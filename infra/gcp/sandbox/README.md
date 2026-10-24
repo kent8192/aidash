@@ -6,7 +6,7 @@ change production files, select a gcloud default, or perform provider OAuth.
 All live acceptance is pending until real observations are attached to #135/#152.
 Local tests only exercise lifecycle and response handling.
 
-Use Python 3.12+, Terraform 1.14.8, OpenSSL 3, kubectl and gcloud. The operator needs a concrete
+Use Python 3.12+, Terraform 1.14.8, OpenSSL 3, kubectl and gcloud. The person running this verification needs a concrete
 explicit parent (`none`, folder or organization), billing account, project-creation quota, project shutdown
 and billing permissions, plus the bootstrap roles described in the parent
 README. The broker image must come from a reviewed source SHA; record the build
@@ -50,9 +50,9 @@ python3 infra/gcp/sandbox/runner.py plan --phase bootstrap --manifest "$RUN/mani
 number/parent/label and billing association, and persists progress before each
 write. A pre-existing ID is never adopted. An interrupted creation resumes only
 when that exact run label is present; otherwise resolve the ambiguous attempt
-with the operator and choose fresh IDs. Do not manually mark a project owned.
+with the person running that attempt and choose fresh IDs. Do not manually mark a project owned.
 The manifest is a local ownership journal, not a signature or security boundary
-against an operator who can edit local files; protect it with the run directory.
+against someone who can edit local files; protect it with the run directory.
 
 `plan --phase bootstrap` is local-only: it archives `infra/gcp` from the recorded
 Git SHA into `$RUN/source`, records that SHA and archive hash in
@@ -62,7 +62,7 @@ byte-for-byte unchanged; no environment inputs or commands are generated. This
 allows the new project's Artifact Registry to exist before a private image build.
 
 1. Review and execute the commands in `bootstrap-plan-commands.json`, then review
-   the saved bootstrap plan. An authorized operator applies that exact plan
+   the saved bootstrap plan. An authorized person applies that exact plan
    separately. Keep its local state and saved plan in place.
 2. Build the broker privately from the **same recorded SHA** and publish it to
    `us-central1-docker.pkg.dev/$APP_PROJECT/aidash/broker` in the newly owned
@@ -82,7 +82,7 @@ python3 infra/gcp/sandbox/runner.py plan --phase environments --manifest "$RUN/m
 
 `set-broker-image` is local-only, requires the exact manifest/source-receipt SHA,
 and refuses to replace an already registered image or change a prepared
-environment. It does not verify remote image provenance; the operator must
+environment. It does not verify remote image provenance; whoever runs the build must
 review the private build receipt and registry digest before registration.
 `plan --phase environments` requires that registered digest and prior bootstrap
 preparation. It reuses the same isolated archive and changes the broker lock
@@ -123,7 +123,7 @@ forwarded. Private credentials stay in memory or mode-0600 files under `RUN`.
 ```sh
 python3 infra/gcp/sandbox/controls.py discover --manifest "$RUN/manifest.json"
 python3 infra/gcp/sandbox/controls.py fixtures --manifest "$RUN/manifest.json" \
-  --operator-member 'user:YOUR_OPERATOR_EMAIL'
+  --verification-member 'user:YOUR_VERIFICATION_EMAIL'
 python3 infra/gcp/sandbox/controls.py identities --manifest "$RUN/manifest.json"
 python3 infra/gcp/sandbox/recipes.py --manifest "$RUN/manifest.json" \
   --resources "$RUN/resources.json" --output "$RUN/requests"
@@ -138,7 +138,7 @@ creates only the unprivileged `aidash-sandbox-control` and
 `aidash-sandbox-target` accounts, dummy secrets, two tenant dummy users and the
 own-tenant server viewer grant. The exact dummy password is in
 `$RUN/dummy-login.json`; never paste it into agent logs. It also grants only the
-specified operator TokenCreator on the test identities so they can be exercised.
+specified verification member TokenCreator on the test identities so they can be exercised.
 `identities` checks each impersonated access token's Google tokeninfo email and
 expiry privately before that identity's results can count as evidence.
 
@@ -169,7 +169,7 @@ SHA-256 of the canonical request spec, identity, project, expected/observed stat
 source SHA and timestamps. Thus regenerated same-ID policy/tenant requests remain
 distinguishable. It stores no payload, token, cookie or response body. Controls
 record bounded metadata in `controls-evidence.json`, including the executable
-and discovered-resource digests. These are real observations only after operator
+and discovered-resource digests. These are real observations only after actual
 execution; unit-test mock outcomes must never be copied into this journal.
 
 ### Assumptions 1–3: policy, prefixes and payloads
@@ -259,7 +259,7 @@ python3 infra/gcp/sandbox/controls.py request-log --manifest "$RUN/manifest.json
   --marker 'THE_24_HEX_MARKER_FROM_CONTROLS_EVIDENCE'
 ```
 
-Run this phase on the operator workstation **outside the sandbox VPC** for its
+Run this phase on the verification workstation **outside the sandbox VPC** for its
 internet control. That request must return an ingress 403/404 and must not return
 the broker's distinctive capability rejection. No arbitrary HTTP failure counts.
 Run Pod controls before revision-alert probes, or rediscover the new ready
@@ -294,7 +294,7 @@ sandbox project and user. Use the actual backend service with a local forward:
 ```sh
 kubectl --kubeconfig="$RUN/kubeconfig" \
   --context="gke_${APP_PROJECT}_us-central1-a_aidash" -n aidash-test \
-  port-forward service/app-aidash-server 18080:8080
+  port-forward service/app-backend 18080:8080
 ```
 
 The owner creates `$RUN/session.json` (mode 0600) with
@@ -457,7 +457,7 @@ phase makes no provider request and changes no Terraform lifecycle guard.
 After probes, revoke dummy provider grants in their owner UI if any were used,
 disconnect Plan Connections/Provider Credentials, delete private callback/token
 artifacts, and record the boolean outcome. Dummy-secret IAM probes require no
-real provider credentials. The envelope does not revoke the operator's personal
+real provider credentials. The envelope does not revoke the signed-in person's
 ADC/gcloud login. Delete only run-specific credential files; preserve evidence
 and state until shutdown verification succeeds.
 

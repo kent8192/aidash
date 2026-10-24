@@ -802,7 +802,7 @@ for #135/#152 assumptions 1–8. It prepares the real roots in an isolated copy,
 requires two newly created projects and a reviewed broker source/digest, records
 only sanitized probe metadata, and verifies project shutdown plus billing
 unlinking without changing production deletion guards. `prepare` and `plan`
-are local preparation; `create`, `probe` and `cleanup` are separate operator
+are local preparation; `create`, `probe` and `cleanup` are separately authorized
 phases. The existing gcloud default project is never used.
 
 Local runner tests are `python3 -m unittest discover -s infra/gcp/tests -p

@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Disposable #152 sandbox lifecycle. All output is allowlisted metadata.
 
-prepare/plan/set-broker-image are local-only. create, probe and cleanup require separate operator
+prepare/plan/set-broker-image are local-only. create, probe and cleanup require separately authorized
 invocations; this tool never runs Terraform apply or changes gcloud defaults.
 """
 import argparse
@@ -159,7 +159,7 @@ def cleanup(m, path):
         raise Refused('cleanup incomplete; rerun cleanup after resolving ownership or cloud access')
     m.update(status='shutdown_verified', cleanup_observed_at=stamp())
     save(path, m)
-    return {'status': 'shutdown_verified', 'permanent_deletion': 'pending_google_recovery_period', 'credential_cleanup': 'project_credentials_disabled; local_operator_credentials_not_managed'}
+    return {'status': 'shutdown_verified', 'permanent_deletion': 'pending_google_recovery_period', 'credential_cleanup': 'project_credentials_disabled; local_login_credentials_not_managed'}
 
 
 def source_receipt(m, path):

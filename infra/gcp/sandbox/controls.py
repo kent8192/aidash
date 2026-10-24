@@ -3,7 +3,7 @@
 
 Review the source and the generated alert command bundle before authorizing any
 live invocation. All captured credentials/bodies stay in memory or the private
-run directory, never stdout. Uses the operator's ADC/gcloud login for fixture
+run directory, never stdout. Uses the signed-in person's ADC/gcloud login for fixture
 administration; tested workload calls explicitly impersonate the discovered SA.
 """
 import argparse
@@ -122,14 +122,14 @@ class Controls:
         self.record('kubeconfig', self.app + '/us-central1-a/aidash', 'verified')
 
     def fixtures(self, args):
-        require(re.fullmatch(r'(user|serviceAccount):[^\s]+@[^\s]+', args.operator_member or ''), 'explicit operator IAM member required')
+        require(re.fullmatch(r'(user|serviceAccount):[^\s]+@[^\s]+', args.verification_member or ''), 'explicit verification IAM member required')
         for account in ('aidash-sandbox-control', 'aidash-sandbox-target'):
             cloud(self.app, 'iam', 'service-accounts', 'create', account, '--display-name=Disposable sandbox control')
-        # Grant only the operator the ability to exercise the existing identities.
+        # Grant only the verification member access to exercise the existing identities.
         # Deploy is never made a broker token creator by this fixture setup.
         for key in ('server', 'worker', 'node', 'broker', 'deploy', 'control'):
             cloud(self.app, 'iam', 'service-accounts', 'add-iam-policy-binding', self.r[key],
-                  '--member=' + args.operator_member, '--role=roles/iam.serviceAccountTokenCreator')
+                  '--member=' + args.verification_member, '--role=roles/iam.serviceAccountTokenCreator')
         for secret in ('aidash-test-cred-dummy', 'aidash-other-cred-dummy', 'aidash-test-cred-management'):
             cloud(self.byok, 'secrets', 'create', secret, '--replication-policy=automatic', '--labels=aidash-sandbox-run=' + self.m['run_id'])
             execute(['gcloud', 'secrets', 'versions', 'add', secret, '--data-file=-', '--project=' + self.byok, '--quiet'], b'aidash-sandbox-dummy')
@@ -145,7 +145,7 @@ class Controls:
         save(self.directory / 'tenant-policy-baseline.json', policy)
         policy.setdefault('bindings', []).append({'role': 'roles/identityplatform.viewer', 'members': ['serviceAccount:' + self.r['server']]})
         self.api('identitytoolkit.googleapis.com', resource + ':setIamPolicy', body={'policy': policy})
-        self.record('fixtures', self.app, 'created', operator_grant_cleanup='project_shutdown')
+        self.record('fixtures', self.app, 'created', verification_grant_cleanup='project_shutdown')
 
     def identities(self, args):
         for name in ('server', 'worker', 'node', 'broker', 'deploy', 'control'):
@@ -620,7 +620,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('phase', choices=['discover', 'fixtures', 'identities', 'manage', 'kms', 'pods', 'gcip', 'tags', 'alert-plan', 'alert', 'alert-collect', 'kubeconfig', 'request-log', 'deny-fixtures', 'restore-deny', 'lifecycle', 'gcip-reenable', 'broker-undelete-last', 'recover-broker'])
     parser.add_argument('--manifest', required=True)
-    parser.add_argument('--operator-member')
+    parser.add_argument('--verification-member')
     parser.add_argument('--probe-image')
     parser.add_argument('--change')
     parser.add_argument('--case')
