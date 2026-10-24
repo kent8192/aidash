@@ -2675,13 +2675,12 @@ async fn home_run_reads_survive_reindex_but_the_writer_is_invalidated_by_its_own
 	.await
 	.unwrap();
 	let run = f.store.runs(&TEST_FIXTURE).await.unwrap().remove(0);
-	if mixed_on_demand {
-		let denied_shared = delivery == "extra_on_demand";
+	if delivery == "extra_on_demand" {
 		let mut denied = policy.clone();
 		denied["policies"].as_array_mut().unwrap().push(json!({
 			"id":"deny-only-on-demand-bank","effect":"deny","subjects":{"any":true},
 			"actions":["memory.read"],"resources":{"kinds":["memory"]},
-			"condition":{"op":"eq","left":{"source":"resource","path":"/shared"},"right":{"source":"literal","value":denied_shared}}
+			"condition":{"op":"eq","left":{"source":"resource","path":"/shared"},"right":{"source":"literal","value":true}}
 		}));
 		authorization
 			.replace(
@@ -2692,10 +2691,10 @@ async fn home_run_reads_survive_reindex_but_the_writer_is_invalidated_by_its_own
 			)
 			.await
 			.unwrap();
-		let mut denied_bank = participant.bank.clone();
-		if denied_shared {
-			denied_bank.participant = None;
-		}
+		let denied_bank = Bank {
+			participant: None,
+			..participant.bank.clone()
+		};
 		let denied_read = memory::list(
 			&f.store,
 			&actor,
@@ -2708,6 +2707,38 @@ async fn home_run_reads_survive_reindex_but_the_writer_is_invalidated_by_its_own
 		assert!(
 			matches!(denied_read, Err(aidash_server::Error::Forbidden)),
 			"the excluded Bank must really deny reads: {denied_read:?}"
+		);
+	}
+	if delivery == "primary_on_demand" {
+		// Run eligibility still requires the primary Bank's memory.read. Its
+		// payload must stay unread: this array passes the relational CHECK but
+		// fails the real Unit loader's typed Entity decoding.
+		let updated = aidash_server::database::native::query(
+			&Query::update()
+				.table(Alias::new("memory_units"))
+				.value(
+					Alias::new("entities"),
+					Expr::value(json!([{"on_demand_loader_sentinel":true}])),
+				)
+				.and_where(Expr::col("id").eq(Expr::value(id)))
+				.to_string(PostgresQueryBuilder),
+		)
+		.execute(f.store.pool.in_scope(&TEST_FIXTURE))
+		.await
+		.unwrap();
+		assert_eq!(updated.rows_affected(), 1);
+		let unreadable = memory::list(
+			&f.store,
+			&actor,
+			memory::ReadBank {
+				provider: primary.clone(),
+				bank: participant.bank.clone(),
+			},
+		)
+		.await;
+		assert!(
+			matches!(&unreadable, Err(aidash_server::Error::Json(error)) if error.is_data() && error.to_string().contains("on_demand_loader_sentinel")),
+			"the primary payload loader must really fail after authorization: {unreadable:?}"
 		);
 	}
 	if delivery == "accepted_lease_lost" {
