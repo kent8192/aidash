@@ -842,43 +842,36 @@ impl BindingResolver for Bench {
 
 #[async_trait]
 impl ExecutionEnvironment for Bench {
+	fn context_source_plan(&self, _run: &Run) -> Result<Vec<PlannedContextSource>> {
+		Ok(super::fixture_source_plan(false, false, false))
+	}
 	async fn context_source(
 		&self,
-		request: ContextSourceRead<'_>,
+		run: &Run,
+		source: &ContextSourceHandle,
 		_worker: Uuid,
-		_frame: SourceQueryFrame<'_>,
+		frame: ContextSourceFrame<'_>,
 	) -> SemanticContextRead {
-		let result = match request {
-			ContextSourceRead::ResidentSkills { blocks, .. } => Ok(Some(serde_json::json!(
-				blocks
-					.iter()
-					.map(|block| block.text.as_str())
-					.collect::<String>()
-			))),
-			ContextSourceRead::RegistrySkills { .. } => unexpected("Registry Skill source"),
-			ContextSourceRead::WorkspaceObservation { run, offset, limit } => {
-				self.home(run).observation(offset, limit).await.map(Some)
-			}
-			ContextSourceRead::References { run: _, entry } => {
-				self.documents(entry).await.map(Some)
-			}
-			ContextSourceRead::Skills { run } => self
-				.skill_context(run)
+		let result = match source.as_str() {
+			"workspace" => self
+				.home(run)
+				.observation(0, context::observation::DEFAULT_LIMIT)
 				.await
-				.map(|text| Some(serde_json::json!(text))),
-			ContextSourceRead::Semantic {
-				run,
-				task,
-				inputs,
-				budget,
-				entry,
-				key,
-				degrade_on_outage,
-			} => {
+				.map(Some),
+			"semantic_memory" => {
 				return self
-					.semantic_context(run, task, inputs, budget, entry, key, degrade_on_outage)
+					.semantic_context(
+						run,
+						frame.task,
+						frame.inputs,
+						frame.budget,
+						frame.entry,
+						frame.key,
+						frame.degrade_on_outage,
+					)
 					.await;
 			}
+			_ => unexpected("unknown planned context source"),
 		};
 		SemanticContextRead {
 			selections: vec![],
@@ -948,7 +941,11 @@ impl ExecutionEnvironment for Bench {
 	) -> Result<String> {
 		unexpected("ExecutionEnvironment.direct_skill_body")
 	}
-	async fn skill_revision(&self, _run: &Run) -> Result<Option<i64>> {
+	async fn source_revision(
+		&self,
+		_source: &ContextSourceHandle,
+		_run: &Run,
+	) -> Result<Option<i64>> {
 		unexpected("ExecutionEnvironment.skill_revision")
 	}
 	async fn cache_scope(&self, _run: &Run) -> Result<aidash_domain::projection::CacheScope> {
@@ -956,6 +953,14 @@ impl ExecutionEnvironment for Bench {
 	}
 	async fn retrieval_scope(&self, _run: &Run) -> Result<RetrievalScope> {
 		unexpected("ExecutionEnvironment.retrieval_scope")
+	}
+	async fn source_retrieval_key(
+		&self,
+		_run: &Run,
+		_bindings: &str,
+		_frame: ContextSourceFrame<'_>,
+	) -> Result<RetrievalKey> {
+		unexpected("ExecutionEnvironment.source_retrieval_key")
 	}
 
 	async fn run_message_limit(&self, _run: &Run) -> Result<usize> {

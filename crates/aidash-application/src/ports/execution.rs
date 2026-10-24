@@ -9,7 +9,6 @@ use aidash_domain::{
 		usage::{UsageDispatch, UsageOutcome},
 	},
 	registry::{EntityRef, Entry},
-	semantic::InputRead,
 	*,
 };
 use async_trait::async_trait;
@@ -546,36 +545,10 @@ pub struct PreparedSkillSource {
 	pub text: String,
 	pub preview: String,
 }
-pub enum ContextSourceRead<'a> {
-	ResidentSkills {
-		run: &'a Run,
-		blocks: &'a [PreparedSkillSource],
-	},
-	RegistrySkills {
-		run: &'a Run,
-	},
-	WorkspaceObservation {
-		run: &'a Run,
-		offset: usize,
-		limit: usize,
-	},
-	References {
-		run: &'a Run,
-		entry: &'a Entry,
-	},
-	Skills {
-		run: &'a Run,
-	},
-	Semantic {
-		run: &'a Run,
-		task: &'a Task,
-		inputs: &'a [(InputRead, String)],
-		budget: usize,
-		entry: &'a Entry,
-		key: Option<&'a aidash_domain::context::sources::RetrievalKey>,
-		degrade_on_outage: bool,
-	},
-}
+pub use super::context_source::{
+	ContextSourceCache, ContextSourceFrame, ContextSourceHandle, ContextSourcePhase,
+	ContextSourceTarget, PlannedContextSource,
+};
 
 /// Composition supplies concrete adapters without exposing their framework types.
 /// A native authority owns its policy scope for the complete step, suspends only
@@ -630,12 +603,17 @@ pub trait ExecutionEnvironment: Send + Sync {
 	fn completion_checks(&self) -> Option<&dyn completion::CompletionChecks> {
 		None
 	}
-	/// Read an admitted context source under the current execution authority.
+	/// Compile the ordered lifecycle plan from this Run's admitted declarations.
+	/// No unbound provider is collected simply because the host implements it.
+	fn context_source_plan(&self, run: &Run) -> Result<Vec<PlannedContextSource>>;
+	/// Read one planned handle under the current execution authority. The
+	/// environment verifies that the handle still belongs to this exact plan.
 	async fn context_source(
 		&self,
-		request: ContextSourceRead<'_>,
+		run: &Run,
+		source: &ContextSourceHandle,
 		worker: Uuid,
-		frame: SourceQueryFrame<'_>,
+		frame: ContextSourceFrame<'_>,
 	) -> SemanticContextRead;
 	async fn recheck_source_observation(&self, run: &Run, content: &Value) -> Result<()>;
 
@@ -645,9 +623,9 @@ pub trait ExecutionEnvironment: Send + Sync {
 	/// Exact SKILL.md text of one pinned direct Skill. A digest other than the
 	/// pinned one is `Conflict("CAPABILITY_CHANGED")`.
 	async fn direct_skill_body(&self, run: &Run, skill_id: Uuid, digest: &str) -> Result<String>;
-	/// Current revision of the Run's pinned Skill record, `None` before one
-	/// exists. An Ordered Run reuses its Skill context while this is unchanged.
-	async fn skill_revision(&self, run: &Run) -> Result<Option<i64>>;
+	/// Current provider-owned revision of a planned revision-cache source.
+	async fn source_revision(&self, source: &ContextSourceHandle, run: &Run)
+	-> Result<Option<i64>>;
 	/// Cache Scope for a salted Projection Version: the Tenant whose provider
 	/// cache the request may share and the current Cache Salt Key version. Fails
 	/// with a typed error when the node has no Cache Salt Key; never unsalted.
@@ -658,6 +636,14 @@ pub trait ExecutionEnvironment: Send + Sync {
 		&self,
 		run: &Run,
 	) -> Result<aidash_domain::context::sources::RetrievalScope>;
+	/// Provider-owned reusable key for the plan's budgeted phase. The operator
+	/// does not choose a native retrieval query or interpret adapter names.
+	async fn source_retrieval_key(
+		&self,
+		run: &Run,
+		bindings: &str,
+		frame: ContextSourceFrame<'_>,
+	) -> Result<aidash_domain::context::sources::RetrievalKey>;
 	async fn run_message_limit(&self, run: &Run) -> Result<usize>;
 	/// The pages people asked this Run to read, recorded beside the inputs
 	/// that carried them (ADR 0052). Empty when the Run has none.
