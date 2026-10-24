@@ -5,6 +5,7 @@ use aidash_domain::{
 	identity::peer_mapping::Mapping,
 	nodes::{
 		DeploymentId, NodeAddress, NodeName,
+		keys::TrustedDeploymentKeys,
 		registration::{NodeRegistration, PinnedKey},
 	},
 	tenancy::TenantName,
@@ -18,6 +19,28 @@ use uuid::Uuid;
 pub struct ViewerGrant {
 	pub key: PinnedKey,
 	pub revision: i64,
+}
+
+/// Receiving trust belongs to this exact authority record, never globally to
+/// the sending Deployment. Node registrations and Graph grants are independent.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ReceivingKeyOwner {
+	Registration {
+		tenant: TenantName,
+		node: NodeName,
+		source_node: NodeAddress,
+	},
+	ViewerGrant {
+		tenant: TenantName,
+		viewer: DeploymentId,
+		identity: Uuid,
+	},
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ReceivingKeys {
+	pub keys: TrustedDeploymentKeys,
+	pub keys_revision: i64,
 }
 
 #[async_trait]
@@ -34,6 +57,18 @@ pub trait InboundRepository: Send + Sync {
 	async fn node_tenant(&self, node: &NodeName) -> Result<Option<TenantName>>;
 	/// Whether `tenant` has no deletion record.
 	async fn tenant_live(&self, tenant: &TenantName) -> Result<bool>;
+	/// Permanent name ownership is not live admission.
+	async fn node_live(&self, tenant: &TenantName, node: &NodeName) -> Result<bool>;
+	/// An authenticated request may finish only an exact durable obligation.
+	/// Implementations bind the original caller, receiver and immutable work.
+	async fn closed_node_request(
+		&self,
+		tenant: &TenantName,
+		receiver: &NodeAddress,
+		sender: &NodeAddress,
+		subject: &str,
+		request: &crate::federation::inbound::RequestDigest<'_>,
+	) -> Result<bool>;
 	/// The registration at `receiver` for `sender`, read in `tenant`'s scope.
 	async fn registration(
 		&self,
@@ -64,4 +99,20 @@ pub trait InboundRepository: Send + Sync {
 		viewer: &DeploymentId,
 		identity: Uuid,
 	) -> Result<Option<ViewerGrant>>;
+	/// Authentication material only. This read does not establish enabled
+	/// authority; admission must separately check the registration or grant.
+	async fn receiving_keys(&self, owner: &ReceivingKeyOwner) -> Result<Option<ReceivingKeys>>;
+	/// Atomically advances only this owner's authentication material and its
+	/// keys revision. Match BOTH revisions, enabled authority and non-quarantine
+	/// under the existing Tenant/Node authority locks, rechecking live Tenant and
+	/// receiving Node. Preserve permissions, authorization revision and cursors.
+	/// False means admission must fail closed or fully reload and revalidate;
+	/// a stale snapshot must never be written unconditionally after a conflict.
+	async fn advance_keys(
+		&self,
+		owner: &ReceivingKeyOwner,
+		expected_keys_revision: i64,
+		expected_authorization_revision: i64,
+		keys: &TrustedDeploymentKeys,
+	) -> Result<bool>;
 }

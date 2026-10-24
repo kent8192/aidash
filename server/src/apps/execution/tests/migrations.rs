@@ -110,7 +110,7 @@ async fn native_history_uses_typed_schema_operations_and_lf_sql_assets() {
 			.iter()
 			.filter(|migration| migration.state_only)
 			.count(),
-		51
+		55
 	);
 	let tables = migrations
 		.iter()
@@ -703,7 +703,7 @@ async fn preserved_baseline_does_not_generate_table_recreation(
 			.iter()
 			.filter(|migration| migration.state_only)
 			.count(),
-		51
+		55
 	);
 }
 
@@ -2953,12 +2953,14 @@ async fn node_deletion_schema_roundtrips_with_registered_model_state(
 					"0040_node_deletions"
 						| "0041_node_deletions_state"
 						| "0042_node_deletions_row_level_security"
+						| "0043_node_administration_target"
+						| "0044_node_administration_target_state"
 				)
 		})
 		.cloned()
 		.collect();
 	node_migrations.sort_by(|left, right| left.name.cmp(&right.name));
-	assert_eq!(node_migrations.len(), 3);
+	assert_eq!(node_migrations.len(), 5);
 
 	let logical = build_state_from_files(&source).await.unwrap();
 	let registered = ProjectState::from_global_registry();
@@ -2977,11 +2979,13 @@ async fn node_deletion_schema_roundtrips_with_registered_model_state(
 			})
 			.collect::<BTreeMap<_, _>>()
 	};
-	assert_eq!(
-		columns(logical.find_model_by_table(table).unwrap()),
-		columns(registered.find_model_by_table(table).unwrap()),
-		"generated logical migration state must match the production ORM schema"
-	);
+	for table in [table, "dashboard_administration_history"] {
+		assert_eq!(
+			columns(logical.find_model_by_table(table).unwrap()),
+			columns(registered.find_model_by_table(table).unwrap()),
+			"generated logical migration state must match the production ORM schema for {table}"
+		);
+	}
 	let pool = fixture.connection.clone().into_postgres().unwrap();
 	for pass in 0..2 {
 		let policy: (bool, bool) = sqlx::query_as("SELECT relrowsecurity,relforcerowsecurity FROM pg_class WHERE oid=to_regclass('public.node_deletions')")
@@ -3033,6 +3037,170 @@ async fn node_deletion_schema_roundtrips_with_registered_model_state(
 				!after.contains(&(migration.app_label.clone(), migration.name.clone()))
 			}));
 			executor.apply_migrations(&node_migrations).await.unwrap();
+			assert_eq!(recorded_keys(&fixture.connection).await, before);
+		}
+	}
+}
+
+/// The audit target survives physical purge and cannot name another Tenant's
+/// Node. HTTP history assertions cannot establish these database constraints.
+#[rstest]
+#[tokio::test]
+async fn node_administration_audit_preserves_permanent_tenant_ownership(
+	#[future] fresh_database: MigrationFixture,
+) {
+	let fixture = fresh_database.await;
+	aidash_server::bootstrap::migrations::run(&migration_context(&fixture.url))
+		.await
+		.unwrap();
+	fixture.tenant_root("acme").await;
+	fixture.tenant_root("sibling").await;
+	let pool = PgPool::connect(&fixture.url).await.unwrap();
+	let name = aidash_domain::nodes::NodeName::derived("acme").to_string();
+	let insert = "INSERT INTO dashboard_administration_history (id,occurred_at,action,actor_kind,tenant,node) VALUES ($1,clock_timestamp(),'node.purge','deployment_administrator',$2,$3)";
+	let wrong_owner = sqlx::query(insert)
+		.bind(Uuid::new_v4())
+		.bind("sibling")
+		.bind(&name)
+		.execute(&pool)
+		.await
+		.unwrap_err();
+	assert_eq!(
+		wrong_owner.as_database_error().unwrap().code().as_deref(),
+		Some("23503")
+	);
+	let no_owner = sqlx::query(insert)
+		.bind(Uuid::new_v4())
+		.bind(Option::<String>::None)
+		.bind(&name)
+		.execute(&pool)
+		.await
+		.unwrap_err();
+	assert_eq!(
+		no_owner.as_database_error().unwrap().code().as_deref(),
+		Some("23514")
+	);
+	let id = Uuid::new_v4();
+	sqlx::query(insert)
+		.bind(id)
+		.bind("acme")
+		.bind(&name)
+		.execute(&pool)
+		.await
+		.unwrap();
+	sqlx::query("DELETE FROM nodes WHERE tenant='acme' AND name=$1")
+		.bind(&name)
+		.execute(&pool)
+		.await
+		.unwrap();
+	let retained: (String, String) =
+		sqlx::query_as("SELECT tenant,node FROM dashboard_administration_history WHERE id=$1")
+			.bind(id)
+			.fetch_one(&pool)
+			.await
+			.unwrap();
+	assert_eq!(retained, ("acme".to_owned(), name.clone()));
+	let permanent_claim = sqlx::query("DELETE FROM node_names WHERE name=$1")
+		.bind(name)
+		.execute(&pool)
+		.await
+		.unwrap_err();
+	assert_eq!(
+		permanent_claim
+			.as_database_error()
+			.unwrap()
+			.code()
+			.as_deref(),
+		Some("23503")
+	);
+	pool.close().await;
+}
+
+/// HTTP proves physical persistence; this owns ORM-state drift and reversible
+/// receiver schema changes while preserving the existing Tenant RLS boundary.
+#[rstest]
+#[tokio::test]
+async fn receiving_keysets_roundtrip_with_registered_model_state(
+	#[future] fresh_database: MigrationFixture,
+) {
+	use reinhardt::db::migrations::{ProjectState, executor::DatabaseMigrationExecutor};
+	let fixture = fresh_database.await;
+	let source =
+		FilesystemSource::new(PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("migrations"));
+	let migrations = source.all_migrations().await.unwrap();
+	let mut executor = DatabaseMigrationExecutor::new(fixture.connection.clone())
+		.with_migration_history(migrations.clone());
+	executor.apply_migrations(&migrations).await.unwrap();
+	let before = recorded_keys(&fixture.connection).await;
+	let logical = build_state_from_files(&source).await.unwrap();
+	let registered = ProjectState::from_global_registry();
+	let tables = [
+		"node_registrations",
+		"node_registration_history",
+		"authorization_peer_graph_grants",
+	];
+	for table in tables {
+		for field in ["source_keys", "keys_revision"] {
+			let actual = &logical.find_model_by_table(table).unwrap().fields[field];
+			let expected = &registered.find_model_by_table(table).unwrap().fields[field];
+			assert_eq!(
+				reinhardt::db::migrations::ColumnDefinition::from_field_state(field, actual),
+				reinhardt::db::migrations::ColumnDefinition::from_field_state(field, expected),
+				"{table}.{field}"
+			);
+		}
+	}
+	let mut receiving: Vec<_> = migrations
+		.iter()
+		.filter(|m| {
+			matches!(
+				m.name.as_str(),
+				"0015_receiving_keysets"
+					| "0016_receiving_keysets_state"
+					| "0045_receiving_keysets"
+					| "0046_receiving_keysets_state"
+			)
+		})
+		.cloned()
+		.collect();
+	receiving.sort_by(|a, b| (&a.app_label, &a.name).cmp(&(&b.app_label, &b.name)));
+	let pool = fixture.connection.clone().into_postgres().unwrap();
+	for pass in 0..2 {
+		for table in tables {
+			let columns: Vec<(String,String,String)> = sqlx::query_as("SELECT column_name,data_type,is_nullable FROM information_schema.columns WHERE table_schema='public' AND table_name=$1 AND column_name IN ('source_keys','keys_revision') ORDER BY column_name").bind(table).fetch_all(&pool).await.unwrap();
+			assert_eq!(
+				columns,
+				vec![
+					("keys_revision".into(), "bigint".into(), "NO".into()),
+					(
+						"source_keys".into(),
+						"text".into(),
+						if table == "authorization_peer_graph_grants" {
+							"NO"
+						} else {
+							"YES"
+						}
+						.into()
+					)
+				],
+				"{table}"
+			);
+			let rls: (bool, bool) = sqlx::query_as(
+				"SELECT relrowsecurity,relforcerowsecurity FROM pg_class WHERE oid=to_regclass($1)",
+			)
+			.bind(format!("public.{table}"))
+			.fetch_one(&pool)
+			.await
+			.unwrap();
+			assert_eq!(rls, (true, true), "{table}");
+		}
+		if pass == 0 {
+			executor.rollback_migrations(&receiving).await.unwrap();
+			for table in tables {
+				let count: i64 = sqlx::query_scalar("SELECT count(*) FROM information_schema.columns WHERE table_schema='public' AND table_name=$1 AND column_name IN ('source_keys','keys_revision')").bind(table).fetch_one(&pool).await.unwrap();
+				assert_eq!(count, 0, "{table}");
+			}
+			executor.apply_migrations(&receiving).await.unwrap();
 			assert_eq!(recorded_keys(&fixture.connection).await, before);
 		}
 	}

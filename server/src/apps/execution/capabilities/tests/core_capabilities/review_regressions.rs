@@ -614,3 +614,519 @@ fn retry_router(retry_calls: Arc<std::sync::atomic::AtomicUsize>) -> Arc<reinhar
 			.into_server_router(),
 	)
 }
+
+/// Maintenance starts from committed rows, independently of live tool admission.
+#[rstest::fixture]
+async fn command_cleanup_fixture(
+	#[future(awt)]
+	#[from(common::native_application)]
+	application: common::ApplicationFixture,
+	core_storage: Arc<tempfile::TempDir>,
+) -> (CoreFixture, Uuid, Uuid) {
+	let (mut f, url, schema) = application.runtime.parts();
+	let app = application.application;
+	let (policy, token, task) = bootstrap(&f, &app, "http://localhost:19999").await;
+	let (status, response) = request(
+		&app,
+		&token,
+		"POST",
+		&format!("/api/tasks/{task}/delegate"),
+		json!({"node_id":f.config.deployment,"agent":{"id":"research","version":"1.0.0"}}),
+	)
+	.await;
+	assert_eq!(status, 200, "{response}");
+	let run = f.store.runs(&TEST_FIXTURE).await.unwrap().remove(0);
+	let area = Uuid::new_v4();
+	let id = Uuid::new_v4();
+	sqlx::query(
+		&Query::insert()
+			.into_table(Alias::new("core_areas"))
+			.columns(
+				[
+					"id",
+					"tenant",
+					"home_node",
+					"agent_id",
+					"owner",
+					"workspace_id",
+					"thread_id",
+					"state",
+				]
+				.map(Alias::new),
+			)
+			.values(vec![
+				area.into(),
+				"acme".into(),
+				run.home_node.clone().into(),
+				run.agent_id.clone().into(),
+				"alice".into(),
+				run.workspace_id.into(),
+				Uuid::new_v4().into(),
+				"running".into(),
+			])
+			.unwrap()
+			.to_string(PostgresQueryBuilder),
+	)
+	.execute(f.store.pool.fixture_driver())
+	.await
+	.unwrap();
+	sqlx::query(
+		&Query::insert()
+			.into_table(Alias::new("core_operations"))
+			.columns(
+				[
+					"id",
+					"area_id",
+					"run_id",
+					"tenant",
+					"principal",
+					"credential_id",
+					"subjects",
+					"request_key",
+					"digest",
+					"kind",
+					"state",
+					"epoch",
+					"generation",
+					"revision",
+					"policy_revision",
+					"input",
+					"result",
+				]
+				.map(Alias::new),
+			)
+			.values(vec![
+				id.into(),
+				area.into(),
+				run.id.into(),
+				"acme".into(),
+				"alice".into(),
+				Uuid::new_v4().into(),
+				json!(["alice"]).into(),
+				id.to_string().into(),
+				"immutable-intent".into(),
+				"shell".into(),
+				"prepared".into(),
+				1_i64.into(),
+				1_i64.into(),
+				1_i64.into(),
+				1_i64.into(),
+				json!({"command":"never replay","seconds":1}).into(),
+				json!({}).into(),
+			])
+			.unwrap()
+			.to_string(PostgresQueryBuilder),
+	)
+	.execute(f.store.pool.fixture_driver())
+	.await
+	.unwrap();
+	let root = core_storage.path().to_owned();
+	f.store.capabilities = Runtime::new(Profile {
+		admission: true,
+		storage: root.clone(),
+		..Profile::default()
+	})
+	.unwrap();
+	(
+		CoreFixture {
+			_storage: core_storage,
+			http_client: reqwest::Client::new(),
+			f,
+			app,
+			token,
+			policy,
+			task,
+			url,
+			schema,
+			root,
+		},
+		area,
+		id,
+	)
+}
+
+/// A protocol stub: proves durable cleanup, not actual Kubernetes termination.
+async fn cleanup_runner(
+	c: &mut CoreFixture,
+	operation: Uuid,
+) -> (
+	reinhardt::test::fixtures::server::TestServerGuard,
+	Arc<std::sync::atomic::AtomicBool>,
+	Arc<std::sync::Mutex<Vec<Value>>>,
+	Arc<std::sync::Mutex<String>>,
+) {
+	use std::sync::{
+		Mutex,
+		atomic::{AtomicBool, Ordering},
+	};
+	let confirmed = Arc::new(AtomicBool::new(false));
+	let requests = Arc::new(Mutex::new(Vec::new()));
+	let stopped = confirmed.clone();
+	let observed = requests.clone();
+	let instance = Arc::new(Mutex::new("cleanup-runner".to_owned()));
+	let health_instance = instance.clone();
+	let router = reinhardt::ServerRouter::new().handler(
+		"/{*rest}",
+		upstream_fixtures::any_handler(move |request: reinhardt::Request| {
+			let path = request.uri.path().to_owned();
+			let body = request.json::<Value>().unwrap_or(Value::Null);
+			observed
+				.lock()
+				.unwrap()
+				.push(json!({"path":path,"body":body}));
+			let response = if path == "/v1/health" {
+				json!({"instance":*health_instance.lock().unwrap()})
+			} else if path.ends_with("/cancel") || path.ends_with("/stop") {
+				json!({"termination_confirmed":stopped.load(Ordering::SeqCst)})
+			} else if path == format!("/v1/operations/{operation}/ack") {
+				assert_eq!(body["digest"], "immutable-intent");
+				json!({"acknowledged":true})
+			} else {
+				json!({"status":"absent"})
+			};
+			async move { reinhardt::Response::ok().with_json(&response).unwrap() }
+		}),
+	);
+	let guard = upstream_fixtures::upstream(Arc::new(router)).await;
+	let mut profile = (*c.f.store.capabilities.0).clone();
+	profile.runner = Some(serde_json::from_value(json!({"endpoint":guard.url,"token_env":"AIDASH_COMMAND_CLEANUP_TEST_TOKEN","image":"fixture@sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","runtime_class":"fixture","namespace":"fixture"})).unwrap());
+	c.f.store.capabilities = Runtime::new(profile).unwrap();
+	(guard, confirmed, requests, instance)
+}
+
+async fn cleanup_operation(c: &CoreFixture, id: Uuid) -> (String, Value) {
+	sqlx::query_as(
+		&Query::select()
+			.columns(["state", "result"].map(Alias::new))
+			.from(Alias::new("core_operations"))
+			.and_where(Expr::col(Alias::new("id")).eq(Expr::value(id)))
+			.to_string(PostgresQueryBuilder),
+	)
+	.fetch_one(c.f.store.pool.fixture_driver())
+	.await
+	.unwrap()
+}
+
+#[rstest::rstest]
+#[case::dispatched(true)]
+#[case::never_dispatched(false)]
+#[tokio::test]
+async fn withdrawn_dispatched_receipt_is_durably_acknowledged_after_retry(
+	#[case] dispatched: bool,
+	#[future] command_cleanup_fixture: (CoreFixture, Uuid, Uuid),
+	worker_control: WorkerControl,
+) {
+	use std::sync::atomic::Ordering;
+	let (mut c, _, id) = Box::pin(command_cleanup_fixture).await;
+	let (_runner, confirmed, requests, _) = cleanup_runner(&mut c, id).await;
+	sqlx::query(
+		&Query::update()
+			.table(Alias::new("core_operations"))
+			.value(
+				Alias::new("state"),
+				if dispatched { "submitted" } else { "prepared" },
+			)
+			.value(
+				Alias::new("runner_instance"),
+				if dispatched {
+					Some("cleanup-runner")
+				} else {
+					None
+				},
+			)
+			.value(
+				Alias::new("result"),
+				json!({"output":"retained output","offset":17}),
+			)
+			.and_where(Expr::col(Alias::new("id")).eq(Expr::value(id)))
+			.to_string(PostgresQueryBuilder),
+	)
+	.execute(c.f.store.pool.fixture_driver())
+	.await
+	.unwrap();
+	let worker = CapabilityWorker {
+		stop: worker_control.stop,
+		handle: tokio::spawn(aidash_server::capabilities::operations::run(
+			c.f.store.clone(),
+			worker_control.receiver,
+		)),
+	};
+	let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(12);
+	loop {
+		let (state, result) = cleanup_operation(&c, id).await;
+		if !dispatched && state == "withdrawn" {
+			break;
+		}
+		if state == "cancelling" {
+			assert_eq!(result["termination_confirmed"], false);
+			break;
+		}
+		assert!(
+			tokio::time::Instant::now() < deadline,
+			"withdrawal did not retry: {state} {result}"
+		);
+		tokio::time::sleep(std::time::Duration::from_millis(30)).await;
+	}
+	confirmed.store(true, Ordering::SeqCst);
+	loop {
+		let (state, result) = cleanup_operation(&c, id).await;
+		if state == "withdrawn" && (!dispatched || result["runner_acknowledged"] == true) {
+			assert_eq!(result["termination_confirmed"], true);
+			assert_eq!(result["effects_may_have_occurred"], dispatched);
+			if !dispatched {
+				assert!(result.get("runner_acknowledged").is_none());
+			}
+			assert_eq!(result["output"], "retained output");
+			assert_eq!(result["offset"], 17);
+			break;
+		}
+		assert!(
+			tokio::time::Instant::now() < deadline,
+			"withdrawn receipt stranded: {state} {result}"
+		);
+		tokio::time::sleep(std::time::Duration::from_millis(30)).await;
+	}
+	assert_eq!(
+		requests
+			.lock()
+			.unwrap()
+			.iter()
+			.any(|r| r["path"] == format!("/v1/operations/{id}/ack")),
+		dispatched
+	);
+	if !dispatched {
+		assert!(requests.lock().unwrap().is_empty());
+	}
+	worker.stop.send(true).unwrap();
+	worker.await.unwrap().unwrap();
+	c.close().await;
+}
+
+async fn python_receipt_snapshot(
+	c: &CoreFixture,
+	id: Uuid,
+) -> (String, Value, Option<String>, i64, i64, String, Value) {
+	sqlx::query_as(
+		&Query::select()
+			.columns(
+				[
+					"digest",
+					"input",
+					"runner_instance",
+					"epoch",
+					"generation",
+					"state",
+					"result",
+				]
+				.map(Alias::new),
+			)
+			.from(Alias::new("core_operations"))
+			.and_where(Expr::col(Alias::new("id")).eq(Expr::value(id)))
+			.to_string(PostgresQueryBuilder),
+	)
+	.fetch_one(c.f.store.pool.fixture_driver())
+	.await
+	.unwrap()
+}
+
+async fn python_record_snapshot(c: &CoreFixture, area: Uuid) -> (String, Value) {
+	sqlx::query_as(
+		&Query::select()
+			.columns(["state", "data"].map(Alias::new))
+			.from(Alias::new("core_records"))
+			.and_where(Expr::col(Alias::new("id")).eq(Expr::value(area)))
+			.to_string(PostgresQueryBuilder),
+	)
+	.fetch_one(c.f.store.pool.fixture_driver())
+	.await
+	.unwrap()
+}
+
+#[rstest::rstest]
+#[tokio::test]
+async fn frozen_python_stop_persists_all_bound_cells_without_touching_replacements(
+	#[future] command_cleanup_fixture: (CoreFixture, Uuid, Uuid),
+	worker_control: WorkerControl,
+) {
+	use std::sync::atomic::Ordering;
+	let (mut c, area, latest) = Box::pin(command_cleanup_fixture).await;
+	let (_runner, confirmed, requests, instance) = cleanup_runner(&mut c, latest).await;
+	let session = Uuid::new_v4();
+	let other_session = Uuid::new_v4();
+	let original = json!({"termination_confirmed":false,"runner_acknowledged":true,"writer_frozen":true,"stdout":"saved output","displays":[{"type":"text","data":"kept"}],"offset":19,"error":null});
+	sqlx::query(
+		&Query::update()
+			.table(Alias::new("core_operations"))
+			.value(Alias::new("state"), "completed")
+			.value(Alias::new("kind"), "code_interpreter")
+			.value(Alias::new("epoch"), 3_i64)
+			.value(Alias::new("runner_instance"), "cleanup-runner")
+			.value(
+				Alias::new("input"),
+				json!({"session_id":session,"command":"do not replay"}),
+			)
+			.value(Alias::new("result"), original.clone())
+			.and_where(Expr::col(Alias::new("id")).eq(Expr::value(latest)))
+			.to_string(PostgresQueryBuilder),
+	)
+	.execute(c.f.store.pool.fixture_driver())
+	.await
+	.unwrap();
+	let mut rows = vec![(latest, true)];
+	for (epoch, generation, instance, sid, state, stopped) in [
+		(1_i64, 1_i64, "cleanup-runner", session, "completed", true),
+		(2, 1, "cleanup-runner", session, "failed", true),
+		(4, 1, "cleanup-runner", session, "completed", false),
+		(2, 2, "cleanup-runner", session, "completed", false),
+		(2, 1, "replacement-runner", session, "completed", false),
+		(2, 1, "cleanup-runner", other_session, "completed", false),
+	] {
+		let id = Uuid::new_v4();
+		let columns = [
+			"id",
+			"area_id",
+			"run_id",
+			"tenant",
+			"principal",
+			"credential_id",
+			"subjects",
+			"request_key",
+			"digest",
+			"kind",
+			"state",
+			"epoch",
+			"generation",
+			"revision",
+			"policy_revision",
+			"input",
+			"result",
+			"runner_instance",
+		];
+		let mut select = Query::select();
+		for column in columns {
+			select.expr(match column {
+				"id" => Expr::value(id),
+				"request_key" => Expr::value(id.to_string()),
+				"epoch" => Expr::value(epoch),
+				"generation" => Expr::value(generation),
+				"runner_instance" => Expr::value(instance),
+				"state" => Expr::value(state),
+				"input" => Expr::value(json!({"session_id":sid,"command":"do not replay"})),
+				_ => Expr::col(Alias::new(column)),
+			});
+		}
+		select
+			.from(Alias::new("core_operations"))
+			.and_where(Expr::col(Alias::new("id")).eq(Expr::value(latest)));
+		sqlx::query(
+			&Query::insert()
+				.into_table(Alias::new("core_operations"))
+				.columns(columns.map(Alias::new))
+				.from_subquery(select)
+				.to_string(PostgresQueryBuilder),
+		)
+		.execute(c.f.store.pool.fixture_driver())
+		.await
+		.unwrap();
+		rows.push((id, stopped));
+	}
+	let binding = json!({"operation_id":latest,"session_id":session,"instance":"cleanup-runner","last_used":chrono::Utc::now(),"last_revision":1});
+	sqlx::query(
+		&Query::insert()
+			.into_table(Alias::new("core_records"))
+			.columns(["id", "tenant", "owner", "area_id", "kind", "state", "data"].map(Alias::new))
+			.values(vec![
+				area.into(),
+				"acme".into(),
+				"alice".into(),
+				area.into(),
+				"python_session".into(),
+				"frozen".into(),
+				binding.clone().into(),
+			])
+			.unwrap()
+			.to_string(PostgresQueryBuilder),
+	)
+	.execute(c.f.store.pool.fixture_driver())
+	.await
+	.unwrap();
+	let mut before = Vec::new();
+	for (id, _) in &rows {
+		before.push(python_receipt_snapshot(&c, *id).await);
+	}
+	let worker = CapabilityWorker {
+		stop: worker_control.stop,
+		handle: tokio::spawn(aidash_server::capabilities::operations::run(
+			c.f.store.clone(),
+			worker_control.receiver,
+		)),
+	};
+	let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(15);
+	loop {
+		if requests
+			.lock()
+			.unwrap()
+			.iter()
+			.any(|r| r["path"] == format!("/v1/sessions/{session}/stop"))
+		{
+			break;
+		}
+		assert!(
+			tokio::time::Instant::now() < deadline,
+			"revoked session was not reaped"
+		);
+		tokio::time::sleep(std::time::Duration::from_millis(30)).await;
+	}
+	assert_eq!(
+		python_record_snapshot(&c, area).await,
+		("frozen".into(), binding)
+	);
+	for ((id, _), snapshot) in rows.iter().zip(&before) {
+		assert_eq!(&python_receipt_snapshot(&c, *id).await, snapshot);
+	}
+	*instance.lock().unwrap() = "replacement-runner".into();
+	confirmed.store(true, Ordering::SeqCst);
+	loop {
+		if requests
+			.lock()
+			.unwrap()
+			.iter()
+			.any(|r| r["path"] == "/v1/health")
+		{
+			break;
+		}
+		assert!(
+			tokio::time::Instant::now() < deadline,
+			"stop identity was not checked"
+		);
+		tokio::time::sleep(std::time::Duration::from_millis(30)).await;
+	}
+	assert_eq!(python_record_snapshot(&c, area).await.0, "frozen");
+	for ((id, _), snapshot) in rows.iter().zip(&before) {
+		assert_eq!(&python_receipt_snapshot(&c, *id).await, snapshot);
+	}
+	*instance.lock().unwrap() = "cleanup-runner".into();
+	loop {
+		if python_record_snapshot(&c, area).await.0 == "reset" {
+			break;
+		}
+		assert!(
+			tokio::time::Instant::now() < deadline,
+			"confirmed session remained frozen"
+		);
+		tokio::time::sleep(std::time::Duration::from_millis(30)).await;
+	}
+	for ((id, stopped), mut expected) in rows.into_iter().zip(before) {
+		if stopped {
+			expected.6["termination_confirmed"] = json!(true);
+		}
+		assert_eq!(
+			python_receipt_snapshot(&c, id).await,
+			expected,
+			"exact cell stop proof for {id}"
+		);
+	}
+	worker.stop.send(true).unwrap();
+	worker.await.unwrap().unwrap();
+	c.close().await;
+}

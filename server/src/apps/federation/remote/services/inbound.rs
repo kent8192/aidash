@@ -8,7 +8,9 @@ use crate::apps::identity::repositories::{
 use crate::federation::Federation;
 use aidash_application::{
 	Result,
-	ports::federation::inbound::{InboundRepository, ViewerGrant},
+	ports::federation::inbound::{
+		InboundRepository, ReceivingKeyOwner, ReceivingKeys, ViewerGrant,
+	},
 	tenancy::TenancyScope,
 };
 use aidash_domain::{
@@ -63,6 +65,39 @@ impl InboundRepository for Federation {
 			.await?)
 	}
 
+	async fn node_live(&self, tenant: &TenantName, node: &NodeName) -> Result<bool> {
+		Ok(self
+			.store
+			.pool
+			.atomic(&TenancyScope::Tenant(tenant.clone()), async |tx| {
+				nodes::is_live(tx, tenant.as_str(), node.as_str()).await
+			})
+			.await?)
+	}
+	async fn closed_node_request(
+		&self,
+		tenant: &TenantName,
+		receiver: &NodeAddress,
+		sender: &NodeAddress,
+		subject: &str,
+		request: &aidash_application::federation::inbound::RequestDigest<'_>,
+	) -> Result<bool> {
+		Ok(self
+			.store
+			.pool
+			.atomic(&TenancyScope::Tenant(tenant.clone()), async |tx| {
+				super::super::repositories::routes::closed_node_request_in(
+					tx,
+					tenant.as_str(),
+					receiver,
+					sender,
+					subject,
+					request,
+				)
+				.await
+			})
+			.await?)
+	}
 	async fn registration(
 		&self,
 		tenant: &TenantName,
@@ -106,7 +141,9 @@ impl InboundRepository for Federation {
 				if !aidash_domain::identity::authority::enabled(&snapshot.bundle, subject) {
 					return Ok(false);
 				}
-				let node = nodes::get(tx, tenant.as_str(), receiver.as_str()).await?;
+				crate::authorization::identity::require_live_subject(tx, &snapshot, subject)
+					.await?;
+				let node = nodes::get_live(tx, tenant.as_str(), receiver.as_str()).await?;
 				let evaluation = Evaluation {
 					subject: subject.to_owned(),
 					action: NODE_USE.into(),
@@ -146,5 +183,60 @@ impl InboundRepository for Federation {
 			})
 		})
 		.transpose()
+	}
+	async fn receiving_keys(&self, owner: &ReceivingKeyOwner) -> Result<Option<ReceivingKeys>> {
+		use crate::apps::identity::repositories::receiving_keys;
+		Ok(self
+			.store
+			.pool
+			.atomic(
+				&TenancyScope::Tenant(receiving_keys::tenant(owner).clone()),
+				async |tx| receiving_keys::get(tx, owner).await,
+			)
+			.await?)
+	}
+
+	async fn advance_keys(
+		&self,
+		owner: &ReceivingKeyOwner,
+		expected_keys_revision: i64,
+		expected_authorization_revision: i64,
+		keys: &aidash_domain::nodes::keys::TrustedDeploymentKeys,
+	) -> Result<bool> {
+		use crate::apps::identity::repositories::receiving_keys;
+		let tenant = receiving_keys::tenant(owner);
+		Ok(self
+			.store
+			.pool
+			.atomic(&TenancyScope::Tenant(tenant.clone()), async |tx| {
+				// Deletion takes exclusive policy then capacity locks in this order.
+				let snapshot = AuthorizationBundle::lock_snapshot(tx, tenant.as_str(), false).await;
+				match snapshot {
+					Err(crate::Error::TenantDeleted | crate::Error::NotFound(_)) => {
+						return Ok(false);
+					}
+					other => {
+						other?;
+					}
+				}
+				if let ReceivingKeyOwner::Registration { node, .. } = owner {
+					nodes::lock_tenant(tx, tenant.as_str()).await?;
+					match nodes::get_live(tx, tenant.as_str(), node.as_str()).await {
+						Err(crate::Error::NotFound(_)) => return Ok(false),
+						other => {
+							other?;
+						}
+					}
+				}
+				receiving_keys::advance(
+					tx,
+					owner,
+					expected_keys_revision,
+					expected_authorization_revision,
+					keys,
+				)
+				.await
+			})
+			.await?)
 	}
 }

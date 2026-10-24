@@ -2119,6 +2119,186 @@ async fn coverage_concurrent_attachments_respect_account_capacity(
 	d.finish().await;
 }
 
+/// Stored live capacity is the common boundary for deletion, restoration,
+/// account attachment and Tier changes; retained Node rows do not reserve slots.
+#[rstest::rstest]
+#[tokio::test]
+async fn deleted_nodes_release_billing_capacity_and_restore_serializes_with_downgrade(
+	#[from(common::runtime)] runtime: common::RuntimeFuture,
+) {
+	use aidash_enterprise_server::billing::nodes::{NodeCount, StoredNodes};
+	let mut d = Cloud::new(runtime).await;
+	let alice = d.person("alice").await;
+	let (tenant, context) = d.tenant_of(&alice).await;
+	let account = d.account(&alice, Some("team")).await;
+	let (_, (status, body)) = d.attach(&alice, &context, &alice, &tenant, account).await;
+	assert_eq!(status, 200, "{body}");
+	let mut tiers = sandbox_defaults();
+	tiers["tiers"]["small"] =
+		json!({"tenants":5,"nodes":1,"pod_seconds":3600,"storage_bytes":1073741824});
+	let tiers = Arc::new(Settings::from_value(tiers).unwrap());
+	let payments = Arc::new(FakePayments::default());
+	payments.set(
+		account,
+		Subscription {
+			tier: "team".into(),
+			status: Status::Active,
+			grace_ends_at: None,
+		},
+	);
+	d.federation.config.tier_limits = Arc::new(Gate {
+		pool: d.control().clone(),
+		settings: tiers.clone(),
+		payments: payments.clone(),
+		offering: Offering::Cloud,
+	});
+	d.app.context.set_singleton(d.federation.clone());
+	let counts = Arc::new(StoredNodes(d.federation.store.pool.clone()));
+	let billing = Billing {
+		pool: d.control().clone(),
+		settings: tiers,
+		payments: payments.clone(),
+		nodes: counts.clone(),
+	};
+	let path = format!("/api/tenants/{tenant}/nodes");
+	let (status, created) = d
+		.call(
+			&alice,
+			"POST",
+			&path,
+			Some(&context),
+			json!({"label":"Recoverable"}),
+		)
+		.await;
+	assert_eq!(status, 201, "{created}");
+	let node = created["name"].as_str().unwrap();
+	assert_eq!(counts.nodes(&tenant).await.unwrap(), 2);
+	{
+		let delete_path = format!("{path}/{node}/deletion");
+		let wait_for_capacity_contenders = async || {
+			tokio::time::timeout(std::time::Duration::from_secs(10), async {
+			loop {
+				let waiting: i64 = d.scalar("SELECT count(*) FROM pg_stat_activity WHERE datname=current_database() AND wait_event='advisory' AND query LIKE '%pg_advisory_xact_lock%'").await;
+				if waiting >= 2 { break; }
+				tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+			}
+		}).await.expect("both real lifecycle and billing requests must wait on capacity");
+		};
+		let mut held = d.control().begin(&TenancyScope::NoTenant).await.unwrap();
+		aidash_server::authorization::services::nodes::lock_capacity(&mut *held, &tenant)
+			.await
+			.unwrap();
+		let operations = async {
+			tokio::join!(
+				d.call(
+					&alice,
+					"POST",
+					&delete_path,
+					Some(&context),
+					json!({"confirmation":node})
+				),
+				billing.change_tier(alice.identity, account, "small"),
+			)
+		};
+		tokio::pin!(operations);
+		tokio::select! {
+			_ = wait_for_capacity_contenders() => {},
+			result = &mut operations => panic!("operations escaped the held capacity lock: {result:?}"),
+		}
+		held.commit().await.unwrap();
+		let (deleted, downgrade) = operations.await;
+		assert_eq!(deleted.0, 200, "{deleted:?}");
+		if let Err(error) = downgrade {
+			assert!(
+				matches!(&error, aidash_server::Error::Conflict(code) if code == "tier_node_limit"),
+				"{error:?}"
+			);
+			billing
+				.change_tier(alice.identity, account, "small")
+				.await
+				.unwrap();
+		}
+		assert_eq!(counts.nodes(&tenant).await.unwrap(), 1);
+		let restore_path = format!("{path}/{node}/restore");
+		let (status, body) = d
+			.call(&alice, "POST", &restore_path, Some(&context), Value::Null)
+			.await;
+		assert_eq!(
+			status, 409,
+			"the downgraded current limit prevents restore: {body}"
+		);
+		assert_eq!(body["error"], "node_limit_reached");
+
+		// Attachment uses the same live count, despite the retained deleted row.
+		let smaller = d.account(&alice, None).await;
+		payments.set(
+			smaller,
+			Subscription {
+				tier: "small".into(),
+				status: Status::Active,
+				grace_ends_at: None,
+			},
+		);
+		assert!(matches!(
+			billing
+				.consent(Party::TenantAdministrator, alice.identity, &tenant, smaller)
+				.await
+				.unwrap(),
+			Consented::AwaitingOtherParty
+		));
+		assert!(matches!(
+			billing
+				.consent(Party::AccountOwner, alice.identity, &tenant, smaller)
+				.await
+				.unwrap(),
+			Consented::Attached
+		));
+		billing
+			.change_tier(alice.identity, smaller, "team")
+			.await
+			.unwrap();
+		let mut held = d.control().begin(&TenancyScope::NoTenant).await.unwrap();
+		aidash_server::authorization::services::nodes::lock_capacity(&mut *held, &tenant)
+			.await
+			.unwrap();
+		let operations = async {
+			tokio::join!(
+				d.call(&alice, "POST", &restore_path, Some(&context), Value::Null),
+				billing.change_tier(alice.identity, smaller, "small"),
+			)
+		};
+		tokio::pin!(operations);
+		tokio::select! {
+			_ = wait_for_capacity_contenders() => {},
+			result = &mut operations => panic!("operations escaped the held capacity lock: {result:?}"),
+		}
+		held.commit().await.unwrap();
+		let (restored, downgraded) = operations.await;
+		let live = counts.nodes(&tenant).await.unwrap();
+		let tier = payments.subscription(smaller).await.unwrap().unwrap().tier;
+		match restored.0 {
+			200 => {
+				let error =
+					downgraded.expect_err("restore and downgrade cannot both exceed capacity");
+				assert!(
+					matches!(&error, aidash_server::Error::Conflict(code) if code == "tier_node_limit"),
+					"{error:?}"
+				);
+				assert_eq!(live, 2);
+				assert_eq!(tier, "team");
+			}
+			409 => {
+				assert_eq!(restored.1["error"], "node_limit_reached");
+				downgraded.unwrap();
+				assert_eq!(live, 1);
+				assert_eq!(tier, "small");
+			}
+			status => panic!("unexpected restore status {status}: {}", restored.1),
+		}
+	}
+	d.finish().await;
+}
+
 fn receipt(tenant: &str, start: DateTime<Utc>, end: DateTime<Utc>) -> PodTime {
 	let allocation = Uuid::new_v4();
 	PodTime {

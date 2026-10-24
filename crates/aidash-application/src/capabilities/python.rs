@@ -28,6 +28,7 @@ pub async fn release(scope: &mut dyn PythonScope, area: &Area, reason: &str) -> 
 		if reply["termination_confirmed"] != true {
 			return Err(Error::Conflict("PYTHON_TERMINATION_UNCONFIRMED".into()));
 		}
+		scope.confirm_stopped(&record).await?;
 	}
 	record.state = "reset".into();
 	record.data["reset_reason"] = json!(reason);
@@ -227,6 +228,7 @@ pub async fn reap(repository: &dyn PythonRepository, cursor: &mut Uuid) -> Resul
 			if stopped["termination_confirmed"] != true {
 				return Err(Error::Conflict("PYTHON_TERMINATION_UNCONFIRMED".into()));
 			}
+			scope.confirm_stopped(&current).await?;
 			current.state = "reset".into();
 			current.data["reset_reason"] = json!(reason);
 			scope.update(&mut current).await?;

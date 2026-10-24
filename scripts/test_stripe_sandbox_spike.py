@@ -172,7 +172,7 @@ class SpikeBoundaryTests(unittest.TestCase):
         for field in ("id", "header"):
             with self.subTest(field=field):
                 self.partial_state()
-                def response(request, timeout):
+                def response(request, timeout, field=field):
                     value = Response({"id": "cs_test_" + KEY if field == "id" else "cs_test_fixture", "livemode": False})
                     if field == "header":
                         value.headers["Request-Id"] = "req_" + KEY

@@ -166,7 +166,8 @@ class RemoteMemory(Cluster):
         # Aidash assigns Tenant names, so each Deployment's Tenant is created first.
         self.tenants = [self.nodes[node]["tenant"] for node in range(2)]
         for node in range(2):
-            subjects = {"alice": {"kind": "user"}, **{f"{self.nodes[n]['address']}/agents/research@1.0.0": {"kind": "agent"} for n in range(2)}}
+            # Remote Agent names still belong to the policy's local receiving/Home Node.
+            subjects = {"alice": {"kind": "user"}, **{f"{self.nodes[n]['address']}/agents/research@1.0.0": {"kind": "agent", "node": self.nodes[node]["node"]} for n in range(2)}}
             bundle = {"tenant": self.tenants[node], "subjects": subjects, "policies": [{"id": "approved-work", "effect": "allow", "subjects": {"any": True}, "actions": ["*"], "resources": {"kinds": ["*"]}}]}
             self.ok(self.api(node, f"/api/authorization/{self.tenants[node]}", {"expected_revision": 1, "bundle": bundle}))
             credential = self.ok(self.api(node, f"/api/authorization/{self.tenants[node]}/credentials", {"subject": "alice"}))

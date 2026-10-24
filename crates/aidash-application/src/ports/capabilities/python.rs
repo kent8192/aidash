@@ -22,6 +22,8 @@ pub trait PythonScope: Send {
 	async fn load(&mut self, area: Uuid) -> Result<Record>;
 	async fn create(&mut self, area: Uuid, data: Value) -> Result<Record>;
 	async fn update(&mut self, record: &mut Record) -> Result<()>;
+	/// Persist the exact session writer stop before its binding may be reset.
+	async fn confirm_stopped(&mut self, record: &Record) -> Result<()>;
 	async fn cached(&mut self, key: Uuid, digest: &str) -> Result<Option<Value>>;
 	async fn cache(&mut self, key: Uuid, digest: &str, value: &Value) -> Result<()>;
 	async fn previous_result(&mut self, id: Uuid) -> Result<Value>;
@@ -69,5 +71,7 @@ pub trait HeapMaintenance: Send {
 	async fn locked(&mut self, snapshot: &Record, operation: &HeapOperation) -> Result<Record>;
 	async fn request(&mut self, method: &str, path: &str, body: Option<Value>) -> Result<Value>;
 	async fn update(&mut self, record: &mut Record) -> Result<()>;
+	/// Persist the exact session writer stop before its binding may be reset.
+	async fn confirm_stopped(&mut self, record: &Record) -> Result<()>;
 	async fn finish(self: Box<Self>, result: Result<bool>) -> Result<()>;
 }

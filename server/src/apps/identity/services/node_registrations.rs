@@ -189,7 +189,8 @@ impl NodeRegistrations {
 						require_node(tx, &tenant, &node).await
 					})
 					.await?;
-				let counterpart = self.counterpart(&tenant, &node, &input, &requested).await?;
+				let (counterpart, preserve_keys) =
+					self.counterpart(&tenant, &node, &input, &requested).await?;
 				f.store
 					.pool
 					.atomic(&TenancyScope::tenant(&tenant)?, async |tx| {
@@ -200,6 +201,7 @@ impl NodeRegistrations {
 							&node,
 							&input,
 							&counterpart,
+							preserve_keys,
 							&AdministrationActor::DeploymentAdministratorBearer,
 							"deployment_administrator",
 						)
@@ -229,7 +231,7 @@ impl NodeRegistrations {
 								require_node(tx, &tenant, &node).await
 							})
 							.await?;
-						let counterpart =
+						let (counterpart, preserve_keys) =
 							self.counterpart(&tenant, &node, &input, &requested).await?;
 						f.store
 							.pool
@@ -241,6 +243,7 @@ impl NodeRegistrations {
 									&node,
 									&input,
 									&counterpart,
+									preserve_keys,
 									&AdministrationActor::TenantAdministrator(
 										administrator.clone(),
 									),
@@ -265,7 +268,7 @@ impl NodeRegistrations {
 		node: &NodeName,
 		input: &RegistrationInput,
 		requested: &Requested,
-	) -> Result<Counterpart> {
+	) -> Result<(Counterpart, bool)> {
 		let f = &self.runtime;
 		match requested {
 			Requested::Keep => f
@@ -276,7 +279,7 @@ impl NodeRegistrations {
 					records::get(tx, tenant, node.as_str(), &input.source_node).await
 				})
 				.await?
-				.map(|current| current.counterpart)
+				.map(|current| (current.counterpart, true))
 				.ok_or_else(|| Error::NotFound("node registration not found".into())),
 			Requested::SameDeployment => {
 				let holder = f
@@ -295,7 +298,7 @@ impl NodeRegistrations {
 						"that Node belongs to this Tenant; its policy decides within the Tenant"
 							.into(),
 					)),
-					Some(_) => Ok(Counterpart::SameDeployment),
+					Some(_) => Ok((Counterpart::SameDeployment, false)),
 				}
 			}
 			Requested::OtherDeployment { endpoint, key_id } => {
@@ -316,10 +319,13 @@ impl NodeRegistrations {
 					&& pinned == *endpoint
 					&& key.key_id == *key_id
 				{
-					return Ok(Counterpart::OtherDeployment {
-						endpoint: pinned,
-						key,
-					});
+					return Ok((
+						Counterpart::OtherDeployment {
+							endpoint: pinned,
+							key,
+						},
+						true,
+					));
 				}
 				let key = aidash_application::federation::registrations::pin(
 					&HttpDirectory::new(f.store.keyless.clone())?,
@@ -328,10 +334,13 @@ impl NodeRegistrations {
 					key_id,
 				)
 				.await?;
-				Ok(Counterpart::OtherDeployment {
-					endpoint: endpoint.clone(),
-					key,
-				})
+				Ok((
+					Counterpart::OtherDeployment {
+						endpoint: endpoint.clone(),
+						key,
+					},
+					false,
+				))
 			}
 		}
 	}
@@ -355,6 +364,7 @@ async fn write(
 	node: &NodeName,
 	input: &RegistrationInput,
 	counterpart: &Counterpart,
+	preserve_keys: bool,
 	by: &AdministrationActor,
 	stamp: &str,
 ) -> Result<NodeRegistration> {
@@ -366,6 +376,7 @@ async fn write(
 		atomic_transactions: input.atomic_transactions,
 		enabled: input.enabled,
 		actor: stamp,
+		preserve_keys,
 	};
 	let stored = if input.expected_revision == 0 {
 		records::insert(tx, &row).await?

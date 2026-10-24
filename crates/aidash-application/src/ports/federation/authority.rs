@@ -11,7 +11,11 @@ pub struct Reply {
 }
 #[async_trait]
 pub trait Peers: Send + Sync {
-	async fn route(&self, node: &str) -> Result<Route>;
+	async fn route(
+		&self,
+		node: &str,
+		request: &crate::federation::inbound::RequestDigest<'_>,
+	) -> Result<Route>;
 }
 #[async_trait]
 pub trait Transport: Send + Sync {
