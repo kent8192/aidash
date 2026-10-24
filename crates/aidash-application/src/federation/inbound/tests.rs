@@ -222,6 +222,19 @@ impl InboundRepository for World {
 			.find(|(held, _)| held == owner)
 			.map(|(_, keys)| keys.clone()))
 	}
+	async fn advance_recovery_keys(
+		&self,
+		_: &ReceivingKeyOwner,
+		_: i64,
+		_: i64,
+		_: &aidash_domain::nodes::keys::TrustedDeploymentKeys,
+		_: &str,
+		_: &RequestDigest<'_>,
+	) -> Result<bool> {
+		// This World has no durable journal; real recovery is owned by HTTP/PG.
+		Ok(false)
+	}
+
 	async fn advance_keys(
 		&self,
 		owner: &ReceivingKeyOwner,

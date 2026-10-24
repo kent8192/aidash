@@ -115,4 +115,18 @@ pub trait InboundRepository: Send + Sync {
 		expected_authorization_revision: i64,
 		keys: &TrustedDeploymentKeys,
 	) -> Result<bool>;
+	/// Advances only a registration's crypto state for the exact authenticated
+	/// durable request. Recheck the real durable proof in the SAME locked Tenant
+	/// transaction, both revisions and quarantine. A live Node/enabled registration
+	/// is not required; never restore enabled/permissions or change authorization.
+	/// Pass the actual signed subject and request unchanged to the proof owner.
+	async fn advance_recovery_keys(
+		&self,
+		owner: &ReceivingKeyOwner,
+		expected_keys_revision: i64,
+		expected_authorization_revision: i64,
+		keys: &TrustedDeploymentKeys,
+		subject: &str,
+		request: &crate::federation::inbound::RequestDigest<'_>,
+	) -> Result<bool>;
 }
