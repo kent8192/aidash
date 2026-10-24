@@ -40,6 +40,20 @@ def checked(command, **kwargs):
     return subprocess.run(command, check=True, capture_output=True, **kwargs)
 
 
+def inventory_difference(required, observed):
+    """Only registered method/path multiplicities enter failure diagnostics."""
+    def entries(counter):
+        return [
+            {"method": method, "path": path, "count": count}
+            for (method, path), count in sorted(counter.items())
+        ]
+
+    return {
+        "missing_from_native": entries(required - observed),
+        "extra_in_native": entries(observed - required),
+    }
+
+
 class IdentityProvider:
     """A private RS256 issuer with bound authorization codes and S256 PKCE."""
 
@@ -720,6 +734,7 @@ def main():
             if observed != required:
                 raise RuntimeError(
                     "native showurls inventory differs from the Bruno catalog"
+                    + ": " + json.dumps(inventory_difference(required, observed), sort_keys=True)
                 )
             stream_factories = []
             stream_bases = []

@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "endpoint_count": 334,
+  "endpoint_count": 342,
   "requests": [
     {
       "name": "Health reports the configured node",
@@ -366,6 +366,7 @@
       "status": 200,
       "required_checks": [
         "Exact HTTP 200",
+        "Documented response fields and types",
         "Start a bound S256 desktop handoff contract"
       ]
     },
@@ -421,6 +422,7 @@
       "status": 200,
       "required_checks": [
         "Exact HTTP 200",
+        "Documented response fields and types",
         "Exchange consumes the bound proof once contract"
       ]
     },
@@ -443,6 +445,7 @@
       "status": 200,
       "required_checks": [
         "Exact HTTP 200",
+        "Documented response fields and types",
         "Rotate the desktop credential family contract"
       ]
     },
@@ -454,6 +457,7 @@
       "status": 200,
       "required_checks": [
         "Exact HTTP 200",
+        "Documented response fields and types",
         "Recover the same prepared rotation after response loss contract"
       ]
     },
@@ -10927,6 +10931,7 @@
       "status": 200,
       "required_checks": [
         "Exact HTTP 200",
+        "Documented response fields and types",
         "Application read preserves the typed response contract contract"
       ]
     },
@@ -11071,8 +11076,8 @@
       ]
     },
     {
-      "name": "1028 remote-human-answer - Anonymous request is rejected",
-      "file": "contracts/1028-remote-human-answer.bru",
+      "name": "1028 remote_human_answer - Anonymous request is rejected",
+      "file": "contracts/1028-remote_human_answer.bru",
       "endpoint": "POST /api/tasks/{task}/remote-grants/{grant}/human-requests/answer",
       "scenario": "Anonymous request is rejected",
       "status": 401,
@@ -11083,8 +11088,8 @@
       ]
     },
     {
-      "name": "1029 remote-human-answer - Wrong JSON media type is rejected",
-      "file": "contracts/1029-remote-human-answer.bru",
+      "name": "1029 remote_human_answer - Wrong JSON media type is rejected",
+      "file": "contracts/1029-remote_human_answer.bru",
       "endpoint": "POST /api/tasks/{task}/remote-grants/{grant}/human-requests/answer",
       "scenario": "Wrong JSON media type is rejected",
       "status": 415,
@@ -11095,8 +11100,8 @@
       ]
     },
     {
-      "name": "1030 remote-human-answer - Malformed JSON cannot reach the use case",
-      "file": "contracts/1030-remote-human-answer.bru",
+      "name": "1030 remote_human_answer - Malformed JSON cannot reach the use case",
+      "file": "contracts/1030-remote_human_answer.bru",
       "endpoint": "POST /api/tasks/{task}/remote-grants/{grant}/human-requests/answer",
       "scenario": "Malformed JSON cannot reach the use case",
       "status": 400,
@@ -12090,6 +12095,7 @@
       "status": 200,
       "required_checks": [
         "Exact HTTP 200",
+        "Documented response fields and types",
         "Deployment Administrator lists every Tenant root record contract"
       ]
     },
@@ -14488,6 +14494,441 @@
         "Rejected input preserves committed workspace state",
         "Exact HTTP 422",
         "Rejection is diagnostic and does not disclose SQL or credentials"
+      ]
+    },
+    {
+      "name": "1320 peer-graph-grant-keys - Anonymous receiving-key request is rejected",
+      "file": "contracts/1320-peer-graph-grant-keys.bru",
+      "endpoint": "GET /api/authorization/{tenant}/peer-graph-grant-keys",
+      "scenario": "Anonymous receiving-key request is rejected",
+      "status": 401,
+      "required_checks": [
+        "Exact HTTP 401",
+        "Stable authorization error envelope"
+      ]
+    },
+    {
+      "name": "1321 peer-graph-grant-keys - Subject bearer has no receiving-record administration authority",
+      "file": "contracts/1321-peer-graph-grant-keys.bru",
+      "endpoint": "GET /api/authorization/{tenant}/peer-graph-grant-keys",
+      "scenario": "Subject bearer has no receiving-record administration authority",
+      "status": 403,
+      "required_checks": [
+        "Exact HTTP 403",
+        "Stable authorization error envelope"
+      ]
+    },
+    {
+      "name": "1322 peer-graph-grant-keys - Missing foreign receiving tuple is not a trust confirmation",
+      "file": "contracts/1322-peer-graph-grant-keys.bru",
+      "endpoint": "GET /api/authorization/{tenant}/peer-graph-grant-keys",
+      "scenario": "Missing foreign receiving tuple is not a trust confirmation",
+      "status": 404,
+      "required_checks": [
+        "Exact HTTP 404",
+        "Rejection is diagnostic and does not disclose SQL or credentials"
+      ]
+    },
+    {
+      "name": "1323 tenant-registration-keys - Anonymous receiving-key request is rejected",
+      "file": "contracts/1323-tenant-registration-keys.bru",
+      "endpoint": "GET /api/tenants/{tenant}/nodes/{node}/registration-keys",
+      "scenario": "Anonymous receiving-key request is rejected",
+      "status": 401,
+      "required_checks": [
+        "Exact HTTP 401",
+        "Stable authorization error envelope"
+      ]
+    },
+    {
+      "name": "1324 tenant-registration-keys - Subject bearer has no receiving-record administration authority",
+      "file": "contracts/1324-tenant-registration-keys.bru",
+      "endpoint": "GET /api/tenants/{tenant}/nodes/{node}/registration-keys",
+      "scenario": "Subject bearer has no receiving-record administration authority",
+      "status": 403,
+      "required_checks": [
+        "Exact HTTP 403",
+        "Stable authorization error envelope"
+      ]
+    },
+    {
+      "name": "1325 tenant-registration-keys - Missing foreign receiving tuple is not a trust confirmation",
+      "file": "contracts/1325-tenant-registration-keys.bru",
+      "endpoint": "GET /api/tenants/{tenant}/nodes/{node}/registration-keys",
+      "scenario": "Missing foreign receiving tuple is not a trust confirmation",
+      "status": 404,
+      "required_checks": [
+        "Exact HTTP 404",
+        "Rejection is diagnostic and does not disclose SQL or credentials"
+      ]
+    },
+    {
+      "name": "1326 peer-graph-grant-keys-change - Anonymous receiving-key request is rejected",
+      "file": "contracts/1326-peer-graph-grant-keys-change.bru",
+      "endpoint": "POST /api/authorization/{tenant}/peer-graph-grant-keys",
+      "scenario": "Anonymous receiving-key request is rejected",
+      "status": 401,
+      "required_checks": [
+        "Exact HTTP 401",
+        "Stable authorization error envelope"
+      ]
+    },
+    {
+      "name": "1327 peer-graph-grant-keys-change - Subject bearer has no receiving-record administration authority",
+      "file": "contracts/1327-peer-graph-grant-keys-change.bru",
+      "endpoint": "POST /api/authorization/{tenant}/peer-graph-grant-keys",
+      "scenario": "Subject bearer has no receiving-record administration authority",
+      "status": 403,
+      "required_checks": [
+        "Exact HTTP 403",
+        "Stable authorization error envelope"
+      ]
+    },
+    {
+      "name": "1328 peer-graph-grant-keys-change - Missing foreign receiving tuple is not a trust confirmation",
+      "file": "contracts/1328-peer-graph-grant-keys-change.bru",
+      "endpoint": "POST /api/authorization/{tenant}/peer-graph-grant-keys",
+      "scenario": "Missing foreign receiving tuple is not a trust confirmation",
+      "status": 404,
+      "required_checks": [
+        "Exact HTTP 404",
+        "Rejection is diagnostic and does not disclose SQL or credentials"
+      ]
+    },
+    {
+      "name": "1329 peer-graph-grant-keys-change - Malformed key change cannot reach record control",
+      "file": "contracts/1329-peer-graph-grant-keys-change.bru",
+      "endpoint": "POST /api/authorization/{tenant}/peer-graph-grant-keys",
+      "scenario": "Malformed key change cannot reach record control",
+      "status": 400,
+      "required_checks": [
+        "Exact HTTP 400",
+        "Rejection is diagnostic and does not disclose SQL or credentials"
+      ]
+    },
+    {
+      "name": "1330 peer-graph-grant-keys-change - A key change requires both typed CAS revisions",
+      "file": "contracts/1330-peer-graph-grant-keys-change.bru",
+      "endpoint": "POST /api/authorization/{tenant}/peer-graph-grant-keys",
+      "scenario": "A key change requires both typed CAS revisions",
+      "status": 422,
+      "required_checks": [
+        "Exact HTTP 422",
+        "Rejection is diagnostic and does not disclose SQL or credentials"
+      ]
+    },
+    {
+      "name": "1331 tenant-node-default - Anonymous Node lifecycle request is rejected",
+      "file": "contracts/1331-tenant-node-default.bru",
+      "endpoint": "POST /api/tenants/{tenant}/nodes/{node}/default",
+      "scenario": "Anonymous Node lifecycle request is rejected",
+      "status": 401,
+      "required_checks": [
+        "Exact HTTP 401",
+        "Stable authorization error envelope"
+      ]
+    },
+    {
+      "name": "1332 tenant-node-default - Subject bearer cannot administer the Node lifecycle",
+      "file": "contracts/1332-tenant-node-default.bru",
+      "endpoint": "POST /api/tenants/{tenant}/nodes/{node}/default",
+      "scenario": "Subject bearer cannot administer the Node lifecycle",
+      "status": 403,
+      "required_checks": [
+        "Rejected write preserves the target Node",
+        "Exact HTTP 403",
+        "Stable authorization error envelope"
+      ]
+    },
+    {
+      "name": "1333 tenant-node-default - An absent Node cannot become the default",
+      "file": "contracts/1333-tenant-node-default.bru",
+      "endpoint": "POST /api/tenants/{tenant}/nodes/{node}/default",
+      "scenario": "An absent Node cannot become the default",
+      "status": 404,
+      "required_checks": [
+        "Exact HTTP 404",
+        "Rejection is diagnostic and does not disclose SQL or credentials"
+      ]
+    },
+    {
+      "name": "1334 tenant-node-deletion - Anonymous Node lifecycle request is rejected",
+      "file": "contracts/1334-tenant-node-deletion.bru",
+      "endpoint": "POST /api/tenants/{tenant}/nodes/{node}/deletion",
+      "scenario": "Anonymous Node lifecycle request is rejected",
+      "status": 401,
+      "required_checks": [
+        "Exact HTTP 401",
+        "Stable authorization error envelope"
+      ]
+    },
+    {
+      "name": "1335 tenant-node-deletion - Subject bearer cannot administer the Node lifecycle",
+      "file": "contracts/1335-tenant-node-deletion.bru",
+      "endpoint": "POST /api/tenants/{tenant}/nodes/{node}/deletion",
+      "scenario": "Subject bearer cannot administer the Node lifecycle",
+      "status": 403,
+      "required_checks": [
+        "Rejected write preserves the target Node",
+        "Exact HTTP 403",
+        "Stable authorization error envelope"
+      ]
+    },
+    {
+      "name": "1336 tenant-node-deletion - The default live Node cannot be deleted",
+      "file": "contracts/1336-tenant-node-deletion.bru",
+      "endpoint": "POST /api/tenants/{tenant}/nodes/{node}/deletion",
+      "scenario": "The default live Node cannot be deleted",
+      "status": 409,
+      "required_checks": [
+        "Rejected write preserves the target Node",
+        "Exact HTTP 409",
+        "Rejection is diagnostic and does not disclose SQL or credentials"
+      ]
+    },
+    {
+      "name": "1337 tenant-node-deletion - Deletion confirmation must equal the target Node name",
+      "file": "contracts/1337-tenant-node-deletion.bru",
+      "endpoint": "POST /api/tenants/{tenant}/nodes/{node}/deletion",
+      "scenario": "Deletion confirmation must equal the target Node name",
+      "status": 400,
+      "required_checks": [
+        "Rejected write preserves the target Node",
+        "Exact HTTP 400",
+        "Rejection is diagnostic and does not disclose SQL or credentials"
+      ]
+    },
+    {
+      "name": "1338 tenant-node-purge - Anonymous Node lifecycle request is rejected",
+      "file": "contracts/1338-tenant-node-purge.bru",
+      "endpoint": "POST /api/tenants/{tenant}/nodes/{node}/purge",
+      "scenario": "Anonymous Node lifecycle request is rejected",
+      "status": 401,
+      "required_checks": [
+        "Exact HTTP 401",
+        "Stable authorization error envelope"
+      ]
+    },
+    {
+      "name": "1339 tenant-node-purge - Subject bearer cannot administer the Node lifecycle",
+      "file": "contracts/1339-tenant-node-purge.bru",
+      "endpoint": "POST /api/tenants/{tenant}/nodes/{node}/purge",
+      "scenario": "Subject bearer cannot administer the Node lifecycle",
+      "status": 403,
+      "required_checks": [
+        "Rejected write preserves the target Node",
+        "Exact HTTP 403",
+        "Stable authorization error envelope"
+      ]
+    },
+    {
+      "name": "1340 tenant-node-purge - Only a deleted Node can be purged",
+      "file": "contracts/1340-tenant-node-purge.bru",
+      "endpoint": "POST /api/tenants/{tenant}/nodes/{node}/purge",
+      "scenario": "Only a deleted Node can be purged",
+      "status": 409,
+      "required_checks": [
+        "Rejected write preserves the target Node",
+        "Exact HTTP 409",
+        "Rejection is diagnostic and does not disclose SQL or credentials"
+      ]
+    },
+    {
+      "name": "1341 tenant-registration-keys-change - Anonymous receiving-key request is rejected",
+      "file": "contracts/1341-tenant-registration-keys-change.bru",
+      "endpoint": "POST /api/tenants/{tenant}/nodes/{node}/registration-keys",
+      "scenario": "Anonymous receiving-key request is rejected",
+      "status": 401,
+      "required_checks": [
+        "Exact HTTP 401",
+        "Stable authorization error envelope"
+      ]
+    },
+    {
+      "name": "1342 tenant-registration-keys-change - Subject bearer has no receiving-record administration authority",
+      "file": "contracts/1342-tenant-registration-keys-change.bru",
+      "endpoint": "POST /api/tenants/{tenant}/nodes/{node}/registration-keys",
+      "scenario": "Subject bearer has no receiving-record administration authority",
+      "status": 403,
+      "required_checks": [
+        "Exact HTTP 403",
+        "Stable authorization error envelope"
+      ]
+    },
+    {
+      "name": "1343 tenant-registration-keys-change - Missing foreign receiving tuple is not a trust confirmation",
+      "file": "contracts/1343-tenant-registration-keys-change.bru",
+      "endpoint": "POST /api/tenants/{tenant}/nodes/{node}/registration-keys",
+      "scenario": "Missing foreign receiving tuple is not a trust confirmation",
+      "status": 404,
+      "required_checks": [
+        "Exact HTTP 404",
+        "Rejection is diagnostic and does not disclose SQL or credentials"
+      ]
+    },
+    {
+      "name": "1344 tenant-registration-keys-change - Malformed key change cannot reach record control",
+      "file": "contracts/1344-tenant-registration-keys-change.bru",
+      "endpoint": "POST /api/tenants/{tenant}/nodes/{node}/registration-keys",
+      "scenario": "Malformed key change cannot reach record control",
+      "status": 400,
+      "required_checks": [
+        "Exact HTTP 400",
+        "Rejection is diagnostic and does not disclose SQL or credentials"
+      ]
+    },
+    {
+      "name": "1345 tenant-registration-keys-change - A key change requires both typed CAS revisions",
+      "file": "contracts/1345-tenant-registration-keys-change.bru",
+      "endpoint": "POST /api/tenants/{tenant}/nodes/{node}/registration-keys",
+      "scenario": "A key change requires both typed CAS revisions",
+      "status": 422,
+      "required_checks": [
+        "Exact HTTP 422",
+        "Rejection is diagnostic and does not disclose SQL or credentials"
+      ]
+    },
+    {
+      "name": "1346 tenant-node-restore - Anonymous Node lifecycle request is rejected",
+      "file": "contracts/1346-tenant-node-restore.bru",
+      "endpoint": "POST /api/tenants/{tenant}/nodes/{node}/restore",
+      "scenario": "Anonymous Node lifecycle request is rejected",
+      "status": 401,
+      "required_checks": [
+        "Exact HTTP 401",
+        "Stable authorization error envelope"
+      ]
+    },
+    {
+      "name": "1347 tenant-node-restore - Subject bearer cannot administer the Node lifecycle",
+      "file": "contracts/1347-tenant-node-restore.bru",
+      "endpoint": "POST /api/tenants/{tenant}/nodes/{node}/restore",
+      "scenario": "Subject bearer cannot administer the Node lifecycle",
+      "status": 403,
+      "required_checks": [
+        "Rejected write preserves the target Node",
+        "Exact HTTP 403",
+        "Stable authorization error envelope"
+      ]
+    },
+    {
+      "name": "1348 tenant-node-restore - Only a deleted Node can be restored",
+      "file": "contracts/1348-tenant-node-restore.bru",
+      "endpoint": "POST /api/tenants/{tenant}/nodes/{node}/restore",
+      "scenario": "Only a deleted Node can be restored",
+      "status": 409,
+      "required_checks": [
+        "Rejected write preserves the target Node",
+        "Exact HTTP 409",
+        "Rejection is diagnostic and does not disclose SQL or credentials"
+      ]
+    },
+    {
+      "name": "1349 tenant-nodes-create - Create a disposable lifecycle Node",
+      "file": "contracts/1349-tenant-nodes-create.bru",
+      "endpoint": "POST /api/tenants/{tenant}/nodes",
+      "scenario": "Create a disposable lifecycle Node",
+      "status": 201,
+      "required_checks": [
+        "Exact HTTP 201",
+        "Documented response fields and types",
+        "Create a disposable lifecycle Node contract"
+      ]
+    },
+    {
+      "name": "1350 tenant-node-default - Select the created Node as default",
+      "file": "contracts/1350-tenant-node-default.bru",
+      "endpoint": "POST /api/tenants/{tenant}/nodes/{node}/default",
+      "scenario": "Select the created Node as default",
+      "status": 200,
+      "required_checks": [
+        "Exact HTTP 200",
+        "Documented response fields and types",
+        "Select the created Node as default contract"
+      ]
+    },
+    {
+      "name": "1351 tenant-node-default - Restore the original default Node",
+      "file": "contracts/1351-tenant-node-default.bru",
+      "endpoint": "POST /api/tenants/{tenant}/nodes/{node}/default",
+      "scenario": "Restore the original default Node",
+      "status": 200,
+      "required_checks": [
+        "Exact HTTP 200",
+        "Documented response fields and types",
+        "Restore the original default Node contract"
+      ]
+    },
+    {
+      "name": "1352 tenant-node-deletion - Delete the disposable nondefault Node",
+      "file": "contracts/1352-tenant-node-deletion.bru",
+      "endpoint": "POST /api/tenants/{tenant}/nodes/{node}/deletion",
+      "scenario": "Delete the disposable nondefault Node",
+      "status": 200,
+      "required_checks": [
+        "Exact HTTP 200",
+        "Documented response fields and types",
+        "Delete the disposable nondefault Node contract"
+      ]
+    },
+    {
+      "name": "1353 tenant-nodes - Ordinary selection excludes the deleted lifecycle Node",
+      "file": "contracts/1353-tenant-nodes.bru",
+      "endpoint": "GET /api/tenants/{tenant}/nodes",
+      "scenario": "Ordinary selection excludes the deleted lifecycle Node",
+      "status": 200,
+      "required_checks": [
+        "Exact HTTP 200",
+        "Documented response fields and types",
+        "Ordinary selection excludes the deleted lifecycle Node contract"
+      ]
+    },
+    {
+      "name": "1354 tenant-nodes - Management reads the exact deleted lifecycle record",
+      "file": "contracts/1354-tenant-nodes.bru",
+      "endpoint": "GET /api/tenants/{tenant}/nodes",
+      "scenario": "Management reads the exact deleted lifecycle record",
+      "status": 200,
+      "required_checks": [
+        "Exact HTTP 200",
+        "Documented response fields and types",
+        "Management reads the exact deleted lifecycle record contract"
+      ]
+    },
+    {
+      "name": "1355 tenant-node-restore - Restore the same lifecycle Node",
+      "file": "contracts/1355-tenant-node-restore.bru",
+      "endpoint": "POST /api/tenants/{tenant}/nodes/{node}/restore",
+      "scenario": "Restore the same lifecycle Node",
+      "status": 200,
+      "required_checks": [
+        "Exact HTTP 200",
+        "Documented response fields and types",
+        "Restore the same lifecycle Node contract"
+      ]
+    },
+    {
+      "name": "1356 tenant-nodes - Selection reads the restored Node at the same address",
+      "file": "contracts/1356-tenant-nodes.bru",
+      "endpoint": "GET /api/tenants/{tenant}/nodes",
+      "scenario": "Selection reads the restored Node at the same address",
+      "status": 200,
+      "required_checks": [
+        "Exact HTTP 200",
+        "Documented response fields and types",
+        "Selection reads the restored Node at the same address contract"
+      ]
+    },
+    {
+      "name": "1357 tenant-node-deletion - Retire the disposable Node after transport verification",
+      "file": "contracts/1357-tenant-node-deletion.bru",
+      "endpoint": "POST /api/tenants/{tenant}/nodes/{node}/deletion",
+      "scenario": "Retire the disposable Node after transport verification",
+      "status": 200,
+      "required_checks": [
+        "Exact HTTP 200",
+        "Documented response fields and types",
+        "Retire the disposable Node after transport verification contract"
       ]
     }
   ]
