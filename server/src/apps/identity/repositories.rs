@@ -148,6 +148,7 @@ pub(crate) mod personal_tenant;
 pub(crate) mod node_deletions;
 pub(crate) mod node_registrations;
 pub(crate) mod nodes;
+pub(crate) mod receiving_keys;
 pub(crate) mod tenant_deletions;
 pub(crate) mod tenant_purge;
 pub(crate) mod tenants;

@@ -183,6 +183,14 @@ All lifecycle/capacity changes share the existing `nodes:<tenant>` lock.
 Run: `cargo test --locked -p aidash-server --test dashboard_oidc tenancy::nodes`;
 Enterprise `--test billing` with the same package/manifest command as Task 10.
 
+Task 2 local source evidence: independent review approved the lifecycle API,
+explicit Node administration audit and live-capacity changes. Node HTTP tests
+10/10, migration tests 3/3, the real concurrent delete/restore and Tier-change
+capacity test, and strict server library clippy passed. The broader Tenancy run
+was 70/73; its three purge-receipt failures passed in the unchanged serial owner
+run (12/12), without establishing the parallel failure's cause. Task 3 cancellation,
+Task 4 physical purge/measured bytes and Task 5 UI remain separate acceptance.
+
 ## Task 3: Stop deleted Node work at every real boundary
 
 **Files:** Modify identity `services/access.rs`, `services/identity.rs`,
@@ -310,7 +318,7 @@ for a particular receiving registration/grant under its existing authority.
 Run `dashboard_oidc tenancy::registrations`, `peer_graph_review`,
 `peer_graph_nodes`, migrations and startup/classification tests.
 
-## Task 8: File/KMS keyring, operator controls and continuity
+## Task 8: File/KMS keyring, management controls and continuity
 
 **Files:** Extend application `federation/key.rs`, integrations
 `federation.rs` and `federation/key.rs`, Enterprise KMS Deployment Key adapter,

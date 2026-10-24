@@ -3,7 +3,7 @@
 use reinhardt::db::migrations::prelude::*;
 pub(super) fn migration() -> Migration {
 	Migration::new("0047_task_origin_source_lifetime", "identity")
-		.add_dependency("identity", "0044_node_administration_target_state")
+		.add_dependency("identity", "0046_receiving_keysets_state")
 		.database_only(true)
 		.atomic(true)
 		.add_operation(Operation::DropConstraintDefinition {

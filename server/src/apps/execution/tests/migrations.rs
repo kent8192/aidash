@@ -110,7 +110,7 @@ async fn native_history_uses_typed_schema_operations_and_lf_sql_assets() {
 			.iter()
 			.filter(|migration| migration.state_only)
 			.count(),
-		53
+		57
 	);
 	let tables = migrations
 		.iter()
@@ -703,7 +703,7 @@ async fn preserved_baseline_does_not_generate_table_recreation(
 			.iter()
 			.filter(|migration| migration.state_only)
 			.count(),
-		51
+		55
 	);
 }
 
@@ -3209,6 +3209,96 @@ async fn source_lifetime_migrations_round_trip_without_weakening_provenance_owne
 				executor.apply_migrations(&group).await.unwrap();
 			}
 			_ => {}
+		}
+	}
+}
+
+/// HTTP proves physical persistence; this owns ORM-state drift and reversible
+/// receiver schema changes while preserving the existing Tenant RLS boundary.
+#[rstest]
+#[tokio::test]
+async fn receiving_keysets_roundtrip_with_registered_model_state(
+	#[future] fresh_database: MigrationFixture,
+) {
+	use reinhardt::db::migrations::{ProjectState, executor::DatabaseMigrationExecutor};
+	let fixture = fresh_database.await;
+	let source =
+		FilesystemSource::new(PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("migrations"));
+	let migrations = source.all_migrations().await.unwrap();
+	let mut executor = DatabaseMigrationExecutor::new(fixture.connection.clone())
+		.with_migration_history(migrations.clone());
+	executor.apply_migrations(&migrations).await.unwrap();
+	let before = recorded_keys(&fixture.connection).await;
+	let logical = build_state_from_files(&source).await.unwrap();
+	let registered = ProjectState::from_global_registry();
+	let tables = [
+		"node_registrations",
+		"node_registration_history",
+		"authorization_peer_graph_grants",
+	];
+	for table in tables {
+		for field in ["source_keys", "keys_revision"] {
+			let actual = &logical.find_model_by_table(table).unwrap().fields[field];
+			let expected = &registered.find_model_by_table(table).unwrap().fields[field];
+			assert_eq!(
+				reinhardt::db::migrations::ColumnDefinition::from_field_state(field, actual),
+				reinhardt::db::migrations::ColumnDefinition::from_field_state(field, expected),
+				"{table}.{field}"
+			);
+		}
+	}
+	let mut receiving: Vec<_> = migrations
+		.iter()
+		.filter(|m| {
+			matches!(
+				m.name.as_str(),
+				"0015_receiving_keysets"
+					| "0016_receiving_keysets_state"
+					| "0045_receiving_keysets"
+					| "0046_receiving_keysets_state"
+			)
+		})
+		.cloned()
+		.collect();
+	receiving.sort_by(|a, b| (&a.app_label, &a.name).cmp(&(&b.app_label, &b.name)));
+	let pool = fixture.connection.clone().into_postgres().unwrap();
+	for pass in 0..2 {
+		for table in tables {
+			let columns: Vec<(String,String,String)> = sqlx::query_as("SELECT column_name,data_type,is_nullable FROM information_schema.columns WHERE table_schema='public' AND table_name=$1 AND column_name IN ('source_keys','keys_revision') ORDER BY column_name").bind(table).fetch_all(&pool).await.unwrap();
+			assert_eq!(
+				columns,
+				vec![
+					("keys_revision".into(), "bigint".into(), "NO".into()),
+					(
+						"source_keys".into(),
+						"text".into(),
+						if table == "authorization_peer_graph_grants" {
+							"NO"
+						} else {
+							"YES"
+						}
+						.into()
+					)
+				],
+				"{table}"
+			);
+			let rls: (bool, bool) = sqlx::query_as(
+				"SELECT relrowsecurity,relforcerowsecurity FROM pg_class WHERE oid=to_regclass($1)",
+			)
+			.bind(format!("public.{table}"))
+			.fetch_one(&pool)
+			.await
+			.unwrap();
+			assert_eq!(rls, (true, true), "{table}");
+		}
+		if pass == 0 {
+			executor.rollback_migrations(&receiving).await.unwrap();
+			for table in tables {
+				let count: i64 = sqlx::query_scalar("SELECT count(*) FROM information_schema.columns WHERE table_schema='public' AND table_name=$1 AND column_name IN ('source_keys','keys_revision')").bind(table).fetch_one(&pool).await.unwrap();
+				assert_eq!(count, 0, "{table}");
+			}
+			executor.apply_migrations(&receiving).await.unwrap();
+			assert_eq!(recorded_keys(&fixture.connection).await, before);
 		}
 	}
 }

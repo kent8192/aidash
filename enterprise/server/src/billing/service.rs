@@ -264,6 +264,18 @@ impl Billing {
 		}
 		store::usage(&self.pool, from, to).await
 	}
+
+	/// Historical facts of an owned account over an explicit half-open period.
+	pub async fn account_usage(
+		&self,
+		owner: Uuid,
+		account: Uuid,
+		starts_at: DateTime<Utc>,
+		ends_at: DateTime<Utc>,
+	) -> Result<super::AccountUsage> {
+		self.owned(owner, account).await?;
+		store::account_usage(&self.pool, account, starts_at, ends_at).await
+	}
 }
 
 /// The report as CSV: a header, then one line per Tenant and day.
