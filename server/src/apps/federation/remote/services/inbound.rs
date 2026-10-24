@@ -63,6 +63,39 @@ impl InboundRepository for Federation {
 			.await?)
 	}
 
+	async fn node_live(&self, tenant: &TenantName, node: &NodeName) -> Result<bool> {
+		Ok(self
+			.store
+			.pool
+			.atomic(&TenancyScope::Tenant(tenant.clone()), async |tx| {
+				nodes::is_live(tx, tenant.as_str(), node.as_str()).await
+			})
+			.await?)
+	}
+	async fn closed_node_request(
+		&self,
+		tenant: &TenantName,
+		receiver: &NodeAddress,
+		sender: &NodeAddress,
+		subject: &str,
+		request: &aidash_application::federation::inbound::RequestDigest<'_>,
+	) -> Result<bool> {
+		Ok(self
+			.store
+			.pool
+			.atomic(&TenancyScope::Tenant(tenant.clone()), async |tx| {
+				super::super::repositories::routes::closed_node_request_in(
+					tx,
+					tenant.as_str(),
+					receiver,
+					sender,
+					subject,
+					request,
+				)
+				.await
+			})
+			.await?)
+	}
 	async fn registration(
 		&self,
 		tenant: &TenantName,
@@ -106,7 +139,9 @@ impl InboundRepository for Federation {
 				if !aidash_domain::identity::authority::enabled(&snapshot.bundle, subject) {
 					return Ok(false);
 				}
-				let node = nodes::get(tx, tenant.as_str(), receiver.as_str()).await?;
+				crate::authorization::identity::require_live_subject(tx, &snapshot, subject)
+					.await?;
+				let node = nodes::get_live(tx, tenant.as_str(), receiver.as_str()).await?;
 				let evaluation = Evaluation {
 					subject: subject.to_owned(),
 					action: NODE_USE.into(),

@@ -34,6 +34,18 @@ pub trait InboundRepository: Send + Sync {
 	async fn node_tenant(&self, node: &NodeName) -> Result<Option<TenantName>>;
 	/// Whether `tenant` has no deletion record.
 	async fn tenant_live(&self, tenant: &TenantName) -> Result<bool>;
+	/// Permanent name ownership is not live admission.
+	async fn node_live(&self, tenant: &TenantName, node: &NodeName) -> Result<bool>;
+	/// An authenticated request may finish only an exact durable obligation.
+	/// Implementations bind the original caller, receiver and immutable work.
+	async fn closed_node_request(
+		&self,
+		tenant: &TenantName,
+		receiver: &NodeAddress,
+		sender: &NodeAddress,
+		subject: &str,
+		request: &crate::federation::inbound::RequestDigest<'_>,
+	) -> Result<bool>;
 	/// The registration at `receiver` for `sender`, read in `tenant`'s scope.
 	async fn registration(
 		&self,
