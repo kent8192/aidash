@@ -2404,31 +2404,36 @@ pub async fn configure_deployment_keys(
 	pool: crate::database::native::Pool,
 ) -> Result<Option<Arc<aidash_application::federation::key::ScheduledDeploymentKeys>>> {
 	use crate::apps::operations::serializers::deployment::DeploymentKeySource as Configured;
-	use aidash_application::federation::key::{DeploymentKeySource, ScheduledDeploymentKeys};
+	use aidash_application::federation::key::{
+		DeploymentKeySource, DeploymentKeyStore, ScheduledDeploymentKeys,
+	};
 	let Some(settings) = settings else {
 		return Ok(None);
 	};
-	let source = match settings.source().map_err(Error::Invalid)? {
-		Configured::File(file) => {
-			let base_dir = if base_dir.is_absolute() {
-				base_dir.to_owned()
-			} else {
-				std::env::current_dir()?.join(base_dir)
-			};
-			DeploymentKeySource::File(base_dir.join(file))
-		}
-		Configured::Kms(version) => DeploymentKeySource::Kms(version.to_owned()),
-	};
-	source.validate()?;
-	let store =
+	let configured = settings.source().map_err(Error::Invalid)?;
+	let store = Arc::new(
 		crate::apps::federation::peer::repositories::deployment_keys::PostgresDeploymentKeys {
 			pool,
 			deployment: deployment.clone(),
-		};
+		},
+	);
+	// Existing schedules are retained and only replaced by CAS. Their validated
+	// references are authoritative, so restarting must not resolve a removed
+	// initial file. The initial slot is used only while no schedule exists.
+	let source = match store.load().await? {
+		Some(state) => state.predecessor_source,
+		None => match configured {
+			Configured::File(file) => {
+				DeploymentKeySource::File(std::fs::canonicalize(base_dir.join(file))?)
+			}
+			Configured::Kms(version) => DeploymentKeySource::Kms(version.to_owned()),
+		},
+	};
+	source.validate()?;
 	Ok(Some(Arc::new(ScheduledDeploymentKeys::new(
 		deployment,
 		source,
-		Arc::new(store),
+		store,
 		Arc::new(crate::apps::federation::peer::services::key_sources::Sources::default()),
 	))))
 }
