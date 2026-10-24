@@ -1,0 +1,116 @@
+//! Authenticate wire inputs and compose the portable allowance use cases.
+use super::{
+	Purpose, Reserved,
+	dispatch::{self, FinalizeInput, Input},
+};
+use crate::{Result, federation::Federation};
+use aidash_application::federation::inbound::Admitted;
+use aidash_application::generation::protocol;
+
+pub(crate) async fn reserve(
+	f: Federation,
+	admitted: Admitted,
+	input: Input,
+) -> Result<Vec<Reserved>> {
+	let source = &admitted.sender.to_string();
+	protocol::reserve(
+		&crate::bootstrap::generation_protocol_receiver(&f, admitted.receiver.node.clone()),
+		source,
+		input,
+	)
+	.await
+	.map_err(Into::into)
+}
+pub(crate) async fn verify(f: Federation, admitted: Admitted, input: Input) -> Result<bool> {
+	let source = &admitted.sender.to_string();
+	protocol::verify(
+		&crate::bootstrap::generation_protocol_receiver(&f, admitted.receiver.node.clone()),
+		&crate::bootstrap::generation_protocol_repository(&f.store),
+		&crate::bootstrap::generation_dispatch_repository(
+			&f.store,
+			f.store
+				.remote_tenancy(input.usage.admission_id, input.usage.grant_id)
+				.await?,
+		),
+		source,
+		input,
+	)
+	.await
+	.map_err(Into::into)
+}
+pub(crate) async fn finalize(
+	f: Federation,
+	admitted: Admitted,
+	input: FinalizeInput,
+) -> Result<bool> {
+	let source = &admitted.sender.to_string();
+	protocol::finalize(
+		&crate::bootstrap::generation_settlement_repository(
+			&f.store,
+			f.store
+				.remote_tenancy(input.usage.admission_id, input.usage.grant_id)
+				.await?,
+		),
+		source,
+		input,
+	)
+	.await
+	.map_err(Into::into)
+}
+
+pub(crate) struct Reservation {
+	pub f: Federation,
+	pub input: Input,
+}
+impl Reservation {
+	pub(crate) async fn settle(self, response: &crate::provider::ModelResponse) -> Result<()> {
+		let reported = aidash_domain::generation::inference::complete_reported_usage(response);
+		dispatch::finish(
+			&self.f,
+			&self.input,
+			super::Finalization::Settled { reported },
+		)
+		.await
+	}
+	/// An admitted dispatch cannot abort; settle it with unknown usage.
+	pub(crate) async fn abort(self) -> Result<()> {
+		dispatch::finish(
+			&self.f,
+			&self.input,
+			super::Finalization::Settled { reported: None },
+		)
+		.await
+	}
+}
+
+/// The caller has suspended its Access before entering this function.
+pub(crate) async fn admit(
+	f: &Federation,
+	run: &crate::domain::Run,
+	attempt: uuid::Uuid,
+	purpose: Purpose,
+	input_digest: String,
+	amount: i64,
+) -> Result<Reservation> {
+	let input = protocol::admit(
+		&crate::bootstrap::generation_protocol_authority(f),
+		&crate::bootstrap::generation_protocol_repository(&f.store),
+		&crate::bootstrap::generation_dispatch_repository(
+			&f.store,
+			f.store.run_tenancy(run.id).await?,
+		),
+		&crate::bootstrap::generation_dispatch_settlement(f),
+		protocol::Admission {
+			run,
+			attempt,
+			purpose,
+			input_digest,
+			amount,
+		},
+	)
+	.await?;
+	Ok(Reservation {
+		f: f.clone(),
+		input,
+	})
+}

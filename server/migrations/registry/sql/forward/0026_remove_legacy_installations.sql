@@ -1,0 +1,10 @@
+DROP TRIGGER registry_installation_writes_lock ON public.registry;
+DROP TRIGGER registry_installations_config_guard ON public.registry;
+DROP TRIGGER registry_installations_model_override_guard ON public.registry;
+DROP TRIGGER atomic_write_guard ON public.installations;
+DROP TRIGGER installations_config_guard ON public.installations;
+DROP TRIGGER installations_registry_writes_lock ON public.installations;
+DROP TRIGGER marketplace_overlay_fence ON public.installations;
+DROP TRIGGER atomic_write_guard ON public.packages;
+DROP TABLE public.installations;
+DROP TABLE public.packages;

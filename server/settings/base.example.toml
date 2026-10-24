@@ -1,0 +1,223 @@
+# Base Settings for server
+#
+# This file contains the base configuration that is common across all environments.
+# Environment-specific settings should be placed in their respective files:
+# - local.toml (development)
+# - staging.toml (staging environment)
+# - production.toml (production environment)
+#
+# IMPORTANT: Copy this file to base.toml and update the values.
+# Commit non-secret defaults only when they are meant to be shared.
+
+[core]
+debug = false
+# secret_key = "uncomment-this-line-and-replace-with-a-long-random-string"
+allowed_hosts = []
+language_code = "en-us"
+time_zone = "UTC"
+use_i18n = true
+use_tz = true
+default_auto_field = "BigAutoField"
+middleware = []
+root_urlconf = ""
+
+[core.security]
+session_cookie_secure = false
+csrf_cookie_secure = false
+secure_ssl_redirect = false
+secure_hsts_seconds = 0
+secure_hsts_include_subdomains = false
+secure_hsts_preload = false
+append_slash = true
+
+[core.databases.default]
+engine = "postgresql"
+host = "localhost"
+port = 5432
+name = "server_db"
+user = "postgres"
+# password = "uncomment-this-line-and-replace-with-db-password"
+
+# Optional recipients for administrator and manager notifications.
+[contacts]
+admins = []
+managers = []
+
+[static]
+url = "/static/"
+root = "staticfiles"
+
+# The Deployment: its Offering, identity and runtime. The Community build
+# runs only the "self-hosted" Offering, the default; the Enterprise build runs
+# "cloud" or "dedicated".
+[deployment]
+offering = "self-hosted"
+id = "aidash://local"
+endpoint = "http://127.0.0.1:8000"
+# api_token = "set-a-random-deployment-administrator-token-at-least-16-characters"
+nats_url = "nats://127.0.0.1:4222"
+web_dir = "../web/dist"
+lease_seconds = 30
+worker_count = 4
+# Optional dedicated /live and /ready listener for runserver.
+# Worker probe listeners are disabled unless this address is configured.
+# probe_listen = "127.0.0.1:8081"
+background_enabled = true
+# Federation with other Deployments. Off, this Deployment refuses and sends no
+# token-bearing request. Exchange between Nodes of this Deployment is not
+# affected.
+federation = true
+
+# The Deployment Key signs Federation tokens, and /.well-known/aidash publishes
+# its public key. Without it this Deployment cannot federate with others. Name
+# one of `file` and `kms`. Create the file with `manage deployment-key generate`
+# and show its key ID with `manage deployment-key show`. A relative path starts
+# at core.base_dir.
+# [deployment.key]
+# file = "/var/lib/aidash/deployment-key.pem"
+# Enterprise build only: a Cloud KMS Ed25519 key version.
+# kms = "projects/PROJECT/locations/REGION/keyRings/RING/cryptoKeys/KEY/cryptoKeyVersions/1"
+
+# Tenancy Rules: how Tenants come to exist and how people join them. The
+# Offering supplies each rule left out; these are the Self-hosted Offering's.
+# Cloud turns Personal Tenants and Tenant creation on. Identities restricted to
+# one Tenant are never covered.
+[tenancy]
+# Create a Personal Tenant for each External Identity at its first sign-in.
+personal_tenants = false
+# Let signed-in External Identities create Tenants. Deployment Administrators
+# always can, without limits.
+tenant_creation = false
+creation_per_hour = 5
+creation_total = 20
+# How many Nodes a Tenant may hold (1 to 1000). A Tier may be stricter.
+# nodes_per_tenant = 10
+# Let Tenant Administrators and Deployment Administrators issue Invitations.
+invitations = true
+# Days a deleted Tenant stays restorable before its data is purged (1 to 90).
+deletion_grace_days = 30
+# Days a purged Tenant's audit history (administration history, authorization
+# decisions, policy revisions, catalog history, Evidence Revocations and
+# Retention Rule history) is kept before it is deleted (1 to 3650).
+audit_retention_days = 365
+
+# Demo data (ADR 0079, ADR 0080): `aidash demo-data` loads fictional Tenants and
+# reserves them for people by verified email. The command refuses to run, and
+# a sign-in fulfils no Demo Reservation, unless this is on. Only the migration
+# Job of a non-production Environment turns it on, with AIDASH_DEMO_DATA_ENABLED.
+[demo_data]
+enabled = false
+
+# Omit this table to disable dashboard OIDC.
+# [dashboard.oidc]
+# issuer = "https://identity.example"
+# client_id = "aidash-dashboard"
+# client_secret = "${OIDC_CLIENT_SECRET}"
+# public_origin = "https://aidash.example"
+# session_absolute_seconds = 43200
+# session_idle_seconds = 1800
+
+# Private origins that Tenants' Keyless model and embedding endpoints (those
+# without provider_credential), HTTP and MCP tool endpoints, Agent Plugin remote
+# MCP servers and Workbench test endpoints may reach. Every other such endpoint
+# may connect only to public addresses. Omit default ports.
+[keyless_endpoints]
+permitted_private_origins = []
+# permitted_private_origins = ["http://ollama.lan:11434"]
+
+[kubernetes]
+enabled = false
+# namespace = "aidash"
+# release = "aidash"
+# endpoint = "https://kubernetes.default.svc"
+# ca_file = "/var/run/secrets/kubernetes.io/serviceaccount/ca.crt"
+# token_file = "/var/run/secrets/kubernetes.io/serviceaccount/token"
+
+# Optional Secret Store. Keys are loaded only by server/worker bootstrap.
+# [provider_credentials]
+# max_per_tenant = 20
+# fingerprint_key = { env = "AIDASH_PROVIDER_FINGERPRINT_KEY" }
+# Or fingerprint_key = { file = "/run/secrets/aidash-fingerprint-key" }
+# [provider_credentials.store]
+# kind = "postgres"
+# master_key = { file = "/run/secrets/aidash-master-key" }
+# Or master_key = { env = "AIDASH_PROVIDER_STORE_MASTER_KEY" }
+# retired_master_keys = [{ env = "AIDASH_PROVIDER_STORE_MASTER_KEY_OLD" }]
+# Cloud and Dedicated alternative, only in the Enterprise build (omit
+# master_key and retired_master_keys):
+# kind = "secret_manager"
+# byok_project_id = "your-aidash-byok-project"
+# environment_id = "develop"
+# Cloud Workers additionally mint Capability Tokens with the broker module's
+# non-secret worker_configuration (Secret Manager Stores only):
+# [provider_credentials.broker]
+# endpoint = "https://your-broker.run.app/api/v1"
+# issuer = "aidash-worker"
+# audience = "develop"
+# kid = "projects/your-aidash-project/locations/us-central1/keyRings/aidash-develop-capability/cryptoKeys/capability/cryptoKeyVersions/1"
+
+# Sign in with ChatGPT Plan Connections (#159): subjects run agents on their
+# own ChatGPT plan allowance. Off by default. Turning it on means this host
+# stores Plan Tokens it can read, so it needs the PostgreSQL Secret Store
+# above; a server with a Secret Manager Store, or none,
+# refuses to start with it on. Turning it off later keeps each owner's status
+# and disconnect, and stops new connections, model lists and plan Runs.
+# [plan_connections]
+# enabled = true
+
+# The largest Workbench Test Limits any Tenant may set. The defaults are the
+# largest values allowed at all; lowering one also lowers values Tenants set.
+# [workbench_test_limits]
+# max_input_bytes = 1000000
+# max_output_tokens = 8192
+# max_total_tokens = 1000000
+# max_steps = 64
+# max_duration_secs = 900
+# max_concurrent = 32
+# payload_days = 365
+# incident_evidence_days = 3650
+
+# Research providers this Deployment offers to every Tenant (ADR 0048). Each
+# Tenant still approves one before use. Takes effect on restart. The
+# deterministic `fixture` corpus is for tests and evaluation and is refused in
+# the production profile. Brave's key is a Deployment secret named by
+# `secret`; its Research account terms are shown to Tenants, so they never
+# name it. Incomplete terms refuse to start; lapsed ones leave Brave not set up.
+# [research_providers]
+# page_reading = true
+# fixture = false
+# [research_providers.brave]
+# secret = "AIDASH_SECRET_BRAVE_SEARCH"
+# [research_providers.brave.account]
+# account_id = "brave-account"
+# agreement_reference = "contract-2026-10"
+# verified_by = "deployment_administrator"
+# verified_at = "2026-10-01T00:00:00Z"
+# review_after = "2027-01-01T00:00:00Z"
+# storage_permitted = true
+# query_training_prohibited = true
+# evaluation_permitted = true
+# retention_days = 90
+# deletion_after_termination_days = 30
+# price_effective_at = "2026-10-01T00:00:00Z"
+# price_review_after = "2027-01-01T00:00:00Z"
+# search_price_micro_usd = 5000
+# monthly_base_fee_micro_usd = 0
+# monthly_limit_micro_usd = 20000000
+
+# How long Research Document snapshot contents are retained (ADR 0045), in
+# seconds: after their Run ends and after their retrieval. Unset periods keep
+# the defaults (one day and seven days); at most ten years. A Tenant's own
+# rules may shorten them. Takes effect on restart.
+# [research_retention]
+# snapshot_after_run_seconds = 86400
+# snapshot_max_age_seconds = 604800
+
+# Tenant Cache Salt Keys for salted Projection Versions (ADR 0016). Without
+# keys this node creates only Legacy Runs. Rotate by adding a key version and
+# changing `current`.
+# [cache_salt]
+# current = 1
+# [[cache_salt.keys]]
+# version = 1
+# secret = "${AIDASH_CACHE_SALT_KEY_V1}"

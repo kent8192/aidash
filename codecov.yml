@@ -1,0 +1,30 @@
+codecov:
+  require_ci_to_pass: true
+coverage:
+  precision: 2
+  round: down
+  status:
+    project:
+      rust:
+        flags: [rust]
+        target: auto
+        threshold: 1%
+    patch:
+      rust:
+        flags: [rust]
+        target: auto
+        threshold: 1%
+flags:
+  rust:
+    paths: [crates/, server/src/]
+    carryforward: false
+ignore:
+  - "**/tests/**"
+  - "**/tests.rs"
+  - "**/*_tests.rs"
+  - "server/migrations/**"
+  - "openapi/**"
+  - "web/src/generated/**"
+  - "web/dist/**"
+  - "coverage/**"
+comment: false

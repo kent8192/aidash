@@ -1,0 +1,562 @@
+//! Provider timeouts, Request Estimators and Projection Version declarations
+//! survive registry HTTP requests, persisted local overrides and the database
+//! constraints.
+#![allow(clippy::disallowed_methods)] // Fixtures reach the database outside a tenancy scope.
+#[path = "../../execution/tests/support/endpoint.rs"]
+mod endpoint_fixtures;
+#[path = "../../execution/tests/support/native_database.rs"]
+mod native_database;
+
+use aidash_domain::tenancy::TenantName;
+use aidash_server::apps::registry::models::Definition;
+use aidash_server::apps::registry::models::states::DefinitionKind;
+use aidash_server::registry::{Entry, ModelConfig};
+use endpoint_fixtures::{EndpointFixture, approve, assert_json, endpoint, tenant_subject};
+use reinhardt::core::exception::DatabaseErrorKind;
+use reinhardt::db::orm::Model;
+use rstest::{fixture, rstest};
+use serde_json::{Value, json};
+
+#[fixture]
+fn timeout_model() -> Value {
+	json!({"id":"timeout-model","version":"1.0.0","kind":"model",
+        "name":{"en":"Timeout fixture"},"description":{"en":"Persistence test"},
+        "config":{"provider":"openrouter","model_id":"vendor/model",
+            "endpoint":"http://127.0.0.1:1/v1","context_window":32768,"max_output_tokens":4096,
+            "modalities":["text"],"cost":{}}})
+}
+
+#[fixture]
+fn supported_timeouts() -> Vec<Option<Value>> {
+	vec![
+		None,
+		Some(Value::Null),
+		Some(json!(1)),
+		Some(json!(900)),
+		Some(json!(1200)),
+		Some(json!(u32::MAX)),
+	]
+}
+
+#[fixture]
+fn invalid_configs() -> Vec<Value> {
+	let mut configurations: Vec<_> = [
+		json!(0),
+		json!(-1),
+		json!(1.5),
+		json!("900"),
+		json!(true),
+		json!([]),
+		json!({}),
+		json!(4294967296_u64),
+	]
+	.into_iter()
+	.map(|value| json!({"request_timeout_secs":value}))
+	.collect();
+	configurations.push(json!({"request_timeout_sec":900}));
+	configurations
+}
+
+#[rstest]
+#[tokio::test]
+async fn configured_timeouts_round_trip_through_the_registry_api(
+	#[future] endpoint: EndpointFixture,
+	timeout_model: Value,
+	supported_timeouts: Vec<Option<Value>>,
+) {
+	// Arrange
+	let app = endpoint.await;
+	let registrar = tenant_subject(&app, "registrar").await;
+	let mut connection = app.database.lease.handle();
+	for (index, timeout) in supported_timeouts.into_iter().enumerate() {
+		let id = format!("registered-{index}");
+		let mut entry = timeout_model.clone();
+		entry["id"] = json!(id);
+		if let Some(value) = &timeout {
+			entry["config"]["request_timeout_secs"] = value.clone();
+		}
+		// Act
+		let created = assert_json(
+			registrar
+				.post("/api/registry", &entry, "json")
+				.await
+				.unwrap(),
+			200,
+		);
+		approve(&app, "endpoint", &id, "1.0.0").await;
+		let found = assert_json(
+			registrar
+				.get(&format!("/api/registry/{id}/1.0.0"))
+				.await
+				.unwrap(),
+			200,
+		);
+		let saved = Definition::objects()
+			.filter(Definition::field_id().eq(id))
+			.get_with_db(&mut connection)
+			.await
+			.unwrap();
+		// Assert
+		assert_eq!(created["config"], entry["config"]);
+		assert_eq!(found["config"], entry["config"]);
+		assert_eq!(saved.metadata.0["config"], entry["config"]);
+		let expected_seconds = timeout.as_ref().and_then(Value::as_u64).unwrap_or(900);
+		let config: ModelConfig =
+			serde_json::from_value(saved.metadata.0["config"].clone()).unwrap();
+		assert_eq!(
+			config.request_timeout().unwrap().as_secs(),
+			expected_seconds
+		);
+	}
+}
+
+#[rstest]
+#[tokio::test]
+async fn invalid_timeouts_and_unknown_fields_leave_no_registration(
+	#[future] endpoint: EndpointFixture,
+	timeout_model: Value,
+	invalid_configs: Vec<Value>,
+) {
+	// Arrange
+	let app = endpoint.await;
+	let registrar = tenant_subject(&app, "registrar").await;
+	let tenant = TenantName::new("endpoint").unwrap();
+	let seeded_definitions = app
+		.runtime
+		.registry
+		.list(&tenant, &Default::default())
+		.await
+		.unwrap();
+	let mut connection = app.database.lease.handle();
+	for (index, invalid) in invalid_configs.into_iter().enumerate() {
+		let mut value = timeout_model.clone();
+		value["id"] = json!(format!("invalid-{index}"));
+		value["config"]
+			.as_object_mut()
+			.unwrap()
+			.extend(invalid.as_object().unwrap().clone());
+		let entry: Entry = serde_json::from_value(value).unwrap();
+		// Act
+		let response = registrar
+			.post("/api/registry", &entry, "json")
+			.await
+			.unwrap();
+		let draft = Definition::build()
+			.tenant("endpoint")
+			.id(&entry.id)
+			.version(&entry.version)
+			.kind(DefinitionKind::Model)
+			.metadata(json!(entry).into())
+			.finish();
+		let error = Definition::objects()
+			.create_with_conn(&mut connection, &draft)
+			.await
+			.unwrap_err();
+		// Assert
+		assert_json(response, 400);
+		let database = error.database_error().expect("database constraint error");
+		assert_eq!(
+			database.kind(),
+			DatabaseErrorKind::CheckViolation,
+			"{error}"
+		);
+		assert_eq!(
+			database.constraint(),
+			Some("registry_model_config"),
+			"{error}"
+		);
+	}
+	assert_eq!(
+		app.runtime
+			.registry
+			.list(&tenant, &Default::default())
+			.await
+			.unwrap(),
+		seeded_definitions
+	);
+}
+
+fn assert_constraint(error: reinhardt::core::exception::Error, constraint: &str) {
+	let database = error.database_error().expect("database constraint error");
+	assert_eq!(
+		database.kind(),
+		DatabaseErrorKind::CheckViolation,
+		"{error}"
+	);
+	assert_eq!(database.code(), Some("23514"), "{error}");
+	assert_eq!(database.constraint(), Some(constraint), "{error}");
+}
+
+#[rstest]
+#[tokio::test]
+async fn database_validates_registered_timeouts(
+	#[future] endpoint: EndpointFixture,
+	timeout_model: Value,
+	invalid_configs: Vec<Value>,
+) {
+	// Arrange
+	let app = endpoint.await;
+	app.database.tenant("endpoint").await;
+	let mut connection = app.database.lease.handle();
+	for (index, config) in invalid_configs.into_iter().enumerate() {
+		let mut entry = timeout_model.clone();
+		entry["id"] = json!(format!("raw-invalid-{index}"));
+		entry["config"]
+			.as_object_mut()
+			.unwrap()
+			.extend(config.as_object().unwrap().clone());
+		let definition = Definition::build()
+			.tenant("endpoint")
+			.id(entry["id"].as_str().unwrap())
+			.version("1.0.0")
+			.kind(DefinitionKind::Model)
+			.metadata(entry.into())
+			.finish();
+		// Act / Assert
+		assert_constraint(
+			Definition::objects()
+				.create_with_conn(&mut connection, &definition)
+				.await
+				.unwrap_err(),
+			"registry_model_config",
+		);
+	}
+}
+
+#[rstest]
+#[tokio::test]
+async fn database_validates_media_route_members_for_models(
+	#[future] endpoint: EndpointFixture,
+	timeout_model: Value,
+) {
+	// Arrange
+	let app = endpoint.await;
+	app.database.tenant("endpoint").await;
+	let mut connection = app.database.lease.handle();
+	let route = json!({"tag":"fixture/verified", "formats":["image/png"],
+		"source":"fixture verification", "verified_at":"2026-09-28T12:00:00Z",
+		"expires_at":"2026-10-28T12:00:00Z"});
+	let mut valid = timeout_model.clone();
+	valid["id"] = json!("valid-route");
+	valid["config"]["media_routes"] = json!([route]);
+	Definition::objects()
+		.create_with_conn(
+			&mut connection,
+			&Definition::build()
+				.tenant("endpoint")
+				.id("valid-route")
+				.version("1.0.0")
+				.kind(DefinitionKind::Model)
+				.metadata(valid.into())
+				.finish(),
+		)
+		.await
+		.unwrap();
+	for (index, routes) in [
+		json!([1]),
+		json!([{"tag":"fixture/verified"}]),
+		json!([{"tag":"fixture/verified", "formats":[1], "source":"fixture", "verified_at":"2026-09-28T12:00:00Z", "expires_at":"2026-10-28T12:00:00Z"}]),
+		json!([{"tag":"fixture/verified", "formats":["image/png"], "source":"fixture", "verified_at":"2026-09-28T12:00:00Z", "expires_at":"2026-10-28T12:00:00Z", "unexpected":true}]),
+		json!([{"tag":"fixture/verified", "formats":["image/png"], "source":"fixture", "verified_at":"not a timestamp", "expires_at":"2026-10-28T12:00:00Z"}]),
+	].into_iter().enumerate() {
+		// Act / Assert
+		let mut entry = timeout_model.clone();
+		entry["id"] = json!(format!("invalid-route-{index}"));
+		entry["config"]["media_routes"] = routes.clone();
+		let definition = Definition::build().tenant("endpoint").id(entry["id"].as_str().unwrap()).version("1.0.0")
+			.kind(DefinitionKind::Model).metadata(entry.into()).finish();
+		assert_constraint(Definition::objects().create_with_conn(&mut connection, &definition)
+			.await.unwrap_err(), "registry_model_config");
+	}
+}
+
+/// The model the dashboard's registration form sends (`web/src/forms.tsx`),
+/// without its Provider Credential: this Node has no Secret Store.
+#[fixture]
+fn dashboard_model() -> Value {
+	json!({"id":"","version":"1.0.0","kind":"model",
+		"name":{"en":"Dashboard fixture"},"description":{"en":"Persistence test"},
+		"capabilities":[],"languages":["ja","en"],"tags":[],"skills":[],"schema":{},
+		"config":{"provider":"openrouter","model_id":"vendor/model",
+			"endpoint":"https://openrouter.ai/api/v1",
+			"reasoning_effort":null,"context_window":32768,"max_output_tokens":4096,
+			"modalities":["text"],"media_routes":[],"cost":{},
+			"request_estimator":"calibrated"}})
+}
+
+#[rstest]
+#[tokio::test]
+async fn projection_measurement_options_round_trip_without_changing_defaults(
+	#[future] endpoint: EndpointFixture,
+	dashboard_model: Value,
+) {
+	let app = endpoint.await;
+	let registrar = tenant_subject(&app, "registrar").await;
+	let now = chrono::Utc::now();
+	let mut entry = dashboard_model;
+	entry["id"] = json!("measured-route");
+	entry["config"]["provider_route"] = json!({
+		"tag":"fixture/exact", "source":"Approved endpoint catalog snapshot",
+		"verified_at": now - chrono::Duration::minutes(1),
+		"expires_at": now + chrono::Duration::hours(1)
+	});
+	entry["config"]["estimate_diagnostics"] = json!({
+		"token_encoding":"o200k_base",
+		"calibrations":{"native":{"ratio_ppm":250000,"samples":20}}
+	});
+	let created = assert_json(
+		registrar
+			.post("/api/registry", &entry, "json")
+			.await
+			.unwrap(),
+		200,
+	);
+	assert_eq!(created["config"], entry["config"]);
+	approve(&app, "endpoint", "measured-route", "1.0.0").await;
+	let stored = assert_json(
+		registrar
+			.get("/api/registry/measured-route/1.0.0")
+			.await
+			.unwrap(),
+		200,
+	);
+	assert_eq!(stored["config"], entry["config"]);
+	assert!(stored["config"].get("projection_versions").is_none());
+}
+
+#[rstest]
+#[tokio::test]
+async fn database_rejects_malformed_projection_measurement_options(
+	#[future] endpoint: EndpointFixture,
+	timeout_model: Value,
+) {
+	let app = endpoint.await;
+	let mut connection = app.database.lease.handle();
+	let invalid = [
+		json!({"provider_route":{"tag":"../other","source":"x","verified_at":"2026-10-23T00:00:00Z","expires_at":"2026-10-24T00:00:00Z"}}),
+		json!({"provider_route":{"tag":"fixture","source":"x","verified_at":"invalid","expires_at":"2026-10-24T00:00:00Z"}}),
+		json!({"estimate_diagnostics":{"token_encoding":"invented"}}),
+		json!({"estimate_diagnostics":{"calibrations":{"native":{"ratio_ppm":0,"samples":20}}}}),
+		json!({"estimate_diagnostics":{"calibrations":{"native":{"ratio_ppm":250000,"samples":201}}}}),
+		json!({"estimate_diagnostics":{"calibrations":{"native":{"ratio_ppm":250000,"samples":true}}}}),
+	];
+	for (index, options) in invalid.into_iter().enumerate() {
+		let id = format!("invalid-measurement-{index}");
+		let mut entry = timeout_model.clone();
+		entry["id"] = json!(id);
+		entry["config"]
+			.as_object_mut()
+			.unwrap()
+			.extend(options.as_object().unwrap().clone());
+		let definition = Definition::build()
+			.tenant("endpoint")
+			.id(id)
+			.version("1.0.0")
+			.kind(DefinitionKind::Model)
+			.metadata(entry.into())
+			.finish();
+		assert_constraint(
+			Definition::objects()
+				.create_with_conn(&mut connection, &definition)
+				.await
+				.unwrap_err(),
+			"registry_model_projection_measurement",
+		);
+	}
+}
+
+#[rstest]
+#[tokio::test]
+async fn request_estimators_persist_through_the_registry_api(
+	#[future] endpoint: EndpointFixture,
+	dashboard_model: Value,
+) {
+	// Arrange
+	let app = endpoint.await;
+	let registrar = tenant_subject(&app, "registrar").await;
+	let mut connection = app.database.lease.handle();
+	for estimator in ["calibrated", "bytes"] {
+		let id = format!("estimator-{estimator}");
+		let mut entry = dashboard_model.clone();
+		entry["id"] = json!(id);
+		entry["config"]["request_estimator"] = json!(estimator);
+		// Act
+		let created = assert_json(
+			registrar
+				.post("/api/registry", &entry, "json")
+				.await
+				.unwrap(),
+			200,
+		);
+		let saved = Definition::objects()
+			.filter(Definition::field_id().eq(id))
+			.get_with_db(&mut connection)
+			.await
+			.unwrap();
+		// Assert
+		assert_eq!(created["config"], entry["config"]);
+		assert_eq!(saved.metadata.0["config"], entry["config"]);
+	}
+}
+
+#[rstest]
+#[tokio::test]
+async fn database_limits_request_estimators_to_known_values(
+	#[future] endpoint: EndpointFixture,
+	dashboard_model: Value,
+) {
+	// Arrange
+	let app = endpoint.await;
+	let mut connection = app.database.lease.handle();
+	for (index, estimator) in [json!("exact"), json!(null), json!(1)]
+		.into_iter()
+		.enumerate()
+	{
+		let mut entry = dashboard_model.clone();
+		entry["id"] = json!(format!("raw-estimator-{index}"));
+		entry["config"]["request_estimator"] = estimator;
+		let definition = Definition::build()
+			.tenant("endpoint")
+			.id(entry["id"].as_str().unwrap())
+			.version("1.0.0")
+			.kind(DefinitionKind::Model)
+			.metadata(entry.into())
+			.finish();
+		// Act / Assert
+		assert_constraint(
+			Definition::objects()
+				.create_with_conn(&mut connection, &definition)
+				.await
+				.unwrap_err(),
+			"registry_model_request_estimator",
+		);
+	}
+}
+
+fn agent_on(id: &str, model: &str, version: &str) -> Value {
+	json!({"id":id,"version":"1.0.0","kind":"agent",
+		"name":{"en":"Projection fixture"},"description":{"en":"Persistence test"},
+		"config":{"schema_version":1,"model":{"id":model,"version":"1.0.0"},
+			"instructions":"Use the pinned projection","bindings":[],"remove_default":[],
+			"projection_version":version}})
+}
+
+#[rstest]
+#[tokio::test]
+async fn projection_versions_persist_and_gate_agent_registration(
+	#[future] endpoint: EndpointFixture,
+	timeout_model: Value,
+) {
+	// Arrange
+	let app = endpoint.await;
+	let registrar = tenant_subject(&app, "registrar").await;
+	let mut connection = app.database.lease.handle();
+	let mut declared = timeout_model.clone();
+	declared["id"] = json!("ordered-model");
+	declared["config"]["projection_versions"] = json!(["legacy", "ordered"]);
+	let mut native_model = timeout_model.clone();
+	native_model["id"] = json!("native-model");
+	native_model["config"]["projection_versions"] = json!(["legacy", "native"]);
+	// Act
+	let created = assert_json(
+		registrar
+			.post("/api/registry", &declared, "json")
+			.await
+			.unwrap(),
+		200,
+	);
+	assert_json(
+		registrar
+			.post("/api/registry", &timeout_model, "json")
+			.await
+			.unwrap(),
+		200,
+	);
+	let accepted = assert_json(
+		registrar
+			.post(
+				"/api/registry",
+				&agent_on("ordered-agent", "ordered-model", "ordered"),
+				"json",
+			)
+			.await
+			.unwrap(),
+		200,
+	);
+	let undeclared = registrar
+		.post(
+			"/api/registry",
+			&agent_on("undeclared-agent", "timeout-model", "ordered"),
+			"json",
+		)
+		.await
+		.unwrap();
+	let undeclared_native = registrar
+		.post(
+			"/api/registry",
+			&agent_on("undeclared-native-agent", "ordered-model", "native"),
+			"json",
+		)
+		.await
+		.unwrap();
+	assert_json(
+		registrar
+			.post("/api/registry", &native_model, "json")
+			.await
+			.unwrap(),
+		200,
+	);
+	let native = assert_json(
+		registrar
+			.post(
+				"/api/registry",
+				&agent_on("native-agent", "native-model", "native"),
+				"json",
+			)
+			.await
+			.unwrap(),
+		200,
+	);
+	// Assert
+	assert_eq!(created["config"], declared["config"]);
+	assert_eq!(accepted["config"]["projection_version"], "ordered");
+	assert_eq!(native["config"]["projection_version"], "native");
+	assert_json(undeclared, 400);
+	assert_json(undeclared_native, 400);
+	for (index, versions) in [json!("ordered"), json!(["v4"]), json!([1]), json!(null)]
+		.into_iter()
+		.enumerate()
+	{
+		let mut entry = timeout_model.clone();
+		entry["id"] = json!(format!("raw-projection-{index}"));
+		entry["config"]["projection_versions"] = versions;
+		let definition = Definition::build()
+			.tenant("endpoint")
+			.id(entry["id"].as_str().unwrap())
+			.version("1.0.0")
+			.kind(DefinitionKind::Model)
+			.metadata(entry.into())
+			.finish();
+		assert_constraint(
+			Definition::objects()
+				.create_with_conn(&mut connection, &definition)
+				.await
+				.unwrap_err(),
+			"registry_model_config",
+		);
+	}
+	let agent = Definition::build()
+		.tenant("endpoint")
+		.id("raw-projection-agent")
+		.version("1.0.0")
+		.kind(DefinitionKind::Agent)
+		.metadata(agent_on("raw-projection-agent", "ordered-model", "v4").into())
+		.finish();
+	assert_constraint(
+		Definition::objects()
+			.create_with_conn(&mut connection, &agent)
+			.await
+			.unwrap_err(),
+		"registry_agent_config",
+	);
+}

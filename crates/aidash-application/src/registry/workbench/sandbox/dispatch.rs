@@ -1,0 +1,177 @@
+//! Durable pending evidence precedes network I/O, followed by fresh authority held through dispatch.
+use crate::{
+	Error, Result,
+	ports::registry::workbench::{
+		profile::ProfileConfiguration,
+		sandbox::dispatch::{
+			PreparedRealRequest, RealDispatchRepository, RealDispatchScope, RealToolTransport,
+		},
+	},
+};
+use aidash_domain::{
+	provider::ToolCall,
+	registry::workbench::{
+		profile::RealToolRule,
+		sandbox::{ProfilePin, TestSession},
+	},
+};
+use serde_json::{Value, json};
+use uuid::Uuid;
+pub struct Dispatch<'a> {
+	pub repository: &'a dyn RealDispatchRepository,
+	pub configuration: &'a dyn ProfileConfiguration,
+	pub transport: &'a dyn RealToolTransport,
+}
+async fn prepare(
+	scope: &mut dyn RealDispatchScope,
+	dispatch: &Dispatch<'_>,
+	session_id: Uuid,
+	pin: &ProfilePin,
+	rule: &RealToolRule,
+	call: &ToolCall,
+) -> Result<(TestSession, Box<dyn PreparedRealRequest>, ToolCall)> {
+	let session = scope.session(session_id, true).await?;
+	if session.status != "running" {
+		return Err(Error::Conflict("test was stopped".into()));
+	}
+	scope.lock_identity().await?;
+	let draft = scope.draft(session.draft_id, true).await?;
+	if draft.archived || draft.revision != session.revision {
+		return Err(Error::Conflict(
+			"draft revision changed or is archived".into(),
+		));
+	}
+	scope
+		.authorize_draft(&draft, "agent_draft.test", true)
+		.await?;
+	let current = scope.profile(&pin.tenant, &pin.id).await?;
+	if !current.enabled
+		|| current.revision != pin.revision
+		|| current.rules != serde_json::to_value(&pin.rules)?
+	{
+		return Err(Error::Conflict(
+			"test profile changed or was disabled".into(),
+		));
+	}
+	let snapshot: aidash_domain::registry::bindings::BindingSnapshot =
+		serde_json::from_value(session.scenario["binding_snapshot"].clone())?;
+	snapshot.validate()?;
+	let binding = snapshot
+		.bindings
+		.iter()
+		.find(|binding| {
+			binding.identity.local() == rule.tool
+				&& binding.alias.as_deref() == Some(&call.name)
+				&& binding.excluded_reason.is_none()
+		})
+		.ok_or(Error::Forbidden)?;
+	let tool = scope.effective(&rule.tool).await?;
+	if aidash_domain::registry::rules::digest(&serde_json::to_value(&tool)?) != binding.digest {
+		return Err(Error::Conflict(
+			"test Tool differs from its admitted Binding".into(),
+		));
+	}
+	let mut call = call.clone();
+	binding.narrow.apply(&mut call.arguments)?;
+	super::super::profile::validate_real_rule(dispatch.configuration, rule, &tool)?;
+	jsonschema::validator_for(&tool.schema)
+		.map_err(|e| Error::Invalid(e.to_string()))?
+		.validate(&call.arguments)
+		.map_err(|e| Error::Invalid(e.to_string()))?;
+	// Resolved with the same authority and checks as the dispatch it serves.
+	let secret = match &rule.secret {
+		Some(name) => Some(
+			scope
+				.tenant_secret(&pin.tenant, name, &rule.endpoint)
+				.await?,
+		),
+		None => None,
+	};
+	let request = dispatch
+		.transport
+		.prepare(session_id, rule, &call, secret.as_ref())?;
+	Ok((session, request, call))
+}
+async fn record_pre_dispatch_denial(
+	repository: &dyn RealDispatchRepository,
+	session_id: Uuid,
+	call: &ToolCall,
+	error: &Error,
+) -> Result<()> {
+	let mut scope = repository.begin_real().await?;
+	let session = scope.session(session_id, true).await?;
+	let mut recorded = session.tool_calls.unwrap_or_else(|| json!([]));
+	if let Some(pending) = recorded
+		.as_array_mut()
+		.and_then(|calls| calls.last_mut())
+		.filter(|pending| pending["id"] == call.id && pending["outcome"] == "outcome_unknown")
+	{
+		pending["outcome"] = json!("denied");
+		pending["error"] = json!(error.to_string());
+		scope.write_calls(session_id, recorded, false).await?;
+	}
+	scope.commit().await
+}
+pub async fn invoke(
+	dispatch: &Dispatch<'_>,
+	session_id: Uuid,
+	pin: &ProfilePin,
+	rule: &RealToolRule,
+	call: &ToolCall,
+) -> Result<(Value, &'static str)> {
+	let repository = dispatch.repository;
+	let action = call.arguments["action"]
+		.as_str()
+		.ok_or_else(|| Error::Invalid("real Tool arguments require an action".into()))?;
+	let resource = call.arguments["resource"]
+		.as_str()
+		.ok_or_else(|| Error::Invalid("real Tool arguments require a resource".into()))?;
+	if !rule.allowed_actions.iter().any(|allowed| allowed == action)
+		|| !rule
+			.allowed_resources
+			.iter()
+			.any(|allowed| allowed == resource)
+	{
+		return Err(Error::Forbidden);
+	}
+	let mut scope = repository.begin_real().await?;
+	let (session, _, prepared_call) =
+		prepare(scope.as_mut(), dispatch, session_id, pin, rule, call).await?;
+	let pending = json!({"id":call.id,"name":call.name,"arguments":prepared_call.arguments,"outcome":"outcome_unknown","endpoint":rule.endpoint});
+	let mut calls = session.tool_calls.unwrap_or_else(|| json!([]));
+	calls
+		.as_array_mut()
+		.ok_or_else(|| Error::Invalid("invalid test call log".into()))?
+		.push(pending);
+	scope.write_calls(session_id, calls, true).await?;
+	scope.commit().await?;
+	let mut scope = repository.begin_real().await?;
+	let (_, request, prepared_call) =
+		match prepare(scope.as_mut(), dispatch, session_id, pin, rule, call).await {
+			Ok(prepared) => prepared,
+			Err(error) => {
+				scope.rollback().await?;
+				record_pre_dispatch_denial(repository, session_id, call, &error).await?;
+				return Err(error);
+			}
+		};
+	let (result, outcome) = request.send().await?;
+	let mut recorded = scope
+		.session(session_id, false)
+		.await?
+		.tool_calls
+		.ok_or_else(|| Error::Conflict("pending test Tool call was lost".into()))?;
+	let last = recorded
+		.as_array_mut()
+		.and_then(|calls| calls.last_mut())
+		.ok_or_else(|| Error::Conflict("pending test Tool call was lost".into()))?;
+	if last["id"] != call.id || last["outcome"] != "outcome_unknown" {
+		return Err(Error::Conflict("pending test Tool call changed".into()));
+	}
+	*last = json!({"id":call.id,"name":call.name,"arguments":prepared_call.arguments,"outcome":outcome,"result":result,"endpoint":rule.endpoint});
+	scope.write_calls(session_id, recorded, false).await?;
+	scope.commit().await?;
+	Ok((result, outcome))
+}
+#[cfg(test)]
+mod tests;

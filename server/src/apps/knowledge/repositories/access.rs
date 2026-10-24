@@ -1,0 +1,187 @@
+//! PostgreSQL authority scope shared by entry, retrieval, and indexing ports.
+use crate::apps::knowledge::{
+	serializers::service::SavedAuthority,
+	services::core::{Entry, Source},
+};
+use crate::authorization::{
+	access::Access,
+	identity::{Actor, SubjectIdentity},
+};
+use crate::{Error, Result, store::Store};
+use aidash_application::tenancy::{DeploymentScopeReason, TenancyScope};
+use serde_json::Value;
+
+use uuid::Uuid;
+
+/// The `subject` a saved authority records for a lease without a Subject.
+pub(crate) const WITHOUT_SUBJECT: &str = "without_subject";
+
+pub(crate) enum Lease<'a> {
+	/// A transaction that no Subject's authority limits, for a Deployment
+	/// Administrator or for Aidash's own work.
+	WithoutSubject(crate::database::native::Transaction),
+	BorrowedWithoutSubject(&'a mut crate::database::native::Transaction),
+	Scoped(Box<Access>),
+	Inherited(&'a mut Access),
+}
+impl Lease<'_> {
+	/// Begin as `actor`. A Subject works in its own Tenant; a Deployment
+	/// Administrator works in the Tenant of `workspace`.
+	pub(crate) async fn begin(store: &Store, actor: &Actor, workspace: Uuid) -> Result<Self> {
+		match actor {
+			Actor::DeploymentAdministrator => {
+				let scope = store.workspace_tenancy(workspace).await?;
+				let tenant = scope.tenant_name().ok_or(Error::Forbidden)?;
+				let mut tx = store.pool.begin(&scope).await?;
+				// Match deletion's lock order before an index mutation locks its Workspace.
+				crate::authorization::remote::deployment_administrator::tenant(
+					&mut *tx,
+					tenant.as_str(),
+				)
+				.await?;
+				Ok(Self::WithoutSubject(tx))
+			}
+			Actor::Subject(identity) => Ok(Self::Scoped(Box::new(
+				Access::begin(store, identity).await?,
+			))),
+		}
+	}
+	/// Begin work in `scope` without a Subject's authority, such as a worker's
+	/// work for its Run.
+	pub(crate) async fn within(store: &Store, scope: &TenancyScope) -> Result<Self> {
+		Ok(Self::WithoutSubject(store.pool.begin(scope).await?))
+	}
+	/// Begin system work that reaches every Tenant's knowledge for `reason`.
+	pub(crate) async fn deployment(store: &Store, reason: DeploymentScopeReason) -> Result<Self> {
+		Self::within(store, &TenancyScope::Deployment(reason)).await
+	}
+	/// Restore the authority saved with work on `workspace`.
+	pub(crate) async fn restore(store: &Store, authority: Value, workspace: Uuid) -> Result<Self> {
+		let authority: SavedAuthority = serde_json::from_value(authority)?;
+		match authority.credential {
+			None if authority.subject == WITHOUT_SUBJECT
+				&& authority.tenant.is_empty()
+				&& authority.subjects.is_empty() =>
+			{
+				Self::within(store, &store.workspace_tenancy(workspace).await?).await
+			}
+			Some(credential_id) => {
+				let mut access = Access::begin(
+					store,
+					&SubjectIdentity {
+						http_session: None,
+						credential_id,
+						tenant: authority.tenant,
+						subject: authority.subject,
+					},
+				)
+				.await?;
+				if authority.subjects.is_empty()
+					|| !authority.subjects.contains(&access.identity.subject)
+				{
+					return Err(Error::Forbidden);
+				}
+				access.subjects = authority.subjects;
+				access.worker();
+				Ok(Self::Scoped(Box::new(access)))
+			}
+			_ => Err(Error::Forbidden),
+		}
+	}
+	pub(crate) fn tx(&mut self) -> &mut crate::database::native::Transaction {
+		match self {
+			Self::WithoutSubject(tx) => tx,
+			Self::BorrowedWithoutSubject(tx) => tx,
+			Self::Scoped(a) => &mut a.tx,
+			Self::Inherited(a) => &mut a.tx,
+		}
+	}
+	pub(crate) fn access(&mut self) -> Option<&mut Access> {
+		match self {
+			Self::WithoutSubject(_) | Self::BorrowedWithoutSubject(_) => None,
+			Self::Scoped(a) => Some(a),
+			Self::Inherited(a) => Some(a),
+		}
+	}
+	pub(crate) fn durable(&mut self) {
+		if let Some(access) = self.access() {
+			access.durable_audit = true;
+		}
+	}
+	pub(crate) fn saved(&mut self) -> Result<Value> {
+		let saved = match self.access() {
+			None => SavedAuthority {
+				credential: None,
+				tenant: String::new(),
+				subject: WITHOUT_SUBJECT.into(),
+				subjects: vec![],
+			},
+			Some(a) => SavedAuthority {
+				credential: Some(a.identity.credential_id),
+				tenant: a.identity.tenant.clone(),
+				subject: a.identity.subject.clone(),
+				subjects: a.subjects.clone(),
+			},
+		};
+		Ok(serde_json::to_value(saved)?)
+	}
+	pub(crate) async fn finish<T>(self, result: Result<T>) -> Result<T> {
+		match self {
+			Self::WithoutSubject(tx) => {
+				if result.is_ok() {
+					tx.commit().await?;
+				} else {
+					tx.rollback().await?;
+				}
+				result
+			}
+			Self::Scoped(a) => a.finish(result).await,
+			Self::Inherited(_) | Self::BorrowedWithoutSubject(_) => result,
+		}
+	}
+	pub(crate) async fn workspace(&mut self, workspace: Uuid, action: &str) -> Result<()> {
+		if self.access().is_none() {
+			if action == super::mutations::SEMANTIC_INDEX_MANAGE {
+				crate::authorization::remote::deployment_administrator::workspace_tenant(
+					self.tx(),
+					workspace,
+				)
+				.await?;
+			} else {
+				crate::authorization::remote::deployment_administrator::require(
+					self.tx(),
+					workspace,
+				)
+				.await?;
+			}
+		}
+		if let Some(a) = self.access() {
+			let resource = a.workspace(workspace).await?;
+			a.require(&resource, "workspace.read").await?;
+			a.require(&resource, action).await?;
+		}
+		Ok(())
+	}
+	pub(crate) async fn permits(&mut self, entry: &Entry, action: &str) -> Result<bool> {
+		aidash_application::semantic::visibility::permits(
+			&mut crate::bootstrap::semantic_disclosure_scope(self),
+			&entry.clone().into(),
+			action,
+		)
+		.await
+		.map_err(Into::into)
+	}
+	pub(crate) async fn source(
+		&mut self,
+		workspace: Uuid,
+		source: &Source,
+	) -> Result<Option<String>> {
+		aidash_application::semantic::visibility::source(
+			&mut crate::bootstrap::semantic_disclosure_scope(self),
+			workspace,
+			source,
+		)
+		.await
+		.map_err(Into::into)
+	}
+}

@@ -1,0 +1,39 @@
+//! Pure validation of configured identities and transport references.
+use crate::{Error, Result};
+
+pub fn validate_endpoint(endpoint: &str) -> Result<()> {
+	let url =
+		url::Url::parse(endpoint).map_err(|_| Error::Invalid("invalid endpoint URL".into()))?;
+	if !matches!(url.scheme(), "http" | "https")
+		|| url.host_str().is_none()
+		|| !url.username().is_empty()
+		|| url.password().is_some()
+		|| url.query().is_some()
+		|| url.fragment().is_some()
+	{
+		return Err(Error::Invalid(
+			"endpoint requires HTTP(S) without inline credentials, query or fragment".into(),
+		));
+	}
+	Ok(())
+}
+
+pub fn validate_secret_reference(name: &str) -> Result<()> {
+	if !name.starts_with("AIDASH_SECRET_")
+		|| !name
+			.chars()
+			.all(|c| c.is_ascii_uppercase() || c.is_ascii_digit() || c == '_')
+	{
+		return Err(Error::Invalid(
+			"credential references must use AIDASH_SECRET_* environment variables".into(),
+		));
+	}
+	Ok(())
+}
+/// Compare fixed-size digests without leaking a matching prefix or secret length.
+pub fn same_secret(a: &str, b: &str) -> bool {
+	use sha2::{Digest, Sha256};
+	let a = Sha256::digest(a.as_bytes());
+	let b = Sha256::digest(b.as_bytes());
+	a.iter().zip(b).fold(0u8, |acc, (x, y)| acc | (x ^ y)) == 0
+}

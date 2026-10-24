@@ -1,0 +1,26 @@
+//! Application endpoint registration and access policies.
+use super::views::{management, personal_agents};
+use crate::apps::identity::services::boundary::AccessBoundary;
+use reinhardt::UnifiedRouter;
+
+pub fn url_patterns() -> UnifiedRouter {
+	UnifiedRouter::new().server(|server| {
+		server
+			.endpoint(personal_agents::create)
+			.with_route_middleware(AccessBoundary::authenticated().with_visibility())
+			.endpoint(management::registry_list)
+			.with_route_middleware(AccessBoundary::authenticated().with_visibility())
+			.endpoint(management::registry_versions)
+			.with_route_middleware(AccessBoundary::authenticated().with_visibility())
+			.endpoint(management::registry_get)
+			.with_route_middleware(AccessBoundary::authenticated().with_visibility())
+			.endpoint(management::registry_create)
+			.with_route_middleware(AccessBoundary::authenticated().with_visibility())
+			.endpoint(management::mcp_tool_hint)
+			.with_route_middleware(AccessBoundary::authenticated().with_visibility())
+			.endpoint(management::skill_import)
+			.with_route_middleware(AccessBoundary::authenticated().with_visibility())
+			.endpoint(management::agent_plugin_import)
+			.with_route_middleware(AccessBoundary::authenticated().with_visibility())
+	})
+}

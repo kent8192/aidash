@@ -1,0 +1,393 @@
+{{- $name := printf "%s-aidash" .Release.Name -}}
+{{- $backend := printf "%s-backend" .Release.Name -}}
+{{- $frontend := printf "%s-frontend" .Release.Name -}}
+{{- $nginxConfig := $.Files.Get "files/default.conf" | replace "http://aidash-backend:8080" (printf "http://%s:8080" $backend) -}}
+{{- $id := required "deployment.id must be a stable aidash:// identity" .Values.deployment.id -}}
+{{- if gt (len .Release.Name) 49 -}}
+{{- fail "release name must be at most 49 characters" -}}
+{{- end -}}
+{{- if not (regexMatch "^aidash://[A-Za-z0-9-]{1,100}$" $id) -}}
+{{- fail "deployment.id is not a valid Deployment id" -}}
+{{- end -}}
+{{- if lt (int .Values.terminationGracePeriodSeconds) 25 -}}
+{{- fail "terminationGracePeriodSeconds must allow the 20-second application drain" -}}
+{{- end -}}
+{{- if gt (len .Values.activation.namespace) 128 -}}
+{{- fail "activation.namespace must be at most 128 UTF-8 bytes" -}}
+{{- end -}}
+{{- if and .Values.memoryRecovery.existingClaim (not (hasPrefix "/" .Values.memoryRecovery.directory)) -}}
+{{- fail "memoryRecovery.directory must be absolute" -}}
+{{- end -}}
+{{- with .Values.release.sourceSha -}}
+{{- if not (regexMatch "^[0-9a-f]{40}$" (toString .)) -}}{{ fail "release.sourceSha must be a 40-character lowercase commit SHA" }}{{- end -}}
+{{- end -}}
+{{- range .Values.trustedProxy.cidrs -}}
+{{- if not (include "aidash.proxyNetwork" .) -}}{{ fail (printf "trustedProxy.cidrs entry %s must be an IP address or a network without host bits: the server refuses anything else at startup" .) }}{{- end -}}
+{{- end -}}
+{{- $image := printf "%s:%s" .Values.image.repository .Values.image.tag -}}
+{{- with .Values.image.digest -}}{{- $image = printf "%s@%s" $.Values.image.repository . -}}{{- end -}}
+{{- $runner := .Values.execution.runner -}}
+{{- $profile := "" -}}
+{{- if $runner.enabled -}}{{- $profile = include "aidash.capabilityProfile" . -}}{{- end -}}
+{{- $providerCredentials := "" -}}
+{{- if not (kindIs "invalid" .Values.providerCredentials.settings) -}}{{- $providerCredentials = include "aidash.providerCredentials" . -}}{{- end -}}
+{{- $gcip := "" -}}
+{{- if not (kindIs "invalid" .Values.gcip.settings) -}}{{- $gcip = include "aidash.gcip" . -}}{{- end -}}
+{{- /* Server and worker share each RWO claim, so they must stay on one Cluster Node. */ -}}
+{{- $colocated := or .Values.memoryRecovery.existingClaim .Values.capabilities.storage.existingClaim -}}
+{{- $kind := include "aidash.workloadKind" . -}}
+{{- $mounts := list -}}
+{{- $volumes := list -}}
+{{- with .Values.memoryRecovery.existingClaim -}}
+{{- $mount := dict "name" "memory-recovery" "mountPath" $.Values.memoryRecovery.directory -}}
+{{- with $.Values.memoryRecovery.subPath -}}{{- $_ := set $mount "subPath" . -}}{{- end -}}
+{{- $mounts = append $mounts $mount -}}
+{{- $volumes = append $volumes (dict "name" "memory-recovery" "persistentVolumeClaim" (dict "claimName" .)) -}}
+{{- end -}}
+{{- with .Values.capabilities.storage.existingClaim -}}
+{{- $mounts = append $mounts (dict "name" "capabilities" "mountPath" (include "aidash.capabilityDirectory" $)) -}}
+{{- $volumes = append $volumes (dict "name" "capabilities" "persistentVolumeClaim" (dict "claimName" .)) -}}
+{{- end -}}
+{{- range $setting := list (dict "name" "capability-profile" "content" $profile) (dict "name" "provider-credentials" "content" $providerCredentials) (dict "name" "gcip" "content" $gcip) -}}
+{{- if $setting.content -}}
+{{- $mounts = append $mounts (dict "name" $setting.name "mountPath" (printf "/etc/aidash/%s" $setting.name) "readOnly" true) -}}
+{{- $volumes = append $volumes (dict "name" $setting.name "configMap" (dict "name" (printf "%s-%s" $name $setting.name))) -}}
+{{- end -}}
+{{- end -}}
+{{- range $role := list "server" "worker" }}
+{{- $settings := index $.Values $role }}
+{{- $secret := required (printf "%s.existingSecret or existingSecret is required" $role) ($settings.existingSecret | default $.Values.existingSecret) }}
+---
+apiVersion: apps/v1
+kind: {{ $kind }}
+metadata:
+  name: {{ $name }}-{{ $role }}
+  labels:
+    app.kubernetes.io/name: aidash
+    app.kubernetes.io/instance: {{ $.Release.Name }}
+    app.kubernetes.io/component: {{ $role }}
+  {{- with $.Values.release.sourceSha }}
+  annotations:
+    aidash.run/source-sha: {{ . | quote }}
+  {{- end }}
+spec:
+  replicas: {{ $settings.replicas }}
+  revisionHistoryLimit: 3
+  minReadySeconds: 2
+  {{- $deployment := ternary "progressDeadlineSeconds: 300\nstrategy: { type: Recreate }" "progressDeadlineSeconds: 300\nstrategy:\n  type: RollingUpdate\n  rollingUpdate: { maxUnavailable: 0, maxSurge: 1 }" (not (not $colocated)) }}
+  {{- include "aidash.workloadRollout" (dict "kind" $kind "name" (printf "%s-%s" $name $role) "deployment" $deployment) | nindent 2 }}
+  selector:
+    matchLabels:
+      app.kubernetes.io/instance: {{ $.Release.Name }}
+      app.kubernetes.io/component: {{ $role }}
+  template:
+    metadata:
+      {{- if or $profile $providerCredentials $gcip }}
+      annotations:
+        checksum/settings: {{ printf "%s\n%s\n%s" $profile $providerCredentials $gcip | sha256sum }}
+      {{- end }}
+      labels:
+        app.kubernetes.io/name: aidash
+        app.kubernetes.io/instance: {{ $.Release.Name }}
+        app.kubernetes.io/component: {{ $role }}
+        # The only Pods the metadata-server egress policy leaves alone (see README).
+        aidash.run/metadata-server: allowed
+        {{- if $colocated }}
+        aidash.run/co-located: "true"
+        {{- end }}
+    spec:
+      hostNetwork: false
+      serviceAccountName: {{ $name }}-{{ $role }}
+      automountServiceAccountToken: {{ and $.Values.observability.enabled (eq $role "server") }}
+      terminationGracePeriodSeconds: {{ $.Values.terminationGracePeriodSeconds }}
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+        runAsGroup: 10001
+        {{- if $colocated }}
+        fsGroup: 10001
+        {{- end }}
+        seccompProfile: { type: RuntimeDefault }
+      {{- with $.Values.image.pullSecrets }}
+      imagePullSecrets: {{ toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with mergeOverwrite (deepCopy $.Values.nodeSelector) $.Values.environment.nodeSelector }}
+      nodeSelector: {{ toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with concat $.Values.tolerations $.Values.environment.tolerations }}
+      tolerations: {{ toYaml . | nindent 8 }}
+      {{- end }}
+      affinity: {{ include "aidash.affinity" $ | nindent 8 }}
+      containers:
+        - name: aidash
+          image: {{ $image | quote }}
+          imagePullPolicy: {{ $.Values.image.pullPolicy }}
+          args: [{{ $role | quote }}]
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities: { drop: [ALL] }
+          envFrom:
+            - secretRef: { name: {{ $secret | quote }} }
+          env:
+            - { name: AIDASH_DEPLOYMENT_ID, value: {{ $id | quote }} }
+            {{- if $.Values.memoryRecovery.existingClaim }}
+            - { name: AIDASH_MEMORY_RECOVERY_DIR, value: {{ $.Values.memoryRecovery.directory | quote }} }
+            {{- end }}
+            - { name: AIDASH_ACTIVATION_BOOTSTRAP, value: "false" }
+            - { name: AIDASH_ACTIVATION_NAMESPACE, value: {{ $.Values.activation.namespace | quote }} }
+            - { name: AIDASH_ACTIVATION_MAX_AGE_SECONDS, value: {{ $.Values.activation.maxAgeSeconds | int64 | toString | quote }} }
+            - { name: AIDASH_ACTIVATION_MAX_BYTES, value: {{ $.Values.activation.maxBytes | int64 | toString | quote }} }
+            - { name: AIDASH_ACTIVATION_REPLICAS, value: {{ $.Values.activation.replicas | int64 | toString | quote }} }
+            - { name: AIDASH_WORKER_SLOTS, value: {{ $.Values.worker.slots | int64 | toString | quote }} }
+            {{- with $.Values.keylessEndpoints.permittedPrivateOrigins }}
+            - { name: AIDASH_KEYLESS_PRIVATE_ORIGINS, value: {{ join "," . | quote }} }
+            {{- end }}
+            {{- if eq $role "server" }}
+            - { name: AIDASH_SSE_RECONCILE_INTERVAL_MS, value: {{ $.Values.sse.reconcileIntervalMs | int64 | toString | quote }} }
+            - { name: AIDASH_SSE_BACKPRESSURE_TIMEOUT_SECONDS, value: {{ $.Values.sse.backpressureTimeoutSeconds | int64 | toString | quote }} }
+            {{- with $.Values.trustedProxy.cidrs }}
+            - { name: AIDASH_AUTH_TRUSTED_PROXY_IPS, value: {{ join "," . | quote }} }
+            {{- end }}
+            {{- end }}
+            {{- if $profile }}
+            - { name: AIDASH_CAPABILITY_PROFILE, value: /etc/aidash/capability-profile/profile.json }
+            # The same token the Runner verifies; the profile's token_env names it.
+            - name: AIDASH_CORE_RUNNER_TOKEN
+              valueFrom: { secretKeyRef: { name: {{ $runner.existingSecret | quote }}, key: {{ $runner.tokenKey | quote }} } }
+            {{- end }}
+            {{- if $providerCredentials }}
+            - { name: AIDASH_PROVIDER_CREDENTIAL_SETTINGS, value: /etc/aidash/provider-credentials/settings.json }
+            {{- end }}
+            {{- if $gcip }}
+            - { name: AIDASH_GCIP_SETTINGS, value: /etc/aidash/gcip/settings.json }
+            {{- end }}
+            - name: AIDASH_ENDPOINT
+              value: {{ $.Values.deployment.endpoint | default (printf "http://%s.%s.svc:8080" $backend $.Release.Namespace) | quote }}
+            - { name: AIDASH_LISTEN, value: "0.0.0.0:8080" }
+            - { name: AIDASH_PROBE_LISTEN, value: "0.0.0.0:8081" }
+            {{- if and $.Values.observability.enabled (eq $role "server") }}
+            - name: AIDASH_KUBERNETES_NAMESPACE
+              valueFrom: { fieldRef: { fieldPath: metadata.namespace } }
+            - { name: AIDASH_KUBERNETES_RELEASE, value: {{ $.Release.Name | quote }} }
+            {{- end }}
+          ports:
+            - { name: probes, containerPort: 8081 }
+            {{- if eq $role "server" }}
+            - { name: http, containerPort: 8080 }
+            {{- end }}
+          startupProbe:
+            httpGet: { path: /live, port: probes }
+            periodSeconds: 2
+            failureThreshold: 150
+          readinessProbe:
+            httpGet: { path: /ready, port: probes }
+            periodSeconds: 3
+            timeoutSeconds: 3
+            failureThreshold: 2
+          livenessProbe:
+            httpGet: { path: /live, port: probes }
+            periodSeconds: 10
+            timeoutSeconds: 2
+          resources: {{ toYaml $settings.resources | nindent 12 }}
+          {{- with $mounts }}
+          volumeMounts: {{ toYaml . | nindent 12 }}
+          {{- end }}
+      {{- with $volumes }}
+      volumes: {{ toYaml . | nindent 8 }}
+      {{- end }}
+{{- end }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ $backend }}
+spec:
+  type: ClusterIP
+  selector:
+    app.kubernetes.io/instance: {{ .Release.Name }}
+    app.kubernetes.io/component: server
+  ports:
+    - name: http
+      port: 8080
+      targetPort: http
+{{- with .Values.backendIngress.podSelectors }}
+---
+# Only the listed same-namespace Pods (and this release's frontend) reach the API.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ $backend }}
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/instance: {{ $.Release.Name | quote }}
+      app.kubernetes.io/component: server
+  policyTypes: [Ingress]
+  ingress:
+    - from:
+        {{- range . }}
+        - podSelector: { matchLabels: {{ toJson . }} }
+        {{- end }}
+        {{- if $.Values.frontend.enabled }}
+        - podSelector: { matchLabels: { app.kubernetes.io/instance: {{ $.Release.Name | quote }}, app.kubernetes.io/component: frontend } }
+        {{- end }}
+      ports: [{ protocol: TCP, port: 8080 }]
+{{- end }}
+{{- range $setting := list (dict "name" "capability-profile" "file" "profile.json" "content" $profile) (dict "name" "provider-credentials" "file" "settings.json" "content" $providerCredentials) (dict "name" "gcip" "file" "settings.json" "content" $gcip) }}
+{{- if $setting.content }}
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ $name }}-{{ $setting.name }}
+data:
+  {{ $setting.file }}: {{ $setting.content | quote }}
+{{- end }}
+{{- end }}
+{{- if .Values.frontend.enabled }}
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ $frontend }}-conf
+data:
+  default.conf: |-
+{{ $nginxConfig | indent 4 }}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ $frontend }}
+  labels:
+    app.kubernetes.io/name: aidash
+    app.kubernetes.io/instance: {{ .Release.Name }}
+    app.kubernetes.io/component: frontend
+spec:
+  replicas: {{ .Values.frontend.replicas }}
+  revisionHistoryLimit: 3
+  minReadySeconds: 2
+  progressDeadlineSeconds: 300
+  strategy:
+    type: RollingUpdate
+    rollingUpdate: { maxUnavailable: 0, maxSurge: 1 }
+  selector:
+    matchLabels:
+      app.kubernetes.io/instance: {{ .Release.Name }}
+      app.kubernetes.io/component: frontend
+  template:
+    metadata:
+      annotations:
+        checksum/nginx-config: {{ $nginxConfig | sha256sum }}
+      labels:
+        app.kubernetes.io/name: aidash
+        app.kubernetes.io/instance: {{ .Release.Name }}
+        app.kubernetes.io/component: frontend
+    spec:
+      hostNetwork: false
+      automountServiceAccountToken: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 101
+        runAsGroup: 101
+        fsGroup: 101
+        seccompProfile: { type: RuntimeDefault }
+      {{- with .Values.image.pullSecrets }}
+      imagePullSecrets: {{ toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with mergeOverwrite (deepCopy .Values.nodeSelector) .Values.environment.nodeSelector }}
+      nodeSelector: {{ toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with concat .Values.tolerations .Values.environment.tolerations }}
+      tolerations: {{ toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.affinity }}
+      affinity: {{ toYaml . | nindent 8 }}
+      {{- end }}
+      containers:
+        - name: frontend
+          image: {{ printf "%s:%s" .Values.frontend.image.repository .Values.frontend.image.tag | quote }}
+          imagePullPolicy: {{ .Values.frontend.image.pullPolicy }}
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities: { drop: [ALL] }
+          ports:
+            - { name: http, containerPort: 8080 }
+          startupProbe:
+            httpGet: { path: /, port: http }
+            periodSeconds: 2
+            failureThreshold: 150
+          readinessProbe:
+            httpGet: { path: /health, port: http }
+            periodSeconds: 3
+            timeoutSeconds: 3
+            failureThreshold: 2
+          livenessProbe:
+            httpGet: { path: /, port: http }
+            periodSeconds: 10
+            timeoutSeconds: 2
+          resources: {{ toYaml .Values.frontend.resources | nindent 12 }}
+          volumeMounts:
+            - { name: nginx-config, mountPath: /etc/nginx/conf.d/default.conf, subPath: default.conf, readOnly: true }
+            - { name: tmp, mountPath: /tmp }
+      volumes:
+        - name: nginx-config
+          configMap: { name: {{ $frontend }}-conf }
+        - name: tmp
+          emptyDir: { sizeLimit: 64Mi }
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ $name }}
+spec:
+  type: {{ .Values.service.type }}
+  selector:
+    app.kubernetes.io/instance: {{ .Release.Name }}
+    app.kubernetes.io/component: frontend
+  ports:
+    - name: http
+      port: {{ .Values.service.port }}
+      targetPort: http
+      {{- with .Values.service.nodePort }}
+      nodePort: {{ . }}
+      {{- end }}
+{{- end }}
+---
+{{- range $role := list "server" "worker" }}
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: {{ $name }}-{{ $role }}
+  {{- with (index $.Values $role).serviceAccount.annotations }}
+  annotations: {{ toYaml . | nindent 4 }}
+  {{- end }}
+automountServiceAccountToken: false
+---
+{{- end }}
+{{- if .Values.observability.enabled }}
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: {{ $name }}-observe
+rules:
+  - apiGroups: [apps]
+    resources: [deployments, statefulsets]
+    verbs: [list]
+  - apiGroups: [""]
+    resources: [pods, events]
+    verbs: [list]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: {{ $name }}-observe
+subjects:
+  - { kind: ServiceAccount, name: {{ $name }}-server, namespace: {{ .Release.Namespace }} }
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: {{ $name }}-observe
+{{- end }}

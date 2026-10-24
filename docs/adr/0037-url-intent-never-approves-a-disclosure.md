@@ -1,0 +1,3 @@
+# A URL intent never approves a Web disclosure
+
+When a person pastes a Web address into a Thread and asks the Run to read it, that URL intent is only a request: the Page reading it leads to still needs its own Web disclosure approval through policy, a Run grant or a designated approver. PR #99 treated the paste as a one-use pre-approval whenever the person was eligible to approve, but that let the requester stand in for the approver from the dashboard, and the Run's context, not just the address, decides whether the disclosure is safe. We accept an extra decision for people who are both requester and approver; an inline shortcut for them can be added later without changing this rule.

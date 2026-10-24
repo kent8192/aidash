@@ -1,0 +1,205 @@
+use crate::native_database::{DatabaseFixture, database};
+use crate::run_fixtures::{approval_pending, human_pending, pending, run};
+use aidash_server::apps::execution::models::{
+	HumanRequest, Run,
+	states::{HumanRequestKind, RunPhase},
+};
+use reinhardt::db::orm::Model;
+use rstest::rstest;
+use uuid::Uuid;
+
+#[rstest]
+#[tokio::test]
+async fn remote_waiting_requests_keep_home_identity_without_a_local_request(
+	#[future] database: DatabaseFixture,
+	mut run: Run,
+) {
+	let database = database.await;
+	database.tenant("acme").await;
+	let mut db = database.lease.handle();
+	let request = Uuid::new_v4();
+	run.context.0["binding_snapshot"] = serde_json::json!({"schema_version":1,"agent":{"registry_deployment":"aidash://receiver","id":"fixture","version":"1.0.0"},"remote":true,"bindings":[],"definitions":[]});
+	run.phase = RunPhase::Waiting;
+	run.pending = human_pending(request).into();
+	Run::objects()
+		.create_with_conn(&mut db, &run)
+		.await
+		.unwrap();
+	let saved = Run::objects()
+		.get(run.id)
+		.get_with_db(&mut db)
+		.await
+		.unwrap();
+	assert_eq!(
+		saved.pending.0["data"]["request_id"],
+		serde_json::json!(request)
+	);
+	assert_eq!(saved.pending_human_request_id, None);
+	assert!(
+		HumanRequest::objects()
+			.filter(HumanRequest::field_id().eq(request))
+			.all_with_db(&mut db)
+			.await
+			.unwrap()
+			.is_empty()
+	);
+}
+
+#[rstest]
+#[tokio::test]
+async fn remote_approval_waits_keep_home_identity_and_capability_waits_name_no_request(
+	#[future] database: DatabaseFixture,
+	run: Run,
+) {
+	// Arrange: neither wait names a row of the local request table.
+	let database = database.await;
+	database.tenant("acme").await;
+	let mut db = database.lease.handle();
+	let approval = Uuid::new_v4();
+	let mut remote = run.clone();
+	remote.context.0["binding_snapshot"] = serde_json::json!({"schema_version":1,"agent":{"registry_deployment":"aidash://receiver","id":"fixture","version":"1.0.0"},"remote":true,"bindings":[],"definitions":[]});
+	remote.phase = RunPhase::Waiting;
+	remote.pending = approval_pending(approval, true).into();
+	let local = Run {
+		id: Uuid::new_v4(),
+		task_id: Uuid::new_v4(),
+		phase: RunPhase::Waiting,
+		pending: approval_pending(approval, false).into(),
+		..run.clone()
+	};
+
+	// Act
+	for waiting in [&remote, &local] {
+		Run::objects()
+			.create_with_conn(&mut db, waiting)
+			.await
+			.unwrap();
+	}
+
+	// Assert: the Home request lives at Home, and a capability approval is no request.
+	for (waiting, source) in [(&remote, "home"), (&local, "capability")] {
+		let saved = Run::objects()
+			.get(waiting.id)
+			.get_with_db(&mut db)
+			.await
+			.unwrap();
+		assert_eq!(saved.pending.0["data"]["reason"], "approval");
+		assert_eq!(saved.pending.0["data"]["approval"]["source"], source);
+		assert_eq!(saved.pending_human_request_id, None, "{source}");
+	}
+	assert!(
+		HumanRequest::objects()
+			.filter(HumanRequest::field_id().eq(approval))
+			.all_with_db(&mut db)
+			.await
+			.unwrap()
+			.is_empty()
+	);
+}
+
+#[rstest]
+#[tokio::test]
+async fn waiting_requests_enforce_identity_ownership_and_reverse_references(
+	#[future] database: DatabaseFixture,
+	run: Run,
+) {
+	// Arrange: two independent runs each own one request.
+	let database = database.await;
+	database.tenant("acme").await;
+	let mut db = database.lease.handle();
+	let mut waiting = Run::objects()
+		.create_with_conn(&mut db, &run)
+		.await
+		.unwrap();
+	let other = Run::objects()
+		.create_with_conn(
+			&mut db,
+			&Run {
+				id: Uuid::new_v4(),
+				task_id: Uuid::new_v4(),
+				..run.clone()
+			},
+		)
+		.await
+		.unwrap();
+	let mut requests = Vec::new();
+	for owner in [&waiting, &other] {
+		let request = HumanRequest::build()
+			.tenant("acme")
+			.id(Uuid::new_v4())
+			.workspace_id(owner.workspace_id)
+			.run(owner.id)
+			.kind(HumanRequestKind::Question)
+			.prompt("Continue?")
+			.response(None)
+			.request_key(format!("waiting-relation-{}", owner.id))
+			.answered_by(None)
+			.finish();
+		requests.push(
+			HumanRequest::objects()
+				.create_with_conn(&mut db, &request)
+				.await
+				.unwrap(),
+		);
+	}
+
+	// Act and assert: writing JSON alone must enforce existence and ownership.
+	waiting.phase = RunPhase::Waiting;
+	for invalid in [Uuid::new_v4(), requests[1].id] {
+		waiting.pending = human_pending(invalid).into();
+		let rejected = Run::objects().update_with_conn(&mut db, &waiting).await;
+		assert!(rejected.is_err(), "invalid waiting reference was saved");
+		let unchanged = Run::objects()
+			.get(waiting.id)
+			.get_with_db(&mut db)
+			.await
+			.unwrap();
+		assert_eq!(unchanged.phase, RunPhase::Ready);
+		assert_eq!(unchanged.pending.0, run.pending.0);
+		assert_eq!(unchanged.pending_human_request_id, None);
+	}
+	waiting.pending = human_pending(requests[0].id).into();
+	// Callers cannot override the projected identity by supplying another scalar.
+	waiting.pending_human_request_id = Some(requests[1].id);
+	Run::objects()
+		.update_with_conn(&mut db, &waiting)
+		.await
+		.unwrap();
+	let saved = Run::objects()
+		.get(waiting.id)
+		.get_with_db(&mut db)
+		.await
+		.unwrap();
+	assert_eq!(saved.pending_human_request_id, Some(requests[0].id));
+	assert!(
+		HumanRequest::objects()
+			.delete_with_conn(&mut db, requests[0].id)
+			.await
+			.is_err()
+	);
+	assert!(
+		HumanRequest::objects()
+			.get(requests[0].id)
+			.get_with_db(&mut db)
+			.await
+			.is_ok()
+	);
+
+	// Clearing the pending state releases the FK without manual column updates.
+	waiting.phase = RunPhase::Ready;
+	waiting.pending = pending(Default::default(), Default::default()).into();
+	Run::objects()
+		.update_with_conn(&mut db, &waiting)
+		.await
+		.unwrap();
+	let resumed = Run::objects()
+		.get(waiting.id)
+		.get_with_db(&mut db)
+		.await
+		.unwrap();
+	assert_eq!(resumed.pending_human_request_id, None);
+	HumanRequest::objects()
+		.delete_with_conn(&mut db, requests[0].id)
+		.await
+		.unwrap();
+}

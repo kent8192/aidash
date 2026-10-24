@@ -1,4 +1,4 @@
-<!-- Thank you for contributing to aidash! Please fill out the information below. -->
+<!-- External code contributions are not accepted until the licensing in #124 takes effect (see the License section of README.md). Please open an Issue instead. Maintainers: fill out the information below. -->
 
 ## Summary
 
@@ -70,9 +70,7 @@ Related to: #
 
 <!-- If this is a breaking change, describe the impact and migration path. -->
 
--
-
-**Migration Guide:**
+- **Migration Guide:**
 
 <!-- If applicable, provide a step-by-step migration guide for users. -->
 
@@ -103,6 +101,7 @@ Related to: #
 - [ ] I have added tests that prove my fix is effective or that my feature works
 - [ ] New and existing unit tests pass locally with my changes
 - [ ] I have tested with all affected database backends (if applicable)
+
 ## Related Issues
 
 <!-- List any related issues, PRs, or external references. -->
@@ -111,39 +110,21 @@ Related to: #
 
 ## Labels to Apply
 
-<!-- Please apply appropriate labels to help with triage and organization. -->
+Follow [GitHub Labels](https://github.com/kent8192/aidash/blob/HEAD/instructions/GITHUB_LABELS.md). Check the live repository
+labels and apply them on GitHub; these checkboxes do not apply labels.
 
 ### Type Label (select one)
+
 - [ ] `bug` - Bug fix
-- [ ] `enhancement` - New feature or improvement
-- [ ] `documentation` - Documentation update
-- [ ] `performance` - Performance improvement
-- [ ] `refactoring` - Code refactoring
-- [ ] `code-quality` - Code quality improvements
+- [ ] `enhancement` - New feature, refactoring, maintenance, or other improvement
+- [ ] `documentation` - Documentation, instructions, or contribution templates only
 
 ### Additional Labels (apply alongside type label when applicable)
+
 - [ ] `breaking-change` - Breaking change (**MUST** match "Yes" in Breaking Change Assessment above)
+- [ ] `accessibility` - Addresses barriers affecting people with disabilities
 
-### Scope Label (select all that apply)
-- [ ] `database` - Database layer, schema, migrations
-- [ ] `auth` - Authentication, authorization, sessions
-- [ ] `orm` - ORM layer, models, query builder
-- [ ] `http` - HTTP layer, handlers, middleware
-- [ ] `routing` - URL routing, path matching
-- [ ] `api` - REST API, serializers, views
-- [ ] `admin` - Admin interface, admin panels
-- [ ] `forms` - Form handling, validation, rendering
-- [ ] `graphql` - GraphQL schema, resolvers
-- [ ] `websockets` - WebSocket connections, handlers
-- [ ] `i18n` - Internationalization, localization
-- [ ] `ci-cd` - CI/CD workflow changes
-
-### Priority Label (for maintainers)
-<!-- Maintainers will apply priority labels during triage -->
-- [ ] `critical` - Blocks release or major functionality
-- [ ] `high` - Important fix or feature
-- [ ] `medium` - Normal priority
-- [ ] `low` - Minor fix or enhancement
+- [ ] I have applied the selected labels on GitHub and verified them with `gh pr view --json labels`.
 
 ---
 

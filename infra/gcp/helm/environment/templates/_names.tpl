@@ -1,0 +1,70 @@
+{{/*
+Every generated name is "<release>-environment-<component>"; the longest
+components (postgres, activity) add 21 characters. Services must fit a
+63-character DNS label, and the postgres/nats StatefulSets and the activity
+CronJob must also leave 11 characters for their controller-generated
+suffixes, so names stay within 52 characters and releases within 31.
+*/}}
+{{- define "environment.name" -}}
+{{- if gt (len .Release.Name) 31 -}}{{ fail "release name is too long: Environment StatefulSet, CronJob and Service names need a release name of at most 31 characters" }}{{- end -}}
+{{- printf "%s-environment" .Release.Name -}}
+{{- end -}}
+{{/*
+Egress policy denying the GCE/GKE metadata server (169.254.169.254) to every Pod
+that lacks the aidash.run/metadata-server label. Keep in step with
+aidash.metadataEgressPolicy in deploy/helm/aidash/templates/_network.tpl.
+*/}}
+{{- define "environment.metadataEgressPolicy" -}}
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ .name }}
+spec:
+  podSelector:
+    matchExpressions:
+      - { key: aidash.run/metadata-server, operator: DoesNotExist }
+  policyTypes: [Egress]
+  egress:
+    - to:
+        - namespaceSelector: {}
+    - to:
+        - ipBlock:
+            cidr: 0.0.0.0/0
+            # The metadata server and the node-local address gke-metadata-server DNATs it to
+            # (169.254.169.252:988). Dataplane V2 enforces before the DNAT; Calico enforces after it.
+            except: [169.254.169.254/32, 169.254.169.252/32]
+{{- end -}}
+{{/*
+The edge's kind: a StatefulSet in production, which GKE's Stateful HA fails over
+to the standby zone with its regional TLS claim (ADR 0067). Keep in step with
+aidash.workloadKind in deploy/helm/aidash/templates/_workload.tpl.
+*/}}
+{{- define "environment.workloadKind" -}}
+{{- $kind := .Values.workloadKind | default "Deployment" -}}
+{{- if not (has $kind (list "Deployment" "StatefulSet")) -}}
+{{- fail "workloadKind must be Deployment or StatefulSet" -}}
+{{- end -}}
+{{- if and .Values.highAvailability.enabled (ne $kind "StatefulSet") -}}
+{{- fail "highAvailability requires workloadKind StatefulSet" -}}
+{{- end -}}
+{{- $kind -}}
+{{- end -}}
+{{/*
+A HighAvailabilityApplication for one StatefulSet of the same name.
+*/}}
+{{- define "environment.highAvailability" -}}
+apiVersion: ha.gke.io/v1
+kind: HighAvailabilityApplication
+metadata:
+  name: {{ .name }}
+spec:
+  resourceSelection:
+    resourceKind: StatefulSet
+  policy:
+    storageSettings:
+      requireRegionalStorage: true
+    failoverSettings:
+      forceDeleteStrategy: AfterNodeUnreachable
+      afterNodeUnreachable:
+        afterNodeUnreachableSeconds: {{ .seconds | int }}
+{{- end -}}

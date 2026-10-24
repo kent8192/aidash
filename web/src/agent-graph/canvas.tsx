@@ -1,0 +1,481 @@
+import { Button } from "../components/ui/button";
+import { useEffect, useId, useRef, useState } from "react";
+import {
+  clampZoom,
+  layoutGraph,
+  relationshipCurve,
+  type AgentGraph,
+  type GraphNode,
+  type Point,
+} from "./model";
+import {
+  ArrowDown,
+  ArrowLeft,
+  ArrowRight,
+  ArrowUp,
+  Crosshair,
+  Minus,
+  Plus,
+  Scan,
+} from "lucide-react";
+import { cn } from "../lib/utils";
+import { fitGraph, fitPadding, zoomFloor } from "../graph-fit";
+import { graphViewport, svgBounds, useGraphFit } from "../graph-fit-view";
+import type { GraphCopy } from "./copy";
+
+type Camera = Point & { zoom: number };
+function localPoint(
+  element: SVGSVGElement,
+  x: number,
+  y: number,
+): Point | null {
+  const matrix = element.getScreenCTM();
+  if (!matrix) return null;
+  const point = new DOMPoint(x, y).matrixTransform(matrix.inverse());
+  return Number.isFinite(point.x) && Number.isFinite(point.y)
+    ? { x: point.x, y: point.y }
+    : null;
+}
+function nodeShape(node: GraphNode, selected: boolean): string {
+  const runtime = node.kind === "run" || node.kind === "task";
+  return cn(
+    "fill-surface stroke-border-strong [stroke-width:1.5]",
+    node.kind === "agent" && "fill-raised stroke-brand-mark",
+    runtime && "stroke-brand-line [stroke-dasharray:4_3]",
+    !node.available && "fill-background stroke-faint [stroke-dasharray:4_3]",
+    selected && "stroke-brand-mark [stroke-width:3.5]",
+  );
+}
+const width = 800;
+const height = 460;
+function zoomAt(
+  camera: Camera,
+  scale: number,
+  point: Point,
+  minimum: number,
+): Camera {
+  const zoom = clampZoom(scale, minimum);
+  const ratio = zoom / camera.zoom;
+  return {
+    zoom,
+    x: point.x - (point.x - camera.x) * ratio,
+    y: point.y - (point.y - camera.y) * ratio,
+  };
+}
+
+export function GraphCanvas({
+  graph,
+  selectedId,
+  label,
+  select,
+  copy,
+}: {
+  graph: AgentGraph;
+  selectedId: string;
+  label: (node: GraphNode) => string;
+  select: (id: string) => void;
+  copy: GraphCopy;
+}) {
+  const signature = JSON.stringify(graph.nodes.map((node) => node.id).sort());
+  const [layout, setLayout] = useState(() => ({
+    signature,
+    positions: layoutGraph(graph.nodes, graph.rootId),
+  }));
+  let positions = layout.positions;
+  // Adjust only when membership changes, not when statuses or pointer positions change.
+  if (signature !== layout.signature) {
+    positions = layoutGraph(graph.nodes, graph.rootId, layout.positions);
+    setLayout({ signature, positions });
+  }
+  const [camera, setCamera] = useState<Camera>({ x: 0, y: 0, zoom: 1 });
+  const needsFraming = useRef(true);
+  const minimum = useRef(0.2);
+  const fitDescription = useId();
+  const svg = useRef<SVGSVGElement>(null);
+  const drag = useRef<{
+    pointer: number;
+    start: Point;
+    camera: Camera;
+    node?: string;
+    position?: Point;
+  } | null>(null);
+  const fit = useGraphFit(
+    svg,
+    () => {
+      const element = svg.current;
+      if (!element || !graph.nodes.length) return null;
+      const viewport = graphViewport(element);
+      const screen = element.getScreenCTM();
+      if (!viewport || !screen) return null;
+      const inverse = screen.inverse();
+      const start = new DOMPoint(viewport.x1, viewport.y1).matrixTransform(
+        inverse,
+      );
+      const end = new DOMPoint(viewport.x2, viewport.y2).matrixTransform(
+        inverse,
+      );
+      const padding = fitPadding(viewport);
+      const result = fitGraph(
+        svgBounds(element),
+        { x1: start.x, y1: start.y, x2: end.x, y2: end.y },
+        {
+          x: padding * Math.hypot(inverse.a, inverse.c),
+          y: padding * Math.hypot(inverse.b, inverse.d),
+        },
+      );
+      minimum.current = zoomFloor(0.2, result?.zoom, camera.zoom);
+      return result;
+    },
+    (next) => {
+      needsFraming.current = false;
+      setCamera(next);
+    },
+    graph.rootId,
+  );
+  useEffect(() => {
+    needsFraming.current = true;
+  }, [graph.rootId]);
+  useEffect(() => {
+    if (needsFraming.current && fit.available && graph.nodes.length)
+      fit.request();
+  });
+  const marker = useId().replace(/:/g, "");
+  const neighbors = new Set([selectedId]);
+  for (const edge of graph.edges) {
+    if (edge.source === selectedId) neighbors.add(edge.target);
+    if (edge.target === selectedId) neighbors.add(edge.source);
+  }
+  useEffect(() => {
+    const element = svg.current;
+    if (!element) return;
+    const wheel = (event: WheelEvent) => {
+      const point = localPoint(element, event.clientX, event.clientY);
+      if (!point) return;
+      event.preventDefault();
+      needsFraming.current = false;
+      setCamera((current) =>
+        zoomAt(
+          current,
+          current.zoom *
+            Math.exp(-Math.max(-200, Math.min(200, event.deltaY)) * 0.004),
+          point,
+          minimum.current,
+        ),
+      );
+    };
+    element.addEventListener("wheel", wheel, { passive: false });
+    return () => element.removeEventListener("wheel", wheel);
+  }, []);
+  const zoom = (factor: number) => {
+    fit.cancel();
+    needsFraming.current = false;
+    setCamera((current) =>
+      zoomAt(
+        current,
+        current.zoom * factor,
+        { x: width / 2, y: height / 2 },
+        minimum.current,
+      ),
+    );
+  };
+  const pan = (x: number, y: number) => {
+    fit.cancel();
+    needsFraming.current = false;
+    setCamera((current) => ({
+      ...current,
+      x: current.x + x,
+      y: current.y + y,
+    }));
+  };
+  return (
+    <div className="agent-graph-canvas flex flex-col gap-2">
+      <div className="flex flex-wrap items-center gap-2">
+        <p className="text-[11px] text-faint">{copy.canvasHelp}</p>
+        <div
+          className="ml-auto inline-flex items-center gap-0.5 rounded-md border border-border-strong bg-surface p-0.5"
+          role="group"
+          aria-label={copy.graph}
+        >
+          <Button
+            variant="ghost"
+            size="icon"
+            className="size-7"
+            type="button"
+            onClick={() => zoom(1.25)}
+            aria-label={copy.zoomIn}
+          >
+            <Plus size={14} aria-hidden="true" />
+          </Button>
+          <Button
+            variant="ghost"
+            size="icon"
+            className="size-7"
+            type="button"
+            onClick={() => zoom(0.8)}
+            aria-label={copy.zoomOut}
+          >
+            <Minus size={14} aria-hidden="true" />
+          </Button>
+          <Button
+            variant="ghost"
+            size="icon"
+            className="size-7"
+            type="button"
+            onClick={() => pan(60, 0)}
+            aria-label={copy.left}
+          >
+            <ArrowLeft size={14} aria-hidden="true" />
+          </Button>
+          <Button
+            variant="ghost"
+            size="icon"
+            className="size-7"
+            type="button"
+            onClick={() => pan(-60, 0)}
+            aria-label={copy.right}
+          >
+            <ArrowRight size={14} aria-hidden="true" />
+          </Button>
+          <Button
+            variant="ghost"
+            size="icon"
+            className="size-7"
+            type="button"
+            onClick={() => pan(0, 60)}
+            aria-label={copy.up}
+          >
+            <ArrowUp size={14} aria-hidden="true" />
+          </Button>
+          <Button
+            variant="ghost"
+            size="icon"
+            className="size-7"
+            type="button"
+            onClick={() => pan(0, -60)}
+            aria-label={copy.down}
+          >
+            <ArrowDown size={14} aria-hidden="true" />
+          </Button>
+          <span aria-hidden className="mx-0.5 h-4 w-px bg-border" />
+          <Button
+            variant="ghost"
+            size="sm"
+            type="button"
+            aria-label={copy.fit}
+            title={
+              fit.available ? copy.fit : `${copy.fit}: ${copy.fitUnavailable}`
+            }
+            aria-describedby={fitDescription}
+            disabled={!fit.available}
+            onClick={fit.request}
+          >
+            <Scan size={14} aria-hidden="true" />
+            <span>{copy.fit}</span>
+          </Button>
+          <Button
+            variant="ghost"
+            size="sm"
+            type="button"
+            onClick={() => {
+              fit.cancel();
+              needsFraming.current = false;
+              const point = positions[selectedId] ?? positions[graph.rootId];
+              setCamera((current) => ({
+                ...current,
+                x: width / 2 - point.x * current.zoom,
+                y: height / 2 - point.y * current.zoom,
+              }));
+            }}
+          >
+            <Crosshair size={14} aria-hidden="true" />
+            {copy.focus}
+          </Button>
+        </div>
+      </div>
+      <span id={fitDescription} className="sr-only" role="status">
+        {fit.available ? "" : copy.fitUnavailable}
+      </span>
+      {/* The equivalent native-button relationship list is the keyboard/screen-reader interface. */}
+      <svg
+        ref={svg}
+        viewBox={`0 0 ${width} ${height}`}
+        aria-hidden="true"
+        focusable="false"
+        className="canvas-grid block max-h-[65vh] min-h-[260px] w-full cursor-grab touch-none select-none rounded-lg border border-border [text-rendering:geometricPrecision] active:cursor-grabbing"
+        onPointerDown={(event) => {
+          if (event.button !== 0 || drag.current) return;
+          needsFraming.current = false;
+          const start = localPoint(
+            event.currentTarget,
+            event.clientX,
+            event.clientY,
+          );
+          if (!start) return;
+          const target =
+            event.target instanceof Element
+              ? event.target.closest<SVGGElement>("[data-graph-node]")
+              : null;
+          const id = target?.dataset.graphNode;
+          if (id) select(id);
+          drag.current = {
+            pointer: event.pointerId,
+            start,
+            camera,
+            node: id !== graph.rootId ? id : undefined,
+            position: id ? positions[id] : undefined,
+          };
+          event.currentTarget.setPointerCapture(event.pointerId);
+        }}
+        onPointerMove={(event) => {
+          const current = drag.current;
+          if (!current || current.pointer !== event.pointerId) return;
+          const point = localPoint(
+            event.currentTarget,
+            event.clientX,
+            event.clientY,
+          );
+          if (!point) return;
+          const dx = point.x - current.start.x;
+          const dy = point.y - current.start.y;
+          if (current.node && current.position) {
+            const id = current.node;
+            const point = {
+              x: current.position.x + dx / current.camera.zoom,
+              y: current.position.y + dy / current.camera.zoom,
+            };
+            setLayout((value) => ({
+              ...value,
+              positions: { ...value.positions, [id]: point },
+            }));
+          } else
+            setCamera({
+              ...current.camera,
+              x: current.camera.x + dx,
+              y: current.camera.y + dy,
+            });
+        }}
+        onPointerUp={(event) => {
+          if (drag.current?.pointer !== event.pointerId) return;
+          drag.current = null;
+          if (event.currentTarget.hasPointerCapture(event.pointerId))
+            event.currentTarget.releasePointerCapture(event.pointerId);
+        }}
+        onPointerCancel={() => {
+          drag.current = null;
+        }}
+        onLostPointerCapture={() => {
+          drag.current = null;
+        }}
+      >
+        <defs>
+          <marker
+            id={marker}
+            markerWidth="7"
+            markerHeight="7"
+            refX="6"
+            refY="3.5"
+            orient="auto"
+          >
+            <path d="M0 0 L7 3.5 L0 7" fill="context-stroke" />
+          </marker>
+        </defs>
+        <g
+          data-camera="true"
+          transform={`translate(${camera.x} ${camera.y}) scale(${camera.zoom})`}
+        >
+          {graph.edges.map((edge) => {
+            const from = positions[edge.source];
+            const to = positions[edge.target];
+            const curve = relationshipCurve(
+              from,
+              to,
+              edge.source === graph.rootId ? 29 : 21,
+              edge.target === graph.rootId ? 31 : 23,
+              graph.edges.some(
+                (other) =>
+                  other.source === edge.target && other.target === edge.source,
+              ),
+            );
+            return (
+              <g
+                key={edge.id}
+                className="group/edge transition-opacity duration-150 data-[muted=true]:opacity-40"
+                data-layer={edge.layer}
+                data-muted={
+                  !(edge.source === selectedId || edge.target === selectedId)
+                }
+              >
+                <path
+                  d={curve.path}
+                  fill="none"
+                  className={
+                    edge.layer === "runtime"
+                      ? "stroke-brand-mark [stroke-dasharray:6_4] [stroke-width:1.6]"
+                      : "stroke-edge-strong [stroke-width:1.6]"
+                  }
+                  markerEnd={`url(#${marker})`}
+                />
+                <text
+                  x={curve.label.x}
+                  y={curve.label.y - 7}
+                  textAnchor="middle"
+                  className="fill-muted-foreground stroke-background text-[10px] [paint-order:stroke] [stroke-linejoin:round] [stroke-width:4px]"
+                >
+                  {copy.relations[edge.relation]}
+                </text>
+              </g>
+            );
+          })}
+          {graph.nodes.map((node) => {
+            const point = positions[node.id];
+            const name = label(node);
+            return (
+              <g
+                key={node.id}
+                data-graph-node={node.id}
+                data-kind={node.kind}
+                data-selected={node.id === selectedId}
+                data-unavailable={!node.available}
+                data-muted={!neighbors.has(node.id)}
+                className="cursor-pointer transition-opacity duration-150 data-[muted=true]:opacity-40"
+                transform={`translate(${point.x} ${point.y})`}
+              >
+                <title>
+                  {name}
+                  {node.status ? ` · ${node.status}` : ""}
+                  {node.available ? "" : ` · ${copy.missing}`}
+                </title>
+                <circle
+                  r={node.id === graph.rootId ? 26 : 18}
+                  className={nodeShape(node, node.id === selectedId)}
+                />
+                <text
+                  className="pointer-events-none fill-foreground font-mono text-[12px] font-semibold"
+                  textAnchor="middle"
+                  y="5"
+                >
+                  {copy.types[node.kind].slice(0, 1)}
+                </text>
+                <text
+                  className="fill-foreground stroke-background text-[12px] font-medium [paint-order:stroke] [stroke-linejoin:round] [stroke-width:4px]"
+                  textAnchor="middle"
+                  y="45"
+                >
+                  {name.length > 30 ? `${name.slice(0, 29)}…` : name}
+                </text>
+                <text
+                  className="fill-faint text-[10px]"
+                  textAnchor="middle"
+                  y="61"
+                >
+                  {copy.types[node.kind]}
+                  {node.status ? ` · ${node.status}` : ""}
+                </text>
+              </g>
+            );
+          })}
+        </g>
+      </svg>
+    </div>
+  );
+}

@@ -1,0 +1,45 @@
+[package]
+name = "aidash-gcp"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+aidash-application.workspace = true
+aidash-capability.workspace = true
+aidash-domain.workspace = true
+aidash-integrations.workspace = true
+async-trait.workspace = true
+base64 = "0.22"
+chrono.workspace = true
+crc32c = "0.6"
+ed25519-dalek = { version = "2.2", features = ["pkcs8", "pem"] }
+gcp_auth = "0.12.7"
+jsonwebtoken = { version = "11.1", default-features = false, features = [
+  "aws_lc_rs",
+] }
+percent-encoding = "2"
+reqwest = { version = "0.13", default-features = false, features = [
+  "json",
+  "rustls",
+] }
+secrecy = "0.10"
+serde.workspace = true
+serde_json.workspace = true
+tokio.workspace = true
+tracing = "0.1"
+uuid.workspace = true
+zeroize = "1"
+
+[dev-dependencies]
+axum = "0.8"
+jsonwebtoken = { version = "11.1", default-features = false, features = [
+  "aws_lc_rs",
+  "use_pem",
+] }
+rstest.workspace = true
+tokio = { workspace = true, features = ["test-util"] }

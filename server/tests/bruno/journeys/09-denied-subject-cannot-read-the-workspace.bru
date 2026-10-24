@@ -1,0 +1,28 @@
+meta {
+  name: Denied subject cannot read the workspace
+  type: http
+  seq: 9
+}
+
+get {
+  url: {{base_url}}/api/workspaces/{{workspace_id}}
+  body: none
+  auth: none
+}
+
+headers {
+  Accept: application/json
+  Authorization: Bearer {{denied_token}}
+}
+
+tests {
+  test("HTTP 403", function () {
+    expect(res.getStatus()).to.equal(403);
+  });
+  test("JSON response contract", function () {
+    expect(res.getHeader("content-type")).to.include("application/json");
+    expect(res.getBody()).to.have.all.keys("error");
+    expect(res.getBody().error).to.be.a("string");
+
+  });
+}

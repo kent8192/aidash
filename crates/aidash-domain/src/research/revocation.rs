@@ -1,0 +1,115 @@
+//! Evidence Revocation: the irreversible end of all of one Run's Research
+//! evidence (ADR 0046). Stored copies of source content become tombstones;
+//! identities, retrieval times and digests remain. The record of who revoked
+//! it, when and why outlives the Run and holds no source content.
+use super::{Failure, Operation};
+use crate::{
+	Error, Result,
+	context::{ContextEvent, HistoryEntry},
+	retention::Decider,
+};
+use chrono::{DateTime, Utc};
+use serde::{Deserialize, Serialize};
+use serde_json::Value;
+use std::collections::BTreeSet;
+use uuid::Uuid;
+
+/// The longest reason a revocation records, in characters.
+pub const MAX_REASON_CHARS: usize = 1_000;
+
+/// The policy action that permits a subject to revoke a Run's evidence,
+/// evaluated on the `research` resource identified by the Run.
+pub const REVOKE: &str = "research.revoke";
+
+/// A revocation's required reason: trimmed, non-empty, bounded and free of
+/// control characters other than line breaks.
+pub fn reason(input: &str) -> Result<String> {
+	let reason = input.trim();
+	if reason.is_empty()
+		|| reason.chars().count() > MAX_REASON_CHARS
+		|| reason
+			.chars()
+			.any(|c| c.is_control() && c != '\n' && c != '\r' && c != '\t')
+	{
+		return Err(Error::Invalid(format!(
+			"a revocation needs a reason of 1 to {MAX_REASON_CHARS} characters"
+		)));
+	}
+	Ok(reason.to_owned())
+}
+
+/// What one revocation removed, counted and identified by digest only.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Removed {
+	pub sources: u32,
+	pub snapshots: u32,
+	pub fragments: u32,
+	pub attempts: u32,
+	pub invocations: u32,
+	/// Text digests of the revoked Document snapshots, sorted and distinct.
+	pub snapshot_digests: Vec<String>,
+}
+
+/// The audit record of one Evidence Revocation.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct EvidenceRevocation {
+	pub run_id: Uuid,
+	/// The Run's Tenant, when the Run has one.
+	pub tenant: Option<String>,
+	pub revoked_by: Decider,
+	pub reason: String,
+	pub revoked_at: DateTime<Utc>,
+	pub removed: Removed,
+}
+
+/// What a revoked research result is replaced with wherever it was stored.
+pub fn tombstone(operation: Operation) -> Value {
+	super::failure(operation, Failure::EvidenceRevoked)
+}
+
+/// The research operation of a stored tool result, recognized by the shared
+/// result envelope rather than by a tool name, so a result is recognized even
+/// after its tool is no longer bound or loaded. Only the envelope's contract
+/// marker counts: an unrelated tool may return the other fields too.
+pub fn result_operation(result: &Value) -> Option<Operation> {
+	if result["contract"] != super::RESULT_CONTRACT {
+		return None;
+	}
+	Operation::parse(result["operation"].as_str()?)
+}
+
+/// Whether `event` is a research result a model request would still carry.
+/// A placeholder is not one, so redaction is idempotent.
+pub fn carries_research(event: &ContextEvent) -> bool {
+	matches!(event, ContextEvent::Tool { result, .. } if result_operation(result).is_some())
+}
+
+/// Replace every research result in `history` with the revoked placeholder,
+/// and its call's arguments, which name the query or address disclosed, with
+/// theirs, keeping each call's id so its `tool_call_id` still pairs.
+/// `originals` names the entries whose original, as journaled, is a research
+/// result although the projection no longer shows its envelope, such as a
+/// result compaction cut to a string. Returns whether anything was replaced.
+pub fn redact(history: &mut [HistoryEntry], originals: &BTreeSet<u64>) -> bool {
+	let mut redacted = false;
+	for entry in history {
+		let research = carries_research(&entry.event) || originals.contains(&entry.seq);
+		let ContextEvent::Tool { call, result } = &mut entry.event else {
+			continue;
+		};
+		// Only a revoked research result is ever this placeholder.
+		let revoked = ContextEvent::is_revoked_result(result);
+		if research && !revoked {
+			*result = ContextEvent::revoked_result(&call.id);
+			redacted = true;
+		}
+		if (research || revoked) && call.arguments != ContextEvent::revoked_arguments() {
+			call.arguments = ContextEvent::revoked_arguments();
+			redacted = true;
+		}
+	}
+	redacted
+}
+
+#[cfg(test)]
+mod tests;

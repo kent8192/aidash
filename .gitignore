@@ -109,6 +109,11 @@ docs/Gemfile.lock
 !.env.example
 !.env.sample
 .ignore/
+/private/*
+!/private/.gitkeep
+/secrets/*
+!/secrets/.gitkeep
+/notes/
 .claude/
 .serena/
 .wtp.yml
@@ -147,6 +152,8 @@ crates/reinhardt-admin/assets/vendor/*
 examples/examples-twitter/static/admin/
 
 # Design/planning documents (local only)
+/CONTEXT.md
+/docs/design/
 docs/plans/
 docs/superpowers/
 website/public/
@@ -170,8 +177,11 @@ infra/**/*.tfstate
 infra/**/*.tfstate.backup
 infra/**/.terraform.tfstate.lock.info
 infra/**/*.tfvars
+infra/**/*.tfvars.json
+infra/**/*.tfplan
 !infra/**/*.example.tfvars
 !infra/**/*.examples.tfvars
+!infra/**/*.example.tfvars.json
 infra/**/backend.tfvars
 infra/github-runners/lambdas/*.zip
 
@@ -184,3 +194,27 @@ infra/github-runners/lambda-src/*/coverage/
 docs/specs/
 
 **/reviews/
+
+# Aidash application artifacts
+!Cargo.lock
+web/node_modules/
+web/dist/
+web/test-results/
+web/gcip-test-results/
+web/playwright-report/
+
+web/*.tsbuildinfo
+
+# Generated contracts, clients, and coverage reports
+/openapi/aidash.json
+/web/src/generated/
+/coverage/
+*.profraw
+*.profdata
+
+__pycache__/
+*.pyc
+
+/docs/design/
+
+web/desktop-test-results/

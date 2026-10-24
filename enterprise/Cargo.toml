@@ -1,0 +1,40 @@
+# Enterprise is its own workspace, so deleting enterprise/ leaves the Community
+# workspace intact (ADR 0032). Shared tables match the root manifest; CI checks
+# them with scripts/check-enterprise-alignment.py.
+[workspace]
+members = ["crates/*", "server"]
+resolver = "3"
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.96"
+publish = false
+
+[workspace.dependencies]
+aidash-domain = { path = "../crates/aidash-domain" }
+aidash-application = { path = "../crates/aidash-application" }
+aidash-integrations = { path = "../crates/aidash-integrations" }
+aidash-capability = { path = "../crates/aidash-capability" }
+aidash-server = { path = "../server" }
+aidash-gcp = { path = "crates/aidash-gcp" }
+reinhardt = { git = "https://github.com/kent8192/reinhardt-web", rev = "14dc81dec2a2cc10641a8f15c455bbaafc2c774e", package = "reinhardt-web", default-features = false }
+async-trait = "0.1.89"
+chrono = { version = "0.4", features = ["serde"] }
+futures-util = "0.3"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tokio = { version = "1", features = ["full"] }
+uuid = { version = "1", features = ["v4", "v7", "serde"] }
+schemars = { version = "1.2.2", features = ["chrono04", "uuid1"] }
+rstest = "0.26.1"
+
+[workspace.lints.clippy]
+# Domain names remain explicit when types are imported independently.
+module_name_repetitions = "allow"
+
+[profile.dev]
+debug = 1
+
+[profile.release]
+lto = "thin"

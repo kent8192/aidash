@@ -1,0 +1,154 @@
+//! Generated agent request contracts remain independent of database rows.
+use crate::{federation::Delegation, registry::Entry};
+use chrono::{DateTime, Utc};
+use schemars::JsonSchema;
+use serde::{Deserialize, Serialize};
+use serde_json::{Value, json};
+use uuid::Uuid;
+
+#[derive(Clone, Debug, Serialize, schemars::JsonSchema)]
+#[schemars(rename = "GenerationRequest")]
+pub struct Request {
+	pub id: Uuid,
+	pub tenant: String,
+	pub policy_id: String,
+	pub policy_revision: i64,
+	pub task_id: Uuid,
+	/// The Node of the requesting Workspace.
+	pub node: crate::nodes::NodeName,
+	/// The address of the Node that owns the Task: this request's own Node for
+	/// a local request, the requesting Home for a foreign one.
+	pub home_node: String,
+	#[serde(skip_serializing)]
+	pub foreign_intent: Option<Value>,
+	pub prepared: bool,
+	pub grant_id: Option<Uuid>,
+	pub admission_id: Option<Uuid>,
+	pub workspace_id: Uuid,
+	#[serde(skip_serializing)]
+	pub credential_id: Uuid,
+	pub root_subject: String,
+	pub subject_chain: Vec<String>,
+	pub agent_id: String,
+	pub agent_version: String,
+
+	#[schemars(with = "Entry")]
+	pub definition: Value,
+	pub status: String,
+	pub reason: String,
+	pub depth: i32,
+	pub token_limit: i64,
+	pub quota_released: bool,
+	pub expires_at: DateTime<Utc>,
+	pub created_at: DateTime<Utc>,
+}
+
+impl Request {
+	/// Whether the Task belongs to a Workspace of this Deployment, as opposed to
+	/// a Home that asked for the generation through a peer.
+	pub fn is_local(&self) -> bool {
+		self.foreign_intent.is_none()
+	}
+
+	/// The subject of the requested agent on the requesting Node in `deployment`.
+	pub fn executor_subject(&self, deployment: &str) -> String {
+		crate::entities::agent_subject(
+			&format!("{deployment}/{}", self.node),
+			&self.agent_id,
+			&self.agent_version,
+		)
+	}
+}
+
+#[derive(Clone, Debug, Serialize, JsonSchema)]
+#[schemars(rename = "GenerationAssignment")]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum Assignment {
+	Existing { delegation: Delegation },
+	Generated { generation: Box<Request> },
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, JsonSchema)]
+#[schemars(rename = "GenerationAction")]
+#[serde(rename_all = "snake_case")]
+pub enum Action {
+	Approve,
+	Deny,
+	Stop,
+	Delete,
+}
+
+#[derive(Clone, Debug, Deserialize, JsonSchema)]
+#[schemars(rename = "GenerationControl")]
+#[serde(deny_unknown_fields)]
+pub struct Control {
+	pub action: Action,
+	pub reason: String,
+}
+
+#[derive(Clone, Debug, Serialize, JsonSchema)]
+#[schemars(rename = "GenerationHistory")]
+pub struct History {
+	pub sequence: i64,
+	pub request_id: Uuid,
+	pub status: String,
+	pub actor: String,
+	pub reason: String,
+	pub created_at: DateTime<Utc>,
+}
+
+#[derive(Clone, Debug, Serialize, JsonSchema)]
+#[schemars(rename = "GenerationUsage")]
+pub struct Usage {
+	pub token_limit: i64,
+	pub used_tokens: i64,
+	pub inference_attempts: i64,
+	pub compaction_call_limit: i64,
+	pub compaction_calls: i64,
+	pub embedding_calls: i64,
+	pub embedding_call_limit: i64,
+	pub summary_calls: i64,
+	pub summary_call_limit: i64,
+}
+
+/// The attributes of a generation request's resource, which policy conditions
+/// may test. A request not yet stored has the same ones.
+pub fn resource_attributes(policy_id: &str, root_subject: &str, task_id: Uuid) -> Value {
+	json!({"policy_id":policy_id,"root_subject":root_subject,"task_id":task_id})
+}
+
+impl Request {
+	pub fn resource_attributes(&self) -> Value {
+		resource_attributes(&self.policy_id, &self.root_subject, self.task_id)
+	}
+	pub fn active(&self) -> bool {
+		matches!(
+			self.status.as_str(),
+			"PENDING_APPROVAL" | "QUEUED" | "ACTIVE"
+		)
+	}
+}
+impl Action {
+	pub fn status(&self) -> &'static str {
+		match self {
+			Self::Approve => "QUEUED",
+			Self::Deny => "DENIED",
+			Self::Stop => "STOPPED",
+			Self::Delete => "DELETED",
+		}
+	}
+	pub fn authorization(&self) -> &'static str {
+		match self {
+			Self::Approve | Self::Deny => "generation.approve",
+			Self::Stop => "generation.stop",
+			Self::Delete => "generation.delete",
+		}
+	}
+	pub fn accepts(&self, job: &Request) -> bool {
+		match self {
+			Self::Approve | Self::Deny => job.status == "PENDING_APPROVAL",
+			Self::Stop => job.active(),
+			Self::Delete => !job.active(),
+		}
+	}
+}

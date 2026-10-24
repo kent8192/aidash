@@ -1,0 +1,353 @@
+import { test, expect, type Route } from "@playwright/test";
+import {
+  installBearerDashboard,
+  selectDashboardLanguage,
+} from "./auth-fixture";
+import { acceptanceSubject } from "./tenant-fixture";
+
+test.beforeEach(async ({ page }) => {
+  await installBearerDashboard(page, "acceptance-access-token");
+  await page.goto("/");
+  await expect(page.locator("#main")).toBeVisible();
+});
+
+test("restarts the event stream when the tab selects another authority", async ({
+  page,
+}) => {
+  const contexts: string[] = [];
+  await page.route("**/auth/session", (route) =>
+    route.fulfill({
+      json: {
+        id: "fixture-browser-session",
+        deployment_administrator: true,
+        mappings: [{ id: "fixture-mapping", tenant: "acme", subject: "alice" }],
+      },
+    }),
+  );
+  await page.route("**/api/events/stream", (route) => {
+    contexts.push(route.request().headers()["x-aidash-context"] ?? "");
+    return route.fulfill({
+      status: 200,
+      contentType: "text/event-stream",
+      body: "id: 1\n\n",
+    });
+  });
+  await page.reload();
+  await page
+    .getByRole("button", { name: "アカウント設定", exact: true })
+    .click();
+  const selector = page.getByRole("combobox", {
+    name: "このタブで使う権限を選択してください",
+    exact: true,
+  });
+  await expect(selector).toHaveValue("deployment_administrator");
+  await expect
+    .poll(() => contexts.includes("deployment_administrator"))
+    .toBeTruthy();
+  await selector.selectOption("mapping:acme:fixture-mapping");
+  await expect
+    .poll(() => contexts.includes("mapping:acme:fixture-mapping"))
+    .toBeTruthy();
+});
+
+test("reinitializes an open tab after its shared session is replaced", async ({
+  page,
+}) => {
+  let sessionId = "fixture-browser-session";
+  await page.route("**/auth/session", (route) =>
+    route.fulfill({
+      json: { id: sessionId, deployment_administrator: true, mappings: [] },
+    }),
+  );
+  await page.clock.install();
+  await page.reload();
+  await expect(page.locator("#main")).toBeVisible();
+  sessionId = "replacement-browser-session";
+  await page.clock.fastForward(60_000);
+  await expect(
+    page.getByRole("heading", { name: "このタブで使う権限を選択してください" }),
+  ).toBeVisible();
+  await expect
+    .poll(() =>
+      page.evaluate(() => sessionStorage.getItem("aidash-session-id")),
+    )
+    .toBe("replacement-browser-session");
+  await expect
+    .poll(() => page.evaluate(() => sessionStorage.getItem("aidash-context")))
+    .toBeNull();
+});
+
+// Needs the golden path's existing runs.
+test(
+  "observes the execution and all management screens",
+  { tag: "@golden-path" },
+  async ({ page }) => {
+    const errors: string[] = [];
+    page.on("pageerror", (e) => errors.push(e.message));
+    await expect(page.locator(".stream-status")).toHaveText("接続中");
+    await expect(page.locator(".collab-rail")).toHaveCount(0);
+    await expect(
+      page.getByRole("button", { name: "新しい依頼", exact: true }),
+    ).toBeVisible();
+    await page.goto("/graph");
+    await page
+      .getByLabel("グラフの視点", { exact: true })
+      .selectOption("neighborhood");
+    await page
+      .getByRole("button", { name: "ノード構成と通信", exact: true })
+      .click();
+    await expect(page.locator(".mesh-canvas svg > g")).toHaveCount(1);
+    await expect(page.locator(".collab-run-grid button")).not.toHaveCount(0);
+    for (const view of [
+      "agents",
+      "clusters",
+      "registry",
+      "marketplace",
+      "node",
+    ]) {
+      await page.goto(`/settings?view=${view}`);
+      await expect(page.locator(".collab-settings-select select")).toHaveValue(
+        view,
+      );
+      await expect(page.locator(".collab-settings h1")).toHaveText("設定");
+    }
+    await page.goto("/settings?view=generation");
+    await expect(page).toHaveURL(/\/creator\?.*view=generation/);
+    await expect(page.locator(".generation-page")).toBeVisible();
+    await page.goto("/collaboration");
+    await selectDashboardLanguage(page, "en-US");
+    await expect(
+      page.getByRole("button", { name: "New request", exact: true }),
+    ).toBeVisible();
+    await page.screenshot({
+      path: "../private/dashboard-overview.png",
+      fullPage: true,
+    });
+    await page.setViewportSize({ width: 390, height: 844 });
+    await page.screenshot({
+      path: "../private/dashboard-mobile.png",
+      fullPage: true,
+    });
+    expect(errors).toEqual([]);
+  },
+);
+
+test("creates a workspace and task and receives live assignment changes", async ({
+  page,
+}) => {
+  // A Tenant subject's state can take seconds to refresh (#404).
+  test.setTimeout(120000);
+  // The research agent belongs to the golden path's Tenant.
+  const subject = acceptanceSubject();
+  await installBearerDashboard(page, subject.token, {
+    tenant: subject.tenant,
+    name: subject.name,
+  });
+  const name = `Browser workspace ${Date.now()}`;
+  const taskName = `Browser research ${Date.now()}`;
+  await page.goto("/collaboration");
+  await page.getByRole("button", { name: "設定", exact: true }).click();
+  await page.getByRole("button", { name: "準備用チャンネル" }).click();
+  await page
+    .getByRole("dialog")
+    .getByLabel("タイトル", { exact: true })
+    .fill(name);
+  await page
+    .getByRole("dialog")
+    .getByLabel("ゴール", { exact: true })
+    .fill("Verify a browser-created task");
+  await page
+    .getByRole("dialog")
+    .getByRole("button", { name: "作成", exact: true })
+    .click();
+  // The dialog closes once the refreshed state lists the new channel, and a
+  // Tenant subject's state took over 5 s in CI (#404).
+  await expect(page.getByRole("dialog")).not.toBeVisible({ timeout: 30000 });
+  await page
+    .getByRole("button", { name: "タスクと成果物", exact: true })
+    .click();
+  await page.getByRole("button", { name: "タスクを追加", exact: true }).click();
+  await page
+    .getByRole("dialog")
+    .getByLabel("ワークスペース", { exact: true })
+    .selectOption({ label: name });
+  await page
+    .getByRole("dialog")
+    .getByLabel("タイトル", { exact: true })
+    .fill(taskName);
+  await page
+    .getByRole("dialog")
+    .getByLabel("説明", { exact: true })
+    .fill("Research the browser workflow");
+  await page
+    .getByRole("dialog")
+    .getByLabel("タスクの要件", { exact: true })
+    .fill("{}");
+  await page
+    .getByRole("dialog")
+    .getByRole("button", { name: "作成", exact: true })
+    .click();
+  await expect(page.getByRole("dialog")).not.toBeVisible();
+  // Tasks are listed in the channel's "Tasks and results" sheet.
+  const openTasks = () =>
+    page.getByRole("button", { name: "タスクと成果物", exact: true }).click();
+  const row = page
+    .getByRole("dialog")
+    .getByRole("button")
+    .filter({ hasText: taskName });
+  await openTasks();
+  await row.click();
+  await page
+    .getByRole("button", { name: "担当を割り当て", exact: true })
+    .click();
+  const select = page
+    .getByRole("dialog")
+    .getByLabel("エージェント", { exact: true });
+  const value = await select
+    .locator("option")
+    .filter({ hasText: "調査エージェント" })
+    .first()
+    .getAttribute("value");
+  await select.selectOption(value!);
+  const selectedLabel = await select.locator("option:checked").textContent();
+  let reordered = false;
+  const reorder = async (route: Route) => {
+    const response = await route.fetch({
+      headers: {
+        ...route.request().headers(),
+        authorization: `Bearer ${subject.token}`,
+      },
+    });
+    const discovery = await response.json();
+    discovery.agents.reverse();
+    reordered = true;
+    await route.fulfill({ response, json: discovery });
+  };
+  await page.route("**/api/discover**", reorder);
+  await expect.poll(() => reordered, { timeout: 15000 }).toBe(true);
+  await expect(select.locator("option:checked")).toHaveText(selectedLabel!);
+  // Discovery keeps polling; stop rewriting it so no fetch outlives the test.
+  await page.unroute("**/api/discover**", reorder);
+
+  await page
+    .getByRole("dialog")
+    .getByRole("button", { name: "担当を割り当て" })
+    .click();
+  await expect(page.getByRole("dialog")).not.toBeVisible();
+  await openTasks();
+  await expect(row).toContainText("完了", { timeout: 60000 });
+});
+
+test("preserves a draft after a failed message request and clears it after success", async ({
+  page,
+}) => {
+  await page.goto("/collaboration");
+  const input = page
+    .getByRole("textbox", { name: "メッセージ", exact: true })
+    .first();
+  await input.fill("Keep this unsent draft");
+  await page.route("**/api/workspaces/*/thread-messages", async (route) => {
+    await route.fulfill({
+      status: 503,
+      contentType: "application/json",
+      body: JSON.stringify({ error: "Temporary message failure" }),
+    });
+  });
+  const failed = page.waitForResponse(
+    (response) =>
+      response.url().includes("/thread-messages") && response.status() === 503,
+  );
+  await page.getByRole("button", { name: "送信", exact: true }).first().click();
+  await failed;
+  await expect(input).toHaveValue("Keep this unsent draft");
+  await page.unroute("**/api/workspaces/*/thread-messages");
+  await page.getByRole("button", { name: "送信", exact: true }).first().click();
+  await expect(input).toHaveValue("");
+});
+
+test("creates task dependencies and a parent through the dashboard", async ({
+  page,
+}) => {
+  const subject = acceptanceSubject();
+  await installBearerDashboard(page, subject.token, {
+    tenant: subject.tenant,
+    name: subject.name,
+  });
+  const headers = { authorization: `Bearer ${subject.token}` };
+  const name = `Relationships ${Date.now()}`;
+  const workspace = await (
+    await page.request.post("/api/workspaces", {
+      headers,
+      data: { title: name, goal: "Task relationships" },
+    })
+  ).json();
+  const tasks = [];
+  for (const title of ["Parent", "Prerequisite"]) {
+    const response = await page.request.post(
+      `/api/workspaces/${workspace.id}/tasks`,
+      {
+        headers,
+        data: {
+          title,
+          description: title,
+          requirements: {},
+          dependencies: [],
+          parent_id: null,
+        },
+      },
+    );
+    expect(response.status()).toBe(200);
+    tasks.push(await response.json());
+  }
+  await page.goto(`/collaboration?channel=${encodeURIComponent(workspace.id)}`);
+  await page
+    .getByRole("button", { name: "タスクと成果物", exact: true })
+    .click();
+  await page.getByRole("button", { name: "タスクを追加", exact: true }).click();
+  const dialog = page.getByRole("dialog");
+  await expect(
+    dialog.locator(`select[name="workspace"] option[value="${workspace.id}"]`),
+  ).toHaveCount(1);
+  await dialog
+    .getByLabel("ワークスペース", { exact: true })
+    .selectOption(workspace.id);
+  await dialog
+    .getByLabel("タイトル", { exact: true })
+    .fill("Child with prerequisite");
+  await dialog
+    .getByLabel("説明", { exact: true })
+    .fill("Created with immutable relationships");
+  await dialog.locator('textarea[name="requirements"]').fill("{}");
+  await dialog
+    .getByLabel("親タスク", { exact: true })
+    .selectOption(tasks[0].id);
+  await expect(
+    dialog.locator(
+      `select[name="dependencies"] option[value="${tasks[0].id}"]`,
+    ),
+  ).toHaveCount(0);
+  await dialog
+    .getByLabel("依存関係", { exact: true })
+    .selectOption([tasks[1].id]);
+  const response = page.waitForResponse(
+    (r) =>
+      r.url().endsWith(`/api/workspaces/${workspace.id}/tasks`) &&
+      r.request().method() === "POST",
+  );
+  await dialog.getByRole("button", { name: "作成", exact: true }).click();
+  const created = await response;
+  expect(created.status()).toBe(200);
+  await expect(dialog).not.toBeVisible();
+  // Verify persisted relationships without Chromium's page-response body cache.
+  const snapshot = await page.request.get(`/api/workspaces/${workspace.id}`, {
+    headers,
+  });
+  expect(snapshot.status()).toBe(200);
+  expect((await snapshot.json()).tasks).toContainEqual(
+    expect.objectContaining({
+      title: "Child with prerequisite",
+      parent_id: tasks[0].id,
+      dependencies: [tasks[1].id],
+    }),
+  );
+});

@@ -1,0 +1,36 @@
+export const citationCopy = {
+  "en-US": {
+    citation: (ordinal: number) => `Source ${ordinal}`,
+    loading: "Loading source…",
+    unavailable: "This source is unavailable.",
+    failed: "The source could not be loaded.",
+    fetched: "Read",
+    requested: "Requested",
+    pages: "Pages",
+    excerpt: "Excerpt the agent read",
+    partial: "Only part of this page was kept.",
+    context: "Surrounding text (not given to the agent)",
+    noContext: "The surrounding text is no longer kept.",
+    expired:
+      "The research service's account terms no longer let this excerpt be kept. The source and its digest remain.",
+    pageImage: "Page the agent viewed",
+    pageImageAlt: (page: number) => `Page ${page} as the agent viewed it`,
+  },
+  "ja-JP": {
+    citation: (ordinal: number) => `出典 ${ordinal}`,
+    loading: "出典を読み込んでいます…",
+    unavailable: "この出典は利用できません。",
+    failed: "出典を読み込めませんでした。",
+    fetched: "取得",
+    requested: "要求したアドレス",
+    pages: "ページ",
+    excerpt: "エージェントが読んだ抜粋",
+    partial: "このページは一部だけが保存されています。",
+    context: "前後の文章（エージェントには渡していません）",
+    noContext: "前後の文章はもう保持されていません。",
+    expired:
+      "調査サービスの利用規約 (Research account terms) により、この抜粋の保持期限が切れました。出典と digest は残っています。",
+    pageImage: "エージェントが見たページ",
+    pageImageAlt: (page: number) => `エージェントが見た ${page} ページ目`,
+  },
+} as const;

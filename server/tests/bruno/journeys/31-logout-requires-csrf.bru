@@ -1,0 +1,28 @@
+meta {
+  name: Logout requires CSRF
+  type: http
+  seq: 31
+}
+
+post {
+  url: {{base_url}}/auth/logout
+  body: none
+  auth: none
+}
+
+headers {
+  Accept: application/json
+  Cookie: {{session_cookie}}
+}
+
+tests {
+  test("HTTP 403", function () {
+    expect(res.getStatus()).to.equal(403);
+  });
+  test("JSON response contract", function () {
+    expect(res.getHeader("content-type")).to.include("application/json");
+    expect(res.getBody()).to.have.all.keys("error");
+    expect(res.getBody().error).to.be.a("string");
+
+  });
+}

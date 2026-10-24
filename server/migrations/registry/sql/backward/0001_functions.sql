@@ -1,0 +1,12 @@
+DROP FUNCTION public.validate_registry_installations();
+DROP FUNCTION public.sync_registry_agent_resource_refs();
+DROP FUNCTION public.sync_registry_agent_model_refs();
+DROP FUNCTION public.marketplace_registry_fence();
+DROP FUNCTION public.lock_registry_installation_writes();
+DROP FUNCTION public.guard_registry_agent_resource_refs();
+DROP FUNCTION public.guard_registry_agent_model_refs();
+DROP FUNCTION public.guard_installation_config();
+DROP FUNCTION public.aidash_valid_http_endpoint(jsonb);
+DROP FUNCTION public.aidash_tool_config_is_valid(jsonb);
+DROP FUNCTION public.aidash_package_source_matches(jsonb, text);
+DROP FUNCTION public.aidash_media_routes_valid(jsonb);

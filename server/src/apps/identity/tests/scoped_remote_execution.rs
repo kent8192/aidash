@@ -1,0 +1,7075 @@
+#![allow(clippy::disallowed_methods)] // Fixtures reach the database outside a tenancy scope.
+use aidash_application::tenancy::TEST_FIXTURE;
+use common::upstream_fixtures;
+use futures_util::{FutureExt, future::BoxFuture};
+use reinhardt::ServerRouter as Router;
+use upstream_fixtures::reply;
+#[path = "../../execution/tests/support/legacy.rs"]
+mod common;
+#[path = "scoped_remote_execution/native_memory.rs"]
+mod native_memory;
+#[path = "../../execution/tests/support/tenant_openrouter.rs"]
+mod tenant_openrouter;
+use aidash_server::{
+	domain::{NewTask, qualified_agent},
+	federation::{Federation, Home},
+	harness::Harness,
+	registry::EntityRef,
+};
+use common::{cleanup, request};
+use futures_util::StreamExt;
+use reinhardt::query::{Alias, Expr, PostgresQueryBuilder, Query};
+use serde_json::{Value, json};
+use std::sync::{
+	Arc,
+	atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering},
+};
+use tokio::sync::Mutex;
+use tokio::sync::Notify;
+use uuid::Uuid;
+
+/// The address of `f`'s default Node of the fixture Tenant, where its Runs
+/// execute and its Workspaces live.
+fn node_of(f: &Federation) -> String {
+	aidash_domain::nodes::NodeAddress::derived(f.config.deployment.as_str(), "acme").to_string()
+}
+
+#[derive(Clone)]
+struct ModelScript {
+	requests: Arc<Mutex<Vec<Value>>>,
+	hold: Arc<AtomicBool>,
+	entered: Arc<Notify>,
+	release: Arc<Notify>,
+	reservations: Arc<Mutex<Option<ReservationCheck>>>,
+	compactions: Arc<Mutex<Vec<Value>>>,
+	compaction_status: Arc<AtomicUsize>,
+	compaction_reservations: Arc<Mutex<Option<ReservationCheck>>>,
+	force_memory_mutate: Arc<AtomicBool>,
+	/// Tool-call responses after the first, for Runs that need several inferences.
+	extra_tool_rounds: Arc<AtomicUsize>,
+}
+
+#[derive(Clone)]
+struct ReservationCheck {
+	pools: Vec<sqlx::PgPool>,
+	dispatcher: sqlx::PgPool,
+	grant: Uuid,
+	admission: Uuid,
+	purpose: &'static str,
+}
+impl ReservationCheck {
+	async fn before_http(&self) {
+		let purposes = if self.purpose == "retrieval" {
+			vec!["embedding", "memory"]
+		} else {
+			vec![self.purpose]
+		};
+		for pool in &self.pools {
+			let count: i64 = {
+				let query_bind_1 = self.grant;
+				let query_bind_2 = self.admission;
+				sqlx::query_scalar(
+					&Query::select()
+						.expr(Expr::cust("COUNT(*)"))
+						.from(Alias::new("generation_remote_usage"))
+						.and_where(Expr::col("grant_id").eq(Expr::value(query_bind_1)))
+						.and_where(Expr::col("admission_id").eq(Expr::value(query_bind_2)))
+						.and_where(Expr::col("purpose").is_in(purposes.clone()))
+						.and_where(Expr::col("state").eq("RESERVED"))
+						.to_string(PostgresQueryBuilder),
+				)
+				.fetch_one(pool)
+				.await
+			}
+			.unwrap();
+			assert_eq!(
+				count, 1,
+				"every allowance owner must have committed its reservation before provider HTTP"
+			);
+		}
+		let count: i64 = {
+			let query_bind_1 = self.grant.to_string();
+			sqlx::query_scalar(
+				&Query::select()
+					.expr(Expr::cust("COUNT(*)"))
+					.from(Alias::new("generation_remote_dispatches"))
+					.and_where(SimpleExpr::CustomWithExpr(
+						"(usage->>'grant_id'=? AND state='DISPATCHED')".to_owned(),
+						vec![Expr::value(query_bind_1.to_owned()).into()],
+					))
+					.and_where(Expr::cust("usage->>'purpose'").is_in(purposes))
+					.to_string(PostgresQueryBuilder),
+			)
+			.fetch_one(&self.dispatcher)
+			.await
+		}
+		.unwrap();
+		assert_eq!(
+			count, 1,
+			"dispatch admission must commit before provider HTTP"
+		);
+	}
+}
+struct Pair {
+	// Rebuilt applications must not release both node environments.
+	_owners: Vec<common::RuntimeFixture>,
+	model: ModelScript,
+	drop_reply: Arc<Mutex<Option<String>>>,
+	peers: Arc<PeerActivity>,
+	a: Federation,
+	b: Federation,
+	aa: common::TestApplication,
+	ba: common::TestApplication,
+	source_policy: Value,
+	receiver_policy: Value,
+	token: String,
+	receiver_token: String,
+	task: Uuid,
+	grant: Uuid,
+	admission: Uuid,
+	requests: Arc<Mutex<Vec<Value>>>,
+	servers: Vec<upstream_fixtures::FixedServerGuard>,
+	providers: Vec<Arc<reinhardt::test::fixtures::server::TestServerGuard>>,
+	au: String,
+	bu: String,
+	aschema: String,
+	bschema: String,
+	semantic: Option<SemanticFixture>,
+	native: Option<Value>,
+	generation: Option<(Value, Value)>,
+	_memory_recovery_directories: Vec<Arc<tempfile::TempDir>>,
+	tenant_embedding: Option<tenant_openrouter::TenantOpenRouter>,
+	receiver_openrouter: tenant_openrouter::TenantOpenRouter,
+}
+struct SemanticFixture {
+	requests: Arc<Mutex<Vec<Value>>>,
+	response: Arc<Mutex<Option<Value>>>,
+	entry: Uuid,
+	failing: Arc<AtomicBool>,
+	failure_at: Arc<AtomicUsize>,
+	reservations: Arc<Mutex<Option<ReservationCheck>>>,
+}
+impl Pair {
+	/// A backstop for a step that keeps serving peer work without finishing;
+	/// the slowest observed step is an order of magnitude shorter.
+	const STEP_CEILING: std::time::Duration = std::time::Duration::from_secs(600);
+	/// No peer response for this long means a stall. Activity is recorded when
+	/// a response completes, so the bound exceeds the longest valid peer
+	/// request: a semantic query may run for its full 120s transport timeout.
+	const STEP_STALL: std::time::Duration = std::time::Duration::from_secs(150);
+	/// Longer than the longest peer-call transport timeout (120s for a
+	/// semantic query), so an in-flight call ends on its own.
+	const IN_FLIGHT_GRACE: std::time::Duration = std::time::Duration::from_secs(180);
+	async fn close(mut self) {
+		self.providers.clear();
+		for server in self.servers.drain(..) {
+			server.abort();
+			let _ = server.stopped().await;
+		}
+		cleanup(self.a.clone(), &self.au, &self.aschema).await;
+		cleanup(self.b.clone(), &self.bu, &self.bschema).await;
+	}
+	fn activation(&self) -> String {
+		format!(
+			"/api/tasks/{}/remote-grants/{}/activate",
+			self.task, self.grant
+		)
+	}
+	async fn run(&self) -> aidash_server::domain::Run {
+		self.b
+			.store
+			.run(&TEST_FIXTURE, self.admission)
+			.await
+			.unwrap()
+	}
+	async fn step(&self) {
+		let worker = Harness {
+			federation: self.b.clone(),
+		};
+		// One step can include many separately bounded peer/provider calls: a
+		// single Remote Ordered `worker_once` served 20-59 peer responses in
+		// 8-36s on a loaded host, and coverage instrumentation on hosted
+		// runners stretches that past any fixed wall-clock bound. Bound the
+		// step by served work instead, as `ScopedWorkerProcess::until` does,
+		// without changing any production timeout, retry deadline or lease.
+		let started = std::time::Instant::now();
+		// Set by the watchdog; the loop stops after the in-flight call.
+		let abandon = std::cell::Cell::new(false);
+		let progress = async {
+			loop {
+				// Never start another call once the watchdog has fired; an
+				// in-flight call is still awaited below.
+				if abandon.get()
+					|| worker.worker_once().await.unwrap()
+					|| abandon.get()
+					|| self.run().await.phase().is_terminal()
+				{
+					// Reconciliation can finish a generated run before another
+					// lease is available. Callers still assert its exact final state.
+					break;
+				}
+				tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+			}
+		};
+		tokio::pin!(progress);
+		let stalled = loop {
+			tokio::select! {
+				() = &mut progress => break None,
+				() = tokio::time::sleep(std::time::Duration::from_millis(100)) => {
+					let idle = self.peers.idle(started);
+					if idle >= Self::STEP_STALL {
+						break Some(format!("no peer response for {idle:.1?}"));
+					}
+					if started.elapsed() >= Self::STEP_CEILING {
+						break Some(format!("still running after {:.1?}", started.elapsed()));
+					}
+				}
+			}
+		};
+		if let Some(reason) = stalled {
+			// Never cancel `worker_once` mid-call: let the in-flight call
+			// release its lease first. Its longest peer call, a semantic
+			// query, gives up after 120s, so allow well beyond that.
+			abandon.set(true);
+			let _ = tokio::time::timeout(Self::IN_FLIGHT_GRACE, &mut progress).await;
+			let run = self.run().await;
+			panic!(
+				"scoped step must progress within its bounded retry delay ({reason}): phase={}, control={}, state={:?}",
+				run.phase().as_str(),
+				run.control.as_str(),
+				run.state,
+			);
+		}
+	}
+}
+
+/// Federation responses served by the in-test Home and receiver applications.
+/// Every scoped worker step performs peer calls, so served work distinguishes
+/// a slowly progressing Run from a stalled one independently of host speed.
+struct PeerActivity {
+	origin: std::time::Instant,
+	served: AtomicUsize,
+	/// Milliseconds after `origin` of the last served response.
+	last: AtomicU64,
+}
+impl PeerActivity {
+	fn new() -> Self {
+		Self {
+			origin: std::time::Instant::now(),
+			served: AtomicUsize::new(0),
+			last: AtomicU64::new(0),
+		}
+	}
+	fn served(&self) -> usize {
+		self.served.load(Ordering::Acquire)
+	}
+	/// Time since the later of `since` and the last served response.
+	fn idle(&self, since: std::time::Instant) -> std::time::Duration {
+		let last =
+			self.origin + std::time::Duration::from_millis(self.last.load(Ordering::Acquire));
+		last.max(since).elapsed()
+	}
+}
+/// Count federation responses served by a production route table.
+struct PeerActivityMiddleware(Arc<PeerActivity>);
+#[async_trait::async_trait]
+impl reinhardt::Middleware for PeerActivityMiddleware {
+	async fn process(
+		&self,
+		request: reinhardt::Request,
+		next: Arc<dyn reinhardt::Handler>,
+	) -> reinhardt::Result<reinhardt::Response> {
+		let federation = request.uri.path().starts_with("/federation/");
+		let response = next.handle(request).await;
+		if federation {
+			let at = self.0.origin.elapsed().as_millis() as u64;
+			self.0.last.fetch_max(at, Ordering::AcqRel);
+			self.0.served.fetch_add(1, Ordering::AcqRel);
+		}
+		response
+	}
+}
+async fn reconnect(f: &mut Federation, notify: Arc<Notify>) {
+	let pool = f
+		.store
+		.pool
+		.options()
+		.clone()
+		.connect_with(f.store.pool.connect_options().as_ref().clone())
+		.await
+		.unwrap();
+	let mut store = aidash_server::store::Store::from_pool(pool, f.config.deployment.clone())
+		.await
+		.unwrap();
+	// A restarted node keeps its Deployment's egress and permitted Keyless origins.
+	store.egress = f.store.egress.clone();
+	store.keyless = f.store.keyless.clone();
+	f.registry = aidash_server::registry::Registry::new(store.pool.clone(), &f.config.deployment)
+		.unwrap()
+		.with_keyless_origins(store.keyless.clone());
+	f.store.pool.close().await;
+	f.store.control_pool.close().await;
+	f.store = store;
+	// Act: replace notification state after reconnecting the durable runtime.
+	f.notify = notify;
+}
+
+mod scoped_pair_composition {
+	// rstest 0.26.1 does not copy function-level allows onto generated partial_N functions.
+	// Each flag selects an independent Run shape that tests combine through `#[with]`.
+	#![allow(clippy::too_many_arguments)]
+	use super::*;
+	#[rstest::fixture]
+	pub(super) async fn scoped_pair(
+		#[default(false)] semantic: bool,
+		#[default(false)] generated: bool,
+		#[default(false)] approval: bool,
+		#[default(false)] decider: bool,
+		#[default(false)] native: bool,
+		#[default((false, false, 32))] large_native: (bool, bool, usize),
+		#[default(false)] ordered: bool,
+		#[default(false)] tenant_embedding: bool,
+		#[future(awt)]
+		#[from(scoped_infrastructure)]
+		#[with(native, ordered)]
+		infrastructure: ScopedInfrastructure,
+	) -> Pair {
+		let ScopedInfrastructure {
+			model_state,
+			model_server,
+			drop_reply,
+			peers,
+			source,
+			receiver,
+			embedding_provider,
+		} = infrastructure;
+		let source_directory = source.application.directory;
+		let receiver_directory = receiver.application.directory;
+		let _aa = source.application.application;
+		let _ba = receiver.application.application;
+		let _aserver = source.server;
+		let _bserver = receiver.server;
+		let (large_native_graph, large_native_journal, native_graph_visits) = large_native;
+		let _ = tracing_subscriber::fmt()
+			.with_env_filter("aidash=debug")
+			.with_test_writer()
+			.try_init();
+		let source = _aa;
+		let receiver = _ba;
+		let (mut a, au, aschema) = source.runtime.parts();
+		let (mut b, bu, bschema) = receiver.runtime.parts();
+		let owners = vec![source.runtime, receiver.runtime];
+		let aa = source.application;
+		// The Home performs required-Home embeddings with its Tenant's Provider
+		// Credential; its application serves the same reconfigured runtime.
+		let tenant_embedding = tenant_embedding.then(|| {
+			let embedding = tenant_openrouter::install(&mut a);
+			aa.context.set_singleton(a.clone());
+			embedding
+		});
+		let ba = receiver.application;
+		// The receiver's approved compaction Decider calls Jev with its Tenant's OpenRouter
+		// Provider Credential (ADR 0041); the fake issuer routes to the model fixture.
+		let receiver_openrouter = tenant_openrouter::install(&mut b);
+		ba.context.set_singleton(b.clone());
+		let memory_recovery_directories = if native {
+			vec![source_directory, receiver_directory]
+		} else {
+			vec![]
+		};
+		let requests = model_state.requests.clone();
+
+		let endpoint = model_server.url.clone();
+		let (mut source_policy, token, mut task) =
+			common::bootstrap_with_context(&a, &aa, &endpoint, semantic).await;
+		let (receiver_policy, receiver_token, _) =
+			common::bootstrap_with_context(&b, &ba, &endpoint, semantic).await;
+		receiver_openrouter.connect("acme").await;
+		*receiver_openrouter.endpoint.lock().unwrap() = endpoint.clone();
+		let decider_definition = json!({"id":"remote-decider","version":"1.0.0","kind":"decider","name":{"en":"Approved remote Decider"},"description":{"en":"Local fixture"},"config":{"hook":"compaction","answer_type":"noul","description":"Keep needed history","provider_credential":"openrouter","routes":[{"provider_contract":"typesafe.jev/1","model":"typesafe/jev-1.13","threshold":"3fe0000000000000","state_budget":{"default_request_bytes":32000,"default_state_bytes":24000,"long_context_request_bytes":400000,"long_context_state_bytes":380000,"input_stages":[null,200,60]}}],"builder":"aidash.compaction/2","option_source":"history_event/1","rule":"compaction.keep/1","mode":"enforce","max_calls_per_run":20}});
+		let (status, body) = request(
+			&ba,
+			&receiver_token,
+			"POST",
+			"/api/registry",
+			decider_definition,
+		)
+		.await;
+		assert_eq!(status, 200, "{body}");
+		assert_eq!(
+			request(
+				&ba,
+				&receiver_token,
+				"POST",
+				"/api/authorization/acme/catalog",
+				json!({"node":aidash_domain::nodes::NodeName::derived("acme"),"entry":{"id":"remote-decider","version":"1.0.0"},"expected_revision":0,"enabled":true})
+			)
+			.await
+			.0,
+			200
+		);
+		source_policy["subjects"]
+			[aidash_domain::agent_subject(&node_of(&b), "research", "1.0.0")] = json!({"kind":"agent"});
+		assert_eq!(
+			request(
+				&aa,
+				&a.config.api_token,
+				"POST",
+				"/api/authorization/acme",
+				json!({"expected_revision":1,"bundle":source_policy})
+			)
+			.await
+			.0,
+			200
+		);
+		// Each Deployment registers the other's default Node, and keeps the
+		// Tenant policy it just wrote.
+		common::register_pair((&a, &aa, "acme"), (&b, &ba, "acme")).await;
+		let (_, credential) = request(
+			&ba,
+			&b.config.api_token,
+			"POST",
+			"/api/authorization/acme/credentials",
+			json!({"subject":"alice"}),
+		)
+		.await;
+		assert_eq!(request(&ba,&b.config.api_token,"POST","/api/authorization/acme/peer-mappings",json!({"node":aidash_domain::nodes::NodeName::derived("acme"),"source_node":node_of(&a),"source_subject":"alice","credential_id":credential["credential"]["id"],"enabled":true,"expected_revision":0})).await.0,200);
+		if semantic {
+			let (_, home_reader) = request(
+				&aa,
+				&a.config.api_token,
+				"POST",
+				"/api/authorization/acme/credentials",
+				json!({"subject":"alice"}),
+			)
+			.await;
+			let (status,body) = request(&aa,&a.config.api_token,"POST","/api/authorization/acme/peer-mappings",json!({"node":aidash_domain::nodes::NodeName::derived("acme"),"source_node":node_of(&b),"source_subject":"alice","credential_id":home_reader["credential"]["id"],"enabled":true,"expected_revision":0})).await;
+			assert_eq!(status, 200, "{body}");
+		}
+		let servers = vec![_aserver, _bserver];
+		let mut providers = vec![model_server];
+		let semantic = if semantic {
+			let workspace = a
+				.store
+				.task(&TEST_FIXTURE, task)
+				.await
+				.unwrap()
+				.workspace_id;
+			let (fixture, server) = configure_semantic(
+				&a,
+				&aa,
+				&token,
+				workspace,
+				&node_of(&b),
+				(native, large_native_journal),
+				embedding_provider.await,
+				tenant_embedding.as_ref(),
+			)
+			.await;
+			providers.push(server);
+			Some(fixture)
+		} else {
+			None
+		};
+		let native = if native {
+			assert!(semantic.is_some());
+			let workspace = a
+				.store
+				.task(&TEST_FIXTURE, task)
+				.await
+				.unwrap()
+				.workspace_id;
+			let data = native_remote_fixture(
+				&a,
+				&b,
+				&aa,
+				&ba,
+				&token,
+				workspace,
+				(
+					large_native_graph,
+					large_native_journal,
+					native_graph_visits,
+				),
+			)
+			.await;
+			source_policy["subjects"]
+				[aidash_domain::agent_subject(&node_of(&b), "research-native", "1.0.0")] =
+				json!({"kind":"agent"});
+			common::replace_policy(&a.store, "acme", source_policy.clone()).await;
+			Some(data)
+		} else {
+			None
+		};
+		let generation = if generated {
+			let (created, input, prepared) = prepare_generated_pair(
+				&a,
+				&b,
+				&aa,
+				&ba,
+				&token,
+				task,
+				(approval, semantic.is_some(), native.is_some()),
+			)
+			.await;
+			task = created;
+			Some((input, prepared))
+		} else {
+			None
+		};
+		if ordered {
+			ordered_receiver_agent(
+				&a,
+				&b,
+				&aa,
+				&ba,
+				&mut source_policy,
+				if native.is_some() {
+					"research-native"
+				} else {
+					"research"
+				},
+			)
+			.await;
+		}
+		let agent = generation.as_ref().map_or_else(
+			|| json!({"id":if ordered { "research-ordered" } else if native.is_some() { "research-native" } else { "research" },"version":"1.0.0"}),
+			|(_, prepared)| prepared["agent"].clone(),
+		);
+		let grant = Uuid::new_v4();
+		let mut mode = if semantic.is_some() {
+			json!({"mode":"required_home","embedding":{"id":"home-embedding","version":"1.0.0"}})
+		} else {
+			json!({"mode":"disabled"})
+		};
+		if let Some(native) = &native {
+			mode["native"] = native["selection"].clone();
+		}
+		if decider {
+			mode["decider"] = json!({"id":"remote-decider","version":"1.0.0"});
+		}
+		let admission = if approval {
+			Uuid::nil()
+		} else {
+			let (status, prepared) = request(
+				&aa,
+				&token,
+				"POST",
+				&format!("/api/tasks/{task}/remote-grants"),
+				json!({"id":grant,"node_id":node_of(&b),"agent":agent,"ttl_seconds":if large_native_journal || ordered {3600} else {300},"semantic":mode}),
+			)
+			.await;
+			assert_eq!(status, 200, "{prepared}");
+			let (status, activated) = request(
+				&aa,
+				&token,
+				"POST",
+				&format!("/api/tasks/{task}/remote-grants/{grant}/activate"),
+				json!({}),
+			)
+			.await;
+			assert_eq!(status, 200, "{activated}");
+			serde_json::from_value(activated["admission_id"].clone()).unwrap()
+		};
+		Pair {
+			_owners: owners,
+			model: model_state,
+			drop_reply,
+			peers,
+			a,
+			b,
+			aa,
+			ba,
+			source_policy,
+			receiver_policy,
+			token,
+			task,
+			grant,
+			admission,
+			requests,
+			receiver_token: credential["token"].as_str().unwrap().into(),
+			servers,
+			providers,
+			au,
+			bu,
+			aschema,
+			bschema,
+			semantic,
+			native,
+			generation,
+			_memory_recovery_directories: memory_recovery_directories,
+			tenant_embedding,
+			receiver_openrouter,
+		}
+	}
+}
+use scoped_pair_composition::scoped_pair;
+
+/// A receiver Agent on the Ordered Projection Version, approved on both nodes.
+/// It copies the receiver's base Agent, so it keeps the Home semantic
+/// memory binding when the fixture has one.
+async fn ordered_receiver_agent(
+	a: &Federation,
+	b: &Federation,
+	aa: &common::TestApplication,
+	ba: &common::TestApplication,
+	source_policy: &mut Value,
+	base_agent: &'static str,
+) {
+	let receiver_token = common::tenant_token(&b.store, "acme").await;
+	let reference = |id: &str| json!({"id":id,"version":"1.0.0"});
+	let fetch = |id: &'static str| async move {
+		let (status, mut entry) = request(
+			ba,
+			&common::tenant_token(&b.store, "acme").await,
+			"GET",
+			&format!("/api/registry/{id}/1.0.0"),
+			Value::Null,
+		)
+		.await;
+		assert_eq!(status, 200, "{entry}");
+		// A new authored version, not a copy of server-derived normalization.
+		entry
+			.as_object_mut()
+			.unwrap()
+			.remove("binding_normalization");
+		entry
+	};
+	let mut model = fetch("model").await;
+	model["id"] = json!("ordered-model");
+	model["config"]["projection_versions"] = json!(["legacy", "ordered"]);
+	let mut agent = fetch(base_agent).await;
+	agent["id"] = json!("research-ordered");
+	agent["config"]["model"] = reference("ordered-model");
+	agent["config"]["projection_version"] = json!("ordered");
+	for entry in [model, agent] {
+		let id = entry["id"].as_str().unwrap().to_owned();
+		let (status, body) = request(ba, &receiver_token, "POST", "/api/registry", entry).await;
+		assert_eq!(status, 200, "{body}");
+		let (status, body) = request(
+			ba,
+			&receiver_token,
+			"POST",
+			"/api/authorization/acme/catalog",
+			json!({"node":aidash_domain::nodes::NodeName::derived("acme"),"entry":reference(&id),"expected_revision":0,"enabled":true}),
+		)
+		.await;
+		assert_eq!(status, 200, "{body}");
+	}
+	let subject = aidash_domain::agent_subject(&node_of(b), "research-ordered", "1.0.0");
+	for (runtime, app) in [(b, ba), (a, aa)] {
+		let (_, mut policy) = request(
+			app,
+			&runtime.config.api_token,
+			"GET",
+			"/api/authorization/acme",
+			Value::Null,
+		)
+		.await;
+		policy["bundle"]["subjects"][&subject] = json!({"kind":"agent"});
+		let (status, body) = request(
+			app,
+			&runtime.config.api_token,
+			"POST",
+			"/api/authorization/acme",
+			json!({"expected_revision":policy["revision"],"bundle":policy["bundle"]}),
+		)
+		.await;
+		assert_eq!(status, 200, "{body}");
+	}
+	source_policy["subjects"][&subject] = json!({"kind":"agent"});
+}
+
+async fn native_remote_fixture(
+	a: &Federation,
+	b: &Federation,
+	aa: &common::TestApplication,
+	ba: &common::TestApplication,
+	token: &str,
+	workspace: Uuid,
+	(large_graph, large_journal, graph_visits): (bool, bool, usize),
+) -> Value {
+	let (_, home_agent) = request(
+		aa,
+		&common::tenant_token(&a.store, "acme").await,
+		"GET",
+		"/api/registry/research/1.0.0",
+		Value::Null,
+	)
+	.await;
+	let (_, embedding) = request(
+		aa,
+		&common::tenant_token(&a.store, "acme").await,
+		"GET",
+		"/api/registry/home-embedding/1.0.0",
+		Value::Null,
+	)
+	.await;
+	let reference = |id: &str| json!({"id":id,"version":"1.0.0"});
+	let zero = json!({"input_per_million":0,"output_per_million":0});
+	let provider = reference("native-memory");
+	let mut policy = json!({"engine":"hindsight_rust","policy":{
+        "extraction":home_agent["config"]["model"],"derivation":home_agent["config"]["model"],"reflection":home_agent["config"]["model"],
+        "embedding":reference("home-embedding"),"reranker":reference("native-reranker"),"tokenizer":reference("native-tokenizer"),
+        "prices":{"extraction":zero,"derivation":zero,"reflection":zero,"embedding":zero,"reranker":zero},
+        "retention":{"unit_max_age_days":null,"candidate_days":7,"history_days":30,"history_versions":16,"model_result_days":7,"backup_days":7,"purge_after_seconds":60,"purge_batch":32,"max_unit_records":128,"max_model_operations":1024},
+        "bounds":{"max_unit_bytes":8192,"max_input_bytes":8192,"max_units":16,"max_candidates":8,"max_entities":8,"max_evidence":8,"max_links":8,"max_graph_hops":3,"max_graph_visits":32,"max_results":4,"max_context_tokens":8192,"max_model_calls":4,"max_model_tokens":8192,"max_cost_micros":10000,"max_retries":2,"max_call_seconds":30},
+        "semantic_link_min_similarity_millionths":700000,"learn_from_runs":false,"maintain_observations":false,"refresh_mental_models":false}});
+	policy["policy"]["bounds"]["max_graph_visits"] = json!(graph_visits);
+	if large_graph {
+		policy["policy"]["bounds"]["max_graph_visits"] = json!(4096);
+	}
+	if large_journal {
+		policy["policy"]["bounds"]["max_units"] = json!(2048);
+		policy["policy"]["bounds"]["max_candidates"] = json!(256);
+		policy["policy"]["retention"]["max_unit_records"] = json!(2048);
+	}
+	for (runtime, app) in [(a, aa), (b, ba)] {
+		let mut roles = vec![
+			("reranker", "native-reranker", json!({"provider":"rrf"})),
+			(
+				"tokenizer",
+				"native-tokenizer",
+				json!({"provider":"utf8_upper_bound"}),
+			),
+			("memory", "native-memory", policy.clone()),
+			(
+				"source",
+				"native-shared",
+				json!({"memory":provider,"scope":"workspace","max_tokens":8192}),
+			),
+		];
+		if runtime.config.deployment == b.config.deployment {
+			roles.insert(
+				0,
+				("embedding", "home-embedding", embedding["config"].clone()),
+			);
+		}
+		for (kind, id, config) in roles {
+			let (status,body)=request(app,&common::tenant_token(&runtime.store, "acme").await,"POST","/api/registry",json!({"id":id,"version":"1.0.0","kind":kind,"name":{"en":id,"ja":id},"description":{"en":"Native remote fixture"},"config":config})).await;
+			assert_eq!(status, 200, "{body}");
+			let (status, body) = request(
+				app,
+				&common::tenant_token(&runtime.store, "acme").await,
+				"POST",
+				"/api/authorization/acme/catalog",
+				json!({"node":aidash_domain::nodes::NodeName::derived("acme"),"entry":reference(id),"expected_revision":0,"enabled":true}),
+			)
+			.await;
+			assert_eq!(status, 200, "{body}");
+		}
+		let (_, mut agent) = request(
+			app,
+			&common::tenant_token(&runtime.store, "acme").await,
+			"GET",
+			"/api/registry/research/1.0.0",
+			Value::Null,
+		)
+		.await;
+		// This is a new authored version, not a copy of server-derived normalization.
+		agent
+			.as_object_mut()
+			.unwrap()
+			.remove("binding_normalization");
+		agent["id"] = json!(if runtime.config.deployment == a.config.deployment {
+			"home-native"
+		} else {
+			"research-native"
+		});
+		let bindings = agent["config"]["bindings"].as_array_mut().unwrap();
+		bindings.retain(|binding| binding["kind"] != "memory");
+		for (kind, id) in [("memory", "native-memory"), ("source", "native-shared")] {
+			bindings.push(json!({"kind":kind,"target":{"registry_deployment":runtime.config.deployment,"id":id,"version":"1.0.0"},"narrow":{}}));
+		}
+		let id = agent["id"].as_str().unwrap().to_owned();
+		let (status, body) = request(
+			app,
+			&common::tenant_token(&runtime.store, "acme").await,
+			"POST",
+			"/api/registry",
+			agent,
+		)
+		.await;
+		assert_eq!(status, 200, "{body}");
+		let (status, body) = request(
+			app,
+			&common::tenant_token(&runtime.store, "acme").await,
+			"POST",
+			"/api/authorization/acme/catalog",
+			json!({"node":aidash_domain::nodes::NodeName::derived("acme"),"entry":reference(&id),"expected_revision":0,"enabled":true}),
+		)
+		.await;
+		assert_eq!(status, 200, "{body}");
+		if runtime.config.deployment == b.config.deployment {
+			let (_, mut policy) = request(
+				app,
+				&runtime.config.api_token,
+				"GET",
+				"/api/authorization/acme",
+				Value::Null,
+			)
+			.await;
+			let revision = policy["revision"].clone();
+			policy["bundle"]["subjects"]
+				[aidash_domain::agent_subject(&node_of(b), "research-native", "1.0.0")] =
+				json!({"kind":"agent"});
+			let (status, body) = request(
+				app,
+				&runtime.config.api_token,
+				"POST",
+				"/api/authorization/acme",
+				json!({"expected_revision":revision,"bundle":policy["bundle"]}),
+			)
+			.await;
+			assert_eq!(status, 200, "{body}");
+		}
+	}
+	let (status, participant) = request(
+		aa,
+		token,
+		"POST",
+		&format!("/api/workspaces/{workspace}/memory/participants"),
+		json!({"agent":reference("home-native")}),
+	)
+	.await;
+	assert_eq!(status, 200, "{participant}");
+	let private = Uuid::new_v4();
+	let shared = Uuid::new_v4();
+	for (id, bank, text) in [
+		(
+			private,
+			participant["bank"].clone(),
+			"Native private claim: 日本の研究手順 is durably attributed.",
+		),
+		(
+			shared,
+			json!({"home":aidash_domain::nodes::NodeAddress::derived(a.config.deployment.as_str(),"acme").to_string(),"tenant":"acme","workspace":workspace,"participant":null}),
+			"Native shared claim: 自転車の設計 uses reciprocal rank fusion.",
+		),
+	] {
+		if id == shared {
+			let (status,body)=request(aa,token,"POST",&format!("/api/workspaces/{workspace}/memory/operate"),json!({"operation_id":Uuid::new_v4(),"provider":provider,"bank":bank,"action":{"action":"configure_bank","expected_revision":0}})).await;
+			assert_eq!(status, 200, "{body}");
+		}
+		let (status,body)=request(aa,token,"POST",&format!("/api/workspaces/{workspace}/memory/units/mutate"),json!({"operation_id":Uuid::new_v4(),"provider":provider,"bank":bank,"changes":[{"operation":"add","id":id,"content":{"text":text,"kind":"world","learning":"fact","verification":"unverified","occurred":null,"entities":[],"evidence":[],"links":[]}}]})).await;
+		assert_eq!(status, 200, "{body}");
+	}
+	if large_journal {
+		use aidash_domain::memory::{
+			Bank, Change, Content, Kind, Learning, Mutation, Verification,
+		};
+		use aidash_server::apps::knowledge::services::native_memory as memory;
+		let actor = aidash_server::authorization::Authorization {
+			pool: a.store.pool.clone(),
+		}
+		.authenticate(token)
+		.await
+		.unwrap();
+		let bank: Bank = serde_json::from_value(participant["bank"].clone()).unwrap();
+		let provider: aidash_domain::registry::EntityRef =
+			serde_json::from_value(provider.clone()).unwrap();
+		// Model loss of the disposable index after valid bank admission. Canonical
+		// grant dependencies must remain readable across projection reconstruction,
+		// independently of the HTTP index's maximum 1,024 projected sources.
+		let mut tx = a.store.pool.begin(&TEST_FIXTURE).await.unwrap();
+		aidash_server::database::native::query(
+			&Query::delete()
+				.from_table(Alias::new("semantic_points"))
+				.and_where(
+					Expr::col("entry_id").in_subquery(
+						Query::select()
+							.column(Alias::new("id"))
+							.from(Alias::new("semantic_entries"))
+							.and_where(Expr::col("workspace_id").eq(Expr::value(workspace)))
+							.to_owned(),
+					),
+				)
+				.to_string(PostgresQueryBuilder),
+		)
+		.execute(&mut *tx)
+		.await
+		.unwrap();
+		for table in [
+			"semantic_entries",
+			"semantic_collections",
+			"semantic_indexes",
+		] {
+			aidash_server::database::native::query(
+				&Query::delete()
+					.from_table(Alias::new(table))
+					.and_where(Expr::col("workspace_id").eq(Expr::value(workspace)))
+					.to_string(PostgresQueryBuilder),
+			)
+			.execute(&mut *tx)
+			.await
+			.unwrap();
+		}
+		tx.commit().await.unwrap();
+		for batch in 0..5 {
+			let changes = (0..if batch == 4 { 1 } else { 256 })
+				.map(|offset| Change::Add {
+					id: Uuid::from_u128(1000 + batch * 256 + offset),
+					content: Content {
+						text: "Admitted long-lived grant dependency".into(),
+						kind: Kind::World,
+						learning: Learning::Fact,
+						verification: Verification::Unverified,
+						occurred: None,
+						mental_model: None,
+						entities: vec![],
+						evidence: vec![],
+						links: vec![],
+					},
+				})
+				.collect();
+			memory::mutate(
+				&a.store,
+				&actor,
+				Mutation {
+					operation_id: Uuid::now_v7(),
+					provider: provider.clone(),
+					bank: bank.clone(),
+					changes,
+				},
+			)
+			.await
+			.unwrap();
+		}
+		let (status, body) = request(aa, &a.config.api_token, "POST", &format!("/api/workspaces/{workspace}/semantic/index"), json!({"expected_revision":0,"spec":{
+			"embedding":embedding["config"],"vector":{"provider":"postgres","endpoint":"local","credential_env":null},
+			"enabled":true,"auto_context":false,"max_sources":100,"max_results":10,"max_result_tokens":32768,"max_input_bytes":32768
+		}})).await;
+		assert_eq!(status, 200, "{body}");
+	}
+	if !large_journal {
+		let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(15);
+		loop {
+			aidash_server::semantic::worker::sweep(&a.store)
+				.await
+				.unwrap();
+			let ready: Vec<String> = sqlx::query_scalar(
+				&Query::select()
+					.column(Alias::new("state"))
+					.from(Alias::new("semantic_entries"))
+					.and_where(Expr::col("id").is_in([private, shared].map(Expr::value)))
+					.to_string(PostgresQueryBuilder),
+			)
+			.fetch_all(a.store.pool.fixture_driver())
+			.await
+			.unwrap();
+			if ready == vec!["READY".to_string(); 2] {
+				break;
+			}
+			assert!(tokio::time::Instant::now() < deadline, "{ready:?}");
+			tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+		}
+	}
+
+	json!({"selection":{"participant":participant["id"],"expected_revision":participant["revision"],"provider":provider},"bank":participant["bank"],"provider":provider,"private":private,"shared":shared})
+}
+
+// Each Home input stays an explicit argument.
+#[allow(clippy::too_many_arguments)]
+async fn configure_semantic(
+	a: &Federation,
+	app: &common::TestApplication,
+	token: &str,
+	workspace: Uuid,
+	executor: &str,
+	memory_mode: (bool, bool),
+	provider: EmbeddingProvider,
+	tenant: Option<&tenant_openrouter::TenantOpenRouter>,
+) -> (
+	SemanticFixture,
+	Arc<reinhardt::test::fixtures::server::TestServerGuard>,
+) {
+	let (native, large_journal) = memory_mode;
+	let EmbeddingProvider {
+		requests,
+		failing,
+		failure_at,
+		reservations,
+		response,
+		server,
+	} = provider;
+	let endpoint = format!("{}/v1", server.url);
+	let embedding = if let Some(tenant) = tenant {
+		// The catalog base URL is fixed; the fake issuer routes calls here.
+		tenant.connect("acme").await;
+		*tenant.endpoint.lock().unwrap() = endpoint.clone();
+		json!({"provider":"openrouter","endpoint":"https://openrouter.ai/api/v1","provider_credential":"openrouter","model":"home-vector","model_version":"1","dimensions":3})
+	} else {
+		// A Keyless embedding fixture on loopback (ADR 0036).
+		a.store.keyless.permit_origin_of(&endpoint).unwrap();
+		json!({"provider":"openai","endpoint":endpoint,"model":"home-vector","model_version":"1","dimensions":3})
+	};
+	let (status, body) = request(app, token, "POST", "/api/registry", json!({"id":"home-embedding","version":"1.0.0","kind":"embedding","name":{"en":"Home embedding"},"description":{"en":"Deterministic semantic fixture"},"config":embedding})).await;
+	assert_eq!(status, 200, "{body}");
+	let (status, body) = request(
+		app,
+		token,
+		"POST",
+		"/api/authorization/acme/catalog",
+		json!({"node":aidash_domain::nodes::NodeName::derived("acme"),"entry":{"id":"home-embedding","version":"1.0.0"},"expected_revision":0,"enabled":true}),
+	)
+	.await;
+	assert_eq!(status, 200, "{body}");
+	let (status, body) = request(app, &a.config.api_token, "POST", &format!("/api/workspaces/{workspace}/semantic/index"), json!({"expected_revision":0,"spec":{
+		"embedding":embedding,"vector":{"provider":"postgres","endpoint":"local","credential_env":null},
+		"enabled":true,"auto_context":!native,"max_sources":100,"max_results":10,"max_result_tokens":if native {32768} else {4096},"max_input_bytes":32768
+	}})).await;
+	assert_eq!(status, 200, "{body}");
+
+	let mut first = Uuid::nil();
+	// Every canonical bank requires an enabled index, including paged journals.
+	if !large_journal {
+		for (key, owner, text) in [
+			("shared", None, "Iridium archive marker: ochre falcon."),
+			(
+				"exact",
+				Some(aidash_domain::agent_subject(executor, "research", "1.0.0")),
+				"Exact executor marker: silver fern.",
+			),
+			(
+				"other-node",
+				Some(qualified_agent(
+					&aidash_domain::nodes::NodeAddress::derived(
+						a.config.deployment.as_str(),
+						"acme",
+					),
+					"research",
+					"1.0.0",
+				)),
+				"DO NOT DISCLOSE: same name at Home.",
+			),
+			(
+				"other-version",
+				Some(aidash_domain::agent_subject(executor, "research", "1.0.1")),
+				"DO NOT DISCLOSE: other definition version.",
+			),
+		] {
+			let (status, body) = request(app, token, "POST", &format!("/api/workspaces/{workspace}/semantic/entries"), json!({"key":key,"expected_revision":0,"source":{"kind":"memory","text":text},"agent":owner,"metadata":{}})).await;
+			assert_eq!(status, 200, "{body}");
+			if key == "shared" {
+				first = serde_json::from_value(body["id"].clone()).unwrap();
+			}
+		}
+		aidash_server::semantic::worker::sweep(&a.store)
+			.await
+			.unwrap();
+	}
+
+	(
+		SemanticFixture {
+			response,
+			reservations,
+			requests,
+			entry: first,
+			failing,
+			failure_at,
+		},
+		server,
+	)
+}
+
+#[rstest::rstest]
+#[tokio::test]
+async fn foreign_run_events_keep_the_executing_node(#[future(awt)] scoped_pair: Pair) {
+	let p = scoped_pair;
+	p.step().await;
+	p.step().await;
+	let events =
+		p.b.store
+			.events(&TEST_FIXTURE, 0, None, 1000)
+			.await
+			.unwrap();
+	let run_events: Vec<_> = events
+		.iter()
+		.filter(|event| event.workspace_id.is_none() && event.data["run_id"] == json!(p.admission))
+		.collect();
+	assert!(
+		!run_events.is_empty(),
+		"remote inference writes Run events without a local Workspace"
+	);
+	let node = aidash_domain::nodes::NodeName::derived("acme");
+	for event in run_events {
+		assert_eq!(event.node.as_ref(), Some(&node), "{}", event.kind);
+		assert_eq!(
+			event.cloud_event(p.b.config.deployment.as_str())["source"],
+			node_of(&p.b)
+		);
+	}
+	let scope = aidash_application::tenancy::TenancyScope::tenant("acme").unwrap();
+	let tenant_event =
+		p.b.store
+			.emit(&scope, None, "tenant.fixture", json!({}))
+			.await
+			.unwrap();
+	assert_eq!(tenant_event.node, None);
+	assert_eq!(
+		tenant_event.cloud_event(p.b.config.deployment.as_str())["source"],
+		p.b.config.deployment.as_str()
+	);
+	p.close().await;
+}
+
+#[rstest::rstest]
+#[tokio::test]
+async fn required_home_search_embeds_with_the_home_tenants_provider_credential(
+	#[with(true, false, false, false, false, (false, false, 32), false, true)]
+	#[future(awt)]
+	scoped_pair: Pair,
+) {
+	// ADR 0006 leaves `provider_credential` as the only keyed embedding shape.
+	// The Home performs required-Home embeddings, so it resolves its own
+	// Tenant's binding as memory-retrieval maintenance; the receiver never
+	// sees the credential, and the same search and disclosure authority applies.
+	let p = scoped_pair;
+	p.step().await;
+	p.step().await;
+	let run = p.run().await;
+	assert_eq!(run.control.as_str(), "ACTIVE", "{run:?}");
+	let requests = p.requests.lock().await;
+	assert_eq!(requests.len(), 1, "{run:?}");
+	let context: Value =
+		serde_json::from_str(requests[0]["messages"][1]["content"].as_str().unwrap()).unwrap();
+	let semantic = &context["current"]["semantic_memory"];
+	assert_eq!(semantic["home_node"], node_of(&p.a), "{context}");
+	let encoded = serde_json::to_string(semantic).unwrap();
+	assert!(encoded.contains("ochre falcon"));
+	assert!(encoded.contains("silver fern"));
+	assert!(!encoded.contains("DO NOT DISCLOSE"));
+	drop(requests);
+	let calls = p.semantic.as_ref().unwrap().requests.lock().await;
+	assert_eq!(calls.len(), 5, "four indexing calls and one search");
+	drop(calls);
+	let mints = p
+		.tenant_embedding
+		.as_ref()
+		.unwrap()
+		.mints
+		.lock()
+		.unwrap()
+		.clone();
+	use aidash_application::provider_access::MaintenancePurpose;
+	let retrieval: Vec<_> = mints
+		.iter()
+		.filter(|(context, _)| context.maintenance == Some(MaintenancePurpose::MemoryRetrieval))
+		.collect();
+	assert_eq!(retrieval.len(), 1, "one Home search embedding: {mints:?}");
+	assert_eq!(retrieval[0].0.tenant, "acme");
+	assert_eq!(retrieval[0].0.run, None);
+	assert!(
+		mints
+			.iter()
+			.all(|(context, id)| context.tenant == "acme" && *id == retrieval[0].1)
+	);
+	p.close().await;
+}
+
+#[rstest::rstest]
+#[tokio::test]
+async fn remote_semantic_context_reaches_actual_model_with_home_scope_and_receipts(
+	#[with(true)]
+	#[future(awt)]
+	scoped_pair: Pair,
+) {
+	let p = scoped_pair;
+	p.step().await;
+	p.step().await;
+	let run = p.run().await;
+	assert_eq!(run.control.as_str(), "ACTIVE", "{run:?}");
+	let requests = p.requests.lock().await;
+	assert_eq!(requests.len(), 1, "{run:?}");
+	assert!(
+		requests[0]["tools"]
+			.as_array()
+			.unwrap()
+			.iter()
+			.all(|tool| tool["function"]["name"] != "memory_mutate")
+	);
+	let context: Value =
+		serde_json::from_str(requests[0]["messages"][1]["content"].as_str().unwrap()).unwrap();
+	let semantic = &context["current"]["semantic_memory"];
+	assert_eq!(semantic["home_node"], node_of(&p.a), "{context}");
+	assert_eq!(
+		semantic["executor"],
+		aidash_domain::agent_subject(&node_of(&p.b), "research", "1.0.0")
+	);
+	assert_eq!(semantic["grant_id"], p.grant.to_string());
+	let encoded = serde_json::to_string(semantic).unwrap();
+	assert!(encoded.contains("ochre falcon"));
+	assert!(encoded.contains("silver fern"));
+	assert!(!encoded.contains("DO NOT DISCLOSE"));
+	assert_eq!(semantic["result"]["matches"].as_array().unwrap().len(), 2);
+	assert_eq!(semantic["sources"].as_array().unwrap().len(), 2);
+	drop(requests);
+	let calls = p.semantic.as_ref().unwrap().requests.lock().await;
+	assert_eq!(calls.len(), 5, "four indexing calls and one search");
+	assert!(
+		!calls.last().unwrap()["input"]
+			.as_str()
+			.unwrap()
+			.contains("ochre falcon"),
+		"the query does not contain the retrieved text"
+	);
+	drop(calls);
+	let saved: i64 = {
+		let query_bind_1 = p.admission;
+		sqlx::query_scalar(
+			&Query::select()
+				.expr(reinhardt::query::Func::count(
+					Expr::col(Alias::new("operation_id")).into(),
+				))
+				.from(Alias::new("semantic_remote_receipts"))
+				.and_where(SimpleExpr::CustomWithExpr(
+					"(run_id=?)".to_owned(),
+					vec![Expr::value(query_bind_1.to_owned()).into()],
+				))
+				.to_string(PostgresQueryBuilder),
+		)
+		.fetch_one(p.b.store.pool.fixture_driver())
+		.await
+	}
+	.unwrap();
+	assert_eq!(saved, 1);
+	p.close().await;
+}
+
+/// Semantic retrievals the receiver has stored for the Run. A reused read adds
+/// none; a fresh retrieval adds one, because its Home operation differs.
+async fn remote_retrievals(p: &Pair) -> i64 {
+	sqlx::query_scalar(
+		&Query::select()
+			.expr(Expr::cust("COUNT(*)"))
+			.from(Alias::new("semantic_remote_receipts"))
+			.and_where(Expr::col("run_id").eq(Expr::value(p.admission)))
+			.to_string(PostgresQueryBuilder),
+	)
+	.fetch_one(p.b.store.pool.fixture_driver())
+	.await
+	.unwrap()
+}
+/// Step the Run until the model has received `count` requests.
+async fn step_to_model_request(p: &Pair, count: usize) {
+	for _ in 0..40 {
+		if p.requests.lock().await.len() >= count {
+			return;
+		}
+		p.step().await;
+	}
+	panic!(
+		"model request {count} never arrived: {:?}",
+		p.run().await.state
+	);
+}
+/// Write a Home semantic entry and index it, as a Home Deployment Administrator would.
+async fn write_home_entry(
+	p: &Pair,
+	key: &str,
+	agent: Option<String>,
+	expected_revision: i64,
+	text: &str,
+) {
+	let workspace =
+		p.a.store
+			.task(&TEST_FIXTURE, p.task)
+			.await
+			.unwrap()
+			.workspace_id;
+	let (status, body) = request(
+		&p.aa,
+		&p.token,
+		"POST",
+		&format!("/api/workspaces/{workspace}/semantic/entries"),
+		json!({"key":key,"expected_revision":expected_revision,"source":{"kind":"memory","text":text},"agent":agent,"metadata":{}}),
+	)
+	.await;
+	assert_eq!(status, 200, "{body}");
+	let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(15);
+	loop {
+		aidash_server::semantic::worker::sweep(&p.a.store)
+			.await
+			.unwrap();
+		let pending: i64 = sqlx::query_scalar(
+			&Query::select()
+				.expr(Expr::cust("COUNT(*)"))
+				.from(Alias::new("semantic_entries"))
+				.and_where(Expr::col("workspace_id").eq(Expr::value(workspace)))
+				.and_where(Expr::col("state").ne("READY"))
+				.to_string(PostgresQueryBuilder),
+		)
+		.fetch_one(p.a.store.pool.fixture_driver())
+		.await
+		.unwrap();
+		if pending == 0 {
+			return;
+		}
+		assert!(tokio::time::Instant::now() < deadline, "indexing stalled");
+		tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+	}
+}
+/// Make the receiver's scheduled semantic retry and the Home operation it
+/// waits on due now, leaving their counters as the production path saved them.
+async fn advance_semantic_retry(p: &Pair) {
+	sqlx::query(
+		&Query::update()
+			.table(Alias::new("runs"))
+			.value_expr(
+				Alias::new("pending"),
+				Expr::cust(
+					"JSONB_SET(pending, '{recovery,retry,at}', TO_JSONB(CLOCK_TIMESTAMP()))",
+				),
+			)
+			.and_where(SimpleExpr::CustomWithExpr(
+				"(id=? AND SET_CONFIG('aidash.input_ledger_worker','true',true)='true')".to_owned(),
+				vec![Expr::value(p.admission).into()],
+			))
+			.to_string(PostgresQueryBuilder),
+	)
+	.execute(p.b.store.pool.fixture_driver())
+	.await
+	.unwrap();
+	sqlx::query(
+		&Query::update()
+			.table(Alias::new("semantic_remote_operations"))
+			.value_expr(Alias::new("next_attempt"), Expr::cust("CLOCK_TIMESTAMP()"))
+			.and_where(SimpleExpr::CustomWithExpr(
+				"(grant_id=? AND state='WAITING')".to_owned(),
+				vec![Expr::value(p.grant).into()],
+			))
+			.to_string(PostgresQueryBuilder),
+	)
+	.execute(p.a.store.pool.fixture_driver())
+	.await
+	.unwrap();
+}
+/// The `semantic_memory` an Ordered model request carried in its volatile part.
+async fn ordered_semantic_memory(p: &Pair, request: usize) -> Value {
+	let requests = p.requests.lock().await;
+	let parts = requests[request - 1]["messages"][1]["content"]
+		.as_array()
+		.expect("an Ordered request")
+		.clone();
+	let volatile: Value = serde_json::from_str(parts[1]["text"].as_str().unwrap()).unwrap();
+	volatile["semantic_memory"].clone()
+}
+/// Home embedding calls so far, failed ones included.
+async fn home_embeddings(p: &Pair) -> usize {
+	p.semantic.as_ref().unwrap().requests.lock().await.len()
+}
+async fn model_saw(p: &Pair, request: usize, text: &str) -> bool {
+	serde_json::to_string(&p.requests.lock().await[request - 1])
+		.unwrap()
+		.contains(text)
+}
+
+/// A remote Ordered Run reuses its Home retrieval while the Home corpus is
+/// unchanged and retrieves again after an entry is inserted or edited, as a
+/// local Ordered Run does. The receiver sees the change in the corpus digest
+/// and retrieves before it infers.
+///
+/// The edited entry is one this executor never received: editing a disclosed
+/// source invalidates the Run instead (see
+/// `consumed_home_semantic_revision_blocks_next_remote_inference`).
+#[rstest::rstest]
+#[tokio::test]
+async fn remote_ordered_run_retrieves_again_after_the_home_corpus_changes(
+	#[with(true, false, false, false, false, (false, false, 32), true)]
+	#[future(awt)]
+	scoped_pair: Pair,
+) {
+	// Arrange
+	let p = scoped_pair;
+	p.model.extra_tool_rounds.store(3, Ordering::Release);
+
+	// Act and assert: the first inference retrieves; the second reuses it.
+	step_to_model_request(&p, 1).await;
+	assert_eq!(remote_retrievals(&p).await, 1);
+	step_to_model_request(&p, 2).await;
+	assert_eq!(remote_retrievals(&p).await, 1, "unchanged corpus is reused");
+
+	// An inserted Home entry changes what the Run should see.
+	write_home_entry(&p, "late", None, 0, "Late marker: cobalt heron.").await;
+	step_to_model_request(&p, 3).await;
+	assert!(model_saw(&p, 3, "cobalt heron").await);
+	assert_eq!(remote_retrievals(&p).await, 2);
+
+	// An edit does too, even of an entry this executor may not retrieve, and
+	// the fresh retrieval still withholds it.
+	write_home_entry(
+		&p,
+		"other-node",
+		Some(qualified_agent(
+			&aidash_domain::nodes::NodeAddress::derived(p.a.config.deployment.as_str(), "acme"),
+			"research",
+			"1.0.0",
+		)),
+		1,
+		"DO NOT DISCLOSE: edited marker amber lynx.",
+	)
+	.await;
+	step_to_model_request(&p, 4).await;
+	assert!(!model_saw(&p, 4, "amber lynx").await);
+	let edited = remote_retrievals(&p).await;
+	assert_eq!(edited, 3);
+
+	// Reuse resumes once the corpus holds still.
+	step_to_model_request(&p, 5).await;
+	assert_eq!(remote_retrievals(&p).await, edited);
+	p.close().await;
+}
+
+/// The Home reports its corpus digest, and only for a grant that gives the
+/// receiver Home semantic access.
+#[rstest::rstest]
+#[tokio::test]
+async fn home_describe_reports_the_corpus_digest_and_it_changes_with_the_corpus(
+	#[with(true)]
+	#[future(awt)]
+	scoped_pair: Pair,
+) {
+	// Arrange
+	let p = scoped_pair;
+	let workspace =
+		p.a.store
+			.task(&TEST_FIXTURE, p.task)
+			.await
+			.unwrap()
+			.workspace_id;
+	let describe = || async {
+		let started = std::time::Instant::now();
+		let (status, body) = describe_from_receiver(&p).await;
+		assert_eq!(status, 200, "{body}");
+		eprintln!("scoped describe (0.4): {:?}", started.elapsed());
+		body
+	};
+	let expected = || async {
+		aidash_server::semantic::services::corpus_digest(&p.a.store, &TEST_FIXTURE, workspace, None)
+			.await
+			.unwrap()
+	};
+
+	// Act
+	let current = describe().await;
+	let again = describe().await;
+	write_home_entry(&p, "late", None, 0, "Late marker: cobalt heron.").await;
+	let changed = describe().await;
+
+	// Assert
+	assert_eq!(current["corpus_digest"], again["corpus_digest"]);
+	assert_ne!(current["corpus_digest"], changed["corpus_digest"]);
+	assert_eq!(changed["corpus_digest"], json!(expected().await));
+	// The digest is not part of the Description a receiver pins and compares.
+	let mut without = changed.clone();
+	without.as_object_mut().unwrap().remove("corpus_digest");
+	serde_json::from_value::<aidash_domain::federation::execution::Description>(without)
+		.expect("a reply must parse as a plain Description");
+	p.close().await;
+}
+
+/// The receiver's request to describe the grant, as its Node sends it to Home.
+async fn describe_from_receiver(p: &Pair) -> (u16, Value) {
+	let home = common::default_node(&p.a.store, "acme").await;
+	common::peer_request(
+		&p.aa,
+		(&p.b, "acme"),
+		&home,
+		"",
+		"/federation/v0.1/scoped/execution/grants/describe",
+		json!({"grant_id":p.grant}),
+	)
+	.await
+}
+
+/// A grant without Home semantic access must not disclose corpus changes.
+#[rstest::rstest]
+#[tokio::test]
+async fn home_describe_omits_the_corpus_digest_without_semantic_access(
+	#[future(awt)] scoped_pair: Pair,
+) {
+	let p = scoped_pair;
+	let (status, body) = describe_from_receiver(&p).await;
+	assert_eq!(status, 200, "{body}");
+	assert!(body.get("corpus_digest").is_none(), "{body}");
+	p.close().await;
+}
+
+/// Step until the Run pauses, within a bound; returns the pausing Run.
+async fn step_until_paused(p: &Pair) -> aidash_server::domain::Run {
+	for _ in 0..5 {
+		let run = p.run().await;
+		if run.control.as_str() == "PAUSED" {
+			return run;
+		}
+		p.step().await;
+	}
+	let run = p.run().await;
+	assert_eq!(
+		run.control.as_str(),
+		"PAUSED",
+		"{:?} {:?}",
+		run.state,
+		run.error
+	);
+	run
+}
+/// The Home journal's corpus digests for the Run's semantic operations.
+async fn home_corpus_digests(p: &Pair) -> Vec<Option<String>> {
+	sqlx::query_scalar(
+		&Query::select()
+			.column(Alias::new("corpus_digest"))
+			.from(Alias::new("semantic_remote_operations"))
+			.and_where(Expr::col("admission_id").eq(Expr::value(p.admission)))
+			.to_string(PostgresQueryBuilder),
+	)
+	.fetch_all(p.a.store.pool.fixture_driver())
+	.await
+	.unwrap()
+}
+
+/// A remote Ordered Run with an unchanged Home corpus retrieves once. Each
+/// later step cites that retrieval's operation, and the Home admits it (#222).
+#[rstest::rstest]
+#[tokio::test]
+async fn remote_ordered_run_reuses_one_retrieval_across_steps(
+	#[with(true, false, false, false, false, (false, false, 32), true)]
+	#[future(awt)]
+	scoped_pair: Pair,
+) {
+	let p = scoped_pair;
+	p.model.extra_tool_rounds.store(3, Ordering::Release);
+	step_to_model_request(&p, 1).await;
+	assert_eq!(remote_retrievals(&p).await, 1);
+	let recorded = home_corpus_digests(&p).await;
+	assert_eq!(recorded.len(), 1);
+	assert!(
+		recorded[0].is_some(),
+		"the Home records the corpus it retrieved from"
+	);
+	step_to_model_request(&p, 2).await;
+	step_to_model_request(&p, 3).await;
+	assert_eq!(
+		remote_retrievals(&p).await,
+		1,
+		"an unchanged corpus is reused"
+	);
+	assert!(model_saw(&p, 3, "ochre falcon").await);
+	p.close().await;
+}
+
+/// An insert changes the Home corpus but no consumed source. The Home refuses
+/// the stale reuse, and the Run retrieves once more instead of pausing.
+#[rstest::rstest]
+#[tokio::test]
+async fn remote_ordered_run_retrieves_again_when_the_home_corpus_changed(
+	#[with(true, false, false, false, false, (false, false, 32), true)]
+	#[future(awt)]
+	scoped_pair: Pair,
+) {
+	let p = scoped_pair;
+	p.model.extra_tool_rounds.store(3, Ordering::Release);
+	step_to_model_request(&p, 1).await;
+	write_home_entry(&p, "late", None, 0, "Late Home marker: amber heron.").await;
+	step_to_model_request(&p, 2).await;
+	assert_eq!(
+		remote_retrievals(&p).await,
+		2,
+		"a changed corpus is retrieved again"
+	);
+	assert!(!model_saw(&p, 1, "amber heron").await);
+	assert!(model_saw(&p, 2, "amber heron").await);
+	assert_eq!(p.run().await.control.as_str(), "ACTIVE");
+	step_to_model_request(&p, 3).await;
+	assert_eq!(
+		remote_retrievals(&p).await,
+		2,
+		"the new retrieval is reused"
+	);
+	p.close().await;
+}
+
+/// Issue #236: a remote Ordered Run keeps reusing its Home retrieval through an
+/// outage of the Home embedding provider while its Retrieval Key holds. A Run
+/// message changes the key's query inputs; a pending entry changes its Home
+/// corpus digest. Only a step that needs a new retrieval follows the outage
+/// policy. Once the provider recovers, the retry retrieves again and the next
+/// step reuses it.
+#[rstest::rstest]
+#[case::run_message(false)]
+#[case::pending_index(true)]
+#[tokio::test]
+async fn remote_ordered_run_keeps_reusing_its_retrieval_through_a_home_embedding_outage(
+	#[case] pending_entry: bool,
+	#[with(true, false, false, false, false, (false, false, 32), true)]
+	#[future(awt)]
+	scoped_pair: Pair,
+) {
+	let p = scoped_pair;
+	p.model.extra_tool_rounds.store(4, Ordering::Release);
+	let failing = &p.semantic.as_ref().unwrap().failing;
+
+	// Arrange: the first step retrieves while the Home provider is healthy.
+	step_to_model_request(&p, 1).await;
+	assert_eq!(remote_retrievals(&p).await, 1);
+	let retrieved = ordered_semantic_memory(&p, 1).await;
+	assert!(!retrieved.is_null(), "step 1 carries semantic context");
+
+	// Act: the Home provider goes down; the next steps keep the same key.
+	failing.store(true, Ordering::Release);
+	let outage = home_embeddings(&p).await;
+	for step in 2..=3 {
+		step_to_model_request(&p, step).await;
+		// Assert: the reuse reaches inference with the same bytes, untouched.
+		assert_eq!(
+			ordered_semantic_memory(&p, step).await,
+			retrieved,
+			"step {step}"
+		);
+		let run = p.run().await;
+		assert_eq!(run.control.as_str(), "ACTIVE", "step {step}: {run:?}");
+		assert!(run.recovery.retry.is_none(), "step {step}: {run:?}");
+		assert!(
+			serde_json::to_value(run.recovery.semantic_reason)
+				.unwrap()
+				.is_null(),
+			"step {step}: {run:?}"
+		);
+	}
+	assert_eq!(remote_retrievals(&p).await, 1, "an unchanged key is reused");
+	assert_eq!(home_embeddings(&p).await, outage, "a reuse embeds nothing");
+
+	let (path, body) = if pending_entry {
+		let workspace =
+			p.a.store
+				.task(&TEST_FIXTURE, p.task)
+				.await
+				.unwrap()
+				.workspace_id;
+		(
+			format!("/api/workspaces/{workspace}/semantic/entries"),
+			json!({"key":"pending-during-outage","expected_revision":0,"source":{"kind":"memory","text":"New Home knowledge: ochre falcon."},"metadata":{}}),
+		)
+	} else {
+		(
+			format!("/api/tasks/{}/remote-grants/{}/messages", p.task, p.grant),
+			json!({"id":Uuid::new_v4(),"content":"Also cover the ochre falcon's range."}),
+		)
+	};
+	let (status, body) = request(&p.aa, &p.token, "POST", &path, body).await;
+	assert_eq!(status, 200, "{body}");
+	if pending_entry {
+		assert_eq!(body["state"], "PENDING", "{body}");
+	}
+	// The refreshed Home corpus digest changes the Retrieval Key before reuse,
+	// so a pending entry waits for indexing without a separate stale retry.
+	for _ in 0..10 {
+		if p.run().await.recovery.retry.is_some() {
+			break;
+		}
+		p.step().await;
+	}
+
+	// Assert: the step that needs a new retrieval follows the outage policy.
+	let run = p.run().await;
+	let retry = run
+		.recovery
+		.retry
+		.as_ref()
+		.unwrap_or_else(|| panic!("a scheduled retry: {run:?}"));
+	assert_eq!(retry.count, 1, "{run:?}");
+	assert_eq!(
+		serde_json::to_value(run.recovery.semantic_reason).unwrap(),
+		"unavailable"
+	);
+	assert_eq!(run.control.as_str(), "ACTIVE");
+	assert_eq!(p.requests.lock().await.len(), 3, "no inference");
+	if pending_entry {
+		assert_eq!(
+			home_embeddings(&p).await,
+			outage,
+			"indexing must finish before embedding"
+		);
+	} else {
+		assert!(
+			home_embeddings(&p).await > outage,
+			"the Home tried to embed"
+		);
+	}
+
+	// Act: the provider recovers and the retry is due.
+	failing.store(false, Ordering::Release);
+	if pending_entry {
+		aidash_server::semantic::worker::sweep(&p.a.store)
+			.await
+			.unwrap();
+	}
+	advance_semantic_retry(&p).await;
+	step_to_model_request(&p, 4).await;
+	// Assert: the retry retrieves again, and the next step reuses it.
+	assert_eq!(remote_retrievals(&p).await, 2, "the retry retrieves again");
+	assert!(p.run().await.recovery.retry.is_none());
+	step_to_model_request(&p, 5).await;
+	assert_eq!(remote_retrievals(&p).await, 2, "step 5 reuses step 4");
+	assert_eq!(
+		ordered_semantic_memory(&p, 5).await,
+		ordered_semantic_memory(&p, 4).await
+	);
+	p.close().await;
+}
+
+/// Revoking the grant or editing a source the Run consumed stops a reuse step
+/// before inference, through the existing pause and invalidation paths.
+#[rstest::rstest]
+#[case::grant_revoked("revoked", Some("authority"))]
+#[case::consumed_source_edited("edited", Some("invalidated"))]
+#[tokio::test]
+async fn remote_ordered_reuse_stops_after_revocation_or_a_consumed_source_edit(
+	#[case] fault: &str,
+	#[case] reason: Option<&str>,
+	#[with(true, false, false, false, false, (false, false, 32), true)]
+	#[future(awt)]
+	scoped_pair: Pair,
+) {
+	let p = scoped_pair;
+	p.model.extra_tool_rounds.store(3, Ordering::Release);
+	step_to_model_request(&p, 1).await;
+	if fault == "revoked" {
+		let (status, body) = request(
+			&p.aa,
+			&p.token,
+			"POST",
+			&format!("/api/tasks/{}/remote-grants/{}/revoke", p.task, p.grant),
+			json!({}),
+		)
+		.await;
+		assert_eq!(status, 200, "{body}");
+	} else {
+		write_home_entry(&p, "shared", None, 1, "Edited archive marker: slate owl.").await;
+	}
+	let run = step_until_paused(&p).await;
+	assert_eq!(
+		run.recovery
+			.semantic_reason
+			.map(|reason| serde_json::to_value(reason).unwrap()),
+		reason.map(|reason| json!(reason)),
+		"{:?}",
+		run.error
+	);
+	assert_eq!(p.requests.lock().await.len(), 1);
+	assert_eq!(remote_retrievals(&p).await, 1);
+	p.close().await;
+}
+
+/// The Home refuses a citation of an operation it did not retrieve for this
+/// Run and grant at or before the current step, and of one that is not READY.
+#[rstest::rstest]
+#[case::another_run("admission_id", "gen_random_uuid()")]
+#[case::another_grant("grant_id", "gen_random_uuid()")]
+#[case::not_ready("state", "'PENDING'")]
+#[case::future_step(
+	"binding",
+	"jsonb_set(binding,'{operation,boundary,step}','999'::jsonb)"
+)]
+#[tokio::test]
+async fn the_home_refuses_a_foreign_reused_operation(
+	#[case] column: &str,
+	#[case] value: &str,
+	#[with(true, false, false, false, false, (false, false, 32), true)]
+	#[future(awt)]
+	scoped_pair: Pair,
+) {
+	let p = scoped_pair;
+	p.model.extra_tool_rounds.store(3, Ordering::Release);
+	step_to_model_request(&p, 1).await;
+	// Rewrite only the Home's record of the cited operation; the receiver still
+	// holds and cites its own READY copy.
+	let tampered = sqlx::query(
+		&Query::update()
+			.table(Alias::new("semantic_remote_operations"))
+			.value_expr(Alias::new(column), Expr::cust(value))
+			.and_where(Expr::col("admission_id").eq(Expr::value(p.admission)))
+			.to_string(PostgresQueryBuilder),
+	)
+	.execute(p.a.store.pool.fixture_driver())
+	.await
+	.unwrap();
+	assert_eq!(tampered.rows_affected(), 1);
+	let run = step_until_paused(&p).await;
+	assert_eq!(run.recovery.semantic_reason, None, "{:?}", run.error);
+	assert_eq!(p.requests.lock().await.len(), 1);
+	assert_eq!(remote_retrievals(&p).await, 1);
+	p.close().await;
+}
+
+#[rstest::rstest]
+#[tokio::test]
+async fn semantic_dependencies_hide_both_node_outputs_and_journals_after_source_change(
+	#[with(true)]
+	#[future(awt)]
+	scoped_pair: Pair,
+) {
+	let p = scoped_pair;
+	for _ in 0..10 {
+		if p.run().await.phase().as_str() == "COMPLETED" {
+			break;
+		}
+		p.step().await;
+		assert_eq!(
+			p.run().await.control.as_str(),
+			"ACTIVE",
+			"{:?}",
+			p.run().await
+		);
+	}
+	assert_eq!(
+		p.run().await.phase().as_str(),
+		"COMPLETED",
+		"{:?}",
+		p.run().await
+	);
+	let workspace =
+		p.a.store
+			.task(&TEST_FIXTURE, p.task)
+			.await
+			.unwrap()
+			.workspace_id;
+	let path = format!("/api/runs/{}", p.admission);
+	let (status, body) = request(&p.ba, &p.receiver_token, "GET", &path, json!({})).await;
+	assert_eq!(status, 200, "{body}");
+	assert_eq!(body["run"]["id"], p.admission.to_string());
+	let home = format!("/api/workspaces/{workspace}");
+	let (status, body) = request(&p.aa, &p.token, "GET", &home, json!({})).await;
+	assert_eq!(status, 200, "{body}");
+	assert!(body.to_string().contains("Scoped remote result"), "{body}");
+	assert!(
+		body.to_string().contains("Scoped remote progress"),
+		"{body}"
+	);
+	let artifact = body["artifacts"][0]["id"].clone();
+	let receipt_path = format!("/api/tasks/{}/remote-grants/{}/semantic", p.task, p.grant);
+	let (status, receipt) = request(&p.aa, &p.token, "GET", &receipt_path, json!({})).await;
+	assert_eq!(status, 200, "{receipt}");
+	assert_eq!(receipt["sources"].as_array().unwrap().len(), 2);
+	assert!(
+		!receipt.to_string().contains("ochre falcon"),
+		"provenance must not return source text"
+	);
+	// Unbounded SSE uses the fixture-owned streaming client without buffering the body.
+	let response =
+		p.aa.streaming_http
+			.get(p.aa.url(format!("/api/events/stream?workspace_id={workspace}")))
+			.bearer_auth(&p.token)
+			.send()
+			.await
+			.unwrap();
+	assert_eq!(response.status(), 200);
+	let mut stream = response.bytes_stream();
+	tokio::time::timeout(std::time::Duration::from_secs(5), stream.next())
+		.await
+		.unwrap()
+		.unwrap()
+		.unwrap();
+	let source = p.semantic.as_ref().unwrap().entry;
+	let (status, body) = request(
+		&p.aa,
+		&p.token,
+		"DELETE",
+		&format!("/api/workspaces/{workspace}/semantic/entries/{source}"),
+		json!({"expected_revision":1}),
+	)
+	.await;
+	assert_eq!(status, 200, "{body}");
+	let (status, body) = request(&p.ba, &p.receiver_token, "GET", &path, json!({})).await;
+	assert_eq!(status, 403, "{body}");
+	assert!(!body.to_string().contains("ochre falcon"));
+	let (status, body) = request(&p.aa, &p.token, "GET", &home, json!({})).await;
+	assert_eq!(status, 200, "{body}");
+	assert!(!body.to_string().contains("Scoped remote result"), "{body}");
+	assert!(
+		!body.to_string().contains("Scoped remote progress"),
+		"{body}"
+	);
+	assert_eq!(
+		request(&p.aa, &p.token, "GET", &receipt_path, json!({}))
+			.await
+			.0,
+		403
+	);
+	let (status,body)=request(&p.aa,&p.token,"POST",&format!("/api/workspaces/{workspace}/semantic/entries"),json!({"key":"derived-reingestion","expected_revision":0,"source":{"kind":"artifact","id":artifact},"metadata":{}})).await;
+	assert_eq!(status, 403, "{body}");
+	let (status, body) = request(
+		&p.aa,
+		&p.token,
+		"POST",
+		&format!("/api/workspaces/{workspace}/messages"),
+		json!({"content":"independent-stream-tail"}),
+	)
+	.await;
+	assert_eq!(status, 200, "{body}");
+	tokio::time::timeout(std::time::Duration::from_secs(20), async {
+		loop {
+			let chunk = stream.next().await.unwrap().unwrap();
+			let frame = String::from_utf8_lossy(&chunk);
+			assert!(
+				!frame.contains("Scoped remote result")
+					&& !frame.contains("Scoped remote progress"),
+				"{frame}"
+			);
+			if frame.contains("independent-stream-tail") {
+				break;
+			}
+		}
+	})
+	.await
+	.unwrap();
+	drop(stream);
+	p.close().await;
+}
+
+#[rstest::rstest]
+#[tokio::test]
+async fn semantic_journal_reads_require_the_current_viewer_at_home(
+	#[with(true)]
+	#[future(awt)]
+	scoped_pair: Pair,
+) {
+	let p = scoped_pair;
+	p.step().await;
+	p.step().await;
+	let mut source_policy = p.source_policy.clone();
+	let mut receiver_policy = p.receiver_policy.clone();
+	source_policy["subjects"]["bob"] = json!({"kind":"user"});
+	receiver_policy["subjects"]["bob"] = json!({"kind":"user"});
+	for (node, app, bundle, revision) in [
+		(&p.a, &p.aa, &source_policy, 2),
+		(&p.b, &p.ba, &receiver_policy, 1),
+	] {
+		let (status, body) = request(
+			app,
+			&node.config.api_token,
+			"POST",
+			"/api/authorization/acme",
+			json!({"expected_revision":revision,"bundle":bundle}),
+		)
+		.await;
+		assert_eq!(status, 200, "{body}");
+	}
+	let (_, viewer) = request(
+		&p.ba,
+		&p.b.config.api_token,
+		"POST",
+		"/api/authorization/acme/credentials",
+		json!({"subject":"bob"}),
+	)
+	.await;
+	let token = viewer["token"].as_str().unwrap();
+	let path = format!("/api/runs/{}", p.admission);
+	assert_eq!(
+		request(&p.ba, token, "GET", &path, json!({})).await.0,
+		403,
+		"producer authority must not stand in for an unmapped reader"
+	);
+	let (_, home_viewer) = request(
+		&p.aa,
+		&p.a.config.api_token,
+		"POST",
+		"/api/authorization/acme/credentials",
+		json!({"subject":"bob"}),
+	)
+	.await;
+	let (status,body)=request(&p.aa,&p.a.config.api_token,"POST","/api/authorization/acme/peer-mappings",json!({"node":aidash_domain::nodes::NodeName::derived("acme"),"source_node":node_of(&p.b),"source_subject":"bob","credential_id":home_viewer["credential"]["id"],"enabled":true,"expected_revision":0})).await;
+	assert_eq!(status, 200, "{body}");
+	let (status, body) = request(&p.ba, token, "GET", &path, json!({})).await;
+	assert_eq!(status, 200, "{body}");
+	source_policy["policies"].as_array_mut().unwrap().push(json!({"id":"reader-source-denial","effect":"deny","subjects":{"ids":["bob"]},"actions":["semantic.read"],"resources":{"kinds":["*"]}}));
+	let (status, body) = request(
+		&p.aa,
+		&p.a.config.api_token,
+		"POST",
+		"/api/authorization/acme",
+		json!({"expected_revision":3,"bundle":source_policy}),
+	)
+	.await;
+	assert_eq!(status, 200, "{body}");
+	assert_eq!(request(&p.ba, token, "GET", &path, json!({})).await.0, 403);
+	assert_eq!(
+		request(&p.ba, &p.receiver_token, "GET", &path, json!({}))
+			.await
+			.0,
+		200,
+		"the producer still has authority; only the current reader was denied"
+	);
+	p.close().await;
+}
+
+#[rstest::rstest]
+#[tokio::test]
+async fn semantic_empty_receipt_replay_rechecks_candidates_without_an_empty_embedding_charge(
+	#[with(true)]
+	#[future(awt)]
+	scoped_pair: Pair,
+) {
+	let p = scoped_pair;
+	let workspace =
+		p.a.store
+			.task(&TEST_FIXTURE, p.task)
+			.await
+			.unwrap()
+			.workspace_id;
+	let ids: Vec<Uuid> = {
+		let query_bind_1 = workspace;
+		let query_bind_2 = aidash_domain::agent_subject(&node_of(&p.b), "research", "1.0.0");
+		sqlx::query_scalar(
+			&Query::select()
+				.column(Alias::new("id"))
+				.from(Alias::new("semantic_entries"))
+				.and_where(SimpleExpr::CustomWithExpr(
+					"(workspace_id=? AND (agent IS NULL OR agent=?))".to_owned(),
+					vec![
+						Expr::value(query_bind_1.to_owned()).into(),
+						Expr::value(query_bind_2.to_owned()).into(),
+					],
+				))
+				.to_string(PostgresQueryBuilder),
+		)
+		.fetch_all(p.a.store.pool.fixture_driver())
+		.await
+	}
+	.unwrap();
+	assert_eq!(ids.len(), 2);
+	for id in ids {
+		let (status, body) = request(
+			&p.aa,
+			&p.token,
+			"DELETE",
+			&format!("/api/workspaces/{workspace}/semantic/entries/{id}"),
+			json!({"expected_revision":1}),
+		)
+		.await;
+		assert_eq!(status, 200, "{body}");
+	}
+	p.step().await;
+	*p.drop_reply.lock().await = Some("semantic.query".into());
+	p.step().await;
+	assert!(p.requests.lock().await.is_empty());
+	assert_eq!(
+		p.semantic.as_ref().unwrap().requests.lock().await.len(),
+		4,
+		"empty candidate retrieval does not call embedding"
+	);
+	let receipt: Value = {
+		let query_bind_1 = p.grant;
+		sqlx::query_scalar(
+			&Query::select()
+				.column(Alias::new("receipt"))
+				.from(Alias::new("semantic_remote_operations"))
+				.and_where(SimpleExpr::CustomWithExpr(
+					"(grant_id=?)".to_owned(),
+					vec![Expr::value(query_bind_1.to_owned()).into()],
+				))
+				.to_string(PostgresQueryBuilder),
+		)
+		.fetch_one(p.a.store.pool.fixture_driver())
+		.await
+	}
+	.unwrap();
+	assert_eq!(receipt["sources"], json!([]));
+	let (status,body)=request(&p.aa,&p.token,"POST",&format!("/api/workspaces/{workspace}/semantic/entries"),json!({"key":"new-current-source","expected_revision":0,"source":{"kind":"memory","text":"Newly admitted cobalt raven."},"metadata":{}})).await;
+	assert_eq!(status, 200, "{body}");
+	aidash_server::semantic::worker::sweep(&p.a.store)
+		.await
+		.unwrap();
+	p.step().await;
+	let requests = p.requests.lock().await;
+	assert_eq!(requests.len(), 1, "{:?}", p.run().await);
+	let body: Value =
+		serde_json::from_str(requests[0]["messages"][1]["content"].as_str().unwrap()).unwrap();
+	assert!(
+		body["current"]["semantic_memory"]
+			.to_string()
+			.contains("cobalt raven")
+	);
+	assert_eq!(
+		body["current"]["semantic_memory"]["sources"]
+			.as_array()
+			.unwrap()
+			.len(),
+		1
+	);
+	drop(requests);
+	assert_eq!(
+		p.semantic.as_ref().unwrap().requests.lock().await.len(),
+		6,
+		"one new index embedding and one fresh retrieval embedding"
+	);
+	p.close().await;
+}
+
+#[rstest::rstest]
+#[tokio::test]
+async fn consumed_home_semantic_revision_blocks_next_remote_inference(
+	#[with(true)]
+	#[future(awt)]
+	scoped_pair: Pair,
+) {
+	let p = scoped_pair;
+	p.step().await;
+	p.step().await;
+	assert_eq!(p.requests.lock().await.len(), 1, "{:?}", p.run().await);
+	let workspace =
+		p.a.store
+			.task(&TEST_FIXTURE, p.task)
+			.await
+			.unwrap()
+			.workspace_id;
+	let source = p.semantic.as_ref().unwrap().entry;
+	let (status, body) = request(
+		&p.aa,
+		&p.token,
+		"DELETE",
+		&format!("/api/workspaces/{workspace}/semantic/entries/{source}"),
+		json!({"expected_revision":1}),
+	)
+	.await;
+	assert_eq!(status, 200, "{body}");
+	p.step().await;
+	assert_eq!(p.run().await.control.as_str(), "PAUSED");
+	assert_eq!(p.requests.lock().await.len(), 1);
+	let control = format!("/api/tasks/{}/remote-grants/{}/control", p.task, p.grant);
+	let management = format!("/api/runs/{}/management", p.admission);
+	let (status, body) = request(&p.ba, &p.receiver_token, "GET", &management, json!({})).await;
+	assert_eq!(status, 200, "{body}");
+	assert_eq!(body["semantic_reason"], "invalidated");
+	assert!(body.get("context").is_none() && body.get("pending").is_none());
+	assert!(!body.to_string().contains("ochre falcon"));
+	let (status, body) = request(
+		&p.aa,
+		&p.token,
+		"POST",
+		&control,
+		json!({"action":"resume"}),
+	)
+	.await;
+	assert_eq!(status, 409, "{body}");
+	let (status, body) = request(
+		&p.ba,
+		&p.receiver_token,
+		"POST",
+		&management,
+		json!({"action":"cancel"}),
+	)
+	.await;
+	assert_eq!(status, 200, "{body}");
+	assert_eq!(body["control"], "CANCELLED");
+	let (status, body) = request(
+		&p.aa,
+		&p.token,
+		"POST",
+		&control,
+		json!({"action":"cancel"}),
+	)
+	.await;
+	assert_eq!(status, 200, "{body}");
+	assert!(!body.to_string().contains("ochre falcon"));
+	let followup = format!("/api/tasks/{}/remote-grants/{}/follow-up", p.task, p.grant);
+	let input = json!({"id":Uuid::new_v4(),"title":"New independent intent","description":"Use only current authorized material.","requirements":{}});
+	let (status, body) = request(&p.aa, &p.token, "POST", &followup, input.clone()).await;
+	assert_eq!(status, 200, "{body}");
+	assert_ne!(body["id"], p.task.to_string());
+	assert!(body["parent_id"].is_null());
+	assert_eq!(body["description"], input["description"]);
+	assert_eq!(
+		body,
+		request(&p.aa, &p.token, "POST", &followup, input).await.1
+	);
+	p.close().await;
+}
+
+#[rstest::rstest]
+#[tokio::test]
+async fn lost_semantic_reply_replays_receipt_without_a_second_embedding(
+	#[with(true)]
+	#[future(awt)]
+	scoped_pair: Pair,
+) {
+	let p = scoped_pair;
+	p.step().await;
+	*p.drop_reply.lock().await = Some("semantic.query".into());
+	p.step().await;
+	assert!(p.requests.lock().await.is_empty());
+	let retry = p.run().await;
+	assert_eq!(retry.recovery.retry.as_ref().unwrap().count, 1);
+	let due: chrono::DateTime<chrono::Utc> = retry.recovery.retry.as_ref().unwrap().at;
+	assert!(due > chrono::Utc::now());
+	assert_eq!(
+		p.run().await.control.as_str(),
+		"ACTIVE",
+		"{:?}",
+		p.run().await
+	);
+	p.step().await;
+	assert_eq!(p.requests.lock().await.len(), 1, "{:?}", p.run().await);
+	assert_eq!(p.semantic.as_ref().unwrap().requests.lock().await.len(), 5);
+	p.close().await;
+}
+
+#[rstest::rstest]
+#[tokio::test]
+async fn source_deleted_during_remote_model_request_rejects_the_response(
+	#[with(true)]
+	#[future(awt)]
+	scoped_pair: Pair,
+) {
+	let p = scoped_pair;
+	p.step().await;
+	p.model.hold.store(true, Ordering::Release);
+	let worker = Harness {
+		federation: p.b.clone(),
+	};
+	let running = tokio::spawn(async move { worker.worker_once().await });
+	tokio::time::timeout(
+		std::time::Duration::from_secs(20),
+		p.model.entered.notified(),
+	)
+	.await
+	.unwrap();
+	let workspace =
+		p.a.store
+			.task(&TEST_FIXTURE, p.task)
+			.await
+			.unwrap()
+			.workspace_id;
+	let source = p.semantic.as_ref().unwrap().entry;
+	let (status, body) = request(
+		&p.aa,
+		&p.token,
+		"DELETE",
+		&format!("/api/workspaces/{workspace}/semantic/entries/{source}"),
+		json!({"expected_revision":1}),
+	)
+	.await;
+	assert_eq!(status, 200, "{body}");
+	p.model.release.notify_waiters();
+	running.await.unwrap().unwrap();
+	assert_eq!(
+		p.run().await.control.as_str(),
+		"PAUSED",
+		"{:?}",
+		p.run().await
+	);
+	assert!(
+		!p.run()
+			.await
+			.context
+			.to_string()
+			.contains("Scoped remote progress")
+	);
+	p.close().await;
+}
+
+#[rstest::rstest]
+#[tokio::test]
+async fn semantic_retry_exhaustion_pauses_and_manual_resume_keeps_attempt_history(
+	#[with(true)]
+	#[future(awt)]
+	scoped_pair: Pair,
+) {
+	let p = scoped_pair;
+	p.step().await;
+	p.semantic
+		.as_ref()
+		.unwrap()
+		.failing
+		.store(true, Ordering::Release);
+	for failure in 1..=6 {
+		p.step().await;
+		let run = p.run().await;
+		assert!(p.requests.lock().await.is_empty());
+		assert_eq!(
+			run.control.as_str(),
+			if failure == 6 { "PAUSED" } else { "ACTIVE" },
+			"{run:?}"
+		);
+		if failure < 6 {
+			assert_eq!(run.recovery.retry.as_ref().unwrap().count, failure);
+			let due: chrono::DateTime<chrono::Utc> = run.recovery.retry.as_ref().unwrap().at;
+			assert!(due > chrono::Utc::now());
+			// Advance only persisted fixture deadlines, after checking that the
+			// production path saved a delay and retained its failure counter.
+			advance_semantic_retry(&p).await;
+		}
+	}
+	let count = || {
+		Query::select()
+			.expr(reinhardt::query::Func::count(
+				Expr::col(Alias::new("id")).into(),
+			))
+			.from(Alias::new("semantic_remote_attempts"))
+			.to_string(PostgresQueryBuilder)
+	};
+	let before: i64 = sqlx::query_scalar(&count())
+		.fetch_one(p.a.store.pool.fixture_driver())
+		.await
+		.unwrap();
+	assert_eq!(before, 6);
+	p.semantic
+		.as_ref()
+		.unwrap()
+		.failing
+		.store(false, Ordering::Release);
+	let (status, body) = request(
+		&p.aa,
+		&p.token,
+		"POST",
+		&format!("/api/tasks/{}/remote-grants/{}/control", p.task, p.grant),
+		json!({"action":"resume"}),
+	)
+	.await;
+	assert_eq!(status, 200, "{body}");
+	assert!(p.run().await.recovery.retry.is_none());
+	p.step().await;
+	assert_eq!(p.requests.lock().await.len(), 1, "{:?}", p.run().await);
+	let after: i64 = sqlx::query_scalar(&count())
+		.fetch_one(p.a.store.pool.fixture_driver())
+		.await
+		.unwrap();
+	assert_eq!(after, 7);
+	let cycles: i64 = sqlx::query_scalar(
+		&Query::select()
+			.expr(reinhardt::query::Func::sum(
+				Expr::col(Alias::new("cycle")).into(),
+			))
+			.from(Alias::new("semantic_remote_operations"))
+			.to_string(PostgresQueryBuilder),
+	)
+	.fetch_one(p.a.store.pool.fixture_driver())
+	.await
+	.unwrap();
+	assert_eq!(cycles, 1);
+	p.close().await;
+}
+
+/// Issue #154, contract for a required-Home Run: like a local Run (#233),
+/// an unavailable Home embedding provider or vector backend is a typed, transient
+/// `unavailable` semantic failure. The step retries with a persisted delay and
+/// never reaches inference. `semantic_retry_exhaustion_pauses_and_manual_resume_
+/// keeps_attempt_history` shows the same classification for HTTP 503 through
+/// exhaustion, `retries_exhausted` and manual resume.
+#[rstest::rstest]
+#[case::provider_transport(true)]
+#[case::vector_backend(false)]
+#[tokio::test]
+async fn required_home_semantic_outage_is_a_typed_transient_failure_for_every_cause(
+	#[case] provider_gone: bool,
+	#[with(true)]
+	#[future(awt)]
+	scoped_pair: Pair,
+) {
+	let mut p = scoped_pair;
+	p.step().await;
+	if provider_gone {
+		// The Home embedding provider follows the model provider in `providers`.
+		let provider = Arc::into_inner(p.providers.remove(1))
+			.expect("the pair owns the Home embedding provider");
+		let address = provider.url.trim_start_matches("http://").to_owned();
+		drop(provider);
+		// The guard owns its listener and every accepted connection, so once the
+		// listener refuses, pooled keep-alive sockets can no longer answer either.
+		while tokio::net::TcpStream::connect(&address).await.is_ok() {
+			tokio::task::yield_now().await;
+		}
+	} else {
+		let mut connection = p.a.store.pool.begin(&TEST_FIXTURE).await.unwrap();
+		aidash_server::database::native::query(
+			&Query::delete()
+				.from_table(Alias::new("semantic_vectors"))
+				.to_string(PostgresQueryBuilder),
+		)
+		.execute(&mut *connection)
+		.await
+		.unwrap();
+		connection.commit().await.unwrap();
+	}
+	p.step().await;
+	let run = p.run().await;
+	assert_eq!(run.control.as_str(), "ACTIVE", "{run:?}");
+	assert_eq!(run.recovery.retry.as_ref().unwrap().count, 1, "{run:?}");
+	assert!(run.recovery.retry.as_ref().unwrap().at > chrono::Utc::now());
+	assert_eq!(
+		serde_json::to_value(run.recovery.semantic_reason).unwrap(),
+		"unavailable",
+		"{run:?}"
+	);
+	assert!(p.requests.lock().await.is_empty(), "no inference happened");
+	p.close().await;
+}
+
+#[rstest::rstest]
+#[tokio::test]
+async fn scoped_remote_worker_finishes_at_home_and_retries_keep_one_execution(
+	#[future(awt)] scoped_pair: Pair,
+) {
+	let p = scoped_pair;
+	let (status, replay) = request(&p.aa, &p.token, "POST", &p.activation(), json!({})).await;
+	assert_eq!(status, 200, "{replay}");
+	assert_eq!(replay["run_id"], p.admission.to_string());
+	for _ in 0..10 {
+		if p.run().await.phase().as_str() == "COMPLETED" {
+			break;
+		}
+		p.step().await;
+		let run = p.run().await;
+		assert_eq!(
+			run.control.as_str(),
+			"ACTIVE",
+			"{} {:?}",
+			run.phase().as_str(),
+			run.error
+		);
+		assert!(
+			run.error.is_none(),
+			"{} {:?}",
+			run.phase().as_str(),
+			run.error
+		);
+	}
+	let run = p.run().await;
+	assert_eq!(run.phase().as_str(), "COMPLETED", "{:?}", run.error);
+	assert_eq!(run.agent_version, "1.0.0");
+	let task = p.a.store.task(&TEST_FIXTURE, p.task).await.unwrap();
+	assert_eq!(task.status.as_str(), "COMPLETED");
+	let snapshot =
+		p.a.store
+			.snapshot(&TEST_FIXTURE, task.workspace_id)
+			.await
+			.unwrap();
+	assert_eq!(snapshot.artifacts.len(), 1);
+	assert_eq!(snapshot.artifacts[0].content, "Scoped remote result");
+	assert_eq!(
+		snapshot
+			.messages
+			.iter()
+			.filter(|m| m.content == "Scoped remote progress")
+			.count(),
+		1
+	);
+	let events =
+		p.a.store
+			.events(&TEST_FIXTURE, 0, Some(task.workspace_id), 1000)
+			.await
+			.unwrap();
+	let completed = events
+		.iter()
+		.filter(|event| event.kind == "task.remote_tool_completed")
+		.collect::<Vec<_>>();
+	assert!(!completed.is_empty());
+	assert!(
+		completed
+			.iter()
+			.all(|event| event.data["remote_run_id"] == json!(p.admission)
+				&& event.data["detail"]["call"]["name"].is_string())
+	);
+	assert!(
+		completed
+			.iter()
+			.all(|event| event.data["detail"]["call"]["arguments"].is_null())
+	);
+	assert!(
+		!events
+			.iter()
+			.any(|event| event.kind == "task.remote_run_recovered")
+	);
+	assert_eq!(p.requests.lock().await.len(), 2);
+	let input = p
+		.requests
+		.lock()
+		.await
+		.iter()
+		.map(ToString::to_string)
+		.collect::<String>();
+	assert!(!input.contains(&p.token));
+	let (status, replay) = request(&p.aa, &p.token, "POST", &p.activation(), json!({})).await;
+	assert_eq!(status, 200, "{replay}");
+	assert_eq!(replay["phase"], "COMPLETED");
+	p.close().await;
+}
+
+#[rstest::rstest]
+#[tokio::test]
+async fn new_cross_node_scoped_transaction_is_rejected_before_manifest_persistence(
+	#[future(awt)] scoped_pair: Pair,
+) {
+	use aidash_server::transactions::{Manifest, coordinator};
+	let p = scoped_pair;
+	for _ in 0..4 {
+		if p.a.store.task(&TEST_FIXTURE, p.task).await.unwrap().status
+			== aidash_server::domain::TaskStatus::Running
+		{
+			break;
+		}
+		p.step().await;
+	}
+	let task = p.a.store.task(&TEST_FIXTURE, p.task).await.unwrap();
+	assert_eq!(task.status.as_str(), "RUNNING");
+	let run = p.run().await;
+	{ let query_bind_1 = run.id; let query_bind_2 = common::tool_pending(json!({"response":{"text":"Atomic remote answer","tool_calls":[],"input_tokens":0,"output_tokens":0},"cursor":0})); sqlx::query(&Query::update().table(Alias::new("runs"))
+		.value(Alias::new("phase"),"TOOL_CALL").value_expr(Alias::new("pending"), SimpleExpr::CustomWithExpr("(?)".to_owned(), vec![Expr::value(query_bind_2.to_owned()).into()]))
+		.and_where(SimpleExpr::CustomWithExpr("(id=?)".to_owned(), vec![Expr::value(query_bind_1.to_owned()).into()])).to_string(PostgresQueryBuilder))
+		.execute(p.b.store.pool.fixture_driver()).await }.unwrap();
+	let mut manifest:Manifest=serde_json::from_value(json!({"id":Uuid::new_v4(),"coordinator":node_of(&p.a),"isolation":"serializable","deadline":chrono::Utc::now()+chrono::Duration::minutes(5),
+		"participants":[{"node_id":node_of(&p.a),"mutations":[{"kind":"complete_task","task_id":task.id,"expected_revision":task.revision,"artifact":{"kind":"text","name":"Answer","content":"Atomic remote answer"}}]},
+		{"node_id":node_of(&p.b),"mutations":[{"kind":"finish_run","run_id":run.id,"task_id":task.id,"expected_revision":run.revision}]}]})).unwrap();
+	manifest
+		.participants
+		.sort_by(|a, b| a.node_id.cmp(&b.node_id));
+	let (status, body) = request(
+		&p.aa,
+		&p.token,
+		"POST",
+		"/api/transactions",
+		json!(manifest),
+	)
+	.await;
+	assert_eq!(status, 403, "{body}");
+	assert!(coordinator::status(&p.a, manifest.id).await.is_err());
+	assert_eq!(
+		p.a.store
+			.task(&TEST_FIXTURE, task.id)
+			.await
+			.unwrap()
+			.status
+			.as_str(),
+		"RUNNING"
+	);
+	assert_eq!(p.run().await.phase().as_str(), "TOOL_CALL");
+	p.close().await;
+}
+
+#[rstest::rstest]
+#[tokio::test]
+async fn scoped_remote_agent_cannot_delegate_through_an_excluded_default_operation(
+	#[future(awt)] scoped_pair: Pair,
+) {
+	let p = scoped_pair;
+	let run = p.run().await;
+	let excluded = run
+		.context
+		.binding_snapshot
+		.as_ref()
+		.unwrap()
+		.bindings
+		.iter()
+		.find(|binding| binding.definition.config["operation"] == "task_delegate")
+		.unwrap();
+	assert!(
+		excluded.excluded_reason.is_some(),
+		"the factual Provider contract is local-only"
+	);
+	let home = Home::new(p.b.clone(), run);
+	let child = home
+		.create_task(
+			"scoped-child-create",
+			&NewTask {
+				title: "Scoped delegated child".into(),
+				description: "Created under a remote run".into(),
+				requirements: json!({}),
+				dependencies: vec![],
+				parent_id: Some(p.task),
+			},
+		)
+		.await
+		.unwrap();
+	let agent = EntityRef {
+		id: "research".into(),
+		version: "1.0.0".into(),
+	};
+	// Calling Home directly cannot recover an operation deliberately excluded
+	// under Q23 or turn its descriptor into a broader remote contract.
+	for _ in 0..2 {
+		assert!(
+			home.delegate_with_key("scoped-child-delegate", child.id, &node_of(&p.a), &agent)
+				.await
+				.is_err()
+		);
+	}
+	assert!(
+		!p.a.store
+			.runs(&TEST_FIXTURE)
+			.await
+			.unwrap()
+			.iter()
+			.any(|run| run.task_id == child.id)
+	);
+	assert!(
+		p.a.store
+			.task(&TEST_FIXTURE, child.id)
+			.await
+			.unwrap()
+			.owner
+			.is_none()
+	);
+	p.close().await;
+}
+
+#[rstest::rstest]
+#[case("source_policy")]
+#[case("receiver_policy")]
+#[case("expiry")]
+#[case("grant_revocation")]
+#[case("source_credential")]
+#[case("receiver_mapping")]
+#[case("task_revision")]
+#[case("disabled_agent")]
+#[case("definition_substitution")]
+#[tokio::test]
+async fn a_changed_execution_boundary_stops_before_inference(
+	#[case] fault: &str,
+	#[future(awt)] scoped_pair: Pair,
+) {
+	let p = scoped_pair;
+	p.step().await;
+	assert_eq!(p.run().await.phase().as_str(), "THINKING");
+	match fault {
+		"source_policy" | "receiver_policy" => {
+			let (f, app, mut bundle, revision) = if fault == "source_policy" {
+				(&p.a, &p.aa, p.source_policy.clone(), 2)
+			} else {
+				(&p.b, &p.ba, p.receiver_policy.clone(), 1)
+			};
+			bundle["policies"].as_array_mut().unwrap().push(json!({"id":"deny-model","effect":"deny","subjects":{"any":true},"actions":["model.infer"],"resources":{"kinds":["model"]}}));
+			assert_eq!(
+				request(
+					app,
+					&f.config.api_token,
+					"POST",
+					"/api/authorization/acme",
+					json!({"expected_revision":revision,"bundle":bundle})
+				)
+				.await
+				.0,
+				200
+			);
+		}
+		"expiry" => {
+			{
+				let query_bind_1 = p.grant;
+				sqlx::query(
+					&Query::update()
+						.table(Alias::new("authorization_remote_grants"))
+						.value_expr(
+							Alias::new("expires_at"),
+							Expr::cust("CURRENT_TIMESTAMP - INTERVAL '1 second'"),
+						)
+						.and_where(SimpleExpr::CustomWithExpr(
+							"(id=?)".to_owned(),
+							vec![Expr::value(query_bind_1.to_owned()).into()],
+						))
+						.to_string(PostgresQueryBuilder),
+				)
+				.execute(p.a.store.pool.fixture_driver())
+				.await
+			}
+			.unwrap();
+		}
+		"grant_revocation" => {
+			assert_eq!(
+				request(
+					&p.aa,
+					&p.token,
+					"POST",
+					&format!("/api/tasks/{}/remote-grants/{}/revoke", p.task, p.grant),
+					json!({})
+				)
+				.await
+				.0,
+				200
+			);
+		}
+		"source_credential" => {
+			let id: Uuid = {
+				let query_bind_1 = p.grant;
+				sqlx::query_scalar(
+					&Query::select()
+						.column(Alias::new("credential_id"))
+						.from(Alias::new("authorization_remote_grants"))
+						.and_where(SimpleExpr::CustomWithExpr(
+							"(id=?)".to_owned(),
+							vec![Expr::value(query_bind_1.to_owned()).into()],
+						))
+						.to_string(PostgresQueryBuilder),
+				)
+				.fetch_one(p.a.store.pool.fixture_driver())
+				.await
+			}
+			.unwrap();
+			assert_eq!(
+				request(
+					&p.aa,
+					&p.a.config.api_token,
+					"POST",
+					&format!("/api/authorization/acme/credentials/{id}/revoke"),
+					json!({})
+				)
+				.await
+				.0,
+				200
+			);
+		}
+		"receiver_mapping" => {
+			let id: Uuid = {
+				let query_bind_1 = node_of(&p.a);
+				sqlx::query_scalar(
+					&Query::select()
+						.column(Alias::new("credential_id"))
+						.from(Alias::new("authorization_peer_mappings"))
+						.and_where(SimpleExpr::CustomWithExpr(
+							"(source_node=?)".to_owned(),
+							vec![Expr::value(query_bind_1.to_owned()).into()],
+						))
+						.to_string(PostgresQueryBuilder),
+				)
+				.fetch_one(p.b.store.pool.fixture_driver())
+				.await
+			}
+			.unwrap();
+			assert_eq!(request(&p.ba,&p.b.config.api_token,"POST","/api/authorization/acme/peer-mappings",json!({"node":aidash_domain::nodes::NodeName::derived("acme"),"source_node":node_of(&p.a),"source_subject":"alice","credential_id":id,"enabled":false,"expected_revision":1})).await.0,200);
+		}
+		"task_revision" => {
+			{
+				let query_bind_1 = p.task;
+				sqlx::query(
+					&Query::update()
+						.table(Alias::new("tasks"))
+						.value_expr(Alias::new("revision"), Expr::cust("revision+1"))
+						.and_where(SimpleExpr::CustomWithExpr(
+							"(id=?)".to_owned(),
+							vec![Expr::value(query_bind_1.to_owned()).into()],
+						))
+						.to_string(PostgresQueryBuilder),
+				)
+				.execute(p.a.store.pool.fixture_driver())
+				.await
+			}
+			.unwrap();
+		}
+		"disabled_agent" => {
+			aidash_server::authorization::Authorization {
+				pool: p.b.store.pool.clone(),
+			}
+			.set_catalog(
+				"acme",
+				&aidash_domain::nodes::NodeName::derived("acme"),
+				&aidash_server::registry::EntityRef {
+					id: "research".into(),
+					version: "1.0.0".into(),
+				},
+				1,
+				false,
+				"deployment_administrator",
+			)
+			.await
+			.unwrap();
+		}
+		"definition_substitution" => {
+			{
+				let query_bind_1 = p.admission;
+				sqlx::query(
+					&Query::update()
+						.table(Alias::new("runs"))
+						.value_expr(Alias::new("agent_version"), Expr::cust("'9.9.9'"))
+						.and_where(SimpleExpr::CustomWithExpr(
+							"(id=?)".to_owned(),
+							vec![Expr::value(query_bind_1.to_owned()).into()],
+						))
+						.to_string(PostgresQueryBuilder),
+				)
+				.execute(p.b.store.pool.fixture_driver())
+				.await
+			}
+			.unwrap();
+		}
+		_ => panic!("unknown fault"),
+	}
+	p.step().await;
+	let run = p.run().await;
+	assert_eq!(
+		run.control.as_str(),
+		"PAUSED",
+		"{fault}: {} {:?}",
+		run.phase().as_str(),
+		run.error
+	);
+	assert!(p.requests.lock().await.is_empty());
+	let task = p.a.store.task(&TEST_FIXTURE, p.task).await.unwrap();
+	assert_eq!(task.status.as_str(), "RUNNING");
+	assert!(
+		p.a.store
+			.snapshot(&TEST_FIXTURE, task.workspace_id)
+			.await
+			.unwrap()
+			.artifacts
+			.is_empty()
+	);
+	p.close().await;
+}
+
+#[rstest::rstest]
+#[tokio::test]
+async fn remote_inputs_are_durable_and_idempotent_and_controls_remain_scoped(
+	#[future(awt)] scoped_pair: Pair,
+) {
+	let p = scoped_pair;
+	p.step().await;
+	let path = format!("/api/tasks/{}/remote-grants/{}/messages", p.task, p.grant);
+	let input =
+		json!({"id":Uuid::new_v4(),"content":"Keep this accepted correction after reconnect."});
+	let first = request(&p.aa, &p.token, "POST", &path, input.clone()).await;
+	assert_eq!(first.0, 200, "{}", first.1);
+	assert_eq!(
+		first,
+		request(&p.aa, &p.token, "POST", &path, input.clone()).await
+	);
+	let mut changed = input.clone();
+	changed["content"] = json!("Cannot replace an admitted message");
+	assert_eq!(
+		request(&p.aa, &p.token, "POST", &path, changed).await.0,
+		409
+	);
+	assert_eq!(
+		p.b.store
+			.run_inputs(&TEST_FIXTURE, p.admission)
+			.await
+			.unwrap()
+			.len(),
+		1
+	);
+	let task = p.a.store.task(&TEST_FIXTURE, p.task).await.unwrap();
+	assert_eq!(
+		p.a.store
+			.snapshot(&TEST_FIXTURE, task.workspace_id)
+			.await
+			.unwrap()
+			.messages
+			.iter()
+			.filter(|m| m.content == input["content"])
+			.count(),
+		1
+	);
+	let control = format!("/api/tasks/{}/remote-grants/{}/control", p.task, p.grant);
+	assert_eq!(
+		request(&p.aa, &p.token, "POST", &control, json!({"action":"pause"}))
+			.await
+			.0,
+		200
+	);
+	assert_eq!(p.run().await.control.as_str(), "PAUSED");
+	let states = request(
+		&p.aa,
+		&p.token,
+		"GET",
+		&format!("/api/tasks/{}/remote-executions", p.task),
+		json!({}),
+	)
+	.await;
+	assert_eq!(states.0, 200, "{}", states.1);
+	assert_eq!(states.1[0]["execution"]["control"], "PAUSED");
+	assert_eq!(
+		request(
+			&p.aa,
+			&p.token,
+			"POST",
+			&control,
+			json!({"action":"resume"})
+		)
+		.await
+		.0,
+		200
+	);
+	for _ in 0..10 {
+		if p.run().await.phase().as_str() == "COMPLETED" {
+			break;
+		}
+		p.step().await;
+		let run = p.run().await;
+		assert_eq!(
+			run.control.as_str(),
+			"ACTIVE",
+			"{} {:?}",
+			run.phase().as_str(),
+			run.error
+		);
+		assert!(run.error.is_none(), "{:?}", run.error);
+	}
+	assert_eq!(p.run().await.phase().as_str(), "COMPLETED");
+	assert!(
+		p.requests
+			.lock()
+			.await
+			.iter()
+			.any(|r| r.to_string().contains("Keep this accepted correction"))
+	);
+	assert_eq!(first, request(&p.aa, &p.token, "POST", &path, input).await);
+	p.close().await;
+}
+
+#[rstest::rstest]
+#[tokio::test]
+async fn revocation_during_remote_inference_discards_response_and_cancel_closes_both_sides(
+	#[future(awt)] scoped_pair: Pair,
+) {
+	let p = scoped_pair;
+	p.step().await;
+	p.model.hold.store(true, Ordering::Release);
+	let worker = Harness {
+		federation: p.b.clone(),
+	};
+	let step = tokio::spawn(async move { worker.worker_once().await.unwrap() });
+	// Retained bindings require several bounded peer checks before provider HTTP.
+	// Match Pair::step's combined fixture budget on loaded CI runners.
+	tokio::time::timeout(
+		std::time::Duration::from_secs(60),
+		p.model.entered.notified(),
+	)
+	.await
+	.expect("remote inference must reach the held provider within the fixture budget");
+	assert_eq!(
+		request(
+			&p.aa,
+			&p.token,
+			"POST",
+			&format!("/api/tasks/{}/remote-grants/{}/revoke", p.task, p.grant),
+			json!({})
+		)
+		.await
+		.0,
+		200
+	);
+	p.model.release.notify_one();
+	assert!(
+		tokio::time::timeout(std::time::Duration::from_secs(60), step)
+			.await
+			.expect("revoked inference must finish within the fixture budget")
+			.unwrap()
+	);
+	assert_eq!(p.run().await.control.as_str(), "PAUSED");
+	let task = p.a.store.task(&TEST_FIXTURE, p.task).await.unwrap();
+	let snapshot =
+		p.a.store
+			.snapshot(&TEST_FIXTURE, task.workspace_id)
+			.await
+			.unwrap();
+	assert!(snapshot.artifacts.is_empty());
+	assert!(snapshot.messages.is_empty());
+	let control = format!("/api/tasks/{}/remote-grants/{}/control", p.task, p.grant);
+	assert_eq!(
+		request(
+			&p.aa,
+			&p.token,
+			"POST",
+			&control,
+			json!({"action":"resume"})
+		)
+		.await
+		.0,
+		403
+	);
+	let cancelled = request(
+		&p.aa,
+		&p.token,
+		"POST",
+		&control,
+		json!({"action":"cancel"}),
+	)
+	.await;
+	assert_eq!(cancelled.0, 200, "{}", cancelled.1);
+	p.step().await;
+	assert_eq!(p.run().await.phase().as_str(), "CANCELLED");
+	assert_eq!(
+		p.a.store
+			.task(&TEST_FIXTURE, p.task)
+			.await
+			.unwrap()
+			.status
+			.as_str(),
+		"CANCELLED"
+	);
+	assert_eq!(
+		request(
+			&p.aa,
+			&p.token,
+			"POST",
+			&control,
+			json!({"action":"cancel"})
+		)
+		.await
+		.0,
+		200
+	);
+	p.close().await;
+}
+
+#[rstest::rstest]
+#[tokio::test]
+async fn peer_outage_and_both_node_restarts_reconcile_one_scoped_execution(
+	#[future(awt)] scoped_pair: Pair,
+	#[from(signal_state)] source_notify: Arc<Notify>,
+	#[from(signal_state)] receiver_notify: Arc<Notify>,
+) {
+	let mut p = scoped_pair;
+	p.step().await;
+	for server in p.servers.drain(..) {
+		server.abort();
+		let _ = server.stopped().await;
+	}
+	p.step().await;
+	assert!(p.run().await.recovery.retry.is_some());
+	assert!(p.run().await.error.is_some());
+	assert!(p.requests.lock().await.is_empty());
+	assert!(
+		p.a.store
+			.snapshot(
+				&TEST_FIXTURE,
+				p.a.store
+					.task(&TEST_FIXTURE, p.task)
+					.await
+					.unwrap()
+					.workspace_id
+			)
+			.await
+			.unwrap()
+			.artifacts
+			.is_empty()
+	);
+	reconnect(&mut p.a, source_notify).await;
+	reconnect(&mut p.b, receiver_notify).await;
+	// Act: rebuild both native applications over the reconnected durable stores.
+	p.aa = common::application(p.a.clone()).await;
+	p.ba = common::application(p.b.clone()).await;
+	for (f, application) in [(&p.a, p.aa.clone()), (&p.b, p.ba.clone())] {
+		let app: Arc<dyn reinhardt::Handler> = Arc::new(
+			aidash_server::routes()
+				.into_server()
+				.with_di_context(application.context.clone())
+				.with_middleware(SourceReplyMiddleware(p.drop_reply.clone())),
+		);
+		let endpoint = reqwest::Url::parse(&f.config.endpoint).unwrap();
+		let listener = tokio::net::TcpListener::bind(("127.0.0.1", endpoint.port().unwrap()))
+			.await
+			.unwrap();
+		// Act: replace the stopped peer transport at its original address.
+		p.servers.push(upstream_fixtures::FixedServerGuard::spawn(
+			Arc::new(listener),
+			app,
+			Some(application.context.clone()),
+		));
+	}
+	let replay = request(&p.aa, &p.token, "POST", &p.activation(), json!({})).await;
+	assert_eq!(replay.0, 200, "{}", replay.1);
+	assert_eq!(replay.1["run_id"], p.admission.to_string());
+	assert_eq!(
+		replay.1["control"], "ACTIVE",
+		"activation preserves the durable control state"
+	);
+	let resumed = request(
+		&p.aa,
+		&p.token,
+		"POST",
+		&format!("/api/tasks/{}/remote-grants/{}/control", p.task, p.grant),
+		json!({"action":"resume"}),
+	)
+	.await;
+	assert_eq!(resumed.0, 200, "{}", resumed.1);
+	for _ in 0..10 {
+		if p.run().await.phase().as_str() == "COMPLETED" {
+			break;
+		}
+		p.step().await;
+	}
+	assert_eq!(p.run().await.phase().as_str(), "COMPLETED");
+	let runs = p.b.store.runs(&TEST_FIXTURE).await.unwrap();
+	assert_eq!(
+		runs.iter()
+			.filter(|run| run.home_node == node_of(&p.a) && run.task_id == p.task)
+			.count(),
+		1
+	);
+	let count: i64 = {
+		let query_bind_1 = p.grant;
+		sqlx::query_scalar(
+			&Query::select()
+				.expr(Expr::cust("COUNT(*)"))
+				.from(Alias::new("authorization_remote_admissions"))
+				.and_where(SimpleExpr::CustomWithExpr(
+					"(grant_id=?)".to_owned(),
+					vec![Expr::value(query_bind_1.to_owned()).into()],
+				))
+				.to_string(PostgresQueryBuilder),
+		)
+		.fetch_one(p.b.store.pool.fixture_driver())
+		.await
+	}
+	.unwrap();
+	assert_eq!(count, 1);
+	let snapshot =
+		p.a.store
+			.snapshot(
+				&TEST_FIXTURE,
+				p.a.store
+					.task(&TEST_FIXTURE, p.task)
+					.await
+					.unwrap()
+					.workspace_id,
+			)
+			.await
+			.unwrap();
+	assert_eq!(snapshot.artifacts.len(), 1);
+	assert_eq!(
+		snapshot
+			.messages
+			.iter()
+			.filter(|message| message.content == "Scoped remote progress")
+			.count(),
+		1
+	);
+	assert_eq!(p.requests.lock().await.len(), 2);
+	p.close().await;
+}
+
+#[rstest::rstest]
+#[case("message")]
+#[case("run_message_complete")]
+#[tokio::test]
+async fn lost_home_effect_reply_reconciles_without_duplicate_effects(
+	#[case] operation: &str,
+	#[future(awt)] scoped_pair: Pair,
+) {
+	let p = scoped_pair;
+	*p.drop_reply.lock().await = Some(operation.to_owned());
+	for _ in 0..15 {
+		if p.run().await.phase().as_str() == "COMPLETED" {
+			break;
+		}
+		p.step().await;
+		let run = p.run().await;
+		if run.control == aidash_server::domain::RunControl::Paused {
+			let response = request(
+				&p.aa,
+				&p.token,
+				"POST",
+				&format!("/api/tasks/{}/remote-grants/{}/control", p.task, p.grant),
+				json!({"action":"resume"}),
+			)
+			.await;
+			assert_eq!(response.0, 200, "{}", response.1);
+		}
+	}
+	assert!(
+		p.drop_reply.lock().await.is_none(),
+		"the fault must be exercised"
+	);
+	assert_eq!(
+		p.run().await.phase().as_str(),
+		"COMPLETED",
+		"{:?}",
+		p.run().await.error
+	);
+	let snapshot =
+		p.a.store
+			.snapshot(
+				&TEST_FIXTURE,
+				p.a.store
+					.task(&TEST_FIXTURE, p.task)
+					.await
+					.unwrap()
+					.workspace_id,
+			)
+			.await
+			.unwrap();
+	assert_eq!(snapshot.artifacts.len(), 1);
+	assert_eq!(
+		snapshot
+			.messages
+			.iter()
+			.filter(|message| message.content == "Scoped remote progress")
+			.count(),
+		1
+	);
+	assert_eq!(
+		p.requests.lock().await.len(),
+		2,
+		"completed inference is never replayed after a lost home reply"
+	);
+	p.close().await;
+}
+
+async fn approve_foreign_generated(b: &Federation, ba: &common::TestApplication, agent: &Value) {
+	let (status, body) = request(
+		ba,
+		&common::tenant_token(&b.store, "acme").await,
+		"POST",
+		"/api/authorization/acme/catalog",
+		json!({"node":aidash_domain::nodes::NodeName::derived("acme"),"entry":agent,"expected_revision":0,"enabled":true}),
+	)
+	.await;
+	assert_eq!(status, 200, "{body}");
+}
+
+async fn prepare_generated_pair(
+	a: &Federation,
+	b: &Federation,
+	aa: &common::TestApplication,
+	ba: &common::TestApplication,
+	token: &str,
+	task: Uuid,
+	(approval, semantic, native): (bool, bool, bool),
+) -> (Uuid, Value, Value) {
+	let workspace = a
+		.store
+		.task(&TEST_FIXTURE, task)
+		.await
+		.unwrap()
+		.workspace_id;
+	let (_, mut parent_template) = request(
+		aa,
+		&common::tenant_token(&a.store, "acme").await,
+		"GET",
+		"/api/registry/research/1.0.0",
+		Value::Null,
+	)
+	.await;
+	let (_, child_template) = request(
+		ba,
+		&common::tenant_token(&b.store, "acme").await,
+		"GET",
+		if native {
+			"/api/registry/research-native/1.0.0"
+		} else {
+			"/api/registry/research/1.0.0"
+		},
+		Value::Null,
+	)
+	.await;
+	parent_template["capabilities"] = json!(["unique-parent-specialist"]);
+	let model_ref = child_template["config"]["model"].clone();
+	let (_, model) = request(
+		ba,
+		&common::tenant_token(&b.store, "acme").await,
+		"GET",
+		&format!(
+			"/api/registry/{}/{}",
+			model_ref["id"].as_str().unwrap(),
+			model_ref["version"].as_str().unwrap()
+		),
+		Value::Null,
+	)
+	.await;
+	let descriptor = |node: &str, entry: &Value| json!({"node_id":node,"entry":{"id":entry["id"],"version":entry["version"]},"digest":aidash_server::registry::digest(entry),"configuration_digest":aidash_server::registry::digest(&entry["config"])});
+	let embedding_descriptor = if semantic {
+		let (status, embedding) = request(
+			aa,
+			&common::tenant_token(&a.store, "acme").await,
+			"GET",
+			"/api/registry/home-embedding/1.0.0",
+			Value::Null,
+		)
+		.await;
+		assert_eq!(status, 200, "{embedding}");
+		Some(descriptor(a.config.deployment.as_str(), &embedding))
+	} else {
+		None
+	};
+	let model_descriptor = descriptor(b.config.deployment.as_str(), &model);
+	let (_, decider) = request(
+		ba,
+		&common::tenant_token(&b.store, "acme").await,
+		"GET",
+		"/api/registry/remote-decider/1.0.0",
+		Value::Null,
+	)
+	.await;
+	let decider_descriptor = descriptor(b.config.deployment.as_str(), &decider);
+	let common = json!({"enabled":true,"permissions":{"roles":[],"groups":[],"attributes":{}},"approval_required":false,"limits":{"max_agents":4,"max_concurrent":4,"max_depth":4,"token_budget":4000000,"tokens_per_agent":800000,"lifetime_seconds":3600}});
+	let mut parent_spec = common.clone();
+	parent_spec["template"] = parent_template;
+	if semantic {
+		parent_spec["embedding"] = json!({"provider":{"id":"home-embedding","version":"1.0.0"},"calls_per_agent":10,"call_budget":40});
+	}
+	parent_spec["remote"] = json!({"inference":[model_descriptor],"compaction":{"provider":decider_descriptor,"calls_per_agent":2,"call_budget":8},"memory":if native {vec![embedding_descriptor.clone().unwrap()]} else {vec![]}});
+	let (status, body) = request(
+		aa,
+		&a.config.api_token,
+		"POST",
+		"/api/generation/acme/policies/remote-parent",
+		json!({"expected_revision":0,"spec":parent_spec}),
+	)
+	.await;
+	assert_eq!(status, 200, "{body}");
+	let (status,parent)=request(aa,token,"POST",&format!("/api/workspaces/{workspace}/tasks"),json!({"title":"Generated origin","description":"Delegate scoped memory research","requirements":{"capability":"unique-parent-specialist"}})).await;
+	assert_eq!(status, 200, "{parent}");
+	let parent_id: Uuid = serde_json::from_value(parent["id"].clone()).unwrap();
+	let (status, parent) = request(
+		aa,
+		token,
+		"POST",
+		&format!("/api/generation/acme/tasks/{parent_id}/assign"),
+		json!({"policy_id":"remote-parent","reason":"ancestor restriction fixture"}),
+	)
+	.await;
+	assert_eq!(status, 200, "{parent}");
+	assert_eq!(parent["kind"], "generated");
+	aidash_server::generation::provision::reconcile(a)
+		.await
+		.unwrap();
+	let parent_run: Uuid = {
+		let query_bind_1 = parent_id;
+		sqlx::query_scalar(
+			&Query::select()
+				.column(Alias::new("id"))
+				.from(Alias::new("runs"))
+				.and_where(SimpleExpr::CustomWithExpr(
+					"(task_id=?)".to_owned(),
+					vec![Expr::value(query_bind_1.to_owned()).into()],
+				))
+				.to_string(PostgresQueryBuilder),
+		)
+		.fetch_one(a.store.pool.fixture_driver())
+		.await
+	}
+	.unwrap();
+	let parent_run = a.store.run(&TEST_FIXTURE, parent_run).await.unwrap();
+	// Seed the trusted origin to isolate the two-owner allowance assertions.
+	// The cluster driver creates this child through the actual task_create tool.
+	let chain = vec![
+		"alice".to_owned(),
+		qualified_agent(
+			&aidash_domain::nodes::NodeAddress::derived(a.config.deployment.as_str(), "acme"),
+			&parent_run.agent_id,
+			&parent_run.agent_version,
+		),
+	];
+	{
+		let query_bind_1 = task;
+		let query_bind_2 = parent_run.id;
+		let query_bind_3 = chain;
+		sqlx::query(
+			&Query::insert()
+				.into_table(Alias::new("authorization_task_origins"))
+				.columns(
+					[
+						"task_id",
+						"source_run_id",
+						"tenant",
+						"root_subject",
+						"subject_chain",
+					]
+					.map(Alias::new),
+				)
+				.from_subquery(
+					Query::select()
+						.expr(SimpleExpr::CustomWithExpr(
+							"(?)".to_owned(),
+							vec![Expr::value(query_bind_1.to_owned()).into()],
+						))
+						.expr(SimpleExpr::CustomWithExpr(
+							"(?)".to_owned(),
+							vec![Expr::value(query_bind_2.to_owned()).into()],
+						))
+						.expr(Expr::cust("'acme'"))
+						.expr(Expr::cust("'alice'"))
+						.expr(SimpleExpr::CustomWithExpr(
+							"(?)".to_owned(),
+							vec![
+								Expr::value(reinhardt::query::Value::Array(
+									reinhardt::query::ArrayType::String,
+									Some(Box::new(
+										query_bind_3
+											.into_iter()
+											.map(reinhardt::query::IntoValue::into_value)
+											.collect(),
+									)),
+								))
+								.into(),
+							],
+						))
+						.to_owned(),
+				)
+				.to_string(PostgresQueryBuilder),
+		)
+		.execute(a.store.pool.fixture_driver())
+		.await
+	}
+	.unwrap();
+	let mut child_spec = common;
+	child_spec["approval_required"] = json!(approval);
+	child_spec["template"] = child_template;
+	child_spec["compaction"] = json!({"provider":{"id":"remote-decider","version":"1.0.0"},"calls_per_agent":2,"call_budget":8});
+	if let Some(embedding_descriptor) = embedding_descriptor {
+		child_spec["remote"] = json!({"embedding":{"provider":embedding_descriptor,"calls_per_agent":10,"call_budget":40},"memory":if native {vec![embedding_descriptor.clone()]} else {vec![]}});
+	}
+	let (status, body) = request(
+		ba,
+		&b.config.api_token,
+		"POST",
+		"/api/generation/acme/policies/remote-child",
+		json!({"expected_revision":0,"spec":child_spec}),
+	)
+	.await;
+	assert_eq!(status, 200, "{body}");
+	let input = json!({"id":Uuid::new_v4(),"node_id":node_of(b),"policy_id":"remote-child","policy_revision":1,"ttl_seconds":600,"reason":"foreign task specialist"});
+	let route = format!("/api/tasks/{task}/remote-generation");
+	let (status, prepared) = request(aa, token, "POST", &route, input.clone()).await;
+	assert_eq!(status, 200, "{prepared}");
+	assert_eq!(prepared["prepared"], !approval);
+	let (status, replayed) = request(aa, token, "POST", &route, input.clone()).await;
+	assert_eq!(status, 200, "{replayed}");
+	assert_eq!(replayed, prepared);
+	if !approval {
+		approve_foreign_generated(b, ba, &prepared["agent"]).await;
+	}
+	let count: i64 = {
+		let query_bind_1 = task;
+		sqlx::query_scalar(
+			&Query::select()
+				.expr(Expr::cust("COUNT(*)"))
+				.from(Alias::new("tasks"))
+				.and_where(SimpleExpr::CustomWithExpr(
+					"(id=?)".to_owned(),
+					vec![Expr::value(query_bind_1.to_owned()).into()],
+				))
+				.to_string(PostgresQueryBuilder),
+		)
+		.fetch_one(b.store.pool.fixture_driver())
+		.await
+	}
+	.unwrap();
+	assert_eq!(
+		count, 0,
+		"foreign preparation cannot create a fake local task"
+	);
+	let count: i64 = {
+		let query_bind_1 = node_of(a);
+		let query_bind_2 = task;
+		sqlx::query_scalar(
+			&Query::select()
+				.expr(Expr::cust("COUNT(*)"))
+				.from(Alias::new("runs"))
+				.and_where(SimpleExpr::CustomWithExpr(
+					"(home_node=? AND task_id=?)".to_owned(),
+					vec![
+						Expr::value(query_bind_1.to_owned()).into(),
+						Expr::value(query_bind_2.to_owned()).into(),
+					],
+				))
+				.to_string(PostgresQueryBuilder),
+		)
+		.fetch_one(b.store.pool.fixture_driver())
+		.await
+	}
+	.unwrap();
+	assert_eq!(count, 0, "preparation cannot activate before the grant");
+	(task, input, prepared)
+}
+
+#[rstest::rstest]
+#[tokio::test]
+async fn foreign_generation_waits_for_approval_and_replays_one_exact_definition(
+	#[with(true, true, true)]
+	#[future(awt)]
+	scoped_pair: Pair,
+) {
+	let p = scoped_pair;
+	let (input, pending) = p.generation.as_ref().unwrap();
+	assert_eq!(pending["status"], "PENDING_APPROVAL");
+	let route = format!("/api/tasks/{}/remote-generation", p.task);
+	let (first, second) = tokio::join!(
+		request(&p.aa, &p.token, "POST", &route, input.clone()),
+		request(&p.aa, &p.token, "POST", &route, input.clone()),
+	);
+	for (status, body) in [first, second] {
+		assert_eq!(status, 200, "{body}");
+		assert_eq!(body, *pending);
+	}
+	let grant = json!({"id":p.grant,"node_id":node_of(&p.b),"agent":pending["agent"],"ttl_seconds":300,"semantic":{"mode":"required_home","embedding":{"id":"home-embedding","version":"1.0.0"}}});
+	let grant_route = format!("/api/tasks/{}/remote-grants", p.task);
+	let mut nil_grant = grant.clone();
+	nil_grant["id"] = json!(Uuid::nil());
+	assert_eq!(
+		request(&p.aa, &p.token, "POST", &grant_route, nil_grant)
+			.await
+			.0,
+		400
+	);
+	assert_ne!(
+		request(&p.aa, &p.token, "POST", &grant_route, grant.clone())
+			.await
+			.0,
+		200
+	);
+	let control = format!(
+		"/api/generation/acme/requests/{}/control",
+		pending["request_id"].as_str().unwrap()
+	);
+	let decision = json!({"action":"approve","reason":"Approve the exact foreign preparation"});
+	let approver = common::tenant_token(&p.b.store, "acme").await;
+	for _ in 0..2 {
+		let (status, body) = request(&p.ba, &approver, "POST", &control, decision.clone()).await;
+		assert_eq!(status, 200, "{body}");
+		assert_eq!(body["status"], "QUEUED");
+	}
+	let (first, second) = tokio::join!(
+		request(&p.aa, &p.token, "POST", &route, input.clone()),
+		request(&p.aa, &p.token, "POST", &route, input.clone()),
+	);
+	for (status, body) in [first, second] {
+		assert_eq!(status, 200, "{body}");
+		assert_eq!(body["prepared"], true);
+		assert_eq!(body["agent"], pending["agent"]);
+		assert_eq!(body["request_id"], pending["request_id"]);
+	}
+	let count: i64 = {
+		let query_bind_1 = node_of(&p.a);
+		let query_bind_2 = p.task;
+		sqlx::query_scalar(
+			&Query::select()
+				.expr(Expr::cust("COUNT(*)"))
+				.from(Alias::new("runs"))
+				.and_where(SimpleExpr::CustomWithExpr(
+					"(home_node=? AND task_id=?)".to_owned(),
+					vec![
+						Expr::value(query_bind_1.to_owned()).into(),
+						Expr::value(query_bind_2.to_owned()).into(),
+					],
+				))
+				.to_string(PostgresQueryBuilder),
+		)
+		.fetch_one(p.b.store.pool.fixture_driver())
+		.await
+	}
+	.unwrap();
+	assert_eq!(
+		count, 0,
+		"approval publishes the definition but cannot activate a Run"
+	);
+	assert_ne!(
+		request(&p.aa, &p.token, "POST", &grant_route, grant.clone())
+			.await
+			.0,
+		200,
+		"the receiver registers a foreign generation unapproved"
+	);
+	approve_foreign_generated(&p.b, &p.ba, &pending["agent"]).await;
+	let (status, body) = request(&p.aa, &p.token, "POST", &grant_route, grant).await;
+	assert_eq!(status, 200, "{body}");
+	let (status, activated) = request(&p.aa, &p.token, "POST", &p.activation(), json!({})).await;
+	assert_eq!(status, 200, "{activated}");
+	let (status, replayed) = request(&p.aa, &p.token, "POST", &p.activation(), json!({})).await;
+	assert_eq!(status, 200, "{replayed}");
+	assert_eq!(replayed["admission_id"], activated["admission_id"]);
+	let rows: (i64, i64) = {
+		let query_bind_1 = node_of(&p.a);
+		let query_bind_2 = p.task;
+		sqlx::query_as(
+			&Query::select()
+				.expr(Expr::cust("COUNT(*)"))
+				.expr(Expr::cust("COUNT(DISTINCT agent_id)"))
+				.from(Alias::new("generation_requests"))
+				.and_where(SimpleExpr::CustomWithExpr(
+					"(home_node=? AND task_id=? AND status='ACTIVE')".to_owned(),
+					vec![
+						Expr::value(query_bind_1.to_owned()).into(),
+						Expr::value(query_bind_2.to_owned()).into(),
+					],
+				))
+				.to_string(PostgresQueryBuilder),
+		)
+		.fetch_one(p.b.store.pool.fixture_driver())
+		.await
+	}
+	.unwrap();
+	assert_eq!(rows, (1, 1));
+	let foreign_with_local_ids: i64 = sqlx::query_scalar(
+		"SELECT COUNT(*) FROM generation_requests WHERE foreign_intent IS NOT NULL \
+		 AND (local_task_id IS NOT NULL OR local_workspace_id IS NOT NULL)",
+	)
+	.fetch_one(p.b.store.pool.fixture_driver())
+	.await
+	.unwrap();
+	assert_eq!(
+		foreign_with_local_ids, 0,
+		"a foreign request leaves both local columns null"
+	);
+	p.close().await;
+}
+
+#[rstest::rstest]
+#[case("deny", "DENIED")]
+#[case("cancel", "STOPPED")]
+#[case("expire", "EXPIRED")]
+#[tokio::test]
+async fn foreign_preparation_termination_releases_unused_allocations_once(
+	#[with(true, true, true)]
+	#[future(awt)]
+	scoped_pair: Pair,
+	#[case] action: &str,
+	#[case] expected: &str,
+) {
+	let p = scoped_pair;
+	let (_, pending) = p.generation.as_ref().unwrap();
+	let job: Uuid = serde_json::from_value(pending["request_id"].clone()).unwrap();
+	let route = format!("/api/generation/acme/requests/{job}/control");
+	for _ in 0..2 {
+		match action {
+			"deny" => {
+				let (status, body) = request(
+					&p.ba,
+					&p.b.config.api_token,
+					"POST",
+					&route,
+					json!({"action":"deny","reason":"Decline foreign preparation"}),
+				)
+				.await;
+				assert_eq!(status, 200, "{body}");
+			}
+			"cancel" => {
+				let route = format!(
+					"/api/tasks/{}/remote-generation/{}/cancel",
+					p.task,
+					pending["intent_id"].as_str().unwrap()
+				);
+				let (status, body) = request(&p.aa, &p.token, "POST", &route, json!({})).await;
+				assert_eq!(status, 200, "{body}");
+			}
+			"expire" => {
+				{
+					let query_bind_1 = job;
+					sqlx::query(
+						&Query::update()
+							.table(Alias::new("generation_requests"))
+							.value_expr(
+								Alias::new("expires_at"),
+								Expr::cust("CLOCK_TIMESTAMP()-INTERVAL '1 second'"),
+							)
+							.and_where(SimpleExpr::CustomWithExpr(
+								"(id=?)".to_owned(),
+								vec![Expr::value(query_bind_1.to_owned()).into()],
+							))
+							.to_string(PostgresQueryBuilder),
+					)
+					.execute(p.b.store.pool.fixture_driver())
+					.await
+				}
+				.unwrap();
+				aidash_server::generation::provision::reconcile(&p.b)
+					.await
+					.unwrap();
+			}
+			_ => unreachable!(),
+		}
+	}
+	let state: (String, bool, Option<Uuid>) = {
+		let query_bind_1 = job;
+		sqlx::query_as(
+			&Query::select()
+				.columns(["status", "quota_released", "admission_id"].map(Alias::new))
+				.from(Alias::new("generation_requests"))
+				.and_where(SimpleExpr::CustomWithExpr(
+					"(id=?)".to_owned(),
+					vec![Expr::value(query_bind_1.to_owned()).into()],
+				))
+				.to_string(PostgresQueryBuilder),
+		)
+		.fetch_one(p.b.store.pool.fixture_driver())
+		.await
+	}
+	.unwrap();
+	assert_eq!(state, (expected.into(), true, None));
+	let budgets: (i64, i64, i64) = sqlx::query_as(
+		&Query::select()
+			.columns(
+				[
+					"allocated_tokens",
+					"allocated_embedding_calls",
+					"allocated_compaction_calls",
+				]
+				.map(Alias::new),
+			)
+			.from(Alias::new("generation_policies"))
+			.and_where(Expr::cust("tenant='acme' AND id='remote-child'"))
+			.to_string(PostgresQueryBuilder),
+	)
+	.fetch_one(p.b.store.pool.fixture_driver())
+	.await
+	.unwrap();
+	assert_eq!(
+		budgets,
+		(0, 0, 0),
+		"only unused allocations are released, exactly once"
+	);
+	let (status, _) = request(
+		&p.ba,
+		&common::tenant_token(&p.b.store, "acme").await,
+		"POST",
+		&route,
+		json!({"action":"approve","reason":"Late approval must not resurrect terminated work"}),
+	)
+	.await;
+	assert_eq!(status, 409);
+	assert_eq!(p.requests.lock().await.len(), 0);
+	assert_eq!(
+		p.semantic.as_ref().unwrap().requests.lock().await.len(),
+		4,
+		"preparation makes no query embedding call"
+	);
+	let (input, _) = p.generation.as_ref().unwrap();
+	let mut replacement = input.clone();
+	replacement["id"] = json!(Uuid::new_v4());
+	let (status, fresh) = request(
+		&p.aa,
+		&p.token,
+		"POST",
+		&format!("/api/tasks/{}/remote-generation", p.task),
+		replacement,
+	)
+	.await;
+	assert_eq!(status, 200, "{fresh}");
+	assert_ne!(fresh["request_id"], pending["request_id"]);
+	let retained: i64 = {
+		let query_bind_1 = node_of(&p.a);
+		let query_bind_2 = p.task;
+		sqlx::query_scalar(
+			&Query::select()
+				.expr(Expr::cust("COUNT(*)"))
+				.from(Alias::new("generation_requests"))
+				.and_where(SimpleExpr::CustomWithExpr(
+					"(home_node=? AND task_id=?)".to_owned(),
+					vec![
+						Expr::value(query_bind_1.to_owned()).into(),
+						Expr::value(query_bind_2.to_owned()).into(),
+					],
+				))
+				.to_string(PostgresQueryBuilder),
+		)
+		.fetch_one(p.b.store.pool.fixture_driver())
+		.await
+	}
+	.unwrap();
+	assert_eq!(retained, 2, "terminal history must survive replacement");
+	p.close().await;
+}
+
+#[rstest::rstest]
+#[tokio::test]
+async fn cancelled_foreign_intent_retries_delivery_after_an_uncertain_ack(
+	#[future(awt)]
+	#[with(true, true, true)]
+	scoped_pair: Pair,
+) {
+	let p = scoped_pair;
+	let (_, prepared) = p.generation.as_ref().unwrap();
+	let intent: Uuid = serde_json::from_value(prepared["intent_id"].clone()).unwrap();
+	let route = format!("/api/tasks/{}/remote-generation/{intent}/cancel", p.task);
+	assert_eq!(
+		request(&p.aa, &p.token, "POST", &route, json!({})).await.0,
+		200
+	);
+	let delivered = || {
+		let pool = p.a.store.pool.fixture_driver().clone();
+		async move {
+			{
+				let query_bind_1 = intent;
+				sqlx::query_scalar::<_, bool>(
+					&Query::select()
+						.column(Alias::new("cancel_delivered"))
+						.from(Alias::new("generation_remote_intents"))
+						.and_where(SimpleExpr::CustomWithExpr(
+							"(id=?)".to_owned(),
+							vec![Expr::value(query_bind_1.to_owned()).into()],
+						))
+						.to_string(PostgresQueryBuilder),
+				)
+				.fetch_one(&pool)
+				.await
+			}
+			.unwrap()
+		}
+	};
+	assert!(delivered().await);
+	// Model an acknowledgement lost before Home persisted its delivery mark.
+	{
+		let query_bind_1 = intent;
+		sqlx::query(
+			&Query::update()
+				.table(Alias::new("generation_remote_intents"))
+				.value(Alias::new("cancel_delivered"), false)
+				.value_expr(
+					Alias::new("cancel_retry_at"),
+					Expr::cust("CLOCK_TIMESTAMP()-INTERVAL '1 second'"),
+				)
+				.and_where(SimpleExpr::CustomWithExpr(
+					"(id=?)".to_owned(),
+					vec![Expr::value(query_bind_1.to_owned()).into()],
+				))
+				.to_string(PostgresQueryBuilder),
+		)
+		.execute(p.a.store.pool.fixture_driver())
+		.await
+	}
+	.unwrap();
+	aidash_server::generation::provision::reconcile(&p.a)
+		.await
+		.unwrap();
+	assert!(delivered().await);
+	p.close().await;
+}
+
+#[rstest::rstest]
+#[tokio::test]
+async fn generated_foreign_executor_and_home_ancestor_share_durable_provider_allowances(
+	#[future(awt)]
+	#[with(true, true)]
+	scoped_pair: Pair,
+) {
+	let pair = scoped_pair;
+	let expectation = ReservationCheck {
+		pools: vec![
+			pair.a.store.pool.fixture_driver().clone(),
+			pair.b.store.pool.fixture_driver().clone(),
+		],
+		dispatcher: pair.a.store.pool.fixture_driver().clone(),
+		grant: pair.grant,
+		admission: pair.admission,
+		purpose: "embedding",
+	};
+	*pair.semantic.as_ref().unwrap().reservations.lock().await = Some(expectation.clone());
+	*pair.model.reservations.lock().await = Some(ReservationCheck {
+		dispatcher: pair.b.store.pool.fixture_driver().clone(),
+		purpose: "inference",
+		..expectation
+	});
+
+	for _ in 0..4 {
+		pair.step().await;
+		if !pair.requests.lock().await.is_empty() || pair.run().await.control.as_str() == "PAUSED" {
+			break;
+		}
+	}
+	let requests = pair.requests.lock().await;
+	assert_eq!(requests.len(), 1, "{:?}", pair.run().await);
+	let input: Value =
+		serde_json::from_str(requests[0]["messages"][1]["content"].as_str().unwrap()).unwrap();
+	assert!(
+		input["current"]["semantic_memory"]
+			.to_string()
+			.contains("ochre falcon")
+	);
+	drop(requests);
+
+	for (dispatcher, owner) in [(&pair.a, &pair.b), (&pair.b, &pair.a)] {
+		let records: Vec<(Value, Value)> = sqlx::query_as(
+			&Query::select()
+				.columns(["usage", "finalization"].map(Alias::new))
+				.from(Alias::new("generation_remote_dispatches"))
+				.and_where(Expr::cust("state='SETTLED'"))
+				.to_string(PostgresQueryBuilder),
+		)
+		.fetch_all(dispatcher.store.pool.fixture_driver())
+		.await
+		.unwrap();
+		assert_eq!(records.len(), 1);
+		for (usage, finalization) in records {
+			let client = dispatcher.client.clone();
+			let sender = common::default_node(&dispatcher.store, "acme").await;
+			let receiver = common::default_node(&owner.store, "acme").await;
+			for _ in 0..3 {
+				let response = common::peering::signed(
+					&client,
+					&owner.config.endpoint,
+					"/scoped/usage/finalize",
+					(dispatcher, &sender),
+					&receiver,
+					"",
+					&json!({"usage":usage,"result":finalization}),
+				)
+				.await
+				.send()
+				.await
+				.unwrap();
+				assert_eq!(response.status(), 200, "{}", response.text().await.unwrap());
+			}
+		}
+	}
+	for node in [&pair.a, &pair.b] {
+		let usage: Vec<(String, String, i64, Option<i64>)> = {
+			let query_bind_1 = pair.grant;
+			let query_bind_2 = pair.admission;
+			sqlx::query_as(
+				&Query::select()
+					.columns(
+						["purpose", "state", "reserved_tokens", "reported_tokens"].map(Alias::new),
+					)
+					.from(Alias::new("generation_remote_usage"))
+					.and_where(SimpleExpr::CustomWithExpr(
+						"(grant_id=? AND admission_id=?)".to_owned(),
+						vec![
+							Expr::value(query_bind_1.to_owned()).into(),
+							Expr::value(query_bind_2.to_owned()).into(),
+						],
+					))
+					.order_by(Alias::new("purpose"), reinhardt::query::Order::Asc)
+					.to_string(PostgresQueryBuilder),
+			)
+			.fetch_all(node.store.pool.fixture_driver())
+			.await
+		}
+		.unwrap();
+		assert_eq!(
+			usage.len(),
+			2,
+			"both embedding and inference must debit {}: {usage:?}",
+			node.config.deployment
+		);
+		let finalized: i64 = sqlx::query_scalar(
+			&Query::select()
+				.expr(Expr::cust("COUNT(*)"))
+				.from(Alias::new("generation_remote_finalizations"))
+				.and_where(Expr::cust("result IS NOT NULL"))
+				.to_string(PostgresQueryBuilder),
+		)
+		.fetch_one(node.store.pool.fixture_driver())
+		.await
+		.unwrap();
+		assert_eq!(finalized, 2, "each owner retains a terminal attempt fence");
+		assert_eq!(usage[0].0, "embedding");
+		assert_eq!(usage[0].1, "SETTLED");
+		assert_eq!(usage[0].3, Some(1));
+		assert_eq!(usage[1].0, "inference");
+		assert_eq!(usage[1].1, "SETTLED");
+		assert_eq!(usage[1].3, Some(2));
+		let budget: (i64, i64) = sqlx::query_as(
+			&Query::select()
+				.columns(["used_tokens", "embedding_calls"].map(Alias::new))
+				.from(Alias::new("generation_budgets"))
+				.to_string(PostgresQueryBuilder),
+		)
+		.fetch_one(node.store.pool.fixture_driver())
+		.await
+		.unwrap();
+		assert_eq!(
+			budget,
+			(3, 1),
+			"exact one-call settlement at {}",
+			node.config.deployment
+		);
+		let (app, token, route) = if node.config.deployment == pair.a.config.deployment {
+			(
+				&pair.aa,
+				&pair.token,
+				format!(
+					"/api/tasks/{}/remote-grants/{}/semantic",
+					pair.task, pair.grant
+				),
+			)
+		} else {
+			(
+				&pair.ba,
+				&pair.receiver_token,
+				format!("/api/runs/{}/semantic", pair.admission),
+			)
+		};
+		let (status, view) = request(app, token, "GET", &route, Value::Null).await;
+		assert_eq!(status, 200, "{view}");
+		assert_eq!(view["allowance_node"], node.config.deployment);
+		assert_eq!(view["allowances"].as_array().unwrap().len(), 1);
+		assert_eq!(view["allowances"][0]["used_tokens"], 3);
+		assert_eq!(view["allowances"][0]["embedding_calls"], 1);
+		let (status, usage) = request(
+			app,
+			token,
+			"GET",
+			&format!(
+				"/api/generation/acme/requests/{}/usage",
+				view["allowances"][0]["request_id"].as_str().unwrap()
+			),
+			Value::Null,
+		)
+		.await;
+		assert_eq!(status, 200, "{usage}");
+		assert_eq!(usage["inference_attempts"], 1);
+	}
+	pair.close().await;
+}
+
+#[rstest::rstest]
+#[case(-1)]
+#[case(1)]
+#[tokio::test]
+async fn embedding_callback_rejects_a_nonexact_reservation(
+	#[future(awt)]
+	#[with(true, true)]
+	scoped_pair: Pair,
+	#[case] delta: i64,
+) {
+	let p = scoped_pair;
+	for _ in 0..4 {
+		p.step().await;
+		if !p.requests.lock().await.is_empty() {
+			break;
+		}
+	}
+	let (mut usage, boundary): (Value, Value) = sqlx::query_as(
+		&Query::select()
+			.columns(["usage", "boundary"].map(Alias::new))
+			.from(Alias::new("generation_remote_dispatches"))
+			.and_where(Expr::cust("usage->>'purpose'='embedding'"))
+			.to_string(PostgresQueryBuilder),
+	)
+	.fetch_one(p.a.store.pool.fixture_driver())
+	.await
+	.unwrap();
+	let exact = boundary["query"].as_str().unwrap().len() as i64 + 1024;
+	assert_eq!(usage["reserved_tokens"], exact);
+	usage["reserved_tokens"] = json!(exact + delta);
+	usage["attempt_id"] = json!(Uuid::new_v4());
+	let response = common::peering::signed(
+		&p.a.client,
+		&p.b.config.endpoint,
+		"/scoped/usage/reserve",
+		(&p.a, &common::default_node(&p.a.store, "acme").await),
+		&common::default_node(&p.b.store, "acme").await,
+		"",
+		&json!({"usage":usage,"boundary":boundary}),
+	)
+	.await
+	.send()
+	.await
+	.unwrap();
+	assert_eq!(response.status(), 403, "{}", response.text().await.unwrap());
+	let count: i64 = {
+		let query_bind_1 = usage["attempt_id"]
+			.as_str()
+			.unwrap()
+			.parse::<Uuid>()
+			.unwrap();
+		sqlx::query_scalar(
+			&Query::select()
+				.expr(Expr::cust("COUNT(*)"))
+				.from(Alias::new("generation_remote_usage"))
+				.and_where(SimpleExpr::CustomWithExpr(
+					"(attempt_id=?)".to_owned(),
+					vec![Expr::value(query_bind_1.to_owned()).into()],
+				))
+				.to_string(PostgresQueryBuilder),
+		)
+		.fetch_one(p.b.store.pool.fixture_driver())
+		.await
+	}
+	.unwrap();
+	assert_eq!(count, 0, "rejected callbacks must not debit an ancestor");
+	p.close().await;
+}
+
+#[rstest::rstest]
+#[tokio::test]
+async fn deployment_administrator_polling_advances_past_hidden_event_pages(
+	#[future(awt)]
+	#[with(true)]
+	scoped_pair: Pair,
+) {
+	let p = scoped_pair;
+	let workspace =
+		p.a.store
+			.task(&TEST_FIXTURE, p.task)
+			.await
+			.unwrap()
+			.workspace_id;
+	let cursor: i64 = sqlx::query_scalar(
+		&Query::select()
+			.expr(Expr::cust("COALESCE(MAX(sequence),0)"))
+			.from(Alias::new("events"))
+			.to_string(PostgresQueryBuilder),
+	)
+	.fetch_one(p.a.store.pool.fixture_driver())
+	.await
+	.unwrap();
+	// An event that concerns no Workspace takes the Tenant of its transaction.
+	let tenant = aidash_application::tenancy::TenancyScope::Tenant(
+		aidash_domain::tenancy::TenantName::new("acme").unwrap(),
+	);
+	let mut tx = p.a.store.pool.begin(&tenant).await.unwrap();
+	p.a.store
+		.event(
+			&mut tx,
+			None,
+			"test.visible",
+			json!({"marker":"before-hidden-burst"}),
+		)
+		.await
+		.unwrap();
+	for _ in 0..501 {
+		p.a.store
+			.event(
+				&mut tx,
+				Some(workspace),
+				"test.hidden",
+				json!({"secret":"hidden-burst"}),
+			)
+			.await
+			.unwrap();
+	}
+	p.a.store
+		.event(
+			&mut tx,
+			None,
+			"test.visible",
+			json!({"marker":"after-hidden-burst"}),
+		)
+		.await
+		.unwrap();
+	tx.commit().await.unwrap();
+	let (status, page) = request(
+		&p.aa,
+		&p.a.config.api_token,
+		"GET",
+		&format!("/api/events?after={cursor}"),
+		Value::Null,
+	)
+	.await;
+	assert_eq!(status, 200, "{page}");
+	assert!(
+		page.to_string().contains("after-hidden-burst"),
+		"Deployment Administrator polling stalled behind hidden events: {page}"
+	);
+	assert!(!page.to_string().contains("\"secret\""));
+	let (status, state) = request(
+		&p.aa,
+		&p.a.config.api_token,
+		"GET",
+		"/api/state",
+		Value::Null,
+	)
+	.await;
+	assert_eq!(status, 200, "{state}");
+	assert!(
+		state["events"].to_string().contains("before-hidden-burst"),
+		"{state}"
+	);
+	assert!(!state["events"].to_string().contains("\"secret\""));
+	assert_eq!(
+		state["deployment"]["id"],
+		p.a.config.deployment.as_str(),
+		"the State names its Deployment, not a Node"
+	);
+	assert!(state.get("node").is_none(), "{state}");
+
+	// A full visible page may span hidden candidate pages. Its cursor must
+	// retain visible events beyond the response limit for the next request.
+	let mut tx = p.a.store.pool.begin(&tenant).await.unwrap();
+	for index in 0..600 {
+		p.a.store
+			.event(&mut tx, None, "test.visible", json!({"index": index}))
+			.await
+			.unwrap();
+	}
+	tx.commit().await.unwrap();
+	let first = async {
+		let client = &(p.aa.client());
+		let mut request = client.request(http::Method::GET, &format!("/api/events?after={cursor}"));
+		request = request.header("authorization", format!("Bearer {}", p.a.config.api_token));
+		request.send().await
+	}
+	.await
+	.unwrap();
+	assert_eq!(first.status(), 200);
+	let first_cursor: i64 = first.headers()["x-aidash-event-cursor"]
+		.to_str()
+		.unwrap()
+		.parse()
+		.unwrap();
+	let first_events: Vec<Value> = serde_json::from_slice(first.body()).unwrap();
+	assert_eq!(first_events.len(), 500);
+	assert_eq!(first_events.last().unwrap()["sequence"], first_cursor);
+	let second = async {
+		let client = &(p.aa.client());
+		let mut request = client.request(
+			http::Method::GET,
+			&format!("/api/events?after={first_cursor}"),
+		);
+		request = request.header("authorization", format!("Bearer {}", p.a.config.api_token));
+		request.send().await
+	}
+	.await
+	.unwrap();
+	assert_eq!(second.status(), 200);
+	let second_events: Vec<Value> = serde_json::from_slice(second.body()).unwrap();
+	let indices: Vec<i64> = first_events
+		.iter()
+		.chain(&second_events)
+		.filter_map(|event| event["data"]["index"].as_i64())
+		.collect();
+	assert_eq!(indices, (0..600).collect::<Vec<_>>());
+	p.close().await;
+}
+
+#[rstest::rstest]
+#[tokio::test]
+async fn deployment_administrator_content_views_cannot_bypass_both_node_subject_authority(
+	#[future(awt)]
+	#[with(true)]
+	scoped_pair: Pair,
+) {
+	let p = scoped_pair;
+	for _ in 0..8 {
+		p.step().await;
+		if p.run().await.phase().as_str() == "COMPLETED" {
+			break;
+		}
+	}
+	assert_eq!(p.run().await.phase().as_str(), "COMPLETED");
+	let task = p.a.store.task(&TEST_FIXTURE, p.task).await.unwrap();
+	let (status, viewer) = request(
+		&p.ba,
+		&p.receiver_token,
+		"GET",
+		&format!("/api/runs/{}", p.admission),
+		Value::Null,
+	)
+	.await;
+	assert_eq!(status, 200, "{viewer}");
+	assert_eq!(viewer["run"]["id"], p.admission.to_string());
+	assert!(
+		p.model.requests.lock().await[0]
+			.to_string()
+			.contains("ochre falcon")
+	);
+	for (f, app) in [(&p.a, &p.aa), (&p.b, &p.ba)] {
+		for path in [
+			"/api/state".to_owned(),
+			"/api/events".into(),
+			"/api/tasks".into(),
+		] {
+			let (status, body) = request(app, &f.config.api_token, "GET", &path, Value::Null).await;
+			assert_eq!(status, 200, "{path}: {body}");
+			for hidden in [
+				"ochre falcon",
+				"Scoped remote result",
+				"Scoped remote progress",
+			] {
+				assert!(
+					!body.to_string().contains(hidden),
+					"Deployment Administrator path {} {path} leaked {hidden}: {:?}",
+					f.config.deployment,
+					body.as_object().map(|fields| fields
+						.iter()
+						.filter(|(_, value)| value.to_string().contains(hidden))
+						.collect::<Vec<_>>())
+				);
+			}
+		}
+		// The notification-backed stream must enforce the same boundary at
+		// delivery, including receiver Run events without a Workspace FK.
+		let (status, body) = request(
+			app,
+			&common::tenant_token(&f.store, "acme").await,
+			"POST",
+			"/api/workspaces",
+			json!({"title":"deployment-administrator-stream-tail","goal":"Independent stream marker"}),
+		)
+		.await;
+		assert_eq!(status, 200, "{body}");
+		// Unbounded SSE uses the fixture-owned streaming client without buffering the body.
+		let response = app
+			.streaming_http
+			.get(app.url("/api/events/stream"))
+			.bearer_auth(&f.config.api_token)
+			.send()
+			.await
+			.unwrap();
+		assert_eq!(response.status(), 200);
+		let mut stream = response.bytes_stream();
+		tokio::time::timeout(std::time::Duration::from_secs(20), async {
+			loop {
+				let chunk = stream.next().await.unwrap().unwrap();
+				let frame = String::from_utf8_lossy(&chunk);
+				for hidden in [
+					"ochre falcon",
+					"Scoped remote result",
+					"Scoped remote progress",
+				] {
+					assert!(
+						!frame.contains(hidden),
+						"Deployment Administrator stream leaked {hidden}: {frame}"
+					);
+				}
+				if frame.contains("deployment-administrator-stream-tail") {
+					break;
+				}
+			}
+		})
+		.await
+		.unwrap();
+		drop(stream);
+	}
+	for path in [
+		format!("/api/workspaces/{}", task.workspace_id),
+		format!("/api/workspaces/{}/message-history", task.workspace_id),
+	] {
+		assert_eq!(
+			request(&p.aa, &p.a.config.api_token, "GET", &path, Value::Null)
+				.await
+				.0,
+			403
+		);
+	}
+	assert_eq!(
+		request(
+			&p.ba,
+			&p.b.config.api_token,
+			"GET",
+			&format!("/api/runs/{}", p.admission),
+			Value::Null
+		)
+		.await
+		.0,
+		403
+	);
+	let (status, control) = request(
+		&p.ba,
+		&p.b.config.api_token,
+		"GET",
+		&format!("/api/runs/{}/management", p.admission),
+		Value::Null,
+	)
+	.await;
+	assert_eq!(status, 200, "{control}");
+	assert!(control.get("context").is_none());
+	assert!(control.get("pending").is_none());
+	assert!(control.get("error").is_none());
+	let snapshot =
+		p.a.store
+			.snapshot(&TEST_FIXTURE, task.workspace_id)
+			.await
+			.unwrap();
+	let artifact = snapshot.artifacts.first().unwrap();
+	let (status,_)=request(&p.aa,&p.a.config.api_token,"POST",&format!("/api/workspaces/{}/semantic/entries",task.workspace_id),json!({"key":"deployment-administrator-bypass","expected_revision":0,"source":{"kind":"artifact","id":artifact.id},"metadata":{}})).await;
+	assert_eq!(status, 403);
+	let (status, independent) = request(
+		&p.aa,
+		&p.a.config.api_token,
+		"POST",
+		"/api/workspaces",
+		json!({"title":"Independent Deployment Administrator work","goal":"Unrelated legacy access"}),
+	)
+	.await;
+	assert_eq!(status, 403, "{independent}");
+	// Required-Home content stays protected, while installation administration
+	// may still configure the live Tenant's index without reading its contents.
+	let index_path = format!("/api/workspaces/{}/semantic/index", task.workspace_id);
+	let (status, index) = request(&p.aa, &p.token, "GET", &index_path, Value::Null).await;
+	assert_eq!(status, 200, "{index}");
+	let (status, configured) = request(
+		&p.aa,
+		&p.a.config.api_token,
+		"POST",
+		&index_path,
+		json!({"expected_revision":index["revision"],"spec":index["spec"]}),
+	)
+	.await;
+	assert_eq!(status, 200, "{configured}");
+	p.close().await;
+}
+
+#[rstest::rstest]
+#[case("COMPLETED", "COMPLETED", None)]
+#[case("FAILED", "FAILED", None)]
+#[case("CANCELLED", "STOPPED", None)]
+#[case("THINKING", "EXPIRED", Some("expire"))]
+#[case("THINKING", "STOPPED", Some("stop"))]
+#[tokio::test]
+async fn generated_foreign_terminal_runs_retain_reads_with_current_dependency_authority(
+	#[future(awt)]
+	#[with(true, true)]
+	scoped_pair: Pair,
+	#[case] phase: &str,
+	#[case] expected: &str,
+	#[case] control: Option<&str>,
+) {
+	let p = scoped_pair;
+	for _ in 0..8 {
+		p.step().await;
+		if p.run().await.phase().as_str() == "COMPLETED" {
+			break;
+		}
+	}
+	assert_eq!(p.run().await.phase().as_str(), "COMPLETED");
+	// Retain produced output, then seed the durable worker terminal cut. The
+	// generation lifecycle and every subsequent read use the production paths.
+	if phase != "COMPLETED" {
+		{
+			let query_bind_1 = p.admission;
+			let query_bind_2 = phase;
+			let query_bind_3 = common::pending(match phase {
+				"THINKING" => aidash_server::domain::RunState::Thinking(Default::default()),
+				"FAILED" => {
+					aidash_server::domain::RunState::Failed(aidash_server::domain::TerminalState {})
+				}
+				"CANCELLED" => aidash_server::domain::RunState::Cancelled(
+					aidash_server::domain::TerminalState {},
+				),
+				_ => panic!("unexpected fixture phase"),
+			});
+			sqlx::query(
+				&Query::update()
+					.table(Alias::new("runs"))
+					.value_expr(
+						Alias::new("phase"),
+						SimpleExpr::CustomWithExpr(
+							"(?)".to_owned(),
+							vec![Expr::value(query_bind_2.to_owned()).into()],
+						),
+					)
+					.value_expr(
+						Alias::new("pending"),
+						SimpleExpr::CustomWithExpr(
+							"(?)".to_owned(),
+							vec![Expr::value(query_bind_3.to_owned()).into()],
+						),
+					)
+					.and_where(SimpleExpr::CustomWithExpr(
+						"(id=?)".to_owned(),
+						vec![Expr::value(query_bind_1.to_owned()).into()],
+					))
+					.to_string(PostgresQueryBuilder),
+			)
+			.execute(p.b.store.pool.fixture_driver())
+			.await
+		}
+		.unwrap();
+	}
+	let job = &p.generation.as_ref().unwrap().1["request_id"];
+	if control == Some("expire") {
+		{
+			let query_bind_1 = serde_json::from_value::<Uuid>(job.clone()).unwrap();
+			sqlx::query(
+				&Query::update()
+					.table(Alias::new("generation_requests"))
+					.value_expr(
+						Alias::new("expires_at"),
+						Expr::cust("CLOCK_TIMESTAMP()-INTERVAL '1 second'"),
+					)
+					.and_where(SimpleExpr::CustomWithExpr(
+						"(id=?)".to_owned(),
+						vec![Expr::value(query_bind_1.to_owned()).into()],
+					))
+					.to_string(PostgresQueryBuilder),
+			)
+			.execute(p.b.store.pool.fixture_driver())
+			.await
+		}
+		.unwrap();
+	} else if let Some(action) = control {
+		let (status, body) = request(
+			&p.ba,
+			&p.b.config.api_token,
+			"POST",
+			&format!(
+				"/api/generation/acme/requests/{}/control",
+				job.as_str().unwrap()
+			),
+			json!({"action":action,"reason":"Retire an executor while retaining its journal"}),
+		)
+		.await;
+		assert_eq!(status, 200, "{body}");
+	}
+	aidash_server::generation::provision::reconcile(&p.b)
+		.await
+		.unwrap();
+	let run = p.run().await;
+	let actual: String = {
+		let query_bind_1 = serde_json::from_value::<Uuid>(job.clone()).unwrap();
+		sqlx::query_scalar(
+			&Query::select()
+				.column(Alias::new("status"))
+				.from(Alias::new("generation_requests"))
+				.and_where(SimpleExpr::CustomWithExpr(
+					"(id=?)".to_owned(),
+					vec![Expr::value(query_bind_1.to_owned()).into()],
+				))
+				.to_string(PostgresQueryBuilder),
+		)
+		.fetch_one(p.b.store.pool.fixture_driver())
+		.await
+	}
+	.unwrap();
+	assert_eq!(actual, expected);
+	let catalog: (bool, i64) = {
+		let query_bind_1 = &run.agent_id;
+		let query_bind_2 = &run.agent_version;
+		sqlx::query_as(
+			&Query::select()
+				.columns(["enabled", "revision"].map(Alias::new))
+				.from(Alias::new("authorization_catalog"))
+				.and_where(SimpleExpr::CustomWithExpr(
+					"(tenant='acme' AND entry_id=? AND entry_version=?)".to_owned(),
+					vec![
+						Expr::value(query_bind_1.to_owned()).into(),
+						Expr::value(query_bind_2.to_owned()).into(),
+					],
+				))
+				.to_string(PostgresQueryBuilder),
+		)
+		.fetch_one(p.b.store.pool.fixture_driver())
+		.await
+	}
+	.unwrap();
+	assert!(
+		!catalog.0,
+		"terminal lifecycle must retire the generated executor"
+	);
+	let path = format!("/api/runs/{}", p.admission);
+	let (status, view) = request(&p.ba, &p.receiver_token, "GET", &path, Value::Null).await;
+	assert_eq!(
+		status, 200,
+		"terminal execution must remain readable: {view}"
+	);
+	assert_eq!(view["run"]["id"], json!(p.admission));
+	assert_eq!(view["run"]["phase"], phase);
+	assert_eq!(view["memory"], Value::Null);
+	let home_path = format!("/api/workspaces/{}", run.workspace_id);
+	let (status, output) = request(&p.aa, &p.token, "GET", &home_path, Value::Null).await;
+	assert_eq!(status, 200, "{output}");
+	assert!(
+		output.to_string().contains("Scoped remote result"),
+		"{output}"
+	);
+	let (status, revoked) = request(
+		&p.ba,
+		&p.receiver_token,
+		"POST",
+		"/api/authorization/acme/catalog",
+		json!({"node":aidash_domain::nodes::NodeName::derived("acme"),"entry":{"id":"model","version":"1.0.0"},"expected_revision":1,"enabled":false}),
+	)
+	.await;
+	assert_eq!(status, 200, "{revoked}");
+	assert_ne!(
+		request(&p.ba, &p.receiver_token, "GET", &path, Value::Null)
+			.await
+			.0,
+		200
+	);
+	let (status, restored) = request(
+		&p.ba,
+		&p.receiver_token,
+		"POST",
+		"/api/authorization/acme/catalog",
+		json!({"node":aidash_domain::nodes::NodeName::derived("acme"),"entry":{"id":"model","version":"1.0.0"},"expected_revision":2,"enabled":true}),
+	)
+	.await;
+	assert_eq!(status, 200, "{restored}");
+	let snapshot = aidash_server::authorization::Authorization {
+		pool: p.b.store.pool.clone(),
+	}
+	.snapshot("acme")
+	.await
+	.unwrap();
+	let mut denied = serde_json::to_value(&snapshot.bundle).unwrap();
+	denied["policies"].as_array_mut().unwrap().push(json!({
+		"id":"deny-retired-agent-model", "effect":"deny",
+		"subjects":{"ids":[aidash_domain::agent_subject(&node_of(&p.b), &run.agent_id,&run.agent_version)]},
+		"actions":["model.infer"], "resources":{"kinds":["model"]}
+	}));
+	let (status, policy) = request(
+		&p.ba,
+		&p.b.config.api_token,
+		"POST",
+		"/api/authorization/acme",
+		json!({"expected_revision":snapshot.revision,"bundle":denied}),
+	)
+	.await;
+	assert_eq!(status, 200, "{policy}");
+	assert_ne!(
+		request(&p.ba, &p.receiver_token, "GET", &path, Value::Null)
+			.await
+			.0,
+		200,
+		"current denies must still govern the retired executor's reads"
+	);
+	let (status, restored) = request(
+		&p.ba,
+		&p.b.config.api_token,
+		"POST",
+		"/api/authorization/acme",
+		json!({"expected_revision":snapshot.revision+1,"bundle":snapshot.bundle}),
+	)
+	.await;
+	assert_eq!(status, 200, "{restored}");
+	assert_eq!(
+		request(&p.ba, &p.receiver_token, "GET", &path, Value::Null)
+			.await
+			.0,
+		200
+	);
+	let (status, revoked) = request(
+		&p.ba,
+		&p.receiver_token,
+		"POST",
+		"/api/authorization/acme/catalog",
+		json!({"node":aidash_domain::nodes::NodeName::derived("acme"),"entry":{"id":run.agent_id,"version":run.agent_version},"expected_revision":catalog.1,"enabled":false}),
+	)
+	.await;
+	assert_eq!(status, 200, "{revoked}");
+	assert_ne!(
+		request(&p.ba, &p.receiver_token, "GET", &path, Value::Null)
+			.await
+			.0,
+		200,
+		"explicit catalog revocation must supersede automatic retirement"
+	);
+	p.close().await;
+}
+
+#[rstest::rstest]
+#[tokio::test]
+async fn a_cross_node_producer_cycle_terminates_and_still_requires_receiver_authority(
+	#[future(awt)]
+	#[with(true)]
+	scoped_pair: Pair,
+) {
+	let p = scoped_pair;
+	for _ in 0..8 {
+		p.step().await;
+		if p.run().await.phase().as_str() == "COMPLETED" {
+			break;
+		}
+	}
+	assert_eq!(p.run().await.phase().as_str(), "COMPLETED");
+	let task = p.a.store.task(&TEST_FIXTURE, p.task).await.unwrap();
+	let snapshot =
+		p.a.store
+			.snapshot(&TEST_FIXTURE, task.workspace_id)
+			.await
+			.unwrap();
+	let artifact = snapshot.artifacts.first().unwrap();
+	// Reproduce a persisted observation cycle: A's grant reads an A Artifact
+	// produced by that grant's B Run. Such provenance must neither recurse over
+	// HTTP nor suppress the receiver's current-reader check.
+	{
+		let query_bind_1 = p.grant;
+		let query_bind_2 = task.workspace_id;
+		let query_bind_3 = artifact.id;
+		sqlx::query(
+			&Query::insert()
+				.into_table(Alias::new("authorization_remote_grant_reads"))
+				.columns(
+					[
+						"grant_id",
+						"workspace_id",
+						"resource_kind",
+						"resource_id",
+						"tenant",
+					]
+					.map(Alias::new),
+				)
+				.from_subquery(
+					Query::select()
+						.expr(SimpleExpr::CustomWithExpr(
+							"(?)".to_owned(),
+							vec![Expr::value(query_bind_1.to_owned()).into()],
+						))
+						.expr(SimpleExpr::CustomWithExpr(
+							"(?)".to_owned(),
+							vec![Expr::value(query_bind_2.to_owned()).into()],
+						))
+						.expr(Expr::cust("'artifact'"))
+						.expr(SimpleExpr::CustomWithExpr(
+							"(?)".to_owned(),
+							vec![Expr::value(query_bind_3.to_owned()).into()],
+						))
+						.expr(Expr::value("acme"))
+						.to_owned(),
+				)
+				.to_string(PostgresQueryBuilder),
+		)
+		.execute(p.a.store.pool.fixture_driver())
+		.await
+	}
+	.unwrap();
+	let path = format!("/api/tasks/{}/remote-grants/{}/semantic", p.task, p.grant);
+	let (status, body) = tokio::time::timeout(
+		std::time::Duration::from_secs(5),
+		request(&p.aa, &p.token, "GET", &path, Value::Null),
+	)
+	.await
+	.expect("cross-node cycle must terminate");
+	assert_eq!(status, 200, "{body}");
+	let mut denied = p.receiver_policy.clone();
+	denied["policies"].as_array_mut().unwrap().push(json!({"id":"deny-cycle-read","effect":"deny","subjects":{"any":true},"actions":["run.read"],"resources":{"kinds":["run"]}}));
+	assert_eq!(
+		request(
+			&p.ba,
+			&p.b.config.api_token,
+			"POST",
+			"/api/authorization/acme",
+			json!({"expected_revision":1,"bundle":denied})
+		)
+		.await
+		.0,
+		200
+	);
+	let (status, body) = tokio::time::timeout(
+		std::time::Duration::from_secs(5),
+		request(&p.aa, &p.token, "GET", &path, Value::Null),
+	)
+	.await
+	.expect("denied cross-node cycle must also terminate");
+	assert_eq!(status, 403, "{body}");
+	let (status, body) = request(
+		&p.aa,
+		&p.token,
+		"GET",
+		&format!("/api/workspaces/{}", task.workspace_id),
+		Value::Null,
+	)
+	.await;
+	assert_eq!(status, 200, "{body}");
+	assert!(body["artifacts"].as_array().unwrap().is_empty());
+	p.close().await;
+}
+
+#[rstest::rstest]
+#[tokio::test]
+async fn generated_home_allowance_failure_releases_only_predispatch_receiver_reservations(
+	#[future(awt)]
+	#[with(true, true)]
+	scoped_pair: Pair,
+) {
+	let pair = scoped_pair;
+	sqlx::query(
+		&Query::update()
+			.table(Alias::new("generation_budgets"))
+			.value(Alias::new("embedding_call_limit"), 0)
+			.to_string(PostgresQueryBuilder),
+	)
+	.execute(pair.a.store.pool.fixture_driver())
+	.await
+	.unwrap();
+	for _ in 0..4 {
+		pair.step().await;
+		if pair.run().await.control.as_str() == "PAUSED" {
+			break;
+		}
+	}
+	let run = pair.run().await;
+	assert_eq!(run.control.as_str(), "PAUSED", "{run:?}");
+	assert_eq!(
+		serde_json::to_value(run.recovery.semantic_reason).unwrap(),
+		"allowance"
+	);
+	assert!(pair.requests.lock().await.is_empty());
+	assert_eq!(
+		pair.semantic.as_ref().unwrap().requests.lock().await.len(),
+		4,
+		"only pre-existing index embeddings are permitted"
+	);
+	let debit: (i64, i64) = sqlx::query_as(
+		&Query::select()
+			.columns(["used_tokens", "embedding_calls"].map(Alias::new))
+			.from(Alias::new("generation_budgets"))
+			.to_string(PostgresQueryBuilder),
+	)
+	.fetch_one(pair.b.store.pool.fixture_driver())
+	.await
+	.unwrap();
+	assert_eq!(debit, (0, 0));
+	let state: String = sqlx::query_scalar(
+		&Query::select()
+			.column(Alias::new("state"))
+			.from(Alias::new("generation_remote_usage"))
+			.to_string(PostgresQueryBuilder),
+	)
+	.fetch_one(pair.b.store.pool.fixture_driver())
+	.await
+	.unwrap();
+	assert_eq!(state, "RELEASED");
+	pair.close().await;
+}
+
+// Act: redirect an existing peer after the test mutates durable reconciliation state.
+type PairFuture = futures_util::future::Shared<BoxFuture<'static, Arc<Mutex<Option<Pair>>>>>;
+#[rstest::fixture]
+fn pair_future(
+	#[default(false)] _generated: bool,
+	#[with(true, _generated)] scoped_pair: impl std::future::Future<Output = Pair> + Send + 'static,
+) -> PairFuture {
+	async move { Arc::new(Mutex::new(Some(scoped_pair.await))) }
+		.boxed()
+		.shared()
+}
+#[rstest::fixture]
+fn status_router(
+	#[default(false)] status_available: bool,
+	#[from(pair_future)] pair: PairFuture,
+	#[from(count_state)] inspections: Arc<AtomicUsize>,
+) -> upstream_fixtures::RouterFuture {
+	async move {
+		let state = pair.await;
+		let pair = state.lock().await;
+		let p = pair.as_ref().unwrap();
+		let activation = json!({"grant_id":p.grant,"admission_id":p.admission,"run_id":p.admission,"phase":"THINKING","control":"ACTIVE","error":null});
+		let reply = Arc::new(upstream_fixtures::any_handler(move |request| {
+			let activation = activation.clone(); let observed = inspections.clone();
+			async move {
+				if request.uri.path().ends_with("/scoped/execution/status") {
+					return if status_available {reinhardt::Response::new(http::StatusCode::OK).with_json(&activation).unwrap()} else {reinhardt::Response::new(http::StatusCode::SERVICE_UNAVAILABLE)};
+				}
+				observed.fetch_add(1, Ordering::AcqRel);
+				tokio::time::sleep(std::time::Duration::from_secs(10)).await;
+				reinhardt::Response::new(http::StatusCode::OK).with_json(&false).unwrap()
+			}
+		}));
+		Arc::new(Router::new().handler_arc("/", reply.clone()).handler_arc("/{*rest}", reply))
+	}.boxed().shared()
+}
+#[rstest::fixture]
+async fn status_scenario(
+	#[default(false)] _status_available: bool,
+	#[from(pair_future)] pair: PairFuture,
+	#[from(count_state)] inspections: Arc<AtomicUsize>,
+	#[from(status_router)]
+	#[with(_status_available, pair.clone(), inspections.clone())]
+	_router: upstream_fixtures::RouterFuture,
+	#[from(upstream_fixtures::async_upstream)]
+	#[with(_router.clone())]
+	#[future(awt)]
+	server: Arc<reinhardt::test::fixtures::server::TestServerGuard>,
+) -> (
+	Pair,
+	Arc<AtomicUsize>,
+	Arc<reinhardt::test::fixtures::server::TestServerGuard>,
+) {
+	let state = pair.await;
+	let p = state.lock().await.take().unwrap();
+	(p, inspections, server)
+}
+#[rstest::fixture]
+fn reconciliation_router(
+	#[from(signal_state)] entered: Arc<Notify>,
+	#[from(signal_state)] release: Arc<Notify>,
+) -> Arc<Router> {
+	let reply = Arc::new(upstream_fixtures::any_handler(move |request| {
+		let wait = release.clone();
+		let reached = entered.clone();
+		async move {
+			assert!(
+				request.uri.path().ends_with("/finalize")
+					|| request.uri.path().ends_with("/cancel")
+			);
+			reached.notify_one();
+			wait.notified().await;
+			reinhardt::Response::new(http::StatusCode::OK)
+				.with_json(&true)
+				.unwrap()
+		}
+	}));
+	Arc::new(
+		Router::new()
+			.handler_arc("/", reply.clone())
+			.handler_arc("/{*rest}", reply),
+	)
+}
+#[rstest::fixture]
+async fn reconciliation_provider(
+	#[from(signal_state)] entered: Arc<Notify>,
+	#[from(signal_state)] release: Arc<Notify>,
+	#[from(reconciliation_router)]
+	#[with(entered.clone(), release.clone())]
+	_router: Arc<Router>,
+	#[from(upstream_fixtures::upstream)]
+	#[with(_router.clone())]
+	#[future(awt)]
+	server: reinhardt::test::fixtures::server::TestServerGuard,
+) -> (
+	Arc<Notify>,
+	Arc<Notify>,
+	Arc<reinhardt::test::fixtures::server::TestServerGuard>,
+) {
+	(entered, release, Arc::new(server))
+}
+/// Points the registration of the Node `node` at `endpoint`, which the Deployment
+/// permits like any fixture origin. The registration keeps what it pinned.
+async fn redirect_peer(f: &Federation, node: &str, endpoint: &str) {
+	common::peering::permit(f, endpoint);
+	let mut tx =
+		aidash_server::database::scope::begin_fixture_deployment(f.store.pool.fixture_driver())
+			.await
+			.unwrap();
+	sqlx::query(
+		&Query::update()
+			.table(Alias::new("node_registrations"))
+			.value(Alias::new("source_endpoint"), endpoint)
+			.and_where(Expr::col(Alias::new("source_node")).eq(node))
+			.to_string(PostgresQueryBuilder),
+	)
+	.execute(&mut *tx)
+	.await
+	.unwrap();
+	tx.commit().await.unwrap();
+}
+
+#[rstest::rstest]
+#[case(false)]
+#[case(true)]
+#[tokio::test]
+async fn remote_status_uses_one_deadline_and_skips_unavailable_dependencies(
+	#[case] status_available: bool,
+	#[from(status_scenario)]
+	#[with(status_available)]
+	#[future(awt)]
+	status_scenario: (
+		Pair,
+		Arc<AtomicUsize>,
+		Arc<reinhardt::test::fixtures::server::TestServerGuard>,
+	),
+) {
+	let (p, inspections, server) = status_scenario;
+	redirect_peer(&p.a, &node_of(&p.b), &server.url).await;
+	let start = tokio::time::Instant::now();
+	let response = tokio::time::timeout(
+		std::time::Duration::from_secs(3),
+		request(
+			&p.aa,
+			&p.token,
+			"GET",
+			&format!("/api/tasks/{}/remote-executions", p.task),
+			Value::Null,
+		),
+	)
+	.await;
+	drop(server);
+	let (status, body) =
+		response.expect("status and dependency checks must share a bounded deadline");
+	assert_eq!(status, 200, "{body}");
+	assert_eq!(body[0]["unavailable"], true, "{body}");
+	assert_eq!(body[0]["semantic"]["reason"], "unavailable", "{body}");
+	if status_available {
+		assert!(inspections.load(Ordering::Acquire) > 0);
+	} else {
+		assert_eq!(
+			inspections.load(Ordering::Acquire),
+			0,
+			"an unavailable peer must not be traversed again"
+		);
+		assert!(start.elapsed() < std::time::Duration::from_secs(1));
+	}
+	p.close().await;
+}
+
+#[rstest::rstest]
+#[case("finalization")]
+#[case("cancellation")]
+#[tokio::test]
+async fn remote_reconciliation_releases_atomic_visibility_before_peer_io(
+	#[future(awt)]
+	#[with(true, true)]
+	scoped_pair: Pair,
+	#[future(awt)] reconciliation_provider: (
+		Arc<Notify>,
+		Arc<Notify>,
+		Arc<reinhardt::test::fixtures::server::TestServerGuard>,
+	),
+	#[case] kind: &str,
+) {
+	use reinhardt::query::{LockBehavior, LockType};
+	let p = scoped_pair;
+	let local = if kind == "finalization" {
+		for _ in 0..4 {
+			p.step().await;
+			if !p.requests.lock().await.is_empty() {
+				break;
+			}
+		}
+		assert_eq!(p.requests.lock().await.len(), 1);
+		sqlx::query(
+			&Query::update()
+				.table(Alias::new("generation_remote_dispatches"))
+				.value(Alias::new("peer_finalized"), false)
+				.and_where(Expr::cust(
+					"state='SETTLED' AND usage->>'purpose'='inference'",
+				))
+				.to_string(PostgresQueryBuilder),
+		)
+		.execute(p.b.store.pool.fixture_driver())
+		.await
+		.unwrap();
+		&p.b
+	} else {
+		let intent = p.generation.as_ref().unwrap().1["intent_id"]
+			.as_str()
+			.unwrap();
+		let (status, body) = request(
+			&p.aa,
+			&p.token,
+			"POST",
+			&format!("/api/tasks/{}/remote-generation/{intent}/cancel", p.task),
+			json!({}),
+		)
+		.await;
+		assert_eq!(status, 200, "{body}");
+		{
+			let query_bind_1 = intent.parse::<Uuid>().unwrap();
+			sqlx::query(
+				&Query::update()
+					.table(Alias::new("generation_remote_intents"))
+					.value(Alias::new("cancel_delivered"), false)
+					.value_expr(Alias::new("cancel_retry_at"), Expr::cust("NULL"))
+					.and_where(SimpleExpr::CustomWithExpr(
+						"(id=?)".to_owned(),
+						vec![Expr::value(query_bind_1.to_owned()).into()],
+					))
+					.to_string(PostgresQueryBuilder),
+			)
+			.execute(p.a.store.pool.fixture_driver())
+			.await
+		}
+		.unwrap();
+		&p.a
+	};
+	let remote = if kind == "finalization" { &p.a } else { &p.b };
+	let (entered, release, server) = reconciliation_provider;
+	redirect_peer(local, &node_of(remote), &server.url).await;
+	let f = local.clone();
+	let reconcile =
+		tokio::spawn(async move { aidash_server::generation::provision::reconcile(&f).await });
+	tokio::time::timeout(std::time::Duration::from_secs(5), entered.notified())
+		.await
+		.unwrap();
+	let mut tx = local
+		.store
+		.control_pool
+		.fixture_driver()
+		.begin()
+		.await
+		.unwrap();
+	let exclusive: Result<bool, _> = sqlx::query_scalar(
+		&Query::select()
+			.column(Alias::new("singleton"))
+			.from(Alias::new("atomic_gate"))
+			.and_where(Expr::col(Alias::new("singleton")).eq(Expr::value(true)))
+			.lock(LockType::Update)
+			.lock_behavior(LockBehavior::Nowait)
+			.to_string(PostgresQueryBuilder),
+	)
+	.fetch_one(&mut *tx)
+	.await;
+	tx.rollback().await.unwrap();
+	release.notify_one();
+	let result = tokio::time::timeout(std::time::Duration::from_secs(5), reconcile)
+		.await
+		.unwrap()
+		.unwrap();
+	drop(server);
+	assert!(
+		exclusive.is_ok(),
+		"peer I/O must not retain the shared atomic gate: {exclusive:?}"
+	);
+	result.unwrap();
+	let pending: i64 = if kind == "finalization" {
+		sqlx::query_scalar(
+			&Query::select()
+				.expr(Expr::cust("COUNT(*)"))
+				.from(Alias::new("generation_remote_dispatches"))
+				.and_where(Expr::cust(
+					"state IN ('ABORTED','SETTLED') AND NOT peer_finalized",
+				))
+				.to_string(PostgresQueryBuilder),
+		)
+		.fetch_one(local.store.pool.fixture_driver())
+		.await
+		.unwrap()
+	} else {
+		sqlx::query_scalar(
+			&Query::select()
+				.expr(Expr::cust("COUNT(*)"))
+				.from(Alias::new("generation_remote_intents"))
+				.and_where(Expr::cust("cancelled AND NOT cancel_delivered"))
+				.to_string(PostgresQueryBuilder),
+		)
+		.fetch_one(local.store.pool.fixture_driver())
+		.await
+		.unwrap()
+	};
+	assert_eq!(pending, 0, "the acknowledged durable outbox must be closed");
+	p.close().await;
+}
+
+#[rstest::rstest]
+#[case("expired")]
+#[case("disabled")]
+#[tokio::test]
+async fn generated_home_lineage_is_rechecked_when_semantic_memory_is_disabled(
+	#[future(awt)]
+	#[with(false, true)]
+	scoped_pair: Pair,
+	#[case] scenario: &str,
+) {
+	let p = scoped_pair;
+	for _ in 0..4 {
+		p.step().await;
+		if !p.requests.lock().await.is_empty() {
+			break;
+		}
+	}
+	assert_eq!(p.requests.lock().await.len(), 1);
+	assert_eq!(p.run().await.phase().as_str(), "TOOL_CALL");
+	if scenario == "expired" {
+		sqlx::query(
+			&Query::update()
+				.table(Alias::new("generation_requests"))
+				.value_expr(
+					Alias::new("expires_at"),
+					Expr::cust("CLOCK_TIMESTAMP()-INTERVAL '1 second'"),
+				)
+				.and_where(Expr::cust("local_task_id IS NOT NULL AND status='ACTIVE'"))
+				.to_string(PostgresQueryBuilder),
+		)
+		.execute(p.a.store.pool.fixture_driver())
+		.await
+		.unwrap();
+	} else {
+		let mut spec: Value = sqlx::query_scalar(
+			&Query::select()
+				.column(Alias::new("spec"))
+				.from(Alias::new("generation_policies"))
+				.and_where(Expr::cust("tenant='acme' AND id='remote-parent'"))
+				.to_string(PostgresQueryBuilder),
+		)
+		.fetch_one(p.a.store.pool.fixture_driver())
+		.await
+		.unwrap();
+		spec["enabled"] = json!(false);
+		let (status, body) = request(
+			&p.aa,
+			&p.a.config.api_token,
+			"POST",
+			"/api/generation/acme/policies/remote-parent",
+			json!({"expected_revision":1,"spec":spec}),
+		)
+		.await;
+		assert_eq!(status, 200, "{body}");
+	}
+	let still_enabled: bool = sqlx::query_scalar(&Query::select().expr(Expr::cust("COUNT(*)=1"))
+		.from(Alias::new("authorization_catalog"))
+		.and_where(Expr::cust("tenant='acme' AND entry_id IN (SELECT agent_id FROM generation_requests WHERE local_task_id IS NOT NULL) AND enabled"))
+		.to_string(PostgresQueryBuilder)).fetch_one(p.a.store.pool.fixture_driver()).await.unwrap();
+	assert!(still_enabled, "this cut must precede lifecycle retirement");
+	p.step().await;
+	let task = p.a.store.task(&TEST_FIXTURE, p.task).await.unwrap();
+	let snapshot =
+		p.a.store
+			.snapshot(&TEST_FIXTURE, task.workspace_id)
+			.await
+			.unwrap();
+	assert!(
+		!snapshot
+			.messages
+			.iter()
+			.any(|message| message.content.contains("Scoped remote progress")),
+		"a previously produced tool call must not run under expired/disabled Home ancestry"
+	);
+	let run = p.run().await;
+	assert_eq!(run.control.as_str(), "PAUSED", "{run:?}");
+	assert_eq!(
+		serde_json::to_value(run.recovery.semantic_reason).unwrap(),
+		"authority",
+		"{run:?}"
+	);
+	assert_eq!(p.requests.lock().await.len(), 1);
+	p.close().await;
+}
+
+async fn seed_remote_history(p: &Pair) {
+	let mut history = vec![
+		json!({"kind":"tool","call":{"id":"first","name":"read","arguments":{}},"result":"keep first"}),
+		json!({"kind":"tool","call":{"id":"obsolete","name":"read","arguments":{}},"result":"old".repeat(50000)}),
+	];
+	for i in 0..6 {
+		history.push(json!({"kind":"tool","call":{"id":format!("recent-{i}"),"name":"read","arguments":{}},"result":"recent"}));
+	}
+	{
+		let query_bind_1 = p.admission;
+		let mut context = serde_json::to_value(p.run().await.context).unwrap();
+		context["history"] = json!(history);
+		// Bare events are a pre-journal projection; drop the cursor so it is imported.
+		context.as_object_mut().unwrap().remove("journal");
+		let query_bind_2 = context;
+		let query_bind_3 = common::pending(aidash_server::domain::RunState::Thinking(
+			aidash_server::domain::ThinkingState::default(),
+		));
+		sqlx::query(
+			&Query::update()
+				.table(Alias::new("runs"))
+				.value(Alias::new("phase"), "THINKING")
+				.value_expr(
+					Alias::new("context"),
+					SimpleExpr::CustomWithExpr(
+						"(?)".to_owned(),
+						vec![Expr::value(query_bind_2.to_owned()).into()],
+					),
+				)
+				.value_expr(
+					Alias::new("pending"),
+					SimpleExpr::CustomWithExpr(
+						"(?)".to_owned(),
+						vec![Expr::value(query_bind_3.to_owned()).into()],
+					),
+				)
+				.and_where(SimpleExpr::CustomWithExpr(
+					"(id=?)".to_owned(),
+					vec![Expr::value(query_bind_1.to_owned()).into()],
+				))
+				.to_string(PostgresQueryBuilder),
+		)
+		.execute(p.b.store.pool.fixture_driver())
+		.await
+	}
+	.unwrap();
+}
+
+#[rstest::rstest]
+#[tokio::test]
+async fn remote_compaction_rejects_a_peer_claimed_small_reservation(
+	#[future(awt)]
+	#[with(true, true, false, true)]
+	scoped_pair: Pair,
+) {
+	let p = scoped_pair;
+	seed_remote_history(&p).await;
+	p.step().await;
+	assert_eq!(p.model.compactions.lock().await.len(), 1);
+	let (mut usage, boundary): (Value, Value) = sqlx::query_as(
+		&Query::select()
+			.columns(["usage", "boundary"].map(Alias::new))
+			.from(Alias::new("generation_remote_dispatches"))
+			.and_where(Expr::cust("usage->>'purpose'='compaction'"))
+			.to_string(PostgresQueryBuilder),
+	)
+	.fetch_one(p.b.store.pool.fixture_driver())
+	.await
+	.unwrap();
+	let attempt = Uuid::new_v4();
+	usage["attempt_id"] = json!(attempt);
+	usage["operation_id"] = json!(attempt);
+	usage["reserved_tokens"] = json!(1025);
+	// An authenticated execution peer controls its own dispatch journal. Home
+	// must reject the claimed amount even when that peer's fence agrees with it.
+	{
+		let query_bind_1 = attempt;
+		let query_bind_2 = &usage;
+		let query_bind_3 = aidash_server::registry::digest(&usage);
+		let query_bind_4 = node_of(&p.a);
+		let query_bind_5 = &boundary;
+		sqlx::query(
+			&Query::insert()
+				.into_table(Alias::new("generation_remote_dispatches"))
+				.columns(
+					[
+						"attempt_id",
+						"usage",
+						"digest",
+						"peer_node",
+						"boundary",
+						"tenant",
+					]
+					.map(Alias::new),
+				)
+				.from_subquery(
+					Query::select()
+						.expr(SimpleExpr::CustomWithExpr(
+							"(?)".to_owned(),
+							vec![Expr::value(query_bind_1.to_owned()).into()],
+						))
+						.expr(SimpleExpr::CustomWithExpr(
+							"(?)".to_owned(),
+							vec![Expr::value(query_bind_2.to_owned()).into()],
+						))
+						.expr(SimpleExpr::CustomWithExpr(
+							"(?)".to_owned(),
+							vec![Expr::value(query_bind_3.to_owned()).into()],
+						))
+						.expr(SimpleExpr::CustomWithExpr(
+							"(?)".to_owned(),
+							vec![Expr::value(query_bind_4.to_owned()).into()],
+						))
+						.expr(SimpleExpr::CustomWithExpr(
+							"(?)".to_owned(),
+							vec![Expr::value(query_bind_5.to_owned()).into()],
+						))
+						.expr(Expr::value("acme"))
+						.to_owned(),
+				)
+				.to_string(PostgresQueryBuilder),
+		)
+		.execute(p.b.store.pool.fixture_driver())
+		.await
+	}
+	.unwrap();
+	{
+		let query_bind_1 = p.admission;
+		let query_bind_2 = boundary["step"].as_i64().unwrap() as i32;
+		sqlx::query(
+			&Query::update()
+				.table(Alias::new("runs"))
+				.value_expr(
+					Alias::new("step"),
+					SimpleExpr::CustomWithExpr(
+						"(?)".to_owned(),
+						vec![Expr::value(query_bind_2.to_owned()).into()],
+					),
+				)
+				.and_where(SimpleExpr::CustomWithExpr(
+					"(id=?)".to_owned(),
+					vec![Expr::value(query_bind_1.to_owned()).into()],
+				))
+				.to_string(PostgresQueryBuilder),
+		)
+		.execute(p.b.store.pool.fixture_driver())
+		.await
+	}
+	.unwrap();
+	let before: i64 = sqlx::query_scalar(
+		&Query::select()
+			.column(Alias::new("used_tokens"))
+			.from(Alias::new("generation_budgets"))
+			.to_string(PostgresQueryBuilder),
+	)
+	.fetch_one(p.a.store.pool.fixture_driver())
+	.await
+	.unwrap();
+	let response = common::peering::signed(
+		&p.a.client,
+		&p.a.config.endpoint,
+		"/scoped/usage/reserve",
+		(&p.b, &common::default_node(&p.b.store, "acme").await),
+		&common::default_node(&p.a.store, "acme").await,
+		"",
+		&json!({"usage":usage,"boundary":boundary}),
+	)
+	.await
+	.send()
+	.await
+	.unwrap();
+	let status = response.status();
+	let body = response.text().await.unwrap();
+	assert_eq!(status, 403, "{body}");
+	let after: i64 = sqlx::query_scalar(
+		&Query::select()
+			.column(Alias::new("used_tokens"))
+			.from(Alias::new("generation_budgets"))
+			.to_string(PostgresQueryBuilder),
+	)
+	.fetch_one(p.a.store.pool.fixture_driver())
+	.await
+	.unwrap();
+	assert_eq!(after, before);
+	let count: i64 = {
+		let query_bind_1 = attempt;
+		sqlx::query_scalar(
+			&Query::select()
+				.expr(Expr::cust("COUNT(*)"))
+				.from(Alias::new("generation_remote_usage"))
+				.and_where(SimpleExpr::CustomWithExpr(
+					"(attempt_id=?)".to_owned(),
+					vec![Expr::value(query_bind_1.to_owned()).into()],
+				))
+				.to_string(PostgresQueryBuilder),
+		)
+		.fetch_one(p.a.store.pool.fixture_driver())
+		.await
+	}
+	.unwrap();
+	assert_eq!(count, 0, "a forged amount must not debit the Home ancestor");
+	p.close().await;
+}
+
+#[rstest::rstest]
+// Home allowance and authority failures keep their semantic reason; a Decider
+// that cannot run pauses the Run with its context reason (ADR 0042). An
+// unavailable Route or an invalid answer schedules an outage retry instead,
+// and the Run pauses only after the fifth (ADR 0066).
+#[case("approved", 0, None)]
+#[case("unnecessary", 0, None)]
+#[case("ancestor_limit", 0, Some(("semantic_reason", json!("allowance"))))]
+#[case("catalog_revoked", 0, Some(("semantic_reason", json!("authority"))))]
+#[case("outage", 503, Some(("decider_retry", json!(1))))]
+#[case("bad_answers", 1, Some(("decider_retry", json!(1))))]
+#[case("credential_rejected", 401, Some(("context_reason", json!("decider_unavailable"))))]
+#[case("unbound", 0, Some(("context_reason", json!("decider_unavailable"))))]
+#[tokio::test]
+async fn remote_compaction_uses_exact_approval_and_origin_owned_allowances(
+	#[future(awt)]
+	#[with(true, true, false, true)]
+	scoped_pair: Pair,
+	#[case] scenario: &str,
+	#[case] status: usize,
+	#[case] reason: Option<(&str, Value)>,
+) {
+	let p = scoped_pair;
+	if scenario != "unnecessary" {
+		seed_remote_history(&p).await;
+	}
+	p.model.compaction_status.store(status, Ordering::Release);
+	*p.model.compaction_reservations.lock().await = Some(ReservationCheck {
+		pools: vec![
+			p.a.store.pool.fixture_driver().clone(),
+			p.b.store.pool.fixture_driver().clone(),
+		],
+		dispatcher: p.b.store.pool.fixture_driver().clone(),
+		grant: p.grant,
+		admission: p.admission,
+		purpose: "compaction",
+	});
+	if scenario == "ancestor_limit" {
+		sqlx::query(
+			&Query::update()
+				.table(Alias::new("generation_budgets"))
+				.value(Alias::new("compaction_call_limit"), 0)
+				.to_string(PostgresQueryBuilder),
+		)
+		.execute(p.a.store.pool.fixture_driver())
+		.await
+		.unwrap();
+	}
+	if scenario == "catalog_revoked" {
+		assert_eq!(
+			request(
+				&p.ba,
+				&p.receiver_token,
+				"POST",
+				"/api/authorization/acme/catalog",
+				json!({"node":aidash_domain::nodes::NodeName::derived("acme"),"entry":{"id":"remote-decider","version":"1.0.0"},"expected_revision":1,"enabled":false})
+			)
+			.await
+			.0,
+			200
+		);
+	}
+	if scenario == "unbound" {
+		// Without a usable OpenRouter binding the receiver stops before any
+		// allowance is reserved or Jev is called (ADR 0041).
+		p.receiver_openrouter.unbind("acme").await;
+	}
+	for _ in 0..4 {
+		p.step().await;
+		let run = p.run().await;
+		if !p.requests.lock().await.is_empty()
+			|| run.control.as_str() == "PAUSED"
+			|| run.recovery.retry.is_some()
+		{
+			break;
+		}
+	}
+	let run = p.run().await;
+	if let Some((field, reason)) = reason {
+		let recovery = serde_json::to_value(&run.recovery).unwrap();
+		assert_eq!(recovery[field], reason, "{run:?}");
+		let retrying = field == "decider_retry";
+		assert_eq!(run.control.as_str() == "PAUSED", !retrying, "{run:?}");
+		assert!(!retrying || run.recovery.retry.is_some(), "{run:?}");
+		assert_ne!(run.phase().as_str(), "FAILED");
+		assert!(p.requests.lock().await.is_empty());
+		assert!(
+			!run.error
+				.as_deref()
+				.unwrap_or_default()
+				.contains("private decider response")
+		);
+	} else {
+		assert_eq!(p.requests.lock().await.len(), 1, "{run:?}");
+	}
+	let count = usize::from(matches!(
+		scenario,
+		"approved" | "outage" | "bad_answers" | "credential_rejected"
+	));
+	let calls = p.model.compactions.lock().await;
+	assert_eq!(calls.len(), count);
+	if let Some(call) = calls.first() {
+		assert_eq!(call["model"], "typesafe/jev-1.13");
+		assert_eq!(call["provider"], json!({"zdr": true}));
+		// The Decider classifies the Run's own history; pinned context such as
+		// Home memory is never part of its state (ADR 0042).
+		assert!(
+			call["state"]["history"]
+				.as_array()
+				.is_some_and(|history| history.iter().any(|entry| entry["result_chars"] == 150000)),
+			"the Run's history must reach the exact decider"
+		);
+		assert!(!call.to_string().contains("ochre falcon"));
+	}
+	drop(calls);
+	for node in [&p.a, &p.b] {
+		let (used, limit): (i64, i64) = sqlx::query_as(
+			&Query::select()
+				.columns(["compaction_calls", "compaction_call_limit"].map(Alias::new))
+				.from(Alias::new("generation_budgets"))
+				.to_string(PostgresQueryBuilder),
+		)
+		.fetch_one(node.store.pool.fixture_driver())
+		.await
+		.unwrap();
+		assert_eq!(
+			used, count as i64,
+			"{}: {used}/{limit}",
+			node.config.deployment
+		);
+		if count > 0 {
+			let amount: i64 = sqlx::query_scalar(
+				&Query::select()
+					.column(Alias::new("reserved_tokens"))
+					.from(Alias::new("generation_remote_usage"))
+					.and_where(Expr::cust("purpose='compaction'"))
+					.to_string(PostgresQueryBuilder),
+			)
+			.fetch_one(node.store.pool.fixture_driver())
+			.await
+			.unwrap();
+			assert_eq!(
+				amount, 401024,
+				"every owner must reserve the approved request maximum"
+			);
+		}
+	}
+	p.close().await;
+}
+
+#[rstest::rstest]
+#[tokio::test]
+async fn remote_compaction_without_explicit_recipient_pauses_without_environment_fallback(
+	#[future(awt)]
+	#[with(true, true)]
+	scoped_pair: Pair,
+) {
+	let p = scoped_pair;
+	seed_remote_history(&p).await;
+	p.step().await;
+	let run = p.run().await;
+	assert_eq!(run.control.as_str(), "PAUSED", "{run:?}");
+	assert_eq!(
+		serde_json::to_value(run.recovery.semantic_reason).unwrap(),
+		"context_budget"
+	);
+	assert!(p.model.compactions.lock().await.is_empty());
+	assert!(p.requests.lock().await.is_empty());
+	p.close().await;
+}
+
+/// A real receiver `runworker` launch. Startup and Run progress are bounded
+/// separately so a failure names its milestone and distinguishes an exited
+/// process from a live worker whose Run stopped progressing.
+struct ScopedWorkerCommand {
+	command: std::process::Command,
+	log: std::path::PathBuf,
+	_settings_directory: tempfile::TempDir,
+	_binary: Arc<ScopedWorkerBinary>,
+}
+/// The exact worker executable for every process one test starts.
+struct ScopedWorkerBinary {
+	path: std::path::PathBuf,
+	_directory: tempfile::TempDir,
+}
+#[rstest::fixture]
+fn scoped_worker_binary(
+	#[from(reinhardt::test::fixtures::temp_dir)] directory: tempfile::TempDir,
+) -> Arc<ScopedWorkerBinary> {
+	// Own the exact local executable until every child is reaped: another
+	// build can replace the shared Cargo output. macOS delays the first exec
+	// of each new executable file by seconds with no CPU in the child, while
+	// later execs of that file start in milliseconds; one snapshot per test
+	// keeps that delay out of the post-SIGKILL restart.
+	#[cfg(target_os = "macos")]
+	let path = {
+		let snapshot = directory.path().join("aidash");
+		std::fs::copy(env!("CARGO_BIN_EXE_aidash"), &snapshot)
+			.expect("snapshot the exact scoped worker executable");
+		snapshot
+	};
+	#[cfg(not(target_os = "macos"))]
+	let path = std::path::PathBuf::from(env!("CARGO_BIN_EXE_aidash"));
+	Arc::new(ScopedWorkerBinary {
+		path,
+		_directory: directory,
+	})
+}
+#[rstest::fixture]
+fn scoped_worker_command(
+	#[from(pair_future)] pair: PairFuture,
+	scoped_worker_binary: Arc<ScopedWorkerBinary>,
+	#[from(reinhardt::test::fixtures::temp_dir)] directory: tempfile::TempDir,
+) -> BoxFuture<'static, ScopedWorkerCommand> {
+	async move {
+		let state = pair.await;
+		let pair = state.lock().await;
+		let p = pair.as_ref().unwrap();
+		let mut database = reqwest::Url::parse(&p.bu).unwrap();
+		database
+			.query_pairs_mut()
+			.append_pair("options", &format!("-c application_name={}", p.bschema));
+		let log = directory.path().join("worker.log");
+		let output = std::fs::File::create(&log).unwrap();
+		let mut command = std::process::Command::new(&scoped_worker_binary.path);
+		command
+			// The fixture has already migrated both databases. Starting only the
+			// worker keeps crash recovery independent of another migration pass.
+			.args(common::native_process_args(&p.b, "runworker"))
+			.envs(common::native_process_environment(
+				&p.b,
+				database.as_str(),
+				directory.path(),
+				1,
+			))
+			.env("AIDASH_ACTIVATION_NAMESPACE", &p.bschema)
+			.env("AIDASH_ENV", "test")
+			// Activation claims and deferred step recovery are logged by the
+			// harness and application crates.
+			.env(
+				"RUST_LOG",
+				"aidash_server=info,aidash_harness=info,aidash_application=info",
+			)
+			.stdin(std::process::Stdio::null())
+			.stdout(output.try_clone().unwrap())
+			.stderr(output);
+		ScopedWorkerCommand {
+			command,
+			log,
+			_settings_directory: directory,
+			_binary: scoped_worker_binary,
+		}
+	}
+	.boxed()
+}
+struct ScopedWorkerProcess {
+	child: std::process::Child,
+	spawned: std::time::Instant,
+	probe: std::net::SocketAddr,
+	command: ScopedWorkerCommand,
+}
+impl ScopedWorkerProcess {
+	/// Process start through settings, database pools and system seeding, as
+	/// in the other process fixtures. It precedes every Run milestone.
+	const STARTUP: std::time::Duration = std::time::Duration::from_secs(60);
+	/// Worker steps serve peer responses continuously: the longest gap was
+	/// 19s at saturated host load, and the worker abandons a command, grant
+	/// or usage call after 60s. No response for this long means a stall.
+	const STALL: std::time::Duration = std::time::Duration::from_secs(60);
+	/// Each milestone spans at most two worker steps and served 26-41 peer
+	/// responses at both low and saturated host load; one retried semantic
+	/// query raised that to 59. Beyond this bound the worker repeats work,
+	/// such as in a retry loop, rather than progressing slowly.
+	const PEER_RESPONSES: usize = 120;
+	const LOG_LINES: usize = 40;
+
+	// Process primitive used by the initial fixture and by the explicit restart Act.
+	fn spawn(mut command: ScopedWorkerCommand) -> Self {
+		// Readiness uses the production probe listener, which cannot inherit a
+		// descriptor. Reserve its port just before each spawn: a port reserved
+		// when the restart command is built stays released for the whole
+		// initial Run, and another process can take it.
+		let probe = std::net::TcpListener::bind("127.0.0.1:0")
+			.unwrap()
+			.local_addr()
+			.unwrap();
+		let child = command
+			.command
+			.env("AIDASH_PROBE_LISTEN", probe.to_string())
+			.spawn()
+			.unwrap();
+		Self {
+			child,
+			spawned: std::time::Instant::now(),
+			probe,
+			command,
+		}
+	}
+	/// Process state and a bounded tail of this worker's own log.
+	fn report(&mut self) -> String {
+		let state = match self.child.try_wait() {
+			Ok(Some(status)) => format!("exited ({status})"),
+			Ok(None) => format!("alive (pid {})", self.child.id()),
+			Err(error) => format!("unobservable ({error})"),
+		};
+		let log = std::fs::read_to_string(&self.command.log).unwrap_or_default();
+		let lines: Vec<&str> = log.lines().collect();
+		let tail = lines[lines.len().saturating_sub(Self::LOG_LINES)..]
+			.iter()
+			.map(|line| line.chars().take(400).collect::<String>())
+			.collect::<Vec<_>>()
+			.join("\n");
+		format!(
+			"worker {state} {:.1?} after spawn; last {} of {} log lines:\n{tail}",
+			self.spawned.elapsed(),
+			lines.len().min(Self::LOG_LINES),
+			lines.len()
+		)
+	}
+	/// Run milestones are measured only after the process can claim work.
+	/// `/ready` covers only database connectivity: the probe listener starts
+	/// before the runtime tasks, so the worker slot's activation startup
+	/// recovery is awaited from the log, as in the other worker process
+	/// fixtures. That pass completes with the broker transport or in its
+	/// database fallback, and either way the slot can then claim the Run.
+	async fn ready(&mut self, http_client: &reqwest::Client) {
+		let mut probed = false;
+		loop {
+			assert!(
+				self.child.try_wait().unwrap().is_none(),
+				"scoped worker exited before readiness: {}",
+				self.report()
+			);
+			if !probed {
+				probed = http_client
+					.get(format!("http://{}/ready", self.probe))
+					.timeout(std::time::Duration::from_millis(500))
+					.send()
+					.await
+					.is_ok_and(|response| response.status().is_success());
+			}
+			let log = std::fs::read_to_string(&self.command.log).unwrap_or_default();
+			if probed && log.contains("activation startup recovery complete") {
+				break;
+			}
+			assert!(
+				self.spawned.elapsed() < Self::STARTUP,
+				"scoped worker did not become ready: {}",
+				self.report()
+			);
+			tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+		}
+		eprintln!(
+			"scoped worker {} ready {:.1?} after spawn",
+			self.child.id(),
+			self.spawned.elapsed()
+		);
+	}
+	/// Wait for one Run milestone while this process remains alive and its
+	/// active Run keeps serving bounded peer work.
+	async fn until(&mut self, p: &Pair, milestone: &str, mut reached: impl AsyncFnMut() -> bool) {
+		let started = std::time::Instant::now();
+		let baseline = p.peers.served();
+		loop {
+			let served = p.peers.served() - baseline;
+			if reached().await {
+				eprintln!(
+					"scoped worker {} reached {milestone} in {:.1?} after {served} peer responses",
+					self.child.id(),
+					started.elapsed()
+				);
+				return;
+			}
+			if self.child.try_wait().unwrap().is_some() {
+				panic!(
+					"{milestone}: worker exited after {served} peer responses; {}\n{}",
+					run_progress(p).await,
+					self.report()
+				);
+			}
+			if run_state(p).await.1 == "PAUSED" {
+				panic!(
+					"{milestone}: Run paused after {served} peer responses; {}\n{}",
+					run_progress(p).await,
+					self.report()
+				);
+			}
+			let idle = p.peers.idle(started);
+			if idle >= Self::STALL {
+				panic!(
+					"{milestone}: live worker stalled; no peer response for {idle:.1?} after {served} in {:.1?}; {}\n{}",
+					started.elapsed(),
+					run_progress(p).await,
+					self.report()
+				);
+			}
+			if served > Self::PEER_RESPONSES {
+				panic!(
+					"{milestone}: live worker repeated work; not reached after {served} peer responses in {:.1?}; {}\n{}",
+					started.elapsed(),
+					run_progress(p).await,
+					self.report()
+				);
+			}
+			tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+		}
+	}
+}
+/// Both launches share one executable snapshot, so the post-SIGKILL restart
+/// reuses a file that has already been executed once.
+#[rstest::fixture]
+async fn running_scoped_pair(
+	#[from(pair_future)]
+	#[with(true)]
+	pair: PairFuture,
+	#[from(scoped_worker_binary)] _binary: Arc<ScopedWorkerBinary>,
+	#[from(scoped_worker_command)]
+	#[with(pair.clone(),_binary.clone())]
+	#[future(awt)]
+	initial: ScopedWorkerCommand,
+	#[from(scoped_worker_command)]
+	#[with(pair.clone(),_binary.clone())]
+	#[future(awt)]
+	restart: ScopedWorkerCommand,
+) -> (Pair, ScopedWorkerProcess, ScopedWorkerCommand) {
+	let state = pair.await;
+	let p = state.lock().await.take().unwrap();
+	p.model.hold.store(true, Ordering::Release);
+	(p, ScopedWorkerProcess::spawn(initial), restart)
+}
+impl Drop for ScopedWorkerProcess {
+	fn drop(&mut self) {
+		let _ = self.child.kill();
+		let _ = self.child.wait();
+	}
+}
+/// Phase and control only: this test runtime also serves every peer call,
+/// and decoding the whole Run on each poll would compete with that work.
+async fn run_state(p: &Pair) -> (String, String) {
+	sqlx::query_as(
+		&Query::select()
+			.columns(["phase", "control"].map(Alias::new))
+			.from(Alias::new("runs"))
+			.and_where(Expr::col("id").eq(Expr::value(p.admission)))
+			.to_string(PostgresQueryBuilder),
+	)
+	.fetch_one(p.b.store.pool.fixture_driver())
+	.await
+	.unwrap()
+}
+/// Durable Run progress and activation claims, without the Run context.
+async fn run_progress(p: &Pair) -> String {
+	let run = p.run().await;
+	let claims: (i64, Option<i64>, Option<f64>) = {
+		let query_bind_1 = p.admission;
+		sqlx::query_as(
+			&Query::select()
+				.expr(Expr::cust("COUNT(claimed_at)"))
+				.expr(Expr::cust(
+					"(ARRAY_AGG(worker_pid ORDER BY claimed_at DESC NULLS LAST))[1]",
+				))
+				.expr(Expr::cust(
+					"EXTRACT(EPOCH FROM CLOCK_TIMESTAMP()-MAX(claimed_at))::float8",
+				))
+				.from(Alias::new("run_activations"))
+				.and_where(Expr::col("run_id").eq(Expr::value(query_bind_1)))
+				.to_string(PostgresQueryBuilder),
+		)
+		.fetch_one(p.b.store.pool.fixture_driver())
+		.await
+	}
+	.unwrap();
+	let now = chrono::Utc::now();
+	format!(
+		"run phase={} control={} step={} revision={} updated {:.1}s ago, lease_owner={:?} lease_remaining={:?}s, lease_recovered={}, error={:?}, retry={:?}; activation claims={} last_pid={:?} last_claim {:?}s ago; peer responses={} last {:.1?} ago; provider requests={}",
+		run.phase().as_str(),
+		run.control.as_str(),
+		run.step,
+		run.revision,
+		(now - run.updated_at).as_seconds_f64(),
+		run.lease_owner,
+		run.lease_until.map(|until| (until - now).as_seconds_f64()),
+		run.recovery.lease_recovered,
+		run.error,
+		run.recovery.retry,
+		claims.0,
+		claims.1,
+		claims.2,
+		p.peers.served(),
+		p.peers.idle(p.peers.origin),
+		p.requests.lock().await.len(),
+	)
+}
+
+#[rstest::rstest]
+#[tokio::test]
+async fn process_sigkill_preserves_remote_receipt_and_uncertain_origin_charges(
+	#[future(awt)] running_scoped_pair: (Pair, ScopedWorkerProcess, ScopedWorkerCommand),
+	#[from(reinhardt::test::fixtures::http_client)] http_client: reqwest::Client,
+) {
+	let (p, mut worker, restart) = running_scoped_pair;
+	worker.ready(&http_client).await;
+	worker
+		.until(&p, "initial inference arrival", async || {
+			!p.requests.lock().await.is_empty()
+		})
+		.await;
+	drop(worker); // Actual SIGKILL. No worker cleanup or settlement runs.
+	let old_attempt: Uuid = sqlx::query_scalar(
+		&Query::select()
+			.column(Alias::new("attempt_id"))
+			.from(Alias::new("generation_remote_dispatches"))
+			.and_where(Expr::cust(
+				"state='DISPATCHED' AND usage->>'purpose'='inference'",
+			))
+			.to_string(PostgresQueryBuilder),
+	)
+	.fetch_one(p.b.store.pool.fixture_driver())
+	.await
+	.unwrap();
+	let before = p.run().await;
+	let before_receipts: i64 = {
+		let query_bind_1 = p.admission;
+		sqlx::query_scalar(
+			&Query::select()
+				.expr(Expr::cust("COUNT(*)"))
+				.from(Alias::new("semantic_remote_receipts"))
+				.and_where(SimpleExpr::CustomWithExpr(
+					"(run_id=?)".to_owned(),
+					vec![Expr::value(query_bind_1.to_owned()).into()],
+				))
+				.to_string(PostgresQueryBuilder),
+		)
+		.fetch_one(p.b.store.pool.fixture_driver())
+		.await
+	}
+	.unwrap();
+	assert_eq!(
+		before_receipts, 1,
+		"receipt must have survived before inference HTTP"
+	);
+	for node in [&p.a, &p.b] {
+		let state: String = {
+			let query_bind_1 = old_attempt;
+			sqlx::query_scalar(
+				&Query::select()
+					.column(Alias::new("state"))
+					.from(Alias::new("generation_remote_usage"))
+					.and_where(SimpleExpr::CustomWithExpr(
+						"(attempt_id=?)".to_owned(),
+						vec![Expr::value(query_bind_1.to_owned()).into()],
+					))
+					.to_string(PostgresQueryBuilder),
+			)
+			.fetch_one(node.store.pool.fixture_driver())
+			.await
+		}
+		.unwrap();
+		assert_eq!(state, "RESERVED");
+	}
+	p.model.hold.store(false, Ordering::Release);
+	p.model.release.notify_one();
+	// Advance only the dead process's lease, retaining the original durable
+	// attempt and fencing. Recovery otherwise waits the production lease delay.
+	{
+		let query_bind_1 = p.admission;
+		sqlx::query(
+			&Query::update()
+				.table(Alias::new("runs"))
+				.value_expr(
+					Alias::new("lease_until"),
+					Expr::cust("CLOCK_TIMESTAMP()-INTERVAL '1 second'"),
+				)
+				.and_where(SimpleExpr::CustomWithExpr(
+					"(id=?)".to_owned(),
+					vec![Expr::value(query_bind_1.to_owned()).into()],
+				))
+				.to_string(PostgresQueryBuilder),
+		)
+		.execute(p.b.store.pool.fixture_driver())
+		.await
+	}
+	.unwrap();
+	// Act: replace the killed worker after preserving its durable receipt and advancing its lease.
+	let mut worker = ScopedWorkerProcess::spawn(restart);
+	worker.ready(&http_client).await;
+	worker
+		.until(&p, "recovered inference arrival", async || {
+			p.requests.lock().await.len() >= 2
+		})
+		.await;
+	worker
+		.until(
+			&p,
+			"same remote Run completion under its original admission",
+			async || run_state(&p).await.0 == "COMPLETED",
+		)
+		.await;
+	drop(worker);
+	let after = p.run().await;
+	assert_eq!(after.id, before.id);
+	assert_eq!(after.task_id, before.task_id);
+	assert_eq!(after.agent_id, before.agent_id);
+	assert_eq!(p.requests.lock().await.len(), 2);
+	assert_eq!(
+		p.semantic.as_ref().unwrap().requests.lock().await.len(),
+		5,
+		"persisted receipt replay must not embed the same boundary again"
+	);
+	for node in [&p.a, &p.b] {
+		let usages: Vec<(Uuid, String, i64, Option<i64>)> = sqlx::query_as(
+			&Query::select()
+				.columns(
+					["attempt_id", "state", "reserved_tokens", "reported_tokens"].map(Alias::new),
+				)
+				.from(Alias::new("generation_remote_usage"))
+				.and_where(Expr::cust("purpose='inference'"))
+				.to_string(PostgresQueryBuilder),
+		)
+		.fetch_all(node.store.pool.fixture_driver())
+		.await
+		.unwrap();
+		assert_eq!(usages.len(), 2);
+		let old = usages.iter().find(|usage| usage.0 == old_attempt).unwrap();
+		assert_eq!(old.1, "RESERVED");
+		assert_eq!(old.3, None);
+		let new = usages.iter().find(|usage| usage.0 != old_attempt).unwrap();
+		assert_eq!(new.1, "SETTLED");
+		assert_eq!(new.3, Some(2));
+		let used: i64 = sqlx::query_scalar(
+			&Query::select()
+				.column(Alias::new("used_tokens"))
+				.from(Alias::new("generation_budgets"))
+				.to_string(PostgresQueryBuilder),
+		)
+		.fetch_one(node.store.pool.fixture_driver())
+		.await
+		.unwrap();
+		assert_eq!(
+			used,
+			old.2 + 3,
+			"uncertain input remains charged at every origin owner"
+		);
+	}
+	let state: String = {
+		let query_bind_1 = old_attempt;
+		sqlx::query_scalar(
+			&Query::select()
+				.column(Alias::new("state"))
+				.from(Alias::new("generation_remote_dispatches"))
+				.and_where(SimpleExpr::CustomWithExpr(
+					"(attempt_id=?)".to_owned(),
+					vec![Expr::value(query_bind_1.to_owned()).into()],
+				))
+				.to_string(PostgresQueryBuilder),
+		)
+		.fetch_one(p.b.store.pool.fixture_driver())
+		.await
+	}
+	.unwrap();
+	assert_eq!(state, "DISPATCHED");
+	p.close().await;
+}
+
+#[rstest::rstest]
+#[case("missing_usage", false)]
+#[case("malformed_usage", false)]
+#[case("overreported_usage", true)]
+#[case("wrong_model", true)]
+#[case("wrong_dimensions", true)]
+#[case("oversized_response", true)]
+#[tokio::test]
+async fn generated_remote_embedding_validates_contract_and_retains_uncertain_charge(
+	#[case] fault: &str,
+	#[case] rejected: bool,
+	#[future(awt)]
+	#[with(true, true)]
+	scoped_pair: Pair,
+) {
+	let p = scoped_pair;
+	let mut response = json!({"model":"home-vector","data":[{"index":0,"embedding":[1.0,0.0,0.0]}],"usage":{"prompt_tokens":1,"total_tokens":1}});
+	match fault {
+		"missing_usage" => {
+			response.as_object_mut().unwrap().remove("usage");
+		}
+		"malformed_usage" => response["usage"] = json!({"prompt_tokens":-1,"total_tokens":-1}),
+		"overreported_usage" => {
+			response["usage"] = json!({"prompt_tokens":99999999,"total_tokens":99999999})
+		}
+		"wrong_model" => response["model"] = json!("unapproved-model"),
+		"wrong_dimensions" => response["data"][0]["embedding"] = json!([1.0]),
+		"oversized_response" => response["padding"] = json!("x".repeat(1_048_577)),
+		_ => unreachable!(),
+	}
+	*p.semantic.as_ref().unwrap().response.lock().await = Some(response);
+	p.step().await;
+	p.step().await;
+	let run = p.run().await;
+	if rejected {
+		assert_eq!(run.control.as_str(), "PAUSED", "{fault}: {run:?}");
+		assert_eq!(
+			serde_json::to_value(run.recovery.semantic_reason).unwrap(),
+			"provider_contract",
+			"{fault}: {run:?}"
+		);
+		assert!(p.requests.lock().await.is_empty());
+	} else {
+		assert_eq!(run.control.as_str(), "ACTIVE", "{fault}: {run:?}");
+		assert_eq!(p.requests.lock().await.len(), 1);
+	}
+	let calls = p.semantic.as_ref().unwrap().requests.lock().await;
+	assert_eq!(calls.len(), 5);
+	let reserved = calls.last().unwrap()["input"].as_str().unwrap().len() as i64 + 1024;
+	drop(calls);
+	for node in [&p.a, &p.b] {
+		let budget: (i64, i64) = sqlx::query_as(
+			&Query::select()
+				.columns(["used_tokens", "embedding_calls"].map(Alias::new))
+				.from(Alias::new("generation_budgets"))
+				.to_string(PostgresQueryBuilder),
+		)
+		.fetch_one(node.store.pool.fixture_driver())
+		.await
+		.unwrap();
+		assert_eq!(
+			budget,
+			(reserved + if rejected { 0 } else { 2 }, 1),
+			"{fault} {}",
+			node.config.deployment
+		);
+	}
+	p.close().await;
+}
+
+#[rstest::rstest]
+#[case("receiver_calls")]
+#[case("home_tokens")]
+#[case("home_catalog")]
+#[case("receiver_expiry")]
+#[tokio::test]
+async fn generated_remote_prerequisites_stop_before_embedding_dispatch(
+	#[case] fault: &str,
+	#[future(awt)]
+	#[with(true, true)]
+	scoped_pair: Pair,
+) {
+	let p = scoped_pair;
+	match fault {
+		"receiver_calls" | "home_tokens" => {
+			let (node, column) = if fault == "receiver_calls" {
+				(&p.b, "embedding_call_limit")
+			} else {
+				(&p.a, "token_limit")
+			};
+			sqlx::query(
+				&Query::update()
+					.table(Alias::new("generation_budgets"))
+					.value(
+						Alias::new(column),
+						if fault == "home_tokens" { 1 } else { 0 },
+					)
+					.to_string(PostgresQueryBuilder),
+			)
+			.execute(node.store.pool.fixture_driver())
+			.await
+			.unwrap();
+		}
+		"home_catalog" => {
+			assert_eq!(request(&p.aa, &p.token, "POST", "/api/authorization/acme/catalog", json!({"node":aidash_domain::nodes::NodeName::derived("acme"),"entry":{"id":"home-embedding","version":"1.0.0"},"expected_revision":1,"enabled":false})).await.0, 200);
+		}
+		"receiver_expiry" => {
+			sqlx::query(
+				&Query::update()
+					.table(Alias::new("generation_requests"))
+					.value_expr(
+						Alias::new("expires_at"),
+						Expr::cust("CLOCK_TIMESTAMP()-INTERVAL '1 second'"),
+					)
+					.to_string(PostgresQueryBuilder),
+			)
+			.execute(p.b.store.pool.fixture_driver())
+			.await
+			.unwrap();
+		}
+		_ => unreachable!(),
+	}
+	for _ in 0..3 {
+		p.step().await;
+		if p.run().await.control.as_str() == "PAUSED" {
+			break;
+		}
+	}
+	let run = p.run().await;
+	assert_eq!(run.control.as_str(), "PAUSED", "{fault}: {run:?}");
+	assert_ne!(run.phase().as_str(), "FAILED");
+	assert!(p.requests.lock().await.is_empty());
+	assert_eq!(
+		p.semantic.as_ref().unwrap().requests.lock().await.len(),
+		4,
+		"no query embedding may dispatch"
+	);
+	p.close().await;
+}
+
+#[rstest::rstest]
+#[tokio::test]
+async fn remote_memory_mutate_is_not_advertised_and_cannot_write_a_receiver_substitute(
+	#[future(awt)]
+	#[with(true)]
+	scoped_pair: Pair,
+) {
+	let p = scoped_pair;
+	p.model.force_memory_mutate.store(true, Ordering::Release);
+	p.step().await;
+	p.step().await;
+	p.step().await;
+	assert_eq!(p.requests.lock().await.len(), 1);
+	let run = p.run().await;
+	assert_eq!(
+		serde_json::to_value(&run.context).unwrap()["history"][0]["event"]["result"]["error"],
+		"unavailable tool memory_mutate",
+		"unsupported remote writes must return an explicit tool error"
+	);
+	for node in [&p.a, &p.b] {
+		let count: i64 = sqlx::query_scalar(
+			&Query::select()
+				.expr(Expr::cust("COUNT(*)"))
+				.from(Alias::new("memory_units"))
+				.to_string(PostgresQueryBuilder),
+		)
+		.fetch_one(node.store.pool.fixture_driver())
+		.await
+		.unwrap();
+		assert_eq!(
+			count, 0,
+			"remote writes cannot use either node's local memory"
+		);
+	}
+	p.close().await;
+}
+
+impl Drop for Pair {
+	fn drop(&mut self) {
+		// Preserve task ownership if a contract assertion fails or is cancelled.
+		for server in &self.servers {
+			server.abort();
+		}
+	}
+}
+
+use reinhardt::query::{ExprTrait as _, QueryStatementBuilder as _, SimpleExpr};
+
+#[rstest::fixture]
+fn values_state() -> Arc<Mutex<Vec<Value>>> {
+	Arc::new(Mutex::new(Vec::new()))
+}
+#[rstest::fixture]
+fn bool_state() -> Arc<AtomicBool> {
+	Arc::new(AtomicBool::new(false))
+}
+#[rstest::fixture]
+fn signal_state() -> Arc<Notify> {
+	Arc::new(Notify::new())
+}
+#[rstest::fixture]
+fn count_state() -> Arc<AtomicUsize> {
+	Arc::new(AtomicUsize::new(0))
+}
+#[rstest::fixture]
+fn reservation_state() -> Arc<Mutex<Option<ReservationCheck>>> {
+	Arc::new(Mutex::new(None))
+}
+#[rstest::fixture]
+fn reply_state() -> Arc<Mutex<Option<String>>> {
+	Arc::new(Mutex::new(None))
+}
+#[rstest::fixture]
+fn response_state() -> Arc<Mutex<Option<Value>>> {
+	Arc::new(Mutex::new(None))
+}
+#[rstest::fixture]
+fn recovery_directory(
+	#[from(reinhardt::test::fixtures::temp_dir)] directory: tempfile::TempDir,
+) -> Arc<tempfile::TempDir> {
+	Arc::new(directory)
+}
+#[rstest::fixture]
+fn model_script(
+	#[from(values_state)] requests: Arc<Mutex<Vec<Value>>>,
+	#[from(bool_state)] hold: Arc<AtomicBool>,
+	#[from(signal_state)] entered: Arc<Notify>,
+	#[from(signal_state)] release: Arc<Notify>,
+	#[from(reservation_state)] reservations: Arc<Mutex<Option<ReservationCheck>>>,
+	#[from(compaction_model_state)] _state: CompactionModelState,
+	#[from(bool_state)] force_memory_mutate: Arc<AtomicBool>,
+) -> ModelScript {
+	let CompactionModelState {
+		compactions,
+		compaction_status,
+		compaction_reservations,
+	} = _state;
+	ModelScript {
+		requests,
+		hold,
+		entered,
+		release,
+		reservations,
+		compactions,
+		compaction_status,
+		compaction_reservations,
+		force_memory_mutate,
+		extra_tool_rounds: Arc::new(AtomicUsize::new(0)),
+	}
+}
+#[rstest::fixture]
+fn model_router(model_script: ModelScript) -> Arc<Router> {
+	let model_app=reinhardt::test::stub::StubRouter::new()
+.route("/v1/chat/completions", http::Method::POST, reply({let script=model_script.clone();move |request:reinhardt::Request| {let script=script.clone();let input=request.json::<Value>().unwrap();async move {
+        let check=script.reservations.lock().await.clone();
+        if let Some(check)=check {check.before_http().await;}
+        let mut calls=script.requests.lock().await;
+        calls.push(input);
+        let count=calls.len(); drop(calls); script.entered.notify_one(); if script.hold.load(Ordering::Acquire) {script.release.notified().await;} let message=if count==1 && script.force_memory_mutate.load(Ordering::Acquire) {json!({"role":"assistant","content":null,"tool_calls":[{"id":"forbidden-write","type":"function","function":{"name":"memory_mutate","arguments":"{\"data\":{\"forbidden\":true}}"}}]})} else if count<=1+script.extra_tool_rounds.load(Ordering::Acquire) {json!({"role":"assistant","content":null,"tool_calls":[{"id":if count==1 {"note".to_owned()} else {format!("note-{count}")},"type":"function","function":{"name":"workspace_message","arguments":"{\"content\":\"Scoped remote progress\"}"}}]})} else {json!({"role":"assistant","content":"Scoped remote result"})};
+        reinhardt::Response::ok().with_json(&json!({"choices":[{"index":0,"finish_reason":if message.get("tool_calls").is_some(){"tool_calls"}else{"stop"},"message":message}],"usage":{"prompt_tokens":1,"completion_tokens":1}})).unwrap()
+    }}}))
+.route("/systemone", http::Method::POST, reply({let script=model_script.clone();move |request:reinhardt::Request| {let script=script.clone();let input=request.json::<Value>().unwrap();async move {
+		if let Some(check)=script.compaction_reservations.lock().await.clone() {check.before_http().await;}
+		script.compactions.lock().await.push(input.clone());
+		match script.compaction_status.load(Ordering::Acquire) {
+			503 => reinhardt::Response::new(http::StatusCode::SERVICE_UNAVAILABLE).with_body("private decider response").with_header("Content-Type", "text/plain; charset=utf-8"),
+			401 => reinhardt::Response::new(http::StatusCode::UNAUTHORIZED).with_body("private decider response").with_header("Content-Type", "text/plain; charset=utf-8"),
+			// OpenRouter names the dated snapshot that served the pinned release.
+			1 => reinhardt::Response::ok().with_json(&json!({"model":format!("{}-20260917",input["model"].as_str().unwrap()),"answers":{}})).unwrap(),
+			_ => {
+				let answers:serde_json::Map<_,_>=input["questions"].as_object().unwrap().keys().map(|name|(name.clone(),json!({"noul":0.0}))).collect();
+				reinhardt::Response::ok().with_json(&json!({"model":format!("{}-20260917",input["model"].as_str().unwrap()),"answers":answers})).unwrap()
+			}
+		}
+	}}})).into_server_router();
+	Arc::new(model_app)
+}
+#[rstest::fixture]
+fn scoped_runtime(
+	#[default(false)] native: bool,
+	#[default("aidash://execution-test")] node: &str,
+	#[default(false)] ordered: bool,
+	#[from(upstream_fixtures::fixed_listener)] listener: upstream_fixtures::ListenerFuture,
+	#[from(recovery_directory)] directory: Arc<tempfile::TempDir>,
+	#[from(common::runtime)] runtime: common::RuntimeFuture,
+) -> common::RuntimeFuture {
+	let node = aidash_domain::nodes::DeploymentId::parse(node).unwrap();
+	async move {
+		let mut owner = runtime.await;
+		let f = &mut owner.federation;
+		f.config.deployment = node.clone();
+		f.store.deployment = node.clone();
+		f.config.endpoint = format!("http://{}", listener.await.local_addr().unwrap());
+		if ordered {
+			// A node without Cache Salt Keys creates only Legacy Runs.
+			f.store = f.store.clone().with_cache_salt(Some(
+				aidash_integrations::inference::CacheSaltKeys::new(
+					&[aidash_integrations::inference::CacheSaltKey {
+						version: 1,
+						secret: "fixture-cache-salt-secret".into(),
+					}],
+					1,
+				)
+				.unwrap(),
+			));
+		}
+		if native {
+			f.store = aidash_server::semantic::services::memory_recovery::initialize(
+				&f.store,
+				directory.path().to_owned(),
+			)
+			.await
+			.unwrap();
+		}
+		f.registry = aidash_server::registry::Registry::new(f.store.pool.clone(), &node)
+			.unwrap()
+			.with_keyless_origins(f.store.keyless.clone());
+		owner
+	}
+	.boxed()
+	.shared()
+}
+
+#[derive(Clone)]
+struct EmbeddingProvider {
+	requests: Arc<Mutex<Vec<Value>>>,
+	failing: Arc<AtomicBool>,
+	failure_at: Arc<AtomicUsize>,
+	reservations: Arc<Mutex<Option<ReservationCheck>>>,
+	response: Arc<Mutex<Option<Value>>>,
+	server: Arc<reinhardt::test::fixtures::server::TestServerGuard>,
+}
+#[rstest::fixture]
+fn embedding_router(
+	#[from(values_state)] requests: Arc<Mutex<Vec<Value>>>,
+	#[from(bool_state)] failing: Arc<AtomicBool>,
+	#[from(count_state)] failure_at: Arc<AtomicUsize>,
+	#[from(reservation_state)] reservations: Arc<Mutex<Option<ReservationCheck>>>,
+	#[from(response_state)] response: Arc<Mutex<Option<Value>>>,
+) -> Arc<Router> {
+	let embedding_app = reinhardt::test::stub::StubRouter::new()
+.route("/v1/embeddings", http::Method::POST, reply(move |request:reinhardt::Request| {let requests=requests.clone();let failing=failing.clone();let failure_at=failure_at.clone();let reservations=reservations.clone();let response=response.clone();let headers=request.headers.clone();let body=request.json::<Value>().unwrap();async move {
+		assert!(!headers.contains_key(http::header::AUTHORIZATION), "an unsigned provider must not receive the subject or peer bearer");
+        let check=reservations.lock().await.clone();
+        if let Some(check)=check {check.before_http().await;}
+		let call = { let mut calls = requests.lock().await; calls.push(body.clone()); calls.len() };
+        if failing.load(Ordering::Acquire) || failure_at.load(Ordering::Acquire) == call {
+            return reinhardt::Response::new(http::StatusCode::SERVICE_UNAVAILABLE).with_json(&json!({"error":"fixture outage"})).unwrap();
+        }
+		if let Some(value) = response.lock().await.clone() { return reinhardt::Response::ok().with_json(&value).unwrap(); }
+        reinhardt::Response::ok().with_json(&json!({"model":body["model"],"data":[{"index":0,"embedding":[1.0,0.0,0.0]}],"usage":{"prompt_tokens":1,"total_tokens":1}})).unwrap()
+	}})).into_server_router();
+	Arc::new(embedding_app)
+}
+#[rstest::fixture]
+fn embedding_provider(
+	#[from(values_state)] requests: Arc<Mutex<Vec<Value>>>,
+	#[from(bool_state)] failing: Arc<AtomicBool>,
+	#[from(count_state)] failure_at: Arc<AtomicUsize>,
+	#[from(reservation_state)] reservations: Arc<Mutex<Option<ReservationCheck>>>,
+	#[from(response_state)] response: Arc<Mutex<Option<Value>>>,
+	#[from(embedding_router)]
+	#[with(requests.clone(),failing.clone(),failure_at.clone(),reservations.clone(),response.clone())]
+	_router: Arc<Router>,
+	#[from(upstream_fixtures::async_upstream)]
+	#[with(futures_util::future::ready(_router.clone()).boxed().shared())]
+	server: upstream_fixtures::UpstreamFuture,
+) -> BoxFuture<'static, EmbeddingProvider> {
+	async move {
+		EmbeddingProvider {
+			requests,
+			failing,
+			failure_at,
+			reservations,
+			response,
+			server: server.await,
+		}
+	}
+	.boxed()
+}
+
+#[derive(Clone)]
+struct CompactionModelState {
+	compactions: Arc<Mutex<Vec<Value>>>,
+	compaction_status: Arc<AtomicUsize>,
+	compaction_reservations: Arc<Mutex<Option<ReservationCheck>>>,
+}
+#[rstest::fixture]
+fn compaction_model_state(
+	#[from(values_state)] compactions: Arc<Mutex<Vec<Value>>>,
+	#[from(count_state)] compaction_status: Arc<AtomicUsize>,
+	#[from(reservation_state)] compaction_reservations: Arc<Mutex<Option<ReservationCheck>>>,
+) -> CompactionModelState {
+	CompactionModelState {
+		compactions,
+		compaction_status,
+		compaction_reservations,
+	}
+}
+
+#[derive(Clone)]
+struct ScopedModel {
+	state: ModelScript,
+	server: Arc<reinhardt::test::fixtures::server::TestServerGuard>,
+}
+#[rstest::fixture]
+fn scoped_model(
+	model_script: ModelScript,
+	#[from(model_router)]
+	#[with(model_script.clone())]
+	router: Arc<Router>,
+	#[from(upstream_fixtures::ready_router)]
+	#[with(router.clone())]
+	ready: upstream_fixtures::RouterFuture,
+	#[from(upstream_fixtures::async_upstream)]
+	#[with(ready.clone())]
+	server: upstream_fixtures::UpstreamFuture,
+) -> BoxFuture<'static, ScopedModel> {
+	async move {
+		let _ = (router, ready);
+		ScopedModel {
+			state: model_script,
+			server: server.await,
+		}
+	}
+	.boxed()
+}
+#[derive(Clone)]
+struct ScopedApplication {
+	application: common::ApplicationFixture,
+	directory: Arc<tempfile::TempDir>,
+	listener: upstream_fixtures::ListenerFuture,
+}
+type ScopedApplicationFuture = futures_util::future::Shared<BoxFuture<'static, ScopedApplication>>;
+#[rstest::fixture]
+fn scoped_application(
+	#[default(false)] _native: bool,
+	#[default("aidash://execution-test")] _node: &str,
+	#[default(false)] _ordered: bool,
+	#[from(recovery_directory)] directory: Arc<tempfile::TempDir>,
+	#[from(upstream_fixtures::fixed_listener)] listener: upstream_fixtures::ListenerFuture,
+	#[from(scoped_runtime)]
+	#[with(_native,_node,_ordered,listener.clone(),directory.clone())]
+	runtime: common::RuntimeFuture,
+	#[from(common::native_application)]
+	#[with(Default::default(),aidash_server::sse::Service::new(Default::default()),Arc::new(|r|r),runtime.clone())]
+	application: common::ApplicationFuture,
+) -> ScopedApplicationFuture {
+	async move {
+		drop(runtime);
+		ScopedApplication {
+			application: application.await,
+			directory,
+			listener,
+		}
+	}
+	.boxed()
+	.shared()
+}
+struct SourceReplyMiddleware(Arc<Mutex<Option<String>>>);
+#[async_trait::async_trait]
+impl reinhardt::Middleware for SourceReplyMiddleware {
+	async fn process(
+		&self,
+		request: reinhardt::Request,
+		next: Arc<dyn reinhardt::Handler>,
+	) -> reinhardt::Result<reinhardt::Response> {
+		let semantic = request.uri.path().ends_with("/scoped/semantic/query");
+		if !semantic && !request.uri.path().ends_with("/scoped/execution/commands") {
+			return next.handle(request).await;
+		}
+		let input: Value = request.json().unwrap();
+		let mut wanted = self.0.lock().await;
+		let lose = wanted.as_deref().is_some_and(|v| {
+			if semantic {
+				v == "semantic.query"
+			} else {
+				input["operation"] == v
+			}
+		});
+		if lose {
+			wanted.take();
+		}
+		drop(wanted);
+		let response = next.handle(request).await?;
+		if lose && response.status.is_success() {
+			Ok(
+				reinhardt::Response::new(http::StatusCode::SERVICE_UNAVAILABLE)
+					.with_json(&json!({"error":"fixture lost a committed reply"}))
+					.unwrap(),
+			)
+		} else {
+			Ok(response)
+		}
+	}
+}
+/// Optional fault and observation middleware for a scoped peer's production routes.
+#[derive(Clone, Default)]
+struct RouterObservers {
+	reply: Option<Arc<Mutex<Option<String>>>>,
+	activity: Option<Arc<PeerActivity>>,
+}
+#[rstest::fixture]
+fn peer_activity() -> Arc<PeerActivity> {
+	Arc::new(PeerActivity::new())
+}
+#[rstest::fixture]
+fn scoped_router(
+	scoped_application: ScopedApplicationFuture,
+	#[default(RouterObservers::default())] observers: RouterObservers,
+) -> upstream_fixtures::RouterFuture {
+	async move {
+		let owner = scoped_application.await;
+		// reinhardt-web#6673: apply fault middleware to production routes directly, preserving HEAD.
+		let mut router = aidash_server::routes()
+			.into_server()
+			.with_di_context(owner.application.application.context.clone());
+		if let Some(reply) = observers.reply {
+			router = router.with_middleware(SourceReplyMiddleware(reply));
+		}
+		if let Some(activity) = observers.activity {
+			router = router.with_middleware(PeerActivityMiddleware(activity));
+		}
+		Arc::new(router)
+	}
+	.boxed()
+	.shared()
+}
+#[rstest::fixture]
+fn scoped_listener(
+	scoped_application: ScopedApplicationFuture,
+) -> upstream_fixtures::ListenerFuture {
+	async move { scoped_application.await.listener.await }
+		.boxed()
+		.shared()
+}
+struct ScopedPeer {
+	application: ScopedApplication,
+	server: upstream_fixtures::FixedServerGuard,
+}
+struct ScopedInfrastructure {
+	model_state: ModelScript,
+	model_server: Arc<reinhardt::test::fixtures::server::TestServerGuard>,
+	drop_reply: Arc<Mutex<Option<String>>>,
+	peers: Arc<PeerActivity>,
+	source: ScopedPeer,
+	receiver: ScopedPeer,
+	embedding_provider: BoxFuture<'static, EmbeddingProvider>,
+}
+mod scoped_peer_composition {
+	// rstest 0.26.1 does not copy function-level allows onto generated partial_N functions.
+	// Each peer fixture threads the node shape flags to its runtime explicitly.
+	#![allow(clippy::too_many_arguments)]
+	use super::*;
+	#[rstest::fixture]
+	pub(super) fn scoped_peer(
+		#[default(false)] _native: bool,
+		#[default("aidash://execution-test")] _node: &str,
+		#[default(false)] _ordered: bool,
+		#[default(RouterObservers::default())] _observers: RouterObservers,
+		#[from(scoped_application)]
+		#[with(_native, _node, _ordered)]
+		application: ScopedApplicationFuture,
+		#[from(scoped_router)]
+		#[with(application.clone(),_observers.clone())]
+		router: upstream_fixtures::RouterFuture,
+		#[from(scoped_listener)]
+		#[with(application.clone())]
+		listener: upstream_fixtures::ListenerFuture,
+		#[from(upstream_fixtures::fixed_upstream)]
+		#[with(None,listener.clone(),router.clone())]
+		server: BoxFuture<'static, upstream_fixtures::FixedServerGuard>,
+	) -> BoxFuture<'static, ScopedPeer> {
+		async move {
+			let _ = (router, listener);
+			ScopedPeer {
+				application: application.await,
+				server: server.await,
+			}
+		}
+		.boxed()
+	}
+	#[rstest::fixture]
+	pub(super) fn scoped_infrastructure(
+		#[default(false)] _native: bool,
+		#[default(false)] _ordered: bool,
+		scoped_model: BoxFuture<'static, ScopedModel>,
+		#[from(reply_state)] drop_reply: Arc<Mutex<Option<String>>>,
+		#[from(peer_activity)] peers: Arc<PeerActivity>,
+		#[from(scoped_peer)]
+		#[with(_native,"aidash://execution-test",false,RouterObservers{reply:Some(drop_reply.clone()),activity:Some(peers.clone())})]
+		source: BoxFuture<'static, ScopedPeer>,
+		#[from(scoped_peer)]
+		#[with(_native,"aidash://scoped-receiver",_ordered,RouterObservers{reply:None,activity:Some(peers.clone())})]
+		receiver: BoxFuture<'static, ScopedPeer>,
+		embedding_provider: BoxFuture<'static, EmbeddingProvider>,
+	) -> BoxFuture<'static, ScopedInfrastructure> {
+		async move {
+			let model = scoped_model.await;
+			ScopedInfrastructure {
+				model_state: model.state,
+				model_server: model.server,
+				drop_reply,
+				peers,
+				source: source.await,
+				receiver: receiver.await,
+				embedding_provider,
+			}
+		}
+		.boxed()
+	}
+}
+use scoped_peer_composition::scoped_infrastructure;
+
+#[rstest::rstest]
+#[tokio::test]
+async fn remote_human_continuations_survive_retries_and_restart_without_a_shadow_run(
+	#[future(awt)] scoped_pair: Pair,
+	#[from(signal_state)] source_notify: Arc<Notify>,
+	#[from(signal_state)] receiver_notify: Arc<Notify>,
+) {
+	let mut p = scoped_pair;
+	p.step().await;
+	let home = Home::new(p.b.clone(), p.run().await);
+	let key = format!("{}:binding-human", p.admission);
+	*p.drop_reply.lock().await = Some("human_request".into());
+	assert!(
+		home.human_request("QUESTION", "Proceed with the saved task?", &key)
+			.await
+			.is_err()
+	);
+	let saved = home
+		.human_request("QUESTION", "Proceed with the saved task?", &key)
+		.await
+		.unwrap();
+	assert_eq!(saved.run_id, p.admission);
+	assert_eq!(
+		saved.workspace_id,
+		p.a.store
+			.task(&TEST_FIXTURE, p.task)
+			.await
+			.unwrap()
+			.workspace_id
+	);
+	assert_eq!(
+		home.human_request("QUESTION", "Proceed with the saved task?", &key)
+			.await
+			.unwrap()
+			.id,
+		saved.id
+	);
+	assert!(
+		home.human_request("QUESTION", "Changed input", &key)
+			.await
+			.is_err()
+	);
+	assert!(
+		p.a.store.run(&TEST_FIXTURE, p.admission).await.is_err(),
+		"Home must not create a shadow execution Run"
+	);
+	// The model guard lives in providers; both peer transports must stop before rebinding.
+	for server in p.servers.drain(..) {
+		server.shutdown().await;
+	}
+	reconnect(&mut p.a, source_notify).await;
+	reconnect(&mut p.b, receiver_notify).await;
+	// Act: rebuild peers over their durable journals after stopping the transports.
+	p.aa = common::application(p.a.clone()).await;
+	p.ba = common::application(p.b.clone()).await;
+	for (f, application) in [(&p.a, p.aa.clone()), (&p.b, p.ba.clone())] {
+		let router = aidash_server::routes()
+			.into_server()
+			.with_di_context(application.context.clone())
+			.with_middleware(SourceReplyMiddleware(p.drop_reply.clone()));
+		let endpoint = reqwest::Url::parse(&f.config.endpoint).unwrap();
+		let listener = tokio::net::TcpListener::bind(("127.0.0.1", endpoint.port().unwrap()))
+			.await
+			.unwrap();
+		// Act: restart the production transport at its original address.
+		p.servers.push(upstream_fixtures::FixedServerGuard::spawn(
+			Arc::new(listener),
+			Arc::new(router),
+			Some(application.context.clone()),
+		));
+	}
+	let home = Home::new(p.b.clone(), p.run().await);
+	assert_eq!(
+		home.human_request_by_id(saved.id).await.unwrap().id,
+		saved.id
+	);
+	let projection = request(
+		&p.aa,
+		&p.token,
+		"GET",
+		&format!("/api/tasks/{}/remote-executions", p.task),
+		Value::Null,
+	)
+	.await;
+	assert_eq!(projection.0, 200, "{}", projection.1);
+	assert_eq!(projection.1[0]["human_requests"][0]["id"], json!(saved.id));
+	let events: Vec<Value> = sqlx::query_scalar(
+		&Query::select()
+			.column(Alias::new("data"))
+			.from(Alias::new("events"))
+			.and_where(Expr::col(Alias::new("kind")).eq("task.remote_human_requested"))
+			.to_string(PostgresQueryBuilder),
+	)
+	.fetch_all(p.a.store.pool.fixture_driver())
+	.await
+	.unwrap();
+	assert_eq!(
+		events.len(),
+		1,
+		"idempotent retries must not duplicate notifications"
+	);
+	assert_eq!(events[0]["task_id"], json!(p.task));
+	assert_eq!(events[0]["request_id"], json!(saved.id));
+	let answer_path = format!(
+		"/api/tasks/{}/remote-grants/{}/human-requests/answer",
+		p.task, p.grant
+	);
+	let (status, answered) = request(
+		&p.aa,
+		&p.token,
+		"POST",
+		&answer_path,
+		json!({"id":saved.id,"response":{"answer":"Continue"}}),
+	)
+	.await;
+	assert_eq!(status, 200, "{answered}");
+	assert_eq!(
+		home.human_request_by_id(saved.id).await.unwrap().response,
+		Some(json!({"answer":"Continue"}))
+	);
+	let approval = home
+		.human_request(
+			"APPROVAL_REQUIRED",
+			"Approve this exact saved operation?",
+			"binding-approval",
+		)
+		.await
+		.unwrap();
+	let response = json!({"approved":true});
+	let input = json!({"id":approval.id,"response":response});
+	let first = request(&p.aa, &p.token, "POST", &answer_path, input.clone()).await;
+	assert_eq!(first.0, 200, "{}", first.1);
+	assert_eq!(
+		request(&p.aa, &p.token, "POST", &answer_path, input).await,
+		first
+	);
+	assert_eq!(
+		home.human_request_by_id(approval.id)
+			.await
+			.unwrap()
+			.response,
+		Some(response)
+	);
+	let denial = home
+		.human_request(
+			"APPROVAL_REQUIRED",
+			"Deny the other saved operation?",
+			"binding-denial",
+		)
+		.await
+		.unwrap();
+	let denied = request(
+		&p.aa,
+		&p.token,
+		"POST",
+		&answer_path,
+		json!({"id":denial.id,"response":{"approved":false}}),
+	)
+	.await;
+	assert_eq!(denied.0, 200, "{}", denied.1);
+	let unanswered = home
+		.human_request(
+			"APPROVAL_REQUIRED",
+			"Expire an unanswered operation",
+			"binding-unanswered",
+		)
+		.await
+		.unwrap();
+	// Advance only the Home journal's request deadlines. The answers above
+	// were durably accepted in time; later polling must retain both decisions.
+	let mut journal: Value = sqlx::query_scalar(
+		&Query::select()
+			.column(Alias::new("human_requests"))
+			.from(Alias::new("authorization_remote_execution"))
+			.and_where(Expr::col(Alias::new("grant_id")).eq(Expr::value(p.grant)))
+			.to_string(PostgresQueryBuilder),
+	)
+	.fetch_one(p.a.store.pool.fixture_driver())
+	.await
+	.unwrap();
+	for record in journal.as_array_mut().unwrap() {
+		record["request"]["created_at"] = json!(chrono::Utc::now() - chrono::Duration::minutes(16));
+	}
+	sqlx::query(
+		&Query::update()
+			.table(Alias::new("authorization_remote_execution"))
+			.value(Alias::new("human_requests"), journal)
+			.and_where(Expr::col(Alias::new("grant_id")).eq(Expr::value(p.grant)))
+			.to_string(PostgresQueryBuilder),
+	)
+	.execute(p.a.store.pool.fixture_driver())
+	.await
+	.unwrap();
+	for (id, expected, actor) in [
+		(
+			approval.id,
+			json!({"approved":true}),
+			first.1["answered_by"].clone(),
+		),
+		(
+			denial.id,
+			json!({"approved":false}),
+			denied.1["answered_by"].clone(),
+		),
+	] {
+		for _ in 0..2 {
+			let retained = home.human_request_by_id(id).await.unwrap();
+			assert_eq!(retained.response, Some(expected.clone()));
+			assert_eq!(json!(retained.answered_by), actor);
+		}
+	}
+	let expired = home.human_request_by_id(unanswered.id).await.unwrap();
+	assert_eq!(
+		expired.response,
+		Some(json!({"approved":false,"expired":true}))
+	);
+	assert_eq!(expired.answered_by.as_deref(), Some("system"));
+	let (status, wrong) = request(
+		&p.aa,
+		&p.token,
+		"POST",
+		&answer_path,
+		json!({"id":Uuid::new_v4(),"response":{"answer":"Wrong request"}}),
+	)
+	.await;
+	assert_eq!(status, 403, "{wrong}");
+	let (status, revoked) = request(
+		&p.aa,
+		&p.token,
+		"POST",
+		&format!("/api/tasks/{}/remote-grants/{}/revoke", p.task, p.grant),
+		json!({}),
+	)
+	.await;
+	assert_eq!(status, 200, "{revoked}");
+	let (status, denied) = request(
+		&p.aa,
+		&p.token,
+		"POST",
+		&answer_path,
+		json!({"id":saved.id,"response":{"answer":"Continue"}}),
+	)
+	.await;
+	assert_eq!(status, 403, "{denied}");
+	assert!(home.human_request_by_id(saved.id).await.is_err());
+	assert!(
+		home.human_request("QUESTION", "After revocation", "revoked")
+			.await
+			.is_err()
+	);
+	p.close().await;
+}
+
+#[rstest::rstest]
+#[case::request("human.request")]
+#[case::read("human.read")]
+#[case::answer("human.answer")]
+#[tokio::test]
+async fn remote_human_authorization_uses_the_home_nodes_address(
+	#[future(awt)] scoped_pair: Pair,
+	#[case] action: &str,
+) {
+	let p = scoped_pair;
+	p.step().await;
+	let home = Home::new(p.b.clone(), p.run().await);
+	let saved = home
+		.human_request("QUESTION", "A Node-scoped question", "node-scoped-human")
+		.await
+		.unwrap();
+	let address = node_of(&p.a);
+	let (kind, id) = if action == "human.request" {
+		("run", format!("{address}/runs/{}", p.admission))
+	} else {
+		(
+			"human_request",
+			format!("{address}/human_requests/{}", saved.id),
+		)
+	};
+	let answer_path = format!(
+		"/api/tasks/{}/remote-grants/{}/human-requests/answer",
+		p.task, p.grant
+	);
+	let answer = json!({"id":saved.id,"response":{"answer":"Continue"}});
+	let mut policy = p.source_policy.clone();
+	policy["policies"].as_array_mut().unwrap().push(json!({
+		"id":"deny-node-human","effect":"deny","subjects":{"any":true},
+		"actions":[action],"resources":{"kinds":[kind],"ids":[id]},
+	}));
+	common::replace_policy(&p.a.store, "acme", policy).await;
+	match action {
+		"human.request" => {
+			let denied = home
+				.human_request(
+					"QUESTION",
+					"Another Node-scoped question",
+					"node-scoped-denied",
+				)
+				.await;
+			assert!(denied.is_err(), "{denied:?}");
+		}
+		"human.read" => {
+			let denied = home.human_request_by_id(saved.id).await;
+			let (status, projection) = request(
+				&p.aa,
+				&p.token,
+				"GET",
+				&format!("/api/tasks/{}/remote-executions", p.task),
+				Value::Null,
+			)
+			.await;
+			assert_eq!(status, 200, "{projection}");
+			assert_eq!(projection[0]["human_requests"], json!([]), "{projection}");
+			assert!(denied.is_err(), "{denied:?}");
+		}
+		"human.answer" => {
+			let (status, response) =
+				request(&p.aa, &p.token, "POST", &answer_path, answer.clone()).await;
+			assert_eq!(status, 403, "{response}");
+			assert_eq!(
+				home.human_request_by_id(saved.id).await.unwrap().response,
+				None
+			);
+		}
+		_ => unreachable!(),
+	}
+	common::replace_policy(&p.a.store, "acme", p.source_policy.clone()).await;
+	match action {
+		"human.request" => {
+			home.human_request(
+				"QUESTION",
+				"Another Node-scoped question",
+				"node-scoped-denied",
+			)
+			.await
+			.unwrap();
+		}
+		"human.read" => {
+			assert_eq!(
+				home.human_request_by_id(saved.id).await.unwrap().id,
+				saved.id
+			);
+		}
+		"human.answer" => {
+			let (status, response) = request(&p.aa, &p.token, "POST", &answer_path, answer).await;
+			assert_eq!(status, 200, "{response}");
+			assert_eq!(
+				home.human_request_by_id(saved.id).await.unwrap().response,
+				Some(json!({"answer":"Continue"}))
+			);
+		}
+		_ => unreachable!(),
+	}
+	p.close().await;
+}
+
+#[rstest::rstest]
+#[case::name(None)]
+#[case::label(Some(("/label", json!("Default"))))]
+#[case::default(Some(("/default", json!(true))))]
+#[tokio::test]
+async fn foreign_generation_uses_the_receiving_nodes_policy_resource(
+	#[with(false, true)]
+	#[future(awt)]
+	scoped_pair: Pair,
+	#[case] condition: Option<(&str, Value)>,
+) {
+	let p = scoped_pair;
+	let receiver = common::default_node(&p.b.store, "acme").await;
+	let (input, _) = p.generation.as_ref().unwrap();
+	let mut policy = p.receiver_policy.clone();
+	policy["policies"] = json!([
+		{"id":"generation","effect":"allow","subjects":{"any":true},"actions":["node.use","task.read","generation.read","generation.request"],"resources":{"kinds":["*"]}},
+		{"id":"receiver","effect":"allow","subjects":{"any":true},"actions":["federation.execute"],"resources":{"kinds":["node"],"ids":[receiver.node]}},
+	]);
+	if let Some((path, value)) = condition {
+		policy["policies"][1]["condition"] = json!({"op":"eq","left":{"source":"resource","path":path},"right":{"source":"literal","value":value}});
+	}
+	for (denied, id) in [
+		(false, json!(receiver.node)),
+		(
+			true,
+			json!(aidash_domain::nodes::NodeName::derived("other")),
+		),
+		(true, json!(receiver.to_string())),
+		(true, json!(receiver.deployment)),
+	] {
+		policy["policies"][1]["resources"]["ids"] = json!([id]);
+		common::replace_policy(&p.b.store, "acme", policy.clone()).await;
+		let (status, body) = common::peer_request(
+			&p.ba,
+			(&p.a, "acme"),
+			&receiver,
+			"",
+			"/federation/v0.1/scoped/generation/prepare",
+			json!({"intent_id":input["id"]}),
+		)
+		.await;
+		assert_eq!(status, if denied { 403 } else { 200 }, "{body}");
+		if !denied {
+			assert_eq!(body["node_id"], receiver.to_string());
+		}
+	}
+	p.close().await;
+}

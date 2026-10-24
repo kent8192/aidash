@@ -1,0 +1,230 @@
+{
+  "issue": 71,
+  "recorded_utc": "2026-09-28T14:52:02.277710+00:00",
+  "base_git_sha": "20d1fb46f13cf042af6afce7763140c132428b78",
+  "dirty": true,
+  "publication": "validation snapshot before implementation commit; no hosted CI is established by this report",
+  "runtime_and_test_inputs_verified_unchanged": 255,
+  "runtime_and_test_inputs_digest": "364c1850413f4fbb8f41a6cd0730d6d73d55bea1088d9365287f53c7e179799e",
+  "source_manifest": "target/activation-remaining/invocation.json",
+  "distinct_rust_cases_passed_after_targeted_retry": 512,
+  "rust_suite_delivery": "split completion after fixture startup port collision; not a clean single full-suite invocation",
+  "logs": {
+    "initial_four_threads": {
+      "path": "target/activation-remaining/initial_four_threads.log",
+      "sha256": "6590be8d835f4d0f8dc70d4633df04ebbc1d87ff478c9ede4806811dbd11d236",
+      "passed": 203,
+      "failed": 2,
+      "ignored": 0
+    },
+    "two_threads": {
+      "path": "target/activation-remaining/two_threads.log",
+      "sha256": "64807a10376bfc0682e763330b3b7c8333e52bd031294f9db97634a14cc09b67",
+      "passed": 442,
+      "failed": 1,
+      "ignored": 0
+    },
+    "qdrant_retry": {
+      "path": "target/activation-remaining/qdrant_retry.log",
+      "sha256": "5fd87dc2b99db82dc286ded01e0eb4a11d79932c1e451df396dee19cf26bd9f9",
+      "passed": 1,
+      "failed": 0,
+      "ignored": 0
+    },
+    "remaining": {
+      "path": "target/activation-remaining/remaining.log",
+      "sha256": "6c09be16728ac86671763180e9d3de785569f073b95cff3008358dd3964d2770",
+      "passed": 69,
+      "failed": 0,
+      "ignored": 0
+    },
+    "retention_serial": {
+      "path": "target/activation-remaining/retention_serial.log",
+      "sha256": "06f7faebfc2f542c38089b2671d10490b3b26b471a17f8379be6c341e95de376",
+      "passed": 12,
+      "failed": 0,
+      "ignored": 0
+    },
+    "migration": {
+      "path": "target/activation-remaining/migration.log",
+      "sha256": "4e91a16815f189d27d20de7c6e22fa4738b7bfb57664c0736e14a19dfc0c48fd",
+      "passed": 0,
+      "failed": 0,
+      "ignored": 0
+    },
+    "clippy": {
+      "path": "target/activation-remaining/clippy.log",
+      "sha256": "72f52ece6b3e4dcc5917e5039e2124a494890ce046c2e58676c9113756a541bb",
+      "passed": 0,
+      "failed": 0,
+      "ignored": 0
+    }
+  },
+  "commands": {
+    "two_threads": "RUST_TEST_THREADS=2 bash scripts/test-rust.sh",
+    "qdrant_retry": "cargo test --locked --test semantic semantic_qdrant_restart_outage_and_lost_points_recover -- --nocapture --test-threads=1",
+    "remaining": "RUST_TEST_THREADS=2 cargo test --locked --test transaction_protocol --test transactions --test workbench_regressions --test worker_activation -- --nocapture",
+    "migration": "cargo test --locked -p migration --all-targets",
+    "clippy": "RUSTC_WRAPPER= cargo clippy --locked --workspace --all-targets -- -D warnings",
+    "format": "cargo fmt --all -- --check"
+  },
+  "notification": {
+    "AT01": "passed",
+    "AT02": "passed with running worker consumption suppressed",
+    "AT04": {
+      "batch": 6,
+      "executing_pid": 96147,
+      "suspended_pid": 96146
+    },
+    "max_ms": 746.0711249999999,
+    "measured_recovery_claims": 0,
+    "measurement": "before HTTP admission to observed committed first lease; upper bound, monotonic time",
+    "p95_ms": 174.639958,
+    "provider_calls": 107,
+    "recovery_delay_ms": 60000,
+    "sample_count": 100,
+    "server_pid": 90872,
+    "slots_per_worker": 2,
+    "worker_pids": [
+      91071, 91072, 93311, 93312, 94071, 94072, 94686, 94687, 95264, 95265
+    ]
+  },
+  "raw_notification_samples": "target/activation-remaining/notification-results.json",
+  "fault_results": {
+    "faults": {
+      "atomic_rollback": true,
+      "combined_pid": 87153,
+      "database_duplicate_disposition": true,
+      "deadline_without_recovery": true,
+      "input_while_owned": true,
+      "provider_calls": 3,
+      "quarantine_cases": 4,
+      "result": "passed",
+      "worker_pid": 87154
+    },
+    "outage": {
+      "broker_absent_at_startup": true,
+      "capacity_refusal_repaired_without_recovery": true,
+      "combined_pid": 88104,
+      "expired_notification_republished_without_recovery": true,
+      "provider_calls": 5,
+      "reconnected": true,
+      "result": "passed",
+      "stream_deleted_and_recreated": true
+    },
+    "crash": {
+      "crash_checkpoint": "committed lease and broker ACK before execution",
+      "early_takeover": false,
+      "original_lease_until": "2026-09-28T14:47:53.320945Z",
+      "provider_calls": 1,
+      "recovery_claims": 0,
+      "replacement_pid": 88765,
+      "result": "passed",
+      "server_pid": 88703
+    },
+    "permissions": {
+      "consumer_created": "2026-09-28 14:47:55.785840267 +00:00:00",
+      "mismatch_did_not_reset_consumer": true,
+      "other_node_denied": true,
+      "result": "passed",
+      "server_publish": true,
+      "server_pull_denied": true,
+      "stream": "AIDASH_ACT_V1_2ee5b63f2a88833e9c6d670a3e31ba360059ade4b1eda6d18e14444458752b5a",
+      "worker_pull_ack": true
+    }
+  },
+  "clusters": [
+    {
+      "distribution": "kubernetes",
+      "version": "v1.34.0",
+      "command": "bash scripts/test-cluster.sh kubernetes",
+      "exit_code": 0,
+      "report": ".ignore/platform/aidash-ops-39c524c62f/report.json",
+      "build_source_digest": "dd623814c79055adc30d59cc26ec760a1a13bac9f87ebeb799ab0a370d9568f6",
+      "images": [
+        {
+          "name": "docker.io/library/aidash-frontend:cluster-acceptance",
+          "id": "sha256:34c0881d12ce10828cf23be2994545f2b7a435bf5a92cad383de6246d53fec44"
+        },
+        {
+          "name": "docker.io/library/aidash-postgres:17-pg-jsonschema-0.3.4",
+          "id": "sha256:94642637ee95ae3ac385b49b10a9b06af37d3e2e3d313b96788af4ff094cf9e4"
+        },
+        {
+          "name": "docker.io/library/aidash:cluster-acceptance",
+          "id": "sha256:40ac5a5179076c063406cbbc1e37c1c38b979850a3a36eaf21b185e06fa1d79c"
+        },
+        {
+          "name": "docker.io/library/nats:2.12-alpine",
+          "id": "docker.io/library/nats@sha256:b270f5e2428354c0335612694d7dd2fb588148e567a5757fdff325ef9c9332e6"
+        },
+        {
+          "name": "docker.io/library/python:3.13-alpine",
+          "id": "docker.io/library/python@sha256:79e7a9b9ff1cbceff819f856fb374477792a5967759d94df266de7b7b4120e6f"
+        },
+        {
+          "name": "docker.io/qdrant/qdrant:v1.19.1",
+          "id": "docker.io/qdrant/qdrant@sha256:12364fe851b9f17356fc88189fc06d1b521262e04659ec7345975b00c9246a10"
+        }
+      ],
+      "activation_consumer_survived_replacement": true,
+      "server_did_not_claim": true,
+      "tasks": 4,
+      "artifacts": 4,
+      "external_effects": 3
+    },
+    {
+      "distribution": "k3s",
+      "version": "v1.34.11+k3s1",
+      "command": "bash scripts/test-cluster.sh k3s",
+      "exit_code": 0,
+      "report": ".ignore/platform/aidash-ops-de219a1fed/report.json",
+      "build_source_digest": "dd623814c79055adc30d59cc26ec760a1a13bac9f87ebeb799ab0a370d9568f6",
+      "images": [
+        {
+          "name": "docker.io/library/aidash-frontend:cluster-acceptance",
+          "id": "sha256:34c0881d12ce10828cf23be2994545f2b7a435bf5a92cad383de6246d53fec44"
+        },
+        {
+          "name": "docker.io/library/aidash-postgres:17-pg-jsonschema-0.3.4",
+          "id": "sha256:94642637ee95ae3ac385b49b10a9b06af37d3e2e3d313b96788af4ff094cf9e4"
+        },
+        {
+          "name": "docker.io/library/aidash:cluster-acceptance",
+          "id": "sha256:40ac5a5179076c063406cbbc1e37c1c38b979850a3a36eaf21b185e06fa1d79c"
+        },
+        {
+          "name": "docker.io/library/nats:2.12-alpine",
+          "id": "docker.io/library/nats@sha256:b270f5e2428354c0335612694d7dd2fb588148e567a5757fdff325ef9c9332e6"
+        },
+        {
+          "name": "docker.io/library/python:3.13-alpine",
+          "id": "docker.io/library/python@sha256:79e7a9b9ff1cbceff819f856fb374477792a5967759d94df266de7b7b4120e6f"
+        },
+        {
+          "name": "docker.io/qdrant/qdrant:v1.19.1",
+          "id": "docker.io/qdrant/qdrant@sha256:12364fe851b9f17356fc88189fc06d1b521262e04659ec7345975b00c9246a10"
+        }
+      ],
+      "activation_consumer_survived_replacement": true,
+      "server_did_not_claim": true,
+      "tasks": 4,
+      "artifacts": 4,
+      "external_effects": 3
+    }
+  ],
+  "remaining_validation": [
+    "Real Issue #70 recipient-routing handoff integration; observed checkout 7a378a2a94fc4e3fafcd8b05f7597c2b905a0eaf contains the design only",
+    "Every publication/commit/ACK ambiguity checkpoint",
+    "Quarantine database-write failure",
+    "Different-version coexistence and binary rollback",
+    "Full per-trigger and per-slot fault matrix; see verification document"
+  ],
+  "fixture_environment": {
+    "convention_source": "scripts/test-rust.sh (immutable local fixture credentials)",
+    "RUSTC_WRAPPER": "",
+    "RUST_MIN_STACK": "8388608",
+    "RUST_TEST_THREADS": "2",
+    "AIDASH_ACTIVATION_EVIDENCE_DIR": "$PWD/target/activation-remaining"
+  }
+}

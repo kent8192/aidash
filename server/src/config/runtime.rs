@@ -1,0 +1,159 @@
+use crate::{Error, Result};
+use reinhardt::conf::settings::{fragment::SettingsValidation, profile::Profile};
+use std::env;
+
+#[derive(Clone)]
+pub struct Config {
+	pub deployment: aidash_domain::nodes::DeploymentId,
+	pub endpoint: String,
+	pub database_url: String,
+	pub nats_url: String,
+	pub api_token: String,
+	pub web_dir: String,
+	pub lease_seconds: i32,
+	pub tenancy: aidash_domain::identity::tenancy::TenancyRules,
+	/// `[deployment] federation`: whether this Deployment federates with other
+	/// Deployments. Exchange between Nodes of this Deployment never depends on it.
+	pub federation: bool,
+	/// The Deployment Key `[deployment.key]` names. `bootstrap::initialize`
+	/// loads it, not `from_settings`, because a Cloud KMS key is fetched over the
+	/// network. Without one this Deployment cannot federate with others.
+	pub deployment_key:
+		Option<std::sync::Arc<dyn aidash_application::federation::key::DeploymentKey>>,
+	/// `[demo_data] enabled`: this Deployment may load Demo data and fulfil its
+	/// Demo Reservations at sign-in.
+	pub demo_data: bool,
+	pub oidc: Option<OidcConfig>,
+	/// A sign-in that the build adds, from settings only that build reads.
+	pub sign_in:
+		Option<std::sync::Arc<dyn crate::apps::identity::services::sign_in::SignInProvider>>,
+	/// The Tier's limits on a Tenant, which the Enterprise build supplies.
+	pub tier_limits: std::sync::Arc<dyn aidash_application::ports::nodes::TierLimits>,
+}
+
+pub use crate::apps::identity::serializers::settings::{OidcConfig, SessionConfig};
+
+pub const PROTOCOL_VERSION: &str = aidash_domain::federation::protocol::CURRENT;
+
+impl Config {
+	pub fn dashboard_session(&self) -> Option<SessionConfig<'_>> {
+		self.sign_in
+			.as_ref()
+			.map(|sign_in| sign_in.session())
+			.or_else(|| self.oidc.as_ref().map(Into::into))
+	}
+	pub fn dashboard_policy(
+		&self,
+	) -> Option<aidash_application::ports::authorization::dashboard::AccountPolicy> {
+		use aidash_application::ports::authorization::dashboard::{AccountPolicy, Issuer};
+		self.sign_in
+			.as_ref()
+			.map(|sign_in| AccountPolicy {
+				issuers: sign_in.issuers(),
+				personal_tenants: self.tenancy.personal_tenants,
+				demo_data: self.demo_data,
+			})
+			.or_else(|| {
+				self.oidc.as_ref().map(|oidc| AccountPolicy {
+					issuers: std::sync::Arc::new(Issuer(oidc.issuer.clone())),
+					personal_tenants: self.tenancy.personal_tenants,
+					demo_data: self.demo_data,
+				})
+			})
+	}
+
+	pub fn from_settings(settings: &super::settings::ProjectSettings) -> Result<Self> {
+		settings
+			.deployment
+			.validate(&Profile::parse("local"))
+			.map_err(|error| Error::Invalid(error.to_string()))?;
+		settings
+			.dashboard
+			.validate(&Profile::parse("local"))
+			.map_err(|error| Error::Invalid(error.to_string()))?;
+		settings
+			.tenancy
+			.validate(&Profile::parse("local"))
+			.map_err(|error| Error::Invalid(error.to_string()))?;
+		let database = settings
+			.core
+			.databases
+			.get("default")
+			.ok_or_else(|| Error::Invalid("core.databases.default is required".into()))?;
+		if !matches!(
+			database.engine.as_str(),
+			"postgresql" | "postgres" | "reinhardt.db.backends.postgresql"
+		) {
+			return Err(Error::Invalid("Aidash requires PostgreSQL".into()));
+		}
+		let extension = crate::bootstrap::build::current().extension;
+		let sign_in = extension.sign_in()?;
+		if sign_in.is_some() && settings.dashboard.oidc.is_some() {
+			return Err(Error::Invalid(
+				"dashboard.oidc cannot be combined with the build's own sign-in".into(),
+			));
+		}
+		let node = &settings.deployment;
+		let web_dir = settings.core.base_dir.join(&node.web_dir);
+		Ok(Self {
+			deployment: aidash_domain::nodes::DeploymentId::parse(&node.id)?,
+			endpoint: node.endpoint.clone(),
+			database_url: database.to_url(),
+			nats_url: node.nats_url.clone(),
+			api_token: node.api_token.clone(),
+			web_dir: web_dir.to_string_lossy().into_owned(),
+			lease_seconds: node.lease_seconds,
+			tenancy: settings.tenancy.rules(settings.deployment.offering),
+			federation: node.federation,
+			deployment_key: None,
+			demo_data: settings.demo_data.enabled,
+			sign_in,
+			tier_limits: std::sync::Arc::new(aidash_application::ports::nodes::NoTierLimits),
+			oidc: settings
+				.dashboard
+				.oidc
+				.as_ref()
+				.map(OidcConfig::normalized)
+				.transpose()?,
+		})
+	}
+	/// What `/.well-known/aidash` publishes: this Deployment and its public key,
+	/// never its Nodes.
+	pub fn deployment_identity(&self) -> DeploymentIdentity {
+		DeploymentIdentity {
+			id: self.deployment.to_string(),
+			endpoint: self.endpoint.clone(),
+			protocol_version: PROTOCOL_VERSION.into(),
+			key: self
+				.deployment_key
+				.as_ref()
+				.map(|key| DeploymentKeyIdentity {
+					id: key.key_id().to_string(),
+					public_key_pem: key.public_key_pem().to_owned(),
+				}),
+		}
+	}
+}
+
+pub fn validate_endpoint(value: &str) -> Result<()> {
+	aidash_domain::configuration::validate_endpoint(value).map_err(Into::into)
+}
+
+pub fn validate_secret_reference(value: &str) -> Result<()> {
+	aidash_domain::configuration::validate_secret_reference(value).map_err(Into::into)
+}
+pub fn secret(name: &str) -> Result<String> {
+	validate_secret_reference(name)?;
+	env::var(name)
+		.map_err(|_| Error::Invalid(format!("credential reference {name} is not configured")))
+}
+
+pub(crate) use aidash_domain::configuration::same_secret;
+
+pub use crate::apps::federation::peer::serializers::identity::{
+	DeploymentIdentity, DeploymentKeyIdentity,
+};
+
+#[cfg(test)]
+#[path = "../apps/execution/tests/config_runtime.rs"]
+mod tests;

@@ -1,0 +1,508 @@
+//! Provider Credential HTTP composition, live policy decisions, and immutable admission pins.
+use super::super::serializers::provider_credentials::{BindingUpdate, Page, Revision};
+use crate::{
+	Error, Result,
+	authorization::{access::NativeAccess, identity::Actor},
+	federation::Federation,
+};
+use aidash_application::{
+	provider_authorization::Target,
+	provider_credentials::{AuthorizationFailure, Metadata, Service, Validated},
+};
+use aidash_domain::{
+	policy::{Evaluation, Resource},
+	provider_credentials::{Binding, Provider, State},
+};
+use reinhardt::injectable;
+use secrecy::SecretString;
+use serde_json::json;
+use std::sync::Arc;
+use uuid::Uuid;
+#[derive(Clone)]
+pub struct Management {
+	pub runtime: Federation,
+}
+#[injectable(scope = "request")]
+pub async fn provide(#[inject] runtime: Federation) -> Management {
+	Management { runtime }
+}
+struct Authority(Option<NativeAccess>);
+impl Authority {
+	async fn finish<T>(self, value: Result<T>) -> Result<T> {
+		match self.0 {
+			Some(access) => access.finish(value).await,
+			None => value,
+		}
+	}
+	/// An authorized mutation attempt may commit preliminary metadata even
+	/// when its final result is an error. Audit the allow decision independently
+	/// and retain the owning repository's original operation result.
+	async fn finish_operation<T>(self, value: Result<T>) -> Result<T> {
+		if let Some(access) = self.0
+			&& access.finish(Ok(())).await.is_err()
+		{
+			tracing::error!(
+				audit_status = "failed",
+				operation_status = if value.is_ok() { "committed" } else { "failed" },
+				"Provider Credential mutation audit could not be finalized"
+			);
+		}
+		value
+	}
+}
+
+struct ListAudit {
+	access: Option<NativeAccess>,
+	finished: bool,
+}
+impl ListAudit {
+	async fn finish<T>(mut self, result: Result<T>) -> Result<T> {
+		if let Some(access) = self.access.take()
+			&& let Err(error) = access.finish(Ok(())).await
+		{
+			self.finished = true;
+			tracing::error!(
+				audit_status = "failed",
+				"Provider Credential list audit could not be finalized"
+			);
+			return Err(error);
+		}
+		self.finished = true;
+		result
+	}
+}
+impl Drop for ListAudit {
+	fn drop(&mut self) {
+		if !self.finished {
+			tracing::error!(
+				audit_status = "failed",
+				"Provider Credential list audit was cancelled before finalization"
+			);
+		}
+	}
+}
+impl Management {
+	fn service(&self) -> Result<Arc<Service>> {
+		self.runtime
+			.store
+			.provider_credentials
+			.clone()
+			.ok_or_else(|| Error::NotFound("Secret Store is not configured".into()))
+	}
+	fn tenant(&self, actor: &Actor, tenant: &str) -> Result<()> {
+		aidash_domain::policy::identifier(tenant)?;
+		if let Actor::Subject(identity) = actor
+			&& identity.tenant != tenant
+		{
+			return Err(Error::Forbidden);
+		}
+		Ok(())
+	}
+	async fn authorize(
+		&self,
+		actor: &Actor,
+		tenant: &str,
+		id: &str,
+		provider: Provider,
+		kind: &str,
+		verb: &str,
+	) -> Result<Authority> {
+		self.tenant(actor, tenant)?;
+		let resource = Resource {
+			tenant: tenant.into(),
+			kind: kind.into(),
+			id: id.into(),
+			attributes: json!({"provider":provider.id()}),
+		};
+		let action = format!("{kind}.{verb}");
+		match actor {
+			Actor::Subject(identity) => {
+				let mut access = NativeAccess::begin(&self.runtime.store, identity).await?;
+				let result = access.require(&resource, &action).await;
+				if let Err(error) = result {
+					return access.finish(Err(error)).await;
+				}
+				Ok(Authority(Some(access)))
+			}
+			Actor::DeploymentAdministrator => {
+				use crate::apps::identity::{
+					models::AuthorizationDecision, repositories::NativePolicyScope,
+				};
+				use aidash_application::ports::AuthorizationScope;
+				// A Deployment Administrator acts on this one Tenant, in its scope.
+				let scope = aidash_application::tenancy::TenancyScope::tenant(tenant)?;
+				let mut tx = self
+					.runtime
+					.store
+					.control_pool
+					.begin(&scope)
+					.await?
+					.into_executor()?;
+				let snapshot = NativePolicyScope(tx.as_mut()).load(tenant).await?;
+				let evaluation = Evaluation {
+					subject: "deployment_administrator".into(),
+					action,
+					resource,
+					environment: json!({"deployment_administrator":true}),
+				};
+				let mut decision = snapshot.bundle.evaluate(&evaluation);
+				decision.allowed = true;
+				decision.reason = "authenticated Deployment Administrator authority".into();
+				decision.revision = snapshot.revision;
+				AuthorizationDecision::append(tx.as_mut(), tenant, &evaluation, &decision).await?;
+				tx.commit().await?;
+				Ok(Authority(None))
+			}
+		}
+	}
+	fn actor(actor: &Actor) -> &str {
+		match actor {
+			Actor::DeploymentAdministrator => "deployment_administrator",
+			Actor::Subject(identity) => &identity.subject,
+		}
+	}
+	fn authorization_verb(target: Target) -> &'static str {
+		match target {
+			Target::Connect { .. } => "create",
+			Target::Reconnect { .. } => "rotate",
+		}
+	}
+	/// Checks, before the browser leaves for consent, that the actor may write
+	/// the target Provider Credential. The callback decides again.
+	pub async fn permit_authorization(
+		&self,
+		actor: &Actor,
+		tenant: &str,
+		provider: Provider,
+		target: Target,
+	) -> Result<()> {
+		let service = self.service()?;
+		self.tenant(actor, tenant)?;
+		if let Target::Reconnect { id, .. } = target {
+			let mut scope = service.repository.begin(tenant).await?;
+			let row = scope.get(id).await?;
+			scope.commit().await?;
+			if row.provider != provider {
+				return Err(Error::Invalid(
+					"Provider Authorization does not match the Provider Credential".into(),
+				));
+			}
+		}
+		self.authorize(
+			actor,
+			tenant,
+			&target.id().to_string(),
+			provider,
+			"provider_credential",
+			Self::authorization_verb(target),
+		)
+		.await?
+		.finish(Ok(()))
+		.await
+	}
+	/// The Provider Authorization write path: exchanges the code under a live
+	/// `provider_credential.create` or `.rotate` decision. This service never
+	/// sees Key Material; it flows from the exchange port into the Store.
+	pub async fn complete_authorization(
+		&self,
+		actor: Actor,
+		tenant: String,
+		provider: Provider,
+		target: Target,
+		code: &str,
+		verifier: &SecretString,
+	) -> std::result::Result<Validated, AuthorizationFailure<Error>> {
+		let service = self.service()?;
+		let authority = self
+			.authorize(
+				&actor,
+				&tenant,
+				&target.id().to_string(),
+				provider,
+				"provider_credential",
+				Self::authorization_verb(target),
+			)
+			.await?;
+		let (result, key_settings_url) = match service
+			.authorize(
+				&tenant,
+				provider,
+				target,
+				code,
+				verifier,
+				Self::actor(&actor),
+			)
+			.await
+		{
+			Ok(validated) => (Ok(validated), None),
+			Err(failure) => (Err(failure.error.into()), failure.key_settings_url),
+		};
+		authority
+			.finish_operation(result)
+			.await
+			.map_err(|error| AuthorizationFailure {
+				error,
+				key_settings_url,
+			})
+	}
+	/// A connection serves the Tenant's Runs right away when the provider has no
+	/// usable binding (none, or one to a revoked Provider Credential) and the
+	/// actor may update the binding. An active binding is never replaced.
+	/// Returns whether the connected Provider Credential is now bound; it is not
+	/// when another active binding won (for example a concurrent connection) or
+	/// the binding could not be updated.
+	pub(crate) async fn bind_if_unbound(
+		&self,
+		actor: Actor,
+		tenant: String,
+		provider: Provider,
+		id: Uuid,
+	) -> bool {
+		let current = async {
+			let service = self.service()?;
+			let mut scope = service.repository.begin(&tenant).await?;
+			let binding = scope
+				.bindings()
+				.await?
+				.into_iter()
+				.find(|b| b.provider == provider);
+			let usable = match binding.as_ref().and_then(|b| b.provider_credential_id) {
+				Some(bound) => scope.get(bound).await?.state == State::Active,
+				None => false,
+			};
+			scope.commit().await?;
+			Ok::<_, Error>((binding, usable))
+		}
+		.await;
+		let expected_revision = match current {
+			Ok((binding, true)) => {
+				return binding.and_then(|b| b.provider_credential_id) == Some(id);
+			}
+			Err(_) => return false,
+			Ok((binding, false)) => binding.map_or(0, |b| b.revision),
+		};
+		let result = self
+			.bind(
+				actor,
+				tenant,
+				provider.id().into(),
+				BindingUpdate {
+					expected_revision,
+					provider_credential_id: Some(id),
+				},
+			)
+			.await;
+		if result.is_err() {
+			tracing::warn!(
+				provider = provider.id(),
+				"connected Provider Credential was left unbound"
+			);
+		}
+		result.is_ok()
+	}
+	pub async fn list(&self, actor: Actor, tenant: String, page: Page) -> Result<Vec<Metadata>> {
+		let service = self.service()?;
+		self.tenant(&actor, &tenant)?;
+		let access = match &actor {
+			Actor::Subject(identity) => {
+				Some(NativeAccess::begin(&self.runtime.store, identity).await?)
+			}
+			Actor::DeploymentAdministrator => None,
+		};
+		let mut audit = ListAudit {
+			access,
+			finished: false,
+		};
+		let result = async {
+			let limit = page.limit.clamp(1, 200);
+			let deployment_administrator = matches!(actor, Actor::DeploymentAdministrator);
+			let mut source_offset = if deployment_administrator {
+				page.offset
+			} else {
+				0
+			};
+			let mut visible_offset = if deployment_administrator {
+				0
+			} else {
+				page.offset
+			};
+			let batch_size = if deployment_administrator { limit } else { 200 };
+			let mut result = Vec::new();
+			loop {
+				let mut scope = service.repository.begin(&tenant).await?;
+				let rows = scope.list(source_offset, batch_size).await?;
+				let exhausted = rows.len() < batch_size;
+				source_offset += rows.len();
+				scope.commit().await?;
+				for row in rows {
+					if let Some(access) = &mut audit.access {
+						let resource = access.resource(
+							"provider_credential",
+							row.id,
+							json!({"provider":row.provider.id()}),
+						);
+						if !access.decide(&resource, "provider_credential.read").await? {
+							continue;
+						}
+					} else {
+						self.authorize(
+							&actor,
+							&tenant,
+							&row.id.to_string(),
+							row.provider,
+							"provider_credential",
+							"read",
+						)
+						.await?
+						.finish(Ok(()))
+						.await?;
+					}
+					// Pagination counts only records visible to this actor.
+					if visible_offset > 0 {
+						visible_offset -= 1;
+					} else {
+						result.push(row.into());
+						if result.len() == limit {
+							return Ok(result);
+						}
+					}
+				}
+				if exhausted {
+					return Ok(result);
+				}
+			}
+		}
+		.await;
+		// Finish every evaluated decision even if reading a later batch fails.
+		audit.finish(result).await
+	}
+	pub async fn get(&self, actor: Actor, tenant: String, id: Uuid) -> Result<Metadata> {
+		let service = self.service()?;
+		self.tenant(&actor, &tenant)?;
+		let mut scope = service.repository.begin(&tenant).await?;
+		let row = scope.get(id).await?;
+		scope.commit().await?;
+		self.authorize(
+			&actor,
+			&tenant,
+			&id.to_string(),
+			row.provider,
+			"provider_credential",
+			"read",
+		)
+		.await?
+		.finish(Ok(row.into()))
+		.await
+	}
+	pub async fn control(
+		&self,
+		actor: Actor,
+		tenant: String,
+		id: Uuid,
+		input: Revision,
+		delete: bool,
+	) -> Result<Metadata> {
+		let service = self.service()?;
+		self.tenant(&actor, &tenant)?;
+		let mut scope = service.repository.begin(&tenant).await?;
+		let row = scope.get(id).await?;
+		scope.commit().await?;
+		let authority = self
+			.authorize(
+				&actor,
+				&tenant,
+				&id.to_string(),
+				row.provider,
+				"provider_credential",
+				if delete { "delete" } else { "revoke" },
+			)
+			.await?;
+		let result = if delete {
+			service
+				.delete(&tenant, id, input.expected_revision, Self::actor(&actor))
+				.await
+		} else {
+			service
+				.revoke(&tenant, id, input.expected_revision, Self::actor(&actor))
+				.await
+		};
+		authority.finish_operation(result.map_err(Into::into)).await
+	}
+	pub async fn bindings(
+		&self,
+		actor: Actor,
+		tenant: String,
+		provider: Option<String>,
+	) -> Result<Vec<Binding>> {
+		let service = self.service()?;
+		self.tenant(&actor, &tenant)?;
+		let provider = provider.as_deref().map(Provider::credential).transpose()?;
+		let mut scope = service.repository.begin(&tenant).await?;
+		let rows = scope.bindings().await?;
+		scope.commit().await?;
+		let mut result = Vec::new();
+		for row in rows
+			.into_iter()
+			.filter(|r| provider.is_none_or(|p| p == r.provider))
+		{
+			let authority = self
+				.authorize(
+					&actor,
+					&tenant,
+					row.provider.id(),
+					row.provider,
+					"provider_credential_binding",
+					"read",
+				)
+				.await?;
+			result.push(authority.finish(Ok(row)).await?);
+		}
+		Ok(result)
+	}
+	pub async fn get_binding(
+		&self,
+		actor: Actor,
+		tenant: String,
+		provider: String,
+	) -> Result<Binding> {
+		self.bindings(actor, tenant, Some(provider))
+			.await?
+			.into_iter()
+			.next()
+			.ok_or_else(|| Error::NotFound("Provider Credential Binding".into()))
+	}
+	pub async fn bind(
+		&self,
+		actor: Actor,
+		tenant: String,
+		provider: String,
+		input: BindingUpdate,
+	) -> Result<Binding> {
+		let service = self.service()?;
+		let provider = Provider::credential(&provider)?;
+		let authority = self
+			.authorize(
+				&actor,
+				&tenant,
+				provider.id(),
+				provider,
+				"provider_credential_binding",
+				"update",
+			)
+			.await?;
+		authority
+			.finish_operation(
+				service
+					.bind(
+						&tenant,
+						provider,
+						input.provider_credential_id,
+						input.expected_revision,
+						Self::actor(&actor),
+					)
+					.await
+					.map_err(Into::into),
+			)
+			.await
+	}
+}

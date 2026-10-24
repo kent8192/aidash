@@ -1,0 +1,177 @@
+//! OpenAPI payload contracts for native endpoints.
+use super::super::views;
+use crate::apps::execution::serializers::human_requests::HumanRequest;
+use crate::apps::execution::serializers::management::ClaimInput;
+use crate::apps::execution::serializers::management::ControlInput;
+use crate::apps::execution::serializers::management::EventQuery;
+use crate::apps::execution::serializers::management::InferenceStreamQuery;
+use crate::apps::execution::serializers::research::{
+	CitedEvidence, HistoryPage, RetentionInput, RevocationInput, RevocationRecord,
+	TenantRetentionView,
+};
+use crate::apps::execution::serializers::runs::RunDetails;
+use crate::apps::execution::serializers::state::StateResponse;
+use crate::apps::federation::remote::serializers::actions::SentResponse;
+use crate::apps::workspaces::serializers::entities::Event;
+use crate::apps::workspaces::serializers::entities::Run;
+use crate::apps::workspaces::serializers::entities::Task;
+use crate::apps::workspaces::serializers::management::MessageInput;
+use crate::apps::workspaces::serializers::tasks::PageQuery;
+use crate::{Result, config::openapi::Contracts};
+use aidash_domain::retention::RetentionChange;
+use reinhardt::rest::openapi::OpenApiSchema;
+use serde_json::Value;
+
+pub(crate) fn register(contracts: &mut Contracts, document: &mut OpenApiSchema) -> Result<()> {
+	contracts.response::<_, StateResponse>(
+		document,
+		views::management::state,
+		200,
+		"application/json",
+	)?;
+	contracts.response::<_, aidash_domain::catalog::CatalogSnapshot>(
+		document,
+		views::management::openrouter_models,
+		200,
+		"application/json",
+	)?;
+	contracts.response::<_, Task>(
+		document,
+		views::management::task_claim,
+		200,
+		"application/json",
+	)?;
+	contracts.request::<_, ClaimInput>(document, views::management::task_claim)?;
+	contracts.path(document, views::management::task_claim, &["Uuid"])?;
+	contracts.response::<_, RunDetails>(
+		document,
+		views::management::run_get,
+		200,
+		"application/json",
+	)?;
+	contracts.query::<_, PageQuery>(document, views::management::run_get)?;
+	contracts.path(document, views::management::run_get, &["Uuid"])?;
+	contracts.response::<_, CitedEvidence>(
+		document,
+		views::management::run_evidence,
+		200,
+		"application/json",
+	)?;
+	contracts.path(
+		document,
+		views::management::run_evidence,
+		&["Uuid", "String"],
+	)?;
+	contracts.response::<_, RevocationRecord>(
+		document,
+		views::research::revoke,
+		200,
+		"application/json",
+	)?;
+	contracts.request::<_, RevocationInput>(document, views::research::revoke)?;
+	contracts.path(document, views::research::revoke, &["Uuid"])?;
+	contracts.response::<_, RevocationRecord>(
+		document,
+		views::research::revocation,
+		200,
+		"application/json",
+	)?;
+	contracts.path(document, views::research::revocation, &["Uuid"])?;
+	contracts.response::<_, Vec<RevocationRecord>>(
+		document,
+		views::research::revocations,
+		200,
+		"application/json",
+	)?;
+	contracts.query::<_, HistoryPage>(document, views::research::revocations)?;
+	contracts.path(document, views::research::revocations, &["String"])?;
+	contracts.response::<_, TenantRetentionView>(
+		document,
+		views::research::retention,
+		200,
+		"application/json",
+	)?;
+	contracts.path(document, views::research::retention, &["String"])?;
+	contracts.response::<_, TenantRetentionView>(
+		document,
+		views::research::retention_update,
+		200,
+		"application/json",
+	)?;
+	contracts.request::<_, RetentionInput>(document, views::research::retention_update)?;
+	contracts.path(document, views::research::retention_update, &["String"])?;
+	contracts.response::<_, Vec<RetentionChange>>(
+		document,
+		views::research::retention_history,
+		200,
+		"application/json",
+	)?;
+	contracts.query::<_, HistoryPage>(document, views::research::retention_history)?;
+	contracts.path(document, views::research::retention_history, &["String"])?;
+	contracts.response::<_, Run>(
+		document,
+		views::management::run_control,
+		200,
+		"application/json",
+	)?;
+	contracts.request::<_, ControlInput>(document, views::management::run_control)?;
+	contracts.path(document, views::management::run_control, &["Uuid"])?;
+	contracts.response::<_, SentResponse>(
+		document,
+		views::management::run_message,
+		200,
+		"application/json",
+	)?;
+	contracts.empty(document, views::management::run_message, 409)?;
+	contracts.request::<_, MessageInput>(document, views::management::run_message)?;
+	contracts.path(document, views::management::run_message, &["Uuid"])?;
+	contracts.response::<_, HumanRequest>(
+		document,
+		views::management::human_answer,
+		200,
+		"application/json",
+	)?;
+	contracts.request::<_, Value>(document, views::management::human_answer)?;
+	contracts.path(document, views::management::human_answer, &["Uuid"])?;
+	contracts.response::<_, Vec<Event>>(
+		document,
+		views::management::events,
+		200,
+		"application/json",
+	)?;
+	contracts.query::<_, EventQuery>(document, views::management::events)?;
+	contracts.response::<_, String>(
+		document,
+		views::management::stream,
+		200,
+		"text/event-stream",
+	)?;
+	contracts.query::<_, EventQuery>(document, views::management::stream)?;
+	contracts.response::<_, String>(
+		document,
+		views::management::run_inference_stream,
+		200,
+		"text/event-stream",
+	)?;
+	contracts
+		.query::<_, InferenceStreamQuery>(document, views::management::run_inference_stream)?;
+	contracts.path(document, views::management::run_inference_stream, &["Uuid"])?;
+	contracts.response::<_, crate::apps::execution::serializers::runs::RunResearch>(
+		document,
+		views::management::run_research,
+		200,
+		"application/json",
+	)?;
+	contracts.path(document, views::management::run_research, &["Uuid"])?;
+	contracts.response::<_, crate::apps::execution::serializers::runs::ResearchProviders>(
+		document,
+		views::management::research_providers,
+		200,
+		"application/json",
+	)?;
+	contracts.query::<_, crate::apps::execution::serializers::runs::ResearchProvidersQuery>(
+		document,
+		views::management::research_providers,
+	)?;
+	Ok(())
+}

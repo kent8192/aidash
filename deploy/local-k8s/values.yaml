@@ -1,0 +1,9 @@
+# Only key references are rendered into the runtime descriptor. The local
+# bootstrap task generates the values once in the existing app Secret.
+providerCredentials:
+  settings:
+    fingerprint_key: { env: AIDASH_PROVIDER_FINGERPRINT_KEY }
+    store:
+      kind: postgres
+      master_key: { env: AIDASH_PROVIDER_STORE_MASTER_KEY }
+    broker: null

@@ -1,0 +1,190 @@
+//! HTTP conversion and DI composition call the shared receiver use cases.
+pub(crate) use crate::apps::identity::serializers::peer_admission::{
+	Admission, Input, MessageInput, RemoteExecutionControlInput,
+};
+use crate::{
+	Result,
+	authorization::{access::Access, remote::Description},
+	domain::RunMetadata,
+	federation::Federation,
+	registry::AgentConfig,
+	store::Store,
+};
+use aidash_application::authorization::peer::admission as app;
+use aidash_application::federation::inbound::Admitted;
+use aidash_domain::federation::execution::admission::Activation;
+use uuid::Uuid;
+#[derive(Clone)]
+pub struct PeerAdmissions {
+	pub(crate) runtime: Federation,
+}
+#[injectable(scope = "request")]
+pub async fn provide_admissions(#[inject] runtime: Federation) -> PeerAdmissions {
+	PeerAdmissions { runtime }
+}
+#[derive(Clone)]
+pub struct PeerExecutionManagement {
+	pub(crate) runtime: Federation,
+}
+#[injectable(scope = "request")]
+pub async fn provide(#[inject] runtime: Federation) -> PeerExecutionManagement {
+	tracing::trace!(
+		service = "PeerExecutionManagement",
+		"creating injectable service"
+	);
+	PeerExecutionManagement { runtime }
+}
+use reinhardt::injectable;
+fn source(admitted: &Admitted) -> String {
+	admitted.sender.to_string()
+}
+impl PeerAdmissions {
+	pub(crate) async fn admit(&self, admitted: Admitted, input: Input) -> Result<Admission> {
+		app::admit(
+			&crate::bootstrap::peer_admission_repository(&self.runtime),
+			&admitted.receiver.node,
+			&source(&admitted),
+			input.grant_id,
+		)
+		.await
+		.map(Into::into)
+		.map_err(Into::into)
+	}
+	pub(crate) async fn verify(&self, admitted: Admitted, id: Uuid) -> Result<bool> {
+		app::verify(
+			&crate::bootstrap::peer_admission_repository(&self.runtime),
+			&admitted.receiver.node,
+			&source(&admitted),
+			id,
+		)
+		.await
+		.map_err(Into::into)
+	}
+}
+pub(crate) async fn message(
+	f: Federation,
+	admitted: Admitted,
+	id: Uuid,
+	input: MessageInput,
+) -> Result<crate::authorization::remote::execution::RemoteExecutionMessageReceipt> {
+	let message = aidash_domain::federation::execution::admission::Message {
+		id: input.message.id,
+		content: input.message.content,
+	};
+	app::message(
+		&crate::bootstrap::peer_admission_repository(&f),
+		&source(&admitted),
+		id,
+		input.grant_id,
+		message,
+	)
+	.await
+	.map(Into::into)
+	.map_err(Into::into)
+}
+pub(crate) async fn control(
+	f: Federation,
+	admitted: Admitted,
+	id: Uuid,
+	input: RemoteExecutionControlInput,
+) -> Result<Activation> {
+	app::control(
+		&crate::bootstrap::peer_admission_repository(&f),
+		&source(&admitted),
+		id,
+		input.grant_id,
+		input.action,
+	)
+	.await
+	.map_err(Into::into)
+}
+pub(crate) async fn status(
+	f: Federation,
+	admitted: Admitted,
+	input: Input,
+) -> Result<Option<Activation>> {
+	app::status(
+		&crate::bootstrap::peer_admission_repository(&f),
+		&source(&admitted),
+		input.grant_id,
+	)
+	.await
+	.map_err(Into::into)
+}
+pub(crate) async fn activate(
+	f: Federation,
+	admitted: Admitted,
+	id: Uuid,
+	input: Input,
+) -> Result<Activation> {
+	app::activate(
+		&crate::bootstrap::peer_admission_repository(&f),
+		&admitted.receiver.node,
+		&source(&admitted),
+		id,
+		input.grant_id,
+	)
+	.await
+	.map_err(Into::into)
+}
+pub(crate) async fn run_grant(store: &Store, run: &RunMetadata) -> Result<Option<Uuid>> {
+	app::run_grant(&crate::bootstrap::peer_admission_records(store), run)
+		.await
+		.map_err(Into::into)
+}
+pub(crate) async fn worker_lease(
+	f: &Federation,
+	run: &RunMetadata,
+) -> Result<Option<(Access, AgentConfig)>> {
+	if !crate::apps::knowledge::repositories::receiver_caches::available(&f.store, run.id).await? {
+		if crate::apps::knowledge::repositories::remote_memory_reads::erase_receiver(&f.store, run)
+			.await
+			.is_err()
+		{
+			tracing::warn!(run = %run.id, "invalidated receiver quotation cleanup remains pending or failed");
+		}
+		return Err(crate::Error::RemoteSemantic(
+			aidash_domain::semantic::Failure::Invalidated,
+		));
+	}
+	let result = app::worker_lease(&crate::bootstrap::peer_admission_repository(f), run)
+		.await
+		.map(|r| r.map(|(scope, agent)| (*scope.access, agent)))
+		.map_err(crate::Error::from);
+	if matches!(
+		&result,
+		Err(crate::Error::RemoteSemantic(
+			aidash_domain::semantic::Failure::Invalidated
+				| aidash_domain::semantic::Failure::Authority
+				| aidash_domain::semantic::Failure::Configuration
+		))
+	) {
+		// The shared use case has already released/rolled back its authority
+		// scope. Disposable quotations can now be removed without lock inversion.
+		if crate::apps::knowledge::repositories::remote_memory_reads::erase_receiver(&f.store, run)
+			.await
+			.is_err()
+		{
+			tracing::warn!(run = %run.id, "invalidated receiver quotation cleanup remains pending or failed");
+		}
+	}
+	result
+}
+pub(crate) async fn leaf_lease(
+	f: &Federation,
+	receiver: &aidash_domain::nodes::NodeName,
+	source: &str,
+	grant: Uuid,
+	admission: Uuid,
+) -> Result<(Access, Description)> {
+	app::leaf_lease(
+		&crate::bootstrap::peer_admission_repository(f),
+		receiver,
+		source,
+		grant,
+		admission,
+	)
+	.await
+	.map(|(scope, d)| (*scope.access, d))
+	.map_err(Into::into)
+}

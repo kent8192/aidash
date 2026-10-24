@@ -1,0 +1,566 @@
+//! Inference inputs, outputs, media validation, and request budgets.
+use crate::{Error, Result};
+use base64::Engine;
+use schemars::JsonSchema;
+use serde::{Deserialize, Serialize};
+use serde_json::{Value, json};
+
+pub mod estimate;
+pub mod usage;
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct ToolSpec {
+	pub name: String,
+	pub description: String,
+	pub parameters: Value,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, schemars::JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct ToolCall {
+	pub id: String,
+	pub name: String,
+	#[serde(deserialize_with = "crate::entities::required_json")]
+	pub arguments: Value,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema)]
+pub struct ModelRequest {
+	pub instructions: String,
+	pub context: ModelContext,
+	pub tools: Vec<ToolSpec>,
+	pub max_output_tokens: u32,
+	/// Structured-output schema for non-tool requests such as the Summary
+	/// Stage. Absent for ordinary inference, whose body stays unchanged.
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub response_format: Option<Value>,
+	/// Resolved, authorized input for this inference only. Never persist bytes
+	/// in the durable context or serialize them with the request metadata.
+	#[serde(skip)]
+	pub content_parts: Vec<ContentPart>,
+	/// Set only for salted Projection Versions. Omitted otherwise, so Legacy
+	/// request metadata and its inference digest stay byte-identical.
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub cache_scope: Option<crate::projection::CacheScope>,
+	/// Mark the end of `system` and of the Ordered Stable Prefix part with
+	/// `cache_control` (ADR 0019). The volatile part is never marked. Valid for
+	/// Ordered requests only; omitted when false, so other request metadata and
+	/// inference digests keep their bytes.
+	#[serde(default, skip_serializing_if = "std::ops::Not::not")]
+	pub cache_breakpoints: bool,
+	/// Set for Agents that opted into a Context Policy, whose recovery alone
+	/// may reduce context: OpenRouter then receives `transforms: []`. Prune-only
+	/// requests keep the provider default; omitted when false, so their
+	/// request metadata and inference digests keep their bytes.
+	#[serde(default, skip_serializing_if = "std::ops::Not::not")]
+	pub disable_provider_transforms: bool,
+	/// The Run step's Estimate Snapshot (ADR 0017). Requests built outside a
+	/// Run step keep the conservative byte estimate. Never serialized, so the
+	/// request metadata and inference digest keep their bytes.
+	#[serde(skip)]
+	pub estimate: estimate::EstimateSnapshot,
+}
+
+/// Model-visible context in the shape fixed by the Run's Projection Version.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[serde(untagged)]
+pub enum ModelContext {
+	/// Ordered: two text parts, the Stable Prefix part first.
+	Ordered(OrderedContext),
+	/// Native: attachments, model-native Model Turns and a volatile message.
+	Native(crate::projection::native::NativeContext),
+	/// Legacy: one JSON value sent as a single text message. It must stay
+	/// the last untagged variant, since any value decodes as Legacy.
+	Legacy(Value),
+}
+
+impl Default for ModelContext {
+	fn default() -> Self {
+		Self::Legacy(Value::Null)
+	}
+}
+
+impl From<Value> for ModelContext {
+	fn from(value: Value) -> Self {
+		Self::Legacy(value)
+	}
+}
+
+impl ModelContext {
+	pub fn legacy_mut(&mut self) -> Option<&mut Value> {
+		match self {
+			Self::Legacy(value) => Some(value),
+			Self::Ordered(_) | Self::Native(_) => None,
+		}
+	}
+
+	/// The Projection Version this context was rendered under.
+	pub fn projection_version(&self) -> crate::projection::ProjectionVersion {
+		match self {
+			Self::Legacy(_) => crate::projection::ProjectionVersion::Legacy,
+			Self::Ordered(_) => crate::projection::ProjectionVersion::Ordered,
+			Self::Native(_) => crate::projection::ProjectionVersion::Native,
+		}
+	}
+
+	/// Whether this context may carry cache breakpoints (ADR 0019).
+	fn caches(&self) -> bool {
+		matches!(self, Self::Ordered(_) | Self::Native(_))
+	}
+
+	/// Leading text parts of the single user message of a Legacy or Ordered
+	/// context, in send order. A Native context has no single user message.
+	fn text_parts(&self) -> Vec<std::borrow::Cow<'_, str>> {
+		match self {
+			Self::Legacy(value) => vec![value.to_string().into()],
+			Self::Ordered(ordered) => vec![
+				ordered.stable.as_str().into(),
+				ordered.volatile.as_str().into(),
+			],
+			Self::Native(_) => vec![],
+		}
+	}
+}
+
+/// Pre-rendered Ordered parts. Each is canonical JSON whose key order was fixed
+/// by typed serialization, never by a `Value` map.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct OrderedContext {
+	/// Run-stable context, summaries and history: the end of the Stable Prefix.
+	pub stable: String,
+	/// Per-step content that is never part of the Stable Prefix.
+	pub volatile: String,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct ModelResponse {
+	pub text: String,
+	pub tool_calls: Vec<ToolCall>,
+	pub input_tokens: u64,
+	pub output_tokens: u64,
+	pub usage_complete: bool,
+	/// Provider-reported usage for this attempt's Usage Record. It is not part
+	/// of the persisted pending state, which older binaries must still read.
+	#[serde(skip)]
+	pub reported: usage::ReportedUsage,
+}
+
+#[derive(Debug, Clone)]
+pub enum ContentPart {
+	Text(String),
+	Image { media_type: String, bytes: Vec<u8> },
+	Audio { format: String, bytes: Vec<u8> },
+}
+
+impl ContentPart {
+	pub fn format_for_media_type(media_type: &str) -> Result<&'static str> {
+		match media_type {
+			"image/png" => Ok("image/png"),
+			"image/jpeg" => Ok("image/jpeg"),
+			"image/gif" => Ok("image/gif"),
+			"image/webp" => Ok("image/webp"),
+			"audio/wav" | "audio/x-wav" => Ok("wav"),
+			"audio/mpeg" => Ok("mp3"),
+			"audio/mp4" | "audio/x-m4a" => Ok("m4a"),
+			"audio/aac" => Ok("aac"),
+			"audio/ogg" => Ok("ogg"),
+			"audio/webm" => Ok("webm"),
+			"audio/flac" | "audio/x-flac" => Ok("flac"),
+			_ => Err(Error::Invalid(format!(
+				"unsupported model media type: {media_type}"
+			))),
+		}
+	}
+
+	pub fn modality_for_media_type(media_type: &str) -> Result<&'static str> {
+		match media_type {
+			"image/png" | "image/jpeg" | "image/gif" | "image/webp" => Ok("image"),
+			"audio/wav" | "audio/x-wav" | "audio/mpeg" | "audio/mp4" | "audio/x-m4a"
+			| "audio/aac" | "audio/ogg" | "audio/webm" | "audio/flac" | "audio/x-flac" => Ok("audio"),
+			_ => Err(Error::Invalid(format!(
+				"unsupported model media type: {media_type}"
+			))),
+		}
+	}
+
+	pub fn from_media(media_type: &str, bytes: Vec<u8>) -> Result<Self> {
+		let part = match Self::modality_for_media_type(media_type)? {
+			"image" => Self::Image {
+				media_type: media_type.into(),
+				bytes,
+			},
+			_ => Self::Audio {
+				format: Self::format_for_media_type(media_type)?.into(),
+				bytes,
+			},
+		};
+		part.validate()?;
+		Ok(part)
+	}
+
+	fn openrouter(&self) -> Value {
+		match self {
+			Self::Text(text) => json!({"type":"text","text":text}),
+			Self::Image { media_type, bytes } => {
+				json!({"type":"image_url","image_url":{"url":format!("data:{media_type};base64,{}",base64::engine::general_purpose::STANDARD.encode(bytes))}})
+			}
+			Self::Audio { format, bytes } => {
+				json!({"type":"input_audio","input_audio":{"data":base64::engine::general_purpose::STANDARD.encode(bytes),"format":format}})
+			}
+		}
+	}
+
+	/// Transport framing of this part with any encoded media payload left
+	/// empty, so estimates keep the array shape without counting base64 bytes.
+	fn estimate_frame(&self) -> Value {
+		match self {
+			Self::Text(_) => self.openrouter(),
+			Self::Image { media_type, .. } => {
+				json!({"type":"image_url","image_url":{"url":format!("data:{media_type};base64,")}})
+			}
+			Self::Audio { format, .. } => {
+				json!({"type":"input_audio","input_audio":{"data":"","format":format}})
+			}
+		}
+	}
+
+	fn validate(&self) -> Result<()> {
+		match self {
+			Self::Text(_) => Ok(()),
+			Self::Image { media_type, bytes } => {
+				let valid = match media_type.as_str() {
+					"image/png" => bytes.starts_with(b"\x89PNG\r\n\x1a\n"),
+					"image/jpeg" => bytes.starts_with(b"\xff\xd8\xff"),
+					"image/gif" => bytes.starts_with(b"GIF87a") || bytes.starts_with(b"GIF89a"),
+					"image/webp" => bytes.starts_with(b"RIFF") && bytes.get(8..12) == Some(b"WEBP"),
+					_ => false,
+				};
+				if !valid {
+					return Err(Error::Invalid(
+						"image MIME does not match a supported file signature".into(),
+					));
+				}
+				Ok(())
+			}
+			Self::Audio { format, bytes } => {
+				let valid = match format.as_str() {
+					"wav" => bytes.starts_with(b"RIFF") && bytes.get(8..12) == Some(b"WAVE"),
+					"mp3" => {
+						bytes.starts_with(b"ID3")
+							|| bytes.get(..4).is_some_and(|header| {
+								header[0] == 0xff
+							&& header[1] & 0xe0 == 0xe0 // 11-bit sync word
+							&& (header[1] >> 3) & 0x03 != 0x01 // reserved version
+							&& (header[1] >> 1) & 0x03 == 0x01 // Layer III
+							&& header[2] >> 4 != 0x0f // reserved bitrate
+							&& (header[2] >> 2) & 0x03 != 0x03 // reserved sample rate
+							})
+					}
+					"m4a" => bytes.get(4..8) == Some(b"ftyp"),
+					"aac" => bytes
+						.get(..2)
+						.is_some_and(|header| header[0] == 0xff && header[1] & 0xf6 == 0xf0),
+					"ogg" => bytes.starts_with(b"OggS"),
+					"webm" => bytes.starts_with(b"\x1a\x45\xdf\xa3"),
+					"flac" => bytes.starts_with(b"fLaC"),
+					_ => false,
+				};
+				if !valid {
+					return Err(Error::Invalid(
+						"audio format does not match a supported file signature".into(),
+					));
+				}
+				Ok(())
+			}
+		}
+	}
+}
+
+/// A five-minute provider cache breakpoint, the provider default (ADR 0019).
+pub(crate) fn cache_control() -> Value {
+	json!({"type":"ephemeral"})
+}
+
+impl ModelRequest {
+	fn media_tokens(parts: &[ContentPart]) -> usize {
+		parts.iter().fold(0_usize, |total, part| {
+			total.saturating_add(match part {
+				ContentPart::Text(_) => 0,
+				ContentPart::Image { bytes, .. } => {
+					4096_usize.saturating_add(bytes.len().div_ceil(256))
+				}
+				ContentPart::Audio { bytes, .. } => {
+					1024_usize.saturating_add(bytes.len().div_ceil(16))
+				}
+			})
+		})
+	}
+
+	/// Space added to a media-free request of `version` by these parts,
+	/// including text labels, media part framing, and the conservative
+	/// provider-side media token allowance.
+	pub fn content_parts_reservation(
+		parts: &[ContentPart],
+		version: crate::projection::ProjectionVersion,
+	) -> usize {
+		if parts.is_empty() {
+			return 0;
+		}
+		let mut reserved = 64_usize.saturating_add(Self::media_tokens(parts));
+		// Array/text framing replaces a plain context string; media parts keep
+		// their framing but not their encoded payload bytes. Native sends text
+		// labels inside a data envelope, escaped once more.
+		for part in parts {
+			let mut frame = part.estimate_frame();
+			if version == crate::projection::ProjectionVersion::Native {
+				frame = crate::projection::native::media_part(frame);
+			}
+			reserved = reserved.saturating_add(frame.to_string().len().saturating_add(1));
+		}
+		reserved
+	}
+
+	pub fn media_within_limits(parts: &[ContentPart]) -> bool {
+		let mut count = 0_usize;
+		let mut bytes = 0_usize;
+		for part in parts {
+			if let ContentPart::Image { bytes: content, .. }
+			| ContentPart::Audio { bytes: content, .. } = part
+			{
+				count += 1;
+				bytes = bytes.saturating_add(content.len());
+			}
+		}
+		count <= 8 && bytes <= 8 * 1024 * 1024
+	}
+
+	/// Model-visible payload, shared by transport and context accounting. The
+	/// context is encoded as message text, including its JSON escaping. A salted
+	/// request's Tenant Cache Salt is prepended by the transport adapter only.
+	pub fn input_body(&self) -> Value {
+		self.body(
+			self.content_parts.iter().map(ContentPart::openrouter),
+			self.cache_breakpoints,
+		)
+	}
+
+	/// `breakpoints` marks `system` and the end of the Stable Prefix: the
+	/// Ordered Stable Prefix part or the last Native history message. It has
+	/// no effect on a Legacy context.
+	fn body(&self, parts: impl Iterator<Item = Value>, breakpoints: bool) -> Value {
+		let breakpoints = breakpoints && self.context.caches();
+		let system = if breakpoints {
+			json!([{"type":"text","text":self.instructions,"cache_control":cache_control()}])
+		} else {
+			json!(self.instructions)
+		};
+		let mut messages = vec![json!({"role":"system","content":system})];
+		match &self.context {
+			ModelContext::Native(native) => {
+				messages.extend(native.chat_messages(parts, breakpoints));
+			}
+			ModelContext::Legacy(_) | ModelContext::Ordered(_) => {
+				messages
+					.push(json!({"role":"user","content":self.user_content(parts, breakpoints)}));
+			}
+		}
+		let mut body = json!({ "messages": messages });
+		if !self.tools.is_empty() {
+			body["tools"] = Value::Array(self.tools.iter().map(|t| json!({"type":"function","function":{"name":t.name,"description":t.description,"parameters":t.parameters}})).collect());
+		}
+		if let Some(format) = &self.response_format {
+			body["response_format"] = format.clone();
+		}
+		body
+	}
+
+	/// The single user message of a Legacy or Ordered context.
+	fn user_content(&self, parts: impl Iterator<Item = Value>, breakpoints: bool) -> Value {
+		let mut parts = parts.peekable();
+		let text = self.context.text_parts();
+		match (&self.context, parts.peek()) {
+			(ModelContext::Legacy(_), None) => Value::String(text.concat()),
+			_ => Value::Array(
+				text.into_iter()
+					.enumerate()
+					.map(|(index, text)| {
+						let mut part = json!({"type":"text","text":text});
+						// The Stable Prefix part comes first; the volatile part
+						// after it changes every step and is never cached.
+						if breakpoints && index == 0 {
+							part["cache_control"] = cache_control();
+						}
+						part
+					})
+					.chain(parts)
+					.collect(),
+			),
+		}
+	}
+
+	/// The Request Estimate under this request's Estimate Snapshot. It is
+	/// never above the byte estimate and never the provider's own count.
+	/// Completion tokens and framing are reserved in the same unit at every gate.
+	pub fn estimated_total_tokens(&self) -> usize {
+		self.estimate.tokens(&self.byte_estimate())
+	}
+
+	pub fn estimated_total_tokens_with_parts(&self, parts: &[ContentPart]) -> usize {
+		self.estimate.tokens(&self.byte_estimate_with_parts(parts))
+	}
+
+	/// The labeled Request Estimate recorded with the Inference Attempt.
+	pub fn request_estimate(&self) -> usage::RequestEstimate {
+		self.estimate.request_estimate(&self.byte_estimate())
+	}
+
+	/// Measure this same request with a separate, frozen snapshot without
+	/// changing execution estimates, prompts, fitting or compaction decisions.
+	pub fn request_estimate_with_snapshot(
+		&self,
+		snapshot: &estimate::EstimateSnapshot,
+	) -> Option<usage::RequestEstimate> {
+		snapshot.usable().then(|| {
+			snapshot
+				.request_estimate(&self.byte_estimate_for_snapshot(&self.content_parts, snapshot))
+		})
+	}
+
+	/// Conservative UTF-8 byte estimate, split by unit.
+	pub fn byte_estimate(&self) -> estimate::ByteEstimate {
+		self.byte_estimate_with_parts(&self.content_parts)
+	}
+
+	pub fn byte_estimate_with_parts(&self, parts: &[ContentPart]) -> estimate::ByteEstimate {
+		self.byte_estimate_for_snapshot(parts, &self.estimate)
+	}
+
+	fn byte_estimate_for_snapshot(
+		&self,
+		parts: &[ContentPart],
+		snapshot: &estimate::EstimateSnapshot,
+	) -> estimate::ByteEstimate {
+		// Base64 is a transport encoding, not text for the model tokenizer.
+		// Keep the transmitted array framing, excluding only encoded media
+		// payload bytes, and reserve a bounded media estimate.
+		// Ordered estimates always count cache breakpoint framing, so whether a
+		// step carries breakpoints never changes a fitting decision (ADR 0019).
+		let body = self.body(parts.iter().map(ContentPart::estimate_frame), true);
+		let salt = if self.cache_scope.is_some() {
+			crate::projection::CACHE_SALT_LINE_RESERVE
+		} else {
+			0
+		};
+		// A tokenized snapshot counts the same body, so the count covers
+		// exactly the text the byte basis measures (ADR 0017).
+		let tokenized = snapshot
+			.encoding()
+			.and_then(|encoding| encoding.count_body(&body))
+			.map(|tokens| tokens.saturating_add(salt));
+		estimate::ByteEstimate {
+			basis: body.to_string().len().saturating_add(salt),
+			media: Self::media_tokens(parts),
+			output: self.max_output_tokens as usize,
+			framing: estimate::FRAMING_RESERVE,
+			tokenized,
+		}
+	}
+
+	pub fn validate(&self) -> Result<()> {
+		if self.cache_breakpoints && !self.context.caches() {
+			return Err(Error::Invalid(
+				"cache breakpoints require the Ordered or Native Projection Version".into(),
+			));
+		}
+		if let ModelContext::Native(native) = &self.context {
+			crate::projection::native::check_model_turns(&native.history)?;
+		}
+		for part in &self.content_parts {
+			part.validate()?;
+		}
+		if !Self::media_within_limits(&self.content_parts) {
+			return Err(Error::Invalid(
+				"model media input exceeds count or byte limit".into(),
+			));
+		}
+		Ok(())
+	}
+}
+
+impl ModelRequest {
+	pub fn ensure_fits(&self, window: usize) -> Result<()> {
+		Self::check_estimate(
+			window,
+			self.max_output_tokens,
+			self.estimated_total_tokens(),
+		)
+	}
+	pub fn ensure_fits_with_parts(&self, window: usize, parts: &[ContentPart]) -> Result<()> {
+		Self::check_estimate(
+			window,
+			self.max_output_tokens,
+			self.estimated_total_tokens_with_parts(parts),
+		)
+	}
+	fn check_estimate(window: usize, max_output_tokens: u32, estimated: usize) -> Result<()> {
+		if estimated > window {
+			return Err(Error::Invalid(format!(
+				"model request exceeds context window: estimated total {estimated}, window {window}, output reserve {}, framing reserve {}",
+				max_output_tokens,
+				estimate::FRAMING_RESERVE
+			)));
+		}
+		Ok(())
+	}
+}
+
+impl ModelRequest {
+	/// Identity of the fixed head of a salted request's Stable Prefix: its
+	/// Projection Version, Tenant, Cache Salt Key version, `system` and tool
+	/// definitions. It changes exactly when a provider can no longer reuse a
+	/// cached prefix from its start, such as a Load or Unload, a resident
+	/// Skill body or new instructions (ADR 0016). The Tenant is part of the
+	/// digested input because each Tenant's salt starts its own prefix. The
+	/// identity holds neither the salt, the Tenant nor any prompt text.
+	/// `None` for an unsalted request.
+	pub fn cache_identity(&self) -> Option<String> {
+		let scope = self.cache_scope.as_ref()?;
+		Some(crate::registry::rules::digest(&json!({
+			"projection_version": self.context.projection_version(),
+			"tenant": scope.tenant,
+			"key_version": scope.key_version,
+			"instructions": self.instructions,
+			"tools": self.tools,
+		})))
+	}
+
+	/// Bind the exact request metadata and ordered media hashes without persisting media bytes.
+	pub fn inference_digest(&self) -> String {
+		use sha2::{Digest, Sha256};
+		let media = self
+			.content_parts
+			.iter()
+			.map(|part| match part {
+				ContentPart::Text(text) => {
+					json!({"text":format!("{:x}",Sha256::digest(text.as_bytes()))})
+				}
+				ContentPart::Image { media_type, bytes } => {
+					json!({"media_type":media_type,"digest":format!("{:x}",Sha256::digest(bytes))})
+				}
+				ContentPart::Audio { format, bytes } => {
+					json!({"format":format,"digest":format!("{:x}",Sha256::digest(bytes))})
+				}
+			})
+			.collect::<Vec<_>>();
+		crate::registry::rules::digest(&json!({"request":self,"media":media}))
+	}
+}
+
+pub mod progress;
+
+#[cfg(test)]
+mod admission_tests;
+#[cfg(test)]
+mod cache_breakpoint_tests;

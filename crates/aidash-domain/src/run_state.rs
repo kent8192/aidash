@@ -1,0 +1,595 @@
+//! Current execution format. Only the storage codec handles unvalidated JSON.
+use super::{Run, RunPhase};
+use crate::{
+	Error, Result,
+	media::ModelMedia,
+	provider::{ModelResponse, ToolCall},
+};
+use chrono::{DateTime, Utc};
+use serde::{Deserialize, Serialize};
+use serde_json::Value;
+use uuid::Uuid;
+mod capability;
+mod row;
+#[cfg(test)]
+mod tests;
+pub use capability::{LeaseWait, PersistedCapability, StateRequirements};
+pub use row::RawRun;
+pub use row::{RunInspection, RunMetadata};
+
+#[derive(Debug, Clone, Copy, Serialize, PartialEq, Eq, schemars::JsonSchema)]
+
+pub struct StateVersion(u32);
+impl Default for StateVersion {
+	fn default() -> Self {
+		Self(1)
+	}
+}
+impl<'de> Deserialize<'de> for StateVersion {
+	fn deserialize<D: serde::Deserializer<'de>>(d: D) -> std::result::Result<Self, D::Error> {
+		match u32::deserialize(d)? {
+			1 => Ok(Self(1)),
+			_ => Err(serde::de::Error::custom("unsupported run state version")),
+		}
+	}
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct ReadyState {}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct ThinkingState {
+	pub force_workspace_read_compaction: bool,
+	pub deferred_workspace_read: Option<Box<DeferredRead>>,
+	pub deferred_skill_read: Option<Box<DeferredRead>>,
+	pub deferred_workspace_observation: Option<Box<DeferredRead>>,
+	pub selected_media: Vec<ModelMedia>,
+	pub media_intake_through_seq: Option<i64>,
+	pub deferred_run_message_reads: Vec<Uuid>,
+}
+#[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct DeferredRead {
+	pub message: String,
+	pub call: ToolCall,
+}
+#[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct ReadPlan {
+	pub step: i32,
+	pub cursor: usize,
+	pub call: ToolCall,
+	#[serde(deserialize_with = "super::required_json")]
+	pub result: Value,
+}
+/// The answer a Run executing for another Node received from that Node's
+/// human request, for the exact call it was asked about.
+#[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct HomeApproval {
+	pub key: String,
+	pub call: ToolCall,
+	pub approved: bool,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct ToolCallState {
+	pub response: ModelResponse,
+	pub response_epoch: i64,
+	pub cursor: usize,
+	pub included_input_seq: i64,
+	pub request_window: usize,
+	pub request_tokens: usize,
+	pub finalizing: bool,
+	pub media_inferred_seq_before_response: i64,
+	pub observed_input_seq_before_response: i64,
+	pub inferred_selected_media: Vec<ModelMedia>,
+	pub deferred_selected_media: Vec<ModelMedia>,
+	pub selected_media: Vec<ModelMedia>,
+	pub deferred_human_media: bool,
+	pub media_inferred_through_seq: Option<i64>,
+	pub media_intake_through_seq: i64,
+	pub required_run_message_reads: Vec<Uuid>,
+	pub references_read_at_inference: bool,
+	pub run_message_catchup: bool,
+	pub run_message_summary_end_seq: i64,
+	pub run_message_summary_limit: usize,
+	pub deferred_reads: ThinkingState,
+	pub workspace_read_plan: Option<ReadPlan>,
+	pub skill_read_plan: Option<ReadPlan>,
+	pub workspace_observation_plan: Option<ReadPlan>,
+	/// Only a Run executing for another Node: Home's answer to the call at `cursor`.
+	pub home_approval: Option<HomeApproval>,
+	/// The capability approval the call at `cursor` waited for. The call runs
+	/// again under it; `advance` clears it with the cursor.
+	pub approval: Option<Uuid>,
+	/// End of the admitted Tool Batch `[cursor, batch_end)`. Present only from
+	/// batch admission until adoption, so a restart resumes exactly those calls.
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub batch_end: Option<usize>,
+}
+impl ToolCallState {
+	/// Move to the call at `cursor`, leaving the approvals of earlier calls behind.
+	pub fn advance(&mut self, cursor: usize) {
+		self.cursor = cursor;
+		self.home_approval = None;
+		self.approval = None;
+	}
+	pub fn selected_media(&self) -> Vec<ModelMedia> {
+		self.deferred_selected_media
+			.iter()
+			.chain(&self.selected_media)
+			.cloned()
+			.collect()
+	}
+	pub fn stale(
+		&self,
+		context: &mut crate::context::Context,
+		observed: &mut i64,
+	) -> ThinkingState {
+		context.media_inferred_seq = self.media_inferred_seq_before_response;
+		*observed = self.observed_input_seq_before_response;
+		let mut selected_media = Vec::new();
+		for value in self
+			.inferred_selected_media
+			.iter()
+			.chain(&self.deferred_selected_media)
+			.chain(&self.selected_media)
+		{
+			if !selected_media.contains(value) {
+				selected_media.push(value.clone());
+			}
+		}
+		ThinkingState {
+			selected_media,
+			media_intake_through_seq: Some(self.media_intake_through_seq),
+			deferred_run_message_reads: self.required_run_message_reads.clone(),
+			..Default::default()
+		}
+	}
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(
+	tag = "phase",
+	content = "data",
+	rename_all = "SCREAMING_SNAKE_CASE",
+	deny_unknown_fields
+)]
+pub enum ResumeState {
+	Ready(ReadyState),
+	Thinking(ThinkingState),
+	ToolCall(Box<ToolCallState>),
+}
+impl ResumeState {
+	pub fn into_state(self) -> RunState {
+		match self {
+			Self::Ready(s) => RunState::Ready(s),
+			Self::Thinking(s) => RunState::Thinking(s),
+			Self::ToolCall(s) => RunState::ToolCall(s),
+		}
+	}
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, schemars::JsonSchema)]
+#[serde(rename_all = "SCREAMING_SNAKE_CASE")]
+pub enum FailureTarget {
+	Failed,
+	Cancelled,
+}
+impl FailureTarget {
+	pub fn task_status(self) -> super::TaskStatus {
+		match self {
+			Self::Failed => super::TaskStatus::Failed,
+			Self::Cancelled => super::TaskStatus::Cancelled,
+		}
+	}
+	pub fn into_state(self) -> RunState {
+		match self {
+			Self::Failed => RunState::Failed(TerminalState {}),
+			Self::Cancelled => RunState::Cancelled(TerminalState {}),
+		}
+	}
+}
+/// Where the approval a Run waits for is decided.
+#[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(tag = "source", rename_all = "snake_case", deny_unknown_fields)]
+pub enum ApprovalRef {
+	/// A capability approval record on this Node (tool call, outbound, Web disclosure).
+	Capability { approval_id: Uuid },
+	/// A Run executing for another Node asks that Node through a human request.
+	Home {
+		request_id: Uuid,
+		key: String,
+		call: ToolCall,
+		expires_at: DateTime<Utc>,
+	},
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(tag = "reason", rename_all = "snake_case", deny_unknown_fields)]
+pub enum WaitingState {
+	Dependencies {
+		wake_at: DateTime<Utc>,
+		resume: ReadyState,
+	},
+	Children {
+		wake_at: DateTime<Utc>,
+		resume: ThinkingState,
+	},
+	Timer {
+		wake_at: DateTime<Utc>,
+		resume: ResumeState,
+	},
+	Human {
+		request_id: Uuid,
+		/// When the Run continues without an answer: a model's question of a
+		/// person who set an Answer Deadline. Every other request waits for
+		/// its answer.
+		#[serde(default, skip_serializing_if = "Option::is_none")]
+		answer_by: Option<DateTime<Utc>>,
+		resume: ResumeState,
+	},
+	/// Waiting for an approval of the call at `resume`'s cursor, which then runs.
+	Approval {
+		approval: ApprovalRef,
+		resume: Box<ToolCallState>,
+	},
+	Reconciliation {
+		request_id: Uuid,
+		key: String,
+		resume: Box<ToolCallState>,
+	},
+	FailureDelivery {
+		target: FailureTarget,
+		wake_at: DateTime<Utc>,
+		last_delivery_error: Option<String>,
+	},
+}
+impl WaitingState {
+	pub fn deadline(&self) -> Option<DateTime<Utc>> {
+		match self {
+			Self::Dependencies { wake_at, .. }
+			| Self::Children { wake_at, .. }
+			| Self::Timer { wake_at, .. }
+			| Self::FailureDelivery { wake_at, .. } => Some(*wake_at),
+			Self::Human { answer_by, .. } => *answer_by,
+			Self::Approval {
+				approval: ApprovalRef::Home { expires_at, .. },
+				..
+			} => Some(*expires_at),
+			_ => None,
+		}
+	}
+	pub fn request_id(&self) -> Option<Uuid> {
+		match self {
+			Self::Human { request_id, .. }
+			| Self::Approval {
+				approval: ApprovalRef::Home { request_id, .. },
+				..
+			}
+			| Self::Reconciliation { request_id, .. } => Some(*request_id),
+			_ => None,
+		}
+	}
+}
+#[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct TerminalState {}
+#[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(
+	tag = "phase",
+	content = "data",
+	rename_all = "SCREAMING_SNAKE_CASE",
+	deny_unknown_fields
+)]
+pub enum RunState {
+	Ready(ReadyState),
+	Thinking(ThinkingState),
+	ToolCall(Box<ToolCallState>),
+	Waiting(Box<WaitingState>),
+	Completed(TerminalState),
+	Failed(TerminalState),
+	Cancelled(TerminalState),
+}
+impl Default for RunState {
+	fn default() -> Self {
+		Self::Ready(ReadyState {})
+	}
+}
+impl RunState {
+	pub fn phase(&self) -> RunPhase {
+		match self {
+			Self::Ready(_) => RunPhase::Ready,
+			Self::Thinking(_) => RunPhase::Thinking,
+			Self::ToolCall(_) => RunPhase::ToolCall,
+			Self::Waiting(_) => RunPhase::Waiting,
+			Self::Completed(_) => RunPhase::Completed,
+			Self::Failed(_) => RunPhase::Failed,
+			Self::Cancelled(_) => RunPhase::Cancelled,
+		}
+	}
+	pub fn failure_delivery(&self) -> bool {
+		matches!(self, Self::Waiting(s) if matches!(**s, WaitingState::FailureDelivery{..}))
+	}
+	pub fn tool(&self) -> Result<&ToolCallState> {
+		match self {
+			Self::ToolCall(s) => Ok(s),
+			_ => Err(Error::Invalid("expected ToolCall state".into())),
+		}
+	}
+	pub fn tool_mut(&mut self) -> Result<&mut ToolCallState> {
+		match self {
+			Self::ToolCall(s) => Ok(s),
+			_ => Err(Error::Invalid("expected ToolCall state".into())),
+		}
+	}
+	pub fn resume(self) -> Result<ResumeState> {
+		match self {
+			Self::Ready(s) => Ok(ResumeState::Ready(s)),
+			Self::Thinking(s) => Ok(ResumeState::Thinking(s)),
+			Self::ToolCall(s) => Ok(ResumeState::ToolCall(s)),
+			_ => Err(Error::Invalid("state cannot be suspended".into())),
+		}
+	}
+	pub fn validate(&self) -> Result<()> {
+		let check = |s: &ToolCallState| {
+			if s.cursor > s.response.tool_calls.len()
+				|| s.response_epoch < 0
+				|| s.included_input_seq < 0
+			{
+				Err(Error::Invalid("invalid ToolCall progress".into()))
+			} else {
+				Ok(())
+			}
+		};
+		match self {
+			Self::ToolCall(s) => check(s),
+			Self::Waiting(s) => match s.as_ref() {
+				WaitingState::Approval { resume, .. }
+				| WaitingState::Reconciliation { resume, .. } => check(resume),
+				WaitingState::Timer {
+					resume: ResumeState::ToolCall(s),
+					..
+				}
+				| WaitingState::Human {
+					resume: ResumeState::ToolCall(s),
+					..
+				} => check(s),
+				_ => Ok(()),
+			},
+			_ => Ok(()),
+		}
+	}
+}
+#[derive(Debug, Clone, Default, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct RecoveryState {
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub semantic_reason: Option<crate::semantic::Failure>,
+	/// Typed context-recovery reason for a paused Run; cleared on resume.
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub context_reason: Option<crate::context::recovery::Failure>,
+	pub retry: Option<RetryState>,
+	pub lease_recovered: bool,
+	/// How many times a person resumed this Run from a pause. A compaction
+	/// decision commits to it, so a resume starts a new decision while a
+	/// recovered lease continues the same one (#108).
+	#[serde(default, skip_serializing_if = "is_zero")]
+	pub decision_cycle: u32,
+	/// Outage retries of the current step's compaction decision after every
+	/// Decider Route failed. A decision commits to it, so each retry asks the
+	/// Routes again; it is reset once the step saves anything else (ADR 0066).
+	#[serde(default, skip_serializing_if = "is_zero")]
+	pub decider_retry: u32,
+	/// Steps that ran with Degraded context (ADR 0059). Kept across resumes.
+	#[serde(
+		default,
+		skip_serializing_if = "crate::semantic::degraded::DegradedContext::is_empty"
+	)]
+	pub degraded: crate::semantic::degraded::DegradedContext,
+}
+fn is_zero(value: &u32) -> bool {
+	*value == 0
+}
+impl RecoveryState {
+	/// Whether this attempt may degrade an unavailable workspace slot: it is
+	/// the last one of the bounded outage retry, or an earlier step of the Run
+	/// already degraded and no retrieval has succeeded since (ADR 0059).
+	///
+	/// A `pending` memory replay keeps the retry count, so after the last
+	/// outage retry it is still the last one: it must not spend a sixth.
+	pub fn degrades_on_outage(&self) -> bool {
+		self.degraded.outage
+			|| (matches!(
+				self.semantic_reason,
+				Some(crate::semantic::Failure::Unavailable | crate::semantic::Failure::Pending)
+			) && self
+				.retry
+				.as_ref()
+				.is_some_and(|retry| retry.count >= crate::semantic::OUTAGE_RETRIES))
+	}
+}
+#[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct RetryState {
+	pub count: u32,
+	pub at: DateTime<Utc>,
+}
+
+#[derive(Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(deny_unknown_fields)]
+struct PendingState {
+	state_version: StateVersion,
+	#[serde(deserialize_with = "super::required_json")]
+	data: Value,
+	recovery: RecoveryState,
+	/// Absent unless the state needs capabilities, so legacy envelopes are unchanged.
+	#[serde(default, skip_serializing_if = "StateRequirements::is_empty")]
+	requires: StateRequirements,
+}
+pub fn encode(state: &RunState, recovery: &RecoveryState) -> Result<Value> {
+	state.validate()?;
+	let data = match state {
+		RunState::Ready(s) => serde_json::to_value(s)?,
+		RunState::Thinking(s) => serde_json::to_value(s)?,
+		RunState::ToolCall(s) => serde_json::to_value(s)?,
+		RunState::Waiting(s) => serde_json::to_value(s)?,
+		RunState::Completed(s) | RunState::Failed(s) | RunState::Cancelled(s) => {
+			serde_json::to_value(s)?
+		}
+	};
+	Ok(serde_json::to_value(PendingState {
+		state_version: StateVersion::default(),
+		data,
+		recovery: recovery.clone(),
+		requires: StateRequirements::of(state, recovery),
+	})?)
+}
+pub fn decode(phase: RunPhase, pending: Value) -> Result<(RunState, RecoveryState)> {
+	// A newer writer may bump the version without declaring a capability; its state
+	// is intact, so this is a capability gap rather than damage to the Run.
+	if let Some(version) = pending
+		.get("state_version")
+		.and_then(Value::as_u64)
+		.filter(|version| *version > u64::from(StateVersion::default().0))
+	{
+		return Err(Error::UnsupportedState(format!(
+			"run state version {version}"
+		)));
+	}
+	let pending: PendingState = serde_json::from_value(pending).map_err(|error| {
+		if capability::is_unknown_shape(&error) {
+			Error::UnsupportedState(error.to_string())
+		} else {
+			Error::Invalid("invalid pending envelope or state version".into())
+		}
+	})?;
+	let unmet = pending.requires.unmet(PersistedCapability::supported());
+	if !unmet.is_empty() {
+		return Err(Error::UnsupportedState(format!(
+			"needs capabilities {}",
+			unmet.join(", ")
+		)));
+	}
+	let data = pending.data;
+	let state = (|| -> std::result::Result<RunState, serde_json::Error> {
+		Ok(match phase {
+			RunPhase::Ready => RunState::Ready(serde_json::from_value(data)?),
+			RunPhase::Thinking => RunState::Thinking(serde_json::from_value(data)?),
+			RunPhase::ToolCall => RunState::ToolCall(serde_json::from_value(data)?),
+			RunPhase::Waiting => RunState::Waiting(serde_json::from_value(data)?),
+			RunPhase::Completed => RunState::Completed(serde_json::from_value(data)?),
+			RunPhase::Failed => RunState::Failed(serde_json::from_value(data)?),
+			RunPhase::Cancelled => RunState::Cancelled(serde_json::from_value(data)?),
+		})
+	})()
+	.map_err(|error| {
+		// A field or variant this build lacks was written by a newer build; that is
+		// a capability gap, not damage to the Run.
+		if capability::is_unknown_shape(&error) {
+			Error::UnsupportedState(error.to_string())
+		} else {
+			Error::Invalid("invalid phase payload".into())
+		}
+	})?;
+	state.validate()?;
+	// A stored requirement may exceed what this build derives (it only keeps older
+	// workers away), but one that falls short would let them claim unreadable state.
+	// Records written before the requirement existed are not accepted: Aidash has
+	// no deployment yet, so there is no persisted state to carry forward.
+	if !StateRequirements::of(&state, &pending.recovery).covered_by(&pending.requires) {
+		return Err(Error::Invalid(
+			"stored capability requirement does not cover the state".into(),
+		));
+	}
+	Ok((state, pending.recovery))
+}
+impl Run {
+	/// Whether the Run's Home is its own executing Node in `deployment`.
+	pub fn is_local(&self, deployment: &str) -> bool {
+		crate::nodes::is_home(&self.home_node, deployment, self.node.as_str())
+	}
+
+	/// The subject of the Run's agent on its executing Node in `deployment`.
+	pub fn executor_subject(&self, deployment: &str) -> String {
+		crate::entities::agent_subject(
+			&format!("{deployment}/{}", self.node),
+			&self.agent_id,
+			&self.agent_version,
+		)
+	}
+
+	/// Native admission persists this context in the same transaction as Run
+	/// insertion. An existing graph can only be reused byte-for-byte.
+	pub fn bind(&mut self, snapshot: crate::registry::bindings::BindingSnapshot) -> Result<()> {
+		snapshot.validate()?;
+		if snapshot.remote == self.is_local(&snapshot.agent.registry_deployment)
+			|| snapshot.agent.id != self.agent_id
+			|| snapshot.agent.version != self.agent_version
+		{
+			return Err(Error::Invalid(
+				"Binding snapshot belongs to a different Agent".into(),
+			));
+		}
+		if let Some(saved) = &self.context.binding_snapshot {
+			return if **saved == snapshot {
+				Ok(())
+			} else {
+				Err(Error::Conflict("Run Bindings are immutable".into()))
+			};
+		}
+		if self.step != 0 || !matches!(self.state, RunState::Ready(_)) {
+			return Err(Error::Conflict(
+				"Bindings must be admitted before Run activation".into(),
+			));
+		}
+		self.context.binding_snapshot = Some(Box::new(snapshot));
+		Ok(())
+	}
+	pub fn phase(&self) -> RunPhase {
+		self.state.phase()
+	}
+	pub fn included_input_seq(&self) -> i64 {
+		match &self.state {
+			RunState::ToolCall(s) => s.included_input_seq,
+			RunState::Waiting(wait) => match wait.as_ref() {
+				WaitingState::Approval { resume, .. }
+				| WaitingState::Reconciliation { resume, .. } => resume.included_input_seq,
+				WaitingState::Human {
+					resume: ResumeState::ToolCall(s),
+					..
+				}
+				| WaitingState::Timer {
+					resume: ResumeState::ToolCall(s),
+					..
+				} => s.included_input_seq,
+				_ => self.observed_input_seq,
+			},
+			_ => self.observed_input_seq,
+		}
+	}
+	pub fn stored_pending(&self) -> Result<Value> {
+		encode(&self.state, &self.recovery)
+	}
+	pub fn suspend(&mut self, wait: impl FnOnce(ResumeState) -> WaitingState) -> Result<()> {
+		let resume = self.state.clone().resume()?;
+		self.state = RunState::Waiting(Box::new(wait(resume)));
+		Ok(())
+	}
+}
+
+impl Run {
+	/// Receiver cleanup changes only the cancelled disposition and clears its prior execution error.
+	pub fn cancelled_delivery(&self) -> Self {
+		let mut cancelled = self.clone();
+		cancelled.state = RunState::Cancelled(TerminalState {});
+		cancelled.error = None;
+		cancelled
+	}
+}
+
+pub mod persistence;

@@ -1,0 +1,382 @@
+# Provider Credentials
+
+Provider Credentials are Tenant-owned metadata records obtained only through
+Provider Authorization, the provider's OAuth flow, as decided in ADR 0006.
+Key Material passes from the server-side exchange into the Secret Store
+write port. Pinned reads use a separate narrow read port. The Store also holds
+[Tenant Secrets](tenant-secrets.md) in their own resource namespace.
+Aidash exposes no HTTP create/rotate endpoint or dashboard
+form accepting typed or pasted provider keys; Provider Authorization (below) is
+the only production write path.
+The v1 Provider Catalog contains `openrouter`, with base URL
+`https://openrouter.ai/api/v1`.
+Registry model and embedding configurations use `provider_credential =
+"openrouter"` or call their endpoint without a key; they never contain a
+Provider Credential ID or an environment key reference. `credential_env` was
+removed from model and embedding configurations in #158: `provider_access`
+has no environment source, and the `registry_model_provider_keys` and
+`semantic_embedding_provider_keys` constraints reject the field in PostgreSQL.
+Every model-provider key therefore comes from a Secret Store, on
+Cloud and self-hosted nodes alike. Sandbox, runner and vector store
+references keep their `AIDASH_SECRET_*` configuration. HTTP and MCP tool
+transports can no longer name one (#296).
+
+Jev also runs through OpenRouter, at `POST {base}/systemone` with
+`provider.zdr = true` (ADR 0041). `decider` configurations name
+`provider_credential = "openrouter"` and ordered `routes`: a System One Route
+with an exact release such as `typesafe/jev-1.14`, and optionally Decisions
+Routes, which reach another decision model such as `cloudflare/clef` at
+`POST {root}/alpha/decisions` (the base without `/v1`) with
+`provider: {"zdr": true, "only": [hosts], "allow_fallbacks": true}` (ADR 0066); `AIDASH_SECRET_JEV`, `AIDASH_JEV_ENDPOINT` and
+`AIDASH_JEV_MODEL` are gone, and the `compactor` kind was removed (#108). Each request is a Decision Attempt of the Run whose
+context it reduces, and it uses the Provider Credential that the Tenant's
+OpenRouter binding names at the time of the call, not the Run's admitted
+inference pin: Runs on a Plan Connection or a Keyless endpoint have no such
+pin. On Cloud its Capability Token names the Run as subject with the Decision
+Attempt as `call`, carries only the `decision` operation and no output bound,
+and the broker admits a body of exactly `model`, `state`, `questions` and
+`provider: {"zdr": true}` on System One, or that `provider` with
+`allow_fallbacks: true` and an `only` list on the Decisions API. The token of a
+Decisions API attempt signs the Decider Route's hosts as `hosts`, and the broker
+relays only an `only` list equal to them, in order; a System One token signs
+no hosts. Before reserving remote compaction allowances, the
+caller checks that the binding is usable without minting a token or reading
+Key Material.
+
+## Keyless endpoints
+
+A model or embedding configuration without `provider_credential` is a Keyless
+endpoint: Aidash calls it without any grant, it has no Provider Catalog entry,
+and Aidash promises nothing about what it retains (ADR 0036). It may connect
+only to public addresses unless the Deployment Administrators list its exact
+origin in `[keyless_endpoints] permitted_private_origins` (Helm:
+`keylessEndpoints.permittedPrivateOrigins`; environment:
+`AIDASH_KEYLESS_PRIVATE_ORIGINS`, comma-separated). An origin is
+`scheme://host[:port]` with any default port omitted, so list
+`http://ollama.lan`, not `http://ollama.lan:80`. A permitted origin does not
+extend to another port or scheme on the same host.
+
+- A host that is a non-public address literal (loopback, private, link-local,
+  the metadata server and similar ranges) is refused before any request, and
+  a Workspace semantic index that names one is refused when it is configured.
+  Workbench test endpoints follow the same rule and share the list.
+- Tenant HTTP and MCP tool endpoints, and the remote MCP servers of the Agent
+  Plugins an Agent takes in, follow the same rule and share the list. A
+  registration, import or installation that names a non-public address literal
+  is refused with `TOOL_ENDPOINT_FORBIDDEN`, or with
+  `AGENT_PLUGIN_SERVER_FORBIDDEN: <plugin>/<server>` for a plugin server. A host
+  name needs HTTPS unless its origin is permitted. Every tool call chooses its
+  client again from the endpoint, so a definition stored before the rule, or
+  before an origin was removed from the list, is refused when it is called.
+- A host name must resolve only to public addresses. The check runs when each
+  connection is made, against every resolved address, so a later DNS answer
+  cannot redirect it. Keyless calls follow no redirects and use no proxy.
+- A refused destination is an authority failure: inference pauses the Run,
+  and semantic retrieval does not treat it as an outage. Neither retries it.
+- Under Federation, the list of the Deployment that makes the call applies.
+
+Choose a Secret Store in server settings. Without
+`[provider_credentials.store]`, Provider Credentials and Plan Connections are
+unavailable.
+
+## Provider Authorization
+
+Tenant settings contain a **Provider connections** section with Connect and
+Reconnect for OpenRouter. The server runs OpenRouter's OAuth PKCE flow:
+
+1. `POST /api/tenants/{tenant}/provider-authorizations/openrouter` (dashboard
+   browser sessions only; CSRF-checked) authorizes `provider_credential.create`,
+   or `.rotate` when the body names `provider_credential_id` and
+   `expected_revision`. It stores a pending authorization bound to the SHA-256
+   of a fresh `state`, the browser (an HttpOnly
+   `__Host-aidash-provider-authorization` cookie), the dashboard session, the
+   dashboard context, the Tenant and the target Provider Credential ID, and
+   returns `authorization_url`. The browser navigates to
+   `https://openrouter.ai/auth` with `callback_url`, an S256
+   `code_challenge`, `key_label` (`Aidash · <tenant>`) and `state`. The PKCE
+   verifier never leaves the server.
+2. OpenRouter redirects to `<public origin>/auth/provider-authorizations/openrouter/callback`
+   with `code` and `state`. The callback consumes the pending row exactly
+   once, then requires the same browser cookie, the same dashboard session,
+   an unexpired row and a live dashboard context. The row lives 30 minutes so
+   it also covers the time spent on the consent page; OpenRouter's code
+   expires 10 minutes after it is issued, and the exchange enforces that. A
+   code without `state`, or a replayed, cross-browser, cross-session or
+   expired `state`, returns 401 before any provider call. A declined consent
+   arrives without `state` (OpenRouter omits it); the callback then consumes
+   the pending row of the same browser cookie, dashboard session and provider
+   and reports `denied`. Each start supersedes any earlier pending row of
+   that browser, session and provider, so a denial always maps to one flow,
+   and a superseded flow's `state` returns 401 before any exchange.
+3. The server exchanges the code with `POST https://openrouter.ai/api/v1/auth/keys`
+   (`code`, `code_verifier`, `code_challenge_method: S256`) under a live
+   `provider_credential.create`/`.rotate` decision, validates the key with
+   `GET /api/v1/key`, and writes it through the Store write path. A rejected
+   code or verifier (OpenRouter 400/403) stores nothing. Reconnect adds a new
+   version to the same Provider Credential (rotation). A connection is bound to
+   OpenRouter when the Tenant has no usable binding (none, or one to a revoked
+   Provider Credential) and the actor may update it.
+4. The callback redirects (303) to the requested same-origin `return_to`
+   with `provider_authorization=connected|unbound|reconnected|denied|failed`
+   (and the parameters below) added to its query, before any fragment. The
+   dashboard reopens the Tenant the authorization started for, including an
+   Deployment Administrator's selected Tenant, and shows the outcome only there.
+   A connection reports `connected` only when the new Provider Credential is
+   bound afterwards; when another active binding wins (for example a
+   concurrent connection) or the actor may not update the binding, the key is
+   stored but the outcome is `unbound`. When
+   the exchange succeeded but storing the key failed, the redirect also
+   carries `provider_key_settings_url`, the issued key's settings page; after
+   a reconnect it carries the settings page of the key that was replaced. The
+   dashboard asks the user to delete that key at OpenRouter. When validation
+   reported a warning about the connected key, such as a missing spending
+   limit, the redirect carries `provider_key_warnings=1` and the dashboard
+   asks the user to review the key at OpenRouter.
+
+The callback must be reachable from the user's browser only; the
+`public_origin` of the dashboard session settings defines it. Key Material is
+never returned, logged, evented or persisted outside the Store. The
+quota and a stale reconnect revision are checked before the exchange, so a
+predictable refusal does not leave an unused key at OpenRouter.
+
+At connection time the server also records the key's **unkeyed SHA-256**
+(`key_digest`). Metadata exposes it only as `key_settings_url`
+(`https://openrouter.ai/keys/<sha256>`), OpenRouter's owner-only key-settings
+page. This is ADR 0006's deliberate exception to the Fingerprint's
+no-correlation rule: each authorization issues a fresh random key. Revocation
+and deletion destroy only Aidash's copy; OpenRouter documents no API for an
+application to delete an OAuth-issued key, so the dashboard links to
+`key_settings_url`, also on deleted records, and asks the user to delete the
+key there.
+
+Tests and CI register Provider Credentials with fixture Key Material through
+`provider_credentials::testing::KeyMaterialWritePort` and point the exchange
+at a fake provider with `OpenRouterAuthorization::at`. Both exist only in
+test builds or behind the `test-support` features of `aidash-application` and
+`aidash-integrations`. `scripts/check-workspace-boundaries.py` rejects any
+production (normal or build) dependency or feature that enables them.
+
+For self-hosted PostgreSQL storage:
+
+```toml
+[provider_credentials]
+max_per_tenant = 20
+fingerprint_key = { env = "AIDASH_PROVIDER_FINGERPRINT_KEY" }
+
+[provider_credentials.store]
+kind = "postgres"
+master_key = { file = "/run/secrets/aidash-master-key" }
+# Alternatively: master_key = { env = "AIDASH_PROVIDER_STORE_MASTER_KEY" }
+retired_master_keys = []
+```
+
+Generate a Master Key with `openssl rand -hex 32`. Deliver its 64 hex characters
+through a private mounted file or the named environment variable. Server and
+worker both need the same current and retired Master Keys. The Helm chart's
+`existingSecret` supplies both processes through `envFrom`; when using separate
+server/worker Secret overrides, include the keys in both. Native `manage`
+commands such as `migrate` validate settings shape but do not load these keys.
+The explicit recovery command below loads the same keys as bootstrap.
+Surrounding whitespace is trimmed from file and environment values.
+
+For Cloud, replace the Store section with:
+
+```toml
+[provider_credentials.store]
+kind = "secret_manager"
+byok_project_id = "your-aidash-byok-project"
+environment_id = "develop"
+```
+
+Both kinds require the separate `provider_credentials.fingerprint_key` setting.
+It replaces `store.fingerprint_env`, including on Cloud. Supply an independent
+random raw string of at least 32 bytes, through `{ env = "..." }` or
+`{ file = "/run/secrets/..." }`. Each source must name exactly one of file or env;
+`AIDASH_SECRET_*` environment names are rejected because that namespace holds
+Deployment secrets, such as a declared Research provider's key. Names that skill imports pass to the `gh` CLI, such
+as `GH_*`, `GITHUB_TOKEN`, `PATH` and the proxy variables, are rejected too,
+because `gh` sends `GH_TOKEN`/`GITHUB_TOKEN` to GitHub as authentication.
+Fingerprints use independent derived Tenant keys,
+HMAC-SHA256 and the first eight bytes in hexadecimal. They are metadata, not
+bearer values. PostgreSQL contains AEAD ciphertext only; plaintext Key Material
+never appears in tables, events, responses, request logs or browser persistence.
+
+The Store encrypts each version with AES-256-GCM and a fresh random nonce.
+Associated data binds its Tenant, resource and version. Encryption keys and key
+identifiers are separately derived from the Master Key with HKDF-SHA256.
+
+To rotate the Master Key, generate a new key, set it as `master_key`, move the
+previous source into `retired_master_keys` and restart server and worker. Retired
+keys decrypt existing versions only. A Provider Credential moves to the current
+key when it is next rotated; there is no bulk re-encryption command. Retain old
+keys while any needed versions still use them.
+
+Startup refuses a missing, unreadable or malformed Master Key, configured keys
+that match no registered key identifier, or a failed stored key check. Wrong
+keys are rejected before registering them. When some registered keys are known,
+versions under an unconfigured key produce a warning with counts; reads fail,
+while revocation and deletion remain available. There is no fallback.
+
+Losing the Master Key loses every Provider Credential and Plan Connection on
+the node. Recovery means reconnecting through Provider Authorization.
+A database backup is useless without a separately retained key backup. Keep the
+current and necessary retired keys backed up outside the database.
+
+After total or partial key loss, stop server and worker and run the following
+with the same settings and key sources as the node, including any retained keys:
+
+```sh
+manage secret-store-recovery
+manage secret-store-recovery --execute
+```
+
+The default is a dry run. Both invocations print only JSON counts:
+`affected_tenants` and `affected_provider_credentials` count active records whose
+pin uses a lost key; `affected_plan_connections` counts Plan Connections whose
+pinned Plan Tokens use one; `version_rows` and `key_registry_rows` count rows to
+remove.
+Recovery requires a PostgreSQL Store and valid current Master Key and fingerprint
+key. It verifies registered configured keys, so a failed key check refuses both
+dry run and execute without changes. It bypasses the wrong-key startup gate and
+does not register a replacement key, migrate, or start runtime services.
+
+With `--execute`, normal application Revocation records the lifecycle event for
+each affected Provider Credential. Recovery then deletes all version and key
+registry rows under unconfigured keys. Configured-key versions in the same
+resource are disabled by normal Revocation, remain present, and keep their
+ciphertext. Unaffected Provider Credentials retain every row and state.
+Recovery never decrypts or re-encrypts version payloads. Restart server and worker
+afterward; normal startup registers the current key. Tenants then delete revoked
+credentials and reconnect through Provider Authorization. The command is safe to rerun
+after an interrupted recovery.
+
+Each affected Plan Connection moves to `needs_reconnection` with a
+`plan_connection.needs_reconnection` event, and its Runs fail at their next
+call. Its grant cannot be revoked at OpenAI any more, because the refresh token
+is gone: the owner reconnects from settings with the same ChatGPT account, or
+disconnects, which then reports `revoked: false` so the owner knows to remove
+the grant at OpenAI themselves.
+
+GCP deployment passes this non-secret Store descriptor to the app chart's
+`providerCredentials.settings`, which renders it as a ConfigMap read as a
+read-only Reinhardt settings source for migrations and the server. BYOK-enabled runtime secrets must contain
+the stable `AIDASH_PROVIDER_FINGERPRINT_KEY` value; a missing or short value
+blocks startup. The key is never generated or changed during deployment. When
+BYOK is omitted, the managed Store remains unset and no fingerprint is required.
+
+Tenant metadata endpoints are GET `/api/tenants/{tenant}/provider-credentials`
+and GET `/api/tenants/{tenant}/provider-credentials/{id}`. Revoke and delete remain
+available, alongside `/api/tenants/{tenant}/provider-credential-bindings`.
+Lifecycle operations and
+binding updates require the current `expected_revision`; stale writes return 409. Sending `provider_credential_id: null` explicitly unbinds a provider and
+retains its revision history; unbind before deleting the last bound record.
+Public policy actions are `provider_credential.read`, `.revoke`, `.delete`, and
+`provider_credential_binding.read`, `.update`. Provider Authorization decides
+`.create` (connect) and `.rotate` (reconnect) when it starts and again at the
+callback; these are the Provider Credential management permissions. Resources
+carry the provider attribute and UUID or Provider Catalog ID respectively.
+Authenticated Subjects may operate only within their Tenant; authenticated
+Deployment Administrators retain explicit policy decision audits. Responses use
+`Cache-Control: no-store`.
+
+Tenant settings show Provider connections (Connect, Reconnect), metadata,
+binding selection, revocation with the OpenRouter key-settings link, and
+deletion without key-entry controls. This example uses test fixture metadata:
+
+![Provider Credential metadata and binding management](images/provider-credentials.png)
+
+The application-layer `Service::authorize` completes Provider Authorization:
+it exchanges the code through the `provider_authorization::Exchange` port and
+creates or rotates the Provider Credential. The Key Material writes behind it
+are private to the application crate; only the test-only write port above
+reaches them with caller-supplied Key Material. Native management composition
+passes only the code and verifier and runs the policy decisions; there is no
+Key Material HTTP serializer, SDK operation, environment variable, or settings
+input.
+Creation persists `pending` before provider verification and secret storage.
+Rotation pins a verified new version before disabling the old one. If that
+post-commit disable fails, it returns the committed metadata with a cleanup
+warning; the PostgreSQL active-row inventory retains the reconciliation work.
+The supervised reconciler retries unpinned versions. With background tasks
+disabled, cleanup remains pending until reconciliation resumes. Revocation
+commits its irreversible metadata state and audit before disabling all versions,
+so effective access closes immediately. A failed database commit leaves external
+versions unchanged; interrupted or failed disables are retried from revoked rows.
+The API returns the committed revoked state while cleanup is pending. Deletion
+refuses a bound record, then commits a `deleted` tombstone before destroying any
+versions or deleting the secret. The private version pin marks unfinished
+cleanup until the idempotent external effects complete; clearing it records a
+metadata-only cleanup event without changing the deletion revision. Interrupted
+cleanup is retried from that tombstone and never restores effective access.
+Subject writes preserve their committed result if the separate authorization
+audit cannot finalize, and report that audit failure through static telemetry.
+Authorized mutation attempts finalize their allow audit independently of the
+operation result, including failed creates that leave pending or deleted metadata;
+the original operation error is preserved. Cleanup completion events use the same
+Tenant and Provider Credential read-policy checks in state, polling, and SSE.
+A supervised reconciler scans
+expired PostgreSQL pending records, disables unpinned active versions left
+by interrupted rotations, disables all versions of revoked records, and completes
+deleted tombstones with unfinished cleanup. Each supervised pass processes at most 25 eligible
+metadata records in UUID order, retains its cursor across passes, and waits 60
+seconds after completing a page. A failed candidate is retried on the next sweep
+without blocking later Tenants. It never lists Secret Manager secrets.
+
+Admission records a local-only Provider Credential ID per Run and provider.
+This includes the enabled workspace semantic index's embedding provider, even
+when the Agent's Model is keyless. Missing embedding bindings
+therefore reject admission before the Run is committed. RequiredHome remote
+semantic search accepts keyless and Tenant-backed workspace embeddings. The Home
+embeds the query itself, so a `provider_credential` source resolves the Home
+Tenant's current Provider Credential Binding as memory-retrieval maintenance,
+exactly as local Run-less retrieval does; the receiving node never receives
+Key Material or a Capability Token. Authorization is unchanged:
+`semantic.search`, `semantic.disclose`, `embedding.invoke` and `registry.read`
+on the Home, plus the receiver's reservations.
+Calls check that record's current active state and current version pin; changing
+a binding cannot retarget admitted Runs. Receiving federation admission uses
+the mapped local Tenant. PostgreSQL resolves the current pinned version through
+the narrow read port. On Cloud, the configured Credential Broker handles
+plaintext reads and provider routing after metadata validation. Without a
+PostgreSQL Store or that broker, Tenant access fails with `credential broker
+not configured` and never falls back to environment keys.
+
+Explicitly authorized local maintenance without a Run resolves the current
+Tenant binding and includes its memory indexing, retention, reflection or
+retrieval purpose in the access context. Run calls keep their admission pins.
+Both paths check current metadata before access. PostgreSQL reads the pinned
+version; Cloud issues a broker capability token.
+
+Workbench tests currently support keyless Models only. A Model using
+Tenant Provider Credentials is rejected before a sandbox session is admitted;
+Workbench has no Run or memory-maintenance authority for Tenant provider access.
+
+Terraform requires an existing billing-enabled `byok_project_id` distinct from
+the application project. This project contains only Provider Credential
+secrets. Runtime creation permission exists only there; management is limited
+to `aidash-<environment_id>-cred-` by a project-number-based IAM condition. The
+runtime identity has no BYOK `versions.access` or `setIamPolicy`. Bootstrap
+configures DATA_READ and DATA_WRITE audits and the fixed custom roles once.
+Deploy can grant only the fixed runtime Create/Manage roles and cannot edit
+BYOK roles. Human-run bootstrap creates the broker identities listed in
+`byok_broker_environments` and binds the fixed BrokerRead role to each
+environment's Secret name prefix. Only these broker bindings grant BYOK
+payload access; runtime and deployment identities have no payload read grant.
+Human-run bootstrap also binds deploy to a prefix-conditioned delete-only
+`aidashByokRetire` role and an unconditioned project list-only
+`aidashByokRetireInventory` role. Deployment cannot grant either role through
+its unchanged Create/Manage allowlist. Retirement inventories only metadata,
+deletes the exact environment prefix, and confirms it is empty before disk,
+runtime identity and IAM removal. Existing running writers are sealed first;
+stopped or missing VMs are never awakened. Cleanup failures retain the disk and
+identity for an idempotent retry. Residual: project-level listing makes BYOK
+secret names visible to deploy; no payload or version read permission is added.
+
+Outputs `byok_project_id` and `secret_prefix` supply the secret namespace. The
+existing shared-project deployment identity could manage a broker service
+account's IAM policy there, and a broker deployment identity could execute code
+with Key Material access. The deploy pipeline remains part of the trust root;
+the IAM deny policy and entry-point hardening are tracked in
+[#151](https://github.com/kent8192/aidash/issues/151). A separate credential
+enclave is deferred. See the residual deployment trust boundary in
+[the infrastructure guide](../infra/gcp/README.md).

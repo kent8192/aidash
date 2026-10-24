@@ -1,0 +1,523 @@
+"""Regression tests for the cluster driver's transport and recovery oracles."""
+import contextlib
+import io
+import json
+import os
+import pathlib
+import socket
+import subprocess
+import sys
+import tempfile
+import threading
+import unittest
+from unittest.mock import Mock, patch
+from urllib.parse import urlsplit
+
+from native_memory_cluster_acceptance import NativeMemory
+from remote_memory_cluster_acceptance import RemoteMemory
+from transaction_cluster_acceptance import Cluster, main, transaction_cases
+
+
+class TransactionPartitionTests(unittest.TestCase):
+    def test_complete_inventory_retains_every_durable_cut_and_lifecycle(self):
+        # Independent acceptance contract: both completion branches, both sides
+        # of every cut, and three attempts at each original topology/action.
+        cuts = [("coordinator.submit", False), ("coordinator.vote", False),
+                ("coordinator.commit", False), ("coordinator.abort", True),
+                ("coordinator.visible", False), ("coordinator.complete", False),
+                ("coordinator.complete", True), ("participant.reserve", False),
+                ("participant.prepare", False), ("participant.apply", False),
+                ("participant.release", False), ("participant.abort", True)]
+        expected = {(2, phase, edge, abort, repetition, None)
+                    for phase, abort in cuts for edge in ("before", "after")
+                    for repetition in (1, 2, 3)}
+        expected.update((count, "coordinator.commit", "before", False, repetition, action)
+                        for count in (2, 3, 16) for action in ("scale", "rolling")
+                        for repetition in (1, 2, 3))
+        expected.update((count, phase, "before", abort, repetition, "partition")
+                        for count in (3, 16)
+                        for phase, abort in (("coordinator.commit", False), ("coordinator.abort", True))
+                        for repetition in (1, 2, 3))
+
+        actual = transaction_cases([2, 3, 16])
+
+        self.assertEqual(len(expected), 102)
+        self.assertEqual(len(actual), 102)
+        self.assertEqual(set(actual), expected)
+
+    def test_ci_partitions_are_disjoint_complete_and_keep_case_order(self):
+        complete = transaction_cases([2, 3, 16])
+        selected = set()
+        for partition, count in (("coordinator", 42), ("participant", 30), ("lifecycle", 30)):
+            with self.subTest(partition=partition):
+                cases = transaction_cases([2, 3, 16], partition=partition)
+                self.assertEqual(len(cases), count)
+                self.assertEqual(len(set(cases)), count)
+                self.assertFalse(selected.intersection(cases))
+                self.assertEqual(cases, [case for case in complete if case in set(cases)])
+                selected.update(cases)
+        self.assertEqual(selected, set(complete))
+
+    def test_individual_selectors_preserve_both_completion_outcomes(self):
+        completion = transaction_cases([2, 3, 16], phase="coordinator.complete")
+        self.assertEqual(len(completion), 36)
+        self.assertEqual({case[0] for case in completion}, {2, 3, 16})
+        self.assertEqual({case[2:4] for case in completion},
+                         {("before", False), ("after", False), ("before", True), ("after", True)})
+        self.assertTrue(all(case[5] is None for case in completion))
+
+    def test_unknown_partitions_and_mixed_selectors_fail_closed(self):
+        for arguments in ({"partition": "missing"},
+                          {"partition": "coordinator", "phase": "coordinator.complete"},
+                          {"partition": "lifecycle", "lifecycle": ["rolling"]}):
+            with self.subTest(arguments=arguments), self.assertRaises(ValueError):
+                transaction_cases([2, 3, 16], **arguments)
+
+    def test_cli_rejects_empty_or_ambiguous_selection_before_creating_resources(self):
+        required = ["driver", "--kubeconfig", "unused", "--distribution", "kubernetes", "--image", "unused", "--queries", "unused"]
+        for arguments, message in ((["--nodes", "2", "--lifecycle", "partition"], "no transaction cases"),
+                                   (["--partition", "lifecycle", "--phase", "coordinator.commit"], "select a partition"),
+                                   (["--partition", "participant", "--lifecycle", "rolling"], "select a partition"),
+                                   (["--phase", "coordinator.commit", "--lifecycle", "rolling"], "select either phase")):
+            errors = io.StringIO()
+            with self.subTest(arguments=arguments), patch("sys.argv", required + arguments), patch(
+                "transaction_cluster_acceptance.Cluster"
+            ) as cluster, contextlib.redirect_stderr(errors):
+                with self.assertRaises(SystemExit) as error:
+                    main()
+                self.assertEqual(error.exception.code, 2)
+                self.assertIn(message, errors.getvalue())
+                cluster.assert_not_called()
+
+    def test_partition_executes_and_records_all_expected_cases_with_full_topology(self):
+        with tempfile.TemporaryDirectory() as directory:
+            cluster = Mock(directory=pathlib.Path(directory))
+            arguments = ["driver", "--kubeconfig", "unused", "--distribution", "kubernetes", "--image", "unused", "--queries", "unused",
+                         "--partition", "participant"]
+            with patch("sys.argv", arguments), patch(
+                "transaction_cluster_acceptance.Cluster", return_value=cluster
+            ), contextlib.redirect_stdout(io.StringIO()):
+                main()
+            evidence = json.loads((cluster.directory / "expected-cases.json").read_text())
+            actual = [call.args for call in cluster.case.call_args_list]
+            self.assertEqual(actual, transaction_cases([2, 3, 16], partition="participant"))
+            self.assertEqual(evidence["partition"], "participant")
+            self.assertEqual([tuple(case[key] for key in
+                                    ("nodes", "phase", "edge", "abort", "repetition", "lifecycle"))
+                              for case in evidence["cases"]], actual)
+            cluster.provision.assert_called_once_with(16)
+            cluster.close.assert_called_once_with()
+
+    def test_evidence_write_failure_closes_resources_before_provisioning(self):
+        with tempfile.TemporaryDirectory() as directory:
+            cluster = Mock(directory=pathlib.Path(directory))
+            arguments = ["driver", "--kubeconfig", "unused", "--distribution", "kubernetes", "--image", "unused", "--queries", "unused"]
+            with patch("sys.argv", arguments), patch(
+                "transaction_cluster_acceptance.Cluster", return_value=cluster
+            ), patch.object(pathlib.Path, "write_text", side_effect=OSError("full")), contextlib.redirect_stdout(io.StringIO()):
+                with self.assertRaisesRegex(OSError, "full"):
+                    main()
+            cluster.provision.assert_not_called()
+            cluster.close.assert_called_once_with()
+
+
+class MemoryNodeContractTests(unittest.TestCase):
+    def test_memory_setup_keeps_the_registered_tenants_nodes_and_subjects(self):
+        for driver in (RemoteMemory, NativeMemory):
+            with self.subTest(driver=driver.__name__):
+                fixture = object.__new__(driver)
+                fixture.nodes = {
+                    0: {"tenant": "home-tenant", "node": "home-12345678", "address": "aidash://tx-00/home-12345678"},
+                    1: {"tenant": "worker-tenant", "node": "worker-abcdef12", "address": "aidash://tx-01/worker-abcdef12"},
+                }
+                fixture.tokens = []
+                fixture.register = Mock()
+                def api(node, path, body):
+                    if path == "/api/tenants":
+                        return 201, {"name": "unregistered-new-tenant"}
+                    return 200, {"token": "alice-token", "credential": {"id": "alice-credential"}}
+                fixture.api = Mock(side_effect=api)
+
+                fixture.configure()
+
+                self.assertEqual(fixture.tenants, ["home-tenant", "worker-tenant"])
+                self.assertFalse(any(call.args[1] == "/api/tenants" for call in fixture.api.call_args_list))
+                for node in range(2):
+                    policy = next(call for call in fixture.api.call_args_list
+                                  if call.args[:2] == (node, f"/api/authorization/{fixture.tenants[node]}"))
+                    mapping = next(call for call in fixture.api.call_args_list
+                                   if call.args[:2] == (node, f"/api/authorization/{fixture.tenants[node]}/peer-mappings"))
+                    subjects = policy.args[2]["bundle"]["subjects"]
+                    self.assertIn("aidash://tx-00/home-12345678/agents/research@1.0.0", subjects)
+                    self.assertIn("aidash://tx-01/worker-abcdef12/agents/research@1.0.0", subjects)
+                    self.assertEqual(mapping.args[2], {
+                        "node": fixture.nodes[node]["node"], "source_node": fixture.nodes[1 - node]["address"],
+                        "source_subject": "alice", "credential_id": "alice-credential", "enabled": True, "expected_revision": 0,
+                    })
+
+    def test_memory_registration_approves_the_receiving_node(self):
+        fixture = object.__new__(RemoteMemory)
+        fixture.nodes = {0: {"node": "home-12345678"}}
+        fixture.tenants = ["home-tenant"]
+        fixture.entries = [{}]
+        fixture.user = Mock(side_effect=[(200, {}), (200, {}), (200, {"id": "memory", "version": "1.0.0"})])
+
+        fixture.register(0, "memory", "memory", {"schema_version": 1})
+
+        approval = fixture.user.call_args_list[1]
+        self.assertEqual(approval.args[1], "/api/authorization/home-tenant/catalog")
+        self.assertEqual(approval.args[2], {"node": "home-12345678", "entry": {"id": "memory", "version": "1.0.0"}, "enabled": True, "expected_revision": 0})
+
+
+class ExtensionBootstrapTests(unittest.TestCase):
+    def setUp(self):
+        self.directory = tempfile.TemporaryDirectory()
+        self.addCleanup(self.directory.cleanup)
+        self.cluster = object.__new__(Cluster)
+        self.cluster.directory = pathlib.Path(self.directory.name)
+        self.cluster.queries = {"pgroonga_ready": "generated readiness query"}
+
+    def test_preparing_is_retried_on_a_fresh_psql_backend(self):
+        self.cluster.kube = Mock(side_effect=[
+            subprocess.CompletedProcess([], 1, "", "ERROR: pgroonga_crash_safer is preparing"),
+            subprocess.CompletedProcess([], 0, "CREATE EXTENSION", ""),
+            subprocess.CompletedProcess([], 0, "ready", ""),
+        ])
+        with patch("transaction_cluster_acceptance.time.sleep") as sleep:
+            self.cluster.install_extensions("tx_6")
+        self.assertEqual(self.cluster.kube.call_count, 3)
+        self.assertTrue(all(not call.kwargs["check"] for call in self.cluster.kube.call_args_list))
+        sleep.assert_called_once_with(0.1)
+        self.assertEqual(self.cluster.kube.call_args_list[-1].args[-1], "generated readiness query")
+        self.assertIn("pgroonga_crash_safer is preparing",
+                      (self.cluster.directory / "extension-bootstrap.log").read_text())
+
+    def test_permanent_extension_errors_surface_with_diagnostics(self):
+        self.cluster.kube = Mock(return_value=subprocess.CompletedProcess([], 1, "", "ERROR: extension is not available"))
+        with patch("transaction_cluster_acceptance.time.sleep") as sleep:
+            with self.assertRaisesRegex(RuntimeError, "extension is not available"):
+                self.cluster.install_extensions("tx_6")
+        sleep.assert_not_called()
+        self.cluster.kube.assert_called_once()
+
+    def test_preparing_retry_is_bounded(self):
+        self.cluster.kube = Mock(return_value=subprocess.CompletedProcess([], 1, "", "ERROR: pgroonga_crash_safer is preparing"))
+        with patch("transaction_cluster_acceptance.time.monotonic", side_effect=[0, 31]):
+            with self.assertRaisesRegex(RuntimeError, "pgroonga_crash_safer is preparing"):
+                self.cluster.install_extensions("tx_6")
+        self.cluster.kube.assert_called_once()
+
+
+class DatabaseRoleTests(unittest.TestCase):
+    """Nodes use the owner and server logins a deployment does (#262)."""
+
+    def setUp(self):
+        self.directory = tempfile.TemporaryDirectory()
+        self.addCleanup(self.directory.cleanup)
+        self.cluster = object.__new__(Cluster)
+        self.cluster.directory = pathlib.Path(self.directory.name)
+        self.cluster.args = Mock(image="aidash:test")
+        self.cluster.owner_password = "owner-password"
+        self.cluster.server_password = "server-password"
+        self.cluster.kube = Mock(return_value=subprocess.CompletedProcess([], 0, "", ""))
+
+    def test_node_database_is_owned_by_the_owner_with_server_default_privileges(self):
+        self.cluster.install_extensions = Mock()
+        self.cluster.provision_database(3)
+        created, privileges = (call.kwargs["value"] for call in self.cluster.kube.call_args_list)
+        self.assertEqual(created, "CREATE DATABASE tx_3 OWNER aidash_owner;\n")
+        self.cluster.install_extensions.assert_called_once_with("tx_3")
+        self.assertIn("tx_3", self.cluster.kube.call_args_list[1].args)
+        self.assertIn("FOR ROLE aidash_owner GRANT SELECT, INSERT, UPDATE, DELETE ON TABLES TO aidash_server", privileges)
+        self.assertNotIn("TRUNCATE", privileges)
+
+    def test_migration_job_logs_in_as_the_owner_and_servers_as_the_server_role(self):
+        self.cluster.start_migration(3)
+        job = self.cluster.kube.call_args.kwargs["value"]
+        container = job["spec"]["template"]["spec"]["containers"][0]
+        self.assertEqual((job["kind"], container["args"], container["imagePullPolicy"]), ("Job", ["migrate"], "IfNotPresent"))
+        self.assertIn({"name": "DATABASE_URL", "value": "postgres://aidash_owner:owner-password@postgres:5432/tx_3"}, container["env"])
+        self.assertEqual(self.cluster.login_url("server", 3), "postgres://aidash_server:server-password@postgres:5432/tx_3")
+
+    def test_failed_migration_surfaces_its_log(self):
+        self.cluster.kube = Mock(side_effect=[
+            subprocess.CompletedProcess([], 1, "", "timed out"),
+            subprocess.CompletedProcess([], 0, "pending migration failed", ""),
+        ])
+        with self.assertRaisesRegex(RuntimeError, "pending migration failed"):
+            self.cluster.await_migration(3)
+        self.assertIn("pending migration failed", (self.cluster.directory / "tx-3-migrate.log").read_text())
+
+
+class PortForwardTests(unittest.TestCase):
+    def setUp(self):
+        self.directory = tempfile.TemporaryDirectory()
+        self.cluster = object.__new__(Cluster)
+        self.cluster.directory = pathlib.Path(self.directory.name)
+        self.cluster.namespace = "test"
+        self.cluster.env = os.environ.copy()
+        self.cluster.token = "test-token"
+        self.cluster.forwards = {}
+        self.cluster.forward_lock = threading.RLock()
+        self.cluster.pods = Mock(return_value=[self.pod("current")])
+        self.children = []
+        self.logs = []
+        self.commands = []
+
+    @staticmethod
+    def pod(name, *, terminating=False, ready=True):
+        return {"metadata": {"name": name, **({"deletionTimestamp": "2026-10-05T00:00:00Z"} if terminating else {})},
+                "status": {"phase": "Running", "conditions": [{"type": "Ready", "status": "True" if ready else "False"}]}}
+
+    def tearDown(self):
+        for process in self.children:
+            if process.poll() is None:
+                process.terminate()
+            process.wait(timeout=10)
+        for log in self.logs:
+            log.close()
+        self.directory.cleanup()
+
+    def child(self, script):
+        # Exercise real subprocess startup and TCP readiness without kubectl.
+        popen = subprocess.Popen
+
+        def start(command, **kwargs):
+            self.commands.append(command)
+            process = popen([sys.executable, "-c", script, command[-1].split(":")[0]], **kwargs)
+            self.children.append(process)
+            self.logs.append(kwargs["stdout"])
+            return process
+
+        return patch("transaction_cluster_acceptance.subprocess.Popen", side_effect=start)
+
+    @staticmethod
+    def listener(delay):
+        return f"""
+import socket, sys, time
+time.sleep({delay})
+with socket.socket() as listener:
+    listener.bind(("127.0.0.1", int(sys.argv[1])))
+    listener.listen()
+    while True:
+        connection, _ = listener.accept()
+        connection.close()
+"""
+
+    def test_waits_for_listener_instead_of_fixed_startup_sleep(self):
+        with self.child(self.listener(0.6)):
+            endpoint = urlsplit(self.cluster.forward(0))
+            try:
+                with socket.create_connection((endpoint.hostname, endpoint.port), timeout=1):
+                    pass
+            except OSError as error:
+                self.fail(f"port-forward returned before its listener was ready: {error}")
+            self.assertEqual(self.cluster.forward(0), endpoint.geturl())
+            self.assertEqual(len(self.children), 1)
+
+    def test_exited_startup_is_not_cached_and_closes_its_log(self):
+        with self.child("import sys; sys.exit(7)"):
+            with self.assertRaisesRegex(OSError, "port-forward"):
+                self.cluster.forward(0)
+        self.assertNotIn(0, self.cluster.forwards)
+        self.assertTrue(self.logs[0].closed)
+
+    def test_startup_timeout_cleans_up_process_and_cache(self):
+        with self.child("import time; time.sleep(60)"), patch(
+            "transaction_cluster_acceptance.time.monotonic", side_effect=[0, 0, 11]
+        ):
+            with self.assertRaisesRegex(TimeoutError, "port-forward"):
+                self.cluster.forward(0)
+        self.assertNotIn(0, self.cluster.forwards)
+        self.assertIsNotNone(self.children[0].poll())
+        self.assertTrue(self.logs[0].closed)
+
+    def test_replacing_dead_cached_forward_closes_old_log(self):
+        process = Mock()
+        process.poll.return_value = 1
+        log = (self.cluster.directory / "old.log").open("a")
+        self.logs.append(log)
+        self.cluster.forwards[0] = (process, "http://127.0.0.1:1", log)
+        with self.child(self.listener(0)):
+            endpoint = self.cluster.forward(0)
+        self.assertNotEqual(endpoint, "http://127.0.0.1:1")
+        self.assertTrue(log.closed)
+
+    def test_transport_failure_does_not_replay_mutation(self):
+        self.cluster.forward = Mock(return_value="http://127.0.0.1:1")
+        with patch("transaction_cluster_acceptance.urllib.request.urlopen", side_effect=ConnectionResetError) as request:
+            with self.assertRaises(ConnectionResetError):
+                self.cluster.api(0, "/api/workspaces", {"title": "create once"})
+        self.assertEqual(request.call_count, 1)
+        self.assertEqual(request.call_args.args[0].get_method(), "POST")
+
+    def test_forward_targets_current_ready_pod_without_service_selection(self):
+        self.cluster.pods.return_value = [self.pod("old", terminating=True),
+                                          self.pod("starting", ready=False), self.pod("new")]
+        with self.child(self.listener(0)):
+            self.cluster.forward(0)
+        self.assertIn("pod/new", self.commands[0])
+        self.assertNotIn("service/tx-0", self.commands[0])
+
+    def test_rollout_stops_old_recovery_before_replacing_the_forward(self):
+        with self.child(self.listener(0)):
+            self.cluster.forward(0)
+            original = self.children[0]
+            self.cluster.kube = Mock()
+            self.cluster.pods.side_effect = [[self.pod("old", terminating=True), self.pod("new")],
+                                             [self.pod("new")], [self.pod("new")]]
+            self.cluster.rollout("tx-0-server")
+            self.assertNotIn(0, self.cluster.forwards)
+            self.assertIsNotNone(original.poll())
+            self.assertTrue(self.logs[0].closed)
+            self.cluster.forward(0)
+        self.assertEqual(len(self.children), 2)
+        self.assertIn("pod/new", self.commands[1])
+
+    def test_ambiguous_ready_generations_do_not_start_a_forward(self):
+        self.cluster.pods.return_value = [self.pod("old"), self.pod("new")]
+        with self.child(self.listener(0)), self.assertRaisesRegex(ConnectionError, "one current ready"):
+            self.cluster.forward(0)
+        self.assertEqual(self.children, [])
+        self.assertEqual(self.cluster.forwards, {})
+
+
+class VisibilityOracleTests(unittest.TestCase):
+    def cluster(self, responses):
+        cluster = object.__new__(Cluster)
+        cluster.api = Mock(side_effect=responses)
+        cluster.inspect = Mock(return_value=[{"revision": 1}])
+        return cluster
+
+    @staticmethod
+    def response(revision):
+        return 200, {"workspace": {"revision": revision}}
+
+    def test_rejects_old_response_after_new_on_another_node(self):
+        cluster = self.cluster([self.response(1), self.response(0)])
+        trace = []
+        with self.assertRaisesRegex(AssertionError, "old state after publication"):
+            cluster.observe(2, "transaction", ["a", "b"], trace)
+        self.assertEqual(trace[-1]["revision"], 0)
+
+    def test_remembers_publication_across_observation_rounds(self):
+        cluster = self.cluster([self.response(0), self.response(1), self.response(0), self.response(1)])
+        trace = []
+        cluster.observe(2, "transaction", ["a", "b"], trace)
+        with self.assertRaisesRegex(AssertionError, "old state after publication"):
+            cluster.observe(2, "transaction", ["a", "b"], trace)
+
+    def test_allows_unavailable_and_new_responses_after_publication(self):
+        cluster = self.cluster([self.response(0), self.response(1), (503, {}), self.response(1)])
+        trace = []
+        cluster.observe(2, "transaction", ["a", "b"], trace)
+        cluster.observe(2, "transaction", ["a", "b"], trace)
+        self.assertEqual([entry["status"] for entry in trace], [200, 200, 503, 200])
+
+    def test_checks_durable_state_before_accepting_publication(self):
+        cluster = self.cluster([self.response(1)])
+        cluster.inspect.return_value = [{"revision": 0}]
+        with self.assertRaisesRegex(AssertionError, "partial visibility"):
+            cluster.observe(2, "transaction", ["a", "b"], [])
+
+
+class NativeEvaluationOracleTests(unittest.TestCase):
+    def evaluate(self, useful_recall):
+        cluster = object.__new__(NativeMemory)
+        cluster.workspace = Mock(return_value=("workspace", None))
+        cluster.scale = Mock()
+        cluster.entries = [{"research": {"id": "research", "version": "1.0.0"}, "native-memory": {}}]
+        cluster.args = Mock(image="test-image")
+        cluster.memory = {}
+        cluster.evidence = {}
+
+        def report_evaluation(*arguments, report):
+            report["cases"] = [{"language": language, "metrics": {
+                "useful_recall": recall, "extraction_label_recall": 1,
+                "missing_support": 0, "duplicate_labels": 0,
+                "stale_units_after_correction": 0, "charged_calls": 1, "charged_tokens": 100,
+            }} for language, recall in (("en-US", 0.75), ("ja-JP", useful_recall))]
+
+        module = Mock()
+        module.evaluate.side_effect = report_evaluation
+        with patch("native_memory_cluster_acceptance.importlib.util.spec_from_file_location"), patch(
+            "native_memory_cluster_acceptance.importlib.util.module_from_spec", return_value=module
+        ):
+            cluster.evaluation()
+        return cluster
+
+    def test_empty_or_incomplete_retrieval_rejects_otherwise_successful_evaluation(self):
+        for recall in (0, 0.5):
+            with self.subTest(recall=recall), self.assertRaisesRegex(AssertionError, "ja-JP"):
+                self.evaluate(recall)
+
+    def test_frozen_retrieval_target_and_better_results_pass_in_both_languages(self):
+        for recall in (0.75, 1):
+            with self.subTest(recall=recall):
+                cluster = self.evaluate(recall)
+                self.assertEqual(cluster.scale.call_args.args, (0, "worker", 0))
+
+
+class PostgresEntrypointTests(unittest.TestCase):
+    def invocation(self, arguments):
+        source = pathlib.Path(__file__).resolve().parents[1] / "deploy/postgres/entrypoint.sh"
+        with tempfile.TemporaryDirectory() as directory:
+            official = pathlib.Path(directory) / "official-entrypoint"
+            official.write_text('#!/usr/bin/env bash\nprintf "%s\\0" "$@"\n')
+            official.chmod(0o755)
+            wrapper = pathlib.Path(directory) / "entrypoint.sh"
+            wrapper.write_text(source.read_text().replace("/usr/local/bin/docker-entrypoint.sh", str(official)))
+            result = subprocess.run(["bash", str(wrapper), *arguments], check=True, capture_output=True)
+        return result.stdout.decode().removesuffix("\0").split("\0")
+
+    @staticmethod
+    def settings(arguments):
+        return dict(argument.split("=", 1) for index, argument in enumerate(arguments)
+                    if index and arguments[index - 1] == "-c")
+
+    def test_server_always_applies_recovery_profile_with_default_worker_capacity(self):
+        arguments = self.invocation(["postgres"])
+        self.assertEqual(arguments[0], "postgres")
+        self.assertEqual(self.settings(arguments), {
+            "max_worker_processes": "96", "shared_preload_libraries": "pgroonga_crash_safer",
+            "pgroonga.enable_crash_safe": "on",
+        })
+
+    def test_explicit_worker_and_network_settings_survive_flags_only_start(self):
+        arguments = self.invocation(["-c", "listen_addresses=127.0.0.1", "-c", "max_worker_processes=256"])
+        self.assertEqual(arguments[0], "postgres")
+        self.assertEqual(self.settings(arguments)["max_worker_processes"], "256")
+        self.assertEqual(self.settings(arguments)["listen_addresses"], "127.0.0.1")
+        self.assertEqual(self.settings(arguments)["pgroonga.enable_crash_safe"], "on")
+
+    def test_administrative_commands_are_forwarded_unchanged(self):
+        arguments = ["psql", "--version"]
+        self.assertEqual(self.invocation(arguments), arguments)
+
+
+class EmbeddingOracleTests(unittest.TestCase):
+    query = "Generated remote research\nFind the relevant non-keyword archive marker"
+
+    def cluster(self, inputs):
+        cluster = object.__new__(RemoteMemory)
+        cluster.provider = Mock(return_value={"errors": [], "requests": [
+            {"kind": "embedding", "body": {"input": value, "model": "home-vector"}}
+            for value in inputs
+        ]})
+        return cluster
+
+    def test_recovery_query_count_ignores_background_reindexing(self):
+        cluster = self.cluster([self.query, "Iridium archive marker: ochre falcon.",
+                                "Exact executor marker: silver fern.",
+                                "DO NOT DISCLOSE: Home Agent scope.", self.query])
+        self.assertEqual(len(cluster.captured("embedding")), 5)
+        self.assertEqual(len(cluster.captured("embedding", embedding_input=self.query)), 2)
+
+    def test_same_query_resend_remains_visible(self):
+        cluster = self.cluster([self.query, "Iridium archive marker: ochre falcon.",
+                                self.query, self.query])
+        self.assertEqual(len(cluster.captured("embedding", embedding_input=self.query)), 3)
+
+
+if __name__ == "__main__":
+    unittest.main()

@@ -1,0 +1,39 @@
+meta {
+  name: Cookie writes reject another origin
+  type: http
+  seq: 28
+}
+
+post {
+  url: {{base_url}}/api/workspaces
+  body: json
+  auth: none
+}
+
+headers {
+  Accept: application/json
+  Content-Type: application/json
+  Cookie: {{session_cookie}}
+  X-Aidash-Context: {{browser_context}}
+  Origin: http://untrusted.invalid
+  X-Aidash-CSRF: {{csrf}}
+}
+
+body:json {
+  {
+    "title": "Wrong origin",
+    "goal": "Must not persist"
+  }
+}
+
+tests {
+  test("HTTP 403", function () {
+    expect(res.getStatus()).to.equal(403);
+  });
+  test("JSON response contract", function () {
+    expect(res.getHeader("content-type")).to.include("application/json");
+    expect(res.getBody()).to.have.all.keys("error");
+    expect(res.getBody().error).to.be.a("string");
+
+  });
+}

@@ -1,0 +1,954 @@
+#![allow(clippy::disallowed_methods)] // Fixtures reach the database outside a tenancy scope.
+use aidash_application::tenancy::TEST_FIXTURE;
+use common::upstream_fixtures as upstream;
+use http::Method;
+use reinhardt::ServerRouter as Router;
+use rstest::fixture;
+use upstream::reply;
+
+#[path = "../../execution/tests/support/legacy.rs"]
+mod common;
+use aidash_server::{domain::NewTask, registry::Entry};
+use common::*;
+use serde_json::{Value, json};
+use uuid::Uuid;
+
+fn tool(id: &str) -> Entry {
+	serde_json::from_value(json!({"id":id,"version":"1.0.0","kind":"tool","name":{"en":id},"description":{"en":"review regression"},"config":{"registry_deployment":"aidash://execution-test","provider":"integration.http@1","operation":"invoke","default_alias":"plugin_0","tier":"integration","transport":{"transport":"http","endpoint":"https://tools.example.com/original","replay":"read_only"}}})).unwrap()
+}
+
+async fn register_keyed(
+	app: &common::TestApplication,
+	token: &str,
+	entry: &Entry,
+	key: &str,
+) -> (u16, Value) {
+	let response = app
+		.raw_http
+		.request(Method::POST, app.url("/api/registry"))
+		.header("authorization", format!("Bearer {token}"))
+		.header("content-type", "application/json")
+		.header("idempotency-key", key)
+		.body(serde_json::to_vec(entry).unwrap())
+		.send()
+		.await
+		.unwrap();
+	let status = response.status().as_u16();
+	let body = response.bytes().await.unwrap();
+	(status, serde_json::from_slice(&body).unwrap())
+}
+
+#[rstest::rstest]
+#[tokio::test]
+async fn registry_server_ids_survive_retries_and_concurrent_requests(
+	#[future(awt)]
+	#[from(common::native_application)]
+	application_fixture: common::ApplicationFixture,
+) {
+	let (f, url, schema) = application_fixture.runtime.parts();
+	let token = tenant_token(&f.store, "acme").await;
+	let app = application_fixture.application.clone();
+	let seeded_definitions = f
+		.registry
+		.list(
+			&aidash_domain::tenancy::TenantName::new("acme").unwrap(),
+			&Default::default(),
+		)
+		.await
+		.unwrap()
+		.len();
+	let mut entry = tool("");
+	entry.name.insert("en".into(), "calm-otter".into());
+	let key = Uuid::new_v4().to_string();
+	let (first, concurrent) = tokio::join!(
+		register_keyed(&app, &token, &entry, &key),
+		register_keyed(&app, &token, &entry, &key),
+	);
+	assert_eq!(first.0, 200, "{first:?}");
+	assert_eq!(first, concurrent);
+	assert_eq!(
+		Uuid::parse_str(first.1["id"].as_str().unwrap())
+			.unwrap()
+			.get_version_num(),
+		7
+	);
+	// A new router models a retry after the committed response was lost.
+	assert_eq!(
+		register_keyed(&common::application(f.clone()).await, &token, &entry, &key).await,
+		first
+	);
+	let mut changed = entry.clone();
+	changed
+		.description
+		.insert("en".into(), "different input".into());
+	assert_eq!(register_keyed(&app, &token, &changed, &key).await.0, 409);
+	assert_eq!(
+		f.registry
+			.list(
+				&aidash_domain::tenancy::TenantName::new("acme").unwrap(),
+				&Default::default()
+			)
+			.await
+			.unwrap()
+			.len(),
+		seeded_definitions + 1
+	);
+	assert_eq!(
+		f.store
+			.events(&TEST_FIXTURE, 0, None, 100)
+			.await
+			.unwrap()
+			.iter()
+			.filter(|event| event.kind == "registry.registered")
+			.count(),
+		1
+	);
+	assert_eq!(register_keyed(&app, &token, &entry, "invalid").await.0, 400);
+	let next = register_keyed(&app, &token, &entry, &Uuid::new_v4().to_string()).await;
+	assert_eq!(next.0, 200);
+	assert_ne!(next.1["id"], first.1["id"]);
+	// Failed validation must roll back the request-key reservation as well.
+	let failed_key = Uuid::new_v4().to_string();
+	let mut invalid = entry.clone();
+	invalid.version = "invalid".into();
+	assert_eq!(
+		register_keyed(&app, &token, &invalid, &failed_key).await.0,
+		400
+	);
+	assert_eq!(
+		register_keyed(&app, &token, &entry, &failed_key).await.0,
+		200
+	);
+	cleanup(f, &url, &schema).await;
+}
+
+#[rstest::rstest]
+#[tokio::test]
+async fn registration_refuses_a_tool_endpoint_at_a_private_address_unless_its_origin_is_permitted(
+	#[future(awt)]
+	#[from(common::native_application)]
+	application_fixture: common::ApplicationFixture,
+) {
+	let (f, url, schema) = application_fixture.runtime.parts();
+	let token = tenant_token(&f.store, "acme").await;
+	let app = application_fixture.application.clone();
+	let at = |id: &str, endpoint: &str| {
+		let mut entry = tool(id);
+		entry.config["transport"]["endpoint"] = json!(endpoint);
+		entry
+	};
+	for endpoint in [
+		"http://10.255.0.7/rpc",
+		"https://[::1]/rpc",
+		"http://tools.example.com/rpc",
+	] {
+		let (status, body) = register_keyed(
+			&app,
+			&token,
+			&at("refused-tool", endpoint),
+			&Uuid::new_v4().to_string(),
+		)
+		.await;
+		assert_ne!(status, 200, "{endpoint}: {body}");
+		assert!(
+			body.to_string().contains("TOOL_ENDPOINT_FORBIDDEN"),
+			"{endpoint}: {body}"
+		);
+	}
+	f.store
+		.keyless
+		.permit_origin_of("http://10.255.0.7")
+		.unwrap();
+	let (status, body) = register_keyed(
+		&app,
+		&token,
+		&at("permitted-tool", "http://10.255.0.7/rpc"),
+		&Uuid::new_v4().to_string(),
+	)
+	.await;
+	assert_eq!(status, 200, "{body}");
+	cleanup(f, &url, &schema).await;
+}
+
+#[rstest::rstest]
+#[tokio::test]
+async fn registry_assigns_uuid_v7_to_blank_ids_and_preserves_explicit_ids(
+	#[future(awt)]
+	#[from(common::native_application)]
+	application_fixture: common::ApplicationFixture,
+) {
+	let (f, url, schema) = application_fixture.runtime.parts();
+	let token = tenant_token(&f.store, "acme").await;
+	let app = application_fixture.application.clone();
+	let mut generated = Vec::new();
+	for id in ["", "", "explicit-tool"] {
+		let mut entry = tool(id);
+		entry.name.insert("en".into(), "calm-otter".into());
+		let (status, result) = request(&app, &token, "POST", "/api/registry", json!(entry)).await;
+		assert_eq!(status, 200, "{result}");
+		let assigned = result["id"].as_str().unwrap();
+		if id.is_empty() {
+			assert_eq!(Uuid::parse_str(assigned).unwrap().get_version_num(), 7);
+			generated.push(assigned.to_owned());
+		} else {
+			assert_eq!(assigned, id);
+		}
+		assert_eq!(
+			f.registry
+				.get(
+					&aidash_domain::tenancy::TenantName::new("acme").unwrap(),
+					assigned,
+					"1.0.0"
+				)
+				.await
+				.unwrap()
+				.id,
+			assigned
+		);
+	}
+	assert_ne!(generated[0], generated[1]);
+	cleanup(f, &url, &schema).await;
+}
+
+#[rstest::rstest]
+#[tokio::test]
+async fn ancestor_dependencies_and_invalid_local_executor_are_rejected(
+	#[future(awt)]
+	#[from(common::native_application)]
+	application_fixture: common::ApplicationFixture,
+) {
+	let (f, url, schema) = application_fixture.runtime.parts();
+	let token = tenant_token(&f.store, "acme").await;
+	let workspace = f
+		.store
+		.create_workspace(
+			&aidash_application::tenancy::TenancyScope::tenant("acme").unwrap(),
+			"alice",
+			"tree",
+			"goal",
+		)
+		.await
+		.unwrap();
+	let input = NewTask {
+		title: "task".into(),
+		description: "work".into(),
+		requirements: json!({}),
+		dependencies: vec![],
+		parent_id: None,
+	};
+	let parent = f
+		.store
+		.create_task(
+			&TEST_FIXTURE,
+			workspace.id,
+			&input,
+			"deployment_administrator",
+			None,
+		)
+		.await
+		.unwrap();
+	let mut child = input.clone();
+	child.parent_id = Some(parent.id);
+	child.dependencies = vec![parent.id];
+	assert!(
+		f.store
+			.create_task(
+				&TEST_FIXTURE,
+				workspace.id,
+				&child,
+				"deployment_administrator",
+				None
+			)
+			.await
+			.is_err()
+	);
+	child.dependencies.clear();
+	let child = f
+		.store
+		.create_task(
+			&TEST_FIXTURE,
+			workspace.id,
+			&child,
+			"deployment_administrator",
+			None,
+		)
+		.await
+		.unwrap();
+	let mut grandchild = input;
+	grandchild.parent_id = Some(child.id);
+	grandchild.dependencies = vec![parent.id];
+	assert!(
+		f.store
+			.create_task(
+				&TEST_FIXTURE,
+				workspace.id,
+				&grandchild,
+				"deployment_administrator",
+				None
+			)
+			.await
+			.is_err()
+	);
+	let app = application_fixture.application.clone();
+	let mut entry = tool("bad-executor");
+	for agent in [
+		json!({"id":"","version":"1.0.0"}),
+		json!({"id":"bad/path","version":"1.0.0"}),
+		json!({"id":"missing","version":"latest"}),
+		json!({"id":"missing","version":"1.0.0"}),
+	] {
+		entry.config = json!({"registry_deployment":f.config.deployment,"provider":"integration.agent@1","operation":"invoke","default_alias":"delegate","tier":"integration","transport":{"transport":"agent","node_id":f.config.deployment,"agent":agent}});
+		assert_ne!(
+			request(&app, &token, "POST", "/api/registry", json!(entry))
+				.await
+				.0,
+			200
+		);
+	}
+	cleanup(f, &url, &schema).await;
+}
+
+#[rstest::rstest]
+#[tokio::test]
+async fn visible_messages_and_events_survive_a_denied_burst(
+	#[future(awt)]
+	#[from(common::native_application)]
+	application_fixture: common::ApplicationFixture,
+) {
+	let (f, url, schema) = application_fixture.runtime.parts();
+	let app = application_fixture.application.clone();
+	let (mut policy, token, task) = bootstrap(&f, &app, "http://127.0.0.1:9").await;
+	let workspace = f
+		.store
+		.task(&TEST_FIXTURE, task)
+		.await
+		.unwrap()
+		.workspace_id;
+	f.store
+		.message(
+			&TEST_FIXTURE,
+			workspace,
+			"allowed",
+			"older-visible",
+			Some("visible-message-old"),
+		)
+		.await
+		.unwrap();
+	// Public tool descriptions may mention privacy; detect the denied body itself.
+	let denied_content = format!("denied-message-private-{}", Uuid::new_v4());
+	for index in 0..110 {
+		f.store
+			.message(
+				&TEST_FIXTURE,
+				workspace,
+				"denied",
+				&denied_content,
+				Some(&format!("denied-message-{index}")),
+			)
+			.await
+			.unwrap();
+	}
+	let denied: Vec<String> = sqlx::query_scalar(
+		&reinhardt::query::Query::select()
+			.expr(reinhardt::query::Expr::cust("id::text"))
+			.from(reinhardt::query::Alias::new("messages"))
+			.and_where(
+				reinhardt::query::Expr::col(reinhardt::query::Alias::new("sender")).eq("denied"),
+			)
+			.to_string(reinhardt::query::PostgresQueryBuilder),
+	)
+	.fetch_all(f.store.pool.fixture_driver())
+	.await
+	.unwrap();
+	policy["policies"].as_array_mut().unwrap().push(json!({"id":"deny-messages","effect":"deny","subjects":{"ids":["alice"]},"actions":["message.read"],"resources":{"kinds":["message"],"ids":denied}}));
+	assert_eq!(
+		request(
+			&app,
+			&f.config.api_token,
+			"POST",
+			"/api/authorization/acme",
+			json!({"expected_revision":1,"bundle":policy})
+		)
+		.await
+		.0,
+		200
+	);
+	for path in [format!("/api/workspaces/{workspace}"), "/api/state".into()] {
+		let (status, body) = request(&app, &token, "GET", &path, Value::Null).await;
+		assert_eq!(status, 200, "{body}");
+		assert!(
+			body["events"].to_string().contains("older-visible"),
+			"{body}"
+		);
+		if path.contains("workspaces") {
+			assert!(body["messages"].to_string().contains("older-visible"));
+		}
+		assert!(!body.to_string().contains(&denied_content), "{body}");
+	}
+	cleanup(f, &url, &schema).await;
+}
+
+#[rstest::rstest]
+#[tokio::test]
+async fn run_message_retries_have_one_durable_effect(
+	#[future(awt)]
+	#[from(common::native_application)]
+	application_fixture: common::ApplicationFixture,
+) {
+	let (f, url, schema) = application_fixture.runtime.parts();
+	let app = application_fixture.application.clone();
+	let (_, token, task) = bootstrap(&f, &app, "http://127.0.0.1:9").await;
+	let (status, body) = request(
+		&app,
+		&token,
+		"POST",
+		&format!("/api/tasks/{task}/claim"),
+		json!({"revision":0,"agent":{"id":"research","version":"1.0.0"}}),
+	)
+	.await;
+	assert_eq!(status, 200, "{body}");
+	let run = f
+		.store
+		.runs(&TEST_FIXTURE)
+		.await
+		.unwrap()
+		.into_iter()
+		.find(|r| r.task_id == task)
+		.unwrap();
+	let key = Uuid::new_v4();
+	for _ in 0..2 {
+		let (status, body) = request(
+			&app,
+			&token,
+			"POST",
+			&format!("/api/runs/{}/message", run.id),
+			json!({"content":"once","idempotency_key":key}),
+		)
+		.await;
+		assert_eq!(status, 200, "{body}");
+	}
+	assert_eq!(
+		f.store
+			.snapshot(&TEST_FIXTURE, run.workspace_id)
+			.await
+			.unwrap()
+			.messages
+			.iter()
+			.filter(|m| m.content == "once")
+			.count(),
+		1
+	);
+	cleanup(f, &url, &schema).await;
+}
+
+#[rstest::rstest]
+#[tokio::test]
+async fn scoped_run_details_keep_memory_home_namespace(
+	#[future(awt)]
+	#[from(common::native_application)]
+	application_fixture: common::ApplicationFixture,
+) {
+	let (f, url, schema) = application_fixture.runtime.parts();
+	let app = application_fixture.application.clone();
+	let (_, token, task) = bootstrap(&f, &app, "http://127.0.0.1:9").await;
+	assert_eq!(
+		request(
+			&app,
+			&token,
+			"POST",
+			&format!("/api/tasks/{task}/claim"),
+			json!({"revision":0,"agent":{"id":"research","version":"1.0.0"}})
+		)
+		.await
+		.0,
+		200
+	);
+	let run = f.store.runs(&TEST_FIXTURE).await.unwrap().remove(0);
+	let (status, details) = request(
+		&app,
+		&token,
+		"GET",
+		&format!("/api/runs/{}", run.id),
+		Value::Null,
+	)
+	.await;
+	assert_eq!(status, 200, "{details}");
+	assert!(
+		details["memory"].is_null(),
+		"an Agent without a memory provider has no bank binding"
+	);
+	cleanup(f, &url, &schema).await;
+}
+
+#[rstest::rstest]
+fn agent_versions_fit_the_authorization_identity_limit() {
+	// The qualified identity reserves the largest Node address.
+	let room = 256 - aidash_domain::nodes::NodeAddress::MAX_LEN - "/agents/@".len();
+	let mut entry = tool(&"a".repeat(100));
+	entry.kind = "agent".into();
+	entry.config = json!({"model":{"id":"model","version":"1.0.0"},"instructions":"test","schema_version":1,"bindings":[],"remove_default":[]});
+	entry.version = format!("1.0.0+{}", "x".repeat(room - 100 - "1.0.0+".len()));
+	aidash_server::registry::validate(&entry).unwrap();
+	entry.version.push('x');
+	assert!(aidash_server::registry::validate(&entry).is_err());
+}
+
+#[rstest::rstest]
+#[tokio::test]
+async fn oversized_agent_instructions_skills_and_tools_are_rejected_at_registration(
+	#[future(awt)]
+	#[from(common::native_application)]
+	application_fixture: common::ApplicationFixture,
+) {
+	let (f, url, schema) = application_fixture.runtime.parts();
+	let app = application_fixture.application.clone();
+	let (_, token, _) = bootstrap(&f, &app, "http://127.0.0.1:9").await;
+	let mut skill = tool("large-skill");
+	skill.kind = "skill".into();
+	skill.config = json!({"instructions":"x".repeat(60000)});
+	f.registry
+		.register(
+			&aidash_domain::tenancy::TenantName::new("acme").unwrap(),
+			skill.clone(),
+		)
+		.await
+		.unwrap();
+	skill.id = "large-skill-second".into();
+	f.registry
+		.register(
+			&aidash_domain::tenancy::TenantName::new("acme").unwrap(),
+			skill,
+		)
+		.await
+		.unwrap();
+	let mut large_tool = tool("large-schema");
+	large_tool.schema = json!({"type":"object","description":"x".repeat(128000)});
+	f.registry
+		.register(
+			&aidash_domain::tenancy::TenantName::new("acme").unwrap(),
+			large_tool,
+		)
+		.await
+		.unwrap();
+	for source in ["instructions", "skills", "tools"] {
+		let mut agent = f
+			.registry
+			.get(
+				&aidash_domain::tenancy::TenantName::new("acme").unwrap(),
+				"research",
+				"1.0.0",
+			)
+			.await
+			.unwrap();
+		agent.id = format!("oversized-{source}");
+		agent.binding_normalization = None;
+		if source == "instructions" {
+			agent.config["instructions"] = json!("x".repeat(128000));
+		} else {
+			let (kind, ids) = if source == "skills" {
+				("skill", vec!["large-skill", "large-skill-second"])
+			} else {
+				("tool", vec!["large-schema"])
+			};
+			agent.config["bindings"] = json!(ids.into_iter().map(|id| json!({"kind":kind,"target":{"registry_deployment":f.config.deployment,"id":id,"version":"1.0.0"},"narrow":{}})).collect::<Vec<_>>());
+		}
+		assert!(
+			f.registry
+				.register(
+					&aidash_domain::tenancy::TenantName::new("acme").unwrap(),
+					agent.clone()
+				)
+				.await
+				.is_err()
+		);
+		assert_eq!(
+			request(&app, &token, "POST", "/api/registry", json!(agent))
+				.await
+				.0,
+			400
+		);
+		assert!(
+			f.registry
+				.get(
+					&aidash_domain::tenancy::TenantName::new("acme").unwrap(),
+					&agent.id,
+					&agent.version
+				)
+				.await
+				.is_err()
+		);
+	}
+	cleanup(f, &url, &schema).await;
+}
+
+#[rstest::rstest]
+#[tokio::test]
+async fn malformed_broker_messages_do_not_stop_valid_delivery(
+	#[from(common::native_application)] application_future: common::ApplicationFuture,
+	#[future(awt)]
+	#[from(review_bus)]
+	#[with(application_future.clone())]
+	bus: aidash_server::bus::EventBus,
+) {
+	use reinhardt::query::{Alias, Expr, PostgresQueryBuilder, Query};
+	let application_fixture = application_future.await;
+	let (f, url, schema) = application_fixture.runtime.parts();
+	let id = Uuid::new_v4();
+	for payload in [
+		"not-json".to_owned(),
+		"{}".to_owned(),
+		"{\"id\":\"invalid\"}".to_owned(),
+		json!({"id":id}).to_string(),
+	] {
+		bus.context
+			.publish(bus.subject.clone(), payload.into())
+			.await
+			.unwrap()
+			.await
+			.unwrap();
+	}
+	// Act: start delivery after publishing the malformed broker inputs.
+	let worker_bus = bus.clone();
+	let worker_f = f.clone();
+	let consumer = tokio::spawn(async move { worker_bus.consumer(worker_f).await });
+	tokio::time::timeout(std::time::Duration::from_secs(10), async {
+		loop {
+			let count: i64 = {
+				let query_bind_1 = id;
+				sqlx::query_scalar(
+					&Query::select()
+						.expr(reinhardt::query::Func::count(
+							Expr::col(reinhardt::query::ColumnRef::Asterisk).into(),
+						))
+						.from(Alias::new("inbox"))
+						.and_where(
+							reinhardt::query::SimpleExpr::from(Expr::col(Alias::new("event_id")))
+								.eq(SimpleExpr::CustomWithExpr(
+									"(?)".to_owned(),
+									vec![Expr::value(query_bind_1.to_owned()).into()],
+								)),
+						)
+						.to_string(PostgresQueryBuilder),
+				)
+				.fetch_one(f.store.pool.fixture_driver())
+				.await
+			}
+			.unwrap();
+			if count == 1 {
+				break;
+			}
+			assert!(
+				!consumer.is_finished(),
+				"consumer exited on malformed input"
+			);
+			tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+		}
+	})
+	.await
+	.unwrap();
+	assert!(!consumer.is_finished());
+	consumer.abort();
+	let _ = consumer.await;
+	bus.context.delete_stream(&bus.stream_name).await.unwrap();
+	cleanup(f, &url, &schema).await;
+}
+
+#[rstest::rstest]
+#[tokio::test]
+async fn registry_replays_emit_once(
+	#[future(awt)]
+	#[from(common::native_application)]
+	application_fixture: common::ApplicationFixture,
+) {
+	let (f, url, schema) = application_fixture.runtime.parts();
+	let app = application_fixture.application.clone();
+	let token = tenant_token(&f.store, "acme").await;
+	for _ in 0..2 {
+		let (status, body) = request(
+			&app,
+			&token,
+			"POST",
+			"/api/registry",
+			json!(tool("replayed")),
+		)
+		.await;
+		assert_eq!(status, 200, "{body}");
+	}
+	assert_eq!(
+		f.store
+			.events(&TEST_FIXTURE, 0, None, 1000)
+			.await
+			.unwrap()
+			.iter()
+			.filter(|e| e.kind == "registry.registered")
+			.count(),
+		1
+	);
+	cleanup(f, &url, &schema).await;
+}
+
+#[rstest::rstest]
+#[tokio::test]
+async fn workspace_messages_deduplicate_retries_and_isolate_actor_and_workspace_keys(
+	#[future(awt)]
+	#[from(common::native_application)]
+	application_fixture: common::ApplicationFixture,
+) {
+	let (f, url, schema) = application_fixture.runtime.parts();
+	let app = application_fixture.application.clone();
+	let (_, token, task) = bootstrap(&f, &app, "http://127.0.0.1:9").await;
+	let workspace = f
+		.store
+		.task(&TEST_FIXTURE, task)
+		.await
+		.unwrap()
+		.workspace_id;
+	let mut policy = common::policy(f.config.deployment.as_str());
+	policy["subjects"]["bob"] = json!({"kind":"user"});
+	let authorization = aidash_server::authorization::Authorization {
+		pool: f.store.pool.clone(),
+	};
+	authorization
+		.replace(
+			"acme",
+			1,
+			serde_json::from_value(policy).unwrap(),
+			"deployment_administrator",
+		)
+		.await
+		.unwrap();
+	let bob = authorization
+		.issue_credential("acme", "bob", 3600, "deployment_administrator")
+		.await
+		.unwrap()
+		.token;
+	let key = Uuid::new_v4();
+	let path = format!("/api/workspaces/{workspace}/messages");
+	for actor in [&token, &bob] {
+		for _ in 0..2 {
+			let (status, body) = request(
+				&app,
+				actor,
+				"POST",
+				&path,
+				json!({"content":"once per actor","idempotency_key":key}),
+			)
+			.await;
+			assert_eq!(status, 200, "{body}");
+		}
+		assert_eq!(
+			request(
+				&app,
+				actor,
+				"POST",
+				&path,
+				json!({"content":"changed","idempotency_key":key})
+			)
+			.await
+			.0,
+			409
+		);
+	}
+	let snapshot = f.store.snapshot(&TEST_FIXTURE, workspace).await.unwrap();
+	assert_eq!(
+		snapshot
+			.messages
+			.iter()
+			.filter(|m| m.content == "once per actor")
+			.count(),
+		2
+	);
+	assert_eq!(
+		f.store
+			.events(&TEST_FIXTURE, 0, Some(workspace), 500)
+			.await
+			.unwrap()
+			.iter()
+			.filter(|e| e.kind == "message.created")
+			.count(),
+		2
+	);
+	let other = f
+		.store
+		.create_workspace(
+			&aidash_application::tenancy::TenancyScope::tenant("acme").unwrap(),
+			"alice",
+			"other",
+			"goal",
+		)
+		.await
+		.unwrap();
+	assert_eq!(
+		request(
+			&app,
+			&token,
+			"POST",
+			&format!("/api/workspaces/{}/messages", other.id),
+			json!({"content":"another workspace","idempotency_key":key})
+		)
+		.await
+		.0,
+		200
+	);
+	cleanup(f, &url, &schema).await;
+}
+
+#[rstest::rstest]
+#[tokio::test]
+async fn subject_conversation_returns_the_committed_task_revision(
+	#[future(awt)]
+	#[from(common::native_application)]
+	application_fixture: common::ApplicationFixture,
+) {
+	let (f, url, schema) = application_fixture.runtime.parts();
+	let app = application_fixture.application.clone();
+	let (_, token, _) = bootstrap(&f, &app, "http://127.0.0.1:9").await;
+	let (status, response) = request(&app, &token, "POST", "/api/conversations", json!({"title":"Conversation","goal":"Work","target":{"id":"research","version":"1.0.0"},"target_kind":"agent"})).await;
+	assert_eq!(status, 200, "{response}");
+	let task = f
+		.store
+		.task(
+			&TEST_FIXTURE,
+			response["task"]["id"].as_str().unwrap().parse().unwrap(),
+		)
+		.await
+		.unwrap();
+	assert!(task.revision > 0);
+	assert_eq!(response["task"]["revision"], task.revision);
+	cleanup(f, &url, &schema).await;
+}
+
+#[rstest::rstest]
+#[tokio::test]
+async fn plugin_control_shaped_data_does_not_suspend_execution(
+	#[future(awt)]
+	#[from(common::native_application)]
+	application_fixture: common::ApplicationFixture,
+
+	#[future(awt)]
+	#[from(plugin_control_shaped_data_does_not_suspend_execution_provider)]
+	fixture: PluginControlShapedDataDoesNotSuspendExecutionProvider,
+) {
+	let output = fixture.state.output;
+	let server = fixture.server;
+
+	use aidash_server::harness::Harness;
+
+	let (f, url, schema) = application_fixture.runtime.parts();
+
+	let endpoint = server.url.clone();
+	let app = application_fixture.application.clone();
+	let (_, token, task) = bootstrap_requiring_tool_call_approval(&f, &app, &endpoint).await;
+	assert_eq!(
+		request(
+			&app,
+			&token,
+			"POST",
+			&format!("/api/tasks/{task}/claim"),
+			json!({"revision":0,"agent":{"id":"research","version":"1.0.0"}})
+		)
+		.await
+		.0,
+		200
+	);
+	let harness = Harness {
+		federation: f.clone(),
+	};
+	for _ in 0..12 {
+		if !harness.worker_once().await.unwrap() {
+			break;
+		}
+		let current = f.store.runs(&TEST_FIXTURE).await.unwrap().remove(0);
+		if let Some((approval, call)) = awaited_tool_call(&current) {
+			assert_eq!(call.name, "plugin_0");
+			assert_eq!(call.id, "call-1");
+			let (status, decided) = decide_tool_call(&app, &token, approval, "allow_once").await;
+			assert_eq!(status, 200, "{decided}");
+		}
+	}
+	let run = f.store.runs(&TEST_FIXTURE).await.unwrap().remove(0);
+	assert_eq!(
+		run.phase().as_str(),
+		"COMPLETED",
+		"error={:?}, pending={}",
+		run.error,
+		json!(run.state)["data"]
+	);
+	assert!(
+		json!(run.context)["history"]
+			.as_array()
+			.unwrap()
+			.iter()
+			.any(|e| e["event"]["kind"] == "tool" && e["event"]["result"] == output)
+	);
+	drop(server);
+
+	cleanup(f, &url, &schema).await;
+}
+
+use reinhardt::query::QueryStatementBuilder;
+
+use reinhardt::query::ExprTrait;
+
+use reinhardt::query::SimpleExpr;
+
+#[derive(Clone)]
+struct PluginControlShapedDataDoesNotSuspendExecutionState {
+	output: Value,
+}
+#[fixture]
+fn plugin_control_shaped_data_does_not_suspend_execution_state()
+-> PluginControlShapedDataDoesNotSuspendExecutionState {
+	PluginControlShapedDataDoesNotSuspendExecutionState {
+		output: json!({"human_request_id":Uuid::new_v4(),"wait_seconds":60}),
+	}
+}
+#[fixture]
+fn plugin_control_shaped_data_does_not_suspend_execution_router(
+	#[from(plugin_control_shaped_data_does_not_suspend_execution_state)]
+	state: PluginControlShapedDataDoesNotSuspendExecutionState,
+) -> std::sync::Arc<Router> {
+	let output = state.output.clone();
+	let result = output.clone();
+	std::sync::Arc::new(reinhardt::test::stub::StubRouter::new()
+.route("/effect", http::Method::POST, reply(move |_request: reinhardt::Request| { let result = result.clone(); async move { reinhardt::Response::ok().with_json(&result).unwrap() } }))
+.route("/v1/chat/completions", http::Method::POST, reply(|request: reinhardt::Request| {let body = request.json::<Value>().unwrap();async move {
+            let context: Value = serde_json::from_str(body["messages"][1]["content"].as_str().unwrap()).unwrap();
+            let done = context["history"].as_array().unwrap().iter().any(|e| e["kind"] == "tool");
+            let message = if done { json!({"role":"assistant","content":"Completed"}) } else {
+                json!({"role":"assistant","content":null,"tool_calls":[{"id":"call-1","type":"function","function":{"name":"plugin_0","arguments":"{}"}}]})
+            };
+            reinhardt::Response::ok().with_json(&json!({"choices":[{"index":0,"finish_reason":if done {"stop"} else {"tool_calls"},"message":message}],"usage":{"prompt_tokens":1,"completion_tokens":1}})).unwrap()
+        }})).into_server_router())
+}
+struct PluginControlShapedDataDoesNotSuspendExecutionProvider {
+	state: PluginControlShapedDataDoesNotSuspendExecutionState,
+	server: reinhardt::test::fixtures::server::TestServerGuard,
+}
+#[fixture]
+async fn plugin_control_shaped_data_does_not_suspend_execution_provider(
+	#[from(plugin_control_shaped_data_does_not_suspend_execution_state)]
+	state: PluginControlShapedDataDoesNotSuspendExecutionState,
+	#[from(plugin_control_shaped_data_does_not_suspend_execution_router)]
+	#[with(state.clone())]
+	_router: std::sync::Arc<Router>,
+	#[future(awt)]
+	#[from(upstream::upstream)]
+	#[with(_router.clone())]
+	server: reinhardt::test::fixtures::server::TestServerGuard,
+) -> PluginControlShapedDataDoesNotSuspendExecutionProvider {
+	PluginControlShapedDataDoesNotSuspendExecutionProvider { state, server }
+}
+
+#[fixture]
+async fn review_bus(
+	#[from(common::native_application)] application: common::ApplicationFuture,
+) -> aidash_server::bus::EventBus {
+	let runtime = application.await.runtime;
+	aidash_server::bus::EventBus::connect(
+		&runtime.federation.config.nats_url,
+		&format!("aidash://review-{}", Uuid::new_v4().simple()),
+	)
+	.await
+	.unwrap()
+}

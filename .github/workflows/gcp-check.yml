@@ -1,0 +1,35 @@
+name: GCP infrastructure checks
+on:
+  workflow_call:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  validate:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 360
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: hashicorp/setup-terraform@b9cd54a3c349d3f38e8881555d616ced269862dd # v3
+        with:
+          terraform_version: 1.14.8
+          terraform_wrapper: false
+      - name: Fetch observer dependencies
+        run: |
+          for attempt in 1 2 3; do
+            if cargo fetch --locked --manifest-path infra/gcp/observer/Cargo.toml; then
+              exit 0
+            fi
+            if [[ "$attempt" == 3 ]]; then
+              exit 1
+            fi
+            sleep "$((attempt * 5))"
+          done
+      - name: Install the pinned chart verification dependency
+        run: python3 -m pip install PyYAML==6.0.3
+      - name: Test infrastructure without cloud credentials or resources
+        env:
+          CARGO_NET_OFFLINE: "true"
+        run: bash infra/gcp/check.sh

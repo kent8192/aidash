@@ -1,0 +1,38 @@
+meta {
+  name: Stale updates retain conflict behavior
+  type: http
+  seq: 11
+}
+
+patch {
+  url: {{base_url}}/api/workspaces/{{workspace_id}}
+  body: json
+  auth: none
+}
+
+headers {
+  Accept: application/json
+  Content-Type: application/json
+  Authorization: Bearer {{owner_token}}
+}
+
+body:json {
+  {
+    "revision": 0,
+    "state": {
+      "stale": true
+    }
+  }
+}
+
+tests {
+  test("HTTP 409", function () {
+    expect(res.getStatus()).to.equal(409);
+  });
+  test("JSON response contract", function () {
+    expect(res.getHeader("content-type")).to.include("application/json");
+    expect(res.getBody()).to.have.all.keys("error");
+    expect(res.getBody().error).to.be.a("string");
+
+  });
+}

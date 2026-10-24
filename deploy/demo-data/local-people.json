@@ -1,0 +1,22 @@
+{
+  "people": [
+    {
+      "email": "alex@example.test",
+      "tenant": "acme",
+      "subject": "alex",
+      "role": "administrator"
+    },
+    {
+      "email": "alex@example.test",
+      "tenant": "globex",
+      "subject": "alex",
+      "role": "member"
+    },
+    {
+      "email": "taylor@example.test",
+      "tenant": "acme",
+      "subject": "taylor",
+      "role": "member"
+    }
+  ]
+}

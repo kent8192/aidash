@@ -1,0 +1,2591 @@
+#![allow(clippy::disallowed_methods)] // Fixtures reach the database outside a tenancy scope.
+use aidash_application::tenancy::TEST_FIXTURE;
+use common::upstream_fixtures;
+use futures_util::FutureExt;
+use http::Method;
+use upstream_fixtures::reply;
+#[path = "../../execution/tests/support/legacy.rs"]
+mod common;
+
+use aidash_server::{
+	authorization::{Authorization, policy::PolicyBundle},
+	config::OidcConfig,
+};
+
+use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
+use futures_util::{StreamExt, future::join_all};
+use reinhardt::query::{Alias, Expr, LockType, PostgresQueryBuilder, Query};
+use serde_json::{Value, json};
+use sha2::{Digest, Sha256};
+use std::sync::{
+	Arc,
+	atomic::{AtomicUsize, Ordering},
+};
+use uuid::Uuid;
+
+#[rstest::rstest]
+#[tokio::test]
+async fn login_prunes_expired_transactions_and_bounds_pending_browser_logins(
+	#[future(awt)]
+	#[from(login_prunes_expired_transactions_and_bounds_pending_browser_logins_fixture)]
+	fixture: LoginPrunesExpiredTransactionsAndBoundsPendingBrowserLoginsFixture,
+) {
+	let (mut federation, url, schema) = fixture.application.runtime.parts();
+	let app = fixture.application.application;
+	let server = fixture.server;
+	let discoveries = fixture.discoveries;
+	let discovery_started = fixture.discovery_started;
+	let discovery_release = fixture.discovery_release;
+	let key_fetches = fixture.key_fetches;
+	let insert = Query::insert()
+		.into_table(Alias::new("dashboard_login_transactions"))
+		.columns(
+			[
+				"state_hash",
+				"browser_hash",
+				"nonce",
+				"pkce_verifier",
+				"return_to",
+				"callback_uri",
+				"expires_at",
+			]
+			.map(Alias::new),
+		)
+		.from_subquery(
+			reinhardt::query::Query::select()
+				.expr(Expr::cust("$1"))
+				.expr(Expr::cust("$2"))
+				.expr(Expr::cust("'nonce'"))
+				.expr(Expr::cust("'verifier'"))
+				.expr(Expr::cust("'/'"))
+				.expr(Expr::cust("'https://127.0.0.1:8080/auth/callback'"))
+				.expr(Expr::cust("clock_timestamp()-interval '1 minute'"))
+				.to_owned(),
+		)
+		.to_string(PostgresQueryBuilder);
+	sqlx::query(&insert)
+		.bind(Sha256::digest(b"abandoned-state").to_vec())
+		.bind(Sha256::digest(b"abandoned-browser").to_vec())
+		.execute(federation.store.pool.fixture_driver())
+		.await
+		.unwrap();
+
+	let first_app = app.clone();
+	let first_request = tokio::spawn(async move {
+		first_app
+			.api_http
+			.request(Method::GET, &first_app.url("/auth/login"))
+			.send()
+			.await
+			.unwrap()
+	});
+	discovery_started.notified().await;
+	let mut admission_probe = federation
+		.store
+		.pool
+		.fixture_driver()
+		.begin()
+		.await
+		.unwrap();
+	let admission_lock_available: bool =
+		sqlx::query_scalar("SELECT pg_try_advisory_xact_lock(71003204)")
+			.fetch_one(&mut *admission_probe)
+			.await
+			.unwrap();
+	assert!(
+		admission_lock_available,
+		"login admission lock stayed held during discovery"
+	);
+	admission_probe.commit().await.unwrap();
+	discovery_release.notify_one();
+	let first = first_request.await.unwrap();
+	assert_eq!(first.status(), 307);
+	let cookie = first.headers()["set-cookie"]
+		.to_str()
+		.unwrap()
+		.split(';')
+		.next()
+		.unwrap()
+		.to_owned();
+	let responses = join_all((0..15).map(|_| {
+		let app = app.clone();
+		let cookie = cookie.clone();
+		async move {
+			app.api_http
+				.request(Method::GET, &app.url("/auth/login"))
+				.header("cookie", cookie)
+				.send()
+				.await
+				.unwrap()
+				.status()
+				.as_u16()
+		}
+	}))
+	.await;
+	assert_eq!(
+		responses.iter().filter(|&&status| status == 307).count(),
+		7,
+		"{responses:?}"
+	);
+	assert_eq!(
+		responses.iter().filter(|&&status| status == 409).count(),
+		8,
+		"{responses:?}"
+	);
+	let count_query = Query::select()
+		.expr(Expr::cust("count(*)"))
+		.from(Alias::new("dashboard_login_transactions"))
+		.to_string(PostgresQueryBuilder);
+	let count: i64 = sqlx::query_scalar(&count_query)
+		.fetch_one(federation.store.pool.fixture_driver())
+		.await
+		.unwrap();
+	assert_eq!(count, 8);
+	assert_eq!(discoveries.load(Ordering::SeqCst), 1);
+	let initial_key_fetches = key_fetches.load(Ordering::SeqCst);
+	let header = URL_SAFE_NO_PAD.encode(json!({"alg":"RS256","kid":"unknown"}).to_string());
+	let payload = URL_SAFE_NO_PAD.encode("{}");
+	let token = format!("{header}.{payload}.signature");
+	for _ in 0..3 {
+		let response = app
+			.api_http
+			.request(Method::POST, &app.url("/auth/backchannel-logout"))
+			.header("content-type", "application/x-www-form-urlencoded")
+			.body(format!("logout_token={token}"))
+			.send()
+			.await
+			.unwrap();
+		assert_eq!(response.status(), 400);
+	}
+	assert_eq!(discoveries.load(Ordering::SeqCst), 1);
+	assert_eq!(key_fetches.load(Ordering::SeqCst), initial_key_fetches + 1);
+	// A full browser queue must be rejected before contacting an uncached issuer.
+	federation.config.oidc.as_mut().unwrap().issuer = "http://127.0.0.1:1/unavailable".into();
+	// Act: rebuild only after changing the advertised issuer.
+	let unavailable = common::application(federation.clone()).await;
+	let denied = app
+		.api_http
+		.request(Method::GET, &unavailable.url("/auth/login"))
+		.header("cookie", cookie)
+		.send()
+		.await
+		.unwrap();
+	assert_eq!(denied.status(), 409);
+	drop(server);
+	common::cleanup(federation, &url, &schema).await;
+}
+
+// Each call names the authority inputs explicitly for this security test.
+#[allow(clippy::too_many_arguments)]
+async fn call(
+	app: &common::TestApplication,
+	method: &str,
+	path: &str,
+	cookie: bool,
+	csrf: bool,
+	context: Option<&str>,
+	bearer: bool,
+	body: Value,
+) -> (u16, Value) {
+	let mut request = app
+		.api_http
+		.request(
+			Method::from_bytes(method.as_bytes()).unwrap(),
+			&app.url(path),
+		)
+		.header("content-type", "application/json");
+	if cookie {
+		request = request
+			.header("cookie", "unrelated=first")
+			.append_header("cookie", "__Host-aidash-session=fixture-session");
+	}
+	if csrf {
+		request = request
+			.header("origin", "https://127.0.0.1:8080")
+			.header("x-aidash-csrf", "fixture-csrf");
+	}
+	if let Some(context) = context {
+		request = request.header("x-aidash-context", context);
+	}
+	if bearer {
+		request = request.header(
+			"authorization",
+			"Bearer deployment-administrator-execution-fixture",
+		);
+	}
+	let response = request.json(&body).send().await.unwrap();
+	let status = response.status().as_u16();
+	let bytes = response.body();
+	(status, serde_json::from_slice(bytes).unwrap_or(Value::Null))
+}
+
+#[rstest::rstest]
+#[case::generic("http://127.0.0.1:18099/issuer")]
+#[tokio::test]
+async fn unmapped_identity_stays_denied_until_deployment_administrator_approves_existing_user(
+	#[case] issuer: &str,
+	#[future(awt)]
+	#[from(unmapped_identity_stays_denied_until_deployment_administrator_approves_existing_user_fixture)]
+	#[with(issuer)]
+	fixture: common::ApplicationFixture,
+	#[from(refresh_control)] expiry_control: (
+		tokio::sync::watch::Sender<bool>,
+		tokio::sync::watch::Receiver<bool>,
+	),
+	#[from(refresh_control)] issuer_control: (
+		tokio::sync::watch::Sender<bool>,
+		tokio::sync::watch::Receiver<bool>,
+	),
+) {
+	let (federation, url, schema) = fixture.runtime.parts();
+	let app = fixture.application;
+
+	let policy: PolicyBundle = serde_json::from_value(json!({
+		"tenant":"acme","subjects":{"alice":{"kind":"user"}},"policies":[]
+	}))
+	.unwrap();
+	common::tenant_root_in(federation.store.pool.fixture_driver(), "acme").await;
+	Authorization {
+		pool: federation.store.pool.clone(),
+	}
+	.replace("acme", 0, policy, "deployment_administrator")
+	.await
+	.unwrap();
+	let identity_id = Uuid::new_v4();
+	let insert_identity = Query::insert()
+		.into_table(Alias::new("dashboard_identities"))
+		.columns(["id", "issuer", "subject", "last_valid_at"].map(Alias::new))
+		.from_subquery(
+			reinhardt::query::Query::select()
+				.expr(Expr::cust("$1"))
+				.expr(Expr::cust("$2"))
+				.expr(Expr::cust("$3"))
+				.expr(Expr::cust("clock_timestamp()"))
+				.to_owned(),
+		)
+		.to_string(PostgresQueryBuilder);
+	sqlx::query(&insert_identity)
+		.bind(identity_id)
+		.bind(issuer)
+		.bind("generic-user-1")
+		.execute(federation.store.pool.fixture_driver())
+		.await
+		.unwrap();
+	let insert_session = Query::insert()
+		.into_table(Alias::new("dashboard_sessions"))
+		.columns(
+			[
+				"id",
+				"token_hash",
+				"csrf_hash",
+				"identity_id",
+				"created_at",
+				"last_activity_at",
+				"expires_at",
+			]
+			.map(Alias::new),
+		)
+		.from_subquery(
+			reinhardt::query::Query::select()
+				.expr(Expr::cust("$1"))
+				.expr(Expr::cust("$2"))
+				.expr(Expr::cust("$3"))
+				.expr(Expr::cust("$4"))
+				.expr(Expr::cust("clock_timestamp()"))
+				.expr(Expr::cust("clock_timestamp()"))
+				.expr(Expr::cust("clock_timestamp()+interval '12 hours'"))
+				.to_owned(),
+		)
+		.to_string(PostgresQueryBuilder);
+	sqlx::query(&insert_session)
+		.bind(Uuid::new_v4())
+		.bind(common::browser_session_digest(b"fixture-session"))
+		.bind(Sha256::digest(b"fixture-csrf").to_vec())
+		.bind(identity_id)
+		.execute(federation.store.pool.fixture_driver())
+		.await
+		.unwrap();
+
+	let mut changed_issuer = federation.clone();
+	changed_issuer.config.oidc.as_mut().unwrap().issuer = "http://127.0.0.1:18099/other".into();
+	assert_eq!(
+		call(
+			// Act: compare a rebuilt application with a different issuer.
+			&common::application(changed_issuer).await,
+			"GET",
+			"/auth/session",
+			true,
+			false,
+			None,
+			false,
+			Value::Null,
+		)
+		.await
+		.0,
+		403
+	);
+	let (status, session) = call(
+		&app,
+		"GET",
+		"/auth/session",
+		true,
+		false,
+		None,
+		false,
+		Value::Null,
+	)
+	.await;
+	assert_eq!(status, 200);
+	assert_eq!(session["mappings"], json!([]));
+	assert_eq!(session["personal_account"], false);
+	assert_eq!(
+		call(
+			&app,
+			"GET",
+			"/api/session",
+			true,
+			false,
+			None,
+			false,
+			Value::Null
+		)
+		.await
+		.0,
+		403
+	);
+	assert_eq!(
+		call(
+			&app,
+			"POST",
+			"/auth/registration",
+			true,
+			false,
+			None,
+			false,
+			Value::Null
+		)
+		.await
+		.0,
+		403
+	);
+	let (status, first) = call(
+		&app,
+		"POST",
+		"/auth/registration",
+		true,
+		true,
+		None,
+		false,
+		Value::Null,
+	)
+	.await;
+	assert_eq!(status, 200);
+	assert_eq!(first["status"], "pending");
+	let (_, duplicate) = call(
+		&app,
+		"POST",
+		"/auth/registration",
+		true,
+		true,
+		None,
+		false,
+		Value::Null,
+	)
+	.await;
+	assert_eq!(duplicate["id"], first["id"]);
+	let concurrent = join_all((0..8).map(|_| {
+		call(
+			&app,
+			"POST",
+			"/auth/registration",
+			true,
+			true,
+			None,
+			false,
+			Value::Null,
+		)
+	}))
+	.await;
+	for (status, registration) in concurrent {
+		assert_eq!(status, 200, "{registration}");
+		assert_eq!(registration["id"], first["id"]);
+		assert_eq!(registration["expires_at"], first["expires_at"]);
+	}
+	let expire = Query::update()
+		.table(Alias::new("dashboard_registration_requests"))
+		.value_expr(
+			Alias::new("expires_at"),
+			Expr::cust("clock_timestamp()-interval '1 second'"),
+		)
+		.and_where(
+			reinhardt::query::SimpleExpr::from(Expr::col(Alias::new("id"))).eq(Expr::cust("$1")),
+		)
+		.to_string(PostgresQueryBuilder);
+	sqlx::query(&expire)
+		.bind(first["id"].as_str().unwrap().parse::<Uuid>().unwrap())
+		.execute(federation.store.pool.fixture_driver())
+		.await
+		.unwrap();
+	let (_, expired) = call(
+		&app,
+		"GET",
+		"/auth/registration",
+		true,
+		false,
+		None,
+		false,
+		Value::Null,
+	)
+	.await;
+	assert_eq!(expired["status"], "expired");
+	let registration_response = app
+		.api_http
+		.request(Method::GET, &app.url("/auth/registration"))
+		.header("cookie", "__Host-aidash-session=fixture-session")
+		.send()
+		.await
+		.unwrap();
+	assert_eq!(registration_response.headers()["cache-control"], "no-store");
+	let (_, listed) = call(
+		&app,
+		"GET",
+		"/api/dashboard/registrations",
+		false,
+		false,
+		None,
+		true,
+		Value::Null,
+	)
+	.await;
+	assert_eq!(listed, json!([]));
+	let (status, fresh) = call(
+		&app,
+		"POST",
+		"/auth/registration",
+		true,
+		true,
+		None,
+		false,
+		Value::Null,
+	)
+	.await;
+	assert_eq!(status, 200);
+	assert_ne!(fresh["id"], first["id"]);
+	let insert_old = Query::insert()
+		.into_table(Alias::new("dashboard_registration_requests"))
+		.columns(["id", "identity_id", "status", "created_at", "expires_at"].map(Alias::new))
+		.from_subquery(
+			reinhardt::query::Query::select()
+				.expr(Expr::cust("$1"))
+				.expr(Expr::cust("$2"))
+				.expr(Expr::cust("'rejected'"))
+				.expr(Expr::cust("clock_timestamp()"))
+				.expr(Expr::cust("clock_timestamp()+interval '1 day'"))
+				.to_owned(),
+		)
+		.to_string(PostgresQueryBuilder);
+	for _ in 0..201 {
+		sqlx::query(&insert_old)
+			.bind(Uuid::new_v4())
+			.bind(identity_id)
+			.execute(federation.store.pool.fixture_driver())
+			.await
+			.unwrap();
+	}
+	let (status, actionable) = call(
+		&app,
+		"GET",
+		"/api/dashboard/registrations",
+		false,
+		false,
+		None,
+		true,
+		Value::Null,
+	)
+	.await;
+	assert_eq!(status, 200);
+	// The queue adds what an Invitation proposed; this request had none.
+	let mut queued = fresh.clone();
+	queued["invitation_id"] = Value::Null;
+	queued["proposed_groups"] = json!([]);
+	assert_eq!(actionable, json!([queued]));
+	let path = format!(
+		"/api/dashboard/registrations/{}/approve",
+		fresh["id"].as_str().unwrap()
+	);
+	let (status, mapping) = call(
+		&app,
+		"POST",
+		&path,
+		false,
+		false,
+		None,
+		true,
+		json!({"tenant":"acme","subject":"alice"}),
+	)
+	.await;
+	assert_eq!(status, 200, "{mapping}");
+	let credential_query = Query::select()
+		.column(Alias::new("credential_id"))
+		.from(Alias::new("dashboard_mappings"))
+		.and_where(
+			reinhardt::query::SimpleExpr::from(Expr::col(Alias::new("id"))).eq(Expr::cust("$1")),
+		)
+		.to_string(PostgresQueryBuilder);
+	let credential_id: Uuid = sqlx::query_scalar(&credential_query)
+		.bind(mapping["id"].as_str().unwrap().parse::<Uuid>().unwrap())
+		.fetch_one(federation.store.pool.fixture_driver())
+		.await
+		.unwrap();
+	assert_eq!(
+		call(
+			&app,
+			"POST",
+			&format!("/api/authorization/acme/credentials/{credential_id}/revoke"),
+			false,
+			false,
+			None,
+			true,
+			Value::Null
+		)
+		.await
+		.0,
+		404
+	);
+	let (_, generic_credentials) = call(
+		&app,
+		"GET",
+		"/api/authorization/acme/credentials",
+		false,
+		false,
+		None,
+		true,
+		Value::Null,
+	)
+	.await;
+	assert!(
+		!generic_credentials
+			.to_string()
+			.contains(&credential_id.to_string())
+	);
+	let context = format!(
+		"mapping:{}:{}",
+		mapping["tenant"].as_str().unwrap(),
+		mapping["id"].as_str().unwrap()
+	);
+	let (status, session) = call(
+		&app,
+		"GET",
+		"/api/session",
+		true,
+		false,
+		Some(&context),
+		false,
+		Value::Null,
+	)
+	.await;
+	assert_eq!(status, 200, "{session}");
+	assert_eq!(session["access"]["subject"], "alice");
+	let path = format!(
+		"/api/dashboard/mappings/{}/disable",
+		mapping["id"].as_str().unwrap()
+	);
+	let (_, mapping_rows) = call(
+		&app,
+		"GET",
+		"/api/dashboard/mappings",
+		false,
+		false,
+		None,
+		true,
+		Value::Null,
+	)
+	.await;
+	let revision = mapping_rows[0]["revision"].as_i64().unwrap();
+	let mut worker = federation
+		.store
+		.pool
+		.fixture_driver()
+		.begin()
+		.await
+		.unwrap();
+	let lock_credential = Query::select()
+		.column(Alias::new("id"))
+		.from(Alias::new("authorization_credentials"))
+		.and_where(
+			reinhardt::query::SimpleExpr::from(Expr::col(Alias::new("id"))).eq(Expr::cust("$1")),
+		)
+		.lock(LockType::Share)
+		.to_string(PostgresQueryBuilder);
+	sqlx::query_scalar::<_, Uuid>(&lock_credential)
+		.bind(credential_id)
+		.fetch_one(&mut *worker)
+		.await
+		.unwrap();
+	let disable_app = app.clone();
+	let disable_path = path.clone();
+	let disable = tokio::spawn(async move {
+		call(
+			&disable_app,
+			"POST",
+			&disable_path,
+			false,
+			false,
+			None,
+			true,
+			json!({"expected_revision":revision}),
+		)
+		.await
+		.0
+	});
+	tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+	let lock_mapping = Query::select()
+		.column(Alias::new("id"))
+		.from(Alias::new("dashboard_mappings"))
+		.and_where(
+			reinhardt::query::SimpleExpr::from(Expr::col(Alias::new("id"))).eq(Expr::cust("$1")),
+		)
+		.lock(LockType::Share)
+		.to_string(PostgresQueryBuilder);
+	tokio::time::timeout(
+		std::time::Duration::from_secs(2),
+		sqlx::query_scalar::<_, Uuid>(&lock_mapping)
+			.bind(mapping["id"].as_str().unwrap().parse::<Uuid>().unwrap())
+			.fetch_one(&mut *worker),
+	)
+	.await
+	.unwrap()
+	.unwrap();
+	worker.commit().await.unwrap();
+	assert_eq!(
+		tokio::time::timeout(std::time::Duration::from_secs(5), disable)
+			.await
+			.unwrap()
+			.unwrap(),
+		204
+	);
+	assert_eq!(
+		call(
+			&app,
+			"GET",
+			"/api/session",
+			true,
+			false,
+			Some(&context),
+			false,
+			Value::Null
+		)
+		.await
+		.0,
+		403
+	);
+	let (status, repeated) = call(
+		&app,
+		"POST",
+		"/auth/registration",
+		true,
+		true,
+		None,
+		false,
+		Value::Null,
+	)
+	.await;
+	assert_eq!(status, 200);
+	assert_eq!(repeated["status"], "pending");
+	let path = format!(
+		"/api/dashboard/registrations/{}/approve",
+		repeated["id"].as_str().unwrap()
+	);
+	let (status, restored) = call(
+		&app,
+		"POST",
+		&path,
+		false,
+		false,
+		None,
+		true,
+		json!({"tenant":"acme","subject":"alice"}),
+	)
+	.await;
+	assert_eq!(status, 200, "{restored}");
+	assert_eq!(restored["id"], mapping["id"]);
+	let disable_path = format!(
+		"/api/dashboard/mappings/{}/disable",
+		mapping["id"].as_str().unwrap()
+	);
+	assert_eq!(
+		call(
+			&app,
+			"POST",
+			&disable_path,
+			false,
+			false,
+			None,
+			true,
+			json!({"expected_revision":revision})
+		)
+		.await
+		.0,
+		409
+	);
+	assert_eq!(
+		call(
+			&app,
+			"GET",
+			"/api/session",
+			true,
+			false,
+			Some(&context),
+			false,
+			Value::Null
+		)
+		.await
+		.0,
+		200
+	);
+	let grant_path =
+		format!("/api/dashboard/identities/{identity_id}/deployment-administrator-grant");
+	let (invalid_status, _) = call(
+		&app,
+		"POST",
+		&grant_path,
+		false,
+		false,
+		None,
+		true,
+		json!({"enabled":true,"expected_revision":-1}),
+	)
+	.await;
+	assert_eq!(invalid_status, 400);
+	let (status, grant) = call(
+		&app,
+		"POST",
+		&grant_path,
+		false,
+		false,
+		None,
+		true,
+		json!({"enabled":true,"expected_revision":0}),
+	)
+	.await;
+	assert_eq!(status, 200, "{grant}");
+	assert_eq!(grant["revision"], 1);
+	let acme = aidash_application::tenancy::TenancyScope::tenant("acme").unwrap();
+	let workspace = federation
+		.store
+		.create_workspace(
+			&acme,
+			"alice",
+			"Browser management",
+			"Pause and cancel an admitted run",
+		)
+		.await
+		.unwrap();
+	let task = federation
+		.store
+		.create_task(
+			&acme,
+			workspace.id,
+			&aidash_server::domain::NewTask {
+				title: "Managed run".into(),
+				description: "Browser Deployment Administrator control".into(),
+				requirements: json!({}),
+				dependencies: vec![],
+				parent_id: None,
+			},
+			"human",
+			None,
+		)
+		.await
+		.unwrap();
+	// Browser controls operate on a real admitted Binding graph.
+	let mut agent = None;
+	for (kind, id, config) in [
+		(
+			"model",
+			"fixture-model",
+			json!({"provider":"openrouter","model_id":"browser-fixture","endpoint":"http://127.0.0.1:1/v1","context_window":128000,"max_output_tokens":4096,"modalities":["text"],"cost":{}}),
+		),
+		(
+			"agent",
+			"fixture-agent",
+			json!({"schema_version":1,"model":{"id":"fixture-model","version":"1.0.0"},"instructions":"Browser management fixture","bindings":[],"remove_default":[]}),
+		),
+	] {
+		agent = Some(federation
+			.registry
+			.register(acme.tenant_name().unwrap(), serde_json::from_value(json!({"id":id,"version":"1.0.0","kind":kind,"name":{"en":id},"description":{"en":"Browser management fixture"},"schema":{},"config":config})).unwrap())
+			.await
+			.unwrap());
+	}
+	let run = common::local_run(&federation.store, &acme, &task, &agent.unwrap()).await;
+	let run_management = format!("/api/runs/{}/management", run.id);
+	assert_eq!(
+		call(
+			&app,
+			"POST",
+			&run_management,
+			true,
+			false,
+			Some("deployment_administrator"),
+			false,
+			json!({"action":"pause"})
+		)
+		.await
+		.0,
+		403,
+		"restoring the route must retain CSRF enforcement"
+	);
+	assert_eq!(
+		federation
+			.store
+			.inspect_run(&TEST_FIXTURE, run.id)
+			.await
+			.unwrap()
+			.control,
+		aidash_server::domain::RunControl::Active
+	);
+	for (action, expected) in [
+		("pause", aidash_server::domain::RunControl::Paused),
+		("cancel", aidash_server::domain::RunControl::Cancelled),
+	] {
+		let (status, body) = call(
+			&app,
+			"POST",
+			&run_management,
+			true,
+			true,
+			Some("deployment_administrator"),
+			false,
+			json!({"action":action}),
+		)
+		.await;
+		assert_eq!(status, 200, "{body}");
+		assert_eq!(body["control"], json!(expected));
+		assert_eq!(
+			federation
+				.store
+				.inspect_run(&TEST_FIXTURE, run.id)
+				.await
+				.unwrap()
+				.control,
+			expected
+		);
+	}
+	assert_eq!(
+		call(
+			&app,
+			"POST",
+			&grant_path,
+			false,
+			false,
+			None,
+			true,
+			json!({"enabled":false,"expected_revision":0})
+		)
+		.await
+		.0,
+		409
+	);
+	for path in [
+		"/api/marketplace",
+		"/api/transactions",
+		"/api/generation/acme/policies/research",
+		"/api/generation/acme/requests/00000000-0000-0000-0000-000000000001/control",
+		"/api/workspaces/00000000-0000-0000-0000-000000000001/semantic/index",
+		"/api/workspaces/00000000-0000-0000-0000-000000000001/semantic/search",
+		"/api/workspaces/00000000-0000-0000-0000-000000000001/semantic/entries",
+		"/api/workspaces/00000000-0000-0000-0000-000000000001/semantic/entries/00000000-0000-0000-0000-000000000002/reindex",
+		"/api/remote",
+		"/api/workbench/drafts",
+		"/api/workbench/agents/legacy-agent/1.0.0/adopt",
+		"/api/workbench/versions/legacy-agent/1.0.0/permissions",
+	] {
+		assert_ne!(
+			call(
+				&app,
+				"POST",
+				path,
+				true,
+				true,
+				Some("deployment_administrator"),
+				false,
+				Value::Null
+			)
+			.await
+			.0,
+			403,
+			"Deployment Administrator route {path} must reach its handler"
+		);
+	}
+	assert_ne!(
+		call(
+			&app,
+			"DELETE",
+			"/api/workspaces/00000000-0000-0000-0000-000000000001/semantic/entries/00000000-0000-0000-0000-000000000002",
+			true,
+			true,
+			Some("deployment_administrator"),
+			false,
+			Value::Null,
+		)
+		.await
+		.0,
+		403
+	);
+	// The boundary holds a shared lock on the Deployment Administrator's own identity until the
+	// mutation commits, so self Display Erasure must be refused rather than stall.
+	let self_erasure = tokio::time::timeout(
+		std::time::Duration::from_secs(20),
+		call(
+			&app,
+			"POST",
+			&format!("/api/dashboard/identities/{identity_id}/display-erasure"),
+			true,
+			true,
+			Some("deployment_administrator"),
+			false,
+			Value::Null,
+		),
+	)
+	.await
+	.expect("self display erasure must not wait on the boundary's identity lock");
+	assert_eq!(self_erasure.0, 403, "{}", self_erasure.1);
+	// Approving or rejecting one's own Registration Request would also wait on
+	// that lock, so the boundary refuses it before taking the Deployment Administrator lease.
+	let own_registration = Uuid::new_v4();
+	sqlx::query(
+		&Query::insert()
+			.into_table(Alias::new("dashboard_registration_requests"))
+			.columns(["id", "identity_id", "status", "created_at", "expires_at"].map(Alias::new))
+			.from_subquery(
+				reinhardt::query::Query::select()
+					.expr(Expr::cust("$1"))
+					.expr(Expr::cust("$2"))
+					.expr(Expr::cust("'pending'"))
+					.expr(Expr::cust("clock_timestamp()"))
+					.expr(Expr::cust("clock_timestamp()+interval '7 days'"))
+					.to_owned(),
+			)
+			.to_string(PostgresQueryBuilder),
+	)
+	.bind(own_registration)
+	.bind(identity_id)
+	.execute(federation.store.pool.fixture_driver())
+	.await
+	.unwrap();
+	for (decision, body) in [
+		("approve", json!({"tenant":"acme","subject":"self"})),
+		("reject", Value::Null),
+	] {
+		let (status, response) = tokio::time::timeout(
+			std::time::Duration::from_secs(20),
+			call(
+				&app,
+				"POST",
+				&format!("/api/dashboard/registrations/{own_registration}/{decision}"),
+				true,
+				true,
+				Some("deployment_administrator"),
+				false,
+				body,
+			),
+		)
+		.await
+		.expect("a self registration decision must not wait on the boundary's identity lock");
+		assert_eq!(status, 403, "{decision}: {response}");
+	}
+	let stream_response = app
+		.streaming_http
+		.clone()
+		.request(Method::GET, app.url("/api/events/stream?after=-1"))
+		.header("cookie", "__Host-aidash-session=fixture-session")
+		.header("x-aidash-context", "deployment_administrator")
+		.send()
+		.await
+		.unwrap();
+	assert_eq!(stream_response.status(), 200);
+	let mut deployment_administrator_stream = stream_response.bytes_stream();
+	assert_eq!(
+		call(
+			&app,
+			"POST",
+			"/api/generation/acme/tasks/00000000-0000-0000-0000-000000000001/assign",
+			true,
+			true,
+			Some("deployment_administrator"),
+			false,
+			Value::Null
+		)
+		.await
+		.0,
+		403
+	);
+	let (status, revoked) = call(
+		&app,
+		"POST",
+		&grant_path,
+		false,
+		false,
+		None,
+		true,
+		json!({"enabled":false,"expected_revision":1}),
+	)
+	.await;
+	assert_eq!(status, 200, "{revoked}");
+	assert_eq!(revoked["revision"], 2);
+	assert_eq!(
+		call(
+			&app,
+			"POST",
+			&run_management,
+			true,
+			true,
+			Some("deployment_administrator"),
+			false,
+			json!({"action":"pause"})
+		)
+		.await
+		.0,
+		403,
+		"a revoked Deployment Administrator grant must still deny management writes"
+	);
+	assert!(
+		tokio::time::timeout(
+			std::time::Duration::from_secs(7),
+			deployment_administrator_stream.next()
+		)
+		.await
+		.unwrap()
+		.is_none()
+	);
+	assert_eq!(
+		call(
+			&app,
+			"POST",
+			&grant_path,
+			false,
+			false,
+			None,
+			true,
+			json!({"enabled":true,"expected_revision":1})
+		)
+		.await
+		.0,
+		409
+	);
+	assert_eq!(
+		call(
+			&app,
+			"GET",
+			"/api/session",
+			false,
+			false,
+			None,
+			true,
+			Value::Null
+		)
+		.await
+		.0,
+		200
+	);
+	assert_eq!(
+		call(
+			&app,
+			"POST",
+			"/auth/logout",
+			true,
+			true,
+			None,
+			false,
+			Value::Null
+		)
+		.await
+		.0,
+		204
+	);
+	assert_eq!(
+		call(
+			&app,
+			"GET",
+			"/auth/session",
+			true,
+			false,
+			None,
+			false,
+			Value::Null
+		)
+		.await
+		.0,
+		401
+	);
+	let expire_session = Query::update()
+		.table(Alias::new("dashboard_sessions"))
+		.value_expr(
+			Alias::new("expires_at"),
+			Expr::cust("clock_timestamp()-interval '1 second'"),
+		)
+		.to_string(PostgresQueryBuilder);
+	sqlx::query(&expire_session)
+		.execute(federation.store.pool.fixture_driver())
+		.await
+		.unwrap();
+	let (stop, stopping) = expiry_control;
+	// Act: refresh the sessions after the preceding expiry or issuer mutation.
+	let refresh = tokio::spawn(aidash_server::dashboard_auth::refresh_active(
+		federation.clone(),
+		stopping,
+	));
+	let count_query = Query::select()
+		.expr(Expr::cust("count(*)"))
+		.from(Alias::new("dashboard_sessions"))
+		.to_string(PostgresQueryBuilder);
+	tokio::time::timeout(std::time::Duration::from_secs(5), async {
+		loop {
+			let count: i64 = sqlx::query_scalar(&count_query)
+				.fetch_one(federation.store.pool.fixture_driver())
+				.await
+				.unwrap();
+			if count == 0 {
+				break;
+			}
+			tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+		}
+	})
+	.await
+	.unwrap();
+	stop.send(true).unwrap();
+	refresh.await.unwrap().unwrap();
+	for index in 0..205 {
+		sqlx::query(&insert_identity)
+			.bind(Uuid::new_v4())
+			.bind(issuer)
+			.bind(format!("paged-{index:03}"))
+			.execute(federation.store.pool.fixture_driver())
+			.await
+			.unwrap();
+	}
+	let (status, first_page) = call(
+		&app,
+		"GET",
+		"/api/dashboard/identities?offset=0",
+		false,
+		false,
+		None,
+		true,
+		Value::Null,
+	)
+	.await;
+	assert_eq!(status, 200);
+	assert_eq!(first_page.as_array().unwrap().len(), 200);
+	let (status, second_page) = call(
+		&app,
+		"GET",
+		"/api/dashboard/identities?offset=200",
+		false,
+		false,
+		None,
+		true,
+		Value::Null,
+	)
+	.await;
+	assert_eq!(status, 200);
+	assert_eq!(second_page.as_array().unwrap().len(), 6);
+	let first_ids: std::collections::HashSet<_> = first_page
+		.as_array()
+		.unwrap()
+		.iter()
+		.map(|identity| identity["id"].as_str().unwrap())
+		.collect();
+	assert!(
+		second_page
+			.as_array()
+			.unwrap()
+			.iter()
+			.all(|identity| !first_ids.contains(identity["id"].as_str().unwrap()))
+	);
+	let insert_credential = Query::insert()
+		.into_table(Alias::new("authorization_credentials"))
+		.columns(
+			[
+				"id",
+				"tenant",
+				"subject",
+				"token_hash",
+				"expires_at",
+				"issued_by",
+			]
+			.map(Alias::new),
+		)
+		.from_subquery(
+			reinhardt::query::Query::select()
+				.expr(Expr::cust("$1"))
+				.expr(Expr::cust("$2"))
+				.expr(Expr::cust("$3"))
+				.expr(Expr::cust("$4"))
+				.expr(Expr::cust("clock_timestamp()+interval '12 hours'"))
+				.expr(Expr::cust("$5"))
+				.to_owned(),
+		)
+		.to_string(PostgresQueryBuilder);
+	let insert_mapping = Query::insert()
+		.into_table(Alias::new("dashboard_mappings"))
+		.columns(["id", "identity_id", "tenant", "subject", "credential_id"].map(Alias::new))
+		.from_subquery(
+			reinhardt::query::Query::select()
+				.expr(Expr::cust("$1"))
+				.expr(Expr::cust("$2"))
+				.expr(Expr::cust("$3"))
+				.expr(Expr::cust("$4"))
+				.expr(Expr::cust("$5"))
+				.to_owned(),
+		)
+		.to_string(PostgresQueryBuilder);
+	for index in 0..205 {
+		let mapping_id = Uuid::new_v4();
+		let credential_id = Uuid::new_v4();
+		let subject = format!("paged-{index:03}");
+		sqlx::query(&insert_credential)
+			.bind(credential_id)
+			.bind("acme")
+			.bind(&subject)
+			.bind(Sha256::digest(format!("mapping-token-{index}")).to_vec())
+			.bind("deployment_administrator")
+			.execute(federation.store.pool.fixture_driver())
+			.await
+			.unwrap();
+		sqlx::query(&insert_mapping)
+			.bind(mapping_id)
+			.bind(identity_id)
+			.bind("acme")
+			.bind(subject)
+			.bind(credential_id)
+			.execute(federation.store.pool.fixture_driver())
+			.await
+			.unwrap();
+	}
+	let (status, first_mapping_page) = call(
+		&app,
+		"GET",
+		"/api/dashboard/mappings?offset=0",
+		false,
+		false,
+		None,
+		true,
+		Value::Null,
+	)
+	.await;
+	assert_eq!(status, 200);
+	assert_eq!(first_mapping_page.as_array().unwrap().len(), 200);
+	let (status, second_mapping_page) = call(
+		&app,
+		"GET",
+		"/api/dashboard/mappings?offset=200",
+		false,
+		false,
+		None,
+		true,
+		Value::Null,
+	)
+	.await;
+	assert_eq!(status, 200);
+	assert_eq!(second_mapping_page.as_array().unwrap().len(), 6);
+	let first_mapping_ids: std::collections::HashSet<_> = first_mapping_page
+		.as_array()
+		.unwrap()
+		.iter()
+		.map(|mapping| mapping["id"].as_str().unwrap())
+		.collect();
+	assert!(
+		second_mapping_page
+			.as_array()
+			.unwrap()
+			.iter()
+			.all(|mapping| !first_mapping_ids.contains(mapping["id"].as_str().unwrap()))
+	);
+	sqlx::query(&insert_session)
+		.bind(Uuid::new_v4())
+		.bind(common::browser_session_digest(b"issuer-change-session"))
+		.bind(Sha256::digest(b"issuer-change-csrf").to_vec())
+		.bind(identity_id)
+		.execute(federation.store.pool.fixture_driver())
+		.await
+		.unwrap();
+	let mut changed_issuer = federation.clone();
+	changed_issuer.config.oidc.as_mut().unwrap().issuer = "http://127.0.0.1:18099/other".into();
+	let (stop, stopping) = issuer_control;
+	// Act: refresh the sessions after the preceding expiry or issuer mutation.
+	let refresh = tokio::spawn(aidash_server::dashboard_auth::refresh_active(
+		changed_issuer,
+		stopping,
+	));
+	let disabled = Query::select()
+		.column(Alias::new("disabled_at"))
+		.from(Alias::new("dashboard_identities"))
+		.and_where(
+			reinhardt::query::SimpleExpr::from(Expr::col(Alias::new("id"))).eq(Expr::cust("$1")),
+		)
+		.to_string(PostgresQueryBuilder);
+	tokio::time::timeout(std::time::Duration::from_secs(5), async {
+		loop {
+			let disabled_at: Option<chrono::DateTime<chrono::Utc>> = sqlx::query_scalar(&disabled)
+				.bind(identity_id)
+				.fetch_one(federation.store.pool.fixture_driver())
+				.await
+				.unwrap();
+			if disabled_at.is_some() {
+				break;
+			}
+			tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+		}
+	})
+	.await
+	.unwrap();
+	stop.send(true).unwrap();
+	refresh.await.unwrap().unwrap();
+	common::cleanup(federation, &url, &schema).await;
+}
+
+struct GoogleBrowser {
+	federation: aidash_server::federation::Federation,
+	app: common::TestApplication,
+	url: String,
+	database: String,
+	identity: Uuid,
+	// Retains the disposable database and its environment for the test.
+	_runtime: common::RuntimeFixture,
+}
+
+#[rstest::fixture]
+async fn google_browser(#[from(common::runtime)] runtime: common::RuntimeFuture) -> GoogleBrowser {
+	let runtime = runtime.await;
+	let (mut federation, url, database) = runtime.parts();
+	// Personal Tenants follow the Tenancy Rules, not the issuer.
+	federation.config.tenancy.personal_tenants = true;
+	federation.config.oidc = Some(OidcConfig {
+		issuer: "https://accounts.google.com".into(),
+		client_id: "aidash".into(),
+		client_secret: "test-secret".into(),
+		public_origin: "https://127.0.0.1:8080".into(),
+		session_absolute_seconds: 43_200,
+		session_idle_seconds: 1_800,
+	});
+	// A session established before personal onboarding was deployed. The HTTP
+	// request must create all personal authority; the fixture supplies none.
+	let identity = Uuid::new_v4();
+	let identity_query = Query::insert()
+		.into_table(Alias::new("dashboard_identities"))
+		.columns(["id", "issuer", "subject", "last_valid_at"].map(Alias::new))
+		.from_subquery(
+			Query::select()
+				.expr(Expr::cust("$1"))
+				.expr(Expr::value("https://accounts.google.com"))
+				.expr(Expr::value("google-browser-user"))
+				.expr(Expr::cust("clock_timestamp()"))
+				.to_owned(),
+		)
+		.to_string(PostgresQueryBuilder);
+	sqlx::query(&identity_query)
+		.bind(identity)
+		.execute(federation.store.pool.fixture_driver())
+		.await
+		.unwrap();
+	let session_query = Query::insert()
+		.into_table(Alias::new("dashboard_sessions"))
+		.columns(
+			[
+				"id",
+				"token_hash",
+				"csrf_hash",
+				"identity_id",
+				"created_at",
+				"last_activity_at",
+				"expires_at",
+			]
+			.map(Alias::new),
+		)
+		.from_subquery(
+			Query::select()
+				.expr(Expr::cust("$1"))
+				.expr(Expr::cust("$2"))
+				.expr(Expr::cust("$3"))
+				.expr(Expr::cust("$4"))
+				.expr(Expr::cust("clock_timestamp()"))
+				.expr(Expr::cust("clock_timestamp()"))
+				.expr(Expr::cust("clock_timestamp()+interval '12 hours'"))
+				.to_owned(),
+		)
+		.to_string(PostgresQueryBuilder);
+	sqlx::query(&session_query)
+		.bind(Uuid::new_v4())
+		.bind(common::browser_session_digest(b"fixture-session"))
+		.bind(Sha256::digest(b"fixture-csrf").to_vec())
+		.bind(identity)
+		.execute(federation.store.pool.fixture_driver())
+		.await
+		.unwrap();
+	let app = common::application(federation.clone()).await;
+	GoogleBrowser {
+		federation,
+		app,
+		url,
+		database,
+		identity,
+		_runtime: runtime,
+	}
+}
+
+#[rstest::rstest]
+#[case::without_registration(false)]
+#[case::pending_shared_registration(true)]
+#[tokio::test]
+async fn google_session_provisions_private_access_without_registration(
+	#[case] with_pending: bool,
+	#[future(awt)]
+	#[from(google_browser)]
+	fixture: GoogleBrowser,
+) {
+	// Arrange: an existing Google browser session has no local authority.
+	let shared_policy: PolicyBundle = serde_json::from_value(json!({
+		"tenant":"acme","subjects":{"alice":{"kind":"user"}},
+		"policies":[{"id":"shared-user","effect":"allow","subjects":{"ids":["alice"]},
+		"actions":["*"],"resources":{"kinds":["*"]}}]
+	}))
+	.unwrap();
+	common::tenant_root_in(fixture.federation.store.pool.fixture_driver(), "acme").await;
+	Authorization {
+		pool: fixture.federation.store.pool.clone(),
+	}
+	.replace("acme", 0, shared_policy, "deployment_administrator")
+	.await
+	.unwrap();
+	let mut pending = None;
+	if with_pending {
+		let (status, registration) = call(
+			&fixture.app,
+			"POST",
+			"/auth/registration",
+			true,
+			true,
+			None,
+			false,
+			Value::Null,
+		)
+		.await;
+		assert_eq!(status, 200, "{registration}");
+		assert_eq!(registration["status"], "pending");
+		pending = Some(registration);
+	}
+	// Act: simultaneous requests resume that session and provision personal access.
+	let sessions = join_all((0..8).map(|_| {
+		call(
+			&fixture.app,
+			"GET",
+			"/auth/session",
+			true,
+			false,
+			None,
+			false,
+			Value::Null,
+		)
+	}))
+	.await;
+	let (status, session) = &sessions[0];
+	// Assert: personal access is available without granting Deployment Administrator authority.
+	assert_eq!(*status, 200, "{session}");
+	assert_eq!(session["deployment_administrator"], false);
+	assert_eq!(session["personal_account"], true);
+	assert_eq!(session["mappings"].as_array().unwrap().len(), 1);
+	assert_eq!(session["mappings"][0]["personal"], true);
+	assert_eq!(session["mappings"][0]["credential_active"], true);
+	for (status, concurrent) in &sessions {
+		assert_eq!(*status, 200, "{concurrent}");
+		assert_eq!(concurrent["mappings"], session["mappings"]);
+	}
+	let pending = match pending {
+		Some(pending) => pending,
+		None => {
+			let (status, registration) = call(
+				&fixture.app,
+				"GET",
+				"/auth/registration",
+				true,
+				false,
+				None,
+				false,
+				Value::Null,
+			)
+			.await;
+			assert_eq!(status, 200, "{registration}");
+			assert_eq!(registration, Value::Null);
+			let (status, pending) = call(
+				&fixture.app,
+				"POST",
+				"/auth/registration",
+				true,
+				true,
+				None,
+				false,
+				Value::Null,
+			)
+			.await;
+			assert_eq!(status, 200, "{pending}");
+			assert_eq!(pending["status"], "pending");
+			pending
+		}
+	};
+	let personal = &session["mappings"][0];
+	let context = format!(
+		"mapping:{}:{}",
+		personal["tenant"].as_str().unwrap(),
+		personal["id"].as_str().unwrap()
+	);
+	let (status, selected) = call(
+		&fixture.app,
+		"GET",
+		"/api/session",
+		true,
+		false,
+		Some(&context),
+		false,
+		Value::Null,
+	)
+	.await;
+	assert_eq!(status, 200, "{selected}");
+	assert_eq!(selected["access"]["tenant"], personal["tenant"]);
+	assert_eq!(selected["access"]["subject"], "owner");
+	assert_eq!(
+		call(
+			&fixture.app,
+			"GET",
+			"/api/dashboard/registrations",
+			true,
+			false,
+			Some("deployment_administrator"),
+			false,
+			Value::Null,
+		)
+		.await
+		.0,
+		403
+	);
+	let (status, still_pending) = call(
+		&fixture.app,
+		"GET",
+		"/auth/registration",
+		true,
+		false,
+		None,
+		false,
+		Value::Null,
+	)
+	.await;
+	assert_eq!(status, 200, "{still_pending}");
+	assert_eq!(still_pending["id"], pending["id"]);
+	assert_eq!(still_pending["status"], "pending");
+	let (status, own_workspace) = call(
+		&fixture.app,
+		"POST",
+		"/api/workspaces",
+		true,
+		true,
+		Some(&context),
+		false,
+		json!({"title":"Personal work","goal":"Use the private tenant"}),
+	)
+	.await;
+	assert_eq!(status, 200, "{own_workspace}");
+	assert_eq!(
+		call(
+			&fixture.app,
+			"GET",
+			&format!("/api/workspaces/{}", own_workspace["id"].as_str().unwrap()),
+			true,
+			false,
+			Some(&context),
+			false,
+			Value::Null,
+		)
+		.await
+		.0,
+		200
+	);
+	// Shared access still needs an explicit approval and coexists with personal access.
+	let (status, shared) = call(
+		&fixture.app,
+		"POST",
+		&format!(
+			"/api/dashboard/registrations/{}/approve",
+			pending["id"].as_str().unwrap()
+		),
+		false,
+		false,
+		None,
+		true,
+		json!({"tenant":"acme","subject":"alice"}),
+	)
+	.await;
+	assert_eq!(status, 200, "{shared}");
+	let shared_context = format!(
+		"mapping:{}:{}",
+		shared["tenant"].as_str().unwrap(),
+		shared["id"].as_str().unwrap()
+	);
+	let (status, shared_workspace) = call(
+		&fixture.app,
+		"POST",
+		"/api/workspaces",
+		true,
+		true,
+		Some(&shared_context),
+		false,
+		json!({"title":"Shared work","goal":"Keep shared data separate"}),
+	)
+	.await;
+	assert_eq!(status, 200, "{shared_workspace}");
+	assert_eq!(
+		call(
+			&fixture.app,
+			"GET",
+			&format!(
+				"/api/workspaces/{}",
+				shared_workspace["id"].as_str().unwrap()
+			),
+			true,
+			false,
+			Some(&context),
+			false,
+			Value::Null,
+		)
+		.await
+		.0,
+		403
+	);
+	let (status, both) = call(
+		&fixture.app,
+		"GET",
+		"/auth/session",
+		true,
+		false,
+		None,
+		false,
+		Value::Null,
+	)
+	.await;
+	assert_eq!(status, 200, "{both}");
+	let mappings = both["mappings"].as_array().unwrap();
+	assert_eq!(mappings.len(), 2);
+	assert!(mappings.iter().any(|mapping| mapping == personal));
+	assert!(
+		mappings
+			.iter()
+			.any(|mapping| { mapping["id"] == shared["id"] && mapping["personal"] == false })
+	);
+	let (status, next_request) = call(
+		&fixture.app,
+		"POST",
+		"/auth/registration",
+		true,
+		true,
+		None,
+		false,
+		Value::Null,
+	)
+	.await;
+	assert_eq!(status, 200, "{next_request}");
+	assert_eq!(next_request["status"], "pending");
+	assert_ne!(next_request["id"], pending["id"]);
+	let mappings_query = Query::select()
+		.expr(Expr::cust("count(*)"))
+		.from(Alias::new("dashboard_mappings"))
+		.and_where(Expr::col("identity_id").eq(Expr::cust("$1")))
+		.to_string(PostgresQueryBuilder);
+	let mapping_count: i64 = sqlx::query_scalar(&mappings_query)
+		.bind(fixture.identity)
+		.fetch_one(fixture.federation.store.pool.fixture_driver())
+		.await
+		.unwrap();
+	assert_eq!(mapping_count, 2);
+	common::cleanup(fixture.federation, &fixture.url, &fixture.database).await;
+}
+
+#[rstest::rstest]
+#[tokio::test]
+async fn google_session_never_adopts_an_existing_personal_tenant(
+	#[future(awt)]
+	#[from(google_browser)]
+	fixture: GoogleBrowser,
+) {
+	// Arrange: a Deployment Administrator already created a Tenant named after the identity.
+	let tenant = format!("personal-{}", fixture.identity.simple());
+	let policy: PolicyBundle = serde_json::from_value(json!({
+		"tenant":tenant,"subjects":{"existing-user":{"kind":"user"}},"policies":[]
+	}))
+	.unwrap();
+	let authorization = Authorization {
+		pool: fixture.federation.store.pool.clone(),
+	};
+	common::tenant_root_in(fixture.federation.store.pool.fixture_driver(), &tenant).await;
+	let before = authorization
+		.replace(&tenant, 0, policy, "deployment_administrator")
+		.await
+		.unwrap();
+	// Act: resumable Google authentication must not claim existing tenant data.
+	let (status, response) = call(
+		&fixture.app,
+		"GET",
+		"/auth/session",
+		true,
+		false,
+		None,
+		false,
+		Value::Null,
+	)
+	.await;
+	// Assert: the Personal Tenant gets an assigned name, so the existing
+	// Tenant gains no authority and keeps its policy.
+	assert_eq!(status, 200, "{response}");
+	assert_eq!(
+		response["mappings"].as_array().unwrap().len(),
+		1,
+		"{response}"
+	);
+	assert_ne!(response["mappings"][0]["tenant"], tenant.as_str());
+	for table in ["dashboard_mappings", "authorization_credentials"] {
+		let count = Query::select()
+			.expr(Expr::cust("count(*)"))
+			.from(Alias::new(table))
+			.and_where(Expr::col("tenant").eq(Expr::cust("$1")))
+			.to_string(PostgresQueryBuilder);
+		let rows: i64 = sqlx::query_scalar(&count)
+			.bind(&tenant)
+			.fetch_one(fixture.federation.store.pool.fixture_driver())
+			.await
+			.unwrap();
+		assert_eq!(rows, 0, "{table}");
+	}
+	let after = authorization.snapshot(&tenant).await.unwrap();
+	assert_eq!(after.revision, before.revision);
+	assert_eq!(
+		serde_json::to_value(after.bundle).unwrap(),
+		serde_json::to_value(before.bundle).unwrap()
+	);
+	common::cleanup(fixture.federation, &fixture.url, &fixture.database).await;
+}
+
+#[rstest::rstest]
+#[case::disabled_mapping("mapping", 200, 403)]
+#[case::revoked_credential("credential", 200, 401)]
+#[case::disabled_subject("subject", 200, 403)]
+#[case::disabled_identity("identity", 403, 403)]
+#[tokio::test]
+async fn google_session_does_not_restore_revoked_personal_authority(
+	#[case] revoked: &str,
+	#[case] session_status: u16,
+	#[case] access_status: u16,
+	#[future(awt)]
+	#[from(google_browser)]
+	fixture: GoogleBrowser,
+) {
+	// Arrange: provision real authority, then independently revoke one of its fences.
+	let (status, session) = call(
+		&fixture.app,
+		"GET",
+		"/auth/session",
+		true,
+		false,
+		None,
+		false,
+		Value::Null,
+	)
+	.await;
+	assert_eq!(status, 200, "{session}");
+	let mapping = &session["mappings"][0];
+	let mapping_id = mapping["id"].as_str().unwrap().parse::<Uuid>().unwrap();
+	let tenant = mapping["tenant"].as_str().unwrap();
+	let context = format!("mapping:{tenant}:{mapping_id}");
+	let credential_query = Query::select()
+		.column(Alias::new("credential_id"))
+		.from(Alias::new("dashboard_mappings"))
+		.and_where(Expr::col("id").eq(Expr::cust("$1")))
+		.to_string(PostgresQueryBuilder);
+	let credential: Uuid = sqlx::query_scalar(&credential_query)
+		.bind(mapping_id)
+		.fetch_one(fixture.federation.store.pool.fixture_driver())
+		.await
+		.unwrap();
+	let authorization = Authorization {
+		pool: fixture.federation.store.pool.clone(),
+	};
+	match revoked {
+		"mapping" => {
+			assert_eq!(
+				call(
+					&fixture.app,
+					"POST",
+					&format!("/api/dashboard/mappings/{mapping_id}/disable"),
+					false,
+					false,
+					None,
+					true,
+					json!({"expected_revision":1}),
+				)
+				.await
+				.0,
+				204
+			);
+		}
+		"subject" => {
+			let mut policy = authorization.snapshot(tenant).await.unwrap();
+			policy.bundle.subjects.get_mut("owner").unwrap().enabled = false;
+			authorization
+				.replace(
+					tenant,
+					policy.revision,
+					policy.bundle,
+					"deployment_administrator",
+				)
+				.await
+				.unwrap();
+		}
+		"credential" | "identity" => {
+			// These persisted fences can be changed independently of onboarding.
+			// Internal dashboard credentials deliberately have no bearer revoke API.
+			let (table, column, id) = if revoked == "credential" {
+				("authorization_credentials", "revoked_at", credential)
+			} else {
+				("dashboard_identities", "disabled_at", fixture.identity)
+			};
+			let update = Query::update()
+				.table(Alias::new(table))
+				.value_expr(Alias::new(column), Expr::cust("clock_timestamp()"))
+				.and_where(Expr::col("id").eq(Expr::cust("$1")))
+				.to_string(PostgresQueryBuilder);
+			sqlx::query(&update)
+				.bind(id)
+				.execute(fixture.federation.store.pool.fixture_driver())
+				.await
+				.unwrap();
+		}
+		_ => unreachable!(),
+	}
+	let policy_before = authorization.snapshot(tenant).await.unwrap();
+	// Act: repeated session requests must not create fresh authority around revocation.
+	for _ in 0..2 {
+		let (status, resumed) = call(
+			&fixture.app,
+			"GET",
+			"/auth/session",
+			true,
+			false,
+			None,
+			false,
+			Value::Null,
+		)
+		.await;
+		assert_eq!(status, session_status, "{revoked}: {resumed}");
+		match revoked {
+			// A disabled personal Mapping is omitted, but the direct Google
+			// identity can still request shared Tenant access.
+			"mapping" => {
+				assert_eq!(resumed["mappings"], json!([]));
+				assert_eq!(resumed["personal_account"], true);
+			}
+			// The dashboard must not auto-select authority that can only fail
+			// authentication and end the browser session.
+			"credential" => {
+				assert_eq!(resumed["mappings"][0]["personal"], true);
+				assert_eq!(resumed["mappings"][0]["credential_active"], false);
+			}
+			"subject" => assert_eq!(resumed["mappings"][0]["credential_active"], true),
+			_ => {}
+		}
+	}
+	// Assert: the original authority remains fenced and is never replaced or reset.
+	assert_eq!(
+		call(
+			&fixture.app,
+			"GET",
+			"/api/session",
+			true,
+			false,
+			Some(&context),
+			false,
+			Value::Null,
+		)
+		.await
+		.0,
+		access_status,
+		"{revoked}"
+	);
+	let current_credential: Uuid = sqlx::query_scalar(&credential_query)
+		.bind(mapping_id)
+		.fetch_one(fixture.federation.store.pool.fixture_driver())
+		.await
+		.unwrap();
+	assert_eq!(current_credential, credential);
+	for table in ["dashboard_mappings", "authorization_credentials"] {
+		let count = Query::select()
+			.expr(Expr::cust("count(*)"))
+			.from(Alias::new(table))
+			.and_where(Expr::col("tenant").eq(Expr::cust("$1")))
+			.to_string(PostgresQueryBuilder);
+		let rows: i64 = sqlx::query_scalar(&count)
+			.bind(tenant)
+			.fetch_one(fixture.federation.store.pool.fixture_driver())
+			.await
+			.unwrap();
+		assert_eq!(rows, 1, "{table}");
+	}
+	let policy_after = authorization.snapshot(tenant).await.unwrap();
+	assert_eq!(policy_after.revision, policy_before.revision);
+	assert_eq!(
+		serde_json::to_value(policy_after.bundle).unwrap(),
+		serde_json::to_value(policy_before.bundle).unwrap()
+	);
+	common::cleanup(fixture.federation, &fixture.url, &fixture.database).await;
+}
+
+/// Seeds a Google External Identity with Display Attributes and a live
+/// session whose cookie is `session` and whose CSRF token is `{session}-csrf`.
+async fn google_identity(
+	federation: &aidash_server::federation::Federation,
+	subject: &str,
+	session: &str,
+) -> Uuid {
+	let identity = Uuid::new_v4();
+	let identity_query = Query::insert()
+		.into_table(Alias::new("dashboard_identities"))
+		.columns(
+			[
+				"id",
+				"issuer",
+				"subject",
+				"verified_email",
+				"display_name",
+				"last_valid_at",
+			]
+			.map(Alias::new),
+		)
+		.from_subquery(
+			Query::select()
+				.expr(Expr::cust("$1"))
+				.expr(Expr::value("https://accounts.google.com"))
+				.expr(Expr::value(subject))
+				.expr(Expr::value(format!("{subject}@example.test")))
+				.expr(Expr::value(format!("Display {subject}")))
+				.expr(Expr::cust("clock_timestamp()"))
+				.to_owned(),
+		)
+		.to_string(PostgresQueryBuilder);
+	sqlx::query(&identity_query)
+		.bind(identity)
+		.execute(federation.store.pool.fixture_driver())
+		.await
+		.unwrap();
+	let session_query = Query::insert()
+		.into_table(Alias::new("dashboard_sessions"))
+		.columns(
+			[
+				"id",
+				"token_hash",
+				"csrf_hash",
+				"identity_id",
+				"created_at",
+				"last_activity_at",
+				"expires_at",
+			]
+			.map(Alias::new),
+		)
+		.from_subquery(
+			Query::select()
+				.expr(Expr::cust("$1"))
+				.expr(Expr::cust("$2"))
+				.expr(Expr::cust("$3"))
+				.expr(Expr::cust("$4"))
+				.expr(Expr::cust("clock_timestamp()"))
+				.expr(Expr::cust("clock_timestamp()"))
+				.expr(Expr::cust("clock_timestamp()+interval '12 hours'"))
+				.to_owned(),
+		)
+		.to_string(PostgresQueryBuilder);
+	sqlx::query(&session_query)
+		.bind(Uuid::new_v4())
+		.bind(common::browser_session_digest(session.as_bytes()))
+		.bind(Sha256::digest(format!("{session}-csrf").as_bytes()).to_vec())
+		.bind(identity)
+		.execute(federation.store.pool.fixture_driver())
+		.await
+		.unwrap();
+	identity
+}
+
+/// A browser request through the session `session`, optionally acting in
+/// `context`; `None` as the session sends the Deployment Administrator bearer token instead.
+async fn browser_call(
+	app: &common::TestApplication,
+	method: &str,
+	path: &str,
+	session: Option<&str>,
+	context: Option<&str>,
+	body: Value,
+) -> (u16, Value) {
+	let mut request = app
+		.api_http
+		.request(
+			Method::from_bytes(method.as_bytes()).unwrap(),
+			&app.url(path),
+		)
+		.header("content-type", "application/json");
+	request = match session {
+		Some(session) => request
+			.header("cookie", format!("__Host-aidash-session={session}"))
+			.header("origin", "https://127.0.0.1:8080")
+			.header("x-aidash-csrf", format!("{session}-csrf")),
+		None => request.header(
+			"authorization",
+			"Bearer deployment-administrator-execution-fixture",
+		),
+	};
+	if let Some(context) = context {
+		request = request.header("x-aidash-context", context);
+	}
+	let response = request.json(&body).send().await.unwrap();
+	let status = response.status().as_u16();
+	(
+		status,
+		serde_json::from_slice(response.body()).unwrap_or(Value::Null),
+	)
+}
+
+/// Registers `session`'s External Identity and lets a Deployment Administrator approve it
+/// into `subject` of `tenant`, returning the approved Mapping.
+async fn deployment_administrator_mapped(
+	app: &common::TestApplication,
+	session: &str,
+	tenant: &str,
+	subject: &str,
+) -> Value {
+	let (status, registration) = browser_call(
+		app,
+		"POST",
+		"/auth/registration",
+		Some(session),
+		None,
+		Value::Null,
+	)
+	.await;
+	assert_eq!(status, 200, "{registration}");
+	let (status, mapping) = browser_call(
+		app,
+		"POST",
+		&format!(
+			"/api/dashboard/registrations/{}/approve",
+			registration["id"].as_str().unwrap()
+		),
+		None,
+		None,
+		json!({"tenant": tenant, "subject": subject}),
+	)
+	.await;
+	assert_eq!(status, 200, "{mapping}");
+	mapping
+}
+
+#[rstest::rstest]
+#[tokio::test]
+async fn tenant_administration_works_without_a_tenant_binding(
+	#[future(awt)]
+	#[from(google_browser)]
+	fixture: GoogleBrowser,
+) {
+	// Arrange: a Deployment Administrator seeds an unbound Tenant with an administrator and a
+	// member. Google sign-in has no Tenant Bindings at all.
+	let actions = aidash_domain::identity::tenant_administration::ACTIONS;
+	let policy: PolicyBundle = serde_json::from_value(json!({
+		"tenant": "acme",
+		"roles": {"admin": {}, "member": {}},
+		"groups": {
+			"administrators": {"roles": ["admin"]},
+			"members": {"roles": ["member"], "assignable": true}
+		},
+		"subjects": {
+			"root": {"kind": "user", "groups": ["administrators"]},
+			"bob": {"kind": "user"}
+		},
+		"policies": [{
+			"id": "tenant-administrators",
+			"effect": "allow",
+			"subjects": {"groups": ["administrators"]},
+			"actions": actions,
+			"resources": {"kinds": actions
+				.iter()
+				.map(|action| aidash_domain::identity::tenant_administration::resource_kind(action))
+				.collect::<std::collections::BTreeSet<_>>()},
+			"condition": null
+		}, {
+			// The last-administrator guard also needs someone who can delete the Tenant.
+			"id": "tenant-deletion",
+			"effect": "allow",
+			"subjects": {"groups": ["administrators"]},
+			"actions": ["tenant.delete"],
+			"resources": {"kinds": ["tenant"]},
+			"condition": null
+		}]
+	}))
+	.unwrap();
+	common::tenant_root_in(fixture.federation.store.pool.fixture_driver(), "acme").await;
+	Authorization {
+		pool: fixture.federation.store.pool.clone(),
+	}
+	.replace("acme", 0, policy, "deployment_administrator")
+	.await
+	.unwrap();
+	let app = &fixture.app;
+	google_identity(&fixture.federation, "alice", "alice-session").await;
+	google_identity(&fixture.federation, "bob", "bob-session").await;
+	google_identity(&fixture.federation, "carol", "carol-session").await;
+	let alice = deployment_administrator_mapped(app, "alice-session", "acme", "root").await;
+	let bob = deployment_administrator_mapped(app, "bob-session", "acme", "bob").await;
+	let alice_context = format!(
+		"mapping:{}:{}",
+		alice["tenant"].as_str().unwrap(),
+		alice["id"].as_str().unwrap()
+	);
+	let bob_context = format!(
+		"mapping:{}:{}",
+		bob["tenant"].as_str().unwrap(),
+		bob["id"].as_str().unwrap()
+	);
+	// Carol's request is generic: it is addressed to no Tenant.
+	let (status, carol) = browser_call(
+		app,
+		"POST",
+		"/auth/registration",
+		Some("carol-session"),
+		None,
+		Value::Null,
+	)
+	.await;
+	assert_eq!(status, 200, "{carol}");
+	let call = |session: &'static str, context: &str, method: &'static str, path: &str| {
+		let context = context.to_owned();
+		let path = path.to_owned();
+		async move {
+			browser_call(
+				app,
+				method,
+				&path,
+				Some(session),
+				Some(&context),
+				Value::Null,
+			)
+			.await
+		}
+	};
+
+	// Act and assert: the administrator holds every administration action.
+	let (status, overview) = call(
+		"alice-session",
+		&alice_context,
+		"GET",
+		"/api/tenants/acme/administration",
+	)
+	.await;
+	assert_eq!(status, 200, "{overview}");
+	let mut expected = actions.to_vec();
+	expected.push(aidash_domain::identity::tenancy::TENANT_DELETE);
+	assert_eq!(overview["actions"], json!(expected));
+	assert_eq!(overview["assignable_groups"], json!(["members"]));
+	// No Registration Request is addressed to an unbound Tenant.
+	let (status, registrations) = call(
+		"alice-session",
+		&alice_context,
+		"GET",
+		"/api/tenants/acme/registrations",
+	)
+	.await;
+	assert_eq!(status, 200, "{registrations}");
+	assert_eq!(registrations, json!([]));
+	let (status, _) = browser_call(
+		app,
+		"POST",
+		&format!(
+			"/api/tenants/acme/registrations/{}/approve",
+			carol["id"].as_str().unwrap()
+		),
+		Some("alice-session"),
+		Some(&alice_context),
+		json!({"subject": "carol", "groups": ["members"]}),
+	)
+	.await;
+	assert_eq!(status, 404);
+	// Mapped identities are listed without their Display Attributes.
+	let (status, mappings) = call(
+		"alice-session",
+		&alice_context,
+		"GET",
+		"/api/tenants/acme/mappings",
+	)
+	.await;
+	assert_eq!(status, 200, "{mappings}");
+	let listed = mappings.as_array().unwrap();
+	assert_eq!(listed.len(), 2, "{mappings}");
+	let member = listed
+		.iter()
+		.find(|mapping| mapping["subject"] == "bob")
+		.unwrap();
+	assert_eq!(member["id"], bob["id"]);
+	assert_eq!(member["identity"]["verified_email"], Value::Null);
+	assert_eq!(member["identity"]["display_name"], Value::Null);
+	assert!(
+		listed
+			.iter()
+			.any(|mapping| mapping["subject"] == "root" && mapping["own_identity"] == true)
+	);
+	// An ordinary member holds no action and is refused with an audited 403.
+	let (status, member_overview) = call(
+		"bob-session",
+		&bob_context,
+		"GET",
+		"/api/tenants/acme/administration",
+	)
+	.await;
+	assert_eq!(status, 200, "{member_overview}");
+	assert_eq!(member_overview["actions"], json!([]));
+	let denial = Query::select()
+		.expr(Expr::cust("count(*)"))
+		.from(Alias::new("authorization_decisions"))
+		.and_where(Expr::cust(
+			"tenant = 'acme' AND subject = 'bob' AND action = 'mapping.read' \
+			 AND (decision ->> 'allowed')::boolean IS FALSE",
+		))
+		.to_string(PostgresQueryBuilder);
+	let denials = || async {
+		sqlx::query_scalar::<_, i64>(&denial)
+			.fetch_one(fixture.federation.store.pool.fixture_driver())
+			.await
+			.unwrap()
+	};
+	let before = denials().await;
+	let (status, _) = call(
+		"bob-session",
+		&bob_context,
+		"GET",
+		"/api/tenants/acme/mappings",
+	)
+	.await;
+	assert_eq!(status, 403);
+	assert_eq!(denials().await, before + 1);
+	// The administrator confers an Assignable Group and disables the member.
+	let (status, membership) = browser_call(
+		app,
+		"PUT",
+		"/api/tenants/acme/subjects/bob/groups",
+		Some("alice-session"),
+		Some(&alice_context),
+		json!({
+			"groups": ["members"],
+			"expected_policy_revision": overview["policy_revision"]
+		}),
+	)
+	.await;
+	assert_eq!(status, 200, "{membership}");
+	assert_eq!(membership["groups"], json!(["members"]));
+	let (status, disabled) = browser_call(
+		app,
+		"POST",
+		&format!(
+			"/api/tenants/acme/mappings/{}/disable",
+			bob["id"].as_str().unwrap()
+		),
+		Some("alice-session"),
+		Some(&alice_context),
+		json!({"expected_revision": member["revision"]}),
+	)
+	.await;
+	assert!(matches!(status, 200 | 204), "{status} {disabled}");
+	let history = Query::select()
+		.expr(Expr::cust("count(*)"))
+		.from(Alias::new("dashboard_administration_history"))
+		.and_where(Expr::cust(
+			"tenant = 'acme' AND actor_kind = 'tenant_administrator'",
+		))
+		.to_string(PostgresQueryBuilder);
+	let recorded: i64 = sqlx::query_scalar(&history)
+		.fetch_one(fixture.federation.store.pool.fixture_driver())
+		.await
+		.unwrap();
+	assert!(recorded >= 1, "{recorded}");
+	// The group change is recorded with its subject and acting administrator.
+	let group_changes = Query::select()
+		.expr(Expr::cust("count(*)"))
+		.from(Alias::new("dashboard_administration_history"))
+		.and_where(Expr::cust(
+			"action = 'subject.group.update' AND tenant = 'acme' AND subject = 'bob' \
+			 AND actor_kind = 'tenant_administrator' AND actor_identity_id IS NOT NULL",
+		))
+		.to_string(PostgresQueryBuilder);
+	let group_changes: i64 = sqlx::query_scalar(&group_changes)
+		.fetch_one(fixture.federation.store.pool.fixture_driver())
+		.await
+		.unwrap();
+	assert_eq!(group_changes, 1);
+	common::cleanup(fixture.federation, &fixture.url, &fixture.database).await;
+}
+
+// Redirect responses are the contract under test; following them contacts the issuer.
+#[rstest::fixture]
+fn browser_client() -> reinhardt::test::APIClientBuilder {
+	reinhardt::test::APIClient::builder().redirect_policy(reinhardt::test::RedirectPolicy::Never)
+}
+
+use reinhardt::query::QueryStatementBuilder;
+
+use reinhardt::query::ExprTrait;
+
+#[rstest::fixture]
+fn login_prunes_expired_transactions_and_bounds_pending_browser_logins_fixture_discoveries()
+-> Arc<AtomicUsize> {
+	Arc::new(AtomicUsize::new(0))
+}
+#[rstest::fixture]
+fn login_prunes_expired_transactions_and_bounds_pending_browser_logins_fixture_discovery_started()
+-> Arc<tokio::sync::Notify> {
+	Arc::new(tokio::sync::Notify::new())
+}
+#[rstest::fixture]
+fn login_prunes_expired_transactions_and_bounds_pending_browser_logins_fixture_discovery_release()
+-> Arc<tokio::sync::Notify> {
+	Arc::new(tokio::sync::Notify::new())
+}
+#[rstest::fixture]
+fn login_prunes_expired_transactions_and_bounds_pending_browser_logins_fixture_key_fetches()
+-> Arc<AtomicUsize> {
+	Arc::new(AtomicUsize::new(0))
+}
+#[rstest::fixture]
+fn login_prunes_expired_transactions_and_bounds_pending_browser_logins_fixture_router(
+	#[from(
+		login_prunes_expired_transactions_and_bounds_pending_browser_logins_fixture_discoveries
+	)]
+	discoveries: Arc<AtomicUsize>,
+	#[from(login_prunes_expired_transactions_and_bounds_pending_browser_logins_fixture_discovery_started)]
+	discovery_started: Arc<tokio::sync::Notify>,
+	#[from(login_prunes_expired_transactions_and_bounds_pending_browser_logins_fixture_discovery_release)]
+	discovery_release: Arc<tokio::sync::Notify>,
+	#[from(
+		login_prunes_expired_transactions_and_bounds_pending_browser_logins_fixture_key_fetches
+	)]
+	key_fetches: Arc<AtomicUsize>,
+	#[from(upstream_fixtures::fixed_listener)] listener: upstream_fixtures::ListenerFuture,
+) -> upstream_fixtures::RouterFuture {
+	async move {
+		let issuer = format!("http://{}/issuer", listener.await.local_addr().unwrap());
+		let metadata_issuer = issuer.clone();
+
+		let discovery_counter = discoveries.clone();
+
+		let started = discovery_started.clone();
+
+		let release = discovery_release.clone();
+
+		let key_counter = key_fetches.clone();
+		let fixture = reinhardt::test::stub::StubRouter::new()
+			.route(
+				"/issuer/.well-known/openid-configuration",
+				http::Method::GET,
+				reply(move |_request: reinhardt::Request| {
+					let issuer = metadata_issuer.clone();
+					discovery_counter.fetch_add(1, Ordering::SeqCst);
+					let started = started.clone();
+					let release = release.clone();
+					async move {
+						started.notify_one();
+						release.notified().await;
+						reinhardt::Response::ok()
+							.with_json(&json!({
+								"issuer": issuer,
+								"authorization_endpoint": format!("{issuer}/protocol/openid-connect/auth"),
+								"token_endpoint": format!("{issuer}/protocol/openid-connect/token"),
+								"jwks_uri": format!("{issuer}/certs"),
+								"response_types_supported": ["code"],
+								"subject_types_supported": ["public"],
+								"id_token_signing_alg_values_supported": ["RS256"]
+							}))
+							.unwrap()
+					}
+				}),
+			)
+			.route(
+				"/issuer/certs",
+				http::Method::GET,
+				reply(move |_request: reinhardt::Request| {
+					key_counter.fetch_add(1, Ordering::SeqCst);
+					async {
+						reinhardt::Response::ok()
+							.with_json(&json!({"keys": []}))
+							.unwrap()
+					}
+				}),
+			)
+			.into_server_router();
+		Arc::new(fixture)
+	}
+	.boxed()
+	.shared()
+}
+#[rstest::fixture]
+fn login_prunes_expired_transactions_and_bounds_pending_browser_logins_fixture_runtime(
+	#[from(upstream_fixtures::fixed_listener)] listener: upstream_fixtures::ListenerFuture,
+	#[from(common::runtime)] runtime: common::RuntimeFuture,
+) -> common::RuntimeFuture {
+	async move {
+		let issuer = format!("http://{}/issuer", listener.await.local_addr().unwrap());
+		let mut owner = runtime.await;
+		let federation = &mut owner.federation;
+		federation.config.oidc = Some(OidcConfig {
+			issuer: issuer.clone(),
+			client_id: "aidash".into(),
+			client_secret: "test-secret".into(),
+			public_origin: "https://127.0.0.1:8080".into(),
+			session_absolute_seconds: 43_200,
+			session_idle_seconds: 1_800,
+		});
+		owner
+	}
+	.boxed()
+	.shared()
+}
+
+struct LoginPrunesExpiredTransactionsAndBoundsPendingBrowserLoginsFixture {
+	application: common::ApplicationFixture,
+	server: upstream_fixtures::FixedServerGuard,
+	discoveries: Arc<AtomicUsize>,
+	discovery_started: Arc<tokio::sync::Notify>,
+	discovery_release: Arc<tokio::sync::Notify>,
+	key_fetches: Arc<AtomicUsize>,
+}
+#[rstest::fixture]
+async fn login_prunes_expired_transactions_and_bounds_pending_browser_logins_fixture(
+	#[from(login_state)] _state: LoginState,
+	#[from(upstream_fixtures::fixed_listener)] _listener: upstream_fixtures::ListenerFuture,
+	#[from(login_prunes_expired_transactions_and_bounds_pending_browser_logins_fixture_router)]
+	#[with(_state.discoveries.clone(),_state.discovery_started.clone(),_state.discovery_release.clone(),_state.key_fetches.clone(),_listener.clone())]
+	_router: upstream_fixtures::RouterFuture,
+	#[from(login_prunes_expired_transactions_and_bounds_pending_browser_logins_fixture_runtime)]
+	#[with(_listener.clone())]
+	_runtime: common::RuntimeFuture,
+	#[from(common::native_application)]
+	#[with(Default::default(),aidash_server::sse::Service::new(Default::default()),Arc::new(|r|r),_runtime.clone())]
+	application: common::ApplicationFuture,
+	#[future(awt)]
+	#[from(upstream_fixtures::fixed_upstream)]
+	#[with(None,_listener.clone(),_router.clone())]
+	server: upstream_fixtures::FixedServerGuard,
+	browser_client: reinhardt::test::APIClientBuilder,
+) -> LoginPrunesExpiredTransactionsAndBoundsPendingBrowserLoginsFixture {
+	let LoginState {
+		discoveries,
+		discovery_started,
+		discovery_release,
+		key_fetches,
+	} = _state;
+	let mut application = application.await;
+	application.application.api_http = Arc::new(
+		browser_client
+			.base_url(&application.application.server.url)
+			.build(),
+	);
+	LoginPrunesExpiredTransactionsAndBoundsPendingBrowserLoginsFixture {
+		application,
+		server,
+		discoveries,
+		discovery_started,
+		discovery_release,
+		key_fetches,
+	}
+}
+
+#[rstest::fixture]
+fn unmapped_identity_stays_denied_until_deployment_administrator_approves_existing_user_fixture_runtime(
+	#[default("https://accounts.google.com")] issuer: &str,
+	#[from(common::runtime)] runtime: common::RuntimeFuture,
+) -> common::RuntimeFuture {
+	let issuer = issuer.to_owned();
+	async move {
+		let mut owner = runtime.await;
+		let federation = &mut owner.federation;
+		federation.config.oidc = Some(OidcConfig {
+			issuer,
+			client_id: "aidash".into(),
+			client_secret: "test-secret".into(),
+			public_origin: "https://127.0.0.1:8080".into(),
+			session_absolute_seconds: 43_200,
+			session_idle_seconds: 1_800,
+		});
+		owner
+	}
+	.boxed()
+	.shared()
+}
+#[rstest::fixture]
+async fn unmapped_identity_stays_denied_until_deployment_administrator_approves_existing_user_fixture(
+	#[default("https://accounts.google.com")] _issuer: &str,
+	#[from(unmapped_identity_stays_denied_until_deployment_administrator_approves_existing_user_fixture_runtime)]
+	#[with(_issuer)]
+	_runtime: common::RuntimeFuture,
+	#[from(common::native_application)]
+	#[with(Default::default(),aidash_server::sse::Service::new(Default::default()),Arc::new(|r|r),_runtime.clone())]
+	application: common::ApplicationFuture,
+	browser_client: reinhardt::test::APIClientBuilder,
+) -> common::ApplicationFixture {
+	let mut application = application.await;
+	application.application.api_http = Arc::new(
+		browser_client
+			.base_url(&application.application.server.url)
+			.build(),
+	);
+	application
+}
+
+#[rstest::fixture]
+fn refresh_control() -> (
+	tokio::sync::watch::Sender<bool>,
+	tokio::sync::watch::Receiver<bool>,
+) {
+	tokio::sync::watch::channel(false)
+}
+
+#[derive(Clone)]
+struct LoginState {
+	discoveries: Arc<AtomicUsize>,
+	discovery_started: Arc<tokio::sync::Notify>,
+	discovery_release: Arc<tokio::sync::Notify>,
+	key_fetches: Arc<AtomicUsize>,
+}
+#[rstest::fixture]
+fn login_state(
+	#[from(
+		login_prunes_expired_transactions_and_bounds_pending_browser_logins_fixture_discoveries
+	)]
+	discoveries: Arc<AtomicUsize>,
+	#[from(login_prunes_expired_transactions_and_bounds_pending_browser_logins_fixture_discovery_started)]
+	discovery_started: Arc<tokio::sync::Notify>,
+	#[from(login_prunes_expired_transactions_and_bounds_pending_browser_logins_fixture_discovery_release)]
+	discovery_release: Arc<tokio::sync::Notify>,
+	#[from(
+		login_prunes_expired_transactions_and_bounds_pending_browser_logins_fixture_key_fetches
+	)]
+	key_fetches: Arc<AtomicUsize>,
+) -> LoginState {
+	LoginState {
+		discoveries,
+		discovery_started,
+		discovery_release,
+		key_fetches,
+	}
+}
+
+#[path = "dashboard_oidc/tenancy.rs"]
+mod tenancy;

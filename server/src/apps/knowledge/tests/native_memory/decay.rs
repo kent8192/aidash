@@ -1,0 +1,739 @@
+//! Real PostgreSQL regressions for independent recall state and bounded maintenance.
+use super::*;
+use aidash_application::tenancy::TEST_FIXTURE;
+use aidash_server::database::native;
+use chrono::{Duration, SubsecRound, Utc};
+
+fn policy() -> Decay {
+	Decay {
+		half_life_days: 1,
+		prior_floor_millionths: 100_000,
+		dormancy: Some(Dormancy {
+			threshold_millionths: 500_000,
+			interval_hours: 1,
+			batch: 1,
+			include_preferences: false,
+			include_procedures: false,
+		}),
+	}
+}
+async fn participant(store: &Store, workspace: Uuid) -> Bank {
+	memory::create_participant(
+		store,
+		&Actor::DeploymentAdministrator,
+		workspace,
+		memory::CreateParticipant {
+			agent: reference("a"),
+		},
+	)
+	.await
+	.unwrap()
+	.bank
+}
+async fn operate(store: &Store, bank: &Bank, action: memory::Action) -> memory::Outcome {
+	memory::operate(
+		store,
+		&Actor::DeploymentAdministrator,
+		memory::Operation {
+			operation_id: Uuid::now_v7(),
+			provider: reference("p"),
+			bank: bank.clone(),
+			action,
+		},
+	)
+	.await
+	.unwrap()
+}
+async fn dormant(store: &Store, bank: &Bank) -> Vec<Unit> {
+	let memory::Outcome::Units(units) = operate(store, bank, memory::Action::Dormant).await else {
+		panic!("units");
+	};
+	units
+}
+async fn id(store: &Store, bank: &Bank) -> Uuid {
+	native::query_scalar(
+		&Query::select()
+			.column(Alias::new("id"))
+			.from(Alias::new("memory_banks"))
+			.and_where(Expr::col("participant_id").eq(Expr::value(bank.participant.unwrap())))
+			.to_string(PostgresQueryBuilder),
+	)
+	.scalar_one(store.pool.in_scope(&TEST_FIXTURE))
+	.await
+	.unwrap()
+}
+async fn clock(store: &Store, bank: &Bank, as_of: chrono::DateTime<Utc>, cursor: Option<Uuid>) {
+	let mut tx = store.pool.begin(&TEST_FIXTURE).await.unwrap();
+	native::query(
+		&Query::update()
+			.table(Alias::new("memory_bank_decay"))
+			.value(Alias::new("as_of"), as_of)
+			.value(Alias::new("cursor"), cursor)
+			.value(Alias::new("next_job"), Utc::now() - Duration::hours(1))
+			.and_where(Expr::col("bank_id").eq(Expr::value(id(store, bank).await)))
+			.to_string(PostgresQueryBuilder),
+	)
+	.execute(&mut *tx)
+	.await
+	.unwrap();
+	tx.commit().await.unwrap();
+}
+async fn sweep(store: &Store) {
+	aidash_server::semantic::worker::sweep(store).await.unwrap();
+}
+
+#[rstest::fixture]
+async fn decay_embedding_provider() -> reinhardt::test::fixtures::TestServerGuard {
+	let router = reinhardt::test::stub::StubRouter::new()
+        .route("/v1/embeddings", http::Method::POST, |request| async move {
+            let input = request.json::<serde_json::Value>().unwrap();
+            Ok(reinhardt::Response::ok().with_json(&json!({"model":input["model"],"data":[{"index":0,"embedding":[1.,0.1,0.]}],"usage":{"prompt_tokens":1}})).unwrap())
+        })
+        .into_server_router();
+	reinhardt::test::fixtures::test_server_guard(router).await
+}
+
+#[rstest]
+#[tokio::test]
+async fn retention_controls_replay_without_renewing_reactivation_and_reject_reused_ids(
+	#[future] database: DatabaseFixture,
+	bounds: Bounds,
+) {
+	let database = database.await;
+	let (store, _, workspace) = setup_endpoint_decay(
+		&database,
+		bounds,
+		"http://127.0.0.1:9/v1",
+		(false, false, false),
+		None,
+		Some(policy()),
+	)
+	.await;
+	let bank = participant(&store, workspace).await;
+	let ids = [Uuid::now_v7(), Uuid::now_v7()];
+	let mut admission = mutation(
+		&bank,
+		Change::Add {
+			id: ids[0],
+			content: content("Retention controls preserve this canonical Unit"),
+		},
+	);
+	admission.changes.push(Change::Add {
+		id: ids[1],
+		content: content("A different Unit cannot reuse the same control request"),
+	});
+	let admitted = memory::mutate(&store, &Actor::DeploymentAdministrator, admission)
+		.await
+		.unwrap();
+	let anchor = (Utc::now() - Duration::days(3)).trunc_subsecs(6);
+	for (action, pinned) in [
+		(memory::Action::Pin { id: ids[0] }, true),
+		(memory::Action::Unpin { id: ids[0] }, false),
+		(memory::Action::Reactivate { id: ids[0] }, false),
+	] {
+		let request = memory::Operation {
+			operation_id: Uuid::now_v7(),
+			provider: reference("p"),
+			bank: bank.clone(),
+			action,
+		};
+		let memory::Outcome::Units(result) =
+			memory::operate(&store, &Actor::DeploymentAdministrator, request.clone())
+				.await
+				.unwrap()
+		else {
+			panic!("control result");
+		};
+		assert_eq!(result, vec![admitted[0].clone()]);
+		// Model a later dormancy sweep between the first response and a retry.
+		// A receipt replay must neither reactivate again nor extend the anchor.
+		let mut tx = store.pool.begin(&TEST_FIXTURE).await.unwrap();
+		native::query(
+			&Query::update()
+				.table(Alias::new("memory_unit_retention"))
+				.value(Alias::new("reactivated_at"), anchor)
+				.value(
+					Alias::new("dormant_policy"),
+					serde_json::to_value(reference("p")).unwrap(),
+				)
+				.and_where(Expr::col("unit_id").eq(Expr::value(ids[0])))
+				.to_string(PostgresQueryBuilder),
+		)
+		.execute(&mut *tx)
+		.await
+		.unwrap();
+		tx.commit().await.unwrap();
+		let memory::Outcome::Units(replayed) =
+			memory::operate(&store, &Actor::DeploymentAdministrator, request.clone())
+				.await
+				.unwrap()
+		else {
+			panic!("control replay");
+		};
+		assert_eq!(replayed, result);
+		for action in [
+			memory::Action::Reactivate { id: ids[1] },
+			if pinned {
+				memory::Action::Unpin { id: ids[0] }
+			} else {
+				memory::Action::Pin { id: ids[0] }
+			},
+		] {
+			assert!(matches!(
+				memory::operate(
+					&store,
+					&Actor::DeploymentAdministrator,
+					memory::Operation {
+						action,
+						..request.clone()
+					}
+				)
+				.await,
+				Err(aidash_server::Error::Conflict(_))
+			));
+		}
+		let row = native::query(
+			&Query::select()
+				.columns(["reactivated_at", "pinned", "dormant_policy"].map(Alias::new))
+				.from(Alias::new("memory_unit_retention"))
+				.and_where(Expr::col("unit_id").eq(Expr::value(ids[0])))
+				.to_string(PostgresQueryBuilder),
+		)
+		.fetch_one(store.pool.in_scope(&TEST_FIXTURE))
+		.await
+		.unwrap();
+		assert_eq!(
+			row.try_get::<chrono::DateTime<Utc>>("reactivated_at")
+				.unwrap(),
+			anchor
+		);
+		assert_eq!(row.try_get::<bool>("pinned").unwrap(), pinned);
+		assert_eq!(
+			row.try_get::<serde_json::Value>("dormant_policy").unwrap(),
+			json!(reference("p"))
+		);
+		let receipt: Vec<Evidence> = native::query_scalar(
+			&Query::select()
+				.column(Alias::new("outcome"))
+				.from(Alias::new("memory_receipts"))
+				.and_where(Expr::col("operation_id").eq(Expr::value(request.operation_id)))
+				.to_string(PostgresQueryBuilder),
+		)
+		.scalar_one(store.pool.in_scope(&TEST_FIXTURE))
+		.await
+		.unwrap();
+		assert_eq!(receipt, vec![admitted[0].evidence()]);
+	}
+	assert!(matches!(
+		memory::operate(
+			&store,
+			&Actor::DeploymentAdministrator,
+			memory::Operation {
+				operation_id: Uuid::nil(),
+				provider: reference("p"),
+				bank,
+				action: memory::Action::Reactivate { id: ids[0] },
+			}
+		)
+		.await,
+		Err(aidash_server::Error::Invalid(_))
+	));
+}
+
+#[rstest]
+#[tokio::test]
+async fn completed_control_replays_report_changed_visibility_as_conflicts(
+	#[future] database: DatabaseFixture,
+	bounds: Bounds,
+) {
+	let database = database.await;
+	let (store, _, workspace) = setup_endpoint_decay(
+		&database,
+		bounds,
+		"http://127.0.0.1:9/v1",
+		(false, false, false),
+		None,
+		Some(policy()),
+	)
+	.await;
+	let bank = participant(&store, workspace).await;
+	for state in ["deleted", "stale", "contradicted"] {
+		for action in ["pin", "unpin", "reactivate"] {
+			let unit = Uuid::now_v7();
+			let source = Uuid::now_v7();
+			let mut body = content("A completed control has a durable outcome");
+			if state == "stale" {
+				let admitted_source = memory::mutate(
+					&store,
+					&Actor::DeploymentAdministrator,
+					mutation(
+						&bank,
+						Change::Add {
+							id: source,
+							content: content("The original supporting evidence"),
+						},
+					),
+				)
+				.await
+				.unwrap();
+				body.evidence = vec![admitted_source[0].evidence()];
+			}
+			let admitted = memory::mutate(
+				&store,
+				&Actor::DeploymentAdministrator,
+				mutation(
+					&bank,
+					Change::Add {
+						id: unit,
+						content: body.clone(),
+					},
+				),
+			)
+			.await
+			.unwrap();
+			let request = memory::Operation {
+				operation_id: Uuid::now_v7(),
+				provider: reference("p"),
+				bank: bank.clone(),
+				action: match action {
+					"pin" => memory::Action::Pin { id: unit },
+					"unpin" => memory::Action::Unpin { id: unit },
+					"reactivate" => memory::Action::Reactivate { id: unit },
+					_ => unreachable!(),
+				},
+			};
+			memory::operate(&store, &Actor::DeploymentAdministrator, request.clone())
+				.await
+				.unwrap();
+			// Use the public mutation path so canonical state, projections, and
+			// the independent recovery ledger all admit the same transition.
+			let change = match state {
+				"deleted" => Change::Delete {
+					id: unit,
+					expected_revision: 1,
+				},
+				"stale" => Change::Correct {
+					id: source,
+					expected_revision: 1,
+					content: content("The supporting evidence changed"),
+				},
+				"contradicted" => {
+					body.verification = Verification::Contradicted;
+					Change::Correct {
+						id: unit,
+						expected_revision: 1,
+						content: body,
+					}
+				}
+				_ => unreachable!(),
+			};
+			memory::mutate(
+				&store,
+				&Actor::DeploymentAdministrator,
+				mutation(&bank, change),
+			)
+			.await
+			.unwrap();
+			let retention = || {
+				Query::select()
+					.columns(["reactivated_at", "pinned", "dormant_policy"].map(Alias::new))
+					.from(Alias::new("memory_unit_retention"))
+					.and_where(Expr::col("unit_id").eq(Expr::value(unit)))
+					.to_string(PostgresQueryBuilder)
+			};
+			let before: (chrono::DateTime<Utc>, bool, Option<serde_json::Value>) =
+				native::query_as(&retention())
+					.columns(&["reactivated_at", "pinned", "dormant_policy"])
+					.fetch_one(store.pool.in_scope(&TEST_FIXTURE))
+					.await
+					.unwrap();
+			let replay =
+				memory::operate(&store, &Actor::DeploymentAdministrator, request.clone()).await;
+			assert!(
+				matches!(replay, Err(aidash_server::Error::Conflict(_))),
+				"{action}/{state}: {replay:?}"
+			);
+			let fresh = memory::Operation {
+				operation_id: Uuid::now_v7(),
+				..request.clone()
+			};
+			assert!(matches!(
+				memory::operate(&store, &Actor::DeploymentAdministrator, fresh.clone()).await,
+				Err(aidash_server::Error::Forbidden)
+			));
+			let after: (chrono::DateTime<Utc>, bool, Option<serde_json::Value>) =
+				native::query_as(&retention())
+					.columns(&["reactivated_at", "pinned", "dormant_policy"])
+					.fetch_one(store.pool.in_scope(&TEST_FIXTURE))
+					.await
+					.unwrap();
+			assert_eq!(after, before, "a changed replay must not affect retention");
+			let receipt: Vec<Evidence> = native::query_scalar(
+				&Query::select()
+					.column(Alias::new("outcome"))
+					.from(Alias::new("memory_receipts"))
+					.and_where(Expr::col("operation_id").eq(Expr::value(request.operation_id)))
+					.to_string(PostgresQueryBuilder),
+			)
+			.scalar_one(store.pool.in_scope(&TEST_FIXTURE))
+			.await
+			.unwrap();
+			assert_eq!(receipt, vec![admitted[0].evidence()]);
+			let missing: Option<Uuid> = native::query_scalar(
+				&Query::select()
+					.column(Alias::new("operation_id"))
+					.from(Alias::new("memory_receipts"))
+					.and_where(Expr::col("operation_id").eq(Expr::value(fresh.operation_id)))
+					.to_string(PostgresQueryBuilder),
+			)
+			.scalar_optional(store.pool.in_scope(&TEST_FIXTURE))
+			.await
+			.unwrap();
+			assert!(missing.is_none());
+		}
+	}
+}
+
+#[rstest]
+#[tokio::test]
+async fn dormant_is_recall_only_and_pin_correction_and_manual_reactivation_preserve_content(
+	#[future] decay_embedding_provider: reinhardt::test::fixtures::TestServerGuard,
+	#[future] database: DatabaseFixture,
+	bounds: Bounds,
+) {
+	let database = database.await;
+	let model = decay_embedding_provider.await;
+	let endpoint = format!("{}/v1", model.url);
+	let (store, _, workspace) = setup_endpoint_decay(
+		&database,
+		bounds,
+		&endpoint,
+		(false, false, false),
+		None,
+		Some(policy()),
+	)
+	.await;
+	let bank = participant(&store, workspace).await;
+	let source = Uuid::now_v7();
+	let admitted = memory::mutate(
+		&store,
+		&Actor::DeploymentAdministrator,
+		mutation(
+			&bank,
+			Change::Add {
+				id: source,
+				content: content("Dormant conflict must remain evidence"),
+			},
+		),
+	)
+	.await
+	.unwrap();
+	// Enabling decay does not hide newly activated historical Banks en masse.
+	sweep(&store).await;
+	assert!(dormant(&store, &bank).await.is_empty());
+	let as_of = Utc::now() + Duration::days(365);
+	clock(&store, &bank, as_of, None).await;
+	sweep(&store).await;
+	assert_eq!(dormant(&store, &bank).await, admitted);
+	let read = memory::ReadBank {
+		provider: reference("p"),
+		bank: bank.clone(),
+	};
+	assert_eq!(
+		memory::list(&store, &Actor::DeploymentAdministrator, read.clone())
+			.await
+			.unwrap(),
+		admitted
+	);
+	let memory::Outcome::Recall(result) = operate(
+		&store,
+		&bank,
+		memory::Action::Recall {
+			query: RecallQuery {
+				text: "conflict".into(),
+				time: None,
+				kinds: vec![],
+				max_tokens: 8192,
+			},
+		},
+	)
+	.await
+	else {
+		panic!("recall");
+	};
+	assert_eq!(result, Recall::Empty);
+	let memory::Outcome::Recall(Recall::Ready { units }) = operate(
+		&store,
+		&bank,
+		memory::Action::RecallIncludingDormant {
+			query: RecallQuery {
+				text: "conflict".into(),
+				time: None,
+				kinds: vec![],
+				max_tokens: 8192,
+			},
+		},
+	)
+	.await
+	else {
+		panic!("dormant-inclusive recall");
+	};
+	assert_eq!(units, admitted);
+	assert!(dormant(&store, &bank).await.is_empty());
+	clock(&store, &bank, as_of, None).await;
+	sweep(&store).await;
+	let memory::Outcome::Units(pinned) =
+		operate(&store, &bank, memory::Action::Pin { id: source }).await
+	else {
+		panic!("units");
+	};
+	assert_eq!(pinned, admitted);
+	assert!(dormant(&store, &bank).await.is_empty());
+	operate(&store, &bank, memory::Action::Unpin { id: source }).await;
+	clock(&store, &bank, as_of, None).await;
+	sweep(&store).await;
+	assert_eq!(dormant(&store, &bank).await, admitted);
+	let memory::Outcome::Units(reactivated) =
+		operate(&store, &bank, memory::Action::Reactivate { id: source }).await
+	else {
+		panic!("units");
+	};
+	assert_eq!(reactivated, admitted);
+	assert!(dormant(&store, &bank).await.is_empty());
+	clock(&store, &bank, as_of, None).await;
+	sweep(&store).await;
+	let corrected = memory::mutate(
+		&store,
+		&Actor::DeploymentAdministrator,
+		mutation(
+			&bank,
+			Change::Correct {
+				id: source,
+				expected_revision: 1,
+				content: content("Correction remains possible while Dormant"),
+			},
+		),
+	)
+	.await
+	.unwrap();
+	assert_eq!(corrected[0].revision, 2);
+	assert!(dormant(&store, &bank).await.is_empty());
+	clock(&store, &bank, as_of, None).await;
+	sweep(&store).await;
+	let deleted = memory::mutate(
+		&store,
+		&Actor::DeploymentAdministrator,
+		mutation(
+			&bank,
+			Change::Delete {
+				id: source,
+				expected_revision: 2,
+			},
+		),
+	)
+	.await
+	.unwrap();
+	assert!(deleted[0].deleted);
+	assert!(
+		memory::list(&store, &Actor::DeploymentAdministrator, read)
+			.await
+			.unwrap()
+			.is_empty()
+	);
+	drop(model);
+}
+
+#[rstest]
+#[tokio::test]
+async fn dormancy_pages_resume_fixed_clock_and_exempt_pinned_preference_and_procedure(
+	#[future] database: DatabaseFixture,
+	bounds: Bounds,
+) {
+	let database = database.await;
+	let (store, _, workspace) = setup_endpoint_decay(
+		&database,
+		bounds,
+		"http://127.0.0.1:9/v1",
+		(false, false, false),
+		None,
+		Some(policy()),
+	)
+	.await;
+	let bank = participant(&store, workspace).await;
+	let mut ids = vec![];
+	for learning in [
+		Learning::Fact,
+		Learning::Preference,
+		Learning::Procedure,
+		Learning::Fact,
+	] {
+		let id = Uuid::now_v7();
+		ids.push(id);
+		let mut body = content("Keep independent recall state");
+		body.learning = learning;
+		memory::mutate(
+			&store,
+			&Actor::DeploymentAdministrator,
+			mutation(&bank, Change::Add { id, content: body }),
+		)
+		.await
+		.unwrap();
+	}
+	operate(&store, &bank, memory::Action::Pin { id: ids[3] }).await;
+	let as_of = Utc::now() + Duration::days(365);
+	clock(&store, &bank, as_of, None).await;
+	sweep(&store).await;
+	let first = native::query(
+		&Query::select()
+			.columns(["as_of", "cursor"].map(Alias::new))
+			.from(Alias::new("memory_bank_decay"))
+			.and_where(Expr::col("bank_id").eq(Expr::value(id(&store, &bank).await)))
+			.to_string(PostgresQueryBuilder),
+	)
+	.fetch_one(store.pool.in_scope(&TEST_FIXTURE))
+	.await
+	.unwrap();
+	assert_eq!(
+		first.try_get::<Option<Uuid>>("cursor").unwrap(),
+		Some(ids[0])
+	);
+	assert_eq!(
+		first
+			.try_get::<Option<chrono::DateTime<Utc>>>("as_of")
+			.unwrap()
+			.unwrap()
+			.timestamp(),
+		as_of.timestamp()
+	);
+	assert_eq!(
+		dormant(&store, &bank)
+			.await
+			.iter()
+			.map(|u| u.id)
+			.collect::<Vec<_>>(),
+		vec![ids[0]]
+	);
+	let restarted = database.kill_and_restart(&store).await;
+	for _ in 0..4 {
+		sweep(&restarted).await;
+	}
+	assert_eq!(
+		dormant(&restarted, &bank)
+			.await
+			.iter()
+			.map(|u| u.id)
+			.collect::<Vec<_>>(),
+		vec![ids[0]]
+	);
+	clock(&restarted, &bank, as_of, None).await;
+	for _ in 0..5 {
+		sweep(&restarted).await;
+	}
+	assert_eq!(
+		dormant(&restarted, &bank)
+			.await
+			.iter()
+			.map(|u| u.id)
+			.collect::<Vec<_>>(),
+		vec![ids[0]]
+	);
+	// A flag from another immutable policy version is ignored, never deleted.
+	let mut tx = restarted.pool.begin(&TEST_FIXTURE).await.unwrap();
+	let other = EntityRef {
+		id: "p".into(),
+		version: "2.0.0".into(),
+	};
+	native::query(
+		&Query::update()
+			.table(Alias::new("memory_unit_retention"))
+			.value(
+				Alias::new("dormant_policy"),
+				serde_json::to_value(&other).unwrap(),
+			)
+			.and_where(Expr::col("unit_id").eq(Expr::value(ids[0])))
+			.to_string(PostgresQueryBuilder),
+	)
+	.execute(&mut *tx)
+	.await
+	.unwrap();
+	tx.commit().await.unwrap();
+	assert!(dormant(&restarted, &bank).await.is_empty());
+	let flag: serde_json::Value = native::query_scalar(
+		&Query::select()
+			.column(Alias::new("dormant_policy"))
+			.from(Alias::new("memory_unit_retention"))
+			.and_where(Expr::col("unit_id").eq(Expr::value(ids[0])))
+			.to_string(PostgresQueryBuilder),
+	)
+	.scalar_one(restarted.pool.in_scope(&TEST_FIXTURE))
+	.await
+	.unwrap();
+	assert_eq!(flag, serde_json::to_value(other).unwrap());
+}
+
+/// Issue #127 change matrix, usage-based archival row: dormancy and manual
+/// reactivation are ranking-only, so a Run that already consumed the Unit keeps
+/// a valid read dependency while new ordinary recall excludes the Unit.
+#[rstest]
+#[tokio::test]
+async fn dormancy_and_reactivation_keep_existing_run_dependencies_valid(
+	#[future] decay_embedding_provider: reinhardt::test::fixtures::TestServerGuard,
+	#[future] database: DatabaseFixture,
+	bounds: Bounds,
+) {
+	// Arrange
+	let database = database.await;
+	let model = decay_embedding_provider.await;
+	let endpoint = format!("{}/v1", model.url);
+	let (store, _, workspace) = setup_endpoint_decay(
+		&database,
+		bounds,
+		&endpoint,
+		(false, false, false),
+		None,
+		Some(policy()),
+	)
+	.await;
+	let bank = participant(&store, workspace).await;
+	let source = Uuid::now_v7();
+	let admitted = memory::mutate(
+		&store,
+		&Actor::DeploymentAdministrator,
+		mutation(
+			&bank,
+			Change::Add {
+				id: source,
+				content: content("Archived but previously consumed guidance"),
+			},
+		),
+	)
+	.await
+	.unwrap();
+	let (scope, run) = super::policy_bounds::recorded_run(&store, &bank, &[source]).await;
+	sweep(&store).await;
+	assert!(super::policy_bounds::run_visible(&scope, &store, run).await);
+
+	// Act: archive by usage, then reactivate manually.
+	clock(&store, &bank, Utc::now() + Duration::days(365), None).await;
+	sweep(&store).await;
+	let archived = dormant(&store, &bank).await;
+	let still_visible_while_dormant = super::policy_bounds::run_visible(&scope, &store, run).await;
+	let memory::Outcome::Units(reactivated) =
+		operate(&store, &bank, memory::Action::Reactivate { id: source }).await
+	else {
+		panic!("units");
+	};
+
+	// Assert
+	assert_eq!(archived, admitted, "the Unit was archived by usage");
+	assert!(
+		still_visible_while_dormant,
+		"archival must not invalidate a Run that already consumed the Unit"
+	);
+	assert_eq!(
+		reactivated, admitted,
+		"reactivation keeps the same Unit revision"
+	);
+	assert!(super::policy_bounds::run_visible(&scope, &store, run).await);
+	drop(model);
+}

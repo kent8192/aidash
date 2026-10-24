@@ -1,0 +1,690 @@
+//! Definition admission validates definitions without resolving any secret.
+use crate::{
+	Error, Result,
+	ports::{bindings::ProviderCatalog, registry::CoreToolCatalog},
+	provider_access::KeylessAccess,
+};
+use aidash_domain::exposure::{
+	self, CapabilityIdentity, CapabilityKind, DeferredBudgets, ExposureState,
+};
+use aidash_domain::registry::rules::skill_instructions;
+use aidash_domain::{
+	agent_plugin::McpServer,
+	configuration::validate_endpoint,
+	keyless::Destination,
+	model::ModelConfig,
+	nodes::DeploymentId,
+	registry::{AgentConfig, ClusterConfig, Entry},
+	tool::ToolConfig,
+};
+use serde_json::Value;
+use std::sync::Arc;
+
+/// A tool never names a Deployment secret: the value would go to an endpoint
+/// the definition's author chose (#296).
+fn reject_deployment_secret(transport: Option<&Value>) -> Result<()> {
+	if transport.is_some_and(|transport| transport.get("credential_env").is_some()) {
+		return Err(Error::Invalid(
+			"tool transports cannot name a Deployment secret".into(),
+		));
+	}
+	Ok(())
+}
+
+enum EndpointRefusal {
+	NonPublic,
+	PlainHttp,
+}
+
+#[derive(Clone)]
+pub struct DefinitionValidation {
+	provider_credentials_enabled: bool,
+	plan_connections_enabled: bool,
+	/// A Tenant chooses its tool endpoints, so they follow the Keyless endpoint
+	/// rule (ADR 0036, #376). Without origins, only public addresses pass.
+	keyless: KeylessAccess,
+	tenant_secrets_enabled: bool,
+	egress_limits: aidash_domain::egress::Limits,
+	core_tools: Arc<dyn CoreToolCatalog>,
+}
+impl DefinitionValidation {
+	pub fn new(core_tools: Arc<dyn CoreToolCatalog>) -> Self {
+		Self {
+			provider_credentials_enabled: false,
+			plan_connections_enabled: false,
+			keyless: KeylessAccess::default(),
+			tenant_secrets_enabled: false,
+			egress_limits: aidash_domain::egress::Limits::default(),
+			core_tools,
+		}
+	}
+	/// The Deployment's permitted private origins. Every clone of `origins`
+	/// shares one list, so origins added later still count.
+	pub fn with_keyless_origins(mut self, origins: KeylessAccess) -> Self {
+		self.keyless = origins;
+		self
+	}
+	/// Why an endpoint at `origin` may not be called, or `None` when it may.
+	fn refused_endpoint(&self, origin: &str) -> Result<Option<EndpointRefusal>> {
+		Ok(match self.keyless.destination(origin)? {
+			Destination::Forbidden => Some(EndpointRefusal::NonPublic),
+			Destination::PublicOnly if !origin.starts_with("https://") => {
+				Some(EndpointRefusal::PlainHttp)
+			}
+			Destination::Permitted | Destination::PublicOnly => None,
+		})
+	}
+	fn validate_tool_endpoint(&self, endpoint: &str) -> Result<()> {
+		let url =
+			url::Url::parse(endpoint).map_err(|_| Error::Invalid("invalid endpoint URL".into()))?;
+		match self.refused_endpoint(&url.origin().ascii_serialization())? {
+			None => Ok(()),
+			Some(EndpointRefusal::NonPublic) => Err(Error::Invalid(
+				"TOOL_ENDPOINT_FORBIDDEN: a tool endpoint at a non-public address needs its origin in [keyless_endpoints] permitted_private_origins"
+					.into(),
+			)),
+			Some(EndpointRefusal::PlainHttp) => Err(Error::Invalid(
+				"TOOL_ENDPOINT_FORBIDDEN: tool endpoints require HTTPS unless the Deployment permits their origin"
+					.into(),
+			)),
+		}
+	}
+	/// Remote MCP servers of the plugins an Agent takes in follow the same rule.
+	fn validate_plugin_servers(
+		&self,
+		bindings: &aidash_domain::registry::bindings::AgentBindings,
+	) -> Result<()> {
+		for plugin in &bindings.agent_plugins {
+			self.validate_agent_plugin(plugin)?;
+		}
+		Ok(())
+	}
+	/// Enforce the Deployment's endpoint policy before an imported plugin is stored.
+	pub fn validate_agent_plugin(
+		&self,
+		plugin: &aidash_domain::agent_plugin::AgentPluginRef,
+	) -> Result<()> {
+		for (name, server) in &plugin.servers {
+			let McpServer::Remote(remote) = server else {
+				continue;
+			};
+			let reason = match self.refused_endpoint(&remote.url.origin().ascii_serialization())? {
+				None => continue,
+				Some(EndpointRefusal::NonPublic) => "",
+				Some(EndpointRefusal::PlainHttp) => " needs HTTPS unless its origin is permitted",
+			};
+			return Err(Error::Invalid(format!(
+				"AGENT_PLUGIN_SERVER_FORBIDDEN: {}/{name}{reason}",
+				plugin.name
+			)));
+		}
+		Ok(())
+	}
+	pub fn with_egress_limits(mut self, limits: aidash_domain::egress::Limits) -> Self {
+		self.egress_limits = limits;
+		self
+	}
+	pub fn with_provider_credentials(mut self, configured: bool) -> Self {
+		self.provider_credentials_enabled = configured;
+		self
+	}
+	/// Plan Connections are enabled only on Self-hosted Deployments that
+	/// turned them on in their settings (ADR 0007).
+	pub fn with_plan_connections(mut self, enabled: bool) -> Self {
+		self.plan_connections_enabled = enabled;
+		self
+	}
+	/// Tenant Secrets exist only where the Secret Store can hold them: a
+	/// self-hosted node with a PostgreSQL Store. Cloud and Dedicated offer
+	/// none until the Credential Broker carries tool calls (#310).
+	pub fn with_tenant_secrets(mut self, enabled: bool) -> Self {
+		self.tenant_secrets_enabled = enabled;
+		self
+	}
+	fn provider_source(&self, endpoint: &str, provider: &str, catalog: Option<&str>) -> Result<()> {
+		self.grant_source(endpoint, provider, catalog, None)
+	}
+	fn grant_source(
+		&self,
+		endpoint: &str,
+		provider: &str,
+		catalog: Option<&str>,
+		plan: Option<&str>,
+	) -> Result<()> {
+		aidash_domain::provider_credentials::validate_grants(endpoint, provider, catalog, plan)?;
+		if catalog.is_some() && !self.provider_credentials_enabled {
+			return Err(Error::Invalid("Secret Store is not configured".into()));
+		}
+		if plan.is_some() && !self.plan_connections_enabled {
+			return Err(Error::Invalid(
+				"Plan Connections are not enabled on this Deployment".into(),
+			));
+		}
+		Ok(())
+	}
+	pub fn node_specifications(
+		&self,
+	) -> std::collections::BTreeMap<String, aidash_domain::provider::ToolSpec> {
+		let mut specifications = crate::tools::builtins()
+			.into_iter()
+			.map(|(name, tool)| (name, tool.specification()))
+			.collect::<std::collections::BTreeMap<_, _>>();
+		specifications.extend(self.core_tools.specifications(
+			&aidash_domain::capabilities::CoreCapabilities {
+				outbound: false,
+				files: true,
+				shell: true,
+				python: true,
+				patch: true,
+				skills: true,
+				sharing: true,
+			},
+		));
+		specifications
+	}
+	pub fn validate_in(&self, e: &Entry, local: bool) -> Result<()> {
+		aidash_domain::registry::rules::validate_metadata(e, local)?;
+		match e.kind.as_str() {
+			"external_service" => {
+				let service = aidash_domain::egress::definition(e)?;
+				if let Some(limits) = service.limits {
+					limits.lower_than(self.egress_limits)?;
+				}
+				if service.secret.is_some() && !self.tenant_secrets_enabled {
+					return Err(Error::Invalid("Tenant Secrets are unavailable".into()));
+				}
+			}
+			"decider" => {
+				let config: aidash_domain::decision::DeciderConfig =
+					serde_json::from_value(e.config.clone())?;
+				config.validate()?;
+				if local && !self.provider_credentials_enabled {
+					return Err(Error::Invalid("Secret Store is not configured".into()));
+				}
+			}
+			"memory" | "source" if e.config.get("schema_version").is_some() => {
+				let descriptor: aidash_domain::registry::bindings::sources::NativeContext =
+					serde_json::from_value(e.config.clone())?;
+				descriptor.validate(&e.kind)?;
+			}
+
+			"memory" => {
+				serde_json::from_value::<aidash_domain::memory::ProviderConfig>(e.config.clone())?
+					.policy
+					.validate()?
+			}
+			"source" => {
+				let config: aidash_domain::memory::SourceConfig =
+					serde_json::from_value(e.config.clone())?;
+				if config.max_tokens == 0
+					|| config.max_tokens > i32::MAX as usize
+					|| config.memory.id.is_empty()
+					|| semver::Version::parse(&config.memory.version).is_err()
+				{
+					return Err(Error::Invalid(
+						"memory source requires a versioned provider and positive context cap"
+							.into(),
+					));
+				}
+			}
+			"reranker" => {
+				let config: aidash_domain::memory::RerankerConfig =
+					serde_json::from_value(e.config.clone())?;
+				if let aidash_domain::memory::RerankerConfig::Model { model } = config
+					&& (model.id.is_empty() || semver::Version::parse(&model.version).is_err())
+				{
+					return Err(Error::Invalid(
+						"reranker requires an exact model version".into(),
+					));
+				}
+			}
+			"tokenizer" => {
+				serde_json::from_value::<aidash_domain::memory::TokenizerConfig>(e.config.clone())?;
+			}
+			"embedding" => self.validate_embedding(
+				&serde_json::from_value(e.config.clone())
+					.map_err(|e| Error::Invalid(e.to_string()))?,
+			)?,
+			"model" => {
+				let m: ModelConfig = serde_json::from_value(e.config.clone())
+					.map_err(|e| Error::Invalid(e.to_string()))?;
+				// A plan model names `chatgpt`; every other model is an OpenRouter route.
+				let provider = if m.uses_plan_connection() {
+					"chatgpt"
+				} else {
+					"openrouter"
+				};
+				if m.provider != provider
+					|| m.model_id.trim().is_empty()
+					|| m.context_window < 2048
+					|| (local && m.max_output_tokens.is_none())
+					|| m.max_output_tokens
+						.is_some_and(|tokens| tokens == 0 || tokens as usize > m.context_window)
+					|| !m.modalities.iter().any(|m| m == "text")
+				{
+					return Err(Error::Invalid(
+					"model requires openrouter (or chatgpt with plan_connection), model_id, text modality, context_window >= 2048 and a valid max_output_tokens value"
+						.into(),
+				));
+				}
+				m.request_timeout()?;
+				m.stream_stall_timeout()?;
+				m.validate_projection_versions()?;
+				m.validate_cache_mode()?;
+				m.validate_provider_route()?;
+				m.validate_estimate_diagnostics()?;
+				if m.provider_credential.is_some() || m.plan_connection.is_some() {
+					aidash_domain::provider_credentials::validate_model_id(&m.model_id)?;
+				}
+				m.validate_plan_usage()?;
+				for route in &m.media_routes {
+					if route.tag.is_empty()
+						|| !route
+							.tag
+							.bytes()
+							.all(|byte| byte.is_ascii_alphanumeric() || b"._-/".contains(&byte))
+						|| route.formats.is_empty()
+						|| route.source.trim().is_empty()
+						|| route.verified_at >= route.expires_at
+						|| route.formats.iter().any(|format| {
+							!matches!(
+								format.as_str(),
+								"image/png"
+									| "image/jpeg" | "image/gif"
+									| "image/webp" | "wav" | "mp3"
+									| "m4a" | "aac" | "ogg" | "webm"
+									| "flac"
+							)
+						}) {
+						return Err(Error::Invalid("invalid media route evidence".into()));
+					}
+				}
+				self.grant_source(
+					&m.endpoint,
+					&m.provider,
+					m.provider_credential.as_deref(),
+					m.plan_connection.as_deref(),
+				)?;
+			}
+			"agent" => {
+				let input: aidash_domain::registry::bindings::AgentBindings =
+					serde_json::from_value(e.config.clone())?;
+				input.validate()?;
+				self.validate_plugin_servers(&input)?;
+			}
+			"cluster" => {
+				let cluster: ClusterConfig =
+					serde_json::from_value(e.config.clone()).map_err(|error| {
+						Error::Invalid(format!("cluster requires a coordinator reference: {error}"))
+					})?;
+				if cluster.coordinator.id.trim().is_empty()
+					|| semver::Version::parse(&cluster.coordinator.version).is_err()
+				{
+					return Err(Error::Invalid(
+						"cluster coordinator requires an id and semantic version".into(),
+					));
+				}
+			}
+			"tool" if aidash_domain::tool::legacy_config(&e.config)?.is_some() => {
+				return Err(Error::Invalid(
+					"Tool registration requires a versioned Provider descriptor".into(),
+				));
+			}
+			"tool" => {
+				reject_deployment_secret(e.config.get("transport"))?;
+				let descriptor: aidash_domain::tool::providers::ToolDescriptor =
+					serde_json::from_value(e.config.clone()).map_err(|error| {
+						Error::Invalid(format!("invalid Tool descriptor: {error}"))
+					})?;
+				self.contract(
+					&descriptor,
+					&aidash_domain::registry::bindings::QualifiedRef {
+						registry_deployment: descriptor.registry_deployment.clone(),
+						id: e.id.clone(),
+						version: e.version.clone(),
+					},
+				)?;
+				if let Some(transport) = &descriptor.transport {
+					self.validate_tool(&serde_json::to_value(transport)?)?;
+				}
+				if local {
+					self.core_tools.provider_available(&descriptor)?;
+				}
+			}
+			"bundle" => {
+				let bundle: aidash_domain::registry::bindings::BundleConfig =
+					serde_json::from_value(e.config.clone())?;
+				bundle.validate()?;
+			}
+			"skill" => aidash_domain::registry::rules::validate_skill(e)?,
+			_ => {}
+		}
+		Ok(())
+	}
+
+	pub fn validate_embedding(
+		&self,
+		config: &aidash_domain::semantic::EmbeddingConfig,
+	) -> Result<()> {
+		if config.provider_credential.is_some() {
+			aidash_domain::provider_credentials::validate_model_id(&config.model)?;
+		}
+		self.provider_source(
+			&config.endpoint,
+			&config.provider,
+			config.provider_credential.as_deref(),
+		)?;
+		config.validate_parameters()?;
+		Ok(())
+	}
+
+	pub fn validate_tool(&self, value: &Value) -> Result<()> {
+		reject_deployment_secret(Some(value))?;
+		let cfg: ToolConfig =
+			serde_json::from_value(value.clone()).map_err(|e| Error::Invalid(e.to_string()))?;
+		match &cfg {
+			ToolConfig::Native {
+				operation,
+				allowed_hosts,
+			} => {
+				if !matches!(operation.as_str(), "echo" | "http_get")
+					|| (operation == "http_get" && allowed_hosts.is_empty())
+				{
+					return Err(Error::Invalid(
+						"native tools support echo or http_get with allowed_hosts".into(),
+					));
+				}
+			}
+			ToolConfig::Http {
+				endpoint,
+				replay,
+				secret,
+			}
+			| ToolConfig::Mcp {
+				endpoint,
+				replay,
+				secret,
+				..
+			} => {
+				validate_endpoint(endpoint)?;
+				self.validate_tool_endpoint(endpoint)?;
+				if let Some(name) = secret {
+					if !self.tenant_secrets_enabled {
+						return Err(Error::Invalid(
+							"Tenant Secrets are not available on this Deployment".into(),
+						));
+					}
+					aidash_domain::tenant_secrets::validate_name(name)?;
+					// The value never travels in plaintext.
+					aidash_domain::tenant_secrets::endpoint_host(endpoint)?;
+				}
+				if !matches!(replay.as_str(), "read_only" | "idempotent" | "unsafe") {
+					return Err(Error::Invalid(
+						"replay must be read_only, idempotent or unsafe".into(),
+					));
+				}
+				if let ToolConfig::Mcp {
+					replay,
+					idempotency_argument,
+					..
+				} = &cfg && replay == "idempotent"
+					&& idempotency_argument
+						.as_ref()
+						.is_none_or(|s| s.trim().is_empty())
+				{
+					return Err(Error::Invalid(
+					"idempotent MCP tools require an idempotency_argument supported by the server"
+						.into(),
+				));
+				}
+			}
+			ToolConfig::Agent { node_id, agent } => {
+				DeploymentId::parse(node_id)?;
+				if agent.id.is_empty()
+					|| agent.id.len() > 100
+					|| !agent
+						.id
+						.as_bytes()
+						.first()
+						.is_some_and(u8::is_ascii_alphanumeric)
+					|| !agent
+						.id
+						.bytes()
+						.all(|c| c.is_ascii_alphanumeric() || b"._-".contains(&c))
+					|| semver::Version::parse(&agent.version).is_err()
+				{
+					return Err(Error::Invalid(
+						"agent tool requires a valid executor ID and semantic version".into(),
+					));
+				}
+			}
+		}
+		Ok(())
+	}
+
+	pub fn bound_prompt_headroom(
+		&self,
+		snapshot: &aidash_domain::registry::bindings::BindingSnapshot,
+		private_context: &Value,
+	) -> Result<usize> {
+		snapshot.validate()?;
+		let config = AgentConfig::from_snapshot(snapshot)?;
+		let model = snapshot
+			.definitions
+			.iter()
+			.find(|d| {
+				d.identity.registry_deployment == snapshot.agent.registry_deployment
+					&& d.identity.local() == config.model
+			})
+			.ok_or_else(|| Error::NotFound(config.model.id.clone()))?;
+		let model: ModelConfig = serde_json::from_value(model.definition.config.clone())?;
+		let version = config.projection_version.unwrap_or_default();
+		model.require_projection(version)?;
+		model.require_prompt_cache(config.prompt_cache.unwrap_or_default(), version)?;
+		if let Some(budgets) = config.exposure_policy().budgets() {
+			return self.deferred_headroom(
+				snapshot,
+				&config,
+				&model,
+				budgets,
+				private_context,
+				version,
+			);
+		}
+		let mut instructions = aidash_domain::context::versioned_agent_instructions(version, "");
+		let mut specifications = vec![];
+		for binding in &snapshot.bindings {
+			if binding.excluded_reason.is_some() {
+				continue;
+			}
+			if binding.definition.kind == "skill" {
+				instructions.push_str(&format!(
+					"\nSkill {}@{}:\n{}",
+					binding.identity.id,
+					binding.identity.version,
+					skill_instructions(&binding.definition)?
+				));
+			} else if binding.definition.kind == "tool" {
+				let alias = binding
+					.alias
+					.as_deref()
+					.ok_or_else(|| Error::Invalid("Tool has no alias".into()))?;
+				let spec = crate::tools::plugin_specification(&binding.definition, alias);
+				specifications.push(spec);
+			}
+		}
+		instructions.push_str("\nAdditional user instructions:\n");
+		instructions.push_str(&config.instructions);
+		aidash_domain::context::request_context_budget(
+			model.context_window,
+			model.output_token_limit(),
+			&instructions,
+			&specifications,
+			private_context,
+			&registration_projection(version),
+			// Registration measures the conservative byte estimate (ADR 0017).
+			aidash_domain::provider::estimate::EstimateSnapshot::default(),
+		)
+		.map_err(Into::into)
+	}
+
+	/// `deferred@1`: the request carries Mandatory exposure, eager tools and
+	/// eager Skill blocks, and may grow to the full exposure budgets. Every
+	/// single Discoverable capability must also fit its own budget.
+	fn deferred_headroom(
+		&self,
+		snapshot: &aidash_domain::registry::bindings::BindingSnapshot,
+		config: &AgentConfig,
+		model: &ModelConfig,
+		budgets: &DeferredBudgets,
+		private_context: &Value,
+		version: aidash_domain::projection::ProjectionVersion,
+	) -> Result<usize> {
+		let node = self.node_specifications();
+		let specifications = crate::registry::bindings::execution::bound_specifications(
+			snapshot,
+			|binding, descriptor| {
+				Ok(
+					match (&descriptor.transport, node.get(&descriptor.operation)) {
+						(None, Some(specification)) => specification.clone(),
+						_ => crate::tools::plugin_specification(
+							&binding.definition,
+							binding.alias.as_deref().unwrap_or_default(),
+						),
+					},
+				)
+			},
+		)?;
+		let attachments = config
+			.skill_attachments
+			.iter()
+			.map(crate::capabilities::skills::attachment_skill)
+			.collect::<Result<Vec<_>>>()?;
+		let catalog = exposure::catalog(snapshot, &specifications, &attachments, None)?;
+		for capability in &catalog {
+			let (name, budget) = match capability.kind {
+				CapabilityKind::Tool => ("schema_bytes", budgets.schema_bytes),
+				CapabilityKind::Skill => ("skill_bytes", budgets.skill_bytes),
+			};
+			if capability.definition_bytes > budget {
+				return Err(Error::Invalid(format!(
+					"{} {} needs {} bytes, over the deferred@1 {name} budget of {budget} bytes",
+					capability.kind.as_str(),
+					capability.alias,
+					capability.definition_bytes,
+				)));
+			}
+		}
+		let selection = exposure::select(budgets, &catalog, &ExposureState::default())?;
+		let mut instructions = aidash_domain::context::versioned_agent_instructions(version, "");
+		for alias in &selection.skills {
+			let capability = catalog
+				.iter()
+				.find(|capability| &capability.alias == alias)
+				.ok_or_else(|| Error::Invalid("selected Skill is not Discoverable".into()))?;
+			// Only Registry Skills can be eager.
+			if !matches!(capability.identity, CapabilityIdentity::Registry(_)) {
+				continue;
+			}
+			instructions.push_str(&exposure::resident_block(
+				capability,
+				&exposure::registry_skill_body(snapshot, capability)?,
+			));
+		}
+		instructions.push_str("\nAdditional user instructions:\n");
+		instructions.push_str(&config.instructions);
+		let exposed = specifications
+			.into_iter()
+			.filter(|(alias, _)| selection.tools.contains(alias))
+			.map(|(_, specification)| specification)
+			.collect::<Vec<_>>();
+		let reserve = budgets.metadata_bytes
+			+ budgets
+				.schema_bytes
+				.saturating_sub(selection.usage.schema_bytes)
+			+ budgets
+				.skill_bytes
+				.saturating_sub(selection.usage.skill_bytes);
+		aidash_domain::context::request_context_budget(
+			model.context_window,
+			model.output_token_limit(),
+			&instructions,
+			&exposed,
+			private_context,
+			&registration_projection(version),
+			// Registration measures the conservative byte estimate (ADR 0017).
+			aidash_domain::provider::estimate::EstimateSnapshot::default(),
+		)?
+		.checked_sub(reserve)
+		.filter(|remaining| *remaining >= aidash_domain::context::MIN_CONTEXT_RESERVE)
+		.ok_or_else(|| {
+			Error::Invalid(
+				"deferred@1 exposure budgets cannot fit the model window with output and context reserves"
+					.into(),
+			)
+		})
+	}
+}
+
+/// The request shape Run creation will use for `version`. The Cache Scope's
+/// values do not affect the estimate; only its presence reserves the salt line.
+fn registration_projection(
+	version: aidash_domain::projection::ProjectionVersion,
+) -> aidash_domain::context::RequestProjection {
+	use aidash_domain::{context::RequestProjection, projection::ProjectionVersion};
+	let scope = aidash_domain::projection::CacheScope {
+		tenant: String::new(),
+		key_version: 0,
+	};
+	match version {
+		ProjectionVersion::Legacy => RequestProjection::Legacy,
+		ProjectionVersion::Ordered => RequestProjection::Ordered(scope),
+		ProjectionVersion::Native => RequestProjection::Native(scope),
+	}
+}
+
+/// The Node's Decision Provider: Jev through OpenRouter's System One API with
+/// the Tenant's Provider Credential (ADR 0041). Admission pins this identity.
+pub fn decision_implementation_id() -> String {
+	format!(
+		"{}:aidash-{}",
+		aidash_domain::decision::PROVIDER,
+		env!("CARGO_PKG_VERSION")
+	)
+}
+
+impl crate::ports::bindings::ProviderCatalog for DefinitionValidation {
+	fn decision_implementation(
+		&self,
+		config: &aidash_domain::decision::DeciderConfig,
+	) -> Result<String> {
+		config.validate()?;
+		if !self.provider_credentials_enabled {
+			return Err(Error::Invalid(
+				"Node has no supported Decision Provider".into(),
+			));
+		}
+		Ok(decision_implementation_id())
+	}
+	fn contract(
+		&self,
+		descriptor: &aidash_domain::tool::providers::ToolDescriptor,
+		identity: &aidash_domain::registry::bindings::QualifiedRef,
+	) -> Result<aidash_domain::tool::ToolContract> {
+		Ok(descriptor.declared_contract(identity.clone())?)
+	}
+	fn implementation(
+		&self,
+		descriptor: &aidash_domain::tool::providers::ToolDescriptor,
+	) -> Result<String> {
+		self.core_tools.provider_available(descriptor)?;
+		Ok(format!(
+			"{}:aidash-{}",
+			descriptor.provider,
+			env!("CARGO_PKG_VERSION")
+		))
+	}
+}
+
+#[cfg(test)]
+mod tests;

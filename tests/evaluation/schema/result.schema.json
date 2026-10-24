@@ -1,0 +1,427 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/kent8192/aidash/tests/evaluation/schema/result.schema.json",
+  "title": "Fixed-task result manifest",
+  "description": "Measurements of one experiment. Every attempted Run appears in runs[]; failed and interrupted Runs are counted, never dropped. The embedded experiment is validated against experiment.schema.json.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "grade",
+    "approvals",
+    "conclusion_scope",
+    "experiment",
+    "runs",
+    "aggregates",
+    "comparisons",
+    "feature_availability",
+    "memory_matrix",
+    "calibration",
+    "spend",
+    "limitations",
+    "error"
+  ],
+  "properties": {
+    "schema_version": { "enum": [1, 2] },
+    "grade": { "const": "measurement-only" },
+    "approvals": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "accuracy_claim",
+        "cost_claim",
+        "production_quality",
+        "default_rollout"
+      ],
+      "properties": {
+        "accuracy_claim": { "const": false },
+        "cost_claim": { "const": false },
+        "production_quality": { "const": false },
+        "default_rollout": { "const": false }
+      }
+    },
+    "conclusion_scope": { "type": "string" },
+    "experiment": { "type": "object" },
+    "runs": { "type": "array", "items": { "$ref": "#/$defs/run" } },
+    "aggregates": { "type": "array", "items": { "$ref": "#/$defs/aggregate" } },
+    "comparisons": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/comparison" }
+    },
+    "feature_availability": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["comparison", "issue", "status", "detail"],
+        "properties": {
+          "comparison": { "type": "string" },
+          "issue": { "type": "string" },
+          "status": {
+            "enum": [
+              "available",
+              "not-measured",
+              "feature-not-available",
+              "not-selected"
+            ]
+          },
+          "detail": { "type": ["string", "null"] }
+        }
+      }
+    },
+    "memory_matrix": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["corpus", "scenarios", "summary"],
+      "properties": {
+        "corpus": { "type": "string" },
+        "scenarios": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/memory_scenario" }
+        },
+        "summary": { "$ref": "#/$defs/counts" }
+      }
+    },
+    "calibration": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["applied", "failures"],
+      "properties": {
+        "applied": { "type": "boolean" },
+        "failures": { "type": "array", "items": { "type": "string" } }
+      }
+    },
+    "spend": {
+      "type": ["object", "null"],
+      "additionalProperties": false,
+      "required": [
+        "ceiling_nanocredits",
+        "committed_nanocredits",
+        "uncertain_attempts",
+        "attempts",
+        "refusal"
+      ],
+      "properties": {
+        "ceiling_nanocredits": { "type": "integer", "minimum": 1 },
+        "committed_nanocredits": { "type": "integer", "minimum": 0 },
+        "uncertain_attempts": { "type": "integer", "minimum": 0 },
+        "attempts": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/spend_attempt" }
+        },
+        "refusal": { "type": ["string", "null"] }
+      }
+    },
+    "skipped_runs": {
+      "description": "Planned Runs that were never dispatched (spend or time refusal, or an error). Skipped Runs are listed, not dropped.",
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["key", "reason"],
+        "properties": {
+          "key": { "type": "string" },
+          "reason": { "type": "string" }
+        }
+      }
+    },
+    "limitations": { "type": "array", "items": { "type": "string" } },
+    "error": { "type": ["string", "null"] }
+  },
+  "$defs": {
+    "outcome": {
+      "enum": [
+        "success",
+        "false_completion",
+        "policy_compliant_escalation",
+        "unresolved",
+        "overflow_failure",
+        "interrupted",
+        "infrastructure_failure"
+      ]
+    },
+    "counts": {
+      "type": "object",
+      "additionalProperties": { "type": "integer", "minimum": 0 }
+    },
+    "distribution": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["n", "unknown", "min", "median", "max", "total"],
+      "properties": {
+        "n": { "type": "integer", "minimum": 0 },
+        "unknown": { "type": "integer", "minimum": 0 },
+        "min": { "type": ["number", "null"] },
+        "median": { "type": ["number", "null"] },
+        "max": { "type": ["number", "null"] },
+        "total": { "type": ["number", "null"] }
+      }
+    },
+    "spend_attempt": {
+      "description": "One live Run's reservation. `charged` is what the ledger counts against the ceiling: always the full reservation, because the live tier reads no Usage Record and so has no `reported` cost. `uncertain` once the evaluator stopped waiting for the Run, `reserved` if it never got that far.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["key", "reserved", "charged", "reported", "state"],
+      "properties": {
+        "key": { "type": "string" },
+        "reserved": { "type": "integer", "minimum": 1 },
+        "charged": { "type": "integer", "minimum": 0 },
+        "reported": { "type": "null" },
+        "state": { "enum": ["reserved", "uncertain"] },
+        "provider_work": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["step", "input_tokens", "output_tokens"],
+            "properties": {
+              "step": { "type": ["integer", "null"] },
+              "input_tokens": { "type": ["integer", "null"] },
+              "output_tokens": { "type": ["integer", "null"] }
+            }
+          }
+        },
+        "provider_work_error": { "type": "string" }
+      }
+    },
+    "run": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "key",
+        "task",
+        "comparison",
+        "arm",
+        "label",
+        "repeat",
+        "run_id",
+        "phase",
+        "error",
+        "interrupted",
+        "infrastructure_error",
+        "outcome",
+        "claimed_success",
+        "oracle",
+        "long_context",
+        "constraint_retention",
+        "tool_selection",
+        "wall_ms",
+        "steps",
+        "compactions",
+        "requests",
+        "usage",
+        "tool_calls",
+        "human_answers",
+        "evidence"
+      ],
+      "properties": {
+        "key": { "type": "string" },
+        "task": { "type": "string" },
+        "comparison": { "type": "string" },
+        "arm": { "type": "string", "pattern": "^[a-z][a-z0-9-]*$" },
+        "label": { "type": "string" },
+        "repeat": { "type": "integer", "minimum": 1 },
+        "run_id": { "type": ["string", "null"] },
+        "phase": { "type": ["string", "null"] },
+        "error": { "type": ["string", "null"] },
+        "interrupted": { "type": "boolean" },
+        "infrastructure_error": { "type": ["string", "null"] },
+        "outcome": { "$ref": "#/$defs/outcome" },
+        "claimed_success": { "type": ["boolean", "null"] },
+        "oracle": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["kind", "passed", "checks", "detail"],
+          "properties": {
+            "kind": { "type": "string" },
+            "passed": { "type": ["boolean", "null"] },
+            "checks": { "type": "array", "items": { "type": "object" } },
+            "detail": { "type": ["string", "null"] }
+          }
+        },
+        "long_context": {
+          "enum": ["none", "pruning", "summary_recovery", "terminal_overflow"]
+        },
+        "constraint_retention": { "type": ["boolean", "null"] },
+        "tool_selection": { "type": ["object", "null"] },
+        "wall_ms": { "type": "number", "minimum": 0 },
+        "steps": { "type": ["integer", "null"] },
+        "recovery_operations": {
+          "type": "array",
+          "items": { "type": "string" }
+        },
+        "compactions": { "type": ["integer", "null"] },
+        "requests": { "type": ["object", "null"] },
+        "usage": { "$ref": "#/$defs/usage" },
+        "tool_calls": { "type": "array", "items": { "type": "object" } },
+        "human_answers": { "type": "array", "items": { "type": "object" } },
+        "evidence": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "content_class",
+            "input_sha256",
+            "final_answer_sha256",
+            "final_answer",
+            "verifier"
+          ],
+          "properties": {
+            "content_class": { "enum": ["fixture-trace", "restricted-live"] },
+            "input_sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+            "final_answer_sha256": {
+              "type": ["string", "null"],
+              "pattern": "^[0-9a-f]{64}$"
+            },
+            "final_answer": { "type": ["string", "null"] },
+            "verifier": { "type": "array", "items": { "type": "object" } }
+          }
+        }
+      }
+    },
+    "usage": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "source",
+        "attempts",
+        "outcomes",
+        "input_tokens",
+        "output_tokens",
+        "estimated_tokens",
+        "cache_read_tokens",
+        "cache_write_tokens",
+        "cost_known_nanocredits",
+        "cost_uncertain_attempts",
+        "records"
+      ],
+      "properties": {
+        "source": { "enum": ["usage-records", "unavailable"] },
+        "attempts": { "type": "integer", "minimum": 0 },
+        "outcomes": { "$ref": "#/$defs/counts" },
+        "input_tokens": { "$ref": "#/$defs/known_sum" },
+        "output_tokens": { "$ref": "#/$defs/known_sum" },
+        "estimated_tokens": { "$ref": "#/$defs/known_sum" },
+        "cache_read_tokens": { "$ref": "#/$defs/known_sum" },
+        "cache_write_tokens": { "$ref": "#/$defs/known_sum" },
+        "cost_known_nanocredits": { "type": "integer", "minimum": 0 },
+        "cost_uncertain_attempts": { "type": "integer", "minimum": 0 },
+        "records": { "type": "array", "items": { "type": "object" } }
+      }
+    },
+    "known_sum": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["known", "unknown"],
+      "properties": {
+        "known": { "type": "integer", "minimum": 0 },
+        "unknown": { "type": "integer", "minimum": 0 }
+      }
+    },
+    "aggregate": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "task",
+        "comparison",
+        "arm",
+        "label",
+        "attempted",
+        "outcomes",
+        "rates",
+        "metrics"
+      ],
+      "properties": {
+        "task": { "type": "string" },
+        "comparison": { "type": "string" },
+        "arm": { "type": "string", "pattern": "^[a-z][a-z0-9-]*$" },
+        "label": { "type": "string" },
+        "attempted": { "type": "integer", "minimum": 0 },
+        "outcomes": { "$ref": "#/$defs/counts" },
+        "rates": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["numerator", "denominator"],
+            "properties": {
+              "numerator": { "type": "integer", "minimum": 0 },
+              "denominator": { "type": "integer", "minimum": 0 }
+            }
+          }
+        },
+        "metrics": {
+          "type": "object",
+          "additionalProperties": { "$ref": "#/$defs/distribution" }
+        }
+      }
+    },
+    "comparison": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "task",
+        "comparison",
+        "issue",
+        "baseline",
+        "candidate",
+        "comparable",
+        "outcome_changes",
+        "median_deltas"
+      ],
+      "properties": {
+        "task": { "type": "string" },
+        "comparison": { "type": "string" },
+        "issue": { "type": "string" },
+        "baseline_arm": { "type": "string" },
+        "candidate_arm": { "type": "string" },
+        "baseline": { "type": "string" },
+        "candidate": { "type": "string" },
+        "comparable": { "type": "boolean" },
+        "outcome_changes": { "type": "array", "items": { "type": "object" } },
+        "median_deltas": {
+          "type": "object",
+          "additionalProperties": { "type": ["number", "null"] }
+        }
+      }
+    },
+    "memory_scenario": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "issue",
+        "evidence",
+        "status",
+        "variants",
+        "checks",
+        "detail"
+      ],
+      "properties": {
+        "id": { "type": "string" },
+        "issue": { "type": "string" },
+        "evidence": {
+          "enum": [
+            "deterministic-api",
+            "deterministic-test",
+            "feature-not-available",
+            "requires-live-tier"
+          ]
+        },
+        "status": {
+          "enum": [
+            "passed",
+            "partial",
+            "failed",
+            "error",
+            "feature-not-available",
+            "requires-live-tier",
+            "not-run"
+          ]
+        },
+        "variants": { "type": "array", "items": { "type": "object" } },
+        "checks": { "type": "array", "items": { "type": "object" } },
+        "detail": { "type": ["string", "null"] }
+      }
+    }
+  }
+}

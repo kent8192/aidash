@@ -1,0 +1,1110 @@
+#![allow(clippy::disallowed_methods)] // Fixtures reach the database outside a tenancy scope.
+use aidash_application::tenancy::TEST_FIXTURE;
+use common::upstream_fixtures;
+use reinhardt::ServerRouter as Router;
+use reinhardt::test::fixtures::server::TestServerGuard;
+use upstream_fixtures::{reply, upstream};
+#[path = "support/legacy.rs"]
+mod common;
+
+use aidash_server::{federation::Federation, harness::Harness};
+
+use base64::Engine;
+use common::{bootstrap, cleanup, request};
+use serde_json::{Value, json};
+use std::sync::{
+	Arc,
+	atomic::{AtomicBool, Ordering},
+};
+use tokio::sync::mpsc;
+
+use uuid::Uuid;
+
+async fn upload(
+	app: &common::TestApplication,
+	token: &str,
+	workspace: &str,
+	name: &str,
+	mime: &str,
+	bytes: &[u8],
+) -> Value {
+	let path = format!(
+		"/api/workspaces/{workspace}/attachments?filename={name}&media_type={}&idempotency_key={}",
+		mime.replace('/', "%2F"),
+		Uuid::new_v4()
+	);
+
+	let authorization = format!("Bearer {token}");
+	let response = async {
+		let client = &(app.api_http);
+		let mut request = client
+			.request(http::Method::POST, &path)
+			.body(bytes::Bytes::copy_from_slice(bytes))
+			.header(http::header::CONTENT_TYPE, "application/octet-stream");
+		request = request.header("authorization", authorization.as_str());
+		request.send().await
+	}
+	.await
+	.unwrap();
+	let status = response.status_code();
+	let body = response.json_value().unwrap();
+	assert_eq!(status, 200, "{body}");
+
+	body
+}
+
+struct AudioBatchCase<'a> {
+	first_audio: &'a [u8],
+	with_text: bool,
+	leading_text: Option<&'a str>,
+}
+
+async fn verify_audio_batches(
+	app: &common::TestApplication,
+	f: &Federation,
+	worker: &Harness,
+	received: &mut mpsc::UnboundedReceiver<Value>,
+	member: &str,
+	case: AudioBatchCase<'_>,
+) {
+	let (status, audio_created) = request(
+		app,
+		member,
+		"POST",
+		"/api/conversations",
+		json!({"title":"Audio batching", "goal":"Inspect both clips", "target":{"id":"research","version":"1.0.1"},"target_kind":"agent"}),
+	)
+	.await;
+	assert_eq!(status, 200, "{audio_created}");
+	let audio_workspace = audio_created["workspace"]["id"].as_str().unwrap();
+	let audio_run = f
+		.store
+		.runs(&TEST_FIXTURE)
+		.await
+		.unwrap()
+		.into_iter()
+		.find(|run| run.workspace_id.to_string() == audio_workspace)
+		.unwrap();
+	// Both messages must fit the admitted Binding's ledger budget. The audio
+	// still forces separate provider requests; tool declarations determine the
+	// remaining window, so a fixed text length is not a stable fixture boundary.
+	let message_limit = f.run_message_limit(&audio_run).await.unwrap();
+	let message_text = if case.with_text {
+		"a".repeat(message_limit / 3)
+	} else {
+		String::new()
+	};
+	let leading_text = case
+		.leading_text
+		.map(|text| text.chars().take(message_limit / 2).collect::<String>());
+	// Reserve space for media framing and intake context while keeping this
+	// clip near the actual window. The leading instruction then needs its own
+	// request, even when Binding declarations reduce the available headroom.
+	let audio_limit = message_limit
+		.saturating_mul(4)
+		.saturating_sub(3_072)
+		.saturating_mul(16);
+	let first_audio = &case.first_audio[..case.first_audio.len().min(audio_limit)];
+	if let Some(content) = &leading_text {
+		let (status, sent) = request(
+			app,
+			member,
+			"POST",
+			&format!("/api/runs/{}/message", audio_run.id),
+			json!({"content":content,"idempotency_key":Uuid::new_v4()}),
+		)
+		.await;
+		assert_eq!(status, 200, "{sent}");
+	}
+	let mut second_audio = first_audio.to_vec();
+	*second_audio.last_mut().unwrap() = 1;
+	let first = upload(
+		app,
+		member,
+		audio_workspace,
+		"first.wav",
+		"audio/wav",
+		first_audio,
+	)
+	.await;
+	let second = upload(
+		app,
+		member,
+		audio_workspace,
+		"second.wav",
+		"audio/wav",
+		&second_audio,
+	)
+	.await;
+	for attachment in [first, second] {
+		let (status, sent) = request(
+			app,
+			member,
+			"POST",
+			&format!("/api/runs/{}/message", audio_run.id),
+			json!({"content":message_text, "idempotency_key":Uuid::new_v4(), "attachment_ids":[attachment["id"]]}),
+		)
+		.await;
+		assert_eq!(status, 200, "{sent}");
+	}
+	let mut audio_batches = Vec::new();
+	let mut saw_prefix_batch = false;
+	for _ in 0..12 {
+		assert!(worker.worker_once().await.unwrap());
+		while let Ok(body) = received.try_recv() {
+			let Some(parts) = body["messages"][1]["content"].as_array() else {
+				if let Some(prefix) = &leading_text
+					&& body["messages"][1]["content"]
+						.as_str()
+						.is_some_and(|content| content.contains(prefix.as_str()))
+				{
+					assert!(body.get("tools").is_none());
+					saw_prefix_batch = true;
+				}
+				continue;
+			};
+			let audio: Vec<String> = parts
+				.iter()
+				.filter_map(|part| part["input_audio"]["data"].as_str().map(str::to_owned))
+				.collect();
+			if !audio.is_empty() {
+				assert_eq!(audio.len(), 1, "audio messages must fit individually");
+				if case.with_text {
+					assert!(parts.iter().any(|part| {
+						part["text"]
+							.as_str()
+							.is_some_and(|text| text.contains(&message_text))
+					}));
+				}
+				audio_batches.push(audio[0].clone());
+			}
+		}
+		if audio_batches.len() == 2 {
+			break;
+		}
+	}
+	assert_eq!(
+		audio_batches,
+		vec![
+			base64::engine::general_purpose::STANDARD.encode(first_audio),
+			base64::engine::general_purpose::STANDARD.encode(&second_audio),
+		]
+	);
+	if leading_text.is_some() {
+		assert!(
+			saw_prefix_batch,
+			"the leading text must be deferred separately"
+		);
+	}
+	assert!(worker.worker_once().await.unwrap());
+	assert_eq!(
+		f.store
+			.run(&TEST_FIXTURE, audio_run.id)
+			.await
+			.unwrap()
+			.phase()
+			.as_str(),
+		"COMPLETED"
+	);
+}
+
+async fn verify_attachment_labels_count_toward_admission(
+	app: &common::TestApplication,
+	f: &Federation,
+	member: &str,
+) {
+	let (status, created) = request(
+		app,
+		member,
+		"POST",
+		"/api/conversations",
+		json!({"title":"Media label budget", "goal":"Inspect audio", "target":{"id":"research","version":"1.0.1"},"target_kind":"agent"}),
+	)
+	.await;
+	assert_eq!(status, 200, "{created}");
+	let workspace = created["workspace"]["id"].as_str().unwrap();
+	let run = f
+		.store
+		.runs(&TEST_FIXTURE)
+		.await
+		.unwrap()
+		.into_iter()
+		.find(|run| run.workspace_id.to_string() == workspace)
+		.unwrap();
+	let seq = f
+		.store
+		.run_inputs(&TEST_FIXTURE, run.id)
+		.await
+		.unwrap()
+		.last()
+		.map_or(1, |input| input.seq + 1);
+	let short_name = "s.wav";
+	let long_name = format!("{}.wav", "x".repeat(251));
+	let short_label = format!("Run message {seq} attachment: {short_name}");
+	let text_body = json!({"messages":[
+		{"role":"system","content":""},
+		{"role":"user","content":[
+			{"type":"text","text":json!({"run_message":""}).to_string()},
+			{"type":"text","text":short_label}
+		]}
+	]});
+	// Leave a little room for the short label while the 255-byte filename
+	// pushes the otherwise identical audio beyond the admission boundary.
+	let audio_tokens = (f.run_message_limit(&run).await.unwrap() * 4)
+		.checked_sub(text_body.to_string().len() + 2 * 1024 + 160)
+		.unwrap();
+	let mut audio = vec![0_u8; audio_tokens * 16];
+	audio[..12].copy_from_slice(b"RIFF\0\0\0\0WAVE");
+	let long = upload(app, member, workspace, &long_name, "audio/wav", &audio).await;
+	let short = upload(app, member, workspace, short_name, "audio/wav", &audio).await;
+	let path = format!("/api/runs/{}/message", run.id);
+	let (status, rejected) = request(
+		app,
+		member,
+		"POST",
+		&path,
+		json!({"content":"", "idempotency_key":Uuid::new_v4(), "attachment_ids":[long["id"]]}),
+	)
+	.await;
+	assert_eq!(status, 400, "{rejected}");
+	assert!(
+		f.store
+			.run_inputs(&TEST_FIXTURE, run.id)
+			.await
+			.unwrap()
+			.is_empty()
+	);
+	let (status, sent) = request(
+		app,
+		member,
+		"POST",
+		&path,
+		json!({"content":"", "idempotency_key":Uuid::new_v4(), "attachment_ids":[short["id"]]}),
+	)
+	.await;
+	assert_eq!(status, 200, "{sent}");
+	assert_eq!(
+		f.store
+			.run_inputs(&TEST_FIXTURE, run.id)
+			.await
+			.unwrap()
+			.len(),
+		1
+	);
+}
+
+async fn verify_expired_route_retry(
+	app: &common::TestApplication,
+	f: &Federation,
+	worker: &Harness,
+	member: &str,
+) {
+	let mut model = f
+		.registry
+		.get(
+			&aidash_domain::tenancy::TenantName::new("acme").unwrap(),
+			"model",
+			"1.0.1",
+		)
+		.await
+		.unwrap();
+	model.version = "1.0.2".into();
+	model.config["media_routes"][0]["expires_at"] =
+		json!(chrono::Utc::now() + chrono::Duration::seconds(3));
+	let (status, body) = request(app, member, "POST", "/api/registry", json!(model)).await;
+	assert_eq!(status, 200, "{body}");
+	let (status, body) = request(
+		app,
+		member,
+		"POST",
+		"/api/authorization/acme/catalog",
+		json!({"node":aidash_domain::nodes::NodeName::derived("acme"),"entry":{"id":"model","version":"1.0.2"},"expected_revision":0,"enabled":true}),
+	)
+	.await;
+	assert_eq!(status, 200, "{body}");
+	let mut agent = f
+		.registry
+		.get(
+			&aidash_domain::tenancy::TenantName::new("acme").unwrap(),
+			"research",
+			"1.0.1",
+		)
+		.await
+		.unwrap();
+	agent.version = "1.0.2".into();
+	agent.binding_normalization = None;
+	agent.config["model"]["version"] = json!("1.0.2");
+	let (status, body) = request(app, member, "POST", "/api/registry", json!(agent)).await;
+	assert_eq!(status, 200, "{body}");
+	let (status, body) = request(
+		app,
+		member,
+		"POST",
+		"/api/authorization/acme/catalog",
+		json!({"node":aidash_domain::nodes::NodeName::derived("acme"),"entry":{"id":"research","version":"1.0.2"},"expected_revision":0,"enabled":true}),
+	)
+	.await;
+	assert_eq!(status, 200, "{body}");
+	let (status, created) = request(
+		app,
+		member,
+		"POST",
+		"/api/conversations",
+		json!({"title":"Retry after route expiry", "goal":"Inspect media", "target":{"id":"research","version":"1.0.2"},"target_kind":"agent"}),
+	)
+	.await;
+	assert_eq!(status, 200, "{created}");
+	let workspace = created["workspace"]["id"].as_str().unwrap();
+	let run = f
+		.store
+		.runs(&TEST_FIXTURE)
+		.await
+		.unwrap()
+		.into_iter()
+		.find(|run| run.workspace_id.to_string() == workspace)
+		.unwrap();
+	let image = upload(
+		app,
+		member,
+		workspace,
+		"retry.png",
+		"image/png",
+		b"\x89PNG\r\n\x1a\nretry",
+	)
+	.await;
+	let key = Uuid::new_v4();
+	let input = json!({"content":"retry", "idempotency_key":key, "attachment_ids":[image["id"]]});
+	let path = format!("/api/runs/{}/message", run.id);
+	let (status, body) = request(app, member, "POST", &path, input.clone()).await;
+	assert_eq!(status, 200, "{body}");
+	tokio::time::sleep(std::time::Duration::from_secs(4)).await;
+	let (status, body) = request(app, member, "POST", &path, input).await;
+	assert_eq!(status, 200, "{body}");
+	assert_eq!(
+		f.store
+			.run_inputs(&TEST_FIXTURE, run.id)
+			.await
+			.unwrap()
+			.len(),
+		1
+	);
+	assert!(worker.worker_once().await.unwrap());
+	assert!(worker.worker_once().await.unwrap());
+	let paused = f.store.run(&TEST_FIXTURE, run.id).await.unwrap();
+	assert_eq!(paused.control.as_str(), "PAUSED");
+	assert_eq!(paused.phase().as_str(), "THINKING");
+	assert_eq!(paused.context.media_inferred_seq, 0);
+	assert_eq!(
+		f.store
+			.run_inputs(&TEST_FIXTURE, run.id)
+			.await
+			.unwrap()
+			.len(),
+		1
+	);
+}
+
+async fn verify_separate_format_routes(
+	app: &common::TestApplication,
+	f: &Federation,
+	worker: &Harness,
+	received: &mut mpsc::UnboundedReceiver<Value>,
+	member: &str,
+) {
+	let mut model = f
+		.registry
+		.get(
+			&aidash_domain::tenancy::TenantName::new("acme").unwrap(),
+			"model",
+			"1.0.1",
+		)
+		.await
+		.unwrap();
+	model.version = "1.0.3".into();
+	model.config["media_routes"] = json!([
+		{"tag":"fixture/png", "formats":["image/png"], "source":"mock provider contract",
+		 "verified_at":chrono::Utc::now() - chrono::Duration::hours(1),
+		 "expires_at":chrono::Utc::now() + chrono::Duration::hours(1)},
+		{"tag":"fixture/jpeg", "formats":["image/jpeg"], "source":"mock provider contract",
+		 "verified_at":chrono::Utc::now() - chrono::Duration::hours(1),
+		 "expires_at":chrono::Utc::now() + chrono::Duration::hours(1)}
+	]);
+	let (status, body) = request(app, member, "POST", "/api/registry", json!(model)).await;
+	assert_eq!(status, 200, "{body}");
+	let (status, body) = request(
+		app,
+		member,
+		"POST",
+		"/api/authorization/acme/catalog",
+		json!({"node":aidash_domain::nodes::NodeName::derived("acme"),"entry":{"id":"model","version":"1.0.3"},"expected_revision":0,"enabled":true}),
+	)
+	.await;
+	assert_eq!(status, 200, "{body}");
+	let mut agent = f
+		.registry
+		.get(
+			&aidash_domain::tenancy::TenantName::new("acme").unwrap(),
+			"research",
+			"1.0.1",
+		)
+		.await
+		.unwrap();
+	agent.version = "1.0.3".into();
+	agent.binding_normalization = None;
+	agent.config["model"]["version"] = json!("1.0.3");
+	let (status, body) = request(app, member, "POST", "/api/registry", json!(agent)).await;
+	assert_eq!(status, 200, "{body}");
+	let (status, body) = request(
+		app,
+		member,
+		"POST",
+		"/api/authorization/acme/catalog",
+		json!({"node":aidash_domain::nodes::NodeName::derived("acme"),"entry":{"id":"research","version":"1.0.3"},"expected_revision":0,"enabled":true}),
+	)
+	.await;
+	assert_eq!(status, 200, "{body}");
+	let (status, created) = request(
+		app,
+		member,
+		"POST",
+		"/api/conversations",
+		json!({"title":"Separate media routes", "goal":"Inspect both images", "target":{"id":"research","version":"1.0.3"},"target_kind":"agent"}),
+	)
+	.await;
+	assert_eq!(status, 200, "{created}");
+	let workspace = created["workspace"]["id"].as_str().unwrap();
+	let run = f
+		.store
+		.runs(&TEST_FIXTURE)
+		.await
+		.unwrap()
+		.into_iter()
+		.find(|run| run.workspace_id.to_string() == workspace)
+		.unwrap();
+	let images = [
+		(
+			"first.png",
+			"image/png",
+			b"\x89PNG\r\n\x1a\nfirst".as_slice(),
+			"fixture/png",
+		),
+		(
+			"second.jpg",
+			"image/jpeg",
+			b"\xff\xd8\xffsecond".as_slice(),
+			"fixture/jpeg",
+		),
+	];
+	for (name, mime, bytes, _) in images {
+		let attachment = upload(app, member, workspace, name, mime, bytes).await;
+		let (status, sent) = request(
+			app,
+			member,
+			"POST",
+			&format!("/api/runs/{}/message", run.id),
+			json!({"content":"", "idempotency_key":Uuid::new_v4(), "attachment_ids":[attachment["id"]]}),
+		)
+		.await;
+		assert_eq!(status, 200, "{sent}");
+	}
+	let mut seen = Vec::new();
+	for _ in 0..12 {
+		assert!(worker.worker_once().await.unwrap());
+		while let Ok(body) = received.try_recv() {
+			let Some(parts) = body["messages"][1]["content"].as_array() else {
+				continue;
+			};
+			let urls: Vec<_> = parts
+				.iter()
+				.filter_map(|part| part["image_url"]["url"].as_str())
+				.collect();
+			if urls.is_empty() {
+				continue;
+			}
+			assert_eq!(urls.len(), 1, "each request needs one common media route");
+			for (index, (_, mime, bytes, tag)) in images.iter().enumerate() {
+				let expected = format!(
+					"data:{mime};base64,{}",
+					base64::engine::general_purpose::STANDARD.encode(bytes)
+				);
+				if urls[0] == expected {
+					assert_eq!(body["provider"]["only"], json!([tag]));
+					if !seen.contains(&index) {
+						seen.push(index);
+					}
+				}
+			}
+		}
+		if seen.len() == 2 {
+			break;
+		}
+	}
+	assert_eq!(seen, vec![0, 1], "both formats must reach their own route");
+	for _ in 0..4 {
+		if f.store
+			.run(&TEST_FIXTURE, run.id)
+			.await
+			.unwrap()
+			.phase()
+			.as_str() == "COMPLETED"
+		{
+			break;
+		}
+		assert!(worker.worker_once().await.unwrap());
+	}
+	assert_eq!(
+		f.store
+			.run(&TEST_FIXTURE, run.id)
+			.await
+			.unwrap()
+			.phase()
+			.as_str(),
+		"COMPLETED"
+	);
+}
+
+#[rstest::rstest]
+#[tokio::test]
+async fn human_media_only_run_input_reaches_the_first_model_request_in_order(
+	#[future(awt)]
+	#[from(common::native_application)]
+	fixture: common::ApplicationFixture,
+	media_requests: MediaRequests,
+	#[from(empty_media_observation)] _empty_media: Arc<AtomicBool>,
+	#[from(media_router)]
+	#[with(media_requests.clone(), _empty_media.clone())]
+	_router: Arc<Router>,
+	#[future(awt)]
+	#[from(upstream)]
+	#[with(_router.clone())]
+	server: TestServerGuard,
+) {
+	let mut received = media_requests.receiver.lock().unwrap().take().unwrap();
+
+	let endpoint = server.url.clone();
+	let (f, url, schema) = fixture.runtime.parts();
+	let app = fixture.application;
+	let (mut policy, token, _) = bootstrap(&f, &app, &endpoint).await;
+	policy["subjects"][aidash_server::domain::qualified_agent(
+		&aidash_domain::nodes::NodeAddress::derived(f.config.deployment.as_str(), "acme"),
+		"research",
+		"1.0.1",
+	)] = json!({"kind":"agent"});
+	let (status, body) = request(
+		&app,
+		&f.config.api_token,
+		"POST",
+		"/api/authorization/acme",
+		json!({"expected_revision":1,"bundle":policy}),
+	)
+	.await;
+	assert_eq!(status, 200, "{body}");
+	let mut model = f
+		.registry
+		.get(
+			&aidash_domain::tenancy::TenantName::new("acme").unwrap(),
+			"model",
+			"1.0.0",
+		)
+		.await
+		.unwrap();
+	model.version = "1.0.1".into();
+	model.config["context_window"] = json!(64_000);
+	model.config["modalities"] = json!(["text", "image", "audio"]);
+	model.config["media_routes"] = json!([{
+		"tag":"fixture/verified", "formats":["image/png", "wav"],
+		"source":"mock provider contract", "verified_at": chrono::Utc::now() - chrono::Duration::hours(1),
+		"expires_at": chrono::Utc::now() + chrono::Duration::hours(1)
+	}]);
+	let (status, body) = request(&app, &token, "POST", "/api/registry", json!(model)).await;
+	assert_eq!(status, 200, "{body}");
+	let (status, body) = request(
+		&app,
+		&token,
+		"POST",
+		"/api/authorization/acme/catalog",
+		json!({"node":aidash_domain::nodes::NodeName::derived("acme"),"entry":{"id":"model","version":"1.0.1"},"expected_revision":0,"enabled":true}),
+	)
+	.await;
+	assert_eq!(status, 200, "{body}");
+	let mut agent = f
+		.registry
+		.get(
+			&aidash_domain::tenancy::TenantName::new("acme").unwrap(),
+			"research",
+			"1.0.0",
+		)
+		.await
+		.unwrap();
+	agent.version = "1.0.1".into();
+	agent.binding_normalization = None;
+	agent.config["model"]["version"] = json!("1.0.1");
+	let (status, body) = request(&app, &token, "POST", "/api/registry", json!(agent)).await;
+	assert_eq!(status, 200, "{body}");
+	let (status, body) = request(
+		&app,
+		&token,
+		"POST",
+		"/api/authorization/acme/catalog",
+		json!({"node":aidash_domain::nodes::NodeName::derived("acme"),"entry":{"id":"research","version":"1.0.1"},"expected_revision":0,"enabled":true}),
+	)
+	.await;
+	assert_eq!(status, 200, "{body}");
+	let (status, created) = request(&app, &token, "POST", "/api/conversations", json!({"title":"Media input","goal":"Inspect media","target":{"id":"research","version":"1.0.1"},"target_kind":"agent"})).await;
+	assert_eq!(status, 200, "{created}");
+	let run = f.store.runs(&TEST_FIXTURE).await.unwrap().remove(0);
+	let workspace = run.workspace_id.to_string();
+	let (status, details) = request(
+		&app,
+		&token,
+		"GET",
+		&format!("/api/runs/{}", run.id),
+		json!({}),
+	)
+	.await;
+	assert_eq!(status, 200, "{details}");
+	assert!(
+		details["media_input_routes"][0]
+			.as_array()
+			.unwrap()
+			.contains(&json!("image/png"))
+	);
+	assert!(
+		details["media_input_routes"][0]
+			.as_array()
+			.unwrap()
+			.contains(&json!("audio/wav"))
+	);
+	let bad = upload(
+		&app,
+		&token,
+		&workspace,
+		"bad.png",
+		"image/png",
+		b"not a png",
+	)
+	.await;
+	let path = format!("/api/runs/{}/message", run.id);
+	let (status, rejected) = request(
+		&app,
+		&token,
+		"POST",
+		&path,
+		json!({"content":"", "idempotency_key":Uuid::new_v4(), "attachment_ids":[bad["id"]]}),
+	)
+	.await;
+	assert_eq!(status, 400, "{rejected}");
+	assert!(
+		f.store
+			.run_inputs(&TEST_FIXTURE, run.id)
+			.await
+			.unwrap()
+			.is_empty()
+	);
+	let mut large_audio = vec![0_u8; 512 * 1024];
+	large_audio[..12].copy_from_slice(b"RIFF\0\0\0\0WAVE");
+	let first_large = upload(
+		&app,
+		&token,
+		&workspace,
+		"large-a.wav",
+		"audio/wav",
+		&large_audio,
+	)
+	.await;
+	let second_large = upload(
+		&app,
+		&token,
+		&workspace,
+		"large-b.wav",
+		"audio/wav",
+		&large_audio,
+	)
+	.await;
+	let (status, rejected) = request(
+		&app,
+		&token,
+		"POST",
+		&path,
+		json!({"content":"","idempotency_key":Uuid::new_v4(),"attachment_ids":[first_large["id"],second_large["id"]]}),
+	)
+	.await;
+	assert_eq!(status, 400, "{rejected}");
+	assert!(
+		f.store
+			.run_inputs(&TEST_FIXTURE, run.id)
+			.await
+			.unwrap()
+			.is_empty()
+	);
+	let audio = upload(
+		&app,
+		&token,
+		&workspace,
+		"sample.wav",
+		"audio/wav",
+		b"RIFF\0\0\0\0WAVEaudio",
+	)
+	.await;
+	let image = upload(
+		&app,
+		&token,
+		&workspace,
+		"sample.png",
+		"image/png",
+		b"\x89PNG\r\n\x1a\nimage",
+	)
+	.await;
+	assert_eq!(
+		request(
+			&app,
+			&token,
+			"POST",
+			&format!("/api/runs/{}/message", Uuid::new_v4()),
+			json!({"content":"","idempotency_key":Uuid::new_v4(),"attachment_ids":[image["id"]]}),
+		)
+		.await
+		.0,
+		403
+	);
+	let key = Uuid::new_v4();
+	let input =
+		json!({"content":"", "idempotency_key":key, "attachment_ids":[audio["id"],image["id"]]});
+	let (status, body) = request(&app, &token, "POST", &path, input.clone()).await;
+	assert_eq!(status, 200, "{body}");
+	assert_eq!(
+		request(&app, &token, "POST", &path, input.clone()).await.0,
+		200
+	);
+	assert_eq!(
+		request(
+			&app,
+			&token,
+			"POST",
+			&path,
+			json!({"content":"","idempotency_key":key,"attachment_ids":[]}),
+		)
+		.await
+		.0,
+		409
+	);
+	let mut reversed = input;
+	reversed["attachment_ids"] = json!([image["id"], audio["id"]]);
+	assert_eq!(request(&app, &token, "POST", &path, reversed).await.0, 409);
+	let worker = Harness {
+		federation: f.clone(),
+	};
+	let mut saw_subject_media = false;
+	for _ in 0..6 {
+		assert!(worker.worker_once().await.unwrap());
+		if let Ok(body) = received.try_recv() {
+			let parts = body["messages"][1]["content"].as_array().unwrap();
+			let types: Vec<_> = parts
+				.iter()
+				.map(|part| part["type"].as_str().unwrap())
+				.collect();
+			assert!(
+				types.ends_with(&["text", "input_audio", "text", "image_url"]),
+				"{types:?}"
+			);
+			assert_eq!(body["provider"]["only"], json!(["fixture/verified"]));
+			saw_subject_media = true;
+			break;
+		}
+	}
+	assert!(
+		saw_subject_media,
+		"model request did not include the accepted run media"
+	);
+	assert_eq!(
+		f.store
+			.run(&TEST_FIXTURE, run.id)
+			.await
+			.unwrap()
+			.phase()
+			.as_str(),
+		"TOOL_CALL"
+	);
+	let (status, correction) = request(
+		&app,
+		&token,
+		"POST",
+		&path,
+		json!({"content":"Please reconsider the media", "idempotency_key":Uuid::new_v4()}),
+	)
+	.await;
+	assert_eq!(status, 200, "{correction}");
+	assert!(worker.worker_once().await.unwrap());
+	assert_eq!(
+		f.store
+			.run(&TEST_FIXTURE, run.id)
+			.await
+			.unwrap()
+			.phase()
+			.as_str(),
+		"THINKING"
+	);
+	assert!(worker.worker_once().await.unwrap());
+	let retried = received.try_recv().expect("stale media was not reinferred");
+	let retried_types: Vec<_> = retried["messages"][1]["content"]
+		.as_array()
+		.unwrap()
+		.iter()
+		.map(|part| part["type"].as_str().unwrap())
+		.collect();
+	assert!(
+		retried_types.ends_with(&["text", "input_audio", "text", "image_url"]),
+		"{retried_types:?}"
+	);
+	for _ in 0..4 {
+		if f.store
+			.run(&TEST_FIXTURE, run.id)
+			.await
+			.unwrap()
+			.phase()
+			.as_str() == "COMPLETED"
+		{
+			break;
+		}
+		assert!(worker.worker_once().await.unwrap());
+	}
+	assert_eq!(
+		f.store
+			.run(&TEST_FIXTURE, run.id)
+			.await
+			.unwrap()
+			.phase()
+			.as_str(),
+		"COMPLETED"
+	);
+	let member = token.clone();
+	let (status, created) = request(
+		&app,
+		&member,
+		"POST",
+		"/api/conversations",
+		json!({"title":"Subject media", "goal":"Inspect image", "target":{"id":"research","version":"1.0.1"},"target_kind":"agent"}),
+	)
+	.await;
+	assert_eq!(status, 200, "{created}");
+	let member_workspace = created["workspace"]["id"].as_str().unwrap();
+	let member_run = f
+		.store
+		.runs(&TEST_FIXTURE)
+		.await
+		.unwrap()
+		.into_iter()
+		.find(|run| run.workspace_id.to_string() == member_workspace)
+		.unwrap();
+	let mut image_ids = Vec::new();
+	let mut expected_urls = Vec::new();
+	for index in 0..10_u8 {
+		let mut bytes = b"\x89PNG\r\n\x1a\nmember".to_vec();
+		bytes.push(b'0' + index);
+		let uploaded = upload(
+			&app,
+			&member,
+			member_workspace,
+			&format!("member-{index}.png"),
+			"image/png",
+			&bytes,
+		)
+		.await;
+		image_ids.push(uploaded["id"].as_str().unwrap().to_owned());
+		expected_urls.push(format!(
+			"data:image/png;base64,{}",
+			base64::engine::general_purpose::STANDARD.encode(&bytes)
+		));
+	}
+	let original_inputs = f
+		.store
+		.run_inputs(&TEST_FIXTURE, member_run.id)
+		.await
+		.unwrap()
+		.len();
+	let (status, rejected) = request(
+		&app,
+		&member,
+		"POST",
+		&format!("/api/runs/{}/message", member_run.id),
+		json!({"content":"", "idempotency_key":Uuid::new_v4(), "attachment_ids":&image_ids[..9]}),
+	)
+	.await;
+	assert_eq!(status, 400, "{rejected}");
+	assert_eq!(
+		f.store
+			.run_inputs(&TEST_FIXTURE, member_run.id)
+			.await
+			.unwrap()
+			.len(),
+		original_inputs
+	);
+	for ids in image_ids.chunks(5) {
+		let (status, sent) = request(
+			&app,
+			&member,
+			"POST",
+			&format!("/api/runs/{}/message", member_run.id),
+			json!({"content":"","idempotency_key":Uuid::new_v4(),"attachment_ids":ids}),
+		)
+		.await;
+		assert_eq!(status, 200, "{sent}");
+	}
+	let mut media_batches = Vec::new();
+	for _ in 0..12 {
+		assert!(worker.worker_once().await.unwrap());
+		while let Ok(body) = received.try_recv() {
+			let Some(parts) = body["messages"][1]["content"].as_array() else {
+				continue;
+			};
+			let urls: Vec<String> = parts
+				.iter()
+				.filter_map(|part| part["image_url"]["url"].as_str().map(str::to_owned))
+				.collect();
+			if !urls.is_empty() {
+				assert_eq!(urls.len(), 5);
+				assert_eq!(body["provider"]["only"], json!(["fixture/verified"]));
+				if media_batches.len() < 2 {
+					assert!(body.get("tools").is_none());
+				}
+				media_batches.push(urls);
+			}
+		}
+		if media_batches.len() == 3 {
+			break;
+		}
+	}
+	let final_member_run = f.store.run(&TEST_FIXTURE, member_run.id).await.unwrap();
+	assert!(
+		media_batches.len() == 3,
+		"subject run did not retry the empty observation and infer both accepted media batches: {} {} {:?} {:?} lease={:?} until={:?} task={:?}",
+		final_member_run.phase().as_str(),
+		final_member_run.control,
+		final_member_run.error,
+		final_member_run.state,
+		final_member_run.lease_owner,
+		final_member_run.lease_until,
+		f.store
+			.task(&TEST_FIXTURE, final_member_run.task_id)
+			.await
+			.unwrap()
+			.status
+	);
+	assert_eq!(media_batches[0], media_batches[1]);
+	assert_eq!(
+		[media_batches[1].clone(), media_batches[2].clone()].concat(),
+		expected_urls
+	);
+	assert!(worker.worker_once().await.unwrap());
+	assert_eq!(
+		f.store
+			.run(&TEST_FIXTURE, member_run.id)
+			.await
+			.unwrap()
+			.phase()
+			.as_str(),
+		"COMPLETED"
+	);
+	Box::pin(verify_audio_batches(
+		&app,
+		&f,
+		&worker,
+		&mut received,
+		&member,
+		AudioBatchCase {
+			first_audio: &large_audio,
+			with_text: false,
+			leading_text: None,
+		},
+	))
+	.await;
+	Box::pin(verify_audio_batches(
+		&app,
+		&f,
+		&worker,
+		&mut received,
+		&member,
+		AudioBatchCase {
+			first_audio: &large_audio[..380 * 1024],
+			with_text: true,
+			leading_text: None,
+		},
+	))
+	.await;
+	let mut near_window_audio = vec![0_u8; 700 * 1024];
+	near_window_audio[..12].copy_from_slice(b"RIFF\0\0\0\0WAVE");
+	let leading_text = "retain this instruction ".repeat(450);
+	Box::pin(verify_audio_batches(
+		&app,
+		&f,
+		&worker,
+		&mut received,
+		&member,
+		AudioBatchCase {
+			first_audio: &near_window_audio,
+			with_text: false,
+			leading_text: Some(&leading_text),
+		},
+	))
+	.await;
+	Box::pin(verify_separate_format_routes(
+		&app,
+		&f,
+		&worker,
+		&mut received,
+		&member,
+	))
+	.await;
+	Box::pin(verify_expired_route_retry(&app, &f, &worker, &member)).await;
+	Box::pin(verify_attachment_labels_count_toward_admission(
+		&app, &f, &member,
+	))
+	.await;
+	drop(server);
+	cleanup(f, &url, &schema).await;
+}
+
+#[derive(Clone)]
+struct MediaRequests {
+	sender: mpsc::UnboundedSender<Value>,
+	receiver: Arc<std::sync::Mutex<Option<mpsc::UnboundedReceiver<Value>>>>,
+}
+#[rstest::fixture]
+fn media_requests() -> MediaRequests {
+	let (sender, receiver) = mpsc::unbounded_channel();
+	MediaRequests {
+		sender,
+		receiver: Arc::new(std::sync::Mutex::new(Some(receiver))),
+	}
+}
+#[rstest::fixture]
+fn empty_media_observation() -> Arc<AtomicBool> {
+	Arc::new(AtomicBool::new(true))
+}
+#[rstest::fixture]
+fn media_router(
+	media_requests: MediaRequests,
+	empty_media_observation: Arc<AtomicBool>,
+) -> Arc<Router> {
+	let sent = media_requests.sender;
+	Arc::new(reinhardt::test::stub::StubRouter::new()
+.route("/v1/models/fixture/endpoints", http::Method::GET, reply(|_request: reinhardt::Request| async { reinhardt::Response::ok().with_json(&json!({"data":{"architecture":{"input_modalities":["text","image","audio"]},"endpoints":[{"tag":"fixture/verified","context_length":128000},{"tag":"fixture/png","context_length":128000},{"tag":"fixture/jpeg","context_length":128000}]}})).unwrap() }))
+.route("/v1/endpoints/zdr", http::Method::GET, reply(|_request: reinhardt::Request| async { reinhardt::Response::ok().with_json(&json!({"data":[{"model_id":"fixture","tag":"fixture/verified"},{"model_id":"fixture","tag":"fixture/png"},{"model_id":"fixture","tag":"fixture/jpeg"}]})).unwrap() }))
+.route("/v1/chat/completions", http::Method::POST, reply(move |request: reinhardt::Request| {let body = request.json::<Value>().unwrap();
+			let sent = sent.clone();
+			let empty_media_observation = empty_media_observation.clone();
+			async move {
+				let image_count = body["messages"][1]["content"]
+					.as_array()
+					.map(|parts| parts.iter().filter(|part| part["type"] == "image_url").count())
+					.unwrap_or(0);
+				let no_tools = body.get("tools").is_none();
+				sent.send(body).unwrap();
+				if image_count == 5 && empty_media_observation.swap(false, Ordering::SeqCst) {
+					assert!(no_tools, "media intake must not advertise task tools");
+					return reinhardt::Response::ok().with_json(&json!({"choices":[{"finish_reason":"tool_calls","message":{"content":null,"tool_calls":[{"id":"ignored-media-call","function":{"name":"workspace_read","arguments":"{}"}}]}}],"usage":{"prompt_tokens":10,"completion_tokens":2}})).unwrap();
+				}
+				reinhardt::Response::ok().with_json(&json!({"choices":[{"finish_reason":"stop","message":{"content":"Done"}}],"usage":{"prompt_tokens":10,"completion_tokens":2}})).unwrap()
+			}
+		})).into_server_router())
+}

@@ -1,0 +1,441 @@
+use super::upstream_fixtures;
+use super::*;
+use reinhardt::ServerRouter as Router;
+use reinhardt::query::{Alias, Expr, PostgresQueryBuilder, Query};
+use reinhardt::test::fixtures::server::TestServerGuard;
+use serde_json::Value;
+use std::sync::atomic::Ordering;
+use upstream_fixtures::{reply, upstream};
+fn a(name: &str) -> Alias {
+	Alias::new(name)
+}
+async fn damage(store: &Store, id: Uuid, phase: RunPhase, pending: Value, context: Value) {
+	{
+		let query_bind_1 = id;
+		let query_bind_2 = pending;
+		let query_bind_3 = context;
+		sqlx::query(
+			&Query::update()
+				.table(a("runs"))
+				.value(a("phase"), phase.as_str())
+				.value_expr(
+					a("pending"),
+					SimpleExpr::CustomWithExpr(
+						"(?)".to_owned(),
+						vec![Expr::value(query_bind_2.to_owned()).into()],
+					),
+				)
+				.value_expr(
+					a("context"),
+					SimpleExpr::CustomWithExpr(
+						"(?)".to_owned(),
+						vec![Expr::value(query_bind_3.to_owned()).into()],
+					),
+				)
+				.and_where(Expr::col(a("id")).eq(SimpleExpr::CustomWithExpr(
+					"(?)".to_owned(),
+					vec![Expr::value(query_bind_1.to_owned()).into()],
+				)))
+				.to_string(PostgresQueryBuilder),
+		)
+		.execute(store.pool.fixture_driver())
+		.await
+	}
+	.unwrap();
+}
+async fn create(f: &Federation, agent: &Entry, workspace: Uuid) -> Run {
+	let task = running_task(f, agent, workspace, None).await;
+	common::local_run(&f.store, &ACME, &task, agent).await
+}
+#[rstest::rstest]
+#[tokio::test]
+async fn malformed_rows_fail_without_effect_replay_and_healthy_work_continues(
+	#[from(super::store)] _store_fixture: StoreFuture,
+	#[from(super::federation)]
+	#[with(_store_fixture.clone())]
+	_federation: common::RuntimeFuture,
+	#[from(upstream_fixtures::hits)] calls: Arc<std::sync::atomic::AtomicUsize>,
+	#[from(malformed_rows_fail_without_effect_replay_and_healthy_work_continues_router)]
+	#[with(calls.clone())]
+	_router: Arc<Router>,
+	#[future(awt)]
+	#[from(upstream)]
+	#[with(_router.clone())]
+	server: TestServerGuard,
+) {
+	let (store, url, schema) = _store_fixture.clone().await.parts();
+	let f = _federation.await.federation;
+
+	let endpoint = format!("{}/v1", server.url);
+	// The model fixture is a Keyless endpoint on loopback (ADR 0036).
+	f.store.keyless.permit_origin_of(&endpoint).unwrap();
+	f.registry.register(&aidash_domain::tenancy::TenantName::new("acme").unwrap(), entry("model","model",json!({"provider":"openrouter","model_id":"fixture","endpoint":endpoint,"context_window":128000,"max_output_tokens":4096,"modalities":["text"],"cost":{}}))).await.unwrap();
+	let agent = f
+		.registry
+		.register(&aidash_domain::tenancy::TenantName::new("acme").unwrap(), entry(
+			"agent",
+			"research",
+			json!({"model":{"id":"model","version":"1.0.0"},"instructions":"Finish","schema_version":1,"bindings":[],"remove_default":[]}),
+		))
+		.await
+		.unwrap();
+	let workspace = store
+		.create_workspace(&ACME, "alice", "Isolation", "Healthy progress")
+		.await
+		.unwrap();
+	let mut damaged = vec![];
+	for (phase, pending, context) in [
+		(RunPhase::Ready, json!({}), common::context(json!({}))),
+		(
+			RunPhase::Waiting,
+			json!({"state_version":1,"data":{"reason":"timer","wake_at":"not-a-timestamp","resume":{"phase":"READY","data":{}}},"recovery":{"retry":null,"lease_recovered":false}}),
+			common::context(json!({})),
+		),
+		(
+			RunPhase::Ready,
+			common::pending(RunState::default()),
+			json!([]),
+		),
+		(
+			RunPhase::Ready,
+			common::pending(RunState::default()),
+			common::context(
+				json!({"history":[{"kind":"tool","result":{"sensitive":"must not appear in diagnostics"}}]}),
+			),
+		),
+	] {
+		let run = create(&f, &agent, workspace.id).await;
+		damage(&store, run.id, phase, pending, context).await;
+		damaged.push(run);
+	}
+	// State a newer build wrote (a later state version, a wait reason this build lacks)
+	// is intact: it waits for a capable worker instead of being repaired into failure.
+	let mut newer = vec![];
+	for (phase, pending) in [
+		(
+			RunPhase::Ready,
+			json!({"state_version":2,"data":{},"recovery":{"retry":null,"lease_recovered":false}}),
+		),
+		(
+			RunPhase::Waiting,
+			json!({"state_version":1,"data":{"reason":"unknown"},"recovery":{"retry":null,"lease_recovered":false}}),
+		),
+	] {
+		let run = create(&f, &agent, workspace.id).await;
+		damage(&store, run.id, phase, pending, common::context(json!({}))).await;
+		newer.push((run, phase));
+	}
+	// An independent unsafe-effect journal is retained even when the Run state
+	// cannot say which effect completed. No new effect may be inferred/replayed.
+	let journal = Query::insert()
+		.into_table(a("invocations"))
+		.columns([
+			a("run_id"),
+			a("idempotency_key"),
+			a("tool"),
+			a("input"),
+			a("status"),
+			a("replay_safe"),
+			Alias::new("tenant"),
+		])
+		.from_subquery(
+			Query::select()
+				.expr(Expr::value(damaged[0].id))
+				.expr(Expr::value("uncertain-before-upgrade"))
+				.expr(Expr::value("unsafe"))
+				.expr(Expr::value(json!({"write":true})))
+				.expr(Expr::value("UNCERTAIN"))
+				.expr(Expr::value(false))
+				.expr(Expr::value("acme"))
+				.to_owned(),
+		)
+		.to_string(PostgresQueryBuilder);
+	sqlx::query(&journal)
+		.execute(store.pool.fixture_driver())
+		.await
+		.unwrap();
+	let healthy_workspace = store
+		.create_workspace(&ACME, "alice", "Healthy", "Continue")
+		.await
+		.unwrap();
+	let healthy = create(&f, &agent, healthy_workspace.id).await;
+	let worker = aidash_server::harness::Harness {
+		federation: f.clone(),
+	};
+	for _ in 0..16 {
+		worker.worker_once().await.unwrap();
+	}
+	let finished = store.run(&ACME, healthy.id).await.unwrap();
+	assert_eq!(
+		finished.phase(),
+		RunPhase::Completed,
+		"{finished:?}; calls={}",
+		calls.load(Ordering::SeqCst)
+	);
+	assert_eq!(calls.load(Ordering::SeqCst), 1);
+	for run in damaged {
+		let inspected = store.inspect_run(&ACME, run.id).await.unwrap();
+		assert_eq!(inspected.phase, RunPhase::Failed);
+		assert_eq!(
+			store.task(&ACME, run.task_id).await.unwrap().status,
+			TaskStatus::Failed
+		);
+		assert!(!inspected.error.as_ref().unwrap().contains("sensitive"));
+	}
+	for (run, phase) in newer {
+		let inspected = store.inspect_run(&ACME, run.id).await.unwrap();
+		assert_eq!(inspected.phase, phase, "{inspected:?}");
+		assert_ne!(
+			store.task(&ACME, run.task_id).await.unwrap().status,
+			TaskStatus::Failed
+		);
+	}
+	let retained: i64 = sqlx::query_scalar(
+		&Query::select()
+			.expr(Expr::cust("COUNT(*)"))
+			.from(a("invocations"))
+			.and_where(Expr::col(a("idempotency_key")).eq(Expr::value("uncertain-before-upgrade")))
+			.and_where(Expr::col(a("status")).eq(Expr::value("UNCERTAIN")))
+			.to_string(PostgresQueryBuilder),
+	)
+	.fetch_one(store.pool.fixture_driver())
+	.await
+	.unwrap();
+	assert_eq!(retained, 1);
+	drop(server);
+	cleanup(store, &url, &schema).await;
+}
+#[rstest::rstest]
+#[tokio::test]
+async fn malformed_state_respects_pause_live_lease_terminal_and_stop_controls(
+	#[from(super::store)] _store_fixture: StoreFuture,
+	#[from(super::federation)]
+	#[with(_store_fixture.clone())]
+	_federation: common::RuntimeFuture,
+) {
+	let (store, url, schema) = _store_fixture.clone().await.parts();
+	let f = _federation.await.federation;
+	let agent = seed(&f.registry).await;
+	let workspace = store
+		.create_workspace(&ACME, "alice", "Controls", "Do not execute")
+		.await
+		.unwrap();
+	let paused = create(&f, &agent, workspace.id).await;
+	store
+		.control(&ACME, paused.id, RunControlAction::Pause)
+		.await
+		.unwrap();
+	damage(&store, paused.id, RunPhase::Ready, json!({}), json!([])).await;
+	let live = create(&f, &agent, workspace.id).await;
+	let token = Uuid::new_v4();
+	let leased = store.lease_run(token, 30).await.unwrap().unwrap();
+	assert_eq!(leased.id, live.id);
+	damage(&store, live.id, RunPhase::Ready, json!({}), json!([])).await;
+	let terminal = create(&f, &agent, workspace.id).await;
+	damage(
+		&store,
+		terminal.id,
+		RunPhase::Completed,
+		json!({}),
+		json!([]),
+	)
+	.await;
+	assert!(store.lease_run(Uuid::new_v4(), 30).await.unwrap().is_none());
+	assert_eq!(store.inspect_runs(&ACME).await.unwrap().len(), 3);
+	assert_eq!(
+		store.inspect_run(&ACME, paused.id).await.unwrap().control,
+		RunControl::Paused
+	);
+	assert_eq!(
+		store.inspect_run(&ACME, live.id).await.unwrap().lease_owner,
+		Some(token)
+	);
+	assert_eq!(
+		store.inspect_run(&ACME, terminal.id).await.unwrap().phase,
+		RunPhase::Completed
+	);
+	assert!(
+		store
+			.control(&ACME, paused.id, RunControlAction::Resume)
+			.await
+			.is_err()
+	);
+	store
+		.control(&ACME, paused.id, RunControlAction::Cancel)
+		.await
+		.unwrap();
+	let worker = aidash_server::harness::Harness {
+		federation: f.clone(),
+	};
+	worker.worker_once().await.unwrap();
+	worker.worker_once().await.unwrap();
+	assert_eq!(
+		store.inspect_run(&ACME, paused.id).await.unwrap().phase,
+		RunPhase::Cancelled
+	);
+	assert_eq!(
+		store.task(&ACME, paused.task_id).await.unwrap().status,
+		TaskStatus::Cancelled
+	);
+	cleanup(store, &url, &schema).await;
+}
+#[rstest::rstest]
+#[tokio::test]
+async fn bounded_recovery_advances_past_a_full_page_of_future_waits(
+	#[from(super::store)] _store_fixture: StoreFuture,
+	#[from(super::federation)]
+	#[with(_store_fixture.clone())]
+	_federation: common::RuntimeFuture,
+) {
+	let (store, url, schema) = _store_fixture.clone().await.parts();
+	let f = _federation.await.federation;
+	let agent = seed(&f.registry).await;
+	let workspace = store
+		.create_workspace(&ACME, "alice", "Paging", "Later work")
+		.await
+		.unwrap();
+	for _ in 0..129 {
+		let run = create(&f, &agent, workspace.id).await;
+		damage(
+			&store,
+			run.id,
+			RunPhase::Waiting,
+			common::pending(RunState::Waiting(Box::new(WaitingState::Timer {
+				wake_at: chrono::Utc::now() + chrono::Duration::hours(1),
+				resume: ResumeState::Ready(Default::default()),
+			}))),
+			common::context(json!({})),
+		)
+		.await;
+	}
+	let healthy = create(&f, &agent, workspace.id).await;
+	assert!(store.lease_run(Uuid::new_v4(), 30).await.unwrap().is_none());
+	assert_eq!(
+		store
+			.lease_run(Uuid::new_v4(), 30)
+			.await
+			.unwrap()
+			.unwrap()
+			.id,
+		healthy.id
+	);
+	cleanup(store, &url, &schema).await;
+}
+
+#[rstest::rstest]
+#[tokio::test]
+async fn invalid_context_failure_delivery_can_resume_without_effect_execution(
+	#[from(super::store)] _store_fixture: StoreFuture,
+	#[from(super::federation)]
+	#[with(_store_fixture.clone())]
+	_federation: common::RuntimeFuture,
+) {
+	let (store, url, schema) = _store_fixture.clone().await.parts();
+	let f = _federation.await.federation;
+	let agent = seed(&f.registry).await;
+	let workspace = store
+		.create_workspace(&ACME, "alice", "Delivery", "Resume disposition only")
+		.await
+		.unwrap();
+	let ordinary = create(&f, &agent, workspace.id).await;
+	store
+		.control(&ACME, ordinary.id, RunControlAction::Pause)
+		.await
+		.unwrap();
+	damage(
+		&store,
+		ordinary.id,
+		RunPhase::Ready,
+		common::pending(RunState::default()),
+		json!([]),
+	)
+	.await;
+	assert!(
+		store
+			.control(&ACME, ordinary.id, RunControlAction::Resume)
+			.await
+			.is_err(),
+		"ordinary execution must still reject an invalid Context"
+	);
+	let run = create(&f, &agent, workspace.id).await;
+	damage(
+		&store,
+		run.id,
+		RunPhase::Ready,
+		common::pending(RunState::default()),
+		json!([]),
+	)
+	.await;
+	// Claiming repairs only the disposition; it never constructs a usable Context.
+	assert!(store.lease_run(Uuid::new_v4(), 30).await.unwrap().is_none());
+	let pending = store.inspect_run(&ACME, run.id).await.unwrap();
+	assert!(pending.state.as_ref().unwrap().failure_delivery());
+	assert!(pending.context.is_none());
+	assert!(pending.state_error.is_some());
+	store
+		.control(&ACME, run.id, RunControlAction::Pause)
+		.await
+		.unwrap();
+	let worker = aidash_server::harness::Harness {
+		federation: f.clone(),
+	};
+	worker.worker_once().await.unwrap();
+	assert_eq!(
+		store.task(&ACME, run.task_id).await.unwrap().status,
+		TaskStatus::Running
+	);
+	let resumed = store
+		.control(&ACME, run.id, RunControlAction::Resume)
+		.await
+		.unwrap();
+	assert_eq!(resumed.control, RunControl::Active);
+	assert!(resumed.state.as_ref().unwrap().failure_delivery());
+	worker.worker_once().await.unwrap();
+	assert_eq!(
+		store.inspect_run(&ACME, run.id).await.unwrap().phase,
+		RunPhase::Failed
+	);
+	assert_eq!(
+		store.task(&ACME, run.task_id).await.unwrap().status,
+		TaskStatus::Failed
+	);
+	let context: Value = sqlx::query_scalar(
+		&Query::select()
+			.column(a("context"))
+			.from(a("runs"))
+			.and_where(Expr::col(a("id")).eq(Expr::value(run.id)))
+			.to_string(PostgresQueryBuilder),
+	)
+	.fetch_one(store.pool.fixture_driver())
+	.await
+	.unwrap();
+	assert_eq!(context, json!([]), "diagnostic Context remains unmodified");
+	let effects: i64 = sqlx::query_scalar(
+		&Query::select()
+			.expr(Expr::cust("COUNT(*)"))
+			.from(a("invocations"))
+			.and_where(Expr::col(a("run_id")).eq(Expr::value(run.id)))
+			.to_string(PostgresQueryBuilder),
+	)
+	.fetch_one(store.pool.fixture_driver())
+	.await
+	.unwrap();
+	assert_eq!(effects, 0);
+	assert_eq!(store.inspect_run(&ACME, run.id).await.unwrap().step, 0);
+	// seed's provider endpoint is unavailable: any provider replay would fail
+	// worker_once rather than delivering the task's Failed disposition.
+	cleanup(store, &url, &schema).await;
+}
+
+use reinhardt::query::SimpleExpr;
+
+#[rstest::fixture]
+fn malformed_rows_fail_without_effect_replay_and_healthy_work_continues_router(
+	#[from(upstream_fixtures::hits)] calls: Arc<std::sync::atomic::AtomicUsize>,
+) -> Arc<Router> {
+	Arc::new(reinhardt::test::stub::StubRouter::new()
+.route("/v1/chat/completions", http::Method::POST, reply(move |_request: reinhardt::Request| {let calls=calls.clone(); async move {
+			calls.fetch_add(1,Ordering::SeqCst);
+			reinhardt::Response::ok().with_json(&json!({"choices":[{"finish_reason":"stop","message":{"role":"assistant","content":"Done"}}],"usage":{"prompt_tokens":100,"completion_tokens":1}})).unwrap()
+		}})).into_server_router())
+}

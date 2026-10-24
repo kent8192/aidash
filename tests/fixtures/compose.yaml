@@ -1,0 +1,35 @@
+services:
+  postgres:
+    # Compose owns its multi-database initialization; isolated ORM fixtures use
+    # the separate aidash-test-postgres image built from the test target.
+    image: aidash-compose-postgres:17-pg-jsonschema-0.3.4
+    # Two concurrent sixteen-Node cases use independent pools/databases.
+    # pg_stat_statements measures actual SQL in SSE baseline/candidate windows.
+    command:
+      [
+        "postgres",
+        "-c",
+        "max_connections=600",
+        "-c",
+        "shared_preload_libraries=pg_stat_statements,pgroonga_crash_safer",
+      ]
+    build:
+      context: ../..
+      dockerfile: deploy/postgres/Dockerfile
+      target: runtime
+    environment:
+      POSTGRES_USER: aidash
+      POSTGRES_PASSWORD: aidash-test
+      POSTGRES_DB: aidash_a
+    ports:
+      - "127.0.0.1::5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -h 127.0.0.1 -U aidash -d aidash_a"]
+      interval: 1s
+      timeout: 5s
+      retries: 60
+  nats:
+    image: nats:2.12-alpine
+    command: ["-js", "-sd", "/data"]
+    ports:
+      - "127.0.0.1::4222"

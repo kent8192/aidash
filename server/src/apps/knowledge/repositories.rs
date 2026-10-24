@@ -1,0 +1,58 @@
+//! Knowledge persistence implements portable semantic ports.
+pub(crate) mod access;
+pub(crate) mod bindings;
+pub(crate) mod candidates;
+pub(crate) mod indexing;
+pub(crate) mod memory_decay;
+pub(crate) mod memory_graph;
+#[cfg(test)]
+use crate::apps::execution::test_database::DatabaseFixture;
+/// One copy of the native-memory fixture for every repository test module.
+#[cfg(test)]
+#[allow(dead_code)] // Shared fixture includes helpers used only by the integration binary.
+#[path = "tests/native_memory/fixture.rs"]
+mod fixture;
+pub(crate) mod memory_impact;
+pub(crate) mod memory_reads;
+pub(crate) mod memory_receipts;
+pub(crate) mod memory_scope;
+pub(crate) mod mutations;
+pub(crate) mod native_memory;
+pub mod postgres_vector;
+pub(crate) mod publications;
+pub(crate) mod receiver_caches;
+pub(crate) mod remote_memory_reads;
+pub(crate) mod remote_participants;
+#[cfg(test)]
+#[path = "tests/native_memory/retry_cycle.rs"]
+mod retry_cycle_tests;
+pub(crate) mod storage;
+pub(crate) mod units;
+#[cfg(test)]
+#[path = "../execution/tests/support/upstream.rs"]
+mod upstream;
+
+pub(crate) mod retrieval;
+
+pub(crate) mod embedding;
+
+pub(crate) mod memory;
+
+pub(crate) mod disclosure;
+
+pub(crate) mod run_context;
+
+pub(crate) mod remote_journal;
+
+pub(crate) mod remote_status;
+
+pub(crate) mod purge;
+
+pub(crate) mod bank_settings;
+
+pub(crate) mod retention;
+
+pub(crate) mod engine_jobs;
+pub(crate) mod learning;
+pub(crate) mod recovery;
+pub(crate) mod unit_origins;

@@ -1,0 +1,3 @@
+# Shared by cargo clippy and Trunk; keep in sync with rust-toolchain.toml.
+msrv = "1.96.0"
+avoid-breaking-exported-api = true

@@ -1,0 +1,1056 @@
+use super::*;
+use aidash_domain::projection::{ProjectionVersion, native::NativeContext};
+
+/// The adapter's clients with production-like deadlines.
+fn test_clients() -> crate::keyless::Clients {
+	crate::keyless::Clients::new(
+		reqwest::Client::new(),
+		std::time::Duration::from_secs(120),
+		std::time::Duration::from_secs(10),
+	)
+	.unwrap()
+}
+
+/// Keyless access that permits this fixture's loopback origin (ADR 0036).
+fn permitting(endpoint: &str) -> aidash_application::provider_access::KeylessAccess {
+	let origin = reqwest::Url::parse(endpoint)
+		.unwrap()
+		.origin()
+		.ascii_serialization();
+	aidash_application::provider_access::KeylessAccess::permitting(
+		aidash_domain::keyless::PermittedOrigins::parse([origin]).unwrap(),
+	)
+}
+
+#[rstest::rstest]
+#[case::legacy(ProjectionVersion::Legacy)]
+// Native envelopes text labels as data, so the label grows by its envelope
+// and a second level of JSON escaping.
+#[case::native(ProjectionVersion::Native)]
+fn media_reservation_covers_complete_request_growth(#[case] version: ProjectionVersion) {
+	let history = json!({"history":"quoted \\\"text\\\" and 日本語"});
+	let context = match version {
+		ProjectionVersion::Native => aidash_domain::provider::ModelContext::Native(NativeContext {
+			attachments: Vec::new(),
+			history: Vec::new(),
+			volatile: history.to_string(),
+		}),
+		_ => history.into(),
+	};
+	let mut request = ModelRequest {
+		instructions: "Inspect the media".into(),
+		context,
+		tools: vec![],
+		max_output_tokens: 512,
+		response_format: None,
+		content_parts: vec![],
+		cache_scope: None,
+		cache_breakpoints: false,
+		disable_provider_transforms: false,
+		estimate: Default::default(),
+	};
+	let without_media = request.estimated_total_tokens();
+	request.content_parts = vec![
+		ContentPart::Text("attachment: \\\"sample\\\"".into()),
+		ContentPart::Image {
+			media_type: "image/png".into(),
+			bytes: vec![0; 8192],
+		},
+		ContentPart::Audio {
+			format: "wav".into(),
+			bytes: vec![0; 32_768],
+		},
+	];
+	assert!(
+		request.estimated_total_tokens()
+			<= without_media.saturating_add(ModelRequest::content_parts_reservation(
+				&request.content_parts,
+				version
+			))
+	);
+}
+
+#[rstest::rstest]
+fn parses_openrouter_tool_calls() {
+	let result = parse(json!({"choices":[{"finish_reason":"tool_calls","message":{"tool_calls":[{"id":"one","function":{"name":"search","arguments":"{\"q\":\"Rust\"}"}}]}}]})).unwrap();
+	assert_eq!(result.tool_calls[0].arguments, json!({"q":"Rust"}));
+}
+#[rstest::rstest]
+fn whitespace_only_tool_call_content_is_not_a_workspace_message() {
+	let result = parse(json!({"choices":[{"finish_reason":"tool_calls","message":{"content":" \n\t ","tool_calls":[{"id":"one","function":{"name":"search","arguments":"{}"}}]}}]})).unwrap();
+	assert!(result.text.is_empty());
+	assert_eq!(result.tool_calls.len(), 1);
+	assert!(
+		parse(json!({"choices":[{"finish_reason":"stop","message":{"content":" \n\t "}}]}))
+			.is_err()
+	);
+}
+#[rstest::rstest]
+fn truncation_cannot_complete_a_task() {
+	assert!(matches!(
+		parse(json!({"choices":[{"finish_reason":"length","message":{"content":"partial"}}]})),
+		Err(Error::TerminalResponse(Failure::OutputTruncated, _))
+	));
+}
+#[rstest::rstest]
+fn a_terminal_response_keeps_its_usage_for_settlement() {
+	let error = parse(json!({
+		"choices":[{"finish_reason":"length","message":{"content":"partial"}}],
+		"usage":{"prompt_tokens":1200,"completion_tokens":256}
+	}))
+	.unwrap_err();
+	let usage = error.terminal_usage().unwrap();
+	assert_eq!((usage.input_tokens, usage.output_tokens), (1200, 256));
+	assert!(usage.usage_complete);
+	assert!(usage.text.is_empty() && usage.tool_calls.is_empty());
+	assert!(matches!(
+		error.settled(),
+		Error::Context(Failure::OutputTruncated)
+	));
+}
+#[rstest::rstest]
+fn token_metrics_count_terminal_responses_but_not_failures() {
+	let truncated = parse(json!({
+		"choices":[{"finish_reason":"length","message":{"content":"partial"}}],
+		"usage":{"prompt_tokens":1200,"completion_tokens":256}
+	}));
+	let usage = billed_usage(&truncated).unwrap();
+	assert_eq!((usage.input_tokens, usage.output_tokens), (1200, 256));
+	let failed = parse(json!({"choices":[]}));
+	assert!(billed_usage(&failed).is_none());
+}
+#[rstest::rstest]
+#[case::length("length", Failure::OutputTruncated)]
+#[case::content_filter("content_filter", Failure::Refused)]
+fn truncated_or_filtered_output_never_yields_tool_calls(
+	#[case] finish_reason: &str,
+	#[case] expected: Failure,
+) {
+	let result = parse(json!({"choices":[{"finish_reason":finish_reason,"message":{
+		"tool_calls":[{"id":"one","function":{"name":"search","arguments":"{}"}}]}}]}));
+	assert!(matches!(result, Err(Error::TerminalResponse(actual, _)) if actual == expected));
+}
+#[rstest::rstest]
+#[case::stop("stop")]
+#[case::tool_calls("tool_calls")]
+fn a_refusal_is_typed_whatever_the_finish_reason(#[case] finish_reason: &str) {
+	let result = parse(json!({"choices":[{"finish_reason":finish_reason,"message":{
+		"refusal":"I can't help with that",
+		"tool_calls":[{"id":"one","function":{"name":"search","arguments":"{}"}}]}}]}));
+	assert!(matches!(
+		result,
+		Err(Error::TerminalResponse(Failure::Refused, _))
+	));
+}
+#[rstest::rstest]
+fn other_unexpected_finish_reasons_remain_external() {
+	assert!(matches!(
+		parse(json!({"choices":[{"finish_reason":"error","message":{"content":"x"}}]})),
+		Err(Error::External(_))
+	));
+}
+#[rstest::rstest]
+#[case::openrouter(400, json!({"error":{"code":400,"message":"This endpoint's maximum context length is 8192 tokens. However, you requested about 9001 tokens (8000 of text input, 1001 in the output). Please reduce the length of either one."}}))]
+#[case::code(400, json!({"error":{"code":"context_length_exceeded","message":"Input is too large"}}))]
+#[case::message(400, json!({"error":{"message":"context_length_exceeded"}}))]
+#[case::anthropic(400, json!({"error":{"code":400,"message":"Provider returned error","metadata":{"raw":"prompt is too long: 210000 tokens > 200000 maximum"}}}))]
+#[case::payload_too_large(413, json!({"error":{"message":"prompt is too long"}}))]
+fn provider_proven_overflow_is_typed(#[case] status: u16, #[case] body: Value) {
+	for byok in [false, true] {
+		assert!(matches!(
+			rejection(status, Some(&body), byok),
+			Error::ContextOverflow
+		));
+	}
+}
+#[rstest::rstest]
+#[case::media(Some(json!({"error":{"message":"Audio exceeds the provider limit"}})), "Audio exceeds the provider limit")]
+#[case::entity(Some(json!({"error":{"message":"Request Entity Too Large"}})), "upstream rejected the request")]
+#[case::unreadable(None, "upstream rejected the request")]
+fn payload_too_large_without_proof_is_not_an_overflow(
+	#[case] body: Option<Value>,
+	#[case] expected: &str,
+) {
+	assert!(matches!(
+		rejection(413, body.as_ref(), false),
+		Error::ProviderRejected { status: 413, reason } if reason == expected
+	));
+}
+#[rstest::rstest]
+#[case::invalid(400, Some(json!({"error":{"message":"Invalid tool schema: secret detail"}})))]
+#[case::unreadable(400, None)]
+#[case::overflow_wording_on_other_status(401, Some(json!({"error":{"message":"maximum context length is 10 tokens"}})))]
+fn unrelated_rejections_stay_provider_rejected_without_the_body(
+	#[case] status: u16,
+	#[case] body: Option<Value>,
+) {
+	let error = rejection(status, body.as_ref(), false);
+	assert!(
+		matches!(&error, Error::ProviderRejected { status: actual, reason } if *actual == status && reason == "upstream rejected the request"),
+		"{error:?}"
+	);
+	assert!(!error.to_string().contains("secret"));
+}
+
+fn parse(value: Value) -> Result<ModelResponse> {
+	parse_openai(value.to_string().as_bytes())
+}
+
+fn completion(usage: Value) -> Value {
+	json!({"choices":[{"finish_reason":"stop","message":{"content":"done"}}],"usage":usage})
+}
+
+#[rstest::rstest]
+#[case::reported(json!({"model":"actual/model","provider":"Actual Provider","provider_route":"actual/region","id":"generation-7","metadata":{"prompt":"private"}}), Some(ProviderIdentity {
+	reported_model: Some("actual/model".into()), reported_provider: Some("Actual Provider".into()), reported_route: Some("actual/region".into()), provider_request_id: Some("generation-7".into())
+}))]
+#[case::missing(json!({"requested_model":"configured/model","route":"requested/region","metadata":{"provider":"requested"}}), None)]
+#[case::invalid(json!({"model":[],"provider":"\nprivate","provider_route":" ","id":"x".repeat(PROVIDER_IDENTITY_FIELD_BYTES + 1)}), None)]
+#[case::provider_is_not_route(json!({"provider":"Actual Provider"}), Some(ProviderIdentity { reported_provider: Some("Actual Provider".into()), ..Default::default() }))]
+fn completion_preserves_only_bounded_explicit_identity(
+	#[case] metadata: Value,
+	#[case] expected: Option<ProviderIdentity>,
+) {
+	let mut body = completion(Value::Null);
+	body.as_object_mut()
+		.unwrap()
+		.extend(metadata.as_object().unwrap().clone());
+	let response = parse(body).unwrap();
+	assert_eq!(response.reported.provider_identity, expected);
+	assert_eq!(response.reported.input_tokens, None);
+}
+
+mod exact_routes {
+	use super::*;
+	use aidash_application::ports::NoProgress;
+	use aidash_domain::model::{MediaRouteEvidence, ProviderRouteEvidence};
+	use axum::{
+		Json, Router,
+		routing::{get, post},
+	};
+	use std::sync::atomic::{AtomicUsize, Ordering};
+
+	struct TestServer(tokio::task::JoinHandle<()>);
+	impl Drop for TestServer {
+		fn drop(&mut self) {
+			self.0.abort();
+		}
+	}
+
+	/// Both discovery APIs are independent inputs; only the completion
+	/// handler records dispatched traffic.
+	#[rstest::rstest]
+	#[case::exact_leaf(vec!["fixture/variant/us"], true, 8192, false, true, true)]
+	#[case::missing_catalog(vec!["other/region"], true, 8192, false, true, false)]
+	#[case::not_zdr(vec!["fixture/variant/us"], false, 8192, false, true, false)]
+	#[case::descendant_region(vec!["fixture/variant/us", "fixture/variant/us/priority"], true, 8192, false, true, false)]
+	#[case::context_limit(vec!["fixture/variant/us"], true, 1, false, true, false)]
+	#[case::media_exact(vec!["fixture/variant/us"], true, 8192, true, true, true)]
+	#[case::media_other_approval(vec!["fixture/variant/us"], true, 8192, true, false, false)]
+	#[tokio::test]
+	async fn pinned_inference_requires_current_exact_zdr_and_media_approval(
+		#[case] tags: Vec<&str>,
+		#[case] private: bool,
+		#[case] limit: u64,
+		#[case] media: bool,
+		#[case] approve_media: bool,
+		#[case] accepted: bool,
+	) {
+		let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+		let endpoint = format!("http://{}/v1", listener.local_addr().unwrap());
+		let catalog = json!({"data":{"architecture":{"input_modalities":["text","image"]},"endpoints":tags.iter().map(|tag| json!({"tag":tag,"context_length":limit})).collect::<Vec<_>>()}});
+		let zdr = json!({"data": if private { vec![json!({"model_id":"vendor/model","tag":"fixture/variant/us"})] } else { vec![] }});
+		let sent = Arc::new(AtomicUsize::new(0));
+		let recorded = Arc::new(std::sync::Mutex::new(None));
+		let (sent_handler, recorded_handler) = (sent.clone(), recorded.clone());
+		let app = Router::new()
+			.route("/v1/models/vendor/model/endpoints", get(move || { let catalog = catalog.clone(); async move { Json(catalog) } }))
+			.route("/v1/endpoints/zdr", get(move || { let zdr = zdr.clone(); async move { Json(zdr) } }))
+			.route("/v1/chat/completions", post(move |Json(body): Json<Value>| {
+				let (sent, recorded) = (sent_handler.clone(), recorded_handler.clone());
+				async move {
+					sent.fetch_add(1, Ordering::SeqCst);
+					*recorded.lock().unwrap() = Some(body);
+					Json(json!({"model":"actual/model","provider":"Actual Provider","id":"generation-1","choices":[{"finish_reason":"stop","message":{"content":"done"}}]}))
+				}
+			}));
+		let _server = TestServer(tokio::spawn(async move {
+			axum::serve(listener, app).await.unwrap()
+		}));
+		let now = chrono::Utc::now();
+		let mut config: ModelConfig = serde_json::from_value(json!({"provider":"openrouter","model_id":"vendor/model","endpoint":endpoint,"context_window":8192,"modalities":["text","image"],"cost":{},"streaming":false})).unwrap();
+		config.provider_route = Some(ProviderRouteEvidence {
+			tag: "fixture/variant/us".into(),
+			source: "administrator approval".into(),
+			verified_at: now - chrono::Duration::minutes(1),
+			expires_at: now + chrono::Duration::hours(1),
+		});
+		config.media_routes = vec![MediaRouteEvidence {
+			tag: if approve_media {
+				"fixture/variant/us"
+			} else {
+				"other/region"
+			}
+			.into(),
+			formats: vec!["image/png".into()],
+			source: "media probe".into(),
+			verified_at: now - chrono::Duration::minutes(1),
+			expires_at: now + chrono::Duration::hours(1),
+		}];
+		let provider = provider(
+			test_clients(),
+			config,
+			Arc::new(permitting(&endpoint)),
+			Default::default(),
+		)
+		.unwrap();
+		let request = ModelRequest {
+			instructions: "Inspect".into(),
+			max_output_tokens: 64,
+			content_parts: if media {
+				vec![ContentPart::Image {
+					media_type: "image/png".into(),
+					bytes: b"\x89PNG\r\n\x1a\n".to_vec(),
+				}]
+			} else {
+				vec![]
+			},
+			..Default::default()
+		};
+		let result = provider.infer(request, &NoProgress).await;
+		assert_eq!(result.is_ok(), accepted, "{result:?}");
+		assert_eq!(sent.load(Ordering::SeqCst), usize::from(accepted));
+		if accepted {
+			let body = recorded.lock().unwrap().take().unwrap();
+			assert_eq!(
+				body["provider"],
+				json!({"only":["fixture/variant/us"],"allow_fallbacks":false,"zdr":true,"require_parameters":true})
+			);
+			let identity = result.unwrap().reported.provider_identity.unwrap();
+			assert_eq!(identity.reported_model.as_deref(), Some("actual/model"));
+			assert_eq!(identity.reported_route, None);
+		}
+	}
+}
+
+#[rstest::rstest]
+#[case::complete(
+	json!({"prompt_tokens":120,"completion_tokens":30,"total_tokens":150}),
+	ReportedUsage { input_tokens: Some(120), output_tokens: Some(30), ..Default::default() },
+	(120, 30, true)
+)]
+#[case::missing_prompt(
+	json!({"completion_tokens":30}),
+	ReportedUsage { output_tokens: Some(30), ..Default::default() },
+	(0, 30, false)
+)]
+#[case::missing_completion(
+	json!({"prompt_tokens":120}),
+	ReportedUsage { input_tokens: Some(120), ..Default::default() },
+	(120, 0, false)
+)]
+#[case::invalid_counts(
+	json!({"prompt_tokens":-1,"completion_tokens":"30","prompt_tokens_details":{"cached_tokens":1.5}}),
+	ReportedUsage::default(),
+	(0, 0, false)
+)]
+#[case::cache_read_and_write(
+	json!({"prompt_tokens":2000,"completion_tokens":40,"prompt_tokens_details":{"cached_tokens":1500,"cache_write_tokens":400},"completion_tokens_details":{"reasoning_tokens":12}}),
+	ReportedUsage { input_tokens: Some(2000), output_tokens: Some(40), cache_read_tokens: Some(1500), cache_write_tokens: Some(400), reasoning_tokens: Some(12), ..Default::default() },
+	(2000, 40, true)
+)]
+#[case::cache_absent(
+	json!({"prompt_tokens":2000,"completion_tokens":40,"prompt_tokens_details":{},"completion_tokens_details":null}),
+	ReportedUsage { input_tokens: Some(2000), output_tokens: Some(40), ..Default::default() },
+	(2000, 40, true)
+)]
+#[case::cost_present(
+	json!({"prompt_tokens":10,"completion_tokens":5,"cost":0.0001234,"cost_details":{"upstream_inference_cost":0.0001}}),
+	ReportedUsage { input_tokens: Some(10), output_tokens: Some(5), cost: Some(ProviderCost { nanocredits: 123_400, upstream_nanocredits: Some(100_000) }), ..Default::default() },
+	(10, 5, true)
+)]
+#[case::cost_absent(
+	json!({"prompt_tokens":10,"completion_tokens":5,"cost_details":{"upstream_inference_cost":0.0001}}),
+	ReportedUsage { input_tokens: Some(10), output_tokens: Some(5), ..Default::default() },
+	(10, 5, true)
+)]
+#[case::cost_exponent(
+	json!({"prompt_tokens":10,"completion_tokens":5,"cost":1.5e-7,"cost_details":{"upstream_inference_cost":null}}),
+	ReportedUsage { input_tokens: Some(10), output_tokens: Some(5), cost: Some(ProviderCost { nanocredits: 150, upstream_nanocredits: None }), ..Default::default() },
+	(10, 5, true)
+)]
+#[case::cost_invalid(
+	json!({"prompt_tokens":10,"completion_tokens":5,"cost":"0.1"}),
+	ReportedUsage { input_tokens: Some(10), output_tokens: Some(5), ..Default::default() },
+	(10, 5, true)
+)]
+fn openrouter_usage_keeps_unknown_fields_absent(
+	#[case] usage: Value,
+	#[case] reported: ReportedUsage,
+	#[case] legacy: (u64, u64, bool),
+) {
+	let result = parse(completion(usage)).unwrap();
+	assert_eq!(result.reported, reported);
+	assert_eq!(
+		(
+			result.input_tokens,
+			result.output_tokens,
+			result.usage_complete
+		),
+		legacy
+	);
+}
+
+#[rstest::rstest]
+fn missing_usage_object_is_unknown() {
+	let result =
+		parse(json!({"choices":[{"finish_reason":"stop","message":{"content":"done"}}]})).unwrap();
+	assert_eq!(result.reported, ReportedUsage::default());
+	assert!(!result.usage_complete);
+}
+
+/// Costs keep their raw decimal text: rounding through `f64` first would turn
+/// `0.1234567890000000000000000001` into `0.123456789` and understate the cost.
+#[rstest::rstest]
+#[case::cost_beyond_f64_precision(
+	r#"{"choices":[{"finish_reason":"stop","message":{"content":"done"}}],"usage":{"prompt_tokens":1,"completion_tokens":1,"cost":0.1234567890000000000000000001,"cost_details":{"upstream_inference_cost":1.0000000000000000000000000001e-9}}}"#,
+	Some(ProviderCost { nanocredits: 123_456_790, upstream_nanocredits: Some(2) })
+)]
+#[case::unexpected_cost_shape(
+	r#"{"choices":[{"finish_reason":"stop","message":{"content":"done"}}],"usage":{"prompt_tokens":1,"completion_tokens":1,"cost":{"total":1},"cost_details":"none"}}"#,
+	None
+)]
+fn openrouter_cost_uses_the_raw_decimal(#[case] body: &str, #[case] cost: Option<ProviderCost>) {
+	let result = parse_openai(body.as_bytes()).unwrap();
+	assert_eq!(result.reported.cost, cost);
+	assert!(result.usage_complete);
+}
+
+/// Usage shape OpenRouter returns for an explicit `cache_control` request on an
+/// Anthropic route: the cache counts are breakdowns of `prompt_tokens`.
+#[rstest::rstest]
+#[case::cache_write(json!({"prompt_tokens":4120,"completion_tokens":96,"total_tokens":4216,"cost":0.0277,"prompt_tokens_details":{"cached_tokens":0,"cache_write_tokens":4096},"completion_tokens_details":{"reasoning_tokens":0},"cost_details":{"upstream_inference_cost":0.0277}}), 4216)]
+#[case::cache_read(json!({"prompt_tokens":4120,"completion_tokens":88,"total_tokens":4208,"cost":0.00268,"prompt_tokens_details":{"cached_tokens":4096,"cache_write_tokens":0},"completion_tokens_details":{"reasoning_tokens":0},"cost_details":{"upstream_inference_cost":0.00268}}), 4208)]
+fn explicit_cache_settlement_charges_prompt_and_completion_once(
+	#[case] usage: Value,
+	#[case] total: i64,
+) {
+	let response = parse(completion(usage)).unwrap();
+	let accounting = aidash_domain::generation::inference::accounting(8192, &response);
+	assert_eq!(accounting.reported, Some(total));
+	assert_eq!(accounting.refund, 8192 - total);
+	assert!(!accounting.exceeded);
+	assert_eq!(
+		aidash_domain::generation::inference::complete_reported_usage(&response),
+		Some(total)
+	);
+}
+#[rstest::rstest]
+fn byok_chat_keeps_broker_capability_failures_typed() {
+	let body = json!({"error":{"code":"capability_expired","message":"maximum context length"}});
+	assert!(matches!(
+		rejection(401, Some(&body), true),
+		Error::Invalid(message) if message.contains("capability_expired")
+	));
+	assert!(matches!(
+		rejection(401, Some(&body), false),
+		Error::ProviderRejected { status: 401, .. }
+	));
+}
+#[rstest::rstest]
+fn only_context_policy_requests_disable_openrouter_transforms(
+	#[values(vec![], vec!["google-vertex".to_owned()])] routes: Vec<String>,
+	#[values(false, true)] opted_in: bool,
+) {
+	let config: ModelConfig = serde_json::from_value(json!({
+		"provider":"openrouter","model_id":"vendor/model","endpoint":"https://openrouter.ai/api/v1",
+		"context_window":8192,"modalities":["text"],"cost":{}
+	}))
+	.unwrap();
+	let request = ModelRequest {
+		instructions: "Answer".into(),
+		context: json!({"history":[]}).into(),
+		tools: vec![],
+		max_output_tokens: 256,
+		response_format: None,
+		content_parts: vec![],
+		cache_scope: None,
+		cache_breakpoints: false,
+		disable_provider_transforms: opted_in,
+		estimate: Default::default(),
+	};
+	let body = request_body(&config, &request, routes, None);
+	// A prune-only Agent keeps OpenRouter's default transforms unchanged.
+	assert_eq!(body.get("transforms"), opted_in.then(|| json!([])).as_ref());
+	assert_eq!(body["model"], json!("vendor/model"));
+	assert_eq!(body["provider"]["zdr"], json!(true));
+}
+
+mod cache_salt {
+	use super::*;
+	use aidash_domain::{
+		projection::CacheScope,
+		provider::{ModelContext, OrderedContext},
+	};
+	use axum::{Json, Router, routing::post};
+
+	const SECRET_ONE: &str = "fixture-cache-salt-secret-one";
+	const SECRET_TWO: &str = "fixture-cache-salt-secret-two";
+
+	struct TestServer(tokio::task::JoinHandle<()>);
+	impl Drop for TestServer {
+		fn drop(&mut self) {
+			self.0.abort();
+		}
+	}
+
+	/// An OpenRouter stand-in that records every completion body it receives.
+	struct Upstream {
+		endpoint: String,
+		bodies: tokio::sync::mpsc::UnboundedReceiver<Value>,
+		_server: TestServer,
+	}
+
+	impl Upstream {
+		async fn start() -> Self {
+			let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+			let endpoint = format!("http://{}/v1", listener.local_addr().unwrap());
+			let (seen, bodies) = tokio::sync::mpsc::unbounded_channel();
+			let app = Router::new().route(
+				"/v1/chat/completions",
+				post(move |Json(body): Json<Value>| {
+					let seen = seen.clone();
+					async move {
+						seen.send(body).unwrap();
+						Json(json!({"choices":[{"finish_reason":"stop","message":{"content":"done"}}],"usage":{"prompt_tokens":1,"completion_tokens":1}}))
+					}
+				}),
+			);
+			let server = TestServer(tokio::spawn(async move {
+				axum::serve(listener, app).await.unwrap()
+			}));
+			Self {
+				endpoint,
+				bodies,
+				_server: server,
+			}
+		}
+
+		fn provider(&self, keys: Option<CacheSaltKeys>) -> Arc<dyn ModelProvider> {
+			self.route(keys, "fixture", None)
+		}
+
+		/// A provider for `model_id` declaring `cache_mode`, if any.
+		fn route(
+			&self,
+			keys: Option<CacheSaltKeys>,
+			model_id: &str,
+			cache_mode: Option<&str>,
+		) -> Arc<dyn ModelProvider> {
+			let mut config = json!({
+				"provider": "openrouter",
+				"model_id": model_id,
+				"endpoint": self.endpoint,
+				"context_window": 100_000,
+				"modalities": ["text"],
+				"cost": {},
+				"projection_versions": ["legacy", "ordered", "native"]
+			});
+			if let Some(mode) = cache_mode {
+				config["cache_mode"] = json!(mode);
+			}
+			let config: ModelConfig = serde_json::from_value(config).unwrap();
+			salted_provider(
+				test_clients(),
+				config,
+				Arc::new(permitting(&self.endpoint)),
+				Default::default(),
+				keys,
+			)
+			.unwrap()
+		}
+
+		/// Every body received so far, in arrival order.
+		fn bodies(&mut self) -> Vec<Value> {
+			let mut bodies = Vec::new();
+			while let Ok(body) = self.bodies.try_recv() {
+				bodies.push(body);
+			}
+			bodies
+		}
+	}
+
+	fn keys() -> CacheSaltKeys {
+		CacheSaltKeys::new(
+			&[
+				CacheSaltKey {
+					version: 1,
+					secret: SECRET_ONE.into(),
+				},
+				CacheSaltKey {
+					version: 2,
+					secret: SECRET_TWO.into(),
+				},
+			],
+			2,
+		)
+		.unwrap()
+	}
+
+	fn scope(tenant: &str, key_version: u32) -> CacheScope {
+		CacheScope {
+			tenant: tenant.into(),
+			key_version,
+		}
+	}
+
+	fn legacy() -> ModelRequest {
+		ModelRequest {
+			instructions: "Shared instructions".into(),
+			context: json!({"task":{"title":"Summarize"}}).into(),
+			tools: vec![],
+			max_output_tokens: 64,
+			response_format: None,
+			content_parts: vec![],
+			cache_scope: None,
+			cache_breakpoints: false,
+			disable_provider_transforms: false,
+			estimate: Default::default(),
+		}
+	}
+
+	fn ordered(scope: CacheScope) -> ModelRequest {
+		ModelRequest {
+			context: ModelContext::Ordered(OrderedContext {
+				stable: r#"{"identity":"fixture"}"#.into(),
+				volatile: r#"{"workspace":{}}"#.into(),
+			}),
+			cache_scope: Some(scope),
+			..legacy()
+		}
+	}
+
+	/// A Native request with one complete Model Turn.
+	fn native(scope: CacheScope) -> ModelRequest {
+		let mut context = aidash_domain::context::Context::default();
+		context.push(aidash_domain::context::ContextEvent::Assistant {
+			epoch: 1,
+			text: String::new(),
+			calls: vec!["call-1".into()],
+		});
+		context.push(aidash_domain::context::ContextEvent::tool(
+			aidash_domain::provider::ToolCall {
+				id: "call-1".into(),
+				name: "workspace_read".into(),
+				arguments: json!({"kind":"task"}),
+			},
+			json!({"title":"Task"}),
+		));
+		ModelRequest {
+			context: ModelContext::Native(aidash_domain::projection::native::native_context(
+				&context,
+				&json!({"identity":"fixture","workspace":{}}),
+			)),
+			cache_scope: Some(scope),
+			..legacy()
+		}
+	}
+
+	fn system(body: &Value) -> &str {
+		body["messages"][0]["content"].as_str().unwrap()
+	}
+
+	fn first_line(body: &Value) -> &str {
+		system(body).split_inclusive('\n').next().unwrap()
+	}
+
+	#[rstest::rstest]
+	#[tokio::test]
+	async fn legacy_requests_are_sent_without_a_salt() {
+		let mut upstream = Upstream::start().await;
+		let request = legacy();
+		for keys in [Some(keys()), None] {
+			upstream
+				.provider(keys)
+				.infer(request.clone(), &aidash_application::ports::NoProgress)
+				.await
+				.unwrap();
+		}
+		let bodies = upstream.bodies();
+		assert_eq!(bodies.len(), 2);
+		for body in &bodies {
+			assert_eq!(body["messages"], request.input_body()["messages"]);
+			assert_eq!(system(body), "Shared instructions");
+		}
+	}
+
+	#[rstest::rstest]
+	#[tokio::test]
+	async fn ordered_requests_start_system_with_the_tenant_salt() {
+		let mut upstream = Upstream::start().await;
+		let request = ordered(scope("tenant-a", 1));
+		upstream
+			.provider(Some(keys()))
+			.infer(request.clone(), &aidash_application::ports::NoProgress)
+			.await
+			.unwrap();
+		let bodies = upstream.bodies();
+		let body = &bodies[0];
+		// The ADR 0016 derivation: HMAC-SHA256(key secret, Tenant id), 128 bits.
+		use hmac::Mac as _;
+		let mut mac = hmac::Hmac::<sha2::Sha256>::new_from_slice(SECRET_ONE.as_bytes()).unwrap();
+		mac.update(b"tenant-a");
+		let digest = mac.finalize().into_bytes();
+		let hex: String = digest[..16].iter().map(|b| format!("{b:02x}")).collect();
+		assert_eq!(
+			system(body),
+			format!("aidash-cache-scope:v1:{hex}\nShared instructions")
+		);
+		let line = first_line(body);
+		let digest = line
+			.strip_prefix("aidash-cache-scope:v1:")
+			.and_then(|rest| rest.strip_suffix('\n'))
+			.unwrap();
+		assert_eq!(digest.len(), 32);
+		assert!(
+			digest
+				.bytes()
+				.all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+		);
+		// Only `system` changes; the user parts and tools are the request's own.
+		assert_eq!(body["messages"][1], request.input_body()["messages"][1]);
+	}
+
+	#[rstest::rstest]
+	#[tokio::test]
+	async fn salts_separate_tenants_and_key_versions_but_repeat_for_the_same_scope() {
+		let mut upstream = Upstream::start().await;
+		let provider = upstream.provider(Some(keys()));
+		for scope in [
+			scope("tenant-a", 2),
+			scope("tenant-b", 2),
+			scope("tenant-a", 2),
+			scope("tenant-a", 1),
+		] {
+			provider
+				.infer(ordered(scope), &aidash_application::ports::NoProgress)
+				.await
+				.unwrap();
+		}
+		let bodies = upstream.bodies();
+		let lines: Vec<&str> = bodies.iter().map(first_line).collect();
+		assert_ne!(
+			lines[0], lines[1],
+			"identical instructions, different Tenants"
+		);
+		assert_eq!(lines[0], lines[2], "same Tenant and key");
+		assert_ne!(lines[0], lines[3], "rotated key version");
+		assert!(lines[0].starts_with("aidash-cache-scope:v2:"));
+		assert!(lines[3].starts_with("aidash-cache-scope:v1:"));
+	}
+
+	#[rstest::rstest]
+	#[case::unknown_version(Some(keys()), 3)]
+	#[case::node_without_keys(None, 1)]
+	#[tokio::test]
+	async fn a_missing_key_version_fails_before_any_request(
+		#[case] keys: Option<CacheSaltKeys>,
+		#[case] version: u32,
+	) {
+		let mut upstream = Upstream::start().await;
+		let error = upstream
+			.provider(keys)
+			.infer(
+				ordered(scope("tenant-a", version)),
+				&aidash_application::ports::NoProgress,
+			)
+			.await
+			.unwrap_err();
+		assert!(matches!(error, Error::Invalid(_)), "{error:?}");
+		assert!(upstream.bodies().is_empty());
+	}
+
+	#[rstest::rstest]
+	#[tokio::test]
+	async fn explicit_routes_receive_breakpoints_after_the_tenant_salt() {
+		// Arrange
+		let mut upstream = Upstream::start().await;
+		let provider = upstream.route(Some(keys()), "anthropic/claude-fixture", Some("explicit"));
+		let marked = ModelRequest {
+			cache_breakpoints: true,
+			disable_provider_transforms: false,
+			..ordered(scope("tenant-a", 1))
+		};
+		let expected_line = keys().line(&scope("tenant-a", 1)).unwrap();
+		// Act
+		provider
+			.infer(marked.clone(), &aidash_application::ports::NoProgress)
+			.await
+			.unwrap();
+		provider
+			.infer(
+				ordered(scope("tenant-a", 1)),
+				&aidash_application::ports::NoProgress,
+			)
+			.await
+			.unwrap();
+		// Assert
+		let bodies = upstream.bodies();
+		let ephemeral = json!({"type":"ephemeral"});
+		assert_eq!(
+			bodies[0]["messages"][0]["content"],
+			json!([{"type":"text","text":format!("{expected_line}Shared instructions"),"cache_control":ephemeral}])
+		);
+		let parts = bodies[0]["messages"][1]["content"].as_array().unwrap();
+		assert_eq!(
+			parts[0]["cache_control"], ephemeral,
+			"the Stable Prefix part"
+		);
+		assert!(parts[1].get("cache_control").is_none(), "the volatile part");
+		assert_eq!(bodies[0]["messages"][1], marked.input_body()["messages"][1]);
+		assert_eq!(bodies[0]["provider"]["zdr"], true);
+		assert!(!bodies[1].to_string().contains("cache_control"));
+		assert_eq!(
+			first_line(&bodies[1]),
+			expected_line,
+			"the same Tenant salt with or without breakpoints"
+		);
+	}
+
+	/// Delegates to `KeylessAccess` and records the signed-scope request of every call.
+	struct Recording(std::sync::Mutex<Vec<(aidash_application::provider_access::Operation, bool)>>);
+	#[async_trait::async_trait]
+	impl ProviderAccess for Recording {
+		async fn resolve(
+			&self,
+			context: &Context,
+			endpoint: &str,
+			source: &Source,
+		) -> Result<aidash_application::provider_access::Access> {
+			let inference = context.inference.as_ref().unwrap();
+			self.0
+				.lock()
+				.unwrap()
+				.push((inference.operations[0], inference.cache_breakpoints));
+			permitting(endpoint)
+				.resolve(context, endpoint, source)
+				.await
+		}
+		async fn check(&self, _: &Context, _: &str, _: &Source) -> Result<()> {
+			unreachable!("inference never preflights a credential")
+		}
+	}
+
+	#[rstest::rstest]
+	#[case::opted_in(true)]
+	#[case::opted_out(false)]
+	#[tokio::test]
+	async fn chat_asks_the_issuer_for_cache_breakpoints_only_when_the_request_carries_them(
+		#[case] breakpoints: bool,
+	) {
+		// Arrange
+		let mut upstream = Upstream::start().await;
+		let access = Arc::new(Recording(Default::default()));
+		let config = json!({
+			"provider": "openrouter",
+			"model_id": "anthropic/claude-fixture",
+			"endpoint": upstream.endpoint,
+			"context_window": 100_000,
+			"modalities": ["text"],
+			"cost": {},
+			"cache_mode": "explicit",
+			"projection_versions": ["legacy", "ordered"]
+		});
+		let provider = salted_provider(
+			test_clients(),
+			serde_json::from_value(config).unwrap(),
+			access.clone(),
+			Default::default(),
+			Some(keys()),
+		)
+		.unwrap();
+		// Act
+		provider
+			.infer(
+				ModelRequest {
+					cache_breakpoints: breakpoints,
+					..ordered(scope("tenant-a", 1))
+				},
+				&aidash_application::ports::NoProgress,
+			)
+			.await
+			.unwrap();
+		// Assert
+		assert_eq!(
+			*access.0.lock().unwrap(),
+			vec![(
+				aidash_application::provider_access::Operation::Chat,
+				breakpoints
+			)]
+		);
+		assert_eq!(
+			upstream.bodies()[0].to_string().contains("cache_control"),
+			breakpoints
+		);
+	}
+
+	#[rstest::rstest]
+	#[case::undeclared("anthropic/claude-fixture", None)]
+	#[case::automatic("anthropic/claude-fixture", Some("automatic"))]
+	#[case::outside_the_allowlist("openai/gpt-fixture", Some("explicit"))]
+	#[tokio::test]
+	async fn other_routes_never_receive_breakpoints(
+		#[case] model_id: &str,
+		#[case] cache_mode: Option<&str>,
+	) {
+		// Arrange
+		let mut upstream = Upstream::start().await;
+		let marked = ModelRequest {
+			cache_breakpoints: true,
+			disable_provider_transforms: false,
+			..ordered(scope("tenant-a", 1))
+		};
+		// Act
+		let error = upstream
+			.route(Some(keys()), model_id, cache_mode)
+			.infer(marked, &aidash_application::ports::NoProgress)
+			.await
+			.unwrap_err();
+		// Assert
+		assert!(
+			matches!(&error, Error::Invalid(message) if message.contains("does not accept cache breakpoints")),
+			"{error:?}"
+		);
+		assert!(upstream.bodies().is_empty());
+	}
+
+	#[rstest::rstest]
+	fn debug_output_never_reveals_the_secret_or_the_salt() {
+		let keys = keys();
+		let line = keys.line(&scope("tenant-a", 2)).unwrap();
+		let digest = line.trim_end().rsplit(':').next().unwrap().to_owned();
+		let request = ordered(scope("tenant-a", 2));
+		let rendered = [
+			format!("{keys:?}"),
+			format!(
+				"{:?}",
+				CacheSaltKey {
+					version: 2,
+					secret: SECRET_TWO.into()
+				}
+			),
+			format!("{request:?}"),
+			format!("{:?}", keys.line(&scope("tenant-a", 9)).unwrap_err()),
+		];
+		for text in rendered {
+			for hidden in [SECRET_ONE, SECRET_TWO, digest.as_str()] {
+				assert!(!text.contains(hidden), "{text}");
+			}
+		}
+	}
+
+	#[rstest::rstest]
+	#[case::empty_secret(&[(1, "  ")], 1)]
+	#[case::current_not_configured(&[(1, SECRET_ONE)], 2)]
+	#[case::duplicate_version(&[(1, SECRET_ONE), (1, SECRET_TWO)], 1)]
+	fn invalid_key_settings_are_rejected(#[case] keys: &[(u32, &str)], #[case] current: u32) {
+		let keys: Vec<CacheSaltKey> = keys
+			.iter()
+			.map(|(version, secret)| CacheSaltKey {
+				version: *version,
+				secret: (*secret).into(),
+			})
+			.collect();
+		let error = CacheSaltKeys::new(&keys, current).unwrap_err();
+		assert!(!format!("{error:?}").contains(SECRET_ONE));
+	}
+
+	#[rstest::rstest]
+	#[tokio::test]
+	async fn native_requests_keep_the_salt_breakpoints_and_zdr() {
+		// Arrange
+		let mut upstream = Upstream::start().await;
+		let provider = upstream.route(Some(keys()), "anthropic/claude-fixture", Some("explicit"));
+		let marked = ModelRequest {
+			cache_breakpoints: true,
+			..native(scope("tenant-a", 1))
+		};
+		let expected_line = keys().line(&scope("tenant-a", 1)).unwrap();
+		// Act
+		provider
+			.infer(marked.clone(), &aidash_application::ports::NoProgress)
+			.await
+			.unwrap();
+		// Assert
+		let bodies = upstream.bodies();
+		let body = &bodies[0];
+		let ephemeral = json!({"type":"ephemeral"});
+		assert_eq!(
+			body["messages"][0]["content"],
+			json!([{"type":"text","text":format!("{expected_line}Shared instructions"),"cache_control":ephemeral}])
+		);
+		let messages = body["messages"].as_array().unwrap();
+		let roles: Vec<&str> = messages
+			.iter()
+			.map(|m| m["role"].as_str().unwrap())
+			.collect();
+		assert_eq!(roles, ["system", "user", "assistant", "tool", "user"]);
+		assert_eq!(messages[2]["tool_calls"][0]["id"], "call-1");
+		assert_eq!(messages[3]["tool_call_id"], "call-1");
+		assert_eq!(messages[3]["content"][0]["cache_control"], ephemeral);
+		assert_eq!(body.to_string().matches("cache_control").count(), 2);
+		assert_eq!(
+			messages[1..],
+			marked.input_body()["messages"].as_array().unwrap()[1..]
+		);
+		assert_eq!(body["provider"]["zdr"], true);
+	}
+
+	#[rstest::rstest]
+	#[case::undeclared(json!(["legacy", "ordered"]))]
+	#[case::legacy_only(json!(null))]
+	#[tokio::test]
+	async fn a_forced_unsupported_projection_fails_typed_before_any_request(
+		#[case] versions: Value,
+	) {
+		// Arrange
+		let mut upstream = Upstream::start().await;
+		let mut config = json!({
+			"provider": "openrouter",
+			"model_id": "fixture",
+			"endpoint": upstream.endpoint,
+			"context_window": 100_000,
+			"modalities": ["text"],
+			"cost": {}
+		});
+		if !versions.is_null() {
+			config["projection_versions"] = versions;
+		}
+		let provider = salted_provider(
+			test_clients(),
+			serde_json::from_value(config).unwrap(),
+			Arc::new(permitting(&upstream.endpoint)),
+			Default::default(),
+			Some(keys()),
+		)
+		.unwrap();
+		// Act
+		let error = provider
+			.infer(
+				native(scope("tenant-a", 1)),
+				&aidash_application::ports::NoProgress,
+			)
+			.await
+			.unwrap_err();
+		// Assert
+		assert!(
+			matches!(
+				&error,
+				Error::UnsupportedProjection { model, version }
+					if model == "fixture" && *version == aidash_domain::projection::ProjectionVersion::Native
+			),
+			"{error:?}"
+		);
+		assert!(upstream.bodies().is_empty());
+	}
+}

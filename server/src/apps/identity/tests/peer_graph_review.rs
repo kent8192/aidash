@@ -1,0 +1,595 @@
+#![allow(clippy::disallowed_methods)] // Fixtures reach the database outside a tenancy scope.
+#[path = "../../execution/tests/support/legacy.rs"]
+mod common;
+
+use aidash_application::tenancy::TEST_FIXTURE;
+use aidash_server::{domain::Task, federation::Federation};
+use common::{bootstrap, cleanup, request};
+use reinhardt::query::{Alias, ColumnRef, Expr, PostgresQueryBuilder, Query};
+use serde_json::{Value, json};
+
+use uuid::Uuid;
+
+const SOURCE: &str = "aidash://source";
+
+async fn project(
+	app: &common::TestApplication,
+	source: &common::Source,
+	viewer: Value,
+	options: Value,
+) -> (u16, Value) {
+	let mut input = json!({
+		"viewer":viewer,"scope_workspace":null,"mode":"mesh",
+		"kinds":["workspace"],"relations":[],"hours":0,"limit":80,"cursor":null,
+		"target_tenant":if viewer["kind"] == "deployment_administrator" { Some("acme") } else { None },
+	});
+	input
+		.as_object_mut()
+		.unwrap()
+		.extend(options.as_object().unwrap().clone());
+	common::post_graph(app, source, &viewer, &input).await
+}
+
+/// The address of the Node of `deployment` that a stand-in sends from.
+fn home(deployment: &str) -> String {
+	format!(
+		"{deployment}/{}",
+		aidash_domain::nodes::NodeName::derived(&format!("{deployment}-sender"))
+	)
+}
+
+async fn credential(f: &Federation, app: &common::TestApplication, tenant: &str) -> Uuid {
+	let (status, issued) = request(
+		app,
+		&f.config.api_token,
+		"POST",
+		&format!("/api/authorization/{tenant}/credentials"),
+		json!({"subject":"alice"}),
+	)
+	.await;
+	assert_eq!(status, 200, "{issued}");
+	issued["credential"]["id"]
+		.as_str()
+		.unwrap()
+		.parse()
+		.unwrap()
+}
+
+async fn viewer(f: &Federation, app: &common::TestApplication) -> (Value, Uuid, common::Source) {
+	let source = common::register_source(f, app, SOURCE, "acme").await;
+	let id = credential(f, app, "acme").await;
+	let (status, mapping) = request(
+		app,
+		&f.config.api_token,
+		"POST",
+		"/api/authorization/acme/peer-mappings",
+		json!({
+			"node":source.receiver.node,"source_node":source.address(),"source_subject":"source-subject",
+			"credential_id":id,"enabled":true,"expected_revision":0,
+		}),
+	)
+	.await;
+	assert_eq!(status, 200, "{mapping}");
+	(
+		json!({"kind":"subject","subject":"source-subject"}),
+		id,
+		source,
+	)
+}
+
+/// Activation writes a receiver run and an admission, not a local workspace/task.
+struct FixtureDefinitions<'a>(&'a Federation);
+#[async_trait::async_trait]
+impl aidash_application::ports::registry::DefinitionLookup for FixtureDefinitions<'_> {
+	async fn definition(
+		&mut self,
+		id: &str,
+		version: &str,
+	) -> aidash_application::Result<aidash_domain::registry::Entry> {
+		self.0
+			.registry
+			.get(
+				&aidash_domain::tenancy::TenantName::new("acme").unwrap(),
+				id,
+				version,
+			)
+			.await
+			.map_err(Into::into)
+	}
+}
+
+async fn admitted_run(
+	f: &Federation,
+	template: &Task,
+	credential: Uuid,
+	tenant: &str,
+	source: &str,
+	workspace: Uuid,
+) -> Uuid {
+	let id = Uuid::new_v4();
+	let mut task = template.clone();
+	task.id = Uuid::new_v4();
+	task.workspace_id = workspace;
+	let agent: Value = sqlx::query_scalar(
+		&Query::select()
+			.column(Alias::new("metadata"))
+			.from(Alias::new("registry"))
+			.and_where(Expr::cust("id='research' AND version='1.0.0'"))
+			.to_string(PostgresQueryBuilder),
+	)
+	.fetch_one(f.store.pool.fixture_driver())
+	.await
+	.unwrap();
+	let agent_entry: aidash_domain::registry::Entry =
+		serde_json::from_value(agent.clone()).unwrap();
+	let snapshot = aidash_application::registry::bindings::resolve(
+		&mut aidash_application::registry::bindings::catalog::LookupCatalog {
+			definitions: &mut FixtureDefinitions(f),
+			node: f.config.deployment.as_str(),
+		},
+		&aidash_server::bootstrap::registry_validation(),
+		aidash_domain::registry::bindings::QualifiedRef {
+			registry_deployment: f.config.deployment.to_string(),
+			id: agent_entry.id.clone(),
+			version: agent_entry.version.clone(),
+		},
+		&agent_entry,
+		true,
+	)
+	.await
+	.unwrap();
+	let context = aidash_server::context::Context {
+		binding_snapshot: Some(Box::new(snapshot.clone())),
+		..Default::default()
+	};
+	let grant = Uuid::new_v4();
+	let receiver = common::default_node(&f.store, tenant).await;
+	let description = json!({
+		"grant_id":grant,"source_node":source,"target_node":receiver.to_string(),
+		"source_tenant":"source-tenant","source_subject":"source-subject","task":task,
+		"inspection":{"node_id":receiver.to_string(),"authority_digest":format!("sha256:{}", "0".repeat(64)),
+			"agent":agent,"definitions":[],"binding_snapshot":snapshot},
+		"expires_at":chrono::Utc::now() + chrono::Duration::hours(1),
+	});
+	sqlx::query(
+		&Query::insert()
+			.into_table(Alias::new("authorization_remote_admissions"))
+			.columns(
+				[
+					"id",
+					"source_node",
+					"grant_id",
+					"task_id",
+					"tenant",
+					"credential_id",
+					"subject_chain",
+					"description",
+					"node",
+				]
+				.map(Alias::new),
+			)
+			.from_subquery(((1..=9).map(|index| Expr::cust(format!("${index}")))).fold(
+				reinhardt::query::Query::select(),
+				|mut select, expr| {
+					select.expr(expr);
+					select
+				},
+			))
+			.to_string(PostgresQueryBuilder),
+	)
+	.bind(id)
+	.bind(source)
+	.bind(grant)
+	.bind(task.id)
+	.bind(tenant)
+	.bind(credential)
+	.bind(vec![
+		"alice".to_owned(),
+		aidash_server::domain::qualified_agent(
+			&aidash_domain::nodes::NodeAddress::derived(f.config.deployment.as_str(), "acme"),
+			"research",
+			"1.0.0",
+		),
+	])
+	.bind(description)
+	.bind(receiver.node.as_str())
+	.execute(f.store.pool.fixture_driver())
+	.await
+	.unwrap();
+	sqlx::query(
+		&Query::insert()
+			.into_table(Alias::new("runs"))
+			.columns(
+				[
+					"id",
+					"task_id",
+					"workspace_id",
+					"home_node",
+					"agent_id",
+					"agent_version",
+					"context",
+					"tenant",
+					"node",
+				]
+				.map(Alias::new),
+			)
+			.from_subquery(((1..=9).map(|index| Expr::cust(format!("${index}")))).fold(
+				reinhardt::query::Query::select(),
+				|mut select, expr| {
+					select.expr(expr);
+					select
+				},
+			))
+			.to_string(PostgresQueryBuilder),
+	)
+	.bind(id)
+	.bind(task.id)
+	.bind(workspace)
+	.bind(source)
+	.bind("research")
+	.bind("1.0.0")
+	.bind(serde_json::to_value(context).unwrap())
+	.bind(tenant)
+	.bind(receiver.node.as_str())
+	.execute(f.store.pool.fixture_driver())
+	.await
+	.unwrap();
+	id
+}
+
+async fn event(f: &Federation, workspace: Option<Uuid>, kind: &str, data: Value, age: i64) {
+	sqlx::query(
+		&Query::insert()
+			.into_table(Alias::new("events"))
+			.columns(
+				[
+					"id",
+					"node",
+					"workspace_id",
+					"kind",
+					"data",
+					"created_at",
+					"tenant",
+				]
+				.map(Alias::new),
+			)
+			.from_subquery(((1..=7).map(|index| Expr::cust(format!("${index}")))).fold(
+				reinhardt::query::Query::select(),
+				|mut select, expr| {
+					select.expr(expr);
+					select
+				},
+			))
+			.to_string(PostgresQueryBuilder),
+	)
+	.bind(Uuid::new_v4())
+	.bind(common::default_node(&f.store, "acme").await.node.as_str())
+	.bind(workspace)
+	.bind(kind)
+	.bind(data)
+	.bind(chrono::Utc::now() - chrono::Duration::seconds(age))
+	.bind("acme")
+	.execute(f.store.pool.fixture_driver())
+	.await
+	.unwrap();
+}
+
+async fn bump_run(f: &Federation, id: Uuid) {
+	{
+		let query_bind_1 = id;
+		sqlx::query(
+			&Query::update()
+				.table(Alias::new("runs"))
+				.value_expr(Alias::new("revision"), Expr::cust("revision + 1"))
+				.and_where(SimpleExpr::CustomWithExpr(
+					"(id=?)".to_owned(),
+					vec![Expr::value(query_bind_1.to_owned()).into()],
+				))
+				.to_string(PostgresQueryBuilder),
+		)
+		.execute(f.store.pool.fixture_driver())
+		.await
+	}
+	.unwrap();
+}
+
+fn run_ids(page: &Value) -> Vec<Uuid> {
+	page["nodes"]
+		.as_array()
+		.unwrap()
+		.iter()
+		.filter(|node| node["kind"] == "run")
+		.map(|node| node["resource_id"].as_str().unwrap().parse().unwrap())
+		.collect()
+}
+
+#[rstest::rstest]
+#[tokio::test]
+async fn admitted_graph_runs_use_receiver_authority_and_scope_bound_generations(
+	#[future(awt)]
+	#[from(common::native_application)]
+	fixture: common::ApplicationFixture,
+) {
+	let (f, url, schema) = fixture.runtime.parts();
+	let app = fixture.application;
+	let (mut policy, token, task_id) = bootstrap(&f, &app, "http://localhost:1").await;
+	let (subject, credential, source) = viewer(&f, &app).await;
+	let task: Task = {
+		let query_bind_1 = task_id;
+		aidash_server::database::query_as(
+			&Query::select()
+				.column(ColumnRef::Asterisk)
+				.from(Alias::new("tasks"))
+				.and_where(SimpleExpr::CustomWithExpr(
+					"(id=?)".to_owned(),
+					vec![Expr::value(query_bind_1.to_owned()).into()],
+				))
+				.to_string(PostgresQueryBuilder),
+		)
+		.fetch_one(f.store.pool.in_scope(&TEST_FIXTURE))
+		.await
+	}
+	.unwrap();
+	let workspace = Uuid::new_v4();
+	let mut expected = vec![];
+	for _ in 0..3 {
+		expected
+			.push(admitted_run(&f, &task, credential, "acme", &source.address(), workspace).await);
+	}
+	let third = admitted_run(
+		&f,
+		&task,
+		credential,
+		"acme",
+		&home("aidash://third"),
+		workspace,
+	)
+	.await;
+	let other_scope = admitted_run(
+		&f,
+		&task,
+		credential,
+		"acme",
+		&source.address(),
+		Uuid::new_v4(),
+	)
+	.await;
+	let mut other_policy = common::policy(f.config.deployment.as_str());
+	other_policy["tenant"] = json!("other");
+	common::tenant_root(&f, "other").await;
+	let (status, value) = request(
+		&app,
+		&f.config.api_token,
+		"POST",
+		"/api/authorization/other",
+		json!({"expected_revision":0,"bundle":other_policy}),
+	)
+	.await;
+	assert_eq!(status, 200, "{value}");
+	let other_credential = self::credential(&f, &app, "other").await;
+	let other_tenant = admitted_run(
+		&f,
+		&task,
+		other_credential,
+		"other",
+		&source.address(),
+		workspace,
+	)
+	.await;
+	for index in 0..6 {
+		event(
+			&f,
+			None,
+			"run.phase",
+			json!({"run_id":expected[0],"workspace_id":workspace}),
+			60 - index,
+		)
+		.await;
+	}
+	event(
+		&f,
+		None,
+		"run.phase",
+		json!({"run_id":third,"workspace_id":workspace}),
+		1,
+	)
+	.await;
+	let options =
+		json!({"scope_workspace":workspace,"kinds":["run","agent"],"relations":["executes"]});
+	let (status, page) = project(&app, &source, subject.clone(), options.clone()).await;
+	assert_eq!(status, 200, "{page}");
+	let mut actual = run_ids(&page);
+	actual.sort();
+	expected.sort();
+	assert_eq!(actual, expected);
+	for denied in [third, other_scope, other_tenant] {
+		assert!(!actual.contains(&denied));
+	}
+	let activity = page["activity"].as_array().unwrap();
+	assert_eq!(activity.len(), 6);
+	assert!(
+		activity
+			.windows(2)
+			.all(|pair| { pair[0]["at"].as_str().unwrap() >= pair[1]["at"].as_str().unwrap() })
+	);
+	let local_workspace_count: i64 = {
+		let query_bind_1 = workspace;
+		sqlx::query_scalar(
+			&Query::select()
+				.expr(Expr::cust("COUNT(*)"))
+				.from(Alias::new("authorization_workspaces"))
+				.and_where(SimpleExpr::CustomWithExpr(
+					"(workspace_id=?)".to_owned(),
+					vec![Expr::value(query_bind_1.to_owned()).into()],
+				))
+				.to_string(PostgresQueryBuilder),
+		)
+		.fetch_one(f.store.pool.fixture_driver())
+		.await
+	}
+	.unwrap();
+	assert_eq!(local_workspace_count, 0);
+	let deployment_administrator = Uuid::new_v4();
+	let (status, grant) = request(
+		&app,
+		&f.config.api_token,
+		"POST",
+		"/api/authorization/acme/peer-graph-grants",
+		json!({
+			"source_deployment":SOURCE,"source_identity":deployment_administrator,"endpoint":source.remote.endpoint,"key_id":source.remote.key_id(),"enabled":true,"expected_revision":0,
+		}),
+	)
+	.await;
+	assert_eq!(status, 200, "{grant}");
+	let (status, deployment_administrator_page) = project(
+		&app,
+		&source,
+		json!({"kind":"deployment_administrator","id":deployment_administrator}),
+		options.clone(),
+	)
+	.await;
+	assert_eq!(status, 200, "{deployment_administrator_page}");
+	let mut actual = run_ids(&deployment_administrator_page);
+	actual.sort();
+	assert_eq!(actual, expected);
+	let mut paged = options.clone();
+	paged["limit"] = json!(2);
+	let (status, first) = project(&app, &source, subject.clone(), paged.clone()).await;
+	assert_eq!(status, 200, "{first}");
+	assert!(first["next_cursor"].is_string(), "{first}");
+	paged["cursor"] = first["next_cursor"].clone();
+	let (status, created) = request(
+		&app,
+		&token,
+		"POST",
+		"/api/workspaces",
+		json!({"title":"Unrelated same-tenant activity","goal":"Do not reset the remote cursor"}),
+	)
+	.await;
+	assert_eq!(status, 200, "{created}");
+	bump_run(&f, other_scope).await;
+	bump_run(&f, third).await;
+	bump_run(&f, other_tenant).await;
+	event(
+		&f,
+		None,
+		"run.phase",
+		json!({"run_id":third,"workspace_id":workspace}),
+		1,
+	)
+	.await;
+	let (status, continued) = project(&app, &source, subject.clone(), paged.clone()).await;
+	assert_eq!(status, 200, "{continued}");
+	bump_run(&f, expected[0]).await;
+	assert_eq!(project(&app, &source, subject.clone(), paged).await.0, 409);
+	policy["policies"].as_array_mut().unwrap().push(json!({
+		"id":"deny-remote-run","effect":"deny","subjects":{"ids":["alice"]},
+		"actions":["run.read"],"resources":{"kinds":["run"]},
+		"condition":{"op":"eq","left":{"source":"resource","path":"/source_workspace_id"},
+			"right":{"source":"literal","value":workspace}},
+	}));
+	let (status, written) = request(
+		&app,
+		&f.config.api_token,
+		"POST",
+		"/api/authorization/acme",
+		json!({"expected_revision":1,"bundle":policy}),
+	)
+	.await;
+	assert_eq!(status, 200, "{written}");
+	let (status, denied) = project(&app, &source, subject, options).await;
+	assert_eq!(status, 200, "{denied}");
+	assert!(run_ids(&denied).is_empty());
+	assert!(denied["activity"].as_array().unwrap().is_empty());
+	cleanup(f, &url, &schema).await;
+}
+
+async fn event_decisions(f: &Federation) -> i64 {
+	sqlx::query_scalar(
+		&Query::select()
+			.expr(Expr::cust("COUNT(*)"))
+			.from(Alias::new("authorization_decisions"))
+			.and_where(Expr::cust("tenant='acme' AND action='workspace.events'"))
+			.to_string(PostgresQueryBuilder),
+	)
+	.fetch_one(f.store.pool.fixture_driver())
+	.await
+	.unwrap()
+}
+
+#[rstest::rstest]
+#[tokio::test]
+async fn graph_activity_is_newest_first_and_checks_workspace_events_once(
+	#[future(awt)]
+	#[from(common::native_application)]
+	fixture: common::ApplicationFixture,
+) {
+	let (f, url, schema) = fixture.runtime.parts();
+	let app = fixture.application;
+	let (mut policy, _, task_id) = bootstrap(&f, &app, "http://localhost:1").await;
+	let (subject, _, source) = viewer(&f, &app).await;
+	let workspace: Uuid = {
+		let query_bind_1 = task_id;
+		sqlx::query_scalar(
+			&Query::select()
+				.column(Alias::new("workspace_id"))
+				.from(Alias::new("tasks"))
+				.and_where(SimpleExpr::CustomWithExpr(
+					"(id=?)".to_owned(),
+					vec![Expr::value(query_bind_1.to_owned()).into()],
+				))
+				.to_string(PostgresQueryBuilder),
+		)
+		.fetch_one(f.store.pool.fixture_driver())
+		.await
+	}
+	.unwrap();
+	for index in 0..6 {
+		event(
+			&f,
+			Some(workspace),
+			"workspace.updated",
+			json!({}),
+			60 - index,
+		)
+		.await;
+	}
+	let before = event_decisions(&f).await;
+	let (status, page) = project(&app, &source, subject.clone(), json!({})).await;
+	assert_eq!(status, 200, "{page}");
+	assert_eq!(event_decisions(&f).await - before, 1);
+	let activity = page["activity"].as_array().unwrap();
+	assert!(activity.len() >= 6);
+	assert_eq!(activity[0]["kind"], "workspace.updated");
+	let updates: Vec<_> = activity
+		.iter()
+		.filter(|item| item["kind"] == "workspace.updated")
+		.collect();
+	assert!(
+		updates
+			.windows(2)
+			.all(|pair| { pair[0]["at"].as_str().unwrap() >= pair[1]["at"].as_str().unwrap() })
+	);
+	policy["policies"].as_array_mut().unwrap().push(json!({
+		"id":"deny-events","effect":"deny","subjects":{"ids":["alice"]},
+		"actions":["workspace.events"],"resources":{"kinds":["workspace"]},
+	}));
+	let (status, written) = request(
+		&app,
+		&f.config.api_token,
+		"POST",
+		"/api/authorization/acme",
+		json!({"expected_revision":1,"bundle":policy}),
+	)
+	.await;
+	assert_eq!(status, 200, "{written}");
+	let (status, page) = project(&app, &source, subject, json!({})).await;
+	assert_eq!(status, 200, "{page}");
+	assert!(!page["nodes"].as_array().unwrap().is_empty());
+	assert!(page["activity"].as_array().unwrap().is_empty());
+	cleanup(f, &url, &schema).await;
+}
+
+use reinhardt::query::QueryStatementBuilder as _;
+
+use reinhardt::query::SimpleExpr;

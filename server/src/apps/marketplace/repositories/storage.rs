@@ -1,0 +1,136 @@
+//! Document persistence within the caller's authorization transaction.
+use crate::{Error, Result};
+use reinhardt::query::{
+	Alias, Expr, ExprTrait, OnConflict, Order, PostgresQueryBuilder, Query, QueryStatementBuilder,
+};
+use serde::{Serialize, de::DeserializeOwned};
+use serde_json::Value;
+
+pub(crate) async fn get<T: DeserializeOwned>(
+	tx: &mut crate::database::native::Transaction,
+	table: &str,
+	key: &str,
+) -> Result<Option<T>> {
+	let value: Option<Value> = {
+		let query_bind_1 = key;
+		crate::database::native::query_scalar(
+			&Query::select()
+				.column(Alias::new("document"))
+				.from(Alias::new(table))
+				.and_where(
+					reinhardt::query::SimpleExpr::from(Expr::col(Alias::new("key"))).eq(
+						SimpleExpr::CustomWithExpr(
+							"(?)".to_owned(),
+							vec![Expr::value(query_bind_1.to_owned()).into()],
+						),
+					),
+				)
+				.to_string(PostgresQueryBuilder),
+		)
+		.scalar_optional(&mut **tx)
+		.await?
+	};
+	value
+		.map(serde_json::from_value)
+		.transpose()
+		.map_err(Into::into)
+}
+
+pub(crate) async fn documents_page<T: DeserializeOwned>(
+	tx: &mut crate::database::native::Transaction,
+	table: &str,
+	after: &str,
+	limit: u64,
+) -> Result<Vec<(String, T)>> {
+	let rows: Vec<(String, Value)> = crate::database::native::query_as(
+		&Query::select()
+			.columns([Alias::new("key"), Alias::new("document")])
+			.from(Alias::new(table))
+			.and_where(Expr::col(Alias::new("key")).gt(Expr::value(after)))
+			.order_by(Alias::new("key"), Order::Asc)
+			.limit(limit)
+			.to_string(PostgresQueryBuilder),
+	)
+	.columns(&["key", "document"])
+	.fetch_all(&mut **tx)
+	.await?;
+	rows.into_iter()
+		.map(|(key, value)| Ok((key, serde_json::from_value(value)?)))
+		.collect()
+}
+
+pub(crate) async fn put(
+	tx: &mut crate::database::native::Transaction,
+	table: &str,
+	key: &str,
+	value: &impl Serialize,
+) -> Result<()> {
+	if table == "marketplace_installations" {
+		let updated = {
+			let query_bind_1 = key;
+			let query_bind_2 = serde_json::to_value(value)?;
+			crate::database::native::query(
+				&Query::update()
+					.table(Alias::new(table))
+					.value_expr(
+						Alias::new("document"),
+						SimpleExpr::CustomWithExpr(
+							"(?)".to_owned(),
+							vec![Expr::value(query_bind_2.to_owned()).into()],
+						),
+					)
+					.and_where(SimpleExpr::CustomWithExpr(
+						"(key=?)".to_owned(),
+						vec![Expr::value(query_bind_1.to_owned()).into()],
+					))
+					.to_string(PostgresQueryBuilder),
+			)
+			.execute(&mut **tx)
+			.await?
+		};
+		if updated.rows_affected() != 1 {
+			return Err(Error::Forbidden);
+		}
+		return Ok(());
+	}
+	{
+		let query_bind_1 = key;
+		let query_bind_2 = serde_json::to_value(value)?;
+		let tenant_owned = table == "marketplace_requests";
+		let mut columns = vec![Alias::new("key"), Alias::new("document")];
+		let mut row = Query::select();
+		row.expr(SimpleExpr::CustomWithExpr(
+			"(?)".to_owned(),
+			vec![Expr::value(query_bind_1.to_owned()).into()],
+		))
+		.expr(SimpleExpr::CustomWithExpr(
+			"(?)".to_owned(),
+			vec![Expr::value(query_bind_2.to_owned()).into()],
+		));
+		if tenant_owned {
+			columns.push(Alias::new("tenant"));
+			row.expr(crate::database::scope::tenant());
+		}
+		crate::database::native::query(
+			&Query::insert()
+				.into_table(Alias::new(table))
+				.columns(columns)
+				.from_subquery(row)
+				.on_conflict(
+					OnConflict::columns(if tenant_owned {
+						vec![Alias::new("tenant"), Alias::new("key")]
+					} else {
+						vec![Alias::new("key")]
+					})
+					.update_columns([Alias::new("document")])
+					.to_owned(),
+				)
+				.to_string(PostgresQueryBuilder),
+		)
+		.execute(&mut **tx)
+		.await?
+	};
+	Ok(())
+}
+
+use reinhardt::query::SimpleExpr;

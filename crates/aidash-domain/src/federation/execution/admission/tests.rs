@@ -1,0 +1,196 @@
+use super::*;
+use rstest::{fixture, rstest};
+use serde_json::json;
+
+#[fixture]
+fn binding() -> (Record, ExecutionPrincipal, Description) {
+	let task = crate::Task {
+		id: Uuid::from_u128(1),
+		workspace_id: Uuid::from_u128(2),
+		title: "Task".into(),
+		description: String::new(),
+		status: crate::TaskStatus::Open,
+		requirements: json!({}),
+		owner: None,
+		created_by: "source-subject".into(),
+		dependencies: vec![],
+		parent_id: None,
+		revision: 7,
+		created_at: Utc::now(),
+	};
+	let inspection = super::super::tests::inspection();
+	let description = Description {
+		grant_id: Uuid::from_u128(3),
+		source_node: "aidash://home".into(),
+		target_node: "aidash://receiver".into(),
+		source_tenant: "source-tenant".into(),
+		source_subject: "source-subject".into(),
+		task,
+		inspection,
+		expires_at: Utc::now(),
+		semantic: crate::semantic::remote::Binding::Disabled { summarizer: None },
+	};
+	let identity = ExecutionPrincipal {
+		tenant: "receiver-tenant".into(),
+		subject: "mapped".into(),
+		credential_id: Uuid::from_u128(4),
+	};
+	let record = Record {
+		id: Uuid::from_u128(5),
+		node: crate::nodes::NodeName::parse("calm-heron-ab12cd34").unwrap(),
+		source_node: description.source_node.clone(),
+		grant_id: description.grant_id,
+		task_id: description.task.id,
+		tenant: identity.tenant.clone(),
+		credential_id: identity.credential_id,
+		subject_chain: vec!["mapped".into(), "agent".into()],
+		description: serde_json::to_value(&description).unwrap(),
+	};
+	(record, identity, description)
+}
+
+#[rstest]
+fn identical_admission_retains_the_original_binding(
+	binding: (Record, ExecutionPrincipal, Description),
+) {
+	let (record, identity, description) = binding;
+	assert!(
+		record
+			.matches(&identity, &["mapped".into(), "agent".into()], &description)
+			.unwrap()
+	);
+	assert_eq!(record.view(&description).id, record.id);
+	assert_eq!(record.view(&description).expires_at, description.expires_at);
+}
+
+#[rstest]
+#[case(0)]
+#[case(1)]
+#[case(2)]
+#[case(3)]
+#[case(4)]
+#[case(5)]
+#[case(6)]
+fn a_replayed_id_cannot_change_authority(
+	binding: (Record, ExecutionPrincipal, Description),
+	#[case] field: usize,
+) {
+	let (mut record, identity, description) = binding;
+	match field {
+		0 => record.source_node = "aidash://other".into(),
+		1 => record.grant_id = Uuid::from_u128(99),
+		2 => record.task_id = Uuid::from_u128(99),
+		3 => record.tenant = "other".into(),
+		4 => record.credential_id = Uuid::from_u128(99),
+		5 => record.subject_chain.reverse(),
+		6 => record.description["inspection"]["authority_digest"] = json!("changed"),
+		_ => panic!("unknown binding mutation"),
+	}
+	assert!(
+		!record
+			.matches(&identity, &["mapped".into(), "agent".into()], &description)
+			.unwrap()
+	);
+}
+
+#[rstest]
+#[case(RemoteExecutionControl::Pause, "pause")]
+#[case(RemoteExecutionControl::Resume, "resume")]
+#[case(RemoteExecutionControl::Cancel, "cancel")]
+fn peer_controls_keep_the_wire_spelling(
+	#[case] action: RemoteExecutionControl,
+	#[case] expected: &str,
+) {
+	assert_eq!(serde_json::to_value(action).unwrap(), json!(expected));
+}
+
+#[rstest]
+fn peer_phase_and_inactive_control_keep_the_protocol_spelling() {
+	assert_eq!(
+		serde_json::to_value(RemoteExecutionPhase::from(crate::RunPhase::ToolCall)).unwrap(),
+		json!("TOOL_CALL")
+	);
+	assert_eq!(
+		serde_json::to_value(RemoteExecutionControlState::Inactive).unwrap(),
+		json!("INACTIVE")
+	);
+}
+
+#[rstest]
+fn activation_carries_a_context_pause_reason_only_when_present() {
+	let mut activation = Activation {
+		grant_id: Uuid::from_u128(1),
+		admission_id: Uuid::from_u128(2),
+		run_id: Uuid::from_u128(2),
+		phase: RemoteExecutionPhase::Thinking,
+		control: RemoteExecutionControlState::Paused,
+		error: None,
+		semantic_reason: None,
+		context_reason: None,
+	};
+	// Peers without the field keep their exact wire shape.
+	let legacy = serde_json::to_value(&activation).unwrap();
+	assert!(legacy.get("context_reason").is_none());
+	assert!(
+		serde_json::from_value::<Activation>(legacy)
+			.unwrap()
+			.context_reason
+			.is_none()
+	);
+	activation.context_reason = Some(crate::context::recovery::Failure::SummaryInvalid);
+	let paused = serde_json::to_value(&activation).unwrap();
+	assert_eq!(paused["context_reason"], json!("summary_invalid"));
+	assert_eq!(
+		serde_json::from_value::<Activation>(paused)
+			.unwrap()
+			.context_reason,
+		Some(crate::context::recovery::Failure::SummaryInvalid)
+	);
+}
+
+#[rstest]
+fn activation_preserves_a_specific_budget_cause_without_stranding_older_peers() {
+	let mut wire = json!({
+		"grant_id":Uuid::from_u128(1),"admission_id":Uuid::from_u128(2),
+		"run_id":Uuid::from_u128(2),"phase":"THINKING","control":"PAUSED",
+		"error":null,"semantic_reason":"durable_memory_budget"
+	});
+	let activation: Activation = serde_json::from_value(wire.clone()).unwrap();
+	wire = serde_json::to_value(activation).unwrap();
+	assert_eq!(wire["semantic_reason"], "context_budget");
+	assert_eq!(wire["semantic_cause"], "durable_memory_budget");
+	let schema = serde_json::to_value(schemars::schema_for!(Activation)).unwrap();
+	assert!(jsonschema::is_valid(&schema, &wire));
+	assert_eq!(
+		serde_json::from_value::<Activation>(wire.clone())
+			.unwrap()
+			.semantic_reason,
+		Some(Failure::DurableMemoryBudget)
+	);
+	// Older peers consume the established reason and ignore the added field.
+	#[derive(Deserialize)]
+	struct OlderActivation {
+		semantic_reason: Failure,
+	}
+	assert_eq!(
+		serde_json::from_value::<OlderActivation>(wire.clone())
+			.unwrap()
+			.semantic_reason,
+		Failure::ContextBudget
+	);
+	// A future cause still leaves the compatible, follow-up-only reason intact.
+	wire["semantic_cause"] = json!("future_budget_cause");
+	assert_eq!(
+		serde_json::from_value::<Activation>(wire.clone())
+			.unwrap()
+			.semantic_reason,
+		Some(Failure::ContextBudget)
+	);
+	wire.as_object_mut().unwrap().remove("semantic_cause");
+	assert_eq!(
+		serde_json::from_value::<Activation>(wire)
+			.unwrap()
+			.semantic_reason,
+		Some(Failure::ContextBudget)
+	);
+}

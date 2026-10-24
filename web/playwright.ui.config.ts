@@ -1,0 +1,57 @@
+import { defineConfig } from "@playwright/test";
+const port = Number(process.env.AIDASH_UI_PORT ?? 18082);
+if (!Number.isInteger(port) || port < 1 || port > 65535)
+  throw new Error("AIDASH_UI_PORT must be a TCP port");
+const baseURL = `http://127.0.0.1:${port}`;
+const dist = process.env.AIDASH_UI_DIST ?? "dist";
+export default defineConfig({
+  testDir: "./tests",
+  testMatch: [
+    "precision-light.spec.ts",
+    "notifications.spec.ts",
+    "marketplace.spec.ts",
+    "transaction-authority.spec.ts",
+    "google-auth.spec.ts",
+    "collaboration.spec.ts",
+    "inference-progress.spec.ts",
+    "core-capabilities.spec.ts",
+    "web-research.spec.ts",
+    "research-evidence-governance.spec.ts",
+    "mesh-graph.spec.ts",
+    "federated-graph.spec.ts",
+    "agent-graph.spec.ts",
+    "agent-skills.spec.ts",
+    "entity-configuration.spec.ts",
+    "native-memory.spec.ts",
+    "registry-labels.spec.ts",
+    "duplicate-labels.spec.ts",
+    "openrouter.spec.ts",
+    "generation-validation.spec.ts",
+    "workbench.spec.ts",
+    "provider-credentials.spec.ts",
+    "tenant-administration.spec.ts",
+    "tenancy.spec.ts",
+    "keyless-approval.spec.ts",
+    "catalog-approval.spec.ts",
+    "agent-plugins.spec.ts",
+    "citations.spec.ts",
+    "community-sign-in.spec.ts",
+    "nodes.spec.ts",
+    "approval-modes.spec.ts",
+  ],
+  workers: 1,
+  retries: 0,
+  timeout: 30000,
+  use: {
+    baseURL,
+    viewport: { width: 1440, height: 1000 },
+    launchOptions: { executablePath: process.env.AIDASH_CHROMIUM_EXECUTABLE },
+    trace: "retain-on-failure",
+  },
+  webServer: {
+    command: `node node_modules/vite/bin/vite.js preview --host 127.0.0.1 --port ${port} --strictPort --outDir ${dist}`,
+    url: baseURL,
+    reuseExistingServer: false,
+  },
+  reporter: "list",
+});

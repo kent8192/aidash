@@ -1,0 +1,567 @@
+import { Button } from "./components/ui/button";
+import { Input } from "./components/ui/input";
+import { NativeSelect } from "./components/ui/native-select";
+import { Textarea } from "./components/ui/textarea";
+import { useContext, useState, useRef, useEffect } from "react";
+import type {
+  TransactionManifest,
+  TransactionMutation,
+  TransactionParticipant,
+} from "./generated/models";
+import { DisplayState, ReferenceName } from "./record-view";
+import { disambiguateLabels } from "./display-labels";
+import { parseNodeAddress, registryDeployment } from "./node-selection";
+import { Field, useI18n } from "./ui";
+import { Group, Hint } from "./components/patterns";
+
+function clearResource(mutation: TransactionMutation): TransactionMutation {
+  switch (mutation.kind) {
+    case "workspace_state":
+      return { ...mutation, workspace_id: "", expected_revision: 0 };
+    case "complete_task":
+      return { ...mutation, task_id: "", expected_revision: 0 };
+    case "finish_run":
+      return { ...mutation, run_id: "", task_id: "", expected_revision: 0 };
+  }
+}
+
+export function TransactionComposer({
+  value,
+  change,
+  deploymentAdministrator = true,
+}: {
+  deploymentAdministrator?: boolean;
+  value: TransactionManifest;
+  change: (value: TransactionManifest) => void;
+}) {
+  const data = useContext(DisplayState);
+  // A manifest names one exact Node per Deployment. An administrator chooses
+  // a local Node; a subject uses the Node selected in the dashboard.
+  const local = value.coordinator;
+  const localNode = parseNodeAddress(local)?.node;
+  const workspaces =
+    data?.workspaces.filter((workspace) => workspace.node === localNode) ?? [];
+  const workspaceIds = new Set(workspaces.map((workspace) => workspace.id));
+  const tasks =
+    data?.tasks.filter((task) => workspaceIds.has(task.workspace_id)) ?? [];
+  const runs =
+    data?.runs.filter(
+      (run) => workspaceIds.has(run.workspace_id) && run.home_node === local,
+    ) ?? [];
+  const { t } = useI18n();
+  const workspaceLabels = disambiguateLabels(
+    workspaces,
+    (workspace) => workspace.id,
+    (workspace) => workspace.title,
+  );
+  const taskLabels = disambiguateLabels(
+    tasks,
+    (task) => task.id,
+    (task) =>
+      `${workspaceLabels.get(task.workspace_id) ?? t("unavailableEntity")} / ${task.title}`,
+  );
+  const runLabels = disambiguateLabels(
+    runs,
+    (run) => run.id,
+    (run) =>
+      `${taskLabels.get(run.task_id) ?? t("unavailableEntity")} · ${t(run.phase)}`,
+  );
+  const update = (index: number, participant: TransactionParticipant) =>
+    change({
+      ...value,
+      participants: value.participants.map((old, i) =>
+        i === index ? participant : old,
+      ),
+    });
+  const nodes = deploymentAdministrator
+    ? [
+        ...new Set(
+          data?.workspaces.map(
+            (workspace) => `${registryDeployment(data)}/${workspace.node}`,
+          ),
+        ),
+      ]
+    : [local];
+  return (
+    <>
+      <Field label={t("transactionDeadline")}>
+        <Input
+          type="datetime-local"
+          className="font-mono tabular"
+          required
+          value={new Date(
+            Date.parse(value.deadline) -
+              new Date(value.deadline).getTimezoneOffset() * 60000,
+          )
+            .toISOString()
+            .slice(0, 19)}
+          onChange={(event) => {
+            if (event.target.value)
+              change({
+                ...value,
+                deadline: new Date(event.target.value).toISOString(),
+              });
+          }}
+        />
+      </Field>
+      {value.participants.map((participant, index) => (
+        <Group
+          key={index}
+          legend={`${t("transactionParticipant")} ${index + 1}`}
+        >
+          <Field label={t("node")}>
+            {!deploymentAdministrator && index > 0 ? (
+              <Input
+                required
+                placeholder="aidash://remote-deployment/node"
+                value={participant.node_id}
+                onChange={(event) =>
+                  update(index, {
+                    ...participant,
+                    node_id: event.target.value,
+                    mutations: participant.mutations.map(clearResource),
+                  })
+                }
+              />
+            ) : (
+              <NativeSelect
+                required
+                disabled={
+                  !deploymentAdministrator &&
+                  participant.node_id === value.coordinator
+                }
+                value={participant.node_id}
+                onChange={(event) => {
+                  const next = {
+                    ...participant,
+                    node_id: event.target.value,
+                    mutations: participant.mutations.map(clearResource),
+                  };
+                  if (deploymentAdministrator)
+                    change({
+                      ...value,
+                      coordinator: next.node_id,
+                      participants: [next],
+                    });
+                  else update(index, next);
+                }}
+              >
+                <option value="">{t("choose")}</option>
+                {nodes
+                  .filter(
+                    (node) =>
+                      node === participant.node_id ||
+                      !value.participants.some(
+                        (other) => other.node_id === node,
+                      ),
+                  )
+                  .map((node) => (
+                    <option key={node} value={node}>
+                      {deploymentAdministrator ? (
+                        parseNodeAddress(node)?.node
+                      ) : (
+                        <ReferenceName id={node} />
+                      )}
+                    </option>
+                  ))}
+              </NativeSelect>
+            )}
+          </Field>
+          {participant.node_id !== local && (
+            <Hint>{t("transactionRemoteReferenceHelp")}</Hint>
+          )}
+          {participant.mutations.map((mutation, mutationIndex) => {
+            const setMutation = (next: TransactionMutation) =>
+              update(index, {
+                ...participant,
+                mutations: participant.mutations.map((old, i) =>
+                  i === mutationIndex ? next : old,
+                ),
+              });
+            return (
+              <Group
+                key={mutationIndex}
+                nested
+                legend={`${t("transactionOperation")} ${mutationIndex + 1}`}
+              >
+                <Field label={t("transactionOperation")}>
+                  <NativeSelect
+                    value={mutation.kind}
+                    onChange={(event) => {
+                      const kind = event.target.value;
+                      if (kind === "workspace_state")
+                        setMutation({
+                          kind,
+                          workspace_id: "",
+                          expected_revision: 0,
+                          state: {},
+                        });
+                      else if (kind === "complete_task")
+                        setMutation({
+                          kind,
+                          task_id: "",
+                          expected_revision: 0,
+                          artifact: { name: "", kind: "text", content: "" },
+                        });
+                      else if (kind === "finish_run")
+                        setMutation({
+                          kind,
+                          run_id: "",
+                          task_id: "",
+                          expected_revision: 0,
+                        });
+                    }}
+                  >
+                    {["workspace_state", "complete_task", "finish_run"].map(
+                      (kind) => (
+                        <option key={kind} value={kind}>
+                          {t(`transactionOperation_${kind}`)}
+                        </option>
+                      ),
+                    )}
+                  </NativeSelect>
+                </Field>
+                {mutation.kind === "workspace_state" && (
+                  <>
+                    <Field label={t("workspace")}>
+                      {participant.node_id === local ? (
+                        <NativeSelect
+                          required
+                          value={mutation.workspace_id}
+                          onChange={(event) =>
+                            setMutation({
+                              ...mutation,
+                              workspace_id: event.target.value,
+                              expected_revision:
+                                workspaces.find(
+                                  (workspace) =>
+                                    workspace.id === event.target.value,
+                                )?.revision ?? 0,
+                            })
+                          }
+                        >
+                          <option value="">{t("choose")}</option>
+                          {workspaces.map((workspace) => (
+                            <option key={workspace.id} value={workspace.id}>
+                              {workspaceLabels.get(workspace.id)}
+                            </option>
+                          ))}
+                        </NativeSelect>
+                      ) : (
+                        <Input
+                          required
+                          value={mutation.workspace_id}
+                          onChange={(event) =>
+                            setMutation({
+                              ...mutation,
+                              workspace_id: event.target.value,
+                              expected_revision: 0,
+                            })
+                          }
+                        />
+                      )}
+                    </Field>
+                    <JsonInput
+                      objectOnly
+                      label={t("transactionState")}
+                      value={mutation.state}
+                      change={(state) => setMutation({ ...mutation, state })}
+                    />
+                  </>
+                )}
+                {mutation.kind === "complete_task" && (
+                  <>
+                    <Field label={t("task")}>
+                      {participant.node_id === local ? (
+                        <NativeSelect
+                          required
+                          value={mutation.task_id}
+                          onChange={(event) =>
+                            setMutation({
+                              ...mutation,
+                              task_id: event.target.value,
+                              expected_revision:
+                                tasks.find(
+                                  (task) => task.id === event.target.value,
+                                )?.revision ?? 0,
+                            })
+                          }
+                        >
+                          <option value="">{t("choose")}</option>
+                          {tasks.map((task) => (
+                            <option key={task.id} value={task.id}>
+                              {taskLabels.get(task.id)}
+                            </option>
+                          ))}
+                        </NativeSelect>
+                      ) : (
+                        <Input
+                          required
+                          value={mutation.task_id}
+                          onChange={(event) =>
+                            setMutation({
+                              ...mutation,
+                              task_id: event.target.value,
+                              expected_revision: 0,
+                            })
+                          }
+                        />
+                      )}
+                    </Field>
+                    <Field label={t("name")}>
+                      <Input
+                        required
+                        value={mutation.artifact.name}
+                        onChange={(event) =>
+                          setMutation({
+                            ...mutation,
+                            artifact: {
+                              ...mutation.artifact,
+                              name: event.target.value,
+                            },
+                          })
+                        }
+                      />
+                    </Field>
+                    <Field label={t("kind")}>
+                      <Input
+                        required
+                        value={mutation.artifact.kind}
+                        onChange={(event) =>
+                          setMutation({
+                            ...mutation,
+                            artifact: {
+                              ...mutation.artifact,
+                              kind: event.target.value,
+                            },
+                          })
+                        }
+                      />
+                    </Field>
+                    <JsonInput
+                      label={t("artifact")}
+                      value={mutation.artifact.content}
+                      change={(content) =>
+                        setMutation({
+                          ...mutation,
+                          artifact: { ...mutation.artifact, content },
+                        })
+                      }
+                    />
+                  </>
+                )}
+                {mutation.kind === "finish_run" && (
+                  <>
+                    <Field label={t("execution")}>
+                      {participant.node_id === local ? (
+                        <NativeSelect
+                          required
+                          value={mutation.run_id}
+                          onChange={(event) => {
+                            const run = runs.find(
+                              (run) => run.id === event.target.value,
+                            );
+                            if (run)
+                              setMutation({
+                                ...mutation,
+                                run_id: run.id,
+                                task_id: run.task_id,
+                                expected_revision: run.revision,
+                              });
+                          }}
+                        >
+                          <option value="">{t("choose")}</option>
+                          {runs.map((run) => (
+                            <option key={run.id} value={run.id}>
+                              {runLabels.get(run.id)}
+                            </option>
+                          ))}
+                        </NativeSelect>
+                      ) : (
+                        <Input
+                          required
+                          value={mutation.run_id}
+                          onChange={(event) =>
+                            setMutation({
+                              ...mutation,
+                              run_id: event.target.value,
+                              expected_revision: 0,
+                            })
+                          }
+                        />
+                      )}
+                    </Field>
+                    {participant.node_id !== local && (
+                      <Field label={t("task")}>
+                        <Input
+                          required
+                          value={mutation.task_id}
+                          onChange={(event) =>
+                            setMutation({
+                              ...mutation,
+                              task_id: event.target.value,
+                              expected_revision: 0,
+                            })
+                          }
+                        />
+                      </Field>
+                    )}
+                  </>
+                )}
+                <Field label={t("revision")}>
+                  <Input
+                    type="number"
+                    required
+                    min={0}
+                    value={mutation.expected_revision}
+                    onChange={(event) =>
+                      setMutation({
+                        ...mutation,
+                        expected_revision: Number(event.target.value),
+                      })
+                    }
+                  />
+                </Field>
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  className="justify-self-start hover:text-destructive"
+                  type="button"
+                  onClick={() =>
+                    update(index, {
+                      ...participant,
+                      mutations: participant.mutations.filter(
+                        (_, i) => i !== mutationIndex,
+                      ),
+                    })
+                  }
+                >
+                  {t("delete")}
+                </Button>
+              </Group>
+            );
+          })}
+          <div className="flex flex-wrap gap-2">
+            <Button
+              variant="outline"
+              size="sm"
+              type="button"
+              onClick={() =>
+                update(index, {
+                  ...participant,
+                  mutations: [
+                    ...participant.mutations,
+                    {
+                      kind: "workspace_state",
+                      workspace_id: "",
+                      expected_revision: 0,
+                      state: {},
+                    },
+                  ],
+                })
+              }
+            >
+              {t("transactionAddOperation")}
+            </Button>
+            <Button
+              variant="ghost"
+              size="sm"
+              className="hover:text-destructive"
+              type="button"
+              disabled={
+                value.participants.length === 1 ||
+                participant.node_id === value.coordinator
+              }
+              onClick={() =>
+                change({
+                  ...value,
+                  participants: value.participants.filter(
+                    (_, i) => i !== index,
+                  ),
+                })
+              }
+            >
+              {t("delete")}
+            </Button>
+          </div>
+        </Group>
+      ))}
+      <Button
+        variant="outline"
+        size="sm"
+        className="justify-self-start"
+        type="button"
+        disabled={deploymentAdministrator || value.participants.length >= 16}
+        onClick={() =>
+          change({
+            ...value,
+            participants: [
+              ...value.participants,
+              {
+                node_id:
+                  nodes.find(
+                    (node) =>
+                      !value.participants.some(
+                        (participant) => participant.node_id === node,
+                      ),
+                  ) ?? "",
+                mutations: [],
+              },
+            ],
+          })
+        }
+      >
+        {t("transactionAddParticipant")}
+      </Button>
+    </>
+  );
+}
+function JsonInput({
+  value,
+  change,
+  label,
+  objectOnly = false,
+}: {
+  value: unknown;
+  change: (value: unknown) => void;
+  label: string;
+  objectOnly?: boolean;
+}) {
+  const [draft, setDraft] = useState(JSON.stringify(value, null, 2));
+  const { t } = useI18n();
+  const committed = useRef(value);
+  const input = useRef<HTMLTextAreaElement>(null);
+  useEffect(() => {
+    if (value !== committed.current) {
+      committed.current = value;
+      input.current?.setCustomValidity("");
+      setDraft(JSON.stringify(value, null, 2));
+    }
+  }, [value]);
+  return (
+    <Field label={label}>
+      <Textarea
+        ref={input}
+        className="min-h-20 font-mono text-xs"
+        required
+        value={draft}
+        onChange={(event) => {
+          setDraft(event.target.value);
+          try {
+            const parsed: unknown = JSON.parse(event.target.value);
+            if (
+              objectOnly &&
+              (!parsed || typeof parsed !== "object" || Array.isArray(parsed))
+            )
+              throw new Error("object required");
+            event.target.setCustomValidity("");
+            committed.current = parsed;
+            change(parsed);
+          } catch {
+            event.target.setCustomValidity(t("jsonHint"));
+          }
+        }}
+      />
+    </Field>
+  );
+}

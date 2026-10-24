@@ -1,0 +1,184 @@
+# Frozen labels for contract evaluation; these do not approve a production model.
+version = "native-memory-labels-v1"
+
+[[cases]]
+id = "english-preference-negation-failure-date"
+language = "en-US"
+text = "On 2024-01-04, Aiko said she prefers rail travel. Aiko does not travel by car. The rollback check failed on 2024-01-04; it did not prove the release safe. Heavy rain caused the train delay."
+query = "What transportation does Aiko favor, and what happened to the verification?"
+
+[[cases.labels]]
+id = "rail-preference"
+patterns = [
+  "(?i)(Aiko|愛子)",
+  "(?i)(rail|train|鉄道|電車)",
+  "(?i)(prefer|favor|好き|好む|選好)",
+]
+kind = "world"
+learning = "preference"
+
+[[cases.labels]]
+id = "car-negation"
+patterns = [
+  "(?i)(Aiko|愛子)",
+  "(?i)(car|自動車|車)",
+  "(?i)(not|never|no |ない|しない|ません)",
+]
+kind = "world"
+learning = "fact"
+
+[[cases.labels]]
+id = "failed-check"
+patterns = ["(?i)(rollback|ロールバック)", "(?i)(fail|失敗)"]
+forbidden = ["(?i)(check succeeded|verification passed|検証に成功|検証は成功)"]
+kind = "experience"
+learning = "failure"
+
+[[cases.labels]]
+id = "weather-cause"
+patterns = ["(?i)(rain|雨)", "(?i)(delay|遅延|遅れ)"]
+kind = "world"
+learning = "fact"
+
+[[cases]]
+id = "japanese-preference-negation-failure-date"
+language = "ja-JP"
+text = "2024年1月4日、愛子（Aiko）は鉄道での旅行を好むと話した。愛子は車で旅行しない。2024年1月4日のロールバック検証は失敗し、リリースの安全性を証明しなかった。大雨が列車の遅延を引き起こした。"
+query = "愛子の移動手段の好みと、検証の結果を教えてください。"
+
+[[cases.labels]]
+id = "rail-preference"
+patterns = [
+  "(?i)(Aiko|愛子)",
+  "(?i)(rail|train|鉄道|電車)",
+  "(?i)(prefer|favor|好き|好む|選好)",
+]
+kind = "world"
+learning = "preference"
+
+[[cases.labels]]
+id = "car-negation"
+patterns = [
+  "(?i)(Aiko|愛子)",
+  "(?i)(car|自動車|車)",
+  "(?i)(not|never|no |ない|しない|ません)",
+]
+kind = "world"
+learning = "fact"
+
+[[cases.labels]]
+id = "failed-check"
+patterns = ["(?i)(rollback|ロールバック)", "(?i)(fail|失敗)"]
+forbidden = ["(?i)(check succeeded|verification passed|検証に成功|検証は成功)"]
+kind = "experience"
+learning = "failure"
+
+[[cases.labels]]
+id = "weather-cause"
+patterns = ["(?i)(rain|雨)", "(?i)(delay|遅延|遅れ)"]
+kind = "world"
+learning = "fact"
+
+# Deterministic paired ranking fixture; never invokes a model or shares learned state.
+[[decay_cases]]
+id = "stale-relevant-versus-recent-noisy"
+as_of = "2026-01-01T00:00:00Z"
+activated_at = "2024-01-01T00:00:00Z"
+half_life_days = 30
+prior_floor_millionths = 100000
+semantic = [1]
+keyword = [2, 1]
+expected_without_decay = [1, 2]
+expected_with_decay = [1, 2]
+
+[[decay_cases.units]]
+id = 1
+learned_at = "2024-01-01T00:00:00Z"
+last_delivered_at = "2025-12-01T00:00:00Z"
+deliveries = 24
+pinned = false
+
+[[decay_cases.units]]
+id = 2
+learned_at = "2025-12-31T00:00:00Z"
+deliveries = 0
+pinned = false
+
+# Deterministic paired near-duplicate fixture (#139). Both variants use identical
+# authority, candidates, relevance scores and vectors; only the policy's
+# `diversity_lambda_millionths` differs. The delivery budget fits exactly two
+# Units, so three paraphrases of one fact cannot also leave room for the distinct
+# fact unless recall diversifies. No model or credential is involved.
+[[diversity_cases]]
+id = "english-near-duplicate-employer"
+language = "en-US"
+query = "Where does Aiko work and who is the manager?"
+lambda_millionths = 700000
+labels = ["employer", "manager"]
+expected_useful_recall_without = 0.5
+expected_useful_recall_with = 1.0
+
+[[diversity_cases.units]]
+id = 1
+text = "Aiko works at the Tokyo office."
+label = "employer"
+score = 1.0
+vector = [1.0, 0.02]
+
+[[diversity_cases.units]]
+id = 2
+text = "Aiko is employed at the Tokyo office."
+label = "employer"
+score = 0.95
+vector = [0.99, 0.03]
+
+[[diversity_cases.units]]
+id = 3
+text = "The Tokyo office is where Aiko works."
+label = "employer"
+score = 0.9
+vector = [0.98, 0.04]
+
+[[diversity_cases.units]]
+id = 4
+text = "Aiko's manager is Ren."
+label = "manager"
+score = 0.8
+vector = [0.05, 1.0]
+
+[[diversity_cases]]
+id = "japanese-near-duplicate-employer"
+language = "ja-JP"
+query = "愛子はどこで働いていて、上司は誰ですか。"
+lambda_millionths = 700000
+labels = ["employer", "manager"]
+expected_useful_recall_without = 0.5
+expected_useful_recall_with = 1.0
+
+[[diversity_cases.units]]
+id = 1
+text = "愛子は東京オフィスで働いている。"
+label = "employer"
+score = 1.0
+vector = [1.0, 0.02]
+
+[[diversity_cases.units]]
+id = 2
+text = "愛子は東京オフィスに勤務している。"
+label = "employer"
+score = 0.95
+vector = [0.99, 0.03]
+
+[[diversity_cases.units]]
+id = 3
+text = "東京オフィスが愛子の職場である。"
+label = "employer"
+score = 0.9
+vector = [0.98, 0.04]
+
+[[diversity_cases.units]]
+id = 4
+text = "愛子の上司は蓮である。"
+label = "manager"
+score = 0.8
+vector = [0.05, 1.0]

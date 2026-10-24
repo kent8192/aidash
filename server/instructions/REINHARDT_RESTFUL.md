@@ -1,0 +1,130 @@
+# Reinhardt RESTful Guidance
+
+## Project shape
+
+Keep the generated entry points stable:
+
+- `src/bin/manage.rs` is the native management CLI and development server
+  entry point.
+- `src/lib.rs` re-exports shared project items.
+- `src/apps.rs` declares application modules.
+- `src/config/apps.rs` owns the installed-app registry.
+- `src/config/urls.rs` aggregates the project `UnifiedRouter`.
+- `src/config/settings.rs` composes typed settings.
+- An app's `models` and `repositories` own persistence adapters; `serializers`,
+  `services`, `views`, and `urls` adapt its API surface to application use cases.
+
+## Adding apps
+
+Use the RESTful scaffold so module declarations and app registration stay in
+sync:
+
+```bash
+cargo run --bin manage startapp users
+```
+
+The command adds the app module under `src/apps/`, registers its
+`#[app_config]`, and creates the app-local route aggregate. Keep handlers,
+serializers, models, and services in that owning app rather than flattening
+them into `src/config/`.
+
+## Feature boundaries
+
+Use this extraction test before implementing a feature: "Could this feature be
+extracted and moved to another project?" If the answer is no, reduce coupling
+until the feature can live inside an app created with `startapp`.
+
+- Keep feature-owned models, serializers, services, views, and routes inside
+  that app.
+- Keep `src/config/` limited to project-wide settings and route composition.
+- Connect apps through explicit serializable DTOs and framework contracts; do
+  not reach into another app's private modules, models, or service state.
+- Keep business models and rules in `aidash-domain`, use cases and authorization
+  in `aidash-application`, supervision in `aidash-runtime`, and external transports
+  in `aidash-integrations`. App services convert input/output and call use cases.
+- Implement application ports in app repositories and inject concrete adapters in
+  `src/bootstrap.rs`. HTTP and worker processes share the same authorization and
+  transaction implementations.
+
+## Route aggregation
+
+The project router mounts each app's `UnifiedRouter` aggregate with
+`mount_unified` under a literal prefix. Aidash endpoints already contain their
+public `/api/`, `/auth/`, and `/federation/v0.1/` prefixes, so the root mounts at
+`/` without changing those paths:
+
+```rust,ignore
+#[routes]
+pub fn routes() -> UnifiedRouter {
+    UnifiedRouter::new().mount_unified(
+        "/",
+        crate::apps::users::urls::url_patterns(),
+    )
+}
+```
+
+The app aggregate owns endpoint ordering and registration:
+
+```rust,ignore
+pub fn url_patterns() -> UnifiedRouter {
+    UnifiedRouter::new().server(|server| {
+        server
+            .endpoint(views::list)
+            .endpoint(views::create)
+            .endpoint(views::retrieve)
+    })
+}
+```
+
+Configure `with_route_middleware` on the native `server` builder immediately
+after its endpoint. `mount_unified` retains each child's route configuration
+and deferred dependency registrations. Only the project root carries `#[routes]`
+and registers the management CLI's route factory. Native app builders use ordinary
+Rust functions; the `#[url_patterns]` attribute is for target-dependent shared
+builders and requires the calling crate's `cfg(server)`.
+
+Register literal paths such as `/config/` before a dynamic `/{id}/` path when
+both can match the same request shape.
+
+## API contracts
+
+- Keep request and response DTOs serializable, explicit, and versionable.
+- Use endpoint macros for method metadata, stable names, and validation.
+- Return explicit status codes and structured JSON error bodies.
+- Use `pre_validate = true` for compatible extractors and manual validation
+  for mixed primitive/validated extractor signatures.
+- Keep OpenAPI or contract changes synchronized with the endpoint behavior.
+
+## Models, services, and dependency injection
+
+- Build persisted models with the generated `Model::build()` typestate builder.
+- Keep reusable business logic in `services`; handlers should coordinate
+  extraction, authorization, service calls, and response mapping.
+- Resolve `DatabaseConnection`, `Depends<T>`, and keyed dependencies through
+  `#[inject]`; do not create parallel pools or service containers in views.
+- Use `CurrentUser<U>` and `guard!()` at the endpoint boundary for authn/authz.
+- Keep database and filesystem work in native code paths.
+
+## Settings and secrets
+
+Compose typed settings from `settings/base.toml`, the selected profile, and
+`REINHARDT_` environment overrides. Keep shared defaults in the tracked
+`settings/*.example.toml` files; generated `settings/*.toml` files are ignored
+because they can contain local credentials. Update the examples and Rust
+settings fragment together when the settings shape changes.
+
+## Verification
+
+Run the narrowest relevant checks first, then the application checks:
+
+```bash
+cargo make fmt-check
+cargo make quality
+cargo run --bin manage check
+cargo run --bin manage showurls
+cargo make test
+```
+
+For API changes, add focused integration coverage for success, validation, and
+error status paths. Do not add skeleton tests; every test must assert behavior
+through a Reinhardt component and clean up its state.

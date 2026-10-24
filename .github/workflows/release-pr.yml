@@ -1,0 +1,36 @@
+name: Release PR
+on:
+  workflow_run:
+    workflows: [Release CI, GCP environments]
+    types: [completed]
+
+permissions:
+  contents: read
+
+# Serialize candidate replacement and staging acknowledgement. Queue every run:
+# the default single pending slot would let a staging run replace a pending CI
+# candidate run, and staging acknowledgement cannot create the missing PR.
+concurrency:
+  group: release-pr-${{ github.repository }}
+  cancel-in-progress: false
+  queue: max
+
+jobs:
+  release:
+    if: >-
+      vars.GCP_ENVIRONMENTS_ENABLED == 'true' &&
+      github.event.workflow_run.conclusion == 'success' &&
+      github.event.workflow_run.head_repository.full_name == github.repository &&
+      (github.event.workflow_run.name == 'GCP environments' ||
+       (github.event.workflow_run.name == 'Release CI' &&
+        github.event.workflow_run.event == 'push' &&
+        startsWith(github.event.workflow_run.head_branch, 'develop/')))
+    permissions:
+      contents: read
+      actions: read
+    uses: ./.github/workflows/release-pr-execute.yml
+    secrets:
+      # Register the full configuration with the runner's secret masker before
+      # any step can display its environment. It remains a managed public var.
+      AIDASH_GCP_CONFIG: ${{ vars.AIDASH_GCP_CONFIG }}
+      RELEASE_APP_PRIVATE_KEY: ${{ secrets.RELEASE_APP_PRIVATE_KEY }}

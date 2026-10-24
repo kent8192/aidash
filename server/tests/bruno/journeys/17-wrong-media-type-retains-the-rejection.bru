@@ -1,0 +1,36 @@
+meta {
+  name: Wrong media type retains the rejection
+  type: http
+  seq: 17
+}
+
+post {
+  url: {{base_url}}/api/workspaces
+  body: json
+  auth: none
+}
+
+headers {
+  Accept: application/json
+  Content-Type: text/plain
+  Authorization: Bearer {{owner_token}}
+}
+
+body:json {
+  {
+    "title": "Wrong media type",
+    "goal": "Should not persist"
+  }
+}
+
+tests {
+  test("HTTP 415", function () {
+    expect(res.getStatus()).to.equal(415);
+  });
+  test("JSON response contract", function () {
+    expect(res.getHeader("content-type")).to.include("application/json");
+    expect(res.getBody()).to.have.all.keys("error");
+    expect(res.getBody().error).to.be.a("string");
+
+  });
+}

@@ -1,0 +1,90 @@
+[package]
+name = "aidash-integrations"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+bytes = "1"
+hyper = { version = "1", features = ["server", "http1"] }
+hyper-util = { version = "0.1", features = ["tokio", "server", "http1"] }
+http-body-util = "0.1"
+secrecy = "0.10"
+aidash-application.workspace = true
+aidash-capability.workspace = true
+aidash-domain.workspace = true
+async-trait.workspace = true
+metrics = "0.24"
+tracing = "0.1"
+chrono.workspace = true
+serde.workspace = true
+serde_json = { workspace = true, features = ["raw_value"] }
+tokio.workspace = true
+uuid.workspace = true
+
+reqwest = { version = "0.13", default-features = false, features = [
+  "form",
+  "json",
+  "rustls",
+  "stream",
+] }
+encoding_rs = "0.8"
+# Pure-Rust PDF reading and rendering for Page reading (#312). It runs only in
+# a bounded child process, because it caps neither decompression nor time.
+hayro = "0.8"
+aidash-runtime.workspace = true
+
+async-nats = "0.46"
+futures-util.workspace = true
+percent-encoding = "2"
+url = "2"
+
+rmcp = { version = "=1.2.0", default-features = false, features = [
+  "client",
+  "transport-streamable-http-client-reqwest",
+  "reqwest",
+] }
+async-stream = "0.3"
+sse-stream = "0.2.6"
+
+base64 = "0.22"
+
+sha2 = "0.10"
+hmac = "0.12"
+
+# The Deployment Key file: PKCS#8 PEM, Ed25519 (ADR 0064).
+ed25519-dalek = { version = "2.2", features = [
+  "pkcs8",
+  "pem",
+  "zeroize",
+  "rand_core",
+] }
+pkcs8 = { version = "0.10", features = ["pem"] }
+rand_core = { version = "0.6", features = ["getrandom"] }
+
+jsonwebtoken = { version = "11.1", default-features = false, features = [
+  "aws_lc_rs",
+] }
+openidconnect = "4.0.1"
+
+[features]
+# Fake-provider constructors for tests (ADR 0006). Production dependencies never
+# enable it; see scripts/check-workspace-boundaries.py.
+test-support = []
+
+[dev-dependencies]
+# The live Token Encoding checks count requests (ADR 0017).
+aidash-domain = { workspace = true, features = ["token-encodings"] }
+jsonwebtoken = { version = "11.1", default-features = false, features = [
+  "aws_lc_rs",
+  "use_pem",
+] }
+rstest.workspace = true
+axum = "0.8"
+tempfile = "3"
+tokio = { workspace = true, features = ["test-util"] }
+flate2 = "1"

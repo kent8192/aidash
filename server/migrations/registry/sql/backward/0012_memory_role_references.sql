@@ -1,0 +1,5 @@
+DROP TRIGGER registry_memory_role_refs_sync ON registry;
+DROP TRIGGER registry_memory_role_refs_guard ON registry_memory_role_refs;
+DROP TRIGGER registry_memory_role_refs_atomic ON registry_memory_role_refs;
+DROP FUNCTION sync_registry_memory_role_refs();
+DROP FUNCTION guard_registry_memory_role_refs();

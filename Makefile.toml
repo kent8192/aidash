@@ -1,0 +1,342 @@
+[config]
+default_to_workspace = false
+
+[tasks.dev]
+description = "Build and start the local Aidash stack in detached mode"
+command = "docker"
+args = ["compose", "--profile", "dev", "up", "--build", "-d"]
+
+[tasks.dev-down]
+description = "Stop local Aidash infrastructure while keeping its data volumes"
+command = "docker"
+args = ["compose", "--profile", "dev", "down"]
+
+[tasks.k8s-up]
+description = "Build and start Aidash with PostgreSQL and NATS in a local kind cluster"
+dependencies = [
+  "k8s-prepare",
+  "k8s-apply-config",
+  "k8s-provider-credentials",
+  "k8s-build-postgres",
+  "k8s-build-backend",
+  "k8s-build-frontend",
+  "k8s-load",
+  "k8s-apply-infra",
+  "k8s-restart-postgres",
+  "k8s-wait-postgres",
+  "k8s-wait-nats",
+  "k8s-activation-provision",
+  "k8s-memory-recovery",
+  "k8s-helm",
+  "k8s-restart-server",
+  "k8s-restart-worker",
+  "k8s-restart-frontend",
+  "k8s-wait-server",
+  "k8s-wait-worker",
+  "k8s-wait-frontend",
+  "k8s-health",
+]
+
+[tasks.k8s-prepare]
+private = true
+script_runner = "sh"
+script = '''
+set -eu
+umask 077
+mkdir -p private/local-k8s
+clusters=$(kind get clusters)
+if printf '%s\n' "$clusters" | grep -qx aidash-local; then
+  kind export kubeconfig --name aidash-local --kubeconfig private/local-k8s/kubeconfig
+else
+  kind create cluster --name aidash-local --kubeconfig private/local-k8s/kubeconfig --config deploy/local-k8s/kind.yaml --wait 180s
+fi
+'''
+
+[tasks.k8s-apply-config]
+private = true
+command = "kubectl"
+args = [
+  "--kubeconfig",
+  "private/local-k8s/kubeconfig",
+  "apply",
+  "-f",
+  "deploy/local-k8s/namespace.yaml",
+  "-f",
+  "deploy/local-k8s/secrets.yaml",
+]
+
+[tasks.k8s-provider-credentials]
+private = true
+command = "python3"
+args = [
+  "scripts/local-k8s-credentials.py",
+  "--kubeconfig",
+  "private/local-k8s/kubeconfig",
+]
+
+[tasks.k8s-build-postgres]
+private = true
+command = "docker"
+args = [
+  "build",
+  "-f",
+  "deploy/postgres/Dockerfile",
+  "-t",
+  "aidash-postgres:17-pg-jsonschema-0.3.4",
+  ".",
+]
+
+[tasks.k8s-build-backend]
+private = true
+command = "docker"
+args = ["build", "-t", "aidash:local", "."]
+
+[tasks.k8s-build-frontend]
+private = true
+command = "docker"
+args = ["build", "--target", "frontend", "-t", "aidash-frontend:local", "."]
+
+[tasks.k8s-load]
+private = true
+command = "kind"
+args = [
+  "load",
+  "docker-image",
+  "aidash-postgres:17-pg-jsonschema-0.3.4",
+  "aidash:local",
+  "aidash-frontend:local",
+  "--name",
+  "aidash-local",
+]
+
+[tasks.k8s-apply-infra]
+private = true
+command = "kubectl"
+args = [
+  "--kubeconfig",
+  "private/local-k8s/kubeconfig",
+  "-n",
+  "aidash-local",
+  "apply",
+  "-f",
+  "deploy/local-k8s/infra.yaml",
+]
+
+[tasks.k8s-restart-postgres]
+private = true
+command = "kubectl"
+args = [
+  "--kubeconfig",
+  "private/local-k8s/kubeconfig",
+  "-n",
+  "aidash-local",
+  "rollout",
+  "restart",
+  "statefulset/postgres",
+]
+
+[tasks.k8s-wait-postgres]
+private = true
+command = "kubectl"
+args = [
+  "--kubeconfig",
+  "private/local-k8s/kubeconfig",
+  "-n",
+  "aidash-local",
+  "rollout",
+  "status",
+  "statefulset/postgres",
+  "--timeout=300s",
+]
+
+[tasks.k8s-wait-nats]
+private = true
+command = "kubectl"
+args = [
+  "--kubeconfig",
+  "private/local-k8s/kubeconfig",
+  "-n",
+  "aidash-local",
+  "rollout",
+  "status",
+  "statefulset/nats",
+  "--timeout=300s",
+]
+
+[tasks.k8s-activation-provision]
+private = true
+script_runner = "sh"
+script = '''
+set -eu
+kubectl --kubeconfig private/local-k8s/kubeconfig -n aidash-local delete job aidash-activation-provision --ignore-not-found
+kubectl --kubeconfig private/local-k8s/kubeconfig -n aidash-local apply -f deploy/local-k8s/activation-provision.yaml
+kubectl --kubeconfig private/local-k8s/kubeconfig -n aidash-local wait --for=condition=complete job/aidash-activation-provision --timeout=120s
+'''
+
+[tasks.k8s-memory-recovery]
+private = true
+script_runner = "sh"
+script = '''
+set -eu
+kubectl --kubeconfig private/local-k8s/kubeconfig -n aidash-local delete job aidash-memory-recovery-init --ignore-not-found
+kubectl --kubeconfig private/local-k8s/kubeconfig -n aidash-local apply -f deploy/local-k8s/memory-recovery.yaml
+kubectl --kubeconfig private/local-k8s/kubeconfig -n aidash-local wait --for=condition=complete job/aidash-memory-recovery-init --timeout=300s
+'''
+
+[tasks.k8s-helm]
+private = true
+command = "helm"
+args = [
+  "--kubeconfig",
+  "private/local-k8s/kubeconfig",
+  "upgrade",
+  "--install",
+  "aidash",
+  "deploy/helm/aidash",
+  "--values",
+  "deploy/local-k8s/values.yaml",
+  "--namespace",
+  "aidash-local",
+  "--set-string",
+  "deployment.id=aidash://node-a",
+  "--set-string",
+  "existingSecret=aidash-local-app",
+  "--set-string",
+  "memoryRecovery.existingClaim=aidash-memory-recovery",
+  "--set-string",
+  "memoryRecovery.directory=/var/lib/aidash/memory-recovery/home",
+  "--set-string",
+  "memoryRecovery.subPath=home",
+  "--set-string",
+  "image.repository=aidash",
+  "--set-string",
+  "image.tag=local",
+  "--set-string",
+  "frontend.image.repository=aidash-frontend",
+  "--set-string",
+  "frontend.image.tag=local",
+  "--set",
+  "service.type=NodePort",
+  "--set",
+  "service.nodePort=30080",
+  "--wait",
+  "--timeout",
+  "10m",
+]
+
+[tasks.k8s-restart-server]
+private = true
+command = "kubectl"
+args = [
+  "--kubeconfig",
+  "private/local-k8s/kubeconfig",
+  "-n",
+  "aidash-local",
+  "rollout",
+  "restart",
+  "deployment/aidash-aidash-server",
+]
+
+[tasks.k8s-restart-worker]
+private = true
+command = "kubectl"
+args = [
+  "--kubeconfig",
+  "private/local-k8s/kubeconfig",
+  "-n",
+  "aidash-local",
+  "rollout",
+  "restart",
+  "deployment/aidash-aidash-worker",
+]
+
+[tasks.k8s-restart-frontend]
+private = true
+command = "kubectl"
+args = [
+  "--kubeconfig",
+  "private/local-k8s/kubeconfig",
+  "-n",
+  "aidash-local",
+  "rollout",
+  "restart",
+  "deployment/aidash-frontend",
+]
+
+[tasks.k8s-wait-server]
+private = true
+command = "kubectl"
+args = [
+  "--kubeconfig",
+  "private/local-k8s/kubeconfig",
+  "-n",
+  "aidash-local",
+  "rollout",
+  "status",
+  "deployment/aidash-aidash-server",
+  "--timeout=300s",
+]
+
+[tasks.k8s-wait-worker]
+private = true
+command = "kubectl"
+args = [
+  "--kubeconfig",
+  "private/local-k8s/kubeconfig",
+  "-n",
+  "aidash-local",
+  "rollout",
+  "status",
+  "deployment/aidash-aidash-worker",
+  "--timeout=300s",
+]
+
+[tasks.k8s-wait-frontend]
+private = true
+command = "kubectl"
+args = [
+  "--kubeconfig",
+  "private/local-k8s/kubeconfig",
+  "-n",
+  "aidash-local",
+  "rollout",
+  "status",
+  "deployment/aidash-frontend",
+  "--timeout=300s",
+]
+
+[tasks.k8s-health]
+private = true
+command = "curl"
+args = [
+  "--fail",
+  "--silent",
+  "--show-error",
+  "--retry",
+  "30",
+  "--retry-connrefused",
+  "--retry-delay",
+  "1",
+  "--max-time",
+  "2",
+  "--retry-max-time",
+  "60",
+  "http://127.0.0.1:8080/health",
+]
+
+[tasks.k8s-down]
+description = "Remove the dedicated local Aidash kind cluster and its data"
+command = "kind"
+args = ["delete", "cluster", "--name", "aidash-local"]
+
+[tasks.k8s-status]
+description = "Show the local Aidash Kubernetes workloads"
+command = "kubectl"
+args = [
+  "--kubeconfig",
+  "private/local-k8s/kubeconfig",
+  "-n",
+  "aidash-local",
+  "get",
+  "pods,services",
+]

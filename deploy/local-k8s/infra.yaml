@@ -1,0 +1,105 @@
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: aidash-memory-recovery
+spec:
+  accessModes: [ReadWriteOnce]
+  resources:
+    requests: { storage: 1Gi }
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: postgres
+spec:
+  selector: { app: aidash-local-postgres }
+  ports:
+    - { port: 5432, targetPort: 5432 }
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: postgres
+spec:
+  serviceName: postgres
+  replicas: 1
+  selector:
+    matchLabels: { app: aidash-local-postgres }
+  template:
+    metadata:
+      labels: { app: aidash-local-postgres }
+    spec:
+      containers:
+        - name: postgres
+          image: aidash-postgres:17-pg-jsonschema-0.3.4
+          imagePullPolicy: IfNotPresent
+          args: [-c, max_connections=400]
+          env:
+            - { name: POSTGRES_USER, value: aidash }
+            - { name: POSTGRES_DB, value: aidash_a }
+            - name: POSTGRES_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  { name: aidash-local-infra, key: POSTGRES_PASSWORD }
+            - name: AIDASH_OWNER_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  { name: aidash-local-infra, key: AIDASH_OWNER_PASSWORD }
+            - name: AIDASH_SERVER_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  { name: aidash-local-infra, key: AIDASH_SERVER_PASSWORD }
+          ports:
+            - { containerPort: 5432 }
+          readinessProbe:
+            exec:
+              command: [pg_isready, -U, aidash, -d, aidash_a]
+            periodSeconds: 2
+          volumeMounts:
+            - { name: data, mountPath: /var/lib/postgresql/data }
+  volumeClaimTemplates:
+    - metadata: { name: data }
+      spec:
+        accessModes: [ReadWriteOnce]
+        resources:
+          requests: { storage: 1Gi }
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: nats
+spec:
+  selector: { app: aidash-local-nats }
+  ports:
+    - { port: 4222, targetPort: 4222 }
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: nats
+spec:
+  serviceName: nats
+  replicas: 1
+  selector:
+    matchLabels: { app: aidash-local-nats }
+  template:
+    metadata:
+      labels: { app: aidash-local-nats }
+    spec:
+      containers:
+        - name: nats
+          image: nats:2.12-alpine
+          args: [-js, -sd, /data]
+          ports:
+            - { containerPort: 4222 }
+          readinessProbe:
+            tcpSocket: { port: 4222 }
+            periodSeconds: 2
+          volumeMounts:
+            - { name: data, mountPath: /data }
+  volumeClaimTemplates:
+    - metadata: { name: data }
+      spec:
+        accessModes: [ReadWriteOnce]
+        resources:
+          requests: { storage: 1Gi }

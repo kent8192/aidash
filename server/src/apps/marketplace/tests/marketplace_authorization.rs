@@ -1,0 +1,3726 @@
+#![allow(clippy::disallowed_methods)] // Fixtures reach the database outside a tenancy scope.
+use aidash_application::tenancy::TEST_FIXTURE;
+use futures_util::FutureExt;
+#[path = "../../execution/tests/support/legacy.rs"]
+mod common;
+use aidash_server::{
+	authorization::{Authorization, policy::PolicyBundle},
+	federation::Federation,
+	registry::{EntityRef, Entry},
+};
+use common::TestApplication as Router;
+use common::request;
+use reinhardt::query::{Alias, Expr, PostgresQueryBuilder, Query};
+use serde_json::{Value, json};
+use std::sync::Arc;
+use uuid::Uuid;
+
+// Advisory locks are database-wide while the shared test service isolates
+// schemas. Serialize fixtures so intentional barriers cannot block another test
+// holding a different half of the lock order; requests inside each test race.
+// Every test carries the whole-test backstop: besides #284's barrier test,
+// `browse_pages_hidden_versions_before_returning_a_visible_package` hung for 6 h
+// while its fixture resolved, before it took this lock.
+static FIXTURE_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
+fn reference(id: &str) -> EntityRef {
+	EntityRef {
+		id: id.into(),
+		version: "1.0.0".into(),
+	}
+}
+fn tool(id: &str) -> Entry {
+	serde_json::from_value(json!({"id":id,"version":"1.0.0","kind":"tool","name":{"en":id},"description":{"en":"Local tool"},"config":{"registry_deployment":"aidash://execution-test","provider":"integration.http@1","operation":"invoke","default_alias":"plugin_0","tier":"integration","narrow":{},"transport":{"transport":"http","endpoint":"https://tools.example/original","replay":"read_only"}}})).unwrap()
+}
+fn bundle(tenant: &str, kind: &str) -> Value {
+	json!({"tenant":tenant,"subjects":{"viewer":{"kind":kind,"roles":["manager"]}},"roles":{"manager":{"inherits":["reader"]},"reader":{}},"policies":[{"id":"all","effect":"allow","subjects":{"roles":["reader"]},"actions":["*"],"resources":{"kinds":["*"]}}]})
+}
+async fn policy(f: &Federation, tenant: &str, revision: i64, mut value: Value) {
+	let authorization = Authorization {
+		pool: f.store.pool.clone(),
+	};
+	let revision = if revision == 0 {
+		common::tenant_root(f, tenant).await;
+		0
+	} else {
+		let current = authorization.snapshot(tenant).await.unwrap();
+		let existing = serde_json::to_value(&current.bundle).unwrap();
+		for (name, subject) in existing["subjects"].as_object().unwrap() {
+			if subject["kind"] == "agent" && value["subjects"].get(name).is_none() {
+				value["subjects"][name] = subject.clone();
+			}
+		}
+		current.revision
+	};
+	authorization
+		.replace(
+			tenant,
+			revision,
+			serde_json::from_value::<PolicyBundle>(value).unwrap(),
+			"deployment_administrator",
+		)
+		.await
+		.unwrap();
+}
+async fn token(f: &Federation, tenant: &str, kind: &str) -> String {
+	policy(f, tenant, 0, bundle(tenant, kind)).await;
+	Authorization {
+		pool: f.store.pool.clone(),
+	}
+	.issue_credential(tenant, "viewer", 3600, "deployment_administrator")
+	.await
+	.unwrap()
+	.token
+}
+fn trace_errors() {
+	let _ = tracing_subscriber::fmt()
+		.with_env_filter("aidash=error")
+		.with_test_writer()
+		.try_init();
+}
+async fn approve(f: &Federation, tenant: &str, entry: &EntityRef) {
+	let name = aidash_domain::tenancy::TenantName::new(tenant).unwrap();
+	if f.registry
+		.get(&name, &entry.id, &entry.version)
+		.await
+		.is_err()
+	{
+		for source in ["a", "b", "c"] {
+			let source = aidash_domain::tenancy::TenantName::new(source).unwrap();
+			if let Ok(mut copy) = f.registry.get(&source, &entry.id, &entry.version).await {
+				copy.binding_normalization = None;
+				f.registry.register(&name, copy).await.unwrap();
+				break;
+			}
+		}
+	}
+	Authorization {
+		pool: f.store.pool.clone(),
+	}
+	.set_catalog(
+		tenant,
+		&aidash_domain::nodes::NodeName::derived(tenant),
+		entry,
+		0,
+		true,
+		"deployment_administrator",
+	)
+	.await
+	.unwrap();
+}
+async fn publish(app: &Router, token: &str, id: &str) -> Value {
+	let result=request(app,token,"POST","/api/marketplace/packages",json!({"source":reference(id),"package_id":"shared-name","author":"display only","idempotency_key":Uuid::new_v4()})).await;
+	assert_eq!(result.0, 200, "{result:?}");
+	result.1
+}
+fn install_input(package: &Value) -> Value {
+	json!({"digest":package["digest"],"config":{},"idempotency_key":Uuid::new_v4()})
+}
+async fn install(app: &Router, token: &str, package: &Value, input: &Value) -> (u16, Value) {
+	request(
+		app,
+		token,
+		"POST",
+		&format!(
+			"/api/marketplace/packages/{}/install",
+			package["key"].as_str().unwrap()
+		),
+		input.clone(),
+	)
+	.await
+}
+#[allow(clippy::too_many_arguments)] // Mirrors the independent approval and pointer preconditions.
+async fn activate(
+	app: &Router,
+	f: &Federation,
+	tenant: &str,
+	installation: &Value,
+	revision: i64,
+	pointer: i64,
+	catalog: i64,
+	enabled: bool,
+) -> (u16, Value) {
+	let approver = Authorization {
+		pool: f.store.pool.clone(),
+	}
+	.issue_credential(tenant, "viewer", 3600, "deployment_administrator")
+	.await
+	.unwrap()
+	.token;
+	request(app,&approver,"POST",&format!("/api/marketplace/installations/{}/activation",installation["installation"]["id"].as_str().unwrap()),json!({"tenant":tenant,"revision":revision,"expected_activation_revision":pointer,"expected_catalog_revision":catalog,"enabled":enabled})).await
+}
+fn deny(mut value: Value, actions: Value) -> Value {
+	value["policies"].as_array_mut().unwrap().push(json!({"id":"deny","effect":"deny","subjects":{"any":true},"actions":actions,"resources":{"kinds":["*"]}}));
+	value
+}
+
+#[rstest::rstest]
+#[timeout(common::TEST_BOUND)]
+#[case("user")]
+#[case("agent")]
+#[case("node")]
+#[case("service")]
+#[tokio::test]
+async fn tenant_publication_pending_installation_and_revisions(
+	#[future(awt)]
+	#[from(common::native_application)]
+	application_fixture: common::ApplicationFixture,
+	#[case] kind: &str,
+) {
+	let _fixture = FIXTURE_LOCK.lock().await;
+	let (f, url, schema) = application_fixture.runtime.parts();
+	let app = application_fixture.application.clone();
+	let a = token(&f, "a", kind).await;
+	let b = token(&f, "b", "user").await;
+	trace_errors();
+	f.registry
+		.register(
+			&aidash_domain::tenancy::TenantName::new("a").unwrap(),
+			tool("source-a"),
+		)
+		.await
+		.unwrap();
+	f.registry
+		.register(
+			&aidash_domain::tenancy::TenantName::new("a").unwrap(),
+			tool("source-b"),
+		)
+		.await
+		.unwrap();
+	approve(&f, "a", &reference("source-a")).await;
+	approve(&f, "b", &reference("source-b")).await;
+	let pa = publish(&app, &a, "source-a").await;
+	let pb = publish(&app, &b, "source-b").await;
+	assert_ne!(pa["key"], pb["key"]);
+	let list = request(&app, &a, "GET", "/api/marketplace/packages", Value::Null).await;
+	assert_eq!(list.0, 200);
+	assert_eq!(list.1.as_array().unwrap().len(), 1);
+	assert_eq!(list.1[0]["owner_tenant"], "a");
+	let missing = request(
+		&app,
+		&a,
+		"GET",
+		"/api/marketplace/packages/missing",
+		Value::Null,
+	)
+	.await;
+	assert_eq!(
+		request(
+			&app,
+			&a,
+			"GET",
+			&format!("/api/marketplace/packages/{}", pb["key"].as_str().unwrap()),
+			Value::Null
+		)
+		.await,
+		missing
+	);
+	let input = install_input(&pa);
+	let installed = install(&app, &a, &pa, &input).await;
+	assert_eq!(installed.0, 200, "{installed:?}");
+	assert_eq!(installed.1["approved"], false);
+	assert_eq!(
+		install(
+			// Act: rebuild the application to verify the committed request can be retried.
+			&common::application(f.clone()).await,
+			&a,
+			&pa,
+			&input
+		)
+		.await,
+		installed
+	);
+	let id = installed.1["installation"]["id"].as_str().unwrap();
+	let entry: Entry = serde_json::from_value(installed.1["entry"].clone()).unwrap();
+	assert_eq!(entry.installation.as_ref().unwrap().tenant, "a");
+	// Another tenant's document must never be loaded or decoded by this list.
+	// Its indexed owner remains enough to isolate even damaged foreign data.
+	use reinhardt::query::{Alias, Expr, PostgresQueryBuilder, Query};
+	sqlx::query(
+		&Query::insert()
+			.into_table(Alias::new("marketplace_installations"))
+			.columns(["key", "document", "tenant", "package_key"].map(Alias::new))
+			.from_subquery(
+				Query::select()
+					.expr(Expr::value("foreign-damaged-installation"))
+					.expr(Expr::value(json!({"damaged":true})))
+					.expr(Expr::value("b"))
+					.expr(Expr::value("foreign-package"))
+					.to_owned(),
+			)
+			.to_string(PostgresQueryBuilder),
+	)
+	.execute(f.store.pool.fixture_driver())
+	.await
+	.unwrap();
+	let listed = request(
+		&app,
+		&a,
+		"GET",
+		"/api/marketplace/installations",
+		Value::Null,
+	)
+	.await;
+	assert_eq!(
+		listed.0, 200,
+		"foreign data affected the tenant list: {listed:?}"
+	);
+	assert_eq!(listed.1.as_array().unwrap().len(), 1);
+	assert_eq!(listed.1[0]["installation"]["id"], id);
+	assert_eq!(
+		request(
+			&app,
+			&b,
+			"GET",
+			&format!("/api/marketplace/installations/{id}"),
+			Value::Null
+		)
+		.await
+		.0,
+		403
+	);
+	assert!(
+		Authorization {
+			pool: f.store.pool.clone()
+		}
+		.set_catalog(
+			"b",
+			&aidash_domain::nodes::NodeName::derived("b"),
+			&EntityRef {
+				id: entry.id.clone(),
+				version: entry.version.clone()
+			},
+			0,
+			true,
+			"deployment_administrator"
+		)
+		.await
+		.is_err()
+	);
+	let catalog = request(&app, &a, "GET", "/api/registry", Value::Null).await;
+	assert!(!catalog.1.to_string().contains(&entry.id));
+	let active = activate(&app, &f, "a", &installed.1, 1, 0, 0, true).await;
+	assert_eq!(active.0, 200, "{active:?}");
+	// The approval history names the subject that activated the revision.
+	let approver: String = sqlx::query_scalar(
+		&Query::select()
+			.column(Alias::new("actor"))
+			.from(Alias::new("authorization_catalog_history"))
+			.and_where(Expr::cust(format!(
+				"tenant='a' AND entry_id='{}' AND enabled",
+				entry.id
+			)))
+			.to_string(PostgresQueryBuilder),
+	)
+	.fetch_one(f.store.pool.fixture_driver())
+	.await
+	.unwrap();
+	assert_eq!(approver, "viewer");
+	for enabled in [false, true] {
+		assert!(
+			Authorization {
+				pool: f.store.pool.clone()
+			}
+			.set_catalog(
+				"a",
+				&aidash_domain::nodes::NodeName::derived("a"),
+				&EntityRef {
+					id: entry.id.clone(),
+					version: entry.version.clone()
+				},
+				1,
+				enabled,
+				"deployment_administrator"
+			)
+			.await
+			.is_err(),
+			"projection catalog writes must use activation"
+		);
+	}
+	let change = json!({"expected_revision":1,"config":{"transport":{"transport":"http","endpoint":"https://tools.example/reconfigured","replay":"read_only"}},"idempotency_key":Uuid::new_v4()});
+	let changed = request(
+		&app,
+		&a,
+		"POST",
+		&format!("/api/marketplace/installations/{id}"),
+		change.clone(),
+	)
+	.await;
+	assert_eq!(changed.0, 200, "{changed:?}");
+	assert_eq!(changed.1["revision"], 2);
+	assert_eq!(changed.1["installation"]["active_revision"], 1);
+	assert_eq!(changed.1["approved"], false);
+	assert_eq!(
+		request(
+			&app,
+			&a,
+			"POST",
+			&format!("/api/marketplace/installations/{id}"),
+			change
+		)
+		.await,
+		changed
+	);
+	assert_eq!(
+		f.registry
+			.get(
+				&aidash_domain::tenancy::TenantName::new("a").unwrap(),
+				&entry.id,
+				&entry.version
+			)
+			.await
+			.unwrap()
+			.config["transport"]["endpoint"],
+		"https://tools.example/original"
+	);
+	let current = request(&app, &a, "GET", "/api/registry", Value::Null).await;
+	assert!(current.1.to_string().contains(&entry.id));
+	assert!(
+		!current
+			.1
+			.to_string()
+			.contains(changed.1["entry"]["id"].as_str().unwrap())
+	);
+	let result = activate(&app, &f, "a", &installed.1, 2, 1, 0, true).await;
+	assert_eq!(result.0, 200, "{result:?}");
+	let current = request(&app, &a, "GET", "/api/registry", Value::Null).await;
+	assert!(!current.1.to_string().contains(&entry.id));
+	assert!(
+		current
+			.1
+			.to_string()
+			.contains(changed.1["entry"]["id"].as_str().unwrap())
+	);
+	// Exact old reads survive activation and disappear only on explicit revocation.
+	assert_eq!(
+		request(
+			&app,
+			&a,
+			"GET",
+			&format!("/api/registry/{}/{}", entry.id, entry.version),
+			Value::Null
+		)
+		.await
+		.0,
+		200
+	);
+	assert_eq!(
+		activate(&app, &f, "a", &installed.1, 1, 2, 1, false)
+			.await
+			.0,
+		200
+	);
+	assert_eq!(
+		request(
+			&app,
+			&a,
+			"GET",
+			&format!("/api/registry/{}/{}", entry.id, entry.version),
+			Value::Null
+		)
+		.await
+		.0,
+		403
+	);
+	assert_eq!(
+		activate(&app, &f, "a", &installed.1, 2, 3, 1, false)
+			.await
+			.0,
+		200
+	);
+	assert!(
+		!request(&app, &a, "GET", "/api/registry", Value::Null)
+			.await
+			.1
+			.to_string()
+			.contains("mkt-")
+	);
+	let mut replay_input = input.clone();
+	replay_input["config"] = json!({"transport":{"transport":"http","endpoint":"https://tools.example/other","replay":"read_only"}});
+	assert_eq!(install(&app, &a, &pa, &replay_input).await.0, 409);
+	policy(
+		&f,
+		"a",
+		1,
+		deny(
+			bundle("a", kind),
+			json!(["marketplace.read", "marketplace.install"]),
+		),
+	)
+	.await;
+	assert_eq!(install(&app, &a, &pa, &input).await.0, 403);
+	// Local committed management/configuration does not require distribution.
+	assert_eq!(
+		request(
+			&app,
+			&a,
+			"GET",
+			&format!("/api/marketplace/installations/{id}"),
+			Value::Null
+		)
+		.await
+		.0,
+		200
+	);
+	common::cleanup(f, &url, &schema).await;
+}
+
+#[rstest::rstest]
+#[timeout(common::TEST_BOUND)]
+#[tokio::test]
+async fn hidden_typed_dependency_and_denial_leave_no_installation(
+	#[future(awt)]
+	#[from(common::native_application)]
+	application_fixture: common::ApplicationFixture,
+) {
+	let _fixture = FIXTURE_LOCK.lock().await;
+	let (f, url, schema) = application_fixture.runtime.parts();
+	let app = application_fixture.application.clone();
+	let a = token(&f, "a", "user").await;
+	let b = token(&f, "b", "user").await;
+	trace_errors();
+	let model:Entry=serde_json::from_value(json!({"id":"hidden-model","version":"1.0.0","kind":"model","name":{"en":"Hidden model"},"description":{"en":"private"},"config":{"provider":"openrouter","model_id":"fixture/model","endpoint":"http://localhost:9","context_window":128000,"max_output_tokens":1024,"modalities":["text"],"cost":{}}})).unwrap();
+	f.registry
+		.register(
+			&aidash_domain::tenancy::TenantName::new("a").unwrap(),
+			model,
+		)
+		.await
+		.unwrap();
+	let agent:Entry=serde_json::from_value(json!({"id":"agent","version":"1.0.0","kind":"agent","name":{"en":"Visible agent"},"description":{"en":"Public summary"},"config":{"model":reference("hidden-model"),"instructions":"hello","schema_version":1,"bindings":[],"remove_default":[]}})).unwrap();
+	f.registry
+		.register(
+			&aidash_domain::tenancy::TenantName::new("a").unwrap(),
+			agent,
+		)
+		.await
+		.unwrap();
+	approve(&f, "a", &reference("hidden-model")).await;
+	approve(&f, "a", &reference("agent")).await;
+	let package = publish(&app, &a, "agent").await;
+	let key = package["key"].as_str().unwrap();
+	assert_eq!(
+		request(
+			&app,
+			&a,
+			"PUT",
+			&format!("/api/marketplace/packages/{key}/audience"),
+			json!({"expected_revision":1,"tenants":["a","b"]})
+		)
+		.await
+		.0,
+		200
+	);
+	let list = request(&app, &b, "GET", "/api/marketplace/packages", Value::Null).await;
+	assert_eq!(list.0, 200);
+	assert_eq!(list.1.as_array().unwrap().len(), 1);
+	assert!(!list.1.to_string().contains("hidden-model"));
+	assert_eq!(list.1[0]["actions"], json!([]));
+	assert_eq!(
+		request(
+			&app,
+			&b,
+			"GET",
+			"/api/marketplace/packages?q=hidden-model",
+			Value::Null
+		)
+		.await
+		.1,
+		json!([])
+	);
+	let denied = request(
+		&app,
+		&b,
+		"GET",
+		&format!("/api/marketplace/packages/{key}"),
+		Value::Null,
+	)
+	.await;
+	assert_eq!(
+		denied,
+		request(
+			&app,
+			&b,
+			"GET",
+			"/api/marketplace/packages/missing",
+			Value::Null
+		)
+		.await
+	);
+	let input = install_input(&package);
+	assert_eq!(install(&app, &b, &package, &input).await.0, 403);
+	assert_eq!(
+		request(
+			&app,
+			&b,
+			"GET",
+			"/api/marketplace/installations",
+			Value::Null
+		)
+		.await
+		.1,
+		json!([])
+	);
+	assert!(
+		!f.registry
+			.list(
+				&aidash_domain::tenancy::TenantName::new("b").unwrap(),
+				&Default::default()
+			)
+			.await
+			.unwrap()
+			.iter()
+			.any(|e| e.installation.is_some())
+	);
+	approve(&f, "b", &reference("hidden-model")).await;
+	let mut wrong = input.clone();
+	wrong["digest"] = json!("wrong");
+	assert_eq!(install(&app, &b, &package, &wrong).await.0, 409);
+	let installed = install(&app, &b, &package, &input).await;
+	assert_eq!(installed.0, 200, "{installed:?}");
+	// A deny overrides inherited role permission and ownership at each surface.
+	policy(
+		&f,
+		"a",
+		1,
+		deny(
+			bundle("a", "user"),
+			json!(["marketplace.share", "registry.export"]),
+		),
+	)
+	.await;
+	assert_eq!(
+		request(
+			&app,
+			&a,
+			"PUT",
+			&format!("/api/marketplace/packages/{key}/audience"),
+			json!({"expected_revision":2,"tenants":[]})
+		)
+		.await
+		.0,
+		403
+	);
+	assert_eq!(request(&app,&a,"POST","/api/marketplace/packages",json!({"source":reference("agent"),"package_id":"second","author":"a","idempotency_key":Uuid::new_v4()})).await.0,403);
+	common::cleanup(f, &url, &schema).await;
+}
+
+#[rstest::rstest]
+#[timeout(common::TEST_BOUND)]
+#[tokio::test]
+async fn browse_pages_hidden_versions_before_returning_a_visible_package(
+	#[future(awt)]
+	#[from(common::native_application)]
+	application_fixture: common::ApplicationFixture,
+) {
+	use reinhardt::query::{Alias, Expr, PostgresQueryBuilder, Query};
+	let _fixture = FIXTURE_LOCK.lock().await;
+	let (f, url, schema) = application_fixture.runtime.parts();
+	let app = application_fixture.application.clone();
+	let a = token(&f, "a", "user").await;
+	trace_errors();
+	f.registry
+		.register(
+			&aidash_domain::tenancy::TenantName::new("a").unwrap(),
+			tool("paged-source"),
+		)
+		.await
+		.unwrap();
+	approve(&f, "a", &reference("paged-source")).await;
+	let published = publish(&app, &a, "paged-source").await;
+	let source_key = published["key"].as_str().unwrap();
+	let (document, source_content): (Value, String) = {
+		let query_bind_1 = source_key;
+		sqlx::query_as(
+			&Query::select()
+				.columns(["document", "source_content"].map(Alias::new))
+				.from(Alias::new("marketplace_versions"))
+				.and_where(SimpleExpr::CustomWithExpr(
+					"(key=?)".to_owned(),
+					vec![Expr::value(query_bind_1.to_owned()).into()],
+				))
+				.to_string(PostgresQueryBuilder),
+		)
+		.fetch_one(f.store.pool.fixture_driver())
+		.await
+	}
+	.unwrap();
+	let source_id = document["source"]["id"].as_str().unwrap();
+	let source_version = document["source"]["version"].as_str().unwrap();
+	for i in 0..64 {
+		let key = format!("!hidden-{i:03}");
+		let package_id = format!("hidden-{i:03}");
+		let mut hidden = document.clone();
+		hidden["key"] = json!(key);
+		hidden["package_id"] = json!(package_id);
+		sqlx::query(
+			&Query::insert()
+				.into_table(Alias::new("marketplace_versions"))
+				.columns(
+					[
+						"key",
+						"document",
+						"repository",
+						"owner",
+						"package_id",
+						"version",
+						"kind",
+						"source_id",
+						"source_version",
+						"source_content",
+					]
+					.map(Alias::new),
+				)
+				.from_subquery({
+					let mut values = Query::select();
+					for i in 1..=10 {
+						values.expr(Expr::cust(format!("${i}")));
+					}
+					values.to_owned()
+				})
+				.to_string(PostgresQueryBuilder),
+		)
+		.bind(key)
+		.bind(hidden)
+		.bind(f.store.deployment.as_str())
+		.bind("a")
+		.bind(package_id)
+		.bind("1.0.0")
+		.bind("tool")
+		.bind(source_id)
+		.bind(source_version)
+		.bind(&source_content)
+		.execute(f.store.pool.fixture_driver())
+		.await
+		.unwrap();
+	}
+	let (status, page) = request(
+		&app,
+		&a,
+		"GET",
+		"/api/marketplace/packages?q=shared-name&limit=1",
+		Value::Null,
+	)
+	.await;
+	assert_eq!(status, 200, "{page}");
+	assert_eq!(page.as_array().unwrap().len(), 1);
+	assert_eq!(page[0]["key"], source_key);
+	let audit: Value = sqlx::query_scalar(
+		&Query::select()
+			.column(Alias::new("data"))
+			.from(Alias::new("events"))
+			.and_where(Expr::cust("kind='marketplace.audit'"))
+			.order_by(Alias::new("sequence"), reinhardt::query::Order::Desc)
+			.limit(1)
+			.to_string(PostgresQueryBuilder),
+	)
+	.fetch_one(f.store.pool.fixture_driver())
+	.await
+	.unwrap();
+	assert_eq!(audit["operation"], "marketplace.browse");
+	assert_eq!(audit["resource"]["query"], "shared-name");
+	common::cleanup(f, &url, &schema).await;
+}
+
+#[rstest::rstest]
+#[timeout(common::TEST_BOUND)]
+#[tokio::test]
+async fn live_redistribution_consent_retains_local_copies_and_export_bytes(
+	#[future(awt)]
+	#[from(common::native_application)]
+	application_fixture: common::ApplicationFixture,
+) {
+	let _fixture = FIXTURE_LOCK.lock().await;
+	let (f, url, schema) = application_fixture.runtime.parts();
+	let app = application_fixture.application.clone();
+	let a = token(&f, "a", "user").await;
+	let b = token(&f, "b", "user").await;
+	let c = token(&f, "c", "user").await;
+	trace_errors();
+	f.registry
+		.register(
+			&aidash_domain::tenancy::TenantName::new("a").unwrap(),
+			tool("original"),
+		)
+		.await
+		.unwrap();
+	approve(&f, "a", &reference("original")).await;
+	let original = publish(&app, &a, "original").await;
+	let key = original["key"].as_str().unwrap();
+	assert_eq!(
+		request(
+			&app,
+			&a,
+			"PUT",
+			&format!("/api/marketplace/packages/{key}/audience"),
+			json!({"expected_revision":1,"tenants":["a","b"]})
+		)
+		.await
+		.0,
+		200
+	);
+	let mut input = install_input(&original);
+	input["config"] = json!({"transport":{"transport":"http","endpoint":"https://tools.example/tenant-secret-setting","replay":"read_only"}});
+	let installed = install(&app, &b, &original, &input).await;
+	assert_eq!(installed.0, 200, "{installed:?}");
+	assert_eq!(
+		activate(&app, &f, "b", &installed.1, 1, 0, 0, true).await.0,
+		200
+	);
+	let source = EntityRef {
+		id: installed.1["entry"]["id"].as_str().unwrap().into(),
+		version: "1.0.0".into(),
+	};
+	let publication = json!({"source":source,"package_id":"downstream","author":"B","idempotency_key":Uuid::new_v4()});
+	assert_eq!(
+		request(
+			&app,
+			&b,
+			"POST",
+			"/api/marketplace/packages",
+			publication.clone()
+		)
+		.await
+		.0,
+		403
+	);
+	assert_eq!(
+		request(
+			&app,
+			&a,
+			"PUT",
+			&format!("/api/marketplace/packages/{key}/consents/b"),
+			json!({"expected_revision":0,"tenants":["b","c"]})
+		)
+		.await
+		.0,
+		200
+	);
+	assert_eq!(
+		request(
+			&app,
+			&a,
+			"GET",
+			&format!("/api/marketplace/packages/{key}/consents/b"),
+			Value::Null,
+		)
+		.await
+		.1,
+		json!({"revision":1,"tenants":["b","c"]}),
+	);
+	assert_eq!(
+		request(
+			&app,
+			&b,
+			"GET",
+			&format!("/api/marketplace/packages/{key}/consents/b"),
+			Value::Null,
+		)
+		.await
+		.0,
+		403,
+	);
+	let downstream = request(
+		&app,
+		&b,
+		"POST",
+		"/api/marketplace/packages",
+		publication.clone(),
+	)
+	.await;
+	assert_eq!(downstream.0, 200, "{downstream:?}");
+	let child = downstream.1["key"].as_str().unwrap();
+	assert_eq!(
+		request(
+			&app,
+			&b,
+			"PUT",
+			&format!("/api/marketplace/packages/{child}/audience"),
+			json!({"expected_revision":1,"tenants":["b","c"]})
+		)
+		.await
+		.0,
+		200
+	);
+	let detail = request(
+		&app,
+		&c,
+		"GET",
+		&format!("/api/marketplace/packages/{child}"),
+		Value::Null,
+	)
+	.await;
+	assert_eq!(detail.0, 200, "{detail:?}");
+	assert_eq!(
+		detail.1["manifest"]["entity"]["config"]["transport"]["endpoint"],
+		"https://tools.example/original"
+	);
+	assert!(!detail.1.to_string().contains("tenant-secret-setting"));
+	let local_c = install(&app, &c, &downstream.1, &install_input(&downstream.1)).await;
+	assert_eq!(local_c.0, 200, "{local_c:?}");
+	// The acquisition audience remains live in known downstream provenance too.
+	let audience_path = format!("/api/marketplace/packages/{key}/audience");
+	assert_eq!(
+		request(
+			&app,
+			&a,
+			"PUT",
+			&audience_path,
+			json!({"expected_revision":2,"tenants":["a"]})
+		)
+		.await
+		.0,
+		200
+	);
+	assert_eq!(
+		request(
+			&app,
+			&c,
+			"GET",
+			&format!("/api/marketplace/packages/{child}"),
+			Value::Null
+		)
+		.await
+		.0,
+		403
+	);
+	assert_eq!(
+		request(
+			&app,
+			&a,
+			"PUT",
+			&audience_path,
+			json!({"expected_revision":3,"tenants":["a","b"]})
+		)
+		.await
+		.0,
+		200
+	);
+	// Withdrawing the original consent blocks already-published child versions.
+	assert_eq!(
+		request(
+			&app,
+			&a,
+			"PUT",
+			&format!("/api/marketplace/packages/{key}/consents/b"),
+			json!({"expected_revision":1,"tenants":[]})
+		)
+		.await
+		.0,
+		200
+	);
+	assert_eq!(
+		request(&app, &c, "GET", "/api/marketplace/packages", Value::Null)
+			.await
+			.1,
+		json!([])
+	);
+	assert_eq!(
+		request(
+			&app,
+			&c,
+			"GET",
+			&format!("/api/marketplace/packages/{child}"),
+			Value::Null
+		)
+		.await
+		.0,
+		403
+	);
+	assert_eq!(
+		request(&app, &b, "POST", "/api/marketplace/packages", publication)
+			.await
+			.0,
+		403
+	);
+	let local_id = local_c.1["installation"]["id"].as_str().unwrap();
+	assert_eq!(
+		request(
+			&app,
+			&c,
+			"GET",
+			&format!("/api/marketplace/installations/{local_id}"),
+			Value::Null
+		)
+		.await
+		.0,
+		200
+	);
+	assert_eq!(request(&app,&c,"POST",&format!("/api/marketplace/installations/{local_id}"),json!({"expected_revision":1,"config":{"transport":{"transport":"http","endpoint":"https://tools.example/retained","replay":"read_only"}},"idempotency_key":Uuid::new_v4()})).await.0,200);
+	// Unknown event families leak nothing.
+	let events = request(&app, &c, "GET", "/api/events", Value::Null).await;
+	assert!(!events.1.to_string().contains(key));
+	common::cleanup(f, &url, &schema).await;
+}
+
+/// Finds the waiter by its database: a Deployment Scope relabels
+/// `application_name` for the transaction's duration.
+async fn wait_for_lock(f: &Federation, schema: &str, pattern: &str) {
+	use reinhardt::query::{Alias, Expr, PostgresQueryBuilder, Query};
+	for _ in 0..500 {
+		let count: i64 = {
+			let query_bind_1 = schema;
+			let query_bind_2 = pattern;
+			sqlx::query_scalar(
+				&Query::select()
+					.expr(Expr::cust("count(*)"))
+					.from(Alias::new("pg_stat_activity"))
+					.and_where(SimpleExpr::CustomWithExpr(
+						"(datname=? AND wait_event_type='Lock' AND query LIKE ?)".to_owned(),
+						vec![
+							Expr::value(query_bind_1.to_owned()).into(),
+							Expr::value(query_bind_2.to_owned()).into(),
+						],
+					))
+					.to_string(PostgresQueryBuilder),
+			)
+			.fetch_one(f.store.pool.fixture_driver())
+			.await
+		}
+		.unwrap();
+		if count > 0 {
+			return;
+		}
+		tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+	}
+	panic!("request did not reach its deterministic database barrier");
+}
+
+#[rstest::rstest]
+#[timeout(common::TEST_BOUND)]
+#[tokio::test]
+async fn audience_revocation_and_install_commit_have_a_durable_order(
+	#[future(awt)]
+	#[from(common::native_application)]
+	application_fixture: common::ApplicationFixture,
+) {
+	use reinhardt::query::{Alias, Expr, PostgresQueryBuilder, Query};
+	let _fixture = FIXTURE_LOCK.lock().await;
+	let (f, url, schema) = application_fixture.runtime.parts();
+	// Requests released by a barrier can wait on locks or pool connections, so
+	// every later await fails with its name and the database activity (#284).
+	let environment = application_fixture.runtime.environment();
+	let app = application_fixture.application.clone();
+	let a = token(&f, "a", "user").await;
+	let b = token(&f, "b", "user").await;
+	trace_errors();
+	f.registry
+		.register(
+			&aidash_domain::tenancy::TenantName::new("a").unwrap(),
+			tool("racing"),
+		)
+		.await
+		.unwrap();
+	approve(&f, "a", &reference("racing")).await;
+	let package = publish(&app, &a, "racing").await;
+	let key = package["key"].as_str().unwrap();
+	let audience_path = format!("/api/marketplace/packages/{key}/audience");
+	assert_eq!(
+		request(
+			&app,
+			&a,
+			"PUT",
+			&audience_path,
+			json!({"expected_revision":1,"tenants":["a","b"]})
+		)
+		.await
+		.0,
+		200
+	);
+	// Revocation wins: hold the same distribution lock before the installing
+	// request reaches it, change the audience, then commit the barrier.
+	let mut barrier = f.store.pool.fixture_driver().begin().await.unwrap();
+	sqlx::query(
+		&Query::select()
+			.expr(Expr::cust("pg_advisory_xact_lock(74003201)"))
+			.to_string(PostgresQueryBuilder),
+	)
+	.execute(&mut *barrier)
+	.await
+	.unwrap();
+	{
+		let query_bind_1 = key;
+		let query_bind_2 = json!({"revision":3,"tenants":["a"]});
+		sqlx::query(
+			&Query::update()
+				.table(Alias::new("marketplace_audiences"))
+				.value_expr(
+					Alias::new("document"),
+					SimpleExpr::CustomWithExpr(
+						"(?)".to_owned(),
+						vec![Expr::value(query_bind_2.to_owned()).into()],
+					),
+				)
+				.and_where(SimpleExpr::CustomWithExpr(
+					"(key=?)".to_owned(),
+					vec![Expr::value(query_bind_1.to_owned()).into()],
+				))
+				.to_string(PostgresQueryBuilder),
+		)
+		.execute(&mut *barrier)
+		.await
+	}
+	.unwrap();
+	let (app2, b2, package2) = (app.clone(), b.clone(), package.clone());
+	let blocked =
+		tokio::spawn(
+			async move { install(&app2, &b2, &package2, &install_input(&package2)).await },
+		);
+	let stage = |step: &str| format!("audience revocation (database {schema}): {step}");
+	// The barrier probe needs a pool connection too, so it is bounded as well.
+	environment
+		.bounded(
+			stage("reach the revoking distribution barrier"),
+			wait_for_lock(&f, &schema, "%74003201%"),
+		)
+		.await;
+	environment
+		.bounded(
+			stage("commit the revoking distribution barrier"),
+			barrier.commit(),
+		)
+		.await
+		.unwrap();
+	assert_eq!(
+		environment
+			.bounded(stage("finish the blocked install"), blocked)
+			.await
+			.unwrap()
+			.0,
+		403
+	);
+	assert_eq!(
+		environment
+			.bounded(
+				stage("list installations after revocation"),
+				request(
+					&app,
+					&b,
+					"GET",
+					"/api/marketplace/installations",
+					Value::Null
+				)
+			)
+			.await
+			.1,
+		json!([])
+	);
+	// Installation wins: block its final success-event insertion after all
+	// protected reads/writes, then queue a revoker on the distribution lock.
+	assert_eq!(
+		environment
+			.bounded(
+				stage("restore the audience"),
+				request(
+					&app,
+					&a,
+					"PUT",
+					&audience_path,
+					json!({"expected_revision":3,"tenants":["a","b"]})
+				)
+			)
+			.await
+			.0,
+		200
+	);
+	let mut barrier = f.store.pool.fixture_driver().begin().await.unwrap();
+	sqlx::query(
+		&Query::select()
+			.expr(Expr::cust("pg_advisory_xact_lock(71003201)"))
+			.to_string(PostgresQueryBuilder),
+	)
+	.execute(&mut *barrier)
+	.await
+	.unwrap();
+	let (app2, b2, package2) = (app.clone(), b.clone(), package.clone());
+	let allowed =
+		tokio::spawn(
+			async move { install(&app2, &b2, &package2, &install_input(&package2)).await },
+		);
+	environment
+		.bounded(
+			stage("reach the event barrier"),
+			wait_for_lock(&f, &schema, "%71003201%"),
+		)
+		.await;
+	let (app2, a2) = (app.clone(), a.clone());
+	let revoked = tokio::spawn(async move {
+		request(
+			&app2,
+			&a2,
+			"PUT",
+			&audience_path,
+			json!({"expected_revision":4,"tenants":["a"]}),
+		)
+		.await
+	});
+	environment
+		.bounded(
+			stage("queue the revocation on the distribution lock"),
+			wait_for_lock(&f, &schema, "%74003201%"),
+		)
+		.await;
+	environment
+		.bounded(stage("commit the event barrier"), barrier.commit())
+		.await
+		.unwrap();
+	let installed = environment
+		.bounded(stage("finish the allowed install"), allowed)
+		.await
+		.unwrap();
+	assert_eq!(installed.0, 200, "{installed:?}");
+	assert_eq!(
+		environment
+			.bounded(stage("finish the queued revocation"), revoked)
+			.await
+			.unwrap()
+			.0,
+		200
+	);
+	assert_eq!(
+		environment
+			.bounded(
+				stage("read the revoked package"),
+				request(
+					&app,
+					&b,
+					"GET",
+					&format!("/api/marketplace/packages/{key}"),
+					Value::Null
+				)
+			)
+			.await
+			.0,
+		403
+	);
+	assert_eq!(
+		environment
+			.bounded(
+				stage("list installations after the install commit"),
+				request(
+					&app,
+					&b,
+					"GET",
+					"/api/marketplace/installations",
+					Value::Null
+				)
+			)
+			.await
+			.1
+			.as_array()
+			.unwrap()
+			.len(),
+		1
+	);
+	environment
+		.bounded(stage("clean up"), common::cleanup(f, &url, &schema))
+		.await;
+}
+
+#[rstest::rstest]
+#[timeout(common::TEST_BOUND)]
+#[case("credential")]
+#[case("policy")]
+#[tokio::test]
+async fn revoked_authority_cannot_commit_a_waiting_installation(
+	#[future(awt)]
+	#[from(common::native_application)]
+	application_fixture: common::ApplicationFixture,
+	#[case] authority: &str,
+) {
+	use reinhardt::query::{Alias, Expr, PostgresQueryBuilder, Query};
+	let _fixture = FIXTURE_LOCK.lock().await;
+	let (f, url, schema) = application_fixture.runtime.parts();
+	let app = application_fixture.application.clone();
+	let a = token(&f, "a", "user").await;
+	trace_errors();
+	f.registry
+		.register(
+			&aidash_domain::tenancy::TenantName::new("a").unwrap(),
+			tool("revocation"),
+		)
+		.await
+		.unwrap();
+	approve(&f, "a", &reference("revocation")).await;
+	let package = publish(&app, &a, "revocation").await;
+	let mut barrier = f.store.pool.fixture_driver().begin().await.unwrap();
+	let query = if authority == "credential" {
+		Query::update()
+			.table(Alias::new("authorization_credentials"))
+			.value_expr(Alias::new("revoked_at"), Expr::cust("clock_timestamp()"))
+			.and_where(Expr::cust("tenant='a'"))
+			.to_string(PostgresQueryBuilder)
+	} else {
+		Query::update()
+			.table(Alias::new("authorization_bundles"))
+			.value_expr(Alias::new("document"), Expr::cust("$1"))
+			.and_where(Expr::cust("tenant='a'"))
+			.to_string(PostgresQueryBuilder)
+	};
+	if authority == "credential" {
+		sqlx::query(&query).execute(&mut *barrier).await.unwrap();
+	} else {
+		sqlx::query(&query)
+			.bind(deny(bundle("a", "user"), json!(["marketplace.install"])))
+			.execute(&mut *barrier)
+			.await
+			.unwrap();
+	}
+	let (app2, a2, package2) = (app.clone(), a.clone(), package.clone());
+	let blocked =
+		tokio::spawn(
+			async move { install(&app2, &a2, &package2, &install_input(&package2)).await },
+		);
+	wait_for_lock(
+		&f,
+		&schema,
+		if authority == "credential" {
+			"%authorization_credentials%"
+		} else {
+			"%authorization_bundles%"
+		},
+	)
+	.await;
+	barrier.commit().await.unwrap();
+	let denied = blocked.await.unwrap();
+	assert!(matches!(denied.0, 401 | 403), "{denied:?}");
+	assert!(
+		!f.registry
+			.list(
+				&aidash_domain::tenancy::TenantName::new("a").unwrap(),
+				&Default::default()
+			)
+			.await
+			.unwrap()
+			.iter()
+			.any(|e| e.installation.is_some())
+	);
+	assert!(
+		!f.store
+			.events(&TEST_FIXTURE, 0, None, 1000)
+			.await
+			.unwrap()
+			.iter()
+			.any(|e| e.kind == "marketplace.installed")
+	);
+	common::cleanup(f, &url, &schema).await;
+}
+
+#[rstest::rstest]
+#[timeout(common::TEST_BOUND)]
+#[tokio::test]
+async fn new_runs_select_active_revision_and_restarted_runs_keep_exact_old_reference(
+	#[future(awt)]
+	#[from(common::native_application)]
+	application_fixture: common::ApplicationFixture,
+) {
+	let _fixture = FIXTURE_LOCK.lock().await;
+	let (f, url, schema) = application_fixture.runtime.parts();
+	let app = application_fixture.application.clone();
+	let a = token(&f, "a", "user").await;
+	trace_errors();
+	let model:Entry=serde_json::from_value(json!({"id":"model","version":"1.0.0","kind":"model","name":{"en":"Model"},"description":{"en":"fixture"},"config":{"provider":"openrouter","model_id":"fixture/model","endpoint":"http://localhost:9","context_window":128000,"max_output_tokens":1024,"modalities":["text"],"cost":{}}})).unwrap();
+	f.registry
+		.register(
+			&aidash_domain::tenancy::TenantName::new("a").unwrap(),
+			model,
+		)
+		.await
+		.unwrap();
+	let agent:Entry=serde_json::from_value(json!({"id":"agent","version":"1.0.0","kind":"agent","name":{"en":"Agent"},"description":{"en":"fixture"},"config":{"model":reference("model"),"instructions":"Original instructions","schema_version":1,"bindings":[],"remove_default":[]}})).unwrap();
+	f.registry
+		.register(
+			&aidash_domain::tenancy::TenantName::new("a").unwrap(),
+			agent,
+		)
+		.await
+		.unwrap();
+	approve(&f, "a", &reference("agent")).await;
+	approve(&f, "a", &reference("model")).await;
+	let package = publish(&app, &a, "agent").await;
+	let original = install(&app, &a, &package, &install_input(&package)).await;
+	assert_eq!(original.0, 200, "{original:?}");
+	assert_eq!(
+		activate(&app, &f, "a", &original.1, 1, 0, 0, true).await.0,
+		200
+	);
+	let old_ref = EntityRef {
+		id: original.1["entry"]["id"].as_str().unwrap().into(),
+		version: "1.0.0".into(),
+	};
+	let mut authority = bundle("a", "user");
+	authority["subjects"][aidash_server::domain::qualified_agent(
+		&aidash_domain::nodes::NodeAddress::derived(f.config.deployment.as_str(), "a"),
+		&old_ref.id,
+		&old_ref.version,
+	)] = json!({"kind":"agent","roles":["manager"]});
+	policy(&f, "a", 1, authority.clone()).await;
+	let workspace = request(
+		&app,
+		&a,
+		"POST",
+		"/api/workspaces",
+		json!({"title":"Pinned","goal":"Test pinned definitions"}),
+	)
+	.await;
+	assert_eq!(workspace.0, 200, "{workspace:?}");
+	let task_path = format!(
+		"/api/workspaces/{}/tasks",
+		workspace.1["id"].as_str().unwrap()
+	);
+	let task = request(
+		&app,
+		&a,
+		"POST",
+		&task_path,
+		json!({"title":"First","description":"Pinned old run"}),
+	)
+	.await;
+	let claimed = request(
+		&app,
+		&a,
+		"POST",
+		&format!("/api/tasks/{}/claim", task.1["id"].as_str().unwrap()),
+		json!({"revision":0,"agent":old_ref}),
+	)
+	.await;
+	assert_eq!(claimed.0, 200, "{claimed:?}");
+	let run = f.store.runs(&TEST_FIXTURE).await.unwrap().remove(0);
+	assert_eq!(run.agent_id, old_ref.id);
+	let installed_id = original.1["installation"]["id"].as_str().unwrap();
+	let changed=request(&app,&a,"POST",&format!("/api/marketplace/installations/{installed_id}"),json!({"expected_revision":1,"config":{"instructions":"Replacement instructions"},"idempotency_key":Uuid::new_v4()})).await;
+	assert_eq!(changed.0, 200, "{changed:?}");
+	assert_eq!(
+		activate(&app, &f, "a", &original.1, 2, 1, 0, true).await.0,
+		200
+	);
+	let new_ref = EntityRef {
+		id: changed.1["entry"]["id"].as_str().unwrap().into(),
+		version: "1.0.0".into(),
+	};
+	authority["subjects"][aidash_server::domain::qualified_agent(
+		&aidash_domain::nodes::NodeAddress::derived(f.config.deployment.as_str(), "a"),
+		&new_ref.id,
+		&new_ref.version,
+	)] = json!({"kind":"agent","roles":["manager"]});
+	policy(&f, "a", 2, authority).await;
+	let task2 = request(
+		&app,
+		&a,
+		"POST",
+		&task_path,
+		json!({"title":"Second","description":"Select active revision"}),
+	)
+	.await;
+	let claim_path = format!("/api/tasks/{}/claim", task2.1["id"].as_str().unwrap());
+	assert_eq!(
+		request(
+			&app,
+			&a,
+			"POST",
+			&claim_path,
+			json!({"revision":0,"agent":old_ref})
+		)
+		.await
+		.0,
+		403
+	);
+	let authorization = Authorization {
+		pool: f.store.pool.clone(),
+	};
+	let area_path = format!("/api/runs/{}/working-area", run.id);
+	let available = request(&app, &a, "GET", &area_path, Value::Null).await;
+	assert_eq!(
+		available.0, 200,
+		"default file Tools require an admitted working area: {available:?}"
+	);
+	authorization
+		.set_catalog(
+			"a",
+			&aidash_domain::nodes::NodeName::derived("a"),
+			&reference("model"),
+			1,
+			false,
+			"deployment_administrator",
+		)
+		.await
+		.unwrap();
+	let denied = request(&app, &a, "GET", &area_path, Value::Null).await;
+	assert_eq!(
+		denied.0, 403,
+		"a direct capability boundary must recheck pinned approvals: {denied:?}"
+	);
+	assert_eq!(
+		request(
+			&app,
+			&a,
+			"POST",
+			&claim_path,
+			json!({"revision":0,"agent":new_ref})
+		)
+		.await
+		.0,
+		403
+	);
+	authorization
+		.set_catalog(
+			"a",
+			&aidash_domain::nodes::NodeName::derived("a"),
+			&reference("model"),
+			2,
+			true,
+			"deployment_administrator",
+		)
+		.await
+		.unwrap();
+	assert_eq!(
+		request(
+			&app,
+			&a,
+			"POST",
+			&claim_path,
+			json!({"revision":0,"agent":new_ref})
+		)
+		.await
+		.0,
+		200
+	);
+	assert_eq!(
+		f.store.run(&TEST_FIXTURE, run.id).await.unwrap().agent_id,
+		old_ref.id
+	);
+	assert_eq!(
+		f.registry
+			.get(
+				&aidash_domain::tenancy::TenantName::new("a").unwrap(),
+				&old_ref.id,
+				&old_ref.version
+			)
+			.await
+			.unwrap()
+			.config["instructions"],
+		"Original instructions"
+	);
+	// A fresh harness resumes from durable rows, not a current active alias.
+	assert!(
+		aidash_server::harness::Harness {
+			federation: f.clone()
+		}
+		.worker_once()
+		.await
+		.unwrap()
+	);
+	assert_eq!(
+		f.store
+			.run(&TEST_FIXTURE, run.id)
+			.await
+			.unwrap()
+			.phase()
+			.as_str(),
+		"THINKING"
+	);
+	assert_eq!(
+		activate(&app, &f, "a", &original.1, 1, 2, 1, false).await.0,
+		200
+	);
+	// The worker orders both runnable revisions by their last update. The new
+	// Run can precede the old Run's next boundary after its first step completes.
+	for _ in 0..2 {
+		assert!(
+			aidash_server::harness::Harness {
+				federation: f.clone()
+			}
+			.worker_once()
+			.await
+			.unwrap()
+		);
+		if f.store.run(&TEST_FIXTURE, run.id).await.unwrap().control
+			== aidash_server::domain::RunControl::Paused
+		{
+			break;
+		}
+	}
+	let paused = f.store.run(&TEST_FIXTURE, run.id).await.unwrap();
+	assert_eq!(paused.control, aidash_server::domain::RunControl::Paused);
+	assert_eq!(paused.agent_id, old_ref.id);
+	let active = f
+		.store
+		.runs(&TEST_FIXTURE)
+		.await
+		.unwrap()
+		.into_iter()
+		.find(|current| current.agent_id == new_ref.id)
+		.unwrap();
+	assert_eq!(active.control, aidash_server::domain::RunControl::Active);
+	common::cleanup(f, &url, &schema).await;
+}
+
+#[rstest::rstest]
+#[timeout(common::TEST_BOUND)]
+#[tokio::test]
+async fn policy_conditions_delegation_and_denies_apply_to_marketplace_boundaries(
+	#[future(awt)]
+	#[from(common::native_application)]
+	application_fixture: common::ApplicationFixture,
+) {
+	let _fixture = FIXTURE_LOCK.lock().await;
+	let (f, url, schema) = application_fixture.runtime.parts();
+	let app = application_fixture.application.clone();
+	let a = token(&f, "a", "user").await;
+	let b = token(&f, "b", "agent").await;
+	trace_errors();
+	f.registry
+		.register(
+			&aidash_domain::tenancy::TenantName::new("a").unwrap(),
+			tool("policy-source"),
+		)
+		.await
+		.unwrap();
+	approve(&f, "a", &reference("policy-source")).await;
+	let package = publish(&app, &a, "policy-source").await;
+	let key = package["key"].as_str().unwrap();
+	let path = format!("/api/marketplace/packages/{key}");
+	let installation = install(&app, &a, &package, &install_input(&package))
+		.await
+		.1;
+	let install_path = format!(
+		"/api/marketplace/installations/{}",
+		installation["installation"]["id"].as_str().unwrap()
+	);
+	let publication = json!({"source":reference("policy-source"),"package_id":"another","author":"A","idempotency_key":Uuid::new_v4()});
+	let mut revision = 1;
+	for action in [
+		"marketplace.browse",
+		"marketplace.read",
+		"marketplace.install",
+		"marketplace.publish",
+		"marketplace.share",
+		"marketplace.redistribution.manage",
+		"installation.configure",
+		"registry.export",
+	] {
+		policy(
+			&f,
+			"a",
+			revision,
+			deny(bundle("a", "user"), json!([action])),
+		)
+		.await;
+		revision += 1;
+		let result = match action {
+			"marketplace.browse" => {
+				let result = request(&app, &a, "GET", "/api/marketplace/packages", Value::Null).await;
+				assert_eq!(result.1, json!([]));
+				continue;
+			},
+			"marketplace.read" => request(&app, &a, "GET", &path, Value::Null).await,
+			"marketplace.install" => install(&app, &a, &package, &install_input(&package)).await,
+			"marketplace.share" => request(&app, &a, "PUT", &format!("{path}/audience"), json!({"expected_revision":1,"tenants":["a","b"]})).await,
+			"marketplace.redistribution.manage" => request(&app, &a, "PUT", &format!("{path}/consents/b"), json!({"expected_revision":0,"tenants":["b"]})).await,
+			"installation.configure" => request(&app, &a, "POST", &install_path, json!({"expected_revision":1,"config":{"transport":{"transport":"http","endpoint":"https://tools.example/changed","replay":"read_only"}},"idempotency_key":Uuid::new_v4()})).await,
+			_ => request(&app, &a, "POST", "/api/marketplace/packages", publication.clone()).await,
+		};
+		assert_eq!(result.0, 403, "deny {action}: {result:?}");
+	}
+	policy(&f, "a", revision, bundle("a", "user")).await;
+	assert_eq!(
+		request(
+			&app,
+			&a,
+			"PUT",
+			&format!("{path}/audience"),
+			json!({"expected_revision":1,"tenants":["a","b"]})
+		)
+		.await
+		.0,
+		200
+	);
+	let mut conditional = bundle("b", "agent");
+	conditional["policies"][0]["condition"] = json!({"op":"eq","left":{"source":"resource","path":"/owner_tenant"},"right":{"source":"literal","value":"a"}});
+	policy(&f, "b", 1, conditional.clone()).await;
+	assert_eq!(request(&app, &b, "GET", &path, Value::Null).await.0, 200);
+	conditional["policies"][0]["condition"]["right"]["value"] = json!("b");
+	policy(&f, "b", 2, conditional).await;
+	assert_eq!(request(&app, &b, "GET", &path, Value::Null).await.0, 403);
+	let mut delegated = bundle("b", "agent");
+	delegated["subjects"]["viewer"]["delegated_by"] = json!("parent");
+	delegated["subjects"]["parent"] = json!({"kind":"user"});
+	policy(&f, "b", 3, delegated).await;
+	assert_eq!(request(&app, &b, "GET", &path, Value::Null).await.0, 403);
+	let mut disabled = bundle("b", "agent");
+	disabled["subjects"]["viewer"]["enabled"] = json!(false);
+	policy(&f, "b", 4, disabled).await;
+	assert_eq!(request(&app, &b, "GET", &path, Value::Null).await.0, 403);
+	let mut default_deny = bundle("b", "agent");
+	default_deny["policies"] = json!([]);
+	policy(&f, "b", 5, default_deny).await;
+	assert_eq!(request(&app, &b, "GET", &path, Value::Null).await.0, 403);
+	let mut spoofed = publication;
+	spoofed["owner_tenant"] = json!("b");
+
+	let rejected = app
+		.clone()
+		.native_oneshot(
+			http::Request::post("/api/marketplace/packages")
+				.header("authorization", format!("Bearer {a}"))
+				.header("content-type", "application/json")
+				.body(bytes::Bytes::from(spoofed.to_string()))
+				.unwrap(),
+		)
+		.await
+		.unwrap();
+	assert_eq!(rejected.status, 422);
+	common::cleanup(f, &url, &schema).await;
+}
+
+#[rstest::rstest]
+#[timeout(common::TEST_BOUND)]
+#[tokio::test]
+async fn readable_distribution_precedes_dependency_preparation_and_bindings_pin_revisions(
+	#[future(awt)]
+	#[from(common::native_application)]
+	application_fixture: common::ApplicationFixture,
+) {
+	let _fixture = FIXTURE_LOCK.lock().await;
+	let (f, url, schema) = application_fixture.runtime.parts();
+	let app = application_fixture.application.clone();
+	let a = token(&f, "a", "user").await;
+	let b = token(&f, "b", "user").await;
+	trace_errors();
+	let model: Entry = serde_json::from_value(json!({"id":"model","version":"1.0.0","kind":"model","name":{"en":"Model"},"description":{"en":"fixture"},"config":{"provider":"openrouter","model_id":"fixture/model","endpoint":"http://localhost:9","context_window":128000,"max_output_tokens":1024,"modalities":["text"],"cost":{}}})).unwrap();
+	f.registry
+		.register(
+			&aidash_domain::tenancy::TenantName::new("a").unwrap(),
+			model,
+		)
+		.await
+		.unwrap();
+	f.registry
+		.register(
+			&aidash_domain::tenancy::TenantName::new("a").unwrap(),
+			tool("dependency"),
+		)
+		.await
+		.unwrap();
+	let agent: Entry = serde_json::from_value(json!({"id":"agent","version":"1.0.0","kind":"agent","name":{"en":"Agent"},"description":{"en":"fixture"},"config":{"model":reference("model"),"schema_version":1,"bindings":[{"kind":"tool","target":{"registry_deployment":f.config.deployment,"id":"dependency","version":"1.0.0"},"narrow":{}}],"remove_default":[],"instructions":"Use the exact tool"}})).unwrap();
+	f.registry
+		.register(
+			&aidash_domain::tenancy::TenantName::new("a").unwrap(),
+			agent,
+		)
+		.await
+		.unwrap();
+	for id in ["model", "dependency", "agent"] {
+		approve(&f, "a", &reference(id)).await;
+	}
+	approve(&f, "b", &reference("model")).await;
+	let dependency = publish(&app, &a, "dependency").await;
+	let agent = request(&app, &a, "POST", "/api/marketplace/packages", json!({"source":reference("agent"),"package_id":"agent","author":"A","idempotency_key":Uuid::new_v4()})).await.1;
+	let published: Value = sqlx::query_scalar(
+		&Query::select()
+			.column(Alias::new("document"))
+			.from(Alias::new("marketplace_versions"))
+			.and_where(Expr::col(Alias::new("key")).eq(Expr::value(agent["key"].as_str().unwrap())))
+			.to_string(PostgresQueryBuilder),
+	)
+	.fetch_one(f.store.pool.fixture_driver())
+	.await
+	.unwrap();
+	assert_eq!(
+		published["dependencies"]
+			.as_array()
+			.unwrap()
+			.iter()
+			.find(|d| d["reference"]["id"] == "dependency")
+			.unwrap()["package"],
+		dependency["key"],
+		"the published exact dependency supplies its disclosure path"
+	);
+	for package in [&dependency, &agent] {
+		assert_eq!(
+			request(
+				&app,
+				&a,
+				"PUT",
+				&format!(
+					"/api/marketplace/packages/{}/audience",
+					package["key"].as_str().unwrap()
+				),
+				json!({"expected_revision":1,"tenants":["a","b"]})
+			)
+			.await
+			.0,
+			200
+		);
+	}
+	assert_eq!(
+		request(
+			&app,
+			&b,
+			"GET",
+			&format!(
+				"/api/marketplace/packages/{}",
+				agent["key"].as_str().unwrap()
+			),
+			Value::Null
+		)
+		.await
+		.0,
+		200,
+		"a readable dependency package must not require a prior installation"
+	);
+	assert_eq!(
+		install(&app, &b, &agent, &install_input(&agent)).await.0,
+		403
+	);
+	assert_eq!(
+		request(
+			&app,
+			&b,
+			"GET",
+			"/api/marketplace/installations",
+			Value::Null
+		)
+		.await
+		.1,
+		json!([])
+	);
+	let dep_local = install(&app, &b, &dependency, &install_input(&dependency)).await;
+	assert_eq!(dep_local.0, 200, "{dep_local:?}");
+	let root = install(&app, &b, &agent, &install_input(&agent)).await;
+	assert_eq!(root.0, 200, "{root:?}");
+	assert_eq!(
+		root.1["entry"]["config"]["bindings"][0]["target"]["id"],
+		dep_local.1["entry"]["id"]
+	);
+	assert_eq!(activate(&app, &f, "b", &root.1, 1, 0, 0, true).await.0, 403);
+	assert_eq!(
+		activate(&app, &f, "b", &dep_local.1, 1, 0, 0, true).await.0,
+		200
+	);
+	assert_eq!(activate(&app, &f, "b", &root.1, 1, 0, 0, true).await.0, 200);
+	let dep_changed = request(&app, &b, "POST", &format!("/api/marketplace/installations/{}",dep_local.1["installation"]["id"].as_str().unwrap()), json!({"expected_revision":1,"config":{"transport":{"transport":"http","endpoint":"https://tools.example/new","replay":"read_only"}},"idempotency_key":Uuid::new_v4()})).await;
+	assert_eq!(dep_changed.0, 200, "{dep_changed:?}");
+	for config in [
+		json!({"model":reference("model")}),
+		json!({"tools":[]}),
+		json!({"skills":[]}),
+		json!({"cluster":null}),
+	] {
+		let mut input = install_input(&agent);
+		input["config"] = config.clone();
+		assert_eq!(install(&app, &b, &agent, &input).await.0, 400);
+		assert_eq!(
+			request(
+				&app,
+				&b,
+				"POST",
+				&format!(
+					"/api/marketplace/installations/{}",
+					root.1["installation"]["id"].as_str().unwrap()
+				),
+				json!({"expected_revision":1,"config":config,"idempotency_key":Uuid::new_v4()})
+			)
+			.await
+			.0,
+			400
+		);
+	}
+	let root_path = format!(
+		"/api/marketplace/installations/{}",
+		root.1["installation"]["id"].as_str().unwrap()
+	);
+	let bindings = json!([{"source":reference("dependency"),"target":{"id":dep_changed.1["entry"]["id"],"version":"1.0.0"}}]);
+	let next = request(
+		&app,
+		&b,
+		"POST",
+		&root_path,
+		json!({"expected_revision":1,"config":{},"bindings":bindings,"idempotency_key":Uuid::new_v4()}),
+	)
+	.await;
+	assert_eq!(next.0, 200, "{next:?}");
+	assert_eq!(next.1["revision"], 2);
+	assert_eq!(next.1["approved"], false);
+	assert_eq!(next.1["installation"]["active_revision"], 1);
+	assert_eq!(
+		root.1["entry"]["config"]["bindings"][0]["target"]["id"],
+		dep_local.1["entry"]["id"]
+	);
+	let wrong_kind = json!([{"source":reference("dependency"),"target":reference("model")}]);
+	assert_eq!(
+		request(
+			&app,
+			&b,
+			"POST",
+			&root_path,
+			json!({"expected_revision":2,"config":{},"bindings":wrong_kind,"idempotency_key":Uuid::new_v4()})
+		)
+		.await
+		.0,
+		403
+	);
+	// Pending configuration must not replace the still-authorized active
+	// dependency when the publisher withdraws distribution to this recipient.
+	let mut authority = bundle("b", "user");
+	authority["policies"].as_array_mut().unwrap().push(json!({"id":"deny-pending","effect":"deny","subjects":{"any":true},"actions":["installation.read"],"resources":{"kinds":["installation"],"ids":[dep_local.1["installation"]["id"]]},"condition":{"op":"eq","left":{"source":"resource","path":"/installation_revision"},"right":{"source":"literal","value":2}}}));
+	policy(&f, "b", 1, authority).await;
+	assert_eq!(
+		request(
+			&app,
+			&a,
+			"PUT",
+			&format!(
+				"/api/marketplace/packages/{}/audience",
+				dependency["key"].as_str().unwrap()
+			),
+			json!({"expected_revision":2,"tenants":["a"]})
+		)
+		.await
+		.0,
+		200
+	);
+	let detail = request(
+		&app,
+		&b,
+		"GET",
+		&format!(
+			"/api/marketplace/packages/{}",
+			agent["key"].as_str().unwrap()
+		),
+		Value::Null,
+	)
+	.await;
+	assert_eq!(
+		detail.0, 200,
+		"the active local dependency must retain manifest access: {detail:?}"
+	);
+	common::cleanup(f, &url, &schema).await;
+}
+
+#[rstest::rstest]
+#[timeout(common::TEST_BOUND)]
+#[tokio::test]
+async fn response_handoff_releases_locks_before_body_drain_and_rechecks_event_replay(
+	#[future(awt)]
+	#[from(common::native_application)]
+	application_fixture: common::ApplicationFixture,
+) {
+	use futures_util::StreamExt;
+	use http::Request;
+
+	let _fixture = FIXTURE_LOCK.lock().await;
+	let (f, url, schema) = application_fixture.runtime.parts();
+	let app = application_fixture.application.clone();
+	let a = token(&f, "a", "user").await;
+	let b = token(&f, "b", "user").await;
+	trace_errors();
+	f.registry
+		.register(
+			&aidash_domain::tenancy::TenantName::new("a").unwrap(),
+			tool("handoff"),
+		)
+		.await
+		.unwrap();
+	approve(&f, "a", &reference("handoff")).await;
+	let package = publish(&app, &a, "handoff").await;
+	let key = package["key"].as_str().unwrap();
+	let audience = format!("/api/marketplace/packages/{key}/audience");
+	assert_eq!(
+		request(
+			&app,
+			&a,
+			"PUT",
+			&audience,
+			json!({"expected_revision":1,"tenants":["a","b"]})
+		)
+		.await
+		.0,
+		200
+	);
+	let state = request(&app, &b, "GET", "/api/state", Value::Null).await;
+	assert_eq!(state.0, 200, "{state:?}");
+	assert!(
+		state.1["events"]
+			.as_array()
+			.unwrap()
+			.iter()
+			.any(|e| e["kind"] == "marketplace.published" && e["data"]["key"] == key)
+	);
+	assert!(!state.1["events"].to_string().contains("marketplace.audit"));
+	let get = |path: &str| {
+		Request::get(path)
+			.header("authorization", format!("Bearer {b}"))
+			.body(bytes::Bytes::new())
+			.unwrap()
+	};
+	// The shared SSE service must include authorized global Marketplace events,
+	// even though this subject has no Workspace events. Audit events stay hidden.
+	let mut readable = app
+		.clone()
+		.native_oneshot(get("/api/events/stream?after=0"))
+		.await
+		.unwrap();
+	assert_eq!(readable.status, 200);
+	let mut readable = readable.take_stream_body().unwrap();
+	let frame = tokio::time::timeout(std::time::Duration::from_secs(3), readable.next())
+		.await
+		.expect("authorized Marketplace replay must emit a frame")
+		.unwrap()
+		.unwrap();
+	let frame = String::from_utf8_lossy(&frame);
+	assert!(frame.contains("marketplace.published"), "{frame}");
+	assert!(frame.contains(key), "{frame}");
+	assert!(!frame.contains("marketplace.audit"), "{frame}");
+	drop(readable);
+	// Do not poll either body until the distribution has been withdrawn.
+	let response = app
+		.clone()
+		.native_oneshot(get(&format!("/api/marketplace/packages/{key}")))
+		.await
+		.unwrap();
+	assert_eq!(response.status, 200);
+	assert_eq!(response.headers["cache-control"], "no-store");
+	let mut stream = app
+		.clone()
+		.native_oneshot(get("/api/events/stream?after=0"))
+		.await
+		.unwrap();
+	assert_eq!(stream.status, 200);
+	let withdrawn = tokio::time::timeout(
+		std::time::Duration::from_secs(3),
+		request(
+			&app,
+			&a,
+			"PUT",
+			&audience,
+			json!({"expected_revision":2,"tenants":["a"]}),
+		),
+	)
+	.await
+	.expect("slow HTTP or SSE consumers must not retain database leases");
+	assert_eq!(withdrawn.0, 200);
+	let state = request(&app, &b, "GET", "/api/state", Value::Null).await;
+	assert_eq!(state.0, 200);
+	assert!(
+		!state.1["events"].to_string().contains(key),
+		"withdrawn package leaked through initial state"
+	);
+
+	let authorized_before_revoke = finite_body(response).await;
+	assert!(String::from_utf8_lossy(&authorized_before_revoke).contains("handoff"));
+	let mut frames = stream.take_stream_body().unwrap();
+	assert!(
+		tokio::time::timeout(std::time::Duration::from_millis(650), frames.next())
+			.await
+			.is_err(),
+		"replay admitted before withdrawal must not newly queue a protected frame"
+	);
+	drop(frames);
+	assert_eq!(
+		request(&app, &b, "GET", "/api/events", Value::Null).await.1,
+		json!([])
+	);
+	assert_eq!(
+		request(
+			&app,
+			&b,
+			"GET",
+			&format!("/api/marketplace/packages/{key}"),
+			Value::Null
+		)
+		.await
+		.0,
+		403
+	);
+	let events = f.store.events(&TEST_FIXTURE, 0, None, 1000).await.unwrap();
+	let audit = events
+		.iter()
+		.find(|e| {
+			e.kind == "marketplace.audit"
+				&& e.data["outcome"] == "denied"
+				&& e.data["tenant"] == "b"
+		})
+		.expect("resource denial audit survives the rolled back request");
+	assert!(audit.data["request_id"].is_string());
+	assert!(audit.data["policy_revision"].is_number());
+	assert!(!audit.data.to_string().contains(&b));
+	common::cleanup(f, &url, &schema).await;
+}
+
+#[rstest::rstest]
+#[timeout(common::TEST_BOUND)]
+#[tokio::test]
+async fn each_audience_tenant_reads_its_own_copy_of_the_events_and_no_other_tenant_reads_one(
+	#[future(awt)]
+	#[from(common::native_application)]
+	application_fixture: common::ApplicationFixture,
+) {
+	use aidash_application::tenancy::TenancyScope;
+	let _fixture = FIXTURE_LOCK.lock().await;
+	let (f, url, schema) = application_fixture.runtime.parts();
+	let app = application_fixture.application.clone();
+	let a = token(&f, "a", "user").await;
+	token(&f, "b", "user").await;
+	let c = token(&f, "c", "user").await;
+	token(&f, "gone", "user").await;
+	sqlx::query(
+		&Query::insert()
+			.into_table(Alias::new("tenant_deletions"))
+			.columns(
+				[
+					"id",
+					"tenant",
+					"deleted_at",
+					"deleted_by_kind",
+					"purge_after",
+					"purge_failures",
+				]
+				.map(Alias::new),
+			)
+			.from_subquery(
+				Query::select()
+					.expr(Expr::value(Uuid::new_v4()))
+					.expr(Expr::value("gone"))
+					.expr(Expr::cust("now()"))
+					.expr(Expr::value("deployment_administrator"))
+					.expr(Expr::cust("now() + interval '30 days'"))
+					.expr(Expr::value(0_i64))
+					.to_owned(),
+			)
+			.to_string(PostgresQueryBuilder),
+	)
+	.execute(f.store.pool.fixture_driver())
+	.await
+	.unwrap();
+	trace_errors();
+	f.registry
+		.register(
+			&aidash_domain::tenancy::TenantName::new("a").unwrap(),
+			tool("announced"),
+		)
+		.await
+		.unwrap();
+	approve(&f, "a", &reference("announced")).await;
+	let package = publish(&app, &a, "announced").await;
+	let key = package["key"].as_str().unwrap();
+	let marketplace_events = |tenant: &'static str| {
+		let store = &f.store;
+		async move {
+			store
+				.events(&TenancyScope::tenant(tenant).unwrap(), 0, None, 1000)
+				.await
+				.unwrap()
+				.into_iter()
+				.filter(|e| e.kind.starts_with("marketplace.") && e.data["key"] == key)
+				.map(|e| e.kind)
+				.collect::<Vec<_>>()
+		}
+	};
+	assert_eq!(marketplace_events("a").await, ["marketplace.published"]);
+	// Act: the audience names a Tenant with no root record and a deleted one beside a real one.
+	let shared = request(
+		&app,
+		&a,
+		"PUT",
+		&format!("/api/marketplace/packages/{key}/audience"),
+		json!({"expected_revision":1,"tenants":["a","b","ghost","gone"]}),
+	)
+	.await;
+	assert_eq!(shared.0, 200, "{shared:?}");
+	// Assert: the publisher keeps its own events, and b has its own copies.
+	assert_eq!(
+		marketplace_events("a").await,
+		["marketplace.published", "marketplace.distribution_changed"]
+	);
+	assert_eq!(
+		marketplace_events("b").await,
+		["marketplace.published", "marketplace.distribution_changed"]
+	);
+	assert!(marketplace_events("c").await.is_empty());
+	assert!(marketplace_events("ghost").await.is_empty());
+	assert!(marketplace_events("gone").await.is_empty());
+	// A Tenant outside the audience reads none through any surface.
+	let polled = request(&app, &c, "GET", "/api/events?after=0", Value::Null).await;
+	assert_eq!(polled.0, 200, "{polled:?}");
+	assert!(!polled.1.to_string().contains(key), "{polled:?}");
+	let state = request(&app, &c, "GET", "/api/state", Value::Null).await;
+	assert_eq!(state.0, 200, "{state:?}");
+	assert!(!state.1["events"].to_string().contains(key), "{state:?}");
+	// A consent change is the owner's to read, so it reaches no recipient.
+	let consent = request(
+		&app,
+		&a,
+		"PUT",
+		&format!("/api/marketplace/packages/{key}/consents/b"),
+		json!({"expected_revision":0,"tenants":["b"]}),
+	)
+	.await;
+	assert_eq!(consent.0, 200, "{consent:?}");
+	assert_eq!(marketplace_events("a").await.len(), 3);
+	assert_eq!(marketplace_events("b").await.len(), 2);
+	common::cleanup(f, &url, &schema).await;
+}
+
+#[rstest::rstest]
+#[timeout(common::TEST_BOUND)]
+#[case("dependency", false)]
+#[case("dependency", true)]
+#[case("consent", false)]
+#[case("consent", true)]
+#[tokio::test]
+async fn live_dependency_and_consent_leases_order_installation_with_revocation(
+	#[future(awt)]
+	#[from(common::native_application)]
+	application_fixture: common::ApplicationFixture,
+	#[case] boundary: &str,
+	#[case] installation_wins: bool,
+) {
+	use reinhardt::query::{Alias, Expr, PostgresQueryBuilder, Query};
+	let _fixture = FIXTURE_LOCK.lock().await;
+	let (f, url, schema) = application_fixture.runtime.parts();
+	let app = application_fixture.application.clone();
+	let a = token(&f, "a", "user").await;
+	let b = token(&f, "b", "user").await;
+	let c = token(&f, "c", "user").await;
+	trace_errors();
+	f.registry
+		.register(
+			&aidash_domain::tenancy::TenantName::new("a").unwrap(),
+			tool("race-root"),
+		)
+		.await
+		.unwrap();
+	f.registry
+		.register(
+			&aidash_domain::tenancy::TenantName::new("a").unwrap(),
+			tool("race-dependency"),
+		)
+		.await
+		.unwrap();
+	for tenant in ["a", "c"] {
+		approve(&f, tenant, &reference("race-dependency")).await;
+	}
+	approve(&f, "a", &reference("race-root")).await;
+	let publication = request(&app, &a, "POST", "/api/marketplace/packages", json!({"source":reference("race-root"),"package_id":"root","author":"A","dependencies":if boundary=="dependency" { vec![reference("race-dependency")] } else {vec![]},"idempotency_key":Uuid::new_v4()})).await;
+	assert_eq!(publication.0, 200, "{publication:?}");
+	let mut package = publication.1;
+	let source_key = package["key"].as_str().unwrap().to_owned();
+	assert_eq!(
+		request(
+			&app,
+			&a,
+			"PUT",
+			&format!("/api/marketplace/packages/{source_key}/audience"),
+			json!({"expected_revision":1,"tenants":["a","b","c"]})
+		)
+		.await
+		.0,
+		200
+	);
+	let consent_path = format!("/api/marketplace/packages/{source_key}/consents/b");
+	if boundary == "consent" {
+		assert_eq!(
+			request(
+				&app,
+				&a,
+				"PUT",
+				&consent_path,
+				json!({"expected_revision":0,"tenants":["b","c"]})
+			)
+			.await
+			.0,
+			200
+		);
+		let imported = install(&app, &b, &package, &install_input(&package)).await;
+		assert_eq!(imported.0, 200);
+		assert_eq!(
+			activate(&app, &f, "b", &imported.1, 1, 0, 0, true).await.0,
+			200
+		);
+		package = request(&app, &b, "POST", "/api/marketplace/packages", json!({"source":{"id":imported.1["entry"]["id"],"version":"1.0.0"},"package_id":"child","author":"B","idempotency_key":Uuid::new_v4()})).await.1;
+		assert_eq!(
+			request(
+				&app,
+				&b,
+				"PUT",
+				&format!(
+					"/api/marketplace/packages/{}/audience",
+					package["key"].as_str().unwrap()
+				),
+				json!({"expected_revision":1,"tenants":["b","c"]})
+			)
+			.await
+			.0,
+			200
+		);
+	}
+	let mut barrier = f.store.pool.fixture_driver().begin().await.unwrap();
+	if installation_wins || boundary == "consent" {
+		let lock = if installation_wins {
+			"pg_advisory_xact_lock(71003201)"
+		} else {
+			"pg_advisory_xact_lock(74003201)"
+		};
+		sqlx::query(
+			&Query::select()
+				.expr(Expr::cust(lock))
+				.to_string(PostgresQueryBuilder),
+		)
+		.execute(&mut *barrier)
+		.await
+		.unwrap();
+	}
+	if !installation_wins {
+		if boundary == "dependency" {
+			sqlx::query(
+				&Query::update()
+					.table(Alias::new("authorization_catalog"))
+					.value(Alias::new("enabled"), false)
+					.and_where(Expr::cust("tenant='c' AND entry_id='race-dependency'"))
+					.to_string(PostgresQueryBuilder),
+			)
+			.execute(&mut *barrier)
+			.await
+			.unwrap();
+		} else {
+			let consent_key = aidash_server::registry::digest(&json!([source_key, "b"]))
+				.trim_start_matches("sha256:")
+				.to_owned();
+			{
+				let query_bind_1 = consent_key;
+				let query_bind_2 = json!({"revision":2,"tenants":[]});
+				sqlx::query(
+					&Query::update()
+						.table(Alias::new("marketplace_consents"))
+						.value_expr(
+							Alias::new("document"),
+							SimpleExpr::CustomWithExpr(
+								"(?)".to_owned(),
+								vec![Expr::value(query_bind_2.to_owned()).into()],
+							),
+						)
+						.and_where(SimpleExpr::CustomWithExpr(
+							"(key=?)".to_owned(),
+							vec![Expr::value(query_bind_1.to_owned()).into()],
+						))
+						.to_string(PostgresQueryBuilder),
+				)
+				.execute(&mut *barrier)
+				.await
+			}
+			.unwrap();
+		}
+	}
+	let (app2, c2, package2) = (app.clone(), c.clone(), package.clone());
+	let installing =
+		tokio::spawn(
+			async move { install(&app2, &c2, &package2, &install_input(&package2)).await },
+		);
+	wait_for_lock(
+		&f,
+		&schema,
+		if installation_wins {
+			"%71003201%"
+		} else if boundary == "consent" {
+			"%74003201%"
+		} else {
+			"%authorization_catalog%"
+		},
+	)
+	.await;
+	let revoking = if installation_wins {
+		let (app2, a2, f2) = (app.clone(), a.clone(), f.clone());
+		let dependency = boundary == "dependency";
+		let task = tokio::spawn(async move {
+			if dependency {
+				Authorization {
+					pool: f2.store.pool.clone(),
+				}
+				.set_catalog(
+					"c",
+					&aidash_domain::nodes::NodeName::derived("c"),
+					&reference("race-dependency"),
+					1,
+					false,
+					"deployment_administrator",
+				)
+				.await
+				.unwrap();
+			} else {
+				assert_eq!(
+					request(
+						&app2,
+						&a2,
+						"PUT",
+						&consent_path,
+						json!({"expected_revision":1,"tenants":[]})
+					)
+					.await
+					.0,
+					200
+				);
+			}
+		});
+		wait_for_lock(
+			&f,
+			&schema,
+			if dependency {
+				"%authorization_catalog%"
+			} else {
+				"%74003201%"
+			},
+		)
+		.await;
+		Some(task)
+	} else {
+		None
+	};
+	barrier.commit().await.unwrap();
+	let result = installing.await.unwrap();
+	if let Some(task) = revoking {
+		task.await.unwrap();
+	}
+	assert_eq!(
+		result.0,
+		if installation_wins { 200 } else { 403 },
+		"{boundary}: {result:?}"
+	);
+	let successes = f
+		.store
+		.events(&TEST_FIXTURE, 0, None, 1000)
+		.await
+		.unwrap()
+		.into_iter()
+		.filter(|e| e.kind == "marketplace.installed" && e.data["tenant"] == "c")
+		.count();
+	assert_eq!(successes, usize::from(installation_wins));
+	assert_eq!(
+		install(&app, &c, &package, &install_input(&package))
+			.await
+			.0,
+		403
+	);
+	common::cleanup(f, &url, &schema).await;
+}
+
+#[rstest::rstest]
+#[timeout(common::TEST_BOUND)]
+#[tokio::test]
+async fn immutable_versions_replays_and_recovery_keep_their_authority_boundaries(
+	#[future(awt)]
+	#[from(common::native_application)]
+	application_fixture: common::ApplicationFixture,
+) {
+	use reinhardt::query::{Alias, Expr, PostgresQueryBuilder, Query};
+	let _fixture = FIXTURE_LOCK.lock().await;
+	let (f, url, schema) = application_fixture.runtime.parts();
+	let app = application_fixture.application.clone();
+	let a = token(&f, "a", "user").await;
+	let b = token(&f, "b", "user").await;
+	// Migrations run as the table owner, as a deployment's migration Job does.
+	let connection = reinhardt::db::backends::DatabaseConnection::new(Arc::new(
+		reinhardt::db::backends::dialect::PostgresBackend::new(
+			common::owner_pool(f.store.pool.fixture_driver()).await,
+		),
+	));
+	let migrations = reinhardt::db::migrations::FilesystemSource::new(
+		std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("migrations"),
+	)
+	.all_migrations()
+	.await
+	.unwrap();
+	let mut executor =
+		reinhardt::db::migrations::executor::DatabaseMigrationExecutor::new(connection);
+	// Replay the complete native graph; a frozen baseline is never unrecorded.
+	let replay = executor.apply_migrations(&migrations).await.unwrap();
+	assert!(replay.applied.is_empty());
+	trace_errors();
+	f.registry
+		.register(
+			&aidash_domain::tenancy::TenantName::new("a").unwrap(),
+			tool("immutable-source"),
+		)
+		.await
+		.unwrap();
+	approve(&f, "a", &reference("immutable-source")).await;
+	f.registry
+		.register(
+			&aidash_domain::tenancy::TenantName::new("a").unwrap(),
+			tool("published-later"),
+		)
+		.await
+		.unwrap();
+	approve(&f, "a", &reference("published-later")).await;
+	approve(&f, "b", &reference("published-later")).await;
+	let input = json!({"source":reference("immutable-source"),"package_id":"immutable","author":"A","dependencies":[reference("published-later")],"idempotency_key":Uuid::new_v4()});
+	let published = request(&app, &a, "POST", "/api/marketplace/packages", input.clone()).await;
+	assert_eq!(published.0, 200, "{published:?}");
+	let renewed = Authorization {
+		pool: f.store.pool.clone(),
+	}
+	.issue_credential("a", "viewer", 3600, "deployment_administrator")
+	.await
+	.unwrap()
+	.token;
+	assert_eq!(
+		request(
+			// Act: rebuild the application to verify the committed request can be retried.
+			&common::application(f.clone()).await,
+			&renewed,
+			"POST",
+			"/api/marketplace/packages",
+			input.clone()
+		)
+		.await,
+		published
+	);
+	assert_eq!(
+		f.store
+			.events(&TEST_FIXTURE, 0, None, 1000)
+			.await
+			.unwrap()
+			.iter()
+			.filter(|e| e.kind == "marketplace.published")
+			.count(),
+		1
+	);
+	// Publishing an already-readable dependency later must not reinterpret an
+	// earlier idempotent result's immutable provenance/graph.
+	publish(&app, &a, "published-later").await;
+	assert_eq!(
+		request(
+			&app,
+			&renewed,
+			"POST",
+			"/api/marketplace/packages",
+			input.clone()
+		)
+		.await,
+		published
+	);
+	let key = published.1["key"].as_str().unwrap();
+	let audience = format!("/api/marketplace/packages/{key}/audience");
+	assert_eq!(
+		request(
+			&app,
+			&a,
+			"PUT",
+			&audience,
+			json!({"expected_revision":1,"tenants":["a","b"]})
+		)
+		.await
+		.0,
+		200
+	);
+	let mut second = tool("immutable-source");
+	second.version = "2.0.0".into();
+	f.registry
+		.register(
+			&aidash_domain::tenancy::TenantName::new("a").unwrap(),
+			second,
+		)
+		.await
+		.unwrap();
+	let second_ref = EntityRef {
+		id: "immutable-source".into(),
+		version: "2.0.0".into(),
+	};
+	approve(&f, "a", &second_ref).await;
+	let second = request(&app,&a,"POST","/api/marketplace/packages",json!({"source":second_ref,"package_id":"immutable","author":"A","idempotency_key":Uuid::new_v4()})).await;
+	assert_eq!(second.0, 200, "{second:?}");
+	assert_eq!(
+		request(
+			&app,
+			&b,
+			"GET",
+			&format!(
+				"/api/marketplace/packages/{}",
+				second.1["key"].as_str().unwrap()
+			),
+			Value::Null
+		)
+		.await
+		.0,
+		403,
+		"audiences never carry to a new version"
+	);
+	let installed = install(&app, &a, &published.1, &install_input(&published.1)).await;
+	assert_eq!(installed.0, 200);
+	let protected_id = installed.1["installation"]["id"].as_str().unwrap();
+	let replay_id = Uuid::new_v4();
+	let mut repeated = install_input(&published.1);
+	repeated["idempotency_key"] = json!(replay_id);
+	assert_eq!(install(&app, &a, &published.1, &repeated).await.0, 200);
+	let mut permission = bundle("a", "user");
+	permission["policies"].as_array_mut().unwrap().push(json!({"id":"old-result","effect":"deny","subjects":{"any":true},"actions":["installation.read"],"resources":{"kinds":["installation"],"ids":[protected_id]}}));
+	policy(&f, "a", 1, permission).await;
+	let mut changed_target = install_input(&second.1);
+	changed_target["idempotency_key"] = json!(replay_id);
+	assert_eq!(
+		install(&app, &a, &second.1, &changed_target).await.0,
+		403,
+		"a changed target must not probe an old now-hidden idempotency result"
+	);
+	policy(&f, "a", 2, bundle("a", "user")).await;
+	let mut changed = input.clone();
+	changed["author"] = json!("replacement");
+	changed["idempotency_key"] = json!(Uuid::new_v4());
+	assert_eq!(
+		request(&app, &a, "POST", "/api/marketplace/packages", changed)
+			.await
+			.0,
+		409
+	);
+	assert_eq!(
+		request(
+			&app,
+			&a,
+			"PUT",
+			&audience,
+			json!({"expected_revision":2,"tenants":["b"]})
+		)
+		.await
+		.0,
+		200
+	);
+	let installation_path = format!("/api/marketplace/installations/{protected_id}");
+	let before_replay = request(&app, &a, "GET", &installation_path, Value::Null).await;
+	assert_eq!(before_replay.0, 200, "{before_replay:?}");
+	// A native baseline replay must retain populated tenant projections exactly.
+	let replay = executor.apply_migrations(&migrations).await.unwrap();
+	assert!(replay.applied.is_empty());
+	let after_replay = request(&app, &a, "GET", &installation_path, Value::Null).await;
+	assert_eq!(after_replay, before_replay);
+	policy(
+		&f,
+		"a",
+		3,
+		deny(bundle("a", "user"), json!(["marketplace.read"])),
+	)
+	.await;
+	assert_eq!(
+		request(&app, &a, "POST", "/api/marketplace/packages", input)
+			.await
+			.0,
+		403,
+		"publication replay cannot recover currently denied read access"
+	);
+
+	// Even trusted SQL callers cannot overwrite immutable published bytes.
+	let update = Query::update()
+		.table(Alias::new("marketplace_versions"))
+		.value_expr(
+			Alias::new("document"),
+			Expr::cust("jsonb_set(document,'{manifest_source}','\"corrupted\"'::jsonb)"),
+		)
+		.and_where(Expr::cust("key=$1"))
+		.to_string(PostgresQueryBuilder);
+	assert!(
+		sqlx::query(&update)
+			.bind(key)
+			.execute(f.store.pool.fixture_driver())
+			.await
+			.is_err()
+	);
+	// Fault injection only: SeaQuery has no ALTER TRIGGER API. A corrupted
+	// backing store must still fail digest verification before sending bytes.
+	// Only the table owner can disable its trigger.
+	let owner = common::owner_pool(f.store.pool.fixture_driver()).await;
+	sqlx::query("ALTER TABLE marketplace_versions DISABLE TRIGGER marketplace_immutable")
+		.execute(&owner)
+		.await
+		.unwrap();
+	sqlx::query(&update)
+		.bind(key)
+		.execute(f.store.pool.fixture_driver())
+		.await
+		.unwrap();
+	sqlx::query("ALTER TABLE marketplace_versions ENABLE TRIGGER marketplace_immutable")
+		.execute(&owner)
+		.await
+		.unwrap();
+	assert_eq!(
+		request(
+			&app,
+			&b,
+			"GET",
+			&format!("/api/marketplace/packages/{key}"),
+			Value::Null
+		)
+		.await
+		.0,
+		409
+	);
+	assert_eq!(
+		install(&app, &b, &published.1, &install_input(&published.1))
+			.await
+			.0,
+		409
+	);
+	common::cleanup(f, &url, &schema).await;
+}
+
+#[rstest::rstest]
+#[timeout(common::TEST_BOUND)]
+#[tokio::test]
+async fn marketplace_event_polling_bounds_candidates_and_advances_past_denials(
+	#[future(awt)]
+	#[from(common::native_application)]
+	application_fixture: common::ApplicationFixture,
+) {
+	let _fixture = FIXTURE_LOCK.lock().await;
+	let (f, url, schema) = application_fixture.runtime.parts();
+	let app = application_fixture.application.clone();
+	let a = token(&f, "a", "user").await;
+	trace_errors();
+	f.registry
+		.register(
+			&aidash_domain::tenancy::TenantName::new("a").unwrap(),
+			tool("events"),
+		)
+		.await
+		.unwrap();
+	approve(&f, "a", &reference("events")).await;
+	let package = publish(&app, &a, "events").await;
+	let installed = install(&app, &a, &package, &install_input(&package)).await;
+	assert_eq!(installed.0, 200, "{installed:?}");
+	let after = f
+		.store
+		.events(&TEST_FIXTURE, 0, None, 1000)
+		.await
+		.unwrap()
+		.last()
+		.unwrap()
+		.sequence;
+	let identity = match (Authorization {
+		pool: f.store.pool.clone(),
+	})
+	.authenticate(&a)
+	.await
+	.unwrap()
+	{
+		aidash_server::authorization::identity::Actor::Subject(identity) => identity,
+		_ => unreachable!(),
+	};
+	let reader = aidash_server::authorization::workspace::Workspaces {
+		store: f.store.clone(),
+		identity,
+	};
+	// Each event is written in its own Tenant's scope, as the Marketplace does:
+	// row-level security hides Tenant b's events from Tenant a outright, while
+	// Tenant a's audits and removed installations stay visible to the database
+	// and are denied only by the reader's authority check.
+	let scope_a = aidash_application::tenancy::TenancyScope::tenant("a").unwrap();
+	let scope_b = aidash_application::tenancy::TenancyScope::tenant("b").unwrap();
+	// Tenant b exists, so that its events can reference its root record.
+	token(&f, "b", "user").await;
+	// Event sequence allocation serializes writers, so each Tenant's batch
+	// commits before the next one starts.
+	let mut tx_b = f.store.pool.begin(&scope_b).await.unwrap();
+	for _ in 0..512 {
+		f.store
+			.event(
+				&mut tx_b,
+				None,
+				"marketplace.installed",
+				json!({"tenant":"b","installation":"foreign"}),
+			)
+			.await
+			.unwrap();
+	}
+	tx_b.commit().await.unwrap();
+	let mut tx = f.store.pool.begin(&scope_a).await.unwrap();
+	for _ in 0..512 {
+		f.store
+			.event(
+				&mut tx,
+				None,
+				"marketplace.audit",
+				json!({"tenant":"a","installation":installed.1["installation"]["id"]}),
+			)
+			.await
+			.unwrap();
+	}
+	let mut denied_cursor = after;
+	for i in 0..4097 {
+		let event = f
+			.store
+			.event(
+				&mut tx,
+				None,
+				"marketplace.installed",
+				json!({"tenant":"a","installation":"removed-installation","revision":1}),
+			)
+			.await
+			.unwrap();
+		if i == 4095 {
+			denied_cursor = event.sequence;
+		}
+	}
+	tx.commit().await.unwrap();
+	// A state snapshot must release its authority lease after bounded work,
+	// even when older visible events exist behind thousands of denials.
+	let state = request(&app, &a, "GET", "/api/state", Value::Null).await;
+	assert_eq!(state.0, 200, "{state:?}");
+	assert_eq!(state.1["events"], json!([]));
+	let mut tx = f.store.pool.begin(&scope_a).await.unwrap();
+	let visible = f
+		.store
+		.event(
+			&mut tx,
+			None,
+			"marketplace.installed",
+			json!({"tenant":"a","installation":installed.1["installation"]["id"],"revision":1}),
+		)
+		.await
+		.unwrap();
+	tx.commit().await.unwrap();
+	let response = app
+		.clone()
+		.native_oneshot(
+			http::Request::get(format!("/api/events?after={after}"))
+				.header("authorization", format!("Bearer {a}"))
+				.body(bytes::Bytes::new())
+				.unwrap(),
+		)
+		.await
+		.unwrap();
+	assert_eq!(response.status, 200);
+	assert_eq!(
+		response.headers["x-aidash-event-cursor"],
+		denied_cursor.to_string()
+	);
+	let bytes = finite_body(response).await;
+	assert_eq!(serde_json::from_slice::<Value>(&bytes).unwrap(), json!([]));
+	let page = request(
+		&app,
+		&a,
+		"GET",
+		&format!("/api/events?after={denied_cursor}"),
+		Value::Null,
+	)
+	.await;
+	assert_eq!(page.0, 200, "{page:?}");
+	assert_eq!(page.1[0]["sequence"], visible.sequence);
+	let (events, cursor) = reader.poll_events(after, None, 1000).await.unwrap();
+	assert!(
+		events.is_empty(),
+		"one poll must stop before the distant visible event"
+	);
+	assert_eq!(
+		cursor, denied_cursor,
+		"audits and foreign tenants must not consume the candidate budget"
+	);
+	let (events, cursor) = reader.poll_events(cursor, None, 1000).await.unwrap();
+	assert_eq!(
+		events.iter().map(|e| e.sequence).collect::<Vec<_>>(),
+		vec![visible.sequence]
+	);
+	assert_eq!(cursor, visible.sequence);
+	common::cleanup(f, &url, &schema).await;
+}
+
+#[rstest::rstest]
+#[timeout(common::TEST_BOUND)]
+#[case("install", "logout", false)]
+#[case("install", "logout", true)]
+#[case("activation", "logout", false)]
+#[case("activation", "logout", true)]
+#[case("administration", "logout", false)]
+#[case("administration", "logout", true)]
+#[case("administration", "deployment_administrator_grant", false)]
+#[case("administration", "deployment_administrator_grant", true)]
+#[case("administration", "expiry", false)]
+#[tokio::test]
+async fn browser_authority_is_ordered_with_pending_marketplace_requests(
+	#[future(awt)]
+	#[from(browser_oidc_application)]
+	application_fixture: common::ApplicationFixture,
+	#[case] operation: &str,
+	#[case] revocation: &str,
+	#[case] mutation_wins: bool,
+) {
+	use reinhardt::query::{Alias, Expr, PostgresQueryBuilder, Query};
+	use sha2::{Digest, Sha256};
+
+	let _fixture = FIXTURE_LOCK.lock().await;
+	let (f, url, schema) = application_fixture.runtime.parts();
+	let app = application_fixture.application.clone();
+	let a = token(&f, "a", "user").await;
+	trace_errors();
+	f.registry
+		.register(
+			&aidash_domain::tenancy::TenantName::new("a").unwrap(),
+			tool("browser-source"),
+		)
+		.await
+		.unwrap();
+	approve(&f, "a", &reference("browser-source")).await;
+	let package = publish(&app, &a, "browser-source").await;
+	let identity = Uuid::new_v4();
+	let session = Uuid::new_v4();
+	let mapping = Uuid::new_v4();
+	let issued = Authorization {
+		pool: f.store.pool.clone(),
+	}
+	.issue_credential("a", "viewer", 3600, "deployment_administrator")
+	.await
+	.unwrap();
+	{
+		let query_bind_1 = identity;
+		sqlx::query(
+			&Query::insert()
+				.into_table(Alias::new("dashboard_identities"))
+				.columns(["id", "issuer", "subject", "last_valid_at"].map(Alias::new))
+				.from_subquery(
+					Query::select()
+						.expr(SimpleExpr::CustomWithExpr(
+							"(?)".to_owned(),
+							vec![Expr::value(query_bind_1.to_owned()).into()],
+						))
+						.expr(Expr::cust("'https://accounts.google.com'"))
+						.expr(Expr::cust("'fixture-user'"))
+						.expr(Expr::cust("clock_timestamp()"))
+						.to_owned(),
+				)
+				.to_string(PostgresQueryBuilder),
+		)
+		.execute(f.store.pool.fixture_driver())
+		.await
+	}
+	.unwrap();
+	{
+		let query_bind_1 = session;
+		let query_bind_2 = identity;
+		let query_bind_3 = common::browser_session_digest(b"marketplace-test-session");
+		let query_bind_4 = Sha256::digest(b"marketplace-test-csrf").to_vec();
+		sqlx::query(
+			&Query::insert()
+				.into_table(Alias::new("dashboard_sessions"))
+				.columns(
+					[
+						"id",
+						"identity_id",
+						"token_hash",
+						"csrf_hash",
+						"expires_at",
+						"created_at",
+						"last_activity_at",
+					]
+					.map(Alias::new),
+				)
+				.from_subquery(
+					Query::select()
+						.expr(SimpleExpr::CustomWithExpr(
+							"(?)".to_owned(),
+							vec![Expr::value(query_bind_1.to_owned()).into()],
+						))
+						.expr(SimpleExpr::CustomWithExpr(
+							"(?)".to_owned(),
+							vec![Expr::value(query_bind_2.to_owned()).into()],
+						))
+						.expr(SimpleExpr::CustomWithExpr(
+							"(?)".to_owned(),
+							vec![Expr::value(query_bind_3.to_owned()).into()],
+						))
+						.expr(SimpleExpr::CustomWithExpr(
+							"(?)".to_owned(),
+							vec![Expr::value(query_bind_4.to_owned()).into()],
+						))
+						.expr(Expr::cust("clock_timestamp()+interval '1 hour'"))
+						.expr(Expr::cust("clock_timestamp()"))
+						.expr(Expr::cust("clock_timestamp()"))
+						.to_owned(),
+				)
+				.to_string(PostgresQueryBuilder),
+		)
+		.execute(f.store.pool.fixture_driver())
+		.await
+	}
+	.unwrap();
+	{
+		let query_bind_1 = mapping;
+		let query_bind_2 = identity;
+		let query_bind_3 = issued.credential.id;
+		sqlx::query(
+			&Query::insert()
+				.into_table(Alias::new("dashboard_mappings"))
+				.columns(
+					["id", "identity_id", "tenant", "subject", "credential_id"].map(Alias::new),
+				)
+				.from_subquery(
+					Query::select()
+						.expr(SimpleExpr::CustomWithExpr(
+							"(?)".to_owned(),
+							vec![Expr::value(query_bind_1.to_owned()).into()],
+						))
+						.expr(SimpleExpr::CustomWithExpr(
+							"(?)".to_owned(),
+							vec![Expr::value(query_bind_2.to_owned()).into()],
+						))
+						.expr(Expr::cust("'a'"))
+						.expr(Expr::cust("'viewer'"))
+						.expr(SimpleExpr::CustomWithExpr(
+							"(?)".to_owned(),
+							vec![Expr::value(query_bind_3.to_owned()).into()],
+						))
+						.to_owned(),
+				)
+				.to_string(PostgresQueryBuilder),
+		)
+		.execute(f.store.pool.fixture_driver())
+		.await
+	}
+	.unwrap();
+
+	let deployment_administrator = operation == "administration";
+	if deployment_administrator {
+		{
+			let query_bind_1 = identity;
+			sqlx::query(
+				&Query::insert()
+					.into_table(Alias::new("dashboard_deployment_administrator_grants"))
+					.columns(["identity_id", "enabled", "revision"].map(Alias::new))
+					.from_subquery(
+						Query::select()
+							.expr(SimpleExpr::CustomWithExpr(
+								"(?)".to_owned(),
+								vec![Expr::value(query_bind_1.to_owned()).into()],
+							))
+							.expr(Expr::cust("TRUE"))
+							.expr(Expr::cust("1"))
+							.to_owned(),
+					)
+					.to_string(PostgresQueryBuilder),
+			)
+			.execute(f.store.pool.fixture_driver())
+			.await
+		}
+		.unwrap();
+	}
+	let (method, path, input, event_kind) = match operation {
+		"install" => (
+			"POST",
+			format!(
+				"/api/marketplace/packages/{}/install",
+				package["key"].as_str().unwrap()
+			),
+			install_input(&package),
+			"marketplace.installed",
+		),
+		"administration" => {
+			let installed = install(&app, &a, &package, &install_input(&package)).await;
+			assert_eq!(installed.0, 200, "{installed:?}");
+			(
+				"GET",
+				"/api/marketplace/administration?tenant=a".into(),
+				Value::Null,
+				"marketplace.installed",
+			)
+		}
+		"activation" => {
+			let installed = install(&app, &a, &package, &install_input(&package)).await;
+			assert_eq!(installed.0, 200, "{installed:?}");
+			(
+				"POST",
+				format!(
+					"/api/marketplace/installations/{}/activation",
+					installed.1["installation"]["id"].as_str().unwrap()
+				),
+				json!({"tenant":"a","revision":1,"expected_activation_revision":0,"expected_catalog_revision":0,"enabled":true}),
+				"marketplace.activation_changed",
+			)
+		}
+		_ => unreachable!(),
+	};
+	let before = f
+		.store
+		.events(&TEST_FIXTURE, 0, None, 1000)
+		.await
+		.unwrap()
+		.iter()
+		.filter(|e| e.kind == event_kind)
+		.count();
+	if revocation == "expiry" {
+		{
+			let query_bind_1 = session;
+			sqlx::query(
+				&Query::update()
+					.table(Alias::new("dashboard_sessions"))
+					.value_expr(
+						Alias::new("expires_at"),
+						Expr::cust("clock_timestamp()+interval '2 seconds'"),
+					)
+					.and_where(SimpleExpr::CustomWithExpr(
+						"(id=?)".to_owned(),
+						vec![Expr::value(query_bind_1.to_owned()).into()],
+					))
+					.to_string(PostgresQueryBuilder),
+			)
+			.execute(f.store.pool.fixture_driver())
+			.await
+		}
+		.unwrap();
+	}
+	let grant_revoke = Query::update()
+		.table(Alias::new("dashboard_deployment_administrator_grants"))
+		.value_expr(Alias::new("enabled"), Expr::cust("FALSE"))
+		.value_expr(Alias::new("revision"), Expr::cust("revision+1"))
+		.and_where(Expr::cust("identity_id=$1"))
+		.to_string(PostgresQueryBuilder);
+	let cookie_request = |method: &str, path: &str, value: Value| {
+		http::Request::builder()
+			.method(method)
+			.uri(path)
+			.header("cookie", "__Host-aidash-session=marketplace-test-session")
+			.header("origin", "https://127.0.0.1:8080")
+			.header("x-aidash-csrf", "marketplace-test-csrf")
+			.header(
+				"x-aidash-context",
+				if deployment_administrator {
+					"deployment_administrator".into()
+				} else {
+					format!("mapping:a:{mapping}")
+				},
+			)
+			.header("content-type", "application/json")
+			.body(bytes::Bytes::from(value.to_string()))
+			.unwrap()
+	};
+	let mut barrier = f.store.pool.fixture_driver().begin().await.unwrap();
+	let wait_at_commit = mutation_wins || revocation == "expiry";
+	if wait_at_commit {
+		sqlx::query(
+			&Query::select()
+				.expr(Expr::cust(if operation == "administration" {
+					"pg_advisory_xact_lock(74003201)"
+				} else {
+					"pg_advisory_xact_lock(71003201)"
+				}))
+				.to_string(PostgresQueryBuilder),
+		)
+		.execute(&mut *barrier)
+		.await
+		.unwrap();
+	} else if revocation == "deployment_administrator_grant" {
+		sqlx::query(&grant_revoke)
+			.bind(identity)
+			.execute(&mut *barrier)
+			.await
+			.unwrap();
+	} else {
+		{
+			let query_bind_1 = session;
+			sqlx::query(
+				&Query::update()
+					.table(Alias::new("dashboard_sessions"))
+					.value_expr(Alias::new("revoked_at"), Expr::cust("clock_timestamp()"))
+					.and_where(SimpleExpr::CustomWithExpr(
+						"(id=?)".to_owned(),
+						vec![Expr::value(query_bind_1.to_owned()).into()],
+					))
+					.to_string(PostgresQueryBuilder),
+			)
+			.execute(&mut *barrier)
+			.await
+		}
+		.unwrap();
+	}
+	let request = cookie_request(method, &path, input);
+	let app2 = app.clone();
+	let installing = tokio::spawn(async move { app2.native_oneshot(request).await.unwrap() });
+	wait_for_lock(
+		&f,
+		&schema,
+		if wait_at_commit {
+			if operation == "administration" {
+				"%74003201%"
+			} else {
+				"%71003201%"
+			}
+		} else if revocation == "deployment_administrator_grant" {
+			"%dashboard_deployment_administrator_grants%"
+		} else {
+			"%dashboard_sessions%"
+		},
+	)
+	.await;
+	let revoking = if mutation_wins {
+		let task = if revocation == "deployment_administrator_grant" {
+			let pool = f.store.pool.fixture_driver().clone();
+			let sql = grant_revoke.clone();
+			tokio::spawn(async move {
+				sqlx::query(&sql)
+					.bind(identity)
+					.execute(&pool)
+					.await
+					.unwrap();
+				200u16
+			})
+		} else {
+			let request = cookie_request("POST", "/auth/logout", json!({}));
+			let app2 = app.clone();
+			tokio::spawn(async move { app2.native_oneshot(request).await.unwrap().status.as_u16() })
+		};
+		wait_for_lock(
+			&f,
+			&schema,
+			if revocation == "deployment_administrator_grant" {
+				"%dashboard_deployment_administrator_grants%"
+			} else {
+				"%dashboard_sessions%"
+			},
+		)
+		.await;
+		Some(task)
+	} else {
+		None
+	};
+	if revocation == "expiry" {
+		tokio::time::sleep(std::time::Duration::from_secs(3)).await;
+	}
+	barrier.commit().await.unwrap();
+	assert_eq!(
+		installing.await.unwrap().status.as_u16(),
+		if mutation_wins {
+			200
+		} else if revocation == "deployment_administrator_grant" {
+			403
+		} else {
+			401
+		}
+	);
+	if let Some(task) = revoking {
+		assert_eq!(
+			task.await.unwrap(),
+			if revocation == "deployment_administrator_grant" {
+				200
+			} else {
+				204
+			}
+		);
+	}
+	assert_eq!(
+		f.store
+			.events(&TEST_FIXTURE, 0, None, 1000)
+			.await
+			.unwrap()
+			.iter()
+			.filter(|e| e.kind == event_kind)
+			.count(),
+		before + usize::from(mutation_wins && operation != "administration")
+	);
+	// The separate durable credential stays valid after logout; the browser
+	// session does not become a lifetime requirement for an already admitted Run.
+	assert!(
+		Authorization {
+			pool: f.store.pool.clone()
+		}
+		.authenticate(&issued.token)
+		.await
+		.is_ok()
+	);
+	common::cleanup(f, &url, &schema).await;
+}
+
+#[rstest::rstest]
+#[timeout(common::TEST_BOUND)]
+#[tokio::test]
+async fn global_event_cursors_bound_workspace_and_marketplace_candidates(
+	#[future(awt)]
+	#[from(common::native_application)]
+	application_fixture: common::ApplicationFixture,
+) {
+	use futures_util::StreamExt;
+	use http::Request;
+
+	let _fixture = FIXTURE_LOCK.lock().await;
+	let (f, url, schema) = application_fixture.runtime.parts();
+	let app = application_fixture.application.clone();
+	let a = token(&f, "a", "user").await;
+	let workspace = request(
+		&app,
+		&a,
+		"POST",
+		"/api/workspaces",
+		json!({"title":"Cursor", "goal":"Bound replay"}),
+	)
+	.await;
+	assert_eq!(workspace.0, 200);
+	let ws = workspace.1["id"].as_str().unwrap().parse().unwrap();
+	let mut after = 0;
+	for i in 0..501 {
+		after = f
+			.store
+			.emit(
+				&TEST_FIXTURE,
+				Some(ws),
+				"workspace.updated",
+				json!({"id":ws,"number":i}),
+			)
+			.await
+			.unwrap()
+			.sequence;
+	}
+	trace_errors();
+	f.registry
+		.register(
+			&aidash_domain::tenancy::TenantName::new("a").unwrap(),
+			tool("cursor-source"),
+		)
+		.await
+		.unwrap();
+	approve(&f, "a", &reference("cursor-source")).await;
+	let package = publish(&app, &a, "cursor-source").await;
+	let newest = f
+		.store
+		.emit(
+			&TEST_FIXTURE,
+			Some(ws),
+			"workspace.updated",
+			json!({"id":ws,"number":502}),
+		)
+		.await
+		.unwrap();
+	let result = tokio::time::timeout(
+		std::time::Duration::from_secs(5),
+		request(
+			&app,
+			&a,
+			"GET",
+			&format!("/api/events?after={after}&limit=1000"),
+			Value::Null,
+		),
+	)
+	.await
+	.expect("global polling must advance past a full page of old workspace events");
+	assert_eq!(result.0, 200);
+	let events = result.1.as_array().unwrap();
+	assert!(
+		events
+			.iter()
+			.all(|e| e["sequence"].as_i64().unwrap() > after)
+	);
+	assert!(events.iter().any(|e| e["data"]["key"] == package["key"]));
+	assert!(events.iter().any(|e| e["sequence"] == newest.sequence));
+	let mut response = app
+		.clone()
+		.native_oneshot(
+			Request::get(format!("/api/events/stream?after={after}"))
+				.header("authorization", format!("Bearer {a}"))
+				.body(bytes::Bytes::new())
+				.unwrap(),
+		)
+		.await
+		.unwrap();
+	assert_eq!(response.status, 200);
+	let mut frames = response.take_stream_body().unwrap();
+	let frame = tokio::time::timeout(std::time::Duration::from_secs(5), frames.next())
+		.await
+		.unwrap()
+		.unwrap()
+		.unwrap();
+	let frame = String::from_utf8_lossy(&frame);
+	assert!(
+		frame.contains("marketplace.published"),
+		"old workspace frames must not replay: {frame}"
+	);
+	drop(frames);
+	let state = request(&app, &a, "GET", "/api/state", Value::Null).await;
+	assert_eq!(state.0, 200);
+	assert!(
+		state.1["events"]
+			.as_array()
+			.unwrap()
+			.iter()
+			.any(|e| e["data"]["key"] == package["key"])
+	);
+	common::cleanup(f, &url, &schema).await;
+}
+
+#[rstest::rstest]
+#[timeout(common::TEST_BOUND)]
+#[tokio::test]
+async fn transitive_bindings_cannot_claim_to_rewrite_immutable_dependencies(
+	#[future(awt)]
+	#[from(common::native_application)]
+	application_fixture: common::ApplicationFixture,
+) {
+	let _fixture = FIXTURE_LOCK.lock().await;
+	let (f, url, schema) = application_fixture.runtime.parts();
+	let app = application_fixture.application.clone();
+	let a = token(&f, "a", "user").await;
+	trace_errors();
+	let model:Entry=serde_json::from_value(json!({"id":"model","version":"1.0.0","kind":"model","name":{"en":"Model"},"description":{"en":"fixture"},"config":{"provider":"openrouter","model_id":"fixture/model","endpoint":"http://localhost:9","context_window":128000,"max_output_tokens":1024,"modalities":["text"],"cost":{}}})).unwrap();
+	f.registry
+		.register(
+			&aidash_domain::tenancy::TenantName::new("a").unwrap(),
+			model,
+		)
+		.await
+		.unwrap();
+	let agent:Entry=serde_json::from_value(json!({"id":"nested","version":"1.0.0","kind":"agent","name":{"en":"Nested"},"description":{"en":"fixture"},"config":{"model":reference("model"),"instructions":"Nested agent","schema_version":1,"bindings":[],"remove_default":[]}})).unwrap();
+	f.registry
+		.register(
+			&aidash_domain::tenancy::TenantName::new("a").unwrap(),
+			agent.clone(),
+		)
+		.await
+		.unwrap();
+	let mut replacement = agent.clone();
+	replacement.id = "replacement".into();
+	f.registry
+		.register(
+			&aidash_domain::tenancy::TenantName::new("a").unwrap(),
+			replacement,
+		)
+		.await
+		.unwrap();
+	let mut bridge = tool("bridge");
+	bridge.config = json!({"registry_deployment":f.config.deployment,"provider":"integration.agent@1","operation":"invoke","default_alias":"delegate","tier":"integration","transport":{"transport":"agent","node_id":f.config.deployment,"agent":reference("nested")}});
+	f.registry
+		.register(
+			&aidash_domain::tenancy::TenantName::new("a").unwrap(),
+			bridge,
+		)
+		.await
+		.unwrap();
+	let mut root = agent;
+	root.id = "root".into();
+	root.binding_normalization = None;
+	root.config["bindings"] = json!([{"kind":"tool","target":{"registry_deployment":f.config.deployment,"id":"bridge","version":"1.0.0"},"narrow":{}}]);
+	f.registry
+		.register(&aidash_domain::tenancy::TenantName::new("a").unwrap(), root)
+		.await
+		.unwrap();
+	for id in ["model", "nested", "replacement", "bridge", "root"] {
+		approve(&f, "a", &reference(id)).await;
+	}
+	let package = publish(&app, &a, "root").await;
+	let mut input = install_input(&package);
+	input["bindings"] = json!([{"source":reference("nested"),"target":reference("replacement")}]);
+	assert_eq!(install(&app, &a, &package, &input).await.0, 403);
+	let installed = install(&app, &a, &package, &install_input(&package)).await;
+	assert_eq!(installed.0, 200, "{installed:?}");
+	assert_eq!(request(&app, &a, "POST", &format!("/api/marketplace/installations/{}",installed.1["installation"]["id"].as_str().unwrap()),
+		json!({"expected_revision":1,"config":{},"bindings":input["bindings"],"idempotency_key":Uuid::new_v4()})).await.0, 403);
+	let bridge_package = request(&app, &a, "POST", "/api/marketplace/packages", json!({"source":reference("bridge"),"package_id":"bridge","author":"A","idempotency_key":Uuid::new_v4()})).await.1;
+	let mut bridge_input = install_input(&bridge_package);
+	bridge_input["bindings"] = input["bindings"].clone();
+	let bound = install(&app, &a, &bridge_package, &bridge_input).await;
+	assert_eq!(bound.0, 200, "direct bindings must still work: {bound:?}");
+	assert_eq!(
+		bound.1["entry"]["config"]["transport"]["agent"],
+		json!(reference("replacement"))
+	);
+	for config in [
+		json!({"agent":reference("replacement")}),
+		json!({"node_id":f.config.deployment}),
+		json!({"transport":"agent"}),
+	] {
+		bridge_input["config"] = config;
+		bridge_input["idempotency_key"] = json!(Uuid::new_v4());
+		assert_eq!(
+			install(&app, &a, &bridge_package, &bridge_input).await.0,
+			400
+		);
+	}
+	common::cleanup(f, &url, &schema).await;
+}
+
+#[rstest::rstest]
+#[timeout(common::TEST_BOUND)]
+#[tokio::test]
+async fn installation_rejects_missing_private_knowledge(
+	#[future(awt)]
+	#[from(common::native_application)]
+	application_fixture: common::ApplicationFixture,
+) {
+	use reinhardt::query::{Alias, Expr, PostgresQueryBuilder, Query};
+	use sha2::{Digest, Sha256};
+	let _fixture = FIXTURE_LOCK.lock().await;
+	let (f, url, schema) = application_fixture.runtime.parts();
+	let app = application_fixture.application.clone();
+	let a = token(&f, "a", "user").await;
+	trace_errors();
+	let model: Entry = serde_json::from_value(json!({"id":"private-model","version":"1.0.0","kind":"model","name":{"en":"Model"},"description":{"en":"fixture"},"config":{"provider":"openrouter","model_id":"fixture/model","endpoint":"http://localhost:9","context_window":128000,"max_output_tokens":1024,"modalities":["text"],"cost":{}}})).unwrap();
+	f.registry
+		.register(
+			&aidash_domain::tenancy::TenantName::new("a").unwrap(),
+			model,
+		)
+		.await
+		.unwrap();
+	let documents = json!([{"name":"Note","media_type":"text/plain","text":"source"}]);
+	let digest = format!("{:x}", Sha256::digest(documents.to_string().as_bytes()));
+	let agent: Entry = serde_json::from_value(json!({"id":"private-agent","version":"1.0.0","kind":"source","name":{"en":"Private Source"},"description":{"en":"fixture"},"config":{"schema_version":1,"source":{"adapter":"private_references","digest":digest}}})).unwrap();
+	f.registry
+		.register(
+			&aidash_domain::tenancy::TenantName::new("a").unwrap(),
+			agent,
+		)
+		.await
+		.unwrap();
+	for id in ["private-model", "private-agent"] {
+		approve(&f, "a", &reference(id)).await;
+	}
+	let package = publish(&app, &a, "private-agent").await;
+	let failed = install(&app, &a, &package, &install_input(&package)).await;
+	assert_eq!(failed.0, 403, "{failed:?}");
+	{
+		let query_bind_1 = "private-agent";
+		let query_bind_2 = "1.0.0";
+		let query_bind_3 = json!([]);
+		sqlx::query(
+			&Query::insert()
+				.into_table(Alias::new("agent_knowledge"))
+				.columns(["tenant", "agent_id", "agent_version", "documents"].map(Alias::new))
+				.from_subquery(
+					Query::select()
+						.expr(Expr::value("a"))
+						.expr(SimpleExpr::CustomWithExpr(
+							"(?)".to_owned(),
+							vec![Expr::value(query_bind_1.to_owned()).into()],
+						))
+						.expr(SimpleExpr::CustomWithExpr(
+							"(?)".to_owned(),
+							vec![Expr::value(query_bind_2.to_owned()).into()],
+						))
+						.expr(SimpleExpr::CustomWithExpr(
+							"(?)".to_owned(),
+							vec![Expr::value(query_bind_3.to_owned()).into()],
+						))
+						.to_owned(),
+				)
+				.to_string(PostgresQueryBuilder),
+		)
+		.execute(f.store.pool.fixture_driver())
+		.await
+	}
+	.unwrap();
+	let mismatched = install(&app, &a, &package, &install_input(&package)).await;
+	assert_eq!(mismatched.0, 403, "{mismatched:?}");
+	{
+		let query_bind_1 = documents;
+		sqlx::query(
+			&Query::update()
+				.table(Alias::new("agent_knowledge"))
+				.value_expr(
+					Alias::new("documents"),
+					SimpleExpr::CustomWithExpr(
+						"(?)".to_owned(),
+						vec![Expr::value(query_bind_1.to_owned()).into()],
+					),
+				)
+				.and_where(Expr::cust(
+					"agent_id='private-agent' AND agent_version='1.0.0'",
+				))
+				.to_string(PostgresQueryBuilder),
+		)
+		.execute(f.store.pool.fixture_driver())
+		.await
+	}
+	.unwrap();
+	let installed = install(&app, &a, &package, &install_input(&package)).await;
+	assert_eq!(installed.0, 200, "{installed:?}");
+	common::cleanup(f, &url, &schema).await;
+}
+
+#[rstest::rstest]
+#[timeout(common::TEST_BOUND)]
+#[tokio::test]
+async fn source_and_administration_pages_preserve_candidate_progress(
+	#[future(awt)]
+	#[from(common::native_application)]
+	application_fixture: common::ApplicationFixture,
+) {
+	let _fixture = FIXTURE_LOCK.lock().await;
+	let (f, url, schema) = application_fixture.runtime.parts();
+	let app = application_fixture.application.clone();
+	let a = token(&f, "a", "user").await;
+	trace_errors();
+	for i in 0..5 {
+		let id = format!("page-{i}");
+		f.registry
+			.register(
+				&aidash_domain::tenancy::TenantName::new("a").unwrap(),
+				tool(&id),
+			)
+			.await
+			.unwrap();
+		approve(&f, "a", &reference(&id)).await;
+	}
+	let mut authority = bundle("a", "user");
+	authority["policies"].as_array_mut().unwrap().push(json!({"id":"hide-sources","effect":"deny","subjects":{"any":true},"actions":["registry.export"],"resources":{"kinds":["tool"],"ids":[format!("{}/tools/page-0@1.0.0",f.config.deployment),format!("{}/tools/page-2@1.0.0",f.config.deployment)]}}));
+	policy(&f, "a", 1, authority).await;
+	let response = app
+		.clone()
+		.native_oneshot(
+			http::Request::get("/api/marketplace/sources?limit=2")
+				.header("authorization", format!("Bearer {a}"))
+				.body(bytes::Bytes::new())
+				.unwrap(),
+		)
+		.await
+		.unwrap();
+	assert_eq!(response.status, 200);
+	let offset = response
+		.headers
+		.get("x-aidash-next-offset")
+		.expect("remaining candidates have a cursor")
+		.to_str()
+		.unwrap()
+		.to_owned();
+	let bytes = finite_body(response).await;
+	let first: Value = serde_json::from_slice(&bytes).unwrap();
+	assert_eq!(first.as_array().unwrap().len(), 2);
+	assert_eq!(first[0]["id"], "page-1");
+	assert_eq!(first[1]["id"], "page-3");
+	let second = request(
+		&app,
+		&a,
+		"GET",
+		&format!("/api/marketplace/sources?limit=2&offset={offset}"),
+		Value::Null,
+	)
+	.await;
+	assert_eq!(second.0, 200, "{second:?}");
+	assert_eq!(second.1.as_array().unwrap().len(), 1);
+	assert_eq!(second.1[0]["id"], "page-4");
+	let package = publish(&app, &a, "page-4").await;
+	let installed = install(&app, &a, &package, &install_input(&package)).await;
+	assert_eq!(installed.0, 200, "{installed:?}");
+	let id = installed.1["installation"]["id"].as_str().unwrap();
+	let staged=request(&app,&a,"POST",&format!("/api/marketplace/installations/{id}"),json!({"expected_revision":1,"config":{"transport":{"transport":"http","endpoint":"https://tools.example/new","replay":"read_only"}},"idempotency_key":Uuid::new_v4()})).await;
+	assert_eq!(staged.0, 200, "{staged:?}");
+	let first = request(
+		&app,
+		&f.config.api_token,
+		"GET",
+		"/api/marketplace/administration?tenant=a&limit=1",
+		Value::Null,
+	)
+	.await;
+	assert_eq!(first.0, 200, "{first:?}");
+	assert_eq!(first.1.as_array().unwrap().len(), 1);
+	assert_eq!(first.1[0]["revision"], 1);
+	let second = request(
+		&app,
+		&f.config.api_token,
+		"GET",
+		"/api/marketplace/administration?tenant=a&limit=1&offset=1",
+		Value::Null,
+	)
+	.await;
+	assert_eq!(second.0, 200, "{second:?}");
+	assert_eq!(second.1.as_array().unwrap().len(), 1);
+	assert_eq!(second.1[0]["revision"], 2);
+	common::cleanup(f, &url, &schema).await;
+}
+
+#[rstest::rstest]
+#[timeout(common::TEST_BOUND)]
+#[tokio::test]
+async fn owner_can_reload_and_restore_a_withdrawn_audience(
+	#[future(awt)]
+	#[from(common::native_application)]
+	application_fixture: common::ApplicationFixture,
+) {
+	let _fixture = FIXTURE_LOCK.lock().await;
+	let (f, url, schema) = application_fixture.runtime.parts();
+	let app = application_fixture.application.clone();
+	let a = token(&f, "a", "user").await;
+	let b = token(&f, "b", "user").await;
+	trace_errors();
+	f.registry
+		.register(
+			&aidash_domain::tenancy::TenantName::new("a").unwrap(),
+			tool("recover-audience"),
+		)
+		.await
+		.unwrap();
+	approve(&f, "a", &reference("recover-audience")).await;
+	let package = publish(&app, &a, "recover-audience").await;
+	let path = format!(
+		"/api/marketplace/packages/{}",
+		package["key"].as_str().unwrap()
+	);
+	let withdrawn = request(
+		&app,
+		&a,
+		"PUT",
+		&format!("{path}/audience"),
+		json!({"expected_revision":1,"tenants":[]}),
+	)
+	.await;
+	assert_eq!(withdrawn.0, 200, "{withdrawn:?}");
+	assert_eq!(withdrawn.1["tenants"], json!(["a"]));
+	let reload = request(&app, &a, "GET", &path, Value::Null).await;
+	assert_eq!(reload.0, 200, "{reload:?}");
+	assert_eq!(reload.1["audience"]["revision"], 2);
+	assert_eq!(request(&app, &b, "GET", &path, Value::Null).await.0, 403);
+	let restored = request(
+		&app,
+		&a,
+		"PUT",
+		&format!("{path}/audience"),
+		json!({"expected_revision":reload.1["audience"]["revision"],"tenants":["b"]}),
+	)
+	.await;
+	assert_eq!(restored.0, 200, "{restored:?}");
+	assert_eq!(restored.1["tenants"], json!(["a", "b"]));
+	assert_eq!(request(&app, &b, "GET", &path, Value::Null).await.0, 200);
+	common::cleanup(f, &url, &schema).await;
+}
+
+use reinhardt::query::{ExprTrait as _, QueryStatementBuilder as _};
+
+use reinhardt::db::migrations::MigrationSource;
+
+use reinhardt::query::SimpleExpr;
+
+#[rstest::fixture]
+fn browser_oidc_runtime(
+	#[from(common::runtime)] runtime: common::RuntimeFuture,
+) -> common::RuntimeFuture {
+	async move {
+		let mut r = runtime.await;
+		r.federation.config.oidc = Some(aidash_server::config::OidcConfig {
+			issuer: "https://accounts.google.com".into(),
+			client_id: "fixture".into(),
+			client_secret: "fixture".into(),
+			public_origin: "https://127.0.0.1:8080".into(),
+			session_absolute_seconds: 3600,
+			session_idle_seconds: 1800,
+		});
+		r
+	}
+	.boxed()
+	.shared()
+}
+#[rstest::fixture]
+fn browser_oidc_application(
+	#[from(browser_oidc_runtime)] runtime: common::RuntimeFuture,
+	#[from(common::native_application)]
+	#[with(Default::default(),aidash_server::sse::Service::new(Default::default()),std::sync::Arc::new(|r|r),runtime.clone())]
+	application: common::ApplicationFuture,
+) -> common::ApplicationFuture {
+	drop(runtime);
+	application
+}
+
+/// Drain the finite response only at the original Act boundary. A native JSON
+/// producer can keep its bytes in a stream while the eager body field is empty.
+async fn finite_body(mut response: reinhardt::Response) -> bytes::Bytes {
+	use futures_util::StreamExt;
+	if let Some(mut stream) = response.take_stream_body() {
+		let mut body = bytes::BytesMut::new();
+		while let Some(chunk) = stream.next().await {
+			body.extend_from_slice(&chunk.unwrap());
+		}
+		body.freeze()
+	} else {
+		response.body
+	}
+}

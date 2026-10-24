@@ -1,0 +1,12 @@
+DROP FUNCTION public.marketplace_overlay_fence();
+DROP FUNCTION public.marketplace_immutable();
+DROP FUNCTION public.marketplace_catalog_fence();
+DROP FUNCTION public.legacy_run_input_bridge();
+DROP FUNCTION public.gate_legacy_run_worker();
+DROP FUNCTION public.gate_legacy_run_output();
+DROP FUNCTION public.gate_legacy_run_message();
+DROP FUNCTION public.gate_legacy_federated_run_message();
+DROP FUNCTION public.aidash_valid_pending_timestamp(jsonb);
+DROP FUNCTION public.aidash_request_activation(uuid, text);
+DROP FUNCTION public.aidash_model_response_is_valid(jsonb);
+DROP FUNCTION public.aidash_activation_trigger();

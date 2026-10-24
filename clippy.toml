@@ -1,0 +1,43 @@
+# Shared by cargo clippy and Trunk; keep in sync with rust-toolchain.toml.
+msrv = "1.96.0"
+avoid-breaking-exported-api = true
+
+# Every transaction opens with a tenancy scope (#263). These calls reach the
+# database without one, so only `server/src/database` and the owner-only
+# migration paths may use them, each behind a local `allow`.
+disallowed-methods = [
+  # Reinhardt's process-wide connection runs statements outside any scope.
+  { path = "reinhardt_db::orm::manager::get_connection", reason = "open a transaction with Pool::begin(scope) (#263)" },
+  { path = "reinhardt_db::orm::manager::get_connection_lease", reason = "open a transaction with Pool::begin(scope) (#263)" },
+  { path = "reinhardt_db::orm::manager::get_connection_registration", reason = "open a transaction with Pool::begin(scope) (#263)" },
+  { path = "reinhardt_db::orm::manager::init_database", reason = "the process-wide connection has no tenancy scope (#263)" },
+  { path = "reinhardt_db::orm::manager::init_database_with_pool_size", reason = "the process-wide connection has no tenancy scope (#263)" },
+  { path = "reinhardt_db::orm::manager::reinitialize_database", reason = "the process-wide connection has no tenancy scope (#263)" },
+  { path = "reinhardt_db::orm::manager::reinitialize_database_with_pool_size", reason = "the process-wide connection has no tenancy scope (#263)" },
+  { path = "reinhardt_db::orm::manager::Manager::create", reason = "use create_with_conn inside Pool::atomic(scope) (#263)" },
+  { path = "reinhardt_db::orm::manager::Manager::update", reason = "use update_with_conn inside Pool::atomic(scope) (#263)" },
+  { path = "reinhardt_db::orm::manager::Manager::delete", reason = "use delete_with_conn inside Pool::atomic(scope) (#263)" },
+  { path = "reinhardt_db::orm::manager::Manager::count", reason = "use count_with_db inside Pool::atomic(scope) (#263)" },
+  { path = "reinhardt_db::orm::manager::Manager::bulk_create", reason = "use the executor variant inside Pool::atomic(scope) (#263)" },
+  { path = "reinhardt_db::orm::manager::Manager::bulk_update", reason = "use the executor variant inside Pool::atomic(scope) (#263)" },
+  { path = "reinhardt_db::orm::query::QuerySet::all", reason = "use all_with_db inside Pool::atomic(scope) (#263)" },
+  { path = "reinhardt_db::orm::query::QuerySet::get", reason = "use get_with_db inside Pool::atomic(scope) (#263)" },
+  { path = "reinhardt_db::orm::query::QuerySet::first", reason = "use first_with_db inside Pool::atomic(scope) (#263)" },
+  { path = "reinhardt_db::orm::query::QuerySet::count", reason = "use count_with_db inside Pool::atomic(scope) (#263)" },
+  { path = "reinhardt_db::orm::query::QuerySet::exists", reason = "use exists_with_db inside Pool::atomic(scope) (#263)" },
+  { path = "reinhardt_db::orm::query::QuerySet::create", reason = "use create_with_conn inside Pool::atomic(scope) (#263)" },
+  { path = "reinhardt_db::orm::query::QuerySet::update_fields", reason = "use update_fields_with_conn inside Pool::atomic(scope) (#263)" },
+  { path = "reinhardt_db::orm::upsert::GetOrCreateBuilder::execute", reason = "the builder runs on the process-wide connection (#263)" },
+  { path = "reinhardt_db::orm::upsert::UpdateOrCreateBuilder::execute", reason = "the builder runs on the process-wide connection (#263)" },
+  # A raw connection runs statements before any scope is written.
+  { path = "reinhardt_db::orm::connection::DatabaseConnectionLease::register", reason = "use Pool::atomic(scope) (#263)" },
+  { path = "reinhardt_db::backends::connection::DatabaseConnection::begin", reason = "use Pool::begin(scope) (#263)" },
+  { path = "reinhardt_db::backends::connection::DatabaseConnection::begin_with_isolation", reason = "use Pool::begin_serializable(scope) (#263)" },
+  { path = "reinhardt_db::backends::connection::DatabaseConnection::connect_postgres", reason = "connect with database::runtime::connect (#263)" },
+  { path = "reinhardt_db::backends::connection::DatabaseConnection::connect_postgres_with_pool_size", reason = "connect with database::runtime::connect (#263)" },
+  { path = "aidash_server::database::native::Pool::connection", reason = "use Pool::begin(scope) or Pool::in_scope(scope) (#263)" },
+  { path = "aidash_server::database::native::Pool::driver", reason = "use Pool::begin(scope) or Pool::in_scope(scope) (#263)" },
+  { path = "aidash_server::database::native::Pool::fixture_driver", reason = "test fixtures only: its sessions hold a Deployment Scope (#264)" },
+  { path = "aidash_server::database::scope::test_fixture_driver", reason = "test fixtures only: its sessions hold a Deployment Scope (#264)" },
+  { path = "aidash_server::database::scope::begin_fixture_deployment", reason = "test fixtures only: its transaction holds a Deployment Scope (#264)" },
+]

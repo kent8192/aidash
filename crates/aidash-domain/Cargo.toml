@@ -1,0 +1,40 @@
+[package]
+name = "aidash-domain"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+base64 = "0.22"
+chrono.workspace = true
+serde.workspace = true
+schemars.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+uuid.workspace = true
+
+jsonschema = { version = "0.33", default-features = false }
+semver = "1"
+sha2 = "0.10"
+serde-saphyr = "=1.3.0"
+url = "2"
+
+http = "1"
+
+# Token Encodings (ADR 0017): pure-Rust counting of the embedded tokenizer
+# files. Only the server enables it, so other binaries carry neither file.
+tokenizers = { version = "0.23", default-features = false, features = [
+  "fancy-regex",
+], optional = true }
+ruzstd = { version = "0.9", optional = true }
+
+[features]
+token-encodings = ["dep:tokenizers", "dep:ruzstd"]
+
+[dev-dependencies]
+toml = "1.1"
+rstest.workspace = true

@@ -1,0 +1,269 @@
+name: ${COMPOSE_PROJECT_NAME:-aidash-dev}
+services:
+  postgres:
+    image: aidash-postgres:17-pg-jsonschema-0.3.4
+    # Two Nodes run separate server/worker and framework/store pools.
+    command: ["postgres", "-c", "max_connections=400"]
+    build:
+      context: .
+      dockerfile: deploy/postgres/Dockerfile
+    environment:
+      POSTGRES_USER: aidash
+      POSTGRES_PASSWORD: aidash-local
+      POSTGRES_DB: aidash_a
+      # Migrations log in as aidash_owner; servers as aidash_server, which
+      # row-level security binds. The superuser only provisions them.
+      AIDASH_OWNER_PASSWORD: aidash-owner-local
+      AIDASH_SERVER_PASSWORD: aidash-server-local
+    ports:
+      - "127.0.0.1:${AIDASH_POSTGRES_PORT:-54370}:5432"
+    volumes:
+      - postgres:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -h 127.0.0.1 -U aidash -d aidash_a"]
+      interval: 2s
+      timeout: 5s
+      retries: 30
+  postgres-extensions:
+    profiles: [dev]
+    build:
+      context: .
+      target: dev-backend
+      args:
+        CARGO_PROFILE: dev
+    entrypoint: ["local-dev-db"]
+    command:
+      - postgres://aidash_owner:aidash-owner-local@postgres:5432/aidash_a
+      - postgres://aidash_owner:aidash-owner-local@postgres:5432/aidash_b
+      - postgres://aidash_owner:aidash-owner-local@postgres:5432/aidash_test
+    depends_on:
+      postgres:
+        condition: service_healthy
+  nats:
+    image: nats:2.12-alpine
+    command: ["-js", "-sd", "/data", "-m", "8222"]
+    ports:
+      - "127.0.0.1:${AIDASH_NATS_PORT:-42270}:4222"
+    volumes:
+      - nats:/data
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "wget",
+          "-q",
+          "--spider",
+          "http://127.0.0.1:8222/healthz?js-enabled-only=true",
+        ]
+      interval: 2s
+      timeout: 5s
+      retries: 30
+  activation-provision:
+    profiles: [dev]
+    build:
+      context: .
+      target: dev-backend
+      args:
+        CARGO_PROFILE: dev
+    env_file:
+      - path: .env
+        required: false
+    environment:
+      NATS_URL: nats://nats:4222
+      AIDASH_DEPLOYMENT_ID: ${AIDASH_DEPLOYMENT_ID:-aidash://node-a}
+    command: ["activation-provision"]
+    depends_on:
+      nats:
+        condition: service_healthy
+  # A generic local OIDC issuer; deploy/local-oidc/compose.yaml wires it in.
+  oidc-issuer:
+    profiles: [oidc]
+    image: node:24.12.0-bookworm-slim
+    entrypoint: [node, /mock-issuer.cjs]
+    command: []
+    ports:
+      - "127.0.0.1:18099:18099"
+    volumes:
+      - ./deploy/local-oidc/mock-issuer.cjs:/mock-issuer.cjs:ro
+  memory-recovery-init:
+    profiles: [dev]
+    build:
+      context: .
+      target: dev-backend
+      args:
+        CARGO_PROFILE: dev
+    environment:
+      DATABASE_URL: postgres://aidash_server:aidash-server-local@postgres:5432/aidash_a
+      AIDASH_DEPLOYMENT_ID: ${AIDASH_DEPLOYMENT_ID:-aidash://node-a}
+      AIDASH_API_TOKEN: ${AIDASH_API_TOKEN:-local-development-token}
+    command:
+      [
+        "memory-recovery",
+        "init-if-missing",
+        "--directory",
+        "/var/lib/aidash/memory-recovery",
+      ]
+    volumes:
+      - memory-recovery:/var/lib/aidash/memory-recovery
+    depends_on:
+      postgres-extensions:
+        condition: service_completed_successfully
+  # Generates this machine's Secret Store keys once. They live in
+  # a volume, so `down -v` deletes them together with the credentials they encrypt.
+  provider-credential-keys:
+    profiles: [dev]
+    build:
+      context: .
+      target: dev-backend
+      args:
+        CARGO_PROFILE: dev
+    entrypoint: ["sh", "-c"]
+    command:
+      - |
+        set -eu
+        umask 077
+        cd /var/lib/aidash/provider-credentials
+        for key in master-key fingerprint-key; do
+          if [ ! -s "$$key" ]; then
+            head -c 32 /dev/urandom | od -An -vtx1 | tr -d ' \n' > "$$key.tmp"
+            mv "$$key.tmp" "$$key"
+          fi
+        done
+    volumes:
+      - provider-credentials:/var/lib/aidash/provider-credentials
+  backend:
+    profiles: [dev]
+    build:
+      context: .
+      target: dev-backend
+      args:
+        CARGO_PROFILE: dev
+    env_file:
+      - path: .env
+        required: false
+    environment:
+      DATABASE_URL: postgres://aidash_server:aidash-server-local@postgres:5432/aidash_a
+      NATS_URL: nats://nats:4222
+      AIDASH_SSE_RECONCILE_INTERVAL_MS: ${AIDASH_SSE_RECONCILE_INTERVAL_MS:-5000}
+      AIDASH_SSE_BACKPRESSURE_TIMEOUT_SECONDS: ${AIDASH_SSE_BACKPRESSURE_TIMEOUT_SECONDS:-30}
+      AIDASH_DEPLOYMENT_ID: ${AIDASH_DEPLOYMENT_ID:-aidash://node-a}
+      AIDASH_ENDPOINT: ${AIDASH_ENDPOINT:-http://127.0.0.1:${AIDASH_BACKEND_PORT:-18080}}
+      AIDASH_LISTEN: 0.0.0.0:8080
+      AIDASH_API_TOKEN: ${AIDASH_API_TOKEN:-local-development-token}
+      AIDASH_MEMORY_RECOVERY_DIR: /var/lib/aidash/memory-recovery
+      AIDASH_PROVIDER_CREDENTIAL_SETTINGS: /run/aidash/provider-credentials.json
+      AIDASH_CAPABILITY_PROFILE: /run/aidash/capability-profile.json
+    configs:
+      - source: provider-credentials
+        target: /run/aidash/provider-credentials.json
+      - source: capability-profile
+        target: /run/aidash/capability-profile.json
+      - source: local-settings
+        target: /app/server/settings/local.toml
+    volumes:
+      - memory-recovery:/var/lib/aidash/memory-recovery
+      - provider-credentials:/var/lib/aidash/provider-credentials:ro
+      - capabilities:/var/lib/aidash/capabilities
+    ports:
+      - "127.0.0.1:${AIDASH_BACKEND_PORT:-18080}:8080"
+    depends_on:
+      memory-recovery-init:
+        condition: service_completed_successfully
+      provider-credential-keys:
+        condition: service_completed_successfully
+      activation-provision:
+        condition: service_completed_successfully
+      nats:
+        condition: service_started
+    healthcheck:
+      test:
+        ["CMD", "curl", "--fail", "--silent", "http://127.0.0.1:8080/health"]
+      interval: 2s
+      timeout: 5s
+      retries: 120
+    develop:
+      watch:
+        - action: rebuild
+          path: ./server
+        - action: rebuild
+          path: ./crates
+        - action: rebuild
+          path: ./Cargo.toml
+        - action: rebuild
+          path: ./Cargo.lock
+  frontend-dev:
+    profiles: [dev]
+    build:
+      context: .
+      target: dev-web
+      args:
+        CARGO_PROFILE: dev
+    command:
+      ["npx", "vite", "--host", "0.0.0.0", "--port", "5173", "--strictPort"]
+    environment:
+      AIDASH_BACKEND: http://backend:8080
+    ports:
+      - "127.0.0.1:${AIDASH_FRONTEND_PORT:-5173}:5173"
+    depends_on:
+      backend:
+        condition: service_healthy
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "node",
+          "-e",
+          "fetch('http://127.0.0.1:5173/src/main.tsx').then(r => process.exit(r.ok ? 0 : 1)).catch(() => process.exit(1))",
+        ]
+      interval: 2s
+      timeout: 5s
+      retries: 30
+    develop:
+      watch:
+        - action: sync
+          path: ./web/src
+          target: /build/web/src
+          ignore:
+            - generated/
+        - action: sync
+          path: ./web/index.html
+          target: /build/web/index.html
+        - action: rebuild
+          path: ./web/package.json
+        - action: rebuild
+          path: ./web/package-lock.json
+        - action: rebuild
+          path: ./web/vite.config.ts
+        - action: rebuild
+          path: ./server
+        - action: rebuild
+          path: ./crates
+configs:
+  provider-credentials:
+    content: |
+      {"provider_credentials": {
+        "fingerprint_key": {"file": "/var/lib/aidash/provider-credentials/fingerprint-key"},
+        "store": {"kind": "postgres", "master_key": {"file": "/var/lib/aidash/provider-credentials/master-key"}}
+      }}
+  # Without a profile the Node admits no core work, so every Goal for an Agent
+  # with core capabilities fails with CAPABILITIES_DISABLED. The dev stack
+  # admits it with the default limits and working storage in a volume. It has
+  # no isolated Runner, so Sandboxed tools stay unavailable.
+  capability-profile:
+    content: |
+      {"admission": true, "storage": "/var/lib/aidash/capabilities"}
+  # The Self-hosted Tenancy Rules leave Personal Tenants off. The dev stack turns
+  # them on, so a first Google sign-in works without a Deployment Administrator.
+  local-settings:
+    content: |
+      [tenancy]
+      personal_tenants = true
+
+      [demo_data]
+      enabled = true
+volumes:
+  postgres:
+  memory-recovery:
+  provider-credentials:
+  capabilities:
+  nats:

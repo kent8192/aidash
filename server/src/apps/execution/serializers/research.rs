@@ -1,0 +1,237 @@
+//! Research evidence read contracts.
+use aidash_domain::research::{
+	document::{Completeness, Line},
+	evidence::{CitedEvidence as Cited, SnapshotContext},
+};
+use base64::Engine;
+use chrono::{DateTime, Utc};
+use schemars::JsonSchema;
+use serde::Serialize;
+use uuid::Uuid;
+
+/// One Source citation as a reader opens it: the Evidence fragment the Run's
+/// Agent received and the Document snapshot it came from.
+#[derive(Debug, Serialize, JsonSchema)]
+pub struct CitedEvidence {
+	/// `ev_<uuid>`, as cited in the Run's text.
+	pub evidence_ref: String,
+	pub run_id: Uuid,
+	pub document_id: Uuid,
+	pub source_id: Uuid,
+	/// The address that answered, after any permitted redirect.
+	pub url: String,
+	/// The address the Run asked for.
+	pub requested_url: String,
+	pub title: Option<String>,
+	pub media_type: String,
+	/// When the snapshot was retrieved; the live page may have changed since.
+	pub fetched_at: DateTime<Utc>,
+	pub completeness: Completeness,
+	/// `sha256:` digest of the snapshot text the fragment was taken from.
+	pub text_digest: String,
+	/// The passage exactly as delivered to the Agent; empty once `expired`.
+	pub text: String,
+	/// `sha256:` digest of the passage as delivered. It outlives the text,
+	/// so the citation can still be verified.
+	pub passage_digest: String,
+	/// The Research account terms of the service that returned the page no
+	/// longer keep the passage (ADR 0058).
+	pub expired: bool,
+	/// 1-based, inclusive snapshot lines of the passage.
+	pub line_start: usize,
+	pub line_end: usize,
+	pub pages: Vec<u32>,
+	/// Snapshot lines around the passage that were not delivered to the Agent;
+	/// absent once the snapshot's text is no longer retained.
+	pub context: Option<EvidenceContext>,
+	/// The page image delivered to the Agent, for a fragment that is a page
+	/// image rather than a passage (ADR 0053); then `text` is empty and the
+	/// lines are zero.
+	pub image: Option<EvidenceImage>,
+}
+
+/// One page of a PDF rendered from the retained original, as the Agent saw it.
+#[derive(Debug, Serialize, JsonSchema)]
+pub struct EvidenceImage {
+	/// The 1-based physical page.
+	pub page: u32,
+	pub media_type: String,
+	pub width: u32,
+	pub height: u32,
+	/// `sha256:` digest of the image bytes.
+	pub digest: String,
+	/// The image bytes, base64-encoded.
+	pub data: String,
+}
+
+/// Up to 20 whole lines and 4 KiB of snapshot text on each side of a passage.
+#[derive(Debug, Serialize, JsonSchema)]
+pub struct EvidenceContext {
+	pub before: Vec<Line>,
+	pub after: Vec<Line>,
+}
+
+impl From<SnapshotContext> for EvidenceContext {
+	fn from(context: SnapshotContext) -> Self {
+		Self {
+			before: context.before,
+			after: context.after,
+		}
+	}
+}
+
+impl From<Cited> for CitedEvidence {
+	fn from(cited: Cited) -> Self {
+		let fragment = cited.fragment;
+		Self {
+			evidence_ref: fragment.reference.to_string(),
+			run_id: fragment.run_id,
+			document_id: fragment.document_id,
+			source_id: fragment.source_id,
+			url: cited.url,
+			requested_url: cited.requested_url,
+			title: cited.title,
+			media_type: cited.media_type,
+			fetched_at: cited.fetched_at,
+			completeness: cited.completeness,
+			text_digest: fragment.text_digest,
+			text: fragment.text,
+			passage_digest: fragment.passage_digest,
+			expired: cited.expired,
+			line_start: fragment.line_start,
+			line_end: fragment.line_end,
+			pages: fragment.pages,
+			context: cited.context.map(Into::into),
+			image: fragment
+				.image
+				.zip(cited.image)
+				.map(|(image, bytes)| EvidenceImage {
+					page: image.page,
+					media_type: image.media_type,
+					width: image.width,
+					height: image.height,
+					digest: image.digest,
+					data: base64::engine::general_purpose::STANDARD.encode(bytes),
+				}),
+		}
+	}
+}
+
+/// A request to revoke all of one Run's Research evidence (ADR 0046).
+#[derive(Debug, serde::Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct RevocationInput {
+	/// Why the evidence is revoked, 1 to 1000 characters. It is kept as audit
+	/// history after the Run is deleted, so do not include URLs, page content
+	/// or personal data.
+	pub reason: String,
+	/// The Tenant the caller expects the Run to belong to. When present, a Run
+	/// of any other Tenant answers 404 and nothing is revoked.
+	#[serde(default)]
+	pub tenant: Option<String>,
+}
+
+/// The audit record of one Evidence Revocation. It holds digests but no
+/// source content.
+#[derive(Debug, Serialize, JsonSchema)]
+pub struct RevocationRecord {
+	pub run_id: Uuid,
+	/// The Run's Tenant, when it has one.
+	pub tenant: Option<String>,
+	/// `subject:<tenant>/<subject>`, `deployment-administrator:<identity>` or
+	/// `deployment-administrator` for the deployment's API token.
+	pub revoked_by: String,
+	pub reason: String,
+	pub revoked_at: DateTime<Utc>,
+	pub removed: RemovedCopies,
+}
+
+/// What a revocation removed, counted and identified by digest only.
+#[derive(Debug, Serialize, JsonSchema)]
+pub struct RemovedCopies {
+	pub sources: u32,
+	pub snapshots: u32,
+	pub fragments: u32,
+	pub attempts: u32,
+	pub invocations: u32,
+	/// `sha256:` text digests of the revoked Document snapshots.
+	pub snapshot_digests: Vec<String>,
+}
+
+impl From<aidash_domain::research::revocation::EvidenceRevocation> for RevocationRecord {
+	fn from(record: aidash_domain::research::revocation::EvidenceRevocation) -> Self {
+		let removed = record.removed;
+		Self {
+			run_id: record.run_id,
+			tenant: record.tenant,
+			revoked_by: record.revoked_by.recorded(),
+			reason: record.reason,
+			revoked_at: record.revoked_at,
+			removed: RemovedCopies {
+				sources: removed.sources,
+				snapshots: removed.snapshots,
+				fragments: removed.fragments,
+				attempts: removed.attempts,
+				invocations: removed.invocations,
+				snapshot_digests: removed.snapshot_digests,
+			},
+		}
+	}
+}
+
+/// One page of audit history, newest first.
+#[derive(Debug, serde::Deserialize, JsonSchema)]
+pub struct HistoryPage {
+	#[serde(default)]
+	pub offset: u64,
+	/// At most 200; 50 when absent.
+	#[serde(default = "history_limit")]
+	pub limit: u32,
+}
+
+fn history_limit() -> u32 {
+	50
+}
+
+/// The Retention Rules that apply to one Tenant, with what the caller may do
+/// about them, so a dashboard offers only that.
+#[derive(Debug, Serialize, JsonSchema)]
+pub struct TenantRetentionView {
+	#[serde(flatten)]
+	pub retention: aidash_application::retention::TenantRetention,
+	/// Whether the caller may change or clear the Tenant's periods.
+	pub can_update: bool,
+	/// Whether the caller may read the history of the Tenant's periods.
+	pub can_read_history: bool,
+	/// Whether the caller may read the Tenant's Evidence Revocation records.
+	pub can_read_revocations: bool,
+}
+
+/// A change of a Tenant's own Retention Rules (ADR 0045).
+#[derive(Debug, serde::Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct RetentionInput {
+	/// The Tenant's periods, none longer than the Deployment's; null clears
+	/// them so the Deployment's periods apply again. A change applies to
+	/// content already kept at the next hourly sweep. The field is required:
+	/// only an explicit null clears, never an omitted field.
+	#[serde(deserialize_with = "nullable_rules")]
+	#[schemars(required, schema_with = "nullable_rules_schema")]
+	pub rules: Option<aidash_domain::retention::RetentionRules>,
+}
+
+// Presence is required, while null is the explicit clear. Schemars' `required`
+// alone unwraps Option and would remove null from the SDK.
+fn nullable_rules_schema(generator: &mut schemars::SchemaGenerator) -> schemars::Schema {
+	<Option<aidash_domain::retention::RetentionRules> as JsonSchema>::json_schema(generator)
+}
+fn nullable_rules<'de, D: serde::Deserializer<'de>>(
+	deserializer: D,
+) -> Result<Option<aidash_domain::retention::RetentionRules>, D::Error> {
+	<Option<aidash_domain::retention::RetentionRules> as serde::Deserialize>::deserialize(
+		deserializer,
+	)
+}
+
+#[cfg(test)]
+mod tests;

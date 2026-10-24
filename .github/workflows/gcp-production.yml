@@ -1,0 +1,134 @@
+name: GCP production
+on:
+  workflow_run:
+    workflows: [CI]
+    branches: [main]
+    types: [completed]
+  schedule:
+    - cron: "1-56/5 * * * *"
+  workflow_dispatch:
+    inputs:
+      main_sha:
+        description: "Exact successful main CI SHA; only human-merged validated release PRs deploy"
+        required: true
+        type: string
+      retry_failed:
+        description: "Retry a failed deployment after manual inspection; never downgrade or replay uncertain work"
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+# Durable controller locking and generation fencing preserve accepted intents.
+# Never cancel a deployment midway or use a latest-only workflow queue here.
+jobs:
+  dispatch:
+    if: >-
+      vars.GCP_PRODUCTION_ENABLED == 'true' &&
+      (github.event_name == 'schedule' ||
+       (github.event_name == 'workflow_run' &&
+        github.event.workflow_run.conclusion == 'success' &&
+        github.event.workflow_run.event == 'push' &&
+        github.event.workflow_run.head_repository.full_name == github.repository))
+    runs-on: ubuntu-24.04
+    timeout-minutes: 3
+    permissions:
+      contents: read
+      actions: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: main
+          persist-credentials: false
+      - name: Dispatch the protected main workflow after authoritative CI verification
+        env:
+          GH_TOKEN: ${{ github.token }}
+          AIDASH_GCP_CONFIG: ${{ vars.AIDASH_GCP_PRODUCTION_CONFIG }}
+        run: python3 infra/gcp/control/controller.py dispatch-production
+
+  prepare:
+    if: >-
+      vars.GCP_PRODUCTION_ENABLED == 'true' &&
+      github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main'
+    environment: production
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      actions: read
+      pull-requests: read
+      id-token: write
+    outputs:
+      trusted: ${{ steps.prepare.outputs.trusted_sha }}
+      source: ${{ steps.prepare.outputs.sha }}
+    env:
+      GH_TOKEN: ${{ github.token }}
+      AIDASH_GCP_CONFIG: ${{ vars.AIDASH_GCP_PRODUCTION_CONFIG }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - uses: google-github-actions/auth@7c6bc770dae815cd3e89ee6cdf493a5fab2cc093 # v3
+        with:
+          workload_identity_provider: ${{ vars.GCP_PRODUCTION_WORKLOAD_IDENTITY_PROVIDER }}
+          service_account: ${{ vars.GCP_PRODUCTION_DEPLOY_SERVICE_ACCOUNT }}
+      - uses: google-github-actions/setup-gcloud@aa5489c8933f4cc7a4f7d45035b3b1440c9c10db # v3
+      - id: prepare
+        name: Authorize the human-merged release and original staging bundle
+        run: python3 infra/gcp/control/controller.py prepare
+
+  apply:
+    needs: prepare
+    if: needs.prepare.result == 'success'
+    environment: production
+    runs-on: ubuntu-24.04
+    timeout-minutes: 55
+    permissions:
+      contents: read
+      actions: read
+      pull-requests: read
+      id-token: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      AIDASH_GCP_CONFIG: ${{ vars.AIDASH_GCP_PRODUCTION_CONFIG }}
+      AIDASH_RUNTIME_PRODUCTION: ${{ secrets.GCP_PRODUCTION_RUNTIME_CONFIG }}
+      AIDASH_GCIP_IDP_SECRETS: ${{ secrets.GCP_PRODUCTION_GCIP_IDP_SECRETS }}
+      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_DNS_API_TOKEN }}
+      TF_IN_AUTOMATION: "true"
+    steps:
+      # Use the controller/charts that built the staged privileged images.
+      # Prepare verified this commit is the release source S, whose tree equals
+      # the human-merged main commit; no rebuild.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ needs.prepare.outputs.trusted }}
+          persist-credentials: false
+      - uses: google-github-actions/auth@7c6bc770dae815cd3e89ee6cdf493a5fab2cc093 # v3
+        with:
+          workload_identity_provider: ${{ vars.GCP_PRODUCTION_WORKLOAD_IDENTITY_PROVIDER }}
+          service_account: ${{ vars.GCP_PRODUCTION_DEPLOY_SERVICE_ACCOUNT }}
+      - uses: google-github-actions/setup-gcloud@aa5489c8933f4cc7a4f7d45035b3b1440c9c10db # v3
+        with:
+          install_components: kubectl,gke-gcloud-auth-plugin
+      - uses: azure/setup-helm@9bc31f4ebc9c6b171d7bfbaa5d006ae7abdb4310 # v5.0.1
+        with:
+          version: v4.1.4
+      - uses: hashicorp/setup-terraform@b9cd54a3c349d3f38e8881555d616ced269862dd # v3
+        with:
+          terraform_version: 1.14.8
+          terraform_wrapper: false
+      - name: Deploy the verified bundle after admission drain
+        run: python3 infra/gcp/control/controller.py reconcile
+      - name: Export safe continuation status without URLs or credentials
+        if: always()
+        run: python3 infra/gcp/control/controller.py production-progress
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        if: always()
+        with:
+          name: production-progress
+          path: ${{ runner.temp }}/production-progress.json
+          if-no-files-found: ignore
+          overwrite: true
+          retention-days: 30
