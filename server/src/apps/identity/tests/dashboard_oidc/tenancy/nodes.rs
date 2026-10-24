@@ -472,3 +472,6 @@ async fn catalog_approvals_belong_to_one_node(
 	assert_eq!(status, 404, "a Node of no Tenant: {body}");
 	d.finish().await;
 }
+
+#[path = "nodes/purge.rs"]
+mod purge;

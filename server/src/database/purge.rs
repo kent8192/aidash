@@ -20,6 +20,10 @@ pub struct Reference {
 	pub child: String,
 	pub parent: String,
 	pub columns: Vec<String>,
+	/// Referenced columns in matching ordinal order.
+	pub parent_columns: Vec<String>,
+	/// SET NULL/SET DEFAULT updates a surviving child and changes its CTID.
+	pub updates_child: bool,
 	/// Whether deleting a parent row deletes its child rows with it.
 	pub cascades: bool,
 }
@@ -98,54 +102,119 @@ pub fn deletion_order(
 /// Every foreign key between tables of the `public` schema, read from the
 /// migrated database.
 pub async fn references(tx: &mut dyn TransactionExecutor) -> Result<Vec<Reference>> {
+	// Read ordinal arrays as text rather than embedding unnest/WITH ORDINALITY
+	// SQL. All three catalog reads use supported Query expressions. Restricting
+	// the class list to public also excludes extension-internal foreign keys.
+	let public = Query::select()
+		.column(Alias::new("oid"))
+		.from(Alias::new("pg_namespace"))
+		.and_where(Expr::col("nspname").eq(Expr::value("public")))
+		.to_owned();
 	let (sql, values) = Query::select()
 		.expr_as(
-			Expr::cust("(SELECT relname::text FROM pg_class WHERE oid = pg_constraint.conrelid)"),
-			Alias::new("child"),
+			Expr::col("oid").cast_as(Alias::new("text")),
+			Alias::new("oid"),
 		)
 		.expr_as(
-			Expr::cust("(SELECT relname::text FROM pg_class WHERE oid = pg_constraint.confrelid)"),
-			Alias::new("parent"),
+			Expr::col("relname").cast_as(Alias::new("text")),
+			Alias::new("relname"),
+		)
+		.from(Alias::new("pg_class"))
+		.and_where(Expr::col("relnamespace").in_subquery(public))
+		.build(PostgresQueryBuilder);
+	let mut names = BTreeMap::<String, String>::new();
+	for row in tx.fetch_all(&sql, convert_values(values)).await? {
+		names.insert(
+			row.get("oid")
+				.map_err(reinhardt::core::exception::Error::from)?,
+			row.get("relname")
+				.map_err(reinhardt::core::exception::Error::from)?,
+		);
+	}
+	let (sql, values) = Query::select()
+		.expr_as(
+			Expr::col("attrelid").cast_as(Alias::new("text")),
+			Alias::new("relation"),
 		)
 		.expr_as(
-			Expr::cust("pg_constraint.confdeltype = 'c'"),
-			Alias::new("cascades"),
+			Expr::col("attnum").cast_as(Alias::new("int8")),
+			Alias::new("number"),
 		)
 		.expr_as(
-			Expr::cust(
-				"(SELECT string_agg(a.attname::text, ',' ORDER BY k.ord) \
-				 FROM unnest(pg_constraint.conkey) WITH ORDINALITY k(attnum, ord) \
-				 JOIN pg_attribute a ON a.attrelid = pg_constraint.conrelid AND a.attnum = k.attnum)",
+			Expr::col("attname").cast_as(Alias::new("text")),
+			Alias::new("attname"),
+		)
+		.from(Alias::new("pg_attribute"))
+		.and_where(Expr::col("attnum").gt(Expr::value(0_i32)))
+		.and_where(Expr::col("attisdropped").eq(Expr::value(false)))
+		.build(PostgresQueryBuilder);
+	let mut attributes = BTreeMap::<(String, i64), String>::new();
+	for row in tx.fetch_all(&sql, convert_values(values)).await? {
+		attributes.insert(
+			(
+				row.get("relation")
+					.map_err(reinhardt::core::exception::Error::from)?,
+				row.get("number")
+					.map_err(reinhardt::core::exception::Error::from)?,
 			),
-			Alias::new("columns"),
-		)
+			row.get("attname")
+				.map_err(reinhardt::core::exception::Error::from)?,
+		);
+	}
+	let mut query = Query::select();
+	for field in ["conrelid", "confrelid", "conkey", "confkey", "confdeltype"] {
+		query.expr_as(
+			Expr::col(Alias::new(field)).cast_as(Alias::new("text")),
+			Alias::new(field),
+		);
+	}
+	let (sql, values) = query
 		.from(Alias::new("pg_constraint"))
 		.and_where(Expr::col("contype").eq(Expr::value("f")))
-		.and_where(Expr::cust("connamespace = 'public'::regnamespace"))
 		.build(PostgresQueryBuilder);
-	tx.fetch_all(&sql, convert_values(values))
-		.await?
-		.into_iter()
-		.map(|row| {
-			Ok(Reference {
-				child: row
-					.get("child")
-					.map_err(reinhardt::core::exception::Error::from)?,
-				parent: row
-					.get("parent")
-					.map_err(reinhardt::core::exception::Error::from)?,
-				cascades: row
-					.get("cascades")
-					.map_err(reinhardt::core::exception::Error::from)?,
-				columns: row
-					.get::<String>("columns")
-					.map_err(reinhardt::core::exception::Error::from)?
-					.split(',')
-					.map(str::to_owned)
-					.collect(),
-			})
-		})
-		.collect()
+	let mut references = Vec::new();
+	for row in tx.fetch_all(&sql, convert_values(values)).await? {
+		let child_oid: String = row
+			.get("conrelid")
+			.map_err(reinhardt::core::exception::Error::from)?;
+		let parent_oid: String = row
+			.get("confrelid")
+			.map_err(reinhardt::core::exception::Error::from)?;
+		let (Some(child), Some(parent)) = (names.get(&child_oid), names.get(&parent_oid)) else {
+			continue;
+		};
+		let column_names = |field: &str, oid: &str| -> Result<Vec<String>> {
+			let array: String = row
+				.get(field)
+				.map_err(reinhardt::core::exception::Error::from)?;
+			array
+				.trim_start_matches('{')
+				.trim_end_matches('}')
+				.split(',')
+				.map(|number| {
+					let number = number
+						.parse::<i64>()
+						.map_err(|_| Error::Invalid("invalid FK catalog ordinal".into()))?;
+					attributes
+						.get(&(oid.to_owned(), number))
+						.cloned()
+						.ok_or_else(|| Error::Invalid("missing FK catalog attribute".into()))
+				})
+				.collect()
+		};
+		let action: String = row
+			.get("confdeltype")
+			.map_err(reinhardt::core::exception::Error::from)?;
+		references.push(Reference {
+			child: child.clone(),
+			parent: parent.clone(),
+			columns: column_names("conkey", &child_oid)?,
+			parent_columns: column_names("confkey", &parent_oid)?,
+			cascades: action == "c",
+			updates_child: matches!(action.as_str(), "n" | "d"),
+		});
+	}
+	Ok(references)
 }
 
 /// Deletes every row `tenant` owns in `table`, and reports how many went.
