@@ -21,6 +21,12 @@ path. Whoever runs the Deployment's host can technically read the Plan Tokens
 it holds. PostgreSQL encrypts them at rest; that does not protect them from the
 host that has the Master Key. Enabling this setting accepts that boundary.
 
+For Cloud or Dedicated upgrades, remove an existing
+`[plan_connections] enabled = true` setting or set it to `false`. Those builds
+now refuse startup with plan usage enabled, including with a PostgreSQL Store,
+and omit the Plan Connection routes from their API and OpenAPI contract. Use the
+Self-hosted Offering for the supported plan flow until #248 is approved.
+
 Sign in as the subject that will own the connection and open personal ChatGPT
 plan settings in the current Tenant. Connect opens OpenAI's consent screen.
 Choose whether to grant ChatGPT plan usage; identity-only consent does not
@@ -122,7 +128,7 @@ revocation. See [Store recovery](provider-credentials.md) for Master Key loss.
 
 ## Acceptance evidence
 
-The [credential-security completion record](operations/provider-credential-security-completion.md)
+The [credential-security acceptance record](operations/provider-credential-security-acceptance.md)
 tracks local regression checks separately from real provider, IAM and
 protected-workflow acceptance. Fake OAuth and Responses fixtures do not prove a
 real connection. A real authorization requires the owner's interactive account

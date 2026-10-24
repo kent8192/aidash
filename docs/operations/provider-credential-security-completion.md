@@ -3,6 +3,9 @@
 Design status: approved on 2026-10-23, including the protected-ref acceptance
 order. Implementation and verification remain tracked separately below.
 
+The [acceptance record](provider-credential-security-acceptance.md) contains
+observed local results and the remaining live evidence requirements.
+
 Implementation baseline: `37d427e09b519fbede493d01997e2447472126dd` on
 `develop/0.1.0`. Delivery branch: `feat/issue-135-remaining-credential-security`.
 
