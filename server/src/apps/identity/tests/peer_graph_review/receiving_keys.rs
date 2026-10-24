@@ -130,6 +130,26 @@ impl InboundRepository for Clock<'_> {
 	async fn tenant_live(&self, tenant: &TenantName) -> aidash_application::Result<bool> {
 		self.0.tenant_live(tenant).await
 	}
+	async fn node_live(
+		&self,
+		tenant: &TenantName,
+		node: &NodeName,
+	) -> aidash_application::Result<bool> {
+		self.0.node_live(tenant, node).await
+	}
+	async fn closed_node_request(
+		&self,
+		tenant: &TenantName,
+		receiver: &NodeAddress,
+		sender: &NodeAddress,
+		subject: &str,
+		request: &RequestDigest<'_>,
+	) -> aidash_application::Result<bool> {
+		self.0
+			.closed_node_request(tenant, receiver, sender, subject, request)
+			.await
+	}
+
 	async fn registration(
 		&self,
 		tenant: &TenantName,

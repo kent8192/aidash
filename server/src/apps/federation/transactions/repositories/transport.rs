@@ -36,9 +36,23 @@ pub(crate) async fn remote<T: DeserializeOwned>(
 	path: &str,
 	body: Option<&impl Serialize>,
 ) -> Result<T> {
+	let bytes = body
+		.map(serde_json::to_vec)
+		.transpose()?
+		.unwrap_or_default();
+	let request = aidash_application::federation::inbound::RequestDigest {
+		method,
+		path,
+		body: &bytes,
+	};
 	crate::bootstrap::peer_transport(runtime)
 		.transaction(
-			async { runtime.route(&sender, node).await.map_err(Into::into) },
+			async {
+				runtime
+					.route_delivery(&sender, node, &request)
+					.await
+					.map_err(Into::into)
+			},
 			method,
 			path,
 			body,
