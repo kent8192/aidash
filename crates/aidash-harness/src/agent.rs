@@ -1870,7 +1870,7 @@ impl<'a> Executor<'a> {
 					},
 					error = recheck => Inference::Interrupted(InterruptionReason::Revoked, error),
 					result = provider => match result {
-						Ok(response) => Inference::Response(response),
+						Ok(response) => Inference::Response(Box::new(response)),
 						Err(error @ Error::InferenceStalled) => Inference::Interrupted(InterruptionReason::Stall, error),
 						Err(error) => Inference::Interrupted(InterruptionReason::StreamError, error),
 					},
@@ -1907,7 +1907,7 @@ impl<'a> Executor<'a> {
 				};
 				let recorded = store.complete_usage_record(run, attempt.0, &outcome).await;
 				let result = match inference {
-					Inference::Response(response) => response,
+					Inference::Response(response) => *response,
 					Inference::Superseded => {
 						self.close_inference(run, token, attempt, ProgressOutcome::Discarded)
 							.await?;
@@ -3106,7 +3106,7 @@ fn record_model_turn(
 const INFERENCE_RECHECK_INTERVAL: std::time::Duration = std::time::Duration::from_secs(1);
 
 enum Inference {
-	Response(aidash_domain::provider::ModelResponse),
+	Response(Box<aidash_domain::provider::ModelResponse>),
 	/// A newer Run input arrived; the attempt is discarded and replanned.
 	Superseded,
 	Interrupted(InterruptionReason, Error),

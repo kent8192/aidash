@@ -89,12 +89,12 @@ matrix remains blocked until that bound is enforceable. Actual Rust recovery
 tests provide separate deterministic evidence and do not substitute for this
 live requirement.
 
-An operator preparing a live campaign must supply all of the following facts:
+Preparing a live campaign requires all of the following facts:
 
 - The exact clean deployed source revision and immutable Registry model
   `id@version` references on both routes. Each route supplies a separate
-  operator source attestation naming the deployed commit, clean state, binary
-  digest and deployed revision. This is an explicit operator attestation,
+  deployed-source attestation naming the deployed commit, clean state, binary
+  digest and deployed revision. This is an explicit source attestation,
   not automatic verification of the remote binary.
 - The Tenant's active connected Provider Credential and its current binding;
   models use that credential, rather than an environment provider key or Plan
@@ -137,7 +137,7 @@ The default pilot plans 390 automatic-route Runs and 650 explicit-route Runs:
 1040 × 180 seconds is 187200 seconds (52 hours), exceeding the shared four-hour
 ceiling before any overhead. **The default complete pilot cannot fit its
 conservative time admission bound and does not start paid work.** This is a
-planning feasibility result, not a measured provider duration. An operator may
+planning feasibility result, not a measured provider duration. You may
 predeclare a different bounded Run timeout in a new frozen configuration, but
 the entire phase, overhead and remaining campaign work must still fit the same
 shared limits. Do not understate the bound, reset the state or assume unbounded
@@ -154,8 +154,8 @@ python3 scripts/evaluate-projections.py run \
 ```
 
 This command is an interface example; the live prerequisites above must first be
-satisfied. The execution document is supplied by the authorized operator and
-contains no bearer token or raw provider credential:
+satisfied. The authorized person preparing the campaign supplies the execution
+document, which contains no bearer token or raw provider credential:
 
 | Field                                                    | Meaning                                                                           |
 | -------------------------------------------------------- | --------------------------------------------------------------------------------- |
@@ -167,7 +167,7 @@ contains no bearer token or raw provider credential:
 | `models`                                                 | Independently fetched, exact serialized configurations, keyed by those references |
 | `prices`                                                 | Approved conservative per-token nanocredit rates, keyed by model reference        |
 | `disclosure_approval`                                    | Private local path to that route's exact approval document                        |
-| `source_attestation`                                     | Private local path to the operator's exact deployed-source attestation            |
+| `source_attestation`                                     | Private local path to the exact deployed-source attestation                       |
 | `tool_endpoint`                                          | The exact approved synthetic fixture-service endpoint, when needed                |
 | `upper_wall_seconds`                                     | Conservative complete-route duration, at least planned Runs × frozen Run timeout  |
 
@@ -187,15 +187,15 @@ requires the complete attestation rather than filling those facts locally.
 An interrupted or failed process keeps its entire reservation, including across
 restarts. Accepted `model.completed` events omit some failed or interrupted
 work and never release headroom. An unresolved reservation or stale state lock
-requires operator reconciliation; retrying with a new state file must not reset
+requires manual reconciliation; retrying with a new state file must not reset
 spent allowance. Existing phase outputs and duplicate phase/route reservations
 are refused rather than silently replacing or adding trials.
 
-## Prompt-free operator export
+## Prompt-free evidence export
 
 The live evaluator has no HTTP endpoint for reading the complete Usage Record
-ledger. A deployment operator obtains the read-only SQL query document from the
-same tested binary:
+ledger. Whoever runs the Deployment obtains the read-only SQL query document
+from the same tested binary:
 
 ```sh
 cargo run --locked -p aidash-server --bin manage -- diagnostics evaluation \
@@ -210,7 +210,7 @@ scope or as a role that bypasses RLS. Select the campaign's complete Run/attempt
 inventory from the authorized results. Never export prompts, raw context,
 messages, credentials, leases or salts.
 
-The operator JSON envelope follows
+The evidence JSON envelope follows
 [`projection-evidence.schema.json`](../tests/evaluation/schema/projection-evidence.schema.json).
 The importer also applies stricter row allowlists, types, joins and accounting
 checks from `scripts/projection_evaluation.py`; JSON Schema alone is insufficient.
@@ -285,7 +285,7 @@ of safety.
 
 ## Report and freeze confirmation
 
-Import the result and its matching operator export per route:
+Import the result and its matching evidence export per route:
 
 ```sh
 python3 scripts/evaluate-projections.py report \
@@ -293,8 +293,8 @@ python3 scripts/evaluate-projections.py report \
   --execution-manifest private/evaluation/projection-execution.json \
   --result automatic=private/evaluation/projection-pilot/pilot-automatic.json \
   --result explicit=private/evaluation/projection-pilot/pilot-explicit.json \
-  --export automatic=private/evaluation/projection-pilot/operator-automatic.json \
-  --export explicit=private/evaluation/projection-pilot/operator-explicit.json \
+  --export automatic=private/evaluation/projection-pilot/evidence-automatic.json \
+  --export explicit=private/evaluation/projection-pilot/evidence-explicit.json \
   --candidate native --explicit-cache off \
   --output private/evaluation/projection-pilot-analysis.json \
   --markdown private/evaluation/projection-pilot-report.md
@@ -331,7 +331,7 @@ diagnostics and unsuccessful work, remain in campaign accounting; they do not
 all enter the primary confirmation gates. Supply retained evidence for every
 prior campaign phase rather than presenting a favorable subset as the complete
 campaign. An unimported phase does not become measured or cost-free.
-The Markdown report is derived from it. Without complete operator exports the
+The Markdown report is derived from it. Without complete evidence exports the
 report remains useful for fixture diagnostics but is inconclusive for adoption.
 Reported metrics include outcome/quality and variance, each token component or
 unknown, provider cost, estimator error without output reservation, within-Run
@@ -387,8 +387,8 @@ contain the actual immutable artifacts:
     "explicit": "private/evaluation/projection-pilot/pilot-explicit.json"
   },
   "exports": {
-    "automatic": "private/evaluation/projection-pilot/operator-automatic.json",
-    "explicit": "private/evaluation/projection-pilot/operator-explicit.json"
+    "automatic": "private/evaluation/projection-pilot/evidence-automatic.json",
+    "explicit": "private/evaluation/projection-pilot/evidence-explicit.json"
   }
 }
 ```

@@ -110,7 +110,7 @@
         "compaction": { "type": "string" },
         "execution_estimator": { "enum": ["bytes", "calibrated"] },
         "source_provenance": {
-          "enum": ["operator-attestation", "remote-unverified"]
+          "enum": ["source-attestation", "remote-unverified"]
         },
         "source_attestation_sha256": {
           "type": ["string", "null"],

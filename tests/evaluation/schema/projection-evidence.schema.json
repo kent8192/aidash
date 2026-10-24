@@ -1,8 +1,8 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://github.com/kent8192/aidash/tests/evaluation/schema/projection-evidence.schema.json",
-  "title": "Tenant-scoped offline projection operator export",
-  "description": "Operator attests this complete inventory was read under the authorized Tenant scope. Source and canonical manifest digest must match exactly. Every planned Run is recorded or explicitly skipped; every attempted Run and table attempt joins exactly. Table rows use the prompt-free diagnostics metadata allowlists in projection_evaluation.py. Shared memory attempts list all source_run_ids and are charged once, without invented per-Run allocation. This is an operator file format, not a public HTTP API.",
+  "title": "Tenant-scoped offline projection evidence export",
+  "description": "The person exporting the evidence attests this complete inventory was read under the authorized Tenant scope. Source and canonical manifest digest must match exactly. Every planned Run is recorded or explicitly skipped; every attempted Run and table attempt joins exactly. Table rows use the prompt-free diagnostics metadata allowlists in projection_evaluation.py. Shared memory attempts list all source_run_ids and are charged once, without invented per-Run allocation. This is an evidence file format, not a public HTTP API.",
   "type": "object",
   "additionalProperties": false,
   "required": [

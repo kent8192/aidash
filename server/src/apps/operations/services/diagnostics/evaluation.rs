@@ -1,8 +1,8 @@
 //! Read-only Reinhardt Query diagnostics for the fixed-task evaluator (#122).
 //!
 //! Usage Records have no HTTP read endpoint. The deterministic evaluation tier
-//! selects complete Run/attempt inventories after an operator executes these
-//! parameterless queries inside the authorized Tenant's read-only RLS scope.
+//! selects complete Run/attempt inventories after whoever runs the Deployment
+//! executes these parameterless queries inside the authorized Tenant's read-only RLS scope.
 //! Cache identities are digests; prompts, salts, leases and raw context are excluded.
 use reinhardt::query::{
 	Alias, Expr, IntoIden, JoinType, Order, PostgresQueryBuilder, Query, QueryStatementBuilder,

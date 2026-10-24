@@ -189,7 +189,7 @@ def main(argv=None):
     report.add_argument("--plan", type=Path, required=True)
     report.add_argument("--corpus", type=Path, default=evaluation.EVALUATION / "corpus.toml")
     report.add_argument("--result", action="append", default=[], help="automatic=PATH or explicit=PATH")
-    report.add_argument("--export", action="append", default=[], help="matching Tenant-scoped operator export")
+    report.add_argument("--export", action="append", default=[], help="matching Tenant-scoped evidence export")
     report.add_argument("--analysis-config", type=Path)
     report.add_argument("--execution-manifest", type=Path,
                         help="predispatch approved execution manifest for derived statistical cost bounds")

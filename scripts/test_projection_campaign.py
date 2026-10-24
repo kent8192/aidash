@@ -220,8 +220,8 @@ class CampaignBoundaryTest(unittest.TestCase):
             corrupt["spend"]["attempts"][0]["reserved"] = 1
             with self.assertRaisesRegex(campaign.CampaignRefusal, "statistical cost bound"):
                 campaign.analysis_reservation_evidence(corrupt, self.plan, route, execution, self.corpus)
-            # The wall-time bound is derived from this sequential runner. An
-            # operator cannot declare a one-second phase to bypass admission.
+            # The wall-time bound is derived from this sequential runner. A
+            # one-second phase declaration cannot bypass admission.
             execution["routes"][route]["upper_wall_seconds"] = 1
             with self.assertRaisesRegex(campaign.CampaignRefusal, "sequential"):
                 campaign.phase_reservations(self.plan, self.corpus, execution)

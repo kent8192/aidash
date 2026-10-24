@@ -1653,7 +1653,7 @@ class LiveGuardTest(unittest.TestCase):
         self.assertNotIn("private model output", json.dumps(result))
         evaluation.validate_result(result)
 
-    def test_live_preserves_only_approved_operator_source_attestation(self):
+    def test_live_preserves_only_approved_source_attestation(self):
         value = corpus()
         source = {"commit": "a" * 40, "dirty": False, "dirty_diff_sha256": None,
                   "binary_sha256": "b" * 64, "server_revision": "a" * 40}
@@ -1681,7 +1681,7 @@ class LiveGuardTest(unittest.TestCase):
                     self.assertEqual(status, expected)
                     manifest = json.loads(args.output.read_text())
                     self.assertEqual(manifest["experiment"]["aidash"], source)
-                    self.assertEqual(manifest["experiment"]["harness"]["source_provenance"], "operator-attestation")
+                    self.assertEqual(manifest["experiment"]["harness"]["source_provenance"], "source-attestation")
         for tampered in (dict(source, dirty=True), dict(source, server_revision="bad"),
                          dict(source, commit="a" * 7)):
             with self.assertRaisesRegex(evaluation.GuardRefusal, "clean full commit"):

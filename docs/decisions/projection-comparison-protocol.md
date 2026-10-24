@@ -338,8 +338,8 @@ overflow demotion. Media-free text is the initial scope.
 
 ### Export diagnostics without adding a public API
 
-Use an operator-mediated read-only export/import path for live Usage Records,
-other provider work, recovery records and route metadata. Extend
+Use a read-only export/import path managed by whoever runs the Deployment for
+live Usage Records, other provider work, recovery records and route metadata. Extend
 `manage diagnostics evaluation` as needed. Its current behavior only emits
 SQL; it does not connect to a remote Deployment. Execute exports inside the
 authorized Tenant scope and validate the experiment's complete Run/attempt

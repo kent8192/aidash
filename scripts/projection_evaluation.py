@@ -1,17 +1,17 @@
 """Offline matched-projection evidence, accounting and switching decisions (#181).
 
-The fixed-task manifest remains the oracle owner. Operator JSON is an additional,
+The fixed-task manifest remains the oracle owner. Evidence JSON is an additional,
 Tenant-scoped, prompt-free export, never a replacement for outcomes or a transport
 API. No function in this module dispatches a Run or performs network I/O.
 
 Public contract:
-  load_evidence(result, operator_export=None, *, corpus=None, memory_corpus=None)
+  load_evidence(result, export=None, *, corpus=None, memory_corpus=None)
       accepts mappings or local JSON paths. Optional corpus arguments are the
       immutable corpus mappings/paths belonging to a historical result.
   analyze_campaign(imports, configuration) -> JSON-finite decision artifact
   render_report(artifact) -> bounded, reproducible Markdown
 
-The operator envelope contains schema_version=1, experiment_id, canonical whole
+The evidence envelope contains schema_version=1, experiment_id, canonical whole
 result manifest_sha256, exact source=experiment.aidash, tenant_id, the complete
 planned_run_keys, run_inventory, and all six diagnostic tables (see TABLES plus
 run_recovery). Each inventory row is {key, run_id, attempt_ids:{table:[id,...]}}.
@@ -71,7 +71,7 @@ MAX_ROWS = 100000
 MAX_TEXT = 4096
 
 # These are metadata fields selected by `manage diagnostics evaluation`, plus
-# optional operator-owned accounting and independent guard annotations. Reject
+# optional export-supplied accounting and independent guard annotations. Reject
 # unknown fields rather than accidentally importing prompts, secrets or context.
 COMMON = {"attempt_id", "id", "run_id", "tenant_id", "tenant", "created_at", "completed_at",
           "finished_at", "settled_at", "cost_nanocredits", "upstream_cost_nanocredits", "cost_amount",
@@ -285,7 +285,7 @@ def _variant_projection(variant):
 
 
 def load_evidence(manifest, export=None, *, corpus=None, memory_corpus=None):
-    """Associate an existing fixed-task result with a complete operator export.
+    """Associate an existing fixed-task result with a complete evidence export.
 
     Both arguments accept JSON mappings or local paths. The export envelope is
     defined by projection-evidence.schema.json. Every planned Run must be either
@@ -327,19 +327,19 @@ def load_evidence(manifest, export=None, *, corpus=None, memory_corpus=None):
             "generation_embedding_usage": [],
         })
     if export is None:
-        normalized["limitations"].append("No complete Tenant-scoped operator export; auxiliary work, routes and recovery may be unknown.")
+        normalized["limitations"].append("No complete Tenant-scoped evidence export; auxiliary work, routes and recovery may be unknown.")
         return normalized
     export = _json(export)
     schema = json.loads((evaluation.EVALUATION / "schema/projection-evidence.schema.json").read_text())
     errors = evaluation.validate(export, schema)
     if errors:
-        raise EvidenceError("invalid operator export: " + "; ".join(errors[:8]))
+        raise EvidenceError("invalid evidence export: " + "; ".join(errors[:8]))
     if export["experiment_id"] != experiment["experiment_id"]:
-        raise EvidenceError("operator export experiment_id differs from the manifest")
+        raise EvidenceError("evidence export experiment_id differs from the manifest")
     if not evaluation.json_equal(export["source"], experiment["aidash"]):
-        raise EvidenceError("operator export source identity differs from the manifest")
+        raise EvidenceError("evidence export source identity differs from the manifest")
     if export["manifest_sha256"] != normalized["manifest_sha256"]:
-        raise EvidenceError("operator export manifest digest differs from the fixed result")
+        raise EvidenceError("evidence export manifest digest differs from the fixed result")
     tenant = export["tenant_id"]
     _text(tenant, "tenant_id")
     planned = {evaluation.run_key(v["task"], v["comparison"], v["arm"], repeat)
@@ -348,7 +348,7 @@ def load_evidence(manifest, export=None, *, corpus=None, memory_corpus=None):
     by_key = {r["key"]: r for r in normalized["runs"]}
     run_ids = [r["run_id"] for r in normalized["runs"]]
     if any(not isinstance(value, str) or not value for value in run_ids) or len(set(run_ids)) != len(run_ids):
-        raise EvidenceError("operator import requires unique durable run_id for every attempted Run")
+        raise EvidenceError("evidence import requires unique durable run_id for every attempted Run")
     inventory = export["run_inventory"]
     _exact_set([r["key"] for r in inventory], by_key, "run_inventory")
     expected = {table: defaultdict(set) for table in TABLES}
@@ -968,7 +968,7 @@ def analyze_campaign(experiments, config):
         if any(not a["live"] for a in route_audits):
             reasons.append("Scripted fixtures measure accounting only and cannot authorize a default change.")
         if any(not a["complete_export"] for a in route_audits):
-            reasons.append("Complete operator evidence is unavailable.")
+            reasons.append("Complete imported evidence is unavailable.")
         if any(a["skipped_runs"] or a["error"] for a in route_audits):
             reasons.append("The planned phase is incomplete or stopped; skipped and failed work is retained.")
         if any(a["source"].get("dirty") is not False or not a["source"].get("commit") or not a["source"].get("binary_sha256") or not a["source"].get("server_revision") for a in route_audits if a["phase"] == "confirmation"):

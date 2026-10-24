@@ -328,7 +328,7 @@ def make_plan(config, corpus, *, source=None, evaluator=None):
                                         "Tenant and connected Provider Credential",
                                         "approved exact disclosure manifest and price ceilings",
                                         "complete phase worst-case spend/time fit",
-                                        "prompt-free operator evidence export"]}
+                                        "prompt-free evidence export"]}
     plan["plan_sha256"] = digest(plan)
     return plan
 
@@ -427,7 +427,7 @@ def analysis_reservation_evidence(manifest, plan, route, execution, corpus):
             or experiment.get("harness", {}).get("disclosure_approval") != digest(approval):
         raise CampaignRefusal("result does not bind the predispatch approval, prices and model configurations")
     if approval.get("source_attestation_sha256") != digest(experiment["aidash"]):
-        raise CampaignRefusal("result source differs from the approved operator attestation")
+        raise CampaignRefusal("result source differs from the approved source attestation")
     actual_models = experiment.get("model", {}).get("registrations", {})
     if set(actual_models) != set(entry["model_refs"]) or any(
             actual_models[name].get("config_sha256") != digest(entry["models"][ref])
@@ -543,7 +543,7 @@ def check_execution(plan, corpus, execution):
         evaluation.require_enforceable_auxiliary_bound(evaluation.auxiliary_allowance(approval))
         evaluation.check_execution_estimator_approval(approval, plan.get("execution_estimator", "bytes"))
         if not entry.get("source_attestation"):
-            raise CampaignRefusal(f"{route} needs an operator attestation of the deployed source and binary")
+            raise CampaignRefusal(f"{route} needs an attestation of the deployed source and binary")
         attestation = read_json(entry["source_attestation"])
         evaluation.validate_source_attestation(attestation, approval, execution["server_revision"])
         if set(attestation) != set(plan["source"]) or any(attestation.get(field) != plan["source"].get(field)

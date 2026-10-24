@@ -7,7 +7,7 @@ writes a validated result manifest. It complements, and never replaces, the
 deterministic protocol, authorization and recovery tests.
 
 For the three-way Legacy/Ordered/Native campaign, its two caching routes,
-shared budget, operator ledger import and frozen confirmation phases, use the
+shared budget, usage ledger import and frozen confirmation phases, use the
 [matched projection comparison guide](projection-comparison.md). The current
 corpus is v2; `tests/evaluation/corpus-v1.toml` preserves the v1 snapshot for
 validating historical results.
@@ -258,11 +258,11 @@ Pricing Runs from Usage Records waits for an HTTP read endpoint for them.
 The live manifest records `model.reported_identities: null`: the live HTTP
 surfaces do not expose the complete per-attempt Usage Records, so the manifest
 cannot independently say what served a request. A live `--source-attestation`
-can bind an operator's exact deployed commit, clean state and binary digest;
-without it the remote source facts stay unknown. This is operator-attested
+can bind the exact deployed commit, clean state and binary digest;
+without it the remote source facts stay unknown. This is explicitly attested
 provenance, not automatic remote binary verification. `model.route` is only the
 connected Provider Credential's catalog provider. The separate, authorized
-operator export can supply the bounded provider-reported identities retained in
+usage ledger export can supply the bounded provider-reported identities retained in
 the ledger. Missing exact model revisions or endpoint tags stay unknown;
 requested routing is not a substitute for reported routing. Every request is
 bounded by the Run's time limit; when it passes,

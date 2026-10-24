@@ -461,7 +461,7 @@ async fn manual_retry_renews_only_the_retry_ledger_and_preserves_durable_budgets
 		]
 	);
 	// Attempt lineage and the original reservation survive retries and
-	// successful policy settlement, so operator cost exports can join every call.
+	// successful policy settlement, so cost exports can join every call.
 	let evidence = aidash_server::database::native::query(
 		&Query::select()
 			.columns(

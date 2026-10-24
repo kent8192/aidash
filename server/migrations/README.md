@@ -615,7 +615,7 @@ does not invent old ownership or provider measurements. It also needs no
 state-only checkpoint; rollback drops the added evidence columns and their
 contents. Existing Tenant row policies continue to cover both attempt tables.
 
-The [projection comparison operator guide](../../docs/projection-comparison.md)
+The [projection comparison guide](../../docs/projection-comparison.md)
 describes the prompt-free diagnostic export, complete attempt inventories and
 remaining live acceptance requirements. These migrations do not switch the
 projection default or rewrite pinned definitions and Runs.

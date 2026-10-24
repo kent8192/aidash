@@ -10,7 +10,7 @@
 - Evaluator: `2.1.4`, SHA-256 `19a92df85ea1ab034a846b8244615d670ea39b37555a4f5f8812301cfc6c6526`.
 - Campaign configuration SHA-256: `d69922b99893667bc81027355d28641d8e31d7eecadf56f8bf7103d5298336e2`.
 - Configuration, prompt-free Run evidence, corpus/campaign file fingerprints and the fixed-evaluator digest: [JSON artifact](projection-comparison-fixture-evidence.json).
-- Protocol: [accepted decisions](../decisions/projection-comparison-protocol.md). Operator workflow and migration/compatibility details: [comparison guide](../projection-comparison.md).
+- Protocol: [accepted decisions](../decisions/projection-comparison-protocol.md). Campaign workflow and migration/compatibility details: [comparison guide](../projection-comparison.md).
 
 ```sh
 python3 scripts/evaluate-projections.py plan \
@@ -46,7 +46,7 @@ The automatic pruning and Summary-retention tasks require a production-routable 
 
 ## Fixture usage and estimator measurements
 
-Every number below is reported by the local scripted fixture and the usage ledger. It is not a production-provider measurement. The fixture manifest carries inference Usage Records, not a complete six-table operator export: total provider-work cost and auxiliary-work completeness remain unknown. The charge column totals only observed inference records. Cache counters are breakdowns and are not added to input/output totals; upstream charges and reservations are not added to billed costs.
+Every number below is reported by the local scripted fixture and the usage ledger. It is not a production-provider measurement. The fixture manifest carries inference Usage Records, not a complete six-table evidence export: total provider-work cost and auxiliary-work completeness remain unknown. The charge column totals only observed inference records. Cache counters are breakdowns and are not added to input/output totals; upstream charges and reservations are not added to billed costs.
 
 | Comparison          | Arm              | Usage records | Input  | Output | Cache read | Cache write | Observed inference fixture charge (nanocredits) |
 | ------------------- | ---------------- | ------------: | ------ | ------ | ---------- | ----------- | ----------------------------------------------- |
@@ -132,7 +132,7 @@ Stable Prefix identity transitions can be reconstructed per Run from `cache_iden
 | Ordered + explicit cache | unknown                   | unknown                        | unknown       | unknown             | unknown                 | unknown                    |
 | Native + explicit cache  | unknown                   | unknown                        | unknown       | unknown             | unknown                 | unknown                    |
 
-No Tenant/credential/disclosure/source-attestation execution manifest or complete operator export was supplied. No paid calls were made. The pilot has 390 automatic-route and 650 explicit-route planned Runs: 1,040 sequential Runs × 180 seconds = 187,200 seconds (52 hours), exceeding the shared 14,400-second ceiling. It must not start under this default configuration. The USD 50 ceiling is shared across preflight and all phases; phase reservations are not refunded from incomplete accepted-response events.
+No Tenant/credential/disclosure/source-attestation execution manifest or complete evidence export was supplied. No paid calls were made. The pilot has 390 automatic-route and 650 explicit-route planned Runs: 1,040 sequential Runs × 180 seconds = 187,200 seconds (52 hours), exceeding the shared 14,400-second ceiling. It must not start under this default configuration. The USD 50 ceiling is shared across preflight and all phases; phase reservations are not refunded from incomplete accepted-response events.
 
 A bounded Decider declaration currently has no enforceable per-physical-request monetary receipt, so live auxiliary dispatch is refused. The default configuration also leaves independent-block readiness false. A future campaign must establish these prerequisites, fit the complete phase inside both ceilings, supply exact upstream/model identity evidence, and complete new frozen confirmation and deployment-estimator trials. Unknown reported endpoint identity cannot be filled from the requested route.
 

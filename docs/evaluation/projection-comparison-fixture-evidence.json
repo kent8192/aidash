@@ -26,7 +26,7 @@
     }
   },
   "full_manifest_canonical_sha256": "296fa777af3a269815ea482081b9552ce4c12c2504022a9ad37c4fd46de1471a",
-  "plan_sha256": "0806fac2b9b671659fbf1d814d34a9dd8974092386137fbcdb722983901f20ea",
+  "plan_sha256": "19b9fe403edf721a13dceccbe7eaef8754650a4b7d54452d102c8f309544d46e",
   "campaign_configuration": {
     "schema_version": 1,
     "name": "matched-projections-v1",
@@ -7522,9 +7522,9 @@
       "Tenant and connected Provider Credential",
       "approved exact disclosure manifest and price ceilings",
       "complete phase worst-case spend/time fit",
-      "prompt-free operator evidence export"
+      "prompt-free evidence export"
     ],
-    "plan_sha256": "0806fac2b9b671659fbf1d814d34a9dd8974092386137fbcdb722983901f20ea"
+    "plan_sha256": "19b9fe403edf721a13dceccbe7eaef8754650a4b7d54452d102c8f309544d46e"
   },
   "fixture_experiment_id": "fte-939839503e92",
   "fixture_execution_order": {

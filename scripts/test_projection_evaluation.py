@@ -148,7 +148,7 @@ class EvidenceImportTest(unittest.TestCase):
 
     def test_raw_json_duplicate_keys_and_nonfinite_manifest_are_rejected(self):
         with tempfile.TemporaryDirectory() as directory:
-            path = Path(directory) / "operator.json"
+            path = Path(directory) / "evidence.json"
             path.write_text('{"schema_version":1,"schema_version":1}')
             with self.assertRaisesRegex(projection.EvidenceError, "duplicate JSON"):
                 projection.load_evidence(self.manifest, path)
@@ -315,7 +315,7 @@ class AccountingReportTest(unittest.TestCase):
         with self.assertRaisesRegex(projection.EvidenceError, "reused"):
             projection.analyze_campaign([evidence, other], configuration(self.manifest))
 
-    def test_manifest_without_operator_export_retains_unknown_measurements_and_failed_runs(self):
+    def test_manifest_without_evidence_export_retains_unknown_measurements_and_failed_runs(self):
         evidence = projection.load_evidence(self.manifest)
         report = projection.analyze_campaign([evidence], configuration(self.manifest))
         self.assertEqual(report["campaign_all_work"]["attempted_runs"], len(self.manifest["runs"]))

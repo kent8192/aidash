@@ -1664,7 +1664,7 @@ def positive_int(value):
 def auxiliary_allowance(approval):
     """Validate declared auxiliary work for offline planning; never infer a free call.
 
-    Call counts are checked against pinned Registry configurations. The operator's
+    Call counts are checked against pinned Registry configurations. The declared
     per-call amount is only a reservation, not proof of an upstream monetary cap.
     Execution must additionally pass require_enforceable_auxiliary_bound; until an
     enforced provider/broker contract exists, live auxiliary dispatch is refused.
@@ -1702,7 +1702,7 @@ def require_enforceable_auxiliary_bound(auxiliary):
     """Refuse paid Decider work until an upstream-enforced monetary bound exists."""
     if auxiliary.get("decider") or auxiliary.get("summary"):
         raise GuardRefusal("bounded Decider/Summary live dispatch is unavailable: max_nanocredits_per_call is an "
-                           "operator-declared reservation, not an enforceable per-physical-request monetary limit "
+                           "declared reservation, not an enforceable per-physical-request monetary limit "
                            "or receipt. An enforced provider/broker bound is required before the hard campaign "
                            "ceiling can authorize these calls; retain recovery diagnostics as not measured")
 
@@ -1776,7 +1776,7 @@ def check_execution_estimator_approval(approval, estimator):
 
 
 def validate_source_attestation(source, approval, server_revision):
-    """Validate operator-supplied remote provenance; this is not local autodetection."""
+    """Validate explicitly supplied remote provenance; this is not local autodetection."""
     fields = {"commit", "dirty", "dirty_diff_sha256", "binary_sha256", "server_revision"}
     if not isinstance(source, dict) or set(source) != fields or source.get("dirty") is not False or \
             source.get("dirty_diff_sha256") is not None or not isinstance(source.get("commit"), str) or \
@@ -1786,7 +1786,7 @@ def validate_source_attestation(source, approval, server_revision):
         raise GuardRefusal("source attestation must name a clean full commit, its binary sha256 and an exactly "
                            "matching full --server-revision")
     if not isinstance(approval, dict) or approval.get("source_attestation_sha256") != canonical_sha256(source):
-        raise GuardRefusal("disclosure approval source_attestation_sha256 must bind the exact operator source attestation")
+        raise GuardRefusal("disclosure approval source_attestation_sha256 must bind the exact deployed-source attestation")
     return dict(source)
 
 

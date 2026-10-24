@@ -821,7 +821,7 @@ async fn summary_usage_is_independent_from_main_and_keeps_prompt_free_evidence(
 #[path = "../../../operations/services/diagnostics/evaluation.rs"]
 mod evaluation_queries;
 
-/// Operator diagnostics execute against the migrated schema, preserve unknown
+/// Evaluation diagnostics execute against the migrated schema, preserve unknown
 /// costs and recovery evidence, and obey the caller's Tenant RLS scope.
 #[rstest::rstest]
 #[tokio::test]

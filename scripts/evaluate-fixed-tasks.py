@@ -75,7 +75,7 @@ LIVE_LIMITATIONS = [
     "Code-execution oracles require an explicitly approved pinned Docker image and run only in disposable "
     "resource-bounded containers with no network, host environment or parent process visibility.",
     "Auxiliary definitions can describe planned Decider/Summary work, but live dispatch is refused until an "
-    "enforced provider/broker monetary bound exists. An operator-declared reservation is not a provider cap "
+    "enforced provider/broker monetary bound exists. A declared reservation is not a provider cap "
     "or a reported charge; recovery diagnostics remain not measured in this live tier.",
 ]
 
@@ -882,7 +882,7 @@ def live(args, read_json=None, transport=None, clock=time.monotonic, sleep=time.
         harness = {"compaction": "server-configured", "cache_salt": True,
                    "builtin_policy": "minimal-task-support/1",
                    "execution_estimator": execution_estimator,
-                   "source_provenance": "operator-attestation" if source_attestation else "remote-unverified",
+                   "source_provenance": "source-attestation" if source_attestation else "remote-unverified",
                    "source_attestation_sha256": evaluation.canonical_sha256(source_attestation) if source_attestation else None,
                    "provider_credential": args.provider_credential,
                    "disclosure_approval": evaluation.canonical_sha256(approval),
@@ -980,7 +980,7 @@ def main(argv=None):
     live_command.add_argument("--execution-estimator", choices=("bytes", "calibrated"), default="bytes",
                               help="Bytes primary comparison; calibrated requires an explicit matching disclosure approval")
     live_command.add_argument("--source-attestation", type=Path,
-                              help="operator-attested clean remote source/binary identity, bound by disclosure approval")
+                              help="explicitly attested clean remote source/binary identity, bound by disclosure approval")
     live_command.add_argument("--model", action="append", default=[],
                               help="corpus model name=Registry model id@version (repeatable)")
     live_command.add_argument("--disclosure-approval", type=Path)
