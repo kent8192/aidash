@@ -239,4 +239,64 @@ impl InboundRepository for Federation {
 			})
 			.await?)
 	}
+	async fn advance_recovery_keys(
+		&self,
+		owner: &ReceivingKeyOwner,
+		expected_keys_revision: i64,
+		expected_authorization_revision: i64,
+		keys: &aidash_domain::nodes::keys::TrustedDeploymentKeys,
+		subject: &str,
+		request: &aidash_application::federation::inbound::RequestDigest<'_>,
+	) -> Result<bool> {
+		use crate::apps::identity::repositories::receiving_keys;
+		let ReceivingKeyOwner::Registration {
+			tenant,
+			node,
+			source_node,
+		} = owner
+		else {
+			return Ok(false);
+		};
+		let receiver = self.config.deployment.node(node.clone());
+		Ok(self
+			.store
+			.pool
+			.atomic(&TenancyScope::Tenant(tenant.clone()), async |tx| {
+				match AuthorizationBundle::lock_snapshot(tx, tenant.as_str(), false).await {
+					Err(crate::Error::TenantDeleted | crate::Error::NotFound(_)) => {
+						return Ok(false);
+					}
+					other => {
+						other?;
+					}
+				}
+				nodes::lock_tenant(tx, tenant.as_str()).await?;
+				// No Node catalog/deletion read: permanent name ownership and the real
+				// immutable journal bind this retained registration, even after purge.
+				if receiving_keys::get_locked(tx, owner).await?.is_none() {
+					return Ok(false);
+				}
+				if !super::super::repositories::routes::closed_node_request_in(
+					tx,
+					tenant.as_str(),
+					&receiver,
+					source_node,
+					subject,
+					request,
+				)
+				.await?
+				{
+					return Ok(false);
+				}
+				receiving_keys::advance_recovery(
+					tx,
+					owner,
+					expected_keys_revision,
+					expected_authorization_revision,
+					keys,
+				)
+				.await
+			})
+			.await?)
+	}
 }
