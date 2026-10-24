@@ -1186,6 +1186,10 @@ impl<'a> Executor<'a> {
 						);
 						run.context.estimate.snapshot = Some(snapshot);
 						store.pin_estimate(run, token).await?;
+						// The saved projection contains immutable Research
+						// references. Restore model-visible values before any
+						// fitting or request construction uses the reloaded Run.
+						store.resolve_research(run).await?;
 						snapshot
 					}
 					None => EstimateSnapshot::conservative(run.step),

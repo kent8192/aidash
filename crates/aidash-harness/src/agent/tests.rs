@@ -133,6 +133,8 @@ struct State {
 	explicit_cache_model: bool,
 	/// Evidence fragments the Run's evidence store holds.
 	known_evidence: Vec<aidash_domain::research::citations::EvidenceRef>,
+	/// Exact Research payload variants, indexed by their durable digest.
+	research_payloads: BTreeMap<String, Value>,
 	/// The Run's Research evidence was revoked.
 	research_revoked: bool,
 	/// Revoked only once this many revocation checks have answered.
@@ -314,6 +316,29 @@ fn unexpected(operation: &str) -> ! {
 
 #[async_trait]
 impl ExecutionStore for Backend {
+	async fn resolve_research(&self, run: &mut Run) -> Result<()> {
+		for entry in &mut run.context.history {
+			if let ContextEvent::Tool { result, .. } = &mut entry.event
+				&& let Some(reference) =
+					aidash_domain::context::research::ResearchReference::parse(result)
+			{
+				*result = self
+					.0
+					.research_payloads
+					.get(&reference.digest)
+					.cloned()
+					.unwrap_or_else(|| reference.unavailable());
+			}
+		}
+		Ok(())
+	}
+	async fn pin_estimate(&self, run: &mut Run, token: Uuid) -> Result<()> {
+		self.save_run(run, token, "run.estimate_pinned").await?;
+		// Native persistence returns the saved projection, whose Research
+		// history contains immutable references rather than provider payloads.
+		*run = serde_json::from_value(serde_json::to_value(&*run)?)?;
+		Ok(())
+	}
 	async fn save_run(&self, run: &Run, token: Uuid, event: &str) -> Result<()> {
 		assert_eq!(token, self.0.token);
 		if self
@@ -1532,6 +1557,7 @@ fn fixture() -> Fixture {
 		prompt_cache: Default::default(),
 		explicit_cache_model: false,
 		known_evidence: vec![],
+		research_payloads: BTreeMap::new(),
 		research_revoked: false,
 		research_revoked_after: None,
 		research_checks: Default::default(),
