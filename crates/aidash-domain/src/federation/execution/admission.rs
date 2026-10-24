@@ -11,7 +11,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use uuid::Uuid;
 mod semantic_failure;
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, schemars::JsonSchema)]
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "SCREAMING_SNAKE_CASE")]
 pub enum RemoteExecutionPhase {
 	Admitted,
@@ -37,7 +37,7 @@ impl From<crate::RunPhase> for RemoteExecutionPhase {
 		}
 	}
 }
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, schemars::JsonSchema)]
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "SCREAMING_SNAKE_CASE")]
 pub enum RemoteExecutionControlState {
 	Inactive,
@@ -82,6 +82,8 @@ pub struct InspectInput {
 }
 #[derive(Clone)]
 pub struct Record {
+	/// Permanent cancellation of the original admission, including before activation.
+	pub cancelled: bool,
 	pub id: Uuid,
 	/// The receiving Node.
 	pub node: crate::nodes::NodeName,
@@ -100,7 +102,8 @@ impl Record {
 		subjects: &[String],
 		description: &Description,
 	) -> serde_json::Result<bool> {
-		Ok(self.source_node == description.source_node
+		Ok(!self.cancelled
+			&& self.source_node == description.source_node
 			&& self.grant_id == description.grant_id
 			&& self.task_id == description.task.id
 			&& self.tenant == identity.tenant
@@ -133,7 +136,7 @@ pub struct Admission {
 	pub task_id: Uuid,
 	pub expires_at: DateTime<Utc>,
 }
-#[derive(Serialize, Deserialize, schemars::JsonSchema)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct Activation {
 	pub grant_id: Uuid,
 	pub admission_id: Uuid,

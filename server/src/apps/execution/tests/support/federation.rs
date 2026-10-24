@@ -84,6 +84,7 @@ pub fn give_key(f: &mut Federation) -> Arc<KeyFile> {
 	f.store.egress = Egress {
 		enabled: true,
 		key: Some(key),
+		keys: None,
 	};
 	file
 }
@@ -208,6 +209,7 @@ pub async fn token(
 		method: method.into(),
 		path: path.into(),
 		body: body_digest(body),
+		transition: None,
 	};
 	claims
 		.mint(&Signing(key))

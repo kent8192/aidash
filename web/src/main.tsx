@@ -1007,6 +1007,7 @@ function Dashboard({
                       />
                     ) : (
                       <TrustTools
+                        offering={data.offering}
                         deploymentAdministrator={deploymentAdministrator}
                         invitations={browserSession?.invitations ?? false}
                         tenant={subjectTenant}

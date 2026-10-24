@@ -33,7 +33,8 @@ fn tool(id: &str) -> Entry {
 	serde_json::from_value(json!({"id":id,"version":"1.0.0","kind":"tool","name":{"en":id},"description":{"en":"Local tool"},"config":{"registry_deployment":"aidash://execution-test","provider":"integration.http@1","operation":"invoke","default_alias":"plugin_0","tier":"integration","narrow":{},"transport":{"transport":"http","endpoint":"https://tools.example/original","replay":"read_only"}}})).unwrap()
 }
 fn bundle(tenant: &str, kind: &str) -> Value {
-	json!({"tenant":tenant,"subjects":{"viewer":{"kind":kind,"roles":["manager"]}},"roles":{"manager":{"inherits":["reader"]},"reader":{}},"policies":[{"id":"all","effect":"allow","subjects":{"roles":["reader"]},"actions":["*"],"resources":{"kinds":["*"]}}]})
+	let node = (kind != "user").then(|| aidash_domain::nodes::NodeName::derived(tenant));
+	json!({"tenant":tenant,"subjects":{"viewer":{"kind":kind,"node":node,"roles":["manager"]}},"roles":{"manager":{"inherits":["reader"]},"reader":{}},"policies":[{"id":"all","effect":"allow","subjects":{"roles":["reader"]},"actions":["*"],"resources":{"kinds":["*"]}}]})
 }
 async fn policy(f: &Federation, tenant: &str, revision: i64, mut value: Value) {
 	let authorization = Authorization {
@@ -158,7 +159,6 @@ fn deny(mut value: Value, actions: Value) -> Value {
 #[timeout(common::TEST_BOUND)]
 #[case("user")]
 #[case("agent")]
-#[case("node")]
 #[case("service")]
 #[tokio::test]
 async fn tenant_publication_pending_installation_and_revisions(
@@ -456,6 +456,64 @@ async fn tenant_publication_pending_installation_and_revisions(
 			&a,
 			"GET",
 			&format!("/api/marketplace/installations/{id}"),
+			Value::Null
+		)
+		.await
+		.0,
+		200
+	);
+	common::cleanup(f, &url, &schema).await;
+}
+
+#[rstest::rstest]
+#[timeout(common::TEST_BOUND)]
+#[tokio::test]
+async fn node_resources_do_not_acquire_subject_credentials(
+	#[future(awt)]
+	#[from(common::native_application)]
+	application_fixture: common::ApplicationFixture,
+) {
+	let _fixture = FIXTURE_LOCK.lock().await;
+	let (f, url, schema) = application_fixture.runtime.parts();
+	let app = application_fixture.application.clone();
+	let agent = token(&f, "a", "agent").await;
+	let nodes = request(
+		&app,
+		&f.config.api_token,
+		"GET",
+		"/api/tenants/a/nodes",
+		Value::Null,
+	)
+	.await;
+	assert_eq!(nodes.0, 200, "{nodes:?}");
+	let node = nodes
+		.1
+		.as_array()
+		.unwrap()
+		.iter()
+		.find(|node| node["default"] == true)
+		.unwrap();
+	let credential = request(
+		&app,
+		&f.config.api_token,
+		"POST",
+		"/api/authorization/a/credentials",
+		json!({"subject":node["name"]}),
+	)
+	.await;
+	assert_eq!(
+		credential,
+		(
+			400,
+			json!({"error":"credential subject must exist and be enabled, including its delegators"})
+		)
+	);
+	assert_eq!(
+		request(
+			&app,
+			&agent,
+			"GET",
+			"/api/marketplace/packages",
 			Value::Null
 		)
 		.await
@@ -1315,8 +1373,17 @@ async fn new_runs_select_active_revision_and_restarted_runs_keep_exact_old_refer
 	application_fixture: common::ApplicationFixture,
 ) {
 	let _fixture = FIXTURE_LOCK.lock().await;
-	let (f, url, schema) = application_fixture.runtime.parts();
-	let app = application_fixture.application.clone();
+	let (mut f, url, schema) = application_fixture.runtime.parts();
+	let core_storage = tempfile::tempdir().unwrap();
+	// This owner exercises admitted core areas while pinning Agent revisions.
+	f.store.capabilities =
+		aidash_server::capabilities::Runtime::new(aidash_server::capabilities::Profile {
+			admission: true,
+			storage: core_storage.path().to_owned(),
+			..Default::default()
+		})
+		.unwrap();
+	let app = common::application(f.clone()).await;
 	let a = token(&f, "a", "user").await;
 	trace_errors();
 	let model:Entry=serde_json::from_value(json!({"id":"model","version":"1.0.0","kind":"model","name":{"en":"Model"},"description":{"en":"fixture"},"config":{"provider":"openrouter","model_id":"fixture/model","endpoint":"http://localhost:9","context_window":128000,"max_output_tokens":1024,"modalities":["text"],"cost":{}}})).unwrap();
@@ -1353,7 +1420,7 @@ async fn new_runs_select_active_revision_and_restarted_runs_keep_exact_old_refer
 		&aidash_domain::nodes::NodeAddress::derived(f.config.deployment.as_str(), "a"),
 		&old_ref.id,
 		&old_ref.version,
-	)] = json!({"kind":"agent","roles":["manager"]});
+	)] = json!({"kind":"agent", "node": aidash_domain::nodes::NodeName::derived("a"),"roles":["manager"]});
 	policy(&f, "a", 1, authority.clone()).await;
 	let workspace = request(
 		&app,
@@ -1402,7 +1469,7 @@ async fn new_runs_select_active_revision_and_restarted_runs_keep_exact_old_refer
 		&aidash_domain::nodes::NodeAddress::derived(f.config.deployment.as_str(), "a"),
 		&new_ref.id,
 		&new_ref.version,
-	)] = json!({"kind":"agent","roles":["manager"]});
+	)] = json!({"kind":"agent", "node": aidash_domain::nodes::NodeName::derived("a"),"roles":["manager"]});
 	policy(&f, "a", 2, authority).await;
 	let task2 = request(
 		&app,

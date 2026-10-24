@@ -157,7 +157,7 @@ pub(crate) async fn admit_agents(
 			continue;
 		}
 		let groups = rules::default_agent_groups(&access.snapshot.bundle);
-		rules::add_agent_subject(&mut access.snapshot.bundle, &subject, &groups)?;
+		rules::add_agent_subject(&mut access.snapshot.bundle, &subject, &node.node, &groups)?;
 		changed = true;
 	}
 	if changed {

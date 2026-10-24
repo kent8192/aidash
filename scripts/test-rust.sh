@@ -5,6 +5,9 @@ export RUSTC_WRAPPER=
 export RUST_MIN_STACK="${RUST_MIN_STACK:-8388608}"
 # Match hosted runner concurrency and bound shared service load on large hosts.
 export RUST_TEST_THREADS="${RUST_TEST_THREADS:-2}"
+# Local cleanup protocol fixtures authenticate through the normal runner resolver.
+# This non-secret token belongs only to the owned test process and its HTTP stub.
+export AIDASH_COMMAND_CLEANUP_TEST_TOKEN=aidash-command-cleanup-fixture
 coverage=false
 partition=all
 shard=

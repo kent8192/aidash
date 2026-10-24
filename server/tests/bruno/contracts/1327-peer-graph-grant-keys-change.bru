@@ -1,0 +1,26 @@
+meta {
+  name: 1327 peer-graph-grant-keys-change - Subject bearer has no receiving-record administration authority
+  type: http
+  seq: 1327
+}
+
+post {
+  url: {{base_url}}/api/authorization/{{tenant}}/peer-graph-grant-keys
+  body: text
+  auth: none
+}
+
+headers {
+  Accept: application/json
+  Authorization: Bearer {{contract_token}}
+  Content-Type: application/json
+}
+
+body:text {
+  {"source_deployment": "aidash://bruno-unknown", "source_identity": "11111111-1111-4111-8111-111111111111", "action": "quarantine", "expected_keys_revision": 1, "expected_authorization_revision": 1}
+}
+
+tests {
+  test("Exact HTTP 403", function () { expect(res.getStatus()).to.equal(403); });
+  test("Stable authorization error envelope", function () { expect(res.getHeader("content-type")).to.include("application/json"); expect(res.getBody()).to.eql({error:"forbidden"}); });
+}

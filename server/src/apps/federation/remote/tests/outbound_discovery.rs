@@ -307,7 +307,7 @@ async fn delegating_to_a_sibling_executes_on_that_receiving_node(
 	}
 	let mut policy = fixture.policy.clone();
 	policy["subjects"][aidash_domain::agent_subject(address, "research", "1.0.0")] =
-		json!({"kind":"agent"});
+		json!({"kind":"agent", "node": name});
 	deployment_administrator(
 		app,
 		"/api/authorization/acme",

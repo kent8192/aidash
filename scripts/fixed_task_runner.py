@@ -134,7 +134,7 @@ class Experiment:
         self.default_node()
         subjects = {self.subject: {"kind": "user"}}
         for agent in agent_ids:
-            subjects[f"{self.node_address}/agents/{agent}@1.0.0"] = {"kind": "agent"}
+            subjects[f"{self.node_address}/agents/{agent}@1.0.0"] = {"kind": "agent", "node": self.node_name}
         bundle = {"tenant": self.tenant, "subjects": subjects,
                   "policies": [{"id": "evaluation-work", "effect": "allow", "subjects": {"any": True},
                                 "actions": ["*"], "resources": {"kinds": ["*"]}}]}

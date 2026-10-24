@@ -31,6 +31,7 @@ fn claims() -> FederationClaims {
 		method: "POST".into(),
 		path: "/scoped/discover?limit=5".into(),
 		body: body_digest(b"{\"query\":\"x\"}"),
+		transition: None,
 	}
 }
 

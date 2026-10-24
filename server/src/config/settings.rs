@@ -14,7 +14,7 @@
 //!
 //! Settings are merged with the following priority (highest to lowest):
 //! 1. Environment variables with `REINHARDT_` prefix
-//! 2. Managed non-secret Provider Credential JSON, when configured
+//! 2. Managed public Deployment, Provider Credential and GCIP JSON, when configured
 //! 3. Environment-specific TOML file (e.g., `production.toml`)
 //! 4. Base TOML file (`base.toml`)
 //! 5. Default values
@@ -22,6 +22,8 @@
 //! GCP startup supplies `AIDASH_PROVIDER_CREDENTIAL_SETTINGS` as the path to a
 //! read-only descriptor file containing only the Provider Credential section.
 //! The fingerprint key stays in its referenced environment variable.
+//! `AIDASH_DEPLOYMENT_SETTINGS` names a public JSON descriptor containing only
+//! `deployment.offering` and an optional initial `deployment.key.kms` reference.
 //!
 //! ## Environment Selection
 //!
@@ -66,6 +68,8 @@ use reinhardt::conf::settings::scoped::ScopedSettings;
 use reinhardt::conf::settings::sources::{DefaultSource, HighPriorityEnvSource, TomlFileSource};
 use reinhardt::settings;
 use std::env;
+
+mod deployment;
 
 // Add fragments to extend settings: e.g. `#[settings(core: CoreSettings | cache: CacheSettings)]`
 #[settings(core: CoreSettings | contacts: ContactSettings | migrations: MigrationSettings | dashboard: DashboardSettings | kubernetes: KubernetesSettings | provider_credentials: ProviderCredentialSettings | cache_salt: CacheSaltSettings | keyless_endpoints: KeylessEndpointSettings | tenancy: TenancySettings | demo_data: DemoDataSettings | plan_connections: PlanConnectionSettings | research_providers: ResearchProviderSettings | research_retention: ResearchRetentionSettings | workbench_test_limits: WorkbenchTestLimitSettings | deployment: DeploymentSettings)]
@@ -114,6 +118,7 @@ fn settings_builder() -> Result<SettingsBuilder, BuildError> {
 		.map(std::path::PathBuf::from)
 		.unwrap_or_else(|| base_dir.join("settings"));
 	let managed = env::var_os("AIDASH_PROVIDER_CREDENTIAL_SETTINGS").map(std::path::PathBuf::from);
+	let deployment = env::var_os("AIDASH_DEPLOYMENT_SETTINGS").map(std::path::PathBuf::from);
 	let extension = crate::bootstrap::build::current().extension;
 
 	// Presence inspection does not interpolate unselected runtime credentials.
@@ -123,6 +128,7 @@ fn settings_builder() -> Result<SettingsBuilder, BuildError> {
 			&base_dir,
 			&settings_dir,
 			managed.as_deref(),
+			deployment.as_deref(),
 		))
 		.add_source(HighPriorityEnvSource::new().with_prefix("REINHARDT_"))
 		.build_scoped()?
@@ -133,6 +139,7 @@ fn settings_builder() -> Result<SettingsBuilder, BuildError> {
 			&base_dir,
 			&settings_dir,
 			managed.as_deref(),
+			deployment.as_deref(),
 		))
 		.add_source(super::legacy_env::LegacyEnvironment::new(configured))
 		.add_source(HighPriorityEnvSource::new().with_prefix("REINHARDT_")))
@@ -143,10 +150,16 @@ fn managed_settings_builder(
 	base_dir: &std::path::Path,
 	settings_dir: &std::path::Path,
 	managed: Option<&std::path::Path>,
+	deployment: Option<&std::path::Path>,
 ) -> SettingsBuilder {
 	let builder = file_settings_builder(profile, base_dir, settings_dir);
-	if let Some(path) = managed {
+	let builder = if let Some(path) = managed {
 		builder.add_source(ManagedSource::new(path))
+	} else {
+		builder
+	};
+	if let Some(path) = deployment {
+		builder.add_source(deployment::ManagedSource::new(path))
 	} else {
 		builder
 	}
@@ -242,6 +255,123 @@ mod tests {
 		directory
 	}
 
+	#[rstest::rstest]
+	fn example_profile_preserves_offering_defaults_and_explicit_tenancy_policy(
+		#[from(managed_fixture)] directory: tempfile::TempDir,
+	) {
+		use aidash_domain::offering::Offering;
+		let example = std::fs::read_to_string(directory.path().join("base.toml")).unwrap();
+		for offering in [Offering::SelfHosted, Offering::Cloud, Offering::Dedicated] {
+			// The Enterprise image changes this same base-example Offering line.
+			std::fs::write(
+				directory.path().join("base.toml"),
+				example.replace(
+					r#"offering = "self-hosted""#,
+					&format!(r#"offering = "{offering}""#),
+				),
+			)
+			.unwrap();
+			let build = || {
+				file_settings_builder("local", directory.path(), directory.path())
+					.build_pending_composed::<ProjectSettings>()
+					.unwrap()
+					.resolve()
+					.unwrap()
+			};
+			std::fs::write(directory.path().join("local.toml"), "").unwrap();
+			let resolved = build();
+			let settings = resolved.settings();
+			assert_eq!(settings.deployment.offering, offering);
+			let rules = settings.tenancy.rules(settings.deployment.offering);
+			assert_eq!(rules.personal_tenants, offering == Offering::Cloud);
+			assert_eq!(rules.tenant_creation, offering == Offering::Cloud);
+			std::fs::write(
+				directory.path().join("local.toml"),
+				"[tenancy]\npersonal_tenants = false\ntenant_creation = true\ncreation_total = 3\n",
+			)
+			.unwrap();
+			let resolved = build();
+			let rules = resolved.settings().tenancy.rules(offering);
+			assert!(!rules.personal_tenants);
+			assert!(rules.tenant_creation);
+			assert_eq!(rules.creation_total, 3);
+		}
+	}
+
+	#[rstest::rstest]
+	fn managed_deployment_settings_reach_scoped_and_composed_startup(
+		#[from(managed_fixture)] directory: tempfile::TempDir,
+	) {
+		use aidash_domain::offering::Offering;
+		let path = directory.path().join("deployment.json");
+		let descriptor = serde_json::json!({"deployment": {"offering": "dedicated", "key": {"kms":
+			"projects/fixture/locations/us-central1/keyRings/federation/cryptoKeys/deployment/cryptoKeyVersions/1"
+		}}});
+		std::fs::write(&path, descriptor.to_string()).unwrap();
+		let build = || {
+			managed_settings_builder(
+				"local",
+				directory.path(),
+				directory.path(),
+				None,
+				Some(&path),
+			)
+		};
+		let scoped = build().build_scoped().unwrap();
+		assert_eq!(
+			scoped
+				.optional_path::<Offering>(&["deployment", "offering"])
+				.unwrap(),
+			Some(Offering::Dedicated)
+		);
+		// The same scoped startup gate still refuses Enterprise settings before a
+		// Community command can connect to a database or expand runtime secrets.
+		assert!(
+			crate::bootstrap::build::Build::COMMUNITY
+				.check(&scoped)
+				.is_err()
+		);
+		let resolved = build()
+			.build_pending_composed::<ProjectSettings>()
+			.unwrap()
+			.resolve()
+			.unwrap();
+		let settings = resolved.settings();
+		assert_eq!(settings.deployment.offering, Offering::Dedicated);
+		assert_eq!(settings.deployment.id, "aidash://local");
+		assert_eq!(
+			settings.deployment.key.as_ref().unwrap().kms.as_deref(),
+			descriptor["deployment"]["key"]["kms"].as_str()
+		);
+		std::fs::write(&path, r#"{"deployment":{"offering":"cloud"}}"#).unwrap();
+		let resolved = build()
+			.build_pending_composed::<ProjectSettings>()
+			.unwrap()
+			.resolve()
+			.unwrap();
+		assert_eq!(resolved.settings().deployment.offering, Offering::Cloud);
+		assert!(resolved.settings().deployment.key.is_none());
+		for invalid in [
+			serde_json::json!({"deployment": {"offering": "cloud"}, "core": {}}),
+			serde_json::json!({"deployment": {"offering": "cloud", "api_token": "override"}}),
+			serde_json::json!({"deployment": {"offering": "cloud", "key": {"kms": "projects/p/cryptoKeyVersions/latest"}}}),
+			serde_json::json!({"deployment": {"offering": "cloud", "key": {"file": "/key"}}}),
+			serde_json::json!({"deployment": {"offering": "cloud", "key": {"kms": descriptor["deployment"]["key"]["kms"], "extra": true}}}),
+			serde_json::json!({"deployment": {"offering": "cloud", "key": null}}),
+			serde_json::json!({"deployment": {"offering": "enterprise"}}),
+			serde_json::json!({"deployment": {"key": descriptor["deployment"]["key"]}}),
+			serde_json::json!({"deployment": {"offering": "self-hosted", "key": descriptor["deployment"]["key"]}}),
+		] {
+			std::fs::write(&path, invalid.to_string()).unwrap();
+			assert!(
+				build().build_scoped().is_err(),
+				"accepted invalid descriptor: {invalid}"
+			);
+		}
+		std::fs::remove_file(&path).unwrap();
+		assert!(build().build_scoped().is_err());
+	}
+
 	fn managed_descriptor() -> serde_json::Value {
 		serde_json::json!({"provider_credentials": {
 			"fingerprint_key": {"env":"AIDASH_PROVIDER_FINGERPRINT_KEY"},
@@ -258,11 +388,17 @@ mod tests {
 		let path = directory.path().join("managed.json");
 		std::fs::write(&path, managed_descriptor().to_string()).unwrap();
 		let build = || {
-			managed_settings_builder("local", directory.path(), directory.path(), Some(&path))
-				.build_pending_composed::<ProjectSettings>()
-				.unwrap()
-				.resolve()
-				.unwrap()
+			managed_settings_builder(
+				"local",
+				directory.path(),
+				directory.path(),
+				Some(&path),
+				None,
+			)
+			.build_pending_composed::<ProjectSettings>()
+			.unwrap()
+			.resolve()
+			.unwrap()
 		};
 		// Act: exercise Reinhardt's actual composition and typed validation.
 		let resolved = build();
@@ -307,10 +443,15 @@ mod tests {
 			serde_json::json!({"provider_credentials": {}, "core": {"debug": true}}),
 		] {
 			std::fs::write(&path, value.to_string()).unwrap();
-			let result =
-				managed_settings_builder("local", directory.path(), directory.path(), Some(&path))
-					.build_pending_composed::<ProjectSettings>()
-					.and_then(|pending| pending.resolve());
+			let result = managed_settings_builder(
+				"local",
+				directory.path(),
+				directory.path(),
+				Some(&path),
+				None,
+			)
+			.build_pending_composed::<ProjectSettings>()
+			.and_then(|pending| pending.resolve());
 			assert!(match result {
 				Ok(resolved) => resolved
 					.settings()
@@ -322,9 +463,15 @@ mod tests {
 		}
 		std::fs::remove_file(&path).unwrap();
 		assert!(
-			managed_settings_builder("local", directory.path(), directory.path(), Some(&path))
-				.build_scoped()
-				.is_err()
+			managed_settings_builder(
+				"local",
+				directory.path(),
+				directory.path(),
+				Some(&path),
+				None
+			)
+			.build_scoped()
+			.is_err()
 		);
 		std::fs::write(&path, managed_descriptor().to_string()).unwrap();
 		std::fs::write(
@@ -332,10 +479,15 @@ mod tests {
 			"[dashboard.oidc]\nclient_secret = '${AIDASH_UNSELECTED_OIDC_REGRESSION_SECRET}'\n",
 		)
 		.unwrap();
-		let scoped =
-			managed_settings_builder("local", directory.path(), directory.path(), Some(&path))
-				.build_scoped()
-				.unwrap();
+		let scoped = managed_settings_builder(
+			"local",
+			directory.path(),
+			directory.path(),
+			Some(&path),
+			None,
+		)
+		.build_scoped()
+		.unwrap();
 		assert!(scoped.has_path(&["provider_credentials", "broker"]));
 		assert!(scoped.has_path(&["dashboard", "oidc"]));
 	}
@@ -364,12 +516,17 @@ mod tests {
 			.unwrap(),
 		)
 		.unwrap();
-		let resolved =
-			managed_settings_builder("local", directory.path(), directory.path(), Some(&path))
-				.build_pending_composed::<ProjectSettings>()
-				.unwrap()
-				.resolve()
-				.unwrap();
+		let resolved = managed_settings_builder(
+			"local",
+			directory.path(),
+			directory.path(),
+			Some(&path),
+			None,
+		)
+		.build_pending_composed::<ProjectSettings>()
+		.unwrap()
+		.resolve()
+		.unwrap();
 		let credentials = &resolved.settings().provider_credentials;
 		let config = &credentials.store;
 		if enabled {
@@ -397,9 +554,15 @@ mod tests {
 	) {
 		let path = directory.path().join("settings.json");
 		assert!(
-			managed_settings_builder("local", directory.path(), directory.path(), Some(&path))
-				.build_scoped()
-				.is_err()
+			managed_settings_builder(
+				"local",
+				directory.path(),
+				directory.path(),
+				Some(&path),
+				None
+			)
+			.build_scoped()
+			.is_err()
 		);
 		std::fs::write(
 			&path,
@@ -407,9 +570,15 @@ mod tests {
 		)
 		.unwrap();
 		assert!(
-			managed_settings_builder("local", directory.path(), directory.path(), Some(&path))
-				.build_scoped()
-				.is_err()
+			managed_settings_builder(
+				"local",
+				directory.path(),
+				directory.path(),
+				Some(&path),
+				None
+			)
+			.build_scoped()
+			.is_err()
 		);
 	}
 

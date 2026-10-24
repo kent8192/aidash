@@ -1,3 +1,5 @@
+import type { State } from "./types";
+import { GraphGrantKeyControls } from "./receiving-key-controls";
 import { Button } from "./components/ui/button";
 import { Input } from "./components/ui/input";
 import { NativeSelect } from "./components/ui/native-select";
@@ -128,9 +130,11 @@ export function TenantPolicyAdministration({
 /** A Deployment Administrator's view of one Tenant at a time. */
 export function AuthorizationPage({
   invitations,
+  offering,
 }: {
   /** Whether this Deployment issues Invitations. */
   invitations: boolean;
+  offering?: State["offering"];
 }) {
   const { t } = useI18n();
   const client = useQueryClient();
@@ -142,7 +146,7 @@ export function AuthorizationPage({
         <div className="w-full max-w-sm">
           <CreateTenantForm onCreated={(created) => setTenant(created.name)} />
         </div>
-        <DeploymentTenants />
+        <DeploymentTenants offering={offering} />
         <form
           className="flex flex-wrap items-end gap-2"
           onSubmit={(event) => {
@@ -324,6 +328,9 @@ function TenantAuthorization({
             <JsonView value={current.bundle} />
           </Disclosure>
         </Panel>
+      )}
+      {current && access.deploymentAdministrator && (
+        <GraphGrantKeyControls tenant={tenant} />
       )}
       {current && onDeleted && (
         <div className="w-full max-w-md">

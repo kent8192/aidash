@@ -148,8 +148,16 @@ class MemoryNodeContractTests(unittest.TestCase):
                     mapping = next(call for call in fixture.api.call_args_list
                                    if call.args[:2] == (node, f"/api/authorization/{fixture.tenants[node]}/peer-mappings"))
                     subjects = policy.args[2]["bundle"]["subjects"]
-                    self.assertIn("aidash://tx-00/home-12345678/agents/research@1.0.0", subjects)
-                    self.assertIn("aidash://tx-01/worker-abcdef12/agents/research@1.0.0", subjects)
+                    self.assertIsNone(subjects["alice"].get("node"))
+                    owning_node = ("home-12345678", "worker-abcdef12")[node]
+                    agent_subjects = ["aidash://tx-00/home-12345678/agents/research@1.0.0",
+                                      "aidash://tx-01/worker-abcdef12/agents/research@1.0.0"]
+                    if driver is NativeMemory:
+                        agent_subjects.append(("aidash://tx-00/home-12345678/agents/learning@1.0.0",
+                                               "aidash://tx-01/worker-abcdef12/agents/learning@1.0.0")[node])
+                    for subject in agent_subjects:
+                        with self.subTest(node=node, subject=subject):
+                            self.assertEqual(subjects[subject], {"kind": "agent", "node": owning_node})
                     self.assertEqual(mapping.args[2], {
                         "node": fixture.nodes[node]["node"], "source_node": fixture.nodes[1 - node]["address"],
                         "source_subject": "alice", "credential_id": "alice-credential", "enabled": True, "expected_revision": 0,

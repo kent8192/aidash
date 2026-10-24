@@ -8,9 +8,10 @@ use aidash_domain::{
 		remote::{Binding, NativeBinding, NativeContext},
 	},
 };
+use reinhardt::db::{backends::TransactionExecutor, orm::execution::convert_values};
 use reinhardt::query::{
 	Alias, ColumnRef, Condition, Expr, ExprTrait, Func, LockType, OnConflict, Order,
-	PostgresQueryBuilder, Query, QueryStatementBuilder,
+	PostgresQueryBuilder, Query, QueryStatementBuilder, SimpleExpr,
 };
 use uuid::Uuid;
 /// A grant can span Runs. Every admitted recall contributes at most max_results
@@ -125,36 +126,136 @@ pub(crate) async fn erase_receipts(
 	unit: &aidash_domain::memory::Unit,
 	withdrawn: bool,
 ) -> Result<()> {
+	erase_receipts_in(
+		&mut **lease.tx(),
+		&unit.bank.tenant,
+		unit.id,
+		unit.revision,
+		withdrawn,
+	)
+	.await
+}
+
+/// Existing source invalidation shared by Unit retention and Node purge.
+/// Keeps content-free read provenance while clearing every derived grant cache.
+pub(crate) async fn erase_receipts_in(
+	tx: &mut dyn TransactionExecutor,
+	tenant: &str,
+	unit: Uuid,
+	revision: i64,
+	withdrawn: bool,
+) -> Result<()> {
 	let mut grants = Query::select();
 	grants
 		.distinct()
 		.column(Alias::new("grant_id"))
 		.from(Alias::new("memory_remote_reads"))
-		.and_where(Expr::col("unit_id").eq(Expr::value(unit.id)));
+		.and_where(Expr::col("tenant").eq(Expr::value(tenant)))
+		.and_where(Expr::col("unit_id").eq(Expr::value(unit)));
 	if !withdrawn {
-		grants.and_where(Expr::col("revision").lt(unit.revision));
+		grants.and_where(Expr::col("revision").lt(revision));
 	}
-	native::query(
-		&Query::update()
-			.table(Alias::new("semantic_remote_operations"))
-			.value(Alias::new("receipt"), None::<serde_json::Value>)
-			.value(Alias::new("state"), "INVALIDATED")
-			.value(Alias::new("error"), "invalidated")
-			.value_expr(Alias::new("fence"), Expr::col("fence").add(1_i64))
-			.value(Alias::new("attempt_id"), None::<Uuid>)
-			.value(
-				Alias::new("lease_until"),
-				None::<chrono::DateTime<chrono::Utc>>,
-			)
-			.value(
-				Alias::new("next_attempt"),
-				None::<chrono::DateTime<chrono::Utc>>,
-			)
-			.and_where(Expr::col("grant_id").in_subquery(grants))
-			.to_string(PostgresQueryBuilder),
-	)
-	.execute(&mut **lease.tx())
-	.await?;
+	invalidate_receipts_in(tx, tenant, Expr::col("grant_id").in_subquery(grants).into()).await
+}
+
+/// Entry-only retrievals have no native Unit membership. The exact read pair
+/// proves which journal cache derived its quotation from this source Entry.
+pub(crate) async fn erase_entry_receipts_in(
+	tx: &mut dyn TransactionExecutor,
+	tenant: &str,
+	entry: Uuid,
+) -> Result<()> {
+	let pairs = Query::select()
+		.expr(Expr::value(1_i32))
+		.from(Alias::new("semantic_remote_reads"))
+		.and_where(
+			Expr::col((Alias::new("semantic_remote_reads"), Alias::new("tenant")))
+				.eq(Expr::value(tenant)),
+		)
+		.and_where(
+			Expr::col((Alias::new("semantic_remote_reads"), Alias::new("entry_id")))
+				.eq(Expr::value(entry)),
+		)
+		.and_where(
+			Expr::col((Alias::new("semantic_remote_reads"), Alias::new("grant_id"))).eq(Expr::col(
+				(
+					Alias::new("semantic_remote_operations"),
+					Alias::new("grant_id"),
+				),
+			)),
+		)
+		.and_where(
+			Expr::col((
+				Alias::new("semantic_remote_reads"),
+				Alias::new("admission_id"),
+			))
+			.eq(Expr::col((
+				Alias::new("semantic_remote_operations"),
+				Alias::new("admission_id"),
+			))),
+		)
+		.to_owned();
+	invalidate_receipts_in(tx, tenant, Expr::exists(pairs).into()).await
+}
+
+/// One source-invalidation transition. Locks serialize reply persistence, and
+/// exact operation/admission/digest membership erases only derived local copies.
+async fn invalidate_receipts_in(
+	tx: &mut dyn TransactionExecutor,
+	tenant: &str,
+	affected: SimpleExpr,
+) -> Result<()> {
+	let scope = Expr::col("tenant")
+		.eq(Expr::value(tenant))
+		.and(affected.clone());
+	let (sql, values) = Query::select()
+		.column(Alias::new("id"))
+		.from(Alias::new("semantic_remote_operations"))
+		.and_where(scope.clone())
+		.order_by(Alias::new("id"), Order::Asc)
+		.lock(LockType::Update)
+		.build(PostgresQueryBuilder);
+	tx.fetch_all(&sql, convert_values(values)).await?;
+	let c = |t: &str, f: &str| Expr::col((Alias::new(t), Alias::new(f)));
+	let journals = Query::select()
+		.expr(Expr::value(1_i32))
+		.from(Alias::new("semantic_remote_operations"))
+		.and_where(scope.clone())
+		.and_where(
+			c("semantic_remote_operations", "id").eq(c("semantic_remote_receipts", "operation_id")),
+		)
+		.and_where(
+			c("semantic_remote_operations", "admission_id")
+				.eq(c("semantic_remote_receipts", "run_id")),
+		)
+		.and_where(
+			c("semantic_remote_operations", "digest").eq(c("semantic_remote_receipts", "digest")),
+		)
+		.to_owned();
+	let (sql, values) = Query::delete()
+		.from_table(Alias::new("semantic_remote_receipts"))
+		.and_where(Expr::col("tenant").eq(Expr::value(tenant)))
+		.and_where(Expr::exists(journals))
+		.build(PostgresQueryBuilder);
+	tx.execute(&sql, convert_values(values)).await?;
+	let (sql, values) = Query::update()
+		.table(Alias::new("semantic_remote_operations"))
+		.value(Alias::new("receipt"), None::<serde_json::Value>)
+		.value(Alias::new("state"), "INVALIDATED")
+		.value(Alias::new("error"), "invalidated")
+		.value_expr(Alias::new("fence"), Expr::col("fence").add(1_i64))
+		.value(Alias::new("attempt_id"), None::<Uuid>)
+		.value(
+			Alias::new("lease_until"),
+			None::<chrono::DateTime<chrono::Utc>>,
+		)
+		.value(
+			Alias::new("next_attempt"),
+			None::<chrono::DateTime<chrono::Utc>>,
+		)
+		.and_where(scope)
+		.build(PostgresQueryBuilder);
+	tx.execute(&sql, convert_values(values)).await?;
 	Ok(())
 }
 
@@ -210,6 +311,27 @@ pub(crate) async fn record(
 			for unit in units {
 				if unit.bank != item.bank || !unit.visible() {
 					return Err(Error::Forbidden);
+				}
+				// Replace the source-lifetime FK with its insertion-time guarantee.
+				// The grant supplies Tenant authority; a historical revision remains
+				// valid provenance even when it differs from the current Unit revision.
+				let (sql, values) = Query::select()
+					.column(Alias::new("id"))
+					.from(Alias::new("memory_units"))
+					.and_where(Expr::col("id").eq(Expr::value(unit.id)))
+					.and_where(Expr::col("tenant").eq(crate::database::scope::tenant_of(
+						"authorization_remote_grants",
+						"id",
+						grant,
+					)))
+					.lock(LockType::KeyShare)
+					.build(PostgresQueryBuilder);
+				if (**tx)
+					.fetch_optional(&sql, convert_values(values))
+					.await?
+					.is_none()
+				{
+					return Err(Error::RemoteSemantic(Failure::Invalidated));
 				}
 				native::query(
 					&Query::insert()
@@ -396,3 +518,6 @@ pub(crate) async fn visible(access: &mut Access, grant: Uuid) -> Result<()> {
 		}
 	}
 }
+
+#[cfg(test)]
+mod tests;

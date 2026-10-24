@@ -226,6 +226,25 @@ impl MappingWrite for WriteScope {
 		input: &PeerMappingInput,
 		subject: &str,
 	) -> Result<()> {
+		if input.enabled || input.expected_revision == 0 {
+			let snapshot = Authorization::load(&mut self.tx, tenant).await?;
+			let local = snapshot
+				.bundle
+				.subjects
+				.get(subject)
+				.ok_or(aidash_application::Error::Forbidden)?;
+			if local.kind != aidash_domain::policy::SubjectKind::User
+				&& local.node.as_ref() != Some(&input.node)
+			{
+				return Err(aidash_application::Error::Forbidden);
+			}
+			crate::apps::identity::repositories::nodes::require_live(
+				&mut *self.tx,
+				tenant,
+				input.node.as_str(),
+			)
+			.await?;
+		}
 		let Some(administrator) = self.administrator.clone() else {
 			return Ok(());
 		};

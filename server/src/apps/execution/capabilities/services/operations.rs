@@ -43,6 +43,11 @@ pub(crate) async fn prepare_kind(
 	kind: &str,
 	extra: Value,
 ) -> Result<Value> {
+	crate::apps::execution::repositories::node_cancellations::require_area_open(
+		&mut **access.tx,
+		area.id,
+	)
+	.await?;
 	aidash_application::capabilities::prepare(
 		&mut crate::bootstrap::operation_admission_scope(store, access, run, area),
 		&run.metadata(),

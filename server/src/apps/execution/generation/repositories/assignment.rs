@@ -546,6 +546,11 @@ impl GenerationAssignmentScope for NativeAssignment<'_> {
 	}
 
 	async fn task(&mut self, task_id: Uuid) -> aidash_application::Result<Task> {
+		crate::apps::execution::repositories::node_cancellations::require_task_open(
+			&mut **self.access.tx,
+			task_id,
+		)
+		.await?;
 		let access = &mut *self.access;
 		let task: Task = {
 			let query_bind_1 = task_id;

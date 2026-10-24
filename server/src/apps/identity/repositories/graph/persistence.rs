@@ -627,6 +627,17 @@ pub(crate) async fn set_grant(
 	let scope = TenancyScope::tenant(&tenant)?;
 	// The viewer's key is pinned like a Node Registration's, fetched outside any
 	// transaction. Disabling keeps what the grant pinned.
+	let current_key_id: Option<String> = crate::database::native::query_scalar(
+		&Query::select()
+			.column(Alias::new("source_key_id"))
+			.from(Alias::new("authorization_peer_graph_grants"))
+			.and_where(Expr::col("tenant").eq(Expr::value(&tenant)))
+			.and_where(Expr::col("source_deployment").eq(Expr::value(viewer.as_str())))
+			.and_where(Expr::col("source_identity").eq(Expr::value(input.source_identity)))
+			.to_string(PostgresQueryBuilder),
+	)
+	.scalar_optional(f.store.pool.in_scope(&scope))
+	.await?;
 	let pinned = if input.enabled {
 		let (Some(endpoint), Some(key_id)) = (&input.endpoint, &input.key_id) else {
 			return Err(Error::Invalid(
@@ -635,16 +646,31 @@ pub(crate) async fn set_grant(
 		};
 		aidash_domain::configuration::validate_endpoint(endpoint)?;
 		let key_id = aidash_domain::nodes::DeploymentKeyId::parse(key_id)?;
-		let key = aidash_application::federation::registrations::pin(
-			&aidash_integrations::federation::directory::HttpDirectory::new(
-				f.store.keyless.clone(),
-			)?,
-			&viewer,
-			endpoint.trim_end_matches('/'),
-			&key_id,
-		)
-		.await?;
-		Some((key.key_id.to_string(), key.public_key_pem))
+		if current_key_id
+			.as_deref()
+			.is_some_and(|current| current != key_id.as_str())
+		{
+			return Err(Error::Conflict(
+				"use independent key confirmation to replace an existing pin".into(),
+			));
+		}
+		if input.expected_revision != 0 && current_key_id.as_deref() == Some(key_id.as_str()) {
+			// This authorization-only UPDATE writes no trust or endpoint.
+			// Its repeated pin is not a crypto CAS precondition: concurrent
+			// manual and normal key changes must remain untouched.
+			None
+		} else {
+			let key = aidash_application::federation::registrations::pin(
+				&aidash_integrations::federation::directory::HttpDirectory::new(
+					f.store.keyless.clone(),
+				)?,
+				&viewer,
+				endpoint.trim_end_matches('/'),
+				&key_id,
+			)
+			.await?;
+			Some(key)
+		}
 	} else {
 		None
 	};
@@ -658,7 +684,7 @@ pub(crate) async fn set_grant(
 	}
 	Authorization::load(&mut tx, &tenant).await?;
 	let row: Option<PeerGraphGrant> = if input.expected_revision == 0 {
-		let (key_id, pem) = pinned
+		let key = pinned
 			.clone()
 			.ok_or_else(|| Error::Invalid("revocation requires an existing grant".into()))?;
 		crate::database::native::query_as(
@@ -671,6 +697,7 @@ pub(crate) async fn set_grant(
 						"source_identity",
 						"source_key_id",
 						"source_public_key_pem",
+						"source_keys",
 						"enabled",
 						"revision",
 					]
@@ -680,8 +707,11 @@ pub(crate) async fn set_grant(
 					Expr::value(tenant.clone()),
 					Expr::value(viewer.to_string()),
 					Expr::value(input.source_identity),
-					Expr::value(key_id),
-					Expr::value(pem),
+					Expr::value(key.key_id.to_string()),
+					Expr::value(key.public_key_pem.clone()),
+					Expr::value(serde_json::to_string(
+						&aidash_application::federation::registrations::trusted_keys(&key)?,
+					)?),
 					Expr::value(input.enabled),
 					Expr::value(1_i64),
 				])
@@ -704,10 +734,19 @@ pub(crate) async fn set_grant(
 			.value_expr(Alias::new("enabled"), Expr::value(input.enabled))
 			.value_expr(Alias::new("revision"), Expr::cust("revision + 1"))
 			.value_expr(Alias::new("updated_at"), Expr::cust("clock_timestamp()"));
-		if let Some((key_id, pem)) = pinned {
-			update
-				.value_expr(Alias::new("source_key_id"), Expr::value(key_id))
-				.value_expr(Alias::new("source_public_key_pem"), Expr::value(pem));
+		if let Some(key) = pinned {
+			let owner =
+				aidash_application::ports::federation::inbound::ReceivingKeyOwner::ViewerGrant {
+					tenant: aidash_domain::tenancy::TenantName::new(&tenant)?,
+					viewer: viewer.clone(),
+					identity: input.source_identity,
+				};
+			let stored = super::super::receiving_keys::get_locked(&mut *tx, &owner).await?;
+			if stored.is_none_or(|stored| stored.keys.current.key_id != key.key_id) {
+				return Err(Error::Conflict(
+					"receiving key changed; use independent confirmation".into(),
+				));
+			}
 		}
 		crate::database::native::query_as(
 			&update

@@ -497,7 +497,7 @@ pub fn policy(deployment: &str) -> Value {
 	);
 	// Peer flows still name the executing Node by its Deployment id (#241).
 	let peer_agent = aidash_domain::agent_subject(deployment, "research", "1.0.0");
-	json!({"tenant":"acme","subjects":{"alice":{"kind":"user"},agent:{"kind":"agent"},peer_agent:{"kind":"agent"}},
+	json!({"tenant":"acme","subjects":{"alice":{"kind":"user"},agent:{"kind":"agent", "node": aidash_domain::nodes::NodeName::derived("acme")},peer_agent:{"kind":"agent", "node": aidash_domain::nodes::NodeName::derived("acme")}},
         "policies":[{"id":"approved-work","effect":"allow","subjects":{"any":true},"actions":["*"],"resources":{"kinds":["*"]}},
             // A wildcard never grants calling a Tenant's tool without approval.
             {"id":"call-unapproved","effect":"allow","subjects":{"any":true},"actions":["tool.call_unapproved"],"resources":{"kinds":["tool"]}}]})

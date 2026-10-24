@@ -232,6 +232,7 @@ def render():
         after="",
         seq=None,
         immutable=False,
+        node_unchanged=False,
     ):
         nonlocal sequence
         route = by_key[endpoint]
@@ -298,18 +299,26 @@ def render():
             js.append(
                 r'test("Rejection is diagnostic and does not disclose SQL or credentials", function () { const value=res.getBody(); const text=typeof value === "string" ? value : JSON.stringify(value); expect(text.length).to.be.greaterThan(0); expect(text).not.to.match(/postgres:\/\/|SELECT .* FROM |deployment_administrator_token|peer_token/); });'
             )
-        if status == 200 and route.get("response"):
-            contract = route["response"]
+        contract = route.get("responses", {}).get(str(status))
+        if contract is None and status == 200:
+            contract = route.get("response")
+        if 200 <= status < 300 and contract is not None:
             js.append(
                 'test("Documented response fields and types", function () { const contract='
                 + json.dumps(contract, separators=(",", ":"))
-                + '; function valid(value,schema){if(schema.$ref)return valid(value,contract.definitions[schema.$ref.split("/").pop()]);if(schema.anyOf)return schema.anyOf.some(item=>valid(value,item));if(schema.oneOf)return schema.oneOf.filter(item=>valid(value,item)).length===1;if(schema.allOf&&!schema.allOf.every(item=>valid(value,item)))return false;if(schema.enum&&!schema.enum.some(item=>JSON.stringify(item)===JSON.stringify(value)))return false;const types=Array.isArray(schema.type)?schema.type:schema.type?[schema.type]:[];if(types.length&&!types.some(type=>type==="null"?value===null:type==="array"?Array.isArray(value):type==="object"?value!==null&&typeof value==="object"&&!Array.isArray(value):type==="integer"?Number.isInteger(value):typeof value===type))return false;if(value!==null&&typeof value==="object"&&!Array.isArray(value)){if((schema.required||[]).some(field=>!(field in value)))return false;for(const [field,property] of Object.entries(schema.properties||{}))if(field in value&&!valid(value[field],property))return false;}if(Array.isArray(value)&&schema.items&&!value.every(item=>valid(item,schema.items)))return false;return true;}expect(valid(res.getBody(),contract.schema)).to.equal(true); });'
+                + '; function valid(value,schema){if(schema===true)return true;if(schema===false)return false;if(schema.$ref)return valid(value,contract.definitions[schema.$ref.split("/").pop().replace(/~1/g,"/").replace(/~0/g,"~")]);if(schema.anyOf)return schema.anyOf.some(item=>valid(value,item));if(schema.oneOf)return schema.oneOf.filter(item=>valid(value,item)).length===1;if(schema.allOf&&!schema.allOf.every(item=>valid(value,item)))return false;if(schema.enum&&!schema.enum.some(item=>JSON.stringify(item)===JSON.stringify(value)))return false;const types=Array.isArray(schema.type)?schema.type:schema.type?[schema.type]:[];if(types.length&&!types.some(type=>type==="null"?value===null:type==="array"?Array.isArray(value):type==="object"?value!==null&&typeof value==="object"&&!Array.isArray(value):type==="integer"?Number.isInteger(value):typeof value===type))return false;if(value!==null&&typeof value==="object"&&!Array.isArray(value)){if((schema.required||[]).some(field=>!(field in value)))return false;for(const [field,property] of Object.entries(schema.properties||{}))if(field in value&&!valid(value[field],property))return false;}if(Array.isArray(value)&&schema.items&&!value.every(item=>valid(item,schema.items)))return false;return true;}expect(valid(res.getBody(),contract.schema)).to.equal(true); });'
             )
         if checks:
             js.append('test("' + label + ' contract", function () { ' + checks + " });")
         if immutable:
             pre += '\nconst snapshot = await bru.sendRequest({method:"GET",url:bru.getEnvVar("base_url")+"/api/workspaces/"+bru.getVar("workspace_id"),headers:{Authorization:"Bearer "+bru.getEnvVar("deployment_administrator_token")}}); if(snapshot.status!==200 || !Number.isInteger(snapshot.data.workspace.revision)) throw new Error("fixture snapshot unavailable"); bru.setVar("beforeWorkspace",JSON.stringify({revision:snapshot.data.workspace.revision,state:snapshot.data.workspace.state}));\n'
             after += '\nconst snapshot = await bru.sendRequest({method:"GET",url:bru.getEnvVar("base_url")+"/api/workspaces/"+bru.getVar("workspace_id"),headers:{Authorization:"Bearer "+bru.getEnvVar("deployment_administrator_token")}}); test("Rejected input preserves committed workspace state", function(){expect(snapshot.status).to.equal(200);expect(JSON.stringify({revision:snapshot.data.workspace.revision,state:snapshot.data.workspace.state})).to.equal(bru.getVar("beforeWorkspace"));});\n'
+        if node_unchanged:
+            # Read the actual target Node, not an unrelated Workspace. The
+            # current ordinary Subject still has no administration authority.
+            read_node = 'const snapshot = await bru.sendRequest({method:"GET",url:bru.getEnvVar("base_url")+"/api/tenants/"+bru.getEnvVar("tenant")+"/nodes?include_deleted=true",headers:{Authorization:"Bearer "+bru.getEnvVar("deployment_administrator_token")}}); if(snapshot.status!==200 || !Array.isArray(snapshot.data)) throw new Error("Node snapshot unavailable");const target=snapshot.data.find(node=>node.name===bru.getEnvVar("tenant_node"));if(!target)throw new Error("target Node unavailable");'
+            pre += '\n' + read_node + 'bru.setVar("beforeNode",JSON.stringify(target));\n'
+            after += '\n' + read_node + 'test("Rejected write preserves the target Node", function(){expect(target).to.eql(JSON.parse(bru.getVar("beforeNode")));});\n'
         text = (
             f"meta {{\n  name: {name}\n  type: http\n  seq: {seq if seq is not None else sequence}\n}}\n\n{method} {{\n  url: {url}\n  body: {kind}\n  auth: none\n}}\n\nheaders {{\n"
             + "\n".join("  " + k + ": " + v for k, v in fields.items())
@@ -494,6 +503,7 @@ def render():
     add("POST /auth/desktop/revoke", "Revoke the rotating desktop credential family", 204, body=json.dumps({"refresh_token":"aidash_refresh_nnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnn"}), seq=58,
         checks='expect(res.getBody()).to.equal("");')
     add("GET /auth/session", "Revoked desktop bearer cannot resolve a session", 401, headers={"Authorization":"Bearer {{desktop_access}}"}, seq=59)
+
 
     for route in routes:
         endpoint = key(route)
@@ -786,6 +796,61 @@ def render():
             add(endpoint, "Malformed JSON cannot reach the use case", 400,
                 headers=DEPLOYMENT_ADMINISTRATOR, body="{", immutable=True)
             continue
+        if endpoint in {
+            "GET /api/tenants/{tenant}/nodes/{node}/registration-keys",
+            "POST /api/tenants/{tenant}/nodes/{node}/registration-keys",
+            "GET /api/authorization/{tenant}/peer-graph-grant-keys",
+            "POST /api/authorization/{tenant}/peer-graph-grant-keys",
+        }:
+            registration = "/registration-keys" in path
+            selector = (
+                {"source_node": "aidash://bruno-unknown/" + NODE}
+                if registration else
+                {"source_deployment": "aidash://bruno-unknown", "source_identity": MISSING}
+            )
+            uri = (
+                "/api/tenants/{{tenant}}/nodes/{{tenant_node}}/registration-keys"
+                if registration else "/api/authorization/{{tenant}}/peer-graph-grant-keys"
+            )
+            body = None
+            if method == "GET":
+                uri += "?" + "&".join(name + "=" + value for name, value in selector.items())
+            else:
+                body = json.dumps({**selector, "action": "quarantine",
+                                   "expected_keys_revision": 1, "expected_authorization_revision": 1})
+            add(endpoint, "Anonymous receiving-key request is rejected", 401, path=uri, body=body)
+            add(endpoint, "Subject bearer has no receiving-record administration authority", 403,
+                path=uri, body=body, headers=SUBJECT)
+            add(endpoint, "Missing foreign receiving tuple is not a trust confirmation", 404,
+                path=uri, body=body, headers=DEPLOYMENT_ADMINISTRATOR)
+            if method == "POST":
+                add(endpoint, "Malformed key change cannot reach record control", 400,
+                    path=uri, body="{", headers=DEPLOYMENT_ADMINISTRATOR)
+                add(endpoint, "A key change requires both typed CAS revisions", 422,
+                    path=uri, body=json.dumps({**selector, "action": "quarantine", "expected_keys_revision": 1}),
+                    headers=DEPLOYMENT_ADMINISTRATOR)
+            continue
+        if endpoint in {"POST /api/tenants/{tenant}/nodes/{node}/" + action
+                        for action in ("default", "deletion", "restore", "purge")}:
+            action = path.rsplit("/", 1)[1]
+            uri = "/api/tenants/{{tenant}}/nodes/{{tenant_node}}/" + action
+            body = json.dumps({"confirmation": "{{tenant_node}}"}) if action == "deletion" else None
+            add(endpoint, "Anonymous Node lifecycle request is rejected", 401, path=uri, body=body)
+            add(endpoint, "Subject bearer cannot administer the Node lifecycle", 403,
+                path=uri, body=body, headers=SUBJECT, node_unchanged=True)
+            if action == "default":
+                add(endpoint, "An absent Node cannot become the default", 404,
+                    path="/api/tenants/{{tenant}}/nodes/" + NODE + "/default",
+                    headers=DEPLOYMENT_ADMINISTRATOR)
+            else:
+                add(endpoint, "The default live Node cannot be deleted" if action == "deletion"
+                    else "Only a deleted Node can be " + ("restored" if action == "restore" else "purged"),
+                    409, path=uri, body=body, headers=DEPLOYMENT_ADMINISTRATOR, node_unchanged=True)
+            if action == "deletion":
+                add(endpoint, "Deletion confirmation must equal the target Node name", 400,
+                    path=uri, body=json.dumps({"confirmation": "wrong"}),
+                    headers=DEPLOYMENT_ADMINISTRATOR, node_unchanged=True)
+            continue
         add(endpoint, "Anonymous request is rejected", 401, immutable=method != "GET")
         if route["name"] == "tenants-personal":
             # Only a signed-in browser session recreates its Personal Tenant.
@@ -819,7 +884,8 @@ def render():
                 headers=DEPLOYMENT_ADMINISTRATOR, immutable=True)
             continue
         if route["source"] == "server/src/apps/identity/views/nodes.rs":
-            # Creating a Node as a Deployment Administrator would change the shared Tenant.
+            # The seq70-78 journey retires its disposable Node; these
+            # remaining probes preserve the shared Tenant's Node selection.
             if method == "GET":
                 add(endpoint, "Subject without node.read cannot list the Nodes", 403, headers=SUBJECT)
                 add(endpoint, "Deployment Administrator lists the Tenant's one default Node", 200,
@@ -1286,6 +1352,44 @@ def render():
         ):
             add(endpoint, read_label, read_status, path=read_path, headers=read_headers,
                 checks=read_checks)
+
+    # Allocate new journey files after legacy scenarios to preserve their
+    # reviewed IDs. Explicit seq70-78 still runs this setup first.
+    # One public transport journey uses DA administration without widening the
+    # shared Subject's policy. Restore the original default before deletion so
+    # later Workspace/catalog scenarios retain their original Node selection.
+    nodes = "/api/tenants/{tenant}/nodes"
+    target = "/api/tenants/{{tenant}}/nodes/{{lifecycle_node}}"
+    add("POST " + nodes, "Create a disposable lifecycle Node", 201,
+        headers=DEPLOYMENT_ADMINISTRATOR, body=json.dumps({"label": "Bruno lifecycle"}), seq=70,
+        checks='const node=res.getBody();expect(node.name).to.match(/^[a-z]+-[a-z]+-[a-z0-9]{8}$/);expect(node.address).to.equal(bru.getEnvVar("node_id")+"/"+node.name);expect(node.label).to.equal("Bruno lifecycle");expect(node.state).to.equal("live");expect(node.default).to.equal(false);expect(node.deletion).to.equal(null);bru.setVar("lifecycle_node",node.name);')
+    add("POST " + nodes + "/{node}/default", "Select the created Node as default", 200,
+        path=target + "/default", headers=DEPLOYMENT_ADMINISTRATOR, seq=71,
+        checks='expect(res.getBody().name).to.equal(bru.getVar("lifecycle_node"));expect(res.getBody().default).to.equal(true);expect(res.getBody().state).to.equal("live");')
+    add("POST " + nodes + "/{node}/default", "Restore the original default Node", 200,
+        path="/api/tenants/{{tenant}}/nodes/{{tenant_node}}/default", headers=DEPLOYMENT_ADMINISTRATOR, seq=72,
+        checks='expect(res.getBody().name).to.equal(bru.getEnvVar("tenant_node"));expect(res.getBody().default).to.equal(true);')
+    add("POST " + nodes + "/{node}/deletion", "Delete the disposable nondefault Node", 200,
+        path=target + "/deletion", headers=DEPLOYMENT_ADMINISTRATOR,
+        body=json.dumps({"confirmation": "{{lifecycle_node}}"}), seq=73,
+        checks='expect(res.getBody().name).to.equal(bru.getVar("lifecycle_node"));expect(res.getBody().state).to.equal("deleted");expect(res.getBody().storage_retained_until_purge).to.equal(true);expect(res.getBody().deletion.id).to.be.a("string");expect(res.getBody().deletion.purge_after).to.be.a("string");bru.setVar("lifecycle_deletion",res.getBody().deletion.id);')
+    add("GET " + nodes, "Ordinary selection excludes the deleted lifecycle Node", 200,
+        headers=DEPLOYMENT_ADMINISTRATOR, seq=74,
+        checks='expect(res.getBody().map(node=>node.name)).not.to.include(bru.getVar("lifecycle_node"));expect(res.getBody().find(node=>node.name===bru.getEnvVar("tenant_node")).default).to.equal(true);')
+    add("GET " + nodes, "Management reads the exact deleted lifecycle record", 200,
+        path="/api/tenants/{{tenant}}/nodes?include_deleted=true", headers=DEPLOYMENT_ADMINISTRATOR, seq=75,
+        checks='const node=res.getBody().find(node=>node.name===bru.getVar("lifecycle_node"));expect(node.state).to.equal("deleted");expect(node.deletion.id).to.equal(bru.getVar("lifecycle_deletion"));expect(node.retained_storage_bytes).to.be.a("number");')
+    add("POST " + nodes + "/{node}/restore", "Restore the same lifecycle Node", 200,
+        path=target + "/restore", headers=DEPLOYMENT_ADMINISTRATOR, seq=76,
+        checks='expect(res.getBody().name).to.equal(bru.getVar("lifecycle_node"));expect(res.getBody().state).to.equal("live");expect(res.getBody().deletion).to.equal(null);expect(res.getBody().storage_retained_until_purge).to.equal(false);')
+    add("GET " + nodes, "Selection reads the restored Node at the same address", 200,
+        headers=DEPLOYMENT_ADMINISTRATOR, seq=77,
+        checks='const node=res.getBody().find(node=>node.name===bru.getVar("lifecycle_node"));expect(node.address).to.equal(bru.getEnvVar("node_id")+"/"+node.name);expect(node.state).to.equal("live");expect(node.deletion).to.equal(null);')
+    add("POST " + nodes + "/{node}/deletion", "Retire the disposable Node after transport verification", 200,
+        path=target + "/deletion", headers=DEPLOYMENT_ADMINISTRATOR,
+        body=json.dumps({"confirmation": "{{lifecycle_node}}"}), seq=78,
+        checks='expect(res.getBody().state).to.equal("deleted");expect(res.getBody().deletion.id).not.to.equal(bru.getVar("lifecycle_deletion"));')
+
 
     # Exact generated file set; no stale request can silently increase coverage.
     for path in directory.glob("[0-9]*.bru"):

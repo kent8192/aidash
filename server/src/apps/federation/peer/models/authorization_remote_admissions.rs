@@ -12,6 +12,8 @@ use serde_json::Value;
 )]
 #[derive(Serialize, Deserialize)]
 pub struct AuthorizationRemoteAdmission {
+	#[field(default = false)]
+	pub cancelled: bool,
 	#[field(primary_key = true)]
 	pub id: uuid::Uuid,
 	/// The receiving Node.

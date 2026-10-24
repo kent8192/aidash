@@ -17,6 +17,16 @@ const MAINTENANCE: TenancyScope =
 	TenancyScope::Deployment(DeploymentScopeReason::CapabilityMaintenance);
 #[async_trait]
 impl OperationProcessingRepository for Repository<'_> {
+	async fn begin_receipt_output(
+		&self,
+		receipt: &Receipt,
+	) -> Result<Box<dyn aidash_application::ports::capabilities::processing::ReceiptOutputScope + '_>>
+	{
+		super::receipt_output::begin(self.store, receipt)
+			.await
+			.map_err(Into::into)
+	}
+
 	async fn active_operations(&self) -> Result<Vec<Uuid>> {
 		let result: NativeResult<Vec<Uuid>> = async {
 			let ids: Vec<Uuid> = crate::database::native::query_scalar(
@@ -41,19 +51,41 @@ impl OperationProcessingRepository for Repository<'_> {
 		result.map_err(Into::into)
 	}
 	async fn receipts(&self, after: Uuid) -> Result<Vec<Receipt>> {
-		let result: NativeResult<Vec<(Uuid, String, Option<String>)>> = async {
-			let rows: Vec<(Uuid, String, Option<String>)> = {
+		let result: NativeResult<Vec<(Uuid, String, Option<String>, String)>> = async {
+			let rows: Vec<(Uuid, String, Option<String>, String)> = {
 				let query_bind_1 = after;
 				crate::database::native::query_as(
 					&Query::select()
-						.columns(["id", "digest", "runner_instance"].map(Alias::new))
+						.columns(["id", "digest", "runner_instance", "state"].map(Alias::new))
 						.from(Alias::new("core_operations"))
 						.and_where(Expr::cust("result->'runner_acknowledged' = 'false'::jsonb"))
-						.and_where(Expr::col(Alias::new("state")).is_in([
-							"completed",
-							"cancelled",
-							"failed",
-						]))
+						.and_where(
+							Expr::col(Alias::new("runner_instance"))
+								.is_not_null()
+								.or(Expr::col(Alias::new("result"))
+									.binary(
+										reinhardt::query::BinOper::PgOperator(
+											reinhardt::query::types::PgBinOper::JsonGetByIndex,
+										),
+										Expr::value("effects_may_have_occurred"),
+									)
+									.eq(Expr::value(serde_json::json!(true)))),
+						)
+						.and_where(
+							Expr::col("state")
+								.is_in(["completed", "cancelled", "failed", "withdrawn"])
+								.or(Expr::col("state")
+									.eq("uncertain")
+									.and(Expr::col("runner_instance").is_not_null())
+									.and(Expr::col("result")
+										.binary(
+											reinhardt::query::BinOper::PgOperator(
+												reinhardt::query::types::PgBinOper::JsonGetByIndex,
+											),
+											Expr::value("termination_confirmed"),
+										)
+										.eq(Expr::value(serde_json::json!(true))))),
+						)
 						.and_where(
 							Expr::col(Alias::new("id")).gt(Expr::value(query_bind_1.to_owned())),
 						)
@@ -61,7 +93,7 @@ impl OperationProcessingRepository for Repository<'_> {
 						.limit(16)
 						.to_string(PostgresQueryBuilder),
 				)
-				.columns(&["id", "digest", "runner_instance"])
+				.columns(&["id", "digest", "runner_instance", "state"])
 				.fetch_all(self.store.pool.in_scope(&MAINTENANCE))
 				.await?
 			};
@@ -71,10 +103,11 @@ impl OperationProcessingRepository for Repository<'_> {
 		result
 			.map(|rows| {
 				rows.into_iter()
-					.map(|(id, digest, runner_instance)| Receipt {
+					.map(|(id, digest, runner_instance, state)| Receipt {
 						id,
 						digest,
 						runner_instance,
+						uncertain: state == "uncertain",
 					})
 					.collect()
 			})

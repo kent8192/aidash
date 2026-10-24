@@ -1,27 +1,27 @@
 //! The Deployment's answers to `accept` (ADR 0064): which Node names a Tenant,
 //! whether that Tenant is deleted, and what its Node Registrations, Peer
 //! Mappings, policy and Peer Graph Grants say.
-use crate::apps::identity::models::AuthorizationBundle;
 use crate::apps::identity::repositories::{
 	node_registrations as registrations, nodes, tenant_deletions,
 };
+use crate::apps::identity::services::receiving_keys;
 use crate::federation::Federation;
 use aidash_application::{
 	Result,
-	ports::federation::inbound::{InboundRepository, ViewerGrant},
+	ports::federation::inbound::{
+		InboundRepository, ReceivingKeyOwner, ReceivingKeys, ViewerGrant,
+	},
 	tenancy::TenancyScope,
 };
 use aidash_domain::{
-	identity::{peer_mapping::Mapping, tenant_administration::NODE_USE},
+	identity::peer_mapping::Mapping,
 	nodes::{
 		DeploymentId, NodeAddress, NodeName,
 		registration::{NodeRegistration, PinnedKey},
 	},
-	policy::{Evaluation, Resource},
 	tenancy::TenantName,
 };
 use async_trait::async_trait;
-use serde_json::json;
 use uuid::Uuid;
 
 #[async_trait]
@@ -63,6 +63,39 @@ impl InboundRepository for Federation {
 			.await?)
 	}
 
+	async fn node_live(&self, tenant: &TenantName, node: &NodeName) -> Result<bool> {
+		Ok(self
+			.store
+			.pool
+			.atomic(&TenancyScope::Tenant(tenant.clone()), async |tx| {
+				nodes::is_live(tx, tenant.as_str(), node.as_str()).await
+			})
+			.await?)
+	}
+	async fn closed_node_request(
+		&self,
+		tenant: &TenantName,
+		receiver: &NodeAddress,
+		sender: &NodeAddress,
+		subject: &str,
+		request: &aidash_application::federation::inbound::RequestDigest<'_>,
+	) -> Result<bool> {
+		Ok(self
+			.store
+			.pool
+			.atomic(&TenancyScope::Tenant(tenant.clone()), async |tx| {
+				super::super::repositories::routes::closed_node_request_in(
+					tx,
+					tenant.as_str(),
+					receiver,
+					sender,
+					subject,
+					request,
+				)
+				.await
+			})
+			.await?)
+	}
 	async fn registration(
 		&self,
 		tenant: &TenantName,
@@ -97,30 +130,7 @@ impl InboundRepository for Federation {
 		receiver: &NodeName,
 		subject: &str,
 	) -> Result<bool> {
-		Ok(self
-			.store
-			.pool
-			.atomic(&TenancyScope::Tenant(tenant.clone()), async |tx| {
-				let snapshot =
-					AuthorizationBundle::lock_snapshot(tx, tenant.as_str(), false).await?;
-				if !aidash_domain::identity::authority::enabled(&snapshot.bundle, subject) {
-					return Ok(false);
-				}
-				let node = nodes::get(tx, tenant.as_str(), receiver.as_str()).await?;
-				let evaluation = Evaluation {
-					subject: subject.to_owned(),
-					action: NODE_USE.into(),
-					resource: Resource {
-						tenant: tenant.to_string(),
-						kind: "node".into(),
-						id: receiver.to_string(),
-						attributes: json!({"label": node.label, "default": node.default}),
-					},
-					environment: json!({"transport": "federation"}),
-				};
-				Ok(snapshot.bundle.evaluate(&evaluation).allowed)
-			})
-			.await?)
+		Ok(receiving_keys::subject_may_use(&self.store.pool, tenant, receiver, subject).await?)
 	}
 
 	async fn viewer_grant(
@@ -146,5 +156,83 @@ impl InboundRepository for Federation {
 			})
 		})
 		.transpose()
+	}
+	async fn receiving_keys(&self, owner: &ReceivingKeyOwner) -> Result<Option<ReceivingKeys>> {
+		Ok(receiving_keys::get(&self.store.pool, owner).await?)
+	}
+
+	async fn advance_keys(
+		&self,
+		owner: &ReceivingKeyOwner,
+		expected_keys_revision: i64,
+		expected_authorization_revision: i64,
+		keys: &aidash_domain::nodes::keys::TrustedDeploymentKeys,
+	) -> Result<bool> {
+		Ok(receiving_keys::advance(
+			&self.store.pool,
+			owner,
+			expected_keys_revision,
+			expected_authorization_revision,
+			keys,
+		)
+		.await?)
+	}
+	async fn advance_recovery_keys(
+		&self,
+		owner: &ReceivingKeyOwner,
+		expected_keys_revision: i64,
+		expected_authorization_revision: i64,
+		keys: &aidash_domain::nodes::keys::TrustedDeploymentKeys,
+		subject: &str,
+		request: &aidash_application::federation::inbound::RequestDigest<'_>,
+	) -> Result<bool> {
+		let proof = DurableRequest {
+			deployment: &self.config.deployment,
+			subject,
+			request,
+		};
+		Ok(receiving_keys::advance_recovery(
+			&self.store.pool,
+			owner,
+			expected_keys_revision,
+			expected_authorization_revision,
+			keys,
+			&proof,
+		)
+		.await?)
+	}
+}
+
+/// Federation owns the durable protocol proof; Identity owns the transaction.
+struct DurableRequest<'a, 'body> {
+	deployment: &'a DeploymentId,
+	subject: &'a str,
+	request: &'a aidash_application::federation::inbound::RequestDigest<'body>,
+}
+#[async_trait]
+impl receiving_keys::RecoveryProof for DurableRequest<'_, '_> {
+	async fn validate(
+		&self,
+		tx: &mut dyn reinhardt::db::backends::TransactionExecutor,
+		owner: &ReceivingKeyOwner,
+	) -> crate::Result<bool> {
+		let ReceivingKeyOwner::Registration {
+			tenant,
+			node,
+			source_node,
+		} = owner
+		else {
+			return Ok(false);
+		};
+		let receiver = self.deployment.node(node.clone());
+		super::super::repositories::routes::closed_node_request_in(
+			tx,
+			tenant.as_str(),
+			&receiver,
+			source_node,
+			self.subject,
+			self.request,
+		)
+		.await
 	}
 }

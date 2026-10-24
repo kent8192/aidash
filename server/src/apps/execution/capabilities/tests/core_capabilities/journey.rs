@@ -486,7 +486,7 @@ fn journey_core(#[from(capability_fixture)] core: CoreFuture) -> CoreFuture {
 		}
 		c.policy["subjects"]
 			[aidash_server::domain::qualified_agent(&aidash_domain::nodes::NodeAddress::derived(c.f.config.deployment.as_str(), "acme"), "research", "1.2.0")] =
-			json!({"kind":"agent"});
+			json!({"kind":"agent", "node": aidash_domain::nodes::NodeName::derived("acme")});
 		crate::common::require_tool_call_approval(&mut c.policy);
 		crate::common::replace_policy(&c.f.store, "acme", c.policy.clone()).await;
 		c

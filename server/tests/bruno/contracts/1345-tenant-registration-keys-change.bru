@@ -1,0 +1,26 @@
+meta {
+  name: 1345 tenant-registration-keys-change - A key change requires both typed CAS revisions
+  type: http
+  seq: 1345
+}
+
+post {
+  url: {{base_url}}/api/tenants/{{tenant}}/nodes/{{tenant_node}}/registration-keys
+  body: text
+  auth: none
+}
+
+headers {
+  Accept: application/json
+  Authorization: Bearer {{deployment_administrator_token}}
+  Content-Type: application/json
+}
+
+body:text {
+  {"source_node": "aidash://bruno-unknown/brave-otter-k3m9q2xa", "action": "quarantine", "expected_keys_revision": 1}
+}
+
+tests {
+  test("Exact HTTP 422", function () { expect(res.getStatus()).to.equal(422); });
+  test("Rejection is diagnostic and does not disclose SQL or credentials", function () { const value=res.getBody(); const text=typeof value === "string" ? value : JSON.stringify(value); expect(text.length).to.be.greaterThan(0); expect(text).not.to.match(/postgres:\/\/|SELECT .* FROM |deployment_administrator_token|peer_token/); });
+}

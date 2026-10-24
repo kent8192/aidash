@@ -12,6 +12,7 @@ fn bundle() -> PolicyBundle {
 		"alice".into(),
 		Subject {
 			kind: SubjectKind::User,
+			node: None,
 			groups: [MEMBERS.to_owned()].into(),
 			roles: BTreeSet::new(),
 			attributes: json!({}),
