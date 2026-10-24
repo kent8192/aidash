@@ -25,6 +25,10 @@ use serde_json::{Value, from_value, json};
 use std::collections::BTreeSet;
 
 pub fn openapi() -> Result<OpenApiSchema> {
+	openapi_for(crate::bootstrap::build::offering())
+}
+
+fn openapi_for(offering: aidash_domain::offering::Offering) -> Result<OpenApiSchema> {
 	let mut inspector = InspectorConfig::default();
 	inspector.security_scheme_names.push("bearer_auth".into());
 	let generator = SchemaGenerator::new()
@@ -53,7 +57,8 @@ pub fn openapi() -> Result<OpenApiSchema> {
 	apps::knowledge::serializers::openapi::register(&mut contracts, &mut document)?;
 	apps::federation::transactions::serializers::openapi::register(&mut contracts, &mut document)?;
 	apps::registry::workbench::serializers::openapi::register(&mut contracts, &mut document)?;
-	contracts.finish(&mut document)?;
+	contracts.finish(&mut document, offering)?;
+
 	document
 		.components
 		.get_or_insert_with(Default::default)
@@ -354,7 +359,11 @@ impl Contracts {
 			.push(parameter);
 		Ok(())
 	}
-	fn finish(&mut self, document: &mut OpenApiSchema) -> Result<()> {
+	fn finish(
+		&mut self,
+		document: &mut OpenApiSchema,
+		offering: aidash_domain::offering::Offering,
+	) -> Result<()> {
 		let components = document.components.get_or_insert_with(Default::default);
 		for (name, schema) in self.response_schemas.take_definitions(true) {
 			let schema = from_value(schema)
@@ -373,6 +382,18 @@ impl Contracts {
 				.or_insert_with(|| schema.clone());
 			components.schemas.insert(format!("Request_{name}"), schema);
 		}
+		// Endpoint macros register every Offering's handlers in a global inventory.
+		// Publish only methods actually mounted by this Offering's Reinhardt router.
+		let routes: BTreeSet<_> = super::urls::routes_for(offering)
+			.server_ref()
+			.get_all_routes()
+			.into_iter()
+			.flat_map(|(path, _, _, methods)| {
+				methods
+					.into_iter()
+					.map(move |method| (path.clone(), method.to_string().to_ascii_lowercase()))
+			})
+			.collect();
 		document.paths.paths.retain(|path, item| {
 			for (method, operation) in [
 				("get", &mut item.get),
@@ -381,7 +402,9 @@ impl Contracts {
 				("patch", &mut item.patch),
 				("delete", &mut item.delete),
 			] {
-				if !self.documented.contains(&(path.clone(), method.into())) {
+				if !self.documented.contains(&(path.clone(), method.into()))
+					|| !routes.contains(&(path.clone(), method.into()))
+				{
 					*operation = None;
 				}
 			}
@@ -390,5 +413,36 @@ impl Contracts {
 				.any(|x| x.is_some())
 		});
 		Ok(())
+	}
+}
+
+#[cfg(test)]
+mod tests {
+	use aidash_domain::offering::Offering;
+	use rstest::rstest;
+
+	#[rstest]
+	#[case(Offering::SelfHosted, true)]
+	#[case(Offering::Cloud, false)]
+	#[case(Offering::Dedicated, false)]
+	fn openapi_lists_plan_connections_only_for_self_hosted(
+		#[case] offering: Offering,
+		#[case] serves_plan: bool,
+	) {
+		let document = super::openapi_for(offering).unwrap();
+		let base = "/api/tenants/{tenant}/plan-connections/{provider}";
+		for path in [
+			base.to_owned(),
+			format!("{base}/authorizations"),
+			format!("{base}/authorizations/complete"),
+			format!("{base}/models"),
+		] {
+			assert_eq!(
+				document.paths.paths.contains_key(&path),
+				serves_plan,
+				"{offering}: {path}"
+			);
+		}
+		assert!(document.paths.paths.contains_key("/api/workspaces"));
 	}
 }

@@ -24,6 +24,7 @@ type Group = (Offerings, fn() -> UnifiedRouter);
 /// route that some Offering does not serve moves into a group of its own here.
 const GROUPS: &[Group] = &[
 	(EVERY_OFFERING, identity::urls::url_patterns),
+	(SELF_HOSTED_ONLY, identity::urls::plan_connection_patterns),
 	(EVERY_OFFERING, execution::capabilities::urls::url_patterns),
 	(EVERY_OFFERING, workspaces::urls::url_patterns),
 	(EVERY_OFFERING, execution::generation::urls::url_patterns),

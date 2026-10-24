@@ -2,13 +2,15 @@
 //!
 //! Plan usage requires `stream: true` and `store: false` and keeps no
 //! conversation state, so every request carries the whole projected context
-//! in `input`. Only the Legacy and Ordered Projection Versions are supported;
-//! the Native version and reasoning items are #249. Output is accepted only
-//! from `response.completed`; deltas feed sanitized Inference Progress.
+//! in `input`. Legacy, Ordered and Native projections retain the observable
+//! messages and tool turns without provider reasoning (ADR 0083). Output is
+//! accepted only from `response.completed`; deltas feed sanitized Inference
+//! Progress.
 use super::{CacheSaltKeys, MAX_RESPONSE_BYTES, safe_upstream_reason};
 use crate::{Error, Result};
 use aidash_application::ports::{InferenceProgressSink, ModelProvider};
 use aidash_application::provider_access::{Context, Inference, Operation, ProviderAccess, Source};
+use aidash_domain::provider::responses::{self as input, TOOL_NAMESPACE};
 use aidash_domain::{
 	context::recovery::Failure as ContextFailure,
 	model::ModelConfig,
@@ -21,7 +23,7 @@ use aidash_domain::{
 };
 use async_trait::async_trait;
 use secrecy::ExposeSecret;
-use serde_json::{Map, Value, json};
+use serde_json::{Value, json};
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
@@ -103,102 +105,36 @@ fn plan_unavailable() -> Error {
 	Error::External("ChatGPT plan usage is temporarily unavailable".into())
 }
 
-/// The namespace every Aidash tool is declared in. Plan usage accepts function
-/// tools only inside a namespace (or as `additional_tools` input items), never
-/// as flat top-level tools.
-const TOOL_NAMESPACE: &str = "aidash";
-
-/// The Responses request equivalent to the Chat Completions body every other
-/// route receives, so context accounting stays the same: `system` becomes
-/// `instructions`, the user message becomes one `input` message, and tools
-/// become function tools in one [`TOOL_NAMESPACE`] namespace.
+/// The model-visible Responses body is shared with request accounting. The
+/// adapter adds only route controls, model configuration and the Tenant salt.
 pub(crate) fn request_body(
 	config: &ModelConfig,
 	request: &ModelRequest,
 	salt: Option<&str>,
 ) -> Result<Value> {
-	let chat = request.input_body();
-	let text = |value: &Value| -> String {
-		match value {
-			Value::String(text) => text.clone(),
-			Value::Array(blocks) => blocks
-				.iter()
-				.filter_map(|block| block.get("text").and_then(Value::as_str))
-				.collect(),
-			_ => String::new(),
-		}
-	};
-	let instructions = format!(
+	if request
+		.content_parts
+		.iter()
+		.any(|part| matches!(part, ContentPart::Audio { .. }))
+	{
+		return Err(Error::Plan(Failure::Unsupported(
+			aidash_domain::plan_connections::Unsupported::Input,
+		)));
+	}
+	let mut body = input::encoded_input_body(request)?;
+	body["model"] = json!(config.model_id);
+	body["instructions"] = json!(format!(
 		"{}{}",
 		salt.unwrap_or_default(),
-		text(&chat["messages"][0]["content"])
-	);
-	let content = match &chat["messages"][1]["content"] {
-		Value::String(text) => vec![json!({"type":"input_text","text":text})],
-		Value::Array(parts) => parts
-			.iter()
-			.map(|part| match part["type"].as_str() {
-				Some("text") => Ok(json!({"type":"input_text","text":part["text"]})),
-				Some("image_url") => {
-					Ok(json!({"type":"input_image","image_url":part["image_url"]["url"]}))
-				}
-				_ => Err(Error::Plan(Failure::Unsupported(
-					aidash_domain::plan_connections::Unsupported::Input,
-				))),
-			})
-			.collect::<Result<Vec<_>>>()?,
-		_ => return Err(Error::Invalid("model request has no user message".into())),
-	};
-	let mut body = json!({
-		"model": config.model_id,
-		"instructions": instructions,
-		"input": [{"role":"user","content":content}],
-		// Plan usage requires both; neither is configurable (ADR 0007).
-		"store": false,
-		"stream": true,
-	});
-	if !request.tools.is_empty() {
-		let tools = request
-			.tools
-			.iter()
-			.map(|tool| {
-				json!({"type":"function","name":tool.name,"description":tool.description,"parameters":tool.parameters})
-			})
-			.collect::<Vec<_>>();
-		body["tools"] = json!([{
-			"type": "namespace",
-			"name": TOOL_NAMESPACE,
-			"description": "Tools of this Aidash agent.",
-			"tools": tools,
-		}]);
-	}
-	if let Some(format) = &request.response_format {
-		body["text"] = json!({"format": text_format(format)?});
-	}
+		request.instructions
+	));
+	// Plan usage requires both; neither is configurable (ADR 0007).
+	body["store"] = json!(false);
+	body["stream"] = json!(true);
 	if let Some(effort) = config.reasoning_effort {
 		body["reasoning"] = json!({"effort": effort});
 	}
 	Ok(body)
-}
-
-/// Chat Completions' `response_format` in the Responses `text.format` shape.
-fn text_format(format: &Value) -> Result<Value> {
-	match format["type"].as_str() {
-		Some("json_schema") => {
-			let schema = &format["json_schema"];
-			let mut value = Map::new();
-			value.insert("type".into(), json!("json_schema"));
-			for key in ["name", "schema", "strict", "description"] {
-				if let Some(field) = schema.get(key) {
-					value.insert(key.into(), field.clone());
-				}
-			}
-			Ok(Value::Object(value))
-		}
-		Some("json_object") => Ok(json!({"type":"json_object"})),
-		Some("text") => Ok(json!({"type":"text"})),
-		_ => Err(Error::Invalid("unsupported response format".into())),
-	}
 }
 
 #[async_trait]
@@ -734,7 +670,7 @@ pub(crate) fn completed(response: &Value) -> Result<ModelResponse> {
 					})?,
 				});
 			}
-			// Reasoning items are not round-tripped yet (#249).
+			// Provider reasoning is deliberately discarded (ADR 0083).
 			_ => {}
 		}
 	}

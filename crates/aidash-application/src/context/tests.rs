@@ -21,6 +21,7 @@ fn request_check_reserves_completion_tokens() {
 		cache_scope: None,
 		cache_breakpoints: false,
 		disable_provider_transforms: false,
+		input_format: Default::default(),
 		estimate: Default::default(),
 	};
 	assert!(check_request(2000, &request).is_err());
@@ -29,6 +30,7 @@ fn request_check_reserves_completion_tokens() {
 #[rstest::rstest]
 fn request_check_reserves_the_registered_model_maximum_with_input_and_framing() {
 	let budget = RequestBudget {
+		input_format: Default::default(),
 		window: 1_048_576,
 		instructions: "",
 		tools: &[],
@@ -59,6 +61,7 @@ fn tool_event_growth_matches_the_complete_request_delta() {
 	let mut after = context.clone();
 	after.push(event.clone());
 	let budget = RequestBudget {
+		input_format: Default::default(),
 		window: usize::MAX,
 		instructions: "instructions with newline\n",
 		tools: &tools,
@@ -86,6 +89,7 @@ async fn fitting_and_final_checks_share_escaped_input_tools_and_output_budget() 
 		let pinned = json!({"task":text.repeat(50)});
 		let mut context = journaled(vec![tool("first", text)]);
 		let mut budget = RequestBudget {
+			input_format: Default::default(),
 			window: usize::MAX,
 			instructions: text,
 			tools: &tools,
@@ -131,12 +135,17 @@ fn snapshot_budget_also_bounds_wide_state_objects() {
 }
 
 #[rstest::rstest]
-fn registration_and_execution_share_the_context_reserve_at_its_boundary() {
+#[case::chat(provider::InputFormat::Chat)]
+#[case::responses(provider::InputFormat::Responses)]
+fn registration_and_execution_share_the_context_reserve_at_its_boundary(
+	#[case] input_format: provider::InputFormat,
+) {
 	let instructions = "Use the private reference documents.";
 	let specifications = vec![];
 	let output = 4096;
 	let private_context = json!({"reference_documents":"private \"quoted\" reference"});
 	let request = RequestBudget {
+		input_format,
 		window: 0,
 		instructions,
 		tools: &specifications,
@@ -155,6 +164,7 @@ fn registration_and_execution_share_the_context_reserve_at_its_boundary() {
 		&specifications,
 		&private_context,
 		&RequestProjection::Legacy,
+		input_format,
 		Default::default(),
 	)
 	.unwrap();
@@ -170,6 +180,7 @@ fn registration_and_execution_share_the_context_reserve_at_its_boundary() {
 			&specifications,
 			&private_context,
 			&RequestProjection::Legacy,
+			input_format,
 			Default::default(),
 		)
 		.is_err()
@@ -294,6 +305,7 @@ impl Scenario {
 	}
 	fn budget(window: usize) -> RequestBudget<'static> {
 		RequestBudget {
+			input_format: Default::default(),
 			window,
 			instructions: "Work on the task",
 			tools: &[],

@@ -61,6 +61,35 @@ fn the_self_hosted_routes_match_the_community_catalog() {
 	assert_eq!(mounted(Offering::SelfHosted), expected);
 }
 
+/// Hosted Plan authorization remains disabled until the #248 contract is approved.
+#[rstest]
+#[case(Offering::SelfHosted, 1)]
+#[case(Offering::Cloud, 0)]
+#[case(Offering::Dedicated, 0)]
+fn plan_connections_are_mounted_only_for_self_hosted(
+	#[case] offering: Offering,
+	#[case] expected_count: usize,
+) {
+	let routes = mounted(offering);
+	let base = "/api/tenants/{tenant}/plan-connections/{provider}";
+	for (method, path) in [
+		("GET", base.to_owned()),
+		("POST", format!("{base}/authorizations")),
+		("POST", format!("{base}/authorizations/complete")),
+		("DELETE", base.to_owned()),
+		("GET", format!("{base}/models")),
+	] {
+		assert_eq!(
+			routes
+				.get(&(method.into(), path.clone()))
+				.copied()
+				.unwrap_or(0),
+			expected_count,
+			"{offering}: {method} {path}"
+		);
+	}
+}
+
 #[rstest]
 fn federation_registration_retains_the_previous_undocumented_peer_protocol() {
 	// The baseline includes internal protocol routes omitted from public OpenAPI.

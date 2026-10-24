@@ -744,5 +744,7 @@
   "decider": "Decider",
   "embedding": "Embedding",
   "reranker": "Reranker",
-  "tokenizer": "Tokenizer"
+  "tokenizer": "Tokenizer",
+  "planConnections": "Plan Connections",
+  "keylessEndpointHelp": "Keyless endpoints receive no credential. Review the endpoint and its data retention policy before use. Default limits are 128000 context tokens and 16384 output tokens; review them for this model."
 }

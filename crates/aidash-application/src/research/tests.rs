@@ -2893,6 +2893,7 @@ async fn a_page_that_exceeds_model_headroom_takes_no_view_or_fragment() {
 	let mut fitting = page_image::FittingRenderer {
 		renderer: &renderer,
 		model: &model,
+		projection: Default::default(),
 		headroom: 1024,
 		selected_parts: vec![],
 	};

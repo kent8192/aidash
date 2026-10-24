@@ -6,6 +6,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
 pub mod estimate;
+pub mod responses;
 pub mod usage;
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
@@ -24,8 +25,40 @@ pub struct ToolCall {
 	pub arguments: Value,
 }
 
+/// The provider's model-visible request format, independent of Projection Version.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum InputFormat {
+	#[default]
+	Chat,
+	Responses,
+}
+
+impl InputFormat {
+	pub fn is_chat(&self) -> bool {
+		*self == Self::Chat
+	}
+
+	/// Native plan requests use Responses accounting (ADR 0083). Existing
+	/// Legacy and Ordered Runs keep their original accounting and digests.
+	pub fn for_model(
+		model: &crate::model::ModelConfig,
+		version: crate::projection::ProjectionVersion,
+	) -> Self {
+		if model.uses_plan_connection() && version == crate::projection::ProjectionVersion::Native {
+			Self::Responses
+		} else {
+			Self::Chat
+		}
+	}
+}
+
 #[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema)]
 pub struct ModelRequest {
+	/// Default omission preserves existing request identities. A Responses
+	/// request binds its format into admission and cache identity.
+	#[serde(default, skip_serializing_if = "InputFormat::is_chat")]
+	pub input_format: InputFormat,
 	pub instructions: String,
 	pub context: ModelContext,
 	pub tools: Vec<ToolSpec>,
@@ -304,9 +337,27 @@ impl ModelRequest {
 	pub fn content_parts_reservation(
 		parts: &[ContentPart],
 		version: crate::projection::ProjectionVersion,
-	) -> usize {
+		input_format: InputFormat,
+	) -> Result<usize> {
 		if parts.is_empty() {
-			return 0;
+			return Ok(0);
+		}
+		if input_format == InputFormat::Responses {
+			let request = Self {
+				input_format,
+				context: ModelContext::Native(crate::projection::native::native_context(
+					&crate::context::Context::default(),
+					&Value::Null,
+				)),
+				..Self::default()
+			};
+			let before = request.estimate_body(&[])?;
+			let after = request.estimate_body(parts)?;
+			return Ok(after
+				.to_string()
+				.len()
+				.saturating_sub(before.to_string().len())
+				.saturating_add(Self::media_tokens(parts)));
 		}
 		let mut reserved = 64_usize.saturating_add(Self::media_tokens(parts));
 		// Array/text framing replaces a plain context string; media parts keep
@@ -319,7 +370,7 @@ impl ModelRequest {
 			}
 			reserved = reserved.saturating_add(frame.to_string().len().saturating_add(1));
 		}
-		reserved
+		Ok(reserved)
 	}
 
 	pub fn media_within_limits(parts: &[ContentPart]) -> bool {
@@ -336,14 +387,24 @@ impl ModelRequest {
 		count <= 8 && bytes <= 8 * 1024 * 1024
 	}
 
-	/// Model-visible payload, shared by transport and context accounting. The
-	/// context is encoded as message text, including its JSON escaping. A salted
+	/// Canonical Chat payload, shared by Chat transport and accounting.
+	/// Responses transport and accounting share [`responses::input_body`].
+	/// Context is encoded as message text, including its JSON escaping. A salted
 	/// request's Tenant Cache Salt is prepended by the transport adapter only.
 	pub fn input_body(&self) -> Value {
 		self.body(
 			self.content_parts.iter().map(ContentPart::openrouter),
 			self.cache_breakpoints,
 		)
+	}
+
+	fn estimate_body(&self, parts: &[ContentPart]) -> Result<Value> {
+		match self.input_format {
+			InputFormat::Chat => Ok(self.body(parts.iter().map(ContentPart::estimate_frame), true)),
+			InputFormat::Responses => {
+				responses::input_body(self, parts.iter().map(ContentPart::estimate_frame))
+			}
+		}
 	}
 
 	/// `breakpoints` marks `system` and the end of the Stable Prefix: the
@@ -442,12 +503,26 @@ impl ModelRequest {
 		parts: &[ContentPart],
 		snapshot: &estimate::EstimateSnapshot,
 	) -> estimate::ByteEstimate {
+		// Infallible fitting rejects malformed input even under calibration.
+		// Admission and validation return the original serialization error.
+		self.checked_byte_estimate(parts, snapshot)
+			.unwrap_or(estimate::ByteEstimate {
+				media: usize::MAX,
+				..Default::default()
+			})
+	}
+
+	fn checked_byte_estimate(
+		&self,
+		parts: &[ContentPart],
+		snapshot: &estimate::EstimateSnapshot,
+	) -> Result<estimate::ByteEstimate> {
 		// Base64 is a transport encoding, not text for the model tokenizer.
 		// Keep the transmitted array framing, excluding only encoded media
 		// payload bytes, and reserve a bounded media estimate.
-		// Ordered estimates always count cache breakpoint framing, so whether a
+		// Chat estimates always count cache breakpoint framing, so whether a
 		// step carries breakpoints never changes a fitting decision (ADR 0019).
-		let body = self.body(parts.iter().map(ContentPart::estimate_frame), true);
+		let body = self.estimate_body(parts)?;
 		let salt = if self.cache_scope.is_some() {
 			crate::projection::CACHE_SALT_LINE_RESERVE
 		} else {
@@ -459,16 +534,19 @@ impl ModelRequest {
 			.encoding()
 			.and_then(|encoding| encoding.count_body(&body))
 			.map(|tokens| tokens.saturating_add(salt));
-		estimate::ByteEstimate {
+		Ok(estimate::ByteEstimate {
 			basis: body.to_string().len().saturating_add(salt),
 			media: Self::media_tokens(parts),
 			output: self.max_output_tokens as usize,
 			framing: estimate::FRAMING_RESERVE,
 			tokenized,
-		}
+		})
 	}
 
 	pub fn validate(&self) -> Result<()> {
+		if self.input_format == InputFormat::Responses {
+			self.estimate_body(&self.content_parts)?;
+		}
 		if self.cache_breakpoints && !self.context.caches() {
 			return Err(Error::Invalid(
 				"cache breakpoints require the Ordered or Native Projection Version".into(),
@@ -491,18 +569,11 @@ impl ModelRequest {
 
 impl ModelRequest {
 	pub fn ensure_fits(&self, window: usize) -> Result<()> {
-		Self::check_estimate(
-			window,
-			self.max_output_tokens,
-			self.estimated_total_tokens(),
-		)
+		self.ensure_fits_with_parts(window, &self.content_parts)
 	}
 	pub fn ensure_fits_with_parts(&self, window: usize, parts: &[ContentPart]) -> Result<()> {
-		Self::check_estimate(
-			window,
-			self.max_output_tokens,
-			self.estimated_total_tokens_with_parts(parts),
-		)
+		let bytes = self.checked_byte_estimate(parts, &self.estimate)?;
+		Self::check_estimate(window, self.max_output_tokens, self.estimate.tokens(&bytes))
 	}
 	fn check_estimate(window: usize, max_output_tokens: u32, estimated: usize) -> Result<()> {
 		if estimated > window {
@@ -527,13 +598,17 @@ impl ModelRequest {
 	/// `None` for an unsalted request.
 	pub fn cache_identity(&self) -> Option<String> {
 		let scope = self.cache_scope.as_ref()?;
-		Some(crate::registry::rules::digest(&json!({
+		let mut identity = json!({
 			"projection_version": self.context.projection_version(),
 			"tenant": scope.tenant,
 			"key_version": scope.key_version,
 			"instructions": self.instructions,
 			"tools": self.tools,
-		})))
+		});
+		if !self.input_format.is_chat() {
+			identity["input_format"] = json!(self.input_format);
+		}
+		Some(crate::registry::rules::digest(&identity))
 	}
 
 	/// Bind the exact request metadata and ordered media hashes without persisting media bytes.
