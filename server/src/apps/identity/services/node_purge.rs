@@ -249,6 +249,51 @@ fn owners<'a>(deletion: &'a NodeDeletion, snapshot: &Snapshot) -> Owners<'a> {
 	}
 }
 
+/// Keep the ordinary policy-first boundary. A completed whole-Tenant purge
+/// legitimately erased that policy, so only its immutable current tombstone
+/// and the exact permanent Node owner can replace the missing row as proof.
+async fn lock_audit_owner(tx: &mut dyn TransactionExecutor, deletion: &NodeDeletion) -> Result<()> {
+	let error = match AuthorizationBundle::lock_frozen(tx, &deletion.tenant, true).await {
+		Ok(_) => return Ok(()),
+		Err(error @ Error::NotFound(_)) => error,
+		Err(error) => return Err(error),
+	};
+	// KeyShare protects lifecycle identity without taking the deletion-row
+	// Update lock before audit rows. Tenant audit deletes those rows before
+	// its non-key audit_erased_at update; those operations remain compatible.
+	// A finished Tenant cannot restore or acquire a new policy/name identity.
+	for (table, predicate) in [
+		(
+			"tenant_deletions",
+			Expr::col("tenant")
+				.eq(Expr::value(&deletion.tenant))
+				.and(Expr::col("restored_at").is_null())
+				.and(Expr::col("purged_at").is_not_null()),
+		),
+		(
+			"node_names",
+			Expr::col("tenant")
+				.eq(Expr::value(&deletion.tenant))
+				.and(Expr::col("name").eq(Expr::value(&deletion.node))),
+		),
+	] {
+		let (sql, values) = Query::select()
+			.expr(Expr::value(1_i32))
+			.from(Alias::new(table))
+			.and_where(predicate)
+			.lock(LockType::KeyShare)
+			.build(PostgresQueryBuilder);
+		if tx
+			.fetch_optional(&sql, convert_values(values))
+			.await?
+			.is_none()
+		{
+			return Err(error);
+		}
+	}
+	Ok(())
+}
+
 /// At the final purge's audit deadline, erase every deletion cycle for this
 /// Node, including earlier restores. Only node_names remains permanently.
 pub async fn erase_audit(store: &Store, retention_days: u32) -> Result<()> {
@@ -274,7 +319,7 @@ pub async fn erase_audit(store: &Store, retention_days: u32) -> Result<()> {
 			.atomic(&TenancyScope::tenant(&deletion.tenant)?, async |tx| {
 				// Keep management response snapshots and expiry serialized. Never
 				// remove the current deletion while its catalog could appear live.
-				AuthorizationBundle::lock_frozen(tx, &deletion.tenant, true).await?;
+				lock_audit_owner(tx, &deletion).await?;
 				nodes::lock_tenant(tx, &deletion.tenant).await?;
 				rows::coverage(tx).await?;
 				let now = database_time(tx).await?;

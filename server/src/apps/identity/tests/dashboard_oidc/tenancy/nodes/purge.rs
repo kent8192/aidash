@@ -1439,3 +1439,201 @@ async fn cross_node_execution_evidence(
 		descendant,
 	)
 }
+
+/// A completed whole-Tenant purge erases policy before the older Node audit
+/// expires. That legitimate tombstone must not block another Tenant's audit.
+#[rstest::rstest]
+#[tokio::test]
+async fn node_audit_expiry_after_whole_tenant_purge_does_not_starve_live_tenant_audit(
+	#[from(common::runtime)] runtime: common::RuntimeFuture,
+) {
+	use aidash_server::apps::identity::services::tenant_purge;
+	let mut d = Deployment::new(runtime, open_rules()).await;
+	let storage = tempfile::tempdir().unwrap();
+	d.federation.store.capabilities = Runtime::new(Profile {
+		storage: storage.path().to_owned(),
+		..Profile::default()
+	})
+	.unwrap();
+	let alice = d.person("alice").await;
+	let mut targets = Vec::new();
+	for label in ["Later purged Tenant", "Live Tenant"] {
+		let (tenant, context) = d.node_tenant(&alice, label).await;
+		let (status, node) = d.create_node(&alice, &context, &tenant, "Delete").await;
+		assert_eq!(status, 201, "{node}");
+		let node = node["name"].as_str().unwrap().to_owned();
+		let (status, workspace) = d.workspace_on(&alice, &context, Some(&node)).await;
+		assert_eq!(status, 200, "{workspace}");
+		let workspace = Uuid::parse_str(workspace["id"].as_str().unwrap()).unwrap();
+		let file = Uuid::new_v4();
+		object(&d, &tenant, workspace, file).await;
+		let deletion = request_purge(&d, &tenant, &node).await;
+		let claimed = node_purge::claim(&d.federation.store)
+			.await
+			.unwrap()
+			.pop()
+			.unwrap();
+		node_purge::purge_node(&d.federation.store, claimed)
+			.await
+			.unwrap();
+		assert!(!storage.path().join(file.simple().to_string()).exists());
+		assert_eq!(
+			d.count(&format!(
+				"SELECT count(*) FROM workspaces WHERE id='{workspace}'"
+			))
+			.await,
+			0
+		);
+		targets.push((tenant, node, deletion));
+	}
+	let (purged_tenant, _, _) = &targets[0];
+	let (status, body) = d
+		.as_deployment_administrator(
+			"POST",
+			&format!("/api/tenants/{purged_tenant}/deletion"),
+			json!({"confirmation":purged_tenant}),
+		)
+		.await;
+	assert_eq!(status, 200, "{body}");
+	// Age the normal thirty-day grace and use its actual worker once. The
+	// immediate-purge HTTP endpoint spawns its own worker, so deliberately do
+	// not race that background lease with a second test-owned claim.
+	sqlx::query("UPDATE tenant_deletions SET deleted_at=clock_timestamp()-interval '100 days',purge_after=clock_timestamp()-interval '70 days' WHERE tenant=$1 AND restored_at IS NULL")
+        .bind(purged_tenant).execute(d.federation.store.pool.fixture_driver()).await.unwrap();
+	let mut claimed = tenant_purge::claim(&d.federation.store).await.unwrap();
+	assert_eq!(claimed.len(), 1);
+	tenant_purge::purge_tenant(&d.federation.store, claimed.pop().unwrap())
+		.await
+		.unwrap();
+	assert_eq!(
+		d.count(&format!(
+			"SELECT count(*) FROM authorization_bundles WHERE tenant='{purged_tenant}'"
+		))
+		.await,
+		0
+	);
+	assert_eq!(
+		d.count(&format!(
+			"SELECT count(*) FROM nodes WHERE tenant='{purged_tenant}'"
+		))
+		.await,
+		0
+	);
+	assert_eq!(d.count(&format!("SELECT count(*) FROM tenant_deletions WHERE tenant='{purged_tenant}' AND purged_at IS NOT NULL AND restored_at IS NULL AND audit_erased_at IS NULL")).await, 1);
+	// Actual owners completed above. Only clock ageing is accelerated: Node
+	// day0, whole Tenant day300, Node audit due while Tenant audit remains.
+	for (index, (_, _, deletion)) in targets.iter().enumerate() {
+		sqlx::query(
+			"UPDATE node_deletions SET purged_at=clock_timestamp()-make_interval(days=>$2) WHERE id=$1",
+		)
+		.bind(deletion)
+		.bind(367_i32 - index as i32)
+		.execute(d.federation.store.pool.fixture_driver())
+		.await
+		.unwrap();
+	}
+	sqlx::query("UPDATE tenant_deletions SET purged_at=clock_timestamp()-interval '67 days' WHERE tenant=$1 AND purged_at IS NOT NULL")
+		.bind(purged_tenant).execute(d.federation.store.pool.fixture_driver()).await.unwrap();
+	for (_, _, deletion) in &targets {
+		assert_eq!(
+			d.count(&format!(
+				"SELECT count(*) FROM node_deletions WHERE id='{deletion}'"
+			))
+			.await,
+			1
+		);
+	}
+	node_purge::erase_audit(&d.federation.store, 365)
+		.await
+		.unwrap();
+	for (tenant, node, _) in &targets {
+		for (table, key) in [
+			("nodes", "name"),
+			("node_deletions", "node"),
+			("dashboard_administration_history", "node"),
+			("authorization_catalog_history", "node"),
+		] {
+			assert_eq!(
+				d.count(&format!(
+					"SELECT count(*) FROM {table} WHERE tenant='{tenant}' AND {key}='{node}'"
+				))
+				.await,
+				0,
+				"{table}: {tenant}"
+			);
+		}
+		assert_eq!(
+			d.count(&format!(
+				"SELECT count(*) FROM node_names WHERE tenant='{tenant}' AND name='{node}'"
+			))
+			.await,
+			1
+		);
+	}
+	assert_eq!(d.count(&format!("SELECT count(*) FROM tenant_deletions WHERE tenant='{purged_tenant}' AND purged_at IS NOT NULL AND audit_erased_at IS NULL")).await, 1);
+	assert_eq!(
+		d.count(&format!(
+			"SELECT count(*) FROM authorization_bundles WHERE tenant='{}'",
+			targets[1].0
+		))
+		.await,
+		1
+	);
+	node_purge::erase_audit(&d.federation.store, 365)
+		.await
+		.unwrap();
+
+	// A missing policy alone is corruption, not proof of completed Tenant
+	// purge. It must never authorize deleting retained Node audit/catalog.
+	let (tenant, context) = d.node_tenant(&alice, "Missing policy only").await;
+	let (_, node) = d.create_node(&alice, &context, &tenant, "Delete").await;
+	let node = node["name"].as_str().unwrap();
+	let deletion = request_purge(&d, &tenant, node).await;
+	let claimed = node_purge::claim(&d.federation.store)
+		.await
+		.unwrap()
+		.pop()
+		.unwrap();
+	node_purge::purge_node(&d.federation.store, claimed)
+		.await
+		.unwrap();
+	sqlx::query(
+		"UPDATE node_deletions SET purged_at=clock_timestamp()-interval '366 days' WHERE id=$1",
+	)
+	.bind(deletion)
+	.execute(d.federation.store.pool.fixture_driver())
+	.await
+	.unwrap();
+	// Credentials keep a real FK to policy. Remove only this deliberate
+	// corruption fixture's authority, then its policy, without any completed
+	// TenantDeletion that could authorize audit expiry.
+	sqlx::query("DELETE FROM authorization_credentials WHERE tenant=$1")
+		.bind(&tenant)
+		.execute(d.federation.store.pool.fixture_driver())
+		.await
+		.unwrap();
+	sqlx::query("DELETE FROM authorization_bundles WHERE tenant=$1")
+		.bind(&tenant)
+		.execute(d.federation.store.pool.fixture_driver())
+		.await
+		.unwrap();
+	assert!(matches!(
+		node_purge::erase_audit(&d.federation.store, 365).await,
+		Err(aidash_server::Error::NotFound(_))
+	));
+	assert_eq!(
+		d.count(&format!(
+			"SELECT count(*) FROM node_deletions WHERE id='{deletion}'"
+		))
+		.await,
+		1
+	);
+	assert_eq!(
+		d.count(&format!(
+			"SELECT count(*) FROM nodes WHERE tenant='{tenant}' AND name='{node}'"
+		))
+		.await,
+		1
+	);
+	d.finish().await;
+}
