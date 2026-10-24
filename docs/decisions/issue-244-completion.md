@@ -141,6 +141,26 @@ Never record secret values in this document, source control, logs or comments.
    Verify it locally. Public discovery remains useful for publication and advance
    refresh, but receiving Federation must not require an HTTP fetch to succeed.
 
+8. **Durable cancellation across restore.** Snapshot the exact work identities in
+   the deletion transaction. Runs have no immutable creation timestamp, so later
+   maintenance must not guess which work predates deletion from `updated_at`.
+   Keep the stop intent through restore, fence old leases and pending work, and
+   finish terminal/quota/network cleanup through the existing owners.
+9. **Source reads survive source purge as provenance.** Keep a sibling Node's
+   content-free source Unit ID and revision. Check source existence under a key
+   share lock when recording the read, rather than making its lifetime foreign
+   key prevent source purge forever. Invalidate derived receipt bodies through
+   the existing source-deletion owner before removing the source. Keep unrelated
+   sibling data and read history. Unknown or contradictory ownership still blocks
+   erasure. This also avoids mutually retaining Nodes preventing both purges.
+10. **Closed-Node recovery learns keys without reopening authority.** A request
+    bound to an already-admitted durable transaction may persist a verified key
+    transition after the exact participant, manifest and caller are revalidated
+    in the same transaction as the trust compare-and-set. Preserve authorization
+    revision, permissions and enabled state. A concurrent disable forces reload
+    and revalidation; quarantine cannot be cleared by a normal proof. Merely
+    accepting the proof temporarily would strand a later retry after overlap.
+
 The alternatives were immediate final deletion, counting deleted Nodes until
 purge, letting Tenant Administrators bypass the recovery period, restoring an
 old policy snapshot, exempting retained Node storage, keeping retired key trust
