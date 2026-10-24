@@ -565,6 +565,23 @@ impl Environment<'_> {
 				}
 			}
 			let mut filtered = content.clone();
+			let declared_volatility = |source: &QualifiedRef| {
+				run.context
+					.binding_snapshot
+					.as_ref()?
+					.bindings
+					.iter()
+					.find(|binding| {
+						&binding.identity == source && binding.excluded_reason.is_none()
+					})?
+					.definition
+					.config
+					.get("context_source")
+					.and_then(|value| {
+						serde_json::from_value::<SourceDeclaration>(value.clone()).ok()
+					})
+					.map(|declaration| declaration.volatility)
+			};
 			let mut removals = provider
 				.fragments
 				.iter()
@@ -576,6 +593,22 @@ impl Environment<'_> {
 				})
 				.map(|fragment| fragment.pointer.clone())
 				.collect::<Vec<_>>();
+			// An explicit native Skill Source contributes attributed data rather
+			// than a system instruction. Leave historical Registry/implicit Skill
+			// blocks byte-identical, including other sources in this same slot.
+			if matches!(slot, Slot::Skills | Slot::ResidentSkills) {
+				removals.extend(
+					provider
+						.fragments
+						.iter()
+						.filter(|fragment| {
+							selected.contains(&fragment.candidate.identity.key())
+								&& declared_volatility(&fragment.candidate.identity.source)
+									.is_some()
+						})
+						.map(|fragment| fragment.pointer.clone()),
+				);
+			}
 			removals.sort_by(|left, right| pointer_order(right).cmp(&pointer_order(left)));
 			removals.dedup();
 			for contribution in &mut result.contributions {
@@ -586,7 +619,14 @@ impl Environment<'_> {
 				{
 					contribution.placement = Some(SourcePlacement {
 						slot: slot.name().into(),
-						pointer: remap_pointer(&fragment.pointer, &removals),
+						pointer: if declared_volatility(&contribution.identity.source).is_some()
+							&& matches!(slot, Slot::Skills | Slot::ResidentSkills)
+						{
+							fragment.pointer.clone()
+						} else {
+							remap_pointer(&fragment.pointer, &removals)
+						},
+						volatility: declared_volatility(&contribution.identity.source),
 					});
 				}
 			}

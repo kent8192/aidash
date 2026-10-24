@@ -1485,7 +1485,7 @@ impl Environment<'_> {
 		let mut workspace_retrieved = false;
 		let result: Result<Option<Value>> = async {
 			let settings =
-				AgentConfig::from_snapshot(run.context.binding_snapshot.as_ref().ok_or_else(
+				AgentConfig::automatic_context(run.context.binding_snapshot.as_ref().ok_or_else(
 					|| aidash_application::Error::Invalid("Run has no Binding snapshot".into()),
 				)?)?;
 			if !settings.semantic_memory && !settings.workspace_context {
@@ -1507,10 +1507,7 @@ impl Environment<'_> {
 				return read.result;
 			}
 			let _ = entry;
-			let agent =
-				AgentConfig::from_snapshot(run.context.binding_snapshot.as_ref().ok_or_else(
-					|| aidash_application::Error::Invalid("Run has no Binding snapshot".into()),
-				)?)?;
+			let agent = settings;
 			let mut lease = crate::semantic::service::Lease::within(
 				&self.federation.store,
 				&self.run_store.scope,

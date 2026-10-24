@@ -358,11 +358,6 @@ impl SourceRequest {
 		}
 		Ok(())
 	}
-	pub fn refresh_key(&self) -> String {
-		digest(
-			&json!({"run":self.run_id,"source":self.source,"declaration":self.declaration,"query":self.query.query_digest,"inputs":self.query.input_digest,"boundary":if self.declaration.volatility==Volatility::Run {"run"} else {&self.boundary},"max_bytes":self.max_bytes}),
-		)
-	}
 }
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
@@ -371,19 +366,25 @@ pub struct DetailRequest {
 	pub identity: CandidateIdentity,
 	pub route: DetailRoute,
 }
-/// Runtime-owned placement in the final source slot. Private bodies copied
-/// into history or another source never establish this source's delivery.
+/// Runtime-owned origin pointer and optional declaration-driven final placement.
+/// Private bodies copied into history or another source never establish delivery.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct SourcePlacement {
 	pub slot: String,
 	pub pointer: String,
+	/// Explicit declarations project each candidate independently. Absent for
+	/// the historical native layout, whose request bytes remain unchanged.
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub volatility: Option<Volatility>,
 }
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct SourceContribution {
 	#[serde(default, skip_serializing_if = "Option::is_none")]
 	pub placement: Option<SourcePlacement>,
+	#[serde(default, skip_serializing_if = "std::ops::Not::not")]
+	pub mandatory: bool,
 	pub identity: CandidateIdentity,
 	pub content: Value,
 	pub provenance: Vec<SourcePin>,
@@ -399,6 +400,7 @@ impl From<SourceCandidate> for SourceContribution {
 		let content_digest = digest(&c.content);
 		Self {
 			placement: None,
+			mandatory: c.mandatory,
 			identity: c.identity,
 			content: c.content,
 			provenance: c.provenance,
@@ -511,6 +513,10 @@ impl SelectionFailure {
 
 #[cfg(test)]
 mod tests;
+
+mod projection;
+pub use projection::declared_present;
+pub(crate) use projection::{fit as fit_declared, project};
 
 impl SelectionEvidence {
 	/// Replay only declared candidate questions and version-pinned threshold code.
