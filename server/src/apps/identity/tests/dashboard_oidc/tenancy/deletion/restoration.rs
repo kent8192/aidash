@@ -4,6 +4,7 @@ use aidash_application::plan_connections::{self as plans, Owner};
 use aidash_application::provider_access::KeyMaterialReader;
 use aidash_application::provider_credentials::Store;
 use async_trait::async_trait;
+use reinhardt::query::{Alias, Expr, ExprTrait, IntoIden, PostgresQueryBuilder, Query, SimpleExpr};
 use secrecy::SecretString;
 use std::sync::{
 	Arc,
@@ -161,20 +162,59 @@ async fn overlapping_restores_retire_connections_only_once(
 	.await
 	.expect("retirement must acquire its own control connection");
 	let mut second = Box::pin(d.restore(&alice, &context, &tenant));
+	let restore_key = SimpleExpr::FunctionCall(
+		"hashtextextended".into_iden(),
+		vec![Expr::value(&tenant).into(), Expr::value(391_351_i64).into()],
+	);
+	let database = Query::select()
+		.column(Alias::new("oid"))
+		.from(Alias::new("pg_database"))
+		.and_where(
+			Expr::col(Alias::new("datname")).eq(SimpleExpr::FunctionCall(
+				"current_database".into_iden(),
+				Vec::new(),
+			)),
+		)
+		.to_owned();
+	let waiting_sql = Query::select()
+		.expr(Expr::exists(
+			Query::select()
+				.expr(Expr::value(1_i32))
+				.from(Alias::new("pg_locks"))
+				.and_where(Expr::col(Alias::new("locktype")).eq(Expr::value("advisory")))
+				.and_where(Expr::col(Alias::new("granted")).eq(Expr::value(false)))
+				.and_where(Expr::col(Alias::new("database")).eq(Expr::subquery(database)))
+				.and_where(
+					Expr::col(Alias::new("objid")).eq(restore_key
+						.clone()
+						.bit_and(Expr::value(i64::from(u32::MAX)))
+						.cast_as("oid")),
+				)
+				.and_where(
+					Expr::col(Alias::new("classid")).eq(restore_key
+						.right_shift(Expr::value(32_i32))
+						.bit_and(Expr::value(i64::from(u32::MAX)))
+						.cast_as("oid")),
+				)
+				.to_owned(),
+		))
+		.to_string(PostgresQueryBuilder);
 	tokio::time::timeout(std::time::Duration::from_secs(10), async {
-        loop {
-            tokio::select! {
-                result = &mut second => panic!("overlapping restore bypassed serialization: {result:?}"),
-                _ = tokio::time::sleep(std::time::Duration::from_millis(20)) => {
-                    // Observe a real PostgreSQL lock wait, rather than assume a
-                    // request has reached the boundary after a fixed sleep.
-                    let waiting: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM pg_locks WHERE locktype='advisory' AND NOT granted AND database=(SELECT oid FROM pg_database WHERE datname=current_database()) AND objid=((hashtextextended($1,391351) & 4294967295)::oid) AND classid=(((hashtextextended($1,391351) >> 32) & 4294967295)::oid))")
-                        .bind(&tenant).fetch_one(d.federation.store.pool.fixture_driver()).await.unwrap();
-                    if waiting { break; }
-                }
-            }
-        }
-    }).await.expect("the second restore must wait for the first retirement");
+		loop {
+			tokio::select! {
+				result = &mut second => panic!("overlapping restore bypassed serialization: {result:?}"),
+				_ = tokio::time::sleep(std::time::Duration::from_millis(20)) => {
+					// Observe a real PostgreSQL lock wait, rather than assume a
+					// request has reached the boundary after a fixed sleep.
+					let waiting: bool = sqlx::query_scalar(&waiting_sql)
+						.fetch_one(d.federation.store.pool.fixture_driver()).await.unwrap();
+					if waiting { break; }
+				}
+			}
+		}
+	})
+	.await
+	.expect("the second restore must wait for the first retirement");
 	assert_eq!(retirement.calls.load(Ordering::SeqCst), 1);
 	retirement.release.notify_one();
 	let (first, second) = tokio::join!(first, second);
