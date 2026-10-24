@@ -277,8 +277,8 @@ async fn scored_sources_reach_the_actual_request_as_individual_items(
 			serde_json::to_vec(&workspace_envelopes(&contexts[1])).unwrap()
 		);
 		let updated = fixture.f.store.runs(&TEST_FIXTURE).await.unwrap().remove(0);
-		assert_eq!(updated.context.source_selections.len(), 2);
 		let next = updated.context.source_selections.last().unwrap();
+		assert_ne!(next.boundary.step, selection.boundary.step);
 		assert_eq!(next.candidate_digest, selection.candidate_digest);
 		assert_eq!(next.query_digest, selection.query_digest);
 		assert_eq!(next.proposed.len(), 2);
