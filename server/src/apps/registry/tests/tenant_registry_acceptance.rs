@@ -1205,3 +1205,55 @@ async fn registration_reads_the_stored_copy_and_another_tenant_cannot(
 	orm_owned.unwrap();
 	assert!(orm_foreign.is_err());
 }
+
+#[rstest]
+#[tokio::test]
+async fn plugin_import_refuses_unpermitted_servers_before_persisting_the_copy(
+	#[future] endpoint: EndpointFixture,
+) {
+	let fixture = endpoint.await;
+	tenant(&fixture, "plugins").await;
+	for (n, endpoint) in ["https://10.0.0.5/mcp", "http://127.0.0.1/mcp"]
+		.into_iter()
+		.enumerate()
+	{
+		let mut files = plugin_files();
+		files.push(PluginFile {path:"mcp.json".into(), bytes:json!({"$schema":agent_plugin::MCP_SCHEMA,"mcpServers":{"remote":{"type":"streamable-http","url":endpoint}}}).to_string().into_bytes()});
+		let (result, calls) = import_plugin(
+			&fixture,
+			"plugins",
+			"owner",
+			fetched(
+				files.clone(),
+				"https://github.com/acme/tools/tree/0123456789012345678901234567890123456789",
+				&[],
+			),
+		)
+		.await;
+		assert_eq!(calls, 1);
+		assert!(
+			matches!(result,Err(aidash_server::Error::Invalid(ref message)) if message.contains("AGENT_PLUGIN_SERVER_FORBIDDEN")),
+			"{result:?}"
+		);
+		assert_eq!(copies(&fixture, "plugins").await, n as i64);
+		fixture
+			.runtime
+			.store
+			.keyless
+			.permit_origin_of(endpoint)
+			.unwrap();
+		let (result, _) = import_plugin(
+			&fixture,
+			"plugins",
+			"owner",
+			fetched(
+				files,
+				"https://github.com/acme/tools/tree/0123456789012345678901234567890123456789",
+				&[],
+			),
+		)
+		.await;
+		assert!(result.is_ok(), "{result:?}");
+	}
+	assert_eq!(copies(&fixture, "plugins").await, 2);
+}

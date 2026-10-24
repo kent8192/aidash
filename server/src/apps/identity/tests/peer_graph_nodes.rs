@@ -37,7 +37,9 @@ fn graph_runtime(
 		f.store.deployment = f.config.deployment.clone();
 		f.config.endpoint = format!("http://{}", listener.await.local_addr().unwrap());
 		f.config.api_token = format!("peer-graph-{suffix}");
-		f.registry = Registry::new(f.store.pool.clone(), &f.config.deployment).unwrap();
+		f.registry = Registry::new(f.store.pool.clone(), &f.config.deployment)
+			.unwrap()
+			.with_keyless_origins(f.store.keyless.clone());
 		owner
 	}
 	.boxed()
