@@ -279,11 +279,17 @@ class ProjectionCampaignTest(unittest.TestCase):
         status, payload = fixture.infer(body)
         self.assertEqual(status, 200)
         answer = json.loads(payload)["choices"][0]["message"]["content"]
-        observed = observation(final_answer=answer, tool_calls=runner.tool_calls_from({"history": history}))
-        graded = evaluation.run_result(value, planned, 1, observed, "deterministic", False)
-        self.assertEqual(graded["outcome"], "success")
-        observed["tool_calls"][1]["model_turn"] = 9
-        self.assertFalse(evaluation.run_result(value, planned, 1, observed, "deterministic", False)["oracle"]["passed"])
+        # The inspection API returns durable HistoryEntry {seq, event} records;
+        # older captured fixtures used flat projection events. Both must retain
+        # the actual calls and their accepted Model Turn for independent grading.
+        for label, entries in (("legacy flat", history), ("inspection journal", [
+                {"seq": index + 1, "event": event} for index, event in enumerate(history)])):
+            with self.subTest(history=label):
+                observed = observation(final_answer=answer, tool_calls=runner.tool_calls_from({"history": entries}))
+                graded = evaluation.run_result(value, planned, 1, observed, "deterministic", False)
+                self.assertEqual(graded["outcome"], "success")
+                observed["tool_calls"][1]["model_turn"] = 9
+                self.assertFalse(evaluation.run_result(value, planned, 1, observed, "deterministic", False)["oracle"]["passed"])
         body["messages"][-1]["tool_call_id"] = "mismatched"
         self.assertEqual(fixture.infer(body)[0], 400)
 

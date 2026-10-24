@@ -33,7 +33,7 @@ from fixed_task_fixture import FIXTURE_PATCHES
 ROOT = Path(__file__).resolve().parent.parent
 EVALUATION = ROOT / "tests/evaluation"
 EVALUATOR_NAME = "aidash-fixed-task-evaluator"
-EVALUATOR_VERSION = "2.1.1"
+EVALUATOR_VERSION = "2.1.2"
 # Files whose bytes define the evaluator, relative to the repository root; their digest is in
 # every manifest. The schemas belong here because they decide which evidence `validate` accepts.
 EVALUATOR_FILES = ("scripts/fixed_task_evaluation.py", "scripts/fixed_task_fixture.py", "scripts/fixed_task_runner.py",

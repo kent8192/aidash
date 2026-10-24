@@ -232,10 +232,12 @@ def loaded_identity(call_name, result):
 
 
 def tool_calls_from(context):
+    """Read inspection journal entries and historical flat projection events."""
+    history = [entry.get("event", entry) for entry in context.get("history", [])]
     calls = []
-    turns = {identifier: event["epoch"] for event in context.get("history", [])
+    turns = {identifier: event["epoch"] for event in history
              if event.get("kind") == "assistant" for identifier in event.get("calls", [])}
-    for event in context.get("history", []):
+    for event in history:
         if event.get("kind") != "tool":
             continue
         result = event.get("result")
