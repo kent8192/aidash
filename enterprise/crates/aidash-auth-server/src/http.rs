@@ -90,7 +90,7 @@ impl Handler for Http {
 		let result = self.dispatch(request).await;
 		Ok(match result {
 			Ok(mut response) => {
-				secure_headers(&mut response);
+				secure_headers(&mut response, Some(&self.auth.config.gcip_auth_domain));
 				response
 			}
 			Err(error) => failure(error),
@@ -1203,10 +1203,10 @@ fn json_response(status: StatusCode, value: Value) -> Response {
 		header::CONTENT_TYPE,
 		"application/json".parse().expect("static MIME"),
 	);
-	secure_headers(&mut response);
+	secure_headers(&mut response, None);
 	response
 }
-fn secure_headers(response: &mut Response) {
+fn secure_headers(response: &mut Response, auth_domain: Option<&str>) {
 	for (name, value) in [
 		(header::CACHE_CONTROL, "no-store"),
 		(header::REFERRER_POLICY, "no-referrer"),
@@ -1216,7 +1216,10 @@ fn secure_headers(response: &mut Response) {
 			.headers
 			.insert(name, value.parse().expect("static header"));
 	}
-	response.headers.insert(header::CONTENT_SECURITY_POLICY, "default-src 'self'; script-src 'self' 'wasm-unsafe-eval' https://apis.google.com; connect-src 'self' https://*.googleapis.com https://*.firebaseapp.com https://*.gstatic.com; frame-src https://*.firebaseapp.com https://accounts.google.com; style-src 'self' 'unsafe-inline'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'".parse().expect("static CSP"));
+	let auth_frame = auth_domain
+		.map(|domain| format!(" https://{domain}"))
+		.unwrap_or_default();
+	response.headers.insert(header::CONTENT_SECURITY_POLICY, format!("default-src 'self'; script-src 'self' 'wasm-unsafe-eval' https://apis.google.com; connect-src 'self' https://*.googleapis.com https://*.firebaseapp.com https://*.gstatic.com; frame-src https://*.firebaseapp.com https://accounts.google.com{auth_frame}; style-src 'self' 'unsafe-inline'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'").parse().expect("validated CSP"));
 }
 fn failure(error: Error) -> Response {
 	let (status, code) = match error {

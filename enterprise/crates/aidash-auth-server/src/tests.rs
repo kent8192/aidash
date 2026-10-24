@@ -366,6 +366,48 @@ pub(super) async fn fixture(configure: impl FnOnce(&mut Authentication)) -> Fixt
 }
 
 #[tokio::test]
+async fn refresh_lock_contention_keeps_lifecycle_connections_available() {
+	let (_container, _pool, _port, url) = reinhardt::test::fixtures::postgres_container_with(
+		reinhardt::test::fixtures::PostgresContainerConfig::default()
+			.image("postgres", "17-alpine"),
+	)
+	.await;
+	let pool = sqlx::postgres::PgPoolOptions::new()
+		.max_connections(1)
+		.acquire_timeout(Duration::from_millis(250))
+		.connect(&url)
+		.await
+		.unwrap();
+	let waiting_store = crate::store::Store::from_pool(pool.clone());
+	let store = crate::store::Store::from_pool(pool);
+	let first = store.refresh_lock("same-refresh-family").await.unwrap();
+	let mut waiter = tokio::spawn(async move {
+		waiting_store
+			.refresh_lock("same-refresh-family")
+			.await
+			.unwrap()
+	});
+	// Even a minimal lifecycle pool must remain usable while refresh callers
+	// retain or wait for the family lock on their separate pool.
+	let scope = store
+		.scope()
+		.await
+		.expect("refresh lock must not consume lifecycle capacity");
+	drop(scope);
+	assert!(
+		tokio::time::timeout(Duration::from_millis(100), &mut waiter)
+			.await
+			.is_err()
+	);
+	drop(first);
+	let second = tokio::time::timeout(Duration::from_secs(2), waiter)
+		.await
+		.expect("the next refresh proceeds after the holder rolls back")
+		.unwrap();
+	second.commit().await.unwrap();
+}
+
+#[tokio::test]
 async fn oidc_issuer_and_marketplace_bff_preserve_real_session_and_refresh_boundaries() {
 	let assets = reinhardt::test::fixtures::temp_dir();
 	std::fs::create_dir(assets.path().join("assets")).unwrap();
@@ -377,7 +419,9 @@ async fn oidc_issuer_and_marketplace_bff_preserve_real_session_and_refresh_bound
 	)
 	.unwrap();
 	let fixture = fixture(|auth| {
-		Arc::make_mut(&mut auth.config).assets_dir = Some(assets.path().to_owned());
+		let config = Arc::make_mut(&mut auth.config);
+		config.assets_dir = Some(assets.path().to_owned());
+		config.gcip_auth_domain = "login.example.com".into();
 	})
 	.await;
 	let auth = fixture.auth.clone();
@@ -408,6 +452,15 @@ async fn oidc_issuer_and_marketplace_bff_preserve_real_session_and_refresh_bound
 		tokens.next() == Some("script-src") && tokens.any(|token| token == "'wasm-unsafe-eval'")
 	}));
 	assert!(!csp.split_whitespace().any(|token| token == "'unsafe-eval'"));
+	let frames: Vec<_> = csp
+		.split(';')
+		.find_map(|directive| directive.trim().strip_prefix("frame-src "))
+		.unwrap()
+		.split_whitespace()
+		.collect();
+	assert!(frames.contains(&"https://login.example.com"));
+	assert!(frames.contains(&"https://*.firebaseapp.com"));
+	assert!(frames.contains(&"https://accounts.google.com"));
 	let nonce = secret();
 	let code = authorize(&client, &issuer, &callback, &browser, &nonce).await;
 	let wrong_client = form(
@@ -626,9 +679,14 @@ async fn oidc_issuer_and_marketplace_bff_preserve_real_session_and_refresh_bound
 	let rotated = refresh_request(&request_id).send().await.unwrap();
 	assert_eq!(rotated.status(), 200, "{}", rotated.text().await.unwrap());
 	let rotated: Value = rotated.json().await.unwrap();
-	let retry = refresh_request(&request_id).send().await.unwrap();
-	assert_eq!(retry.status(), 200);
-	assert_eq!(retry.json::<Value>().await.unwrap(), rotated);
+	let (first_retry, second_retry) = tokio::join!(
+		refresh_request(&request_id).send(),
+		refresh_request(&request_id).send(),
+	);
+	for retry in [first_retry.unwrap(), second_retry.unwrap()] {
+		assert_eq!(retry.status(), 200);
+		assert_eq!(retry.json::<Value>().await.unwrap(), rotated);
+	}
 	assert!(
 		!refresh_request(&Uuid::new_v4().to_string())
 			.send()

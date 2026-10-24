@@ -105,6 +105,7 @@ impl Authentication {
 		Ok(store)
 	}
 	pub async fn new(config: Config, store: Store) -> Result<Self> {
+		config.validate().map_err(|_| Error::Configuration)?;
 		// A serving process must not own the schema or forge migration history.
 		// PostgreSQL's two-argument privilege functions use the current role.
 		let function = |name: &str, args: Vec<reinhardt::query::SimpleExpr>| {

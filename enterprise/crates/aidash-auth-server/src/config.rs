@@ -96,6 +96,18 @@ impl Config {
 		{
 			return Err(invalid());
 		}
+		if self.gcip_auth_domain.len() > 253
+			|| self.gcip_auth_domain.split('.').any(|label| {
+				label.is_empty()
+					|| label.len() > 63
+					|| label.starts_with('-')
+					|| label.ends_with('-')
+					|| !label
+						.bytes()
+						.all(|byte| byte.is_ascii_alphanumeric() || byte == b'-')
+			}) {
+			return Err(invalid());
+		}
 		if self.gcip_providers.iter().any(|(tenant, providers)| {
 			!self.gcip_tenants.contains(tenant)
 				|| providers.is_empty()
@@ -222,6 +234,26 @@ mod tests {
 			value.validate().is_err(),
 			"production callback requires HTTPS"
 		);
+	}
+	#[test]
+	fn startup_accepts_auth_hosts_and_rejects_csp_source_injection() {
+		let mut value = config();
+		for host in ["project.firebaseapp.com", "login.example.com", "localhost"] {
+			value.gcip_auth_domain = host.into();
+			assert!(value.validate().is_ok(), "valid auth host: {host}");
+		}
+		for host in [
+			"https://login.example.com",
+			"login.example.com/path",
+			"login.example.com:443",
+			"login.example.com; script-src *",
+			"login.example.com\r\nX-Injected: yes",
+			"login..example.com",
+			"-login.example.com",
+		] {
+			value.gcip_auth_domain = host.into();
+			assert!(value.validate().is_err(), "invalid auth host: {host:?}");
+		}
 	}
 	#[test]
 	fn startup_rejects_ambiguous_peer_and_unknown_upstream_pool() {

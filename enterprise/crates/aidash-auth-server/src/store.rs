@@ -35,12 +35,19 @@ pub(crate) fn decode<T: DeserializeOwned>(value: serde_json::Value) -> Result<T>
 pub struct Store {
 	pub(crate) connection: DatabaseConnection,
 	pub(crate) pool: sqlx::PgPool,
+	refresh_locks: DatabaseConnection,
 }
 impl Store {
 	pub fn from_pool(pool: sqlx::PgPool) -> Self {
+		// A refresh retains its family lock while using the lifecycle/OAuth pool.
+		// Keep lock holders and waiters off that pool so they cannot exhaust it.
+		let refresh_pool = sqlx::postgres::PgPoolOptions::new()
+			.max_connections(pool.options().get_max_connections())
+			.connect_lazy_with(pool.connect_options().as_ref().clone());
 		Self {
 			connection: DatabaseConnection::new(Arc::new(PostgresBackend::new(pool.clone()))),
 			pool,
+			refresh_locks: DatabaseConnection::new(Arc::new(PostgresBackend::new(refresh_pool))),
 		}
 	}
 	#[allow(clippy::disallowed_methods)] // This service owns an isolated schema and contains no Tenant data.
@@ -80,7 +87,7 @@ impl Store {
 		use sha2::{Digest, Sha256};
 		let hash = Sha256::digest(raw.as_bytes());
 		let key = i32::from_be_bytes(hash[..4].try_into().expect("four hash bytes"));
-		let mut tx = self.connection.begin().await.map_err(unavailable)?;
+		let mut tx = self.refresh_locks.begin().await.map_err(unavailable)?;
 		let (sql, args) = Query::select()
 			.expr(SimpleExpr::FunctionCall(
 				Alias::new("pg_advisory_xact_lock").into_iden(),
