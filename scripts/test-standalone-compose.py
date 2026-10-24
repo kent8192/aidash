@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Exercise the shipped container/Compose lifecycle, with disposable credentials.
 
-Builds are optional; all four product images must exist otherwise. The dedicated
+Builds are optional; both product images must exist otherwise. The dedicated
 project and its volume are removed even on failure. No Cloud process is started.
 """
 
@@ -48,7 +48,7 @@ def request(url, expected):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--build", action="store_true", help="build all four images, with dev-profile native binaries")
+    parser.add_argument("--build", action="store_true", help="build both images, with dev-profile native binaries")
     args = parser.parse_args()
     (ROOT / "private").mkdir(exist_ok=True)
     with ExitStack() as cleanup:
@@ -75,10 +75,9 @@ def main():
         run(["python3", "scripts/prepare-standalone-compose.py", "--directory", str(directory)])
         cleanup.callback(lambda: compose("down", "-v", "--remove-orphans"))
         if args.build:
-            print("Building all four standalone product images", flush=True)
-            compose("build", "--build-arg", "CARGO_PROFILE=dev", "authentication", "marketplace", "marketplace-web", timeout=3600)
-            run(["docker", "build", "-t", "aidash-auth-web:local", "enterprise/auth/frontend"], timeout=1800)
-            print("PASS: four independent product images built", flush=True)
+            print("Building both standalone full-stack product images", flush=True)
+            compose("build", "--build-arg", "CARGO_PROFILE=dev", "authentication", "marketplace", timeout=3600)
+            print("PASS: two independent full-stack product images built", flush=True)
         compose("up", "--no-build", "-d", "--wait", "--wait-timeout", "180", profiles=("marketplace",))
         origin = f"http://127.0.0.1:{marketplace_port}"
         issuer = f"http://127.0.0.1:{auth_port}"
@@ -98,24 +97,17 @@ def main():
         assert query["redirect_uri"] == [origin + "/auth/callback"]
         assert "HttpOnly" in headers["set-cookie"]
         assert not any(key in query for key in ("access_token", "refresh_token", "id_token"))
-        print("PASS: real frontend proxy/BFF/loopback transport returns exact PKCE redirect and HttpOnly cookie", flush=True)
-        frontend = run(["docker", "run", "--rm", "-d", "--read-only", "--user", "10001:10001",
-                        "--cap-drop", "ALL", "--security-opt", "no-new-privileges:true", "--tmpfs", "/tmp",
-                        "--network", environment["AIDASH_STANDALONE_PROJECT"] + "_default",
-                        "-p", "127.0.0.1::8080", "-e", "AUTHENTICATION_BACKEND_URL=http://authentication:8081",
-                        "aidash-auth-web:local"]).strip()
-        cleanup.callback(lambda: run(["docker", "rm", "-f", frontend]))
-        frontend_port = run(["docker", "port", frontend, "8080/tcp"]).strip().rsplit(":", 1)[1]
-        # Docker exec reaches the real proxy only after its entrypoint has rendered config.
-        run(["docker", "exec", frontend, "sh", "-ec",
-             "for attempt in 1 2 3 4 5 6 7 8 9 10; do wget -q -O /dev/null http://127.0.0.1:8080/sign-in && exit 0; sleep 1; done; exit 1"])
-        assert b".js" in request(f"http://127.0.0.1:{frontend_port}/sign-in", 200)[1]
-        proxied = json.loads(request(f"http://127.0.0.1:{frontend_port}/.well-known/openid-configuration", 200)[1])
-        assert proxied["issuer"] == issuer
-        print("PASS: separate Auth frontend image serves Pages/proxies OIDC as non-root with read-only root", flush=True)
-        compose("stop", "marketplace-web", "authentication-loopback", "marketplace")
-        compose("restart", "authentication")
-        compose("up", "--no-build", "-d", "--wait", "--wait-timeout", "60", profiles=("auth",))
+        print("PASS: real unified Pages/BFF/loopback transport returns exact PKCE redirect and HttpOnly cookie", flush=True)
+        for service in ("authentication","marketplace"):
+            identifier=compose("ps","-q",service).strip()
+            inspected=json.loads(run(["docker","inspect",identifier]))[0]
+            assert inspected["Config"]["User"] == "10001:10001"
+            assert inspected["HostConfig"]["ReadonlyRootfs"]
+        print("PASS: each Pages/native service is one non-root read-only product container",flush=True)
+        compose("stop", "authentication-loopback", "marketplace")
+        # Recreate the product process/network as a deployment rollout would.
+        # No Marketplace process or development issuer relay participates.
+        compose("up", "--no-build", "-d", "--force-recreate", "--no-deps", "--wait", "--wait-timeout", "60", "authentication", profiles=("auth",))
         request(issuer + "/healthz", 200)
         print("PASS: Authentication restarts without Marketplace, Cloud, worker or NATS", flush=True)
 

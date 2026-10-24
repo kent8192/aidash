@@ -14,6 +14,7 @@ coverage
 openapi
 **/node_modules
 **/dist
+**/dist-wasm
 **/pkg
 **/test-results
 **/playwright-report

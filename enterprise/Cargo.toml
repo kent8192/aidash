@@ -2,8 +2,7 @@
 # workspace intact (ADR 0032). Shared tables match the root manifest; CI checks
 # them with scripts/check-enterprise-alignment.py.
 [workspace]
-members = ["crates/*", "server", "auth/backend", "marketplace/backend"]
-exclude = ["auth/frontend", "marketplace/frontend"]
+members = ["crates/*", "server", "auth", "marketplace"]
 resolver = "3"
 
 [workspace.package]

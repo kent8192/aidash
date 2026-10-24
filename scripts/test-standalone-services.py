@@ -79,8 +79,10 @@ def main():
     parser.add_argument("--auth-binary", type=Path, required=True)
     parser.add_argument("--marketplace-binary", type=Path, required=True)
     parser.add_argument("--auth-assets", type=Path, required=True)
+    parser.add_argument("--marketplace-assets", type=Path, required=True)
     args = parser.parse_args()
     assert (args.auth_assets / "index.html").is_file(), "build Auth Pages first"
+    assert (args.marketplace_assets / "index.html").is_file(), "build Marketplace Pages first"
     auth_binary = str(args.auth_binary.resolve())
     marketplace_binary = str(args.marketplace_binary.resolve())
     (ROOT / "private").mkdir(exist_ok=True)
@@ -106,7 +108,7 @@ def main():
                 "-U", "postgres", "-d", "aidash", input=sql)
 
         for product in ("auth", "marketplace"):
-            ddl((ROOT / "enterprise" / product / "backend/bootstrap.sql").read_text())
+            ddl((ROOT / "enterprise" / product / "bootstrap.sql").read_text())
         role_passwords = {
             role: secrets.token_hex(24)
             for role in ("aidash_auth_owner", "aidash_auth_app", "marketplace_owner", "marketplace_app")
@@ -156,11 +158,12 @@ def main():
         runtime_config = write("auth-runtime.toml", body.replace(config["database_url_file"],
                                write("runtime.url", database("aidash_auth_app"))))
         run(auth_binary, "--config", owner_config, "migrate")
-        ddl((ROOT / "enterprise/auth/backend/seal-ledger.sql").read_text())
+        ddl((ROOT / "enterprise/auth/seal-ledger.sql").read_text())
         environment = {**os.environ, "AIDASH_MARKETPLACE_DATABASE_URL": database("marketplace_owner")}
         run(marketplace_binary, "migrate", env=environment)
         environment.update({"AIDASH_MARKETPLACE_DATABASE_URL": database("marketplace_app"),
                             "AIDASH_MARKETPLACE_LISTEN": f"127.0.0.1:{marketplace_port}",
+                            "AIDASH_MARKETPLACE_ASSETS_DIR": str(args.marketplace_assets.resolve()),
                             "AIDASH_MARKETPLACE_ORIGIN": origin, "AIDASH_AUTH_ISSUER": issuer})
         for name, value in (("CLIENT", client_secret), ("RESOURCE", resource_secret),
                             ("BILLING", secrets.token_urlsafe(40)),

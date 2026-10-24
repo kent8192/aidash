@@ -34,6 +34,9 @@ lint:
       paths:
         - openapi/aidash.json
         - web/src/generated/**
+        # Pinned, licensed upstream browser modules; packaging verifies their digests.
+        - enterprise/auth/static/assets/vendor/**
+        - enterprise/*/static/assets/fonts/**
         - web/dist/**
         - web/test-results/**
         - web/desktop-test-results/**

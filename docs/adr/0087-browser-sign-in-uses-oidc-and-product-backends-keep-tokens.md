@@ -21,7 +21,7 @@ Downstream refresh tokens rotate in families scoped to one product client and de
 ## Consequences
 
 - First-party client registration, exact callback validation and audience checks remain implementation requirements. The accepted session and refresh scope above constrain their implementation. ADR 0089 fixes internal RPC service authentication and transport; ADR 0090 preserves the Desktop broker.
-- The independent Marketplace web build and backend can use the standard authentication interface without importing Cloud's browser shell.
+- The unified Marketplace Pages project uses typed server functions within the product and the standard OIDC interface between products without importing Cloud's browser shell.
 - This is an accepted target contract; the existing Cloud and Marketplace browser entrypoints are not changed by this record.
 
 ## References

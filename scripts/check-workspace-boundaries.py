@@ -144,8 +144,8 @@ def enterprise_violations(metadata, root):
     workspace = manifest["workspace"]
     if workspace.get("resolver") != "3":
         errors.append("the Enterprise workspace must use resolver 3")
-    if workspace.get("members") != ["crates/*", "server", "auth/backend", "marketplace/backend"]:
-        errors.append("the Enterprise workspace must include crates/*, server and both standalone backends")
+    if workspace.get("members") != ["crates/*", "server", "auth", "marketplace"]:
+        errors.append("the Enterprise workspace must include crates/*, server and both standalone Pages projects")
     if "package" in manifest:
         errors.append("the Enterprise root manifest must be a virtual workspace")
     community = root.parent
@@ -178,8 +178,7 @@ def enterprise_violations(metadata, root):
             pending.extend((dependency, [*path, packages[dependency]["name"]])
                            for dependency in graph.get(package_id, []))
     errors.extend(module_violations(root, (root / "crates", root / "server",
-                                         root / "auth" / "backend", root / "marketplace" / "backend",
-                                         root / "auth" / "frontend", root / "marketplace" / "frontend")))
+                                         root / "auth", root / "marketplace")))
     return errors
 
 

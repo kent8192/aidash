@@ -81,15 +81,15 @@ clients retain no total timeout while reinhardt-web#6689 remains open.
 ### Standalone authentication and Marketplace
 
 The Enterprise workspace also contains two independent services:
-[shared authentication](enterprise/auth/backend/README.md) and
-[Marketplace distribution](enterprise/marketplace/backend/README.md).
+[shared authentication](enterprise/auth/README.md) and
+[Marketplace distribution](enterprise/marketplace/README.md).
 Each has its own process, configuration, schema, database role and migration
 command. They start without the Cloud server, worker or NATS. A physical
 PostgreSQL instance may be shared with separate ownership and credentials.
 
-The [Marketplace web app](enterprise/marketplace/frontend/README.md) has its own build
-and container; the [authentication web app](enterprise/auth/frontend/README.md) is
-bundled with its service image. See the [independent deployment chart](enterprise/deploy/standalone-service/README.md)
+Each product is one Reinhardt Pages project whose browser calls typed
+`server_fn` functions in its own native service. Each image bundles that
+product's WASM assets and executable. See the [independent deployment chart](enterprise/deploy/standalone-service/README.md)
 and [approved authentication/distribution design](docs/authentication-and-standalone-marketplace-design.md).
 The [standalone Compose profiles](enterprise/deploy/local/README.md) start either
 product with `cargo make auth-dev` or `cargo make marketplace-dev`; root

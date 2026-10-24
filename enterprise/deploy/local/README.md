@@ -19,9 +19,9 @@ docker compose -f enterprise/compose.yaml --profile marketplace up --build -d --
 
 `cargo make auth-dev`, `cargo make marketplace-dev` and `cargo make standalone-down`
 wrap these operations. Auth serves its bundled Pages at
-<http://127.0.0.1:18081/sign-in>; Marketplace's separate Pages container serves
+<http://127.0.0.1:18081/sign-in>; Marketplace serves its own bundled Pages at
 <http://127.0.0.1:18082/>. Auth's mTLS listener is published only on
-`127.0.0.1:19091`. PostgreSQL and Marketplace's backend have no host port.
+`127.0.0.1:19091`. PostgreSQL has no host port; each product HTTP port serves its own Pages, RPC and API.
 
 Default GCIP settings are placeholders. They support startup, discovery, public
 catalog and PKCE redirect checks; they cannot establish live upstream sign-in.
@@ -61,7 +61,7 @@ For faster local native compilation, build dev-profile runtime images and use
 
 ```sh
 docker compose -f enterprise/compose.yaml --profile auth --profile marketplace \
-  build --build-arg CARGO_PROFILE=dev authentication marketplace marketplace-web
+  build --build-arg CARGO_PROFILE=dev authentication marketplace
 docker compose -f enterprise/compose.yaml --profile auth --profile marketplace \
   up --no-build -d --wait
 ```
@@ -86,8 +86,8 @@ both profiles and every standalone Helm example. It protects migration/seal
 ordering, credential mounts, source paths and non-root/read-only deployment.
 Native service acceptance and PostgreSQL ownership have their own tests.
 
-`python3 scripts/test-standalone-compose.py --build` builds all four product
+`python3 scripts/test-standalone-compose.py --build` builds both full-stack product
 images, provisions a disposable Compose project, checks both independent
-startups and the real proxy/PKCE transport, then removes its project and volume.
+startups and the real Pages/server_fn/BFF/PKCE transport, then removes its project and volume.
 Without `--build` it uses already-built local images. Full CI runs this container
 acceptance in addition to native entry-point and configuration contracts.

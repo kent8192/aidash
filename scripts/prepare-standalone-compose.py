@@ -73,7 +73,7 @@ def prepare(directory, auth_port, marketplace_port, gcip):
         "gcip_project": gcip["project"], "gcip_tenants": [gcip["tenant"]],
         "gcip_browser_api_key": gcip["api_key"], "gcip_auth_domain": gcip["auth_domain"],
         "signing_key_file": "/run/secrets/auth-signing-key.pem", "signing_key_id": "local-1",
-        "token_encryption_key_file": "/run/secrets/auth-token-encryption-key", "assets_dir": "/app/auth-web",
+        "token_encryption_key_file": "/run/secrets/auth-token-encryption-key", "assets_dir": "/app/pages",
     }
     body = "\n".join(f"{key} = {json.dumps(value)}" for key, value in config.items())
     body += '\nloopback_development = true\n\n[gcip_providers]\n'

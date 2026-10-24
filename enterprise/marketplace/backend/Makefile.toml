@@ -1,9 +1,0 @@
-[tasks.fmt-check]
-command = "cargo"
-args = ["fmt", "--", "--check"]
-[tasks.quality]
-command = "cargo"
-args = ["clippy", "--locked", "--all-targets", "--", "-D", "warnings"]
-[tasks.test]
-command = "cargo"
-args = ["test", "--locked"]

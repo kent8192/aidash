@@ -26,8 +26,8 @@ services:
     volumes:
       - postgres:/var/lib/postgresql/data
       - ./deploy/local/init-roles.sh:/docker-entrypoint-initdb.d/10-service-roles.sh:ro
-      - ./auth/backend/bootstrap.sql:/bootstrap/auth.sql:ro
-      - ./marketplace/backend/bootstrap.sql:/bootstrap/marketplace.sql:ro
+      - ./auth/bootstrap.sql:/bootstrap/auth.sql:ro
+      - ./marketplace/bootstrap.sql:/bootstrap/marketplace.sql:ro
     healthcheck:
       test: [CMD-SHELL, "pg_isready -h 127.0.0.1 -U postgres -d standalone"]
       interval: 2s
@@ -39,7 +39,7 @@ services:
     image: ${AIDASH_AUTH_IMAGE:-aidash-auth:local}
     build:
       context: ..
-      dockerfile: enterprise/auth/backend/Dockerfile
+      dockerfile: enterprise/auth/Dockerfile
     command: [--config, /run/secrets/auth-config, migrate]
     secrets:
       - source: auth-owner-config
@@ -66,7 +66,7 @@ services:
       - source: auth-owner-url
         target: owner-url
     volumes:
-      - ./auth/backend/seal-ledger.sql:/seal-ledger.sql:ro
+      - ./auth/seal-ledger.sql:/seal-ledger.sql:ro
     depends_on:
       auth-migrate:
         condition: service_completed_successfully
@@ -77,7 +77,7 @@ services:
     image: ${AIDASH_AUTH_IMAGE:-aidash-auth:local}
     build:
       context: ..
-      dockerfile: enterprise/auth/backend/Dockerfile
+      dockerfile: enterprise/auth/Dockerfile
     command: [--config, /run/secrets/auth-config, serve]
     secrets:
       - source: auth-runtime-config
@@ -108,7 +108,7 @@ services:
     image: ${AIDASH_MARKETPLACE_IMAGE:-aidash-marketplace:local}
     build:
       context: ..
-      dockerfile: enterprise/marketplace/backend/Dockerfile
+      dockerfile: enterprise/marketplace/Dockerfile
     command: [migrate]
     environment:
       AIDASH_MARKETPLACE_DATABASE_URL_FILE: /run/secrets/owner-url
@@ -131,7 +131,7 @@ services:
       - source: marketplace-owner-url
         target: owner-url
     volumes:
-      - ./marketplace/backend/seal-ledger.sql:/seal-ledger.sql:ro
+      - ./marketplace/seal-ledger.sql:/seal-ledger.sql:ro
     depends_on:
       marketplace-migrate:
         condition: service_completed_successfully
@@ -142,10 +142,11 @@ services:
     image: ${AIDASH_MARKETPLACE_IMAGE:-aidash-marketplace:local}
     build:
       context: ..
-      dockerfile: enterprise/marketplace/backend/Dockerfile
+      dockerfile: enterprise/marketplace/Dockerfile
     environment:
       AIDASH_MARKETPLACE_DATABASE_URL_FILE: /run/secrets/marketplace-app-url
       AIDASH_MARKETPLACE_LISTEN: 0.0.0.0:8082
+      AIDASH_MARKETPLACE_ASSETS_DIR: /app/pages
       AIDASH_MARKETPLACE_ORIGIN: http://127.0.0.1:${AIDASH_MARKETPLACE_PORT:-18082}
       AIDASH_AUTH_ISSUER: http://127.0.0.1:${AIDASH_AUTH_PORT:-18081}
       AIDASH_MARKETPLACE_CLIENT_SECRET_FILE: /run/secrets/marketplace-client-secret
@@ -160,6 +161,8 @@ services:
       - marketplace-billing-secret
       - marketplace-enrollment-secret
       - marketplace-recall-secret
+    ports:
+      - "127.0.0.1:${AIDASH_MARKETPLACE_PORT:-18082}:8082"
     depends_on:
       marketplace-seal:
         condition: service_completed_successfully
@@ -175,13 +178,13 @@ services:
   authentication-loopback:
     <<: *service
     profiles: [marketplace]
-    image: node:24.12.0-bookworm-slim
-    entrypoint: [node, /oidc-loopback.cjs]
+    image: python:3.13-slim
+    entrypoint: [python3, /oidc-loopback.py]
     environment:
       AUTH_PORT: ${AIDASH_AUTH_PORT:-18081}
     network_mode: service:marketplace
     volumes:
-      - ./deploy/local/oidc-loopback.cjs:/oidc-loopback.cjs:ro
+      - ./deploy/local/oidc-loopback.py:/oidc-loopback.py:ro
     depends_on:
       marketplace:
         condition: service_healthy
@@ -189,32 +192,10 @@ services:
       test:
         [
           CMD,
-          node,
-          -e,
-          "const s=require('node:net').connect(+process.env.AUTH_PORT,'127.0.0.1',()=>{s.end();process.exit(0)});s.on('error',()=>process.exit(1));setTimeout(()=>process.exit(1),2000)",
+          python3,
+          -c,
+          "import os,socket; socket.create_connection(('127.0.0.1',int(os.environ['AUTH_PORT'])),timeout=2).close()",
         ]
-      interval: 2s
-      timeout: 3s
-      retries: 30
-
-  marketplace-web:
-    <<: *service
-    profiles: [marketplace]
-    image: ${AIDASH_MARKETPLACE_WEB_IMAGE:-aidash-marketplace-web:local}
-    build:
-      context: ./marketplace/frontend
-    environment:
-      MARKETPLACE_BACKEND_URL: http://marketplace:8082
-    tmpfs: [/tmp, "/etc/nginx/conf.d:uid=10001,gid=10001,mode=0700"]
-    ports:
-      - "127.0.0.1:${AIDASH_MARKETPLACE_PORT:-18082}:8080"
-    depends_on:
-      marketplace:
-        condition: service_healthy
-      authentication-loopback:
-        condition: service_healthy
-    healthcheck:
-      test: [CMD, wget, -q, --spider, http://127.0.0.1:8080/healthz]
       interval: 2s
       timeout: 3s
       retries: 30

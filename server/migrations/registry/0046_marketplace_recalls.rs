@@ -7,22 +7,17 @@ pub(super) fn migration() -> Migration {
 		.add_operation(Operation::CreateTable {
 			name: "marketplace_plugin_recalls".into(),
 			columns: vec![
-				ColumnDefinition::new("plugin_id", FieldType::Uuid).with_not_null(true),
-				ColumnDefinition::new("version", FieldType::Text).with_not_null(true),
+				ColumnDefinition::new("plugin_id", FieldType::Uuid)
+					.with_not_null(true)
+					.with_primary_key(true),
+				ColumnDefinition::new("version", FieldType::Text)
+					.with_not_null(true)
+					.with_primary_key(true),
 				ColumnDefinition::new("digest", FieldType::Text).with_not_null(true),
 				ColumnDefinition::new("reason", FieldType::Text).with_not_null(true),
 				ColumnDefinition::new("recalled_at", FieldType::TimestampTz).with_not_null(true),
 			],
-			constraints: vec![
-				Constraint::PrimaryKey {
-					name: "marketplace_plugin_recalls_pkey".into(),
-					columns: vec!["plugin_id".into(), "version".into()],
-				},
-				Constraint::Check {
-					name: "marketplace_plugin_recalls_digest".into(),
-					expression: "digest ~ '^sha256:[0-9a-f]{64}$'".into(),
-				},
-			],
+			constraints: vec![],
 			without_rowid: None,
 			interleave_in_parent: None,
 			partition: None,

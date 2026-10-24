@@ -21,18 +21,21 @@ The standalone Marketplace exposes public listing and detail metadata, including
 
 ## Consequences
 
-- At Aidash's pinned Reinhardt revision `bb2562bc4839250d277a7ceecbf7fe5c18dd82c8`, `reinhardt-grpc` provides service registration and DI, but its standard listener exposes no TLS/mTLS configuration or dedicated client/channel API. The inspected upstream main revision `746e267ffc2edb75ee626d7508d273b526c387d6` has the same gaps. These are observed implementation prerequisites, not reasons to bypass the selected framework.
-- Implementation must supply the missing Reinhardt server/client transport support, peer identity handling and service authorization integration before authentication cutover. Certificate issuance and rotation are also required; they are not provided by the existing Workload Identity configuration.
-- Service credentials, migrations and independent startup checks must demonstrate ownership boundaries even while PostgreSQL infrastructure is shared.
-- This is an accepted target architecture; neither the framework extensions nor service extraction are implemented here.
+- The pinned Reinhardt revision `b6a006a769ca340c22a51e67fef1bb4be1dc3039` provides the required TLS/mTLS transport and peer identity support. Service-specific source/session/admission authorization remains in the owning adapters; successful certificate authentication alone grants no Account-administration permission.
+- Certificate issuance and rotation remain deployment responsibilities. Existing Workload Identity configuration does not supply product mTLS certificates.
+- Service credentials, migrations and independent startup checks demonstrate ownership boundaries even while PostgreSQL infrastructure is shared.
+- Local transport/PostgreSQL fixtures establish implementation contracts; live GCIP, real-cluster cutover and production certificate rotation remain separate acceptance.
 
 ## Implementation
 
-Authentication is implemented under `enterprise/auth/backend` and Marketplace
-under `enterprise/marketplace/backend`, each as a generated Reinhardt project
-with an owning app. Their sibling `frontend` directories are generated Pages
-projects with independent static builds. Each backend owns its bootstrap/seal
-DDL and native migrations; neither starts or migrates Cloud. The shared database
+Authentication is implemented under `enterprise/auth` and Marketplace under
+`enterprise/marketplace`, each as one full-stack project following actual
+`startproject/startapp --with-pages` output. App-owned Pages components and
+shared typed `server_fn` declarations connect to the same process's native
+services through request/service DI. Each project owns its bootstrap/seal DDL,
+Reinhardt migrations, static assets and single product image. Native and WASM share
+one Cargo package and the Enterprise workspace lockfile. wasm-pack/Python build
+the bundle without Node.js; E2E uses Reinhardt's `fixtures::wasm::e2e` helpers. The shared database
 role/FK contract is verified in Authentication's PostgreSQL suite.
 
 Independent Compose profiles now apply bootstrap, owning-service migrations and

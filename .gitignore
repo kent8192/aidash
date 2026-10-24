@@ -202,14 +202,12 @@ web/dist/
 web/test-results/
 web/gcip-test-results/
 web/playwright-report/
-enterprise/marketplace/frontend/node_modules
-enterprise/marketplace/frontend/dist/
-enterprise/marketplace/frontend/test-results/
-enterprise/marketplace/frontend/playwright-report/
-enterprise/auth/frontend/node_modules
-enterprise/auth/frontend/dist/
-enterprise/auth/frontend/test-results/
-enterprise/auth/frontend/playwright-report/
+enterprise/marketplace/dist/
+enterprise/marketplace/test-results/
+enterprise/marketplace/playwright-report/
+enterprise/auth/dist/
+enterprise/auth/test-results/
+enterprise/auth/playwright-report/
 
 web/*.tsbuildinfo
 
@@ -226,3 +224,7 @@ __pycache__/
 /docs/design/
 
 web/desktop-test-results/
+
+# Reinhardt Pages generated bindings (native and WASM share Enterprise Cargo.lock).
+enterprise/auth/dist-wasm/
+enterprise/marketplace/dist-wasm/

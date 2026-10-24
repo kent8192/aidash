@@ -4,7 +4,7 @@ Status: all 33 design questions and the complete architecture are approved; impl
 
 ## Result and scope
 
-Run the Marketplace as an independently built and deployed web application and backend. Extract a shared Authentication Server for Cloud and Marketplace human sign-in. Use `reinhardt-grpc` for Cloud's private authentication integration, and standard OAuth 2.0 / OpenID Connect for both products' browser sign-in.
+Run the Marketplace as an independently built and deployed full-stack web service. Extract a shared Authentication Server for Cloud and Marketplace human sign-in. Use `reinhardt-grpc` for Cloud's private authentication integration, and standard OAuth 2.0 / OpenID Connect for both products' browser sign-in.
 
 The Marketplace distributes Agent Plugins. Registry downloads and validates them, stores local copies, and pins them inside Agent versions. Existing same-Deployment sharing of Tenant Registry definitions is Shared Package functionality, even where current code still calls it `marketplace`. Extracting that module unchanged would not implement the intended product boundary.
 
@@ -104,7 +104,7 @@ Installed local copies do not need the Marketplace for each execution. A plugin'
 2. Make the Authentication Server capable of checking legacy Identities and durable origins before Cloud operations depend on it. Preserve External Identity UUIDs, issuer/subject pairs, Mappings, Subject Credentials, Personal Tenants, Billing owner references and Run origins.
 3. Assign common Accounts lazily at the first new sign-in, with an explicit choice of new Account or fresh proof of an existing Account. Do not eagerly allocate one Account per legacy Identity: the no-merge rule would then prevent those Identities from joining one Account later.
 4. Invalidate old browser/Desktop sessions at cutover while preserving admitted work. First Account assignment establishes retained Account provenance for that Identity's existing work; later unlink does not replace it.
-5. Deliver independent Marketplace web/backend startup, migrations and artifact distribution. Keep old Shared Package functionality distinct. Limit the initial shared-auth sign-in rollout to Cloud and Marketplace.
+5. Deliver independent Marketplace Pages service startup, migrations and artifact distribution. Keep old Shared Package functionality distinct. Limit the initial shared-auth sign-in rollout to Cloud and Marketplace.
 
 These are prerequisite and compatibility constraints, not a claim that a migration or deployment has run. The implementation uses independent generated projects as described below. Cutover and rollback must not restore an older path that ignores current stops; production update/backup procedures must also preserve the existing ADR 0082 contract.
 
@@ -135,36 +135,57 @@ The following are acceptance contracts. Local automated evidence, hosted CI and 
 
 ## Implemented project layout
 
-Each product owns a generated Reinhardt REST backend and Pages frontend:
+Each product is one generated Reinhardt Pages project:
 
 ```text
 enterprise/
   auth/
-    backend/     # authentication app, HTTP/OIDC, gRPC, store and migrations
-    frontend/    # account Pages app, GCIP browser bridge and static assets
+    Cargo.toml, build.rs, Makefile.toml, Dockerfile, static/
+    src/bin/manage.rs
+    src/client/lib.rs
+    src/config/{apps,settings,urls}.rs
+    src/apps/authentication/{client,server,server_fn,services,urls}.rs
+    src/apps/authentication/{client/components,server,server_fn,services,urls}/
+    src/apps/authentication/serializers.rs
   marketplace/
-    backend/     # distribution app, BFF, Entitlements, Connections and Recalls
-    frontend/    # catalog Pages app, Library and Publisher UI
+    # Same project/app layout, with the distribution app.
 ```
 
-`reinhardt-admin startproject` and `startapp` generate both project/app
-boundaries, using `--template rest` for backends and `--template pages` for
-frontends. Templates come from the same immutable Reinhardt revision as the
-service dependencies. Existing service crate names, migration app labels,
-public URLs and source identity references are retained. Native backends remain
-members of the Enterprise workspace; Auth selects only authentication/JWKS and
-GCIP adapters, while Cloud explicitly selects its `cloud-adapters`/`cloud`
-features. The architecture gate checks each service-only production graph for
-Runtime, Harness, NATS and Cloud-server dependencies. Frontends have independent Cargo/npm
-lockfiles and static image builds. The frontend is not an additional persistence
-owner. OIDC tokens and confidential clients remain entirely backend-owned.
+The layout follows actual `reinhardt-admin startproject --with-pages` and
+`startapp --with-pages` output from the pinned framework templates. The generated
+`build.rs` supplies client/server aliases; target-specific modules share typed
+serializers and `#[server_fn]` declarations. The project registers the app once
+through `src/config/urls.rs`, with the inventory-driven Pages entry point at
+`src/client/lib.rs` and specialized native commands at `src/bin/manage.rs`.
+There are no separate frontend/backend projects or runtime images.
+
+Views use `page!`; app-owned hooks manage state and effect cleanup. Marketplace
+forms use `form!` with `use_form`/`use_form_action`, and scoped resources discard
+stale protected reads. Form initialization is independent of parent render tracking.
+Browser data and mutations use generated typed `server_fn` stubs. Native adapters
+inject the existing owning service and HTTP request and retain its cookie/CSRF,
+rate-limit, source lifecycle and Product Session policies in process. OIDC,
+gRPC/mTLS, Registry and download protocol endpoints remain external interfaces.
+No client-selected arbitrary path is accepted by a server function. Product
+access/refresh tokens stay native; GCIP's transient upstream proof stays in the
+Enterprise sign-in bridge.
+
+Each product builds native and WASM from one Cargo package in the Enterprise
+workspace and packages its assets and executable in one image. Rust uses
+`enterprise/Cargo.lock`; wasm-pack and Python assemble static assets without
+Node.js or a JavaScript package manifest. Browser E2E uses the native WebDriver
+fixtures in `reinhardt-test/src/fixtures/wasm/e2e.rs`. Existing crate names,
+migration labels, source references and protocol URLs are retained. Auth selects
+only authentication/JWKS and GCIP adapters; Cloud explicitly selects its
+`cloud-adapters`/`cloud` features. Architecture gates check each service-only
+production graph for Runtime, Harness, NATS and Cloud-server dependencies.
 
 The owning app modules and their real HTTP/PostgreSQL contracts implement
 ADRs 0083–0089; Cloud's existing browser/Desktop/source-lifecycle tests also own
 ADR 0090 compatibility. Marketplace and Registry acceptance cases own ADRs
 0091–0092, including persisted acquisition deadlines, verify/pin, Recall and
-Connection removal. Browser contracts exercise the actual Pages WASM UI with
-controlled external responses. They do not prove live GCIP or payment-provider
+Connection removal. Browser contracts exercise actual Pages WASM with real native services and
+PostgreSQL; only upstream GCIP/key/status dependencies use controlled fixtures. They do not prove live GCIP or payment-provider
 acceptance. Service role/FK tests apply the distributed bootstrap/seal scripts
 to a shared physical PostgreSQL database with no Cloud schema or migrations.
 

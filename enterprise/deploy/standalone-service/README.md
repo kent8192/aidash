@@ -2,16 +2,15 @@
 
 Install this chart separately for authentication and Marketplace. Their image,
 configuration, replicas and migration commands are independent; neither release
-starts a Cloud server or worker. A frontend release can serve
-`enterprise/marketplace/frontend` and proxy its API/auth routes to Marketplace.
+starts a Cloud server or worker. Each product image bundles its Pages WASM
+assets and native executable; the same service serves the browser, typed
+`server_fn`, BFF and external API routes.
 
 Build images from the repository root:
 
 ```sh
-docker build -f enterprise/auth/backend/Dockerfile -t aidash-auth:local .
-docker build -f enterprise/marketplace/backend/Dockerfile -t aidash-marketplace:local .
-docker build -t aidash-auth-web:local enterprise/auth/frontend
-docker build -t aidash-marketplace-web:local enterprise/marketplace/frontend
+docker build -f enterprise/auth/Dockerfile -t aidash-auth:local .
+docker build -f enterprise/marketplace/Dockerfile -t aidash-marketplace:local .
 ```
 
 In production use digest-pinned private-registry image references. Supply existing
@@ -32,34 +31,32 @@ For Marketplace set port 8082 and the `AIDASH_MARKETPLACE_*` settings. Place HTT
 behind the deployment's HTTPS edge. The gRPC Service is internal; authenticate and
 authorize peers even on the cluster network.
 
-Install a third release for the Marketplace frontend with
-`-f marketplace-web.values.yaml --set image=<frontend-image-digest>`. Set
-`environment.MARKETPLACE_BACKEND_URL` to the backend Service's private HTTP URL.
-The frontend listens on 8080 and needs the two supplied ephemeral directories:
-Nginx renders its configuration into `/etc/nginx/conf.d` and keeps its PID/cache
-under `/tmp`. The rest of its filesystem remains read-only, with the same
-unprivileged UID and group as the backend releases. Authentication's service
-image already bundles its own independent web assets.
+Install one release per product using `auth.values.yaml` or
+`marketplace.values.yaml`. Assets reside at `/app/pages` in each product image;
+no additional proxy image, frontend release or frontend-to-backend URL is needed.
+The public HTTPS edge must deny `/internal/` and forward the product origin to
+its single HTTP service. Both serving containers run non-root with read-only
+root filesystems.
 
 ## Helm examples and native startup proof
 
-Use `auth-backend.values.yaml` and `marketplace-backend.values.yaml` as non-secret
+Use `auth.values.yaml` and `marketplace.values.yaml` as non-secret
 examples. Set real public origins, configuration/credential Secret names, service
 account and certificate issuer/SAN before installation. The Authentication
 configuration Secret contains `auth.toml`; its runtime Secret uses the mounted
-filenames in `enterprise/auth/backend/auth.example.toml`. Migration-owner
+filenames in `enterprise/auth/auth.example.toml`. Migration-owner
 credentials are supplied only to the explicit migration command, never to the
 serving Deployment. The Marketplace runtime Secret contains `database-url` and
 its separately named client/resource/Billing/enrollment/Recall secret files.
 
 ```sh
 helm lint enterprise/deploy/standalone-service \
-  -f enterprise/deploy/standalone-service/auth-backend.values.yaml \
+  -f enterprise/deploy/standalone-service/auth.values.yaml \
   --set-string image="$AUTH_IMAGE_DIGEST"
 helm template authentication enterprise/deploy/standalone-service \
-  -f enterprise/deploy/standalone-service/auth-backend.values.yaml \
+  -f enterprise/deploy/standalone-service/auth.values.yaml \
   --set-string image="$AUTH_IMAGE_DIGEST"
-# Use marketplace-backend.values.yaml for the independent Marketplace release.
+# Use marketplace.values.yaml for the independent Marketplace release.
 ```
 
 A local entry-point smoke test starts a disposable PostgreSQL database, applies
@@ -68,7 +65,7 @@ runtime credentials. It starts Marketplace with Authentication absent, reads
 public metadata, starts Authentication, checks OIDC discovery/Pages and the BFF's
 PKCE redirect/HttpOnly cookie, then stops Marketplace while Authentication stays
 healthy. It starts no Cloud process, worker, NATS or Cloud migration. It requires
-Docker, OpenSSL and already-built native binaries/Authentication Pages assets:
+Docker, OpenSSL and already-built native binaries and both products' Pages assets:
 
 ```sh
 cargo build --locked --manifest-path enterprise/Cargo.toml \
@@ -76,7 +73,8 @@ cargo build --locked --manifest-path enterprise/Cargo.toml \
 python3 scripts/test-standalone-services.py \
   --auth-binary enterprise/target/debug/aidash-auth-server \
   --marketplace-binary enterprise/target/debug/aidash-marketplace-server \
-  --auth-assets enterprise/auth/frontend/dist
+  --auth-assets enterprise/auth/dist \
+  --marketplace-assets enterprise/marketplace/dist
 ```
 
 The Authentication PostgreSQL suite separately verifies every service role's

@@ -1,8 +1,0 @@
-target/
-pkg/
-dist/
-node_modules/
-test-results/
-playwright-report/
-settings/*.toml
-!settings/*.example.toml
