@@ -299,7 +299,7 @@ enum Denial {
 #[case::unapproved(Denial::Unapproved)]
 #[case::disclosure(Denial::Disclosure)]
 #[tokio::test]
-async fn source_selection_denial_pauses_before_any_paid_request(
+async fn source_selection_denial_pauses_before_classifier_or_inference(
 	#[case] denial: Denial,
 	#[future(awt)]
 	#[with(false, true, false, false, false, Some(SelectionCase::Enforce))]
