@@ -31,7 +31,7 @@ PROBE_PROTOCOL = "aidash-admission-probe/2"
 # -I excludes the script directory. Only this trusted controller installation
 # supplies its journal helpers; sandbox paths and environment imports stay excluded.
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from runner_journal import Rejected, identity, save
+from runner_journal import Rejected, identity, save, sync_directory
 
 
 def termination_time(terminated, started_at, observed):
@@ -96,10 +96,11 @@ class Runner(AllocationJournal):
         self.aggregate = ActivityAggregate()
 
         identity_path = self.root / "instance"
-        if not identity_path.exists():
+        fresh_instance = not identity_path.exists()
+        if fresh_instance:
             save(identity_path, str(uuid.uuid4()))
         self.instance = json.loads(identity_path.read_bytes())
-        self.initialize_allocations()
+        self.initialize_allocations(fresh_instance=fresh_instance)
         self.token = os.environ[config["token_env"]]
         if len(self.token) < 32:
             raise ValueError("runner token must have at least 32 characters")
@@ -369,6 +370,8 @@ class Runner(AllocationJournal):
                     record["pod_uid"] = session["pod_uid"]
                     record["container_id"] = session["container_id"]
             save(self.path(operation), record)
+            if session:
+                self.begin_allocation_work(record)
             self.aggregate.track(operation, record)
             save(area_path, {"epoch": request["epoch"], "operation_id": operation})
             if not request["files"] or session:
@@ -714,6 +717,7 @@ class Runner(AllocationJournal):
                     os.fsync(output.fileno())
                 if digest.hexdigest() != file["digest"]:
                     raise RuntimeError("Python file integrity")
+            sync_directory(directory)
             manifest = [f for f in record["request"]["files"] if f["scope"] != "working"]
             manifest += [dict(f, scope="working") for f in exported["files"]]
             session = dict(session_id=record["session_id"], area_id=record["area_id"], operation_id=operation,
@@ -723,6 +727,7 @@ class Runner(AllocationJournal):
             self.update(operation, status=result["status"], writer_frozen=memory_live, termination_confirmed=not memory_live,
                         finished_at=time.time(), stdout=result.get("stdout", ""), truncated=result.get("truncated", False),
                         displays=result.get("displays", []), files=exported["files"], error=result.get("error"), exit_code=result["exit_code"])
+            self.allocation_harvested(self.get(operation), idle=memory_live)
             if not memory_live:
                 self.close_allocation(record)
         except Exception as error:
@@ -766,9 +771,11 @@ class Runner(AllocationJournal):
                 os.fsync(output.fileno())
             if digest.hexdigest() != file['digest']:
                 raise RuntimeError('stopped output integrity')
+        sync_directory(directory)
         self.update(operation, status='failed', exit_code=137, termination_confirmed=True,
                     stdout=captured['stdout'], truncated=True, files=exported['files'],
                     finished_at=time.time(), error={'code':'SANDBOX_LOST', 'message':'Sandbox stopped; saved files were recovered and output may be incomplete.'})
+        self.allocation_harvested(self.get(operation))
         self.close_allocation(record)
 
     def reconcile(self, operation):
@@ -881,11 +888,13 @@ class Runner(AllocationJournal):
                             os.fsync(output.fileno())
                         if digest.hexdigest() != file["digest"]:
                             raise RuntimeError("output file digest changed")
+                    sync_directory(directory)
                     self.update(operation, status="cancelled" if current["cancel_requested"] else
                                 ("completed" if terminal["exitCode"] == 0 else "failed"),
                                 finished_at=time.time(), stdout=captured["stdout"],
                                 truncated=captured["truncated"], files=exported["files"], error=diagnostic,
                                 deadline_expired=captured.get("deadline_expired"))
+                    self.allocation_harvested(self.get(operation))
                     # Retain the terminal journal and files before collecting Kubernetes resources.
                     self.close_allocation(self.get(operation))
                     break
