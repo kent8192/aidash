@@ -555,6 +555,8 @@ jobs:
       - run: python3 -m unittest discover -s scripts -p test_ci_success_aggregate.py
       # Fixed-task evaluator (#122): deterministic corpus, oracles and guard rails; no Docker or credentials.
       - run: python3 -m unittest discover -s scripts -p test_fixed_task_evaluation.py
+      # Matched projection campaign import, statistical gates and shared limits (#181).
+      - run: python3 -m unittest discover -s scripts -p 'test_projection_*.py'
       - run: python3 -m unittest discover -s scripts -p test_evaluate_native_memory.py
       - run: python3 -m unittest discover -s runner -p 'test_*.py'
       # Chart invariants render through Helm and parse the manifests with PyYAML.

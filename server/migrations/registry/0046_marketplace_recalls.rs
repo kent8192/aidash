@@ -2,8 +2,8 @@
 // Deployment-owned append-only learned Recalls; no cross-service foreign keys.
 use reinhardt::db::migrations::prelude::*;
 pub(super) fn migration() -> Migration {
-	Migration::new("0045_marketplace_recalls", "registry")
-		.add_dependency("registry", "0044_foreign_key_relations_state")
+	Migration::new("0046_marketplace_recalls", "registry")
+		.add_dependency("registry", "0045_projection_measurement_config")
 		.add_operation(Operation::CreateTable {
 			name: "marketplace_plugin_recalls".into(),
 			columns: vec![

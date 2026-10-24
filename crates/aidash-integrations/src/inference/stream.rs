@@ -5,16 +5,17 @@
 //! with the same content are accepted or rejected identically. Only sanitized
 //! progress (text, and tool-call identity plus argument size) is offered while
 //! the stream is open; argument text and reasoning never leave the assembler.
-use super::{parse_openai, safe_upstream_reason};
+use super::{parse_openai, provider_identity, safe_upstream_reason};
 use crate::{Error, Result};
 use aidash_application::ports::InferenceProgressSink;
 use aidash_domain::provider::{
 	ModelResponse,
 	progress::{InferenceProgress, MAX_PROGRESS_ITEM_BYTES},
+	usage::ProviderIdentity,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value, json, value::RawValue};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 /// The whole stream may carry this many times the assembled limit. A response
 /// that fits the limit can arrive as one-token deltas, each wrapped in a few
@@ -45,6 +46,14 @@ struct Completion {
 	choices: Value,
 	#[serde(skip_serializing_if = "Option::is_none")]
 	usage: Option<Box<RawValue>>,
+	#[serde(skip_serializing_if = "Option::is_none")]
+	model: Option<String>,
+	#[serde(skip_serializing_if = "Option::is_none")]
+	provider: Option<String>,
+	#[serde(skip_serializing_if = "Option::is_none")]
+	provider_route: Option<String>,
+	#[serde(skip_serializing_if = "Option::is_none")]
+	id: Option<String>,
 }
 
 /// Incrementally parses SSE bytes and assembles one completion choice.
@@ -66,6 +75,10 @@ pub(crate) struct StreamAssembler<'a> {
 	unindexed: bool,
 	finish_reason: Option<String>,
 	usage: Option<Box<RawValue>>,
+	identity: ProviderIdentity,
+	/// Conflicting reports cannot identify one route. Keep those fields
+	/// unknown even if a later chunk repeats one of the alternatives.
+	ambiguous_identity: BTreeSet<&'static str>,
 	done: bool,
 }
 
@@ -88,6 +101,8 @@ impl<'a> StreamAssembler<'a> {
 			unindexed: false,
 			finish_reason: None,
 			usage: None,
+			identity: ProviderIdentity::default(),
+			ambiguous_identity: BTreeSet::new(),
 			done: false,
 		}
 	}
@@ -179,6 +194,10 @@ impl<'a> StreamAssembler<'a> {
 		let completion = Completion {
 			choices: json!([{"finish_reason": finish_reason, "message": message}]),
 			usage: self.usage,
+			model: self.identity.reported_model,
+			provider: self.identity.reported_provider,
+			provider_route: self.identity.reported_route,
+			id: self.identity.provider_request_id,
 		};
 		let body = serde_json::to_vec(&completion)
 			.map_err(|error| Error::External(format!("invalid response JSON: {error}")))?;
@@ -236,6 +255,42 @@ impl<'a> StreamAssembler<'a> {
 			.map_err(|error| Error::External(format!("invalid response JSON: {error}")))?;
 		if let Some(error) = chunk.get("error").filter(|error| !error.is_null()) {
 			return Err(rejected(error));
+		}
+		if let Some(identity) = provider_identity(&chunk) {
+			for (name, retained, incoming) in [
+				(
+					"model",
+					&mut self.identity.reported_model,
+					identity.reported_model,
+				),
+				(
+					"provider",
+					&mut self.identity.reported_provider,
+					identity.reported_provider,
+				),
+				(
+					"provider_route",
+					&mut self.identity.reported_route,
+					identity.reported_route,
+				),
+				(
+					"id",
+					&mut self.identity.provider_request_id,
+					identity.provider_request_id,
+				),
+			] {
+				if self.ambiguous_identity.contains(name) {
+					continue;
+				}
+				if let Some(incoming) = incoming {
+					if retained.as_ref().is_some_and(|value| value != &incoming) {
+						*retained = None;
+						self.ambiguous_identity.insert(name);
+					} else {
+						*retained = Some(incoming);
+					}
+				}
+			}
 		}
 		if let Some(choices) = chunk.get("choices").and_then(Value::as_array) {
 			// A non-streamed body is read at `/choices/0`, so a chunk contributes at

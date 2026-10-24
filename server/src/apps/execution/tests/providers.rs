@@ -40,6 +40,8 @@ fn config(
 		projection_versions: vec![],
 		cache_mode: None,
 		request_estimator: None,
+		provider_route: None,
+		estimate_diagnostics: None,
 	}
 }
 

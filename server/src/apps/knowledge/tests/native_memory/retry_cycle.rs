@@ -467,6 +467,48 @@ async fn manual_retry_renews_only_the_retry_ledger_and_preserves_durable_budgets
 			(1, "complete".to_owned()),
 		]
 	);
+	// Attempt lineage and the original reservation survive retries and
+	// successful policy settlement, so cost exports can join every call.
+	let evidence = aidash_server::database::native::query(
+		&Query::select()
+			.columns(
+				[
+					"source_run_ids",
+					"reserved_tokens",
+					"reserved_cost_micros",
+					"provider_usage",
+				]
+				.map(Alias::new),
+			)
+			.from(Alias::new("memory_model_attempts"))
+			.and_where(Expr::col("operation_id").eq(Expr::value(operation)))
+			.to_string(PostgresQueryBuilder),
+	)
+	.fetch_all(f.store.pool.in_scope(&TEST_FIXTURE))
+	.await
+	.unwrap();
+	assert_eq!(evidence.len(), 3);
+	for row in evidence {
+		assert_eq!(
+			row.try_get::<Option<serde_json::Value>>("source_run_ids")
+				.unwrap(),
+			Some(json!([run.id]))
+		);
+		assert_eq!(
+			row.try_get::<Option<i64>>("reserved_tokens").unwrap(),
+			Some(6)
+		);
+		assert_eq!(
+			row.try_get::<Option<i64>>("reserved_cost_micros").unwrap(),
+			Some(0)
+		);
+		// The embedding response supplies token usage, but no monetary charge.
+		assert_eq!(
+			row.try_get::<Option<serde_json::Value>>("provider_usage")
+				.unwrap(),
+			None
+		);
+	}
 	// Assert: every charged attempt still counts against the durable budget.
 	let calls: i64 = aidash_server::database::native::query_scalar(
 		&Query::select()
