@@ -20,6 +20,12 @@ pub struct NodeRegistrationHistory {
 	pub source_public_key_pem: Option<String>,
 	#[field(field_type = "text", null = true)]
 	pub source_key_id: Option<String>,
+	/// Receiver-local current/retiring/quarantined authentication state.
+	#[field(field_type = "text", null = true)]
+	pub source_keys: Option<String>,
+	/// Authentication generation; independent of authorization revision.
+	#[field(default = 1)]
+	pub keys_revision: i64,
 	#[field]
 	pub atomic_transactions: bool,
 	#[field]
