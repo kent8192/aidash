@@ -129,10 +129,7 @@ pub trait PeerAdmissionRepository: PeerAdmissionRecords {
 	/// Cancel and project the exact response atomically from its receiver binding.
 	async fn cancel_admission(
 		&self,
-		tenant: &str,
-		receiver: &NodeName,
-		source: &str,
-		subject: &str,
+		admitted: &crate::federation::inbound::Admitted,
 		request: &crate::federation::inbound::RequestDigest<'_>,
 		id: Uuid,
 		grant: Uuid,

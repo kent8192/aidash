@@ -91,10 +91,7 @@ pub(crate) async fn control(
 ) -> Result<Activation> {
 	app::control(
 		&crate::bootstrap::peer_admission_repository(&f),
-		admitted.tenant.as_str(),
-		&admitted.receiver.node,
-		&source(&admitted),
-		admitted.subject().unwrap_or(""),
+		&admitted,
 		request,
 		id,
 		input.grant_id,

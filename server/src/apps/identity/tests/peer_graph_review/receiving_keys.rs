@@ -54,10 +54,9 @@ async fn token(
 	sender: &str,
 	receiver: &str,
 	subject: &str,
-	body: &Value,
+	request: &RequestDigest<'_>,
 	proof: Option<String>,
 	now: u64,
-	wrong_binding: bool,
 ) -> String {
 	FederationClaims {
 		iss: SOURCE.into(),
@@ -69,9 +68,9 @@ async fn token(
 		jti: Uuid::new_v4(),
 		kid: signer.kid().into(),
 		protocol: aidash_domain::federation::protocol::CURRENT.into(),
-		method: if wrong_binding { "DELETE" } else { "POST" }.into(),
-		path: "/scoped/graph".into(),
-		body: body_digest(body.to_string().as_bytes()),
+		method: request.method.into(),
+		path: request.path.into(),
+		body: body_digest(request.body),
 		transition: proof,
 	}
 	.mint(signer)
@@ -162,10 +161,13 @@ async fn receiving_rollover_survives_discovery_outage_restart_and_cursor_continu
 		&sender.to_string(),
 		&receiver.to_string(),
 		"source-subject",
-		&subject_first,
+		&RequestDigest {
+			method: "POST",
+			path: "/scoped/graph",
+			body: subject_first.to_string().as_bytes(),
+		},
 		None,
 		now,
-		false,
 	)
 	.await;
 	let (status, first) = post(&app, &pred, &subject_first).await;
@@ -180,10 +182,13 @@ async fn receiving_rollover_survives_discovery_outage_restart_and_cursor_continu
 		&sender.to_string(),
 		&receiver.to_string(),
 		"source-subject",
-		&body,
+		&RequestDigest {
+			method: "DELETE",
+			path: "/scoped/graph",
+			body: body.to_string().as_bytes(),
+		},
 		Some(proof.clone()),
 		now,
-		true,
 	)
 	.await;
 	assert_eq!(post(&app, &bad, &body).await.0, 401);
@@ -193,10 +198,13 @@ async fn receiving_rollover_survives_discovery_outage_restart_and_cursor_continu
 		&sender.to_string(),
 		&receiver.to_string(),
 		"source-subject",
-		&body,
+		&RequestDigest {
+			method: "POST",
+			path: "/scoped/graph",
+			body: body.to_string().as_bytes(),
+		},
 		Some(proof.clone()),
 		now,
-		false,
 	)
 	.await;
 	let (status, page) = post(&app, &raw, &body).await;
@@ -238,10 +246,13 @@ async fn receiving_rollover_survives_discovery_outage_restart_and_cursor_continu
 		SOURCE,
 		f.config.deployment.as_str(),
 		&format!("oidc:{identity}"),
-		&first_body,
+		&RequestDigest {
+			method: "POST",
+			path: "/scoped/graph",
+			body: first_body.to_string().as_bytes(),
+		},
 		None,
 		now,
-		false,
 	)
 	.await;
 	let (status, first) = post(&app, &pred, &first_body).await;
@@ -257,10 +268,13 @@ async fn receiving_rollover_survives_discovery_outage_restart_and_cursor_continu
 		SOURCE,
 		f.config.deployment.as_str(),
 		&format!("oidc:{identity}"),
-		&continued_body,
+		&RequestDigest {
+			method: "POST",
+			path: "/scoped/graph",
+			body: continued_body.to_string().as_bytes(),
+		},
 		Some(proof.clone()),
 		now,
-		false,
 	)
 	.await;
 	let (status, continued) = post(&app, &raw, &continued_body).await;
@@ -296,10 +310,13 @@ async fn receiving_rollover_survives_discovery_outage_restart_and_cursor_continu
 		&sender.to_string(),
 		&receiver.to_string(),
 		"source-subject",
-		&body,
+		&RequestDigest {
+			method: "POST",
+			path: "/scoped/graph",
+			body: body.to_string().as_bytes(),
+		},
 		None,
 		after_overlap,
-		false,
 	)
 	.await;
 	let body_bytes = body.to_string();
@@ -326,10 +343,13 @@ async fn receiving_rollover_survives_discovery_outage_restart_and_cursor_continu
 		&sender.to_string(),
 		&receiver.to_string(),
 		"source-subject",
-		&body,
+		&RequestDigest {
+			method: "POST",
+			path: "/scoped/graph",
+			body: body.to_string().as_bytes(),
+		},
 		None,
 		after_overlap,
-		false,
 	)
 	.await;
 	assert!(matches!(
@@ -356,10 +376,13 @@ async fn receiving_rollover_survives_discovery_outage_restart_and_cursor_continu
 		SOURCE,
 		f.config.deployment.as_str(),
 		&format!("oidc:{identity}"),
-		&grant_body,
+		&RequestDigest {
+			method: "POST",
+			path: "/scoped/graph",
+			body: grant_body.to_string().as_bytes(),
+		},
 		None,
 		after_overlap,
-		false,
 	)
 	.await;
 	let grant_bytes = grant_body.to_string();
@@ -406,10 +429,13 @@ async fn receiving_rollover_survives_discovery_outage_restart_and_cursor_continu
 		SOURCE,
 		f.config.deployment.as_str(),
 		&format!("oidc:{missed}"),
-		&body,
+		&RequestDigest {
+			method: "POST",
+			path: "/scoped/graph",
+			body: body.to_string().as_bytes(),
+		},
 		Some(proof),
 		after_overlap,
-		false,
 	)
 	.await;
 	let body_bytes = body.to_string();
@@ -701,10 +727,13 @@ async fn manual_graph_keys_preserve_cursor_authority_and_refuse_stale_normal_pro
 		SOURCE,
 		f.config.deployment.as_str(),
 		&format!("oidc:{identity}"),
-		&body,
+		&RequestDigest {
+			method: "POST",
+			path: "/scoped/graph",
+			body: body.to_string().as_bytes(),
+		},
 		None,
 		now,
-		false,
 	)
 	.await;
 	let (status, page) = post(&app, &old_token, &body).await;
@@ -734,10 +763,13 @@ async fn manual_graph_keys_preserve_cursor_authority_and_refuse_stale_normal_pro
 		SOURCE,
 		f.config.deployment.as_str(),
 		&format!("oidc:{identity}"),
-		&body,
+		&RequestDigest {
+			method: "POST",
+			path: "/scoped/graph",
+			body: body.to_string().as_bytes(),
+		},
 		Some(transition),
 		now,
-		false,
 	)
 	.await;
 	let quarantined = f.receiving_keys(&owner).await.unwrap().unwrap();
@@ -773,10 +805,13 @@ async fn manual_graph_keys_preserve_cursor_authority_and_refuse_stale_normal_pro
 		SOURCE,
 		f.config.deployment.as_str(),
 		&format!("oidc:{identity}"),
-		&continuation,
+		&RequestDigest {
+			method: "POST",
+			path: "/scoped/graph",
+			body: continuation.to_string().as_bytes(),
+		},
 		None,
 		now,
-		false,
 	)
 	.await;
 	let (status, continued) = post(&app, &raw, &continuation).await;
@@ -794,10 +829,13 @@ async fn manual_graph_keys_preserve_cursor_authority_and_refuse_stale_normal_pro
 		SOURCE,
 		f.config.deployment.as_str(),
 		&format!("oidc:{identity}"),
-		&body,
+		&RequestDigest {
+			method: "POST",
+			path: "/scoped/graph",
+			body: body.to_string().as_bytes(),
+		},
 		Some(proof(&old, &third, now).await),
 		now,
-		false,
 	)
 	.await;
 	let pinned = f.receiving_keys(&owner).await.unwrap().unwrap();

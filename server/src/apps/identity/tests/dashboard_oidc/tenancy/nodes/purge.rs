@@ -164,12 +164,16 @@ async fn node_purge_erases_owned_files_and_rows_and_preserves_sibling_and_tenant
 		cross_node_execution_evidence(
 			&d,
 			&tenant,
-			&target,
-			&sibling,
-			work[0].0,
-			work[1].0,
-			target_credential,
-			sibling_credential,
+			CrossNodeOwner {
+				node: &target,
+				workspace: work[0].0,
+				credential: target_credential,
+			},
+			CrossNodeOwner {
+				node: &sibling,
+				workspace: work[1].0,
+				credential: sibling_credential,
+			},
 		)
 		.await;
 
@@ -1390,16 +1394,28 @@ async fn node_purge_drains_mutual_reads_and_invalidates_body_caches_while_preser
 	d.finish().await;
 }
 
+struct CrossNodeOwner<'a> {
+	node: &'a str,
+	workspace: Uuid,
+	credential: Uuid,
+}
+
 async fn cross_node_execution_evidence(
 	d: &Deployment,
 	tenant: &str,
-	target: &str,
-	sibling: &str,
-	target_workspace: Uuid,
-	sibling_workspace: Uuid,
-	target_credential: Uuid,
-	sibling_credential: Uuid,
+	target: CrossNodeOwner<'_>,
+	sibling: CrossNodeOwner<'_>,
 ) -> (Uuid, Uuid, Uuid, Uuid, Uuid) {
+	let CrossNodeOwner {
+		node: target,
+		workspace: target_workspace,
+		credential: target_credential,
+	} = target;
+	let CrossNodeOwner {
+		node: sibling,
+		workspace: sibling_workspace,
+		credential: sibling_credential,
+	} = sibling;
 	let pending = aidash_domain::run_state::encode(
 		&aidash_domain::run_state::RunState::Completed(aidash_domain::run_state::TerminalState {}),
 		&aidash_domain::run_state::RecoveryState::default(),

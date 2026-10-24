@@ -1198,7 +1198,9 @@ async fn the_providers_api_says_what_is_set_up_and_approved_only_to_a_tenant_sub
 		Value::Null,
 	)
 	.await;
-	assert_eq!(status, 404, "{body}");
+	// Absent and inaccessible Nodes share the same refusal to avoid disclosing existence.
+	assert_eq!(status, 403, "{body}");
+	assert_eq!(body["error"], "forbidden");
 
 	r.close().await;
 }

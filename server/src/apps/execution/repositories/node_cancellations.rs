@@ -792,17 +792,13 @@ pub(crate) async fn allows_closed_node_request_in(
 	if !subject.is_empty() {
 		return Ok(false);
 	}
-	if let Some((id, grant)) =
-		crate::apps::identity::serializers::peer_admission::cancel_request(request)
+	if crate::apps::identity::repositories::peer_admission::terminal::replay_in(
+		tx, tenant, receiver, sender, subject, request,
+	)
+	.await?
+	.is_some()
 	{
-		if crate::apps::identity::repositories::peer_admission::terminal::replay_in(
-			tx, tenant, receiver, sender, subject, id, grant, request,
-		)
-		.await?
-		.is_some()
-		{
-			return Ok(true);
-		}
+		return Ok(true);
 	}
 	let id: Option<Uuid> = match stop(request) {
 		Some(Stop::Generation(id)) => {

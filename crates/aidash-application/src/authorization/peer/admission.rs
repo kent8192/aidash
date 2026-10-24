@@ -432,10 +432,7 @@ pub async fn status<R: PeerAdmissionRepository>(
 }
 pub async fn control<R: PeerAdmissionRepository>(
 	repository: &R,
-	tenant: &str,
-	receiver: &NodeName,
-	source: &str,
-	subject: &str,
+	admitted: &crate::federation::inbound::Admitted,
 	request: &crate::federation::inbound::RequestDigest<'_>,
 	id: Uuid,
 	grant: Uuid,
@@ -443,9 +440,13 @@ pub async fn control<R: PeerAdmissionRepository>(
 ) -> Result<Activation> {
 	if matches!(action, RemoteExecutionControl::Cancel) {
 		return repository
-			.cancel_admission(tenant, receiver, source, subject, request, id, grant)
+			.cancel_admission(admitted, request, id, grant)
 			.await;
 	}
+	let tenant = admitted.tenant.as_str();
+	let receiver = &admitted.receiver.node;
+	let source = admitted.sender.to_string();
+	let source = source.as_str();
 	let record = repository.record(id).await?.ok_or(Error::Forbidden)?;
 	if record.tenant != tenant
 		|| record.node != *receiver

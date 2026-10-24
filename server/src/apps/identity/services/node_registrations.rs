@@ -197,13 +197,18 @@ impl NodeRegistrations {
 						require_node(tx, &tenant, &node).await?;
 						write(
 							tx,
-							&tenant,
-							&node,
-							&input,
-							&counterpart,
-							preserve_keys,
+							&records::Write {
+								tenant: &tenant,
+								node: node.as_str(),
+								source_node: &input.source_node,
+								counterpart: &counterpart,
+								atomic_transactions: input.atomic_transactions,
+								enabled: input.enabled,
+								actor: "deployment_administrator",
+								preserve_keys,
+							},
+							input.expected_revision,
 							&AdministrationActor::DeploymentAdministratorBearer,
-							"deployment_administrator",
 						)
 						.await
 					})
@@ -239,15 +244,20 @@ impl NodeRegistrations {
 								decide(tx).await?;
 								write(
 									tx,
-									&tenant,
-									&node,
-									&input,
-									&counterpart,
-									preserve_keys,
+									&records::Write {
+										tenant: &tenant,
+										node: node.as_str(),
+										source_node: &input.source_node,
+										counterpart: &counterpart,
+										atomic_transactions: input.atomic_transactions,
+										enabled: input.enabled,
+										actor: &format!("oidc:{}", administrator.identity_id),
+										preserve_keys,
+									},
+									input.expected_revision,
 									&AdministrationActor::TenantAdministrator(
 										administrator.clone(),
 									),
-									&format!("oidc:{}", administrator.identity_id),
 								)
 								.await
 							})
@@ -368,28 +378,14 @@ async fn require_node(
 /// Writes the registration and its revision, and records the change.
 async fn write(
 	tx: &mut reinhardt::db::orm::AtomicTransaction,
-	tenant: &str,
-	node: &NodeName,
-	input: &RegistrationInput,
-	counterpart: &Counterpart,
-	preserve_keys: bool,
+	row: &records::Write<'_>,
+	expected_revision: i64,
 	by: &AdministrationActor,
-	stamp: &str,
 ) -> Result<NodeRegistration> {
-	let row = records::Write {
-		tenant,
-		node: node.as_str(),
-		source_node: &input.source_node,
-		counterpart,
-		atomic_transactions: input.atomic_transactions,
-		enabled: input.enabled,
-		actor: stamp,
-		preserve_keys,
-	};
-	let stored = if input.expected_revision == 0 {
-		records::insert(tx, &row).await?
+	let stored = if expected_revision == 0 {
+		records::insert(tx, row).await?
 	} else {
-		records::update(tx, &row, input.expected_revision).await?
+		records::update(tx, row, expected_revision).await?
 	}
 	.ok_or_else(|| Error::Conflict("node registration revision changed".into()))?;
 	records::append_history(tx, &stored).await?;
@@ -400,7 +396,7 @@ async fn write(
 			identity: None,
 			registration: None,
 			mapping: None,
-			tenant: Some(tenant),
+			tenant: Some(row.tenant),
 			subject: None,
 			invitation: None,
 		},

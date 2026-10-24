@@ -910,14 +910,16 @@ impl PeerAdmissionRepository for Repository<'_> {
 	}
 	async fn cancel_admission(
 		&self,
-		tenant: &str,
-		receiver: &aidash_domain::nodes::NodeName,
-		source: &str,
-		subject: &str,
+		admitted: &aidash_application::federation::inbound::Admitted,
 		request: &aidash_application::federation::inbound::RequestDigest<'_>,
 		id: Uuid,
 		grant: Uuid,
 	) -> Result<aidash_domain::federation::execution::admission::Activation> {
+		let tenant = admitted.tenant.as_str();
+		let receiver = &admitted.receiver.node;
+		let source = admitted.sender.to_string();
+		let source = source.as_str();
+		let subject = admitted.subject().unwrap_or("");
 		let store = &self.runtime.store;
 		let mut tx = store.pool.begin(&TenancyScope::tenant(tenant)?).await?;
 		crate::authorization::Authorization::load_with_mode(&mut tx, tenant, true).await?;
@@ -942,10 +944,10 @@ impl PeerAdmissionRepository for Repository<'_> {
 			if super::nodes::is_live(&mut *tx, tenant, receiver.as_str()).await? {
 				return Err(aidash_application::Error::Forbidden);
 			}
-			if let Some(saved) = terminal::replay_in(
-				&mut *tx, tenant, &owner, &sender, subject, id, grant, request,
-			)
-			.await?
+			if crate::apps::identity::serializers::peer_admission::cancel_request(request)
+				== Some((id, grant))
+				&& let Some(saved) =
+					terminal::replay_in(&mut *tx, tenant, &owner, &sender, subject, request).await?
 			{
 				tx.commit().await?;
 				return Ok(saved);

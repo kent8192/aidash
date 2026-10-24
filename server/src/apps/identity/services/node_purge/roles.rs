@@ -231,10 +231,10 @@ pub(super) async fn resolve(
 		if let (Some(workspace), Some(run)) = (
 			workspaces.get(&usage.workspace_id),
 			usage.run_id.and_then(|id| evidence.runs.get(&id)),
-		) {
-			if workspace != &run.node && (workspace == owners.node || run.node == owners.node) {
-				return Err(Error::Conflict("Node purge found conflicting embedding Workspace and Run owners; repair the execution evidence before retrying".into()));
-			}
+		) && workspace != &run.node
+			&& (workspace == owners.node || run.node == owners.node)
+		{
+			return Err(Error::Conflict("Node purge found conflicting embedding Workspace and Run owners; repair the execution evidence before retrying".into()));
 		}
 	}
 	let requests: Vec<Request> =

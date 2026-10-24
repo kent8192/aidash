@@ -33,10 +33,8 @@ fn files(kind: &str, data: &Value) -> Result<Vec<MountedFile>> {
 				values.extend(chunks.values());
 			}
 		}
-		"outbound" => {
-			if !data["output_file"].is_null() {
-				values.push(&data["output_file"]);
-			}
+		"outbound" if !data["output_file"].is_null() => {
+			values.push(&data["output_file"]);
 		}
 		_ => {}
 	}

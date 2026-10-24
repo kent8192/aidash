@@ -542,7 +542,9 @@ async fn pod_time_is_metered_once_and_stops_when_a_tenant_deletion_is_recorded(
 	assert_eq!(metered, 90_000);
 	// A Deletion recorded 4 hours ago: a Pod that ran across it is metered
 	// only until it, and one that began after it is not metered at all.
-	let deleted_at = at(-Duration::hours(4));
+	// Use the same PostgreSQL-representable boundary for deletion and receipts.
+	let deleted_at =
+		DateTime::from_timestamp_micros(at(-Duration::hours(4)).timestamp_micros()).unwrap();
 	sqlx::query(
 		"INSERT INTO tenant_deletions (id, tenant, deleted_at, deleted_by_kind, purge_after, purge_failures) VALUES ($1, $2, $3, 'deployment_administrator', $4, 0)",
 	)

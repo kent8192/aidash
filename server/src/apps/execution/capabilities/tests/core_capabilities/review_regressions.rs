@@ -774,6 +774,11 @@ async fn cleanup_runner(
 	let router = reinhardt::ServerRouter::new().handler(
 		"/{*rest}",
 		upstream_fixtures::any_handler(move |request: reinhardt::Request| {
+			assert_eq!(
+				request.headers.get("authorization").unwrap(),
+				"Bearer aidash-command-cleanup-fixture",
+				"cleanup fixtures require the token provisioned by scripts/test-rust.sh"
+			);
 			let path = request.uri.path().to_owned();
 			let body = request.json::<Value>().unwrap_or(Value::Null);
 			observed
@@ -917,11 +922,19 @@ async fn withdrawn_dispatched_receipt_is_durably_acknowledged_after_retry(
 			.any(|r| r["path"] == format!("/v1/operations/{id}/ack")),
 		dispatched
 	);
-	if !dispatched {
-		assert!(requests.lock().unwrap().is_empty());
-	}
 	worker.stop.send(true).unwrap();
 	worker.await.unwrap().unwrap();
+	if !dispatched {
+		let requests = requests.lock().unwrap();
+		// Independent allocation housekeeping does not dispatch an operation.
+		assert!(
+			requests.iter().all(|request| matches!(
+				request["path"].as_str(),
+				Some("/v1/health" | "/v1/allocations/receipts")
+			)),
+			"never-dispatched cleanup must only perform housekeeping: {requests:?}"
+		);
+	}
 	c.close().await;
 }
 
