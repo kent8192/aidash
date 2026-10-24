@@ -608,6 +608,7 @@ fn reported(response: &Value) -> ReportedUsage {
 		reasoning_tokens: count("/usage/output_tokens_details/reasoning_tokens"),
 		// Plan usage is billed to the owner's plan: Aidash learns no cost.
 		cost: None,
+		provider_identity: super::provider_identity(response),
 	}
 }
 

@@ -54,10 +54,12 @@ fn model() -> ModelConfig {
 		max_output_tokens: Some(8192),
 		modalities: vec!["text".into(), "image".into(), "audio".into()],
 		media_routes: vec![routes(vec!["image/png".into(), "mp3".into()])],
+		provider_route: None,
 		cost: json!({}),
 		projection_versions: vec![],
 		cache_mode: None,
 		request_estimator: None,
+		estimate_diagnostics: None,
 	}
 }
 #[derive(Default)]

@@ -487,6 +487,38 @@ fn streamed_cost_keeps_the_raw_decimal(#[values(1, 7, 4096)] split: usize) {
 }
 
 #[rstest::rstest]
+#[case::consistent(false)]
+#[case::conflicting_route(true)]
+fn streamed_identity_merges_explicit_fields_and_keeps_conflicts_unknown(
+	#[case] conflicting: bool,
+	#[values(1, 13, 4096)] split: usize,
+) {
+	let mut first = delta(json!({"content":"done"}));
+	first["model"] = json!("actual/model");
+	first["provider"] = json!("Actual Provider");
+	first["id"] = json!("generation-1");
+	first["provider_route"] = json!("actual/region");
+	let second = json!({"choices":[], "provider_route": if conflicting { "other/region" } else { "actual/region" }, "metadata":{"prompt":"must not persist"}});
+	let last = json!({"choices":[], "provider_route":"actual/region", "usage":{"prompt_tokens":12,"completion_tokens":7}});
+	let body = sse(&[first, second, finish("stop"), last], true);
+	let (result, _) = assemble(&body, split, 1_048_576);
+	let identity = result.unwrap().reported.provider_identity.unwrap();
+	assert_eq!(identity.reported_model.as_deref(), Some("actual/model"));
+	assert_eq!(
+		identity.reported_provider.as_deref(),
+		Some("Actual Provider")
+	);
+	assert_eq!(
+		identity.provider_request_id.as_deref(),
+		Some("generation-1")
+	);
+	assert_eq!(
+		identity.reported_route.as_deref(),
+		(!conflicting).then_some("actual/region")
+	);
+}
+
+#[rstest::rstest]
 fn a_sole_unindexed_choice_is_choice_zero() {
 	// Arrange
 	let body = sse(

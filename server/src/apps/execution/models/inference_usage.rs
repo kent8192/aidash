@@ -1,12 +1,12 @@
 //! One Usage Record per Inference Attempt. Reported counts, provider cost and the
 //! request estimate stay separate; unknown values stay NULL.
-use crate::Result;
+use crate::{Error, Result};
 use aidash_domain::provider::usage::{UsageDispatch, UsageOutcome};
 use chrono::{DateTime, Utc};
 use reinhardt::core::exception::Error as FrameworkError;
 use reinhardt::db::associations::ForeignKeyField;
 use reinhardt::db::backends::TransactionExecutor;
-use reinhardt::db::orm::{Model, execution::convert_values};
+use reinhardt::db::orm::{Json, Model, execution::convert_values};
 use reinhardt::model;
 use reinhardt::query::{
 	Alias, Expr, ExprTrait, PostgresQueryBuilder, Query, QueryStatementBuilder,
@@ -42,6 +42,16 @@ pub struct InferenceUsage {
 	pub model_version: String,
 	#[field]
 	pub projection_version: i32,
+	/// Physical provider call purpose; auxiliary work never calibrates main inference.
+	#[field(field_type = "text")]
+	pub purpose: String,
+	#[field(field_type = "text", null = true)]
+	pub requested_route: Option<String>,
+	#[field(null = true)]
+	pub provider_identity: Option<Json<serde_json::Value>>,
+	/// Prompt-free estimates of the same request under separately pinned snapshots.
+	#[field(null = true)]
+	pub shadow_estimates: Option<Json<serde_json::Value>>,
 	#[field(null = true)]
 	pub input_tokens: Option<i64>,
 	#[field(null = true)]
@@ -99,13 +109,14 @@ fn stored(count: Option<u64>) -> Option<i64> {
 
 impl InferenceUsage {
 	/// The caller holds the Run's worker lease. Records the Run left dispatched
-	/// belong to a lost lease or crash, so they become unknown before insertion.
+	/// of the same purpose belong to a lost lease or crash, so they become unknown
+	/// before insertion. Other purposes retain their independent terminal write.
 	pub(crate) async fn dispatch(
 		tx: &mut dyn TransactionExecutor,
 		run: Uuid,
 		dispatch: &UsageDispatch,
 	) -> Result<()> {
-		Self::abandon(tx, run, None).await?;
+		Self::abandon(tx, run, None, Some(dispatch.purpose.as_str())).await?;
 		let tenant = crate::database::scope::parent_tenant(tx, "runs", "id", run).await?;
 		let record = Self::build()
 			.tenant(tenant)
@@ -116,6 +127,12 @@ impl InferenceUsage {
 			.model_id(dispatch.model_id.clone())
 			.model_version(dispatch.model_version.clone())
 			.projection_version(i32::from(dispatch.projection_version))
+			.purpose(dispatch.purpose.as_str().to_owned())
+			.requested_route(dispatch.requested_route.clone())
+			.provider_identity(None)
+			.shadow_estimates(Some(Json(serde_json::to_value(
+				&dispatch.shadow_estimates,
+			)?)))
 			.input_tokens(None)
 			.output_tokens(None)
 			.cache_read_tokens(None)
@@ -131,7 +148,7 @@ impl InferenceUsage {
 			.byte_basis(stored(Some(dispatch.estimate.byte_basis)))
 			.output_reservation(stored(Some(dispatch.estimate.output_reservation)))
 			.estimate_ratio_ppm(dispatch.estimate.ratio_ppm.map(i64::from))
-			.calibration_sample(dispatch.calibration_sample)
+			.calibration_sample(dispatch.calibration_sample && dispatch.purpose.as_str() == "main")
 			.cache_identity(dispatch.cache_identity.clone())
 			.outcome(DISPATCHED.to_owned())
 			.rejection_class(None)
@@ -141,6 +158,29 @@ impl InferenceUsage {
 			.insert_with_executor(tx, &record)
 			.await
 			.map_err(FrameworkError::from)?;
+		if dispatch.purpose.as_str() == "summary" {
+			// Creation of a compaction journal precedes authorization and may
+			// finish without I/O. Only this durable dispatch establishes that the
+			// provider could incur work; commit it with its Usage Record.
+			let (sql, values) = Query::update()
+				.table(Alias::new("context_compaction_attempts"))
+				.value_expr(Alias::new("provider_dispatched"), Expr::value(true))
+				.and_where(Expr::col("id").eq(Expr::value(dispatch.attempt)))
+				.and_where(Expr::col("run_id").eq(Expr::value(run)))
+				.and_where(Expr::col("stage").eq(Expr::value("summary")))
+				.and_where(Expr::col("outcome").is_null())
+				.build(PostgresQueryBuilder);
+			if tx
+				.execute(&sql, convert_values(values))
+				.await?
+				.rows_affected
+				!= 1
+			{
+				return Err(Error::Conflict(
+					"Summary dispatch has no open compaction attempt".into(),
+				));
+			}
+		}
 		Ok(())
 	}
 
@@ -152,7 +192,7 @@ impl InferenceUsage {
 		run: Uuid,
 		lease: Uuid,
 	) -> Result<()> {
-		Self::abandon(tx, run, Some(lease)).await
+		Self::abandon(tx, run, Some(lease), None).await
 	}
 
 	/// Make the Run's dispatched attempts unknown, except those of `kept`.
@@ -160,6 +200,7 @@ impl InferenceUsage {
 		tx: &mut dyn TransactionExecutor,
 		run: Uuid,
 		kept: Option<Uuid>,
+		purpose: Option<&str>,
 	) -> Result<()> {
 		let mut update = Query::update();
 		update
@@ -171,6 +212,9 @@ impl InferenceUsage {
 			.value_expr(Alias::new("completed_at"), Expr::current_timestamp())
 			.and_where(Expr::col("run_id").eq(Expr::value(run)))
 			.and_where(Expr::col("outcome").eq(Expr::value(DISPATCHED)));
+		if let Some(purpose) = purpose {
+			update.and_where(Expr::col("purpose").eq(Expr::value(purpose)));
+		}
 		if let Some(kept) = kept {
 			update.and_where(Expr::col("lease_token").ne(Expr::value(kept)));
 		}
@@ -196,6 +240,12 @@ impl InferenceUsage {
 		match outcome {
 			UsageOutcome::Completed(usage) => {
 				let cost = usage.cost;
+				let identity = usage
+					.provider_identity
+					.as_ref()
+					.map(serde_json::to_value)
+					.transpose()?;
+				update.value_expr(Alias::new("provider_identity"), Expr::value(identity));
 				for (column, value) in [
 					("input_tokens", stored(usage.input_tokens)),
 					("output_tokens", stored(usage.output_tokens)),
@@ -241,7 +291,10 @@ impl InferenceUsage {
 			.all_with_executor(tx)
 			.await
 			.map_err(FrameworkError::from)?;
-		let Some(record) = records.first().filter(|record| record.calibration_sample) else {
+		let Some(record) = records
+			.first()
+			.filter(|record| record.calibration_sample && record.purpose == "main")
+		else {
 			return Ok(());
 		};
 		if let (Some(model), Some(byte_basis), Some(prompt_tokens)) = (

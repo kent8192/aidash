@@ -26,6 +26,52 @@ fn request() -> ModelRequest {
 		estimate: Default::default(),
 	}
 }
+
+#[rstest]
+fn shadow_estimates_measure_the_same_request_without_changing_execution() {
+	use super::estimate::{EstimateSnapshot, FRAMING_RESERVE};
+	let request = ModelRequest {
+		instructions: "private observation input ".repeat(64),
+		max_output_tokens: 64,
+		..Default::default()
+	};
+	let before = request.request_estimate();
+	let digest = request.inference_digest();
+	let snapshot = EstimateSnapshot::calibrated(7, 250_000, 20);
+	let estimate = request.request_estimate_with_snapshot(&snapshot).unwrap();
+	assert_eq!(estimate.byte_basis, before.byte_basis);
+	assert_eq!(
+		estimate.tokens,
+		(before.byte_basis * 275_000).div_ceil(1_000_000) + 64 + FRAMING_RESERVE as u64
+	);
+	assert_eq!(estimate.estimator, "calibrated");
+	assert_eq!(request.request_estimate(), before);
+	assert_eq!(request.inference_digest(), digest);
+	let record = usage::ShadowEstimate { snapshot, estimate };
+	assert!(
+		!serde_json::to_string(&record)
+			.unwrap()
+			.contains("private observation input")
+	);
+}
+
+#[rstest]
+fn shadow_tokenization_uses_the_supplied_encoding_and_preserves_unavailability() {
+	use super::estimate::{EstimateSnapshot, TokenEncoding};
+	let request = ModelRequest {
+		instructions: "A moderately long request. ".repeat(100),
+		max_output_tokens: 64,
+		..Default::default()
+	};
+	let snapshot = EstimateSnapshot::tokenized(0, TokenEncoding::O200kBase, None);
+	let shadow = request.request_estimate_with_snapshot(&snapshot);
+	assert_eq!(shadow.is_some(), TokenEncoding::O200kBase.available());
+	if let Some(shadow) = shadow {
+		assert_eq!(shadow.estimator, "tokenized");
+		assert!(shadow.tokens < request.request_estimate().tokens);
+	}
+	assert_eq!(request.estimate, EstimateSnapshot::conservative(0));
+}
 #[rstest]
 fn admission_fingerprint_retains_the_existing_metadata_and_exact_ordered_media_hash_contract(
 	request: ModelRequest,
