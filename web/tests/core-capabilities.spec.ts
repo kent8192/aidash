@@ -771,14 +771,19 @@ test("a Tool call approval shows the exact call and is allowed once, for this Ru
 
   const once = page
     .getByRole("article", { name: "Tool call approval" })
-    .filter({ hasText: "acme" });
-  for (const text of [
-    "crm@1.0.0",
-    "invoke",
-    "researcher@1.0.0",
-    "lookup_account",
-  ])
+    .filter({
+      has: page
+        .getByRole("region", { name: /^Arguments/ })
+        .filter({ hasText: JSON.stringify(toolArguments, null, 2) }),
+    });
+  for (const text of ["crm@1.0.0", "researcher@1.0.0", "lookup_account"])
     await expect(once.getByText(text, { exact: true })).toBeVisible();
+  await expect(
+    once
+      .getByRole("term")
+      .filter({ hasText: /^Operation$/ })
+      .locator("+ dd"),
+  ).toHaveText("invoke");
   const shown = once.getByRole("region", { name: /^Arguments/ });
   await expect(shown).toHaveText(JSON.stringify(toolArguments, null, 2));
   await expect(

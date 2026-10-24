@@ -12,6 +12,7 @@ use common::request;
 use serde_json::{Value, json};
 use std::sync::{Arc, Mutex};
 use uuid::Uuid;
+#[path = "semantic/source_selection.rs"]
 mod source_selection;
 
 struct ControlledContext {

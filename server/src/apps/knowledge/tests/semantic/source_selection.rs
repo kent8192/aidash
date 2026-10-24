@@ -8,7 +8,10 @@ use aidash_domain::{
 	},
 	registry::bindings::QualifiedRef,
 };
-use reinhardt::query::{Alias, Expr, PostgresQueryBuilder, Query, QueryStatementBuilder as _};
+use reinhardt::query::{
+	Alias, ColumnRef, Expr, ExprTrait as _, Func, PostgresQueryBuilder, Query,
+	QueryStatementBuilder as _,
+};
 
 #[path = "../../../execution/tests/support/tenant_openrouter.rs"]
 mod tenant_openrouter;
@@ -53,7 +56,7 @@ pub(super) async fn configure_selector(
 	};
 	f.registry
 		.register(
-			&"acme".parse().unwrap(),
+			&aidash_domain::tenancy::TenantName::new("acme").unwrap(),
 			serde_json::from_value(json!({
 				"id":"context-selector","version":"1.0.0","kind":"decider",
 				"name":{"en":"Context selector"},"description":{"en":"Select individual Workspace items"},
@@ -88,10 +91,14 @@ pub(super) fn declaration(f: &aidash_server::federation::Federation, case: Selec
 	})
 }
 
-/// The classifier answers candidate-bound questions, keeping the artifact and
-/// dropping the message. It never supplies admission, receipts or final fitting.
+/// The first proposal keeps the artifact and drops the message; a later call
+/// keeps both. It never supplies admission, receipts or final fitting.
 pub(super) fn answer(body: Value, calls: &Arc<Mutex<Vec<Value>>>) -> reinhardt::Response {
-	calls.lock().unwrap().push(body.clone());
+	let call = {
+		let mut calls = calls.lock().unwrap();
+		calls.push(body.clone());
+		calls.len()
+	};
 	assert_eq!(body["state"]["contract"], SOURCE_BUILDER);
 	let candidates = body["state"]["candidates"].as_array().unwrap();
 	let answers: serde_json::Map<_, _> = body["questions"]
@@ -106,9 +113,14 @@ pub(super) fn answer(body: Value, calls: &Arc<Mutex<Vec<Value>>>) -> reinhardt::
 					candidate["id"].as_str().unwrap().strip_prefix("sha256:") == Some(identity)
 				})
 				.expect("question identifies one source candidate");
-			let preview: Value =
-				serde_json::from_str(candidate["preview"].as_str().unwrap()).unwrap();
-			let keep = preview["source"]["kind"] == "artifact";
+			let preview = candidate["preview"].as_str().unwrap();
+			let preview =
+				serde_json::from_str::<String>(preview).unwrap_or_else(|_| preview.into());
+			let keep = match preview.as_str() {
+				"A car has a steering wheel." => true,
+				"Vehicle safety" => call > 1,
+				other => panic!("unexpected disclosed source preview: {other}"),
+			};
 			(
 				question.clone(),
 				json!({"type":"noul","noul":if keep {0.9} else {0.1}}),
@@ -129,6 +141,16 @@ async fn cleanup(fixture: ControlledContext) {
 	drop(fixture.model_server);
 	drop(fixture.embedding_server);
 	dispose(fixture.f, &fixture.url, &fixture.schema).await;
+}
+
+fn workspace_envelopes(context: &Value) -> Vec<Value> {
+	context["current"]["context_sources"]
+		.as_array()
+		.expect("explicit Step sources are attributed data")
+		.iter()
+		.filter(|item| item["provenance"]["identity"]["source"]["id"] == "context-workspace")
+		.cloned()
+		.collect()
 }
 
 #[rstest::rstest]
@@ -164,14 +186,26 @@ async fn scored_sources_reach_the_actual_request_as_individual_items(
 		})
 		.cloned()
 		.collect::<Vec<_>>();
+	if matches!(case, SelectionCase::Shadow) {
+		fixture
+			.tool_rounds
+			.store(1, std::sync::atomic::Ordering::Release);
+	}
 	fixture.worker.worker_once().await.unwrap();
 	let contexts = fixture.captured.lock().unwrap().clone();
 	let run = fixture.f.store.runs(&TEST_FIXTURE).await.unwrap().remove(0);
 	assert_eq!(contexts.len(), 1, "{run:?}");
-	let matches = contexts[0]["current"]["semantic_memory"]["workspace"]["matches"]
-		.as_array()
-		.unwrap();
-	assert_eq!(matches, &expected);
+	let envelopes = workspace_envelopes(&contexts[0]);
+	for envelope in &envelopes {
+		assert_eq!(envelope["source"], "context_source");
+		assert_eq!(envelope["trust"], "data");
+		assert_eq!(envelope["provenance"]["placement"]["volatility"], "step");
+	}
+	let matches = envelopes
+		.iter()
+		.map(|item| item["content"].clone())
+		.collect::<Vec<_>>();
+	assert_eq!(matches, expected);
 	let mut kinds = matches
 		.iter()
 		.map(|item| item["source"]["kind"].as_str().unwrap())
@@ -189,7 +223,7 @@ async fn scored_sources_reach_the_actual_request_as_individual_items(
 			.iter()
 			.find(|item| item["source"]["kind"] == "artifact")
 			.unwrap()["text"],
-		"A car has a steering wheel."
+		serde_json::to_string("A car has a steering wheel.").unwrap()
 	);
 	let selections = &run.context.source_selections;
 	assert_eq!(selections.len(), 1);
@@ -228,6 +262,29 @@ async fn scored_sources_reach_the_actual_request_as_individual_items(
 			"Vehicle safety"
 		);
 		assert_eq!(selection.selected.len(), 2);
+		for _ in 0..3 {
+			if fixture.captured.lock().unwrap().len() == 2 {
+				break;
+			}
+			fixture.worker.worker_once().await.unwrap();
+		}
+		let contexts = fixture.captured.lock().unwrap().clone();
+		assert_eq!(contexts.len(), 2);
+		// Both calls use this exact immutable Source, Step placement and source
+		// candidates. Changing the Shadow keep proposal cannot change its bytes.
+		assert_eq!(
+			serde_json::to_vec(&workspace_envelopes(&contexts[0])).unwrap(),
+			serde_json::to_vec(&workspace_envelopes(&contexts[1])).unwrap()
+		);
+		let updated = fixture.f.store.runs(&TEST_FIXTURE).await.unwrap().remove(0);
+		let next = updated.context.source_selections.last().unwrap();
+		assert_ne!(next.boundary.step, selection.boundary.step);
+		assert_eq!(next.candidate_digest, selection.candidate_digest);
+		assert_eq!(next.query_digest, selection.query_digest);
+		assert_eq!(next.proposed.len(), 2);
+		assert_eq!(next.selected.len(), 2);
+		assert_eq!(next.failure, None);
+		assert_eq!(fixture.selector_calls.lock().unwrap().len(), 2);
 	}
 	cleanup(fixture).await;
 }
@@ -242,7 +299,7 @@ enum Denial {
 #[case::unapproved(Denial::Unapproved)]
 #[case::disclosure(Denial::Disclosure)]
 #[tokio::test]
-async fn source_selection_denial_pauses_before_any_paid_request(
+async fn source_selection_denial_pauses_before_classifier_or_inference(
 	#[case] denial: Denial,
 	#[future(awt)]
 	#[with(false, true, false, false, false, Some(SelectionCase::Enforce))]
@@ -302,9 +359,9 @@ async fn source_selection_denial_pauses_before_any_paid_request(
 	assert!(fixture.selector_calls.lock().unwrap().is_empty());
 	assert!(fixture.captured.lock().unwrap().is_empty());
 	let query = Query::select()
-		.expr(Expr::cust("COUNT(*)"))
+		.expr(Func::count(Expr::col(ColumnRef::Asterisk).into()))
 		.from(Alias::new("decision_attempts"))
-		.and_where(Expr::col("run_id").eq(run.id))
+		.and_where(Expr::col("run_id").eq(Expr::value(run.id)))
 		.to_string(PostgresQueryBuilder);
 	let attempts: i64 = sqlx::query_scalar(&query)
 		.fetch_one(fixture.f.store.pool.fixture_driver())

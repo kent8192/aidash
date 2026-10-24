@@ -5774,7 +5774,7 @@ async fn provider_registered_sources_join_existing_lifecycle_phases(
 	#[case] projection: ProjectionVersion,
 ) {
 	// A provider registers new native capabilities using the existing source
-	// plan. Their names and payloads are unknown to the operator.
+	// plan. Their names and payloads are unknown to the Harness.
 	let state = Arc::get_mut(&mut canonical.backend.0).unwrap();
 	state.projection = projection;
 	state.provider_status = None;
