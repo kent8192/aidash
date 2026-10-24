@@ -57,6 +57,18 @@ pub trait InboundRepository: Send + Sync {
 	async fn node_tenant(&self, node: &NodeName) -> Result<Option<TenantName>>;
 	/// Whether `tenant` has no deletion record.
 	async fn tenant_live(&self, tenant: &TenantName) -> Result<bool>;
+	/// Permanent name ownership is not live admission.
+	async fn node_live(&self, tenant: &TenantName, node: &NodeName) -> Result<bool>;
+	/// An authenticated request may finish only an exact durable obligation.
+	/// Implementations bind the original caller, receiver and immutable work.
+	async fn closed_node_request(
+		&self,
+		tenant: &TenantName,
+		receiver: &NodeAddress,
+		sender: &NodeAddress,
+		subject: &str,
+		request: &crate::federation::inbound::RequestDigest<'_>,
+	) -> Result<bool>;
 	/// The registration at `receiver` for `sender`, read in `tenant`'s scope.
 	async fn registration(
 		&self,
@@ -102,5 +114,19 @@ pub trait InboundRepository: Send + Sync {
 		expected_keys_revision: i64,
 		expected_authorization_revision: i64,
 		keys: &TrustedDeploymentKeys,
+	) -> Result<bool>;
+	/// Advances only a registration's crypto state for the exact authenticated
+	/// durable request. Recheck the real durable proof in the SAME locked Tenant
+	/// transaction, both revisions and quarantine. A live Node/enabled registration
+	/// is not required; never restore enabled/permissions or change authorization.
+	/// Pass the actual signed subject and request unchanged to the proof owner.
+	async fn advance_recovery_keys(
+		&self,
+		owner: &ReceivingKeyOwner,
+		expected_keys_revision: i64,
+		expected_authorization_revision: i64,
+		keys: &TrustedDeploymentKeys,
+		subject: &str,
+		request: &crate::federation::inbound::RequestDigest<'_>,
 	) -> Result<bool>;
 }

@@ -9,7 +9,7 @@ use reinhardt::db::backends::TransactionExecutor;
 use reinhardt::db::orm::Model;
 use reinhardt::db::orm::execution::convert_values;
 use reinhardt::query::{
-	Alias, Expr, ExprTrait, IntoIden, IntoValue, OnConflict, PostgresQueryBuilder, Query,
+	Alias, Expr, ExprTrait, IntoIden, IntoValue, LockType, OnConflict, PostgresQueryBuilder, Query,
 	QueryStatementBuilder, SimpleExpr,
 };
 use uuid::Uuid;
@@ -127,23 +127,6 @@ fn node_of(row: &reinhardt::db::backends::Row) -> Result<Node> {
 	})
 }
 
-/// A Tenant's Nodes, the default first, then oldest first.
-pub(crate) async fn list(tx: &mut dyn TransactionExecutor, tenant: &str) -> Result<Vec<Node>> {
-	let (sql, values) = Query::select()
-		.columns(COLUMNS.map(Alias::new))
-		.from(Alias::new(NodeRow::table_name()))
-		.and_where(Expr::col("tenant").eq(Expr::value(tenant)))
-		.order_by(Alias::new("is_default"), reinhardt::query::Order::Desc)
-		.order_by(Alias::new("created_at"), reinhardt::query::Order::Asc)
-		.order_by(Alias::new("name"), reinhardt::query::Order::Asc)
-		.build(PostgresQueryBuilder);
-	tx.fetch_all(&sql, convert_values(values))
-		.await?
-		.iter()
-		.map(node_of)
-		.collect()
-}
-
 async fn one(
 	tx: &mut dyn TransactionExecutor,
 	tenant: &str,
@@ -238,6 +221,53 @@ pub(crate) async fn get_live(
 	.ok_or_else(|| Error::NotFound("node not found".into()))
 }
 
+/// Fresh atomic admissions call this while holding the policy SHARE lease.
+/// Node deletion advances this row's MVCC version under the exclusive policy
+/// lease, so a SERIALIZABLE snapshot from before deletion cannot admit work.
+pub(crate) async fn require_live_locked(
+	tx: &mut dyn TransactionExecutor,
+	tenant: &str,
+	name: &str,
+) -> Result<()> {
+	let (sql, values) = Query::select()
+		.column(Alias::new("name"))
+		.from(Alias::new(NodeRow::table_name()))
+		.and_where(Expr::col("tenant").eq(Expr::value(tenant)))
+		.and_where(Expr::col("name").eq(Expr::value(name)))
+		.and_where(live_condition())
+		.lock(LockType::Share)
+		.build(PostgresQueryBuilder);
+	tx.fetch_optional(&sql, convert_values(values))
+		.await?
+		.ok_or(Error::Forbidden)?;
+	Ok(())
+}
+
+/// The deletion owner holds policy exclusive, then Node capacity, before this
+/// fence. Keep every logical field unchanged; only the row's MVCC version must
+/// advance to invalidate fresh admissions using an older SERIALIZABLE snapshot.
+pub(crate) async fn fence_old_admission_snapshots(
+	tx: &mut dyn TransactionExecutor,
+	tenant: &str,
+	name: &str,
+) -> Result<()> {
+	let (sql, values) = Query::update()
+		.table(Alias::new(NodeRow::table_name()))
+		.value_expr(Alias::new("label"), Expr::col("label"))
+		.and_where(Expr::col("tenant").eq(Expr::value(tenant)))
+		.and_where(Expr::col("name").eq(Expr::value(name)))
+		.build(PostgresQueryBuilder);
+	if tx
+		.execute(&sql, convert_values(values))
+		.await?
+		.rows_affected
+		!= 1
+	{
+		return Err(Error::NotFound("node not found".into()));
+	}
+	Ok(())
+}
+
 pub(crate) async fn list_live(tx: &mut dyn TransactionExecutor, tenant: &str) -> Result<Vec<Node>> {
 	let (sql, values) = Query::select()
 		.columns(COLUMNS.map(Alias::new))
@@ -317,4 +347,69 @@ pub(crate) async fn set_default(
 		tx.execute(&sql, convert_values(values)).await?;
 	}
 	get_live(tx, tenant, name).await
+}
+
+/// Current executing authority, including physical existence and unresolved deletion.
+/// Callers that mutate under this predicate hold the Tenant policy lease, which
+/// serializes with Node deletion and restoration.
+pub(crate) fn live_node_condition(tenant: SimpleExpr, node: SimpleExpr) -> SimpleExpr {
+	let mut deleted = Query::select();
+	deleted
+		.expr(Expr::value(1_i32))
+		.from_as(Alias::new("node_deletions"), Alias::new("closed_node"))
+		.and_where(
+			Expr::col((Alias::new("closed_node"), Alias::new("tenant")))
+				.eq(Expr::col((Alias::new("live_node"), Alias::new("tenant")))),
+		)
+		.and_where(
+			Expr::col((Alias::new("closed_node"), Alias::new("node")))
+				.eq(Expr::col((Alias::new("live_node"), Alias::new("name")))),
+		)
+		.and_where(Expr::col((Alias::new("closed_node"), Alias::new("restored_at"))).is_null());
+	let mut live = Query::select();
+	live.expr(Expr::value(1_i32))
+		.from_as(Alias::new("nodes"), Alias::new("live_node"))
+		.and_where(Expr::col((Alias::new("live_node"), Alias::new("tenant"))).eq(tenant))
+		.and_where(Expr::col((Alias::new("live_node"), Alias::new("name"))).eq(node))
+		.and_where(Expr::exists(deleted).not());
+	Expr::exists(live).into()
+}
+
+/// A Workspace's durable identity does not retain authority after its Node closes.
+pub(crate) fn live_workspace_condition(workspace: SimpleExpr, tenant: SimpleExpr) -> SimpleExpr {
+	let mut live = Query::select();
+	live.expr(Expr::value(1_i32))
+		.from_as(Alias::new("workspaces"), Alias::new("live_workspace"))
+		.and_where(Expr::col((Alias::new("live_workspace"), Alias::new("id"))).eq(workspace))
+		.and_where(Expr::col((Alias::new("live_workspace"), Alias::new("tenant"))).eq(tenant))
+		.and_where(live_node_condition(
+			Expr::col((Alias::new("live_workspace"), Alias::new("tenant"))).into(),
+			Expr::col((Alias::new("live_workspace"), Alias::new("node"))).into(),
+		));
+	Expr::exists(live).into()
+}
+
+/// Absence is a refusal, while persistence failures remain errors.
+pub(crate) async fn is_live(
+	tx: &mut dyn TransactionExecutor,
+	tenant: &str,
+	name: &str,
+) -> Result<bool> {
+	match get_live(tx, tenant, name).await {
+		Ok(_) => Ok(true),
+		Err(Error::NotFound(_)) => Ok(false),
+		Err(error) => Err(error),
+	}
+}
+
+/// A saved execution identity losing its Node is authority withdrawal, not an outage.
+pub(crate) async fn require_live(
+	tx: &mut dyn TransactionExecutor,
+	tenant: &str,
+	name: &str,
+) -> Result<()> {
+	if !is_live(tx, tenant, name).await? {
+		return Err(Error::Forbidden);
+	}
+	Ok(())
 }

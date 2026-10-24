@@ -24,6 +24,7 @@ import {
   tenantNodesCreate,
 } from "./generated/aidash";
 import { useNodes } from "./nodes";
+import { NodeLifecycleSettings } from "./node-lifecycle-settings";
 import {
   changedRegistration,
   inOtherDeployment,
@@ -75,7 +76,10 @@ export function NodesPage({ data }: { data: State }) {
         select(created.name);
       } else await tenantNodeUpdate(path, labelling.name, { label });
       setLabelling(null);
-      await client.invalidateQueries({ queryKey: ["nodes", tenant] });
+      await Promise.all([
+        client.invalidateQueries({ queryKey: ["nodes", tenant] }),
+        client.invalidateQueries({ queryKey: ["node-lifecycle", tenant] }),
+      ]);
     } catch (reason) {
       setError(failure(reason));
     } finally {
@@ -153,6 +157,13 @@ export function NodesPage({ data }: { data: State }) {
           </RowList>
         )}
       </Panel>
+      {(can("node.delete") || can("node.update")) && (
+        <NodeLifecycleSettings
+          tenant={tenant}
+          canUpdate={can("node.update")}
+          canDelete={can("node.delete")}
+        />
+      )}
       {selected && can("node_registration.read") && (
         <Registrations
           key={selected.name}

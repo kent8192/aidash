@@ -89,7 +89,8 @@ The runner token is referenced by environment-variable name in the profile;
 secret bytes belong only in the trusted services' environment.
 
 1. Deploy the additive database migration while admission is disabled. Preserve
-   the existing database, working objects and runner journal through upgrades.
+   the existing database, working objects and runner journal through upgrades
+   within the supported allocation-journal format described below.
 2. Run admission and the runtime gate against the deployed isolation profile.
 3. Approve the exact Sandboxed bundles in the Tenant. Register explicit Skill or
    reference Sources, create a Binding-only version of a selected Agent and
@@ -99,6 +100,20 @@ secret bytes belong only in the trusted services' environment.
    become access to users' private working files or originals.
 5. Expand Agent/catalog/policy scope explicitly only after the acceptance and
    Binding and isolation evidence passes.
+
+The allocation-receipt journal introduces a breaking format change. The supported
+format includes the root `instance`, the `allocation-journal` initialization
+anchor, and the independent `allocations/` subjournal with its matching `instance`
+marker. Pre-allocation journals are unsupported; there is no automatic migration
+or supported in-place upgrade from that format. Under an existing runner instance,
+a missing anchor or allocation subjournal cannot be distinguished from evidence
+lost after initialization, so startup fails closed.
+
+Preserve the original journal, operation records, working objects and available
+provider evidence for investigation and manual reconciliation. Do not delete the
+journal, reset the runner instance or create replacement allocation markers to
+make startup succeed. Missing historical Tenant attribution or provider start/stop
+evidence must not be guessed or converted into fabricated usage receipts.
 
 To roll back, restart API and Worker services with the same profile and storage
 paths but `admission: false`. Keep the controller and reconciliation workers

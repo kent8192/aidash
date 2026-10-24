@@ -118,12 +118,23 @@ pub async fn sweep(repository: &dyn PodUsageRepository, cursor: &mut Cursor) -> 
 		events.push(event(receipt, page.instance)?);
 		previous = Some(receipt.allocation_id);
 	}
+	let mut failure = None;
 	for (receipt, event) in page.receipts.iter().zip(events) {
-		repository.deliver_allocation(event).await?;
-		repository.acknowledge_allocation(receipt).await?;
+		if let Err(error) = repository.deliver_allocation(event).await {
+			tracing::warn!(allocation = %receipt.allocation_id, %error, "allocation usage delivery failed");
+			failure.get_or_insert(error);
+			continue;
+		}
+		if let Err(error) = repository.acknowledge_allocation(receipt).await {
+			tracing::warn!(allocation = %receipt.allocation_id, %error, "allocation usage acknowledgement failed");
+			failure.get_or_insert(error);
+		}
 	}
-	// Empty/last pages wrap, so newly inserted lower UUIDs cannot starve.
+	// Advance despite individual failures; wrapping retries retained receipts and new lower UUIDs.
 	cursor.after = page.next_after;
+	if let Some(error) = failure {
+		return Err(error);
+	}
 	if page.pending_evidence > 0 {
 		return Err(unavailable());
 	}

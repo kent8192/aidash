@@ -530,6 +530,10 @@ async fn node_lifecycle_releases_capacity_and_keeps_each_deletion_history(
 		.await;
 	assert_eq!(status, 200, "{body}");
 	assert_eq!(body["default"], true);
+	let (status, target_workspace) = d.workspace_on(&alice, &context, Some(&first)).await;
+	assert_eq!(status, 200, "{target_workspace}");
+	let (status, sibling_workspace) = d.workspace_on(&alice, &context, Some(second)).await;
+	assert_eq!(status, 200, "{sibling_workspace}");
 	let (status, deleted) = d
 		.as_person(
 			&alice,
@@ -541,6 +545,22 @@ async fn node_lifecycle_releases_capacity_and_keeps_each_deletion_history(
 		.await;
 	assert_eq!(status, 200, "{deleted}");
 	assert_eq!(deleted["state"], "deleted");
+	// Cached browser context and an existing Workspace ID cannot retain deleted Node authority.
+	for (workspace, expected) in [(&target_workspace, 403), (&sibling_workspace, 200)] {
+		let (status, body) = d
+			.as_person(
+				&alice,
+				"GET",
+				&format!("/api/workspaces/{}", workspace["id"].as_str().unwrap()),
+				Some(&context),
+				Value::Null,
+			)
+			.await;
+		assert_eq!(status, expected, "{body}");
+	}
+	let (status, body) = d.workspace_on(&alice, &context, Some(&first)).await;
+	assert_eq!(status, 404, "deleted Node cannot create fresh work: {body}");
+
 	let deadline = deleted["deletion"]["purge_after"].clone();
 	assert!(deadline.is_string(), "{deleted}");
 	assert_eq!(d.nodes_of(&alice, &context, &tenant).await.len(), 1);

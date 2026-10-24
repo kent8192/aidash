@@ -1,23 +1,36 @@
 import { expect, test, type Page } from "@playwright/test";
+import type { NodeRecord } from "../src/generated/models";
 import { installBearerDashboard } from "./auth-fixture";
 
 const access = { kind: "subject", tenant: "alpha", subject: "alice" };
 const deployment = "aidash://home";
 const created = "2026-10-21T00:00:00Z";
 
-type Node = {
-  name: string;
-  address: string;
-  label: string;
-  default: boolean;
-  created_at: string;
-};
-const node = (name: string, label: string, isDefault = false): Node => ({
+const node = (name: string, label: string, isDefault = false): NodeRecord => ({
   name,
   address: `${deployment}/${name}`,
   label,
   default: isDefault,
   created_at: created,
+  state: "live",
+  deletion: null,
+  storage_retained_until_purge: false,
+});
+const deleted = (name: string, by = "tenant_administrator"): NodeRecord => ({
+  ...node(name, name),
+  state: "deleted",
+  storage_retained_until_purge: true,
+  deletion: {
+    id: `deletion-${name}`,
+    deleted_at: created,
+    deleted_by_kind: by,
+    purge_after: "2099-11-20T00:00:00Z",
+    purged_at: null,
+    purge_step: null,
+    purge_failures: 0,
+    purge_error: null,
+    purge_failed_at: null,
+  },
 });
 const workspace = (id: string, title: string, owner: string) => ({
   id,
@@ -50,9 +63,24 @@ const registration = (
  *  who may manage Nodes and their registrations. */
 async function setup(
   page: Page,
-  options: { lab?: { request?: boolean } } = {},
+  options: {
+    lab?: { request?: boolean };
+    member?: boolean;
+    updateOnly?: boolean;
+    administrator?: boolean;
+    retained?: NodeRecord[];
+    restoreConflict?: boolean;
+  } = {},
 ) {
-  const nodes = [node("first", "Home", true), node("second", "Lab")];
+  const nodes = [
+    node("first", "Home", true),
+    node("second", "Lab"),
+    ...(options.retained ?? []),
+  ];
+  const queries: URL[] = [];
+  const actor = options.administrator
+    ? { kind: "deployment_administrator" }
+    : access;
   const registrations: Record<string, ReturnType<typeof registration>[]> = {
     first: [registration("first", `${deployment}/sibling`)],
     second: [],
@@ -60,10 +88,16 @@ async function setup(
   const posts: { path: string; body: Record<string, unknown> }[] = [];
   const errors: string[] = [];
   page.on("pageerror", (error) => errors.push(error.message));
-  await installBearerDashboard(page, "fixture", {
-    tenant: "alpha",
-    name: "alice",
-  });
+  await installBearerDashboard(
+    page,
+    "fixture",
+    options.administrator
+      ? undefined
+      : {
+          tenant: "alpha",
+          name: "alice",
+        },
+  );
   await page.addInitScript(() =>
     localStorage.setItem("aidash-locale", "en-US"),
   );
@@ -73,11 +107,11 @@ async function setup(
     const method = request.method();
     if (path === "/api/events/stream") return route.abort();
     if (path === "/api/session")
-      return route.fulfill({ json: { access, node_id: deployment } });
+      return route.fulfill({ json: { access: actor, node_id: deployment } });
     if (path === "/api/state")
       return route.fulfill({
         json: {
-          access,
+          access: actor,
           deployment: {
             id: deployment,
             endpoint: "http://localhost",
@@ -115,12 +149,17 @@ async function setup(
         json: {
           tenant: "alpha",
           label: null,
-          actions: [
-            "node.create",
-            "node.update",
-            "node_registration.read",
-            "node_registration.update",
-          ],
+          actions: options.member
+            ? []
+            : options.updateOnly
+              ? ["node.update"]
+              : [
+                  "node.delete",
+                  "node.create",
+                  "node.update",
+                  "node_registration.read",
+                  "node_registration.update",
+                ],
           assignable_groups: [],
           policy_revision: 1,
         },
@@ -134,7 +173,69 @@ async function setup(
         registrations.third = [];
         return route.fulfill({ status: 201, json: added });
       }
-      return route.fulfill({ json: nodes });
+      const url = new URL(request.url());
+      queries.push(url);
+      const rows =
+        url.searchParams.get("include_deleted") === "true"
+          ? nodes.slice(
+              Number(url.searchParams.get("offset") ?? 0),
+              Number(url.searchParams.get("offset") ?? 0) +
+                Number(url.searchParams.get("limit")),
+            )
+          : nodes.filter((value) => value.state === "live");
+      return route.fulfill({ json: rows });
+    }
+    if (path === "/api/tenants")
+      return route.fulfill({
+        json: [
+          {
+            name: "alpha",
+            label: "Alpha",
+            personal: false,
+            deletion: null,
+            restorable: false,
+            purgeable: false,
+            purge: null,
+          },
+        ],
+      });
+    const lifecycle =
+      /^\/api\/tenants\/alpha\/nodes\/([^/]+)\/(default|deletion|restore|purge)$/.exec(
+        path,
+      );
+    if (lifecycle && method === "POST") {
+      const target = nodes.find((value) => value.name === lifecycle[1])!;
+      posts.push({
+        path,
+        body: request.postData() ? request.postDataJSON() : {},
+      });
+      if (lifecycle[2] === "restore" && options.restoreConflict)
+        return route.fulfill({
+          status: 409,
+          json: { error: "Node capacity exceeded" },
+        });
+      if (lifecycle[2] === "default")
+        nodes.forEach((value) => {
+          value.default = value === target;
+        });
+      if (lifecycle[2] === "deletion")
+        Object.assign(target, deleted(target.name), { label: target.label });
+      if (lifecycle[2] === "restore")
+        Object.assign(target, {
+          state: "live",
+          deletion: null,
+          storage_retained_until_purge: false,
+        });
+      if (lifecycle[2] === "purge") {
+        target.state = "deleting";
+        Object.assign(target.deletion!, {
+          purge_step: "capability_objects",
+          purge_failures: 3,
+          purge_error: "storage unavailable",
+          purge_failed_at: created,
+        });
+      }
+      return route.fulfill({ json: target });
     }
     const relabel = /^\/api\/tenants\/alpha\/nodes\/([^/]+)$/.exec(path);
     if (relabel && method === "PATCH") {
@@ -196,7 +297,7 @@ async function setup(
     }
     return route.fulfill({ json: [] });
   });
-  return { posts, errors, registrations };
+  return { posts, errors, registrations, queries };
 }
 
 const openAccountMenu = (page: Page) =>
@@ -534,4 +635,217 @@ test("receiving keys require independent confirmation and discard stale consent"
     },
   ]);
   expect(errors).toEqual([]);
+});
+
+test("Node management switches the default, confirms deletion and falls back to the live default", async ({
+  page,
+}) => {
+  const { posts, queries, errors } = await setup(page);
+  await page.goto("/settings?view=nodes");
+  const first = page.locator('[data-lifecycle-node="first"]');
+  const second = page.locator('[data-lifecycle-node="second"]');
+  await expect(
+    first.getByRole("button", { name: "Delete Node", exact: true }),
+  ).toHaveCount(0);
+  await second.getByRole("button", { name: "Make default" }).click();
+  await expect(second).toContainText("Default");
+  await page
+    .locator('[data-node="first"]')
+    .getByRole("button", { name: "Work here" })
+    .click();
+  await first.getByRole("button", { name: "Delete Node", exact: true }).click();
+  const dialog = page.getByRole("dialog", { name: "Delete Node", exact: true });
+  await expect(dialog).toContainText("Storage charges depend on your Offering");
+  await expect(
+    dialog.getByRole("button", { name: "Delete Node", exact: true }),
+  ).toBeDisabled();
+  await dialog.getByLabel("Type the Node name to confirm").fill("first");
+  await dialog
+    .getByRole("button", { name: "Delete Node", exact: true })
+    .click();
+  await expect(dialog).toBeHidden();
+  await expect(first).toContainText("Deleted");
+  await expect(first).toContainText("2099");
+  await expect(first).toContainText("Files remain stored until purge");
+  await expect(
+    second.getByRole("button", { name: "Delete Node", exact: true }),
+  ).toHaveCount(0);
+  await openAccountMenu(page);
+  await expect(page.getByTestId("node-selector")).toHaveValue("second");
+  await expect(page.getByTestId("node-selector").locator("option")).toHaveCount(
+    1,
+  );
+  await page.keyboard.press("Escape");
+  await first
+    .getByRole("button", { name: "Restore Node", exact: true })
+    .click();
+  await expect(page.locator('[data-node="first"]')).toBeVisible();
+  expect(posts.map((post) => post.path)).toEqual([
+    "/api/tenants/alpha/nodes/second/default",
+    "/api/tenants/alpha/nodes/first/deletion",
+    "/api/tenants/alpha/nodes/first/restore",
+  ]);
+  expect(posts[1].body).toEqual({ confirmation: "first" });
+  expect(queries.some((url) => url.search === "")).toBe(true);
+  expect(
+    queries.some(
+      (url) =>
+        url.searchParams.get("include_deleted") === "true" &&
+        url.searchParams.get("limit") === "25",
+    ),
+  ).toBe(true);
+  expect(errors).toEqual([]);
+});
+
+test("deleted Node management reports restore conflicts and restricts administrator deletions", async ({
+  page,
+}) => {
+  await setup(page, {
+    retained: [
+      deleted("recoverable"),
+      deleted("operator-deleted", "deployment_administrator"),
+    ],
+    restoreConflict: true,
+  });
+  await page.goto("/settings?view=nodes");
+  const recoverable = page.locator('[data-lifecycle-node="recoverable"]');
+  await recoverable
+    .getByRole("button", { name: "Restore Node", exact: true })
+    .click();
+  await expect(page.getByRole("alert")).toContainText("current Node capacity");
+  const restricted = page.locator('[data-lifecycle-node="operator-deleted"]');
+  await expect(restricted).toContainText(
+    "Only a Deployment Administrator can restore",
+  );
+  await expect(
+    restricted.getByRole("button", { name: "Restore Node", exact: true }),
+  ).toHaveCount(0);
+  await expect(
+    page.getByRole("button", { name: "Purge Node now", exact: true }),
+  ).toHaveCount(0);
+});
+
+test("a Deployment Administrator explicitly opens a Tenant's Node management and requests purge", async ({
+  page,
+}) => {
+  const { posts, queries, errors } = await setup(page, {
+    administrator: true,
+    retained: [deleted("recoverable", "deployment_administrator")],
+  });
+  await page.goto("/trust?view=authorization");
+  await expect(
+    page.getByRole("heading", { name: "Node lifecycle", exact: true }),
+  ).toHaveCount(0);
+  await page.getByRole("button", { name: "Manage Nodes", exact: true }).click();
+  const retained = page.locator('[data-lifecycle-node="recoverable"]');
+  await expect(
+    retained.getByRole("button", { name: "Restore Node", exact: true }),
+  ).toBeVisible();
+  await retained
+    .getByRole("button", { name: "Purge Node now", exact: true })
+    .click();
+  const dialog = page.getByRole("dialog", {
+    name: "Purge Node permanently",
+    exact: true,
+  });
+  await dialog.getByLabel("Type the Node name to confirm").fill("recoverable");
+  await dialog
+    .getByRole("button", { name: "Purge Node permanently", exact: true })
+    .click();
+  await expect(retained).toContainText("Deleting");
+  await expect(retained).toContainText("storage unavailable");
+  await expect(retained).toContainText("3");
+  await expect(
+    retained.getByRole("button", { name: "Restore Node", exact: true }),
+  ).toHaveCount(0);
+  expect(posts.map((post) => post.path)).toEqual([
+    "/api/tenants/alpha/nodes/recoverable/purge",
+  ]);
+  expect(
+    queries.every((url) => url.pathname === "/api/tenants/alpha/nodes"),
+  ).toBe(true);
+  expect(errors).toEqual([]);
+});
+
+test("an ordinary member has live selection and no Node lifecycle controls or management reads", async ({
+  page,
+}) => {
+  const { queries } = await setup(page, {
+    member: true,
+    retained: [deleted("hidden")],
+  });
+  await page.goto("/settings?view=nodes");
+  await expect(page.locator("[data-node]")).toHaveCount(2);
+  await expect(
+    page.getByRole("heading", { name: "Node lifecycle", exact: true }),
+  ).toHaveCount(0);
+  expect(queries.every((url) => !url.searchParams.has("include_deleted"))).toBe(
+    true,
+  );
+});
+
+test("the node.update allowlist permits changing the default without deletion-management access", async ({
+  page,
+}) => {
+  const { queries } = await setup(page, { updateOnly: true });
+  await page.goto("/settings?view=nodes");
+  const second = page.locator('[data-lifecycle-node="second"]');
+  await second
+    .getByRole("button", { name: "Make default", exact: true })
+    .click();
+  await expect(second).toContainText("Default");
+  await expect(
+    page.getByRole("button", { name: "Delete Node", exact: true }),
+  ).toHaveCount(0);
+  expect(queries.every((url) => !url.searchParams.has("include_deleted"))).toBe(
+    true,
+  );
+});
+
+test("Node management pages retained records and offers no recovery for purged or expired Nodes", async ({
+  page,
+}) => {
+  const purged = deleted("permanent");
+  purged.state = "purged";
+  purged.storage_retained_until_purge = false;
+  purged.deletion!.purged_at = created;
+  const expired = deleted("expired");
+  expired.deletion!.purge_after = "2020-11-20T00:00:00Z";
+  const { queries } = await setup(page, {
+    retained: [
+      ...Array.from({ length: 23 }, (_, index) => deleted(`retained-${index}`)),
+      purged,
+      expired,
+    ],
+  });
+  await page.goto("/settings?view=nodes");
+  const panel = page
+    .getByRole("heading", { name: "Node lifecycle", exact: true })
+    .locator("xpath=ancestor::section[1]");
+  await expect(page.locator("[data-lifecycle-node]")).toHaveCount(25);
+  await panel.getByRole("button", { name: "Next page", exact: true }).click();
+  await expect(page.locator("[data-lifecycle-node]")).toHaveCount(2);
+  const permanent = page.locator('[data-lifecycle-node="permanent"]');
+  await expect(permanent).toContainText("Purged");
+  await expect(permanent.getByRole("button")).toHaveCount(0);
+  await expect(page.locator('[data-lifecycle-node="expired"]')).toContainText(
+    "The restore deadline has passed",
+  );
+  await expect(
+    page.getByRole("button", { name: "Restore Node", exact: true }),
+  ).toHaveCount(0);
+  await expect(
+    panel.getByRole("button", { name: "Next page", exact: true }),
+  ).toBeDisabled();
+  expect(
+    queries.some(
+      (url) =>
+        url.searchParams.get("offset") === "25" &&
+        url.searchParams.get("limit") === "25",
+    ),
+  ).toBe(true);
+  await panel
+    .getByRole("button", { name: "Previous page", exact: true })
+    .click();
+  await expect(page.locator("[data-lifecycle-node]")).toHaveCount(25);
 });
