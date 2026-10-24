@@ -2,8 +2,8 @@
 // Deployment configuration has no Tenant or Node foreign key and survives their purge.
 use reinhardt::db::migrations::prelude::*;
 pub(super) fn migration() -> Migration {
-	Migration::new("0050_runner_allocation_journals", "execution")
-		.add_dependency("execution", "0049_foreign_key_relations_state")
+	Migration::new("0052_runner_allocation_journals", "execution")
+		.add_dependency("execution", "0051_compaction_provider_dispatch")
 		.atomic(true)
 		.add_operation(Operation::CreateTable {
 			name: "runner_allocation_journals".into(),

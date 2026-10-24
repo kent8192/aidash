@@ -4,8 +4,8 @@
 // Logical state already removed this scalar source FK in knowledge/0023.
 use reinhardt::db::migrations::prelude::*;
 pub(super) fn migration() -> Migration {
-	Migration::new("0036_remote_read_source_lifetime", "knowledge")
-		.add_dependency("knowledge", "0035_foreign_key_relations_state")
+	Migration::new("0037_remote_read_source_lifetime", "knowledge")
+		.add_dependency("knowledge", "0036_memory_attempt_evidence")
 		.database_only(true)
 		.atomic(true)
 		.add_operation(Operation::DropConstraintDefinition {

@@ -6,7 +6,7 @@ One local HTTP server plays the external parties:
   scripted fixture Agent behaviors named by corpus tasks;
 - the fixture HTTP tools at /tools/{task}/{alias}.
 
-There is no Jev classifier: ordinary Runs are not pruned (ADR 0041).
+Actual Decider/Summary recovery is measured separately through approved pinned providers.
 
 The scripted Agent is a probe, not a model: it acts only on what the harness
 actually delivered in the request. A correction that compaction removed is
@@ -162,11 +162,21 @@ class Fixture:
                 "tool_definition_bytes": [item["tool_bytes"] for item in records],
                 "cache_breakpoints": [item["breakpoints"] for item in records],
                 "salted": [item["salted"] for item in records],
-                "overflow_rejections": sum(item["overflow"] for item in records)}
+                "overflow_rejections": sum(item["overflow"] for item in records),
+                "native_envelopes": [{"calls": item["native_tool_calls"], "results": item["native_tool_results"]}
+                                     for item in records]}
 
     # ------------------------------------------------------------- model
     def infer(self, body):
         view = request_view(body)
+        call_ids = [call.get("id") for message in body.get("messages", []) for call in message.get("tool_calls", [])]
+        result_ids = [message.get("tool_call_id") for message in body.get("messages", [])
+                      if message.get("role") == "tool"]
+        if call_ids or result_ids:
+            if not all(isinstance(value, str) and value for value in call_ids + result_ids) or \
+                    len(call_ids) != len(set(call_ids)) or len(result_ids) != len(set(result_ids)) or \
+                    set(call_ids) != set(result_ids):
+                return 400, {"error": {"message": "native assistant/tool envelopes must preserve every tool_call_id"}}
         with self.lock:
             matches = [uuid for uuid in self.probes if uuid in view]
         if len(matches) != 1:
@@ -192,7 +202,11 @@ class Fixture:
                 "bytes": len(text.encode()), "prompt_tokens": prompt, "tools": len(tools),
                 "tool_bytes": len(json.dumps(tools, ensure_ascii=False).encode()),
                 "breakpoints": len(boundaries), "salted": system_text.lstrip().startswith(SALT_PREFIX),
-                "overflow": overflow})
+                "overflow": overflow,
+                "native_tool_calls": [call.get("id") for message in body.get("messages", [])
+                                      for call in message.get("tool_calls", [])],
+                "native_tool_results": [message.get("tool_call_id") for message in body.get("messages", [])
+                                        if message.get("role") == "tool"]})
         if overflow:
             return 400, {"error": {"code": 400, "message": f"This endpoint's maximum context length is {window} "
                                    f"tokens. However, you requested about {prompt} tokens."}}
@@ -239,6 +253,17 @@ class Fixture:
                 return {"content": "The pricing module was not provided, so I cannot fix it."}
             code = PRICING_VISIBLE_ONLY if behavior == "pricing-visible-only-fix" else PRICING_COMPLETE
             return {"content": f"```python\n{code}```\n\nAll tests pass. The task is complete."}
+        if behavior == "multi-call-reader":
+            if not probe.called:
+                probe.called = True
+                return {"tool_calls": [("invoice_lookup", {"invoice_number": "INV-2026-0105"}),
+                                       ("currency_convert", {"amount": 155, "from": "USD", "to": "EUR"})]}
+            # Read the results actually delivered, not the scripted fact that a call was issued.
+            status = re.search(r'"payment_status"\s*:\s*"unpaid"', view)
+            converted = re.search(r'"converted_amount"\s*:\s*142[.]6(?:0)?(?:[,}\s])', view)
+            if status and converted:
+                return {"content": "Invoice is unpaid. Converted amount: 142.60 EUR. Complete."}
+            return {"content": "Both independent tool results were not delivered."}
         if behavior == "invoice-overdue-report":
             return {"content": self.overdue_report(view)}
         if behavior == "constraint-tracker":
@@ -398,6 +423,11 @@ class Fixture:
             filler = (f"Archive page {page}: vendor catalogue entries, delivery terms and historical quotes. "
                       * (size // 80 + 1))[:size]
             return 200, {"page": page, "content": (correction + " " if correction else "") + filler}
+        if alias == "currency_convert":
+            if arguments.get("from") != "USD" or arguments.get("to") != "EUR" or arguments.get("amount") != 155:
+                return 422, {"error": "the frozen fixture permits only 155 USD to EUR"}
+            return 200, {"converted_amount": 142.60, "currency": "EUR", "source_amount": 155,
+                         "source_currency": "USD", "rate": "0.92", "as_of": "2026-10-10"}
         if alias == "invoice_lookup":
             return 200, {"invoice": arguments.get("invoice_number"), "amount_cents": 15500, "currency": "USD",
                          "due_date": "2026-10-01", "payment_status": "unpaid", "payer": "Aster Labs"}

@@ -2,8 +2,8 @@
 // Source identity remains, with insertion-time same-Tenant KeyShare existence.
 use reinhardt::db::migrations::prelude::*;
 pub(super) fn migration() -> Migration {
-	Migration::new("0055_session_area_lifetime_state", "execution")
-		.add_dependency("execution", "0054_session_area_lifetime")
+	Migration::new("0057_session_area_lifetime_state", "execution")
+		.add_dependency("execution", "0056_session_area_lifetime")
 		.state_only(true)
 		.atomic(true)
 		.add_operation(Operation::DropConstraintDefinition {
