@@ -1481,6 +1481,8 @@ impl Environment<'_> {
 			Ok(String::new())
 		}
 	}
+	// Keep the native retrieval boundary's admission, query, and budget inputs explicit.
+	#[allow(clippy::too_many_arguments)]
 	async fn semantic_context(
 		&self,
 		run: &Run,

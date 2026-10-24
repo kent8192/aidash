@@ -385,11 +385,14 @@ impl Environment<'_> {
 				let (query, query_failure) = if matches!(declaration.pin, PinPolicy::Scored { .. })
 				{
 					match if let Some(query) = &semantic_query {
-						query.as_ref().map(Clone::clone).map_err(|_| {
-							aidash_application::Error::Invalid(
-								"source retrieval query is unavailable".into(),
-							)
-						})
+						query
+							.as_ref()
+							.map_err(|_| {
+								aidash_application::Error::Invalid(
+									"source retrieval query is unavailable".into(),
+								)
+							})
+							.cloned()
 					} else {
 						self.source_query(run, declaration.query, query_frame).await
 					} {
@@ -517,7 +520,7 @@ impl Environment<'_> {
 						.map(|fragment| fragment.pointer.clone()),
 				);
 			}
-			removals.sort_by(|left, right| pointer_order(right).cmp(&pointer_order(left)));
+			removals.sort_by_key(|pointer| std::cmp::Reverse(pointer_order(pointer)));
 			removals.dedup();
 			for contribution in &mut result.contributions {
 				if let Some(fragment) = provider
@@ -638,6 +641,8 @@ impl aidash_application::ports::decision::DecisionAuthority for SourceAuthority<
 	}
 }
 impl Environment<'_> {
+	// Keep the native selection boundary's authorization and decision inputs explicit.
+	#[allow(clippy::too_many_arguments)]
 	async fn select_context_source(
 		&self,
 		run: &Run,
