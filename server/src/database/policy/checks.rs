@@ -45,19 +45,20 @@ fn enabled(sql: &str) -> Vec<String> {
 		.collect()
 }
 
-/// Every policy migration in `migrations` runs nothing but the rendered
-/// template, and together they enable the `owned` tables and no other. Returns
-/// how many operations enable tables.
+/// Every policy migration runs the rendered template, with only the terminal
+/// receipt migration's exact atomic guard alongside it. Together they enable
+/// the `owned` tables and no other. Returns how many operations enable tables.
 pub fn assert_policy_migrations_run_the_rendered_template(
 	migrations: &[Migration],
 	owned: &BTreeSet<&str>,
 ) -> usize {
 	let mut covered = BTreeSet::new();
 	let mut policies = 0;
-	for migration in migrations
-		.iter()
-		.filter(|migration| migration.name.ends_with("_row_level_security"))
-	{
+	for migration in migrations.iter().filter(|migration| {
+		migration.name.ends_with("_row_level_security")
+			|| (migration.app_label.as_str(), migration.name.as_str())
+				== ("identity", "0049_remote_terminal_receipts")
+	}) {
 		for (sql, reverse_sql) in statements(migration) {
 			let tables = enabled(sql);
 			if tables.is_empty() {
@@ -65,14 +66,28 @@ pub fn assert_policy_migrations_run_the_rendered_template(
 			}
 			policies += 1;
 			let tables = tables.iter().map(String::as_str).collect::<Vec<_>>();
-			// The operation holds nothing but the template.
+			// The mixed table-creation migration keeps its RLS and atomic guard
+			// in one operation. Validate both directions completely; no other
+			// migration or extra DDL is admitted by this exact exception.
 			let label = format!("{}.{}", migration.app_label, migration.name);
-			assert_eq!(sql, enable(&tables), "{label}");
-			assert_eq!(
-				reverse_sql,
-				Some(disable(&tables).as_str()),
-				"{label} reversed"
-			);
+			let mut forward = enable(&tables);
+			let mut backward = disable(&tables);
+			if (migration.app_label.as_str(), migration.name.as_str())
+				== ("identity", "0049_remote_terminal_receipts")
+			{
+				assert_eq!(tables, ["authorization_remote_terminal_receipts"]);
+				forward.push_str(concat!(
+					"CREATE TRIGGER atomic_write_guard BEFORE INSERT OR DELETE OR UPDATE OR TRUNCATE ",
+					"ON public.authorization_remote_terminal_receipts FOR EACH STATEMENT ",
+					"EXECUTE FUNCTION public.atomic_write_guard();\n",
+				));
+				backward.insert_str(
+					0,
+					"DROP TRIGGER atomic_write_guard ON public.authorization_remote_terminal_receipts;\n",
+				);
+			}
+			assert_eq!(sql, forward, "{label}");
+			assert_eq!(reverse_sql, Some(backward.as_str()), "{label} reversed");
 			for table in tables {
 				assert!(covered.insert(table.to_owned()), "{table} is enabled twice");
 			}
