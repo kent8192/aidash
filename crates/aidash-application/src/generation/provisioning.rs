@@ -56,7 +56,13 @@ pub async fn activate_in(
 	for (reference, action) in snapshot
 		.definitions
 		.iter()
-		.filter(|d| d.identity != snapshot.agent)
+		.filter(|d| {
+			d.identity != snapshot.agent
+				&& !aidash_domain::registry::bindings::defaults::is_implicit_compaction(
+					&snapshot,
+					&d.identity,
+				)
+		})
 		.map(|d| {
 			(
 				d.identity.local(),

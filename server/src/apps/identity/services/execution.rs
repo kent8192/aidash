@@ -295,6 +295,7 @@ impl WorkerAuthority {
 					};
 					let mut scope =
 						crate::bootstrap::approval_scope(Some(store), &mut access, None);
+					scope.run = Some(Box::new(run.clone()));
 					aidash_application::capabilities::approvals::disclose(
 						&mut scope,
 						&run.metadata(),
@@ -332,6 +333,7 @@ impl WorkerAuthority {
 			let request =
 				aidash_application::capabilities::approvals::ToolCallRequest { area, ..request };
 			let mut scope = crate::bootstrap::approval_scope(Some(store), &mut access, None);
+			scope.run = Some(Box::new(run.clone()));
 			aidash_application::capabilities::approvals::tool_call(
 				&mut scope,
 				&run.metadata(),
@@ -632,6 +634,19 @@ impl WorkerAuthority {
 		let mut access = self.access.write().await;
 		crate::capabilities::skills::context(store, &mut access, run).await
 	}
+	pub async fn skill_context_items(
+		&self,
+		store: &Store,
+		run: &Run,
+	) -> Result<Vec<aidash_application::capabilities::skills::ContextItem>> {
+		let mut access = self.access.write().await;
+		aidash_application::capabilities::skills::context_items(
+			&mut crate::bootstrap::file_scope(Some(store), &mut access, Some(run)),
+			&run.metadata(),
+		)
+		.await
+		.map_err(Into::into)
+	}
 	pub async fn direct_skills(
 		&self,
 		store: &Store,
@@ -646,7 +661,7 @@ impl WorkerAuthority {
 		run: &Run,
 		skill_id: Uuid,
 		digest: &str,
-	) -> Result<String> {
+	) -> Result<Option<String>> {
 		let mut access = self.access.write().await;
 		crate::capabilities::skills::direct_body(store, &mut access, run, skill_id, digest).await
 	}
@@ -795,6 +810,27 @@ impl aidash_application::ports::bindings::BindingAuthority for SnapshotAuthority
 		}
 		crate::marketplace::check_pinned(&mut access, &current).await?;
 
+		Ok(())
+	}
+	async fn check_metadata(
+		&self,
+		run: &Run,
+		binding: &aidash_domain::registry::bindings::ResolvedBinding,
+	) -> aidash_application::Result<()> {
+		if run.id != self.run.id {
+			return Err(aidash_application::Error::Forbidden);
+		}
+		let mut access = self.access.write().await;
+		if binding.identity.registry_deployment != access.node_id {
+			return Err(aidash_application::Error::Forbidden);
+		}
+		let current = catalog::metadata(&mut access, &binding.identity.local()).await?;
+		if aidash_domain::registry::rules::digest(&serde_json::to_value(current)?) != binding.digest
+		{
+			return Err(aidash_application::Error::Conflict(
+				"admitted Binding definition changed".into(),
+			));
+		}
 		Ok(())
 	}
 }
@@ -961,24 +997,39 @@ impl Guard {
 	) -> aidash_application::ports::execution::SemanticContextRead {
 		let mut workspace_retrieved = false;
 		let result: Result<Option<Value>> = async {
+			let automatic = self
+				.run
+				.context
+				.binding_snapshot
+				.as_ref()
+				.map(|snapshot| AgentConfig::automatic_context(snapshot))
+				.transpose()?;
+			let agent = automatic.as_ref().unwrap_or(&self.agent);
 			let workspace_budget = if self.remote.is_some() {
 				budget
 			} else {
 				crate::semantic::services::memory_context::workspace_budget(budget)?
 			};
-			let semantic = aidash_application::execution::semantic_context::retrieve(
+			let query = aidash_application::execution::semantic_context::query_material(
+				&self.run,
+				task,
+				inputs,
+				aidash_domain::context::source::MAX_SOURCE_BYTES,
+			)?;
+			let semantic = aidash_application::execution::semantic_context::retrieve_with_query(
 				&crate::bootstrap::run_semantic_repository(
 					store,
 					self.remote.as_ref(),
 					&self.access,
 					&self.run,
-					&self.agent,
+					agent,
 				),
 				task,
 				inputs,
+				&query.text,
 				workspace_budget,
 				// Required-Home semantic context never degrades (ADR 0059).
-				degrade_on_outage && self.remote.is_none() && self.agent.workspace_degrades,
+				degrade_on_outage && self.remote.is_none() && agent.workspace_degrades,
 			)
 			.await
 			.map_err(Error::from)?;
@@ -999,7 +1050,7 @@ impl Guard {
 				task,
 				inputs,
 				available,
-				&self.agent,
+				agent,
 				key,
 			)
 			.await?;
@@ -1014,10 +1065,37 @@ impl Guard {
 		}
 		.await;
 		aidash_application::ports::execution::SemanticContextRead {
+			selections: vec![],
+			contributions: vec![],
 			workspace_retrieved,
 			result: result.map_err(Into::into),
 		}
 	}
+	/// Reading a source for the main model does not permit disclosing it to a
+	/// separate selector. Policy sees the exact selector and destination set.
+	pub(crate) async fn context_source_disclosure(
+		&self,
+		decider: &aidash_domain::decision::DeciderPin,
+		config: &aidash_domain::decision::DeciderConfig,
+		pins: &[aidash_domain::decision::SourcePin],
+		source: &aidash_domain::registry::bindings::QualifiedRef,
+		query_policy: aidash_domain::context::source::QueryPolicy,
+	) -> Result<()> {
+		let mut access = self.access.write().await;
+		let mut workspace = access.workspace(self.run.workspace_id).await?;
+		workspace.attributes["context_selection"] = json!(decider);
+		workspace.attributes["hook"] = json!("context_selection");
+		workspace.attributes["source"] = json!(source);
+		workspace.attributes["query_policy"] = json!(query_policy);
+		workspace.attributes["inference_model"] = json!(self.agent.model);
+		workspace.attributes["decider"] = json!(decider.identity);
+		workspace.attributes["selector_routes"] = json!(config.routes);
+		workspace.attributes["source_pins"] = json!(pins);
+		workspace.attributes["preview_disclosure"] = json!(true);
+		workspace.attributes["query_disclosure"] = json!(true);
+		access.require(&workspace, "semantic.disclose").await
+	}
+
 	pub(crate) async fn recheck_source_observation(
 		&self,
 		store: &Store,

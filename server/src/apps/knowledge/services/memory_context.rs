@@ -38,14 +38,10 @@ pub(crate) fn workspace_budget(budget: usize) -> Result<usize> {
 
 pub(crate) struct Context {
 	value: Option<Value>,
-	delivered: Vec<Unit>,
 }
 impl Context {
 	fn status(value: Option<Value>) -> Self {
-		Self {
-			value,
-			delivered: Vec::new(),
-		}
+		Self { value }
 	}
 }
 
@@ -69,6 +65,37 @@ pub(crate) async fn retrieve(
 	if agent.memory.is_none() || agent.allow_cross_conversation_memory == Some(false) {
 		return Ok(Context::status(bounded_status("disabled", budget)?));
 	}
+	let primary_automatic = !run
+		.context
+		.binding_snapshot
+		.as_ref()
+		.is_some_and(|snapshot| {
+			snapshot.bindings.iter().any(|binding| {
+				binding.excluded_reason.is_none()
+					&& binding.definition.kind == "memory"
+					&& agent.memory.as_ref() == Some(&binding.identity.local())
+					&& binding
+						.definition
+						.config
+						.get("context_source")
+						.and_then(|value| {
+							serde_json::from_value::<
+								aidash_domain::context::source::SourceDeclaration,
+							>(value.clone())
+							.ok()
+						})
+						.is_some_and(|declaration| {
+							matches!(
+								declaration.pin,
+								aidash_domain::context::source::PinPolicy::OnDemand
+							)
+						})
+			})
+		});
+	// This branch precedes bank binding, source authorization and provider I/O.
+	if !primary_automatic && agent.sources.is_empty() {
+		return Ok(Context::status(None));
+	}
 	crate::apps::execution::services::task_evidence::record(lease.tx(), run, task).await?;
 	let binding = bindings::load(&mut **lease.tx(), &run.metadata())
 		.await?
@@ -78,7 +105,11 @@ pub(crate) async fn retrieve(
 	if agent.memory.as_ref() != Some(&binding.provider) {
 		return Err(Error::Conflict("Run memory definition changed".into()));
 	}
-	let mut declared = vec![(binding.bank.clone(), binding.provider.clone(), budget)];
+	let mut declared = if primary_automatic {
+		vec![(binding.bank.clone(), binding.provider.clone(), budget)]
+	} else {
+		vec![]
+	};
 	for reference in &agent.sources {
 		let entry = memory::definition(lease, &binding.bank.tenant, reference, "source").await?;
 		let source: SourceConfig = serde_json::from_value(entry.config.clone())?;
@@ -96,11 +127,13 @@ pub(crate) async fn retrieve(
 		}
 		declare_bank(&mut declared, bank, source.memory, source.max_tokens);
 	}
-	let mut query = format!("{}\n{}", task.title, task.description);
-	for (_, text) in inputs {
-		query.push('\n');
-		query.push_str(text);
-	}
+	let query = aidash_application::execution::semantic_context::query_material(
+		run,
+		task,
+		inputs,
+		aidash_domain::context::source::MAX_SOURCE_BYTES,
+	)?
+	.text;
 	let boundary = match key {
 		Some(key) => serde_json::to_value(key)?,
 		None => {
@@ -200,26 +233,19 @@ pub(crate) async fn retrieve(
 	}
 	Ok(Context {
 		value: Some(envelope),
-		delivered,
 	})
 }
 
 /// Journal once after every Bank and the combined delivery envelope have succeeded.
 pub(crate) async fn complete(
-	lease: &mut Lease<'_>,
-	run: &Run,
+	_lease: &mut Lease<'_>,
+	_run: &Run,
 	semantic: Option<Value>,
 	memory: Context,
 	budget: usize,
 ) -> Result<Option<Value>> {
 	let output = combine(semantic, memory.value, budget)?;
-	if output
-		.as_ref()
-		.is_some_and(|value| value["memory"]["banks"].is_array())
-		&& !memory.delivered.is_empty()
-	{
-		super::super::repositories::memory_reads::record(lease, run.id, &memory.delivered).await?;
-	}
+
 	Ok(output)
 }
 
@@ -436,6 +462,13 @@ pub(crate) async fn recheck(
 		.await?;
 	}
 	if observed["memory"]["banks"].is_array() {
+		for bank in observed["memory"]["banks"].as_array().into_iter().flatten() {
+			for item in bank["recall"]["units"].as_array().into_iter().flatten() {
+				let unit: Unit = serde_json::from_value(item.clone())?;
+				current_unit(store, lease, &unit).await?;
+			}
+		}
+
 		// Lost authority keeps the generic authority pause (ADR 0013); any other
 		// cause pauses with its exact semantic reason, never a re-retrieval.
 		match super::super::repositories::memory_reads::invalidity(lease, run.id).await? {
@@ -443,6 +476,33 @@ pub(crate) async fn recheck(
 			Some(crate::semantic::remote::Failure::Authority) => return Err(Error::Forbidden),
 			Some(failure) => return Err(Error::RemoteSemantic(failure)),
 		}
+	}
+	Ok(())
+}
+
+async fn current_unit(store: &Store, lease: &mut Lease<'_>, unit: &Unit) -> Result<()> {
+	super::native_memory::scope(store, lease, &unit.bank, "memory.read").await?;
+	let current = super::super::repositories::units::load(lease, unit.id, false).await?;
+	if current.as_ref() != Some(unit) || !unit.visible() {
+		return Err(Error::RemoteSemantic(
+			crate::semantic::remote::Failure::Invalidated,
+		));
+	}
+	Ok(())
+}
+/// Automatic retrieval stages Units, but does not attest they reached a model.
+/// Only exact final candidates at accepted inference enter #125's read journal.
+pub(crate) async fn accept(
+	store: &Store,
+	lease: &mut Lease<'_>,
+	run: &Run,
+	units: &[Unit],
+) -> Result<()> {
+	for unit in units {
+		current_unit(store, lease, unit).await?;
+	}
+	if !units.is_empty() {
+		super::super::repositories::memory_reads::record(lease, run.id, units).await?;
 	}
 	Ok(())
 }

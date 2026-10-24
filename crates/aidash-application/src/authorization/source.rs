@@ -47,6 +47,11 @@ pub async fn authorize<S: SourceAuthorityScope + ?Sized>(
 		resource.attributes["remote_node"] = json!(node);
 		resource.attributes["digest"] = json!(definition.digest);
 		access.source_require(&resource, "registry.read").await?;
+		if aidash_domain::registry::bindings::defaults::is_compaction_decider(&definition.metadata)
+			&& inspection.decider.as_ref() != Some(&definition.entry)
+		{
+			continue;
+		}
 		let action = match definition.kind.as_str() {
 			"agent" => "agent.execute",
 			"model" => "model.infer",

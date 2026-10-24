@@ -11,7 +11,10 @@ use serde_json::Value;
 use std::collections::{BTreeMap, BTreeSet};
 
 pub const BINDING_SCHEMA: u8 = 1;
+pub mod defaults;
+pub use defaults::{COMPACTION_DECIDER_ID, COMPACTION_DECIDER_VERSION, COMPACTION_DEFAULT};
 mod snapshot;
+pub mod source_defaults;
 pub mod sources;
 pub const MAX_BINDINGS: usize = 128;
 /// Upper bound for an Agent definition's Run Tool Parallelism ceiling.
@@ -127,11 +130,19 @@ pub fn definition_references(
 			}
 		}
 		"memory" | "source" if entry.config.get("schema_version").is_some() => {
-			sources::validate_definition(entry)?;
+			if let Some(native) = sources::validate_definition(entry)?
+				&& let Some(declaration) = native.context_source
+			{
+				result.extend(declaration.references());
+			}
 		}
 		"memory" => {
 			let provider: crate::memory::ProviderConfig =
 				serde_json::from_value(entry.config.clone())?;
+			if let Some(declaration) = provider.context_source {
+				declaration.validate()?;
+				result.extend(declaration.references());
+			}
 			result.extend(
 				[
 					(provider.policy.extraction, "model"),
@@ -148,6 +159,9 @@ pub fn definition_references(
 		"source" => {
 			let source: crate::memory::SourceConfig = serde_json::from_value(entry.config.clone())?;
 			result.push((local(&source.memory), "memory".into()));
+			if let Some(declaration) = source.context_source {
+				result.extend(declaration.references());
+			}
 		}
 		"reranker" => {
 			if let crate::memory::RerankerConfig::Model { model } =
@@ -246,7 +260,7 @@ impl AgentBindings {
 			|| self
 				.remove_default
 				.iter()
-				.any(|name| !defaults.contains(&name.as_str()))
+				.any(|name| name != COMPACTION_DEFAULT && !defaults.contains(&name.as_str()))
 			|| self.remove_default.iter().collect::<BTreeSet<_>>().len()
 				!= self.remove_default.len()
 		{
@@ -338,6 +352,13 @@ impl AgentBindings {
 		}
 	}
 	pub fn normalize(&self, node: &str) -> Result<Vec<NormalizedBinding>> {
+		self.normalize_with_compaction(node, None)
+	}
+	pub fn normalize_with_compaction(
+		&self,
+		node: &str,
+		compaction_override: Option<&QualifiedRef>,
+	) -> Result<Vec<NormalizedBinding>> {
 		self.validate()?;
 		crate::nodes::DeploymentId::parse(node)?;
 		let mut result = Vec::new();
@@ -384,6 +405,8 @@ impl AgentBindings {
 				});
 			}
 		}
+		source_defaults::add_workspace_observation(node, &mut result)?;
+		defaults::add_compaction(self, node, compaction_override, &mut result)?;
 		if result.len() > MAX_BINDINGS {
 			return Err(Error::Invalid(
 				"expanded Bindings exceed 128 entries".into(),
@@ -399,10 +422,23 @@ impl AgentBindings {
 pub struct AgentNormalization {
 	pub schema_version: u8,
 	pub registry_deployment: String,
+	/// Exact explicit compaction replacement, resolved by trusted registration.
+	pub compaction_override: Option<QualifiedRef>,
 	pub bindings: Vec<NormalizedBinding>,
 }
 impl Entry {
 	pub fn normalize_agent(&mut self, node: &str) -> Result<()> {
+		let replacement = self
+			.binding_normalization
+			.as_ref()
+			.and_then(|saved| saved.compaction_override.clone());
+		self.normalize_agent_with_compaction(node, replacement.as_ref())
+	}
+	pub fn normalize_agent_with_compaction(
+		&mut self,
+		node: &str,
+		replacement: Option<&QualifiedRef>,
+	) -> Result<()> {
 		if self.kind != "agent" {
 			if self.binding_normalization.is_some() {
 				return Err(Error::Invalid(
@@ -415,13 +451,18 @@ impl Entry {
 		self.binding_normalization = Some(AgentNormalization {
 			schema_version: BINDING_SCHEMA,
 			registry_deployment: node.into(),
-			bindings: config.normalize(node)?,
+			compaction_override: replacement.cloned(),
+			bindings: config.normalize_with_compaction(node, replacement)?,
 		});
 		Ok(())
 	}
 	pub fn normalized_bindings(&self, node: &str) -> Result<Vec<NormalizedBinding>> {
 		let config: AgentBindings = serde_json::from_value(self.config.clone())?;
-		let expected = config.normalize(node)?;
+		let replacement = self
+			.binding_normalization
+			.as_ref()
+			.and_then(|saved| saved.compaction_override.as_ref());
+		let expected = config.normalize_with_compaction(node, replacement)?;
 		if let Some(saved) = &self.binding_normalization {
 			if saved.schema_version != BINDING_SCHEMA
 				|| saved.registry_deployment != node
@@ -878,9 +919,11 @@ impl ForeignAgentSnapshot {
 				|| matches!(
 					definition.definition.kind.as_str(),
 					"memory" | "source" | "skill"
-				) || definition.definition.kind == "agent"
-				&& serde_json::from_value::<AgentBindings>(definition.definition.config.clone())
-					.is_ok_and(|agent| !agent.agent_plugins.is_empty())
+				) && !source_defaults::workspace_observation()
+					.is_ok_and(|source| source == definition.definition)
+				|| definition.definition.kind == "agent"
+					&& serde_json::from_value::<AgentBindings>(definition.definition.config.clone())
+						.is_ok_and(|agent| !agent.agent_plugins.is_empty())
 		}) {
 			return Err(Error::Invalid(
 				"foreign Agent has an unsupported private or cross-Node dependency".into(),
@@ -922,11 +965,11 @@ impl ResolvedDefinition {
 	}
 }
 impl BindingSnapshot {
-	/// Reconstruct an explicit exact Decider from the retained admission closure.
+	/// Reconstruct an exact Decider from the retained admission closure.
 	pub fn decider(&self, hook: crate::decision::Hook) -> Result<crate::decision::BoundDecider> {
 		self.bound_decider(hook)?
 			.map(|(bound, _)| bound)
-			.ok_or_else(|| Error::Invalid("Run has no explicit Decider for this hook".into()))
+			.ok_or_else(|| Error::Invalid("Run has no Decider for this hook".into()))
 	}
 	/// The Decider bound for `hook` with its pinned definition, or `None` when
 	/// the Run has none for it.

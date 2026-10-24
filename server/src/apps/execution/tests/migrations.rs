@@ -53,6 +53,7 @@ const TENANT_REGISTRY_MIGRATIONS: &[(&str, &str)] = &[
 	("registry", "0042_external_services"),
 	("registry", "0043_external_services_state"),
 	("registry", "0044_foreign_key_relations_state"),
+	("registry", "0045_context_sources"),
 	("marketplace", "0008_remove_compatibility_gate"),
 	("marketplace", "0009_remove_compatibility_gate_state"),
 	("marketplace", "0010_row_level_security"),
@@ -105,7 +106,7 @@ async fn native_history_uses_typed_schema_operations_and_lf_sql_assets() {
 			.iter()
 			.filter(|migration| migration.state_only)
 			.count(),
-		51
+		52
 	);
 	let tables = migrations
 		.iter()
@@ -343,14 +344,14 @@ async fn generation_with_existing_sql_assets_preserves_history_and_dependency(
 	);
 	assert_eq!(std::fs::read(history).unwrap(), original);
 	let generated = FilesystemSource::new(fixture.directory.path().join("migrations"))
-		.get_migration("execution", "0053_policy_probe")
+		.get_migration("execution", "0058_policy_probe")
 		.await
 		.unwrap();
 	assert_eq!(
 		generated.dependencies,
 		vec![(
 			"execution".to_owned(),
-			"0052_research_journal_results_row_level_security".to_owned()
+			"0057_approval_observations_state".to_owned()
 		)]
 	);
 	assert!(generated.operations.is_empty());
@@ -698,7 +699,7 @@ async fn preserved_baseline_does_not_generate_table_recreation(
 			.iter()
 			.filter(|migration| migration.state_only)
 			.count(),
-		51
+		52
 	);
 }
 
@@ -2819,4 +2820,44 @@ async fn deferred_exposure_rollback_is_refused_while_an_agent_uses_exposure(
 		"{error}"
 	);
 	assert!(contract_accepts(&pool, "aidash_agent_bindings_is_valid", vec![deferred]).await);
+}
+
+#[rstest]
+#[tokio::test]
+async fn context_sources_migration_accepts_exact_native_policies_and_rejects_mismatched_operations(
+	#[future] fresh_database: MigrationFixture,
+) {
+	let fixture = fresh_database.await;
+	fixture.migrate().await;
+	let pool = fixture.connection.clone().into_postgres().unwrap();
+	let accepts = |config: serde_json::Value| {
+		let pool = pool.clone();
+		async move {
+			contract_accepts(
+				&pool,
+				"aidash_context_is_valid",
+				vec![config, json!("source")],
+			)
+			.await
+		}
+	};
+	let declaration = json!({"provider":"aidash.native-context/1","operation":"workspace_retrieval","tools":{"read":[],"write":[],"detail":null},"pin":{"policy":"always"},"query":"accepted-inputs-first@1"});
+	let configured = json!({"schema_version":1,"source":{"adapter":"workspace_retrieval"},"context_source":declaration});
+	assert!(
+		accepts(json!({"schema_version":1,"source":{"adapter":"workspace_observation"}})).await
+	);
+	assert!(accepts(configured.clone()).await);
+	for (field, value) in [
+		("provider", json!("unavailable.provider")),
+		("operation", json!("skills")),
+		("query", json!("unknown@1")),
+		("required_home", json!("true")),
+	] {
+		let mut invalid = configured.clone();
+		invalid["context_source"][field] = value;
+		assert!(!accepts(invalid.clone()).await, "{invalid}");
+	}
+	let mut unknown = configured;
+	unknown["context_source"]["unknown"] = json!(true);
+	assert!(!accepts(unknown).await);
 }

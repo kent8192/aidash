@@ -47,6 +47,10 @@ impl Catalog {
 			plugins: BTreeMap::new(),
 		};
 		result.insert(entry("model", "model", json!({})));
+		result.insert(crate::registry::system::compaction_decider().unwrap());
+		result.insert(
+			aidash_domain::registry::bindings::source_defaults::workspace_observation().unwrap(),
+		);
 		for operation in crate::registry::system::operations() {
 			result.core(operation);
 		}
@@ -230,7 +234,7 @@ async fn defaults_are_exact_and_a_saved_snapshot_is_immutable() {
 	assert_eq!(serde_json::to_value(&saved).unwrap(), encoded);
 	assert_eq!(
 		saved.bindings.len(),
-		REQUIRED_TOOLS.len() + DEFAULT_TOOLS.len()
+		REQUIRED_TOOLS.len() + DEFAULT_TOOLS.len() + 2
 	);
 	assert_eq!(saved.definitions.len(), saved.bindings.len() + 2);
 	let recovered: BindingSnapshot = serde_json::from_value(encoded).unwrap();
@@ -1588,6 +1592,32 @@ async fn public_foreign_snapshot() -> ForeignAgentSnapshot {
 }
 
 #[tokio::test]
+async fn receiver_export_rejects_a_custom_policy_hidden_under_the_system_source_identity() {
+	use aidash_domain::{
+		context::source::QueryPolicy,
+		registry::bindings::{source_defaults, sources},
+	};
+	let mut catalog = Catalog::new();
+	let identity = source_defaults::workspace_observation_reference(NODE);
+	let source = catalog.entries.get_mut(&identity).unwrap();
+	let mut native: sources::NativeContext = serde_json::from_value(source.config.clone()).unwrap();
+	let mut custom = native.declaration(&identity);
+	custom.query = QueryPolicy::AcceptedInputsFirstV1;
+	native.context_source = Some(custom);
+	source.config = serde_json::to_value(native).unwrap();
+	// This is a valid, freshly admitted graph with correct digests, so rejection
+	// comes from the receiver export boundary rather than corrupt snapshot bytes.
+	let saved = snapshot(&mut catalog, &agent_config(), true).await.unwrap();
+	saved.validate().unwrap();
+	let error = ForeignAgentSnapshot::from_snapshot(saved).unwrap_err();
+	assert!(
+		error
+			.to_string()
+			.contains("unsupported private or cross-Node dependency")
+	);
+}
+
+#[tokio::test]
 async fn foreign_agent_transports_pin_receiver_closures_without_flattening_child_tools() {
 	let child = public_foreign_snapshot().await;
 	let mut catalog = Catalog::new();
@@ -1914,6 +1944,12 @@ use aidash_domain::tool::{Concurrency, concurrency::ConcurrentCall};
 /// A provider bound like the Node's: its contract is the provider's current one.
 struct CurrentProviders;
 impl ProviderCatalog for CurrentProviders {
+	fn decision_implementation(
+		&self,
+		config: &aidash_domain::decision::DeciderConfig,
+	) -> Result<String> {
+		providers().decision_implementation(config)
+	}
 	fn contract(
 		&self,
 		descriptor: &ToolDescriptor,
@@ -2231,4 +2267,291 @@ async fn admitted_bindings_compare_the_home_with_the_full_executing_node(
 		sessions: None,
 	};
 	assert_eq!(resolver.tools(&run).await.is_ok(), accepted);
+}
+
+#[tokio::test]
+async fn remote_home_receipt_obligation_rejects_on_demand_despite_false_declaration_flag() {
+	use aidash_domain::{
+		context::source::PinPolicy,
+		registry::bindings::sources::{NativeContext, NativeSource, OnUnavailable},
+	};
+	let mut catalog = Catalog::new();
+	let identity = reference("mandatory-home-source");
+	let mut native = NativeContext {
+		schema_version: 1,
+		source: NativeSource::WorkspaceRetrieval {
+			on_unavailable: OnUnavailable::Pause,
+		},
+		context_source: None,
+	};
+	let mut declaration = native.declaration(&identity);
+	declaration.required_home = false;
+	declaration.pin = PinPolicy::OnDemand;
+	native.context_source = Some(declaration);
+	catalog.insert(entry(
+		&identity.id,
+		"source",
+		serde_json::to_value(native).unwrap(),
+	));
+	let mut config = agent_config();
+	config.bindings.push(
+		serde_json::from_value(json!({"kind":"source","target":identity,"narrow":{}})).unwrap(),
+	);
+	let local = snapshot(&mut catalog, &config, false).await.unwrap();
+	local.validate().unwrap();
+	let remote = snapshot(&mut catalog, &config, true).await;
+	let error = remote.unwrap_err();
+	assert!(
+		error
+			.to_string()
+			.contains("required-Home semantic contribution"),
+		"{error}"
+	);
+}
+
+#[tokio::test]
+async fn ordinary_compaction_default_is_pinned_removed_or_replaced_by_exact_hook() {
+	use aidash_domain::decision::Hook;
+	let mut catalog = Catalog::new();
+	let ordinary = snapshot(&mut catalog, &agent_config(), false)
+		.await
+		.unwrap();
+	let (bound, definition) = ordinary.bound_decider(Hook::Compaction).unwrap().unwrap();
+	assert_eq!(bound.pin.identity, defaults::compaction_reference(NODE));
+	assert_eq!(
+		definition,
+		crate::registry::system::compaction_decider().unwrap()
+	);
+	assert_eq!(
+		ordinary
+			.bindings
+			.iter()
+			.find(|binding| binding.identity == bound.pin.identity)
+			.unwrap()
+			.origin,
+		BindingOrigin::Default
+	);
+
+	let mut removed = agent_config();
+	removed.remove_default.push(COMPACTION_DEFAULT.into());
+	let opted_out = snapshot(&mut catalog, &removed, false).await.unwrap();
+	assert!(opted_out.bound_decider(Hook::Compaction).unwrap().is_none());
+	assert!(
+		!opted_out
+			.definitions
+			.iter()
+			.any(|definition| definition.identity == bound.pin.identity)
+	);
+
+	let mut approval = crate::registry::system::approval_decider().unwrap();
+	approval.id = "judge".into();
+	catalog.insert(approval);
+	let mut config = agent_config();
+	config.bindings.push(Binding {
+		kind: BindingKind::Decider,
+		target: reference("judge"),
+		alias: None,
+		narrow: Default::default(),
+		members: vec![],
+		exposure: None,
+	});
+	let with_approval = snapshot(&mut catalog, &config, false).await.unwrap();
+	assert!(
+		with_approval
+			.bound_decider(Hook::Compaction)
+			.unwrap()
+			.is_some()
+	);
+	assert!(
+		with_approval
+			.bound_decider(Hook::Approval)
+			.unwrap()
+			.is_some()
+	);
+
+	let mut replacement = crate::registry::system::compaction_decider().unwrap();
+	replacement.id = "tenant.compaction".into();
+	catalog.insert(replacement);
+	config.bindings.push(Binding {
+		kind: BindingKind::Decider,
+		target: reference("tenant.compaction"),
+		alias: None,
+		narrow: Default::default(),
+		members: vec![],
+		exposure: None,
+	});
+	let replaced = snapshot(&mut catalog, &config, false).await.unwrap();
+	assert_eq!(
+		replaced
+			.bound_decider(Hook::Compaction)
+			.unwrap()
+			.unwrap()
+			.0
+			.pin
+			.identity,
+		reference("tenant.compaction")
+	);
+	assert!(
+		!replaced
+			.definitions
+			.iter()
+			.any(|definition| definition.identity == bound.pin.identity)
+	);
+	let root = replaced
+		.definitions
+		.iter()
+		.find(|definition| definition.identity == replaced.agent)
+		.unwrap();
+	assert_eq!(
+		root.definition
+			.binding_normalization
+			.as_ref()
+			.unwrap()
+			.compaction_override,
+		Some(reference("tenant.compaction"))
+	);
+
+	// A fabricated hook claim cannot hide the default in a durable snapshot.
+	let mut forged = with_approval;
+	let root = forged
+		.definitions
+		.iter_mut()
+		.find(|definition| definition.identity == forged.agent)
+		.unwrap();
+	root.definition
+		.normalize_agent_with_compaction(NODE, Some(&reference("judge")))
+		.unwrap();
+	root.digest =
+		aidash_domain::registry::rules::digest(&serde_json::to_value(&root.definition).unwrap());
+	// Match the fabricated closure so only its false hook claim can reject it.
+	forged
+		.bindings
+		.retain(|binding| binding.identity != bound.pin.identity);
+	forged
+		.definitions
+		.retain(|definition| definition.identity != bound.pin.identity);
+	assert!(
+		matches!(forged.validate(), Err(aidash_domain::Error::Invalid(message)) if message == "compaction replacement differs from its exact Decider hook")
+	);
+}
+
+#[rstest::rstest]
+#[case::implicit_defaults(None, None, true)]
+#[case::one_explicit_correction_first(
+	Some(aidash_domain::context::source::QueryPolicy::AcceptedInputsFirstV1),
+	None,
+	false
+)]
+#[case::workspace_only_correction_first(
+	None,
+	Some(aidash_domain::context::source::QueryPolicy::AcceptedInputsFirstV1),
+	false
+)]
+#[case::matching_explicit_corrections(
+	Some(aidash_domain::context::source::QueryPolicy::AcceptedInputsFirstV1),
+	Some(aidash_domain::context::source::QueryPolicy::AcceptedInputsFirstV1),
+	true
+)]
+#[tokio::test]
+async fn semantic_query_policy_agrees_including_implicit_defaults(
+	#[case] memory_query: Option<aidash_domain::context::source::QueryPolicy>,
+	#[case] workspace_query: Option<aidash_domain::context::source::QueryPolicy>,
+	#[case] accepted: bool,
+) {
+	use aidash_domain::registry::bindings::sources::{NativeContext, NativeSource, OnUnavailable};
+	let mut catalog = Catalog::new();
+	let mut config = agent_config();
+	for (id, kind, source, query) in [
+		(
+			"query-memory",
+			"memory",
+			NativeSource::SemanticMemory {},
+			memory_query,
+		),
+		(
+			"query-workspace",
+			"source",
+			NativeSource::WorkspaceRetrieval {
+				on_unavailable: OnUnavailable::Pause,
+			},
+			workspace_query,
+		),
+	] {
+		let mut native = NativeContext {
+			schema_version: 1,
+			source,
+			context_source: None,
+		};
+		if let Some(query) = query {
+			let mut declaration = native.declaration(&reference(id));
+			declaration.query = query;
+			native.context_source = Some(declaration);
+		}
+		catalog.insert(entry(id, kind, serde_json::to_value(native).unwrap()));
+		config.bindings.push(
+			serde_json::from_value(json!({"kind":kind,"target":reference(id),"narrow":{}}))
+				.unwrap(),
+		);
+	}
+	let result = snapshot(&mut catalog, &config, false).await;
+	assert_eq!(result.is_ok(), accepted, "{result:?}");
+	if let Err(error) = result {
+		assert!(error.to_string().contains("query policy"), "{error}");
+	}
+}
+
+#[tokio::test]
+async fn native_primary_memory_and_bank_source_pin_the_same_explicit_query_policy() {
+	use aidash_domain::{
+		context::source::QueryPolicy,
+		registry::bindings::sources::{NativeContext, NativeSource, semantic_query_policy},
+	};
+	let mut catalog = Catalog::new();
+	for declaration in crate::test_support::native_memory_entries() {
+		catalog.insert(declaration);
+	}
+	catalog.insert(entry("fixture-model", "model", json!({})));
+	let identity = reference("native");
+	let mut declaration = NativeContext {
+		schema_version: 1,
+		source: NativeSource::SemanticMemory {},
+		context_source: None,
+	}
+	.declaration(&identity);
+	declaration.query = QueryPolicy::AcceptedInputsFirstV1;
+	let provider = catalog.entries.get_mut(&identity).unwrap();
+	let original: aidash_domain::memory::ProviderConfig =
+		serde_json::from_value(provider.config.clone()).unwrap();
+	assert_eq!(
+		serde_json::to_value(&original).unwrap(),
+		provider.config,
+		"omitted source policy keeps existing ProviderConfig bytes"
+	);
+	provider.config["context_source"] = json!(declaration);
+	catalog.insert(entry("workspace-bank-source","source",json!({"scope":"workspace","memory":{"id":"native","version":"1.0.0"},"max_tokens":512,"context_source":declaration})));
+	let mut config = agent_config();
+	config.bindings.push(
+		serde_json::from_value(json!({"kind":"memory","target":identity,"narrow":{}})).unwrap(),
+	);
+	config.bindings.push(
+		serde_json::from_value(
+			json!({"kind":"source","target":reference("workspace-bank-source"),"narrow":{}}),
+		)
+		.unwrap(),
+	);
+	let admitted = snapshot(&mut catalog, &config, false).await.unwrap();
+	assert_eq!(
+		semantic_query_policy(&admitted).unwrap(),
+		QueryPolicy::AcceptedInputsFirstV1
+	);
+	catalog
+		.entries
+		.get_mut(&reference("workspace-bank-source"))
+		.unwrap()
+		.config
+		.as_object_mut()
+		.unwrap()
+		.remove("context_source");
+	let error = snapshot(&mut catalog, &config, false).await.unwrap_err();
+	assert!(error.to_string().contains("query policy"), "{error}");
 }

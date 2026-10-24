@@ -842,6 +842,35 @@ impl BindingResolver for Bench {
 
 #[async_trait]
 impl ExecutionEnvironment for Bench {
+	fn context_source_plan(&self, _run: &Run) -> Result<Vec<PlannedContextSource>> {
+		Ok(super::fixture_source_plan(false, false, false))
+	}
+	async fn context_source(
+		&self,
+		run: &Run,
+		source: &ContextSourceHandle,
+		_worker: Uuid,
+		frame: ContextSourceFrame<'_>,
+	) -> SemanticContextRead {
+		let result = match source.as_str() {
+			"workspace" => self
+				.home(run)
+				.observation(0, context::observation::DEFAULT_LIMIT)
+				.await
+				.map(Some),
+			"semantic_memory" => {
+				return self.semantic_context(frame).await;
+			}
+			_ => unexpected("unknown planned context source"),
+		};
+		SemanticContextRead {
+			selections: vec![],
+			contributions: vec![],
+			workspace_retrieved: false,
+			result,
+		}
+	}
+
 	fn node_id(&self) -> &str {
 		"aidash://fixture"
 	}
@@ -886,15 +915,11 @@ impl ExecutionEnvironment for Bench {
 	fn binding_resolver(&self) -> &dyn BindingResolver {
 		self
 	}
-	async fn documents(&self, _entry: &Entry) -> Result<Value> {
-		unexpected("ExecutionEnvironment.documents")
-	}
+
 	async fn recheck_source_observation(&self, _run: &Run, _content: &Value) -> Result<()> {
 		unexpected("ExecutionEnvironment.recheck_source_observation")
 	}
-	async fn skill_context(&self, _run: &Run) -> Result<String> {
-		unexpected("ExecutionEnvironment.skill_context")
-	}
+
 	async fn direct_skills(&self, _run: &Run) -> Result<Vec<aidash_domain::exposure::DirectSkill>> {
 		Ok(vec![])
 	}
@@ -903,10 +928,14 @@ impl ExecutionEnvironment for Bench {
 		_run: &Run,
 		_skill_id: Uuid,
 		_digest: &str,
-	) -> Result<String> {
+	) -> Result<Option<String>> {
 		unexpected("ExecutionEnvironment.direct_skill_body")
 	}
-	async fn skill_revision(&self, _run: &Run) -> Result<Option<i64>> {
+	async fn source_revision(
+		&self,
+		_source: &ContextSourceHandle,
+		_run: &Run,
+	) -> Result<Option<i64>> {
 		unexpected("ExecutionEnvironment.skill_revision")
 	}
 	async fn cache_scope(&self, _run: &Run) -> Result<aidash_domain::projection::CacheScope> {
@@ -915,18 +944,15 @@ impl ExecutionEnvironment for Bench {
 	async fn retrieval_scope(&self, _run: &Run) -> Result<RetrievalScope> {
 		unexpected("ExecutionEnvironment.retrieval_scope")
 	}
-	async fn semantic_context(
+	async fn source_retrieval_key(
 		&self,
 		_run: &Run,
-		_task: &Task,
-		_inputs: &[(InputRead, String)],
-		_budget: usize,
-		_entry: &Entry,
-		_key: Option<&RetrievalKey>,
-		_degrade_on_outage: bool,
-	) -> SemanticContextRead {
-		unexpected("ExecutionEnvironment.semantic_context")
+		_bindings: &str,
+		_frame: ContextSourceFrame<'_>,
+	) -> Result<RetrievalKey> {
+		unexpected("ExecutionEnvironment.source_retrieval_key")
 	}
+
 	async fn run_message_limit(&self, _run: &Run) -> Result<usize> {
 		Ok(16000)
 	}
@@ -1429,4 +1455,10 @@ async fn unloaded_aliases_end_the_batch_and_record_the_exposure_denial() {
 		])
 	);
 	assert_eq!(progress(&run), (4, None));
+}
+
+impl Bench {
+	async fn semantic_context(&self, _frame: ContextSourceFrame<'_>) -> SemanticContextRead {
+		unexpected("ExecutionEnvironment.semantic_context")
+	}
 }
