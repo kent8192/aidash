@@ -30,7 +30,7 @@ pub struct PluginTool {
 	pub entry: Entry,
 	pub alias: String,
 	pub config: ToolConfig,
-	pub client: reqwest::Client,
+	pub transport: aidash_integrations::tools::HttpTools,
 }
 impl PluginTool {
 	fn application(&self) -> aidash_application::tools::Plugin {
@@ -59,12 +59,7 @@ impl Tool for PluginTool {
 			run: &ctx.run,
 		};
 		self.application()
-			.invoke(
-				&context,
-				&crate::bootstrap::tool_transport(self.client.clone()),
-				input,
-				key,
-			)
+			.invoke(&context, &self.transport, input, key)
 			.await
 			.map_err(Into::into)
 	}

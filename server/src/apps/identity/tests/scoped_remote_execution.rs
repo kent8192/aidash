@@ -304,8 +304,9 @@ async fn reconnect(f: &mut Federation, notify: Arc<Notify>) {
 	// A restarted node keeps its Deployment's egress and permitted Keyless origins.
 	store.egress = f.store.egress.clone();
 	store.keyless = f.store.keyless.clone();
-	f.registry =
-		aidash_server::registry::Registry::new(store.pool.clone(), &f.config.deployment).unwrap();
+	f.registry = aidash_server::registry::Registry::new(store.pool.clone(), &f.config.deployment)
+		.unwrap()
+		.with_keyless_origins(store.keyless.clone());
 	f.store.pool.close().await;
 	f.store.control_pool.close().await;
 	f.store = store;
@@ -6368,7 +6369,9 @@ fn scoped_runtime(
 			.await
 			.unwrap();
 		}
-		f.registry = aidash_server::registry::Registry::new(f.store.pool.clone(), &node).unwrap();
+		f.registry = aidash_server::registry::Registry::new(f.store.pool.clone(), &node)
+			.unwrap()
+			.with_keyless_origins(f.store.keyless.clone());
 		owner
 	}
 	.boxed()

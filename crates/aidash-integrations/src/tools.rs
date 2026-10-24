@@ -4,7 +4,7 @@ use aidash_application::execution::bounded_utf8_end;
 use aidash_application::{
 	Error, Result, ports::tools::ToolTransport, provider_access::KeylessAccess, tools::required,
 };
-use aidash_domain::tool::ToolConfig;
+use aidash_domain::{keyless::Destination, tool::ToolConfig};
 use async_trait::async_trait;
 use rmcp::{
 	RoleClient, ServiceExt,
@@ -20,6 +20,8 @@ mod mcp;
 
 /// Total budget for a native `http_get`, covering DNS resolution and the request.
 const NATIVE_HTTP_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
+const TOOL_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(120);
+const TOOL_CONNECT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
 /// Total budget for reading a server's tool list: handshake and every page.
 const MCP_LIST_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(15);
 /// Most `tools/list` pages read while looking for one tool.
@@ -39,8 +41,66 @@ where
 		.map_err(|error| Error::Port(Box::new(error)))
 }
 
+/// The clients of Tenant tool endpoints. Neither follows redirects or uses a
+/// system proxy: a proxy resolves names itself, which would bypass the
+/// address check of `public`.
+#[derive(Clone)]
+pub struct ToolClients {
+	/// An origin the Deployment permits, which may reach private addresses.
+	permitted: reqwest::Client,
+	/// Every other endpoint: each new connection resolves public addresses only.
+	public: reqwest::Client,
+}
+impl ToolClients {
+	pub fn new() -> Result<Self> {
+		Ok(Self {
+			permitted: reqwest::Client::builder()
+				.timeout(TOOL_TIMEOUT)
+				.connect_timeout(TOOL_CONNECT_TIMEOUT)
+				.redirect(reqwest::redirect::Policy::none())
+				.no_proxy()
+				.build()
+				.map_err(crate::http_error)?,
+			public: crate::keyless::public_client(TOOL_TIMEOUT, TOOL_CONNECT_TIMEOUT)?,
+		})
+	}
+}
+
+/// Invocation and pre-registration discovery apply the same origin/TLS rule.
+fn tool_destination(origins: &KeylessAccess, endpoint: &str) -> Result<Destination> {
+	let destination = origins.destination(endpoint)?;
+	if destination == Destination::PublicOnly {
+		let url = reqwest::Url::parse(endpoint)
+			.map_err(|_| Error::Invalid("invalid tool endpoint URL".into()))?;
+		if url.scheme() != "https" {
+			return Err(Error::Forbidden);
+		}
+	}
+	Ok(destination)
+}
+
+/// A Tenant chooses a tool's endpoint, so the Keyless endpoint rule decides
+/// where each call may connect (ADR 0036).
+#[derive(Clone)]
 pub struct HttpTools {
-	pub client: reqwest::Client,
+	origins: KeylessAccess,
+	clients: ToolClients,
+}
+impl HttpTools {
+	pub fn new(origins: KeylessAccess, clients: ToolClients) -> Self {
+		Self { origins, clients }
+	}
+	/// The client a call to `endpoint` may use; a refused destination never reaches I/O.
+	fn client(&self, endpoint: &str) -> Result<&reqwest::Client> {
+		match tool_destination(&self.origins, endpoint)? {
+			Destination::Permitted => Ok(&self.clients.permitted),
+			Destination::PublicOnly => Ok(&self.clients.public),
+			Destination::Forbidden => {
+				tracing::warn!("tool endpoint refused: its host is a non-public address");
+				Err(Error::Forbidden)
+			}
+		}
+	}
 }
 #[async_trait]
 impl ToolTransport for HttpTools {
@@ -88,7 +148,7 @@ impl ToolTransport for HttpTools {
 			}
 			ToolConfig::Http { endpoint, .. } => {
 				let mut request = self
-					.client
+					.client(endpoint)?
 					.post(endpoint)
 					.header("idempotency-key", key)
 					.json(&input);
@@ -97,7 +157,7 @@ impl ToolTransport for HttpTools {
 				if let Some(secret) = secret {
 					request = request.bearer_auth(secret.expose_secret());
 				}
-				let response = request.send().await.map_err(crate::http_error)?;
+				let response = request.send().await.map_err(crate::keyless::send_error)?;
 				if !response.status().is_success() {
 					return Err(Error::External(format!(
 						"HTTP tool returned {}",
@@ -112,7 +172,7 @@ impl ToolTransport for HttpTools {
 				idempotency_argument,
 				..
 			} => {
-				let service = mcp_session(&self.client, endpoint, secret).await?;
+				let service = mcp_session(self.client(endpoint)?, endpoint, secret).await?;
 				let mut args = input
 					.as_object()
 					.cloned()
@@ -123,7 +183,7 @@ impl ToolTransport for HttpTools {
 				let result = service
 					.call_tool(CallToolRequestParams::new(tool_name.clone()).with_arguments(args))
 					.await
-					.map_err(|e| Error::External(format!("MCP call failed: {e}")));
+					.map_err(|e| mcp::call_error(&e));
 				let _ = service.cancel().await;
 				let result = result?;
 				if result.is_error == Some(true) {
@@ -153,7 +213,7 @@ async fn mcp_session(
 		StreamableHttpClientTransport::with_client(mcp::BoundedClient(client.clone()), config);
 	().serve(transport)
 		.await
-		.map_err(|e| Error::External(format!("MCP initialization failed: {e}")))
+		.map_err(|e| mcp::initialization_error(&e))
 }
 
 /// What the MCP server at `endpoint` says about `tool_name` in `tools/list`:
@@ -171,7 +231,7 @@ pub async fn mcp_read_only_hint(
 	tool_name: &str,
 ) -> Result<Option<bool>> {
 	crate::validate_endpoint(endpoint)?;
-	let client = clients.keyless(origins.destination(endpoint)?)?;
+	let client = clients.keyless(tool_destination(origins, endpoint)?)?;
 	// One budget covers the handshake and every page; dropping the session on
 	// timeout closes it.
 	tokio::time::timeout(MCP_LIST_TIMEOUT, async {

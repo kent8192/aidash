@@ -14,7 +14,7 @@ use serde_json::{Value, json};
 use uuid::Uuid;
 
 fn tool(id: &str) -> Entry {
-	serde_json::from_value(json!({"id":id,"version":"1.0.0","kind":"tool","name":{"en":id},"description":{"en":"review regression"},"config":{"registry_deployment":"aidash://execution-test","provider":"integration.http@1","operation":"invoke","default_alias":"plugin_0","tier":"integration","transport":{"transport":"http","endpoint":"http://127.0.0.1:9/original","replay":"read_only"}}})).unwrap()
+	serde_json::from_value(json!({"id":id,"version":"1.0.0","kind":"tool","name":{"en":id},"description":{"en":"review regression"},"config":{"registry_deployment":"aidash://execution-test","provider":"integration.http@1","operation":"invoke","default_alias":"plugin_0","tier":"integration","transport":{"transport":"http","endpoint":"https://tools.example.com/original","replay":"read_only"}}})).unwrap()
 }
 
 async fn register_keyed(
@@ -119,6 +119,54 @@ async fn registry_server_ids_survive_retries_and_concurrent_requests(
 		register_keyed(&app, &token, &entry, &failed_key).await.0,
 		200
 	);
+	cleanup(f, &url, &schema).await;
+}
+
+#[rstest::rstest]
+#[tokio::test]
+async fn registration_refuses_a_tool_endpoint_at_a_private_address_unless_its_origin_is_permitted(
+	#[future(awt)]
+	#[from(common::native_application)]
+	application_fixture: common::ApplicationFixture,
+) {
+	let (f, url, schema) = application_fixture.runtime.parts();
+	let token = tenant_token(&f.store, "acme").await;
+	let app = application_fixture.application.clone();
+	let at = |id: &str, endpoint: &str| {
+		let mut entry = tool(id);
+		entry.config["transport"]["endpoint"] = json!(endpoint);
+		entry
+	};
+	for endpoint in [
+		"http://10.255.0.7/rpc",
+		"https://[::1]/rpc",
+		"http://tools.example.com/rpc",
+	] {
+		let (status, body) = register_keyed(
+			&app,
+			&token,
+			&at("refused-tool", endpoint),
+			&Uuid::new_v4().to_string(),
+		)
+		.await;
+		assert_ne!(status, 200, "{endpoint}: {body}");
+		assert!(
+			body.to_string().contains("TOOL_ENDPOINT_FORBIDDEN"),
+			"{endpoint}: {body}"
+		);
+	}
+	f.store
+		.keyless
+		.permit_origin_of("http://10.255.0.7")
+		.unwrap();
+	let (status, body) = register_keyed(
+		&app,
+		&token,
+		&at("permitted-tool", "http://10.255.0.7/rpc"),
+		&Uuid::new_v4().to_string(),
+	)
+	.await;
+	assert_eq!(status, 200, "{body}");
 	cleanup(f, &url, &schema).await;
 }
 
