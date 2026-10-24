@@ -48,7 +48,7 @@ jobs:
           RELEASE_APP_BOT_LOGIN: ${{ steps.app.outputs.app-slug }}[bot]
           COMPLETED_WORKFLOW: ${{ github.event.workflow_run.name }}
         run: |
-          if [ "$COMPLETED_WORKFLOW" = 'CI' ]; then
+          if [ "$COMPLETED_WORKFLOW" = 'Release CI' ]; then
             python3 -u infra/gcp/control/releases.py candidate
           else
             python3 -u infra/gcp/control/releases.py staging
