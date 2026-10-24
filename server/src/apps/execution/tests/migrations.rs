@@ -23,7 +23,12 @@ use rstest::{fixture, rstest};
 use serde_json::json;
 use sqlx::PgPool;
 use std::{
-	collections::BTreeSet, fs::File, path::PathBuf, process::Stdio, sync::Arc, time::Duration,
+	collections::{BTreeMap, BTreeSet},
+	fs::File,
+	path::PathBuf,
+	process::Stdio,
+	sync::Arc,
+	time::Duration,
 };
 use tempfile::TempDir;
 use uuid::Uuid;
@@ -2829,10 +2834,28 @@ async fn node_deletion_history_preserves_deadlines_and_permanent_ownership(
 	#[future] fresh_database: MigrationFixture,
 ) {
 	let fixture = fresh_database.await;
-	fixture.migrate().await;
+	// This owner contract concerns the applied schema; command-process launch
+	// remains covered separately by the existing migration lifecycle tests.
+	aidash_server::bootstrap::migrations::run(&migration_context(&fixture.url))
+		.await
+		.unwrap();
 	fixture.tenant_root("acme").await;
 	fixture.tenant_root("sibling").await;
 	let pool = PgPool::connect(&fixture.url).await.unwrap();
+	// Grace is elapsed UTC time even when the connection crosses a local DST
+	// change. A one-day deadline remains exactly 24 hours, rather than 25.
+	let mut session = pool.acquire().await.unwrap();
+	sqlx::query("SET TIME ZONE 'America/New_York'")
+		.execute(&mut *session)
+		.await
+		.unwrap();
+	let exact_day = sqlx::query("INSERT INTO node_deletions (id,tenant,node,deleted_at,deleted_by_kind,purge_after,purge_failures) VALUES ($1,'sibling',$2,'2026-11-01 00:00:00+00','deployment_administrator','2026-11-02 00:00:00+00',0)")
+        .bind(Uuid::new_v4()).bind(aidash_domain::nodes::NodeName::derived("sibling").to_string()).execute(&mut *session).await;
+	assert!(
+		exact_day.is_ok(),
+		"one elapsed UTC day must fit in any session timezone: {exact_day:?}"
+	);
+	drop(session);
 	let node = aidash_domain::nodes::NodeName::derived("acme").to_string();
 	let insert = "INSERT INTO node_deletions (id,tenant,node,deleted_at,deleted_by_kind,purge_after,purge_failures) VALUES ($1,$2,$3,CURRENT_TIMESTAMP,'deployment_administrator',CURRENT_TIMESTAMP + INTERVAL '30 days',0)";
 	let first = Uuid::new_v4();
@@ -2901,4 +2924,116 @@ async fn node_deletion_history_preserves_deadlines_and_permanent_ownership(
 			.unwrap();
 	assert_eq!(names, 1, "the name claim is permanent");
 	pool.close().await;
+}
+
+/// The new schema must roundtrip independently of process-launch behavior,
+/// and the recorded logical fields must match the registered production model.
+#[rstest]
+#[tokio::test]
+async fn node_deletion_schema_roundtrips_with_registered_model_state(
+	#[future] fresh_database: MigrationFixture,
+) {
+	use aidash_server::apps::identity::models::NodeDeletion;
+	use reinhardt::db::migrations::{ProjectState, executor::DatabaseMigrationExecutor};
+
+	let fixture = fresh_database.await;
+	let source =
+		FilesystemSource::new(PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("migrations"));
+	let migrations = source.all_migrations().await.unwrap();
+	let mut executor = DatabaseMigrationExecutor::new(fixture.connection.clone())
+		.with_migration_history(migrations.clone());
+	executor.apply_migrations(&migrations).await.unwrap();
+	let before = recorded_keys(&fixture.connection).await;
+	let mut node_migrations: Vec<_> = migrations
+		.iter()
+		.filter(|migration| {
+			migration.app_label == "identity"
+				&& matches!(
+					migration.name.as_str(),
+					"0040_node_deletions"
+						| "0041_node_deletions_state"
+						| "0042_node_deletions_row_level_security"
+				)
+		})
+		.cloned()
+		.collect();
+	node_migrations.sort_by(|left, right| left.name.cmp(&right.name));
+	assert_eq!(node_migrations.len(), 3);
+
+	let logical = build_state_from_files(&source).await.unwrap();
+	let registered = ProjectState::from_global_registry();
+	let table = NodeDeletion::table_name();
+	// Model metadata also carries Rust identifier hints. Compare the same
+	// canonical column definitions that Reinhardt uses for schema detection.
+	let columns = |model: &reinhardt::db::migrations::ModelState| {
+		model
+			.fields
+			.iter()
+			.map(|(name, field)| {
+				(
+					name.clone(),
+					reinhardt::db::migrations::ColumnDefinition::from_field_state(name, field),
+				)
+			})
+			.collect::<BTreeMap<_, _>>()
+	};
+	assert_eq!(
+		columns(logical.find_model_by_table(table).unwrap()),
+		columns(registered.find_model_by_table(table).unwrap()),
+		"generated logical migration state must match the production ORM schema"
+	);
+	let pool = fixture.connection.clone().into_postgres().unwrap();
+	for pass in 0..2 {
+		let policy: (bool, bool) = sqlx::query_as("SELECT relrowsecurity,relforcerowsecurity FROM pg_class WHERE oid=to_regclass('public.node_deletions')")
+            .fetch_one(&pool).await.unwrap();
+		assert_eq!(
+			policy,
+			(true, true),
+			"Tenant RLS must survive reapplication"
+		);
+		let node_nullable: String = sqlx::query_scalar("SELECT is_nullable FROM information_schema.columns WHERE table_schema='public' AND table_name='node_deletions' AND column_name='node'")
+            .fetch_one(&pool).await.unwrap();
+		assert_eq!(node_nullable, "NO");
+		let identity: (String, String) = sqlx::query_as("SELECT data_type,is_nullable FROM information_schema.columns WHERE table_schema='public' AND table_name='node_deletions' AND column_name='id'")
+            .fetch_one(&pool).await.unwrap();
+		assert_eq!(identity, ("uuid".to_owned(), "NO".to_owned()));
+		let primary_key: Vec<String> = sqlx::query_scalar("SELECT a.attname::text FROM pg_constraint c JOIN pg_attribute a ON a.attrelid=c.conrelid AND a.attnum=ANY(c.conkey) WHERE c.conrelid='public.node_deletions'::regclass AND c.contype='p' ORDER BY a.attnum")
+            .fetch_all(&pool).await.unwrap();
+		assert_eq!(primary_key, ["id"]);
+		let deadline_type: String = sqlx::query_scalar("SELECT data_type FROM information_schema.columns WHERE table_schema='public' AND table_name='node_deletions' AND column_name='purge_after'")
+            .fetch_one(&pool).await.unwrap();
+		assert_eq!(deadline_type, "timestamp with time zone");
+		let trigger: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM pg_trigger WHERE tgrelid='public.node_deletions'::regclass AND tgname='node_deletions_immutable' AND NOT tgisinternal)")
+            .fetch_one(&pool).await.unwrap();
+		assert!(
+			trigger,
+			"immutable deletion facts must survive reapplication"
+		);
+		if pass == 0 {
+			executor
+				.rollback_migrations(&node_migrations)
+				.await
+				.unwrap();
+			let table: Option<String> =
+				sqlx::query_scalar("SELECT to_regclass('public.node_deletions')::text")
+					.fetch_one(&pool)
+					.await
+					.unwrap();
+			assert!(table.is_none());
+			let function: Option<String> = sqlx::query_scalar(
+				"SELECT to_regprocedure('public.aidash_node_deletion_immutable()')::text",
+			)
+			.fetch_one(&pool)
+			.await
+			.unwrap();
+			assert!(function.is_none());
+			let after = recorded_keys(&fixture.connection).await;
+			assert_eq!(after.len(), before.len() - node_migrations.len());
+			assert!(node_migrations.iter().all(|migration| {
+				!after.contains(&(migration.app_label.clone(), migration.name.clone()))
+			}));
+			executor.apply_migrations(&node_migrations).await.unwrap();
+			assert_eq!(recorded_keys(&fixture.connection).await, before);
+		}
+	}
 }
