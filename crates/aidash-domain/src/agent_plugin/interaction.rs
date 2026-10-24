@@ -151,10 +151,21 @@ pub struct CallCheckpoint {
 	pub key: String,
 	pub continuation_sends: u32,
 	pub wire_pending: bool,
+	/// Exact journal identity of the admitted send. Live callbacks own `input`
+	/// and `responses` while waiting, but must never replace this identity.
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub sent: Option<SentRound>,
 	pub input: Option<RequiredInput>,
 	pub responses: BTreeMap<String, Value>,
 	pub active: Option<ActiveInput>,
 	pub waited_millis: u64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct SentRound {
+	pub key: String,
+	pub input: Value,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
@@ -171,6 +182,7 @@ impl CallCheckpoint {
 			key,
 			continuation_sends: 0,
 			wire_pending: false,
+			sent: None,
 			input: None,
 			responses: BTreeMap::new(),
 			active: None,

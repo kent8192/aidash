@@ -33,12 +33,15 @@ pub enum PersistedCapability {
 	DegradedContext,
 	/// A logical MCP call retains its continuation and input checkpoint.
 	McpCallState,
+	/// A sent MCP round keeps its identity while a live callback waits.
+	McpSentRound,
 }
 impl PersistedCapability {
 	pub const ALL: &'static [Self] = &[
 		Self::ToolBatchState,
 		Self::DegradedContext,
 		Self::McpCallState,
+		Self::McpSentRound,
 	];
 
 	/// What this build can load. A worker only leases Runs whose state needs a subset.
@@ -50,6 +53,7 @@ impl PersistedCapability {
 			Self::ToolBatchState => "tool_batch_state",
 			Self::DegradedContext => "degraded_context",
 			Self::McpCallState => "mcp_call_state",
+			Self::McpSentRound => "mcp_sent_round",
 		}
 	}
 }
@@ -68,6 +72,12 @@ impl ToolCallState {
 			.map(|_| PersistedCapability::ToolBatchState)
 			.into_iter()
 			.chain(self.mcp.as_ref().map(|_| PersistedCapability::McpCallState))
+			.chain(
+				self.mcp
+					.as_ref()
+					.and_then(|checkpoint| checkpoint.sent.as_ref())
+					.map(|_| PersistedCapability::McpSentRound),
+			)
 	}
 }
 impl RecoveryState {

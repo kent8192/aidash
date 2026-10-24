@@ -18,7 +18,10 @@ use common::*;
 use http::Method;
 use reinhardt::test::stub::StubRouter;
 use serde_json::{Value, json};
-use std::sync::{Arc, Mutex};
+use std::sync::{
+	Arc, Mutex,
+	atomic::{AtomicBool, Ordering::SeqCst},
+};
 #[path = "support/legacy.rs"]
 mod common;
 #[path = "support/mcp.rs"]
@@ -57,6 +60,7 @@ fn plugin_files(url: &str) -> Vec<PluginFile> {
 /// Keeps the model's view of each request: the tools it was offered.
 #[derive(Default)]
 struct Model {
+	only_update: AtomicBool,
 	sampling: Mutex<Vec<Value>>,
 	offered: Mutex<Vec<Vec<String>>>,
 }
@@ -91,6 +95,7 @@ impl Model {
 		let calls: Vec<Value> = ["lookup", "update"]
 			.into_iter()
 			.map(alias)
+			.filter(|name| !self.only_update.load(SeqCst) || *name == alias("update"))
 			.filter(|name| offered.contains(name))
 			.enumerate()
 			.map(|(n, name)| {
@@ -338,6 +343,127 @@ fn results(run: &Run) -> Vec<(String, Value)> {
 			_ => None,
 		})
 		.collect()
+}
+
+/// A crashed worker must also stop if a regression assertion unwinds the test.
+struct WorkerTask(Option<tokio::task::JoinHandle<()>>);
+
+impl WorkerTask {
+	fn start(world: &World) -> Self {
+		let harness = Harness {
+			federation: world.f.clone(),
+		};
+		Self(Some(tokio::spawn(async move {
+			loop {
+				harness.worker_once().await.unwrap();
+				tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+			}
+		})))
+	}
+
+	async fn stop(mut self) {
+		let worker = self.0.take().unwrap();
+		worker.abort();
+		let error = worker.await.expect_err("the worker was interrupted");
+		assert!(error.is_cancelled(), "worker failed: {error}");
+	}
+}
+
+impl Drop for WorkerTask {
+	fn drop(&mut self) {
+		if let Some(worker) = &self.0 {
+			worker.abort();
+		}
+	}
+}
+
+async fn wait_for_run(world: &World, mut done: impl FnMut(&Run) -> bool) -> Run {
+	tokio::time::timeout(std::time::Duration::from_secs(20), async {
+		loop {
+			let run = world
+				.f
+				.store
+				.run(&TEST_FIXTURE, world.run.id)
+				.await
+				.unwrap();
+			assert!(run.error.is_none(), "worker failed: {:?}", run.error);
+			if done(&run) {
+				return run;
+			}
+			tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+		}
+	})
+	.await
+	.expect("the worker persisted the expected state")
+}
+
+fn resumed_tool(run: &Run) -> &aidash_domain::run_state::ToolCallState {
+	use aidash_domain::{RunState, WaitingState, run_state::ResumeState};
+	match &run.state {
+		RunState::ToolCall(tool) => tool,
+		RunState::Waiting(wait) => match wait.as_ref() {
+			WaitingState::Human {
+				resume: ResumeState::ToolCall(tool),
+				..
+			}
+			| WaitingState::Approval { resume: tool, .. }
+			| WaitingState::Reconciliation { resume: tool, .. } => tool,
+			other => panic!("expected a suspended tool call: {other:?}"),
+		},
+		other => panic!("expected a tool call: {other:?}"),
+	}
+}
+
+async fn round_journal(world: &World) -> Vec<aidash_server::store::Invocation> {
+	use aidash_server::apps::execution::models::Invocation;
+	use reinhardt::db::orm::Model;
+	world
+		.f
+		.store
+		.pool
+		.atomic(&TEST_FIXTURE, async |tx| {
+			Ok(Invocation::objects()
+				.all()
+				.all_with_executor(tx)
+				.await
+				.map_err(reinhardt::core::exception::Error::from)?
+				.into_iter()
+				.filter(|row| row.run_id() == world.run.id && row.tool == "mcp.round")
+				.map(Into::into)
+				.collect())
+		})
+		.await
+		.unwrap()
+}
+
+async fn expire_worker_lease_and_admitted_approval(world: &World, approval: uuid::Uuid) -> Value {
+	use aidash_server::apps::execution::{capabilities::models::CoreRecords, models::Run};
+	use reinhardt::db::orm::Model;
+	world
+		.f
+		.store
+		.pool
+		.atomic(&TEST_FIXTURE, async |tx| {
+			let mut record = Run::objects().get(world.run.id).get_with_db(tx).await?;
+			assert!(
+				record.lease_owner.is_some(),
+				"live callbacks retain their worker lease"
+			);
+			record.lease_until = Some(chrono::Utc::now() - chrono::Duration::seconds(1));
+			Run::objects().update_with_conn(tx, &record).await?;
+			let mut admitted = CoreRecords::objects().get(approval).get_with_db(tx).await?;
+			assert_eq!(admitted.kind, "tool_call");
+			assert_eq!(admitted.state, "consumed");
+			let consumed_at = admitted.data["consumed_at"].clone();
+			assert!(consumed_at.is_string());
+			admitted.expires_at = Some(chrono::Utc::now() - chrono::Duration::seconds(1));
+			CoreRecords::objects()
+				.update_with_conn(tx, &admitted)
+				.await?;
+			Ok(consumed_at)
+		})
+		.await
+		.unwrap()
 }
 
 #[rstest::rstest]
@@ -819,6 +945,248 @@ async fn state_only_modern_rounds_exhaust_the_continuation_limit_without_resetti
 		"initial request plus ten continuations"
 	);
 	assert_eq!(events(&world, "mcp.input_failed").await.len(), 1);
+	let (url, schema, f) = (world.url.clone(), world.schema.clone(), world.f.clone());
+	drop(world);
+	cleanup(f, &url, &schema).await;
+}
+
+#[rstest::rstest]
+#[case::live_form(false)]
+#[case::live_sampling_during_modern_continuation(true)]
+#[tokio::test]
+async fn worker_loss_during_a_live_callback_reconciles_the_original_send_once(
+	#[case] modern_sampling: bool,
+	#[future(awt)]
+	#[from(common::native_application)]
+	fixture: ApplicationFixture,
+) {
+	use aidash_application::ports::tools::PluginSessions;
+	use aidash_domain::{RunState, WaitingState};
+	let world = world(fixture, false).await;
+	world.model.only_update.store(true, SeqCst);
+	let form = json!({"mode":"form","message":"Choose a label","requestedSchema":{"type":"object","properties":{"label":{"type":"string","enum":["ok","no"]}},"required":["label"]}});
+	if modern_sampling {
+		world
+			.mcp
+			.modern_inputs(json!({"first-form":{"method":"elicitation/create","params":form}}));
+		world.mcp.live_input("sampling/createMessage", json!({"messages":[{"role":"user","content":{"type":"text","text":"Server sampling"}}],"systemPrompt":"sampling-only-system","maxTokens":32}));
+	} else {
+		world.mcp.live_input("elicitation/create", form);
+	}
+	let harness = Harness {
+		federation: world.f.clone(),
+	};
+	let admission = step_until(&harness, &world, |run| awaited_tool_call(run).is_some()).await;
+	let (tool_approval, original_call) = awaited_tool_call(&admission).unwrap();
+	assert_eq!(original_call.name, alias("update"));
+	assert_eq!(original_call.arguments, json!({"q":"call 0"}));
+	assert!(world.mcp.calls().is_empty());
+	let (status, response) =
+		decide_tool_call(&world.app, &world.token, tool_approval, "allow_once").await;
+	assert_eq!(status, 200, "{response}");
+
+	if modern_sampling {
+		let first = step_until(&harness, &world, |run| matches!(&run.state, RunState::Waiting(wait) if matches!(wait.as_ref(), WaitingState::Human { .. }))).await;
+		let RunState::Waiting(wait) = first.state else {
+			unreachable!()
+		};
+		let WaitingState::Human { request_id, .. } = wait.as_ref() else {
+			unreachable!()
+		};
+		// This earlier wait must remain charged when a live callback replaces the input.
+		tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+		let (status, response) = request(
+			&world.app,
+			&world.token,
+			"POST",
+			&format!("/api/human-requests/{request_id}/answer"),
+			json!({"action":"accept","content":{"label":"ok"}}),
+		)
+		.await;
+		assert_eq!(status, 200, "{response}");
+	}
+
+	// The callback travels over the live MCP stream. Observe the checkpoint that the
+	// executing worker itself persisted, then lose that worker before the callback answer.
+	let worker = WorkerTask::start(&world);
+	let waiting = wait_for_run(&world, |run| run.lease_owner.is_some() && matches!(&run.state, RunState::Waiting(wait) if if modern_sampling { matches!(wait.as_ref(), WaitingState::Approval { .. }) } else { matches!(wait.as_ref(), WaitingState::Human { .. }) })).await;
+	let before = resumed_tool(&waiting).mcp.as_ref().unwrap().clone();
+	assert_eq!(resumed_tool(&waiting).response.tool_calls[0], original_call);
+	assert_eq!(before.continuation_sends, u32::from(modern_sampling));
+	if modern_sampling {
+		assert!(
+			before.waited_millis > 0,
+			"the first form consumed human-wait budget"
+		);
+	}
+	let send_count = if modern_sampling { 2 } else { 1 };
+	assert_eq!(world.mcp.calls().len(), send_count);
+	assert!(world.model.sampling.lock().unwrap().is_empty());
+	let journal = round_journal(&world).await;
+	let original_send = journal.iter().find(|row| row.status == "STARTED").unwrap();
+	let original_key = original_send.idempotency_key.clone();
+	let expected_input = json!({
+		"call":{"id":"call-0","name":alias("update"),"arguments":{"q":"call 0"}},
+		"request_state":if modern_sampling { json!("sealed-request-state") } else { Value::Null },
+		"input_responses":if modern_sampling { json!({"first-form":{"action":"accept","content":{"label":"ok"}}}) } else { json!({}) }
+	});
+	assert_eq!(original_send.input, expected_input);
+	worker.stop().await;
+	world.f.store.plugin_sessions.close(world.run.id).await;
+	let consumed_at = expire_worker_lease_and_admitted_approval(&world, tool_approval).await;
+
+	if modern_sampling {
+		let (approval, _) = awaited_tool_call(&waiting).unwrap();
+		let (status, inbox) = request(
+			&world.app,
+			&world.token,
+			"GET",
+			"/api/capabilities/approvals?state=pending&role=approver",
+			Value::Null,
+		)
+		.await;
+		assert_eq!(status, 200, "{inbox}");
+		let card = inbox["items"]
+			.as_array()
+			.unwrap()
+			.iter()
+			.find(|card| card["id"] == json!(approval))
+			.unwrap();
+		assert_eq!(card["kind"], "sampling");
+		let (status, response) = request(&world.app, &world.token, "POST", &format!("/api/capabilities/approvals/{approval}/decide"), json!({"idempotency_key":uuid::Uuid::new_v4(),"expected_revision":card["revision"],"choice":"allow_run","targets":card["targets"],"expires_at":chrono::Utc::now()+chrono::Duration::minutes(10)})).await;
+		assert_eq!(status, 200, "{response}");
+	} else {
+		let RunState::Waiting(wait) = &waiting.state else {
+			unreachable!()
+		};
+		let WaitingState::Human { request_id, .. } = wait.as_ref() else {
+			unreachable!()
+		};
+		let (status, response) = request(
+			&world.app,
+			&world.token,
+			"POST",
+			&format!("/api/human-requests/{request_id}/answer"),
+			json!({"action":"accept","content":{"label":"ok"}}),
+		)
+		.await;
+		assert_eq!(status, 200, "{response}");
+	}
+
+	// Recovery cannot answer a dead wire callback by running it again. In particular,
+	// granting Sampling after worker loss must not start a provider inference.
+	let worker = WorkerTask::start(&world);
+	let reconciliation = wait_for_run(&world, |run| {
+		assert_eq!(world.mcp.calls().len(), send_count, "worker recovery sent an additional tools/call instead of reconciling the original send");
+		assert!(world.model.sampling.lock().unwrap().is_empty(), "worker recovery inferred for the interrupted live Sampling callback");
+		run.lease_owner.is_none() && matches!(&run.state, RunState::Waiting(wait) if matches!(wait.as_ref(), WaitingState::Reconciliation { .. }))
+	}).await;
+	worker.stop().await;
+	let RunState::Waiting(wait) = &reconciliation.state else {
+		unreachable!()
+	};
+	let WaitingState::Reconciliation {
+		request_id,
+		key,
+		resume,
+	} = wait.as_ref()
+	else {
+		unreachable!()
+	};
+	assert_eq!(key, &original_key);
+	assert_eq!(resume.response.tool_calls[0], original_call);
+	// The call was already admitted, so expiry while its worker was absent
+	// cannot ask for or consume another approval during reconciliation.
+	world
+		.f
+		.store
+		.pool
+		.atomic(&TEST_FIXTURE, async |tx| {
+			use aidash_server::apps::execution::capabilities::models::CoreRecords;
+			use reinhardt::db::orm::Model;
+			let admitted = CoreRecords::objects()
+				.get(tool_approval)
+				.get_with_db(tx)
+				.await?;
+			assert_eq!(admitted.state, "consumed");
+			assert_eq!(admitted.data["consumed_at"], consumed_at);
+			Ok(())
+		})
+		.await
+		.unwrap();
+	assert!(
+		waiting.stored_pending().unwrap()["requires"]
+			.as_array()
+			.unwrap()
+			.contains(&json!("mcp_sent_round"))
+	);
+	let checkpoint = resume.mcp.as_ref().unwrap();
+	assert_eq!(checkpoint.continuation_sends, before.continuation_sends);
+	assert!(checkpoint.waited_millis >= before.waited_millis);
+	let sent = checkpoint
+		.sent
+		.as_ref()
+		.expect("the original sent identity is durable");
+	assert_eq!(sent.key, original_key);
+	assert_eq!(sent.input, expected_input);
+	let journal = round_journal(&world).await;
+	assert_eq!(journal.len(), send_count);
+	assert_eq!(
+		journal
+			.iter()
+			.find(|row| row.idempotency_key == original_key)
+			.unwrap()
+			.status,
+		"UNCERTAIN"
+	);
+
+	let confirmed = json!({"effect":"verified original send"});
+	let (status, response) = request(
+		&world.app,
+		&world.token,
+		"POST",
+		&format!("/api/human-requests/{request_id}/answer"),
+		json!({"result":confirmed}),
+	)
+	.await;
+	assert_eq!(status, 200, "{response}");
+	// Commit reconciliation, then stop at the separate durable step before the
+	// logical tool result is consumed. The next worker must adopt it once.
+	harness.worker_once().await.unwrap();
+	let committed = world
+		.f
+		.store
+		.run(&TEST_FIXTURE, world.run.id)
+		.await
+		.unwrap();
+	assert!(matches!(committed.state, RunState::ToolCall(_)));
+	assert!(results(&committed).is_empty());
+	let journal = round_journal(&world).await;
+	let completed = journal
+		.iter()
+		.find(|row| row.idempotency_key == original_key)
+		.unwrap();
+	assert_eq!(completed.status, "COMPLETED");
+	assert_eq!(completed.input, expected_input);
+	assert_eq!(
+		completed.result,
+		Some(json!({"outcome":"complete","data":confirmed}))
+	);
+	let after = step_until(&harness, &world, |run| results(run).len() == 1).await;
+	assert_eq!(results(&after), vec![(alias("update"), confirmed)]);
+	let finished = step_until(&harness, &world, |run| run.phase().as_str() == "COMPLETED").await;
+	assert_eq!(results(&finished), results(&after));
+	assert_eq!(world.mcp.calls().len(), send_count);
+	assert!(world.model.sampling.lock().unwrap().is_empty());
+	assert_eq!(
+		events(&world, "tool.completed")
+			.await
+			.iter()
+			.filter(|event| event["idempotency_key"] == original_key)
+			.count(),
+		1
+	);
+	assert_eq!(round_journal(&world).await.len(), send_count);
 	let (url, schema, f) = (world.url.clone(), world.schema.clone(), world.f.clone());
 	drop(world);
 	cleanup(f, &url, &schema).await;

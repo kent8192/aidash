@@ -442,12 +442,19 @@ fn the_retired_approval_waits_cannot_become_executable() {
 fn a_saved_mcp_checkpoint_requires_a_worker_that_understands_its_continuation() {
 	let mut data = tool_data();
 	data["mcp"] = json!({"key":"call","continuation_sends":1,"wire_pending":false,"input":{"request_state":"opaque","requests":{}},"responses":{},"active":null,"waited_millis":5000});
-	let pending = requiring(&["mcp_call_state"], data.clone());
-	let (state, recovery) = decode(RunPhase::ToolCall, pending.clone()).unwrap();
-	assert_eq!(
-		StateRequirements::of(&state, &recovery).names(),
-		["mcp_call_state"]
-	);
-	assert_eq!(encode(&state, &recovery).unwrap(), pending);
-	assert!(decode(RunPhase::ToolCall, envelope(data)).is_err());
+	let mut sent_data = data.clone();
+	sent_data["mcp"]["sent"] = json!({"key":"call:mcp:round:1","input":{"call":{"id":"call-1","name":"echo","arguments":{}},"request_state":"opaque","input_responses":{}}});
+	for (data, requirements) in [
+		(data, vec!["mcp_call_state"]),
+		(sent_data, vec!["mcp_call_state", "mcp_sent_round"]),
+	] {
+		let pending = requiring(&requirements, data.clone());
+		let (state, recovery) = decode(RunPhase::ToolCall, pending.clone()).unwrap();
+		assert_eq!(
+			StateRequirements::of(&state, &recovery).names(),
+			requirements
+		);
+		assert_eq!(encode(&state, &recovery).unwrap(), pending);
+		assert!(decode(RunPhase::ToolCall, envelope(data)).is_err());
+	}
 }
