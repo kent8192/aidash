@@ -5773,6 +5773,11 @@ async fn provider_registered_sources_join_existing_lifecycle_phases(
 	state.provider_status = None;
 	state.extra_context_sources = vec![
 		(
+			ContextSourcePhase::FixedData,
+			"reference_documents".into(),
+			json!([]),
+		),
+		(
 			ContextSourcePhase::SnapshotData,
 			"inventory_extension".into(),
 			json!({"stock":"warehouse 12"}),
@@ -5793,4 +5798,21 @@ async fn provider_registered_sources_join_existing_lifecycle_phases(
 	assert!(content.contains("Tuesday 10:00"));
 	assert!(!requests[0].instructions.contains("warehouse 12"));
 	assert!(!requests[0].instructions.contains("Tuesday 10:00"));
+	// An admitted automatic document provider retains its empty fixed payload.
+	// In contrast, a mount-only provider has no such plan target at all.
+	let documents = match &requests[0].context {
+		ModelContext::Legacy(context) => context["current"].get("reference_documents").cloned(),
+		ModelContext::Ordered(context) => serde_json::from_str::<Value>(&context.stable)
+			.unwrap()
+			.get("reference_documents")
+			.cloned(),
+		ModelContext::Native(context) => context
+			.attachments
+			.iter()
+			.find(|item| {
+				item.source == aidash_domain::projection::native::Source::ReferenceDocuments
+			})
+			.map(|item| item.content.clone()),
+	};
+	assert_eq!(documents, Some(json!([])));
 }
