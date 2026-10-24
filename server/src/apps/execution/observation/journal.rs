@@ -509,7 +509,7 @@ impl DecisionJournal for Journal {
 				)
 				.value_expr(
 					Alias::new("answers"),
-					answers.map_or(Expr::cust("NULL"), |a| Expr::value(json!(a)).into()),
+					answers.map_or(Expr::cust("NULL"), |a| Expr::value(json!(a))),
 				)
 				.value(Alias::new("provider_report"), json!(report))
 				.and_where(Expr::col("id").eq(Expr::value(permit.record.attempt)))
