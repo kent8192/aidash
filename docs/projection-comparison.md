@@ -6,6 +6,10 @@ implements the [frozen protocol](decisions/projection-comparison-protocol.md)
 using the [fixed-task evaluator](evaluation.md). It does not change the default:
 **Legacy remains selected, and existing definitions and Runs retain their pins.**
 
+The [2026-10-24 evidence report](evaluation/projection-comparison-2026-10-24.md)
+records 88 scripted fixture Runs, their calibration failures and all unmeasured
+live-provider metrics. It concludes that the evidence is inconclusive.
+
 The checked-in configuration is
 [`tests/evaluation/projection-campaign.toml`](../tests/evaluation/projection-campaign.toml).
 A plan is an immutable description of an experiment, not approval to spend.
@@ -94,8 +98,10 @@ An operator preparing a live campaign must supply all of the following facts:
   not automatic verification of the remote binary.
 - The Tenant's active connected Provider Credential and its current binding;
   models use that credential, rather than an environment provider key or Plan
-  Connection. `AIDASH_EVALUATION_TOKEN` authorizes Registry operations and
-  `AIDASH_EVALUATION_SUBJECT_TOKEN` authorizes Tenant Tasks. Tokens are read
+  Connection. `AIDASH_EVALUATION_TOKEN` authorizes Deployment Administrator
+  inspection of the credential and binding;
+  `AIDASH_EVALUATION_SUBJECT_TOKEN` authorizes Tenant Registry, Catalog and Task
+  operations. Tokens are read
   from the environment and omitted from command arguments and artifacts.
 - Fresh exact-route evidence (`tag`, `source`, `verified_at`, `expires_at`),
   required reasoning and model caps, a fixed estimator configuration, and ZDR

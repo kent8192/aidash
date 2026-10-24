@@ -12,6 +12,10 @@ shared budget, operator ledger import and frozen confirmation phases, use the
 corpus is v2; `tests/evaluation/corpus-v1.toml` preserves the v1 snapshot for
 validating historical results.
 
+The [2026-10-24 projection report](evaluation/projection-comparison-2026-10-24.md)
+retains the measured fixture outcomes and calibration failures separately from
+the live experiment, which has not run.
+
 Results are measurements. Every manifest sets `grade: "measurement-only"` and
 all `approvals` to `false`. Conclusions are limited to the tested tasks, the
 tested model or fixture configuration and the recorded repeat counts. A
@@ -146,13 +150,13 @@ ignored.
 Before it registers anything or starts a Run, the live tier refuses unless:
 
 - `--base-url` is `https://`; plain `http://` is accepted only for a loopback
-  Node (`localhost`, `127.0.0.1`, `::1`), because both bearer tokens are sent
-  with every request. Redirects are never followed: urllib would resend the
+  Node (`localhost`, `127.0.0.1`, `::1`), because both bearer tokens are used
+  against that Node. Redirects are never followed: urllib would resend the
   bearer token to the new location, so a 30x response is a failed request.
   Plain `http://` never goes through an environment proxy (`HTTP_PROXY`),
   which would otherwise receive both tokens in plaintext;
-- both bearer tokens are set (Deployment Administrator for Registry writes, Tenant subject for
-  Tasks); neither is copied into the manifest;
+- both bearer tokens are set (Deployment Administrator for credential/binding inspection,
+  Tenant subject for Registry, Catalog and Tasks); neither is copied into the manifest;
 - the named Provider Credential exists, is `active`, and is the credential the
   Tenant's Provider Credential Binding for its provider names (Run admission
   pins the bound credential, not the one on the command line), the binding has
@@ -288,28 +292,31 @@ check observed are kept only as `arguments_sha256` and `observed_sha256`,
 because a model can copy task data into them. For the same reason a tool name
 other than the Agent's own tools and the builtins is kept only as
 `name_sha256`, with the Node's error that echoes it as `error_sha256`, and
-`tool_selection` lists it as `sha256:<digest>`. Fixture tools point at an unroutable endpoint
-and their Tool call approvals are denied, so a live Run never causes an external
-tool effect. Usage Records have no HTTP read endpoint, so live token counts come
-from Workspace events (at most the latest 100) and do not price anything. The
-live tier has been exercised only against in-memory fakes; it has never been run
-against a provider.
+`tool_selection` lists it as `sha256:<digest>`. Without an approved
+`fixture_service`, fixture tools point at an unroutable endpoint and their Tool
+call approvals are denied. With that approval, only the exact synthetic service
+and task/alias allowlist can receive calls. Usage Records have no HTTP read
+endpoint, so the live manifest's token counts come from Workspace events (at
+most the latest 100) and do not price anything. Complete ledger imports supply
+the separate campaign report. No live-provider campaign was run for the
+[2026-10-24 report](evaluation/projection-comparison-2026-10-24.md).
 
 ## Corpus
 
 `tests/evaluation/` is versioned with the code:
 
-| Path                   | Content                                                                               |
-| ---------------------- | ------------------------------------------------------------------------------------- |
-| `corpus.toml`          | Tasks, fixture models, fixture tools and paired comparisons (`fixed-task-corpus-v1`). |
-| `memory.toml`          | The memory matrix corpus (`memory-corpus-v1`).                                        |
-| `snapshots/`           | Controlled task inputs. They are embedded in the Task text.                           |
-| `oracles/`             | Held-out checks. They are never sent to an Agent.                                     |
-| `schema/*.schema.json` | JSON Schemas of the experiment and result manifests.                                  |
+| Path                   | Content                                                                                |
+| ---------------------- | -------------------------------------------------------------------------------------- |
+| `corpus.toml`          | Tasks, fixture models, fixture tools and matched comparisons (`fixed-task-corpus-v2`). |
+| `corpus-v1.toml`       | Archived `fixed-task-corpus-v1` for historical result validation.                      |
+| `memory.toml`          | The memory matrix corpus (`memory-corpus-v1`).                                         |
+| `snapshots/`           | Controlled task inputs. They are embedded in the Task text.                            |
+| `oracles/`             | Held-out checks. They are never sent to an Agent.                                      |
+| `schema/*.schema.json` | JSON Schemas of the experiment and result manifests.                                   |
 
 The corpus SHA-256 covers `corpus.toml` and every input and oracle file it
 references. The memory corpus has its own SHA-256. Changing a task, an input,
-an oracle or the evaluator (`evaluator.sha256` covers the four scripts and the
+an oracle or the evaluator (`evaluator.sha256` covers the five scripts and the
 two manifest schemas) changes the manifest's identity, and direct comparisons
 with earlier manifests are no longer valid. Each invocation reads the corpus
 files once: Task text and oracles use exactly the bytes that were hashed. Both
