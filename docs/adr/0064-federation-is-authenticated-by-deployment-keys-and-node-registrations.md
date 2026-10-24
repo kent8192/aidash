@@ -49,3 +49,14 @@ miss the overlap, or whose keys are lost or compromised, need independent manual
 confirmation. A normal transition cannot clear quarantine or enable a disabled
 record. The Deployment-wide Federation switch and each receiver's authority
 remain unchanged.
+
+## Later decision: Tenant authority for remote Graph View
+
+The 2026-10-23 [Issue 301 decision](https://github.com/kent8192/aidash/issues/301)
+requires remote Graph View to use ordinary Subject Federation and the receiving
+Tenant's policy, and calls for removing Peer Graph Grants and the special
+Deployment Administrator projection paths. That change is tracked separately by
+[Issue 486](https://github.com/kent8192/aidash/issues/486). It is a decision for
+future implementation, not evidence that the grant APIs described above have
+already been removed. The rollover contract above describes the existing grants
+while they remain available.

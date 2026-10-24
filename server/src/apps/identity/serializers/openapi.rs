@@ -24,6 +24,42 @@ use reinhardt::rest::openapi::OpenApiSchema;
 use serde_json::Value;
 
 pub(crate) fn register(contracts: &mut Contracts, document: &mut OpenApiSchema) -> Result<()> {
+	{
+		use super::manual_keys as k;
+		use views::manual_keys as v;
+		contracts.query::<_, k::RegistrationKeySelector>(document, v::registration_status)?;
+		contracts.request::<_, k::RegistrationKeyChange>(document, v::registration_change)?;
+		contracts.query::<_, k::GraphKeySelector>(document, v::graph_status)?;
+		contracts.request::<_, k::GraphKeyChange>(document, v::graph_change)?;
+		contracts.response::<_, k::ReceivingKeyStatus>(
+			document,
+			v::registration_status,
+			200,
+			"application/json",
+		)?;
+		contracts.response::<_, k::ReceivingKeyStatus>(
+			document,
+			v::registration_change,
+			200,
+			"application/json",
+		)?;
+		contracts.response::<_, k::ReceivingKeyStatus>(
+			document,
+			v::graph_status,
+			200,
+			"application/json",
+		)?;
+		contracts.response::<_, k::ReceivingKeyStatus>(
+			document,
+			v::graph_change,
+			200,
+			"application/json",
+		)?;
+		contracts.path(document, v::registration_status, &["String", "String"])?;
+		contracts.path(document, v::registration_change, &["String", "String"])?;
+		contracts.path(document, v::graph_status, &["String"])?;
+		contracts.path(document, v::graph_change, &["String"])?;
+	}
 	use super::desktop;
 	use super::provider_credentials as pc;
 	use aidash_application::provider_credentials::Metadata;

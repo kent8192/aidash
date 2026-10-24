@@ -5,6 +5,12 @@ Earlier distribution-specific job details are retained in the
 cluster acceptance supports Kubernetes with kind; historical job names and
 results do not validate the GKE migration.
 
+Application PRs run **CI** (`ci.yml`). Pushes to `develop/**`, including merges
+into `develop/0.1.0`, run **Release CI** (`release-ci.yml`), which calls the same
+CI suite at that exact source commit. Main retains CI's authenticated release
+verification. The PR check remains **CI Success**; release automation accepts
+only the exact successful develop push from Release CI as source evidence.
+
 The Rust coverage upload job installs Codecov CLI 11.3.1 from PyPI through the pinned
 `codecov/codecov-action`'s official `use_pypi` input. OIDC authentication,
 the explicit LCOV input and `fail_ci_if_error: true` remain required.

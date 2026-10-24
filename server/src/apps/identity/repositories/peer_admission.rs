@@ -31,7 +31,9 @@ use reinhardt::query::{
 use serde_json::Value;
 use std::{borrow::Borrow, ops::DerefMut};
 use uuid::Uuid;
+pub(crate) mod terminal;
 struct Record {
+	cancelled: bool,
 	id: Uuid,
 	node: String,
 	source_node: String,
@@ -43,6 +45,7 @@ struct Record {
 	description: Value,
 }
 crate::native_record!(Record {
+	cancelled,
 	id,
 	node,
 	source_node,
@@ -64,6 +67,7 @@ impl From<Record> for State {
 	fn from(r: Record) -> Self {
 		Self {
 			id: r.id,
+			cancelled: r.cancelled,
 			node: stored_node(&r.node),
 			source_node: r.source_node,
 			grant_id: r.grant_id,
@@ -79,6 +83,7 @@ impl From<crate::apps::federation::peer::models::AuthorizationRemoteAdmission> f
 	fn from(r: crate::apps::federation::peer::models::AuthorizationRemoteAdmission) -> Self {
 		Self {
 			id: r.id,
+			cancelled: r.cancelled,
 			node: stored_node(&r.node),
 			source_node: r.source_node,
 			grant_id: r.grant_id,
@@ -437,6 +442,11 @@ impl PeerAdmissionScope for Owned {
 			.map_err(Into::into)
 	}
 	async fn required_record(&mut self, id: Uuid) -> Result<State> {
+		crate::apps::execution::repositories::node_cancellations::require_admission_open(
+			&mut **self.access.tx,
+			id,
+		)
+		.await?;
 		let result: NativeResult<State> = async {
 			let access = &mut *self.access;
 			let run_id = id;
@@ -480,6 +490,11 @@ impl PeerAdmissionScope for Owned {
 		self.access.home_corpus_digest = digest
 	}
 	async fn activation_record(&mut self, id: Uuid) -> Result<Option<State>> {
+		crate::apps::execution::repositories::node_cancellations::require_admission_open(
+			&mut **self.access.tx,
+			id,
+		)
+		.await?;
 		let result: NativeResult<Option<State>> = async {
 			let access = &mut *self.access;
 			let row: Option<Record> = {
@@ -893,13 +908,98 @@ impl PeerAdmissionRepository for Repository<'_> {
 		let scope = store.run_tenancy(id).await?;
 		store.inspect_run(&scope, id).await.map_err(Into::into)
 	}
+	async fn cancel_admission(
+		&self,
+		tenant: &str,
+		receiver: &aidash_domain::nodes::NodeName,
+		source: &str,
+		subject: &str,
+		request: &aidash_application::federation::inbound::RequestDigest<'_>,
+		id: Uuid,
+		grant: Uuid,
+	) -> Result<aidash_domain::federation::execution::admission::Activation> {
+		let store = &self.runtime.store;
+		let mut tx = store.pool.begin(&TenancyScope::tenant(tenant)?).await?;
+		crate::authorization::Authorization::load_with_mode(&mut tx, tenant, true).await?;
+		super::nodes::lock_tenant(&mut *tx, tenant).await?;
+		crate::transactions::gate::read_in(&mut tx).await?;
+		let owner = store.deployment.node(receiver.clone());
+		let sender = aidash_domain::nodes::NodeAddress::parse(source)?;
+		let record: Option<Record> = crate::database::native::query_as(
+			&Query::select()
+				.column(Asterisk)
+				.from(Alias::new("authorization_remote_admissions"))
+				.and_where(Expr::col("id").eq(Expr::value(id)))
+				.and_where(Expr::col("tenant").eq(tenant))
+				.lock(LockType::Update)
+				.to_string(PostgresQueryBuilder),
+		)
+		.fetch_optional(&mut *tx)
+		.await?;
+		let mut record = if let Some(record) = record {
+			record
+		} else {
+			if super::nodes::is_live(&mut *tx, tenant, receiver.as_str()).await? {
+				return Err(aidash_application::Error::Forbidden);
+			}
+			if let Some(saved) = terminal::replay_in(
+				&mut *tx, tenant, &owner, &sender, subject, id, grant, request,
+			)
+			.await?
+			{
+				tx.commit().await?;
+				return Ok(saved);
+			}
+			return Err(aidash_application::Error::Forbidden);
+		};
+		if record.node != receiver.as_str()
+			|| record.source_node != source
+			|| record.grant_id != grant
+		{
+			return Err(aidash_application::Error::Forbidden);
+		}
+		cancel_in(tx.as_mut(), tenant, id).await?;
+		record.cancelled = true;
+		let run: Option<aidash_domain::run_state::RawRun> = crate::database::query_as(
+			&Query::select()
+				.column(Asterisk)
+				.from(Alias::new("runs"))
+				.and_where(Expr::col("id").eq(Expr::value(id)))
+				.and_where(Expr::col("tenant").eq(tenant))
+				.lock(LockType::Update)
+				.to_string(PostgresQueryBuilder),
+		)
+		.fetch_optional(&mut *tx)
+		.await?;
+		if let Some(raw) = run {
+			if raw.metadata.node != *receiver
+				|| raw.metadata.home_node != source
+				|| raw.metadata.task_id != record.task_id
+			{
+				return Err(aidash_application::Error::Forbidden);
+			}
+			if !raw.metadata.phase.is_terminal()
+				&& raw.metadata.control != aidash_domain::RunControl::Cancelled
+			{
+				store
+					.control_in(&mut tx, id, aidash_domain::RunControlAction::Cancel)
+					.await?;
+			}
+		}
+		let activation = terminal::response_in(&mut *tx, &store.deployment, &record).await?;
+		tx.commit().await?;
+		self.runtime.notify.notify_waiters();
+		Ok(activation)
+	}
+
 	async fn control(&self, id: Uuid, action: &RemoteExecutionControl) -> Result<RunInspection> {
 		let store = &self.runtime.store;
 		let scope = store.run_tenancy(id).await?;
-		store
-			.control(&scope, id, action.action())
-			.await
-			.map_err(Into::into)
+		let mut tx = store.pool.begin(&scope).await?;
+		crate::transactions::gate::read_in(&mut tx).await?;
+		let run = store.control_in(&mut tx, id, action.action()).await?;
+		tx.commit().await?;
+		Ok(run)
 	}
 	fn messages(&self, run: &Run) -> Box<dyn AdmissionMessages + '_> {
 		Box::new(crate::federation::Home::new(
@@ -963,4 +1063,30 @@ impl From<aidash_domain::federation::execution::admission::Admission>
 			expires_at: v.expires_at,
 		}
 	}
+}
+
+/// Permanent cancellation belongs to the original admission row. The caller
+/// retains the policy/gate and exact binding locks; this never invents a Run.
+pub(crate) async fn cancel_in(
+	tx: &mut dyn reinhardt::db::backends::TransactionExecutor,
+	tenant: &str,
+	id: Uuid,
+) -> NativeResult<()> {
+	let changed = crate::database::native::query(
+		&Query::update()
+			.table(Alias::new("authorization_remote_admissions"))
+			.value(Alias::new("cancelled"), true)
+			.and_where(Expr::col("id").eq(Expr::value(id)))
+			.and_where(Expr::col("tenant").eq(tenant))
+			.to_string(PostgresQueryBuilder),
+	)
+	.execute(tx)
+	.await?
+	.rows_affected();
+	if changed != 1 {
+		return Err(crate::Error::Conflict(
+			"cancellation admission owner disappeared".into(),
+		));
+	}
+	Ok(())
 }

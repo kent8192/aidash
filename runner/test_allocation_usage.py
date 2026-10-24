@@ -4,6 +4,7 @@ This is the primary owner of the durable provider journal and delete barrier;
 Kubernetes here is a fake API, not proof of a real gVisor deployment.
 """
 import copy
+import base64
 import contextlib
 import io
 import hashlib
@@ -175,6 +176,140 @@ class AllocationUsageTest(unittest.TestCase):
         runner.kube = kube
         runner.allocation_housekeeping()
         self.assertEqual(len(runner.allocation_receipts()['receipts']), 1)
+
+    def test_stopped_uncertain_ack_preserves_outcome_and_independent_allocation(self):
+        # Shared with the Rust digest owner, including Unicode and omitted displays.
+        self.assertEqual(self.runner.output_digest({'operation_id': '00000000-0000-0000-0000-000000000002', 'digest': 'intent', 'stdout': 'aGk=', 'files': [{'path': '結果.txt', 'size': 2, 'object_id': 'file', 'digest': 'hash'}], 'truncated': True}),
+                         '0b9c0a8283390da0eb7572f59944f0a7dff0f8503cf29dc25bb74dc2d5d62503')
+        self.runner.observe_allocation(self.record, self.pod)
+        self.finish()
+        before = self.runner.allocation_receipts()
+        self.record.update(status='uncertain', digest='command', termination_confirmed=True,
+                           stdout='saved partial output', files=[], displays=[], truncated=True, output_harvested=True, effects_may_have_occurred=True,
+                           error='output harvesting failed')
+        save(self.runner.path(self.operation), self.record)
+        for proof in (False, None, 'true', 1):
+            with self.subTest(proof=proof):
+                self.runner.update(self.operation, termination_confirmed=proof)
+                with self.assertRaises(Rejected):
+                    self.runner.acknowledge(self.operation, 'command')
+                self.assertEqual(self.runner.get(self.operation)['stdout'], 'saved partial output')
+        self.runner.update(self.operation, termination_confirmed=True)
+        with self.assertRaises(Rejected):
+            self.runner.acknowledge(self.operation, 'wrong-digest')
+        self.assertEqual(self.runner.cancel(self.operation)['status'], 'uncertain')
+        proof = self.runner.output_digest(self.runner.get(self.operation))
+        for runner in (self.runner, self.restart()):
+            outcome = runner.acknowledge(self.operation, 'command', proof)
+            self.assertEqual(outcome['status'], 'uncertain')
+            self.assertTrue(outcome['acknowledged'])
+            self.assertTrue(outcome['effects_may_have_occurred'])
+            self.assertEqual(outcome['error'], 'output harvesting failed')
+            self.assertEqual(outcome['stdout'], '')
+            self.assertEqual(runner.allocation_receipts(), before)
+
+    def test_actual_stopped_uncertain_harvest_retries_before_adopted_ack(self):
+        content = b'recovered file'
+        file = dict(path='saved.txt', object_id=hashlib.sha256(content).hexdigest(),
+                    digest=hashlib.sha256(content).hexdigest(), size=len(content))
+        self.record.update(status='running', digest='command', container_id='a'*64,
+                           cancel_requested=False, executed=True, started_at=1790000000,
+                           stdout='', displays=[], files=[], truncated=False,
+                           request={'usage_tenant':'acme', 'kind':'shell', 'files':[]})
+        save(self.runner.path(self.operation), self.record)
+        self.pod['status']['containerStatuses'][0]['state'] = {
+            'terminated':{'finishedAt':'2026-10-02T00:02:00Z', 'exitCode':0}}
+        self.runner.config.update(output_bytes=1024, working_bytes=1<<20)
+        self.runner.kube = Mock(return_value=Mock(stdout=json.dumps(self.pod).encode()))
+        self.runner.exec_collector = Mock(side_effect=RuntimeError('collector harvest failed'))
+        def failed_guard(record, action, **_):
+            if action == 'status': return {'termination_confirmed':True}
+            raise RuntimeError('guard harvest failed')
+        self.runner.guard = failed_guard
+        self.runner.reconcile(self.operation)
+        saved = self.runner.get(self.operation)
+        self.assertEqual(saved['status'], 'uncertain')
+        self.assertIs(saved['termination_confirmed'], True)
+        error = saved['error']
+        with self.assertRaises(RuntimeError):
+            self.runner.acknowledge(self.operation, 'command')
+        self.assertFalse(self.runner.get(self.operation).get('output_harvested', False))
+        self.assertFalse(self.operation in self.runner.active)
+        allocation = json.loads((self.root / 'allocations' / (self.uid+'.json')).read_bytes())
+        self.assertFalse(allocation.get('cleanup_ready', False))
+        entered, release = threading.Event(), threading.Event()
+        def guard(record, action, **_):
+            if action == 'status': return {'termination_confirmed':True}
+            if action == 'export': return {'files':[file]}
+            if action == 'logs': return {'stdout':base64.b64encode(b'recovered stdout').decode()}
+            if action == 'read':
+                entered.set()
+                if not release.wait(5): raise RuntimeError('test harvest not released')
+                return {'data':base64.b64encode(content).decode()}
+            raise AssertionError(action)
+        self.runner.guard = guard
+        failures = []
+        def ack():
+            try: self.runner.acknowledge(self.operation, 'command')
+            except Exception as error: failures.append(error)
+        worker = threading.Thread(target=ack)
+        worker.start()
+        try:
+            self.assertTrue(entered.wait(5))
+            with self.assertRaises(Rejected): self.runner.acknowledge(self.operation, 'command')
+            self.assertFalse(self.runner.get(self.operation).get('output_harvested', False))
+        finally:
+            release.set()
+            worker.join(5)
+        self.assertFalse(worker.is_alive())
+        self.assertEqual(len(failures), 1)
+        self.assertIsInstance(failures[0], Rejected)
+        harvested = self.runner.get(self.operation)
+        self.assertEqual(harvested['status'], 'uncertain')
+        self.assertEqual(harvested['error'], error)
+        self.assertIs(harvested['output_harvested'], True)
+        self.assertEqual((self.root / (self.operation+'.files') / file['object_id']).read_bytes(), content)
+        # Crash before server adoption: the runner still retains every payload.
+        runner = self.restart()
+        public = runner.public(runner.get(self.operation))
+        self.assertEqual(public['stdout'], base64.b64encode(b'recovered stdout').decode())
+        for proof in (None, 'wrong-output-digest'):
+            with self.assertRaises(Rejected): runner.acknowledge(self.operation, 'command', proof)
+        self.assertEqual(base64.b64decode(runner.output_chunk(self.operation, file['object_id'], 0)['data']), content)
+        self.finish()
+        before = runner.allocation_receipts()
+        self.assertEqual(len(before['receipts']), 1)
+        # A crash after the saved ACK but before payload unlink retries drain.
+        with patch('pathlib.Path.unlink', side_effect=OSError('interrupted unlink')):
+            with self.assertRaises(OSError): runner.acknowledge(self.operation, 'command', public['output_digest'])
+        self.assertTrue((self.root / (self.operation+'.files')).exists())
+        runner = self.restart()
+        acknowledged = runner.acknowledge(self.operation, 'command', public['output_digest'])
+        self.assertEqual(acknowledged['status'], 'uncertain')
+        self.assertEqual(acknowledged['error'], error)
+        runner = self.restart()
+        runner.acknowledge(self.operation, 'command', public['output_digest'])
+        self.assertEqual(runner.allocation_receipts()['receipts'], before['receipts'])
+        self.assertFalse((self.root / (self.operation+'.files')).exists())
+
+    def test_stopped_python_harvest_preserves_cell_stdout_and_displays(self):
+        self.record.update(status='uncertain', digest='cell', termination_confirmed=True,
+                           stdout='cHl0aG9u', displays=[{'mime':'image/png','data':'saved'}], files=[], truncated=True,
+                           error='cell harvest failed', request={'usage_tenant':'acme','kind':'python','files':[]})
+        save(self.runner.path(self.operation), self.record)
+        self.runner.config.update(working_bytes=1<<20)
+        def guard(record, action, **_):
+            if action == 'status': return {'termination_confirmed':True}
+            if action == 'export': return {'files':[]}
+            raise AssertionError('Python must not read shell logs: '+action)
+        self.runner.guard = guard
+        self.runner.observe_allocation(self.record, self.pod)
+        with self.assertRaises(Rejected): self.runner.acknowledge(self.operation, 'cell')
+        saved = self.runner.get(self.operation)
+        self.assertEqual(saved['stdout'], self.record['stdout'])
+        self.assertEqual(saved['displays'], self.record['displays'])
+        self.assertEqual(saved['status'], 'uncertain')
+        self.assertEqual(saved['error'], 'cell harvest failed')
 
     def test_restart_replays_a_durable_harvest_handoff_after_operation_ack(self):
         self.record.update(status='completed', digest='cell', container_id='a'*64,

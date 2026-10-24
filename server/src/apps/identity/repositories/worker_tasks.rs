@@ -187,52 +187,52 @@ impl WorkerTaskScope for WorkerTasks<'_> {
 	}
 	async fn insert_origin(&mut self, task: Uuid, source: Uuid) -> Result<()> {
 		let result: NativeResult<()> = async {
-			{
-				let query_bind_1 = task;
-				let query_bind_2 = source;
-				let query_bind_3 = &self.access.identity.tenant;
-				let query_bind_4 = &self.access.identity.subject;
-				let query_bind_5 = &self.access.subjects;
-				crate::database::native::query(
-					&Query::insert()
-						.into_table(Alias::new("authorization_task_origins"))
-						.columns([
-							Alias::new("task_id"),
-							Alias::new("source_run_id"),
-							Alias::new("tenant"),
-							Alias::new("root_subject"),
-							Alias::new("subject_chain"),
-						])
-						.from_subquery(
-							Query::select()
-								.expr(SimpleExpr::CustomWithExpr(
-									"(?)".to_owned(),
-									vec![Expr::value(query_bind_1.to_owned()).into()],
-								))
-								.expr(SimpleExpr::CustomWithExpr(
-									"(?)".to_owned(),
-									vec![Expr::value(query_bind_2.to_owned()).into()],
-								))
-								.expr(SimpleExpr::CustomWithExpr(
-									"(?)".to_owned(),
-									vec![Expr::value(query_bind_3.to_owned()).into()],
-								))
-								.expr(SimpleExpr::CustomWithExpr(
-									"(?)".to_owned(),
-									vec![Expr::value(query_bind_4.to_owned()).into()],
-								))
-								.expr(SimpleExpr::CustomWithExpr(
-									"(?)".to_owned(),
-									vec![crate::database::text_array(query_bind_5.to_owned())],
-								))
-								.to_owned(),
-						)
-						.on_conflict(OnConflict::columns(["task_id"]).do_nothing().to_owned())
-						.to_string(PostgresQueryBuilder),
-				)
-				.execute(&mut **self.access.tx)
-				.await?;
+			// Retain insertion-time source existence, not a perpetual Run lifetime.
+			let source_row = crate::database::native::query(
+				&Query::select()
+					.column(Alias::new("id"))
+					.from(Alias::new("runs"))
+					.and_where(Expr::col("id").eq(Expr::value(source)))
+					.and_where(
+						Expr::col("tenant")
+							.eq(crate::database::scope::tenant_of("tasks", "id", task)),
+					)
+					.lock(reinhardt::query::LockType::KeyShare)
+					.to_string(PostgresQueryBuilder),
+			)
+			.fetch_optional(&mut **self.access.tx)
+			.await?;
+			if source_row.is_none() {
+				return Err(crate::Error::Forbidden);
 			}
+
+			crate::database::native::query(
+				&Query::insert()
+					.into_table(Alias::new("authorization_task_origins"))
+					.columns(
+						[
+							"task_id",
+							"source_run_id",
+							"tenant",
+							"root_subject",
+							"subject_chain",
+						]
+						.map(Alias::new),
+					)
+					.from_subquery(
+						Query::select()
+							.expr(Expr::value(task))
+							.expr(Expr::value(source))
+							.expr(Expr::value(&self.access.identity.tenant))
+							.expr(Expr::value(&self.access.identity.subject))
+							.expr(crate::database::text_array(self.access.subjects.clone()))
+							.to_owned(),
+					)
+					.on_conflict(OnConflict::columns(["task_id"]).do_nothing().to_owned())
+					.to_string(PostgresQueryBuilder),
+			)
+			.execute(&mut **self.access.tx)
+			.await?;
 			Ok(())
 		}
 		.await;

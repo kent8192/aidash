@@ -56,3 +56,5 @@ pub mod tenants;
 pub mod invitations;
 
 pub(crate) mod tenant_administration;
+
+pub(crate) mod manual_keys;

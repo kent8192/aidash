@@ -59,6 +59,7 @@ impl Nodes {
 			created_at: node.created_at,
 			state,
 			storage_retained_until_purge,
+			retained_storage_bytes: None,
 			deletion: deletion.map(|row| NodeDeletionRecord {
 				id: row.id,
 				deleted_at: row.deleted_at,
@@ -96,13 +97,22 @@ impl Nodes {
 		} else {
 			Default::default()
 		};
-		Ok(rows
-			.into_iter()
-			.map(|node| {
-				let deletion = deletions.remove(node.name.as_str());
-				self.record(node, deletion)
-			})
-			.collect())
+		let mut records = Vec::with_capacity(rows.len());
+		for node in rows {
+			let bytes = if page.include_deleted {
+				Some(
+					super::node_purge::retained_storage_bytes_in(tx, tenant, node.name.as_str())
+						.await?,
+				)
+			} else {
+				None
+			};
+			let deletion = deletions.remove(node.name.as_str());
+			let mut record = self.record(node, deletion);
+			record.retained_storage_bytes = bytes;
+			records.push(record);
+		}
+		Ok(records)
 	}
 
 	pub(crate) async fn list(
@@ -333,7 +343,7 @@ impl Nodes {
 	) -> Result<NodeRecord> {
 		let name = domain::NodeName::parse(&name)?;
 		let f = self.runtime.clone();
-		let (node, deletion) = match actor {
+		let (node, deletion, bytes) = match actor {
 			Actor::DeploymentAdministrator => {
 				f.store
 					.pool
@@ -392,7 +402,9 @@ impl Nodes {
 					.await?
 			}
 		};
-		Ok(self.record(node, deletion))
+		let mut record = self.record(node, deletion);
+		record.retained_storage_bytes = Some(bytes);
+		Ok(record)
 	}
 }
 
@@ -429,7 +441,7 @@ async fn change_in(
 	name: &str,
 	change: &Change,
 	actor: &AdministrationActor,
-) -> Result<(Node, Option<NodeDeletion>)> {
+) -> Result<(Node, Option<NodeDeletion>, u64)> {
 	nodes::lock_tenant(tx, tenant).await?;
 	let mut node = nodes::get(tx, tenant, name).await?;
 	let current = node_deletions::current_locked(tx, tenant, name).await?;
@@ -451,16 +463,17 @@ async fn change_in(
 				return Err(Error::Conflict("node_deleted".into()));
 			}
 			domain::deletion::check_delete(node.default, nodes::count_live(tx, tenant).await?)?;
-			Some(
-				node_deletions::record(
-					tx,
-					tenant,
-					name,
-					actor,
-					f.config.tenancy.node_deletion_grace_days,
-				)
-				.await?,
+			let deletion = node_deletions::record(
+				tx,
+				tenant,
+				name,
+				actor,
+				f.config.tenancy.node_deletion_grace_days,
 			)
+			.await?;
+			crate::apps::execution::repositories::node_cancellations::record(f, tx, &deletion)
+				.await?;
+			Some(deletion)
 		}
 		Change::Restore => {
 			let row = current.ok_or_else(|| Error::Conflict("the Node is not deleted".into()))?;
@@ -497,7 +510,8 @@ async fn change_in(
 			name,
 		)
 		.await?;
-	Ok((node, deletion))
+	let bytes = super::node_purge::retained_storage_bytes_in(tx, tenant, name).await?;
+	Ok((node, deletion, bytes))
 }
 
 /// Counts live Nodes within the caller's Tenant scope. Capacity decisions

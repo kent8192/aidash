@@ -159,7 +159,8 @@ configured. The project is never inferred from a developer's `gcloud` default.
    `main` through the normal review process. Nonproduction privileged jobs pin
    the reviewed controller on `automation_branch`; production jobs use `main`. Select a deployable source containing Google OAuth,
    trusted-proxy authentication rate limits, the existing runtime contract and
-   successful `ci.yml` for its **exact SHA**. The app build explicitly refuses
+   successful `release-ci.yml` for its **exact develop SHA** (`ci.yml` remains
+   the PR and main verification workflow). The app build explicitly refuses
    sources missing either HTTP integration. Enable production only after its
    isolated account setup and acceptance checks in the release runbook pass.
 3. Copy `bootstrap/terraform.example.tfvars` to the ignored
@@ -762,6 +763,60 @@ aidash-deploy-broker-boundary --attachment-point=cloudresourcemanager.googleapis
    a Cloud Run service or job, a Compute instance and a GKE node pool created
    with a broker service account, that the `data_access` log exists, and that
    removing the BYOK audit configuration raises the BYOK project IAM alert.
+
+## Deployment bootstrap settings
+
+Managed GCP Environments run the Cloud Offering. Their existing runtime
+configuration JSON may include this public descriptor alongside the normal
+Google/GCIP and provider configuration:
+
+```json
+{
+  "deployment": {
+    "offering": "cloud",
+    "key": {
+      "kms": "projects/PROJECT/locations/LOCATION/keyRings/RING/cryptoKeys/KEY/cryptoKeyVersions/1"
+    }
+  }
+}
+```
+
+The snippet is only the additional section, not a complete runtime configuration.
+Omitting `deployment` means `{"offering":"cloud"}`; omitting `key` leaves the
+image/profile key configuration alone. If `deployment` is present, `offering` is
+required. Only `offering` and optional `key.kms` are accepted. Other Offerings,
+unknown fields, null values, file paths and malformed/non-numeric key-version
+references are refused before runtime Secrets are materialized. This does not
+widen the runtime environment-variable allowlist or accept arbitrary TOML.
+
+The trusted controller passes this public section to the chart as
+`deployment.settings`, outside the application runtime Secret. Server, worker,
+copied migration Job and in-container management commands use the same read-only
+settings source. Deployment/reconciliation refreshes the descriptor through the
+existing lifecycle fencing and readiness checks; settings reload preserves the
+installed image. An installed Offering cannot change; an existing initial
+KMS reference cannot change or disappear on reload or redeployment. Keep it in
+the runtime configuration and perform subsequent rotations through
+`manage deployment-key rollover`, whose persisted schedule remains authoritative.
+A runtime Secret version change alone does not restart Pods; use the authorized
+controller deployment/reconciliation path.
+
+Test delivery pins the application source independently of the controller/chart:
+those still come from the protected default-branch trusted anchor. Selecting an
+application commit with this descriptor loader does not add the handoff to an
+older trusted controller/chart. Land the reviewed delivery changes in that
+anchor before claiming managed live acceptance, and verify source eligibility
+for both sides. Preserve this boundary; do not substitute an application-source
+chart, alternate control image or ad hoc Pod override to bypass it.
+
+Supply a separately owned federation Ed25519 signing key and scoped public-key
+read/sign permissions for the server, worker and management execution identities.
+The descriptor creates no KMS/IAM resources and does not reuse capability/broker
+keys. Actual metadata-token signing and rollover acceptance still require those
+resources and live verification. GCP Environment kinds remain unchanged and do
+not provision Dedicated deployments. Use the [generic chart's Dedicated
+configuration](../../deploy/helm/aidash/README.md#deployment-offering-and-initial-kms-key)
+with a separate Deployment identity, namespace and database for Dedicated.
 
 ## GCIP sign-in
 

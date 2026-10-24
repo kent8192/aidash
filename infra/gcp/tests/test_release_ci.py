@@ -94,6 +94,7 @@ class ReleaseCITests(unittest.TestCase):
             lambda gh: gh.branches[CONFIG["develop_branch"]]["commit"].update(sha=NEXT),
             lambda gh: gh.runs[100].update(conclusion="failure"),
             lambda gh: gh.runs[100].update(event="pull_request"),
+            lambda gh: gh.runs[100].update(name="CI", path=".github/workflows/ci.yml", workflow_id=30),
             lambda gh: gh.runs.update({101: dict(workflow_run(101), status="completed", conclusion="cancelled")}),
         ]
         for change in changes:

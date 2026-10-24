@@ -168,3 +168,9 @@ pub mod provider_credentials;
 pub mod secret_store;
 
 pub mod tenant_secrets;
+
+pub(crate) mod node_purge;
+
+pub mod node_recovery;
+
+pub(crate) mod manual_keys;

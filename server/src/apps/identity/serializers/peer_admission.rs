@@ -36,3 +36,29 @@ pub(crate) struct MessageInput {
 }
 
 use uuid::Uuid;
+
+/// Canonical exact recovery request, shared by routing and receiving-key CAS.
+/// The ordinary HTTP/local handlers parse this same deny-unknown-fields type.
+pub(crate) fn cancel_request(
+	request: &aidash_application::federation::inbound::RequestDigest<'_>,
+) -> Option<(Uuid, Uuid)> {
+	if request.method != "POST" || request.path.contains('?') {
+		return None;
+	}
+	let id = request
+		.path
+		.strip_prefix("/scoped/execution/admissions/")?
+		.strip_suffix("/control")?;
+	let admission = Uuid::parse_str(id).ok()?;
+	if admission.to_string() != id {
+		return None;
+	}
+	let input: RemoteExecutionControlInput = serde_json::from_slice(request.body).ok()?;
+	if !matches!(
+		input.action,
+		aidash_domain::federation::execution::admission::RemoteExecutionControl::Cancel
+	) {
+		return None;
+	}
+	Some((admission, input.grant_id))
+}
