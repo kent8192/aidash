@@ -41,6 +41,32 @@ Add supplementary labels only when their meaning applies:
   canonical Issue for duplicates and explain invalid or wontfix decisions. Closing
   an Issue or merging a PR alone does not justify these labels.
 
+## Severity and Priority
+
+Use `severity:*` for observed impact and `priority:*` for scheduling urgency.
+Assess them independently: impact alone does not determine when work should be
+scheduled. Add at most one label from each family when the classification is
+known and applicable; leave it unset otherwise. When reassessing a classification,
+replace the previous label in that family and preserve other valid labels.
+
+### Severity
+
+| Label               | Meaning                                                                                  |
+| ------------------- | ---------------------------------------------------------------------------------------- |
+| `severity:critical` | Critical impact: core functionality unavailable, data loss, or severe security exposure. |
+| `severity:high`     | Major impact: important functionality is broken with no practical workaround.            |
+| `severity:medium`   | Moderate impact: functionality is impaired, but a practical workaround exists.           |
+| `severity:low`      | Minor impact: limited disruption, cosmetic defects, or small usability issues.           |
+
+### Priority
+
+| Label         | Meaning                                                                             |
+| ------------- | ----------------------------------------------------------------------------------- |
+| `priority:P0` | Immediate: address before other planned work; blocks release or ongoing operations. |
+| `priority:P1` | High: schedule in the next available work cycle.                                    |
+| `priority:P2` | Normal: schedule through regular backlog planning.                                  |
+| `priority:P3` | Low: address when capacity permits; may be deferred.                                |
+
 ## Apply and Verify
 
 1. Apply labels during creation with `gh issue create --label` or
