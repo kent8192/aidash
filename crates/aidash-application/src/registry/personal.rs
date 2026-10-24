@@ -137,3 +137,42 @@ pub async fn load(scope: &mut dyn PrivateKnowledgeRead, entry: &Entry) -> Result
 	}
 	Ok(documents)
 }
+
+/// Automatic references follow each admitted Source before touching its private store.
+/// Manual document reads continue through `load`, including OnDemand Sources.
+pub async fn automatic_documents(
+	scope: &mut dyn PrivateKnowledgeRead,
+	bindings: &[aidash_domain::registry::bindings::ResolvedBinding],
+) -> Result<Value> {
+	use aidash_domain::registry::bindings::sources::{NativeSource, validate_definition};
+	let mut documents = Vec::new();
+	for binding in bindings
+		.iter()
+		.filter(|binding| binding.excluded_reason.is_none() && binding.definition.kind == "source")
+	{
+		let Some(descriptor) = validate_definition(&binding.definition)? else {
+			continue;
+		};
+		if !matches!(descriptor.source, NativeSource::PrivateReferences { .. })
+			|| descriptor
+				.context_source
+				.as_ref()
+				.is_some_and(|declaration| {
+					matches!(
+						declaration.pin,
+						aidash_domain::context::source::PinPolicy::OnDemand
+					)
+				}) {
+			continue;
+		}
+		let value = load(scope, &binding.definition).await?;
+		documents.extend(
+			value
+				.as_array()
+				.ok_or_else(|| Error::Invalid("private Source requires a document list".into()))?
+				.iter()
+				.cloned(),
+		);
+	}
+	Ok(json!(documents))
+}
