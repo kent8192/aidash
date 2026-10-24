@@ -37,7 +37,7 @@ SPEC.loader.exec_module(cli)
 
 
 def corpus():
-    value = evaluation.load_corpus()
+    value = evaluation.load_corpus(evaluation.EVALUATION / "corpus-v1.toml")
     for index, task in enumerate(value["tasks"]):
         task["_index"] = index
     return value
@@ -85,7 +85,7 @@ class CorpusTest(unittest.TestCase):
             copy = Path(directory) / "evaluation"
             shutil.copytree(evaluation.EVALUATION, copy)
             text = (copy / "corpus.toml").read_text()
-            (copy / "corpus.toml").write_text(text.replace('comparisons = ["exposure"]',
+            (copy / "corpus.toml").write_text(text.replace('comparisons = ["exposure", "projection", "explicit-projection"]',
                                                            'comparisons = ["completion-gate"]'))
             with self.assertRaisesRegex(evaluation.CorpusError, "unavailable comparison completion-gate"):
                 evaluation.load_corpus(copy / "corpus.toml")
@@ -101,10 +101,10 @@ class CorpusTest(unittest.TestCase):
             text = (copy / "corpus.toml").read_text()
             # A custom corpus must not swap the approved model or lift the priced step limit.
             (copy / "corpus.toml").write_text(text.replace(
-                'candidate = { label = "ordered", agent = { projection_version = "ordered" } }',
-                'candidate = { label = "ordered", agent = { projection_version = "ordered", max_steps = 1000, '
+                '{ id = "ordered", label = "ordered", agent = { projection_version = "ordered", prompt_cache = "off" } }',
+                '{ id = "ordered", label = "ordered", agent = { projection_version = "ordered", max_steps = 1000, '
                 'model = { id = "other", version = "1.0.0" } } }'))
-            with self.assertRaisesRegex(evaluation.CorpusError, "projection candidate may set only the Agent fields"):
+            with self.assertRaisesRegex(evaluation.CorpusError, "projection ordered may set only the Agent fields"):
                 evaluation.load_corpus(copy / "corpus.toml")
             (copy / "corpus.toml").write_text(text.replace('approval_pattern = "(?i)purg"\n', ""))
             with self.assertRaisesRegex(evaluation.CorpusError, "escalation oracle needs approval_pattern"):
@@ -153,6 +153,224 @@ class CorpusTest(unittest.TestCase):
         self.assertNotIn("HiddenPricingRegression", text)
 
 
+class ProjectionCampaignTest(unittest.TestCase):
+    def test_frozen_routes_preserve_all_primary_tasks_and_match_arm_caps(self):
+        value = evaluation.load_corpus()
+        old = corpus()
+        original = {item["id"] for item in old["tasks"] if "projection" in item["comparisons"]}
+        for route, expected in (("projection", {"legacy", "ordered", "native"}),
+                                ("explicit-projection", {"legacy", "ordered", "native", "ordered-explicit",
+                                                         "native-explicit"})):
+            planned = evaluation.plan(value, selected_comparisons=[route])
+            self.assertTrue(original <= {item["task"]["id"] for item in planned})
+            for identifier in original:
+                arms = [item for item in planned if item["task"]["id"] == identifier]
+                self.assertEqual({item["arm"] for item in arms}, expected)
+                self.assertEqual(len({item["model"] for item in arms}), 1)
+                caps = value["models"][task(value, identifier)["model"]]
+                for arm in arms:
+                    self.assertEqual(arm["model_configuration"]["context_window"], caps["context_window"])
+                    self.assertEqual(arm["model_configuration"]["max_output_tokens"], caps["max_output_tokens"])
+        self.assertEqual(sum(item.get("primary_weight", 0) for item in value["tasks"]), 1)
+        # Archived v1 bytes still produce the historical snapshot, including its canonical filename.
+        self.assertIn("corpus.toml", old["_snapshot"]["files"])
+        self.assertNotIn("corpus-v1.toml", old["_snapshot"]["files"])
+
+    def test_confirmation_selects_exact_frozen_arms_without_rewriting_the_corpus(self):
+        value = evaluation.load_corpus()
+        before = evaluation.canonical_sha256(value["comparisons"])
+        selected = evaluation.plan(value, ["native-multi-call-results"], ["explicit-projection"],
+                                   ["legacy", "native-explicit"])
+        self.assertEqual([item["arm"] for item in selected], ["legacy", "native-explicit"])
+        self.assertEqual(evaluation.canonical_sha256(value["comparisons"]), before)
+        for comparison, arms in (("projection", ["legacy", "native-explicit"]),
+                                  ("explicit-projection", ["legacy", "typo"])):
+            with self.subTest(comparison=comparison), self.assertRaisesRegex(evaluation.CorpusError,
+                                                                            "requested arms are absent"):
+                evaluation.plan(value, ["native-multi-call-results"], [comparison], arms)
+
+    def test_primary_live_preflight_rejects_changed_caps_estimator_or_model_within_route(self):
+        value = evaluation.load_corpus()
+        planned = evaluation.plan(value, ["structured-data-overdue-totals", "long-conversation-corrections"],
+                                  ["projection"])
+        mapping = {"standard": "standard@1", "small-window": "small@1"}
+        models = {reference: {"model_id": "provider/same-model", "provider": "openrouter", "endpoint": "https://p/v1",
+                              "provider_credential": "openrouter", "reasoning_effort": "medium",
+                              "request_estimator": "bytes", "projection_versions": ["legacy", "ordered", "native"],
+                              "provider_route": {"tag": "groq", "source": "https://openrouter.ai/api/v1/endpoints/zdr",
+                                  "verified_at": "2000-01-01T00:00:00Z", "expires_at": "2099-01-01T00:00:00Z"},
+                              **value["models"][name]} for name, reference in mapping.items()}
+        evaluation.check_matched_live_models(value, planned, mapping, models)
+        changes = [("context_window", 128000, "must match frozen corpus"),
+                   ("request_estimator", "calibrated", "request_estimator=bytes"),
+                   ("reasoning_effort", "high", "reasoning_effort=medium"),
+                   ("projection_versions", ["legacy", "ordered"], "support projection native"),
+                   ("model_id", "provider/other-model", "one matched model"),
+                   ("provider_route", None, "provider_route"),
+                   ("provider_route", {"tag": "other", "source": "catalog", "verified_at": "2000-01-01T00:00:00Z",
+                                       "expires_at": "2099-01-01T00:00:00Z"}, "one matched model"),
+                   ("provider_route", {"tag": "groq", "source": "catalog", "verified_at": "2000-01-01T00:00:00Z",
+                                       "expires_at": "2001-01-01T00:00:00Z"}, "expired")]
+        for field, changed, error in changes:
+            with self.subTest(field=field):
+                altered = {key: dict(config) for key, config in models.items()}
+                altered["small@1"][field] = changed
+                with self.assertRaisesRegex(evaluation.GuardRefusal, error):
+                    evaluation.check_matched_live_models(value, planned, mapping, altered)
+        exported = evaluation.requested_model_routes(models)
+        self.assertEqual(exported["standard@1"]["provider_route"], models["standard@1"]["provider_route"])
+        self.assertNotIn("provider_routing", exported["standard@1"])
+        calibrated = {key: dict(config, request_estimator="calibrated") for key, config in models.items()}
+        evaluation.check_matched_live_models(value, planned, mapping, calibrated, execution_estimator="calibrated")
+        with self.assertRaisesRegex(evaluation.GuardRefusal, "execution_estimator"):
+            evaluation.check_execution_estimator_approval({}, "calibrated")
+        evaluation.check_execution_estimator_approval({"execution_estimator": "calibrated"}, "calibrated")
+
+    def test_multi_arm_manifest_validates_pairs_and_refuses_rewritten_execution_order(self):
+        value = evaluation.load_corpus()
+        result = full_result(value)
+        selected = evaluation.plan(value, ["code-change-hidden-regression"], ["projection"])
+        result["experiment"]["execution_order"] = {"seed": 181, "method": "seeded-rotating-arm-blocks/1",
+            "planned": [evaluation.run_key(p["task"]["id"], p["comparison"]["id"], p["arm"], repeat)
+                        for p, repeat in evaluation.execution_schedule(selected, 2, 181)]}
+        evaluation.validate_result(result, value)
+        self.assertEqual({(row["baseline_arm"], row["candidate_arm"]) for row in result["comparisons"]},
+                         {("legacy", "ordered"), ("legacy", "native")})
+        result["experiment"]["execution_order"]["planned"].reverse()
+        with self.assertRaisesRegex(evaluation.CorpusError, "differs from its seed"):
+            evaluation.validate_result(result, value)
+
+    def test_seeded_order_balances_positions_and_keeps_every_repeat(self):
+        planned = evaluation.plan(evaluation.load_corpus(), ["native-multi-call-results"], ["explicit-projection"])
+        schedule = evaluation.execution_schedule(planned, 5, 181)
+        self.assertEqual(schedule, evaluation.execution_schedule(planned, 5, 181))
+        keys = [evaluation.run_key(p["task"]["id"], p["comparison"]["id"], p["arm"], r) for p, r in schedule]
+        self.assertEqual(len(set(keys)), 25)
+        positions = {arm: [] for arm in ("legacy", "ordered", "native", "ordered-explicit", "native-explicit")}
+        for index, (planned, _) in enumerate(schedule):
+            positions[planned["arm"]].append(index % 5)
+        self.assertTrue(all(set(values) == set(range(5)) for values in positions.values()))
+
+    def test_native_multi_call_fixture_requires_both_paired_results_and_one_model_turn(self):
+        value = evaluation.load_corpus()
+        planned = next(item for item in evaluation.plan(value, ["native-multi-call-results"], ["projection"])
+                       if item["arm"] == "native")
+        item = planned["task"]
+        fixture = fixture_module.Fixture({"fixture/m": 128000})
+        identifier = "00000000-0000-0000-0000-0000000000aa"
+        fixture.register(identifier, item, "native")
+        body = {"model": "fixture/m", "messages": [{"role": "user", "content": identifier}],
+                "tools": [{"type": "function", "function": {"name": alias}} for alias in item["tools"]]}
+        status, payload = fixture.infer(body)
+        self.assertEqual(status, 200)
+        assistant = json.loads(payload)["choices"][0]["message"]
+        calls = assistant["tool_calls"]
+        self.assertEqual(len(calls), 2)
+        self.assertNotEqual(calls[0]["id"], calls[1]["id"])
+        body["messages"].append(assistant)
+        history = [{"kind": "assistant", "epoch": 8, "calls": [call["id"] for call in calls]}]
+        for call in calls:
+            name = call["function"]["name"]
+            arguments = json.loads(call["function"]["arguments"])
+            result = fixture.tool(item, name, arguments)[1]
+            body["messages"].append({"role": "tool", "tool_call_id": call["id"], "content": json.dumps(result)})
+            history.append({"kind": "tool", "call": {"id": call["id"], "name": name, "arguments": arguments},
+                            "result": result})
+        status, payload = fixture.infer(body)
+        self.assertEqual(status, 200)
+        answer = json.loads(payload)["choices"][0]["message"]["content"]
+        # The inspection API returns durable HistoryEntry {seq, event} records;
+        # older captured fixtures used flat projection events. Both must retain
+        # the actual calls and their accepted Model Turn for independent grading.
+        for label, entries in (("legacy flat", history), ("inspection journal", [
+                {"seq": index + 1, "event": event} for index, event in enumerate(history)])):
+            with self.subTest(history=label):
+                observed = observation(final_answer=answer, tool_calls=runner.tool_calls_from({"history": entries}))
+                graded = evaluation.run_result(value, planned, 1, observed, "deterministic", False)
+                self.assertEqual(graded["outcome"], "success")
+                observed["tool_calls"][1]["model_turn"] = 9
+                self.assertFalse(evaluation.run_result(value, planned, 1, observed, "deterministic", False)["oracle"]["passed"])
+        body["messages"][-1]["tool_call_id"] = "mismatched"
+        self.assertEqual(fixture.infer(body)[0], 400)
+
+    def test_actual_compaction_oracle_needs_adoption_and_retained_independent_constraints(self):
+        value = evaluation.load_corpus()
+        item = task(value, "actual-pruning-correction-retention")
+        retained = answer_json({"budget_usd": 300, "excluded_vendors": ["Contoso", "Northwind"]})
+        for compactions, budget, passed in ((0, 300, False), (1, 500, False), (1, 300, True)):
+            answer = retained if budget == 300 else answer_json({"budget_usd": budget,
+                                                                "excluded_vendors": ["Contoso", "Northwind"]})
+            with self.subTest(compactions=compactions, budget=budget):
+                self.assertEqual(evaluation.grade(value, item, observation(final_answer=answer,
+                    compactions=compactions), False)["passed"], passed)
+
+    def test_live_auxiliary_contract_reserves_all_permitted_calls_and_rejects_digest_drift(self):
+        config = {"hook": "compaction", "mode": "enforce", "provider_credential": "openrouter",
+                  "max_calls_per_run": 3, "routes": [{"model": "decision/model", "hosts": ["one"]}]}
+        allowance = {"reference": "decider@1", "config_sha256": evaluation.canonical_sha256(config),
+                     "max_calls_per_run": 3, "max_nanocredits_per_call": 900}
+        approval = {"external_compaction": {"mode": "bounded", "decider": allowance, "summary": None}}
+        auxiliary = evaluation.auxiliary_allowance(approval)
+        value = corpus()
+        item = task(value, "structured-data-overdue-totals")
+        model = {"context_window": 100, "max_output_tokens": 10}
+        prices = {"input_nanocredits_per_token": 1, "cache_write_nanocredits_per_token": 2,
+                  "output_nanocredits_per_token": 3}
+        main = runner.run_worst_case(item, value, model, prices)
+        self.assertEqual(runner.run_worst_case(item, value, model, prices, auxiliary), main + 2700)
+        evaluation.verify_auxiliary_configs(auxiliary, {"decider@1": config}, "openrouter")
+        with self.assertRaisesRegex(evaluation.GuardRefusal, "not an enforceable"):
+            evaluation.require_enforceable_auxiliary_bound(auxiliary)
+        evaluation.require_enforceable_auxiliary_bound(evaluation.auxiliary_allowance({"external_compaction": "disabled"}))
+        larger = dict(config, max_calls_per_run=5)
+        oversized = {**auxiliary, "decider": dict(auxiliary["decider"], config_sha256=evaluation.canonical_sha256(larger))}
+        with self.assertRaisesRegex(evaluation.GuardRefusal, "exactly the approved"):
+            evaluation.verify_auxiliary_configs(oversized, {"decider@1": larger}, "openrouter")
+        with self.assertRaisesRegex(evaluation.GuardRefusal, "exact digest"):
+            evaluation.verify_auxiliary_configs(auxiliary, {"decider@1": dict(config, max_calls_per_run=100)},
+                                                 "openrouter")
+        del allowance["max_nanocredits_per_call"]
+        with self.assertRaisesRegex(evaluation.GuardRefusal, "unpriced auxiliary"):
+            evaluation.auxiliary_allowance(approval)
+
+    def test_live_fixture_and_container_support_require_exact_explicit_approval(self):
+        value = evaluation.load_corpus()
+        planned = evaluation.plan(value, ["native-multi-call-results"], ["projection"])
+        approval = {}
+        with self.assertRaisesRegex(evaluation.GuardRefusal, "need fixture tool results"):
+            evaluation.live_task_support(approval, value, planned, "https://fixture.test")
+        approval["fixture_service"] = {"endpoint": "https://fixture.test", "corpus_sha256": value["_snapshot"]["sha256"],
+                                      "tasks": {"native-multi-call-results": ["currency_convert", "invoice_lookup"]},
+                                      "synthetic_only": True}
+        self.assertEqual(evaluation.live_task_support(approval, value, planned, "https://fixture.test"),
+                         ("https://fixture.test", None))
+        approval["fixture_service"]["tasks"]["native-multi-call-results"].append("records_purge")
+        with self.assertRaises(evaluation.GuardRefusal):
+            evaluation.live_task_support(approval, value, planned, "https://fixture.test")
+        planned = evaluation.plan(value, ["code-change-verified-fix"], ["projection"])
+        with self.assertRaisesRegex(evaluation.GuardRefusal, "code_oracle"):
+            evaluation.live_task_support({}, value, planned, "https://fixture.test")
+        contract = {"image": "python@sha256:" + "a" * 64, "network": "none", "memory_mb": 128, "cpus": 1,
+                    "pids_limit": 64, "timeout_seconds": 20}
+        _, code = evaluation.live_task_support({"code_oracle": contract}, value, planned, "https://fixture.test")
+        with tempfile.TemporaryDirectory() as directory:
+            Path(directory, "target.py").write_text("pass\n")
+            completed = subprocess.CompletedProcess([], 0, "[42]")
+            with mock.patch.object(evaluation, "bounded_subprocess", return_value=completed) as execute, \
+                    mock.patch.object(evaluation.subprocess, "run") as cleanup:
+                self.assertTrue(code(directory, [{"args": [], "kwargs": {}, "expected": 42}], 99,
+                                     target="target.py")["passed"])
+            command = execute.call_args.args[0]
+            for flag, expected in (("--network", "none"), ("--memory", "128m"), ("--pids-limit", "64"),
+                                   ("--cpus", "1"), ("--user", "65534:65534"), ("--pull", "never")):
+                self.assertEqual(command[command.index(flag) + 1], expected)
+            self.assertIn("--read-only", command)
+            self.assertTrue(command[command.index("--mount") + 1].endswith(",dst=/work,readonly"))
+            self.assertEqual(execute.call_args.args[2], 20)
+            self.assertEqual(cleanup.call_args.args[0][:3], ["docker", "rm", "-f"])
+
+
+
 class SchemaTest(unittest.TestCase):
     def test_validator_rejects_extra_missing_and_mistyped_fields(self):
         schema = {"type": "object", "additionalProperties": False, "required": ["a"],
@@ -167,6 +385,65 @@ class SchemaTest(unittest.TestCase):
 
 
 class OracleTest(unittest.TestCase):
+    def test_live_code_oracle_rejects_candidate_that_disables_unittest_assertions(self):
+        value = evaluation.load_corpus()
+        item = task(value, "code-change-verified-fix")
+        candidate = "import unittest\nunittest.TestCase.assertEqual = lambda *args, **kwargs: None\n" \
+                    "def discounted_total(prices_cents, coupon_cents=0, percent_off=0):\n    return -999\n"
+        planned = next(p for p in evaluation.plan(value, [item["id"]], ["projection"]) if p["arm"] == "native")
+        code = evaluation.container_code_execution("python@sha256:" + "a" * 64)
+        real_run = subprocess.run
+        real_popen = subprocess.Popen
+        def translate(command):
+            mount = command[command.index("--mount") + 1]
+            directory = mount.split("src=", 1)[1].split(",dst=", 1)[0]
+            image = command.index(code.image)
+            arguments = [part.replace("/work", directory) for part in command[image + 2:]]
+            return [sys.executable, *arguments], directory
+        def run(command, **kwargs):
+            if command[:3] == ["docker", "rm", "-f"]:
+                return subprocess.CompletedProcess(command, 0)
+            translated, directory = translate(command)
+            return real_run(translated, cwd=directory, **kwargs)
+        def popen(command, **kwargs):
+            if command[0] != "docker":
+                return real_popen(command, **kwargs)
+            translated, directory = translate(command)
+            return real_popen(translated, cwd=directory, **kwargs)
+        for source, expected in ((candidate, "false_completion"),
+                                 (fixture_module.PRICING_COMPLETE, "success"),
+                                 (fixture_module.PRICING_VISIBLE_ONLY, "false_completion")):
+            with self.subTest(expected=expected, malicious=source == candidate), \
+                    mock.patch.object(evaluation.subprocess, "run", side_effect=run), \
+                    mock.patch.object(evaluation.subprocess, "Popen", side_effect=popen):
+                result = evaluation.run_result(value, planned, 1, observation(final_answer="```python\n" + source +
+                                               "```\nAll tests pass."), "live", code)
+            self.assertEqual(result["outcome"], expected)
+            self.assertIs(result["oracle"]["passed"], expected == "success")
+
+    def test_candidate_output_collection_has_a_hard_host_memory_bound(self):
+        with self.assertRaisesRegex(ValueError, "65536-byte limit"):
+            evaluation.bounded_subprocess([sys.executable, "-I", "-c",
+                "import sys; sys.stdout.write('x' * 131072)"], b"", timeout=5)
+
+    def test_malformed_exclusions_fail_grading_without_losing_the_live_run(self):
+        value = evaluation.load_corpus()
+        planned = next(p for p in evaluation.plan(value, ["long-conversation-corrections"], ["projection"])
+                       if p["arm"] == "native")
+        for exclusions in (["Northwind", 1], 123, "Northwind", [None], {"Northwind": True}):
+            with self.subTest(exclusions=exclusions):
+                result = evaluation.run_result(value, planned, 1, observation(final_answer=answer_json({
+                    "budget_usd": 300, "excluded_vendors": exclusions})), "live", False)
+                self.assertEqual(result["run_id"], "run")
+                self.assertEqual(result["outcome"], "false_completion")
+                self.assertIs(result["oracle"]["passed"], False)
+        with mock.patch.object(evaluation, "grade", side_effect=TypeError("private model output")):
+            result = evaluation.run_result(value, planned, 1, observation(final_answer="Done."), "live", False)
+        self.assertEqual(result["run_id"], "run")
+        self.assertEqual(result["outcome"], "infrastructure_failure")
+        self.assertEqual(result["repeat"], 1)
+        self.assertNotIn("private model output", json.dumps(result))
+
     def test_visible_only_fix_with_a_success_claim_is_false_completion(self):
         value = corpus()
         item = task(value, "code-change-hidden-regression")
@@ -622,6 +899,14 @@ class ExperimentNodeContractTest(unittest.TestCase):
         requests = []
         def call(method, path, body, token, timeout=None):
             requests.append((method, path, body))
+            if path == "/api/registry" or path.endswith("/catalog"):
+                # Current HTTP services require Actor::Subject for Tenant-owned definitions and approvals.
+                if token != "subject-token":
+                    return 403, {"error": "Tenant subject authority required"}
+                # ModelConfig and EmbeddingConfig deny unknown fields, including legacy null keys.
+                if path == "/api/registry" and body["kind"] in ("model", "embedding") and \
+                        "credential_env" in body["config"]:
+                    return 400, {"error": "unknown field credential_env"}
             if path == "/api/tenants":
                 return 201, {"name": "tenant-12345678"}
             if path.endswith("/nodes"):
@@ -633,6 +918,9 @@ class ExperimentNodeContractTest(unittest.TestCase):
 
         experiment.authorize(["agent"])
         experiment.register("agent", "agent", {})
+        experiment.register("model", "model", runner.model_config(
+            {"model_id": "fixture/m", "context_window": 128000, "max_output_tokens": 4096},
+            "http://127.0.0.1:8080", "standard"))
 
         policy = next(body["bundle"] for method, path, body in requests if body and "bundle" in body)
         self.assertEqual(policy["subjects"]["aidash://evaluation/build-abcdef12/agents/agent@1.0.0"],
@@ -764,6 +1052,48 @@ class RunnerTest(unittest.TestCase):
         self.assertEqual(clock.now, 1.5, "the second poll interval is cut to the remaining 0.5 s")
         self.assertTrue(node.cancelled)
         self.assertTrue(observed["interrupted"])
+
+    def test_a_mandatory_context_block_is_preserved_as_local_overflow_after_cancellation(self):
+        for active_phase in ("WAITING", "THINKING"):
+            with self.subTest(active_phase=active_phase):
+                node = FakeNode([active_phase])
+                reason = "Mandatory context cannot fit the model window; reduce instructions, tools or pinned context"
+
+                def blocked(method, path, body, token, timeout=None, node=node, active_phase=active_phase, reason=reason):
+                    status, payload = node.call(method, path, body, token)
+                    if method == "GET" and path == "/api/runs/run-1" and payload["run"]["phase"] == active_phase:
+                        payload["run"]["state_error"] = reason
+                    return status, payload
+
+                clock = Clock()
+                experiment = self.experiment(node)
+                experiment.api = runner.Api(blocked, "deployment-administrator")
+                observed = runner.run_task(experiment.api, experiment, self.planned, 1,
+                                           {"id": "a", "version": "1.0.0"}, timeout=1.5, clock=clock, sleep=clock.sleep)
+                graded = evaluation.run_result(self.corpus, self.planned, 1, observed, "live", False)
+                self.assertTrue(node.cancelled, "the blocked Run must not remain active")
+                self.assertEqual(graded["phase"], "CANCELLED", "preserve the actual cancellation phase")
+                self.assertEqual(graded["error"], reason, "preserve the authoritative pre-cancellation cause")
+                self.assertEqual(graded["outcome"], "overflow_failure")
+                self.assertFalse(graded["interrupted"], "a known local fitting failure is not an observer timeout")
+                self.assertEqual(clock.now, 0, "do not retry a mandatory window block until the observer deadline")
+
+    def test_cancellation_waits_for_terminal_acknowledgement_and_preserves_a_completion_race(self):
+        for terminal in ("CANCELLED", "COMPLETED"):
+            with self.subTest(terminal=terminal):
+                node = FakeNode(["WAITING"])
+
+                def delayed(method, path, body, token, timeout=None, node=node, terminal=terminal):
+                    result = node.call(method, path, body, token)
+                    if path.endswith("/control"):
+                        node.phases = ["WAITING", terminal]
+                    return result
+
+                clock = Clock()
+                actual = runner.stop_run(runner.Api(delayed, "administrator"), "subject", "task-uuid", "run-1",
+                                         clock, clock.sleep)
+                self.assertEqual(actual["phase"], terminal, "an accepted control is not terminal acknowledgement")
+                self.assertEqual(clock.now, 1.0, "wait within the cancellation grace rather than leaving work active")
 
     def test_cancellation_falls_back_to_the_deployment_administrator_token(self):
         node = FakeNode(["RUNNING"])
@@ -1088,7 +1418,7 @@ class LiveGuardTest(unittest.TestCase):
             ledger.reserve("d", 1)
 
     def args(self, **overrides):
-        values = ["live", "--base-url", "https://node.invalid", "--tenant", "acme", "--provider-credential", "pc-1",
+        values = ["live", "--corpus", str(evaluation.EVALUATION / "corpus-v1.toml"), "--execution-seed", "0", "--base-url", "https://node.invalid", "--tenant", "acme", "--provider-credential", "pc-1",
                   "--model", "standard=live@1.0.0", "--disclosure-approval", "approval.json",
                   "--max-spend-nanocredits", "1000000000", "--max-wall-seconds", "60", "--task",
                   "structured-data-overdue-totals", "--comparison", "projection", "--repeats", "1",
@@ -1136,6 +1466,17 @@ class LiveGuardTest(unittest.TestCase):
                 return 200, {}
             return node.call(method, path, body, token)
         return call, registered
+
+    def test_live_refuses_a_changed_actual_registry_config_before_any_mutation(self):
+        value = corpus()
+        frozen = {"provider_credential": "openrouter", "credential_env": None, "model_id": "vendor/model",
+                  "context_window": 1000, "max_output_tokens": 100}
+        approval = self.approval(value, model_config_digests={"live@1.0.0": evaluation.canonical_sha256(frozen)})
+        transport, registered = self.live_node(model_config={"max_output_tokens": 101})
+        with mock.patch.dict(os.environ, {"AIDASH_EVALUATION_TOKEN": "admin", "AIDASH_EVALUATION_SUBJECT_TOKEN": "subject"}), \
+                self.assertRaisesRegex(evaluation.GuardRefusal, "model_config_digests.*exactly match"):
+            cli.live(self.args(), read_json=lambda _: approval, transport=transport, wall_now=lambda: self.NOW)
+        self.assertEqual(registered, [], "a digest mismatch must happen before Registry, catalog or Run writes")
 
     def test_live_refuses_without_tokens_credential_or_approval_and_does_no_work(self):
         value = corpus()
@@ -1207,13 +1548,13 @@ class LiveGuardTest(unittest.TestCase):
                 cli.live(args, read_json=lambda _: approval, transport=call, wall_now=lambda: self.NOW)
         self.assertEqual(registered, [], "no Registry write may precede the guard rails")
 
-    def test_live_refuses_code_execution_oracles_unconditionally(self):
+    def test_live_refuses_code_execution_oracles_without_explicit_container_approval(self):
         value = corpus()
         approval = self.approval(value, max_spend_nanocredits=10_000_000_000)
         call, registered = self.live_node()
         with mock.patch.dict(os.environ, self.ENV):
             args = self.args(**{"--task": "code-change-hidden-regression"})
-            with self.assertRaisesRegex(evaluation.GuardRefusal, "container runner.*--network none"):
+            with self.assertRaisesRegex(evaluation.GuardRefusal, "explicit code_oracle approval.*network none"):
                 cli.live(args, read_json=lambda _: approval, transport=call, wall_now=lambda: self.NOW)
         # Every other required argument is present, so only the removed flag can make the parser exit.
         stderr = io.StringIO()
@@ -1258,6 +1599,20 @@ class LiveGuardTest(unittest.TestCase):
                 status = raised
             return status, json.loads(output.read_text()) if output.exists() else None
 
+    def test_live_reads_tenant_registry_models_with_the_subject_authority(self):
+        transport, _ = self.live_node()
+        observed = []
+        def tenant_registry(method, path, body, token, timeout=None):
+            if method == "GET" and path.startswith("/api/registry/"):
+                observed.append(token)
+                if token != self.ENV["AIDASH_EVALUATION_SUBJECT_TOKEN"]:
+                    return 403, {"error": "Deployment Administrators cannot read Tenant Registry entries"}
+            return transport(method, path, body, token, timeout)
+        status, result = self.run_live(tenant_registry, ceiling="1000000")
+        self.assertEqual(status, 0)
+        self.assertEqual(len(result["runs"]), 2)
+        self.assertEqual(observed, [self.ENV["AIDASH_EVALUATION_SUBJECT_TOKEN"]])
+
     def test_live_stops_dispatch_at_the_ceiling_and_records_every_attempt(self):
         # One Run's worst case is 24 steps * 6 attempts * (1000 * max(1, 1) + 100 * 5) = 216000 nanocredits.
         for phase in ("FAILED", "COMPLETED"):
@@ -1282,7 +1637,57 @@ class LiveGuardTest(unittest.TestCase):
                 self.assertIsNone(result["experiment"]["model"]["reported_identities"])
                 self.assertIn("null", result["limitations"][0])
                 self.assertEqual(result["experiment"]["aidash"]["server_revision"], "0123abc")
+                self.assertIsNone(result["experiment"]["aidash"]["commit"])
+                self.assertIsNone(result["experiment"]["aidash"]["dirty"])
+                self.assertEqual(result["experiment"]["harness"]["source_provenance"], "remote-unverified")
                 self.assertEqual(result["experiment"]["created_at"], "2026-10-11T00:00:00.000000Z")
+
+    def test_grader_exception_keeps_every_dispatched_paid_run_in_the_manifest(self):
+        call, _ = self.live_node()
+        with mock.patch.object(evaluation, "run_result", side_effect=TypeError("private model output")):
+            status, result = self.run_live(call, ceiling="1000000")
+        self.assertEqual(status, 1)
+        self.assertEqual(len(result["runs"]), 2)
+        self.assertEqual(result["skipped_runs"], [])
+        self.assertEqual({run["key"] for run in result["runs"]},
+                         {attempt["key"] for attempt in result["spend"]["attempts"]})
+        self.assertTrue(all(run["outcome"] == "infrastructure_failure" for run in result["runs"]))
+        self.assertNotIn("private model output", json.dumps(result))
+        evaluation.validate_result(result)
+
+    def test_live_preserves_only_approved_source_attestation(self):
+        value = corpus()
+        source = {"commit": "a" * 40, "dirty": False, "dirty_diff_sha256": None,
+                  "binary_sha256": "b" * 64, "server_revision": "a" * 40}
+        approval = self.approval(value, max_spend_nanocredits=1000000,
+                                 source_attestation_sha256=evaluation.canonical_sha256(source))
+        for changed, expected in ((False, 0), (True, "refused")):
+            call, registered = self.live_node()
+            clock = Clock()
+            attested = dict(source, binary_sha256="c" * 64) if changed else source
+            with tempfile.TemporaryDirectory() as directory, mock.patch.dict(os.environ, self.ENV):
+                args = self.args(**{"--server-revision": source["commit"], "--max-spend-nanocredits": "1000000"})
+                args.source_attestation = Path("source.json")
+                args.output = Path(directory) / "result.json"
+                def read(path, source_value=attested, source_path=args.source_attestation):
+                    return source_value if path == source_path else approval
+                if changed:
+                    with self.assertRaisesRegex(evaluation.GuardRefusal, "source_attestation_sha256"):
+                        cli.live(args, read_json=read, transport=call, clock=clock, sleep=clock.sleep,
+                                 wall_now=lambda: self.NOW)
+                    self.assertEqual(registered, [])
+                    self.assertFalse(args.output.exists())
+                else:
+                    status = cli.live(args, read_json=read, transport=call, clock=clock, sleep=clock.sleep,
+                                      wall_now=lambda: self.NOW)
+                    self.assertEqual(status, expected)
+                    manifest = json.loads(args.output.read_text())
+                    self.assertEqual(manifest["experiment"]["aidash"], source)
+                    self.assertEqual(manifest["experiment"]["harness"]["source_provenance"], "source-attestation")
+        for tampered in (dict(source, dirty=True), dict(source, server_revision="bad"),
+                         dict(source, commit="a" * 7)):
+            with self.assertRaisesRegex(evaluation.GuardRefusal, "clean full commit"):
+                evaluation.validate_source_attestation(tampered, approval, source["commit"])
 
     def test_no_dropped_runs_rule_applies_when_spend_is_set(self):
         call, _ = self.live_node()
@@ -1954,13 +2359,16 @@ class HardeningTest(unittest.TestCase):
         planned = {"task": item, "comparison": {"id": "exposure"}, "arm": "baseline", "label": "legacy",
                    "agent_fields": {}}
         item_expected = dict(item, expected_arguments=arguments)
-        calls = [{"name": "invoice_lookup", "arguments": arguments, "error": None, "dispatch_rejected": False,
-                  "loaded": None}]
+        calls = [{"id": "copied restricted call identifier", "name": "invoice_lookup", "arguments": arguments,
+                  "error": None, "dispatch_rejected": False, "loaded": None}]
         observed = observation(final_answer="It is unpaid.", tool_calls=calls)
         live = evaluation.run_result(value, dict(planned, task=item_expected), 1, observed, "live", False)
         self.assertEqual(live["outcome"], "success", "grading still sees the raw arguments")
         self.assertEqual(live["tool_calls"][0]["arguments_sha256"], evaluation.canonical_sha256(arguments))
         self.assertNotIn("arguments", live["tool_calls"][0])
+        self.assertNotIn("id", live["tool_calls"][0])
+        self.assertEqual(live["tool_calls"][0]["id_sha256"],
+                         evaluation.canonical_sha256("copied restricted call identifier"))
         check = next(check for check in live["oracle"]["checks"] if check["check"] == "arguments")
         self.assertNotIn("observed", check)
         self.assertEqual(live["evidence"]["verifier"], live["oracle"]["checks"])
@@ -2195,7 +2603,7 @@ class DeterministicTest(unittest.TestCase):
                 corpus=evaluation.EVALUATION / "corpus.toml", memory_corpus=evaluation.EVALUATION / "memory.toml",
                 task=["structured-data-overdue-totals"], comparison=["projection"], repeats=1, run_timeout=1.0,
                 output=output, allow_unavailable_arms=False, parallel=1, binary=str(binary), skip_memory=True,
-                skip_rust_evidence=True, evidence_timeout=1.0)
+                skip_rust_evidence=True, evidence_timeout=1.0, execution_seed=181)
             identity = mock.patch.object(evaluation, "source_identity", side_effect=source_identity) \
                 if source_identity else contextlib.nullcontext()
             with mock.patch.object(cli, "checked", side_effect=fake_checked), identity, \

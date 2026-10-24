@@ -58,6 +58,7 @@ const TENANT_REGISTRY_MIGRATIONS: &[(&str, &str)] = &[
 	("registry", "0042_external_services"),
 	("registry", "0043_external_services_state"),
 	("registry", "0044_foreign_key_relations_state"),
+	("registry", "0045_projection_measurement_config"),
 	("marketplace", "0008_remove_compatibility_gate"),
 	("marketplace", "0009_remove_compatibility_gate_state"),
 	("marketplace", "0010_row_level_security"),

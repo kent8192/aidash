@@ -22,7 +22,7 @@
     "error"
   ],
   "properties": {
-    "schema_version": { "const": 1 },
+    "schema_version": { "enum": [1, 2] },
     "grade": { "const": "measurement-only" },
     "approvals": {
       "type": "object",
@@ -218,7 +218,7 @@
         "key": { "type": "string" },
         "task": { "type": "string" },
         "comparison": { "type": "string" },
-        "arm": { "enum": ["baseline", "candidate"] },
+        "arm": { "type": "string", "pattern": "^[a-z][a-z0-9-]*$" },
         "label": { "type": "string" },
         "repeat": { "type": "integer", "minimum": 1 },
         "run_id": { "type": ["string", "null"] },
@@ -246,6 +246,10 @@
         "tool_selection": { "type": ["object", "null"] },
         "wall_ms": { "type": "number", "minimum": 0 },
         "steps": { "type": ["integer", "null"] },
+        "recovery_operations": {
+          "type": "array",
+          "items": { "type": "string" }
+        },
         "compactions": { "type": ["integer", "null"] },
         "requests": { "type": ["object", "null"] },
         "usage": { "$ref": "#/$defs/usage" },
@@ -329,7 +333,7 @@
       "properties": {
         "task": { "type": "string" },
         "comparison": { "type": "string" },
-        "arm": { "enum": ["baseline", "candidate"] },
+        "arm": { "type": "string", "pattern": "^[a-z][a-z0-9-]*$" },
         "label": { "type": "string" },
         "attempted": { "type": "integer", "minimum": 0 },
         "outcomes": { "$ref": "#/$defs/counts" },
@@ -368,6 +372,8 @@
         "task": { "type": "string" },
         "comparison": { "type": "string" },
         "issue": { "type": "string" },
+        "baseline_arm": { "type": "string" },
+        "candidate_arm": { "type": "string" },
         "baseline": { "type": "string" },
         "candidate": { "type": "string" },
         "comparable": { "type": "boolean" },

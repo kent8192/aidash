@@ -1,5 +1,6 @@
 //! Per-attempt inference usage. Reported counts, provider cost and Aidash's
 //! request estimate stay separate; an absent value is unknown, never zero.
+use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 /// Usage exactly as the provider reported it. Each field is `None` when the
@@ -15,7 +16,26 @@ pub struct ReportedUsage {
 	/// Breakdown of `output_tokens` spent on reasoning.
 	pub reasoning_tokens: Option<u64>,
 	pub cost: Option<ProviderCost>,
+	/// Only identities explicitly reported upstream, never requested values.
+	pub provider_identity: Option<ProviderIdentity>,
 }
+
+/// Allowlisted response metadata. Missing or invalid fields remain unknown.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ProviderIdentity {
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub reported_model: Option<String>,
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub reported_provider: Option<String>,
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub reported_route: Option<String>,
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub provider_request_id: Option<String>,
+}
+
+/// Bound each retained identity field independently; no arbitrary metadata map.
+pub const PROVIDER_IDENTITY_FIELD_BYTES: usize = 256;
 
 /// Provider cost in billionths of an OpenRouter credit.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -120,7 +140,8 @@ fn parse_exponent(text: &str) -> Option<i64> {
 }
 
 /// How far Aidash trusts its own request estimate.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum EstimateConfidence {
 	/// Counted with a Token Encoding: still an upper bound, never the
 	/// provider's count, since templates add tokens no encoding sees.
@@ -141,7 +162,8 @@ impl EstimateConfidence {
 
 /// Aidash's estimate of the request size. It is labeled as an estimate and is
 /// never merged into reported counts.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct RequestEstimate {
 	/// The whole Request Estimate, output reservation included.
 	pub tokens: u64,
@@ -159,9 +181,34 @@ pub struct RequestEstimate {
 	pub ratio_ppm: Option<u32>,
 }
 
+/// A prompt-free measurement using a separately pinned estimator snapshot.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ShadowEstimate {
+	pub snapshot: super::estimate::EstimateSnapshot,
+	pub estimate: RequestEstimate,
+}
+
+/// Why an attempt was dispatched; auxiliary work remains in task accounting.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum UsagePurpose {
+	Main,
+	Summary,
+}
+
+impl UsagePurpose {
+	pub fn as_str(self) -> &'static str {
+		match self {
+			Self::Main => "main",
+			Self::Summary => "summary",
+		}
+	}
+}
+
 /// Facts recorded before provider I/O for one Inference Attempt.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct UsageDispatch {
+	pub purpose: UsagePurpose,
 	/// Public Inference Attempt identifier; never the worker lease token.
 	pub attempt: Uuid,
 	/// Worker lease that dispatched the attempt.
@@ -174,6 +221,9 @@ pub struct UsageDispatch {
 	/// The upstream model slug (`ModelConfig::model_id`), the calibration key.
 	pub upstream_model: String,
 	pub estimate: RequestEstimate,
+	/// Requested exact upstream tag, distinct from provider-reported identity.
+	pub requested_route: Option<String>,
+	pub shadow_estimates: Vec<ShadowEstimate>,
 	/// A complete outcome becomes a calibration sample: a media-free Inference
 	/// Attempt of a Run step (ADR 0017).
 	pub calibration_sample: bool,

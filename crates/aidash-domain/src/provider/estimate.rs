@@ -75,7 +75,8 @@ pub struct CalibrationSample {
 }
 
 /// A calibration key's pinned ratio and the samples it was taken over.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub struct Calibration {
 	/// The 99th-percentile ratio of prompt tokens to byte basis, in parts per
 	/// million, rounded up and capped at one token per byte.
