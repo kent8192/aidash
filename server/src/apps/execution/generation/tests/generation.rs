@@ -1545,6 +1545,18 @@ async fn matching_ordinary_agent_is_reused_without_generation_or_quota(
 		"run",
 		"memory"
 	]);
+	// Ordinary admission reads the required Source and dormant Decider metadata
+	// without granting permission to invoke the Decider or execute another task.
+	bundle["policies"].as_array_mut().unwrap().push(json!({
+		"id":"required-binding-metadata",
+		"effect":"allow",
+		"subjects":{"any":true},
+		"actions":["registry.read"],
+		"resources":{
+			"kinds":["source","decider"],
+			"ids":["aidash.workspace-observation","aidash.compaction-decider"]
+		}
+	}));
 	bundle["policies"].as_array_mut().unwrap().push(json!({"id":"task-owner","effect":"allow","subjects":{"any":true},"actions":["task.read","task.execute","task.delegate"],"resources":{"kinds":["task"]},"condition":{"op":"eq","left":{"source":"resource","path":"/created_by"},"right":{"source":"literal","value":"alice"}}}));
 	assert_eq!(
 		request(

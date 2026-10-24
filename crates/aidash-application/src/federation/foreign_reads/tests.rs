@@ -44,8 +44,10 @@ struct Scope {
 	subjects: Vec<String>,
 	view_denied: Option<&'static str>,
 	source_denied: Option<&'static str>,
+	definition_denied: Option<&'static str>,
 	snapshot_fault: Option<Fault>,
 	entry_fault: Option<Fault>,
+	metadata_fault: Option<Fault>,
 	entry: Entry,
 	retired: Option<Entry>,
 	terminal_statuses: Vec<String>,
@@ -163,19 +165,43 @@ impl ForeignSourceAuthority for Source<'_> {
 		self.scope
 			.resource("registry", &entry.id, json!({"version":entry.version}))
 	}
-	async fn decide(&mut self, _: &Resource, action: &str) -> Result<bool> {
+	async fn decide(&mut self, resource: &Resource, action: &str) -> Result<bool> {
 		assert_eq!(self.scope.snapshot.revision, 99);
 		self.scope.calls.push(format!("source:{action}"));
 		if self.scope.block_source {
 			std::future::pending::<()>().await;
 		}
-		Ok(self.scope.source_denied != Some(action))
+		Ok(self.scope.source_denied != Some(action)
+			&& !(resource.id == self.scope.entry.id
+				&& self.scope.definition_denied == Some(action)))
 	}
 	async fn catalog_entry(&mut self, reference: &EntityRef, action: &str) -> Result<Entry> {
-		assert_eq!(reference.id, "a");
 		assert_eq!(action, "registry.read");
 		self.scope.calls.push("current-definition".into());
+		if reference.id != self.scope.entry.id {
+			return Ok(self
+				.scope
+				.record
+				.as_ref()
+				.unwrap()
+				.description
+				.inspection
+				.definitions
+				.iter()
+				.find(|definition| &definition.entry == reference)
+				.unwrap()
+				.metadata
+				.clone());
+		}
 		match self.scope.entry_fault {
+			Some(fault) => Err(fault.error()),
+			None => Ok(self.scope.entry.clone()),
+		}
+	}
+	async fn metadata(&mut self, reference: &EntityRef) -> Result<Entry> {
+		assert_eq!(reference.id, self.scope.entry.id);
+		self.scope.calls.push("current-metadata".into());
+		match self.scope.metadata_fault {
 			Some(fault) => Err(fault.error()),
 			None => Ok(self.scope.entry.clone()),
 		}
@@ -266,14 +292,112 @@ fn scope(run: RunMetadata) -> Scope {
 		subjects: vec!["viewer".into()],
 		view_denied: None,
 		source_denied: None,
+		definition_denied: None,
 		snapshot_fault: None,
 		entry_fault: None,
+		metadata_fault: None,
 		entry,
 		retired: None,
 		terminal_statuses: vec![],
 		block_source: false,
 		source_executor_enabled: None,
 	}
+}
+
+#[fixture]
+fn compaction_scope(mut scope: Scope) -> Scope {
+	scope.entry.config["schema_version"] = json!(1);
+	let snapshot = crate::test_support::resolve("aidash://local", &scope.entry, true, vec![]);
+	scope.entry = crate::registry::system::compaction_decider().unwrap();
+	let inspection = &mut scope.record.as_mut().unwrap().description.inspection;
+	inspection.agent = snapshot
+		.definitions
+		.iter()
+		.find(|definition| definition.identity == snapshot.agent)
+		.unwrap()
+		.definition
+		.clone();
+	inspection.definitions = snapshot
+		.definitions
+		.iter()
+		.map(|definition| Definition {
+			entry: definition.identity.local(),
+			kind: definition.definition.kind.clone(),
+			digest: definition.digest.clone(),
+			metadata: definition.definition.clone(),
+		})
+		.collect();
+	inspection.binding_snapshot = snapshot;
+	scope
+}
+
+#[rstest]
+#[case::unapproved(Some(Fault::Forbidden), None)]
+#[case::dispatch_denied(None, Some("decision.invoke"))]
+#[tokio::test]
+async fn dormant_compaction_metadata_does_not_require_dispatch_authority(
+	mut compaction_scope: Scope,
+	run: RunMetadata,
+	#[case] approval_fault: Option<Fault>,
+	#[case] denied: Option<&'static str>,
+) {
+	compaction_scope.entry_fault = approval_fault;
+	compaction_scope.definition_denied = denied;
+	assert!(visible(&mut compaction_scope, &run).await.unwrap());
+	restored(&compaction_scope);
+}
+
+#[rstest]
+#[case::registry_denied("registry.read")]
+#[case::metadata_changed("digest")]
+#[case::metadata_hidden("hidden")]
+#[tokio::test]
+async fn dormant_compaction_metadata_retains_current_read_and_digest_checks(
+	mut compaction_scope: Scope,
+	run: RunMetadata,
+	#[case] mutation: &str,
+) {
+	match mutation {
+		"registry.read" => compaction_scope.definition_denied = Some("registry.read"),
+		"digest" => {
+			compaction_scope
+				.entry
+				.description
+				.insert("en".into(), "Changed".into());
+		}
+		"hidden" => compaction_scope.metadata_fault = Some(Fault::Forbidden),
+		_ => panic!("unknown mutation"),
+	}
+	assert!(!visible(&mut compaction_scope, &run).await.unwrap());
+	restored(&compaction_scope);
+}
+
+#[rstest]
+#[case::approved(None, None, true)]
+#[case::unapproved(Some(Fault::Forbidden), None, false)]
+#[case::dispatch_denied(None, Some("decision.invoke"), false)]
+#[tokio::test]
+async fn an_explicit_compaction_decider_retains_approval_and_dispatch_checks(
+	mut compaction_scope: Scope,
+	run: RunMetadata,
+	#[case] approval_fault: Option<Fault>,
+	#[case] denied: Option<&'static str>,
+	#[case] allowed: bool,
+) {
+	let inspection = &mut compaction_scope
+		.record
+		.as_mut()
+		.unwrap()
+		.description
+		.inspection;
+	inspection.decider = Some(EntityRef {
+		id: compaction_scope.entry.id.clone(),
+		version: compaction_scope.entry.version.clone(),
+	});
+	compaction_scope.entry_fault = approval_fault;
+	compaction_scope.definition_denied = denied;
+	assert_eq!(visible(&mut compaction_scope, &run).await.unwrap(), allowed);
+	restored(&compaction_scope);
 }
 fn restored(scope: &Scope) {
 	assert_eq!(scope.snapshot.revision, 1);
