@@ -1936,7 +1936,8 @@ async fn coverage_retention_keeps_referenced_history_and_accounts_after_tenant_p
 		pool: d.control().clone(),
 	}
 	.pod_time(PodTime {
-		operation: Uuid::new_v4(),
+		allocation: Uuid::new_v4(),
+		receipt_digest: "a".repeat(64),
 		tenant: tenant.clone(),
 		started_at: boundary - Duration::days(8) + Duration::hours(1),
 		ended_at: boundary + Duration::hours(1),
