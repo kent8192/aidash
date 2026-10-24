@@ -7124,29 +7124,99 @@ async fn node_deletion_or_explicit_cancel_prevents_late_activation(
 			.await
 			.unwrap();
 	}
-	for _ in 0..2 {
-		let (status, body) = common::peer_request(
-			&p.ba,
-			(&p.a, "acme"),
-			&receiver,
-			"",
-			&format!(
-				"/federation/v0.1/scoped/execution/admissions/{}/control",
-				p.admission
-			),
-			json!({"grant_id":p.grant,"action":"cancel"}),
-		)
-		.await;
-		assert_eq!(status, 200, "{body}");
-		assert_eq!(body["phase"], "ADMITTED");
-		assert_eq!(body["control"], "CANCELLED");
-		assert!(body["error"].is_null());
+	use aidash_application::{
+		federation::key::Signing,
+		ports::federation::inbound::{InboundRepository, ReceivingKeyOwner},
+	};
+	use aidash_capability::{
+		InMemorySigner, TokenSigner,
+		federation::{
+			FederationClaims, body_digest,
+			rollover::{RolloverClaims, mint_transition},
+		},
+	};
+	use aidash_domain::{nodes::DeploymentKeyId, tenancy::TenantName};
+	use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
+	use secrecy::ExposeSecret;
+
+	// Exercise the production TCP router and recovery CAS with an authentic
+	// successor, not the in-process admission shortcut or a synthetic journal.
+	async fn successor_cancel(
+		p: &Pair,
+		next: &InMemorySigner,
+		transition: &str,
+		subject: &str,
+		body: Value,
+	) -> (u16, Value) {
+		let path = format!("/scoped/execution/admissions/{}/control", p.admission);
+		let bytes = serde_json::to_vec(&body).unwrap();
+		let now = chrono::Utc::now().timestamp() as u64;
+		let token = FederationClaims {
+			iss: p.a.config.deployment.to_string(),
+			sub: node_of(&p.a),
+			aud: node_of(&p.b),
+			subject: subject.into(),
+			iat: now,
+			exp: now + 60,
+			jti: Uuid::new_v4(),
+			kid: next.kid().into(),
+			protocol: aidash_domain::federation::protocol::CURRENT.into(),
+			method: "POST".into(),
+			path: path.clone(),
+			body: body_digest(&bytes),
+			transition: Some(transition.into()),
+		}
+		.mint(next)
+		.await
+		.unwrap();
+		let mut request =
+			p.a.client
+				.post(format!("{}/federation/v0.1{path}", p.b.config.endpoint))
+				.header("content-type", "application/json")
+				.body(bytes);
+		for (name, value) in common::peering::peer_headers(token.expose_secret()) {
+			request = request.header(name, value);
+		}
+		let response = request.send().await.unwrap();
+		(response.status().as_u16(), response.json().await.unwrap())
 	}
+	let tenant = TenantName::new("acme").unwrap();
+	let sender = aidash_domain::nodes::NodeAddress::parse(&node_of(&p.a)).unwrap();
+	let owner = ReceivingKeyOwner::Registration {
+		tenant: tenant.clone(),
+		node: receiver.node.clone(),
+		source_node: sender.clone(),
+	};
+	let before =
+		p.b.registration(&tenant, &receiver.node, &sender)
+			.await
+			.unwrap()
+			.unwrap();
+	let raw = InMemorySigner::new("temporary".into(), [24; 32]);
+	let next = InMemorySigner::new(
+		DeploymentKeyId::of_public_key(&raw.public_key().to_bytes()).to_string(),
+		[24; 32],
+	);
+	let old = p.a.config.deployment_key.as_deref().unwrap();
+	let now = chrono::Utc::now().timestamp() as u64;
+	let transition = mint_transition(
+		&RolloverClaims {
+			deployment: p.a.config.deployment.to_string(),
+			predecessor_kid: old.key_id().to_string(),
+			successor_kid: next.kid().into(),
+			successor_public_key: URL_SAFE_NO_PAD.encode(next.public_key().to_bytes()),
+			published_at: now - 90_000,
+			activates_at: now - 3_600,
+			retires_at: now - 3_600 + 604_800,
+		},
+		&Signing(old),
+	)
+	.await
+	.unwrap();
+	let initial = p.b.receiving_keys(&owner).await.unwrap().unwrap();
 	if deletion {
-		let path = format!(
-			"/federation/v0.1/scoped/execution/admissions/{}/control",
-			p.admission
-		);
+		// Each denied request is otherwise correctly signed. None may advance
+		// cryptographic trust before the durable stop binding is established.
 		for (subject, body) in [
 			(
 				"",
@@ -7159,13 +7229,67 @@ async fn node_deletion_or_explicit_cancel_prevents_late_activation(
 			),
 			("root", json!({"grant_id":p.grant,"action":"cancel"})),
 		] {
-			let (status, response) =
-				common::peer_request(&p.ba, (&p.a, "acme"), &receiver, subject, &path, body).await;
+			let (status, response) = successor_cancel(&p, &next, &transition, subject, body).await;
 			assert!(
 				matches!(status, 400 | 401 | 403 | 404 | 409),
 				"closed stop proof admitted another request: {status} {response}"
 			);
+			assert_eq!(p.b.receiving_keys(&owner).await.unwrap().unwrap(), initial);
 		}
+	}
+	for _ in 0..2 {
+		let body = json!({"grant_id":p.grant,"action":"cancel"});
+		let (status, body) = if deletion {
+			successor_cancel(&p, &next, &transition, "", body).await
+		} else {
+			common::peer_request(
+				&p.ba,
+				(&p.a, "acme"),
+				&receiver,
+				"",
+				&format!(
+					"/federation/v0.1/scoped/execution/admissions/{}/control",
+					p.admission
+				),
+				body,
+			)
+			.await
+		};
+		assert_eq!(status, 200, "{body}");
+		assert_eq!(body["phase"], "ADMITTED");
+		assert_eq!(body["control"], "CANCELLED");
+		assert!(body["error"].is_null());
+		assert!(p.b.store.runs(&TEST_FIXTURE).await.unwrap().is_empty());
+		if deletion {
+			let learned = p.b.receiving_keys(&owner).await.unwrap().unwrap();
+			assert_eq!(learned.keys.current.key_id.as_str(), next.kid());
+			assert_eq!(learned.keys_revision, initial.keys_revision + 1);
+			let after =
+				p.b.registration(&tenant, &receiver.node, &sender)
+					.await
+					.unwrap()
+					.unwrap();
+			assert_eq!(
+				(
+					after.enabled,
+					after.atomic_transactions,
+					after.revision,
+					after.actor,
+					after.created_at,
+					after.updated_at
+				),
+				(
+					before.enabled,
+					before.atomic_transactions,
+					before.revision,
+					before.actor.clone(),
+					before.created_at,
+					before.updated_at
+				)
+			);
+		}
+	}
+	if deletion {
 		let (status, body) = request(
 			&p.ba,
 			&p.b.config.api_token,
@@ -7193,6 +7317,36 @@ async fn node_deletion_or_explicit_cancel_prevents_late_activation(
 	.await
 	.unwrap();
 	assert!(cancelled);
+	if deletion {
+		// Restoration refusal above is checked before quarantine, so it cannot
+		// be explained by an unrelated authentication failure.
+		let learned = p.b.receiving_keys(&owner).await.unwrap().unwrap();
+		let (status, state) = request(&p.ba, &p.b.config.api_token, "POST",
+			&format!("/api/tenants/acme/nodes/{}/registration-keys", receiver.node),
+			json!({"source_node":sender.to_string(),"action":"quarantine",
+				"expected_keys_revision":learned.keys_revision,"expected_authorization_revision":before.revision})).await;
+		assert_eq!(status, 200, "{state}");
+		let quarantined = p.b.receiving_keys(&owner).await.unwrap().unwrap();
+		assert!(quarantined.keys.quarantined);
+		assert_eq!(quarantined.keys_revision, learned.keys_revision + 1);
+		assert_eq!(
+			successor_cancel(
+				&p,
+				&next,
+				&transition,
+				"",
+				json!({"grant_id":p.grant,"action":"cancel"})
+			)
+			.await
+			.0,
+			401
+		);
+		assert_eq!(
+			p.b.receiving_keys(&owner).await.unwrap().unwrap(),
+			quarantined
+		);
+		assert!(p.b.store.runs(&TEST_FIXTURE).await.unwrap().is_empty());
+	}
 	p.close().await;
 }
 
