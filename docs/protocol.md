@@ -1,10 +1,10 @@
 # Protocol and recovery contracts
 
-This document describes implemented runtime and recovery contracts. Cross-Node transaction coordination, semantic vector memory, Kubernetes orchestration and scoped remote execution have implementation paths. Their complete integrated release acceptance remains open; full A2A interoperability is also open. See [transactions](transactions.md), [authorization](authorization.md) and [orchestration](orchestration.md) for their separate contracts and limits.
+This document describes runtime and recovery contracts, including the accepted Node lifecycle and Deployment Key rollover decisions. Cross-Node transaction coordination, semantic vector memory, Kubernetes orchestration and scoped remote execution have implementation paths. Their complete integrated release acceptance remains open; full A2A interoperability is also open. See [transactions](transactions.md), [authorization](authorization.md) and [orchestration](orchestration.md) for their separate contracts and limits.
 
 ## Trust and identity
 
-A Deployment publishes `/.well-known/aidash` with its `aidash://` identity, endpoint, protocol version and, when it has a Deployment Key, that key's ID and public key (`key` is `null` otherwise). The document names no Node. All management routes under `/api` require a bearer access token except the public, credential-free `/api/openapi.json` contract. The dashboard uses authenticated fetch for SSE so credentials do not appear in URLs.
+A Deployment publishes `/.well-known/aidash` with its `aidash://` identity, endpoint, protocol version and, when it has a Deployment Key, that key's ID and public key (`key` is `null` otherwise). During a scheduled rollover, optional `key_rollover` publishes `successor` or `retiring` public identities, `published_at`, `activates_at`, `retires_at` (Unix seconds) and the public `transition` proof. The document names no Node and exposes neither private keys nor File/KMS source references. All management routes under `/api` require a bearer access token except the public, credential-free `/api/openapi.json` contract. The dashboard uses authenticated fetch for SSE so credentials do not appear in URLs.
 
 The Deployment Administrator token retains privileged bootstrap, administration and recovery access; it runs no work of its own, because every workspace, task and Run belongs to a Tenant (ADR 0043). Revocable subject tokens apply the current tenant policy to workspace and conversation APIs, human interaction, approved Registry discovery, local execution, state collections and event delivery. Local runs persist the root credential and delegated agent chain, rechecking their intersected authority at each durable boundary. Scoped remote execution uses a durable source grant, receiver admission, explicit activation and scoped Home commands; each Node rechecks its own authority at durable boundaries. Subject bearer tokens are not forwarded. See [authorization](authorization.md) for the exact admission path, actions, catalog approvals, revocation and credential rotation. The full cross-Node acceptance in #38 remains open.
 
@@ -22,8 +22,9 @@ Federation retains the `/federation/v0.1` path namespace and speaks protocol `0.
 | `protocol`       | `0.4`                                                                                             |
 | `method`, `path` | the request method and its target under `/federation/v0.1`, with the query                        |
 | `body`           | base64url without padding of SHA-256 over the request body bytes                                  |
+| `transition`     | optional bounded predecessor-signed rollover proof during overlap                                 |
 
-A token is bound to one request, so a captured token reaches no other endpoint, and the receiver keeps no `jti` store: a repeat of the same request within the window meets the handlers' own idempotency. The receiving Node decides in this order, and every refusal up to and including the signature answers `401` with `{"error":"unauthorized"}`, so a caller cannot tell a wrong Node name from a wrong key. The request names a Node of this Deployment, whose Tenant is not deleted. For a sender in another Deployment, the receiving Deployment needs `[deployment] federation = true` and a Deployment Key of its own, and the receiving Node needs a Node Registration for the sender that pins the sender's key. The signature must verify with that key. A sender in this Deployment is trusted in process and is never accepted over HTTP. A sender of the receiving Node's own Tenant needs no registration and no Peer Mapping: the Tenant's policy must allow `node.use` on the receiving Node for the sender's subject. A sender of another Tenant needs an enabled Node Registration, and a named subject needs an enabled Peer Mapping keyed by `(receiving Node, sending Node, sending subject)`; a missing mapping after a valid signature answers 403. The handler then requires the operation's own action for the acting subject. A token whose `subject` is empty acts as the sending Node itself, and mapped-subject access refuses it with 403. With the switch off or no key, the receiver refuses every token and the sender answers 503 `federation_disabled` before any network call; exchange between Nodes of one Deployment is unaffected. A Node Registration fetches `/.well-known/aidash` from the other Deployment, which must advertise `0.4`. A public endpoint must use HTTPS. A private address works only when the Deployment permits its origin in `[keyless_endpoints] permitted_private_origins`. A Deployment Administrator of another Deployment reads a Tenant's graph under a Peer Graph Grant with a token whose `iss`, `sub` and `aud` are Deployment ids and whose `subject` is `oidc:<identity uuid>`; that is the one inbound caller that is not a Node. This version is not a hostile multi-tenant sandbox.
+A token is bound to one request, so a captured token reaches no other endpoint, and the receiver keeps no `jti` store: a repeat of the same request within the window meets the handlers' own idempotency. The receiving Node decides in this order, and every refusal up to and including the signature answers `401` with `{"error":"unauthorized"}`, so a caller cannot tell a wrong Node name from a wrong key. The request names a Node of this Deployment, whose Tenant is not deleted. For a sender in another Deployment, the receiving Deployment needs `[deployment] federation = true` and a Deployment Key of its own, and the receiving Node needs a Node Registration for the sender that pins the sender's key. The signature must verify with its current receiving keyset, including a verified successor transition when needed. A sender in this Deployment is trusted in process and is never accepted over HTTP. A sender of the receiving Node's own Tenant needs no registration and no Peer Mapping: the Tenant's policy must allow `node.use` on the receiving Node for the sender's subject. A sender of another Tenant needs an enabled Node Registration, and a named subject needs an enabled Peer Mapping keyed by `(receiving Node, sending Node, sending subject)`; a missing mapping after a valid signature answers 403. The handler then requires the operation's own action for the acting subject. A token whose `subject` is empty acts as the sending Node itself, and mapped-subject access refuses it with 403. With the switch off or no key, the receiver refuses every token and the sender answers 503 `federation_disabled` before any network call; exchange between Nodes of one Deployment is unaffected. A Node Registration fetches `/.well-known/aidash` from the other Deployment, which must advertise `0.4`. A public endpoint must use HTTPS. A private address works only when the Deployment permits its origin in `[keyless_endpoints] permitted_private_origins`. A Deployment Administrator of another Deployment reads a Tenant's graph under a Peer Graph Grant with a token whose `iss`, `sub` and `aud` are Deployment ids and whose `subject` is `oidc:<identity uuid>`; that is the one inbound caller that is not a Node. This version is not a hostile multi-tenant sandbox.
 
 | Endpoint             | Purpose                                                                           |
 | -------------------- | --------------------------------------------------------------------------------- |
@@ -45,6 +46,97 @@ B's connection to C is not included in B's graph projection. See the
 Remote workers retrieve workspace metadata with `snapshot_workspace`, then use `snapshot_page` for the `tasks`, `artifacts`, `events` and `messages` collections. Each page has `items` and an optional UUID `next` cursor, supplied as `after` on the next request. Pages contain at most 32 records and 3 MiB of serialized data, below the 4 MiB limit on a Federation response. Tasks and artifacts are paginated to completion; events and messages retain their latest-100 observation window. An individual resource larger than 3 MiB is rejected explicitly. Collection reads observe current home state and do not provide a transaction snapshot across pages.
 
 Agent memory is separated by agent ID, version, workspace UUID and workspace home Node. Existing local memory retains its local namespace; a remote Run cannot read or overwrite it by reusing a workspace UUID. A dependent run fails with the dependency ID and terminal status when a prerequisite is failed, cancelled or abandoned.
+
+### Deployment Key rollover
+
+A normal rollover publishes one successor, activates its signing 24 hours later
+and ends predecessor verification seven days after activation. Only one normal
+rollover may run at a time. During the half-open overlap
+`[activates_at, retires_at)`, a successor-signed request carries one compact
+`transition` proof signed by the receiver's currently trusted key. The complete
+Federation token, including this proof, must fit the existing 8192-byte limit.
+The outer token still has its 60-second lifetime and exact method, target, query
+and body binding. A proof alone admits no request.
+
+Receiving Node Registrations and Peer Graph Grants keep cryptographic trust
+separate from authorization. Persist advancement only after the full outer token,
+Deployment/Node or named viewer identity, exact mapping and current authority
+checks succeed, with a compare-and-set against both trust and authorization
+revisions. A crypto-only update preserves permissions, enabled state,
+authorization revision, administration actor/timestamps and Graph cursors.
+A conflict requires reload and revalidation; it must not overwrite newer trust.
+
+Request-carried verification needs no public-identity HTTP fetch. Publishing a
+public key alone never changes receiving trust. A receiver that misses the overlap
+needs independent manual confirmation, as does replacement after a lost or
+compromised key. Each record's existing administrator controls explicit quarantine
+and manual re-pin. Normal proof cannot clear quarantine or enable a disabled
+record, and confirmation does not itself enable one. Independent receivers cannot
+be promised immediate incident notification or revocation.
+
+For the exact closed-Node durable recovery described below, learning a successor
+requires the participant, immutable manifest and caller to be revalidated in the
+same transaction as the trust compare-and-set. It grants no new authority and
+retains the normal proof expiry: no historical-key fallback or expiry waiver.
+See [ADR 0084](adr/0084-normal-deployment-key-rollover-is-proven-by-the-currently-trusted-key.md)
+and [normal rollover operations](decisions/nodes-and-federation.md#16-the-deployment-key)
+for the existing File/KMS commands and schedule.
+
+## Node deletion and recovery
+
+A deleted Node refuses ordinary reads, access and work at the next durable
+boundary, including new Reserve and Prepare. Deletion snapshots the exact work
+identities and durable stop intent in its transaction; mutable Run timestamps
+cannot reconstruct that set later. Restore keeps the stop intent, fences old
+leases and pending work, and never restarts canceled Runs. Preserved data reopens
+only under current Tenant policy and current credentials and registrations.
+
+Only exact, already-admitted immutable durable finish/decision/stop cleanup may
+continue through a closed Node. Revalidate its participant, manifest and caller;
+this exception cannot create work, reserve new authority or undo a decided atomic
+commit. It is not a general access exemption for a deleted Node or disabled
+registration. See [lifecycle management](authorization.md#tenancy-rules-tenant-creation-and-invitations)
+for default switching, grace, capacity and restore restrictions.
+
+Purge removes Node-owned data and preserves sibling Nodes and Tenant-shared
+Registry definitions, Provider Credentials, Tenant Secrets, user subjects and
+policy revisions. Retained files remain billable according to the Offering until
+physical erasure; deleting the whole Tenant retains its existing exemption.
+Execution Pod time ends on actual Pod stop, not the Node deletion request.
+
+Separable audit expires under `audit_retention_days` (365 days by default) after
+final purge. Assigned Node names remain permanent. Keep the exact current
+registration dependency while a retained durable journal needs it for recovery;
+audit expiry does not erase that required trust. Content-free sibling source-read
+identities and revisions survive source purge, while the source-deletion owner
+invalidates derived receipt bodies. Unknown or contradictory ownership blocks
+erasure. See [ADR 0083](adr/0083-node-deletion-is-recoverable-and-releases-capacity-before-purge.md).
+
+## Allocation usage
+
+Pod usage follows one actual provider Pod UID through its complete start-to-stop
+lifetime. A recreated Pod has a new allocation identity; retries keep the original
+identity, canonical receipt digest and immutable Tenant/start/end facts. Command
+or Run completion is not allocation stop. Delayed receipts remain ingestible
+after authority withdrawal and replay their frozen facts rather than assigning
+historical usage from today's Billing Account attachment.
+
+Account coverage and reporting intervals are half-open. Split complete allocation
+time by historical coverage and Tenant-deletion exemptions; Node deletion alone
+creates no exemption. Storage sampling includes explicit zero-byte samples after
+physical purge so an active Tenant cannot retain stale nonzero usage. See
+[retained usage facts](operations/usage-facts.md) for precision, replay, retention
+and account-period queries.
+
+The accepted [Live preview contract](adr/0085-live-preview-pods-use-the-execution-pod-time-meter-until-they-stop.md)
+uses this same meter until actual stop, including time after Run completion.
+Generic allocation-meter evidence does not establish actual preview runtime
+acceptance (Issue 405), Kubernetes/gVisor acceptance or live Stripe acceptance.
+The [Stripe Sandbox experiment](operations/stripe-billing.md) remains blocked on
+Sandbox access and actual Checkout; no billing model, launch price, currency or
+processor export model is selected by these usage facts. Full remaining-Issue
+acceptance, including the separately owned PR 478 restore/Plan Connection repair,
+remains tracked in the [completion plan](decisions/issue-244-completion-plan.md).
 
 ## Persistence and delivery
 

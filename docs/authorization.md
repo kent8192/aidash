@@ -72,7 +72,8 @@ A Tenant Administrator approves Registration Requests, manages Mappings, and rea
 | `node.read`                     | `node`              | List the Tenant's Nodes (members hold it)                                                                      |
 | `node.use`                      | `node`              | Work in a Node, such as creating a Workspace there (members hold it)                                           |
 | `node.create`                   | `tenant`            | Create a Node within "Nodes per Tenant"                                                                        |
-| `node.update`                   | `node`              | Change a Node's label                                                                                          |
+| `node.update`                   | `node`              | Change a Node's label or make it the default                                                                   |
+| `node.delete`                   | `node`              | Manage deleted Nodes, soft-delete and restore them under current authority                                     |
 | `node_registration.read`        | `node_registration` | List the Node Registrations of one of the Tenant's Nodes and their history                                     |
 | `node_registration.update`      | `node_registration` | Register a Node of another Tenant at one of the Tenant's Nodes, change that registration or disable it         |
 | `workbench.test_limits.update`  | `test_limits`       | Read and set the Tenant's Workbench Test Limits within the Deployment's ceilings                               |
@@ -115,16 +116,17 @@ Every Tenant has a root record keyed by its Tenant name, `<adjective>-<noun>-<8 
 
 The Tenancy Rules are deployment-wide settings under `[tenancy]`; no Tenant's policy decides them. The `[deployment] offering` supplies each rule the settings leave out, and an explicit value overrides it. Identities of a GCIP Tenant with a Tenant Binding are never covered: they hold no Personal Tenant, create no Tenants and redeem no other Tenant's Invitation.
 
-| Setting                | Self-hosted | Cloud  | Dedicated | Meaning                                                                       |
-| ---------------------- | ----------- | ------ | --------- | ----------------------------------------------------------------------------- |
-| `personal_tenants`     | `false`     | `true` | `false`   | Provision a Personal Tenant at an identity's first sign-in                    |
-| `tenant_creation`      | `false`     | `true` | `false`   | Let signed-in External Identities create Tenants                              |
-| `creation_per_hour`    | `5`         | `5`    | `5`       | Creations per External Identity within any 60 minutes                         |
-| `creation_total`       | `20`        | `20`   | `20`      | Tenants one External Identity created and has not had purged                  |
-| `invitations`          | `true`      | `true` | `true`    | Let Tenant Administrators and Deployment Administrators issue Invitations     |
-| `deletion_grace_days`  | `30`        | `30`   | `30`      | Days a deleted Tenant stays restorable before its data is purged (1 to 90)    |
-| `audit_retention_days` | `365`       | `365`  | `365`     | Days a purged Tenant's audit history is kept before it is deleted (1 to 3650) |
-| `nodes_per_tenant`     | `10`        | `10`   | `10`      | Nodes one Tenant may hold (1 to 1000); a Tier may be stricter                 |
+| Setting                    | Self-hosted | Cloud  | Dedicated | Meaning                                                                    |
+| -------------------------- | ----------- | ------ | --------- | -------------------------------------------------------------------------- |
+| `personal_tenants`         | `false`     | `true` | `false`   | Provision a Personal Tenant at an identity's first sign-in                 |
+| `tenant_creation`          | `false`     | `true` | `false`   | Let signed-in External Identities create Tenants                           |
+| `creation_per_hour`        | `5`         | `5`    | `5`       | Creations per External Identity within any 60 minutes                      |
+| `creation_total`           | `20`        | `20`   | `20`      | Tenants one External Identity created and has not had purged               |
+| `invitations`              | `true`      | `true` | `true`    | Let Tenant Administrators and Deployment Administrators issue Invitations  |
+| `deletion_grace_days`      | `30`        | `30`   | `30`      | Days a deleted Tenant stays restorable before its data is purged (1 to 90) |
+| `node_deletion_grace_days` | `30`        | `30`   | `30`      | Days a deleted Node stays restorable (1 to 90), fixed at deletion          |
+| `audit_retention_days`     | `365`       | `365`  | `365`     | Days separable Tenant/Node audit is kept after final purge (1 to 3650)     |
+| `nodes_per_tenant`         | `10`        | `10`   | `10`      | Live Nodes one Tenant may hold (1 to 1000); a Tier may be stricter         |
 
 `POST /api/tenants` with `{"label":"Research"}` creates a Tenant and answers 201 with `{name, label, created_at, mapping_id}`. The label must have 1 to 64 characters after trimming and no control characters. The route authenticates itself:
 
@@ -132,9 +134,58 @@ The Tenancy Rules are deployment-wide settings under `[tenancy]`; no Tenant's po
 - Any other browser session creates a Tenant for its External Identity, without needing a Mapping, where `tenant_creation` allows it. The identity becomes the Tenant Creator: it receives the first Mapping, to `owner` in `administrators`, and the first policy revision's actor is `oidc:<identity>`. Exceeding `creation_per_hour` answers 429 with `Retry-After` until a slot frees; exceeding `creation_total` answers 403 `tenant_limit_reached`. Personal Tenants never count. An advisory lock per identity serializes concurrent creations.
 - Subject Credentials, agents and Nodes never create Tenants (403).
 
-Every Tenant starts with one default Node, labelled `Default`, which `tenants::create` writes with the root record for every creator, Personal Tenants included. A Node has an assigned name (`<adjective>-<noun>-<8 random characters>`, unique in the Deployment, never changed and never reused, so `node_names` outlives a purge) and a label of 1 to 64 characters that its Tenant Administrators change. Its address is `aidash://<deployment>/<name>`. `GET /api/tenants/{tenant}/nodes` lists the Tenant's Nodes under `node.read`, the default first. `POST /api/tenants/{tenant}/nodes` with `{"label":…}` creates a Node under `node.create`, answers 201, and answers 403 `node_limit_reached` when the Tenant holds `nodes_per_tenant` Nodes or the Tier's limit, whichever is lower; an advisory lock per Tenant serializes concurrent creations. The Community build has no Tier limit. `PATCH /api/tenants/{tenant}/nodes/{node}` with `{"label":…}` changes the label under `node.update`. Nodes are created here and never stopped; #388 decides how a Node stops. Creations are appended to `dashboard_administration_history` as `node.create`.
+Every Tenant starts with one default Node, labelled `Default`, which
+`tenants::create` writes with the root record for every creator, Personal Tenants
+included. A Node has an assigned name (`<adjective>-<noun>-<8 random characters>`,
+unique in the Deployment, never changed and never reused, so `node_names` outlives
+a purge) and a label of 1 to 64 characters that its Tenant Administrators change.
+Its address is `aidash://<deployment>/<name>`.
 
-A Node Registration is a Tenant Administrator's decision that one of its Nodes accepts one named Node of another Tenant, and addresses outbound exchange to it. `POST /api/tenants/{tenant}/nodes/{node}/registrations` takes `{source_node, endpoint?, key_id?, atomic_transactions, enabled, expected_revision}` under `node_registration.update` and answers the registration. `expected_revision` is 0 to create and the revision being replaced otherwise; a stale revision, or creating one that exists, answers 409. For a Node of this Deployment, `endpoint` and `key_id` must be absent and `source_node` must hold a name some Tenant holds; a Node of the owning Tenant answers 422, because the Tenant's policy decides within the Tenant. For a Node of another Deployment, both are required: the server fetches `{endpoint}/.well-known/aidash` with a 5 second timeout and requires its `id` to be the Node's Deployment, its `protocol_version` to be `0.4`, and its `key.id` to be the key ID typed, and the PEM to hash to that key ID. Anything else answers 422 with the reason. The registration stores the fetched public key, so a key that changes later fails every signature until the registration is replaced with the new key ID; the key ID the administrator types is the trust anchor, not the endpoint. Disabling needs no answer from the other Deployment and keeps what the registration pinned. `GET` on the same path lists the Node's registrations (`offset`, `limit` as for Peer Mappings), and `GET /api/tenants/{tenant}/nodes/{node}/registration-history?after=0&limit=100` lists every revision in order, under `node_registration.read`. Every write is appended to `dashboard_administration_history` as `node_registration.update`.
+`GET /api/tenants/{tenant}/nodes` lists all live Nodes under `node.read`, the
+default first. This ordinary selector excludes deleted Nodes. The separate
+management query on the same route, `?include_deleted=true&limit=100&offset=0`,
+requires `node.delete` or a Deployment Administrator; it includes deletion states
+and uses bounded pagination (default and maximum `limit` 100, minimum 1).
+Node records have `state` (`live`, `deleted`, `deleting` or `purged`), an optional
+`deletion` record including `deleted_at`, `deleted_by_kind` and `purge_after`, and
+`storage_retained_until_purge`. That boolean flags the retention lifecycle before
+physical purge; it is not a byte measurement or a price.
+
+`POST /api/tenants/{tenant}/nodes` with `{"label":…}` creates a Node under
+`node.create`, answers 201, and answers 403 `node_limit_reached` when the live
+Node count reaches `nodes_per_tenant` or the Tier's limit, whichever is lower.
+The Community build has no Tier limit. Creation, default changes, deletion and
+restore share the Tenant capacity lock. `PATCH /api/tenants/{tenant}/nodes/{node}`
+with `{"label":…}` changes the label under `node.update`.
+
+The following mutations accept a Deployment Administrator or an authorized browser
+Mapping of the path Tenant; Subject Credentials do not administer this lifecycle.
+Each returns the Node record and appends the named administration event to
+`dashboard_administration_history`.
+
+| POST route suffix after `/api/tenants/{tenant}/nodes/{node}` | Body                             | Authority                     | Administration event |
+| ------------------------------------------------------------ | -------------------------------- | ----------------------------- | -------------------- |
+| `/default`                                                   | none                             | `node.update`                 | `node.default`       |
+| `/deletion`                                                  | `{"confirmation":"<node name>"}` | `node.delete`                 | `node.delete`        |
+| `/restore`                                                   | none                             | `node.delete`                 | `node.restore`       |
+| `/purge`                                                     | none                             | Deployment Administrator only | `node.purge`         |
+
+Only a live Node can become default. Move the default to another live Node before
+deletion; deleting the default or last live Node returns 409. Deletion fixes the
+recovery deadline using `node_deletion_grace_days` (30 days by default, 1–90),
+immediately frees its capacity slot and denies ordinary work and access at the
+next boundary. Restore checks current capacity (409 `node_limit_reached` on a
+conflict), current policy and current credential/registration state. It never
+restarts canceled work or restores revoked authority. Only a Deployment
+Administrator may restore a Node deleted by a Deployment Administrator. Restore
+is refused after the deadline or once purge has begun; `/purge` requests resumable
+physical erasure and may bypass the grace period only for a Deployment
+Administrator. Retained files remain in the active Tenant's storage meter until
+physical purge, subject to the Offering and the existing Tenant-deletion
+exemption. See [Node deletion and recovery](protocol.md#node-deletion-and-recovery)
+for durable cleanup and retention. Creations are audited as `node.create`.
+
+A Node Registration is a Tenant Administrator's decision that one of its Nodes accepts one named Node of another Tenant, and addresses outbound exchange to it. `POST /api/tenants/{tenant}/nodes/{node}/registrations` takes `{source_node, endpoint?, key_id?, atomic_transactions, enabled, expected_revision}` under `node_registration.update` and answers the registration. `expected_revision` is 0 to create and the revision being replaced otherwise; a stale revision, or creating one that exists, answers 409. For a Node of this Deployment, `endpoint` and `key_id` must be absent and `source_node` must hold a name some Tenant holds; a Node of the owning Tenant answers 422, because the Tenant's policy decides within the Tenant. For a Node of another Deployment, both are required: the server fetches `{endpoint}/.well-known/aidash` with a 5 second timeout and requires its `id` to be the Node's Deployment, its `protocol_version` to be `0.4`, and its `key.id` to be the key ID typed, and the PEM to hash to that key ID. Anything else answers 422 with the reason. The registration stores the fetched public key as its initial trust anchor; the key ID the administrator types establishes that trust, not the endpoint. Planned rollover can advance its receiving keyset after the complete request and predecessor-signed transition verify, without replacing its authorization. See [Deployment Key rollover](protocol.md#deployment-key-rollover). Disabling needs no answer from the other Deployment and keeps what the registration pinned. `GET` on the same path lists the Node's registrations (`offset`, `limit` as for Peer Mappings), and `GET /api/tenants/{tenant}/nodes/{node}/registration-history?after=0&limit=100` lists every revision in order, under `node_registration.read`. Every administrator registration update is appended to `dashboard_administration_history` as `node_registration.update`; cryptographic advancement does not create an authorization revision.
 
 `GET /api/tenants?offset=0` lists root records for Deployment Administrators, newest first, 200 per page, each with its current `deletion`, if any. `PUT /api/tenants/{tenant}/label` changes the label under `tenant.update`, through a browser Mapping of that Tenant.
 
@@ -498,8 +549,12 @@ with `GET` on the same path (`offset`, `limit`, maximum 200). The body contains
 browser identity UUID), `endpoint`, `key_id`, `enabled` and `expected_revision`
 (zero on creation). The server fetches `{endpoint}/.well-known/aidash` like a
 Node Registration does and pins the key whose ID was typed; the viewer's token
-must verify with it, so a changed key on the viewer's side fails until the grant
-is created again with the new key ID. A Peer Graph Grant applies to one tenant and
+must verify with the grant's receiving keyset. A normal, predecessor-proven
+rollover advances that trust without recreating the grant or changing its
+authorization revision, enabled state, permissions or Graph cursor validity.
+Missed overlap and lost or compromised keys require independent manual
+confirmation by a receiving Deployment Administrator; publication alone is not
+confirmation, and normal proof never clears quarantine. A Peer Graph Grant applies to one tenant and
 one named source identity; it confers no Deployment Administrator authority and never turns a
 subject mapping into a Deployment Administrator mapping. Disabling the grant denies the next page or refresh. Catalog
 approvals and the graph display allowlist still apply under a Peer Graph Grant.
