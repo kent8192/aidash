@@ -326,8 +326,32 @@ class Terraform:
                 "Restore the applied BYOK project and retire all managed environments "
                 "before changing byok_project_id"
             )
-        managed = value or {}
-        for entry in managed.values():
+        # Outputs can be persisted before a partial apply creates its pools.
+        # They record requested inputs, not proof that an Environment started.
+        running = set()
+        for resource in state.get("resources", []):
+            if resource.get("mode") != "managed" or resource.get("type") != "google_container_node_pool":
+                continue
+            address = f'{resource.get("module") or ""}.{resource["type"]}.{resource["name"]}'
+            match = NODE_POOL.match(address)
+            if not match:
+                continue
+            for instance in resource.get("instances", []):
+                if instance.get("deposed"):
+                    continue
+                count = (instance.get("attributes") or {}).get("node_count")
+                if type(count) is not int or count < 0:
+                    raise RuntimeError(
+                        "Terraform state lacks a known Environment node count; inspect partial apply before continuing"
+                    )
+                if count > 0:
+                    running.add(match.group(1))
+        managed = {identity: dict(entry) for identity, entry in (value or {}).items()}
+        for identity, entry in managed.items():
+            if entry.get("running") and identity not in running:
+                # Shared GCIP/broker applies must keep incomplete starts at zero.
+                # Only the current lifecycle generation may authorize starting it.
+                entry.update(running=False, published=False, address=None)
             if entry.get("kind") in {"develop", "pr"} and not entry.get("hostname_token"):
                 # Keep old origins usable for stop/destroy and unaffected retained data.
                 # A verified deployment replaces this map with its newly issued token.

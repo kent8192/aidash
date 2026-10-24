@@ -71,6 +71,8 @@ pub struct Store {
 	/// endpoints and permitted private origins, a public-only one for every
 	/// other Keyless endpoint (ADR 0036).
 	pub provider_clients: aidash_integrations::keyless::Clients,
+	/// Tenant HTTP and MCP tool clients, owned by this runtime like `provider_clients`.
+	pub tool_clients: aidash_integrations::tools::ToolClients,
 	/// Keyless provider access with this Deployment's permitted private origins.
 	pub keyless: aidash_application::provider_access::KeylessAccess,
 	/// The Deployment Key and the switch Federation requests to other
@@ -466,6 +468,7 @@ impl Store {
 			deployment,
 			semantic_client: provider_clients.direct.clone(),
 			provider_clients,
+			tool_clients: aidash_integrations::tools::ToolClients::new()?,
 			keyless: Default::default(),
 			egress: Default::default(),
 			research_retention: aidash_domain::retention::RetentionRules::DEFAULT,
@@ -578,6 +581,7 @@ impl Store {
 			deployment: self.deployment.clone(),
 			semantic_client: self.semantic_client.clone(),
 			provider_clients: self.provider_clients.clone(),
+			tool_clients: self.tool_clients.clone(),
 			keyless: self.keyless.clone(),
 			egress: self.egress.clone(),
 			research_retention: self.research_retention,
@@ -630,6 +634,7 @@ impl Store {
 			deployment: self.deployment.clone(),
 			semantic_client: self.semantic_client.clone(),
 			provider_clients: self.provider_clients.clone(),
+			tool_clients: self.tool_clients.clone(),
 			keyless: self.keyless.clone(),
 			egress: self.egress.clone(),
 			research_retention: self.research_retention,

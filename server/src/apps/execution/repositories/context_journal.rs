@@ -299,6 +299,7 @@ impl Store {
 						"id",
 						"run_id",
 						"stage",
+						"provider_dispatched",
 						"policy_version",
 						"provider",
 						"source_from_seq",
@@ -314,6 +315,13 @@ impl Store {
 					Expr::value(attempt.id).into(),
 					Expr::value(run.id).into(),
 					Expr::value(attempt.stage.label()).into(),
+					// Other stages use their own provider journals; this flag attests
+					// only Summary I/O, whose Usage Record shares this attempt ID.
+					Expr::value(
+						(attempt.stage == aidash_domain::context::recovery::Stage::Summary)
+							.then_some(false),
+					)
+					.into(),
 					Expr::value(attempt.policy_version.as_str()).into(),
 					Expr::value(attempt.provider.as_str()).into(),
 					Expr::value(signed(attempt.source_from_seq)?).into(),

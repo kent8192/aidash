@@ -50,6 +50,10 @@ pub struct ModelConfig {
 	/// catalog and ZDR APIs are checked again before every media inference.
 	#[serde(default)]
 	pub media_routes: Vec<MediaRouteEvidence>,
+	/// Administrator-approved evidence pinning every inference to one exact
+	/// OpenRouter endpoint tag. Requested routing is never a reported identity.
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub provider_route: Option<ProviderRouteEvidence>,
 	pub cost: Value,
 	/// Projection Versions this model accepts (ADR 0015). Omitted means Legacy
 	/// only and is not serialized, so existing model definitions keep bytes.
@@ -65,6 +69,10 @@ pub struct ModelConfig {
 	/// and their compaction timing.
 	#[serde(default, skip_serializing_if = "Option::is_none")]
 	pub request_estimator: Option<crate::provider::estimate::RequestEstimator>,
+	/// Separate frozen inputs for request-size diagnostics. These snapshots
+	/// never select the estimator used for execution or compaction.
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub estimate_diagnostics: Option<EstimateDiagnostics>,
 }
 
 /// A model route's declared prompt-caching behavior.
@@ -107,7 +115,123 @@ pub struct MediaRouteEvidence {
 	pub expires_at: chrono::DateTime<chrono::Utc>,
 }
 
+/// Time-bounded approval of an upstream route. The adapter checks the current
+/// model catalog and ZDR list again before sending a completion request.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct ProviderRouteEvidence {
+	pub tag: String,
+	pub source: String,
+	pub verified_at: chrono::DateTime<chrono::Utc>,
+	pub expires_at: chrono::DateTime<chrono::Utc>,
+}
+
+/// Opt-in observational inputs, pinned in the immutable model version.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct EstimateDiagnostics {
+	/// Explicit encoding selection; never inferred from an upstream model slug.
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub token_encoding: Option<crate::provider::estimate::TokenEncoding>,
+	/// Independently frozen calibration inputs keyed by projection. A key with
+	/// fewer than the required samples has no calibrated diagnostic result.
+	#[serde(default)]
+	pub calibrations: std::collections::BTreeMap<
+		crate::projection::ProjectionVersion,
+		crate::provider::estimate::Calibration,
+	>,
+}
+
 impl ModelConfig {
+	pub fn validate_estimate_diagnostics(&self) -> Result<()> {
+		use crate::provider::estimate::{CALIBRATION_WINDOW, PPM};
+		if self
+			.estimate_diagnostics
+			.as_ref()
+			.is_some_and(|diagnostics| {
+				diagnostics
+					.calibrations
+					.iter()
+					.any(|(projection, calibration)| {
+						!projection.is_implemented()
+							|| calibration.ratio_ppm == 0
+							|| u64::from(calibration.ratio_ppm) > PPM
+							|| calibration.samples as usize > CALIBRATION_WINDOW
+					})
+			}) {
+			return Err(Error::Invalid(
+				"estimate_diagnostics requires bounded implemented projection calibrations".into(),
+			));
+		}
+		Ok(())
+	}
+
+	/// Observational snapshots of the same request, separate from execution's
+	/// selected snapshot. Missing calibration and encodings remain inapplicable.
+	pub fn diagnostic_snapshots(
+		&self,
+		projection: crate::projection::ProjectionVersion,
+		step: i32,
+	) -> Vec<crate::provider::estimate::EstimateSnapshot> {
+		use crate::provider::estimate::{CALIBRATION_MINIMUM, EstimateSnapshot};
+		let mut snapshots = vec![EstimateSnapshot::conservative(step)];
+		let Some(diagnostics) = &self.estimate_diagnostics else {
+			return snapshots;
+		};
+		let calibration = diagnostics
+			.calibrations
+			.get(&projection)
+			.copied()
+			.filter(|calibration| calibration.samples as usize >= CALIBRATION_MINIMUM);
+		if let Some(calibration) = calibration {
+			snapshots.push(EstimateSnapshot::calibrated(
+				step,
+				calibration.ratio_ppm,
+				calibration.samples,
+			));
+		}
+		if let Some(encoding) = diagnostics
+			.token_encoding
+			.filter(|encoding| encoding.available())
+		{
+			snapshots.push(EstimateSnapshot::tokenized(step, encoding, calibration));
+		}
+		snapshots
+	}
+
+	/// Explicit restrictions are supported only on OpenRouter and never
+	/// silently disappear on another adapter or after their approval expires.
+	pub fn validate_provider_route(&self) -> Result<()> {
+		let Some(route) = &self.provider_route else {
+			return Ok(());
+		};
+		let now = chrono::Utc::now();
+		if self.provider != "openrouter" || self.uses_plan_connection() {
+			return Err(Error::Invalid(
+				"provider_route requires OpenRouter API usage".into(),
+			));
+		}
+		if route.tag.len() > 256
+			|| route.tag.split('/').any(|segment| {
+				segment.is_empty()
+					|| matches!(segment, "." | "..")
+					|| !segment.bytes().all(|byte| {
+						byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.')
+					})
+			}) || route.source.trim().is_empty()
+			|| route.source.len() > 1024
+			|| route.source.chars().any(char::is_control)
+			|| route.verified_at > now
+			|| route.expires_at <= now
+			|| route.expires_at <= route.verified_at
+		{
+			return Err(Error::Invalid(
+				"provider_route requires current exact-tag approval evidence".into(),
+			));
+		}
+		Ok(())
+	}
+
 	/// The estimator this model version opted into; `bytes` when omitted.
 	pub fn request_estimator(&self) -> crate::provider::estimate::RequestEstimator {
 		self.request_estimator.unwrap_or_default()
@@ -181,6 +305,9 @@ impl ModelConfig {
 		}
 		if !self.media_routes.is_empty() {
 			return invalid("it has no OpenRouter media routes");
+		}
+		if self.provider_route.is_some() {
+			return invalid("it has no OpenRouter provider route");
 		}
 		if self.cache_mode == Some(CacheMode::Explicit) {
 			return invalid("it cannot declare explicit prompt caching");
@@ -314,9 +441,13 @@ impl ModelConfig {
 
 	fn current_media_routes(&self) -> impl Iterator<Item = &MediaRouteEvidence> {
 		let now = chrono::Utc::now();
-		self.media_routes
-			.iter()
-			.filter(move |route| route.verified_at <= now && route.expires_at > now)
+		self.media_routes.iter().filter(move |route| {
+			route.verified_at <= now
+				&& route.expires_at > now
+				&& self.provider_route.as_ref().is_none_or(|pin| {
+					pin.tag == route.tag && pin.verified_at <= now && pin.expires_at > now
+				})
+		})
 	}
 
 	/// Current routes expressed as MIME types the run-message upload accepts.

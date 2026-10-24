@@ -72,11 +72,11 @@ LIVE_LIMITATIONS = [
     "dispatched Run stays charged at its full reservation as uncertain, because interrupted and retried attempts "
     "emit no model.completed event; spend.attempts[].provider_work lists the accepted attempts the Node reported, "
     "for information only.",
-    "Code-execution oracles (python-tests) are not run in the live tier; they need a container runner "
-    "(--network none, no host environment, no parent process visibility).",
-    "External Jev compaction is excluded by the evaluator's attestation that the evaluated Tenant approves no "
-    "compaction Decider: the Node does not report its approvals over HTTP. A Run that applied a compaction stops all "
-    "further dispatch.",
+    "Code-execution oracles require an explicitly approved pinned Docker image and run only in disposable "
+    "resource-bounded containers with no network, host environment or parent process visibility.",
+    "Auxiliary definitions can describe planned Decider/Summary work, but live dispatch is refused until an "
+    "enforced provider/broker monetary bound exists. A declared reservation is not a provider cap "
+    "or a reported charge; recovery diagnostics remain not measured in this live tier.",
 ]
 
 
@@ -281,7 +281,7 @@ def memory_matrix_deterministic(api, experiment, corpus, memory_corpus, model_re
     api_scenarios = [item for item in memory_corpus["scenarios"] if item["evidence"] == "deterministic-api"]
     roles = {"model": {"id": model_refs["standard"]["id"], "version": "1.0.0"}}
     try:
-        embedding_config = {"provider": "openai", "endpoint": fixture_url + "/v1", "credential_env": None,
+        embedding_config = {"provider": "openai", "endpoint": fixture_url + "/v1",
                             "model": f"{experiment.prefix}-embedding", "model_version": "1", "dimensions": 8}
         embedding = experiment.register("embedding", f"{experiment.prefix}-embedding", embedding_config)
         roles["embedding"] = {"id": embedding["id"], "version": "1.0.0"}
@@ -407,7 +407,7 @@ def source_drift(source, binary):
 def experiment_manifest(tier, corpus, memory_corpus, source, model, harness, variants, repeats, limits, limitations,
                         *, evaluator, created_at=None):
     """`evaluator` is the identity pinned by evaluation.pin_evaluator() before the experiment began."""
-    return {"schema_version": 1, "experiment_id": "fte-" + secrets.token_hex(6), "tier": tier,
+    return {"schema_version": 2, "experiment_id": "fte-" + secrets.token_hex(6), "tier": tier,
             "created_at": created_at or timestamp(utc_now()),
             "aidash": source, "corpus": corpus["_snapshot"], "memory_corpus": memory_corpus["_snapshot"],
             "evaluator": evaluator, "model": model, "harness": harness, "variants": variants,
@@ -417,7 +417,7 @@ def experiment_manifest(tier, corpus, memory_corpus, source, model, harness, var
 def assemble(corpus, experiment, runs, availability, memory, calibrate, spend, limitations, error,
              skipped_runs=()):
     aggregates = evaluation.aggregate(runs) if runs else []
-    result = {"schema_version": 1, "grade": "measurement-only",
+    result = {"schema_version": 2, "grade": "measurement-only",
               "approvals": {"accuracy_claim": False, "cost_claim": False, "production_quality": False,
                             "default_rollout": False},
               "conclusion_scope": evaluation.CONCLUSION_SCOPE, "experiment": experiment, "runs": runs,
@@ -493,7 +493,7 @@ def run_deterministic(args, binary_directory):
     memory_corpus = evaluation.load_memory_corpus(args.memory_corpus)
     for index, task in enumerate(corpus["tasks"]):
         task["_index"] = index
-    planned_runs = evaluation.plan(corpus, args.task, args.comparison)
+    planned_runs = evaluation.plan(corpus, args.task, args.comparison, getattr(args, "arm", None))
     for planned in planned_runs:
         planned["corpus"] = corpus
     checked(["docker", "info", "--format", "{{.ServerVersion}}"])
@@ -597,8 +597,9 @@ def run_deterministic(args, binary_directory):
                 config = runner.model_config(dict(spec, model_id=model_ids[name]), fixture_url, name)
                 model_refs[name] = dict(experiment.register("model", f"{prefix}-model-{name}", config),
                                         model_id=model_ids[name])
-            variants, registration_errors = runner.register_variants(experiment, corpus, planned_runs, model_refs,
-                                                                     fixture_url)
+            variants, registration_errors = runner.register_variants(
+                experiment, corpus, planned_runs, model_refs, fixture_url,
+                remove_all_defaults=corpus["version"] != "fixed-task-corpus-v1")
             availability = evaluation.feature_availability(corpus, args.comparison, registration_errors)
             if registration_errors and not args.allow_unavailable_arms:
                 # An arm the corpus marks available was rejected: a harness regression, not an absent feature.
@@ -606,8 +607,9 @@ def run_deterministic(args, binary_directory):
             usage = usage_reader_for(postgres, "aidash_evaluation", password, query)
             # Runs are independent (own Workspace, Task and fixture probe state), so up to
             # --parallel of them share the Node's worker slots. Results keep plan order.
-            jobs = [(repeat, planned) for repeat in range(1, args.repeats + 1) for planned in planned_runs
-                    if "agent_ref" in planned]
+            jobs = [(repeat, planned) for planned, repeat in evaluation.execution_schedule(
+                planned_runs, args.repeats, args.execution_seed)
+                    if "agent_ref" in planned and not planned["task"].get("requires_compaction")]
             stop = threading.Event()
 
             def execute(job):
@@ -656,19 +658,29 @@ def run_deterministic(args, binary_directory):
     model = {"kind": "scripted-fixture", "registrations": dict(model_refs),
              "reported_identities": sorted(model_ids.values()), "route": "local scripted fixture", "mutable_alias": False}
     harness = {"compaction": "none: ordinary Runs are not pruned until #108 (ADR 0041)", "cache_salt": True,
-               "provider_credential": None, "disclosure_approval": None, "jev_classifier": "none"}
+               "provider_credential": None, "disclosure_approval": None, "jev_classifier": "none",
+               "builtin_policy": "historical-defaults/1" if corpus["version"] == "fixed-task-corpus-v1"
+                                 else "minimal-task-support/1"}
     limits = {"run_timeout_seconds": args.run_timeout, "wall_seconds": max(1.0, time.monotonic() - started),
               "max_output_tokens": max(spec["max_output_tokens"] for spec in corpus["models"].values()),
               "spend_ceiling_nanocredits": None}
-    if error is None and len(runs) != len(variants) * args.repeats:
+    unmeasured_tasks = {task["id"] for task in corpus["tasks"] if task.get("requires_compaction")}
+    expected_runs = sum(variant["task"] not in unmeasured_tasks for variant in variants) * args.repeats
+    if error is None and len(runs) != expected_runs:
         error = "not every planned Run was recorded"
     # Every planned Run without a record (queued when interrupted, or lost to a failure) is listed as skipped.
     recorded = {run["key"] for run in runs}
-    skipped = [(key, "not recorded: " + (error or "the evaluation stopped")) for key in (
+    skipped = [(key, "not measured: this disposable Node has no approved fixture Decider route; "
+                     "run the independent Rust recovery evidence" if key.split("/")[0] in unmeasured_tasks else
+                     "not recorded: " + (error or "the evaluation stopped")) for key in (
         evaluation.run_key(variant["task"], variant["comparison"], variant["arm"], repeat)
         for repeat in range(1, args.repeats + 1) for variant in variants) if key not in recorded]
     experiment_value = experiment_manifest("deterministic", corpus, memory_corpus, source, model, harness, variants,
                                            args.repeats, limits, DETERMINISTIC_LIMITATIONS, evaluator=evaluator)
+    experiment_value["execution_order"] = {
+        "seed": args.execution_seed, "method": "seeded-rotating-arm-blocks/1",
+        "planned": [evaluation.run_key(p["task"]["id"], p["comparison"]["id"], p["arm"], repeat)
+                    for p, repeat in evaluation.execution_schedule(planned_runs, args.repeats, args.execution_seed)]}
     result = assemble(corpus, experiment_value, runs, availability, memory, True, None,
                       DETERMINISTIC_LIMITATIONS, error, skipped)
     invalid = finalize(result, reservation, corpus, memory_corpus)
@@ -749,13 +761,20 @@ def live(args, read_json=None, transport=None, clock=time.monotonic, sleep=time.
     models = {}
     for reference in sorted(set(mapping.values())):
         identifier, _, version = reference.partition("@")
-        models[reference] = api.get(f"/api/registry/{identifier}/{version}")["config"]
+        models[reference] = api.get(f"/api/registry/{identifier}/{version}", subject)["config"]
     approval = read_json(args.disclosure_approval) if args.disclosure_approval else None
+    evaluation.check_model_config_digests(approval, models, required=corpus["version"] != "fixed-task-corpus-v1")
+    execution_estimator = getattr(args, "execution_estimator", "bytes")
+    evaluation.check_execution_estimator_approval(approval, execution_estimator)
+    source_attestation = None
+    if getattr(args, "source_attestation", None):
+        source_attestation = evaluation.validate_source_attestation(read_json(args.source_attestation), approval,
+                                                                   args.server_revision)
     expires_at = evaluation.require_live_authorization(credential, binding, approval, corpus["_snapshot"]["sha256"],
                                                        models, args.max_spend_nanocredits, args.max_wall_seconds,
                                                        wall_now())
     evaluation.check_live_models(models)
-    selected = evaluation.plan(corpus, args.task, args.comparison)
+    selected = evaluation.plan(corpus, args.task, args.comparison, getattr(args, "arm", None))
     planned_runs = [planned for planned in selected if planned["model"] in mapping]
     if not planned_runs:
         raise evaluation.GuardRefusal("no planned Run uses a mapped model")
@@ -766,20 +785,29 @@ def live(args, read_json=None, transport=None, clock=time.monotonic, sleep=time.
         unmapped = sorted({p["model"] for p in selected if p["model"] not in mapping})
         raise evaluation.GuardRefusal(f"selectors {uncovered} match only pairs whose corpus models {unmapped} have no "
                                       "--model mapping; map them or drop the selectors")
-    if any(p["task"]["oracle"]["kind"] == "python-tests" for p in planned_runs):
-        raise evaluation.GuardRefusal(
-            "python-tests oracles run model-written code and are refused in the live tier: stripping the "
-            "environment does not hide the parent's tokens (ps eww, /proc/<ppid>/environ) or the network, and a "
-            "test process can exit 0 on its own. They need a container runner (--network none, no host "
-            "environment, no parent process visibility). Select tasks without them with --task")
-    # Fixture tools point at an unroutable endpoint and their approvals are denied, so a task that
-    # needs a tool result could only fail or pass by guessing. Escalation tasks need the denial.
-    tool_tasks = sorted({p["task"]["id"] for p in planned_runs
-                         if p["task"]["kind"] != "escalation" and evaluation.task_tools(corpus, p["task"])})
-    if tool_tasks:
-        raise evaluation.GuardRefusal(
-            f"tasks {tool_tasks} need fixture tool results, which the live tier never provides: fixture tools "
-            "point at an unroutable endpoint and their approvals are denied. Select other tasks with --task")
+    fixture_endpoint, code_oracle = evaluation.live_task_support(approval, corpus, planned_runs,
+                                                                 args.tool_endpoint)
+    auxiliary = evaluation.auxiliary_allowance(approval)
+    auxiliary_entries = {}
+    for kind in ("decider", "summary"):
+        allowance = auxiliary[kind]
+        if allowance:
+            identifier, _, version = allowance["reference"].partition("@")
+            auxiliary_entries[allowance["reference"]] = api.get(f"/api/registry/{identifier}/{version}", subject)["config"]
+    evaluation.verify_auxiliary_configs(auxiliary, auxiliary_entries, credential["provider"])
+    evaluation.require_enforceable_auxiliary_bound(auxiliary)
+    missing = sorted({p["task"]["id"] for p in planned_runs if p["task"].get("requires_compaction")
+                      and (not auxiliary["decider"] or p["task"].get("requires_summary") and not auxiliary["summary"])})
+    if missing:
+        raise evaluation.GuardRefusal(f"tasks {missing} require approved bounded Decider/Summary allowances; "
+                                      "declare their exact references, configuration digests and all-call cost caps")
+    evaluation.check_matched_live_models(corpus, planned_runs, mapping, models, execution_estimator=execution_estimator)
+    if code_oracle:
+        try:
+            checked(["docker", "image", "inspect", code_oracle.image], timeout=20)
+        except (OSError, subprocess.SubprocessError):
+            raise evaluation.GuardRefusal("approved code-oracle image is not locally available; pull its pinned digest "
+                                          "before the live campaign, then rerun preflight") from None
     ledger = evaluation.SpendLedger(args.max_spend_nanocredits, args.max_wall_seconds, clock, expires_at, wall_now)
     created_at = timestamp(wall_now())
     prefix = "fte" + secrets.token_hex(3)
@@ -802,17 +830,20 @@ def live(args, read_json=None, transport=None, clock=time.monotonic, sleep=time.
         for planned in planned_runs:
             planned["corpus"] = corpus
             planned["live_model"] = mapping[planned["model"]]
-        # Fixture tools point at an unroutable endpoint and their approvals are denied, so a
-        # live Run never reaches an external tool effect.
+            planned["auxiliary"] = auxiliary
+        # Only an exact approved synthetic service can receive fixture Tool calls; absent that
+        # approval the endpoint remains unreachable and all Tool call approvals are denied.
         variants, registration_errors = runner.register_variants(experiment, corpus, planned_runs, model_refs,
-                                                                 args.tool_endpoint, remove_all_defaults=True)
+                                                                 fixture_endpoint or args.tool_endpoint, remove_all_defaults=True)
         if registration_errors and not args.allow_unavailable_arms:
             error = unavailable_arms_error(registration_errors)
         else:
             skipped = runner.live_runs(api, experiment, corpus, planned_runs, args.repeats, ledger, models,
                                        approval["prices"], args.run_timeout, observations, clock, sleep,
                                        runner.binding_guard(args.tenant, credential["provider"],
-                                                            (binding["provider_credential_id"], binding["revision"])))
+                                                            (binding["provider_credential_id"], binding["revision"])),
+                                       execution_seed=args.execution_seed,
+                                       auxiliary=auxiliary, approve_fixture_tools=fixture_endpoint is not None)
     except (KeyboardInterrupt, Terminated) as stop:
         stopped = stop
         error = f"interrupted by the evaluator ({type(stop).__name__})"
@@ -826,10 +857,11 @@ def live(args, read_json=None, transport=None, clock=time.monotonic, sleep=time.
         runs = []
         for planned, repeat, observation in observations:
             try:
-                runs.append(evaluation.run_result(corpus, planned, repeat, observation, "live", False))
+                runs.append(evaluation.run_result(corpus, planned, repeat, observation, "live", code_oracle or False))
             except Exception as failure:  # A grading fault must not discard the record of paid work.
+                runs.append(evaluation.failed_run_result(corpus, planned, repeat, observation, "live", failure))
                 error = (error + "; " if error else "") + f"grading failed for run {repeat} of " \
-                    f"{planned['task']['id']}: {type(failure).__name__}: {failure}"
+                    f"{planned['task']['id']}: {type(failure).__name__}"
         dispatched = {evaluation.run_key(planned["task"]["id"], planned["comparison"]["id"], planned["arm"], repeat)
                       for planned, repeat, _ in observations}
         graded = {run["key"] for run in runs}
@@ -840,21 +872,32 @@ def live(args, read_json=None, transport=None, clock=time.monotonic, sleep=time.
             evaluation.run_key(planned["task"]["id"], planned["comparison"]["id"], planned["arm"], repeat)
             for repeat in range(1, args.repeats + 1) for planned in planned_runs if "agent_ref" in planned)
             if key not in graded and key not in listed]
-        source = evaluation.source_identity(server_revision=args.server_revision)
-        source.update({"commit": None, "dirty": None, "dirty_diff_sha256": None})
+        source = source_attestation or evaluation.source_identity(server_revision=args.server_revision)
+        if source_attestation is None:
+            source.update({"commit": None, "dirty": None, "dirty_diff_sha256": None})
         # Neither Usage Records nor model.completed events expose the provider-reported identity (I-5).
         model = {"kind": "live-provider", "registrations": model_refs, "reported_identities": None,
-                 "route": f"configured credential provider: {credential.get('provider')}", "mutable_alias": True}
+                 "route": f"configured credential provider: {credential.get('provider')}", "mutable_alias": True,
+                 "requested_routes": evaluation.requested_model_routes(models), "reported_routes": None}
         harness = {"compaction": "server-configured", "cache_salt": True,
+                   "builtin_policy": "minimal-task-support/1",
+                   "execution_estimator": execution_estimator,
+                   "source_provenance": "source-attestation" if source_attestation else "remote-unverified",
+                   "source_attestation_sha256": evaluation.canonical_sha256(source_attestation) if source_attestation else None,
                    "provider_credential": args.provider_credential,
                    "disclosure_approval": evaluation.canonical_sha256(approval),
-                   "jev_classifier": "excluded: the approval attests the Tenant approves no compaction Decider"}
+                   "jev_classifier": "bounded approved Decider" if auxiliary["decider"] else
+                                     "excluded: the approval attests the Tenant approves no compaction Decider"}
         limits = {"run_timeout_seconds": args.run_timeout, "wall_seconds": args.max_wall_seconds,
                   "max_output_tokens": max(config["max_output_tokens"] for config in models.values()),
                   "spend_ceiling_nanocredits": args.max_spend_nanocredits}
         experiment_value = experiment_manifest("live", corpus, memory_corpus, source, model, harness, variants,
                                                args.repeats, limits, LIVE_LIMITATIONS, evaluator=evaluator,
                                                created_at=created_at)
+        experiment_value["execution_order"] = {
+            "seed": args.execution_seed, "method": "seeded-rotating-arm-blocks/1",
+            "planned": [evaluation.run_key(p["task"]["id"], p["comparison"]["id"], p["arm"], repeat)
+                        for p, repeat in evaluation.execution_schedule(planned_runs, args.repeats, args.execution_seed)]}
         availability = evaluation.feature_availability(corpus, args.comparison, registration_errors)
         memory = evaluation.memory_matrix(memory_corpus, {})
         result = assemble(corpus, experiment_value, runs, availability, memory, False, ledger.summary(),
@@ -901,10 +944,13 @@ def main(argv=None):
         command.add_argument("--memory-corpus", type=Path, default=evaluation.EVALUATION / "memory.toml")
         command.add_argument("--task", action="append", help="limit to this task id (repeatable)")
         command.add_argument("--comparison", action="append", help="limit to this comparison id (repeatable)")
+        command.add_argument("--arm", action="append", help="execute only this frozen arm id (repeatable)")
         command.add_argument("--repeats", type=int, default=1 if name == "deterministic" else 3,
                              help="Runs per task arm (default 1 deterministic, 3 live)")
         command.add_argument("--run-timeout", type=float, default=180.0)
         command.add_argument("--output", type=Path)
+        command.add_argument("--execution-seed", type=int, default=181,
+                             help="recorded seed for balanced randomized task/arm execution order")
         command.add_argument("--allow-unavailable-arms", action="store_true",
                              help="treat an Agent definition the Node rejects for an available comparison as "
                                   "feature-not-available instead of failing (for a baseline Node that predates it)")
@@ -928,9 +974,13 @@ def main(argv=None):
     live_command.add_argument("--server-revision", required=True,
                               help="deployed source fingerprint of the evaluated Node: 7 to 64 lowercase "
                                    "hexadecimal characters (a git commit or SHA-256)")
-    live_command.add_argument("--tool-endpoint", default="http://127.0.0.1:9/aidash-fixed-task-evaluation",
+    live_command.add_argument("--tool-endpoint", default="https://tools.invalid/aidash-fixed-task-evaluation",
                               help="endpoint declared by fixture tools; approvals for them are denied")
     live_command.add_argument("--provider-credential", help="connected Tenant Provider Credential ID")
+    live_command.add_argument("--execution-estimator", choices=("bytes", "calibrated"), default="bytes",
+                              help="Bytes primary comparison; calibrated requires an explicit matching disclosure approval")
+    live_command.add_argument("--source-attestation", type=Path,
+                              help="explicitly attested clean remote source/binary identity, bound by disclosure approval")
     live_command.add_argument("--model", action="append", default=[],
                               help="corpus model name=Registry model id@version (repeatable)")
     live_command.add_argument("--disclosure-approval", type=Path)
@@ -945,8 +995,8 @@ def main(argv=None):
     args = parser.parse_args(argv)
     if args.command == "validate":
         return validate_command(args)
-    if not 1 <= args.repeats <= 64:
-        parser.error("--repeats must be between 1 and 64")
+    if not 1 <= args.repeats <= 250:
+        parser.error("--repeats must be between 1 and 250")
     # NaN would make every deadline comparison false, so a Run could poll past every limit, and the
     # manifest records limits of at least one second, so a shorter one is refused before any work.
     if not math.isfinite(args.run_timeout) or args.run_timeout < 1:

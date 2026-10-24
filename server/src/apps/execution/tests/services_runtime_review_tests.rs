@@ -66,6 +66,7 @@ async fn interruption_store(
 			.unwrap(),
 		semantic_client: http_client.clone(),
 		provider_clients: crate::semantic::backend::clients().unwrap(),
+		tool_clients: aidash_integrations::tools::ToolClients::new().unwrap(),
 		keyless: Default::default(),
 		egress: Default::default(),
 		research_retention: aidash_domain::retention::RetentionRules::DEFAULT,

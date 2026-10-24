@@ -42,3 +42,63 @@ async fn oversized_json_and_unterminated_sse_are_rejected_before_decoding() {
 		server.abort();
 	}
 }
+
+async fn refused_error() -> reqwest::Error {
+	crate::tools::ToolClients::new()
+		.unwrap()
+		.public
+		.get("http://localhost:9/")
+		.send()
+		.await
+		.unwrap_err()
+}
+
+fn wrapped(error: reqwest::Error) -> DynamicTransportError {
+	DynamicTransportError {
+		transport_name: "test".into(),
+		transport_type_id: std::any::TypeId::of::<Failure>(),
+		error: Box::new(Failure::Client(error)),
+	}
+}
+
+#[tokio::test]
+async fn a_refused_destination_is_an_authority_failure_in_every_rmcp_wrapper() {
+	let initialization = ClientInitializeError::TransportError {
+		error: wrapped(refused_error().await),
+		context: "send initialize request".into(),
+	};
+	assert!(matches!(
+		initialization_error(&initialization),
+		Error::Forbidden
+	));
+	let call = ServiceError::TransportSend(wrapped(refused_error().await));
+	assert!(matches!(call_error(&call), Error::Forbidden));
+}
+
+#[tokio::test]
+async fn other_transport_failures_stay_outages() {
+	let unreachable = || async {
+		reqwest::Client::new()
+			.get("http://127.0.0.1:9/")
+			.timeout(std::time::Duration::from_secs(2))
+			.send()
+			.await
+			.unwrap_err()
+	};
+	let initialization = ClientInitializeError::TransportError {
+		error: wrapped(unreachable().await),
+		context: "send initialize request".into(),
+	};
+	assert!(matches!(
+		initialization_error(&initialization),
+		Error::External(_)
+	));
+	assert!(matches!(
+		call_error(&ServiceError::TransportSend(wrapped(unreachable().await))),
+		Error::External(_)
+	));
+	assert!(matches!(
+		call_error(&ServiceError::TransportClosed),
+		Error::External(_)
+	));
+}

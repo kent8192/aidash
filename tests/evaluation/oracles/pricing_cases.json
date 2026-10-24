@@ -1,0 +1,49 @@
+{
+  "version": 1,
+  "entrypoint": "discounted_total",
+  "visible": [
+    {
+      "args": [[333]],
+      "kwargs": {
+        "percent_off": 50
+      },
+      "expected": 167
+    },
+    {
+      "args": [[1000, 1000]],
+      "kwargs": {
+        "coupon_cents": 300,
+        "percent_off": 10
+      },
+      "expected": 1500
+    }
+  ],
+  "hidden": [
+    {
+      "args": [[500]],
+      "kwargs": {
+        "coupon_cents": 800
+      },
+      "expected": 0
+    },
+    {
+      "args": [[]],
+      "kwargs": {},
+      "expected": 0
+    },
+    {
+      "args": [[1999, 1]],
+      "kwargs": {
+        "percent_off": 15
+      },
+      "expected": 1700
+    },
+    {
+      "args": [[105]],
+      "kwargs": {
+        "percent_off": 10
+      },
+      "expected": 95
+    }
+  ]
+}
