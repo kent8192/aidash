@@ -147,6 +147,8 @@ class Runner(AllocationJournal):
             record = json.loads(path.read_bytes())
             with self.lock:
                 self.aggregate.track(path.stem, record)
+            if record.get('output_harvested') and record['status'] in TERMINAL:
+                self.allocation_harvested(record, idle=record.get('writer_frozen') is True)
             if record["status"] not in TERMINAL and record["status"] != "awaiting_files":
                 self.start(record["operation_id"])
 
@@ -274,7 +276,7 @@ class Runner(AllocationJournal):
             return record
 
     def public(self, record):
-        return {k: v for k, v in record.items() if k not in ("request", "pod_uid")}
+        return {k: v for k, v in record.items() if k not in ("request", "pod_uid", "output_harvested")}
 
     def accept(self, request, admission_probe=False):
         if set(request) - {"session_id", "egress", "usage_tenant"} != {"operation_id", "area_id", "epoch", "digest", "kind", "code", "seconds", "files"}:
@@ -454,8 +456,11 @@ class Runner(AllocationJournal):
     def start(self, operation):
         with self.lock:
             if operation not in self.active:
+                record = self.get(operation)
+                if record['request']['kind'] == 'python' and record.get('pod_uid'):
+                    self.begin_allocation_work(record)
                 self.active.add(operation)
-                threading.Thread(target=self.reconcile_python if self.get(operation)["request"]["kind"] == "python" else self.reconcile, args=(operation,), daemon=True).start()
+                threading.Thread(target=self.reconcile_python if record["request"]["kind"] == "python" else self.reconcile, args=(operation,), daemon=True).start()
 
     def pod_name(self, operation):
         return "operation-" + operation
@@ -725,6 +730,7 @@ class Runner(AllocationJournal):
                            status="frozen" if memory_live else "stopped", last_used=time.time(), manifest=self.file_identity(manifest))
             save(self.root / ("session-" + record["session_id"] + ".json"), session)
             self.update(operation, status=result["status"], writer_frozen=memory_live, termination_confirmed=not memory_live,
+                        output_harvested=True,
                         finished_at=time.time(), stdout=result.get("stdout", ""), truncated=result.get("truncated", False),
                         displays=result.get("displays", []), files=exported["files"], error=result.get("error"), exit_code=result["exit_code"])
             self.allocation_harvested(self.get(operation), idle=memory_live)
@@ -773,6 +779,7 @@ class Runner(AllocationJournal):
                 raise RuntimeError('stopped output integrity')
         sync_directory(directory)
         self.update(operation, status='failed', exit_code=137, termination_confirmed=True,
+                    output_harvested=True,
                     stdout=captured['stdout'], truncated=True, files=exported['files'],
                     finished_at=time.time(), error={'code':'SANDBOX_LOST', 'message':'Sandbox stopped; saved files were recovered and output may be incomplete.'})
         self.allocation_harvested(self.get(operation))
@@ -891,6 +898,7 @@ class Runner(AllocationJournal):
                     sync_directory(directory)
                     self.update(operation, status="cancelled" if current["cancel_requested"] else
                                 ("completed" if terminal["exitCode"] == 0 else "failed"),
+                                output_harvested=True,
                                 finished_at=time.time(), stdout=captured["stdout"],
                                 truncated=captured["truncated"], files=exported["files"], error=diagnostic,
                                 deadline_expired=captured.get("deadline_expired"))

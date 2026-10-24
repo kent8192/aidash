@@ -290,6 +290,8 @@ Execution stop alone never permits cleanup: the output owner first fsyncs saved
 files and their directory, saves the terminal operation, and persists the allocation
 cleanup handoff. Python reuse revokes the previous handoff before dispatch; idle
 cleanup requires a settled frozen-session handoff. Operation ACK cannot erase it.
+An internal durable terminal harvest stamp replays an interrupted handoff after
+restart, and recovered Python dispatch revokes the old handoff before starting.
 
 Authenticated native housekeeping polls `GET /v1/allocations/receipts` in bounded
 pages and acknowledges each immutable digest with
