@@ -53,7 +53,7 @@ impl UsageEvents for Meter {
 				}
 				store::record_pod_usage(
 					tx,
-					event.operation,
+					event.allocation,
 					&event.tenant,
 					event.started_at,
 					event.ended_at,

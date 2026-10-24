@@ -274,6 +274,40 @@ provide a storage class and size for its kept claim. Use a class with reclaim
 `Retain` on GCP. Supply its bearer token using `execution.runner.existingSecret`
 and `execution.runner.tokenKey`; never put it in Helm values.
 
+Execution usage is one complete Pod allocation per Kubernetes Pod UID, including
+Python cells that reuse a frozen interpreter. `allocations/<uid>.json` in the
+Runner journal retains its native Tenant context and provider evidence separately
+from operation acknowledgement. The start is Kubernetes `status.startTime` (kubelet
+acknowledgement before image pulling), and the end is the latest `finishedAt` of
+all declared regular and init containers. Command timestamps still serve Completion
+Gate runtime and are never allocation billing timestamps. The Runner requests
+normal deletion and retains `aidash.dev/allocation-receipt` until all stop evidence
+is durable. Deletion uses API-side UID and observed resource-version preconditions;
+a replaced or changed Pod stays untouched until fresh evidence permits retry. The
+Runner then removes only its own finalizer with a UID precondition. Its sandbox
+Role therefore also needs `patch` on Pods.
+
+Authenticated native housekeeping polls `GET /v1/allocations/receipts` in bounded
+pages and acknowledges each immutable digest with
+`POST /v1/allocations/<uid>/ack` only after the usage sink succeeds. Failed delivery
+or acknowledgement is retried independently of Run authority, operation retention
+and Tenant purge. Missing or contradictory evidence remains pending; timestamps
+are never estimated. The native `runner_allocation_journals` table pins the first
+trusted runner instance per Deployment across native replicas and restarts. It is
+Deployment configuration retained for the Deployment lifetime, with no Tenant or
+Node foreign key. A changed runner instance is unavailable for usage delivery until
+the original journal is restored; housekeeping does not automatically repin it.
+Keep and back up the journal volume together with native persistence.
+Structured `allocation_usage` diagnostics include the allocation and runner IDs,
+pending evidence/cleanup reason, observation age and observation/cleanup attempts.
+Observation age is diagnostic metadata and never supplies billable timestamps.
+
+See the Kubernetes [Pod API](https://kubernetes.io/docs/reference/kubernetes-api/workload-resources/pod-v1/)
+and [Pod lifecycle](https://kubernetes.io/docs/concepts/workloads/pods/pod-lifecycle/)
+for the provider timestamp and termination semantics. An allocation receipt test
+with a fake API does not establish actual Kubernetes/gVisor acceptance. Live
+preview runtime and its acceptance remain dependent on Issue 405.
+
 With the Runner enabled the chart also renders the application's capability
 profile (`<release>-aidash-capability-profile`) and points server and worker at it
 through `AIDASH_CAPABILITY_PROFILE`, with `admission: true`. It shares the Runner's

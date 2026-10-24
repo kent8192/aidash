@@ -348,14 +348,14 @@ async fn generation_with_existing_sql_assets_preserves_history_and_dependency(
 	);
 	assert_eq!(std::fs::read(history).unwrap(), original);
 	let generated = FilesystemSource::new(fixture.directory.path().join("migrations"))
-		.get_migration("execution", "0050_policy_probe")
+		.get_migration("execution", "0051_policy_probe")
 		.await
 		.unwrap();
 	assert_eq!(
 		generated.dependencies,
 		vec![(
 			"execution".to_owned(),
-			"0049_foreign_key_relations_state".to_owned()
+			"0050_runner_allocation_journals".to_owned()
 		)]
 	);
 	assert!(generated.operations.is_empty());
