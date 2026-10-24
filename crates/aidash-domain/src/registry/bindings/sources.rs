@@ -1,5 +1,5 @@
 //! Explicit declarations for native context adapters. The application lifecycle
-//! plan resolves them independently of the operator; content is authorized separately.
+//! plan resolves them independently of the Harness; content is authorized separately.
 use crate::{
 	Error, Result,
 	capabilities::{ReferenceAttachment, SkillAttachment},
