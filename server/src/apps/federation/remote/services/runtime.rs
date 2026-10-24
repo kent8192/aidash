@@ -143,7 +143,8 @@ impl Federation {
 	pub async fn for_workers(&self) -> Result<Self> {
 		let store = self.store.isolated_pool().await?;
 		Ok(Self {
-			registry: Registry::new(store.pool.clone(), &store.deployment)?,
+			registry: Registry::new(store.pool.clone(), &store.deployment)?
+				.with_keyless_origins(store.keyless.clone()),
 			store,
 			..self.clone()
 		})
@@ -151,7 +152,8 @@ impl Federation {
 	pub async fn for_recovery(&self) -> Result<Self> {
 		let store = self.store.recovery_pool().await?;
 		Ok(Self {
-			registry: Registry::new(store.pool.clone(), &store.deployment)?,
+			registry: Registry::new(store.pool.clone(), &store.deployment)?
+				.with_keyless_origins(store.keyless.clone()),
 			store,
 			..self.clone()
 		})
@@ -159,7 +161,8 @@ impl Federation {
 	pub async fn for_runtime_workers(&self) -> Result<Self> {
 		let store = self.store.worker_pool().await?;
 		Ok(Self {
-			registry: Registry::new(store.pool.clone(), &store.deployment)?,
+			registry: Registry::new(store.pool.clone(), &store.deployment)?
+				.with_keyless_origins(store.keyless.clone()),
 			store,
 			..self.clone()
 		})

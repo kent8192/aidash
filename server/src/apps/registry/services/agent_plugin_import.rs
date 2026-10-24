@@ -42,7 +42,15 @@ pub async fn import(
 			files,
 		} => {
 			let mut access = Access::begin(&runtime.store, &identity).await?;
-			let result = store(&mut access, &source, &plugin, &files, denied).await;
+			let result = store(
+				&mut access,
+				&runtime.registry.validation(),
+				&source,
+				&plugin,
+				&files,
+				denied,
+			)
+			.await;
 			let selected = access.finish(result).await?;
 			Ok(AgentPluginImportResult {
 				plugins: vec![root],
@@ -69,12 +77,14 @@ async fn require_agent_create(access: &mut Access) -> Result<()> {
 /// earlier.
 async fn store(
 	access: &mut Access,
+	validation: &aidash_application::registry::DefinitionValidation,
 	source: &str,
 	plugin: &LoadedPlugin,
 	files: &[PluginFile],
 	denied: Vec<String>,
 ) -> Result<ImportedAgentPlugin> {
 	require_agent_create(access).await?;
+	validation.validate_agent_plugin(&AgentPluginRef::of(plugin, source))?;
 	let stored = agent_plugins::insert(&mut **access.tx, source, plugin, files, &denied).await?;
 	let reference = AgentPluginRef::of(&stored.plugin, &stored.source);
 	reference.validate()?;
