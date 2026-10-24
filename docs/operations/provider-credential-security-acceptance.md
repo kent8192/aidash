@@ -53,6 +53,76 @@ No disposable project was created, no billing account was linked and no real
 provider consent was performed during the local checks above. The sandbox runner
 and recipes are preparation for the following observations, not their evidence.
 
+### Initial sandbox attempt (2026-10-24)
+
+Subsequent owner-authorized execution created both disposable projects through
+the sandbox runner's ownership journal. Billing was linked to the application
+project. Google refused the BYOK project's billing link with
+`FAILED_PRECONDITION / QuotaFailure: Cloud billing quota exceeded`. An additional
+billing-linked project slot request was prepared, but transmission approval was
+still pending at 03:46 UTC. Terraform planning/apply, private image builds and
+real IAM or provider acceptance had not started.
+
+The single-name DNS-01 certificate was issued and normal workstation resolution
+of the new leaf returned only loopback. Temporary challenge TXT records were
+removed. A new Google Web client for Community OIDC sign-in was created in the
+application project after the owner completed the policy acknowledgement. The
+Console and downloaded configuration confirmed External/Testing, one owner
+test user, only `openid`/email/profile scopes, no JavaScript origins and the exact
+approved callback. The retained secret files were verified to be owned and
+mode-0600; the original Downloads copy was removed. No real provider consent was
+performed.
+
+At that observation, the new client, certificate, ACME account, remaining DNS
+record and both projects still required cleanup. The original shutdown deadline
+was 2026-10-25 02:54 UTC. A task-local cleanup watcher was armed with the exact
+owned project IDs and numbers, source revision and lifecycle journal. It treats
+an undeleted or unconfirmed Google client as incomplete cleanup while allowing
+GCP teardown to proceed. It requires the workstation/process and authorizations
+to remain available; its armed receipt is not shutdown evidence.
+
+### Quota decision and verified teardown
+
+The owner subsequently approved a request for one additional billing-linked
+project slot. The first submission mistakenly entered `4` in the field for
+additional projects, interpreting it as the total, although its prose requested
+one additional slot. Google's official form acknowledged receipt, and the
+specified mailbox received a quota-denial notification at 04:02:38 UTC. It gives
+general review factors without an individual reason or project/case identifier;
+the recipient, topic and immediate timing correlate it to this submission. The
+cause of denial is unknown. No additional billing slot was granted.
+
+The sandbox was then cleaned up before the original 24-hour deadline. Console
+readback confirmed the new Google client absent from the active client list,
+and its two private credential files were removed. The reviewed leaf helper
+completed certificate revocation and ACME account deactivation. An independent
+Cloudflare GET found no record at either exact A or challenge TXT name.
+Independent Google API readback confirmed both owned projects in
+`DELETE_REQUESTED`, with billing disabled and the billing-account association
+empty. Google's recovery period and delayed final billing remain separate from
+these observed shutdown results.
+
+The cleanup watcher exited successfully after verifying all three resource
+lifecycle records. Its AC-only sleep assertion also exited and was absent from
+the system assertion inventory. After external cleanup was settled, the copied
+DNS token and run TLS private key were removed. Ownership journals, sanitized
+receipts and public certificate evidence remain available; private key retirement
+is recorded separately, so do not replay certificate issuance or cleanup.
+
+After cleanup, read-only billing observation found two billing-enabled projects.
+A corrected support request entered `1` in the additional-project field, retained
+the approved minimum capacity goal of four overall, and disclosed the first
+input error and completed cleanup. Its full 990-character body was verified
+before one submission attempt. Google's confirmation page acknowledged receipt
+at 04:34 UTC. The corrected request remains pending; this acknowledgement is not
+quota approval or a new sandbox attempt.
+
+No Terraform plan/apply, private image build, real provider consent or live
+IAM/GCIP/metadata/alert acceptance occurred. Their required evidence remains
+pending. The quota refusal does not create an additional scoped deferral.
+
+### Required live evidence
+
 | Scope                                            | State                                 | Required evidence                                                                                                                                           |
 | ------------------------------------------------ | ------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | #136/#137 Cloud Store and broker                 | Pending                               | Actual create/manage/read split, prefix isolation, ingress, KMS verification and streamed provider calls                                                    |

@@ -38,7 +38,8 @@ The user selected two recommendations on 2026-10-23:
 ## Scope and acceptance inventory
 
 GitHub's actual Sub-issue relation contains eleven children and no grandchildren.
-The parent body omits #248/#249 and has stale #149/#158 checkboxes.
+At the design baseline, the parent body omitted #248/#249 and had stale #149/#158
+checkboxes. The parent body was reconciled during delivery.
 
 | Child | Baseline                                  | Remaining acceptance in this PR                                                                                        |
 | ----- | ----------------------------------------- | ---------------------------------------------------------------------------------------------------------------------- |
