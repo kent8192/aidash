@@ -196,7 +196,6 @@ impl Billing {
 		tenant: &str,
 		account: Uuid,
 	) -> Result<Consented> {
-		let now = Utc::now();
 		self.pool
 			.atomic(&TenancyScope::NoTenant, async |tx| {
 				let row = store::lock_account(tx, account)
@@ -205,9 +204,19 @@ impl Billing {
 				if party == Party::AccountOwner && row.owner_identity != identity {
 					return Err(Error::NotFound("billing account".into()));
 				}
+				// Every consent and transition shares the same Tenant serialization,
+				// after the receiving account lock. A competing move must not reuse
+				// consents that another completed move has already consumed.
+				aidash_server::authorization::services::nodes::lock_capacity(tx, tenant).await?;
 				if store::tenant_deleted(tx, tenant).await? != Some(false) {
 					return Err(Error::NotFound("tenant".into()));
 				}
+				if store::attached_account(tx, tenant).await? == Some(account) {
+					// The caller's authority and Tenant liveness have been checked.
+					// No new capacity or consent is needed for an unchanged attachment.
+					return Ok(Consented::Attached);
+				}
+				let now = store::database_now(tx).await?;
 				store::consent(
 					tx,
 					tenant,
@@ -226,7 +235,6 @@ impl Billing {
 					Party::TenantAdministrator => (identity, other.identity_id),
 					Party::AccountOwner => (other.identity_id, identity),
 				};
-				aidash_server::authorization::services::nodes::lock_capacity(tx, tenant).await?;
 				let subscription = self.payments.subscription(account).await?;
 				let nodes = self.nodes.nodes(tenant).await?;
 				let covered = store::covered_tenants(tx, account).await?;
