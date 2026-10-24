@@ -65,6 +65,37 @@ pub(crate) async fn retrieve(
 	if agent.memory.is_none() || agent.allow_cross_conversation_memory == Some(false) {
 		return Ok(Context::status(bounded_status("disabled", budget)?));
 	}
+	let primary_automatic = !run
+		.context
+		.binding_snapshot
+		.as_ref()
+		.is_some_and(|snapshot| {
+			snapshot.bindings.iter().any(|binding| {
+				binding.excluded_reason.is_none()
+					&& binding.definition.kind == "memory"
+					&& agent.memory.as_ref() == Some(&binding.identity.local())
+					&& binding
+						.definition
+						.config
+						.get("context_source")
+						.and_then(|value| {
+							serde_json::from_value::<
+								aidash_domain::context::source::SourceDeclaration,
+							>(value.clone())
+							.ok()
+						})
+						.is_some_and(|declaration| {
+							matches!(
+								declaration.pin,
+								aidash_domain::context::source::PinPolicy::OnDemand
+							)
+						})
+			})
+		});
+	// This branch precedes bank binding, source authorization and provider I/O.
+	if !primary_automatic && agent.sources.is_empty() {
+		return Ok(Context::status(None));
+	}
 	crate::apps::execution::services::task_evidence::record(lease.tx(), run, task).await?;
 	let binding = bindings::load(&mut **lease.tx(), &run.metadata())
 		.await?
@@ -74,7 +105,11 @@ pub(crate) async fn retrieve(
 	if agent.memory.as_ref() != Some(&binding.provider) {
 		return Err(Error::Conflict("Run memory definition changed".into()));
 	}
-	let mut declared = vec![(binding.bank.clone(), binding.provider.clone(), budget)];
+	let mut declared = if primary_automatic {
+		vec![(binding.bank.clone(), binding.provider.clone(), budget)]
+	} else {
+		vec![]
+	};
 	for reference in &agent.sources {
 		let entry = memory::definition(lease, &binding.bank.tenant, reference, "source").await?;
 		let source: SourceConfig = serde_json::from_value(entry.config.clone())?;

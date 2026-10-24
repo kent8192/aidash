@@ -11,6 +11,14 @@ use aidash_domain::{
 };
 use serde_json::json;
 
+mod plan;
+
+#[derive(Clone, Copy)]
+struct SourceQueryFrame<'a> {
+	task: &'a Task,
+	input_cutoff: i64,
+}
+
 /// Each item retains its owning source identity and the pointer used only to
 /// reconstruct the current request. Array positions never form its identity.
 #[derive(Clone)]
@@ -171,7 +179,7 @@ impl ContextSourceProvider for NativeContribution<'_> {
 }
 
 #[derive(Clone, Copy)]
-enum Slot {
+pub(super) enum Slot {
 	ResidentSkills,
 	RegistrySkills,
 	References,
@@ -237,41 +245,39 @@ impl Slot {
 impl Environment<'_> {
 	pub(super) async fn collect_context_source(
 		&self,
-		read: ContextSourceRead<'_>,
+		run: &Run,
+		handle: &ContextSourceHandle,
 		worker: Uuid,
-		frame: SourceQueryFrame<'_>,
+		frame: ContextSourceFrame<'_>,
 	) -> SemanticContextRead {
-		let semantic_query = match &read {
-			ContextSourceRead::Semantic {
-				run, task, inputs, ..
-			} => Some(
-				aidash_application::execution::semantic_context::query_material(
-					run,
-					task,
-					inputs,
-					MAX_SOURCE_BYTES,
-				),
-			),
-			_ => None,
+		let slot = match self.planned_context_slot(run, handle) {
+			Ok(slot) => slot,
+			Err(error) => {
+				return SemanticContextRead {
+					selections: vec![],
+					contributions: vec![],
+					workspace_retrieved: false,
+					result: Err(error),
+				};
+			}
 		};
-		let resident_blocks = if let ContextSourceRead::ResidentSkills { blocks, .. } = &read {
-			Some(*blocks)
+		let semantic_query = matches!(slot, Slot::Semantic).then(|| {
+			aidash_application::execution::semantic_context::query_material(
+				run,
+				frame.task,
+				frame.inputs,
+				MAX_SOURCE_BYTES,
+			)
+		});
+		let resident_blocks = matches!(slot, Slot::ResidentSkills).then_some(frame.prepared);
+		let max_bytes = if matches!(slot, Slot::Semantic) {
+			frame.budget
 		} else {
-			None
+			MAX_SOURCE_BYTES
 		};
-		let (run, slot, max_bytes) = match &read {
-			ContextSourceRead::ResidentSkills { run, .. } => {
-				(*run, Slot::ResidentSkills, MAX_SOURCE_BYTES)
-			}
-			ContextSourceRead::RegistrySkills { run } => {
-				(*run, Slot::RegistrySkills, MAX_SOURCE_BYTES)
-			}
-			ContextSourceRead::References { run, .. } => (*run, Slot::References, MAX_SOURCE_BYTES),
-			ContextSourceRead::Skills { run } => (*run, Slot::Skills, MAX_SOURCE_BYTES),
-			ContextSourceRead::Semantic { run, budget, .. } => (*run, Slot::Semantic, *budget),
-			ContextSourceRead::WorkspaceObservation { run, .. } => {
-				(*run, Slot::Observation, MAX_SOURCE_BYTES)
-			}
+		let query_frame = SourceQueryFrame {
+			task: frame.task,
+			input_cutoff: frame.input_cutoff,
 		};
 		let prepare = || -> Result<Vec<(QualifiedRef, SourceDeclaration, SourcePin)>> {
 			let snapshot = run.context.binding_snapshot.as_ref().ok_or_else(|| {
@@ -281,7 +287,7 @@ impl Environment<'_> {
 			for binding in snapshot
 				.bindings
 				.iter()
-				.filter(|binding| slot.matches(binding))
+				.filter(|binding| slot.automatic_matches(binding))
 			{
 				let declaration = match serde_json::from_value::<
 					aidash_domain::registry::bindings::sources::NativeContext,
@@ -367,102 +373,7 @@ impl Environment<'_> {
 				};
 			}
 		};
-		if !declarations.is_empty()
-			&& declarations
-				.iter()
-				.all(|(_, declaration, _)| matches!(declaration.pin, PinPolicy::OnDemand))
-		{
-			let empty = match slot {
-				Slot::References => Some(json!([])),
-				Slot::Skills | Slot::RegistrySkills | Slot::ResidentSkills => Some(json!("")),
-				_ => None,
-			};
-			return SemanticContextRead {
-				selections: vec![],
-				contributions: vec![],
-				workspace_retrieved: false,
-				result: Ok(empty),
-			};
-		}
-		let mut result = match read {
-			ContextSourceRead::ResidentSkills { blocks, .. } => SemanticContextRead {
-				selections: vec![],
-				contributions: vec![],
-				workspace_retrieved: false,
-				result: Ok(Some(json!(
-					blocks
-						.iter()
-						.map(|block| block.text.as_str())
-						.collect::<String>()
-				))),
-			},
-			ContextSourceRead::RegistrySkills { run } => {
-				let read: Result<_> = async {
-					let mut text = String::new();
-					for binding in &run
-						.context
-						.binding_snapshot
-						.as_ref()
-						.ok_or_else(|| {
-							aidash_application::Error::Invalid("Skill source lacks snapshot".into())
-						})?
-						.bindings
-					{
-						if binding.excluded_reason.is_none() && binding.definition.kind == "skill" {
-							let entry = self
-								.catalog()
-								.get_for_run(run, &binding.identity.id, &binding.identity.version)
-								.await?;
-							text.push_str(&format!(
-								"\nSkill {}@{}:\n{}",
-								binding.identity.id,
-								binding.identity.version,
-								self.catalog().skill_instructions(&entry)?
-							));
-						}
-					}
-					Ok(Some(json!(text)))
-				}
-				.await;
-				SemanticContextRead {
-					selections: vec![],
-					contributions: vec![],
-					workspace_retrieved: false,
-					result: read,
-				}
-			}
-
-			ContextSourceRead::References { entry, .. } => SemanticContextRead {
-				selections: vec![],
-				contributions: vec![],
-				workspace_retrieved: false,
-				result: self.documents(entry).await.map(Some),
-			},
-			ContextSourceRead::Skills { run } => SemanticContextRead {
-				selections: vec![],
-				contributions: vec![],
-				workspace_retrieved: false,
-				result: self.skill_context(run).await.map(|text| Some(json!(text))),
-			},
-			ContextSourceRead::WorkspaceObservation { run, offset, limit } => SemanticContextRead {
-				selections: vec![],
-				contributions: vec![],
-				workspace_retrieved: false,
-				result: self.home(run).observation(offset, limit).await.map(Some),
-			},
-			ContextSourceRead::Semantic {
-				run,
-				task,
-				inputs,
-				budget,
-				entry,
-				key,
-				degrade_on_outage,
-			} => {
-				self.semantic_context(run, task, inputs, budget, entry, key, degrade_on_outage)
-					.await
-			}
-		};
+		let mut result = self.native_context_payload(run, slot, frame).await;
 		let Ok(Some(content)) = &result.result else {
 			return result;
 		};
@@ -483,7 +394,7 @@ impl Environment<'_> {
 							)
 						})
 					} else {
-						self.source_query(run, declaration.query, frame).await
+						self.source_query(run, declaration.query, query_frame).await
 					} {
 						Ok(query) => (query, None),
 						Err(
@@ -565,6 +476,23 @@ impl Environment<'_> {
 				}
 			}
 			let mut filtered = content.clone();
+			let declared_volatility = |source: &QualifiedRef| {
+				run.context
+					.binding_snapshot
+					.as_ref()?
+					.bindings
+					.iter()
+					.find(|binding| {
+						&binding.identity == source && binding.excluded_reason.is_none()
+					})?
+					.definition
+					.config
+					.get("context_source")
+					.and_then(|value| {
+						serde_json::from_value::<SourceDeclaration>(value.clone()).ok()
+					})
+					.map(|declaration| declaration.volatility)
+			};
 			let mut removals = provider
 				.fragments
 				.iter()
@@ -576,6 +504,22 @@ impl Environment<'_> {
 				})
 				.map(|fragment| fragment.pointer.clone())
 				.collect::<Vec<_>>();
+			// An explicit native Skill Source contributes attributed data rather
+			// than a system instruction. Leave historical Registry/implicit Skill
+			// blocks byte-identical, including other sources in this same slot.
+			if matches!(slot, Slot::Skills | Slot::ResidentSkills) {
+				removals.extend(
+					provider
+						.fragments
+						.iter()
+						.filter(|fragment| {
+							selected.contains(&fragment.candidate.identity.key())
+								&& declared_volatility(&fragment.candidate.identity.source)
+									.is_some()
+						})
+						.map(|fragment| fragment.pointer.clone()),
+				);
+			}
 			removals.sort_by(|left, right| pointer_order(right).cmp(&pointer_order(left)));
 			removals.dedup();
 			for contribution in &mut result.contributions {
@@ -586,7 +530,14 @@ impl Environment<'_> {
 				{
 					contribution.placement = Some(SourcePlacement {
 						slot: slot.name().into(),
-						pointer: remap_pointer(&fragment.pointer, &removals),
+						pointer: if declared_volatility(&contribution.identity.source).is_some()
+							&& matches!(slot, Slot::Skills | Slot::ResidentSkills)
+						{
+							fragment.pointer.clone()
+						} else {
+							remap_pointer(&fragment.pointer, &removals)
+						},
+						volatility: declared_volatility(&contribution.identity.source),
 					});
 				}
 			}

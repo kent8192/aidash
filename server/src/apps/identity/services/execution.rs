@@ -661,7 +661,7 @@ impl WorkerAuthority {
 		run: &Run,
 		skill_id: Uuid,
 		digest: &str,
-	) -> Result<String> {
+	) -> Result<Option<String>> {
 		let mut access = self.access.write().await;
 		crate::capabilities::skills::direct_body(store, &mut access, run, skill_id, digest).await
 	}
@@ -997,6 +997,14 @@ impl Guard {
 	) -> aidash_application::ports::execution::SemanticContextRead {
 		let mut workspace_retrieved = false;
 		let result: Result<Option<Value>> = async {
+			let automatic = self
+				.run
+				.context
+				.binding_snapshot
+				.as_ref()
+				.map(|snapshot| AgentConfig::automatic_context(snapshot))
+				.transpose()?;
+			let agent = automatic.as_ref().unwrap_or(&self.agent);
 			let workspace_budget = if self.remote.is_some() {
 				budget
 			} else {
@@ -1014,14 +1022,14 @@ impl Guard {
 					self.remote.as_ref(),
 					&self.access,
 					&self.run,
-					&self.agent,
+					agent,
 				),
 				task,
 				inputs,
 				&query.text,
 				workspace_budget,
 				// Required-Home semantic context never degrades (ADR 0059).
-				degrade_on_outage && self.remote.is_none() && self.agent.workspace_degrades,
+				degrade_on_outage && self.remote.is_none() && agent.workspace_degrades,
 			)
 			.await
 			.map_err(Error::from)?;
@@ -1042,7 +1050,7 @@ impl Guard {
 				task,
 				inputs,
 				available,
-				&self.agent,
+				agent,
 				key,
 			)
 			.await?;

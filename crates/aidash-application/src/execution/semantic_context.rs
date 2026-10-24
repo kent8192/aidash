@@ -91,3 +91,27 @@ pub fn query_material(
 		max_bytes,
 	))
 }
+
+/// The native combined provider's reusable read key. The operator delegates
+/// this material to the environment so other providers can use their own keys.
+pub fn retrieval_key(
+	run: &aidash_domain::Run,
+	bindings: &str,
+	frame: crate::ports::context_source::ContextSourceFrame<'_>,
+	scope: aidash_domain::context::sources::RetrievalScope,
+) -> Result<aidash_domain::context::sources::RetrievalKey> {
+	Ok(aidash_domain::context::sources::RetrievalKey::new(
+		run.id,
+		frame.task,
+		frame.inputs.iter().map(|(read, _)| read.clone()).collect(),
+		frame.budget,
+		bindings.into(),
+		scope,
+	)
+	.with_query_material(&query_material(
+		run,
+		frame.task,
+		frame.inputs,
+		aidash_domain::context::source::MAX_SOURCE_BYTES,
+	)?))
+}

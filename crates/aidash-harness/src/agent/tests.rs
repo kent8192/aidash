@@ -43,11 +43,70 @@ fn text(value: &str) -> Step {
 	Step::Offer(InferenceProgress::Text { text: value.into() })
 }
 
+/// The fake provider registers only its fixture-backed sources. Opaque handles
+/// deliberately differ from Registry identities, as in the native resolver.
+fn fixture_source_plan(resident: bool, registry: bool, direct: bool) -> Vec<PlannedContextSource> {
+	let mut sources = vec![];
+	if resident {
+		sources.push((
+			"resident_skills",
+			ContextSourcePhase::Instructions,
+			ContextSourceTarget::Instructions,
+			ContextSourceCache::Boundary,
+		));
+	} else {
+		if registry {
+			sources.push((
+				"registry_skills",
+				ContextSourcePhase::Instructions,
+				ContextSourceTarget::Instructions,
+				ContextSourceCache::None,
+			));
+		}
+		if direct {
+			sources.push((
+				"skills",
+				ContextSourcePhase::Instructions,
+				ContextSourceTarget::Instructions,
+				ContextSourceCache::Revision,
+			));
+		}
+	}
+	sources.extend([
+		(
+			"workspace",
+			ContextSourcePhase::SnapshotData,
+			ContextSourceTarget::Pinned("workspace".into()),
+			ContextSourceCache::None,
+		),
+		(
+			"semantic_memory",
+			ContextSourcePhase::BudgetedData,
+			ContextSourceTarget::Pinned("semantic_memory".into()),
+			ContextSourceCache::Retrieval,
+		),
+	]);
+	sources
+		.into_iter()
+		.map(|(slot, phase, target, cache)| PlannedContextSource {
+			handle: ContextSourceHandle::new(slot.into()),
+			phase,
+			target,
+			cache,
+			contribution_slot: slot.into(),
+			sources: vec![],
+			refresh_each_step: false,
+		})
+		.collect()
+}
+
 #[derive(Clone)]
 struct Backend(Arc<State>);
 struct State {
+	extra_context_sources: Vec<(ContextSourcePhase, String, Value)>,
 	conversation_memory: bool,
 	source_receipts: bool,
+	source_volatility: Option<context::source::Volatility>,
 	deny_source: bool,
 	deny_source_after_dispatch: bool,
 	memory_value: Mutex<Value>,
@@ -1032,20 +1091,55 @@ impl ExecutionAuthority for Backend {
 
 #[async_trait]
 impl ExecutionEnvironment for Backend {
+	fn context_source_plan(&self, run: &Run) -> Result<Vec<PlannedContextSource>> {
+		let mut plan = fixture_source_plan(
+			deferred_exposure(run)?.is_some(),
+			!self.0.skills.is_empty(),
+			self.home(run).has_local_authority()
+				&& (self.0.skill_tool || self.0.tools.contains(&"skill_list")),
+		);
+		plan.extend(self.0.extra_context_sources.iter().map(|(phase, key, _)| {
+			PlannedContextSource {
+				handle: ContextSourceHandle::new(format!("extension:{key}")),
+				phase: *phase,
+				target: ContextSourceTarget::Pinned(key.clone()),
+				cache: ContextSourceCache::None,
+				contribution_slot: key.clone(),
+				sources: vec![],
+				refresh_each_step: true,
+			}
+		}));
+		Ok(plan)
+	}
 	async fn context_source(
 		&self,
-		request: ContextSourceRead<'_>,
+		run: &Run,
+		source: &ContextSourceHandle,
 		_worker: Uuid,
-		_frame: SourceQueryFrame<'_>,
+		frame: ContextSourceFrame<'_>,
 	) -> SemanticContextRead {
-		let result = match request {
-			ContextSourceRead::ResidentSkills { blocks, .. } => Ok(Some(serde_json::json!(
-				blocks
+		if let Some((_, _, value)) = self
+			.0
+			.extra_context_sources
+			.iter()
+			.find(|(_, key, _)| source.as_str() == format!("extension:{key}"))
+		{
+			return SemanticContextRead {
+				selections: vec![],
+				contributions: vec![],
+				workspace_retrieved: false,
+				result: Ok(Some(value.clone())),
+			};
+		}
+		let result = match source.as_str() {
+			"resident_skills" => Ok(Some(serde_json::json!(
+				frame
+					.prepared
 					.iter()
 					.map(|block| block.text.as_str())
 					.collect::<String>()
 			))),
-			ContextSourceRead::RegistrySkills { run } => {
+			"registry_skills" => {
 				let mut text = String::new();
 				for skill in &self.0.skills {
 					let entry = self
@@ -1062,29 +1156,26 @@ impl ExecutionEnvironment for Backend {
 				}
 				Ok(Some(json!(text)))
 			}
-			ContextSourceRead::WorkspaceObservation { run, offset, limit } => {
-				self.home(run).observation(offset, limit).await.map(Some)
-			}
-			ContextSourceRead::References { run: _, entry } => {
-				self.documents(entry).await.map(Some)
-			}
-			ContextSourceRead::Skills { run } => self
-				.skill_context(run)
+			"workspace" => self
+				.home(run)
+				.observation(0, context::observation::DEFAULT_LIMIT)
 				.await
-				.map(|text| Some(serde_json::json!(text))),
-			ContextSourceRead::Semantic {
-				run,
-				task,
-				inputs,
-				budget,
-				entry,
-				key,
-				degrade_on_outage,
-			} => {
+				.map(Some),
+			"skills" => self.skill_context(run).await.map(|text| Some(json!(text))),
+			"semantic_memory" => {
 				return self
-					.semantic_context(run, task, inputs, budget, entry, key, degrade_on_outage)
+					.semantic_context(
+						run,
+						frame.task,
+						frame.inputs,
+						frame.budget,
+						frame.entry,
+						frame.key,
+						frame.degrade_on_outage,
+					)
 					.await;
 			}
+			_ => unexpected("unknown planned context source"),
 		};
 		SemanticContextRead {
 			selections: vec![],
@@ -1143,7 +1234,12 @@ impl ExecutionEnvironment for Backend {
 		self.record("skills.direct");
 		Ok(self.0.direct_skills.clone())
 	}
-	async fn direct_skill_body(&self, run: &Run, skill_id: Uuid, digest: &str) -> Result<String> {
+	async fn direct_skill_body(
+		&self,
+		run: &Run,
+		skill_id: Uuid,
+		digest: &str,
+	) -> Result<Option<String>> {
 		let _ = run;
 		self.record("skills.direct_body");
 		let skill = self
@@ -1155,9 +1251,13 @@ impl ExecutionEnvironment for Backend {
 		if skill.metadata.digest != digest {
 			return Err(Error::Conflict("CAPABILITY_CHANGED".into()));
 		}
-		Ok(self.0.direct_bodies[&skill_id].clone())
+		Ok(Some(self.0.direct_bodies[&skill_id].clone()))
 	}
-	async fn skill_revision(&self, run: &Run) -> Result<Option<i64>> {
+	async fn source_revision(
+		&self,
+		_source: &ContextSourceHandle,
+		run: &Run,
+	) -> Result<Option<i64>> {
 		let _ = run;
 		Ok(*self.0.skill_revision.lock().unwrap())
 	}
@@ -1174,6 +1274,19 @@ impl ExecutionEnvironment for Backend {
 	async fn retrieval_scope(&self, run: &Run) -> Result<RetrievalScope> {
 		let _ = run;
 		Ok(self.0.retrieval.lock().unwrap().clone())
+	}
+	async fn source_retrieval_key(
+		&self,
+		run: &Run,
+		bindings: &str,
+		frame: ContextSourceFrame<'_>,
+	) -> Result<RetrievalKey> {
+		aidash_application::execution::semantic_context::retrieval_key(
+			run,
+			bindings,
+			frame,
+			self.retrieval_scope(run).await?,
+		)
 	}
 
 	async fn run_message_limit(&self, run: &Run) -> Result<usize> {
@@ -1456,8 +1569,10 @@ fn fixture() -> Fixture {
 		updated_at: now,
 	};
 	let backend = Backend(Arc::new(State {
+		extra_context_sources: vec![],
 		conversation_memory: false,
 		source_receipts: false,
+		source_volatility: None,
 		deny_source: false,
 		deny_source_after_dispatch: false,
 		memory_value: Mutex::new(json!({"fact":"observed"})),
@@ -4823,7 +4938,15 @@ fn ordered_parts(request: &ModelRequest) -> (&str, &str) {
 }
 
 fn semantic_memory(request: &ModelRequest) -> Value {
-	serde_json::from_str::<Value>(ordered_parts(request).1).unwrap()["semantic_memory"].clone()
+	match &request.context {
+		ModelContext::Legacy(context) => context["current"]["semantic_memory"].clone(),
+		ModelContext::Ordered(context) => {
+			serde_json::from_str::<Value>(&context.volatile).unwrap()["semantic_memory"].clone()
+		}
+		ModelContext::Native(context) => {
+			serde_json::from_str::<Value>(&context.volatile).unwrap()["semantic_memory"].clone()
+		}
+	}
 }
 
 fn count(fixture: &Fixture, call: &str) -> usize {
@@ -5387,10 +5510,6 @@ mod research;
 mod completion;
 
 impl Backend {
-	async fn documents(&self, entry: &Entry) -> Result<Value> {
-		let _ = entry;
-		Ok(json!([]))
-	}
 	async fn skill_context(&self, run: &Run) -> Result<String> {
 		let _ = run;
 		if let Some(text) = &self.0.skill_context {
@@ -5461,7 +5580,9 @@ impl Backend {
 							placement: Some(context::source::SourcePlacement {
 								slot: "semantic_memory".into(),
 								pointer: String::new(),
+								volatility: self.0.source_volatility,
 							}),
+							mandatory: false,
 							identity: context::source::CandidateIdentity {
 								source: QualifiedRef::builtin("aidash://node", "source"),
 								item: "semantic_memory".into(),
@@ -5502,6 +5623,12 @@ impl Backend {
 async fn fetched_sources_gain_delivery_only_after_an_accepted_exact_request(
 	mut canonical: Fixture,
 	#[case] projection: ProjectionVersion,
+	#[values(
+		None,
+		Some(context::source::Volatility::Run),
+		Some(context::source::Volatility::Step)
+	)]
+	volatility: Option<context::source::Volatility>,
 ) {
 	// A failed physical inference saves authorized retrieval bytes for recovery,
 	// but cannot grant evidence that a model accepted those bytes.
@@ -5509,6 +5636,7 @@ async fn fetched_sources_gain_delivery_only_after_an_accepted_exact_request(
 		let state = Arc::get_mut(&mut canonical.backend.0).unwrap();
 		state.projection = projection;
 		state.source_receipts = true;
+		state.source_volatility = volatility;
 	}
 	assert!(matches!(
 		advance_sources(&mut canonical).await,
@@ -5564,6 +5692,7 @@ async fn dropped_skill_bytes_repeated_in_unrelated_history_cannot_gain_delivery(
 	contribution.placement = Some(context::source::SourcePlacement {
 		slot: "skills".into(),
 		pointer: format!("/@text/0/{}", text.len()),
+		volatility: None,
 	});
 	canonical
 		.run
@@ -5626,4 +5755,42 @@ async fn current_degraded_source_frame_is_rechecked_before_response_adoption(
 			.iter()
 			.any(|(kind, _)| kind == "model.completed")
 	);
+}
+
+#[rstest]
+#[case(ProjectionVersion::Legacy)]
+#[case(ProjectionVersion::Ordered)]
+#[case(ProjectionVersion::Native)]
+#[tokio::test]
+async fn provider_registered_sources_join_existing_lifecycle_phases(
+	mut canonical: Fixture,
+	#[case] projection: ProjectionVersion,
+) {
+	// A provider registers new native capabilities using the existing source
+	// plan. Their names and payloads are unknown to the operator.
+	let state = Arc::get_mut(&mut canonical.backend.0).unwrap();
+	state.projection = projection;
+	state.provider_status = None;
+	state.extra_context_sources = vec![
+		(
+			ContextSourcePhase::SnapshotData,
+			"inventory_extension".into(),
+			json!({"stock":"warehouse 12"}),
+		),
+		(
+			ContextSourcePhase::BudgetedData,
+			"schedule_extension".into(),
+			json!({"delivery":"Tuesday 10:00"}),
+		),
+	];
+	advance_sources(&mut canonical).await.unwrap();
+	let requests = canonical.backend.0.requests.lock().unwrap();
+	assert_eq!(requests.len(), 1);
+	let content = serde_json::to_value(&requests[0].context)
+		.unwrap()
+		.to_string();
+	assert!(content.contains("warehouse 12"));
+	assert!(content.contains("Tuesday 10:00"));
+	assert!(!requests[0].instructions.contains("warehouse 12"));
+	assert!(!requests[0].instructions.contains("Tuesday 10:00"));
 }

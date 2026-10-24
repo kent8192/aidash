@@ -240,7 +240,9 @@ async fn receiver_preflight_intersects_executor_and_mapping_without_admitting_a_
 	let definitions = result["definitions"].as_array().unwrap();
 	assert_eq!(
 		definitions.len(),
-		3 + aidash_domain::registry::bindings::REQUIRED_TOOLS.len()
+		// Agent, model and HTTP Tool, plus the required workspace Source
+		// and dormant default compaction Decider.
+		5 + aidash_domain::registry::bindings::REQUIRED_TOOLS.len()
 			+ aidash_domain::registry::bindings::DEFAULT_TOOLS.len()
 	);
 	for definition in definitions {
