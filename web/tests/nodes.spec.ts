@@ -649,6 +649,158 @@ test("receiving keys require independent confirmation and discard stale consent"
         "-----BEGIN PUBLIC KEY-----\nfixture\n-----END PUBLIC KEY-----",
     },
   ]);
+  // The successful POST also awaits list invalidation before the dialog can
+  // close. Request capture alone does not establish that the form is idle.
+  await expect(
+    page.getByRole("button", { name: "Quarantine key", exact: true }),
+  ).toBeEnabled();
+  await page.getByRole("button", { name: "Close", exact: true }).click();
+  await expect(page.getByRole("dialog")).toHaveCount(0);
+  // The receiver has no catalog/list entry. Prescribed HTTP snapshots exercise
+  // routing and consent here; retained authority/persistence belongs to PG.
+  const receiver = "quiet-harbor-ab12cd34";
+  const retainedWrites: Record<string, unknown>[] = [];
+  const retainedReads: string[] = [];
+  const snapshots = [
+    {
+      key_id: "c".repeat(43),
+      quarantined: true,
+      keys_revision: 7,
+      authorization_revision: 4,
+      enabled: false,
+    },
+    {
+      key_id: "d".repeat(43),
+      quarantined: true,
+      keys_revision: 9,
+      authorization_revision: 4,
+      enabled: false,
+    },
+  ];
+  await page.route(
+    `**/api/tenants/alpha/nodes/${receiver}/registration-keys**`,
+    async (route) => {
+      if (route.request().method() === "GET") {
+        const selected = new URL(route.request().url()).searchParams.get(
+          "source_node",
+        );
+        retainedReads.push(selected!);
+        if (selected !== source)
+          return route.fulfill({
+            status: 404,
+            json: { error: "registration not found" },
+          });
+        return route.fulfill({ json: snapshots.shift() });
+      }
+      retainedWrites.push(route.request().postDataJSON());
+      if (retainedWrites.length === 1)
+        return route.fulfill({
+          status: 409,
+          json: { error: "revision changed" },
+        });
+      if (retainedWrites.length === 2)
+        return route.fulfill({
+          json: {
+            key_id: "e".repeat(43),
+            quarantined: false,
+            keys_revision: 10,
+            authorization_revision: 4,
+            enabled: false,
+          },
+        });
+      return route.fulfill({
+        status: 403,
+        json: { error: "current authority revoked" },
+      });
+    },
+  );
+  const known = page.locator("section.panel").filter({
+    has: page.getByRole("heading", {
+      name: "Known registration key",
+      exact: true,
+    }),
+  });
+  await known.getByLabel("Receiving Node name", { exact: true }).fill(receiver);
+  await known
+    .getByLabel("Original source Node address", { exact: true })
+    .fill(source);
+  await known.getByRole("button", { name: "Look up key", exact: true }).click();
+  const dialog = page.getByRole("dialog", { name: "Manage key", exact: true });
+  await expect(dialog.getByText("c".repeat(43), { exact: true })).toBeVisible();
+  await expect(dialog).toContainText("This record is disabled.");
+  const retainedConfirm = dialog.getByRole("button", {
+    name: "Confirm key",
+    exact: true,
+  });
+  const acknowledgement = dialog.getByLabel(
+    "I checked the key ID through a separate trusted channel",
+    { exact: true },
+  );
+  await dialog
+    .getByLabel("Independently confirmed key ID", { exact: true })
+    .fill("e".repeat(43));
+  await dialog
+    .getByLabel("Public key PEM", { exact: true })
+    .fill("independently obtained public PEM");
+  await expect(retainedConfirm).toBeDisabled();
+  await acknowledgement.check();
+  await retainedConfirm.click();
+  await expect(dialog.getByText("d".repeat(43), { exact: true })).toBeVisible();
+  await expect(retainedConfirm).toBeDisabled();
+  expect(retainedWrites).toHaveLength(1); // a fresh GET, never an automatic POST retry
+  expect(retainedReads).toEqual([source, source]);
+  await acknowledgement.check();
+  await retainedConfirm.click();
+  await expect(dialog.getByText("e".repeat(43), { exact: true })).toBeVisible();
+  expect(retainedWrites.slice(0, 2)).toEqual([
+    {
+      source_node: source,
+      action: "confirm",
+      expected_keys_revision: 7,
+      expected_authorization_revision: 4,
+      expected_key_id: "e".repeat(43),
+      public_key_pem: "independently obtained public PEM",
+    },
+    {
+      source_node: source,
+      action: "confirm",
+      expected_keys_revision: 9,
+      expected_authorization_revision: 4,
+      expected_key_id: "e".repeat(43),
+      public_key_pem: "independently obtained public PEM",
+    },
+  ]);
+  await dialog
+    .getByRole("button", { name: "Quarantine key", exact: true })
+    .click();
+  await expect(dialog).toContainText(
+    "Your current permissions do not allow this operation.",
+  );
+  await expect(
+    dialog.getByRole("button", { name: "Confirm key", exact: true }),
+  ).toHaveCount(0);
+  await expect(dialog.getByText("e".repeat(43), { exact: true })).toHaveCount(
+    0,
+  );
+  expect(retainedWrites).toHaveLength(3);
+  expect(retainedWrites[2]).toEqual({
+    source_node: source,
+    action: "quarantine",
+    expected_keys_revision: 10,
+    expected_authorization_revision: 4,
+  });
+  await page.keyboard.press("Escape");
+  await known
+    .getByLabel("Original source Node address", { exact: true })
+    .fill("aidash://unknown/wrong-source");
+  await expect(
+    known.getByRole("button", { name: "Manage key", exact: true }),
+  ).toHaveCount(0);
+  await known.getByRole("button", { name: "Look up key", exact: true }).click();
+  await expect(known).toContainText("registration not found");
+  await expect(dialog).toHaveCount(0);
+  expect(retainedWrites).toHaveLength(3);
+  await expect(page.locator(`[data-node="${receiver}"]`)).toHaveCount(0);
   expect(errors).toEqual([]);
 });
 
@@ -833,6 +985,9 @@ test("an ordinary member has live selection and no Node lifecycle controls or ma
   await expect(page.locator("[data-node]")).toHaveCount(2);
   await expect(
     page.getByRole("heading", { name: "Node lifecycle", exact: true }),
+  ).toHaveCount(0);
+  await expect(
+    page.getByRole("heading", { name: "Known registration key", exact: true }),
   ).toHaveCount(0);
   expect(queries.every((url) => !url.searchParams.has("include_deleted"))).toBe(
     true,

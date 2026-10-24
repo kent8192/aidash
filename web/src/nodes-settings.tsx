@@ -1,6 +1,7 @@
 import {
   ReceivingKeyControl,
   DeletedNodeKeyControls,
+  KnownRegistrationKeyControls,
 } from "./receiving-key-controls";
 import { useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
@@ -176,7 +177,10 @@ export function NodesPage({ data }: { data: State }) {
         />
       )}
       {can("node_registration.read") && can("node_registration.update") && (
-        <DeletedNodeKeyControls tenant={tenant} />
+        <>
+          <DeletedNodeKeyControls tenant={tenant} />
+          <KnownRegistrationKeyControls key={tenant} tenant={tenant} />
+        </>
       )}
       {labelling && (
         <Modal
