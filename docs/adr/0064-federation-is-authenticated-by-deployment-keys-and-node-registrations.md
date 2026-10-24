@@ -4,8 +4,8 @@ Federation used one shared bearer secret per pair of Deployments (a Peer Credent
 Deployment Administrators could configure. Once Nodes inside Tenants are the parties of
 Federation (ADR 0028), that model puts Aidash staff in the path of every cross-Deployment
 cooperation on Cloud, and a per-Node shared secret cannot be read back by the server on Cloud,
-where the Secret Store is write-only for the application host. Each Deployment therefore holds one
-Deployment Key and signs short-lived tokens that name the sending and the receiving Node. A
+where the Secret Store is write-only for the application host. Each Deployment therefore holds a
+Deployment signing identity and signs short-lived tokens that name the sending and receiving Node. A
 receiving Node accepts only Nodes that its Tenant Administrators registered, and the Node
 Registration pins the sending Deployment's public key. Within one Tenant there is no
 registration: the Tenant's policy decides over the sender's own subject.
@@ -30,3 +30,21 @@ registration: the Tenant's policy decides over the sender's own subject.
   Nodes. A Node's address names its Deployment and its Node name, never its Tenant, and the
   sending Tenant's name leaves the protocol and the Peer Mapping key.
 - A Peer Graph Grant also pins the other Deployment's key.
+
+## Extension: scheduled key rollover
+
+[ADR 0084](0084-normal-deployment-key-rollover-is-proven-by-the-currently-trusted-key.md)
+extends this original single-key model. A Deployment publishes one successor and
+its predecessor-signed transition, activates signing after 24 hours, and retires
+predecessor verification seven days after activation. Public identity publication
+includes this public schedule and proof without exposing signing-source references
+or private keys. A successor-signed request carries the bounded proof during the
+overlap, so receivers can verify it without fetching public identity over HTTP.
+
+Node Registrations and Peer Graph Grants persist authentication trust separately
+from authorization. A key transition preserves their authorization revision,
+enabled state and permissions, including Graph cursor validity. Receivers that
+miss the overlap, or whose keys are lost or compromised, need independent manual
+confirmation. A normal transition cannot clear quarantine or enable a disabled
+record. The Deployment-wide Federation switch and each receiver's authority
+remain unchanged.
