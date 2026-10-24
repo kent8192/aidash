@@ -1,4 +1,5 @@
 // reinhardt-migration-source: 1
+// Physical constraints are maintained separately from the logical model state (0057).
 use reinhardt::db::migrations::prelude::*;
 pub(super) fn migration() -> Migration {
 	Migration::new("0053_approval_observations", "execution")
@@ -6,6 +7,7 @@ pub(super) fn migration() -> Migration {
 			"execution",
 			"0052_research_journal_results_row_level_security",
 		)
+		.database_only(true)
 		.atomic(true)
 		.add_operation(Operation::CreateTable {
 			name: "approval_observer_settings".into(),

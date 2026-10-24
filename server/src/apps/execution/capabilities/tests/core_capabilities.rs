@@ -1010,6 +1010,8 @@ async fn configure_approvals(mut c: CoreFixture) -> (CoreFixture, aidash_server:
 		"artifact",
 		"human_request"
 	]);
+	// A dormant default still requires current Registry metadata visibility.
+	c.policy["policies"].as_array_mut().unwrap().push(json!({"id":"default-decider-metadata","effect":"allow","subjects":{"any":true},"actions":["registry.read"],"resources":{"kinds":["decider"]}}));
 	c.policy["policies"].as_array_mut().unwrap().push(json!({"id":"approvable-outbound","effect":"allow","subjects":{"any":true},"actions":["capability.request","capability.approve"],"resources":{"kinds":["outbound"]}}));
 	common::replace_policy(&c.f.store, "acme", c.policy.clone()).await;
 	(c, run)

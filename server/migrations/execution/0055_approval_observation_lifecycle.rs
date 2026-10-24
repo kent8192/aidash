@@ -3,7 +3,8 @@
 use reinhardt::db::migrations::prelude::*;
 pub(super) fn migration() -> Migration {
 	Migration::new("0055_approval_observation_lifecycle", "execution")
-		.add_dependency("execution", "0054_approval_observation_rls")
+		.add_dependency("execution", "0054_approval_observation_row_level_security")
+		.database_only(true)
 		.atomic(true)
 		.add_operation(Operation::AddConstraintDefinition {
 			table: "approval_observations".into(),
