@@ -63,7 +63,7 @@ the same transaction as pruning.
 New evidence must begin at or after both permanent Tenant birth and the retained
 history floor. An older or straddling receipt fails as unavailable history rather
 than partially billing or inventing uncovered time; preserve the provider receipt
-for operator reconciliation. An identical retained receipt remains replayable
+for manual reconciliation. An identical retained receipt remains replayable
 without recomputing its frozen attribution. Development schemas are recreated;
 old rows are not assigned guessed digests or historical coverage.
 
