@@ -914,6 +914,7 @@ impl PeerAdmissionRepository for Repository<'_> {
 		receiver: &aidash_domain::nodes::NodeName,
 		source: &str,
 		subject: &str,
+		request: &aidash_application::federation::inbound::RequestDigest<'_>,
 		id: Uuid,
 		grant: Uuid,
 	) -> Result<aidash_domain::federation::execution::admission::Activation> {
@@ -941,8 +942,10 @@ impl PeerAdmissionRepository for Repository<'_> {
 			if super::nodes::is_live(&mut *tx, tenant, receiver.as_str()).await? {
 				return Err(aidash_application::Error::Forbidden);
 			}
-			if let Some(saved) =
-				terminal::replay_in(&mut *tx, tenant, &owner, &sender, subject, id, grant).await?
+			if let Some(saved) = terminal::replay_in(
+				&mut *tx, tenant, &owner, &sender, subject, id, grant, request,
+			)
+			.await?
 			{
 				tx.commit().await?;
 				return Ok(saved);

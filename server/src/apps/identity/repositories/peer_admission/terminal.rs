@@ -97,8 +97,11 @@ pub(crate) async fn replay_in(
 	subject: &str,
 	id: Uuid,
 	grant: Uuid,
+	request: &aidash_application::federation::inbound::RequestDigest<'_>,
 ) -> Result<Option<Activation>> {
-	if !subject.is_empty()
+	if crate::apps::identity::serializers::peer_admission::cancel_request(request)
+		!= Some((id, grant))
+		|| !subject.is_empty()
 		|| super::super::tenant_deletions::is_deleted(tx, tenant).await?
 		|| super::super::node_registrations::name_tenant(tx, receiver.node.as_str())
 			.await?

@@ -157,7 +157,14 @@ pub(crate) async fn registration_sources_with_planned_in(
 		let registration = super::node_registrations::get_locked(tx, tenant, node, &address, true)
 			.await?
 			.ok_or_else(blocked)?;
-		if &address.deployment != deployment {
+		if &address.deployment == deployment {
+			if !matches!(
+				&registration.counterpart,
+				aidash_domain::nodes::registration::Counterpart::SameDeployment
+			) {
+				return Err(blocked());
+			}
+		} else {
 			let owner =
 				aidash_application::ports::federation::inbound::ReceivingKeyOwner::Registration {
 					tenant: aidash_domain::tenancy::TenantName::new(tenant)?,

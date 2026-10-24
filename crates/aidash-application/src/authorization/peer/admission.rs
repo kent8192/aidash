@@ -436,13 +436,14 @@ pub async fn control<R: PeerAdmissionRepository>(
 	receiver: &NodeName,
 	source: &str,
 	subject: &str,
+	request: &crate::federation::inbound::RequestDigest<'_>,
 	id: Uuid,
 	grant: Uuid,
 	action: RemoteExecutionControl,
 ) -> Result<Activation> {
 	if matches!(action, RemoteExecutionControl::Cancel) {
 		return repository
-			.cancel_admission(tenant, receiver, source, subject, id, grant)
+			.cancel_admission(tenant, receiver, source, subject, request, id, grant)
 			.await;
 	}
 	let record = repository.record(id).await?.ok_or(Error::Forbidden)?;

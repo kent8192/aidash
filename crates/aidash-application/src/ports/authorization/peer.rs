@@ -133,6 +133,7 @@ pub trait PeerAdmissionRepository: PeerAdmissionRecords {
 		receiver: &NodeName,
 		source: &str,
 		subject: &str,
+		request: &crate::federation::inbound::RequestDigest<'_>,
 		id: Uuid,
 		grant: Uuid,
 	) -> Result<aidash_domain::federation::execution::admission::Activation>;

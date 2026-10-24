@@ -796,7 +796,7 @@ pub(crate) async fn allows_closed_node_request_in(
 		crate::apps::identity::serializers::peer_admission::cancel_request(request)
 	{
 		if crate::apps::identity::repositories::peer_admission::terminal::replay_in(
-			tx, tenant, receiver, sender, subject, id, grant,
+			tx, tenant, receiver, sender, subject, id, grant, request,
 		)
 		.await?
 		.is_some()

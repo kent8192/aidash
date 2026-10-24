@@ -87,6 +87,7 @@ pub(crate) async fn control(
 	admitted: Admitted,
 	id: Uuid,
 	input: RemoteExecutionControlInput,
+	request: &aidash_application::federation::inbound::RequestDigest<'_>,
 ) -> Result<Activation> {
 	app::control(
 		&crate::bootstrap::peer_admission_repository(&f),
@@ -94,6 +95,7 @@ pub(crate) async fn control(
 		&admitted.receiver.node,
 		&source(&admitted),
 		admitted.subject().unwrap_or(""),
+		request,
 		id,
 		input.grant_id,
 		input.action,

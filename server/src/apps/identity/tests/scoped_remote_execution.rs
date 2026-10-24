@@ -7620,6 +7620,28 @@ async fn successor_cancel(
 	(response.status().as_u16(), response.json().await.unwrap())
 }
 
+/// Pause only after the real peer boundary has accepted the signed request.
+/// The public control endpoint and all its DI/persistence remain production code.
+#[derive(Clone)]
+struct AcceptedControl {
+	arrived: Arc<AtomicUsize>,
+	entered: Arc<tokio::sync::Barrier>,
+	release: Arc<tokio::sync::Semaphore>,
+}
+#[async_trait::async_trait]
+impl reinhardt::Middleware for AcceptedControl {
+	async fn process(
+		&self,
+		request: reinhardt::Request,
+		next: Arc<dyn reinhardt::Handler>,
+	) -> reinhardt::Result<reinhardt::Response> {
+		self.arrived.fetch_add(1, Ordering::SeqCst);
+		self.entered.wait().await;
+		self.release.acquire().await.unwrap().forget();
+		next.handle(request).await
+	}
+}
+
 /// The Home's durable grant owns stop delivery while the Home Node is closed.
 #[rstest::rstest]
 #[case::ordinary_retry(false, false)]
@@ -7816,6 +7838,83 @@ async fn node_deletion_retries_delegated_stop_until_receiver_and_home_settle(
 				.await
 				.unwrap();
 		let keeper_file = owned_file(&p.b, keeper_workspace.id).await;
+		let accepted = AcceptedControl {
+			arrived: Arc::new(AtomicUsize::new(0)),
+			entered: Arc::new(tokio::sync::Barrier::new(3)),
+			release: Arc::new(tokio::sync::Semaphore::new(0)),
+		};
+		let mut inflight = tokio::task::JoinSet::new();
+		let accepted_app = if lose_reply {
+			let pause = accepted.clone();
+			let app = common::application_with(p.b.clone(), move |_| {
+				Router::new()
+					.endpoint(aidash_server::apps::identity::views::peer_execution::control)
+					.with_route_middleware(
+						aidash_server::apps::identity::services::boundary::AccessBoundary::peer()
+							.with_visibility(),
+					)
+					.with_route_middleware(pause.clone())
+			})
+			.await;
+			let canonical = format!("/scoped/execution/admissions/{}/control", p.admission);
+			let payload = json!({"grant_id":p.grant,"action":"cancel"});
+			let denied = common::peering::post_as(
+				&app.client(),
+				"unused",
+				common::peering::Bearer::Raw("invalid"),
+				"",
+				&format!("/federation/v0.1{canonical}"),
+				&payload,
+			)
+			.await;
+			assert_eq!(denied.status_code(), 401);
+			assert_eq!(
+				accepted.arrived.load(Ordering::SeqCst),
+				0,
+				"authentication precedes the pause"
+			);
+			for path in [
+				format!("{canonical}?extra=1"),
+				format!(
+					"/scoped/execution/admissions/{}/control",
+					p.admission.simple()
+				),
+			] {
+				let bytes = serde_json::to_vec(&payload).unwrap();
+				let token = common::peering::token(
+					p.a.config.deployment_key.as_deref().unwrap(),
+					p.a.config.deployment.as_str(),
+					&node_of(&p.a),
+					&receiver.to_string(),
+					"",
+					("POST", &path, &bytes),
+				)
+				.await;
+				let client = app.client();
+				inflight.spawn(async move {
+					let mut call = client
+						.request(http::Method::POST, &format!("/federation/v0.1{path}"))
+						.body(bytes::Bytes::from(bytes))
+						.header("content-type", "application/json");
+					for (name, value) in common::peering::peer_headers(&token) {
+						call = call.header(name, value);
+					}
+					let reply = call.send().await.unwrap();
+					(path, reply.status_code())
+				});
+			}
+			tokio::time::timeout(std::time::Duration::from_secs(10), accepted.entered.wait())
+				.await
+				.unwrap();
+			assert_eq!(
+				accepted.arrived.load(Ordering::SeqCst),
+				2,
+				"both original signed requests were admitted live"
+			);
+			Some(app)
+		} else {
+			None
+		};
 		for (path, body) in [
 			(
 				format!("/api/tenants/acme/nodes/{keeper}/default"),
@@ -7963,6 +8062,22 @@ async fn node_deletion_retries_delegated_stop_until_receiver_and_home_settle(
 				.await
 				.unwrap();
 		assert_eq!(count, 0, "finite catalog audit expired");
+		if lose_reply {
+			let before: Value = sqlx::query_scalar("SELECT jsonb_build_object('receipt',to_jsonb(r),'trust',to_jsonb(n)) FROM authorization_remote_terminal_receipts r JOIN node_registrations n ON n.tenant=r.tenant AND n.node=r.node AND n.source_node=r.source_node WHERE r.id=$1")
+				.bind(p.admission).fetch_one(p.b.store.pool.fixture_driver()).await.unwrap();
+			accepted.release.add_permits(2);
+			while let Some(reply) = inflight.join_next().await {
+				let (path, status) = reply.unwrap();
+				assert!(
+					(400..500).contains(&status),
+					"an admitted live noncanonical request must not replay after purge: {path}: {status}"
+				);
+			}
+			let after: Value = sqlx::query_scalar("SELECT jsonb_build_object('receipt',to_jsonb(r),'trust',to_jsonb(n)) FROM authorization_remote_terminal_receipts r JOIN node_registrations n ON n.tenant=r.tenant AND n.node=r.node AND n.source_node=r.source_node WHERE r.id=$1")
+				.bind(p.admission).fetch_one(p.b.store.pool.fixture_driver()).await.unwrap();
+			assert_eq!(after, before);
+		}
+		drop(accepted_app);
 		assert!(
 			!p.b.store
 				.capabilities
@@ -8548,4 +8663,304 @@ async fn node_deletion_fences_old_home_grant_after_decided_recovery(
 		"RUNNING"
 	);
 	p.close().await;
+}
+
+/// Actual local registered delivery owns query binding; required recovery trust
+/// must keep its local counterpart kind before any receiver file is unlinked.
+#[rstest::rstest]
+#[case::query_binding(false)]
+#[case::required_counterpart(true)]
+#[tokio::test]
+async fn local_terminal_cancel_preserves_request_and_trust(
+	#[case] wrong_counterpart: bool,
+	#[future(awt)]
+	#[from(common::native_application)]
+	fixture: common::ApplicationFixture,
+) {
+	use aidash_application::ports::federation::inbound::InboundRepository;
+	use aidash_domain::{
+		federation::route::Sender, nodes::registration::Counterpart, tenancy::TenantName,
+	};
+	let (mut f, url, schema) = fixture.runtime.parts();
+	let app = fixture.application;
+	let directory = tempfile::tempdir().unwrap();
+	let mut profile = (*f.store.capabilities.0).clone();
+	profile.storage = directory.path().to_owned();
+	f.store.capabilities =
+		aidash_server::capabilities::services::core::Runtime::new(profile).unwrap();
+	app.context.set_singleton(f.clone());
+	let (_, _, receiver_task) = common::bootstrap(&f, &app, "http://localhost:1").await;
+	let beta_token = common::tenant_token(&f.store, "beta").await;
+	let source = common::register_local_node(&f, &app, "acme", "beta").await;
+	let receiver = common::register_local_node(&f, &app, "beta", "acme").await;
+	let tenant = TenantName::new("acme").unwrap();
+	let registered = f
+		.registration(&tenant, &receiver.node, &source)
+		.await
+		.unwrap()
+		.unwrap();
+	assert_eq!(registered.counterpart, Counterpart::SameDeployment);
+	let (status, mut policy) = request(
+		&app,
+		&f.config.api_token,
+		"GET",
+		"/api/authorization/beta",
+		Value::Null,
+	)
+	.await;
+	assert_eq!(status, 200, "{policy}");
+	policy["bundle"]["subjects"]
+		[aidash_domain::agent_subject(&receiver.to_string(), "research", "1.0.0")] =
+		json!({"kind":"agent","node":source.node});
+	let (status, body) = request(
+		&app,
+		&f.config.api_token,
+		"POST",
+		"/api/authorization/beta",
+		json!({"expected_revision":policy["revision"],"bundle":policy["bundle"]}),
+	)
+	.await;
+	assert_eq!(status, 200, "{body}");
+	let (status, credential) = request(
+		&app,
+		&f.config.api_token,
+		"POST",
+		"/api/authorization/acme/credentials",
+		json!({"subject":"alice"}),
+	)
+	.await;
+	assert_eq!(status, 200, "{credential}");
+	let (status, body) = request(&app, &f.config.api_token, "POST", "/api/authorization/acme/peer-mappings", json!({"node":receiver.node,"source_node":source,"source_subject":"alice","credential_id":credential["credential"]["id"],"enabled":true,"expected_revision":0})).await;
+	assert_eq!(status, 200, "{body}");
+	let (status, workspace) = request(
+		&app,
+		&beta_token,
+		"POST",
+		"/api/workspaces",
+		json!({"title":"Local Home","goal":"exact local control"}),
+	)
+	.await;
+	assert_eq!(status, 200, "{workspace}");
+	let (status, task) = request(
+		&app,
+		&beta_token,
+		"POST",
+		&format!(
+			"/api/workspaces/{}/tasks",
+			workspace["id"].as_str().unwrap()
+		),
+		json!({"title":"Local delegated task","description":"Never activate"}),
+	)
+	.await;
+	assert_eq!(status, 200, "{task}");
+	let grant = Uuid::new_v4();
+	let (status, prepared) = request(&app, &beta_token, "POST", &format!("/api/tasks/{}/remote-grants",task["id"].as_str().unwrap()), json!({"id":grant,"node_id":receiver,"agent":{"id":"research","version":"1.0.0"},"ttl_seconds":300,"semantic":{"mode":"disabled"}})).await;
+	assert_eq!(status, 200, "{prepared}");
+	let sender = Sender {
+		tenant: TenantName::new("beta").unwrap(),
+		node: Some(source.node.clone()),
+		subject: None,
+	};
+	assert_eq!(
+		f.route(&sender, &receiver.to_string())
+			.await
+			.unwrap()
+			.counterpart,
+		Counterpart::SameDeployment
+	);
+	let admitted: Value = f
+		.request(
+			&sender,
+			&receiver.to_string(),
+			reqwest::Method::POST,
+			"/scoped/execution/admissions",
+			Some(&json!({"grant_id":grant})),
+		)
+		.await
+		.unwrap();
+	let admission: Uuid = serde_json::from_value(admitted["id"].clone()).unwrap();
+	let path = format!("/scoped/execution/admissions/{admission}/control");
+	let control = json!({"grant_id":grant,"action":"cancel"});
+	let actual: Value = f
+		.request(
+			&sender,
+			&receiver.to_string(),
+			reqwest::Method::POST,
+			&path,
+			Some(&control),
+		)
+		.await
+		.unwrap();
+	assert_eq!(actual["phase"], "ADMITTED");
+	assert_eq!(actual["control"], "CANCELLED");
+	let saved: Value = sqlx::query_scalar(
+		"SELECT activation FROM authorization_remote_terminal_receipts WHERE tenant='acme' AND id=$1",
+	)
+	.bind(admission)
+	.fetch_one(f.store.pool.fixture_driver())
+	.await
+	.unwrap();
+	assert_eq!(
+		saved, actual,
+		"the real local response owner captured the receipt"
+	);
+	let receiver_workspace = f
+		.store
+		.task(&TEST_FIXTURE, receiver_task)
+		.await
+		.unwrap()
+		.workspace_id;
+	let area = Uuid::new_v4();
+	let file = Uuid::new_v4();
+	sqlx::query("INSERT INTO core_areas(id,tenant,home_node,agent_id,owner,workspace_id,thread_id) VALUES($1,'acme',$2,'fixture','alice',$3,$4)")
+		.bind(area).bind(receiver.to_string()).bind(receiver_workspace).bind(Uuid::new_v4()).execute(f.store.pool.fixture_driver()).await.unwrap();
+	sqlx::query("INSERT INTO core_objects(id,tenant,area_id,kind,digest,size) VALUES($1,'acme',$2,'working','fixture',4)")
+		.bind(file).bind(area).execute(f.store.pool.fixture_driver()).await.unwrap();
+	sqlx::query("INSERT INTO core_quotas(tenant,used_bytes) VALUES('acme',4) ON CONFLICT(tenant) DO UPDATE SET used_bytes=core_quotas.used_bytes+4")
+		.execute(f.store.pool.fixture_driver()).await.unwrap();
+	let file_path = directory.path().join(file.simple().to_string());
+	tokio::fs::write(&file_path, b"data").await.unwrap();
+	let keeper = common::second_node_in(f.store.pool.fixture_driver(), "acme").await;
+	for (path, body) in [
+		(
+			format!("/api/tenants/acme/nodes/{keeper}/default"),
+			Value::Null,
+		),
+		(
+			format!("/api/tenants/acme/nodes/{}/deletion", receiver.node),
+			json!({"confirmation":receiver.node}),
+		),
+	] {
+		let (status, body) = request(&app, &f.config.api_token, "POST", &path, body).await;
+		assert_eq!(status, 200, "{body}");
+	}
+	aidash_server::generation::provision::reconcile(&f)
+		.await
+		.unwrap();
+	sqlx::query("UPDATE node_deletions SET purge_step='capability_objects' WHERE tenant='acme' AND node=$1 AND restored_at IS NULL")
+		.bind(receiver.node.as_str()).execute(f.store.pool.fixture_driver()).await.unwrap();
+	let deletion = aidash_server::apps::identity::services::node_purge::claim(&f.store)
+		.await
+		.unwrap()
+		.pop()
+		.unwrap();
+	if wrong_counterpart {
+		let before: Value = sqlx::query_scalar("SELECT to_jsonb(n) FROM node_registrations n WHERE tenant='acme' AND node=$1 AND source_node=$2")
+			.bind(receiver.node.as_str()).bind(source.to_string()).fetch_one(f.store.pool.fixture_driver()).await.unwrap();
+		let key = f.config.deployment_key.as_deref().unwrap();
+		let pinned = aidash_domain::nodes::registration::PinnedKey {
+			key_id: key.key_id().clone(),
+			public_key_pem: key.public_key_pem().to_owned(),
+		};
+		let keys = aidash_application::federation::registrations::trusted_keys(&pinned).unwrap();
+		// The column constraints allow this shape, but local InProcess proof cannot use it.
+		sqlx::query("UPDATE node_registrations SET source_endpoint='http://127.0.0.1:9',source_public_key_pem=$3,source_key_id=$4,source_keys=$5 WHERE tenant='acme' AND node=$1 AND source_node=$2")
+			.bind(receiver.node.as_str()).bind(source.to_string()).bind(pinned.public_key_pem).bind(pinned.key_id.as_str()).bind(serde_json::to_string(&keys).unwrap()).execute(f.store.pool.fixture_driver()).await.unwrap();
+		assert!(matches!(
+			f.registration(&tenant, &receiver.node, &source)
+				.await
+				.unwrap()
+				.unwrap()
+				.counterpart,
+			Counterpart::OtherDeployment { .. }
+		));
+		let corrupt: Value = sqlx::query_scalar("SELECT to_jsonb(n) FROM node_registrations n WHERE tenant='acme' AND node=$1 AND source_node=$2")
+			.bind(receiver.node.as_str()).bind(source.to_string()).fetch_one(f.store.pool.fixture_driver()).await.unwrap();
+		let error = aidash_server::apps::identity::services::node_purge::run_step(
+			&f.store,
+			&deletion,
+			aidash_domain::nodes::deletion::PurgeStep::FIRST,
+		)
+		.await
+		.unwrap_err();
+		assert!(
+			matches!(error,aidash_server::Error::Conflict(ref why) if why.contains("recovery registration dependency"))
+		);
+		assert!(file_path.exists());
+		let count: i64 = sqlx::query_scalar(
+			"SELECT count(*) FROM authorization_remote_admissions WHERE tenant='acme' AND id=$1",
+		)
+		.bind(admission)
+		.fetch_one(f.store.pool.fixture_driver())
+		.await
+		.unwrap();
+		assert_eq!(count, 1);
+		let after: Value = sqlx::query_scalar(
+			"SELECT activation FROM authorization_remote_terminal_receipts WHERE tenant='acme' AND id=$1",
+		)
+		.bind(admission)
+		.fetch_one(f.store.pool.fixture_driver())
+		.await
+		.unwrap();
+		assert_eq!(after, saved);
+		let after:Value=sqlx::query_scalar("SELECT to_jsonb(n) FROM node_registrations n WHERE tenant='acme' AND node=$1 AND source_node=$2").bind(receiver.node.as_str()).bind(source.to_string()).fetch_one(f.store.pool.fixture_driver()).await.unwrap();
+		assert_eq!(after, corrupt, "no automatic trust repair");
+		sqlx::query("UPDATE node_registrations SET source_endpoint=NULL,source_public_key_pem=NULL,source_key_id=NULL,source_keys=NULL WHERE tenant='acme' AND node=$1 AND source_node=$2")
+			.bind(receiver.node.as_str()).bind(source.to_string()).execute(f.store.pool.fixture_driver()).await.unwrap();
+		let restored:Value=sqlx::query_scalar("SELECT to_jsonb(n) FROM node_registrations n WHERE tenant='acme' AND node=$1 AND source_node=$2").bind(receiver.node.as_str()).bind(source.to_string()).fetch_one(f.store.pool.fixture_driver()).await.unwrap();
+		assert_eq!(restored, before);
+	}
+	aidash_server::apps::identity::services::node_purge::purge_node(&f.store, deletion)
+		.await
+		.unwrap();
+	assert!(!file_path.exists());
+	let remaining: i64 = sqlx::query_scalar(
+		"SELECT count(*) FROM authorization_remote_admissions WHERE tenant='acme' AND id=$1",
+	)
+	.bind(admission)
+	.fetch_one(f.store.pool.fixture_driver())
+	.await
+	.unwrap();
+	assert_eq!(remaining, 0);
+	let canonical: Value = f
+		.request(
+			&sender,
+			&receiver.to_string(),
+			reqwest::Method::POST,
+			&path,
+			Some(&control),
+		)
+		.await
+		.unwrap();
+	assert_eq!(canonical, saved);
+	let trust: Value = sqlx::query_scalar(
+		"SELECT to_jsonb(n) FROM node_registrations n WHERE tenant='acme' AND node=$1 AND source_node=$2",
+	)
+	.bind(receiver.node.as_str())
+	.bind(source.to_string())
+	.fetch_one(f.store.pool.fixture_driver())
+	.await
+	.unwrap();
+	if !wrong_counterpart {
+		let query: aidash_server::Result<Value> = f
+			.request(
+				&sender,
+				&receiver.to_string(),
+				reqwest::Method::POST,
+				&format!("{path}?extra=1"),
+				Some(&control),
+			)
+			.await;
+		assert!(
+			query.is_err(),
+			"local query-bearing receipt replay must be denied: {query:?}"
+		);
+	}
+	let after: Value = sqlx::query_scalar(
+		"SELECT to_jsonb(n) FROM node_registrations n WHERE tenant='acme' AND node=$1 AND source_node=$2",
+	)
+	.bind(receiver.node.as_str())
+	.bind(source.to_string())
+	.fetch_one(f.store.pool.fixture_driver())
+	.await
+	.unwrap();
+	assert_eq!(after, trust);
+	let runs: i64 = sqlx::query_scalar("SELECT count(*) FROM runs WHERE id=$1")
+		.bind(admission)
+		.fetch_one(f.store.pool.fixture_driver())
+		.await
+		.unwrap();
+	assert_eq!(runs, 0, "inactive cancellation never invents a Run");
+	f.store.pool.close().await;
+	cleanup(f, &url, &schema).await;
 }
