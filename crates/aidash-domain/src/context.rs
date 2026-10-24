@@ -348,6 +348,16 @@ impl Context {
 
 	/// Provider-visible projection of this context.
 	pub fn model_view(&self, current: &Value) -> Value {
+		let projected = source::project(self, current);
+		let mut current = projected.snapshot;
+		let envelopes = projected
+			.run
+			.into_iter()
+			.chain(projected.step)
+			.collect::<Vec<_>>();
+		if !envelopes.is_empty() {
+			current["context_sources"] = json!(envelopes);
+		}
 		json!({
 			"current": current,
 			"summary": self.summary_view(),
@@ -502,6 +512,7 @@ pub struct RequestBudget<'a> {
 
 impl RequestBudget<'_> {
 	pub fn request(&self, context: &Context, pinned: &Value) -> crate::provider::ModelRequest {
+		let context_sources = &context.source_contributions;
 		let (context, cache_scope) = match self.projection {
 			RequestProjection::Legacy => (context.model_view(pinned).into(), None),
 			RequestProjection::Ordered(scope) => (
@@ -515,7 +526,7 @@ impl RequestBudget<'_> {
 				Some(scope.clone()),
 			),
 		};
-		crate::provider::ModelRequest {
+		let mut request = crate::provider::ModelRequest {
 			instructions: self.instructions.into(),
 			context,
 			tools: self.tools.to_vec(),
@@ -527,7 +538,9 @@ impl RequestBudget<'_> {
 			cache_breakpoints: false,
 			disable_provider_transforms: false,
 			estimate: self.estimate,
-		}
+		};
+		source::fit_declared(&mut request, context_sources, self.window);
+		request
 	}
 
 	/// The same budget under the conservative byte estimate. Run-fixed quotas
@@ -568,6 +581,11 @@ const ORDERED_VOLATILE_KEYS: [&str; 11] = [
 /// Render an Ordered context. Declaration order of these typed views fixes the
 /// byte order; `serde_json::Value` maps are only used for nested values.
 pub fn ordered_context(context: &Context, pinned: &Value) -> crate::provider::OrderedContext {
+	let projected = source::project(context, pinned);
+	let mut pinned = projected.snapshot;
+	if !projected.step.is_empty() {
+		pinned["context_sources"] = json!(projected.step);
+	}
 	#[derive(Serialize)]
 	struct Stable<'a> {
 		#[serde(skip_serializing_if = "Option::is_none")]
@@ -576,6 +594,8 @@ pub fn ordered_context(context: &Context, pinned: &Value) -> crate::provider::Or
 		task: Option<&'a Value>,
 		#[serde(skip_serializing_if = "Option::is_none")]
 		reference_documents: Option<&'a Value>,
+		#[serde(skip_serializing_if = "Vec::is_empty")]
+		context_sources: Vec<crate::projection::native::Envelope>,
 		run_message_summary: &'a str,
 		// Absent without any summary, so prune-only bytes stay unchanged.
 		#[serde(skip_serializing_if = "Option::is_none")]
@@ -589,6 +609,7 @@ pub fn ordered_context(context: &Context, pinned: &Value) -> crate::provider::Or
 		identity: fields.get("identity"),
 		task: fields.get("task"),
 		reference_documents: fields.get("reference_documents"),
+		context_sources: projected.run,
 		run_message_summary: &context.run_message_summary,
 		summary: context.summary_projection(),
 		history: context.events().collect(),
@@ -596,7 +617,7 @@ pub fn ordered_context(context: &Context, pinned: &Value) -> crate::provider::Or
 	crate::provider::OrderedContext {
 		// Serializing borrowed JSON values and derived structs cannot fail.
 		stable: serde_json::to_string(&stable).expect("serializable Ordered stable part"),
-		volatile: volatile_part(pinned, None),
+		volatile: volatile_part(&pinned, None),
 	}
 }
 
