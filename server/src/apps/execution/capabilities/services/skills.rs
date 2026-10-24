@@ -70,7 +70,7 @@ pub(crate) async fn direct_body(
 	run: &Run,
 	skill_id: Uuid,
 	digest: &str,
-) -> Result<String> {
+) -> Result<Option<String>> {
 	aidash_application::capabilities::skills::direct_body(
 		&mut crate::bootstrap::file_scope(Some(store), access, Some(run)),
 		&run.metadata(),

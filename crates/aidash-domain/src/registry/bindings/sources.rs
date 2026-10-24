@@ -1,5 +1,5 @@
-//! Explicit declarations for current native context adapters, without routing or
-//! a general ContextSource framework. Source content is authorized separately.
+//! Explicit declarations for native context adapters. The application lifecycle
+//! plan resolves them independently of the operator; content is authorized separately.
 use crate::{
 	Error, Result,
 	capabilities::{ReferenceAttachment, SkillAttachment},
@@ -275,85 +275,6 @@ pub fn validate_definition(entry: &crate::registry::Entry) -> Result<Option<Nati
 	Ok(None)
 }
 
-#[cfg(test)]
-mod tests {
-	use super::*;
-	use serde_json::json;
-	#[test]
-	fn adapters_are_explicit_and_future_framework_or_policy_fields_are_rejected() {
-		for adapter in ["conversation_memory", "semantic_memory"] {
-			let descriptor: NativeContext =
-				serde_json::from_value(json!({"schema_version":1,"source":{"adapter":adapter}}))
-					.unwrap();
-			descriptor.validate("memory").unwrap();
-			assert!(descriptor.validate("source").is_err());
-		}
-		for config in [
-			json!({"schema_version":1,"source":{"adapter":"future_provider"}}),
-			json!({"schema_version":1,"source":{"adapter":"conversation_memory","allow_cross_conversation_memory":true}}),
-			json!({"schema_version":1,"source":{"adapter":"semantic_memory","on_unavailable":"degrade"}}),
-			json!({"schema_version":1,"source":{"adapter":"workspace_retrieval","on_unavailable":"skip"}}),
-		] {
-			assert!(serde_json::from_value::<NativeContext>(config).is_err());
-		}
-	}
-	#[test]
-	fn only_workspace_retrieval_opts_into_degrading_and_pause_stays_implicit() {
-		let parse = |source| {
-			serde_json::from_value::<NativeContext>(json!({"schema_version":1,"source":source}))
-				.unwrap()
-		};
-		let default = parse(json!({"adapter":"workspace_retrieval"}));
-		default.validate("source").unwrap();
-		assert!(matches!(
-			default.source,
-			NativeSource::WorkspaceRetrieval {
-				on_unavailable: OnUnavailable::Pause
-			}
-		));
-		// The default is never written, so existing descriptors keep their digest.
-		assert_eq!(
-			serde_json::to_value(&default).unwrap(),
-			json!({"schema_version":1,"source":{"adapter":"workspace_retrieval"}})
-		);
-		let degrade = parse(json!({"adapter":"workspace_retrieval","on_unavailable":"degrade"}));
-		degrade.validate("source").unwrap();
-		assert_eq!(
-			serde_json::to_value(&degrade).unwrap(),
-			json!({"schema_version":1,"source":{"adapter":"workspace_retrieval","on_unavailable":"degrade"}})
-		);
-	}
-	#[test]
-	fn private_sources_pin_digest_and_validate_roots_without_implying_authority() {
-		let private = NativeContext {
-			schema_version: 1,
-			context_source: None,
-			source: NativeSource::PrivateReferences {
-				digest: "0".repeat(64),
-			},
-		};
-		private.validate("source").unwrap();
-		assert!(!private.memory());
-		let roots = NativeContext {
-			schema_version: 1,
-			context_source: None,
-			source: NativeSource::SkillRoots {
-				roots: vec![".agents/skills".into()],
-			},
-		};
-		roots.validate("source").unwrap();
-		assert!(roots.requires_skill_support());
-		let invalid = NativeContext {
-			schema_version: 1,
-			context_source: None,
-			source: NativeSource::SkillRoots {
-				roots: vec!["../.agents/skills".into()],
-			},
-		};
-		assert!(invalid.validate("source").is_err());
-	}
-}
-
 /// Explicit source policies name capabilities in the same admitted closure. The
 /// frozen Tool descriptors pin each operation/provider edge without duplicating schemas.
 pub(super) fn validate_dependencies(snapshot: &super::BindingSnapshot) -> Result<()> {
@@ -468,4 +389,83 @@ pub fn is_selection_decider(entry: &crate::registry::Entry) -> bool {
 	entry.kind == "decider"
 		&& serde_json::from_value::<crate::decision::DeciderConfig>(entry.config.clone())
 			.is_ok_and(|config| config.hook == crate::decision::Hook::ContextSelection)
+}
+
+#[cfg(test)]
+mod tests {
+	use super::*;
+	use serde_json::json;
+	#[test]
+	fn adapters_are_explicit_and_future_framework_or_policy_fields_are_rejected() {
+		for adapter in ["conversation_memory", "semantic_memory"] {
+			let descriptor: NativeContext =
+				serde_json::from_value(json!({"schema_version":1,"source":{"adapter":adapter}}))
+					.unwrap();
+			descriptor.validate("memory").unwrap();
+			assert!(descriptor.validate("source").is_err());
+		}
+		for config in [
+			json!({"schema_version":1,"source":{"adapter":"future_provider"}}),
+			json!({"schema_version":1,"source":{"adapter":"conversation_memory","allow_cross_conversation_memory":true}}),
+			json!({"schema_version":1,"source":{"adapter":"semantic_memory","on_unavailable":"degrade"}}),
+			json!({"schema_version":1,"source":{"adapter":"workspace_retrieval","on_unavailable":"skip"}}),
+		] {
+			assert!(serde_json::from_value::<NativeContext>(config).is_err());
+		}
+	}
+	#[test]
+	fn only_workspace_retrieval_opts_into_degrading_and_pause_stays_implicit() {
+		let parse = |source| {
+			serde_json::from_value::<NativeContext>(json!({"schema_version":1,"source":source}))
+				.unwrap()
+		};
+		let default = parse(json!({"adapter":"workspace_retrieval"}));
+		default.validate("source").unwrap();
+		assert!(matches!(
+			default.source,
+			NativeSource::WorkspaceRetrieval {
+				on_unavailable: OnUnavailable::Pause
+			}
+		));
+		// The default is never written, so existing descriptors keep their digest.
+		assert_eq!(
+			serde_json::to_value(&default).unwrap(),
+			json!({"schema_version":1,"source":{"adapter":"workspace_retrieval"}})
+		);
+		let degrade = parse(json!({"adapter":"workspace_retrieval","on_unavailable":"degrade"}));
+		degrade.validate("source").unwrap();
+		assert_eq!(
+			serde_json::to_value(&degrade).unwrap(),
+			json!({"schema_version":1,"source":{"adapter":"workspace_retrieval","on_unavailable":"degrade"}})
+		);
+	}
+	#[test]
+	fn private_sources_pin_digest_and_validate_roots_without_implying_authority() {
+		let private = NativeContext {
+			schema_version: 1,
+			context_source: None,
+			source: NativeSource::PrivateReferences {
+				digest: "0".repeat(64),
+			},
+		};
+		private.validate("source").unwrap();
+		assert!(!private.memory());
+		let roots = NativeContext {
+			schema_version: 1,
+			context_source: None,
+			source: NativeSource::SkillRoots {
+				roots: vec![".agents/skills".into()],
+			},
+		};
+		roots.validate("source").unwrap();
+		assert!(roots.requires_skill_support());
+		let invalid = NativeContext {
+			schema_version: 1,
+			context_source: None,
+			source: NativeSource::SkillRoots {
+				roots: vec!["../.agents/skills".into()],
+			},
+		};
+		assert!(invalid.validate("source").is_err());
+	}
 }
