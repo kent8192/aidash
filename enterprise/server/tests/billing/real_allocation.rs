@@ -31,7 +31,7 @@ fn isolated_runtime(
 	#[from(reinhardt::test::fixtures::http_client)] client: reqwest::Client,
 ) -> common::RuntimeFuture {
 	common::runtime(
-		common::execution_database(environment, "real_allocation", 12),
+		common::execution_database(environment, "execution_real_allocation", 12),
 		client,
 	)
 }
@@ -798,7 +798,19 @@ impl Dispatch {
 			.await;
 		assert_eq!(status, 201);
 		let tenant = created["name"].as_str().unwrap().to_owned();
-		let context = d.context(alice, &tenant).await;
+		let (status, session) = d
+			.call(alice, "GET", "/auth/session", None, Value::Null)
+			.await;
+		assert_eq!(status, 200);
+		let mapping = session["mappings"]
+			.as_array()
+			.unwrap()
+			.iter()
+			.find(|mapping| mapping["tenant"] == tenant)
+			.unwrap();
+		assert_eq!(mapping["credential_active"], true);
+		let subject = mapping["subject"].as_str().unwrap();
+		let context = format!("mapping:{tenant}:{}", mapping["id"].as_str().unwrap());
 		let account = d.account(alice, Some("team")).await;
 		let ((a, _), (b, _)) = d.attach(alice, &context, alice, &tenant, account).await;
 		assert!(matches!(a, 200 | 201 | 202) && matches!(b, 200 | 201 | 202));
@@ -808,11 +820,10 @@ impl Dispatch {
 		let (status, snapshot, ..) = d.send("GET", &policy_path, None, None, Value::Null).await;
 		assert_eq!(status, 200);
 		let mut policy = snapshot["bundle"].clone();
-		policy["subjects"]["allocation-operator"] = json!({"kind":"user"});
 		let agent = aidash_server::domain::qualified_agent(&node, "allocation-agent", "1.0.0");
 		policy["subjects"][&agent] = json!({"kind":"agent","node":node.node});
 		policy["policies"].as_array_mut().unwrap().push(json!({
-			"id":"allocation-acceptance-work", "effect":"allow", "subjects":{"ids":["allocation-operator",agent]},
+			"id":"allocation-acceptance-work", "effect":"allow", "subjects":{"ids":[agent]},
 			"actions":["*"], "resources":{"kinds":["*"]}
 		}));
 		let (status, _, ..) = d
@@ -867,16 +878,20 @@ impl Dispatch {
 			.await
 			.unwrap();
 		common::approve_agent_on(f, &tenant, &registered, &node).await;
-		let (status, credential, ..) = d
-			.send(
+		// A separate work credential shares the actual area-owning Subject with
+		// the browser; revoking it must leave the browser's own credential live.
+		let (status, credential) = d
+			.call(
+				alice,
 				"POST",
 				&format!("{policy_path}/credentials"),
-				None,
-				None,
-				json!({"subject":"allocation-operator"}),
+				Some(&context),
+				json!({"subject":subject}),
 			)
 			.await;
 		assert_eq!(status, 200);
+		assert_eq!(credential["credential"]["subject"], subject);
+		assert_eq!(credential["credential"]["mapping_id"], mapping["id"]);
 		let token = credential["token"].as_str().unwrap().to_owned();
 		let credential = serde_json::from_value(credential["credential"]["id"].clone()).unwrap();
 		let (status, workspace) = common::request(
@@ -1117,7 +1132,7 @@ async fn actual_allocation_receipts_reach_frozen_usage_before_independent_ack(
 		.call(
 			&d,
 			"python",
-			json!({"expected_revision":shell_done["revision"],"code":"counter = 41\nprint(counter)"}),
+			json!({"expected_revision":shell_done["revision"],"code":"counter = 41\nfrom pathlib import Path\nPath('allocation-saved.txt').write_text('saved through native idle')\nprint(counter)"}),
 		)
 		.await;
 	let first_id: Uuid = serde_json::from_value(first["operation_id"].clone()).unwrap();
@@ -1282,7 +1297,7 @@ async fn actual_allocation_receipts_reach_frozen_usage_before_independent_ack(
 	evidence.record(json!({"kind":"deployment_runner_pin","pin":pin}));
 
 	// The ordinary reset acknowledgement creates a new actual allocation.
-	let input = json!({"expected_revision":second_done["revision"],"expected_session_id":second_done["session_id"],"code":"print('new interpreter')"});
+	let input = json!({"expected_revision":second_done["revision"],"expected_session_id":second_done["session_id"],"code":"assert 'counter' not in globals()\nfrom pathlib import Path\nsaved = Path('allocation-saved.txt').read_text()\nassert saved == 'saved through native idle'\nprint(saved)\nprint('new interpreter')"});
 	let reset = dispatch.call(&d, "python", input.clone()).await;
 	assert_eq!(reset["error"]["code"], "SESSION_RESET");
 	assert_ne!(reset["session_id"], second_done["session_id"]);
@@ -1293,6 +1308,12 @@ async fn actual_allocation_receipts_reach_frozen_usage_before_independent_ack(
 	let third_done = dispatch
 		.completed(&d, &worker, &recorder, "python", third_id)
 		.await;
+	assert!(
+		third_done["output"]
+			.as_str()
+			.unwrap()
+			.contains("saved through native idle")
+	);
 	output_ack(&d, &dispatch, &worker, &recorder, &evidence, third_id).await;
 	let third_name = format!("operation-{third_id}");
 	let third_uids = pod_uids(&provider(
@@ -1302,7 +1323,7 @@ async fn actual_allocation_receipts_reach_frozen_usage_before_independent_ack(
 	assert_eq!(third_uids.len(), 1);
 	let third_uid = third_uids.first().unwrap().clone();
 	assert_ne!(third_uid, reused_uid);
-	evidence.record(json!({"kind":"python_recreated","operation":third_id,"allocation":third_uid,"previous_allocation":reused_uid}));
+	evidence.record(json!({"kind":"python_recreated","operation":third_id,"allocation":third_uid,"previous_allocation":reused_uid,"saved_output":third_done["output"]}));
 	allocations.push(
 		drain(
 			&d,
@@ -1325,8 +1346,8 @@ async fn actual_allocation_receipts_reach_frozen_usage_before_independent_ack(
 	evidence.record(json!({"kind":"actual_idle_stop","allocation":third_uid,"session":idle}));
 
 	// A distinct authority-loss phase: revoke an actual originating credential
-	// while its normally dispatched shell is still running. No billing lock is
-	// held. Reconciliation must use its existing withdrawal/cancel ordering.
+	// while its normally dispatched shell is still running. Retain the last
+	// genuine receipt behind the same real capacity barrier through Run terminal.
 	let authority_dispatched = tokio::time::Instant::now();
 	let authority = dispatch.call(&d, "shell", json!({"expected_revision":third_done["revision"],"command":"printf 'authority active\\n'; sleep 110"})).await;
 	let authority_id: Uuid = serde_json::from_value(authority["operation_id"].clone()).unwrap();
@@ -1338,11 +1359,42 @@ async fn actual_allocation_receipts_reach_frozen_usage_before_independent_ack(
 		async || controller.running_uid(runner, &authority_name).await,
 	)
 	.await;
+	let authority_native = eventually(
+		&worker,
+		&recorder,
+		"authority-loss command is executing in the native operation",
+		async || {
+			let native = controller
+				.get(&format!("/v1/operations/{authority_id}"))
+				.await
+				.unwrap();
+			assert_eq!(native["operation_id"], authority_id.to_string());
+			(native["status"] == "running" && native["executed"] == true).then_some(native)
+		},
+	)
+	.await;
+	let authority_binding = only(
+		&authority_native,
+		&["operation_id", "digest", "area_id", "epoch"],
+	);
 	assert!(
 		authority_dispatched.elapsed() < Wait::from_secs(60),
 		"authority loss must precede the real shell's natural/deadline completion"
 	);
 	assert!(evidence.receipt(&authority_uid, 0).is_none());
+	let mut held = d.control().begin(&TenancyScope::NoTenant).await.unwrap();
+	aidash_server::authorization::services::nodes::lock_capacity(&mut *held, &dispatch.tenant)
+		.await
+		.unwrap();
+	let pid: Vec<Value> = store::fetch(
+		&mut *held,
+		&Query::select()
+			.expr_as(Expr::cust("pg_backend_pid()"), Alias::new("pid"))
+			.to_owned(),
+	)
+	.await
+	.unwrap();
+	let pid = i32::try_from(pid[0]["pid"].as_i64().unwrap()).unwrap();
 	let authority_start = evidence.record(json!({"kind":"authority_loss_requested","allocation":authority_uid,"credential":dispatch.credential}));
 	let (status, revoked, ..) = d
 		.send(
@@ -1378,18 +1430,32 @@ async fn actual_allocation_receipts_reach_frozen_usage_before_independent_ack(
 		status, 401,
 		"the actual originating credential has no authority"
 	);
-	eventually(
+	let stopped = eventually(
 		&worker,
 		&recorder,
-		"normal withdrawal persists actual termination",
+		"authority withdrawal requests cancellation and native writer stops",
 		async || {
 			let row = operation(&d, &dispatch.tenant, authority_id).await;
-			(row["state"] == "withdrawn" && row["result"]["termination_confirmed"] == true)
-				.then_some(())
+			let native = controller
+				.get(&format!("/v1/operations/{authority_id}"))
+				.await
+				.unwrap();
+			assert_eq!(only(&native, &["operation_id", "digest", "area_id", "epoch"]), authority_binding);
+			(matches!(row["state"].as_str(), Some("cancelling" | "withdrawn"))
+				&& row["result"]["error"] == "AUTHORITY_WITHDRAWN"
+				&& native["executed"] == true
+				&& native["cancel_requested"] == true
+				&& native["termination_confirmed"] == true)
+				.then(|| json!({"binding":authority_binding,"state":row["state"],"native":only(&native, &["status", "executed", "cancel_requested", "termination_confirmed"])}))
 		},
 	)
 	.await;
-	output_ack(&d, &dispatch, &worker, &recorder, &evidence, authority_id).await;
+	assert!(
+		authority_dispatched.elapsed() < Wait::from_secs(100),
+		"positive authority stop must precede the real shell's natural/deadline completion"
+	);
+	evidence
+		.record(json!({"kind":"authority_native_stop","allocation":authority_uid,"proof":stopped}));
 	let authority_receipt = eventually(
 		&worker,
 		&recorder,
@@ -1397,6 +1463,7 @@ async fn actual_allocation_receipts_reach_frozen_usage_before_independent_ack(
 		async || evidence.receipt(&authority_uid, authority_start),
 	)
 	.await;
+	validate_provider(&provider_directory, &authority_receipt);
 	// Kubernetes metav1.Time can have only whole-second precision. Keep its
 	// exact value for receipt/DB equality; the committed revoke, rejected bearer
 	// and withdrawn/confirmed-stop transition establish authority ordering.
@@ -1407,6 +1474,89 @@ async fn actual_allocation_receipts_reach_frozen_usage_before_independent_ack(
 		nanos(&authority_receipt["ended_at"]) >= revoked_second * 1_000_000_000,
 		"provider stop cannot predate the second containing committed revocation"
 	);
+	common::wait_for_blocked(d.control(), pid, 1).await;
+	worker.live(&recorder);
+	let pending = controller
+		.get("/v1/allocations/receipts?limit=64")
+		.await
+		.unwrap();
+	assert_eq!(pending["instance"], instance);
+	assert!(
+		pending["receipts"]
+			.as_array()
+			.unwrap()
+			.contains(&authority_receipt)
+	);
+	assert_eq!(
+		facts(&d, &authority_uid).await,
+		json!({"raw":[],"segments":[]})
+	);
+	assert!(evidence.ack(&authority_uid, true).is_none());
+	evidence.record(json!({"kind":"authority_meter_blocked_before_terminal","allocation":authority_uid,"page":pending,"raw":[],"segments":[]}));
+	// The capability loop waits in Meter before its next withdrawal/output ACK.
+	// Normal Harness cancellation owns Run settlement independently of that loop.
+	let (status, _) = d
+		.call(
+			&alice,
+			"POST",
+			&format!("/api/runs/{}/control", dispatch.run.id),
+			Some(&dispatch.context),
+			json!({"action":"cancel"}),
+		)
+		.await;
+	assert_eq!(status, 200);
+	assert!(
+		aidash_server::harness::Harness {
+			federation: d.federation.clone()
+		}
+		.worker_once()
+		.await
+		.unwrap()
+	);
+	let run = d
+		.federation
+		.store
+		.runs(&TenancyScope::tenant(&dispatch.tenant).unwrap())
+		.await
+		.unwrap()
+		.into_iter()
+		.find(|run| run.id == dispatch.run.id)
+		.unwrap();
+	assert!(run.state.phase().is_terminal());
+	evidence.record(json!({"kind":"run_terminal","run":run.id,"phase":run.state.phase().as_str()}));
+	let pending = controller
+		.get("/v1/allocations/receipts?limit=64")
+		.await
+		.unwrap();
+	assert_eq!(pending["instance"], instance);
+	assert!(
+		pending["receipts"]
+			.as_array()
+			.unwrap()
+			.contains(&authority_receipt)
+	);
+	assert_eq!(
+		facts(&d, &authority_uid).await,
+		json!({"raw":[],"segments":[]})
+	);
+	assert!(evidence.ack(&authority_uid, true).is_none());
+	evidence.record(json!({"kind":"terminal_before_first_meter_commit","run":run.id,"allocation":authority_uid,"page":pending,"raw":[],"segments":[]}));
+	held.commit().await.unwrap();
+	evidence.record(
+		json!({"kind":"terminal_capacity_released","run":run.id,"allocation":authority_uid}),
+	);
+	eventually(
+		&worker,
+		&recorder,
+		"normal withdrawal persists actual termination after Meter release",
+		async || {
+			let row = operation(&d, &dispatch.tenant, authority_id).await;
+			(row["state"] == "withdrawn" && row["result"]["termination_confirmed"] == true)
+				.then_some(())
+		},
+	)
+	.await;
+	output_ack(&d, &dispatch, &worker, &recorder, &evidence, authority_id).await;
 	allocations.push(
 		drain(
 			&d,
@@ -1419,29 +1569,6 @@ async fn actual_allocation_receipts_reach_frozen_usage_before_independent_ack(
 		)
 		.await,
 	);
-	// Complete the Run through its ordinary independent browser authority, then
-	// retain deployment housekeeping through the final allocation-page drain.
-	let (status, _) = d
-		.call(
-			&alice,
-			"POST",
-			&format!("/api/runs/{}/control", dispatch.run.id),
-			Some(&dispatch.context),
-			json!({"action":"cancel"}),
-		)
-		.await;
-	assert_eq!(status, 200);
-	let run = d
-		.federation
-		.store
-		.runs(&TenancyScope::tenant(&dispatch.tenant).unwrap())
-		.await
-		.unwrap()
-		.into_iter()
-		.find(|run| run.id == dispatch.run.id)
-		.unwrap();
-	assert!(run.state.phase().is_terminal());
-	evidence.record(json!({"kind":"run_terminal","run":run.id}));
 	eventually(
 		&worker,
 		&recorder,
@@ -1468,7 +1595,7 @@ async fn actual_allocation_receipts_reach_frozen_usage_before_independent_ack(
 	eventually(
 		&worker,
 		&recorder,
-		"deployment sweep continues after terminal Run and empty worklist",
+		"observed empty allocation page after terminal Run and empty worklist",
 		async || {
 			evidence
 				.events()
