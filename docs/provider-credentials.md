@@ -231,10 +231,11 @@ manage secret-store-recovery --execute
 ```
 
 The default is a dry run. Both invocations print only JSON counts:
-`affected_tenants` and `affected_provider_credentials` count active records whose
-pin uses a lost key; `affected_plan_connections` counts Plan Connections with
-any version under a lost key, including unpinned refresh evidence. `version_rows`
-and `key_registry_rows` count rows to remove.
+`affected_provider_credentials` counts active records whose pin uses a lost key;
+`affected_plan_connections` counts Plan Connections with any version under a
+lost key, including unpinned refresh evidence. `affected_tenants` counts distinct
+Tenants affected by either category. `version_rows` and `key_registry_rows` count
+rows to remove.
 Recovery requires a PostgreSQL Store and valid current Master Key and fingerprint
 key. It verifies registered configured keys, so a failed key check refuses both
 dry run and execute without changes. It bypasses the wrong-key startup gate and
