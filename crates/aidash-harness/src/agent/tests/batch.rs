@@ -859,17 +859,7 @@ impl ExecutionEnvironment for Bench {
 				.await
 				.map(Some),
 			"semantic_memory" => {
-				return self
-					.semantic_context(
-						run,
-						frame.task,
-						frame.inputs,
-						frame.budget,
-						frame.entry,
-						frame.key,
-						frame.degrade_on_outage,
-					)
-					.await;
+				return self.semantic_context(frame).await;
 			}
 			_ => unexpected("unknown planned context source"),
 		};
@@ -1468,16 +1458,7 @@ async fn unloaded_aliases_end_the_batch_and_record_the_exposure_denial() {
 }
 
 impl Bench {
-	async fn semantic_context(
-		&self,
-		_run: &Run,
-		_task: &Task,
-		_inputs: &[(InputRead, String)],
-		_budget: usize,
-		_entry: &Entry,
-		_key: Option<&RetrievalKey>,
-		_degrade_on_outage: bool,
-	) -> SemanticContextRead {
+	async fn semantic_context(&self, _frame: ContextSourceFrame<'_>) -> SemanticContextRead {
 		unexpected("ExecutionEnvironment.semantic_context")
 	}
 }

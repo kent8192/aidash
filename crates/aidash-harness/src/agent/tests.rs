@@ -1163,17 +1163,7 @@ impl ExecutionEnvironment for Backend {
 				.map(Some),
 			"skills" => self.skill_context(run).await.map(|text| Some(json!(text))),
 			"semantic_memory" => {
-				return self
-					.semantic_context(
-						run,
-						frame.task,
-						frame.inputs,
-						frame.budget,
-						frame.entry,
-						frame.key,
-						frame.degrade_on_outage,
-					)
-					.await;
+				return self.semantic_context(frame).await;
 			}
 			_ => unexpected("unknown planned context source"),
 		};
@@ -5521,27 +5511,18 @@ impl Backend {
 		self.record("source.skill");
 		Ok(self.0.skill_text.lock().unwrap().clone())
 	}
-	async fn semantic_context(
-		&self,
-		run: &Run,
-		task: &Task,
-		inputs: &[(InputRead, String)],
-		budget: usize,
-		entry: &Entry,
-		key: Option<&RetrievalKey>,
-		degrade_on_outage: bool,
-	) -> SemanticContextRead {
-		let _ = (run, task, inputs, budget, entry);
+	async fn semantic_context(&self, frame: ContextSourceFrame<'_>) -> SemanticContextRead {
+		let budget = frame.budget;
 		self.0
 			.semantic_keys
 			.lock()
 			.unwrap()
-			.push(key.map(RetrievalKey::digest));
+			.push(frame.key.map(RetrievalKey::digest));
 		self.0
 			.semantic_degrade
 			.lock()
 			.unwrap()
-			.push(degrade_on_outage);
+			.push(frame.degrade_on_outage);
 		if let Some((workspace_retrieved, reason)) = self.0.semantic_failure.lock().unwrap().take()
 		{
 			return SemanticContextRead {
