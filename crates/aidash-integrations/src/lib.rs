@@ -5,6 +5,7 @@ pub mod inference;
 pub mod keyless;
 pub mod kubernetes;
 pub mod openrouter;
+pub mod recovery;
 pub mod response;
 pub mod semantic;
 

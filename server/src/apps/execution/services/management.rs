@@ -749,7 +749,7 @@ impl HarnessManagement {
 		let sender = lease.sender();
 		let principal = lease.principal();
 		let limit = f.run_message_limit(&run).await?;
-		let mut lease = lease.into_native()?;
+		let mut lease = lease.into_native().await?;
 		let result = async {
 			let (existing, record) = crate::apps::execution::models::RunInput::admit_media(
 				lease.tx(),

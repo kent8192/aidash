@@ -25,6 +25,8 @@ use uuid::Uuid;
 
 const RECOVERY: TenancyScope = TenancyScope::Deployment(DeploymentScopeReason::MemoryRecovery);
 
+pub mod protection;
+
 const MAX_ARCHIVES: usize = 128;
 
 #[derive(Serialize, Deserialize)]
@@ -49,14 +51,36 @@ pub struct Report {
 
 /// Attach an existing external ledger, including its persistent closed state.
 /// A missing/corrupt ledger is never initialized implicitly.
-pub fn attach(store: Store, directory: PathBuf) -> Result<Store> {
-	let ledger = Arc::new(FileRecovery::new(directory, store.deployment.to_string())?);
-	Ok(store.with_memory_recovery(Some(ledger)))
+pub async fn attach(store: Store, directory: PathBuf) -> Result<Store> {
+	let ledger = external(&store, &directory)?;
+	attach_ledger(store, ledger).await
+}
+/// Compose an independently durable store, also used by supervised recovery tools.
+pub async fn attach_protected(
+	store: Store,
+	directory: PathBuf,
+	objects: Arc<dyn aidash_application::ports::memory::objects::RecoveryObjects>,
+) -> Result<Store> {
+	let ledger = FileRecovery::new(directory, store.deployment.to_string())?.with_objects(objects);
+	attach_ledger(store, ledger).await
+}
+async fn attach_ledger(store: Store, ledger: FileRecovery) -> Result<Store> {
+	// Missing/corrupt protection closes only memory, preserving management access.
+	let _ = ledger.verify().await;
+	Ok(store.with_memory_recovery(Some(Arc::new(ledger))))
 }
 fn external(store: &Store, directory: &Path) -> Result<FileRecovery> {
-	FileRecovery::new(directory.to_owned(), store.deployment.to_string())
+	let mut recovery = FileRecovery::from_env(directory.to_owned(), store.deployment.to_string())?;
+	if let Some(objects) = store
+		.pool
+		.memory_recovery()
+		.and_then(|active| active.objects())
+	{
+		recovery = recovery.with_objects(objects);
+	}
+	Ok(recovery)
 }
-fn active_external(store: &Store, directory: &Path) -> Result<FileRecovery> {
+async fn active_external(store: &Store, directory: &Path) -> Result<FileRecovery> {
 	let recovery = external(store, directory)?;
 	let active = store
 		.pool
@@ -65,7 +89,22 @@ fn active_external(store: &Store, directory: &Path) -> Result<FileRecovery> {
 	if active.epoch()? != recovery.load()?.epoch {
 		return Err(Error::Forbidden);
 	}
+	recovery.verify().await?;
 	Ok(recovery)
+}
+/// Activate independent protection after every floor-advancing writer is fenced.
+/// This seeds every local shard, including floors ahead of PostgreSQL.
+pub async fn protect(store: &Store, directory: &Path) -> Result<Store> {
+	let recovery = external(store, directory)?;
+	recovery.protect().await?;
+	attach_ledger(store.clone(), recovery).await
+}
+/// Rebuild a replacement disk behind a new create-only recovery barrier.
+pub async fn reconstruct(
+	store: &Store,
+	directory: &Path,
+) -> Result<aidash_domain::memory::recovery::history::Head> {
+	external(store, directory)?.reconstruct().await
 }
 fn bypass(store: &Store) -> Store {
 	let mut internal = store.clone();
@@ -108,11 +147,11 @@ pub async fn initialize(store: &Store, directory: PathBuf) -> Result<Store> {
 				return Err(Error::Conflict("a new recovery epoch requires empty new-format memory; restore the existing external ledger".into()));
 			}
 		}
-		recovery.initialize(&[])
+		recovery.initialize(&[]).await
 	}
 	.await;
 	lease.finish(result).await?;
-	attach(store.clone(), directory)
+	attach(store.clone(), directory).await
 }
 
 /// Explicit deployment bootstrap preserves every existing epoch and closed gate.
@@ -121,7 +160,8 @@ pub async fn initialize_if_missing(store: &Store, directory: PathBuf) -> Result<
 	let recovery = external(store, &directory)?;
 	if directory.join("epoch.cbor").exists() || directory.join("ledger.cbor").exists() {
 		recovery.load()?;
-		attach(store.clone(), directory)
+		recovery.verify().await?;
+		attach(store.clone(), directory).await
 	} else {
 		initialize(store, directory).await
 	}
@@ -171,7 +211,15 @@ async fn configuration(
 
 /// Backups live in the external managed directory and expire under the pinned bank policy.
 pub async fn backup(store: &Store, directory: &Path, bank: Bank) -> Result<PathBuf> {
-	let recovery = active_external(store, directory)?;
+	backup_to(store, directory, bank, None).await
+}
+async fn backup_to(
+	store: &Store,
+	directory: &Path,
+	bank: Bank,
+	spool: Option<protection::SpoolLimits>,
+) -> Result<PathBuf> {
+	let recovery = active_external(store, directory).await?;
 	recovery.require_serving()?;
 	let mut lease = Lease::deployment(store, DeploymentScopeReason::MemoryRecovery).await?;
 	let result = async {
@@ -205,20 +253,24 @@ pub async fn backup(store: &Store, directory: &Path, bank: Bank) -> Result<PathB
 			expires_at: now + Duration::days(i64::from(policy.retention.backup_days)),
 			units: contents,
 		};
-		let archives = directory.join("archives");
+		let archives = directory.join(if spool.is_some() { "spool" } else { "archives" });
 		std::fs::create_dir_all(&archives)?;
-		if prune(
-			&mut lease,
-			&archives,
-			store.deployment.as_str(),
-			ledger.epoch,
-			now,
-		)
-		.await? >= MAX_ARCHIVES
+		if spool.is_none()
+			&& prune(
+				&mut lease,
+				&archives,
+				store.deployment.as_str(),
+				ledger.epoch,
+				now,
+			)
+			.await? >= MAX_ARCHIVES
 		{
 			return Err(Error::Conflict(
 				"managed memory backup capacity reached".into(),
 			));
+		}
+		if let Some(limits) = spool {
+			limits.require_capacity(&archives, &archive)?;
 		}
 		let path = archives.join(format!("{}.cbor", Uuid::new_v4()));
 		recovery::atomic_write(&path, &archive)?;
@@ -294,7 +346,7 @@ fn clear(unit: &mut Unit) {
 /// Restore a bank into a live Home database. Authority, primary evidence, origin
 /// metadata, budget reservations and request/deletion receipts are never rewound.
 pub async fn restore(store: &Store, directory: &Path, path: &Path) -> Result<Report> {
-	let recovery = active_external(store, directory)?;
+	let recovery = active_external(store, directory).await?;
 	let archive: Archive = recovery::read(path)?;
 	let ledger = recovery.load()?;
 	if archive.format != 1
@@ -370,7 +422,7 @@ pub async fn restore(store: &Store, directory: &Path, path: &Path) -> Result<Rep
 				clear(&mut unit);
 			}
 			if !unit.visible() {
-				recovery.advance_restore(ledger.epoch, &unit)?;
+				recovery.advance_restore(ledger.epoch, &unit).await?;
 			}
 			repository::restore_body(&mut lease, bank_id, &unit).await?;
 			if !unit.visible() {
@@ -417,10 +469,9 @@ async fn validate_writer(store: &Store, unit: &Unit, policy: &Policy) -> Result<
 		if record.home_node != unit.bank.home || record.workspace_id != unit.bank.workspace {
 			return Err(Error::Forbidden);
 		}
-		let mut access =
-			crate::authorization::execution::access_for_run(store, &record.metadata(), true)
-				.await?
-				.ok_or(Error::Forbidden)?;
+		let mut access = crate::authorization::execution::proof_for_run(store, &record.metadata())
+			.await?
+			.ok_or(Error::Forbidden)?;
 		// Exact provider roles and generated origin allowance are rechecked
 		// before any rebuild can invoke a model. No reservation is refunded.
 		for (reference, kind) in [
@@ -441,7 +492,7 @@ async fn validate_writer(store: &Store, unit: &Unit, policy: &Policy) -> Result<
 		}
 		access.finish(Ok(())).await?;
 	}
-	let mut writer = Lease::restore(
+	let mut writer = Lease::restore_proof(
 		store,
 		serde_json::to_value(origin.authority)?,
 		unit.bank.workspace,
@@ -505,16 +556,27 @@ async fn finish(
 					Err(error) => return Err(error),
 				}
 			}
-			unit.revision = unit
-				.revision
-				.checked_add(1)
-				.filter(|revision| *revision < i64::MAX)
-				.ok_or(Error::Forbidden)?;
-			unit.deleted = ttl;
-			unit.stale = !ttl;
+			let floor = ledger
+				.units
+				.get(&unit.id)
+				.ok_or(Error::SemanticUnavailable)?;
+			// A failed SQL deletion still published an irrevocable negative receipt.
+			// Reconcile that exact identity instead of inventing another deletion revision.
+			unit.revision = if floor.deleted {
+				floor.revision
+			} else {
+				floor
+					.revision
+					.max(unit.revision)
+					.checked_add(1)
+					.filter(|revision| *revision < i64::MAX)
+					.ok_or(Error::Forbidden)?
+			};
+			unit.deleted = ttl || floor.deleted;
+			unit.stale = !unit.deleted;
 			unit.updated_at = Utc::now();
 			clear(&mut unit);
-			recovery.advance_restore(epoch, &unit)?;
+			recovery.advance_restore(epoch, &unit).await?;
 			ledger.observe(&unit)?;
 			let mut lease = Lease::deployment(store, DeploymentScopeReason::MemoryRecovery).await?;
 			repository::lock_workspace(&mut lease, bank.workspace, true).await?;
@@ -545,12 +607,25 @@ async fn finish(
 	let bank_id = repository::bank_id(&mut lease, bank, false)
 		.await?
 		.ok_or(Error::Forbidden)?;
+	let floors = recovery.load()?;
 	for unit in &mut contents {
 		if !unit.visible() {
+			let floor = floors
+				.units
+				.get(&unit.id)
+				.ok_or(Error::SemanticUnavailable)?;
+			// Hidden SQL rows can also lag a deletion whose COMMIT failed.
+			// Preserve the permanent receipt before clearing their remaining body.
+			unit.revision = if floor.deleted {
+				floor.revision
+			} else {
+				floor.revision.max(unit.revision)
+			};
+			unit.deleted |= floor.deleted;
 			// A current stale unit may still carry a body pending ordinary
 			// cleanup. The recovery gate opens only after removing that body.
 			clear(unit);
-			recovery.advance_restore(epoch, unit)?;
+			recovery.advance_restore(epoch, unit).await?;
 			repository::restore_body(&mut lease, bank_id, unit).await?;
 			unit_origins::record(&mut lease, unit, None, None).await?;
 			if unit.deleted {
@@ -741,33 +816,45 @@ async fn finish(
 		}
 		report.restored += 1;
 	}
-	recovery.gate(false, epoch)?;
+	if !recovery.reconstructed()? {
+		recovery.gate(false, epoch)?;
+	}
 	Ok(report)
 }
 
 pub async fn prune_expired(store: &Store, directory: &Path) -> Result<()> {
-	let recovery = active_external(store, directory)?;
-	let ledger = recovery.load()?;
 	let archives = directory.join("archives");
-	if archives.exists() {
-		let mut lease = Lease::deployment(store, DeploymentScopeReason::MemoryRecovery).await?;
-		let result = prune(
-			&mut lease,
-			&archives,
-			store.deployment.as_str(),
-			ledger.epoch,
-			Utc::now(),
-		)
-		.await
-		.map(|_| ());
-		lease.finish(result).await?;
+	if !archives.exists() {
+		return Ok(());
 	}
-	Ok(())
+	// Worker sweeps reuse startup verification and its local publication gate.
+	// Full history replay holds the writer lock across remote I/O and belongs
+	// to startup and explicit recovery, never routine local archive cleanup.
+	let active = store
+		.pool
+		.memory_recovery()
+		.ok_or(Error::SemanticUnavailable)?;
+	active.require_serving()?;
+	let epoch = external(store, directory)?.epoch()?;
+	if active.epoch()? != epoch {
+		return Err(Error::Forbidden);
+	}
+	let mut lease = Lease::deployment(store, DeploymentScopeReason::MemoryRecovery).await?;
+	let result = prune(
+		&mut lease,
+		&archives,
+		store.deployment.as_str(),
+		epoch,
+		Utc::now(),
+	)
+	.await
+	.map(|_| ());
+	lease.finish(result).await
 }
 
 /// Persistently close memory serving before Deployment Administrator recovery work.
-pub fn prepare_restore(store: &Store, directory: &Path) -> Result<Uuid> {
-	let recovery = active_external(store, directory)?;
+pub async fn prepare_restore(store: &Store, directory: &Path) -> Result<Uuid> {
+	let recovery = active_external(store, directory).await?;
 	let epoch = recovery.load()?.epoch;
 	recovery.gate(true, epoch)?;
 	Ok(epoch)
@@ -789,6 +876,12 @@ impl reinhardt::commands::CapabilityCommand for Command {
 						"prepare-restore",
 						"status",
 						"prune",
+						"protect",
+						"backup-all",
+						"prune-remote",
+						"reconstruct",
+						"reconcile-all",
+						"resume",
 					])
 					.required(true),
 			)
@@ -812,6 +905,22 @@ impl reinhardt::commands::CapabilityCommand for Command {
 			.arg(
 				clap::Arg::new("archive")
 					.long("archive")
+					.value_parser(clap::value_parser!(PathBuf)),
+			)
+			.arg(
+				clap::Arg::new("json")
+					.long("json")
+					.action(clap::ArgAction::SetTrue),
+			)
+			.arg(
+				clap::Arg::new("writers-fenced")
+					.long("writers-fenced")
+					.action(clap::ArgAction::SetTrue)
+					.help("Attest all server, worker and maintenance floor writers are stopped"),
+			)
+			.arg(
+				clap::Arg::new("report")
+					.long("report")
 					.value_parser(clap::value_parser!(PathBuf)),
 			)
 	}
@@ -842,13 +951,52 @@ impl reinhardt::commands::CapabilityCommand for Command {
 			let store = attach(
 				Store::from_pool(
 					database.into_postgres().ok_or(Error::Forbidden)?,
-					config.deployment,
+					config.deployment.clone(),
 				)
 				.await?
+				.with_dashboard_policy(config.dashboard_policy())
 				.with_keyless_origins(settings.keyless_endpoints.origins()?),
 				directory.clone(),
-			)?;
-			match matches.get_one::<String>("action").map(String::as_str) {
+			)
+			.await?;
+			let action = matches.get_one::<String>("action").map(String::as_str);
+			if matches!(action, Some("protect" | "reconstruct" | "reconcile-all" | "resume")) && !matches.get_flag("writers-fenced") {
+				return Err(Error::Invalid("supervised recovery requires --writers-fenced after stopping every floor writer".into()));
+			}
+			let body_objects = || -> Result<Arc<dyn aidash_application::ports::memory::objects::RecoveryObjects>> {
+				let bucket = std::env::var("AIDASH_MEMORY_RECOVERY_ARCHIVE_BUCKET").map_err(|_| Error::Invalid("recovery archive bucket is required".into()))?;
+				Ok(Arc::new(aidash_integrations::recovery::GcsObjects::new(bucket)?))
+			};
+			match action {
+				Some("protect") => {
+					protect(&store, directory).await?;
+					println!("independent Home ledger protection verified");
+				}
+				Some("backup-all") => {
+					let report = protection::backup_all(&store, directory, body_objects()?, protection::SpoolLimits::from_env()?).await?;
+					println!("{}", serde_json::to_string(&report)?);
+					if !report.complete { return Err(Error::Conflict("all-bank memory backup incomplete".into())); }
+				}
+				Some("prune-remote") => {
+					let report = protection::prune_remote(&store, body_objects()?).await?;
+					println!("{}", serde_json::to_string(&report)?);
+					if !report.complete { return Err(Error::Conflict("remote memory archive pruning incomplete".into())); }
+				}
+				Some("reconstruct") => {
+					println!("{}", serde_json::to_string(&reconstruct(&store, directory).await?)?);
+				}
+				Some("reconcile-all") => {
+					let path = matches.get_one::<PathBuf>("report").ok_or_else(|| Error::Invalid("reconcile-all requires --report".into()))?;
+					let report = protection::reconcile_all(&store, directory, body_objects()?).await?;
+					recovery::atomic_write(path, &report)?;
+					println!("{}", serde_json::to_string(&report)?);
+				}
+				Some("resume") => {
+					let path = matches.get_one::<PathBuf>("report").ok_or_else(|| Error::Invalid("resume requires --report".into()))?;
+					let report: protection::HomeReport = recovery::read(path)?;
+					protection::resume(&store, directory, body_objects()?, &report).await?;
+					println!("Home memory resumed with verified all-bank evidence");
+				}
 				Some("init") => {
 					initialize(&store, directory.clone()).await?;
 					println!("initialized new-format memory ledger");
@@ -886,22 +1034,33 @@ impl reinhardt::commands::CapabilityCommand for Command {
 					println!("expired memory archives removed");
 				}
 				Some("prepare-restore") => {
-					println!("{}", prepare_restore(&store, directory)?);
+					println!("{}", prepare_restore(&store, directory).await?);
 				}
 				Some("status") => {
-					let ledger = external(&store, directory)?.load()?;
-					println!(
-						"epoch={} restoring={} fenced_units={}",
-						ledger.epoch,
-						ledger.restoring,
-						ledger.units.len()
-					);
+					let recovery = external(&store, directory)?;
+					let ledger = recovery.load()?;
+					if matches.get_flag("json") {
+						let _ = recovery.verify().await;
+						println!("{}", serde_json::json!({
+							"home": store.deployment.as_str(), "epoch": ledger.epoch, "restoring": ledger.restoring,
+							"serving": recovery.require_serving().is_ok(), "fenced_units": ledger.units.len(),
+							"protected": recovery.protection_requested()?, "head": recovery.publication_head().ok(),
+						}));
+					} else {
+						println!("epoch={} restoring={} fenced_units={}", ledger.epoch, ledger.restoring, ledger.units.len());
+					}
 				}
 				_ => return Err(Error::Forbidden),
 			}
 			Ok(())
 		}
 		.await;
+		if result.is_err() {
+			eprintln!(
+				"{}",
+				serde_json::json!({"event": "memory_recovery_command_failed", "action": matches.get_one::<String>("action")})
+			);
+		}
 		result.map_err(|error| reinhardt::commands::CommandError::ExecutionError(error.to_string()))
 	}
 }

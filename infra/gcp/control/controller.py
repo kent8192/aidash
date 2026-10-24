@@ -1384,6 +1384,12 @@ def reconcile_locked(config, store, terraform, managed):
                 published=False,
                 address=None,
                 spot=entry["spot"],
+                # Retain provisioned protection even if the opt-in is later
+                # omitted: a protected Home must never silently downgrade.
+                recovery_protected=bool(
+                    (previous or {}).get("recovery_protected")
+                    or config.get("recovery_protected", {}).get(identity, False)
+                ),
                 release_sha=entry["sha"],
                 # Switch the SAML ACS, runtime setting and edge helper proxy
                 # with the release deployment itself.

@@ -334,6 +334,8 @@ class AutomaticStagingTests(unittest.TestCase):
     def test_production_writers_run_the_original_staged_source_in_owned_namespaces(self):
         cluster = FakeCluster([])
         output = {"hostname": "aidash.run", "runtime_secret": "production", "provider_credentials": None,
+                  "memory_recovery": {"required": True, "history_bucket": "production-history", "archive_bucket": "production-archives",
+                                      "backup_service_account": f"backup@{PROJECT}.iam.gserviceaccount.com", "prune_service_account": f"prune@{PROJECT}.iam.gserviceaccount.com"},
                   "server_service_account": f"server@{PROJECT}.iam.gserviceaccount.com",
                   "worker_service_account": f"worker@{PROJECT}.iam.gserviceaccount.com"}
         kube.prepare(cluster, "production")

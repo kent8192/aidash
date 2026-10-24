@@ -39,6 +39,57 @@ class ChartsTest(unittest.TestCase):
     base = {'deployment': {'id': 'aidash://fixture'}, 'existingSecret': 'fixture',
             'capabilities': {'storage': {'existingClaim': 'objects'}}}
 
+    def test_protected_memory_schedules_backup_and_independent_prune(self):
+        gcip = {'dashboard': {'gcip': {'project_id': 'fixture', 'web_api_key': 'public',
+                                      'public_origin': 'https://fixture.aidash.run', 'tenant_bindings': {}}}}
+        values = {**self.base, 'deployment': {'id': 'aidash://fixture', 'endpoint': 'https://fixture.aidash.run'},
+                  'gcip': {'settings': gcip}, 'image': {'repository': 'aidash', 'digest': 'sha256:' + 'a' * 64},
+                  'memoryRecovery': {'existingClaim': 'memory', 'directory': '/var/lib/aidash/memory-recovery/home',
+                                     'subPath': 'home', 'protection': {
+                                         'required': True, 'historyBucket': 'fixture-history',
+                                         'archiveBucket': 'fixture-archives', 'existingSecret': 'maintenance',
+                                         'backupServiceAccount': {'annotations': {'iam.gke.io/gcp-service-account': 'backup@fixture.iam.gserviceaccount.com'}},
+                                         'pruneServiceAccount': {'annotations': {'iam.gke.io/gcp-service-account': 'prune@fixture.iam.gserviceaccount.com'}}}}}
+        objects = render(self.aidash, values)
+        jobs = {value['metadata']['name']: value for value in objects if value['kind'] == 'CronJob'}
+        self.assertEqual(sorted(jobs), ['fixture-aidash-memory-backup', 'fixture-aidash-memory-prune'])
+        for name, action, schedule in [('backup', 'backup-all', '0 */6 * * *'), ('prune', 'prune-remote', '*/15 * * * *')]:
+            job = jobs['fixture-aidash-memory-' + name]
+            self.assertEqual(job['spec']['schedule'], schedule)
+            self.assertTrue(job['spec']['suspend'], 'initialization must finish before maintenance is scheduled')
+            self.assertEqual(job['spec']['concurrencyPolicy'], 'Forbid')
+            pod = job['spec']['jobTemplate']['spec']['template']['spec']
+            container = pod['containers'][0]
+            self.assertIn(action, container['args'])
+            self.assertEqual(container['image'], 'aidash@sha256:' + 'a' * 64)
+            self.assertEqual(container['envFrom'], [{'secretRef': {'name': 'maintenance'}}])
+            env = {item['name']: item.get('value') for item in container['env']}
+            self.assertEqual(env['AIDASH_DEPLOYMENT_ID'], 'aidash://fixture')
+            self.assertEqual(env['AIDASH_ENDPOINT'], 'https://fixture.aidash.run')
+            self.assertEqual(env['AIDASH_GCIP_SETTINGS'], '/etc/aidash/gcip/settings.json')
+            mount = next(item for item in container['volumeMounts'] if item['name'] == 'gcip')
+            self.assertTrue(mount['readOnly'])
+            self.assertEqual(next(item for item in pod['volumes'] if item['name'] == 'gcip')['configMap']['name'], 'fixture-aidash-gcip')
+            self.assertEqual(pod['securityContext']['runAsUser'], 10001)
+            self.assertTrue(container['securityContext']['readOnlyRootFilesystem'])
+            mounted = [volume for volume in pod['volumes'] if 'persistentVolumeClaim' in volume]
+            if name == 'backup':
+                self.assertEqual(mounted, [{'name': 'memory-recovery', 'persistentVolumeClaim': {'claimName': 'memory'}}])
+                self.assertIn('podAffinity', pod['affinity'])
+            else:
+                self.assertEqual(mounted, [], 'pruning must run after total ledger disk loss')
+        for role in ('server', 'worker'):
+            container = select(objects, 'Deployment', '-aidash-' + role)['spec']['template']['spec']['containers'][0]
+            env = {item['name']: item.get('value') for item in container['env']}
+            self.assertEqual(env['AIDASH_MEMORY_RECOVERY_REQUIRED'], 'true')
+            self.assertEqual(env['AIDASH_MEMORY_RECOVERY_HISTORY_BUCKET'], 'fixture-history')
+
+    def test_protected_memory_rejects_incomplete_storage_configuration(self):
+        command = ['helm', 'template', 'fixture', str(ROOT / self.aidash), '-f', '-']
+        values = {**self.base, 'memoryRecovery': {'protection': {'required': True}}}
+        result = subprocess.run(command, input=json.dumps(values), text=True, capture_output=True)
+        self.assertNotEqual(result.returncode, 0, 'a required protected Home cannot silently render a local-only profile')
+
     def test_local_postgres_secret_store_is_mounted_without_key_material(self):
         values = yaml.safe_load((ROOT / 'deploy/local-k8s/values.yaml').read_text())
         values.update(self.base)
@@ -695,12 +746,13 @@ class ChartsTest(unittest.TestCase):
             self.assertEqual(state['volumeClaimTemplates'][0]['spec']['storageClassName'], 'aidash-retain')
         # The controller's migration Job reaches the dependencies alongside server and worker;
         # the activity observer reaches only PostgreSQL, never the unauthenticated NATS port.
-        application, observer = select(objects, 'NetworkPolicy', '-dependencies')['spec']['ingress']
+        application, observer, maintenance = select(objects, 'NetworkPolicy', '-dependencies')['spec']['ingress']
         self.assertEqual(application['from'], [{'podSelector': {'matchExpressions': [
             {'key': 'app.kubernetes.io/component', 'operator': 'In', 'values': ['server', 'worker', 'migration']}]}}])
         self.assertEqual(application['ports'], [{'protocol': 'TCP', 'port': 5432}, {'protocol': 'TCP', 'port': 4222}])
         self.assertEqual(observer['from'], [{'podSelector': {'matchLabels': {'aidash.run/activity': 'fixture'}}}])
         self.assertEqual(observer['ports'], [{'protocol': 'TCP', 'port': 5432}])
+        self.assertEqual(maintenance['ports'], [{'protocol': 'TCP', 'port': 5432}])
         # A preview edge mounts the controller-bound shared TLS claim instead of its own.
         own = select(objects, 'PersistentVolumeClaim', '-tls')
         self.assertEqual(own['metadata']['annotations'], {'helm.sh/resource-policy': 'keep'})

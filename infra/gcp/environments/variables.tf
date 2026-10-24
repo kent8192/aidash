@@ -80,7 +80,8 @@ variable "environments" {
     release_sha     = optional(string)
     # Set to "public_origin" only with a release deployment, so the SAML ACS
     # switches in the same apply that installs the edge's sign-in helper proxy.
-    auth_helper = optional(string, "firebase")
+    auth_helper        = optional(string, "firebase")
+    recovery_protected = optional(bool, false)
   }))
   default = {}
   validation {

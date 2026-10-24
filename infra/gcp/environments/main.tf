@@ -50,6 +50,7 @@ output "environments" {
     secret_prefix          = m.secret_prefix
     provider_credentials   = m.provider_credentials
     gcip                   = m.gcip
+    memory_recovery        = m.memory_recovery
   } }
 }
 
