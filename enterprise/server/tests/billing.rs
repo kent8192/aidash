@@ -442,7 +442,8 @@ async fn pod_time_is_metered_once_and_stops_when_a_tenant_deletion_is_recorded(
 	let start = at(-Duration::hours(10));
 	let operation = Uuid::new_v4();
 	let event = |operation, from: DateTime<Utc>, to: DateTime<Utc>| PodTime {
-		operation,
+		allocation: operation,
+		receipt_digest: "a".repeat(64),
 		tenant: tenant.clone(),
 		started_at: from,
 		ended_at: to,
@@ -648,7 +649,8 @@ async fn records_older_than_the_retention_period_are_swept_and_the_rest_survive(
 	for (operation, ended) in [(Uuid::new_v4(), old), (Uuid::new_v4(), recent)] {
 		meter
 			.pod_time(PodTime {
-				operation,
+				allocation: operation,
+				receipt_digest: "a".repeat(64),
 				tenant: tenant.clone(),
 				started_at: ended - Duration::seconds(5),
 				ended_at: ended,
@@ -1002,7 +1004,8 @@ async fn new_runs_follow_the_free_tier_a_paid_subscription_and_suspension(
 	let ended = Utc::now();
 	meter
 		.pod_time(PodTime {
-			operation: Uuid::new_v4(),
+			allocation: Uuid::new_v4(),
+			receipt_digest: "a".repeat(64),
 			tenant: tenant.clone(),
 			started_at: ended - Duration::seconds(3600),
 			ended_at: ended,
@@ -1215,7 +1218,8 @@ async fn a_deployment_administrator_reads_usage_as_json_and_csv(
 	let ended = Utc::now();
 	meter
 		.pod_time(PodTime {
-			operation: Uuid::new_v4(),
+			allocation: Uuid::new_v4(),
+			receipt_digest: "a".repeat(64),
 			tenant: tenant.clone(),
 			started_at: ended - Duration::milliseconds(90_500),
 			ended_at: ended,

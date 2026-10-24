@@ -38,7 +38,7 @@ class EgressIsolationTest(unittest.TestCase):
         runner = self.runner()
         operation = str(uuid.uuid4())
         request = {'operation_id': operation, 'area_id': str(uuid.uuid4()), 'epoch': 1,
-                   'digest': 'fixture', 'kind': 'shell', 'code': 'true', 'seconds': 30, 'files': []}
+                   'usage_tenant': 'acme', 'digest': 'fixture', 'kind': 'shell', 'code': 'true', 'seconds': 30, 'files': []}
         for lease in [
             {'url': 'http://another-service:8950', 'token': operation + '.' + 'a' * 43},
             {'url': runner.config['egress']['endpoint'], 'token': str(uuid.uuid4()) + '.' + 'a' * 43},
