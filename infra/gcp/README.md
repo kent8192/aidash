@@ -331,6 +331,16 @@ draining/`waiting_for_active_work`/`waiting_for_preview_tls`/
 `waiting_for_gcip_refresh`/interrupted/failed state, source and digests. A build artifact alone is not proof
 of a successful deployment.
 
+Terraform can persist `managed_configuration` before creating the corresponding
+node pool. Recovery checks current managed node-pool instances in Terraform state
+instead of treating that requested input as proof of a running Environment.
+Missing or zero-node pools remain stopped and unpublished during shared GCIP and
+broker updates; deposed instances do not count as running. A current lifecycle
+generation with a pending start and a verified release can then use the normal
+deployment path to start its own pool. A newer stop/destroy or an already consumed
+start authorization cannot restart it. An unknown node count aborts recovery for
+inspection rather than assuming it is safe to stop a possibly live pool.
+
 A deployment brings the Environment node pool (and the system pool) up, ensures
 the `aidash-retain` StorageClass, namespaces, Secrets and retained PVCs, installs
 the `env` chart (PostgreSQL, NATS, edge, activity collector), runs a one-shot Job
