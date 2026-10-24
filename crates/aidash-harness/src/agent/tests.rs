@@ -1095,7 +1095,8 @@ impl ExecutionEnvironment for Backend {
 		let mut plan = fixture_source_plan(
 			deferred_exposure(run)?.is_some(),
 			!self.0.skills.is_empty(),
-			self.0.local_authority && (self.0.skill_tool || self.0.tools.contains(&"skill_list")),
+			self.home(run).has_local_authority()
+				&& (self.0.skill_tool || self.0.tools.contains(&"skill_list")),
 		);
 		plan.extend(self.0.extra_context_sources.iter().map(|(phase, key, _)| {
 			PlannedContextSource {
@@ -1233,7 +1234,12 @@ impl ExecutionEnvironment for Backend {
 		self.record("skills.direct");
 		Ok(self.0.direct_skills.clone())
 	}
-	async fn direct_skill_body(&self, run: &Run, skill_id: Uuid, digest: &str) -> Result<String> {
+	async fn direct_skill_body(
+		&self,
+		run: &Run,
+		skill_id: Uuid,
+		digest: &str,
+	) -> Result<Option<String>> {
 		let _ = run;
 		self.record("skills.direct_body");
 		let skill = self
@@ -1245,7 +1251,7 @@ impl ExecutionEnvironment for Backend {
 		if skill.metadata.digest != digest {
 			return Err(Error::Conflict("CAPABILITY_CHANGED".into()));
 		}
-		Ok(self.0.direct_bodies[&skill_id].clone())
+		Ok(Some(self.0.direct_bodies[&skill_id].clone()))
 	}
 	async fn source_revision(
 		&self,
@@ -5504,10 +5510,6 @@ mod research;
 mod completion;
 
 impl Backend {
-	async fn documents(&self, entry: &Entry) -> Result<Value> {
-		let _ = entry;
-		Ok(json!([]))
-	}
 	async fn skill_context(&self, run: &Run) -> Result<String> {
 		let _ = run;
 		if let Some(text) = &self.0.skill_context {

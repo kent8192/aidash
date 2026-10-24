@@ -532,13 +532,6 @@ pub struct SemanticContextRead {
 	pub result: Result<Option<Value>>,
 }
 
-/// In-memory execution frame used by native providers; private Task/input data
-/// does not become part of a Registry declaration.
-#[derive(Clone, Copy)]
-pub struct SourceQueryFrame<'a> {
-	pub task: &'a Task,
-	pub input_cutoff: i64,
-}
 pub struct PreparedSkillSource {
 	pub identity: aidash_domain::exposure::CapabilityIdentity,
 	pub digest: String,
@@ -620,9 +613,15 @@ pub trait ExecutionEnvironment: Send + Sync {
 	/// Direct Skills pinned for this Run, as deferred-exposure catalog input. Empty
 	/// when Skills are off, nothing is pinned, or the Home has no local authority.
 	async fn direct_skills(&self, run: &Run) -> Result<Vec<aidash_domain::exposure::DirectSkill>>;
-	/// Exact SKILL.md text of one pinned direct Skill. A digest other than the
-	/// pinned one is `Conflict("CAPABILITY_CHANGED")`.
-	async fn direct_skill_body(&self, run: &Run, skill_id: Uuid, digest: &str) -> Result<String>;
+	/// Exact SKILL.md text of one pinned direct Skill eligible for automatic
+	/// resident context. `None` omits an OnDemand body before it is read. A digest
+	/// other than the pinned one is `Conflict("CAPABILITY_CHANGED")`.
+	async fn direct_skill_body(
+		&self,
+		run: &Run,
+		skill_id: Uuid,
+		digest: &str,
+	) -> Result<Option<String>>;
 	/// Current provider-owned revision of a planned revision-cache source.
 	async fn source_revision(&self, source: &ContextSourceHandle, run: &Run)
 	-> Result<Option<i64>>;

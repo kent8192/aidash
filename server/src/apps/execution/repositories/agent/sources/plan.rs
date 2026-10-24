@@ -4,6 +4,18 @@
 use super::*;
 
 impl Slot {
+	pub(super) fn automatic_matches(self, binding: &ResolvedBinding) -> bool {
+		self.matches(binding)
+			&& !(matches!(binding.definition.kind.as_str(), "memory" | "source")
+				&& binding
+					.definition
+					.config
+					.get("context_source")
+					.and_then(|config| {
+						serde_json::from_value::<SourceDeclaration>(config.clone()).ok()
+					})
+					.is_some_and(|declaration| matches!(declaration.pin, PinPolicy::OnDemand)))
+	}
 	fn phase(self) -> ContextSourcePhase {
 		match self {
 			Self::ResidentSkills | Self::RegistrySkills | Self::Skills => {
@@ -54,6 +66,40 @@ impl Environment<'_> {
 				binding.excluded_reason.is_none() && binding.alias.as_deref() == Some("skill_list")
 			});
 		let snapshot_digest = digest(&serde_json::to_value(snapshot)?);
+		if snapshot.remote
+			|| self
+				.authority
+				.as_ref()
+				.is_some_and(|authority| authority.is_remote())
+		{
+			for binding in snapshot
+				.bindings
+				.iter()
+				.filter(|binding| Slot::Semantic.matches(binding))
+			{
+				if binding
+					.definition
+					.config
+					.get("context_source")
+					.and_then(|config| {
+						serde_json::from_value::<SourceDeclaration>(config.clone()).ok()
+					})
+					.is_some_and(|declaration| {
+						matches!(
+							declaration.pin,
+							PinPolicy::OnDemand
+								| PinPolicy::Scored {
+									mode: aidash_domain::decision::Mode::Enforce,
+									..
+								}
+						)
+					}) {
+					return Err(aidash_application::Error::Invalid(
+						"required-Home context must retain its mandatory delivery".into(),
+					));
+				}
+			}
+		}
 		let mut plan = vec![];
 		// Host compatibility order is independent of the order in which an Agent
 		// declared groups. Within each group the recorded binding order survives.
@@ -74,7 +120,7 @@ impl Environment<'_> {
 			let admitted = snapshot
 				.bindings
 				.iter()
-				.filter(|binding| slot.matches(binding))
+				.filter(|binding| slot.automatic_matches(binding))
 				.collect::<Vec<_>>();
 			if admitted.is_empty() {
 				continue;
@@ -89,7 +135,7 @@ impl Environment<'_> {
 					})
 					.is_some_and(|declaration| {
 						declaration.volatility == Volatility::Step
-							&& matches!(declaration.pin, PinPolicy::Scored { .. })
+							&& !matches!(declaration.pin, PinPolicy::OnDemand)
 					})
 			});
 			plan.push(PlannedContextSource {
@@ -141,19 +187,6 @@ impl Environment<'_> {
 		slot: Slot,
 		frame: ContextSourceFrame<'_>,
 	) -> SemanticContextRead {
-		if matches!(slot, Slot::Semantic) {
-			return self
-				.semantic_context(
-					run,
-					frame.task,
-					frame.inputs,
-					frame.budget,
-					frame.entry,
-					frame.key,
-					frame.degrade_on_outage,
-				)
-				.await;
-		}
 		let result = match slot {
 			Slot::ResidentSkills => Ok(Some(json!(
 				frame
@@ -198,7 +231,19 @@ impl Environment<'_> {
 				.observation(0, aidash_domain::context::observation::DEFAULT_LIMIT)
 				.await
 				.map(Some),
-			Slot::Semantic => unreachable!("handled above"),
+			Slot::Semantic => {
+				return self
+					.semantic_context(
+						run,
+						frame.task,
+						frame.inputs,
+						frame.budget,
+						frame.entry,
+						frame.key,
+						frame.degrade_on_outage,
+					)
+					.await;
+			}
 		};
 		SemanticContextRead {
 			selections: vec![],

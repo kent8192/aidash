@@ -1,5 +1,5 @@
-//! Explicit declarations for current native context adapters, without routing or
-//! a general ContextSource framework. Source content is authorized separately.
+//! Explicit declarations for native context adapters. The application lifecycle
+//! plan resolves them independently of the operator; content is authorized separately.
 use crate::{
 	Error, Result,
 	capabilities::{ReferenceAttachment, SkillAttachment},

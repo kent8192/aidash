@@ -938,7 +938,7 @@ impl ExecutionEnvironment for Bench {
 		_run: &Run,
 		_skill_id: Uuid,
 		_digest: &str,
-	) -> Result<String> {
+	) -> Result<Option<String>> {
 		unexpected("ExecutionEnvironment.direct_skill_body")
 	}
 	async fn source_revision(
@@ -1468,12 +1468,6 @@ async fn unloaded_aliases_end_the_batch_and_record_the_exposure_denial() {
 }
 
 impl Bench {
-	async fn documents(&self, _entry: &Entry) -> Result<Value> {
-		unexpected("ExecutionEnvironment.documents")
-	}
-	async fn skill_context(&self, _run: &Run) -> Result<String> {
-		unexpected("ExecutionEnvironment.skill_context")
-	}
 	async fn semantic_context(
 		&self,
 		_run: &Run,

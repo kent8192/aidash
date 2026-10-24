@@ -3,7 +3,7 @@
 use super::*;
 
 impl Executor<'_> {
-	async fn ordered_instruction_source(
+	pub(super) async fn ordered_instruction_source(
 		&self,
 		run: &mut Run,
 		token: Uuid,
@@ -42,7 +42,7 @@ impl Executor<'_> {
 		Ok((text, OrderedSkill::Retrieved(observation)))
 	}
 
-	async fn ordered_data_sources(
+	pub(super) async fn ordered_data_sources(
 		&self,
 		run: &mut Run,
 		token: Uuid,
@@ -51,7 +51,10 @@ impl Executor<'_> {
 		retrieves: bool,
 		frame: ContextSourceFrame<'_>,
 	) -> Result<OrderedSemantic> {
-		let key = if retrieves {
+		let has_sources = plan
+			.iter()
+			.any(|source| source.phase == ContextSourcePhase::BudgetedData);
+		let key = if retrieves && has_sources {
 			Some(
 				self.environment
 					.source_retrieval_key(run, bindings, frame)
@@ -60,7 +63,10 @@ impl Executor<'_> {
 		} else {
 			None
 		};
-		let boundary = key.as_ref().map_or_else(String::new, |key| key.digest());
+		let boundary = key.as_ref().map_or_else(
+			|| format!("{}:no-budgeted-sources", run.id),
+			|key| key.digest(),
+		);
 		let cached = run
 			.context
 			.source_observation
@@ -116,7 +122,7 @@ impl Executor<'_> {
 	}
 }
 
-async fn read_planned_source(
+pub(super) async fn read_planned_source(
 	environment: &dyn ExecutionEnvironment,
 	run: &mut Run,
 	token: Uuid,
@@ -136,7 +142,7 @@ async fn read_planned_source(
 	.await
 }
 
-async fn collect_data_phase(
+pub(super) async fn collect_data_phase(
 	environment: &dyn ExecutionEnvironment,
 	run: &mut Run,
 	token: Uuid,
@@ -160,7 +166,7 @@ async fn collect_data_phase(
 	Ok(values)
 }
 
-fn cached_data_phase(
+pub(super) fn cached_data_phase(
 	plan: &[PlannedContextSource],
 	phase: ContextSourcePhase,
 	content: &Value,
