@@ -1,5 +1,5 @@
 //! One authoritative sender schedule per Deployment. Optimistic compare-and-set
-//! serializes independent operators without a network call inside a DB lock.
+//! serializes independent key management commands without a network call inside a DB lock.
 use crate::{Error, Result, database::native::Pool};
 use aidash_application::{
 	federation::key::{DeploymentKeyRollover, DeploymentKeyStore},

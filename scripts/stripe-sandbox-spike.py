@@ -101,8 +101,9 @@ def sandbox(obj):
 def definitive_metered_refusal(status, payload, step):
     """Only an explicit semantic refusal at metered Checkout permits fallback.
 
-    Never persist error messages. Unknown wording needs operator investigation,
-    not a widened classifier or a model decision inferred from an HTTP status.
+    Never persist error messages. Unknown wording needs investigation by the
+    person running the experiment, not a widened classifier or a model decision
+    inferred from an HTTP status.
     """
     error = payload.get("error", {}) if isinstance(payload, dict) else {}
     if status != 400 or step != "session" or error.get("type") != "invalid_request_error":

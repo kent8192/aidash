@@ -318,7 +318,7 @@ for a particular receiving registration/grant under its existing authority.
 Run `dashboard_oidc tenancy::registrations`, `peer_graph_review`,
 `peer_graph_nodes`, migrations and startup/classification tests.
 
-## Task 8: File/KMS keyring, operator controls and continuity
+## Task 8: File/KMS keyring, Deployment Administrator controls and continuity
 
 **Files:** Extend application `federation/key.rs`, integrations
 `federation.rs` and `federation/key.rs`, Enterprise KMS Deployment Key adapter,

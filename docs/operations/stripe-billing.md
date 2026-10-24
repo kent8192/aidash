@@ -1,7 +1,7 @@
 # Stripe billing sandbox acceptance
 
 Task 0 remains **blocked on an available Stripe Sandbox credential and actual
-operator Checkout**. The runner and offline tests do not establish Managed
+manual Checkout**. The runner and offline tests do not establish Managed
 Payments compatibility. No billing model, production integration, launch price,
 Terraform change, or Issue acceptance follows from this document alone.
 
@@ -17,7 +17,8 @@ Managed Payments setup requires activation in the selected Sandbox and API
 The disposable Product uses `txcd_10103001` (business SaaS), listed among
 [eligible Managed Payments tax codes](https://docs.stripe.com/payments/managed-payments/eligibility).
 It represents an automated software service, not inference resale. This test
-classification does not replace the operator's actual product eligibility review.
+classification does not replace the Stripe account holder's actual product
+eligibility review.
 The fixture price is USD 1 per unit, tax inclusive; seven units should produce a
 USD 7 Sandbox charge. These amounts are test fixtures, not commercial pricing.
 
@@ -28,14 +29,15 @@ prove either compatibility or incompatibility of this specific experiment.
 
 ## Credential and result handling
 
-An operator supplies an explicit JSON file, normally under the ignored
-`secrets/` directory, containing exactly one `STRIPE_SECRET_KEY` property with
+The person running the experiment supplies an explicit JSON file, normally under
+the ignored `secrets/` directory, containing exactly one `STRIPE_SECRET_KEY` property with
 the Sandbox secret key. Set its permissions to `0600`. Do not put the key on the
 command line, source an environment file, or paste it into an Issue. The runner
 accepts only `sk_test_...` or `rk_test_...`; live and publishable keys are refused
 before a network request. Restricted keys need permission for the resources
 listed below. The key prefix alone does not distinguish legacy test mode from
-a separate Sandbox: the operator must confirm the selected Dashboard Sandbox.
+a separate Sandbox: the person running the experiment must confirm the selected
+Dashboard Sandbox.
 
 No credentials are currently available for this task. Do not search existing
 environment or secret files to obtain them. The no-credential invocation is safe:
@@ -47,14 +49,14 @@ python3 scripts/stripe-sandbox-spike.py --output notes/stripe-spike.json
 It exits `2`, emits `winner: inconclusive` and `reason: credential_required`, and
 makes no network request. This is readiness evidence only.
 
-After an operator supplies credentials, use the same output path for every
-phase. Each command prints only a validated JSON projection: run ID, fixed API
+After the person running the experiment supplies credentials, use the same output
+path for every phase. Each command prints only a validated JSON projection: run ID, fixed API
 version, Stripe request IDs, object IDs, normalized compatibility error, numeric
 billing evidence, booleans, and fixed reason values. No HTTP response body,
 error text, headers, Checkout URL, customer contact information, card details,
 or key is logged. Result files are written atomically with `0600` permissions
 under `notes/`. Keep the run's result until cleanup and acceptance are recorded.
-The file is a resume journal for a trusted operator; it is not a signed receipt.
+The file is a resume journal for the trusted person running the experiment; it is not a signed receipt.
 Do not edit evidence or copy IDs from unrelated resources into it.
 
 HTTPS redirects and environment-configured proxies are disabled. HTTP timeout
@@ -73,7 +75,7 @@ possibly attempted, retaining their original window. All persisted ID slots
 require string scalars; expanded API objects are never retained in those slots.
 Run only one process against a journal at a time.
 
-## Metered experiment and operator checkpoints
+## Metered experiment and manual checkpoints
 
 Run commands from the checkout root. These commands are intentionally separate;
 there is no API shortcut that claims to complete a hosted customer Checkout.
@@ -100,8 +102,8 @@ invoice, or confirms an unrelated PaymentIntent to manufacture acceptance.
    python3 scripts/stripe-sandbox-spike.py --credential-file secrets/stripe-sandbox.json --output notes/stripe-spike.json --phase checkout --open-checkout
    ```
 
-   The operator completes the Stripe-hosted page using [Stripe test payment
-   details](https://docs.stripe.com/testing#cards) and fictional buyer contact
+   The person running the experiment completes the Stripe-hosted page using
+   [Stripe test payment details](https://docs.stripe.com/testing#cards) and fictional buyer contact
    information. The configured redirect is `https://localhost:4242/success`;
    a local success page is optional and its availability is not proof of payment.
    Rerun `--phase checkout` to check API completion. The Session must be
@@ -162,7 +164,7 @@ invoice, or confirms an unrelated PaymentIntent to manufacture acceptance.
    succeeded PaymentIntent and [Charge](https://docs.stripe.com/api/charges/object),
    requiring the same USD 7 to be paid, captured and unrefunded. A zero initial
    invoice, account credit, an open invoice, wrong quantity, or pending charge
-   cannot establish acceptance. Record the final safe JSON plus operator date
+   cannot establish acceptance. Record the final safe JSON plus the experiment date
    and Sandbox context in Issue #242 and the local Task 0 report.
 
 If Stripe does not support using this clock-associated Customer with Managed
