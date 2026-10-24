@@ -80,7 +80,7 @@ class LostLedgerDrillTests(unittest.TestCase):
                 resumed, interrupted = False, False
                 actions = []
 
-                def binary(argv, **kwargs):
+                def binary(argv, *, actions=actions, lost=lost, before=before, report=report, **kwargs):
                     nonlocal resumed, interrupted
                     action = argv[2]
                     actions.append(action)
@@ -108,7 +108,7 @@ class LostLedgerDrillTests(unittest.TestCase):
 
                 save = drill.save
 
-                def interrupted_save(path, value, **kwargs):
+                def interrupted_save(path, value, *, lost=lost, save=save, **kwargs):
                     nonlocal interrupted
                     if lost == "receipt" and value.get("passed") and not interrupted:
                         interrupted = True
@@ -147,7 +147,7 @@ class LostLedgerDrillTests(unittest.TestCase):
                 args = argparse.Namespace(phase="recover", directory=directory, evidence=evidence,
                                           writers_fenced=True, fault_at=None, binary="aidash")
 
-                def binary(argv, **kwargs):
+                def binary(argv, *, status=status, **kwargs):
                     if argv[2] == "status":
                         return subprocess.CompletedProcess(argv, 0, json.dumps(status), "")
                     self.assertEqual(argv[2], "resume")
