@@ -7116,7 +7116,6 @@ async fn node_deletion_or_explicit_cancel_prevents_late_activation(
 				format!("{base}/{}/deletion", receiver.node),
 				json!({"confirmation":receiver.node}),
 			),
-			(format!("{base}/{}/restore", receiver.node), Value::Null),
 		] {
 			let (status, body) = request(&p.ba, &p.b.config.api_token, "POST", &path, body).await;
 			assert_eq!(status, 200, "{body}");
@@ -7142,6 +7141,40 @@ async fn node_deletion_or_explicit_cancel_prevents_late_activation(
 		assert_eq!(body["phase"], "ADMITTED");
 		assert_eq!(body["control"], "CANCELLED");
 		assert!(body["error"].is_null());
+	}
+	if deletion {
+		let path = format!(
+			"/federation/v0.1/scoped/execution/admissions/{}/control",
+			p.admission
+		);
+		for (subject, body) in [
+			(
+				"",
+				json!({"grant_id":Uuid::from_u128(91),"action":"cancel"}),
+			),
+			("", json!({"grant_id":p.grant,"action":"resume"})),
+			(
+				"",
+				json!({"grant_id":p.grant,"action":"cancel","message":"new effect"}),
+			),
+			("root", json!({"grant_id":p.grant,"action":"cancel"})),
+		] {
+			let (status, response) =
+				common::peer_request(&p.ba, (&p.a, "acme"), &receiver, subject, &path, body).await;
+			assert!(
+				matches!(status, 400 | 401 | 403 | 404 | 409),
+				"closed stop proof admitted another request: {status} {response}"
+			);
+		}
+		let (status, body) = request(
+			&p.ba,
+			&p.b.config.api_token,
+			"POST",
+			&format!("/api/tenants/acme/nodes/{}/restore", receiver.node),
+			Value::Null,
+		)
+		.await;
+		assert_eq!(status, 200, "{body}");
 	}
 	let (status, body) = request(&p.aa, &p.token, "POST", &p.activation(), json!({})).await;
 	assert!(
@@ -7282,6 +7315,107 @@ async fn node_deletion_blocks_cached_home_but_preserves_exact_finalization(
 			.status
 			.as_str(),
 		"COMPLETED"
+	);
+	p.close().await;
+}
+
+/// The Home's durable grant owns stop delivery while the Home Node is closed.
+#[rstest::rstest]
+#[tokio::test]
+async fn node_deletion_retries_delegated_stop_until_receiver_and_home_settle(
+	#[future(awt)] scoped_pair: Pair,
+) {
+	let p = scoped_pair;
+	let home = common::default_node(&p.a.store, "acme").await;
+	let sibling = common::second_node_in(p.a.store.pool.fixture_driver(), "acme").await;
+	for (path, body) in [
+		(
+			format!("/api/tenants/acme/nodes/{sibling}/default"),
+			Value::Null,
+		),
+		(
+			format!("/api/tenants/acme/nodes/{}/deletion", home.node),
+			json!({"confirmation":home.node}),
+		),
+	] {
+		let (status, body) = request(&p.aa, &p.a.config.api_token, "POST", &path, body).await;
+		assert_eq!(status, 200, "{body}");
+	}
+	aidash_server::generation::provision::reconcile(&p.a)
+		.await
+		.unwrap();
+	assert_eq!(p.run().await.control.as_str(), "CANCELLED");
+	assert!(
+		!p.run().await.phase().is_terminal(),
+		"a control acknowledgement is not terminal settlement"
+	);
+	assert_ne!(
+		p.a.store
+			.task(&TEST_FIXTURE, p.task)
+			.await
+			.unwrap()
+			.status
+			.as_str(),
+		"CANCELLED"
+	);
+	let pending: i64 = sqlx::query_scalar(
+		&Query::select()
+			.expr(reinhardt::query::Func::count(Expr::col("id").into()))
+			.from(Alias::new("node_cancellation_jobs"))
+			.and_where(Expr::col("kind").eq("grant"))
+			.and_where(Expr::col("work_id").eq(Expr::value(p.grant)))
+			.to_string(PostgresQueryBuilder),
+	)
+	.fetch_one(p.a.store.pool.fixture_driver())
+	.await
+	.unwrap();
+	assert_eq!(pending, 1);
+	p.step().await;
+	assert_eq!(p.run().await.phase().as_str(), "CANCELLED");
+	sqlx::query(
+		&Query::update()
+			.table(Alias::new("node_cancellation_jobs"))
+			.value_expr(Alias::new("retry_at"), Expr::current_timestamp())
+			.and_where(Expr::col("node").eq(home.node.as_str()))
+			.to_string(PostgresQueryBuilder),
+	)
+	.execute(p.a.store.pool.fixture_driver())
+	.await
+	.unwrap();
+	aidash_server::generation::provision::reconcile(&p.a.clone())
+		.await
+		.unwrap();
+	let stopped = p.a.store.task(&TEST_FIXTURE, p.task).await.unwrap();
+	assert_eq!(stopped.status.as_str(), "CANCELLED");
+	let (status, body) = request(
+		&p.aa,
+		&p.a.config.api_token,
+		"POST",
+		&format!("/api/tenants/acme/nodes/{}/restore", home.node),
+		Value::Null,
+	)
+	.await;
+	assert_eq!(status, 200, "{body}");
+	assert_eq!(
+		request(&p.aa, &p.token, "POST", &p.activation(), json!({}))
+			.await
+			.0,
+		403
+	);
+	aidash_server::generation::provision::reconcile(&p.a)
+		.await
+		.unwrap();
+	assert_eq!(
+		p.a.store
+			.task(&TEST_FIXTURE, p.task)
+			.await
+			.unwrap()
+			.revision,
+		stopped.revision
+	);
+	assert!(
+		p.requests.lock().await.is_empty(),
+		"cancelled execution never invokes the provider"
 	);
 	p.close().await;
 }

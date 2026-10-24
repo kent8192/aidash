@@ -673,19 +673,22 @@ async fn preserved_baseline_does_not_generate_table_recreation(
 	.unwrap();
 	let mut command = deployment_command(&fixture.url, fixture.directory.path());
 	command.args(["makemigrations", "--check", "--dry-run"]);
+	let log_path = fixture.directory.path().join("schema-check.log");
+	let log = File::create(&log_path).unwrap();
+	command.stdout(log.try_clone().unwrap()).stderr(log);
 	// Act: use the shipped command, including installed-app model scope.
-	let output = tokio::time::timeout(Duration::from_secs(35), command.output())
-		.await
-		.unwrap()
-		.unwrap();
+	let result = tokio::time::timeout(Duration::from_secs(35), command.status()).await;
+	let output = std::fs::read_to_string(log_path).unwrap();
+	assert!(
+		result.is_ok(),
+		"manage makemigrations exceeded its deadline: {output}"
+	);
 	// Assert: neither built-in auth tables nor existing Aidash tables are proposed.
 	assert!(
-		output.status.success(),
-		"{}\n{}",
-		String::from_utf8_lossy(&output.stdout),
-		String::from_utf8_lossy(&output.stderr)
+		result.unwrap().unwrap().success(),
+		"manage makemigrations failed: {output}"
 	);
-	assert!(String::from_utf8_lossy(&output.stdout).contains("No changes detected"));
+	assert!(output.contains("No changes detected"));
 	let applied = DatabaseMigrationRecorder::new(fixture.connection)
 		.get_applied_migrations_if_present()
 		.await
@@ -2984,12 +2987,15 @@ async fn node_deletion_schema_roundtrips_with_registered_model_state(
 		}
 		selected.extend(descendants);
 	}
-	let node_migrations: Vec<_> = migrations
-		.iter()
+	let mut ordered = reinhardt::db::migrations::MigrationPlan::new();
+	ordered.migrations = migrations.clone();
+	ordered.sort().unwrap();
+	let node_migrations: Vec<_> = ordered
+		.migrations
+		.into_iter()
 		.filter(|migration| {
 			selected.contains(&(migration.app_label.clone(), migration.name.clone()))
 		})
-		.cloned()
 		.collect();
 
 	let logical = build_state_from_files(&source).await.unwrap();

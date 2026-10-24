@@ -7,8 +7,8 @@ use aidash_domain::generation::requests::{Control, Request};
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use reinhardt::query::{
-	Alias, ColumnRef, Expr, LockType, PostgresQueryBuilder, Query, QueryStatementBuilder,
-	SimpleExpr,
+	Alias, ColumnRef, Expr, ExprTrait as _, LockType, PostgresQueryBuilder, Query,
+	QueryStatementBuilder, SimpleExpr,
 };
 use serde_json::{Value, json};
 
@@ -189,9 +189,8 @@ impl GenerationLifecycleScope for NativeLifecycle<'_> {
 				Expr::col("agent_version"),
 				Expr::value(job.agent_version.clone()),
 			))
-			.and_where(Expr::cust(
-				"phase NOT IN ('COMPLETED','FAILED','CANCELLED') AND control <> 'CANCELLED'",
-			))
+			.and_where(Expr::col("phase").is_not_in(["COMPLETED", "FAILED", "CANCELLED"]))
+			.and_where(Expr::col("control").ne("CANCELLED"))
 			.lock(LockType::Update)
 			.to_owned();
 		if let Some(id) = job.admission_id {

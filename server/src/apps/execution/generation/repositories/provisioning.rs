@@ -22,7 +22,7 @@ use aidash_domain::{
 };
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
-use reinhardt::query::{Expr, QueryStatementBuilder, SimpleExpr};
+use reinhardt::query::{Alias, Expr, ExprTrait as _, Query, QueryStatementBuilder, SimpleExpr};
 use serde_json::Value;
 
 use uuid::Uuid;
@@ -126,7 +126,23 @@ impl GenerationProvisioning for NativeProvisioning {
 impl GenerationProvisionRead for Read {
 	async fn jobs(&mut self) -> aidash_application::Result<Vec<Request>> {
 		let f = &self.runtime;
-		let jobs:Vec<Request>=crate::database::query_as(&reinhardt::query::Query::select().expr(reinhardt::query::SimpleExpr::from(reinhardt::query::Expr::col(reinhardt::query::ColumnRef::table_asterisk("g")))).from_as(reinhardt::query::Alias::new("generation_requests"), reinhardt::query::Alias::new("g")).join(reinhardt::query::JoinType::LeftJoin, reinhardt::query::TableRef::table_alias(reinhardt::query::Alias::new("runs"), reinhardt::query::Alias::new("r")), reinhardt::query::Expr::cust("r.task_id = g.task_id AND r.agent_id = g.agent_id AND r.agent_version = g.agent_version")).and_where(reinhardt::query::Expr::cust("NOT EXISTS (SELECT 1 FROM node_cancellation_jobs j WHERE j.tenant=g.tenant AND j.kind='generation' AND j.work_id=g.id) AND g.local_task_id IS NOT NULL AND g.status IN ('PENDING_APPROVAL', 'QUEUED', 'ACTIVE') AND (g.status = 'QUEUED' OR g.expires_at <= CLOCK_TIMESTAMP() OR r.phase IN ('COMPLETED', 'FAILED', 'CANCELLED'))")).order_by_expr(reinhardt::query::SimpleExpr::from(reinhardt::query::Expr::col((reinhardt::query::Alias::new("g"), reinhardt::query::Alias::new("created_at")))), reinhardt::query::Order::Asc).order_by_expr(reinhardt::query::SimpleExpr::from(reinhardt::query::Expr::col((reinhardt::query::Alias::new("g"), reinhardt::query::Alias::new("id")))), reinhardt::query::Order::Asc).limit(32).to_string(reinhardt::query::PostgresQueryBuilder))
+		let pending = Expr::exists(
+			Query::select()
+				.expr(Expr::value(1_i32))
+				.from_as(Alias::new("node_cancellation_jobs"), Alias::new("j"))
+				.and_where(
+					Expr::col((Alias::new("j"), Alias::new("tenant")))
+						.eq(Expr::col((Alias::new("g"), Alias::new("tenant")))),
+				)
+				.and_where(Expr::col((Alias::new("j"), Alias::new("kind"))).eq("generation"))
+				.and_where(
+					Expr::col((Alias::new("j"), Alias::new("work_id")))
+						.eq(Expr::col((Alias::new("g"), Alias::new("id")))),
+				)
+				.to_owned(),
+		)
+		.not();
+		let jobs:Vec<Request>=crate::database::query_as(&reinhardt::query::Query::select().expr(reinhardt::query::SimpleExpr::from(reinhardt::query::Expr::col(reinhardt::query::ColumnRef::table_asterisk("g")))).from_as(reinhardt::query::Alias::new("generation_requests"), reinhardt::query::Alias::new("g")).join(reinhardt::query::JoinType::LeftJoin, reinhardt::query::TableRef::table_alias(reinhardt::query::Alias::new("runs"), reinhardt::query::Alias::new("r")), reinhardt::query::Expr::cust("r.task_id = g.task_id AND r.agent_id = g.agent_id AND r.agent_version = g.agent_version")).and_where(pending).and_where(reinhardt::query::Expr::cust("g.local_task_id IS NOT NULL AND g.status IN ('PENDING_APPROVAL', 'QUEUED', 'ACTIVE') AND (g.status = 'QUEUED' OR g.expires_at <= CLOCK_TIMESTAMP() OR r.phase IN ('COMPLETED', 'FAILED', 'CANCELLED'))")).order_by_expr(reinhardt::query::SimpleExpr::from(reinhardt::query::Expr::col((reinhardt::query::Alias::new("g"), reinhardt::query::Alias::new("created_at")))), reinhardt::query::Order::Asc).order_by_expr(reinhardt::query::SimpleExpr::from(reinhardt::query::Expr::col((reinhardt::query::Alias::new("g"), reinhardt::query::Alias::new("id")))), reinhardt::query::Order::Asc).limit(32).to_string(reinhardt::query::PostgresQueryBuilder))
         .fetch_all(f.store.pool.in_scope(&TenancyScope::Deployment(DeploymentScopeReason::GenerationReconcile))).await?;
 		Ok(jobs)
 	}

@@ -16,18 +16,19 @@ pub fn allows(
 		.as_ref()
 		.and_then(|(state, _)| state.tool().ok())
 		.filter(|tool| tool.finalizing);
+	let saved_failure = decoded.as_ref().and_then(|(state, _)| match state {
+		crate::RunState::Waiting(wait) => match wait.as_ref() {
+			crate::WaitingState::FailureDelivery { target, .. } => Some(target.task_status()),
+			_ => None,
+		},
+		_ => None,
+	});
 	let terminal = match raw.metadata.phase {
 		RunPhase::Completed => Some(TaskStatus::Completed),
 		RunPhase::Failed => Some(TaskStatus::Failed),
 		RunPhase::Cancelled => Some(TaskStatus::Cancelled),
 		_ if raw.metadata.control == RunControl::Cancelled => Some(TaskStatus::Cancelled),
-		_ => decoded.as_ref().and_then(|(state, _)| match state {
-			crate::RunState::Waiting(wait) => match wait.as_ref() {
-				crate::WaitingState::FailureDelivery { target, .. } => Some(target.task_status()),
-				_ => None,
-			},
-			_ => None,
-		}),
+		_ => saved_failure,
 	};
 	let keys_only = |keys: &[&str]| {
 		data.as_object().is_some_and(|object| {
@@ -66,7 +67,9 @@ pub fn allows(
 		"run_message_terminal_transition" => {
 			original_run
 				&& keys_only(&["revision", "status", "run_id", "keys", "through_seq"])
-				&& terminal.is_some_and(|target| data["status"] == json!(target))
+				&& (terminal.is_some_and(|target| data["status"] == json!(target))
+					|| (!raw.metadata.phase.is_terminal()
+						&& saved_failure.is_some_and(|target| data["status"] == json!(target))))
 				&& data["keys"] == json!([])
 				&& data["through_seq"].as_i64()
 					== Some(inputs.iter().map(|input| input.seq).max().unwrap_or(0))
@@ -88,5 +91,67 @@ pub fn allows(
 			keys_only(&[]) && (!inputs.is_empty() || terminal.is_some() || finalizing.is_some())
 		}
 		_ => false,
+	}
+}
+
+#[cfg(test)]
+mod tests {
+	use super::*;
+	use crate::run_state::{FailureTarget, RecoveryState, RunState, WaitingState};
+	use uuid::Uuid;
+
+	#[rstest::rstest]
+	#[case::saved_failure(TaskStatus::Failed, true)]
+	#[case::cancellation(TaskStatus::Cancelled, true)]
+	#[case::invented_success(TaskStatus::Completed, false)]
+	fn saved_failure_delivery_survives_cancel_without_admitting_fresh_commands(
+		#[case] target: TaskStatus,
+		#[case] allowed: bool,
+	) {
+		let run = Uuid::from_u128(1);
+		let pending = crate::run_state::encode(
+			&RunState::Waiting(Box::new(WaitingState::FailureDelivery {
+				target: FailureTarget::Failed,
+				wake_at: "2030-01-01T00:00:00Z".parse().unwrap(),
+				last_delivery_error: Some("retry delivery".into()),
+			})),
+			&RecoveryState::default(),
+		)
+		.unwrap();
+		let raw: RawRun = serde_json::from_value(json!({
+			"id":run,"task_id":Uuid::from_u128(2),"workspace_id":Uuid::from_u128(3),
+			"node":"brave-otter-k3m9q2xa","home_node":"aidash://home/brave-otter-k3m9q2xa",
+			"agent_id":"producer","agent_version":"1","phase":"WAITING","control":"CANCELLED",
+			"step":3,"revision":7,"observed_input_seq":0,"ledger_worker_ready":true,"error":"saved failure",
+			"lease_owner":null,"lease_until":null,"updated_at":"2030-01-01T00:00:00Z",
+			"context":crate::context::Context::default(),"pending":pending
+		}))
+		.unwrap();
+		let mut data = json!({"revision":4,"status":target,"run_id":run,"keys":[],"through_seq":0});
+		assert_eq!(
+			allows(
+				&raw,
+				&[],
+				"result",
+				"run_message_terminal_transition",
+				&data
+			),
+			allowed
+		);
+		data["run_id"] = json!(Uuid::from_u128(9));
+		assert!(!allows(
+			&raw,
+			&[],
+			"result",
+			"run_message_terminal_transition",
+			&data
+		));
+		assert!(!allows(
+			&raw,
+			&[],
+			"result",
+			"message",
+			&json!({"content":"new work"})
+		));
 	}
 }

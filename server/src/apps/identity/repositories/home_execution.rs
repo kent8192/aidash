@@ -694,12 +694,8 @@ pub(crate) async fn cancel_deleted_node_grant(
 			.from(Alias::new("authorization_remote_grants"))
 			.and_where(Expr::col("id").eq(Expr::value(id)))
 			.and_where(Expr::col("tenant").eq(Expr::value(tenant.to_owned())))
-			.and_where(SimpleExpr::CustomWithExpr(
-				"(node=? OR node_id=?)".into(),
-				vec![
-					Expr::value(node.to_owned()).into(),
-					Expr::value(format!("{}/{}", f.config.deployment, node)).into(),
-				],
+			.and_where(Expr::col("node").eq(Expr::value(node)).or(
+				Expr::col("node_id").eq(Expr::value(format!("{}/{}", f.config.deployment, node))),
 			))
 			.lock(LockType::Update)
 			.to_string(PostgresQueryBuilder),
@@ -730,25 +726,38 @@ pub(crate) async fn cancel_deleted_node_grant(
 	if bound.task_id != grant.task_id {
 		return Err(NativeError::Forbidden);
 	}
-	let response: Value = crate::authorization::peer::authority_request(
-		f,
-		&aidash_domain::federation::route::Sender {
-			tenant: aidash_domain::tenancy::TenantName::new(tenant)?,
-			node: Some(aidash_domain::nodes::NodeName::parse(&grant.node)?),
-			subject: None,
-		},
-		&grant.node_id,
-		&format!(
-			"/scoped/execution/admissions/{}/control",
-			bound.admission_id
-		),
-		&json!({"grant_id":id,"action":"cancel"}),
-	)
-	.await?;
+	let response: aidash_domain::federation::execution::admission::Activation =
+		crate::authorization::peer::authority_request(
+			f,
+			&aidash_domain::federation::route::Sender {
+				tenant: aidash_domain::tenancy::TenantName::new(tenant)?,
+				node: Some(aidash_domain::nodes::NodeName::parse(&grant.node)?),
+				subject: None,
+			},
+			&grant.node_id,
+			&format!(
+				"/scoped/execution/admissions/{}/control",
+				bound.admission_id
+			),
+			&json!({"grant_id":id,"action":"cancel"}),
+		)
+		.await?;
+	if response.grant_id != grant.id
+		|| response.admission_id != bound.admission_id
+		|| response.run_id != bound.admission_id
+	{
+		return Err(NativeError::Forbidden);
+	}
+	use aidash_domain::federation::execution::admission::{
+		RemoteExecutionControlState, RemoteExecutionPhase,
+	};
 	if !matches!(
-		response["phase"].as_str(),
-		Some("COMPLETED" | "FAILED" | "CANCELLED")
-	) && !(response["phase"] == "ADMITTED" && response["control"] == "CANCELLED")
+		response.phase,
+		RemoteExecutionPhase::Completed
+			| RemoteExecutionPhase::Failed
+			| RemoteExecutionPhase::Cancelled
+	) && !(matches!(response.phase, RemoteExecutionPhase::Admitted)
+		&& matches!(response.control, RemoteExecutionControlState::Cancelled))
 	{
 		return Ok(false);
 	}

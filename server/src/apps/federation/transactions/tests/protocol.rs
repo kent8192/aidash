@@ -548,6 +548,15 @@ async fn workspace_task_execution_and_artifact_commit_together_once(
 			after.revision, before.revision,
 			"deletion cannot invalidate a decided participant"
 		);
+		let mut fresh = manifest.clone();
+		fresh.id = Uuid::new_v4();
+		let rejected = participant::reserve(&b.f, None, a.address.as_str(), &fresh)
+			.await
+			.unwrap_err();
+		assert!(
+			matches!(rejected, aidash_server::Error::Conflict(ref reason) if reason == "Node cancellation is pending"),
+			"restoration must not reopen a captured Run while its decision is recovering: {rejected}"
+		);
 	}
 	assert_eq!(
 		complete(&a, manifest.id).await.decision.as_deref(),
@@ -569,6 +578,15 @@ async fn workspace_task_execution_and_artifact_commit_together_once(
 		assert_eq!(
 			remaining, 0,
 			"terminal owner retires the captured job after recovery"
+		);
+		let mut fresh = manifest.clone();
+		fresh.id = Uuid::new_v4();
+		assert!(
+			matches!(
+				participant::reserve(&b.f, None, a.address.as_str(), &fresh).await,
+				Err(aidash_server::Error::Forbidden)
+			),
+			"retiring the queue must not restore old Run authority"
 		);
 	}
 	for _ in 0..2 {

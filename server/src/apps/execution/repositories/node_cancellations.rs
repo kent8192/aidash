@@ -12,12 +12,13 @@ use reinhardt::db::{
 	orm::{Model, execution::convert_values},
 };
 use reinhardt::query::{
-	Alias, Expr, ExprTrait, LockType, PostgresQueryBuilder, Query, QueryStatementBuilder,
+	Alias, Expr, ExprTrait, IntoIden, LockType, PostgresQueryBuilder, Query, QueryStatementBuilder,
 	SimpleExpr,
 };
 use uuid::Uuid;
 
 pub(crate) mod home_commands;
+mod snapshot;
 
 const BATCH: usize = 32;
 
@@ -28,104 +29,19 @@ pub(crate) async fn record(
 	tx: &mut dyn TransactionExecutor,
 	deletion: &crate::apps::identity::models::NodeDeletion,
 ) -> Result<()> {
-	let owner =
-		|sql: &str, values: Vec<SimpleExpr>| SimpleExpr::CustomWithExpr(format!("({sql})"), values);
-	let run_owner = owner(
-		"node = ? OR EXISTS(SELECT 1 FROM workspaces w WHERE w.id=runs.workspace_id AND w.tenant=runs.tenant AND w.node=? AND runs.home_node=?) OR EXISTS(SELECT 1 FROM core_runs cr JOIN core_areas a ON a.id=cr.area_id AND a.tenant=cr.tenant JOIN workspaces w ON w.id=a.workspace_id AND w.tenant=a.tenant WHERE cr.run_id=runs.id AND cr.tenant=runs.tenant AND w.node=? AND a.home_node=?)",
-		vec![
-			Expr::value(deletion.node.clone()).into(),
-			Expr::value(deletion.node.clone()).into(),
-			Expr::value(format!("{}/{}", f.config.deployment, deletion.node)).into(),
-			Expr::value(deletion.node.clone()).into(),
-			Expr::value(format!("{}/{}", f.config.deployment, deletion.node)).into(),
-		],
-	);
-	let capability_owner = |table: &str| {
-		owner(
-			&format!(
-				"EXISTS(SELECT 1 FROM core_areas a JOIN workspaces w ON w.id=a.workspace_id AND w.tenant=a.tenant WHERE a.id={table}.area_id AND a.tenant={table}.tenant AND w.node=? AND a.home_node=?) OR EXISTS(SELECT 1 FROM runs r WHERE r.tenant={table}.tenant AND r.node=? AND r.id={})",
-				if table == "core_operations" {
-					"core_operations.run_id"
-				} else {
-					"(SELECT o.run_id FROM core_operations o WHERE o.id::text=core_records.data->>'operation_id' AND o.tenant=core_records.tenant)"
-				}
-			),
-			vec![
-				Expr::value(deletion.node.clone()).into(),
-				Expr::value(format!("{}/{}", f.config.deployment, deletion.node)).into(),
-				Expr::value(deletion.node.clone()).into(),
-			],
-		)
-	};
-	for (kind, table, predicate, pending) in [
-		(
-			"run",
-			"runs",
-			run_owner,
-			"phase NOT IN ('COMPLETED','FAILED','CANCELLED') OR lease_owner IS NOT NULL",
-		),
-		(
-			"admission",
-			"authorization_remote_admissions",
-			Expr::col("node").eq(Expr::value(deletion.node.clone())),
-			"NOT cancelled",
-		),
-		(
-			"generation",
-			"generation_requests",
-			Expr::col("node").eq(Expr::value(deletion.node.clone())),
-			"status IN ('PENDING_APPROVAL','QUEUED','ACTIVE') OR NOT quota_released",
-		),
-		(
-			"grant",
-			"authorization_remote_grants",
-			owner(
-				"EXISTS (SELECT 1 FROM workspaces w WHERE w.id=authorization_remote_grants.workspace_id AND w.tenant=authorization_remote_grants.tenant AND w.node=?) OR node_id=?",
-				vec![
-					Expr::value(deletion.node.clone()).into(),
-					Expr::value(format!("{}/{}", f.config.deployment, deletion.node)).into(),
-				],
-			),
-			"TRUE",
-		),
-		(
-			"intent",
-			"generation_remote_intents",
-			owner(
-				"EXISTS (SELECT 1 FROM tasks t JOIN workspaces w ON w.id=t.workspace_id AND w.tenant=t.tenant WHERE t.id=generation_remote_intents.task_id AND t.tenant=generation_remote_intents.tenant AND w.node=?)",
-				vec![Expr::value(deletion.node.clone()).into()],
-			),
-			"NOT cancel_delivered",
-		),
-		(
-			"task",
-			"tasks",
-			owner(
-				"EXISTS (SELECT 1 FROM workspaces w WHERE w.id=tasks.workspace_id AND w.tenant=tasks.tenant AND w.node=?) OR EXISTS (SELECT 1 FROM authorization_remote_execution e JOIN authorization_remote_grants g ON g.id=e.grant_id AND g.tenant=e.tenant WHERE e.task_id=tasks.id AND e.tenant=tasks.tenant AND e.task_revision=tasks.revision AND g.node_id=?)",
-				vec![
-					Expr::value(deletion.node.clone()).into(),
-					Expr::value(format!("{}/{}", f.config.deployment, deletion.node)).into(),
-				],
-			),
-			"status NOT IN ('COMPLETED','CANCELLED','ABANDONED')",
-		),
-		(
-			"operation",
-			"core_operations",
-			capability_owner("core_operations"),
-			"NOT ((state IN ('completed','cancelled','failed','withdrawn') AND ((COALESCE(result->'termination_confirmed'='true'::jsonb,false) AND COALESCE(result->'runner_acknowledged'='true'::jsonb,false)) OR (runner_instance IS NULL AND COALESCE(result->'effects_may_have_occurred'='false'::jsonb,false)))) OR (state='uncertain' AND COALESCE(result->'termination_confirmed'='true'::jsonb,false) AND COALESCE(result->'runner_acknowledged'='true'::jsonb,false)))",
-		),
-		(
-			"python",
-			"core_records",
-			capability_owner("core_records"),
-			"kind='python_session' AND state='frozen'",
-		),
-	] {
+	let address = format!("{}/{}", f.config.deployment, deletion.node);
+	for (kind, table, predicate, pending) in snapshot::selectors(
+		&deletion.node,
+		&address,
+		f.config.deployment.as_str(),
+		deletion.id,
+	) {
 		let select = Query::select()
-			.expr(owner(
-				"(? || CAST(id AS text))",
-				vec![Expr::value(format!("{}:{kind}:", deletion.id)).into()],
+			.expr(Expr::value(format!("{}:{kind}:", deletion.id)).binary(
+				reinhardt::query::BinOper::PgOperator(
+					reinhardt::query::types::PgBinOper::Concatenate,
+				),
+				Expr::col("id").cast_as("text"),
 			))
 			.expr(Expr::value(deletion.id))
 			.expr(Expr::value(deletion.tenant.clone()))
@@ -133,7 +49,10 @@ pub(crate) async fn record(
 			.expr(Expr::value(kind))
 			.column(Alias::new("id"))
 			.expr(if kind == "python" {
-				Expr::cust("to_jsonb(core_records.*)")
+				SimpleExpr::FunctionCall(
+					Alias::new("to_jsonb").into_iden(),
+					vec![Expr::col("core_records").into()],
+				)
 			} else {
 				Expr::value(serde_json::Value::Null).into()
 			})
@@ -141,7 +60,7 @@ pub(crate) async fn record(
 			.from(Alias::new(table))
 			.and_where(Expr::col("tenant").eq(Expr::value(deletion.tenant.clone())))
 			.and_where(predicate)
-			.and_where(Expr::cust(format!("({pending})")))
+			.and_where(pending)
 			.to_owned();
 		let (sql, values) = Query::insert()
 			.into_table(Alias::new("node_cancellation_jobs"))
@@ -174,7 +93,16 @@ pub(crate) async fn record(
 			.column(reinhardt::query::ColumnRef::Asterisk)
 			.from(Alias::new("runs"))
 			.and_where(Expr::col("tenant").eq(Expr::value(deletion.tenant.clone())))
-			.and_where(SimpleExpr::CustomWithExpr("id IN (SELECT work_id FROM node_cancellation_jobs WHERE deletion_id = ? AND kind='run')".into(), vec![Expr::value(deletion.id).into()]))
+			.and_where(
+				Expr::col("id").in_subquery(
+					Query::select()
+						.column(Alias::new("work_id"))
+						.from(Alias::new("node_cancellation_jobs"))
+						.and_where(Expr::col("deletion_id").eq(Expr::value(deletion.id)))
+						.and_where(Expr::col("kind").eq("run"))
+						.to_owned(),
+				),
+			)
 			.lock(LockType::Update)
 			.to_string(PostgresQueryBuilder),
 	)
@@ -243,6 +171,79 @@ pub(crate) async fn require_admission_open(
 pub(crate) async fn require_run_open(tx: &mut dyn TransactionExecutor, run: Uuid) -> Result<()> {
 	require_work_open(tx, "run", run).await
 }
+pub(crate) fn run_open_condition(run: SimpleExpr, tenant: SimpleExpr) -> SimpleExpr {
+	Expr::exists(
+		Query::select()
+			.expr(Expr::value(1_i32))
+			.from(Alias::new("node_cancellation_jobs"))
+			.and_where(Expr::col("kind").eq("run"))
+			.and_where(Expr::col("work_id").eq(run))
+			.and_where(Expr::col("tenant").eq(tenant))
+			.to_owned(),
+	)
+	.not()
+}
+/// Fresh atomic mutations use current lifecycle authority. Exact decided
+/// finish/apply never calls this guard and retains its original decision proof.
+pub(crate) async fn require_fresh_run(
+	tx: &mut dyn TransactionExecutor,
+	tenant: &str,
+	run: Uuid,
+) -> Result<()> {
+	require_run_open(tx, run).await?;
+	let raw: RawRun = crate::database::query_as(
+		&Query::select()
+			.column(reinhardt::query::ColumnRef::Asterisk)
+			.from(Alias::new("runs"))
+			.and_where(Expr::col("tenant").eq(Expr::value(tenant)))
+			.and_where(Expr::col("id").eq(Expr::value(run)))
+			.to_string(PostgresQueryBuilder),
+	)
+	.fetch_one(&mut *tx)
+	.await?;
+	if raw.metadata.control != RunControl::Active || raw.metadata.phase.is_terminal() {
+		return Err(Error::Forbidden);
+	}
+	require_admission_open(tx, run).await?;
+	let cancelled: Option<bool> = crate::database::native::query_scalar(
+		&Query::select()
+			.column(Alias::new("cancelled"))
+			.from(Alias::new("authorization_remote_admissions"))
+			.and_where(Expr::col("tenant").eq(Expr::value(tenant)))
+			.and_where(Expr::col("id").eq(Expr::value(run)))
+			.to_string(PostgresQueryBuilder),
+	)
+	.scalar_optional(tx)
+	.await?;
+	if cancelled == Some(true) {
+		return Err(Error::Forbidden);
+	}
+	Ok(())
+}
+pub(crate) async fn require_fresh_task(
+	tx: &mut dyn TransactionExecutor,
+	tenant: &str,
+	task: Uuid,
+) -> Result<()> {
+	require_task_open(tx, task).await?;
+	let task: aidash_domain::Task = crate::database::query_as(
+		&Query::select()
+			.column(reinhardt::query::ColumnRef::Asterisk)
+			.from(Alias::new("tasks"))
+			.and_where(Expr::col("tenant").eq(Expr::value(tenant)))
+			.and_where(Expr::col("id").eq(Expr::value(task)))
+			.to_string(PostgresQueryBuilder),
+	)
+	.fetch_one(tx)
+	.await?;
+	if matches!(
+		task.status,
+		TaskStatus::Completed | TaskStatus::Failed | TaskStatus::Cancelled | TaskStatus::Abandoned
+	) {
+		return Err(Error::Forbidden);
+	}
+	Ok(())
+}
 pub(crate) async fn require_generation_open(
 	tx: &mut dyn TransactionExecutor,
 	request: Uuid,
@@ -301,10 +302,14 @@ pub(crate) async fn reconcile(f: &Federation) -> Result<()> {
 				.table(Alias::new("node_cancellation_jobs"))
 				.value_expr(
 					Alias::new("retry_at"),
-					Expr::cust("CLOCK_TIMESTAMP() + INTERVAL '30 seconds'"),
+					SimpleExpr::FunctionCall(Alias::new("clock_timestamp").into_iden(), vec![])
+						.add(Expr::value("30 seconds").cast_as("interval")),
 				)
 				.and_where(Expr::col("id").eq(Expr::value(job.id.clone())))
-				.and_where(Expr::cust("retry_at <= CLOCK_TIMESTAMP()"))
+				.and_where(Expr::col("retry_at").lte(SimpleExpr::FunctionCall(
+					Alias::new("clock_timestamp").into_iden(),
+					vec![],
+				)))
 				.to_string(PostgresQueryBuilder),
 		)
 		.execute(f.store.pool.in_scope(&scope))
@@ -524,10 +529,16 @@ async fn stop_task(f: &Federation, job: &NodeCancellationJob) -> Result<bool> {
 			.from(Alias::new("node_cancellation_jobs"))
 			.and_where(Expr::col("deletion_id").eq(Expr::value(job.deletion_id)))
 			.and_where(Expr::col("kind").eq(Expr::value("grant")))
-			.and_where(SimpleExpr::CustomWithExpr(
-				"work_id IN (SELECT id FROM authorization_remote_grants WHERE task_id = ?)".into(),
-				vec![Expr::value(job.work_id).into()],
-			))
+			.and_where(
+				Expr::col("work_id").in_subquery(
+					Query::select()
+						.column(Alias::new("id"))
+						.from(Alias::new("authorization_remote_grants"))
+						.and_where(Expr::col("tenant").eq(Expr::value(job.tenant.clone())))
+						.and_where(Expr::col("task_id").eq(Expr::value(job.work_id)))
+						.to_owned(),
+				),
+			)
 			.limit(1)
 			.to_string(PostgresQueryBuilder),
 	)
@@ -606,8 +617,9 @@ fn stop(request: &RequestDigest<'_>) -> Option<Stop> {
 
 /// Proof for the sending side: durable cancellation, exact original Home Node,
 /// target, intent/grant/admission and Tenant. A caller cannot supply an exemption.
-pub(crate) async fn allows_closed_node_delivery(
-	f: &Federation,
+pub(crate) async fn allows_closed_node_delivery_in(
+	tx: &mut dyn TransactionExecutor,
+	own: &aidash_domain::nodes::DeploymentId,
 	sender: &Sender,
 	receiver: &NodeAddress,
 	request: &RequestDigest<'_>,
@@ -618,8 +630,6 @@ pub(crate) async fn allows_closed_node_delivery(
 	let Some(node) = &sender.node else {
 		return Ok(false);
 	};
-	let scope = TenancyScope::tenant(sender.tenant.as_str())?;
-	let mut tx = f.store.pool.begin(&scope).await?;
 	let allowed = match stop(request) {
 		Some(Stop::Generation(id)) => {
 			let binding: Option<serde_json::Value> = crate::database::native::query_scalar(
@@ -643,22 +653,42 @@ pub(crate) async fn allows_closed_node_delivery(
 				.is_some_and(|intent| {
 					intent.id == id
 						&& intent.source_tenant == sender.tenant.as_str()
-						&& intent.home_node == f.config.deployment.node(node.clone()).to_string()
+						&& intent.home_node == own.node(node.clone()).to_string()
 						&& intent.target_node == receiver.to_string()
 				})
 		}
 		Some(Stop::Execution { admission, grant }) => {
-			let id:Option<Uuid>=crate::database::native::query_scalar(&Query::select().column((Alias::new("g"),Alias::new("id")))
-                .from_as(Alias::new("authorization_remote_grants"),Alias::new("g"))
-                .and_where(SimpleExpr::CustomWithExpr(
-                    "g.id=? AND g.tenant=? AND g.node=? AND g.node_id=? AND g.revoked AND EXISTS(SELECT 1 FROM authorization_remote_execution e WHERE e.grant_id=g.id AND e.tenant=g.tenant AND e.task_id=g.task_id AND e.admission_id=?)".into(),
-                    vec![Expr::value(grant).into(),Expr::value(sender.tenant.as_str().to_owned()).into(),Expr::value(node.as_str().to_owned()).into(),Expr::value(receiver.to_string()).into(),Expr::value(admission).into()]))
-                .to_string(PostgresQueryBuilder)).scalar_optional(&mut *tx).await?;
+			use snapshot::column as col;
+			let id: Option<Uuid> = crate::database::native::query_scalar(
+				&Query::select()
+					.column((Alias::new("g"), Alias::new("id")))
+					.from_as(Alias::new("authorization_remote_grants"), Alias::new("g"))
+					.and_where(col("g", "id").eq(Expr::value(grant)))
+					.and_where(col("g", "tenant").eq(Expr::value(sender.tenant.as_str())))
+					.and_where(col("g", "node").eq(Expr::value(node.as_str())))
+					.and_where(col("g", "node_id").eq(Expr::value(receiver.to_string())))
+					.and_where(col("g", "revoked").eq(true))
+					.and_where(Expr::exists(
+						Query::select()
+							.expr(Expr::value(1_i32))
+							.from_as(
+								Alias::new("authorization_remote_execution"),
+								Alias::new("e"),
+							)
+							.and_where(col("e", "grant_id").eq(col("g", "id")))
+							.and_where(col("e", "tenant").eq(col("g", "tenant")))
+							.and_where(col("e", "task_id").eq(col("g", "task_id")))
+							.and_where(col("e", "admission_id").eq(Expr::value(admission)))
+							.to_owned(),
+					))
+					.to_string(PostgresQueryBuilder),
+			)
+			.scalar_optional(&mut *tx)
+			.await?;
 			id.is_some()
 		}
 		None => false,
 	};
-	tx.commit().await?;
 	Ok(allowed)
 }
 
@@ -676,34 +706,75 @@ pub(crate) async fn allows_closed_node_request_in(
 	if !subject.is_empty() {
 		return Ok(false);
 	}
-	let id:Option<Uuid>=match stop(request) {
-        Some(Stop::Generation(id))=>crate::database::native::query_scalar(&Query::select().column(Alias::new("id"))
-            .from(Alias::new("generation_requests"))
-            .and_where(Expr::col("tenant").eq(Expr::value(tenant.to_owned())))
-            .and_where(Expr::col("node").eq(Expr::value(receiver.node.as_str().to_owned())))
-            .and_where(Expr::col("home_node").eq(Expr::value(sender.to_string())))
-            .and_where(SimpleExpr::CustomWithExpr("foreign_intent->>'id'=? AND foreign_intent->>'home_node'=? AND foreign_intent->>'target_node'=?".into(),
-                vec![Expr::value(id.to_string()).into(),Expr::value(sender.to_string()).into(),Expr::value(receiver.to_string()).into()]))
-            .to_string(PostgresQueryBuilder)).scalar_optional(tx).await?,
-        Some(Stop::Execution{admission,grant})=>crate::database::native::query_scalar(&Query::select().column(Alias::new("id"))
-            .from(Alias::new("authorization_remote_admissions"))
-            .and_where(Expr::col("id").eq(Expr::value(admission)))
-            .and_where(Expr::col("grant_id").eq(Expr::value(grant)))
-            .and_where(Expr::col("tenant").eq(Expr::value(tenant.to_owned())))
-            .and_where(Expr::col("node").eq(Expr::value(receiver.node.as_str().to_owned())))
-            .and_where(Expr::col("source_node").eq(Expr::value(sender.to_string())))
-            .to_string(PostgresQueryBuilder)).scalar_optional(tx).await?,
-        None=>None,
-    };
+	let id: Option<Uuid> = match stop(request) {
+		Some(Stop::Generation(id)) => {
+			crate::database::native::query_scalar(
+				&Query::select()
+					.column(Alias::new("id"))
+					.from(Alias::new("generation_requests"))
+					.and_where(Expr::col("tenant").eq(Expr::value(tenant.to_owned())))
+					.and_where(Expr::col("node").eq(Expr::value(receiver.node.as_str().to_owned())))
+					.and_where(Expr::col("home_node").eq(Expr::value(sender.to_string())))
+					.and_where(
+						snapshot::json_text(Expr::col("foreign_intent").into(), "id")
+							.eq(Expr::value(id.to_string())),
+					)
+					.and_where(
+						snapshot::json_text(Expr::col("foreign_intent").into(), "home_node")
+							.eq(Expr::value(sender.to_string())),
+					)
+					.and_where(
+						snapshot::json_text(Expr::col("foreign_intent").into(), "target_node")
+							.eq(Expr::value(receiver.to_string())),
+					)
+					.to_string(PostgresQueryBuilder),
+			)
+			.scalar_optional(tx)
+			.await?
+		}
+		Some(Stop::Execution { admission, grant }) => {
+			crate::database::native::query_scalar(
+				&Query::select()
+					.column(Alias::new("id"))
+					.from(Alias::new("authorization_remote_admissions"))
+					.and_where(Expr::col("id").eq(Expr::value(admission)))
+					.and_where(Expr::col("grant_id").eq(Expr::value(grant)))
+					.and_where(Expr::col("tenant").eq(Expr::value(tenant.to_owned())))
+					.and_where(Expr::col("node").eq(Expr::value(receiver.node.as_str().to_owned())))
+					.and_where(Expr::col("source_node").eq(Expr::value(sender.to_string())))
+					.to_string(PostgresQueryBuilder),
+			)
+			.scalar_optional(tx)
+			.await?
+		}
+		None => None,
+	};
 	Ok(id.is_some())
 }
 
 /// Fence reuse of a mutable Area/session until its captured writer has stopped.
 pub(crate) async fn require_area_open(tx: &mut dyn TransactionExecutor, area: Uuid) -> Result<()> {
-	let pending: Option<String> = crate::database::native::query_scalar(&Query::select()
-        .column(Alias::new("id")).from(Alias::new("node_cancellation_jobs"))
-        .and_where(SimpleExpr::CustomWithExpr("(kind='operation' AND work_id IN(SELECT id FROM core_operations WHERE area_id=?)) OR (kind='python' AND work_id IN(SELECT id FROM core_records WHERE area_id=?))".into(),vec![Expr::value(area).into(),Expr::value(area).into()]))
-        .limit(1).to_string(PostgresQueryBuilder)).scalar_optional(tx).await?;
+	let work = |kind: &str, table: &str| {
+		Expr::col("kind").eq(Expr::value(kind)).and(
+			Expr::col("work_id").in_subquery(
+				Query::select()
+					.column(Alias::new("id"))
+					.from(Alias::new(table))
+					.and_where(Expr::col("area_id").eq(Expr::value(area)))
+					.to_owned(),
+			),
+		)
+	};
+	let pending: Option<String> = crate::database::native::query_scalar(
+		&Query::select()
+			.column(Alias::new("id"))
+			.from(Alias::new("node_cancellation_jobs"))
+			.and_where(work("operation", "core_operations").or(work("python", "core_records")))
+			.limit(1)
+			.to_string(PostgresQueryBuilder),
+	)
+	.scalar_optional(tx)
+	.await?;
 	if pending.is_some() {
 		return Err(Error::Conflict("Area cancellation is pending".into()));
 	}

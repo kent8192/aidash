@@ -2612,6 +2612,24 @@ async fn node_deletion_settles_generation_once_after_restore(
 	assert_eq!(status, 200, "{body}");
 	// A live sibling uses the same Tenant policy; deleting the target may
 	// release only its allocation and must not disable the sibling executor.
+	for id in ["model", "http", "research"] {
+		aidash_server::authorization::Authorization {
+			pool: f.store.pool.clone(),
+		}
+		.set_catalog(
+			"acme",
+			&sibling,
+			&aidash_domain::registry::EntityRef {
+				id: id.into(),
+				version: "1.0.0".into(),
+			},
+			0,
+			true,
+			"deployment_administrator",
+		)
+		.await
+		.unwrap();
+	}
 	let sibling_task = missing_task(&app, &token).await;
 	let (status, sibling_assignment) = request(
 		&app,
