@@ -193,13 +193,15 @@ pub(crate) async fn enqueue_capability(
 	let original_run: Uuid = serde_json::from_value(record.data["run_id"].clone())?;
 	population(
 		&mut *access.tx,
-		&record.tenant,
-		record.id,
-		"capability",
-		capability_kind(record),
-		Some(original_run),
-		initial_settlement(&record.state, &record.data),
-		created_at,
+		Population {
+			tenant: &record.tenant,
+			approval: record.id,
+			approval_type: "capability",
+			kind: capability_kind(record),
+			run: Some(original_run),
+			settled: initial_settlement(&record.state, &record.data),
+			created: created_at,
+		},
 	)
 	.await?;
 	let selected = settings(&mut *access.tx, &record.tenant).await?;
@@ -415,13 +417,15 @@ pub(crate) async fn enqueue_generation(
 	};
 	population(
 		&mut *access.tx,
-		&job.tenant,
-		job.id,
-		"generation",
-		ApprovalKind::Generation,
-		None,
-		class,
-		job.created_at,
+		Population {
+			tenant: &job.tenant,
+			approval: job.id,
+			approval_type: "generation",
+			kind: ApprovalKind::Generation,
+			run: None,
+			settled: class,
+			created: job.created_at,
+		},
 	)
 	.await?;
 	let selected = settings(&mut *access.tx, &job.tenant).await?;
@@ -628,16 +632,26 @@ pub(super) async fn observation(
 		.pop())
 }
 
-async fn population(
-	tx: &mut dyn TransactionExecutor,
-	tenant: &str,
+struct Population<'a> {
+	tenant: &'a str,
 	approval: Uuid,
-	approval_type: &str,
+	approval_type: &'a str,
 	kind: ApprovalKind,
 	run: Option<Uuid>,
 	settled: SettlementClass,
 	created: chrono::DateTime<Utc>,
-) -> Result<()> {
+}
+
+async fn population(tx: &mut dyn TransactionExecutor, record: Population<'_>) -> Result<()> {
+	let Population {
+		tenant,
+		approval,
+		approval_type,
+		kind,
+		run,
+		settled,
+		created,
+	} = record;
 	let (sql, values) = Query::insert()
 		.into_table(Alias::new("approval_observation_population"))
 		.columns(
