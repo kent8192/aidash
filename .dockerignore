@@ -14,6 +14,8 @@ coverage
 openapi
 **/node_modules
 **/dist
+enterprise/auth-web/pkg
+enterprise/marketplace-web/pkg
 web/src/generated
 web/test-results
 web/playwright-report

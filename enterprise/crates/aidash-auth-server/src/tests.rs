@@ -367,7 +367,19 @@ pub(super) async fn fixture(configure: impl FnOnce(&mut Authentication)) -> Fixt
 
 #[tokio::test]
 async fn oidc_issuer_and_marketplace_bff_preserve_real_session_and_refresh_boundaries() {
-	let fixture = fixture(|_| {}).await;
+	let assets = reinhardt::test::fixtures::temp_dir();
+	std::fs::create_dir(assets.path().join("assets")).unwrap();
+	let wasm = b"\0asm\x01\0\0\0";
+	std::fs::write(assets.path().join("assets/account.wasm"), wasm).unwrap();
+	std::fs::write(
+		assets.path().join("index.html"),
+		"<!doctype html><title>Account</title>",
+	)
+	.unwrap();
+	let fixture = fixture(|auth| {
+		Arc::make_mut(&mut auth.config).assets_dir = Some(assets.path().to_owned());
+	})
+	.await;
 	let auth = fixture.auth.clone();
 	let client = fixture.client.clone();
 	let issuer = fixture.issuer.clone();
@@ -376,6 +388,26 @@ async fn oidc_issuer_and_marketplace_bff_preserve_real_session_and_refresh_bound
 	let account = fixture.account.clone();
 	let identity = fixture.identity.clone();
 	let browser = fixture.browser.clone();
+	let module = client
+		.get(format!("{issuer}/assets/account.wasm"))
+		.send()
+		.await
+		.unwrap();
+	assert_eq!(module.status(), 200);
+	assert_eq!(module.headers()["content-type"], "application/wasm");
+	assert_eq!(module.bytes().await.unwrap().as_ref(), wasm);
+	let page = client
+		.get(format!("{issuer}/sign-in"))
+		.send()
+		.await
+		.unwrap();
+	assert_eq!(page.status(), 200);
+	let csp = page.headers()["content-security-policy"].to_str().unwrap();
+	assert!(csp.split(';').any(|directive| {
+		let mut tokens = directive.split_whitespace();
+		tokens.next() == Some("script-src") && tokens.any(|token| token == "'wasm-unsafe-eval'")
+	}));
+	assert!(!csp.split_whitespace().any(|token| token == "'unsafe-eval'"));
 	let nonce = secret();
 	let code = authorize(&client, &issuer, &callback, &browser, &nonce).await;
 	let wrong_client = form(

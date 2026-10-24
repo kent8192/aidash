@@ -8,6 +8,10 @@ New multi-Node scoped transactions are temporarily rejected to prevent manifest 
 
 ## Cargo workspace
 
+Native server builds require the Protocol Buffers compiler (`protoc`) on `PATH`
+for `reinhardt-grpc`. The provided Docker images install it in their build stage;
+the standalone WASM frontend builds do not require it.
+
 All packages use Rust 2024. The virtual workspace defaults to `aidash-server`;
 Reinhardt's `manage` CLI provides the standard management operations and Aidash's
 registered custom commands, including `serve`, `server`, and `worker`:
@@ -85,7 +89,9 @@ PostgreSQL instance may be shared with separate ownership and credentials.
 
 The [Marketplace web app](enterprise/marketplace-web/README.md) has its own build
 and container; the [authentication web app](enterprise/auth-web/README.md) is
-bundled with its service image. See the [independent deployment chart](enterprise/deploy/standalone-service/README.md)
+bundled with its service image. Both use Rust and Reinhardt Pages compiled to
+WebAssembly, with independent Cargo workspaces. Authentication keeps the upstream
+Firebase browser SDK behind a small JavaScript adapter. See the [independent deployment chart](enterprise/deploy/standalone-service/README.md)
 and [approved authentication/distribution design](docs/authentication-and-standalone-marketplace-design.md).
 Cloud enables shared authentication explicitly through `[dashboard.common_auth]` and
 `[dashboard.oidc]`; direct `[dashboard.gcip]` sign-in is mutually exclusive.

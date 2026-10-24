@@ -1398,6 +1398,29 @@ async fn marketplace_copy_is_local_and_recall_survives_disconnect(
 	assert_eq!(status, 200, "{body}");
 	let entry: aidash_server::registry::Entry = serde_json::from_value(definition).unwrap();
 	support::approve_agent(&runtime, "acme", &entry).await;
+	// The approval helper creates a bare Agent; this Tenant uses group-based authority.
+	let authorization = aidash_server::authorization::Authorization {
+		pool: runtime.store.pool.clone(),
+	};
+	let mut snapshot = authorization.snapshot("acme").await.unwrap();
+	let node = support::default_node(&runtime.store, "acme").await;
+	let agent_subject = aidash_domain::qualified_agent(&node, &entry.id, &entry.version);
+	snapshot
+		.bundle
+		.subjects
+		.get_mut(&agent_subject)
+		.unwrap()
+		.groups
+		.insert(MEMBERS.to_owned());
+	authorization
+		.replace(
+			"acme",
+			snapshot.revision,
+			snapshot.bundle,
+			"deployment_administrator",
+		)
+		.await
+		.unwrap();
 	let scope = TenancyScope::tenant("acme").unwrap();
 	let workspace = runtime
 		.store

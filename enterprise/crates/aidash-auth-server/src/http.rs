@@ -205,6 +205,8 @@ impl Http {
 			.map_err(|_| Error::Unavailable)?;
 		let content_type = if relative.ends_with(".js") {
 			"text/javascript"
+		} else if relative.ends_with(".wasm") {
+			"application/wasm"
 		} else if relative.ends_with(".css") {
 			"text/css"
 		} else if relative.ends_with(".svg") {
@@ -1214,7 +1216,7 @@ fn secure_headers(response: &mut Response) {
 			.headers
 			.insert(name, value.parse().expect("static header"));
 	}
-	response.headers.insert(header::CONTENT_SECURITY_POLICY, "default-src 'self'; script-src 'self' https://apis.google.com; connect-src 'self' https://*.googleapis.com https://*.firebaseapp.com https://*.gstatic.com; frame-src https://*.firebaseapp.com https://accounts.google.com; style-src 'self' 'unsafe-inline'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'".parse().expect("static CSP"));
+	response.headers.insert(header::CONTENT_SECURITY_POLICY, "default-src 'self'; script-src 'self' 'wasm-unsafe-eval' https://apis.google.com; connect-src 'self' https://*.googleapis.com https://*.firebaseapp.com https://*.gstatic.com; frame-src https://*.firebaseapp.com https://accounts.google.com; style-src 'self' 'unsafe-inline'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'".parse().expect("static CSP"));
 }
 fn failure(error: Error) -> Response {
 	let (status, code) = match error {

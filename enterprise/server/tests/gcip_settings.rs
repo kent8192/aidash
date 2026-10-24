@@ -90,7 +90,10 @@ fn managed_direct_gcip_cannot_be_combined_with_another_sign_in(
 			"source_issuers":{"https://securetoken.google.com/fixture-project/tenants/shared":""}
 		});
 	}
-	source["dashboard"] = toml::Value::try_from(dashboard).unwrap();
+	source.as_table_mut().unwrap().insert(
+		"dashboard".into(),
+		toml::Value::try_from(dashboard).unwrap(),
+	);
 	std::fs::write(
 		directory.path().join("base.toml"),
 		toml::to_string(&source).unwrap(),
