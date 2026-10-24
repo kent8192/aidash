@@ -141,7 +141,7 @@ impl GraphOptions {
 }
 #[derive(Clone)]
 pub enum Candidate {
-	Registry(Entry),
+	Registry(Box<Entry>),
 	Workspace(Workspace),
 	Task(Task),
 	Run(RunMetadata),

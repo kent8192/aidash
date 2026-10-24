@@ -954,13 +954,18 @@ impl<'a> Environment<'a> {
 
 #[async_trait]
 impl ExecutionEnvironment for Environment<'_> {
+	fn context_source_plan(&self, run: &Run) -> Result<Vec<PlannedContextSource>> {
+		self.native_context_source_plan(run)
+	}
 	async fn context_source(
 		&self,
-		request: ContextSourceRead<'_>,
+		run: &Run,
+		source: &ContextSourceHandle,
 		worker: Uuid,
-		frame: SourceQueryFrame<'_>,
+		frame: ContextSourceFrame<'_>,
 	) -> SemanticContextRead {
-		self.collect_context_source(request, worker, frame).await
+		self.collect_context_source(run, source, worker, frame)
+			.await
 	}
 
 	fn node_id(&self) -> &str {
@@ -1237,8 +1242,31 @@ impl ExecutionEnvironment for Environment<'_> {
 			.await
 			.map_err(Into::into)
 	}
-	async fn skill_revision(&self, run: &Run) -> Result<Option<i64>> {
+	async fn source_revision(
+		&self,
+		source: &ContextSourceHandle,
+		run: &Run,
+	) -> Result<Option<i64>> {
+		if !matches!(
+			self.planned_context_slot(run, source)?,
+			sources::Slot::Skills
+		) {
+			return Ok(None);
+		}
 		super::skills::revision(&self.federation.store, run.id).await
+	}
+	async fn source_retrieval_key(
+		&self,
+		run: &Run,
+		bindings: &str,
+		frame: ContextSourceFrame<'_>,
+	) -> Result<aidash_domain::context::sources::RetrievalKey> {
+		aidash_application::execution::semantic_context::retrieval_key(
+			run,
+			bindings,
+			frame,
+			self.retrieval_scope(run).await?,
+		)
 	}
 	async fn retrieval_scope(
 		&self,
