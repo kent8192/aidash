@@ -114,8 +114,15 @@ A corrected support request entered `1` in the additional-project field, retaine
 the approved minimum capacity goal of four overall, and disclosed the first
 input error and completed cleanup. Its full 990-character body was verified
 before one submission attempt. Google's confirmation page acknowledged receipt
-at 04:34 UTC. The corrected request remains pending; this acknowledgement is not
-quota approval or a new sandbox attempt.
+at 04:34 UTC. At that point its result was pending; the acknowledgement proves
+receipt, not quota approval or a new sandbox attempt.
+
+A new quota-denial notification reached the same mailbox/thread at 04:57:17 UTC,
+after the corrected submission. It supplies no individual reason or request,
+project or case identifier, so the cause is unknown and the notification does
+not independently identify the corrected request. No quota increase has been
+confirmed. No new sandbox attempt has occurred; mandatory live acceptance is
+blocked on billing-linked project capacity, not deferred.
 
 No Terraform plan/apply, private image build, real provider consent or live
 IAM/GCIP/metadata/alert acceptance occurred. Their required evidence remains
