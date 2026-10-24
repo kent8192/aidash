@@ -155,12 +155,12 @@ pub(super) async fn collect_data_phase(
 		let ContextSourceTarget::Pinned(key) = &source.target else {
 			return Err(Error::Invalid("data source targets instructions".into()));
 		};
-		if let Some(value) = read_planned_source(environment, run, token, source, frame).await? {
-			if values.insert(key.clone(), value).is_some() {
-				return Err(Error::Invalid(
-					"context sources share an output target".into(),
-				));
-			}
+		if let Some(value) = read_planned_source(environment, run, token, source, frame).await?
+			&& values.insert(key.clone(), value).is_some()
+		{
+			return Err(Error::Invalid(
+				"context sources share an output target".into(),
+			));
 		}
 	}
 	Ok(values)

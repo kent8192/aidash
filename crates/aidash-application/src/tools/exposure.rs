@@ -97,6 +97,18 @@ async fn asset(ctx: &ToolContext<'_>, catalog: &[Capability], input: &Value) -> 
 		.and_then(|files| files.iter().find(|file| file["path"] == path))
 		.cloned()
 		.ok_or_else(|| Error::Invalid("SKILL_FILE_UNAVAILABLE".into()))?;
+	// Only OnDemand direct Sources advertise their main body as an asset.
+	// Read it after this exact capability was active in the request; a Load
+	// staged by an earlier call in this response takes effect next request.
+	if path == "SKILL.md"
+		&& matches!(capability.identity, CapabilityIdentity::DirectSkill { .. })
+		&& !ctx.run.context.exposure.loaded.iter().any(|loaded| {
+			loaded.identity == capability.identity
+				&& loaded.digest == capability.digest
+				&& loaded.kind == CapabilityKind::Skill
+		}) {
+		return Err(Error::Invalid("CAPABILITY_NOT_LOADED".into()));
+	}
 	// A declared base64 asset is binary whatever its decoded bytes are.
 	let bytes = match &capability.identity {
 		CapabilityIdentity::Registry(reference) => {

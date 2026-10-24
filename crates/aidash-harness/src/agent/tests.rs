@@ -194,6 +194,8 @@ struct State {
 	explicit_cache_model: bool,
 	/// Evidence fragments the Run's evidence store holds.
 	known_evidence: Vec<aidash_domain::research::citations::EvidenceRef>,
+	/// Exact Research payload variants, indexed by their durable digest.
+	research_payloads: BTreeMap<String, Value>,
 	/// The Run's Research evidence was revoked.
 	research_revoked: bool,
 	/// Revoked only once this many revocation checks have answered.
@@ -375,6 +377,29 @@ fn unexpected(operation: &str) -> ! {
 
 #[async_trait]
 impl ExecutionStore for Backend {
+	async fn resolve_research(&self, run: &mut Run) -> Result<()> {
+		for entry in &mut run.context.history {
+			if let ContextEvent::Tool { result, .. } = &mut entry.event
+				&& let Some(reference) =
+					aidash_domain::context::research::ResearchReference::parse(result)
+			{
+				*result = self
+					.0
+					.research_payloads
+					.get(&reference.digest)
+					.cloned()
+					.unwrap_or_else(|| reference.unavailable());
+			}
+		}
+		Ok(())
+	}
+	async fn pin_estimate(&self, run: &mut Run, token: Uuid) -> Result<()> {
+		self.save_run(run, token, "run.estimate_pinned").await?;
+		// Native persistence returns the saved projection, whose Research
+		// history contains immutable references rather than provider payloads.
+		*run = serde_json::from_value(serde_json::to_value(&*run)?)?;
+		Ok(())
+	}
 	async fn save_run(&self, run: &Run, token: Uuid, event: &str) -> Result<()> {
 		assert_eq!(token, self.0.token);
 		if self
@@ -1163,17 +1188,7 @@ impl ExecutionEnvironment for Backend {
 				.map(Some),
 			"skills" => self.skill_context(run).await.map(|text| Some(json!(text))),
 			"semantic_memory" => {
-				return self
-					.semantic_context(
-						run,
-						frame.task,
-						frame.inputs,
-						frame.budget,
-						frame.entry,
-						frame.key,
-						frame.degrade_on_outage,
-					)
-					.await;
+				return self.semantic_context(frame).await;
 			}
 			_ => unexpected("unknown planned context source"),
 		};
@@ -1658,6 +1673,7 @@ fn fixture() -> Fixture {
 		prompt_cache: Default::default(),
 		explicit_cache_model: false,
 		known_evidence: vec![],
+		research_payloads: BTreeMap::new(),
 		research_revoked: false,
 		research_revoked_after: None,
 		research_checks: Default::default(),
@@ -5521,27 +5537,18 @@ impl Backend {
 		self.record("source.skill");
 		Ok(self.0.skill_text.lock().unwrap().clone())
 	}
-	async fn semantic_context(
-		&self,
-		run: &Run,
-		task: &Task,
-		inputs: &[(InputRead, String)],
-		budget: usize,
-		entry: &Entry,
-		key: Option<&RetrievalKey>,
-		degrade_on_outage: bool,
-	) -> SemanticContextRead {
-		let _ = (run, task, inputs, budget, entry);
+	async fn semantic_context(&self, frame: ContextSourceFrame<'_>) -> SemanticContextRead {
+		let budget = frame.budget;
 		self.0
 			.semantic_keys
 			.lock()
 			.unwrap()
-			.push(key.map(RetrievalKey::digest));
+			.push(frame.key.map(RetrievalKey::digest));
 		self.0
 			.semantic_degrade
 			.lock()
 			.unwrap()
-			.push(degrade_on_outage);
+			.push(frame.degrade_on_outage);
 		if let Some((workspace_retrieved, reason)) = self.0.semantic_failure.lock().unwrap().take()
 		{
 			return SemanticContextRead {
@@ -5773,6 +5780,11 @@ async fn provider_registered_sources_join_existing_lifecycle_phases(
 	state.provider_status = None;
 	state.extra_context_sources = vec![
 		(
+			ContextSourcePhase::FixedData,
+			"reference_documents".into(),
+			json!([]),
+		),
+		(
 			ContextSourcePhase::SnapshotData,
 			"inventory_extension".into(),
 			json!({"stock":"warehouse 12"}),
@@ -5793,4 +5805,21 @@ async fn provider_registered_sources_join_existing_lifecycle_phases(
 	assert!(content.contains("Tuesday 10:00"));
 	assert!(!requests[0].instructions.contains("warehouse 12"));
 	assert!(!requests[0].instructions.contains("Tuesday 10:00"));
+	// An admitted automatic document provider retains its empty fixed payload.
+	// In contrast, a mount-only provider has no such plan target at all.
+	let documents = match &requests[0].context {
+		ModelContext::Legacy(context) => context["current"].get("reference_documents").cloned(),
+		ModelContext::Ordered(context) => serde_json::from_str::<Value>(&context.stable)
+			.unwrap()
+			.get("reference_documents")
+			.cloned(),
+		ModelContext::Native(context) => context
+			.attachments
+			.iter()
+			.find(|item| {
+				item.source == aidash_domain::projection::native::Source::ReferenceDocuments
+			})
+			.map(|item| item.content.clone()),
+	};
+	assert_eq!(documents, Some(json!([])));
 }

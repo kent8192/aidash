@@ -18,17 +18,21 @@ use aidash_domain::{
 };
 use async_trait::async_trait;
 use rstest::{fixture, rstest};
+use std::{collections::BTreeSet, sync::Mutex};
 use uuid::Uuid;
 
 const NODE: &str = "aidash://fixture";
 /// Non-UTF-8 bytes of a packaged binary file.
 const BINARY: &[u8] = &[0xff, 0xfe, 0x00, 0x01];
 
+#[derive(Default)]
 struct Operations {
 	specifications: BTreeMap<String, ToolSpec>,
 	direct: Vec<DirectSkill>,
 	files: BTreeMap<String, Vec<u8>>,
 	read_bytes: usize,
+	reads: Mutex<Vec<String>>,
+	denied: BTreeSet<String>,
 }
 #[async_trait]
 impl ToolOperations for Operations {
@@ -99,6 +103,10 @@ impl ToolOperations for Operations {
 			.ok_or_else(|| Error::NotFound("skill unavailable".into()))?;
 		if skill.metadata.digest != digest {
 			return Err(Error::Conflict("CAPABILITY_CHANGED".into()));
+		}
+		self.reads.lock().unwrap().push(path.into());
+		if self.denied.contains(path) {
+			return Err(Error::Forbidden);
 		}
 		self.files
 			.get(path)
@@ -218,6 +226,38 @@ fn fixture() -> Fixture {
 		),
 		"Guide Skill",
 	));
+	// This direct Source supplies SKILL.md through its admitted manual asset
+	// operation while its automatic resident contribution stays OnDemand.
+	let mut source = aidash_domain::registry::bindings::sources::NativeContext {
+		schema_version: 1,
+		source: aidash_domain::registry::bindings::sources::NativeSource::SkillRoots {
+			roots: vec![".agents/skills".into()],
+		},
+		context_source: None,
+	};
+	let mut declaration = source.declaration(&aidash_domain::registry::bindings::QualifiedRef {
+		registry_deployment: NODE.into(),
+		id: "on-demand-skills".into(),
+		version: "1.0.0".into(),
+	});
+	declaration.pin = aidash_domain::context::source::PinPolicy::OnDemand;
+	let reader = aidash_domain::registry::bindings::QualifiedRef::builtin(NODE, SKILL_ASSET_READ);
+	declaration.tools = aidash_domain::context::source::SourceTools {
+		read: vec![reader.clone()],
+		detail: Some(reader),
+		..Default::default()
+	};
+	source.context_source = Some(declaration);
+	bindings.push(crate::test_support::binding(
+		"source",
+		NODE,
+		"on-demand-skills",
+	));
+	extras.push(crate::test_support::entry(
+		"on-demand-skills",
+		"source",
+		json!(source),
+	));
 	let snapshot = crate::test_support::resolve(NODE, &root, false, extras);
 	let specifications = snapshot
 		.bindings
@@ -259,6 +299,7 @@ fn fixture() -> Fixture {
 				("blob.bin".into(), BINARY.to_vec()),
 			]),
 			read_bytes: 4,
+			..Default::default()
 		},
 		run: run(snapshot),
 	}
@@ -465,7 +506,7 @@ fn code(error: &Error) -> (&'static str, &str) {
 }
 #[rstest]
 #[tokio::test]
-async fn direct_skill_assets_read_through_the_pinned_record(fixture: Fixture) {
+async fn direct_skill_assets_read_through_the_pinned_record(mut fixture: Fixture) {
 	let skill = fixture.capability("skill_field_notes").await;
 	assert_eq!(skill["digest"], "direct-digest");
 	let read = |path: &str, offset: usize| json!({"alias":skill["alias"],"digest":skill["digest"],"path":path,"offset":offset,"max_chars":3});
@@ -503,6 +544,52 @@ async fn direct_skill_assets_read_through_the_pinned_record(fixture: Fixture) {
 			.await,
 		Err(error) if code(&error) == ("invalid", "CAPABILITY_CHANGED")
 	));
+	fixture.operations.reads.lock().unwrap().clear();
+	assert!(
+		matches!(fixture.call("skill_asset_read", read("SKILL.md", 0)).await, Err(error) if code(&error) == ("invalid", "CAPABILITY_NOT_LOADED"))
+	);
+	assert!(fixture.operations.reads.lock().unwrap().is_empty());
+	let loaded = fixture
+		.call(
+			"capability_load",
+			json!({"alias":skill["alias"],"digest":skill["digest"]}),
+		)
+		.await
+		.unwrap();
+	fixture
+		.run
+		.context
+		.exposure
+		.stage(serde_json::from_value(loaded["exposure_update"].clone()).unwrap());
+	assert!(
+		matches!(fixture.call("skill_asset_read", read("SKILL.md", 0)).await, Err(error) if code(&error) == ("invalid", "CAPABILITY_NOT_LOADED"))
+	);
+	assert!(fixture.operations.reads.lock().unwrap().is_empty());
+	fixture.run.context.exposure.activate();
+	assert_eq!(
+		fixture
+			.call("skill_asset_read", read("SKILL.md", 0))
+			.await
+			.unwrap()["content"],
+		"Rea"
+	);
+	assert_eq!(*fixture.operations.reads.lock().unwrap(), ["SKILL.md"]);
+	fixture.operations.denied.insert("SKILL.md".into());
+	assert!(matches!(
+		fixture.call("skill_asset_read", read("SKILL.md", 0)).await,
+		Err(Error::Forbidden)
+	));
+	assert_eq!(
+		*fixture.operations.reads.lock().unwrap(),
+		["SKILL.md", "SKILL.md"],
+		"the allowed route reaches its denied private reader"
+	);
+	fixture.operations.reads.lock().unwrap().clear();
+	fixture.run.context.exposure.loaded[0].digest = "stale-loaded-revision".into();
+	assert!(
+		matches!(fixture.call("skill_asset_read", read("SKILL.md", 0)).await, Err(error) if code(&error) == ("invalid", "CAPABILITY_NOT_LOADED"))
+	);
+	assert!(fixture.operations.reads.lock().unwrap().is_empty());
 }
 
 #[tokio::test]
@@ -545,6 +632,7 @@ async fn the_capability_tools_describe_and_load_a_tool_the_run_pinned_from_a_plu
 			direct: vec![],
 			files: BTreeMap::new(),
 			read_bytes: 4,
+			..Default::default()
 		},
 		run,
 	};
