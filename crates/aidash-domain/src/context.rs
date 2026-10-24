@@ -357,7 +357,8 @@ impl Context {
 	}
 }
 
-/// Public inspection omits the durable, authority-bound Source cache.
+/// Public inspection omits source content, detail routes, selection manifests
+/// and delivery receipts; these execution records require source authority.
 #[derive(Debug, Serialize, schemars::JsonSchema)]
 pub struct InspectionContext<'a> {
 	#[serde(skip_serializing_if = "Option::is_none")]

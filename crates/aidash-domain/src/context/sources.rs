@@ -116,6 +116,11 @@ pub struct RetrievalScope {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct RetrievalKey {
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub query_policy: Option<super::source::QueryPolicy>,
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub input_digest: Option<String>,
+
 	pub run_id: Uuid,
 	pub query_digest: String,
 	pub inputs: Vec<InputRead>,
@@ -133,6 +138,8 @@ impl RetrievalKey {
 		scope: RetrievalScope,
 	) -> Self {
 		Self {
+			query_policy: None,
+			input_digest: None,
 			run_id,
 			query_digest: digest(&json!({"title":task.title,"description":task.description})),
 			inputs,
@@ -140,6 +147,15 @@ impl RetrievalKey {
 			binding_digest,
 			scope,
 		}
+	}
+
+	pub fn with_query_material(mut self, query: &super::source::QueryMaterial) -> Self {
+		if query.policy != super::source::QueryPolicy::TaskInputsV1 {
+			self.query_policy = Some(query.policy);
+			self.input_digest = Some(query.input_digest.clone());
+			self.query_digest = query.query_digest.clone();
+		}
+		self
 	}
 	pub fn digest(&self) -> String {
 		digest(&json!(self))

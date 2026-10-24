@@ -10,7 +10,8 @@ use aidash_domain::{
 		operations::{FileScope, MountedFile as FileEntry},
 		sessions::Area,
 		skills::{
-			MAX_RUN_SKILLS, Pinned, SkillList, SkillLoad, SkillRead, content_digest, validate,
+			MAX_RUN_SKILLS, Pinned, SkillList, SkillLoad, SkillMetadata, SkillRead, content_digest,
+			validate,
 		},
 	},
 	exposure::{DirectSkill, SkillOriginKind},
@@ -290,7 +291,28 @@ pub(crate) fn text_chunk(
 	let next = offset + count;
 	Ok((&text[start..end], (next < total).then_some(next)))
 }
+/// One authorized pinned Skill's metadata and currently loaded instructions.
+#[derive(Debug, Clone)]
+pub struct ContextItem {
+	pub metadata: SkillMetadata,
+	/// Exact legacy contribution, including its trailing newline(s).
+	pub text: String,
+}
+
 pub async fn context(scope: &mut dyn SkillScope, run: &RunMetadata) -> Result<String> {
+	let items = context_items(scope, run).await?;
+	let mut text = String::from("\nPinned Skills (select by UUID and origin; use skill_load):\n");
+	for item in items {
+		text.push_str(&item.text);
+	}
+	Ok(text)
+}
+
+/// Preserve source identity while using the same authority and reads as `context`.
+pub async fn context_items(
+	scope: &mut dyn SkillScope,
+	run: &RunMetadata,
+) -> Result<Vec<ContextItem>> {
 	scope.context_authority(run).await?;
 	let support = if deferred(scope)? {
 		SKILL_ASSET_READ
@@ -309,9 +331,9 @@ pub async fn context(scope: &mut dyn SkillScope, run: &RunMetadata) -> Result<St
 	scope.require(&resource, "tool.invoke").await?;
 	let record = scope.skill_record(run.id).await?;
 	let pinned: Vec<Pinned> = serde_json::from_value(record.data)?;
-	let mut text = String::from("\nPinned Skills (select by UUID and origin; use skill_load):\n");
+	let mut items = Vec::with_capacity(pinned.len());
 	for skill in pinned {
-		text.push_str(&serde_json::to_string(&skill.metadata)?);
+		let mut text = serde_json::to_string(&skill.metadata)?;
 		text.push('\n');
 		if skill.loaded {
 			let file = skill
@@ -323,8 +345,12 @@ pub async fn context(scope: &mut dyn SkillScope, run: &RunMetadata) -> Result<St
 			text.push_str(std::str::from_utf8(&bytes).map_err(|_| Error::Forbidden)?);
 			text.push('\n');
 		}
+		items.push(ContextItem {
+			metadata: skill.metadata,
+			text,
+		});
 	}
-	Ok(text)
+	Ok(items)
 }
 pub async fn mounted(scope: &mut dyn SkillScope, run: Uuid) -> Result<Vec<FileEntry>> {
 	let record = match scope.skill_record(run).await {

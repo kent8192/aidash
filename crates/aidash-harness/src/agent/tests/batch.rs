@@ -842,6 +842,52 @@ impl BindingResolver for Bench {
 
 #[async_trait]
 impl ExecutionEnvironment for Bench {
+	async fn context_source(
+		&self,
+		request: ContextSourceRead<'_>,
+		_worker: Uuid,
+		_frame: SourceQueryFrame<'_>,
+	) -> SemanticContextRead {
+		let result = match request {
+			ContextSourceRead::ResidentSkills { blocks, .. } => Ok(Some(serde_json::json!(
+				blocks
+					.iter()
+					.map(|block| block.text.as_str())
+					.collect::<String>()
+			))),
+			ContextSourceRead::RegistrySkills { .. } => unexpected("Registry Skill source"),
+			ContextSourceRead::WorkspaceObservation { run, offset, limit } => {
+				self.home(run).observation(offset, limit).await.map(Some)
+			}
+			ContextSourceRead::References { run: _, entry } => {
+				self.documents(entry).await.map(Some)
+			}
+			ContextSourceRead::Skills { run } => self
+				.skill_context(run)
+				.await
+				.map(|text| Some(serde_json::json!(text))),
+			ContextSourceRead::Semantic {
+				run,
+				task,
+				inputs,
+				budget,
+				entry,
+				key,
+				degrade_on_outage,
+			} => {
+				return self
+					.semantic_context(run, task, inputs, budget, entry, key, degrade_on_outage)
+					.await;
+			}
+		};
+		SemanticContextRead {
+			selections: vec![],
+			contributions: vec![],
+			workspace_retrieved: false,
+			result,
+		}
+	}
+
 	fn node_id(&self) -> &str {
 		"aidash://fixture"
 	}
@@ -886,15 +932,11 @@ impl ExecutionEnvironment for Bench {
 	fn binding_resolver(&self) -> &dyn BindingResolver {
 		self
 	}
-	async fn documents(&self, _entry: &Entry) -> Result<Value> {
-		unexpected("ExecutionEnvironment.documents")
-	}
+
 	async fn recheck_source_observation(&self, _run: &Run, _content: &Value) -> Result<()> {
 		unexpected("ExecutionEnvironment.recheck_source_observation")
 	}
-	async fn skill_context(&self, _run: &Run) -> Result<String> {
-		unexpected("ExecutionEnvironment.skill_context")
-	}
+
 	async fn direct_skills(&self, _run: &Run) -> Result<Vec<aidash_domain::exposure::DirectSkill>> {
 		Ok(vec![])
 	}
@@ -915,18 +957,7 @@ impl ExecutionEnvironment for Bench {
 	async fn retrieval_scope(&self, _run: &Run) -> Result<RetrievalScope> {
 		unexpected("ExecutionEnvironment.retrieval_scope")
 	}
-	async fn semantic_context(
-		&self,
-		_run: &Run,
-		_task: &Task,
-		_inputs: &[(InputRead, String)],
-		_budget: usize,
-		_entry: &Entry,
-		_key: Option<&RetrievalKey>,
-		_degrade_on_outage: bool,
-	) -> SemanticContextRead {
-		unexpected("ExecutionEnvironment.semantic_context")
-	}
+
 	async fn run_message_limit(&self, _run: &Run) -> Result<usize> {
 		Ok(16000)
 	}
@@ -1429,4 +1460,25 @@ async fn unloaded_aliases_end_the_batch_and_record_the_exposure_denial() {
 		])
 	);
 	assert_eq!(progress(&run), (4, None));
+}
+
+impl Bench {
+	async fn documents(&self, _entry: &Entry) -> Result<Value> {
+		unexpected("ExecutionEnvironment.documents")
+	}
+	async fn skill_context(&self, _run: &Run) -> Result<String> {
+		unexpected("ExecutionEnvironment.skill_context")
+	}
+	async fn semantic_context(
+		&self,
+		_run: &Run,
+		_task: &Task,
+		_inputs: &[(InputRead, String)],
+		_budget: usize,
+		_entry: &Entry,
+		_key: Option<&RetrievalKey>,
+		_degrade_on_outage: bool,
+	) -> SemanticContextRead {
+		unexpected("ExecutionEnvironment.semantic_context")
+	}
 }

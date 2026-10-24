@@ -49,6 +49,12 @@ impl BindingResolver for PinnedResolver {
 			if binding.excluded_reason.is_some() {
 				continue;
 			}
+			if aidash_domain::registry::bindings::sources::is_selection_decider(&binding.definition)
+				|| defaults::is_compaction_decider(&binding.definition)
+			{
+				self.authority.check_metadata(run, binding).await?;
+				continue;
+			}
 			self.authority.check(run, binding).await?;
 			let Some(alias) = &binding.alias else {
 				continue;

@@ -391,6 +391,7 @@ pub async fn resolve(
 		crate::tenant_secrets::admit(&name, &endpoint, hosts.as_deref())?;
 	}
 	if entry.kind == "agent" {
+		entry.binding_normalization = None;
 		let snapshot = crate::registry::bindings::resolve(
 			&mut Bindings { scope, node },
 			validation,
@@ -404,6 +405,11 @@ pub async fn resolve(
 		)
 		.await?;
 		validation.bound_prompt_headroom(&snapshot, &Value::Null)?;
+		entry.binding_normalization = snapshot
+			.definitions
+			.iter()
+			.find(|definition| definition.identity == snapshot.agent)
+			.and_then(|definition| definition.definition.binding_normalization.clone());
 	}
 	Ok((entry, graph.iter().map(reference).collect(), bindings))
 }
@@ -479,6 +485,13 @@ impl crate::ports::bindings::BindingCatalog for Bindings<'_> {
 	) -> Result<Entry> {
 		if reference.registry_deployment != self.node {
 			return Err(Error::Forbidden);
+		}
+		// The implicit system default is metadata until compaction is needed.
+		// Explicit package dependency authorization remains in local_graph.
+		if reference
+			== &aidash_domain::registry::bindings::defaults::compaction_reference(self.node)
+		{
+			return self.scope.raw(&reference.local()).await;
 		}
 		local(self.scope, &reference.local()).await
 	}

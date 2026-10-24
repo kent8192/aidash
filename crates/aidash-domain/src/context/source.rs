@@ -371,9 +371,19 @@ pub struct DetailRequest {
 	pub identity: CandidateIdentity,
 	pub route: DetailRoute,
 }
+/// Runtime-owned placement in the final source slot. Private bodies copied
+/// into history or another source never establish this source's delivery.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct SourcePlacement {
+	pub slot: String,
+	pub pointer: String,
+}
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct SourceContribution {
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub placement: Option<SourcePlacement>,
 	pub identity: CandidateIdentity,
 	pub content: Value,
 	pub provenance: Vec<SourcePin>,
@@ -388,6 +398,7 @@ impl From<SourceCandidate> for SourceContribution {
 	fn from(c: SourceCandidate) -> Self {
 		let content_digest = digest(&c.content);
 		Self {
+			placement: None,
 			identity: c.identity,
 			content: c.content,
 			provenance: c.provenance,

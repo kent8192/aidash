@@ -18,7 +18,8 @@ pub enum Operation {
 	Discovery,
 	Embeddings,
 	/// One System One request to a Decider's provider (a Decision Attempt).
-	/// It is always alone in `ops`, for a Run subject, with no output bound.
+	/// It is always alone in `ops`, for a Run or approval-observation subject,
+	/// with no output bound.
 	Decision,
 }
 
@@ -36,6 +37,13 @@ pub enum Maintenance {
 pub enum TokenSubject {
 	Run {
 		run: String,
+		call: Uuid,
+	},
+	/// An independently leased Shadow observation, including Generation
+	/// approvals that do not have an executing Run.
+	ApprovalObservation {
+		observation: Uuid,
+		tenant: String,
 		call: Uuid,
 	},
 	Maintenance {
@@ -185,6 +193,14 @@ impl PublicKeys {
 			TokenSubject::Maintenance { tenant, .. } if tenant != &claims.tenant => {
 				return Err(Failure::Tenant);
 			}
+			TokenSubject::ApprovalObservation { tenant, .. } if tenant != &claims.tenant => {
+				return Err(Failure::Tenant);
+			}
+			TokenSubject::ApprovalObservation {
+				observation, call, ..
+			} if observation.is_nil() || call.is_nil() => {
+				return Err(Failure::ClaimViolation);
+			}
 			_ => {}
 		}
 		if claims.credential.is_nil()
@@ -219,11 +235,16 @@ impl PublicKeys {
 			if claims.ops.len() != 1
 				|| claims.max_output_tokens != 0
 				|| claims.cache_breakpoints
-				|| !matches!(claims.sub, TokenSubject::Run { .. })
-			{
+				|| !matches!(
+					claims.sub,
+					TokenSubject::Run { .. } | TokenSubject::ApprovalObservation { .. }
+				) {
 				return Err(Failure::ClaimViolation);
 			}
-		} else if claims.max_output_tokens == 0 || !claims.hosts.is_empty() {
+		} else if claims.max_output_tokens == 0
+			|| !claims.hosts.is_empty()
+			|| matches!(claims.sub, TokenSubject::ApprovalObservation { .. })
+		{
 			return Err(Failure::ClaimViolation);
 		}
 		Ok(claims)

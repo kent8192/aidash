@@ -55,3 +55,13 @@ export function useViewerSubject(): string | null {
   const access = session.data?.access;
   return access?.kind === "subject" ? access.subject : null;
 }
+
+/** Tenant from the already authorized session; never guessed from a private ID. */
+export function useViewerTenant(): string | null {
+  const session = useQuery<SessionResponse>({
+    queryKey: ["session"],
+    enabled: false,
+  });
+  const access = session.data?.access;
+  return access?.kind === "subject" ? access.tenant : null;
+}
