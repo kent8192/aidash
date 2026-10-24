@@ -119,7 +119,10 @@
         "cache_salt": { "type": "boolean" },
         "provider_credential": { "type": ["string", "null"] },
         "disclosure_approval": { "type": ["string", "null"] },
-        "jev_classifier": { "type": "string" }
+        "jev_classifier": { "type": "string" },
+        "builtin_policy": {
+          "enum": ["historical-defaults/1", "minimal-task-support/1"]
+        }
       }
     },
     "variants": {

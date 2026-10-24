@@ -597,8 +597,9 @@ def run_deterministic(args, binary_directory):
                 config = runner.model_config(dict(spec, model_id=model_ids[name]), fixture_url, name)
                 model_refs[name] = dict(experiment.register("model", f"{prefix}-model-{name}", config),
                                         model_id=model_ids[name])
-            variants, registration_errors = runner.register_variants(experiment, corpus, planned_runs, model_refs,
-                                                                     fixture_url)
+            variants, registration_errors = runner.register_variants(
+                experiment, corpus, planned_runs, model_refs, fixture_url,
+                remove_all_defaults=corpus["version"] != "fixed-task-corpus-v1")
             availability = evaluation.feature_availability(corpus, args.comparison, registration_errors)
             if registration_errors and not args.allow_unavailable_arms:
                 # An arm the corpus marks available was rejected: a harness regression, not an absent feature.
@@ -657,7 +658,9 @@ def run_deterministic(args, binary_directory):
     model = {"kind": "scripted-fixture", "registrations": dict(model_refs),
              "reported_identities": sorted(model_ids.values()), "route": "local scripted fixture", "mutable_alias": False}
     harness = {"compaction": "none: ordinary Runs are not pruned until #108 (ADR 0041)", "cache_salt": True,
-               "provider_credential": None, "disclosure_approval": None, "jev_classifier": "none"}
+               "provider_credential": None, "disclosure_approval": None, "jev_classifier": "none",
+               "builtin_policy": "historical-defaults/1" if corpus["version"] == "fixed-task-corpus-v1"
+                                 else "minimal-task-support/1"}
     limits = {"run_timeout_seconds": args.run_timeout, "wall_seconds": max(1.0, time.monotonic() - started),
               "max_output_tokens": max(spec["max_output_tokens"] for spec in corpus["models"].values()),
               "spend_ceiling_nanocredits": None}
@@ -877,6 +880,7 @@ def live(args, read_json=None, transport=None, clock=time.monotonic, sleep=time.
                  "route": f"configured credential provider: {credential.get('provider')}", "mutable_alias": True,
                  "requested_routes": evaluation.requested_model_routes(models), "reported_routes": None}
         harness = {"compaction": "server-configured", "cache_salt": True,
+                   "builtin_policy": "minimal-task-support/1",
                    "execution_estimator": execution_estimator,
                    "source_provenance": "operator-attestation" if source_attestation else "remote-unverified",
                    "source_attestation_sha256": evaluation.canonical_sha256(source_attestation) if source_attestation else None,

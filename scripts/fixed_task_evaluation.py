@@ -33,7 +33,7 @@ from fixed_task_fixture import FIXTURE_PATCHES
 ROOT = Path(__file__).resolve().parent.parent
 EVALUATION = ROOT / "tests/evaluation"
 EVALUATOR_NAME = "aidash-fixed-task-evaluator"
-EVALUATOR_VERSION = "2.1.2"
+EVALUATOR_VERSION = "2.1.3"
 # Files whose bytes define the evaluator, relative to the repository root; their digest is in
 # every manifest. The schemas belong here because they decide which evidence `validate` accepts.
 EVALUATOR_FILES = ("scripts/fixed_task_evaluation.py", "scripts/fixed_task_fixture.py", "scripts/fixed_task_runner.py",
@@ -79,7 +79,8 @@ OPTIONAL_ORACLE_FIELDS = {"python-tests": {"timeout_seconds": "positive", "cases
                           "answer-pattern": {"forbidden_pattern": "pattern"}}
 # Messages that identify a failed compaction or an over-window request.
 OVERFLOW_PATTERNS = (re.compile(r"(?i)compaction could not fit"), re.compile(r"(?i)context (window|length|overflow)"),
-                     re.compile(r"(?i)exceeds? (the )?(model )?(context|window)"), re.compile(r"(?i)too (large|long) for"))
+                     re.compile(r"(?i)exceeds? (the )?(model )?(context|window)"), re.compile(r"(?i)too (large|long) for"),
+                     re.compile(r"(?i)mandatory context cannot fit the model window"))
 SUCCESS_CLAIM = re.compile(r"(?i)\b(all tests pass|tests pass|complete|completed|done|success|successful|finished)\b")
 # A negation earlier in the same sentence withdraws that success phrase; another sentence does not.
 NEGATION = re.compile(r"(?i)\b(not|no|never|cannot|can't|couldn't|didn't|wasn't|isn't|unable|failed|declined|denied|"

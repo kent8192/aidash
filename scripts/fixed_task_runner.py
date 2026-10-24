@@ -329,7 +329,13 @@ def cancel_run(api, token, task_uuid, run_id, clock, sleep, claim_uncertain=Fals
     if run["phase"] in TERMINAL:
         return run
     grace.post(f"/api/runs/{run_id}/control", {"action": "cancel"}, token)
-    return grace.get(f"/api/runs/{run_id}", token)["run"]
+    while True:
+        run = grace.get(f"/api/runs/{run_id}", token)["run"]
+        if run["phase"] in TERMINAL:
+            return run
+        if clock() >= grace_deadline:
+            raise RuntimeError(f"Run {run_id} did not acknowledge cancellation within {CANCEL_GRACE}s")
+        sleep(min(1.0, max(0.0, grace_deadline - clock())))
 
 
 def record_final_state(observation, run):
@@ -418,6 +424,17 @@ def run_task(api, experiment, planned, repeat, agent_ref, fixture=None, usage_re
                 if clock() > deadline:
                     raise DeadlineExceeded(f"Run {run_id} passed its {timeout}s time limit")
                 if run["phase"] == "WAITING":
+                    reason = run.get("state_error") or run.get("error") or ""
+                    if reason.startswith("Mandatory context cannot fit the model window;"):
+                        # The server requires changed pinned input, rather than
+                        # another provider retry. The fixed evaluator cannot
+                        # rewrite it. Stop the Run and preserve this observed
+                        # local cause instead of reporting a later timeout.
+                        stopped = stop_run(api, token, task_uuid, run_id, clock, sleep)
+                        if stopped is None:
+                            raise RuntimeError("the context-blocked Run could not be confirmed cancelled")
+                        run = dict(stopped, error=reason) if stopped["phase"] == "CANCELLED" else stopped
+                        break
                     for request in bounded.get("/api/state", token)["human_requests"]:
                         if request["run_id"] != run_id or request.get("response") is not None:
                             continue
