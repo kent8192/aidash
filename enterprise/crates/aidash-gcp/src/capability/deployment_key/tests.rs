@@ -51,7 +51,7 @@ async fn handle(State(api): State<Arc<Api>>, request: Request) -> Response {
 		[if version.ends_with("/2") { 8 } else { 7 }; 32],
 	);
 	if path.ends_with(":asymmetricSign") {
-		if mode == "sign_denied" {
+		if mode == "sign_denied" && version.ends_with("/2") {
 			return (StatusCode::FORBIDDEN, "sign denied").into_response();
 		}
 		let body = axum::body::to_bytes(request.into_body(), 8192)

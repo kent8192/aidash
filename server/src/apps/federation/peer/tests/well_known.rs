@@ -68,23 +68,26 @@ async fn a_deployment_with_a_key_file_publishes_the_key_id_and_the_public_key(
 
 #[rstest]
 #[tokio::test]
-async fn scheduled_keys_are_shared_across_processes_and_published_without_source_references(
+async fn independent_rings_share_parent_relative_keys_after_reconnection_and_publish_no_sources(
 	endpoint: EndpointFuture,
 ) {
 	use aidash_application::federation::key::{DeploymentKeySource, DeploymentKeys};
 	let app = endpoint.await;
 	let dir = tempfile::tempdir().unwrap();
-	let old_path = dir.path().join("old.pem");
+	let base = dir.path().join("server");
+	std::fs::create_dir(&base).unwrap();
+	let old_path = dir.path().join("secrets/old.pem");
 	let next_path = dir.path().join("successor.pem");
 	let other_path = dir.path().join("other.pem");
 	let old = FileDeploymentKey::generate(&old_path, false).unwrap();
 	FileDeploymentKey::generate(&next_path, false).unwrap();
 	FileDeploymentKey::generate(&other_path, false).unwrap();
-	let settings = serde_json::from_value(serde_json::json!({ "file": old_path })).unwrap();
+	let settings =
+		serde_json::from_value(serde_json::json!({ "file": "../secrets/old.pem" })).unwrap();
 	let load = || {
 		aidash_server::bootstrap::configure_deployment_keys(
 			Some(&settings),
-			dir.path(),
+			&base,
 			app.runtime.config.deployment.clone(),
 			app.runtime.store.pool.clone(),
 		)
@@ -103,13 +106,13 @@ async fn scheduled_keys_are_shared_across_processes_and_published_without_source
 	assert_eq!(usize::from(one.is_ok()) + usize::from(two.is_ok()), 1);
 	let publication = first.publication(now).await.unwrap();
 	let successor = publication.successor.unwrap();
-	std::fs::remove_file(dir.path().join("old.pem")).unwrap();
+	std::fs::remove_file(&old_path).unwrap();
 	let connection = aidash_server::database::runtime::connect(&app.runtime.config.database_url, 2)
 		.await
 		.unwrap();
 	let restarted = aidash_server::bootstrap::configure_deployment_keys(
 		Some(&settings),
-		dir.path(),
+		&base,
 		app.runtime.config.deployment.clone(),
 		connection.into_postgres().unwrap().into(),
 	)
