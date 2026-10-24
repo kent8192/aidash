@@ -297,7 +297,7 @@ async function setup(
     }
     return route.fulfill({ json: [] });
   });
-  return { posts, errors, queries };
+  return { posts, errors, registrations, queries };
 }
 
 const openAccountMenu = (page: Page) =>
@@ -522,13 +522,142 @@ test("a question waiting in another Node is listed, and answering it goes to tha
   expect(errors).toEqual([]);
 });
 
+/** The browser owns deliberate independent confirmation and stale-form handling;
+ * actual record authority/CAS persistence is owned by HTTP/PostgreSQL tests. */
+test("receiving keys require independent confirmation and discard stale consent", async ({
+  page,
+}) => {
+  const { registrations, errors } = await setup(page);
+  const source = "aidash://remote/remote-node";
+  registrations.first.push(
+    registration("first", source, {
+      endpoint: "https://remote.example",
+      key_id: "a".repeat(43),
+      enabled: false,
+    }),
+  );
+  const writes: Record<string, unknown>[] = [];
+  let status = {
+    key_id: "a".repeat(43),
+    quarantined: false,
+    keys_revision: 1,
+    authorization_revision: 2,
+    enabled: false,
+  };
+  let conflict = false;
+  await page.route(
+    "**/api/tenants/alpha/nodes/first/registration-keys**",
+    async (route) => {
+      if (route.request().method() === "GET")
+        return route.fulfill({ json: status });
+      const body = route.request().postDataJSON();
+      writes.push(body);
+      if (conflict) {
+        conflict = false;
+        status = { ...status, keys_revision: 3 };
+        return route.fulfill({
+          status: 409,
+          json: { error: "revision changed" },
+        });
+      }
+      status = {
+        ...status,
+        quarantined: body.action === "quarantine",
+        keys_revision: status.keys_revision + 1,
+      };
+      return route.fulfill({ json: status });
+    },
+  );
+  await page.goto("/settings?view=nodes");
+  const row = page.locator(`[data-registration="${source}"]`);
+  await row.getByRole("button", { name: "Manage key", exact: true }).click();
+  await page
+    .getByRole("button", { name: "Quarantine key", exact: true })
+    .click();
+  await expect(
+    page.getByText("Key quarantined", { exact: true }),
+  ).toBeVisible();
+  await page
+    .getByLabel("Independently confirmed key ID", { exact: true })
+    .fill("b".repeat(43));
+  await page
+    .getByLabel("Public key PEM", { exact: true })
+    .fill("-----BEGIN PUBLIC KEY-----\nfixture\n-----END PUBLIC KEY-----");
+  const confirm = page.getByRole("button", {
+    name: "Confirm key",
+    exact: true,
+  });
+  await expect(confirm).toBeDisabled();
+  await page
+    .getByLabel("I checked the key ID through a separate trusted channel", {
+      exact: true,
+    })
+    .check();
+  conflict = true;
+  await confirm.click();
+  await expect(
+    page.getByText(
+      "The record changed. Review its current key and confirm again.",
+      { exact: true },
+    ),
+  ).toBeVisible();
+  await expect(confirm).toBeDisabled();
+  await page
+    .getByLabel("I checked the key ID through a separate trusted channel", {
+      exact: true,
+    })
+    .check();
+  await confirm.click();
+  expect(writes).toEqual([
+    {
+      source_node: source,
+      action: "quarantine",
+      expected_keys_revision: 1,
+      expected_authorization_revision: 2,
+    },
+    {
+      source_node: source,
+      action: "confirm",
+      expected_keys_revision: 2,
+      expected_authorization_revision: 2,
+      expected_key_id: "b".repeat(43),
+      public_key_pem:
+        "-----BEGIN PUBLIC KEY-----\nfixture\n-----END PUBLIC KEY-----",
+    },
+    {
+      source_node: source,
+      action: "confirm",
+      expected_keys_revision: 3,
+      expected_authorization_revision: 2,
+      expected_key_id: "b".repeat(43),
+      public_key_pem:
+        "-----BEGIN PUBLIC KEY-----\nfixture\n-----END PUBLIC KEY-----",
+    },
+  ]);
+  expect(errors).toEqual([]);
+});
+
 test("Node management switches the default, confirms deletion and falls back to the live default", async ({
   page,
 }) => {
-  const { posts, queries, errors } = await setup(page);
+  const { posts, queries, registrations, errors } = await setup(page);
+  const source = "aidash://remote/retained-source";
+  registrations.first.push(
+    registration("first", source, {
+      endpoint: "https://remote.example",
+      key_id: "a".repeat(43),
+      enabled: false,
+    }),
+  );
   await page.goto("/settings?view=nodes");
   const first = page.locator('[data-lifecycle-node="first"]');
   const second = page.locator('[data-lifecycle-node="second"]');
+  const keys = page.locator("section.panel").filter({
+    has: page.getByRole("heading", { name: "Deleted Node keys", exact: true }),
+  });
+  await expect(keys.getByRole("button", { name: "Review keys" })).toHaveCount(
+    0,
+  );
   await expect(
     first.getByRole("button", { name: "Delete Node", exact: true }),
   ).toHaveCount(0);
@@ -561,10 +690,25 @@ test("Node management switches the default, confirms deletion and falls back to 
     1,
   );
   await page.keyboard.press("Escape");
+  // The same mounted panel must refresh after deletion, without navigation,
+  // refocus or reload. Selecting it opens the existing foreign record controls.
+  await expect(keys.getByText("Home", { exact: true })).toBeVisible();
+  await keys.getByRole("button", { name: "Review keys" }).click();
+  await expect(keys.getByText(source, { exact: true })).toBeVisible();
+  await expect(
+    keys.getByRole("button", { name: "Manage key", exact: true }),
+  ).toBeVisible();
   await first
     .getByRole("button", { name: "Restore Node", exact: true })
     .click();
   await expect(page.locator('[data-node="first"]')).toBeVisible();
+  await expect(keys.getByRole("button", { name: "Review keys" })).toHaveCount(
+    0,
+  );
+  await expect(keys.getByText(source, { exact: true })).toHaveCount(0);
+  await expect(
+    keys.getByRole("button", { name: "Manage key", exact: true }),
+  ).toHaveCount(0);
   expect(posts.map((post) => post.path)).toEqual([
     "/api/tenants/alpha/nodes/second/default",
     "/api/tenants/alpha/nodes/first/deletion",
