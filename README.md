@@ -81,14 +81,14 @@ clients retain no total timeout while reinhardt-web#6689 remains open.
 ### Standalone authentication and Marketplace
 
 The Enterprise workspace also contains two independent services:
-[shared authentication](enterprise/crates/aidash-auth-server/README.md) and
-[Marketplace distribution](enterprise/crates/aidash-marketplace-server/README.md).
+[shared authentication](enterprise/auth/backend/README.md) and
+[Marketplace distribution](enterprise/marketplace/backend/README.md).
 Each has its own process, configuration, schema, database role and migration
 command. They start without the Cloud server, worker or NATS. A physical
 PostgreSQL instance may be shared with separate ownership and credentials.
 
-The [Marketplace web app](enterprise/marketplace-web/README.md) has its own build
-and container; the [authentication web app](enterprise/auth-web/README.md) is
+The [Marketplace web app](enterprise/marketplace/frontend/README.md) has its own build
+and container; the [authentication web app](enterprise/auth/frontend/README.md) is
 bundled with its service image. See the [independent deployment chart](enterprise/deploy/standalone-service/README.md)
 and [approved authentication/distribution design](docs/authentication-and-standalone-marketplace-design.md).
 Cloud enables shared authentication explicitly through `[dashboard.common_auth]` and

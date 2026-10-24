@@ -1,0 +1,24 @@
+# Build enterprise/auth/backend/Dockerfile from the repository root.
+port: 8081
+args: ["--config", "/run/aidash/config/auth.toml", "serve"]
+grpc:
+  enabled: true
+  port: 9091
+secretVolumes:
+  - name: configuration
+    secretName: authentication-config
+    mountPath: /run/aidash/config
+  - name: credentials
+    secretName: authentication-runtime
+    mountPath: /run/secrets
+  - name: grpc-tls
+    secretName: authentication-tls
+    mountPath: /run/secrets/auth-tls
+certificate:
+  enabled: true
+  secretName: authentication-tls
+  issuerRef:
+    name: aidash-services
+    kind: ClusterIssuer
+  dnsNames: [authentication.internal]
+  usages: [server auth]

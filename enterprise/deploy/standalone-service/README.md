@@ -3,14 +3,15 @@
 Install this chart separately for authentication and Marketplace. Their image,
 configuration, replicas and migration commands are independent; neither release
 starts a Cloud server or worker. A frontend release can serve
-`enterprise/marketplace-web` and proxy its API/auth routes to Marketplace.
+`enterprise/marketplace/frontend` and proxy its API/auth routes to Marketplace.
 
 Build images from the repository root:
 
 ```sh
-docker build -f enterprise/crates/aidash-auth-server/Dockerfile -t aidash-auth:local .
-docker build -f enterprise/crates/aidash-marketplace-server/Dockerfile -t aidash-marketplace:local .
-docker build -t aidash-marketplace-web:local enterprise/marketplace-web
+docker build -f enterprise/auth/backend/Dockerfile -t aidash-auth:local .
+docker build -f enterprise/marketplace/backend/Dockerfile -t aidash-marketplace:local .
+docker build -t aidash-auth-web:local enterprise/auth/frontend
+docker build -t aidash-marketplace-web:local enterprise/marketplace/frontend
 ```
 
 In production use digest-pinned private-registry image references. Supply existing
@@ -37,6 +38,49 @@ Nginx renders its configuration into `/etc/nginx/conf.d` and keeps its PID/cache
 under `/tmp`. The rest of its filesystem remains read-only, with the same
 unprivileged UID and group as the backend releases. Authentication's service
 image already bundles its own independent web assets.
+
+## Helm examples and native startup proof
+
+Use `auth-backend.values.yaml` and `marketplace-backend.values.yaml` as non-secret
+examples. Set real public origins, configuration/credential Secret names, service
+account and certificate issuer/SAN before installation. The Authentication
+configuration Secret contains `auth.toml`; its runtime Secret uses the mounted
+filenames in `enterprise/auth/backend/auth.example.toml`. Migration-owner
+credentials are supplied only to the explicit migration command, never to the
+serving Deployment. The Marketplace runtime Secret contains `database-url` and
+its separately named client/resource/Billing/enrollment/Recall secret files.
+
+```sh
+helm lint enterprise/deploy/standalone-service \
+  -f enterprise/deploy/standalone-service/auth-backend.values.yaml \
+  --set-string image="$AUTH_IMAGE_DIGEST"
+helm template authentication enterprise/deploy/standalone-service \
+  -f enterprise/deploy/standalone-service/auth-backend.values.yaml \
+  --set-string image="$AUTH_IMAGE_DIGEST"
+# Use marketplace-backend.values.yaml for the independent Marketplace release.
+```
+
+A local entry-point smoke test starts a disposable PostgreSQL database, applies
+each production bootstrap file and each binary's own migrations, then uses only
+runtime credentials. It starts Marketplace with Authentication absent, reads
+public metadata, starts Authentication, checks OIDC discovery/Pages and the BFF's
+PKCE redirect/HttpOnly cookie, then stops Marketplace while Authentication stays
+healthy. It starts no Cloud process, worker, NATS or Cloud migration. It requires
+Docker, OpenSSL and already-built native binaries/Authentication Pages assets:
+
+```sh
+cargo build --locked --manifest-path enterprise/Cargo.toml \
+  -p aidash-auth-server -p aidash-marketplace-server --bins
+python3 scripts/test-standalone-services.py \
+  --auth-binary enterprise/target/debug/aidash-auth-server \
+  --marketplace-binary enterprise/target/debug/aidash-marketplace-server \
+  --auth-assets enterprise/auth/frontend/dist
+```
+
+The Authentication PostgreSQL suite separately verifies every service role's
+cross-service read/write denial, sealed migration history and absence of
+cross-schema foreign keys. Its signed GCIP fixtures and real mTLS transports do
+not establish live GCIP provider configuration or cluster certificate issuance.
 
 ## Certificate issuance and rotation
 

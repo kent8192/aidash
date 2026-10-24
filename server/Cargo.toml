@@ -36,7 +36,10 @@ aidash-application.workspace = true
 aidash-capability.workspace = true
 aidash-harness.workspace = true
 aidash-runtime.workspace = true
-aidash-integrations = { workspace = true, features = ["authentication"] }
+aidash-integrations = { workspace = true, features = [
+  "cloud-adapters",
+  "authentication",
+] }
 reinhardt = { workspace = true, features = [
   "api-only",
   "uuid",

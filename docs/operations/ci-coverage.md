@@ -189,3 +189,21 @@ The ideal path is the ordinary `playwright install --with-deps chromium` against
 working runner sources. Remove the URL rewrite after unmodified hosted sources
 complete the same bounded installation reliably across the browser and cluster
 jobs; keep the deadline and required acceptance assertions.
+
+## Standalone products
+
+`Standalone Authentication web contracts` and `Standalone Marketplace web
+contracts` build the independent `enterprise/{auth,marketplace}/frontend` Pages
+projects, lint native/WASM targets, and run their Playwright contracts. The
+Authentication job publishes its built static assets for `Standalone native
+service acceptance`. That job builds only the two service packages, verifies
+their production dependency graphs, and runs `scripts/test-standalone-services.py`
+with a disposable PostgreSQL database and production bootstrap/seal scripts.
+It starts no Cloud server, worker, NATS or Cloud migrations. The `CI Success`
+aggregate requires this service acceptance job for full CI.
+
+Library tests in the Enterprise workspace additionally exercise signed OIDC/BFF
+flows, Product Session and refresh boundaries, mTLS peer permissions and source
+lifecycle, real service-role isolation and cross-schema FK rejection. These
+local/hosted fixtures do not establish live GCIP, cluster deployment, provider
+billing or production cutover acceptance.

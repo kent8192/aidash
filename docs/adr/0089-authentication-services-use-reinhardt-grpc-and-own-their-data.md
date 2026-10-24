@@ -25,3 +25,12 @@ The standalone Marketplace exposes public listing and detail metadata, including
 - Implementation must supply the missing Reinhardt server/client transport support, peer identity handling and service authorization integration before authentication cutover. Certificate issuance and rotation are also required; they are not provided by the existing Workload Identity configuration.
 - Service credentials, migrations and independent startup checks must demonstrate ownership boundaries even while PostgreSQL infrastructure is shared.
 - This is an accepted target architecture; neither the framework extensions nor service extraction are implemented here.
+
+## Implementation
+
+Authentication is implemented under `enterprise/auth/backend` and Marketplace
+under `enterprise/marketplace/backend`, each as a generated Reinhardt project
+with an owning app. Their sibling `frontend` directories are generated Pages
+projects with independent static builds. Each backend owns its bootstrap/seal
+DDL and native migrations; neither starts or migrates Cloud. The shared database
+role/FK contract is verified in Authentication's PostgreSQL suite.

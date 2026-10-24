@@ -1,0 +1,3 @@
+settings/*.toml
+!settings/*.example.toml
+target/

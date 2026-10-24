@@ -1,0 +1,7 @@
+node_modules
+dist
+target
+pkg
+test-results
+playwright-report
+.env*

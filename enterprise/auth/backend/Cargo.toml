@@ -1,0 +1,65 @@
+[package]
+name = "aidash-auth-server"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+default-run = "aidash-auth-server"
+
+[lints]
+workspace = true
+
+[dependencies]
+aidash-application.workspace = true
+aidash-domain.workspace = true
+aidash-gcp.workspace = true
+aidash-integrations = { workspace = true, features = ["authentication"] }
+async-trait.workspace = true
+aes-gcm = "0.10"
+base64 = "0.22"
+bytes = "1"
+chrono.workspace = true
+ctor = "0.6"
+http = "1"
+linkme = "0.3"
+reinhardt = { workspace = true, features = [
+  "minimal",
+  "db-postgres",
+  "auth-oidc-op",
+  "argon2-hasher",
+  "grpc-tls",
+] }
+reqwest = { version = "0.13", default-features = false, features = [
+  "json",
+  "rustls",
+] }
+serde.workspace = true
+serde_json.workspace = true
+sha2 = "0.10"
+subtle = "2"
+sqlx = { version = "0.8.6", default-features = false, features = [
+  "runtime-tokio",
+  "postgres",
+] }
+thiserror = "2"
+tokio.workspace = true
+tokio-stream = { version = "0.1", features = ["net"] }
+toml = "1.1"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
+url = "2"
+uuid.workspace = true
+
+[dev-dependencies]
+jsonwebtoken = { version = "11.1", default-features = false, features = [
+  "aws_lc_rs",
+  "use_pem",
+] }
+aidash-marketplace-server = { path = "../../marketplace/backend" }
+reinhardt = { workspace = true, features = ["test", "testcontainers"] }
+rstest.workspace = true
+rcgen = "0.14.8"
+
+[[bin]]
+name = "aidash-auth-server"
+path = "src/bin/manage.rs"

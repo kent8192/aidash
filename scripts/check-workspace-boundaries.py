@@ -5,6 +5,7 @@ import json
 import os
 from pathlib import Path
 import re
+import subprocess
 import sys
 import tomllib
 
@@ -143,8 +144,8 @@ def enterprise_violations(metadata, root):
     workspace = manifest["workspace"]
     if workspace.get("resolver") != "3":
         errors.append("the Enterprise workspace must use resolver 3")
-    if workspace.get("members") != ["crates/*", "server"]:
-        errors.append("the Enterprise workspace must include crates/* and server")
+    if workspace.get("members") != ["crates/*", "server", "auth/backend", "marketplace/backend"]:
+        errors.append("the Enterprise workspace must include crates/*, server and both standalone backends")
     if "package" in manifest:
         errors.append("the Enterprise root manifest must be a virtual workspace")
     community = root.parent
@@ -176,7 +177,9 @@ def enterprise_violations(metadata, root):
                 continue
             pending.extend((dependency, [*path, packages[dependency]["name"]])
                            for dependency in graph.get(package_id, []))
-    errors.extend(module_violations(root, (root / "crates", root / "server")))
+    errors.extend(module_violations(root, (root / "crates", root / "server",
+                                         root / "auth" / "backend", root / "marketplace" / "backend",
+                                         root / "auth" / "frontend", root / "marketplace" / "frontend")))
     return errors
 
 
@@ -188,6 +191,20 @@ def main():
     root = Path(metadata["workspace_root"])
     if args.workspace == "enterprise":
         errors = enterprise_violations(metadata, root)
+        # Workspace metadata unifies all members' features. Check each actual
+        # standalone production build separately so Cloud's selected adapters
+        # cannot mask a runtime/NATS dependency in a service-only build.
+        forbidden = {"aidash-server", "aidash-enterprise-server", "aidash-runtime",
+                     "aidash-harness", "async-nats"}
+        for service in ("aidash-auth-server", "aidash-marketplace-server"):
+            result = subprocess.run(
+                ["cargo", "tree", "--locked", "--manifest-path", str(root / "Cargo.toml"),
+                 "-p", service, "--edges", "normal,build", "--prefix", "none"],
+                capture_output=True, text=True, check=True,
+            )
+            found = {line.split()[0] for line in result.stdout.splitlines() if line.strip()} & forbidden
+            errors.extend(f"standalone build includes {dependency}: {service}"
+                          for dependency in sorted(found))
         message = "The Enterprise workspace composes only Community crates and follows the Rust 2024 conventions."
     else:
         errors = violations(metadata, root)

@@ -396,10 +396,15 @@ jobs:
     needs: scope
     if: needs.scope.outputs.mode == 'full'
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 60
+    env:
+      CARGO_BUILD_JOBS: "2"
+      CARGO_PROFILE_DEV_DEBUG: "0"
+      CARGO_INCREMENTAL: "0"
+      RUST_MIN_STACK: "8388608"
     defaults:
       run:
-        working-directory: enterprise/marketplace-web
+        working-directory: enterprise/marketplace/frontend
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -408,10 +413,20 @@ jobs:
         with:
           node-version: "24.12.0"
           cache: npm
-          cache-dependency-path: enterprise/marketplace-web/package-lock.json
+          cache-dependency-path: enterprise/marketplace/frontend/package-lock.json
+      - name: Install the native framework build prerequisite
+        run: ../../../scripts/install-ci-protoc.sh
+      - name: Install Pages browser build prerequisites
+        run: |
+          rustup target add wasm32-unknown-unknown
+          cargo install wasm-pack --version 0.15.0 --locked
       - run: npm ci
       - name: Build without the Cloud dashboard or API generator
         run: npm run build
+      - name: Lint native and WASM frontend targets
+        run: |
+          cargo clippy --locked --all-targets -- -D warnings
+          cargo clippy --locked --target wasm32-unknown-unknown --all-targets -- -D warnings
       - run: npx playwright install --with-deps chromium
       - name: Exercise UI HTTP contracts with controlled backend responses
         run: npm test -- --reporter=list,json
@@ -421,17 +436,22 @@ jobs:
         if: always()
         with:
           name: marketplace-web-browser-contracts
-          path: enterprise/marketplace-web/test-results/
+          path: enterprise/marketplace/frontend/test-results/
           if-no-files-found: ignore
   authentication-web:
     name: Standalone Authentication web contracts
     needs: scope
     if: needs.scope.outputs.mode == 'full'
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 60
+    env:
+      CARGO_BUILD_JOBS: "2"
+      CARGO_PROFILE_DEV_DEBUG: "0"
+      CARGO_INCREMENTAL: "0"
+      RUST_MIN_STACK: "8388608"
     defaults:
       run:
-        working-directory: enterprise/auth-web
+        working-directory: enterprise/auth/frontend
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -440,10 +460,20 @@ jobs:
         with:
           node-version: "24.12.0"
           cache: npm
-          cache-dependency-path: enterprise/auth-web/package-lock.json
+          cache-dependency-path: enterprise/auth/frontend/package-lock.json
+      - name: Install the native framework build prerequisite
+        run: ../../../scripts/install-ci-protoc.sh
+      - name: Install Pages browser build prerequisites
+        run: |
+          rustup target add wasm32-unknown-unknown
+          cargo install wasm-pack --version 0.15.0 --locked
       - run: npm ci
       - name: Build authentication assets without the Cloud dashboard
         run: npm run build
+      - name: Lint native and WASM frontend targets
+        run: |
+          cargo clippy --locked --all-targets -- -D warnings
+          cargo clippy --locked --target wasm32-unknown-unknown --all-targets -- -D warnings
       - run: npx playwright install --with-deps chromium
       - name: Exercise browser proof flows with the controlled GCIP adapter
         run: npm test -- --reporter=list,json
@@ -453,8 +483,47 @@ jobs:
         if: always()
         with:
           name: authentication-web-browser-contracts
-          path: enterprise/auth-web/test-results/
+          path: enterprise/auth/frontend/test-results/
           if-no-files-found: ignore
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: authentication-pages-build
+          path: enterprise/auth/frontend/dist/
+          if-no-files-found: error
+  standalone-services:
+    name: Standalone native service acceptance
+    needs: [scope, authentication-web]
+    if: needs.scope.outputs.mode == 'full'
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    env:
+      CARGO_BUILD_JOBS: "2"
+      CARGO_INCREMENTAL: "0"
+      CARGO_PROFILE_DEV_DEBUG: "0"
+      RUST_MIN_STACK: "8388608"
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - run: scripts/install-ci-protoc.sh
+      - uses: Swatinem/rust-cache@49a0bdc70d2e1b713ca9e2869b211fcce03d3c1c # v2
+        with:
+          shared-key: standalone-services
+          workspaces: "enterprise -> target"
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        with:
+          name: authentication-pages-build
+          path: enterprise/auth/frontend/dist/
+      - name: Build only the independent native services
+        run: |
+          cargo metadata --locked --format-version 1 --manifest-path enterprise/Cargo.toml | python3 scripts/check-workspace-boundaries.py --workspace enterprise
+          cargo build --locked --manifest-path enterprise/Cargo.toml -p aidash-auth-server -p aidash-marketplace-server --bins
+      - name: Start both services without Cloud, worker or NATS
+        run: |
+          python3 scripts/test-standalone-services.py \
+            --auth-binary enterprise/target/debug/aidash-auth-server \
+            --marketplace-binary enterprise/target/debug/aidash-marketplace-server \
+            --auth-assets enterprise/auth/frontend/dist
   infrastructure-tests:
     name: Infrastructure contract tests
     needs: scope
@@ -610,6 +679,7 @@ jobs:
         enterprise-web,
         marketplace-web,
         authentication-web,
+        standalone-services,
         bruno,
         acceptance,
         browser,

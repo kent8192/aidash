@@ -1,4 +1,4 @@
-# Set image to the digest-pinned image built from enterprise/marketplace-web.
+# Set image to the digest-pinned image built from enterprise/marketplace/frontend.
 port: 8080
 environment:
   MARKETPLACE_BACKEND_URL: http://marketplace:8082

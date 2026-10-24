@@ -100,17 +100,17 @@ Installed local copies do not need the Marketplace for each execution. A plugin'
 
 ## Migration and delivery constraints
 
-1. Supply the missing Reinhardt gRPC transport support, service authentication and certificate lifecycle before private RPC cutover.
+1. Use the pinned Reinhardt gRPC transport and service authentication support, and provision/verify the certificate lifecycle before private RPC cutover.
 2. Make the Authentication Server capable of checking legacy Identities and durable origins before Cloud operations depend on it. Preserve External Identity UUIDs, issuer/subject pairs, Mappings, Subject Credentials, Personal Tenants, Billing owner references and Run origins.
 3. Assign common Accounts lazily at the first new sign-in, with an explicit choice of new Account or fresh proof of an existing Account. Do not eagerly allocate one Account per legacy Identity: the no-merge rule would then prevent those Identities from joining one Account later.
 4. Invalidate old browser/Desktop sessions at cutover while preserving admitted work. First Account assignment establishes retained Account provenance for that Identity's existing work; later unlink does not replace it.
 5. Deliver independent Marketplace web/backend startup, migrations and artifact distribution. Keep old Shared Package functionality distinct. Limit the initial shared-auth sign-in rollout to Cloud and Marketplace.
 
-These are prerequisite and compatibility constraints, not a claim that a migration or deployment has run. Implementation task breakdown follows final design confirmation. Cutover and rollback must not restore an older path that ignores current stops; production update/backup procedures must also preserve the existing ADR 0082 contract.
+These are prerequisite and compatibility constraints, not a claim that a migration or deployment has run. The implementation uses independent generated projects as described below. Cutover and rollback must not restore an older path that ignores current stops; production update/backup procedures must also preserve the existing ADR 0082 contract.
 
 ## Implementation acceptance criteria
 
-The following are required future verification scenarios, not tests already run by this documentation change.
+The following are acceptance contracts. Local automated evidence, hosted CI and live provider/cluster acceptance are recorded separately in PR #507.
 
 | Area                              | Required evidence                                                                                                                                                                                                  |
 | --------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
@@ -132,6 +132,47 @@ The following are required future verification scenarios, not tests already run 
 | Recall persistence                | Learned Recall blocks new Runs after communication loss and Connection removal; an offline-issued Recall applies on resynchronization without promising earlier delivery                                           |
 | Enforcement claims                | Demonstrate server-side acquisition restrictions; never represent local signatures, mTLS or Recall as proof against a modified Self-hosted runtime                                                                 |
 | Source/build boundary             | Community builds without Enterprise; GCIP code/data remains Enterprise; shared dependencies stay aligned across the two workspaces                                                                                 |
+
+## Implemented project layout
+
+Each product owns a generated Reinhardt REST backend and Pages frontend:
+
+```text
+enterprise/
+  auth/
+    backend/     # authentication app, HTTP/OIDC, gRPC, store and migrations
+    frontend/    # account Pages app, GCIP browser bridge and static assets
+  marketplace/
+    backend/     # distribution app, BFF, Entitlements, Connections and Recalls
+    frontend/    # catalog Pages app, Library and Publisher UI
+```
+
+`reinhardt-admin startproject` and `startapp` generate both project/app
+boundaries, using `--template rest` for backends and `--template pages` for
+frontends. Templates come from the same immutable Reinhardt revision as the
+service dependencies. Existing service crate names, migration app labels,
+public URLs and source identity references are retained. Native backends remain
+members of the Enterprise workspace; Auth selects only authentication/JWKS and
+GCIP adapters, while Cloud explicitly selects its `cloud-adapters`/`cloud`
+features. The architecture gate checks each service-only production graph for
+Runtime, Harness, NATS and Cloud-server dependencies. Frontends have independent Cargo/npm
+lockfiles and static image builds. The frontend is not an additional persistence
+owner. OIDC tokens and confidential clients remain entirely backend-owned.
+
+The owning app modules and their real HTTP/PostgreSQL contracts implement
+ADRs 0083–0089; Cloud's existing browser/Desktop/source-lifecycle tests also own
+ADR 0090 compatibility. Marketplace and Registry acceptance cases own ADRs
+0091–0092, including persisted acquisition deadlines, verify/pin, Recall and
+Connection removal. Browser contracts exercise the actual Pages WASM UI with
+controlled external responses. They do not prove live GCIP or payment-provider
+acceptance. Service role/FK tests apply the distributed bootstrap/seal scripts
+to a shared physical PostgreSQL database with no Cloud schema or migrations.
+
+Use the per-product READMEs and the
+[deployment guide](../enterprise/deploy/standalone-service/README.md) for current
+build commands, owner/runtime credentials, certificate configuration and image
+paths. Production cutover, rebuilt release-image provenance, hosted CI and live
+GCIP/cluster/payment evidence must be reported independently of local tests.
 
 ## Decision records
 
