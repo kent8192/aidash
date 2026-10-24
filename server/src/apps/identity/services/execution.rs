@@ -661,7 +661,7 @@ impl WorkerAuthority {
 		run: &Run,
 		skill_id: Uuid,
 		digest: &str,
-	) -> Result<String> {
+	) -> Result<Option<String>> {
 		let mut access = self.access.write().await;
 		crate::capabilities::skills::direct_body(store, &mut access, run, skill_id, digest).await
 	}

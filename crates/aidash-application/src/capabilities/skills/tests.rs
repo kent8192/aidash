@@ -148,7 +148,7 @@ mod exposure {
 		policy::Resource,
 		registry::{EntityRef, Entry, bindings::BindingSnapshot},
 	};
-	use std::collections::BTreeMap;
+	use std::collections::{BTreeMap, BTreeSet};
 
 	const NODE: &str = "aidash://local";
 
@@ -160,6 +160,8 @@ mod exposure {
 		stored: BTreeMap<Uuid, Vec<u8>>,
 		updates: usize,
 		required: Vec<String>,
+		reads: Vec<Uuid>,
+		denied: BTreeSet<Uuid>,
 	}
 	#[async_trait::async_trait]
 	impl FileScopePort for Scope {
@@ -288,6 +290,10 @@ mod exposure {
 			})
 		}
 		async fn read_skill_file(&mut self, file: &FileEntry) -> Result<Vec<u8>> {
+			self.reads.push(file.file_id);
+			if self.denied.contains(&file.file_id) {
+				return Err(Error::Forbidden);
+			}
 			Ok(self
 				.stored
 				.get(&file.file_id)
@@ -377,6 +383,8 @@ mod exposure {
 			stored: BTreeMap::new(),
 			updates: 0,
 			required: vec![],
+			reads: vec![],
+			denied: BTreeSet::new(),
 		}
 	}
 	fn run() -> RunMetadata {
@@ -449,7 +457,7 @@ mod exposure {
 			direct_body(&mut scope, &run, skill.skill_id, &skill.digest)
 				.await
 				.unwrap(),
-			text
+			Some(text)
 		);
 		assert!(matches!(
 			direct_body(&mut scope, &run, skill.skill_id, "changed").await,
@@ -599,5 +607,137 @@ mod exposure {
 		let mut scope = scope(false, &skill);
 		assert!(direct(&mut scope, &run()).await.unwrap().is_empty());
 		assert!(scope.required.is_empty());
+	}
+
+	#[rstest::rstest]
+	#[case::legacy(false)]
+	#[case::deferred(true)]
+	#[tokio::test]
+	async fn mixed_on_demand_skill_bodies_are_excluded_before_automatic_reads(
+		#[case] deferred: bool,
+	) {
+		use aidash_domain::{
+			context::source::{PinPolicy, SourceTools},
+			registry::bindings::{
+				QualifiedRef,
+				sources::{NativeContext, NativeSource},
+			},
+		};
+		let mut public = metadata();
+		public.origin = "area:workspace:.agents/skills/public".into();
+		let mut private = metadata();
+		private.origin = "area:workspace:private/.agents/skills/private".into();
+		let mut scope = scope(deferred, &public);
+		let mut root = crate::test_support::agent("agent");
+		root.config["instructions"] = json!("");
+		if deferred {
+			root.config["exposure"] = json!({"version":"deferred@1"});
+		}
+		for source in ["mounted-skills", "private-skills"] {
+			root.config["bindings"]
+				.as_array_mut()
+				.unwrap()
+				.push(crate::test_support::binding("source", NODE, source));
+		}
+		let mut on_demand = NativeContext {
+			schema_version: 1,
+			source: NativeSource::SkillRoots {
+				roots: vec!["private/.agents/skills".into()],
+			},
+			context_source: None,
+		};
+		let mut declaration = on_demand.declaration(&QualifiedRef {
+			registry_deployment: NODE.into(),
+			id: "private-skills".into(),
+			version: "1.0.0".into(),
+		});
+		declaration.pin = PinPolicy::OnDemand;
+		declaration.tools = SourceTools::default();
+		on_demand.context_source = Some(declaration);
+		scope.snapshot = crate::test_support::resolve(
+			NODE,
+			&root,
+			false,
+			vec![
+				crate::test_support::entry(
+					"mounted-skills",
+					"source",
+					json!({"schema_version":1,"source":{"adapter":"skill_roots","roots":[".agents/skills"]}}),
+				),
+				crate::test_support::entry("private-skills", "source", json!(on_demand)),
+			],
+		);
+		let public_file = file("SKILL.md", b"Always body");
+		let private_file = file("SKILL.md", b"OnDemand body");
+		scope
+			.stored
+			.insert(public_file.file_id, b"Always body".to_vec());
+		scope
+			.stored
+			.insert(private_file.file_id, b"OnDemand body".to_vec());
+		scope.denied.insert(private_file.file_id);
+		scope.pinned = json!([
+			Pinned {
+				metadata: public.clone(),
+				loaded: true,
+				files: vec![public_file.clone()],
+				instruction_json_len: None
+			},
+			Pinned {
+				metadata: private.clone(),
+				loaded: true,
+				files: vec![private_file.clone()],
+				instruction_json_len: None
+			},
+		]);
+
+		let items = context_items(&mut scope, &run()).await.unwrap();
+		assert_eq!(items.len(), 1);
+		assert_eq!(items[0].metadata.skill_id, public.skill_id);
+		assert!(items[0].text.contains("Always body"));
+		assert_eq!(scope.reads, [public_file.file_id]);
+		if deferred {
+			scope.reads.clear();
+			let catalog = direct(&mut scope, &run()).await.unwrap();
+			assert_eq!(
+				catalog.len(),
+				2,
+				"OnDemand remains discoverable through its tools"
+			);
+			assert!(
+				!scope.reads.contains(&private_file.file_id),
+				"discovery must not read old-record OnDemand bodies merely to measure them"
+			);
+			scope.reads.clear();
+			assert_eq!(
+				direct_body(&mut scope, &run(), private.skill_id, &private.digest)
+					.await
+					.unwrap(),
+				None
+			);
+			assert_eq!(
+				direct_body(&mut scope, &run(), public.skill_id, &public.digest)
+					.await
+					.unwrap()
+					.as_deref(),
+				Some("Always body")
+			);
+			assert_eq!(scope.reads, [public_file.file_id]);
+		}
+		let read = json!({"skill_id":private.skill_id,"digest":private.digest,"path":"SKILL.md","max_chars":16});
+		assert!(
+			matches!(
+				invoke(&mut scope, &run(), "skill_read", read.clone()).await,
+				Err(Error::Forbidden)
+			),
+			"manual read reaches the same denied private object"
+		);
+		scope.denied.clear();
+		assert_eq!(
+			invoke(&mut scope, &run(), "skill_read", read)
+				.await
+				.unwrap()["content"],
+			"OnDemand body"
+		);
 	}
 }

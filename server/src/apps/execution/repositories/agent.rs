@@ -1228,7 +1228,12 @@ impl ExecutionEnvironment for Environment<'_> {
 			None => Ok(vec![]),
 		}
 	}
-	async fn direct_skill_body(&self, run: &Run, skill_id: Uuid, digest: &str) -> Result<String> {
+	async fn direct_skill_body(
+		&self,
+		run: &Run,
+		skill_id: Uuid,
+		digest: &str,
+	) -> Result<Option<String>> {
 		self.authority
 			.as_ref()
 			.and_then(|authority| authority.guard.local_authority())
@@ -1445,46 +1450,22 @@ impl Environment<'_> {
 			.ok_or_else(|| {
 				aidash_application::Error::Invalid("Run has no admitted Binding snapshot".into())
 			})?;
-		let mut documents = vec![];
-		for binding in &snapshot.bindings {
-			if binding.excluded_reason.is_some()
-				|| binding.definition.kind != "source"
-				|| binding.definition.config.get("schema_version").is_none()
-			{
-				continue;
-			}
-			let context: aidash_domain::registry::bindings::sources::NativeContext =
-				serde_json::from_value(binding.definition.config.clone())?;
-			if matches!(
-				context.source,
-				aidash_domain::registry::bindings::sources::NativeSource::PrivateReferences { .. }
-			) {
-				let tenant = self.federation.store.run_tenant(self.step_run.id).await?;
-				let value =
-					crate::knowledge::load(&self.federation.registry, &tenant, &binding.definition)
-						.await?;
-				documents.extend(
-					value
-						.as_array()
-						.ok_or_else(|| {
-							aidash_application::Error::Invalid(
-								"private source is not a document list".into(),
-							)
-						})?
-						.iter()
-						.cloned(),
-				);
-			}
-		}
-		Ok(serde_json::json!(documents))
+		let tenant = self.federation.store.run_tenant(self.step_run.id).await?;
+		self.federation
+			.registry
+			.automatic_documents(&tenant, &snapshot.bindings)
+			.await
+			.map_err(Into::into)
 	}
 	async fn skill_context(&self, run: &Run) -> Result<String> {
 		let settings =
-			AgentConfig::from_snapshot(run.context.binding_snapshot.as_ref().ok_or_else(
+			AgentConfig::automatic_context(run.context.binding_snapshot.as_ref().ok_or_else(
 				|| aidash_application::Error::Invalid("Run has no Binding snapshot".into()),
 			)?)?;
 		// Support-tool availability does not opt in to mounted Skill Sources.
-		if !settings.core_capabilities.skills {
+		if !settings.core_capabilities.skills
+			|| settings.skill_attachments.is_empty() && settings.skill_roots.is_empty()
+		{
 			return Ok(String::new());
 		}
 		if let Some(authority) = self
