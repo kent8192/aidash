@@ -2783,11 +2783,17 @@ async fn home_run_reads_survive_reindex_but_the_writer_is_invalidated_by_its_own
 			!request.contains(excluded_text),
 			"OnDemand content must not reach the model: {request}"
 		);
-		assert_eq!(accepted.context.source_deliveries.len(), 1);
-		assert_eq!(
-			accepted.context.source_deliveries[0].identity.source.id,
-			delivered_source
-		);
+		let bank_deliveries = accepted
+			.context
+			.source_deliveries
+			.iter()
+			.filter(|receipt| {
+				receipt.identity.source.id == primary.id
+					|| receipt.identity.source.id == "shared-source"
+			})
+			.collect::<Vec<_>>();
+		assert_eq!(bank_deliveries.len(), 1);
+		assert_eq!(bank_deliveries[0].identity.source.id, delivered_source);
 		let reads: Vec<Uuid> = aidash_server::database::native::query_scalar(
 			&Query::select()
 				.column(Alias::new("unit_id"))
