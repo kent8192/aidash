@@ -82,6 +82,8 @@ pub struct InspectInput {
 }
 #[derive(Clone)]
 pub struct Record {
+	/// Permanent cancellation of the original admission, including before activation.
+	pub cancelled: bool,
 	pub id: Uuid,
 	/// The receiving Node.
 	pub node: crate::nodes::NodeName,
@@ -100,7 +102,8 @@ impl Record {
 		subjects: &[String],
 		description: &Description,
 	) -> serde_json::Result<bool> {
-		Ok(self.source_node == description.source_node
+		Ok(!self.cancelled
+			&& self.source_node == description.source_node
 			&& self.grant_id == description.grant_id
 			&& self.task_id == description.task.id
 			&& self.tenant == identity.tenant

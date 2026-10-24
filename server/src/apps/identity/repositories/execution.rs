@@ -151,7 +151,13 @@ impl ExecutionGrantSession for GrantScope<'_> {
 		self.access.worker();
 	}
 	async fn refresh(&mut self, run: Uuid) -> Result<()> {
-		self.access.refresh_execution(run).await.map_err(Into::into)
+		self.access.refresh_execution(run).await?;
+		crate::apps::execution::repositories::node_cancellations::require_run_open(
+			&mut **self.access.tx,
+			run,
+		)
+		.await
+		.map_err(Into::into)
 	}
 	async fn required_grant(&mut self, run: Uuid) -> Result<ExecutionGrant> {
 		let result: NativeResult<Grant> = async {

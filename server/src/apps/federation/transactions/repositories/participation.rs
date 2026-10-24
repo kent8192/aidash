@@ -64,7 +64,23 @@ pub(crate) async fn require_live_participant_in(
 		&tenant,
 		address.node.as_str(),
 	)
-	.await
+	.await?;
+	let participant = manifest
+		.local(&address.to_string())
+		.map_err(|_| Error::Forbidden)?;
+	for mutation in &participant.mutations {
+		use crate::apps::execution::repositories::node_cancellations;
+		match mutation {
+			aidash_domain::transactions::Mutation::FinishRun { run_id, .. } => {
+				node_cancellations::require_fresh_run(tx, &tenant, *run_id).await?
+			}
+			aidash_domain::transactions::Mutation::CompleteTask { task_id, .. } => {
+				node_cancellations::require_fresh_task(tx, &tenant, *task_id).await?
+			}
+			aidash_domain::transactions::Mutation::WorkspaceState { .. } => {}
+		}
+	}
+	Ok(())
 }
 
 pub(crate) async fn require_live_participant(

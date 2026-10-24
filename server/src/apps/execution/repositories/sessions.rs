@@ -634,6 +634,7 @@ impl SessionScope for Scope<'_> {
 		result.map_err(Into::into)
 	}
 	async fn pin(&mut self, run_id: Uuid, area: &mut Area, config: &AgentConfig) -> Result<()> {
+		super::node_cancellations::require_area_open(&mut **self.access.tx, area.id).await?;
 		let store = self
 			.store
 			.ok_or_else(|| Error::External("session repository scope invariant".into()))?;
@@ -647,6 +648,7 @@ impl SessionScope for Scope<'_> {
 		result.map_err(Into::into)
 	}
 	async fn enqueue(&mut self, run_id: Uuid, area: &Area, initialized: bool) -> Result<()> {
+		super::node_cancellations::require_area_open(&mut **self.access.tx, area.id).await?;
 		let result: NativeResult<_> = async {
 			let access = &mut *self.access;
 			{

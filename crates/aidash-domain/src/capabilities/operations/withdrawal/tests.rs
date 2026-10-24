@@ -4,6 +4,8 @@ use rstest::{fixture, rstest};
 fn snapshot() -> Snapshot {
 	Snapshot {
 		operation_id: Uuid::from_u128(1),
+		digest: "immutable-intent".into(),
+		runner_instance: Some("original-runner".into()),
 		kind: "shell".into(),
 		state: "running".into(),
 		result: json!({}),
@@ -91,4 +93,20 @@ fn a_withdrawn_shell_stays_fenced_after_a_confirmed_stop(mut snapshot: Snapshot)
 	snapshot.state = "cancelling".into();
 	snapshot.area_state = "uncertain".into();
 	assert_eq!(snapshot.change(true).area_state, None);
+}
+
+#[rstest]
+#[case::confirmed("uncertain", json!({"termination_confirmed":true,"runner_acknowledged":true}), Some("runner"), true)]
+#[case::ack_only("completed", json!({"runner_acknowledged":true}), Some("runner"), false)]
+#[case::stop_only("completed", json!({"termination_confirmed":true}), Some("runner"), false)]
+#[case::undispatched("withdrawn", json!({"effects_may_have_occurred":false}), None, true)]
+#[case::uncertain_no_shortcut("uncertain", json!({"effects_may_have_occurred":false}), None, false)]
+#[case::malformed("failed", json!({"termination_confirmed":"true","runner_acknowledged":true}), Some("runner"), false)]
+fn deletion_requires_exact_physical_completion(
+	#[case] state: &str,
+	#[case] result: Value,
+	#[case] instance: Option<&str>,
+	#[case] expected: bool,
+) {
+	assert_eq!(safe_to_erase(state, &result, instance), expected);
 }
