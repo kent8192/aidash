@@ -2,6 +2,14 @@
 use crate::{RunControl, RunPhase, TaskStatus, run_input::RunInput, run_state::RawRun};
 use serde_json::{Value, json};
 
+/// These saved continuations have already chosen their outcome. Stop owners
+/// must deliver them before replacing pending execution with a terminal state.
+pub fn has_saved_continuation(raw: &RawRun) -> bool {
+	crate::run_state::decode(raw.metadata.phase, raw.pending.clone()).is_ok_and(|(state, _)| {
+		state.failure_delivery() || state.tool().is_ok_and(|tool| tool.finalizing)
+	})
+}
+
 /// This does not replace Home authorization. The remote owner still checks its
 /// original grant, current policy and revision before applying a callback.
 pub fn allows(
@@ -27,8 +35,9 @@ pub fn allows(
 		RunPhase::Completed => Some(TaskStatus::Completed),
 		RunPhase::Failed => Some(TaskStatus::Failed),
 		RunPhase::Cancelled => Some(TaskStatus::Cancelled),
+		_ if saved_failure.is_some() => saved_failure,
 		_ if raw.metadata.control == RunControl::Cancelled => Some(TaskStatus::Cancelled),
-		_ => saved_failure,
+		_ => None,
 	};
 	let keys_only = |keys: &[&str]| {
 		data.as_object().is_some_and(|object| {
@@ -67,9 +76,7 @@ pub fn allows(
 		"run_message_terminal_transition" => {
 			original_run
 				&& keys_only(&["revision", "status", "run_id", "keys", "through_seq"])
-				&& (terminal.is_some_and(|target| data["status"] == json!(target))
-					|| (!raw.metadata.phase.is_terminal()
-						&& saved_failure.is_some_and(|target| data["status"] == json!(target))))
+				&& terminal.is_some_and(|target| data["status"] == json!(target))
 				&& data["keys"] == json!([])
 				&& data["through_seq"].as_i64()
 					== Some(inputs.iter().map(|input| input.seq).max().unwrap_or(0))
@@ -102,7 +109,7 @@ mod tests {
 
 	#[rstest::rstest]
 	#[case::saved_failure(TaskStatus::Failed, true)]
-	#[case::cancellation(TaskStatus::Cancelled, true)]
+	#[case::cancellation(TaskStatus::Cancelled, false)]
 	#[case::invented_success(TaskStatus::Completed, false)]
 	fn saved_failure_delivery_survives_cancel_without_admitting_fresh_commands(
 		#[case] target: TaskStatus,

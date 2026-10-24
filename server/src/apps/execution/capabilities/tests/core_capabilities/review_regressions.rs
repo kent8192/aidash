@@ -753,12 +753,14 @@ async fn command_cleanup_fixture(
 async fn cleanup_runner(
 	c: &mut CoreFixture,
 	operation: Uuid,
+	uncertain: bool,
 ) -> (
 	reinhardt::test::fixtures::server::TestServerGuard,
 	Arc<std::sync::atomic::AtomicBool>,
 	Arc<std::sync::Mutex<Vec<Value>>>,
 	Arc<std::sync::Mutex<String>>,
 ) {
+	use sha2::Digest as _;
 	use std::sync::{
 		Mutex,
 		atomic::{AtomicBool, Ordering},
@@ -778,13 +780,30 @@ async fn cleanup_runner(
 				.lock()
 				.unwrap()
 				.push(json!({"path":path,"body":body}));
+			let content = b"new";
+			let file_digest = format!("{:x}", sha2::Sha256::digest(content));
+			let mut output = json!({"operation_id":operation,"digest":"immutable-intent","status":"uncertain",
+				"termination_confirmed":stopped.load(Ordering::SeqCst),"output_harvested":true,"acknowledged":false,
+				"stdout":"cmVjb3ZlcmVkIHBhcnRpYWw=","files":[{"object_id":file_digest,"digest":file_digest,"size":3,"path":"saved.txt"}],"truncated":true});
+			let proof = aidash_domain::capabilities::operations::processing::output_digest(&health_instance.lock().unwrap(), &output).unwrap();
+			output["output_digest"] = json!(proof);
 			let response = if path == "/v1/health" {
 				json!({"instance":*health_instance.lock().unwrap()})
 			} else if path.ends_with("/cancel") || path.ends_with("/stop") {
 				json!({"operation_id":operation,"digest":"immutable-intent","termination_confirmed":stopped.load(Ordering::SeqCst)})
+			} else if path == format!("/v1/operations/{operation}") && uncertain {
+				output
+			} else if path == format!("/v1/operations/{operation}/files/{file_digest}") && uncertain {
+				json!({"data":"bmV3","offset":0,"size":3,"digest":file_digest})
 			} else if path == format!("/v1/operations/{operation}/ack") {
 				assert_eq!(body["digest"], "immutable-intent");
-				json!({"acknowledged":true})
+				if uncertain {
+					assert!(stopped.load(Ordering::SeqCst));
+					assert_eq!(body["output_digest"], proof, "uncertain ACK requires adopted output");
+				}
+				if uncertain {
+					json!({"operation_id":operation,"digest":"immutable-intent","status":"uncertain","termination_confirmed":true,"acknowledged":true,"acknowledged_output_digest":proof})
+				} else { json!({"acknowledged":true}) }
 			} else {
 				json!({"status":"absent"})
 			};
@@ -822,7 +841,7 @@ async fn withdrawn_dispatched_receipt_is_durably_acknowledged_after_retry(
 ) {
 	use std::sync::atomic::Ordering;
 	let (mut c, _, id) = Box::pin(command_cleanup_fixture).await;
-	let (_runner, confirmed, requests, _) = cleanup_runner(&mut c, id).await;
+	let (_runner, confirmed, requests, _) = cleanup_runner(&mut c, id, false).await;
 	sqlx::query(
 		&Query::update()
 			.table(Alias::new("core_operations"))
@@ -954,7 +973,7 @@ async fn frozen_python_stop_persists_all_bound_cells_without_touching_replacemen
 ) {
 	use std::sync::atomic::Ordering;
 	let (mut c, area, latest) = Box::pin(command_cleanup_fixture).await;
-	let (_runner, confirmed, requests, instance) = cleanup_runner(&mut c, latest).await;
+	let (_runner, confirmed, requests, instance) = cleanup_runner(&mut c, latest, false).await;
 	let session = Uuid::new_v4();
 	let other_session = Uuid::new_v4();
 	let original = json!({"termination_confirmed":false,"runner_acknowledged":true,"writer_frozen":true,"stdout":"saved output","displays":[{"type":"text","data":"kept"}],"offset":19,"error":null});
@@ -1150,7 +1169,8 @@ async fn node_deletion_retries_original_terminal_writer_without_rewriting_output
 ) {
 	use std::sync::atomic::Ordering;
 	let (mut c, _, id) = Box::pin(command_cleanup_fixture).await;
-	let (_runner, confirmed, requests, instance) = cleanup_runner(&mut c, id).await;
+	let (_runner, confirmed, requests, instance) =
+		cleanup_runner(&mut c, id, state == "uncertain" && !acknowledged).await;
 	let original = json!({"termination_confirmed":false,"runner_acknowledged":acknowledged,"effects_may_have_occurred":true,"stdout":"retained output","error":"saved outcome","offset":17});
 	sqlx::query(
 		&Query::update()
@@ -1223,6 +1243,65 @@ async fn node_deletion_retries_original_terminal_writer_without_rewriting_output
 		assert_eq!(pending, if done && acknowledged { 0 } else { 1 });
 	}
 	if !acknowledged {
+		let profile = (*c.f.store.capabilities.0).clone();
+		let mut constrained = profile.clone();
+		constrained.working_bytes = 4;
+		constrained.retained_bytes = 4;
+		c.f.store.capabilities = Runtime::new(constrained).unwrap();
+		let (stop, receiver) = tokio::sync::watch::channel(false);
+		let failed = CapabilityWorker {
+			stop,
+			handle: tokio::spawn(aidash_server::capabilities::operations::run(
+				c.f.store.clone(),
+				receiver,
+			)),
+		};
+		let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(12);
+		loop {
+			let reads = requests
+				.lock()
+				.unwrap()
+				.iter()
+				.filter(|r| r["path"].as_str().is_some_and(|p| p.contains("/files/")))
+				.count();
+			if reads >= 2 {
+				break;
+			}
+			assert!(
+				tokio::time::Instant::now() < deadline,
+				"saved output was not retried after quota failure"
+			);
+			tokio::time::sleep(std::time::Duration::from_millis(30)).await;
+		}
+		failed.stop.send(true).unwrap();
+		failed.await.unwrap().unwrap();
+		assert_eq!(
+			cleanup_operation(&c, id).await.1["runner_acknowledged"],
+			false
+		);
+		assert!(
+			!requests
+				.lock()
+				.unwrap()
+				.iter()
+				.any(|r| r["path"] == format!("/v1/operations/{id}/ack"))
+		);
+		let objects: i64 = sqlx::query_scalar(
+			&Query::select()
+				.expr(Expr::cust("COUNT(*)"))
+				.from(Alias::new("core_objects"))
+				.to_string(PostgresQueryBuilder),
+		)
+		.fetch_one(c.f.store.pool.fixture_driver())
+		.await
+		.unwrap();
+		assert_eq!(
+			objects, 0,
+			"failed adoption rolls back objects and quota together"
+		);
+		c.f.store.capabilities = Runtime::new(profile).unwrap();
+	}
+	if !acknowledged {
 		// Stop proof alone cannot retire the queue. Let the production receipt
 		// owner acknowledge this exact saved operation before maintenance retries.
 		let worker = CapabilityWorker {
@@ -1240,7 +1319,27 @@ async fn node_deletion_retries_original_terminal_writer_without_rewriting_output
 				let mut expected = original.clone();
 				expected["termination_confirmed"] = json!(true);
 				expected["runner_acknowledged"] = json!(true);
-				assert_eq!(result, expected);
+				let output = &result["stopped_output"];
+				assert!(result["stopped_output_digest"].is_string());
+				for (file, bytes) in [
+					(&output["files"][0], b"new".as_slice()),
+					(&output["output_file"], b"recovered partial".as_slice()),
+				] {
+					let id = file["file_id"].as_str().unwrap().parse::<Uuid>().unwrap();
+					assert_eq!(
+						tokio::fs::read(c.root.join(id.simple().to_string()))
+							.await
+							.unwrap(),
+						bytes
+					);
+				}
+				let mut semantic = result.clone();
+				semantic.as_object_mut().unwrap().remove("stopped_output");
+				semantic
+					.as_object_mut()
+					.unwrap()
+					.remove("stopped_output_digest");
+				assert_eq!(semantic, expected);
 				break;
 			}
 			assert!(
@@ -1298,7 +1397,7 @@ async fn node_deletion_due_cursor_visits_later_jobs_after_a_failed_page(
 	command_cleanup_fixture: (CoreFixture, Uuid, Uuid),
 ) {
 	let (mut c, area, id) = Box::pin(command_cleanup_fixture).await;
-	let (_runner, _, requests, instance) = cleanup_runner(&mut c, id).await;
+	let (_runner, _, requests, instance) = cleanup_runner(&mut c, id, false).await;
 	*instance.lock().unwrap() = "replacement".into();
 	sqlx::query(&Query::update().table(Alias::new("core_operations"))
  .value(Alias::new("state"),"uncertain").value(Alias::new("runner_instance"),"cleanup-runner")

@@ -677,7 +677,15 @@ async fn preserved_baseline_does_not_generate_table_recreation(
 	let log = File::create(&log_path).unwrap();
 	command.stdout(log.try_clone().unwrap()).stderr(log);
 	// Act: use the shipped command, including installed-app model scope.
-	let result = tokio::time::timeout(Duration::from_secs(35), command.status()).await;
+	let started = std::time::Instant::now();
+	let mut child = command.spawn().unwrap();
+	eprintln!(
+		"schema-check child={} log={}",
+		child.id().unwrap(),
+		log_path.display()
+	);
+	let result = tokio::time::timeout(Duration::from_secs(35), child.wait()).await;
+	eprintln!("schema-check elapsed={:?}", started.elapsed());
 	let output = std::fs::read_to_string(log_path).unwrap();
 	assert!(
 		result.is_ok(),

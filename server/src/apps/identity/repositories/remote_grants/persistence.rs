@@ -94,12 +94,22 @@ impl GrantScope for Scope {
 		self.access.subjects.push(subject);
 	}
 	async fn inherit_task_origin(&mut self, id: Uuid) -> Result<()> {
+		crate::apps::execution::repositories::node_cancellations::require_task_open(
+			self.access.tx.as_mut(),
+			id,
+		)
+		.await?;
 		crate::authorization::execution::inherit_task_origin(&mut self.access, id)
 			.await
 			.map(|_| ())
 			.map_err(Into::into)
 	}
 	async fn live(&mut self, id: Uuid) -> Result<bool> {
+		crate::apps::execution::repositories::node_cancellations::require_grant_open(
+			self.access.tx.as_mut(),
+			id,
+		)
+		.await?;
 		live(&mut self.access, id).await.map_err(Into::into)
 	}
 	async fn grant_reads_visible(&mut self, id: Uuid) -> Result<bool> {

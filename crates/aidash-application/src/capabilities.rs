@@ -111,6 +111,7 @@ pub mod runner;
 pub mod reconciliation;
 
 pub mod processing;
+mod receipt_output;
 
 pub mod outbound;
 

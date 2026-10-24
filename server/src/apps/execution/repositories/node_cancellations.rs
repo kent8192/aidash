@@ -162,6 +162,12 @@ pub(crate) async fn record(
 pub(crate) async fn require_task_open(tx: &mut dyn TransactionExecutor, task: Uuid) -> Result<()> {
 	require_work_open(tx, "task", task).await
 }
+pub(crate) async fn require_grant_open(
+	tx: &mut dyn TransactionExecutor,
+	grant: Uuid,
+) -> Result<()> {
+	require_work_open(tx, "grant", grant).await
+}
 pub(crate) async fn require_admission_open(
 	tx: &mut dyn TransactionExecutor,
 	id: Uuid,
@@ -510,8 +516,71 @@ async fn stop_run(f: &Federation, job: &NodeCancellationJob) -> Result<bool> {
 		.await?;
 	tx.commit().await?;
 	let Some(owned) = owned else { return Ok(false) };
+	raw.metadata = owned.clone();
+	if aidash_domain::federation::execution::settlement::has_saved_continuation(&raw) {
+		let result = settle_saved_run(f, &scope, raw, token).await;
+		if result.is_err() {
+			f.store.release_lease(&scope, job.work_id, token).await?;
+		}
+		return result;
+	}
 	f.store
 		.cancel_owned_execution(&scope, &owned, token)
+		.await?;
+	Ok(true)
+}
+
+/// Resume only the saved settlement, after releasing the cancellation locks.
+/// Home ledgers make a lost reply retryable without repeating inference or effects.
+async fn settle_saved_run(
+	f: &Federation,
+	scope: &TenancyScope,
+	raw: RawRun,
+	token: Uuid,
+) -> Result<bool> {
+	use aidash_domain::{RunState, WaitingState, run_state::TerminalState};
+	let (state, _) = aidash_domain::run_state::decode(raw.metadata.phase, raw.pending.clone())?;
+	if let RunState::Waiting(wait) = &state
+		&& let WaitingState::FailureDelivery { target, .. } = **wait
+	{
+		let result = async {
+			f.deliver_run_message_metadata(&raw.metadata).await?;
+			f.transition_terminal_metadata(&raw.metadata, target.task_status(), None)
+				.await
+				.map(|task| task.status)
+		}
+		.await;
+		let settled = result.is_ok();
+		f.store
+			.finish_failure_delivery(
+				scope,
+				&super::store::run_state::FailureDelivery {
+					metadata: raw.metadata,
+					target,
+				},
+				token,
+				result,
+			)
+			.await?;
+		return Ok(settled);
+	}
+	let mut run = raw.decode()?;
+	let home = crate::federation::Home::new(f.clone(), run.clone());
+	let task = home.task().await?;
+	let artifact = aidash_domain::ArtifactInput {
+		kind: "text".into(),
+		name: aidash_application::execution::result_artifact_name(&task.title),
+		content: serde_json::json!(run.state.tool()?.response.text),
+	};
+	let task = home
+		.complete(&format!("{}:complete", run.id), &artifact)
+		.await?;
+	if task.status != TaskStatus::Completed {
+		return Err(Error::Conflict("saved completion is not settled".into()));
+	}
+	run.state = RunState::Completed(TerminalState {});
+	f.store
+		.save_run(scope, &run, token, "run.completed")
 		.await?;
 	Ok(true)
 }
@@ -557,9 +626,43 @@ async fn stop_task(f: &Federation, job: &NodeCancellationJob) -> Result<bool> {
 	)
 	.fetch_one(&mut *tx)
 	.await?;
+	// A local saved finalization/failure still owns this exact Home Task. Its
+	// Run job may be retrying transport, so this tick must leave the Task intact.
+	let workspace: aidash_domain::Workspace = crate::database::query_as(
+		&Query::select()
+			.column(reinhardt::query::ColumnRef::Asterisk)
+			.from(Alias::new("workspaces"))
+			.and_where(Expr::col("id").eq(Expr::value(task.workspace_id)))
+			.and_where(Expr::col("tenant").eq(Expr::value(job.tenant.clone())))
+			.to_string(PostgresQueryBuilder),
+	)
+	.fetch_one(&mut *tx)
+	.await?;
+	let saved: Vec<RawRun> = crate::database::query_as(
+		&Query::select()
+			.column(reinhardt::query::ColumnRef::Asterisk)
+			.from(Alias::new("runs"))
+			.and_where(Expr::col("tenant").eq(Expr::value(job.tenant.clone())))
+			.and_where(Expr::col("task_id").eq(Expr::value(task.id)))
+			.and_where(Expr::col("workspace_id").eq(Expr::value(task.workspace_id)))
+			.and_where(Expr::col("home_node").eq(Expr::value(format!(
+				"{}/{}",
+				f.config.deployment, workspace.node
+			))))
+			.and_where(Expr::col("phase").is_not_in(["COMPLETED", "FAILED", "CANCELLED"]))
+			.to_string(PostgresQueryBuilder),
+	)
+	.fetch_all(&mut *tx)
+	.await?;
+	if saved
+		.iter()
+		.any(aidash_domain::federation::execution::settlement::has_saved_continuation)
+	{
+		return Ok(false);
+	}
 	if !matches!(
 		task.status,
-		TaskStatus::Completed | TaskStatus::Cancelled | TaskStatus::Abandoned
+		TaskStatus::Completed | TaskStatus::Failed | TaskStatus::Cancelled | TaskStatus::Abandoned
 	) {
 		f.store
 			.transition_in(

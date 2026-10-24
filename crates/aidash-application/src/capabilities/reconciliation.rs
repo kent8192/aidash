@@ -375,8 +375,10 @@ async fn upload_inputs(
 	}
 	Ok(())
 }
-async fn download_output(
-	scope: &mut dyn OperationReconciliationScope,
+pub(super) async fn download_output<
+	T: crate::ports::capabilities::processing::OutputTransfer + ?Sized,
+>(
+	scope: &mut T,
 	operation: Uuid,
 	file: &Value,
 ) -> Result<(Uuid, String)> {

@@ -4,7 +4,10 @@ use aidash_domain::{RunControl, TaskStatus};
 
 /// Receiver cancellation after revocation must not require reaching its Home node.
 pub async fn finish_cancelled(scope: &mut dyn FailureScope) -> Result<bool> {
-	if scope.metadata().control == RunControl::Cancelled && scope.remote_grant().await? {
+	if scope.metadata().control == RunControl::Cancelled
+		&& scope.target() == TaskStatus::Cancelled
+		&& scope.remote_grant().await?
+	{
 		scope.finish(Ok(TaskStatus::Cancelled)).await?;
 		return Ok(true);
 	}

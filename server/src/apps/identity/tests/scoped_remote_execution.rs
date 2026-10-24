@@ -7199,11 +7199,14 @@ async fn node_deletion_or_explicit_cancel_prevents_late_activation(
 /// The real final-completion owner survives deletion, while a cached Home cannot
 /// use restoration to admit a different effect.
 #[rstest::rstest]
+#[case::saved_finalization(false)]
+#[case::saved_failure(true)]
 #[tokio::test]
 async fn node_deletion_blocks_cached_home_but_preserves_exact_finalization(
+	#[case] saved_failure: bool,
 	#[future(awt)] scoped_pair: Pair,
 ) {
-	let p = scoped_pair;
+	let mut p = scoped_pair;
 	for _ in 0..10 {
 		let run = p.run().await;
 		if run
@@ -7216,7 +7219,7 @@ async fn node_deletion_blocks_cached_home_but_preserves_exact_finalization(
 		p.step().await;
 	}
 	let token = Uuid::new_v4();
-	let run =
+	let mut run =
 		p.b.store
 			.lease_run(token, 60)
 			.await
@@ -7231,12 +7234,26 @@ async fn node_deletion_blocks_cached_home_but_preserves_exact_finalization(
 		name: aidash_application::execution::result_artifact_name(&task.title),
 		content: json!(text),
 	};
-	assert!(
+	if saved_failure {
+		run.state = aidash_domain::RunState::Waiting(Box::new(
+			aidash_domain::WaitingState::FailureDelivery {
+				target: aidash_domain::run_state::FailureTarget::Failed,
+				wake_at: chrono::Utc::now(),
+				last_delivery_error: Some("saved failure awaiting Home".into()),
+			},
+		));
 		p.b.store
-			.begin_final_completion(&TEST_FIXTURE, &run, token)
+			.save_run(&TEST_FIXTURE, &run, token, "run.failure_pending")
 			.await
-			.unwrap()
-	);
+			.unwrap();
+	} else {
+		assert!(
+			p.b.store
+				.begin_final_completion(&TEST_FIXTURE, &run, token)
+				.await
+				.unwrap()
+		);
+	}
 	let receiver = common::default_node(&p.b.store, "acme").await;
 	let sibling = common::second_node_in(p.b.store.pool.fixture_driver(), "acme").await;
 	for (path, body) in [
@@ -7274,11 +7291,83 @@ async fn node_deletion_blocks_cached_home_but_preserves_exact_finalization(
 			.await
 			.is_err()
 	);
+	let endpoint: String = sqlx::query_scalar(
+		&Query::select()
+			.column(Alias::new("source_endpoint"))
+			.from(Alias::new("node_registrations"))
+			.and_where(Expr::col("source_node").eq(node_of(&p.a)))
+			.to_string(PostgresQueryBuilder),
+	)
+	.fetch_one(p.b.store.pool.fixture_driver())
+	.await
+	.unwrap();
+	let unavailable = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+	let unavailable_url = format!("http://{}", unavailable.local_addr().unwrap());
+	drop(unavailable);
+	redirect_peer(&p.b, &node_of(&p.a), &unavailable_url).await;
+	aidash_server::generation::provision::reconcile(&p.b)
+		.await
+		.unwrap();
+	assert!(
+		!p.run().await.phase().is_terminal(),
+		"a failed saved delivery must stay retryable"
+	);
+	assert_eq!(
+		p.a.store
+			.task(&TEST_FIXTURE, task.id)
+			.await
+			.unwrap()
+			.status
+			.as_str(),
+		"RUNNING"
+	);
+	redirect_peer(&p.b, &node_of(&p.a), &endpoint).await;
+	// Restart both durable runtimes and their real HTTP transports. Home
+	// settlement still verifies the receiver; no old closed pool may survive
+	// behind the original peer address.
+	for server in p.servers.drain(..) {
+		server.shutdown().await;
+	}
+	reconnect(&mut p.a, Arc::new(Notify::new())).await;
+	reconnect(&mut p.b, Arc::new(Notify::new())).await;
+	p.aa = common::application(p.a.clone()).await;
+	p.ba = common::application(p.b.clone()).await;
+	for (f, application) in [(&p.a, p.aa.clone()), (&p.b, p.ba.clone())] {
+		let router = aidash_server::routes()
+			.into_server()
+			.with_di_context(application.context.clone())
+			.with_middleware(SourceReplyMiddleware(p.drop_reply.clone()));
+		let endpoint = reqwest::Url::parse(&f.config.endpoint).unwrap();
+		let listener = tokio::net::TcpListener::bind(("127.0.0.1", endpoint.port().unwrap()))
+			.await
+			.unwrap();
+		p.servers.push(upstream_fixtures::FixedServerGuard::spawn(
+			Arc::new(listener),
+			Arc::new(router),
+			Some(application.context.clone()),
+		));
+	}
+	sqlx::query(
+		&Query::update()
+			.table(Alias::new("node_cancellation_jobs"))
+			.value_expr(Alias::new("retry_at"), Expr::current_timestamp())
+			.and_where(Expr::col("work_id").eq(Expr::value(run.id)))
+			.to_string(PostgresQueryBuilder),
+	)
+	.execute(p.b.store.pool.fixture_driver())
+	.await
+	.unwrap();
+	// Reconciliation wins the race with the stale worker/callback. It must
+	// finish only the durable continuation, including after retry/reload.
 	for _ in 0..2 {
-		home.complete(&format!("{}:complete", run.id), &artifact)
+		aidash_server::generation::provision::reconcile(&p.b)
 			.await
 			.unwrap();
 	}
+	assert_eq!(
+		p.run().await.phase().as_str(),
+		if saved_failure { "FAILED" } else { "COMPLETED" }
+	);
 	let snapshot =
 		p.a.store
 			.snapshot(&TEST_FIXTURE, task.workspace_id)
@@ -7290,7 +7379,7 @@ async fn node_deletion_blocks_cached_home_but_preserves_exact_finalization(
 			.iter()
 			.filter(|saved| saved.content == artifact.content)
 			.count(),
-		1
+		if saved_failure { 0 } else { 1 }
 	);
 	assert!(
 		!snapshot
@@ -7306,7 +7395,10 @@ async fn node_deletion_blocks_cached_home_but_preserves_exact_finalization(
 	aidash_server::generation::provision::reconcile(&p.b)
 		.await
 		.unwrap();
-	assert_eq!(p.run().await.phase().as_str(), "CANCELLED");
+	assert_eq!(
+		p.run().await.phase().as_str(),
+		if saved_failure { "FAILED" } else { "COMPLETED" }
+	);
 	assert_eq!(
 		p.a.store
 			.task(&TEST_FIXTURE, p.task)
@@ -7314,7 +7406,7 @@ async fn node_deletion_blocks_cached_home_but_preserves_exact_finalization(
 			.unwrap()
 			.status
 			.as_str(),
-		"COMPLETED"
+		if saved_failure { "FAILED" } else { "COMPLETED" }
 	);
 	p.close().await;
 }
@@ -7416,6 +7508,176 @@ async fn node_deletion_retries_delegated_stop_until_receiver_and_home_settle(
 	assert!(
 		p.requests.lock().await.is_empty(),
 		"cancelled execution never invokes the provider"
+	);
+	p.close().await;
+}
+
+/// Captured OPEN source Tasks cannot mint unsnapshotted grants after restore.
+#[rstest::rstest]
+#[tokio::test]
+async fn node_deletion_fences_source_preparation_before_maintenance(
+	#[future(awt)]
+	#[with(false,false,false,false,false,(false,false,32),false,false,false)]
+	scoped_pair: Pair,
+) {
+	let p = scoped_pair;
+	let home = common::default_node(&p.a.store, "acme").await;
+	let sibling = common::second_node_in(p.a.store.pool.fixture_driver(), "acme").await;
+	for (path, body) in [
+		(
+			format!("/api/tenants/acme/nodes/{sibling}/default"),
+			Value::Null,
+		),
+		(
+			format!("/api/tenants/acme/nodes/{}/deletion", home.node),
+			json!({"confirmation":home.node}),
+		),
+		(
+			format!("/api/tenants/acme/nodes/{}/restore", home.node),
+			Value::Null,
+		),
+	] {
+		let (status, body) = request(&p.aa, &p.a.config.api_token, "POST", &path, body).await;
+		assert_eq!(status, 200, "{body}");
+	}
+	assert_eq!(
+		p.a.store
+			.task(&TEST_FIXTURE, p.task)
+			.await
+			.unwrap()
+			.status
+			.as_str(),
+		"OPEN"
+	);
+	let (status, body) = request(&p.aa, &p.token, "POST", &format!("/api/tasks/{}/remote-grants", p.task),
+		json!({"id":Uuid::new_v4(),"node_id":node_of(&p.b),"agent":{"id":"research","version":"1.0.0"},"ttl_seconds":300,"semantic":{"mode":"disabled"}})).await;
+	assert!(
+		matches!(status, 403 | 409),
+		"captured source Task minted a new grant: {status} {body}"
+	);
+	p.close().await;
+}
+
+#[rstest::rstest]
+#[tokio::test]
+async fn node_deletion_fences_old_home_grant_after_decided_recovery(
+	#[future(awt)] scoped_pair: Pair,
+) {
+	use aidash_server::transactions::{Manifest, coordinator};
+	let p = scoped_pair;
+	for _ in 0..4 {
+		if p.a
+			.store
+			.task(&TEST_FIXTURE, p.task)
+			.await
+			.unwrap()
+			.status
+			.as_str() == "RUNNING"
+		{
+			break;
+		}
+		p.step().await;
+	}
+	let task = p.a.store.task(&TEST_FIXTURE, p.task).await.unwrap();
+	assert_eq!(task.status.as_str(), "RUNNING");
+	let home = Home::new(p.b.clone(), p.run().await);
+	let revision: i64 = sqlx::query_scalar(
+		&Query::select()
+			.column(Alias::new("revision"))
+			.from(Alias::new("workspaces"))
+			.and_where(Expr::col("id").eq(Expr::value(task.workspace_id)))
+			.to_string(PostgresQueryBuilder),
+	)
+	.fetch_one(p.a.store.pool.fixture_driver())
+	.await
+	.unwrap();
+	let manifest: Manifest = serde_json::from_value(json!({"id":Uuid::new_v4(),"coordinator":node_of(&p.a),
+		"isolation":"serializable","deadline":chrono::Utc::now()+chrono::Duration::minutes(5),
+		"participants":[{"node_id":node_of(&p.a),"mutations":[{"kind":"workspace_state","workspace_id":task.workspace_id,
+		"expected_revision":revision,"state":{"recovered":true}}]}]})).unwrap();
+	coordinator::submit(&p.a, &manifest).await.unwrap();
+	for _ in 0..12 {
+		let state = coordinator::advance(&p.a, manifest.id).await.unwrap();
+		if state.decision.is_some() {
+			break;
+		}
+	}
+	let decided = coordinator::status(&p.a, manifest.id).await.unwrap();
+	assert_eq!(decided.decision.as_deref(), Some("COMMIT"));
+	assert!(!decided.complete);
+	let node = common::default_node(&p.a.store, "acme").await;
+	let sibling = common::second_node_in(p.a.store.pool.fixture_driver(), "acme").await;
+	for (path, body) in [
+		(
+			format!("/api/tenants/acme/nodes/{sibling}/default"),
+			Value::Null,
+		),
+		(
+			format!("/api/tenants/acme/nodes/{}/deletion", node.node),
+			json!({"confirmation":node.node}),
+		),
+		(
+			format!("/api/tenants/acme/nodes/{}/restore", node.node),
+			Value::Null,
+		),
+	] {
+		let (status, body) = request(&p.aa, &p.a.config.api_token, "POST", &path, body).await;
+		assert_eq!(status, 200, "{body}");
+	}
+	let revoked: bool = sqlx::query_scalar(
+		&Query::select()
+			.column(Alias::new("revoked"))
+			.from(Alias::new("authorization_remote_grants"))
+			.and_where(Expr::col("id").eq(Expr::value(p.grant)))
+			.to_string(PostgresQueryBuilder),
+	)
+	.fetch_one(p.a.store.pool.fixture_driver())
+	.await
+	.unwrap();
+	assert!(
+		!revoked,
+		"the real pending decision deferred grant mutation"
+	);
+	for _ in 0..12 {
+		if coordinator::advance(&p.a, manifest.id)
+			.await
+			.unwrap()
+			.complete
+		{
+			break;
+		}
+	}
+	assert!(
+		coordinator::status(&p.a, manifest.id)
+			.await
+			.unwrap()
+			.complete
+	);
+	assert!(
+		home.message("fresh-after-atomic-restore", "must not be admitted")
+			.await
+			.is_err()
+	);
+	// History remains readable; cancellation maintenance has not changed the Task.
+	let snapshot =
+		p.a.store
+			.snapshot(&TEST_FIXTURE, task.workspace_id)
+			.await
+			.unwrap();
+	assert!(
+		!snapshot
+			.messages
+			.iter()
+			.any(|m| m.content == "must not be admitted")
+	);
+	assert_eq!(
+		p.a.store
+			.task(&TEST_FIXTURE, task.id)
+			.await
+			.unwrap()
+			.status
+			.as_str(),
+		"RUNNING"
 	);
 	p.close().await;
 }

@@ -3200,6 +3200,45 @@ impl Store {
 		if valid.is_none() {
 			return Err(Error::Conflict("worker lease lost".into()));
 		}
+		let saved: crate::domain::run_state::RawRun = crate::database::query_as(
+			&Query::select()
+				.column(reinhardt::query::ColumnRef::Asterisk)
+				.from(Alias::new("runs"))
+				.and_where(Expr::col("id").eq(Expr::value(run.id)))
+				.to_string(PostgresQueryBuilder),
+		)
+		.fetch_one(&mut *tx)
+		.await?;
+		if aidash_domain::federation::execution::settlement::has_saved_continuation(&saved) {
+			let captured: bool = crate::database::native::query_scalar(
+				&Query::select()
+					.expr(Expr::exists(
+						Query::select()
+							.expr(Expr::value(1_i32))
+							.from(Alias::new("node_cancellation_jobs"))
+							.and_where(Expr::col("kind").eq("run"))
+							.and_where(Expr::col("work_id").eq(Expr::value(run.id)))
+							.and_where(
+								Expr::col("tenant").in_subquery(
+									Query::select()
+										.column(Alias::new("tenant"))
+										.from(Alias::new("runs"))
+										.and_where(Expr::col("id").eq(Expr::value(run.id)))
+										.to_owned(),
+								),
+							)
+							.to_owned(),
+					))
+					.to_string(PostgresQueryBuilder),
+			)
+			.scalar_one(&mut *tx)
+			.await?;
+			if captured {
+				return Err(Error::Conflict(
+					"saved Node execution settlement is pending".into(),
+				));
+			}
+		}
 		let phase = if run.is_local(self.deployment.as_str()) {
 			let task: Task = {
 				let query_bind_1 = run.task_id;
@@ -3219,14 +3258,15 @@ impl Store {
 				.fetch_one(&mut *tx)
 				.await?
 			};
-			let phase = if task.status == crate::domain::TaskStatus::Completed {
-				"COMPLETED"
-			} else {
-				"CANCELLED"
+			let phase = match task.status {
+				crate::domain::TaskStatus::Completed => "COMPLETED",
+				crate::domain::TaskStatus::Failed => "FAILED",
+				_ => "CANCELLED",
 			};
 			if !matches!(
 				task.status,
 				crate::domain::TaskStatus::Completed
+					| crate::domain::TaskStatus::Failed
 					| crate::domain::TaskStatus::Cancelled
 					| crate::domain::TaskStatus::Abandoned
 			) {
