@@ -124,6 +124,7 @@ impl Config {
 			id: self.deployment.to_string(),
 			endpoint: self.endpoint.clone(),
 			protocol_version: PROTOCOL_VERSION.into(),
+			key_rollover: None,
 			key: self
 				.deployment_key
 				.as_ref()

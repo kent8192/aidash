@@ -149,6 +149,8 @@ pub const TABLES: &[Table] = &[
 	table("execution", "decision_evidence", TenantOwned),
 	table("execution", "decision_outcomes", TenantOwned),
 	table("execution", "decision_states", TenantOwned),
+	// One immutable trusted runner pin per Deployment; configuration, not Tenant data or audit.
+	table("execution", "runner_allocation_journals", DeploymentWide),
 	// per-model token statistics without Tenant content
 	table("execution", "estimate_calibration_samples", DeploymentWide),
 	table("execution", "events", TenantOwned),
@@ -215,6 +217,7 @@ pub const TABLES: &[Table] = &[
 	// decides whom its Node accepts (#241)
 	table("federation", "node_registration_history", TenantOwned),
 	table("federation", "node_registrations", TenantOwned),
+	table("federation", "deployment_key_rollovers", DeploymentWide),
 	table("federation", "remote_run_message_fences", TenantOwned),
 	// identity
 	table("identity", "authorization_bundles", TenantOwned),

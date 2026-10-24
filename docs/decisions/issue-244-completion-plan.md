@@ -149,6 +149,15 @@ Run: `cargo test --locked -p aidash-domain --lib`; then server `startup` and
 `migrations` targets. New ownership must not add an application/domain dependency
 on server or Reinhardt.
 
+Task 1 local evidence: domain 2,187, application 3,755 and startup/classification
+15 tests passed. The deletion-deadline regression failed across a daylight-saving
+transition before the CHECK used elapsed-hour bounds. Both focused in-process
+migration tests then passed on the final source, including rollback/reapply,
+model/schema agreement and the ownership, RLS and immutable-deadline constraints.
+The independent fix review approved the integrated range ending `94b2c4cde2`.
+The separate external migration CLI fixture stalled locally before SQL; broad
+migration and hosted acceptance remain Task 13 requirements.
+
 ## Task 2: Default selection, delete/restore and live capacity
 
 **Files:** Modify identity `services/nodes.rs`, `views/nodes.rs`,

@@ -475,3 +475,441 @@ async fn catalog_approvals_belong_to_one_node(
 
 #[path = "nodes/purge.rs"]
 mod purge;
+/// The HTTP lifecycle owns default safety, capacity release, and immutable
+/// deletion history. Missing lifecycle routes or counting retained rows breaks
+/// this contract; a pure repository test would miss authorization and routing.
+#[rstest::rstest]
+#[tokio::test]
+async fn node_lifecycle_releases_capacity_and_keeps_each_deletion_history(
+	#[from(common::runtime)] runtime: common::RuntimeFuture,
+) {
+	let d = Deployment::new(
+		runtime,
+		TenancyRules {
+			nodes_per_tenant: 2,
+			..open_rules()
+		},
+	)
+	.await;
+	let alice = d.person("alice").await;
+	let (tenant, context) = d.node_tenant(&alice, "Lifecycle").await;
+	let first = d.nodes_of(&alice, &context, &tenant).await[0]["name"]
+		.as_str()
+		.unwrap()
+		.to_owned();
+	let path = format!("/api/tenants/{tenant}/nodes");
+	let (status, body) = d
+		.as_person(
+			&alice,
+			"POST",
+			&format!("{path}/{first}/deletion"),
+			Some(&context),
+			json!({"confirmation":first}),
+		)
+		.await;
+	assert_eq!(status, 409, "default/last Node cannot be deleted: {body}");
+	let (status, second) = d.create_node(&alice, &context, &tenant, "Second").await;
+	assert_eq!(status, 201, "{second}");
+	let second = second["name"].as_str().unwrap();
+	let (status, body) = d
+		.as_person(
+			&alice,
+			"POST",
+			&format!("{path}/{second}/deletion"),
+			Some(&context),
+			json!({"confirmation":"wrong"}),
+		)
+		.await;
+	assert_eq!(status, 400, "{body}");
+	let (status, body) = d
+		.as_person(
+			&alice,
+			"POST",
+			&format!("{path}/{second}/default"),
+			Some(&context),
+			Value::Null,
+		)
+		.await;
+	assert_eq!(status, 200, "{body}");
+	assert_eq!(body["default"], true);
+	let (status, deleted) = d
+		.as_person(
+			&alice,
+			"POST",
+			&format!("{path}/{first}/deletion"),
+			Some(&context),
+			json!({"confirmation":first}),
+		)
+		.await;
+	assert_eq!(status, 200, "{deleted}");
+	assert_eq!(deleted["state"], "deleted");
+	let deadline = deleted["deletion"]["purge_after"].clone();
+	assert!(deadline.is_string(), "{deleted}");
+	assert_eq!(d.nodes_of(&alice, &context, &tenant).await.len(), 1);
+	let (status, third) = d
+		.create_node(&alice, &context, &tenant, "Reuses slot")
+		.await;
+	assert_eq!(
+		status, 201,
+		"deleted Node releases its slot immediately: {third}"
+	);
+	let third = third["name"].as_str().unwrap();
+	let (status, body) = d
+		.as_person(
+			&alice,
+			"POST",
+			&format!("{path}/{first}/restore"),
+			Some(&context),
+			Value::Null,
+		)
+		.await;
+	assert_eq!(
+		status, 409,
+		"restore must respect the current limit: {body}"
+	);
+	let (status, body) = d
+		.as_person(
+			&alice,
+			"POST",
+			&format!("{path}/{third}/deletion"),
+			Some(&context),
+			json!({"confirmation":third}),
+		)
+		.await;
+	assert_eq!(status, 200, "{body}");
+	let (status, restored) = d
+		.as_person(
+			&alice,
+			"POST",
+			&format!("{path}/{first}/restore"),
+			Some(&context),
+			Value::Null,
+		)
+		.await;
+	assert_eq!(status, 200, "{restored}");
+	assert_eq!(restored["state"], "live");
+	let (status, deleted_again) = d
+		.as_person(
+			&alice,
+			"POST",
+			&format!("{path}/{first}/deletion"),
+			Some(&context),
+			json!({"confirmation":first}),
+		)
+		.await;
+	assert_eq!(status, 200, "{deleted_again}");
+	assert_ne!(deleted_again["deletion"]["id"], deleted["deletion"]["id"]);
+	assert_eq!(
+		d.count(&format!(
+			"SELECT count(*) FROM node_deletions WHERE tenant = '{tenant}' AND node = '{first}'"
+		))
+		.await,
+		2
+	);
+	let (status, body) = d
+		.as_person(
+			&alice,
+			"POST",
+			&format!("{path}/{first}/purge"),
+			Some(&context),
+			Value::Null,
+		)
+		.await;
+	assert_eq!(
+		status, 403,
+		"only Deployment Administrators request immediate purge: {body}"
+	);
+	let (status, requested) = d
+		.as_deployment_administrator("POST", &format!("{path}/{first}/purge"), Value::Null)
+		.await;
+	assert_eq!(status, 200, "{requested}");
+	assert_eq!(requested["state"], "deleting");
+	assert_eq!(
+		requested["deletion"]["purge_after"],
+		deleted_again["deletion"]["purge_after"]
+	);
+	let (status, body) = d
+		.as_deployment_administrator("POST", &format!("{path}/{first}/restore"), Value::Null)
+		.await;
+	assert_eq!(status, 409, "requested purge cannot be restored: {body}");
+	assert_eq!(
+		d.count(&format!(
+			"SELECT count(*) FROM nodes WHERE tenant = '{tenant}' AND name = '{first}'"
+		))
+		.await,
+		1,
+		"purge endpoint only requests worker execution"
+	);
+	d.finish().await;
+}
+
+#[rstest::rstest]
+#[tokio::test]
+async fn node_lifecycle_management_and_restore_use_current_collection_authority(
+	#[from(common::runtime)] runtime: common::RuntimeFuture,
+) {
+	let d = Deployment::new(runtime, open_rules()).await;
+	let alice = d.person("alice").await;
+	let bob = d.person("bob").await;
+	let (tenant, context) = d.node_tenant(&alice, "Policy").await;
+	let bob_context = d.admit(&tenant, &bob, "bob", json!(["members"])).await;
+	let (status, created) = d
+		.create_node(&alice, &context, &tenant, "Recoverable")
+		.await;
+	assert_eq!(status, 201, "{created}");
+	let node = created["name"].as_str().unwrap();
+	let path = format!("/api/tenants/{tenant}/nodes");
+	let (status, ordinary) = d
+		.as_person(
+			&alice,
+			"GET",
+			&format!("{path}?limit=1&offset=1"),
+			Some(&context),
+			Value::Null,
+		)
+		.await;
+	assert_eq!(status, 200, "{ordinary}");
+	assert_eq!(
+		ordinary.as_array().unwrap().len(),
+		2,
+		"management pagination must not hide live Nodes from ordinary selectors"
+	);
+	let manage = format!("{path}?include_deleted=true&limit=1&offset=0");
+	let (status, body) = d
+		.as_person(&bob, "GET", &manage, Some(&bob_context), Value::Null)
+		.await;
+	assert_eq!(
+		status, 403,
+		"member read is not deletion management authority: {body}"
+	);
+	let (status, body) = d
+		.as_person(
+			&bob,
+			"POST",
+			&format!("{path}/{node}/deletion"),
+			Some(&bob_context),
+			json!({"confirmation":node}),
+		)
+		.await;
+	assert_eq!(status, 403, "{body}");
+	let (status, body) = d
+		.as_person(
+			&alice,
+			"POST",
+			&format!("{path}/{node}/deletion"),
+			Some(&context),
+			json!({"confirmation":node}),
+		)
+		.await;
+	assert_eq!(status, 200, "{body}");
+	let (status, body) = d
+		.as_person(
+			&alice,
+			"GET",
+			&format!("{path}?include_deleted=true"),
+			Some(&context),
+			Value::Null,
+		)
+		.await;
+	assert_eq!(status, 200, "{body}");
+	assert_eq!(body.as_array().unwrap().len(), 2);
+	assert!(
+		body.as_array()
+			.unwrap()
+			.iter()
+			.any(|record| record["name"] == node && record["storage_retained_until_purge"] == true)
+	);
+	let (status, body) = d
+		.as_person(&alice, "GET", &manage, Some(&context), Value::Null)
+		.await;
+	assert_eq!(status, 200, "{body}");
+	assert_eq!(body.as_array().unwrap().len(), 1);
+	let (status, body) = d
+		.as_person(
+			&alice,
+			"GET",
+			&format!("{path}?include_deleted=true&limit=101"),
+			Some(&context),
+			Value::Null,
+		)
+		.await;
+	assert_eq!(status, 400, "{body}");
+
+	let policy_path = format!("/api/authorization/{tenant}");
+	let (status, snapshot) = d
+		.as_deployment_administrator("GET", &policy_path, Value::Null)
+		.await;
+	assert_eq!(status, 200, "{snapshot}");
+	let mut bundle = snapshot["bundle"].clone();
+	bundle["policies"].as_array_mut().unwrap().push(json!({
+		"id":"withdraw-node-deletion", "effect":"deny", "subjects":{"groups":["administrators"]},
+		"actions":["node.delete"], "resources":{"kinds":["node"]}
+	}));
+	let (status, body) = d
+		.as_deployment_administrator(
+			"POST",
+			&policy_path,
+			json!({"expected_revision":snapshot["revision"],"bundle":bundle}),
+		)
+		.await;
+	assert_eq!(status, 200, "{body}");
+	let (status, body) = d
+		.as_person(
+			&alice,
+			"POST",
+			&format!("{path}/{node}/restore"),
+			Some(&context),
+			Value::Null,
+		)
+		.await;
+	assert_eq!(status, 403, "restore uses intervening policy edits: {body}");
+	let (status, body) = d
+		.as_person(&alice, "GET", &manage, Some(&context), Value::Null)
+		.await;
+	assert_eq!(
+		status, 403,
+		"management rechecks collection authority: {body}"
+	);
+	let (status, body) = d
+		.as_deployment_administrator("POST", &format!("{path}/{node}/restore"), Value::Null)
+		.await;
+	assert_eq!(status, 200, "{body}");
+	assert_eq!(d.count(&format!("SELECT count(*) FROM dashboard_administration_history WHERE tenant = '{tenant}' AND node = '{node}' AND action IN ('node.create','node.delete','node.restore')")).await, 3);
+	d.finish().await;
+}
+
+#[rstest::rstest]
+#[tokio::test]
+async fn node_lifecycle_browser_administrator_keeps_identity_and_requires_current_grant(
+	#[from(common::runtime)] runtime: common::RuntimeFuture,
+) {
+	let d = Deployment::new(runtime, open_rules()).await;
+	let alice = d.person("alice").await;
+	let carol = d.person("carol").await;
+	sqlx::query("INSERT INTO dashboard_deployment_administrator_grants (identity_id) VALUES ($1)")
+		.bind(carol.identity)
+		.execute(d.federation.store.pool.driver())
+		.await
+		.unwrap();
+	let (tenant, context) = d.node_tenant(&alice, "Browser management").await;
+	let first = d.nodes_of(&alice, &context, &tenant).await[0]["name"]
+		.as_str()
+		.unwrap()
+		.to_owned();
+	let (status, second) = d
+		.create_node(&alice, &context, &tenant, "New default")
+		.await;
+	assert_eq!(status, 201, "{second}");
+	let second = second["name"].as_str().unwrap();
+	let path = format!("/api/tenants/{tenant}/nodes");
+	let (status, body) = d
+		.as_person(
+			&carol,
+			"POST",
+			&format!("{path}/{second}/default"),
+			Some("deployment_administrator"),
+			Value::Null,
+		)
+		.await;
+	assert_eq!(
+		status, 200,
+		"browser administrator manages the Node default: {body}"
+	);
+	for suffix in ["purge/extra", "%70urge", "%2Fpurge"] {
+		let (status, body) = d
+			.as_person(
+				&carol,
+				"POST",
+				&format!("{path}/{first}/{suffix}"),
+				Some("deployment_administrator"),
+				Value::Null,
+			)
+			.await;
+		assert!(
+			matches!(status, 403 | 404 | 405),
+			"noncanonical lifecycle path must be refused: {status} {body}"
+		);
+	}
+	let (status, body) = d
+		.as_person(
+			&carol,
+			"POST",
+			&format!("{path}/{first}/deletion"),
+			Some("deployment_administrator"),
+			json!({"confirmation":first}),
+		)
+		.await;
+	assert_eq!(status, 200, "{body}");
+	assert_eq!(
+		body["deletion"]["deleted_by_kind"],
+		"deployment_administrator"
+	);
+	let (status, body) = d
+		.as_person(
+			&alice,
+			"POST",
+			&format!("{path}/{first}/restore"),
+			Some(&context),
+			Value::Null,
+		)
+		.await;
+	assert_eq!(
+		status, 409,
+		"only a Deployment Administrator restores its deletion: {body}"
+	);
+	let (status, body) = d
+		.as_person(
+			&carol,
+			"POST",
+			&format!("{path}/{first}/restore"),
+			Some("deployment_administrator"),
+			Value::Null,
+		)
+		.await;
+	assert_eq!(status, 200, "{body}");
+	let (status, body) = d
+		.as_person(
+			&carol,
+			"POST",
+			&format!("{path}/{first}/deletion"),
+			Some("deployment_administrator"),
+			json!({"confirmation":first}),
+		)
+		.await;
+	assert_eq!(status, 200, "{body}");
+	let (status, body) = d
+		.as_person(
+			&carol,
+			"POST",
+			&format!("{path}/{first}/purge"),
+			Some("deployment_administrator"),
+			Value::Null,
+		)
+		.await;
+	assert_eq!(
+		status, 200,
+		"browser administrator may request immediate purge: {body}"
+	);
+	let history = format!(
+		"SELECT count(*) FROM dashboard_administration_history WHERE tenant = '{tenant}' AND actor_identity_id = '{}' AND node IS NOT NULL AND action IN ('node.default','node.delete','node.restore','node.purge')",
+		carol.identity
+	);
+	assert_eq!(d.count(&history).await, 5);
+	sqlx::query("UPDATE dashboard_deployment_administrator_grants SET enabled=false,revision=revision+1 WHERE identity_id=$1")
+		.bind(carol.identity).execute(d.federation.store.pool.driver()).await.unwrap();
+	let (status, body) = d
+		.as_person(
+			&carol,
+			"POST",
+			&format!("{path}/{second}/default"),
+			Some("deployment_administrator"),
+			Value::Null,
+		)
+		.await;
+	assert_eq!(
+		status, 403,
+		"a disabled grant cannot retain browser management authority: {body}"
+	);
+	assert_eq!(d.count(&history).await, 5);
+	d.finish().await;
+}

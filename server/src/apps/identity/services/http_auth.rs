@@ -57,6 +57,22 @@ pub(crate) fn browser_deployment_administrator_allowed(method: &Method, path: &s
 		return true;
 	}
 	let segments: Vec<&str> = path.split('/').collect();
+	// Node lifecycle administration never starts or resumes Tenant work.
+	// Keep these paths exact; no general Tenant mutation authority is implied.
+	if *method == Method::POST
+		&& matches!(
+			segments.as_slice(),
+			[
+				"",
+				"tenants",
+				_,
+				"nodes",
+				_,
+				"default" | "deletion" | "restore" | "purge"
+			]
+		) {
+		return true;
+	}
 	// The Workspace handler reports Tenant Deletion before its ordinary refusal
 	// of administrator writes. It still grants no mutation authority.
 	if *method == Method::PATCH && matches!(segments.as_slice(), ["", "workspaces", _]) {

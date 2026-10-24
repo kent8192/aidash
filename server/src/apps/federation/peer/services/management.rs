@@ -35,6 +35,6 @@ impl PeerManagement {
 	}
 	pub(crate) async fn identity(&self) -> Result<Value> {
 		let f = self.runtime.clone();
-		Ok(json!(f.config.deployment_identity()))
+		Ok(json!(super::identity::publication(&f).await?))
 	}
 }

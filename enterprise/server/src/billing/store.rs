@@ -3,8 +3,8 @@
 //! run in the no-Tenant scope. Mappings are Tenant-owned: they are read in
 //! their Tenant's own scope.
 use super::models::{
-	BillingAccount, BillingAttachment, BillingAttachmentConsent, BillingPodUsage,
-	BillingStorageSample, BillingSubscription,
+	BillingAccount, BillingAttachment, BillingAttachmentConsent, BillingCoveragePeriod,
+	BillingPodUsage, BillingStorageSample, BillingSubscription,
 };
 use super::payments::{Status, Subscription};
 use aidash_application::tenancy::TenancyScope;
@@ -15,7 +15,7 @@ use reinhardt::db::backends::TransactionExecutor;
 use reinhardt::db::orm::execution::convert_values;
 use reinhardt::db::orm::{Model, QueryRow};
 use reinhardt::query::{
-	Alias, Expr, ExprTrait, IntoValue, OnConflict, PostgresQueryBuilder, Query,
+	Alias, Expr, ExprTrait, IntoIden, IntoValue, OnConflict, PostgresQueryBuilder, Query,
 	QueryStatementBuilder, SelectStatement, SimpleExpr,
 };
 use serde::de::DeserializeOwned;
@@ -358,8 +358,33 @@ pub async fn consent(
 	Ok(())
 }
 
-/// Attaches `tenant` to `account`, moving it from another account, and
-/// consumes every consent that named the Tenant.
+#[derive(serde::Deserialize)]
+struct ClockRow {
+	now: DateTime<Utc>,
+}
+
+/// The database's current wall clock, not the transaction's start time.
+/// Attachment callers read it only after acquiring the Tenant capacity lock.
+pub async fn database_now(tx: &mut dyn TransactionExecutor) -> Result<DateTime<Utc>> {
+	let query = Query::select()
+		.expr_as(
+			SimpleExpr::FunctionCall("clock_timestamp".into_iden(), vec![]),
+			Alias::new("now"),
+		)
+		.to_owned();
+	fetch::<ClockRow>(tx, &query)
+		.await?
+		.into_iter()
+		.next()
+		.map(|row| row.now)
+		.ok_or_else(|| Error::Invalid("the database clock returned no instant".into()))
+}
+
+/// Moves coverage, the current attachment, and consent consumption atomically.
+/// The caller holds the receiving account lock followed by the Tenant capacity
+/// lock, has ruled out an unchanged attachment, and obtained `now` after locking.
+/// Serialized service writes keep intervals disjoint; storage additionally
+/// requires positive closed spans and at most one open interval per Tenant.
 pub async fn attach(
 	tx: &mut dyn TransactionExecutor,
 	tenant: &str,
@@ -368,6 +393,42 @@ pub async fn attach(
 	owner: Uuid,
 	now: DateTime<Utc>,
 ) -> Result<()> {
+	execute(
+		tx,
+		Query::update()
+			.table(Alias::new(BillingCoveragePeriod::table_name()))
+			.value(Alias::new("ends_at"), now)
+			.and_where(Expr::col("tenant").eq(Expr::value(tenant)))
+			.and_where(Expr::col("ends_at").is_null()),
+	)
+	.await?;
+	execute(
+		tx,
+		Query::insert()
+			.into_table(Alias::new(BillingCoveragePeriod::table_name()))
+			.columns(
+				[
+					"id",
+					"tenant",
+					"account_id",
+					"starts_at",
+					"ends_at",
+					"consented_by_administrator",
+					"consented_by_owner",
+				]
+				.map(Alias::new),
+			)
+			.values_panic([
+				IntoValue::into_value(Uuid::new_v4()),
+				IntoValue::into_value(tenant.to_owned()),
+				IntoValue::into_value(account),
+				IntoValue::into_value(now),
+				IntoValue::into_value(None::<DateTime<Utc>>),
+				IntoValue::into_value(administrator),
+				IntoValue::into_value(owner),
+			]),
+	)
+	.await?;
 	execute(
 		tx,
 		Query::insert()
@@ -701,7 +762,9 @@ pub async fn usage(pool: &Pool, from: NaiveDate, to: NaiveDate) -> Result<Vec<Us
 /// Deletes what has outlived `cutoff`: metering records, and the attachments
 /// of Tenants purged before it. Expired consents go too, then the canceled
 /// Subscriptions that ended before `cutoff`, then the Accounts left with no
-/// Subscription, attachment or consent that were created before it.
+/// Subscription, attachment, coverage or consent that were created before it.
+/// Closed coverage is retained while any retained raw lifetime or sample refers
+/// to its span. Open coverage survives purge: no authoritative end is known.
 pub async fn sweep(pool: &Pool, cutoff: DateTime<Utc>, now: DateTime<Utc>) -> Result<()> {
 	pool.atomic(&TenancyScope::NoTenant, async |tx| {
 		execute(
@@ -716,6 +779,49 @@ pub async fn sweep(pool: &Pool, cutoff: DateTime<Utc>, now: DateTime<Utc>) -> Re
 			Query::delete()
 				.from_table(Alias::new(BillingStorageSample::table_name()))
 				.and_where(Expr::col("sampled_at").lt(Expr::value(cutoff))),
+		)
+		.await?;
+		execute(
+			tx,
+			Query::delete()
+				.from_table(Alias::new(BillingCoveragePeriod::table_name()))
+				.and_where(Expr::col("ends_at").lt(Expr::value(cutoff)))
+				.and_where(Expr::not_exists(
+					Query::select()
+						.expr(Expr::value(1))
+						.from(Alias::new(BillingPodUsage::table_name()))
+						.and_where(
+							Expr::col(("billing_pod_usage", "tenant"))
+								.eq(Expr::col(("billing_coverage_periods", "tenant"))),
+						)
+						.and_where(
+							Expr::col(("billing_pod_usage", "started_at"))
+								.lt(Expr::col(("billing_coverage_periods", "ends_at"))),
+						)
+						.and_where(
+							Expr::col(("billing_pod_usage", "ended_at"))
+								.gt(Expr::col(("billing_coverage_periods", "starts_at"))),
+						)
+						.to_owned(),
+				))
+				.and_where(Expr::not_exists(
+					Query::select()
+						.expr(Expr::value(1))
+						.from(Alias::new(BillingStorageSample::table_name()))
+						.and_where(
+							Expr::col(("billing_storage_samples", "tenant"))
+								.eq(Expr::col(("billing_coverage_periods", "tenant"))),
+						)
+						.and_where(
+							Expr::col(("billing_storage_samples", "sampled_at"))
+								.gte(Expr::col(("billing_coverage_periods", "starts_at"))),
+						)
+						.and_where(
+							Expr::col(("billing_storage_samples", "sampled_at"))
+								.lt(Expr::col(("billing_coverage_periods", "ends_at"))),
+						)
+						.to_owned(),
+				)),
 		)
 		.await?;
 		execute(
@@ -768,6 +874,16 @@ pub async fn sweep(pool: &Pool, cutoff: DateTime<Utc>, now: DateTime<Utc>) -> Re
 				.and_where(Expr::cust(
 					"NOT EXISTS (SELECT 1 FROM billing_attachment_consents c \
 					 WHERE c.account_id = billing_accounts.id)",
+				))
+				.and_where(Expr::not_exists(
+					Query::select()
+						.expr(Expr::value(1))
+						.from(Alias::new(BillingCoveragePeriod::table_name()))
+						.and_where(
+							Expr::col(("billing_coverage_periods", "account_id"))
+								.eq(Expr::col(("billing_accounts", "id"))),
+						)
+						.to_owned(),
 				)),
 		)
 		.await?;

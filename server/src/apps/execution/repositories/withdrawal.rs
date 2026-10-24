@@ -103,6 +103,7 @@ impl OperationWithdrawalScope for Scope {
 			operation_id: self.operation.id,
 			kind: self.operation.kind.clone(),
 			state: self.operation.state.clone(),
+			result: self.operation.result.clone(),
 			epoch: self.operation.epoch,
 			generation: self.operation.generation,
 			area_epoch: self.area.epoch,
