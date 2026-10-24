@@ -85,17 +85,23 @@ def ci_success(config, sha):
     query = urllib.parse.urlencode(
         {"head_sha": sha, "status": "success", "per_page": 100}
     )
-    value = github(
-        f"repos/{config['repository']}/actions/workflows/ci.yml/runs?{query}"
-    )
-    if not any(
-        item["head_sha"] == sha
-        and item["conclusion"] == "success"
-        and item["status"] == "completed"
-        and (not config.get("required_ci_branch") or item.get("event") == "push" and item.get("head_branch") == config["required_ci_branch"])
-        for item in value["workflow_runs"]
-    ):
-        raise Refused("Required CI has not succeeded for the exact source SHA")
+    branch = config.get("required_ci_branch")
+    workflows = ("ci.yml", "release-ci.yml")
+    if branch:
+        workflows = ("release-ci.yml",) if branch.startswith("develop/") else ("ci.yml",)
+    for filename in workflows:
+        value = github(
+            f"repos/{config['repository']}/actions/workflows/{filename}/runs?{query}"
+        )
+        if any(
+            item["head_sha"] == sha
+            and item["conclusion"] == "success"
+            and item["status"] == "completed"
+            and (not branch or item.get("event") == "push" and item.get("head_branch") == branch)
+            for item in value["workflow_runs"]
+        ):
+            return
+    raise Refused("Required CI has not succeeded for the exact source SHA")
 
 
 def pull(config, number):
@@ -132,7 +138,7 @@ def source(config, identity, ref, approved_sha=""):
         sha = github(f"repos/{repository}/commits/{urllib.parse.quote(ref, safe='')}")[
             "sha"
         ]
-    ci_success(config, sha)
+    ci_success(dict(config, required_ci_branch=config["develop_branch"]) if identity == "develop" else config, sha)
     return dict(
         sha=sha,
         source_ref=ref,
@@ -222,15 +228,21 @@ def requests(config, event, name, state):
     if name != "workflow_run" or event["workflow_run"]["conclusion"] != "success":
         return []
     completed = event["workflow_run"]
-    workflow = github(f"repos/{config['repository']}/actions/workflows/ci.yml")
+    release_ci = completed.get("name") == "Release CI"
+    if not release_ci and completed.get("name") != "CI":
+        raise Refused("Unexpected CI workflow name")
+    filename = "release-ci.yml" if release_ci else "ci.yml"
+    workflow = github(f"repos/{config['repository']}/actions/workflows/{filename}")
     if completed["workflow_id"] != workflow["id"]:
         raise Refused("Unexpected CI workflow identity")
     candidates = []
-    if config.get("release_flow_enabled") and completed.get("event") == "push" and completed.get("head_branch") == config["develop_branch"]:
+    if release_ci and config.get("release_flow_enabled") and completed.get("event") == "push" and completed.get("head_branch") == config["develop_branch"]:
         current = source(config, "develop", config["develop_branch"])
         if current["sha"] == completed["head_sha"]:
             candidates.append(dict(common, environment="develop", action="up", mode="normal", ci_run_id=completed["id"], **current))
     for identity, entry in state.get("environments", {}).items():
+        if (identity == "develop") != release_ci:
+            continue
         if identity == "develop" and candidates:
             continue
         if entry["desired"] == "destroyed" or identity == "test" or entry.get("fork"):
@@ -476,7 +488,7 @@ def verify_source(config, identity, entry):
         raise Refused(
             "PR head changed before deployment; request/await CI for the new SHA"
         )
-    ci_success(config, entry["sha"])
+    ci_success(dict(config, required_ci_branch=config["develop_branch"]) if identity == "develop" else config, entry["sha"])
 
 
 def gcip_revision(config):

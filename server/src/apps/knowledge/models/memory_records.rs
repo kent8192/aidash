@@ -239,6 +239,17 @@ pub struct MemoryModelAttempt {
 	)]
 	pub operation:
 		ForeignKeyField<crate::apps::knowledge::models::memory_records::MemoryModelOperation>,
+	/// All admitted source Runs at dispatch, once per physical attempt. NULL is
+	/// historical unknown; an empty array is work performed outside a Run.
+	#[field(null = true)]
+	pub source_run_ids: Option<Json<Value>>,
+	#[field(null = true)]
+	pub reserved_tokens: Option<i64>,
+	#[field(null = true)]
+	pub reserved_cost_micros: Option<i64>,
+	/// Provider-reported facts, distinct from the policy tariff and allowance.
+	#[field(null = true)]
+	pub provider_usage: Option<Json<Value>>,
 	#[field]
 	pub ordinal: i32,
 	/// The Retry Cycle the attempt was charged in (ADR 0057).

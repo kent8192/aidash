@@ -25,7 +25,7 @@ from policy import IMAGE_KINDS, Refused, transition
 SHA = "a" * 40
 # The trusted commit this controller run reconciles from.
 TRUSTED = "c" * 40
-CONFIG = {"repository": "kent8192/aidash", "project_id": PROJECT}
+CONFIG = {"repository": "kent8192/aidash", "project_id": PROJECT, "develop_branch": "develop/0.1.0"}
 RUNTIME = {
     "AIDASH_OIDC_CLIENT_ID": "client",
     "AIDASH_OIDC_CLIENT_SECRET": "client-secret",

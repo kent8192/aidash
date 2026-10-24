@@ -286,6 +286,87 @@ fn dashboard_model() -> Value {
 
 #[rstest]
 #[tokio::test]
+async fn projection_measurement_options_round_trip_without_changing_defaults(
+	#[future] endpoint: EndpointFixture,
+	dashboard_model: Value,
+) {
+	let app = endpoint.await;
+	let registrar = tenant_subject(&app, "registrar").await;
+	let now = chrono::Utc::now();
+	let mut entry = dashboard_model;
+	entry["id"] = json!("measured-route");
+	entry["config"]["provider_route"] = json!({
+		"tag":"fixture/exact", "source":"Approved endpoint catalog snapshot",
+		"verified_at": now - chrono::Duration::minutes(1),
+		"expires_at": now + chrono::Duration::hours(1)
+	});
+	entry["config"]["estimate_diagnostics"] = json!({
+		"token_encoding":"o200k_base",
+		"calibrations":{"native":{"ratio_ppm":250000,"samples":20}}
+	});
+	let created = assert_json(
+		registrar
+			.post("/api/registry", &entry, "json")
+			.await
+			.unwrap(),
+		200,
+	);
+	assert_eq!(created["config"], entry["config"]);
+	approve(&app, "endpoint", "measured-route", "1.0.0").await;
+	let stored = assert_json(
+		registrar
+			.get("/api/registry/measured-route/1.0.0")
+			.await
+			.unwrap(),
+		200,
+	);
+	assert_eq!(stored["config"], entry["config"]);
+	assert!(stored["config"].get("projection_versions").is_none());
+}
+
+#[rstest]
+#[tokio::test]
+async fn database_rejects_malformed_projection_measurement_options(
+	#[future] endpoint: EndpointFixture,
+	timeout_model: Value,
+) {
+	let app = endpoint.await;
+	let mut connection = app.database.lease.handle();
+	let invalid = [
+		json!({"provider_route":{"tag":"../other","source":"x","verified_at":"2026-10-23T00:00:00Z","expires_at":"2026-10-24T00:00:00Z"}}),
+		json!({"provider_route":{"tag":"fixture","source":"x","verified_at":"invalid","expires_at":"2026-10-24T00:00:00Z"}}),
+		json!({"estimate_diagnostics":{"token_encoding":"invented"}}),
+		json!({"estimate_diagnostics":{"calibrations":{"native":{"ratio_ppm":0,"samples":20}}}}),
+		json!({"estimate_diagnostics":{"calibrations":{"native":{"ratio_ppm":250000,"samples":201}}}}),
+		json!({"estimate_diagnostics":{"calibrations":{"native":{"ratio_ppm":250000,"samples":true}}}}),
+	];
+	for (index, options) in invalid.into_iter().enumerate() {
+		let id = format!("invalid-measurement-{index}");
+		let mut entry = timeout_model.clone();
+		entry["id"] = json!(id);
+		entry["config"]
+			.as_object_mut()
+			.unwrap()
+			.extend(options.as_object().unwrap().clone());
+		let definition = Definition::build()
+			.tenant("endpoint")
+			.id(id)
+			.version("1.0.0")
+			.kind(DefinitionKind::Model)
+			.metadata(entry.into())
+			.finish();
+		assert_constraint(
+			Definition::objects()
+				.create_with_conn(&mut connection, &definition)
+				.await
+				.unwrap_err(),
+			"registry_model_projection_measurement",
+		);
+	}
+}
+
+#[rstest]
+#[tokio::test]
 async fn request_estimators_persist_through_the_registry_api(
 	#[future] endpoint: EndpointFixture,
 	dashboard_model: Value,

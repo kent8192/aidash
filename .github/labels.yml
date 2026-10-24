@@ -1,0 +1,84 @@
+# Label Definitions for Aidash
+# Single source of truth for repository label names, colors, and descriptions.
+
+# Type Labels
+- name: bug
+  color: "d73a4a"
+  description: "Something isn't working"
+
+- name: enhancement
+  color: "a2eeef"
+  description: "New feature or request"
+
+- name: documentation
+  color: "0075ca"
+  description: "Improvements or additions to documentation"
+
+- name: question
+  color: "d876e3"
+  description: "Further information is requested"
+
+# Supplementary Labels
+- name: breaking-change
+  color: "D93F0B"
+  description: "Changes existing behavior or compatibility"
+
+- name: accessibility
+  color: "f143ab"
+  description: "Barrier affecting people with disabilities"
+
+# Contribution Labels
+- name: good first issue
+  color: "7057ff"
+  description: "Good for newcomers"
+
+- name: help wanted
+  color: "008672"
+  description: "Extra attention is needed"
+
+# Status Labels
+- name: duplicate
+  color: "cfd3d7"
+  description: "This issue or pull request already exists"
+
+- name: invalid
+  color: "e4e669"
+  description: "This doesn't seem right"
+
+- name: wontfix
+  color: "ffffff"
+  description: "This will not be worked on"
+
+# Severity Labels
+- name: severity:critical
+  color: "B60205"
+  description: "Critical impact: core functionality unavailable, data loss, or severe security exposure."
+
+- name: severity:high
+  color: "D93F0B"
+  description: "Major impact: important functionality is broken with no practical workaround."
+
+- name: severity:medium
+  color: "FBCA04"
+  description: "Moderate impact: functionality is impaired, but a practical workaround exists."
+
+- name: severity:low
+  color: "0E8A16"
+  description: "Minor impact: limited disruption, cosmetic defects, or small usability issues."
+
+# Priority Labels
+- name: priority:P0
+  color: "B60205"
+  description: "Immediate: address before other planned work; blocks release or ongoing operations."
+
+- name: priority:P1
+  color: "D93F0B"
+  description: "High: schedule in the next available work cycle."
+
+- name: priority:P2
+  color: "FBCA04"
+  description: "Normal: schedule through regular backlog planning."
+
+- name: priority:P3
+  color: "0E8A16"
+  description: "Low: address when capacity permits; may be deferred."

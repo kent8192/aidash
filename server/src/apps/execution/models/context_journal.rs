@@ -46,6 +46,10 @@ pub struct ContextCompactionAttempt {
 	pub run: ForeignKeyField<crate::apps::execution::models::Run>,
 	#[field(field_type = "text")]
 	pub stage: String,
+	/// NULL is historical unknown. False proves no durable provider dispatch;
+	/// true is committed atomically with the Summary Usage Record before I/O.
+	#[field(null = true)]
+	pub provider_dispatched: Option<bool>,
 	#[field(field_type = "text")]
 	pub policy_version: String,
 	#[field(field_type = "text")]

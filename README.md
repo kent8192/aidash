@@ -448,6 +448,11 @@ Servers and workers (`serve`, `server`, `worker`, `runserver` and `runworker`) r
 
 ## CI and coverage
 
+Application PRs run **CI**. Merges into `develop/0.1.0` and other `develop/**`
+branches run **Release CI**, which reuses the same validation suite and supplies
+the successful source evidence for staging and Release PR automation. Main
+pushes retain CI's release verification.
+
 CI runs Trunk, Clippy, eight Rust test partitions, a separate coverage upload, Bruno API contracts, infrastructure checks, collaboration browser tests, and the PostgreSQL/NATS/Chromium acceptance suite in separate jobs. Each Cargo test target belongs to exactly one partition; the inventory is derived from locked Cargo metadata and validated before execution. Dependency caches are isolated by partition. All eight LCOV reports are required and uploaded together under the same Rust coverage flag. `CI Success` requires every CI job to succeed, including the Codecov upload. Use that check for branch protection. Rust coverage uses `cargo llvm-cov` with real PostgreSQL tests and uploads an explicit LCOV file through Codecov OIDC. Codecov measures `crates/` and `server/src/`; tests, migration plumbing and generated API files are excluded. Browser tests establish dashboard behavior and are not included in the Rust coverage percentage.
 
 Cluster recovery, transaction cluster recovery, and isolated capability runtime acceptance are available for manual execution. Run `bash scripts/test-cluster.sh kubernetes` after installing the browser dependencies; use the `transactions` or `remote-memory` profile for those recovery suites. Run `scripts/test-capability-cluster.sh` for isolated capability acceptance. These suites are outside the CI workflow and its `CI Success` prerequisites.

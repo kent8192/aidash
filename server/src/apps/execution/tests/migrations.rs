@@ -53,6 +53,7 @@ const TENANT_REGISTRY_MIGRATIONS: &[(&str, &str)] = &[
 	("registry", "0042_external_services"),
 	("registry", "0043_external_services_state"),
 	("registry", "0044_foreign_key_relations_state"),
+	("registry", "0045_projection_measurement_config"),
 	("marketplace", "0008_remove_compatibility_gate"),
 	("marketplace", "0009_remove_compatibility_gate_state"),
 	("marketplace", "0010_row_level_security"),
@@ -93,7 +94,7 @@ async fn native_history_uses_typed_schema_operations_and_lf_sql_assets() {
 	);
 	let knowledge = graph.get_leaf_nodes_for_app("knowledge");
 	assert_eq!(knowledge.len(), 1);
-	assert_eq!(knowledge[0].name, "0036_memory_recovery_eligibility");
+	assert_eq!(knowledge[0].name, "0037_recovery_evidence_merge");
 	// Assert: retain the physical graph, model snapshots, and all supported tables.
 	assert!(
 		migrations
@@ -105,7 +106,7 @@ async fn native_history_uses_typed_schema_operations_and_lf_sql_assets() {
 			.iter()
 			.filter(|migration| migration.state_only)
 			.count(),
-		50
+		51
 	);
 	let tables = migrations
 		.iter()
@@ -343,14 +344,14 @@ async fn generation_with_existing_sql_assets_preserves_history_and_dependency(
 	);
 	assert_eq!(std::fs::read(history).unwrap(), original);
 	let generated = FilesystemSource::new(fixture.directory.path().join("migrations"))
-		.get_migration("execution", "0050_policy_probe")
+		.get_migration("execution", "0052_policy_probe")
 		.await
 		.unwrap();
 	assert_eq!(
 		generated.dependencies,
 		vec![(
 			"execution".to_owned(),
-			"0049_foreign_key_relations_state".to_owned()
+			"0051_compaction_provider_dispatch".to_owned()
 		)]
 	);
 	assert!(generated.operations.is_empty());
@@ -698,7 +699,7 @@ async fn preserved_baseline_does_not_generate_table_recreation(
 			.iter()
 			.filter(|migration| migration.state_only)
 			.count(),
-		50
+		51
 	);
 }
 

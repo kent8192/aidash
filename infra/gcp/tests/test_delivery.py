@@ -375,13 +375,53 @@ class AutomaticStagingTests(unittest.TestCase):
 
     def test_exact_develop_push_creates_staging_but_a_superseded_sha_does_not(self):
         config = {"repository": "kent8192/aidash", "develop_branch": "develop/0.1.0", "release_flow_enabled": True}
-        event = {"workflow_run": {"id": 100, "workflow_id": 1, "conclusion": "success", "event": "push", "head_branch": "develop/0.1.0", "head_sha": SOURCE}}
+        event = {"workflow_run": {"id": 100, "name": "Release CI", "workflow_id": 2, "conclusion": "success", "event": "push", "head_branch": "develop/0.1.0", "head_sha": SOURCE}}
         candidate = {"sha": SOURCE, "source_ref": "develop/0.1.0", "source_repo": "kent8192/aidash", "fork": False, "approved_sha": ""}
-        with patch.dict(os.environ, {"GITHUB_RUN_ID": "123"}), patch.object(controller, "github", return_value={"id": 1}), patch.object(controller, "source", return_value=candidate):
+        with patch.dict(os.environ, {"GITHUB_RUN_ID": "123"}), patch.object(controller, "github", side_effect=lambda path: {"id": 2 if path.endswith("/release-ci.yml") else 1}), patch.object(controller, "source", return_value=candidate):
             requests = controller.requests(config, event, "workflow_run", {})
             self.assertEqual((requests[0]["action"], requests[0]["sha"]), ("up", SOURCE))
             event["workflow_run"]["head_sha"] = BASE
             self.assertEqual(controller.requests(config, event, "workflow_run", {}), [])
+
+    def test_ordinary_ci_cannot_start_the_shared_staging_environment(self):
+        config = {"repository": "kent8192/aidash", "develop_branch": "develop/0.1.0", "release_flow_enabled": True}
+        event = {"workflow_run": {"id": 100, "name": "CI", "workflow_id": 1, "conclusion": "success", "event": "push", "head_branch": config["develop_branch"], "head_sha": SOURCE}}
+        candidate = {"sha": SOURCE, "source_ref": config["develop_branch"], "source_repo": config["repository"], "fork": False, "approved_sha": ""}
+        with patch.dict(os.environ, {"GITHUB_RUN_ID": "123"}), patch.object(controller, "github", return_value={"id": 1}), patch.object(controller, "source", return_value=candidate):
+            for state in [{}, {"environments": {"develop": dict(candidate, desired="running", sequence=1)}}]:
+                with self.subTest(state=state):
+                    self.assertEqual(controller.requests(config, event, "workflow_run", state), [])
+
+    def test_preview_updates_remain_bound_to_ordinary_ci(self):
+        config = {"repository": "kent8192/aidash", "develop_branch": "develop/0.1.0", "release_flow_enabled": True}
+        candidate = {"sha": SOURCE, "source_ref": "pr/9", "source_repo": config["repository"], "fork": False, "approved_sha": ""}
+        state = {"environments": {"pr-9": dict(candidate, desired="running", sequence=1)}}
+        completed = {"id": 100, "name": "CI", "workflow_id": 1, "conclusion": "success", "event": "pull_request", "head_branch": "feature/example", "head_sha": SOURCE}
+        with patch.dict(os.environ, {"GITHUB_RUN_ID": "123"}), patch.object(controller, "github", side_effect=lambda path: {"id": 2 if path.endswith("/release-ci.yml") else 1}), patch.object(controller, "source", return_value=candidate):
+            requests = controller.requests(config, {"workflow_run": completed}, "workflow_run", state)
+            self.assertEqual([(value["environment"], value["action"]) for value in requests], [("pr-9", "update")])
+            completed.update(name="Release CI", workflow_id=2, event="push", head_branch="develop/0.4.0")
+            self.assertEqual(controller.requests(config, {"workflow_run": completed}, "workflow_run", state), [])
+
+    def test_staging_requires_release_ci_while_test_sources_can_reuse_either_suite(self):
+        completed = {"head_sha": SOURCE, "status": "completed", "conclusion": "success", "event": "push", "head_branch": CONFIG["develop_branch"]}
+        runs = {"ci.yml": [completed], "release-ci.yml": []}
+
+        def github(path):
+            filename = path.split("/workflows/")[1].split("/")[0]
+            return {"workflow_runs": runs[filename]}
+
+        with patch.object(controller, "github", side_effect=github):
+            controller.ci_success(CONFIG, SOURCE)
+            with self.assertRaises(Refused):
+                controller.ci_success(dict(CONFIG, required_ci_branch=CONFIG["develop_branch"]), SOURCE)
+            runs["ci.yml"], runs["release-ci.yml"] = [], [completed]
+            controller.ci_success(CONFIG, SOURCE)
+            controller.ci_success(dict(CONFIG, required_ci_branch=CONFIG["develop_branch"]), SOURCE)
+            for change in [{"event": "workflow_dispatch"}, {"head_branch": "develop/0.4.0"}, {"conclusion": "failure"}]:
+                runs["release-ci.yml"] = [dict(completed, **change)]
+                with self.subTest(change=change), self.assertRaises(Refused):
+                    controller.ci_success(dict(CONFIG, required_ci_branch=CONFIG["develop_branch"]), SOURCE)
 
     def test_hostname_survives_updates_and_resume_but_changes_after_retirement(self):
         request = {"environment": "develop", "action": "up", "sequence": 1, "sha": SOURCE, "source_ref": "develop/0.1.0", "source_repo": "kent8192/aidash"}
