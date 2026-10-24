@@ -40,6 +40,7 @@ predecessor verification seven days after activation. Public identity publicatio
 includes this public schedule and proof without exposing signing-source references
 or private keys. A successor-signed request carries the bounded proof during the
 overlap, so receivers can verify it without fetching public identity over HTTP.
+Publication alone does not authorize key replacement.
 
 Node Registrations and Peer Graph Grants persist authentication trust separately
 from authorization. A key transition preserves their authorization revision,

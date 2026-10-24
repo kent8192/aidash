@@ -22,6 +22,7 @@ pub const TABLES: &[Table] = &[
 	table("billing", "billing_accounts", DeploymentWide),
 	table("billing", "billing_attachment_consents", DeploymentWide),
 	table("billing", "billing_attachments", DeploymentWide),
+	table("billing", "billing_coverage_periods", DeploymentWide),
 	table("billing", "billing_pod_usage", DeploymentWide),
 	table("billing", "billing_storage_samples", DeploymentWide),
 	table("billing", "billing_subscriptions", DeploymentWide),

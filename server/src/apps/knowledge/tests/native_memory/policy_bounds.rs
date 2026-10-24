@@ -1305,6 +1305,7 @@ pub(super) async fn run_visible(
 			id: store.deployment.to_string(),
 			endpoint: "http://127.0.0.1:9".into(),
 			protocol_version: "0.1".into(),
+			key_rollover: None,
 			key: None,
 		})
 		.await

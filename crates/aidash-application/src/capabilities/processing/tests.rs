@@ -8,6 +8,7 @@ use rstest::{fixture, rstest};
 use std::{collections::VecDeque, sync::Mutex};
 type Row = (Uuid, String, Option<String>);
 struct Trace {
+	allocation_scans: usize,
 	calls: Vec<String>,
 	after: Vec<Uuid>,
 	rows: VecDeque<Vec<Row>>,
@@ -26,6 +27,7 @@ struct Repository(Mutex<Trace>);
 #[fixture]
 fn repository() -> Repository {
 	Repository(Mutex::new(Trace {
+		allocation_scans: 0,
 		calls: vec![],
 		after: vec![],
 		rows: VecDeque::from([vec![(
@@ -149,7 +151,7 @@ async fn acknowledgement_keeps_health_send_and_database_mark_in_order(repository
 		]
 	);
 	assert_eq!(trace.marked, vec![Uuid::from_u128(1)]);
-	assert_eq!(cursor.0, Uuid::from_u128(1));
+	assert_eq!(cursor.operation, Uuid::from_u128(1));
 }
 #[rstest]
 #[tokio::test]
@@ -174,7 +176,7 @@ async fn failed_acknowledgement_keeps_the_database_receipt_retryable_and_advance
 	acknowledge(&repository, &mut cursor).await.unwrap();
 	let trace = repository.0.lock().unwrap();
 	assert!(trace.marked.is_empty());
-	assert_eq!(cursor.0, Uuid::from_u128(1));
+	assert_eq!(cursor.operation, Uuid::from_u128(1));
 }
 #[rstest]
 #[case::health("health")]
@@ -195,7 +197,7 @@ async fn failed_health_or_mark_preserves_the_error_and_cursor_without_a_false_re
 	);
 	let trace = repository.0.lock().unwrap();
 	assert!(trace.marked.is_empty());
-	assert_eq!(cursor.0, Uuid::from_u128(1));
+	assert_eq!(cursor.operation, Uuid::from_u128(1));
 }
 #[rstest]
 #[tokio::test]
@@ -297,4 +299,38 @@ fn publication_disclosure_preserves_conflict_classification_across_the_domain_bo
 	#[case] blocked: bool,
 ) {
 	assert_eq!(blocked_publication(&error).is_some(), blocked);
+}
+
+#[async_trait]
+impl crate::ports::capabilities::pod_usage::PodUsageRepository for Repository {
+	async fn pending_allocations(
+		&self,
+		_: Option<Uuid>,
+	) -> Result<crate::ports::capabilities::pod_usage::AllocationPage> {
+		self.0.lock().unwrap().allocation_scans += 1;
+		Ok(crate::ports::capabilities::pod_usage::AllocationPage {
+			instance: Uuid::nil(),
+			receipts: vec![],
+			next_after: None,
+			pending_evidence: 0,
+		})
+	}
+	async fn deliver_allocation(&self, _: crate::usage::PodTime) -> Result<()> {
+		Err(Error::Forbidden)
+	}
+	async fn acknowledge_allocation(
+		&self,
+		_: &crate::ports::capabilities::pod_usage::AllocationReceipt,
+	) -> Result<()> {
+		Err(Error::Forbidden)
+	}
+}
+
+#[rstest]
+#[tokio::test]
+async fn allocations_are_polled_even_when_no_operations_remain(repository: Repository) {
+	sweep(&repository, &mut ReceiptCursor::default())
+		.await
+		.unwrap();
+	assert_eq!(repository.0.lock().unwrap().allocation_scans, 1);
 }

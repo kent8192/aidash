@@ -6,6 +6,7 @@ fn snapshot() -> Snapshot {
 		operation_id: Uuid::from_u128(1),
 		kind: "shell".into(),
 		state: "running".into(),
+		result: json!({}),
 		epoch: 8,
 		generation: 3,
 		area_epoch: 8,
@@ -47,10 +48,11 @@ fn dispatched_writers_keep_possible_effects_even_after_a_confirmed_stop(
 	let change = snapshot.change(stopped);
 	assert_eq!(change.state, status);
 	assert_eq!(change.area_state, Some(area));
-	assert_eq!(
-		change.result,
-		json!({"termination_confirmed":stopped,"effects_may_have_occurred":effects,"error":"AUTHORITY_WITHDRAWN"})
-	);
+	let mut expected = json!({"termination_confirmed":stopped,"effects_may_have_occurred":effects,"error":"AUTHORITY_WITHDRAWN"});
+	if effects {
+		expected["runner_acknowledged"] = json!(false);
+	}
+	assert_eq!(change.result, expected);
 }
 #[rstest]
 #[case::epoch("epoch")]
