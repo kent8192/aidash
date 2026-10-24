@@ -301,8 +301,11 @@ async fn node_purge_erases_owned_files_and_rows_and_preserves_sibling_and_tenant
 	sqlx::query("INSERT INTO semantic_remote_operations(id,tenant,home_node,grant_id,admission_id,digest,binding,state,receipt) SELECT $1,tenant,home_node,$2,$3,'entry-digest','{}','READY','{\"result\":{\"matches\":[{\"text\":\"target source\"}]}}' FROM semantic_remote_operations WHERE id=$4").bind(entry_journal).bind(entry_grant).bind(sibling_run).bind(sibling_journal).execute(d.federation.store.pool.fixture_driver()).await.unwrap();
 	sqlx::query("INSERT INTO semantic_remote_reads(grant_id,tenant,admission_id,entry_id,revision,content_digest) VALUES ($1,$2,$3,$4,1,'fixture')").bind(entry_grant).bind(&tenant).bind(sibling_run).bind(source_entry).execute(d.federation.store.pool.fixture_driver()).await.unwrap();
 	sqlx::query("INSERT INTO semantic_remote_receipts(operation_id,tenant,run_id,digest,receipt) VALUES ($1,$2,$3,'entry-digest','{\"result\":{\"matches\":[{\"text\":\"target source\"}]}}')").bind(entry_journal).bind(&tenant).bind(sibling_run).execute(d.federation.store.pool.fixture_driver()).await.unwrap();
+	// Same-Tenant inconsistent incidental metadata is representable in existing
+	// data. Ordinary append(workspace) derives the Workspace's own Node; this
+	// robustness control must not be mistaken for that normal writer path.
 	let sibling_event = Uuid::new_v4();
-	sqlx::query("INSERT INTO events(id,tenant,node,workspace_id,kind,data) VALUES ($1,$2,$3,$4,'fixture.workspace','{}')").bind(sibling_event).bind(&tenant).bind(&target).bind(work[1].0).execute(d.federation.store.pool.fixture_driver()).await.unwrap();
+	sqlx::query("INSERT INTO events(id,tenant,node,workspace_id,kind,data) VALUES ($1,$2,$3,$4,'fixture.workspace',$5)").bind(sibling_event).bind(&tenant).bind(&target).bind(work[1].0).bind(json!({"content":"sibling Event body"})).execute(d.federation.store.pool.fixture_driver()).await.unwrap();
 	for node in [&target, &sibling] {
 		sqlx::query("INSERT INTO authorization_catalog (tenant,node,entry_id,entry_version,enabled,revision) SELECT tenant,$2,id,version,true,1 FROM registry WHERE tenant=$1 ORDER BY id,version LIMIT 1").bind(&tenant).bind(node).execute(d.federation.store.pool.fixture_driver()).await.unwrap();
 		sqlx::query("INSERT INTO authorization_catalog_history (tenant,node,entry_id,entry_version,enabled,revision,actor) SELECT tenant,node,entry_id,entry_version,enabled,revision,'fixture' FROM authorization_catalog WHERE tenant=$1 AND node=$2").bind(&tenant).bind(node).execute(d.federation.store.pool.fixture_driver()).await.unwrap();
@@ -315,6 +318,18 @@ async fn node_purge_erases_owned_files_and_rows_and_preserves_sibling_and_tenant
 		))
 		.await;
 	assert!(shared_before > 0);
+	// The initial default Node has only Tenant-creation history. Produce an
+	// actual separable sibling management event before testing its retention.
+	let (status, relabeled) = d
+		.as_deployment_administrator(
+			"PATCH",
+			&format!("/api/tenants/{tenant}/nodes/{sibling}"),
+			json!({"label":"Retained sibling"}),
+		)
+		.await;
+	assert_eq!(status, 200, "{relabeled}");
+	let sibling_audit: Uuid = sqlx::query_scalar("SELECT id FROM dashboard_administration_history WHERE tenant=$1 AND node=$2 AND action='node.update'")
+		.bind(&tenant).bind(&sibling).fetch_one(d.federation.store.pool.fixture_driver()).await.unwrap();
 	let revisions_before = d
 		.count(&format!(
 			"SELECT count(*) FROM authorization_revisions WHERE tenant='{tenant}'"
@@ -723,7 +738,7 @@ async fn node_purge_erases_owned_files_and_rows_and_preserves_sibling_and_tenant
 		.await,
 		1
 	);
-	assert!(d.count(&format!("SELECT count(*) FROM dashboard_administration_history WHERE tenant='{tenant}' AND node='{sibling}'")).await > 0);
+	assert_eq!(d.count(&format!("SELECT count(*) FROM dashboard_administration_history WHERE id='{sibling_audit}' AND tenant='{tenant}' AND node='{sibling}'")).await, 1);
 	assert_eq!(
 		d.count(&format!(
 			"SELECT count(*) FROM node_names WHERE name='{target}'"
@@ -731,6 +746,17 @@ async fn node_purge_erases_owned_files_and_rows_and_preserves_sibling_and_tenant
 		.await,
 		1
 	);
+	assert_eq!(
+		d.count(&format!("SELECT count(*) FROM events WHERE id='{sibling_event}' AND tenant='{tenant}' AND workspace_id='{}' AND node='{target}'", work[1].0)).await,
+		1,
+		"finite emitter catalog audit preserves the sibling Workspace Event unchanged"
+	);
+	let body: Value = sqlx::query_scalar("SELECT data FROM events WHERE id=$1")
+		.bind(sibling_event)
+		.fetch_one(d.federation.store.pool.fixture_driver())
+		.await
+		.unwrap();
+	assert_eq!(body, json!({"content":"sibling Event body"}));
 	d.finish().await;
 }
 

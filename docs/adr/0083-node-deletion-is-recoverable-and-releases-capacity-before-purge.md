@@ -20,6 +20,11 @@ Tenant-shared Registry definitions, Provider Credentials, Tenant Secrets, user
 subjects and shared policy revisions survive. Registrations owned by another
 Tenant or Deployment stay under that receiver's control.
 
+A Workspace Event follows its Workspace owner. Its scalar emitter Node metadata
+references the permanent same-Tenant name, allowing finite Node catalog audit to
+expire without deleting or rewriting a surviving Workspace's Event body. This
+metadata does not confer current Node admission or access authority.
+
 Current registrations needed by retained atomic journals are recovery state,
 separate from finite audit history. Retain only the exact local coordinator to
 remote participant and local participant to remote coordinator pairs validated

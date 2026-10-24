@@ -3217,7 +3217,7 @@ async fn node_purge_source_lifetime_migrations_round_trip_without_weakening_prov
 /// receiver schema changes while preserving the existing Tenant RLS boundary.
 #[rstest]
 #[tokio::test]
-async fn receiving_keysets_roundtrip_with_registered_model_state(
+async fn node_purge_receiving_keysets_roundtrip_with_registered_model_state(
 	#[future] fresh_database: MigrationFixture,
 ) {
 	use reinhardt::db::migrations::{ProjectState, executor::DatabaseMigrationExecutor};
@@ -3247,20 +3247,42 @@ async fn receiving_keysets_roundtrip_with_registered_model_state(
 			);
 		}
 	}
-	let mut receiving: Vec<_> = migrations
-		.iter()
-		.filter(|m| {
-			matches!(
-				m.name.as_str(),
-				"0015_receiving_keysets"
-					| "0016_receiving_keysets_state"
-					| "0045_receiving_keysets"
-					| "0046_receiving_keysets_state"
-			)
+	// Rollback reverses its supplied list, so preserve a dependency-sorted
+	// transitive closure. Later recovery ownership/cancellation descendants must
+	// be reversed before their receiving-keyset prerequisites, too.
+	let mut plan = reinhardt::db::migrations::MigrationPlan::new();
+	for migration in &migrations {
+		plan = plan.with_migration(migration.clone());
+	}
+	plan.sort().unwrap();
+	let mut selected = BTreeSet::from([
+		("federation".to_owned(), "0015_receiving_keysets".to_owned()),
+		(
+			"federation".to_owned(),
+			"0016_receiving_keysets_state".to_owned(),
+		),
+		("identity".to_owned(), "0045_receiving_keysets".to_owned()),
+		(
+			"identity".to_owned(),
+			"0046_receiving_keysets_state".to_owned(),
+		),
+	]);
+	for migration in &plan.migrations {
+		if migration
+			.dependencies
+			.iter()
+			.any(|key| selected.contains(key))
+		{
+			selected.insert((migration.app_label.clone(), migration.name.clone()));
+		}
+	}
+	let receiving = plan
+		.migrations
+		.into_iter()
+		.filter(|migration| {
+			selected.contains(&(migration.app_label.clone(), migration.name.clone()))
 		})
-		.cloned()
-		.collect();
-	receiving.sort_by(|a, b| (&a.app_label, &a.name).cmp(&(&b.app_label, &b.name)));
+		.collect::<Vec<_>>();
 	let pool = fixture.connection.clone().into_postgres().unwrap();
 	for pass in 0..2 {
 		for table in tables {
@@ -3303,39 +3325,68 @@ async fn receiving_keysets_roundtrip_with_registered_model_state(
 	}
 }
 
-/// Recovery trust belongs to permanent Node identity, without making the
-/// catalog permanent or changing the scalar ORM's physical-only FK contract.
+/// Scalar Node evidence belongs to permanent identity without making the
+/// catalog permanent or changing the ORM's physical-only FK contract.
 #[rstest]
+#[case::registration(
+	"federation",
+	"0019_node_registration_recovery_ownership",
+	None,
+	"node_registrations",
+	"node_registrations_node_fkey",
+	"node_registrations_tenant_root_fkey"
+)]
+#[case::event(
+	"execution",
+	"0054_session_area_lifetime",
+	Some("0055_session_area_lifetime_state"),
+	"events",
+	"events_node_fkey",
+	"events_tenant_root_fkey"
+)]
 #[tokio::test]
 async fn node_purge_registration_recovery_ownership_roundtrips_without_a_catalog_shell(
 	#[future] fresh_database: MigrationFixture,
+	#[case] app: &str,
+	#[case] physical: &str,
+	#[case] state: Option<&str>,
+	#[case] table: &str,
+	#[case] node_fk: &str,
+	#[case] tenant_fk: &str,
 ) {
 	use reinhardt::db::migrations::{ProjectState, executor::DatabaseMigrationExecutor};
 	let fixture = fresh_database.await;
 	let source =
 		FilesystemSource::new(PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("migrations"));
 	let migrations = source.all_migrations().await.unwrap();
-	let group = migrations
+	let mut group = migrations
 		.iter()
 		.filter(|migration| {
-			migration.app_label == "federation"
-				&& migration.name == "0019_node_registration_recovery_ownership"
+			migration.app_label == app
+				&& (migration.name == physical || state == Some(migration.name.as_str()))
 		})
 		.cloned()
 		.collect::<Vec<_>>();
-	assert_eq!(group.len(), 1);
-	assert!(group[0].database_only);
+	group.sort_by(|a, b| a.name.cmp(&b.name));
+	assert_eq!(group.len(), 1 + usize::from(state.is_some()));
+	assert!(
+		group
+			.iter()
+			.find(|m| m.name == physical)
+			.unwrap()
+			.database_only
+	);
 	for state in [
 		build_state_from_files(&source).await.unwrap(),
 		ProjectState::from_global_registry(),
 	] {
 		assert!(
 			!state
-				.find_model_by_table("node_registrations")
+				.find_model_by_table(table)
 				.unwrap()
 				.constraints
 				.iter()
-				.any(|constraint| constraint.name == "node_registrations_node_fkey")
+				.any(|constraint| constraint.name == node_fk)
 		);
 	}
 	let mut executor = DatabaseMigrationExecutor::new(fixture.connection.clone())
@@ -3346,7 +3397,7 @@ async fn node_purge_registration_recovery_ownership_roundtrips_without_a_catalog
 		.into_iter()
 		.enumerate()
 	{
-		let actual: (String, String) = sqlx::query_as("SELECT confrelid::regclass::text, pg_get_constraintdef(oid) FROM pg_constraint WHERE conrelid='node_registrations'::regclass AND conname='node_registrations_node_fkey'").fetch_one(&pool).await.unwrap();
+		let actual: (String, String) = sqlx::query_as("SELECT confrelid::regclass::text, pg_get_constraintdef(oid) FROM pg_constraint WHERE conrelid=to_regclass($1) AND conname=$2").bind(table).bind(node_fk).fetch_one(&pool).await.unwrap();
 		assert_eq!(actual.0, parent);
 		assert!(
 			actual.1.contains(if parent == "node_names" {
@@ -3356,9 +3407,22 @@ async fn node_purge_registration_recovery_ownership_roundtrips_without_a_catalog
 			}),
 			"{actual:?}"
 		);
-		let root: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM pg_constraint WHERE conrelid='node_registrations'::regclass AND conname='node_registrations_tenant_fkey')").fetch_one(&pool).await.unwrap();
+		let root: bool = sqlx::query_scalar(
+			"SELECT EXISTS(SELECT 1 FROM pg_constraint WHERE conrelid=to_regclass($1) AND conname=$2)",
+		)
+		.bind(table)
+		.bind(tenant_fk)
+		.fetch_one(&pool)
+		.await
+		.unwrap();
 		assert!(root);
-		let rls: (bool, bool) = sqlx::query_as("SELECT relrowsecurity,relforcerowsecurity FROM pg_class WHERE oid='node_registrations'::regclass").fetch_one(&pool).await.unwrap();
+		let rls: (bool, bool) = sqlx::query_as(
+			"SELECT relrowsecurity,relforcerowsecurity FROM pg_class WHERE oid=to_regclass($1)",
+		)
+		.bind(table)
+		.fetch_one(&pool)
+		.await
+		.unwrap();
 		assert_eq!(rls, (true, true));
 		match pass {
 			0 => {
@@ -3369,5 +3433,58 @@ async fn node_purge_registration_recovery_ownership_roundtrips_without_a_catalog
 			}
 			_ => {}
 		}
+	}
+	if table == "events" {
+		fixture.tenant_root("event-owner").await;
+		fixture.tenant_root("event-other").await;
+		let node = aidash_domain::nodes::NodeName::derived("event-owner").to_string();
+		let id = Uuid::new_v4();
+		let insert = "INSERT INTO events(id,tenant,node,kind,data) VALUES ($1,$2,$3,'fixture.retained','{}')";
+		let foreign = sqlx::query(insert)
+			.bind(Uuid::new_v4())
+			.bind("event-other")
+			.bind(&node)
+			.execute(&pool)
+			.await
+			.unwrap_err();
+		assert_eq!(
+			foreign.as_database_error().unwrap().code().as_deref(),
+			Some("23503")
+		);
+		sqlx::query(insert)
+			.bind(id)
+			.bind("event-owner")
+			.bind(&node)
+			.execute(&pool)
+			.await
+			.unwrap();
+		sqlx::query(insert)
+			.bind(Uuid::new_v4())
+			.bind("event-owner")
+			.bind(Option::<String>::None)
+			.execute(&pool)
+			.await
+			.unwrap();
+		sqlx::query("DELETE FROM nodes WHERE tenant='event-owner' AND name=$1")
+			.bind(&node)
+			.execute(&pool)
+			.await
+			.unwrap();
+		let retained: (String, String) =
+			sqlx::query_as("SELECT tenant,node FROM events WHERE id=$1")
+				.bind(id)
+				.fetch_one(&pool)
+				.await
+				.unwrap();
+		assert_eq!(retained, ("event-owner".to_owned(), node.clone()));
+		let permanent = sqlx::query("DELETE FROM node_names WHERE name=$1")
+			.bind(node)
+			.execute(&pool)
+			.await
+			.unwrap_err();
+		assert_eq!(
+			permanent.as_database_error().unwrap().code().as_deref(),
+			Some("23503")
+		);
 	}
 }
