@@ -723,11 +723,9 @@ impl Service {
 			if let StoredVersion::Tokens(Stored {
 				rotation: Some(receipt),
 				..
-			}) = entry
+			}) = entry && committed.contains(version)
 			{
-				if committed.contains(version) {
-					resolved.insert(receipt.intent_version.clone());
-				}
+				resolved.insert(receipt.intent_version.clone());
 			}
 		}
 		entries

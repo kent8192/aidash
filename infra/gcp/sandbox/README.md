@@ -312,9 +312,14 @@ a fresh owner session first. The executable uses real tenant account APIs,
 reads `validSince` before/after, verifies `/auth/session` was authenticated before
 mutation, then checks denial with the **old cookie**. Reset obtains and consumes
 an OOB code internally without email delivery/logging. Password changes update
-`dummy-login.json`; no returned token or callback is printed. Run disable/delete
-last. Between disable and delete, run `controls.py gcip-reenable --manifest
-"$RUN/manifest.json"` and obtain a fresh owner session. To restore the dummy user after delete, use tenant `accounts:batchCreate`
+`dummy-login.json`; no returned token or callback is printed. Complete any
+provider acceptance and grant cleanup that uses this identity before running
+disable/delete. Between disable and delete, run `controls.py gcip-reenable
+--manifest "$RUN/manifest.json"`, then have the Deployment Administrator restore
+the exact Aidash identity through `POST /api/dashboard/identities/{id}/restore`
+and obtain a fresh owner session. GCIP re-enablement alone does not restore
+Aidash authority; see [Account Status](../../../docs/authorization.md#dashboard-identity).
+To restore the dummy user after delete, use tenant `accounts:batchCreate`
 and `accounts:update` via the fixture setup in a new run; do not recreate a
 production user. A still-valid session is a failure to investigate (including
 propagation/cache interval), not accepted by waiting indefinitely or assuming
