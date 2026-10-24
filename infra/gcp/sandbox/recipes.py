@@ -88,7 +88,7 @@ def build(m, r):
         add('deploy-deny-' + name, 8, 'app', deploy, method, url, 'deny', body=body, permission=permission, resource=account)
     # Reachability controls use the separate untagged fixture and are run
     # only during the reviewed temporary allow-substrate phase.
-    for name, permission, method, url, body in operations:
+    for name, _permission, method, url, body in operations:
         if name in ('delete', 'undelete', 'disable'):
             continue  # controls.py lifecycle owns stateful restoration.
         control_url = url.replace(broker, r['control'])

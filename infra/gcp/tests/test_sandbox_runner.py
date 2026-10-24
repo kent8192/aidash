@@ -3,7 +3,6 @@
 The fake cloud models resources and failures, never IAM decisions. These tests
 are local lifecycle/redaction proof, not evidence that Google's IAM works.
 """
-import contextlib
 import importlib.util
 import io
 import json
@@ -208,7 +207,9 @@ class LifecycleTests(unittest.TestCase):
             resource = f'projects/1001/secrets/aidash-test-cred-dummy-{number}/versions/1'
             first = dict(base, url='https://secretmanager.googleapis.com/v1/' + resource + ':access', resource=resource)
             batch.write_text(json.dumps([first, dict(first, id='must-not-run')]))
-            with mock.patch.dict(os.environ, self.env), mock.patch('urllib.request.OpenerDirector.open', side_effect=lambda *a, **k: Response(status, body)) as transport:
+            def response(*args, status=status, body=body, **kwargs):
+                return Response(status, body)
+            with mock.patch.dict(os.environ, self.env), mock.patch('urllib.request.OpenerDirector.open', side_effect=response) as transport:
                 result = runner.probe(json.loads(self.manifest.read_text()), self.manifest, args)
                 self.assertEqual(transport.call_count, 1)
                 self.assertFalse(result['all_passed'])

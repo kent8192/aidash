@@ -40,7 +40,8 @@ def select_resources(m, bootstrap, environments, pool, service):
     config = bootstrap['configuration']['value']
     require(config['project_id'] == app and env['byok_project_id'] == m['projects']['byok']['id'], 'output project mismatch')
     bindings = env['gcip']['tenant_bindings']
-    tenant = lambda label: next(key for key, value in bindings.items() if value == label)
+    def tenant(label):
+        return next(key for key, value in bindings.items() if value == label)
     return dict(server=env['server_service_account'], worker=env['worker_service_account'],
         node=pool['config']['serviceAccount'], node_pool_service_account=pool['config']['serviceAccount'],
         node_pool=env['node_pool'], broker=config['broker_service_accounts']['test'], deploy=config['deploy_service_account'],
@@ -99,7 +100,8 @@ class Controls:
 
     def discover(self, args):
         root = self.directory / 'source/infra/gcp'
-        read = lambda name: json.loads(command(['terraform', '-chdir=' + str(root / name), 'output', '-json']))
+        def read(name):
+            return json.loads(command(['terraform', '-chdir=' + str(root / name), 'output', '-json']))
         bootstrap, environments = read('bootstrap'), read('environments')
         pool_name = environments['environments']['value']['test']['node_pool']
         pool = cloud(self.app, 'container', 'node-pools', 'describe', pool_name, '--cluster=aidash', '--zone=us-central1-a')
@@ -218,7 +220,7 @@ class Controls:
             label_matches = (labels.get('aidash.run/metadata-server') == 'allowed' if allowed
                              else 'aidash.run/metadata-server' not in labels)
             uri = 'http://169.254.169.254/computeMetadata/v1/instance/service-accounts/default/email'
-            def fetch(url, metadata=False):
+            def fetch(url, metadata=False, namespace=namespace, pod=pod):
                 name = 'iam-probe-' + secrets.token_hex(4)
                 curl = ['curl', '--silent', '--max-time', '15', '--write-out', '\n%{http_code}']
                 if metadata:
@@ -305,7 +307,8 @@ class Controls:
             self.record('deny-policy-restored', identity, 'exact_bindings_verified', baseline_sha256=hashlib.sha256(json.dumps(policy, sort_keys=True).encode()).hexdigest())
         for identity, original in key_baseline.items():
             original_keys = {key['name'] for key in original}
-            inventory = lambda: cloud(self.app, 'iam', 'service-accounts', 'keys', 'list', '--iam-account=' + identity, '--managed-by=user')
+            def inventory(identity=identity):
+                return cloud(self.app, 'iam', 'service-accounts', 'keys', 'list', '--iam-account=' + identity, '--managed-by=user')
             for key in inventory():
                 if key['name'] not in original_keys:
                     cloud(self.app, 'iam', 'service-accounts', 'keys', 'delete', key['name'].rsplit('/', 1)[1], '--iam-account=' + identity)
@@ -425,9 +428,11 @@ class Controls:
         save(file_policy, {**recovery['policy'], 'etag': policy['etag']})
         cloud(self.app, 'iam', 'service-accounts', 'set-iam-policy', identity, str(file_policy))
         actual = cloud(self.app, 'iam', 'service-accounts', 'get-iam-policy', identity)
-        canonical = lambda value: sorted(json.dumps({**binding, 'members': sorted(binding.get('members', []))}, sort_keys=True) for binding in value.get('bindings', []))
+        def canonical(value):
+            return sorted(json.dumps({**binding, 'members': sorted(binding.get('members', []))}, sort_keys=True) for binding in value.get('bindings', []))
         require(canonical(actual) == canonical(recovery['policy']), 'broker IAM restoration unverified')
-        list_tags = lambda: cloud(self.app, 'resource-manager', 'tags', 'bindings', 'list', '--parent=' + parent, '--location=global')
+        def list_tags():
+            return cloud(self.app, 'resource-manager', 'tags', 'bindings', 'list', '--parent=' + parent, '--location=global')
         expected = {tag['tagValue'] for tag in recovery['tags']}
         current = {tag['tagValue'] for tag in list_tags()}
         require(current <= expected, 'unexpected broker tags; inspect recovery journal')
@@ -457,7 +462,7 @@ class Controls:
         require(200 <= status < 300, 'untagged control lacks positive authority')
         self.record('tag-untagged-policy', target, 'allowed', http_status=status)
         save(self.directory / 'control-tag-recovery.json', {'project': self.app, 'parent': control_parent, 'tag_value': tag, 'stage': 'create_pending'})
-        created = cloud(self.app, 'resource-manager', 'tags', 'bindings', 'create', '--tag-value=' + tag, '--parent=' + control_parent, '--location=global')
+        cloud(self.app, 'resource-manager', 'tags', 'bindings', 'create', '--tag-value=' + tag, '--parent=' + control_parent, '--location=global')
         try:
             spec['body']['policy'] = cloud(self.app, 'iam', 'service-accounts', 'get-iam-policy', self.r['control'])
             status, body = request(spec, self.token(self.r['deploy']), self.app)
@@ -587,7 +592,8 @@ class Controls:
         # /auth/session returns SessionView.id only for an authenticated session.
         require(status == 200 and before_session.get('id'), 'fresh authenticated application session required')
         base = f'v1/projects/{self.app}/tenants/{self.r["own_tenant"]}/accounts:'
-        lookup = lambda: self.api('identitytoolkit.googleapis.com', base + 'lookup', body={'localId': [self.r['dummy_user']]})
+        def lookup():
+            return self.api('identitytoolkit.googleapis.com', base + 'lookup', body={'localId': [self.r['dummy_user']]})
         before = lookup()['users'][0].get('validSince')
         password = secrets.token_urlsafe(32)
         if args.change == 'reset':

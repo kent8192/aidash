@@ -1,4 +1,5 @@
 """Applied-output and generated-command contracts; no cloud acceptance claimed."""
+import importlib
 import json
 from pathlib import Path
 import sys
@@ -7,10 +8,9 @@ import unittest
 from unittest import mock
 
 SANDBOX = Path(__file__).resolve().parents[1] / 'sandbox'
-sys.path.insert(0, str(SANDBOX))
-import controls
-import recipes
-sys.path.pop(0)
+with mock.patch.object(sys, 'path', [str(SANDBOX), *sys.path]):
+    controls = importlib.import_module('controls')
+    recipes = importlib.import_module('recipes')
 
 
 class ControlContracts(unittest.TestCase):
@@ -22,7 +22,8 @@ class ControlContracts(unittest.TestCase):
             billing_account='ABCDEF-ABCDEF-ABCDEF', parent='none', environment='test', status='created',
             projects={'app': {'id': 'aidash-sbx-app-one', 'number': '1000'}, 'byok': {'id': 'aidash-sbx-byok-one', 'number': '1001'}})
         self.app = self.m['projects']['app']['id']
-        sa = lambda name: name + '@' + self.app + '.iam.gserviceaccount.com'
+        def sa(name):
+            return name + '@' + self.app + '.iam.gserviceaccount.com'
         self.bootstrap = {'configuration': {'value': {'project_id': self.app, 'deploy_service_account': sa('aidash-deploy'), 'broker_service_accounts': {'test': sa('aidash-test-broker')}}}}
         self.environments = {'environments': {'value': {'test': {'server_service_account': sa('adactualhash-server'), 'worker_service_account': sa('adactualhash-worker'),
             'node_pool': 'aidash-test-123456789abc', 'byok_project_id': self.m['projects']['byok']['id'],
@@ -166,7 +167,8 @@ class ControlContracts(unittest.TestCase):
         baseline = {identity: {'bindings': [], 'etag': 'old'} for identity in identities}
         file = self.directory / 'deny-policies-baseline.json'
         file.write_text(json.dumps(baseline))
-        keyname = lambda identity, suffix: 'projects/' + self.app + '/serviceAccounts/' + identity + '/keys/' + suffix
+        def keyname(identity, suffix):
+            return 'projects/' + self.app + '/serviceAccounts/' + identity + '/keys/' + suffix
         original = {identity: [{'name': keyname(identity, 'original')}] for identity in identities[:2]}
         (self.directory / 'deny-keys-baseline.json').write_text(json.dumps(original))
         current = {identity: keys + [{'name': keyname(identity, 'unexpected')}] for identity, keys in original.items()}
@@ -263,81 +265,85 @@ class ControlContracts(unittest.TestCase):
     def test_last_broker_undelete_recovers_identity_policy_and_tags_for_each_outcome(self):
         for outcome in ('deny', 'allow', 'tags_lost', 'interrupted'):
             with self.subTest(outcome=outcome):
-                control = self.instance()
-                control.record('control-delete-undelete', self.r['control'], 'same_identity_restored', tag_count=0)
-                journal = self.directory / 'broker-undelete-recovery.json'
-                journal.unlink(missing_ok=True)
-                uid = '12345'
-                resource = 'projects/' + self.app + '/serviceAccounts/' + uid
-                parent = '//iam.googleapis.com/' + resource
-                original_policy = {'etag': 'old', 'bindings': [{'role': 'roles/iam.serviceAccountUser', 'members': ['serviceAccount:' + self.r['deploy']]}]}
-                tag = {'name': 'tagBindings/fixture', 'tagValue': 'tagValues/123', 'parent': parent}
-                state = {'deleted': False, 'tags': [tag], 'policy': original_policy, 'restore_fails': outcome == 'interrupted'}
-                events = []
-                def cloud(project, *words):
-                    self.assertEqual(project, self.app)
-                    if 'bindings' in words:
-                        if 'create' in words:
-                            state['tags'] = [tag]
-                            return tag
-                        return state['tags']
-                    if 'get-iam-policy' in words:
-                        return {**state['policy'], 'etag': 'fresh'}
-                    if 'set-iam-policy' in words:
-                        restored = json.loads(Path(words[-1]).read_text())
-                        self.assertEqual(restored['etag'], 'fresh')
-                        state['policy'] = restored
-                        return restored
-                    if 'delete' in words:
-                        durable = json.loads(journal.read_text())
-                        self.assertEqual(durable['stage'], 'delete_pending')
-                        self.assertEqual(durable['unique_id'], uid)
-                        self.assertEqual(durable['policy'], {**original_policy, 'etag': 'fresh'})
-                        self.assertEqual(durable['tags'], [tag])
-                        events.append('admin-delete')
-                        state['deleted'] = True
-                        if outcome == 'tags_lost':
-                            state['tags'] = []
-                        if outcome == 'interrupted':
-                            raise controls.Refused('lost delete response')
-                        return {}
-                    return {'uniqueId': uid, 'disabled': False}
-                def request(spec, token, project):
-                    if spec['method'] == 'GET':
-                        return (404, {}) if state['deleted'] else (200, {'uniqueId': uid, 'disabled': False})
-                    self.assertEqual(spec['url'], 'https://iam.googleapis.com/v1/' + resource + ':undelete')
-                    if token == 'deploy':
-                        events.append('deploy-undelete')
-                        self.assertTrue(state['deleted'])
-                        if outcome == 'allow':
-                            state['deleted'] = False
-                            return 200, {}
-                        return 403, {'error': {'status': 'PERMISSION_DENIED', 'details': [{'@type': 'type.googleapis.com/google.rpc.ErrorInfo', 'domain': 'iam.googleapis.com', 'reason': 'IAM_PERMISSION_DENIED', 'metadata': {'permission': 'iam.serviceAccounts.undelete', 'resource': resource}}]}}
-                    events.append('admin-undelete')
-                    if state['restore_fails']:
-                        return 503, {}
+                self.check_broker_undelete_outcome(outcome)
+
+    def check_broker_undelete_outcome(self, outcome):
+        control = self.instance()
+        control.record('control-delete-undelete', self.r['control'], 'same_identity_restored', tag_count=0)
+        journal = self.directory / 'broker-undelete-recovery.json'
+        journal.unlink(missing_ok=True)
+        uid = '12345'
+        resource = 'projects/' + self.app + '/serviceAccounts/' + uid
+        parent = '//iam.googleapis.com/' + resource
+        original_policy = {'etag': 'old', 'bindings': [{'role': 'roles/iam.serviceAccountUser', 'members': ['serviceAccount:' + self.r['deploy']]}]}
+        tag = {'name': 'tagBindings/fixture', 'tagValue': 'tagValues/123', 'parent': parent}
+        state = {'deleted': False, 'tags': [tag], 'policy': original_policy, 'restore_fails': outcome == 'interrupted'}
+        events = []
+        def cloud(project, *words):
+            self.assertEqual(project, self.app)
+            if 'bindings' in words:
+                if 'create' in words:
+                    state['tags'] = [tag]
+                    return tag
+                return state['tags']
+            if 'get-iam-policy' in words:
+                return {**state['policy'], 'etag': 'fresh'}
+            if 'set-iam-policy' in words:
+                restored = json.loads(Path(words[-1]).read_text())
+                self.assertEqual(restored['etag'], 'fresh')
+                state['policy'] = restored
+                return restored
+            if 'delete' in words:
+                durable = json.loads(journal.read_text())
+                self.assertEqual(durable['stage'], 'delete_pending')
+                self.assertEqual(durable['unique_id'], uid)
+                self.assertEqual(durable['policy'], {**original_policy, 'etag': 'fresh'})
+                self.assertEqual(durable['tags'], [tag])
+                events.append('admin-delete')
+                state['deleted'] = True
+                if outcome == 'tags_lost':
+                    state['tags'] = []
+                if outcome == 'interrupted':
+                    raise controls.Refused('lost delete response')
+                return {}
+            return {'uniqueId': uid, 'disabled': False}
+        def request(spec, token, project):
+            if spec['method'] == 'GET':
+                return (404, {}) if state['deleted'] else (200, {'uniqueId': uid, 'disabled': False})
+            self.assertEqual(spec['url'], 'https://iam.googleapis.com/v1/' + resource + ':undelete')
+            if token == 'deploy':
+                events.append('deploy-undelete')
+                self.assertTrue(state['deleted'])
+                if outcome == 'allow':
                     state['deleted'] = False
-                    state['policy'] = {'etag': 'after', 'bindings': []}
-                    return 200, {'uniqueId': uid}
-                with mock.patch.object(controls, 'cloud', side_effect=cloud), mock.patch.object(controls, 'request', side_effect=request), mock.patch.object(control, 'token', side_effect=lambda identity=None: 'deploy' if identity else 'admin'):
-                    if outcome == 'deny':
-                        control.broker_undelete_last(None)
-                    else:
-                        with self.assertRaises(controls.Refused):
-                            control.broker_undelete_last(None)
-                    if outcome == 'interrupted':
-                        self.assertEqual(json.loads(journal.read_text())['stage'], 'restore_pending')
-                        state['restore_fails'] = False
-                        control.recover_broker(None)
-                self.assertFalse(state['deleted'])
-                self.assertEqual(state['policy']['bindings'], original_policy['bindings'])
-                self.assertEqual(state['tags'], [tag])
-                self.assertEqual(json.loads(journal.read_text())['stage'], 'restored')
-                if outcome != 'interrupted':
-                    rows = json.loads((self.directory / 'controls-evidence.json').read_text())
-                    result = [row for row in rows if row['case'] == 'broker-undelete'][-1]
-                    self.assertEqual(result['observed'], {'deny': 'passed', 'allow': 'failed', 'tags_lost': 'inconclusive_tag_state'}[outcome])
-                    self.assertEqual(events[:2], ['admin-delete', 'deploy-undelete'])
+                    return 200, {}
+                return 403, {'error': {'status': 'PERMISSION_DENIED', 'details': [{'@type': 'type.googleapis.com/google.rpc.ErrorInfo', 'domain': 'iam.googleapis.com', 'reason': 'IAM_PERMISSION_DENIED', 'metadata': {'permission': 'iam.serviceAccounts.undelete', 'resource': resource}}]}}
+            events.append('admin-undelete')
+            if state['restore_fails']:
+                return 503, {}
+            state['deleted'] = False
+            state['policy'] = {'etag': 'after', 'bindings': []}
+            return 200, {'uniqueId': uid}
+        with mock.patch.object(controls, 'cloud', side_effect=cloud), mock.patch.object(controls, 'request', side_effect=request), mock.patch.object(control, 'token', side_effect=lambda identity=None: 'deploy' if identity else 'admin'):
+            if outcome == 'deny':
+                control.broker_undelete_last(None)
+            else:
+                with self.assertRaises(controls.Refused):
+                    control.broker_undelete_last(None)
+            if outcome == 'interrupted':
+                self.assertEqual(json.loads(journal.read_text())['stage'], 'restore_pending')
+                state['restore_fails'] = False
+                control.recover_broker(None)
+        self.assertFalse(state['deleted'])
+        self.assertEqual(state['policy']['bindings'], original_policy['bindings'])
+        self.assertEqual(state['tags'], [tag])
+        self.assertEqual(json.loads(journal.read_text())['stage'], 'restored')
+        if outcome != 'interrupted':
+            rows = json.loads((self.directory / 'controls-evidence.json').read_text())
+            result = [row for row in rows if row['case'] == 'broker-undelete'][-1]
+            self.assertEqual(result['observed'], {'deny': 'passed', 'allow': 'failed', 'tags_lost': 'inconclusive_tag_state'}[outcome])
+            self.assertEqual(events[:2], ['admin-delete', 'deploy-undelete'])
+
 
     def test_kms_failure_cleans_private_signature_without_emitting_contents(self):
         control = self.instance()
