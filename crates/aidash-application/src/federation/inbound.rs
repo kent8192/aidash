@@ -229,18 +229,31 @@ pub async fn accept(
 			.ok_or(Error::Forbidden)?;
 		Acting::Mapped {
 			credential_id: mapping.credential_id,
-			subject,
+			subject: subject.clone(),
 		}
 	};
 	if let Some((keys_revision, keys)) = advancement {
-		if !live_authority
-			|| !repository
+		let advanced = if live_authority {
+			repository
 				.advance_keys(&owner, keys_revision, registration.revision, &keys)
 				.await?
-		{
+		} else {
+			repository
+				.advance_recovery_keys(
+					&owner,
+					keys_revision,
+					registration.revision,
+					&keys,
+					&subject,
+					request,
+				)
+				.await?
+		};
+		if !advanced {
 			return Err(Error::Unauthorized);
 		}
 	}
+
 	Ok(Admitted {
 		tenant,
 		receiver,

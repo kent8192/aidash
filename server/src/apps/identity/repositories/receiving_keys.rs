@@ -94,17 +94,66 @@ pub(crate) async fn advance(
 	expected_authorization_revision: i64,
 	keys: &TrustedDeploymentKeys,
 ) -> Result<bool> {
-	let Some((stored, revision, enabled)) = read(tx, owner, true).await? else {
+	let Some(snapshot) = read(tx, owner, true).await? else {
 		return Ok(false);
 	};
-	if !enabled
-		|| revision != expected_authorization_revision
+	if !snapshot.2 {
+		return Ok(false);
+	}
+	compare_and_advance(
+		tx,
+		owner,
+		expected_keys_revision,
+		expected_authorization_revision,
+		keys,
+		snapshot,
+	)
+	.await
+}
+
+/// The Federation adapter has locked this row and revalidated the exact real
+/// durable request in this transaction. This does not grant live authority.
+pub(crate) async fn advance_recovery(
+	tx: &mut dyn TransactionExecutor,
+	owner: &ReceivingKeyOwner,
+	expected_keys_revision: i64,
+	expected_authorization_revision: i64,
+	keys: &TrustedDeploymentKeys,
+) -> Result<bool> {
+	if !matches!(owner, ReceivingKeyOwner::Registration { .. }) {
+		return Ok(false);
+	}
+	let Some(snapshot) = read(tx, owner, true).await? else {
+		return Ok(false);
+	};
+	compare_and_advance(
+		tx,
+		owner,
+		expected_keys_revision,
+		expected_authorization_revision,
+		keys,
+		snapshot,
+	)
+	.await
+}
+
+async fn compare_and_advance(
+	tx: &mut dyn TransactionExecutor,
+	owner: &ReceivingKeyOwner,
+	expected_keys_revision: i64,
+	expected_authorization_revision: i64,
+	keys: &TrustedDeploymentKeys,
+	snapshot: (ReceivingKeys, i64, bool),
+) -> Result<bool> {
+	let (stored, revision, enabled_at_read) = snapshot;
+	if revision != expected_authorization_revision
 		|| stored.keys_revision != expected_keys_revision
 		|| stored.keys.quarantined
 		|| expected_keys_revision == i64::MAX
 	{
 		return Ok(false);
 	}
+
 	// A normal transition cannot reset quarantine, retirement history or trust.
 	let Some(retiring) = &keys.retiring else {
 		return Ok(false);
@@ -143,7 +192,7 @@ pub(crate) async fn advance(
 		.cond_where(condition)
 		.and_where(Expr::col("keys_revision").eq(Expr::value(expected_keys_revision)))
 		.and_where(Expr::col("revision").eq(Expr::value(expected_authorization_revision)))
-		.and_where(Expr::col("enabled").eq(Expr::value(true)))
+		.and_where(Expr::col("enabled").eq(Expr::value(enabled_at_read)))
 		.build(PostgresQueryBuilder);
 	Ok(tx
 		.execute(&sql, convert_values(values))
