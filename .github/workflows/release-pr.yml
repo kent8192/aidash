@@ -1,7 +1,7 @@
 name: Release PR
 on:
   workflow_run:
-    workflows: [CI, GCP environments]
+    workflows: [Release CI, GCP environments]
     types: [completed]
 
 permissions:
@@ -22,7 +22,8 @@ jobs:
       github.event.workflow_run.conclusion == 'success' &&
       github.event.workflow_run.head_repository.full_name == github.repository &&
       (github.event.workflow_run.name == 'GCP environments' ||
-       (github.event.workflow_run.event == 'push' &&
+       (github.event.workflow_run.name == 'Release CI' &&
+        github.event.workflow_run.event == 'push' &&
         startsWith(github.event.workflow_run.head_branch, 'develop/')))
     permissions:
       contents: read
