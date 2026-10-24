@@ -219,7 +219,32 @@
       "required": ["id"],
       "properties": {
         "id": { "type": "string", "pattern": "^aidash://[A-Za-z0-9-]{1,100}$" },
-        "endpoint": { "type": "string" }
+        "endpoint": { "type": "string" },
+        "settings": {
+          "type": ["object", "null"],
+          "additionalProperties": false,
+          "required": ["offering"],
+          "properties": {
+            "offering": { "enum": ["self-hosted", "cloud", "dedicated"] },
+            "key": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["kms"],
+              "properties": {
+                "kms": {
+                  "type": "string",
+                  "maxLength": 1024,
+                  "pattern": "^projects/[A-Za-z0-9_-]+/locations/[A-Za-z0-9_-]+/keyRings/[A-Za-z0-9_-]+/cryptoKeys/[A-Za-z0-9_-]+/cryptoKeyVersions/[1-9][0-9]*$"
+                }
+              }
+            }
+          },
+          "if": {
+            "type": "object",
+            "properties": { "offering": { "const": "self-hosted" } }
+          },
+          "then": { "not": { "required": ["key"] } }
+        }
       }
     },
     "existingSecret": { "type": "string" },

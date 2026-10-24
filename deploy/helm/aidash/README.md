@@ -67,6 +67,58 @@ to override file settings with "no managed Store"; `null` renders nothing.
 GCIP keys; its `public_origin` must equal `deployment.endpoint`. It is rendered the same
 way for `AIDASH_GCIP_SETTINGS`. Changing either restarts server and worker.
 
+## Deployment Offering and initial KMS key
+
+`deployment.settings` is an optional public startup descriptor. It accepts only
+`offering` (`self-hosted`, `cloud`, or `dedicated`) and an optional `key` object
+containing only `kms`, a full numeric CryptoKeyVersion reference. Unknown fields,
+file paths, null keys and KMS keys for `self-hosted` are refused. Its default
+`null` preserves the image/profile defaults: Community is Self-hosted and the
+Enterprise image is Cloud. The binary still refuses an incompatible Offering
+before connecting to its database.
+
+A separately identified Dedicated Deployment uses the Enterprise image, its own
+release, namespace, database and stable Deployment id. For example:
+
+```yaml
+image:
+  repository: REGISTRY/aidash-enterprise
+  digest: sha256:REVIEWED_IMAGE_DIGEST
+existingSecret: dedicated-runtime
+deployment:
+  id: aidash://dedicated-example
+  endpoint: https://dedicated.example.com
+  settings:
+    offering: dedicated
+    key:
+      kms: projects/PROJECT/locations/LOCATION/keyRings/RING/cryptoKeys/KEY/cryptoKeyVersions/1
+```
+
+Provision the image, runtime Secret, federation signing key and service-account
+IAM separately. Omit `key` when federation signing is not configured. These are
+public references, never private key material; they grant no signing permission.
+The chart wraps the descriptor in `{"deployment": ...}` in a read-only ConfigMap
+and sets `AIDASH_DEPLOYMENT_SETTINGS` for both server and worker. It participates
+in the Pod settings checksum. The shared loader merges it over base/profile TOML;
+fields it omits retain their profile values. Management commands run inside those
+containers inherit the same source. A Job copied from the server template must
+retain its environment, volumes and mounts; the managed GCP migration does so.
+
+One Deployment identity keeps one Offering. A connected Helm install/upgrade
+checks the installed descriptor and refuses its removal, an Offering change,
+or replacement/removal of an existing initial KMS reference. Adding a first key
+is allowed. Offline `helm template` cannot inspect installed state; declarative
+controllers must preserve these invariants when applying rendered manifests.
+Do not reinterpret a retained Deployment/database by editing its Offering.
+
+Settings are read at process startup, so an accepted descriptor addition changes
+the checksum and restarts both roles. Retain the initial KMS reference across
+restarts and use `manage deployment-key rollover --expected-current <key-id>
+--kms <successor-version>` for subsequent keys. The persisted predecessor-proven
+schedule stays authoritative after restart, even after its initial signer retires;
+changing chart settings is not a rollover. Run the management command with the
+same settings, database access and workload identity as the Deployment.
+
 ## Metadata server egress
 
 On GKE every node pool runs `GKE_METADATA`, so a Pod that reaches the metadata
