@@ -640,10 +640,24 @@ test("receiving keys require independent confirmation and discard stale consent"
 test("Node management switches the default, confirms deletion and falls back to the live default", async ({
   page,
 }) => {
-  const { posts, queries, errors } = await setup(page);
+  const { posts, queries, registrations, errors } = await setup(page);
+  const source = "aidash://remote/retained-source";
+  registrations.first.push(
+    registration("first", source, {
+      endpoint: "https://remote.example",
+      key_id: "a".repeat(43),
+      enabled: false,
+    }),
+  );
   await page.goto("/settings?view=nodes");
   const first = page.locator('[data-lifecycle-node="first"]');
   const second = page.locator('[data-lifecycle-node="second"]');
+  const keys = page.locator("section.panel").filter({
+    has: page.getByRole("heading", { name: "Deleted Node keys", exact: true }),
+  });
+  await expect(keys.getByRole("button", { name: "Review keys" })).toHaveCount(
+    0,
+  );
   await expect(
     first.getByRole("button", { name: "Delete Node", exact: true }),
   ).toHaveCount(0);
@@ -676,10 +690,25 @@ test("Node management switches the default, confirms deletion and falls back to 
     1,
   );
   await page.keyboard.press("Escape");
+  // The same mounted panel must refresh after deletion, without navigation,
+  // refocus or reload. Selecting it opens the existing foreign record controls.
+  await expect(keys.getByText("Home", { exact: true })).toBeVisible();
+  await keys.getByRole("button", { name: "Review keys" }).click();
+  await expect(keys.getByText(source, { exact: true })).toBeVisible();
+  await expect(
+    keys.getByRole("button", { name: "Manage key", exact: true }),
+  ).toBeVisible();
   await first
     .getByRole("button", { name: "Restore Node", exact: true })
     .click();
   await expect(page.locator('[data-node="first"]')).toBeVisible();
+  await expect(keys.getByRole("button", { name: "Review keys" })).toHaveCount(
+    0,
+  );
+  await expect(keys.getByText(source, { exact: true })).toHaveCount(0);
+  await expect(
+    keys.getByRole("button", { name: "Manage key", exact: true }),
+  ).toHaveCount(0);
   expect(posts.map((post) => post.path)).toEqual([
     "/api/tenants/alpha/nodes/second/default",
     "/api/tenants/alpha/nodes/first/deletion",

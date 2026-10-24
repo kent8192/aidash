@@ -89,6 +89,7 @@ export function NodeLifecycleSettings({
       await Promise.all([
         client.invalidateQueries({ queryKey: ["nodes", tenant] }),
         client.invalidateQueries({ queryKey: ["node-lifecycle", tenant] }),
+        client.invalidateQueries({ queryKey: ["deleted-node-keys", tenant] }),
         client.invalidateQueries({ queryKey: ["state"] }),
       ]);
       setBusy(false);

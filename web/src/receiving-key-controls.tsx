@@ -197,6 +197,9 @@ export function DeletedNodeKeyControls({ tenant }: { tenant: string }) {
     nodes.data?.filter(
       (node) => node.state === "deleted" || node.state === "deleting",
     ) ?? [];
+  const selectedNode = deleted.find((node) => node.name === selected);
+  // Restoration or a changed page must discard the old record's controls.
+  if (selected && nodes.isSuccess && !selectedNode) setSelected("");
   return (
     <Panel title={t("receivingKeyDeletedNodes")}>
       <Hint>{t("receivingKeyDeletedHelp")}</Hint>
@@ -235,11 +238,11 @@ export function DeletedNodeKeyControls({ tenant }: { tenant: string }) {
           },
         }}
       />
-      {selected && (
+      {selectedNode && (
         <DeletedRegistrationKeys
-          key={selected}
+          key={selectedNode.name}
           tenant={tenant}
-          node={selected}
+          node={selectedNode.name}
         />
       )}
     </Panel>
