@@ -4932,7 +4932,15 @@ fn ordered_parts(request: &ModelRequest) -> (&str, &str) {
 }
 
 fn semantic_memory(request: &ModelRequest) -> Value {
-	serde_json::from_str::<Value>(ordered_parts(request).1).unwrap()["semantic_memory"].clone()
+	match &request.context {
+		ModelContext::Legacy(context) => context["current"]["semantic_memory"].clone(),
+		ModelContext::Ordered(context) => {
+			serde_json::from_str::<Value>(&context.volatile).unwrap()["semantic_memory"].clone()
+		}
+		ModelContext::Native(context) => {
+			serde_json::from_str::<Value>(&context.volatile).unwrap()["semantic_memory"].clone()
+		}
+	}
 }
 
 fn count(fixture: &Fixture, call: &str) -> usize {
