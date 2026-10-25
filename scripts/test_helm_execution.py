@@ -90,6 +90,26 @@ class ChartsTest(unittest.TestCase):
         result = subprocess.run(command, input=json.dumps(values), text=True, capture_output=True)
         self.assertNotEqual(result.returncode, 0, 'a required protected Home cannot silently render a local-only profile')
 
+    def test_common_auth_mounts_the_managed_profile_and_tls_on_both_product_workers(self):
+        objects = render(self.aidash, dict(self.base, commonAuth={'existingSecret': 'cloud-auth'}))
+        for role in ('server', 'worker'):
+            pod = select(objects, 'Deployment', '-' + role)['spec']['template']['spec']
+            container = pod['containers'][0]
+            environment = {entry['name']: entry.get('value') for entry in container['env']}
+            self.assertEqual(environment['REINHARDT_ENV'], 'managed-common-auth')
+            self.assertNotIn('AIDASH_GCIP_SETTINGS', environment)
+            mount = next(mount for mount in container['volumeMounts'] if mount.get('subPath') == 'settings.toml')
+            self.assertEqual(mount['mountPath'], '/app/server/settings/managed-common-auth.toml')
+            self.assertTrue(mount['readOnly'])
+            self.assertIn({'name': 'common-auth', 'mountPath': '/run/auth-tls', 'readOnly': True}, container['volumeMounts'])
+            volume = next(volume for volume in pod['volumes'] if volume['name'] == mount['name'])
+            self.assertEqual(volume['secret']['secretName'], 'cloud-auth')
+        gcip = {'dashboard': {'gcip': {'project_id': 'project', 'web_api_key': 'public',
+                                     'tenant_bindings': {}, 'public_origin': 'https://cloud.example.test'}}}
+        with self.assertRaises(subprocess.CalledProcessError):
+            render(self.aidash, dict(self.base, deployment={'id': 'aidash://fixture', 'endpoint': 'https://cloud.example.test'},
+                                    commonAuth={'existingSecret': 'cloud-auth'}, gcip={'settings': gcip}))
+
     def test_local_postgres_secret_store_is_mounted_without_key_material(self):
         values = yaml.safe_load((ROOT / 'deploy/local-k8s/values.yaml').read_text())
         values.update(self.base)
@@ -142,12 +162,24 @@ class ChartsTest(unittest.TestCase):
                     self.assertEqual(pod['metadata']['labels'][key], value)
                 self.assertIn('nodeAffinity', pod['spec']['affinity'])
                 self.assertEqual(pod['spec']['securityContext']['fsGroup'], 10001)
-                claims = {volume['name']: volume['persistentVolumeClaim']['claimName'] for volume in pod['spec']['volumes']}
+                claims = {volume['name']: volume['persistentVolumeClaim']['claimName'] for volume in pod['spec']['volumes']
+                          if 'persistentVolumeClaim' in volume}
                 paths = {mount['name']: mount['mountPath'] for mount in pod['spec']['containers'][0]['volumeMounts']}
                 self.assertEqual({name: (claims[name], paths[name]) for name in claims}, mounts)
         # Without a shared claim the roles roll independently.
         unshared = render(self.aidash, dict(self.base, capabilities={'storage': {'existingClaim': ''}}))
         self.assertEqual(select(unshared, 'Deployment', '-aidash-server')['spec']['strategy']['type'], 'RollingUpdate')
+
+    def test_read_only_roles_have_a_writable_temp_directory(self):
+        # Several migration roots are staged under the temp directory, and the
+        # migration Job copies the server template.
+        objects = render(self.aidash, self.base)
+        for role in ('server', 'worker'):
+            pod = select(objects, 'Deployment', '-aidash-' + role)['spec']['template']['spec']
+            container = pod['containers'][0]
+            self.assertTrue(container['securityContext']['readOnlyRootFilesystem'])
+            self.assertIn({'name': 'tmp', 'mountPath': '/tmp'}, container['volumeMounts'])
+            self.assertIn({'name': 'tmp', 'emptyDir': {'sizeLimit': '64Mi'}}, pod['volumes'])
 
     def test_server_worker_google_identities_are_separate(self):
         objects = render(self.aidash, dict(self.base,

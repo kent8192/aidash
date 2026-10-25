@@ -27,6 +27,7 @@ fn request(projection: RequestProjection, events: u32) -> ModelRequest {
 	}
 	let pinned = json!({"identity":{"agent_id":"agent"},"task":{"title":"Task"},"agent_state":{"step":events}});
 	RequestBudget {
+		input_format: Default::default(),
 		window: usize::MAX,
 		instructions: "Follow the task",
 		tools: &tools(),
@@ -142,15 +143,20 @@ fn legacy_requests_reject_breakpoints_and_keep_their_bytes() {
 /// Each Tenant's salt starts a prefix no other Tenant can reuse, so identical
 /// instructions and tools in two Tenants have distinct, undisclosed identities.
 #[rstest]
-fn cache_identity_follows_the_tenant_cache_boundary(ordered: ModelRequest) {
+#[case::tenant(false)]
+#[case::input_format(true)]
+fn cache_identity_follows_the_provider_cache_boundary(ordered: ModelRequest, #[case] format: bool) {
 	// Arrange
-	let other = request(
+	let mut other = request(
 		RequestProjection::Ordered(CacheScope {
-			tenant: "tenant-b".into(),
+			tenant: if format { "tenant-a" } else { "tenant-b" }.into(),
 			key_version: 1,
 		}),
 		2,
 	);
+	if format {
+		other.input_format = InputFormat::Responses;
+	}
 	// Act
 	let (a, b) = (
 		ordered.cache_identity().unwrap(),

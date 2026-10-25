@@ -6,7 +6,7 @@ import {
   tenantSubject,
 } from "./registry-fixture";
 
-async function setup(page: Page) {
+async function setup(page: Page, models?: Record<string, unknown>[]) {
   const errors: string[] = [];
   page.on("pageerror", (error) => errors.push(error.message));
   await installBearerDashboard(page, "fixture-token");
@@ -35,17 +35,19 @@ async function setup(page: Page) {
             key: null,
           },
           registry: [
-            {
-              id: "model",
-              version: "1.0.0",
-              kind: "model",
-              name: { en: "Model" },
-              description: { en: "Model" },
-              capabilities: [],
-              languages: [],
-              tags: [],
-              config: {},
-            },
+            ...(models ?? [
+              {
+                id: "model",
+                version: "1.0.0",
+                kind: "model",
+                name: { en: "Model" },
+                description: { en: "Model" },
+                capabilities: [],
+                languages: [],
+                tags: [],
+                config: {},
+              },
+            ]),
             {
               id: "fixture-cluster",
               version: "1.0.0",
@@ -449,3 +451,96 @@ test("imports a skills.sh registry page and its supporting files", async ({
   await expect(dialog.getByText("Use clear language.")).toBeVisible();
   expect(errors).toEqual([]);
 });
+
+for (const selected of [
+  {
+    source: "provider_credential:openrouter",
+    id: "tenant-model",
+    label: "Tenant のプロバイダ認証情報",
+  },
+  {
+    source: "plan_connection:chatgpt",
+    id: "plan-model",
+    label: "個人 Plan 接続",
+  },
+  { source: "keyless:openai", id: "local-model", label: "Keyless" },
+])
+  test(`agent selection cascades ${selected.source} to its versioned Registry reference`, async ({
+    page,
+  }) => {
+    await setup(
+      page,
+      [
+        {
+          id: "tenant-model",
+          config: { provider: "openrouter", provider_credential: "openrouter" },
+        },
+        {
+          id: "plan-model",
+          config: { provider: "chatgpt", plan_connection: "chatgpt" },
+        },
+        {
+          id: "local-model",
+          config: {
+            provider: "openrouter",
+            endpoint: "http://localhost:11434/v1",
+          },
+        },
+      ].map((entry) => ({
+        ...entry,
+        kind: "model",
+        version: "2.1.0",
+        name: { en: entry.id },
+        description: { en: entry.id },
+        capabilities: [],
+        tags: [],
+        languages: [],
+        skills: [],
+        schema: {},
+      })),
+    );
+    await page.route("**/api/tenants/acme/plan-connections/chatgpt", (route) =>
+      route.fulfill({ json: { enabled: true, connection: null } }),
+    );
+    await page.goto("/registry");
+    await page
+      .getByRole("button", { name: "エンティティを登録", exact: true })
+      .click();
+    const dialog = page.getByRole("dialog");
+    await dialog.getByLabel("名前").fill("Source-first agent");
+    await dialog
+      .getByLabel("説明")
+      .fill("Keeps a versioned Registry model reference");
+    await dialog
+      .locator('[name="instructions"]')
+      .fill("Follow the task instructions carefully.");
+    const provider = dialog.getByLabel("プロバイダー", { exact: true });
+    const model = dialog.locator('[name="model"]');
+    await expect(model).toBeDisabled();
+    await provider.selectOption("plan_connection:chatgpt");
+    await model.selectOption("plan-model@2.1.0");
+    await expect(dialog.getByText("未接続", { exact: true })).toBeVisible();
+    await expect(
+      dialog.getByRole("link", { name: "ChatGPT Plan の個人設定" }),
+    ).toHaveAttribute("href", "/settings?view=planConnections");
+    await provider.selectOption(selected.source);
+    if (selected.source !== "plan_connection:chatgpt")
+      await expect(model).toHaveValue("");
+    await expect(
+      provider.locator(`option[value="${selected.source}"]`),
+    ).toContainText(selected.label);
+    await expect(model.locator('option:not([value=""])')).toHaveCount(1);
+    await model.selectOption(`${selected.id}@2.1.0`);
+    const sent = page.waitForRequest(
+      (request) =>
+        new URL(request.url()).pathname === "/api/registry" &&
+        request.method() === "POST",
+    );
+    await dialog
+      .getByRole("button", { name: "エンティティを登録", exact: true })
+      .click();
+    expect((await sent).postDataJSON().config.model).toEqual({
+      id: selected.id,
+      version: "2.1.0",
+    });
+  });

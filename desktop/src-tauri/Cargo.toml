@@ -59,3 +59,4 @@ keyring = { version = "3.6.3", features = [
 
 [dev-dependencies]
 rstest = "0.26"
+tokio = { version = "1", features = ["test-util"] }

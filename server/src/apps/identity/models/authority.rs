@@ -299,9 +299,10 @@ impl AuthorizationCredential {
 				&issuer,
 				&mapping_tenant,
 			)?;
-			crate::authorization::identity::validate_dashboard_status(Some((
-				issuer, valid, disabled,
-			)))?;
+			crate::authorization::identity::validate_local_status(
+				policy,
+				Some((issuer, valid, disabled)),
+			)?;
 		}
 		Ok(())
 	}

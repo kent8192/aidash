@@ -82,6 +82,9 @@ impl DashboardAuthority {
 		if account.disabled_at.is_some() {
 			return Err(Error::Forbidden);
 		}
+		if let Some(authority) = &policy.authority {
+			authority.validate_origin(account.id).await?;
+		}
 		// A Demo Reservation never reaches an issuer with a Tenant Binding, and
 		// only a Deployment that loads Demo data holds one.
 		if policy.demo_data
@@ -115,6 +118,13 @@ impl DashboardAuthority {
 				self.disable(account.id, None).await?;
 			}
 			return Err(Error::Forbidden);
+		}
+		if let Some(authority) = &policy.authority {
+			authority.validate_origin(account.id).await?;
+			return self
+				.accounts
+				.record_valid(account.id, self.accounts.now(), None)
+				.await;
 		}
 		let Some(status) = &self.status else {
 			return Ok(());
@@ -207,7 +217,11 @@ impl DashboardAuthority {
 			}
 			return;
 		}
-		if self.status.is_none() {
+		if self.status.is_none()
+			&& policy
+				.as_ref()
+				.is_none_or(|policy| policy.authority.is_none())
+		{
 			return;
 		}
 		match self.account_valid(&account).await {

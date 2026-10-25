@@ -52,6 +52,15 @@ deployments before authorizing their retry; mail retries do not redeploy.
    `release/<UTC timestamp>-<S prefix>` branch into `main`, using the release
    GitHub App. One current managed release PR remains open. A newer candidate
    closes only older managed PRs and never rewrites their branches.
+   Every development push also retires superseded managed PRs and cancels their
+   pending App-owned staging checks, without waiting for the next full CI run.
+   Failed or cancelled staging attempts complete the matching pending check and
+   link to the deployment run; a bounded artifact from trusted intake identifies
+   the exact source and CI run, independently of the controller's commit.
+   Successful staging checks are preserved. Reconcile historical orphaned checks
+   with a manual **Release PR** dispatch on the protected development branch
+   while their managed PR is still open. Queue time is part of the staging wait;
+   it is not evidence that deployment work is running.
    Release PR CI verifies the App provenance, the exact successful Release CI
    run and equality of the source and PR merge trees. It skips the full test,
    lint, coverage and desktop matrices; staging remains an independent required

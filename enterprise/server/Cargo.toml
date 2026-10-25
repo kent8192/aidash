@@ -23,7 +23,7 @@ path = "src/bin/manage.rs"
 [dependencies]
 aidash-application.workspace = true
 aidash-domain.workspace = true
-aidash-gcp.workspace = true
+aidash-gcp = { workspace = true, features = ["cloud"] }
 aidash-server.workspace = true
 async-trait.workspace = true
 chrono.workspace = true

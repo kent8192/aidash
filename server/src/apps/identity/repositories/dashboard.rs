@@ -204,9 +204,32 @@ impl StatusRecovery for Recovery {
 		else {
 			return Ok(false);
 		};
-		let Ok(access) = Access::begin(&self.federation.store, &subject).await else {
+		let Ok(mut access) = Access::begin(&self.federation.store, &subject).await else {
 			return Ok(false);
 		};
+		let policy = pool.dashboard_policy();
+		match DashboardExecutionOrigin::require_current(&mut **access.tx, run, policy.as_ref())
+			.await
+		{
+			Ok(()) => {}
+			Err(crate::Error::Forbidden | crate::Error::Unauthorized) => {
+				use reinhardt::query::{
+					Alias, Expr, ExprTrait, PostgresQueryBuilder, Query, QueryStatementBuilder,
+				};
+				let update = Query::update()
+					.table(Alias::new("runs"))
+					.value(Alias::new("error"), "external identity disabled")
+					.and_where(Expr::col("id").eq(Expr::value(run)))
+					.and_where(Expr::col("control").eq(Expr::value("PAUSED")))
+					.and_where(Expr::col("error").eq(Expr::value("identity status unavailable")))
+					.to_string(PostgresQueryBuilder);
+				crate::database::native::query(&update)
+					.execute(&mut **access.tx)
+					.await?;
+				return access.finish(Ok(false)).await.map_err(Into::into);
+			}
+			Err(error) => return Err(error.into()),
+		}
 		let scope = TenancyScope::tenant(&subject.tenant)?;
 		let changed = Run::resume_identity_pause(pool, &scope, run).await;
 		access.finish(changed).await.map_err(Into::into)

@@ -1,0 +1,51 @@
+# Install one release per process. Supply a digest-pinned image and existing
+# configuration/credential Secrets; this chart does not create plaintext secrets.
+image: ""
+replicas: 2
+args: []
+port: 8082
+environment: {}
+secretEnvironment: {}
+# [{name: config, secretName: ..., mountPath: /run/aidash/config}]
+secretVolumes: []
+# Ephemeral process state only, for example Nginx's generated config and cache.
+# [{name: nginx-config, mountPath: /etc/nginx/conf.d}]
+writableDirectories: []
+resources:
+  requests:
+    cpu: 100m
+    memory: 128Mi
+  limits:
+    memory: 512Mi
+serviceAccountName: default
+grpc:
+  enabled: false
+  port: 9091
+# Optional cert-manager integration. A trusted issuer must already be installed.
+# URI SANs name services; possession of a signed certificate is still checked
+# against the authentication service's distinct product/admin peer permissions.
+certificate:
+  enabled: false
+  secretName: ""
+  issuerRef:
+    name: ""
+    kind: Issuer
+  dnsNames: []
+  uris: []
+  duration: 720h
+  renewBefore: 240h
+  usages:
+    - server auth
+# Ingress NetworkPolicy for this release's Pods. Disabled by default so an upgrade
+# cannot silently cut off callers; enable it wherever the service trusts proxy
+# networks (AIDASH_MARKETPLACE_TRUSTED_PROXY_IPS / trusted_proxy_ips), because any
+# peer that can connect directly could forge forwarded HTTPS and client IPs.
+# Each rule names a port (http, or grpc when grpc.enabled) and the peers admitted
+# to it; a peer is {podSelector, namespaceSelector}, at least one with matchLabels
+# or matchExpressions. A podSelector alone selects Pods of this release's namespace.
+# Kubelet probes (/healthz readiness, TCP liveness on the http port) originate on
+# the node; GKE Dataplane V2 always admits them, so no rule is needed for them.
+# [{port: http, from: [{podSelector: {matchLabels: {aidash.run/edge: env}}}]}]
+networkPolicy:
+  enabled: false
+  ingress: []

@@ -3,8 +3,9 @@ msrv = "1.96.0"
 avoid-breaking-exported-api = true
 
 # Every transaction opens with a tenancy scope (#263). These calls reach the
-# database without one, so only `server/src/database` and the owner-only
-# migration paths may use them, each behind a local `allow`.
+# database without one, so only `server/src/database`, owner-only migration
+# paths and independent services' own schema adapters may use them, each behind
+# a local `allow`. Independent services must not compose the Cloud tenancy pool.
 disallowed-methods = [
   # Reinhardt's process-wide connection runs statements outside any scope.
   { path = "reinhardt_db::orm::manager::get_connection", reason = "open a transaction with Pool::begin(scope) (#263)" },

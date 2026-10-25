@@ -16,3 +16,6 @@ pub use registry_requests::RegistryRequest;
 pub(crate) mod records;
 pub mod states;
 pub(crate) mod transaction_records;
+
+mod marketplace_recalls;
+pub use marketplace_recalls::MarketplacePluginRecall;

@@ -101,6 +101,7 @@ test("undocumented views open their existing contextual owner", () => {
     "clusters",
     "deployment",
     "providerCredentials",
+    "planConnections",
     "marketplace",
     "approvals",
   ]);

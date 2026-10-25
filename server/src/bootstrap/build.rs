@@ -212,6 +212,19 @@ impl Build {
 			.optional_path::<Offering>(&["deployment", "offering"])?
 			.unwrap_or_default();
 		self.admit(offering)?;
+		// Hosted authorization and token custody need OpenAI's approved contract
+		// (#248). A PostgreSQL Store does not make a hosted flow permissible.
+		if offering != Offering::SelfHosted
+			&& settings
+				.optional_path::<bool>(&["plan_connections", "enabled"])?
+				.unwrap_or(false)
+		{
+			return Err(BuildError::Validation(
+				"hosted Plan Connections are disabled pending OpenAI approval (#248); \
+				 turn off [plan_connections] enabled"
+					.into(),
+			));
+		}
 		let _ = OFFERING.set(offering);
 		Ok(())
 	}

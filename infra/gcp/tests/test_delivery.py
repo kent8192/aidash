@@ -377,11 +377,35 @@ class AutomaticStagingTests(unittest.TestCase):
         config = {"repository": "kent8192/aidash", "develop_branch": "develop/0.1.0", "release_flow_enabled": True}
         event = {"workflow_run": {"id": 100, "name": "Release CI", "workflow_id": 2, "conclusion": "success", "event": "push", "head_branch": "develop/0.1.0", "head_sha": SOURCE}}
         candidate = {"sha": SOURCE, "source_ref": "develop/0.1.0", "source_repo": "kent8192/aidash", "fork": False, "approved_sha": ""}
-        with patch.dict(os.environ, {"GITHUB_RUN_ID": "123"}), patch.object(controller, "github", side_effect=lambda path: {"id": 2 if path.endswith("/release-ci.yml") else 1}), patch.object(controller, "source", return_value=candidate):
-            requests = controller.requests(config, event, "workflow_run", {})
-            self.assertEqual((requests[0]["action"], requests[0]["sha"]), ("up", SOURCE))
-            event["workflow_run"]["head_sha"] = BASE
-            self.assertEqual(controller.requests(config, event, "workflow_run", {}), [])
+        completed = dict(event["workflow_run"], status="completed")
+        prefix = "repos/" + config["repository"]
+        # A queued completion may reach prepare after develop advances, before
+        # the new head has CI. An already accepted retry still owns its SHA.
+        for current, validated, retry in [(SOURCE, True, False), (SOURCE, False, False),
+                                           (BASE, True, False), (BASE, False, False), (BASE, False, True)]:
+            with self.subTest(current=current, validated=validated, retry=retry):
+                replies = {
+                    prefix + "/actions/workflows/release-ci.yml": {"id": 2},
+                    prefix + "/commits/develop%2F0.1.0": {"sha": current},
+                    prefix + f"/actions/workflows/release-ci.yml/runs?head_sha={current}&status=success&per_page=100":
+                        {"workflow_runs": [dict(completed, head_sha=current)] if validated else []},
+                }
+                state = {"environments": {"develop": dict(candidate, desired="running", sequence=123)}} if retry else {}
+                with patch.dict(os.environ, {"GITHUB_RUN_ID": "123"}), patch.object(
+                    controller, "github", side_effect=lambda path, replies=replies: deepcopy(replies[path])
+                ):
+                    if current == SOURCE and not validated:
+                        with self.assertRaisesRegex(Refused, "Required CI has not succeeded"):
+                            controller.requests(config, event, "workflow_run", state)
+                        continue
+                    requests = controller.requests(config, event, "workflow_run", state)
+                if current == SOURCE or retry:
+                    self.assertEqual(len(requests), 1)
+                    self.assertEqual((requests[0]["environment"], requests[0]["action"], requests[0]["sha"]),
+                                     ("develop", "update" if retry else "up", SOURCE))
+                    self.assertEqual(requests[0]["sequence"], 123)
+                else:
+                    self.assertEqual(requests, [])
 
     def test_ordinary_ci_cannot_start_the_shared_staging_environment(self):
         config = {"repository": "kent8192/aidash", "develop_branch": "develop/0.1.0", "release_flow_enabled": True}

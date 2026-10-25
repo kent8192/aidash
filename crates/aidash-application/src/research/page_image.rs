@@ -10,6 +10,7 @@ use async_trait::async_trait;
 pub struct FittingRenderer<'a> {
 	pub renderer: &'a dyn PageRenderer,
 	pub model: &'a ModelConfig,
+	pub projection: aidash_domain::projection::ProjectionVersion,
 	pub headroom: usize,
 	pub selected_parts: Vec<ContentPart>,
 }
@@ -49,7 +50,7 @@ impl PageRenderer for FittingRenderer<'_> {
 			ContentPart::from_media(&image.media_type, image.bytes.clone())
 				.map_err(|_| Failure::RenderFailed)?,
 		);
-		check_model_media_headroom(self.headroom, parts, self.model)
+		check_model_media_headroom(self.headroom, parts, self.model, self.projection)
 			.map_err(|_| Failure::ResponseTooLarge)?;
 		Ok(image)
 	}

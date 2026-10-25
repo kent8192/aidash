@@ -15,6 +15,7 @@ import re
 import secrets
 from tempfile import TemporaryDirectory
 import time
+from urllib.parse import urlsplit
 
 from cloud import bounded_timeout, private_json, run
 from policy import ENVIRONMENT, Refused, idle_due
@@ -572,21 +573,89 @@ def gcip_settings(project, output, dashboard):
     return {"dashboard": {"gcip": deepcopy(settings)}}
 
 
+def common_auth_settings(output, dashboard, tls, external):
+    """Opt-in Cloud sign-in. Return Secret files, never Helm or Terraform values.
+
+    The existing native TOML source loads a managed profile over the image's
+    base settings; OIDC client credentials remain referenced environment values.
+    Random previews retain their managed GCIP routing until registered as OIDC
+    clients explicitly; this path never grants Cloud direct GCIP access.
+    """
+    if not isinstance(dashboard, dict) or "common_auth" not in dashboard:
+        if tls is not None:
+            raise Refused("common authentication TLS requires dashboard.common_auth")
+        return None
+    invalid = "invalid managed common authentication configuration"
+    if set(dashboard) != {"oidc", "common_auth"} or PREVIEW_HOST.fullmatch(output["hostname"]):
+        raise Refused(invalid)
+    oidc, common = dashboard["oidc"], dashboard["common_auth"]
+    if (not isinstance(oidc, dict) or set(oidc) != {"issuer", "public_origin"}
+        or not isinstance(common, dict) or set(common) != {"grpc_endpoint", "server_domain", "source_issuers"}
+        or external.get("AIDASH_OIDC_CLIENT_ID") != "cloud"
+        or not isinstance(external.get("AIDASH_OIDC_CLIENT_SECRET"), str)
+        or len(external["AIDASH_OIDC_CLIENT_SECRET"].strip()) < 32
+        or oidc["public_origin"] != "https://" + output["hostname"]):
+        raise Refused(invalid)
+
+    def https_origin(value):
+        if not isinstance(value, str):
+            return False
+        try:
+            url = urlsplit(value)
+            return (url.scheme == "https" and bool(url.hostname) and url.path == ""
+                    and not (url.query or url.fragment or url.username or url.password)
+                    and (url.port is None or 1 <= url.port <= 65535))
+        except ValueError:
+            return False
+
+    sources = common["source_issuers"]
+    if (not https_origin(oidc["issuer"]) or not https_origin(common["grpc_endpoint"])
+        or not isinstance(common["server_domain"], str)
+        or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9.-]{0,252}", common["server_domain"])
+        or not isinstance(sources, dict) or not sources
+        or any(not isinstance(issuer, str) or not issuer.startswith("https://") or not isinstance(tenant, str)
+               for issuer, tenant in sources.items())
+        or not isinstance(tls, dict) or set(tls) != {"ca.pem", "cloud.pem", "cloud-key.pem"}
+        or any(not isinstance(value, str) or not value.startswith("-----BEGIN ") for value in tls.values())):
+        raise Refused(invalid)
+    oidc_settings = dict(oidc, client_id="cloud", client_secret="${AIDASH_OIDC_CLIENT_SECRET}")
+    for field, default in (("session_absolute_seconds", 43200), ("session_idle_seconds", 1800)):
+        value = external.get("AIDASH_OIDC_" + field.upper(), str(default))
+        if not isinstance(value, str) or not value.isdecimal() or not 60 <= int(value) <= 604800:
+            raise Refused(invalid)
+        oidc_settings[field] = int(value)
+    if oidc_settings["session_idle_seconds"] > oidc_settings["session_absolute_seconds"]:
+        raise Refused(invalid)
+    common_settings = dict(common, ca_certificate_file="/run/auth-tls/ca.pem",
+                           client_certificate_file="/run/auth-tls/cloud.pem",
+                           client_private_key_file="/run/auth-tls/cloud-key.pem")
+    common_settings.pop("source_issuers")
+    sections = {"dashboard.oidc": oidc_settings, "dashboard.common_auth": common_settings}
+    text = ""
+    for section, values in sections.items():
+        text += f"[{section}]\n" + "\n".join(f"{key} = {json.dumps(value)}" for key, value in values.items()) + "\n"
+    text += "[dashboard.common_auth.source_issuers]\n"
+    text += "\n".join(f"{json.dumps(issuer)} = {json.dumps(tenant)}" for issuer, tenant in sources.items()) + "\n"
+    return dict(tls, **{"settings.toml": text})
+
+
 def materialize(cluster, identity, project, output, runtime):
     """Write the runtime Secrets from the selected Secret Manager JSON; return chart settings."""
     namespace = namespace_of(identity)
     external = deepcopy(runtime)
     dashboard = external.pop("dashboard", None)
+    tls = external.pop("common_auth_tls", None)
     # Older BYOK configuration stored the fingerprint under its Registry-resolvable
     # name. Carry the same value over and never emit the legacy name.
     legacy = external.pop(LEGACY_FINGERPRINT_KEY, None)
     if legacy is not None:
         external.setdefault("AIDASH_PROVIDER_FINGERPRINT_KEY", legacy)
-    if dashboard is not None and any(key.startswith("AIDASH_OIDC_") for key in external):
+    common = common_auth_settings(output, dashboard, tls, external)
+    if common is None and dashboard is not None and any(key.startswith("AIDASH_OIDC_") for key in external):
         raise Refused("GCIP and OIDC runtime configuration cannot coexist")
     if not all(key.startswith("AIDASH_SECRET_") or key in RUNTIME_KEYS for key in external):
         raise Refused("runtime secret may contain only Google client/session and provider credential configuration")
-    gcip = gcip_settings(project, output, dashboard)
+    gcip = None if common else gcip_settings(project, output, dashboard)
     if gcip is None and (not external.get("AIDASH_OIDC_CLIENT_ID") or not external.get("AIDASH_OIDC_CLIENT_SECRET")):
         raise Refused("Google OAuth client configuration is required")
     provider = provider_settings(output.get("provider_credentials"), external)
@@ -609,7 +678,9 @@ def materialize(cluster, identity, project, output, runtime):
         # both the servers that fulfil Demo Reservations (ADR 0079) and the Job
         # that loads Demo data (ADR 0080); production keeps the false default.
         values["AIDASH_DEMO_DATA_ENABLED"] = "true"
-    if gcip is None:
+    if common:
+        values.update(AIDASH_OIDC_ISSUER=dashboard["oidc"]["issuer"], AIDASH_OIDC_PUBLIC_ORIGIN=dashboard["oidc"]["public_origin"])
+    elif gcip is None:
         values.update(AIDASH_OIDC_ISSUER="https://accounts.google.com", AIDASH_OIDC_PUBLIC_ORIGIN="https://" + output["hostname"])
     for manifest in (
         secret(namespace, "app-runtime", values),
@@ -625,7 +696,9 @@ def materialize(cluster, identity, project, output, runtime):
         secret(namespace, "env-activity", {"DATABASE_URL": observer, "AIDASH_CORE_RUNNER_TOKEN": tokens["runner"]}),
     ):
         cluster.apply(manifest)
-    return {"gcip": gcip, "provider": provider}
+    if common:
+        cluster.apply(secret(namespace, "app-common-auth", common, environment=False))
+    return {"gcip": gcip, "provider": provider, "common_auth": "app-common-auth" if common else ""}
 
 
 def failover(identity):
@@ -694,6 +767,7 @@ def app_values(cluster, identity, output, release, sha, settings):
         "backendIngress": {"podSelectors": [{"aidash.run/edge": "env"}]},
         "providerCredentials": {"settings": settings["provider"]},
         "gcip": {"settings": settings["gcip"]},
+        "commonAuth": {"existingSecret": settings.get("common_auth", "")},
         "server": role(output["server_service_account"]),
         "worker": role(output["worker_service_account"]),
         "environment": {"nodeSelector": selector, "tolerations": tolerations},
@@ -1158,6 +1232,7 @@ def reload(cluster, identity, output, settings):
     values.update(
         providerCredentials={"settings": settings["provider"]},
         gcip={"settings": settings["gcip"]},
+        commonAuth={"existingSecret": settings.get("common_auth", "")},
     )
     # Releases installed before the installer had its own namespace carry no
     # value for it; the chart default would be shared by every Environment.

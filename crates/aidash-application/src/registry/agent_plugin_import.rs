@@ -11,6 +11,7 @@ pub enum PluginImport {
 	/// The repository holds several plugins; these are their roots.
 	Choose(Vec<String>),
 	Loaded {
+		entitlement_expires_at: Option<chrono::DateTime<chrono::Utc>>,
 		/// `https://github.com/<owner>/<repo>/tree/<commit sha>[/<root>]`.
 		source: String,
 		/// The plugin directory relative to the repository root; empty for the root.
@@ -41,6 +42,7 @@ impl AgentPluginImport {
 					agent_plugin::load(&fetched.files).map_err(aidash_domain::Error::from)?;
 				Ok(PluginImport::Loaded {
 					source: fetched.source,
+					entitlement_expires_at: fetched.entitlement_expires_at,
 					root: fetched.root,
 					denied: fetched.denied,
 					plugin: Box::new(plugin),

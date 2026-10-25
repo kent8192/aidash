@@ -111,7 +111,7 @@ def pull(config, number):
     return value
 
 
-def source(config, identity, ref, approved_sha=""):
+def source(config, identity, ref, approved_sha="", *, expected_sha=""):
     if identity == "production":
         if ref != "main":
             raise Refused("Production source is always main")
@@ -138,6 +138,10 @@ def source(config, identity, ref, approved_sha=""):
         sha = github(f"repos/{repository}/commits/{urllib.parse.quote(ref, safe='')}")[
             "sha"
         ]
+    # Delayed CI completions must not validate a newer branch head's pending
+    # CI before discovering that the triggering source has been superseded.
+    if expected_sha and sha != expected_sha:
+        return None
     ci_success(dict(config, required_ci_branch=config["develop_branch"]) if identity == "develop" else config, sha)
     return dict(
         sha=sha,
@@ -237,8 +241,8 @@ def requests(config, event, name, state):
         raise Refused("Unexpected CI workflow identity")
     candidates = []
     if release_ci and config.get("release_flow_enabled") and completed.get("event") == "push" and completed.get("head_branch") == config["develop_branch"]:
-        current = source(config, "develop", config["develop_branch"])
-        if current["sha"] == completed["head_sha"]:
+        current = source(config, "develop", config["develop_branch"], expected_sha=completed["head_sha"])
+        if current is not None:
             candidates.append(dict(common, environment="develop", action="up", mode="normal", ci_run_id=completed["id"], **current))
     for identity, entry in state.get("environments", {}).items():
         if (identity == "develop") != release_ci:
@@ -405,7 +409,13 @@ def provision_secret(config, output, kind):
     value = json.loads(raw)
     previous = json.dumps(value, sort_keys=True)
     gcip = output.get("gcip", {})
-    if gcip.get("tenant_ids"):
+    dashboard = value.get("dashboard")
+    if isinstance(dashboard, dict) and "common_auth" in dashboard:
+        # Keep the original Terraform-owned GCIP Tenants/IDs/users while
+        # selecting the separate runtime authority. Removing their resource
+        # declarations at cutover would destroy upstream sign-in identities.
+        kube.common_auth_settings(output, dashboard, value.get("common_auth_tls"), value)
+    elif gcip.get("tenant_ids"):
         dashboard = value.setdefault("dashboard", {})
         if dashboard.get("oidc") or any(key.startswith("AIDASH_OIDC_") for key in value):
             raise Refused("Remove OIDC runtime configuration before enabling the sole GCIP issuer")

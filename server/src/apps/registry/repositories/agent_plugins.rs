@@ -149,7 +149,15 @@ pub async fn insert(
 		)
 		.build(PostgresQueryBuilder);
 	tx.execute(&sql, convert_values(values)).await?;
-	get(tx, &plugin.digest)
+	let stored = get(tx, &plugin.digest)
 		.await?
-		.ok_or_else(|| Error::NotFound("Agent Plugin copy".into()))
+		.ok_or_else(|| Error::NotFound("Agent Plugin copy".into()))?;
+	if stored.source != source
+		&& (stored.source.starts_with("marketplace://") || source.starts_with("marketplace://"))
+	{
+		return Err(Error::Conflict(
+			"AGENT_PLUGIN_SOURCE_CONFLICT: digest is already pinned to another source".into(),
+		));
+	}
+	Ok(stored)
 }
