@@ -67,6 +67,7 @@ async fn targeted_claim_never_acquires_an_older_neighbor(
 		.await
 		.unwrap()
 		.into_executor()
+		.await
 		.unwrap();
 	// Act: notification claims are scoped to exactly one committed Run.
 	let claimed = Store::lease_run_in(
@@ -151,6 +152,7 @@ async fn leasing_skips_runs_whose_stored_requirement_exceeds_the_worker(
 		.await
 		.unwrap()
 		.into_executor()
+		.await
 		.unwrap();
 	let mut scope = crate::bootstrap::activation_scheduling_scope(tx.as_mut());
 	scope.capabilities = old_worker;
@@ -192,6 +194,7 @@ async fn leasing_skips_runs_whose_stored_requirement_exceeds_the_worker(
 		.await
 		.unwrap()
 		.into_executor()
+		.await
 		.unwrap();
 	let resumed = Store::lease_run_in(
 		tx.as_mut(),
@@ -260,6 +263,7 @@ async fn malformed_requirements_stay_visible_and_hidden_runs_are_counted(
 		.await
 		.unwrap()
 		.into_executor()
+		.await
 		.unwrap();
 	let mut scope = crate::bootstrap::activation_scheduling_scope(tx.as_mut());
 	scope.capabilities = current;
@@ -316,6 +320,7 @@ async fn a_cancelled_run_no_worker_can_load_is_handed_to_cancellation_delivery(
 		.await
 		.unwrap()
 		.into_executor()
+		.await
 		.unwrap();
 	let mut scope = crate::bootstrap::activation_scheduling_scope(tx.as_mut());
 	let waiting = scope.capability_waits().await.unwrap();

@@ -121,15 +121,17 @@ pub(crate) async fn check(
 		{
 			return Err(Error::Forbidden);
 		}
+		let proof = lease.proof();
 		let pool = lease.tx().pool().clone();
 		let mut access = crate::authorization::access::Access::from_transaction(
 			lease.tx().lend(),
 			&pool,
-			&destination.home,
+			aidash_domain::nodes::deployment_of(&destination.home),
 			None,
 			&identity,
 			snapshot,
 		);
+		access.audit = !proof;
 		access.subjects = saved.subjects;
 		access.worker();
 		let mut publisher = PublisherTransaction {
@@ -156,8 +158,13 @@ pub(crate) async fn check(
 		{
 			return Err(Error::Forbidden);
 		}
+		let mut source = if lease.proof() {
+			Lease::BorrowedProofWithoutSubject(lease.tx())
+		} else {
+			Lease::BorrowedWithoutSubject(lease.tx())
+		};
 		Box::pin(check_source(
-			&mut Lease::BorrowedWithoutSubject(lease.tx()),
+			&mut source,
 			&destination,
 			source_id,
 			source_revision,

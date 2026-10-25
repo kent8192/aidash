@@ -160,11 +160,7 @@ impl Repository for NativeRepository {
 		if owner.subject.is_empty() || owner.subject.len() > 256 {
 			return Err(Error::Invalid("invalid Plan Connection owner".into()));
 		}
-		let mut tx = self
-			.pool
-			.begin(&scope)
-			.await
-			.and_then(crate::database::native::Transaction::into_executor)?;
+		let mut tx = self.pool.begin(&scope).await?.into_executor().await?;
 		lock_owner(tx.as_mut(), &owner.tenant, &owner.subject).await?;
 		Ok(Box::new(NativeScope {
 			tx,
@@ -173,11 +169,7 @@ impl Repository for NativeRepository {
 	}
 	async fn owner_of(&self, id: Uuid) -> Result<Option<Owner>> {
 		let scope = TenancyScope::Deployment(DeploymentScopeReason::PlanConnectionOwner);
-		let mut tx = self
-			.pool
-			.begin(&scope)
-			.await
-			.and_then(crate::database::native::Transaction::into_executor)?;
+		let mut tx = self.pool.begin(&scope).await?.into_executor().await?;
 		let row = Record::objects()
 			.filter(Record::field_id().eq(id))
 			.all_with_executor(tx.as_mut())
@@ -194,8 +186,9 @@ impl Repository for NativeRepository {
 		let mut tx = self
 			.pool
 			.begin(&TenancyScope::tenant(tenant)?)
-			.await
-			.and_then(crate::database::native::Transaction::into_executor)?;
+			.await?
+			.into_executor()
+			.await?;
 		let rows = Record::objects()
 			.filter(Record::field_tenant().eq(tenant))
 			.all_with_executor(tx.as_mut())
@@ -384,7 +377,7 @@ pub async fn pinned(
 	} else {
 		TenancyScope::tenant(tenant)?
 	};
-	let mut tx = pool.begin(&scope).await?.into_executor()?;
+	let mut tx = pool.begin(&scope).await?.into_executor().await?;
 	let pin = RunPin::objects()
 		.filter(RunPin::field_id().eq(format!("{run}:{}", provider.id())))
 		.all_with_executor(tx.as_mut())

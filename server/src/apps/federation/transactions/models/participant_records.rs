@@ -26,6 +26,7 @@ impl AtomicParticipant {
 		))
 		.await?
 		.into_executor()
+		.await
 	}
 
 	pub(crate) async fn lock(tx: &mut dyn TransactionExecutor, id: Uuid) -> Result<Option<Self>> {

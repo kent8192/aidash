@@ -643,3 +643,17 @@ operations and change neither retained MCP state nor projection behavior.
 `registry/0048_plugin_marketplace_merge` joins the Registry merge above with
 `0047_marketplace_recall_constraints`. This empty state-only migration keeps a
 single Registry leaf without rewriting either history or changing stored data.
+
+## Home ledger recovery eligibility (#434)
+
+`knowledge/0036_memory_recovery_eligibility` (after
+`knowledge/0035_foreign_key_relations_state`) adds the required
+`recovery_eligible_at` timestamp to `memory_bank_settings`. Existing rows receive
+the migration timestamp, then the default is removed so application writers
+explicitly record eligibility. Typed Reinhardt column operations preserve the
+matching model state.
+
+`knowledge/0037_recovery_evidence_merge` joins this history with
+`knowledge/0036_memory_attempt_evidence` without changing either migration. It
+is an empty state-only migration: both independent column changes apply before
+the single Knowledge head, and no schema or model state is overwritten.
