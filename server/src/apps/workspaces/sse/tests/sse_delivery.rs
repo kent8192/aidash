@@ -1,6 +1,8 @@
 #![allow(clippy::disallowed_methods)] // Fixtures reach the database outside a tenancy scope.
 #[path = "../../../execution/tests/support/legacy.rs"]
 mod common;
+#[path = "sse_delivery/common_auth.rs"]
+mod common_auth;
 #[path = "sse_delivery/edge_cases.rs"]
 mod edge_cases;
 #[path = "sse_delivery/process.rs"]

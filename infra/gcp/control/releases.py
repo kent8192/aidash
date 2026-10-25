@@ -28,6 +28,8 @@ SHA = re.compile(r"[a-f0-9]{40}")
 CHECK = "Staging deployment"
 ATTRIBUTION = "🤖 Generated with [Codex](https://openai.com/codex/)"
 REQUESTS = count(1)
+FAILED_OUTCOMES = frozenset({"failure", "cancelled", "timed_out", "stale", "action_required"})
+TERMINAL_OUTCOMES = FAILED_OUTCOMES | {"success", "neutral", "skipped"}
 
 
 def api(path, method="GET", data=None, *, raw=False):
@@ -102,10 +104,7 @@ def workflow(config, filename, name):
 
 
 @phase
-def completed_run(config, event, filename, name, event_name):
-    if event.get("action") != "completed" or event.get("repository", {}).get("full_name") != config["repository"]:
-        raise Refused("Release automation requires a same-repository completed workflow event")
-    announced = event["workflow_run"]
+def trusted_run(config, announced, filename, name, event_name):
     value = api(f"repos/{config['repository']}/actions/runs/{int(announced['id'])}")
     owner = workflow(config, filename, name)
     if (
@@ -115,13 +114,21 @@ def completed_run(config, event, filename, name, event_name):
         or value.get("path") != owner["path"]
         or value.get("name") != name
         or value.get("event") not in ({event_name} if isinstance(event_name, str) else event_name)
-        or value.get("status") != "completed"
-        or value.get("conclusion") != "success"
         or value.get("repository", {}).get("full_name") != config["repository"]
         or value.get("head_repository", {}).get("full_name") != config["repository"]
         or not SHA.fullmatch(value.get("head_sha", ""))
     ):
-        raise Refused("Only the exact successful trusted workflow run can authorize this release")
+        raise Refused("Only the exact trusted workflow run can authorize this release")
+    return value
+
+
+@phase
+def completed_run(config, event, filename, name, event_name, *, conclusions=frozenset({"success"})):
+    if event.get("action") != "completed" or event.get("repository", {}).get("full_name") != config["repository"]:
+        raise Refused("Release automation requires a same-repository completed workflow event")
+    value = trusted_run(config, event["workflow_run"], filename, name, event_name)
+    if value.get("status") != "completed" or value.get("conclusion") not in conclusions:
+        raise Refused("The trusted workflow has not reached the required terminal outcome")
     return value
 
 
@@ -202,6 +209,33 @@ def managed_prs(config):
     return result
 
 
+def finish_pending(config, sha, conclusion, title, summary, *, run_id=None):
+    slug = config["release_app_bot_login"][:-5]
+    for value in pages(f"repos/{config['repository']}/commits/{sha}/check-runs?filter=all", "check_runs"):
+        if value.get("name") != CHECK or value.get("app", {}).get("slug") != slug or value.get("status") == "completed":
+            continue
+        data = {"status": "completed", "conclusion": conclusion, "completed_at": datetime.now(timezone.utc).isoformat(),
+                "output": {"title": title, "summary": summary}}
+        if run_id is not None:
+            data["details_url"] = f"https://github.com/{config['repository']}/actions/runs/{run_id}"
+        api(f"repos/{config['repository']}/check-runs/{value['id']}", "PATCH", data)
+
+
+@phase
+def retire_superseded(config):
+    current = protected_branch(config, config["develop_branch"])
+    for pr, metadata in managed_prs(config):
+        source = metadata["source_sha"]
+        if source == current:
+            continue
+        ancestor(config, source, current)
+        finish_pending(config, source, "cancelled", "This release candidate was superseded",
+                       f"Source `{source}` was superseded by protected development source `{current}`. A new release requires its own CI and staging evidence.")
+        api(f"repos/{config['repository']}/pulls/{pr['number']}", "PATCH", {"state": "closed"})
+        emit("candidate.superseded", pull_number=pr["number"], source_sha=source)
+    return current
+
+
 @phase
 def check(config, sha, receipt=None):
     slug = config["release_app_bot_login"][:-5]
@@ -211,6 +245,7 @@ def check(config, sha, receipt=None):
         emit("staging.check.preserved", source_sha=sha)
         return
     data = {"name": CHECK, "head_sha": sha, "status": "in_progress", "external_id": f"aidash-staging/1:{sha}"}
+    data["output"] = {"title": "Waiting for staging evidence", "summary": f"Waiting for a trusted deployment of source `{sha}`. This includes runner queue time; readiness requires the exact staging receipt."}
     if receipt is not None:
         data.update(status="completed", conclusion="success", external_id=f"aidash-staging/1:{receipt['run_id']}:{receipt['generation']}:{receipt['trusted_sha']}",
                     output={"title": "The exact release candidate is ready in staging", "summary": f"Source: `{sha}`\nGeneration: {receipt['generation']}\nTrusted controller: `{receipt['trusted_sha']}`"})
@@ -269,11 +304,9 @@ def create_candidate(config, event):
     return True
 
 
-@phase
-def download_receipt(config, event, optional=False):
-    completed = completed_run(config, event, "gcp-environments.yml", "GCP environments", {"workflow_run", "schedule", "workflow_dispatch", "issue_comment"})
+def download_artifact(config, completed, name, optional=False):
     artifacts = pages(f"repos/{config['repository']}/actions/runs/{completed['id']}/artifacts", "artifacts")
-    owned = [value for value in artifacts if value.get("name") == "staging-receipt"]
+    owned = [value for value in artifacts if value.get("name") == name]
     if optional and not owned:
         # Scheduled reconciliations and test/PR operations publish no staging evidence.
         emit("staging.receipt.absent", run_id=completed["id"])
@@ -285,9 +318,122 @@ def download_receipt(config, event, optional=False):
         raise Refused("Staging artifact exceeded its bounded size")
     with zipfile.ZipFile(io.BytesIO(archive)) as zipped:
         files = zipped.infolist()
-        if len(files) != 1 or files[0].filename != "staging-receipt.json" or not 0 < files[0].file_size <= 16384 or files[0].flag_bits & 1:
+        if len(files) != 1 or files[0].filename != name + ".json" or not 0 < files[0].file_size <= 16384 or files[0].flag_bits & 1:
             raise Refused("Only the sanitized staging receipt can be consumed")
         return json.loads(zipped.read(files[0]))
+
+
+@phase
+def download_receipt(config, event, optional=False):
+    completed = completed_run(config, event, "gcp-environments.yml", "GCP environments", {"workflow_run", "schedule", "workflow_dispatch", "issue_comment"})
+    return download_artifact(config, completed, "staging-receipt", optional)
+
+
+@phase
+def record_attempt(config, event):
+    completed = completed_run(config, event, "release-ci.yml", "Release CI", "push")
+    if completed["head_branch"] != config["develop_branch"]:
+        raise Refused("Only protected development Release CI can identify a staging attempt")
+    identifiers = [os.environ.get(name, "") for name in ("GITHUB_RUN_ID", "GITHUB_RUN_ATTEMPT")]
+    if any(not re.fullmatch(r"[1-9][0-9]{0,19}", value) for value in identifiers):
+        raise Refused("A staging attempt requires its trusted run and attempt identity")
+    value = {"protocol": "aidash-staging-attempt/1", "source_sha": completed["head_sha"], "ci_run_id": completed["id"],
+             "run_id": int(identifiers[0]), "run_attempt": int(identifiers[1])}
+    (Path(os.environ["RUNNER_TEMP"]) / "staging-attempt.json").write_text(json.dumps(value))
+
+
+@phase
+def fail_staging(config, completed):
+    # A workflow's head_sha identifies its controller, not its deployment target.
+    # Only the bounded artifact written by trusted intake identifies the source.
+    if completed["event"] != "workflow_run":
+        return
+    attempt = download_artifact(config, completed, "staging-attempt", optional=True)
+    if attempt is None:
+        return
+    if (not isinstance(attempt, dict)
+            or set(attempt) != {"protocol", "source_sha", "ci_run_id", "run_id", "run_attempt"}
+            or attempt["protocol"] != "aidash-staging-attempt/1"
+            or not isinstance(attempt["source_sha"], str) or not SHA.fullmatch(attempt["source_sha"])
+            or any(type(attempt[key]) is not int or attempt[key] < 1 for key in ("ci_run_id", "run_id", "run_attempt"))
+            or attempt["run_id"] != completed["id"] or attempt["run_attempt"] > completed.get("run_attempt", 1)):
+        raise Refused("Staging failure requires the exact trusted attempt artifact")
+    matches = [meta for _, meta in managed_prs(config) if meta["source_sha"] == attempt["source_sha"] and meta["ci_run_id"] == attempt["ci_run_id"]]
+    if len(matches) != 1:
+        return
+    source = attempt["source_sha"]
+    current_candidate(config, source)
+    if source_ci(config, source)["id"] != attempt["ci_run_id"]:
+        raise Refused("Staging failure does not identify the original exact source CI")
+    conclusion = "cancelled" if completed["conclusion"] == "cancelled" else "failure"
+    finish_pending(config, source, conclusion, "Staging did not complete successfully",
+                   f"The trusted staging attempt for `{source}` ended with `{completed['conclusion']}`. Inspect the linked run before retrying; no staging readiness was published.",
+                   run_id=completed["id"])
+
+
+@phase
+def replay_staging_failure(config, sha):
+    oldest = time.time() - config.get("staging_max_age_seconds", 604800)
+    artifacts = pages(f"repos/{config['repository']}/actions/artifacts?{urlencode({'name': 'staging-attempt'})}", "artifacts")
+    for artifact in sorted(artifacts, key=lambda value: str(value.get("created_at", "")), reverse=True):
+        try:
+            if datetime.fromisoformat(artifact["created_at"].replace("Z", "+00:00")).timestamp() < oldest:
+                return
+            if artifact.get("expired") is not False or artifact.get("workflow_run", {}).get("head_branch") != config["develop_branch"]:
+                continue
+            run = trusted_run(config, artifact["workflow_run"], "gcp-environments.yml", "GCP environments", "workflow_run")
+            if run["head_branch"] != config["develop_branch"]:
+                continue
+            attempt = download_artifact(config, run, "staging-attempt")
+            if (not isinstance(attempt, dict) or attempt.get("source_sha") != sha
+                    or attempt.get("run_id") != run["id"] or type(attempt.get("run_attempt")) is not int
+                    or not 1 <= attempt["run_attempt"] <= run.get("run_attempt", 1)):
+                continue
+            # A newer queued, running or deferred successful attempt must not
+            # inherit the failure of an older attempt for this same source.
+            if run["status"] == "completed" and run["conclusion"] in FAILED_OUTCOMES:
+                fail_staging(config, run)
+            return
+        except (Refused, ValueError, KeyError, TypeError, AttributeError, zipfile.BadZipFile) as error:
+            emit("staging.receipt.rejected", error_type=type(error).__name__)
+
+
+@phase
+def reconcile(config, event):
+    name = os.environ.get("GITHUB_EVENT_NAME")
+    if event.get("repository", {}).get("full_name") != config["repository"]:
+        raise Refused("Release reconciliation requires the configured repository")
+    completed = None
+    if name in {"push", "workflow_dispatch"}:
+        ref = "refs/heads/" + config["develop_branch"]
+        if os.environ.get("GITHUB_REF") != ref or name == "push" and (event.get("ref") != ref or not SHA.fullmatch(event.get("after", ""))):
+            raise Refused("Release reconciliation must run on protected development")
+    elif name == "workflow_run":
+        workflow_name = event.get("workflow_run", {}).get("name")
+        if workflow_name == "Release CI":
+            completed = completed_run(config, event, "release-ci.yml", workflow_name, "push", conclusions=TERMINAL_OUTCOMES)
+        elif workflow_name == "GCP environments":
+            completed = completed_run(config, event, "gcp-environments.yml", workflow_name, {"workflow_run", "schedule", "workflow_dispatch", "issue_comment"}, conclusions=TERMINAL_OUTCOMES)
+        else:
+            raise Refused("Unexpected release reconciliation workflow")
+        if completed["head_branch"] != config["develop_branch"]:
+            raise Refused("Release reconciliation requires the protected development execution branch")
+    else:
+        raise Refused("Unexpected release reconciliation event")
+    current = retire_superseded(config)
+    if completed is None:
+        if any(meta["source_sha"] == current for _, meta in managed_prs(config)):
+            replay_staging(config, current)
+        return
+    if completed["name"] == "Release CI":
+        if completed["conclusion"] == "success" and completed["head_sha"] == current:
+            create_candidate(config, event)
+    elif completed["conclusion"] == "success":
+        receipt = download_receipt(config, event, optional=True)
+        if receipt is not None and receipt.get("source_sha") == current:
+            accept_staging(config, event, receipt)
+    else:
+        replay_staging_failure(config, current)
 
 
 @phase
@@ -304,7 +450,7 @@ def replay_staging(config, sha):
         try:
             if datetime.fromisoformat(artifact["created_at"].replace("Z", "+00:00")).timestamp() < oldest:
                 emit("staging.replay.waiting", reason="evidence_expired")
-                return
+                break
             produced = artifact["workflow_run"]
             if artifact.get("expired") is not False or produced.get("head_branch") != branch:
                 continue
@@ -320,6 +466,7 @@ def replay_staging(config, sha):
             emit("staging.receipt.rejected", error_type=type(error).__name__)
             continue
     emit("staging.replay.waiting", reason="no_matching_receipt")
+    replay_staging_failure(config, sha)
 
 
 @phase
@@ -433,16 +580,22 @@ def verify_ci(config, event, sha, mode):
 @phase
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("action", choices=["context", "candidate", "staging", "verify-ci"])
+    parser.add_argument("action", choices=["context", "candidate", "staging", "verify-ci", "reconcile", "attempt"])
     parser.add_argument("--receipt", type=Path)
     args = parser.parse_args()
+    if args.action == "attempt":
+        if os.environ.get("GITHUB_EVENT_NAME") != "workflow_run":
+            raise Refused("Staging intake requires a workflow completion event")
+        config = {"repository": os.environ["GITHUB_REPOSITORY"], "develop_branch": os.environ["DEVELOP_BRANCH"]}
+        record_attempt(config, json.loads(Path(os.environ["GITHUB_EVENT_PATH"]).read_text()))
+        return
     if args.action == "verify-ci":
         config = {"repository": os.environ["GITHUB_REPOSITORY"], "develop_branch": os.environ.get("DEVELOP_BRANCH", ""),
                   "release_app_bot_login": os.environ.get("RELEASE_APP_BOT_LOGIN", "")}
         event = json.loads(Path(os.environ["GITHUB_EVENT_PATH"]).read_text())
         verify_ci(config, event, os.environ["GITHUB_SHA"], os.environ["CI_MODE"])
         return
-    if os.environ.get("GITHUB_EVENT_NAME") != "workflow_run":
+    if os.environ.get("GITHUB_EVENT_NAME") != "workflow_run" and args.action not in {"context", "reconcile"}:
         raise Refused("Release automation only accepts workflow completion events")
     config = configuration()
     event = json.loads(Path(os.environ["GITHUB_EVENT_PATH"]).read_text())
@@ -454,7 +607,9 @@ def main():
         if SHA.fullmatch(os.environ.get("GITHUB_SHA", "")):
             emit("workflow.identity", controller_sha=os.environ["GITHUB_SHA"])
         return
-    if args.action == "candidate":
+    if args.action == "reconcile":
+        reconcile(config, event)
+    elif args.action == "candidate":
         create_candidate(config, event)
     else:
         if args.receipt is not None and args.receipt.stat().st_size > 16384:

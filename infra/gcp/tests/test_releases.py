@@ -71,6 +71,20 @@ class GitHubTransport:
         self.artifacts = [{"id": 300, "name": "staging-receipt", "expired": False, "size_in_bytes": len(self.zipfiles[300]), "created_at": created,
                            "workflow_run": {"id": 200, "head_sha": MAIN, "head_branch": CONFIG["develop_branch"]}}]
 
+    def add_attempt(self, value=None):
+        self.add_staging()
+        value = value if value is not None else {"protocol": "aidash-staging-attempt/1", "source_sha": SOURCE, "ci_run_id": 100, "run_id": 200, "run_attempt": 1}
+        self.set_attempt(value)
+        self.runs[200]["conclusion"] = "failure"
+        return value
+
+    def set_attempt(self, value):
+        content = io.BytesIO()
+        with zipfile.ZipFile(content, "w") as zipped:
+            zipped.writestr("staging-attempt.json", json.dumps(value))
+        self.zipfiles[300] = content.getvalue()
+        self.artifacts[0].update(name="staging-attempt", size_in_bytes=len(self.zipfiles[300]))
+
     def managed_pr(self, sha=SOURCE, number=1):
         metadata = {"protocol": "aidash-release/1", "source_sha": sha, "source_branch": CONFIG["develop_branch"], "ci_run_id": 100}
         return {"number": number, "node_id": f"PR_{number}", "draft": True, "state": "open", "user": {"login": BOT, "type": "Bot"},
@@ -122,7 +136,7 @@ class GitHubTransport:
         elif path == "actions/artifacts":
             response = {"artifacts": [value for value in self.artifacts if value["name"] == query["name"][0]]}
         elif path.endswith("/artifacts"):
-            response = {"artifacts": self.artifacts if int(path.split("/")[2]) == 200 else []}
+            response = {"artifacts": [item for item in self.artifacts if item["workflow_run"]["id"] == int(path.split("/")[2])]}
         elif path.startswith("actions/runs/"):
             response = self.runs[int(path.split("/")[2])]
         elif path.startswith("git/matching-refs/"):
@@ -168,6 +182,138 @@ class ReleaseLifecycleTests(unittest.TestCase):
         self.transport = patch.object(releases, "run", self.github)
         self.transport.start()
         self.addCleanup(self.transport.stop)
+
+    def reconcile(self, value, event_name="workflow_run"):
+        with TemporaryDirectory() as directory:
+            path = Path(directory) / "event.json"
+            path.write_text(json.dumps(value))
+            environment = {"AIDASH_GCP_CONFIG": json.dumps(CONFIG), "GITHUB_REPOSITORY": REPOSITORY,
+                           "GITHUB_EVENT_NAME": event_name, "GITHUB_EVENT_PATH": str(path),
+                           "GITHUB_REF": "refs/heads/" + CONFIG["develop_branch"]}
+            with patch.dict(os.environ, environment), patch.object(sys, "argv", ["releases.py", "reconcile"]):
+                releases.main()
+
+    def test_develop_push_retires_obsolete_owned_candidate_and_only_its_pending_app_checks(self):
+        releases.create_candidate(CONFIG, event(self.github.runs[100]))
+        old_ref = deepcopy(self.github.refs)
+        self.github.prs.append(self.github.managed_pr(NEXT, number=2))
+        unrelated = self.github.managed_pr(number=9)
+        unrelated["user"] = {"login": "human", "type": "User"}
+        self.github.prs.append(unrelated)
+        self.github.checks.extend([
+            dict(self.github.checks[0], id=2),
+            dict(self.github.checks[0], id=3, app={"slug": "unrelated"}),
+            dict(self.github.checks[0], id=4, status="completed", conclusion="success"),
+        ])
+        self.github.branches[CONFIG["develop_branch"]]["commit"]["sha"] = NEXT
+        self.reconcile({"repository": {"full_name": REPOSITORY}, "ref": "refs/heads/" + CONFIG["develop_branch"], "after": NEXT}, "push")
+        self.assertEqual([pr["state"] for pr in self.github.prs], ["closed", "open", "open"])
+        self.assertEqual([check.get("conclusion") for check in self.github.checks], ["cancelled", "cancelled", None, "success"])
+        self.assertEqual(self.github.refs, old_ref)
+        writes = deepcopy(self.github.writes)
+        self.reconcile({"repository": {"full_name": REPOSITORY}}, "workflow_dispatch")
+        self.assertEqual(self.github.writes, writes, "Repeated reconciliation must be idempotent")
+
+    def test_failed_staging_finishes_exact_pending_check_using_attempt_source_not_controller_sha(self):
+        for conclusion, run_attempt in (("failure", 1), ("cancelled", 1), ("timed_out", 1), ("failure", 2)):
+            with self.subTest(conclusion=conclusion, run_attempt=run_attempt):
+                self.github = GitHubTransport()
+                with patch.object(releases, "run", self.github):
+                    releases.create_candidate(CONFIG, event(self.github.runs[100]))
+                    with TemporaryDirectory() as directory:
+                        path = Path(directory) / "event.json"
+                        path.write_text(json.dumps(event(self.github.runs[100])))
+                        environment = {"GITHUB_EVENT_NAME": "workflow_run", "GITHUB_REPOSITORY": REPOSITORY,
+                                       "GITHUB_EVENT_PATH": str(path), "DEVELOP_BRANCH": CONFIG["develop_branch"],
+                                       "GITHUB_RUN_ID": "200", "GITHUB_RUN_ATTEMPT": "1", "RUNNER_TEMP": directory}
+                        with patch.dict(os.environ, environment), patch.object(sys, "argv", ["releases.py", "attempt"]):
+                            releases.main()
+                        self.github.add_attempt(json.loads((Path(directory) / "staging-attempt.json").read_text()))
+                    self.github.runs[200]["conclusion"] = conclusion
+                    # Re-running failed jobs reuses the successful intake's
+                    # artifact; the immutable triggering source stays the same.
+                    self.github.runs[200]["run_attempt"] = run_attempt
+                    self.reconcile(event(self.github.runs[200]))
+                check = self.github.checks[0]
+                self.assertEqual(check["status"], "completed")
+                self.assertEqual(check["conclusion"], "cancelled" if conclusion == "cancelled" else "failure")
+                self.assertIn("/actions/runs/200", check["details_url"])
+                self.assertTrue(self.github.prs[0]["draft"])
+
+    def test_unrelated_or_invalid_failure_evidence_cannot_complete_staging(self):
+        changes = [lambda gh, value: gh.artifacts.clear(),
+                   lambda gh, value: value.update(source_sha=NEXT),
+                   lambda gh, value: value.update(ci_run_id=99),
+                   lambda gh, value: value.update(run_id=201),
+                   lambda gh, value: value.update(run_attempt=2),
+                   lambda gh, value: value.update(protocol="untrusted"),
+                   lambda gh, value: gh.runs[200].update(event="schedule"),
+                   lambda gh, value: gh.runs[200].update(status="in_progress"),
+                   lambda gh, value: gh.runs[200]["head_repository"].update(full_name="attacker/aidash")]
+        for change in changes:
+            with self.subTest(change=change):
+                self.github = GitHubTransport()
+                with patch.object(releases, "run", self.github):
+                    releases.create_candidate(CONFIG, event(self.github.runs[100]))
+                    value = self.github.add_attempt()
+                    change(self.github, value)
+                    if self.github.artifacts:
+                        self.github.set_attempt(value)
+                    writes = deepcopy(self.github.writes)
+                    try:
+                        self.reconcile(event(self.github.runs[200]))
+                    except Refused:
+                        pass
+                self.assertEqual(self.github.writes, writes)
+                self.assertEqual(self.github.checks[0]["status"], "in_progress")
+
+    def test_failed_attempt_does_not_overwrite_successful_staging(self):
+        releases.create_candidate(CONFIG, event(self.github.runs[100]))
+        self.github.add_staging()
+        releases.accept_staging(CONFIG, event(self.github.runs[200]), receipt())
+        self.github.add_attempt()
+        writes = deepcopy(self.github.writes)
+        self.reconcile(event(self.github.runs[200]))
+        self.assertEqual(self.github.writes, writes)
+        self.assertEqual(self.github.checks[0]["conclusion"], "success")
+
+    def test_failure_before_candidate_and_lost_completion_are_replayed(self):
+        for create_first in (False, True):
+            with self.subTest(create_first=create_first):
+                self.github = GitHubTransport()
+                with patch.object(releases, "run", self.github):
+                    if create_first:
+                        self.reconcile(event(self.github.runs[100]))
+                    self.github.add_attempt()
+                    self.github.artifacts.append(dict(self.github.artifacts[0], id=301, name="staging-receipt",
+                                                      created_at=(datetime.now(timezone.utc) - timedelta(days=8)).strftime("%Y-%m-%dT%H:%M:%SZ")))
+                    if create_first:
+                        self.reconcile({"repository": {"full_name": REPOSITORY}}, "workflow_dispatch")
+                    else:
+                        self.reconcile(event(self.github.runs[200]))
+                        self.reconcile(event(self.github.runs[100]))
+                self.assertEqual(self.github.checks[0]["conclusion"], "failure")
+                self.assertTrue(self.github.prs[0]["draft"])
+
+    def test_newer_pending_or_deferred_attempt_does_not_replay_an_older_failure(self):
+        for status in ("in_progress", "completed"):
+            with self.subTest(status=status):
+                self.github = GitHubTransport()
+                with patch.object(releases, "run", self.github):
+                    self.github.add_attempt()
+                    old = deepcopy(self.github.artifacts[0])
+                    old["created_at"] = (datetime.now(timezone.utc) - timedelta(hours=1)).strftime("%Y-%m-%dT%H:%M:%SZ")
+                    self.github.zipfiles[301] = self.github.zipfiles[300]
+                    old["id"] = 301
+                    value = {"protocol": "aidash-staging-attempt/1", "source_sha": SOURCE, "ci_run_id": 100, "run_id": 201, "run_attempt": 1}
+                    self.github.set_attempt(value)
+                    self.github.artifacts[0]["workflow_run"]["id"] = 201
+                    self.github.artifacts.append(old)
+                    self.github.runs[201] = workflow_run(201, "GCP environments", MAIN, "workflow_run")
+                    self.github.runs[201]["status"] = status
+                    self.reconcile(event(self.github.runs[100]))
+                    self.reconcile(event(self.github.runs[200]))
+                self.assertEqual(self.github.checks[0]["status"], "in_progress")
 
     def test_cli_creates_exact_draft_and_retry_preserves_candidate_and_unrelated_pr(self):
         unrelated = self.github.managed_pr(number=9)

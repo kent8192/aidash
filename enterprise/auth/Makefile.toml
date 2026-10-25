@@ -1,0 +1,29 @@
+[config]
+default_to_workspace = false
+skip_core_tasks = true
+
+[tasks.wasm-build-dev]
+script = { file = "scripts/wasm-build-dev.sh" }
+[tasks.wasm-build-release]
+script = { file = "scripts/wasm-build-release.sh" }
+[tasks.fmt-check]
+command = "reinhardt-admin"
+args = ["fmt", "src", "--check", "--edition", "2024"]
+[tasks.quality]
+command = "cargo"
+args = [
+  "clippy",
+  "--locked",
+  "-p",
+  "aidash-auth-server",
+  "--all-targets",
+  "--",
+  "-D",
+  "warnings",
+]
+[tasks.test]
+command = "cargo"
+args = ["test", "--locked", "-p", "aidash-auth-server", "--lib"]
+[tasks.e2e]
+command = "python3"
+args = ["../../scripts/test-standalone-browser.py", "--product", "auth"]

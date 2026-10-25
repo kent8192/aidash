@@ -1073,6 +1073,18 @@ impl DashboardIdentity {
 		}
 		Ok(())
 	}
+
+	pub(crate) async fn restore_common<E: OrmExecutor + TransactionExecutor>(
+		db: &mut E,
+		id: Uuid,
+		checked_at: DateTime<Utc>,
+	) -> Result<()> {
+		// Lock/update Runs before the Identity, matching worker control order.
+		// Local disabled_at still refuses new admissions. The conditional
+		// restore rolls the transaction back if another restore won meanwhile.
+		super::DashboardExecutionOrigin::pause_local_retirement(db, id).await?;
+		Self::restore(db, id, checked_at).await
+	}
 }
 
 #[cfg(test)]

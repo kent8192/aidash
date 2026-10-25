@@ -13,6 +13,85 @@ use std::fmt;
 pub struct DashboardSettings {
 	#[setting(optional, node)]
 	pub oidc: Option<OidcConfig>,
+	#[setting(optional, node)]
+	pub common_auth: Option<CommonAuthSettings>,
+}
+
+/// Explicit Cloud-only common authentication configuration. Dedicated and
+/// Self-hosted keep their independently configured sign-in provider.
+#[settings(fragment = true, validate = false)]
+#[derive(Clone, Debug, Serialize, Deserialize, schemars::JsonSchema)]
+pub struct CommonAuthSettings {
+	#[setting(required)]
+	pub grpc_endpoint: String,
+	#[setting(required)]
+	pub server_domain: String,
+	#[setting(required)]
+	pub ca_certificate_file: std::path::PathBuf,
+	#[setting(required)]
+	pub client_certificate_file: std::path::PathBuf,
+	#[setting(required)]
+	pub client_private_key_file: std::path::PathBuf,
+	/// The original upstream issuers, including any GCIP pool suffix. These
+	/// restrictions govern product-local Mapping selection after OIDC login.
+	/// Empty value means unrestricted; otherwise the value is the bound Tenant.
+	#[setting(required)]
+	pub source_issuers: std::collections::BTreeMap<String, String>,
+}
+
+impl CommonAuthSettings {
+	pub fn client(&self, client_id: &str) -> Result<aidash_integrations::authentication::Client> {
+		if self.source_issuers.is_empty()
+			|| self.source_issuers.keys().any(|issuer| issuer.is_empty())
+		{
+			return Err(Error::Invalid(
+				"dashboard.common_auth.source_issuers is required".into(),
+			));
+		}
+		for tenant in self
+			.source_issuers
+			.values()
+			.filter(|tenant| !tenant.is_empty())
+		{
+			aidash_domain::tenancy::TenantName::new(tenant.clone())?;
+		}
+		let read = |path: &std::path::Path| {
+			std::fs::read(path).map_err(|_| {
+				Error::Invalid("common authentication TLS material cannot be read".into())
+			})
+		};
+		aidash_integrations::authentication::Client::new(
+			aidash_integrations::authentication::Settings {
+				endpoint: self.grpc_endpoint.clone(),
+				server_domain: self.server_domain.clone(),
+				ca_certificate: read(&self.ca_certificate_file)?,
+				client_certificate: read(&self.client_certificate_file)?,
+				client_private_key: read(&self.client_private_key_file)?,
+				product_client_id: client_id.to_owned(),
+			},
+		)
+		.map_err(Into::into)
+	}
+}
+
+impl aidash_application::ports::authorization::dashboard::Issuers for CommonAuthSettings {
+	fn admitted(&self) -> Vec<String> {
+		self.source_issuers.keys().cloned().collect()
+	}
+	fn restriction(&self, issuer: &str) -> Option<String> {
+		self.source_issuers
+			.get(issuer)
+			.filter(|tenant| !tenant.is_empty())
+			.cloned()
+	}
+	fn restricted_issuer(&self, tenant: &str) -> Option<String> {
+		self.source_issuers
+			.iter()
+			.find_map(|(issuer, restriction)| (restriction == tenant).then(|| issuer.clone()))
+	}
+	fn retires_refused(&self) -> bool {
+		true
+	}
 }
 
 #[settings(fragment = true)]
@@ -161,6 +240,7 @@ mod tests {
 		oidc_config.client_id = client_id.into();
 		oidc_config.client_secret = client_secret.into();
 		let dashboard = DashboardSettings {
+			common_auth: None,
 			oidc: Some(oidc_config),
 		};
 		// Act
@@ -196,6 +276,7 @@ mod tests {
 		// Arrange
 		oidc_config.public_origin = public_origin.into();
 		let dashboard = DashboardSettings {
+			common_auth: None,
 			oidc: Some(oidc_config),
 		};
 		// Act

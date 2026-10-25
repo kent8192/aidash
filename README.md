@@ -8,6 +8,10 @@ New multi-Node scoped transactions are temporarily rejected to prevent manifest 
 
 ## Cargo workspace
 
+Native server builds require the Protocol Buffers compiler (`protoc`) on `PATH`
+for `reinhardt-grpc`. The provided Docker images install it in their build stage;
+the standalone browser frontend builds do not require it.
+
 All packages use Rust 2024. The virtual workspace defaults to `aidash-server`;
 Reinhardt's `manage` CLI provides the standard management operations and Aidash's
 registered custom commands, including `serve`, `server`, and `worker`:
@@ -63,8 +67,8 @@ for the layout, the alignment and export checks, and the images.
 The React dashboard remains in
 `web/` and uses the existing URL, JSON, authentication, and SSE contracts.
 
-Reinhardt is pinned to development revision
-`19928e83b46c130a3a40320e5c9b71aa9f84e322` in the manifests and lockfile. The initial
+Reinhardt's exact revision is pinned in the [workspace manifest](Cargo.toml),
+aligned with Enterprise and the infrastructure observer, and retained in their lockfiles. The initial
 project and app scaffolds were generated with the Reinhardt CLI. Server tests use
 its composable guard, method-aware stub router, configurable PostgreSQL fixture,
 and request builder with per-request headers and redirect policy. The PostgreSQL
@@ -73,6 +77,27 @@ Send fixture after reinhardt-web#6705 fixes #6702. Native ORM timestamp bindings
 include the #6703 repair from #6704; both issues remain open until closed by the
 maintainer because their fixes merged into the development branch. Streaming
 clients retain no total timeout while reinhardt-web#6689 remains open.
+
+### Standalone authentication and Marketplace
+
+The Enterprise workspace also contains two independent services:
+[shared authentication](enterprise/auth/README.md) and
+[Marketplace distribution](enterprise/marketplace/README.md).
+Each has its own process, configuration, schema, database role and migration
+command. They start without the Cloud server, worker or NATS. A physical
+PostgreSQL instance may be shared with separate ownership and credentials.
+
+Each product is one Reinhardt Pages project whose browser calls typed
+`server_fn` functions in its own native service. Each image bundles that
+product's WASM assets and executable. See the [independent deployment chart](enterprise/deploy/standalone-service/README.md)
+and [approved authentication/distribution design](docs/authentication-and-standalone-marketplace-design.md).
+The [standalone Compose profiles](enterprise/deploy/local/README.md) start either
+product with `cargo make auth-dev` or `cargo make marketplace-dev`; root
+`compose.yaml` remains the Cloud development stack.
+Cloud enables shared authentication explicitly through `[dashboard.common_auth]` and
+`[dashboard.oidc]`; direct `[dashboard.gcip]` sign-in is mutually exclusive.
+Dedicated and Self-hosted keep independent sign-in. Import retained legacy
+Identity UUIDs before the Cloud cutover; Marketplace sign-in creates no Cloud Tenant.
 
 ## Run locally
 
@@ -475,3 +500,48 @@ The [Tauri 2 desktop client](desktop/README.md) bundles the shared dashboard and
 ## License
 
 The licensing of Aidash is being prepared in [#124](https://github.com/kent8192/aidash/issues/124). Until it takes effect, the [interim notice](LICENSE) reserves all rights in original Aidash material, except `aidash-capability` (Apache-2.0). Third-party material keeps its own terms; see [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md). External code contributions are not accepted until then, and issues are welcome.
+
+## Deployment Marketplace Connections
+
+Registry imports immutable plugin copies from GitHub or a configured standalone
+Marketplace. An import URI is `marketplace://<plugin-uuid>/<semver>`; it never
+supplies an endpoint, Library owner or credential. Configure an optional
+`[marketplace]` endpoint and one `[[marketplace.connections]]` per local Tenant:
+
+```toml
+[marketplace]
+endpoint = "https://marketplace.example.com"
+poll_seconds = 60
+
+[[marketplace.connections]]
+tenant = "brave-otter-12345678"
+connection_id = "00000000-0000-0000-0000-000000000001"
+owner_account_id = "00000000-0000-0000-0000-000000000002"
+owner_tenant_id = "brave-otter-12345678"
+secret_file = "secrets/marketplace-connection"
+```
+
+The Marketplace must authorize the Connection and its enrolled Library owner.
+For a personal Library, omit `owner_tenant_id` and provide
+`personal_identity_id`, the retained local External Identity UUID whose Personal
+Tenant receives the copy. The default exception also requires an online shared
+authentication binding proving that Identity belongs to the Connection owner
+Account; a configured local UUID alone is insufficient. Independent Deployment
+sign-in cannot infer this association from email. Importing that personal Library
+without that proof or into any other Tenant
+requires an explicit `marketplace.personal_library.import` policy; the default
+Tenant administrator wildcard alone does not grant it. Local `registry.create`
+is checked before fetching and again before storing.
+
+The client refuses redirects and validates the returned plugin/version binding,
+canonical file paths, base64, size limits, tree digest and Agent Plugin schema.
+Registry retains the Tenant-local copy and its authoritative acquisition expiry.
+Expired acquisitions refuse new Agent versions and Runs; an authorized renewed
+acquisition can update the receipt without replacing the pinned bytes or source.
+Configured Connections synchronize Recalls periodically. Learned Recalls survive
+Marketplace outages and Connection removal and refuse new Runs of that plugin
+version; they do not cancel admitted Runs or delete local copies. An offline
+Deployment learns newly issued Recalls only after synchronization. Normal local
+execution does not contact the Marketplace. These supported-runtime checks do
+not prevent the person running a Self-hosted Deployment from modifying its runtime or copying already
+delivered content; this is not a DRM guarantee.

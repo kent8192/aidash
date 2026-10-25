@@ -114,6 +114,9 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+      - name: Install the native gRPC build prerequisite
+        if: matrix.workspace == 'backend' || matrix.workspace == 'enterprise'
+        run: scripts/install-ci-protoc.sh
       - run: rustup show active-toolchain
       - uses: Swatinem/rust-cache@49a0bdc70d2e1b713ca9e2869b211fcce03d3c1c # v2
         with:
@@ -138,6 +141,8 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+      - name: Install the native gRPC build prerequisite
+        run: scripts/install-ci-protoc.sh
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: "24.12.0"
@@ -191,6 +196,8 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+      - name: Install the native gRPC build prerequisite
+        run: scripts/install-ci-protoc.sh
       - run: rustup show active-toolchain
       - uses: Swatinem/rust-cache@49a0bdc70d2e1b713ca9e2869b211fcce03d3c1c # v2
         with:
@@ -274,6 +281,8 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+      - name: Install the native gRPC build prerequisite
+        run: scripts/install-ci-protoc.sh
       - run: rustup show active-toolchain
       - uses: Swatinem/rust-cache@49a0bdc70d2e1b713ca9e2869b211fcce03d3c1c # v2
         with:
@@ -317,6 +326,8 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+      - name: Install the native gRPC build prerequisite
+        run: scripts/install-ci-protoc.sh
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: "24.12.0"
@@ -344,6 +355,8 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+      - name: Install the native gRPC build prerequisite
+        run: scripts/install-ci-protoc.sh
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: "24.12.0"
@@ -378,6 +391,162 @@ jobs:
           name: enterprise-web-browser-evidence
           path: enterprise/web/test-results/
           if-no-files-found: ignore
+  marketplace-web:
+    name: Standalone marketplace Pages contracts
+    needs: scope
+    if: needs.scope.outputs.mode == 'full'
+    runs-on: ubuntu-latest
+    timeout-minutes: 75
+    env:
+      CARGO_BUILD_JOBS: "2"
+      CARGO_PROFILE_DEV_DEBUG: "0"
+      CARGO_PROFILE_TEST_DEBUG: "0"
+      CARGO_INCREMENTAL: "0"
+      RUST_MIN_STACK: "8388608"
+    defaults:
+      run:
+        working-directory: enterprise/marketplace
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: Swatinem/rust-cache@49a0bdc70d2e1b713ca9e2869b211fcce03d3c1c # v2
+        with:
+          shared-key: standalone-pages-marketplace
+          workspaces: "enterprise -> target"
+      - name: Install native framework build prerequisites
+        run: ../../scripts/install-ci-protoc.sh
+      - name: Install Rust Pages build tools
+        run: |
+          rustup target add wasm32-unknown-unknown
+          cargo install wasm-pack --version 0.15.0 --locked
+      - name: Build this product's WASM and static assets without Node.js
+        run: bash scripts/wasm-build-release.sh
+      - name: Lint native and WASM targets including browser fixtures
+        run: |
+          cargo clippy --locked -p aidash-marketplace-server --features browser-e2e --all-targets -- -D warnings
+          cargo clippy --locked -p aidash-marketplace-server --target wasm32-unknown-unknown --all-targets -- -D warnings
+      - name: Exercise real Pages and native services with Reinhardt WASM E2E fixtures
+        run: |
+          driver="$(python3 ../../scripts/install-standalone-webdriver.py)"
+          python3 ../../scripts/test-standalone-browser.py --product marketplace --driver "$driver"
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        if: always()
+        with:
+          name: marketplace-pages-browser-evidence
+          path: notes/standalone-webdriver.log
+          if-no-files-found: ignore
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: marketplace-pages-build
+          path: enterprise/marketplace/dist/
+          if-no-files-found: error
+  authentication-web:
+    name: Standalone auth Pages contracts
+    needs: [scope, marketplace-web]
+    if: needs.scope.outputs.mode == 'full'
+    runs-on: ubuntu-latest
+    timeout-minutes: 75
+    env:
+      CARGO_BUILD_JOBS: "2"
+      CARGO_PROFILE_DEV_DEBUG: "0"
+      CARGO_PROFILE_TEST_DEBUG: "0"
+      CARGO_INCREMENTAL: "0"
+      RUST_MIN_STACK: "8388608"
+    defaults:
+      run:
+        working-directory: enterprise/auth
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: Swatinem/rust-cache@49a0bdc70d2e1b713ca9e2869b211fcce03d3c1c # v2
+        with:
+          shared-key: standalone-pages-auth
+          workspaces: "enterprise -> target"
+      - name: Install native framework build prerequisites
+        run: ../../scripts/install-ci-protoc.sh
+      - name: Install Rust Pages build tools
+        run: |
+          rustup target add wasm32-unknown-unknown
+          cargo install wasm-pack --version 0.15.0 --locked
+      - name: Build this product's WASM and static assets without Node.js
+        run: bash scripts/wasm-build-release.sh
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        with:
+          name: marketplace-pages-build
+          path: enterprise/marketplace/dist/
+      - name: Lint native and WASM targets including browser fixtures
+        run: |
+          cargo clippy --locked -p aidash-auth-server --features browser-e2e --all-targets -- -D warnings
+          cargo clippy --locked -p aidash-auth-server --target wasm32-unknown-unknown --all-targets -- -D warnings
+      - name: Exercise real Pages and native services with Reinhardt WASM E2E fixtures
+        run: |
+          driver="$(python3 ../../scripts/install-standalone-webdriver.py)"
+          python3 ../../scripts/test-standalone-browser.py --product auth --driver "$driver"
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        if: always()
+        with:
+          name: auth-pages-browser-evidence
+          path: notes/standalone-webdriver.log
+          if-no-files-found: ignore
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: authentication-pages-build
+          path: enterprise/auth/dist/
+          if-no-files-found: error
+  standalone-services:
+    name: Standalone native service acceptance
+    needs: [scope, authentication-web, marketplace-web]
+    if: needs.scope.outputs.mode == 'full'
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    env:
+      CARGO_BUILD_JOBS: "2"
+      CARGO_INCREMENTAL: "0"
+      CARGO_PROFILE_DEV_DEBUG: "0"
+      RUST_MIN_STACK: "8388608"
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - run: scripts/install-ci-protoc.sh
+      - uses: Swatinem/rust-cache@49a0bdc70d2e1b713ca9e2869b211fcce03d3c1c # v2
+        with:
+          shared-key: standalone-services
+          workspaces: "enterprise -> target"
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        with:
+          name: authentication-pages-build
+          path: enterprise/auth/dist/
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        with:
+          name: marketplace-pages-build
+          path: enterprise/marketplace/dist/
+      - name: Build only the independent native services
+        run: |
+          cargo metadata --locked --format-version 1 --manifest-path enterprise/Cargo.toml | python3 scripts/check-workspace-boundaries.py --workspace enterprise
+          cargo build --locked --manifest-path enterprise/Cargo.toml -p aidash-auth-server -p aidash-marketplace-server --bins
+      - name: Start both services without Cloud, worker or NATS
+        run: |
+          python3 scripts/test-standalone-services.py \
+            --auth-binary enterprise/target/debug/aidash-auth-server \
+            --marketplace-binary enterprise/target/debug/aidash-marketplace-server \
+            --auth-assets enterprise/auth/dist \
+            --marketplace-assets enterprise/marketplace/dist
+  standalone-containers:
+    name: Standalone container acceptance
+    needs: scope
+    if: needs.scope.outputs.mode == 'full'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    # Keep Docker's Rust/WASM build storage separate from the native Cargo job.
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Build both product images and exercise independent Compose profiles
+        run: python3 scripts/test-standalone-compose.py --build
   infrastructure-tests:
     name: Infrastructure contract tests
     needs: scope
@@ -410,6 +579,7 @@ jobs:
       - run: python3 -m pip install PyYAML==6.0.3
       - run: python3 -m unittest discover -s scripts -p test_local_activation.py
       - run: python3 -m unittest discover -s scripts -p test_helm_execution.py
+      - run: python3 -m unittest discover -s scripts -p test_standalone_deployment.py
   acceptance:
     name: Federation tests
     needs: scope
@@ -421,6 +591,8 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+      - name: Install the native gRPC build prerequisite
+        run: scripts/install-ci-protoc.sh
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: "24.12.0"
@@ -452,6 +624,8 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+      - name: Install the native gRPC build prerequisite
+        run: scripts/install-ci-protoc.sh
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: "24.12.0"
@@ -482,6 +656,8 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+      - name: Install the native gRPC build prerequisite
+        run: scripts/install-ci-protoc.sh
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: "24.12.0"
@@ -527,6 +703,10 @@ jobs:
         community-export,
         community-bundle,
         enterprise-web,
+        marketplace-web,
+        authentication-web,
+        standalone-services,
+        standalone-containers,
         bruno,
         acceptance,
         browser,
