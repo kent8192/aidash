@@ -139,3 +139,321 @@ pub(super) async fn stopped(browser: BrowserClient, endpoint: &str) {
 	);
 	browser.close().await.unwrap();
 }
+
+/// Hostile markup in every field a Publisher or Aidash Recall controls. Each
+/// payload would execute or create an element if the Pages UI ever treated
+/// publisher text as markup instead of as a text node.
+const HOSTILE: &str = r#"<img src=x onerror="window.__xss=1"> <script>window.__xss=1</script> "><svg onload=window.__xss=1>"#;
+
+/// Waits until `main` renders every expected string as DOM text. `textContent`
+/// is used instead of rendered text because CSS (for example `text-transform`)
+/// must not hide a missing or altered payload.
+async fn dom_text(browser: &BrowserClient, expected: &[String]) {
+	let deadline = tokio::time::Instant::now() + Duration::from_secs(20);
+	loop {
+		let content = browser
+			.execute_js(
+				"return document.querySelector('main')?.textContent ?? ''",
+				vec![],
+			)
+			.await
+			.unwrap();
+		let content = content.as_str().unwrap_or_default();
+		if expected.iter().all(|value| content.contains(value)) {
+			return;
+		}
+		assert!(
+			tokio::time::Instant::now() < deadline,
+			"missing hostile text {expected:?}; main: {content}"
+		);
+		tokio::time::sleep(Duration::from_millis(25)).await;
+	}
+}
+
+/// Loads `route` in a fresh document so session and catalog resources refetch.
+async fn visit(browser: &BrowserClient, endpoint: &str, route: &str, expected: &[String]) {
+	browser
+		.navigate(&format!("{endpoint}/#{route}"))
+		.await
+		.unwrap();
+	browser.inner().refresh().await.unwrap();
+	dom_text(browser, expected).await;
+	// An `onerror` handler fires only after the image request fails, so give any
+	// injected element time to run before asserting that nothing executed.
+	tokio::time::sleep(Duration::from_millis(500)).await;
+	let injected = browser
+		.execute_js(
+			"return document.querySelector('img[src=\"x\"], svg[onload], script:not([src]), [onerror], [onload]')\
+			 ?.outerHTML ?? null",
+			vec![],
+		)
+		.await
+		.unwrap();
+	assert!(
+		injected.is_null(),
+		"{route} created an element from publisher text: {injected}"
+	);
+	let executed = browser
+		.execute_js("return typeof window.__xss", vec![])
+		.await
+		.unwrap();
+	assert_eq!(executed, "undefined", "{route} executed publisher text");
+}
+
+#[tokio::test]
+// Only the fixture administrator provisions this service's schema and roles;
+// application operations use the Marketplace runtime credential below.
+#[allow(clippy::disallowed_methods)]
+async fn publisher_controlled_text_is_rendered_as_text() {
+	use crate::auth::{Session as ProductSession, hash};
+	use aidash_domain::agent_plugin::{PluginFile, tree_digest};
+	use base64::{Engine as _, engine::general_purpose::STANDARD};
+	use serde_json::json as value;
+	use std::sync::{Arc, atomic::AtomicBool};
+	use uuid::Uuid;
+
+	let (_container, _pool, _port, admin_url) = reinhardt::test::fixtures::postgres_container_with(
+		reinhardt::test::fixtures::PostgresContainerConfig::default()
+			.image("postgres", "17-alpine")
+			.user("postgres")
+			.password("fixture-admin-password")
+			.database("marketplace"),
+	)
+	.await;
+	let admin = reinhardt::db::backends::DatabaseConnection::connect_postgres(&admin_url)
+		.await
+		.unwrap();
+	// Infrastructure DDL has no Query representation; this fixture provisions
+	// exactly the dedicated owner/runtime roles required by production startup.
+	for ddl in include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/bootstrap.sql"))
+		.lines()
+		.filter(|line| !line.trim_start().starts_with("--"))
+		.collect::<Vec<_>>()
+		.join("\n")
+		.split(';')
+		.map(str::trim)
+		.filter(|ddl| !ddl.is_empty())
+	{
+		admin.execute(ddl, Vec::new()).await.unwrap();
+	}
+	for sql in [
+		"ALTER ROLE marketplace_owner LOGIN PASSWORD 'fixture-owner-password'",
+		"ALTER ROLE marketplace_app LOGIN PASSWORD 'fixture-runtime-password'",
+		"REVOKE ALL ON SCHEMA public FROM PUBLIC",
+	] {
+		admin.execute(sql, Vec::new()).await.unwrap();
+	}
+	let with_login = |user: &str, password: &str| {
+		let mut url = url::Url::parse(&admin_url).unwrap();
+		url.set_username(user).unwrap();
+		url.set_password(Some(password)).unwrap();
+		url.to_string()
+	};
+	crate::migrations::migrate(&with_login("marketplace_owner", "fixture-owner-password"))
+		.await
+		.unwrap();
+
+	let account = Uuid::new_v4();
+	let identity = Uuid::new_v4();
+	let (issuer, auth_task) = super::server(super::Status {
+		account,
+		identity,
+		active: Arc::new(AtomicBool::new(true)),
+	})
+	.await;
+	let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+	let origin = format!("http://{}", listener.local_addr().unwrap());
+	let service = crate::Marketplace::connect(
+		super::config(&origin, &issuer),
+		&with_login("marketplace_app", "fixture-runtime-password"),
+	)
+	.await
+	.unwrap();
+	let token = crate::auth::secret();
+	let csrf = crate::auth::secret();
+	let session = ProductSession {
+		account_id: account,
+		source_identity_id: identity,
+		provider_subject: account.to_string(),
+		csrf_token: csrf.clone(),
+		refresh_request_id: Uuid::new_v4(),
+		access_token: "fixture-access".into(),
+		refresh_token: None,
+		created_at: chrono::Utc::now(),
+		last_used: chrono::Utc::now(),
+	};
+	service
+		.store
+		.connection
+		.atomic(async |tx| {
+			crate::store::put(
+				tx,
+				&format!("session:{}", hash(&token)),
+				"session",
+				&session,
+			)
+			.await
+		})
+		.await
+		.unwrap();
+	let (endpoint, task) =
+		super::server_on(listener, crate::config::urls::handler(service.clone())).await;
+	let client = reqwest::Client::new();
+	let post = |path: &str, body: serde_json::Value| {
+		client
+			.post(format!("{endpoint}{path}"))
+			.header("cookie", format!("marketplace-session={token}"))
+			.header("origin", &origin)
+			.header("x-marketplace-csrf", &csrf)
+			.json(&body)
+	};
+
+	// Every free-text field the server accepts carries the payloads. The plugin
+	// slug (lowercase ASCII, digits and hyphens), the version (semantic version)
+	// and the origin scheme (HTTPS URL) are validated and cannot carry markup
+	// in those positions; the origin's path and query still can.
+	let publisher_name = format!("publisher:{HOSTILE}");
+	let plugin_name = format!("name:{HOSTILE}");
+	let description = format!("description:{HOSTILE}");
+	let license = format!("license:{HOSTILE}");
+	let permission = format!("permission:{HOSTILE}");
+	let plugin_origin = format!("https://example.com/plugin?origin={HOSTILE}");
+	let reason = format!("reason:{HOSTILE}");
+	let slug = format!("xss-{}", Uuid::new_v4().simple());
+	let publisher: serde_json::Value = post(
+		"/api/server_fn/marketplace_create_publisher",
+		value!({"name":publisher_name,"csrf":csrf}),
+	)
+	.send()
+	.await
+	.unwrap()
+	.json()
+	.await
+	.unwrap();
+	let publisher = publisher["publisher"]["id"].as_str().unwrap();
+	let created = post(
+		"/api/marketplace/plugins",
+		value!({"publisher_id":publisher,"slug":slug,"name":plugin_name,"description":description,"price_cents":0,"currency":"USD","declared_permissions":[permission],"license":license,"origin":plugin_origin}),
+	)
+	.send()
+	.await
+	.unwrap();
+	assert_eq!(
+		created.status(),
+		200,
+		"hostile text must be accepted as data"
+	);
+	let created: serde_json::Value = created.json().await.unwrap();
+	let plugin = created["plugin"]["id"].as_str().unwrap();
+	let manifest = br#"{"$schema":"https://agent-plugins.org/schemas/1.0.0/plugin.schema.json","name":"hostile-plugin"}"#;
+	let files = [PluginFile {
+		path: "plugin.json".into(),
+		bytes: manifest.to_vec(),
+	}];
+	for version in ["1.0.0", "2.0.0"] {
+		let published = post(
+			&format!("/api/marketplace/plugins/{plugin}/versions"),
+			value!({"version":version,"files":{"plugin.json":STANDARD.encode(manifest)},"expected_sha256":tree_digest(&files)}),
+		)
+		.send()
+		.await
+		.unwrap();
+		assert_eq!(
+			published.status(),
+			200,
+			"{}",
+			published.text().await.unwrap()
+		);
+	}
+	assert_eq!(
+		post(
+			&format!("/api/marketplace/plugins/{plugin}/acquire"),
+			value!({})
+		)
+		.send()
+		.await
+		.unwrap()
+		.status(),
+		200
+	);
+	assert_eq!(
+		client
+			.post(format!("{endpoint}/internal/recalls"))
+			.bearer_auth("test-recall-secret-32-characters-long")
+			.json(&value!({"plugin_id":plugin,"version":"1.0.0","reason":reason}))
+			.send()
+			.await
+			.unwrap()
+			.status(),
+		200
+	);
+
+	let browser = browser_client(browser_config()).await;
+	browser.navigate(&endpoint).await.unwrap();
+	browser
+		.inner()
+		.add_cookie(
+			cookie::Cookie::build(("marketplace-session", token.clone()))
+				.domain(
+					url::Url::parse(&endpoint)
+						.unwrap()
+						.host_str()
+						.unwrap()
+						.to_owned(),
+				)
+				.path("/")
+				.http_only(true)
+				.same_site(cookie::SameSite::Lax)
+				.build(),
+		)
+		.await
+		.unwrap();
+	// Catalog: Publisher, name, description and license are listed publicly.
+	visit(
+		&browser,
+		&endpoint,
+		"/",
+		&[
+			publisher_name.clone(),
+			plugin_name.clone(),
+			description.clone(),
+			license.clone(),
+		],
+	)
+	.await;
+	// Detail: also the origin, declared permissions and the recall reason.
+	visit(
+		&browser,
+		&endpoint,
+		&format!("/plugins/{slug}"),
+		&[
+			publisher_name.clone(),
+			plugin_name.clone(),
+			description.clone(),
+			license.clone(),
+			permission.clone(),
+			plugin_origin.clone(),
+			reason.clone(),
+		],
+	)
+	.await;
+	// Library of the Account that acquired it, listing the recalled version.
+	visit(
+		&browser,
+		&endpoint,
+		"/library",
+		&[plugin_name.clone(), reason.clone()],
+	)
+	.await;
+	// Publisher tools list the same Publisher and plugin names back to their owner.
+	visit(
+		&browser,
+		&endpoint,
+		"/publishers",
+		&[publisher_name.clone(), plugin_name.clone()],
+	)
+	.await;
+	browser.close().await.unwrap();
+	auth_task.abort();
+	task.abort();
+}
