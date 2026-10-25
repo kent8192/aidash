@@ -26,6 +26,11 @@ while (($#)); do
     *) echo 'Usage: scripts/test-rust.sh [--coverage] [--partition NAME] [--shard 1|2]' >&2; exit 2 ;;
   esac
 done
+if [[ "$partition" == server-unit ]]; then
+  # Bound concurrent code generation for the large server libtest and binaries.
+  export CARGO_BUILD_JOBS="${CARGO_BUILD_JOBS:-1}"
+  printf 'Server unit compiler jobs: %s\n' "$CARGO_BUILD_JOBS"
+fi
 if [[ -n "$shard" ]]; then
   [[ "$shard" == 1 || "$shard" == 2 ]] || { echo 'Rust test shard must be 1 or 2' >&2; exit 2; }
   export AIDASH_RUST_TEST_SHARD="$shard"
