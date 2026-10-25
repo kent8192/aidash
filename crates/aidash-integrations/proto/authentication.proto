@@ -1,0 +1,79 @@
+syntax = "proto3";
+package aidash.authentication.v1;
+
+// Product service certificates may call validity and product-scoped revocation.
+// AccountAdministration requires a distinct Authentication Administrator peer.
+service AuthenticationValidity {
+  rpc ValidateInteractive(ValidateInteractiveRequest) returns (ValidityResponse);
+  rpc ValidateOrigin(ValidateOriginRequest) returns (ValidityResponse);
+}
+service SessionRevocation {
+  rpc RevokeProductSession(RevokeProductSessionRequest) returns (RevocationResponse);
+  rpc RevokeAllSessions(RevokeAllSessionsRequest) returns (RevocationResponse);
+  rpc CreateDesktopSession(CreateDesktopSessionRequest) returns (DesktopSessionResponse);
+}
+service AccountAdministration {
+  rpc SuspendAccount(AccountAdministrationRequest) returns (RevocationResponse);
+  rpc RestoreAccount(AccountAdministrationRequest) returns (RevocationResponse);
+}
+// A product Deployment Administrator may restore an upstream-enabled source;
+// this grants no common Account administration authority.
+service SourceLifecycle {
+  rpc RestoreIdentity(RestoreIdentityRequest) returns (RevocationResponse);
+}
+message ValidateInteractiveRequest {
+  string external_identity_id = 1;
+  // The authentication server's product session, never a caller's account claim.
+  string product_session_id = 2;
+  string product_client_id = 3;
+}
+message ValidateOriginRequest {
+  string external_identity_id = 1;
+  // Empty for legacy origins. Once assigned, the source's first account is stable.
+  string expected_account_id = 2;
+  optional uint64 expected_suspension_epoch = 3;
+  // Only a new admission or an explicitly authorized manual resume may save
+  // this snapshot; automatic resumes retain their existing expected epoch.
+  bool bind_current = 4;
+  optional uint64 expected_source_disable_epoch = 5;
+}
+message ValidityResponse {
+  bool active = 1;
+  string reason = 2;
+  string source_identity_id = 3;
+  string account_id = 4;
+  // Only these source claims may select a product-local Mapping.
+  string source_issuer = 5;
+  string source_subject = 6;
+  optional uint64 suspension_epoch = 7;
+  uint64 source_disable_epoch = 8;
+}
+message RevokeProductSessionRequest {
+  string product_session_id = 1;
+  string product_client_id = 2;
+}
+message RevokeAllSessionsRequest {
+  string product_session_id = 1;
+  string product_client_id = 2;
+}
+message CreateDesktopSessionRequest {
+  string browser_session_id = 1;
+  string product_client_id = 2;
+  string device_id = 3;
+  uint32 absolute_seconds = 4;
+  uint32 idle_seconds = 5;
+}
+message DesktopSessionResponse {
+  string product_session_id = 1;
+  string source_identity_id = 2;
+  string account_id = 3;
+}
+message AccountAdministrationRequest {
+  string account_id = 1;
+  string audit_reason = 2;
+}
+message RestoreIdentityRequest {
+  string external_identity_id = 1;
+  string audit_reason = 2;
+}
+message RevocationResponse { bool completed = 1; }

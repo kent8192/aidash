@@ -256,6 +256,14 @@ impl RuntimeTasks {
 				}
 			}));
 		}
+		if !federation.config.marketplace.connections.is_empty() {
+			tasks.spawn_service(runtime_task(
+				crate::apps::registry::services::marketplace_recalls::run(
+					federation.clone(),
+					receiver.clone(),
+				),
+			));
+		}
 		for service in build::current()
 			.extension
 			.services(&federation, receiver.clone())
@@ -711,11 +719,20 @@ pub fn skill_import() -> aidash_application::registry::skill_import::SkillImport
 }
 
 /// Agent Plugin transport is external; HTTP handlers depend only on the use case.
-pub fn agent_plugin_import() -> aidash_application::registry::agent_plugin_import::AgentPluginImport
-{
-	aidash_application::registry::agent_plugin_import::AgentPluginImport::new(Arc::new(
-		aidash_integrations::agent_plugin_import::PublicAgentPluginSource,
-	))
+pub fn agent_plugin_import(
+	config: &crate::config::Config,
+	tenant: &str,
+) -> Result<aidash_application::registry::agent_plugin_import::AgentPluginImport> {
+	let marketplace = config
+		.marketplace
+		.connection(tenant)
+		.map(|connection| config.marketplace.client_for(connection))
+		.transpose()?;
+	Ok(
+		aidash_application::registry::agent_plugin_import::AgentPluginImport::new(Arc::new(
+			aidash_integrations::marketplace::Sources { marketplace },
+		)),
+	)
 }
 
 /// Keep conversation authorization, writes, and delegation in one borrowed scope.

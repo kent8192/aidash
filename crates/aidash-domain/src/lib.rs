@@ -1,4 +1,5 @@
 //! Business models, authorization rules, and state invariants.
+pub mod accounts;
 pub mod agent_plugin;
 pub mod approval_rules;
 pub mod catalog;

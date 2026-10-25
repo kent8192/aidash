@@ -12,3 +12,5 @@ pub mod management;
 
 pub mod core;
 pub use core::*;
+
+pub mod marketplace_recalls;

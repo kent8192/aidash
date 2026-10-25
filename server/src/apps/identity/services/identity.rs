@@ -41,6 +41,9 @@ pub struct SubjectIdentity {
 #[derive(Clone)]
 pub(crate) struct HttpSession {
 	pub id: Uuid,
+	pub provider_session: Option<Uuid>,
+	pub common_authority:
+		Option<std::sync::Arc<dyn aidash_application::ports::accounts::Authority>>,
 	pub identity_id: Uuid,
 	pub idle_seconds: i64,
 	pub access_expires_at: Option<DateTime<Utc>>,
@@ -213,6 +216,15 @@ impl SubjectIdentity {
 		let Some((id, issuer)) = row else {
 			return Ok(());
 		};
+		if let Some(authority) = pool.dashboard_policy().and_then(|policy| policy.authority) {
+			if let Some(session) = &self.http_session {
+				authority
+					.validate_interactive(id, session.provider_session.ok_or(Error::Unauthorized)?)
+					.await?;
+			} else {
+				authority.validate_origin(id).await?;
+			}
+		}
 		if admits_identity(pool.dashboard_policy().as_ref(), &issuer) {
 			return Ok(());
 		}
@@ -261,6 +273,7 @@ impl SubjectIdentity {
 		snapshot: Snapshot,
 		policy: Option<&aidash_application::ports::authorization::dashboard::AccountPolicy>,
 	) -> Result<Snapshot> {
+		self.validate_common(tx, policy).await?;
 		AuthorizationCredential::lock_valid(
 			tx,
 			self.credential_id,
@@ -306,6 +319,8 @@ impl SubjectIdentity {
 		&self,
 		tx: &mut crate::database::native::Transaction,
 	) -> Result<()> {
+		let common_policy = tx.pool().dashboard_policy();
+		self.validate_common(tx, common_policy.as_ref()).await?;
 		let valid: Option<(Uuid, Option<Uuid>)> = {
 			let query_bind_1 = self.credential_id;
 			let query_bind_2 = &self.tenant;
@@ -421,7 +436,55 @@ impl SubjectIdentity {
 				&issuer,
 				&mapping_tenant,
 			)?;
-			validate_dashboard_status(Some((issuer, valid, disabled)))?;
+			validate_local_status(
+				tx.pool().dashboard_policy().as_ref(),
+				Some((issuer, valid, disabled)),
+			)?;
+		}
+		Ok(())
+	}
+
+	/// Original source authority is checked independently of a departed browser
+	/// session for durable Run/Subject Credentials. No positive result survives
+	/// this operation boundary.
+	async fn validate_common<E: TransactionExecutor + ?Sized>(
+		&self,
+		tx: &mut E,
+		policy: Option<&aidash_application::ports::authorization::dashboard::AccountPolicy>,
+	) -> Result<()> {
+		let Some(authority) = policy.and_then(|policy| policy.authority.as_ref()) else {
+			return Ok(());
+		};
+		if let Some(session) = &self.http_session {
+			let remote = session.provider_session.ok_or(Error::Unauthorized)?;
+			return authority
+				.validate_interactive(session.identity_id, remote)
+				.await
+				.map_err(Into::into);
+		}
+		// User-issued credentials also follow the Mapping they were issued through.
+		let query = Query::select()
+			.column(Alias::new("identity_id"))
+			.from(Alias::new("dashboard_mappings"))
+			.and_where(
+				Condition::any()
+					.add(Expr::col("credential_id").eq(Expr::value(self.credential_id)))
+					.add(
+						Expr::col("id").in_subquery(
+							Query::select()
+								.column(Alias::new("mapping_id"))
+								.from(Alias::new("authorization_credentials"))
+								.and_where(Expr::col("id").eq(Expr::value(self.credential_id)))
+								.to_owned(),
+						),
+					),
+			)
+			.to_string(PostgresQueryBuilder);
+		let identity: Option<Uuid> = crate::database::native::query_scalar(&query)
+			.scalar_optional(tx)
+			.await?;
+		if let Some(identity) = identity {
+			authority.validate_origin(identity).await?;
 		}
 		Ok(())
 	}
@@ -446,6 +509,14 @@ impl HttpSession {
 		tx: &mut E,
 		lock: bool,
 	) -> Result<()> {
+		if let Some(authority) = &self.common_authority {
+			authority
+				.validate_interactive(
+					self.identity_id,
+					self.provider_session.ok_or(Error::Unauthorized)?,
+				)
+				.await?;
+		}
 		let mut query = Query::select();
 		query.column(Alias::new("id")).from(Alias::new("dashboard_sessions"))
 			.and_where(Expr::cust("id=$1 AND identity_id=$2 AND revoked_at IS NULL AND expires_at>clock_timestamp() AND last_activity_at>clock_timestamp()-$3::bigint*interval '1 second'"));
@@ -486,6 +557,19 @@ pub(crate) fn validate_dashboard_status(validity: Option<IdentityValidity>) -> R
 			DashboardStatusFailure::Forbidden => Error::Forbidden,
 			DashboardStatusFailure::Unavailable => Error::IdentityStatusUnavailable,
 		})
+}
+
+pub(crate) fn validate_local_status(
+	policy: Option<&aidash_application::ports::authorization::dashboard::AccountPolicy>,
+	validity: Option<IdentityValidity>,
+) -> Result<()> {
+	if policy.is_some_and(|policy| policy.authority.is_some()) {
+		return match validity {
+			Some((_, _, None)) => Ok(()),
+			_ => Err(Error::Forbidden),
+		};
+	}
+	validate_dashboard_status(validity)
 }
 
 use reinhardt::query::SimpleExpr;

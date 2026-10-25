@@ -9,6 +9,9 @@ publish.workspace = true
 workspace = true
 
 [dependencies]
+reinhardt = { workspace = true, features = ["grpc-tls"], optional = true }
+prost = { version = "0.14", optional = true }
+tonic-prost = { version = "0.14", optional = true }
 bytes = "1"
 hyper = { version = "1", features = ["server", "http1"] }
 hyper-util = { version = "0.1", features = ["tokio", "server", "http1"] }
@@ -35,15 +38,15 @@ reqwest = { version = "0.13", default-features = false, features = [
 encoding_rs = "0.8"
 # Pure-Rust PDF reading and rendering for Page reading (#312). It runs only in
 # a bounded child process, because it caps neither decompression nor time.
-hayro = "0.8"
-aidash-runtime.workspace = true
+hayro = { version = "0.8", optional = true }
+aidash-runtime = { workspace = true, optional = true }
 
-async-nats = "0.46"
+async-nats = { version = "0.46", optional = true }
 futures-util.workspace = true
 percent-encoding = "2"
 url = "2"
 
-rmcp = { version = "=1.2.0", default-features = false, features = [
+rmcp = { version = "=1.2.0", optional = true, default-features = false, features = [
   "client",
   "transport-streamable-http-client-reqwest",
   "reqwest",
@@ -71,12 +74,28 @@ jsonwebtoken = { version = "11.1", default-features = false, features = [
 ] }
 openidconnect = "4.0.1"
 
+[build-dependencies]
+tonic-prost-build = "0.14"
+prost-build = "0.14"
+protoc-bin-vendored = "3"
+
 [features]
+default = ["cloud-adapters"]
+# Standalone consumers select authentication/JWKS without worker, NATS or runtime adapters.
+cloud-adapters = [
+  "dep:aidash-runtime",
+  "dep:async-nats",
+  "dep:hayro",
+  "dep:rmcp",
+]
+authentication = ["dep:reinhardt", "dep:prost", "dep:tonic-prost"]
 # Fake-provider constructors for tests (ADR 0006). Production dependencies never
 # enable it; see scripts/check-workspace-boundaries.py.
 test-support = []
 
 [dev-dependencies]
+rcgen = "0.14"
+tokio-stream = { version = "0.1", features = ["net"] }
 # The live Token Encoding checks count requests (ADR 0017).
 aidash-domain = { workspace = true, features = ["token-encodings"] }
 jsonwebtoken = { version = "11.1", default-features = false, features = [

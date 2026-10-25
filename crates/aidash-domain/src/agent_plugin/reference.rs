@@ -27,7 +27,7 @@ pub struct AgentPluginRef {
 	/// The [`LoadedPlugin::digest`] of the copy.
 	pub digest: String,
 	pub name: PluginName,
-	/// The commit-pinned GitHub URL of the plugin root.
+	/// The commit-pinned GitHub URL or immutable Marketplace plugin/version URI.
 	pub source: String,
 	#[serde(default, skip_serializing_if = "Option::is_none")]
 	pub version: Option<String>,
@@ -66,9 +66,12 @@ impl AgentPluginRef {
 				"the digest is not sha256: and 64 lowercase hex digits",
 			));
 		}
-		if !self.source.starts_with(SOURCE_PREFIX) || self.source.len() > MAX_SOURCE_BYTES {
+		if (!self.source.starts_with(SOURCE_PREFIX)
+			&& MarketplaceSource::parse(&self.source).is_none())
+			|| self.source.len() > MAX_SOURCE_BYTES
+		{
 			return Err(invalid(&format!(
-				"the source must be a {SOURCE_PREFIX} URL of at most {MAX_SOURCE_BYTES} bytes"
+				"the source must be a GitHub URL or marketplace://UUID/semver of at most {MAX_SOURCE_BYTES} bytes"
 			)));
 		}
 		if self.skills.len() > MAX_REFERENCE_SKILLS {
@@ -77,6 +80,29 @@ impl AgentPluginRef {
 			)));
 		}
 		Ok(())
+	}
+}
+
+/// Immutable catalog identity; transport always comes from Deployment settings.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MarketplaceSource {
+	pub plugin_id: uuid::Uuid,
+	pub version: String,
+}
+impl MarketplaceSource {
+	pub fn parse(source: &str) -> Option<Self> {
+		let (plugin, version) = source.strip_prefix("marketplace://")?.split_once('/')?;
+		let plugin_id = uuid::Uuid::parse_str(plugin).ok()?;
+		if plugin_id.to_string() != plugin
+			|| version.len() > 128
+			|| semver::Version::parse(version).is_err()
+		{
+			return None;
+		}
+		Some(Self {
+			plugin_id,
+			version: version.to_owned(),
+		})
 	}
 }
 

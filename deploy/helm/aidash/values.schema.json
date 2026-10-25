@@ -295,6 +295,11 @@
       "type": "object",
       "properties": { "settings": { "type": ["object", "null"] } }
     },
+    "commonAuth": {
+      "type": "object",
+      "properties": { "existingSecret": { "type": "string" } },
+      "additionalProperties": false
+    },
     "server": { "$ref": "#/definitions/role" },
     "worker": {
       "allOf": [

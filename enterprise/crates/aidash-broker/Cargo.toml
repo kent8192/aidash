@@ -11,8 +11,8 @@ workspace = true
 [dependencies]
 aidash-domain.workspace = true
 aidash-capability.workspace = true
-aidash-gcp.workspace = true
-aidash-integrations.workspace = true
+aidash-gcp = { workspace = true, features = ["cloud"] }
+aidash-integrations = { workspace = true, features = ["cloud-adapters"] }
 async-stream = "0.3"
 axum = "0.8"
 base64 = "0.22"

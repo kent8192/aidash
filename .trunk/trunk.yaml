@@ -23,6 +23,7 @@ lint:
       paths:
         - deploy/helm/**/templates/**
         - infra/gcp/helm/**/templates/**
+        - enterprise/deploy/**/templates/**
         # Compact JSON is the byte-exact baseline for legacy policy serialization.
         - tests/fixtures/native_memory_policy_baseline.json
         # Compact JSON is the byte-exact baseline for legacy model requests.
@@ -33,6 +34,9 @@ lint:
       paths:
         - openapi/aidash.json
         - web/src/generated/**
+        # Pinned, licensed upstream browser modules; packaging verifies their digests.
+        - enterprise/auth/static/assets/vendor/**
+        - enterprise/*/static/assets/fonts/**
         - web/dist/**
         - web/test-results/**
         - web/desktop-test-results/**
