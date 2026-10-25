@@ -20,3 +20,5 @@ pub mod startup;
 pub(crate) const GOOGLE_OIDC_ISSUER: &str = "https://accounts.google.com";
 
 mod legacy_env;
+
+pub mod marketplace;

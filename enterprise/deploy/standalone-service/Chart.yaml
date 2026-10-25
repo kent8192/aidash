@@ -1,0 +1,6 @@
+apiVersion: v2
+name: aidash-standalone-service
+description: One independently released Aidash authentication or Marketplace process
+type: application
+version: 0.1.0
+appVersion: "0.1.0"

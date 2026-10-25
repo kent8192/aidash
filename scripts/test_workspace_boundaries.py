@@ -152,6 +152,21 @@ class EnterpriseWorkspaceTests(unittest.TestCase):
     def test_locked_enterprise_workspace_composes_only_community_crates(self):
         self.assertEqual(BOUNDARIES.enterprise_violations(self.metadata, self.root), [])
 
+    def test_standalone_services_cannot_compose_the_cloud_runtime(self):
+        identities = {package["name"]: package["id"] for package in self.metadata["packages"]}
+        for service in ("aidash-auth-server", "aidash-marketplace-server"):
+            for kind in (None, "build"):
+                with self.subTest(service=service, kind=kind):
+                    metadata = copy.deepcopy(self.metadata)
+                    node = next(node for node in metadata["resolve"]["nodes"]
+                                if node["id"] == identities[service])
+                    node["deps"].append({"pkg": identities["aidash-server"],
+                                         "dep_kinds": [{"kind": kind}]})
+                    self.assertIn(
+                        f"standalone service composes Cloud runtime: {service} -> aidash-server",
+                        BOUNDARIES.enterprise_violations(metadata, self.root),
+                    )
+
     def test_local_dependencies_outside_community_crates_are_rejected(self):
         metadata = copy.deepcopy(self.metadata)
         metadata["packages"].append({

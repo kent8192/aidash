@@ -43,6 +43,7 @@ impl DefinitionLookup for SqlScope<'_> {
 #[async_trait]
 impl DefinitionWriter for SqlScope<'_> {
 	async fn insert_definition(&mut self, entry: &Entry) -> Result<bool> {
+		super::marketplace_recalls::check_acquisition_native(&mut **self.0, entry).await?;
 		transaction_records::insert_definition(&mut **self.0, entry)
 			.await
 			.map_err(Into::into)

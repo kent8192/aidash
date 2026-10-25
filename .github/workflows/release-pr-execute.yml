@@ -20,8 +20,8 @@ jobs:
       AIDASH_GCP_CONFIG: ${{ secrets.AIDASH_GCP_CONFIG }}
       GH_DEBUG: ""
     steps:
-      # workflow_run pins github.sha to the protected default-branch revision.
-      # Never execute the candidate branch or downloaded artifact code here.
+      # The dispatcher admits push/manual events only on the default branch;
+      # completion events also pin github.sha there. Keep one immutable revision.
       - name: Check out the trusted workflow revision
         id: checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -41,18 +41,12 @@ jobs:
           permission-contents: write
           permission-pull-requests: write
           permission-checks: write
-      - name: Create the immutable candidate or acknowledge trusted staging
+      - name: Reconcile immutable candidates and trusted staging outcomes
         id: controller
         env:
           GH_TOKEN: ${{ steps.app.outputs.token }}
           RELEASE_APP_BOT_LOGIN: ${{ steps.app.outputs.app-slug }}[bot]
-          COMPLETED_WORKFLOW: ${{ github.event.workflow_run.name }}
-        run: |
-          if [ "$COMPLETED_WORKFLOW" = 'Release CI' ]; then
-            python3 -u infra/gcp/control/releases.py candidate
-          else
-            python3 -u infra/gcp/control/releases.py staging
-          fi
+        run: python3 -u infra/gcp/control/releases.py reconcile
       - name: Report step outcomes without private inputs
         if: ${{ always() }}
         env:

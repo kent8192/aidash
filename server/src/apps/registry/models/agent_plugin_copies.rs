@@ -31,4 +31,7 @@ pub struct AgentPluginCopy {
 	pub denied: Json<Value>,
 	#[field(auto_now_add = true)]
 	pub created_at: DateTime<Utc>,
+	/// Mutable authoritative acquisition receipt; plugin bytes/source stay immutable.
+	#[field(null = true)]
+	pub entitlement_expires_at: Option<DateTime<Utc>>,
 }

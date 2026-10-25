@@ -276,13 +276,19 @@ impl ExecutionAdmissionSession for Admission<'_> {
 						.columns([Alias::new("identity_id"), Alias::new("id")])
 						.from(Alias::new("dashboard_mappings"))
 						.and_where(
-							reinhardt::query::SimpleExpr::from(Expr::col(Alias::new(
-								"credential_id",
-							)))
-							.eq(SimpleExpr::CustomWithExpr(
-								"(?)".to_owned(),
-								vec![Expr::value(query_bind_1.to_owned()).into()],
-							)),
+							reinhardt::query::Condition::any()
+								.add(Expr::col("credential_id").eq(Expr::value(query_bind_1)))
+								.add(
+									Expr::col("id").in_subquery(
+										Query::select()
+											.column(Alias::new("mapping_id"))
+											.from(Alias::new("authorization_credentials"))
+											.and_where(
+												Expr::col("id").eq(Expr::value(query_bind_1)),
+											)
+											.to_owned(),
+									),
+								),
 						)
 						.to_string(PostgresQueryBuilder),
 				)
@@ -306,6 +312,23 @@ impl ExecutionAdmissionSession for Admission<'_> {
 			let run_id = run;
 			let identity_id = identity;
 			let mapping_id = mapping;
+			let policy = access.tx.pool().dashboard_policy();
+			let binding = match policy.and_then(|policy| policy.authority) {
+				Some(authority) => Some(authority.origin_binding(identity_id).await?),
+				None => None,
+			};
+			let account_id = binding.as_ref().and_then(|binding| binding.account_id);
+			let source_epoch = binding
+				.as_ref()
+				.and_then(|binding| binding.source_disable_epoch)
+				.map(i64::try_from)
+				.transpose()
+				.map_err(|_| crate::Error::IdentityStatusUnavailable)?;
+			let epoch = binding
+				.and_then(|binding| binding.suspension_epoch)
+				.map(i64::try_from)
+				.transpose()
+				.map_err(|_| crate::Error::IdentityStatusUnavailable)?;
 			{
 				let query_bind_1 = run_id;
 				let query_bind_2 = identity_id;
@@ -318,6 +341,9 @@ impl ExecutionAdmissionSession for Admission<'_> {
 							Alias::new("identity_id"),
 							Alias::new("mapping_id"),
 							Alias::new("tenant"),
+							Alias::new("account_id"),
+							Alias::new("suspension_epoch"),
+							Alias::new("source_disable_epoch"),
 						])
 						.from_subquery(
 							reinhardt::query::Query::select()
@@ -334,6 +360,9 @@ impl ExecutionAdmissionSession for Admission<'_> {
 									vec![Expr::value(query_bind_3.to_owned()).into()],
 								))
 								.expr(crate::database::scope::tenant())
+								.expr(Expr::value(account_id))
+								.expr(Expr::value(epoch))
+								.expr(Expr::value(source_epoch))
 								.to_owned(),
 						)
 						.to_string(PostgresQueryBuilder),
@@ -434,6 +463,12 @@ impl ExecutionAdmissionSession for Admission<'_> {
 			.map_err(Into::into)
 	}
 	async fn check_pinned_installation(&mut self, entry: &Entry) -> Result<()> {
+		crate::apps::registry::repositories::marketplace_recalls::check(
+			&mut **self.access.tx,
+			entry,
+		)
+		.await
+		.map_err(aidash_application::Error::from)?;
 		crate::marketplace::check_pinned(self.access, entry)
 			.await
 			.map_err(Into::into)

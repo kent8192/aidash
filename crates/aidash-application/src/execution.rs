@@ -769,12 +769,13 @@ pub fn choose_inference_media(
 	headroom: usize,
 	human_batch_present: bool,
 	model: &ModelConfig,
+	projection: aidash_domain::projection::ProjectionVersion,
 ) -> (Vec<aidash_domain::provider::ContentPart>, bool) {
 	let mut combined = selected_parts;
 	combined.extend(human_parts.iter().cloned());
 	let defer_selected = human_batch_present
 		&& (!aidash_domain::provider::ModelRequest::media_within_limits(&combined)
-			|| media_request_headroom(headroom, &combined).is_err()
+			|| media_request_headroom(headroom, &combined, model, projection).is_err()
 			|| !model.has_current_media_route_for_parts(&combined));
 	(
 		if defer_selected {
@@ -789,19 +790,10 @@ pub fn choose_inference_media(
 pub fn media_request_headroom(
 	headroom: usize,
 	parts: &[aidash_domain::provider::ContentPart],
+	model: &ModelConfig,
+	projection: aidash_domain::projection::ProjectionVersion,
 ) -> Result<()> {
-	let request = aidash_domain::provider::ModelRequest {
-		instructions: String::new(),
-		context: json!({}).into(),
-		tools: Vec::new(),
-		max_output_tokens: 0,
-		response_format: None,
-		content_parts: Vec::new(),
-		cache_scope: None,
-		cache_breakpoints: false,
-		disable_provider_transforms: false,
-		estimate: Default::default(),
-	};
+	let request = media::admission_request(model, projection, json!({}), Vec::new());
 	request
 		.ensure_fits_with_parts(headroom, parts)
 		.map_err(Into::into)
@@ -828,6 +820,7 @@ pub fn encoded_run_message_reservation(messages: &[Value]) -> usize {
 			cache_scope: None,
 			cache_breakpoints: false,
 			disable_provider_transforms: false,
+			input_format: Default::default(),
 			estimate: Default::default(),
 		}
 		.estimated_total_tokens()
@@ -848,19 +841,9 @@ pub fn check_model_media_headroom(
 	headroom: usize,
 	parts: Vec<aidash_domain::provider::ContentPart>,
 	model: &ModelConfig,
+	projection: aidash_domain::projection::ProjectionVersion,
 ) -> Result<()> {
-	let request = aidash_domain::provider::ModelRequest {
-		instructions: String::new(),
-		context: json!({}).into(),
-		tools: Vec::new(),
-		max_output_tokens: 0,
-		response_format: None,
-		content_parts: parts,
-		cache_scope: None,
-		cache_breakpoints: false,
-		disable_provider_transforms: false,
-		estimate: Default::default(),
-	};
+	let request = media::admission_request(model, projection, json!({}), parts);
 	request.validate()?;
 	if !model.has_current_media_route_for_parts(&request.content_parts) {
 		return Err(Error::Invalid(format!(

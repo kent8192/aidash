@@ -1,0 +1,100 @@
+[package]
+name = "aidash-marketplace-server"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+default-run = "aidash-marketplace-server"
+
+[lints]
+workspace = true
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+serde.workspace = true
+serde_json.workspace = true
+ctor = "0.6"
+linkme = "0.3"
+inventory = "0.3"
+
+[build-dependencies]
+cfg_aliases = "0.2"
+
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+aidash-domain.workspace = true
+async-trait.workspace = true
+base64 = "0.22"
+chrono.workspace = true
+http = "1"
+openidconnect = "4.0.1"
+percent-encoding = "2"
+reinhardt = { workspace = true, features = [
+  "minimal",
+  "pages",
+  "client-router",
+  "database",
+  "db-postgres",
+] }
+reqwest = { version = "0.13", default-features = false, features = [
+  "form",
+  "json",
+  "rustls",
+] }
+sha2 = "0.10"
+subtle = "2"
+thiserror = "2"
+tokio.workspace = true
+url = "2"
+uuid.workspace = true
+
+[target.'cfg(not(target_arch = "wasm32"))'.dev-dependencies]
+cookie = "0.18.2"
+reinhardt-test = { git = "https://github.com/kent8192/reinhardt-web", rev = "b6a006a769ca340c22a51e67fef1bb4be1dc3039", default-features = false, features = [
+  "e2e",
+] }
+reinhardt = { workspace = true, features = ["test", "testcontainers"] }
+
+[[bin]]
+name = "aidash-marketplace-server"
+path = "src/bin/manage.rs"
+
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+reinhardt = { package = "reinhardt-web", git = "https://github.com/kent8192/reinhardt-web", rev = "b6a006a769ca340c22a51e67fef1bb4be1dc3039", default-features = false, features = [
+  "pages",
+  "client-router",
+] }
+
+
+console_error_panic_hook = "0.1"
+gloo-events = "0.2"
+js-sys = "0.3"
+wasm-bindgen = "0.2.106"
+wasm-bindgen-futures = "0.4.56"
+web-sys = { version = "0.3", features = [
+  "Window",
+  "Document",
+  "Element",
+  "HtmlElement",
+  "HtmlInputElement",
+  "HtmlSelectElement",
+  "HtmlFormElement",
+  "FormData",
+  "File",
+  "FileList",
+  "Blob",
+  "Event",
+  "EventTarget",
+  "Location",
+  "RequestCredentials",
+] }
+
+
+[package.metadata.wasm-pack.profile.release]
+wasm-opt = false
+
+[features]
+default = ["client-router"]
+client-router = []
+browser-e2e = []

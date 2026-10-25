@@ -25,7 +25,8 @@ pub use manifest::{Author, Manifest, PluginName};
 pub use mcp::{Command, Cwd, Executable, Header, McpServer, RemoteServer, ServerName, StdioServer};
 pub use paths::tree_digest;
 pub use reference::{
-	AgentPluginRef, MAX_AGENT_PLUGINS, MAX_REFERENCE_SKILLS, MAX_SOURCE_BYTES, PinnedAgentPlugin,
+	AgentPluginRef, MAX_AGENT_PLUGINS, MAX_REFERENCE_SKILLS, MAX_SOURCE_BYTES, MarketplaceSource,
+	PinnedAgentPlugin,
 };
 pub(crate) use settings::validate as validate_settings;
 pub use settings::{MAX_SERVER_TOOLS, MAX_TOOL_NAME, PluginSettings, ReadOnlyTool, ServerSettings};

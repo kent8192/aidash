@@ -117,6 +117,20 @@ enabled = false
 # session_absolute_seconds = 43200
 # session_idle_seconds = 1800
 
+# Cloud-only opt-in to the extracted authentication service. OIDC issuer above
+# is the authentication server; source issuers below remain the original GCIP
+# pool identities used by existing Mapping and durable Run references. Import
+# those original UUIDs into authentication before enabling this cutover.
+# [dashboard.common_auth]
+# grpc_endpoint = "https://authentication.internal:9091"
+# server_domain = "authentication.internal"
+# ca_certificate_file = "/run/auth-tls/ca.pem"
+# client_certificate_file = "/run/auth-tls/cloud.pem"
+# client_private_key_file = "/run/auth-tls/cloud-key.pem"
+# [dashboard.common_auth.source_issuers]
+# "https://securetoken.google.com/PROJECT/tenants/shared-pool" = "" # unrestricted
+# "https://securetoken.google.com/PROJECT/tenants/corporate-pool" = "acme" # Tenant-bound
+
 # Private origins that Tenants' Keyless model and embedding endpoints (those
 # without provider_credential), HTTP and MCP tool endpoints, Agent Plugin remote
 # MCP servers and Workbench test endpoints may reach. Every other such endpoint
@@ -159,9 +173,11 @@ enabled = false
 # Sign in with ChatGPT Plan Connections (#159): subjects run agents on their
 # own ChatGPT plan allowance. Off by default. Turning it on means this host
 # stores Plan Tokens it can read, so it needs the PostgreSQL Secret Store
-# above; a server with a Secret Manager Store, or none,
-# refuses to start with it on. Turning it off later keeps each owner's status
-# and disconnect, and stops new connections, model lists and plan Runs.
+# above. Self-hosted refuses enablement without that Store. Cloud and Dedicated
+# refuse enablement with any Store and expose no Plan routes until OpenAI's
+# hosted approval and contract (#248). Turning it off later on Self-hosted
+# keeps each owner's status and disconnect, and stops new connections,
+# model lists and plan Runs.
 # [plan_connections]
 # enabled = true
 

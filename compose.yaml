@@ -1,3 +1,5 @@
+# Cloud development stack. Independent Auth/Marketplace profiles live in
+# enterprise/compose.yaml; see enterprise/deploy/local/README.md.
 name: ${COMPOSE_PROJECT_NAME:-aidash-dev}
 services:
   postgres:

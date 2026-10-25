@@ -639,3 +639,7 @@ These empty merge migrations give each app one leaf while preserving the
 original migration identities, dependencies, schema changes and rollback
 guards. New migrations depend on the merged leaf. They perform no schema
 operations and change neither retained MCP state nor projection behavior.
+
+`registry/0048_plugin_marketplace_merge` joins the Registry merge above with
+`0047_marketplace_recall_constraints`. This empty state-only migration keeps a
+single Registry leaf without rewriting either history or changing stored data.

@@ -45,7 +45,8 @@ Key Material.
 
 ## Keyless endpoints
 
-A model or embedding configuration without `provider_credential` is a Keyless
+A model configuration without both `provider_credential` and `plan_connection`,
+or an embedding configuration without `provider_credential`, is a Keyless
 endpoint: Aidash calls it without any grant, it has no Provider Catalog entry,
 and Aidash promises nothing about what it retains (ADR 0036). It may connect
 only to public addresses unless the Deployment Administrators list its exact
@@ -78,6 +79,12 @@ extend to another port or scheme on the same host.
 Choose a Secret Store in server settings. Without
 `[provider_credentials.store]`, Provider Credentials and Plan Connections are
 unavailable.
+
+[ChatGPT Plan Connections](plan-connections.md) belong to one subject, use
+`plan_connection: "chatgpt"` in model configurations and remain separate from a
+Tenant's Provider Credential Binding. They are available only on opted-in
+Self-hosted Deployments with the PostgreSQL Store; Cloud and Dedicated support
+is deferred to #248 pending hosted-app approval.
 
 ## Provider Authorization
 
@@ -217,8 +224,9 @@ keys are rejected before registering them. When some registered keys are known,
 versions under an unconfigured key produce a warning with counts; reads fail,
 while revocation and deletion remain available. There is no fallback.
 
-Losing the Master Key loses every Provider Credential and Plan Connection on
-the node. Recovery means reconnecting through Provider Authorization.
+Losing a Master Key makes the versions encrypted under it unreadable. A
+Provider Credential or current Plan Token pinned to such a version needs
+reconnection. Recovery cannot recover the lost plaintext.
 A database backup is useless without a separately retained key backup. Keep the
 current and necessary retired keys backed up outside the database.
 
@@ -231,10 +239,11 @@ manage secret-store-recovery --execute
 ```
 
 The default is a dry run. Both invocations print only JSON counts:
-`affected_tenants` and `affected_provider_credentials` count active records whose
-pin uses a lost key; `affected_plan_connections` counts Plan Connections whose
-pinned Plan Tokens use one; `version_rows` and `key_registry_rows` count rows to
-remove.
+`affected_provider_credentials` counts active records whose pin uses a lost key;
+`affected_plan_connections` counts Plan Connections with any version under a
+lost key, including unpinned refresh evidence. `affected_tenants` counts distinct
+Tenants affected by either category. `version_rows` and `key_registry_rows` count
+rows to remove.
 Recovery requires a PostgreSQL Store and valid current Master Key and fingerprint
 key. It verifies registered configured keys, so a failed key check refuses both
 dry run and execute without changes. It bypasses the wrong-key startup gate and
@@ -245,17 +254,21 @@ each affected Provider Credential. Recovery then deletes all version and key
 registry rows under unconfigured keys. Configured-key versions in the same
 resource are disabled by normal Revocation, remain present, and keep their
 ciphertext. Unaffected Provider Credentials retain every row and state.
-Recovery never decrypts or re-encrypts version payloads. Restart server and worker
-afterward; normal startup registers the current key. Tenants then delete revoked
-credentials and reconnect through Provider Authorization. The command is safe to rerun
-after an interrupted recovery.
+Recovery cannot decrypt lost-key payloads and does not re-encrypt existing
+versions. For affected Plan resources it privately reads configured-key
+versions to find or create a token-free, encrypted revocation-uncertainty marker
+under the current key before deleting unreadable versions. No plaintext is
+printed. Restart server and worker afterward; normal startup registers the
+current key. Tenants then delete revoked Provider Credentials and reconnect
+through Provider Authorization. The command is safe to rerun after interruption.
 
-Each affected Plan Connection moves to `needs_reconnection` with a
-`plan_connection.needs_reconnection` event, and its Runs fail at their next
-call. Its grant cannot be revoked at OpenAI any more, because the refresh token
-is gone: the owner reconnects from settings with the same ChatGPT account, or
-disconnects, which then reports `revoked: false` so the owner knows to remove
-the grant at OpenAI themselves.
+A Plan Connection whose current pin was lost moves to `needs_reconnection`
+with a `plan_connection.needs_reconnection` event; its Runs fail at their next
+call. A connection with a readable current pin remains usable. Both cases
+retain uncertainty about grants whose tokens or refresh evidence were lost.
+Disconnect therefore reports `revoked: false` even if it successfully revokes a
+surviving current token. The owner must also remove the connection in ChatGPT
+settings; reconnecting alone cannot confirm revocation of a lost grant.
 
 GCP deployment passes this non-secret Store descriptor to the app chart's
 `providerCredentials.settings`, which renders it as a ConfigMap read as a

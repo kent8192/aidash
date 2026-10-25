@@ -8,6 +8,9 @@ fn main() {
 			"desktop_login",
 			"desktop_access",
 			"desktop_logout",
+			"plan_listen",
+			"plan_wait",
+			"plan_cancel",
 		]),
 	))
 	.expect("build desktop application");

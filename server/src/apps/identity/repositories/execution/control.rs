@@ -127,6 +127,14 @@ impl RunControlScope for Scope<'_> {
 	}
 	async fn update_credential(&mut self, id: Uuid, credential: Uuid) -> Result<()> {
 		let result: NativeResult<()> = async {
+			let policy = self.access.tx.pool().dashboard_policy();
+			crate::apps::identity::models::DashboardExecutionOrigin::renew_manual(
+				&mut **self.access.tx,
+				id,
+				&self.access.identity,
+				policy.as_ref(),
+			)
+			.await?;
 			let query_bind_1 = id;
 			let query_bind_2 = credential;
 			crate::database::native::query(

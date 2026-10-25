@@ -256,6 +256,14 @@ impl RuntimeTasks {
 				}
 			}));
 		}
+		if !federation.config.marketplace.connections.is_empty() {
+			tasks.spawn_service(runtime_task(
+				crate::apps::registry::services::marketplace_recalls::run(
+					federation.clone(),
+					receiver.clone(),
+				),
+			));
+		}
 		for service in build::current()
 			.extension
 			.services(&federation, receiver.clone())
@@ -640,6 +648,7 @@ pub fn registry_validation() -> aidash_application::registry::DefinitionValidati
 	// keeps a management command from admitting what the server would not.
 	.with_plan_connections(settings.as_ref().is_some_and(|s| {
 		s.plan_connections.enabled
+			&& build::offering() == aidash_domain::offering::Offering::SelfHosted
 			&& matches!(s.provider_credentials.store, Some(StoreConfig::Postgres { .. }))
 	}))
 	// Tenant Secrets live in a PostgreSQL Secret Store only (ADR 0051).
@@ -710,11 +719,20 @@ pub fn skill_import() -> aidash_application::registry::skill_import::SkillImport
 }
 
 /// Agent Plugin transport is external; HTTP handlers depend only on the use case.
-pub fn agent_plugin_import() -> aidash_application::registry::agent_plugin_import::AgentPluginImport
-{
-	aidash_application::registry::agent_plugin_import::AgentPluginImport::new(Arc::new(
-		aidash_integrations::agent_plugin_import::PublicAgentPluginSource,
-	))
+pub fn agent_plugin_import(
+	config: &crate::config::Config,
+	tenant: &str,
+) -> Result<aidash_application::registry::agent_plugin_import::AgentPluginImport> {
+	let marketplace = config
+		.marketplace
+		.connection(tenant)
+		.map(|connection| config.marketplace.client_for(connection))
+		.transpose()?;
+	Ok(
+		aidash_application::registry::agent_plugin_import::AgentPluginImport::new(Arc::new(
+			aidash_integrations::marketplace::Sources { marketplace },
+		)),
+	)
 }
 
 /// Keep conversation authorization, writes, and delegation in one borrowed scope.
@@ -2483,9 +2501,10 @@ pub async fn configure_provider_credentials(
 
 /// Plan Tokens live only in a PostgreSQL Secret Store (ADR 0008):
 /// Cloud and Dedicated wait for OpenAI's approval of a hosted flow (#248), so a
-/// server whose Store is in Secret Manager, or that has none, refuses to start
-/// with Plan Connections on. The service exists whenever the Store could hold
-/// Plan Tokens, so owners can still read and disconnect their connections
+/// server refuses their enablement at the settings boundary regardless of its
+/// Store. Self-hosted also refuses enablement without a PostgreSQL Store.
+/// The service exists whenever the Store could hold Plan Tokens, so owners
+/// can still read and disconnect their connections
 /// after `enabled` is turned off (ADR 0007).
 pub fn configure_plan_connections(
 	store: &mut Store,

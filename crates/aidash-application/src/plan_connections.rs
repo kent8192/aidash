@@ -104,8 +104,11 @@ pub struct ExchangeRequest<'a> {
 pub enum RefreshFailure {
 	/// The refresh token is unusable: the grant has ended.
 	Terminal,
-	/// Anything else; the tokens are kept.
+	/// A confirmed rejection or failure before dispatch; the tokens are kept.
 	Unavailable(Error),
+	/// The request may have replaced the grant, but no usable reply arrived.
+	/// Keep the durable intent and never replay the possibly spent token.
+	Ambiguous(Error),
 }
 
 /// OpenAI's OAuth and model-list endpoints. Implementations never log, event
@@ -192,6 +195,8 @@ pub struct Metadata {
 	pub tenant: String,
 	pub subject: String,
 	pub provider: Provider,
+	/// Effective state, including the connecting identity's current Mapping
+	/// eligibility. The stored grant state is preserved while identity use pauses.
 	pub state: State,
 	pub connected_at: DateTime<Utc>,
 	pub refreshed_at: Option<DateTime<Utc>>,
@@ -228,6 +233,66 @@ pub struct Disconnection {
 struct Stored {
 	access_token: String,
 	refresh_token: String,
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	rotation: Option<Replacement>,
+}
+
+/// Encrypted alongside tokens, never projected as connection metadata. A
+/// durable intent precedes the external effect; its exact base prevents a
+/// receipt from attaching to a reconnect or another identity's grant.
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
+struct RefreshIntent {
+	tenant: String,
+	subject: String,
+	connection: Uuid,
+	identity: Uuid,
+	revision: i64,
+	pin: Option<String>,
+}
+impl RefreshIntent {
+	fn for_row(row: &PlanConnection) -> Self {
+		Self {
+			tenant: row.tenant.clone(),
+			subject: row.subject.clone(),
+			connection: row.id,
+			identity: row.identity_id,
+			revision: row.revision,
+			pin: row.pinned_version.clone(),
+		}
+	}
+}
+#[derive(Serialize, Deserialize)]
+struct Replacement {
+	intent_version: String,
+	intent: RefreshIntent,
+	access_expires_at: DateTime<Utc>,
+	earliest_refresh_at: Option<DateTime<Utc>>,
+	refresh_expires_at: DateTime<Utc>,
+	refreshed_at: DateTime<Utc>,
+}
+#[derive(Serialize, Deserialize)]
+#[serde(untagged)]
+enum StoredVersion {
+	Tokens(Stored),
+	Intent {
+		refresh_intent: RefreshIntent,
+	},
+	/// A lost-key version may contain an unknown live grant. This token-free
+	/// record survives ordinary cleanup under an available encryption key.
+	Unconfirmed {
+		revocation_unconfirmed: Uuid,
+	},
+}
+impl StoredVersion {
+	fn seal(&self) -> SecretString {
+		serde_json::to_string(self)
+			.expect("Plan Token journal serializes")
+			.into()
+	}
+	fn open(value: &SecretString) -> Result<Self> {
+		serde_json::from_str(value.expose_secret())
+			.map_err(|_| Error::Invalid("unreadable Plan Token journal".into()))
+	}
 }
 struct Tokens {
 	access: SecretString,
@@ -238,6 +303,7 @@ impl Tokens {
 		serde_json::to_string(&Stored {
 			access_token: issued.access_token.expose_secret().to_owned(),
 			refresh_token: issued.refresh_token.expose_secret().to_owned(),
+			rotation: None,
 		})
 		.expect("token JSON serializes")
 		.into()
@@ -288,6 +354,9 @@ fn plan_unavailable() -> Error {
 
 pub struct Service {
 	pub repository: Arc<dyn Repository>,
+	/// Plan versions must be durable and visible through `versions`/`reader`
+	/// before `add_version` returns, independently of the owner's Scope.
+	/// The Self-hosted PostgreSQL Store provides this recovery boundary.
 	pub store: Arc<dyn Store>,
 	pub reader: Arc<dyn KeyMaterialReader>,
 	pub authorization: Arc<dyn Authorization>,
@@ -305,9 +374,22 @@ impl Service {
 	/// The owner's connection, if any.
 	pub async fn status(&self, owner: &Owner) -> Result<Option<Metadata>> {
 		let mut scope = self.repository.begin(owner).await?;
-		let row = scope.owned(Provider::Chatgpt).await?;
+		let Some(mut row) = scope.owned(Provider::Chatgpt).await? else {
+			scope.commit().await?;
+			return Ok(None);
+		};
+		self.recover(scope.as_mut(), &mut row).await?;
+		let mapped = scope.mapped_identities().await?;
 		scope.commit().await?;
-		Ok(row.as_ref().map(Metadata::from))
+		let mut metadata = Metadata::from(&row);
+		// Identity Disablement pauses rather than mutates the stored state.
+		// Another identity mapped to the subject never inherits this grant.
+		if !row.serves(&mapped) {
+			metadata.state = State::Ineligible;
+		} else if row.state == State::Active && row.require_usable(Utc::now()).is_err() {
+			metadata.state = State::NeedsReconnection;
+		}
+		Ok(Some(metadata))
 	}
 
 	/// Refuses before OpenAI issues anything when `identity` may not hold the
@@ -535,8 +617,25 @@ impl Service {
 					.into(),
 			));
 		}
+		// Terminal cleanup removes the old pin before any uncertainty
+		// evidence. If it was interrupted, a reconnect must durably retain
+		// that missing-pin evidence before replacing it with a new grant.
+		// Only this call's unchanged initial registration has no prior grant.
+		if !first || row.revision != 1 {
+			let versions = self
+				.store
+				.versions(&row.tenant, &row.secret_resource)
+				.await?;
+			if !row
+				.pinned_version
+				.as_ref()
+				.is_some_and(|pin| versions.contains(pin))
+			{
+				self.retain_uncertainty(&row, &versions).await?;
+			}
+		}
 		let now = Utc::now();
-		let stale = self.stale_versions(&row).await;
+		let stale = self.stale_versions(&row, None).await;
 		let version = self
 			.store
 			.add_version(&owner.tenant, &row.secret_resource, &Tokens::seal(issued))
@@ -575,14 +674,75 @@ impl Service {
 		})
 	}
 
-	/// The versions to destroy once a new one is pinned: everything the
-	/// resource holds now, including versions an earlier cleanup failed to
-	/// destroy. Read under the owner's scope, before the new version is added.
-	async fn stale_versions(&self, row: &PlanConnection) -> Vec<String> {
-		self.store
-			.versions(&row.tenant, &row.secret_resource)
-			.await
-			.unwrap_or_else(|_| row.pinned_version.iter().cloned().collect())
+	/// Versions known to be superseded by the current pin or by a confirmed
+	/// refresh outcome. Unresolved intents and unpinned replacements survive
+	/// reconnects and terminal cleanup so disconnect can still revoke/report
+	/// them. A newer connection revision alone cannot confirm an old grant.
+	async fn stale_versions(
+		&self,
+		row: &PlanConnection,
+		resolved_intent: Option<&str>,
+	) -> Vec<String> {
+		let Ok(versions) = self.store.versions(&row.tenant, &row.secret_resource).await else {
+			return Vec::new();
+		};
+		let mut entries = std::collections::BTreeMap::new();
+		for version in versions {
+			let Ok(value) = self
+				.reader
+				.read(&row.tenant, &row.secret_resource, &version)
+				.await
+			else {
+				continue;
+			};
+			if let Ok(entry) = StoredVersion::open(&value) {
+				entries.insert(version, entry);
+			}
+		}
+		// Follow only receipts in the committed pin's ancestry. Other receipts
+		// may belong to a refresh interrupted before metadata committed.
+		let mut committed = std::collections::BTreeSet::new();
+		let mut pin = row.pinned_version.as_ref();
+		while let Some(version) = pin {
+			if !committed.insert(version.clone()) {
+				break;
+			}
+			pin = match entries.get(version) {
+				Some(StoredVersion::Tokens(Stored {
+					rotation: Some(receipt),
+					..
+				})) => receipt.intent.pin.as_ref(),
+				_ => None,
+			};
+		}
+		let mut resolved = std::collections::BTreeSet::new();
+		if let Some(intent) = resolved_intent {
+			resolved.insert(intent.to_owned());
+		}
+		for (version, entry) in &entries {
+			if let StoredVersion::Tokens(Stored {
+				rotation: Some(receipt),
+				..
+			}) = entry && committed.contains(version)
+			{
+				resolved.insert(receipt.intent_version.clone());
+			}
+		}
+		entries
+			.into_iter()
+			.filter_map(|(version, entry)| {
+				let disposable = match entry {
+					StoredVersion::Intent { .. } => resolved.contains(&version),
+					StoredVersion::Unconfirmed { .. } => false,
+					StoredVersion::Tokens(Stored {
+						rotation: Some(receipt),
+						..
+					}) => committed.contains(&version) || resolved.contains(&receipt.intent_version),
+					StoredVersion::Tokens(_) => true,
+				};
+				disposable.then_some(version)
+			})
+			.collect()
 	}
 
 	/// Revokes the grant at OpenAI, then deletes Aidash's copy. A revocation
@@ -683,23 +843,56 @@ impl Service {
 			.map_err(Error::Plan)
 	}
 
-	/// Records that a connection's pinned Plan Tokens became unreadable with a
-	/// lost Master Key. They cannot be revoked at OpenAI any more, so the
-	/// owner must connect again; the Store removes the versions itself. The
-	/// pin is kept although nothing can read it: a later disconnection then
-	/// fails to read the refresh token and reports the grant as not revoked,
-	/// where no pin would claim it had nothing left to revoke.
-	pub async fn mark_unreadable(&self, id: Uuid, actor: &str) -> Result<()> {
+	/// Records lost-key Plan versions before offline recovery removes them.
+	/// A surviving current pin can still serve calls, but a token-free marker
+	/// retains uncertainty about older unpinned grants through reconnection.
+	pub async fn mark_unreadable(&self, id: Uuid, pinned_lost: bool, actor: &str) -> Result<()> {
 		let Some(owner) = self.repository.owner_of(id).await? else {
 			return Ok(());
 		};
 		let mut scope = self.repository.begin(&owner).await?;
-		let Some(row) = scope.owned(Provider::Chatgpt).await?.filter(|row| {
-			row.id == id && row.pinned_version.is_some() && row.state != State::NeedsReconnection
-		}) else {
+		let Some(row) = scope
+			.owned(Provider::Chatgpt)
+			.await?
+			.filter(|row| row.id == id)
+		else {
 			return scope.commit().await;
 		};
-		Self::strand(scope, row, actor).await
+		let versions = self
+			.store
+			.versions(&row.tenant, &row.secret_resource)
+			.await?;
+		self.retain_uncertainty(&row, &versions).await?;
+		if pinned_lost && row.state != State::NeedsReconnection {
+			Self::strand(scope, row, actor).await
+		} else {
+			scope.commit().await
+		}
+	}
+
+	/// Preserve evidence before unavailable versions or a missing old pin
+	/// can be replaced. This Store commit survives metadata rollback.
+	async fn retain_uncertainty(&self, row: &PlanConnection, versions: &[String]) -> Result<()> {
+		for version in versions {
+			if let Ok(value) = self
+				.reader
+				.read(&row.tenant, &row.secret_resource, version)
+				.await && matches!(StoredVersion::open(&value), Ok(StoredVersion::Unconfirmed { revocation_unconfirmed }) if revocation_unconfirmed == row.id)
+			{
+				return Ok(());
+			}
+		}
+		self.store
+			.add_version(
+				&row.tenant,
+				&row.secret_resource,
+				&StoredVersion::Unconfirmed {
+					revocation_unconfirmed: row.id,
+				}
+				.seal(),
+			)
+			.await?;
+		Ok(())
 	}
 
 	/// Asks for reconnection while keeping a pin nothing can read, as
@@ -735,7 +928,7 @@ impl Service {
 			.await?
 			.ok_or(Error::Plan(Failure::NotConnected))?;
 		let mut scope = self.repository.begin(&owner).await?;
-		let row = scope
+		let mut row = scope
 			.owned(Provider::Chatgpt)
 			.await?
 			.filter(|row| row.holds(pin))
@@ -743,13 +936,28 @@ impl Service {
 		if !row.serves(&scope.mapped_identities().await?) {
 			return Err(Error::Plan(Failure::NotConnected));
 		}
+		let recovered = self.recover(scope.as_mut(), &mut row).await?;
+		if recovered {
+			scope.commit().await?;
+			return Box::pin(self.access(pin, false)).await;
+		}
+		if row.state != State::Active {
+			let failure = if row.state == State::Ineligible {
+				Failure::Ineligible
+			} else {
+				Failure::NeedsReconnection
+			};
+			scope.commit().await?;
+			return Err(Error::Plan(failure));
+		}
 		let now = Utc::now();
 		let version = match row.require_usable(now) {
 			Ok(version) => version.to_owned(),
 			// Unused past its refresh lifetime: record that it needs
 			// reconnection and destroy its tokens, not only refuse the call.
 			Err(Failure::NeedsReconnection) if row.state == State::Active => {
-				self.discard(scope, row, State::NeedsReconnection).await?;
+				self.discard(scope, row, State::NeedsReconnection, None)
+					.await?;
 				return Err(Error::Plan(Failure::NeedsReconnection));
 			}
 			Err(failure) => return Err(Error::Plan(failure)),
@@ -778,6 +986,92 @@ impl Service {
 		self.refresh(scope, row, tokens, now).await
 	}
 
+	/// Reconcile an interrupted refresh while holding the same owner lock as
+	/// every writer. No replacement means the external result is unknown; an
+	/// old token must never be retried. Keep the evidence for disconnect.
+	async fn recover(&self, scope: &mut dyn Scope, row: &mut PlanConnection) -> Result<bool> {
+		if row.state != State::Active {
+			return Ok(false);
+		}
+		let base = RefreshIntent::for_row(row);
+		let mut intents = Vec::new();
+		let mut replacements = Vec::new();
+		let versions = self
+			.store
+			.versions(&row.tenant, &row.secret_resource)
+			.await?;
+		let pinned_exists = row
+			.pinned_version
+			.as_ref()
+			.is_some_and(|pin| versions.contains(pin));
+		for version in versions {
+			if row.pinned_version.as_ref() == Some(&version) {
+				continue;
+			}
+			let value = match self
+				.reader
+				.read(&row.tenant, &row.secret_resource, &version)
+				.await
+			{
+				Ok(value) => value,
+				Err(error @ Error::Invalid(_)) => {
+					// A completed refresh cleans up after releasing its scope.
+					// Ignore a version it removed after this scan listed it,
+					// but keep failures for versions that still exist.
+					if !self
+						.store
+						.versions(&row.tenant, &row.secret_resource)
+						.await?
+						.contains(&version)
+					{
+						continue;
+					}
+					return Err(error);
+				}
+				Err(error) => return Err(error),
+			};
+			match StoredVersion::open(&value)? {
+				StoredVersion::Intent { refresh_intent } if refresh_intent == base => {
+					intents.push(version)
+				}
+				StoredVersion::Tokens(Stored {
+					rotation: Some(rotation),
+					..
+				}) if rotation.intent == base => replacements.push((version, rotation)),
+				_ => {}
+			}
+		}
+		if intents.is_empty() && replacements.is_empty() && pinned_exists {
+			return Ok(false);
+		}
+		// Terminal cleanup may remove the pin and older uncertainty records
+		// before this matching receipt. A missing pin must remain evidence of
+		// unconfirmed revocation, so recovery cannot replace it with a new pin.
+		if pinned_exists
+			&& intents.len() == 1
+			&& replacements.len() == 1
+			&& replacements[0].1.intent_version == intents[0]
+		{
+			let (version, replacement) = replacements.pop().expect("one replacement");
+			row.pinned_version = Some(version);
+			row.access_expires_at = replacement.access_expires_at;
+			row.earliest_refresh_at = replacement.earliest_refresh_at;
+			row.refresh_expires_at = replacement.refresh_expires_at;
+			row.refreshed_at = Some(replacement.refreshed_at);
+			row.revision += 1;
+			scope
+				.save(row, "plan_connection.refreshed", SYSTEM_ACTOR)
+				.await?;
+			return Ok(true);
+		}
+		row.state = State::NeedsReconnection;
+		row.revision += 1;
+		scope
+			.save(row, "plan_connection.needs_reconnection", SYSTEM_ACTOR)
+			.await?;
+		Ok(false)
+	}
+
 	async fn refresh(
 		&self,
 		mut scope: Box<dyn Scope>,
@@ -785,6 +1079,18 @@ impl Service {
 		tokens: Tokens,
 		now: DateTime<Utc>,
 	) -> Result<SecretString> {
+		let intent = RefreshIntent::for_row(&row);
+		let intent_version = self
+			.store
+			.add_version(
+				&row.tenant,
+				&row.secret_resource,
+				&StoredVersion::Intent {
+					refresh_intent: intent.clone(),
+				}
+				.seal(),
+			)
+			.await?;
 		let issued = match self
 			.authorization
 			.refresh(&row.client_id, &tokens.refresh)
@@ -792,11 +1098,19 @@ impl Service {
 		{
 			Ok(issued) => issued,
 			Err(RefreshFailure::Terminal) => {
-				self.discard(scope, row, State::NeedsReconnection).await?;
+				self.discard(scope, row, State::NeedsReconnection, Some(&intent_version))
+					.await?;
 				return Err(Error::Plan(Failure::NeedsReconnection));
 			}
 			Err(RefreshFailure::Unavailable(error)) => {
+				// The provider confirmed it did not rotate. A lost cleanup is
+				// conservatively treated like an interrupted request on restart.
+				self.store.destroy(&row.tenant, &intent_version).await?;
 				scope.commit().await?;
+				return Err(error);
+			}
+			Err(RefreshFailure::Ambiguous(error)) => {
+				Self::strand(scope, row, SYSTEM_ACTOR).await?;
 				return Err(error);
 			}
 		};
@@ -807,49 +1121,66 @@ impl Service {
 			.as_deref()
 			.is_some_and(|scope| !domain::grants_plan_usage(scope))
 		{
-			self.revoke_quietly(&row.client_id, &issued.refresh_token)
-				.await;
-			self.discard(scope, row, State::NeedsReconnection).await?;
-			return Err(Error::Plan(Failure::NeedsReconnection));
+			drop(scope);
+			return Err(self
+				.abandon_rotation(
+					&row,
+					&issued,
+					&intent_version,
+					Error::Plan(Failure::NeedsReconnection),
+				)
+				.await);
 		}
 		let lifetime = match issued_lifetime(&issued) {
 			Ok(lifetime) => lifetime,
 			Err(error) => {
 				drop(scope);
-				return Err(self.abandon_rotation(&row, &issued, error).await);
+				return Err(self
+					.abandon_rotation(&row, &issued, &intent_version, error)
+					.await);
 			}
 		};
-		let stale = self.stale_versions(&row).await;
+		let stale = self.stale_versions(&row, Some(&intent_version)).await;
+		let replacement = StoredVersion::Tokens(Stored {
+			access_token: issued.access_token.expose_secret().to_owned(),
+			refresh_token: issued.refresh_token.expose_secret().to_owned(),
+			rotation: Some(Replacement {
+				intent_version: intent_version.clone(),
+				intent,
+				access_expires_at: now + lifetime,
+				earliest_refresh_at: earliest_refresh(&issued, now + lifetime),
+				refresh_expires_at: now + domain::refresh_lifetime(),
+				refreshed_at: now,
+			}),
+		});
 		// Store the rotated pair before anything else: the old refresh token
 		// is already spent.
 		let version = match self
 			.store
-			.add_version(&row.tenant, &row.secret_resource, &Tokens::seal(&issued))
+			.add_version(&row.tenant, &row.secret_resource, &replacement.seal())
 			.await
 		{
 			Ok(version) => version,
 			Err(error) => {
 				drop(scope);
-				return Err(self.abandon_rotation(&row, &issued, error).await);
+				return Err(self
+					.abandon_rotation(&row, &issued, &intent_version, error)
+					.await);
 			}
 		};
-		let spent = row.clone();
 		row.pinned_version = Some(version);
 		row.access_expires_at = now + lifetime;
 		row.earliest_refresh_at = earliest_refresh(&issued, row.access_expires_at);
 		row.refresh_expires_at = now + domain::refresh_lifetime();
 		row.refreshed_at = Some(now);
 		row.revision += 1;
-		if let Err(error) = scope
+		// The replacement is durable. A save failure or lost commit reply
+		// leaves it recoverable; revoking it here could invalidate a pin whose
+		// commit actually succeeded. The next owner reconciles either result.
+		scope
 			.save(&row, "plan_connection.refreshed", SYSTEM_ACTOR)
-			.await
-		{
-			drop(scope);
-			return Err(self.abandon_rotation(&spent, &issued, error).await);
-		}
-		if let Err(error) = scope.commit().await {
-			return Err(self.abandon_rotation(&spent, &issued, error).await);
-		}
+			.await?;
+		scope.commit().await?;
 		for version in stale {
 			self.destroy_quietly(&row.tenant, &version).await;
 		}
@@ -860,16 +1191,21 @@ impl Service {
 	/// is spent, so the connection cannot be used again: the new grant is
 	/// revoked rather than left live at OpenAI, and the connection asks for
 	/// reconnection. Every stored version, including any written for the new
-	/// pair, is destroyed. If that transition cannot be written either, the
-	/// next call's refresh with the spent token makes it.
+	/// pair, is destroyed only after confirmed revocation. Otherwise the intent
+	/// remains as evidence of an unknown grant. A lost transition is reconciled
+	/// on the next call without replaying the spent token.
 	async fn abandon_rotation(
 		&self,
 		spent: &PlanConnection,
 		issued: &Issued,
+		intent_version: &str,
 		error: Error,
 	) -> Error {
-		self.revoke_quietly(&spent.client_id, &issued.refresh_token)
-			.await;
+		let revoked = self
+			.authorization
+			.revoke(&spent.client_id, &issued.refresh_token)
+			.await
+			.is_ok();
 		let owner = Owner {
 			tenant: spent.tenant.clone(),
 			subject: spent.subject.clone(),
@@ -883,7 +1219,13 @@ impl Service {
 					&& row.revision == spent.revision
 					&& row.pinned_version == spent.pinned_version
 			}) {
-				Some(row) => self.discard(scope, row, State::NeedsReconnection).await,
+				Some(row) if revoked => {
+					self.discard(scope, row, State::NeedsReconnection, Some(intent_version))
+						.await
+				}
+				// Keep the intent when the replacement's revocation was not
+				// confirmed; disconnect must not report success for the old grant.
+				Some(row) => Self::strand(scope, row, SYSTEM_ACTOR).await,
 				None => scope.commit().await,
 			}
 		}
@@ -953,19 +1295,22 @@ impl Service {
 		result
 	}
 
-	/// Ends use after a rejected refresh: the tokens are destroyed, while the
-	/// row keeps the issued client for reconnection.
+	/// Ends use after a rejected refresh. Superseded tokens are destroyed;
+	/// unresolved grants stay reachable for disconnect. The issued client is
+	/// kept for reconnection.
 	async fn discard(
 		&self,
 		mut scope: Box<dyn Scope>,
 		mut row: PlanConnection,
 		state: State,
+		resolved_intent: Option<&str>,
 	) -> Result<()> {
 		let event = match state {
 			State::Ineligible => "plan_connection.ineligible",
 			State::Active | State::NeedsReconnection => "plan_connection.needs_reconnection",
 		};
 		row.state = state;
+		let mut versions = self.stale_versions(&row, resolved_intent).await;
 		let pinned = row.pinned_version.take();
 		row.revision += 1;
 		// Destroy the tokens while the owner's scope still serializes writers:
@@ -975,10 +1320,6 @@ impl Service {
 		// the pinned version goes last, so until then it stays readable. A
 		// transition lost after that leaves a pin the Store rejects, which
 		// the next call records instead.
-		let mut versions = self
-			.store
-			.versions(&row.tenant, &row.secret_resource)
-			.await?;
 		versions.sort_by_key(|version| Some(version) == pinned.as_ref());
 		for version in versions {
 			gone(self.store.destroy(&row.tenant, &version).await)?;
@@ -988,17 +1329,53 @@ impl Service {
 	}
 
 	async fn revoke_row(&self, row: &PlanConnection) -> bool {
-		let Some(version) = row.pinned_version.as_deref() else {
-			return true;
+		let Ok(versions) = self.store.versions(&row.tenant, &row.secret_resource).await else {
+			return false;
 		};
-		match self.tokens(row, version).await {
-			Ok(tokens) => self
-				.authorization
-				.revoke(&row.client_id, &tokens.refresh)
+		let mut confirmed = row
+			.pinned_version
+			.as_ref()
+			.is_some_and(|pin| versions.contains(pin));
+		let mut intents = Vec::new();
+		let mut replacements = Vec::new();
+		for version in versions {
+			let stored = match self
+				.reader
+				.read(&row.tenant, &row.secret_resource, &version)
 				.await
-				.is_ok(),
-			Err(_) => false,
+			{
+				Ok(value) => StoredVersion::open(&value),
+				Err(error) => Err(error),
+			};
+			match stored {
+				Ok(StoredVersion::Tokens(tokens)) => {
+					if self
+						.authorization
+						.revoke(&row.client_id, &tokens.refresh_token.into())
+						.await
+						.is_err()
+					{
+						confirmed = false;
+					}
+					if let Some(rotation) = tokens.rotation {
+						replacements.push(rotation);
+					}
+				}
+				Ok(StoredVersion::Intent { refresh_intent }) => {
+					intents.push((version, refresh_intent))
+				}
+				Ok(StoredVersion::Unconfirmed { .. }) => confirmed = false,
+				Err(_) => confirmed = false,
+			}
 		}
+		// RFC 7009 success for an old token says nothing about an unknown
+		// replacement. A missing local receipt leaves revocation unconfirmed.
+		confirmed
+			&& intents.iter().all(|(version, intent)| {
+				replacements.iter().any(|replacement| {
+					replacement.intent_version == *version && replacement.intent == *intent
+				})
+			})
 	}
 
 	async fn revoke_quietly(&self, client: &str, refresh: &SecretString) {
@@ -1010,10 +1387,16 @@ impl Service {
 	/// Deletes every Plan Token version and the resource. A resource that is
 	/// already gone counts as deleted, so a retried cleanup completes.
 	async fn delete_tokens(&self, row: &PlanConnection) -> Result<()> {
-		let versions = match self.store.versions(&row.tenant, &row.secret_resource).await {
+		let mut versions = match self.store.versions(&row.tenant, &row.secret_resource).await {
 			Err(Error::NotFound(_)) => Vec::new(),
 			versions => versions?,
 		};
+		// Once any uncertainty evidence is deleted, a failed metadata deletion
+		// must still be unconfirmed on retry. Remove the committed pin first;
+		// a row without a pin is never proof of upstream revocation either.
+		// Reconnect preserves a missing pin as a durable uncertainty marker
+		// before writing a new grant, so it cannot erase this evidence.
+		versions.sort_by_key(|version| Some(version) != row.pinned_version.as_ref());
 		for version in versions {
 			gone(self.store.destroy(&row.tenant, &version).await)?;
 		}

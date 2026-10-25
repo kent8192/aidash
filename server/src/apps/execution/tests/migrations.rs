@@ -56,6 +56,9 @@ const TENANT_REGISTRY_MIGRATIONS: &[(&str, &str)] = &[
 	("registry", "0045_agent_plugin_settings"),
 	("registry", "0045_projection_measurement_config"),
 	("registry", "0046_merge_agent_plugin_and_projection"),
+	("registry", "0046_marketplace_recalls"),
+	("registry", "0047_marketplace_recall_constraints"),
+	("registry", "0048_plugin_marketplace_merge"),
 	("marketplace", "0008_remove_compatibility_gate"),
 	("marketplace", "0009_remove_compatibility_gate_state"),
 	("marketplace", "0010_row_level_security"),
@@ -108,7 +111,7 @@ async fn native_history_uses_typed_schema_operations_and_lf_sql_assets() {
 			.iter()
 			.filter(|migration| migration.state_only)
 			.count(),
-		51
+		52
 	);
 	let tables = migrations
 		.iter()
@@ -701,7 +704,7 @@ async fn preserved_baseline_does_not_generate_table_recreation(
 			.iter()
 			.filter(|migration| migration.state_only)
 			.count(),
-		51
+		52
 	);
 }
 
@@ -2432,6 +2435,7 @@ async fn agent_plugin_copies_key_by_tenant_and_digest_and_check_their_documents(
 			.plugin(plugin.into())
 			.files(files.into())
 			.denied(json!([]).into())
+			.entitlement_expires_at(None)
 			.finish()
 	};
 	let plugin = json!({"digest":digest,"manifest":{"name":"tools"}});

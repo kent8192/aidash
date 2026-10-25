@@ -4,7 +4,7 @@ on:
     inputs:
       action:
         type: choice
-        options: [create, resume, stop, destroy]
+        options: [create, resume, stop, destroy, verify-boundaries]
         required: true
       environment:
         type: choice
@@ -42,9 +42,76 @@ permissions:
 # groups. Intent acceptance and applies share a durable GCS lock, with state
 # updated using compare-and-swap. Builds cannot overwrite a newer generation.
 jobs:
+  # These are negative experiments, not deployment jobs. The protected dispatch
+  # omits Environment entirely; an unprotected dispatch declares nonproduction
+  # so GitHub's branch policy can refuse it before any runner/OIDC request exists.
+  # Do not relax that policy to make the second experiment reach Google.
+  wif-without-environment:
+    if: >-
+      github.event_name == 'workflow_dispatch' && inputs.action == 'verify-boundaries' &&
+      github.ref == 'refs/heads/develop/0.1.0'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 3
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - name: Require provider denial from the protected workflow without Environment
+        env:
+          WIF_PROVIDER: ${{ vars.GCP_WORKLOAD_IDENTITY_PROVIDER }}
+          WIF_REF_PROTECTED: ${{ github.ref_protected }}
+        run: >-
+          python3 infra/gcp/sandbox/wif_probe.py
+          --case protected-ref-without-environment
+          --evidence "$RUNNER_TEMP/wif-evidence/result.json"
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        if: always()
+        with:
+          name: wif-without-environment-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/wif-evidence/result.json
+          if-no-files-found: error
+          retention-days: 30
+
+  wif-unprotected-ref:
+    if: >-
+      github.event_name == 'workflow_dispatch' && inputs.action == 'verify-boundaries' &&
+      github.ref != 'refs/heads/develop/0.1.0'
+    runs-on: ubuntu-24.04
+    environment: nonproduction
+    timeout-minutes: 3
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - name: Require provider denial if Environment branch protection admits this job
+        env:
+          WIF_PROVIDER: ${{ vars.GCP_WORKLOAD_IDENTITY_PROVIDER }}
+          WIF_REF_PROTECTED: ${{ github.ref_protected }}
+        run: >-
+          python3 infra/gcp/sandbox/wif_probe.py
+          --case unprotected-ref-with-environment
+          --evidence "$RUNNER_TEMP/wif-evidence/result.json"
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        if: always()
+        with:
+          name: wif-unprotected-ref-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/wif-evidence/result.json
+          if-no-files-found: error
+          retention-days: 30
+
   intake:
     if: >-
+      inputs.action != 'verify-boundaries' &&
       vars.GCP_ENVIRONMENTS_ENABLED == 'true' &&
+      (github.event_name != 'workflow_run' || github.event.workflow_run.conclusion == 'success') &&
       (github.event_name != 'issue_comment' ||
        (github.event.issue.pull_request && startsWith(github.event.comment.body, '/preview ') &&
         contains(fromJSON('["OWNER","MEMBER","COLLABORATOR"]'), github.event.comment.author_association)))
@@ -52,6 +119,7 @@ jobs:
     timeout-minutes: 3
     permissions:
       contents: read
+      actions: read
     outputs:
       proceed: ${{ steps.filter.outputs.proceed }}
       # Every later job checks out this one protected default-branch commit, so
@@ -87,6 +155,27 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: python3 infra/gcp/control/controller.py preflight
+      - name: Record the exact staging attempt before credentialed work
+        if: >-
+          steps.filter.outputs.proceed == 'true' &&
+          github.event_name == 'workflow_run' &&
+          github.event.workflow_run.name == 'Release CI'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          DEVELOP_BRANCH: ${{ fromJSON(vars.AIDASH_GCP_CONFIG || '{}').develop_branch }}
+        run: python3 infra/gcp/control/releases.py attempt
+      - name: Publish the bounded staging attempt identity
+        if: >-
+          steps.filter.outputs.proceed == 'true' &&
+          github.event_name == 'workflow_run' &&
+          github.event.workflow_run.name == 'Release CI'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: staging-attempt
+          overwrite: true
+          path: ${{ runner.temp }}/staging-attempt.json
+          if-no-files-found: error
+          retention-days: 7
 
   prepare:
     needs: intake

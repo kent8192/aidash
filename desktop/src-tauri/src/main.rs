@@ -5,6 +5,7 @@ mod auth;
 mod credentials;
 #[cfg(feature = "e2e")]
 mod e2e;
+mod plan_connections;
 mod profiles;
 
 use auth::{Access, Cached, Endpoint, Failure, Tokens};
@@ -28,6 +29,7 @@ pub struct DesktopState {
 	operation: Mutex<HashMap<String, Cached>>,
 	generation: AtomicU64,
 	cancel: Notify,
+	plans: plan_connections::Relay,
 	client: reqwest::Client,
 }
 impl DesktopState {
@@ -41,7 +43,47 @@ impl DesktopState {
 	fn invalidate(&self) {
 		self.generation.fetch_add(1, Ordering::SeqCst);
 		self.cancel.notify_waiters();
+		self.plans.cancel_all();
 	}
+}
+#[tauri::command]
+async fn plan_listen(
+	state: State<'_, DesktopState>,
+) -> Result<plan_connections::Listening, String> {
+	let generation = state.generation.load(Ordering::SeqCst);
+	let listening = state.plans.listen().await?;
+	if let Err(error) = state.current(generation) {
+		state.plans.cancel(&listening.id);
+		return Err(error);
+	}
+	Ok(listening)
+}
+#[tauri::command]
+async fn plan_wait(
+	_app: tauri::AppHandle,
+	state: State<'_, DesktopState>,
+	id: String,
+	authorization_url: String,
+) -> Result<String, String> {
+	let generation = state.generation.load(Ordering::SeqCst);
+	let waiting = state.plans.prepare(&id, &authorization_url)?;
+	state.current(generation)?;
+	#[cfg(feature = "e2e")]
+	let _fixture_browser = e2e::open_browser(waiting.authorization_url())?;
+	#[cfg(not(feature = "e2e"))]
+	_app.opener()
+		.open_url(waiting.authorization_url().as_str(), None::<&str>)
+		.map_err(|_| "Cannot open the system browser")?;
+	// Do not take operation: authenticated API transport needs the existing session
+	// while the owner completes browser consent and exchanges this single-use code.
+	let callback = waiting.receive().await?;
+	state.current(generation)?;
+	Ok(callback)
+}
+#[tauri::command]
+async fn plan_cancel(state: State<'_, DesktopState>, id: String) -> Result<(), String> {
+	state.plans.cancel(&id);
+	Ok(())
 }
 #[tauri::command]
 async fn connection_settings(state: State<'_, DesktopState>) -> Result<Settings, String> {
@@ -351,6 +393,7 @@ fn main() {
 				operation: Mutex::new(HashMap::new()),
 				generation: AtomicU64::new(0),
 				cancel: Notify::new(),
+				plans: plan_connections::Relay::default(),
 				client: auth::client().map_err(std::io::Error::other)?,
 			});
 			let window =
@@ -372,7 +415,10 @@ fn main() {
 			remove_connection,
 			desktop_login,
 			desktop_access,
-			desktop_logout
+			desktop_logout,
+			plan_listen,
+			plan_wait,
+			plan_cancel
 		])
 		.run(tauri::generate_context!())
 		.expect("run Aidash Desktop");

@@ -263,6 +263,17 @@ pub(crate) async fn validate_session_identity(
 			DashboardIdentity::find(tx, session.identity_id()).await
 		})
 		.await?;
+	if let Some(authority) = &f.config.common_auth {
+		use aidash_application::ports::accounts::Authority as _;
+		let remote_session = session
+			.provider_sid
+			.as_deref()
+			.and_then(|sid| Uuid::parse_str(sid).ok())
+			.ok_or(Error::Unauthorized)?;
+		authority
+			.validate_interactive(session.identity_id(), remote_session)
+			.await?;
+	}
 	account_valid(f, identity).await?;
 	// Revalidation may revoke the session. Reread it by id: a concurrent desktop
 	// refresh rotates its access-token hash, which is not a revocation.
@@ -330,6 +341,11 @@ fn http_session(
 ) -> identity::HttpSession {
 	identity::HttpSession {
 		id: session.id,
+		provider_session: session
+			.provider_sid
+			.as_deref()
+			.and_then(|sid| Uuid::parse_str(sid).ok()),
+		common_authority: None,
 		identity_id: session.identity_id(),
 		idle_seconds: session
 			.desktop_idle_seconds
@@ -345,7 +361,10 @@ pub async fn actor_from_headers(
 ) -> Result<(Actor, BrowserOrigin)> {
 	let config = required_config(f)?;
 	let session = session_from_headers(f, headers).await?;
-	let http_session = http_session(config, &session);
+	let mut http_session = http_session(config, &session);
+	http_session.common_authority = f.config.common_auth.as_ref().map(|authority| {
+		authority.clone() as std::sync::Arc<dyn aidash_application::ports::accounts::Authority>
+	});
 	if !csrf_allowed(config, headers, &session, method) {
 		return Err(Error::Forbidden);
 	}
@@ -369,7 +388,11 @@ pub async fn actor_from_headers(
 		}
 		return Ok((
 			Actor::DeploymentAdministrator,
-			BrowserOrigin::unmapped(config, &session),
+			BrowserOrigin {
+				identity_id: session.identity_id(),
+				mapping_id: None,
+				session: http_session,
+			},
 		));
 	}
 	// The selector names the Mapping's Tenant, so the lookup runs in that
@@ -607,8 +630,28 @@ impl DashboardSessions {
 			return Err(Error::Unauthorized);
 		}
 		let metadata = provider_metadata(config).await?;
-		let (sign_in, provider_sid) =
-			exchange_identity(config, metadata, &transaction, query.code).await?;
+		let (sign_in, provider_sid) = if let Some(authority) = &f.config.common_auth {
+			let login = aidash_integrations::authentication::exchange_source(
+				&crate::bootstrap::oidc_settings(config),
+				metadata,
+				&aidash_integrations::oidc::PendingLogin {
+					callback_uri: &transaction.callback_uri,
+					pkce_verifier: &transaction.pkce_verifier,
+					nonce: &transaction.nonce,
+				},
+				query.code,
+				authority,
+			)
+			.await?;
+			let source =
+				DashboardIdentity::register_source(pool, &login.sign_in, login.identity_id).await?;
+			if source.id != login.identity_id {
+				return Err(Error::Forbidden);
+			}
+			(login.sign_in, Some(login.product_session_id.to_string()))
+		} else {
+			exchange_identity(config, metadata, &transaction, query.code).await?
+		};
 		let identity = crate::bootstrap::dashboard_authority(&f)
 			.admit_login(
 				&mut crate::bootstrap::dashboard_login(pool.clone(), f.config.deployment.as_str()),
@@ -896,6 +939,38 @@ impl DashboardSessions {
 			.contract())
 	}
 	pub(crate) async fn admin_restore_identity(&self, id: Uuid) -> Result<http::StatusCode> {
+		if let Some(authority) = &self.runtime.config.common_auth {
+			let pool = &self.runtime.store.pool;
+			let row = pool
+				.atomic(&TenancyScope::NoTenant, async |tx| {
+					DashboardIdentity::find(tx, id).await
+				})
+				.await?;
+			self.runtime
+				.config
+				.dashboard_policy()
+				.ok_or(Error::Forbidden)?
+				.require_identity(&row.issuer)?;
+			// This product-admin RPC is separate from AccountAdministration.
+			// The authentication server must freshly verify the original upstream.
+			authority
+				.restore_identity(
+					id,
+					"Cloud Deployment Administrator restored source identity".into(),
+				)
+				.await?;
+			if row.disabled_at.is_some() {
+				let scope = TenancyScope::Deployment(
+					aidash_application::tenancy::DeploymentScopeReason::IdentityStatus,
+				);
+				pool.atomic(&scope, async |tx| {
+					DashboardIdentity::restore_common(tx, id, Utc::now()).await
+				})
+				.await?;
+				self.runtime.notify.notify_waiters();
+			}
+			return Ok(http::StatusCode::NO_CONTENT);
+		}
 		crate::bootstrap::dashboard_authority(&self.runtime)
 			.restore(id)
 			.await?;
@@ -1085,6 +1160,14 @@ impl DashboardSessions {
 		if !csrf_allowed(config, &headers, &session, &Method::POST) {
 			return Err(Error::Forbidden);
 		}
+		if let Some(authority) = &f.config.common_auth {
+			let remote = session
+				.provider_sid
+				.as_deref()
+				.and_then(|sid| Uuid::parse_str(sid).ok())
+				.ok_or(Error::Unauthorized)?;
+			authority.revoke_all_sessions(remote).await?;
+		}
 		DashboardSession::revoke(&f.store.pool, session.identity_id(), true).await?;
 		let mut response = Response::new(http::StatusCode::NO_CONTENT);
 		clear_cookie(&mut response, SESSION_COOKIE, config, true)?;
@@ -1166,7 +1249,13 @@ impl BrowserOrigin {
 			.bind(self.identity_id)
 			.fetch_optional(&mut *tx)
 			.await?;
-		identity::validate_dashboard_status(status)?;
+		if self.session.common_authority.is_some() {
+			if !matches!(status, Some((_, _, None))) {
+				return Err(Error::Forbidden);
+			}
+		} else {
+			identity::validate_dashboard_status(status)?;
+		}
 		let mut query = Query::select();
 		query
 			.column(Alias::new("enabled"))
