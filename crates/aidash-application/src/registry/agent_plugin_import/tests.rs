@@ -54,6 +54,7 @@ fn manifest(name: &str) -> PluginFile {
 
 fn fetched(files: Vec<PluginFile>) -> PluginFetch {
 	PluginFetch::Fetched(FetchedPlugin {
+		entitlement_expires_at:None,
 		root: "plugins/review".into(),
 		source: "https://github.com/acme/plugins/tree/0123456789012345678901234567890123456789/plugins/review".into(),
 		files,
@@ -103,6 +104,7 @@ async fn a_valid_directory_is_loaded_and_its_provenance_passes_through() {
 		denied,
 		plugin,
 		files: passed,
+		..
 	} = result
 	else {
 		panic!("a single plugin is loaded");

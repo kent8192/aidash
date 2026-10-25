@@ -1,0 +1,20 @@
+{
+  "version": "13.0.0",
+  "files": {
+    "firebase-app.js": {
+      "upstream": "https://www.gstatic.com/firebasejs/13.0.0/firebase-app.js",
+      "upstream_sha256": "7cb48cbc5728f220562d05bd0aab8c17d8bda03c599ad8cb4ad0f042e4f65765",
+      "sha256": "547ba47044234d3b2536c3a279318e0e4a81b585b3f7cc2009abd482a7f59c2f"
+    },
+    "firebase-auth.js": {
+      "upstream": "https://www.gstatic.com/firebasejs/13.0.0/firebase-auth.js",
+      "upstream_sha256": "286224de4d870ef55e4301f718488fa77f146d60d6953b3a76f9a3883669b34a",
+      "sha256": "1587261a6b0dacde08015924a40ccfc8e6a7d07f9d5f465fce9be72df1f254cb"
+    }
+  },
+  "transformations": [
+    "Use a relative App import in Auth",
+    "Remove development source-map references",
+    "Remove trailing whitespace outside JavaScript literals and extra blank lines at EOF"
+  ]
+}

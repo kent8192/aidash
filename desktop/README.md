@@ -111,6 +111,28 @@ For a loopback HTTP profile, logout and removal clear local access without sendi
 a refresh credential; the client-discarded server-side refresh family expires under
 the same idle and absolute limits.
 
+## Personal ChatGPT plan authorization
+
+On a Self-hosted Deployment that opts into [Plan Connections](../docs/plan-connections.md),
+personal ChatGPT plan settings use the system browser and a separate temporary
+`127.0.0.1` listener. The server holds the pending authorization, PKCE verifier
+and nonce and alone exchanges the returned code. The Desktop client relays
+only the callback URL over its authenticated Aidash session; it never receives
+or stores Plan Tokens.
+
+The listener validates OpenAI's authorization destination and the exact
+loopback callback port/path before opening the browser. It accepts a callback
+once. Switching the Aidash connection, Tenant, Mapping or session, logging out
+or cancelling the flow releases it and prevents a late result from attaching
+to a different subject. Waiting for OpenAI does not block the native operation
+mutex used by Aidash session refresh.
+
+The existing Aidash sign-in handoff remains separate. Browser-only users can
+paste their callback URL into the pending personal connection screen instead;
+do not put callback URLs in chat or diagnostic logs. Real provider login/MFA
+and consent require the owner and remain distinct from fixture-based native
+tests.
+
 ## Boundaries
 
 Web cookie/CSRF authentication remains intact. Desktop CORS permits exactly
@@ -121,10 +143,12 @@ connection/authority generation through body consumption. Switching profiles
 clears query caches, selection, authority and SSE cursors. Reconnection within a
 single authority continues to send `Last-Event-ID`.
 
-Only the bundled main window can invoke the seven application commands. There
+Only the bundled main window can invoke the fixed application commands. There
 are no generic HTTP, filesystem, shell, secret-read or opener IPC permissions.
 Native HTTP operations target fixed `/auth` endpoints on the selected profile.
-The external opener accepts only that server's validated authorization URL.
+The external opener accepts the selected server's validated Aidash authorization
+URL or the separately validated OpenAI authorization URL for an active personal
+Plan Connection listener.
 Remote navigation and new windows are denied. CSP forbids remote scripts,
 frames and forms; remote API data receives no native capabilities.
 

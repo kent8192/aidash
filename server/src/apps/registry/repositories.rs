@@ -254,6 +254,7 @@ impl<E: OrmExecutor> DefinitionLookup for OrmScope<'_, E> {
 #[async_trait]
 impl<E: OrmExecutor> DefinitionWriter for OrmScope<'_, E> {
 	async fn insert_definition(&mut self, entry: &Entry) -> aidash_application::Result<bool> {
+		marketplace_recalls::check_acquisition(self.db, self.tenant.as_str(), entry).await?;
 		records::insert_definition(self.db, self.tenant, entry)
 			.await
 			.map_err(Into::into)
@@ -353,6 +354,7 @@ impl DefinitionLookup for NativeScope<'_> {
 #[async_trait]
 impl DefinitionWriter for NativeScope<'_> {
 	async fn insert_definition(&mut self, entry: &Entry) -> aidash_application::Result<bool> {
+		marketplace_recalls::check_acquisition_native(self.0, entry).await?;
 		transaction_records::insert_definition(self.0, entry)
 			.await
 			.map_err(Into::into)
@@ -480,3 +482,5 @@ async fn private_documents<E: OrmExecutor>(
 	)
 	.await?)
 }
+
+pub mod marketplace_recalls;

@@ -31,6 +31,15 @@ impl StreamAuthorityStore for Authority<'_> {
 		self.workspaces.store.deployment.as_str()
 	}
 	fn reports_status(&self, issuer: &str) -> bool {
+		if self
+			.workspaces
+			.store
+			.pool
+			.dashboard_policy()
+			.is_some_and(|policy| policy.authority.is_some())
+		{
+			return false;
+		}
 		crate::authorization::identity::reports_status(issuer)
 	}
 	fn now(&self) -> chrono::DateTime<chrono::Utc> {

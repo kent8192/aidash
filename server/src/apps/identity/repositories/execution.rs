@@ -161,6 +161,13 @@ impl ExecutionGrantSession for GrantScope<'_> {
 	}
 	async fn required_grant(&mut self, run: Uuid) -> Result<ExecutionGrant> {
 		let result: NativeResult<Grant> = async {
+			let policy = self.access.tx.pool().dashboard_policy();
+			crate::apps::identity::models::DashboardExecutionOrigin::require_current(
+				&mut **self.access.tx,
+				run,
+				policy.as_ref(),
+			)
+			.await?;
 			let current: Grant = {
 				let query_bind_1 = run;
 				crate::database::native::query_as(

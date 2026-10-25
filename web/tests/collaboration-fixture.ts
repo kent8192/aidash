@@ -241,6 +241,7 @@ export async function setup(
     dashboardContext?: string | null;
     olderMessages?: number;
     runMemory?: boolean;
+    planModel?: boolean;
     latestMessageChangesOnPoll?: boolean;
     messageAttachment?: boolean;
     extraGraphAgent?: boolean;
@@ -268,6 +269,12 @@ export async function setup(
   } = {},
 ) {
   let data = fixture(options.referenceLayout);
+  if (options.planModel)
+    data.registry[1].config = {
+      ...data.registry[1].config,
+      plan_connection: "chatgpt",
+      provider: "chatgpt",
+    };
   // The reference request verifies on a peer so the request canvas shows a federated zone.
   const labRuns =
     options.referenceLayout && !options.subject

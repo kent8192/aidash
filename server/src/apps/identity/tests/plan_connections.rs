@@ -52,6 +52,7 @@ struct Consent {
 struct Calls {
 	exchanges: usize,
 	refreshes: usize,
+	spent: Vec<String>,
 	revoked: Vec<String>,
 }
 #[derive(Clone, Default)]
@@ -60,6 +61,7 @@ struct FakeOpenAi {
 	/// The nonce each issued ID token carries.
 	id_tokens: Arc<Mutex<BTreeMap<String, String>>>,
 	calls: Arc<Mutex<Calls>>,
+	revoke_unavailable: Arc<std::sync::atomic::AtomicBool>,
 }
 impl FakeOpenAi {
 	/// What OpenAI does after consent: bind a fresh code to the request.
@@ -143,9 +145,22 @@ impl Authorization for FakeOpenAi {
 			return Err(RefreshFailure::Terminal);
 		}
 		calls.refreshes += 1;
+		if calls
+			.spent
+			.contains(&refresh_token.expose_secret().to_owned())
+		{
+			return Err(RefreshFailure::Terminal);
+		}
+		calls.spent.push(refresh_token.expose_secret().to_owned());
 		Ok(tokens(100 + calls.refreshes, None))
 	}
 	async fn revoke(&self, _: &str, refresh_token: &SecretString) -> Result<()> {
+		if self
+			.revoke_unavailable
+			.load(std::sync::atomic::Ordering::SeqCst)
+		{
+			return Err(Error::External("fixture revocation unavailable".into()));
+		}
 		self.calls
 			.lock()
 			.unwrap()
@@ -962,13 +977,37 @@ async fn approvals_retire_a_connection_left_without_a_mapping(
 	// would leave it.
 	execute(
 		&fixture.f,
-		format!("UPDATE dashboard_mappings SET enabled = false WHERE id = '{mapping}'"),
+		Query::update()
+			.table(Alias::new("dashboard_mappings"))
+			.value(Alias::new("enabled"), Expr::value(false))
+			.and_where(
+				Expr::col(Alias::new("id")).eq(Expr::value(Uuid::parse_str(mapping).unwrap())),
+			)
+			.to_string(PostgresQueryBuilder),
 	)
 	.await;
 	assert!(
 		table_text(&fixture.f, "plan_connections")
 			.await
 			.contains("alice")
+	);
+	let owner = aidash_application::plan_connections::Owner {
+		tenant: "alpha".into(),
+		subject: "alice".into(),
+	};
+	assert_eq!(
+		fixture
+			.f
+			.store
+			.plan_connections
+			.as_ref()
+			.unwrap()
+			.status(&owner)
+			.await
+			.unwrap()
+			.unwrap()
+			.state,
+		aidash_domain::plan_connections::State::Ineligible
 	);
 	let (status, _) = map(&fixture, "browser-c", "alice").await;
 	assert_eq!(status, 200);
@@ -1095,6 +1134,26 @@ async fn connections_serve_only_the_identity_that_connected_them(
 	assert_eq!(status, 200);
 	set_disabled(&f, "plan-connection-bob", true).await;
 	connect(&fixture, "browser-a", &owners).await;
+	let owner = aidash_application::plan_connections::Owner {
+		tenant: "alpha".into(),
+		subject: "alice".into(),
+	};
+	let plans = f.store.plan_connections.as_ref().unwrap();
+	assert_eq!(
+		plans.status(&owner).await.unwrap().unwrap().state,
+		aidash_domain::plan_connections::State::Active
+	);
+	set_disabled(&f, "plan-connection-bob", false).await;
+	assert_eq!(
+		plans.status(&owner).await.unwrap().unwrap().state,
+		aidash_domain::plan_connections::State::Ineligible
+	);
+	set_disabled(&f, "plan-connection-bob", true).await;
+	assert_eq!(
+		plans.status(&owner).await.unwrap().unwrap().state,
+		aidash_domain::plan_connections::State::Active
+	);
+
 	let admitted = Uuid::new_v4();
 	admit_once(admitted).await.unwrap();
 	let access = AdmittedAccess {
@@ -1112,7 +1171,15 @@ async fn connections_serve_only_the_identity_that_connected_them(
 	access.check(&context, endpoint, &source).await.unwrap();
 
 	set_disabled(&f, "plan-connection-alice", true).await;
+	assert_eq!(
+		plans.status(&owner).await.unwrap().unwrap().state,
+		aidash_domain::plan_connections::State::Ineligible
+	);
 	set_disabled(&f, "plan-connection-bob", false).await;
+	assert_eq!(
+		plans.status(&owner).await.unwrap().unwrap().state,
+		aidash_domain::plan_connections::State::Ineligible
+	);
 	assert!(matches!(
 		admit_once(Uuid::new_v4()).await,
 		Err(aidash_server::Error::Plan(Failure::NotConnected))
@@ -1480,3 +1547,299 @@ async fn servers_without_a_postgres_store_refuse_to_enable_plan_connections(
 	}
 	common::cleanup(f, &url, &schema).await;
 }
+
+#[path = "plan_connections/journey.rs"]
+mod journey;
+
+/// Interrupts the caller at the real Store commit boundary, without returning
+/// an error to the service (which would exercise its graceful cleanup instead).
+struct InterruptedStore {
+	after_destroy: bool,
+	inner: Arc<aidash_server::apps::identity::repositories::secret_store::PostgresStore>,
+	after_commit: bool,
+	reached: tokio::sync::Notify,
+}
+#[async_trait]
+impl Store for InterruptedStore {
+	fn resource(&self, id: Uuid) -> String {
+		self.inner.resource(id)
+	}
+	async fn create(&self, tenant: &str, id: Uuid) -> Result<()> {
+		self.inner.create(tenant, id).await
+	}
+	async fn create_plan(&self, tenant: &str, id: Uuid) -> Result<()> {
+		self.inner.create_plan(tenant, id).await
+	}
+	async fn add_version(
+		&self,
+		tenant: &str,
+		resource: &str,
+		value: &SecretString,
+	) -> Result<String> {
+		let replacement = value.expose_secret().contains("plan-refresh-101");
+		if replacement && !self.after_commit {
+			self.reached.notify_one();
+			std::future::pending::<()>().await;
+		}
+		let version = self.inner.add_version(tenant, resource, value).await?;
+		if replacement && self.after_commit {
+			self.reached.notify_one();
+			std::future::pending::<()>().await;
+		}
+		Ok(version)
+	}
+	async fn versions(&self, tenant: &str, resource: &str) -> Result<Vec<String>> {
+		self.inner.versions(tenant, resource).await
+	}
+	async fn disable(&self, tenant: &str, version: &str) -> Result<()> {
+		self.inner.disable(tenant, version).await
+	}
+	async fn destroy(&self, tenant: &str, version: &str) -> Result<()> {
+		self.inner.destroy(tenant, version).await?;
+		if self.after_destroy {
+			self.reached.notify_one();
+			std::future::pending::<()>().await;
+		}
+		Ok(())
+	}
+	async fn delete(&self, tenant: &str, resource: &str) -> Result<()> {
+		self.inner.delete(tenant, resource).await
+	}
+}
+
+async fn durable_service(f: &Federation, openai: &FakeOpenAi) -> Service {
+	let store = Arc::new(
+		aidash_server::apps::identity::repositories::secret_store::PostgresStore::new(
+			f.store.control_pool.clone(),
+			"41".repeat(32).into(),
+			vec![],
+		)
+		.await
+		.unwrap(),
+	);
+	Service {
+		repository: Arc::new(NativeRepository {
+			pool: f.store.control_pool.clone(),
+			node: f.store.deployment.to_string(),
+		}),
+		store: store.clone(),
+		reader: store,
+		authorization: Arc::new(openai.clone()),
+	}
+}
+
+async fn connect_durable(
+	fixture: &Fixture,
+	service: &Service,
+) -> aidash_domain::plan_connections::PlanConnection {
+	use aidash_application::plan_connections::{self as plans, Owner, Pending};
+	let owner = Owner {
+		tenant: "alpha".into(),
+		subject: "alice".into(),
+	};
+	let mut scope = service.repository.begin(&owner).await.unwrap();
+	let saved_client = scope
+		.owned(Provider::Chatgpt)
+		.await
+		.unwrap()
+		.map(|row| row.client_id);
+	scope.commit().await.unwrap();
+	let request = plans::begin(
+		"urn:uuid:0d5c0e5e-5d5a-4c4b-9a8e-1b2c3d4e5f60",
+		1457,
+		saved_client.as_deref(),
+	)
+	.unwrap();
+	let (code, state, client) = fixture.openai.consent(&request.url);
+	let callback = aidash_domain::plan_connections::parse_callback(
+		&format!(
+			"{}?code={code}&state={state}&client_id={client}",
+			request.redirect_uri
+		),
+		&request.redirect_uri,
+	)
+	.unwrap();
+	service
+		.complete(
+			&owner,
+			identity_of(&fixture.f, "plan-connection-alice").await,
+			Pending {
+				state: request.state.expose_secret(),
+				verifier: &request.verifier,
+				nonce: request.nonce.expose_secret(),
+				redirect_uri: &request.redirect_uri,
+				saved_client: saved_client.as_deref(),
+			},
+			&callback,
+			"fixture",
+		)
+		.await
+		.unwrap();
+	let mut scope = service.repository.begin(&owner).await.unwrap();
+	let mut row = scope.owned(Provider::Chatgpt).await.unwrap().unwrap();
+	row.access_expires_at = chrono::Utc::now();
+	scope
+		.save(&row, "fixture.expired", "fixture")
+		.await
+		.unwrap();
+	scope.commit().await.unwrap();
+	row
+}
+
+#[rstest::rstest]
+#[case::replacement_durable(true, false, false)]
+#[case::upstream_replaced_but_not_durable(false, false, false)]
+#[case::disconnect_durable_unpinned(true, true, false)]
+#[case::disconnect_unknown_upstream(false, true, false)]
+#[case::disconnect_upstream_unavailable(true, true, true)]
+#[tokio::test]
+async fn interrupted_refresh_recovers_only_a_durable_replacement(
+	#[case] after_commit: bool,
+	#[case] disconnect_first: bool,
+	#[case] revoke_unavailable: bool,
+	#[from(parts)] parts: Parts,
+	#[future(awt)]
+	#[from(plan_application)]
+	#[with(parts.clone())]
+	application: common::ApplicationFixture,
+) {
+	let fixture = Fixture::new(application, parts);
+	map(&fixture, "browser-a", "alice").await;
+	let mut service = durable_service(&fixture.f, &fixture.openai).await;
+	let row = connect_durable(&fixture, &service).await;
+	let encrypted = Arc::new(
+		aidash_server::apps::identity::repositories::secret_store::PostgresStore::new(
+			fixture.f.store.control_pool.clone(),
+			"41".repeat(32).into(),
+			vec![],
+		)
+		.await
+		.unwrap(),
+	);
+	let interrupted = Arc::new(InterruptedStore {
+		after_destroy: false,
+		inner: encrypted.clone(),
+		after_commit,
+		reached: Default::default(),
+	});
+	service.store = interrupted.clone();
+	let pin = row.pin();
+	let task = tokio::spawn(async move { service.bearer(pin).await });
+	tokio::time::timeout(
+		std::time::Duration::from_secs(15),
+		interrupted.reached.notified(),
+	)
+	.await
+	.unwrap();
+	task.abort();
+	assert!(task.await.unwrap_err().is_cancelled());
+	// All application state and the transaction owning its advisory lock are
+	// gone. Only independent PostgreSQL commits may recover the grant.
+	let restarted = durable_service(&fixture.f, &fixture.openai).await;
+	let owner = aidash_application::plan_connections::Owner {
+		tenant: row.tenant.clone(),
+		subject: row.subject.clone(),
+	};
+	let mut scope = restarted.repository.begin(&owner).await.unwrap();
+	assert_eq!(
+		scope
+			.owned(Provider::Chatgpt)
+			.await
+			.unwrap()
+			.unwrap()
+			.pinned_version,
+		row.pinned_version
+	);
+	scope.commit().await.unwrap();
+	let mut replacement_is_durable = false;
+	for version in encrypted
+		.versions(&row.tenant, &row.secret_resource)
+		.await
+		.unwrap()
+	{
+		let value = encrypted
+			.read(&row.tenant, &row.secret_resource, &version)
+			.await
+			.unwrap();
+		replacement_is_durable |= value.expose_secret().contains("plan-refresh-101");
+	}
+	assert_eq!(replacement_is_durable, after_commit);
+	if disconnect_first {
+		fixture
+			.openai
+			.revoke_unavailable
+			.store(revoke_unavailable, std::sync::atomic::Ordering::SeqCst);
+		let disconnected = restarted
+			.disconnect(&owner, row.revision, "fixture")
+			.await
+			.unwrap();
+		assert_eq!(disconnected.revoked, after_commit && !revoke_unavailable);
+		if after_commit && !revoke_unavailable {
+			assert!(
+				fixture
+					.openai
+					.calls
+					.lock()
+					.unwrap()
+					.revoked
+					.contains(&"plan-refresh-101".to_owned()),
+				"disconnect must revoke the unpinned replacement"
+			);
+		}
+		assert!(
+			encrypted
+				.versions(&row.tenant, &row.secret_resource)
+				.await
+				.unwrap()
+				.is_empty()
+		);
+		assert!(restarted.status(&owner).await.unwrap().is_none());
+		fixture.cleanup().await;
+		return;
+	}
+	let recovered = restarted.bearer(pin).await;
+	if after_commit {
+		assert_eq!(recovered.unwrap().expose_secret(), "plan-access-101");
+		let status = restarted.status(&owner).await.unwrap().unwrap();
+		assert_eq!(status.state, aidash_domain::plan_connections::State::Active);
+		assert!(status.refreshed_at.is_some());
+	} else {
+		assert!(matches!(
+			recovered,
+			Err(Error::Plan(Failure::NeedsReconnection))
+		));
+		assert!(matches!(
+			restarted.bearer(pin).await,
+			Err(Error::Plan(Failure::NeedsReconnection))
+		));
+	}
+	assert_eq!(
+		fixture.openai.calls.lock().unwrap().refreshes,
+		1,
+		"an interrupted refresh must never replay its spent token"
+	);
+	let status = restarted.status(&owner).await.unwrap().unwrap();
+	let metadata = serde_json::to_string(&status).unwrap();
+	assert!(
+		!metadata.contains("plan-refresh")
+			&& !metadata.contains("plan-access")
+			&& !metadata.contains("oaiapp_")
+			&& !metadata.contains("chatgpt-account")
+	);
+	let disconnected = restarted
+		.disconnect(&owner, status.revision, "fixture")
+		.await
+		.unwrap();
+	assert_eq!(disconnected.revoked, after_commit);
+	assert!(
+		encrypted
+			.versions(&row.tenant, &row.secret_resource)
+			.await
+			.unwrap()
+			.is_empty()
+	);
+	fixture.cleanup().await;
+}
+
+#[path = "plan_connections/recovery.rs"]
+mod recovery;

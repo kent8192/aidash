@@ -74,6 +74,7 @@ async fn personal_agent_roundtrip(mut execution: ExecutionFixture, large_documen
 			.map(|tool| tool.specification())
 			.collect::<Vec<_>>();
 		let budget = context::RequestBudget {
+			input_format: Default::default(),
 			window: 32768,
 			instructions: "",
 			tools: &tools,

@@ -34,16 +34,6 @@ pub fn url_patterns() -> UnifiedRouter {
 			.with_route_middleware(AccessBoundary::authenticated())
 			.endpoint(super::views::provider_authorizations::callback)
 			.with_route_middleware(AccessBoundary::public())
-			.endpoint(super::views::plan_connections::status)
-			.with_route_middleware(AccessBoundary::authenticated())
-			.endpoint(super::views::plan_connections::start)
-			.with_route_middleware(AccessBoundary::authenticated())
-			.endpoint(super::views::plan_connections::complete)
-			.with_route_middleware(AccessBoundary::authenticated())
-			.endpoint(super::views::plan_connections::disconnect)
-			.with_route_middleware(AccessBoundary::authenticated())
-			.endpoint(super::views::plan_connections::models)
-			.with_route_middleware(AccessBoundary::authenticated())
 			.endpoint(super::views::approval_preferences::preferences)
 			.with_route_middleware(AccessBoundary::authenticated())
 			.endpoint(super::views::approval_preferences::update_preferences)
@@ -285,6 +275,24 @@ pub fn url_patterns() -> UnifiedRouter {
 			.endpoint(sessions::backchannel_logout)
 			.with_route_middleware(AccessBoundary::public())
 			.endpoint(management::session)
+			.with_route_middleware(AccessBoundary::authenticated())
+	})
+}
+
+/// Personal Plan authorization is served only by Self-hosted Deployments.
+/// Hosted Offerings await OpenAI approval and their own contract (#248).
+pub fn plan_connection_patterns() -> UnifiedRouter {
+	UnifiedRouter::new().server(|server| {
+		server
+			.endpoint(super::views::plan_connections::status)
+			.with_route_middleware(AccessBoundary::authenticated())
+			.endpoint(super::views::plan_connections::start)
+			.with_route_middleware(AccessBoundary::authenticated())
+			.endpoint(super::views::plan_connections::complete)
+			.with_route_middleware(AccessBoundary::authenticated())
+			.endpoint(super::views::plan_connections::disconnect)
+			.with_route_middleware(AccessBoundary::authenticated())
+			.endpoint(super::views::plan_connections::models)
 			.with_route_middleware(AccessBoundary::authenticated())
 	})
 }

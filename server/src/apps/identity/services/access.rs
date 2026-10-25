@@ -515,6 +515,13 @@ impl Access {
 			)
 			.await?;
 		}
+		let policy = self.pool.dashboard_policy();
+		crate::apps::identity::models::DashboardExecutionOrigin::require_current(
+			&mut **self.tx,
+			run_id,
+			policy.as_ref(),
+		)
+		.await?;
 		self.tx.admissions.clear();
 		self.remote_read_cache.clear();
 		self.unavailable_peers.clear();

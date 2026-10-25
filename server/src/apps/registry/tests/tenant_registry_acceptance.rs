@@ -920,6 +920,7 @@ impl AgentPluginSource for FixedSource {
 
 fn fetched(files: Vec<PluginFile>, source: &str, denied: &[&str]) -> PluginFetch {
 	PluginFetch::Fetched(FetchedPlugin {
+		entitlement_expires_at: None,
 		root: "plugins/tools".into(),
 		source: source.to_owned(),
 		files,
@@ -1256,4 +1257,378 @@ async fn plugin_import_refuses_unpermitted_servers_before_persisting_the_copy(
 		assert!(result.is_ok(), "{result:?}");
 	}
 	assert_eq!(copies(&fixture, "plugins").await, 2);
+}
+
+// Real import + persisted Recall + real claim admission. The stopped upstream
+// and removed Connection cannot clear a learned stop or cancel an admitted Run.
+#[rstest]
+#[tokio::test]
+async fn marketplace_copy_is_local_and_recall_survives_disconnect(
+	#[future] endpoint: EndpointFixture,
+) {
+	use aidash_domain::marketplace::distribution::{Artifact, Recall};
+	use base64::{Engine as _, engine::general_purpose::STANDARD};
+	use reinhardt::{Response, ServerRouter};
+	let fixture = endpoint.await;
+	tenant(&fixture, "acme").await;
+	let acme = credential(&fixture, "acme", "owner").await;
+	assert_eq!(register(&acme, &model("model")).await.0, 200);
+	let files = plugin_files();
+	let digest = agent_plugin::tree_digest(&files);
+	let artifact = Artifact {
+		entitlement_expires_at: None,
+		plugin_id: Uuid::from_u128(1),
+		version: "1.0.0".into(),
+		digest: digest.clone(),
+		files: files
+			.iter()
+			.map(|file| (file.path.clone(), STANDARD.encode(&file.bytes)))
+			.collect(),
+	};
+	let recall = Recall {
+		plugin_id: Uuid::from_u128(1),
+		version: "1.0.0".into(),
+		digest: digest.clone(),
+		reason: "withdrawn".into(),
+		recalled_at: chrono::Utc::now(),
+	};
+	let recalled = Arc::new(std::sync::atomic::AtomicBool::new(false));
+	let observed = recalled.clone();
+	let calls = Arc::new(AtomicUsize::new(0));
+	let observed_calls = calls.clone();
+	let router = Arc::new(
+		ServerRouter::new()
+			.handler(
+				"/api/marketplace/downloads",
+				upstream::any_handler(move |_| {
+					observed_calls.fetch_add(1, Ordering::SeqCst);
+					let artifact = artifact.clone();
+					async move { Response::ok().with_json(&artifact).unwrap() }
+				}),
+			)
+			.handler(
+				"/api/marketplace/recalls",
+				upstream::any_handler(move |_| {
+					let recalls = if observed.load(Ordering::SeqCst) {
+						vec![recall.clone()]
+					} else {
+						vec![]
+					};
+					async move {
+						Response::ok()
+							.with_json(&json!({"recalls":recalls}))
+							.unwrap()
+					}
+				}),
+			),
+	);
+	let remote = upstream::upstream(router).await;
+	let secret = tempfile::NamedTempFile::new().unwrap();
+	std::fs::write(secret.path(), "connection-secret").unwrap();
+	let mut runtime = fixture.runtime.clone();
+	let personal_identity = Uuid::from_u128(77);
+	sqlx::query("INSERT INTO dashboard_identities (id,issuer,subject,last_valid_at) VALUES ($1,'personal-upstream','personal',clock_timestamp())").bind(personal_identity).execute(runtime.store.pool.fixture_driver()).await.unwrap();
+	sqlx::query("INSERT INTO personal_tenants (identity_id,tenant,created_at) VALUES ($1,'acme',clock_timestamp())").bind(personal_identity).execute(runtime.store.pool.fixture_driver()).await.unwrap();
+	let (common_authority, account_binding, _account_server) =
+		library_account_authority(personal_identity, Uuid::from_u128(99)).await;
+	runtime.config.common_auth = Some(Arc::new(common_authority));
+	runtime.config.marketplace.endpoint = Some(remote.url.clone());
+	runtime.config.marketplace.connections =
+		vec![aidash_server::config::marketplace::TenantConnection {
+			tenant: "acme".into(),
+			connection_id: Uuid::from_u128(5),
+			owner_account_id: Uuid::from_u128(6),
+			owner_tenant_id: None,
+			personal_identity_id: Some(personal_identity),
+			secret_file: secret.path().to_owned(),
+		}];
+	let request = || PluginImportRequest {
+		url: "marketplace://00000000-0000-0000-0000-000000000001/1.0.0".into(),
+		plugin_path: None,
+	};
+	let source = aidash_server::bootstrap::agent_plugin_import(&runtime.config, "acme").unwrap();
+	let denied = aidash_server::apps::registry::services::agent_plugin_import::import(
+		&runtime,
+		&source,
+		actor(&fixture, "acme", "owner").await,
+		request(),
+	)
+	.await;
+	assert!(
+		matches!(&denied, Err(aidash_server::Error::Forbidden)),
+		"expected Personal Library ownership denial; actual={denied:?}; error_display={}",
+		denied
+			.as_ref()
+			.err()
+			.map(ToString::to_string)
+			.as_deref()
+			.unwrap_or("<successful import>")
+	);
+	assert_eq!(
+		calls.load(Ordering::SeqCst),
+		0,
+		"a matching local Personal Tenant UUID belonging to another common Account must not grant Library import"
+	);
+	account_binding.lock().unwrap().account_id = Uuid::from_u128(6).to_string();
+	let source = aidash_server::bootstrap::agent_plugin_import(&runtime.config, "acme").unwrap();
+	let imported = aidash_server::apps::registry::services::agent_plugin_import::import(
+		&runtime,
+		&source,
+		actor(&fixture, "acme", "owner").await,
+		request(),
+	)
+	.await
+	.unwrap()
+	.selected
+	.unwrap();
+	assert_eq!(copies(&fixture, "acme").await, 1);
+	let (collision, _) = import_plugin(
+		&fixture,
+		"acme",
+		"owner",
+		fetched(plugin_files(), PLUGIN_SOURCE, &[]),
+	)
+	.await;
+	assert!(
+		matches!(collision, Err(aidash_server::Error::Conflict(_))),
+		"a GitHub source cannot erase Marketplace provenance"
+	);
+	assert_eq!(imported.reference.source, request().url);
+	let definition = plugin_agent("marketplace-agent", "Help", &[imported.reference]);
+	let (status, body) = register(&acme, &definition).await;
+	assert_eq!(status, 200, "{body}");
+	let entry: aidash_server::registry::Entry = serde_json::from_value(definition).unwrap();
+	support::approve_agent(&runtime, "acme", &entry).await;
+	// The approval helper creates a bare Agent; this Tenant uses group-based authority.
+	let authorization = aidash_server::authorization::Authorization {
+		pool: runtime.store.pool.clone(),
+	};
+	let mut snapshot = authorization.snapshot("acme").await.unwrap();
+	let node = support::default_node(&runtime.store, "acme").await;
+	let agent_subject = aidash_domain::qualified_agent(&node, &entry.id, &entry.version);
+	snapshot
+		.bundle
+		.subjects
+		.get_mut(&agent_subject)
+		.unwrap()
+		.groups
+		.insert(MEMBERS.to_owned());
+	authorization
+		.replace(
+			"acme",
+			snapshot.revision,
+			snapshot.bundle,
+			"deployment_administrator",
+		)
+		.await
+		.unwrap();
+	let scope = TenancyScope::tenant("acme").unwrap();
+	let workspace = runtime
+		.store
+		.create_workspace(&scope, "owner", "Marketplace", "Recall acceptance")
+		.await
+		.unwrap();
+	let task_input: aidash_domain::NewTask = serde_json::from_value(
+		json!({"title":"Use copy","description":"Execute installed plugin"}),
+	)
+	.unwrap();
+	let first = runtime
+		.store
+		.create_task(&scope, workspace.id, &task_input, "owner", None)
+		.await
+		.unwrap();
+	let aidash_server::authorization::identity::Actor::Subject(identity) =
+		actor(&fixture, "acme", "owner").await
+	else {
+		panic!("subject")
+	};
+	let reference = aidash_domain::registry::EntityRef {
+		id: entry.id.clone(),
+		version: entry.version.clone(),
+	};
+	aidash_server::authorization::services::execution::claim(
+		&runtime,
+		&identity,
+		first.id,
+		first.revision,
+		&reference,
+	)
+	.await
+	.unwrap();
+	let mut tx = runtime.store.pool.begin(&scope).await.unwrap();
+	let plugin_source =
+		aidash_domain::agent_plugin::MarketplaceSource::parse(&request().url).unwrap();
+	aidash_server::apps::registry::repositories::marketplace_recalls::receipt(
+		&mut *tx,
+		&plugin_source,
+		&digest,
+		Some(chrono::Utc::now() - chrono::Duration::seconds(1)),
+	)
+	.await
+	.unwrap();
+	tx.commit().await.unwrap();
+	let expired = runtime
+		.store
+		.create_task(&scope, workspace.id, &task_input, "owner", None)
+		.await
+		.unwrap();
+	let denied = aidash_server::authorization::services::execution::claim(
+		&runtime,
+		&identity,
+		expired.id,
+		expired.revision,
+		&reference,
+	)
+	.await;
+	assert!(matches!(denied, Err(aidash_server::Error::Forbidden)));
+	let mut new_version = serde_json::to_value(&entry).unwrap();
+	new_version["version"] = json!("2.0.0");
+	let (status, body) = register(&acme, &new_version).await;
+	assert_eq!(
+		status, 403,
+		"expired acquisition cannot register new Agent version: {body}"
+	);
+	aidash_server::apps::registry::services::agent_plugin_import::import(
+		&runtime,
+		&source,
+		actor(&fixture, "acme", "owner").await,
+		request(),
+	)
+	.await
+	.unwrap();
+	// Renewal must actually unblock a new admission before Recall is learned;
+	// otherwise a stale expiry could make the Recall denial pass accidentally.
+	aidash_server::authorization::services::execution::claim(
+		&runtime,
+		&identity,
+		expired.id,
+		expired.revision,
+		&reference,
+	)
+	.await
+	.unwrap();
+	recalled.store(true, Ordering::SeqCst);
+	aidash_server::apps::registry::services::marketplace_recalls::synchronize(&runtime)
+		.await
+		.unwrap();
+	runtime.config.marketplace.connections.clear();
+	drop(remote);
+	let second = runtime
+		.store
+		.create_task(&scope, workspace.id, &task_input, "owner", None)
+		.await
+		.unwrap();
+	let rejected = aidash_server::authorization::services::execution::claim(
+		&runtime,
+		&identity,
+		second.id,
+		second.revision,
+		&reference,
+	)
+	.await;
+	assert!(
+		matches!(rejected, Err(aidash_server::Error::Forbidden)),
+		"{rejected:?}"
+	);
+	let runs = runtime.store.runs(&scope).await.unwrap();
+	assert_eq!(runs.iter().filter(|run| run.task_id == first.id).count(), 1);
+	assert!(!runs.iter().any(|run| run.task_id == second.id));
+	assert_eq!(
+		copies(&fixture, "acme").await,
+		1,
+		"Recall retains the installed copy"
+	);
+}
+
+/// This fixture supplies only authoritative account bindings. Registry's own
+/// policy, local Personal Tenant checks and HTTP acquisition remain real.
+struct LibraryAccountPeer(
+	std::sync::Arc<std::sync::Mutex<aidash_integrations::authentication::proto::ValidityResponse>>,
+);
+#[reinhardt::grpc::tonic::async_trait]
+impl aidash_integrations::authentication::proto::authentication_validity_server::AuthenticationValidity for LibraryAccountPeer {
+ async fn validate_interactive(&self,_:reinhardt::grpc::tonic::Request<aidash_integrations::authentication::proto::ValidateInteractiveRequest>)->Result<reinhardt::grpc::tonic::Response<aidash_integrations::authentication::proto::ValidityResponse>,reinhardt::grpc::tonic::Status> { Err(reinhardt::grpc::tonic::Status::unimplemented("not used by Registry account binding")) }
+ async fn validate_origin(&self,request:reinhardt::grpc::tonic::Request<aidash_integrations::authentication::proto::ValidateOriginRequest>)->Result<reinhardt::grpc::tonic::Response<aidash_integrations::authentication::proto::ValidityResponse>,reinhardt::grpc::tonic::Status> {
+  let response=self.0.lock().unwrap().clone();assert_eq!(request.into_inner().external_identity_id,response.source_identity_id);
+  Ok(reinhardt::grpc::tonic::Response::new(response))
+ }
+}
+struct LibraryAccountServer(
+	tokio::task::JoinHandle<Result<(), reinhardt::grpc::tonic::transport::Error>>,
+);
+impl Drop for LibraryAccountServer {
+	fn drop(&mut self) {
+		self.0.abort();
+	}
+}
+async fn library_account_authority(
+	identity: Uuid,
+	account: Uuid,
+) -> (
+	aidash_integrations::authentication::Client,
+	std::sync::Arc<std::sync::Mutex<aidash_integrations::authentication::proto::ValidityResponse>>,
+	LibraryAccountServer,
+) {
+	use aidash_integrations::authentication::{
+		Client, Settings,
+		proto::{ValidityResponse, authentication_validity_server::AuthenticationValidityServer},
+	};
+	use rcgen::{
+		BasicConstraints, CertificateParams, ExtendedKeyUsagePurpose, IsCa, Issuer, KeyPair,
+	};
+	use reinhardt::grpc::{GrpcServerTlsConfig, tonic};
+	let mut params = CertificateParams::default();
+	params.is_ca = IsCa::Ca(BasicConstraints::Unconstrained);
+	let key = KeyPair::generate().unwrap();
+	let ca = params.self_signed(&key).unwrap().pem();
+	let issuer = Issuer::new(params, key);
+	let leaf = |server| {
+		let mut params = CertificateParams::new(vec!["authentication.internal".into()]).unwrap();
+		params.extended_key_usages = vec![if server {
+			ExtendedKeyUsagePurpose::ServerAuth
+		} else {
+			ExtendedKeyUsagePurpose::ClientAuth
+		}];
+		let key = KeyPair::generate().unwrap();
+		(
+			params.signed_by(&key, &issuer).unwrap().pem(),
+			key.serialize_pem(),
+		)
+	};
+	let response = Arc::new(std::sync::Mutex::new(ValidityResponse {
+		active: true,
+		reason: String::new(),
+		source_identity_id: identity.to_string(),
+		account_id: account.to_string(),
+		suspension_epoch: Some(0),
+		source_disable_epoch: 0,
+		source_issuer: "personal-upstream".into(),
+		source_subject: "personal".into(),
+	}));
+	let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+	let endpoint = format!("https://{}", listener.local_addr().unwrap());
+	let (cert, key) = leaf(true);
+	let mut server = GrpcServerTlsConfig::new(cert, key, ca.clone())
+		.configure(tonic::transport::Server::builder())
+		.unwrap();
+	let incoming =
+		async_stream::stream! {loop{yield listener.accept().await.map(|(socket,_)|socket);}};
+	let running = LibraryAccountServer(tokio::spawn(
+		server
+			.add_service(AuthenticationValidityServer::new(LibraryAccountPeer(
+				response.clone(),
+			)))
+			.serve_with_incoming(incoming),
+	));
+	let (cert, key) = leaf(false);
+	let client = Client::new(Settings {
+		endpoint,
+		server_domain: "authentication.internal".into(),
+		ca_certificate: ca.into_bytes(),
+		client_certificate: cert.into_bytes(),
+		client_private_key: key.into_bytes(),
+		product_client_id: "cloud-client".into(),
+	})
+	.unwrap();
+	(client, response, running)
 }

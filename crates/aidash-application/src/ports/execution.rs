@@ -473,6 +473,7 @@ pub trait ExecutionAuthority: Send + Sync {
 		&self,
 		messages: &[(i64, Uuid, usize)],
 		model: &ModelConfig,
+		projection: aidash_domain::projection::ProjectionVersion,
 	) -> Result<HumanMediaBatch>;
 	async fn reserve_inference(
 		&self,

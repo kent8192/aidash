@@ -47,6 +47,7 @@ fn media_reservation_covers_complete_request_growth(#[case] version: ProjectionV
 		cache_scope: None,
 		cache_breakpoints: false,
 		disable_provider_transforms: false,
+		input_format: Default::default(),
 		estimate: Default::default(),
 	};
 	let without_media = request.estimated_total_tokens();
@@ -63,10 +64,14 @@ fn media_reservation_covers_complete_request_growth(#[case] version: ProjectionV
 	];
 	assert!(
 		request.estimated_total_tokens()
-			<= without_media.saturating_add(ModelRequest::content_parts_reservation(
-				&request.content_parts,
-				version
-			))
+			<= without_media.saturating_add(
+				ModelRequest::content_parts_reservation(
+					&request.content_parts,
+					version,
+					Default::default(),
+				)
+				.unwrap()
+			)
 	);
 }
 
@@ -477,6 +482,7 @@ fn only_context_policy_requests_disable_openrouter_transforms(
 		cache_scope: None,
 		cache_breakpoints: false,
 		disable_provider_transforms: opted_in,
+		input_format: Default::default(),
 		estimate: Default::default(),
 	};
 	let body = request_body(&config, &request, routes, None);
@@ -615,6 +621,7 @@ mod cache_salt {
 			cache_scope: None,
 			cache_breakpoints: false,
 			disable_provider_transforms: false,
+			input_format: Default::default(),
 			estimate: Default::default(),
 		}
 	}

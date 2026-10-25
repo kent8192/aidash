@@ -536,6 +536,20 @@ impl HarnessManagement {
 			existing.workspace_id,
 		)
 		.await?;
+		if input.action == crate::domain::RunControlAction::Resume
+			&& f.store
+				.pool
+				.dashboard_policy()
+				.is_some_and(|policy| policy.authority.is_some())
+			&& crate::apps::identity::models::DashboardExecutionOrigin::is_human_origin(
+				&mut *tx, id,
+			)
+			.await?
+		{
+			// Common-auth human work is readmitted only by a current interactive
+			// session of its original source, through the Subject control path.
+			return Err(Error::Forbidden);
+		}
 		let r = f.store.control_in(&mut tx, id, input.action).await?;
 		tx.commit().await?;
 		f.notify.notify_waiters();
@@ -807,18 +821,12 @@ impl HarnessManagement {
 					.map(|attachment| attachment.media_type.as_str()),
 			)?;
 			let headroom = f.run_request_headroom(&run).await?;
-			let request = crate::provider::ModelRequest {
-				instructions: String::new(),
-				context: json!({"run_message":input.content}).into(),
-				tools: Vec::new(),
-				max_output_tokens: 0,
-				response_format: None,
-				content_parts: parts,
-				cache_scope: None,
-				cache_breakpoints: false,
-				disable_provider_transforms: false,
-				estimate: Default::default(),
-			};
+			let request = aidash_application::execution::media::admission_request(
+				&model,
+				agent.projection_version.unwrap_or_default(),
+				json!({"run_message":input.content}),
+				parts,
+			);
 			request.validate()?;
 			crate::generation::budget::Reservation::check_request(headroom, &request)?;
 			Ok(())

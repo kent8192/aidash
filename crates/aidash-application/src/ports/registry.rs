@@ -127,6 +127,8 @@ pub struct PluginImportRequest {
 /// One plugin directory at an exact commit.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FetchedPlugin {
+	/// Authoritative acquisition receipt; absent for an unlimited entitlement or GitHub.
+	pub entitlement_expires_at: Option<chrono::DateTime<chrono::Utc>>,
 	/// The plugin directory relative to the repository root; empty for the root.
 	pub root: String,
 	/// `https://github.com/<owner>/<repo>/tree/<commit sha>[/<root>]`.

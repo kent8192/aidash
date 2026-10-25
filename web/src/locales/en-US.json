@@ -801,5 +801,7 @@
   "nodeStorageCloud": "Retained storage remains billable until physical purge. Storage charges continue under the current Cloud billing terms.",
   "nodeStorageDedicated": "Dedicated meters and reports usage under your contract until physical purge. This view does not calculate a storage charge.",
   "nodeStorageOfferingUnknown": "Current Offering is unavailable. This view cannot determine the applicable storage charge. Files remain stored until physical purge.",
-  "nodeStorageExemption": "Node deletion does not change the applicable storage billing rules. If the Tenant itself is deleted, its existing storage exemption still applies."
+  "nodeStorageExemption": "Node deletion does not change the applicable storage billing rules. If the Tenant itself is deleted, its existing storage exemption still applies.",
+  "planConnections": "Plan Connections",
+  "keylessEndpointHelp": "Keyless endpoints receive no credential. Review the endpoint and its data retention policy before use. Default limits are 128000 context tokens and 16384 output tokens; review them for this model."
 }

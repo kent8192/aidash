@@ -5,6 +5,7 @@ export type DesktopSettings = {
   selected: string | null;
 };
 export type DesktopAccess = { access_token: string; expires_in: number };
+export type DesktopPlanListener = { id: string; port: number };
 export const desktopAvailable = () => "__TAURI_INTERNALS__" in window;
 async function command<T>(
   name: string,
@@ -25,4 +26,8 @@ export const desktop = {
       rejectedToken: rejectedToken ?? null,
     }),
   logout: () => command<void>("desktop_logout"),
+  planListen: () => command<DesktopPlanListener>("plan_listen"),
+  planWait: (id: string, authorizationUrl: string) =>
+    command<string>("plan_wait", { id, authorizationUrl }),
+  planCancel: (id: string) => command<void>("plan_cancel", { id }),
 };

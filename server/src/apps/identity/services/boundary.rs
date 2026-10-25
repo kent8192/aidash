@@ -115,6 +115,12 @@ impl AccessBoundary {
 			request.extensions.insert(origin);
 			actor
 		};
+		if let Actor::Subject(identity) = &actor {
+			// Even identity-only endpoints that do not open an Access transaction
+			// are new protected operations. User-issued bearer credentials retain
+			// their original source Mapping and must check the common authority.
+			identity.check_binding(&runtime.store.pool).await?;
+		}
 		if matches!(self.requirement, Requirement::DeploymentAdministrator)
 			&& !matches!(actor, Actor::DeploymentAdministrator)
 		{

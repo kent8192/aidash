@@ -11,6 +11,57 @@ description = "Stop local Aidash infrastructure while keeping its data volumes"
 command = "docker"
 args = ["compose", "--profile", "dev", "down"]
 
+[tasks.standalone-prepare]
+description = "Prepare private local Auth/Marketplace credentials without Cloud configuration"
+command = "python3"
+args = ["scripts/prepare-standalone-compose.py"]
+
+[tasks.auth-dev]
+description = "Build and start standalone Auth without Cloud or Marketplace"
+dependencies = ["standalone-prepare"]
+command = "docker"
+args = [
+  "compose",
+  "-f",
+  "enterprise/compose.yaml",
+  "--profile",
+  "auth",
+  "up",
+  "--build",
+  "-d",
+  "--wait",
+]
+
+[tasks.marketplace-dev]
+description = "Build and start standalone Marketplace without Cloud or Auth"
+dependencies = ["standalone-prepare"]
+command = "docker"
+args = [
+  "compose",
+  "-f",
+  "enterprise/compose.yaml",
+  "--profile",
+  "marketplace",
+  "up",
+  "--build",
+  "-d",
+  "--wait",
+]
+
+[tasks.standalone-down]
+description = "Stop standalone Auth/Marketplace while preserving data and credentials"
+command = "docker"
+args = [
+  "compose",
+  "-f",
+  "enterprise/compose.yaml",
+  "--profile",
+  "auth",
+  "--profile",
+  "marketplace",
+  "down",
+]
+
 [tasks.k8s-up]
 description = "Build and start Aidash with PostgreSQL and NATS in a local kind cluster"
 dependencies = [

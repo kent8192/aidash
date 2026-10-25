@@ -12,6 +12,7 @@ import {
   useRegistryVersions,
 } from "./catalog-approval";
 import { approvalState } from "./catalog-approval-model";
+import { ModelSource } from "./model-source";
 import { toolReplay } from "./tool-declaration";
 
 type Selection =
@@ -83,6 +84,7 @@ export function EntityDetails({
             v{current.version}
           </span>
         </div>
+        <ModelSource entry={current} />
         {local(current.description) && (
           <Hint>{local(current.description)}</Hint>
         )}

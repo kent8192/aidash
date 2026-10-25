@@ -22283,7 +22283,7 @@
                 "type": "array"
               },
               "source": {
-                "description": "The commit-pinned GitHub URL of the plugin root.",
+                "description": "The commit-pinned GitHub URL or immutable Marketplace plugin/version URI.",
                 "type": "string"
               },
               "version": {
@@ -43611,6 +43611,7 @@
     "json": false,
     "method": "GET",
     "name": "plan-connection-status",
+    "offerings": ["self-hosted"],
     "path": "/api/tenants/{tenant}/plan-connections/{provider}",
     "query_parameters": [],
     "responses": {
@@ -43643,7 +43644,8 @@
                 "type": "integer"
               },
               "state": {
-                "$ref": "#/components/schemas/PlanConnectionState"
+                "$ref": "#/components/schemas/PlanConnectionState",
+                "description": "Effective state, including the connecting identity's current Mapping\neligibility. The stored grant state is preserved while identity use pauses."
               },
               "subject": {
                 "type": "string"
@@ -43731,6 +43733,7 @@
     "json": true,
     "method": "POST",
     "name": "plan-authorization-start",
+    "offerings": ["self-hosted"],
     "path": "/api/tenants/{tenant}/plan-connections/{provider}/authorizations",
     "query_parameters": [],
     "responses": {
@@ -43763,6 +43766,7 @@
     "json": true,
     "method": "POST",
     "name": "plan-authorization-complete",
+    "offerings": ["self-hosted"],
     "path": "/api/tenants/{tenant}/plan-connections/{provider}/authorizations/complete",
     "query_parameters": [],
     "responses": {
@@ -43828,7 +43832,8 @@
                 "type": "integer"
               },
               "state": {
-                "$ref": "#/components/schemas/PlanConnectionState"
+                "$ref": "#/components/schemas/PlanConnectionState",
+                "description": "Effective state, including the connecting identity's current Mapping\neligibility. The stored grant state is preserved while identity use pauses."
               },
               "subject": {
                 "type": "string"
@@ -43896,6 +43901,7 @@
     "json": true,
     "method": "DELETE",
     "name": "plan-connection-disconnect",
+    "offerings": ["self-hosted"],
     "path": "/api/tenants/{tenant}/plan-connections/{provider}",
     "query_parameters": [],
     "responses": {
@@ -43924,6 +43930,7 @@
     "json": false,
     "method": "GET",
     "name": "plan-connection-models",
+    "offerings": ["self-hosted"],
     "path": "/api/tenants/{tenant}/plan-connections/{provider}/models",
     "query_parameters": [],
     "responses": {
