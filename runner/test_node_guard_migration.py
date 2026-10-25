@@ -167,9 +167,10 @@ class GuardMigrationTest(unittest.TestCase):
                     node_guard.handle(dict(old, action='status', epoch=2))
                 # Failed, malformed, duplicate and prefix-only inventories cannot
                 # be converted into completed native absence.
-                for inventory in (FileNotFoundError('native command missing'), b'not-an-id\n',
-                                  (old['container_id'] + 'c\n').encode(),
-                                  ((old['container_id'] + '\n') * 2).encode()):
+                for invalid_inventory in (FileNotFoundError('native command missing'), b'not-an-id\n',
+                                          (old['container_id'] + 'c\n').encode(),
+                                          ((old['container_id'] + '\n') * 2).encode()):
+                    inventory = invalid_inventory
                     node_guard.retry_cleanup('')
                     self.assertTrue(pending.exists())
                     self.assertEqual(deleted, [])
