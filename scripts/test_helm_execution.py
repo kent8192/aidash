@@ -39,6 +39,26 @@ class ChartsTest(unittest.TestCase):
     base = {'deployment': {'id': 'aidash://fixture'}, 'existingSecret': 'fixture',
             'capabilities': {'storage': {'existingClaim': 'objects'}}}
 
+    def test_common_auth_mounts_the_managed_profile_and_tls_on_both_product_workers(self):
+        objects = render(self.aidash, dict(self.base, commonAuth={'existingSecret': 'cloud-auth'}))
+        for role in ('server', 'worker'):
+            pod = select(objects, 'Deployment', '-' + role)['spec']['template']['spec']
+            container = pod['containers'][0]
+            environment = {entry['name']: entry.get('value') for entry in container['env']}
+            self.assertEqual(environment['REINHARDT_ENV'], 'managed-common-auth')
+            self.assertNotIn('AIDASH_GCIP_SETTINGS', environment)
+            mount = next(mount for mount in container['volumeMounts'] if mount.get('subPath') == 'settings.toml')
+            self.assertEqual(mount['mountPath'], '/app/server/settings/managed-common-auth.toml')
+            self.assertTrue(mount['readOnly'])
+            self.assertIn({'name': 'common-auth', 'mountPath': '/run/auth-tls', 'readOnly': True}, container['volumeMounts'])
+            volume = next(volume for volume in pod['volumes'] if volume['name'] == mount['name'])
+            self.assertEqual(volume['secret']['secretName'], 'cloud-auth')
+        gcip = {'dashboard': {'gcip': {'project_id': 'project', 'web_api_key': 'public',
+                                     'tenant_bindings': {}, 'public_origin': 'https://cloud.example.test'}}}
+        with self.assertRaises(subprocess.CalledProcessError):
+            render(self.aidash, dict(self.base, deployment={'id': 'aidash://fixture', 'endpoint': 'https://cloud.example.test'},
+                                    commonAuth={'existingSecret': 'cloud-auth'}, gcip={'settings': gcip}))
+
     def test_local_postgres_secret_store_is_mounted_without_key_material(self):
         values = yaml.safe_load((ROOT / 'deploy/local-k8s/values.yaml').read_text())
         values.update(self.base)

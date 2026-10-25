@@ -69,6 +69,7 @@ async fn fetch_with_endpoints(
 		format!("/{root}")
 	};
 	Ok(PluginFetch::Fetched(FetchedPlugin {
+		entitlement_expires_at: None,
 		source: format!(
 			"https://github.com/{}/{}/tree/{}{suffix}",
 			source.owner, source.repo, commit.sha

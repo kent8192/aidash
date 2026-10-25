@@ -47,6 +47,9 @@ impl Issuers for Issuer {
 #[derive(Clone)]
 pub struct AccountPolicy {
 	pub issuers: Arc<dyn Issuers>,
+	/// Common authentication is checked online at every new operation boundary.
+	/// Upstream status freshness is enforced by that authority, not a local cache.
+	pub authority: Option<Arc<dyn crate::ports::accounts::Authority>>,
 	/// The Tenancy Rule that creates a Personal Tenant at sign-in.
 	pub personal_tenants: bool,
 	/// The Deployment loads Demo data (`[demo_data] enabled`), so a sign-in

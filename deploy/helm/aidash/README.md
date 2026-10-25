@@ -10,6 +10,13 @@ Home recovery ledger before enabling native memory. See [orchestration](../../..
 (40 hex characters) annotates both Deployments with `aidash.run/source-sha`, so a
 controller can tie a completed rollout to the deployed commit.
 
+For Cloud common authentication, `commonAuth.existingSecret` names an existing
+Secret with `settings.toml`, `ca.pem`, `cloud.pem` and `cloud-key.pem`. Both server
+and worker mount it read-only, using a managed profile over the image's base
+settings; simultaneous `gcip.settings` is refused. See the
+[configuration and certificate procedure](../../../enterprise/deploy/standalone-service/cloud-common-auth.md).
+Auth and Marketplace have their own releases and do not join this chart.
+
 Server and worker have separate Kubernetes ServiceAccounts. Set
 `server.serviceAccount.annotations` and `worker.serviceAccount.annotations` to
 their respective `iam.gke.io/gcp-service-account` annotations. These annotations

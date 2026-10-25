@@ -181,13 +181,11 @@ impl RegistryManagement {
 		actor: Actor,
 		request: PluginImportRequest,
 	) -> Result<AgentPluginImportResult> {
-		agent_plugin_import::import(
-			&self.runtime,
-			&crate::bootstrap::agent_plugin_import(),
-			actor,
-			request,
-		)
-		.await
+		let Actor::Subject(ref identity) = actor else {
+			return Err(Error::Forbidden);
+		};
+		let source = crate::bootstrap::agent_plugin_import(&self.runtime.config, &identity.tenant)?;
+		agent_plugin_import::import(&self.runtime, &source, actor, request).await
 	}
 }
 

@@ -409,7 +409,13 @@ def provision_secret(config, output, kind):
     value = json.loads(raw)
     previous = json.dumps(value, sort_keys=True)
     gcip = output.get("gcip", {})
-    if gcip.get("tenant_ids"):
+    dashboard = value.get("dashboard")
+    if isinstance(dashboard, dict) and "common_auth" in dashboard:
+        # Keep the original Terraform-owned GCIP Tenants/IDs/users while
+        # selecting the separate runtime authority. Removing their resource
+        # declarations at cutover would destroy upstream sign-in identities.
+        kube.common_auth_settings(output, dashboard, value.get("common_auth_tls"), value)
+    elif gcip.get("tenant_ids"):
         dashboard = value.setdefault("dashboard", {})
         if dashboard.get("oidc") or any(key.startswith("AIDASH_OIDC_") for key in value):
             raise Refused("Remove OIDC runtime configuration before enabling the sole GCIP issuer")

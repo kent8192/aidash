@@ -137,8 +137,13 @@ pub(super) async fn credential_current(access: &mut Access) -> Result<()> {
 		.fetch_optional(&mut **access.tx)
 		.await?
 	};
+	let common = access
+		.tx
+		.pool()
+		.dashboard_policy()
+		.is_some_and(|policy| policy.authority.is_some());
 	if current.is_some_and(|(issuer, enabled, fresh)| {
-		!enabled || (crate::authorization::identity::reports_status(&issuer) && !fresh)
+		!enabled || (!common && crate::authorization::identity::reports_status(&issuer) && !fresh)
 	}) {
 		return Err(Error::IdentityStatusUnavailable);
 	}

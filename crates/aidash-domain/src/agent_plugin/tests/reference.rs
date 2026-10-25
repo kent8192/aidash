@@ -50,6 +50,12 @@ fn a_stored_reference_refuses_unknown_fields_and_invalid_names() {
 
 #[rstest]
 #[case::accepted(SOURCE, true)]
+#[case::marketplace("marketplace://00000000-0000-0000-0000-000000000001/1.2.3", true)]
+#[case::marketplace_traversal("marketplace://00000000-0000-0000-0000-000000000001/../1.2.3", false)]
+#[case::marketplace_query(
+	"marketplace://00000000-0000-0000-0000-000000000001/1.2.3?url=https://elsewhere",
+	false
+)]
 #[case::not_github("https://gitlab.com/acme/tools", false)]
 #[case::not_https("http://github.com/acme/tools", false)]
 #[case::too_long(&format!("https://github.com/{}", "a".repeat(MAX_SOURCE_BYTES)), false)]

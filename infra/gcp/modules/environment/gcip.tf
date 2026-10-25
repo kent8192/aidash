@@ -4,9 +4,12 @@ locals {
   gcip_saml   = merge({}, [for alias, pool in var.gcip_tenants : { for id, provider in pool.saml : "${alias}/${id}" => merge(provider, { pool = alias, provider_id = id }) }]...)
 }
 resource "google_identity_platform_tenant" "aidash" {
-  for_each              = var.gcip_tenants
-  project               = var.project_id
-  display_name          = "${local.name}-${each.key}"
+  for_each = var.gcip_tenants
+  project  = var.project_id
+  # Identity Platform accepts only 4-20 letters, digits and hyphens starting with
+  # a letter. Environment names alone exceed that and aliases may contain "_",
+  # so derive a stable per-Environment pool name; nothing reads it.
+  display_name          = "ad-${substr(sha256("${local.name}/${each.key}"), 0, 17)}"
   allow_password_signup = each.value.password_sign_up
   client {
     # Federated first sign-in must create its tenant account even when passwords are disabled.
