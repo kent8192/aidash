@@ -73,7 +73,7 @@ impl Marketplace {
 		}
 	}
 	/// Refuses plain-HTTP requests when the origin is HTTPS. Forwarded HTTPS
-	/// metadata counts only from the configured proxy IPs; probes stay reachable.
+	/// metadata counts only from the configured proxy IPs or networks; probes stay reachable.
 	pub(crate) fn require_https(&self, request: &Request) -> Result<()> {
 		if !self.config.secure()
 			|| (request.method == http::Method::GET && request.uri.path() == "/healthz")
@@ -81,7 +81,10 @@ impl Marketplace {
 			return Ok(());
 		}
 		request.set_trusted_proxies(reinhardt::http::TrustedProxies::new(
-			self.config.trusted_proxy_ips.clone(),
+			crate::config::settings::trusted_peer(
+				&self.config.trusted_proxy_ips,
+				request.remote_addr,
+			),
 		));
 		if request.is_secure() {
 			Ok(())

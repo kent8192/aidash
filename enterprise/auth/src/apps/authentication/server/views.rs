@@ -65,7 +65,10 @@ impl Http {
 			));
 		}
 		request.set_trusted_proxies(reinhardt::http::TrustedProxies::new(
-			self.auth.config.trusted_proxy_ips.clone(),
+			crate::config::settings::trusted_peer(
+				&self.auth.config.trusted_proxy_ips,
+				request.remote_addr,
+			),
 		));
 		if !self.auth.config.loopback_development && !request.is_secure() {
 			return Ok(failure(Error::Invalid));

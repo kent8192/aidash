@@ -109,8 +109,10 @@ HTTP is accepted only for loopback development URLs.
 
 With an HTTPS origin the service itself refuses plain-HTTP requests (except
 `GET /healthz`) and sends `Strict-Transport-Security`. Forwarded HTTPS metadata is
-accepted only from the exact proxy IPs listed in the comma-separated
-`AIDASH_MARKETPLACE_TRUSTED_PROXY_IPS`. Leave it unset only for loopback HTTP
+accepted only from the proxies listed in the comma-separated
+`AIDASH_MARKETPLACE_TRUSTED_PROXY_IPS`, each an exact IP or a CIDR network such as
+`10.44.0.0/14` (host bits must be zero; every peer in the network is trusted, so
+restrict who can reach the service). An invalid entry fails startup. Leave it unset only for loopback HTTP
 origins; with an HTTPS origin and no trusted proxy, every request except
 `GET /healthz` is refused with 400.
 

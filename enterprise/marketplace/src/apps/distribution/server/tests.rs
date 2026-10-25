@@ -300,20 +300,30 @@ async fn standalone_distribution_enforces_ownership_and_persists_recall() {
 	// An HTTPS origin makes the application refuse plain HTTP itself and send
 	// HSTS; only a configured proxy IP may assert forwarded HTTPS.
 	let hsts = "max-age=63072000; includeSubDomains";
-	for (trusted, forwarded, path, status) in [
-		(true, false, "/healthz", 200),
-		(true, false, "/api/marketplace/catalog", 400),
-		(true, false, "/api/server_fn/marketplace_session", 400),
-		(true, true, "/api/marketplace/catalog", 200),
-		(false, true, "/api/marketplace/catalog", 400),
+	for (proxies, forwarded, path, status) in [
+		(&["127.0.0.1"][..], false, "/healthz", 200),
+		(&["127.0.0.1"], false, "/api/marketplace/catalog", 400),
+		(
+			&["127.0.0.1"],
+			false,
+			"/api/server_fn/marketplace_session",
+			400,
+		),
+		(&["127.0.0.1"], true, "/api/marketplace/catalog", 200),
+		(&[], true, "/api/marketplace/catalog", 400),
+		// A CIDR network trusts any peer inside it and no other.
+		(&["127.0.0.0/8"], true, "/api/marketplace/catalog", 200),
+		(&["10.0.0.0/8"], true, "/api/marketplace/catalog", 400),
+		(
+			&["10.0.0.0/8", "127.0.0.0/8"],
+			true,
+			"/api/marketplace/catalog",
+			200,
+		),
 	] {
 		let secure = Marketplace::connect(
 			Config {
-				trusted_proxy_ips: if trusted {
-					vec!["127.0.0.1".parse().unwrap()]
-				} else {
-					vec![]
-				},
+				trusted_proxy_ips: proxies.iter().map(|proxy| proxy.parse().unwrap()).collect(),
 				..config("https://marketplace.example.com", &issuer)
 			},
 			&app_url,
@@ -333,7 +343,7 @@ async fn standalone_distribution_enforces_ownership_and_persists_recall() {
 			request = request.header("x-forwarded-proto", "https");
 		}
 		let response = request.send().await.unwrap();
-		assert_eq!(response.status(), status, "{path} {trusted} {forwarded}");
+		assert_eq!(response.status(), status, "{path} {proxies:?} {forwarded}");
 		assert_eq!(response.headers()["strict-transport-security"], hsts);
 		secure_task.abort();
 	}

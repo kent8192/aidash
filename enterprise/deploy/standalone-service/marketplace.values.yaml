@@ -4,8 +4,11 @@ environment:
   AIDASH_MARKETPLACE_LISTEN: 0.0.0.0:8082
   AIDASH_MARKETPLACE_ORIGIN: https://marketplace.example.com
   AIDASH_AUTH_ISSUER: https://auth.example.com
-  # Exact IPs of the HTTPS edge (comma-separated); replace with the real proxy address.
-  AIDASH_MARKETPLACE_TRUSTED_PROXY_IPS: 10.0.0.10
+  # IPs or CIDR networks of the HTTPS edge (comma-separated). 10.44.0.0/14 is the GKE Pod
+  # CIDR from infra/gcp/environments/cluster.tf, where the edge Pods (aidash.run/edge=env)
+  # live and change IPs. Every Pod in that range is trusted to assert forwarded HTTPS, so a
+  # NetworkPolicy must restrict ingress to this Service to the edge Pods.
+  AIDASH_MARKETPLACE_TRUSTED_PROXY_IPS: 10.44.0.0/14
   AIDASH_MARKETPLACE_CLIENT_SECRET_FILE: /run/secrets/marketplace-client-secret
   AIDASH_MARKETPLACE_RESOURCE_SECRET_FILE: /run/secrets/marketplace-resource-secret
   AIDASH_MARKETPLACE_BILLING_SECRET_FILE: /run/secrets/marketplace-billing-secret

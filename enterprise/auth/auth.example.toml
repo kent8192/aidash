@@ -15,8 +15,8 @@ signing_key_id = "auth-key-1"
 token_encryption_key_file = "/run/secrets/auth-token-encryption-key"
 assets_dir = "/app/pages"
 loopback_development = false
-# Only the exact IPs of a trusted HTTPS reverse proxy; never trust arbitrary
-# forwarded headers. A co-located edge can use loopback.
+# Only the IPs or CIDR networks (e.g. "10.44.0.0/14") of a trusted HTTPS reverse proxy;
+# never trust arbitrary forwarded headers. A co-located edge can use loopback.
 trusted_proxy_ips = ["127.0.0.1"]
 
 [gcip_providers]

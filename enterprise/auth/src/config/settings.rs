@@ -44,7 +44,7 @@ pub struct Config {
 	#[serde(default)]
 	pub gcip_mfa_mandatory: Vec<String>,
 	#[serde(default)]
-	pub trusted_proxy_ips: Vec<std::net::IpAddr>,
+	pub trusted_proxy_ips: Vec<ProxyNetwork>,
 	#[serde(default)]
 	pub assets_dir: Option<PathBuf>,
 	pub gcip_browser_api_key: String,
@@ -56,6 +56,79 @@ pub struct Config {
 	pub clients: Vec<Client>,
 	#[serde(default)]
 	pub loopback_development: bool,
+}
+/// A trusted proxy network. A plain IP is a full-length prefix and matches only itself.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Deserialize)]
+#[serde(try_from = "String")]
+pub struct ProxyNetwork {
+	address: std::net::IpAddr,
+	prefix: u32,
+}
+impl ProxyNetwork {
+	fn width(address: std::net::IpAddr) -> u32 {
+		if address.is_ipv4() { 32 } else { 128 }
+	}
+	fn bits(address: std::net::IpAddr) -> u128 {
+		match address {
+			std::net::IpAddr::V4(address) => u32::from(address).into(),
+			std::net::IpAddr::V6(address) => address.into(),
+		}
+	}
+	fn masked(&self, address: std::net::IpAddr) -> u128 {
+		let host = Self::width(address) - self.prefix;
+		Self::bits(address) & u128::MAX.checked_shl(host).unwrap_or(0)
+	}
+	pub fn contains(&self, address: std::net::IpAddr) -> bool {
+		address.is_ipv4() == self.address.is_ipv4()
+			&& self.masked(address) == Self::bits(self.address)
+	}
+}
+impl std::str::FromStr for ProxyNetwork {
+	type Err = String;
+	fn from_str(raw: &str) -> Result<Self, Self::Err> {
+		let invalid = || {
+			format!(
+				"invalid trusted proxy network {raw:?}; expected an IP or a CIDR network without host bits"
+			)
+		};
+		let (address, prefix) = raw
+			.split_once('/')
+			.map_or((raw, None), |(a, p)| (a, Some(p)));
+		let address: std::net::IpAddr = address.parse().map_err(|_| invalid())?;
+		let width = Self::width(address);
+		let prefix = match prefix {
+			None => width,
+			Some(prefix) if !prefix.is_empty() && prefix.bytes().all(|b| b.is_ascii_digit()) => {
+				prefix
+					.parse()
+					.ok()
+					.filter(|p| *p <= width)
+					.ok_or_else(invalid)?
+			}
+			Some(_) => return Err(invalid()),
+		};
+		let network = Self { address, prefix };
+		// Host bits set usually mean a mistyped network; refuse rather than widen it.
+		if network.masked(address) != Self::bits(address) {
+			return Err(invalid());
+		}
+		Ok(network)
+	}
+}
+impl TryFrom<String> for ProxyNetwork {
+	type Error = String;
+	fn try_from(raw: String) -> Result<Self, String> {
+		raw.parse()
+	}
+}
+/// The peer address when it lies in a trusted network. Reinhardt then honours the forwarded
+/// headers for that peer alone; any other peer gets an empty trusted set.
+pub fn trusted_peer(
+	networks: &[ProxyNetwork],
+	peer: Option<std::net::SocketAddr>,
+) -> Option<std::net::IpAddr> {
+	peer.map(|peer| peer.ip())
+		.filter(|ip| networks.iter().any(|network| network.contains(*ip)))
 }
 impl Config {
 	pub fn validate(&self) -> Result<(), String> {
@@ -274,5 +347,71 @@ mod tests {
 			value.validate().is_err(),
 			"a misspelled pool must not silently use the default sign-in methods"
 		);
+	}
+	#[test]
+	fn proxy_network_contains_only_its_own_family_and_range() {
+		let network = |raw: &str| raw.parse::<ProxyNetwork>().unwrap();
+		let ip = |raw: &str| raw.parse::<std::net::IpAddr>().unwrap();
+		for (cidr, address, expected) in [
+			("10.44.0.0/14", "10.44.0.1", true),
+			("10.44.0.0/14", "10.47.255.255", true),
+			("10.44.0.0/14", "10.48.0.0", false),
+			("10.44.0.0/14", "10.43.255.255", false),
+			("127.0.0.0/8", "127.0.0.1", true),
+			("10.0.0.0/8", "127.0.0.1", false),
+			("0.0.0.0/0", "203.0.113.9", true),
+			("0.0.0.0/0", "::1", false),
+			("127.0.0.1", "127.0.0.1", true),
+			("127.0.0.1", "127.0.0.2", false),
+			("fd00::/8", "fd12::1", true),
+			("fd00::/8", "fe80::1", false),
+			("::1", "::1", true),
+			("::/0", "::1", true),
+			("::/0", "127.0.0.1", false),
+			("::1", "127.0.0.1", false),
+		] {
+			assert_eq!(
+				network(cidr).contains(ip(address)),
+				expected,
+				"{cidr} contains {address}"
+			);
+		}
+	}
+	#[test]
+	fn proxy_network_rejects_malformed_entries() {
+		for raw in [
+			"10.0.0.1/8",
+			"10.44.0.0/33",
+			"fd00::/129",
+			"fd00::1/8",
+			"10.0.0.0/",
+			"10.0.0.0/+8",
+			"10.0.0.0/-1",
+			"10.0.0.0/8/8",
+			"10.0.0.0/ 8",
+			"/8",
+			"",
+			"edge.example.com",
+			"10.0.0.0/eight",
+		] {
+			assert!(raw.parse::<ProxyNetwork>().is_err(), "{raw:?}");
+		}
+	}
+	#[test]
+	fn trusted_peer_requires_a_matching_network() {
+		let networks: Vec<ProxyNetwork> =
+			vec!["10.0.0.0/8".parse().unwrap(), "::1".parse().unwrap()];
+		let peer = |raw: &str| Some(raw.parse::<std::net::SocketAddr>().unwrap());
+		assert_eq!(
+			trusted_peer(&networks, peer("10.1.2.3:443")),
+			Some("10.1.2.3".parse().unwrap())
+		);
+		assert_eq!(
+			trusted_peer(&networks, peer("[::1]:443")),
+			Some("::1".parse().unwrap())
+		);
+		assert_eq!(trusted_peer(&networks, peer("192.0.2.1:443")), None);
+		assert_eq!(trusted_peer(&networks, None), None);
+		assert_eq!(trusted_peer(&[], peer("10.1.2.3:443")), None);
 	}
 }

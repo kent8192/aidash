@@ -596,6 +596,27 @@ async fn oidc_issuer_and_marketplace_bff_preserve_real_session_and_refresh_bound
 		.unwrap();
 	assert_eq!(rpc.headers()["strict-transport-security"], hsts);
 	secure_task.abort();
+	// A CIDR network trusts forwarded HTTPS from any peer inside it and no other.
+	for (proxy, status) in [("127.0.0.0/8", 200), ("10.0.0.0/8", 400)] {
+		let mut networked = (*auth).clone();
+		{
+			let config = Arc::make_mut(&mut networked.config);
+			config.loopback_development = false;
+			config.trusted_proxy_ips = vec![proxy.parse().unwrap()];
+		}
+		let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+		let origin = format!("http://{}", listener.local_addr().unwrap());
+		let task = spawn(listener, crate::config::urls::handler(Arc::new(networked)));
+		ready(&client, &origin, "/healthz").await;
+		let response = client
+			.get(format!("{origin}/sign-in"))
+			.header("x-forwarded-proto", "https")
+			.send()
+			.await
+			.unwrap();
+		assert_eq!(response.status(), status, "{proxy}");
+		task.abort();
+	}
 	let nonce = secret();
 	let code = authorize(&client, &issuer, &callback, &browser, &nonce).await;
 	let wrong_client = form(
