@@ -111,12 +111,24 @@ class ChartsTest(unittest.TestCase):
                     self.assertEqual(pod['metadata']['labels'][key], value)
                 self.assertIn('nodeAffinity', pod['spec']['affinity'])
                 self.assertEqual(pod['spec']['securityContext']['fsGroup'], 10001)
-                claims = {volume['name']: volume['persistentVolumeClaim']['claimName'] for volume in pod['spec']['volumes']}
+                claims = {volume['name']: volume['persistentVolumeClaim']['claimName'] for volume in pod['spec']['volumes']
+                          if 'persistentVolumeClaim' in volume}
                 paths = {mount['name']: mount['mountPath'] for mount in pod['spec']['containers'][0]['volumeMounts']}
                 self.assertEqual({name: (claims[name], paths[name]) for name in claims}, mounts)
         # Without a shared claim the roles roll independently.
         unshared = render(self.aidash, dict(self.base, capabilities={'storage': {'existingClaim': ''}}))
         self.assertEqual(select(unshared, 'Deployment', '-aidash-server')['spec']['strategy']['type'], 'RollingUpdate')
+
+    def test_read_only_roles_have_a_writable_temp_directory(self):
+        # Several migration roots are staged under the temp directory, and the
+        # migration Job copies the server template.
+        objects = render(self.aidash, self.base)
+        for role in ('server', 'worker'):
+            pod = select(objects, 'Deployment', '-aidash-' + role)['spec']['template']['spec']
+            container = pod['containers'][0]
+            self.assertTrue(container['securityContext']['readOnlyRootFilesystem'])
+            self.assertIn({'name': 'tmp', 'mountPath': '/tmp'}, container['volumeMounts'])
+            self.assertIn({'name': 'tmp', 'emptyDir': {'sizeLimit': '64Mi'}}, pod['volumes'])
 
     def test_server_worker_google_identities_are_separate(self):
         objects = render(self.aidash, dict(self.base,
