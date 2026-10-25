@@ -71,6 +71,13 @@ impl AccessTransaction {
 		self.transaction.take()
 	}
 
+	/// The executor for checks that only read rows for Node-backed subjects.
+	pub(crate) fn executor(&mut self) -> Option<&mut dyn TransactionExecutor> {
+		self.transaction
+			.as_mut()
+			.map(|transaction| transaction as &mut dyn TransactionExecutor)
+	}
+
 	pub(crate) fn admitted(&self, admission: &CatalogAdmission) -> Option<crate::registry::Entry> {
 		let transaction = self.transaction.as_ref()?;
 		if transaction.lock_epoch() != self.admissions_epoch {
@@ -372,7 +379,8 @@ impl Access {
 			return Err(Error::Forbidden);
 		}
 		for subject in &subjects {
-			super::identity::require_live_subject(&mut *self.tx, &self.snapshot, subject).await?;
+			super::identity::require_live_subject_on(self.tx.executor(), &self.snapshot, subject)
+				.await?;
 		}
 		if identity.credential_id != self.identity.credential_id {
 			identity.lock_credential(&mut self.tx).await?;
@@ -678,7 +686,8 @@ impl Access {
 
 	pub async fn decide(&mut self, resource: &Resource, action: &str) -> Result<bool> {
 		for subject in &self.subjects {
-			super::identity::require_live_subject(&mut *self.tx, &self.snapshot, subject).await?;
+			super::identity::require_live_subject_on(self.tx.executor(), &self.snapshot, subject)
+				.await?;
 		}
 		aidash_application::authorization::lease::decide(
 			&mut crate::bootstrap::run_visibility_scope(self),

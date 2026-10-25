@@ -62,16 +62,31 @@ pub(crate) async fn require_live_subject(
 	snapshot: &Snapshot,
 	subject: &str,
 ) -> Result<()> {
+	require_live_subject_on(Some(tx), snapshot, subject).await
+}
+
+/// Variant for a lease that may be suspended. A plain user needs no database
+/// read, while a Node-backed subject is rejected instead of dereferencing a
+/// suspended authorization transaction.
+pub(crate) async fn require_live_subject_on(
+	tx: Option<&mut dyn TransactionExecutor>,
+	snapshot: &Snapshot,
+	subject: &str,
+) -> Result<()> {
 	if !enabled(snapshot, subject) {
 		return Err(Error::Forbidden);
 	}
+	let mut tx = tx;
 	let mut current = Some(subject);
 	while let Some(id) = current {
 		let subject = snapshot.bundle.subjects.get(id).ok_or(Error::Forbidden)?;
 		if subject.kind != aidash_domain::policy::SubjectKind::User {
 			let node = subject.node.as_ref().ok_or(Error::Forbidden)?;
+			let transaction = tx
+				.as_deref_mut()
+				.ok_or_else(|| Error::Conflict("authorization transaction is suspended".into()))?;
 			crate::apps::identity::repositories::nodes::require_live(
-				tx,
+				transaction,
 				&snapshot.bundle.tenant,
 				node.as_str(),
 			)
