@@ -486,22 +486,61 @@ impl Authentication {
 		{
 			return Err(Error::Unauthorized);
 		}
-		let session = ProductSession {
-			id: Uuid::new_v4(),
-			account_id: account.id,
-			identity_id: identity.id,
-			client_id: client.into(),
-			device_id: secret(),
-			issued_at: auth_time,
-			last_seen_at: now,
-			absolute_expires_at: now + Duration::hours(12),
-			idle_seconds: 1800,
-			account_epoch: account.session_epoch,
-			revoked_at: None,
-		};
+		let session = browser_session(&account, &identity, client, auth_time, now);
 		tx.save_session(&session).await?;
 		Box::new(tx).commit().await?;
 		Ok(session)
+	}
+
+	/// Continue an admitted SSO browser session into a product session. The
+	/// parent is rechecked under the row locks an all-products logout takes, so
+	/// a logout that completes after the caller's SSO check leaves no successor.
+	pub(crate) async fn continue_sso_session(
+		&self,
+		parent_id: Uuid,
+		client: &str,
+	) -> Result<ProductSession> {
+		let now = Utc::now();
+		let mut tx = self.store.scope().await?;
+		let parent = tx.session(parent_id).await?.ok_or(Error::Unauthorized)?;
+		let account = tx
+			.account(parent.account_id)
+			.await?
+			.ok_or(Error::Unauthorized)?;
+		let identity = tx
+			.identity(parent.identity_id)
+			.await?
+			.ok_or(Error::Unauthorized)?;
+		if parent.client_id != "sso"
+			|| interactive_validity(&parent, &account, &identity, now) != Validity::Active
+		{
+			return Err(Error::Unauthorized);
+		}
+		let session = browser_session(&account, &identity, client, parent.issued_at, now);
+		tx.save_session(&session).await?;
+		Box::new(tx).commit().await?;
+		Ok(session)
+	}
+}
+fn browser_session(
+	account: &Account,
+	identity: &ExternalIdentity,
+	client: &str,
+	auth_time: chrono::DateTime<Utc>,
+	now: chrono::DateTime<Utc>,
+) -> ProductSession {
+	ProductSession {
+		id: Uuid::new_v4(),
+		account_id: account.id,
+		identity_id: identity.id,
+		client_id: client.into(),
+		device_id: secret(),
+		issued_at: auth_time,
+		last_seen_at: now,
+		absolute_expires_at: now + Duration::hours(12),
+		idle_seconds: 1800,
+		account_epoch: account.session_epoch,
+		revoked_at: None,
 	}
 }
 use reinhardt::query::{IntoIden, QueryStatementBuilder};

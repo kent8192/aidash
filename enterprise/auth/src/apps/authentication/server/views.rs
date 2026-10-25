@@ -885,7 +885,7 @@ impl OidcInteraction for Interaction {
 				.prompts
 				.iter()
 				.any(|p| p == "login" || p == "select_account" || p == "consent");
-			if !force && let Ok((sso, source)) = http.sso(&request).await {
+			if !force && let Ok((sso, _)) = http.sso(&request).await {
 				let age = Utc::now()
 					.timestamp()
 					.saturating_sub(sso.issued_at.timestamp());
@@ -898,7 +898,7 @@ impl OidcInteraction for Interaction {
 					// lifecycle proof; Link changes always use upstream UI.
 					let product = self
 						.0
-						.issue_session(source.id, &pending.request.client_id, sso.issued_at)
+						.continue_sso_session(sso.id, &pending.request.client_id)
 						.await?;
 					let browser = cookie(&request, self.0.config.loopback_development)
 						.ok_or(Error::Unauthorized)?;

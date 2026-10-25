@@ -1008,6 +1008,22 @@ async fn oidc_issuer_and_marketplace_bff_preserve_real_session_and_refresh_bound
 		.issue_session(sibling.id, "marketplace", Utc::now())
 		.await
 		.unwrap();
+	let admitted_sso = auth
+		.issue_session(sibling.id, "sso", Utc::now())
+		.await
+		.unwrap();
+	let continued = auth
+		.continue_sso_session(admitted_sso.id, "marketplace")
+		.await
+		.unwrap();
+	assert_eq!(continued.identity_id, sibling.id);
+	assert_eq!(continued.issued_at, admitted_sso.issued_at);
+	assert!(
+		auth.continue_sso_session(current.id, "marketplace")
+			.await
+			.is_err(),
+		"only an SSO browser session can be continued into a product session"
+	);
 	Accounts::new(auth.store.clone())
 		.logout_all_authenticated(current.id, Utc::now())
 		.await
@@ -1016,6 +1032,14 @@ async fn oidc_issuer_and_marketplace_bff_preserve_real_session_and_refresh_bound
 		auth.check_session(desktop.id).await.unwrap().0,
 		Validity::Active,
 		"explicit all-products logout includes independent Desktop sessions"
+	);
+	// The SSO check happened before this logout completed; continuing it now
+	// must recheck the parent instead of minting a session at the new epoch.
+	assert!(
+		auth.continue_sso_session(admitted_sso.id, "marketplace")
+			.await
+			.is_err(),
+		"an all-products logout that wins the race leaves no successor session"
 	);
 
 	let status: Value = client
