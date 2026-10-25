@@ -81,6 +81,7 @@ fn config(origin: &str, issuer: &str) -> Config {
 		},
 		origin: origin.into(),
 		issuer: issuer.into(),
+		trusted_proxy_ips: vec![],
 		client_id: "marketplace".into(),
 		client_secret: "test-client-secret-32-characters-long".into(),
 		billing_secret: "test-billing-secret-32-characters-long".into(),
@@ -241,6 +242,8 @@ async fn standalone_distribution_enforces_ownership_and_persists_recall() {
 		.unwrap();
 	assert_eq!(response.status(), 200);
 	assert_eq!(response.headers()["cache-control"], "no-store");
+	// An HTTP origin is loopback development, where HSTS would be meaningless.
+	assert!(!response.headers().contains_key("strict-transport-security"));
 	let current: Value = response.json().await.unwrap();
 	assert_eq!(current, value!({"authenticated":true,"csrf_token":csrf}));
 	let rejected = post(
@@ -260,6 +263,58 @@ async fn standalone_distribution_enforces_ownership_and_persists_recall() {
 		.await
 		.unwrap();
 	assert_eq!(wrong_origin.status(), 403);
+	for csrf_header in [Some("wrong"), None] {
+		let mut request = client
+			.post(format!("{endpoint}/api/marketplace/plugins"))
+			.header("cookie", format!("marketplace-session={token}"))
+			.header("origin", origin);
+		if let Some(value) = csrf_header {
+			request = request.header("x-marketplace-csrf", value);
+		}
+		let rejected = request.json(&value!({})).send().await.unwrap();
+		assert_eq!(rejected.status(), 403, "{csrf_header:?}");
+	}
+
+	// An HTTPS origin makes the application refuse plain HTTP itself and send
+	// HSTS; only a configured proxy IP may assert forwarded HTTPS.
+	let hsts = "max-age=63072000; includeSubDomains";
+	for (trusted, forwarded, path, status) in [
+		(true, false, "/healthz", 200),
+		(true, false, "/api/marketplace/catalog", 400),
+		(true, false, "/api/server_fn/marketplace_session", 400),
+		(true, true, "/api/marketplace/catalog", 200),
+		(false, true, "/api/marketplace/catalog", 400),
+	] {
+		let secure = Marketplace::connect(
+			Config {
+				trusted_proxy_ips: if trusted {
+					vec!["127.0.0.1".parse().unwrap()]
+				} else {
+					vec![]
+				},
+				..config("https://marketplace.example.com", &issuer)
+			},
+			&app_url,
+		)
+		.await
+		.unwrap();
+		let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+		let (secure_endpoint, secure_task) =
+			server_on(listener, crate::config::urls::handler(secure)).await;
+		let url = format!("{secure_endpoint}{path}");
+		let mut request = if path.starts_with("/api/server_fn/") {
+			client.post(url)
+		} else {
+			client.get(url)
+		};
+		if forwarded {
+			request = request.header("x-forwarded-proto", "https");
+		}
+		let response = request.send().await.unwrap();
+		assert_eq!(response.status(), status, "{path} {trusted} {forwarded}");
+		assert_eq!(response.headers()["strict-transport-security"], hsts);
+		secure_task.abort();
+	}
 	// Missing entitlement must reach the real persistence-backed acquisition guard.
 	let publisher: Value = post(
 		"/api/server_fn/marketplace_create_publisher",

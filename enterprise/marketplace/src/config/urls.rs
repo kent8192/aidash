@@ -19,6 +19,7 @@ mod native {
 	use reinhardt::{Handler, Request, Response, ServerRouter};
 	use std::sync::Arc;
 	pub struct Application {
+		service: Arc<crate::Marketplace>,
 		protocol: crate::MarketplaceHandler,
 		rpc: ServerRouter,
 	}
@@ -28,6 +29,7 @@ mod native {
 		let context = Arc::new(InjectionContext::builder(singleton).build());
 		Application {
 			protocol: service.handler(),
+			service,
 			rpc: routes().with_di_context(context).into_server(),
 		}
 	}
@@ -35,7 +37,12 @@ mod native {
 	impl Handler for Application {
 		async fn handle(&self, request: Request) -> reinhardt::core::exception::Result<Response> {
 			if request.uri.path().starts_with("/api/server_fn/") {
-				let response = self.rpc.handle(request).await?;
+				if let Err(error) = self.service.require_https(&request) {
+					return Ok(self.service.strict_transport(error.response()));
+				}
+				let response = self
+					.service
+					.strict_transport(self.rpc.handle(request).await?);
 				return Ok(response
 					.with_header("cache-control", "no-store")
 					.with_header("x-content-type-options", "nosniff")

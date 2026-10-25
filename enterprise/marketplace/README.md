@@ -107,6 +107,12 @@ secret. Register `marketplace-resource` separately for introspection and read-on
 common Account status checks. It has no Account administration permission. HTTPS is required;
 HTTP is accepted only for loopback development URLs.
 
+With an HTTPS origin the service itself refuses plain-HTTP requests (except
+`GET /healthz`) and sends `Strict-Transport-Security`. Forwarded HTTPS metadata is
+accepted only from the exact proxy IPs listed in the comma-separated
+`AIDASH_MARKETPLACE_TRUSTED_PROXY_IPS`; leave it unset only when the service
+terminates TLS itself or the origin is loopback HTTP.
+
 The BFF verifies signed OIDC issuer/audience/nonce and PKCE. It stores access and
 refresh tokens in Marketplace persistence and returns only an opaque HttpOnly
 cookie. Each protected request performs remote introspection; an unavailable

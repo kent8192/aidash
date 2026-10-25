@@ -77,13 +77,11 @@ impl Marketplace {
 			.map(|(_, v)| v.to_owned())
 	}
 	pub(crate) fn csrf(&self, request: &Request, session: &Session) -> Result<()> {
+		use subtle::ConstantTimeEq;
+		let token = request.headers.get("x-marketplace-csrf");
 		if request.headers.get("origin").and_then(|v| v.to_str().ok())
 			!= Some(self.config.origin.trim_end_matches('/'))
-			|| request
-				.headers
-				.get("x-marketplace-csrf")
-				.and_then(|v| v.to_str().ok())
-				!= Some(&session.csrf_token)
+			|| token.is_none_or(|v| !bool::from(v.as_bytes().ct_eq(session.csrf_token.as_bytes())))
 		{
 			return Err(Error::Forbidden);
 		}

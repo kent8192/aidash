@@ -26,6 +26,13 @@ use std::{collections::HashMap, sync::Arc};
 use uuid::Uuid;
 
 const COOKIE: &str = "__Host-aidash-auth";
+/// Two years; browsers ignore the header over plain HTTP, so loopback development omits it.
+pub(crate) const HSTS: &str = "max-age=63072000; includeSubDomains";
+/// Compares secrets in constant time so response timing does not reveal a matching prefix.
+fn same_secret(left: &str, right: &str) -> bool {
+	use subtle::ConstantTimeEq;
+	bool::from(left.as_bytes().ct_eq(right.as_bytes()))
+}
 #[derive(Clone)]
 pub struct Http {
 	auth: Arc<Authentication>,
@@ -38,6 +45,18 @@ impl Http {
 #[async_trait]
 impl Handler for Http {
 	async fn handle(&self, request: Request) -> reinhardt::core::exception::Result<Response> {
+		let mut response = self.respond(request).await?;
+		if !self.auth.config.loopback_development {
+			response.headers.insert(
+				header::STRICT_TRANSPORT_SECURITY,
+				HSTS.parse().expect("static header"),
+			);
+		}
+		Ok(response)
+	}
+}
+impl Http {
+	async fn respond(&self, request: Request) -> reinhardt::core::exception::Result<Response> {
 		let path = request.uri.path().to_owned();
 		if matches!(path.as_str(), "/health" | "/healthz") && request.method == Method::GET {
 			return Ok(json_response(
@@ -255,7 +274,7 @@ impl Http {
 			.ok_or(Error::Unauthorized)?;
 		if flow.consumed
 			|| flow.expires_at <= Utc::now()
-			|| csrf.is_some_and(|csrf| csrf != flow.csrf)
+			|| csrf.is_some_and(|csrf| !same_secret(csrf, &flow.csrf))
 		{
 			return Err(Error::Unauthorized);
 		}
@@ -561,12 +580,11 @@ impl Http {
 		))
 	}
 	fn account_csrf(&self, request: &Request, csrf: &str) -> Result<()> {
-		if csrf
-			!= digest(&format!(
-				"account:{}",
-				cookie(request, self.auth.config.loopback_development)
-					.ok_or(Error::Unauthorized)?
-			)) {
+		let expected = digest(&format!(
+			"account:{}",
+			cookie(request, self.auth.config.loopback_development).ok_or(Error::Unauthorized)?
+		));
+		if !same_secret(csrf, &expected) {
 			return Err(Error::Unauthorized);
 		}
 		Ok(())
@@ -1219,7 +1237,10 @@ fn secure_headers(response: &mut Response, auth_domain: Option<&str>) {
 	let auth_frame = auth_domain
 		.map(|domain| format!(" https://{domain}"))
 		.unwrap_or_default();
-	response.headers.insert(header::CONTENT_SECURITY_POLICY, format!("default-src 'self'; script-src 'self' 'wasm-unsafe-eval' https://apis.google.com; connect-src 'self' https://*.googleapis.com https://*.firebaseapp.com https://*.gstatic.com; frame-src https://*.firebaseapp.com https://accounts.google.com{auth_frame}; style-src 'self' 'unsafe-inline'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'").parse().expect("validated CSP"));
+	// `apis.google.com` and `style-src-attr` stay for Firebase's popup/redirect
+	// resolver (gcip-sdk.js), which loads gapi and styles its hidden iframe inline.
+	// `<style>` elements and foreign stylesheets remain blocked.
+	response.headers.insert(header::CONTENT_SECURITY_POLICY, format!("default-src 'self'; script-src 'self' 'wasm-unsafe-eval' https://apis.google.com; connect-src 'self' https://*.googleapis.com https://*.firebaseapp.com https://*.gstatic.com; frame-src https://*.firebaseapp.com https://accounts.google.com{auth_frame}; style-src 'self'; style-src-attr 'unsafe-inline'; object-src 'none'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'").parse().expect("validated CSP"));
 }
 fn failure(error: Error) -> Response {
 	let (status, code) = match error {

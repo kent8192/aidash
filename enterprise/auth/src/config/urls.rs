@@ -21,12 +21,14 @@ mod native {
 	pub struct Application {
 		protocol: crate::http::Http,
 		rpc: ServerRouter,
+		hsts: bool,
 	}
 	pub fn handler(service: Arc<crate::service::Authentication>) -> Application {
 		let singleton = Arc::new(SingletonScope::new());
 		singleton.set(Browser(service.clone()));
 		let context = Arc::new(InjectionContext::builder(singleton).build());
 		Application {
+			hsts: !service.config.loopback_development,
 			protocol: crate::http::Http::new(service.clone()),
 			rpc: routes().with_di_context(context).into_server(),
 		}
@@ -36,6 +38,11 @@ mod native {
 		async fn handle(&self, request: Request) -> reinhardt::core::exception::Result<Response> {
 			if request.uri.path().starts_with("/api/server_fn/") {
 				let response = self.rpc.handle(request).await?;
+				let response = if self.hsts {
+					response.with_header("strict-transport-security", crate::http::HSTS)
+				} else {
+					response
+				};
 				return Ok(response
 					.with_header("cache-control", "no-store")
 					.with_header("x-content-type-options", "nosniff")

@@ -5,6 +5,8 @@ pub struct Config {
 	pub assets_dir: Option<std::path::PathBuf>,
 	pub origin: String,
 	pub issuer: String,
+	/// Exact IPs of a trusted HTTPS reverse proxy; only they may assert forwarded HTTPS.
+	pub trusted_proxy_ips: Vec<std::net::IpAddr>,
 	pub client_id: String,
 	pub client_secret: String,
 	pub billing_secret: String,
@@ -22,6 +24,7 @@ impl Config {
 			assets_dir: env::var_os("AIDASH_MARKETPLACE_ASSETS_DIR").map(Into::into),
 			origin: get("AIDASH_MARKETPLACE_ORIGIN")?,
 			issuer: get("AIDASH_AUTH_ISSUER")?,
+			trusted_proxy_ips: trusted_proxy_ips()?,
 			client_id: env::var("AIDASH_MARKETPLACE_CLIENT_ID")
 				.unwrap_or_else(|_| "marketplace".into()),
 			client_secret: read_secret("AIDASH_MARKETPLACE_CLIENT_SECRET_FILE")?,
@@ -61,6 +64,20 @@ impl Config {
 	pub fn secure(&self) -> bool {
 		self.origin.starts_with("https://")
 	}
+}
+fn trusted_proxy_ips() -> Result<Vec<std::net::IpAddr>> {
+	let Ok(value) = env::var("AIDASH_MARKETPLACE_TRUSTED_PROXY_IPS") else {
+		return Ok(Vec::new());
+	};
+	value
+		.split(',')
+		.map(str::trim)
+		.filter(|ip| !ip.is_empty())
+		.map(|ip| {
+			ip.parse()
+				.map_err(|_| Error::Invalid("invalid trusted proxy IP"))
+		})
+		.collect()
 }
 fn read_secret(key: &str) -> Result<String> {
 	let path = env::var(key).map_err(|_| Error::Invalid("missing Marketplace secret file"))?;

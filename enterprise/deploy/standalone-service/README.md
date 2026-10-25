@@ -27,7 +27,8 @@ For the corresponding disposable local bootstrap/migration/seal lifecycle, use
 
 For authentication set port 8081, enable the private gRPC port 9091, mount its
 configuration and TLS files, and pass `--config /run/aidash/config/auth.toml serve`.
-For Marketplace set port 8082 and the `AIDASH_MARKETPLACE_*` settings. Place HTTP
+For Marketplace set port 8082 and the `AIDASH_MARKETPLACE_*` settings, including
+`AIDASH_MARKETPLACE_TRUSTED_PROXY_IPS` with the edge's exact IPs. Place HTTP
 behind the deployment's HTTPS edge. The gRPC Service is internal; authenticate and
 authorize peers even on the cluster network.
 

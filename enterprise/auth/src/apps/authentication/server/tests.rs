@@ -376,6 +376,7 @@ pub(super) async fn fixture(configure: impl FnOnce(&mut Authentication)) -> Fixt
 			},
 			origin: marketplace_origin.clone(),
 			issuer: issuer.clone(),
+			trusted_proxy_ips: vec![],
 			client_id: "marketplace".into(),
 			client_secret: CLIENT_SECRET.into(),
 			resource_client_id: "marketplace-resource".into(),
@@ -546,6 +547,55 @@ async fn oidc_issuer_and_marketplace_bff_preserve_real_session_and_refresh_bound
 	assert!(frames.contains(&"https://login.example.com"));
 	assert!(frames.contains(&"https://*.firebaseapp.com"));
 	assert!(frames.contains(&"https://accounts.google.com"));
+	let directive = |name: &str| {
+		csp.split(';')
+			.find_map(|directive| directive.trim().strip_prefix(name))
+			.map(|tokens| tokens.split_whitespace().collect::<Vec<_>>())
+	};
+	// `<style>` elements stay blocked; only inline style attributes (Firebase's
+	// hidden gapi iframe) are allowed.
+	assert_eq!(directive("style-src ").unwrap(), ["'self'"]);
+	assert_eq!(directive("style-src-attr ").unwrap(), ["'unsafe-inline'"]);
+	assert_eq!(directive("object-src ").unwrap(), ["'none'"]);
+	// Loopback development is plain HTTP, where HSTS would be meaningless.
+	assert!(!page.headers().contains_key("strict-transport-security"));
+
+	// Outside loopback development every response carries HSTS, and plain HTTP
+	// is refused unless a trusted proxy asserts HTTPS.
+	let mut secure = (*auth).clone();
+	{
+		let config = Arc::make_mut(&mut secure.config);
+		config.loopback_development = false;
+		config.trusted_proxy_ips = vec!["127.0.0.1".parse().unwrap()];
+	}
+	let secure_listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+	let secure_origin = format!("http://{}", secure_listener.local_addr().unwrap());
+	let secure_task = spawn(
+		secure_listener,
+		crate::config::urls::handler(Arc::new(secure)),
+	);
+	ready(&client, &secure_origin, "/healthz").await;
+	let hsts = "max-age=63072000; includeSubDomains";
+	for (path, forwarded, status) in [
+		("/healthz", false, 200),
+		("/sign-in", false, 400),
+		("/sign-in", true, 200),
+	] {
+		let mut request = client.get(format!("{secure_origin}{path}"));
+		if forwarded {
+			request = request.header("x-forwarded-proto", "https");
+		}
+		let response = request.send().await.unwrap();
+		assert_eq!(response.status(), status, "{path} forwarded={forwarded}");
+		assert_eq!(response.headers()["strict-transport-security"], hsts);
+	}
+	let rpc = client
+		.post(format!("{secure_origin}/api/server_fn/auth_account"))
+		.send()
+		.await
+		.unwrap();
+	assert_eq!(rpc.headers()["strict-transport-security"], hsts);
+	secure_task.abort();
 	let nonce = secret();
 	let code = authorize(&client, &issuer, &callback, &browser, &nonce).await;
 	let wrong_client = form(

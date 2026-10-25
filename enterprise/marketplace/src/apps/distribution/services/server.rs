@@ -23,7 +23,7 @@ pub enum Error {
 }
 pub type Result<T> = std::result::Result<T, Error>;
 impl Error {
-	fn response(&self) -> Response {
+	pub(crate) fn response(&self) -> Response {
 		let status = match self {
 			Self::Invalid(_) | Self::Json(_) => StatusCode::BAD_REQUEST,
 			Self::Unauthorized => StatusCode::UNAUTHORIZED,
@@ -39,6 +39,8 @@ impl Error {
 		.with_header("cache-control", "no-store")
 	}
 }
+/// Two years; sent whenever the configured origin is HTTPS.
+const HSTS: &str = "max-age=63072000; includeSubDomains";
 pub struct Marketplace {
 	pub(crate) config: Config,
 	pub(crate) store: store::Store,
@@ -63,6 +65,30 @@ impl Marketplace {
 	pub fn handler(self: &Arc<Self>) -> MarketplaceHandler {
 		MarketplaceHandler(self.clone())
 	}
+	pub(crate) fn strict_transport(&self, response: Response) -> Response {
+		if self.config.secure() {
+			response.with_header("strict-transport-security", HSTS)
+		} else {
+			response
+		}
+	}
+	/// Refuses plain-HTTP requests when the origin is HTTPS. Forwarded HTTPS
+	/// metadata counts only from the configured proxy IPs; probes stay reachable.
+	pub(crate) fn require_https(&self, request: &Request) -> Result<()> {
+		if !self.config.secure()
+			|| (request.method == http::Method::GET && request.uri.path() == "/healthz")
+		{
+			return Ok(());
+		}
+		request.set_trusted_proxies(reinhardt::http::TrustedProxies::new(
+			self.config.trusted_proxy_ips.clone(),
+		));
+		if request.is_secure() {
+			Ok(())
+		} else {
+			Err(Error::Invalid("HTTPS is required"))
+		}
+	}
 }
 #[derive(Clone)]
 pub struct MarketplaceHandler(Arc<Marketplace>);
@@ -70,11 +96,17 @@ pub struct MarketplaceHandler(Arc<Marketplace>);
 impl Handler for MarketplaceHandler {
 	async fn handle(&self, request: Request) -> reinhardt::core::exception::Result<Response> {
 		let pages = request.uri.path() == "/" || request.uri.path().starts_with("/assets/");
-		let response = match self.0.dispatch(request).await {
+		let result = match self.0.require_https(&request) {
+			Ok(()) => self.0.dispatch(request).await,
+			Err(error) => Err(error),
+		};
+		let response = match result {
 			Ok(response) => response,
 			Err(error) => error.response(),
 		};
-		Ok(response
+		Ok(self
+			.0
+			.strict_transport(response)
 			.with_header("x-content-type-options", "nosniff")
 			.with_header("referrer-policy", "same-origin")
 			.with_header(

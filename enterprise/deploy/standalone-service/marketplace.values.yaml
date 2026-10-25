@@ -4,6 +4,8 @@ environment:
   AIDASH_MARKETPLACE_LISTEN: 0.0.0.0:8082
   AIDASH_MARKETPLACE_ORIGIN: https://marketplace.example.com
   AIDASH_AUTH_ISSUER: https://auth.example.com
+  # Exact IPs of the HTTPS edge (comma-separated); replace with the real proxy address.
+  AIDASH_MARKETPLACE_TRUSTED_PROXY_IPS: 10.0.0.10
   AIDASH_MARKETPLACE_CLIENT_SECRET_FILE: /run/secrets/marketplace-client-secret
   AIDASH_MARKETPLACE_RESOURCE_SECRET_FILE: /run/secrets/marketplace-resource-secret
   AIDASH_MARKETPLACE_BILLING_SECRET_FILE: /run/secrets/marketplace-billing-secret

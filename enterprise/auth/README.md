@@ -113,7 +113,8 @@ not create the schema or run Cloud migrations. Build and provide this project's
 The product image bundles its own Pages assets at `/app/pages`.
 
 Place public HTTP behind the configured HTTPS origin. Forwarded HTTPS metadata
-is accepted only from explicitly trusted proxy IPs. Keep gRPC private and require
+is accepted only from explicitly trusted proxy IPs, and every response outside loopback
+development carries `Strict-Transport-Security`. Keep gRPC private and require
 client certificates. `/healthz`, OIDC discovery and JWKS support service checks;
 user interactions, accounts and protected data retain their own authentication
 and CSRF checks. Real GCIP project/provider configuration and workload access to
