@@ -7,6 +7,7 @@ from pathlib import Path
 import stat
 import subprocess
 import sys
+import tomllib
 from tempfile import TemporaryDirectory
 import unittest
 from unittest.mock import patch
@@ -107,6 +108,44 @@ class RuntimeConfigurationTests(unittest.TestCase):
         tokens = self.cluster.secret("aidash-pr-2", "aidash-identity")
         self.assertEqual(self.cluster.secret("aidash-pr-2", "env-activity")["AIDASH_CORE_RUNNER_TOKEN"], tokens["runner"])
         self.assertEqual(self.cluster.secret("aidash-pr-2", "app-runner"), {"AIDASH_CORE_RUNNER_TOKEN": tokens["runner"]})
+
+    def test_common_auth_materializes_only_cloud_credentials_and_private_tls_files(self):
+        runtime = {
+            "AIDASH_OIDC_CLIENT_ID": "cloud", "AIDASH_OIDC_CLIENT_SECRET": "c" * 40,
+            "dashboard": {
+                "oidc": {"issuer": "https://auth.example.test", "public_origin": "https://pr-2.aidash.run"},
+                "common_auth": {
+                    "grpc_endpoint": "https://authentication.internal:9091", "server_domain": "authentication.internal",
+                    "source_issuers": {"https://securetoken.google.com/project/tenants/shared": ""},
+                },
+            },
+            "common_auth_tls": {"ca.pem": "-----BEGIN CERTIFICATE-----\nfixture-ca\n-----END CERTIFICATE-----",
+                                "cloud.pem": "-----BEGIN CERTIFICATE-----\nfixture-client\n-----END CERTIFICATE-----",
+                                "cloud-key.pem": "-----BEGIN PRIVATE KEY-----\nfixture-key\n-----END PRIVATE KEY-----"},
+        }
+        settings = self.materialize(runtime)
+        self.assertIsNone(settings["gcip"])
+        self.assertEqual(settings["common_auth"], "app-common-auth")
+        stored = self.cluster.secret("aidash-pr-2", "app-runtime")
+        self.assertEqual(stored["AIDASH_OIDC_ISSUER"], "https://auth.example.test")
+        self.assertNotIn("common_auth_tls", stored)
+        files = self.cluster.secret("aidash-pr-2", "app-common-auth")
+        self.assertEqual({key: files[key] for key in runtime["common_auth_tls"]}, runtime["common_auth_tls"])
+        dashboard = tomllib.loads(files["settings.toml"])["dashboard"]
+        self.assertEqual(dashboard["oidc"]["client_secret"], "${AIDASH_OIDC_CLIENT_SECRET}")
+        self.assertEqual(dashboard["common_auth"]["source_issuers"], runtime["dashboard"]["common_auth"]["source_issuers"])
+        self.assertEqual(dashboard["common_auth"]["client_private_key_file"], "/run/auth-tls/cloud-key.pem")
+        release = {"images": {kind: f"registry.example/{kind}@sha256:" + "a" * 64 for kind in IMAGE_KINDS}}
+        output = dict(OUTPUT, server_service_account="server@example.test", worker_service_account="worker@example.test")
+        values = kube.app_values(self.cluster, "test", output, release, "a" * 40, settings)
+        self.assertEqual(values["commonAuth"], {"existingSecret": "app-common-auth"})
+        for secret in (*runtime["common_auth_tls"].values(), runtime["AIDASH_OIDC_CLIENT_SECRET"]):
+            self.assertNotIn(secret, json.dumps(values))
+        for update in ({"dashboard": dict(runtime["dashboard"], gcip={})}, {"common_auth_tls": {}},
+                       {"AIDASH_OIDC_CLIENT_ID": "marketplace"},
+                       {"dashboard": dict(runtime["dashboard"], oidc={"issuer": "http://auth.internal", "public_origin": "https://pr-2.aidash.run"})}):
+            with self.subTest(update=list(update)), self.assertRaises(Refused):
+                self.materialize(dict(runtime, **update))
 
     def test_demo_data_is_enabled_for_nonproduction_servers_and_job_only(self):
         # The server Deployment reads app-runtime through envFrom; the copied

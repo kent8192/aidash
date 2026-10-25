@@ -341,6 +341,26 @@ class TenantMFATests(unittest.TestCase):
 
 
 class RuntimeConfigTests(unittest.TestCase):
+    def test_common_auth_preserves_existing_upstream_pool_resources_without_enabling_direct_gcip(self):
+        output = dict(OUTPUT, hostname="test.aidash.run")
+        raw = {
+            "AIDASH_OIDC_CLIENT_ID": "cloud", "AIDASH_OIDC_CLIENT_SECRET": "c" * 40,
+            "dashboard": {
+                "oidc": {"issuer": "https://auth.example.test", "public_origin": "https://test.aidash.run"},
+                "common_auth": {"grpc_endpoint": "https://authentication.internal:9091", "server_domain": "authentication.internal",
+                                "source_issuers": {"https://securetoken.google.com/aidash-fixture/tenants/pool-a": "acme"}},
+            },
+            "common_auth_tls": {"ca.pem": "-----BEGIN CERTIFICATE-----\nca", "cloud.pem": "-----BEGIN CERTIFICATE-----\nclient",
+                                "cloud-key.pem": "-----BEGIN PRIVATE KEY-----\nkey"},
+        }
+        with patch("controller.run", side_effect=[b'[{"name":"projects/aidash-fixture/secrets/runtime/versions/1","state":"ENABLED"}]',
+                                                  json.dumps(raw).encode()]) as command:
+            actual = controller.provision_secret({"project_id": "aidash-fixture"}, output, "test")
+        self.assertEqual(actual, raw)
+        self.assertNotIn("gcip", actual["dashboard"])
+        self.assertEqual(command.call_count, 2)
+        self.assertEqual(output["gcip"]["tenant_ids"], ["pool-a"])
+
     def test_outputs_replace_runtime_bindings_without_republishing_unchanged_secrets(
         self,
     ):

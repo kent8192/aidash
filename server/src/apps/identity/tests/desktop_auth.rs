@@ -19,6 +19,9 @@ use uuid::Uuid;
 const COOKIE: &str = "__Host-aidash-session=desktop-browser-fixture; aidash-csrf=desktop-csrf";
 const ORIGIN: &str = "https://127.0.0.1:8080";
 
+#[path = "desktop_auth/common_auth.rs"]
+mod common_auth;
+
 #[rstest::rstest]
 #[tokio::test]
 #[ignore = "requires web npm dependencies and Chromium; run scripts/test-desktop-browser.sh"]
