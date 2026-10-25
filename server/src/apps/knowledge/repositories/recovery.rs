@@ -13,6 +13,8 @@ use std::{
 	path::{Path, PathBuf},
 };
 
+pub(crate) mod history;
+
 const MAGIC: &[u8; 8] = b"AIDMEM01";
 pub(crate) const MAX_FILE_BYTES: u64 = 64 * 1024 * 1024;
 #[derive(Serialize, Deserialize)]
@@ -22,7 +24,11 @@ struct UnitFence {
 	id: uuid::Uuid,
 	fence: Fence,
 }
+#[derive(Clone)]
 pub(crate) struct FileRecovery {
+	independent: Option<std::sync::Arc<history::HistoryStore>>,
+	verified: std::sync::Arc<std::sync::atomic::AtomicBool>,
+	required: bool,
 	pub directory: PathBuf,
 	pub home: String,
 }
@@ -33,9 +39,15 @@ impl FileRecovery {
 				"memory recovery needs an absolute external directory and Home identity".into(),
 			));
 		}
-		Ok(Self { directory, home })
+		Ok(Self {
+			directory,
+			home,
+			independent: None,
+			verified: Default::default(),
+			required: false,
+		})
 	}
-	fn lock(&self) -> Result<File> {
+	fn lock_file(&self) -> Result<File> {
 		// Do not create directories during serving. Initialization is explicit;
 		// a missing external volume/ledger is a closed gate, never a fresh epoch.
 		let mut options = OpenOptions::new();
@@ -48,7 +60,19 @@ impl FileRecovery {
 		let file = options
 			.open(self.directory.join("ledger.lock"))
 			.map_err(storage_error)?;
+		Ok(file)
+	}
+	fn lock_wait(&self) -> Result<File> {
+		let file = self.lock_file()?;
 		file.lock().map_err(storage_error)?;
+		Ok(file)
+	}
+	fn lock(&self) -> Result<File> {
+		if !self.protection_requested()? {
+			return self.lock_wait();
+		}
+		let file = self.lock_file()?;
+		file.try_lock().map_err(|_| Error::SemanticUnavailable)?;
 		Ok(file)
 	}
 	pub fn load(&self) -> Result<Ledger> {
@@ -125,7 +149,7 @@ impl FileRecovery {
 		}
 		Ok(ledger)
 	}
-	pub fn initialize(&self, units: &[Unit]) -> Result<()> {
+	pub async fn initialize(&self, units: &[Unit]) -> Result<()> {
 		std::fs::create_dir_all(&self.directory).map_err(storage_error)?;
 		#[cfg(unix)]
 		{
@@ -133,20 +157,28 @@ impl FileRecovery {
 			std::fs::set_permissions(&self.directory, std::fs::Permissions::from_mode(0o700))
 				.map_err(storage_error)?;
 		}
-		let _guard = self.lock()?;
+		let _guard = self.waiting_lock().await?;
 		if self.directory.join("ledger.cbor").exists() || self.directory.join("epoch.cbor").exists()
 		{
 			return Err(Error::Conflict(
 				"external memory ledger already exists; never replace its epoch".into(),
 			));
 		}
-		let ledger = Ledger::new(self.home.clone());
+		let mut ledger = Ledger::new(self.home.clone());
+		for unit in units {
+			ledger.observe(unit)?;
+		}
+		if self.protection_requested()? {
+			self.initialize_publication(&ledger).await?;
+		}
+		let mut metadata = ledger.clone();
+		metadata.units.clear();
 		std::fs::create_dir_all(self.directory.join("units")).map_err(storage_error)?;
 		// A crash after this permanent anchor leaves a closed gate. Initialization
 		// can never replace a prior epoch when its ledger file is missing.
 		atomic_write(&self.directory.join("epoch.cbor"), &ledger.epoch)?;
-		atomic_write(&self.directory.join("ledger.cbor"), &ledger)?;
-		self.observe_locked(&ledger, units)
+		atomic_write(&self.directory.join("ledger.cbor"), &metadata)?;
+		self.observe_locked(&metadata, units)
 	}
 	pub fn gate(&self, restoring: bool, epoch: uuid::Uuid) -> Result<Ledger> {
 		let _guard = self.lock()?;
@@ -154,26 +186,43 @@ impl FileRecovery {
 		if ledger.epoch != epoch {
 			return Err(Error::Forbidden);
 		}
+		if !restoring {
+			self.require_publication(epoch)?;
+		}
 		ledger.restoring = restoring;
 		atomic_write(&self.directory.join("ledger.cbor"), &ledger)?;
 		self.load_units_locked(ledger)
 	}
-	pub fn advance_restore(&self, epoch: uuid::Uuid, unit: &Unit) -> Result<()> {
-		let _guard = self.lock()?;
+	pub async fn advance_restore(&self, epoch: uuid::Uuid, unit: &Unit) -> Result<()> {
+		let _guard = self.waiting_lock().await?;
 		let ledger = self.load_locked()?;
 		if !ledger.restoring || ledger.epoch != epoch {
 			return Err(Error::Forbidden);
 		}
-		self.observe_locked(&ledger, std::slice::from_ref(unit))
+		self.publish_locked(&ledger, std::slice::from_ref(unit))
+			.await
 	}
 }
+#[async_trait::async_trait]
 impl MemoryRecovery for FileRecovery {
+	async fn verify(&self) -> aidash_application::Result<()> {
+		Ok(FileRecovery::verify(self).await?)
+	}
+	fn objects(
+		&self,
+	) -> Option<std::sync::Arc<dyn aidash_application::ports::memory::objects::RecoveryObjects>> {
+		self.independent
+			.as_ref()
+			.map(|history| history.objects.clone())
+	}
 	fn require_serving(&self) -> aidash_application::Result<()> {
 		let _guard = self
 			.lock()
 			.map_err(|_| aidash_application::Error::SemanticUnavailable)?;
 		let ledger = self
 			.load_locked()
+			.map_err(|_| aidash_application::Error::SemanticUnavailable)?;
+		self.require_publication(ledger.epoch)
 			.map_err(|_| aidash_application::Error::SemanticUnavailable)?;
 		if ledger.restoring {
 			return Err(aidash_application::Error::SemanticUnavailable);
@@ -191,6 +240,8 @@ impl MemoryRecovery for FileRecovery {
 		let ledger = self
 			.load_locked()
 			.map_err(|_| aidash_application::Error::SemanticUnavailable)?;
+		self.require_publication(ledger.epoch)
+			.map_err(|_| aidash_application::Error::SemanticUnavailable)?;
 		let mut selected = Ledger::new(self.home.clone());
 		if let Some(fence) = self
 			.unit_locked(&ledger, unit.id)
@@ -203,15 +254,17 @@ impl MemoryRecovery for FileRecovery {
 		}
 		Ok(())
 	}
-	fn observe_many(&self, units: &[Unit]) -> aidash_application::Result<()> {
-		let result = (|| {
-			let _guard = self.lock()?;
+	async fn observe_many(&self, units: &[Unit]) -> aidash_application::Result<()> {
+		let result: Result<()> = async {
+			let _guard = self.waiting_lock().await?;
 			let ledger = self.load_locked()?;
+			self.require_publication(ledger.epoch)?;
 			if ledger.restoring {
 				return Err(Error::SemanticUnavailable);
 			}
-			self.observe_locked(&ledger, units)
-		})();
+			self.publish_locked(&ledger, units).await
+		}
+		.await;
 		result.map_err(Into::into)
 	}
 }
@@ -220,6 +273,9 @@ fn storage_error(_: std::io::Error) -> Error {
 }
 
 pub(crate) fn read<T: DeserializeOwned>(path: &Path) -> Result<T> {
+	decode(&bytes(path)?)
+}
+pub(crate) fn bytes(path: &Path) -> Result<Vec<u8>> {
 	let file = File::open(path).map_err(storage_error)?;
 	if file.metadata().map_err(storage_error)?.len() > MAX_FILE_BYTES {
 		return Err(Error::Invalid(
@@ -230,6 +286,14 @@ pub(crate) fn read<T: DeserializeOwned>(path: &Path) -> Result<T> {
 	file.take(MAX_FILE_BYTES + 1)
 		.read_to_end(&mut data)
 		.map_err(storage_error)?;
+	if data.len() as u64 > MAX_FILE_BYTES {
+		return Err(Error::Invalid(
+			"memory recovery file exceeds its declared size cap".into(),
+		));
+	}
+	Ok(data)
+}
+pub(crate) fn decode<T: DeserializeOwned>(data: &[u8]) -> Result<T> {
 	if data.len() < 40
 		|| data.len() as u64 > MAX_FILE_BYTES
 		|| &data[..8] != MAGIC

@@ -102,11 +102,7 @@ impl AuthorizationTransaction for PolicyTransaction {
 #[async_trait]
 impl AuthorizationStore for PolicyRepository {
 	async fn begin(&self, scope: &TenancyScope) -> Result<Box<dyn AuthorizationTransaction>> {
-		let transaction = self
-			.pool
-			.begin(scope)
-			.await
-			.and_then(crate::database::native::Transaction::into_executor)?;
+		let transaction = self.pool.begin(scope).await?.into_executor().await?;
 		Ok(Box::new(PolicyTransaction(transaction)))
 	}
 }

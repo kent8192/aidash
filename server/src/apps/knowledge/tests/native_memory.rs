@@ -31,6 +31,8 @@ mod change_matrix;
 mod decay;
 #[path = "native_memory/diversity.rs"]
 mod diversity;
+#[path = "native_memory/maintenance_review.rs"]
+mod maintenance_review;
 #[path = "native_memory/policy_bounds.rs"]
 mod policy_bounds;
 #[path = "native_memory/precision.rs"]
@@ -39,8 +41,14 @@ mod precision;
 mod purge;
 #[path = "../../execution/tests/support/deployment.rs"]
 mod recovery_deployment;
+#[path = "native_memory/recovery_history.rs"]
+mod recovery_history;
 #[path = "native_memory/recovery_policy.rs"]
 mod recovery_policy;
+#[path = "native_memory/recovery_publications.rs"]
+mod recovery_publications;
+#[path = "native_memory/remote_prune_review.rs"]
+mod remote_prune_review;
 #[path = "native_memory/review_capacity.rs"]
 mod review_capacity;
 #[path = "native_memory/review_delivery.rs"]
@@ -628,7 +636,9 @@ async fn memory_restore_process_sigkill_keeps_the_external_gate_closed_until_val
 		"the shipped restore process was actually killed by SIGKILL"
 	);
 	held.rollback().await.unwrap();
-	let reopened = recovery::attach(store.clone(), directory.to_owned()).unwrap();
+	let reopened = recovery::attach(store.clone(), directory.to_owned())
+		.await
+		.unwrap();
 	let read = memory::ReadBank {
 		provider: reference("p"),
 		bank: participant.bank,
@@ -807,7 +817,7 @@ async fn old_memory_archive_cannot_revive_deleted_corrected_or_dependent_bodies(
 	)
 	.await
 	.unwrap();
-	recovery::prepare_restore(&store, directory).unwrap();
+	recovery::prepare_restore(&store, directory).await.unwrap();
 	// Rewind only memory bodies. Current origin/control/authority/primary
 	// evidence tables and the independently retained ledger remain live.
 	let mut tx = store.pool.begin(&TEST_FIXTURE).await.unwrap();
@@ -1072,7 +1082,7 @@ async fn memory_restore_gate_survives_reopen_and_missing_external_state_never_in
 		bank: bank.clone(),
 		action: memory::Action::Settings,
 	};
-	let epoch = recovery::prepare_restore(&store, directory).unwrap();
+	let epoch = recovery::prepare_restore(&store, directory).await.unwrap();
 	assert!(matches!(
 		memory::operate(&store, &Actor::DeploymentAdministrator, query()).await,
 		Err(aidash_server::Error::SemanticUnavailable)
@@ -3686,6 +3696,13 @@ async fn learning_rejects_uncertain_effects_and_reads_complete_canonical_results
 		let archive = memory_recovery::backup(&store, directory, participant.bank.clone())
 			.await
 			.unwrap();
+		let job = recovery_history::read_only_job(&store, directory).await;
+		assert!(
+			memory_recovery::backup(&job, directory, participant.bank.clone())
+				.await
+				.is_ok(),
+			"Run-origin proofs must work with the actual read-only Job login"
+		);
 		let mut tx = store.pool.begin(&TEST_FIXTURE).await.unwrap();
 		native::query(
 			&Query::delete()

@@ -80,6 +80,11 @@ spec:
         - podSelector: { matchLabels: { aidash.run/activity: {{ .Release.Name | quote }} } }
       ports:
         - { protocol: TCP, port: 5432 }
+    # Recovery Jobs use their read-only login and never connect to NATS.
+    - from:
+        - podSelector: { matchExpressions: [{ key: app.kubernetes.io/component, operator: In, values: [memory-backup, memory-prune] }] }
+      ports:
+        - { protocol: TCP, port: 5432 }
 {{- if (include "environment.workloadKind" $ | eq "StatefulSet") | and $.Values.highAvailability.enabled }}
 {{- range $role := list "postgres" "nats" "edge" }}
 ---

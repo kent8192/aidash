@@ -136,7 +136,7 @@ impl GenerationEmbeddingRepository for NativeEmbeddingRepository {
 	}
 	async fn begin(&self) -> Result<Box<dyn GenerationEmbeddingSession>> {
 		Ok(Box::new(Session {
-			transaction: self.pool.begin(&self.scope).await?.into_executor()?,
+			transaction: self.pool.begin(&self.scope).await?.into_executor().await?,
 		}))
 	}
 }

@@ -29,10 +29,30 @@ pub(crate) async fn access_for_run(
 	run: &crate::domain::RunMetadata,
 	durable_audit: bool,
 ) -> Result<Option<Access>> {
+	access_for_run_with_mode(store, run, durable_audit, false).await
+}
+/// A recovery proof must be read-only before binding the worker, whose initial
+/// workspace check would otherwise persist an authorization decision.
+pub(crate) async fn proof_for_run(
+	store: &Store,
+	run: &crate::domain::RunMetadata,
+) -> Result<Option<Access>> {
+	access_for_run_with_mode(store, run, false, true).await
+}
+async fn access_for_run_with_mode(
+	store: &Store,
+	run: &crate::domain::RunMetadata,
+	durable_audit: bool,
+	proof: bool,
+) -> Result<Option<Access>> {
 	let Some(grant) = grant(store, run).await? else {
 		return Ok(None);
 	};
-	let mut access = Access::begin(store, &grant.identity()).await?;
+	let mut access = if proof {
+		Access::begin_proof(store, &grant.identity()).await?
+	} else {
+		Access::begin(store, &grant.identity()).await?
+	};
 	aidash_application::authorization::execution::bind_worker(
 		&mut crate::bootstrap::execution_grant_scope(&mut access),
 		run,

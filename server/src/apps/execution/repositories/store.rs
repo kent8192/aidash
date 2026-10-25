@@ -197,11 +197,7 @@ impl Store {
 	where
 		F: Future<Output = Result<T>>,
 	{
-		let mut tx = self
-			.pool
-			.begin(scope)
-			.await
-			.and_then(crate::database::native::Transaction::into_executor)?;
+		let mut tx = self.pool.begin(scope).await?.into_executor().await?;
 		RunRecord::ensure_response_current(tx.as_mut(), run_id, worker, included_input_seq).await?;
 		let result = effect.await?;
 		tx.commit().await?;
@@ -221,11 +217,7 @@ impl Store {
 			key,
 			track_output,
 		} = request;
-		let mut tx = self
-			.pool
-			.begin(scope)
-			.await
-			.and_then(crate::database::native::Transaction::into_executor)?;
+		let mut tx = self.pool.begin(scope).await?.into_executor().await?;
 		RunRecord::ensure_response_current(tx.as_mut(), run.id, worker, included_input_seq).await?;
 		RunRecord::worker_context(tx.as_mut()).await?;
 		nonempty(content, "message")?;
@@ -440,7 +432,7 @@ impl Store {
 			.await?;
 		let memory_recovery = std::env::var_os("AIDASH_MEMORY_RECOVERY_DIR")
 			.map(|directory| {
-				crate::semantic::repositories::recovery::FileRecovery::new(
+				crate::semantic::repositories::recovery::FileRecovery::from_env(
 					directory.into(),
 					deployment.to_string(),
 				)
@@ -450,6 +442,9 @@ impl Store {
 				std::sync::Arc::new(recovery)
 					as std::sync::Arc<dyn aidash_application::ports::memory::MemoryRecovery>
 			});
+		if let Some(recovery) = &memory_recovery {
+			let _ = recovery.verify().await;
+		}
 		let provider_clients = crate::semantic::backend::clients()?;
 		Ok(Self {
 			pool: pool.into(),
@@ -2914,11 +2909,7 @@ impl Store {
 	}
 	pub async fn lease_run(&self, worker: Uuid, seconds: i32) -> Result<Option<Run>> {
 		let scope = &TenancyScope::Deployment(DeploymentScopeReason::ActivationClaim);
-		let mut tx = self
-			.pool
-			.begin(scope)
-			.await
-			.and_then(crate::database::native::Transaction::into_executor)?;
+		let mut tx = self.pool.begin(scope).await?.into_executor().await?;
 		let mut cursor = self.recovery_cursors.execution.lock().await;
 		let run = Self::lease_run_in(
 			tx.as_mut(),
@@ -2939,11 +2930,7 @@ impl Store {
 		worker: Uuid,
 		seconds: i32,
 	) -> Result<bool> {
-		let mut tx = self
-			.pool
-			.begin(scope)
-			.await
-			.and_then(crate::database::native::Transaction::into_executor)?;
+		let mut tx = self.pool.begin(scope).await?.into_executor().await?;
 		let renewed = RunRecord::renew(tx.as_mut(), id, worker, seconds).await?;
 		tx.commit().await?;
 		Ok(renewed)
@@ -3087,11 +3074,7 @@ impl Store {
 		Ok((saved, closed))
 	}
 	pub async fn release_lease(&self, scope: &TenancyScope, id: Uuid, worker: Uuid) -> Result<()> {
-		let mut tx = self
-			.pool
-			.begin(scope)
-			.await
-			.and_then(crate::database::native::Transaction::into_executor)?;
+		let mut tx = self.pool.begin(scope).await?.into_executor().await?;
 		RunRecord::release_worker(tx.as_mut(), id, worker).await?;
 		tx.commit().await?;
 		Ok(())
@@ -3448,11 +3431,7 @@ impl Store {
 		prompt: &str,
 		key: &str,
 	) -> Result<HumanRequest> {
-		let mut tx = self
-			.pool
-			.begin(scope)
-			.await
-			.and_then(crate::database::native::Transaction::into_executor)?;
+		let mut tx = self.pool.begin(scope).await?.into_executor().await?;
 		let request = self
 			.human_request_in(tx.as_mut(), run, kind, prompt, key)
 			.await?;
@@ -3470,11 +3449,7 @@ impl Store {
 		if request.run_id != run.id || request.workspace_id != run.workspace_id {
 			return Err(Error::Forbidden);
 		}
-		let mut tx = self
-			.pool
-			.begin(scope)
-			.await
-			.and_then(crate::database::native::Transaction::into_executor)?;
+		let mut tx = self.pool.begin(scope).await?.into_executor().await?;
 		let (cached, created) = HumanRequestRecord::admit_home(tx.as_mut(), request, key).await?;
 		human_interaction::validate_replay(&cached, run, &request.kind, &request.prompt)?;
 		if cached.id != request.id {
@@ -3581,11 +3556,7 @@ impl Store {
 		scope: &TenancyScope,
 		id: Uuid,
 	) -> Result<HumanRequest> {
-		let mut tx = self
-			.pool
-			.begin(scope)
-			.await
-			.and_then(crate::database::native::Transaction::into_executor)?;
+		let mut tx = self.pool.begin(scope).await?.into_executor().await?;
 		let request = HumanRequestRecord::read_in(tx.as_mut(), id, false)
 			.await?
 			.ok_or_else(|| Error::NotFound("human request".into()))?;
@@ -3599,11 +3570,7 @@ impl Store {
 		id: Uuid,
 		response: Value,
 	) -> Result<HumanRequest> {
-		let mut tx = self
-			.pool
-			.begin(scope)
-			.await
-			.and_then(crate::database::native::Transaction::into_executor)?;
+		let mut tx = self.pool.begin(scope).await?.into_executor().await?;
 		let request = self.answer_in(tx.as_mut(), id, response, "human").await?;
 		tx.commit().await?;
 		Ok(request)
@@ -3616,11 +3583,7 @@ impl Store {
 		id: Uuid,
 		response: Value,
 	) -> Result<HumanRequest> {
-		let mut tx = self
-			.pool
-			.begin(scope)
-			.await
-			.and_then(crate::database::native::Transaction::into_executor)?;
+		let mut tx = self.pool.begin(scope).await?.into_executor().await?;
 		let request = self.answer_in(tx.as_mut(), id, response, "system").await?;
 		tx.commit().await?;
 		Ok(request)
@@ -3886,11 +3849,7 @@ impl Store {
 		key: &str,
 		result: &Value,
 	) -> Result<Value> {
-		let mut tx = self
-			.pool
-			.begin(scope)
-			.await
-			.and_then(crate::database::native::Transaction::into_executor)?;
+		let mut tx = self.pool.begin(scope).await?.into_executor().await?;
 		if !RunRecord::hold_worker(tx.as_mut(), run.id, worker).await? {
 			return Err(Error::Conflict(
 				"worker lease lost while recording tool result".into(),
@@ -3929,11 +3888,7 @@ impl Store {
 		worker: Uuid,
 		dispatch: &aidash_domain::provider::usage::UsageDispatch,
 	) -> Result<()> {
-		let mut tx = self
-			.pool
-			.begin(scope)
-			.await
-			.and_then(crate::database::native::Transaction::into_executor)?;
+		let mut tx = self.pool.begin(scope).await?.into_executor().await?;
 		if !RunRecord::hold_worker_lease(tx.as_mut(), run.id, worker).await? {
 			return Err(Error::Conflict(
 				"worker lease lost before dispatching inference".into(),
@@ -3953,11 +3908,7 @@ impl Store {
 		attempt: Uuid,
 		outcome: &aidash_domain::provider::usage::UsageOutcome,
 	) -> Result<bool> {
-		let mut tx = self
-			.pool
-			.begin(scope)
-			.await
-			.and_then(crate::database::native::Transaction::into_executor)?;
+		let mut tx = self.pool.begin(scope).await?.into_executor().await?;
 		let completed = InferenceUsage::complete(tx.as_mut(), run.id, attempt, outcome).await?;
 		tx.commit().await?;
 		Ok(completed)

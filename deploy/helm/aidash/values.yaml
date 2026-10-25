@@ -32,6 +32,20 @@ memoryRecovery:
   directory: /var/lib/aidash/memory-recovery
   # Select the initialized Home directory when it is a child of the claim root.
   subPath: ""
+  protection:
+    required: false
+    historyBucket: ""
+    archiveBucket: ""
+    # Maintenance DATABASE_URL, separate from the server runtime login.
+    existingSecret: ""
+    backupSchedule: "0 */6 * * *"
+    pruneSchedule: "*/15 * * * *"
+    spoolMaxFiles: 128
+    spoolMaxBytes: 536870912
+    backupServiceAccount:
+      annotations: {}
+    pruneServiceAccount:
+      annotations: {}
 capabilities:
   storage:
     # Retained RWO claim for capability objects, mounted at /var/lib/aidash/capabilities

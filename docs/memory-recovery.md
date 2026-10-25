@@ -19,7 +19,10 @@ commit. Partial filesystem failures retain conservative floors and withhold
 uncertain bodies. Normal reads inspect only the selected unit's fence;
 recovery and status combine the shards. The 64 MiB per-file guard therefore
 does not impose an aggregate Home unit capacity. Retain the whole directory,
-including every unit shard, independently of database snapshots.
+including every unit shard, independently of database snapshots. Production also
+uses [independent GCS floor history and scheduled body copies](operations/home-ledger-recovery.md#commands-and-production-composition).
+The protected profile publishes floors before local fsync and SQL commit; a
+periodic body archive cannot replace its non-body history.
 
 Initialize once after native schema creation, before creating native memory
 participants or banks. Initialization requires empty new-format memory and
@@ -108,6 +111,22 @@ withheld unit counts. These describe memory recovery. They do not prove cleanup 
 previously disclosed information, hosted backups outside this managed directory,
 or a PostgreSQL replica/failover profile. Full database rewind requires a separate
 authority/control/evidence continuity design and acceptance result.
+
+## Ledger disk loss
+
+The commands above require an existing valid ledger; they do not currently
+recover a lost ledger disk. The accepted #434 design adds synchronous GCS
+protection of the epoch and non-body floors, six-hour all-bank off-disk archives
+and fifteen-minute archive pruning. Supervised disk reconstruction keeps the
+same epoch, reconciles every bank against independently recovered floors and
+current PostgreSQL, and withholds uncertain bodies. Its two-hour RTO is an
+unverified target for ledger-only loss with an unrewound database.
+
+See [ADR 0083](adr/0083-home-recovery-ledger-loss-preserves-the-never-rewind-guarantee.md)
+and the [ledger-loss recovery design](operations/home-ledger-recovery.md) for the
+accepted decisions, publication protocol and required drill. Implementation and
+production acceptance are pending; this does not extend today's restore command
+or permit initialization of a replacement epoch.
 
 The disposable cluster runner creates an application-owned child directory under
 each Home volume. Run `scripts/test-cluster.sh kubernetes native-memory`. This

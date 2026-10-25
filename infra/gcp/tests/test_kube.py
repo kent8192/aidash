@@ -29,7 +29,7 @@ OUTPUT = {
 RUNTIME = {"AIDASH_OIDC_CLIENT_ID": "client", "AIDASH_OIDC_CLIENT_SECRET": "client-secret"}
 RANDOM_HOST = "0123456789abcdef" * 2 + ".preview.aidash.run"
 # PostgreSQL role passwords are 64 hex digits.
-PASSWORDS = {"observer": "0" * 64, "owner": "1" * 64, "server": "2" * 64}
+PASSWORDS = {"observer": "0" * 64, "owner": "1" * 64, "server": "2" * 64, "memory-recovery": "3" * 64}
 
 
 class ClusterCommandTests(unittest.TestCase):
@@ -65,6 +65,7 @@ class ClusterCommandTests(unittest.TestCase):
             cluster.upgrade("aidash-pr-2", "app", kube.APP_CHART, {"gcip": {"settings": settings["gcip"]}})
             kube.database_roles(cluster, "pr-2")
             kube.observer_role(cluster, "pr-2")
+            kube.memory_role(cluster, "pr-2")
             self.assertEqual(os.listdir(directory), ["kubeconfig"])
         stdin = b"".join(data or b"" for _, data, _ in commands)
         argv = json.dumps([[str(arg) for arg in args] for args, _, _ in commands])
@@ -77,12 +78,12 @@ class ClusterCommandTests(unittest.TestCase):
         self.assertTrue(all("--server-side" in args for args, _, _ in commands if "apply" in args))
         self.assertEqual(
             {item["metadata"]["name"] for item in applied},
-            {"app-runtime", "app-migration", "app-runner", "env-postgres", "env-activity"},
+            {"app-runtime", "app-migration", "app-memory-recovery", "app-runner", "env-postgres", "env-activity"},
         )
         # Role passwords reach PostgreSQL only through exec stdin: the legacy
         # ownership check, the roles, PGroonga, then the observer.
         execs = [(args, data) for args, data, _ in commands if "exec" in args]
-        self.assertEqual(len(execs), 4)
+        self.assertEqual(len(execs), 5)
         self.assertTrue(all("-i" in args for args, _ in execs))
         for password in PASSWORDS.values():
             self.assertIn(b"PASSWORD '" + password.encode() + b"'", stdin)
@@ -192,8 +193,15 @@ class RuntimeConfigurationTests(unittest.TestCase):
     def test_observer_never_receives_the_application_database_login(self):
         self.materialize(RUNTIME)
         tokens = self.cluster.secret("aidash-pr-2", "aidash-identity")
-        self.assertEqual(set(tokens), {"database", "api", "runner", "observer", "owner", "server"})
-        self.assertEqual(len({tokens[name] for name in ("database", "observer", "owner", "server")}), 4)
+        self.assertEqual(set(tokens), {"database", "api", "runner", "observer", "owner", "server", "memory-recovery"})
+        self.assertEqual(len({tokens[name] for name in ("database", "observer", "owner", "server", "memory-recovery")}), 5)
+        maintenance = self.cluster.secret("aidash-pr-2", "app-memory-recovery")
+        self.assertEqual(set(maintenance), {"DATABASE_URL", "AIDASH_API_TOKEN"})
+        self.assertRegex(maintenance["AIDASH_API_TOKEN"], r"^[0-9a-f]{64}$")
+        self.assertNotIn(maintenance["AIDASH_API_TOKEN"], tokens.values())
+        self.assertIn("postgres://aidash_memory_recovery:", maintenance["DATABASE_URL"])
+        for role in ("owner", "server", "observer"):
+            self.assertNotIn(tokens[role], maintenance["DATABASE_URL"])
         activity = self.cluster.secret("aidash-pr-2", "env-activity")
         self.assertEqual(
             activity["DATABASE_URL"],
@@ -578,6 +586,52 @@ class SealAndMigrationTests(unittest.TestCase):
         with self.assertRaisesRegex(Refused, "rollover"):
             kube.reload(self.cluster, "test", output, dict(settings, deployment={"offering": "cloud"}))
 
+    def test_protected_home_composes_independent_jobs_and_migration_network_access(self):
+        output = dict(OUTPUT, server_service_account="server@fixture", worker_service_account="worker@fixture",
+                      memory_recovery={"required": True, "history_bucket": "fixture-history", "archive_bucket": "fixture-archives",
+                                       "backup_service_account": "backup@fixture", "prune_service_account": "prune@fixture"})
+        release = {"images": {kind: f"registry.example/{kind}@sha256:" + "a" * 64 for kind in ("app", "control", "sandbox")}}
+        values = kube.app_values(self.cluster, "test", output, release, "a" * 40, {"provider": None, "gcip": None})
+        protection = values["memoryRecovery"]["protection"]
+        self.assertTrue(protection["required"])
+        self.assertEqual(protection["historyBucket"], "fixture-history")
+        self.assertEqual(protection["archiveBucket"], "fixture-archives")
+        self.assertEqual(protection["existingSecret"], "app-memory-recovery")
+        self.assertEqual(protection["pruneServiceAccount"]["annotations"]["iam.gke.io/gcp-service-account"], "prune@fixture")
+        full_release = {"images": {kind: f"registry.example/{kind}@sha256:" + "a" * 64 for kind in IMAGE_KINDS}}
+        rendered = []
+        for chart, name, chart_values in (
+            (kube.APP_CHART, "app", values),
+            (kube.ENV_CHART, "env", kube.env_values("test", output, full_release, {"provider": None, "gcip": None})),
+        ):
+            manifest = subprocess.check_output(["helm", "template", name, str(chart), "-f", "-"], input=json.dumps(chart_values).encode())
+            rendered.extend(obj for obj in yaml.safe_load_all(manifest) if obj)
+        ingress = next(obj for obj in rendered if obj["kind"] == "NetworkPolicy" and obj["metadata"]["name"].endswith("-dependencies"))["spec"]["ingress"]
+        for job in (obj for obj in rendered if obj["kind"] == "CronJob" and "-memory-" in obj["metadata"]["name"]):
+            labels = job["spec"]["jobTemplate"]["spec"]["template"]["metadata"]["labels"]
+            allowed = set()
+            for rule in ingress:
+                for source in rule["from"]:
+                    selector = source["podSelector"]
+                    matches = selector.get("matchLabels", {}).items() <= labels.items() and all(
+                        expression['operator'] == "In" and labels.get(expression["key"]) in expression["values"]
+                        for expression in selector.get("matchExpressions", [])
+                    )
+                    if matches:
+                        allowed.update(port["port"] for port in rule["ports"])
+            self.assertEqual(allowed, {5432}, job["metadata"]["name"] + " needs PostgreSQL without unauthenticated NATS")
+        self.cluster.put({
+            "kind": "Deployment", "metadata": {"name": "app-aidash-server", "namespace": "aidash-test"},
+            "spec": {"replicas": 0, "template": {"metadata": {"labels": {}}, "spec": {"containers": [{
+                "name": "aidash", "env": [{"name": "AIDASH_MEMORY_RECOVERY_REQUIRED", "value": "true"}],
+            }]}}},
+        })
+        kube.migrate(self.cluster, "test", "a" * 40)
+        (job,) = [value for key,value in self.cluster.objects.items() if key[0] == "job"]
+        self.assertEqual(job["spec"]["template"]["metadata"]["labels"]["aidash.run/metadata-server"], "allowed")
+        with self.assertRaisesRegex(Refused, "protection"):
+            kube.app_values(self.cluster, "production", {**output, "memory_recovery": {"required": False}}, release, "a" * 40, {"provider": None, "gcip": None})
+
     def test_existing_journal_claim_keeps_its_bound_storage_class(self):
         output = dict(OUTPUT, server_service_account="server@fixture", worker_service_account="worker@fixture")
         release = {"images": {kind: f"registry.example/{kind}@sha256:" + "a" * 64 for kind in ("app", "control", "sandbox")}}
@@ -666,7 +720,8 @@ class SealAndMigrationTests(unittest.TestCase):
 
     def test_production_disk_holders_are_statefulsets_under_stateful_ha(self):
         output = dict(OUTPUT, hostname="aidash.run", runtime_secret="production",
-                      server_service_account="server@fixture", worker_service_account="worker@fixture")
+                      server_service_account="server@fixture", worker_service_account="worker@fixture",
+                      memory_recovery={"required": True, "history_bucket": "fixture-history", "archive_bucket": "fixture-archives", "backup_service_account": "backup@fixture", "prune_service_account": "prune@fixture"})
         release = {"images": {kind: f"registry.example/{kind}@sha256:" + "a" * 64 for kind in IMAGE_KINDS}}
         settings = {"provider": None, "gcip": None}
         failover = {"workloadKind": "StatefulSet", "highAvailability": {"enabled": True}}
@@ -688,7 +743,7 @@ class SealAndMigrationTests(unittest.TestCase):
         settings = {"provider": None, "gcip": None}
         recovery = kube.app_values(self.cluster, "test", output, release, "a" * 40, settings)["memoryRecovery"]
         self.assertEqual(recovery, {"existingClaim": "memory-recovery", "subPath": "home",
-                                    "directory": "/var/lib/aidash/memory-recovery/home"})
+                                    "directory": "/var/lib/aidash/memory-recovery/home", "protection": {"required": False}})
         # As rendered by the app chart from these values.
         mounts = [
             {"name": "memory-recovery", "mountPath": recovery["directory"], "subPath": recovery["subPath"]},
@@ -803,6 +858,95 @@ class SealAndMigrationTests(unittest.TestCase):
         with patch.object(kube, "wait_job", return_value=False), self.assertRaises(RuntimeError):
             kube.migrate(self.cluster, "test", "a" * 40, '{"people": []}')
         self.assertIsNone(self.cluster.get("secret", "app-demo-data", "aidash-test"))
+
+
+class MemoryScheduleTests(unittest.TestCase):
+    def setUp(self):
+        self.cluster = FakeCluster([])
+        self.namespace = "aidash-test"
+        self.jobs = ("app-aidash-memory-backup", "app-aidash-memory-prune")
+        self.settings = {"provider": None, "gcip": None}
+        self.output = dict(OUTPUT, server_service_account="server@fixture", worker_service_account="worker@fixture",
+                           memory_recovery={"required": True, "history_bucket": "fixture-history", "archive_bucket": "fixture-archives",
+                                            "backup_service_account": "backup@fixture", "prune_service_account": "prune@fixture"})
+        self.release = {"images": {kind: f"registry.example/{kind}@sha256:" + "a" * 64 for kind in IMAGE_KINDS}}
+        kube.prepare(self.cluster, "test")
+        kube.materialize(self.cluster, "test", PROJECT, self.output, RUNTIME)
+        upgrade = self.cluster.upgrade
+
+        def install(namespace, name, chart, values):
+            upgrade(namespace, name, chart, values)
+            if chart == kube.APP_CHART:
+                # Use the actual chart's schedules, including upgrade resets.
+                manifest = subprocess.check_output(["helm", "template", name, str(chart), "--namespace", namespace, "-f", "-"],
+                                                   input=json.dumps(values).encode())
+                for obj in yaml.safe_load_all(manifest):
+                    if obj and obj["kind"] == "CronJob":
+                        obj["metadata"]["namespace"] = namespace
+                        self.cluster.put(obj)
+
+        context = patch.object(self.cluster, "upgrade", install)
+        context.start()
+        self.addCleanup(context.stop)
+
+    def assert_suspended(self, suspended):
+        for name in self.jobs:
+            self.assertIs(self.cluster.get("cronjob", name, self.namespace)["spec"].get("suspend"), suspended, name)
+
+    def deploy(self):
+        kube.deploy(self.cluster, "test", self.output, self.release, "a" * 40, self.settings)
+
+    def test_schedules_wait_for_migrations_and_maintenance_role(self):
+        for step in ("migrate", "memory_role"):
+            original = getattr(kube, step)
+
+            def initializing(*args, _original=original, **kwargs):
+                self.assert_suspended(True)
+                return _original(*args, **kwargs)
+
+            context = patch.object(kube, step, initializing)
+            context.start()
+            self.addCleanup(context.stop)
+        self.deploy()
+        self.assert_suspended(False)
+
+    def test_failed_migration_or_maintenance_role_leaves_schedules_suspended(self):
+        for step in ("migrate", "memory_role"):
+            with self.subTest(step=step):
+                self.cluster.failures.clear()
+                self.cluster.fail((step, "test"), RuntimeError("initialization failed"))
+                with self.assertRaisesRegex(RuntimeError, "initialization failed"):
+                    self.deploy()
+                self.assert_suspended(True)
+
+    def test_reload_resumes_only_after_successful_maintenance_role(self):
+        self.deploy()
+        original = kube.memory_role
+
+        def initialize(*args):
+            self.assert_suspended(True)
+            return original(*args)
+
+        with patch.object(kube, "memory_role", initialize):
+            kube.reload(self.cluster, "test", self.output, self.settings)
+        self.assert_suspended(False)
+        self.cluster.fail(("memory_role", "test"), RuntimeError("role failed"))
+        with self.assertRaisesRegex(RuntimeError, "role failed"):
+            kube.reload(self.cluster, "test", self.output, self.settings)
+        self.assert_suspended(True)
+
+    def test_stop_suspends_every_schedule_before_shutting_down_dependencies(self):
+        self.deploy()
+        scale = self.cluster.scale
+
+        def shutdown(*args):
+            self.assert_suspended(True)
+            self.assertTrue(self.cluster.get("cronjob", kube.ACTIVITY, self.namespace)["spec"]["suspend"])
+            return scale(*args)
+
+        with patch.object(self.cluster, "scale", shutdown):
+            kube.stop(self.cluster, "test")
+        self.assert_suspended(True)
 
 
 class DatabaseRoleTests(unittest.TestCase):

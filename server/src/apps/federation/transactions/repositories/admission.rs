@@ -134,8 +134,9 @@ impl AdmissionRepository for Repository {
 			.store
 			.control_pool
 			.begin(&aidash_application::tenancy::TenancyScope::NoTenant)
-			.await
-			.and_then(crate::database::native::Transaction::into_executor)?;
+			.await?
+			.into_executor()
+			.await?;
 		Ok(Box::new(Owned {
 			runtime: self.runtime.clone(),
 			tx,

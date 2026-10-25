@@ -258,7 +258,11 @@ pub(super) fn advisory_lock(function: &str, key: String) -> SimpleExpr {
 }
 
 pub(crate) async fn recovery_lease(db: &Pool, id: Uuid) -> Result<Box<dyn TransactionExecutor>> {
-	let mut tx = db.begin(&TenancyScope::NoTenant).await?.into_executor()?;
+	let mut tx = db
+		.begin(&TenancyScope::NoTenant)
+		.await?
+		.into_executor()
+		.await?;
 	let (sql, values) = Query::select()
 		.expr_as(
 			advisory_lock("pg_try_advisory_xact_lock", format!("atomic:{id}")),

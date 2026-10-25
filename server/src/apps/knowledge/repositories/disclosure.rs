@@ -21,7 +21,10 @@ impl SemanticDisclosureScope for Disclosure<'_, '_> {
 	fn scoped(&self) -> bool {
 		!matches!(
 			self.lease,
-			Lease::WithoutSubject(_) | Lease::BorrowedWithoutSubject(_)
+			Lease::WithoutSubject(_)
+				| Lease::BorrowedWithoutSubject(_)
+				| Lease::ProofWithoutSubject(_)
+				| Lease::BorrowedProofWithoutSubject(_)
 		)
 	}
 	async fn deployment_administrator_visible(&mut self, workspace: Uuid) -> Result<bool> {

@@ -26,13 +26,14 @@ variable "cluster" {
 }
 variable "environment" {
   type = object({
-    kind         = string
-    incarnation  = string
-    running      = bool
-    spot         = bool
-    nodes        = number
-    machine_type = string
-    auth_helper  = optional(string, "firebase")
+    kind               = string
+    incarnation        = string
+    running            = bool
+    spot               = bool
+    nodes              = number
+    machine_type       = string
+    auth_helper        = optional(string, "firebase")
+    recovery_protected = optional(bool, false)
   })
   validation {
     condition     = var.deployment_tier == "production" ? (var.environment_id == "production" && var.environment.kind == "production" && var.environment.running && !var.environment.spot) : var.environment.kind != "production" && var.environment_id != "production"
