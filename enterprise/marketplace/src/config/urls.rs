@@ -1,6 +1,13 @@
 //! One project registration for browser routes and typed server functions.
-use reinhardt::{UnifiedRouter, routes};
-#[routes]
+//!
+//! Only the WASM client discovers routes through `inventory`; the native
+//! binaries build their handler from `handler()` directly. Reinhardt allows one
+//! `#[routes]` marker per link unit, and Auth's cross-service tests link this
+//! library next to Auth's own registration, so a native marker here would
+//! collide with Auth's marker at link time.
+use reinhardt::UnifiedRouter;
+
+#[cfg_attr(client, reinhardt::routes)]
 pub fn routes() -> UnifiedRouter {
 	UnifiedRouter::new().merge(crate::apps::distribution::urls::url_patterns())
 }

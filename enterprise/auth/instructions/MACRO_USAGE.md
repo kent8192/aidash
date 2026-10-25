@@ -10,9 +10,14 @@ equivalents can miss.
 - Aggregate each app through its `urls` module instead of importing individual
   handlers into project configuration.
 - Keep server and client route tables behind their target cfg aliases.
+- Apply the attribute on the WASM client only. Reinhardt emits one
+  `__reinhardt_routes_registration_marker` per link unit, and the native
+  binaries call the aggregate through `handler()` without reading the
+  `inventory`, so a second native marker makes the cross-service test fail to
+  link.
 
 ```rust,ignore
-#[routes]
+#[cfg_attr(client, reinhardt::routes)]
 pub fn routes() -> UnifiedRouter {
     UnifiedRouter::new()
         .merge(crate::apps::notes::urls::url_patterns())
