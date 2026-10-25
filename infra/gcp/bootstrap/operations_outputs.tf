@@ -19,6 +19,9 @@ output "operations_configuration" {
     backup_freshness_max_seconds       = 93600
     restore_test_required              = true
     native_home_ledger_required        = true
+    home_ledger_rto_seconds            = 7200
+    home_archive_freshness_max_seconds = 28800
+    home_remote_prune_max_seconds      = 1800
     volume_utilization_threshold       = var.production_volume_utilization_threshold
     restart_threshold                  = var.production_restart_threshold
     monitoring_hostname                = var.production_monitoring_hostname
@@ -28,6 +31,9 @@ output "operations_configuration" {
       google_monitoring_alert_policy.production_uptime[*].name,
       [for policy in google_monitoring_alert_policy.production_workload : policy.name],
       google_monitoring_alert_policy.production_backup_failed[*].name,
+      google_monitoring_alert_policy.memory_prune[*].name,
+      google_monitoring_alert_policy.memory_archives[*].name,
+      google_monitoring_alert_policy.memory_closed[*].name,
     )
   }
 }

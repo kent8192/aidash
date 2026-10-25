@@ -223,6 +223,14 @@ configured. The project is never inferred from a developer's `gcloud` default.
 The optional `node_count` map in `AIDASH_GCP_CONFIG` (keys `develop`, `test`,
 `pr`) sets the Environment node pool size per kind; omitted kinds use one node.
 
+The optional `recovery_protected` map in `AIDASH_GCP_CONFIG` opts exact
+nonproduction Environment IDs into independent Home recovery on their next
+authorized deployment, for example `{"test": true, "pr-42": true}`. First
+enable `memory_recovery_nonproduction_enabled` in bootstrap. The controller
+retains provisioned protection through updates and stop/resume even if the
+opt-in is later omitted or set to `false`. Production always requires it. See
+[Home ledger recovery](../../docs/operations/home-ledger-recovery.md).
+
 The optional `GCP_DEMO_DATA` Environment secret of `nonproduction` holds the real
 people for Demo data (ADR 0080) as one JSON object:
 `{"people":[{"email":"a@example.com","tenant":"acme","subject":"alex","role":"administrator"}]}`.

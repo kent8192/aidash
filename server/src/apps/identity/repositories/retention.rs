@@ -282,6 +282,7 @@ impl RetentionRepository for TenantRetention<'_> {
 							.begin(&self.actor.tenancy()?)
 							.await?
 							.into_executor()
+							.await
 					}
 					.await,
 				)?),

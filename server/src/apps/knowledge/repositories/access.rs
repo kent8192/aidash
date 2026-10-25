@@ -21,6 +21,9 @@ pub(crate) enum Lease<'a> {
 	/// Administrator or for Aidash's own work.
 	WithoutSubject(crate::database::native::Transaction),
 	BorrowedWithoutSubject(&'a mut crate::database::native::Transaction),
+	/// Recovery revalidation retains this mode through credentialless lineage.
+	ProofWithoutSubject(crate::database::native::Transaction),
+	BorrowedProofWithoutSubject(&'a mut crate::database::native::Transaction),
 	Scoped(Box<Access>),
 	Inherited(&'a mut Access),
 }
@@ -57,25 +60,49 @@ impl Lease<'_> {
 	}
 	/// Restore the authority saved with work on `workspace`.
 	pub(crate) async fn restore(store: &Store, authority: Value, workspace: Uuid) -> Result<Self> {
+		Self::restore_with_mode(store, authority, workspace, false).await
+	}
+	pub(crate) async fn restore_proof(
+		store: &Store,
+		authority: Value,
+		workspace: Uuid,
+	) -> Result<Self> {
+		Self::restore_with_mode(store, authority, workspace, true).await
+	}
+	async fn restore_with_mode(
+		store: &Store,
+		authority: Value,
+		workspace: Uuid,
+		proof: bool,
+	) -> Result<Self> {
 		let authority: SavedAuthority = serde_json::from_value(authority)?;
 		match authority.credential {
 			None if authority.subject == WITHOUT_SUBJECT
 				&& authority.tenant.is_empty()
 				&& authority.subjects.is_empty() =>
 			{
-				Self::within(store, &store.workspace_tenancy(workspace).await?).await
+				let tx = store
+					.pool
+					.begin(&store.workspace_tenancy(workspace).await?)
+					.await?;
+				Ok(if proof {
+					Self::ProofWithoutSubject(tx)
+				} else {
+					Self::WithoutSubject(tx)
+				})
 			}
 			Some(credential_id) => {
-				let mut access = Access::begin(
-					store,
-					&SubjectIdentity {
-						http_session: None,
-						credential_id,
-						tenant: authority.tenant,
-						subject: authority.subject,
-					},
-				)
-				.await?;
+				let identity = SubjectIdentity {
+					http_session: None,
+					credential_id,
+					tenant: authority.tenant,
+					subject: authority.subject,
+				};
+				let mut access = if proof {
+					Access::begin_proof(store, &identity).await?
+				} else {
+					Access::begin(store, &identity).await?
+				};
 				if authority.subjects.is_empty()
 					|| !authority.subjects.contains(&access.identity.subject)
 				{
@@ -90,17 +117,28 @@ impl Lease<'_> {
 	}
 	pub(crate) fn tx(&mut self) -> &mut crate::database::native::Transaction {
 		match self {
-			Self::WithoutSubject(tx) => tx,
-			Self::BorrowedWithoutSubject(tx) => tx,
+			Self::WithoutSubject(tx) | Self::ProofWithoutSubject(tx) => tx,
+			Self::BorrowedWithoutSubject(tx) | Self::BorrowedProofWithoutSubject(tx) => tx,
 			Self::Scoped(a) => &mut a.tx,
 			Self::Inherited(a) => &mut a.tx,
 		}
 	}
 	pub(crate) fn access(&mut self) -> Option<&mut Access> {
 		match self {
-			Self::WithoutSubject(_) | Self::BorrowedWithoutSubject(_) => None,
+			Self::WithoutSubject(_)
+			| Self::BorrowedWithoutSubject(_)
+			| Self::ProofWithoutSubject(_)
+			| Self::BorrowedProofWithoutSubject(_) => None,
 			Self::Scoped(a) => Some(a),
 			Self::Inherited(a) => Some(a),
+		}
+	}
+	pub(crate) fn proof(&self) -> bool {
+		match self {
+			Self::ProofWithoutSubject(_) | Self::BorrowedProofWithoutSubject(_) => true,
+			Self::WithoutSubject(_) | Self::BorrowedWithoutSubject(_) => false,
+			Self::Scoped(access) => !access.audit,
+			Self::Inherited(access) => !access.audit,
 		}
 	}
 	pub(crate) fn durable(&mut self) {
@@ -127,7 +165,7 @@ impl Lease<'_> {
 	}
 	pub(crate) async fn finish<T>(self, result: Result<T>) -> Result<T> {
 		match self {
-			Self::WithoutSubject(tx) => {
+			Self::WithoutSubject(tx) | Self::ProofWithoutSubject(tx) => {
 				if result.is_ok() {
 					tx.commit().await?;
 				} else {
@@ -136,7 +174,9 @@ impl Lease<'_> {
 				result
 			}
 			Self::Scoped(a) => a.finish(result).await,
-			Self::Inherited(_) | Self::BorrowedWithoutSubject(_) => result,
+			Self::Inherited(_)
+			| Self::BorrowedWithoutSubject(_)
+			| Self::BorrowedProofWithoutSubject(_) => result,
 		}
 	}
 	pub(crate) async fn workspace(&mut self, workspace: Uuid, action: &str) -> Result<()> {

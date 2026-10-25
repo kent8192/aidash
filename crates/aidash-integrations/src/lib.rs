@@ -12,6 +12,8 @@ pub mod kubernetes;
 #[cfg(feature = "cloud-adapters")]
 pub mod openrouter;
 #[cfg(feature = "cloud-adapters")]
+pub mod recovery;
+#[cfg(feature = "cloud-adapters")]
 pub mod response;
 #[cfg(feature = "cloud-adapters")]
 pub mod semantic;

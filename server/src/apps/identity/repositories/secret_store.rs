@@ -246,8 +246,9 @@ impl PostgresStore {
 	async fn begin(&self, scope: &TenancyScope) -> Result<Box<dyn TransactionExecutor>> {
 		self.pool
 			.begin(scope)
+			.await?
+			.into_executor()
 			.await
-			.and_then(crate::database::native::Transaction::into_executor)
 			.map_err(db_error)
 	}
 	/// Key Material of one Tenant.

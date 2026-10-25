@@ -5,15 +5,24 @@ use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
+pub mod objects;
+
 /// Native adapters retain this ledger outside recoverable database snapshots.
 /// Only memory paths consult its serving gate; primary execution remains usable.
+#[async_trait]
 pub trait MemoryRecovery: Send + Sync {
+	/// Verify the durable publication after process startup or uncertain I/O.
+	async fn verify(&self) -> Result<()>;
+	/// Maintenance commands share the configured independent object adapter.
+	fn objects(&self) -> Option<std::sync::Arc<dyn objects::RecoveryObjects>> {
+		None
+	}
 	fn require_serving(&self) -> Result<()>;
 	fn epoch(&self) -> Result<Uuid>;
 	/// Every canonical read also checks the independently retained body fence.
 	/// A database rewind or uncertain commit cannot be served with an open epoch.
 	fn require_current(&self, unit: &Unit) -> Result<()>;
-	fn observe_many(&self, units: &[Unit]) -> Result<()>;
+	async fn observe_many(&self, units: &[Unit]) -> Result<()>;
 }
 
 /// A snapshot contains only currently readable units and fully resolved source revisions.
