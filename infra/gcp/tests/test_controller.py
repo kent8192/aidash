@@ -1196,6 +1196,28 @@ class ReconcileTests(ReconcileFixture, unittest.TestCase):
         self.assertEqual(len(self.cloud.plans), plans)
         self.assertFalse(any(call[0] == "helm" or call[2:3] == ("runner",) for call in self.calls))
 
+    def test_gcip_refresh_of_an_unpublished_environment_does_not_block_its_next_deployment(self):
+        # A first start that failed after its writers started leaves the node
+        # pool running while nothing is published.
+        self.context.enter_context(patch.object(controller, "reconcile_environment"))
+        self.request("develop", action="up", source_ref="develop/0.1.0")
+        with patch.object(controller, "public_health", side_effect=controller.Refused("no public origin")):
+            with self.assertRaisesRegex(RuntimeError, "Reconciliation incomplete"):
+                self.reconcile()
+        self.assertTrue(self.cloud.managed["develop"]["running"])
+        self.assertFalse(self.cloud.managed["develop"]["published"])
+        # A GCIP change quiesces it and refreshes its settings successfully.
+        self.config["gcip_tenants"] = {"company": {"tenant": "acme"}}
+        self.cloud.gcip = {"tenant_ids": ["new-pool"], "tenant_bindings": {"new-pool": "acme"}}
+        self.request("develop", action="up", source_ref="develop/0.1.0", sha="d" * 40)
+        self.calls.clear()
+        self.reconcile()
+        entry = self.store.state["environments"]["develop"]
+        self.assertFalse(entry["gcip_pending"])
+        self.assertFalse(entry["gcip_quiesced"])
+        self.assertEqual(entry["status"], "ready")
+        self.assertTrue(self.deployed("develop"))
+
     def test_gcip_refresh_failure_cannot_unseal_through_an_ordinary_stop(self):
         self.request()
         self.reconcile()

@@ -706,6 +706,10 @@ def refresh_gcip_environments(config, store, terraform, managed, revision, affec
                 kube.admission(cluster, identity, "open")
                 public_health(output)
                 quiesced = False
+            elif not previous["published"]:
+                # An unpublished Environment admits nothing, so no old policy
+                # remains to fence; its next deployment applies these settings.
+                quiesced = False
             update_entry(
                 store, identity, generation, gcip_revision=revision,
                 gcip_mfa_revision=gcip_mfa_revision(config),
