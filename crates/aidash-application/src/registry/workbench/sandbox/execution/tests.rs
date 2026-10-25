@@ -394,6 +394,7 @@ fn job(model: Arc<Model>) -> Job {
 			cache_scope: None,
 			cache_breakpoints: false,
 			disable_provider_transforms: false,
+			input_format: Default::default(),
 			estimate: Default::default(),
 		},
 		initial_conversation: vec![json!({"role":"user","content":"original"})],

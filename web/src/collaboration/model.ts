@@ -11,6 +11,7 @@ export const settingsSections = [
   "transactions",
   "deployment",
   "providerCredentials",
+  "planConnections",
   "marketplace",
   "approvals",
   "node",
@@ -25,6 +26,7 @@ export const visibleSettingsSections = [
   "clusters",
   "deployment",
   "providerCredentials",
+  "planConnections",
   "marketplace",
   "approvals",
 ] as const;
@@ -32,7 +34,7 @@ export const visibleSettingsSections = [
  *  Deployment Administrator acts as nobody in a Tenant and has none. */
 export const personalSettingsSections: Partial<
   Record<(typeof settingsSections)[number], true>
-> = { approvals: true };
+> = { approvals: true, planConnections: true };
 export type IntegratedView =
   | "files"
   | "progress"

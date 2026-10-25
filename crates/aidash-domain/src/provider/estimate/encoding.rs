@@ -90,7 +90,7 @@ impl TokenEncoding {
 	}
 
 	/// Tokens of the model-visible text in a provider request body, plus the
-	/// message and tool framing constants. Every string in a message counts
+	/// message/item and tool framing constants. Every string in a message counts
 	/// as the text the model receives, its JSON escaping decoded once. Tool
 	/// definitions and any other top-level value count as their JSON.
 	pub fn count_body(self, body: &Value) -> Option<usize> {
@@ -103,7 +103,7 @@ impl TokenEncoding {
 		let mut tokens = 0_usize;
 		for (key, value) in fields {
 			let counted = match (key.as_str(), value) {
-				("messages", Value::Array(messages)) => {
+				("messages" | "input", Value::Array(messages)) => {
 					messages.iter().try_fold(0_usize, |sum, message| {
 						Some(
 							sum.saturating_add(MESSAGE_TOKENS)
@@ -111,9 +111,20 @@ impl TokenEncoding {
 						)
 					})?
 				}
+				("instructions", Value::String(text)) => {
+					MESSAGE_TOKENS.saturating_add(self.count(text)?)
+				}
 				("tools", Value::Array(tools)) => tools.iter().try_fold(0_usize, |sum, tool| {
+					// Responses namespaces contain multiple tools. Count the
+					// namespace framing and each function, preserving Chat's
+					// one framing reserve per top-level function definition.
+					let definitions = if tool["type"] == "namespace" {
+						1 + tool["tools"].as_array().map_or(0, Vec::len)
+					} else {
+						1
+					};
 					Some(
-						sum.saturating_add(TOOL_TOKENS)
+						sum.saturating_add(TOOL_TOKENS.saturating_mul(definitions))
 							.saturating_add(self.count(&tool.to_string())?),
 					)
 				})?,

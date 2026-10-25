@@ -813,3 +813,20 @@ The controller compares the normalized `mfaConfig` (state, enabled providers and
 `roles/identityplatform.viewer` includes `firebaseauth.users.get` in the [official permission list](https://docs.cloud.google.com/iam/docs/roles-permissions/identityplatform). Its applicability and effective isolation of tenant `accounts:lookup` remain **documented assumptions awaiting a sandbox test**. Verify own-pool lookup succeeds and another environment's pool and project-root lookup fail before rollout; failure must stop rollout and return to the lead, never broaden runtime IAM. The trusted deploy principal holds Identity Platform administration to create pools and reconcile their policies. Password-change/reset behavior for `validSince` also awaits sandbox verification; the server relies only on the returned timestamp.
 
 Provider-mocked Terraform cases cover multi-tenancy, callback domains, per-pool signup, IdP resources and the MFA Requirement default, TOTP window range and SSO restriction. Fake REST controller tests cover grant creation, repeated reconciliation, unrelated bindings, etag retry, destruction, and tenant MFA drift correction (including the complete `enabled`/`mandatory` TOTP config), recording and pending retry. Rust and Playwright use signed fixtures; the Firebase Auth Emulator is not used.
+
+## Disposable credential-security verification
+
+Use the [sandbox envelope and independent acceptance matrix](sandbox/README.md)
+for #135/#152 assumptions 1–8. It prepares the real roots in an isolated copy,
+requires two newly created projects and a reviewed broker source/digest, records
+only sanitized probe metadata, and verifies project shutdown plus billing
+unlinking without changing production deletion guards. `prepare` and `plan`
+are local preparation; `create`, `probe` and `cleanup` are separately authorized
+phases. The existing gcloud default project is never used.
+
+Local runner tests are `python3 -m unittest discover -s infra/gcp/tests -p
+'test_sandbox*.py' -v`. They are not live IAM, ingress, WIF or alert
+acceptance. Protected-ref-only evidence follows ADR 0081 and is collected after
+the reviewed implementation reaches the protected ref. Hosted Plan-secret
+refresh remains deferred to #248; real OpenRouter/ChatGPT acceptance requires
+the owner's interactive consent and is separate from dummy-secret probes.

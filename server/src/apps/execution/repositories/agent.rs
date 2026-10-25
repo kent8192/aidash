@@ -659,9 +659,10 @@ impl ExecutionAuthority for Authority<'_> {
 		&self,
 		messages: &[(i64, Uuid, usize)],
 		model: &ModelConfig,
+		projection: aidash_domain::projection::ProjectionVersion,
 	) -> Result<HumanMediaBatch> {
 		self.guard
-			.human_message_media(messages, model)
+			.human_message_media(messages, model, projection)
 			.await
 			.map_err(Into::into)
 	}

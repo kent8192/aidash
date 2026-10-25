@@ -1,5 +1,9 @@
 use super::*;
 use aidash_application::provider_access::Access;
+use aidash_domain::{
+	projection::native::{Envelope, NativeContext, NativeMessage, Source as NativeSource, Trust},
+	provider::ModelContext,
+};
 use axum::{
 	Json, Router,
 	http::{HeaderMap, StatusCode, header},
@@ -140,17 +144,138 @@ fn ordered_contexts_send_both_parts_in_order() {
 	assert_eq!(body["instructions"], "Be precise.");
 }
 
+fn envelope(source: NativeSource, content: Value) -> Envelope {
+	Envelope {
+		source,
+		provenance: json!({"journal":"context"}),
+		revision: Some(7),
+		trust: Trust::Data,
+		content,
+	}
+}
+
+fn native_request() -> ModelRequest {
+	ModelRequest {
+		context: ModelContext::Native(NativeContext {
+			attachments: vec![envelope(NativeSource::Task, json!("original task"))],
+			history: vec![],
+			volatile: json!({"step":1}).to_string(),
+		}),
+		..request()
+	}
+}
+
+#[test]
+fn native_requests_preserve_all_messages_calls_results_and_media_in_order() {
+	let mut request = native_request();
+	let ModelContext::Native(native) = &mut request.context else {
+		unreachable!()
+	};
+	native.history = vec![
+		NativeMessage::Assistant {
+			text: Some("Looking up both sources.".into()),
+			tool_calls: vec![
+				ToolCall {
+					id: "call-a".into(),
+					name: "search".into(),
+					arguments: json!({"q":"first"}),
+				},
+				ToolCall {
+					id: "call-b".into(),
+					name: "search".into(),
+					arguments: json!({"q":"second"}),
+				},
+			],
+		},
+		NativeMessage::Tool {
+			tool_call_id: "call-a".into(),
+			envelope: envelope(NativeSource::Tool, json!({"found":"first"})),
+		},
+		NativeMessage::Tool {
+			tool_call_id: "call-b".into(),
+			envelope: envelope(NativeSource::Tool, json!({"found":"second"})),
+		},
+		NativeMessage::Human {
+			request: envelope(NativeSource::HumanRequest, json!("Proceed?")),
+			response: json!("yes"),
+		},
+		NativeMessage::Assistant {
+			text: Some("Continuing after approval.".into()),
+			tool_calls: vec![],
+		},
+		NativeMessage::Data {
+			envelope: envelope(NativeSource::ModelMediaObservation, json!("observed image")),
+		},
+	];
+	request.content_parts = vec![ContentPart::Image {
+		media_type: "image/png".into(),
+		bytes: b"\x89PNG\r\n\x1a\n".to_vec(),
+	}];
+	request.validate().unwrap();
+	let body = request_body(&config(), &request, Some("salt-line\n")).unwrap();
+	assert_eq!(body["instructions"], "salt-line\nBe precise.");
+	assert_eq!(body["store"], false);
+	assert_eq!(body["stream"], true);
+	let input = body["input"].as_array().unwrap();
+	assert_eq!(input.len(), 10);
+	let data = |index: usize| {
+		serde_json::from_str::<Value>(input[index]["content"][0]["text"].as_str().unwrap()).unwrap()
+	};
+	assert_eq!(input[0]["role"], "user");
+	assert_eq!(data(0)["content"], "original task");
+	assert_eq!(data(0)["trust"], "data");
+	assert_eq!(
+		input[1],
+		json!({"role":"assistant","content":[{"type":"input_text","text":"Looking up both sources."}]})
+	);
+	for (index, call_id, arguments) in [
+		(2, "call-a", r#"{"q":"first"}"#),
+		(3, "call-b", r#"{"q":"second"}"#),
+	] {
+		assert_eq!(
+			input[index],
+			json!({"type":"function_call","call_id":call_id,"namespace":"aidash","name":"search","arguments":arguments})
+		);
+	}
+	for (index, call_id, found) in [(4, "call-a", "first"), (5, "call-b", "second")] {
+		assert_eq!(input[index]["type"], "function_call_output");
+		assert_eq!(input[index]["call_id"], call_id);
+		let output: Value = serde_json::from_str(input[index]["output"].as_str().unwrap()).unwrap();
+		assert_eq!(output["content"]["found"], found);
+		assert_eq!(output["trust"], "data");
+	}
+	assert_eq!(input[6]["role"], "user");
+	assert_eq!(data(6)["response"], "yes");
+	assert_eq!(data(6)["in_reply_to"]["source"], "human_request");
+	assert_eq!(
+		input[7],
+		json!({"role":"assistant","content":[{"type":"input_text","text":"Continuing after approval."}]})
+	);
+	assert_eq!(data(8)["source"], "model_media_observation");
+	assert_eq!(data(9)["content"], json!({"step":1}));
+	assert_eq!(
+		input[9]["content"][1],
+		json!({"type":"input_image","image_url":"data:image/png;base64,iVBORw0KGgo="})
+	);
+	assert!(body.get("previous_response_id").is_none());
+	assert!(body.get("include").is_none());
+	assert!(input.iter().all(|item| item["type"] != "reasoning"));
+}
+
 #[test]
 fn audio_input_is_refused_before_any_request() {
-	let mut request = request();
-	request.content_parts = vec![ContentPart::Audio {
-		format: "wav".into(),
-		bytes: vec![0; 4],
-	}];
-	assert!(matches!(
-		request_body(&config(), &request, None),
-		Err(Error::Plan(Failure::Unsupported(_)))
-	));
+	for mut request in [request(), native_request()] {
+		request.content_parts = vec![ContentPart::Audio {
+			format: "wav".into(),
+			bytes: vec![0; 4],
+		}];
+		assert!(matches!(
+			request_body(&config(), &request, None),
+			Err(Error::Plan(Failure::Unsupported(
+				aidash_domain::plan_connections::Unsupported::Input
+			)))
+		));
+	}
 }
 
 #[test]
@@ -530,6 +655,129 @@ async fn plan_calls_stream_from_the_responses_endpoint_with_the_plan_bearer() {
 	assert_eq!(seen[0].1["store"], false);
 	assert_eq!(seen[0].1["stream"], true);
 	assert!(access.reports.lock().unwrap().is_empty());
+}
+
+/// The provider's streamed calls survive a complete tool step and a persisted
+/// request reload, including an assistant turn containing calls without text.
+/// Reasoning can contribute usage, but never enters the replay or progress.
+#[tokio::test]
+async fn native_streamed_tool_steps_resume_with_the_complete_observable_history() {
+	let seen = Arc::new(Mutex::new(Vec::<Value>::new()));
+	let history = seen.clone();
+	let app = Router::new().route(
+		"/responses",
+		post(move |Json(body): Json<Value>| {
+			let history = history.clone();
+			async move {
+				let mut seen = history.lock().unwrap();
+				seen.push(body);
+				let output = match seen.len() {
+					1 => json!([
+						{"type":"reasoning","encrypted_content":"opaque-reasoning-never-retained","summary":[{"text":"hidden-summary"}]},
+						{"type":"message","content":[{"type":"output_text","text":"Checking two sources."}]},
+						{"type":"function_call","namespace":"aidash","call_id":"step-1-a","name":"search","arguments":"{\"q\":\"one\"}"},
+						{"type":"function_call","namespace":"aidash","call_id":"step-1-b","name":"search","arguments":"{\"q\":\"two\"}"}
+					]),
+					2 => json!([
+						{"type":"function_call","namespace":"aidash","call_id":"step-2-a","name":"search","arguments":"{\"q\":\"three\"}"}
+					]),
+					_ => json!([
+						{"type":"message","content":[{"type":"output_text","text":"Finished all three."}]}
+					]),
+				};
+				let mut events = vec![json!({"type":"response.reasoning_summary_text.delta","delta":"hidden-summary"})];
+				for (index, item) in output.as_array().unwrap().iter().enumerate() {
+					match item["type"].as_str() {
+						Some("message") => events.push(json!({"type":"response.output_text.delta","output_index":index,"delta":item["content"][0]["text"]})),
+						Some("function_call") => {
+							let mut added = item.clone();
+							added["arguments"] = json!("");
+							events.push(json!({"type":"response.output_item.added","output_index":index,"item":added}));
+							events.push(json!({"type":"response.function_call_arguments.delta","output_index":index,"delta":item["arguments"]}));
+						}
+						_ => {},
+					}
+				}
+				events.push(completed_event(output));
+				stream_response(&events)
+			}
+		}),
+	);
+	let (url, _server) = serve(app).await;
+	let (mut plan, _) = provider(&url, true);
+	plan.config.projection_versions = vec![aidash_domain::projection::ProjectionVersion::Native];
+	let recorder = Recorder::default();
+	let mut request = native_request();
+	for (step, expected_ids) in [(1, vec!["step-1-a", "step-1-b"]), (2, vec!["step-2-a"])] {
+		let result = plan.infer(request.clone(), &recorder).await.unwrap();
+		assert_eq!(
+			result
+				.tool_calls
+				.iter()
+				.map(|call| call.id.as_str())
+				.collect::<Vec<_>>(),
+			expected_ids
+		);
+		assert!(result.tool_calls.iter().all(|call| call.name == "search"));
+		assert_eq!(result.reported.reasoning_tokens, Some(40));
+		let ModelContext::Native(native) = &mut request.context else {
+			unreachable!()
+		};
+		native.history.push(NativeMessage::Assistant {
+			text: (!result.text.is_empty()).then_some(result.text),
+			tool_calls: result.tool_calls.clone(),
+		});
+		for call in result.tool_calls {
+			native.history.push(NativeMessage::Tool {
+				tool_call_id: call.id,
+				envelope: envelope(NativeSource::Tool, json!({"result":call.arguments})),
+			});
+		}
+		native.volatile = json!({"step":step+1}).to_string();
+		// A resumed Run rehydrates the projected messages rather than a
+		// provider response ID or opaque reasoning blob.
+		request = serde_json::from_value(serde_json::to_value(&request).unwrap()).unwrap();
+	}
+	let result = plan.infer(request, &recorder).await.unwrap();
+	assert_eq!(result.text, "Finished all three.");
+	assert!(result.tool_calls.is_empty());
+	let seen = seen.lock().unwrap();
+	assert_eq!(seen.len(), 3);
+	let first = seen[0]["input"].as_array().unwrap();
+	let second = seen[1]["input"].as_array().unwrap();
+	let third = seen[2]["input"].as_array().unwrap();
+	assert_eq!(first.len(), 2);
+	assert_eq!(second.len(), 7);
+	assert_eq!(third.len(), 9);
+	assert_eq!(first[0], second[0]);
+	assert_eq!(second[..6], third[..6]);
+	assert_eq!(second[1]["role"], "assistant");
+	for (index, kind, id) in [
+		(2, "function_call", "step-1-a"),
+		(3, "function_call", "step-1-b"),
+		(4, "function_call_output", "step-1-a"),
+		(5, "function_call_output", "step-1-b"),
+		(6, "function_call", "step-2-a"),
+		(7, "function_call_output", "step-2-a"),
+	] {
+		assert_eq!(third[index]["type"], kind);
+		assert_eq!(third[index]["call_id"], id);
+	}
+	for body in seen.iter() {
+		assert_eq!(body["store"], false);
+		assert_eq!(body["stream"], true);
+		assert!(body.get("previous_response_id").is_none());
+		assert!(body.get("include").is_none());
+		assert!(!body.to_string().contains("opaque-reasoning-never-retained"));
+		assert!(!body.to_string().contains("hidden-summary"));
+	}
+	let progress = recorder.0.lock().unwrap();
+	assert!(progress.iter().any(
+		|item| matches!(item, InferenceProgress::Text { text } if text == "Checking two sources.")
+	));
+	assert!(progress.iter().any(|item| matches!(item, InferenceProgress::ToolCall { id:Some(id), argument_bytes, .. } if id == "step-1-b" && *argument_bytes > 0)));
+	assert!(!format!("{progress:?}").contains("hidden-summary"));
+	assert!(!format!("{progress:?}").contains("opaque-reasoning-never-retained"));
 }
 
 #[tokio::test]
