@@ -1,4 +1,5 @@
 //! Browser workflow. Every mutation uses the latest server-owned CSRF/context.
+use super::forms::{CodeForm, CredentialsForm, use_code_form, use_credentials_form};
 use crate::apps::authentication::server_fn::*;
 use crate::{
 	api::{self, Error},
@@ -63,9 +64,8 @@ pub enum Action {
 }
 pub struct App {
 	pub state: Signal<State>,
-	pub email: Signal<String>,
-	pub password: Signal<String>,
-	pub code: Signal<String>,
+	pub credentials: CredentialsForm,
+	pub code: CodeForm,
 	pub account_page: bool,
 	flow: Option<String>,
 	client: Ref<Option<Client>>,
@@ -80,9 +80,8 @@ pub fn use_authentication() -> Rc<App> {
 		.filter(|value| !value.is_empty());
 	let app = Rc::new(App {
 		state: use_state(State::default()).0,
-		email: use_state(String::new()).0,
-		password: use_state(String::new()).0,
-		code: use_state(String::new()).0,
+		credentials: use_credentials_form(),
+		code: use_code_form(),
 		account_page: location.pathname().unwrap_or_default() == "/settings/account",
 		flow,
 		client: use_ref(None),
@@ -143,9 +142,8 @@ impl App {
 		});
 	}
 	fn clear_fields(&self) {
-		self.email.set(String::new());
-		self.password.set(String::new());
-		self.code.set(String::new());
+		self.credentials.clear();
+		self.code.clear();
 	}
 	fn client(&self) -> Result<Client, Error> {
 		self.client
@@ -235,14 +233,14 @@ impl App {
 		}
 		match error.code().as_deref() {
 			Some("aidash/second-factor-required") => {
-				self.password.set(String::new());
+				self.credentials.clear_password();
 				self.state.update(|state| {
 					state.factor = Some(Factor::Challenge);
 					state.error = None;
 				});
 			}
 			Some("aidash/enrollment-required") => {
-				self.password.set(String::new());
+				self.credentials.clear_password();
 				self.state.update(|state| {
 					state.factor = Some(Factor::Enroll);
 					state.error = None;
@@ -300,10 +298,8 @@ impl App {
 		self.ensure_current(generation)?;
 		match action {
 			Action::Password => {
-				let token = self
-					.client()?
-					.password(&self.email.get(), &self.password.get())
-					.await?;
+				let (email, password) = self.credentials.values();
+				let token = self.client()?.password(&email, &password).await?;
 				self.complete(token, generation).await?;
 			}
 			Action::Popup(provider) => {
@@ -322,21 +318,17 @@ impl App {
 			}
 			Action::Redirect(provider) => self.client()?.redirect(&provider).await?,
 			Action::Register => {
-				let sent = self
-					.client()?
-					.register(&self.email.get(), &self.password.get())
-					.await?;
+				let (email, password) = self.credentials.values();
+				let sent = self.client()?.register(&email, &password).await?;
 				self.ensure_current(generation)?;
-				self.password.set(String::new());
+				self.credentials.clear_password();
 				self.state.update(|state|state.notice=Some(if sent { "Check your email and verify your address, then sign in to continue. This has not created an Aidash Account yet." } else { "Your login was created, but the verification email could not be sent. Enter your password and resend it." }.into()));
 			}
 			Action::Resend => {
-				let sent = self
-					.client()?
-					.resend(&self.email.get(), &self.password.get())
-					.await?;
+				let (email, password) = self.credentials.values();
+				let sent = self.client()?.resend(&email, &password).await?;
 				self.ensure_current(generation)?;
-				self.password.set(String::new());
+				self.credentials.clear_password();
 				self.state.update(|state| {
 					state.notice = Some(
 						if sent {
@@ -351,9 +343,9 @@ impl App {
 			Action::Code => {
 				let client = self.client()?;
 				let token = if self.state.get().factor == Some(Factor::Enroll) {
-					client.finish_enrollment(&self.code.get()).await?
+					client.finish_enrollment(&self.code.value()).await?
 				} else {
-					client.resolve(&self.code.get()).await?
+					client.resolve(&self.code.value()).await?
 				};
 				self.complete(token, generation).await?;
 			}

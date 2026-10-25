@@ -216,6 +216,8 @@ fn sign_in_form(app: Rc<App>, state: State, context: LoginContext) -> Page {
 		.providers
 		.iter()
 		.any(|provider| provider == "password");
+	let fields = app.credentials.fields.clone();
+	let validate = app.credentials.validate.clone();
 	page!({
 		if context.tenant_ids.len() > 1 && state.factor.is_none() {
 			div {
@@ -272,30 +274,11 @@ fn sign_in_form(app: Rc<App>, state: State, context: LoginContext) -> Page {
 				form {
 					@submit: move |event| {
 						event.prevent_default();
-						app.dispatch(Action::Password);
+						if (validate)() {
+							app.dispatch(Action::Password);
+						}
 					},
-					label {
-						class: "field",
-						"Email" input {
-							type: "email",
-							name: "email",
-							autocomplete: "username",
-							required: true,
-							disabled: state.busy,
-							bind: app.email
-						}
-					}
-					label {
-						class: "field",
-						"Password" input {
-							type: "password",
-							name: "password",
-							autocomplete: "current-password",
-							required: true,
-							disabled: state.busy,
-							bind: app.password
-						}
-					}
+					{ (fields)(state.busy) }
 					button {
 						type: "submit",
 						class: "full-width",
@@ -343,6 +326,8 @@ fn factor_form(app: Rc<App>, state: State) -> Page {
 		.clone()
 		.map(|enrollment| enrollment_view(app.clone(), enrollment))
 		.unwrap_or(Page::Empty);
+	let field = app.code.field.clone();
+	let validate = app.code.validate.clone();
 	page!({
 		section {
 			h2 { {
@@ -358,19 +343,11 @@ fn factor_form(app: Rc<App>, state: State) -> Page {
 			form {
 				@submit: move |event| {
 					event.prevent_default();
-					app.dispatch(Action::Code);
-				},
-				label {
-					class: "field",
-					"Verification code" input {
-						name: "code",
-						autocomplete: "one-time-code",
-						pattern: "[0-9]{6}",
-						maxlength: 6,
-						required: true,
-						bind: app.code
+					if (validate)() {
+						app.dispatch(Action::Code);
 					}
-				}
+				},
+				{ (field)() }
 				button {
 					type: "submit",
 					disabled: state.busy || (enroll && state.enrollment.is_none()),
@@ -395,7 +372,7 @@ fn email_tool(app: Rc<App>, state: State, label: &'static str, action: Action) -
 		button {
 			type: "button",
 			class: "text-button",
-			disabled: state.busy || !state.ready || app.email.get().is_empty() || app.password.get().is_empty(),
+			disabled: state.busy || !state.ready || !(app.credentials.complete)(),
 			@click: move |_| app.dispatch(action.clone()),
 			{ label }
 		}
