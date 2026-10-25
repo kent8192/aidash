@@ -75,17 +75,23 @@ impl Marketplace {
 	/// Refuses plain-HTTP requests when the origin is HTTPS. Forwarded HTTPS
 	/// metadata counts only from the configured proxy IPs or networks; probes stay reachable.
 	///
-	/// Every `/internal/` route is exempt (any method). These are machine-to-machine,
+	/// Exactly three routes are exempt, POST only: `/internal/billing/events`,
+	/// `/internal/enrollments` and `/internal/recalls`. These are machine-to-machine,
 	/// Bearer-authenticated, never carry browser cookies, and the public edge denies
-	/// them, so they keep their in-cluster plain-HTTP path. The chart's NetworkPolicy
-	/// limits who can reach it. `/api/marketplace/downloads` and `/recalls` stay
-	/// enforced, because remote Registry Connections reach them through the HTTPS edge.
+	/// them, so they keep their in-cluster plain-HTTP path. That cleartext Bearer hop is
+	/// the pre-existing in-cluster design; in-cluster TLS is tracked in Issue #516. The
+	/// chart's NetworkPolicy limits who can reach it. Any other `/internal/` path or
+	/// method, and `/api/marketplace/downloads` and `/recalls` (which remote Registry
+	/// Connections reach through the HTTPS edge), stay enforced.
 	pub(crate) fn require_https(&self, request: &Request) -> Result<()> {
 		let path = request.uri.path();
 		if !self.config.secure()
 			|| (request.method == http::Method::GET && path == "/healthz")
-			|| path.starts_with("/internal/")
-		{
+			|| (request.method == http::Method::POST
+				&& matches!(
+					path,
+					"/internal/billing/events" | "/internal/enrollments" | "/internal/recalls"
+				)) {
 			return Ok(());
 		}
 		request.set_trusted_proxies(reinhardt::http::TrustedProxies::new(

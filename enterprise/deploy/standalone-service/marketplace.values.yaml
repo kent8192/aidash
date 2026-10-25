@@ -17,7 +17,8 @@ environment:
   AIDASH_MARKETPLACE_RECALL_SECRET_FILE: /run/secrets/marketplace-recall-secret
 # Browsers and remote Registry Connections (/api/marketplace/*) arrive through the
 # edge Pods: with an HTTPS origin the service answers 400 to plain HTTP except
-# GET /healthz and /internal/*. The public edge denies /internal/, so the in-cluster
+# GET /healthz and the three /internal/ POST routes (billing/events, enrollments,
+# recalls). The public edge denies /internal/, so the in-cluster
 # Billing, enrollment and Recall integrations call this Service directly over plain
 # HTTP with their Bearer secrets; those Pods are the second peer below. The service
 # does not know their labels (the standalone services are not yet deployed from

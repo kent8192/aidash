@@ -481,8 +481,9 @@ async fn standalone_distribution_enforces_ownership_and_persists_recall() {
 		200,
 		"an identical verified event retry is idempotent"
 	);
-	// /internal/* is machine-to-machine and keeps its in-cluster plain-HTTP path under an
-	// HTTPS origin with no trusted proxy, while browser and Registry routes stay refused.
+	// The three /internal/ POST routes are machine-to-machine and keep their in-cluster
+	// plain-HTTP path under an HTTPS origin with no trusted proxy; every other path or
+	// method, browser and Registry routes stay refused.
 	let strict = Marketplace::connect(config("https://marketplace.example.com", &issuer), &app_url)
 		.await
 		.unwrap();
@@ -518,6 +519,8 @@ async fn standalone_distribution_enforces_ownership_and_persists_recall() {
 	for (path, method_post) in [
 		("/api/marketplace/catalog", false),
 		("/api/marketplace/downloads", true),
+		("/internal/other", true),
+		("/internal/recalls", false),
 	] {
 		let url = format!("{strict_endpoint}{path}");
 		let request = if method_post {
