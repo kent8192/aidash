@@ -127,6 +127,7 @@ async fn selected_messages_are_all_authorized_before_ordered_attachment_bytes(
 		id(10),
 		&[(7, id(1), 128000), (9, id(2), 128000)],
 		&model,
+		Default::default(),
 	)
 	.await
 	.unwrap();
@@ -165,7 +166,8 @@ async fn later_message_denial_prevents_reading_any_attachment_bytes(
 			&mut scope,
 			id(10),
 			&[(7, id(1), 128000), (9, id(2), 128000)],
-			&model
+			&model,
+			Default::default()
 		)
 		.await,
 		Err(Error::Forbidden)
@@ -178,7 +180,9 @@ async fn later_message_denial_prevents_reading_any_attachment_bytes(
 #[rstest]
 #[tokio::test]
 async fn empty_message_lists_have_no_reads_or_cursor(mut scope: Scope, model: ModelConfig) {
-	let output = authorized(&mut scope, id(10), &[], &model).await.unwrap();
+	let output = authorized(&mut scope, id(10), &[], &model, Default::default())
+		.await
+		.unwrap();
 	assert!(output.parts.is_empty());
 	assert_eq!(output.through_seq, None);
 	assert!(!output.has_more);
@@ -196,6 +200,7 @@ async fn messages_without_media_still_advance_the_last_complete_sequence(
 		id(10),
 		&[(3, id(1), 128000), (8, id(2), 128000)],
 		&model,
+		Default::default(),
 	)
 	.await
 	.unwrap();
@@ -226,10 +231,16 @@ async fn an_individual_message_over_the_limit_is_rejected_before_media_validatio
 		)]
 	};
 	scope.rows.insert(id(1), records);
-	let error = load(&mut scope, id(10), &[(1, id(1), 128000)], &model)
-		.await
-		.err()
-		.unwrap();
+	let error = load(
+		&mut scope,
+		id(10),
+		&[(1, id(1), 128000)],
+		&model,
+		Default::default(),
+	)
+	.await
+	.err()
+	.unwrap();
 	assert!(
 		matches!(error,Error::Invalid(ref message) if message=="run media input exceeds count or byte limit")
 	);
@@ -259,6 +270,7 @@ async fn total_limits_defer_the_whole_next_message_without_examining_its_integri
 		id(10),
 		&[(1, id(1), 128000), (2, id(2), 128000)],
 		&model,
+		Default::default(),
 	)
 	.await
 	.unwrap();
@@ -292,6 +304,7 @@ async fn immutable_attachment_integrity_is_required_even_after_a_complete_messag
 		id(10),
 		&[(1, id(1), 128000), (2, id(2), 128000)],
 		&model,
+		Default::default(),
 	)
 	.await
 	.err()
@@ -325,10 +338,16 @@ async fn media_type_and_signature_rejection_keep_the_domain_error(
 	if !unsupported {
 		scope.rows.get_mut(&id(1)).unwrap()[0].media_type = "image/png".into();
 	}
-	let error = load(&mut scope, id(10), &[(1, id(1), 128000)], &model)
-		.await
-		.err()
-		.unwrap();
+	let error = load(
+		&mut scope,
+		id(10),
+		&[(1, id(1), 128000)],
+		&model,
+		Default::default(),
+	)
+	.await
+	.err()
+	.unwrap();
 	assert!(matches!(
 		error,
 		Error::Domain(aidash_domain::Error::Invalid(_))
@@ -340,10 +359,16 @@ async fn first_message_budget_failure_returns_the_existing_context_error(
 	mut scope: Scope,
 	model: ModelConfig,
 ) {
-	let error = load(&mut scope, id(10), &[(1, id(1), 0)], &model)
-		.await
-		.err()
-		.unwrap();
+	let error = load(
+		&mut scope,
+		id(10),
+		&[(1, id(1), 0)],
+		&model,
+		Default::default(),
+	)
+	.await
+	.err()
+	.unwrap();
 	assert!(
 		matches!(error,Error::Domain(aidash_domain::Error::Invalid(ref message)) if message.starts_with("model request exceeds context window:"))
 	);
@@ -362,6 +387,7 @@ async fn later_budget_failure_truncates_every_part_from_the_deferred_message(
 		id(10),
 		&[(1, id(1), 128000), (2, id(2), 0)],
 		&model,
+		Default::default(),
 	)
 	.await
 	.unwrap();
@@ -389,10 +415,16 @@ async fn first_message_requires_a_current_approved_route(
 	} else {
 		model.media_routes.clear();
 	}
-	let error = load(&mut scope, id(10), &[(1, id(1), 128000)], &model)
-		.await
-		.err()
-		.unwrap();
+	let error = load(
+		&mut scope,
+		id(10),
+		&[(1, id(1), 128000)],
+		&model,
+		Default::default(),
+	)
+	.await
+	.err()
+	.unwrap();
 	assert!(matches!(error,Error::MediaRouteUnavailable(ref name) if name=="saved-model"));
 }
 #[rstest]
@@ -409,6 +441,7 @@ async fn separate_format_routes_cannot_authorize_one_combined_media_batch(
 		id(10),
 		&[(1, id(1), 128000), (2, id(2), 128000)],
 		&model,
+		Default::default(),
 	)
 	.await
 	.unwrap();
@@ -430,6 +463,7 @@ async fn even_deferred_messages_keep_the_original_authorization_preflight(
 		id(10),
 		&[(1, id(1), 128000), (2, id(2), 128000), (3, id(3), 128000)],
 		&model,
+		Default::default(),
 	)
 	.await
 	.unwrap();
@@ -458,6 +492,7 @@ async fn attachment_read_faults_retain_their_identity_without_partial_output(
 		id(10),
 		&[(1, id(1), 128000), (2, id(2), 128000)],
 		&model,
+		Default::default(),
 	)
 	.await
 	.err()
@@ -795,4 +830,66 @@ async fn page_images_need_no_file_authority_and_must_keep_their_digest(mut file_
 		revoked.as_slice(),
 		[ContentPart::Text(note)] if note == "Page image unavailable: ev_missing was revoked."
 	));
+}
+
+#[rstest]
+#[case::chat(false, 2)]
+#[case::native_plan(true, 1)]
+#[tokio::test]
+async fn escaped_attachment_labels_keep_the_selected_batch_within_dispatch_headroom(
+	mut model: ModelConfig,
+	#[case] plan: bool,
+	#[case] through: i64,
+) {
+	// Eight valid PNGs fit Chat framing but not Native data envelopes at this window.
+	if plan {
+		model.plan_connection = Some("chatgpt".into());
+	}
+	let attachment = attachment(&"\"".repeat(255), "image/png", PIXEL.to_vec());
+	let mut scope = Scope {
+		rows: BTreeMap::from([
+			(id(1), vec![attachment.clone(); 4]),
+			(id(2), vec![attachment; 4]),
+		]),
+		..Default::default()
+	};
+	let headroom = 41_000;
+	let projection = if plan {
+		ProjectionVersion::Native
+	} else {
+		ProjectionVersion::Legacy
+	};
+	let batch = load(
+		&mut scope,
+		id(10),
+		&[(1, id(1), headroom), (2, id(2), headroom)],
+		&model,
+		projection,
+	)
+	.await
+	.unwrap();
+	assert_eq!(batch.through_seq, Some(through));
+	assert_eq!(batch.has_more, plan);
+	// Inspect the actual provider input, independently of the batching probe.
+	let mut request = ModelRequest {
+		content_parts: batch.parts,
+		..Default::default()
+	};
+	let body = if plan {
+		request.context = aidash_domain::provider::ModelContext::Native(
+			aidash_domain::projection::native::native_context(&Default::default(), &json!({})),
+		);
+		aidash_domain::provider::responses::encoded_input_body(&request).unwrap()
+	} else {
+		request.context = json!({}).into();
+		request.input_body()
+	};
+	let images = request.content_parts.len() / 2;
+	let required = body.to_string().len() - images * PIXEL.len().div_ceil(3) * 4
+		+ images * 4097
+		+ aidash_domain::provider::estimate::FRAMING_RESERVE;
+	assert!(
+		required <= headroom,
+		"selected batch requires {required}, only {headroom} available"
+	);
 }

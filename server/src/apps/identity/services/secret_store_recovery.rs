@@ -16,8 +16,8 @@ use std::{collections::BTreeSet, sync::Arc};
 struct Counts {
 	affected_tenants: usize,
 	affected_provider_credentials: usize,
-	/// Plan Connections whose pinned Plan Tokens become unreadable. Their
-	/// owners must connect again; the grant cannot be revoked at OpenAI.
+	/// Plan Connections with unreadable versions, including unpinned grants.
+	/// Only a lost current pin requires reconnection; all retain uncertainty.
 	affected_plan_connections: usize,
 	version_rows: usize,
 	key_registry_rows: usize,
@@ -51,7 +51,12 @@ async fn recover(execute: bool) -> Result<Counts> {
 		.iter()
 		.map(|(resource, version)| format!("{resource}/versions/{version}"))
 		.collect();
-	let plans = unreadable_plan_connections(&pool, &lost_pins).await?;
+	let lost_resources = inventory
+		.versions
+		.iter()
+		.map(|(resource, _)| resource.clone())
+		.collect();
+	let plans = unreadable_plan_connections(&pool, &lost_pins, &lost_resources).await?;
 	let plan_repository = Arc::new(PlanRepository {
 		pool: pool.clone(),
 		node: config.deployment.to_string(),
@@ -85,7 +90,7 @@ async fn recover(execute: bool) -> Result<Counts> {
 		affected_tenants: affected
 			.iter()
 			.map(|row| row.tenant.as_str())
-			.chain(plans.iter().map(|(_, tenant)| tenant.as_str()))
+			.chain(plans.iter().map(|(_, tenant, _)| tenant.as_str()))
 			.collect::<BTreeSet<_>>()
 			.len(),
 		affected_provider_credentials: affected.len(),
@@ -122,9 +127,9 @@ async fn recover(execute: bool) -> Result<Counts> {
 				aidash_integrations::semantic::client()?,
 			)),
 		};
-		for (id, _) in plans {
+		for (id, _, pinned_lost) in plans {
 			plan_service
-				.mark_unreadable(id, "secret-store-recovery")
+				.mark_unreadable(id, pinned_lost, "secret-store-recovery")
 				.await?;
 		}
 		store.remove_unavailable(&inventory).await?;
@@ -132,13 +137,14 @@ async fn recover(execute: bool) -> Result<Counts> {
 	Ok(counts)
 }
 
-/// Plan Connections pinned to a version whose Master Key is gone, scanned in
-/// bounded pages by id like the Provider Credentials above: only matching
-/// ids are kept, and no transaction outlives one page.
+/// Plan resources with any lost-key version, scanned in bounded pages. A
+/// reconnect may have moved the pin while an unresolved grant remains under
+/// the old key. Preserve that uncertainty before deleting its ciphertext.
 async fn unreadable_plan_connections(
 	pool: &crate::database::native::Pool,
 	lost_pins: &BTreeSet<String>,
-) -> Result<Vec<(uuid::Uuid, String)>> {
+	lost_resources: &BTreeSet<String>,
+) -> Result<Vec<(uuid::Uuid, String, bool)>> {
 	use reinhardt::db::orm::{QueryRow, execution::convert_values};
 	use reinhardt::query::{
 		Alias, Expr, ExprTrait, Order, PostgresQueryBuilder, Query, QueryStatementBuilder,
@@ -152,20 +158,20 @@ async fn unreadable_plan_connections(
 				Alias::new("id"),
 				Alias::new("tenant"),
 				Alias::new("pinned_version"),
+				Alias::new("secret_resource"),
 			])
 			.from(Alias::new("plan_connections"))
-			.and_where(Expr::col(Alias::new("pinned_version")).is_not_null())
 			.order_by(Alias::new("id"), Order::Asc)
 			.limit(RECONCILIATION_BATCH_SIZE as u64);
 		if let Some(after) = after {
 			query.and_where(Expr::col(Alias::new("id")).gt(Expr::value(after)));
 		}
 		let (sql, values) = query.build(PostgresQueryBuilder);
-		// Recovery reconciles every Tenant's pinned Plan Tokens.
+		// Recovery reconciles every Tenant's Plan Token versions.
 		let scope = aidash_application::tenancy::TenancyScope::Deployment(
 			aidash_application::tenancy::DeploymentScopeReason::SecretStoreRecovery,
 		);
-		let mut tx = pool.begin(&scope).await?.into_executor()?;
+		let mut tx = pool.begin(&scope).await?.into_executor().await?;
 		let rows = tx.fetch_all(&sql, convert_values(values)).await?;
 		tx.commit().await?;
 		let page = rows
@@ -184,15 +190,25 @@ async fn unreadable_plan_connections(
 					id,
 					tenant,
 					data["pinned_version"].as_str().map(str::to_owned),
+					data["secret_resource"]
+						.as_str()
+						.ok_or_else(|| Error::Invalid("unreadable Plan resource".into()))?
+						.to_owned(),
 				))
 			})
 			.collect::<Result<Vec<_>>>()?;
-		after = page.last().map(|(id, _, _)| *id);
+		after = page.last().map(|(id, _, _, _)| *id);
 		let complete = page.len() < RECONCILIATION_BATCH_SIZE;
 		found.extend(
 			page.into_iter()
-				.filter(|(_, _, pin)| pin.as_ref().is_some_and(|pin| lost_pins.contains(pin)))
-				.map(|(id, tenant, _)| (id, tenant)),
+				.filter(|(_, _, _, resource)| lost_resources.contains(resource))
+				.map(|(id, tenant, pin, _)| {
+					(
+						id,
+						tenant,
+						pin.as_ref().is_some_and(|pin| lost_pins.contains(pin)),
+					)
+				}),
 		);
 		if complete {
 			return Ok(found);

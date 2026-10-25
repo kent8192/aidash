@@ -38,6 +38,14 @@ fn usage() -> Value {
 	json!({"choices":[],"usage":{"prompt_tokens":12,"completion_tokens":7}})
 }
 
+/// OpenRouter's usage chunk: an empty delta that repeats the terminal reason
+/// and carries the accounting, followed by `[DONE]`.
+fn accounting(reason: &str) -> Value {
+	json!({"choices":[{"index":0,"delta":{"role":"assistant","content":""},
+		"finish_reason":reason,"native_finish_reason":reason}],
+		"usage":{"prompt_tokens":12,"completion_tokens":7}})
+}
+
 fn assemble(
 	bytes: &[u8],
 	split: usize,
@@ -413,9 +421,49 @@ fn a_leading_bom_is_ignored_only_at_the_stream_start(#[values(1, 2, 7, 4096)] sp
 }
 
 #[rstest::rstest]
+#[case::text(
+	vec![delta(json!({"content":"Done"})), finish("stop")],
+	json!({"finish_reason":"stop","message":{"content":"Done"}})
+)]
+#[case::tool_calls(
+	vec![
+		delta(json!({"tool_calls":[{"index":0,"id":"call-1","function":{"name":"run","arguments":"{}"}}]})),
+		finish("tool_calls"),
+	],
+	json!({"finish_reason":"tool_calls","message":{"tool_calls":[
+		{"id":"call-1","function":{"name":"run","arguments":"{}"}}
+	]}})
+)]
+fn an_openrouter_usage_chunk_repeating_the_finish_reason_is_accounting(
+	#[case] mut chunks: Vec<Value>,
+	#[case] choice: Value,
+	#[values(1, 13, 4096)] split: usize,
+) {
+	// Arrange: the terminal reason appears on the finishing chunk and again on
+	// the usage chunk, which the provider documents as accounting.
+	let reason = choice["finish_reason"].as_str().unwrap();
+	chunks.push(accounting(reason));
+	let body = sse(&chunks, true);
+
+	// Act
+	let (response, _) = assemble(&body, split, 1_048_576);
+
+	// Assert: it assembles, and the usage on the repeated chunk is recorded.
+	let response = response.unwrap();
+	assert_eq!((response.input_tokens, response.output_tokens), (12, 7));
+	assert!(response.usage_complete);
+	same_outcome(
+		Ok(response),
+		json!({"choices":[choice], "usage":{"prompt_tokens":12,"completion_tokens":7}}),
+	);
+}
+
+#[rstest::rstest]
 #[case::text(delta(json!({"content":"late"})))]
 #[case::tool_call(delta(json!({"tool_calls":[{"index":0,"id":"call-1","function":{"name":"run","arguments":"{}"}}]})))]
 #[case::second_reason(finish("length"))]
+#[case::same_reason_text(json!({"choices":[{"index":0,"delta":{"content":"late"},"finish_reason":"stop"}]}))]
+#[case::same_reason_tool_call(json!({"choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"id":"call-1","function":{"name":"run","arguments":"{}"}}]},"finish_reason":"stop"}]}))]
 fn choice_output_after_the_finish_reason_is_rejected(#[case] late: Value) {
 	// Arrange
 	let body = sse(

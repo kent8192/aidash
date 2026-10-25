@@ -86,7 +86,8 @@ impl AtomicGate {
 		let mut tx = db
 			.begin(&aidash_application::tenancy::TenancyScope::NoTenant)
 			.await?
-			.into_executor()?;
+			.into_executor()
+			.await?;
 		// The ORM's select_for_update cannot express FOR SHARE NOWAIT in alpha.16.
 		let (sql, values) = Query::select()
 			.expr_as(

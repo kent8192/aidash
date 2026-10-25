@@ -21,7 +21,10 @@ export default defineConfig({
     {
       // Needs `npm run build` first.
       name: "bundle",
-      testMatch: "gcip-second-factor-menu.spec.ts",
+      testMatch: [
+        "gcip-second-factor-menu.spec.ts",
+        "plan-connections-unavailable.spec.ts",
+      ],
       use: { baseURL: "http://127.0.0.1:18085" },
     },
   ],

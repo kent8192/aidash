@@ -1161,6 +1161,7 @@ impl<'a> Executor<'a> {
 				// silently or send breakpoints to another route (ADR 0019).
 				model_cfg.require_prompt_cache(agent.prompt_cache, agent.projection_version)?;
 				let explicit_cache = agent.prompt_cache == PromptCache::Explicit;
+				let input_format = aidash_domain::provider::InputFormat::for_model(&model_cfg, agent.projection_version);
 				// A proven provider overflow shrinks the effective window for the Run.
 				let window = run.context.recovery.effective_window(model_cfg.context_window);
 				let policy = context::policy::Effective::of(agent.context_policy.as_ref());
@@ -1427,7 +1428,7 @@ impl<'a> Executor<'a> {
 				}
 				let media = Box::pin(resolve_model_input_media(
 					self.environment,
-					run,
+					agent.projection_version,
 					guard,
 					if run_message_catchup {
 						&[]
@@ -1475,7 +1476,8 @@ impl<'a> Executor<'a> {
 					aidash_domain::provider::ModelRequest::content_parts_reservation(
 						&media.parts,
 						agent.projection_version,
-					),
+						input_format,
+					)?,
 				);
 				let private_context = if agent.knowledge_digest.is_some() {
 					json!({"reference_documents":documents.clone()})
@@ -1496,10 +1498,12 @@ impl<'a> Executor<'a> {
 					&specifications,
 					&fixed_context,
 					&projection,
+					input_format,
 					estimate,
 				)
 				.map_err(|_| unreducible(guard))?;
 				let mut budget = context::RequestBudget {
+					input_format,
 					window: context_window,
 					instructions: &instructions,
 					tools: &specifications,
@@ -2819,7 +2823,7 @@ impl<'a> Executor<'a> {
 								.catalog().get_for_run(&*run, &agent.model.id, &agent.model.version)
 								.await?;
 							let model: ModelConfig = serde_json::from_value(model_entry.config)?;
-							match check_model_media_headroom(headroom, parts, &model) {
+							match check_model_media_headroom(headroom, parts, &model, agent.projection_version) {
 								Ok(()) => {}
 								Err(Error::Invalid(message) | Error::Domain(aidash_domain::Error::Invalid(message))) => {
 									return self
@@ -3247,7 +3251,7 @@ async fn prepare_tool_result(
 }
 async fn resolve_model_input_media(
 	environment: &dyn ExecutionEnvironment,
-	_run: &Run,
+	projection: ProjectionVersion,
 	guard: Option<&dyn ExecutionAuthority>,
 	selections: &[ModelMedia],
 	messages: &[(i64, Uuid, usize)],
@@ -3275,7 +3279,7 @@ async fn resolve_model_input_media(
 	} else {
 		guard
 			.ok_or(Error::Forbidden)?
-			.human_message_media(messages, model)
+			.human_message_media(messages, model, projection)
 			.await?
 	};
 	let batch_headroom = human
@@ -3293,6 +3297,7 @@ async fn resolve_model_input_media(
 		batch_headroom,
 		human.through_seq.is_some(),
 		model,
+		projection,
 	);
 	if !model.has_current_media_route_for_parts(&parts) {
 		return Err(Error::MediaRouteUnavailable(model.model_id.clone()));

@@ -288,8 +288,9 @@ impl ModelConfig {
 	}
 
 	/// Plan usage reaches only OpenAI's Responses API, which needs a stream and
-	/// supports neither OpenRouter media routes, cache breakpoints, audio input
-	/// nor, for now, the Native Projection Version (#249).
+	/// supports neither OpenRouter media routes, cache breakpoints nor audio
+	/// input. Native messages and tool turns do not retain provider reasoning
+	/// (ADR 0083).
 	pub fn validate_plan_usage(&self) -> Result<()> {
 		if !self.uses_plan_connection() {
 			return Ok(());
@@ -314,12 +315,6 @@ impl ModelConfig {
 		}
 		if self.modalities.iter().any(|modality| modality == "audio") {
 			return invalid("it cannot accept audio input");
-		}
-		if self
-			.projection_versions
-			.contains(&crate::projection::ProjectionVersion::Native)
-		{
-			return invalid("it supports only the Legacy and Ordered Projection Versions");
 		}
 		Ok(())
 	}

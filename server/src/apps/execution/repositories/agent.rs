@@ -49,8 +49,9 @@ impl ExecutionStore for RunStore {
 				.store
 				.pool
 				.begin(&self.scope)
-				.await
-				.and_then(crate::database::native::Transaction::into_executor)?;
+				.await?
+				.into_executor()
+				.await?;
 			let expired = super::research::account_terms::expired(tx.as_mut(), run.id).await?;
 			tx.commit().await?;
 			Ok(expired)
@@ -659,9 +660,10 @@ impl ExecutionAuthority for Authority<'_> {
 		&self,
 		messages: &[(i64, Uuid, usize)],
 		model: &ModelConfig,
+		projection: aidash_domain::projection::ProjectionVersion,
 	) -> Result<HumanMediaBatch> {
 		self.guard
-			.human_message_media(messages, model)
+			.human_message_media(messages, model, projection)
 			.await
 			.map_err(Into::into)
 	}

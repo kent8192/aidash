@@ -173,9 +173,11 @@ enabled = false
 # Sign in with ChatGPT Plan Connections (#159): subjects run agents on their
 # own ChatGPT plan allowance. Off by default. Turning it on means this host
 # stores Plan Tokens it can read, so it needs the PostgreSQL Secret Store
-# above; a server with a Secret Manager Store, or none,
-# refuses to start with it on. Turning it off later keeps each owner's status
-# and disconnect, and stops new connections, model lists and plan Runs.
+# above. Self-hosted refuses enablement without that Store. Cloud and Dedicated
+# refuse enablement with any Store and expose no Plan routes until OpenAI's
+# hosted approval and contract (#248). Turning it off later on Self-hosted
+# keeps each owner's status and disconnect, and stops new connections,
+# model lists and plan Runs.
 # [plan_connections]
 # enabled = true
 

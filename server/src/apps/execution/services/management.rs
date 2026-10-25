@@ -763,7 +763,7 @@ impl HarnessManagement {
 		let sender = lease.sender();
 		let principal = lease.principal();
 		let limit = f.run_message_limit(&run).await?;
-		let mut lease = lease.into_native()?;
+		let mut lease = lease.into_native().await?;
 		let result = async {
 			let (existing, record) = crate::apps::execution::models::RunInput::admit_media(
 				lease.tx(),
@@ -818,18 +818,12 @@ impl HarnessManagement {
 					.map(|attachment| attachment.media_type.as_str()),
 			)?;
 			let headroom = f.run_request_headroom(&run).await?;
-			let request = crate::provider::ModelRequest {
-				instructions: String::new(),
-				context: json!({"run_message":input.content}).into(),
-				tools: Vec::new(),
-				max_output_tokens: 0,
-				response_format: None,
-				content_parts: parts,
-				cache_scope: None,
-				cache_breakpoints: false,
-				disable_provider_transforms: false,
-				estimate: Default::default(),
-			};
+			let request = aidash_application::execution::media::admission_request(
+				&model,
+				agent.projection_version.unwrap_or_default(),
+				json!({"run_message":input.content}),
+				parts,
+			);
 			request.validate()?;
 			crate::generation::budget::Reservation::check_request(headroom, &request)?;
 			Ok(())

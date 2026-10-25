@@ -10,7 +10,7 @@ import time
 
 ROOT = Path(__file__).resolve().parents[3]
 sys.path.insert(0, str(ROOT / "infra/gcp/control"))
-from kube import LEGACY_OWNERSHIP_SQL, OBSERVER_ROLE, OWNER_ROLE, observer_sql  # noqa: E402
+from kube import LEGACY_OWNERSHIP_SQL, OBSERVER_ROLE, OWNER_ROLE, observer_sql, MEMORY_ROLE, memory_role_sql  # noqa: E402
 
 
 def check_legacy_ownership(container):
@@ -35,6 +35,28 @@ def check_legacy_ownership(container):
         actual = psql(LEGACY_OWNERSHIP_SQL)
         if actual != expected:
             raise AssertionError(f"legacy ownership after {statement!r}: {actual!r} != {expected!r}")
+
+
+def check_memory_role(container):
+    """Exercise the deployed login and guards, including its required row locks."""
+    database = "aidash_observer_test"
+    def psql(sql, role="postgres", success=True):
+        result = subprocess.run(["docker", "exec", "-i", container, "psql", "-h", "127.0.0.1", "-U", role,
+                                 "-d", database, "-v", "ON_ERROR_STOP=1", "--no-psqlrc", "--tuples-only", "--no-align"],
+                                input=sql, text=True, capture_output=True)
+        if (result.returncode == 0) != success:
+            raise AssertionError(f"memory login boundary: {sql!r}: {result.stderr}")
+        return result.stdout.strip()
+    psql("CREATE TABLE memory_role_fixture (id integer PRIMARY KEY, body text); INSERT INTO memory_role_fixture VALUES (1, 'retained');")
+    psql(memory_role_sql(secrets.token_hex(32), database))
+    psql(memory_role_sql(secrets.token_hex(32), database))  # idempotent grants and guards
+    assert psql("BEGIN; SELECT body FROM memory_role_fixture FOR SHARE; COMMIT;", MEMORY_ROLE).splitlines()[1] == "retained"
+    for statement in ("UPDATE memory_role_fixture SET id = id", "UPDATE memory_role_fixture SET body = 'rewritten'",
+                      "DELETE FROM memory_role_fixture", "INSERT INTO memory_role_fixture VALUES (2, 'added')",
+                      "ALTER TABLE memory_role_fixture DISABLE TRIGGER ALL", "SET ROLE postgres"):
+        psql(statement, MEMORY_ROLE, success=False)
+    assert psql("SELECT body FROM memory_role_fixture") == "retained"
+    psql("DROP TABLE memory_role_fixture")
 
 
 def main():
@@ -88,6 +110,10 @@ def main():
             .rsplit(":", 1)[1]
         )
         check_legacy_ownership(container)
+        check_memory_role(container)
+        if "--memory-role-only" in sys.argv:
+            print("memory recovery login: row locks allowed, mutations and privilege escalation refused")
+            return
         password = secrets.token_hex(32)
         environment = dict(
             os.environ,

@@ -176,6 +176,20 @@ impl SubjectIdentity {
 
 	/// Persist missing-Binding disablement before taking any execution lease.
 	pub(crate) async fn check_binding(&self, pool: &crate::database::native::Pool) -> Result<()> {
+		self.check_binding_with_mode(pool, true).await
+	}
+	/// Maintenance proofs deny a removed Binding without changing live Identity or Run state.
+	pub(crate) async fn check_binding_read_only(
+		&self,
+		pool: &crate::database::native::Pool,
+	) -> Result<()> {
+		self.check_binding_with_mode(pool, false).await
+	}
+	async fn check_binding_with_mode(
+		&self,
+		pool: &crate::database::native::Pool,
+		persist: bool,
+	) -> Result<()> {
 		let col = |table: &str, name: &str| Expr::col((Alias::new(table), Alias::new(name)));
 		let query = Query::select()
 			.columns(
@@ -228,8 +242,9 @@ impl SubjectIdentity {
 		if admits_identity(pool.dashboard_policy().as_ref(), &issuer) {
 			return Ok(());
 		}
-		if crate::apps::identity::models::DashboardIdentity::disable_if_current(pool, id, None)
-			.await?
+		if persist
+			&& crate::apps::identity::models::DashboardIdentity::disable_if_current(pool, id, None)
+				.await?
 		{
 			// The identity's Runs may belong to any Tenant.
 			let scope = TenancyScope::Deployment(DeploymentScopeReason::IdentityStatus);

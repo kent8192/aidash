@@ -72,6 +72,7 @@ static NATIVE: std::sync::LazyLock<RequestProjection> = std::sync::LazyLock::new
 
 fn budget(window: usize) -> RequestBudget<'static> {
 	RequestBudget {
+		input_format: Default::default(),
 		window,
 		instructions: "Work on the task",
 		tools: &[],

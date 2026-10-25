@@ -315,6 +315,7 @@ async fn claim(store: &Store) -> Result<Box<dyn TransactionExecutor>> {
 		))
 		.await?
 		.into_executor()
+		.await
 }
 
 pub(super) async fn recover(store: &Store, seconds: i32) -> Result<Option<(Run, Uuid)>> {
