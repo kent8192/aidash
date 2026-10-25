@@ -1,5 +1,7 @@
 # syntax=docker/dockerfile:1
 FROM rust:1.96-bookworm AS rust
+RUN apt-get update && apt-get install -y --no-install-recommends protobuf-compiler && \
+    rm -rf /var/lib/apt/lists/*
 WORKDIR /build
 COPY Cargo.toml Cargo.lock rust-toolchain.toml ./
 COPY crates ./crates

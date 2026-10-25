@@ -1,0 +1,45 @@
+{{- if .Values.networkPolicy.enabled }}
+{{- $ingress := .Values.networkPolicy.ingress }}
+{{- if not $ingress }}{{- fail "networkPolicy.ingress must list at least one allowed port" }}{{- end }}
+# Only the listed peers reach this release's Pods. Without it every Pod in the
+# cluster could connect directly and forge the forwarded HTTPS metadata that
+# trusted proxy networks may assert.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ .Release.Name }}
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/instance: {{ .Release.Name | quote }}
+  policyTypes: [Ingress]
+  ingress:
+{{- range $rule := $ingress }}
+{{- $port := dict "http" $.Values.port }}
+{{- if $.Values.grpc.enabled }}{{- $_ := set $port "grpc" $.Values.grpc.port }}{{- end }}
+{{- if not (hasKey $port $rule.port) }}
+{{- fail (printf "networkPolicy.ingress port %v must be http, or grpc with grpc.enabled" $rule.port) }}
+{{- end }}
+{{- if not $rule.from }}
+{{- fail (printf "networkPolicy.ingress %v needs at least one peer; an empty from admits every Pod" $rule.port) }}
+{{- end }}
+    - from:
+{{- range $peer := $rule.from }}
+{{- range $key, $_ := $peer }}
+{{- if not (has $key (list "podSelector" "namespaceSelector")) }}
+{{- fail (printf "networkPolicy.ingress %v peers accept only podSelector and namespaceSelector, not %s" $rule.port $key) }}
+{{- end }}
+{{- end }}
+{{- if not (or $peer.podSelector $peer.namespaceSelector) }}
+{{- fail (printf "networkPolicy.ingress %v peer has no selector" $rule.port) }}
+{{- end }}
+{{- range $selector := list $peer.podSelector $peer.namespaceSelector }}
+{{- if and $selector (not (or $selector.matchLabels $selector.matchExpressions)) }}
+{{- fail (printf "networkPolicy.ingress %v selector must set matchLabels or matchExpressions; an empty selector matches every Pod or namespace" $rule.port) }}
+{{- end }}
+{{- end }}
+        - {{ toJson $peer }}
+{{- end }}
+      ports: [{ protocol: TCP, port: {{ get $port $rule.port }} }]
+{{- end }}
+{{- end }}

@@ -287,6 +287,7 @@ async fn leased(f: &Federation, app: &TestApplication, token: &str) -> (Run, Uui
 
 fn budget(projection: &RequestProjection) -> RequestBudget<'_> {
 	RequestBudget {
+		input_format: Default::default(),
 		window: WINDOW,
 		instructions: "Follow the task",
 		tools: &[],
@@ -309,6 +310,7 @@ fn boundary_in(
 ) -> Boundary {
 	let projection = RequestProjection::Legacy;
 	let budget = RequestBudget {
+		input_format: Default::default(),
 		window,
 		..budget(&projection)
 	};
@@ -387,6 +389,7 @@ async fn decide_in(
 		now: Utc::now(),
 	};
 	let budget = RequestBudget {
+		input_format: Default::default(),
 		window,
 		..budget(&projection)
 	};

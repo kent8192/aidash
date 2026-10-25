@@ -39585,6 +39585,7 @@
   {
     "method": "GET",
     "path": "/api/tenants/{tenant}/plan-connections/{provider}",
+    "offerings": ["self-hosted"],
     "name": "plan-connection-status",
     "source": "server/src/apps/identity/views/plan_connections.rs",
     "json": false,
@@ -39703,6 +39704,7 @@
   {
     "method": "POST",
     "path": "/api/tenants/{tenant}/plan-connections/{provider}/authorizations",
+    "offerings": ["self-hosted"],
     "name": "plan-authorization-start",
     "source": "server/src/apps/identity/views/plan_connections.rs",
     "json": true,
@@ -39733,6 +39735,7 @@
   {
     "method": "POST",
     "path": "/api/tenants/{tenant}/plan-connections/{provider}/authorizations/complete",
+    "offerings": ["self-hosted"],
     "name": "plan-authorization-complete",
     "source": "server/src/apps/identity/views/plan_connections.rs",
     "json": true,
@@ -39864,6 +39867,7 @@
   {
     "method": "DELETE",
     "path": "/api/tenants/{tenant}/plan-connections/{provider}",
+    "offerings": ["self-hosted"],
     "name": "plan-connection-disconnect",
     "source": "server/src/apps/identity/views/plan_connections.rs",
     "json": true,
@@ -39890,6 +39894,7 @@
   {
     "method": "GET",
     "path": "/api/tenants/{tenant}/plan-connections/{provider}/models",
+    "offerings": ["self-hosted"],
     "name": "plan-connection-models",
     "source": "server/src/apps/identity/views/plan_connections.rs",
     "json": false,

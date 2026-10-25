@@ -9,45 +9,63 @@ use crate::{
 };
 use aidash_domain::{
 	model::ModelConfig,
-	provider::{ContentPart, ModelRequest},
+	projection::ProjectionVersion,
+	provider::{ContentPart, InputFormat, ModelContext, ModelRequest},
 };
 use serde_json::json;
 use sha2::{Digest, Sha256};
 use uuid::Uuid;
+/// Conservative media pre-admission in the selected provider input shape.
+/// Native plan labels use the same provenance envelopes as the final request.
+/// Other routes retain their established Chat probe for compatibility.
+pub fn admission_request(
+	model: &ModelConfig,
+	projection: ProjectionVersion,
+	context: serde_json::Value,
+	content_parts: Vec<ContentPart>,
+) -> ModelRequest {
+	let input_format = InputFormat::for_model(model, projection);
+	let context = if input_format == InputFormat::Responses {
+		ModelContext::Native(aidash_domain::projection::native::native_context(
+			&Default::default(),
+			&context,
+		))
+	} else {
+		context.into()
+	};
+	ModelRequest {
+		context,
+		content_parts,
+		input_format,
+		..Default::default()
+	}
+}
+
 pub async fn authorized<S: AuthorizedMediaScope + ?Sized>(
 	scope: &mut S,
 	workspace: Uuid,
 	messages: &[(i64, Uuid, usize)],
 	model: &ModelConfig,
+	projection: ProjectionVersion,
 ) -> Result<HumanMediaBatch> {
 	for (_, message, _) in messages {
 		scope.authorize_message(workspace, *message).await?;
 	}
-	load(scope, workspace, messages, model).await
+	load(scope, workspace, messages, model, projection).await
 }
 pub async fn load<S: MediaAttachments + ?Sized>(
 	scope: &mut S,
 	workspace: Uuid,
 	messages: &[(i64, Uuid, usize)],
 	model: &ModelConfig,
+	projection: ProjectionVersion,
 ) -> Result<HumanMediaBatch> {
 	let mut parts = Vec::new();
 	let mut count = 0_usize;
 	let mut total = 0_usize;
 	let mut through_seq = None;
 	let mut has_more = false;
-	let request = ModelRequest {
-		instructions: String::new(),
-		context: json!({}).into(),
-		tools: Vec::new(),
-		max_output_tokens: 0,
-		response_format: None,
-		content_parts: Vec::new(),
-		cache_scope: None,
-		cache_breakpoints: false,
-		disable_provider_transforms: false,
-		estimate: Default::default(),
-	};
+	let request = admission_request(model, projection, json!({}), Vec::new());
 	for (seq, id, headroom) in messages {
 		let attachments = scope.attachments(workspace, *id).await?;
 		let message_bytes = attachments.iter().fold(0_usize, |sum, attachment| {

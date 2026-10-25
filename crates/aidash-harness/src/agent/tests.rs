@@ -193,6 +193,7 @@ struct State {
 	prompt_cache: aidash_domain::projection::PromptCache,
 	/// Serve an `anthropic/` model that declares explicit prompt caching.
 	explicit_cache_model: bool,
+	plan_connection: bool,
 	/// Evidence fragments the Run's evidence store holds.
 	known_evidence: Vec<aidash_domain::research::citations::EvidenceRef>,
 	/// Exact Research payload variants, indexed by their durable digest.
@@ -320,6 +321,9 @@ impl Backend {
 		let mut config = json!({
 			"provider":"openrouter","model_id":"fixture","endpoint":"http://fixture.invalid/v1","context_window":window,"max_output_tokens":output,"modalities":["text"],"cost":{}
 		});
+		if self.0.plan_connection && id != "summarizer" {
+			config["plan_connection"] = json!("chatgpt");
+		}
 		if id == "summarizer"
 			&& let Some(diagnostics) = &self.0.summary_estimate_diagnostics
 		{
@@ -1042,6 +1046,7 @@ impl ExecutionAuthority for Backend {
 		&self,
 		messages: &[(i64, Uuid, usize)],
 		model: &ModelConfig,
+		_projection: aidash_domain::projection::ProjectionVersion,
 	) -> Result<HumanMediaBatch> {
 		let _ = model;
 		if !self.0.human_media_pending {
@@ -1691,6 +1696,7 @@ fn fixture() -> Fixture {
 		human_media_pending: false,
 		prompt_cache: Default::default(),
 		explicit_cache_model: false,
+		plan_connection: false,
 		known_evidence: vec![],
 		research_payloads: BTreeMap::new(),
 		research_revoked: false,
@@ -4903,6 +4909,7 @@ async fn compaction_leaves_the_exposure_set_intact(mut fixture: Fixture) {
 	let pinned = json!({});
 	let tools = [];
 	let mut budget = context::RequestBudget {
+		input_format: Default::default(),
 		window: usize::MAX,
 		instructions: "Do the task",
 		tools: &tools,
@@ -5281,6 +5288,7 @@ fn ordered_estimate_counts_the_complete_request_near_the_window(#[case] events: 
 	}
 	let request = |projection| {
 		context::RequestBudget {
+			input_format: Default::default(),
 			window: 128_000,
 			instructions: "Do the task",
 			tools: &[],
@@ -5313,6 +5321,7 @@ fn ordered_estimate_counts_the_complete_request_near_the_window(#[case] events: 
 	grown.push(history_event(events + 1));
 	let growth = |projection| {
 		let budget = context::RequestBudget {
+			input_format: Default::default(),
 			window: 128_000,
 			instructions: "Do the task",
 			tools: &[],

@@ -681,6 +681,53 @@ fn installation_overrides_cannot_clear_a_personal_agent_knowledge_digest() {
 }
 
 #[rstest]
+#[tokio::test]
+async fn dashboard_keyless_model_registration_uses_the_openrouter_adapter_contract(
+	validation: DefinitionValidation,
+) {
+	// The browser's wire test checks these public required fields independently.
+	let config: Value =
+		serde_json::from_str(include_str!("tests/fixtures/keyless-dashboard-model.json")).unwrap();
+	let input = definition("", "model", config.clone());
+	let mut scope = Scope::default();
+	let accepted = register(
+		&mut scope,
+		&validation,
+		input.clone(),
+		None,
+		true,
+		"aidash://home",
+	)
+	.await
+	.unwrap();
+	assert_eq!(
+		scope.entries[&identity(&accepted.id, &accepted.version)].config,
+		config
+	);
+
+	// OpenAI-compatible is a presentation label, not this model adapter's wire name.
+	let mut wrong_adapter = input;
+	wrong_adapter.config["provider"] = json!("openai");
+	let mut refused = Scope::default();
+	let error = register(
+		&mut refused,
+		&validation,
+		wrong_adapter,
+		None,
+		true,
+		"aidash://home",
+	)
+	.await
+	.unwrap_err();
+	assert!(
+		error.to_string().contains("model requires openrouter"),
+		"{error}"
+	);
+	assert!(refused.entries.is_empty());
+	assert!(refused.events.is_empty());
+}
+
+#[rstest]
 #[case("model")]
 #[case("embedding")]
 fn provider_credential_definition_sources_are_portable_and_fail_closed_without_store(
@@ -821,7 +868,7 @@ async fn plan_models_need_enabled_plan_connections_and_plan_usage_limits() {
 	let entry = definition(
 		"chatgpt-model",
 		"model",
-		json!({"provider":"chatgpt","model_id":"gpt-fixture","endpoint":"https://api.openai.com/v1","plan_connection":"chatgpt","context_window":128000,"max_output_tokens":16384,"modalities":["text","image"],"cost":{},"projection_versions":["legacy","ordered"]}),
+		json!({"provider":"chatgpt","model_id":"gpt-fixture","endpoint":"https://api.openai.com/v1","plan_connection":"chatgpt","context_window":128000,"max_output_tokens":16384,"modalities":["text","image"],"cost":{},"projection_versions":["legacy","ordered","native"]}),
 	);
 	for local in [false, true] {
 		assert!(
@@ -845,7 +892,6 @@ async fn plan_models_need_enabled_plan_connections_and_plan_usage_limits() {
 			("streaming", json!(false)),
 			("modalities", json!(["text", "audio"])),
 			("cache_mode", json!("explicit")),
-			("projection_versions", json!(["native"])),
 			("model_id", json!("gpt/../fixture")),
 		] {
 			let mut changed = entry.clone();

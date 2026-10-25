@@ -63,6 +63,11 @@ providerCredentials:
 # public_origin must equal deployment.endpoint. null renders nothing.
 gcip:
   settings: null
+# Cloud only: an existing Secret containing settings.toml (dashboard.oidc and
+# dashboard.common_auth), ca.pem, cloud.pem and cloud-key.pem. The selected
+# managed profile overlays the image's base settings. Never GCIP simultaneously.
+commonAuth:
+  existingSecret: ""
 # Deployment, or StatefulSet for the server, worker and Runner, which hold
 # ReadWriteOnce claims. GKE's Stateful HA fails StatefulSets on regional disks
 # over to another zone (ADR 0067).

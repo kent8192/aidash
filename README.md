@@ -8,6 +8,10 @@ New multi-Node scoped transactions are temporarily rejected to prevent manifest 
 
 ## Cargo workspace
 
+Native server builds require the Protocol Buffers compiler (`protoc`) on `PATH`
+for `reinhardt-grpc`. The provided Docker images install it in their build stage;
+the standalone browser frontend builds do not require it.
+
 All packages use Rust 2024. The virtual workspace defaults to `aidash-server`;
 Reinhardt's `manage` CLI provides the standard management operations and Aidash's
 registered custom commands, including `serve`, `server`, and `worker`:
@@ -63,8 +67,8 @@ for the layout, the alignment and export checks, and the images.
 The React dashboard remains in
 `web/` and uses the existing URL, JSON, authentication, and SSE contracts.
 
-Reinhardt is pinned to development revision
-`19928e83b46c130a3a40320e5c9b71aa9f84e322` in the manifests and lockfile. The initial
+Reinhardt's exact revision is pinned in the [workspace manifest](Cargo.toml),
+aligned with Enterprise and the infrastructure observer, and retained in their lockfiles. The initial
 project and app scaffolds were generated with the Reinhardt CLI. Server tests use
 its composable guard, method-aware stub router, configurable PostgreSQL fixture,
 and request builder with per-request headers and redirect policy. The PostgreSQL
@@ -73,6 +77,27 @@ Send fixture after reinhardt-web#6705 fixes #6702. Native ORM timestamp bindings
 include the #6703 repair from #6704; both issues remain open until closed by the
 maintainer because their fixes merged into the development branch. Streaming
 clients retain no total timeout while reinhardt-web#6689 remains open.
+
+### Standalone authentication and Marketplace
+
+The Enterprise workspace also contains two independent services:
+[shared authentication](enterprise/auth/README.md) and
+[Marketplace distribution](enterprise/marketplace/README.md).
+Each has its own process, configuration, schema, database role and migration
+command. They start without the Cloud server, worker or NATS. A physical
+PostgreSQL instance may be shared with separate ownership and credentials.
+
+Each product is one Reinhardt Pages project whose browser calls typed
+`server_fn` functions in its own native service. Each image bundles that
+product's WASM assets and executable. See the [independent deployment chart](enterprise/deploy/standalone-service/README.md)
+and [approved authentication/distribution design](docs/authentication-and-standalone-marketplace-design.md).
+The [standalone Compose profiles](enterprise/deploy/local/README.md) start either
+product with `cargo make auth-dev` or `cargo make marketplace-dev`; root
+`compose.yaml` remains the Cloud development stack.
+Cloud enables shared authentication explicitly through `[dashboard.common_auth]` and
+`[dashboard.oidc]`; direct `[dashboard.gcip]` sign-in is mutually exclusive.
+Dedicated and Self-hosted keep independent sign-in. Import retained legacy
+Identity UUIDs before the Cloud cutover; Marketplace sign-in creates no Cloud Tenant.
 
 ## Run locally
 
@@ -277,11 +302,13 @@ Model registration uses an editable `modelprovider-modelname-reasoningeffort` na
 
 A model version can declare `cache_mode`: `none` (the default), `automatic` for routes that cache matching prefixes on their own, or `explicit` for routes that cache only up to `cache_control` breakpoints. `explicit` is accepted only for `anthropic/` model IDs. An Agent on the `ordered` projection and such a model can set `prompt_cache: explicit`; its requests then mark the end of the system prompt and of the Stable Prefix part. Cache writes cost more than ordinary input, so enable it for Agents whose Runs take several steps. Message catch-up and media-deferral steps carry no breakpoints, and no other route ever receives `cache_control`. Both fields are set in the Registry API's JSON config; see [Context Projection Versions](docs/features/context-projection.md#explicit-prompt-caching).
 
+Self-hosted Deployments can also opt into personal [ChatGPT Plan Connections](docs/plan-connections.md) with `[plan_connections] enabled = true` and the encrypted PostgreSQL Store. A subject connects their own plan from personal settings, then registers a model with `plan_connection: "chatgpt"`. Its Runs use the Responses API and never fall back to a Tenant's OpenRouter credential. Legacy, Ordered and Native projection are supported without retaining provider reasoning. Cloud and Dedicated plan usage remains disabled pending the hosted-app approval tracked in #248.
+
 ### Migrating existing model registrations
 
-Direct OpenAI and Anthropic inference configurations are no longer supported. Register a new OpenRouter model version using the catalog, then register agent versions referencing that model. Existing model versions without `max_output_tokens` retain their legacy output allowance; register a new version from the catalog to use the model's advertised maximum. OpenRouter calls always enforce ZDR. Omitting `reasoning_effort` preserves the model default; non-ZDR fallback is not available.
+Direct OpenAI Platform API-key and Anthropic inference configurations are no longer supported. Register a new OpenRouter model version using the catalog, then register agent versions referencing that model. Personal ChatGPT Plan Connections use their separate authorization and model source described above. Existing model versions without `max_output_tokens` retain their legacy output allowance; register a new version from the catalog to use the model's advertised maximum. OpenRouter calls always enforce ZDR. Omitting `reasoning_effort` preserves the model default; non-ZDR fallback is not available.
 
-**Upgrading past #158 (breaking):** `credential_env` and `AIDASH_SECRET_OPENROUTER` / `AIDASH_SECRET_EMBEDDING` no longer configure model or embedding providers. Registry model and embedding entries, their installation overrides, and semantic index specs that contain `credential_env` no longer load, and the `registry/0024_model_provider_keys` and `knowledge/0031_embedding_provider_keys` migrations refuse to run while such records exist. Delete those entries or remove the key from those overrides (or reset the development database), connect OpenRouter for each Tenant through Provider connections, then register new versions with `provider_credential: "openrouter"` (or without a key for an unauthenticated endpoint). Jev moved to OpenRouter as well: `AIDASH_SECRET_JEV`, `AIDASH_JEV_ENDPOINT` and `AIDASH_JEV_MODEL` are ignored, `compactor` entries drop `provider`, `endpoint` and `credential_env` for `provider_credential: "openrouter"` and a `typesafe/jev-X.Y` model, and `registry/0025_compactor_provider_keys` refuses to run while an old compactor exists. Ordinary Runs use the Tenant-approved default Decider described in History compaction.
+**Upgrading past #158 (breaking):** `credential_env` and `AIDASH_SECRET_OPENROUTER` / `AIDASH_SECRET_EMBEDDING` no longer configure model or embedding providers. Registry model and embedding entries, their installation overrides, and semantic index specs that contain `credential_env` no longer load, and the `registry/0024_model_provider_keys` and `knowledge/0031_embedding_provider_keys` migrations refuse to run while such records exist. Delete those entries or remove the key from those overrides (or reset the development database), connect OpenRouter for each Tenant through Provider connections, then register new versions with `provider_credential: "openrouter"` (or without a key for an unauthenticated endpoint). Jev moved to OpenRouter as well: `AIDASH_SECRET_JEV`, `AIDASH_JEV_ENDPOINT` and `AIDASH_JEV_MODEL` are ignored, `compactor` entries drop `provider`, `endpoint` and `credential_env` for `provider_credential: "openrouter"` and a `typesafe/jev-X.Y` model, and `registry/0025_compactor_provider_keys` refuses to run while an old compactor exists. The later #108 migration replaces that transitional compactor kind with Deciders, as described next; current Runs compact through their Tenant-approved default or explicitly bound custom Decider.
 
 **Upgrading past #108 (breaking):** the `compactor` Registry kind is gone, and `registry/0035_decider_kind` refuses to run while a compactor entry exists. Each Tenant is seeded with `aidash.compaction-decider@1.0.0`; ordinary Agent registration binds it by default. Approve that exact version in each Node's Tenant catalog, or register and explicitly bind a custom compaction Decider. Generation policies and RequiredHome remote execution name Decider versions where they named compactors, and the `compaction.invoke` action is now `decision.invoke`. Decision Evidence moved to version 3; `execution/0036_decision_evidence_v3` refuses to run while version 2 Decision Attempts exist. The `prune_unavailable` pause reason is replaced by `decider_unapproved`, `decider_calls_exhausted` and `decider_unavailable`.
 
@@ -479,3 +506,48 @@ The [Tauri 2 desktop client](desktop/README.md) bundles the shared dashboard and
 ## License
 
 The licensing of Aidash is being prepared in [#124](https://github.com/kent8192/aidash/issues/124). Until it takes effect, the [interim notice](LICENSE) reserves all rights in original Aidash material, except `aidash-capability` (Apache-2.0). Third-party material keeps its own terms; see [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md). External code contributions are not accepted until then, and issues are welcome.
+
+## Deployment Marketplace Connections
+
+Registry imports immutable plugin copies from GitHub or a configured standalone
+Marketplace. An import URI is `marketplace://<plugin-uuid>/<semver>`; it never
+supplies an endpoint, Library owner or credential. Configure an optional
+`[marketplace]` endpoint and one `[[marketplace.connections]]` per local Tenant:
+
+```toml
+[marketplace]
+endpoint = "https://marketplace.example.com"
+poll_seconds = 60
+
+[[marketplace.connections]]
+tenant = "brave-otter-12345678"
+connection_id = "00000000-0000-0000-0000-000000000001"
+owner_account_id = "00000000-0000-0000-0000-000000000002"
+owner_tenant_id = "brave-otter-12345678"
+secret_file = "secrets/marketplace-connection"
+```
+
+The Marketplace must authorize the Connection and its enrolled Library owner.
+For a personal Library, omit `owner_tenant_id` and provide
+`personal_identity_id`, the retained local External Identity UUID whose Personal
+Tenant receives the copy. The default exception also requires an online shared
+authentication binding proving that Identity belongs to the Connection owner
+Account; a configured local UUID alone is insufficient. Independent Deployment
+sign-in cannot infer this association from email. Importing that personal Library
+without that proof or into any other Tenant
+requires an explicit `marketplace.personal_library.import` policy; the default
+Tenant administrator wildcard alone does not grant it. Local `registry.create`
+is checked before fetching and again before storing.
+
+The client refuses redirects and validates the returned plugin/version binding,
+canonical file paths, base64, size limits, tree digest and Agent Plugin schema.
+Registry retains the Tenant-local copy and its authoritative acquisition expiry.
+Expired acquisitions refuse new Agent versions and Runs; an authorized renewed
+acquisition can update the receipt without replacing the pinned bytes or source.
+Configured Connections synchronize Recalls periodically. Learned Recalls survive
+Marketplace outages and Connection removal and refuse new Runs of that plugin
+version; they do not cancel admitted Runs or delete local copies. An offline
+Deployment learns newly issued Recalls only after synchronization. Normal local
+execution does not contact the Marketplace. These supported-runtime checks do
+not prevent the person running a Self-hosted Deployment from modifying its runtime or copying already
+delivered content; this is not a DRM guarantee.

@@ -413,6 +413,7 @@ impl Tool for ResearchTool {
 				let fitting = aidash_application::research::page_image::FittingRenderer {
 					renderer: renderer.as_ref(),
 					model: &model,
+					projection: agent.projection_version.unwrap_or_default(),
 					headroom: context.home.federation.run_request_headroom(run).await?,
 					selected_parts,
 				};

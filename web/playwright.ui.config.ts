@@ -29,6 +29,7 @@ export default defineConfig({
     "generation-validation.spec.ts",
     "workbench.spec.ts",
     "provider-credentials.spec.ts",
+    "plan-connections.spec.ts",
     "tenant-administration.spec.ts",
     "tenancy.spec.ts",
     "keyless-approval.spec.ts",

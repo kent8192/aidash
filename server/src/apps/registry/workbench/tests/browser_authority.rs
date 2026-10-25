@@ -271,6 +271,7 @@ async fn a_removed_binding_disables_the_identity_before_workbench_authority_lock
 			.clone()
 			.with_dashboard_policy(Some(AccountPolicy {
 				issuers: std::sync::Arc::new(RemovedBinding),
+				authority: None,
 				personal_tenants: false,
 				demo_data: false,
 			}));

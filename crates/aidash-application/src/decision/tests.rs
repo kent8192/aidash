@@ -604,6 +604,7 @@ async fn evaluate(
 	let original = context.clone();
 	let pinned = json!({"reference_documents":"DOCUMENT_SECRET"});
 	let budget = RequestBudget {
+		input_format: Default::default(),
 		window,
 		instructions: "SYSTEM_SECRET",
 		tools: &[],
@@ -1987,6 +1988,7 @@ async fn native_decisions_prune_whole_model_turns_and_keep_markers() {
 		key_version: 1,
 	});
 	let full = RequestBudget {
+		input_format: Default::default(),
 		window: usize::MAX,
 		instructions: "Work on the task",
 		tools: &[],
@@ -1997,6 +1999,7 @@ async fn native_decisions_prune_whole_model_turns_and_keep_markers() {
 	.request(&context, &pinned)
 	.estimated_total_tokens();
 	let budget = RequestBudget {
+		input_format: Default::default(),
 		window: full * 3 / 4,
 		instructions: "Work on the task",
 		tools: &[],

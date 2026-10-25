@@ -49,7 +49,7 @@ INTEGER_FIELDS = {"elapsed_ms", "failure_line", "request_number", "http_status",
 STRING_FIELDS = {
     "method": {"GET", "POST", "PATCH", "DELETE", "other"},
     "endpoint": {label for _, label in ROUTES} | {"repos/{owner}/{repo}/" + label for _, label in ROUTES} | {"graphql", "unrecognized_route"},
-    "action": {"context", "candidate", "staging"},
+    "action": {"context", "candidate", "staging", "reconcile", "attempt"},
     "reason": {"different_development_branch", "evidence_expired", "no_matching_receipt", "no_staging_receipt"},
     "error_type": {"Refused", "ValueError", "KeyError", "TypeError", "AttributeError", "BadZipFile", "RuntimeError", "CommandError",
                    "JSONDecodeError", "UnicodeDecodeError", "TimeoutExpired", "OperationDeadline", "FileNotFoundError", "PermissionError",

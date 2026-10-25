@@ -1356,6 +1356,208 @@ struct GoogleBrowser {
 	_runtime: common::RuntimeFixture,
 }
 
+struct OnlineAuthority {
+	state: std::sync::atomic::AtomicUsize,
+	calls: std::sync::Mutex<Vec<(Uuid, Option<Uuid>)>>,
+}
+
+#[async_trait::async_trait]
+impl aidash_application::ports::accounts::Authority for OnlineAuthority {
+	async fn origin_binding(
+		&self,
+		source: Uuid,
+	) -> aidash_application::Result<aidash_domain::accounts::DurableOrigin> {
+		self.validate_origin(source).await?;
+		Ok(aidash_domain::accounts::DurableOrigin {
+			identity_id: source,
+			account_id: None,
+			suspension_epoch: None,
+			source_disable_epoch: None,
+		})
+	}
+	async fn validate_bound_origin(
+		&self,
+		origin: &aidash_domain::accounts::DurableOrigin,
+	) -> aidash_application::Result<()> {
+		self.validate_origin(origin.identity_id).await
+	}
+	async fn validate_interactive(
+		&self,
+		source: Uuid,
+		session: Uuid,
+	) -> aidash_application::Result<()> {
+		self.calls.lock().unwrap().push((source, Some(session)));
+		match self.state.load(Ordering::SeqCst) {
+			0 => Ok(()),
+			1 => Err(aidash_application::Error::Forbidden),
+			_ => Err(aidash_application::Error::IdentityStatusUnavailable),
+		}
+	}
+	async fn validate_origin(&self, source: Uuid) -> aidash_application::Result<()> {
+		self.calls.lock().unwrap().push((source, None));
+		match self.state.load(Ordering::SeqCst) {
+			0 => Ok(()),
+			1 => Err(aidash_application::Error::Forbidden),
+			_ => Err(aidash_application::Error::IdentityStatusUnavailable),
+		}
+	}
+}
+
+// Real HTTP, Mapping and credential boundaries must consult the common
+// authority on each operation. Transport behavior has its own real mTLS test.
+#[rstest::rstest]
+#[tokio::test]
+async fn common_authority_stops_new_operations_without_coupling_durable_credentials_to_logout(
+	#[future(awt)]
+	#[from(google_browser)]
+	fixture: GoogleBrowser,
+) {
+	let (status, session) = call(
+		&fixture.app,
+		"GET",
+		"/auth/session",
+		true,
+		false,
+		None,
+		false,
+		Value::Null,
+	)
+	.await;
+	assert_eq!(status, 200, "{session}");
+	let mapping = &session["mappings"][0];
+	let tenant = mapping["tenant"].as_str().unwrap();
+	let subject = mapping["subject"].as_str().unwrap();
+	let mapping_id = mapping["id"].as_str().unwrap().parse::<Uuid>().unwrap();
+	let remote_session = Uuid::new_v4();
+	let update = Query::update()
+		.table(Alias::new("dashboard_sessions"))
+		.value(Alias::new("provider_sid"), remote_session.to_string())
+		.and_where(Expr::col("identity_id").eq(Expr::value(fixture.identity)))
+		.to_string(PostgresQueryBuilder);
+	sqlx::query(&update)
+		.execute(fixture.federation.store.pool.fixture_driver())
+		.await
+		.unwrap();
+	let credential = Authorization {
+		pool: fixture.federation.store.pool.clone(),
+	}
+	.issue_credential(tenant, subject, 3600, "deployment_administrator")
+	.await
+	.unwrap();
+	let update = Query::update()
+		.table(Alias::new("authorization_credentials"))
+		.value(Alias::new("mapping_id"), mapping_id)
+		.and_where(Expr::col("id").eq(Expr::value(credential.credential.id)))
+		.to_string(PostgresQueryBuilder);
+	sqlx::query(&update)
+		.execute(fixture.federation.store.pool.fixture_driver())
+		.await
+		.unwrap();
+	let authority = Arc::new(OnlineAuthority {
+		state: 0.into(),
+		calls: Default::default(),
+	});
+	let mut federation = fixture.federation.clone();
+	let mut policy = federation.config.dashboard_policy().unwrap();
+	policy.authority = Some(authority.clone());
+	federation.store = federation.store.with_dashboard_policy(Some(policy));
+	let app = common::application(federation).await;
+	let context = format!("mapping:{tenant}:{mapping_id}");
+	assert_eq!(
+		call(
+			&app,
+			"GET",
+			"/api/session",
+			true,
+			false,
+			Some(&context),
+			false,
+			Value::Null
+		)
+		.await
+		.0,
+		200
+	);
+	authority.state.store(1, Ordering::SeqCst);
+	assert_eq!(
+		call(
+			&app,
+			"GET",
+			"/api/session",
+			true,
+			false,
+			Some(&context),
+			false,
+			Value::Null
+		)
+		.await
+		.0,
+		403
+	);
+	authority.state.store(2, Ordering::SeqCst);
+	assert_eq!(
+		call(
+			&app,
+			"GET",
+			"/api/session",
+			true,
+			false,
+			Some(&context),
+			false,
+			Value::Null
+		)
+		.await
+		.0,
+		503
+	);
+	authority.state.store(0, Ordering::SeqCst);
+	assert_eq!(
+		common::request(&app, &credential.token, "GET", "/api/registry", Value::Null)
+			.await
+			.0,
+		200
+	);
+	assert_eq!(
+		call(
+			&app,
+			"POST",
+			"/auth/logout",
+			true,
+			true,
+			None,
+			false,
+			Value::Null
+		)
+		.await
+		.0,
+		204
+	);
+	assert_eq!(
+		common::request(&app, &credential.token, "GET", "/api/registry", Value::Null)
+			.await
+			.0,
+		200
+	);
+	authority.state.store(1, Ordering::SeqCst);
+	assert_eq!(
+		common::request(&app, &credential.token, "GET", "/api/registry", Value::Null)
+			.await
+			.0,
+		403
+	);
+	authority.state.store(2, Ordering::SeqCst);
+	assert_eq!(
+		common::request(&app, &credential.token, "GET", "/api/registry", Value::Null)
+			.await
+			.0,
+		503
+	);
+	let calls = authority.calls.lock().unwrap();
+	assert!(calls.contains(&(fixture.identity, Some(remote_session))));
+	assert!(calls.contains(&(fixture.identity, None)));
+	assert!(calls.iter().all(|(source, _)| *source == fixture.identity));
+}
+
 #[rstest::fixture]
 async fn google_browser(#[from(common::runtime)] runtime: common::RuntimeFuture) -> GoogleBrowser {
 	let runtime = runtime.await;
@@ -2652,3 +2854,6 @@ fn login_state(
 
 #[path = "dashboard_oidc/tenancy.rs"]
 mod tenancy;
+
+#[path = "dashboard_oidc/common_auth_settings.rs"]
+mod common_auth_settings;

@@ -444,6 +444,9 @@ pub fn estimated_tokens(value: &str) -> usize {
 /// escaped text value, so the Legacy probe measures Ordered growth exactly.
 /// Only Native Runs record `Assistant` events (ADR 0015), so a history that
 /// holds one, or an Assistant event itself, is measured as Native messages.
+/// This is a preliminary quota for tool results. Responses may use different
+/// framing; complete-request fitting and the final pre-dispatch gate measure
+/// that request's actual input format before any provider I/O.
 pub fn tool_event_growth(context: &Context, event: &ContextEvent) -> usize {
 	let native = matches!(event, ContextEvent::Assistant { .. })
 		|| context
@@ -467,6 +470,7 @@ pub fn tool_event_growth(context: &Context, event: &ContextEvent) -> usize {
 			cache_scope: None,
 			cache_breakpoints: false,
 			disable_provider_transforms: false,
+			input_format: Default::default(),
 			// Growth is in the unit of the Run's current byte quotas, so a
 			// tokenized Run does not count its whole context per event.
 			estimate: context.estimate.current().quota(),
@@ -501,6 +505,7 @@ impl RequestProjection {
 
 #[derive(Clone, Copy)]
 pub struct RequestBudget<'a> {
+	pub input_format: crate::provider::InputFormat,
 	pub window: usize,
 	pub instructions: &'a str,
 	pub tools: &'a [crate::provider::ToolSpec],
@@ -537,6 +542,7 @@ impl RequestBudget<'_> {
 			// Set per step by the harness; salted estimates count it either way.
 			cache_breakpoints: false,
 			disable_provider_transforms: false,
+			input_format: self.input_format,
 			estimate: self.estimate,
 		};
 		source::fit_declared(&mut request, context_sources, self.window);
@@ -699,6 +705,8 @@ pub const MIN_CONTEXT_RESERVE: usize = 2048;
 
 /// Reserve room for history using the same complete request estimate as
 /// execution. Registration passes the conservative snapshot.
+// These inputs describe the same fixed request at registration and execution.
+#[allow(clippy::too_many_arguments)]
 pub fn request_context_budget(
 	window: usize,
 	max_output_tokens: u32,
@@ -706,9 +714,11 @@ pub fn request_context_budget(
 	specifications: &[crate::provider::ToolSpec],
 	private_context: &Value,
 	projection: &RequestProjection,
+	input_format: crate::provider::InputFormat,
 	estimate: crate::provider::estimate::EstimateSnapshot,
 ) -> Result<usize> {
 	let budget = RequestBudget {
+		input_format,
 		window,
 		instructions,
 		tools: specifications,

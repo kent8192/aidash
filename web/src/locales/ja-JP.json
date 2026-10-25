@@ -745,5 +745,7 @@
   "decider": "Decider",
   "embedding": "埋め込み",
   "reranker": "再順位付け",
-  "tokenizer": "トークナイザー"
+  "tokenizer": "トークナイザー",
+  "planConnections": "Plan 接続",
+  "keylessEndpointHelp": "Keyless エンドポイントには認証情報を送信しません。利用前にエンドポイントとデータ保持方針を確認してください。上限の既定値はコンテキスト 128000、出力 16384 トークンです。モデルに合わせて確認してください。"
 }

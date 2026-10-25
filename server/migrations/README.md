@@ -629,3 +629,7 @@ configuration histories, respectively. Each empty state-only migration depends
 on both existing leaves and changes no schema or data. Existing migration names,
 dependencies and rollback guards remain intact; each app has one head for future
 generation.
+
+`registry/0048_context_marketplace_merge` joins that Registry history with
+`0047_marketplace_recall_constraints`. This empty state-only migration keeps a
+single Registry leaf without rewriting either history or changing stored data.

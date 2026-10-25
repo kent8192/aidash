@@ -55,3 +55,24 @@ fn the_cloud_and_dedicated_offerings_pass_the_build_check() {
 		);
 	}
 }
+
+#[test]
+fn hosted_plan_enablement_is_refused_even_with_a_postgres_store() {
+	for offering in ["cloud", "dedicated"] {
+		let output = serve(
+			&format!("{offering}-plan"),
+			&format!(
+				"[deployment]\noffering = \"{offering}\"\n\
+				 [plan_connections]\nenabled = true\n\
+				 [provider_credentials.store]\nkind = \"postgres\"\n\
+				 master_key = {{ env = \"UNAVAILABLE_PLAN_MASTER_KEY\" }}\n"
+			),
+		);
+		let stderr = String::from_utf8_lossy(&output.stderr);
+		assert!(!output.status.success());
+		assert!(
+			stderr.contains("hosted Plan Connections are disabled pending OpenAI approval (#248)"),
+			"{offering}: {stderr}"
+		);
+	}
+}

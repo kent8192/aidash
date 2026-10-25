@@ -1,4 +1,5 @@
 import { RunCompactionDetails } from "../compaction-details";
+import { RunPlanUsage } from "../model-source";
 import { X } from "lucide-react";
 import { Button } from "../components/ui/button";
 import { Input } from "../components/ui/input";
@@ -549,6 +550,7 @@ function RunPanel({
           )}
         </div>
       )}
+      <RunPlanUsage run={run} data={data} />
       {run.state_error && <Alert>{run.state_error}</Alert>}
       {run.error && (
         <p className="text-xs leading-relaxed text-destructive [overflow-wrap:anywhere]">

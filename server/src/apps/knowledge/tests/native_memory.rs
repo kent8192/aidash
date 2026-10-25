@@ -2659,6 +2659,13 @@ async fn home_run_reads_survive_reindex_but_the_writer_is_invalidated_by_its_own
 			federation: true,
 			deployment_key: None,
 			sign_in: None,
+			marketplace: aidash_server::config::marketplace::MarketplaceSettings {
+				endpoint: None,
+				connections: Vec::new(),
+				poll_seconds: 60,
+			},
+			common_auth: None,
+			common_issuers: None,
 			tier_limits: std::sync::Arc::new(aidash_application::ports::nodes::NoTierLimits),
 		},
 		store,

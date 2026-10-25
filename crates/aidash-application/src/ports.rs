@@ -200,4 +200,5 @@ pub mod decision;
 pub mod research;
 pub mod retention;
 
+pub mod accounts;
 pub mod context_source;

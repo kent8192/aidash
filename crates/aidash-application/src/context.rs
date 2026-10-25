@@ -277,6 +277,7 @@ pub fn summary_request(plan: &SummaryPlan, pinned: &Value, max_tokens: u32) -> M
 		cache_breakpoints: false,
 		// Only an opted-in Context Policy has a Summary Stage.
 		disable_provider_transforms: true,
+		input_format: Default::default(),
 		estimate: Default::default(),
 	}
 }

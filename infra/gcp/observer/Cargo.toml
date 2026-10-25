@@ -9,11 +9,11 @@ publish = false
 # Keep both revisions equal to the root workspace's reinhardt pin; a test
 # compares them.
 [dependencies]
-reinhardt-db = { git = "https://github.com/kent8192/reinhardt-web", rev = "14dc81dec2a2cc10641a8f15c455bbaafc2c774e", default-features = false, features = [
+reinhardt-db = { git = "https://github.com/kent8192/reinhardt-web", rev = "b6a006a769ca340c22a51e67fef1bb4be1dc3039", default-features = false, features = [
   "backends",
   "postgres",
 ] }
-reinhardt-query = { git = "https://github.com/kent8192/reinhardt-web", rev = "14dc81dec2a2cc10641a8f15c455bbaafc2c774e" }
+reinhardt-query = { git = "https://github.com/kent8192/reinhardt-web", rev = "b6a006a769ca340c22a51e67fef1bb4be1dc3039" }
 serde_json = "1"
 tokio = { version = "1", features = ["macros", "rt-multi-thread", "time"] }
 
