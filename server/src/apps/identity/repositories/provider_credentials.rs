@@ -36,7 +36,7 @@ fn binding(row: BindingRecord) -> Result<Binding> {
 impl Repository for NativeRepository {
 	async fn begin(&self, tenant: &str) -> Result<Box<dyn Scope>> {
 		let scope = aidash_application::tenancy::TenancyScope::tenant(tenant)?;
-		let mut tx = self.pool.begin(&scope).await?.into_executor()?;
+		let mut tx = self.pool.begin(&scope).await?.into_executor().await?;
 		let (sql, values) = Query::select()
 			.expr(SimpleExpr::FunctionCall(
 				"pg_advisory_xact_lock".into_iden(),
@@ -62,7 +62,7 @@ impl Repository for NativeRepository {
 		let scope = aidash_application::tenancy::TenancyScope::Deployment(
 			aidash_application::tenancy::DeploymentScopeReason::CredentialReconcile,
 		);
-		let mut tx = self.pool.begin(&scope).await?.into_executor()?;
+		let mut tx = self.pool.begin(&scope).await?.into_executor().await?;
 		let mut query = Record::objects()
 			.filter(
 				Record::field_state()
@@ -573,7 +573,8 @@ impl AdmittedAccess {
 			.control_pool
 			.begin(&scope)
 			.await?
-			.into_executor()?;
+			.into_executor()
+			.await?;
 		let pins = super::super::models::provider_credentials::RunProviderCredential::objects()
 			.filter(
 				super::super::models::provider_credentials::RunProviderCredential::field_id()

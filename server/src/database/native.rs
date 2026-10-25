@@ -277,7 +277,7 @@ impl Transaction {
 		&self.1
 	}
 	pub async fn commit(self) -> Result<()> {
-		self.prepare_memory_commit()?;
+		self.prepare_memory_commit().await?;
 		match self.0 {
 			Some(tx) => Ok(tx.commit().await?),
 			None => Err(Error::Conflict(
@@ -314,16 +314,18 @@ impl Transaction {
 		}
 		Ok(())
 	}
-	fn prepare_memory_commit(&self) -> Result<()> {
+	async fn prepare_memory_commit(&self) -> Result<()> {
 		if !self.2.is_empty()
 			&& let Some(recovery) = self.1.memory_recovery()
 		{
-			recovery.observe_many(&self.2.values().cloned().collect::<Vec<_>>())?;
+			recovery
+				.observe_many(&self.2.values().cloned().collect::<Vec<_>>())
+				.await?;
 		}
 		Ok(())
 	}
-	pub fn into_executor(self) -> Result<Box<dyn TransactionExecutor>> {
-		self.prepare_memory_commit()?;
+	pub async fn into_executor(self) -> Result<Box<dyn TransactionExecutor>> {
+		self.prepare_memory_commit().await?;
 		Ok(self.0.expect("transaction is lent to an authority scope"))
 	}
 }

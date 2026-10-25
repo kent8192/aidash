@@ -137,7 +137,8 @@ impl Management {
 					.control_pool
 					.begin(&scope)
 					.await?
-					.into_executor()?;
+					.into_executor()
+					.await?;
 				let snapshot = NativePolicyScope(tx.as_mut()).load(tenant).await?;
 				let evaluation = Evaluation {
 					subject: "deployment_administrator".into(),

@@ -175,6 +175,7 @@ fn declared_mixed_sources_place_independently_and_defaults_keep_request_bytes() 
 	] {
 		let pinned = json!({"reference_documents":[{"text":"step-reference"},{"text":"default-reference"}],"semantic_memory":{"matches":[{"text":"run-retrieval"}]}});
 		let budget = RequestBudget {
+			input_format: Default::default(),
 			window: 100_000,
 			instructions: "trusted instructions",
 			tools: &[],
@@ -298,6 +299,7 @@ fn final_budget_drops_optional_envelopes_without_treating_equal_history_as_deliv
 			response: json!(content),
 		});
 		let budget = RequestBudget {
+			input_format: Default::default(),
 			window: 12_000,
 			instructions: "trusted instructions",
 			tools: &[],

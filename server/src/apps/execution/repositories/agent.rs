@@ -32,7 +32,13 @@ use uuid::Uuid;
 #[async_trait]
 impl ExecutionStore for RunStore {
 	async fn resolve_research(&self, run: &mut Run) -> Result<()> {
-		let mut tx = self.store.pool.begin(&self.scope).await?.into_executor()?;
+		let mut tx = self
+			.store
+			.pool
+			.begin(&self.scope)
+			.await?
+			.into_executor()
+			.await?;
 		super::research::resolve_entries(tx.as_mut(), run.id, &mut run.context.history).await?;
 		tx.commit().await.map_err(crate::Error::from)?;
 		Ok(())
@@ -55,8 +61,9 @@ impl ExecutionStore for RunStore {
 				.store
 				.pool
 				.begin(&self.scope)
-				.await
-				.and_then(crate::database::native::Transaction::into_executor)?;
+				.await?
+				.into_executor()
+				.await?;
 			let expired = super::research::account_terms::expired(tx.as_mut(), run.id).await?;
 			tx.commit().await?;
 			Ok(expired)

@@ -364,6 +364,7 @@ impl Revocations<'_> {
 							.begin(&self.actor.tenancy()?)
 							.await?
 							.into_executor()
+							.await
 					}
 					.await,
 				)?),

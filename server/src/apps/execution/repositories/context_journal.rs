@@ -237,7 +237,7 @@ impl Store {
 				serde_json::from_value(event)?,
 			));
 		}
-		let mut tx = self.pool.begin(scope).await?.into_executor()?;
+		let mut tx = self.pool.begin(scope).await?.into_executor().await?;
 		super::research::resolve_entries(tx.as_mut(), run, &mut entries).await?;
 		tx.commit().await?;
 		Ok(entries)

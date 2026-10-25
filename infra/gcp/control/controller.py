@@ -706,6 +706,10 @@ def refresh_gcip_environments(config, store, terraform, managed, revision, affec
                 kube.admission(cluster, identity, "open")
                 public_health(output)
                 quiesced = False
+            elif not previous["published"]:
+                # An unpublished Environment admits nothing, so no old policy
+                # remains to fence; its next deployment applies these settings.
+                quiesced = False
             update_entry(
                 store, identity, generation, gcip_revision=revision,
                 gcip_mfa_revision=gcip_mfa_revision(config),
@@ -1394,6 +1398,12 @@ def reconcile_locked(config, store, terraform, managed):
                 published=False,
                 address=None,
                 spot=entry["spot"],
+                # Retain provisioned protection even if the opt-in is later
+                # omitted: a protected Home must never silently downgrade.
+                recovery_protected=bool(
+                    (previous or {}).get("recovery_protected")
+                    or config.get("recovery_protected", {}).get(identity, False)
+                ),
                 release_sha=entry["sha"],
                 # Switch the SAML ACS, runtime setting and edge helper proxy
                 # with the release deployment itself.

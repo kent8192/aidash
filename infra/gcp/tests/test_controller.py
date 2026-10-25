@@ -167,6 +167,10 @@ class CloudFixture:
                 server_service_account=f"{key}-server@{PROJECT}.iam.gserviceaccount.com",
                 worker_service_account=f"{key}-worker@{PROJECT}.iam.gserviceaccount.com",
                 provider_credentials=None,
+                memory_recovery={"required": key == "production" or self.managed[key].get("recovery_protected", False), "history_bucket": key + "-history",
+                                 "archive_bucket": key + "-archives",
+                                 "backup_service_account": f"{key}-backup@{PROJECT}.iam.gserviceaccount.com",
+                                 "prune_service_account": f"{key}-prune@{PROJECT}.iam.gserviceaccount.com"},
                 gcip=deepcopy(self.gcip),
             )
             for key in self.managed
@@ -305,6 +309,36 @@ class ReconcileFixture:
 
 
 class ReconcileTests(ReconcileFixture, unittest.TestCase):
+    def test_nonproduction_protection_survives_deployment_stop_and_resume(self):
+        self.config["develop_branch"] = "develop/0.1.0"
+        for identity in ("test", "develop", "pr-1"):
+            with self.subTest(identity=identity):
+                self.config["recovery_protected"] = {identity: True}
+                source_ref = "develop/0.1.0" if identity == "develop" else "main"
+                if identity.startswith("pr-"):
+                    source_ref = "pr/1"
+                self.request(identity, source_ref=source_ref)
+                self.reconcile()
+                namespace = "aidash-" + identity
+                self.assertTrue(self.cloud.managed[identity].get("recovery_protected"))
+                self.assertTrue(self.kube.releases[(namespace, "app")]["memoryRecovery"]["protection"]["required"])
+                # Omitting or disabling the opt-in cannot downgrade an already
+                # provisioned Home when the controller rebuilds desired state.
+                self.config.pop("recovery_protected")
+                self.request(identity, action="resume", source_ref=source_ref, sha="b" * 40)
+                self.reconcile()
+                self.assertTrue(self.cloud.managed[identity]["recovery_protected"])
+                self.request(identity, action="stop", source_ref=source_ref)
+                self.reconcile()
+                self.assertTrue(self.cloud.managed[identity]["recovery_protected"])
+                self.config["recovery_protected"] = {identity: False}
+                self.request(identity, action="resume", source_ref=source_ref, sha="b" * 40)
+                self.reconcile()
+                self.assertTrue(self.cloud.managed[identity]["recovery_protected"])
+                self.assertTrue(self.kube.releases[(namespace, "app")]["memoryRecovery"]["protection"]["required"])
+                self.request(identity, action="stop", source_ref=source_ref)
+                self.reconcile()
+
     def test_partial_start_recovers_through_shared_refresh_then_current_start(self):
         partial = self.partial_start()
         requested = deepcopy(self.store.state["environments"]["develop"])
@@ -1161,6 +1195,28 @@ class ReconcileTests(ReconcileFixture, unittest.TestCase):
         controller.reconcile(config, self.store)
         self.assertEqual(len(self.cloud.plans), plans)
         self.assertFalse(any(call[0] == "helm" or call[2:3] == ("runner",) for call in self.calls))
+
+    def test_gcip_refresh_of_an_unpublished_environment_does_not_block_its_next_deployment(self):
+        # A first start that failed after its writers started leaves the node
+        # pool running while nothing is published.
+        self.context.enter_context(patch.object(controller, "reconcile_environment"))
+        self.request("develop", action="up", source_ref="develop/0.1.0")
+        with patch.object(controller, "public_health", side_effect=controller.Refused("no public origin")):
+            with self.assertRaisesRegex(RuntimeError, "Reconciliation incomplete"):
+                self.reconcile()
+        self.assertTrue(self.cloud.managed["develop"]["running"])
+        self.assertFalse(self.cloud.managed["develop"]["published"])
+        # A GCIP change quiesces it and refreshes its settings successfully.
+        self.config["gcip_tenants"] = {"company": {"tenant": "acme"}}
+        self.cloud.gcip = {"tenant_ids": ["new-pool"], "tenant_bindings": {"new-pool": "acme"}}
+        self.request("develop", action="up", source_ref="develop/0.1.0", sha="d" * 40)
+        self.calls.clear()
+        self.reconcile()
+        entry = self.store.state["environments"]["develop"]
+        self.assertFalse(entry["gcip_pending"])
+        self.assertFalse(entry["gcip_quiesced"])
+        self.assertEqual(entry["status"], "ready")
+        self.assertTrue(self.deployed("develop"))
 
     def test_gcip_refresh_failure_cannot_unseal_through_an_ordinary_stop(self):
         self.request()

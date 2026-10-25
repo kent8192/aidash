@@ -190,12 +190,12 @@ pub(crate) enum NativeLease {
 	DeploymentAdministrator(Box<dyn TransactionExecutor>),
 }
 impl Lease {
-	pub(crate) fn into_native(self) -> Result<NativeLease> {
+	pub(crate) async fn into_native(self) -> Result<NativeLease> {
 		match self {
 			Self::Scoped(access) => Ok(NativeLease::Scoped(Box::new((*access).into_native()?))),
-			Self::DeploymentAdministrator(tx) => {
-				Ok(NativeLease::DeploymentAdministrator(tx.into_executor()?))
-			}
+			Self::DeploymentAdministrator(tx) => Ok(NativeLease::DeploymentAdministrator(
+				tx.into_executor().await?,
+			)),
 		}
 	}
 }

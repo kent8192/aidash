@@ -140,6 +140,10 @@ spec:
             - secretRef: { name: {{ $secret | quote }} }
           env:
             - { name: AIDASH_DEPLOYMENT_ID, value: {{ $id | quote }} }
+            {{- if $.Values.memoryRecovery.protection.required }}
+            - { name: AIDASH_MEMORY_RECOVERY_REQUIRED, value: "true" }
+            - { name: AIDASH_MEMORY_RECOVERY_HISTORY_BUCKET, value: {{ $.Values.memoryRecovery.protection.historyBucket | quote }} }
+            {{- end }}
             {{- if $.Values.memoryRecovery.existingClaim }}
             - { name: AIDASH_MEMORY_RECOVERY_DIR, value: {{ $.Values.memoryRecovery.directory | quote }} }
             {{- end }}

@@ -1054,8 +1054,8 @@ async fn authorization_api_enforces_policy_revision_revocation_and_audit(
 	assert_eq!(decisions[0]["decision"]["allowed"], true);
 	assert!(decisions[0].get("attributes").is_none());
 	assert_eq!(
-		get(&app, "/api/authorization/unknown/decisions").await.0,
-		404
+		get(&app, "/api/authorization/unknown/decisions").await,
+		(404, json!({"error": "authorization policy"}))
 	);
 }
 

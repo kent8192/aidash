@@ -633,3 +633,22 @@ generation.
 `registry/0048_context_marketplace_merge` joins that Registry history with
 `0047_marketplace_recall_constraints`. This empty state-only migration keeps a
 single Registry leaf without rewriting either history or changing stored data.
+
+`execution/0059_research_history_merge` also joins
+`0051_research_journal_results_state` to that Execution history. This empty
+state-only migration preserves the durable Research result history and leaves
+a single Execution head without changing either existing branch.
+
+## Home ledger recovery eligibility (#434)
+
+`knowledge/0036_memory_recovery_eligibility` (after
+`knowledge/0035_foreign_key_relations_state`) adds the required
+`recovery_eligible_at` timestamp to `memory_bank_settings`. Existing rows receive
+the migration timestamp, then the default is removed so application writers
+explicitly record eligibility. Typed Reinhardt column operations preserve the
+matching model state.
+
+`knowledge/0037_recovery_evidence_merge` joins this history with
+`knowledge/0036_memory_attempt_evidence` without changing either migration. It
+is an empty state-only migration: both independent column changes apply before
+the single Knowledge head, and no schema or model state is overwritten.

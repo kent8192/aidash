@@ -238,6 +238,7 @@ pub(crate) async fn set(
 		"provider_version",
 		"revision",
 		"next_maintenance",
+		"recovery_eligible_at",
 		"tenant",
 	]
 	.map(Alias::new);
@@ -252,6 +253,7 @@ pub(crate) async fn set(
 					.expr(Expr::value(&provider.version))
 					.expr(Expr::value(revision))
 					.expr(Expr::value(chrono::Utc::now()))
+					.expr(Expr::value(chrono::Utc::now()))
 					.expr(Expr::value(bank.tenant.clone()))
 					.to_owned(),
 			)
@@ -263,6 +265,7 @@ pub(crate) async fn set(
 							"provider_version",
 							"revision",
 							"next_maintenance",
+							"recovery_eligible_at",
 						]
 						.map(Alias::new),
 					)
