@@ -36,8 +36,10 @@
 {{- /* Server and worker share each RWO claim, so they must stay on one Cluster Node. */ -}}
 {{- $colocated := or .Values.memoryRecovery.existingClaim .Values.capabilities.storage.existingClaim -}}
 {{- $kind := include "aidash.workloadKind" . -}}
-{{- $mounts := list -}}
-{{- $volumes := list -}}
+{{- /* The root filesystem is read-only. A build with several migration roots
+stages them under the temp directory, and the migration Job copies this template. */ -}}
+{{- $mounts := list (dict "name" "tmp" "mountPath" "/tmp") -}}
+{{- $volumes := list (dict "name" "tmp" "emptyDir" (dict "sizeLimit" "64Mi")) -}}
 {{- with .Values.memoryRecovery.existingClaim -}}
 {{- $mount := dict "name" "memory-recovery" "mountPath" $.Values.memoryRecovery.directory -}}
 {{- with $.Values.memoryRecovery.subPath -}}{{- $_ := set $mount "subPath" . -}}{{- end -}}
