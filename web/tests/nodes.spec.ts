@@ -900,7 +900,7 @@ test("deleted Node management reports restore conflicts and restricts administra
   await setup(page, {
     retained: [
       deleted("recoverable"),
-      deleted("operator-deleted", "deployment_administrator"),
+      deleted("administrator-deleted", "deployment_administrator"),
     ],
     restoreConflict: true,
   });
@@ -910,7 +910,9 @@ test("deleted Node management reports restore conflicts and restricts administra
     .getByRole("button", { name: "Restore Node", exact: true })
     .click();
   await expect(page.getByRole("alert")).toContainText("current Node capacity");
-  const restricted = page.locator('[data-lifecycle-node="operator-deleted"]');
+  const restricted = page.locator(
+    '[data-lifecycle-node="administrator-deleted"]',
+  );
   await expect(restricted).toContainText(
     "Only a Deployment Administrator can restore",
   );

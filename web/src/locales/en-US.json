@@ -784,7 +784,7 @@
   "nodeDeletedAt": "Deleted at",
   "nodePurgeDeadline": "Purge deadline (fixed at deletion)",
   "nodePurgedAt": "Purged at",
-  "nodeOperatorRestore": "Only a Deployment Administrator can restore this Node.",
+  "nodeDeploymentAdministratorRestore": "Only a Deployment Administrator can restore this Node.",
   "nodeRestoreExpired": "The restore deadline has passed.",
   "nodeRestoreConflict": "Restore was refused. Check the current Node capacity, restore deadline and purge progress before trying again.",
   "nodeLifecycleConflict": "The Node changed or this action is no longer allowed. Review its current default and lifecycle state.",

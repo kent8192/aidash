@@ -784,7 +784,7 @@
   "nodeDeletedAt": "削除日時",
   "nodePurgeDeadline": "消去期限（削除時に確定）",
   "nodePurgedAt": "消去日時",
-  "nodeOperatorRestore": "この Node を復元できるのは Deployment Administrator だけです。",
+  "nodeDeploymentAdministratorRestore": "この Node を復元できるのは Deployment Administrator だけです。",
   "nodeRestoreExpired": "復元期限を過ぎています。",
   "nodeRestoreConflict": "復元できませんでした。現在の Node 容量、復元期限、消去の進捗を確認してください。",
   "nodeLifecycleConflict": "Node の状態が変わったか、この操作ができなくなりました。現在の既定 Node と削除状態を確認してください。",

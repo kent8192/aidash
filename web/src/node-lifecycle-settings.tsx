@@ -155,13 +155,13 @@ export function NodeLifecycleSettings({
               typeof bytes === "number" &&
               Number.isSafeInteger(bytes) &&
               bytes >= 0;
-            const operatorDeletion =
+            const administratorDeletion =
               deletion?.deleted_by_kind === "deployment_administrator";
             const restorable =
               node.state === "deleted" &&
               deletion &&
               new Date(deletion.purge_after).getTime() > now &&
-              (!operatorDeletion || deploymentAdministrator);
+              (!administratorDeletion || deploymentAdministrator);
             return (
               <div
                 key={node.name}
@@ -270,14 +270,14 @@ export function NodeLifecycleSettings({
                         {new Date(deletion.purged_at).toLocaleString(locale)}
                       </span>
                     )}
-                    {operatorDeletion &&
+                    {administratorDeletion &&
                       !deploymentAdministrator &&
                       node.state === "deleted" && (
-                        <Hint>{t("nodeOperatorRestore")}</Hint>
+                        <Hint>{t("nodeDeploymentAdministratorRestore")}</Hint>
                       )}
                     {node.state === "deleted" &&
                       !restorable &&
-                      !operatorDeletion && (
+                      !administratorDeletion && (
                         <Hint>{t("nodeRestoreExpired")}</Hint>
                       )}
                     {deletion.purge_step && (
