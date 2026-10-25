@@ -34,6 +34,26 @@ run "password_and_sso_tenants_are_separate" {
     condition     = var.gcip_tenants["password"].mfa.state == "disabled" && var.gcip_tenants["sso"].mfa.state == "disabled"
     error_message = "An omitted MFA Requirement must be declared disabled."
   }
+  assert {
+    condition = alltrue([for pool in google_identity_platform_tenant.aidash : can(regex("^[A-Za-z][A-Za-z0-9-]{3,19}$", pool.display_name))]) && (
+      google_identity_platform_tenant.aidash["password"].display_name != google_identity_platform_tenant.aidash["sso"].display_name
+    )
+    error_message = "Identity Platform rejects display names that are not 4-20 letters, digits and hyphens starting with a letter."
+  }
+}
+run "display_names_fit_long_environments_and_underscored_aliases" {
+  command = plan
+  variables {
+    environment_id = "pr-123456"
+    environment = {
+      kind = "pr", incarnation = "bbbbbbbbbbbb", running = false, spot = false, nodes = 1, machine_type = "n2-standard-4"
+    }
+    gcip_tenants = { shared_pool_with_a_long_alias = { password_sign_up = true } }
+  }
+  assert {
+    condition     = can(regex("^[A-Za-z][A-Za-z0-9-]{3,19}$", google_identity_platform_tenant.aidash["shared_pool_with_a_long_alias"].display_name))
+    error_message = "Identity Platform rejects display names that are not 4-20 letters, digits and hyphens starting with a letter."
+  }
 }
 run "saml_posts_to_the_proxied_helper_with_its_release" {
   command = plan
