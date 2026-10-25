@@ -201,9 +201,6 @@ async fn visit(browser: &BrowserClient, endpoint: &str, route: &str, expected: &
 }
 
 #[tokio::test]
-// Only the fixture administrator provisions this service's schema and roles;
-// application operations use the Marketplace runtime credential below.
-#[allow(clippy::disallowed_methods)]
 async fn publisher_controlled_text_is_rendered_as_text() {
 	use crate::auth::{Session as ProductSession, hash};
 	use aidash_domain::agent_plugin::{PluginFile, tree_digest};
@@ -212,46 +209,11 @@ async fn publisher_controlled_text_is_rendered_as_text() {
 	use std::sync::{Arc, atomic::AtomicBool};
 	use uuid::Uuid;
 
-	let (_container, _pool, _port, admin_url) = reinhardt::test::fixtures::postgres_container_with(
-		reinhardt::test::fixtures::PostgresContainerConfig::default()
-			.image("postgres", "17-alpine")
-			.user("postgres")
-			.password("fixture-admin-password")
-			.database("marketplace"),
-	)
-	.await;
-	let admin = reinhardt::db::backends::DatabaseConnection::connect_postgres(&admin_url)
-		.await
-		.unwrap();
-	// Infrastructure DDL has no Query representation; this fixture provisions
-	// exactly the dedicated owner/runtime roles required by production startup.
-	for ddl in include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/bootstrap.sql"))
-		.lines()
-		.filter(|line| !line.trim_start().starts_with("--"))
-		.collect::<Vec<_>>()
-		.join("\n")
-		.split(';')
-		.map(str::trim)
-		.filter(|ddl| !ddl.is_empty())
-	{
-		admin.execute(ddl, Vec::new()).await.unwrap();
-	}
-	for sql in [
-		"ALTER ROLE marketplace_owner LOGIN PASSWORD 'fixture-owner-password'",
-		"ALTER ROLE marketplace_app LOGIN PASSWORD 'fixture-runtime-password'",
-		"REVOKE ALL ON SCHEMA public FROM PUBLIC",
-	] {
-		admin.execute(sql, Vec::new()).await.unwrap();
-	}
-	let with_login = |user: &str, password: &str| {
-		let mut url = url::Url::parse(&admin_url).unwrap();
-		url.set_username(user).unwrap();
-		url.set_password(Some(password)).unwrap();
-		url.to_string()
-	};
-	crate::migrations::migrate(&with_login("marketplace_owner", "fixture-owner-password"))
-		.await
-		.unwrap();
+	let super::ProvisionedDatabase {
+		app_url,
+		_container,
+		..
+	} = super::provisioned_database().await;
 
 	let account = Uuid::new_v4();
 	let identity = Uuid::new_v4();
@@ -263,12 +225,9 @@ async fn publisher_controlled_text_is_rendered_as_text() {
 	.await;
 	let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
 	let origin = format!("http://{}", listener.local_addr().unwrap());
-	let service = crate::Marketplace::connect(
-		super::config(&origin, &issuer),
-		&with_login("marketplace_app", "fixture-runtime-password"),
-	)
-	.await
-	.unwrap();
+	let service = crate::Marketplace::connect(super::config(&origin, &issuer), &app_url)
+		.await
+		.unwrap();
 	let token = crate::auth::secret();
 	let csrf = crate::auth::secret();
 	let session = ProductSession {

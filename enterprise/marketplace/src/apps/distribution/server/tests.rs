@@ -92,12 +92,18 @@ fn config(origin: &str, issuer: &str) -> Config {
 	}
 }
 
-#[tokio::test]
+/// A migrated PostgreSQL database with the dedicated owner/runtime roles.
+struct ProvisionedDatabase {
+	admin: reinhardt::db::backends::DatabaseConnection,
+	owner_url: String,
+	app_url: String,
+	_container: Box<dyn std::any::Any>,
+}
 // Only the fixture administrator provisions this service's schema and roles;
-// application operations use the Marketplace runtime credential below.
+// application operations use the Marketplace runtime credential.
 #[allow(clippy::disallowed_methods)]
-async fn standalone_distribution_enforces_ownership_and_persists_recall() {
-	let (_container, _pool, _port, admin_url) = reinhardt::test::fixtures::postgres_container_with(
+async fn provisioned_database() -> ProvisionedDatabase {
+	let (container, pool, _port, admin_url) = reinhardt::test::fixtures::postgres_container_with(
 		reinhardt::test::fixtures::PostgresContainerConfig::default()
 			.image("postgres", "17-alpine")
 			.user("postgres")
@@ -139,6 +145,22 @@ async fn standalone_distribution_enforces_ownership_and_persists_recall() {
 	let app_url = with_login("marketplace_app", "fixture-runtime-password");
 
 	migrations::migrate(&owner_url).await.unwrap();
+	ProvisionedDatabase {
+		admin,
+		owner_url,
+		app_url,
+		_container: Box::new((container, pool)),
+	}
+}
+
+#[tokio::test]
+async fn standalone_distribution_enforces_ownership_and_persists_recall() {
+	let ProvisionedDatabase {
+		admin,
+		owner_url,
+		app_url,
+		_container,
+	} = provisioned_database().await;
 	let account = Uuid::new_v4();
 	let identity = Uuid::new_v4();
 	let active = Arc::new(AtomicBool::new(true));

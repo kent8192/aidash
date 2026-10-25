@@ -37,13 +37,13 @@ mod native {
 	impl Handler for Application {
 		async fn handle(&self, request: Request) -> reinhardt::core::exception::Result<Response> {
 			if request.uri.path().starts_with("/api/server_fn/") {
-				if let Err(error) = self.service.require_https(&request) {
-					return Ok(self.service.strict_transport(error.response()));
-				}
-				let response = self
+				let response = match self.service.require_https(&request) {
+					Ok(()) => self.rpc.handle(request).await?,
+					Err(error) => error.response(),
+				};
+				return Ok(self
 					.service
-					.strict_transport(self.rpc.handle(request).await?);
-				return Ok(response
+					.strict_transport(response)
 					.with_header("cache-control", "no-store")
 					.with_header("x-content-type-options", "nosniff")
 					.with_header("referrer-policy", "same-origin")
