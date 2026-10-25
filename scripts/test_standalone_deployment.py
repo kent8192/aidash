@@ -94,6 +94,61 @@ class StandaloneDeploymentTests(unittest.TestCase):
                     if "secret" in volume:
                         self.assertTrue(mount["readOnly"])
 
+    def render_chart(self, *arguments):
+        chart = ROOT / "enterprise/deploy/standalone-service"
+        output = subprocess.check_output(["helm", "template", "fixture", str(chart), *arguments,
+                                          "--set-string", "image=registry.example/product@sha256:" + "a" * 64],
+                                         stderr=subprocess.STDOUT)
+        return [item for item in yaml.safe_load_all(output) if item]
+
+    def test_examples_admit_only_the_edge_and_named_peers_to_each_port(self):
+        chart = ROOT / "enterprise/deploy/standalone-service"
+        for values, ports in (("auth", {8081, 9091}), ("marketplace", {8082})):
+            with self.subTest(values=values):
+                policies = [item for item in self.render_chart("-f", str(chart / (values + ".values.yaml")))
+                            if item["kind"] == "NetworkPolicy"]
+                self.assertEqual(len(policies), 1)
+                spec = policies[0]["spec"]
+                self.assertEqual(spec["policyTypes"], ["Ingress"])
+                self.assertEqual(spec["podSelector"]["matchLabels"], {"app.kubernetes.io/instance": "fixture"})
+                by_port = {}
+                for rule in spec["ingress"]:
+                    # A missing or empty `from` would admit every peer.
+                    self.assertTrue(rule.get("from"))
+                    for peer in rule["from"]:
+                        self.assertEqual(set(peer) - {"podSelector", "namespaceSelector"}, set())
+                        for selector in (peer.get("podSelector"), peer.get("namespaceSelector")):
+                            if selector is not None:
+                                self.assertTrue(selector.get("matchLabels") or selector.get("matchExpressions"))
+                    for port in rule["ports"]:
+                        by_port.setdefault(port["port"], []).extend(rule["from"])
+                self.assertEqual(set(by_port), ports)
+                http = 8081 if values == "auth" else 8082
+                # The HTTP port admits exactly the edge Pods of the release's namespace.
+                self.assertEqual(by_port[http], [{"podSelector": {"matchLabels": {"aidash.run/edge": "env"}}}])
+                if values == "auth":
+                    # Private gRPC never admits the edge, and every peer names a namespace.
+                    self.assertNotIn({"podSelector": {"matchLabels": {"aidash.run/edge": "env"}}}, by_port[9091])
+                    self.assertTrue(all("namespaceSelector" in peer for peer in by_port[9091]))
+
+    def test_default_values_render_no_network_policy_and_unsafe_rules_are_refused(self):
+        self.assertFalse([item for item in self.render_chart() if item["kind"] == "NetworkPolicy"])
+        enabled = ["--set", "networkPolicy.enabled=true"]
+        edge = "networkPolicy.ingress[0].from[0].podSelector.matchLabels.aidash\\.run/edge=env"
+        for name, arguments in (
+            ("no rules", enabled),
+            ("empty from", enabled + ["--set", "networkPolicy.ingress[0].port=http"]),
+            ("empty selector", enabled + ["--set", "networkPolicy.ingress[0].port=http",
+                                           "--set-json", 'networkPolicy.ingress[0].from=[{"podSelector":{}}]']),
+            ("empty match labels", enabled + ["--set", "networkPolicy.ingress[0].port=http",
+                                               "--set-json", 'networkPolicy.ingress[0].from=[{"podSelector":{"matchLabels":{}}}]']),
+            ("ip block", enabled + ["--set", "networkPolicy.ingress[0].port=http",
+                                     "--set-json", 'networkPolicy.ingress[0].from=[{"ipBlock":{"cidr":"0.0.0.0/0"}}]']),
+            ("grpc without grpc enabled", enabled + ["--set", "networkPolicy.ingress[0].port=grpc", "--set", edge]),
+        ):
+            with self.subTest(name=name), self.assertRaises(subprocess.CalledProcessError):
+                self.render_chart(*arguments)
+
 
 if __name__ == "__main__":
     unittest.main()

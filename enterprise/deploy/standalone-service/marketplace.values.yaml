@@ -6,14 +6,34 @@ environment:
   AIDASH_AUTH_ISSUER: https://auth.example.com
   # IPs or CIDR networks of the HTTPS edge (comma-separated). 10.44.0.0/14 is the GKE Pod
   # CIDR from infra/gcp/environments/cluster.tf, where the edge Pods (aidash.run/edge=env)
-  # live and change IPs. Every Pod in that range is trusted to assert forwarded HTTPS, so a
-  # NetworkPolicy must restrict ingress to this Service to the edge Pods.
+  # live and change IPs. Every Pod in that range may assert forwarded HTTPS, which is why
+  # networkPolicy below admits only the edge Pods to the HTTP port; do not disable it
+  # while this network is trusted.
   AIDASH_MARKETPLACE_TRUSTED_PROXY_IPS: 10.44.0.0/14
   AIDASH_MARKETPLACE_CLIENT_SECRET_FILE: /run/secrets/marketplace-client-secret
   AIDASH_MARKETPLACE_RESOURCE_SECRET_FILE: /run/secrets/marketplace-resource-secret
   AIDASH_MARKETPLACE_BILLING_SECRET_FILE: /run/secrets/marketplace-billing-secret
   AIDASH_MARKETPLACE_ENROLLMENT_SECRET_FILE: /run/secrets/marketplace-enrollment-secret
   AIDASH_MARKETPLACE_RECALL_SECRET_FILE: /run/secrets/marketplace-recall-secret
+# Every HTTP caller must arrive through a trusted proxy: with an HTTPS origin the
+# service answers 400 to plain HTTP (except GET /healthz). So browsers, Registry
+# Connections (/api/marketplace/downloads, /recalls) and the Billing, enrollment and
+# Recall integrations (/internal/*) all reach it through the edge Pods, never by
+# direct Service DNS. The public edge denies /internal/; serving those routes to the
+# in-cluster integrations needs an internal-only edge route (Issue #516). Marketplace
+# calls Authentication (/oauth/token, /oauth/introspect, /oauth/revoke) at the
+# AIDASH_AUTH_ISSUER origin, so it is an egress concern, not an ingress peer here.
+# The edge Pods live in the namespace of this release; if they do not, add a
+# namespaceSelector to the peer. Kubelet probes are node-originated and always admitted
+# by GKE Dataplane V2.
+networkPolicy:
+  enabled: true
+  ingress:
+    - port: http
+      from:
+        - podSelector:
+            matchLabels:
+              aidash.run/edge: env
 secretEnvironment:
   AIDASH_MARKETPLACE_DATABASE_URL:
     name: marketplace-runtime

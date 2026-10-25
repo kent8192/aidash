@@ -31,8 +31,36 @@ For Marketplace set port 8082 and the `AIDASH_MARKETPLACE_*` settings, including
 `AIDASH_MARKETPLACE_TRUSTED_PROXY_IPS` (and Auth's `trusted_proxy_ips`) with the edge's
 IPs or CIDR networks, for example the cluster Pod CIDR when the edge Pods' IPs change.
 Everything in a trusted network may assert forwarded HTTPS, so restrict ingress to the
-edge Pods with a NetworkPolicy. Place HTTP behind the deployment's HTTPS edge. The gRPC Service is internal; authenticate and
-authorize peers even on the cluster network.
+edge Pods with the chart's NetworkPolicy (below). Place HTTP behind the deployment's
+HTTPS edge. The gRPC Service is internal; authenticate and authorize peers even on the
+cluster network.
+
+## Ingress NetworkPolicy
+
+`networkPolicy.enabled` renders one `NetworkPolicy` (`policyTypes: [Ingress]`) selecting
+this release's Pods. It is off in `values.yaml` so an upgrade cannot silently cut off
+callers, and on in both examples. `networkPolicy.ingress` lists rules, each a `port`
+(`http`, or `grpc` when `grpc.enabled`) and a non-empty `from` of peers. A peer is a
+`podSelector` and/or `namespaceSelector`; the chart refuses to render an empty `from`, an
+empty selector (which would match every Pod or namespace), any other peer type, or a
+port the release does not serve. A `podSelector` alone selects Pods in the release's
+namespace; add a `namespaceSelector` when the peer lives elsewhere. A policy that allows
+no port at all is refused too.
+
+| Port          | Peers admitted in the examples                                                                                                             | Why                                                                                                                                                                                                                                                                                                                                                                                                                                              |
+| ------------- | ------------------------------------------------------------------------------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `http`        | Edge Pods, `aidash.run/edge=env` (as `backendIngress.podSelectors` in `deploy/helm/aidash` and `EDGE_PODS` in `infra/gcp/control/kube.py`) | Every HTTP caller must arrive through a trusted proxy: with an HTTPS origin the service answers 400 to plain HTTP (only `GET /healthz` is exempt). This covers browsers, Registry Connections (`/api/marketplace/downloads`, `/recalls`), the Billing, enrollment and Recall integrations (`/internal/*`) and Marketplace's own `/oauth/token`, `/oauth/introspect` and `/oauth/revoke` calls, which use the public `AIDASH_AUTH_ISSUER` origin. |
+| `grpc` (Auth) | Cloud server and worker Pods (`component in (server, worker)`) and the separate Account-administration workload                            | Only Cloud and administration use the private gRPC/mTLS port; Marketplace does not.                                                                                                                                                                                                                                                                                                                                                              |
+
+Placeholders to replace before installation: the Auth `grpc` peers name
+`REPLACE_WITH_CLOUD_NAMESPACE`, `REPLACE_WITH_ADMINISTRATION_NAMESPACE` and
+`aidash.run/authentication-admin=REPLACE_WITH_ADMINISTRATION_WORKLOAD`, which match
+nothing (fail closed) until set, because the standalone services are not yet deployed
+from `infra/gcp` (Issue #516). The `/internal/*` integrations cannot use direct Service
+DNS: the public edge must deny `/internal/`, so serving them needs an internal-only
+edge route, also tracked there. Kubelet probes (`/healthz` readiness, TCP liveness on
+the http port) come from the node, which GKE Dataplane V2 always admits, so no rule is
+needed for them; other CNIs may need a node-CIDR peer.
 
 Install one release per product using `auth.values.yaml` or
 `marketplace.values.yaml`. Assets reside at `/app/pages` in each product image;
