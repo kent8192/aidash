@@ -481,6 +481,53 @@ async fn standalone_distribution_enforces_ownership_and_persists_recall() {
 		200,
 		"an identical verified event retry is idempotent"
 	);
+	// /internal/* is machine-to-machine and keeps its in-cluster plain-HTTP path under an
+	// HTTPS origin with no trusted proxy, while browser and Registry routes stay refused.
+	let strict = Marketplace::connect(config("https://marketplace.example.com", &issuer), &app_url)
+		.await
+		.unwrap();
+	let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+	let (strict_endpoint, strict_task) =
+		server_on(listener, crate::config::urls::handler(strict)).await;
+	let mut internal = billing.clone();
+	internal["event_id"] = format!("event-{}", Uuid::new_v4()).into();
+	assert_eq!(
+		client
+			.post(format!("{strict_endpoint}/internal/billing/events"))
+			.bearer_auth("test-billing-secret-32-characters-long")
+			.json(&internal)
+			.send()
+			.await
+			.unwrap()
+			.status(),
+		200,
+		"plain-HTTP /internal/* is not refused for transport"
+	);
+	assert_eq!(
+		client
+			.post(format!("{strict_endpoint}/internal/billing/events"))
+			.bearer_auth("untrusted-browser")
+			.json(&internal)
+			.send()
+			.await
+			.unwrap()
+			.status(),
+		403,
+		"exempt from HTTPS, not from the Bearer credential"
+	);
+	for (path, method_post) in [
+		("/api/marketplace/catalog", false),
+		("/api/marketplace/downloads", true),
+	] {
+		let url = format!("{strict_endpoint}{path}");
+		let request = if method_post {
+			client.post(url)
+		} else {
+			client.get(url)
+		};
+		assert_eq!(request.send().await.unwrap().status(), 400, "{path}");
+	}
+	strict_task.abort();
 	let mut changed = billing.clone();
 	changed["revoked"] = true.into();
 	assert_eq!(

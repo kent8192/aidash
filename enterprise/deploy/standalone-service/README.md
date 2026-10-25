@@ -47,20 +47,23 @@ port the release does not serve. A `podSelector` alone selects Pods in the relea
 namespace; add a `namespaceSelector` when the peer lives elsewhere. A policy that allows
 no port at all is refused too.
 
-| Port          | Peers admitted in the examples                                                                                                             | Why                                                                                                                                                                                                                                                                                                                                                                                                                                              |
-| ------------- | ------------------------------------------------------------------------------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| `http`        | Edge Pods, `aidash.run/edge=env` (as `backendIngress.podSelectors` in `deploy/helm/aidash` and `EDGE_PODS` in `infra/gcp/control/kube.py`) | Every HTTP caller must arrive through a trusted proxy: with an HTTPS origin the service answers 400 to plain HTTP (only `GET /healthz` is exempt). This covers browsers, Registry Connections (`/api/marketplace/downloads`, `/recalls`), the Billing, enrollment and Recall integrations (`/internal/*`) and Marketplace's own `/oauth/token`, `/oauth/introspect` and `/oauth/revoke` calls, which use the public `AIDASH_AUTH_ISSUER` origin. |
-| `grpc` (Auth) | Cloud server and worker Pods (`component in (server, worker)`) and the separate Account-administration workload                            | Only Cloud and administration use the private gRPC/mTLS port; Marketplace does not.                                                                                                                                                                                                                                                                                                                                                              |
+| Port                 | Peers admitted in the examples                                                                                                             | Why                                                                                                                                                                                                                                                                                                                                                                        |
+| -------------------- | ------------------------------------------------------------------------------------------------------------------------------------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `http` (Auth)        | Edge Pods, `aidash.run/edge=env` (as `backendIngress.podSelectors` in `deploy/helm/aidash` and `EDGE_PODS` in `infra/gcp/control/kube.py`) | Browsers, Marketplace's `/oauth/token`, `/oauth/introspect` and `/oauth/revoke` calls (public `AIDASH_AUTH_ISSUER` origin) and Cloud's OIDC flow arrive through the edge.                                                                                                                                                                                                  |
+| `http` (Marketplace) | The same edge Pods, plus the in-cluster Billing, enrollment and Recall integration Pods                                                    | Browsers and remote Registry Connections (`/api/marketplace/downloads`, `/recalls`) use the HTTPS edge. With an HTTPS origin the service answers 400 to plain HTTP except `GET /healthz` and every `/internal/*` route. The public edge denies `/internal/`, so the integrations call the Service directly with their Bearer secrets and are admitted only by this policy. |
+| `grpc` (Auth)        | Cloud server and worker Pods (`component in (server, worker)`) and the separate Account-administration workload                            | Only Cloud and administration use the private gRPC/mTLS port; Marketplace does not.                                                                                                                                                                                                                                                                                        |
 
-Placeholders to replace before installation: the Auth `grpc` peers name
+Placeholders to replace before installation, because the standalone services are not
+yet deployed from `infra/gcp` (Issue #516): the Auth `grpc` peers name
 `REPLACE_WITH_CLOUD_NAMESPACE`, `REPLACE_WITH_ADMINISTRATION_NAMESPACE` and
-`aidash.run/authentication-admin=REPLACE_WITH_ADMINISTRATION_WORKLOAD`, which match
-nothing (fail closed) until set, because the standalone services are not yet deployed
-from `infra/gcp` (Issue #516). The `/internal/*` integrations cannot use direct Service
-DNS: the public edge must deny `/internal/`, so serving them needs an internal-only
-edge route, also tracked there. Kubelet probes (`/healthz` readiness, TCP liveness on
-the http port) come from the node, which GKE Dataplane V2 always admits, so no rule is
-needed for them; other CNIs may need a node-CIDR peer.
+`aidash.run/authentication-admin=REPLACE_WITH_ADMINISTRATION_WORKLOAD`; the Marketplace
+integration peer names `REPLACE_WITH_INTEGRATIONS_NAMESPACE` and
+`aidash.run/marketplace-integration=REPLACE_WITH_BILLING_ENROLLMENT_RECALL_WORKLOAD`.
+They match nothing (fail closed) until set. Plain HTTP to `/internal/*` is acceptable
+only because a Bearer secret is the sole credential there and this policy limits who
+can reach it; keep the policy enabled. Kubelet probes (`/healthz` readiness, TCP
+liveness on the http port) come from the node, which GKE Dataplane V2 always admits, so
+no rule is needed for them.
 
 Install one release per product using `auth.values.yaml` or
 `marketplace.values.yaml`. Assets reside at `/app/pages` in each product image;

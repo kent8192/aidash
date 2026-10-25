@@ -115,7 +115,7 @@ The product image bundles its own Pages assets at `/app/pages`.
 Place public HTTP behind the configured HTTPS origin. Forwarded HTTPS metadata
 is accepted only from the proxies in `trusted_proxy_ips`, each an exact IP or a CIDR
 network such as `"10.44.0.0/14"` (host bits must be zero; every peer in the network is
-trusted, so restrict who can reach the service; an invalid entry fails startup), and every response outside loopback
+trusted, so restrict who can reach the service with the standalone chart's `networkPolicy`; an invalid entry fails startup), and every response outside loopback
 development carries `Strict-Transport-Security`. Keep gRPC private and require
 client certificates. `/healthz`, OIDC discovery and JWKS support service checks;
 user interactions, accounts and protected data retain their own authentication

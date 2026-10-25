@@ -15,17 +15,18 @@ environment:
   AIDASH_MARKETPLACE_BILLING_SECRET_FILE: /run/secrets/marketplace-billing-secret
   AIDASH_MARKETPLACE_ENROLLMENT_SECRET_FILE: /run/secrets/marketplace-enrollment-secret
   AIDASH_MARKETPLACE_RECALL_SECRET_FILE: /run/secrets/marketplace-recall-secret
-# Every HTTP caller must arrive through a trusted proxy: with an HTTPS origin the
-# service answers 400 to plain HTTP (except GET /healthz). So browsers, Registry
-# Connections (/api/marketplace/downloads, /recalls) and the Billing, enrollment and
-# Recall integrations (/internal/*) all reach it through the edge Pods, never by
-# direct Service DNS. The public edge denies /internal/; serving those routes to the
-# in-cluster integrations needs an internal-only edge route (Issue #516). Marketplace
-# calls Authentication (/oauth/token, /oauth/introspect, /oauth/revoke) at the
-# AIDASH_AUTH_ISSUER origin, so it is an egress concern, not an ingress peer here.
-# The edge Pods live in the namespace of this release; if they do not, add a
-# namespaceSelector to the peer. Kubelet probes are node-originated and always admitted
-# by GKE Dataplane V2.
+# Browsers and remote Registry Connections (/api/marketplace/*) arrive through the
+# edge Pods: with an HTTPS origin the service answers 400 to plain HTTP except
+# GET /healthz and /internal/*. The public edge denies /internal/, so the in-cluster
+# Billing, enrollment and Recall integrations call this Service directly over plain
+# HTTP with their Bearer secrets; those Pods are the second peer below. The service
+# does not know their labels (the standalone services are not yet deployed from
+# infra/gcp, Issue #516), so their namespace and labels are PLACEHOLDERS that match
+# nothing until replaced. Marketplace calls Authentication (/oauth/token,
+# /oauth/introspect, /oauth/revoke) at the AIDASH_AUTH_ISSUER origin, so that is an
+# egress concern, not an ingress peer here. The edge Pods live in the namespace of
+# this release; if they do not, add a namespaceSelector to the peer. Kubelet probes
+# are node-originated and always admitted by GKE Dataplane V2.
 networkPolicy:
   enabled: true
   ingress:
@@ -34,6 +35,12 @@ networkPolicy:
         - podSelector:
             matchLabels:
               aidash.run/edge: env
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: REPLACE_WITH_INTEGRATIONS_NAMESPACE
+          podSelector:
+            matchLabels:
+              aidash.run/marketplace-integration: REPLACE_WITH_BILLING_ENROLLMENT_RECALL_WORKLOAD
 secretEnvironment:
   AIDASH_MARKETPLACE_DATABASE_URL:
     name: marketplace-runtime

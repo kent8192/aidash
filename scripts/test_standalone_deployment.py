@@ -124,8 +124,17 @@ class StandaloneDeploymentTests(unittest.TestCase):
                         by_port.setdefault(port["port"], []).extend(rule["from"])
                 self.assertEqual(set(by_port), ports)
                 http = 8081 if values == "auth" else 8082
-                # The HTTP port admits exactly the edge Pods of the release's namespace.
-                self.assertEqual(by_port[http], [{"podSelector": {"matchLabels": {"aidash.run/edge": "env"}}}])
+                edge = {"podSelector": {"matchLabels": {"aidash.run/edge": "env"}}}
+                if values == "auth":
+                    # Auth's HTTP port admits exactly the edge Pods of the release's namespace.
+                    self.assertEqual(by_port[http], [edge])
+                else:
+                    # Marketplace also admits the in-cluster /internal/* integrations, each
+                    # peer pinned to a namespace as well as labels.
+                    self.assertEqual(by_port[http][0], edge)
+                    self.assertTrue(len(by_port[http]) > 1)
+                    self.assertTrue(all("namespaceSelector" in peer and "podSelector" in peer
+                                        for peer in by_port[http][1:]))
                 if values == "auth":
                     # Private gRPC never admits the edge, and every peer names a namespace.
                     self.assertNotIn({"podSelector": {"matchLabels": {"aidash.run/edge": "env"}}}, by_port[9091])
