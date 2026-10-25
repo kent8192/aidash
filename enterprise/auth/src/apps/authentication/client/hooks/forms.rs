@@ -82,6 +82,7 @@ pub fn use_credentials_form() -> CredentialsForm {
 				label {
 					class: "field",
 					"Email" input {
+						type: "email",
 						name: "email",
 						autocomplete: "username",
 						required: true,
@@ -92,6 +93,7 @@ pub fn use_credentials_form() -> CredentialsForm {
 				label {
 					class: "field",
 					"Password" input {
+						type: "password",
 						name: "password",
 						autocomplete: "current-password",
 						required: true,
