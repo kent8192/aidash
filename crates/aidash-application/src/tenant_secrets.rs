@@ -13,6 +13,8 @@ use std::sync::Arc;
 use url::Url;
 use uuid::Uuid;
 
+pub mod readiness;
+
 /// Every mutating scope serializes one Tenant, including quota and name races.
 #[async_trait]
 pub trait Scope: Send {
@@ -234,6 +236,19 @@ impl Service {
 		let rows = scope.list().await?;
 		scope.commit().await?;
 		Ok(rows.into_iter().map(Metadata::from).collect())
+	}
+
+	/// The Tenant's active Tenant Secrets, for readiness facts. A pending or
+	/// deleted name is not usable, so it is left out.
+	pub async fn active(&self, tenant: &str) -> Result<Vec<Metadata>> {
+		let mut scope = self.repository.begin(tenant).await?;
+		let rows = scope.list().await?;
+		scope.commit().await?;
+		Ok(rows
+			.into_iter()
+			.filter(|row| row.state == State::Active)
+			.map(Metadata::from)
+			.collect())
 	}
 	pub async fn get(&self, tenant: &str, name: &str) -> Result<Metadata> {
 		tenant_secrets::validate_name(name)?;

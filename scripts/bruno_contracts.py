@@ -1151,6 +1151,17 @@ def render():
                     immutable=True,
                 )
             continue
+        if route["source"] in {
+            "server/src/apps/registry/views/management.rs",
+            "server/src/apps/marketplace/views/management.rs",
+        } and path.endswith("/secret-readiness"):
+            add(endpoint, "Deployment Administrator bearer has no Tenant authority", 403,
+                headers=DEPLOYMENT_ADMINISTRATOR)
+            add(endpoint, "Forged bearer cannot read Tenant Secret readiness", 401,
+                headers={"Authorization": "Bearer forged"})
+            add(endpoint, "Subject without registry.read cannot read Tenant Secret readiness", 403,
+                headers=DENIED_SUBJECT)
+            continue
         # The positive/missing-resource read reaches the application and database,
         # rather than merely confirming that the router has a matching endpoint.
         headers = DEPLOYMENT_ADMINISTRATOR

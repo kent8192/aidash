@@ -42535,5 +42535,187 @@
         }
       }
     }
+  },
+  {
+    "method": "GET",
+    "path": "/api/marketplace/packages/{key}/secret-readiness",
+    "name": "marketplace-secret-readiness",
+    "source": "server/src/apps/marketplace/views/management.rs",
+    "json": false,
+    "uuid_parameters": [],
+    "query_parameters": [],
+    "response": {
+      "schema": {
+        "type": "array",
+        "items": {
+          "$ref": "#/components/schemas/TenantSecretReadinessFact"
+        }
+      },
+      "definitions": {
+        "TenantSecretReadinessFact": {
+          "type": "object",
+          "description": "One item readiness fact. `item` names the bound tool or External service,\nor the Marketplace package's Secret slot.",
+          "required": ["item", "kind", "status", "repair"],
+          "properties": {
+            "item": {
+              "type": "string"
+            },
+            "kind": {
+              "$ref": "#/components/schemas/TenantSecretReadinessKind"
+            },
+            "repair": {
+              "$ref": "#/components/schemas/TenantSecretReadinessRepair"
+            },
+            "status": {
+              "$ref": "#/components/schemas/TenantSecretReadinessStatus"
+            },
+            "tenant_secret_name": {
+              "type": ["string", "null"]
+            }
+          }
+        },
+        "TenantSecretReadinessKind": {
+          "oneOf": [
+            {
+              "type": "string",
+              "enum": ["tool", "external_service"]
+            },
+            {
+              "type": "string",
+              "description": "One Secret slot a Marketplace package declares, before the installer\nchooses which of their Tenant Secrets fills it.",
+              "enum": ["slot"]
+            }
+          ],
+          "description": "Where a readiness fact belongs."
+        },
+        "TenantSecretReadinessRepair": {
+          "oneOf": [
+            {
+              "type": "string",
+              "description": "The caller holds `secret.manage` and can fix it in Tenant Secrets.",
+              "enum": ["manage_secret"]
+            },
+            {
+              "type": "string",
+              "description": "The caller cannot manage Secrets; someone who can must fix it.",
+              "enum": ["ask_administrator"]
+            },
+            {
+              "type": "string",
+              "description": "Only an operator of the Deployment can fix it.",
+              "enum": ["operator"]
+            },
+            {
+              "type": "string",
+              "description": "Nothing to repair.",
+              "enum": ["none"]
+            }
+          ],
+          "description": "Who can repair a fact that is not ready."
+        },
+        "TenantSecretReadinessStatus": {
+          "type": "string",
+          "description": "What one bound item needs from the Tenant's Secrets.",
+          "enum": [
+            "ready",
+            "secret_missing",
+            "secret_hosts_mismatch",
+            "secrets_unavailable_on_deployment",
+            "broker_not_configured"
+          ]
+        }
+      }
+    }
+  },
+  {
+    "method": "GET",
+    "path": "/api/registry/{id}/{version}/secret-readiness",
+    "name": "registry-secret-readiness",
+    "source": "server/src/apps/registry/views/management.rs",
+    "json": false,
+    "uuid_parameters": [],
+    "query_parameters": [],
+    "response": {
+      "schema": {
+        "type": "array",
+        "items": {
+          "$ref": "#/components/schemas/TenantSecretReadinessFact"
+        }
+      },
+      "definitions": {
+        "TenantSecretReadinessFact": {
+          "type": "object",
+          "description": "One item readiness fact. `item` names the bound tool or External service,\nor the Marketplace package's Secret slot.",
+          "required": ["item", "kind", "status", "repair"],
+          "properties": {
+            "item": {
+              "type": "string"
+            },
+            "kind": {
+              "$ref": "#/components/schemas/TenantSecretReadinessKind"
+            },
+            "repair": {
+              "$ref": "#/components/schemas/TenantSecretReadinessRepair"
+            },
+            "status": {
+              "$ref": "#/components/schemas/TenantSecretReadinessStatus"
+            },
+            "tenant_secret_name": {
+              "type": ["string", "null"]
+            }
+          }
+        },
+        "TenantSecretReadinessKind": {
+          "oneOf": [
+            {
+              "type": "string",
+              "enum": ["tool", "external_service"]
+            },
+            {
+              "type": "string",
+              "description": "One Secret slot a Marketplace package declares, before the installer\nchooses which of their Tenant Secrets fills it.",
+              "enum": ["slot"]
+            }
+          ],
+          "description": "Where a readiness fact belongs."
+        },
+        "TenantSecretReadinessRepair": {
+          "oneOf": [
+            {
+              "type": "string",
+              "description": "The caller holds `secret.manage` and can fix it in Tenant Secrets.",
+              "enum": ["manage_secret"]
+            },
+            {
+              "type": "string",
+              "description": "The caller cannot manage Secrets; someone who can must fix it.",
+              "enum": ["ask_administrator"]
+            },
+            {
+              "type": "string",
+              "description": "Only an operator of the Deployment can fix it.",
+              "enum": ["operator"]
+            },
+            {
+              "type": "string",
+              "description": "Nothing to repair.",
+              "enum": ["none"]
+            }
+          ],
+          "description": "Who can repair a fact that is not ready."
+        },
+        "TenantSecretReadinessStatus": {
+          "type": "string",
+          "description": "What one bound item needs from the Tenant's Secrets.",
+          "enum": [
+            "ready",
+            "secret_missing",
+            "secret_hosts_mismatch",
+            "secrets_unavailable_on_deployment",
+            "broker_not_configured"
+          ]
+        }
+      }
+    }
   }
 ]

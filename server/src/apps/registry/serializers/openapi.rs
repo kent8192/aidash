@@ -10,6 +10,7 @@ use crate::apps::registry::serializers::knowledge::PersonalAgent;
 use crate::apps::registry::serializers::skill_import::ImportRequest;
 use crate::apps::registry::serializers::skill_import::ImportResult;
 use crate::{Result, config::openapi::Contracts};
+use aidash_application::tenant_secrets::readiness::Fact;
 use reinhardt::rest::openapi::OpenApiSchema;
 
 pub(crate) fn register(contracts: &mut Contracts, document: &mut OpenApiSchema) -> Result<()> {
@@ -40,6 +41,17 @@ pub(crate) fn register(contracts: &mut Contracts, document: &mut OpenApiSchema) 
 	contracts.path(
 		document,
 		views::management::registry_get,
+		&["String", "String"],
+	)?;
+	contracts.response::<_, Vec<Fact>>(
+		document,
+		views::management::secret_readiness,
+		200,
+		"application/json",
+	)?;
+	contracts.path(
+		document,
+		views::management::secret_readiness,
 		&["String", "String"],
 	)?;
 	contracts.response::<_, RegistryContractsEntry>(

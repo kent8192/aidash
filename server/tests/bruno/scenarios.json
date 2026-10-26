@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "endpoint_count": 338,
+  "endpoint_count": 340,
   "requests": [
     {
       "name": "Health reports the configured node",
@@ -14700,6 +14700,116 @@
       "file": "contracts/1338-approval-observation-report.bru",
       "endpoint": "GET /api/tenants/{tenant}/approval-observations/report",
       "scenario": "Subject Credential bearer cannot administer the observer",
+      "status": 403,
+      "required_checks": [
+        "Exact HTTP 403",
+        "Stable authorization error envelope"
+      ]
+    },
+    {
+      "name": "1339 marketplace-secret-readiness - Anonymous request is rejected",
+      "file": "contracts/1339-marketplace-secret-readiness.bru",
+      "endpoint": "GET /api/marketplace/packages/{key}/secret-readiness",
+      "scenario": "Anonymous request is rejected",
+      "status": 401,
+      "required_checks": [
+        "Exact HTTP 401",
+        "Stable authorization error envelope"
+      ]
+    },
+    {
+      "name": "1340 marketplace-secret-readiness - Malformed bearer syntax is rejected",
+      "file": "contracts/1340-marketplace-secret-readiness.bru",
+      "endpoint": "GET /api/marketplace/packages/{key}/secret-readiness",
+      "scenario": "Malformed bearer syntax is rejected",
+      "status": 401,
+      "required_checks": [
+        "Exact HTTP 401",
+        "Stable authorization error envelope"
+      ]
+    },
+    {
+      "name": "1341 marketplace-secret-readiness - Deployment Administrator bearer has no Tenant authority",
+      "file": "contracts/1341-marketplace-secret-readiness.bru",
+      "endpoint": "GET /api/marketplace/packages/{key}/secret-readiness",
+      "scenario": "Deployment Administrator bearer has no Tenant authority",
+      "status": 403,
+      "required_checks": [
+        "Exact HTTP 403",
+        "Stable authorization error envelope"
+      ]
+    },
+    {
+      "name": "1342 marketplace-secret-readiness - Forged bearer cannot read Tenant Secret readiness",
+      "file": "contracts/1342-marketplace-secret-readiness.bru",
+      "endpoint": "GET /api/marketplace/packages/{key}/secret-readiness",
+      "scenario": "Forged bearer cannot read Tenant Secret readiness",
+      "status": 401,
+      "required_checks": [
+        "Exact HTTP 401",
+        "Stable authorization error envelope"
+      ]
+    },
+    {
+      "name": "1343 marketplace-secret-readiness - Subject without registry.read cannot read Tenant Secret readiness",
+      "file": "contracts/1343-marketplace-secret-readiness.bru",
+      "endpoint": "GET /api/marketplace/packages/{key}/secret-readiness",
+      "scenario": "Subject without registry.read cannot read Tenant Secret readiness",
+      "status": 403,
+      "required_checks": [
+        "Exact HTTP 403",
+        "Stable authorization error envelope"
+      ]
+    },
+    {
+      "name": "1344 registry-secret-readiness - Anonymous request is rejected",
+      "file": "contracts/1344-registry-secret-readiness.bru",
+      "endpoint": "GET /api/registry/{id}/{version}/secret-readiness",
+      "scenario": "Anonymous request is rejected",
+      "status": 401,
+      "required_checks": [
+        "Exact HTTP 401",
+        "Stable authorization error envelope"
+      ]
+    },
+    {
+      "name": "1345 registry-secret-readiness - Malformed bearer syntax is rejected",
+      "file": "contracts/1345-registry-secret-readiness.bru",
+      "endpoint": "GET /api/registry/{id}/{version}/secret-readiness",
+      "scenario": "Malformed bearer syntax is rejected",
+      "status": 401,
+      "required_checks": [
+        "Exact HTTP 401",
+        "Stable authorization error envelope"
+      ]
+    },
+    {
+      "name": "1346 registry-secret-readiness - Deployment Administrator bearer has no Tenant authority",
+      "file": "contracts/1346-registry-secret-readiness.bru",
+      "endpoint": "GET /api/registry/{id}/{version}/secret-readiness",
+      "scenario": "Deployment Administrator bearer has no Tenant authority",
+      "status": 403,
+      "required_checks": [
+        "Exact HTTP 403",
+        "Stable authorization error envelope"
+      ]
+    },
+    {
+      "name": "1347 registry-secret-readiness - Forged bearer cannot read Tenant Secret readiness",
+      "file": "contracts/1347-registry-secret-readiness.bru",
+      "endpoint": "GET /api/registry/{id}/{version}/secret-readiness",
+      "scenario": "Forged bearer cannot read Tenant Secret readiness",
+      "status": 401,
+      "required_checks": [
+        "Exact HTTP 401",
+        "Stable authorization error envelope"
+      ]
+    },
+    {
+      "name": "1348 registry-secret-readiness - Subject without registry.read cannot read Tenant Secret readiness",
+      "file": "contracts/1348-registry-secret-readiness.bru",
+      "endpoint": "GET /api/registry/{id}/{version}/secret-readiness",
+      "scenario": "Subject without registry.read cannot read Tenant Secret readiness",
       "status": 403,
       "required_checks": [
         "Exact HTTP 403",

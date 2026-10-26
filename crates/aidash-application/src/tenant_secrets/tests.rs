@@ -812,3 +812,35 @@ async fn brokered_resolution_returns_a_route_and_never_reads_the_value() {
 	foreign.destination.origin = "https://api.example.com".into();
 	assert_eq!(grants.0.lock().await.len(), 1, "no second token was minted");
 }
+
+#[tokio::test]
+async fn active_secrets_exclude_pending_and_deleted_names() {
+	let (s, _, _) = service_with(FakeStore::default());
+	let kept = s
+		.put(
+			"alpha",
+			"kept",
+			put(Some("canary-kept-value"), Some(&["api.example.com"]), 0),
+			"actor",
+		)
+		.await
+		.unwrap();
+	let removed = s
+		.put(
+			"alpha",
+			"removed",
+			put(Some("canary-removed-value"), Some(&["api.example.com"]), 0),
+			"actor",
+		)
+		.await
+		.unwrap();
+	s.delete("alpha", "removed", removed.revision, "actor")
+		.await
+		.unwrap();
+	let active = s.active("alpha").await.unwrap();
+	assert_eq!(active.len(), 1);
+	assert_eq!(active[0].id, kept.id);
+	assert_eq!(active[0].name, "kept");
+	assert_eq!(active[0].hosts, ["api.example.com"]);
+	assert!(s.active("beta").await.unwrap().is_empty());
+}
