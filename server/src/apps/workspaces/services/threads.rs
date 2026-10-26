@@ -30,6 +30,7 @@ pub(crate) async fn post(
 			thread_id: input.thread_id,
 			idempotency_key: input.idempotency_key,
 			attachment_ids: &input.attachment_ids,
+			citations: &input.file_versions,
 		},
 	)
 	.await

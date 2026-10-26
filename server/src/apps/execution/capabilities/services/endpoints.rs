@@ -1264,6 +1264,7 @@ pub(crate) async fn restore_new_thread(
 				thread_id: None,
 				idempotency_key: input.idempotency_key,
 				attachment_ids: vec![],
+				file_versions: vec![],
 			},
 		)
 		.await?;

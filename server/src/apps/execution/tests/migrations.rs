@@ -111,7 +111,7 @@ async fn native_history_uses_typed_schema_operations_and_lf_sql_assets() {
 			.iter()
 			.filter(|migration| migration.state_only)
 			.count(),
-		59
+		60
 	);
 	let tables = migrations
 		.iter()
@@ -349,15 +349,12 @@ async fn generation_with_existing_sql_assets_preserves_history_and_dependency(
 	);
 	assert_eq!(std::fs::read(history).unwrap(), original);
 	let generated = FilesystemSource::new(fixture.directory.path().join("migrations"))
-		.get_migration("execution", "0065_policy_probe")
+		.get_migration("execution", "0066_policy_probe")
 		.await
 		.unwrap();
 	assert_eq!(
 		generated.dependencies,
-		vec![(
-			"execution".to_owned(),
-			"0064_previews_row_level_security".to_owned()
-		)]
+		vec![("execution".to_owned(), "0065_previews_state".to_owned())]
 	);
 	assert!(generated.operations.is_empty());
 }
@@ -451,14 +448,14 @@ async fn nonempty_generation_reads_sql_assets_and_replays_only_logical_state(
 	let generated = after
 		.iter()
 		.find(|migration| {
-			migration.app_label == "workspaces" && migration.name == "0011_content_probe"
+			migration.app_label == "workspaces" && migration.name == "0014_content_probe"
 		})
 		.unwrap();
 	assert_eq!(
 		generated.dependencies,
 		vec![(
 			"workspaces".to_owned(),
-			"0010_foreign_key_relations_state".to_owned()
+			"0013_message_file_versions_state".to_owned()
 		)]
 	);
 	assert_eq!(generated.operations.len(), 1);
@@ -704,7 +701,7 @@ async fn preserved_baseline_does_not_generate_table_recreation(
 			.iter()
 			.filter(|migration| migration.state_only)
 			.count(),
-		59
+		60
 	);
 }
 

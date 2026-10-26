@@ -391,6 +391,7 @@ pub const TABLES: &[Table] = &[
 	table("workspaces", "channel_threads", TenantOwned),
 	table("workspaces", "conversations", TenantOwned),
 	table("workspaces", "messages", TenantOwned),
+	table("workspaces", "message_file_versions", TenantOwned),
 	table("workspaces", "task_dependencies", TenantOwned),
 	table("workspaces", "tasks", TenantOwned),
 	table("workspaces", "workspaces", TenantOwned),

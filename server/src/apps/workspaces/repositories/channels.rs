@@ -743,4 +743,24 @@ impl ChannelScope for NativeChannels<'_> {
 		}
 		Ok(grouped)
 	}
+	async fn record_citations(
+		&mut self,
+		_: Uuid,
+		message: Uuid,
+		citations: &[aidash_domain::workspaces::channels::CitedFileVersion],
+	) -> Result<Vec<aidash_domain::workspaces::channels::ChannelCitation>> {
+		super::citations::record(self.store, &mut *self.lease, message, citations).await?;
+		let mut stored =
+			super::citations::for_messages(self.store, &mut *self.lease, &[message]).await?;
+		Ok(stored.remove(&message).unwrap_or_default())
+	}
+	async fn message_citations(
+		&mut self,
+		_: Uuid,
+		ids: &[Uuid],
+	) -> Result<HashMap<Uuid, Vec<aidash_domain::workspaces::channels::ChannelCitation>>> {
+		super::citations::for_messages(self.store, &mut *self.lease, ids)
+			.await
+			.map_err(Into::into)
+	}
 }
