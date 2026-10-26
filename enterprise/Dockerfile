@@ -33,6 +33,7 @@ WORKDIR /build/enterprise/web
 RUN npm run build
 
 FROM debian:bookworm-slim AS runtime
+LABEL org.opencontainers.image.licenses="BUSL-1.1"
 RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates && \
     rm -rf /var/lib/apt/lists/*
 COPY --from=rust /out/aidash /usr/local/bin/aidash
@@ -47,6 +48,13 @@ RUN sed -i '/^\[core\]$/a base_dir = "/app/server"' /app/server/settings/base.to
     sed -i 's/^offering = "self-hosted"$/offering = "cloud"/' /app/server/settings/base.toml && \
     grep -qx 'offering = "cloud"' /app/server/settings/base.toml
 COPY --from=web /build/enterprise/web/dist /app/web
+# The Enterprise image is never published, but it carries the same notices as
+# the Community image plus the parameterised BUSL text for the Licensed Work.
+COPY enterprise/LICENSE /usr/share/doc/aidash/enterprise/LICENSE
+COPY LICENSE /usr/share/doc/aidash/LICENSE
+COPY LICENSES /usr/share/doc/aidash/LICENSES
+COPY THIRD_PARTY_NOTICES.md /usr/share/doc/aidash/THIRD_PARTY_NOTICES.md
+COPY third_party /usr/share/doc/aidash/third_party
 RUN mkdir -p /var/lib/aidash/memory-recovery && chown -R 10001:10001 /var/lib/aidash
 WORKDIR /app/server
 USER 10001:10001

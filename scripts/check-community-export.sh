@@ -50,6 +50,10 @@ cd "$stage"
 
 cargo metadata --locked --format-version 1 | python3 scripts/check-workspace-boundaries.py
 docker build --target runtime --build-arg CARGO_PROFILE=dev --tag "$image" .
+# The published Community image must carry no Enterprise path and must ship
+# its component notice, the license texts of its third-party material and the
+# attribution notices under /usr/share/doc/aidash.
+python3 "$root/scripts/check-licensing.py" artifact --image "$image"
 
 chmod 755 "$settings"
 printf '[deployment]\noffering = "cloud"\n' >"$settings/base.toml"
