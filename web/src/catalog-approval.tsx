@@ -31,10 +31,12 @@ import {
   defaultAgentGroups,
   earlierAgentGroups,
   requestedGroups,
+  restrictionLabel,
   unapprovedClosure,
   unapprovedDependency,
   type ApprovalState,
   type Closure,
+  type Restriction,
 } from "./catalog-approval-model";
 import { useNodes } from "./nodes";
 import { useTenantActions } from "./tenant-administration";
@@ -172,6 +174,9 @@ export function CatalogApprovalSection({
   // Node a decision here applies to.
   const { selected } = useNodes();
   const [chosen, setChosen] = useState<string[]>();
+  const [restricting, setRestricting] = useState<boolean>();
+  const [subjectNames, setSubjectNames] = useState<string>();
+  const [restrictedGroups, setRestrictedGroups] = useState<string[]>();
   const [closure, setClosure] = useState<Closure>();
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
@@ -199,6 +204,25 @@ export function CatalogApprovalSection({
   const sentGroups = choosesGroups
     ? requestedGroups(groups, assignable)
     : undefined;
+  const currentRestriction = version.approval?.restriction;
+  const restricts = restricting ?? currentRestriction != null;
+  const restrictionText =
+    subjectNames ?? currentRestriction?.subjects.join(", ") ?? "";
+  const restrictionSubjects = restrictionText
+    .split(",")
+    .map((name) => name.trim())
+    .filter((name) => name.length > 0);
+  const restrictionGroups =
+    restrictedGroups ??
+    currentRestriction?.groups.filter((group) => assignable.includes(group)) ??
+    [];
+  const requestedRestriction = (): Restriction | null | undefined => {
+    if (!restricts) return currentRestriction != null ? null : undefined;
+    if (restrictionSubjects.length === 0 && restrictionGroups.length === 0) {
+      return currentRestriction != null ? null : undefined;
+    }
+    return { subjects: restrictionSubjects, groups: restrictionGroups };
+  };
   const path = encodeURIComponent(tenant ?? "");
   const decide = async (action: () => Promise<unknown>) => {
     if (busy) return;
@@ -226,7 +250,7 @@ export function CatalogApprovalSection({
   const approve = () =>
     decide(() =>
       authorizationSetCatalog(path, {
-        ...approvalRequest(version, true, sentGroups),
+        ...approvalRequest(version, true, sentGroups, requestedRestriction()),
         node: selected!.name,
       }),
     );
@@ -242,7 +266,7 @@ export function CatalogApprovalSection({
       authorizationApproveCatalog(path, {
         approvals: [
           ...needed.dependencies.map((item) => approvalRequest(item, true)),
-          approvalRequest(version, true, sentGroups),
+          approvalRequest(version, true, sentGroups, requestedRestriction()),
         ],
         node: selected!.name,
       }),
@@ -258,6 +282,11 @@ export function CatalogApprovalSection({
           {t("catalogApproval")}
         </h4>
         <ApprovalBadge version={version} />
+        {currentRestriction != null && (
+          <span className="min-w-0 text-xs text-muted-foreground [overflow-wrap:anywhere]">
+            {t("catalogRestrictedTo")}: {restrictionLabel(currentRestriction)}
+          </span>
+        )}
       </div>
       <Hint>
         {t(
@@ -310,6 +339,62 @@ export function CatalogApprovalSection({
             ],
           ]}
         />
+      )}
+      {decides && state !== "approved" && (
+        <div
+          className="grid gap-1.5"
+          role="group"
+          aria-label={t("catalogRestriction")}
+        >
+          <label className="flex items-center gap-2 text-xs font-semibold text-foreground">
+            <input
+              type="checkbox"
+              className="size-3.5 shrink-0 accent-primary"
+              disabled={busy}
+              checked={restricts}
+              onChange={(event) => {
+                setRestricting(event.target.checked);
+                if (!event.target.checked) {
+                  setSubjectNames("");
+                  setRestrictedGroups([]);
+                }
+              }}
+            />
+            {t("catalogRestriction")}
+          </label>
+          {restricts && (
+            <>
+              <label className="grid gap-1 text-xs">
+                <span>{t("catalogRestrictionSubjects")}</span>
+                <input
+                  className="min-w-0 rounded-md border border-border bg-surface px-2 py-1 font-mono text-xs text-foreground"
+                  disabled={busy}
+                  value={restrictionText}
+                  placeholder="alice, acme/agents/writer@1.0.0"
+                  onChange={(event) => setSubjectNames(event.target.value)}
+                />
+              </label>
+              {assignable.length > 0 && (
+                <div
+                  className="grid gap-1"
+                  role="group"
+                  aria-label={t("catalogRestrictionGroups")}
+                >
+                  <span className={subheading}>
+                    {t("catalogRestrictionGroups")}
+                  </span>
+                  <GroupChoice
+                    groups={assignable}
+                    selected={restrictionGroups}
+                    disabled={busy}
+                    change={setRestrictedGroups}
+                  />
+                </div>
+              )}
+              <Hint>{t("catalogRestrictionHelp")}</Hint>
+            </>
+          )}
+        </div>
       )}
       {decides && state !== "approved" && entry.kind === "agent" && (
         <>
@@ -455,6 +540,12 @@ export function CatalogApprovalSection({
                       {record.actor}
                     </span>
                   </span>
+                  {record.restriction != null && (
+                    <span className="col-span-2 min-w-0 text-[11px] text-muted-foreground [overflow-wrap:anywhere] sm:col-span-1">
+                      {t("catalogRestrictedTo")}:{" "}
+                      {restrictionLabel(record.restriction)}
+                    </span>
+                  )}
                   <time className="col-start-2 font-mono text-[11px] text-faint sm:col-start-auto">
                     {new Date(record.created_at).toLocaleString(locale)}
                   </time>

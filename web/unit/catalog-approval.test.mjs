@@ -6,6 +6,8 @@ import {
   dependencies,
   earlierAgentGroups,
   requestedGroups,
+  restrictionLabel,
+  restrictionRequest,
   unapprovedClosure,
   unapprovedDependency,
 } from "../src/catalog-approval-model.ts";
@@ -214,4 +216,50 @@ test("an approval fences on the version's current approval revision", () => {
       groups: ["members"],
     },
   );
+});
+
+test("a restriction names subjects and groups, or clears them", () => {
+  assert.equal(restrictionRequest(undefined), undefined);
+  assert.deepEqual(restrictionRequest(null), { subjects: [], groups: [] });
+  assert.deepEqual(
+    restrictionRequest({
+      subjects: ["writer@1", "alice"],
+      groups: ["members"],
+    }),
+    { subjects: ["alice", "writer@1"], groups: ["members"] },
+  );
+  assert.equal(restrictionLabel(null), "");
+  assert.equal(
+    restrictionLabel({ subjects: ["alice"], groups: ["members"] }),
+    "alice, members",
+  );
+});
+
+test("an approval carries a named restriction and omits an absent one", () => {
+  const target = version(
+    "tool",
+    "tool",
+    {},
+    { approval: { enabled: true, revision: 2 } },
+  );
+  assert.deepEqual(
+    approvalRequest(target, true, undefined, {
+      subjects: ["alice"],
+      groups: [],
+    }),
+    {
+      entry: ref("tool"),
+      enabled: true,
+      expected_revision: 2,
+      restriction: { subjects: ["alice"], groups: [] },
+    },
+  );
+  assert.equal(
+    approvalRequest(target, true, undefined, undefined).restriction,
+    undefined,
+  );
+  assert.deepEqual(approvalRequest(target, true, undefined, null).restriction, {
+    subjects: [],
+    groups: [],
+  });
 });

@@ -4,6 +4,37 @@ import type { EntityRef } from "./types";
 /** Where one version of the Tenant's Registry stands for Catalog Approval. */
 export type ApprovalState = "builtin" | "approved" | "withdrawn" | "unapproved";
 
+/** Who may use an approved version on its Node (ADR 0029, ADR 0095). */
+export type Restriction = { subjects: string[]; groups: string[] };
+
+const names = (values: readonly string[]) => [...values].sort();
+
+/** A new restriction, or clearing one, is a visible new approval revision. */
+export function restrictionRequest(
+  restriction: Restriction | null | undefined,
+): Restriction | undefined {
+  if (restriction === undefined) return undefined;
+  if (restriction === null) return { subjects: [], groups: [] };
+  return {
+    subjects: names(restriction.subjects),
+    groups: names(restriction.groups),
+  };
+}
+
+export function restrictionLabel(
+  restriction: Restriction | null | undefined,
+): string {
+  if (
+    !restriction ||
+    (restriction.subjects.length === 0 && restriction.groups.length === 0)
+  ) {
+    return "";
+  }
+  return [...names(restriction.subjects), ...names(restriction.groups)].join(
+    ", ",
+  );
+}
+
 export function approvalState(version: RegistryVersion): ApprovalState {
   if (!version.needs_approval) return "builtin";
   if (!version.approval) return "unapproved";
@@ -153,11 +184,14 @@ export function approvalRequest(
   version: RegistryVersion,
   enabled: boolean,
   groups?: string[],
+  restriction?: Restriction | null,
 ): RequestApproval {
+  const named = restrictionRequest(restriction);
   return {
     entry: { id: version.entry.id, version: version.entry.version },
     enabled,
     expected_revision: version.approval?.revision ?? 0,
     ...(groups ? { groups } : {}),
+    ...(named ? { restriction: named } : {}),
   };
 }
