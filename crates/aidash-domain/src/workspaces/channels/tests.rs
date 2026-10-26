@@ -59,3 +59,25 @@ fn only_legacy_unordered_records_can_use_sorted_replay_identity() {
 		Ok(false)
 	);
 }
+
+#[rstest]
+fn citations_are_bounded_unique_and_ordered() {
+	let citation = |area: u128, file: u128| CitedFileVersion {
+		area_id: Uuid::from_u128(area),
+		file_id: Uuid::from_u128(file),
+	};
+	let accepted: Vec<_> = (1..=MAX_CITED_VERSIONS)
+		.map(|file| citation(1, file as u128))
+		.collect();
+	assert_eq!(validate_citations(&accepted), Ok(()));
+	let mut too_many = accepted.clone();
+	too_many.push(citation(1, 99));
+	assert!(matches!(
+		validate_citations(&too_many),
+		Err(Error::Invalid(ref value)) if value.starts_with("CITATION_LIMIT")
+	));
+	assert!(matches!(
+		validate_citations(&[citation(1, 2), citation(1, 2)]),
+		Err(Error::Invalid(ref value)) if value.starts_with("CITATION_DUPLICATE")
+	));
+}

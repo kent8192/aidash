@@ -23,6 +23,62 @@ pub struct ChannelMessage {
 	pub thread_id: Option<Uuid>,
 	pub is_thread_root: bool,
 	pub attachments: Vec<ChannelAttachment>,
+	#[serde(default)]
+	pub citations: Vec<ChannelCitation>,
+}
+
+/// One exact File version a message cites. The ids are what the composer sends;
+/// the Working Area revision and the version metadata are recorded at cite time.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct CitedFileVersion {
+	pub area_id: Uuid,
+	pub file_id: Uuid,
+}
+
+/// A citation as one viewer may see it.
+///
+/// `available` is false when the hold that kept the version is gone; the version
+/// is never substituted. A viewer who may not download the Working Area sees the
+/// path and ids only, with `reason = "forbidden"` and no digest, size, media type
+/// or revision.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct ChannelCitation {
+	pub area_id: Uuid,
+	pub file_id: Uuid,
+	pub path: String,
+	#[serde(skip_serializing_if = "Option::is_none")]
+	pub digest: Option<String>,
+	#[serde(skip_serializing_if = "Option::is_none")]
+	pub size: Option<u64>,
+	#[serde(skip_serializing_if = "Option::is_none")]
+	pub media_type: Option<String>,
+	#[serde(skip_serializing_if = "Option::is_none")]
+	pub revision: Option<i64>,
+	pub available: bool,
+	#[serde(skip_serializing_if = "Option::is_none")]
+	pub reason: Option<String>,
+}
+
+/// One message cites at most this many File versions.
+pub const MAX_CITED_VERSIONS: usize = 8;
+
+/// Reject an oversized or duplicated citation list before any write.
+pub fn validate_citations(citations: &[CitedFileVersion]) -> Result<()> {
+	if citations.len() > MAX_CITED_VERSIONS {
+		return Err(Error::Invalid(
+			"CITATION_LIMIT: at most 8 File versions".into(),
+		));
+	}
+	let mut seen = HashSet::new();
+	for citation in citations {
+		if !seen.insert((citation.area_id, citation.file_id)) {
+			return Err(Error::Invalid(
+				"CITATION_DUPLICATE: the same File version is cited twice".into(),
+			));
+		}
+	}
+	Ok(())
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
