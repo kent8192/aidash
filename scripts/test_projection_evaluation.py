@@ -31,7 +31,8 @@ def example():
             identifier = f"attempt-{index}-{ordinal}"
             identifiers.append(identifier)
             rows.append({"attempt_id": identifier, "run_id": run["run_id"], "purpose": "main",
-                         "projection_version": version, "created_at": f"2026-10-23T00:00:0{ordinal}Z",
+                         "projection_version": version, "harness_contract": 1,
+                         "created_at": f"2026-10-23T00:00:0{ordinal}Z",
                          "input_tokens": 100, "output_tokens": 5, "cache_read_tokens": 10 + ordinal * 10,
                          "cache_write_tokens": 0, "reasoning_tokens": None,
                          "cost_nanocredits": cost, "upstream_cost_nanocredits": 90,
@@ -134,6 +135,8 @@ class EvidenceImportTest(unittest.TestCase):
             "boolean money": lambda e: e["inference_usage"][0].__setitem__("cost_nanocredits", True),
             "wrong pinned projection": lambda e: e["inference_usage"][0].__setitem__("projection_version", 99),
             "boolean projection": lambda e: e["inference_usage"][0].__setitem__("projection_version", True),
+            "wrong pinned harness contract": lambda e: e["inference_usage"][0].__setitem__("harness_contract", 2),
+            "boolean harness contract": lambda e: e["inference_usage"][0].__setitem__("harness_contract", True),
             "private shadow": lambda e: e["inference_usage"][0]["shadow_estimates"][0]["estimate"].__setitem__("prompt", "private"),
             "missing recovery": lambda e: e["run_recovery"].pop(),
             "unknown purpose": lambda e: e["inference_usage"][0].__setitem__("purpose", "free-work"),
@@ -145,6 +148,14 @@ class EvidenceImportTest(unittest.TestCase):
                 corrupt(export)
                 with self.assertRaises(projection.EvidenceError):
                     projection.load_evidence(self.manifest, export)
+
+    def test_harness_contract_arm_field_is_numeric_with_a_legacy_default(self):
+        for value, expected in ((None, 1), ("legacy@1", 1), ("structured@1", 2), ("structured@2", 3),
+                                (1, 1), (2, 2), (3, 3), ("2", 2)):
+            variant = {"agent_fields": {} if value is None else {"harness_contract": value}}
+            self.assertEqual(projection._variant_harness_contract(variant), expected)
+        with self.assertRaises(projection.EvidenceError):
+            projection._variant_harness_contract({"agent_fields": {"harness_contract": True}})
 
     def test_raw_json_duplicate_keys_and_nonfinite_manifest_are_rejected(self):
         with tempfile.TemporaryDirectory() as directory:
