@@ -169,8 +169,8 @@ Build from the repository root:
 docker build -f enterprise/crates/aidash-broker/Dockerfile -t aidash-broker .
 cargo test --locked -p aidash-capability
 cargo test --locked --manifest-path enterprise/Cargo.toml -p aidash-broker -p aidash-gcp
-python3 -m unittest discover -s infra/gcp/tests -p test_broker_terraform.py -v
-bash infra/gcp/check.sh
+python3 -m unittest discover -s enterprise/infra/gcp/tests -p test_broker_terraform.py -v
+bash enterprise/infra/gcp/check.sh
 ```
 
 Human-run bootstrap receives `byok_broker_environments`, a set of retained
@@ -191,7 +191,7 @@ cannot grant BYOK read access. Secret Manager IAM Conditions use project
 numbers, as specified by the
 [official resource-name reference](https://cloud.google.com/iam/docs/conditions-resource-attributes).
 
-`infra/gcp/modules/credential-broker` consumes #136's `byok_project_id`,
+`enterprise/infra/gcp/modules/credential-broker` consumes #136's `byok_project_id`,
 `secret_prefix`, bootstrap-created `broker_service_account_email` and stable
 `signing_key_id`. It creates no service account, signing key or BYOK-project IAM.
 In the environment
@@ -199,7 +199,7 @@ controller's `credential_brokers[environment_id]` configuration, set
 `broker_service_account_email` and `signing_key_id` to the corresponding
 bootstrap map entries before
 enabling the broker, and leave `image` out: the digest comes from the reviewed
-`infra/gcp/environments/broker-image.json`. Cloud Run uses that account; human-run
+`enterprise/infra/gcp/environments/broker-image.json`. Cloud Run uses that account; human-run
 bootstrap grants deploy automation `roles/iam.serviceAccountUser` on it in the
 application project, because an IAM deny policy stops deploy changing its policy. The VM runtime
 holds only `roles/cloudkms.signer` on the signing key and no broker role. Public
@@ -246,10 +246,10 @@ For each existing environment (shown as `test`), import the existing resources
 into the initialized bootstrap state, then remove only their old state addresses:
 
 ```sh
-terraform -chdir=infra/gcp/bootstrap import 'google_kms_key_ring.capability["test"]' 'projects/PROJECT/locations/us-central1/keyRings/aidash-test-capability'
-terraform -chdir=infra/gcp/bootstrap import 'google_kms_crypto_key.capability["test"]' 'projects/PROJECT/locations/us-central1/keyRings/aidash-test-capability/cryptoKeys/capability'
-terraform -chdir=infra/gcp/environments state rm 'module.credential_broker["test"].google_kms_crypto_key.capability[0]'
-terraform -chdir=infra/gcp/environments state rm 'module.credential_broker["test"].google_kms_key_ring.capability[0]'
+terraform -chdir=enterprise/infra/gcp/bootstrap import 'google_kms_key_ring.capability["test"]' 'projects/PROJECT/locations/us-central1/keyRings/aidash-test-capability'
+terraform -chdir=enterprise/infra/gcp/bootstrap import 'google_kms_crypto_key.capability["test"]' 'projects/PROJECT/locations/us-central1/keyRings/aidash-test-capability/cryptoKeys/capability'
+terraform -chdir=enterprise/infra/gcp/environments state rm 'module.credential_broker["test"].google_kms_crypto_key.capability[0]'
+terraform -chdir=enterprise/infra/gcp/environments state rm 'module.credential_broker["test"].google_kms_key_ring.capability[0]'
 ```
 
 Use the imported `broker_signing_keys` output in `credential_brokers`. Review both
@@ -265,7 +265,7 @@ bootstrap split alone cannot protect Key Material from a compromised pipeline.
 Issue [#151](https://github.com/kent8192/aidash/issues/151) adds an IAM deny
 policy for the impersonation path, a digest-pinned broker image, a protected
 deploy Environment and alerts; see "Deploy pipeline boundary" in
-[`infra/gcp/README.md`](../../infra/gcp/README.md). Broker redeploy stays an
+[`enterprise/infra/gcp/README.md`](../../infra/gcp/README.md). Broker redeploy stays an
 accepted residual risk. Sandbox verification is
 [#152](https://github.com/kent8192/aidash/issues/152). No Cloud infrastructure has been applied.
 

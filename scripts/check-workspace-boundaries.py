@@ -32,6 +32,13 @@ def enterprise_references(root):
     ]
 
 
+def layout_violations(root):
+    """Cloud infrastructure must stay inside enterprise/ (#254)."""
+    if (root / "infra").exists():
+        return ["Cloud infrastructure must live under enterprise/: infra/"]
+    return []
+
+
 def violations(metadata, root):
     packages = {package["id"]: package for package in metadata["packages"]}
     members = {packages[member]["name"]: member for member in metadata["workspace_members"]}
@@ -113,6 +120,7 @@ def violations(metadata, root):
         if package["source"] is not None and GOOGLE_CLOUD.match(package["name"]):
             errors.append(f"Community resolves a Google Cloud client: {package['name']}")
     errors.extend(enterprise_references(root))
+    errors.extend(layout_violations(root))
     errors.extend(module_violations(root, (root / "crates", root / "server")))
     return errors
 

@@ -1,0 +1,1646 @@
+#!/usr/bin/env python3
+"""GitHub-authorized, tier-isolated deployment lifecycle. Infrastructure only."""
+
+import argparse
+from copy import deepcopy
+from datetime import datetime
+import hashlib
+import json
+import os
+from pathlib import Path
+import secrets
+import shutil
+import tempfile
+import time
+import urllib.parse
+import urllib.request
+
+from gcip import reconcile_environment, reconcile_mfa, ensure_authorized_domain
+import backup
+import kube
+import delivery
+
+from cloud import (
+    Store,
+    Terraform,
+    github,
+    private_json,
+    run,
+    OperationDeadline,
+    operation_budget,
+    bounded_timeout,
+    retire_provider_credentials,
+    trusted_revision,
+)
+from policy import (
+    Refused,
+    attach_release,
+    build_needed,
+    current_release,
+    eligible_base,
+    idle_due,
+    preview_command,
+    transition,
+)
+
+ROOT = Path(__file__).resolve().parents[4]
+CONFIG = ROOT / "enterprise/infra/gcp/config.json"
+
+
+def load_config():
+    value = (
+        json.loads(CONFIG.read_text())
+        if CONFIG.exists()
+        else json.loads(os.environ["AIDASH_GCP_CONFIG"])
+    )
+    required = {
+        "project_id",
+        "state_bucket",
+        "release_bucket",
+        "cloudflare_zone_id",
+        "deploy_service_account",
+        "domain",
+        "repository",
+        "develop_branch",
+    }
+    if not required <= value.keys() or value["domain"] != "aidash.run":
+        raise Refused(
+            "Configure the explicit GCP project, buckets, repository, development branch, and aidash.run zone"
+        )
+    delivery.validate_config(value)
+    if delivery.production(value) and (os.environ.get("GITHUB_REF") != "refs/heads/main" or os.environ.get("GITHUB_EVENT_NAME") != "workflow_dispatch"):
+        raise Refused("Production cloud operations run only from the main dispatch workflow")
+    return value
+
+
+def permission(config, actor):
+    value = github(
+        f"repos/{config['repository']}/collaborators/{urllib.parse.quote(actor, safe='')}/permission"
+    )
+    if value["permission"] not in {"admin", "maintain", "write"}:
+        raise Refused("Lifecycle operations require repository write permission")
+
+
+def ci_success(config, sha):
+    query = urllib.parse.urlencode(
+        {"head_sha": sha, "status": "success", "per_page": 100}
+    )
+    branch = config.get("required_ci_branch")
+    workflows = ("ci.yml", "release-ci.yml")
+    if branch:
+        workflows = ("release-ci.yml",) if branch.startswith("develop/") else ("ci.yml",)
+    for filename in workflows:
+        value = github(
+            f"repos/{config['repository']}/actions/workflows/{filename}/runs?{query}"
+        )
+        if any(
+            item["head_sha"] == sha
+            and item["conclusion"] == "success"
+            and item["status"] == "completed"
+            and (not branch or item.get("event") == "push" and item.get("head_branch") == branch)
+            for item in value["workflow_runs"]
+        ):
+            return
+    raise Refused("Required CI has not succeeded for the exact source SHA")
+
+
+def pull(config, number):
+    value = github(f"repos/{config['repository']}/pulls/{int(number)}")
+    if value["state"] != "open" or not eligible_base(value["base"]["ref"]):
+        raise Refused("PR must be open and target main or develop/x.y.z")
+    return value
+
+
+def source(config, identity, ref, approved_sha="", *, expected_sha=""):
+    if identity == "production":
+        if ref != "main":
+            raise Refused("Production source is always main")
+        main_sha = github(f"repos/{config['repository']}/branches/main")["commit"]["sha"]
+        return delivery.authorize_production(config, main_sha, ci_success)
+    if identity.startswith("pr-"):
+        pr = pull(config, identity[3:])
+        sha = pr["head"]["sha"]
+        repository = pr["head"]["repo"]["full_name"]
+        fork = repository != config["repository"]
+        if fork and approved_sha != sha:
+            raise Refused(
+                "Forks require an explicit approved_sha equal to the current PR head"
+            )
+        ref = "pr/" + identity[3:]
+    else:
+        if identity == "develop":
+            ref = ref or config["develop_branch"]
+            if ref != config["develop_branch"]:
+                raise Refused("Shared develop follows the configured develop_branch")
+        if not ref:
+            raise Refused("Choose a source ref for this test environment")
+        repository, fork = config["repository"], False
+        sha = github(f"repos/{repository}/commits/{urllib.parse.quote(ref, safe='')}")[
+            "sha"
+        ]
+    # Delayed CI completions must not validate a newer branch head's pending
+    # CI before discovering that the triggering source has been superseded.
+    if expected_sha and sha != expected_sha:
+        return None
+    ci_success(dict(config, required_ci_branch=config["develop_branch"]) if identity == "develop" else config, sha)
+    return dict(
+        sha=sha,
+        source_ref=ref,
+        source_repo=repository,
+        fork=fork,
+        approved_sha=approved_sha,
+    )
+
+
+def requests(config, event, name, state):
+    sequence = int(os.environ["GITHUB_RUN_ID"])
+    common = {"sequence": sequence}
+    if delivery.production(config):
+        if name != "workflow_dispatch" or os.environ.get("GITHUB_REF") != "refs/heads/main":
+            raise Refused("Production requires a main workflow dispatch")
+        previous = state.get("environments", {}).get("production", {})
+        expected = event.get("inputs", {}).get("main_sha")
+        retained = previous.get("main_sha") == expected and previous.get("desired") == "running"
+        retry = str(event.get("inputs", {}).get("retry_failed", "false")).lower() == "true"
+        if retained and not retry and (previous.get("status") == "failed" or previous.get("failed_deployment_generation") is not None and previous.get("failed_deployment_generation") == previous.get("generation")):
+            raise Refused("A failed production deployment requires explicit retry_failed authorization")
+        candidate = delivery.authorize_production(config, expected or "", ci_success, accepted=previous.get("release") if retained and not retry else None)
+        if event.get("inputs", {}).get("main_sha") != candidate["main_sha"]:
+            raise Refused("The dispatched main SHA was superseded")
+        if retained and not retry:
+            common["sequence"] = previous["sequence"]
+            # Freeze the accepted bundle even if staging publishes a newer index.
+            candidate.update(sha=previous["sha"], release=deepcopy(previous["release"]))
+        return [dict(common, environment="production", action="up", mode="normal", force=False, **candidate)]
+    if name == "workflow_dispatch":
+        permission(config, os.environ["GITHUB_ACTOR"])
+        inputs = event["inputs"]
+        action = inputs["action"]
+        identity = (
+            "pr-" + inputs["pr_number"]
+            if inputs["environment"] == "pr"
+            else inputs["environment"]
+        )
+        value = dict(
+            common,
+            environment=identity,
+            action=action,
+            mode=""
+            if inputs.get("vm_mode", "default") == "default"
+            else inputs["vm_mode"],
+            force=inputs.get("force", "false") == "true",
+        )
+        if action in {"create", "resume"}:
+            previous = state.get("environments", {}).get(identity, {})
+            ref = inputs.get("source_ref") or previous.get("source_ref", "")
+            # Retained test resumes stay pinned unless a new source is explicit.
+            if (
+                identity == "test"
+                and action == "resume"
+                and not inputs.get("source_ref")
+            ):
+                ref = previous.get("sha", "")
+            approved = inputs.get("approved_sha") or previous.get("approved_sha", "")
+            value.update(source(config, identity, ref, approved))
+        return [value]
+    if name == "issue_comment":
+        if (
+            not event.get("issue", {}).get("pull_request")
+            or event.get("action") != "created"
+        ):
+            return []
+        command = preview_command(event["comment"]["body"])
+        if command is None:
+            return []
+        permission(config, event["comment"]["user"]["login"])
+        identity = "pr-" + str(event["issue"]["number"])
+        previous = state.get("environments", {}).get(identity, {})
+        if command["action"] == "up":
+            if time.time() - previous.get("last_comment_at", 0) < config.get("preview_request_interval_seconds", 60):
+                raise Refused("Preview requests are rate limited; stop and destroy remain available")
+            retained = [entry for entry in state.get("environments", {}).values() if entry.get("kind") == "pr" and entry.get("desired") != "destroyed"]
+            # A destroyed tombstone is not retained, so recreating it adds a preview.
+            new = not previous or previous.get("desired") == "destroyed"
+            if new and len(retained) >= config.get("max_preview_environments", 10):
+                raise Refused("Preview retention budget reached; retire an environment first")
+        value = dict(common, environment=identity, last_comment_at=int(time.time()), **command)
+        if command["action"] == "up":
+            previous = state.get("environments", {}).get(identity, {})
+            approved = command["approved_sha"] or previous.get("approved_sha", "")
+            value.update(source(config, identity, "", approved))
+        return [value]
+    if name != "workflow_run" or event["workflow_run"]["conclusion"] != "success":
+        return []
+    completed = event["workflow_run"]
+    release_ci = completed.get("name") == "Release CI"
+    if not release_ci and completed.get("name") != "CI":
+        raise Refused("Unexpected CI workflow name")
+    filename = "release-ci.yml" if release_ci else "ci.yml"
+    workflow = github(f"repos/{config['repository']}/actions/workflows/{filename}")
+    if completed["workflow_id"] != workflow["id"]:
+        raise Refused("Unexpected CI workflow identity")
+    candidates = []
+    if release_ci and config.get("release_flow_enabled") and completed.get("event") == "push" and completed.get("head_branch") == config["develop_branch"]:
+        current = source(config, "develop", config["develop_branch"], expected_sha=completed["head_sha"])
+        if current is not None:
+            candidates.append(dict(common, environment="develop", action="up", mode="normal", ci_run_id=completed["id"], **current))
+    for identity, entry in state.get("environments", {}).items():
+        if (identity == "develop") != release_ci:
+            continue
+        if identity == "develop" and candidates:
+            continue
+        if entry["desired"] == "destroyed" or identity == "test" or entry.get("fork"):
+            continue
+        if entry["sequence"] == sequence:
+            # An accepted workflow-run retry belongs to its original source,
+            # even when the followed branch advanced during the failed build.
+            candidates.append(
+                dict(
+                    common,
+                    environment=identity,
+                    action="update",
+                    **{
+                        key: entry.get(key, "")
+                        for key in (
+                            "sha",
+                            "source_ref",
+                            "source_repo",
+                            "fork",
+                            "approved_sha",
+                        )
+                    },
+                )
+            )
+            continue
+        try:
+            current = source(config, identity, entry["source_ref"])
+        except Refused:
+            continue
+        if current["sha"] == completed["head_sha"]:
+            candidates.append(
+                dict(common, environment=identity, action="update", **current)
+            )
+    return candidates
+
+
+def prepare(config, store):
+    event = json.loads(Path(os.environ["GITHUB_EVENT_PATH"]).read_text())
+    state, _ = store.read("lifecycle/state.json")
+    state = state or {"environments": {}}
+    values = requests(config, event, os.environ["GITHUB_EVENT_NAME"], state)
+    prepared = {"build": False, "targets": [], "sha": "", "source_repo": ""}
+    prepared["trusted_sha"] = trusted_revision()
+    if values:
+        # Accepting intent and executing cloud effects use the same lock. A stop
+        # cannot be acknowledged while an older apply can still start a node pool.
+        # Refresh source/state after waiting; an earlier read may now be stale.
+        with store.lock(wait_seconds=450):
+            state, _ = store.read("lifecycle/state.json")
+            values = requests(
+                config,
+                event,
+                os.environ["GITHUB_EVENT_NAME"],
+                state or {"environments": {}},
+            )
+            for request in values:
+
+                def accept(current, request=request):
+                    updated, changed = transition(
+                        current, request, secrets.token_hex(6), time.time(),
+                        hostname_token=secrets.token_hex(16), production=delivery.production(config),
+                    )
+                    if delivery.production(config) and changed:
+                        updated, _ = attach_release(updated, "production", updated["environments"]["production"]["generation"], request["release"], request["release"]["trusted_sha"])
+                    return updated, (
+                        changed,
+                        updated["environments"].get(request["environment"]),
+                    )
+
+                changed, entry = store.mutate(accept)
+                if entry and delivery.production(config):
+                    prepared.update(sha=entry["sha"], source_repo=entry["source_repo"], trusted_sha=entry["release"]["trusted_sha"])
+                if (
+                    entry
+                    and (changed or entry["sequence"] == request["sequence"])
+                    and build_needed(entry, prepared["trusted_sha"])
+                ):
+                    # Re-running a failed workflow keeps its run ID. Re-emit
+                    # pending builds without changing the accepted generation.
+                    prepared.update(
+                        build=True, sha=entry["sha"], source_repo=entry["source_repo"]
+                    )
+                    prepared["targets"].append(
+                        {
+                            "environment": request["environment"],
+                            "generation": entry["generation"],
+                        }
+                    )
+    destination = Path(os.environ.get("RUNNER_TEMP", "/tmp")) / "aidash-request.json"
+    private_json(destination, prepared)
+    if os.environ.get("GITHUB_OUTPUT"):
+        with open(os.environ["GITHUB_OUTPUT"], "a") as file:
+            for key in ("build", "sha", "source_repo", "trusted_sha"):
+                file.write(
+                    f"{key}={str(prepared[key]).lower() if key == 'build' else prepared[key]}\n"
+                )
+
+
+def update_entry(store, identity, generation, **fields):
+    def update(state):
+        entry = state["environments"].get(identity)
+        if entry and entry["generation"] == generation:
+            if fields.get("status") in {"ready", "failed"}:
+                if entry.get("status") != fields["status"]:
+                    entry["outcome_version"] = entry.get("outcome_version", 0) + 1
+                    for key in ("outcome_at", "outcome_run_id", "outcome_trusted_sha", "outcome_published", "staging_publication_run_id", "staging_verified_at", "staging_publication_pending"):
+                        entry.pop(key, None)
+                for key in ("outcome_at", "outcome_run_id"):
+                    if key in entry:
+                        fields[key] = entry[key]
+                fields.setdefault("outcome_at", int(time.time()))
+                fields.setdefault("outcome_run_id", str(os.environ.get("GITHUB_RUN_ID", "0")))
+            entry.update(fields)
+        return state, None
+
+    store.mutate(update)
+
+
+def current_entry(store, identity, generation):
+    state, _ = store.read("lifecycle/state.json")
+    entry = state["environments"].get(identity)
+    if not entry or entry["generation"] != generation:
+        raise Refused("A newer lifecycle request superseded this operation")
+    return entry
+
+
+def demo_people():
+    """The Demo data people file from the nonproduction Environment secret, or None.
+
+    Its value holds real people's addresses, so neither it nor any part of
+    it appears in a message.
+    """
+    raw = os.environ.get("AIDASH_DEMO_DATA")
+    if not raw or not raw.strip():
+        return None
+    try:
+        value = json.loads(raw)
+    except ValueError:
+        value = None
+    if not isinstance(value, dict):
+        raise Refused("AIDASH_DEMO_DATA must be a JSON object")
+    return json.dumps(value, sort_keys=True)
+
+
+def provision_secret(config, output, kind):
+    secret = output["runtime_secret"]
+    all_versions = json.loads(run("gcloud", "secrets", "versions", "list", secret,
+        "--project", config["project_id"], "--format=json(name,state)"))
+    versions = [item for item in all_versions if item["state"] == "ENABLED"]
+    latest_enabled = False
+    if versions:
+        # Version IDs increase with creation; latest can point at a disabled rollback version.
+        version = max(int(item["name"].rsplit("/", 1)[-1]) for item in versions)
+        latest_enabled = version == max(int(item["name"].rsplit("/", 1)[-1]) for item in all_versions)
+        raw = run("gcloud", "secrets", "versions", "access", str(version), "--secret", secret, "--project", config["project_id"])
+    else:
+        raw = os.environ.get("AIDASH_RUNTIME_" + kind.upper())
+        if not raw:
+            raise Refused(f"Set the {kind} runtime configuration secret before resuming this environment")
+    value = json.loads(raw)
+    previous = json.dumps(value, sort_keys=True)
+    gcip = output.get("gcip", {})
+    dashboard = value.get("dashboard")
+    if isinstance(dashboard, dict) and "common_auth" in dashboard:
+        # Keep the original Terraform-owned GCIP Tenants/IDs/users while
+        # selecting the separate runtime authority. Removing their resource
+        # declarations at cutover would destroy upstream sign-in identities.
+        kube.common_auth_settings(output, dashboard, value.get("common_auth_tls"), value)
+    elif gcip.get("tenant_ids"):
+        dashboard = value.setdefault("dashboard", {})
+        if dashboard.get("oidc") or any(key.startswith("AIDASH_OIDC_") for key in value):
+            raise Refused("Remove OIDC runtime configuration before enabling the sole GCIP issuer")
+        settings = dashboard.setdefault("gcip", {})
+        api_key = config.get("gcip_web_api_key") or settings.get("web_api_key")
+        if not api_key:
+            raise Refused("Configure the GCIP web API key from the bootstrap output")
+        settings.update({key: gcip[key] for key in ("project_id", "public_origin", "tenant_bindings", "providers", "password_sign_up")})
+        if gcip.get("shared_pool"):
+            settings["shared_pool"] = gcip["shared_pool"]
+        else:
+            settings.pop("shared_pool", None)
+        settings["sign_in_domains"] = gcip.get("sign_in_domains", {})
+        # A sign-in hint only: GCIP enforces the Requirement and Aidash never reads
+        # second-factor claims as authority. The page uses it to lead a user with no
+        # factor through enrollment. State written before MFA existed lists none.
+        settings["mfa_mandatory"] = sorted(tenant for tenant, declared in gcip.get("mfa", {}).items() if declared["state"] == "mandatory")
+        # Firebase's helper is the default and needs no key. Terraform selects the
+        # public origin only in the apply that deploys a release, so the SAML ACS,
+        # this setting and the edge's helper proxy switch together.
+        if gcip.get("auth_helper", "firebase") == "firebase":
+            settings.pop("auth_helper", None)
+        else:
+            settings["auth_helper"] = gcip["auth_helper"]
+        settings["web_api_key"] = api_key
+    elif value.get("dashboard", {}).get("gcip"):
+        # Binding removal must reach the retained server before any subsequent
+        # boundary; disabling infrastructure cannot leave an old pool admitted.
+        value["dashboard"]["gcip"].update(tenant_bindings={}, providers={}, password_sign_up=[], sign_in_domains={}, mfa_mandatory=[])
+        value["dashboard"]["gcip"].pop("shared_pool", None)
+    encoded = json.dumps(value, sort_keys=True)
+    # Keep latest enabled after a rollback, even when the selected configuration
+    # is unchanged, so every reader of "latest" sees the managed version.
+    if not versions or encoded != previous or not latest_enabled:
+        run("gcloud", "secrets", "versions", "add", secret, "--project", config["project_id"], "--data-file=-", data=encoded.encode())
+    return value
+
+
+def public_health(output):
+    """Allow bounded DNS/ACME propagation, and reject a previous preview's IP."""
+    for attempt in range(24):
+        try:
+            with urllib.request.urlopen(
+                f"https://{output['hostname']}/health", timeout=bounded_timeout(10)
+            ) as response:
+                value = json.load(response)
+                if (
+                    response.status == 200
+                    and value.get("deployment") == "aidash://" + output["runtime_secret"]
+                ):
+                    return
+        except (OSError, ValueError):
+            pass
+        if attempt != 23:
+            time.sleep(5)
+    raise Refused(
+        "Public HTTPS did not resolve to this environment with a trusted certificate"
+    )
+
+
+def verify_source(config, identity, entry):
+    if identity == "production":
+        candidate = delivery.authorize_production(config, entry["main_sha"], ci_success, accepted=entry["release"])
+        if candidate["sha"] != entry["sha"]:
+            raise Refused("Production evidence changed before deployment")
+        # Keep the original accepted images when staging publishes a new index.
+        release = entry["release"]
+        delivery.valid_images(release["images"], config["staging_project_id"])
+        if release["source_sha"] != entry["sha"] or release["trusted_sha"] != entry["sha"]:
+            raise Refused("The retained bundle was not built from the release source")
+        return
+    if identity == "develop" and config.get("release_flow_enabled"):
+        current = github(f"repos/{config['repository']}/branches/{urllib.parse.quote(config['develop_branch'], safe='')}")
+        if not current.get("protected") or current["commit"]["sha"] != entry["sha"]:
+            raise Refused("Staging source was superseded before deployment")
+    if (
+        identity.startswith("pr-")
+        and pull(config, identity[3:])["head"]["sha"] != entry["sha"]
+    ):
+        raise Refused(
+            "PR head changed before deployment; request/await CI for the new SHA"
+        )
+    ci_success(dict(config, required_ci_branch=config["develop_branch"]) if identity == "develop" else config, entry["sha"])
+
+
+def gcip_revision(config):
+    """Persist only a digest of shared inputs, including private IdP rotation."""
+    value = {
+        # MFA changes alter neither Tenant Bindings nor IdPs, so they never fence hosts.
+        "tenants": {
+            alias: {key: setting for key, setting in pool.items() if key != "mfa"}
+            for alias, pool in config.get("gcip_tenants", {}).items()
+        },
+        "idp_secrets": json.loads(os.environ.get("AIDASH_GCIP_IDP_SECRETS") or "{}"),
+        "web_api_key": config.get("gcip_web_api_key"),
+    }
+    return hashlib.sha256(json.dumps(value, sort_keys=True).encode()).hexdigest()
+
+
+def gcip_mfa_revision(config):
+    """Digest of declared tenant MFA, normalized to the module's defaults.
+
+    The tenant and the runtime's `mfa_mandatory` hint follow a declaration only
+    through an apply and a refresh, so a change needs both; it never fences hosts.
+    """
+    value = {}
+    for alias, pool in config.get("gcip_tenants", {}).items():
+        mfa = pool.get("mfa") or {}
+        value[alias] = {
+            "state": mfa.get("state") or "disabled",
+            "totp_adjacent_intervals": (mfa.get("totp") or {}).get("adjacent_intervals", 5),
+        }
+    return hashlib.sha256(json.dumps(value, sort_keys=True).encode()).hexdigest()
+
+
+def quiesce_gcip(terraform, identity):
+    if kube.quiesce(terraform.cluster(), identity) is not True:
+        raise Refused("GCIP application/runner quiescence was not confirmed")
+
+
+def gcip_output_revision(output):
+    value = {key: setting for key, setting in (output or {}).get("gcip", {}).items() if key != "mfa"}
+    if not value.get("tenant_ids"):
+        value = {}
+    return hashlib.sha256(json.dumps(value, sort_keys=True).encode()).hexdigest()
+
+
+def reconcile_gcip_mfa(store, identity, generation, output):
+    """Enforce declared tenant MFA; annotate and record each correction before the next tenant."""
+    for tenant, fields in reconcile_mfa(output):
+        print(f"::warning title=GCIP MFA drift corrected::{identity} tenant={tenant} fields={','.join(fields)}")
+        update_entry(store, identity, generation, gcip_mfa_drift_at=int(time.time()))
+
+
+class GcipTerraform:
+    """Fence plan changes and reconcile actual outputs at every apply boundary."""
+
+    def __init__(self, terraform, config, store, managed, directory):
+        self.terraform = terraform
+        self.config = config
+        self.store = store
+        self.previous = deepcopy(managed)
+        self.failed = set()
+        self.directory = directory
+        self.connection = None
+
+    def outputs(self):
+        return self.terraform.outputs() if self.previous else {}
+
+    def shared_outputs(self):
+        return self.terraform.shared_outputs()
+
+    def cluster(self, required=True):
+        """Connect once per reconciliation, only after the shared cluster exists."""
+        if self.connection is None:
+            value = self.terraform.shared_outputs().get("cluster")
+            if not value:
+                if required:
+                    raise RuntimeError("Shared cluster outputs are unavailable")
+                return None
+            self.connection = kube.connect(self.config, value, self.directory)
+        return self.connection
+
+    def broker_configuration(self, environments):
+        return self.terraform.broker_configuration(environments)
+
+    def broker_configuration_in_state(self, store):
+        return self.terraform.broker_configuration_in_state(store)
+
+    def broker_configuration_changed(self, store, environments):
+        return self.terraform.broker_configuration_changed(store, environments)
+
+    def apply(self, managed, retiring=(), starting=(), affected=None, allow_failures=False, keep_sealed=()):
+        # Include removed environments until their destruction plan is fenced.
+        protected = self.previous | managed
+        if affected is None:
+            revision, affected = gate_gcip_changes(self.config, self.store, self, protected)
+        else:
+            revision, affected = gcip_revision(self.config), dict(affected)
+
+        def fence_plan(plan):
+            output = plan.get("output_changes", {}).get("environments", {})
+            before, after = output.get("before") or {}, output.get("after") or {}
+            if any(
+                change["type"].startswith("google_identity_platform_tenant")
+                and set(change["change"]["actions"]) - {"no-op", "read"}
+                for change in plan.get("resource_changes", [])
+            ) or any(gcip_output_revision(before.get(identity)) != gcip_output_revision(after.get(identity)) for identity in before.keys() | after.keys()):
+                _, planned = gate_gcip_changes(
+                    self.config, self.store, self, protected, force=True, fenced=affected
+                )
+                affected.update(planned)
+
+        self.terraform.apply(managed, retiring=retiring, starting=starting, before_apply=fence_plan)
+        self.previous = deepcopy(managed)
+        # Desired inputs can be unchanged when Terraform regenerates a pool ID.
+        # Re-read actual outputs after every apply, including unrelated lifecycle work.
+        _, changed = gate_gcip_changes(self.config, self.store, self, managed, fenced=affected)
+        affected.update(changed)
+        targets = {identity: generation for identity, generation in affected.items() if identity in managed and identity not in self.failed}
+        failures = refresh_gcip_environments(
+            self.config, self.store, self, managed, revision, targets, keep_sealed
+        )
+        self.failed.update(failures)
+        if failures and not allow_failures:
+            raise Refused("GCIP refresh incomplete: " + ", ".join(failures))
+        return failures
+
+
+def gate_gcip_changes(config, store, terraform, managed, force=False, fenced=()):
+    """Fence every old binding before any apply can change the shared pools."""
+    outputs = terraform.outputs() if managed else {}
+    state, _ = store.read("lifecycle/state.json")
+    revision, mfa_revision = gcip_revision(config), gcip_mfa_revision(config)
+    affected = {}
+    for identity in managed:
+        entry = state["environments"][identity]
+        output = outputs.get(identity, {})
+        if not (
+            config.get("gcip_tenants")
+            or output.get("gcip", {}).get("tenant_ids")
+            or entry.get("gcip_output_revision") not in (None, gcip_output_revision(None))
+            or entry.get("gcip_pending")
+        ):
+            continue
+        unchanged = (
+            entry.get("gcip_revision") == revision
+            and entry.get("gcip_output_revision") == gcip_output_revision(output)
+            and not entry.get("gcip_pending")
+        )
+        if not force and unchanged and entry.get("gcip_mfa_revision") == mfa_revision:
+            continue
+        if entry["kind"] == "pr" and entry["desired"] != "destroyed":
+            pr = github(f"repos/{config['repository']}/pulls/{identity[3:]}")
+            if pr["state"] != "open":
+                entry["desired"] = "destroyed"
+                update_entry(
+                    store,
+                    identity,
+                    entry["generation"],
+                    desired="destroyed",
+                    status="retiring",
+                )
+        if not force and unchanged:
+            # MFA alone alters no Tenant Binding or IdP: apply and refresh without fencing.
+            if entry["desired"] != "destroyed":
+                affected[identity] = entry["generation"]
+            continue
+        update_entry(store, identity, entry["generation"], gcip_pending=True)
+        if identity not in fenced and output and managed[identity].get("running"):
+            quiesce_gcip(terraform, identity)
+            update_entry(store, identity, entry["generation"], gcip_quiesced=True)
+        if entry["desired"] != "destroyed":
+            affected[identity] = entry["generation"]
+    return revision, affected
+
+
+
+def refresh_gcip_environments(config, store, terraform, managed, revision, affected, keep_sealed=()):
+    if not affected:
+        return []
+    outputs = terraform.outputs()
+    failures = []
+    for identity, generation in affected.items():
+        if identity in keep_sealed:
+            # A pending production update keeps writers stopped; its deployment
+            # applies these settings to the new release instead of reloading the
+            # old one and invalidating the Pre-update Backup.
+            continue
+        try:
+            entry = current_entry(store, identity, generation)
+            output = outputs[identity]
+            reconcile_environment(output)
+            # Before any host reload/unseal: a new pool never admits undeclared MFA.
+            reconcile_gcip_mfa(store, identity, generation, output)
+            runtime = provision_secret(config, output, entry["kind"])
+            previous = managed[identity]
+            quiesced = bool(entry.get("gcip_quiesced"))
+            if previous["running"] and previous["published"]:
+                # Reload the existing authorized release, even if a newer source
+                # is awaiting a build. This does not authorize a stopped start.
+                cluster = terraform.cluster()
+                settings = kube.materialize(cluster, identity, config["project_id"], output, runtime)
+                kube.reload(cluster, identity, output, settings)
+                if kube.health(cluster, identity) != previous["release_sha"]:
+                    raise Refused("GCIP refresh changed the authorized running source")
+                current_entry(store, identity, generation)
+                kube.admission(cluster, identity, "open")
+                public_health(output)
+                quiesced = False
+            elif not previous["published"]:
+                # An unpublished Environment admits nothing, so no old policy
+                # remains to fence; its next deployment applies these settings.
+                quiesced = False
+            update_entry(
+                store, identity, generation, gcip_revision=revision,
+                gcip_mfa_revision=gcip_mfa_revision(config),
+                gcip_output_revision=gcip_output_revision(output), gcip_pending=False,
+                gcip_quiesced=quiesced
+            )
+        except (Exception, OperationDeadline) as error:
+            # The digest advances only after successful reload. Keep failures
+            # gated and retry them on the next scheduled reconciliation.
+            failures.append(identity)
+            if managed[identity]["running"]:
+                with operation_budget(90):
+                    try:
+                        quiesce_gcip(terraform, identity)
+                    except Exception:
+                        pass
+            if isinstance(error, OperationDeadline):
+                raise
+            bounded_timeout(1)
+    return failures
+
+
+def restore_broker_admission(terraform, sealed, store=None):
+    # Restore every successful preflight seal when reconciliation cannot reach
+    # cleanup, even if an earlier unseal fails. Keep failures explicit.
+    failed = False
+    # Use the same reserved cleanup allowance as per-environment recovery;
+    # the reconciliation budget may already have expired.
+    with operation_budget(180):
+        for identity in sorted(sealed):
+            try:
+                if store is not None:
+                    # Admission restoration starts writers: a backup taken before
+                    # this point no longer describes the pre-write state.
+                    mark_started_writers(store, {identity})
+                kube.unseal(terraform.cluster(), identity)
+            except (Exception, OperationDeadline):
+                failed = True
+    if failed:
+        raise RuntimeError("Broker drain admission restoration failed")
+
+
+def restore_presealed_running_host(terraform, store, identity, presealed, managed):
+    previous = managed.get(identity, {})
+    if identity in presealed and previous.get("running") and previous.get("published"):
+        # Early exits keep the prior healthy release serving. Deliberately
+        # gated failed deployments and stopped/retired Environments stay gated.
+        restore_broker_admission(terraform, {identity}, store)
+
+
+def stop_environment(store, terraform, managed, identity, generation):
+    """Remove DNS, stop workloads, then scale the node pool to zero. Data stays."""
+    current_entry(store, identity, generation)
+    managed[identity].update(published=False, address=None)
+    terraform.apply(managed)
+    current_entry(store, identity, generation)
+    kube.stop(terraform.cluster(), identity)
+    managed[identity]["running"] = False
+    terraform.apply(managed)
+
+
+def reconcile(config, store):
+    with store.lock():
+        state, _ = store.read("lifecycle/state.json")
+        identities = set((state or {}).get("environments", {}))
+        if delivery.production(config) and identities - {"production"} or not delivery.production(config) and "production" in identities:
+            raise Refused("The lifecycle state belongs to a different deployment tier")
+        terraform = Terraform(ROOT / "enterprise/infra/gcp/environments", config)
+        managed = terraform.configuration_in_state(store)
+        # Private kubeconfig and Helm values live only for this run.
+        directory = tempfile.mkdtemp(prefix="aidash-kube-", dir=os.environ.get("RUNNER_TEMP"))
+        failure = None
+        try:
+            adapter = GcipTerraform(terraform, config, store, managed, directory)
+            reconcile_locked(
+                config, store, adapter, managed
+            )
+            validate_staging_publication(config, store, adapter)
+        except (Exception, OperationDeadline) as error:
+            failure = error
+        finally:
+            shutil.rmtree(directory, ignore_errors=True)
+        with operation_budget(120):
+            try:
+                delivery.flush_outcomes(config, store)
+            except Exception:
+                if failure is None:
+                    raise
+        if failure is not None:
+            raise failure
+
+
+def validate_staging_publication(config, store, terraform):
+    """Recover evidence publication by rechecking the running source, without deploying."""
+    state, _ = store.read("lifecycle/state.json")
+    entry = (state or {}).get("environments", {}).get("develop", {})
+    if not config.get("release_flow_enabled") or entry.get("status") != "ready":
+        return
+    if entry.get("outcome_published") == "ready" and delivery.staging_publication_complete(config, entry):
+        return
+    verify_source(config, "develop", entry)
+    if kube.health(terraform.cluster(), "develop") != entry["sha"]:
+        raise Refused("Staging publication requires the current running source")
+    public_health(terraform.outputs()["develop"])
+    current_entry(store, "develop", entry["generation"])
+    update_entry(store, "develop", entry["generation"],
+                 staging_publication_run_id=str(os.environ["GITHUB_RUN_ID"]), staging_verified_at=int(time.time()), staging_publication_pending=True)
+
+
+def require_backup_covers_retained_volumes(cluster, identity):
+    """Every required claim exists, and only the ledger is excluded."""
+    namespace = kube.namespace_of(identity)
+    claims = cluster.items("persistentvolumeclaim", namespace)
+    observed = {claim["metadata"]["name"] for claim in claims}
+    missing = sorted(set(kube.CLAIMS) - observed)
+    if missing:
+        raise Refused(
+            "Retained volumes are missing before the Pre-update Backup: " + ", ".join(missing)
+        )
+    unexpected = sorted(
+        f"{item.get('kind', 'Resource')}/{item['metadata']['name']}"
+        for item in cluster.excluded(namespace, kube.BACKUP_LABEL, kube.BACKUP_EXCLUDE)
+        if not (
+            item.get("kind") == "PersistentVolumeClaim"
+            and item["metadata"]["name"] == kube.LEDGER_CLAIM
+        )
+    )
+    if unexpected:
+        raise Refused(
+            "Resources are excluded from the Pre-update Backup: " + ", ".join(unexpected)
+        )
+
+
+def pre_update_backup(config, store, terraform, identity, generation, entry):
+    """Back up the sealed Environment before anything changes. Failure parks the
+    update as `failed`; only an explicit retry_failed starts a new generation."""
+    plan = config.get("pre_update_backup_plan")
+    if not plan and not delivery.production(config):
+        return
+    cluster = terraform.cluster()
+    if cluster.get("namespace", kube.namespace_of(identity)) is None:
+        # Both callers only reach this for an Environment Terraform records as
+        # previously running, so a missing namespace is drift, not a first deploy.
+        raise Refused(
+            "The running Environment namespace is missing; refusing to update without a restore point"
+        )
+    if not plan:
+        raise Refused("Production updates need a Pre-update Backup plan: enable production_backup_enabled and publish pre_update_backup_plan (release-deployment step 7)")
+    if entry.get("pre_update_backup"):
+        if not backup.restorable(entry):
+            raise Refused(
+                "The recorded Pre-update Backup is no longer restorable; retry_failed starts a new generation and backup"
+            )
+        return
+    kube.protect(cluster, identity)
+    require_backup_covers_retained_volumes(cluster, identity)
+    # Applying the object does not wait for the backup agent's reconciliation.
+    # Keep the same deployment reserve as the subsequent backup wait.
+    def ready_to_backup():
+        application = cluster.get("protectedapplication", kube.PROTECTED_APPLICATION, kube.namespace_of(identity)) or {}
+        return (application.get("status") or {}).get("readyToBackup") is True
+
+    kube.wait_until(
+        ready_to_backup,
+        "The ProtectedApplication did not become ready for backup",
+        seconds=min(300, backup.wait_window()),
+    )
+    shared = terraform.shared_outputs().get("cluster") or {}
+    expected_cluster = f"projects/{shared.get('project_id')}/locations/{shared.get('location')}/clusters/{shared.get('name')}"
+    name = backup.take(plan, generation, entry["sha"], expected_cluster)
+    current_entry(store, identity, generation)
+    update_entry(store, identity, generation, pre_update_backup=name)
+
+
+def deployment_changed(entry, previous, output):
+    """Whether the applied Environment differs from the accepted running intent."""
+    return (
+        not previous
+        or not previous["running"]
+        or previous.get("release_sha") != entry["sha"]
+        or previous["spot"] != entry["spot"]
+        or not entry.get("applied")
+        or entry["applied"].get("release_sha") != entry["sha"]
+        or previous.get("hostname_token") != entry.get("hostname_token")
+        or (entry.get("force") and entry.get("start_pending"))
+        or entry.get("provider_credentials") != (output or {}).get("provider_credentials")
+    )
+
+
+def pending_production_update(config, store, terraform, managed):
+    """The production update this reconciliation would deploy, if any.
+
+    This is the loop's deploy decision, taken before a shared apply so its
+    Pre-update Backup can precede Terraform. Only a trusted release that would
+    actually deploy qualifies: recording a backup for an update that then waits
+    for a build would claim a restore point the running writers have invalidated.
+    """
+    if not delivery.production(config):
+        return None
+    state, _ = store.read("lifecycle/state.json")
+    entry = ((state or {}).get("environments") or {}).get("production")
+    if not entry or entry.get("desired") != "running":
+        return None
+    previous = managed.get("production")
+    if not previous or not previous.get("running"):
+        return None
+    if entry.get("failed_deployment_generation") == entry["generation"] and not entry.get("start_pending"):
+        return None
+    if not current_release(entry, trusted_revision()):
+        return None
+    output = terraform.outputs().get("production") if managed else None
+    return entry if deployment_changed(entry, previous, output) else None
+
+
+def mark_started_writers(store, identities):
+    """Admission restoration starts writers; that invalidates a recorded restore point."""
+    for identity in sorted(identities):
+        state, _ = store.read("lifecycle/state.json")
+        entry = ((state or {}).get("environments") or {}).get(identity)
+        if entry and entry.get("pre_update_backup") and not entry.get("writers_started"):
+            update_entry(store, identity, entry["generation"], writers_started=True)
+
+
+def take_pre_update_backup_before_shared(config, store, terraform, managed, sealed):
+    """Take a production update's backup before broker/GCIP changes reach Terraform.
+
+    Returns the seals, whether a production update will deploy, and whether it is
+    safe to run the shared apply. The shared apply reloads a running release and
+    reopens admission, so the backup must be taken first. If production was not
+    already drained by the broker preflight or GCIP quiescence, seal it here. A
+    seal that cannot be confirmed stops reconciliation before any shared change.
+    Failures restore the admissions this run drained, record any writers they
+    started as started, and park the update behind the same durable generation
+    fence as a failed deployment.
+    """
+    try:
+        entry = pending_production_update(config, store, terraform, managed)
+    except (Exception, OperationDeadline):
+        # Discovery runs after the broker preflight sealed running hosts.
+        restore_broker_admission(terraform, sealed, store)
+        raise
+    if entry is None:
+        return sealed, False, True
+    identity = "production"
+    generation = entry["generation"]
+    try:
+        # A resumed generation still has to prove its retained source is current
+        # before the shared apply may change Terraform.
+        verify_source(config, identity, entry)
+        if entry.get("pre_update_backup"):
+            if not backup.restorable(entry):
+                raise Refused(
+                    "The recorded Pre-update Backup is no longer restorable; retry_failed starts a new generation and backup"
+                )
+            return sealed, True, True
+        if identity not in sealed:
+            if not kube.seal(terraform.cluster(), identity):
+                update_entry(store, identity, generation, status="waiting_for_active_work")
+                restore_broker_admission(terraform, sealed, store)
+                return sealed, True, False
+            sealed = sealed | {identity}
+        pre_update_backup(config, store, terraform, identity, generation, entry)
+    except (Exception, OperationDeadline) as error:
+        update_entry(
+            store,
+            identity,
+            generation,
+            status="failed",
+            diagnostic=type(error).__name__,
+            failed_deployment_generation=generation,
+            # No start remains authorized; retry_failed must create a new
+            # generation, which also takes a new backup id.
+            start_pending=False,
+        )
+        restore_broker_admission(terraform, sealed, store)
+        print(f"Deferred/failed: {identity}: {type(error).__name__}")
+        raise
+    return sealed | {identity}, True, True
+
+
+def reconcile_locked(config, store, terraform, managed):
+    state, _ = store.read("lifecycle/state.json")
+    if not state:
+        return
+    # Fence every old GCIP binding before any apply can change the shared pools.
+    revision, affected = gate_gcip_changes(config, store, terraform, managed)
+    broker_changed = terraform.broker_configuration_changed(store, managed)
+    presealed = set()
+    if broker_changed:
+        previous_brokers = terraform.broker_configuration_in_state(store)
+        desired_brokers = terraform.broker_configuration(managed)
+        blocked = False
+        # Every apply consumes broker intent, including lifecycle plans. Drain
+        # before any plan can remove or replace a live broker.
+        try:
+            for identity, previous in managed.items():
+                prior = (previous_brokers or {}).get(identity, {})
+                desired = desired_brokers.get(identity, {})
+                if not previous["running"] or (
+                    previous_brokers is not None
+                    and (prior == desired or (not prior.get("enabled") and not desired.get("enabled")))
+                ):
+                    continue
+                state, _ = store.read("lifecycle/state.json")
+                entry = state["environments"][identity]
+                current_entry(store, identity, entry["generation"])
+                if kube.seal(terraform.cluster(), identity):
+                    presealed.add(identity)
+                else:
+                    update_entry(store, identity, entry["generation"], status="waiting_for_active_work")
+                    blocked = True
+        except (Exception, OperationDeadline):
+            restore_broker_admission(terraform, presealed, store)
+            raise
+        if blocked:
+            restore_broker_admission(terraform, presealed, store)
+            return
+    # One apply serves broker intent and GCIP fencing, after brokers are
+    # drained so no plan can replace a live broker first.
+    gcip_failures = []
+    shared_apply = broker_changed or bool(affected)
+    deploy_pending = False
+    keep_sealed = set()
+    if shared_apply:
+        presealed, deploy_pending, backup_ready = take_pre_update_backup_before_shared(
+            config, store, terraform, managed, presealed
+        )
+        if not backup_ready:
+            # Active work kept production from sealing, so no Pre-update Backup
+            # exists. Do not change shared infrastructure ahead of it.
+            return
+        if deploy_pending:
+            state, _ = store.read("lifecycle/state.json")
+            entry = state["environments"].get("production")
+            if entry and entry.get("pre_update_backup"):
+                keep_sealed.add("production")
+        try:
+            gcip_failures = terraform.apply(
+                managed, affected=affected, allow_failures=True, keep_sealed=keep_sealed
+            )
+        except (Exception, OperationDeadline) as error:
+            if deploy_pending:
+                state, _ = store.read("lifecycle/state.json")
+                entry = state["environments"].get("production")
+                if entry and entry.get("pre_update_backup"):
+                    # Restoring admission starts writers, so the recorded backup
+                    # is no longer restorable. Retry only through the explicit
+                    # retry_failed fence and a new generation/backup.
+                    update_entry(
+                        store,
+                        "production",
+                        entry["generation"],
+                        status="failed",
+                        diagnostic=type(error).__name__,
+                        failed_deployment_generation=entry["generation"],
+                        start_pending=False,
+                    )
+                    print(f"Deferred/failed: production: {type(error).__name__}")
+            if presealed:
+                # A partial GCIP apply may have changed the old release's
+                # identity infrastructure. Keep those writers and their Runner
+                # stopped, just as the per-environment failure cleanup does.
+                state, _ = store.read("lifecycle/state.json")
+                entries = state["environments"]
+                reopen = {
+                    identity for identity in presealed
+                    if not (entries[identity].get("gcip_quiesced") or entries[identity].get("gcip_pending"))
+                }
+                restore_broker_admission(terraform, reopen, store)
+            raise
+    state, _ = store.read("lifecycle/state.json")
+    if shared_apply and deploy_pending:
+        entry = state["environments"].get("production")
+        if entry and entry.get("pre_update_backup"):
+            if "production" in keep_sealed:
+                # The refresh left production sealed; this deployment applies
+                # the GCIP change to the new release.
+                update_entry(store, "production", entry["generation"], gcip_quiesced=False)
+            else:
+                # The shared apply's GCIP refresh reloads the release and reopens
+                # admission. Re-seal before the deployment rather than trusting
+                # the pre-apply seal.
+                presealed.discard("production")
+    failures = list(gcip_failures)
+    trusted = trusted_revision()
+    for identity, snapshot in sorted(
+        state["environments"].items(),
+        key=lambda pair: (pair[1]["desired"] == "running", pair[1]["sequence"]),
+    ):
+        deployment_started = False
+        reloaded = False
+        keep_sealed = set()
+        sealed = identity in presealed
+        try:
+            generation = snapshot["generation"]
+            entry = current_entry(store, identity, generation)
+            output = terraform.outputs().get(identity) if managed else None
+            if output and entry["desired"] != "destroyed":
+                reconcile_environment(output)
+                try:
+                    reconcile_gcip_mfa(store, identity, generation, output)
+                except (Exception, OperationDeadline):
+                    # The next run fences this host and retries through the GCIP refresh,
+                    # including when the check exhausted the operation budget.
+                    with operation_budget(60):
+                        update_entry(store, identity, generation, gcip_pending=True)
+                    raise
+            # Close/merge cleanup is reconciled regardless of CI, builds, or fork approval.
+            if entry["kind"] == "pr" and entry["desired"] != "destroyed":
+                pr = github(f"repos/{config['repository']}/pulls/{identity[3:]}")
+                if pr["state"] != "open":
+                    entry["desired"] = "destroyed"
+                    update_entry(
+                        store,
+                        identity,
+                        generation,
+                        desired="destroyed",
+                        status="retiring",
+                    )
+            if entry["desired"] == "destroyed":
+                current_entry(store, identity, generation)
+                if identity in managed:
+                    managed[identity].update(published=False, address=None)
+                    cluster = terraform.cluster(required=False)
+                    if config.get("byok_project_id") and cluster is not None:
+                        # Freeze the only Provider Credential writer before
+                        # inventorying dynamic secrets. Failure keeps it gated;
+                        # retirement never starts a stopped Environment.
+                        if managed[identity]["running"]:
+                            if not kube.seal(cluster, identity, force=True):
+                                raise Refused("Provider Credential writer is not sealed")
+                        else:
+                            kube.drain(cluster, identity)
+                    retire_provider_credentials(config, identity)
+                    current_entry(store, identity, generation)
+                    terraform.apply(managed)
+                    reconcile_environment(output, enabled=False)
+                    ensure_authorized_domain(output, enabled=False)
+                    if cluster is not None:
+                        kube.destroy(cluster, identity)
+                    del managed[identity]
+                    terraform.apply(managed, retiring={identity})
+                else:
+                    # Also recover a partial earlier Terraform retirement.
+                    retire_provider_credentials(config, identity)
+                update_entry(
+                    store,
+                    identity,
+                    generation,
+                    status="destroyed",
+                    applied=None,
+                    published=False,
+                    gcip_pending=False,
+                    gcip_quiesced=False,
+                )
+                continue
+            if entry["desired"] == "stopped":
+                if entry.get("gcip_quiesced") and not entry.get("force"):
+                    # Seal rolls back if the paused app cannot be observed.
+                    # A failed GCIP refresh must never reopen its old policy.
+                    update_entry(store, identity, generation, status="waiting_for_gcip_refresh")
+                    continue
+                if identity in managed and managed[identity]["running"]:
+                    if not entry.get("force") and not kube.seal(terraform.cluster(), identity):
+                        update_entry(store, identity, generation, status="draining")
+                        continue
+                    stop_environment(store, terraform, managed, identity, generation)
+                update_entry(
+                    store,
+                    identity,
+                    generation,
+                    status="stopped",
+                    applied=managed.get(identity),
+                    published=False,
+                    gcip_quiesced=False,
+                )
+                continue
+            if identity in terraform.failed:
+                # GCIP failures stay gated, but must not prevent unrelated
+                # environment retirement or an accepted stop.
+                continue
+            if entry["kind"] == "pr" and any(
+                value["kind"] == "pr" and value["running"]
+                for key, value in managed.items()
+                if key != identity
+            ):
+                update_entry(
+                    store, identity, generation, status="waiting_for_pr_slot"
+                )
+                restore_presealed_running_host(terraform, store, identity, presealed, managed)
+                continue
+            previous = managed.get(identity)
+            # A retained release from another trusted commit is never deployed
+            # with this commit's charts and controller; it awaits a rebuild.
+            release = current_release(entry, trusted)
+            if (
+                previous and previous["running"] and previous["published"]
+                and entry.get("provider_credentials") != output.get("provider_credentials")
+                and (identity in presealed or not release)
+                # A pending deployment applies the new descriptor to the new
+                # release. Reloading the old one would start writers after the
+                # recorded Pre-update Backup.
+                and not (
+                    release
+                    and entry.get("pre_update_backup")
+                    and backup.restorable(entry)
+                )
+            ):
+                if not sealed:
+                    # Recover a prior successful apply whose controller
+                    # stopped before updating the durable settings receipt.
+                    current_entry(store, identity, generation)
+                    if not kube.seal(terraform.cluster(), identity):
+                        update_entry(store, identity, generation, status="waiting_for_active_work")
+                        continue
+                    sealed = True
+                    presealed.add(identity)
+                # Broker intent has already changed Terraform outputs. Reload the
+                # existing authorized release even if a newer build is pending.
+                # Failure must take the deployment gate path, not unseal stale settings.
+                current_entry(store, identity, generation)
+                deployment_started = True
+                cluster = terraform.cluster()
+                runtime = provision_secret(config, output, entry["kind"])
+                settings = kube.materialize(cluster, identity, config["project_id"], output, runtime)
+                kube.reload(cluster, identity, output, settings)
+                if kube.health(cluster, identity) != previous["release_sha"]:
+                    raise Refused("Settings reload changed the running source")
+                current_entry(store, identity, generation)
+                update_entry(
+                    store, identity, generation,
+                    provider_credentials=output.get("provider_credentials"),
+                )
+                entry = current_entry(store, identity, generation)
+                deployment_started = False
+                # reload() restarts the writers. Re-establish the seal before
+                # taking a backup rather than trusting the earlier drain.
+                reloaded = True
+            if entry.get(
+                "failed_deployment_generation"
+            ) == generation and not entry.get("start_pending"):
+                restore_presealed_running_host(terraform, store, identity, presealed, managed)
+                continue
+            changed = deployment_changed(entry, previous, output)
+            needs_deploy = bool(release) and changed
+            if previous and previous["running"]:
+                if entry.get("gcip_quiesced") and not (needs_deploy and entry.get("force")):
+                    update_entry(store, identity, generation, status="waiting_for_gcip_refresh")
+                    continue
+                cluster = terraform.cluster()
+                if needs_deploy and not sealed:
+                    if entry.get("force"):
+                        # Explicit force skips the activity verdict and also
+                        # repairs an Environment whose edge never became available.
+                        try:
+                            kube.gate(cluster, identity)
+                        except Exception:
+                            pass
+                        kube.drain(cluster, identity)
+                    elif not kube.seal(cluster, identity):
+                        update_entry(
+                            store,
+                            identity,
+                            generation,
+                            status="waiting_for_active_work",
+                        )
+                        continue
+                    sealed = True
+                elif not needs_deploy:
+                    observation = kube.activity(cluster, identity)
+                    try:
+                        due = identity != "production" and observation is not None and idle_due(
+                            observation, time.time(), entry.get("keepalive_at", 0)
+                        )
+                    except Refused:
+                        # An unknown or stale snapshot never authorizes a stop.
+                        due = False
+                    if due:
+                        if kube.seal(
+                            cluster, identity, idle_only=True,
+                            keepalive_at=entry.get("keepalive_at", 0),
+                        ):
+                            sealed = True
+                            # A new request wins over this inactivity decision.
+                            current_entry(store, identity, generation)
+                            update_entry(
+                                store,
+                                identity,
+                                generation,
+                                desired="stopped",
+                                status="idle_stop_requested",
+                            )
+                            stop_environment(store, terraform, managed, identity, generation)
+                            update_entry(
+                                store,
+                                identity,
+                                generation,
+                                applied=managed[identity],
+                                published=False,
+                                status="stopped",
+                            )
+                        restore_presealed_running_host(terraform, store, identity, presealed, managed)
+                        continue
+                    # Renewal also reaches quiet, already-running previews.
+                    # This touches only the trusted edge certificate and never
+                    # changes the app release, migrations or outcome receipt.
+                    current_entry(store, identity, generation)
+                    if delivery.install_tls(config, cluster, identity, output):
+                        public_health(output)
+                    # The deployed images keep running unchanged; only a needed
+                    # deployment waits for a release from this trusted commit.
+                    if not release and (changed or not entry.get("release")):
+                        update_entry(
+                            store, identity, generation, status="awaiting_build"
+                        )
+                        restore_presealed_running_host(terraform, store, identity, presealed, managed)
+                        continue
+                    if sealed or entry.get("status") != "ready":
+                        current_entry(store, identity, generation)
+                        kube.unseal(cluster, identity)
+                        if kube.health(cluster, identity) != previous["release_sha"]:
+                            raise Refused("Running source differs from the authorized release")
+                    update_entry(
+                        store,
+                        identity,
+                        generation,
+                        status="ready",
+                        start_pending=False,
+                        provider_credentials=output.get("provider_credentials"),
+                    )
+                    continue
+            if not release:
+                update_entry(store, identity, generation, status="awaiting_build")
+                restore_presealed_running_host(terraform, store, identity, presealed, managed)
+                continue
+            # Revalidate source identity at the effect boundary, not just at intake.
+            current_entry(store, identity, generation)
+            verify_source(config, identity, entry)
+            if sealed and previous and previous["running"]:
+                if reloaded and not kube.seal(terraform.cluster(), identity):
+                    # seal() restored service; a recorded backup is no longer
+                    # the pre-write state.
+                    if entry.get("pre_update_backup"):
+                        update_entry(store, identity, generation, writers_started=True)
+                    update_entry(store, identity, generation, status="waiting_for_active_work")
+                    continue
+                pre_update_backup(config, store, terraform, identity, generation, entry)
+                entry = current_entry(store, identity, generation)
+            if (not previous or not previous["running"]) and not entry.get(
+                "start_pending"
+            ):
+                update_entry(
+                    store,
+                    identity,
+                    generation,
+                    desired="stopped",
+                    status="interrupted",
+                )
+                restore_presealed_running_host(terraform, store, identity, presealed, managed)
+                continue
+            if entry["kind"] == "pr" and not entry.get("hostname_token") and (not previous or not previous["running"]):
+                # The shared preview disk moves only after the previous
+                # preview's edge and attachment are gone.
+                cluster = terraform.cluster(required=False)
+                if cluster is not None and not kube.preview_tls_available(cluster, identity):
+                    update_entry(store, identity, generation, status="waiting_for_preview_tls")
+                    continue
+            # A manual resume is a single start authorization, not permission
+            # to start again after a later stop.
+            update_entry(store, identity, generation, start_pending=False)
+            deployment_started = True
+            # The Pre-update Backup is valid only while the refresh leaves this
+            # Environment's writers stopped; the deployment applies the new
+            # settings to the new release.
+            if entry.get("pre_update_backup"):
+                keep_sealed = {identity}
+            if previous:
+                managed[identity].update(published=False, address=None)
+                terraform.apply(managed, keep_sealed=keep_sealed)
+            current_entry(store, identity, generation)
+            managed[identity] = dict(
+                kind=entry["kind"],
+                generation=generation,
+                incarnation=entry["incarnation"],
+                running=True,
+                published=False,
+                address=None,
+                spot=entry["spot"],
+                # Retain provisioned protection even if the opt-in is later
+                # omitted: a protected Home must never silently downgrade.
+                recovery_protected=bool(
+                    (previous or {}).get("recovery_protected")
+                    or config.get("recovery_protected", {}).get(identity, False)
+                ),
+                release_sha=entry["sha"],
+                # Switch the SAML ACS, runtime setting and edge helper proxy
+                # with the release deployment itself.
+                auth_helper="firebase" if entry.get("hostname_token") else "public_origin",
+            )
+            if entry.get("hostname_token"):
+                managed[identity]["hostname_token"] = entry["hostname_token"]
+            nodes = config.get("node_count", {}).get(entry["kind"])
+            if nodes:
+                managed[identity]["nodes"] = nodes
+            terraform.apply(
+                managed,
+                starting={identity} if entry.get("start_pending") else set(),
+                keep_sealed=keep_sealed,
+            )
+            output = terraform.outputs()[identity]
+            cluster = terraform.cluster()
+            kube.prepare(
+                cluster, identity,
+                terraform.shared_outputs()["preview_tls_volume_handle"] if entry["kind"] == "pr" and not entry.get("hostname_token") else None,
+                protected=bool(config.get("pre_update_backup_plan")),
+            )
+            delivery.install_tls(config, cluster, identity, output)
+            ensure_authorized_domain(output)
+            runtime = provision_secret(config, output, entry["kind"])
+            settings = kube.materialize(cluster, identity, config["project_id"], output, runtime)
+            reconcile_environment(output)
+            # This apply may first materialize the `mfa` output, which neither
+            # GCIP digest fences: enforce it before the edge reopens admission.
+            reconcile_gcip_mfa(store, identity, generation, output)
+            current_entry(store, identity, generation)
+            kube.deploy(
+                cluster, identity, output, entry["release"], entry["sha"], settings,
+                demo_people=demo_people(), fork=bool(entry.get("fork")),
+            )
+            if entry.get("pre_update_backup"):
+                # Write ahead: a crash inside start_writers must read as started.
+                update_entry(store, identity, generation, writers_started=True)
+            kube.start_writers(cluster, identity)
+            if kube.health(cluster, identity) != entry["sha"]:
+                raise Refused("Running source differs from the authorized release")
+            current_entry(store, identity, generation)
+            verify_source(config, identity, entry)
+            managed[identity].update(published=True, address=kube.address(cluster, identity))
+            # A kept-sealed production update has not consumed its GCIP change
+            # yet; publishing must not re-fence it and stop the writers that
+            # just started. The success update below records the new revision.
+            terraform.apply(
+                managed,
+                affected={identity: generation} if keep_sealed else None,
+                keep_sealed=keep_sealed,
+            )
+            current_entry(store, identity, generation)
+            kube.admission(cluster, identity, "open")
+            # Certificate issuance requires live DNS; validate it before declaring ready.
+            public_health(output)
+            current_entry(store, identity, generation)
+            verify_source(config, identity, entry)
+            update_entry(
+                store,
+                identity,
+                generation,
+                applied=managed[identity],
+                published=True,
+                status="ready",
+                gcip_revision=revision,
+                gcip_mfa_revision=gcip_mfa_revision(config),
+                gcip_output_revision=gcip_output_revision(terraform.outputs()[identity]),
+                gcip_pending=False,
+                gcip_quiesced=False,
+                provider_credentials=output.get("provider_credentials"),
+                outcome_at=int(time.time()),
+                outcome_run_id=str(os.environ.get("GITHUB_RUN_ID", "0")),
+                staging_publication_run_id=str(os.environ.get("GITHUB_RUN_ID", "0")),
+                staging_verified_at=int(time.time()),
+            )
+            print(
+                f"Ready: {identity} source={entry['sha']}"
+            )
+        except (Exception, OperationDeadline) as error:
+            with operation_budget(180):
+                if deployment_started:
+                    # Keep failed releases gated and data intact. A subsequent
+                    # explicit resume/new source can retry, but cron cannot loop
+                    # migrations or resurrect an interrupted first start.
+                    update_entry(
+                        store,
+                        identity,
+                        snapshot["generation"],
+                        failed_deployment_generation=snapshot["generation"],
+                    )
+                    if identity in managed:
+                        managed[identity].update(published=False, address=None)
+                        try:
+                            kube.gate(terraform.cluster(), identity)
+                        except Exception:
+                            pass
+                        try:
+                            terraform.apply(managed, keep_sealed=keep_sealed)
+                        except Exception:
+                            pass
+                elif sealed:
+                    try:
+                        current = current_entry(store, identity, snapshot["generation"])
+                        if not (current.get("gcip_quiesced") or current.get("gcip_pending")):
+                            if current.get("pre_update_backup"):
+                                # Restoring admission starts writers, so this
+                                # generation's backup is no longer a restore
+                                # point. Fence it: only retry_failed may create
+                                # the next generation and backup.
+                                update_entry(
+                                    store,
+                                    identity,
+                                    snapshot["generation"],
+                                    writers_started=True,
+                                    failed_deployment_generation=snapshot["generation"],
+                                    start_pending=False,
+                                )
+                            kube.unseal(terraform.cluster(), identity)
+                    except Exception:
+                        pass
+                update_entry(
+                    store,
+                    identity,
+                    snapshot["generation"],
+                    status="failed",
+                    diagnostic=type(error).__name__,
+                    outcome_at=int(time.time()),
+                    outcome_run_id=str(os.environ.get("GITHUB_RUN_ID", "0")),
+                )
+                print(f"Deferred/failed: {identity}: {type(error).__name__}")
+                failures.append(identity)
+            if isinstance(error, OperationDeadline):
+                raise
+            # A normal failure's cleanup may have consumed the remaining
+            # operation budget. Do not start another environment/cleanup.
+            bounded_timeout(1)
+    failures = sorted(set(failures) | terraform.failed)
+    if failures:
+        raise RuntimeError("Reconciliation incomplete: " + ", ".join(failures))
+
+
+def finish(config, store, prepared_path, release_path):
+    prepared = json.loads(Path(prepared_path).read_text())
+    release = json.loads(Path(release_path).read_text())
+    trusted = trusted_revision()
+    for target in prepared["targets"]:
+
+        def attach(state, target=target):
+            return attach_release(
+                state, target["environment"], target["generation"], release, trusted
+            )
+
+        store.mutate(attach)
+    reconcile(config, store)
+
+
+def preflight(event, name, repository):
+    if name == "issue_comment":
+        if event.get("action") != "created" or "pull_request" not in event.get(
+            "issue", {}
+        ):
+            return False
+        try:
+            if preview_command(event["comment"]["body"]) is None:
+                return False
+            permission({"repository": repository}, event["comment"]["user"]["login"])
+        except Refused:
+            return False
+    return True
+
+
+def controller_budget(phase):
+    seconds = 8 * 60 if phase == "prepare" else 40 * 60
+    if os.environ.get("GITHUB_ACTIONS") == "true":
+        # Include runner setup/download time in the allowance. These hard
+        # limits match gcp-environments.yml; reserve cleanup + lock release.
+        hard_limit, reserve = (
+            (10 * 60, 2 * 60) if phase == "prepare" else (55 * 60, 7 * 60)
+        )
+        with operation_budget(60):
+            jobs = github(
+                f"repos/{os.environ['GITHUB_REPOSITORY']}/actions/runs/{os.environ['GITHUB_RUN_ID']}/attempts/{os.environ['GITHUB_RUN_ATTEMPT']}/jobs?per_page=100"
+            )
+        job = next(
+            (job for job in jobs["jobs"] if job["name"] == os.environ["GITHUB_JOB"]),
+            None,
+        )
+        if not job or not job.get("started_at"):
+            raise Refused("Cannot determine this job's remaining lifecycle time")
+        started = datetime.fromisoformat(
+            job["started_at"].replace("Z", "+00:00")
+        ).timestamp()
+        seconds = min(seconds, hard_limit - (time.time() - started) - reserve)
+    if seconds < 60:
+        raise Refused("Insufficient job time to acquire the lifecycle lock safely")
+    return seconds
+
+
+def main():
+    parser = argparse.ArgumentParser()
+    parser.add_argument(
+        "phase", choices=["preflight", "prepare", "finish", "reconcile", "receipt", "production-progress", "dispatch-production"]
+    )
+    parser.add_argument("--request")
+    parser.add_argument("--release")
+    args = parser.parse_args()
+    if args.phase == "dispatch-production":
+        event = json.loads(Path(os.environ["GITHUB_EVENT_PATH"]).read_text())
+        delivery.dispatch_production(json.loads(os.environ["AIDASH_GCP_CONFIG"]), event)
+        return
+    if args.phase == "preflight":
+        event = json.loads(Path(os.environ["GITHUB_EVENT_PATH"]).read_text())
+        proceed = preflight(
+            event, os.environ["GITHUB_EVENT_NAME"], os.environ["GITHUB_REPOSITORY"]
+        )
+        with open(os.environ["GITHUB_OUTPUT"], "a") as output:
+            output.write(f"proceed={str(proceed).lower()}\n")
+        return
+    if args.phase == "production-progress":
+        with operation_budget(60):
+            config = load_config()
+            event = json.loads(Path(os.environ["GITHUB_EVENT_PATH"]).read_text())
+            delivery.export_production_progress(config, Store(config["state_bucket"]), event.get("inputs", {}).get("main_sha"))
+        return
+    with operation_budget(controller_budget(args.phase)):
+        config = load_config()
+        store = Store(config["state_bucket"])
+        if args.phase == "prepare":
+            prepare(config, store)
+        elif args.phase == "finish":
+            finish(config, store, args.request, args.release)
+        elif args.phase == "receipt":
+            delivery.export_staging_receipt(config, store)
+        else:
+            reconcile(config, store)
+
+
+if __name__ == "__main__":
+    main()

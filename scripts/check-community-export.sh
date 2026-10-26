@@ -6,13 +6,14 @@ set -euo pipefail
 root=$(git -C "$(dirname "$0")/.." rev-parse --show-toplevel)
 stage=$(mktemp -d "${TMPDIR:-/tmp}/aidash-community-export.XXXXXX")
 settings=$(mktemp -d "${TMPDIR:-/tmp}/aidash-community-settings.XXXXXX")
+descriptions=$(mktemp -d "${TMPDIR:-/tmp}/aidash-community-openapi.XXXXXX")
 project=aidash-community-export
 image=aidash-community-export:runtime
 cleanup() {
 	if [ -f "$stage/compose.yaml" ]; then
 		docker compose --project-directory "$stage" -p "$project" --profile dev down -v || true
 	fi
-	rm -rf "$stage" "$settings"
+	rm -rf "$stage" "$settings" "$descriptions"
 }
 trap cleanup EXIT
 
@@ -22,6 +23,29 @@ if [ ! -d "$stage/enterprise" ]; then
 	exit 1
 fi
 rm -rf "$stage/enterprise"
+# Cloud infrastructure lives inside enterprise/ after the licensing cutover
+# (#254). A top-level infra/ would put an Enterprise path back in Community.
+if [ -e "$stage/infra" ]; then
+	echo "the Community tree still has a top-level infra/" >&2
+	exit 1
+fi
+
+# The full tree builds the Community aidash-server package, so its OpenAPI
+# description must match the one generated without enterprise/ byte for byte.
+target="${CARGO_TARGET_DIR:-$root/target}"
+CARGO_TARGET_DIR="$target" AIDASH_OPENAPI_DESCRIPTION_ONLY=1 \
+	AIDASH_OPENAPI_OUTPUT="$descriptions/full.json" "$root/scripts/generate-api.sh"
+(
+	cd "$stage"
+	CARGO_TARGET_DIR="$target" AIDASH_OPENAPI_DESCRIPTION_ONLY=1 \
+		AIDASH_OPENAPI_OUTPUT="$descriptions/export.json" scripts/generate-api.sh
+)
+if ! cmp -s "$descriptions/full.json" "$descriptions/export.json"; then
+	echo "the Community and exported OpenAPI descriptions differ" >&2
+	diff -u "$descriptions/full.json" "$descriptions/export.json" >&2 || true
+	exit 1
+fi
+python3 "$root/scripts/check-community-openapi.py" "$descriptions/export.json"
 cd "$stage"
 
 cargo metadata --locked --format-version 1 | python3 scripts/check-workspace-boundaries.py

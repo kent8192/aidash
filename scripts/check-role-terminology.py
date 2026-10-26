@@ -5,7 +5,7 @@ The deployment-wide authority role is the Deployment Administrator. Text that
 means whoever runs the Deployment's machines names them or the Node instead.
 "operator" remains only where it means something else: SQL operators, NATS
 operators, Kubernetes selector operators, search query operators, and the
-private infra/delivery input directory.
+private enterprise/infra/delivery input directory.
 """
 
 import re
@@ -37,7 +37,7 @@ ALLOWED = [
     # Search query operators of the Brave API.
     r'"operators": true',
     r"search operators",
-    # The private input directory of infra/delivery.
+    # The private input directory of enterprise/infra/delivery.
     r"--operator-directory",
     r"operator_directory",
     r"secrets/delivery/operator",

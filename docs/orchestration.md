@@ -151,7 +151,7 @@ retry/deletion records. Native memory's PGroonga crash-safe worker settings are
 included in the database image; recovery and index reconciliation run after a
 database outage.
 The default chart connects to externally managed dependencies. The optional
-[GCP Environment chart](../infra/gcp/helm/environment/README.md) supplies retained
+[GCP Environment chart](../enterprise/infra/gcp/helm/environment/README.md) supplies retained
 PostgreSQL 17, JetStream and edge workloads within the shared cluster. The acceptance
 runner supplies disposable StatefulSets and PVCs for PostgreSQL and JetStream;
 its fixture passwords and unprotected network are local-test settings.
@@ -245,9 +245,9 @@ the drain can be interrupted **even without `force`**. The activity CronJob
 persists minute observations; missing or stale observations block automatic stop.
 Stopping retains PVCs. Destroy is the separate deletion action. The GCP lifecycle
 controller drives this sequence through `kubectl` and Helm; see the
-[GCP Environments guide](../infra/gcp/README.md). Real GKE Cluster Node loss,
+[GCP Environments guide](../enterprise/infra/gcp/README.md). Real GKE Cluster Node loss,
 Spot preemption and disk reattachment drills remain open; see the
-[Phase 4 handoff](operations/issue-155-phase4.md).
+[Phase 4 handoff](../enterprise/docs/operations/issue-155-phase4.md).
 
 ## Acceptance
 

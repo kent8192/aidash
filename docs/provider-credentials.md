@@ -392,4 +392,4 @@ with Key Material access. The deploy pipeline remains part of the trust root;
 the IAM deny policy and entry-point hardening are tracked in
 [#151](https://github.com/kent8192/aidash/issues/151). A separate credential
 enclave is deferred. See the residual deployment trust boundary in
-[the infrastructure guide](../infra/gcp/README.md).
+[the infrastructure guide](../enterprise/infra/gcp/README.md).

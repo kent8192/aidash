@@ -5,7 +5,7 @@ environment:
   AIDASH_MARKETPLACE_ORIGIN: https://marketplace.example.com
   AIDASH_AUTH_ISSUER: https://auth.example.com
   # IPs or CIDR networks of the HTTPS edge (comma-separated). 10.44.0.0/14 is the GKE Pod
-  # CIDR from infra/gcp/environments/cluster.tf, where the edge Pods (aidash.run/edge=env)
+  # CIDR from enterprise/infra/gcp/environments/cluster.tf, where the edge Pods (aidash.run/edge=env)
   # live and change IPs. Every Pod in that range may assert forwarded HTTPS, which is why
   # networkPolicy below admits only the edge Pods to the HTTP port; do not disable it
   # while this network is trusted.
@@ -22,7 +22,7 @@ environment:
 # Billing, enrollment and Recall integrations call this Service directly over plain
 # HTTP with their Bearer secrets; those Pods are the second peer below. The service
 # does not know their labels (the standalone services are not yet deployed from
-# infra/gcp, Issue #516), so their namespace and labels are PLACEHOLDERS that match
+# enterprise/infra/gcp, Issue #516), so their namespace and labels are PLACEHOLDERS that match
 # nothing until replaced. Marketplace calls Authentication (/oauth/token,
 # /oauth/introspect, /oauth/revoke) at the AIDASH_AUTH_ISSUER origin, so that is an
 # egress concern, not an ingress peer here. The edge Pods live in the namespace of

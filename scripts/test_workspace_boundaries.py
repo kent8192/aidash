@@ -110,6 +110,18 @@ class WorkspaceBoundaryTests(unittest.TestCase):
         self.assertEqual(BOUNDARIES.violations(metadata, ROOT), [])
 
 
+class LayoutTests(unittest.TestCase):
+    def test_cloud_infrastructure_outside_enterprise_is_rejected(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            self.assertEqual(BOUNDARIES.layout_violations(root), [])
+            (root / "infra").mkdir()
+            self.assertEqual(
+                BOUNDARIES.layout_violations(root),
+                ["Cloud infrastructure must live under enterprise/: infra/"],
+            )
+
+
 class EnterpriseReferenceTests(unittest.TestCase):
     def references(self, files):
         with tempfile.TemporaryDirectory() as directory:

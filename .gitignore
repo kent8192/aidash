@@ -172,23 +172,23 @@ benchmarks/frontend/results/*
 !benchmarks/frontend/results/.gitkeep
 
 # Terraform
-infra/**/.terraform/
-infra/**/*.tfstate
-infra/**/*.tfstate.backup
-infra/**/.terraform.tfstate.lock.info
-infra/**/*.tfvars
-infra/**/*.tfvars.json
-infra/**/*.tfplan
-!infra/**/*.example.tfvars
-!infra/**/*.examples.tfvars
-!infra/**/*.example.tfvars.json
-infra/**/backend.tfvars
-infra/github-runners/lambdas/*.zip
+enterprise/infra/**/.terraform/
+enterprise/infra/**/*.tfstate
+enterprise/infra/**/*.tfstate.backup
+enterprise/infra/**/.terraform.tfstate.lock.info
+enterprise/infra/**/*.tfvars
+enterprise/infra/**/*.tfvars.json
+enterprise/infra/**/*.tfplan
+!enterprise/infra/**/*.example.tfvars
+!enterprise/infra/**/*.examples.tfvars
+!enterprise/infra/**/*.example.tfvars.json
+enterprise/infra/**/backend.tfvars
+enterprise/infra/github-runners/lambdas/*.zip
 
 # Orphan detector Lambda build artifacts (Issue #3903)
-infra/github-runners/lambda-src/*/node_modules/
-infra/github-runners/lambda-src/*/dist/
-infra/github-runners/lambda-src/*/coverage/
+enterprise/infra/github-runners/lambda-src/*/node_modules/
+enterprise/infra/github-runners/lambda-src/*/dist/
+enterprise/infra/github-runners/lambda-src/*/coverage/
 
 # Design spec documents (internal planning, not for release)
 docs/specs/

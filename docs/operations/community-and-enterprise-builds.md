@@ -26,6 +26,8 @@ When the table is absent, the Offering is `self-hosted`. Every command that load
 
 `enterprise/` is a separate Cargo workspace with its own `Cargo.lock`. Its `server` package composes the Community `aidash-server` library and passes its own build to it. No Community manifest, lockfile or root `Dockerfile` names `enterprise/`, so deleting the directory leaves a working Community tree.
 
+`enterprise/infra/` holds the GCP Environments and delivery Terraform, the environment chart and the Cloud-only scripts. It is not part of the Community build.
+
 `enterprise/` keeps copies of `rust-toolchain.toml`, `rustfmt.toml`, `clippy.toml`, the `[workspace.package]` and `[workspace.lints]` tables and the profiles. `scripts/check-enterprise-alignment.py` fails when a copy differs from the Community file, or when `enterprise/Cargo.lock` holds a version of a Community-locked package that `Cargo.lock` does not hold. To fix a version difference, run the `cargo update --manifest-path enterprise/Cargo.toml -p <package> --precise <version>` command that the check prints.
 
 Nothing under `enterprise/` declares a license until the licensing cutover (#255).
@@ -40,11 +42,12 @@ scripts/check-community-export.sh
 
 The script does these steps:
 
-1. It extracts `git archive HEAD` into a temporary directory and deletes `enterprise/` there.
-2. It runs `cargo metadata --locked` and `scripts/check-workspace-boundaries.py` in that tree.
-3. It builds the root `Dockerfile` at the `runtime` target, which runs `cargo build --locked`.
-4. It starts that image with `offering = "cloud"` and expects the Community refusal.
-5. It starts the `dev` Compose profile's `backend` and waits until `/health` answers.
+1. It extracts `git archive HEAD` into a temporary directory, deletes `enterprise/` there, and refuses a tree that still has a top-level `infra/`.
+2. It generates the OpenAPI description with `scripts/generate-api.sh` in the full tree's Community build and in the extracted tree. It fails unless the two files are byte-identical, and unless no path or tag names a Cloud-only feature (GCIP, the broker, billing, Secret Manager or Cloud KMS). `scripts/check-community-openapi.py` holds the denylist.
+3. It runs `cargo metadata --locked` and `scripts/check-workspace-boundaries.py` in that tree.
+4. It builds the root `Dockerfile` at the `runtime` target, which runs `cargo build --locked`.
+5. It starts that image with `offering = "cloud"` and expects the Community refusal.
+6. It starts the `dev` Compose profile's `backend` and waits until `/health` answers.
 
 The CI job `community-export` runs the same script.
 
@@ -99,7 +102,7 @@ cargo run --locked --manifest-path enterprise/Cargo.toml --bin aidash -- serve
 
 The root `Dockerfile` builds the Community image. This change publishes it nowhere.
 
-`enterprise/Dockerfile` builds the Enterprise image from the repository root. Its settings select the `cloud` Offering. `infra/gcp/control/images.py` builds the `app` image of the GCP Environments from it, and the image goes only to Aidash's private Artifact Registry.
+`enterprise/Dockerfile` builds the Enterprise image from the repository root. Its settings select the `cloud` Offering. `enterprise/infra/gcp/control/images.py` builds the `app` image of the GCP Environments from it, and the image goes only to Aidash's private Artifact Registry.
 
 ```sh
 docker build -f enterprise/Dockerfile --target runtime .

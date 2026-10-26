@@ -46,7 +46,7 @@ jobs:
           CI_MODE: ${{ steps.scope.outputs.mode }}
           DEVELOP_BRANCH: ${{ fromJSON(vars.AIDASH_GCP_CONFIG || '{}').develop_branch }}
           RELEASE_APP_BOT_LOGIN: ${{ fromJSON(vars.AIDASH_GCP_CONFIG || '{}').release_app_bot_login }}
-        run: python3 infra/gcp/control/releases.py verify-ci
+        run: python3 enterprise/infra/gcp/control/releases.py verify-ci
   gcp-infrastructure:
     name: GCP infrastructure
     needs: scope
@@ -100,7 +100,7 @@ jobs:
             directory: desktop/src-tauri
             features: ""
           - workspace: observer
-            directory: infra/gcp/observer
+            directory: enterprise/infra/gcp/observer
             features: ""
           - workspace: enterprise
             directory: enterprise
@@ -313,7 +313,12 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+      - name: Install the native gRPC build prerequisite
+        run: scripts/install-ci-protoc.sh
       - run: rustup show active-toolchain
+      - uses: Swatinem/rust-cache@49a0bdc70d2e1b713ca9e2869b211fcce03d3c1c # v2
+        with:
+          shared-key: community-export
       - name: Build and serve the Community build from a tree without enterprise/
         run: scripts/check-community-export.sh
   community-bundle:
@@ -558,6 +563,7 @@ jobs:
         with:
           persist-credentials: false
       - run: python3 -m unittest discover -s scripts -p test_check_community_bundle.py
+      - run: python3 -m unittest discover -s scripts -p test_check_community_openapi.py
       - run: python3 -m unittest discover -s scripts -p test_transaction_cluster_acceptance.py
       - run: python3 -m unittest discover -s scripts -p test_core_capability_evidence.py
       - run: python3 -m unittest discover -s scripts -p test_golden_path.py
