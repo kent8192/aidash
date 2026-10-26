@@ -15,6 +15,6 @@ The references are a thread message that cites a File version (including a corre
 ## Consequences
 
 - Download and File preview serve a Retained version as they serve a current one, after checking current authority over the Working Area.
-- Releasing a message's reference happens when the message is deleted or stops being visible. A Live preview releases its revision when it stops.
+- A message's reference is released when the message itself is removed, for example by Tenant Deletion; a person losing sight of the message does not release it, since others may still see it. A Live preview releases its revision when it stops.
 - Retained bytes grow only with File versions that later publications replaced, as in version-control history.
 - Cleaning up a Working Area or deleting a Tenant removes Retained versions too; a reference then shows the version as no longer retained instead of showing another version.
