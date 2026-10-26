@@ -422,6 +422,25 @@ pub(crate) fn register(contracts: &mut Contracts, document: &mut OpenApiSchema) 
 		views::management::file_download,
 	)?;
 	contracts
+		.response::<_, crate::apps::execution::capabilities::serializers::previews::PreviewAvailability>(
+			document,
+			views::previews::availability,
+			200,
+			"application/json",
+		)?;
+	contracts
+		.request::<_, crate::apps::execution::capabilities::serializers::previews::PreviewTicketInput>(
+			document,
+			views::previews::ticket,
+		)?;
+	contracts
+		.response::<_, crate::apps::execution::capabilities::serializers::previews::PreviewTicket>(
+			document,
+			views::previews::ticket,
+			200,
+			"application/json",
+		)?;
+	contracts
 		.response::<_, crate::apps::execution::capabilities::serializers::cleanup::ManagementPage>(
 			document,
 			views::management::managed_areas,

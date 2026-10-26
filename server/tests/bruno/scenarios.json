@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "endpoint_count": 338,
+  "endpoint_count": 340,
   "requests": [
     {
       "name": "Health reports the configured node",
@@ -14704,6 +14704,108 @@
       "required_checks": [
         "Exact HTTP 403",
         "Stable authorization error envelope"
+      ]
+    },
+    {
+      "name": "1339 core_preview_availability - Anonymous request is rejected",
+      "file": "contracts/1339-core_preview_availability.bru",
+      "endpoint": "GET /api/previews/availability",
+      "scenario": "Anonymous request is rejected",
+      "status": 401,
+      "required_checks": [
+        "Exact HTTP 401",
+        "Stable authorization error envelope"
+      ]
+    },
+    {
+      "name": "1340 core_preview_availability - Anonymous request is rejected",
+      "file": "contracts/1340-core_preview_availability.bru",
+      "endpoint": "GET /api/previews/availability",
+      "scenario": "Anonymous request is rejected",
+      "status": 401,
+      "required_checks": [
+        "Exact HTTP 401",
+        "Stable authorization error envelope"
+      ]
+    },
+    {
+      "name": "1341 core_preview_availability - Deployment Administrator reads the same availability flag",
+      "file": "contracts/1341-core_preview_availability.bru",
+      "endpoint": "GET /api/previews/availability",
+      "scenario": "Deployment Administrator reads the same availability flag",
+      "status": 200,
+      "required_checks": [
+        "Exact HTTP 200",
+        "Documented response fields and types",
+        "Deployment Administrator reads the same availability flag contract"
+      ]
+    },
+    {
+      "name": "1342 core_preview_availability - Subject bearer reads the availability flag",
+      "file": "contracts/1342-core_preview_availability.bru",
+      "endpoint": "GET /api/previews/availability",
+      "scenario": "Subject bearer reads the availability flag",
+      "status": 200,
+      "required_checks": [
+        "Exact HTTP 200",
+        "Documented response fields and types",
+        "Subject bearer reads the availability flag contract"
+      ]
+    },
+    {
+      "name": "1343 core_preview_ticket - Anonymous request is rejected",
+      "file": "contracts/1343-core_preview_ticket.bru",
+      "endpoint": "POST /api/previews/tickets",
+      "scenario": "Anonymous request is rejected",
+      "status": 401,
+      "required_checks": [
+        "Rejected input preserves committed workspace state",
+        "Exact HTTP 401",
+        "Stable authorization error envelope"
+      ]
+    },
+    {
+      "name": "1344 core_preview_ticket - Deployment Administrator cannot issue a ticket",
+      "file": "contracts/1344-core_preview_ticket.bru",
+      "endpoint": "POST /api/previews/tickets",
+      "scenario": "Deployment Administrator cannot issue a ticket",
+      "status": 400,
+      "required_checks": [
+        "Exact HTTP 400",
+        "Rejection is diagnostic and does not disclose SQL or credentials"
+      ]
+    },
+    {
+      "name": "1345 core_preview_ticket - Malformed JSON cannot reach the use case",
+      "file": "contracts/1345-core_preview_ticket.bru",
+      "endpoint": "POST /api/previews/tickets",
+      "scenario": "Malformed JSON cannot reach the use case",
+      "status": 400,
+      "required_checks": [
+        "Exact HTTP 400",
+        "Rejection is diagnostic and does not disclose SQL or credentials"
+      ]
+    },
+    {
+      "name": "1346 core_preview_ticket - Unknown Ticket fields are rejected",
+      "file": "contracts/1346-core_preview_ticket.bru",
+      "endpoint": "POST /api/previews/tickets",
+      "scenario": "Unknown Ticket fields are rejected",
+      "status": 422,
+      "required_checks": [
+        "Exact HTTP 422",
+        "Rejection is diagnostic and does not disclose SQL or credentials"
+      ]
+    },
+    {
+      "name": "1347 core_preview_ticket - Ticket input is required",
+      "file": "contracts/1347-core_preview_ticket.bru",
+      "endpoint": "POST /api/previews/tickets",
+      "scenario": "Ticket input is required",
+      "status": 422,
+      "required_checks": [
+        "Exact HTTP 422",
+        "Rejection is diagnostic and does not disclose SQL or credentials"
       ]
     }
   ]

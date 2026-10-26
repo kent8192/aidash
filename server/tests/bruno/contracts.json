@@ -42535,5 +42535,62 @@
         }
       }
     }
+  },
+  {
+    "method": "GET",
+    "path": "/api/previews/availability",
+    "name": "core_preview_availability",
+    "source": "server/src/apps/execution/capabilities/views/previews.rs",
+    "json": false,
+    "uuid_parameters": [],
+    "query_parameters": [],
+    "response": {
+      "schema": {
+        "$ref": "#/components/schemas/PreviewAvailability"
+      },
+      "definitions": {
+        "PreviewAvailability": {
+          "type": "object",
+          "required": ["available", "preview_domain"],
+          "properties": {
+            "available": {
+              "type": "boolean"
+            },
+            "preview_domain": {
+              "type": ["string", "null"]
+            }
+          }
+        }
+      }
+    }
+  },
+  {
+    "method": "POST",
+    "path": "/api/previews/tickets",
+    "name": "core_preview_ticket",
+    "source": "server/src/apps/execution/capabilities/views/previews.rs",
+    "json": true,
+    "uuid_parameters": [],
+    "query_parameters": [],
+    "response": {
+      "schema": {
+        "$ref": "#/components/schemas/PreviewTicket"
+      },
+      "definitions": {
+        "PreviewTicket": {
+          "type": "object",
+          "required": ["url", "expires_at"],
+          "properties": {
+            "url": {
+              "type": "string"
+            },
+            "expires_at": {
+              "type": "string",
+              "format": "date-time"
+            }
+          }
+        }
+      }
+    }
   }
 ]

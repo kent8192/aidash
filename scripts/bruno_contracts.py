@@ -1082,6 +1082,24 @@ def render():
                 add(endpoint, "Paging rejects nonnumeric offsets", 400,
                     path=uri + "?offset=invalid", headers=DEPLOYMENT_ADMINISTRATOR)
             continue
+        if route["source"] == "server/src/apps/execution/capabilities/views/previews.rs":
+            flag = 'expect(res.getBody()).to.have.all.keys("available","preview_domain");expect(res.getBody().available).to.equal(false);expect(res.getBody().preview_domain).to.equal(null);'
+            if path.endswith("/availability"):
+                add(endpoint, "Anonymous request is rejected", 401)
+                add(endpoint, "Deployment Administrator reads the same availability flag", 200,
+                    headers=DEPLOYMENT_ADMINISTRATOR, checks=flag)
+                add(endpoint, "Subject bearer reads the availability flag", 200,
+                    headers=SUBJECT, checks=flag)
+            else:
+                body = json.dumps({"area_id": MISSING, "file_id": MISSING})
+                add(endpoint, "Deployment Administrator cannot issue a ticket", 400,
+                    headers=DEPLOYMENT_ADMINISTRATOR, body=body)
+                add(endpoint, "Malformed JSON cannot reach the use case", 400,
+                    headers=SUBJECT, body="{")
+                add(endpoint, "Unknown Ticket fields are rejected", 422,
+                    headers=SUBJECT, body=json.dumps({"area_id": MISSING, "file_id": MISSING, "unexpected": True}))
+                add(endpoint, "Ticket input is required", 422, headers=SUBJECT, body="{}")
+            continue
         if route["json"]:
             add(
                 endpoint,

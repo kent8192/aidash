@@ -195,6 +195,24 @@ impl RuntimeTasks {
 					.map_err(Into::into)
 			}));
 		}
+		if event_streams.is_some()
+			&& let Some(preview) = &federation.config.preview
+			&& preview.in_process
+		{
+			// The Self-hosted default: the API process is also the Preview
+			// gateway. Helm runs it apart and turns `in_process` off there.
+			let listener = tokio::net::TcpListener::bind(preview.listen).await?;
+			let authority = Arc::new(crate::apps::execution::repositories::previews::Gateway {
+				store: federation.store.clone(),
+				domain: preview.domain.clone(),
+			});
+			let stopping = receiver.clone();
+			tasks.spawn_service(runtime_task(async move {
+				aidash_integrations::preview::serve(listener, authority, stopping)
+					.await
+					.map_err(Into::into)
+			}));
+		}
 		tasks.spawn_worker(federation.sandbox.clone().run(receiver.clone()));
 		tasks.spawn_service(runtime_task(
 			crate::apps::execution::services::metrics::run(coordinator.clone()),
@@ -495,7 +513,7 @@ pub fn model_catalog(client: reqwest::Client) -> Arc<dyn aidash_application::por
 
 mod compatibility;
 mod listener;
-pub use compatibility::{migrate, require_migrated, serve};
+pub use compatibility::{migrate, preview_gateway, require_migrated, serve};
 
 /// Legacy-only Keyless inference: no Cache Salt Keys, so any salted request is
 /// rejected without being sent. Run inference uses `admitted_model_provider`,

@@ -1523,3 +1523,34 @@ pub(crate) use crate::apps::execution::capabilities::serializers::endpoints::{
 };
 
 use reinhardt::query::SimpleExpr;
+
+/// Whether this Deployment offers Previews and where.
+pub(crate) fn preview_availability(f: &Federation) -> aidash_application::preview::Availability {
+	aidash_application::preview::Availability::of(
+		f.config
+			.preview
+			.as_ref()
+			.map(|preview| preview.domain.as_str()),
+	)
+}
+
+/// Authorize the File version as a download, then issue its one-time ticket.
+pub(crate) async fn preview_ticket(
+	f: Federation,
+	actor: Actor,
+	input: crate::apps::execution::capabilities::serializers::previews::PreviewTicketInput,
+	origin: String,
+) -> Result<aidash_application::preview::Issued> {
+	let mut access = access(&f, actor).await?;
+	let preview = f.config.preview.as_ref();
+	let result = {
+		let mut scope = crate::apps::execution::repositories::previews::Scope {
+			access: &mut access,
+			domain: preview.map(|preview| preview.domain.as_str()),
+			public_port: preview.and_then(|preview| preview.public_port),
+			origin: &origin,
+		};
+		aidash_application::preview::issue(&mut scope, input.area_id, input.file_id).await
+	};
+	access.finish(result.map_err(Into::into)).await
+}
