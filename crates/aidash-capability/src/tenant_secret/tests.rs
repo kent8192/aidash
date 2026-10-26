@@ -7,6 +7,7 @@ use crate::{
 use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
 use secrecy::ExposeSecret;
 use serde_json::json;
+use std::collections::BTreeMap;
 
 const ISS: &str = "server";
 const AUD: &str = "tenant-secret";
@@ -21,6 +22,10 @@ fn keys(signer: &InMemorySigner) -> PublicKeys {
 	let mut keys = PublicKeys::default();
 	keys.insert(signer.kid().into(), signer.public_key());
 	keys
+}
+
+fn issuers() -> BTreeMap<String, String> {
+	BTreeMap::from([(KID.to_owned(), ISS.to_owned())])
 }
 
 fn claims() -> SecretClaims {
@@ -101,7 +106,7 @@ async fn round_trips_every_attach_and_subject() {
 			value.sub = sub;
 			let token = mint_secret(&value, &signer).await.unwrap();
 			let verified = keys
-				.verify_secret(token.expose_secret(), ISS, AUD, 100)
+				.verify_secret(token.expose_secret(), &issuers(), AUD, 100)
 				.unwrap();
 			assert_eq!(verified, value);
 		}
@@ -139,10 +144,27 @@ async fn neither_token_kind_passes_as_the_other() {
 	);
 	let provider = mint(&provider_claims(), &signer).await.unwrap();
 	assert_eq!(
-		keys.verify_secret(provider.expose_secret(), ISS, AUD, 100)
+		keys.verify_secret(provider.expose_secret(), &issuers(), AUD, 100)
 			.unwrap_err(),
 		Failure::InvalidSignature
 	);
+}
+
+#[tokio::test]
+async fn a_header_never_carries_a_broker_or_forwarding_prefix() {
+	let signer = signer();
+	let keys = keys(&signer);
+	for name in ["x-aidash-correlation", "x-forwarded-host", "sec-fetch-mode"] {
+		let mut value = claims();
+		value.attach = Attach::Header { name: name.into() };
+		let token = mint_secret(&value, &signer).await.unwrap();
+		assert_eq!(
+			keys.verify_secret(token.expose_secret(), &issuers(), AUD, 100)
+				.unwrap_err(),
+			Failure::ClaimViolation,
+			"{name}"
+		);
+	}
 }
 
 #[tokio::test]
@@ -161,7 +183,7 @@ async fn accepts_canonical_https_origins_and_root_prefixes() {
 		};
 		let token = mint_secret(&value, &signer).await.unwrap();
 		assert!(
-			keys.verify_secret(token.expose_secret(), ISS, AUD, 100)
+			keys.verify_secret(token.expose_secret(), &issuers(), AUD, 100)
 				.is_ok(),
 			"{origin}"
 		);
@@ -304,7 +326,7 @@ async fn rejects_each_violation_with_its_own_code() {
 		apply(&mut value, case);
 		let token = mint_secret(&value, &signer).await.unwrap();
 		assert_eq!(
-			keys.verify_secret(token.expose_secret(), ISS, AUD, 100)
+			keys.verify_secret(token.expose_secret(), &issuers(), AUD, 100)
 				.unwrap_err(),
 			expected,
 			"case {case}"
@@ -323,15 +345,16 @@ async fn checks_signature_issuer_audience_and_time() {
 		(ISS, "other", 100, Failure::Audience),
 		(ISS, AUD, 160, Failure::Expired),
 	] {
+		let issuers = BTreeMap::from([(KID.to_owned(), issuer.to_owned())]);
 		assert_eq!(
-			keys.verify_secret(token, issuer, audience, now)
+			keys.verify_secret(token, &issuers, audience, now)
 				.unwrap_err(),
 			expected
 		);
 	}
 	assert_eq!(
 		PublicKeys::default()
-			.verify_secret(token, ISS, AUD, 100)
+			.verify_secret(token, &issuers(), AUD, 100)
 			.unwrap_err(),
 		Failure::UnknownKid
 	);
@@ -341,15 +364,64 @@ async fn checks_signature_issuer_audience_and_time() {
 		InMemorySigner::new(KID.into(), [8; 32]).public_key(),
 	);
 	assert_eq!(
-		wrong.verify_secret(token, ISS, AUD, 100).unwrap_err(),
+		wrong
+			.verify_secret(token, &issuers(), AUD, 100)
+			.unwrap_err(),
 		Failure::InvalidSignature
 	);
 	for token in ["", "a.b.c.d", "eyJhbGciOiJub25lIn0.e30."] {
 		assert_eq!(
-			keys.verify_secret(token, ISS, AUD, 100).unwrap_err(),
+			keys.verify_secret(token, &issuers(), AUD, 100).unwrap_err(),
 			Failure::InvalidSignature
 		);
 	}
+}
+
+#[tokio::test]
+async fn a_key_only_speaks_for_the_issuer_the_deployment_maps_to_it() {
+	let server = InMemorySigner::new("kms/server".into(), [1; 32]);
+	let worker = InMemorySigner::new("kms/worker".into(), [2; 32]);
+	let mut keys = PublicKeys::default();
+	keys.insert(server.kid().into(), server.public_key());
+	keys.insert(worker.kid().into(), worker.public_key());
+	let issuers = BTreeMap::from([
+		(server.kid().to_owned(), "aidash-server".to_owned()),
+		(worker.kid().to_owned(), "aidash-worker".to_owned()),
+	]);
+	let minted = |signer: &InMemorySigner, issuer: &str| {
+		let mut value = claims();
+		value.kid = signer.kid().into();
+		value.iss = issuer.into();
+		value
+	};
+	for (signer, issuer) in [(&server, "aidash-server"), (&worker, "aidash-worker")] {
+		let value = minted(signer, issuer);
+		let token = mint_secret(&value, signer).await.unwrap();
+		let verified = keys
+			.verify_secret(token.expose_secret(), &issuers, AUD, 100)
+			.unwrap();
+		assert_eq!(verified.iss, issuer);
+	}
+	for (signer, issuer) in [(&server, "aidash-worker"), (&worker, "aidash-server")] {
+		let value = minted(signer, issuer);
+		let token = mint_secret(&value, signer).await.unwrap();
+		assert_eq!(
+			keys.verify_secret(token.expose_secret(), &issuers, AUD, 100)
+				.unwrap_err(),
+			Failure::Audience,
+			"a {issuer} claim on the {} key",
+			signer.kid()
+		);
+	}
+	// A key missing from the issuer map is unknown even though it signed the token.
+	let unmapped = BTreeMap::from([("kms/other".to_owned(), "aidash-server".to_owned())]);
+	let value = minted(&server, "aidash-server");
+	let token = mint_secret(&value, &server).await.unwrap();
+	assert_eq!(
+		keys.verify_secret(token.expose_secret(), &unmapped, AUD, 100)
+			.unwrap_err(),
+		Failure::UnknownKid
+	);
 }
 
 #[tokio::test]
@@ -367,7 +439,8 @@ async fn a_claim_never_names_a_key_other_than_its_header() {
 	let signature = signer.sign(input.as_bytes()).await.unwrap();
 	let token = format!("{input}.{}", URL_SAFE_NO_PAD.encode(signature));
 	assert_eq!(
-		keys.verify_secret(&token, ISS, AUD, 100).unwrap_err(),
+		keys.verify_secret(&token, &issuers(), AUD, 100)
+			.unwrap_err(),
 		Failure::UnknownKid
 	);
 }
@@ -387,7 +460,8 @@ async fn a_token_with_an_unknown_claim_is_refused() {
 	let signature = signer.sign(input.as_bytes()).await.unwrap();
 	let token = format!("{input}.{}", URL_SAFE_NO_PAD.encode(signature));
 	assert_eq!(
-		keys.verify_secret(&token, ISS, AUD, 100).unwrap_err(),
+		keys.verify_secret(&token, &issuers(), AUD, 100)
+			.unwrap_err(),
 		Failure::InvalidSignature
 	);
 }
@@ -407,7 +481,8 @@ async fn a_subject_with_an_unknown_member_is_refused() {
 	let signature = signer.sign(input.as_bytes()).await.unwrap();
 	let token = format!("{input}.{}", URL_SAFE_NO_PAD.encode(signature));
 	assert_eq!(
-		keys.verify_secret(&token, ISS, AUD, 100).unwrap_err(),
+		keys.verify_secret(&token, &issuers(), AUD, 100)
+			.unwrap_err(),
 		Failure::InvalidSignature
 	);
 }
@@ -420,7 +495,7 @@ async fn a_token_without_the_optional_response_bound_still_verifies() {
 	value.max_response_bytes = None;
 	let token = mint_secret(&value, &signer).await.unwrap();
 	let verified = keys
-		.verify_secret(token.expose_secret(), ISS, AUD, 100)
+		.verify_secret(token.expose_secret(), &issuers(), AUD, 100)
 		.unwrap();
 	assert_eq!(verified.max_response_bytes, None);
 	let payload = token.expose_secret().split('.').nth(1).unwrap();

@@ -543,7 +543,7 @@ fn sealed_payload_hosts_match_the_domain_normalization() {
 		vec!["a.example".to_owned(), "b.example".to_owned()],
 	] {
 		let expected = aidash_domain::tenant_secrets::normalize_hosts(&hosts).unwrap();
-		let opened = sealed::open(&sealed::seal(&hosts, "canary-value")).unwrap();
+		let opened = sealed::open(&sealed::seal(&hosts, "canary-value").unwrap()).unwrap();
 		assert_eq!(opened.hosts, expected, "{hosts:?}");
 	}
 	for bad in [
@@ -556,6 +556,10 @@ fn sealed_payload_hosts_match_the_domain_normalization() {
 	] {
 		assert!(
 			aidash_domain::tenant_secrets::normalize_hosts(&[bad.to_owned()]).is_err(),
+			"{bad}"
+		);
+		assert!(
+			sealed::seal(&[bad.to_owned()], "canary-value").is_err(),
 			"{bad}"
 		);
 		let payload = serde_json::json!({"v": 1, "hosts": [bad], "value": "canary-value"});

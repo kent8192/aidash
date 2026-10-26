@@ -15,7 +15,8 @@ fn round_trips_and_normalizes_its_hosts() {
 	let bytes = seal(
 		&hosts(&["API.Example.com", "api.example.com", "b.example"]),
 		"canary-value",
-	);
+	)
+	.unwrap();
 	assert_eq!(
 		serde_json::from_slice::<serde_json::Value>(&bytes).unwrap(),
 		json!({
@@ -61,11 +62,18 @@ fn refuses_every_payload_that_is_not_exactly_a_sealed_secret() {
 }
 
 #[test]
-fn sealing_invalid_hosts_is_a_programming_error() {
-	// The callers validate hosts before sealing; there is no value to store for
-	// an invalid host list, so the codec refuses to produce one.
-	let result = std::panic::catch_unwind(|| seal(&[], "canary-value"));
-	assert!(result.is_err());
+fn sealing_invalid_hosts_is_refused_without_a_payload() {
+	let too_many: Vec<String> = (0..=MAX_HOSTS)
+		.map(|index| format!("h{index}.example"))
+		.collect();
+	for invalid in [
+		hosts(&[]),
+		too_many,
+		hosts(&["https://api.example.com"]),
+		hosts(&["api.example.com:443"]),
+	] {
+		assert!(seal(&invalid, "canary-value").is_err(), "{invalid:?}");
+	}
 }
 
 #[test]

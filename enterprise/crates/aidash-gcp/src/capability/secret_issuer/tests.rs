@@ -1,6 +1,7 @@
 use super::*;
 use aidash_capability::{Failure, InMemorySigner, PublicKeys};
 use secrecy::ExposeSecret;
+use std::collections::BTreeMap;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 const KID: &str =
@@ -44,6 +45,10 @@ fn issuer(signer: &Arc<InMemorySigner>) -> SecretTokenIssuer {
 	SecretTokenIssuer::new(configuration(), signer.clone()).unwrap()
 }
 
+fn issuers() -> BTreeMap<String, String> {
+	BTreeMap::from([(KID.to_owned(), "server".to_owned())])
+}
+
 #[tokio::test]
 async fn mints_a_tenant_secret_token_with_its_own_configuration_and_ttl() {
 	// Arrange
@@ -56,7 +61,7 @@ async fn mints_a_tenant_secret_token_with_its_own_configuration_and_ttl() {
 	let mut keys = PublicKeys::default();
 	keys.insert(KID.into(), signer.public_key());
 	let claims = keys
-		.verify_secret(token.expose_secret(), "server", "tenant-secret", now())
+		.verify_secret(token.expose_secret(), &issuers(), "tenant-secret", now())
 		.unwrap();
 	assert_eq!(claims.iss, "server");
 	assert_eq!(claims.aud, "tenant-secret");

@@ -44,20 +44,18 @@ pub struct Sealed {
 pub struct SealedError;
 
 /// Seals a value with the hosts it may be sent to. Hosts are normalized,
-/// de-duplicated and sorted here, and the output is zeroized when dropped.
-///
-/// # Panics
-///
-/// `hosts` must be valid Tenant Secret hosts (1 to `MAX_HOSTS`); sealing an
-/// invalid list is a programming error, not a call the caller may retry.
-pub fn seal(hosts: &[String], value: &str) -> Zeroizing<Vec<u8>> {
-	let hosts = normalize_hosts(hosts).expect("Tenant Secret hosts are validated before sealing");
+/// de-duplicated and sorted here, and the output is zeroized when dropped. A
+/// list that is not 1 to `MAX_HOSTS` valid hosts is refused.
+pub fn seal(hosts: &[String], value: &str) -> Result<Zeroizing<Vec<u8>>, SealedError> {
+	let hosts = normalize_hosts(hosts).ok_or(SealedError)?;
 	let payload = SealPayload {
 		v: VERSION,
 		hosts: &hosts,
 		value,
 	};
-	Zeroizing::new(serde_json::to_vec(&payload).expect("a sealed Tenant Secret always serializes"))
+	serde_json::to_vec(&payload)
+		.map(Zeroizing::new)
+		.map_err(|_| SealedError)
 }
 
 /// Opens a payload the Secret Store returned. A payload that is not exactly a

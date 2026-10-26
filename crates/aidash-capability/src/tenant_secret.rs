@@ -4,7 +4,7 @@
 use crate::{Failure, PublicKeys, SignError, TOKEN_TTL_SECS, TokenSigner, jws};
 use secrecy::SecretString;
 use serde::{Deserialize, Serialize};
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use uuid::Uuid;
 
 pub mod sealed;
@@ -125,12 +125,15 @@ pub async fn mint_secret(
 }
 
 impl PublicKeys {
-	/// A Tenant Secret token, with the same structural checks as `verify`. `now`
-	/// is supplied by admission; expiry is never checked during a stream.
+	/// A Tenant Secret token, with the same structural checks as `verify`.
+	/// `issuers` maps each accepted `kid` to the one issuer that key may speak
+	/// for: a kid absent from the map is unknown, and a claim that names another
+	/// issuer is refused. `now` is supplied by admission; expiry is never checked
+	/// during a stream.
 	pub fn verify_secret(
 		&self,
 		token: &str,
-		issuer: &str,
+		issuers: &BTreeMap<String, String>,
 		audience: &str,
 		now: u64,
 	) -> Result<SecretClaims, Failure> {
@@ -139,7 +142,8 @@ impl PublicKeys {
 		if claims.kid != kid {
 			return Err(Failure::UnknownKid);
 		}
-		if claims.iss != issuer || claims.aud != audience {
+		let issuer = issuers.get(&kid).ok_or(Failure::UnknownKid)?;
+		if claims.iss != *issuer || claims.aud != audience {
 			return Err(Failure::Audience);
 		}
 		if now >= claims.exp {
@@ -227,6 +231,7 @@ fn header_valid(name: &str) -> bool {
 				| "trailer" | "expect"
 		) && !name.starts_with("sec-")
 		&& !name.starts_with("x-forwarded-")
+		&& !name.starts_with("x-aidash-")
 }
 
 fn version_valid(version: &str) -> bool {

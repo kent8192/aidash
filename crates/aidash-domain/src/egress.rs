@@ -159,6 +159,7 @@ impl ExternalService {
 					| "trailer" | "expect"
 			) || header.starts_with("sec-")
 			|| header.starts_with("x-forwarded-")
+			|| header.starts_with("x-aidash-")
 		{
 			return Err(Error::Invalid(
 				"invalid External service credential header".into(),
