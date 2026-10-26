@@ -175,6 +175,7 @@ struct State {
 	direct_skills: Vec<DirectSkill>,
 	direct_bodies: BTreeMap<Uuid, String>,
 	projection: ProjectionVersion,
+	harness_contract: aidash_domain::harness_contract::HarnessContract,
 	skill_tool: bool,
 	skill_revision: Mutex<Option<i64>>,
 	skill_text: Mutex<String>,
@@ -1400,6 +1401,7 @@ impl ExecutionEnvironment for Backend {
 			context_policy: self.0.context_policy.clone(),
 			tool_parallelism: 1,
 			projection_version: self.0.projection,
+			harness_contract: self.0.harness_contract,
 			prompt_cache: self.0.prompt_cache,
 			completion: self.0.completion.clone(),
 		})
@@ -1676,6 +1678,7 @@ fn fixture() -> Fixture {
 		direct_skills: vec![],
 		direct_bodies: BTreeMap::new(),
 		projection: ProjectionVersion::Legacy,
+		harness_contract: Default::default(),
 		skill_tool: false,
 		skill_revision: Mutex::new(Some(1)),
 		skill_text: Mutex::new("\nPinned Skills: review\n".into()),

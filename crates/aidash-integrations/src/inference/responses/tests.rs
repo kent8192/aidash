@@ -160,6 +160,7 @@ fn native_request() -> ModelRequest {
 			attachments: vec![envelope(NativeSource::Task, json!("original task"))],
 			history: vec![],
 			volatile: json!({"step":1}).to_string(),
+			harness: None,
 		}),
 		..request()
 	}

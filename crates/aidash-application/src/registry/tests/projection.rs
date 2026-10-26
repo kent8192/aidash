@@ -280,3 +280,54 @@ fn definitions_without_cache_fields_keep_their_bytes() {
 	assert_eq!(serde_json::to_string(&model).unwrap(), LEGACY_MODEL);
 	assert_eq!(serde_json::to_string(&agent).unwrap(), LEGACY_AGENT);
 }
+
+#[rstest]
+#[case::absent(None, "structured@1")]
+#[case::legacy(Some("legacy"), "structured@1")]
+#[case::ordered(Some("ordered"), "structured@2")]
+#[tokio::test]
+async fn registration_rejects_structured_harness_contracts_without_native(
+	validation: DefinitionValidation,
+	#[case] version: Option<&str>,
+	#[case] contract: &str,
+) {
+	// Arrange
+	let mut scope = scope_with(model_config(Some(json!(["legacy", "ordered", "native"]))));
+	let mut config = agent_config(version);
+	config["harness_contract"] = json!(contract);
+	let agent = definition("agent", "agent", config);
+	// Act
+	let error = register_definition(&mut scope, &validation, &agent, NODE)
+		.await
+		.unwrap_err();
+	// Assert
+	assert!(is_invalid(&error), "{error:?}");
+	assert!(!scope.entries.contains_key("agent@1.0.0"));
+}
+
+#[rstest]
+#[case::structured1("structured@1")]
+#[case::structured2("structured@2")]
+#[tokio::test]
+async fn registration_accepts_structured_harness_contracts_on_native(
+	validation: DefinitionValidation,
+	#[case] contract: &str,
+) {
+	// Arrange
+	let mut scope = scope_with(model_config(Some(json!(["native"]))));
+	let mut config = agent_config(Some("native"));
+	config["harness_contract"] = json!(contract);
+	let agent = definition("agent", "agent", config);
+	// Act
+	let inserted = register_definition(&mut scope, &validation, &agent, NODE)
+		.await
+		.unwrap();
+	// Assert
+	assert!(inserted);
+	let stored: AgentBindings =
+		serde_json::from_value(scope.entries["agent@1.0.0"].config.clone()).unwrap();
+	assert_eq!(
+		stored.harness_contract.unwrap_or_default(),
+		serde_json::from_value(json!(contract)).unwrap()
+	);
+}
