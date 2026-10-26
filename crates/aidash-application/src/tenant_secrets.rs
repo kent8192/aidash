@@ -2,6 +2,7 @@
 //! and never returned; metadata carries only a Fingerprint, the last four
 //! characters and the hosts the value may be sent to.
 use crate::{Error, Result, provider_access::KeyMaterialReader, provider_credentials::Store};
+use aidash_capability::tenant_secret::{Attach, Destination, SecretSubject};
 use aidash_domain::tenant_secrets::{self, State, TenantSecret, UNAVAILABLE};
 use async_trait::async_trait;
 use chrono::{DateTime, Duration, Utc};
@@ -9,6 +10,7 @@ use hmac::{Hmac, Mac};
 use secrecy::{ExposeSecret, SecretString};
 use sha2::Sha256;
 use std::sync::Arc;
+use url::Url;
 use uuid::Uuid;
 
 /// Every mutating scope serializes one Tenant, including quota and name races.
@@ -41,12 +43,67 @@ pub trait Repository: Send + Sync {
 	async fn all(&self, tenant: &str) -> Result<Vec<TenantSecret>>;
 }
 
+/// One Tenant Secret call as the broker must authorize it. The Service fills
+/// the Tenant Secret id and its pinned version from the current metadata.
+#[derive(Clone)]
+pub struct SecretCallGrant {
+	pub tenant: String,
+	pub secret: Uuid,
+	/// The numeric version of the pinned Secret Store resource, as the broker
+	/// reads `versions/{version}`.
+	pub version: String,
+	pub destination: Destination,
+	pub methods: Vec<String>,
+	pub attach: Attach,
+	pub subject: SecretSubject,
+	pub max_response_bytes: Option<u64>,
+}
+
+/// Where a brokered call goes and the token that authorizes it. `base` is the
+/// broker's `{endpoint}/v1/forward`; the token is a Tenant Secret Capability
+/// Token (ADR 0095).
+pub struct SecretRoute {
+	pub base: Url,
+	pub token: SecretString,
+}
+
+/// The Tenant Secret broker of a Cloud or Dedicated Deployment. A
+/// self-hosted Deployment configures none and reads the value instead.
+#[async_trait]
+pub trait SecretCalls: Send + Sync {
+	async fn route(&self, grant: SecretCallGrant) -> Result<SecretRoute>;
+}
+
+/// What a transport knows about one call, before the Service looks the named
+/// Tenant Secret up. It is only needed when a broker is configured.
+#[derive(Clone)]
+pub struct SecretCall {
+	pub destination: Destination,
+	pub methods: Vec<String>,
+	pub attach: Attach,
+	pub subject: SecretSubject,
+	pub max_response_bytes: Option<u64>,
+}
+
+/// How a call's Tenant Secret was resolved. A brokered call never reads the
+/// value: W3b sends it to [`SecretRoute::base`] with [`SecretRoute::token`].
+pub enum Resolved {
+	/// A self-hosted node reads the pinned version to make the call.
+	Value(SecretString),
+	/// A Cloud or Dedicated node forwards through the Tenant Secret broker.
+	Brokered(SecretRoute),
+}
+
 pub struct Service {
 	pub repository: Arc<dyn Repository>,
 	pub store: Arc<dyn Store>,
 	/// Reads one pinned version, only on a self-hosted node; the value is read
-	/// to make the call and goes nowhere else.
-	pub reader: Arc<dyn KeyMaterialReader>,
+	/// to make the call and goes nowhere else. `None` where the application
+	/// host is write-only (ADR 0002).
+	pub reader: Option<Arc<dyn KeyMaterialReader>>,
+	/// Routes calls through the Tenant Secret broker on Cloud and Dedicated.
+	/// `None` on self-hosted, where [`Service::reader`] reads instead.
+	pub calls: Option<Arc<dyn SecretCalls>>,
 	pub fingerprint_key: SecretString,
 	pub max_per_tenant: usize,
 }
@@ -115,6 +172,20 @@ fn validate_value(value: &SecretString) -> Result<()> {
 }
 fn unavailable() -> Error {
 	Error::Invalid(UNAVAILABLE.into())
+}
+
+/// A capability token names `versions/{version}`, so only the numeric part of
+/// the Store's pinned resource is a claim.
+fn numeric_version(version: &str) -> Result<String> {
+	let (_, number) = version
+		.rsplit_once("/versions/")
+		.ok_or_else(|| Error::Invalid("Tenant Secret has an invalid pinned version".into()))?;
+	if number.is_empty() || number.starts_with('0') || !number.bytes().all(|b| b.is_ascii_digit()) {
+		return Err(Error::Invalid(
+			"Tenant Secret has an invalid pinned version".into(),
+		));
+	}
+	Ok(number.into())
 }
 
 /// Registration, installation and test profiles refuse any definition that
@@ -218,11 +289,22 @@ impl Service {
 						"nothing to change: send a value, hosts or both".into(),
 					));
 				}
+				// ADR 0096: where the Store seals the hosts with the value, the
+				// application host cannot attach new hosts to a value it cannot read.
+				if self.store.seals_secret_hosts() && hosts.is_some() && input.value.is_none() {
+					return Err(Error::Invalid(
+						"changing a Tenant Secret's hosts requires its value on this Deployment"
+							.into(),
+					));
+				}
 				let mut added = None;
 				if let Some(value) = &input.value {
+					// A sealed Store also records the hosts, so a new value sent
+					// without hosts keeps the current ones.
+					let sealed_hosts = hosts.as_deref().unwrap_or(&row.hosts);
 					let version = self
 						.store
-						.add_version(tenant, &row.secret_resource, value)
+						.add_secret_version(tenant, &row.secret_resource, sealed_hosts, value)
 						.await?;
 					let (fingerprint, last4) = self.fingerprint(tenant, value);
 					row.pinned_version = Some(version.clone());
@@ -287,7 +369,7 @@ impl Service {
 		self.store.create_secret(tenant, id).await?;
 		let version = self
 			.store
-			.add_version(tenant, &row.secret_resource, &value)
+			.add_secret_version(tenant, &row.secret_resource, &row.hosts, &value)
 			.await?;
 		let mut scope = self.repository.begin(tenant).await?;
 		let pending = scope.named(name).await?;
@@ -339,10 +421,21 @@ impl Service {
 		Ok(row.into())
 	}
 
-	/// The value to send to `endpoint`, or `secret_unavailable` when the
-	/// Tenant Secret is missing, deleted, or no longer records the endpoint's
-	/// host. This is where dispatch re-checks what registration checked.
-	pub async fn resolve(&self, tenant: &str, name: &str, endpoint: &str) -> Result<SecretString> {
+	/// Resolves the Tenant Secret one call names, or `secret_unavailable` when
+	/// it is missing, deleted, or no longer records the endpoint's host. This
+	/// is where dispatch re-checks what registration checked.
+	///
+	/// With a [`SecretCalls`] configured the value is never read: the Service
+	/// re-checks the metadata and returns a [`Resolved::Brokered`] route. A
+	/// transport that cannot broker must pass `None` and is refused. Without a
+	/// broker, the pinned version is read and returned as [`Resolved::Value`].
+	pub async fn resolve(
+		&self,
+		tenant: &str,
+		name: &str,
+		endpoint: &str,
+		call: Option<SecretCall>,
+	) -> Result<Resolved> {
 		let mut scope = self.repository.begin(tenant).await?;
 		let row = scope.named(name).await?;
 		scope.commit().await?;
@@ -352,12 +445,56 @@ impl Service {
 		if !tenant_secrets::permits(&row.hosts, endpoint).unwrap_or(false) {
 			return Err(unavailable());
 		}
-		let pinned = row.require_active()?;
-		match self.reader.read(tenant, &row.secret_resource, pinned).await {
-			Ok(value) => Ok(value),
+		let pinned = row.require_active()?.to_owned();
+		if let Some(calls) = &self.calls {
+			let call = call.ok_or_else(|| {
+				Error::Invalid("this call path cannot use the Tenant Secret broker".into())
+			})?;
+			// The token's destination is checked as well, so a broker never sees
+			// a route the metadata does not record.
+			if !tenant_secrets::permits(&row.hosts, &call.destination.origin).unwrap_or(false) {
+				return Err(unavailable());
+			}
+			let route = calls
+				.route(SecretCallGrant {
+					tenant: tenant.into(),
+					secret: row.id,
+					version: numeric_version(&pinned)?,
+					destination: call.destination,
+					methods: call.methods,
+					attach: call.attach,
+					subject: call.subject,
+					max_response_bytes: call.max_response_bytes,
+				})
+				.await?;
+			return Ok(Resolved::Brokered(route));
+		}
+		let reader = self
+			.reader
+			.as_ref()
+			.ok_or_else(|| Error::External("Secret Store is not readable".into()))?;
+		match reader.read(tenant, &row.secret_resource, &pinned).await {
+			Ok(value) => Ok(Resolved::Value(value)),
 			// A rejected pin is permanent; a store outage stays retryable.
 			Err(Error::Invalid(_)) => Err(unavailable()),
 			Err(error) => Err(error),
+		}
+	}
+
+	/// The direct value for a self-hosted transport. It refuses to read when a
+	/// broker is configured, so a Cloud or Dedicated Deployment never falls
+	/// back to the value (ADR 0095).
+	pub async fn resolve_value(
+		&self,
+		tenant: &str,
+		name: &str,
+		endpoint: &str,
+	) -> Result<SecretString> {
+		match self.resolve(tenant, name, endpoint, None).await? {
+			Resolved::Value(value) => Ok(value),
+			Resolved::Brokered(_) => Err(Error::Invalid(
+				"this call path cannot use the Tenant Secret broker".into(),
+			)),
 		}
 	}
 

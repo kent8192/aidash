@@ -306,7 +306,7 @@ impl Authority for Gateway {
 						.tenant_secrets
 						.as_ref()
 						.ok_or_else(|| Error::Invalid("secret_unavailable".into()))?
-						.resolve(&identity.tenant, name, &definition.base_url)
+						.resolve_value(&identity.tenant, name, &definition.base_url)
 						.await?,
 				),
 				None => None,

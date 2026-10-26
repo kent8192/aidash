@@ -1995,6 +1995,55 @@ fn store_settings_validate_shape_without_loading_keys() {
 			.to_string()
 			.contains("a Credential Broker serves only an Enterprise Secret Store")
 	);
+	let mut tenant_brokered = json!({"store":{"kind":"postgres","master_key":{"env":"AIDASH_PROVIDER_STORE_MASTER_KEY"}}});
+	tenant_brokered["tenant_secret_broker"] = json!({"endpoint":"https://broker.example.test"});
+	assert!(
+		serde_json::from_value::<Settings>(tenant_brokered)
+			.unwrap()
+			.validate(&Profile::parse("local"))
+			.unwrap_err()
+			.to_string()
+			.contains("a Tenant Secret Broker serves only an Enterprise Secret Store")
+	);
+}
+
+#[test]
+fn tenant_secrets_are_offered_only_where_the_store_can_hold_them() {
+	use aidash_server::apps::identity::serializers::provider_credentials::Settings;
+	let fingerprint = json!({"env":"AIDASH_PROVIDER_FINGERPRINT_KEY"});
+	// A PostgreSQL Store reads Tenant Secrets locally.
+	let postgres = json!({"fingerprint_key":fingerprint.clone(),"store":{"kind":"postgres","master_key":{"env":"AIDASH_PROVIDER_STORE_MASTER_KEY"}}});
+	assert!(
+		serde_json::from_value::<Settings>(postgres)
+			.unwrap()
+			.offers_tenant_secrets()
+	);
+	// A Secret Manager Store is write-only: without its broker, Tenant
+	// Secrets stay unavailable.
+	let cloud = json!({"fingerprint_key":fingerprint,"store":{"kind":"secret_manager","byok_project_id":"byok-project","environment_id":"local"}});
+	assert!(
+		!serde_json::from_value::<Settings>(cloud.clone())
+			.unwrap()
+			.offers_tenant_secrets()
+	);
+	let mut brokered = cloud;
+	brokered["tenant_secret_broker"] = json!({
+		"endpoint":"https://broker.example.test",
+		"issuer":"aidash-server",
+		"audience":"local-tsec",
+		"kid":"kms/tenant-secret"
+	});
+	assert!(
+		serde_json::from_value::<Settings>(brokered)
+			.unwrap()
+			.offers_tenant_secrets()
+	);
+	// No Store at all offers none.
+	assert!(
+		!serde_json::from_value::<Settings>(json!({}))
+			.unwrap()
+			.offers_tenant_secrets()
+	);
 }
 
 #[rstest]
@@ -3224,7 +3273,8 @@ async fn tenant_secrets_are_host_bound_write_only_and_purged_with_their_tenant(
 			},
 		),
 		store: encrypted.clone(),
-		reader: encrypted.clone(),
+		reader: Some(encrypted.clone()),
+		calls: None,
 		fingerprint_key: "tenant-secret-fingerprint-at-least-32-bytes".into(),
 		max_per_tenant: 64,
 	};
@@ -3244,7 +3294,7 @@ async fn tenant_secrets_are_host_bound_write_only_and_purged_with_their_tenant(
 		.unwrap();
 	assert_eq!(
 		service
-			.resolve("alpha", "image-key", "https://api.example.test/upload")
+			.resolve_value("alpha", "image-key", "https://api.example.test/upload")
 			.await
 			.unwrap()
 			.expose_secret(),
@@ -3255,7 +3305,7 @@ async fn tenant_secrets_are_host_bound_write_only_and_purged_with_their_tenant(
 		("alpha", "https://another.example.test/upload"),
 	] {
 		let error = service
-			.resolve(tenant, "image-key", endpoint)
+			.resolve_value(tenant, "image-key", endpoint)
 			.await
 			.unwrap_err();
 		assert!(error.to_string().contains("secret_unavailable"));
@@ -3280,7 +3330,7 @@ async fn tenant_secrets_are_host_bound_write_only_and_purged_with_their_tenant(
 	assert_ne!(created.fingerprint, changed.fingerprint);
 	assert_eq!(
 		service
-			.resolve("alpha", "image-key", "https://api.example.test/")
+			.resolve_value("alpha", "image-key", "https://api.example.test/")
 			.await
 			.unwrap()
 			.expose_secret(),
@@ -3292,7 +3342,7 @@ async fn tenant_secrets_are_host_bound_write_only_and_purged_with_their_tenant(
 		.unwrap();
 	assert!(
 		service
-			.resolve("alpha", "image-key", "https://api.example.test/")
+			.resolve_value("alpha", "image-key", "https://api.example.test/")
 			.await
 			.unwrap_err()
 			.to_string()
@@ -3334,7 +3384,8 @@ async fn tenant_secret_http_management_refuses_other_tenants_and_deployment_admi
 			},
 		),
 		store: encrypted.clone(),
-		reader: encrypted,
+		reader: Some(encrypted),
+		calls: None,
 		fingerprint_key: "tenant-secret-fingerprint-at-least-32-bytes".into(),
 		max_per_tenant: 64,
 	}));

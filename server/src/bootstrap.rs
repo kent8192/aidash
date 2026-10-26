@@ -54,11 +54,33 @@ pub fn management_commands() -> reinhardt::commands::CommandRegistry {
 	registry
 }
 
+/// Which part of a Deployment this process runs. It selects the Capability
+/// Token key a Tenant Secret call signs with (ADR 0095).
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ProcessRole {
+	/// HTTP and background workers in one process.
+	Serve,
+	/// HTTP only; no agent work runs here.
+	Server,
+	/// Background workers only.
+	Worker,
+}
+
 /// Populate the same request container used by native runserver and HTTP fixtures.
 pub async fn initialize(
 	context: &InjectionContext,
 	settings: &ProjectSettings,
 	connection: BackendConnection,
+) -> Result<Federation> {
+	initialize_as(context, settings, connection, ProcessRole::Serve).await
+}
+
+/// [`initialize`] for a process that knows which role it serves.
+pub async fn initialize_as(
+	context: &InjectionContext,
+	settings: &ProjectSettings,
+	connection: BackendConnection,
+	role: ProcessRole,
 ) -> Result<Federation> {
 	// Native runserver/worker also need the application response logs. An
 	// embedding host's existing subscriber keeps ownership of logging.
@@ -115,7 +137,7 @@ pub async fn initialize(
 	)?;
 	build::current().extension.install(&mut store)?;
 	config.tier_limits = build::current().extension.tier_limits(&store)?;
-	configure_tenant_secrets(&mut store);
+	configure_tenant_secrets(&mut store, &settings.provider_credentials, role)?;
 	let registry = Registry::new(store.pool.clone(), &store.deployment)?
 		.with_keyless_origins(store.keyless.clone())
 		.with_provider_credentials(store.provider_credentials.is_some())
@@ -654,10 +676,13 @@ pub fn registry_validation() -> aidash_application::registry::DefinitionValidati
 			&& build::offering() == aidash_domain::offering::Offering::SelfHosted
 			&& matches!(s.provider_credentials.store, Some(StoreConfig::Postgres { .. }))
 	}))
-	// Tenant Secrets live in a PostgreSQL Secret Store only (ADR 0051).
-	.with_tenant_secrets(settings.as_ref().is_some_and(|s| {
-		matches!(s.provider_credentials.store, Some(StoreConfig::Postgres { .. }))
-	}))
+	// A PostgreSQL Store reads Tenant Secrets locally; an Enterprise Store
+	// needs its Tenant Secret broker (ADR 0051, ADR 0095).
+	.with_tenant_secrets(
+		settings
+			.as_ref()
+			.is_some_and(|s| s.provider_credentials.offers_tenant_secrets()),
+	)
 }
 pub fn registry_validation_for(
 	store: &Store,
@@ -2553,17 +2578,41 @@ pub fn configure_plan_connections(
 /// The most Tenant Secrets one Tenant may hold.
 const TENANT_SECRETS_PER_TENANT: usize = 64;
 
-/// Tenant Secrets exist only where the Store holds their values and the server
-/// may read them: a PostgreSQL Secret Store on a self-hosted node. A Secret
-/// Manager Store (Cloud, Dedicated) is write-only to the application host, so
-/// no Tenant Secret is offered until the Credential Broker carries tool calls
-/// (#310); definitions that name one are then refused at registration.
-pub fn configure_tenant_secrets(store: &mut Store) {
-	let (Some(credentials), Some(reader)) = (
-		store.provider_credentials.as_ref(),
-		store.provider_key_material_reader.clone(),
-	) else {
-		return;
+/// Tenant Secrets exist wherever the Store holds their values: a self-hosted
+/// PostgreSQL Store reads them locally, and a Secret Manager Store (Cloud,
+/// Dedicated) routes calls through its Tenant Secret broker. Without the
+/// broker, a Secret Manager Store keeps them unavailable (#310).
+pub fn configure_tenant_secrets(
+	store: &mut Store,
+	settings: &crate::apps::identity::serializers::provider_credentials::Settings,
+	role: ProcessRole,
+) -> Result<()> {
+	use crate::apps::identity::serializers::provider_credentials::StoreConfig;
+	let Some(credentials) = store.provider_credentials.as_ref() else {
+		return Ok(());
+	};
+	let (reader, calls) = match &settings.store {
+		Some(StoreConfig::Postgres { .. }) => {
+			let Some(reader) = store.provider_key_material_reader.clone() else {
+				return Ok(());
+			};
+			(Some(reader), None)
+		}
+		Some(StoreConfig::Enterprise(_)) => {
+			if !settings.offers_tenant_secrets() {
+				return Ok(());
+			}
+			let Some(calls) = build::current().extension.tenant_secret_calls(
+				settings.broker.as_ref(),
+				settings.tenant_secret_broker.as_ref(),
+				role == ProcessRole::Worker,
+			)?
+			else {
+				return Ok(());
+			};
+			(None, Some(calls))
+		}
+		None => return Ok(()),
 	};
 	store.tenant_secrets = Some(Arc::new(aidash_application::tenant_secrets::Service {
 		repository: Arc::new(
@@ -2573,9 +2622,11 @@ pub fn configure_tenant_secrets(store: &mut Store) {
 		),
 		store: credentials.store.clone(),
 		reader,
+		calls,
 		fingerprint_key: credentials.fingerprint_key.clone(),
 		max_per_tenant: TENANT_SECRETS_PER_TENANT,
 	}));
+	Ok(())
 }
 
 /// Worker inference is bound to local admission evidence, never a mutable binding.

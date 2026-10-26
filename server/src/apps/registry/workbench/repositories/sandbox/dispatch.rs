@@ -66,7 +66,7 @@ impl RealDispatchScope for Scope {
 				aidash_domain::tenant_secrets::UNAVAILABLE.into(),
 			));
 		};
-		service.resolve(tenant, name, endpoint).await
+		service.resolve_value(tenant, name, endpoint).await
 	}
 	async fn rollback(self: Box<Self>) -> Result<()> {
 		Box::new(self.tx)
