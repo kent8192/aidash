@@ -1718,6 +1718,9 @@ mod retention_boundary_tests;
 #[path = "core_capabilities/retained_versions.rs"]
 mod retained_version_tests;
 
+#[path = "core_capabilities/previews.rs"]
+mod preview_tests;
+
 #[path = "core_capabilities/message_citations.rs"]
 mod message_citation_tests;
 
