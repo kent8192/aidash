@@ -271,10 +271,12 @@ pub fn request_host(host: &str) -> Option<&str> {
 }
 
 /// Split a Preview request's Host into its label and the configured domain.
-pub fn label_of<'a>(host: &'a str, domain: &str) -> Option<&'a str> {
-	let host = request_host(host)?;
-	let label = host.strip_suffix(domain)?.strip_suffix('.')?;
-	(!label.is_empty() && !label.contains('.')).then_some(label)
+/// DNS names are case-insensitive, so the Host is folded to lowercase first.
+pub fn label_of(host: &str, domain: &str) -> Option<String> {
+	let host = request_host(host)?.to_ascii_lowercase();
+	let domain = domain.to_ascii_lowercase();
+	let label = host.strip_suffix(&domain)?.strip_suffix('.')?;
+	(!label.is_empty() && !label.contains('.')).then(|| label.to_owned())
 }
 
 #[cfg(test)]

@@ -141,11 +141,21 @@ fn the_preview_domain_must_not_share_a_registrable_domain_with_the_dashboard() {
 
 #[test]
 fn a_label_is_suffixed_to_the_configured_domain_only() {
-	assert_eq!(label_of("abc.example.com:8443", "example.com"), Some("abc"));
-	assert_eq!(label_of("abc.example.com", "example.com"), Some("abc"));
+	assert_eq!(
+		label_of("abc.example.com:8443", "example.com"),
+		Some("abc".into())
+	);
+	assert_eq!(
+		label_of("abc.example.com", "example.com"),
+		Some("abc".into())
+	);
 	assert_eq!(label_of("abc.evil-example.com", "example.com"), None);
 	assert_eq!(label_of("example.com", "example.com"), None);
 	assert_eq!(label_of("a.b.example.com", "example.com"), None);
 	assert_eq!(label_of("abc.example.com:bad", "example.com"), None);
 	assert_eq!(request_host("[::1]:8960"), Some("::1"));
+	assert_eq!(
+		label_of("ABC.Example.COM", "example.com"),
+		Some("abc".into())
+	);
 }
