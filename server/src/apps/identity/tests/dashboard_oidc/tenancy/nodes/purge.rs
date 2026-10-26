@@ -608,30 +608,25 @@ async fn node_purge_erases_owned_files_and_rows_and_preserves_sibling_and_tenant
 		("approval_observation_population", "approval"),
 		("research_journal_results", "id"),
 	] {
-		assert_eq!(
-			d.count(&format!(
-				"SELECT count(*) FROM {table} WHERE {key}='{target_run}'"
-			))
-			.await,
-			0,
-			"{table}"
-		);
-		assert_eq!(
-			d.count(&format!(
-				"SELECT count(*) FROM {table} WHERE {key}='{sibling_run}'"
-			))
-			.await,
-			1,
-			"{table}"
-		);
+		for (run, expected) in [(target_run, 0), (sibling_run, 1)] {
+			let count = Query::select()
+				.expr(reinhardt::query::Func::count(
+					Expr::col(Alias::new(key)).into(),
+				))
+				.from(Alias::new(table))
+				.and_where(Expr::col(Alias::new(key)).eq(Expr::value(run)))
+				.to_string(PostgresQueryBuilder);
+			assert_eq!(d.count(&count).await, expected, "{table}");
+		}
 	}
-	assert_eq!(
-		d.count(&format!(
-			"SELECT count(*) FROM approval_observer_settings WHERE tenant='{tenant}'"
+	let settings_count = Query::select()
+		.expr(reinhardt::query::Func::count(
+			Expr::col(Alias::new("tenant")).into(),
 		))
-		.await,
-		1
-	);
+		.from(Alias::new("approval_observer_settings"))
+		.and_where(Expr::col(Alias::new("tenant")).eq(Expr::value(tenant.clone())))
+		.to_string(PostgresQueryBuilder);
+	assert_eq!(d.count(&settings_count).await, 1);
 	assert_eq!(
 		d.count(&format!(
 			"SELECT count(*) FROM core_runs WHERE run_id='{target_run}'"
