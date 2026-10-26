@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 kent8192
+# SPDX-License-Identifier: BUSL-1.1
+# See enterprise/LICENSE.
+
 # Existing zone, sending registration, verified destination and DNS remain
 # externally owned. This module never creates/deletes a zone, onboards Sending,
 # changes Sending DKIM/DMARC, or triggers destination verification mail.
@@ -13,9 +17,18 @@ data "cloudflare_zone" "existing" {
 
 locals {
   aliases = {
-    stg  = "stg.deployment@aidash.run"
-    prod = "prod.deployment@aidash.run"
-    test = "test.deployment@aidash.run"
+    stg       = "stg.deployment@aidash.run"
+    prod      = "prod.deployment@aidash.run"
+    test      = "test.deployment@aidash.run"
+    licensing = "licensing@aidash.run"
+  }
+  # Deployment mail uses its tier in the rule name. The licensing address is a
+  # public contact route, not a deployment notification, so it gets its own name.
+  rule_names = {
+    stg       = "Aidash stg deployment notifications"
+    prod      = "Aidash prod deployment notifications"
+    test      = "Aidash test deployment notifications"
+    licensing = "Aidash licensing inquiries"
   }
 }
 
@@ -93,7 +106,7 @@ data "cloudflare_email_routing_rule" "adopted" {
         length(self.matchers) == 1 &&
         try(self.matchers[0].type == "literal" && self.matchers[0].field == "to" && self.matchers[0].value == local.aliases[each.key], false)
       )
-      error_message = "Adoption is restricted to exact, API-managed deployment aliases; do not take over Worker or multi-matcher rules."
+      error_message = "Adoption is restricted to exact, API-managed Aidash aliases; do not take over Worker or multi-matcher rules."
     }
   }
 }
@@ -101,7 +114,7 @@ data "cloudflare_email_routing_rule" "adopted" {
 resource "cloudflare_email_routing_rule" "deployment" {
   for_each = local.aliases
   zone_id  = var.zone_id
-  name     = "Aidash ${each.key} deployment notifications"
+  name     = local.rule_names[each.key]
   enabled  = true
   source   = "api"
   matchers = [{ type = "literal", field = "to", value = each.value }]
@@ -118,7 +131,7 @@ resource "cloudflare_email_routing_rule" "deployment" {
     prevent_destroy = true
     precondition {
       condition     = length(local.matching_rules[each.key]) <= 1
-      error_message = "Multiple existing rules match a deployment alias; resolve ownership before applying."
+      error_message = "Multiple existing rules match an Aidash alias; resolve ownership before applying."
     }
   }
 }

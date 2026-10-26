@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 kent8192
+# SPDX-License-Identifier: BUSL-1.1
+# See enterprise/LICENSE.
+
 data "cloudflare_email_routing_dns" "required" {
   count   = var.configure_routing_dns ? 1 : 0
   zone_id = var.zone_id

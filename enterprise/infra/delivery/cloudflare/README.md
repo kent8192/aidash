@@ -1,10 +1,15 @@
-# Cloudflare deployment mail setup
+# Cloudflare mail setup
 
-This Terraform root manages exactly three literal Email Routing aliases:
-`stg.deployment@aidash.run`, `prod.deployment@aidash.run`, and
-`test.deployment@aidash.run`. They forward to one supplied, already verified
+This Terraform root manages exactly four literal Email Routing aliases:
+`stg.deployment@aidash.run`, `prod.deployment@aidash.run`,
+`test.deployment@aidash.run`, and `licensing@aidash.run`. The three deployment
+aliases forward deployment notifications; `licensing@aidash.run` is the public
+licensing contact route. All four forward to one supplied, already verified
 private destination. It creates no catch-all and does not send verification or
 deployment mail.
+
+The deployment rules are named `Aidash <tier> deployment notifications`. The
+licensing rule is `Aidash licensing inquiries`.
 
 The existing zone, configured `aidash.run` Email Sending registration and verified
 destination remain data sources. Existing matching aliases are discovered and
