@@ -652,3 +652,23 @@ matching model state.
 `knowledge/0036_memory_attempt_evidence` without changing either migration. It
 is an empty state-only migration: both independent column changes apply before
 the single Knowledge head, and no schema or model state is overwritten.
+
+## Harness Contract versions (#531)
+
+`registry/0049_harness_contract` (after `registry/0048_context_marketplace_merge`)
+replaces `public.aidash_agent_bindings_is_valid` so the optional
+`harness_contract` key accepts `legacy@1`, `structured@1` or `structured@2`;
+omitted and explicit null are accepted so definitions written before #531 keep
+their bytes. `AgentBindings::validate` rejects a structured version whose
+Projection Version is not Native. PostgreSQL function bodies have no typed
+Reinhardt operation, so the replacement and its 0042 restore live in reversible
+SQL assets. It is database-only and changes no model state.
+
+`execution/0060_harness_contract` (after `execution/0059_research_history_merge`)
+adds `inference_usage.harness_contract` with typed column operations. Historical
+Usage Records receive `1` (`legacy@1`); the migration then removes the default so
+every new dispatch supplies the pinned version, and a check keeps it positive.
+The generated state-only checkpoint `execution/0061_harness_contract_state`
+drops that check from the ORM snapshot again, because it is enforced apart from
+model state like the earlier `inference_usage` checks. Rollback drops the
+evidence column and loses the recorded versions.

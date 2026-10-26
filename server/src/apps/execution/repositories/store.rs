@@ -5025,6 +5025,17 @@ fn require_projection(
 ) -> Result<()> {
 	let agent = crate::registry::AgentConfig::from_snapshot(snapshot)?;
 	let version = agent.projection_version.unwrap_or_default();
+	let contract = agent.harness_contract.unwrap_or_default();
+	if !contract.is_implemented() {
+		return Err(Error::Invalid(format!(
+			"Harness Contract {contract} is not implemented"
+		)));
+	}
+	if !contract.supports(version) {
+		return Err(Error::Invalid(format!(
+			"Harness Contract {contract} does not support Projection Version {version}"
+		)));
+	}
 	if version.is_legacy() {
 		return Ok(());
 	}

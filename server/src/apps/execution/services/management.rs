@@ -818,9 +818,16 @@ impl HarnessManagement {
 					.map(|attachment| attachment.media_type.as_str()),
 			)?;
 			let headroom = f.run_request_headroom(&run).await?;
+			let version = agent.projection_version.unwrap_or_default();
+			if !agent.harness_contract.unwrap_or_default().supports(version) {
+				return Err(Error::Invalid(format!(
+					"Harness Contract {} does not support Projection Version {version}",
+					agent.harness_contract.unwrap_or_default()
+				)));
+			}
 			let request = aidash_application::execution::media::admission_request(
 				&model,
-				agent.projection_version.unwrap_or_default(),
+				version,
 				json!({"run_message":input.content}),
 				parts,
 			);

@@ -70,6 +70,7 @@ fn dispatch(token: Uuid) -> UsageDispatch {
 		model_id: "model".into(),
 		model_version: "1.0.0".into(),
 		projection_version: ProjectionVersion::Legacy.number(),
+		harness_contract: aidash_domain::harness_contract::HarnessContract::Legacy.number(),
 		upstream_model: "vendor/model".into(),
 		purpose: UsagePurpose::Main,
 		requested_route: None,
