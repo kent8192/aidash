@@ -122,5 +122,6 @@ pub(crate) mod worker;
 pub(crate) mod research;
 
 pub(crate) mod egress;
+pub(crate) mod previews;
 
 pub(crate) mod source_delivery;

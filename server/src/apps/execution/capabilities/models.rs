@@ -29,3 +29,6 @@ pub use core_operations::CoreOperations;
 
 pub(crate) mod egress;
 pub use egress::RequestRecord as EgressRequest;
+
+mod previews;
+pub use previews::{CorePreviewSessions, CorePreviewTickets, CorePreviews};
