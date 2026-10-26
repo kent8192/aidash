@@ -379,6 +379,7 @@ fn submission(review: &ApprovalReview, ids: &[&str]) -> ApprovalReviewSubmission
 		node: review.node.clone(),
 		root: review.root.clone(),
 		closure_digest: review.closure_digest.clone(),
+		request: None,
 		items: ids
 			.iter()
 			.map(|id| {

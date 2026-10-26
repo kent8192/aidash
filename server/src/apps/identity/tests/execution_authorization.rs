@@ -5207,3 +5207,473 @@ async fn approval_review_submission_rejects_a_dependency_changed_after_the_revie
 	assert_eq!(model["revision"], 3);
 	cleanup(f, &url, &schema).await;
 }
+
+#[rstest::rstest]
+#[tokio::test]
+async fn catalog_request_creation_needs_read_is_idempotent_and_refuses_a_ready_review(
+	#[future(awt)]
+	#[from(common::native_application)]
+	fixture: common::ApplicationFixture,
+) {
+	let (f, url, schema) = fixture.runtime.parts();
+	let app = fixture.application;
+	let (mut policy, alice, _) = bootstrap(&f, &app, "http://127.0.0.1:9").await;
+	let deployment_administrator = f.config.api_token.clone();
+	let node = aidash_domain::nodes::NodeName::derived("acme");
+	let request_body = json!({"node":node,"root":{"id":"research","version":"1.0.0"},
+		"reason":"Please review the writer"});
+	// Every version is approved, so there is nothing to request.
+	let (status, body) = request_create(&app, &alice, &request_body).await;
+	assert_eq!(status, 409, "{body}");
+	assert!(body.to_string().contains("CATALOG_APPROVAL_REQUEST_READY"));
+
+	// Withdrawing a dependency gives the requester something to ask for.
+	assert_eq!(
+		request(
+			&app,
+			&alice,
+			"POST",
+			"/api/authorization/acme/catalog",
+			json!({"node":node,"entry":{"id":"model","version":"1.0.0"},
+				"enabled":false,"expected_revision":1})
+		)
+		.await
+		.0,
+		200
+	);
+	let (status, first) = request_create(&app, &alice, &request_body).await;
+	assert_eq!(status, 200, "{first}");
+	assert_eq!(first["state"], "open");
+	assert_eq!(first["next_action"], "waiting_for_approver");
+	assert!(first["closure_digest"].as_str().is_some());
+	let (status, again) = request_create(&app, &alice, &request_body).await;
+	assert_eq!(status, 200, "{again}");
+	assert_eq!(again["id"], first["id"]);
+	assert_eq!(again["revision"], first["revision"]);
+
+	// A subject without registry.read on the root cannot create one.
+	policy["subjects"]["bob"] = json!({"kind":"user"});
+	policy["policies"].as_array_mut().unwrap().push(json!({
+		"id":"deny-bob-root","effect":"deny","subjects":{"ids":["bob"]},
+		"actions":["registry.read"],"resources":{"kinds":["agent"],"ids":["research"]}
+	}));
+	assert_eq!(
+		request(
+			&app,
+			&deployment_administrator,
+			"POST",
+			"/api/authorization/acme",
+			json!({"expected_revision":1,"bundle":policy})
+		)
+		.await
+		.0,
+		200
+	);
+	let (_, credential) = request(
+		&app,
+		&deployment_administrator,
+		"POST",
+		"/api/authorization/acme/credentials",
+		json!({"subject":"bob"}),
+	)
+	.await;
+	let bob = credential["token"].as_str().unwrap();
+	let (status, body) = request_create(&app, bob, &request_body).await;
+	assert_eq!(status, 403, "{body}");
+	cleanup(f, &url, &schema).await;
+}
+
+async fn request_create(app: &common::TestApplication, token: &str, body: &Value) -> (u16, Value) {
+	request(
+		app,
+		token,
+		"POST",
+		"/api/authorization/acme/catalog/requests",
+		body.clone(),
+	)
+	.await
+}
+
+#[rstest::rstest]
+#[tokio::test]
+async fn catalog_request_decline_and_withdraw_respect_authority_and_pending_visibility(
+	#[future(awt)]
+	#[from(common::native_application)]
+	fixture: common::ApplicationFixture,
+) {
+	let (f, url, schema) = fixture.runtime.parts();
+	let app = fixture.application;
+	let (mut policy, alice, _) = bootstrap(&f, &app, "http://127.0.0.1:9").await;
+	let deployment_administrator = f.config.api_token.clone();
+	let node = aidash_domain::nodes::NodeName::derived("acme");
+	for id in ["model", "http"] {
+		assert_eq!(
+			request(
+				&app,
+				&alice,
+				"POST",
+				"/api/authorization/acme/catalog",
+				json!({"node":node,"entry":{"id":id,"version":"1.0.0"},
+					"enabled":false,"expected_revision":1})
+			)
+			.await
+			.0,
+			200
+		);
+	}
+	policy["subjects"]["bob"] = json!({"kind":"user"});
+	policy["policies"].as_array_mut().unwrap().push(json!({
+		"id":"deny-bob-approve","effect":"deny","subjects":{"ids":["bob"]},
+		"actions":["catalog.approve"],"resources":{"kinds":["*"]}
+	}));
+	policy["policies"].as_array_mut().unwrap().push(json!({
+		"id":"deny-alice-model","effect":"deny","subjects":{"ids":["alice"]},
+		"actions":["registry.read"],"resources":{"kinds":["model"],"ids":["model"]}
+	}));
+	assert_eq!(
+		request(
+			&app,
+			&deployment_administrator,
+			"POST",
+			"/api/authorization/acme",
+			json!({"expected_revision":1,"bundle":policy})
+		)
+		.await
+		.0,
+		200
+	);
+	let (_, credential) = request(
+		&app,
+		&deployment_administrator,
+		"POST",
+		"/api/authorization/acme/credentials",
+		json!({"subject":"bob"}),
+	)
+	.await;
+	let bob = credential["token"].as_str().unwrap();
+	let (status, created) = request_create(
+		&app,
+		bob,
+		&json!({"node":node,"root":{"id":"research","version":"1.0.0"},"reason":"Need writer"}),
+	)
+	.await;
+	assert_eq!(status, 200, "{created}");
+	let id = created["id"].as_str().unwrap();
+	// The pending list is for approvers only and never carries item names.
+	let (status, pending) = request(
+		&app,
+		&alice,
+		"GET",
+		&format!("/api/authorization/acme/catalog/requests/pending?node={node}"),
+		Value::Null,
+	)
+	.await;
+	assert_eq!(status, 200, "{pending}");
+	let card = pending["requests"]
+		.as_array()
+		.unwrap()
+		.iter()
+		.find(|card| card["id"] == id)
+		.expect("the approver sees the open request");
+	assert!(card["review"]["approvable"].as_u64().unwrap() >= 1);
+	assert_eq!(
+		card["review"]["hidden"], 1,
+		"the unreadable model is counted but never named"
+	);
+	assert!(card.get("items").is_none(), "items are never named here");
+	let (status, bob_pending) = request(
+		&app,
+		bob,
+		"GET",
+		&format!("/api/authorization/acme/catalog/requests/pending?node={node}"),
+		Value::Null,
+	)
+	.await;
+	assert_eq!(status, 200, "{bob_pending}");
+	assert!(bob_pending["requests"].as_array().unwrap().is_empty());
+
+	// The requester cannot decline or withdraw someone else's request, and
+	// an approver declines with a reason.
+	let (status, body) = request(
+		&app,
+		bob,
+		"POST",
+		&format!("/api/authorization/acme/catalog/requests/{id}/decline"),
+		json!({"reason":"No"}),
+	)
+	.await;
+	assert_eq!(status, 403, "{body}");
+	let (status, declined) = request(
+		&app,
+		&alice,
+		"POST",
+		&format!("/api/authorization/acme/catalog/requests/{id}/decline"),
+		json!({"reason":"Not this version"}),
+	)
+	.await;
+	assert_eq!(status, 200, "{declined}");
+	assert_eq!(declined["state"], "declined");
+	assert_eq!(declined["decline_reason"], "Not this version");
+	assert_eq!(declined["next_action"], "declined");
+
+	// A final request frees the tuple; only the requester may withdraw the next.
+	let (status, second) = request_create(
+		&app,
+		bob,
+		&json!({"node":node,"root":{"id":"research","version":"1.0.0"},"reason":"Again"}),
+	)
+	.await;
+	assert_eq!(status, 200, "{second}");
+	let second_id = second["id"].as_str().unwrap();
+	let (status, body) = request(
+		&app,
+		&alice,
+		"POST",
+		&format!("/api/authorization/acme/catalog/requests/{second_id}/withdraw"),
+		Value::Null,
+	)
+	.await;
+	assert_eq!(status, 403, "{body}");
+	let (status, withdrawn) = request(
+		&app,
+		bob,
+		"POST",
+		&format!("/api/authorization/acme/catalog/requests/{second_id}/withdraw"),
+		Value::Null,
+	)
+	.await;
+	assert_eq!(status, 200, "{withdrawn}");
+	assert_eq!(withdrawn["state"], "withdrawn");
+	cleanup(f, &url, &schema).await;
+}
+
+#[rstest::rstest]
+#[tokio::test]
+async fn catalog_request_is_fulfilled_by_the_review_and_grants_nothing_before_it(
+	#[future(awt)]
+	#[from(common::native_application)]
+	fixture: common::ApplicationFixture,
+) {
+	let (f, url, schema) = fixture.runtime.parts();
+	let app = fixture.application;
+	let (mut policy, alice, _) = bootstrap(&f, &app, "http://127.0.0.1:9").await;
+	let deployment_administrator = f.config.api_token.clone();
+	let node = aidash_domain::nodes::NodeName::derived("acme");
+	assert_eq!(
+		request(
+			&app,
+			&alice,
+			"POST",
+			"/api/authorization/acme/catalog",
+			json!({"node":node,"entry":{"id":"model","version":"1.0.0"},
+				"enabled":false,"expected_revision":1})
+		)
+		.await
+		.0,
+		200
+	);
+	policy["subjects"]["bob"] = json!({"kind":"user"});
+	policy["policies"].as_array_mut().unwrap().push(json!({
+		"id":"deny-bob-approve","effect":"deny","subjects":{"ids":["bob"]},
+		"actions":["catalog.approve"],"resources":{"kinds":["*"]}
+	}));
+	assert_eq!(
+		request(
+			&app,
+			&deployment_administrator,
+			"POST",
+			"/api/authorization/acme",
+			json!({"expected_revision":1,"bundle":policy})
+		)
+		.await
+		.0,
+		200
+	);
+	let (_, credential) = request(
+		&app,
+		&deployment_administrator,
+		"POST",
+		"/api/authorization/acme/credentials",
+		json!({"subject":"bob"}),
+	)
+	.await;
+	let bob = credential["token"].as_str().unwrap();
+	let (status, created) = request_create(
+		&app,
+		bob,
+		&json!({"node":node,"root":{"id":"research","version":"1.0.0"},"reason":"Please"}),
+	)
+	.await;
+	assert_eq!(status, 200, "{created}");
+	let id = created["id"].as_str().unwrap();
+	// Creating a request changes no Catalog Approval.
+	let (_, before) = request(
+		&app,
+		&alice,
+		"GET",
+		&format!("/api/authorization/acme/catalog?node={node}"),
+		Value::Null,
+	)
+	.await;
+	assert_eq!(
+		before
+			.as_array()
+			.unwrap()
+			.iter()
+			.find(|binding| binding["entry_id"] == "model")
+			.unwrap()["revision"],
+		2
+	);
+
+	let path =
+		format!("/api/authorization/acme/catalog/review?node={node}&entry=agent/research@1.0.0");
+	let (_, review) = request(&app, &alice, "GET", &path, Value::Null).await;
+	let model = review["items"]
+		.as_array()
+		.unwrap()
+		.iter()
+		.find(|item| item["reference"]["id"] == "model")
+		.unwrap();
+	let submission = json!({
+		"node":node,
+		"root":{"id":"research","version":"1.0.0"},
+		"closure_digest":review["closure_digest"],
+		"request":id,
+		"items":[{
+			"reference":model["reference"],
+			"digest":model["digest"],
+			"expected_revision":model["expected_revision"],
+			"restriction":model["proposed_restriction"],
+		}],
+	});
+	// Holding the request grants the requester no approval authority.
+	let (status, denied) = request(
+		&app,
+		bob,
+		"POST",
+		"/api/authorization/acme/catalog/review",
+		submission.clone(),
+	)
+	.await;
+	assert_eq!(status, 403, "{denied}");
+	let (status, body) = request(
+		&app,
+		&alice,
+		"POST",
+		"/api/authorization/acme/catalog/review",
+		submission,
+	)
+	.await;
+	assert_eq!(status, 200, "{body}");
+	let (status, mine) = request(
+		&app,
+		bob,
+		"GET",
+		&format!("/api/authorization/acme/catalog/requests/mine?node={node}"),
+		Value::Null,
+	)
+	.await;
+	assert_eq!(status, 200, "{mine}");
+	let request_view = mine["requests"]
+		.as_array()
+		.unwrap()
+		.iter()
+		.find(|request| request["id"] == id)
+		.unwrap();
+	assert_eq!(request_view["state"], "fulfilled");
+	assert_eq!(request_view["next_action"], "fulfilled");
+	cleanup(f, &url, &schema).await;
+}
+
+#[rstest::rstest]
+#[tokio::test]
+async fn catalog_request_turns_stale_after_a_missing_dependency_is_registered(
+	#[future(awt)]
+	#[from(common::native_application)]
+	fixture: common::ApplicationFixture,
+) {
+	let (f, url, schema) = fixture.runtime.parts();
+	let app = fixture.application;
+	let (_, alice, _) = bootstrap(&f, &app, "http://127.0.0.1:9").await;
+	let node = aidash_domain::nodes::NodeName::derived("acme");
+	let deployment = f.config.deployment.clone();
+	// A root that names a dependency the Tenant has not registered yet.
+	let broken = json!({"id":"broken","version":"1.0.0","kind":"agent",
+		"name":{"en":"Broken"},"description":{"en":"Missing dependency"},
+		"config":{"schema_version":1,"model":{"id":"model","version":"1.0.0"},
+			"instructions":"Wait","bindings":[{"kind":"tool","target":{
+				"registry_deployment":deployment,"id":"later","version":"1.0.0"},
+				"narrow":{}}],"remove_default":[]}});
+	let metadata = serde_json::to_string(&broken).unwrap();
+	sqlx::query("INSERT INTO registry (tenant, id, version, kind, metadata) VALUES ('acme','broken','1.0.0','agent',$1::jsonb)")
+		.bind(metadata)
+		.execute(f.store.pool.fixture_driver())
+		.await
+		.unwrap();
+	let (status, created) = request_create(
+		&app,
+		&alice,
+		&json!({"node":node,"root":{"id":"broken","version":"1.0.0"},"reason":"Missing tool"}),
+	)
+	.await;
+	assert_eq!(status, 200, "{created}");
+	let id = created["id"].as_str().unwrap();
+	let digest = created["closure_digest"].as_str().unwrap().to_owned();
+	assert_eq!(
+		created["review"]["hidden"].as_u64().unwrap(),
+		0,
+		"the missing item is named, not hidden"
+	);
+
+	// Registering the dependency changes the closure digest.
+	let later = json!({"id":"later","version":"1.0.0","kind":"tool",
+		"name":{"en":"Later"},"description":{"en":"Arrived"},
+		"config":{"registry_deployment":deployment,"provider":"integration.http@1",
+			"operation":"invoke","default_alias":"later","tier":"integration","narrow":{},
+			"transport":{"transport":"http","endpoint":"https://tools.example/later",
+				"replay":"read_only"}}});
+	f.registry
+		.register(
+			&aidash_domain::tenancy::TenantName::new("acme").unwrap(),
+			serde_json::from_value(later).unwrap(),
+		)
+		.await
+		.unwrap();
+
+	// Approving through the stale request is refused before any write.
+	let stale_submission = json!({
+		"node":node,
+		"root":{"id":"broken","version":"1.0.0"},
+		"closure_digest":digest,
+		"request":id,
+	});
+	let (status, body) = request(
+		&app,
+		&alice,
+		"POST",
+		"/api/authorization/acme/catalog/review",
+		stale_submission,
+	)
+	.await;
+	assert_eq!(status, 409, "{body}");
+	assert!(body.to_string().contains("APPROVAL_REQUEST_STALE"));
+
+	// A lazy read records the stale state.
+	let (status, mine) = request(
+		&app,
+		&alice,
+		"GET",
+		&format!("/api/authorization/acme/catalog/requests/mine?node={node}"),
+		Value::Null,
+	)
+	.await;
+	assert_eq!(status, 200, "{mine}");
+	let request_view = mine["requests"]
+		.as_array()
+		.unwrap()
+		.iter()
+		.find(|request| request["id"] == id)
+		.unwrap();
+	assert_eq!(request_view["state"], "stale");
+	cleanup(f, &url, &schema).await;
+}

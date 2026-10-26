@@ -18,6 +18,13 @@ allows, so every existing approval and history row migrates as unrestricted.
 The columns are typed `AddColumn` operations, so the model state follows the
 physical migration and no state-only checkpoint is needed.
 
+`identity/0042_catalog_approval_requests` creates the Tenant-owned request
+table for ADR 0096, its `0043` row policy and its `0044` state-only snapshot.
+The physical table has a partial unique index keeping at most one open request
+per requester, root and Node, and a check that only a declined request carries
+a decline reason. The policy asset follows the standard Tenant template; the
+state snapshot carries the columns without the physical checks and index.
+
 Reinhardt is the sole migration owner. The source files are grouped under the
 labels `identity`, `registry`, `workspaces`, `execution`, `federation`, `knowledge`,
 `marketplace`, and `operations`; these are modules in `aidash-server`, not separate
@@ -82,7 +89,7 @@ the pinned revision incorporates
 [#6638](https://github.com/kent8192/reinhardt-web/issues/6638). The final snapshot
 records the registered model metadata. These migrations extend the original table definitions and preserve their SQL
 assets. The environment migration additionally records conditional extension
-ownership before this new native history is published. The complete native graph contains 57
+ownership before this new native history is published. The complete native graph contains 58
 records and describes 119 models.
 
 The original baseline has 36 migrations for physical schema creation and eight

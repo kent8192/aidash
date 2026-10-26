@@ -122,6 +122,9 @@ pub struct ApprovalReviewSubmission {
 	pub node: NodeName,
 	pub root: EntityRef,
 	pub closure_digest: String,
+	/// An open Catalog Approval Request this submission answers.
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub request: Option<uuid::Uuid>,
 	#[serde(default)]
 	pub items: Vec<ReviewApproval>,
 	#[serde(default)]

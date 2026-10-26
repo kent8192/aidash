@@ -46,6 +46,16 @@ pub(crate) enum AdministrationActor {
 	/// A Demo Reservation, spent by the sign-in or the load that maps its
 	/// External Identity (ADR 0079). Nobody decides it.
 	DemoData,
+	/// A Tenant subject acting with a Subject Credential, such as making a
+	/// Catalog Approval Request (ADR 0096). The subject is recorded as the
+	/// event's concerned subject because the history table has no actor-subject
+	/// column.
+	Subject {
+		subject: String,
+	},
+	/// The server itself, such as marking a request fulfilled when a read sees
+	/// its review already ready.
+	System,
 }
 
 /// The fields of one administration history row other than its actor.
@@ -70,6 +80,8 @@ impl AdministrationActor {
 			}
 			Self::Identity { identity, .. } => format!("oidc:{identity}"),
 			Self::DemoData => "demo-data".into(),
+			Self::Subject { subject } => subject.clone(),
+			Self::System => "system".into(),
 		}
 	}
 
@@ -93,6 +105,8 @@ impl AdministrationActor {
 			),
 			Self::Identity { identity, mapping } => ("identity", Some(*identity), *mapping),
 			Self::DemoData => ("demo_data", None, None),
+			Self::Subject { .. } => ("subject", None, None),
+			Self::System => ("system", None, None),
 		}
 	}
 
