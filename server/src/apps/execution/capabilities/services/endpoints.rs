@@ -1153,6 +1153,7 @@ pub(crate) async fn file_download(
 							.limit(1)
 							.to_string(PostgresQueryBuilder),
 					)
+					.columns(&["digest", "size", "path", "media_type"])
 					.fetch_optional(&mut **access.tx)
 					.await?
 				};
