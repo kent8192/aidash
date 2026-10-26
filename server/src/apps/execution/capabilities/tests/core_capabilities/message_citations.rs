@@ -3,12 +3,7 @@ use super::*;
 use base64::Engine;
 use reinhardt::query::{Alias, Expr, PostgresQueryBuilder, Query};
 
-async fn post(
-	c: &CoreFixture,
-	workspace: Uuid,
-	content: &str,
-	citations: &[Value],
-) -> (u16, Value) {
+async fn post(c: &CoreFixture, workspace: Uuid, content: &str, citations: &Value) -> (u16, Value) {
 	request(
 		&c.app,
 		&c.token,
