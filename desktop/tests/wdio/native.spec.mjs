@@ -48,12 +48,16 @@ async function add(name, origin) {
   await textContains("Connect to Aidash");
   await $("main form input:not([type=url])").setValue(name);
   const url = await $("main form input[type=url]");
-  // WebView2's clear command can leave React's controlled value in place.
-  // Keyboard editing delivers the same input events as replacing a saved URL.
-  await url.click();
-  await browser.keys([Key.Ctrl, "a"]);
-  await browser.keys(Key.Backspace);
-  await url.addValue(origin);
+  if (process.platform === "win32") {
+    // WebView2's clear command can leave React's controlled value in place.
+    // Keyboard editing delivers the same input events as replacing a saved URL.
+    await url.click();
+    await browser.keys([Key.Control, "a"]);
+    await browser.keys(Key.Backspace);
+    await url.addValue(origin);
+  } else {
+    await url.setValue(origin);
+  }
   assert.equal(await url.getValue(), origin);
   await button("Save and connect");
 }
