@@ -17,6 +17,7 @@ async-stream = "0.3"
 axum = "0.8"
 base64 = "0.22"
 futures-util.workspace = true
+percent-encoding = "2"
 reqwest = { version = "0.13", default-features = false, features = [
   "json",
   "rustls",

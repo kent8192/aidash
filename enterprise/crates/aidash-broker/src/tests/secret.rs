@@ -137,7 +137,27 @@ async fn handle(State(state): State<Arc<UpstreamState>>, request: Request) -> Re
 			.body(Body::empty())
 			.unwrap(),
 		"/api/large" => Response::new(Body::from(vec![b'x'; 1000])),
-		"/api/teapot" => (StatusCode::IM_A_TEAPOT, "teapot").into_response(),
+		"/api/created" => Response::builder()
+			.status(StatusCode::CREATED)
+			.header(header::LOCATION, "/api/created/1")
+			.header(header::ETAG, "\"v1\"")
+			.header(header::RETRY_AFTER, "2")
+			.header(header::CACHE_CONTROL, "max-age=0")
+			.body(Body::from("created"))
+			.unwrap(),
+		"/api/teapot" => Response::builder()
+			.status(StatusCode::IM_A_TEAPOT)
+			.header(header::WWW_AUTHENTICATE, "Bearer")
+			.header(header::ETAG, "\"t\"")
+			.header("x-ratelimit-remaining", "7")
+			.body(Body::from("teapot"))
+			.unwrap(),
+		"/api/hop" => Response::builder()
+			.header(header::ETAG, "\"keep\"")
+			.header(header::CONNECTION, "x-hop")
+			.header("x-hop", "drop")
+			.body(Body::from("hop"))
+			.unwrap(),
 		"/api/slow" => {
 			tokio::time::sleep(Duration::from_millis(500)).await;
 			Json(json!({"slow":true})).into_response()
@@ -293,31 +313,54 @@ impl SecretFixture {
 			.await
 	}
 	async fn request_token(&self, token: &str, method: &str, uri: &str, body: Body) -> Response {
+		self.request_token_headers(token, method, uri, body, &[])
+			.await
+	}
+	async fn request_token_headers(
+		&self,
+		token: &str,
+		method: &str,
+		uri: &str,
+		body: Body,
+		extra: &[(&str, String)],
+	) -> Response {
+		let mut builder = Request::builder()
+			.method(method)
+			.uri(uri)
+			.header("x-aidash-secret-call", token)
+			.header(header::AUTHORIZATION, "Bearer inbound-must-be-stripped")
+			.header(header::COOKIE, "session=inbound")
+			.header("x-forwarded-for", "203.0.113.1")
+			.header("x-aidash-other", "strip-me")
+			.header("x-hop", "strip-me")
+			.header(header::CONNECTION, "keep-alive, x-hop")
+			.header(header::HOST, "attacker.invalid")
+			.header(header::CONTENT_TYPE, "application/json")
+			.header(header::ACCEPT, "text/event-stream")
+			.header("x-api-key", "inbound-must-be-replaced")
+			.header("mcp-session-id", "client-session")
+			.header("last-event-id", "client-event");
+		for (name, value) in extra {
+			builder = builder.header(*name, value);
+		}
 		self.broker
 			.clone()
 			.router()
-			.oneshot(
-				Request::builder()
-					.method(method)
-					.uri(uri)
-					.header("x-aidash-secret-call", token)
-					.header(header::AUTHORIZATION, "Bearer inbound-must-be-stripped")
-					.header(header::COOKIE, "session=inbound")
-					.header("x-forwarded-for", "203.0.113.1")
-					.header("x-aidash-other", "strip-me")
-					.header("x-hop", "strip-me")
-					.header(header::CONNECTION, "keep-alive, x-hop")
-					.header(header::HOST, "attacker.invalid")
-					.header(header::CONTENT_TYPE, "application/json")
-					.header(header::ACCEPT, "text/event-stream")
-					.header("x-api-key", "inbound-must-be-replaced")
-					.header("mcp-session-id", "client-session")
-					.header("last-event-id", "client-event")
-					.body(body)
-					.unwrap(),
-			)
+			.oneshot(builder.body(body).unwrap())
 			.await
 			.unwrap()
+	}
+	async fn request_with_headers(
+		&self,
+		claims: &SecretClaims,
+		method: &str,
+		uri: &str,
+		body: Body,
+		extra: &[(&str, String)],
+	) -> Response {
+		let token = mint_secret(claims, &self.server_signer).await.unwrap();
+		self.request_token_headers(token.expose_secret(), method, uri, body, extra)
+			.await
 	}
 	async fn request_without_token(&self, uri: &str) -> Response {
 		self.broker
@@ -369,7 +412,13 @@ async fn get_and_post_forward_streamed_bodies_and_attach_the_value() {
 		yield Ok(Bytes::from_static(b"world"));
 	});
 	let post = f
-		.request(&f.claims(), "POST", "/v1/forward/echo", post_body)
+		.request_with_headers(
+			&f.claims(),
+			"POST",
+			"/v1/forward/echo",
+			post_body,
+			&[(header::CONTENT_LENGTH.as_str(), "11".to_owned())],
+		)
 		.await;
 	assert_eq!(post.status(), 200);
 	assert_eq!(json_body(post).await["body"], "hello world");
@@ -391,6 +440,10 @@ async fn get_and_post_forward_streamed_bodies_and_attach_the_value() {
 		assert!(!seen[0].headers.contains_key(name), "{name}");
 	}
 	assert_ne!(seen[0].headers[header::HOST], "attacker.invalid");
+	assert!(!seen[0].headers.contains_key(header::CONTENT_LENGTH));
+	assert!(!seen[0].headers.contains_key(header::TRANSFER_ENCODING));
+	assert_eq!(seen[1].headers[header::CONTENT_LENGTH], "11");
+	assert!(!seen[1].headers.contains_key(header::TRANSFER_ENCODING));
 	assert_eq!(seen[1].body, b"hello world");
 	drop(seen);
 
@@ -475,6 +528,167 @@ async fn sse_streams_early_and_passes_session_headers() {
 	assert_eq!(seen[0].headers["mcp-session-id"], "client-session");
 	assert_eq!(seen[0].headers["last-event-id"], "client-event");
 	assert_eq!(seen[0].headers[header::ACCEPT], "text/event-stream");
+}
+
+#[tokio::test]
+async fn non_public_ip_literals_are_refused_without_a_secret_read() {
+	let f = SecretFixture::without_origin_override().await;
+	for origin in [
+		"https://10.0.0.5",
+		"https://169.254.169.254",
+		"https://[::1]",
+		"https://[::ffff:127.0.0.1]",
+	] {
+		let mut claims = f.claims();
+		claims.destination.origin = origin.into();
+		let reads = f.source.reads.load(Ordering::SeqCst);
+		assert_error(
+			f.request(&claims, "GET", "/v1/forward/echo", Body::empty())
+				.await,
+			403,
+			"secret_destination_refused",
+			Some(claims.jti),
+		)
+		.await;
+		assert_eq!(f.source.reads.load(Ordering::SeqCst), reads, "{origin}");
+	}
+	assert_eq!(f.upstream.calls.load(Ordering::SeqCst), 0);
+}
+
+#[tokio::test]
+async fn secret_store_outage_is_broker_unavailable() {
+	let f = SecretFixture::new().await;
+	f.source.store_unavailable.store(true, Ordering::SeqCst);
+	let claims = f.claims();
+	assert_error(
+		f.request(&claims, "GET", "/v1/forward/echo", Body::empty())
+			.await,
+		503,
+		"broker_unavailable",
+		Some(claims.jti),
+	)
+	.await;
+	assert_eq!(f.upstream.calls.load(Ordering::SeqCst), 0);
+}
+
+#[tokio::test]
+async fn percent_escapes_are_checked_per_segment_and_forwarded_unchanged() {
+	let f = SecretFixture::new().await;
+	let response = f
+		.request(&f.claims(), "GET", "/v1/forward/a%20b", Body::empty())
+		.await;
+	assert_eq!(response.status(), 200);
+	json_body(response).await;
+	{
+		let seen = f.upstream.seen.lock().unwrap();
+		assert_eq!(seen[0].path, "/api/a%20b");
+	}
+	for uri in [
+		"/v1/forward/%252e%252e/x",
+		"/v1/forward/a%00b",
+		"/v1/forward/a%0ab",
+		"/v1/forward/a%2fb",
+		"/v1/forward/a%5cb",
+		"/v1/forward/%zz",
+	] {
+		let claims = f.claims();
+		assert_error(
+			f.request(&claims, "GET", uri, Body::empty()).await,
+			403,
+			"secret_destination_refused",
+			Some(claims.jti),
+		)
+		.await;
+	}
+	assert_eq!(f.upstream.calls.load(Ordering::SeqCst), 1);
+	assert_eq!(f.source.reads.load(Ordering::SeqCst), 1);
+}
+
+#[tokio::test]
+async fn response_headers_pass_through_except_hop_by_hop_and_content_length() {
+	let f = SecretFixture::new().await;
+	let response = f
+		.request(&f.claims(), "GET", "/v1/forward/created", Body::empty())
+		.await;
+	assert_eq!(response.status(), 201);
+	assert_eq!(response.headers()[header::LOCATION], "/api/created/1");
+	assert_eq!(response.headers()[header::ETAG], "\"v1\"");
+	assert_eq!(response.headers()[header::RETRY_AFTER], "2");
+	assert_eq!(response.headers()[header::CACHE_CONTROL], "max-age=0");
+	assert!(response.headers().get(header::CONTENT_LENGTH).is_none());
+	to_bytes(response.into_body(), 1024).await.unwrap();
+
+	let response = f
+		.request(&f.claims(), "GET", "/v1/forward/teapot", Body::empty())
+		.await;
+	assert_eq!(response.status(), 418);
+	assert_eq!(response.headers()[header::WWW_AUTHENTICATE], "Bearer");
+	assert_eq!(response.headers()[header::ETAG], "\"t\"");
+	assert_eq!(response.headers()["x-ratelimit-remaining"], "7");
+	assert_eq!(response.headers()[header::CACHE_CONTROL], "no-store");
+	to_bytes(response.into_body(), 1024).await.unwrap();
+
+	let response = f
+		.request(&f.claims(), "GET", "/v1/forward/hop", Body::empty())
+		.await;
+	assert_eq!(response.status(), 200);
+	assert_eq!(response.headers()[header::ETAG], "\"keep\"");
+	assert!(response.headers().get("x-hop").is_none());
+	assert!(response.headers().get(header::CONNECTION).is_none());
+	to_bytes(response.into_body(), 1024).await.unwrap();
+}
+
+#[tokio::test]
+async fn request_body_framing_matches_the_inbound_request() {
+	let f = SecretFixture::new().await;
+	let get = f
+		.request(&f.claims(), "GET", "/v1/forward/echo", Body::empty())
+		.await;
+	assert_eq!(get.status(), 200);
+	to_bytes(get.into_body(), 4096).await.unwrap();
+	{
+		let seen = f.upstream.seen.lock().unwrap();
+		assert!(!seen[0].headers.contains_key(header::CONTENT_LENGTH));
+		assert!(!seen[0].headers.contains_key(header::TRANSFER_ENCODING));
+	}
+
+	let post_body = Body::from_stream(async_stream::stream! {
+		yield Ok::<_, std::io::Error>(Bytes::from_static(b"hello "));
+		yield Ok(Bytes::from_static(b"world"));
+	});
+	let post = f
+		.request_with_headers(
+			&f.claims(),
+			"POST",
+			"/v1/forward/echo",
+			post_body,
+			&[(header::CONTENT_LENGTH.as_str(), "11".to_owned())],
+		)
+		.await;
+	assert_eq!(post.status(), 200);
+	to_bytes(post.into_body(), 4096).await.unwrap();
+	{
+		let seen = f.upstream.seen.lock().unwrap();
+		assert_eq!(seen[1].headers[header::CONTENT_LENGTH], "11");
+		assert!(!seen[1].headers.contains_key(header::TRANSFER_ENCODING));
+		assert_eq!(seen[1].body, b"hello world");
+	}
+
+	let chunked = f
+		.request_with_headers(
+			&f.claims(),
+			"POST",
+			"/v1/forward/echo",
+			Body::from("chunked"),
+			&[(header::TRANSFER_ENCODING.as_str(), "chunked".to_owned())],
+		)
+		.await;
+	assert_eq!(chunked.status(), 200);
+	to_bytes(chunked.into_body(), 4096).await.unwrap();
+	{
+		let seen = f.upstream.seen.lock().unwrap();
+		assert_eq!(seen[2].body, b"chunked");
+	}
 }
 
 #[tokio::test]
@@ -614,8 +828,8 @@ async fn every_broker_owned_error_has_its_contract_shape() {
 	assert_error(
 		f.request(&outage, "GET", "/v1/forward/echo", Body::empty())
 			.await,
-		502,
-		"upstream_unreachable",
+		503,
+		"broker_unavailable",
 		Some(outage.jti),
 	)
 	.await;

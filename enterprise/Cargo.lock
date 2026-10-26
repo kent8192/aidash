@@ -153,6 +153,7 @@ dependencies = [
  "base64 0.22.1",
  "chrono",
  "futures-util",
+ "percent-encoding",
  "reqwest 0.13.5",
  "secrecy",
  "serde",

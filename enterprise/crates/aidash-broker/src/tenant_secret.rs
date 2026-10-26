@@ -10,6 +10,7 @@ use aidash_capability::{
 	KeyMaterialError, PublicKeys,
 	tenant_secret::{Attach, SealedSecretSource, SecretClaims, SecretSubject, sealed},
 };
+use aidash_domain::keyless::{Destination, PermittedOrigins};
 use axum::{
 	Router,
 	body::{Body, Bytes},
@@ -18,6 +19,7 @@ use axum::{
 	response::Response,
 };
 use futures_util::StreamExt;
+use percent_encoding::percent_decode_str;
 use secrecy::{ExposeSecret, SecretString};
 use sha2::{Digest, Sha256};
 use std::{
@@ -41,6 +43,7 @@ const BROKER_REJECTED: &str = "broker_rejected";
 const DESTINATION_REFUSED: &str = "secret_destination_refused";
 const SECRET_UNAVAILABLE: &str = "secret_unavailable";
 const RATE_LIMITED: &str = "rate_limited";
+const BROKER_UNAVAILABLE: &str = "broker_unavailable";
 const UPSTREAM_UNREACHABLE: &str = "upstream_unreachable";
 
 /// The Tenant Secret role's configuration. `issuers` maps each accepted `kid`
@@ -313,6 +316,18 @@ async fn forward(State(broker): State<Arc<TenantSecretBroker>>, request: Request
 	guard.entry.version = claims.version.clone();
 	guard.entry.subject = subject_kind(&claims.sub).into();
 	let jti = Some(claims.jti);
+	// A name is resolved and checked by `PublicDns` at connect time, but an IP
+	// literal never reaches the resolver, so the same domain rule decides it
+	// before any connection. The broker permits no private origins.
+	if !matches!(
+		aidash_domain::keyless::destination(
+			&claims.destination.origin,
+			&PermittedOrigins::default()
+		),
+		Ok(Destination::PublicOnly)
+	) {
+		return guard.error(StatusCode::FORBIDDEN, DESTINATION_REFUSED, jti);
+	}
 	if !claims
 		.methods
 		.iter()
@@ -334,7 +349,7 @@ async fn forward(State(broker): State<Arc<TenantSecretBroker>>, request: Request
 			return guard.error(StatusCode::NOT_FOUND, SECRET_UNAVAILABLE, jti);
 		}
 		Err(KeyMaterialError::StoreUnavailable) => {
-			return guard.error(StatusCode::BAD_GATEWAY, UPSTREAM_UNREACHABLE, jti);
+			return guard.error(StatusCode::SERVICE_UNAVAILABLE, BROKER_UNAVAILABLE, jti);
 		}
 	};
 	let Some(host) = origin_host(&claims.destination.origin) else {
@@ -353,6 +368,15 @@ async fn forward(State(broker): State<Arc<TenantSecretBroker>>, request: Request
 	let headers = request.headers().clone();
 	let connection = connection_tokens(&headers);
 	let attach = claims.attach.header().to_ascii_lowercase();
+	let content_length = headers
+		.get(header::CONTENT_LENGTH)
+		.and_then(|value| value.to_str().ok())
+		.and_then(|value| value.trim().parse::<u64>().ok());
+	// A request without one of the two framing headers has no body, so a GET is
+	// never changed into a chunked request. A declared length is forwarded as
+	// the exact length of the streamed body.
+	let has_body = headers.contains_key(header::TRANSFER_ENCODING)
+		|| content_length.is_some_and(|length| length > 0);
 	let mut call = broker.client.request(method, url);
 	for (name, value) in &headers {
 		if forward_header(name.as_str(), &connection, &attach) {
@@ -372,23 +396,31 @@ async fn forward(State(broker): State<Arc<TenantSecretBroker>>, request: Request
 		Attach::Bearer => call.header(header::AUTHORIZATION, value),
 		Attach::Header { name } => call.header(name, value),
 	};
-	let bytes_in = guard.bytes_in.clone();
-	let mut incoming = request.into_body().into_data_stream();
-	let body = async_stream::stream! {
-		while let Some(chunk) = incoming.next().await {
-			match chunk {
-				Ok(bytes) => {
-					bytes_in.fetch_add(bytes.len() as u64, Ordering::Relaxed);
-					yield Ok::<Bytes, std::io::Error>(bytes);
-				}
-				Err(_) => {
-					yield Err(std::io::Error::other("request body unavailable"));
-					break;
+	let call = if has_body {
+		let bytes_in = guard.bytes_in.clone();
+		let mut incoming = request.into_body().into_data_stream();
+		let body = async_stream::stream! {
+			while let Some(chunk) = incoming.next().await {
+				match chunk {
+					Ok(bytes) => {
+						bytes_in.fetch_add(bytes.len() as u64, Ordering::Relaxed);
+						yield Ok::<Bytes, std::io::Error>(bytes);
+					}
+					Err(_) => {
+						yield Err(std::io::Error::other("request body unavailable"));
+						break;
+					}
 				}
 			}
+		};
+		let call = call.body(reqwest::Body::wrap_stream(body));
+		match content_length.filter(|length| *length > 0) {
+			Some(length) => call.header(header::CONTENT_LENGTH, length),
+			None => call,
 		}
+	} else {
+		call
 	};
-	let call = call.body(reqwest::Body::wrap_stream(body));
 	let upstream = match tokio::time::timeout_at(deadline, call.send()).await {
 		Ok(Ok(response)) => response,
 		Ok(Err(error)) if aidash_integrations::keyless::refused(&error) => {
@@ -406,35 +438,19 @@ fn forward_response(
 	max_response_bytes: Option<u64>,
 ) -> Response {
 	let status = upstream.status();
-	let redirect = status.is_redirection();
 	guard.entry.status = status.as_u16();
 	let mut builder = Response::builder().status(status);
 	let connection = connection_tokens(upstream.headers());
-	if redirect {
-		// A redirect is returned unchanged; the broker never follows it.
-		for (name, value) in upstream.headers() {
-			if !response_hop_by_hop(name.as_str())
-				&& name != header::CONTENT_LENGTH
-				&& !connection.iter().any(|token| token == name.as_str())
-			{
-				builder = builder.header(name, value);
-			}
+	for (name, value) in upstream.headers() {
+		if !response_hop_by_hop(name.as_str())
+			&& name != header::CONTENT_LENGTH
+			&& !connection.iter().any(|token| token == name.as_str())
+		{
+			builder = builder.header(name, value);
 		}
-	} else {
-		for name in [
-			"content-type",
-			"mcp-session-id",
-			"last-event-id",
-			"content-encoding",
-		] {
-			if let Some(value) = upstream.headers().get(name) {
-				builder = builder.header(name, value);
-			}
-		}
-		match upstream.headers().get(header::CACHE_CONTROL) {
-			Some(value) => builder = builder.header(header::CACHE_CONTROL, value),
-			None => builder = builder.header(header::CACHE_CONTROL, "no-store"),
-		}
+	}
+	if upstream.headers().get(header::CACHE_CONTROL).is_none() {
+		builder = builder.header(header::CACHE_CONTROL, "no-store");
 	}
 	let bytes_out = guard.bytes_out.clone();
 	let mut stream = upstream.bytes_stream();
@@ -511,8 +527,28 @@ fn broker_error(status: StatusCode, code: &'static str, jti: Option<uuid::Uuid>)
 }
 
 /// The forwarded path: `{rest}` is joined under the signed prefix, with its
-/// leading `/` removed. Percent escapes, backslashes, empty segments and `.`
-/// or `..` segments are refused, so a forwarded path cannot leave the prefix.
+/// leading `/` removed. Each segment is percent-decoded for checking only, so
+/// a path cannot leave the prefix or hide a second encoding; the original
+/// still-encoded path is forwarded.
+fn percent_encoding_valid(segment: &str) -> bool {
+	let bytes = segment.as_bytes();
+	let mut index = 0;
+	while index < bytes.len() {
+		if bytes[index] == b'%' {
+			if index + 2 >= bytes.len()
+				|| !bytes[index + 1].is_ascii_hexdigit()
+				|| !bytes[index + 2].is_ascii_hexdigit()
+			{
+				return false;
+			}
+			index += 3;
+		} else {
+			index += 1;
+		}
+	}
+	true
+}
+
 fn forward_path(claims: &SecretClaims, uri: &Uri) -> Result<String, ()> {
 	if uri.scheme().is_some() || uri.authority().is_some() {
 		return Err(());
@@ -527,16 +563,26 @@ fn forward_path(claims: &SecretClaims, uri: &Uri) -> Result<String, ()> {
 	};
 	if rest
 		.bytes()
-		.any(|b| matches!(b, b'%' | b'\\' | b'?' | b'#') || b.is_ascii_control())
+		.any(|b| matches!(b, b'\\' | b'?' | b'#') || b.is_ascii_control())
 	{
 		return Err(());
 	}
-	if !rest.is_empty()
-		&& rest
-			.split('/')
-			.any(|segment| segment.is_empty() || segment == "." || segment == "..")
-	{
-		return Err(());
+	if !rest.is_empty() {
+		for segment in rest.split('/') {
+			if segment.is_empty() || !percent_encoding_valid(segment) {
+				return Err(());
+			}
+			let decoded = percent_decode_str(segment).collect::<Vec<u8>>();
+			if decoded.is_empty()
+				|| decoded.as_slice() == b"."
+				|| decoded.as_slice() == b".."
+				|| decoded
+					.iter()
+					.any(|b| matches!(b, b'/' | b'\\' | b'%') || b.is_ascii_control())
+			{
+				return Err(());
+			}
+		}
 	}
 	let prefix = &claims.destination.path_prefix;
 	let joined = format!("{prefix}{rest}");
