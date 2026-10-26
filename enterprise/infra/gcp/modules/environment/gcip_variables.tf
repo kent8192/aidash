@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 kent8192
+# SPDX-License-Identifier: BUSL-1.1
+# See enterprise/LICENSE.
+
 variable "gcip_tenants" {
   description = "GCIP pool definitions cloned into each environment. Pool aliases are configuration keys, not GCIP-generated IDs. A pool with a tenant has a Tenant Binding; the one pool without a tenant is the Shared Pool."
   type = map(object({

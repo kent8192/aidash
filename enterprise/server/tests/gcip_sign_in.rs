@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 kent8192
+// SPDX-License-Identifier: BUSL-1.1
+// See enterprise/LICENSE.
+
 //! Signed token and fake tenant Admin API acceptance through the production router.
 #![allow(clippy::disallowed_methods)] // Fixtures reach the database outside a tenancy scope.
 #[path = "../../../server/src/apps/execution/tests/support/legacy.rs"]

@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 kent8192
+// SPDX-License-Identifier: BUSL-1.1
+// See enterprise/LICENSE.
+
 //! The billing core on PostgreSQL: meters, Billing Accounts, Tiers, the rules
 //! for who may exist on Cloud, Run admission and the usage report.
 #![allow(clippy::disallowed_methods)] // Fixtures reach the database outside a tenancy scope.

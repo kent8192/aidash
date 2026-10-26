@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 kent8192
+// SPDX-License-Identifier: BUSL-1.1
+// See enterprise/LICENSE.
+
 //! The Deployment Key of Cloud and Dedicated: an Ed25519 key version in Cloud
 //! KMS (ADR 0064). The private key never leaves KMS. The public key is fetched
 //! once, so signing needs only the KMS call that Capability Tokens already use.

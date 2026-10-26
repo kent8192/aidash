@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 kent8192
+// SPDX-License-Identifier: BUSL-1.1
+// See enterprise/LICENSE.
+
 //! Infrastructure-only, read-only activity snapshot. No application writes or migrations.
 use reinhardt_db::backends::{
 	DatabaseConnection, IsolationLevel, QueryValue, Row, TransactionExecutor,

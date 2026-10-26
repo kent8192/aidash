@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 kent8192
+// SPDX-License-Identifier: BUSL-1.1
+// See enterprise/LICENSE.
+
 #[cfg(server)]
 mod native {
 	//! Standalone service entry point. Schema owners migrate explicitly before serve.

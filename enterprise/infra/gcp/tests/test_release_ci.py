@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 kent8192
+# SPDX-License-Identifier: BUSL-1.1
+# See enterprise/LICENSE.
+
 """Reusing full development CI must never authorize an untested release tree."""
 
 from contextlib import redirect_stderr, redirect_stdout

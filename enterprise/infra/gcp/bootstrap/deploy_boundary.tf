@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 kent8192
+# SPDX-License-Identifier: BUSL-1.1
+# See enterprise/LICENSE.
+
 // The deploy pipeline stays part of the trust root for Key Material (ADR 0005), but
 // path 1 (impersonating a Credential Broker account) is closed here, by the
 // human-run bootstrap that the deploy identity cannot change (#151).

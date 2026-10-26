@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 kent8192
+# SPDX-License-Identifier: BUSL-1.1
+# See enterprise/LICENSE.
+
 """Execute the required CI gate against full and verified release job outcomes."""
 
 from copy import deepcopy

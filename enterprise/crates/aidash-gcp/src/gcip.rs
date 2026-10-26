@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 kent8192
+// SPDX-License-Identifier: BUSL-1.1
+// See enterprise/LICENSE.
+
 //! GCIP transport adapters of Cloud and Dedicated. Signed client tokens authenticate; custom claims never authorize.
 use aidash_domain::identity::dashboard::{AccountState, SignIn};
 use aidash_integrations::jwks::HttpSigningKeys;

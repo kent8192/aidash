@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 kent8192
+# SPDX-License-Identifier: BUSL-1.1
+# See enterprise/LICENSE.
+
 """In-memory stand-in for kube.Cluster: one method per kubectl/helm/gcloud command."""
 
 import base64

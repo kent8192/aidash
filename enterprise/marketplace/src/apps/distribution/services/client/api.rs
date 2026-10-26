@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 kent8192
+// SPDX-License-Identifier: BUSL-1.1
+// See enterprise/LICENSE.
+
 //! Pages resources backed by the app's generated typed server functions.
 use super::super::super::serializers::*;
 pub(crate) use super::super::super::serializers::{

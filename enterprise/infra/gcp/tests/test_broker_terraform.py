@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 kent8192
+# SPDX-License-Identifier: BUSL-1.1
+# See enterprise/LICENSE.
+
 """Inspect real Terraform state produced exclusively by the mock Google provider."""
 import json
 from pathlib import Path

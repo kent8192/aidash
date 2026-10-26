@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 kent8192
+// SPDX-License-Identifier: BUSL-1.1
+// See enterprise/LICENSE.
+
 // Account settings starts a normal GCIP sign-in with the intent to enroll a
 // second factor. The intent must survive the provider's redirect round trip, so
 // it lives in sessionStorage with a lifetime of one login transaction (10 min).

@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 kent8192
+// SPDX-License-Identifier: BUSL-1.1
+// See enterprise/LICENSE.
+
 //! Validated sign-in forms on the Pages form runtime.
 //!
 //! The generated form types are opaque, so each runtime is retained once and

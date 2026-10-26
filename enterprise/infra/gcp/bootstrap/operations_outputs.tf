@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 kent8192
+# SPDX-License-Identifier: BUSL-1.1
+# See enterprise/LICENSE.
+
 output "operations_configuration" {
   description = "Nonsecret second-phase operational configuration, not evidence of backup completion or successful recovery."
   value = {

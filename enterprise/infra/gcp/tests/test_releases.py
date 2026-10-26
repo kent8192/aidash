@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 kent8192
+# SPDX-License-Identifier: BUSL-1.1
+# See enterprise/LICENSE.
+
 """Release lifecycle and authorization at the actual gh JSON/API boundary."""
 
 from copy import deepcopy

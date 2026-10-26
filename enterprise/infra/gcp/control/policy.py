@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 kent8192
+# SPDX-License-Identifier: BUSL-1.1
+# See enterprise/LICENSE.
+
 """Pure lifecycle policy. No cloud calls, shell interpretation, or application writes."""
 
 from copy import deepcopy

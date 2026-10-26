@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 kent8192
+// SPDX-License-Identifier: BUSL-1.1
+// See enterprise/LICENSE.
+
 //! Independent migration set, including the framework's durable OAuth/OIDC stores.
 use reinhardt::auth::{oauth2_server::PostgresOAuthStore, oidc_op::PostgresOidcStore};
 use reinhardt::db::migrations::{FieldType, prelude::*};

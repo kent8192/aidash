@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 kent8192
+// SPDX-License-Identifier: BUSL-1.1
+// See enterprise/LICENSE.
+
 import { createServer } from "node:http";
 import { expect, test } from "@playwright/test";
 import { mockGcip } from "./fixtures/gcip";

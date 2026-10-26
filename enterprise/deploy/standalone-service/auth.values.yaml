@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 kent8192
+# SPDX-License-Identifier: BUSL-1.1
+# See enterprise/LICENSE.
+
 # Build enterprise/auth/Dockerfile from the repository root.
 port: 8081
 args: ["--config", "/run/aidash/config/auth.toml", "serve"]

@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 kent8192
+# SPDX-License-Identifier: BUSL-1.1
+# See enterprise/LICENSE.
+
 // Detection for the paths the deploy pipeline keeps (#151): broker redeploy and
 // misuse of Key Material. These live in the human-run bootstrap so the deploy
 // identity, which holds no monitoring or logging role, cannot mute them.

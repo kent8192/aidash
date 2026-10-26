@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 kent8192
+// SPDX-License-Identifier: BUSL-1.1
+// See enterprise/LICENSE.
+
 //! Reinhardt command entry point of the Enterprise build.
 #[cfg(not(target_arch = "wasm32"))]
 fn main() {

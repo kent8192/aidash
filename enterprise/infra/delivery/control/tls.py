@@ -1,4 +1,8 @@
 #!/usr/bin/env python3
+# SPDX-FileCopyrightText: 2026 kent8192
+# SPDX-License-Identifier: BUSL-1.1
+# See enterprise/LICENSE.
+
 """Issue/renew only the preview wildcard; keep PEM and DNS tokens out of logs/state.
 
 The protected certificate-renewal workflow owns this operation. Terraform owns

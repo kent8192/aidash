@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 kent8192
+# SPDX-License-Identifier: BUSL-1.1
+# See enterprise/LICENSE.
+
 {{- $name := include "environment.name" . -}}
 {{- $edge := .Values.edge -}}
 {{- $hostname := required "edge.hostname is required" $edge.hostname -}}

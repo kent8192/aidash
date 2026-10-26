@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 kent8192
+// SPDX-License-Identifier: BUSL-1.1
+// See enterprise/LICENSE.
+
 //! The downstream issuer and BFF contract over actual HTTP and PostgreSQL.
 //! GCIP verification owns its existing signed-token tests. These fixtures seed
 //! an already-verified source through the production repository and use the real

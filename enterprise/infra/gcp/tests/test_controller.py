@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 kent8192
+# SPDX-License-Identifier: BUSL-1.1
+# See enterprise/LICENSE.
+
 """Exercise complete reconciliation with cloud boundaries replaced, not the policy."""
 
 from contextlib import ExitStack, contextmanager, redirect_stdout

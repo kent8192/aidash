@@ -1,4 +1,8 @@
 #!/bin/sh
+# SPDX-FileCopyrightText: 2026 kent8192
+# SPDX-License-Identifier: BUSL-1.1
+# See enterprise/LICENSE.
+
 set -eu
 # Infrastructure-only role/schema/default-privilege DDL; the owning service
 # binaries, not this PostgreSQL entrypoint, apply the Reinhardt migrations.

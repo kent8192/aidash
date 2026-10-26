@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 kent8192
+# SPDX-License-Identifier: BUSL-1.1
+# See enterprise/LICENSE.
+
 """Provider Credential IAM boundaries; workloads receive no runtime-config secret grant."""
 import re
 import unittest

@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 kent8192
+# SPDX-License-Identifier: BUSL-1.1
+# See enterprise/LICENSE.
+
 // Existing, billing-enabled project. Bootstrap does not create GCP projects.
 resource "google_project_service" "byok_secret_manager" {
   count              = var.byok_project_id != "" ? 1 : 0

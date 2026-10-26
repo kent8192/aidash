@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 kent8192
+# SPDX-License-Identifier: BUSL-1.1
+# See enterprise/LICENSE.
+
 """Pre-update Backup: an on-demand Backup for GKE backup taken while writers are sealed.
 
 A person restores it only for an update that failed before `start_writers`

@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 kent8192
+// SPDX-License-Identifier: BUSL-1.1
+// See enterprise/LICENSE.
+
 //! A signed GCIP login must yield a usable, bounded lifecycle proof. The key
 //! lookup and upstream enabled fact are fixture inputs; TokenVerifier still
 //! verifies RS256, issuer, audience, tenant and authentication time itself.

@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 kent8192
+# SPDX-License-Identifier: BUSL-1.1
+# See enterprise/LICENSE.
+
 // Provider Credential Key Material lives in a separate, dedicated BYOK project;
 // only the server identity creates and manages it.
 // Create is checked on the project and cannot be limited by a Secret name.

@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 kent8192
+# SPDX-License-Identifier: BUSL-1.1
+# See enterprise/LICENSE.
+
 variable "project_id" { type = string }
 variable "gke_backup_enabled" {
   description = "Install the production Backup for GKE agent after the bootstrap API preparation, independently of second-phase backup plan creation."

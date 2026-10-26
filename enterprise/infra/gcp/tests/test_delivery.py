@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 kent8192
+# SPDX-License-Identifier: BUSL-1.1
+# See enterprise/LICENSE.
+
 """Release authorization, deployment evidence and automatic source selection contracts."""
 
 from copy import deepcopy

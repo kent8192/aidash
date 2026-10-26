@@ -1,4 +1,8 @@
 #!/usr/bin/env python3
+# SPDX-FileCopyrightText: 2026 kent8192
+# SPDX-License-Identifier: BUSL-1.1
+# See enterprise/LICENSE.
+
 """Generate reviewable dummy-resource requests; never executes cloud operations.
 
 Resources JSON: server, worker, node, control service-account emails; own_tenant,

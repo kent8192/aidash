@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 kent8192
+# SPDX-License-Identifier: BUSL-1.1
+# See enterprise/LICENSE.
+
 // Bootstrap owns role definitions. Environment automation can provision only
 // its named buckets and bucket bindings, without project IAM or role administration.
 variable "memory_recovery_nonproduction_enabled" {

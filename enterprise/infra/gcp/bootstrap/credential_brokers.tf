@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 kent8192
+# SPDX-License-Identifier: BUSL-1.1
+# See enterprise/LICENSE.
+
 // Human-run bootstrap alone creates identities with BYOK payload access.
 // The deploy pipeline is an accepted trust root; deploy_boundary.tf (#151) denies
 // it every way of impersonating these accounts.

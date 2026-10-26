@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 kent8192
+# SPDX-License-Identifier: BUSL-1.1
+# See enterprise/LICENSE.
+
 variable "project_id" {
   type        = string
   description = "Existing, billing-enabled GCP project. Never infer it from the local gcloud default."

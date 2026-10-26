@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 kent8192
+# SPDX-License-Identifier: BUSL-1.1
+# See enterprise/LICENSE.
+
 """Behavioral regressions for lifecycle races, authorization, and idle semantics."""
 
 from pathlib import Path

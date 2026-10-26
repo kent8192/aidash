@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 kent8192
+# SPDX-License-Identifier: BUSL-1.1
+# See enterprise/LICENSE.
+
 variable "production_backup_agent_enabled" {
   description = "Prepare the Backup for GKE API and controller agent flag before the first production cluster deployment; does not create a backup plan."
   type        = bool

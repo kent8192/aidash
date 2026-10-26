@@ -1,4 +1,8 @@
 #!/usr/bin/env python3
+# SPDX-FileCopyrightText: 2026 kent8192
+# SPDX-License-Identifier: BUSL-1.1
+# See enterprise/LICENSE.
+
 """Dispatch-only negative WIF probes; credentials and raw responses stay in memory.
 
 The runtime endpoint delivers the JWT over HTTPS. Local claim inspection checks

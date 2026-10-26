@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 kent8192
+# SPDX-License-Identifier: BUSL-1.1
+# See enterprise/LICENSE.
+
 output "managed_inventory" {
   description = "Fixed inventory for the read-only discovery/adoption helper; no secret values."
   value = {

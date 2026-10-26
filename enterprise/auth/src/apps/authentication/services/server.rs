@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 kent8192
+// SPDX-License-Identifier: BUSL-1.1
+// See enterprise/LICENSE.
+
 //! Composition of shared identity lifecycle, upstream GCIP and Reinhardt's issuer.
 use crate::{Error, Result, config::Config, store::Store};
 use aidash_application::{

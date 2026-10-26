@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 kent8192
+# SPDX-License-Identifier: BUSL-1.1
+# See enterprise/LICENSE.
+
 """The dispatch experiment's HTTP contract, fail-closed classification and redaction.
 
 No live GitHub/Google request is made. Mock the HTTP opener, not the probe's

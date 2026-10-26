@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 kent8192
+// SPDX-License-Identifier: BUSL-1.1
+// See enterprise/LICENSE.
+
 //! Static Pages assets are served by the same owning product process.
 use crate::{Error, Marketplace, Result};
 use reinhardt::Response;

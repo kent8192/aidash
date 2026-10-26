@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 kent8192
+# SPDX-License-Identifier: BUSL-1.1
+# See enterprise/LICENSE.
+
 """Kubernetes/Helm boundary for Environments on the shared GKE cluster. Infrastructure only.
 
 Charts come only from this trusted checkout. Secrets reach the cluster through

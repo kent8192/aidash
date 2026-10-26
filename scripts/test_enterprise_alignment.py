@@ -64,6 +64,14 @@ class EnterpriseAlignmentTests(unittest.TestCase):
             "[profile] differs between the workspaces",
         ])
 
+    def test_the_component_license_is_fixed_per_workspace(self):
+        self.edit(self.community / "Cargo.toml", 'license = "Apache-2.0"', 'license = "MIT"')
+        self.edit(self.enterprise / "Cargo.toml", 'license = "BUSL-1.1"', 'license = "MIT"')
+        self.assertEqual(ALIGNMENT.misalignments(self.community, self.enterprise), [
+            '[workspace.package] license in Cargo.toml must be "Apache-2.0"',
+            '[workspace.package] license in enterprise/Cargo.toml must be "BUSL-1.1"',
+        ])
+
     def test_a_shared_dependency_must_name_the_same_crate(self):
         self.edit(self.community / "Cargo.toml", 'aidash-domain = { path = "crates/aidash-domain" }',
                   'aidash-domain = { path = "crates/aidash-application" }')

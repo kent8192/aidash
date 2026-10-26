@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 kent8192
+# SPDX-License-Identifier: BUSL-1.1
+# See enterprise/LICENSE.
+
 // Terraform owns metadata only. Certificate/key JSON versions are added by the
 // trusted renewal workflow and must never enter Terraform configuration/state.
 variable "preview_tls_secret_id" {

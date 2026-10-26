@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 kent8192
+# SPDX-License-Identifier: BUSL-1.1
+# See enterprise/LICENSE.
+
 """Runner contracts at its CLI/cloud subprocess and HTTP response boundaries.
 
 The fake cloud models resources and failures, never IAM decisions. These tests

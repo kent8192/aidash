@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 kent8192
+# SPDX-License-Identifier: BUSL-1.1
+# See enterprise/LICENSE.
+
 """Human-run bootstrap owns BYOK roles; dedicated broker identities receive prefix-conditioned read grants."""
 from pathlib import Path
 import unittest

@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 kent8192
+// SPDX-License-Identifier: BUSL-1.1
+// See enterprise/LICENSE.
+
 //! Declarative components shared by the Marketplace routes.
 use super::super::hooks::{Load, Resource};
 use crate::api::{ApiError, Plugin, PluginVersion, encode, price};

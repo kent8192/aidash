@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 kent8192
+# SPDX-License-Identifier: BUSL-1.1
+# See enterprise/LICENSE.
+
 # Deployment, or StatefulSet for the edge, which holds its TLS claim. GKE's
 # Stateful HA fails StatefulSets on regional disks over to another zone (ADR 0067).
 workloadKind: Deployment

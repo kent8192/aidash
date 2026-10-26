@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 kent8192
+# SPDX-License-Identifier: BUSL-1.1
+# See enterprise/LICENSE.
+
 // Nonproduction shares one zonal cluster. Production uses a separate regional
 // control plane and keeps its retained disks on regional disks in two zones:
 // its pools run in the first zone, and standby pools in the second scale up

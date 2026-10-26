@@ -5,6 +5,9 @@ The two workspaces have separate lockfiles (ADR 0032). Every version that
 enterprise/Cargo.lock holds of a package Community also locks must be one that
 Cargo.lock holds, so that Community tests describe the code the Enterprise
 build runs.
+
+The [workspace.package] tables match except for the component license:
+Apache-2.0 for Community and BUSL-1.1 for Enterprise (ADR 0035).
 """
 from collections import defaultdict
 from pathlib import Path
@@ -38,9 +41,23 @@ def misalignments(community, enterprise):
             errors.append(f"enterprise/{name} differs from {name}")
     ours = tomllib.loads((community / "Cargo.toml").read_text())
     theirs = tomllib.loads((enterprise / "Cargo.toml").read_text())
-    for table in ("package", "lints"):
-        if ours["workspace"].get(table) != theirs["workspace"].get(table):
-            errors.append(f"[workspace.{table}] differs between the workspaces")
+    ours_package = dict(ours["workspace"].get("package", {}))
+    theirs_package = dict(theirs["workspace"].get("package", {}))
+    ours_license = ours_package.pop("license", None)
+    theirs_license = theirs_package.pop("license", None)
+    if ours_package != theirs_package:
+        errors.append("[workspace.package] differs between the workspaces")
+    # The license is the one package key that must differ, by component.
+    for manifest, actual, expected in (
+        ("Cargo.toml", ours_license, "Apache-2.0"),
+        ("enterprise/Cargo.toml", theirs_license, "BUSL-1.1"),
+    ):
+        if actual != expected:
+            errors.append(
+                f'[workspace.package] license in {manifest} must be "{expected}"'
+            )
+    if ours["workspace"].get("lints") != theirs["workspace"].get("lints"):
+        errors.append("[workspace.lints] differs between the workspaces")
     if ours.get("profile") != theirs.get("profile"):
         errors.append("[profile] differs between the workspaces")
     shared = ours["workspace"]["dependencies"].keys() & theirs["workspace"]["dependencies"].keys()

@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 kent8192
+# SPDX-License-Identifier: BUSL-1.1
+# See enterprise/LICENSE.
+
 """Small trusted CLI/API boundary used by the lifecycle controller."""
 
 from contextlib import contextmanager

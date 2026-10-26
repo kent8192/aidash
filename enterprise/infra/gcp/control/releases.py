@@ -1,4 +1,8 @@
 #!/usr/bin/env python3
+# SPDX-FileCopyrightText: 2026 kent8192
+# SPDX-License-Identifier: BUSL-1.1
+# See enterprise/LICENSE.
+
 """Release candidates, staging gates and CI verification, executed from protected code.
 
 PR code is never checked out or executed. Every API write uses fixed endpoints

@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 kent8192
+# SPDX-License-Identifier: BUSL-1.1
+# See enterprise/LICENSE.
+
 # Read-only discovery must fill these adoption inputs before planning an
 # existing installation. Import blocks adopt only declared objects; no search
 # by pattern, repository recreation, or unrelated-policy deletion is performed.

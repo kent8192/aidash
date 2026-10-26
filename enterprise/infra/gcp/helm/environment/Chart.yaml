@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 kent8192
+# SPDX-License-Identifier: BUSL-1.1
+# See enterprise/LICENSE.
+
 apiVersion: v2
 name: aidash-gcp-environment
 description: Retained PostgreSQL 17, NATS JetStream, edge and activity for one GCP Environment

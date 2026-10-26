@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 kent8192
+// SPDX-License-Identifier: BUSL-1.1
+// See enterprise/LICENSE.
+
 export const EMAIL_KEY = "aidash.gcip.email";
 // The email handoff is consumed exactly once. main.tsx takes it at startup,
 // before /auth/config or the lazy sign-in chunk load, so a failure there

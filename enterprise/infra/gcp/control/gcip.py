@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 kent8192
+# SPDX-License-Identifier: BUSL-1.1
+# See enterprise/LICENSE.
+
 """Tenant IAM and MFA reconciliation; never grants a runtime principal project-wide access."""
 from copy import deepcopy
 import json

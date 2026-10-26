@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 kent8192
+# SPDX-License-Identifier: BUSL-1.1
+# See enterprise/LICENSE.
+
 """#151: the deploy identity cannot reach the Credential Broker identity.
 
 Terraform state comes exclusively from the mock Google provider; nothing here

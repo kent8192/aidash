@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 kent8192
+# SPDX-License-Identifier: BUSL-1.1
+# See enterprise/LICENSE.
+
 """Wildcard renewal contract: actual certificate validation and private transport."""
 
 from contextlib import redirect_stdout

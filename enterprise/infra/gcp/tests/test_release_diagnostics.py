@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 kent8192
+# SPDX-License-Identifier: BUSL-1.1
+# See enterprise/LICENSE.
+
 """Public release diagnostics preserve HTTP evidence without disclosing inputs."""
 
 from contextlib import redirect_stderr, redirect_stdout

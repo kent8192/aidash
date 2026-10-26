@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 kent8192
+# SPDX-License-Identifier: BUSL-1.1
+# See enterprise/LICENSE.
+
 locals {
   gcip_google = { for alias, pool in var.gcip_tenants : alias => pool if pool.google_client_id != null }
   gcip_oidc   = merge({}, [for alias, pool in var.gcip_tenants : { for id, provider in pool.oidc : "${alias}/${id}" => merge(provider, { pool = alias, provider_id = id }) }]...)

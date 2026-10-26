@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 kent8192
+# SPDX-License-Identifier: BUSL-1.1
+# See enterprise/LICENSE.
+
 // This second bootstrap phase runs only after production's existing cluster is
 // available. Neither backups nor alerts enable CI/CD or create another cluster.
 locals {

@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 kent8192
+// SPDX-License-Identifier: BUSL-1.1
+// See enterprise/LICENSE.
+
 import { ShieldCheck } from "lucide-react";
 import { desktopAvailable } from "@/desktop";
 import { useI18n } from "@/ui";

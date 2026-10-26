@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 kent8192
+// SPDX-License-Identifier: BUSL-1.1
+// See enterprise/LICENSE.
+
 //! Explicit native registration of the app's typed server functions.
 use super::super::server_fn::*;
 use reinhardt::{ServerRouter, pages::server_fn::ServerFnRouterExt};

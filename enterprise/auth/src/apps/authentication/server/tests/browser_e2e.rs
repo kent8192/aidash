@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 kent8192
+// SPDX-License-Identifier: BUSL-1.1
+// See enterprise/LICENSE.
+
 //! Real Pages + server_fn + OIDC/BFF + PostgreSQL workflows. Only the external
 //! GCIP browser module/key/status dependencies are fixtures; product handlers,
 //! sessions, cookies, CSRF, migrations and distribution remain production code.

@@ -1,4 +1,8 @@
 #!/usr/bin/env python3
+# SPDX-FileCopyrightText: 2026 kent8192
+# SPDX-License-Identifier: BUSL-1.1
+# See enterprise/LICENSE.
+
 """Disposable #152 sandbox lifecycle. All output is allowlisted metadata.
 
 prepare/plan/set-broker-image are local-only. create, probe and cleanup require separately authorized

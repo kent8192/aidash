@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 kent8192
+// SPDX-License-Identifier: BUSL-1.1
+// See enterprise/LICENSE.
+
 //! Authentication-owned records. No foreign keys point at product-owned tables.
 use reinhardt::{db::orm::Json, model};
 use serde::{Deserialize, Serialize};

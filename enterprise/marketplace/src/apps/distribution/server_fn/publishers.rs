@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 kent8192
+// SPDX-License-Identifier: BUSL-1.1
+// See enterprise/LICENSE.
+
 //! Typed full-stack Pages boundary. Only serializable data crosses the wire.
 use super::super::serializers::*;
 #[cfg(server)]

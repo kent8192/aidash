@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 kent8192
+# SPDX-License-Identifier: BUSL-1.1
+# See enterprise/LICENSE.
+
 """Adopt Email Service metadata and provision a Sending token without Terraform secrets.
 
 No domain onboarding, DNS updates, verification mail or email sends exist here.

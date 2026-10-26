@@ -1,4 +1,8 @@
 #!/usr/bin/env python3
+# SPDX-FileCopyrightText: 2026 kent8192
+# SPDX-License-Identifier: BUSL-1.1
+# See enterprise/LICENSE.
+
 """Read deployed operational metadata without creating backups, restores or resources.
 
 Exit success means the configured foundation and a fresh successful backup were

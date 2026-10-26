@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 kent8192
+// SPDX-License-Identifier: BUSL-1.1
+// See enterprise/LICENSE.
+
 //! Write-only Secret Manager REST adapter of the Secret Store.
 use aidash_application::{Error, Result, provider_credentials::Store};
 use async_trait::async_trait;

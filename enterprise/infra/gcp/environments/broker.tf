@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 kent8192
+# SPDX-License-Identifier: BUSL-1.1
+# See enterprise/LICENSE.
+
 // The Credential Broker image digest is reviewed code, not deployment configuration
 // (#151): changing the broker means changing broker-image.json in a pull request.
 // Update it with the procedure in enterprise/infra/gcp/README.md; null means no image has been

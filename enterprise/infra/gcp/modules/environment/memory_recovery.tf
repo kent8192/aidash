@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 kent8192
+# SPDX-License-Identifier: BUSL-1.1
+# See enterprise/LICENSE.
+
 // A second failure domain for the Home's non-body floors and expiring bodies.
 // Provisioning is separate from the supervised activation and lost-ledger drill.
 locals {

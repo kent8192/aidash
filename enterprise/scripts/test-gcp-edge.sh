@@ -1,4 +1,8 @@
 #!/usr/bin/env bash
+# SPDX-FileCopyrightText: 2026 kent8192
+# SPDX-License-Identifier: BUSL-1.1
+# See enterprise/LICENSE.
+
 # Verify the rendered admission pair in a disposable network-isolated container.
 set -euo pipefail
 cd "$(dirname "$0")/../.."

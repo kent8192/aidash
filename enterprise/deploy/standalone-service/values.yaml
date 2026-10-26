@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 kent8192
+# SPDX-License-Identifier: BUSL-1.1
+# See enterprise/LICENSE.
+
 # Install one release per process. Supply a digest-pinned image and existing
 # configuration/credential Secrets; this chart does not create plaintext secrets.
 image: ""

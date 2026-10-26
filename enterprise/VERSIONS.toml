@@ -1,0 +1,29 @@
+# Enterprise version history.
+#
+# One [[version]] table records one published Enterprise version. CI checks
+# these records against git and rejects a Change Date that moves later.
+#
+# version:             The Enterprise version. It matches version in
+#                      [workspace.package] and the Licensed Work in
+#                      enterprise/LICENSE.
+# change_date:         The date when this version becomes available under
+#                      change_license. It is the date of first public
+#                      distribution plus four years. A recorded date never
+#                      moves later.
+# change_license:      The SPDX identifier this version converts to on
+#                      change_date.
+# first_public_commit: The commit that first added enterprise/LICENSE. CI
+#                      derives it from git; a follow-up PR records it after the
+#                      cutover merge.
+# first_public_date:   The UTC date of first_public_commit. The same follow-up
+#                      PR records it.
+#
+# first_public_commit and first_public_date are absent for 0.1.0 because the
+# cutover merge commit does not exist until this PR merges. The follow-up PR
+# records them, and CI derives the commit from git as the first commit that
+# added enterprise/LICENSE.
+
+[[version]]
+version = "0.1.0"
+change_date = 2030-10-26
+change_license = "Apache-2.0"

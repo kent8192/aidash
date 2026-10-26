@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 kent8192
+// SPDX-License-Identifier: BUSL-1.1
+// See enterprise/LICENSE.
+
 //! The Enterprise migrations extend Community's, and the models of both
 //! workspaces agree with their migration state.
 use std::fs;

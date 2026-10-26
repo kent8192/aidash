@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 kent8192
+# SPDX-License-Identifier: BUSL-1.1
+# See enterprise/LICENSE.
+
 mock_provider "google" {
   mock_resource "google_kms_key_ring" {
     defaults = { id = "projects/aidash-fixture/locations/us-central1/keyRings/aidash-test-capability" }

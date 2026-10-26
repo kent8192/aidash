@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 kent8192
+# SPDX-License-Identifier: BUSL-1.1
+# See enterprise/LICENSE.
+
 """Allowlisted release evidence; never print command output or arbitrary API text."""
 
 from contextvars import ContextVar

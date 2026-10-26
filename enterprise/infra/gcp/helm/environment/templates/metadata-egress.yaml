@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 kent8192
+# SPDX-License-Identifier: BUSL-1.1
+# See enterprise/LICENSE.
+
 {{- if .Values.metadataServerEgress.enabled }}
 ---
 # No Pod of this chart (PostgreSQL, NATS, edge, activity) has a Google identity or
