@@ -234,9 +234,7 @@ export function FilePreviewPane({
         />
       );
     } else {
-      body = (
-        <PreviewDomainView selection={selection} availability={availability} />
-      );
+      body = <PreviewDomainView selection={selection} />;
     }
   } else if (kind === "unsupported") {
     body = (
@@ -362,20 +360,8 @@ export function FilePreviewPane({
   );
 }
 
-function PreviewDomainView({
-  selection,
-  availability,
-}: {
-  selection: FilePreviewSelection;
-  availability: PreviewAvailability;
-}) {
-  if (desktopAvailable())
-    return (
-      <DesktopPreviewDomain
-        selection={selection}
-        previewDomain={availability.preview_domain}
-      />
-    );
+function PreviewDomainView({ selection }: { selection: FilePreviewSelection }) {
+  if (desktopAvailable()) return <DesktopPreviewDomain selection={selection} />;
   return <WebPreviewDomain selection={selection} />;
 }
 
@@ -480,20 +466,14 @@ function WebPreviewDomain({ selection }: { selection: FilePreviewSelection }) {
 
 function DesktopPreviewDomain({
   selection,
-  previewDomain,
 }: {
   selection: FilePreviewSelection;
-  previewDomain: string | null;
 }) {
   const { t } = useI18n();
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
 
   const open = async () => {
-    if (!previewDomain) {
-      setError(t("filePreviewPreviewUnavailable"));
-      return;
-    }
     setBusy(true);
     setError("");
     try {
@@ -501,7 +481,7 @@ function DesktopPreviewDomain({
         area_id: selection.area,
         file_id: selection.file.file_id,
       });
-      await desktop.openPreviewUrl(issued.url, previewDomain);
+      await desktop.openPreviewUrl(issued.url);
     } catch (caught) {
       setError(t(previewTicketErrorKey(caught)));
     } finally {
