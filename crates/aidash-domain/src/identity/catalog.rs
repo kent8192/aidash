@@ -51,6 +51,20 @@ impl CatalogRestriction {
 	pub fn normalized(self) -> Option<Self> {
 		(!self.is_unrestricted()).then_some(self)
 	}
+
+	/// Everyone either restriction admits. Widening an approval keeps the
+	/// existing members and adds the new ones.
+	pub fn union(&self, other: &Self) -> Self {
+		Self {
+			subjects: self.subjects.union(&other.subjects).cloned().collect(),
+			groups: self.groups.union(&other.groups).cloned().collect(),
+		}
+	}
+
+	/// Whether this restriction names everything `other` does.
+	pub fn contains(&self, other: &Self) -> bool {
+		other.subjects.is_subset(&self.subjects) && other.groups.is_subset(&self.groups)
+	}
 }
 
 /// A requested change to a Catalog Approval's restriction. An approval that
@@ -178,6 +192,23 @@ mod tests {
 			groups: groups(&["reviewers"]),
 		};
 		assert!(valid.validate().is_ok());
+	}
+
+	#[rstest::rstest]
+	fn a_union_keeps_existing_members_and_adds_only_the_new_ones() {
+		let current = CatalogRestriction {
+			subjects: groups(&["alice"]),
+			groups: groups(&["reviewers"]),
+		};
+		let proposed = CatalogRestriction {
+			subjects: groups(&["alice", "writer@1"]),
+			groups: BTreeSet::new(),
+		};
+		let union = current.union(&proposed);
+		assert_eq!(union.subjects, groups(&["alice", "writer@1"]));
+		assert_eq!(union.groups, groups(&["reviewers"]));
+		assert!(union.contains(&current));
+		assert!(union.contains(&proposed));
 	}
 
 	#[rstest::rstest]

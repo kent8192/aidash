@@ -4745,3 +4745,465 @@ async fn a_dependency_restriction_follows_the_using_agent_not_the_person(
 	);
 	cleanup(f, &url, &schema).await;
 }
+
+#[rstest::rstest]
+#[tokio::test]
+async fn approval_review_reports_readiness_and_hides_unreadable_dependencies(
+	#[future(awt)]
+	#[from(common::native_application)]
+	fixture: common::ApplicationFixture,
+) {
+	let (f, url, schema) = fixture.runtime.parts();
+	let app = fixture.application;
+	let (mut policy, token, _) = bootstrap(&f, &app, "http://127.0.0.1:9").await;
+	let deployment_administrator = f.config.api_token.clone();
+	let node = aidash_domain::nodes::NodeName::derived("acme");
+	let path =
+		format!("/api/authorization/acme/catalog/review?node={node}&entry=agent/research@1.0.0");
+	let (status, review) = request(&app, &token, "GET", &path, Value::Null).await;
+	assert_eq!(status, 200, "{review}");
+	assert_eq!(review["ready"], true);
+	assert_eq!(review["hidden"], 0);
+	assert!(
+		review["closure_digest"]
+			.as_str()
+			.unwrap()
+			.starts_with("sha256:")
+	);
+	let ids: Vec<_> = review["items"]
+		.as_array()
+		.unwrap()
+		.iter()
+		.map(|item| item["reference"]["id"].as_str().unwrap().to_owned())
+		.collect();
+	assert!(ids.contains(&"research".to_owned()));
+	assert!(ids.contains(&"model".to_owned()));
+
+	// A dependency the reviewer may not read is counted, never named.
+	policy["subjects"]["bob"] = json!({"kind":"user"});
+	policy["policies"].as_array_mut().unwrap().push(json!({
+		"id":"deny-model","effect":"deny","subjects":{"ids":["alice"]},
+		"actions":["registry.read"],"resources":{"kinds":["model"],"ids":["model"]}
+	}));
+	policy["policies"].as_array_mut().unwrap().push(json!({
+		"id":"deny-bob-root","effect":"deny","subjects":{"ids":["bob"]},
+		"actions":["registry.read"],"resources":{"kinds":["agent"],"ids":["research"]}
+	}));
+	assert_eq!(
+		request(
+			&app,
+			&deployment_administrator,
+			"POST",
+			"/api/authorization/acme",
+			json!({"expected_revision":1,"bundle":policy})
+		)
+		.await
+		.0,
+		200
+	);
+	let (status, hidden) = request(&app, &token, "GET", &path, Value::Null).await;
+	assert_eq!(status, 200, "{hidden}");
+	assert_eq!(hidden["hidden"], 1);
+	assert!(
+		!hidden["items"]
+			.as_array()
+			.unwrap()
+			.iter()
+			.any(|item| item["reference"]["id"] == "model")
+	);
+	assert_eq!(hidden["ready"], false);
+	let (_, credential) = request(
+		&app,
+		&deployment_administrator,
+		"POST",
+		"/api/authorization/acme/credentials",
+		json!({"subject":"bob"}),
+	)
+	.await;
+	let bob = credential["token"].as_str().unwrap();
+	let (status, body) = request(&app, bob, "GET", &path, Value::Null).await;
+	assert_eq!(status, 403, "{body}");
+	cleanup(f, &url, &schema).await;
+}
+
+#[rstest::rstest]
+#[tokio::test]
+async fn approval_review_submission_fences_stale_authority_and_approves_a_subset(
+	#[future(awt)]
+	#[from(common::native_application)]
+	fixture: common::ApplicationFixture,
+) {
+	let (f, url, schema) = fixture.runtime.parts();
+	let app = fixture.application;
+	let (mut policy, alice, _) = bootstrap(&f, &app, "http://127.0.0.1:9").await;
+	let deployment_administrator = f.config.api_token.clone();
+	let node = aidash_domain::nodes::NodeName::derived("acme");
+	let model = json!({"id":"model","version":"1.0.0"});
+
+	// Withdraw the model so the review has one approvable item.
+	assert_eq!(
+		request(
+			&app,
+			&alice,
+			"POST",
+			"/api/authorization/acme/catalog",
+			json!({"node":node,"entry":model,"enabled":false,"expected_revision":1})
+		)
+		.await
+		.0,
+		200
+	);
+	let path =
+		format!("/api/authorization/acme/catalog/review?node={node}&entry=agent/research@1.0.0");
+	let (status, review) = request(&app, &alice, "GET", &path, Value::Null).await;
+	assert_eq!(status, 200, "{review}");
+	let model_item = review["items"]
+		.as_array()
+		.unwrap()
+		.iter()
+		.find(|item| item["reference"]["id"] == "model")
+		.unwrap();
+	assert_eq!(model_item["status"], "approvable");
+	assert_eq!(model_item["expected_revision"], 2);
+	let item = json!({
+		"reference": model_item["reference"],
+		"digest": model_item["digest"],
+		"expected_revision": model_item["expected_revision"],
+		"restriction": model_item["proposed_restriction"],
+	});
+	let submit = json!({
+		"node":node,
+		"root":{"id":"research","version":"1.0.0"},
+		"closure_digest":review["closure_digest"],
+		"items":[item],
+	});
+
+	// A changed closure digest is stale before any write.
+	let mut stale = submit.clone();
+	stale["closure_digest"] = json!("sha256:changed");
+	let (status, body) = request(
+		&app,
+		&alice,
+		"POST",
+		"/api/authorization/acme/catalog/review",
+		stale,
+	)
+	.await;
+	assert_eq!(status, 409, "{body}");
+	assert!(body.to_string().contains("APPROVAL_REVIEW_STALE"));
+
+	// A principal without catalog.approve is refused as a whole.
+	policy["subjects"]["bob"] = json!({"kind":"user"});
+	policy["policies"].as_array_mut().unwrap().push(json!({
+		"id":"deny-bob","effect":"deny","subjects":{"ids":["bob"]},
+		"actions":["catalog.approve"],"resources":{"kinds":["*"]}
+	}));
+	assert_eq!(
+		request(
+			&app,
+			&deployment_administrator,
+			"POST",
+			"/api/authorization/acme",
+			json!({"expected_revision":1,"bundle":policy})
+		)
+		.await
+		.0,
+		200
+	);
+	let (_, credential) = request(
+		&app,
+		&deployment_administrator,
+		"POST",
+		"/api/authorization/acme/credentials",
+		json!({"subject":"bob"}),
+	)
+	.await;
+	let bob = credential["token"].as_str().unwrap();
+	let (status, bob_review) = request(&app, bob, "GET", &path, Value::Null).await;
+	assert_eq!(status, 200, "{bob_review}");
+	assert_eq!(
+		bob_review["items"]
+			.as_array()
+			.unwrap()
+			.iter()
+			.find(|item| item["reference"]["id"] == "model")
+			.unwrap()["status"],
+		"needs_other_approver"
+	);
+	let (status, body) = request(
+		&app,
+		bob,
+		"POST",
+		"/api/authorization/acme/catalog/review",
+		submit.clone(),
+	)
+	.await;
+	assert_eq!(status, 403, "{body}");
+
+	// Alice approves only the reviewed model; the already approved root stays.
+	let (status, result) = request(
+		&app,
+		&alice,
+		"POST",
+		"/api/authorization/acme/catalog/review",
+		submit,
+	)
+	.await;
+	assert_eq!(status, 200, "{result}");
+	assert_eq!(result["bindings"].as_array().unwrap().len(), 1);
+	assert_eq!(result["bindings"][0]["entry_id"], "model");
+	assert_eq!(result["bindings"][0]["revision"], 3);
+	let (status, after) = request(&app, &alice, "GET", &path, Value::Null).await;
+	assert_eq!(status, 200, "{after}");
+	assert_eq!(after["ready"], true);
+	cleanup(f, &url, &schema).await;
+}
+
+#[rstest::rstest]
+#[tokio::test]
+async fn approval_review_approves_local_items_and_activates_marketplace_on_a_non_default_node(
+	#[future(awt)]
+	#[from(common::native_application)]
+	fixture: common::ApplicationFixture,
+) {
+	let (f, url, schema) = fixture.runtime.parts();
+	let app = fixture.application;
+	let (_, alice, _) = bootstrap(&f, &app, "http://127.0.0.1:9").await;
+	let deployment = f.config.deployment.clone();
+	let node = aidash_domain::nodes::NodeName::derived("acme");
+	let second = common::second_node_in(f.store.pool.fixture_driver(), "acme").await;
+	let tenant = aidash_domain::tenancy::TenantName::new("acme").unwrap();
+
+	// A Tenant tool becomes a Marketplace package and an installed copy.
+	let source = json!({"id":"review-source","version":"1.0.0","kind":"tool","name":{"en":"Source"},
+		"description":{"en":"Marketplace source"},"config":{"registry_deployment":deployment,
+		"provider":"integration.http@1","operation":"invoke","default_alias":"review",
+		"tier":"integration","narrow":{},"transport":{"transport":"http",
+		"endpoint":"https://tools.example/review","replay":"read_only"}}});
+	f.registry
+		.register(&tenant, serde_json::from_value(source.clone()).unwrap())
+		.await
+		.unwrap();
+	aidash_server::authorization::Authorization {
+		pool: f.store.pool.clone(),
+	}
+	.set_catalog(
+		"acme",
+		&node,
+		&aidash_domain::registry::EntityRef {
+			id: "review-source".into(),
+			version: "1.0.0".into(),
+		},
+		0,
+		true,
+		"deployment_administrator",
+	)
+	.await
+	.unwrap();
+	let (status, package) = request(
+		&app,
+		&alice,
+		"POST",
+		"/api/marketplace/packages",
+		json!({"source":{"id":"review-source","version":"1.0.0"},
+			"package_id":"review-package","author":"test","idempotency_key":Uuid::new_v4()}),
+	)
+	.await;
+	assert_eq!(status, 200, "{package}");
+	let (status, installed) = request(
+		&app,
+		&alice,
+		"POST",
+		&format!(
+			"/api/marketplace/packages/{}/install",
+			package["key"].as_str().unwrap()
+		),
+		json!({"digest":package["digest"],"config":{},"idempotency_key":Uuid::new_v4()}),
+	)
+	.await;
+	assert_eq!(status, 200, "{installed}");
+	let installed_id = installed["entry"]["id"].as_str().unwrap();
+	assert!(installed_id.starts_with("mkt-"), "{installed}");
+	// Registration validates that an installed binding is active and approved;
+	// activate it on the default Node, then review it again on another Node.
+	let (status, activated) = request(
+		&app,
+		&alice,
+		"POST",
+		&format!(
+			"/api/marketplace/installations/{}/activation",
+			installed["installation"]["id"].as_str().unwrap()
+		),
+		json!({"tenant":"acme","revision":installed["revision"],
+			"expected_activation_revision":installed["installation"]["activation_revision"],
+			"expected_catalog_revision":0,"enabled":true}),
+	)
+	.await;
+	assert_eq!(status, 200, "{activated}");
+
+	// A new agent version depends on the local model and the installed copy.
+	let agent = json!({"id":"research","version":"2.0.0","kind":"agent",
+		"name":{"en":"Research"},"description":{"en":"Review root"},
+		"config":{"schema_version":1,"model":{"id":"model","version":"1.0.0"},
+			"instructions":"Use the installed tool",
+			"bindings":[{"kind":"tool","target":{"registry_deployment":deployment,
+				"id":installed_id,"version":"1.0.0"},"narrow":{}}],"remove_default":[]}});
+	let (status, body) = request(&app, &alice, "POST", "/api/registry", agent).await;
+	assert_eq!(status, 200, "{body}");
+
+	let path =
+		format!("/api/authorization/acme/catalog/review?node={second}&entry=agent/research@2.0.0");
+	let (status, review) = request(&app, &alice, "GET", &path, Value::Null).await;
+	assert_eq!(status, 200, "{review}");
+	let items = review["items"].as_array().unwrap();
+	let installed_item = items
+		.iter()
+		.find(|item| item["reference"]["id"] == installed_id)
+		.unwrap();
+	assert_eq!(installed_item["status"], "needs_marketplace_activation");
+	let installation = &installed_item["installation"];
+	assert!(!installation.is_null(), "{installed_item}");
+	let activation = json!({
+		"installation": installation["installation"],
+		"revision": installation["revision"],
+		"digest": installation["digest"],
+		"expected_activation_revision": installation["expected_activation_revision"],
+		"restriction": installed_item["proposed_restriction"],
+	});
+	let local: Vec<_> = items
+		.iter()
+		.filter(|item| item["installation"].is_null())
+		.map(|item| {
+			json!({
+				"reference": item["reference"],
+				"digest": item["digest"],
+				"expected_revision": item["expected_revision"],
+				"restriction": item["proposed_restriction"],
+			})
+		})
+		.collect();
+	let submission = json!({
+		"node":second,
+		"root":{"id":"research","version":"2.0.0"},
+		"closure_digest":review["closure_digest"],
+		"items":local,
+		"installations":[activation],
+	});
+	let (status, result) = request(
+		&app,
+		&alice,
+		"POST",
+		"/api/authorization/acme/catalog/review",
+		submission,
+	)
+	.await;
+	assert_eq!(status, 200, "{result}");
+	assert_eq!(result["bindings"].as_array().unwrap().len(), 2);
+	assert_eq!(result["installations"].as_array().unwrap().len(), 1);
+	assert_eq!(
+		result["installations"][0]["active_revision"],
+		installed["revision"]
+	);
+
+	let (status, after) = request(&app, &alice, "GET", &path, Value::Null).await;
+	assert_eq!(status, 200, "{after}");
+	assert_eq!(after["ready"], true, "{after}");
+	assert_eq!(
+		after["items"]
+			.as_array()
+			.unwrap()
+			.iter()
+			.find(|item| item["reference"]["id"] == installed_id)
+			.unwrap()["approved"],
+		true
+	);
+	cleanup(f, &url, &schema).await;
+}
+
+#[rstest::rstest]
+#[tokio::test]
+async fn approval_review_submission_rejects_a_dependency_changed_after_the_review(
+	#[future(awt)]
+	#[from(common::native_application)]
+	fixture: common::ApplicationFixture,
+) {
+	let (f, url, schema) = fixture.runtime.parts();
+	let app = fixture.application;
+	let (_, alice, _) = bootstrap(&f, &app, "http://127.0.0.1:9").await;
+	let node = aidash_domain::nodes::NodeName::derived("acme");
+	let model = json!({"id":"model","version":"1.0.0"});
+	assert_eq!(
+		request(
+			&app,
+			&alice,
+			"POST",
+			"/api/authorization/acme/catalog",
+			json!({"node":node,"entry":model,"enabled":false,"expected_revision":1})
+		)
+		.await
+		.0,
+		200
+	);
+	let path =
+		format!("/api/authorization/acme/catalog/review?node={node}&entry=agent/research@1.0.0");
+	let (_, review) = request(&app, &alice, "GET", &path, Value::Null).await;
+	let model_item = review["items"]
+		.as_array()
+		.unwrap()
+		.iter()
+		.find(|item| item["reference"]["id"] == "model")
+		.unwrap()
+		.clone();
+	assert_eq!(model_item["expected_revision"], 2);
+	// The dependency changes between the review and the submission.
+	assert_eq!(
+		request(
+			&app,
+			&alice,
+			"POST",
+			"/api/authorization/acme/catalog",
+			json!({"node":node,"entry":model,"enabled":true,"expected_revision":2})
+		)
+		.await
+		.0,
+		200
+	);
+	let submission = json!({
+		"node":node,
+		"root":{"id":"research","version":"1.0.0"},
+		"closure_digest":review["closure_digest"],
+		"items":[{
+			"reference":model_item["reference"],
+			"digest":model_item["digest"],
+			"expected_revision":model_item["expected_revision"],
+		}],
+	});
+	let (status, body) = request(
+		&app,
+		&alice,
+		"POST",
+		"/api/authorization/acme/catalog/review",
+		submission,
+	)
+	.await;
+	assert_eq!(status, 409, "{body}");
+	assert!(body.to_string().contains("APPROVAL_REVIEW_STALE"));
+	// The refusal left the later revision in place; no partial write happened.
+	let (_, catalog) = request(
+		&app,
+		&alice,
+		"GET",
+		&format!("/api/authorization/acme/catalog?node={node}"),
+		Value::Null,
+	)
+	.await;
+	let model = catalog
+		.as_array()
+		.unwrap()
+		.iter()
+		.find(|binding| binding["entry_id"] == "model")
+		.unwrap();
+	assert_eq!(model["enabled"], true);
+	assert_eq!(model["revision"], 3);
+	cleanup(f, &url, &schema).await;
+}

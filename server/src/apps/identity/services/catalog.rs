@@ -147,27 +147,3 @@ pub async fn get(
 }
 
 pub use crate::apps::identity::serializers::catalog::Binding;
-
-// The caller retains the tenant, compatibility and resource locks until commit.
-// Marketplace callers retain their writer and resource locks through commit.
-pub(crate) async fn set_in(
-	tx: &mut crate::database::native::Transaction,
-	tenant: &str,
-	node: &aidash_domain::nodes::NodeName,
-	entry: &EntityRef,
-	expected_revision: i64,
-	enabled: bool,
-	actor: &str,
-) -> Result<Binding> {
-	aidash_application::authorization::catalog::set_in(
-		&mut crate::bootstrap::catalog_mutation_scope(tx),
-		tenant,
-		node,
-		entry,
-		expected_revision,
-		enabled,
-		actor,
-	)
-	.await
-	.map_err(Into::into)
-}

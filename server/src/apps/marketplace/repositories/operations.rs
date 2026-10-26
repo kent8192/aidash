@@ -25,6 +25,8 @@ pub(crate) struct NativeDeploymentAdministrator<'a> {
 	pub(crate) principal: Principal,
 	/// The Tenant whose subject was decided `catalog.approve` for this activation.
 	pub(crate) approving: Option<String>,
+	/// The Node the approvals apply to; absent keeps the Tenant's default Node.
+	pub(crate) node: Option<aidash_domain::nodes::NodeName>,
 }
 #[async_trait]
 impl PrivateKnowledgeRead for NativeDeploymentAdministrator<'_> {
@@ -121,7 +123,7 @@ impl DeploymentAdministratorScope for NativeDeploymentAdministrator<'_> {
 		tenant: &str,
 		reference: &EntityRef,
 	) -> aidash_application::Result<bool> {
-		super::installations::approved(self.staging.tx, tenant, reference)
+		super::installations::approved(self.staging.tx, tenant, reference, self.node.as_ref())
 			.await
 			.map_err(Into::into)
 	}
@@ -131,26 +133,36 @@ impl DeploymentAdministratorScope for NativeDeploymentAdministrator<'_> {
 		reference: &EntityRef,
 		expected_revision: i64,
 		enabled: bool,
+		restriction: aidash_domain::identity::catalog::RestrictionChange,
 	) -> aidash_application::Result<()> {
-		// A package is activated for the Tenant's default Node; other Nodes
-		// approve it themselves (#241).
-		let node: String = crate::database::native::query_scalar(
-			&Query::select()
-				.column(Alias::new("name"))
-				.from(Alias::new("nodes"))
-				.and_where(Expr::col("tenant").eq(Expr::value(tenant)))
-				.and_where(Expr::col("is_default"))
-				.to_string(PostgresQueryBuilder),
-		)
-		.scalar_one(&mut **self.staging.tx)
-		.await?;
-		crate::authorization::catalog::set_in(
-			self.staging.tx,
+		// A package is activated for the named Node, or the Tenant's default
+		// Node when the caller names none (#241).
+		let node = match &self.node {
+			Some(node) => node.clone(),
+			None => {
+				let name: String = crate::database::native::query_scalar(
+					&Query::select()
+						.column(Alias::new("name"))
+						.from(Alias::new("nodes"))
+						.and_where(Expr::col("tenant").eq(Expr::value(tenant)))
+						.and_where(Expr::col("is_default"))
+						.to_string(PostgresQueryBuilder),
+				)
+				.scalar_one(&mut **self.staging.tx)
+				.await?;
+				aidash_domain::nodes::NodeName::parse(&name)?
+			}
+		};
+		aidash_application::authorization::catalog::set_in_with_restriction(
+			&mut crate::apps::identity::repositories::catalog_mutation::NativeMutation(
+				self.staging.tx,
+			),
 			tenant,
-			&aidash_domain::nodes::NodeName::parse(&node)?,
+			&node,
 			reference,
 			expected_revision,
 			enabled,
+			restriction,
 			&aidash_application::marketplace::operations::actor(&self.principal),
 		)
 		.await
@@ -162,12 +174,28 @@ impl DeploymentAdministratorScope for NativeDeploymentAdministrator<'_> {
 		tenant: &str,
 		reference: &EntityRef,
 	) -> aidash_application::Result<i64> {
+		let node = match &self.node {
+			Some(node) => node.as_str().to_owned(),
+			None => {
+				let name: String = crate::database::native::query_scalar(
+					&Query::select()
+						.column(Alias::new("name"))
+						.from(Alias::new("nodes"))
+						.and_where(Expr::col("tenant").eq(Expr::value(tenant)))
+						.and_where(Expr::col("is_default"))
+						.to_string(PostgresQueryBuilder),
+				)
+				.scalar_one(&mut **self.staging.tx)
+				.await?;
+				name
+			}
+		};
 		Ok(crate::database::native::query_scalar(
 			&Query::select()
 				.column(Alias::new("revision"))
 				.from(Alias::new("authorization_catalog"))
 				.and_where(Expr::col("tenant").eq(Expr::value(tenant)))
-				.and_where(Expr::col("node").eq(crate::database::scope::default_node(tenant)))
+				.and_where(Expr::col("node").eq(Expr::value(node)))
 				.and_where(Expr::col("entry_id").eq(Expr::value(&reference.id)))
 				.and_where(Expr::col("entry_version").eq(Expr::value(&reference.version)))
 				.lock(LockType::Share)

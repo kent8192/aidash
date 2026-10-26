@@ -12,7 +12,9 @@ use crate::apps::identity::serializers::peer::PeerMappingInput;
 use crate::apps::identity::serializers::policies::AuthorizationPage;
 use crate::apps::identity::serializers::policies::AuthorizationUpdate;
 use crate::apps::identity::serializers::policies::CredentialInput;
-use crate::apps::identity::serializers::policies::{CatalogApprovals, CatalogInput};
+use crate::apps::identity::serializers::policies::{
+	CatalogApprovals, CatalogInput, CatalogReviewQuery, CatalogReviewResult,
+};
 use crate::apps::identity::serializers::remote::PrepareInput;
 use crate::apps::identity::serializers::remote::Prepared;
 use crate::apps::identity::serializers::services_policy::Decision;
@@ -20,6 +22,9 @@ use crate::apps::identity::serializers::services_policy::Evaluation;
 use crate::apps::identity::serializers::session::SessionResponse;
 use crate::apps::workspaces::serializers::tasks::PageQuery;
 use crate::{Result, config::openapi::Contracts};
+use aidash_application::authorization::catalog::review::{
+	ApprovalReview, ApprovalReviewSubmission,
+};
 use reinhardt::rest::openapi::OpenApiSchema;
 use serde_json::Value;
 
@@ -480,6 +485,27 @@ pub(crate) fn register(contracts: &mut Contracts, document: &mut OpenApiSchema) 
 	)?;
 	contracts.request::<_, CatalogApprovals>(document, views::policies::approve_catalog)?;
 	contracts.path(document, views::policies::approve_catalog, &["String"])?;
+	contracts.response::<_, ApprovalReview>(
+		document,
+		views::policies::catalog_review,
+		200,
+		"application/json",
+	)?;
+	contracts.query::<_, CatalogReviewQuery>(document, views::policies::catalog_review)?;
+	contracts.path(document, views::policies::catalog_review, &["String"])?;
+	contracts.response::<_, CatalogReviewResult>(
+		document,
+		views::policies::submit_catalog_review,
+		200,
+		"application/json",
+	)?;
+	contracts
+		.request::<_, ApprovalReviewSubmission>(document, views::policies::submit_catalog_review)?;
+	contracts.path(
+		document,
+		views::policies::submit_catalog_review,
+		&["String"],
+	)?;
 	contracts.response::<_, IssuedCredential>(
 		document,
 		views::policies::issue_credential,

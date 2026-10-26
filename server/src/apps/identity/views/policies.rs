@@ -3,7 +3,7 @@ use crate::apps::identity::oidc::BrowserOrigin;
 use crate::apps::identity::policy::Evaluation;
 use crate::apps::identity::serializers::policies::{
 	AuthorizationPage, AuthorizationUpdate, CatalogApprovals, CatalogInput, CatalogQuery,
-	CredentialInput, CredentialPage,
+	CatalogReviewQuery, CredentialInput, CredentialPage,
 };
 use crate::apps::identity::services::policies::PolicyAdministration;
 use crate::authorization::identity::Actor;
@@ -60,6 +60,34 @@ pub async fn approve_catalog(
 			.approve(actor, tenant, input.node, input.approvals)
 			.await,
 	)
+}
+
+#[get(
+	"/api/authorization/{tenant}/catalog/review",
+	name = "authorization-catalog-review",
+	auth = "protected"
+)]
+pub async fn catalog_review(
+	#[inject] service: Depends<PolicyAdministration>,
+	#[inject] actor: crate::authorization::identity::Actor,
+	Path(tenant): Path<String>,
+	Query(query): Query<CatalogReviewQuery>,
+) -> ViewResult<Response> {
+	crate::http::json(service.review(actor, tenant, query).await)
+}
+
+#[post(
+	"/api/authorization/{tenant}/catalog/review",
+	name = "authorization-submit-catalog-review",
+	auth = "protected"
+)]
+pub async fn submit_catalog_review(
+	#[inject] service: Depends<PolicyAdministration>,
+	#[inject] actor: crate::authorization::identity::Actor,
+	Path(tenant): Path<String>,
+	Json(input): Json<aidash_application::authorization::catalog::review::ApprovalReviewSubmission>,
+) -> ViewResult<Response> {
+	crate::http::json(service.submit_review(actor, tenant, input).await)
 }
 
 #[post(

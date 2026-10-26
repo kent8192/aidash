@@ -179,6 +179,7 @@ pub mod channels;
 pub mod marketplace;
 
 pub mod catalog;
+pub mod catalog_review;
 
 pub mod generation;
 

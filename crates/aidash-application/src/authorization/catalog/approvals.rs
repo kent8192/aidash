@@ -61,6 +61,18 @@ pub async fn approve(
 	scope: &mut dyn CatalogApprovalScope,
 	approvals: &[Approval],
 ) -> Result<Vec<Binding>> {
+	approve_with_satisfied(scope, approvals, &BTreeSet::new(), &BTreeSet::new()).await
+}
+
+/// The same, treating `satisfied` as approved by an activation in the same
+/// submission, so one review can approve a local definition whose dependency
+/// is a Marketplace copy it activates in the same transaction.
+pub async fn approve_with_satisfied(
+	scope: &mut dyn CatalogApprovalScope,
+	approvals: &[Approval],
+	satisfied: &BTreeSet<(String, String)>,
+	extra_subjects: &BTreeSet<String>,
+) -> Result<Vec<Binding>> {
 	if approvals.is_empty() || approvals.len() > MAX_APPROVALS {
 		return Err(Error::Invalid("CATALOG_APPROVALS_BOUNDS".into()));
 	}
@@ -110,11 +122,11 @@ pub async fn approve(
 			continue;
 		};
 		restriction.validate()?;
-		if let Some(subject) = restriction
-			.subjects
-			.iter()
-			.find(|subject| !existing_subjects.contains(*subject) && !new_agents.contains(*subject))
-		{
+		if let Some(subject) = restriction.subjects.iter().find(|subject| {
+			!existing_subjects.contains(*subject)
+				&& !new_agents.contains(*subject)
+				&& !extra_subjects.contains(*subject)
+		}) {
 			return Err(Error::Invalid(format!(
 				"CATALOG_RESTRICTION_UNKNOWN_SUBJECT: {subject}"
 			)));
@@ -141,12 +153,14 @@ pub async fn approve(
 	for approval in approvals.iter().filter(|approval| approval.enabled) {
 		let entry = &definitions[&(approval.entry.id.clone(), approval.entry.version.clone())];
 		for dependency in dependencies(entry, scope.node().deployment.as_str())? {
-			let satisfied = crate::registry::system::builtin_reference(&dependency)
-				|| match requested.get(&(dependency.id.clone(), dependency.version.clone())) {
+			let key = (dependency.id.clone(), dependency.version.clone());
+			let available = crate::registry::system::builtin_reference(&dependency)
+				|| satisfied.contains(&key)
+				|| match requested.get(&key) {
 					Some(enabled) => *enabled,
 					None => scope.approved(&dependency).await?,
 				};
-			if !satisfied {
+			if !available {
 				return Err(Error::Invalid(format!(
 					"CATALOG_DEPENDENCY_UNAPPROVED: {}@{}",
 					dependency.id, dependency.version

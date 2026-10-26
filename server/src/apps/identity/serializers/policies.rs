@@ -2,7 +2,7 @@
 use crate::apps::identity::policy::PolicyBundle;
 use crate::registry::EntityRef;
 use schemars::JsonSchema;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 #[derive(Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct CatalogInput {
@@ -24,6 +24,21 @@ pub(crate) struct CatalogInput {
 #[serde(deny_unknown_fields)]
 pub(crate) struct CatalogQuery {
 	pub(crate) node: aidash_domain::nodes::NodeName,
+}
+
+/// One root definition on one Node, named as `kind/id@version` or `id@version`.
+#[derive(Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct CatalogReviewQuery {
+	pub(crate) node: aidash_domain::nodes::NodeName,
+	pub(crate) entry: String,
+}
+
+/// What one review submission wrote, in the caller's transaction.
+#[derive(Serialize, JsonSchema)]
+pub(crate) struct CatalogReviewResult {
+	pub(crate) bindings: Vec<crate::apps::identity::serializers::catalog::Binding>,
+	pub(crate) installations: Vec<aidash_domain::marketplace::Installation>,
 }
 /// Approvals of one dependency closure, decided together.
 #[derive(Deserialize, JsonSchema)]

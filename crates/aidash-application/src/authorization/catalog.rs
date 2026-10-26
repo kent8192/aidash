@@ -60,9 +60,11 @@ pub async fn list(scope: &mut dyn CatalogScope, search: &Search) -> Result<Vec<E
 			id: entry.id.clone(),
 			version: entry.version.clone(),
 		};
+		let direct_user = scope.direct_user(&reference);
 		if (!scope.inherited_lease()
 			|| scope.approved(&reference)
 			|| crate::registry::system::is_builtin(&entry))
+			&& scope.permits_restriction(&reference, &direct_user).await?
 			&& scope.active(&entry).await?
 			&& search.matches(&entry)
 			&& scope
@@ -231,6 +233,7 @@ mod mutation_tests;
 
 pub mod approvals;
 pub mod retained;
+pub mod review;
 
 pub fn attributes(entry: &Entry) -> serde_json::Value {
 	serde_json::json!({"version":entry.version,"capabilities":entry.capabilities,"tags":entry.tags,"languages":entry.languages,"config":entry.config})
