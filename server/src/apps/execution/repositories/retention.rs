@@ -18,7 +18,7 @@ use aidash_domain::{
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use reinhardt::query::{
-	Alias, ColumnRef, Expr, ExprTrait as _, IntoValue as _, JoinType, LockType, Order,
+	Alias, ColumnRef, Expr, ExprTrait as _, IntoValue as _, JoinType, LockType, OnConflict, Order,
 	PostgresQueryBuilder, Query, QueryStatementBuilder as _, TableRef,
 };
 use serde_json::Value;
@@ -291,9 +291,34 @@ impl RetentionScope for Scope<'_> {
 						Utc::now().into_value(),
 					])
 					.map_err(NativeError::Invalid)?
+					.on_conflict(
+						OnConflict::columns(
+							["tenant", "area_id", "holder_kind", "holder_id", "revision"]
+								.map(Alias::new),
+						)
+						.do_nothing()
+						.to_owned(),
+					)
 					.to_string(PostgresQueryBuilder),
 			)
 			.execute(&mut **self.access.tx)
+			.await?;
+			// A concurrent identical retain may have written the hold first; the
+			// unique key makes both callers converge on the same row.
+			let hold_id: Uuid = crate::database::native::query_scalar(
+				&Query::select()
+					.column(Alias::new("id"))
+					.from(Alias::new("core_retention_holds"))
+					.and_where(Expr::col(Alias::new("tenant")).eq(Expr::value(hold.tenant.clone())))
+					.and_where(Expr::col(Alias::new("area_id")).eq(Expr::value(hold.area_id)))
+					.and_where(
+						Expr::col(Alias::new("holder_kind")).eq(Expr::value(hold.holder.kind())),
+					)
+					.and_where(Expr::col(Alias::new("holder_id")).eq(Expr::value(hold.holder.id())))
+					.and_where(Expr::col(Alias::new("revision")).eq(Expr::value(hold.revision)))
+					.to_string(PostgresQueryBuilder),
+			)
+			.scalar_one(&mut **self.access.tx)
 			.await?;
 			for file in &hold.files {
 				crate::database::native::query(
@@ -313,7 +338,7 @@ impl RetentionScope for Scope<'_> {
 						)
 						.values(vec![
 							Uuid::new_v4().into(),
-							id.into(),
+							hold_id.into(),
 							file.file_id.into(),
 							hold.tenant.clone().into(),
 							file.path.clone().into(),
@@ -323,6 +348,11 @@ impl RetentionScope for Scope<'_> {
 							file.media_type.clone().into(),
 						])
 						.map_err(NativeError::Invalid)?
+						.on_conflict(
+							OnConflict::columns([Alias::new("hold_id"), Alias::new("file_id")])
+								.do_nothing()
+								.to_owned(),
+						)
 						.to_string(PostgresQueryBuilder),
 				)
 				.execute(&mut **self.access.tx)

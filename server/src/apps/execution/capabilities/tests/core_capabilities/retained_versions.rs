@@ -31,6 +31,17 @@ async fn holds(c: &CoreFixture, tenant: &str) -> i64 {
 	counts(c, &query).await
 }
 
+async fn held_files(c: &CoreFixture, tenant: &str) -> i64 {
+	let query = Query::select()
+		.expr(reinhardt::query::Func::count(
+			Expr::col(Alias::new("id")).into(),
+		))
+		.from(Alias::new("core_retention_files"))
+		.and_where(Expr::col(Alias::new("tenant")).eq(Expr::value(tenant)))
+		.to_string(PostgresQueryBuilder);
+	counts(c, &query).await
+}
+
 async fn download(c: &CoreFixture, area: Uuid, file: Uuid) -> (u16, Value) {
 	request(
 		&c.app,
@@ -394,5 +405,135 @@ async fn the_reclamation_sweep_releases_an_expired_federation_hold(
 	);
 	let _ = stop.send(true);
 	worker.await.unwrap().unwrap();
+	c.close().await;
+}
+
+#[rstest::rstest]
+#[tokio::test]
+async fn citations_of_two_files_at_one_revision_share_one_hold(
+	#[future] capability_fixture: CoreFixture,
+) {
+	let c = capability_fixture.await;
+	let run = admit(&c).await;
+	let (status, created) = request(
+		&c.app,
+		&c.token,
+		"POST",
+		&path_for_patch(run.id),
+		json!({"idempotency_key":Uuid::new_v4(),"expected_revision":1,"preconditions":{"first.txt":null,"second.txt":null},"patch":"*** Begin Patch\n*** Add File: first.txt\n+first\n*** Add File: second.txt\n+second\n*** End Patch"}),
+	)
+	.await;
+	assert_eq!(status, 200, "{created}");
+	let (_, area) = request(
+		&c.app,
+		&c.token,
+		"GET",
+		&format!("/api/runs/{}/working-area", run.id),
+		Value::Null,
+	)
+	.await;
+	let area_id: Uuid = serde_json::from_value(area["id"].clone()).unwrap();
+	let manifest = area["manifest"].as_array().unwrap();
+	let first: Uuid = serde_json::from_value(
+		manifest
+			.iter()
+			.find(|file| file["path"] == "first.txt")
+			.unwrap()["file_id"]
+			.clone(),
+	)
+	.unwrap();
+	let second: Uuid = serde_json::from_value(
+		manifest
+			.iter()
+			.find(|file| file["path"] == "second.txt")
+			.unwrap()["file_id"]
+			.clone(),
+	)
+	.unwrap();
+	let message = source(&c, run.workspace_id, "cite two versions").await;
+	let holder = Holder::Message {
+		message_id: message,
+	};
+	aidash_server::capabilities::retention::retain_for(
+		&c.f,
+		actor(&c).await,
+		area_id,
+		first,
+		holder.clone(),
+	)
+	.await
+	.unwrap();
+	aidash_server::capabilities::retention::retain_for(
+		&c.f,
+		actor(&c).await,
+		area_id,
+		second,
+		holder.clone(),
+	)
+	.await
+	.unwrap();
+	assert_eq!(holds(&c, "acme").await, 1, "the revision has one hold");
+	assert_eq!(held_files(&c, "acme").await, 2, "both citations are kept");
+	let manifest = aidash_server::capabilities::retention::retained_manifest_for(
+		&c.f,
+		actor(&c).await,
+		area_id,
+		second,
+	)
+	.await
+	.unwrap()
+	.unwrap();
+	assert_eq!(manifest.len(), 2);
+	c.close().await;
+}
+
+#[rstest::rstest]
+#[tokio::test]
+async fn concurrent_identical_citations_leave_one_hold(#[future] capability_fixture: CoreFixture) {
+	let c = capability_fixture.await;
+	let run = admit(&c).await;
+	let (status, created) = request(
+		&c.app,
+		&c.token,
+		"POST",
+		&path_for_patch(run.id),
+		json!({"idempotency_key":Uuid::new_v4(),"expected_revision":1,"preconditions":{"shared.txt":null},"patch":"*** Begin Patch\n*** Add File: shared.txt\n+shared\n*** End Patch"}),
+	)
+	.await;
+	assert_eq!(status, 200, "{created}");
+	let (_, area) = request(
+		&c.app,
+		&c.token,
+		"GET",
+		&format!("/api/runs/{}/working-area", run.id),
+		Value::Null,
+	)
+	.await;
+	let area_id: Uuid = serde_json::from_value(area["id"].clone()).unwrap();
+	let file: Uuid = serde_json::from_value(area["manifest"][0]["file_id"].clone()).unwrap();
+	let message = source(&c, run.workspace_id, "cite concurrently").await;
+	let holder = Holder::Message {
+		message_id: message,
+	};
+	let (first, second) = tokio::join!(
+		aidash_server::capabilities::retention::retain_for(
+			&c.f,
+			actor(&c).await,
+			area_id,
+			file,
+			holder.clone(),
+		),
+		aidash_server::capabilities::retention::retain_for(
+			&c.f,
+			actor(&c).await,
+			area_id,
+			file,
+			holder.clone(),
+		),
+	);
+	first.unwrap();
+	second.unwrap();
+	assert_eq!(holds(&c, "acme").await, 1, "one hold for the holder");
+	assert_eq!(held_files(&c, "acme").await, 1, "one row per File version");
 	c.close().await;
 }

@@ -51,6 +51,20 @@ pub(super) fn migration() -> Migration {
 						"(holder_kind = 'federation') = (expires_at IS NOT NULL) AND (holder_kind = 'federation') = (peer IS NOT NULL)"
 							.into(),
 				},
+				// One hold per holder per Working Area revision: a holder may cite
+				// File versions of several Areas or revisions, while every File
+				// version of one revision belongs to the same hold. Files are
+				// unique per hold below, so concurrent identical retains converge.
+				Constraint::Unique {
+					name: "core_retention_holds_holder_revision_key".into(),
+					columns: vec![
+						"tenant".into(),
+						"area_id".into(),
+						"holder_kind".into(),
+						"holder_id".into(),
+						"revision".into(),
+					],
+				},
 				Constraint::ForeignKey {
 					name: "core_retention_holds_tenant_fkey".into(),
 					columns: vec!["tenant".into()],
