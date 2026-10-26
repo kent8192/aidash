@@ -93,6 +93,7 @@ run "production_broker_uses_production_identity" {
       module.credential_broker.production.service_account == "aidash-production-broker@aidash-production-fixture.iam.gserviceaccount.com" &&
       module.tenant_secret_broker.production.service_account == "aidash-production-tsec@aidash-production-fixture.iam.gserviceaccount.com" &&
       output.secret_prefix.production == "aidash-production-cred-" &&
+      output.tenant_secret_brokers.production.audience == "production-tsec" &&
       output.tenant_secret_brokers.production.kid == "projects/aidash-production-fixture/locations/us-central1/keyRings/aidash-production-capability/cryptoKeys/tenant-secret/cryptoKeyVersions/1"
     )
     error_message = "Production capabilities and Secret Store prefixes must bind its dedicated bootstrap brokers and server key."

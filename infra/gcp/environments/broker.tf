@@ -15,7 +15,10 @@ locals {
   broker_image = local.broker_image_digest == null ? null : "us-central1-docker.pkg.dev/${var.project_id}/aidash/broker@${local.broker_image_digest}"
   // The server signs Tenant Secret Capability Tokens with a key of its own, and
   // the broker accepts both issuers' public keys (ADR 0005 amendment, ADR 0095).
+  // The worker's existing issuer must stay identical for provider and Tenant
+  // Secret tokens, so it is named once here and passed to both brokers.
   tenant_secret_issuer = "aidash-server"
+  worker_issuer        = "aidash-worker"
 }
 
 variable "credential_brokers" {
@@ -73,6 +76,7 @@ module "credential_broker" {
   signing_key_id               = each.value.signing_key_id
   signing_version              = each.value.signing_version
   verification_versions        = each.value.verification_versions
+  issuer                       = local.worker_issuer
 }
 module "tenant_secret_broker" {
   source   = "../modules/credential-broker"
@@ -93,9 +97,11 @@ module "tenant_secret_broker" {
   signing_version              = each.value.tenant_secret_signing_version
   verification_versions        = each.value.tenant_secret_verification_versions
   issuer                       = local.tenant_secret_issuer
-  // The Tenant Secret broker accepts both issuers' public keys (ADR 0005 amendment).
+  // The Tenant Secret broker accepts both issuers' public keys and maps each
+  // verification key to the issuer its tokens must carry (ADR 0005 amendment).
   secondary_signing_key_id        = each.value.signing_key_id
   secondary_verification_versions = each.value.verification_versions
+  secondary_issuer                = local.worker_issuer
 }
 // Wire IAM after both modules exist: broker -> worker/server settings must not
 // create a reverse module dependency through the runtime service-account output.

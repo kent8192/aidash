@@ -290,7 +290,7 @@ class RuntimeConfigurationTests(unittest.TestCase):
     def test_byok_descriptor_requires_a_stable_fingerprint_and_matching_broker(self):
         store = {"kind": "secret_manager", "byok_project_id": "aidash-byok-fixture", "environment_id": "pr-2"}
         broker = {"endpoint": "https://broker", "issuer": "https://issuer", "audience": "pr-2", "kid": "1"}
-        tenant = {"endpoint": "https://tenant-broker", "issuer": "aidash-server", "audience": "pr-2", "kid": "2"}
+        tenant = {"endpoint": "https://tenant-broker", "issuer": "aidash-server", "audience": "pr-2-tsec", "kid": "2"}
         descriptor = {"fingerprint_key": {"env": "AIDASH_PROVIDER_FINGERPRINT_KEY"}, "store": store,
                       "broker": broker, "tenant_secret_broker": tenant}
         output = dict(OUTPUT, provider_credentials=descriptor)
@@ -299,7 +299,7 @@ class RuntimeConfigurationTests(unittest.TestCase):
         with self.assertRaisesRegex(Refused, "broker"):
             self.materialize(dict(RUNTIME, AIDASH_PROVIDER_FINGERPRINT_KEY="f" * 32), dict(output, provider_credentials=dict(descriptor, broker=dict(broker, audience="test"))))
         with self.assertRaisesRegex(Refused, "Tenant Secret broker"):
-            self.materialize(dict(RUNTIME, AIDASH_PROVIDER_FINGERPRINT_KEY="f" * 32), dict(output, provider_credentials=dict(descriptor, tenant_secret_broker=dict(tenant, audience="test"))))
+            self.materialize(dict(RUNTIME, AIDASH_PROVIDER_FINGERPRINT_KEY="f" * 32), dict(output, provider_credentials=dict(descriptor, tenant_secret_broker=dict(tenant, audience="pr-2"))))
         settings = self.materialize(dict(RUNTIME, AIDASH_PROVIDER_FINGERPRINT_KEY="f" * 32), output)
         self.assertEqual(settings["provider"], descriptor)
         expected = {"fingerprint_key": None, "store": None, "broker": None, "tenant_secret_broker": None}

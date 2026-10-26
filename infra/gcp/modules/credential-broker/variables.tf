@@ -115,6 +115,19 @@ variable "secondary_verification_versions" {
     error_message = "Secondary verification versions must be positive integers."
   }
 }
+variable "secondary_issuer" {
+  description = "Issuer carried by tokens signed with the secondary (worker) key; required for the Tenant Secret broker."
+  type        = string
+  default     = ""
+  validation {
+    condition     = !var.enabled || var.role != "tenant-secrets" || var.secondary_issuer != ""
+    error_message = "An enabled Tenant Secret broker must name the worker issuer."
+  }
+  validation {
+    condition     = var.secondary_issuer == "" || var.role == "tenant-secrets"
+    error_message = "Only the Tenant Secret broker may configure a secondary issuer."
+  }
+}
 variable "issuer" {
   type    = string
   default = "aidash-worker"

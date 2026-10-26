@@ -405,13 +405,14 @@ class ChartsTest(unittest.TestCase):
         # Self-hosted reads Tenant Secrets directly, so egress needs no broker.
         render(self.aidash, dict(self.base, execution=execution, providerCredentials={'settings': postgres}))
         store = {'kind': 'secret_manager', 'byok_project_id': 'aidash-byok-1', 'environment_id': 'pr-1'}
-        tenant = {'endpoint': 'https://tenant-broker.run.app/api/v1', 'issuer': 'aidash-server',
-                  'audience': 'pr-1', 'kid': 'server-key-1'}
+        tenant = {'endpoint': 'https://tenant-broker.run.app', 'issuer': 'aidash-server',
+                  'audience': 'pr-1-tsec', 'kid': 'server-key-1'}
         cloud = {'fingerprint_key': {'env': 'AIDASH_PROVIDER_FINGERPRINT_KEY'}, 'store': store,
                  'broker': None, 'tenant_secret_broker': tenant}
         render(self.aidash, dict(self.base, execution=execution, providerCredentials={'settings': cloud}))
         for missing in (dict(cloud, tenant_secret_broker=None),
-                        dict(cloud, tenant_secret_broker=dict(tenant, audience='develop'))):
+                        dict(cloud, tenant_secret_broker=dict(tenant, audience='pr-1')),
+                        dict(cloud, tenant_secret_broker=dict(tenant, audience='develop-tsec'))):
             with self.subTest(descriptor=missing), self.assertRaises(subprocess.CalledProcessError):
                 render(self.aidash, dict(self.base, execution=execution,
                                          providerCredentials={'settings': missing}))
@@ -419,7 +420,7 @@ class ChartsTest(unittest.TestCase):
     def test_managed_provider_and_gcip_settings_are_validated_and_mounted(self):
         store = {'kind': 'secret_manager', 'byok_project_id': 'aidash-byok-1', 'environment_id': 'pr-1'}
         broker = {'endpoint': 'https://broker.run.app/api/v1', 'issuer': 'aidash-worker', 'audience': 'pr-1', 'kid': 'k1'}
-        tenant = {'endpoint': 'https://tenant-broker.run.app/api/v1', 'issuer': 'aidash-server', 'audience': 'pr-1', 'kid': 's1'}
+        tenant = {'endpoint': 'https://tenant-broker.run.app', 'issuer': 'aidash-server', 'audience': 'pr-1-tsec', 'kid': 's1'}
         descriptor = {'fingerprint_key': {'env': 'AIDASH_PROVIDER_FINGERPRINT_KEY'}, 'store': store,
                       'broker': broker, 'tenant_secret_broker': tenant}
         gcip = {'project_id': 'fixture', 'web_api_key': 'public', 'public_origin': 'https://pr-1.aidash.run',
@@ -464,7 +465,8 @@ class ChartsTest(unittest.TestCase):
             dict(descriptor, broker=dict(broker, audience='develop')),
             dict(descriptor, broker=dict(broker, kid='')),
             dict(descriptor, tenant_secret_broker=None),
-            dict(descriptor, tenant_secret_broker=dict(tenant, audience='develop')),
+            dict(descriptor, tenant_secret_broker=dict(tenant, audience='pr-1')),
+            dict(descriptor, tenant_secret_broker=dict(tenant, audience='develop-tsec')),
             dict(descriptor, tenant_secret_broker=dict(tenant, kid='')),
             dict(descriptor, tenant_secret_broker=dict(tenant, extra=None)),
             dict(disabled, broker=broker),

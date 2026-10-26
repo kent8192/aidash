@@ -40,9 +40,9 @@ run "running_pool_and_workload_identities" {
       kid      = "kms-version"
     }
     tenant_secret_broker = {
-      endpoint = "https://tenant-broker.run.app/api/v1"
+      endpoint = "https://tenant-broker.run.app"
       issuer   = "aidash-server"
-      audience = "test"
+      audience = "test-tsec"
       kid      = "server-kms-version"
     }
     environment = {

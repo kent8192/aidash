@@ -598,8 +598,12 @@ reviewed `broker-image.json` digest: `aidash-<id>-credential-broker` runs as
 `aidash-<id>-broker` and reads `-cred-`; `aidash-<id>-tenant-secret-broker` runs
 as `aidash-<id>-tsec` and reads `-tsec-`. The Tenant Secret service receives
 `AIDASH_BROKER_ROLE=tenant-secrets`, `AIDASH_TENANT_SECRET_PREFIX=aidash-<id>-tsec-`,
-`AIDASH_SECRET_CALL_AUDIENCE=<id>`, `AIDASH_CAPABILITY_ISSUER=aidash-server` and
-both issuers' public keys in `AIDASH_CAPABILITY_PUBLIC_KEYS`.
+`AIDASH_SECRET_CALL_AUDIENCE=<id>-tsec`, both issuers' public keys in
+`AIDASH_CAPABILITY_PUBLIC_KEYS`, and `AIDASH_SECRET_CALL_ISSUERS`, a JSON object
+mapping each verification kid to the issuer its tokens must carry
+(`aidash-server` for the server key, `aidash-worker` for the worker key). The
+server configuration exports the bare Cloud Run URI; the Rust side appends
+`/v1/forward`.
 
 ### Deploy pipeline boundary
 

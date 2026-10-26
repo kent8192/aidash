@@ -13,9 +13,19 @@ locals {
   // Leave time to cancel upstream work, return a response and record the audit
   // before Cloud Run closes the request at its platform deadline.
   broker_deadline_secs = var.timeout_secs - 30
+  // Provider and Tenant Secret tokens must never share an audience, even though
+  // their JWS typ already differs.
+  audience = local.tenant_secret_role ? "${var.environment_id}-tsec" : var.environment_id
   public_keys = merge(
     { for v, k in data.google_kms_crypto_key_version.verification : "${var.signing_key_id}/cryptoKeyVersions/${v}" => k.public_key[0].pem },
     { for v, k in data.google_kms_crypto_key_version.secondary_verification : "${var.secondary_signing_key_id}/cryptoKeyVersions/${v}" => k.public_key[0].pem },
+  )
+  // Each public key names the issuer its tokens must carry. Both the server and
+  // the worker may mint Tenant Secret tokens, so one issuer string cannot cover
+  // both keys.
+  secret_call_issuers = merge(
+    { for v, k in data.google_kms_crypto_key_version.verification : "${var.signing_key_id}/cryptoKeyVersions/${v}" => var.issuer },
+    { for v, k in data.google_kms_crypto_key_version.secondary_verification : "${var.secondary_signing_key_id}/cryptoKeyVersions/${v}" => var.secondary_issuer },
   )
 }
 data "google_project" "byok" {
@@ -75,12 +85,12 @@ resource "google_cloud_run_v2_service" "broker" {
           local.tenant_secret_role ? {
             AIDASH_BROKER_ROLE          = "tenant-secrets"
             AIDASH_TENANT_SECRET_PREFIX = var.secret_prefix
-            AIDASH_SECRET_CALL_AUDIENCE = var.environment_id
-            AIDASH_CAPABILITY_ISSUER    = var.issuer
+            AIDASH_SECRET_CALL_AUDIENCE = local.audience
+            AIDASH_SECRET_CALL_ISSUERS  = jsonencode(local.secret_call_issuers)
             } : {
             AIDASH_PROVIDER_CREDENTIAL_PREFIX = var.secret_prefix
             AIDASH_CAPABILITY_ISSUER          = var.issuer
-            AIDASH_CAPABILITY_AUDIENCE        = var.environment_id
+            AIDASH_CAPABILITY_AUDIENCE        = local.audience
           },
         )
         content {
@@ -95,15 +105,16 @@ output "worker_configuration" {
   value = local.enabled && !local.tenant_secret_role ? {
     endpoint = "${google_cloud_run_v2_service.broker[0].uri}/api/v1"
     issuer   = var.issuer
-    audience = var.environment_id
+    audience = local.audience
     kid      = "${var.signing_key_id}/cryptoKeyVersions/${var.signing_version}"
   } : null
 }
 output "server_configuration" {
   value = local.enabled && local.tenant_secret_role ? {
-    endpoint = "${google_cloud_run_v2_service.broker[0].uri}/api/v1"
+    // The server appends /v1/forward itself.
+    endpoint = google_cloud_run_v2_service.broker[0].uri
     issuer   = var.issuer
-    audience = var.environment_id
+    audience = local.audience
     kid      = "${var.signing_key_id}/cryptoKeyVersions/${var.signing_version}"
   } : null
 }

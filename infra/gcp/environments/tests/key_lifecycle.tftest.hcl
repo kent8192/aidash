@@ -85,8 +85,8 @@ run "environment_enabled" {
     } }
   }
   assert {
-    condition     = output.credential_brokers["test"].kid == "${run.bootstrap_keys.broker_signing_keys["test"]}/cryptoKeyVersions/1" && output.tenant_secret_brokers["test"].kid == "${run.bootstrap_keys.tenant_secret_signing_keys["test"]}/cryptoKeyVersions/1"
-    error_message = "Worker and server capability authority use their own bootstrap keys."
+    condition     = output.credential_brokers["test"].kid == "${run.bootstrap_keys.broker_signing_keys["test"]}/cryptoKeyVersions/1" && output.tenant_secret_brokers["test"].kid == "${run.bootstrap_keys.tenant_secret_signing_keys["test"]}/cryptoKeyVersions/1" && output.tenant_secret_brokers["test"].endpoint == "https://broker.run.app" && output.tenant_secret_brokers["test"].audience == "test-tsec"
+    error_message = "Worker and server capability authority use their own bootstrap keys, the server keeps a bare endpoint and a Tenant Secret audience."
   }
 }
 

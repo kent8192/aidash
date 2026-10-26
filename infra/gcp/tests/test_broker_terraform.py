@@ -78,12 +78,18 @@ class CredentialBrokerTerraformTests(unittest.TestCase):
         env = {item["name"]: item["value"] for item in service["template"][0]["containers"][0]["env"]}
         self.assertEqual(env["AIDASH_BROKER_ROLE"], "tenant-secrets")
         self.assertEqual(env["AIDASH_TENANT_SECRET_PREFIX"], "aidash-production-tsec-")
-        self.assertEqual(env["AIDASH_SECRET_CALL_AUDIENCE"], "production")
-        self.assertEqual(env["AIDASH_CAPABILITY_ISSUER"], "aidash-server")
-        self.assertEqual(json.loads(env["AIDASH_CAPABILITY_PUBLIC_KEYS"]), {
+        self.assertEqual(env["AIDASH_SECRET_CALL_AUDIENCE"], "production-tsec")
+        self.assertNotIn("AIDASH_CAPABILITY_ISSUER", env)
+        public_keys = json.loads(env["AIDASH_CAPABILITY_PUBLIC_KEYS"])
+        self.assertEqual(public_keys, {
             "projects/aidash-fixture/locations/us-central1/keyRings/aidash-production-capability/cryptoKeys/capability/cryptoKeyVersions/1": "PUBLIC-KEY-FIXTURE",
             "projects/aidash-fixture/locations/us-central1/keyRings/aidash-production-capability/cryptoKeys/tenant-secret/cryptoKeyVersions/1": "PUBLIC-KEY-FIXTURE",
         })
+        self.assertEqual(json.loads(env["AIDASH_SECRET_CALL_ISSUERS"]), {
+            "projects/aidash-fixture/locations/us-central1/keyRings/aidash-production-capability/cryptoKeys/capability/cryptoKeyVersions/1": "aidash-worker",
+            "projects/aidash-fixture/locations/us-central1/keyRings/aidash-production-capability/cryptoKeys/tenant-secret/cryptoKeyVersions/1": "aidash-server",
+        })
+        self.assertEqual(set(json.loads(env["AIDASH_SECRET_CALL_ISSUERS"])), set(public_keys))
         self.assertFalse(self.resources("tenant_secrets", "google_kms_crypto_key_iam_member"))
 
     def test_bootstrap_broker_bindings_are_the_only_byok_payload_accessors(self):

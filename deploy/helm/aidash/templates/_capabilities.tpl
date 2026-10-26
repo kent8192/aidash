@@ -56,7 +56,7 @@ install limits may not exceed maximum_seconds. */ -}}
 {{- range $key, $value := $tenant -}}
 {{- if or (not (kindIs "string" $value)) (not $value) -}}{{ fail (printf "providerCredentials.settings.tenant_secret_broker.%s must be a non-empty string" $key) }}{{- end -}}
 {{- end -}}
-{{- if ne $tenant.audience $store.environment_id -}}{{ fail "providerCredentials.settings.tenant_secret_broker.audience must be the Store's Environment" }}{{- end -}}
+{{- if ne $tenant.audience (printf "%s-tsec" $store.environment_id) -}}{{ fail "providerCredentials.settings.tenant_secret_broker.audience must be the Store's Environment with a -tsec suffix" }}{{- end -}}
 {{- else if or (not (kindIs "invalid" $broker)) (and (not (kindIs "invalid" $store)) (eq (toJson $store.kind) "\"secret_manager\"") .Values.execution.egress.enabled) -}}{{ fail "Cloud and Dedicated Secret Manager stores require providerCredentials.settings.tenant_secret_broker when a broker is configured or egress is enabled" }}{{- end -}}
 {{- toJson (dict "provider_credentials" $d) -}}
 {{- end -}}

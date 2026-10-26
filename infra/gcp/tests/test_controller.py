@@ -42,7 +42,7 @@ def descriptor(identity, broker=True, kid="version-1"):
         "fingerprint_key": {"env": "AIDASH_PROVIDER_FINGERPRINT_KEY"},
         "store": {"kind": "secret_manager", "byok_project_id": "aidash-byok-fixture", "environment_id": identity},
         "broker": {"endpoint": "https://broker.run.app/api/v1", "issuer": "https://broker.run.app", "audience": identity, "kid": kid} if broker else None,
-        "tenant_secret_broker": {"endpoint": "https://tenant-broker.run.app/api/v1", "issuer": "aidash-server", "audience": identity, "kid": "server-" + kid} if broker else None,
+        "tenant_secret_broker": {"endpoint": "https://tenant-broker.run.app", "issuer": "aidash-server", "audience": identity + "-tsec", "kid": "server-" + kid} if broker else None,
     }
 
 

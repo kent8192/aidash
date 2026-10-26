@@ -73,8 +73,9 @@ metadataServerEgress:
 # PostgreSQL stores use master_key: {env: AIDASH_PROVIDER_STORE_MASTER_KEY},
 # fingerprint_key: {env: AIDASH_PROVIDER_FINGERPRINT_KEY}, and null brokers.
 # A Secret Manager Store on Cloud/Dedicated also names the Tenant Secret broker
-# (endpoint, issuer, audience, kid of the server signing key); it is required
-# when a broker is configured or execution.egress.enabled is set.
+# (endpoint, issuer, audience `<environment_id>-tsec`, kid of the server signing
+# key); it is required when a broker is configured or execution.egress.enabled
+# is set.
 providerCredentials:
   settings: null
 # Managed public GCIP fragment {dashboard: {gcip: {...}}} for AIDASH_GCIP_SETTINGS;

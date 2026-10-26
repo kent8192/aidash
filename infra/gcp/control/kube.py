@@ -550,7 +550,7 @@ def provider_settings(descriptor, external):
         or not isinstance(tenant_secret_broker, dict)
         or set(tenant_secret_broker) != {"endpoint", "issuer", "audience", "kid"}
         or any(not isinstance(value, str) or not value for value in tenant_secret_broker.values())
-        or tenant_secret_broker["audience"] != store["environment_id"]
+        or tenant_secret_broker["audience"] != f"{store['environment_id']}-tsec"
     ):
         raise Refused("invalid managed Tenant Secret broker")
     return deepcopy(descriptor)
