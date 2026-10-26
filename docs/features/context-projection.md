@@ -57,8 +57,11 @@ traffic, and nothing ever falls back to `legacy`.
 
 A `native` request has this shape:
 
-1. `system`: the salt line, the agent boilerplate and every harness instruction,
-   including the per-turn catch-up and media-intake paragraphs.
+1. `system`: the salt line, the Harness Contract and every harness instruction,
+   including the per-turn catch-up and media-intake paragraphs. Under the
+   `structured@*` [Harness Contracts](harness-contract.md), the per-turn
+   paragraphs and the step's markers move to an `aidash`-trust envelope at the
+   end of the trailing user message instead.
 2. One user message of Run-stable attachments: `identity`, `task`,
    `reference_documents`, `run_message_summary` and the Execution Summary, each
    a separate text part.
