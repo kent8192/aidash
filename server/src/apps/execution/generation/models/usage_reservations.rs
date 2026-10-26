@@ -40,7 +40,7 @@ impl GenerationBudget {
 			!= 1
 		{
 			return Err(Error::Invalid(
-				"generated agent token budget exhausted".into(),
+				aidash_domain::generation::inference::TOKEN_BUDGET_EXHAUSTED.into(),
 			));
 		}
 		Ok(())

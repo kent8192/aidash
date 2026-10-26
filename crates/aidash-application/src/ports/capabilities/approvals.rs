@@ -9,6 +9,7 @@ use aidash_domain::{
 	provider::ToolCall,
 	registry::EntityRef,
 	run_input::RunInput,
+	tool::AgentPluginTool,
 };
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
@@ -28,12 +29,83 @@ pub struct Creation {
 	pub data: Value,
 	pub expires: Option<DateTime<Utc>>,
 }
-/// One exact call of a Tenant's HTTP or MCP tool that needs a Tool call approval.
+/// The tool a Tool call approval is asked for. A Run grant covers one operation of one target.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ToolCallTarget {
+	/// A version of a Tenant's HTTP or MCP tool definition in the Registry.
+	Registry(EntityRef),
+	/// A tool a Run pinned from a remote MCP server of an Agent Plugin copy. It is no Registry
+	/// entry: the pin, not a definition, says whether it is Read-only.
+	AgentPlugin(AgentPluginTool),
+}
+
+impl ToolCallTarget {
+	/// What the Tenant's policy, an Approval Rule and the dashboard call the tool: a definition
+	/// id, or `agent-plugin:<plugin>/<server>/<tool>`.
+	pub fn id(&self) -> String {
+		match self {
+			Self::Registry(reference) => reference.id.clone(),
+			Self::AgentPlugin(tool) => {
+				format!("agent-plugin:{}/{}/{}", tool.plugin, tool.server, tool.tool)
+			}
+		}
+	}
+
+	/// What a call is approved for: the definition version, or the digest of the plugin copy
+	/// that declared the tool, so another copy of the same plugin needs its own approval.
+	pub fn version(&self) -> String {
+		match self {
+			Self::Registry(reference) => reference.version.clone(),
+			Self::AgentPlugin(tool) => tool.digest.clone(),
+		}
+	}
+
+	/// The `<id>@<version>` an approval prompt names. A plugin copy shows the first 12 hex
+	/// digits of its digest.
+	pub fn label(&self) -> String {
+		match self {
+			Self::Registry(_) => format!("{}@{}", self.id(), self.version()),
+			Self::AgentPlugin(tool) => {
+				let digest = tool.digest.strip_prefix("sha256:").unwrap_or(&tool.digest);
+				format!(
+					"{}@{}",
+					self.id(),
+					digest.chars().take(12).collect::<String>()
+				)
+			}
+		}
+	}
+
+	/// What an approval record and the Run grant made from it keep to name the target.
+	pub fn record(&self) -> Value {
+		let mut fields = serde_json::json!({"tool": self.id(), "version": self.version()});
+		if let Self::AgentPlugin(tool) = self {
+			fields["plugin_tool"] = serde_json::json!(tool);
+		}
+		fields
+	}
+
+	/// The target an approval record or Run grant names, as [`Self::record`] wrote it.
+	pub fn from_record(data: &Value) -> Result<Self> {
+		if data["plugin_tool"].is_object() {
+			return Ok(Self::AgentPlugin(serde_json::from_value(
+				data["plugin_tool"].clone(),
+			)?));
+		}
+		Ok(Self::Registry(EntityRef {
+			id: data["tool"].as_str().unwrap_or_default().into(),
+			version: data["version"].as_str().unwrap_or_default().into(),
+		}))
+	}
+}
+
+/// One exact call of a Tenant's HTTP or MCP tool, or of an Agent Plugin's, that needs a Tool call
+/// approval.
 #[derive(Debug, Clone)]
 pub struct ToolCallRequest {
 	/// The call's invocation key. One approval belongs to one key and one call.
 	pub key: String,
-	pub tool: EntityRef,
+	pub tool: ToolCallTarget,
 	/// The operation of the tool the call invokes; a Run grant covers one.
 	pub operation: String,
 	pub call: ToolCall,
@@ -42,6 +114,15 @@ pub struct ToolCallRequest {
 	/// The operation is a declared Read-only operation: it needs no approval,
 	/// and the Tenant's policy may still forbid the call outright.
 	pub read_only: bool,
+}
+
+#[derive(Debug, Clone)]
+pub struct SamplingApprovalRequest {
+	pub key: String,
+	pub target: aidash_domain::agent_plugin::interaction::SamplingTarget,
+	pub request: aidash_domain::agent_plugin::interaction::SamplingRequest,
+	pub expires_at: DateTime<Utc>,
+	pub area: Option<Uuid>,
 }
 
 /// Why a Tool call approval refuses the call.

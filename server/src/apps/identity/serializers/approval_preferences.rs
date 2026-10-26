@@ -180,6 +180,9 @@ impl RuleInput {
 			return Ok(());
 		};
 		let valid = match self.kind {
+			ApprovalKind::Sampling => {
+				aidash_domain::agent_plugin::interaction::valid_sampling_rule(target, self.effect)
+			}
 			ApprovalKind::ToolCall => tool(target),
 			ApprovalKind::Outbound => origin(target),
 			ApprovalKind::WebSearch => provider(target),
