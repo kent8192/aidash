@@ -316,20 +316,31 @@ impl RealDispatchScope for Scope<'_> {
 		tenant: &str,
 		name: &str,
 		endpoint: &str,
-	) -> Result<secrecy::SecretString> {
+		call: crate::tenant_secrets::SecretCall,
+	) -> Result<crate::tenant_secrets::CallSecret> {
 		assert_eq!(
 			(tenant, name, endpoint),
 			("tenant", "key", "https://test.example/rpc")
 		);
+		assert_eq!(call.methods, ["POST"]);
+		assert!(matches!(
+			call.subject,
+			aidash_capability::tenant_secret::SecretSubject::Workbench { .. }
+		));
 		self.repository
 			.state
 			.lock()
 			.unwrap()
 			.order
 			.push("tenant_secret".into());
-		Ok(secrecy::SecretString::from(
-			"tenant-secret-value".to_owned(),
-		))
+		Ok(crate::tenant_secrets::CallSecret::Value {
+			record: crate::tenant_secrets::SecretRecord {
+				id: Uuid::now_v7(),
+				version: "1".into(),
+				host: "test.example".into(),
+			},
+			value: secrecy::SecretString::from("tenant-secret-value".to_owned()),
+		})
 	}
 	async fn rollback(mut self: Box<Self>) -> Result<()> {
 		self.repository.state.lock().unwrap().rollbacks += 1;
@@ -351,20 +362,28 @@ struct Request {
 	state: Arc<Mutex<State>>,
 	response: &'static str,
 }
+#[async_trait]
 impl RealToolTransport for Repository {
-	fn prepare(
+	async fn prepare(
 		&self,
 		id: Uuid,
 		selected: &RealToolRule,
 		input: &ToolCall,
-		secret: Option<&secrecy::SecretString>,
+		secret: Option<&crate::tenant_secrets::CallSecret>,
 	) -> Result<Box<dyn PreparedRealRequest>> {
 		use secrecy::ExposeSecret;
 		self.state
 			.lock()
 			.unwrap()
 			.secrets
-			.push(secret.map(|s| s.expose_secret().to_owned()));
+			.push(secret.map(|secret| match secret {
+				crate::tenant_secrets::CallSecret::Value { value, .. } => {
+					value.expose_secret().to_owned()
+				}
+				crate::tenant_secrets::CallSecret::Brokered { .. } => {
+					panic!("fixture resolves a self-hosted value")
+				}
+			}));
 		assert_eq!(id, Uuid::from_u128(9));
 		assert_eq!(selected.endpoint, rule().endpoint);
 		assert_eq!(*input, call());

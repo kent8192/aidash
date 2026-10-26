@@ -1,8 +1,9 @@
 //! HTTP and MCP transports for validated application tools.
-use crate::keyless::Clients;
+use crate::{broker, keyless::Clients};
 use aidash_application::execution::bounded_utf8_end;
 use aidash_application::{
-	Error, Result, ports::tools::ToolTransport, provider_access::KeylessAccess, tools::required,
+	Error, Result, ports::tools::ToolTransport, provider_access::KeylessAccess,
+	tenant_secrets::CallSecret, tools::required,
 };
 use aidash_domain::{keyless::Destination, tool::ToolConfig};
 use async_trait::async_trait;
@@ -14,9 +15,35 @@ use rmcp::{
 		StreamableHttpClientTransport, streamable_http_client::StreamableHttpClientTransportConfig,
 	},
 };
-use secrecy::{ExposeSecret, SecretString};
+use secrecy::ExposeSecret;
 use serde_json::{Value, json};
 mod mcp;
+
+/// A broker-owned failure is only expected when this call is brokered. An
+/// upstream response with the same header passthrough is the tool's own.
+fn broker_failure(
+	secret: Option<&CallSecret>,
+	headers: &reqwest::header::HeaderMap,
+) -> Option<broker::BrokerFailure> {
+	match secret {
+		Some(CallSecret::Brokered { .. }) => broker::BrokerFailure::from_headers(headers),
+		_ => None,
+	}
+}
+
+fn is_brokered(secret: Option<&CallSecret>) -> bool {
+	matches!(secret, Some(CallSecret::Brokered { .. }))
+}
+
+/// A brokered call sends the value it does not have: connect failures, and a
+/// response from the broker itself, are operator faults, never a direct retry.
+fn brokered_send_error(error: reqwest::Error) -> Error {
+	if crate::keyless::refused(&error) {
+		crate::keyless::send_error(error)
+	} else {
+		broker::BrokerFailure::connect_failure().into_error()
+	}
+}
 
 /// Total budget for a native `http_get`, covering DNS resolution and the request.
 const NATIVE_HTTP_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
@@ -109,7 +136,7 @@ impl ToolTransport for HttpTools {
 		configuration: &ToolConfig,
 		input: Value,
 		key: &str,
-		secret: Option<&SecretString>,
+		secret: Option<&CallSecret>,
 	) -> Result<Value> {
 		match configuration {
 			ToolConfig::Native {
@@ -147,17 +174,43 @@ impl ToolTransport for HttpTools {
 				web_fetch_response(response, &url).await
 			}
 			ToolConfig::Http { endpoint, .. } => {
-				let mut request = self
-					.client(endpoint)?
-					.post(endpoint)
-					.header("idempotency-key", key)
-					.json(&input);
-				// A Tenant Secret goes as the bearer credential, to the host the
-				// application layer already checked against its recorded hosts.
-				if let Some(secret) = secret {
-					request = request.bearer_auth(secret.expose_secret());
+				// Keep the destination authority check even when the request goes
+				// to the broker: the endpoint must still be one this call may use.
+				let endpoint_client = self.client(endpoint)?;
+				let request = if let Some(CallSecret::Brokered { source, rest, .. }) = secret {
+					// The broker is Deployment configuration, not the Tenant's
+					// choice, so it may be an in-cluster private address.
+					let route = source.route().await?;
+					let url = broker::forward_url(&route.base, rest)?;
+					self.clients
+						.permitted
+						.post(url)
+						.header(broker::SECRET_CALL, route.token.expose_secret())
+						.header("idempotency-key", key)
+						.json(&input)
+				} else {
+					let request = endpoint_client
+						.post(endpoint)
+						.header("idempotency-key", key)
+						.json(&input);
+					if let Some(CallSecret::Value { value, .. }) = secret {
+						// A self-hosted Tenant Secret goes as the bearer
+						// credential, exactly as before broker deployments.
+						request.bearer_auth(value.expose_secret())
+					} else {
+						request
+					}
+				};
+				let response = request.send().await.map_err(|error| {
+					if is_brokered(secret) {
+						brokered_send_error(error)
+					} else {
+						crate::keyless::send_error(error)
+					}
+				})?;
+				if let Some(failure) = broker_failure(secret, response.headers()) {
+					return Err(failure.into_error());
 				}
-				let response = request.send().await.map_err(crate::keyless::send_error)?;
 				if !response.status().is_success() {
 					return Err(Error::External(format!(
 						"HTTP tool returned {}",
@@ -172,7 +225,13 @@ impl ToolTransport for HttpTools {
 				idempotency_argument,
 				..
 			} => {
-				let service = mcp_session(self.client(endpoint)?, endpoint, secret).await?;
+				let endpoint_client = self.client(endpoint)?;
+				let client = if is_brokered(secret) {
+					&self.clients.permitted
+				} else {
+					endpoint_client
+				};
+				let service = mcp_session(client, endpoint, secret).await?;
 				let mut args = input
 					.as_object()
 					.cloned()
@@ -203,14 +262,25 @@ impl ToolTransport for HttpTools {
 async fn mcp_session(
 	client: &reqwest::Client,
 	endpoint: &str,
-	secret: Option<&SecretString>,
+	secret: Option<&CallSecret>,
 ) -> Result<RunningService<RoleClient, ()>> {
 	let mut config = StreamableHttpClientTransportConfig::with_uri(endpoint.to_owned());
-	if let Some(secret) = secret {
-		config = config.auth_header(secret.expose_secret());
-	}
-	let transport =
-		StreamableHttpClientTransport::with_client(mcp::BoundedClient(client.clone()), config);
+	let client = match secret {
+		// A brokered session sends every request to the broker and carries a
+		// fresh Tenant Secret Capability Token instead of a bearer value.
+		Some(CallSecret::Brokered { source, rest, .. }) => {
+			let route = source.route().await?;
+			let url = broker::forward_url(&route.base, rest)?;
+			config = StreamableHttpClientTransportConfig::with_uri(url.to_string());
+			mcp::BoundedClient::brokered(client.clone(), source.clone(), rest.clone(), route)
+		}
+		Some(CallSecret::Value { value, .. }) => {
+			config = config.auth_header(value.expose_secret());
+			mcp::BoundedClient::direct(client.clone())
+		}
+		None => mcp::BoundedClient::direct(client.clone()),
+	};
+	let transport = StreamableHttpClientTransport::with_client(client, config);
 	().serve(transport)
 		.await
 		.map_err(|e| mcp::initialization_error(&e))

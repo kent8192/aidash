@@ -39,6 +39,14 @@ pub struct Invocation {
 	pub result: Option<Json<Value>>,
 	#[field]
 	pub replay_safe: bool,
+	/// The Tenant Secret this call carried and its pinned version. The value is
+	/// never recorded. Null for a call without one.
+	#[field(null = true)]
+	pub tenant_secret_id: Option<Uuid>,
+	#[field(null = true, field_type = "text")]
+	pub tenant_secret_version: Option<String>,
+	#[field(null = true, field_type = "text")]
+	pub tenant_secret_host: Option<String>,
 	#[field(auto_now_add = true)]
 	pub created_at: DateTime<Utc>,
 }

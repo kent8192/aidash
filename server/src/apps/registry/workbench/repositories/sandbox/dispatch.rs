@@ -59,14 +59,15 @@ impl RealDispatchScope for Scope {
 		tenant: &str,
 		name: &str,
 		endpoint: &str,
-	) -> Result<secrecy::SecretString> {
+		call: aidash_application::tenant_secrets::SecretCall,
+	) -> Result<aidash_application::tenant_secrets::CallSecret> {
 		// A node without a Secret Store holds no Tenant Secret.
 		let Some(service) = &self.tenant_secrets else {
 			return Err(aidash_application::Error::Invalid(
 				aidash_domain::tenant_secrets::UNAVAILABLE.into(),
 			));
 		};
-		service.resolve_value(tenant, name, endpoint).await
+		service.call_secret(tenant, name, endpoint, call).await
 	}
 	async fn rollback(self: Box<Self>) -> Result<()> {
 		Box::new(self.tx)

@@ -1,5 +1,6 @@
 //! Tool effects retain the execution identity and the original idempotency keys.
 use crate::Result;
+use crate::tenant_secrets::{CallSecret, SecretCall};
 use aidash_domain::{
 	Artifact, ArtifactInput, HumanRequest, NewTask, Task,
 	agent_plugin::{ListedTool, PluginName, RemoteServer, ServerName},
@@ -9,22 +10,22 @@ use aidash_domain::{
 	tool::ToolConfig,
 };
 use async_trait::async_trait;
-use secrecy::SecretString;
 use serde_json::Value;
 use std::collections::BTreeMap;
 use uuid::Uuid;
 
 #[async_trait]
 pub trait ToolTransport: Send + Sync {
-	/// `secret` is the value of the Tenant Secret the configuration names,
-	/// already checked against the endpoint's host; the transport sends it as
-	/// the bearer credential and nowhere else.
+	/// `secret` is the Tenant Secret the configuration names, already checked
+	/// against the endpoint's host. A self-hosted transport sends the value as
+	/// the bearer credential; a brokered one sends the call to the broker and
+	/// never reads a value.
 	async fn invoke(
 		&self,
 		configuration: &ToolConfig,
 		input: Value,
 		key: &str,
-		secret: Option<&SecretString>,
+		secret: Option<&CallSecret>,
 	) -> Result<Value>;
 }
 
@@ -146,11 +147,19 @@ pub trait ToolOperations: Send + Sync {
 	) -> Result<Option<Vec<u8>>>;
 	/// Encoded-byte cap of one Skill asset chunk: the resource profile's `read_bytes`.
 	fn skill_read_bytes(&self) -> Result<usize>;
-	/// The value of the Run's Tenant's Tenant Secret `name`, to be sent to
-	/// `endpoint`. A missing or deleted Tenant Secret, or one that does not
-	/// record the endpoint's host, is `secret_unavailable`. A placement with
-	/// no Secret Store of its own holds none.
-	async fn tenant_secret(&self, _name: &str, _endpoint: &str) -> Result<SecretString> {
+	/// The Run's Tenant's Tenant Secret `name` for one call to `endpoint`.
+	/// `call` names the destination, methods and subject the broker must
+	/// authorize. A missing or deleted Tenant Secret, or one that does not
+	/// record the endpoint's host, is `secret_unavailable`. A placement with no
+	/// Secret Store of its own holds none. `key` is the invocation the call
+	/// records its Tenant Secret id, version and host on.
+	async fn tenant_secret(
+		&self,
+		_name: &str,
+		_endpoint: &str,
+		_call: SecretCall,
+		_key: &str,
+	) -> Result<CallSecret> {
 		Err(crate::Error::Invalid(
 			aidash_domain::tenant_secrets::UNAVAILABLE.into(),
 		))

@@ -2,7 +2,9 @@
 use crate::{
 	Error, Result,
 	ports::tools::{ToolOperations, ToolTransport},
+	tenant_secrets::{SecretCall, endpoint_destination},
 };
+use aidash_capability::tenant_secret::{Attach, SecretSubject};
 use aidash_domain::{
 	ArtifactInput, NewTask, Run,
 	provider::ToolSpec,
@@ -40,6 +42,34 @@ pub struct Plugin {
 	pub entry: Entry,
 	pub alias: String,
 	pub config: ToolConfig,
+}
+
+/// The broker authorization one tool call needs. A tool endpoint is signed as
+/// its origin plus the path's directory, so the broker forwards only that path
+/// and the remaining segment the transport appends. An MCP session uses POST,
+/// GET and DELETE; an HTTP tool uses POST alone.
+fn tenant_secret_call(config: &ToolConfig, run: &Run, endpoint: &str) -> Result<SecretCall> {
+	let methods = match config {
+		ToolConfig::Http { .. } => vec!["POST".to_owned()],
+		ToolConfig::Mcp { .. } => {
+			vec!["POST".to_owned(), "GET".to_owned(), "DELETE".to_owned()]
+		}
+		_ => {
+			return Err(Error::Invalid(
+				"tool configuration has no external transport".into(),
+			));
+		}
+	};
+	Ok(SecretCall {
+		destination: endpoint_destination(endpoint)?,
+		methods,
+		attach: Attach::Bearer,
+		subject: SecretSubject::Run {
+			run: run.id.to_string(),
+			call: uuid::Uuid::now_v7(),
+		},
+		max_response_bytes: Some(256_000),
+	})
 }
 pub fn validate_native_http_url(raw: &str, allowed_hosts: &[String]) -> Result<url::Url> {
 	let url = url::Url::parse(raw).map_err(|_| Error::Invalid("invalid URL".into()))?;
@@ -99,7 +129,12 @@ impl Plugin {
 				// any effect, so a deleted Tenant Secret fails the call outright.
 				let secret = match aidash_domain::tenant_secrets::named(&self.config) {
 					Some((name, endpoint)) => {
-						Some(ctx.operations.tenant_secret(name, endpoint).await?)
+						let call = tenant_secret_call(&self.config, ctx.run, endpoint)?;
+						Some(
+							ctx.operations
+								.tenant_secret(name, endpoint, call, key)
+								.await?,
+						)
 					}
 					None => None,
 				};

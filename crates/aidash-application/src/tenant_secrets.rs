@@ -9,7 +9,7 @@ use chrono::{DateTime, Duration, Utc};
 use hmac::{Hmac, Mac};
 use secrecy::{ExposeSecret, SecretString};
 use sha2::Sha256;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use url::Url;
 use uuid::Uuid;
 
@@ -62,6 +62,7 @@ pub struct SecretCallGrant {
 /// Where a brokered call goes and the token that authorizes it. `base` is the
 /// broker's `{endpoint}/v1/forward`; the token is a Tenant Secret Capability
 /// Token (ADR 0095).
+#[derive(Clone)]
 pub struct SecretRoute {
 	pub base: Url,
 	pub token: SecretString,
@@ -92,6 +93,81 @@ pub enum Resolved {
 	Value(SecretString),
 	/// A Cloud or Dedicated node forwards through the Tenant Secret broker.
 	Brokered(SecretRoute),
+}
+
+/// The narrowest path prefix that still contains `endpoint`: the endpoint
+/// path's directory, up to and including its last `/`. The broker signs this
+/// prefix alone, and each call appends the remaining path to it. For
+/// `https://api.example.com/v1/tools/run` the prefix is `/v1/tools/` and the
+/// remainder is `run`; for `https://api.example.com/run` it is `/` and `run`.
+fn endpoint_path_parts(endpoint: &str) -> Result<(String, String)> {
+	let url = Url::parse(endpoint)
+		.map_err(|_| Error::Invalid("invalid Tenant Secret endpoint URL".into()))?;
+	let path = url.path();
+	let cut = path.rfind('/').map_or(0, |index| index + 1);
+	let prefix = if cut == 0 { "/" } else { &path[..cut] };
+	Ok((prefix.into(), path[cut..].into()))
+}
+
+/// The destination a tool or test endpoint signs. `path_prefix` is the
+/// endpoint path's directory, so the token never covers a sibling path.
+pub fn endpoint_destination(endpoint: &str) -> Result<Destination> {
+	let url = Url::parse(endpoint)
+		.map_err(|_| Error::Invalid("invalid Tenant Secret endpoint URL".into()))?;
+	if url.host_str().is_none() {
+		return Err(Error::Invalid("invalid Tenant Secret endpoint URL".into()));
+	}
+	Ok(Destination {
+		origin: url.origin().ascii_serialization(),
+		path_prefix: endpoint_path_parts(endpoint)?.0,
+	})
+}
+
+/// The part of the endpoint path outside its signed [`endpoint_destination`]
+/// prefix. The transport appends it to the broker's `{endpoint}/v1/forward`.
+pub fn forward_rest(endpoint: &str) -> Result<String> {
+	Ok(endpoint_path_parts(endpoint)?.1)
+}
+
+/// What an invocation records about the Tenant Secret it carried. The value
+/// itself is never recorded.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SecretRecord {
+	pub id: Uuid,
+	/// The pinned Secret Store version, as the broker reads it.
+	pub version: String,
+	pub host: String,
+}
+
+/// One call's Tenant Secret. A brokered credential can mint a new token for
+/// the next request of a long-lived MCP session; a self-hosted one carries the
+/// value read for this call alone.
+pub enum CallSecret {
+	Value {
+		record: SecretRecord,
+		value: SecretString,
+	},
+	Brokered {
+		record: SecretRecord,
+		source: Arc<dyn SecretRouteSource>,
+		/// The endpoint path outside its signed prefix.
+		rest: String,
+	},
+}
+impl CallSecret {
+	pub fn record(&self) -> &SecretRecord {
+		match self {
+			Self::Value { record, .. } | Self::Brokered { record, .. } => record,
+		}
+	}
+}
+
+/// Mints another route for the same call. A transport that keeps one MCP
+/// session open past a token's lifetime calls this rather than reading a value
+/// or calling the tool endpoint directly.
+#[async_trait]
+pub trait SecretRouteSource: Send + Sync {
+	async fn route(&self) -> Result<SecretRoute>;
 }
 
 pub struct Service {
@@ -421,6 +497,21 @@ impl Service {
 		Ok(row.into())
 	}
 
+	/// The active Tenant Secret a call names, after re-checking the endpoint's
+	/// host. Missing, deleted, or no longer host-matching is `secret_unavailable`.
+	async fn active_row(&self, tenant: &str, name: &str, endpoint: &str) -> Result<TenantSecret> {
+		let mut scope = self.repository.begin(tenant).await?;
+		let row = scope.named(name).await?;
+		scope.commit().await?;
+		let Some(row) = row.filter(|r| r.state == State::Active) else {
+			return Err(unavailable());
+		};
+		if !tenant_secrets::permits(&row.hosts, endpoint).unwrap_or(false) {
+			return Err(unavailable());
+		}
+		Ok(row)
+	}
+
 	/// Resolves the Tenant Secret one call names, or `secret_unavailable` when
 	/// it is missing, deleted, or no longer records the endpoint's host. This
 	/// is where dispatch re-checks what registration checked.
@@ -436,15 +527,19 @@ impl Service {
 		endpoint: &str,
 		call: Option<SecretCall>,
 	) -> Result<Resolved> {
-		let mut scope = self.repository.begin(tenant).await?;
-		let row = scope.named(name).await?;
-		scope.commit().await?;
-		let Some(row) = row.filter(|r| r.state == State::Active) else {
-			return Err(unavailable());
-		};
-		if !tenant_secrets::permits(&row.hosts, endpoint).unwrap_or(false) {
-			return Err(unavailable());
-		}
+		let row = self.active_row(tenant, name, endpoint).await?;
+		self.resolve_row(tenant, &row, call).await
+	}
+
+	/// The resolution shared by [`Service::resolve`] and
+	/// [`Service::call_secret`]: the caller has already checked the Tenant
+	/// Secret's state and the endpoint's host.
+	async fn resolve_row(
+		&self,
+		tenant: &str,
+		row: &TenantSecret,
+		call: Option<SecretCall>,
+	) -> Result<Resolved> {
 		let pinned = row.require_active()?.to_owned();
 		if let Some(calls) = &self.calls {
 			let call = call.ok_or_else(|| {
@@ -495,6 +590,43 @@ impl Service {
 			Resolved::Brokered(_) => Err(Error::Invalid(
 				"this call path cannot use the Tenant Secret broker".into(),
 			)),
+		}
+	}
+
+	/// One transport call's credential and the metadata its invocation records.
+	///
+	/// A self-hosted Deployment reads the pinned value once and returns it. A
+	/// Cloud or Dedicated Deployment mints the first route now and returns a
+	/// source that mints another for the next request of a long-lived MCP
+	/// session; it never reads the value and never falls back to a direct call.
+	pub async fn call_secret(
+		self: &Arc<Self>,
+		tenant: &str,
+		name: &str,
+		endpoint: &str,
+		call: SecretCall,
+	) -> Result<CallSecret> {
+		let row = self.active_row(tenant, name, endpoint).await?;
+		let pinned = row.require_active()?.to_owned();
+		let record = SecretRecord {
+			id: row.id,
+			version: numeric_version(&pinned)?,
+			host: tenant_secrets::endpoint_host(endpoint)?,
+		};
+		match self.resolve_row(tenant, &row, Some(call.clone())).await? {
+			Resolved::Brokered(first) => Ok(CallSecret::Brokered {
+				record,
+				source: Arc::new(RefreshSource {
+					service: Arc::downgrade(self),
+					tenant: tenant.into(),
+					name: name.into(),
+					endpoint: endpoint.into(),
+					call,
+					first: Mutex::new(Some(first)),
+				}),
+				rest: forward_rest(endpoint)?,
+			}),
+			Resolved::Value(value) => Ok(CallSecret::Value { record, value }),
 		}
 	}
 
@@ -601,6 +733,44 @@ impl Service {
 		}
 		scope.commit().await?;
 		Ok(cleaned)
+	}
+}
+
+/// Re-routes one call through the broker after a token's lifetime. It keeps a
+/// weak Service so a finished request does not pin the Secret Store.
+struct RefreshSource {
+	service: std::sync::Weak<Service>,
+	tenant: String,
+	name: String,
+	endpoint: String,
+	call: SecretCall,
+	/// The route minted when the call started, used before the first refresh.
+	first: Mutex<Option<SecretRoute>>,
+}
+
+#[async_trait]
+impl SecretRouteSource for RefreshSource {
+	async fn route(&self) -> Result<SecretRoute> {
+		if let Some(first) = self.first.lock().unwrap().take() {
+			return Ok(first);
+		}
+		let service = self.service.upgrade().ok_or_else(|| {
+			Error::External("Tenant Secret broker routing is no longer available".into())
+		})?;
+		match service
+			.resolve(
+				&self.tenant,
+				&self.name,
+				&self.endpoint,
+				Some(self.call.clone()),
+			)
+			.await?
+		{
+			Resolved::Brokered(route) => Ok(route),
+			Resolved::Value(_) => Err(Error::Invalid(
+				"this call path cannot use the Tenant Secret broker".into(),
+			)),
+		}
 	}
 }
 
