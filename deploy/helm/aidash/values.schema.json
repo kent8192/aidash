@@ -198,6 +198,35 @@
         }
       }
     },
+    "preview": {
+      "type": "object",
+      "properties": {
+        "enabled": { "type": "boolean" },
+        "domain": {
+          "type": "string",
+          "pattern": "^([a-z0-9]([a-z0-9.-]*[a-z0-9])?)?$"
+        },
+        "inProcess": { "type": "boolean" },
+        "port": { "type": "integer", "minimum": 1, "maximum": 65535 },
+        "publicPort": { "type": "integer", "minimum": 1, "maximum": 65535 },
+        "podPort": { "type": "integer", "minimum": 1, "maximum": 65535 },
+        "ingress": {
+          "type": "object",
+          "properties": {
+            "enabled": { "type": "boolean" },
+            "className": { "type": "string" },
+            "tlsSecret": { "type": "string" },
+            "annotations": {
+              "type": "object",
+              "additionalProperties": { "type": "string" }
+            }
+          },
+          "additionalProperties": false
+        },
+        "resources": { "type": "object" }
+      },
+      "additionalProperties": false
+    },
     "sse": {
       "type": "object",
       "required": ["reconcileIntervalMs", "backpressureTimeoutSeconds"],

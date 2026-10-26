@@ -231,6 +231,28 @@ execution:
     maximum_seconds: 600
     idle_seconds: 1800
 
+# Previews (ADR 0068). Disabled by default: no Live previews and no HTML/PDF
+# File previews. `domain` must be a registrable domain separate from the
+# dashboard's; a local cluster uses `localhost`. The gateway runs in the API
+# process unless `inProcess` is false, when this chart deploys it apart.
+preview:
+  enabled: false
+  domain: ""
+  inProcess: true
+  port: 8960
+  publicPort: 443
+  # The port a Live preview Pod declares. W6 wires the Pod to it; the policy
+  # below is the only ingress that port admits.
+  podPort: 3000
+  ingress:
+    enabled: false
+    className: ""
+    tlsSecret: ""
+    annotations: {}
+  resources:
+    requests: { cpu: 50m, memory: 128Mi }
+    limits: { cpu: "1", memory: 512Mi }
+
 # Stable across Pod replacements. Provision once with `aidash activation-provision`
 # using NATS operator credentials and these same values; runtime does not create objects.
 activation:

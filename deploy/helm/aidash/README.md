@@ -197,6 +197,23 @@ kubectl -n "$NS" delete job md-activity
 If any of these fail while the exempt Pods work, the policy is the suspect: delete
 `<release>-aidash-metadata-egress` and retry to confirm, then widen it.
 
+## Previews
+
+Previews (ADR 0068) are off until `preview.enabled` is true. Set `preview.domain`
+to a registrable domain separate from the dashboard's public origin; the chart
+refuses a shared registrable domain and a local cluster uses `localhost`. The
+gateway runs in the API process by default. Set `preview.inProcess` to false to
+render it as its own Deployment and turn the API process's listener off; both
+modes expose `<release>-preview` on `preview.port`. A ticket URL names
+`preview.publicPort` (443 by default). Enable `preview.ingress` for a wildcard
+`*.<preview.domain>` Ingress and name its `tlsSecret`.
+
+The chart renders `<release>-preview-sandbox` in `execution.sandboxNamespace`:
+only the gateway Pods of this release may reach an Execution Pod, and only on
+`preview.podPort` (the port a Live preview declares; W6 sets it). Without a
+preview domain the dashboard reports Previews unavailable and opens no HTML or
+PDF File previews.
+
 ## Optional execution components
 
 Enable `execution.createNamespaces`, `execution.runtimeClass.create`,
