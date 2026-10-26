@@ -7,6 +7,7 @@ use uuid::Uuid;
 
 pub mod federation;
 mod jws;
+pub mod tenant_secret;
 
 pub const TOKEN_TTL_SECS: u64 = 60;
 pub const TOKEN_TYPE: &str = "aidash-capability+jwt";
@@ -100,6 +101,10 @@ pub enum Failure {
 	Operation,
 	#[error("model")]
 	Model,
+	#[error("destination")]
+	Destination,
+	#[error("method")]
+	Method,
 	#[error("claim_violation")]
 	ClaimViolation,
 }
