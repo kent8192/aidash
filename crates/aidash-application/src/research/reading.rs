@@ -61,7 +61,7 @@ pub async fn read(
 		.ok_or_else(unavailable)?;
 	// The passage is read again after that: an account-terms purge empties it
 	// with its snapshot, and the copy read first would still hold the text.
-	let fragment = store
+	let mut fragment = store
 		.fragments(run, &[reference])
 		.await?
 		.into_iter()
@@ -69,17 +69,21 @@ pub async fn read(
 		.ok_or_else(unavailable)?;
 	// A page image is read with its fragment; like a passage's text, it stays
 	// after a retention purge of the snapshot (ADR 0053). The account-terms
-	// purge removes it, and the citation is then unavailable.
-	let image = match &fragment.image {
-		Some(_) => Some(
-			store
-				.page_image(run, &fragment.reference)
-				.await?
-				.ok_or_else(unavailable)?
-				.1,
-		),
+	// purge removes it; the retained identity/digest then reports expiry.
+	let mut image = match &fragment.image {
+		Some(_) => store
+			.page_image(run, &fragment.reference)
+			.await?
+			.map(|(_, bytes)| bytes),
 		None => None,
 	};
+	let expired = document.purged.is_some_and(|purge| {
+		purge.reason == aidash_domain::research::evidence::PurgeReason::AccountTerms
+	}) || store
+		.expired_results(run)
+		.await?
+		.documents
+		.contains(&fragment.document_id);
 	// The evidence itself is decided last, after every read: a revocation
 	// committed during any of them withholds what was already read.
 	if store.revoked(run).await? {
@@ -91,7 +95,18 @@ pub async fn read(
 	if !reader.readable(run).await? {
 		return Err(unavailable());
 	}
+	if expired {
+		fragment.text.clear();
+		image = None;
+	} else if fragment.image.is_some() && image.is_none() {
+		return Err(unavailable());
+	}
 	let mut cited = CitedEvidence::new(fragment, &document);
+	if expired {
+		cited.expired = true;
+		cited.context = None;
+		cited.title = None;
+	}
 	cited.image = image;
 	Ok(cited)
 }

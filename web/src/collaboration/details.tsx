@@ -1,4 +1,5 @@
 import { ElicitationForm, elicitationMessage } from "./elicitation";
+import { RunCompactionDetails } from "../compaction-details";
 import { RunPlanUsage } from "../model-source";
 import { X } from "lucide-react";
 import { Button } from "../components/ui/button";
@@ -561,6 +562,10 @@ function RunPanel({
           {run.error}
         </p>
       )}
+      <RunCompactionDetails
+        bindings={run.context?.binding_snapshot?.bindings ?? []}
+        reason={run.recovery?.context_reason}
+      />
       <DegradedContext run={run} />
       {/* The server denies subjects the stream of a foreign-home run. */}
       {!managed && (

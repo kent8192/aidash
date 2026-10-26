@@ -43,11 +43,72 @@ fn text(value: &str) -> Step {
 	Step::Offer(InferenceProgress::Text { text: value.into() })
 }
 
+/// The fake provider registers only its fixture-backed sources. Opaque handles
+/// deliberately differ from Registry identities, as in the native resolver.
+fn fixture_source_plan(resident: bool, registry: bool, direct: bool) -> Vec<PlannedContextSource> {
+	let mut sources = vec![];
+	if resident {
+		sources.push((
+			"resident_skills",
+			ContextSourcePhase::Instructions,
+			ContextSourceTarget::Instructions,
+			ContextSourceCache::Boundary,
+		));
+	} else {
+		if registry {
+			sources.push((
+				"registry_skills",
+				ContextSourcePhase::Instructions,
+				ContextSourceTarget::Instructions,
+				ContextSourceCache::None,
+			));
+		}
+		if direct {
+			sources.push((
+				"skills",
+				ContextSourcePhase::Instructions,
+				ContextSourceTarget::Instructions,
+				ContextSourceCache::Revision,
+			));
+		}
+	}
+	sources.extend([
+		(
+			"workspace",
+			ContextSourcePhase::SnapshotData,
+			ContextSourceTarget::Pinned("workspace".into()),
+			ContextSourceCache::None,
+		),
+		(
+			"semantic_memory",
+			ContextSourcePhase::BudgetedData,
+			ContextSourceTarget::Pinned("semantic_memory".into()),
+			ContextSourceCache::Retrieval,
+		),
+	]);
+	sources
+		.into_iter()
+		.map(|(slot, phase, target, cache)| PlannedContextSource {
+			handle: ContextSourceHandle::new(slot.into()),
+			phase,
+			target,
+			cache,
+			contribution_slot: slot.into(),
+			sources: vec![],
+			refresh_each_step: false,
+		})
+		.collect()
+}
+
 #[derive(Clone)]
 struct Backend(Arc<State>);
 struct State {
+	extra_context_sources: Vec<(ContextSourcePhase, String, Value)>,
 	conversation_memory: bool,
+	source_receipts: bool,
+	source_volatility: Option<context::source::Volatility>,
 	deny_source: bool,
+	deny_source_after_dispatch: bool,
 	memory_value: Mutex<Value>,
 	semantic_failure: Mutex<Option<(bool, aidash_domain::semantic::Failure)>>,
 	requests: Mutex<Vec<ModelRequest>>,
@@ -139,6 +200,8 @@ struct State {
 	plan_connection: bool,
 	/// Evidence fragments the Run's evidence store holds.
 	known_evidence: Vec<aidash_domain::research::citations::EvidenceRef>,
+	/// Exact Research payload variants, indexed by their durable digest.
+	research_payloads: BTreeMap<String, Value>,
 	/// The Run's Research evidence was revoked.
 	research_revoked: bool,
 	/// Revoked only once this many revocation checks have answered.
@@ -146,6 +209,10 @@ struct State {
 	research_checks: std::sync::atomic::AtomicUsize,
 	/// Provider results the Research account terms no longer keep.
 	expired_research: aidash_domain::research::expiry::ExpiredResults,
+	expired_research_after: Option<usize>,
+	/// A result the persistence boundary replaces when its account expires.
+	settled_research: Option<Value>,
+	expiry_checks: std::sync::atomic::AtomicUsize,
 	/// Completed artifacts, in completion order.
 	artifacts: Mutex<Vec<Value>>,
 	completion: Option<aidash_domain::completion::CompletionPolicy>,
@@ -324,6 +391,29 @@ fn unexpected(operation: &str) -> ! {
 
 #[async_trait]
 impl ExecutionStore for Backend {
+	async fn resolve_research(&self, run: &mut Run) -> Result<()> {
+		for entry in &mut run.context.history {
+			if let ContextEvent::Tool { result, .. } = &mut entry.event
+				&& let Some(reference) =
+					aidash_domain::context::research::ResearchReference::parse(result)
+			{
+				*result = self
+					.0
+					.research_payloads
+					.get(&reference.digest)
+					.cloned()
+					.unwrap_or_else(|| reference.unavailable());
+			}
+		}
+		Ok(())
+	}
+	async fn pin_estimate(&self, run: &mut Run, token: Uuid) -> Result<()> {
+		self.save_run(run, token, "run.estimate_pinned").await?;
+		// Native persistence returns the saved projection, whose Research
+		// history contains immutable references rather than provider payloads.
+		*run = serde_json::from_value(serde_json::to_value(&*run)?)?;
+		Ok(())
+	}
 	async fn save_run(&self, run: &Run, token: Uuid, event: &str) -> Result<()> {
 		assert_eq!(token, self.0.token);
 		if self
@@ -437,6 +527,14 @@ impl ExecutionStore for Backend {
 		_: &Run,
 	) -> Result<aidash_domain::research::expiry::ExpiredResults> {
 		self.record("store.expired_research");
+		let check = self.0.expiry_checks.fetch_add(1, Ordering::SeqCst);
+		if self
+			.0
+			.expired_research_after
+			.is_some_and(|after| check < after)
+		{
+			return Ok(Default::default());
+		}
 		Ok(self.0.expired_research.clone())
 	}
 	async fn unknown_evidence(
@@ -537,6 +635,7 @@ impl ExecutionStore for Backend {
 		let _ = run;
 		assert_eq!(token, self.0.token);
 		self.record("invocation.finish");
+		let output = self.0.settled_research.as_ref().unwrap_or(output);
 		self.0
 			.invocations
 			.lock()
@@ -1081,6 +1180,90 @@ impl ExecutionAuthority for Backend {
 
 #[async_trait]
 impl ExecutionEnvironment for Backend {
+	fn context_source_plan(&self, run: &Run) -> Result<Vec<PlannedContextSource>> {
+		let mut plan = fixture_source_plan(
+			deferred_exposure(run)?.is_some(),
+			!self.0.skills.is_empty(),
+			self.home(run).has_local_authority()
+				&& (self.0.skill_tool || self.0.tools.contains(&"skill_list")),
+		);
+		plan.extend(self.0.extra_context_sources.iter().map(|(phase, key, _)| {
+			PlannedContextSource {
+				handle: ContextSourceHandle::new(format!("extension:{key}")),
+				phase: *phase,
+				target: ContextSourceTarget::Pinned(key.clone()),
+				cache: ContextSourceCache::None,
+				contribution_slot: key.clone(),
+				sources: vec![],
+				refresh_each_step: true,
+			}
+		}));
+		Ok(plan)
+	}
+	async fn context_source(
+		&self,
+		run: &Run,
+		source: &ContextSourceHandle,
+		_worker: Uuid,
+		frame: ContextSourceFrame<'_>,
+	) -> SemanticContextRead {
+		if let Some((_, _, value)) = self
+			.0
+			.extra_context_sources
+			.iter()
+			.find(|(_, key, _)| source.as_str() == format!("extension:{key}"))
+		{
+			return SemanticContextRead {
+				selections: vec![],
+				contributions: vec![],
+				workspace_retrieved: false,
+				result: Ok(Some(value.clone())),
+			};
+		}
+		let result = match source.as_str() {
+			"resident_skills" => Ok(Some(serde_json::json!(
+				frame
+					.prepared
+					.iter()
+					.map(|block| block.text.as_str())
+					.collect::<String>()
+			))),
+			"registry_skills" => {
+				let mut text = String::new();
+				for skill in &self.0.skills {
+					let entry = self
+						.catalog()
+						.get_for_run(run, &skill.id, &skill.version)
+						.await
+						.unwrap();
+					text.push_str(&format!(
+						"\nSkill {}@{}:\n{}",
+						skill.id,
+						skill.version,
+						self.catalog().skill_instructions(&entry).unwrap()
+					));
+				}
+				Ok(Some(json!(text)))
+			}
+			"workspace" => self
+				.home(run)
+				.observation(0, context::observation::DEFAULT_LIMIT)
+				.await
+				.map(Some),
+			"skills" => self.skill_context(run).await.map(|text| Some(json!(text))),
+			"semantic_memory" => {
+				return self.semantic_context(frame).await;
+			}
+			_ => unexpected("unknown planned context source"),
+		};
+		SemanticContextRead {
+			selections: vec![],
+			contributions: vec![],
+			workspace_retrieved: false,
+			result,
+		}
+	}
+
 	fn binding_resolver(&self) -> &dyn aidash_application::ports::bindings::BindingResolver {
 		self
 	}
@@ -1105,11 +1288,14 @@ impl ExecutionEnvironment for Backend {
 	async fn close_plugin_sessions(&self, run: Uuid) {
 		self.0.closed_sessions.lock().unwrap().push(run);
 	}
-	async fn documents(&self, entry: &Entry) -> Result<Value> {
-		let _ = entry;
-		Ok(json!([]))
-	}
-	async fn recheck_source_observation(&self, _: &Run, _: &Value) -> Result<()> {
+
+	async fn recheck_source_observation(&self, _: &Run, content: &Value) -> Result<()> {
+		if self.0.deny_source_after_dispatch
+			&& !self.0.requests.lock().unwrap().is_empty()
+			&& content.get("semantic_memory") == Some(&*self.0.memory_value.lock().unwrap())
+		{
+			return Err(Error::Forbidden);
+		}
 		if self.0.conversation_memory {
 			self.record("source.recheck");
 		}
@@ -1121,23 +1307,18 @@ impl ExecutionEnvironment for Backend {
 		}
 		Ok(())
 	}
-	async fn skill_context(&self, run: &Run) -> Result<String> {
-		let _ = run;
-		if let Some(text) = &self.0.skill_context {
-			return Ok(text.clone());
-		}
-		if !self.0.skill_tool {
-			unexpected("ExecutionEnvironment.skill_context")
-		}
-		self.record("source.skill");
-		Ok(self.0.skill_text.lock().unwrap().clone())
-	}
+
 	async fn direct_skills(&self, run: &Run) -> Result<Vec<DirectSkill>> {
 		let _ = run;
 		self.record("skills.direct");
 		Ok(self.0.direct_skills.clone())
 	}
-	async fn direct_skill_body(&self, run: &Run, skill_id: Uuid, digest: &str) -> Result<String> {
+	async fn direct_skill_body(
+		&self,
+		run: &Run,
+		skill_id: Uuid,
+		digest: &str,
+	) -> Result<Option<String>> {
 		let _ = run;
 		self.record("skills.direct_body");
 		let skill = self
@@ -1149,9 +1330,13 @@ impl ExecutionEnvironment for Backend {
 		if skill.metadata.digest != digest {
 			return Err(Error::Conflict("CAPABILITY_CHANGED".into()));
 		}
-		Ok(self.0.direct_bodies[&skill_id].clone())
+		Ok(Some(self.0.direct_bodies[&skill_id].clone()))
 	}
-	async fn skill_revision(&self, run: &Run) -> Result<Option<i64>> {
+	async fn source_revision(
+		&self,
+		_source: &ContextSourceHandle,
+		run: &Run,
+	) -> Result<Option<i64>> {
 		let _ = run;
 		Ok(*self.0.skill_revision.lock().unwrap())
 	}
@@ -1169,55 +1354,20 @@ impl ExecutionEnvironment for Backend {
 		let _ = run;
 		Ok(self.0.retrieval.lock().unwrap().clone())
 	}
-	async fn semantic_context(
+	async fn source_retrieval_key(
 		&self,
 		run: &Run,
-		task: &Task,
-		inputs: &[(InputRead, String)],
-		budget: usize,
-		entry: &Entry,
-		key: Option<&RetrievalKey>,
-		degrade_on_outage: bool,
-	) -> SemanticContextRead {
-		let _ = (run, task, inputs, budget, entry);
-		self.0
-			.semantic_keys
-			.lock()
-			.unwrap()
-			.push(key.map(RetrievalKey::digest));
-		self.0
-			.semantic_degrade
-			.lock()
-			.unwrap()
-			.push(degrade_on_outage);
-		if let Some((workspace_retrieved, reason)) = self.0.semantic_failure.lock().unwrap().take()
-		{
-			return SemanticContextRead {
-				workspace_retrieved,
-				result: Err(Error::RemoteSemantic(reason)),
-			};
-		}
-		let result: Result<Option<Value>> = async {
-			if self.0.conversation_memory {
-				self.record("source.memory");
-				if self.0.fill_semantic_budget {
-					return Ok(Some(json!({"fact":"m".repeat(budget.saturating_sub(16))})));
-				}
-				return Ok(Some(self.0.memory_value.lock().unwrap().clone()));
-			}
-			Ok(None)
-		}
-		.await;
-		let workspace_retrieved = result.as_ref().is_ok_and(|value| {
-			value
-				.as_ref()
-				.is_some_and(|value| aidash_domain::semantic::degraded::degraded(value).is_none())
-		});
-		SemanticContextRead {
-			workspace_retrieved,
-			result,
-		}
+		bindings: &str,
+		frame: ContextSourceFrame<'_>,
+	) -> Result<RetrievalKey> {
+		aidash_application::execution::semantic_context::retrieval_key(
+			run,
+			bindings,
+			frame,
+			self.retrieval_scope(run).await?,
+		)
 	}
+
 	async fn run_message_limit(&self, run: &Run) -> Result<usize> {
 		let _ = run;
 		Ok(16000)
@@ -1511,8 +1661,12 @@ fn fixture() -> Fixture {
 		updated_at: now,
 	};
 	let backend = Backend(Arc::new(State {
+		extra_context_sources: vec![],
 		conversation_memory: false,
+		source_receipts: false,
+		source_volatility: None,
 		deny_source: false,
+		deny_source_after_dispatch: false,
 		memory_value: Mutex::new(json!({"fact":"observed"})),
 		semantic_failure: Mutex::new(None),
 		requests: Mutex::new(vec![]),
@@ -1601,10 +1755,14 @@ fn fixture() -> Fixture {
 		explicit_cache_model: false,
 		plan_connection: false,
 		known_evidence: vec![],
+		research_payloads: BTreeMap::new(),
 		research_revoked: false,
 		research_revoked_after: None,
 		research_checks: Default::default(),
 		expired_research: Default::default(),
+		expired_research_after: None,
+		settled_research: None,
+		expiry_checks: Default::default(),
 		artifacts: Mutex::new(vec![]),
 		completion: None,
 		checks: None,
@@ -2287,6 +2445,7 @@ fn summary_dependencies_keep_a_message_whose_read_result_jev_truncated() {
 	};
 	// Jev keeps the leading text of an old result as a plain string.
 	let entries = [context::HistoryEntry {
+		research: None,
 		seq: 1,
 		event: ContextEvent::tool(call, json!("{\"kind\":\"message\",\"content\":\"private")),
 	}];
@@ -2888,9 +3047,21 @@ async fn a_summary_dependency_revoked_during_pruning_pauses_before_inference(
 	state.jev_retention = Some(1.0);
 	*state.summary_text.lock().unwrap() = Some(valid_summary());
 	thinking_with_history(&mut fixture, 40);
-	let originals = fixture.run.context.history.clone();
+	let mut originals = fixture.run.context.history.clone();
 	advance_sources(&mut fixture).await.unwrap();
 	assert!(fixture.run.context.execution_summary.is_some());
+	// Force another insufficient pruning while the previous summary exists.
+	let earlier_head = fixture.run.context.journal.head;
+	thinking_with_history(&mut fixture, 40);
+	originals.extend(
+		fixture
+			.run
+			.context
+			.history
+			.iter()
+			.filter(|entry| entry.seq > earlier_head)
+			.cloned(),
+	);
 
 	// The check before pruning passes; the source is revoked before the
 	// check that follows it.
@@ -2917,6 +3088,10 @@ async fn a_summary_dependency_revoked_during_pruning_pauses_before_inference(
 			.count(),
 		2,
 		"{step:?}"
+	);
+	assert!(
+		step.contains(&"decision.rejected"),
+		"the staged decision and charged attempts must be settled: {step:?}"
 	);
 	for provider in ["provider.infer", "summarizer.infer"] {
 		assert!(!step.contains(&provider), "{provider}: {step:?}");
@@ -4883,7 +5058,16 @@ fn ordered_parts(request: &ModelRequest) -> (&str, &str) {
 }
 
 fn semantic_memory(request: &ModelRequest) -> Value {
-	serde_json::from_str::<Value>(ordered_parts(request).1).unwrap()["semantic_memory"].clone()
+	match &request.context {
+		ModelContext::Sampling(_) => panic!("sampling has no Run memory"),
+		ModelContext::Legacy(context) => context["current"]["semantic_memory"].clone(),
+		ModelContext::Ordered(context) => {
+			serde_json::from_str::<Value>(&context.volatile).unwrap()["semantic_memory"].clone()
+		}
+		ModelContext::Native(context) => {
+			serde_json::from_str::<Value>(&context.volatile).unwrap()["semantic_memory"].clone()
+		}
+	}
 }
 
 fn count(fixture: &Fixture, call: &str) -> usize {
@@ -5447,3 +5631,303 @@ async fn catch_up_steps_carry_no_breakpoints() {
 mod research;
 
 mod completion;
+
+impl Backend {
+	async fn skill_context(&self, run: &Run) -> Result<String> {
+		let _ = run;
+		if let Some(text) = &self.0.skill_context {
+			return Ok(text.clone());
+		}
+		if !self.0.skill_tool {
+			unexpected("ExecutionEnvironment.skill_context")
+		}
+		self.record("source.skill");
+		Ok(self.0.skill_text.lock().unwrap().clone())
+	}
+	async fn semantic_context(&self, frame: ContextSourceFrame<'_>) -> SemanticContextRead {
+		let budget = frame.budget;
+		self.0
+			.semantic_keys
+			.lock()
+			.unwrap()
+			.push(frame.key.map(RetrievalKey::digest));
+		self.0
+			.semantic_degrade
+			.lock()
+			.unwrap()
+			.push(frame.degrade_on_outage);
+		if let Some((workspace_retrieved, reason)) = self.0.semantic_failure.lock().unwrap().take()
+		{
+			return SemanticContextRead {
+				selections: vec![],
+				contributions: vec![],
+				workspace_retrieved,
+				result: Err(Error::RemoteSemantic(reason)),
+			};
+		}
+		let result: Result<Option<Value>> = async {
+			if self.0.conversation_memory {
+				self.record("source.memory");
+				if self.0.fill_semantic_budget {
+					return Ok(Some(json!({"fact":"m".repeat(budget.saturating_sub(16))})));
+				}
+				return Ok(Some(self.0.memory_value.lock().unwrap().clone()));
+			}
+			Ok(None)
+		}
+		.await;
+		let workspace_retrieved = result.as_ref().is_ok_and(|value| {
+			value
+				.as_ref()
+				.is_some_and(|value| aidash_domain::semantic::degraded::degraded(value).is_none())
+		});
+		SemanticContextRead {
+			selections: vec![],
+			contributions: if self.0.source_receipts {
+				result
+					.as_ref()
+					.ok()
+					.and_then(|value| value.as_ref())
+					.map(|content| {
+						let digest = aidash_domain::registry::rules::digest(content);
+						context::source::SourceContribution {
+							placement: Some(context::source::SourcePlacement {
+								slot: "semantic_memory".into(),
+								pointer: String::new(),
+								volatility: self.0.source_volatility,
+							}),
+							mandatory: false,
+							identity: context::source::CandidateIdentity {
+								source: QualifiedRef::builtin("aidash://node", "source"),
+								item: "semantic_memory".into(),
+								revision: digest.clone(),
+								range: None,
+							},
+							content: content.clone(),
+							provenance: vec![aidash_domain::decision::SourcePin {
+								resource: "test-source".into(),
+								revision_digest: digest.clone(),
+							}],
+							dependencies: vec![aidash_domain::decision::SourcePin {
+								resource: "test-source".into(),
+								revision_digest: digest.clone(),
+							}],
+							completeness: context::source::Completeness::Complete,
+							detail: None,
+							fetched_digest: digest.clone(),
+							content_digest: digest,
+						}
+					})
+					.into_iter()
+					.collect()
+			} else {
+				vec![]
+			},
+			workspace_retrieved,
+			result,
+		}
+	}
+}
+
+#[rstest]
+#[case(ProjectionVersion::Legacy)]
+#[case(ProjectionVersion::Ordered)]
+#[case(ProjectionVersion::Native)]
+#[tokio::test]
+async fn fetched_sources_gain_delivery_only_after_an_accepted_exact_request(
+	mut canonical: Fixture,
+	#[case] projection: ProjectionVersion,
+	#[values(
+		None,
+		Some(context::source::Volatility::Run),
+		Some(context::source::Volatility::Step)
+	)]
+	volatility: Option<context::source::Volatility>,
+) {
+	// A failed physical inference saves authorized retrieval bytes for recovery,
+	// but cannot grant evidence that a model accepted those bytes.
+	{
+		let state = Arc::get_mut(&mut canonical.backend.0).unwrap();
+		state.projection = projection;
+		state.source_receipts = true;
+		state.source_volatility = volatility;
+	}
+	assert!(matches!(
+		advance_sources(&mut canonical).await,
+		Err(Error::ProviderRejected { .. })
+	));
+	assert_eq!(canonical.run.context.source_contributions.len(), 1);
+	assert!(canonical.run.context.source_deliveries.is_empty());
+	let fetched = canonical.run.context.source_contributions[0].clone();
+	Arc::get_mut(&mut canonical.backend.0)
+		.unwrap()
+		.provider_status = None;
+	advance_sources(&mut canonical).await.unwrap();
+	assert_eq!(
+		count(&canonical, "source.memory"),
+		1,
+		"the recovered boundary reuses its authorized read"
+	);
+	let [receipt] = canonical.run.context.source_deliveries.as_slice() else {
+		panic!("exactly the accepted source envelope is delivered")
+	};
+	assert_eq!(receipt.identity, fetched.identity);
+	assert_eq!(receipt.content_digest, fetched.content_digest);
+	let usage = canonical.backend.0.usage.lock().unwrap();
+	assert_eq!(receipt.accepted_inference, usage.last().unwrap().0.attempt);
+	assert_ne!(receipt.accepted_inference, usage.first().unwrap().0.attempt);
+}
+
+#[rstest]
+#[tokio::test]
+async fn dropped_skill_bytes_repeated_in_unrelated_history_cannot_gain_delivery(
+	mut canonical: Fixture,
+) {
+	let text = "A source-only Skill block that the current request does not inject";
+	Arc::get_mut(&mut canonical.backend.0)
+		.unwrap()
+		.provider_status = None;
+	let mut contribution =
+		context::source::SourceContribution::from(context::source::SourceCandidate {
+			identity: context::source::CandidateIdentity {
+				source: QualifiedRef::builtin("aidash://node", "private-skill"),
+				item: "skills/private-skill".into(),
+				revision: "r1".into(),
+				range: None,
+			},
+			content: json!(text),
+			preview: text.into(),
+			provenance: vec![],
+			dependencies: vec![],
+			completeness: context::source::Completeness::Complete,
+			detail: None,
+			mandatory: false,
+		});
+	contribution.placement = Some(context::source::SourcePlacement {
+		slot: "skills".into(),
+		pointer: format!("/@text/0/{}", text.len()),
+		volatility: None,
+	});
+	canonical
+		.run
+		.context
+		.source_contributions
+		.push(contribution);
+	canonical.run.context.push(ContextEvent::Human {
+		request: "Unrelated earlier question".into(),
+		request_kind: "INFORMATION_REQUEST".into(),
+		response: json!(text),
+	});
+	advance_sources(&mut canonical).await.unwrap();
+	let requests = canonical.backend.0.requests.lock().unwrap();
+	assert!(
+		serde_json::to_string(&requests[0].context)
+			.unwrap()
+			.contains(text)
+	);
+	assert!(!requests[0].instructions.contains(text));
+	assert!(canonical.run.context.source_deliveries.is_empty());
+}
+
+#[rstest]
+#[case(ProjectionVersion::Legacy)]
+#[case(ProjectionVersion::Ordered)]
+#[case(ProjectionVersion::Native)]
+#[tokio::test]
+async fn current_degraded_source_frame_is_rechecked_before_response_adoption(
+	mut canonical: Fixture,
+	#[case] projection: ProjectionVersion,
+) {
+	let envelope = json!({"workspace":aidash_domain::semantic::degraded::marker(aidash_domain::semantic::degraded::OutageCause::EmbeddingProvider),"memory":{"banks":[{"recall":{"units":[{"text":"Current shared bank source"}]}}]}});
+	let state = Arc::get_mut(&mut canonical.backend.0).unwrap();
+	state.projection = projection;
+	state.provider_status = None;
+	state.source_receipts = true;
+	state.deny_source_after_dispatch = true;
+	*state.memory_value.lock().unwrap() = envelope.clone();
+	assert!(matches!(
+		advance_sources(&mut canonical).await,
+		Err(Error::Forbidden)
+	));
+	assert_eq!(canonical.backend.0.requests.lock().unwrap().len(), 1);
+	assert_eq!(
+		semantic_memory(&canonical.backend.0.requests.lock().unwrap()[0]),
+		envelope
+	);
+	assert!(
+		canonical.run.context.source_observation.is_none(),
+		"degraded reads deliberately bypass observation caching"
+	);
+	assert!(canonical.run.context.source_deliveries.is_empty());
+	assert!(
+		!canonical
+			.backend
+			.0
+			.writes
+			.lock()
+			.unwrap()
+			.iter()
+			.any(|(kind, _)| kind == "model.completed")
+	);
+}
+
+#[rstest]
+#[case(ProjectionVersion::Legacy)]
+#[case(ProjectionVersion::Ordered)]
+#[case(ProjectionVersion::Native)]
+#[tokio::test]
+async fn provider_registered_sources_join_existing_lifecycle_phases(
+	mut canonical: Fixture,
+	#[case] projection: ProjectionVersion,
+) {
+	// A provider registers new native capabilities using the existing source
+	// plan. Their names and payloads are unknown to the Harness.
+	let state = Arc::get_mut(&mut canonical.backend.0).unwrap();
+	state.projection = projection;
+	state.provider_status = None;
+	state.extra_context_sources = vec![
+		(
+			ContextSourcePhase::FixedData,
+			"reference_documents".into(),
+			json!([]),
+		),
+		(
+			ContextSourcePhase::SnapshotData,
+			"inventory_extension".into(),
+			json!({"stock":"warehouse 12"}),
+		),
+		(
+			ContextSourcePhase::BudgetedData,
+			"schedule_extension".into(),
+			json!({"delivery":"Tuesday 10:00"}),
+		),
+	];
+	advance_sources(&mut canonical).await.unwrap();
+	let requests = canonical.backend.0.requests.lock().unwrap();
+	assert_eq!(requests.len(), 1);
+	let content = serde_json::to_value(&requests[0].context)
+		.unwrap()
+		.to_string();
+	assert!(content.contains("warehouse 12"));
+	assert!(content.contains("Tuesday 10:00"));
+	assert!(!requests[0].instructions.contains("warehouse 12"));
+	assert!(!requests[0].instructions.contains("Tuesday 10:00"));
+	// An admitted automatic document provider retains its empty fixed payload.
+	// In contrast, a mount-only provider has no such plan target at all.
+	let documents = match &requests[0].context {
+		ModelContext::Sampling(_) => panic!("expected a Run context"),
+		ModelContext::Legacy(context) => context["current"].get("reference_documents").cloned(),
+		ModelContext::Ordered(context) => serde_json::from_str::<Value>(&context.stable)
+			.unwrap()
+			.get("reference_documents")
+			.cloned(),
+		ModelContext::Native(context) => context
+			.attachments
+			.iter()
+			.find(|item| {
+				item.source == aidash_domain::projection::native::Source::ReferenceDocuments
+			})
+			.map(|item| item.content.clone()),
+	};
+	assert_eq!(documents, Some(json!([])));
+}

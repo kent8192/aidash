@@ -197,8 +197,11 @@ impl Research {
 			"working_area",
 			"artifact",
 			"human_request",
-			"bundle"
+			"bundle",
+			"source"
 		]);
+		// Removing research disclosure authority keeps default metadata readable.
+		policy["policies"].as_array_mut().unwrap().push(json!({"id":"default-decider-metadata","effect":"allow","subjects":{"any":true},"actions":["registry.read"],"resources":{"kinds":["decider"]}}));
 		policy["policies"].as_array_mut().unwrap().push(json!({"id":"approvable-research","effect":"allow","subjects":{"any":true},"actions":["capability.request","capability.approve"],"resources":{"kinds":["research"]}}));
 		crate::common::replace_policy(&self.c.f.store, "acme", self.c.policy.clone()).await;
 	}

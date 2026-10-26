@@ -1,3 +1,4 @@
+import { contextSourceConfiguration } from "./context-source-model";
 import { selfHostedPlanConnections } from "@slots/plan-connections";
 import { coordinatorDefaults, hasInstructionalBinding } from "./agent-bindings";
 import { registryDeployment } from "./node-selection";
@@ -111,6 +112,33 @@ const CLEF_ROUTE = {
     input_stages: [null, 200, 60],
   },
 };
+const deciderContracts: Record<
+  string,
+  { builder: string; option_source: string; rule: string }
+> = {
+  compaction: {
+    builder: "aidash.compaction/2",
+    option_source: "history_event/1",
+    rule: "compaction.keep/1",
+  },
+  approval_observation: {
+    builder: "aidash.approval-observation/1",
+    option_source: "pending_action/1",
+    rule: "approval.observe/1",
+  },
+  context_selection: {
+    builder: "aidash.context-selection/1",
+    option_source: "source_candidate/1",
+    rule: "context-source.keep/1",
+  },
+};
+function probabilityBits(value: number): string {
+  if (!Number.isFinite(value) || value <= 0 || value > 0.5)
+    throw new Error("Enter a Route threshold above 0 and at most 0.5");
+  const view = new DataView(new ArrayBuffer(8));
+  view.setFloat64(0, value);
+  return view.getBigUint64(0).toString(16).padStart(16, "0");
+}
 export function GoalForm({ data, submit }: { data: State; submit: Submit }) {
   const { t } = useI18n();
   const where = useNodeChoice();
@@ -359,7 +387,8 @@ export function EntityForm({
   submit: Submit;
   initial?: string;
 }) {
-  const { t } = useI18n();
+  const { t, locale } = useI18n();
+  const ja = locale === "ja-JP";
   const entityLabel = useEntityLabel(data.registry);
   const [kind, setKind] = useState(initial);
   const registration = useRef<{ body: string; key: string } | null>(null);
@@ -396,6 +425,7 @@ export function EntityForm({
   const [core, setCore] = useState(emptyCore);
   const [pluginConfig, setPluginConfig] = useState<Record<string, unknown>>({});
   const [cluster, setCluster] = useState("");
+  const [deciderHook, setDeciderHook] = useState("compaction");
   const [readingDocuments, setReadingDocuments] = useState(false);
   return (
     <form
@@ -463,11 +493,7 @@ export function EntityForm({
                     }
                   : kind === "decider"
                     ? {
-                        // A compaction Decider: only the Jev model, whether
-                        // Clef answers when Jev is unavailable, the mode, call
-                        // limit and state retention are chosen here; the
-                        // contract and rule are fixed by this Node.
-                        hook: "compaction",
+                        hook: deciderHook,
                         answer_type: "noul",
                         description: s("description_en"),
                         provider_credential: "openrouter",
@@ -476,22 +502,33 @@ export function EntityForm({
                             provider_contract: "typesafe.jev/1",
                             model: s("model_id"),
                             hosts: [],
-                            // The threshold 0.5 as binary64 bits.
-                            threshold: "3fe0000000000000",
+                            threshold:
+                              deciderHook === "compaction"
+                                ? "3fe0000000000000"
+                                : probabilityBits(Number(s("route_threshold"))),
                           },
                           ...(d.has("clef_route") ? [CLEF_ROUTE] : []),
                         ],
-                        builder: "aidash.compaction/2",
-                        option_source: "history_event/1",
-                        rule: "compaction.keep/1",
-                        mode: s("decider_mode"),
+                        ...deciderContracts[deciderHook],
+                        mode:
+                          deciderHook === "approval_observation"
+                            ? "shadow"
+                            : s("decider_mode"),
                         max_calls_per_run: Number(s("max_calls_per_run")),
                         state_retention: {
-                          enabled: d.has("retain_state"),
+                          enabled:
+                            deciderHook === "compaction" &&
+                            d.has("retain_state"),
                           days: Number(s("retention_days")),
                         },
                       }
                     : (memoryConfiguration(kind, d) ?? JSON.parse(s("config")));
+          const declaration =
+            kind === "source" ||
+            (kind === "memory" && s("context_adapter") === "native_memory")
+              ? contextSourceConfiguration(d)
+              : undefined;
+          if (declaration) config.context_source = declaration;
           const entry = {
             id: "",
             version: s("version"),
@@ -800,7 +837,53 @@ export function EntityForm({
           </>
         ) : kind === "decider" ? (
           <>
-            <Hint>{t("deciderHelp")}</Hint>
+            <Hint>
+              {deciderHook === "compaction"
+                ? t("deciderHelp")
+                : ja
+                  ? "Jev の正確なリリースを選び、この不変バージョンを Node の Tenant Catalog で承認してください。Tenant の OpenRouter 接続を使います。Shadow は観測や提案を記録し、保護された操作やリクエストを変更しません。"
+                  : "Select an exact Jev release and approve this immutable version in the Node's Tenant Catalog. It uses the Tenant's OpenRouter connection. Shadow records observations or proposals without changing the protected action or request."}
+            </Hint>
+            <Field label={ja ? "判断の用途" : "Decision hook"}>
+              <NativeSelect
+                value={deciderHook}
+                onChange={(event) => setDeciderHook(event.target.value)}
+              >
+                <option value="compaction">
+                  {ja ? "履歴の圧縮" : "History compaction"}
+                </option>
+                <option value="approval_observation">
+                  {ja
+                    ? "独立した Shadow 承認の観測"
+                    : "Independent Shadow approval observation"}
+                </option>
+                <option value="context_selection">
+                  {ja
+                    ? "コンテキスト候補の選択"
+                    : "Context candidate selection"}
+                </option>
+              </NativeSelect>
+            </Field>
+            <Hint>
+              {ja
+                ? "契約と質問は用途ごとにバージョンで固定されます。しきい値を変更するには新しい不変バージョンと Catalog Approval が必要です。承認の観測は Auto の強制判断を変更しません。"
+                : "Each hook pins its versioned contract and questions. A threshold change requires a new immutable version and Catalog Approval. Observation does not change Auto enforcement."}
+            </Hint>
+            {deciderHook !== "compaction" && (
+              <Field
+                label={ja ? "Jev Route のしきい値" : "Jev Route threshold"}
+              >
+                <Input
+                  name="route_threshold"
+                  type="number"
+                  min={0.000001}
+                  max={0.5}
+                  step="any"
+                  required
+                  defaultValue={0.5}
+                />
+              </Field>
+            )}
             <Field label={t("model")}>
               <Input
                 name="model_id"
@@ -812,7 +895,16 @@ export function EntityForm({
             </Field>
             <div className="grid min-w-0 gap-4 sm:grid-cols-3">
               <Field label={t("deciderMode")}>
-                <NativeSelect name="decider_mode" defaultValue="enforce">
+                <NativeSelect
+                  key={deciderHook}
+                  name="decider_mode"
+                  defaultValue={
+                    deciderHook === "approval_observation"
+                      ? "shadow"
+                      : "enforce"
+                  }
+                  disabled={deciderHook === "approval_observation"}
+                >
                   <option value="enforce">{t("deciderModeEnforce")}</option>
                   <option value="shadow">{t("deciderModeShadow")}</option>
                 </NativeSelect>
@@ -843,7 +935,11 @@ export function EntityForm({
               {t("deciderClefRoute")}
             </label>
             <label className="flex items-center gap-2 text-sm">
-              <input type="checkbox" name="retain_state" />
+              <input
+                type="checkbox"
+                name="retain_state"
+                disabled={deciderHook !== "compaction"}
+              />
               {t("deciderRetainState")}
             </label>
           </>

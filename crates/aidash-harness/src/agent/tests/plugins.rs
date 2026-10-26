@@ -245,6 +245,25 @@ fn approvals(fixture: &Fixture, answers: impl IntoIterator<Item = ToolCallApprov
 
 #[rstest]
 #[tokio::test]
+async fn a_preliminary_mcp_checkpoint_does_not_admit_stale_tool_calls(mut fixture: Fixture) {
+	plugin_call(&mut fixture, true);
+	approvals(&fixture, [ToolCallApproval::Approved { approval_id: None }]);
+	fixture.run.state.tool_mut().unwrap().mcp =
+		Some(aidash_domain::agent_plugin::interaction::CallCheckpoint::new("preliminary".into()));
+	fixture
+		.backend
+		.add_input("Correct the request before calling the tool");
+
+	advance(&mut fixture).await.unwrap();
+
+	assert_eq!(scripted(&fixture).invocations(), 0);
+	assert_eq!(fixture.run.phase(), RunPhase::Thinking);
+	assert_eq!(fixture.backend.events(), ["run.message_received"]);
+	assert!(fixture.backend.0.invocations.lock().unwrap().is_empty());
+}
+
+#[rstest]
+#[tokio::test]
 async fn a_plugin_call_waits_for_a_tool_call_approval(mut fixture: Fixture) {
 	let call = plugin_call(&mut fixture, false);
 	let approval = Uuid::from_u128(0xa1);

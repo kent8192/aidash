@@ -11,6 +11,7 @@ const KEY: &str = "plugin-call";
 enum Reply {
 	Sample,
 	LiveThenModern,
+	InvalidInput,
 }
 
 struct Remote(Reply);
@@ -60,6 +61,18 @@ impl ExecutionTool for Remote {
 		inputs: Option<Arc<dyn PluginInputs>>,
 	) -> Result<ToolRound> {
 		match self.0 {
+			Reply::InvalidInput => {
+				let input = RequiredInput {
+					request_state: Some("invalid".into()),
+					requests: (0..=aidash_domain::agent_plugin::interaction::MAX_INPUTS)
+						.map(|index| (index.to_string(), form("Too many forms")))
+						.collect(),
+				};
+				// The native session adapter validates a received batch before
+				// returning it to the harness and propagates the domain error.
+				input.validate()?;
+				Ok(ToolRound::InputRequired(input))
+			}
 			Reply::Sample => Ok(ToolRound::Complete(
 				checkpoint.unwrap().responses["sample"].clone(),
 			)),
@@ -119,6 +132,40 @@ async fn execute(fixture: &mut Fixture, remote: &Remote) -> Result<Option<Value>
 			},
 		)
 		.await
+}
+
+#[rstest]
+#[tokio::test]
+async fn a_rejected_input_batch_finishes_the_round_and_replays_its_error(mut fixture: Fixture) {
+	fixture.run.state = RunState::ToolCall(Box::default());
+	let expected = json!({"error":"MCP_INPUT_INVALID"});
+
+	for _ in 0..2 {
+		assert_eq!(
+			execute(&mut fixture, &Remote(Reply::InvalidInput))
+				.await
+				.unwrap(),
+			Some(expected.clone())
+		);
+	}
+
+	assert_eq!(
+		*fixture.backend.0.invocations.lock().unwrap(),
+		BTreeMap::from([(
+			format!("{KEY}:mcp:round:0"),
+			(
+				"COMPLETED".into(),
+				Some(json!({"outcome":"complete","data":expected}))
+			)
+		)])
+	);
+	assert!(
+		!fixture
+			.backend
+			.events()
+			.iter()
+			.any(|event| event == "run.waiting")
+	);
 }
 
 #[rstest]

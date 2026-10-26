@@ -431,6 +431,7 @@ impl aidash_application::provider_access::ProviderAccess for AdmittedAccess {
 		endpoint: &str,
 		source: &aidash_application::provider_access::Source,
 	) -> Result<aidash_application::provider_access::Access> {
+		crate::apps::execution::observation::provider_scope(&self.store, context, true).await?;
 		use aidash_application::provider_access::Source;
 		if let Source::Plan { provider } = source {
 			let (service, pin) = self.plan(context, endpoint, provider).await?;
@@ -456,6 +457,7 @@ impl aidash_application::provider_access::ProviderAccess for AdmittedAccess {
 		endpoint: &str,
 		source: &aidash_application::provider_access::Source,
 	) -> Result<()> {
+		crate::apps::execution::observation::provider_scope(&self.store, context, false).await?;
 		use aidash_application::provider_access::Source;
 		if let Source::Plan { provider } = source {
 			let (service, pin) = self.plan(context, endpoint, provider).await?;
@@ -594,6 +596,7 @@ impl AdmittedAccess {
 			tenant: pin.tenant,
 			run: Some(run),
 			maintenance: context.maintenance,
+			observation: context.observation,
 			provider_credential_id: Some(pin.provider_credential_id),
 			inference: context.inference.clone(),
 		})

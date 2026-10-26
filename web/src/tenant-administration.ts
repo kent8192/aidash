@@ -8,6 +8,8 @@ export type TenantAdministration = {
   tenant: string;
   label: string | null;
   actions: string[];
+  /** Authorized service/agent targets, independent of collection-level grants. */
+  issuable_subjects?: string[];
   /** Listed only for a Tenant Administrator. */
   assignable_groups: string[];
   policy_revision: number | null;

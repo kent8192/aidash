@@ -47,14 +47,18 @@ struct Scope {
 	events: Vec<(String, Value)>,
 	documents: Option<Value>,
 	fail_documents: bool,
+	denied_documents: BTreeSet<String>,
 	secret_hosts: BTreeMap<String, Vec<String>>,
 	plugins: BTreeMap<String, crate::ports::bindings::StoredAgentPlugin>,
 }
 
 #[async_trait]
 impl PrivateKnowledgeRead for Scope {
-	async fn documents(&mut self, _: &Entry) -> Result<Option<Value>> {
+	async fn documents(&mut self, entry: &Entry) -> Result<Option<Value>> {
 		self.trace.push("private_read".into());
+		if self.denied_documents.contains(&entry.id) {
+			return Err(Error::Forbidden);
+		}
 		Ok(self.documents.clone())
 	}
 }
@@ -73,6 +77,11 @@ fn identity(id: &str, version: &str) -> String {
 	format!("{id}@{version}")
 }
 impl Scope {
+	fn put_builtins(&mut self, node: &str) {
+		for declaration in crate::test_support::builtin_entries(node) {
+			self.put(declaration);
+		}
+	}
 	fn put(&mut self, entry: Entry) {
 		self.entries
 			.insert(identity(&entry.id, &entry.version), entry);
@@ -92,6 +101,9 @@ impl DefinitionLookup for Scope {
 	}
 	async fn definition(&mut self, id: &str, version: &str) -> Result<Entry> {
 		self.trace.push(format!("read:{id}@{version}"));
+		if id == system::COMPACTION_DECIDER_ID && version == system::COMPACTION_DECIDER_VERSION {
+			return system::compaction_decider();
+		}
 		self.entries
 			.get(&identity(id, version))
 			.cloned()
@@ -368,6 +380,63 @@ async fn private_context_requires_the_original_node_content(
 	assert_eq!(scope.trace, ["private_read"]);
 }
 
+#[tokio::test]
+async fn mixed_on_demand_references_do_not_read_the_excluded_private_store() {
+	use aidash_domain::{
+		context::source::{PinPolicy, SourceTools},
+		registry::bindings::{QualifiedRef, sources::NativeContext},
+	};
+	let node = "aidash://local";
+	let documents =
+		json!([{"name":"always.txt","media_type":"text/plain","text":"Always evidence"}]);
+	let always = definition(
+		"always-references",
+		"source",
+		json!({"schema_version":1,"source":{"adapter":"private_references","digest":aidash_domain::registry::knowledge::digest(&documents)}}),
+	);
+	let mut on_demand = always.clone();
+	on_demand.id = "on-demand-references".into();
+	let mut descriptor: NativeContext = serde_json::from_value(on_demand.config.clone()).unwrap();
+	let mut declaration = descriptor.declaration(&QualifiedRef {
+		registry_deployment: node.into(),
+		id: on_demand.id.clone(),
+		version: on_demand.version.clone(),
+	});
+	declaration.pin = PinPolicy::OnDemand;
+	declaration.tools = SourceTools::default();
+	descriptor.context_source = Some(declaration);
+	on_demand.config = json!(descriptor);
+	let mut root = crate::test_support::agent("agent");
+	for source in [&always.id, &on_demand.id] {
+		root.config["bindings"]
+			.as_array_mut()
+			.unwrap()
+			.push(crate::test_support::binding("source", node, source));
+	}
+	let snapshot =
+		crate::test_support::resolve(node, &root, false, vec![always, on_demand.clone()]);
+	let mut scope = Scope {
+		documents: Some(documents.clone()),
+		denied_documents: BTreeSet::from([on_demand.id.clone()]),
+		..Default::default()
+	};
+
+	assert_eq!(
+		personal::automatic_documents(&mut scope, &snapshot.bindings)
+			.await
+			.unwrap(),
+		documents
+	);
+	assert_eq!(scope.trace, ["private_read"]);
+	assert!(
+		matches!(
+			personal::load(&mut scope, &on_demand).await,
+			Err(Error::Forbidden)
+		),
+		"the excluded store still rejects a real explicit read"
+	);
+}
+
 #[rstest]
 #[case::accepted(false)]
 #[case::changed_private_content(true)]
@@ -380,9 +449,7 @@ async fn private_registration_emits_only_after_private_content_is_saved(
 		fail_documents,
 		..Default::default()
 	};
-	for builtin in crate::test_support::builtin_entries("aidash://home") {
-		scope.put(builtin);
-	}
+	scope.put_builtins("aidash://home");
 	scope.put(definition("model", "model", json!({"provider":"openrouter","model_id":"fixture","endpoint":"https://example.test","context_window":131072,"max_output_tokens":1024,"modalities":["text"],"cost":{}})));
 	let entry = definition(
 		"",
@@ -433,7 +500,9 @@ async fn private_registration_emits_only_after_private_content_is_saved(
 			scope
 				.entries
 				.values()
-				.find(|e| e.kind == "source")
+				.find(
+					|e| e.kind == "source" && e.config["source"]["adapter"] == "private_references"
+				)
 				.unwrap()
 				.config["source"]["digest"],
 			aidash_domain::registry::knowledge::digest(scope.documents.as_ref().unwrap())

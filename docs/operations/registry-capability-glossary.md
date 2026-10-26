@@ -43,7 +43,7 @@ The identity of one exact capability declaration within its registering Node. Th
 _Avoid_: Unqualified tool name, model alias
 
 **Core capability**:
-A capability whose implementation and governing authority belong to the Node. A Core capability is declared through the Registry as a Built-in tool or a Host-distributed tool.
+A capability whose implementation and governing authority belong to the Node. A Core capability is declared through a Tenant's Registry as a Built-in tool, with Sandboxed tools requiring the Tenant's Catalog Approval.
 _Avoid_: Capability outside the Registry
 
 **Registry integration**:
@@ -54,9 +54,9 @@ _Avoid_: All Registry tools, Core capability
 A system-origin Tool required by Aidash's own features and declared as an immutable capability of its Node. Its availability is distinct from authority to read or change resources.
 _Avoid_: Marketplace package, ungoverned operation
 
-**Host-distributed tool**:
-A Node capability distributed as a Marketplace package for explicit tenant installation and approval. Installing it does not confer authority over its target resources.
-_Avoid_: Third-party integration, automatically authorized builtin
+**Sandboxed tool**:
+A Built-in tool whose execution uses the Node's isolated runtime and requires its exact version to have the Tenant's Catalog Approval. Approval is distinct from authority over the tool's target resources.
+_Avoid_: Host-distributed tool, third-party integration, automatically authorized builtin
 
 **Binding**:
 An Agent definition's reference to a declared capability, with its chosen name and additional applicable restrictions. A Binding expresses availability independently of permission to use the capability.
@@ -129,8 +129,38 @@ An immutable reference attached to an exact Agent definition within its owner's 
 _Avoid_: Public package file, current mutable document
 
 **Source observation**:
-A durable account of exact source contents and revisions delivered at one reasoning boundary. It records what was read independently of the source's later state and continuing disclosure authority.
-_Avoid_: Binding snapshot, permanent read permission
+A durable account of source contents and revisions observed at one reasoning boundary. Observation is distinct from selection or delivery to an accepted inference and from continuing disclosure authority.
+_Avoid_: Binding snapshot, delivery proof, permanent read permission
+
+**Source candidate**:
+An authorized, revision-bound item offered by a Context source for possible inclusion in a Run's reasoning. A candidate is distinct from an included contribution or a complete read.
+_Avoid_: Delivered context, accepted evidence
+
+**Source contribution**:
+A bounded, attributed part of a Context source offered for one reasoning boundary, with its provenance and completeness. A contribution is distinct from the source's entire contents or proof of delivery.
+_Avoid_: Source store, full read
+
+**Context selection**:
+A relevance decision about which authorized Source candidates to include. Selection is distinct from permission to read or disclose a source and from final request fitting.
+_Avoid_: Authorization, delivery, instruction selection
+
+**Source delivery receipt**:
+An account of the exact source revisions and ranges included in an accepted inference request. It is distinct from retrieval, selection and a replacement operation's complete-read preconditions.
+_Avoid_: Retrieval receipt, selection log, blanket read grant
+
+### Approval observation
+
+**Shadow approval observation**:
+A recorded Decider proposal beside an approval whose outcome it does not control. It is distinct from an Auto approval or a person's decision.
+_Avoid_: Automatic approval, human approval
+
+**Human approval label**:
+A person's explicit approval or refusal of one protected action, associated with the observation of that same action. It is distinct from expiry, cancellation or an approval given by a rule or mode.
+_Avoid_: Approval status, model verdict
+
+**Approval calibration report**:
+A comparison of Shadow verdicts with Human approval labels, separated by the relevant decision configuration and action kind. It is distinct from proof that a threshold is safe for an unobserved population.
+_Avoid_: Safety certification, automatically learned policy
 
 ### Execution placement
 

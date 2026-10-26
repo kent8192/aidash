@@ -53,12 +53,16 @@ const TENANT_REGISTRY_MIGRATIONS: &[(&str, &str)] = &[
 	("registry", "0042_external_services"),
 	("registry", "0043_external_services_state"),
 	("registry", "0044_foreign_key_relations_state"),
+	("registry", "0045_context_sources"),
 	("registry", "0045_agent_plugin_settings"),
 	("registry", "0045_projection_measurement_config"),
+	("registry", "0046_context_projection_merge"),
 	("registry", "0046_merge_agent_plugin_and_projection"),
 	("registry", "0046_marketplace_recalls"),
 	("registry", "0047_marketplace_recall_constraints"),
+	("registry", "0048_context_marketplace_merge"),
 	("registry", "0048_plugin_marketplace_merge"),
+	("registry", "0049_plugin_context_merge"),
 	("marketplace", "0008_remove_compatibility_gate"),
 	("marketplace", "0009_remove_compatibility_gate_state"),
 	("marketplace", "0010_row_level_security"),
@@ -111,7 +115,7 @@ async fn native_history_uses_typed_schema_operations_and_lf_sql_assets() {
 			.iter()
 			.filter(|migration| migration.state_only)
 			.count(),
-		53
+		61
 	);
 	let tables = migrations
 		.iter()
@@ -349,14 +353,14 @@ async fn generation_with_existing_sql_assets_preserves_history_and_dependency(
 	);
 	assert_eq!(std::fs::read(history).unwrap(), original);
 	let generated = FilesystemSource::new(fixture.directory.path().join("migrations"))
-		.get_migration("execution", "0053_policy_probe")
+		.get_migration("execution", "0061_policy_probe")
 		.await
 		.unwrap();
 	assert_eq!(
 		generated.dependencies,
 		vec![(
 			"execution".to_owned(),
-			"0052_merge_mcp_and_usage_evidence".to_owned()
+			"0060_plugin_research_merge".to_owned()
 		)]
 	);
 	assert!(generated.operations.is_empty());
@@ -704,7 +708,7 @@ async fn preserved_baseline_does_not_generate_table_recreation(
 			.iter()
 			.filter(|migration| migration.state_only)
 			.count(),
-		53
+		61
 	);
 }
 
@@ -2995,4 +2999,60 @@ async fn deferred_exposure_rollback_is_refused_while_an_agent_uses_exposure(
 		"{error}"
 	);
 	assert!(contract_accepts(&pool, "aidash_agent_bindings_is_valid", vec![deferred]).await);
+}
+
+#[rstest]
+#[tokio::test]
+async fn context_sources_migration_accepts_exact_native_policies_and_rejects_mismatched_operations(
+	#[future] fresh_database: MigrationFixture,
+) {
+	let fixture = fresh_database.await;
+	fixture.migrate().await;
+	let pool = fixture.connection.clone().into_postgres().unwrap();
+	let accepts = |config: serde_json::Value| {
+		let pool = pool.clone();
+		async move {
+			contract_accepts(
+				&pool,
+				"aidash_context_is_valid",
+				vec![config, json!("source")],
+			)
+			.await
+		}
+	};
+	let declaration = json!({"provider":"aidash.native-context/1","operation":"workspace_retrieval","tools":{"read":[],"write":[],"detail":null},"pin":{"policy":"always"},"query":"accepted-inputs-first@1"});
+	let configured = json!({"schema_version":1,"source":{"adapter":"workspace_retrieval"},"context_source":declaration});
+	assert!(
+		accepts(json!({"schema_version":1,"source":{"adapter":"workspace_observation"}})).await
+	);
+	assert!(accepts(configured.clone()).await);
+	let tool = json!({"registry_deployment":"aidash://test","id":"shared-tool","version":"1.0.0"});
+	let mut shared_roles = configured.clone();
+	shared_roles["context_source"]["tools"]["read"] = json!([tool]);
+	shared_roles["context_source"]["tools"]["write"] = json!([tool]);
+	assert!(
+		accepts(shared_roles.clone()).await,
+		"one exact Tool may serve both roles"
+	);
+	for role in ["read", "write"] {
+		let mut duplicate = shared_roles.clone();
+		duplicate["context_source"]["tools"][role] = json!([tool, tool]);
+		assert!(
+			!accepts(duplicate).await,
+			"duplicates within {role} must be rejected"
+		);
+	}
+	for (field, value) in [
+		("provider", json!("unavailable.provider")),
+		("operation", json!("skills")),
+		("query", json!("unknown@1")),
+		("required_home", json!("true")),
+	] {
+		let mut invalid = configured.clone();
+		invalid["context_source"][field] = value;
+		assert!(!accepts(invalid.clone()).await, "{invalid}");
+	}
+	let mut unknown = configured;
+	unknown["context_source"]["unknown"] = json!(true);
+	assert!(!accepts(unknown).await);
 }

@@ -39,6 +39,7 @@ struct Memory {
 	fragments: Mutex<Vec<EvidenceFragment>>,
 	spend: Mutex<u64>,
 	revoked: Mutex<BTreeSet<Uuid>>,
+	expired_documents: Mutex<BTreeSet<Uuid>>,
 	/// A revocation that commits just before the next reservation.
 	revoke_at_reserve: AtomicBool,
 	/// A retention purge that commits just before the next fragment.
@@ -91,6 +92,7 @@ impl Memory {
 	}
 	/// What the account-terms sweep does to one snapshot and its passages.
 	fn expire_snapshot(&self, id: Uuid) {
+		self.expired_documents.lock().unwrap().insert(id);
 		for snapshot in self.snapshots.lock().unwrap().iter_mut() {
 			if snapshot.id == id {
 				purge(snapshot, PurgeReason::AccountTerms);
@@ -100,6 +102,10 @@ impl Memory {
 		for fragment in self.fragments.lock().unwrap().iter_mut() {
 			if fragment.document_id == id {
 				fragment.text.clear();
+				self.page_images
+					.lock()
+					.unwrap()
+					.remove(&fragment.reference.0);
 			}
 		}
 	}
@@ -118,6 +124,23 @@ fn purge(snapshot: &mut DocumentSnapshot, reason: PurgeReason) {
 
 #[async_trait]
 impl EvidenceStore for Memory {
+	async fn expired_results(
+		&self,
+		run: Uuid,
+	) -> Result<aidash_domain::research::expiry::ExpiredResults> {
+		let expired = self.expired_documents.lock().unwrap();
+		Ok(aidash_domain::research::expiry::ExpiredResults {
+			documents: self
+				.snapshots
+				.lock()
+				.unwrap()
+				.iter()
+				.filter(|snapshot| snapshot.run_id == run && expired.contains(&snapshot.id))
+				.map(|snapshot| snapshot.id)
+				.collect(),
+			..Default::default()
+		})
+	}
 	async fn revoked(&self, run: Uuid) -> Result<bool> {
 		Ok(self.is_revoked(run))
 	}
@@ -2868,6 +2891,58 @@ fn an_approval_covers_only_the_charge_its_approver_was_shown() {
 	let run = Uuid::new_v4();
 	assert_eq!(disclosure(5_000).digest(run), disclosure(5_000).digest(run));
 	assert_ne!(disclosure(5_000).digest(run), disclosure(9_000).digest(run));
+}
+
+#[rstest::rstest]
+#[case::account_terms_first(false)]
+#[case::ordinary_retention_first(true)]
+#[tokio::test]
+async fn expired_page_image_citations_keep_identity_and_digest_without_bytes(
+	#[case] retention_first: bool,
+) {
+	let (store, gate) = (Memory::default(), Gate::permitting());
+	let research = Research {
+		store: &store,
+		gate: &gate,
+		limits: Limits::default(),
+	};
+	let run = Uuid::new_v4();
+	let document = read_scan(&research, run, 1024).await;
+	let document_id: Uuid = serde_json::from_value(document.clone()).unwrap();
+	let viewed = research
+		.view(
+			&call(run, "view", "research.page@1"),
+			&pixel(),
+			&json!({"document_id":document,"page":2}),
+		)
+		.await
+		.unwrap();
+	let reference: EvidenceRef = viewed["data"]["evidence_ref"]
+		.as_str()
+		.unwrap()
+		.parse()
+		.unwrap();
+	let before = reading::read(&Readers(vec![run]), &store, run, &reference.to_string())
+		.await
+		.unwrap();
+	assert_eq!(before.image, Some(PIXEL.to_vec()));
+	assert!(!before.expired);
+	if retention_first {
+		store.purge_snapshot(document_id);
+	}
+	store.expire_snapshot(document_id);
+	let after = reading::read(&Readers(vec![run]), &store, run, &reference.to_string())
+		.await
+		.unwrap();
+	assert!(after.expired);
+	assert_eq!(after.fragment.reference, reference);
+	assert_eq!(
+		after.fragment.image.unwrap().digest,
+		viewed["data"]["image"]["digest"].as_str().unwrap()
+	);
+	assert!(after.image.is_none());
+	assert!(after.context.is_none());
+	assert!(after.title.is_none());
 }
 
 #[tokio::test]

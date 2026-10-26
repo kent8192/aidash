@@ -383,6 +383,74 @@ async fn a_member_issues_credentials_for_itself_that_end_with_its_mapping(
 
 #[rstest::rstest]
 #[tokio::test]
+async fn active_self_issued_credentials_are_bounded_independently_of_history(
+	#[from(common::runtime)] runtime: common::RuntimeFuture,
+) {
+	use aidash_server::apps::identity::models::AuthorizationCredential;
+	use reinhardt::db::orm::Model;
+	let t = Team::new(runtime).await;
+	let active_id = Uuid::new_v4();
+	let mapping = Team::mapping(&t.bob_context).parse::<Uuid>().unwrap();
+	t.d.federation
+		.store
+		.pool
+		.atomic(&aidash_application::tenancy::TEST_FIXTURE, async |tx| {
+			let now = chrono::Utc::now();
+			for n in 0_u32..202 {
+				let entropy = Uuid::new_v4();
+				let row = AuthorizationCredential::build()
+					.id(if n == 0 { active_id } else { Uuid::new_v4() })
+					.tenant(t.tenant.clone())
+					.subject("bob")
+					.token_hash(entropy.as_bytes().repeat(2))
+					.created_at(now - chrono::Duration::hours(if n == 0 { 2 } else { 1 }))
+					.expires_at(if n > 0 && n.is_multiple_of(2) {
+						now - chrono::Duration::minutes(30)
+					} else {
+						now + chrono::Duration::hours(1)
+					})
+					.revoked_at(if n.is_multiple_of(2) {
+						None
+					} else {
+						Some(now - chrono::Duration::minutes(10))
+					})
+					.issued_by("history-fixture")
+					.mapping_id(Some(mapping))
+					.finish();
+				AuthorizationCredential::objects()
+					.create_with_conn(tx, &row)
+					.await?;
+			}
+			Ok(())
+		})
+		.await
+		.unwrap();
+	let (status, history) = t.bob("GET", "/credentials?mine=true", Value::Null).await;
+	assert_eq!(status, 200, "{history}");
+	assert_eq!(history.as_array().unwrap().len(), 200);
+	assert!(
+		history
+			.as_array()
+			.unwrap()
+			.iter()
+			.all(|row| row["id"] != json!(active_id))
+	);
+	let (status, active) = t
+		.bob("GET", "/credentials?mine=true&active=true", Value::Null)
+		.await;
+	assert_eq!(status, 200, "{active}");
+	assert_eq!(active.as_array().unwrap().len(), 1);
+	assert_eq!(active[0]["id"], json!(active_id));
+	let (status, page) = t
+		.bob("GET", "/credentials?mine=true&offset=200", Value::Null)
+		.await;
+	assert_eq!(status, 200, "{page}");
+	assert_eq!(page.as_array().unwrap().len(), 2);
+	t.finish().await;
+}
+
+#[rstest::rstest]
+#[tokio::test]
 async fn an_administrator_issues_credentials_only_for_subjects_no_person_was_mapped_to(
 	#[from(common::runtime)] runtime: common::RuntimeFuture,
 ) {
@@ -508,5 +576,59 @@ async fn a_peer_mapping_binds_only_a_credential_its_author_could_issue(
 		t.d.as_deployment_administrator("POST", &t.path("/peer-mappings"), disabled)
 			.await;
 	assert_eq!(status, 403, "{body}");
+	t.finish().await;
+}
+
+#[rstest::rstest]
+#[tokio::test]
+async fn overview_lists_item_scoped_credential_targets_without_policy_read(
+	#[from(common::runtime)] runtime: common::RuntimeFuture,
+) {
+	let t = Team::new(runtime).await;
+	let (status, response) = t.replace(|bundle| {
+  bundle["subjects"]["ci"] = json!({"kind":"service"});
+  bundle["subjects"]["other-ci"] = json!({"kind":"service"});
+  bundle["policies"].as_array_mut().unwrap().extend([
+   json!({"id":"issue-ci","effect":"allow","subjects":{"ids":["bob"]},"actions":["credential.issue"],"resources":{"kinds":["*"],"ids":["ci"]}}),
+   json!({"id":"no-policy-read","effect":"deny","subjects":{"ids":["bob"]},"actions":["policy.read"],"resources":{"kinds":["*"]}}),
+  ]);
+ }).await;
+	assert_eq!(status, 200, "{response}");
+	let (status, overview) =
+		t.d.as_person(
+			&t.bob,
+			"GET",
+			&format!("/api/tenants/{}/administration", t.tenant),
+			Some(&t.bob_context),
+			Value::Null,
+		)
+		.await;
+	assert_eq!(status, 200, "{overview}");
+	assert_eq!(overview["issuable_subjects"], json!(["ci"]));
+	assert!(
+		!overview["actions"]
+			.as_array()
+			.unwrap()
+			.contains(&json!("policy.read"))
+	);
+	assert!(
+		!overview["actions"]
+			.as_array()
+			.unwrap()
+			.contains(&json!("credential.issue")),
+		"an item grant must not imply a collection grant"
+	);
+	assert_eq!(
+		t.bob("POST", "/credentials", json!({"subject":"ci"}))
+			.await
+			.0,
+		200
+	);
+	assert_eq!(
+		t.bob("POST", "/credentials", json!({"subject":"other-ci"}))
+			.await
+			.0,
+		403
+	);
 	t.finish().await;
 }

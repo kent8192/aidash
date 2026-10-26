@@ -62,6 +62,7 @@ async fn interruption_store(
 	crate::store::Store {
 		capabilities: crate::capabilities::Runtime::new(Default::default()).unwrap(),
 		pool: pool.clone().into(),
+		restoration_pool: pool.clone().into(),
 		control_pool: pool.into(),
 		deployment: aidash_domain::nodes::DeploymentId::parse("aidash://interruption-poll-test")
 			.unwrap(),

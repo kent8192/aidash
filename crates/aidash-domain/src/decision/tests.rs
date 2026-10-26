@@ -469,6 +469,7 @@ mod pruning_rules {
 
 	fn assistant(seq: u64, text: &str, calls: &[&str]) -> HistoryEntry {
 		HistoryEntry {
+			research: None,
 			seq,
 			event: ContextEvent::Assistant {
 				epoch: 1,
@@ -479,6 +480,7 @@ mod pruning_rules {
 	}
 	fn tool(seq: u64, id: &str, result: &str) -> HistoryEntry {
 		HistoryEntry {
+			research: None,
 			seq,
 			event: ContextEvent::Tool {
 				call: ToolCall {
@@ -529,6 +531,19 @@ mod pruning_rules {
 		let partial = apply(&history, &BTreeMap::from([(1, Branch::Drop)]), &units);
 		assert_eq!(partial.removed, 0);
 		assert_eq!(partial.history.len(), 5);
+	}
+
+	#[test]
+	fn native_removes_a_dropped_orphaned_tool_and_its_arguments() {
+		let history = vec![
+			tool(1, "orphan", &"x".repeat(2000)),
+			assistant(2, "Keep this response", &[]),
+		];
+		let units = Units::of(&history, true);
+		assert_eq!(units.turn_of[0], None);
+		let pruned = apply(&history, &BTreeMap::from([(0, Branch::Drop)]), &units);
+		assert_eq!(pruned.removed, 1);
+		assert_eq!(pruned.history, vec![history[1].clone()]);
 	}
 
 	#[test]

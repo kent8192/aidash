@@ -45,6 +45,32 @@ test.beforeEach(async ({ page }) => {
               tags: [],
               skills: [],
             },
+            {
+              id: "fixture-model",
+              version: "1.0.0",
+              kind: "model",
+              name: { en: "Fixture model" },
+              description: { en: "Model" },
+              config: {},
+              schema: {},
+              capabilities: [],
+              languages: [],
+              tags: [],
+              skills: [],
+            },
+            {
+              id: "source-selector",
+              version: "2.0.0",
+              kind: "decider",
+              name: { en: "Source selector" },
+              description: { en: "Scored context" },
+              config: { hook: "context_selection" },
+              schema: {},
+              capabilities: [],
+              languages: [],
+              tags: [],
+              skills: [],
+            },
             ...["1.0.0", "2.0.0"].map((version) => ({
               id: "shared-tool",
               version,
@@ -696,5 +722,138 @@ test("an External service form submits its destination, methods and Secret attac
       secret: "image-key",
       authentication: { type: "header", name: "X-API-Key" },
     },
+  });
+});
+
+test("source declarations preserve exact tools and prevent mandatory Home filtering", async ({
+  page,
+}) => {
+  const dialog = page.getByRole("dialog");
+  await dialog.getByLabel("Entity type").selectOption("source");
+  await dialog
+    .getByLabel("Context source", { exact: true })
+    .selectOption("workspace_retrieval");
+  await dialog.getByLabel("Configure an explicit source declaration").check();
+  await dialog
+    .getByLabel("Provider operation: provider", { exact: true })
+    .fill("workspace");
+  await dialog
+    .getByLabel("Provider operation", { exact: true })
+    .fill("retrieve");
+  await dialog.getByLabel("Pin policy").selectOption("on_demand");
+  await dialog.getByLabel("Required-Home contribution").check();
+  await expect(dialog.getByLabel("Pin policy")).toHaveValue("always");
+  await expect(
+    dialog.getByLabel("Pin policy").locator('option[value="on_demand"]'),
+  ).toBeDisabled();
+  await dialog.getByLabel("Pin policy").selectOption("scored");
+  await expect(
+    dialog.getByLabel("Selection mode").locator('option[value="enforce"]'),
+  ).toBeDisabled();
+  await expect(dialog.getByLabel("Selection mode")).toHaveValue("shadow");
+  await dialog.getByLabel("Pin policy").selectOption("always");
+  await dialog
+    .getByLabel("Query policy")
+    .selectOption("accepted-inputs-first@1");
+  const read = dialog.getByLabel("Exact read tools");
+  const version = JSON.stringify({
+    registry_deployment: "aidash://test",
+    id: "shared-tool",
+    version: "2.0.0",
+  });
+  await read.selectOption(version);
+  const posted = page.waitForRequest(
+    (request) =>
+      request.url().endsWith("/api/registry") && request.method() === "POST",
+  );
+  await dialog
+    .getByRole("button", { name: "Register entity", exact: true })
+    .click();
+  expect((await posted).postDataJSON().config.context_source).toMatchObject({
+    provider: "workspace",
+    operation: "retrieve",
+    pin: { policy: "always" },
+    tools: {
+      read: [
+        {
+          registry_deployment: "aidash://test",
+          id: "shared-tool",
+          version: "2.0.0",
+        },
+      ],
+    },
+    query: "accepted-inputs-first@1",
+    volatility: "step",
+    required_home: true,
+  });
+});
+
+test("ordinary Agents can bind the exact context-selection Decider", async ({
+  page,
+}) => {
+  const dialog = page.getByRole("dialog");
+  await dialog.getByLabel("Entity type").selectOption("agent");
+  await dialog
+    .getByLabel("Model", { exact: true })
+    .selectOption("fixture-model@1.0.0");
+  await dialog
+    .getByLabel("Additional instructions (optional)")
+    .fill("Select relevant context for the task.");
+  await expect(
+    dialog
+      .getByLabel("Item to add")
+      .locator('option[value="decider:source-selector@2.0.0"]'),
+  ).toHaveCount(1);
+  await dialog
+    .getByLabel("Item to add")
+    .selectOption("decider:source-selector@2.0.0");
+  await dialog
+    .getByRole("button", { name: "Add to this Agent", exact: true })
+    .click();
+  await dialog
+    .getByLabel("Description", { exact: true })
+    .fill("Agent with scored context");
+  const posted = page.waitForRequest(
+    (request) =>
+      request.url().endsWith("/api/registry") && request.method() === "POST",
+  );
+  await dialog
+    .getByRole("button", { name: "Register entity", exact: true })
+    .click();
+  expect((await posted).postDataJSON().config.bindings).toContainEqual({
+    kind: "decider",
+    target: {
+      registry_deployment: "aidash://test",
+      id: "source-selector",
+      version: "2.0.0",
+    },
+    narrow: {},
+  });
+});
+
+test("new observation Deciders pin their own contract and remain Shadow", async ({
+  page,
+}) => {
+  const dialog = page.getByRole("dialog");
+  await dialog.getByLabel("Entity type").selectOption("decider");
+  await dialog.getByLabel("Decision hook").selectOption("approval_observation");
+  await expect(dialog.locator('[name="decider_mode"]')).toHaveValue("shadow");
+  await expect(dialog.locator('[name="decider_mode"]')).toBeDisabled();
+  await dialog.getByLabel("Jev Route threshold").fill("0.2");
+  const posted = page.waitForRequest(
+    (request) =>
+      request.url().endsWith("/api/registry") && request.method() === "POST",
+  );
+  await dialog
+    .getByRole("button", { name: "Register entity", exact: true })
+    .click();
+  expect((await posted).postDataJSON().config).toMatchObject({
+    hook: "approval_observation",
+    mode: "shadow",
+    builder: "aidash.approval-observation/1",
+    option_source: "pending_action/1",
+    rule: "approval.observe/1",
+    state_retention: { enabled: false },
+    routes: [{ threshold: "3fc999999999999a" }],
   });
 });

@@ -572,6 +572,7 @@ Reinhardt constraint operations. `0051_mcp_elicitation_state` updates the ORM en
 state. Rollback's restored check refuses existing MCP elicitation rows rather
 than deleting them. Deploy API servers and workers together before enabling
 these requests; older binaries cannot decode the new kind.
+`registry/0045_context_sources` (after `0044_foreign_key_relations_state`) validates the optional native `context_source` declaration and the required workspace-observation source (#110, ADR 0086). Exact Tool and Decider references remain admission and live-authority checks. The migration replaces PostgreSQL JSON validation functions using DDL because Reinhardt has no typed function-body operation. It changes no rows and rollback refuses while declarations requiring the new schema remain.
 
 ## Projection comparison evidence (#181)
 
@@ -643,6 +644,28 @@ operations and change neither retained MCP state nor projection behavior.
 `registry/0048_plugin_marketplace_merge` joins the Registry merge above with
 `0047_marketplace_recall_constraints`. This empty state-only migration keeps a
 single Registry leaf without rewriting either history or changing stored data.
+`execution/0058_research_projection_merge` and
+`registry/0046_context_projection_merge` join the independent Research/approval
+and projection evidence histories, and the Context Source and projection
+configuration histories, respectively. Each empty state-only migration depends
+on both existing leaves and changes no schema or data. Existing migration names,
+dependencies and rollback guards remain intact; each app has one head for future
+generation.
+
+`registry/0048_context_marketplace_merge` joins that Registry history with
+`0047_marketplace_recall_constraints`. This empty state-only migration keeps a
+single Registry leaf without rewriting either history or changing stored data.
+
+`execution/0059_research_history_merge` also joins
+`0051_research_journal_results_state` to that Execution history. This empty
+state-only migration preserves the durable Research result history and leaves
+a single Execution head without changing either existing branch.
+
+`execution/0060_plugin_research_merge` and `registry/0049_plugin_context_merge`
+join the MCP and Research/approval histories, and the Agent Plugin and Context
+Source histories, respectively. Both are empty state-only migrations. They
+preserve the existing migration identities and give each app one leaf without
+changing schema, retained inputs, or data.
 
 ## Home ledger recovery eligibility (#434)
 

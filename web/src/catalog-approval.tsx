@@ -1,3 +1,4 @@
+import { RegisteredCompactionDetails } from "./compaction-details";
 import { SecretDisclosure } from "./tenant-secrets";
 import { useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
@@ -277,6 +278,12 @@ export function CatalogApprovalSection({
         ))}
       <SecretDisclosure entry={entry} />
       {recipients && <DeciderRecipients recipients={recipients} />}
+      {entry.kind === "agent" && (
+        <RegisteredCompactionDetails
+          normalization={entry.binding_normalization}
+          definitions={versions.map(({ entry }) => entry)}
+        />
+      )}
       {readOnly && decides && state !== "approved" && (
         <Notice tone="warning" role="status" className="read-only-notice">
           {t("catalogReadOnlyNotice")}

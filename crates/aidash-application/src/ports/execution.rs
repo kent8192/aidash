@@ -9,7 +9,6 @@ use aidash_domain::{
 		usage::{UsageDispatch, UsageOutcome},
 	},
 	registry::{EntityRef, Entry},
-	semantic::InputRead,
 	*,
 };
 use async_trait::async_trait;
@@ -137,6 +136,11 @@ pub trait ExecutionStore: Send + Sync {
 	/// worker's lease, and emit `run.semantic_degraded` (ADR 0059).
 	async fn degrade_sources(&self, run: &mut Run, token: Uuid) -> Result<()> {
 		self.save_run(run, token, "run.semantic_degraded").await
+	}
+	/// Resolve immutable Research references for this execution projection.
+	/// A store without Research references keeps the supplied context.
+	async fn resolve_research(&self, _run: &mut Run) -> Result<()> {
+		Ok(())
 	}
 	/// Persist a workspace's recovery before a later memory failure reloads the
 	/// Run. Keep the current lease and adopt the saved Run revision.
@@ -582,9 +586,22 @@ pub trait ExecutionVisibility: Send {
 /// executor persists recovery of an earlier outage before propagating `result`.
 #[derive(Debug)]
 pub struct SemanticContextRead {
+	pub selections: Vec<aidash_domain::context::source::SelectionEvidence>,
+	pub contributions: Vec<aidash_domain::context::source::SourceContribution>,
 	pub workspace_retrieved: bool,
 	pub result: Result<Option<Value>>,
 }
+
+pub struct PreparedSkillSource {
+	pub identity: aidash_domain::exposure::CapabilityIdentity,
+	pub digest: String,
+	pub text: String,
+	pub preview: String,
+}
+pub use super::context_source::{
+	ContextSourceCache, ContextSourceFrame, ContextSourceHandle, ContextSourcePhase,
+	ContextSourceTarget, PlannedContextSource,
+};
 
 /// Composition supplies concrete adapters without exposing their framework types.
 /// A native authority owns its policy scope for the complete step, suspends only
@@ -642,18 +659,35 @@ pub trait ExecutionEnvironment: Send + Sync {
 	fn completion_checks(&self) -> Option<&dyn completion::CompletionChecks> {
 		None
 	}
-	async fn documents(&self, entry: &Entry) -> Result<Value>;
+	/// Compile the ordered lifecycle plan from this Run's admitted declarations.
+	/// No unbound provider is collected simply because the host implements it.
+	fn context_source_plan(&self, run: &Run) -> Result<Vec<PlannedContextSource>>;
+	/// Read one planned handle under the current execution authority. The
+	/// environment verifies that the handle still belongs to this exact plan.
+	async fn context_source(
+		&self,
+		run: &Run,
+		source: &ContextSourceHandle,
+		worker: Uuid,
+		frame: ContextSourceFrame<'_>,
+	) -> SemanticContextRead;
 	async fn recheck_source_observation(&self, run: &Run, content: &Value) -> Result<()>;
-	async fn skill_context(&self, run: &Run) -> Result<String>;
+
 	/// Direct Skills pinned for this Run, as deferred-exposure catalog input. Empty
 	/// when Skills are off, nothing is pinned, or the Home has no local authority.
 	async fn direct_skills(&self, run: &Run) -> Result<Vec<aidash_domain::exposure::DirectSkill>>;
-	/// Exact SKILL.md text of one pinned direct Skill. A digest other than the
-	/// pinned one is `Conflict("CAPABILITY_CHANGED")`.
-	async fn direct_skill_body(&self, run: &Run, skill_id: Uuid, digest: &str) -> Result<String>;
-	/// Current revision of the Run's pinned Skill record, `None` before one
-	/// exists. An Ordered Run reuses its Skill context while this is unchanged.
-	async fn skill_revision(&self, run: &Run) -> Result<Option<i64>>;
+	/// Exact SKILL.md text of one pinned direct Skill eligible for automatic
+	/// resident context. `None` omits an OnDemand body before it is read. A digest
+	/// other than the pinned one is `Conflict("CAPABILITY_CHANGED")`.
+	async fn direct_skill_body(
+		&self,
+		run: &Run,
+		skill_id: Uuid,
+		digest: &str,
+	) -> Result<Option<String>>;
+	/// Current provider-owned revision of a planned revision-cache source.
+	async fn source_revision(&self, source: &ContextSourceHandle, run: &Run)
+	-> Result<Option<i64>>;
 	/// Cache Scope for a salted Projection Version: the Tenant whose provider
 	/// cache the request may share and the current Cache Salt Key version. Fails
 	/// with a typed error when the node has no Cache Salt Key; never unsalted.
@@ -664,21 +698,14 @@ pub trait ExecutionEnvironment: Send + Sync {
 		&self,
 		run: &Run,
 	) -> Result<aidash_domain::context::sources::RetrievalScope>;
-	/// `key` is present for an Ordered Run: equal keys replay the same bytes.
-	/// `degrade_on_outage`: this attempt puts the Degraded context marker in an
-	/// unavailable workspace slot instead of failing, if every source of that
-	/// slot opted in and the Run is local (ADR 0059).
-	#[allow(clippy::too_many_arguments)]
-	async fn semantic_context(
+	/// Provider-owned reusable key for the plan's budgeted phase. The Harness
+	/// does not choose a native retrieval query or interpret adapter names.
+	async fn source_retrieval_key(
 		&self,
 		run: &Run,
-		task: &Task,
-		inputs: &[(InputRead, String)],
-		budget: usize,
-		entry: &Entry,
-		key: Option<&aidash_domain::context::sources::RetrievalKey>,
-		degrade_on_outage: bool,
-	) -> SemanticContextRead;
+		bindings: &str,
+		frame: ContextSourceFrame<'_>,
+	) -> Result<aidash_domain::context::sources::RetrievalKey>;
 	async fn run_message_limit(&self, run: &Run) -> Result<usize>;
 	/// The pages people asked this Run to read, recorded beside the inputs
 	/// that carried them (ADR 0052). Empty when the Run has none.

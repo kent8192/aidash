@@ -989,6 +989,38 @@ def render():
                     path=uri, headers=DEPLOYMENT_ADMINISTRATOR, body=json.dumps({"access_token": "pasted"}),
                     immutable=True)
             continue
+        if route["source"] == "server/src/apps/execution/observation/views.rs":
+            # Administrative observer settings/reports require a browser Mapping;
+            # a per-approval projection additionally requires the underlying
+            # approval's visibility. Use valid typed inputs so these cases reach
+            # the authority boundary rather than failing a query extractor.
+            uri = path.replace("{kind}", "capability")
+            if path.endswith("/report"):
+                uri += "?start=2026-10-01T00:00:00Z&end=2026-10-02T00:00:00Z"
+            elif "node" in route["query_parameters"]:
+                uri += "?node={{tenant_node}}"
+            body = json.dumps({"expected_revision": 0, "decider": None}) if route["json"] else None
+            add(endpoint, "Forged bearer cannot inspect approval observations", 401,
+                path=uri, headers={"Authorization": "Bearer forged"}, body=body,
+                immutable=method != "GET")
+            add(endpoint, "Deployment Administrator bearer cannot inspect Tenant observations", 403,
+                path=uri, headers=DEPLOYMENT_ADMINISTRATOR, body=body,
+                immutable=method != "GET")
+            if "{id}" not in path:
+                add(endpoint, "Subject Credential bearer cannot administer the observer", 403,
+                    path=uri, headers=SUBJECT, body=body, immutable=method != "GET")
+            else:
+                add(endpoint, "Observation resource IDs reject malformed UUIDs", 400,
+                    path=uri.replace("{id}", "not-a-uuid"), headers=DEPLOYMENT_ADMINISTRATOR)
+            if route["json"]:
+                add(endpoint, "Wrong JSON media type is rejected", 415,
+                    path=uri, headers=DEPLOYMENT_ADMINISTRATOR, body=body,
+                    media="text/plain", immutable=True)
+                add(endpoint, "Malformed JSON cannot reach the use case", 400,
+                    path=uri, headers=DEPLOYMENT_ADMINISTRATOR, body="{", immutable=True)
+                add(endpoint, "Observer revision is required", 422,
+                    path=uri, headers=DEPLOYMENT_ADMINISTRATOR, body="{}", immutable=True)
+            continue
         if route["source"] == "server/src/apps/identity/views/approval_preferences.rs":
             # A person's Approval Mode and Approval Rules are their own: only the
             # owner's dashboard or desktop session reaches them, and a Tenant

@@ -122,11 +122,13 @@ export function PeerMappings({
   tenant,
   credentials,
   editable = true,
+  readable = true,
 }: {
   tenant: string;
   credentials: Credential[];
   /** Whether the caller may create, change and disable mappings. */
   editable?: boolean;
+  readable?: boolean;
 }) {
   const { t, locale } = useI18n();
   const list = useTenantNodes(tenant);
@@ -154,16 +156,26 @@ export function PeerMappings({
     queryKey: ["authorization", tenant, "peer-mappings", offset],
     queryFn: () =>
       authorizationPeerMappings(path, { offset, limit: PAGE_SIZE }),
+    enabled: readable,
     refetchInterval: 5000,
   });
   const history = useQuery({
     queryKey: ["authorization", tenant, "peer-mapping-history", after],
     queryFn: () =>
       authorizationPeerMappingHistory(path, { after, limit: PAGE_SIZE }),
+    enabled: readable,
     refetchInterval: 5000,
   });
-  const rows = !mappings.isError ? mappings.data : undefined;
-  const revisions = !history.isError ? history.data : undefined;
+  const rows = readable && !mappings.isError ? mappings.data : undefined;
+  const revisions = readable && !history.isError ? history.data : undefined;
+  // A readable mapping discloses its credential ID even when credential details
+  // are unavailable. Keep that opaque choice usable without credential.read.
+  const credentialChoices = [
+    ...new Set([
+      ...credentials.map((credential) => credential.id),
+      ...(rows ?? []).map((mapping) => mapping.credential_id),
+    ]),
+  ];
   const save = async (input: PeerMappingInput) => {
     if (busy) return;
     setBusy(true);
@@ -210,8 +222,10 @@ export function PeerMappings({
       >
         <Hint>{t("authPeerMappingHelp")}</Hint>
         {error && !editing && <Alert>{t(error)}</Alert>}
-        {mappings.isError && <Alert>{mappings.error.message}</Alert>}
-        {mappings.isPending && <Loading />}
+        {readable && mappings.isError && (
+          <Alert>{mappings.error.message}</Alert>
+        )}
+        {readable && mappings.isPending && <Loading />}
         {rows?.length === 0 && (
           <p className="text-xs text-muted-foreground">
             {t("authNoPeerMappings")}
@@ -304,8 +318,8 @@ export function PeerMappings({
         />
       </Panel>
       <Panel title={t("authPeerMappingHistory")}>
-        {history.isError && <Alert>{history.error.message}</Alert>}
-        {history.isPending && <Loading />}
+        {readable && history.isError && <Alert>{history.error.message}</Alert>}
+        {readable && history.isPending && <Loading />}
         {revisions?.length === 0 && (
           <p className="text-xs text-muted-foreground">{t("authNoHistory")}</p>
         )}
@@ -359,7 +373,7 @@ export function PeerMappings({
           }}
         />
       </Panel>
-      {editing && (
+      {editing && (readable || editing === "new") && (
         <Modal
           title={t(
             editing === "new" ? "authAddPeerMapping" : "authEditPeerMapping",
@@ -406,18 +420,22 @@ export function PeerMappings({
                 defaultValue={editing === "new" ? "" : editing.credential_id}
               >
                 <option value="">{t("authSelectCredential")}</option>
-                {credentials.map((credential) => (
-                  <option
-                    key={credential.id}
-                    value={credential.id}
-                    disabled={
-                      !!credential.revoked_at ||
-                      Date.parse(credential.expires_at) <= now
-                    }
-                  >
-                    {credentialLabels.get(credential.id)}
-                  </option>
-                ))}
+                {credentialChoices.map((id) => {
+                  const credential = credentials.find((item) => item.id === id);
+                  return (
+                    <option
+                      key={id}
+                      value={id}
+                      disabled={
+                        !!credential &&
+                        (!!credential.revoked_at ||
+                          Date.parse(credential.expires_at) <= now)
+                      }
+                    >
+                      {credentialLabels.get(id) ?? id}
+                    </option>
+                  );
+                })}
               </NativeSelect>
             </Field>
             <Hint>{t("authPeerMappingSaveHelp")}</Hint>

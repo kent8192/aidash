@@ -33,9 +33,9 @@ pub trait ProfileRepository: Send + Sync {
 	async fn begin_draft(&self) -> Result<Box<dyn ProfileDraftScope + '_>>;
 	/// Preserve the existing ordered 100-row native profile transaction.
 	async fn page(&self, tenant: &str) -> Result<Vec<TestProfile>>;
-	/// The same page for those who write the profiles. A Subject needs
-	/// `workbench.test_profile.update` in the same transaction.
-	async fn administered(&self, tenant: &str) -> Result<Vec<TestProfile>>;
+	/// At most 100 ordered profiles after the exclusive ID cursor. A Subject
+	/// needs `workbench.test_profile.update` in the same transaction.
+	async fn administered(&self, tenant: &str, after: Option<&str>) -> Result<Vec<TestProfile>>;
 	/// Decides `workbench.test_profile.update` for a Subject before anything
 	/// about the rules is read, keeping nothing; `save` decides it again with
 	/// the write, which keeps that decision.

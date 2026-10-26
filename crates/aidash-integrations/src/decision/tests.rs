@@ -790,3 +790,145 @@ async fn an_approval_request_asks_the_block_questions_of_the_pending_call_on_eac
 	// Each Route's endpoint received exactly one request.
 	assert_eq!(bodies.lock().unwrap().len(), 2);
 }
+
+#[tokio::test]
+async fn oversized_valid_decision_responses_are_refused_with_or_without_content_length() {
+	for chunked in [false, true] {
+		let router = Router::new().route("/systemone", post(move || async move {
+   let body = serde_json::to_vec(&json!({"model":"typesafe/jev-1.13","answers":{"q0":{"noul":0.5}},"debug":"x".repeat(8 * 1024 * 1024)})).unwrap();
+   if chunked {
+    let chunks: Vec<_> = body.chunks(1024 * 1024).map(|chunk| Ok::<_, std::io::Error>(axum::body::Bytes::copy_from_slice(chunk))).collect();
+    axum::response::Response::new(axum::body::Body::from_stream(futures_util::stream::iter(chunks)))
+   } else {
+    let size = body.len();
+    let mut response = axum::response::Response::new(axum::body::Body::from(body));
+    response.headers_mut().insert("content-length", size.to_string().parse().unwrap());
+    response
+   }
+  }));
+		let (endpoint, _server) = server(router).await;
+		let client = provider(&endpoint, None);
+		let request = client
+			.plan(0, &json!({"goal":"authorized"}), &questions(1))
+			.unwrap()
+			.remove(0);
+		let error = client
+			.prepare(0, &request, Uuid::now_v7())
+			.await
+			.unwrap()
+			.dispatch()
+			.await
+			.unwrap_err();
+		assert!(matches!(error, DispatchError::InvalidAnswers), "{error}");
+	}
+}
+
+#[tokio::test]
+async fn physical_dispatch_retains_verified_provider_facts_even_when_answers_are_invalid_or_refused()
+ {
+	let payload = Arc::new(Mutex::new((StatusCode::OK, String::new())));
+	let served = payload.clone();
+	let calls = Arc::new(AtomicUsize::new(0));
+	let counted = calls.clone();
+	let router = Router::new().route(
+		"/api/alpha/decisions",
+		post(move || {
+			let served = served.clone();
+			let calls = counted.clone();
+			async move {
+				calls.fetch_add(1, Ordering::SeqCst);
+				let (status, body) = served.lock().unwrap().clone();
+				(status, [("content-type", "application/json")], body)
+			}
+		}),
+	);
+	let (endpoint, _server) = server(router).await;
+	let client = routed(&endpoint);
+	let request = client
+		.plan(1, &json!({"goal":"authorized"}), &questions(1))
+		.unwrap()
+		.remove(0);
+	let expected = AttemptProviderReport::Reported {
+		served_model: Some("cloudflare/clef".into()),
+		served_host: Some("deepinfra".into()),
+		input_tokens: Some(12),
+		output_tokens: Some(2),
+		cost_usd: Some(ProviderCost::new(0.000002).unwrap()),
+	};
+	for case in 0..7 {
+		let mut response = json!({"model":"cloudflare/clef","provider":"DeepInfra","answers":{"q0":{"type":"noul","noul":0.4}},"usage":{"input_tokens":12,"output_tokens":2,"cost":0.000002}});
+		let status = if case == 2 {
+			StatusCode::PAYMENT_REQUIRED
+		} else {
+			StatusCode::OK
+		};
+		if case == 1 || case == 2 {
+			response["answers"] = json!({});
+		}
+		if case == 3 {
+			response["usage"] = json!({"input_tokens":"12","output_tokens":-2,"cost":-0.1});
+		}
+		if case == 5 {
+			response["usage"]["cost"] = json!(0.0);
+		}
+		if case == 4 {
+			response = json!({"model":"unapproved/model","provider":"arbitrary-provider-body","answers":{},"debug":"PRIVATE_RESPONSE"});
+		}
+		let wire = if case == 6 {
+			r#"{"model":"cloudflare/clef","provider":"DeepInfra","answers":{"q0":{"noul":0.4}},"usage":{"input_tokens":12,"cost":1e9999}}"#.to_owned()
+		} else {
+			serde_json::to_string(&response).unwrap()
+		};
+		*payload.lock().unwrap() = (status, wire);
+		let result = client
+			.prepare(1, &request, Uuid::new_v4())
+			.await
+			.unwrap()
+			.dispatch_reported()
+			.await;
+		match case {
+			0 | 3 | 5 | 6 => assert!(result.result.is_ok()),
+			2 => assert!(matches!(result.result, Err(DispatchError::Refused(402)))),
+			_ => assert!(matches!(result.result, Err(DispatchError::InvalidAnswers))),
+		}
+		if case <= 2 {
+			assert_eq!(result.provider_report, expected);
+		} else if case == 3 {
+			assert_eq!(
+				result.provider_report,
+				AttemptProviderReport::Reported {
+					served_model: Some("cloudflare/clef".into()),
+					served_host: Some("deepinfra".into()),
+					input_tokens: None,
+					output_tokens: None,
+					cost_usd: None
+				}
+			);
+		} else if case == 5 {
+			assert_eq!(
+				result.provider_report,
+				AttemptProviderReport::Reported {
+					served_model: Some("cloudflare/clef".into()),
+					served_host: Some("deepinfra".into()),
+					input_tokens: Some(12),
+					output_tokens: Some(2),
+					cost_usd: Some(ProviderCost::new(0.0).unwrap())
+				}
+			);
+		} else if case == 6 {
+			assert_eq!(
+				result.provider_report,
+				AttemptProviderReport::Reported {
+					served_model: Some("cloudflare/clef".into()),
+					served_host: Some("deepinfra".into()),
+					input_tokens: Some(12),
+					output_tokens: None,
+					cost_usd: None
+				}
+			);
+		} else {
+			assert_eq!(result.provider_report, AttemptProviderReport::Unknown);
+		}
+	}
+	assert_eq!(calls.load(Ordering::SeqCst), 7);
+}

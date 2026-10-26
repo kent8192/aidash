@@ -340,9 +340,9 @@ async fn catalog_approval_and_run_read_denials_cover_search_collections_and_even
 	let builtin_count = aidash_application::registry::system::operations().count();
 	let (status, catalog) = request(&app, &token, "GET", "/api/registry", Value::Null).await;
 	assert_eq!(status, 200, "{catalog}");
-	// The Tenant's three approved definitions, the built-in tools and the
-	// approval Decider, which is listed so a person can find it to approve it.
-	assert_eq!(catalog.as_array().unwrap().len(), 4 + builtin_count);
+	// The Tenant's three approved definitions, the built-in tools, workspace
+	// observation Source and both Deciders. Listing a Decider grants no approval.
+	assert_eq!(catalog.as_array().unwrap().len(), 6 + builtin_count);
 	assert!(
 		catalog
 			.as_array()
@@ -399,7 +399,7 @@ async fn catalog_approval_and_run_read_denials_cover_search_collections_and_even
 		request(&app, other_token, "GET", "/api/registry", Value::Null).await;
 	assert_eq!(status, 200, "{other_catalog}");
 	let other_catalog = other_catalog.as_array().unwrap();
-	assert_eq!(other_catalog.len(), builtin_count + 1);
+	assert_eq!(other_catalog.len(), builtin_count + 3);
 	assert!(
 		other_catalog
 			.iter()
@@ -1364,6 +1364,26 @@ async fn worker_effect_boundary_serializes_revocation_and_persists_audit_before_
 	assert_eq!(call.id, "effect");
 	let (status, decided) = decide_tool_call(&app, &token, approval, "allow_once").await;
 	assert_eq!(status, 200, "{decided}");
+	let label: String = sqlx::query_scalar(
+		&reinhardt::query::Query::select()
+			.column(reinhardt::query::Alias::new("settlement"))
+			.from(reinhardt::query::Alias::new(
+				"approval_observation_population",
+			))
+			.and_where(reinhardt::query::SimpleExpr::CustomWithExpr(
+				"approval = ?".into(),
+				vec![reinhardt::query::Expr::value(approval).into()],
+			))
+			.to_string(reinhardt::query::PostgresQueryBuilder),
+	)
+	.fetch_one(f.store.pool.fixture_driver())
+	.await
+	.unwrap();
+	assert_eq!(
+		label, "human_allow",
+		"the explicit capability decision records its typed label atomically"
+	);
+
 	harness.worker_once().await.unwrap();
 	assert!(matches!(
 		f.store.run(&TEST_FIXTURE, run.id).await.unwrap().state,
@@ -2436,6 +2456,95 @@ async fn claimed_run(
 	assert_eq!(status, 200, "{claimed}");
 	let run = f.store.runs(&TEST_FIXTURE).await.unwrap().remove(0);
 	(token, run)
+}
+
+/// A Run whose model names the Tenant's OpenRouter Provider Credential reads
+/// the pin admitted for it in the step's own Tenant (#521). The worker used to
+/// name an empty Tenant, which failed the pin lookup before any provider
+/// request.
+#[rstest::rstest]
+#[tokio::test]
+async fn worker_inference_reads_the_runs_provider_credential_pin_in_the_steps_tenant(
+	#[future(awt)] tool_call_approvals: ToolCallApprovals,
+) {
+	use aidash_domain::tenancy::TenantName;
+	use aidash_server::registry::Entry;
+
+	// Arrange: the Tenant connects an OpenRouter Provider Credential, and the
+	// fake issuer routes the access it mints to the fixture upstream.
+	let t = tool_call_approvals;
+	t.script.store(0, Ordering::SeqCst);
+	let (mut f, url, schema) = t.application.runtime.parts();
+	let openrouter = tenant_openrouter::install(&mut f);
+	t.application.application.context.set_singleton(f.clone());
+	let (_, token, task_id) = bootstrap(&f, &t.application.application, &t.server.url).await;
+	let tenant = TenantName::new("acme").unwrap();
+	let model: Entry = serde_json::from_value(json!({
+		"id":"byok-model","version":"1.0.0","kind":"model",
+		"name":{"en":"BYOK model"},"description":{"en":"BYOK fixture"},
+		"config":{
+			"provider":"openrouter","model_id":"fixture-byok",
+			"endpoint":"https://openrouter.ai/api/v1",
+			"provider_credential":"openrouter",
+			"context_window":128000,"max_output_tokens":4096,
+			"modalities":["text"],"cost":{}
+		}
+	}))
+	.unwrap();
+	f.registry.register(&tenant, model).await.unwrap();
+	let agent: Entry = serde_json::from_value(json!({
+		"id":"byok-agent","version":"1.0.0","kind":"agent",
+		"name":{"en":"BYOK agent"},"description":{"en":"BYOK fixture"},
+		"config":{
+			"schema_version":1,
+			"model":{"id":"byok-model","version":"1.0.0"},
+			"instructions":"Complete the task",
+			"bindings":[],
+			"remove_default":["file_search","file_read"]
+		}
+	}))
+	.unwrap();
+	f.registry.register(&tenant, agent.clone()).await.unwrap();
+	common::approve_agent(&f, "acme", &agent).await;
+	openrouter.connect("acme").await;
+	*openrouter.endpoint.lock().unwrap() = format!("{}/v1", t.server.url);
+
+	// Act: claim and run the Agent to completion.
+	let (status, claimed) = request(
+		&t.application.application,
+		&token,
+		"POST",
+		&format!("/api/tasks/{task_id}/claim"),
+		json!({"revision":0,"agent":{"id":"byok-agent","version":"1.0.0"}}),
+	)
+	.await;
+	assert_eq!(status, 200, "{claimed}");
+	let run = f.store.runs(&TEST_FIXTURE).await.unwrap().remove(0);
+	let harness = Harness {
+		federation: f.clone(),
+	};
+	let finished = step_until(&harness, &f, run.id, |run| {
+		assert!(awaited_tool_call(run).is_none(), "nobody is asked");
+		run.phase().as_str() == "COMPLETED"
+	})
+	.await;
+
+	// Assert: the inference reached the fixture with the Run's admitted pin.
+	assert_eq!(
+		finished.phase().as_str(),
+		"COMPLETED",
+		"{:?}",
+		finished.error
+	);
+	assert_eq!(t.inferences.load(Ordering::SeqCst), 1);
+	{
+		let mints = openrouter.mints.lock().unwrap();
+		assert_eq!(mints.len(), 1, "{mints:?}");
+		assert_eq!(mints[0].0.tenant, "acme");
+		assert_eq!(mints[0].0.run, Some(run.id));
+	}
+	drop(t.server);
+	cleanup(f, &url, &schema).await;
 }
 
 #[rstest::rstest]

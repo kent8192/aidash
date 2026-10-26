@@ -224,6 +224,9 @@ impl RuntimeTasks {
 			Arc::new(generation_provisioning_repository(&worker_runtime)),
 			registry_validation_for(&worker_runtime.store),
 		));
+		tasks.spawn_service(runtime_task(crate::apps::execution::observation::run(
+			worker_runtime.clone(),
+		)));
 		tasks.spawn_service(runtime_task(crate::semantic::worker::run(
 			worker_runtime.clone(),
 		)));
@@ -2597,6 +2600,7 @@ pub(crate) fn admitted_model_provider(
 			tenant,
 			run,
 			maintenance,
+			observation: None,
 			provider_credential_id: None,
 			inference: None,
 		},
@@ -2620,6 +2624,7 @@ pub(crate) fn admitted_semantic_transport(
 		tenant,
 		run,
 		maintenance,
+		observation: None,
 		provider_credential_id: None,
 		inference: None,
 	};

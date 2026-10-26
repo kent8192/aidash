@@ -400,8 +400,13 @@ async fn a_revocation_committed_while_the_request_is_built_never_reaches_the_pro
 const EXPIRED_DOCUMENT: &str = "0190f1d2-0000-7000-8000-0000000000d1";
 
 #[rstest]
+#[case::already_expired(false)]
+#[case::expired_during_context_reads(true)]
 #[tokio::test]
-async fn expired_provider_results_never_reach_a_model_request_again(fixture: Fixture) {
+async fn expired_provider_results_never_reach_a_model_request_again(
+	fixture: Fixture,
+	#[case] late: bool,
+) {
 	// Arrange: a page a provider with account terms read, now expired.
 	let mut fixture = thinking(fixture);
 	let mut page = research_result("an expired passage");
@@ -424,8 +429,23 @@ async fn expired_provider_results_never_reach_a_model_request_again(fixture: Fix
 		through: Some(through),
 	};
 
+	if late {
+		Arc::get_mut(&mut fixture.backend.0)
+			.unwrap()
+			.expired_research_after = Some(1);
+	}
+
 	// Act
 	let _ = advance_sources(&mut fixture).await;
+
+	if late {
+		assert!(fixture.backend.0.requests.lock().unwrap().is_empty());
+		assert_eq!(
+			events(&fixture).last().map(String::as_str),
+			Some("run.research_expired")
+		);
+		advance_sources(&mut fixture).await.unwrap();
+	}
 
 	// Assert: only the expired result is replaced; what Aidash sent stays.
 	let request = first_request(&fixture);
@@ -618,6 +638,7 @@ async fn a_research_result_compaction_cut_to_a_string_is_redacted_from_its_journ
 		fixture.backend.0.journal.lock().unwrap().push((
 			fixture.run.id,
 			aidash_domain::context::HistoryEntry {
+				research: None,
 				seq,
 				event: ContextEvent::tool(call(id, "renamed", json!({})), original),
 			},
@@ -663,6 +684,7 @@ async fn an_elided_research_result_loses_the_arguments_its_original_named(fixtur
 		fixture.backend.0.journal.lock().unwrap().push((
 			fixture.run.id,
 			aidash_domain::context::HistoryEntry {
+				research: None,
 				seq,
 				event: ContextEvent::tool(call(id, "renamed", arguments), original),
 			},
@@ -682,4 +704,49 @@ async fn an_elided_research_result_loses_the_arguments_its_original_named(fixtur
 		"{request}"
 	);
 	assert!(request.contains("a kept note"), "{request}");
+}
+
+#[rstest]
+#[case::fresh(false)]
+#[case::completed_replay(true)]
+#[tokio::test]
+async fn expired_view_results_are_revalidated_before_selecting_model_media(
+	mut fixture: Fixture,
+	#[case] replay: bool,
+) {
+	let view = Scripted::research(Operation::View);
+	let output = json!({"contract":"aidash.research/1", "version":1, "operation":"view", "status":"ok", "data":{"evidence_ref":KNOWN.to_string(), "image":{"digest":"sha256:fixture"}}});
+	*view.outputs.lock().unwrap() = [output.clone()].into();
+	bind(&mut fixture, "page_image", view.clone());
+	let state = Arc::get_mut(&mut fixture.backend.0).unwrap();
+	state.local_authority = true;
+	state.scoped = true;
+	state.permit_tools = true;
+	*state.tool_call_approvals.lock().unwrap() =
+		[ToolCallApproval::Approved { approval_id: None }].into();
+	state.settled_research = Some(aidash_domain::research::expiry::tombstone(Operation::View));
+	respond(
+		&mut fixture.run,
+		vec![call(
+			"image-0",
+			"page_image",
+			json!({"document_id":EXPIRED_DOCUMENT, "page":1}),
+		)],
+	);
+	if replay {
+		let key = format!("{}:0:0", fixture.run.id);
+		fixture
+			.backend
+			.0
+			.invocations
+			.lock()
+			.unwrap()
+			.insert(key, ("COMPLETED".into(), Some(output)));
+	}
+	advance_sources(&mut fixture).await.unwrap();
+	assert!(fixture.run.state.tool().unwrap().selected_media.is_empty());
+	assert!(
+		matches!(fixture.run.context.events().last(), Some(ContextEvent::Tool{result,..}) if result["error"]["code"] == "result_expired")
+	);
+	assert_eq!(view.invocations(), usize::from(!replay));
 }

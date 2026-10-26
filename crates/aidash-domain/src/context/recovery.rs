@@ -10,6 +10,14 @@ use serde::{Deserialize, Serialize};
 #[schemars(rename = "ContextRecoveryFailure")]
 #[serde(rename_all = "snake_case")]
 pub enum Failure {
+	#[error("The source selection Decider is unavailable")]
+	SourceSelectionUnavailable,
+	#[error("Source candidate disclosure is forbidden")]
+	SourceSelectionForbidden,
+	#[error("The exact source selection Decider is not approved")]
+	SourceSelectionUnapproved,
+	#[error("The source selection Decider call allowance is exhausted")]
+	SourceSelectionCallsExhausted,
 	#[error(
 		"Mandatory context cannot fit the model window; reduce instructions, tools or pinned context"
 	)]
@@ -38,6 +46,10 @@ impl Failure {
 	/// Stable event and metric label.
 	pub fn label(self) -> &'static str {
 		match self {
+			Self::SourceSelectionUnavailable => "source_selection_unavailable",
+			Self::SourceSelectionForbidden => "source_selection_forbidden",
+			Self::SourceSelectionUnapproved => "source_selection_unapproved",
+			Self::SourceSelectionCallsExhausted => "source_selection_calls_exhausted",
 			Self::ContextUnreducible => "context_unreducible",
 			Self::DeciderUnapproved => "decider_unapproved",
 			Self::DeciderCallsExhausted => "decider_calls_exhausted",

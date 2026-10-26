@@ -130,6 +130,8 @@ pub enum Reserved {
 	/// The Run's evidence was revoked; checked under the same lock as the
 	/// revocation, so nothing is dispatched after it commits.
 	Revoked,
+	/// This account ID was terminated and cannot be reused for a new agreement.
+	AccountUnavailable,
 }
 
 /// Run-scoped Research evidence. Every read is limited to the given Run; an
@@ -143,6 +145,13 @@ pub enum Reserved {
 pub trait EvidenceStore: Send + Sync {
 	/// Whether the Run's Research evidence was revoked.
 	async fn revoked(&self, run: Uuid) -> Result<bool>;
+	/// Account expiry is independent of a snapshot's first ordinary purge reason.
+	async fn expired_results(
+		&self,
+		_run: Uuid,
+	) -> Result<aidash_domain::research::expiry::ExpiredResults> {
+		Ok(Default::default())
+	}
 	async fn attempt(&self, run: Uuid, key: &str) -> Result<Option<AttemptState>>;
 	/// Purged snapshots count toward neither the snapshot nor the byte limit,
 	/// so a Run can read a Source again after its contents were purged.

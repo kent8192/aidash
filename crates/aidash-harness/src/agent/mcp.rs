@@ -219,7 +219,10 @@ impl Executor<'_> {
 				};
 				let result = match result {
 					Ok(result) => result,
-					Err(Error::Invalid(message)) => ToolRound::Complete(json!({"error": message})),
+					Err(
+						Error::Invalid(message)
+						| Error::Domain(aidash_domain::Error::Invalid(message)),
+					) => ToolRound::Complete(json!({"error": message})),
 					// Leave the sent request unfinished. Recovery reconciles it.
 					Err(error) => return Err(error),
 				};
