@@ -117,6 +117,23 @@ let ids: Vec<Uuid> = {
 		.await;
 		result.map_err(Into::into)
 	}
+	async fn expire_previews(&self) -> Result<()> {
+		let result: NativeResult<()> = async {
+			for table in ["core_preview_tickets", "core_preview_sessions"] {
+				crate::database::native::query(
+					&Query::delete()
+						.from_table(Alias::new(table))
+						.and_where(Expr::cust("expires_at <= CURRENT_TIMESTAMP"))
+						.to_string(PostgresQueryBuilder),
+				)
+				.execute(self.store.pool.in_scope(&MAINTENANCE))
+				.await?;
+			}
+			Ok(())
+		}
+		.await;
+		result.map_err(Into::into)
+	}
 	async fn python(&self, cursor: &mut Uuid) -> Result<()> {
 		python::reap(self.store, cursor).await.map_err(Into::into)
 	}
