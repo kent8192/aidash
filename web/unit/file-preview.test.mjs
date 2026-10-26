@@ -14,6 +14,7 @@ import {
 import { classifyFilePreview } from "../src/file-preview/preview-kind.ts";
 import { SpreadsheetPreviewError } from "../src/file-preview/spreadsheet-types.ts";
 import { parseXlsx } from "../src/file-preview/xlsx.ts";
+import { resolveWorkingAreaPath } from "../src/file-preview/working-area-path.ts";
 
 const bytesOf = (text) => new TextEncoder().encode(text).buffer;
 const toArrayBuffer = (value) =>
@@ -259,4 +260,24 @@ test("Markdown bounds pathological syntax instead of stalling", () => {
   const formatted = parseMarkdown("**bold** and *em* and `code`");
   assert.ok(JSON.stringify(formatted).includes('"kind":"strong"'));
   assert.ok(JSON.stringify(formatted).includes('"kind":"em"'));
+});
+
+test("Markdown image paths resolve inside the Working Area revision", () => {
+  assert.equal(
+    resolveWorkingAreaPath("docs/readme.md", "./img/a.png"),
+    "docs/img/a.png",
+  );
+  assert.equal(resolveWorkingAreaPath("readme.md", "img/a.png"), "img/a.png");
+  assert.equal(resolveWorkingAreaPath("docs/readme.md", "../a.png"), "a.png");
+  assert.equal(
+    resolveWorkingAreaPath("docs/readme.md", "img/a.png?v=1#x"),
+    "docs/img/a.png",
+  );
+  assert.equal(resolveWorkingAreaPath("readme.md", "../a.png"), null);
+  assert.equal(resolveWorkingAreaPath("docs/readme.md", "/a.png"), null);
+  assert.equal(
+    resolveWorkingAreaPath("docs/readme.md", "https://example.com/a.png"),
+    null,
+  );
+  assert.equal(resolveWorkingAreaPath("docs/readme.md", "img\\a.png"), null);
 });

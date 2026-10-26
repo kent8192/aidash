@@ -769,5 +769,16 @@
   "filePreviewSpreadsheetCellsLimit": "このシートは File preview のセル数上限（200,000 セル）を超えています。ダウンロードしてすべてのセルを確認してください。",
   "filePreviewSpreadsheetColumnsLimit": "このシートは File preview の列数上限（1,000 列）を超えています。ダウンロードしてすべての列を確認してください。",
   "filePreviewSpreadsheetParseError": "スプレッドシートを File preview 用に読み込めませんでした。ダウンロードして確認してください。",
-  "filePreviewSpreadsheetTabs": "シート"
+  "filePreviewSpreadsheetTabs": "シート",
+  "filePreviewAction": "File preview",
+  "filePreviewPaneTitle": "File preview",
+  "filePreviewPaneClose": "File preview を閉じる",
+  "filePreviewPaneDigest": "ダイジェスト",
+  "filePreviewPaneRevision": "Revision",
+  "filePreviewPaneSize": "サイズ",
+  "filePreviewPaneLoading": "File version を読み込んでいます…",
+  "filePreviewPaneFetchError": "この File version を File preview 用に読み込めませんでした。",
+  "filePreviewPaneChanged": "ファイル一覧を読み込んだ後にこの File version が変わりました。ペインを閉じて、現在の File version を開き直してください。",
+  "filePreviewPaneDownloadError": "この File version をダウンロードできませんでした。",
+  "filePreviewPreviewDomainTitle": "preview domain から開きます"
 }

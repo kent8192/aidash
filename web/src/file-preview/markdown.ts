@@ -1,9 +1,11 @@
 /**
- * A deliberately small Markdown renderer input. It supports the subset the
- * dashboard shows for a File version, and it never produces HTML: raw HTML is
- * dropped, links are limited to http/https and images are limited to sibling
- * File versions of the same revision. The React renderer turns these nodes
- * into elements, so there is no `dangerouslySetInnerHTML` path at all.
+ * A deliberately small Markdown renderer input, the in-repo replacement for a
+ * third-party renderer because web/package.json has none. It supports the
+ * subset the dashboard shows for a File version, and it never produces HTML:
+ * raw HTML is dropped, links are limited to http/https and images are limited
+ * to sibling File versions of the same revision. The React renderer turns
+ * these nodes into elements, so there is no `dangerouslySetInnerHTML` path at
+ * all. Keep it that way if this is ever swapped for a library.
  */
 export type MarkdownInline =
   | { kind: "text"; text: string }

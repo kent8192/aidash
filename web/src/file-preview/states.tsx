@@ -64,7 +64,10 @@ export function FilePreviewPreviewDomainState({
   const { t } = useI18n();
   return (
     <div className="grid min-w-0 gap-2">
-      <Notice>{t("filePreviewPreviewDomainBody")}</Notice>
+      <Notice>
+        <strong className="block">{t("filePreviewPreviewDomainTitle")}</strong>
+        {t("filePreviewPreviewDomainBody")}
+      </Notice>
       {onOpenPreviewDomain ? (
         <Button
           type="button"

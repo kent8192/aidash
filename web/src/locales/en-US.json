@@ -769,5 +769,16 @@
   "filePreviewSpreadsheetCellsLimit": "This sheet exceeds the File preview cell limit (200,000 cells). Download the file to inspect every cell.",
   "filePreviewSpreadsheetColumnsLimit": "This sheet exceeds the File preview column limit (1,000 columns). Download the file to inspect every column.",
   "filePreviewSpreadsheetParseError": "The spreadsheet could not be read for its File preview. Download the file to inspect it.",
-  "filePreviewSpreadsheetTabs": "Sheets"
+  "filePreviewSpreadsheetTabs": "Sheets",
+  "filePreviewAction": "File preview",
+  "filePreviewPaneTitle": "File preview",
+  "filePreviewPaneClose": "Close File preview",
+  "filePreviewPaneDigest": "Digest",
+  "filePreviewPaneRevision": "Revision",
+  "filePreviewPaneSize": "Size",
+  "filePreviewPaneLoading": "Loading the File version…",
+  "filePreviewPaneFetchError": "Could not load this File version for its File preview.",
+  "filePreviewPaneChanged": "This File version changed after the file list loaded. Close the pane and open the current version.",
+  "filePreviewPaneDownloadError": "Could not download this File version.",
+  "filePreviewPreviewDomainTitle": "Opens from the preview domain"
 }
