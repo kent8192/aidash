@@ -30,4 +30,6 @@ export const desktop = {
   planWait: (id: string, authorizationUrl: string) =>
     command<string>("plan_wait", { id, authorizationUrl }),
   planCancel: (id: string) => command<void>("plan_cancel", { id }),
+  openPreviewUrl: (url: string, previewDomain: string) =>
+    command<void>("open_preview_url", { url, previewDomain }),
 };

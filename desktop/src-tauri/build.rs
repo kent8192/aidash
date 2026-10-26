@@ -11,6 +11,7 @@ fn main() {
 			"plan_listen",
 			"plan_wait",
 			"plan_cancel",
+			"open_preview_url",
 		]),
 	))
 	.expect("build desktop application");

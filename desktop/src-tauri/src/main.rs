@@ -6,6 +6,7 @@ mod credentials;
 #[cfg(feature = "e2e")]
 mod e2e;
 mod plan_connections;
+mod preview;
 mod profiles;
 
 use auth::{Access, Cached, Endpoint, Failure, Tokens};
@@ -83,6 +84,23 @@ async fn plan_wait(
 #[tauri::command]
 async fn plan_cancel(state: State<'_, DesktopState>, id: String) -> Result<(), String> {
 	state.plans.cancel(&id);
+	Ok(())
+}
+/// Opens a Preview ticket in the system browser. Only HTTPS ticket URLs on the
+/// configured preview domain reach the opener; the renderer cannot open others.
+#[tauri::command]
+async fn open_preview_url(
+	_app: tauri::AppHandle,
+	url: String,
+	preview_domain: String,
+) -> Result<(), String> {
+	let url = preview::validate(&url, &preview_domain)?;
+	#[cfg(feature = "e2e")]
+	let _fixture_browser = e2e::open_browser(&url)?;
+	#[cfg(not(feature = "e2e"))]
+	_app.opener()
+		.open_url(url.as_str(), None::<&str>)
+		.map_err(|_| "Cannot open the system browser")?;
 	Ok(())
 }
 #[tauri::command]
@@ -418,7 +436,8 @@ fn main() {
 			desktop_logout,
 			plan_listen,
 			plan_wait,
-			plan_cancel
+			plan_cancel,
+			open_preview_url
 		])
 		.run(tauri::generate_context!())
 		.expect("run Aidash Desktop");
