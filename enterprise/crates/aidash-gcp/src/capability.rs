@@ -1,6 +1,7 @@
 //! Google Cloud REST adapters. Signing and Key Material reads use separate identities.
 pub mod deployment_key;
 pub mod issuer;
+pub mod secret_calls;
 pub mod secret_issuer;
 use aidash_capability::{
 	KeyMaterialError, KeyMaterialSource, SignError, TokenSigner, tenant_secret::SealedSecretSource,

@@ -197,6 +197,6 @@ impl ToolOperations for Operations {
 		else {
 			return Err(unavailable());
 		};
-		service.resolve(tenant.as_str(), name, endpoint).await
+		service.resolve_value(tenant.as_str(), name, endpoint).await
 	}
 }

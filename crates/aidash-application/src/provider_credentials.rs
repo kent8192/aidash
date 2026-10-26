@@ -49,13 +49,30 @@ pub trait Store: Send + Sync {
 	fn secret_resource(&self, id: Uuid) -> String {
 		format!("aidash-store/tenant-secrets/{id}")
 	}
+	/// Whether one Tenant Secret version seals the value together with the
+	/// hosts it may be sent to (ADR 0096). A Store that does needs the value
+	/// again to change them; a Store that does not keeps hosts in PostgreSQL.
+	fn seals_secret_hosts(&self) -> bool {
+		false
+	}
 	/// Creates one Tenant Secret's resource. A Store that cannot hold Tenant
-	/// Secrets, such as Cloud's Secret Manager until the Credential Broker
-	/// carries tool calls (#310), refuses.
+	/// Secrets refuses.
 	async fn create_secret(&self, _tenant: &str, _id: Uuid) -> Result<()> {
 		Err(Error::Invalid(
 			"this Secret Store does not hold Tenant Secrets".into(),
 		))
+	}
+	/// Writes one Tenant Secret version. A Store that seals hosts with the
+	/// value uses them; a Store that does not ignores them and calls
+	/// [`Store::add_version`].
+	async fn add_secret_version(
+		&self,
+		tenant: &str,
+		resource: &str,
+		_hosts: &[String],
+		value: &SecretString,
+	) -> Result<String> {
+		self.add_version(tenant, resource, value).await
 	}
 }
 /// Every mutating scope serializes one Tenant, including quota and binding races.

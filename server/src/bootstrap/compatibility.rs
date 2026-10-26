@@ -1,5 +1,5 @@
 //! Native migration and HTTP launch paths used by the compatibility binary.
-use super::{RuntimeTasks, initialize};
+use super::{ProcessRole, RuntimeTasks, initialize_as};
 use crate::apps::execution::services::lifecycle::{ProbeServer, ProcessLifecycle};
 use crate::{
 	Error, Result,
@@ -47,7 +47,17 @@ pub async fn serve(settings: ProjectSettings, workers: bool) -> Result<()> {
 	let coordinator = ShutdownCoordinator::new(Duration::from_secs(20));
 	let mut stopped = coordinator.subscribe();
 	ProcessLifecycle::register(&context, coordinator.clone());
-	let federation = initialize(&context, &settings, connection).await?;
+	let federation = initialize_as(
+		&context,
+		&settings,
+		connection,
+		if workers {
+			ProcessRole::Serve
+		} else {
+			ProcessRole::Server
+		},
+	)
+	.await?;
 	let protection =
 		reinhardt::Depends::<crate::http::Protection>::resolve_from_registry(&context, true)
 			.await

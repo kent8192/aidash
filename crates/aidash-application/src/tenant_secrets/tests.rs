@@ -101,12 +101,17 @@ impl Scope for Lease {
 }
 
 type SecretVersions = BTreeMap<String, BTreeMap<String, (String, &'static str)>>;
+type SealedHosts = BTreeMap<String, BTreeMap<String, Vec<String>>>;
 
 #[derive(Clone, Default)]
 struct FakeStore {
 	/// resource -> version -> (value, state)
 	state: Arc<Mutex<SecretVersions>>,
+	/// What each version sealed: resource -> version -> hosts.
+	sealed_hosts: Arc<Mutex<SealedHosts>>,
 	refuse_secrets: bool,
+	/// Whether this Store seals the hosts with the value (ADR 0096).
+	seals: bool,
 }
 #[async_trait]
 impl Store for FakeStore {
@@ -165,6 +170,31 @@ impl Store for FakeStore {
 			.insert(self.secret_resource(id), BTreeMap::new());
 		Ok(())
 	}
+	fn seals_secret_hosts(&self) -> bool {
+		self.seals
+	}
+	async fn add_secret_version(
+		&self,
+		tenant: &str,
+		resource: &str,
+		hosts: &[String],
+		value: &SecretString,
+	) -> Result<String> {
+		if !self.seals {
+			return self.add_version(tenant, resource, value).await;
+		}
+		let sealed = aidash_capability::tenant_secret::sealed::seal(hosts, value.expose_secret())
+			.map_err(|_| Error::Invalid("invalid Tenant Secret hosts".into()))?;
+		let payload = SecretString::from(String::from_utf8_lossy(&sealed).into_owned());
+		let version = self.add_version(tenant, resource, &payload).await?;
+		self.sealed_hosts
+			.lock()
+			.await
+			.entry(resource.to_owned())
+			.or_default()
+			.insert(version.clone(), hosts.to_vec());
+		Ok(version)
+	}
 }
 #[async_trait]
 impl KeyMaterialReader for FakeStore {
@@ -188,11 +218,44 @@ fn service_with(store: FakeStore) -> (Service, Repo, FakeStore) {
 		Service {
 			repository: Arc::new(repo.clone()),
 			store: Arc::new(store.clone()),
-			reader: Arc::new(store.clone()),
+			reader: Some(Arc::new(store.clone())),
+			calls: None,
 			fingerprint_key: "test-fingerprint-root-key".into(),
 			max_per_tenant: 2,
 		},
 		repo,
+		store,
+	)
+}
+
+#[derive(Clone, Default)]
+struct RecordedGrant(Arc<Mutex<Vec<SecretCallGrant>>>);
+struct FakeCalls(RecordedGrant);
+#[async_trait]
+impl SecretCalls for FakeCalls {
+	async fn route(&self, grant: SecretCallGrant) -> Result<SecretRoute> {
+		self.0.0.lock().await.push(grant);
+		Ok(SecretRoute {
+			base: Url::parse("https://broker.example/v1/forward").unwrap(),
+			token: "canary-capability-token".into(),
+		})
+	}
+}
+
+fn service_with_calls(store: FakeStore) -> (Service, RecordedGrant, FakeStore) {
+	let repo = Repo::default();
+	let grants = RecordedGrant::default();
+	(
+		Service {
+			repository: Arc::new(repo),
+			store: Arc::new(store.clone()),
+			// A brokered Store is write-only: this reader must never be called.
+			reader: None,
+			calls: Some(Arc::new(FakeCalls(grants.clone()))),
+			fingerprint_key: "test-fingerprint-root-key".into(),
+			max_per_tenant: 2,
+		},
+		grants,
 		store,
 	)
 }
@@ -241,7 +304,7 @@ async fn a_stored_secret_shows_only_a_fingerprint_and_last_four_and_resolves_to_
 	assert_eq!(created.revision, 2);
 	let shown = serde_json::to_string(&created).unwrap();
 	assert!(!shown.contains("super-secret-value"), "{shown}");
-	let value = s.resolve("alpha", "search", ENDPOINT).await.unwrap();
+	let value = s.resolve_value("alpha", "search", ENDPOINT).await.unwrap();
 	assert_eq!(value.expose_secret(), "super-secret-value-1234");
 	// Another host, another Tenant and a missing name all fail the same way.
 	for (tenant, name, endpoint) in [
@@ -250,7 +313,7 @@ async fn a_stored_secret_shows_only_a_fingerprint_and_last_four_and_resolves_to_
 		("alpha", "other", ENDPOINT),
 	] {
 		assert!(matches!(
-			s.resolve(tenant, name, endpoint).await,
+			s.resolve_value(tenant, name, endpoint).await,
 			Err(Error::Invalid(m)) if m == UNAVAILABLE
 		));
 	}
@@ -281,7 +344,7 @@ async fn replacing_the_value_keeps_the_name_and_disables_the_old_version() {
 	assert_eq!(second.last4, "bbbb");
 	assert_ne!(second.fingerprint, first.fingerprint);
 	assert_eq!(
-		s.resolve("alpha", "search", ENDPOINT)
+		s.resolve_value("alpha", "search", ENDPOINT)
 			.await
 			.unwrap()
 			.expose_secret(),
@@ -328,7 +391,7 @@ async fn changing_hosts_takes_effect_at_the_next_resolution() {
 	)
 	.await
 	.unwrap();
-	assert!(s.resolve("alpha", "search", ENDPOINT).await.is_err());
+	assert!(s.resolve_value("alpha", "search", ENDPOINT).await.is_err());
 	assert_eq!(
 		s.hosts("alpha", "search").await.unwrap().unwrap(),
 		["other.example"]
@@ -351,7 +414,7 @@ async fn deleting_makes_calls_fail_destroys_the_value_and_frees_the_name() {
 		.await
 		.unwrap();
 	assert!(matches!(
-		s.resolve("alpha", "search", ENDPOINT).await,
+		s.resolve_value("alpha", "search", ENDPOINT).await,
 		Err(Error::Invalid(m)) if m == UNAVAILABLE
 	));
 	assert!(
@@ -466,7 +529,7 @@ async fn a_store_that_cannot_hold_tenant_secrets_refuses_and_leaves_nothing_usab
 		)
 		.await;
 	assert!(matches!(result, Err(Error::Invalid(_))));
-	assert!(s.resolve("alpha", "search", ENDPOINT).await.is_err());
+	assert!(s.resolve_value("alpha", "search", ENDPOINT).await.is_err());
 	// The unfinished row expires and is cleaned up by reconciliation.
 	{
 		let mut data = repo.0.lock().await;
@@ -568,4 +631,184 @@ fn sealed_payload_hosts_match_the_domain_normalization() {
 			"{bad}"
 		);
 	}
+}
+
+#[tokio::test]
+async fn a_sealing_store_refuses_a_hosts_change_without_the_value_and_seals_a_new_version() {
+	let (s, repo, store) = service_with(FakeStore {
+		seals: true,
+		..Default::default()
+	});
+	let created = s
+		.put(
+			"alpha",
+			"search",
+			put(Some("first-value-aaaa"), Some(&["api.example.com"]), 0),
+			"actor",
+		)
+		.await
+		.unwrap();
+	// The first version seals the hosts with the value.
+	let resource = store.secret_resource(created.id);
+	let first = {
+		let state = store.state.lock().await;
+		state
+			.get(&resource)
+			.unwrap()
+			.values()
+			.next()
+			.unwrap()
+			.0
+			.clone()
+	};
+	let opened = aidash_capability::tenant_secret::sealed::open(first.as_bytes()).unwrap();
+	assert_eq!(opened.hosts, ["api.example.com"]);
+	assert_eq!(opened.value.expose_secret(), "first-value-aaaa");
+	// A hosts change without the value is refused and changes nothing.
+	let refused = s
+		.put(
+			"alpha",
+			"search",
+			put(None, Some(&["other.example"]), created.revision),
+			"actor",
+		)
+		.await;
+	assert!(invalid(&refused), "{refused:?}");
+	assert!(
+		refused
+			.unwrap_err()
+			.to_string()
+			.contains("requires its value"),
+		"a clear invalid-input error"
+	);
+	let unchanged = s.get("alpha", "search").await.unwrap();
+	assert_eq!(unchanged.hosts, ["api.example.com"]);
+	assert_eq!(unchanged.revision, created.revision);
+	// The value and the hosts together write one new sealed version, and the
+	// pin follows it.
+	let changed = s
+		.put(
+			"alpha",
+			"search",
+			put(
+				Some("second-value-bbbb"),
+				Some(&["Other.Example"]),
+				created.revision,
+			),
+			"actor",
+		)
+		.await
+		.unwrap();
+	assert_eq!(changed.hosts, ["other.example"]);
+	let row = repo.0.lock().await.rows.get(&created.id).cloned().unwrap();
+	let pinned = row.pinned_version.clone().unwrap();
+	assert_eq!(pinned, format!("{resource}/versions/2"));
+	assert_eq!(
+		store.sealed_hosts.lock().await[&resource][&pinned],
+		["other.example"]
+	);
+	let payload = {
+		let state = store.state.lock().await;
+		state.get(&resource).unwrap()[&pinned].0.clone()
+	};
+	let opened = aidash_capability::tenant_secret::sealed::open(payload.as_bytes()).unwrap();
+	assert_eq!(opened.hosts, ["other.example"]);
+	assert_eq!(opened.value.expose_secret(), "second-value-bbbb");
+	// Replacing only the value keeps the current hosts in the sealed version.
+	let replaced = s
+		.put(
+			"alpha",
+			"search",
+			put(Some("third-value-cccc"), None, changed.revision),
+			"actor",
+		)
+		.await
+		.unwrap();
+	assert_eq!(replaced.hosts, ["other.example"]);
+	let row = repo.0.lock().await.rows.get(&created.id).cloned().unwrap();
+	let pinned = row.pinned_version.unwrap();
+	assert_eq!(
+		store.sealed_hosts.lock().await[&resource][&pinned],
+		["other.example"]
+	);
+}
+
+#[tokio::test]
+async fn brokered_resolution_returns_a_route_and_never_reads_the_value() {
+	let (s, grants, _) = service_with_calls(FakeStore {
+		seals: true,
+		..Default::default()
+	});
+	let created = s
+		.put(
+			"alpha",
+			"search",
+			put(Some("canary-value-1234"), Some(&["api.example.com"]), 0),
+			"actor",
+		)
+		.await
+		.unwrap();
+	let call = SecretCall {
+		destination: Destination {
+			origin: "https://api.example.com".into(),
+			path_prefix: "/tool/".into(),
+		},
+		methods: vec!["POST".into()],
+		attach: Attach::Header {
+			name: "x-api-key".into(),
+		},
+		subject: SecretSubject::Run {
+			run: "run-1".into(),
+			call: Uuid::from_u128(1),
+		},
+		max_response_bytes: Some(262_144),
+	};
+	let resolved = s
+		.resolve("alpha", "search", ENDPOINT, Some(call))
+		.await
+		.unwrap();
+	let Resolved::Brokered(route) = resolved else {
+		panic!("a brokered resolution returns a route");
+	};
+	assert_eq!(route.base.as_str(), "https://broker.example/v1/forward");
+	assert_eq!(route.token.expose_secret(), "canary-capability-token");
+	{
+		let recorded = grants.0.lock().await;
+		assert_eq!(recorded.len(), 1);
+		assert_eq!(recorded[0].tenant, "alpha");
+		assert_eq!(recorded[0].secret, created.id);
+		assert_eq!(recorded[0].version, "1");
+		assert_eq!(recorded[0].destination.origin, "https://api.example.com");
+		assert_eq!(recorded[0].methods, ["POST"]);
+		assert_eq!(recorded[0].max_response_bytes, Some(262_144));
+	}
+	// The direct path refuses rather than reading: this Service has no reader.
+	assert!(
+		s.resolve_value("alpha", "search", ENDPOINT)
+			.await
+			.unwrap_err()
+			.to_string()
+			.contains("broker")
+	);
+	// A destination the metadata does not record is refused before a token.
+	let mut foreign = SecretCall {
+		destination: Destination {
+			origin: "https://evil.example".into(),
+			path_prefix: "/".into(),
+		},
+		methods: vec!["GET".into()],
+		attach: Attach::Bearer,
+		subject: SecretSubject::Run {
+			run: "run-1".into(),
+			call: Uuid::from_u128(2),
+		},
+		max_response_bytes: None,
+	};
+	assert!(matches!(
+		s.resolve("alpha", "search", ENDPOINT, Some(foreign.clone()))
+			.await,
+		Err(Error::Invalid(message)) if message == UNAVAILABLE
+	));
+	foreign.destination.origin = "https://api.example.com".into();
+	assert_eq!(grants.0.lock().await.len(), 1, "no second token was minted");
 }

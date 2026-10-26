@@ -55,9 +55,9 @@ pub struct Store {
 	/// `[plan_connections] enabled`: new authorizations, model lists and
 	/// admission of `chatgpt` models.
 	pub plan_connections_enabled: bool,
-	/// Present only where the Secret Store can hold Tenant Secret values and
-	/// the server may read them: a self-hosted node with a PostgreSQL Store
-	/// (ADR 0051). Cloud and Dedicated offer none until #310.
+	/// Present wherever the Secret Store holds Tenant Secrets: a self-hosted
+	/// PostgreSQL Store reads them locally, and a Secret Manager Store routes
+	/// through its Tenant Secret broker (ADR 0051, ADR 0095).
 	pub tenant_secrets: Option<std::sync::Arc<aidash_application::tenant_secrets::Service>>,
 	pub capabilities: crate::capabilities::Runtime,
 	pub pool: Pool,

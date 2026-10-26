@@ -110,6 +110,15 @@ impl Extension for Adapters {
 		provider_credentials::store(store, broker)
 	}
 
+	fn tenant_secret_calls(
+		&self,
+		broker: Option<&serde_json::Value>,
+		tenant_secret_broker: Option<&serde_json::Value>,
+		worker: bool,
+	) -> aidash_server::Result<Option<Arc<dyn aidash_application::tenant_secrets::SecretCalls>>> {
+		provider_credentials::secret_calls(broker, tenant_secret_broker, worker)
+	}
+
 	/// `[deployment.key] kms`: an Ed25519 key version in Cloud KMS, whose
 	/// public key is fetched here, once, at startup.
 	async fn deployment_key(&self, kms: &str) -> aidash_server::Result<Arc<dyn DeploymentKey>> {
