@@ -22,6 +22,7 @@ import { Input } from "../components/ui/input";
 import { NativeSelect } from "../components/ui/native-select";
 import { focusedVersion } from "../approval-decider-model";
 import { ApprovalSettingsPage } from "../approval-settings";
+import { CatalogRequestQueue } from "../catalog-requests";
 import { approvalCopy } from "../approval-settings-copy";
 import { DeploymentPage } from "../deployment";
 import { UsagePanel } from "@slots/usage";
@@ -547,6 +548,7 @@ export function Configuration({
 }) {
   const { t, locale } = useI18n();
   const { can } = useTenantActions(data.access);
+  const selectedNode = useNodes().selected;
   const deploymentAdministrator =
     data.access.kind === "deployment_administrator";
   const restricted =
@@ -605,6 +607,19 @@ export function Configuration({
                 focus={section === "registry" ? focus : undefined}
               />
             ))}
+          {section === "registry" &&
+            data.access.kind === "subject" &&
+            selectedNode !== undefined &&
+            can("catalog.approve") && (
+              <ToolSection title={t("approvalPendingTitle")}>
+                <CatalogRequestQueue
+                  tenant={data.access.tenant}
+                  node={selectedNode.name}
+                  subject={data.access.subject}
+                  canApprove
+                />
+              </ToolSection>
+            )}
           {section === "registry" && (
             <ToolSection
               title={

@@ -2,11 +2,7 @@ import { RegisteredCompactionDetails } from "./compaction-details";
 import { SecretDisclosure } from "./tenant-secrets";
 import { useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import {
-  authorizationApproveCatalog,
-  authorizationSetCatalog,
-  registryVersions,
-} from "./generated/aidash";
+import { authorizationSetCatalog, registryVersions } from "./generated/aidash";
 import type { RegistryVersion } from "./generated/models";
 import type { State } from "./types";
 import { ApiError } from "./transport";
@@ -15,7 +11,7 @@ import { toolReplay } from "./tool-declaration";
 import { deciderRecipients, type DeciderRecipient } from "./decider";
 import { agentPlugins, type AgentPluginRef } from "./agent-plugins";
 import { AgentPluginSummary } from "./agent-plugin-summary";
-import { Badge, useEntryLabel, useI18n, type StatusTone } from "./ui";
+import { Badge, useI18n, type StatusTone } from "./ui";
 import { Button } from "./components/ui/button";
 import {
   Alert,
@@ -32,12 +28,10 @@ import {
   earlierAgentGroups,
   requestedGroups,
   restrictionLabel,
-  unapprovedClosure,
-  unapprovedDependency,
   type ApprovalState,
-  type Closure,
   type Restriction,
 } from "./catalog-approval-model";
+import { ApprovalReviewPanel } from "./approval-review";
 import { useNodes } from "./nodes";
 import { useTenantActions } from "./tenant-administration";
 
@@ -154,9 +148,9 @@ export function AgentPluginsDisclosure({
   );
 }
 
-/** One version's Catalog Approval: its state and history, and for a subject
- *  holding `catalog.approve`, the decision itself. An approval refused for an
- *  unapproved dependency turns into one request for the whole closure. */
+/** One version's Catalog Approval: its state and history, a single-item
+ *  decision for a subject holding `catalog.approve`, and the server-driven
+ *  review for the whole closure. */
 export function CatalogApprovalSection({
   version,
   versions,
@@ -168,7 +162,6 @@ export function CatalogApprovalSection({
 }) {
   const { t, locale } = useI18n();
   const client = useQueryClient();
-  const label = useEntryLabel(versions.map((item) => item.entry));
   const { tenant, can, assignable } = useTenantActions(access);
   // The versions list reports the selected Node's approvals, so that is the
   // Node a decision here applies to.
@@ -177,7 +170,7 @@ export function CatalogApprovalSection({
   const [restricting, setRestricting] = useState<boolean>();
   const [subjectNames, setSubjectNames] = useState<string>();
   const [restrictedGroups, setRestrictedGroups] = useState<string[]>();
-  const [closure, setClosure] = useState<Closure>();
+  const [reviewOpen, setReviewOpen] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const entry = version.entry;
@@ -230,15 +223,12 @@ export function CatalogApprovalSection({
     setError("");
     try {
       await action();
-      setClosure(undefined);
       await client.invalidateQueries();
     } catch (reason) {
-      const named =
-        reason instanceof ApiError && reason.status === 400
-          ? unapprovedDependency(reason.message)
-          : null;
-      if (named) setClosure(unapprovedClosure(version, versions, named));
-      else if (reason instanceof ApiError && reason.status === 409) {
+      if (reason instanceof ApiError && reason.status === 400) {
+        // A missing dependency needs the whole-closure review, not a retry.
+        setReviewOpen(true);
+      } else if (reason instanceof ApiError && reason.status === 409) {
         setError(t("catalogConflict"));
         await client.invalidateQueries({ queryKey: ["registry-versions"] });
       } else
@@ -258,16 +248,6 @@ export function CatalogApprovalSection({
     decide(() =>
       authorizationSetCatalog(path, {
         ...approvalRequest(version, false),
-        node: selected!.name,
-      }),
-    );
-  const approveClosure = (needed: Closure) =>
-    decide(() =>
-      authorizationApproveCatalog(path, {
-        approvals: [
-          ...needed.dependencies.map((item) => approvalRequest(item, true)),
-          approvalRequest(version, true, sentGroups, requestedRestriction()),
-        ],
         node: selected!.name,
       }),
     );
@@ -420,96 +400,47 @@ export function CatalogApprovalSection({
           )}
         </>
       )}
-      {closure && (
-        <div
-          className="catalog-dependencies grid gap-2 rounded-md border border-border bg-surface px-3 py-2.5"
-          role="group"
-          aria-label={t("catalogDependencies")}
-        >
-          <h5 className={subheading}>{t("catalogDependencies")}</h5>
-          <Hint>{t("catalogDependenciesHelp")}</Hint>
-          <ul className="grid gap-1.5 text-xs">
-            {[...closure.dependencies, version].map((item) => {
-              const keyless = keylessOrigin(item.entry);
-              const routes = deciderRecipients(item.entry);
-              const itemPlugins = agentPlugins(item.entry);
-              return (
-                <li
-                  key={`${item.entry.id}@${item.entry.version}`}
-                  className="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1"
-                >
-                  <span className="min-w-0 font-medium text-foreground [overflow-wrap:anywhere]">
-                    {label(item.entry)}
-                  </span>
-                  <Badge value={item.entry.kind} />
-                  {keyless && <KeylessOrigin origin={keyless} />}
-                  {routes && <DeciderRecipients recipients={routes} />}
-                  {itemPlugins && (
-                    <div className="w-full">
-                      <AgentPluginsDisclosure plugins={itemPlugins} admits />
-                    </div>
-                  )}
-                </li>
-              );
-            })}
-          </ul>
-          {closure.blocked.length > 0 && (
-            <div className="grid gap-1">
-              <p className="text-xs font-medium text-warning">
-                {t("catalogBlocked")}
-              </p>
-              <ul className="grid gap-1 text-xs text-muted-foreground">
-                {closure.blocked.map((blocked) => (
-                  <li
-                    key={`${blocked.reference.id}@${blocked.reference.version}`}
-                  >
-                    {label(blocked.reference)} ·{" "}
-                    {t(
-                      blocked.installed
-                        ? "catalogBlockedInstalled"
-                        : "catalogBlockedMissing",
-                    )}
-                  </li>
-                ))}
-              </ul>
-            </div>
-          )}
+      {tenant !== null &&
+        selected !== undefined &&
+        version.needs_approval &&
+        !installed && (
           <div className="flex flex-wrap gap-2">
+            {decides && state === "approved" ? (
+              <Button
+                size="sm"
+                variant="outline"
+                disabled={busy}
+                onClick={() => void withdraw()}
+              >
+                {t("catalogWithdraw")}
+              </Button>
+            ) : decides ? (
+              <Button size="sm" disabled={busy} onClick={() => void approve()}>
+                {t("catalogApprove")}
+              </Button>
+            ) : null}
             <Button
               size="sm"
-              disabled={busy || closure.blocked.length > 0}
-              onClick={() => void approveClosure(closure)}
-            >
-              {t("catalogApproveAll")} ({closure.dependencies.length + 1})
-            </Button>
-            <Button
-              size="sm"
-              variant="ghost"
+              variant={decides ? "outline" : "default"}
               disabled={busy}
-              onClick={() => setClosure(undefined)}
+              onClick={() => setReviewOpen((open) => !open)}
             >
-              {t("cancel")}
+              {t("approvalReview")}
             </Button>
           </div>
-        </div>
-      )}
-      {decides && !closure && (
-        <div className="flex flex-wrap gap-2">
-          {state === "approved" ? (
-            <Button
-              size="sm"
-              variant="outline"
-              disabled={busy}
-              onClick={() => void withdraw()}
-            >
-              {t("catalogWithdraw")}
-            </Button>
-          ) : (
-            <Button size="sm" disabled={busy} onClick={() => void approve()}>
-              {t("catalogApprove")}
-            </Button>
-          )}
-        </div>
+        )}
+      {reviewOpen && tenant !== null && selected !== undefined && (
+        <ApprovalReviewPanel
+          tenant={tenant}
+          node={selected.name}
+          root={{ id: entry.id, version: entry.version }}
+          subject={access.kind === "subject" ? access.subject : undefined}
+          canApprove={can("catalog.approve")}
+          onClose={() => setReviewOpen(false)}
+          onChanged={() =>
+            client.invalidateQueries({ queryKey: ["registry-versions"] })
+          }
+        />
       )}
       {error && <Alert>{error}</Alert>}
       {version.needs_approval && (

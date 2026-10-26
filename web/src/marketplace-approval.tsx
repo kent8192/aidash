@@ -16,6 +16,7 @@ import { useNodes } from "./nodes";
 import { Panel, useI18n } from "./ui";
 import { RecordView } from "./record-view";
 import { marketplaceCopy } from "./marketplace-copy";
+import { ApprovalReviewPanel } from "./approval-review";
 import {
   Alert,
   Check,
@@ -43,10 +44,11 @@ export function ApprovalSetReview({
   const { locale } = useI18n();
   const copy = marketplaceCopy[locale];
   const [review, setReview] = useState<ApprovalSet>();
+  const [reviewing, setReviewing] = useState<MarketplaceInstallationRevision>();
   const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState("");
   // An activation is decided against the default Node's Catalog Approvals.
-  const { home } = useNodes();
+  const { home, selected } = useNodes();
   const catalog = useQuery({
     queryKey: [...context, "review-catalog", home?.name],
     queryFn: () => authorizationCatalog(tenant, { node: home!.name }),
@@ -86,6 +88,21 @@ export function ApprovalSetReview({
       item.installation.active_revision !== item.revision,
   );
   const selectedCount = review?.installations.length ?? 0;
+  const reviewNode = selected ?? home;
+  if (reviewing && reviewNode)
+    return (
+      <ApprovalReviewPanel
+        tenant={tenant}
+        node={reviewNode.name}
+        root={{
+          id: reviewing.entry.id,
+          version: reviewing.entry.version,
+        }}
+        canApprove
+        onClose={() => setReviewing(undefined)}
+        onChanged={() => onSaved()}
+      />
+    );
   return (
     <Panel
       title={copy.reviewSet}
@@ -166,6 +183,14 @@ export function ApprovalSetReview({
                 <span className="min-w-0 break-all font-mono text-[11px] text-faint">
                   {copy.installationRevision}: {item.revision} · {item.digest}
                 </span>
+                <Button
+                  size="sm"
+                  variant="outline"
+                  disabled={busy || !home}
+                  onClick={() => setReviewing(item)}
+                >
+                  {copy.reviewOnNode}
+                </Button>
               </div>
               <Disclosure className="pl-5.5" summary={copy.reviewDefinition}>
                 <RecordView
