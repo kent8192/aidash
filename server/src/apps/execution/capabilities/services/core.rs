@@ -28,7 +28,7 @@ pub(crate) mod patch;
 #[path = "python.rs"]
 pub(crate) mod python;
 #[path = "reclamation.rs"]
-pub(crate) mod reclamation;
+pub mod reclamation;
 #[path = "records.rs"]
 pub(crate) mod records;
 #[path = "references.rs"]

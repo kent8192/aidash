@@ -1,24 +1,16 @@
 //! A cited File version survives later publications until its last hold goes.
 use super::*;
-use aidash_application::ports::capabilities::{
-	cleanup::ErasureScope as _, reclamation::ReclamationRepository as _,
-};
 use aidash_domain::capabilities::retention::Holder;
 use base64::Engine;
 use reinhardt::query::{Alias, Expr, PostgresQueryBuilder, Query};
 
-async fn access(c: &CoreFixture) -> crate::authorization::access::Access {
-	let auth = crate::authorization::Authorization {
+async fn actor(c: &CoreFixture) -> aidash_server::authorization::identity::Actor {
+	aidash_server::authorization::Authorization {
 		pool: c.f.store.pool.clone(),
-	};
-	let crate::authorization::identity::Actor::Subject(identity) =
-		auth.authenticate(&c.token).await.unwrap()
-	else {
-		panic!("the fixture credential is a subject")
-	};
-	crate::authorization::access::Access::begin(&c.f.store, &identity)
-		.await
-		.unwrap()
+	}
+	.authenticate(&c.token)
+	.await
+	.unwrap()
 }
 
 async fn counts(c: &CoreFixture, sql: &str) -> i64 {
@@ -95,35 +87,39 @@ async fn a_cited_html_revision_survives_later_publications_and_release_reclaims_
 	)
 	.await;
 	let area_id: Uuid = serde_json::from_value(area["id"].clone()).unwrap();
-	let html = area["manifest"]
-		.as_array()
-		.unwrap()
-		.iter()
-		.find(|file| file["path"] == "index.html")
-		.unwrap()["file_id"]
-		.clone();
-	let sibling = area["manifest"]
-		.as_array()
-		.unwrap()
-		.iter()
-		.find(|file| file["path"] == "assets/app.js")
-		.unwrap()["file_id"]
-		.clone();
-	let html: Uuid = serde_json::from_value(html).unwrap();
-	let sibling: Uuid = serde_json::from_value(sibling).unwrap();
+	let html: Uuid = serde_json::from_value(
+		area["manifest"]
+			.as_array()
+			.unwrap()
+			.iter()
+			.find(|file| file["path"] == "index.html")
+			.unwrap()["file_id"]
+			.clone(),
+	)
+	.unwrap();
+	let sibling: Uuid = serde_json::from_value(
+		area["manifest"]
+			.as_array()
+			.unwrap()
+			.iter()
+			.find(|file| file["path"] == "assets/app.js")
+			.unwrap()["file_id"]
+			.clone(),
+	)
+	.unwrap();
 	let message = source(&c, run.workspace_id, "cite the HTML page").await;
 	let holder = Holder::Message {
 		message_id: message,
 	};
-	let mut authority = access(&c).await;
-	let retained = crate::apps::execution::capabilities::services::retention::retain(
-		&c.f.store,
-		&mut authority,
+	let hold = aidash_server::capabilities::retention::retain_for(
+		&c.f,
+		actor(&c).await,
 		area_id,
 		html,
 		holder.clone(),
-	);
-	let hold = authority.finish(retained).await.unwrap();
+	)
+	.await
+	.unwrap();
 	assert_eq!(
 		hold.files.len(),
 		2,
@@ -169,13 +165,12 @@ async fn a_cited_html_revision_survives_later_publications_and_release_reclaims_
 	assert_eq!(text(&bytes), "old()\n");
 
 	// Releasing the last hold lets the ordinary reclamation erase both.
-	let mut authority = access(&c).await;
-	let released = crate::apps::execution::capabilities::services::retention::release(
-		&c.f.store,
-		&mut authority,
-		&holder,
+	assert_eq!(
+		aidash_server::capabilities::retention::release_for(&c.f, actor(&c).await, &holder)
+			.await
+			.unwrap(),
+		1
 	);
-	assert_eq!(authority.finish(released).await.unwrap(), 1);
 	let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(15);
 	while object_exists(&c, html).await || object_exists(&c, sibling).await {
 		assert!(
@@ -228,17 +223,17 @@ async fn a_tenant_over_its_storage_ceiling_cannot_retain_a_version(
 		.await
 		.unwrap();
 	let message = source(&c, run.workspace_id, "cite over quota").await;
-	let mut authority = access(&c).await;
-	let retained = crate::apps::execution::capabilities::services::retention::retain(
-		&c.f.store,
-		&mut authority,
+	let error = aidash_server::capabilities::retention::retain_for(
+		&c.f,
+		actor(&c).await,
 		area_id,
 		file,
 		Holder::Message {
 			message_id: message,
 		},
-	);
-	let error = authority.finish(retained).await.unwrap_err();
+	)
+	.await
+	.unwrap_err();
 	assert!(
 		error.to_string().starts_with("QUOTA_EXCEEDED"),
 		"a refused hold explains the ceiling, not a missing version: {error}"
@@ -249,12 +244,13 @@ async fn a_tenant_over_its_storage_ceiling_cannot_retain_a_version(
 
 #[rstest::rstest]
 #[tokio::test]
-async fn cleanup_releases_holds_and_expired_federation_holds_are_swept(
+async fn cleanup_releases_holds_and_lets_their_versions_go(
 	#[future] capability_fixture: CoreFixture,
 ) {
 	let c = capability_fixture.await;
 	assert!(
-		crate::database::classification::purged().any(|table| table == "core_retention_holds"),
+		aidash_server::database::classification::purged()
+			.any(|table| table == "core_retention_holds"),
 		"Tenant purge deletes retention holds"
 	);
 	let run = admit(&c).await;
@@ -278,36 +274,102 @@ async fn cleanup_releases_holds_and_expired_federation_holds_are_swept(
 	let area_id: Uuid = serde_json::from_value(area["id"].clone()).unwrap();
 	let file: Uuid = serde_json::from_value(area["manifest"][0]["file_id"].clone()).unwrap();
 	let message = source(&c, run.workspace_id, "cite for cleanup").await;
-	let mut authority = access(&c).await;
-	let retained = crate::apps::execution::capabilities::services::retention::retain(
-		&c.f.store,
-		&mut authority,
+	aidash_server::capabilities::retention::retain_for(
+		&c.f,
+		actor(&c).await,
 		area_id,
 		file,
 		Holder::Message {
 			message_id: message,
 		},
-	);
-	authority.finish(retained).await.unwrap();
+	)
+	.await
+	.unwrap();
 	assert_eq!(holds(&c, "acme").await, 1);
-	let native: crate::apps::execution::capabilities::serializers::contracts::Area =
-		serde_json::from_value(area.clone()).unwrap();
-	let domain: aidash_domain::capabilities::sessions::Area = native.into();
-	let repository = crate::bootstrap::cleanup_repository(&c.f.store);
-	let mut scope = repository.begin().await.unwrap();
-	scope.release_holds(&domain).await.unwrap();
-	scope.finish(Ok(true)).await.unwrap();
+
+	// An irreversible cleanup erases the Area, so it must release its holds.
+	let revision = area["revision"].clone();
+	let (status, confirmation) = request(
+		&c.app,
+		&c.token,
+		"POST",
+		&format!("/api/working-areas/{area_id}/deletion-confirmation"),
+		json!({"expected_revision":revision}),
+	)
+	.await;
+	assert_eq!(status, 200, "{confirmation}");
+	let (status, deletion) = request(
+		&c.app,
+		&c.token,
+		"POST",
+		&format!("/api/working-areas/{area_id}/cleanup"),
+		json!({"idempotency_key":Uuid::new_v4(),"expected_revision":revision,"choice":"irreversible","confirmation_id":confirmation["confirmation_id"]}),
+	)
+	.await;
+	assert_eq!(status, 200, "{deletion}");
+	let operation: Uuid = serde_json::from_value(deletion["operation_id"].clone()).unwrap();
+	let (status, reconciled) = request(
+		&c.app,
+		&c.token,
+		"POST",
+		&format!("/api/file-cleanups/{operation}/reconcile"),
+		json!({}),
+	)
+	.await;
+	assert_eq!(status, 200, "{reconciled}");
+	let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(15);
+	loop {
+		let (_, state) = request(
+			&c.app,
+			&c.token,
+			"GET",
+			&format!("/api/file-cleanups/{operation}"),
+			Value::Null,
+		)
+		.await;
+		if state["state"] == "deleted" {
+			break;
+		}
+		assert!(tokio::time::Instant::now() < deadline, "{state}");
+		tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+	}
 	assert_eq!(
 		holds(&c, "acme").await,
 		0,
 		"cleanup removes the Working Area's holds"
 	);
+	c.close().await;
+}
 
-	// A Federation hold keeps its File versions only until its period ends.
-	let mut authority = access(&c).await;
-	let retained = crate::apps::execution::capabilities::services::retention::retain(
-		&c.f.store,
-		&mut authority,
+#[rstest::rstest]
+#[tokio::test]
+async fn the_reclamation_sweep_releases_an_expired_federation_hold(
+	#[future] capability_fixture: CoreFixture,
+) {
+	let c = capability_fixture.await;
+	let run = admit(&c).await;
+	let (status, created) = request(
+		&c.app,
+		&c.token,
+		"POST",
+		&path_for_patch(run.id),
+		json!({"idempotency_key":Uuid::new_v4(),"expected_revision":1,"preconditions":{"delegated.html":null},"patch":"*** Begin Patch\n*** Add File: delegated.html\n+<html>delegated</html>\n*** End Patch"}),
+	)
+	.await;
+	assert_eq!(status, 200, "{created}");
+	let (_, area) = request(
+		&c.app,
+		&c.token,
+		"GET",
+		&format!("/api/runs/{}/working-area", run.id),
+		Value::Null,
+	)
+	.await;
+	let area_id: Uuid = serde_json::from_value(area["id"].clone()).unwrap();
+	let file: Uuid = serde_json::from_value(area["manifest"][0]["file_id"].clone()).unwrap();
+	aidash_server::capabilities::retention::retain_for(
+		&c.f,
+		actor(&c).await,
 		area_id,
 		file,
 		Holder::Federation {
@@ -315,13 +377,22 @@ async fn cleanup_releases_holds_and_expired_federation_holds_are_swept(
 			reference_id: "delegated-run".into(),
 			expires_at: chrono::Utc::now() - chrono::Duration::seconds(1),
 		},
-	);
-	authority.finish(retained).await.unwrap();
+	)
+	.await
+	.unwrap();
 	assert_eq!(holds(&c, "acme").await, 1);
-	crate::bootstrap::reclamation_repository(&c.f.store)
-		.expire_holds()
-		.await
-		.unwrap();
-	assert_eq!(holds(&c, "acme").await, 0);
+	let WorkerControl { stop, receiver: rx } = worker_control();
+	let worker = tokio::spawn(aidash_server::capabilities::reclamation::run(
+		c.f.store.clone(),
+		rx,
+	));
+	tokio::time::sleep(std::time::Duration::from_millis(2500)).await;
+	assert_eq!(
+		holds(&c, "acme").await,
+		0,
+		"the sweep releases a Federation hold whose period ended"
+	);
+	let _ = stop.send(true);
+	worker.await.unwrap().unwrap();
 	c.close().await;
 }

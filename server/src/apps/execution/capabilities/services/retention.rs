@@ -53,3 +53,41 @@ pub async fn retained_manifest(
 	.await
 	.map_err(Into::into)
 }
+
+/// Retains a File version for an authenticated actor, opening its own authority
+/// transaction and committing it. HTTP adapters and the acceptance tests use
+/// this; callers that already hold a transaction call [`retain`] instead.
+pub async fn retain_for(
+	f: &crate::federation::Federation,
+	actor: crate::authorization::identity::Actor,
+	area: Uuid,
+	file: Uuid,
+	holder: Holder,
+) -> Result<RetentionHold> {
+	let mut access = super::endpoints::access(f, actor).await?;
+	let result = retain(&f.store, &mut access, area, file, holder).await;
+	access.finish(result).await
+}
+
+/// Releases every hold of `holder` for an authenticated actor.
+pub async fn release_for(
+	f: &crate::federation::Federation,
+	actor: crate::authorization::identity::Actor,
+	holder: &Holder,
+) -> Result<u64> {
+	let mut access = super::endpoints::access(f, actor).await?;
+	let result = release(&f.store, &mut access, holder).await;
+	access.finish(result).await
+}
+
+/// The held File versions of `file` for an authenticated actor.
+pub async fn retained_manifest_for(
+	f: &crate::federation::Federation,
+	actor: crate::authorization::identity::Actor,
+	area: Uuid,
+	file: Uuid,
+) -> Result<Option<Vec<RetainedFile>>> {
+	let mut access = super::endpoints::access(f, actor).await?;
+	let result = retained_manifest(&f.store, &mut access, area, file).await;
+	access.finish(result).await
+}
