@@ -16,7 +16,8 @@ import { Field, useI18n } from "../ui";
 import { post } from "./client";
 import type { ApprovalCard as Approval } from "../generated/models";
 import { requestPrice, runGrantScope } from "../research";
-import { useViewerSubject } from "../approval-queries";
+import { ApprovalObservation } from "../approval-observation";
+import { useViewerTenant, useViewerSubject } from "../approval-queries";
 import {
   approvalCopy,
   givenByText,
@@ -242,6 +243,7 @@ export function ApprovalCardView({ item }: { item: Approval }) {
   const ja = locale === "ja-JP";
   const words = approvalCopy[locale];
   const viewer = useViewerSubject();
+  const tenant = useViewerTenant();
   const advance = givenBy(item.given_by);
   const refusal = refusedBy(item.refused_by);
   const client = useQueryClient();
@@ -328,6 +330,13 @@ export function ApprovalCardView({ item }: { item: Approval }) {
             item.decided_by ?? "?",
           )}
         </Hint>
+      )}
+      {tenant && item.kind !== "grant" && (
+        <ApprovalObservation
+          tenant={tenant}
+          kind="capability"
+          approval={item.id}
+        />
       )}
       {item.state === "pending" && item.viewer_is_approver && (
         <>

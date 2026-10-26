@@ -100,6 +100,7 @@ const pretty = (value: unknown) => JSON.stringify(value, null, 2);
  *  refused request. */
 type PolicyAccess = {
   deploymentAdministrator: boolean;
+  issuableSubjects?: string[];
   can: (action: string) => boolean;
 };
 const DEPLOYMENT_ADMINISTRATOR: PolicyAccess = {
@@ -107,21 +108,23 @@ const DEPLOYMENT_ADMINISTRATOR: PolicyAccess = {
   can: () => true,
 };
 
-/** A Tenant's own view of its policy, credentials and Peer Mappings, for a
- *  subject whose Tenant's policy grants `policy.read`. */
+/** A Tenant's policy, credentials and Peer Mappings, each shown under the
+ *  caller's independently granted action. */
 export function TenantPolicyAdministration({
   tenant,
   can,
+  issuableSubjects,
 }: {
   tenant: string;
   can: (action: string) => boolean;
+  issuableSubjects: string[];
 }) {
   return (
     <div className="authorization-page grid min-w-0 gap-6">
       <TenantAuthorization
         tenant={tenant}
         invitations={false}
-        access={{ deploymentAdministrator: false, can }}
+        access={{ deploymentAdministrator: false, can, issuableSubjects }}
       />
     </div>
   );
@@ -211,18 +214,23 @@ function TenantAuthorization({
   const [editor, setEditor] = useState<Snapshot | null>(null);
   const [issuing, setIssuing] = useState(false);
   const [issued, setIssued] = useState<IssuedCredential | null>(null);
+  const [issuedChoices, setIssuedChoices] = useState<Credential[]>([]);
   const [revoking, setRevoking] = useState<Credential | null>(null);
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
   const snapshot = useQuery({
     queryKey: ["authorization", tenant, "snapshot"],
     queryFn: () => authorizationSnapshot(path),
+    enabled: access.can("policy.read"),
     retry: false,
     refetchInterval: 5000,
   });
   const missing =
-    snapshot.error instanceof ApiError && snapshot.error.status === 404;
-  const current = !snapshot.isError ? snapshot.data : undefined;
+    access.can("policy.read") &&
+    snapshot.error instanceof ApiError &&
+    snapshot.error.status === 404;
+  const current =
+    access.can("policy.read") && !snapshot.isError ? snapshot.data : undefined;
   const admissions = useQuery({
     queryKey: ["authorization", tenant, "transaction-revocations"],
     queryFn: () => transactionRevocations(path),
@@ -239,9 +247,25 @@ function TenantAuthorization({
         if (page.length < 200) return all;
       }
     },
-    enabled: !!current && access.can("credential.read"),
+    enabled: access.can("credential.read"),
     refetchInterval: 5000,
   });
+  const issueSubjects = access.deploymentAdministrator
+    ? Object.entries(current?.bundle.subjects ?? {})
+        .filter(([, subject]) => subject.enabled !== false)
+        .map(([id]) => id)
+    : (access.issuableSubjects ?? []);
+  const canIssue = issueSubjects.length > 0;
+  const mappingCredentials = [
+    ...new Map(
+      [
+        ...issuedChoices,
+        ...(!credentials.isError && access.can("credential.read")
+          ? (credentials.data ?? [])
+          : []),
+      ].map((credential) => [credential.id, credential]),
+    ).values(),
+  ];
   const message = (reason: unknown) =>
     reason instanceof ApiError && reason.status === 409
       ? t("authConflict")
@@ -274,7 +298,9 @@ function TenantAuthorization({
       setError("");
     }
   };
-  const modal = !!editor || issuing || !!revoking;
+  const canRevoke =
+    access.can("credential.read") && access.can("credential.revoke");
+  const modal = (!!current && !!editor) || issuing || (canRevoke && !!revoking);
   return (
     <>
       <div className="grid min-w-0 gap-3">
@@ -297,8 +323,8 @@ function TenantAuthorization({
           </Notice>
         )}
         {error && !modal && <Alert>{error}</Alert>}
-        {snapshot.isPending && <Loading />}
-        {snapshot.isError && !missing && (
+        {access.can("policy.read") && snapshot.isPending && <Loading />}
+        {access.can("policy.read") && snapshot.isError && !missing && (
           <Alert retry={() => void snapshot.refetch()}>
             {snapshot.error.message}
           </Alert>
@@ -353,133 +379,135 @@ function TenantAuthorization({
           canRevoke
         />
       )}
-      {current && (
-        <>
+      <>
+        {current && (
           <EvaluationPanel
             key={current.revision}
             tenant={tenant}
             snapshot={current}
             record={access.deploymentAdministrator}
           />
-          {/* Issuing is granted apart from reading: either opens the panel,
+        )}
+        {/* Issuing is granted apart from reading: either opens the panel,
               and only reading shows the list. */}
-          {(access.can("credential.read") ||
-            access.can("credential.issue")) && (
-            <Panel
-              title={t("authCredentials")}
-              action={
-                access.can("credential.issue") && (
-                  <Button
-                    variant="outline"
-                    size="sm"
-                    onClick={() => {
-                      setError("");
-                      setIssued(null);
-                      setIssuing(true);
-                    }}
-                  >
-                    {t("authIssueCredential")}
-                  </Button>
-                )
-              }
-            >
-              <Hint>{t("authCredentialsHelp")}</Hint>
-              {access.can("credential.read") && credentials.isError && (
-                <Alert>{credentials.error.message}</Alert>
-              )}
-              {access.can("credential.read") && credentials.isPending && (
-                <Loading />
-              )}
-              {access.can("credential.read") &&
-                !credentials.isError &&
-                credentials.data?.length === 0 && <Empty />}
-              {access.can("credential.read") &&
-                !credentials.isError &&
-                !!credentials.data?.length && (
-                  <RowList>
-                    {credentials.data.map((credential) => (
-                      <div
-                        className="auth-row grid min-w-0 grid-cols-[minmax(0,1fr)_auto] items-center gap-x-4 gap-y-2 py-2 sm:grid-cols-[minmax(0,1fr)_auto_auto]"
-                        key={credential.id}
-                      >
-                        <div className="grid min-w-0 gap-0.5">
-                          <span className="truncate font-medium text-foreground">
-                            {credential.subject}
-                          </span>
-                          <span className="truncate text-[11px] text-faint">
-                            <time
-                              className="font-mono"
-                              dateTime={credential.created_at}
-                            >
-                              {new Date(credential.created_at).toLocaleString(
-                                locale,
-                              )}
-                            </time>
-                            {" · "}
-                            {t("authExpires")}{" "}
-                            <time
-                              className="font-mono"
-                              dateTime={credential.expires_at}
-                            >
-                              {new Date(credential.expires_at).toLocaleString(
-                                locale,
-                              )}
-                            </time>
-                          </span>
-                        </div>
-                        <AccessBadge
-                          value={
-                            credential.revoked_at
-                              ? "authRevoked"
-                              : Date.parse(credential.expires_at) <=
-                                  credentials.dataUpdatedAt
-                                ? "authExpired"
-                                : "authActive"
-                          }
-                        />
-                        {!credential.revoked_at &&
-                          access.can("credential.revoke") && (
-                            <Button
-                              variant="destructive"
-                              size="sm"
-                              className="col-span-2 justify-self-start sm:col-span-1"
-                              disabled={busy}
-                              onClick={() => {
-                                setError("");
-                                setRevoking(credential);
-                              }}
-                            >
-                              {t("authRevoke")}
-                            </Button>
-                          )}
+        {(access.can("credential.read") || canIssue) && (
+          <Panel
+            title={t("authCredentials")}
+            action={
+              canIssue && (
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={() => {
+                    setError("");
+                    setIssued(null);
+                    setIssuing(true);
+                  }}
+                >
+                  {t("authIssueCredential")}
+                </Button>
+              )
+            }
+          >
+            <Hint>{t("authCredentialsHelp")}</Hint>
+            {access.can("credential.read") && credentials.isError && (
+              <Alert>{credentials.error.message}</Alert>
+            )}
+            {access.can("credential.read") && credentials.isPending && (
+              <Loading />
+            )}
+            {access.can("credential.read") &&
+              !credentials.isError &&
+              credentials.data?.length === 0 && <Empty />}
+            {access.can("credential.read") &&
+              !credentials.isError &&
+              !!credentials.data?.length && (
+                <RowList>
+                  {credentials.data.map((credential) => (
+                    <div
+                      className="auth-row grid min-w-0 grid-cols-[minmax(0,1fr)_auto] items-center gap-x-4 gap-y-2 py-2 sm:grid-cols-[minmax(0,1fr)_auto_auto]"
+                      key={credential.id}
+                    >
+                      <div className="grid min-w-0 gap-0.5">
+                        <span className="truncate font-medium text-foreground">
+                          {credential.subject}
+                        </span>
+                        <span className="truncate text-[11px] text-faint">
+                          <time
+                            className="font-mono"
+                            dateTime={credential.created_at}
+                          >
+                            {new Date(credential.created_at).toLocaleString(
+                              locale,
+                            )}
+                          </time>
+                          {" · "}
+                          {t("authExpires")}{" "}
+                          <time
+                            className="font-mono"
+                            dateTime={credential.expires_at}
+                          >
+                            {new Date(credential.expires_at).toLocaleString(
+                              locale,
+                            )}
+                          </time>
+                        </span>
                       </div>
-                    ))}
-                  </RowList>
-                )}
-            </Panel>
-          )}
-          {access.can("peer_mapping.read") && (
-            <PeerMappings
-              tenant={tenant}
-              credentials={!credentials.isError ? (credentials.data ?? []) : []}
-              editable={access.can("peer_mapping.update")}
-            />
-          )}
+                      <AccessBadge
+                        value={
+                          credential.revoked_at
+                            ? "authRevoked"
+                            : Date.parse(credential.expires_at) <=
+                                credentials.dataUpdatedAt
+                              ? "authExpired"
+                              : "authActive"
+                        }
+                      />
+                      {!credential.revoked_at && canRevoke && (
+                        <Button
+                          variant="destructive"
+                          size="sm"
+                          className="col-span-2 justify-self-start sm:col-span-1"
+                          disabled={busy}
+                          onClick={() => {
+                            setError("");
+                            setRevoking(credential);
+                          }}
+                        >
+                          {t("authRevoke")}
+                        </Button>
+                      )}
+                    </div>
+                  ))}
+                </RowList>
+              )}
+          </Panel>
+        )}
+        {(access.can("peer_mapping.read") ||
+          access.can("peer_mapping.update")) && (
+          <PeerMappings
+            tenant={tenant}
+            credentials={mappingCredentials}
+            readable={access.can("peer_mapping.read")}
+            editable={access.can("peer_mapping.update")}
+          />
+        )}
+        {current && (
           <HistoryPanel
             key={`${tenant}-revisions`}
             tenant={tenant}
             kind="revisions"
           />
-          {access.can("decision.read") && (
-            <HistoryPanel
-              key={`${tenant}-decisions`}
-              tenant={tenant}
-              kind="decisions"
-            />
-          )}
-        </>
-      )}
-      {editor && (
+        )}
+        {access.can("decision.read") && (
+          <HistoryPanel
+            key={`${tenant}-decisions`}
+            tenant={tenant}
+            kind="decisions"
+          />
+        )}
+      </>
+      {current && editor && (
         <Modal title={t("authEditPolicy")} close={close}>
           <PolicyEditor
             snapshot={editor}
@@ -513,6 +541,10 @@ function TenantAuthorization({
                 });
                 setIssuing(false);
                 setIssued(value);
+                setIssuedChoices((previous) => [
+                  ...previous.filter((item) => item.id !== value.credential.id),
+                  value.credential,
+                ]);
               });
             }}
           >
@@ -520,19 +552,9 @@ function TenantAuthorization({
             <div className="grid gap-3 sm:grid-cols-2">
               <Field label={t("authSubject")}>
                 <NativeSelect name="subject" required className="font-mono">
-                  {Object.entries(current?.bundle.subjects ?? {})
-                    // A Tenant issues credentials only for its service and
-                    // agent subjects; a person issues its own (ADR 0063).
-                    .filter(
-                      ([, subject]) =>
-                        subject.enabled !== false &&
-                        (access.deploymentAdministrator ||
-                          subject.kind === "service" ||
-                          subject.kind === "agent"),
-                    )
-                    .map(([id]) => (
-                      <option key={id}>{id}</option>
-                    ))}
+                  {issueSubjects.map((id) => (
+                    <option key={id}>{id}</option>
+                  ))}
                 </NativeSelect>
               </Field>
               <Field label={t("authLifetime")}>
@@ -587,7 +609,7 @@ function TenantAuthorization({
           </div>
         </Modal>
       )}
-      {revoking && (
+      {revoking && canRevoke && (
         <Modal title={t("authRevoke")} close={close}>
           <div className="grid min-w-0 gap-3">
             <p className="text-[13px] leading-relaxed text-muted-foreground">

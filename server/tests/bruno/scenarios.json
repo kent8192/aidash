@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "endpoint_count": 342,
+  "endpoint_count": 346,
   "requests": [
     {
       "name": "Health reports the configured node",
@@ -14824,8 +14824,224 @@
       ]
     },
     {
-      "name": "1349 tenant-nodes-create - Create a disposable lifecycle Node",
-      "file": "contracts/1349-tenant-nodes-create.bru",
+      "name": "1349 approval-observer - Anonymous request is rejected",
+      "file": "contracts/1349-approval-observer.bru",
+      "endpoint": "GET /api/tenants/{tenant}/approval-observer",
+      "scenario": "Anonymous request is rejected",
+      "status": 401,
+      "required_checks": [
+        "Exact HTTP 401",
+        "Stable authorization error envelope"
+      ]
+    },
+    {
+      "name": "1350 approval-observer - Forged bearer cannot inspect approval observations",
+      "file": "contracts/1350-approval-observer.bru",
+      "endpoint": "GET /api/tenants/{tenant}/approval-observer",
+      "scenario": "Forged bearer cannot inspect approval observations",
+      "status": 401,
+      "required_checks": [
+        "Exact HTTP 401",
+        "Stable authorization error envelope"
+      ]
+    },
+    {
+      "name": "1351 approval-observer - Deployment Administrator bearer cannot inspect Tenant observations",
+      "file": "contracts/1351-approval-observer.bru",
+      "endpoint": "GET /api/tenants/{tenant}/approval-observer",
+      "scenario": "Deployment Administrator bearer cannot inspect Tenant observations",
+      "status": 403,
+      "required_checks": [
+        "Exact HTTP 403",
+        "Stable authorization error envelope"
+      ]
+    },
+    {
+      "name": "1352 approval-observer - Subject Credential bearer cannot administer the observer",
+      "file": "contracts/1352-approval-observer.bru",
+      "endpoint": "GET /api/tenants/{tenant}/approval-observer",
+      "scenario": "Subject Credential bearer cannot administer the observer",
+      "status": 403,
+      "required_checks": [
+        "Exact HTTP 403",
+        "Stable authorization error envelope"
+      ]
+    },
+    {
+      "name": "1353 approval-observer-update - Anonymous request is rejected",
+      "file": "contracts/1353-approval-observer-update.bru",
+      "endpoint": "PUT /api/tenants/{tenant}/approval-observer",
+      "scenario": "Anonymous request is rejected",
+      "status": 401,
+      "required_checks": [
+        "Rejected input preserves committed workspace state",
+        "Exact HTTP 401",
+        "Stable authorization error envelope"
+      ]
+    },
+    {
+      "name": "1354 approval-observer-update - Forged bearer cannot inspect approval observations",
+      "file": "contracts/1354-approval-observer-update.bru",
+      "endpoint": "PUT /api/tenants/{tenant}/approval-observer",
+      "scenario": "Forged bearer cannot inspect approval observations",
+      "status": 401,
+      "required_checks": [
+        "Rejected input preserves committed workspace state",
+        "Exact HTTP 401",
+        "Stable authorization error envelope"
+      ]
+    },
+    {
+      "name": "1355 approval-observer-update - Deployment Administrator bearer cannot inspect Tenant observations",
+      "file": "contracts/1355-approval-observer-update.bru",
+      "endpoint": "PUT /api/tenants/{tenant}/approval-observer",
+      "scenario": "Deployment Administrator bearer cannot inspect Tenant observations",
+      "status": 403,
+      "required_checks": [
+        "Rejected input preserves committed workspace state",
+        "Exact HTTP 403",
+        "Stable authorization error envelope"
+      ]
+    },
+    {
+      "name": "1356 approval-observer-update - Subject Credential bearer cannot administer the observer",
+      "file": "contracts/1356-approval-observer-update.bru",
+      "endpoint": "PUT /api/tenants/{tenant}/approval-observer",
+      "scenario": "Subject Credential bearer cannot administer the observer",
+      "status": 403,
+      "required_checks": [
+        "Rejected input preserves committed workspace state",
+        "Exact HTTP 403",
+        "Stable authorization error envelope"
+      ]
+    },
+    {
+      "name": "1357 approval-observer-update - Wrong JSON media type is rejected",
+      "file": "contracts/1357-approval-observer-update.bru",
+      "endpoint": "PUT /api/tenants/{tenant}/approval-observer",
+      "scenario": "Wrong JSON media type is rejected",
+      "status": 415,
+      "required_checks": [
+        "Rejected input preserves committed workspace state",
+        "Exact HTTP 415",
+        "Rejection is diagnostic and does not disclose SQL or credentials"
+      ]
+    },
+    {
+      "name": "1358 approval-observer-update - Malformed JSON cannot reach the use case",
+      "file": "contracts/1358-approval-observer-update.bru",
+      "endpoint": "PUT /api/tenants/{tenant}/approval-observer",
+      "scenario": "Malformed JSON cannot reach the use case",
+      "status": 400,
+      "required_checks": [
+        "Rejected input preserves committed workspace state",
+        "Exact HTTP 400",
+        "Rejection is diagnostic and does not disclose SQL or credentials"
+      ]
+    },
+    {
+      "name": "1359 approval-observer-update - Observer revision is required",
+      "file": "contracts/1359-approval-observer-update.bru",
+      "endpoint": "PUT /api/tenants/{tenant}/approval-observer",
+      "scenario": "Observer revision is required",
+      "status": 422,
+      "required_checks": [
+        "Rejected input preserves committed workspace state",
+        "Exact HTTP 422",
+        "Rejection is diagnostic and does not disclose SQL or credentials"
+      ]
+    },
+    {
+      "name": "1360 approval-observation - Anonymous request is rejected",
+      "file": "contracts/1360-approval-observation.bru",
+      "endpoint": "GET /api/tenants/{tenant}/approval-observations/{kind}/{id}",
+      "scenario": "Anonymous request is rejected",
+      "status": 401,
+      "required_checks": [
+        "Exact HTTP 401",
+        "Stable authorization error envelope"
+      ]
+    },
+    {
+      "name": "1361 approval-observation - Forged bearer cannot inspect approval observations",
+      "file": "contracts/1361-approval-observation.bru",
+      "endpoint": "GET /api/tenants/{tenant}/approval-observations/{kind}/{id}",
+      "scenario": "Forged bearer cannot inspect approval observations",
+      "status": 401,
+      "required_checks": [
+        "Exact HTTP 401",
+        "Stable authorization error envelope"
+      ]
+    },
+    {
+      "name": "1362 approval-observation - Deployment Administrator bearer cannot inspect Tenant observations",
+      "file": "contracts/1362-approval-observation.bru",
+      "endpoint": "GET /api/tenants/{tenant}/approval-observations/{kind}/{id}",
+      "scenario": "Deployment Administrator bearer cannot inspect Tenant observations",
+      "status": 403,
+      "required_checks": [
+        "Exact HTTP 403",
+        "Stable authorization error envelope"
+      ]
+    },
+    {
+      "name": "1363 approval-observation - Observation resource IDs reject malformed UUIDs",
+      "file": "contracts/1363-approval-observation.bru",
+      "endpoint": "GET /api/tenants/{tenant}/approval-observations/{kind}/{id}",
+      "scenario": "Observation resource IDs reject malformed UUIDs",
+      "status": 400,
+      "required_checks": [
+        "Exact HTTP 400",
+        "Rejection is diagnostic and does not disclose SQL or credentials"
+      ]
+    },
+    {
+      "name": "1364 approval-observation-report - Anonymous request is rejected",
+      "file": "contracts/1364-approval-observation-report.bru",
+      "endpoint": "GET /api/tenants/{tenant}/approval-observations/report",
+      "scenario": "Anonymous request is rejected",
+      "status": 401,
+      "required_checks": [
+        "Exact HTTP 401",
+        "Stable authorization error envelope"
+      ]
+    },
+    {
+      "name": "1365 approval-observation-report - Forged bearer cannot inspect approval observations",
+      "file": "contracts/1365-approval-observation-report.bru",
+      "endpoint": "GET /api/tenants/{tenant}/approval-observations/report",
+      "scenario": "Forged bearer cannot inspect approval observations",
+      "status": 401,
+      "required_checks": [
+        "Exact HTTP 401",
+        "Stable authorization error envelope"
+      ]
+    },
+    {
+      "name": "1366 approval-observation-report - Deployment Administrator bearer cannot inspect Tenant observations",
+      "file": "contracts/1366-approval-observation-report.bru",
+      "endpoint": "GET /api/tenants/{tenant}/approval-observations/report",
+      "scenario": "Deployment Administrator bearer cannot inspect Tenant observations",
+      "status": 403,
+      "required_checks": [
+        "Exact HTTP 403",
+        "Stable authorization error envelope"
+      ]
+    },
+    {
+      "name": "1367 approval-observation-report - Subject Credential bearer cannot administer the observer",
+      "file": "contracts/1367-approval-observation-report.bru",
+      "endpoint": "GET /api/tenants/{tenant}/approval-observations/report",
+      "scenario": "Subject Credential bearer cannot administer the observer",
+      "status": 403,
+      "required_checks": [
+        "Exact HTTP 403",
+        "Stable authorization error envelope"
+      ]
+    },
+    {
+      "name": "1368 tenant-nodes-create - Create a disposable lifecycle Node",
+      "file": "contracts/1368-tenant-nodes-create.bru",
       "endpoint": "POST /api/tenants/{tenant}/nodes",
       "scenario": "Create a disposable lifecycle Node",
       "status": 201,
@@ -14836,8 +15052,8 @@
       ]
     },
     {
-      "name": "1350 tenant-node-default - Select the created Node as default",
-      "file": "contracts/1350-tenant-node-default.bru",
+      "name": "1369 tenant-node-default - Select the created Node as default",
+      "file": "contracts/1369-tenant-node-default.bru",
       "endpoint": "POST /api/tenants/{tenant}/nodes/{node}/default",
       "scenario": "Select the created Node as default",
       "status": 200,
@@ -14848,8 +15064,8 @@
       ]
     },
     {
-      "name": "1351 tenant-node-default - Restore the original default Node",
-      "file": "contracts/1351-tenant-node-default.bru",
+      "name": "1370 tenant-node-default - Restore the original default Node",
+      "file": "contracts/1370-tenant-node-default.bru",
       "endpoint": "POST /api/tenants/{tenant}/nodes/{node}/default",
       "scenario": "Restore the original default Node",
       "status": 200,
@@ -14860,8 +15076,8 @@
       ]
     },
     {
-      "name": "1352 tenant-node-deletion - Delete the disposable nondefault Node",
-      "file": "contracts/1352-tenant-node-deletion.bru",
+      "name": "1371 tenant-node-deletion - Delete the disposable nondefault Node",
+      "file": "contracts/1371-tenant-node-deletion.bru",
       "endpoint": "POST /api/tenants/{tenant}/nodes/{node}/deletion",
       "scenario": "Delete the disposable nondefault Node",
       "status": 200,
@@ -14872,8 +15088,8 @@
       ]
     },
     {
-      "name": "1353 tenant-nodes - Ordinary selection excludes the deleted lifecycle Node",
-      "file": "contracts/1353-tenant-nodes.bru",
+      "name": "1372 tenant-nodes - Ordinary selection excludes the deleted lifecycle Node",
+      "file": "contracts/1372-tenant-nodes.bru",
       "endpoint": "GET /api/tenants/{tenant}/nodes",
       "scenario": "Ordinary selection excludes the deleted lifecycle Node",
       "status": 200,
@@ -14884,8 +15100,8 @@
       ]
     },
     {
-      "name": "1354 tenant-nodes - Management reads the exact deleted lifecycle record",
-      "file": "contracts/1354-tenant-nodes.bru",
+      "name": "1373 tenant-nodes - Management reads the exact deleted lifecycle record",
+      "file": "contracts/1373-tenant-nodes.bru",
       "endpoint": "GET /api/tenants/{tenant}/nodes",
       "scenario": "Management reads the exact deleted lifecycle record",
       "status": 200,
@@ -14896,8 +15112,8 @@
       ]
     },
     {
-      "name": "1355 tenant-node-restore - Restore the same lifecycle Node",
-      "file": "contracts/1355-tenant-node-restore.bru",
+      "name": "1374 tenant-node-restore - Restore the same lifecycle Node",
+      "file": "contracts/1374-tenant-node-restore.bru",
       "endpoint": "POST /api/tenants/{tenant}/nodes/{node}/restore",
       "scenario": "Restore the same lifecycle Node",
       "status": 200,
@@ -14908,8 +15124,8 @@
       ]
     },
     {
-      "name": "1356 tenant-nodes - Selection reads the restored Node at the same address",
-      "file": "contracts/1356-tenant-nodes.bru",
+      "name": "1375 tenant-nodes - Selection reads the restored Node at the same address",
+      "file": "contracts/1375-tenant-nodes.bru",
       "endpoint": "GET /api/tenants/{tenant}/nodes",
       "scenario": "Selection reads the restored Node at the same address",
       "status": 200,
@@ -14920,8 +15136,8 @@
       ]
     },
     {
-      "name": "1357 tenant-node-deletion - Retire the disposable Node after transport verification",
-      "file": "contracts/1357-tenant-node-deletion.bru",
+      "name": "1376 tenant-node-deletion - Retire the disposable Node after transport verification",
+      "file": "contracts/1376-tenant-node-deletion.bru",
       "endpoint": "POST /api/tenants/{tenant}/nodes/{node}/deletion",
       "scenario": "Retire the disposable Node after transport verification",
       "status": 200,

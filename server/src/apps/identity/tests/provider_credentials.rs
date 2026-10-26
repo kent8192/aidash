@@ -890,6 +890,7 @@ async fn workspace_embedding_credential_is_pinned_with_environment_model_admissi
 		maintenance: None,
 		provider_credential_id: None,
 		inference: None,
+		observation: None,
 	};
 	// Resolution reaches the deliberately unbound broker, proving it found the
 	// admitted embedding pin rather than failing at the Env-only Agent closure.
@@ -1144,6 +1145,7 @@ async fn admission_pins_local_tenant_id_and_reloads_state_without_environment_fa
 		maintenance: None,
 		provider_credential_id: None,
 		inference: None,
+		observation: None,
 	};
 	let mut maintenance = Context {
 		tenant: "beta".into(),
@@ -1152,6 +1154,7 @@ async fn admission_pins_local_tenant_id_and_reloads_state_without_environment_fa
 		// Supplied IDs cannot select another Tenant's record for maintenance.
 		provider_credential_id: Some(a.id),
 		inference: None,
+		observation: None,
 	};
 	assert!(
 		access

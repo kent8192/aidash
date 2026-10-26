@@ -43,7 +43,7 @@ fn normalization_records_trusted_origins_and_keeps_required_tools() {
 	assert_eq!(
 		normalized
 			.iter()
-			.filter(|b| b.origin == BindingOrigin::Required)
+			.filter(|b| b.origin == BindingOrigin::Required && b.binding.kind == BindingKind::Tool)
 			.count(),
 		2
 	);
@@ -243,7 +243,9 @@ fn deferred_normalization_swaps_skill_tools_for_exposure_tools() {
 	);
 	for binding in &normalized {
 		let operation = binding.binding.target.id.trim_start_matches("aidash.");
-		let required = REQUIRED_TOOLS.contains(&operation) || EXPOSURE_TOOLS.contains(&operation);
+		let required = REQUIRED_TOOLS.contains(&operation)
+			|| EXPOSURE_TOOLS.contains(&operation)
+			|| binding.binding.target.id == source_defaults::WORKSPACE_OBSERVATION_ID;
 		assert_eq!(
 			binding.origin == BindingOrigin::Required,
 			required,

@@ -256,6 +256,11 @@ impl PythonRepository for Repository<'_> {
 		.await;
 		result
 			.map(|o| HeapOperation {
+				writer_settled: aidash_domain::capabilities::operations::withdrawal::safe_to_erase(
+					&o.state,
+					&o.result,
+					o.runner_instance.as_deref(),
+				),
 				credential_id: o.credential_id,
 				tenant: o.tenant,
 				principal: o.principal,

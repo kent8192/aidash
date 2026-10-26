@@ -23,15 +23,7 @@ async fn agent_memory_sources_require_the_same_embedding_configuration(
 	#[case] private: bool,
 ) {
 	let mut scope = Scope::default();
-	for name in crate::registry::system::operations() {
-		let descriptor =
-			aidash_domain::tool::providers::core_descriptor("aidash://home", name).unwrap();
-		scope.put(definition(
-			&format!("aidash.{name}"),
-			"tool",
-			serde_json::to_value(descriptor).unwrap(),
-		));
-	}
+	scope.put_builtins("aidash://home");
 	scope.put(definition("rrf", "reranker", json!({"provider":"rrf"})));
 	scope.put(definition(
 		"tokens",

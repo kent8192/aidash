@@ -13,16 +13,17 @@ use crate::apps::execution::serializers::runs::RunDetails;
 use crate::apps::execution::serializers::state::StateResponse;
 use crate::apps::federation::remote::serializers::actions::SentResponse;
 use crate::apps::workspaces::serializers::entities::Event;
-use crate::apps::workspaces::serializers::entities::Run;
 use crate::apps::workspaces::serializers::entities::Task;
 use crate::apps::workspaces::serializers::management::MessageInput;
 use crate::apps::workspaces::serializers::tasks::PageQuery;
 use crate::{Result, config::openapi::Contracts};
+use aidash_domain::RunInspection;
 use aidash_domain::retention::RetentionChange;
 use reinhardt::rest::openapi::OpenApiSchema;
 use serde_json::Value;
 
 pub(crate) fn register(contracts: &mut Contracts, document: &mut OpenApiSchema) -> Result<()> {
+	super::super::observation::register(contracts, document)?;
 	contracts.response::<_, StateResponse>(
 		document,
 		views::management::state,
@@ -108,7 +109,7 @@ pub(crate) fn register(contracts: &mut Contracts, document: &mut OpenApiSchema) 
 	)?;
 	contracts.query::<_, HistoryPage>(document, views::research::retention_history)?;
 	contracts.path(document, views::research::retention_history, &["String"])?;
-	contracts.response::<_, Run>(
+	contracts.response::<_, RunInspection>(
 		document,
 		views::management::run_control,
 		200,

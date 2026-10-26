@@ -54,11 +54,22 @@ impl OperationProcessingRepository for Repository<'_> {
 		let result: NativeResult<Vec<(Uuid, String, Option<String>, String)>> = async {
 			let rows: Vec<(Uuid, String, Option<String>, String)> = {
 				let query_bind_1 = after;
+				let acknowledged = Expr::col("result").binary(
+					reinhardt::query::BinOper::PgOperator(
+						reinhardt::query::types::PgBinOper::JsonGetByIndex,
+					),
+					Expr::value("runner_acknowledged"),
+				);
 				crate::database::native::query_as(
 					&Query::select()
 						.columns(["id", "digest", "runner_instance", "state"].map(Alias::new))
 						.from(Alias::new("core_operations"))
-						.and_where(Expr::cust("result->'runner_acknowledged' = 'false'::jsonb"))
+						// Ordinary uncertain reconciliation historically omitted the
+						// ACK flag. Its stopped receipts still need output adoption.
+						.and_where(
+							acknowledged.clone().eq(Expr::value(serde_json::json!(false)))
+								.or(Expr::col("state").eq("uncertain").and(acknowledged.is_null())),
+						)
 						.and_where(
 							Expr::col(Alias::new("runner_instance"))
 								.is_not_null()

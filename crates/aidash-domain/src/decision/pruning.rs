@@ -113,7 +113,7 @@ pub fn apply(
 		};
 		match chosen(index) {
 			Branch::Keep => pruned.history.push(entry.clone()),
-			Branch::Drop if units.turns.is_some() => {
+			Branch::Drop if units.turn_of[index].is_some() => {
 				// The call stays in its Model Turn; only its result is elided.
 				let mut kept = entry.clone();
 				kept.event = ContextEvent::Tool {
@@ -138,6 +138,7 @@ pub fn apply(
 				let head: String = text.chars().take(TRUNCATED_HEAD).collect();
 				pruned.truncated += 1;
 				pruned.history.push(HistoryEntry {
+					research: entry.research_reference(),
 					seq: entry.seq,
 					event: ContextEvent::Tool {
 						call: call.clone(),

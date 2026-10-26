@@ -1,6 +1,7 @@
 import { expect, test } from "@playwright/test";
 import { installBearerDashboard } from "./auth-fixture";
-import { builtInApprovalDecider } from "./registry-fixture";
+import { setup } from "./collaboration-fixture";
+import { builtInApprovalDecider, defaultNode } from "./registry-fixture";
 
 const access = { kind: "subject", tenant: "alpha", subject: "alice" };
 const mapping = (
@@ -719,6 +720,7 @@ test("a policy reader allowed to issue credentials but not to list them can stil
         json: {
           tenant: "alpha",
           actions: ["policy.read", "credential.issue"],
+          issuable_subjects: ["ci"],
           assignable_groups: [],
           policy_revision: 3,
         },
@@ -729,7 +731,10 @@ test("a policy reader allowed to issue credentials but not to list them can stil
           revision: 3,
           bundle: {
             tenant: "alpha",
-            subjects: { alice: { kind: "user", groups: [] } },
+            subjects: {
+              alice: { kind: "user", groups: [] },
+              ci: { kind: "service", groups: [] },
+            },
             groups: {},
             roles: {},
             policies: [],
@@ -872,3 +877,349 @@ test("Tenant Secrets clear values after writing and edit hosts without returning
     panel.getByText("fingerprint-296", { exact: false }),
   ).toHaveCount(0);
 });
+
+test("readable mappings and item-scoped issuance support peer writes without credential reads", async ({
+  page,
+}) => {
+  await setup(page, {
+    locale: "en-US",
+    subject: true,
+    tenantActions: ["peer_mapping.read", "peer_mapping.update"],
+  });
+  let policyReads = 0;
+  let credentialReads = 0;
+  const mappedCredential = "00000000-0000-4000-8000-000000000002";
+  const writes: unknown[] = [];
+  const existing = {
+    tenant: "acme",
+    node: defaultNode.name,
+    source_node: "aidash://home/remote-node",
+    source_subject: "ci",
+    credential_id: mappedCredential,
+    enabled: true,
+    revision: 7,
+    actor: "alice",
+    updated_at: "2026-10-23T00:00:00Z",
+  };
+  const issued = {
+    id: "00000000-0000-4000-8000-000000000001",
+    tenant: "acme",
+    subject: "ci",
+    created_at: "2026-10-23T00:00:00Z",
+    expires_at: "2099-10-23T00:00:00Z",
+    revoked_at: null,
+    issued_by: "alice",
+    mapping_id: null,
+  };
+  await page.route("**/api/tenants/acme/administration", (route) =>
+    route.fulfill({
+      json: {
+        tenant: "acme",
+        actions: ["peer_mapping.read", "peer_mapping.update"],
+        issuable_subjects: ["ci"],
+        assignable_groups: [],
+        policy_revision: 1,
+      },
+    }),
+  );
+  await page.route("**/api/authorization/acme", (route) => {
+    policyReads++;
+    return route.fulfill({
+      status: 403,
+      json: { error: "policy read denied" },
+    });
+  });
+  await page.route("**/api/authorization/acme/credentials**", (route) => {
+    const request = route.request();
+    if (request.method() === "POST") {
+      expect(request.postDataJSON().subject).toBe("ci");
+      return route.fulfill({
+        json: { credential: issued, token: "fixture-issued-once" },
+      });
+    }
+    if (!new URL(request.url()).searchParams.has("mine")) credentialReads++;
+    return route.fulfill({ json: [] });
+  });
+  await page.route("**/api/authorization/acme/peer-mappings**", (route) => {
+    if (route.request().method() === "GET")
+      return route.fulfill({ json: [existing] });
+    writes.push(route.request().postDataJSON());
+    return route.fulfill({ json: { ...existing, revision: 8 } });
+  });
+  await page.goto("/trust?view=authorization");
+  await page
+    .getByRole("button", { name: "Edit peer mapping", exact: true })
+    .click();
+  const dialog = page.getByRole("dialog");
+  await expect(
+    dialog.getByLabel("Local credential", { exact: true }),
+  ).toHaveValue(mappedCredential);
+  await expect(
+    dialog.locator(`option[value="${mappedCredential}"]`),
+  ).toHaveText(mappedCredential);
+  await dialog
+    .getByRole("button", { name: "Save and enable mapping", exact: true })
+    .click();
+  await expect.poll(() => writes.length).toBe(1);
+  expect(writes[0]).toEqual({
+    node: existing.node,
+    source_node: existing.source_node,
+    source_subject: existing.source_subject,
+    credential_id: mappedCredential,
+    enabled: true,
+    expected_revision: 7,
+  });
+  await page
+    .getByRole("button", { name: "Issue credential", exact: true })
+    .click();
+  await expect(dialog.getByLabel("Subject", { exact: true })).toHaveValue("ci");
+  await dialog
+    .getByRole("button", { name: "Issue credential", exact: true })
+    .click();
+  await expect(dialog.getByRole("textbox")).toHaveValue("fixture-issued-once");
+  await dialog
+    .getByRole("button", { name: "I have saved the token", exact: true })
+    .click();
+  await page
+    .getByRole("button", { name: "Add peer mapping", exact: true })
+    .click();
+  await dialog
+    .getByLabel("Local credential", { exact: true })
+    .selectOption(mappedCredential);
+  await expect(
+    dialog.getByLabel("Local credential", { exact: true }),
+  ).toHaveValue(mappedCredential);
+  await expect(
+    dialog
+      .getByLabel("Local credential", { exact: true })
+      .locator(`option[value="${issued.id}"]`),
+  ).toBeEnabled();
+  await dialog
+    .getByLabel("Local credential", { exact: true })
+    .selectOption(issued.id);
+  await expect(
+    dialog.getByLabel("Local credential", { exact: true }),
+  ).toHaveValue(issued.id);
+  expect(policyReads).toBe(0);
+  expect(credentialReads).toBe(0);
+});
+
+test("self-issued credentials poll bounded pages and keep older active credentials revocable", async ({
+  page,
+}) => {
+  await setup(page, { locale: "en-US", subject: true, tenantActions: [] });
+  const offsets: number[] = [];
+  const revoked: string[] = [];
+  const row = (id: string, ended = true) => ({
+    id,
+    tenant: "acme",
+    subject: "alice",
+    created_at: "2026-10-23T00:00:00Z",
+    expires_at: "2099-10-23T00:00:00Z",
+    revoked_at: ended ? "2026-10-23T01:00:00Z" : null,
+    issued_by: "alice",
+    mapping_id: "mapping",
+  });
+  await page.route("**/api/authorization/acme/credentials**", (route) => {
+    const request = route.request();
+    if (request.method() === "POST") {
+      revoked.push(new URL(request.url()).pathname);
+      return route.fulfill({ json: row("older-active") });
+    }
+    const offset = Number(
+      new URL(request.url()).searchParams.get("offset") ?? 0,
+    );
+    if (new URL(request.url()).searchParams.get("active") === "true")
+      return route.fulfill({
+        json: revoked.length ? [] : [row("older-active", false)],
+      });
+    offsets.push(offset);
+    return route.fulfill({
+      json:
+        offset === 0
+          ? Array.from({ length: 200 }, (_, n) => row(`history-${n}`))
+          : [row("older-active", revoked.length > 0)],
+    });
+  });
+  await page.goto("/trust?view=authorization");
+  await expect(
+    page.getByRole("button", { name: "Revoke", exact: true }),
+  ).toBeVisible();
+  expect(offsets).not.toContain(200);
+  await page.getByRole("button", { name: "Revoke", exact: true }).click();
+  await page
+    .getByRole("dialog")
+    .getByRole("button", { name: "Confirm revocation", exact: true })
+    .click();
+  await expect
+    .poll(() => revoked)
+    .toContain("/api/authorization/acme/credentials/older-active/revoke");
+  await page.getByRole("button", { name: "Next", exact: true }).click();
+  await expect.poll(() => offsets).toContain(200);
+});
+
+test("cached policy details disappear when policy.read is removed", async ({
+  page,
+}) => {
+  await page.clock.install();
+  await setup(page, { locale: "en-US", subject: true });
+  let readable = true;
+  await page.route("**/api/tenants/acme/administration", (route) =>
+    route.fulfill({
+      json: {
+        tenant: "acme",
+        actions: readable
+          ? ["policy.read", "policy.update", "credential.read"]
+          : ["credential.read"],
+        issuable_subjects: [],
+        assignable_groups: [],
+        policy_revision: 1,
+      },
+    }),
+  );
+  await page.route("**/api/authorization/acme", (route) =>
+    route.fulfill({
+      json: {
+        revision: 1,
+        bundle: {
+          tenant: "acme",
+          subjects: { alice: { kind: "user" } },
+          policies: [],
+        },
+      },
+    }),
+  );
+  await page.goto("/trust?view=authorization");
+  await expect(page.getByText("Policy bundle", { exact: true })).toBeVisible();
+  await page
+    .getByRole("navigation", { name: "Main navigation" })
+    .getByRole("button", { name: "Creator", exact: true })
+    .click();
+  readable = false;
+  await page.clock.fastForward(2000);
+  await page
+    .getByRole("navigation", { name: "Main navigation" })
+    .getByRole("button", { name: "Trust", exact: true })
+    .click();
+  await page
+    .getByRole("button", { name: "Access and accounts", exact: true })
+    .click();
+  await expect(
+    page.getByText("Subject credentials", { exact: true }),
+  ).toBeVisible();
+  await expect(page.getByText("Policy bundle", { exact: true })).toHaveCount(0);
+  await expect(
+    page.getByRole("button", { name: "Edit policy", exact: true }),
+  ).toHaveCount(0);
+});
+
+for (const peerEdit of [true, false]) {
+  test(`an open ${peerEdit ? "peer edit" : "credential revoke"} dialog hides cached details after permission loss`, async ({
+    page,
+  }) => {
+    await page.clock.install();
+    await setup(page, { locale: "en-US", subject: true });
+    let readable = true;
+    let authorityReads = 0;
+    await page.route("**/api/tenants/acme/administration", (route) => {
+      authorityReads++;
+      return route.fulfill({
+        json: {
+          tenant: "acme",
+          actions: peerEdit
+            ? readable
+              ? ["peer_mapping.read", "peer_mapping.update"]
+              : ["peer_mapping.update"]
+            : readable
+              ? ["credential.read", "credential.revoke", "credential.issue"]
+              : ["credential.issue"],
+          issuable_subjects: peerEdit ? [] : ["ci"],
+          assignable_groups: [],
+          policy_revision: 1,
+        },
+      });
+    });
+    await page.route("**/api/authorization/acme/credentials**", (route) =>
+      route.fulfill({
+        json:
+          peerEdit || new URL(route.request().url()).searchParams.has("mine")
+            ? []
+            : [
+                {
+                  id: "00000000-0000-4000-8000-000000000777",
+                  tenant: "acme",
+                  subject: "private-service",
+                  created_at: "2026-10-23T00:00:00Z",
+                  expires_at: "2099-10-23T00:00:00Z",
+                  revoked_at: null,
+                  issued_by: "alice",
+                  mapping_id: null,
+                },
+              ],
+      }),
+    );
+    await page.route("**/api/authorization/acme/peer-mappings**", (route) =>
+      route.fulfill({
+        json: [
+          {
+            tenant: "acme",
+            node: defaultNode.name,
+            source_node: "aidash://remote/private-source",
+            source_subject: "private-subject",
+            credential_id: "private-credential",
+            enabled: true,
+            revision: 1,
+            actor: "alice",
+            updated_at: "2026-10-23T00:00:00Z",
+          },
+        ],
+      }),
+    );
+    await page.goto("/trust?view=authorization");
+    await page
+      .getByRole("button", {
+        name: peerEdit ? "Edit peer mapping" : "Revoke",
+        exact: true,
+      })
+      .click();
+    const dialog = page.getByRole("dialog");
+    if (peerEdit) {
+      await expect(
+        dialog.getByLabel("Source node", { exact: true }),
+      ).toHaveValue("aidash://remote/private-source");
+      await expect(
+        page.getByText("aidash://remote/private-source", { exact: true }),
+      ).toBeVisible();
+    } else {
+      await expect(
+        dialog.getByText("private-service", { exact: true }),
+      ).toBeVisible();
+    }
+    readable = false;
+    await page.clock.fastForward(2000);
+    // Refresh authority while the edit remains mounted, as on returning to the tab.
+    await page.evaluate(() =>
+      window.dispatchEvent(new Event("visibilitychange")),
+    );
+    await expect.poll(() => authorityReads).toBeGreaterThan(1);
+    await expect(dialog).toHaveCount(0);
+    await expect(
+      page.getByText(
+        peerEdit ? "aidash://remote/private-source" : "private-service",
+        { exact: true },
+      ),
+    ).toHaveCount(0);
+    // Remaining write authority permits new work without revealing cached records.
+    await page
+      .getByRole("button", {
+        name: peerEdit ? "Add peer mapping" : "Issue credential",
+        exact: true,
+      })
+      .click();
+    await expect(
+      dialog.getByLabel(peerEdit ? "Source node" : "Subject", {
+        exact: true,
+      }),
+    ).toHaveValue(peerEdit ? "" : "ci");
+  });
+}

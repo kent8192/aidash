@@ -49,6 +49,7 @@ async fn leased(f: &Federation, app: &TestApplication, token: &str) -> (Run, Uui
 fn project(run: &mut Run, head: u64, imported: u64) {
 	run.context.history = (1..=head)
 		.map(|seq| HistoryEntry {
+			research: None,
 			seq,
 			event: event(seq),
 		})
@@ -203,10 +204,12 @@ async fn saves_journal_original_events_with_their_origin(
 		range,
 		vec![
 			HistoryEntry {
+				research: None,
 				seq: 2,
 				event: event(2)
 			},
 			HistoryEntry {
+				research: None,
 				seq: 3,
 				event: event(3)
 			},

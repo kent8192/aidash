@@ -72,6 +72,9 @@ pub fn tombstone(operation: Operation) -> Value {
 /// after its tool is no longer bound or loaded. Only the envelope's contract
 /// marker counts: an unrelated tool may return the other fields too.
 pub fn result_operation(result: &Value) -> Option<Operation> {
+	if let Some(reference) = crate::context::research::ResearchReference::parse(result) {
+		return Some(reference.operation);
+	}
 	if result["contract"] != super::RESULT_CONTRACT {
 		return None;
 	}
@@ -81,7 +84,7 @@ pub fn result_operation(result: &Value) -> Option<Operation> {
 /// Whether `event` is a research result a model request would still carry.
 /// A placeholder is not one, so redaction is idempotent.
 pub fn carries_research(event: &ContextEvent) -> bool {
-	matches!(event, ContextEvent::Tool { result, .. } if result_operation(result).is_some())
+	matches!(event, ContextEvent::Tool { result, .. } if result_operation(result).is_some() || ContextEvent::is_expired_result(result))
 }
 
 /// Replace every research result in `history` with the revoked placeholder,
@@ -93,7 +96,9 @@ pub fn carries_research(event: &ContextEvent) -> bool {
 pub fn redact(history: &mut [HistoryEntry], originals: &BTreeSet<u64>) -> bool {
 	let mut redacted = false;
 	for entry in history {
-		let research = carries_research(&entry.event) || originals.contains(&entry.seq);
+		let research = carries_research(&entry.event)
+			|| entry.research_reference().is_some()
+			|| originals.contains(&entry.seq);
 		let ContextEvent::Tool { call, result } = &mut entry.event else {
 			continue;
 		};

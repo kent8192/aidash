@@ -41,6 +41,9 @@ pub trait PythonScope: Send {
 	async fn event(&mut self, workspace: Uuid, kind: &str, data: Value) -> Result<()>;
 }
 pub struct HeapOperation {
+	/// The exact operation has durable stop and receipt settlement evidence,
+	/// or was withdrawn before dispatch. A running heap may reset only then.
+	pub writer_settled: bool,
 	pub credential_id: Uuid,
 	pub tenant: String,
 	pub principal: String,

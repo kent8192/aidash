@@ -1169,6 +1169,294 @@ async fn frozen_python_stop_persists_all_bound_cells_without_touching_replacemen
 
 /// Protocol fixture exercises the production stop owner and durable retries;
 /// physical Kubernetes termination remains covered by the runner's own tests.
+async fn delete_and_restore_owning_node(c: &CoreFixture) {
+	let node = common::default_node(&c.f.store, "acme").await;
+	let sibling = common::second_node_in(c.f.store.pool.fixture_driver(), "acme").await;
+	for (path, body) in [
+		(
+			format!("/api/tenants/acme/nodes/{sibling}/default"),
+			Value::Null,
+		),
+		(
+			format!("/api/tenants/acme/nodes/{}/deletion", node.node),
+			json!({"confirmation":node.node}),
+		),
+		(
+			format!("/api/tenants/acme/nodes/{}/restore", node.node),
+			Value::Null,
+		),
+	] {
+		let (status, body) = request(&c.app, &c.f.config.api_token, "POST", &path, body).await;
+		assert_eq!(status, 200, "{body}");
+	}
+}
+
+async fn retry_node_cancellations(c: &CoreFixture) {
+	sqlx::query(
+		&Query::update()
+			.table(Alias::new("node_cancellation_jobs"))
+			.value_expr(Alias::new("retry_at"), Expr::current_timestamp())
+			.to_string(PostgresQueryBuilder),
+	)
+	.execute(c.f.store.pool.fixture_driver())
+	.await
+	.unwrap();
+	aidash_server::generation::provision::reconcile(&c.f.clone())
+		.await
+		.unwrap();
+}
+
+#[rstest::rstest]
+#[case::prepared("prepared")]
+#[case::running("running")]
+#[case::completed_during_deletion("completed")]
+#[tokio::test]
+async fn node_deletion_captures_running_python_until_its_original_writer_is_stopped(
+	#[case] state: &str,
+	#[future] command_cleanup_fixture: (CoreFixture, Uuid, Uuid),
+	worker_control: WorkerControl,
+) {
+	use std::sync::atomic::Ordering;
+	let (mut c, area, id) = Box::pin(command_cleanup_fixture).await;
+	let (_runner, confirmed, requests, instance) = cleanup_runner(&mut c, id, false).await;
+	let session = Uuid::new_v4();
+	let active = if state == "completed" {
+		"running"
+	} else {
+		state
+	};
+	sqlx::query(
+		&Query::update()
+			.table(Alias::new("core_operations"))
+			.value(Alias::new("state"), active)
+			.value(Alias::new("kind"), "code_interpreter")
+			.value(
+				Alias::new("runner_instance"),
+				(active == "running").then_some("cleanup-runner"),
+			)
+			.value(
+				Alias::new("input"),
+				json!({"session_id":session,"code":"must never replay"}),
+			)
+			.and_where(Expr::col("id").eq(Expr::value(id)))
+			.to_string(PostgresQueryBuilder),
+	)
+	.execute(c.f.store.pool.fixture_driver())
+	.await
+	.unwrap();
+	let binding = json!({"operation_id":id,"session_id":session,"instance":"cleanup-runner","last_used":chrono::Utc::now(),"last_revision":1});
+	sqlx::query(
+		&Query::insert()
+			.into_table(Alias::new("core_records"))
+			.columns(["id", "tenant", "owner", "area_id", "kind", "state", "data"].map(Alias::new))
+			.values(vec![
+				area.into(),
+				"acme".into(),
+				"alice".into(),
+				area.into(),
+				"python_session".into(),
+				"running".into(),
+				binding.clone().into(),
+			])
+			.unwrap()
+			.to_string(PostgresQueryBuilder),
+	)
+	.execute(c.f.store.pool.fixture_driver())
+	.await
+	.unwrap();
+	delete_and_restore_owning_node(&c).await;
+	let captured: i64 = sqlx::query_scalar(
+		&Query::select()
+			.expr(reinhardt::query::Func::count(Expr::col("id").into()))
+			.from(Alias::new("node_cancellation_jobs"))
+			.and_where(Expr::col("kind").eq("python"))
+			.and_where(Expr::col("work_id").eq(Expr::value(area)))
+			.to_string(PostgresQueryBuilder),
+	)
+	.fetch_one(c.f.store.pool.fixture_driver())
+	.await
+	.unwrap();
+	assert_eq!(
+		captured, 1,
+		"a running heap needs its own durable cleanup job"
+	);
+	let heap_state = if state == "completed" {
+		// Ordinary completion may settle the cell after deletion captured its
+		// running binding. It must not strand the unchanged heap's cleanup job.
+		sqlx::query(
+			&Query::update()
+				.table(Alias::new("core_operations"))
+				.value(Alias::new("state"), "completed")
+				.value(
+					Alias::new("result"),
+					json!({"termination_confirmed":false,"runner_acknowledged":true,"writer_frozen":true}),
+				)
+				.and_where(Expr::col("id").eq(Expr::value(id)))
+				.to_string(PostgresQueryBuilder),
+		)
+		.execute(c.f.store.pool.fixture_driver())
+		.await
+		.unwrap();
+		sqlx::query(
+			&Query::update()
+				.table(Alias::new("core_records"))
+				.value(Alias::new("state"), "frozen")
+				.value(Alias::new("revision"), 1_i64)
+				.and_where(Expr::col("id").eq(Expr::value(area)))
+				.to_string(PostgresQueryBuilder),
+		)
+		.execute(c.f.store.pool.fixture_driver())
+		.await
+		.unwrap();
+		"frozen"
+	} else {
+		"running"
+	};
+	retry_node_cancellations(&c).await;
+	assert_eq!(
+		python_record_snapshot(&c, area).await,
+		(heap_state.into(), binding.clone())
+	);
+	*instance.lock().unwrap() = "replacement-runner".into();
+	confirmed.store(true, Ordering::SeqCst);
+	retry_node_cancellations(&c).await;
+	assert_eq!(
+		python_record_snapshot(&c, area).await,
+		(heap_state.into(), binding.clone())
+	);
+	*instance.lock().unwrap() = "cleanup-runner".into();
+	// Only the dispatched cell needs the receipt worker. Keep the completed
+	// case owned by deletion rather than racing unrelated idle-heap maintenance.
+	let worker = (state == "running").then(|| CapabilityWorker {
+		stop: worker_control.stop,
+		handle: tokio::spawn(aidash_server::capabilities::operations::run(
+			c.f.store.clone(),
+			worker_control.receiver,
+		)),
+	});
+	let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(12);
+	loop {
+		retry_node_cancellations(&c).await;
+		let pending: i64 = sqlx::query_scalar(
+			&Query::select()
+				.expr(reinhardt::query::Func::count(Expr::col("id").into()))
+				.from(Alias::new("node_cancellation_jobs"))
+				.and_where(Expr::col("work_id").is_in([Expr::value(id), Expr::value(area)]))
+				.to_string(PostgresQueryBuilder),
+		)
+		.fetch_one(c.f.store.pool.fixture_driver())
+		.await
+		.unwrap();
+		if python_record_snapshot(&c, area).await.0 == "reset" && pending == 0 {
+			break;
+		}
+		assert!(
+			tokio::time::Instant::now() < deadline,
+			"the stopped heap or {pending} cancellation jobs still block Node purge"
+		);
+		tokio::time::sleep(std::time::Duration::from_millis(30)).await;
+	}
+	let (saved, result) = cleanup_operation(&c, id).await;
+	assert_eq!(
+		saved,
+		if state == "completed" {
+			"completed"
+		} else {
+			"withdrawn"
+		}
+	);
+	assert_eq!(result["termination_confirmed"], true);
+	assert_eq!(
+		python_record_snapshot(&c, area).await.1["reset_reason"],
+		"owning_node_deleted"
+	);
+	assert!(
+		requests
+			.lock()
+			.unwrap()
+			.iter()
+			.any(|r| r["path"] == format!("/v1/sessions/{session}/stop"))
+	);
+	if let Some(worker) = worker {
+		worker.stop.send(true).unwrap();
+		worker.await.unwrap().unwrap();
+	}
+	c.close().await;
+}
+
+#[rstest::rstest]
+#[tokio::test]
+async fn stopped_uncertain_output_without_an_ack_flag_is_adopted_and_acknowledged(
+	#[future] command_cleanup_fixture: (CoreFixture, Uuid, Uuid),
+	worker_control: WorkerControl,
+) {
+	use std::sync::atomic::Ordering;
+	let (mut c, _, id) = Box::pin(command_cleanup_fixture).await;
+	let (_runner, confirmed, requests, _) = cleanup_runner(&mut c, id, true).await;
+	confirmed.store(true, Ordering::SeqCst);
+	// This is the durable result emitted by ordinary uncertain reconciliation.
+	// No Node deletion subsequently adds an acknowledgement flag for it.
+	sqlx::query(
+		&Query::update()
+			.table(Alias::new("core_operations"))
+			.value(Alias::new("state"), "uncertain")
+			.value(Alias::new("runner_instance"), "cleanup-runner")
+			.value(
+				Alias::new("result"),
+				json!({"error":"sandbox lost","termination_confirmed":true}),
+			)
+			.and_where(Expr::col("id").eq(Expr::value(id)))
+			.to_string(PostgresQueryBuilder),
+	)
+	.execute(c.f.store.pool.fixture_driver())
+	.await
+	.unwrap();
+	let worker = CapabilityWorker {
+		stop: worker_control.stop,
+		handle: tokio::spawn(aidash_server::capabilities::operations::run(
+			c.f.store.clone(),
+			worker_control.receiver,
+		)),
+	};
+	let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(8);
+	loop {
+		let (state, result) = cleanup_operation(&c, id).await;
+		assert_eq!(state, "uncertain");
+		assert_eq!(result["error"], "sandbox lost");
+		if result["runner_acknowledged"] == true {
+			let output = &result["stopped_output"];
+			for (file, bytes) in [
+				(&output["files"][0], b"new".as_slice()),
+				(&output["output_file"], b"recovered partial".as_slice()),
+			] {
+				let file: Uuid = serde_json::from_value(file["file_id"].clone()).unwrap();
+				assert_eq!(
+					tokio::fs::read(c.root.join(file.simple().to_string()))
+						.await
+						.unwrap(),
+					bytes
+				);
+			}
+			break;
+		}
+		assert!(
+			tokio::time::Instant::now() < deadline,
+			"ordinary uncertain output was excluded from receipt adoption: {result}"
+		);
+		tokio::time::sleep(std::time::Duration::from_millis(30)).await;
+	}
+	assert!(
+		requests
+			.lock()
+			.unwrap()
+			.iter()
+			.any(|r| r["path"] == format!("/v1/operations/{id}/ack"))
+	);
+	worker.stop.send(true).unwrap();
+	worker.await.unwrap().unwrap();
+	c.close().await;
+}
+
 #[rstest::rstest]
 #[case::completed("completed", true)]
 #[case::uncertain("uncertain", true)]
@@ -1197,25 +1485,7 @@ async fn node_deletion_retries_original_terminal_writer_without_rewriting_output
 	.execute(c.f.store.pool.fixture_driver())
 	.await
 	.unwrap();
-	let node = common::default_node(&c.f.store, "acme").await;
-	let sibling = common::second_node_in(c.f.store.pool.fixture_driver(), "acme").await;
-	for (path, body) in [
-		(
-			format!("/api/tenants/acme/nodes/{sibling}/default"),
-			Value::Null,
-		),
-		(
-			format!("/api/tenants/acme/nodes/{}/deletion", node.node),
-			json!({"confirmation":node.node}),
-		),
-		(
-			format!("/api/tenants/acme/nodes/{}/restore", node.node),
-			Value::Null,
-		),
-	] {
-		let (status, body) = request(&c.app, &c.f.config.api_token, "POST", &path, body).await;
-		assert_eq!(status, 200, "{body}");
-	}
+	delete_and_restore_owning_node(&c).await;
 	for (runner, stopped, done) in [
 		("replacement", true, false),
 		("cleanup-runner", false, false),

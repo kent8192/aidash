@@ -2,6 +2,8 @@
 
 Agent registration, generation templates, Workbench and native execution use Binding contract 1. Admission saves the complete immutable closure before activation; execution reads that closure and checks current authority and Provider compatibility at each protected boundary. See the [capability glossary](registry-capability-glossary.md) for the terms used here.
 
+See [Registry Harness operation](registry-harness.md) for default compaction approval, independent Shadow observation and Registry-declared context-source policies.
+
 ## Immutable declarations
 
 Tools declare a registering Node, a versioned provider operation, a stable default model alias, a tier and supported narrowing. The provider owns effects, replay safety, fitting, continuation, disclosure and approval requirements. Generic HTTP/MCP calls remain `Unsafe` even if their transport configuration contains a stronger replay label. Native echo fixtures are not ordinary deployable integrations.
@@ -396,6 +398,13 @@ read-only contract. A publisher's `transport.replay` claim does not establish
 this guarantee. Unattested external calls require fixtures. Binding digests,
 the admitted draft, test profile and current permissions are rechecked at
 every test step.
+
+Profile writers read the same Tenant's profiles and rules through
+`GET /api/workbench/test-profiles/{tenant}` under the same update action.
+Each request returns at most 100 profiles ordered by ID. Pass the last returned
+ID as the exclusive `after` cursor to read the next page; the dashboard provides
+Previous and Next controls without loading the entire collection. Ordinary
+draft profile discovery retains its bounded, authority-filtered summary list.
 
 A profile rule may name a [Tenant Secret](../tenant-secrets.md) with
 `secret: "<name>"`. Its writer needs `secret.use`, and the test endpoint must

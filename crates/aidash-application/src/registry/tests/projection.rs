@@ -22,17 +22,7 @@ fn agent_config(version: Option<&str>) -> Value {
 
 fn scope_with(model: Value) -> Scope {
 	let mut scope = Scope::default();
-	for name in aidash_domain::registry::bindings::REQUIRED_TOOLS
-		.iter()
-		.chain(aidash_domain::registry::bindings::DEFAULT_TOOLS)
-	{
-		let descriptor = aidash_domain::tool::providers::core_descriptor(NODE, name).unwrap();
-		scope.put(definition(
-			&format!("aidash.{name}"),
-			"tool",
-			serde_json::to_value(descriptor).unwrap(),
-		));
-	}
+	scope.put_builtins(NODE);
 	scope.put(definition("model", "model", model));
 	scope
 }

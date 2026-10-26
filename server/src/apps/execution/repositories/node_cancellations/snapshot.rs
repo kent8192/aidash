@@ -227,7 +227,7 @@ pub(super) fn selectors(
 			capability("core_records", node, address),
 			Expr::col("kind")
 				.eq("python_session")
-				.and(Expr::col("state").eq("frozen")),
+				.and(Expr::col("state").is_in(["frozen", "running"])),
 		),
 	]
 }

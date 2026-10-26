@@ -54,14 +54,40 @@ pub(crate) async fn append(
 	run: Uuid,
 	context: &Context,
 ) -> Result<()> {
+	super::research::freeze_context(tx.as_mut(), run, context).await?;
 	let persisted = head(tx, run).await?;
+	if persisted > 0 {
+		use crate::apps::execution::models::research::{json_field, json_text};
+		let legacy: Option<i64> = native::query_scalar(
+			&Query::select()
+				.column(Alias::new("seq"))
+				.from(Alias::new(EVENTS))
+				.and_where(Expr::col("run_id").eq(Expr::value(run)))
+				.and_where(
+					json_text(
+						Expr::from(json_field(Expr::col(Alias::new("event")), "result")),
+						"contract",
+					)
+					.eq(Expr::value(aidash_domain::research::RESULT_CONTRACT)),
+				)
+				.limit(1)
+				.to_string(PostgresQueryBuilder),
+		)
+		.scalar_optional(&mut **tx)
+		.await?;
+		if legacy.is_some() {
+			return Err(Error::Invalid(
+				"legacy inline Research journal requires a development database reset".into(),
+			));
+		}
+	}
 	let mut insert = Query::insert();
 	insert
 		.into_table(Alias::new(EVENTS))
 		.columns(["run_id", "seq", "origin", "event", "digest", "tenant"].map(Alias::new));
 	let mut pending = false;
 	for entry in context.unjournaled(persisted) {
-		let event = serde_json::to_value(&entry.event)?;
+		let event = entry.durable_event();
 		let digest = aidash_domain::registry::rules::digest(&event);
 		let origin = if entry.seq <= context.journal.imported_through {
 			"imported"
@@ -178,9 +204,9 @@ impl Store {
 		from: u64,
 		through: u64,
 	) -> Result<Vec<HistoryEntry>> {
-		native::query(
+		let rows = native::query(
 			&Query::select()
-				.columns(["seq", "event"].map(Alias::new))
+				.columns(["seq", "event", "digest"].map(Alias::new))
 				.from(Alias::new(EVENTS))
 				.and_where(Expr::col("run_id").eq(Expr::value(run)))
 				.and_where(Expr::col("seq").gte(Expr::value(signed(from)?)))
@@ -189,17 +215,32 @@ impl Store {
 				.to_string(PostgresQueryBuilder),
 		)
 		.fetch_all(self.pool.in_scope(scope))
-		.await?
-		.into_iter()
-		.map(|row| {
+		.await?;
+		let mut entries = Vec::with_capacity(rows.len());
+		for row in rows {
 			let seq: i64 = row.try_get("seq")?;
-			Ok(HistoryEntry {
-				seq: u64::try_from(seq)
+			let event: serde_json::Value = row.try_get("event")?;
+			let digest: String = row.try_get("digest")?;
+			if aidash_domain::registry::rules::digest(&event) != digest {
+				return Err(Error::Invalid(
+					"Context Journal event digest mismatch".into(),
+				));
+			}
+			if event["result"]["contract"] == aidash_domain::research::RESULT_CONTRACT {
+				return Err(Error::Invalid(
+					"legacy inline Research journal requires a development database reset".into(),
+				));
+			}
+			entries.push(HistoryEntry::new(
+				u64::try_from(seq)
 					.map_err(|_| Error::Invalid("context journal sequence is negative".into()))?,
-				event: serde_json::from_value(row.try_get("event")?)?,
-			})
-		})
-		.collect()
+				serde_json::from_value(event)?,
+			));
+		}
+		let mut tx = self.pool.begin(scope).await?.into_executor().await?;
+		super::research::resolve_entries(tx.as_mut(), run, &mut entries).await?;
+		tx.commit().await?;
+		Ok(entries)
 	}
 
 	/// Journal saved projection entries the journal lacks, under the lease and

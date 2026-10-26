@@ -1,5 +1,9 @@
 import { TenantSecrets } from "./tenant-secrets";
 import type { ReactNode } from "react";
+import {
+  ApprovalObserverPanel,
+  ApprovalObservationReportPanel,
+} from "./approval-observation";
 import { ApprovalDeciderPanel } from "./approval-decider";
 import { TenantPolicyAdministration } from "./authorization";
 import { TenantIdentityAdministration } from "./dashboard-identity";
@@ -27,6 +31,7 @@ export function TenantAccess({
     <>
       {subject && overview.data && (
         <OwnCredentials
+          key={tenant}
           tenant={tenant}
           subject={subject}
           canIssue={can("credential.create")}
@@ -38,6 +43,16 @@ export function TenantAccess({
           subject={subject}
           canUpdate={can("tenant.update")}
         />
+      )}
+      {subject && can("approval.read") && (
+        <>
+          <ApprovalObserverPanel
+            tenant={tenant}
+            subject={subject}
+            canUpdate={can("tenant.update")}
+          />
+          <ApprovalObservationReportPanel tenant={tenant} />
+        </>
       )}
       <TenantIdentityAdministration
         key={tenant}
@@ -52,8 +67,21 @@ export function TenantAccess({
           canManage={can("secret.manage")}
         />
       )}
-      {can("policy.read") && (
-        <TenantPolicyAdministration tenant={tenant} can={can} />
+      {([
+        "policy.read",
+        "credential.read",
+        "credential.issue",
+        "peer_mapping.read",
+        "peer_mapping.update",
+        "decision.read",
+      ].some(can) ||
+        !!overview.data?.issuable_subjects?.length) && (
+        <TenantPolicyAdministration
+          key={tenant}
+          tenant={tenant}
+          can={can}
+          issuableSubjects={overview.data?.issuable_subjects ?? []}
+        />
       )}
     </>
   );

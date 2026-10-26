@@ -285,7 +285,9 @@ pub(crate) async fn linked_registry(
 	let entry: Option<serde_json::Value> = crate::database::native::query_scalar(&sql)
 		.scalar_optional(authority.connection())
 		.await?;
-	let entry = entry.map(serde_json::from_value::<Entry>).transpose()?;
+	let entry = entry
+		.map(serde_json::from_value::<Box<Entry>>)
+		.transpose()?;
 	Ok(entry
 		.filter(|entry| entry.kind == kind)
 		.map(Candidate::Registry))

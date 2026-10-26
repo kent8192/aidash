@@ -24,28 +24,27 @@ const BATCH: usize = 32;
 
 /// Called immediately after NodeDeletion insertion, under its policy/capacity
 /// locks. The snapshot survives restore; subsequent work is never selected.
-pub(crate) async fn record(
+pub(in crate::apps::execution) async fn record(
 	f: &Federation,
 	tx: &mut dyn TransactionExecutor,
-	deletion: &crate::apps::identity::models::NodeDeletion,
+	deletion: Uuid,
+	tenant: &str,
+	node: &str,
 ) -> Result<()> {
-	let address = format!("{}/{}", f.config.deployment, deletion.node);
-	for (kind, table, predicate, pending) in snapshot::selectors(
-		&deletion.node,
-		&address,
-		f.config.deployment.as_str(),
-		deletion.id,
-	) {
+	let address = format!("{}/{}", f.config.deployment, node);
+	for (kind, table, predicate, pending) in
+		snapshot::selectors(node, &address, f.config.deployment.as_str(), deletion)
+	{
 		let select = Query::select()
-			.expr(Expr::value(format!("{}:{kind}:", deletion.id)).binary(
+			.expr(Expr::value(format!("{}:{kind}:", deletion)).binary(
 				reinhardt::query::BinOper::PgOperator(
 					reinhardt::query::types::PgBinOper::Concatenate,
 				),
 				Expr::col("id").cast_as("text"),
 			))
-			.expr(Expr::value(deletion.id))
-			.expr(Expr::value(deletion.tenant.clone()))
-			.expr(Expr::value(deletion.node.clone()))
+			.expr(Expr::value(deletion))
+			.expr(Expr::value(tenant.to_owned()))
+			.expr(Expr::value(node.to_owned()))
 			.expr(Expr::value(kind))
 			.column(Alias::new("id"))
 			.expr(if kind == "python" {
@@ -58,7 +57,7 @@ pub(crate) async fn record(
 			})
 			.expr(Expr::current_timestamp())
 			.from(Alias::new(table))
-			.and_where(Expr::col("tenant").eq(Expr::value(deletion.tenant.clone())))
+			.and_where(Expr::col("tenant").eq(Expr::value(tenant.to_owned())))
 			.and_where(predicate)
 			.and_where(pending)
 			.to_owned();
@@ -92,13 +91,13 @@ pub(crate) async fn record(
 		&Query::select()
 			.column(reinhardt::query::ColumnRef::Asterisk)
 			.from(Alias::new("runs"))
-			.and_where(Expr::col("tenant").eq(Expr::value(deletion.tenant.clone())))
+			.and_where(Expr::col("tenant").eq(Expr::value(tenant.to_owned())))
 			.and_where(
 				Expr::col("id").in_subquery(
 					Query::select()
 						.column(Alias::new("work_id"))
 						.from(Alias::new("node_cancellation_jobs"))
-						.and_where(Expr::col("deletion_id").eq(Expr::value(deletion.id)))
+						.and_where(Expr::col("deletion_id").eq(Expr::value(deletion)))
 						.and_where(Expr::col("kind").eq("run"))
 						.to_owned(),
 				),
@@ -124,7 +123,7 @@ pub(crate) async fn record(
 			&Query::select()
 				.column(Alias::new("work_id"))
 				.from(Alias::new("node_cancellation_jobs"))
-				.and_where(Expr::col("deletion_id").eq(Expr::value(deletion.id)))
+				.and_where(Expr::col("deletion_id").eq(Expr::value(deletion)))
 				.and_where(Expr::col("kind").eq(Expr::value(kind)))
 				.to_string(PostgresQueryBuilder),
 		)
@@ -135,17 +134,13 @@ pub(crate) async fn record(
 				crate::apps::identity::repositories::remote_grants::persistence::revoke_for_node_in(
 					&f.store,
 					tx,
-					&deletion.tenant,
+					tenant,
 					id,
 				)
 				.await?;
 			} else if kind == "admission" {
-				crate::apps::identity::repositories::peer_admission::cancel_in(
-					tx,
-					&deletion.tenant,
-					id,
-				)
-				.await?;
+				crate::apps::identity::repositories::peer_admission::cancel_in(tx, tenant, id)
+					.await?;
 			} else {
 				crate::apps::execution::generation::repositories::foreign::home::set_cancelled_in(
 					tx, id,
@@ -939,12 +934,17 @@ async fn stop_python(f: &Federation, job: &NodeCancellationJob) -> Result<bool> 
 	if record.state == "reset" {
 		return Ok(true);
 	}
-	if record.revision != snapshot.revision {
+	// The captured active cell may have completed while cancellation was
+	// admitted. Its unchanged binding still owns the same heap; a different
+	// cell/session was rejected above and can never be reset through this job.
+	if record.revision != snapshot.revision
+		&& !(snapshot.state == "running" && record.state == "frozen")
+	{
 		return Err(Error::Conflict("captured Python revision changed".into()));
 	}
-	aidash_application::capabilities::python::stop_frozen(
+	aidash_application::capabilities::python::stop_captured(
 		&crate::bootstrap::python_repository(&f.store),
-		&super::capability_records::domain(snapshot),
+		&super::capability_records::domain(record),
 		"owning_node_deleted",
 	)
 	.await

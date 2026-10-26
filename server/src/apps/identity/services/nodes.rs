@@ -471,8 +471,14 @@ async fn change_in(
 				f.config.tenancy.node_deletion_grace_days,
 			)
 			.await?;
-			crate::apps::execution::repositories::node_cancellations::record(f, tx, &deletion)
-				.await?;
+			crate::apps::execution::services::node_cancellations::record_deletion_in(
+				f,
+				tx,
+				deletion.id,
+				tenant,
+				name,
+			)
+			.await?;
 			Some(deletion)
 		}
 		Change::Restore => {

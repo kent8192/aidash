@@ -95,3 +95,25 @@ async fn the_retry_floor_runs_from_when_a_slow_failure_ended() {
 	assert!(cache.get(&upstream, || at(70)).await.is_err());
 	assert_eq!(upstream.calls.load(Ordering::SeqCst), 2);
 }
+
+#[tokio::test]
+async fn a_slow_success_stays_fresh_for_a_full_period() {
+	let cache = CatalogCache::new();
+	let upstream = Upstream::default();
+	let reads = AtomicUsize::new(0);
+	let fetched = cache
+		.get(&upstream, || {
+			if reads.fetch_add(1, Ordering::SeqCst) == 0 {
+				at(0)
+			} else {
+				at(601)
+			}
+		})
+		.await
+		.unwrap();
+	assert_eq!(fetched.fetched_at, at(601));
+	assert!(!cache.get(&upstream, || at(1200)).await.unwrap().stale);
+	assert_eq!(upstream.calls.load(Ordering::SeqCst), 1);
+	cache.get(&upstream, || at(1201)).await.unwrap();
+	assert_eq!(upstream.calls.load(Ordering::SeqCst), 2);
+}

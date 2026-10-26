@@ -55,27 +55,24 @@ test("a Workspace created in a second Node belongs to that Node and to no other"
   );
   await dialog.getByLabel("Title", { exact: true }).fill(title);
   await dialog.getByLabel("Goal", { exact: true }).fill("Live in the Lab Node");
-  const created = page.waitForResponse(
-    (response) =>
-      new URL(response.url()).pathname === "/api/workspaces" &&
-      response.request().method() === "POST",
-  );
+  const previousChannel = new URL(page.url()).searchParams.get("channel");
   await dialog.getByRole("button", { name: "Create", exact: true }).click();
-  const workspace = (await (await created).json()) as {
-    id: string;
-    node: string;
-  };
-  expect(workspace.node).toBe(second.name);
   await expect(page.getByRole("dialog")).not.toBeVisible({ timeout: 30000 });
-  await expect(page).toHaveURL(new RegExp(`channel=${workspace.id}`));
+  await expect(page).toHaveURL((url) => {
+    const channel = url.searchParams.get("channel");
+    return !!channel && channel !== previousChannel;
+  });
+  const workspaceId = new URL(page.url()).searchParams.get("channel");
+  expect(workspaceId).toBeTruthy();
 
-  const read = await request.get(`/api/workspaces/${workspace.id}`, {
+  const read = await request.get(`/api/workspaces/${workspaceId}`, {
     headers: { authorization: `Bearer ${subject.token}` },
   });
   expect(read.status(), await read.text()).toBe(200);
   expect(
-    ((await read.json()) as { workspace: { node: string } }).workspace.node,
-  ).toBe(second.name);
+    ((await read.json()) as { workspace: { node: string; title: string } })
+      .workspace,
+  ).toMatchObject({ node: second.name, title });
 
   const listed = () =>
     page

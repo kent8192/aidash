@@ -306,8 +306,9 @@ impl CitedEvidence {
 		// Only the account-terms purge empties a delivered passage, and it
 		// purges the snapshot too; a fresh passage may be empty. A page image
 		// carries no text, so it is never expired by that test.
-		let expired =
-			fragment.image.is_none() && fragment.text.is_empty() && document.purged.is_some();
+		let expired = document
+			.purged
+			.is_some_and(|purge| purge.reason == PurgeReason::AccountTerms);
 		Self {
 			fragment,
 			requested_url: document.requested_url.clone(),

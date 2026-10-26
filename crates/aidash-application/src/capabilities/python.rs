@@ -213,7 +213,7 @@ pub async fn reap(repository: &dyn PythonRepository, cursor: &mut Uuid) -> Resul
 			) => "authority_or_source_withdrawn",
 			Err(error) => return Err(error),
 		};
-		stop_frozen(repository, &snapshot, reason).await?;
+		stop_captured(repository, &snapshot, reason).await?;
 	}
 	Ok(())
 }
@@ -221,9 +221,10 @@ pub async fn reap(repository: &dyn PythonRepository, cursor: &mut Uuid) -> Resul
 #[cfg(test)]
 mod tests;
 
-/// Stop a captured frozen heap through the same positive-confirmation owner as
-/// idle/revoked maintenance. The caller durably fences Area reuse while pending.
-pub async fn stop_frozen(
+/// Stop a captured heap through the same positive-confirmation owner as
+/// idle/revoked maintenance. A running heap also requires its operation's durable
+/// stop and receipt settlement; the caller fences Area reuse while pending.
+pub async fn stop_captured(
 	repository: &dyn PythonRepository,
 	snapshot: &aidash_domain::capabilities::records::Record,
 	reason: &str,
@@ -236,7 +237,11 @@ pub async fn stop_frozen(
 	let mut scope = repository.begin().await?;
 	let result = async {
 		let mut current = scope.locked(snapshot, &operation).await?;
-		if current.revision != snapshot.revision || current.state != "frozen" {
+		if current.revision != snapshot.revision
+			|| current.state != snapshot.state
+			|| !matches!(current.state.as_str(), "frozen" | "running")
+			|| (current.state == "running" && !operation.writer_settled)
+		{
 			return Ok(false);
 		}
 		let sid = current.data["session_id"]

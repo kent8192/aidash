@@ -104,7 +104,7 @@ async fn catalog_visibility_retains_viewer_specific_permission(
 	)
 	.unwrap();
 	assert_eq!(
-		visible(&mut scope, &Candidate::Registry(entry))
+		visible(&mut scope, &Candidate::Registry(Box::new(entry)))
 			.await
 			.unwrap(),
 		allowed

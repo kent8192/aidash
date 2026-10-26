@@ -825,6 +825,7 @@ impl Research<'_> {
 			Reserved::SnapshotLimit => Err(failure(operation, Failure::SnapshotLimit)),
 			Reserved::BudgetExhausted => Err(failure(operation, Failure::BudgetExhausted)),
 			Reserved::Revoked => Err(failure(operation, Failure::EvidenceRevoked)),
+			Reserved::AccountUnavailable => Err(failure(operation, Failure::AccountUnavailable)),
 		})
 	}
 

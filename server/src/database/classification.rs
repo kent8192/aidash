@@ -145,6 +145,10 @@ pub const TABLES: &[Table] = &[
 	table("execution", "core_runs", TenantOwned),
 	table("execution", "core_task_sessions", TenantOwned),
 	// Decision Evidence (#290) belongs to its Run, like the Context Journal.
+	table("execution", "approval_observer_settings", TenantOwned),
+	table("execution", "approval_observations", TenantOwned),
+	table("execution", "approval_observation_attempts", TenantOwned),
+	table("execution", "approval_observation_population", TenantOwned),
 	table("execution", "decision_attempts", TenantOwned),
 	table("execution", "decision_evidence", TenantOwned),
 	table("execution", "decision_outcomes", TenantOwned),
@@ -183,6 +187,7 @@ pub const TABLES: &[Table] = &[
 	// recorded ends of Research account holders' agreements (ADR 0058)
 	table("execution", "research_account_terminations", DeploymentWide),
 	table("execution", "research_attempts", TenantOwned),
+	table("execution", "research_journal_results", TenantOwned),
 	table("execution", "research_fragments", TenantOwned),
 	table("execution", "research_originals", TenantOwned),
 	table("execution", "research_page_images", TenantOwned),

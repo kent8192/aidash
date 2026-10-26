@@ -15,3 +15,7 @@ Revocation may be decided by a subject whose Tenant policy permits `research.rev
 - **Keep an Execution Summary that absorbed revoked results.** The summary is a compressed copy of those results, and a revoked source must not survive inside summary text. Rejected.
 - **Treat revoked results like a revoked summary dependency and pause.** That path waits until the source is readable again, which a revoked one never is, so the Run would stop for good. Rejected.
 - **Also elide the model's own Model Turns.** It would remove the Run's reasoning around every research call. Rejected.
+
+## Amendment: Research references (#331, 2026-10-23)
+
+[ADR 0083](0083-research-journals-retain-content-addressed-references-and-purges-remove-the-owned-bytes.md) replaces the original inline-journal exception: the journal remains append-only but holds immutable Research references. Revocation removes their Research-owned contents and every fitted variant, so journal reads resolve to placeholders while integrity commitments remain valid. The original claim that provider content stays until Run deletion no longer applies to this format; Runs are never deleted.

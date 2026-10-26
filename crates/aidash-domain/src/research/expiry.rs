@@ -37,6 +37,9 @@ impl ExpiredResults {
 	/// result by its Document snapshot only, so reading a searched Source with
 	/// Aidash's own page reader never expires with the search.
 	pub fn covers(&self, result: &Value) -> bool {
+		if let Some(reference) = crate::context::research::ResearchReference::parse(result) {
+			return reference.covered_by(self);
+		}
 		let uuid = |value: &Value| value.as_str().and_then(|id| id.parse::<Uuid>().ok());
 		match result_operation(result) {
 			Some(Operation::Search) => {
@@ -74,7 +77,11 @@ pub fn expire(
 ) -> bool {
 	let mut replaced = false;
 	for entry in history {
-		let carried = expired.carried_by(&entry.event) || originals.contains(&entry.seq);
+		let carried = expired.carried_by(&entry.event)
+			|| entry
+				.research_reference()
+				.is_some_and(|reference| reference.covered_by(expired))
+			|| originals.contains(&entry.seq);
 		let ContextEvent::Tool { call, result } = &mut entry.event else {
 			continue;
 		};

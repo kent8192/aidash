@@ -72,13 +72,52 @@ impl Journal for StoredJournal<'_> {
 				let seq = data["seq"]
 					.as_u64()
 					.ok_or_else(|| Error::Invalid("context journal sequence is negative".into()))?;
-				Ok(HistoryEntry {
+				Ok(HistoryEntry::new(
 					seq,
-					event: serde_json::from_value(data["event"].clone())?,
-				})
+					serde_json::from_value(data["event"].clone())?,
+				))
 			})
 			.collect()
 	}
+}
+
+/// Sanitize a worker projection inside its Run/Research write fence. A late
+/// worker cannot persist content or a summary after the purge has committed.
+pub(crate) async fn protect_projection(
+	tx: &mut dyn TransactionExecutor,
+	run: Uuid,
+	context: &mut Context,
+) -> Result<()> {
+	if !aidash_application::research::revocation::may_carry_research(context)
+		&& !context
+			.history
+			.iter()
+			.any(|entry| entry.research_reference().is_some())
+	{
+		return Ok(());
+	}
+	native(lock(tx, &run_lock(run)).await)?;
+	for entry in &mut context.history {
+		if entry.research.is_none() {
+			entry.research = entry.research_reference();
+		}
+	}
+	if native(ResearchRevocation::exists(tx, run).await)? {
+		let journal = StoredJournal {
+			tx: tokio::sync::Mutex::new(&mut *tx),
+			run,
+		};
+		revoke_projection(context, &journal).await?;
+	} else {
+		let expired = native(super::account_terms::expired(tx, run).await)?;
+		let journal = StoredJournal {
+			tx: tokio::sync::Mutex::new(&mut *tx),
+			run,
+		};
+		aidash_application::research::account_terms::expire_projection(context, &expired, &journal)
+			.await?;
+	}
+	Ok(())
 }
 
 /// What a projection scrub applies.
@@ -517,6 +556,9 @@ impl RevocationScope for Scope<'_> {
 		let (snapshots, snapshot_digests) = native(ResearchSnapshot::revoke(tx, run, at).await)?;
 		native(ResearchOriginal::revoke(tx, run).await)?;
 		native(ResearchPageImage::revoke(tx, run).await)?;
+		native(
+			crate::apps::execution::models::research::ResearchJournalResult::revoke(tx, run).await,
+		)?;
 		let fragments = native(ResearchFragment::revoke(tx, run).await)?;
 		let sources = native(ResearchSource::revoke(tx, run).await)?;
 		let attempts = native(ResearchAttempt::revoke(tx, run).await)?;

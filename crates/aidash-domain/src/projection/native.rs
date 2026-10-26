@@ -26,6 +26,8 @@ pub enum Source {
 	Identity,
 	Task,
 	ReferenceDocuments,
+	/// One exact Registry-declared context candidate, always data.
+	ContextSource,
 	RunMessageSummary,
 	ExecutionSummary,
 	Tool,
@@ -133,6 +135,11 @@ pub struct NativeContext {
 /// for a corrected answer, so only a turn without calls answers it; tool-call
 /// turns that gather the missing evidence or repair the files keep it current.
 pub fn native_context(context: &Context, pinned: &Value) -> NativeContext {
+	let projected = crate::context::source::project(context, pinned);
+	let mut pinned = projected.snapshot;
+	if !projected.step.is_empty() {
+		pinned["context_sources"] = json!(projected.step);
+	}
 	let mut history = Vec::new();
 	let mut markers = Vec::new();
 	let entries = &context.history;
@@ -181,11 +188,22 @@ pub fn native_context(context: &Context, pinned: &Value) -> NativeContext {
 		.map(|marker| serde_json::to_value(marker).expect("serializable marker"))
 		.collect();
 	let markers = Value::Array(markers);
+	let mut attachments = attachments(context, &pinned);
+	let source_position = attachments
+		.iter()
+		.position(|envelope| {
+			matches!(
+				envelope.source,
+				Source::RunMessageSummary | Source::ExecutionSummary
+			)
+		})
+		.unwrap_or(attachments.len());
+	attachments.splice(source_position..source_position, projected.run);
 	NativeContext {
-		attachments: attachments(context, pinned),
+		attachments,
 		history,
 		volatile: crate::context::volatile_part(
-			pinned,
+			&pinned,
 			markers
 				.as_array()
 				.is_some_and(|markers| !markers.is_empty())

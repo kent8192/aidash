@@ -51,6 +51,7 @@ fn scope() -> Scope {
 	agent.config["remove_default"] = json!(aidash_domain::registry::bindings::DEFAULT_TOOLS);
 	agent.config["bindings"] = json!([
 		{"kind":"memory","target":{"registry_deployment":node,"id":"memory","version":"1.0.0"}},
+		{"kind":"decider","target":{"registry_deployment":node,"id":"private.compaction","version":"1.0.0"}},
 		{"kind":"tool","target":{"registry_deployment":node,"id":"tool","version":"1.0.0"}}
 	]);
 	let memory = crate::test_support::entry(
@@ -63,6 +64,8 @@ fn scope() -> Scope {
 		"tool",
 		json!({"registry_deployment":node,"provider":"integration.http@1","operation":"invoke","default_alias":"lookup","tier":"integration","transport":{"transport":"http","endpoint":"https://fixture.invalid","replay":"unsafe"}}),
 	);
+	let mut compaction = crate::registry::system::compaction_decider().unwrap();
+	compaction.id = "private.compaction".into();
 	Scope {
 		visible: true,
 		clusters: vec!["conversation-cluster@1.0.0".into()],
@@ -70,7 +73,7 @@ fn scope() -> Scope {
 			json!({"tenant":"tenant","subjects":{subject:{"kind":"agent", "node": aidash_domain::nodes::NodeName::derived("acme"),"delegated_by":null}}}),
 		)
 		.unwrap(),
-		snapshot: crate::test_support::resolve(node, &agent, false, vec![memory, tool]),
+		snapshot: crate::test_support::resolve(node, &agent, false, vec![memory, tool, compaction]),
 		calls: vec![],
 		fail: None,
 		deny: None,
@@ -88,6 +91,21 @@ impl Scope {
 			return Err(Error::Forbidden);
 		}
 		Ok(())
+	}
+	fn current(&self, reference: &EntityRef) -> Entry {
+		let mut entry = self
+			.snapshot
+			.definitions
+			.iter()
+			.find(|d| {
+				d.identity.registry_deployment == self.node_id() && d.identity.local() == *reference
+			})
+			.map(|d| d.definition.clone())
+			.unwrap_or_else(|| crate::test_support::entry(&reference.id, "cluster", json!({})));
+		if self.changed.as_deref() == Some(&reference.id) {
+			entry.tags.push("changed".into());
+		}
+		entry
 	}
 }
 #[async_trait]
@@ -108,19 +126,11 @@ impl RunGuardScope for Scope {
 	}
 	async fn catalog(&mut self, reference: &EntityRef, action: &str) -> Result<Entry> {
 		self.record(format!("catalog:{}:{action}", reference.id))?;
-		let mut entry = self
-			.snapshot
-			.definitions
-			.iter()
-			.find(|d| {
-				d.identity.registry_deployment == self.node_id() && d.identity.local() == *reference
-			})
-			.map(|d| d.definition.clone())
-			.unwrap_or_else(|| crate::test_support::entry(&reference.id, "cluster", json!({})));
-		if self.changed.as_deref() == Some(&reference.id) {
-			entry.tags.push("changed".into());
-		}
-		Ok(entry)
+		Ok(self.current(reference))
+	}
+	async fn metadata(&mut self, reference: &EntityRef) -> Result<Entry> {
+		self.record(format!("metadata:{}:registry.read", reference.id))?;
+		Ok(self.current(reference))
 	}
 	async fn task_read(&mut self, id: Uuid) -> Result<Task> {
 		self.record("task_read")?;
@@ -176,15 +186,21 @@ async fn opt_in_memory_keeps_current_source_authority_without_a_native_area(
 	assert!(!config.core_capabilities.enabled());
 	assert!(!scope.calls.contains(&"context".into()));
 	for definition in &scope.snapshot.definitions {
+		let path = if definition.identity.id == "private.compaction" {
+			"metadata"
+		} else {
+			"catalog"
+		};
 		assert!(
 			scope
 				.calls
-				.contains(&format!("catalog:{}:registry.read", definition.identity.id))
+				.contains(&format!("{path}:{}:registry.read", definition.identity.id))
 		);
 	}
 }
 #[rstest]
 #[case("fixture-model")]
+#[case("private.compaction")]
 #[case("memory")]
 #[case("tool")]
 #[case("aidash.workspace_read")]
@@ -195,7 +211,12 @@ async fn revocation_of_any_admitted_dependency_prevents_accepting_output(
 	run: RunMetadata,
 	#[case] dependency: &str,
 ) {
-	scope.deny = Some(format!("catalog:{dependency}:registry.read"));
+	let path = if dependency == "private.compaction" {
+		"metadata"
+	} else {
+		"catalog"
+	};
+	scope.deny = Some(format!("{path}:{dependency}:registry.read"));
 	assert!(matches!(
 		authorize(&mut scope, &run, true).await,
 		Err(Error::Forbidden)
@@ -204,6 +225,7 @@ async fn revocation_of_any_admitted_dependency_prevents_accepting_output(
 #[rstest]
 #[case("producer")]
 #[case("fixture-model")]
+#[case("private.compaction")]
 #[case("memory")]
 #[case("tool")]
 #[tokio::test]
@@ -251,7 +273,7 @@ async fn adapter_fault_stops_at_the_failing_boundary(
 			.snapshot
 			.definitions
 			.iter()
-			.filter(|d| ["memory", "tool"].contains(&d.identity.id.as_str()))
+			.filter(|d| ["memory", "tool", "private.compaction"].contains(&d.identity.id.as_str()))
 			.map(|d| d.definition.clone())
 			.collect();
 		scope.snapshot = crate::test_support::resolve("aidash://local", &root, false, extras);
