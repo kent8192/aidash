@@ -5675,5 +5675,34 @@ async fn catalog_request_turns_stale_after_a_missing_dependency_is_registered(
 		.find(|request| request["id"] == id)
 		.unwrap();
 	assert_eq!(request_view["state"], "stale");
+	// The read derived stale without writing: the row is still open, so the
+	// requester can withdraw it. That write is what persists the final state.
+	let (status, withdrawn) = request(
+		&app,
+		&alice,
+		"POST",
+		&format!("/api/authorization/acme/catalog/requests/{id}/withdraw"),
+		Value::Null,
+	)
+	.await;
+	assert_eq!(status, 200, "{withdrawn}");
+	assert_eq!(withdrawn["state"], "withdrawn");
+	let (_, after) = request(
+		&app,
+		&alice,
+		"GET",
+		&format!("/api/authorization/acme/catalog/requests/mine?node={node}"),
+		Value::Null,
+	)
+	.await;
+	assert_eq!(
+		after["requests"]
+			.as_array()
+			.unwrap()
+			.iter()
+			.find(|request| request["id"] == id)
+			.unwrap()["state"],
+		"withdrawn"
+	);
 	cleanup(f, &url, &schema).await;
 }

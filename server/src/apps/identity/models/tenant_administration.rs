@@ -53,9 +53,6 @@ pub(crate) enum AdministrationActor {
 	Subject {
 		subject: String,
 	},
-	/// The server itself, such as marking a request fulfilled when a read sees
-	/// its review already ready.
-	System,
 }
 
 /// The fields of one administration history row other than its actor.
@@ -81,7 +78,6 @@ impl AdministrationActor {
 			Self::Identity { identity, .. } => format!("oidc:{identity}"),
 			Self::DemoData => "demo-data".into(),
 			Self::Subject { subject } => subject.clone(),
-			Self::System => "system".into(),
 		}
 	}
 
@@ -106,7 +102,6 @@ impl AdministrationActor {
 			Self::Identity { identity, mapping } => ("identity", Some(*identity), *mapping),
 			Self::DemoData => ("demo_data", None, None),
 			Self::Subject { .. } => ("subject", None, None),
-			Self::System => ("system", None, None),
 		}
 	}
 

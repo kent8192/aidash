@@ -140,7 +140,19 @@ fn request_view(
 	request: &ApprovalRequest,
 	review: Option<&ApprovalReview>,
 ) -> CatalogApprovalRequestView {
-	let next_action = match request.state {
+	// A read derives the effective state from the current review without
+	// writing: a stale closure reads as stale and a ready review as fulfilled.
+	// Only an exclusive write path persists those derived states.
+	let state = if request.state.is_open() {
+		match review {
+			Some(review) if review.closure_digest != request.closure_digest => RequestState::Stale,
+			Some(review) if review.ready => RequestState::Fulfilled,
+			_ => request.state,
+		}
+	} else {
+		request.state
+	};
+	let next_action = match state {
 		RequestState::Fulfilled => CatalogRequestNextAction::Fulfilled,
 		RequestState::Declined => CatalogRequestNextAction::Declined,
 		RequestState::Stale => CatalogRequestNextAction::Stale,
@@ -156,8 +168,10 @@ fn request_view(
 		root: request.root.clone(),
 		requester: request.requester.clone(),
 		reason: request.reason.clone(),
-		state: request.state,
-		decline_reason: request.decline_reason.clone(),
+		state,
+		decline_reason: (state == RequestState::Declined)
+			.then(|| request.decline_reason.clone())
+			.flatten(),
 		closure_digest: request.closure_digest.clone(),
 		created_at: request.created_at,
 		updated_at: request.updated_at,
@@ -656,7 +670,7 @@ impl PolicyAdministration {
 		access.finish(result).await
 	}
 
-	/// The requester's own requests. Lazy reads refresh a stale or ready state.
+	/// The requester's own requests. Reads derive stale/fulfilled without writing.
 	pub(crate) async fn mine_requests(
 		&self,
 		actor: Actor,
@@ -667,7 +681,7 @@ impl PolicyAdministration {
 		let identity = tenant_subject(actor, &tenant)?;
 		let requester = identity.subject.clone();
 		let limit = page.limit.clamp(1, 100);
-		let mut access = Access::begin_exclusive(&f.store, &identity).await?;
+		let mut access = Access::begin(&f.store, &identity).await?;
 		let result = async {
 			let rows = requests::mine(
 				&mut access.tx,
@@ -680,7 +694,9 @@ impl PolicyAdministration {
 			.await?;
 			let more = rows.len() as u64 > limit;
 			let mut views = vec![];
-			for mut request in rows.into_iter().take(limit as usize) {
+			for request in rows.into_iter().take(limit as usize) {
+				// A read never writes. It derives stale/fulfilled for display;
+				// the next exclusive write path persists that state.
 				let review = if request.state.is_open() {
 					match request_review_for(
 						&mut access,
@@ -691,27 +707,7 @@ impl PolicyAdministration {
 					)
 					.await
 					{
-						Ok(current) => {
-							if request.closure_digest != current.closure_digest {
-								let now = database_time(&mut *access.tx).await?;
-								request.stale(now)?;
-								requests::save(&mut access.tx, &request).await?;
-							} else if current.ready {
-								let actor = AdministrationActor::System;
-								let now = database_time(&mut *access.tx).await?;
-								request.fulfil(&actor.decision_actor(), now)?;
-								requests::save(&mut access.tx, &request).await?;
-								record_request_event(
-									&mut access,
-									&actor,
-									CATALOG_REQUEST_FULFIL,
-									&tenant,
-									&request.requester,
-								)
-								.await?;
-							}
-							Some(current)
-						}
+						Ok(current) => Some(current),
 						Err(Error::Forbidden | Error::NotFound(_)) => None,
 						Err(error) => return Err(error),
 					}
@@ -740,12 +736,12 @@ impl PolicyAdministration {
 		let f = self.runtime.clone();
 		let identity = tenant_subject(actor, &tenant)?;
 		let limit = page.limit.clamp(1, 100);
-		let mut access = Access::begin_exclusive(&f.store, &identity).await?;
+		let mut access = Access::begin(&f.store, &identity).await?;
 		let result = async {
 			let rows =
 				requests::open_page(&mut access.tx, &tenant, page.node.as_ref(), 512).await?;
 			let mut views = vec![];
-			for mut request in rows {
+			for request in rows {
 				let current = match request_review_for(
 					&mut access,
 					&f.store,
@@ -759,25 +755,9 @@ impl PolicyAdministration {
 					Err(Error::Forbidden | Error::NotFound(_)) => continue,
 					Err(error) => return Err(error),
 				};
-				if request.closure_digest != current.closure_digest {
-					let now = database_time(&mut *access.tx).await?;
-					request.stale(now)?;
-					requests::save(&mut access.tx, &request).await?;
-					continue;
-				}
-				if current.ready {
-					let actor = AdministrationActor::System;
-					let now = database_time(&mut *access.tx).await?;
-					request.fulfil(&actor.decision_actor(), now)?;
-					requests::save(&mut access.tx, &request).await?;
-					record_request_event(
-						&mut access,
-						&actor,
-						CATALOG_REQUEST_FULFIL,
-						&tenant,
-						&request.requester,
-					)
-					.await?;
+				// Derived, never written: a stale closure or a ready review
+				// leaves the pending list.
+				if request.closure_digest != current.closure_digest || current.ready {
 					continue;
 				}
 				if current
