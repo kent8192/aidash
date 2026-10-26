@@ -1,7 +1,10 @@
 use super::*;
 use crate::ports::catalog::CatalogMutation;
 use aidash_domain::{
-	identity::tenancy::{MEMBERS, initial_policy},
+	identity::{
+		catalog::{CatalogRestriction, RestrictionChange},
+		tenancy::{MEMBERS, initial_policy},
+	},
 	policy::{PolicyBundle, SubjectKind},
 };
 use async_trait::async_trait;
@@ -18,6 +21,7 @@ struct Fixture {
 	writes: Vec<String>,
 	saved: usize,
 	node: aidash_domain::nodes::NodeAddress,
+	stored_restriction: Option<CatalogRestriction>,
 }
 
 fn entry(value: Value) -> Entry {
@@ -54,6 +58,7 @@ fn approval(id: &str, enabled: bool) -> Approval {
 		enabled,
 		expected_revision: 0,
 		groups: None,
+		restriction: None,
 	}
 }
 fn subject() -> String {
@@ -73,6 +78,7 @@ impl Fixture {
 			writes: vec![],
 			saved: 0,
 			node: node(),
+			stored_restriction: None,
 		}
 	}
 }
@@ -91,9 +97,13 @@ impl CatalogMutation for Fixture {
 		reference: &EntityRef,
 		expected_revision: i64,
 		enabled: bool,
+		restriction: RestrictionChange,
 	) -> Result<Option<Binding>> {
 		self.writes
 			.push(format!("approve:{}:{enabled}", reference.id));
+		if let RestrictionChange::Replace(restriction) = restriction {
+			self.stored_restriction = restriction;
+		}
 		Ok(Some(Binding {
 			tenant: tenant.into(),
 			node: node.clone(),
@@ -101,6 +111,7 @@ impl CatalogMutation for Fixture {
 			entry_version: reference.version.clone(),
 			enabled,
 			revision: expected_revision + 1,
+			restriction: self.stored_restriction.clone(),
 		}))
 	}
 	async fn history(&mut self, binding: &Binding, actor: &str) -> Result<()> {
@@ -341,4 +352,94 @@ async fn an_agent_whose_subject_has_another_kind_is_refused() {
 
 fn node() -> aidash_domain::nodes::NodeAddress {
 	NODE.parse().unwrap()
+}
+
+fn restricted(subjects: &[&str], groups: &[&str]) -> Option<CatalogRestriction> {
+	Some(CatalogRestriction {
+		subjects: subjects.iter().map(|value| (*value).to_owned()).collect(),
+		groups: groups.iter().map(|value| (*value).to_owned()).collect(),
+	})
+}
+
+#[rstest]
+#[tokio::test]
+async fn an_approval_records_a_restriction_of_existing_subjects_and_assignable_groups() {
+	// Arrange
+	let mut fixture = Fixture::new(vec![model()]);
+	let mut request = approval("model", true);
+	request.restriction = restricted(&["owner"], &["members"]);
+	// Act
+	let bindings = approve(&mut fixture, &[request]).await.unwrap();
+	// Assert
+	assert_eq!(
+		bindings[0].restriction,
+		restricted(&["owner"], &["members"])
+	);
+}
+
+#[rstest]
+#[tokio::test]
+async fn a_restriction_naming_an_unknown_subject_is_refused_before_any_write() {
+	// Arrange
+	let mut fixture = Fixture::new(vec![model()]);
+	let mut request = approval("model", true);
+	request.restriction = restricted(&["nobody"], &[]);
+	// Act
+	let result = approve(&mut fixture, &[request]).await;
+	// Assert
+	assert!(
+		matches!(&result, Err(Error::Invalid(message)) if message == "CATALOG_RESTRICTION_UNKNOWN_SUBJECT: nobody"),
+		"{result:?}"
+	);
+	assert!(fixture.writes.is_empty());
+}
+
+#[rstest]
+#[tokio::test]
+async fn a_restriction_naming_a_group_that_is_not_assignable_is_refused() {
+	// Arrange
+	let mut fixture = Fixture::new(vec![model()]);
+	let mut request = approval("model", true);
+	request.restriction = restricted(&[], &["not-a-group"]);
+	// Act
+	let result = approve(&mut fixture, &[request]).await;
+	// Assert
+	assert!(
+		matches!(&result, Err(Error::Invalid(message)) if message == "CATALOG_RESTRICTION_NOT_ASSIGNABLE: not-a-group"),
+		"{result:?}"
+	);
+	assert!(fixture.writes.is_empty());
+}
+
+#[rstest]
+#[tokio::test]
+async fn an_omitted_restriction_keeps_the_stored_one_and_an_empty_one_clears_it() {
+	// Arrange: an approval already restricted to owner.
+	let mut fixture = Fixture::new(vec![model()]);
+	fixture.stored_restriction = restricted(&["owner"], &[]);
+	// Act: omit the restriction, then explicitly clear it.
+	let kept = approve(&mut fixture, &[approval("model", true)])
+		.await
+		.unwrap();
+	let mut cleared = approval("model", true);
+	cleared.restriction = restricted(&[], &[]);
+	let cleared = approve(&mut fixture, &[cleared]).await.unwrap();
+	// Assert
+	assert_eq!(kept[0].restriction, restricted(&["owner"], &[]));
+	assert_eq!(cleared[0].restriction, None);
+}
+
+#[rstest]
+#[tokio::test]
+async fn a_restriction_may_name_the_agent_subject_this_request_creates() {
+	// Arrange: the model dependency is approved in the same request.
+	let mut fixture = Fixture::new(vec![agent("model", &[]), model()]);
+	let mut dependency = approval("model", true);
+	dependency.restriction = restricted(&[&subject()], &[]);
+	// Act
+	let bindings = approve(&mut fixture, &[approval("agent", true), dependency])
+		.await
+		.unwrap();
+	// Assert
+	assert_eq!(bindings[1].restriction, restricted(&[&subject()], &[]));
 }

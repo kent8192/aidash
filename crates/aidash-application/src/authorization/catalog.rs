@@ -1,6 +1,9 @@
 //! Exact definition admission and discovery share current policy and inherited approval fences.
 use crate::{Error, Result, ports::catalog::CatalogScope};
-use aidash_domain::registry::{EntityRef, Entry, Search};
+use aidash_domain::{
+	identity::catalog::{CatalogRestriction, RestrictionChange},
+	registry::{EntityRef, Entry, Search},
+};
 pub async fn entry(
 	scope: &mut dyn CatalogScope,
 	reference: &EntityRef,
@@ -12,14 +15,26 @@ pub async fn entry(
 	{
 		return Err(Error::Forbidden);
 	}
+	// A cache hit already holds the distribution lock taken by its first
+	// admission in this transaction; a new admission takes it before reading
+	// the restriction so a concurrent change cannot slip in between.
+	if !scope.inherited_lease() && scope.admitted(reference, action).is_none() {
+		scope.distribution_lock().await?;
+	}
+	// The restriction is checked on every use, including a cached or inherited
+	// admission: an agent's approved closure does not make a dependency usable
+	// by another agent that a delegated Run adds to the subject chain.
+	let direct_user = scope.direct_user(reference);
+	if !scope.permits_restriction(reference, &direct_user).await? {
+		// A restriction narrows the Tenant policy; refuse exactly as an
+		// unapproved version does, without disclosing the restriction.
+		return Err(Error::Forbidden);
+	}
 	// The distribution, catalog and policy locks taken by the first admission keep it
 	// current for the rest of the scope's transaction; repeating it re-proves nothing.
 	if let Some(entry) = scope.admitted(reference, action) {
 		scope.remember(reference);
 		return Ok(entry);
-	}
-	if !scope.inherited_lease() {
-		scope.distribution_lock().await?;
 	}
 	let document = scope.document(reference).await?.ok_or(Error::Forbidden)?;
 	let entry: Entry = serde_json::from_value(document)?;
@@ -74,6 +89,40 @@ mod tests;
 
 /// Shared with Marketplace activation, whose caller already holds its writer and admission lease.
 /// All effects and the resulting history remain in the caller's transaction.
+pub async fn set_in_with_restriction(
+	scope: &mut dyn crate::ports::catalog::CatalogMutation,
+	tenant: &str,
+	node: &aidash_domain::nodes::NodeName,
+	reference: &EntityRef,
+	expected_revision: i64,
+	enabled: bool,
+	restriction: RestrictionChange,
+	actor: &str,
+) -> Result<aidash_domain::identity::catalog::Binding> {
+	aidash_domain::identity::catalog::validate_revision(expected_revision)?;
+	if let RestrictionChange::Replace(Some(restriction)) = &restriction {
+		restriction.validate()?;
+	}
+	if !scope.registered(reference).await? {
+		return Err(Error::NotFound("registry entry".into()));
+	}
+	let binding = scope
+		.compare_and_set(
+			tenant,
+			node,
+			reference,
+			expected_revision,
+			enabled,
+			restriction,
+		)
+		.await?
+		.ok_or_else(|| Error::Conflict("catalog revision changed".into()))?;
+	scope.history(&binding, actor).await?;
+	Ok(binding)
+}
+
+/// Create or change an approval without naming a restriction. The stored one
+/// stays as it is, so re-enabling never silently widens an approval.
 pub async fn set_in(
 	scope: &mut dyn crate::ports::catalog::CatalogMutation,
 	tenant: &str,
@@ -83,16 +132,46 @@ pub async fn set_in(
 	enabled: bool,
 	actor: &str,
 ) -> Result<aidash_domain::identity::catalog::Binding> {
-	aidash_domain::identity::catalog::validate_revision(expected_revision)?;
-	if !scope.registered(reference).await? {
-		return Err(Error::NotFound("registry entry".into()));
+	set_in_preserving(
+		scope,
+		tenant,
+		node,
+		reference,
+		expected_revision,
+		enabled,
+		actor,
+	)
+	.await
+}
+
+pub async fn set_in_preserving(
+	scope: &mut dyn crate::ports::catalog::CatalogMutation,
+	tenant: &str,
+	node: &aidash_domain::nodes::NodeName,
+	reference: &EntityRef,
+	expected_revision: i64,
+	enabled: bool,
+	actor: &str,
+) -> Result<aidash_domain::identity::catalog::Binding> {
+	set_in_with_restriction(
+		scope,
+		tenant,
+		node,
+		reference,
+		expected_revision,
+		enabled,
+		RestrictionChange::Preserve,
+		actor,
+	)
+	.await
+}
+
+/// Normalize a requested restriction so an empty one is stored as absent.
+pub fn restriction_change(restriction: Option<CatalogRestriction>) -> RestrictionChange {
+	match restriction {
+		Some(restriction) => RestrictionChange::Replace(restriction.normalized()),
+		None => RestrictionChange::Preserve,
 	}
-	let binding = scope
-		.compare_and_set(tenant, node, reference, expected_revision, enabled)
-		.await?
-		.ok_or_else(|| Error::Conflict("catalog revision changed".into()))?;
-	scope.history(&binding, actor).await?;
-	Ok(binding)
 }
 
 pub async fn set_catalog(
@@ -104,6 +183,29 @@ pub async fn set_catalog(
 	enabled: bool,
 	actor: &str,
 ) -> Result<aidash_domain::identity::catalog::Binding> {
+	set_catalog_with_restriction(
+		scope,
+		tenant,
+		node,
+		reference,
+		expected_revision,
+		enabled,
+		RestrictionChange::Preserve,
+		actor,
+	)
+	.await
+}
+
+pub async fn set_catalog_with_restriction(
+	scope: &mut dyn crate::ports::catalog::CatalogAdministrator,
+	tenant: &str,
+	node: &aidash_domain::nodes::NodeName,
+	reference: &EntityRef,
+	expected_revision: i64,
+	enabled: bool,
+	restriction: RestrictionChange,
+	actor: &str,
+) -> Result<aidash_domain::identity::catalog::Binding> {
 	super::require_deployment_administrator(scope.principal())?;
 	aidash_domain::identity::catalog::validate_revision(expected_revision)?;
 	scope.load_tenant(tenant).await?;
@@ -111,13 +213,14 @@ pub async fn set_catalog(
 	if !aidash_domain::marketplace::installations::catalog_update_allowed(&definition) {
 		return Err(Error::Forbidden);
 	}
-	set_in(
+	set_in_with_restriction(
 		scope,
 		tenant,
 		node,
 		reference,
 		expected_revision,
 		enabled,
+		restriction,
 		actor,
 	)
 	.await

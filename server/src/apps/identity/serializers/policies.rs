@@ -14,6 +14,10 @@ pub(crate) struct CatalogInput {
 	/// Assignable Groups for the subject of an approved agent version (ADR 0062).
 	#[serde(default)]
 	pub(crate) groups: Option<std::collections::BTreeSet<String>>,
+	/// Subjects and Assignable Groups that may use the version on this Node
+	/// (ADR 0095). Absent keeps an existing restriction.
+	#[serde(default)]
+	pub(crate) restriction: Option<aidash_domain::identity::catalog::CatalogRestriction>,
 }
 /// The Node whose Catalog Approvals are read.
 #[derive(Deserialize, JsonSchema)]

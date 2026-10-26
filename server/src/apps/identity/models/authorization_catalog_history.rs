@@ -20,6 +20,9 @@ pub struct AuthorizationCatalogHistory {
 	pub revision: i64,
 	#[field]
 	pub enabled: bool,
+	/// The restriction stored by this revision (ADR 0095).
+	#[field(null = true)]
+	pub restriction: Option<reinhardt::db::orm::Json<serde_json::Value>>,
 	#[field(field_type = "text")]
 	pub actor: String,
 	#[field(auto_now_add = true)]

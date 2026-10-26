@@ -101,6 +101,9 @@ impl PolicyAdministration {
 					entry_version: row.entry_version,
 					enabled: row.enabled,
 					revision: row.revision,
+					restriction: row
+						.restriction
+						.and_then(|value| serde_json::from_value(value.0).ok()),
 				})
 				.collect())
 		}
@@ -118,6 +121,7 @@ impl PolicyAdministration {
 			enabled: input.enabled,
 			expected_revision: input.expected_revision,
 			groups: input.groups,
+			restriction: input.restriction,
 		};
 		Ok(self
 			.approve(actor, tenant, input.node, vec![approval])

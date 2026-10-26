@@ -4,7 +4,10 @@
 //! version also makes the agent a subject of the Tenant's policy (ADR 0062).
 use crate::{Error, Result, ports::catalog::CatalogApprovalScope};
 use aidash_domain::{
-	identity::{catalog::Binding, tenant_administration as rules},
+	identity::{
+		catalog::{Binding, CatalogRestriction, RestrictionChange},
+		tenant_administration as rules,
+	},
 	policy::SubjectKind,
 	registry::{EntityRef, Entry, bindings::AgentBindings},
 };
@@ -25,6 +28,11 @@ pub struct Approval {
 	/// default (`members`) applies when absent.
 	#[serde(default, skip_serializing_if = "Option::is_none")]
 	pub groups: Option<BTreeSet<String>>,
+	/// Who may use the version on this Node. Absent keeps an existing
+	/// restriction (or leaves a new approval unrestricted); an empty
+	/// restriction clears it.
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub restriction: Option<CatalogRestriction>,
 }
 
 /// The exact versions a definition names directly, which must be approved (or
@@ -70,6 +78,57 @@ pub async fn approve(
 		scope.require(&entry, CATALOG_APPROVE).await?;
 		definitions.insert(key, entry);
 	}
+	// A version approved by this request may be named by another item's
+	// restriction, so an Approval Review can restrict a dependency to the
+	// agent it is approving at the same time.
+	let mut new_agents = BTreeSet::new();
+	for approval in approvals.iter().filter(|approval| approval.enabled) {
+		let entry = &definitions[&(approval.entry.id.clone(), approval.entry.version.clone())];
+		if entry.kind == "agent" {
+			new_agents.insert(aidash_domain::qualified_agent(
+				scope.node(),
+				&entry.id,
+				&entry.version,
+			));
+		}
+	}
+	let existing_subjects = scope
+		.policy()
+		.subjects
+		.keys()
+		.cloned()
+		.collect::<BTreeSet<_>>();
+	let assignable_groups = scope
+		.policy()
+		.groups
+		.iter()
+		.filter(|(_, group)| group.assignable)
+		.map(|(name, _)| name.clone())
+		.collect::<BTreeSet<_>>();
+	for approval in approvals.iter().filter(|approval| approval.enabled) {
+		let Some(restriction) = &approval.restriction else {
+			continue;
+		};
+		restriction.validate()?;
+		if let Some(subject) = restriction
+			.subjects
+			.iter()
+			.find(|subject| !existing_subjects.contains(*subject) && !new_agents.contains(*subject))
+		{
+			return Err(Error::Invalid(format!(
+				"CATALOG_RESTRICTION_UNKNOWN_SUBJECT: {subject}"
+			)));
+		}
+		if let Some(group) = restriction
+			.groups
+			.iter()
+			.find(|group| !assignable_groups.contains(*group))
+		{
+			return Err(Error::Invalid(format!(
+				"CATALOG_RESTRICTION_NOT_ASSIGNABLE: {group}"
+			)));
+		}
+	}
 	let requested: BTreeMap<_, _> = approvals
 		.iter()
 		.map(|approval| {
@@ -101,13 +160,25 @@ pub async fn approve(
 	let mut bindings = Vec::with_capacity(approvals.len());
 	for approval in approvals {
 		bindings.push(
-			super::set_in(
+			super::set_in_with_restriction(
 				scope,
 				&tenant,
 				&scope_node,
 				&approval.entry,
 				approval.expected_revision,
 				approval.enabled,
+				if approval.enabled {
+					match &approval.restriction {
+						Some(restriction) => {
+							RestrictionChange::Replace(restriction.clone().normalized())
+						}
+						None => RestrictionChange::Preserve,
+					}
+				} else {
+					// Withdrawal is never blocked by a restriction, and leaves
+					// any stored one for the next approval.
+					RestrictionChange::Preserve
+				},
 				&actor,
 			)
 			.await?,

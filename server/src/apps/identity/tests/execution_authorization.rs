@@ -4397,3 +4397,351 @@ mod approval_modes {
 		cleanup(f, &url, &schema).await;
 	}
 }
+
+#[rstest::rstest]
+#[tokio::test]
+async fn catalog_restrictions_are_persisted_with_their_history_and_fenced_by_revision(
+	#[future(awt)]
+	#[from(common::native_application)]
+	fixture: common::ApplicationFixture,
+) {
+	let (f, url, schema) = fixture.runtime.parts();
+	let app = fixture.application;
+	let (mut policy, token, _) = bootstrap(&f, &app, "http://127.0.0.1:9").await;
+	let deployment_administrator = f.config.api_token.clone();
+	let node = aidash_domain::nodes::NodeName::derived("acme");
+	let agent = json!({"id":"research","version":"1.0.0"});
+	// Give the Tenant one Assignable Group a restriction may name.
+	policy["groups"] = json!({"members":{"assignable":true}});
+	assert_eq!(
+		request(
+			&app,
+			&deployment_administrator,
+			"POST",
+			"/api/authorization/acme",
+			json!({"expected_revision":1,"bundle":policy})
+		)
+		.await
+		.0,
+		200
+	);
+
+	// A single approval records who may use the agent version.
+	let (status, binding) = request(
+		&app,
+		&token,
+		"POST",
+		"/api/authorization/acme/catalog",
+		json!({"node":node,"entry":agent,"enabled":true,"expected_revision":1,
+			"restriction":{"subjects":["alice"],"groups":[]}}),
+	)
+	.await;
+	assert_eq!(status, 200, "{binding}");
+	assert_eq!(binding["revision"], 2);
+	assert_eq!(binding["restriction"]["subjects"], json!(["alice"]));
+
+	// A stale revision cannot change the restriction.
+	let (status, stale) = request(
+		&app,
+		&token,
+		"POST",
+		"/api/authorization/acme/catalog",
+		json!({"node":node,"entry":agent,"enabled":true,"expected_revision":1,
+			"restriction":{"subjects":["alice"],"groups":[]}}),
+	)
+	.await;
+	assert_eq!(status, 409, "{stale}");
+
+	// A batch approval can replace the restriction with an Assignable Group.
+	let (status, bindings) = request(
+		&app,
+		&token,
+		"POST",
+		"/api/authorization/acme/catalog/approvals",
+		json!({"node":node,"approvals":[{"entry":agent,"enabled":true,"expected_revision":2,
+			"restriction":{"subjects":[],"groups":["members"]}}]}),
+	)
+	.await;
+	assert_eq!(status, 200, "{bindings}");
+	assert_eq!(bindings[0]["revision"], 3);
+	assert_eq!(bindings[0]["restriction"]["groups"], json!(["members"]));
+
+	let (status, catalog) = request(
+		&app,
+		&token,
+		"GET",
+		&format!("/api/authorization/acme/catalog?node={node}"),
+		Value::Null,
+	)
+	.await;
+	assert_eq!(status, 200, "{catalog}");
+	let approval = catalog
+		.as_array()
+		.unwrap()
+		.iter()
+		.find(|binding| binding["entry_id"] == "research")
+		.unwrap();
+	assert_eq!(approval["restriction"]["groups"], json!(["members"]));
+
+	let (status, versions) = request(
+		&app,
+		&token,
+		"GET",
+		&format!("/api/registry/versions?node={node}"),
+		Value::Null,
+	)
+	.await;
+	assert_eq!(status, 200, "{versions}");
+	let version = versions["versions"]
+		.as_array()
+		.unwrap()
+		.iter()
+		.find(|version| version["entry"]["id"] == "research")
+		.unwrap();
+	assert_eq!(
+		version["approval"]["restriction"]["groups"],
+		json!(["members"])
+	);
+	assert_eq!(
+		version["history"]
+			.as_array()
+			.unwrap()
+			.iter()
+			.find(|record| record["revision"] == 2)
+			.unwrap()["restriction"]["subjects"],
+		json!(["alice"])
+	);
+
+	// A group that is not Assignable cannot restrict an approval.
+	let (status, refused) = request(
+		&app,
+		&token,
+		"POST",
+		"/api/authorization/acme/catalog",
+		json!({"node":node,"entry":agent,"enabled":true,"expected_revision":3,
+			"restriction":{"subjects":[],"groups":["not-a-group"]}}),
+	)
+	.await;
+	assert_eq!(status, 400, "{refused}");
+	cleanup(f, &url, &schema).await;
+}
+
+#[rstest::rstest]
+#[tokio::test]
+async fn an_agent_version_restriction_admits_only_the_named_run_starter(
+	#[future(awt)]
+	#[from(common::native_application)]
+	fixture: common::ApplicationFixture,
+) {
+	let (f, url, schema) = fixture.runtime.parts();
+	let app = fixture.application;
+	let (mut policy, alice, task_id) = bootstrap(&f, &app, "http://127.0.0.1:9").await;
+	let deployment_administrator = f.config.api_token.clone();
+	policy["subjects"]["bob"] = json!({"kind":"user"});
+	assert_eq!(
+		request(
+			&app,
+			&deployment_administrator,
+			"POST",
+			"/api/authorization/acme",
+			json!({"expected_revision":1,"bundle":policy})
+		)
+		.await
+		.0,
+		200
+	);
+	let node = aidash_domain::nodes::NodeName::derived("acme");
+	let agent = json!({"id":"research","version":"1.0.0"});
+	let (status, binding) = request(
+		&app,
+		&alice,
+		"POST",
+		"/api/authorization/acme/catalog",
+		json!({"node":node,"entry":agent,"enabled":true,"expected_revision":1,
+			"restriction":{"subjects":["alice"],"groups":[]}}),
+	)
+	.await;
+	assert_eq!(status, 200, "{binding}");
+	let claim = json!({"revision":0,"agent":{"id":"research","version":"1.0.0"}});
+	assert_eq!(
+		request(
+			&app,
+			&alice,
+			"POST",
+			&format!("/api/tasks/{task_id}/claim"),
+			claim.clone()
+		)
+		.await
+		.0,
+		200,
+		"the named starter may run the restricted agent version"
+	);
+
+	// Bob holds the same policy actions but is not named by the restriction.
+	let (status, credential) = request(
+		&app,
+		&deployment_administrator,
+		"POST",
+		"/api/authorization/acme/credentials",
+		json!({"subject":"bob"}),
+	)
+	.await;
+	assert_eq!(status, 200, "{credential}");
+	let bob = credential["token"].as_str().unwrap();
+	let (status, workspace) = request(
+		&app,
+		bob,
+		"POST",
+		"/api/workspaces",
+		json!({"title":"Bob","goal":"Denied"}),
+	)
+	.await;
+	assert_eq!(status, 200, "{workspace}");
+	let (status, task) = request(
+		&app,
+		bob,
+		"POST",
+		&format!(
+			"/api/workspaces/{}/tasks",
+			workspace["id"].as_str().unwrap()
+		),
+		json!({"title":"Denied","description":"Not named"}),
+	)
+	.await;
+	assert_eq!(status, 200, "{task}");
+	let runs = f.store.runs(&TEST_FIXTURE).await.unwrap().len();
+	let (status, refused) = request(
+		&app,
+		bob,
+		"POST",
+		&format!("/api/tasks/{}/claim", task["id"].as_str().unwrap()),
+		claim,
+	)
+	.await;
+	assert_eq!(status, 403, "{refused}");
+	assert_eq!(
+		f.store.runs(&TEST_FIXTURE).await.unwrap().len(),
+		runs,
+		"a refused claim creates no Run"
+	);
+	cleanup(f, &url, &schema).await;
+}
+
+#[rstest::rstest]
+#[tokio::test]
+async fn a_dependency_restriction_follows_the_using_agent_not_the_person(
+	#[future(awt)]
+	#[from(common::native_application)]
+	fixture: common::ApplicationFixture,
+) {
+	let (f, url, schema) = fixture.runtime.parts();
+	let app = fixture.application;
+	let (_, alice, task_id) = bootstrap(&f, &app, "http://127.0.0.1:9").await;
+	let node = aidash_domain::nodes::NodeName::derived("acme");
+	let agent_subject = aidash_domain::qualified_agent(
+		&aidash_domain::nodes::NodeAddress::derived(f.config.deployment.as_str(), "acme"),
+		"research",
+		"1.0.0",
+	);
+	let model = json!({"id":"model","version":"1.0.0"});
+	let claim = json!({"revision":0,"agent":{"id":"research","version":"1.0.0"}});
+	let new_task = async |title: &str| -> Uuid {
+		let (status, workspace) = request(
+			&app,
+			&alice,
+			"POST",
+			"/api/workspaces",
+			json!({"title":title,"goal":"Dependency restriction"}),
+		)
+		.await;
+		assert_eq!(status, 200, "{workspace}");
+		let (status, task) = request(
+			&app,
+			&alice,
+			"POST",
+			&format!(
+				"/api/workspaces/{}/tasks",
+				workspace["id"].as_str().unwrap()
+			),
+			json!({"title":title,"description":title}),
+		)
+		.await;
+		assert_eq!(status, 200, "{task}");
+		Uuid::parse_str(task["id"].as_str().unwrap()).unwrap()
+	};
+
+	// The model is restricted to the agent, so Alice's Run may still use it.
+	let (status, binding) = request(
+		&app,
+		&alice,
+		"POST",
+		"/api/authorization/acme/catalog",
+		json!({"node":node,"entry":model,"enabled":true,"expected_revision":1,
+			"restriction":{"subjects":[agent_subject],"groups":[]}}),
+	)
+	.await;
+	assert_eq!(status, 200, "{binding}");
+	assert_eq!(
+		request(
+			&app,
+			&alice,
+			"POST",
+			&format!("/api/tasks/{task_id}/claim"),
+			claim.clone()
+		)
+		.await
+		.0,
+		200,
+		"the agent that uses the model directly is named"
+	);
+
+	// Restricting the model to Alice alone does not admit the agent that uses it.
+	let (status, binding) = request(
+		&app,
+		&alice,
+		"POST",
+		"/api/authorization/acme/catalog",
+		json!({"node":node,"entry":model,"enabled":true,"expected_revision":2,
+			"restriction":{"subjects":["alice"],"groups":[]}}),
+	)
+	.await;
+	assert_eq!(status, 200, "{binding}");
+	let denied = new_task("Denied").await;
+	let (status, refused) = request(
+		&app,
+		&alice,
+		"POST",
+		&format!("/api/tasks/{denied}/claim"),
+		claim.clone(),
+	)
+	.await;
+	assert_eq!(status, 403, "{refused}");
+
+	// Clearing the restriction restores the pre-existing unrestricted meaning.
+	let (status, binding) = request(
+		&app,
+		&alice,
+		"POST",
+		"/api/authorization/acme/catalog",
+		json!({"node":node,"entry":model,"enabled":true,"expected_revision":3,
+			"restriction":{"subjects":[],"groups":[]}}),
+	)
+	.await;
+	assert_eq!(status, 200, "{binding}");
+	assert!(binding.get("restriction").is_none() || binding["restriction"].is_null());
+	let allowed = new_task("Allowed").await;
+	assert_eq!(
+		request(
+			&app,
+			&alice,
+			"POST",
+			&format!("/api/tasks/{allowed}/claim"),
+			claim
+		)
+		.await
+		.0,
+		200,
+		"an unrestricted legacy approval still admits"
+	);
+	cleanup(f, &url, &schema).await;
+}

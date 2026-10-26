@@ -10,6 +10,14 @@ remain SQL DDL assets because Reinhardt has no function-body operation. The
 reverse restores the previous Tool and Agent contracts; remove External
 service definitions and bindings before reversing the kind constraints.
 
+`identity/0041_catalog_restriction` adds a nullable `restriction` jsonb column
+to `authorization_catalog` and to its append-only history (ADR 0029, ADR 0095).
+The column names subjects and Assignable Groups that may use one exact version
+on one Node; NULL keeps the pre-existing meaning, everyone the Tenant's policy
+allows, so every existing approval and history row migrates as unrestricted.
+The columns are typed `AddColumn` operations, so the model state follows the
+physical migration and no state-only checkpoint is needed.
+
 Reinhardt is the sole migration owner. The source files are grouped under the
 labels `identity`, `registry`, `workspaces`, `execution`, `federation`, `knowledge`,
 `marketplace`, and `operations`; these are modules in `aidash-server`, not separate
