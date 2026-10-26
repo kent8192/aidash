@@ -21,6 +21,7 @@ use aidash_application::tenancy::{DeploymentScopeReason, TenancyScope};
 use aidash_domain::capabilities::retention::RetainedFile;
 use aidash_domain::preview::{PreviewKind, PreviewLabel, PreviewSecret, label_of};
 use async_trait::async_trait;
+use chrono::{DateTime, Utc};
 use reinhardt::query::{
 	Alias, Expr, ExprTrait as _, IntoValue as _, OnConflict, PostgresQueryBuilder, Query,
 	QueryStatementBuilder as _,
@@ -247,9 +248,7 @@ struct Resolved {
 
 impl Gateway {
 	async fn resolve(&self, host: &str) -> NativeResult<Resolved> {
-		let label = label_of(host, &self.domain)
-			.ok_or(NativeError::Forbidden)?
-			.to_owned();
+		let label = label_of(host, &self.domain).ok_or(NativeError::Forbidden)?;
 		let label = PreviewLabel::parse(label)?;
 		let row: Option<ResolvedRow> = crate::database::native::query_as(
 			&Query::select()
@@ -318,6 +317,9 @@ impl Gateway {
 			return Err(NativeError::Forbidden);
 		}
 		let session = PreviewSecret::generate()?;
+		let expires_at = Utc::now()
+			+ chrono::TimeDelta::try_seconds(aidash_domain::preview::SESSION_SECONDS)
+				.expect("Preview session lifetime fits");
 		let insert = Query::insert()
 			.into_table(Alias::new("core_preview_sessions"))
 			.columns(
@@ -329,6 +331,7 @@ impl Gateway {
 					"credential_id",
 					"origin",
 					"digest",
+					"expires_at",
 				]
 				.map(Alias::new),
 			)
@@ -340,6 +343,7 @@ impl Gateway {
 				credential_id.into(),
 				origin.into(),
 				session.digest().into(),
+				expires_at.into(),
 			])
 			.map_err(NativeError::Invalid)?
 			.to_string(PostgresQueryBuilder);
@@ -362,30 +366,38 @@ impl Gateway {
 			return Err(NativeError::NotFound("preview unavailable".into()));
 		};
 		let secret = PreviewSecret::parse(cookie)?;
-		let session: Option<(Uuid, String, Uuid, String)> = crate::database::native::query_as(
-			&Query::select()
-				.columns([
-					Alias::new("id"),
-					Alias::new("subject"),
-					Alias::new("credential_id"),
-					Alias::new("origin"),
-				])
-				.from(Alias::new("core_preview_sessions"))
-				.and_where(Expr::col(Alias::new("preview_id")).eq(Expr::value(preview.preview_id)))
-				.and_where(Expr::col(Alias::new("digest")).eq(Expr::value(secret.digest())))
-				.limit(1)
-				.to_string(PostgresQueryBuilder),
-		)
-		.columns(&["id", "subject", "credential_id", "origin"])
-		.fetch_optional(
-			self.store
-				.pool
-				.in_scope(&TenancyScope::tenant(&preview.tenant)?),
-		)
-		.await?;
-		let Some((session_id, subject, credential_id, origin)) = session else {
+		let session: Option<(Uuid, String, Uuid, String, DateTime<Utc>)> =
+			crate::database::native::query_as(
+				&Query::select()
+					.columns([
+						Alias::new("id"),
+						Alias::new("subject"),
+						Alias::new("credential_id"),
+						Alias::new("origin"),
+						Alias::new("expires_at"),
+					])
+					.from(Alias::new("core_preview_sessions"))
+					.and_where(
+						Expr::col(Alias::new("preview_id")).eq(Expr::value(preview.preview_id)),
+					)
+					.and_where(Expr::col(Alias::new("digest")).eq(Expr::value(secret.digest())))
+					.and_where(Expr::cust("expires_at > CURRENT_TIMESTAMP"))
+					.limit(1)
+					.to_string(PostgresQueryBuilder),
+			)
+			.columns(&["id", "subject", "credential_id", "origin", "expires_at"])
+			.fetch_optional(
+				self.store
+					.pool
+					.in_scope(&TenancyScope::tenant(&preview.tenant)?),
+			)
+			.await?;
+		let Some((session_id, subject, credential_id, origin, expires_at)) = session else {
 			return Err(NativeError::Forbidden);
 		};
+		if expires_at <= Utc::now() {
+			return Err(NativeError::Forbidden);
+		}
 		// The cookie is not authority: re-run the download decision under the
 		// stored credential, so a revoked subject stops at the next request.
 		let mut access = Access::begin(

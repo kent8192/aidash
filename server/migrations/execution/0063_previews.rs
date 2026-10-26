@@ -100,6 +100,7 @@ pub(super) fn migration() -> Migration {
 				ColumnDefinition::new("served_bytes", FieldType::BigInteger)
 					.with_not_null(true)
 					.with_default(Some("0".into())),
+				ColumnDefinition::new("expires_at", FieldType::TimestampTz).with_not_null(true),
 				ColumnDefinition::new("created_at", FieldType::TimestampTz)
 					.with_not_null(true)
 					.with_default(Some("CURRENT_TIMESTAMP".into())),

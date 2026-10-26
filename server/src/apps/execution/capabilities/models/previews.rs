@@ -71,6 +71,8 @@ pub struct CorePreviewSessions {
 	pub digest: String,
 	#[field(default = 0)]
 	pub served_bytes: i64,
+	/// The cookie's `Max-Age`; a stolen value is useless after this instant.
+	pub expires_at: DateTime<Utc>,
 	#[field(auto_now_add = true)]
 	pub created_at: DateTime<Utc>,
 	#[field(auto_now_add = true)]

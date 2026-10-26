@@ -33,6 +33,7 @@ pub(super) fn migration() -> Migration {
 				ColumnDefinition::new("created_at", FieldType::TimestampTz).with_not_null(true),
 				ColumnDefinition::new("credential_id", FieldType::Uuid).with_not_null(true),
 				ColumnDefinition::new("digest", FieldType::Text).with_not_null(true),
+				ColumnDefinition::new("expires_at", FieldType::TimestampTz).with_not_null(true),
 				ColumnDefinition::new("id", FieldType::Uuid)
 					.with_not_null(true)
 					.with_primary_key(true),
