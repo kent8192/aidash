@@ -154,21 +154,44 @@ BEGIN
  deferred := COALESCE(deferred,false);
  -- plpgsql ends an IF condition at its first THEN, so no CASE inside one.
  IF deferred THEN
-  removable := ARRAY['workspace_observe','workspace_wait','skill_asset_read','file_search','file_read','task_create','task_delegate','agent_discover','artifact_publish','workspace_message','memory_mutate','memory_recall','memory_reflect'];
+  removable := ARRAY['workspace_observe','workspace_wait','skill_asset_read','file_search','file_read','task_create','task_delegate','agent_discover','artifact_publish','workspace_message','memory_mutate','memory_recall','memory_reflect','compaction'];
   support := ARRAY['skill_asset_read'];
  ELSE
-  removable := ARRAY['workspace_observe','workspace_wait','skill_list','skill_load','skill_read','file_search','file_read','task_create','task_delegate','agent_discover','artifact_publish','workspace_message','memory_mutate','memory_recall','memory_reflect'];
+  removable := ARRAY['workspace_observe','workspace_wait','skill_list','skill_load','skill_read','file_search','file_read','task_create','task_delegate','agent_discover','artifact_publish','workspace_message','memory_mutate','memory_recall','memory_reflect','compaction'];
   support := ARRAY['skill_list','skill_load','skill_read'];
  END IF;
  FOR item IN SELECT jsonb_array_elements(edges) LOOP
   IF jsonb_typeof(item) <> 'object' OR item - ARRAY['kind','target','alias','narrow','members','exposure']::text[] <> '{}'::jsonb
   OR COALESCE(item->'exposure','null'::jsonb) <> 'null'::jsonb
   AND NOT (deferred AND item->>'kind' IN ('tool','bundle','skill') AND COALESCE(item->>'exposure' IN ('eager','deferred'),false))
-  OR NOT COALESCE(item->>'kind' IN ('tool','bundle','skill','memory','source','external_service'),false)
+  OR NOT COALESCE(item->>'kind' IN ('tool','bundle','skill','memory','source','external_service','decider'),false)
   OR NOT COALESCE(public.aidash_qualified_ref_is_valid(item->'target'),false)
   OR jsonb_typeof(COALESCE(item->'narrow','{}'::jsonb)) <> 'object'
-  OR COALESCE(item->'narrow','{}'::jsonb) - ARRAY['allowed_hosts','scope','limits','concurrency']::text[] <> '{}'::jsonb THEN RETURN false; END IF;
+  OR COALESCE(item->'narrow','{}'::jsonb) - ARRAY['allowed_hosts','scope','limits','concurrency','decision']::text[] <> '{}'::jsonb THEN RETURN false; END IF;
   restriction := COALESCE(item->'narrow','{}'::jsonb);
+  -- Current undeployed Decider Binding contract (#103/#108). Approval and
+  -- execution still validate exact version ceilings in the application.
+  IF COALESCE(restriction->'decision','null'::jsonb) <> 'null'::jsonb THEN
+   candidate := restriction->'decision';
+   IF item->>'kind' <> 'decider' OR jsonb_typeof(candidate) <> 'object'
+   OR candidate - ARRAY['threshold','preserve_recent','forbid_apply','max_calls_per_run']::text[] <> '{}'::jsonb
+   OR jsonb_typeof(COALESCE(candidate->'threshold','"3fe0000000000000"'::jsonb)) <> 'string'
+   OR NOT COALESCE(candidate->>'threshold','3fe0000000000000') ~ '^[0-9a-f]{16}$'
+   OR (COALESCE(candidate->>'threshold','3fe0000000000000') COLLATE "C" > '3fe0000000000000'
+    AND candidate->>'threshold' <> '8000000000000000')
+   OR jsonb_typeof(COALESCE(candidate->'preserve_recent','6'::jsonb)) <> 'number'
+   OR NOT COALESCE(candidate->>'preserve_recent','6') ~ '^[0-9]+$'
+   OR COALESCE(candidate->>'preserve_recent','6')::numeric < 6
+   OR jsonb_typeof(COALESCE(candidate->'forbid_apply','false'::jsonb)) <> 'boolean' THEN RETURN false; END IF;
+   IF COALESCE(candidate->'max_calls_per_run','null'::jsonb) <> 'null'::jsonb
+   AND (jsonb_typeof(candidate->'max_calls_per_run') <> 'number'
+    OR NOT (candidate->>'max_calls_per_run') ~ '^[1-9][0-9]*$'
+    OR (candidate->>'max_calls_per_run')::numeric > 18446744073709551615) THEN RETURN false; END IF;
+  END IF;
+  IF item->>'kind' = 'decider' AND (
+   COALESCE(restriction->'allowed_hosts','null'::jsonb) <> 'null'::jsonb
+   OR COALESCE(restriction->'scope','{}'::jsonb) <> '{}'::jsonb
+   OR COALESCE(restriction->'limits','{}'::jsonb) <> '{}'::jsonb) THEN RETURN false; END IF;
   IF COALESCE(restriction->'allowed_hosts','null'::jsonb) <> 'null'::jsonb THEN
    IF jsonb_typeof(restriction->'allowed_hosts') <> 'array' OR jsonb_array_length(restriction->'allowed_hosts') = 0
    OR jsonb_path_exists(restriction->'allowed_hosts','strict $[*] ? (@.type() != "string")') THEN RETURN false; END IF;

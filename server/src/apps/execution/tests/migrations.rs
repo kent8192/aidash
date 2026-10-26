@@ -2263,6 +2263,25 @@ async fn agent_plugin_settings_migration_validates_the_key_and_refuses_rollback_
 			"agent_plugin_settings":settings})
 	};
 	let digest = format!("sha256:{}", "ab01".repeat(16));
+	// Generated Agents disable implicit compaction. The replacement validator
+	// must preserve that key and the current Decider Binding restrictions.
+	let mut compaction = json!({"schema_version":1,"model":{"id":"model","version":"1.0.0"},
+		"instructions":"Work","remove_default":["compaction"]});
+	let mut deferred_compaction = compaction.clone();
+	deferred_compaction["exposure"] = json!({"version":"deferred@1"});
+	compaction["bindings"] = json!([{"kind":"decider",
+		"target":{"registry_deployment":"aidash://local","id":"decider","version":"1.0.0"},
+		"narrow":{"decision":{"threshold":"3fd0000000000000","preserve_recent":8,
+			"forbid_apply":true,"max_calls_per_run":2}}}]);
+	let compaction_agents = [deferred_compaction, compaction];
+	for config in &compaction_agents {
+		let mut with_settings = config.clone();
+		with_settings["agent_plugin_settings"] = json!({"acme":{"docs":{"tools":["search"]}}});
+		assert!(
+			contract_accepts(&pool, "aidash_agent_bindings_is_valid", vec![with_settings]).await,
+			"Agent Plugin settings must retain the compaction contract: {config}"
+		);
+	}
 	// Assert: the contract mirrors PluginSettings' shape: plugin to server to settings.
 	for valid in [
 		json!({}),
@@ -2332,11 +2351,22 @@ async fn agent_plugin_settings_migration_validates_the_key_and_refuses_rollback_
 			.unwrap();
 	let mut executor =
 		reinhardt::db::migrations::DatabaseMigrationExecutor::new(fixture.connection.clone());
-	// Act / Assert: without stored settings the reverse restores the 0041 contract.
+	// Act / Assert: without stored settings the reverse restores the 0042 contract.
 	executor
 		.rollback_migrations(std::slice::from_ref(&migration))
 		.await
 		.unwrap();
+	for config in &compaction_agents {
+		assert!(
+			contract_accepts(
+				&pool,
+				"aidash_agent_bindings_is_valid",
+				vec![config.clone()]
+			)
+			.await,
+			"rollback must retain the compaction contract: {config}"
+		);
+	}
 	assert!(
 		!contract_accepts(
 			&pool,
