@@ -12,19 +12,20 @@ use std::net::SocketAddr;
 #[settings(fragment = true, section = "preview", validate = false)]
 pub struct PreviewSettings {
 	/// A registrable domain separate from the dashboard's; a local cluster uses
-	/// `localhost` and previews under `*.localhost`.
-	#[setting(default = "None")]
+	/// `localhost` and previews under `*.localhost`. Omitting every field makes
+	/// Previews unavailable.
+	#[setting(optional)]
 	pub domain: Option<String>,
 	/// Where the gateway listens. A Self-hosted Deployment that runs the gateway
 	/// in-process binds loopback; a separate Deployment binds its Pod address.
-	#[setting(default = "None", leaf)]
+	#[setting(optional, leaf)]
 	pub listen: Option<SocketAddr>,
 	/// Whether the API process also runs the gateway. Helm turns this off when
 	/// it deploys the gateway as its own workload.
-	#[setting(default = "true")]
-	pub in_process: bool,
+	#[setting(optional)]
+	pub in_process: Option<bool>,
 	/// The public port a ticket URL names; 443 when absent.
-	#[setting(default = "None")]
+	#[setting(optional)]
 	pub public_port: Option<u16>,
 }
 
@@ -66,7 +67,7 @@ impl PreviewSettings {
 		Ok(Some(PreviewConfig {
 			domain,
 			listen,
-			in_process: self.in_process,
+			in_process: self.in_process.unwrap_or(true),
 			public_port: self.public_port,
 		}))
 	}
@@ -102,7 +103,7 @@ mod tests {
 		PreviewSettings {
 			domain: domain.map(str::to_owned),
 			listen: None,
-			in_process: true,
+			in_process: None,
 			public_port: None,
 		}
 	}
