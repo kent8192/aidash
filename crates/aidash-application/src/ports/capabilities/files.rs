@@ -49,6 +49,10 @@ pub trait FileScopePort: Send {
 		))
 	}
 	fn limits(&self) -> Result<Limits>;
+	/// Bytes the Area keeps beyond its manifest as Retained versions.
+	async fn retained_bytes(&mut self, _area: &Area) -> Result<u64> {
+		Ok(0)
+	}
 	fn policy_revision(&self) -> i64;
 	fn resource(&self, kind: &str, id: &str, attributes: Value) -> Resource;
 	async fn entry(&mut self, reference: &EntityRef, action: &str) -> Result<Entry>;

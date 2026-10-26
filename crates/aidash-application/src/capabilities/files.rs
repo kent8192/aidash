@@ -578,7 +578,9 @@ pub async fn materialize(
 		if original.digest != *expected_digest {
 			return Err(Error::Conflict("FILE_CHANGED".into()));
 		}
-		if entries.iter().map(|f| f.size).sum::<u64>() + original.size
+		if entries.iter().map(|f| f.size).sum::<u64>()
+			+ original.size
+			+ scope.retained_bytes(&area).await?
 			> scope.limits()?.working_bytes
 		{
 			return Err(Error::Conflict("WORKING_QUOTA".into()));
@@ -645,7 +647,9 @@ pub async fn materialize(
 			)
 		}
 	};
-	let size = entries.iter().map(|f| f.size).sum::<u64>() + text.len() as u64;
+	let size = entries.iter().map(|f| f.size).sum::<u64>()
+		+ text.len() as u64
+		+ scope.retained_bytes(&area).await?;
 	if size > scope.limits()?.working_bytes {
 		return Err(Error::Conflict("WORKING_QUOTA".into()));
 	}
