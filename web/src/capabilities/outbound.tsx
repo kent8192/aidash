@@ -22,11 +22,13 @@ export function OutboundFiles({
   area,
   revision,
   files,
+  thread,
 }: {
   run: string;
   area: string;
   revision: number;
   files: readonly CoreFile[];
+  thread?: string | null;
 }) {
   const { locale, t } = useI18n();
   const ja = locale === "ja-JP";
@@ -122,6 +124,7 @@ export function OutboundFiles({
                       file: item.output_file!,
                       files,
                       revision,
+                      thread,
                     })
                   }
                 >

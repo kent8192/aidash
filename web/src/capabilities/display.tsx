@@ -21,11 +21,13 @@ export function DisplayFile({
   file,
   files,
   revision,
+  thread,
 }: {
   area: string;
   file: CoreFile;
   files?: readonly CoreFile[];
   revision?: number;
+  thread?: string | null;
 }) {
   const { locale, t } = useI18n();
   const ja = locale === "ja-JP";
@@ -80,6 +82,7 @@ export function DisplayFile({
               file,
               files: files ?? [file],
               revision,
+              thread,
             })
           }
         >

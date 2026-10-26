@@ -104,6 +104,7 @@ function OperationCard({
           file={file}
           files={area.manifest}
           revision={area.revision}
+          thread={area.thread_id}
         />
       ))}
       {(query.error || error || value.error) && (
@@ -459,6 +460,7 @@ function FileOperations({
                           file: f,
                           files: area.manifest,
                           revision: area.revision,
+                          thread: area.thread_id,
                         })
                       }
                     >
@@ -809,6 +811,7 @@ function FileOperations({
         area={area.id}
         revision={area.revision}
         files={area.manifest}
+        thread={area.thread_id}
       />
       <CapabilityApprovals area={area.id} />
       {error && <Alert>{error}</Alert>}
