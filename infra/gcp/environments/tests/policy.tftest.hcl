@@ -98,25 +98,32 @@ run "identities_are_separated" {
     }
     credential_brokers = {
       test = {
-        enabled                      = true
-        byok_project_id              = "aidash-byok-fixture"
-        secret_prefix                = "aidash-test-cred-"
-        broker_service_account_email = "aidash-test-broker@aidash-fixture.iam.gserviceaccount.com"
-        signing_key_id               = "projects/aidash-fixture/locations/us-central1/keyRings/aidash-test-capability/cryptoKeys/capability"
+        enabled                                    = true
+        byok_project_id                            = "aidash-byok-fixture"
+        secret_prefix                              = "aidash-test-cred-"
+        broker_service_account_email               = "aidash-test-broker@aidash-fixture.iam.gserviceaccount.com"
+        signing_key_id                             = "projects/aidash-fixture/locations/us-central1/keyRings/aidash-test-capability/cryptoKeys/capability"
+        tenant_secret_broker_service_account_email = "aidash-test-tsec@aidash-fixture.iam.gserviceaccount.com"
+        tenant_secret_signing_key_id               = "projects/aidash-fixture/locations/us-central1/keyRings/aidash-test-capability/cryptoKeys/tenant-secret"
+        tenant_secret_broker_service_account_email = "aidash-test-tsec@aidash-fixture.iam.gserviceaccount.com"
+        tenant_secret_signing_key_id               = "projects/aidash-fixture/locations/us-central1/keyRings/aidash-test-capability/cryptoKeys/tenant-secret"
       }
     }
   }
   assert {
-    condition     = module.credential_broker["test"].service_account == var.credential_brokers["test"].broker_service_account_email
-    error_message = "Environment composition must consume the broker SA from bootstrap."
+    condition     = module.credential_broker["test"].service_account == var.credential_brokers["test"].broker_service_account_email && module.tenant_secret_broker["test"].service_account == var.credential_brokers["test"].tenant_secret_broker_service_account_email
+    error_message = "Environment composition must consume both broker SAs from bootstrap."
   }
   assert {
     condition = (
       google_kms_crypto_key_iam_member.broker_signer["test"].member == "serviceAccount:worker@aidash-fixture.iam.gserviceaccount.com" &&
       google_kms_crypto_key_iam_member.broker_signer["test"].role == "roles/cloudkms.signer" &&
-      google_kms_crypto_key_iam_member.broker_signer["test"].crypto_key_id == module.credential_broker["test"].signing_key
+      google_kms_crypto_key_iam_member.broker_signer["test"].crypto_key_id == module.credential_broker["test"].signing_key &&
+      google_kms_crypto_key_iam_member.tenant_secret_signer["test"].member == "serviceAccount:server@aidash-fixture.iam.gserviceaccount.com" &&
+      google_kms_crypto_key_iam_member.tenant_secret_signer["test"].role == "roles/cloudkms.signer" &&
+      google_kms_crypto_key_iam_member.tenant_secret_signer["test"].crypto_key_id == module.tenant_secret_broker["test"].signing_key
     )
-    error_message = "Only the matching worker identity may sign capabilities for its broker."
+    error_message = "Only the matching worker signs provider tokens; only the server signs Tenant Secret tokens."
   }
   assert {
     condition = (
@@ -148,7 +155,8 @@ run "identities_are_separated" {
       google_project_iam_member.nodes.project == var.project_id && length(google_project_iam_member.nodes.condition) == 0 &&
       google_artifact_registry_repository_iam_member.nodes.role == "roles/artifactregistry.reader" && google_artifact_registry_repository_iam_member.nodes.repository == "aidash" &&
       google_artifact_registry_repository_iam_member.nodes.member == "serviceAccount:aidash-gke-nodes@aidash-fixture.iam.gserviceaccount.com" &&
-      google_kms_crypto_key_iam_member.broker_signer["test"].member != "serviceAccount:aidash-gke-nodes@aidash-fixture.iam.gserviceaccount.com"
+      google_kms_crypto_key_iam_member.broker_signer["test"].member != "serviceAccount:aidash-gke-nodes@aidash-fixture.iam.gserviceaccount.com" &&
+      google_kms_crypto_key_iam_member.tenant_secret_signer["test"].member != "serviceAccount:aidash-gke-nodes@aidash-fixture.iam.gserviceaccount.com"
     )
     error_message = "The node identity holds only GKE's node role and release image pulls."
   }
@@ -172,8 +180,8 @@ run "identities_are_separated" {
     error_message = "A running environment needs the untainted E2 system node."
   }
   assert {
-    condition     = output.environments["test"].provider_credentials.broker == module.credential_broker["test"].worker_configuration && output.environments["test"].provider_credentials.store.byok_project_id == var.byok_project_id && output.environments["test"].provider_credentials.store.environment_id == "test" && output.environments["test"].provider_credentials.broker.endpoint == "https://broker.run.app/api/v1"
-    error_message = "Environment output must carry the actual Store and broker worker settings."
+    condition     = output.environments["test"].provider_credentials.broker == module.credential_broker["test"].worker_configuration && output.environments["test"].provider_credentials.tenant_secret_broker == module.tenant_secret_broker["test"].server_configuration && output.tenant_secret_brokers["test"] == module.tenant_secret_broker["test"].server_configuration && output.environments["test"].provider_credentials.store.byok_project_id == var.byok_project_id && output.environments["test"].provider_credentials.store.environment_id == "test" && output.environments["test"].provider_credentials.broker.endpoint == "https://broker.run.app/api/v1" && output.environments["test"].provider_credentials.tenant_secret_broker.kid == "projects/aidash-fixture/locations/us-central1/keyRings/aidash-test-capability/cryptoKeys/tenant-secret/cryptoKeyVersions/1"
+    error_message = "Environment output must carry the actual Store, worker broker and server Tenant Secret broker settings."
   }
 }
 
@@ -267,11 +275,13 @@ run "no_broker_in_preview" {
     }
     credential_brokers = {
       pr-137 = {
-        enabled                      = true
-        byok_project_id              = "aidash-byok-fixture"
-        secret_prefix                = "aidash-pr-137-cred-"
-        broker_service_account_email = "aidash-pr-137-broker@aidash-fixture.iam.gserviceaccount.com"
-        signing_key_id               = "projects/aidash-fixture/locations/us-central1/keyRings/aidash-pr-137-capability/cryptoKeys/capability"
+        enabled                                    = true
+        byok_project_id                            = "aidash-byok-fixture"
+        secret_prefix                              = "aidash-pr-137-cred-"
+        broker_service_account_email               = "aidash-pr-137-broker@aidash-fixture.iam.gserviceaccount.com"
+        signing_key_id                             = "projects/aidash-fixture/locations/us-central1/keyRings/aidash-pr-137-capability/cryptoKeys/capability"
+        tenant_secret_broker_service_account_email = "aidash-pr-137-tsec@aidash-fixture.iam.gserviceaccount.com"
+        tenant_secret_signing_key_id               = "projects/aidash-fixture/locations/us-central1/keyRings/aidash-pr-137-capability/cryptoKeys/tenant-secret"
       }
     }
   }
@@ -291,11 +301,13 @@ run "broker_must_use_the_environment_store_project" {
     } }
     credential_brokers = {
       test = {
-        enabled                      = true
-        byok_project_id              = "aidash-byok-other"
-        secret_prefix                = "aidash-test-cred-"
-        broker_service_account_email = "aidash-test-broker@aidash-fixture.iam.gserviceaccount.com"
-        signing_key_id               = "projects/aidash-fixture/locations/us-central1/keyRings/aidash-test-capability/cryptoKeys/capability"
+        enabled                                    = true
+        byok_project_id                            = "aidash-byok-other"
+        secret_prefix                              = "aidash-test-cred-"
+        broker_service_account_email               = "aidash-test-broker@aidash-fixture.iam.gserviceaccount.com"
+        signing_key_id                             = "projects/aidash-fixture/locations/us-central1/keyRings/aidash-test-capability/cryptoKeys/capability"
+        tenant_secret_broker_service_account_email = "aidash-test-tsec@aidash-fixture.iam.gserviceaccount.com"
+        tenant_secret_signing_key_id               = "projects/aidash-fixture/locations/us-central1/keyRings/aidash-test-capability/cryptoKeys/tenant-secret"
       }
     }
   }
@@ -316,11 +328,13 @@ run "broker_needs_an_approved_digest" {
     } }
     credential_brokers = {
       test = {
-        enabled                      = true
-        byok_project_id              = "aidash-byok-fixture"
-        secret_prefix                = "aidash-test-cred-"
-        broker_service_account_email = "aidash-test-broker@aidash-fixture.iam.gserviceaccount.com"
-        signing_key_id               = "projects/aidash-fixture/locations/us-central1/keyRings/aidash-test-capability/cryptoKeys/capability"
+        enabled                                    = true
+        byok_project_id                            = "aidash-byok-fixture"
+        secret_prefix                              = "aidash-test-cred-"
+        broker_service_account_email               = "aidash-test-broker@aidash-fixture.iam.gserviceaccount.com"
+        signing_key_id                             = "projects/aidash-fixture/locations/us-central1/keyRings/aidash-test-capability/cryptoKeys/capability"
+        tenant_secret_broker_service_account_email = "aidash-test-tsec@aidash-fixture.iam.gserviceaccount.com"
+        tenant_secret_signing_key_id               = "projects/aidash-fixture/locations/us-central1/keyRings/aidash-test-capability/cryptoKeys/tenant-secret"
       }
     }
   }

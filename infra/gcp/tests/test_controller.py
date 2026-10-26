@@ -42,6 +42,7 @@ def descriptor(identity, broker=True, kid="version-1"):
         "fingerprint_key": {"env": "AIDASH_PROVIDER_FINGERPRINT_KEY"},
         "store": {"kind": "secret_manager", "byok_project_id": "aidash-byok-fixture", "environment_id": identity},
         "broker": {"endpoint": "https://broker.run.app/api/v1", "issuer": "https://broker.run.app", "audience": identity, "kid": kid} if broker else None,
+        "tenant_secret_broker": {"endpoint": "https://tenant-broker.run.app/api/v1", "issuer": "aidash-server", "audience": identity, "kid": "server-" + kid} if broker else None,
     }
 
 
@@ -778,7 +779,7 @@ class ReconcileTests(ReconcileFixture, unittest.TestCase):
                 self.assertEqual(entry["provider_credentials"], expected if enabled else None)
                 self.assertEqual([call for call in self.calls if call[0] in {"helm", "migrate"}], [("helm", "test", "app")])
                 app = self.kube.releases[("aidash-test", "app")]
-                self.assertEqual(app["providerCredentials"]["settings"], expected if enabled else {"fingerprint_key": None, "store": None, "broker": None})
+                self.assertEqual(app["providerCredentials"]["settings"], expected if enabled else {"fingerprint_key": None, "store": None, "broker": None, "tenant_secret_broker": None})
                 self.assertEqual(app["release"]["sourceSha"], SHA)
                 self.assertFalse(self.stopped("test"))
                 self.calls.clear()

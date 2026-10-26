@@ -49,6 +49,7 @@ class CredentialBrokerTerraformTests(unittest.TestCase):
         self.assertEqual(workloads, [
             ("projects/aidash-byok-fixture/roles/aidashByokCreate", "serviceAccount:server@aidash-fixture.iam.gserviceaccount.com"),
             ("projects/aidash-byok-fixture/roles/aidashByokManage", "serviceAccount:server@aidash-fixture.iam.gserviceaccount.com"),
+            ("roles/cloudkms.signer", "serviceAccount:server@aidash-fixture.iam.gserviceaccount.com"),
             ("roles/cloudkms.signer", "serviceAccount:worker@aidash-fixture.iam.gserviceaccount.com"),
         ])
 
@@ -70,26 +71,50 @@ class CredentialBrokerTerraformTests(unittest.TestCase):
             # bootstrap alone binds anything on it (including the deploy actAs grant).
             self.assertFalse(self.resources(run, "google_service_account_iam_member"))
 
+    def test_tenant_secret_broker_uses_its_own_account_and_both_issuers(self):
+        service, = self.resources("tenant_secrets", "google_cloud_run_v2_service")
+        self.assertEqual(service["name"], "aidash-production-tenant-secret-broker")
+        self.assertEqual(service["template"][0]["service_account"], "aidash-production-tsec@aidash-fixture.iam.gserviceaccount.com")
+        env = {item["name"]: item["value"] for item in service["template"][0]["containers"][0]["env"]}
+        self.assertEqual(env["AIDASH_BROKER_ROLE"], "tenant-secrets")
+        self.assertEqual(env["AIDASH_TENANT_SECRET_PREFIX"], "aidash-production-tsec-")
+        self.assertEqual(env["AIDASH_SECRET_CALL_AUDIENCE"], "production")
+        self.assertEqual(env["AIDASH_CAPABILITY_ISSUER"], "aidash-server")
+        self.assertEqual(json.loads(env["AIDASH_CAPABILITY_PUBLIC_KEYS"]), {
+            "projects/aidash-fixture/locations/us-central1/keyRings/aidash-production-capability/cryptoKeys/capability/cryptoKeyVersions/1": "PUBLIC-KEY-FIXTURE",
+            "projects/aidash-fixture/locations/us-central1/keyRings/aidash-production-capability/cryptoKeys/tenant-secret/cryptoKeyVersions/1": "PUBLIC-KEY-FIXTURE",
+        })
+        self.assertFalse(self.resources("tenant_secrets", "google_kms_crypto_key_iam_member"))
+
     def test_bootstrap_broker_bindings_are_the_only_byok_payload_accessors(self):
         for run, environments in (("broker_environments", ("develop", "test")), ("production_broker_bootstrap", ("production",))):
             with self.subTest(profile=run):
                 resources = self.bootstrap_states[run]
                 roles = {r["values"]["name"]: r["values"] for r in resources if r["type"] == "google_project_iam_custom_role"}
                 readers = [r["values"] for r in resources if r["type"] == "google_project_iam_member" and "secretmanager.versions.access" in roles.get(r["values"]["role"], {}).get("permissions", [])]
-                self.assertEqual(len(readers), len(environments))
-                self.assertEqual({r["member"] for r in readers}, {f"serviceAccount:aidash-{env}-broker@aidash-fixture.iam.gserviceaccount.com" for env in environments})
+                self.assertEqual(len(readers), 2 * len(environments))
+                expected = {
+                    f"serviceAccount:aidash-{env}-{suffix}@aidash-fixture.iam.gserviceaccount.com"
+                    for env in environments for suffix in ("broker", "tsec")
+                }
+                self.assertEqual({r["member"] for r in readers}, expected)
                 for grant in readers:
                     self.assertEqual(grant["project"], "aidash-byok-fixture")
-                    environment = next(env for env in environments if f"aidash-{env}-broker@" in grant["member"])
-                    self.assertEqual(grant["condition"][0]["expression"], f'resource.name.startsWith("projects/123456789012/secrets/aidash-{environment}-cred-")')
+                    suffix = "tsec" if "-tsec@" in grant["member"] else "broker"
+                    environment = next(env for env in environments if f"aidash-{env}-{suffix}@" in grant["member"])
+                    prefix = "tsec" if suffix == "tsec" else "cred"
+                    self.assertEqual(grant["condition"][0]["expression"], f'resource.name.startsWith("projects/123456789012/secrets/aidash-{environment}-{prefix}-")')
         disabled = self.bootstrap_states["brokers_opt_in_only"]
-        self.assertFalse([r for r in disabled if r["address"].startswith("google_service_account.broker[") or r["address"].startswith("google_project_iam_member.byok_broker_read[")])
+        self.assertFalse([r for r in disabled if r["address"].startswith((
+            "google_service_account.broker[", "google_service_account.tenant_secret_broker[",
+            "google_project_iam_member.byok_broker_read[", "google_project_iam_member.byok_tenant_secret_broker_read[",
+        ))])
 
     def test_bootstrap_deploy_can_read_public_keys_without_a_signing_grant(self):
         resources = self.bootstrap_states["broker_environments"]
         keys = {r["values"]["id"] for r in resources if r["type"] == "google_kms_crypto_key"}
         grants = [r["values"] for r in resources if r["type"] == "google_kms_crypto_key_iam_member"]
-        self.assertEqual(len(grants), 2)
+        self.assertEqual(len(grants), 4)
         self.assertEqual({grant["crypto_key_id"] for grant in grants}, keys)
         self.assertTrue(all(grant["role"] == "roles/cloudkms.publicKeyViewer" and grant["member"] == "serviceAccount:aidash-deploy@aidash-fixture.iam.gserviceaccount.com" for grant in grants))
         disabled = self.bootstrap_states["brokers_opt_in_only"]
@@ -117,8 +142,9 @@ class CredentialBrokerTerraformTests(unittest.TestCase):
         for run in ("broker_disabled_plan", "broker_reenabled_plan", "environment_removed_plan"):
             changes = self.lifecycle_plans[run]
             self.assertFalse([r for r in changes if r["type"] in material])
-            service, = [r for r in changes if r["type"] == "google_cloud_run_v2_service"]
-            self.assertEqual(service["change"]["actions"], ["create"] if run == "broker_reenabled_plan" else ["delete"])
+            services = [r for r in changes if r["type"] == "google_cloud_run_v2_service"]
+            self.assertEqual(len(services), 2)
+            self.assertEqual({tuple(r["change"]["actions"]) for r in services}, {("create",)} if run == "broker_reenabled_plan" else {("delete",)})
         permanent = [r for r in self.lifecycle_plans["bootstrap_after_retirement_plan"] if r["type"] in material]
         self.assertEqual({r["type"] for r in permanent}, {"google_kms_key_ring", "google_kms_crypto_key"})
         self.assertTrue(all(r["change"]["actions"] == ["no-op"] for r in permanent))
@@ -143,15 +169,26 @@ class CredentialBrokerTerraformTests(unittest.TestCase):
         changes = self.lifecycle_plans["broker_rotation_plan"]
         material = {"google_kms_key_ring", "google_kms_crypto_key", "google_kms_crypto_key_version"}
         self.assertFalse([r for r in changes if r["mode"] == "managed" and r["type"] in material])
-        service, = [r for r in changes if r["type"] == "google_cloud_run_v2_service"]
-        self.assertEqual(service["change"]["actions"], ["update"])
-        signer, = [r for r in changes if r["type"] == "google_kms_crypto_key_iam_member"]
-        self.assertEqual(signer["change"]["actions"], ["no-op"])
-        key = signer["change"]["after"]["crypto_key_id"]
-        env = {item["name"]: item["value"] for item in service["change"]["after"]["template"][0]["containers"][0]["env"]}
-        self.assertEqual(json.loads(env["AIDASH_CAPABILITY_PUBLIC_KEYS"]), {
-            f"{key}/cryptoKeyVersions/1": "fixture-public-key",
-            f"{key}/cryptoKeyVersions/2": "fixture-public-key-2",
+        services = [r for r in changes if r["type"] == "google_cloud_run_v2_service"]
+        self.assertEqual(len(services), 2)
+        self.assertEqual({tuple(r["change"]["actions"]) for r in services}, {("update",)})
+        signers = [r for r in changes if r["type"] == "google_kms_crypto_key_iam_member"]
+        self.assertTrue(signers)
+        self.assertEqual({tuple(r["change"]["actions"]) for r in signers}, {("no-op",)})
+        worker_key = "projects/aidash-fixture/locations/us-central1/keyRings/aidash-test-capability/cryptoKeys/capability"
+        server_key = "projects/aidash-fixture/locations/us-central1/keyRings/aidash-test-capability/cryptoKeys/tenant-secret"
+        by_name = {}
+        for service in services:
+            env = {item["name"]: item["value"] for item in service["change"]["after"]["template"][0]["containers"][0]["env"]}
+            by_name[service["address"]] = json.loads(env["AIDASH_CAPABILITY_PUBLIC_KEYS"])
+        self.assertEqual(by_name['module.credential_broker["test"].google_cloud_run_v2_service.broker[0]'], {
+            f"{worker_key}/cryptoKeyVersions/1": "fixture-public-key",
+            f"{worker_key}/cryptoKeyVersions/2": "fixture-public-key-2",
+        })
+        self.assertEqual(by_name['module.tenant_secret_broker["test"].google_cloud_run_v2_service.broker[0]'], {
+            f"{server_key}/cryptoKeyVersions/1": "fixture-public-key",
+            f"{worker_key}/cryptoKeyVersions/1": "fixture-public-key",
+            f"{worker_key}/cryptoKeyVersions/2": "fixture-public-key-2",
         })
 
     def test_pr_and_disabled_environments_have_no_broker_or_accessor(self):

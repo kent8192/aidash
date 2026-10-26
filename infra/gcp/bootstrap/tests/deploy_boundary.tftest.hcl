@@ -49,6 +49,22 @@ run "deploy_boundary" {
     }
   }
   override_resource {
+    target = google_service_account.tenant_secret_broker["develop"]
+    values = {
+      email     = "aidash-develop-tsec@aidash-fixture.iam.gserviceaccount.com"
+      name      = "projects/aidash-fixture/serviceAccounts/aidash-develop-tsec@aidash-fixture.iam.gserviceaccount.com"
+      unique_id = "100000000000000000003"
+    }
+  }
+  override_resource {
+    target = google_service_account.tenant_secret_broker["test"]
+    values = {
+      email     = "aidash-test-tsec@aidash-fixture.iam.gserviceaccount.com"
+      name      = "projects/aidash-fixture/serviceAccounts/aidash-test-tsec@aidash-fixture.iam.gserviceaccount.com"
+      unique_id = "100000000000000000004"
+    }
+  }
+  override_resource {
     target = google_kms_key_ring.capability["develop"]
     values = { id = "projects/aidash-fixture/locations/us-central1/keyRings/aidash-develop-capability" }
   }
@@ -63,6 +79,14 @@ run "deploy_boundary" {
   override_resource {
     target = google_kms_crypto_key.capability["test"]
     values = { id = "projects/aidash-fixture/locations/us-central1/keyRings/aidash-test-capability/cryptoKeys/capability" }
+  }
+  override_resource {
+    target = google_kms_crypto_key.tenant_secret["develop"]
+    values = { id = "projects/aidash-fixture/locations/us-central1/keyRings/aidash-develop-capability/cryptoKeys/tenant-secret" }
+  }
+  override_resource {
+    target = google_kms_crypto_key.tenant_secret["test"]
+    values = { id = "projects/aidash-fixture/locations/us-central1/keyRings/aidash-test-capability/cryptoKeys/tenant-secret" }
   }
   assert {
     condition     = google_iam_deny_policy.deploy_broker_boundary[0].parent == "cloudresourcemanager.googleapis.com%2Fprojects%2Faidash-fixture"
@@ -90,23 +114,27 @@ run "deploy_boundary" {
   }
   assert {
     condition     = keys(google_tags_tag_binding.broker) == ["develop", "test"] && google_tags_tag_binding.broker["develop"].parent == "//iam.googleapis.com/projects/aidash-fixture/serviceAccounts/100000000000000000001" && google_tags_tag_binding.broker["test"].parent == "//iam.googleapis.com/projects/aidash-fixture/serviceAccounts/100000000000000000002" && alltrue([for b in google_tags_tag_binding.broker : b.tag_value == "tagValues/2001"])
-    error_message = "Every broker service account carries the broker tag, and nothing else does."
+    error_message = "Every Key Material broker service account carries the broker tag."
+  }
+  assert {
+    condition     = keys(google_tags_tag_binding.tenant_secret_broker) == ["develop", "test"] && google_tags_tag_binding.tenant_secret_broker["develop"].parent == "//iam.googleapis.com/projects/aidash-fixture/serviceAccounts/100000000000000000003" && google_tags_tag_binding.tenant_secret_broker["test"].parent == "//iam.googleapis.com/projects/aidash-fixture/serviceAccounts/100000000000000000004" && alltrue([for b in google_tags_tag_binding.tenant_secret_broker : b.tag_value == "tagValues/2001"])
+    error_message = "Every Tenant Secret broker service account carries the broker tag, so the deny policy covers it."
   }
   assert {
     condition     = google_monitoring_alert_policy.byok_key_material_read[0].project == "aidash-byok-fixture" && alltrue([for p in [google_monitoring_alert_policy.broker_revision[0], google_monitoring_alert_policy.broker_iam_policy[0]] : p.project == "aidash-fixture"])
     error_message = "Each alert policy lives in the project that writes its audit log."
   }
   assert {
-    condition     = strcontains(google_monitoring_alert_policy.byok_key_material_read[0].conditions[0].condition_matched_log[0].filter, "AccessSecretVersion") && strcontains(google_monitoring_alert_policy.byok_key_material_read[0].conditions[0].condition_matched_log[0].filter, "NOT protoPayload.authenticationInfo.principalEmail=(\"aidash-develop-broker@aidash-fixture.iam.gserviceaccount.com\" OR \"aidash-test-broker@aidash-fixture.iam.gserviceaccount.com\")") && strcontains(google_monitoring_alert_policy.byok_key_material_read[0].conditions[0].condition_matched_log[0].filter, "projects/aidash-byok-fixture/logs/cloudaudit.googleapis.com%2Fdata_access")
-    error_message = "Alert on every Key Material read except by the exact broker accounts."
+    condition     = strcontains(google_monitoring_alert_policy.byok_key_material_read[0].conditions[0].condition_matched_log[0].filter, "AccessSecretVersion") && strcontains(google_monitoring_alert_policy.byok_key_material_read[0].conditions[0].condition_matched_log[0].filter, "NOT ((protoPayload.resourceName:(\"secrets/aidash-develop-cred-\" OR \"secrets/aidash-test-cred-\") AND protoPayload.authenticationInfo.principalEmail=(\"aidash-develop-broker@aidash-fixture.iam.gserviceaccount.com\" OR \"aidash-test-broker@aidash-fixture.iam.gserviceaccount.com\")) OR (protoPayload.resourceName:(\"secrets/aidash-develop-tsec-\" OR \"secrets/aidash-test-tsec-\") AND protoPayload.authenticationInfo.principalEmail=(\"aidash-develop-tsec@aidash-fixture.iam.gserviceaccount.com\" OR \"aidash-test-tsec@aidash-fixture.iam.gserviceaccount.com\")))") && strcontains(google_monitoring_alert_policy.byok_key_material_read[0].conditions[0].condition_matched_log[0].filter, "projects/aidash-byok-fixture/logs/cloudaudit.googleapis.com%2Fdata_access")
+    error_message = "Alert when either broker reads the other namespace or a non-broker reads any payload."
   }
   assert {
-    condition     = strcontains(google_monitoring_alert_policy.broker_revision[0].conditions[0].condition_matched_log[0].filter, "(\"aidash-develop-credential-broker\" OR \"aidash-test-credential-broker\")") && strcontains(google_monitoring_alert_policy.broker_revision[0].conditions[0].condition_matched_log[0].filter, "Services.UpdateService")
+    condition     = strcontains(google_monitoring_alert_policy.broker_revision[0].conditions[0].condition_matched_log[0].filter, "(\"aidash-develop-credential-broker\" OR \"aidash-develop-tenant-secret-broker\" OR \"aidash-test-credential-broker\" OR \"aidash-test-tenant-secret-broker\")") && strcontains(google_monitoring_alert_policy.broker_revision[0].conditions[0].condition_matched_log[0].filter, "Services.UpdateService")
     error_message = "Alert on every revision of each broker service."
   }
   assert {
-    condition     = strcontains(google_monitoring_alert_policy.broker_iam_policy[0].conditions[0].condition_matched_log[0].filter, "Services.SetIamPolicy") && strcontains(google_monitoring_alert_policy.broker_iam_policy[0].conditions[1].condition_matched_log[0].filter, "google.iam.admin.v1.SetIAMPolicy") && strcontains(google_monitoring_alert_policy.broker_iam_policy[0].conditions[1].condition_matched_log[0].filter, "100000000000000000001")
-    error_message = "Alert on IAM policy changes of broker services and accounts."
+    condition     = strcontains(google_monitoring_alert_policy.broker_iam_policy[0].conditions[0].condition_matched_log[0].filter, "Services.SetIamPolicy") && strcontains(google_monitoring_alert_policy.broker_iam_policy[0].conditions[1].condition_matched_log[0].filter, "google.iam.admin.v1.SetIAMPolicy") && strcontains(google_monitoring_alert_policy.broker_iam_policy[0].conditions[1].condition_matched_log[0].filter, "100000000000000000001") && strcontains(google_monitoring_alert_policy.broker_iam_policy[0].conditions[1].condition_matched_log[0].filter, "100000000000000000003")
+    error_message = "Alert on IAM policy changes of broker services and both account kinds."
   }
   assert {
     condition     = strcontains(google_monitoring_alert_policy.broker_revision[0].conditions[2].condition_matched_log[0].filter, "compute.googleapis.com") && strcontains(google_monitoring_alert_policy.broker_revision[0].conditions[2].condition_matched_log[0].filter, "instances.setServiceAccount") && strcontains(google_monitoring_alert_policy.broker_revision[0].conditions[3].condition_matched_log[0].filter, "container.googleapis.com") && strcontains(google_monitoring_alert_policy.broker_revision[0].conditions[3].condition_matched_log[0].filter, "CreateNodePool")
@@ -137,7 +165,7 @@ run "alerts_reject_malformed_recipient" {
 run "no_boundary_without_brokers" {
   command = plan
   assert {
-    condition     = length(google_iam_deny_policy.deploy_broker_boundary) == 0 && length(google_tags_tag_key.broker) == 0 && length(google_tags_tag_binding.broker) == 0
-    error_message = "A deployment without Credential Broker accounts creates no tag or deny policy."
+    condition     = length(google_iam_deny_policy.deploy_broker_boundary) == 0 && length(google_tags_tag_key.broker) == 0 && length(google_tags_tag_binding.broker) == 0 && length(google_tags_tag_binding.tenant_secret_broker) == 0
+    error_message = "A deployment without broker accounts creates no tag or deny policy."
   }
 }

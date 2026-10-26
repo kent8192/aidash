@@ -113,7 +113,8 @@ locals {
       byok_project_id = var.byok_project_id
       environment_id  = var.environment_id
     }
-    broker = var.broker
+    broker               = var.broker
+    tenant_secret_broker = var.tenant_secret_broker
   } : null
 }
 output "namespace" { value = local.namespace }

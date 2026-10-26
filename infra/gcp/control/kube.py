@@ -510,8 +510,12 @@ def prepare(cluster, identity, preview_handle=None, protected=False):
 def provider_settings(descriptor, external):
     """Validate the managed Store/broker descriptor; key material never appears here."""
     if descriptor is None:
-        descriptor = {"fingerprint_key": None, "store": None, "broker": None}
-    if not isinstance(descriptor, dict) or set(descriptor) != {"fingerprint_key", "store", "broker"}:
+        descriptor = {"fingerprint_key": None, "store": None, "broker": None, "tenant_secret_broker": None}
+    # Terraform state written before #310 has no Tenant Secret broker key. Supply
+    # the explicit none so the chart's fixed descriptor shape still validates.
+    if isinstance(descriptor, dict) and set(descriptor) == {"fingerprint_key", "store", "broker"}:
+        descriptor = dict(descriptor, tenant_secret_broker=None)
+    if not isinstance(descriptor, dict) or set(descriptor) != {"fingerprint_key", "store", "broker", "tenant_secret_broker"}:
         raise Refused("invalid managed Provider Credential configuration")
     store = descriptor["store"]
     if store is not None:
@@ -540,6 +544,15 @@ def provider_settings(descriptor, external):
         or broker["audience"] != store["environment_id"]
     ):
         raise Refused("invalid managed Provider Credential broker")
+    tenant_secret_broker = descriptor["tenant_secret_broker"]
+    if tenant_secret_broker is not None and (
+        store is None
+        or not isinstance(tenant_secret_broker, dict)
+        or set(tenant_secret_broker) != {"endpoint", "issuer", "audience", "kid"}
+        or any(not isinstance(value, str) or not value for value in tenant_secret_broker.values())
+        or tenant_secret_broker["audience"] != store["environment_id"]
+    ):
+        raise Refused("invalid managed Tenant Secret broker")
     return deepcopy(descriptor)
 
 

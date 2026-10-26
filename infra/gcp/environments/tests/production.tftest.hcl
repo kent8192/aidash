@@ -77,20 +77,25 @@ run "production_broker_uses_production_identity" {
   variables {
     broker_image_lock_file = "tests/fixtures/broker-image.json"
     credential_brokers = { production = {
-      enabled                      = true
-      byok_project_id              = "aidash-production-byok-fixture"
-      secret_prefix                = "aidash-production-cred-"
-      broker_service_account_email = "aidash-production-broker@aidash-production-fixture.iam.gserviceaccount.com"
-      signing_key_id               = "projects/aidash-production-fixture/locations/us-central1/keyRings/aidash-production-capability/cryptoKeys/capability"
+      enabled                                    = true
+      byok_project_id                            = "aidash-production-byok-fixture"
+      secret_prefix                              = "aidash-production-cred-"
+      broker_service_account_email               = "aidash-production-broker@aidash-production-fixture.iam.gserviceaccount.com"
+      signing_key_id                             = "projects/aidash-production-fixture/locations/us-central1/keyRings/aidash-production-capability/cryptoKeys/capability"
+      tenant_secret_broker_service_account_email = "aidash-production-tsec@aidash-production-fixture.iam.gserviceaccount.com"
+      tenant_secret_signing_key_id               = "projects/aidash-production-fixture/locations/us-central1/keyRings/aidash-production-capability/cryptoKeys/tenant-secret"
     } }
   }
   assert {
     condition = (
       keys(module.credential_broker) == ["production"] &&
+      keys(module.tenant_secret_broker) == ["production"] &&
       module.credential_broker.production.service_account == "aidash-production-broker@aidash-production-fixture.iam.gserviceaccount.com" &&
-      output.secret_prefix.production == "aidash-production-cred-"
+      module.tenant_secret_broker.production.service_account == "aidash-production-tsec@aidash-production-fixture.iam.gserviceaccount.com" &&
+      output.secret_prefix.production == "aidash-production-cred-" &&
+      output.tenant_secret_brokers.production.kid == "projects/aidash-production-fixture/locations/us-central1/keyRings/aidash-production-capability/cryptoKeys/tenant-secret/cryptoKeyVersions/1"
     )
-    error_message = "Production capabilities and Provider Credential prefixes must bind its dedicated bootstrap broker."
+    error_message = "Production capabilities and Secret Store prefixes must bind its dedicated bootstrap brokers and server key."
   }
 }
 run "production_rejects_shared_project" {

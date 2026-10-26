@@ -7,19 +7,24 @@ terraform {
   }
 }
 locals {
-  enabled = var.enabled && var.environment_kind != "pr"
-  name    = "aidash-${var.environment_id}-credential-broker"
+  enabled            = var.enabled && var.environment_kind != "pr"
+  tenant_secret_role = var.role == "tenant-secrets"
+  name               = local.tenant_secret_role ? "aidash-${var.environment_id}-tenant-secret-broker" : "aidash-${var.environment_id}-credential-broker"
   // Leave time to cancel upstream work, return a response and record the audit
   // before Cloud Run closes the request at its platform deadline.
   broker_deadline_secs = var.timeout_secs - 30
+  public_keys = merge(
+    { for v, k in data.google_kms_crypto_key_version.verification : "${var.signing_key_id}/cryptoKeyVersions/${v}" => k.public_key[0].pem },
+    { for v, k in data.google_kms_crypto_key_version.secondary_verification : "${var.secondary_signing_key_id}/cryptoKeyVersions/${v}" => k.public_key[0].pem },
+  )
 }
 data "google_project" "byok" {
   count      = local.enabled ? 1 : 0
   project_id = var.byok_project_id
 }
-// Human-run bootstrap owns the broker SA, its BYOK read binding and the deploy
-// identity's actAs grant. Environment automation holds an IAM deny on the broker
-// SA's setIamPolicy (#151), so this module must not bind anything on it.
+// Human-run bootstrap owns both broker SAs, their BYOK read bindings and the
+// deploy identity's actAs grants. Environment automation holds an IAM deny on the
+// broker SAs' setIamPolicy (#151), so this module must not bind anything on them.
 resource "google_kms_crypto_key_iam_member" "signer" {
   count         = local.enabled && var.bind_runtime_signer ? 1 : 0
   crypto_key_id = var.signing_key_id
@@ -29,6 +34,11 @@ resource "google_kms_crypto_key_iam_member" "signer" {
 data "google_kms_crypto_key_version" "verification" {
   for_each   = local.enabled ? var.verification_versions : toset([])
   crypto_key = var.signing_key_id
+  version    = each.key
+}
+data "google_kms_crypto_key_version" "secondary_verification" {
+  for_each   = local.enabled && var.secondary_signing_key_id != "" ? var.secondary_verification_versions : toset([])
+  crypto_key = var.secondary_signing_key_id
   version    = each.key
 }
 resource "google_cloud_run_v2_service" "broker" {
@@ -54,16 +64,25 @@ resource "google_cloud_run_v2_service" "broker" {
       resources { limits = { cpu = "1", memory = "1Gi" } }
       ports { container_port = 8080 }
       dynamic "env" {
-        for_each = {
-          AIDASH_BYOK_PROJECT_NUMBER        = data.google_project.byok[0].number
-          AIDASH_PROVIDER_CREDENTIAL_PREFIX = var.secret_prefix
-          AIDASH_CAPABILITY_ISSUER          = var.issuer
-          AIDASH_CAPABILITY_AUDIENCE        = var.environment_id
-          AIDASH_CAPABILITY_PUBLIC_KEYS     = jsonencode({ for v, k in data.google_kms_crypto_key_version.verification : "${var.signing_key_id}/cryptoKeyVersions/${v}" => k.public_key[0].pem })
-          AIDASH_BROKER_REQUESTS_PER_SECOND = tostring(var.requests_per_second)
-          AIDASH_BROKER_BURST               = tostring(var.burst)
-          AIDASH_BROKER_TIMEOUT_SECS        = tostring(local.broker_deadline_secs)
-        }
+        for_each = merge(
+          {
+            AIDASH_BYOK_PROJECT_NUMBER        = data.google_project.byok[0].number
+            AIDASH_CAPABILITY_PUBLIC_KEYS     = jsonencode(local.public_keys)
+            AIDASH_BROKER_REQUESTS_PER_SECOND = tostring(var.requests_per_second)
+            AIDASH_BROKER_BURST               = tostring(var.burst)
+            AIDASH_BROKER_TIMEOUT_SECS        = tostring(local.broker_deadline_secs)
+          },
+          local.tenant_secret_role ? {
+            AIDASH_BROKER_ROLE          = "tenant-secrets"
+            AIDASH_TENANT_SECRET_PREFIX = var.secret_prefix
+            AIDASH_SECRET_CALL_AUDIENCE = var.environment_id
+            AIDASH_CAPABILITY_ISSUER    = var.issuer
+            } : {
+            AIDASH_PROVIDER_CREDENTIAL_PREFIX = var.secret_prefix
+            AIDASH_CAPABILITY_ISSUER          = var.issuer
+            AIDASH_CAPABILITY_AUDIENCE        = var.environment_id
+          },
+        )
         content {
           name  = env.key
           value = env.value
@@ -73,7 +92,15 @@ resource "google_cloud_run_v2_service" "broker" {
   }
 }
 output "worker_configuration" {
-  value = local.enabled ? {
+  value = local.enabled && !local.tenant_secret_role ? {
+    endpoint = "${google_cloud_run_v2_service.broker[0].uri}/api/v1"
+    issuer   = var.issuer
+    audience = var.environment_id
+    kid      = "${var.signing_key_id}/cryptoKeyVersions/${var.signing_version}"
+  } : null
+}
+output "server_configuration" {
+  value = local.enabled && local.tenant_secret_role ? {
     endpoint = "${google_cloud_run_v2_service.broker[0].uri}/api/v1"
     issuer   = var.issuer
     audience = var.environment_id

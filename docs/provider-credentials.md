@@ -272,7 +272,10 @@ settings; reconnecting alone cannot confirm revocation of a lost grant.
 
 GCP deployment passes this non-secret Store descriptor to the app chart's
 `providerCredentials.settings`, which renders it as a ConfigMap read as a
-read-only Reinhardt settings source for migrations and the server. BYOK-enabled runtime secrets must contain
+read-only Reinhardt settings source for migrations and the server. The descriptor
+carries `fingerprint_key`, `store`, `broker` (the worker's Key Material broker)
+and `tenant_secret_broker` (the server's Tenant Secret broker; null when not
+configured). BYOK-enabled runtime secrets must contain
 the stable `AIDASH_PROVIDER_FINGERPRINT_KEY` value; a missing or short value
 blocks startup. The key is never generated or changed during deployment. When
 BYOK is omitted, the managed Store remains unset and no fingerprint is required.
