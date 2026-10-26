@@ -15,6 +15,7 @@ import { classifyFilePreview } from "../src/file-preview/preview-kind.ts";
 import { SpreadsheetPreviewError } from "../src/file-preview/spreadsheet-types.ts";
 import { parseXlsx } from "../src/file-preview/xlsx.ts";
 import { resolveWorkingAreaPath } from "../src/file-preview/working-area-path.ts";
+import { previewTicketErrorKey } from "../src/capabilities/preview-errors.ts";
 
 const bytesOf = (text) => new TextEncoder().encode(text).buffer;
 const toArrayBuffer = (value) =>
@@ -280,4 +281,34 @@ test("Markdown image paths resolve inside the Working Area revision", () => {
     null,
   );
   assert.equal(resolveWorkingAreaPath("docs/readme.md", "img\\a.png"), null);
+});
+
+test("preview ticket failures map to actionable states", () => {
+  assert.equal(
+    previewTicketErrorKey({ status: 403, message: "denied" }),
+    "filePreviewNoAccessNow",
+  );
+  assert.equal(
+    previewTicketErrorKey({ status: 404, message: "gone" }),
+    "filePreviewVersionReleased",
+  );
+  assert.equal(
+    previewTicketErrorKey({ status: 413, message: "too large" }),
+    "filePreviewVersionTooLarge",
+  );
+  assert.equal(
+    previewTicketErrorKey({ status: 503, message: "later" }),
+    "filePreviewPreviewUnavailable",
+  );
+  assert.equal(
+    previewTicketErrorKey({
+      status: 409,
+      message: "FILE_VERSION_TOO_LARGE",
+    }),
+    "filePreviewVersionTooLarge",
+  );
+  assert.equal(
+    previewTicketErrorKey(new Error("network")),
+    "filePreviewTicketError",
+  );
 });

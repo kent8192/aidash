@@ -51,6 +51,9 @@ import {
   FilePreviewPane,
   type FilePreviewSelection,
 } from "../capabilities/file-preview-pane";
+import { FileCitationProvider } from "./file-citations";
+import { corePreviewAvailability } from "../generated/aidash";
+import type { PreviewAvailability } from "../generated/models";
 import { TimelineStrip } from "./request/timeline";
 import { Phase, SegmentedProgress } from "./request/progress";
 import { parseOwner, runDisplayStatus } from "./request/canvas-model";
@@ -281,11 +284,16 @@ export function Channel({
     null,
   );
   const previewTrigger = useRef<HTMLElement | null>(null);
+  const previewManifests = useRef(
+    new Map<string, NonNullable<FilePreviewSelection["files"]>>(),
+  );
   const openFilePreview = useCallback((selection: FilePreviewSelection) => {
     previewTrigger.current =
       document.activeElement instanceof HTMLElement
         ? document.activeElement
         : null;
+    if (selection.files?.length)
+      previewManifests.current.set(selection.area, selection.files);
     setFilePreview(selection);
   }, []);
   const closeFilePreview = useCallback(() => {
@@ -293,6 +301,22 @@ export function Channel({
     previewTrigger.current?.focus();
     previewTrigger.current = null;
   }, []);
+  const manifestFor = useCallback(
+    (area: string) => previewManifests.current.get(area),
+    [],
+  );
+  const previewAvailability = useQuery({
+    queryKey: ["preview-availability"],
+    queryFn: ({ signal }) => corePreviewAvailability({ signal }),
+    staleTime: Infinity,
+    gcTime: Infinity,
+    retry: false,
+  });
+  const availability: PreviewAvailability | null =
+    previewAvailability.data ??
+    (previewAvailability.isError
+      ? { available: false, preview_domain: null }
+      : null);
   const query = useQuery({
     queryKey: ["workspace", workspace.id],
     queryFn: ({ signal }) => workspaceGet(workspace.id, { signal }),
@@ -658,108 +682,117 @@ export function Channel({
         </div>
         {control.error && <Alert className="basis-full">{control.error}</Alert>}
       </header>
-      <FilePreviewContextProvider open={openFilePreview}>
-        <Tabs
-          value={shownTab}
-          onValueChange={(value) => setTab(value as typeof tab)}
-          className="relative flex min-h-0 flex-1 flex-col md:flex-row"
+      <FileCitationProvider>
+        <FilePreviewContextProvider
+          open={openFilePreview}
+          manifestFor={manifestFor}
+          availability={availability}
         >
-          {!desktop && (
-            <TabsList className="bg-surface">
-              <TabsTrigger value="conversation">
-                {view.conversation}
-              </TabsTrigger>
-              <TabsTrigger value="canvas">{view.canvas}</TabsTrigger>
-              <TabsTrigger value="tasks">
-                {view.tasks}
-                {count(tasks.length)}
-              </TabsTrigger>
-              <TabsTrigger value="results">
-                {view.results}
-                {count(artifacts.length)}
-              </TabsTrigger>
-            </TabsList>
-          )}
-          {desktop ? (
-            <div className="flex min-h-0 min-w-0 flex-1 flex-col">
-              {unavailable}
-              {canvas}
-            </div>
-          ) : (
-            <TabsContent
-              value="canvas"
-              className="flex min-h-0 flex-1 flex-col data-[state=inactive]:hidden"
-            >
-              {unavailable}
-              {canvas}
-            </TabsContent>
-          )}
-          <aside
-            ref={setThreadContainer}
-            aria-label={threadCopy[locale].thread}
-            hidden={!thread || query.isError || shownTab !== "conversation"}
-            className="absolute inset-0 z-40 flex min-h-0 flex-col bg-surface md:static md:z-auto md:w-[360px] md:shrink-0 md:border-l md:border-border"
-          />
-          {filePreview && shownTab === "conversation" && (
-            <FilePreviewPane
-              key={`${filePreview.area}:${filePreview.file.file_id}:${filePreview.file.digest}`}
-              selection={filePreview}
-              onClose={closeFilePreview}
-            />
-          )}
-          <aside
-            aria-label={view.details}
-            hidden={desktop ? !dockOpen : tab === "canvas"}
-            className="flex min-h-0 flex-1 flex-col bg-surface md:w-[400px] md:flex-none md:border-l md:border-border"
+          <Tabs
+            value={shownTab}
+            onValueChange={(value) => setTab(value as typeof tab)}
+            className="relative flex min-h-0 flex-1 flex-col md:flex-row"
           >
-            {desktop && (
-              <div className="flex items-stretch border-b border-border">
-                <TabsList className="flex-1 border-b-0">
-                  <TabsTrigger value="conversation">
-                    {view.conversation}
-                    {count(query.data?.messages?.length ?? 0)}
-                  </TabsTrigger>
-                  <TabsTrigger value="tasks">
-                    {view.tasks}
-                    {count(tasks.length)}
-                  </TabsTrigger>
-                  <TabsTrigger value="results">
-                    {view.results}
-                    {count(artifacts.length)}
-                  </TabsTrigger>
-                </TabsList>
-                <Button
-                  variant="ghost"
-                  size="icon"
-                  type="button"
-                  className="mr-1.5 self-center"
-                  aria-label={view.hideDock}
-                  onClick={() => setDockOpen(false)}
-                >
-                  <PanelRightClose />
-                </Button>
-              </div>
+            {!desktop && (
+              <TabsList className="bg-surface">
+                <TabsTrigger value="conversation">
+                  {view.conversation}
+                </TabsTrigger>
+                <TabsTrigger value="canvas">{view.canvas}</TabsTrigger>
+                <TabsTrigger value="tasks">
+                  {view.tasks}
+                  {count(tasks.length)}
+                </TabsTrigger>
+                <TabsTrigger value="results">
+                  {view.results}
+                  {count(artifacts.length)}
+                </TabsTrigger>
+              </TabsList>
             )}
-            {!desktop && unavailable}
-            <TabsContent
-              value="conversation"
-              forceMount
-              className="flex min-h-0 flex-1 flex-col data-[state=inactive]:hidden"
+            {desktop ? (
+              <div className="flex min-h-0 min-w-0 flex-1 flex-col">
+                {unavailable}
+                {canvas}
+              </div>
+            ) : (
+              <TabsContent
+                value="canvas"
+                className="flex min-h-0 flex-1 flex-col data-[state=inactive]:hidden"
+              >
+                {unavailable}
+                {canvas}
+              </TabsContent>
+            )}
+            <aside
+              ref={setThreadContainer}
+              aria-label={threadCopy[locale].thread}
+              hidden={!thread || query.isError || shownTab !== "conversation"}
+              className="absolute inset-0 z-40 flex min-h-0 flex-col bg-surface md:static md:z-auto md:w-[360px] md:shrink-0 md:border-l md:border-border"
+            />
+            {filePreview && shownTab === "conversation" && (
+              <FilePreviewPane
+                key={`${filePreview.area}:${filePreview.file.file_id}:${filePreview.file.digest}`}
+                selection={filePreview}
+                onClose={closeFilePreview}
+              />
+            )}
+            <aside
+              aria-label={view.details}
+              hidden={desktop ? !dockOpen : tab === "canvas"}
+              className="flex min-h-0 flex-1 flex-col bg-surface md:w-[400px] md:flex-none md:border-l md:border-border"
             >
-              {conversation}
-            </TabsContent>
-            <TabsContent value="tasks" className="flex min-h-0 flex-1 flex-col">
-              {taskPane}
-            </TabsContent>
-            <TabsContent
-              value="results"
-              className="flex min-h-0 flex-1 flex-col"
-            >
-              {resultPane}
-            </TabsContent>
-          </aside>
-        </Tabs>
-      </FilePreviewContextProvider>
+              {desktop && (
+                <div className="flex items-stretch border-b border-border">
+                  <TabsList className="flex-1 border-b-0">
+                    <TabsTrigger value="conversation">
+                      {view.conversation}
+                      {count(query.data?.messages?.length ?? 0)}
+                    </TabsTrigger>
+                    <TabsTrigger value="tasks">
+                      {view.tasks}
+                      {count(tasks.length)}
+                    </TabsTrigger>
+                    <TabsTrigger value="results">
+                      {view.results}
+                      {count(artifacts.length)}
+                    </TabsTrigger>
+                  </TabsList>
+                  <Button
+                    variant="ghost"
+                    size="icon"
+                    type="button"
+                    className="mr-1.5 self-center"
+                    aria-label={view.hideDock}
+                    onClick={() => setDockOpen(false)}
+                  >
+                    <PanelRightClose />
+                  </Button>
+                </div>
+              )}
+              {!desktop && unavailable}
+              <TabsContent
+                value="conversation"
+                forceMount
+                className="flex min-h-0 flex-1 flex-col data-[state=inactive]:hidden"
+              >
+                {conversation}
+              </TabsContent>
+              <TabsContent
+                value="tasks"
+                className="flex min-h-0 flex-1 flex-col"
+              >
+                {taskPane}
+              </TabsContent>
+              <TabsContent
+                value="results"
+                className="flex min-h-0 flex-1 flex-col"
+              >
+                {resultPane}
+              </TabsContent>
+            </aside>
+          </Tabs>
+        </FilePreviewContextProvider>
+      </FileCitationProvider>
       <Sheet open={statusOpen} onOpenChange={setStatusOpen}>
         <SheetContent closeLabel={t("close")} className="gap-0 p-0">
           <SheetHeader className="border-b border-border px-5 pb-3 pt-4">
