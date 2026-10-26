@@ -161,6 +161,54 @@ one media inference makes two concurrent discovery requests and one chat call.
 Runtime and Terraform reject smaller bursts. Cache and rate-limit
 bookkeeping are bounded to 10,000 entries. Cross-instance rates are approximate.
 
+## Tenant Secret role
+
+`AIDASH_BROKER_ROLE=tenant-secrets` selects the Tenant Secret role (ADR 0095,
+ADR 0096). When the variable is absent or empty the binary runs the Key Material
+role described above; any other value fails startup. The Tenant Secret role has
+its own prefix, audience, issuer map and public keys, and shares no
+configuration or identity with the Key Material role.
+
+It receives `AIDASH_TENANT_SECRET_PREFIX` (the `aidash-<environment>-tsec-`
+namespace), `AIDASH_SECRET_CALL_AUDIENCE` (`<environment>-tsec`),
+`AIDASH_SECRET_CALL_ISSUERS` (a JSON map from `kid` to the one issuer that key
+may speak for), `AIDASH_CAPABILITY_PUBLIC_KEYS`, `AIDASH_BYOK_PROJECT_NUMBER`
+and the shared rate and timeout variables. A `kid` absent from the issuer map is
+unknown, and a token whose `iss` disagrees with its `kid`'s issuer is refused.
+
+Workers and the server call `{METHOD} /v1/forward{rest}` with the Tenant Secret
+Capability Token in `x-aidash-secret-call`; inbound `Authorization` is always
+stripped. The broker verifies the token, checks the method against the signed
+`methods`, joins `{rest}` under the signed `path_prefix` while refusing percent
+escapes, backslashes, empty segments and `.`/`..`, and keeps the raw query. It
+then reads
+`projects/<project-number>/secrets/<prefix><secret>/versions/<version>` through
+the Tenant Secret source, opens the sealed payload, and requires the token's
+destination host (without its port) to be one of the sealed hosts. Reads are
+cached for 60 seconds by `(resource, version)`. The outbound client resolves
+public addresses only, follows no redirects and uses no proxy. Request and
+response bodies stream, and the signed `max_response_bytes`, when present, cuts
+the response stream. `mcp-session-id`, `last-event-id`, `content-type` and
+`accept` pass through. The per-secret token bucket is keyed by Tenant and Tenant
+Secret.
+
+Broker-owned errors are `{"error":"<code>"}` with `x-aidash-broker-error` and,
+once a token is verified, `x-aidash-correlation: <jti>`:
+
+| Code                         | Status | Meaning                                                                 |
+| ---------------------------- | ------ | ----------------------------------------------------------------------- |
+| `broker_rejected`            | 401    | signature, key, type, audience, expiry or another claim violation       |
+| `secret_destination_refused` | 403    | method, path, sealed host or public-address refusal                     |
+| `secret_unavailable`         | 404    | version missing, disabled or destroyed, or a payload that is not sealed |
+| `rate_limited`               | 429    | per-Tenant-Secret token bucket                                          |
+| `upstream_unreachable`       | 502    | destination or Secret Store connect, TLS or timeout failure             |
+
+Upstream statuses pass through, including redirects, which are never followed.
+Each request writes one `secret_call` structured line with the Tenant, Tenant
+Secret, version, destination host, a 16-character SHA-256 path digest, method,
+status, bytes in and out, `jti`, subject kind and duration. Values, header values
+and bodies never enter logging.
+
 ## Deployment and verification
 
 Build from the repository root:

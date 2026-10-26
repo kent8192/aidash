@@ -1,7 +1,12 @@
 //! Cloud-only composition. No private signing key or provider key is configured here.
-use aidash_broker::{Broker, CloudLogging, Config};
+use aidash_broker::{
+	Broker, CloudLogging, Config,
+	tenant_secret::{TenantSecretBroker, TenantSecretConfig},
+};
 use aidash_capability::PublicKeys;
-use aidash_gcp::capability::{MetadataTokenSource, SecretManagerKeyMaterialSource};
+use aidash_gcp::capability::{
+	MetadataTokenSource, SecretManagerKeyMaterialSource, SecretManagerTenantSecretSource,
+};
 use std::{collections::BTreeMap, sync::Arc, time::Duration};
 
 fn env(name: &str) -> Result<String, &'static str> {
@@ -24,6 +29,17 @@ async fn shutdown_signal() {
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
 	tracing_subscriber::fmt().json().with_target(false).init();
+	match std::env::var("AIDASH_BROKER_ROLE") {
+		Ok(role) if role == "tenant-secrets" => tenant_secrets().await,
+		Ok(role) if role.is_empty() => key_material().await,
+		Ok(_) => Err("unknown broker role".into()),
+		Err(std::env::VarError::NotPresent) => key_material().await,
+		Err(_) => Err("invalid broker role".into()),
+	}
+}
+/// The Key Material role. It is unchanged and remains the default when no role
+/// is configured.
+async fn key_material() -> Result<(), Box<dyn std::error::Error>> {
 	let project = env("AIDASH_BYOK_PROJECT_NUMBER")?;
 	let prefix = env("AIDASH_PROVIDER_CREDENTIAL_PREFIX")?;
 	let keys: BTreeMap<String, String> =
@@ -34,17 +50,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 		audience: env("AIDASH_CAPABILITY_AUDIENCE")?,
 		byok_project_number: project.clone(),
 		secret_prefix: prefix.clone(),
-		requests_per_second: std::env::var("AIDASH_BROKER_REQUESTS_PER_SECOND")
-			.unwrap_or_else(|_| "5".into())
-			.parse()?,
-		burst: std::env::var("AIDASH_BROKER_BURST")
-			.unwrap_or_else(|_| "20".into())
-			.parse()?,
-		inference_deadline: Duration::from_secs(
-			std::env::var("AIDASH_BROKER_TIMEOUT_SECS")
-				.unwrap_or_else(|_| "3600".into())
-				.parse()?,
-		),
+		requests_per_second: rate()?,
+		burst: burst()?,
+		inference_deadline: timeout()?,
 	};
 	let source = SecretManagerKeyMaterialSource::new(
 		&project,
@@ -57,11 +65,65 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 		Arc::new(source),
 		Arc::new(CloudLogging),
 	)?);
+	serve(broker.router()).await
+}
+/// The Tenant Secret role. It has its own prefix, audience, issuer map and
+/// public keys, and shares no configuration with the Key Material role.
+async fn tenant_secrets() -> Result<(), Box<dyn std::error::Error>> {
+	let project = env("AIDASH_BYOK_PROJECT_NUMBER")?;
+	let prefix = env("AIDASH_TENANT_SECRET_PREFIX")?;
+	let audience = env("AIDASH_SECRET_CALL_AUDIENCE")?;
+	let issuers: BTreeMap<String, String> =
+		serde_json::from_str(&env("AIDASH_SECRET_CALL_ISSUERS")?)
+			.map_err(|_| "invalid Tenant Secret issuer configuration")?;
+	let keys: BTreeMap<String, String> =
+		serde_json::from_str(&env("AIDASH_CAPABILITY_PUBLIC_KEYS")?)
+			.map_err(|_| "invalid public key configuration")?;
+	let config = TenantSecretConfig {
+		byok_project_number: project.clone(),
+		secret_prefix: prefix.clone(),
+		audience,
+		issuers,
+		requests_per_second: rate()?,
+		burst: burst()?,
+		timeout: timeout()?,
+	};
+	let source = SecretManagerTenantSecretSource::new(
+		&project,
+		&prefix,
+		Arc::new(MetadataTokenSource::new()?),
+	)?;
+	let broker = Arc::new(TenantSecretBroker::new(
+		config,
+		PublicKeys::from_pems(keys)?,
+		Arc::new(source),
+		Arc::new(CloudLogging),
+	)?);
+	serve(broker.router()).await
+}
+fn rate() -> Result<f64, Box<dyn std::error::Error>> {
+	Ok(std::env::var("AIDASH_BROKER_REQUESTS_PER_SECOND")
+		.unwrap_or_else(|_| "5".into())
+		.parse()?)
+}
+fn burst() -> Result<u32, Box<dyn std::error::Error>> {
+	Ok(std::env::var("AIDASH_BROKER_BURST")
+		.unwrap_or_else(|_| "20".into())
+		.parse()?)
+}
+fn timeout() -> Result<Duration, Box<dyn std::error::Error>> {
+	Ok(Duration::from_secs(
+		std::env::var("AIDASH_BROKER_TIMEOUT_SECS")
+			.unwrap_or_else(|_| "3600".into())
+			.parse()?,
+	))
+}
+async fn serve(router: axum::Router) -> Result<(), Box<dyn std::error::Error>> {
 	let port: u16 = std::env::var("PORT")
 		.unwrap_or_else(|_| "8080".into())
 		.parse()?;
 	let listener = tokio::net::TcpListener::bind((std::net::Ipv4Addr::UNSPECIFIED, port)).await?;
-	axum::serve(listener, broker.router())
+	axum::serve(listener, router)
 		.with_graceful_shutdown(shutdown_signal())
 		.await?;
 	Ok(())

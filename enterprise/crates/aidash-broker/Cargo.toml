@@ -23,13 +23,15 @@ reqwest = { version = "0.13", default-features = false, features = [
   "stream",
 ] }
 secrecy = "0.10"
-zeroize = "1"
 serde.workspace = true
 serde_json.workspace = true
+sha2 = "0.10"
 tokio.workspace = true
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["json"] }
+url = "2"
 uuid.workspace = true
+zeroize = "1"
 
 [dev-dependencies]
 chrono.workspace = true

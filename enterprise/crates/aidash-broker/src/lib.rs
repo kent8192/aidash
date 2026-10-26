@@ -21,6 +21,7 @@ use std::{
 use tokio::time::Instant;
 
 mod policy;
+pub mod tenant_secret;
 
 const REQUEST_LIMIT: usize = 1024 * 1024;
 // The application's 8 MiB raw-media allowance expands to about 11 MiB in base64.
@@ -51,6 +52,33 @@ struct Cached {
 struct Bucket {
 	tokens: f64,
 	since: Instant,
+}
+/// One shared per-key token bucket for the Key Material and Tenant Secret
+/// roles. Bookkeeping is bounded without keeping per-token state.
+fn take_token<K: Eq + std::hash::Hash>(
+	buckets: &Mutex<HashMap<K, Bucket>>,
+	key: K,
+	requests_per_second: f64,
+	burst: u32,
+) -> bool {
+	let now = Instant::now();
+	let mut buckets = buckets.lock().unwrap();
+	buckets.retain(|_, b| now.duration_since(b.since) < Duration::from_secs(120));
+	if buckets.len() >= 10000 && !buckets.contains_key(&key) {
+		return false;
+	}
+	let b = buckets.entry(key).or_insert(Bucket {
+		tokens: burst.into(),
+		since: now,
+	});
+	b.tokens = (b.tokens + now.duration_since(b.since).as_secs_f64() * requests_per_second)
+		.min(burst.into());
+	b.since = now;
+	if b.tokens < 1.0 {
+		return false;
+	}
+	b.tokens -= 1.0;
+	true
 }
 /// Structured audit values contain no request/response body, token or Key Material.
 #[derive(Debug, serde::Serialize)]
@@ -87,6 +115,13 @@ impl AuditSink for CloudLogging {
 			.and_then(Value::as_f64);
 		// System One reports `input_tokens`, `output_tokens` and `cost` instead.
 		tracing::info!(jti = %a.jti, subject = ?a.subject, tenant = %a.tenant, credential = %a.credential, version = %a.version, provider = %a.provider, model = %a.model, operation = ?a.operation, status = a.status, latency_ms = a.latency_ms as u64, prompt_tokens = count("prompt_tokens"), completion_tokens = count("completion_tokens"), total_tokens = count("total_tokens"), input_tokens = count("input_tokens"), output_tokens = count("output_tokens"), cost, "provider_call");
+	}
+}
+impl crate::tenant_secret::SecretCallSink for CloudLogging {
+	fn record(&self, a: &crate::tenant_secret::SecretCallAudit) {
+		// One structured stdout line per forwarded Tenant Secret call. It names
+		// no value, header value or body.
+		tracing::info!(tenant = %a.tenant, secret = %a.secret, version = %a.version, host = %a.host, path_sha256 = %a.path_sha256, method = %a.method, status = a.status, bytes_in = a.bytes_in, bytes_out = a.bytes_out, jti = %a.jti, subject = %a.subject, duration_ms = a.duration_ms as u64, "secret_call");
 	}
 }
 pub struct Broker {
@@ -154,26 +189,12 @@ impl Broker {
 		Router::new().fallback(relay).with_state(self)
 	}
 	fn rate_limit(&self, credential: uuid::Uuid) -> bool {
-		let now = Instant::now();
-		let mut buckets = self.buckets.lock().unwrap();
-		// Bound per-instance bookkeeping without keeping per-token state.
-		buckets.retain(|_, b| now.duration_since(b.since) < Duration::from_secs(120));
-		if buckets.len() >= 10000 && !buckets.contains_key(&credential) {
-			return false;
-		}
-		let b = buckets.entry(credential).or_insert(Bucket {
-			tokens: self.config.burst.into(),
-			since: now,
-		});
-		b.tokens = (b.tokens
-			+ now.duration_since(b.since).as_secs_f64() * self.config.requests_per_second)
-			.min(self.config.burst.into());
-		b.since = now;
-		if b.tokens < 1.0 {
-			return false;
-		}
-		b.tokens -= 1.0;
-		true
+		take_token(
+			&self.buckets,
+			credential,
+			self.config.requests_per_second,
+			self.config.burst,
+		)
 	}
 	async fn key(&self, claims: &Claims) -> Result<SecretString, KeyMaterialError> {
 		let secret = format!(

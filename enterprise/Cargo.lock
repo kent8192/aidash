@@ -157,10 +157,12 @@ dependencies = [
  "secrecy",
  "serde",
  "serde_json",
+ "sha2 0.10.9",
  "tokio",
  "tower",
  "tracing",
  "tracing-subscriber",
+ "url",
  "uuid",
  "zeroize",
 ]
