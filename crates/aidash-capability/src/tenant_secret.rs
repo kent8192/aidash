@@ -1,13 +1,25 @@
 //! Tenant Secret Capability Tokens (ADR 0095): a kind of token of its own that
 //! names one Tenant Secret at one version and the only destination it may reach.
 //! The broker never accepts one kind as the other.
-use crate::{Failure, PublicKeys, SignError, TOKEN_TTL_SECS, TokenSigner, jws};
+use crate::{Failure, KeyMaterialError, PublicKeys, SignError, TOKEN_TTL_SECS, TokenSigner, jws};
 use secrecy::SecretString;
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
 use uuid::Uuid;
+use zeroize::Zeroizing;
 
 pub mod sealed;
+
+/// The broker alone may read a sealed Tenant Secret version. The bytes are
+/// opened with `sealed::open`; a caller never receives the value.
+#[async_trait::async_trait]
+pub trait SealedSecretSource: Send + Sync {
+	async fn access(
+		&self,
+		secret: &str,
+		version: &str,
+	) -> Result<Zeroizing<Vec<u8>>, KeyMaterialError>;
+}
 
 /// The JWS `typ` of a token that authorizes one call that carries a Tenant Secret.
 pub const SECRET_TOKEN_TYPE: &str = "aidash-secret-call+jwt";

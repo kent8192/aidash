@@ -2,7 +2,9 @@
 pub mod deployment_key;
 pub mod issuer;
 pub mod secret_issuer;
-use aidash_capability::{KeyMaterialError, KeyMaterialSource, SignError, TokenSigner};
+use aidash_capability::{
+	KeyMaterialError, KeyMaterialSource, SignError, TokenSigner, tenant_secret::SealedSecretSource,
+};
 use async_trait::async_trait;
 use base64::{Engine, engine::general_purpose::STANDARD};
 use secrecy::{ExposeSecret, SecretString};
@@ -247,6 +249,101 @@ impl KeyMaterialSource for SecretManagerKeyMaterialSource {
 			return Err(KeyMaterialError::Unavailable);
 		}
 		Ok(SecretString::from(text.to_owned()))
+	}
+}
+/// Production Tenant Secret source. The Tenant Secret broker identity alone
+/// receives versions.access on the `-tsec-` prefix, and the payload stays
+/// sealed until the broker opens it.
+pub struct SecretManagerTenantSecretSource {
+	resource_prefix: String,
+	base: String,
+	client: reqwest::Client,
+	tokens: Arc<dyn AccessTokenSource>,
+}
+impl SecretManagerTenantSecretSource {
+	pub fn new(
+		project_number: &str,
+		secret_prefix: &str,
+		tokens: Arc<dyn AccessTokenSource>,
+	) -> Result<Self, SignError> {
+		if project_number.is_empty()
+			|| !project_number.bytes().all(|b| b.is_ascii_digit())
+			|| !secret_prefix.starts_with("aidash-")
+			|| !secret_prefix.ends_with("-tsec-")
+			|| !secret_prefix
+				.bytes()
+				.all(|b| b.is_ascii_alphanumeric() || b == b'-')
+		{
+			return Err(SignError);
+		}
+		Ok(Self {
+			resource_prefix: format!("projects/{project_number}/secrets/{secret_prefix}"),
+			base: "https://secretmanager.googleapis.com/v1".into(),
+			client: client()?,
+			tokens,
+		})
+	}
+}
+#[async_trait]
+impl SealedSecretSource for SecretManagerTenantSecretSource {
+	async fn access(
+		&self,
+		secret: &str,
+		version: &str,
+	) -> Result<Zeroizing<Vec<u8>>, KeyMaterialError> {
+		let id = secret
+			.strip_prefix(&self.resource_prefix)
+			.and_then(|id| uuid::Uuid::parse_str(id).ok());
+		if id.is_none_or(|id| id.is_nil()) || !numeric_version(version) {
+			return Err(KeyMaterialError::Unavailable);
+		}
+		let token = self
+			.tokens
+			.token()
+			.await
+			.map_err(|_| KeyMaterialError::StoreUnavailable)?;
+		let response = self
+			.client
+			.get(format!("{}/{secret}/versions/{version}:access", self.base))
+			.bearer_auth(token.expose_secret())
+			.send()
+			.await
+			.map_err(|_| KeyMaterialError::StoreUnavailable)?;
+		// Disabled/destroyed versions return 400 FAILED_PRECONDITION. These are
+		// permanent secret failures, not a transient Secret Manager outage.
+		if matches!(response.status().as_u16(), 400 | 403 | 404 | 409) {
+			return Err(KeyMaterialError::Unavailable);
+		}
+		#[derive(Deserialize)]
+		#[serde(rename_all = "camelCase")]
+		struct Payload {
+			data: String,
+			data_crc32c: String,
+		}
+		#[derive(Deserialize)]
+		struct Accessed {
+			name: String,
+			payload: Payload,
+		}
+		// A sealed payload is at most 65,536 bytes; its base64 form and JSON
+		// framing stay below this response bound.
+		let accessed: Accessed = bounded_json(response, 131_072)
+			.await
+			.map_err(|_| KeyMaterialError::StoreUnavailable)?;
+		let data = Zeroizing::new(accessed.payload.data);
+		let bytes = Zeroizing::new(
+			STANDARD
+				.decode(data.as_bytes())
+				.map_err(|_| KeyMaterialError::StoreUnavailable)?,
+		);
+		if accessed.name != format!("{secret}/versions/{version}")
+			|| accessed.payload.data_crc32c.parse::<u32>().ok() != Some(crc32c::crc32c(&bytes))
+			|| bytes.is_empty()
+			|| bytes.len() > 65_536
+		{
+			return Err(KeyMaterialError::StoreUnavailable);
+		}
+		Ok(bytes)
 	}
 }
 fn numeric_version(value: &str) -> bool {
