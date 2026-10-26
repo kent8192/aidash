@@ -39,6 +39,12 @@ run "running_pool_and_workload_identities" {
       audience = "test"
       kid      = "kms-version"
     }
+    tenant_secret_broker = {
+      endpoint = "https://tenant-broker.run.app"
+      issuer   = "aidash-server"
+      audience = "test-tsec"
+      kid      = "server-kms-version"
+    }
     environment = {
       kind         = "test"
       incarnation  = "aaaaaaaaaaaa"
@@ -105,9 +111,9 @@ run "running_pool_and_workload_identities" {
       google_project_iam_member.provider_credential_manage[0].role == "projects/aidash-byok-fixture/roles/aidashByokManage" &&
       google_project_iam_member.provider_credential_manage[0].member == "serviceAccount:${output.server_service_account}" &&
       length(google_project_iam_member.provider_credential_manage[0].condition) == 1 &&
-      google_project_iam_member.provider_credential_manage[0].condition[0].expression == "resource.name.startsWith('projects/123456789012/secrets/aidash-test-cred-')"
+      google_project_iam_member.provider_credential_manage[0].condition[0].expression == "resource.name.startsWith('projects/123456789012/secrets/aidash-test-cred-') || resource.name.startsWith('projects/123456789012/secrets/aidash-test-tsec-')"
     )
-    error_message = "Only the server binds bootstrap's fixed Create/Manage roles, with management limited to its environment prefix."
+    error_message = "Only the server binds bootstrap's fixed Create/Manage roles, with management limited to its environment's Provider Credential and Tenant Secret prefixes."
   }
   assert {
     condition = output.provider_credentials == {
@@ -117,9 +123,10 @@ run "running_pool_and_workload_identities" {
         byok_project_id = "aidash-byok-fixture"
         environment_id  = "test"
       }
-      broker = var.broker
+      broker               = var.broker
+      tenant_secret_broker = var.tenant_secret_broker
     }
-    error_message = "BYOK must deliver the Store descriptor and a fingerprint reference, never the secret value."
+    error_message = "BYOK must deliver the Store descriptor, both broker settings and a fingerprint reference, never the secret value."
   }
   assert {
     condition     = output.gcip.runtime_service_account == output.server_service_account && output.runtime_secret == "aidash-test-aaaaaaaaaaaa-runtime"

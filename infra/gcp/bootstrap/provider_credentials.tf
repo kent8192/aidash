@@ -30,12 +30,24 @@ resource "google_project_iam_custom_role" "byok_manage" {
     "secretmanager.versions.list",
   ]
 }
-// Read role definition only; #137's human-run bootstrap owns the broker identity and grants.
+// Read role definitions only; #137's human-run bootstrap owns the broker
+// identities and grants. Key Material and Tenant Secrets use separate roles so a
+// forwarder bug cannot cross the two namespaces (ADR 0095).
 resource "google_project_iam_custom_role" "byok_broker_read" {
   count   = var.byok_project_id != "" ? 1 : 0
   project = var.byok_project_id
   role_id = "aidashByokBrokerRead"
   title   = "Aidash Provider Credential broker read"
+  permissions = [
+    "secretmanager.versions.access", "secretmanager.versions.get",
+    "secretmanager.secrets.get",
+  ]
+}
+resource "google_project_iam_custom_role" "byok_tenant_secret_broker_read" {
+  count   = var.byok_project_id != "" ? 1 : 0
+  project = var.byok_project_id
+  role_id = "aidashByokTenantSecretBrokerRead"
+  title   = "Aidash Tenant Secret broker read"
   permissions = [
     "secretmanager.versions.access", "secretmanager.versions.get",
     "secretmanager.secrets.get",

@@ -31,6 +31,7 @@ run "production_workflow_is_main_only" {
       strcontains(google_iam_workload_identity_pool_provider.github.attribute_condition, "assertion.environment == 'production'") &&
       !strcontains(google_iam_workload_identity_pool_provider.github.attribute_condition, "gcp-environments.yml") &&
       keys(google_service_account.broker) == ["production"] &&
+      keys(google_service_account.tenant_secret_broker) == ["production"] &&
       google_service_account.production_nodes[0].account_id == "aidash-gke-nodes" &&
       google_artifact_registry_repository_iam_member.production_nodes_staging[0].project == "aidash-nonproduction-fixture" &&
       google_artifact_registry_repository_iam_member.production_nodes_staging[0].role == "roles/artifactregistry.reader" &&

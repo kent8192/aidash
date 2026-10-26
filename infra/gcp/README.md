@@ -504,13 +504,17 @@ remains; cleanup must verify each old prefix is empty before removing its runtim
 identities and disks. Enabling BYOK on a legacy deployment remains supported.
 
 Bootstrap enables Secret Manager and its DATA_READ/DATA_WRITE audit logs there.
-Human-run bootstrap defines `aidashByokCreate`, `aidashByokManage` and
-`aidashByokBrokerRead` once per deployment. Environment automation binds each Environment's
-server Workload Identity service account to the create-only role without a condition and the seven-permission
-manage role with their environment's Secret name prefix using the numeric project
-number. Runtime identities have no BYOK payload access or IAM-setting permission.
-Pods have no Secret Manager runtime configuration access; the controller
-materializes runtime configuration as a Kubernetes Secret.
+Human-run bootstrap defines `aidashByokCreate`, `aidashByokManage`,
+`aidashByokBrokerRead` and `aidashByokTenantSecretBrokerRead` once per
+deployment. Environment automation binds each Environment's server Workload
+Identity service account to the create-only role without a condition and the
+seven-permission manage role with both of that environment's Secret name
+prefixes (`aidash-<id>-cred-` and `aidash-<id>-tsec-`) using the numeric project
+number. Create is authorized on the parent project, so it cannot be limited by a
+Secret name and already covers both namespaces. Runtime identities have no BYOK
+payload access or IAM-setting permission. Pods have no Secret Manager runtime
+configuration access; the controller materializes runtime configuration as a
+Kubernetes Secret.
 
 BYOK-enabled Environments pass the non-secret Store descriptor to the app chart's
 `providerCredentials.settings`; the chart mounts it read-only into migrations and
@@ -522,9 +526,11 @@ upgrades and restarts. It stays in the `app-runtime` Secret, never in the public
 descriptor. Disabled BYOK renders no Store and needs no fingerprint key. The
 managed descriptor uses `fingerprint_key = {env = "AIDASH_PROVIDER_FINGERPRINT_KEY"}`
 and `store.kind = "secret_manager"`; the fingerprint reference stays outside the
-Registry-accessible `AIDASH_SECRET_*` namespace. Store-only environments use a
-null broker descriptor; enabled brokers add their non-secret endpoint, issuer,
-audience and signing-key version to the same settings source.
+Registry-accessible `AIDASH_SECRET_*` namespace. Store-only environments use null
+`broker` and `tenant_secret_broker` descriptors; enabled brokers add their
+non-secret endpoint, issuer, audience and signing-key version to the same settings
+source. `tenant_secret_broker` is required when the Store is a Secret Manager
+Store and either `broker` is configured or `execution.egress.enabled` is set.
 
 The deploy identity's BYOK role contains only `resourcemanager.projects.get`,
 `getIamPolicy` and `setIamPolicy`. Its binding uses exactly
@@ -556,21 +562,48 @@ delete. Deployment remains the trust root under #151; bootstrap owns these
 fixed retirement grants and deployment cannot re-grant them or any read role.
 
 `aidashByokBrokerRead` contains `secretmanager.versions.access`, `versions.get`
-and `secrets.get`. Human-run bootstrap alone binds it to the broker identities
-listed in `byok_broker_environments`, with each environment's Secret name prefix.
+and `secrets.get`. `aidashByokTenantSecretBrokerRead` contains the same three
+permissions for Tenant Secrets. Human-run bootstrap alone binds each role to the
+broker identity of its own kind (`aidash-<id>-broker` for `-cred-`,
+`aidash-<id>-tsec` for `-tsec-`) listed in `byok_broker_environments`, with each
+environment's Secret name prefix. Neither broker can read the other namespace.
 Deployment and runtime identities receive no BYOK payload read grant. Outputs
-`byok_project_id` and `secret_prefix` supply the broker's secret namespace.
-The same human-run bootstrap owns permanent signing keys and exports
-`broker_signing_keys`. It grants the deploy service account
-`roles/cloudkms.publicKeyViewer` on each signing CryptoKey so deployment plans
-can fetch verification PEMs; this grant does not authorize signing. Cloud KMS
-Admin does not provide the required
+`byok_project_id`, `secret_prefix`, `broker_service_accounts`,
+`tenant_secret_broker_service_accounts`, `broker_signing_keys` and
+`tenant_secret_signing_keys` supply the brokers' identities, namespaces and keys.
+The same human-run bootstrap owns permanent signing keys: one worker key
+(`.../cryptoKeys/capability`) and a separate server key
+(`.../cryptoKeys/tenant-secret`) in the same permanent key ring. It grants the
+deploy service account `roles/cloudkms.publicKeyViewer` on each signing CryptoKey
+so deployment plans can fetch verification PEMs; this grant does not authorize
+signing. Cloud KMS Admin does not provide the required
 [`cloudkms.cryptoKeyVersions.viewPublicKey`](https://docs.cloud.google.com/kms/docs/reference/rest/v1/projects.locations.keyRings.cryptoKeys.cryptoKeyVersions/getPublicKey)
-permission. Environment automation consumes their IDs and removes
-only service/signing bindings on disable or retirement. Keep the bootstrap
-environment set to preserve immutable KMS names. See the
+permission. The environments root grants `roles/cloudkms.signer` on the worker key
+to the environment's worker service account and on the server key to its server
+service account only. Environment automation consumes their IDs and removes only
+service/signing bindings on disable or retirement. Keep the bootstrap environment
+set to preserve immutable KMS names. See the
 [broker deployment guide](../../enterprise/crates/aidash-broker/README.md) for the input
 contract and manual import steps for any pre-merge draft deployment.
+
+An enabled `credential_brokers.<id>` entry now needs both
+`tenant_secret_broker_service_account_email` and
+`tenant_secret_signing_key_id` from those outputs; Terraform refuses an enabled
+entry without them. `tenant_secret_signing_version` and
+`tenant_secret_verification_versions` default to `1`/`[1]` and rotate exactly
+like the worker key.
+
+The environment root creates two internal Cloud Run services from the same
+reviewed `broker-image.json` digest: `aidash-<id>-credential-broker` runs as
+`aidash-<id>-broker` and reads `-cred-`; `aidash-<id>-tenant-secret-broker` runs
+as `aidash-<id>-tsec` and reads `-tsec-`. The Tenant Secret service receives
+`AIDASH_BROKER_ROLE=tenant-secrets`, `AIDASH_TENANT_SECRET_PREFIX=aidash-<id>-tsec-`,
+`AIDASH_SECRET_CALL_AUDIENCE=<id>-tsec`, both issuers' public keys in
+`AIDASH_CAPABILITY_PUBLIC_KEYS`, and `AIDASH_SECRET_CALL_ISSUERS`, a JSON object
+mapping each verification kid to the issuer its tokens must carry
+(`aidash-server` for the server key, `aidash-worker` for the worker key). The
+server configuration exports the bare Cloud Run URI; the Rust side appends
+`/v1/forward`.
 
 ### Deploy pipeline boundary
 
@@ -582,9 +615,10 @@ is closed in code, the second is hardened and detected but accepted.
 **Path 1, impersonation, is blocked.** The deploy service account holds
 `roles/iam.serviceAccountAdmin` in the shared project, which includes
 `iam.serviceAccounts.setIamPolicy`. Human-run bootstrap (`bootstrap/deploy_boundary.tf`)
-tags every Credential Broker service account with `<project>/aidash-credential-broker=broker`
-and attaches the project deny policy `aidash-deploy-broker-boundary`. For the deploy
-service account, on resources carrying that tag, it denies:
+tags every Credential and Tenant Secret Broker service account with
+`<project>/aidash-credential-broker=broker` and attaches the project deny policy
+`aidash-deploy-broker-boundary`. For the deploy service account, on resources
+carrying that tag, it denies:
 
 | Permission (deny-policy name)                           | Why                                |
 | ------------------------------------------------------- | ---------------------------------- |
@@ -601,7 +635,7 @@ service account, on resources carrying that tag, it denies:
 
 Every other service account keeps working: the deploy identity still administers
 the runtime and node accounts. `iam.serviceAccounts.actAs` stays allowed because
-Cloud Run needs it to run the broker; bootstrap grants it
+Cloud Run needs it to run the brokers; bootstrap grants it
 (`roles/iam.serviceAccountUser` on each broker account), because the environments
 root can no longer bind anything on those accounts. The deploy identity holds no
 tag, deny-policy, monitoring or logging role, so it cannot untag a broker account,
@@ -613,10 +647,10 @@ permissions without being covered by the deny policy, or when a new role has not
 been classified.
 
 **Path 2, broker redeploy, is the accepted residual risk.** The deploy identity can
-`actAs` the broker account and holds `roles/run.admin`, so it can ship a modified
+`actAs` either broker account and holds `roles/run.admin`, so it can ship a modified
 broker image, or any other Cloud Run service or job, Compute instance or GKE node
-pool that runs as that account, and read Key Material as the broker. It is hardened and detected,
-not prevented:
+pool that runs as that account, and read Secret Store payloads as the broker. It is
+hardened and detected, not prevented:
 
 - The broker image digest is reviewed code (`environments/broker-image.json`).
   Terraform derives `us-central1-docker.pkg.dev/<project>/aidash/broker@<digest>`
@@ -633,8 +667,10 @@ not prevented:
     instance (`insert`, `bulkInsert`, `setServiceAccount`, templates) or GKE cluster
     or node pool create/update whose request names a broker account;
   - any IAM policy change of a broker service or broker service account;
-  - `AccessSecretVersion` of BYOK secrets by any principal other than the broker
-    accounts. That is the only DATA_READ method of Secret Manager; `GetSecret`,
+  - `AccessSecretVersion` of BYOK secrets (Provider Credential Key Material or
+    Tenant Secrets) by any principal other than the broker account that owns that
+    namespace (`-cred-` for the Key Material broker, `-tsec-` for the Tenant
+    Secret broker). That is the only DATA_READ method of Secret Manager; `GetSecret`,
     `GetSecretVersion` and `ListSecrets` are ADMIN_READ, which the BYOK audit
     configuration does not enable, so the server's and deploy's routine metadata
     reads produce no entries to alert on;

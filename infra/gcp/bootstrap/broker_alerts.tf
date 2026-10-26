@@ -2,16 +2,44 @@
 // misuse of Key Material. These live in the human-run bootstrap so the deploy
 // identity, which holds no monitoring or logging role, cannot mute them.
 locals {
-  broker_environment_ids = sort(keys(google_service_account.broker))
-  // Mirrors the Cloud Run service name in modules/credential-broker.
-  broker_service_names  = [for id in local.broker_environment_ids : "aidash-${id}-credential-broker"]
-  broker_account_emails = [for id in local.broker_environment_ids : google_service_account.broker[id].email]
-  broker_account_ids    = [for id in local.broker_environment_ids : google_service_account.broker[id].unique_id]
+  credential_broker_environment_ids    = sort(keys(google_service_account.broker))
+  tenant_secret_broker_environment_ids = sort(keys(google_service_account.tenant_secret_broker))
+  // Mirrors the Cloud Run service names in modules/credential-broker.
+  broker_service_names = sort(concat(
+    [for id in local.credential_broker_environment_ids : "aidash-${id}-credential-broker"],
+    [for id in local.tenant_secret_broker_environment_ids : "aidash-${id}-tenant-secret-broker"],
+  ))
+  broker_account_emails = sort(concat(
+    [for id in local.credential_broker_environment_ids : google_service_account.broker[id].email],
+    [for id in local.tenant_secret_broker_environment_ids : google_service_account.tenant_secret_broker[id].email],
+  ))
+  credential_broker_emails = sort([
+    for id in local.credential_broker_environment_ids : google_service_account.broker[id].email
+  ])
+  tenant_secret_broker_emails = sort([
+    for id in local.tenant_secret_broker_environment_ids : google_service_account.tenant_secret_broker[id].email
+  ])
+  broker_account_ids = sort(concat(
+    [for id in local.credential_broker_environment_ids : google_service_account.broker[id].unique_id],
+    [for id in local.tenant_secret_broker_environment_ids : google_service_account.tenant_secret_broker[id].unique_id],
+  ))
+  // A broker may read only its own namespace. A read of -cred- by the Tenant
+  // Secret broker, or of -tsec- by the Key Material broker, is not legitimate.
+  credential_secret_prefixes = sort([
+    for id in local.credential_broker_environment_ids : "secrets/aidash-${id}-cred-"
+  ])
+  tenant_secret_secret_prefixes = sort([
+    for id in local.tenant_secret_broker_environment_ids : "secrets/aidash-${id}-tsec-"
+  ])
   // Logging query fragments: ("a" OR "b").
-  quoted_services = join(" OR ", [for name in local.broker_service_names : "\"${name}\""])
-  quoted_emails   = join(" OR ", [for email in local.broker_account_emails : "\"${email}\""])
-  quoted_ids      = join(" OR ", [for id in local.broker_account_ids : "\"${id}\""])
-  cloud_run_audit = "protoPayload.serviceName=\"run.googleapis.com\""
+  quoted_services               = join(" OR ", [for name in local.broker_service_names : "\"${name}\""])
+  quoted_emails                 = join(" OR ", [for email in local.broker_account_emails : "\"${email}\""])
+  quoted_credential_emails      = join(" OR ", [for email in local.credential_broker_emails : "\"${email}\""])
+  quoted_tenant_secret_emails   = join(" OR ", [for email in local.tenant_secret_broker_emails : "\"${email}\""])
+  quoted_credential_prefixes    = join(" OR ", [for prefix in local.credential_secret_prefixes : "\"${prefix}\""])
+  quoted_tenant_secret_prefixes = join(" OR ", [for prefix in local.tenant_secret_secret_prefixes : "\"${prefix}\""])
+  quoted_ids                    = join(" OR ", [for id in local.broker_account_ids : "\"${id}\""])
+  cloud_run_audit               = "protoPayload.serviceName=\"run.googleapis.com\""
   // Structured service-account fields of Cloud Run v2/v1 service and job requests; the
   // substring match on the whole request stays as the fallback for shapes not listed.
   cloud_run_runs_as_broker = "(protoPayload.request.service.template.serviceAccount=(${local.quoted_emails}) OR protoPayload.request.template.serviceAccount=(${local.quoted_emails}) OR protoPayload.request.job.template.template.serviceAccount=(${local.quoted_emails}) OR protoPayload.request.service.spec.template.spec.serviceAccountName=(${local.quoted_emails}) OR protoPayload.request.spec.template.spec.serviceAccountName=(${local.quoted_emails}) OR protoPayload.request:(${local.quoted_emails}))"
@@ -81,7 +109,7 @@ resource "google_monitoring_alert_policy" "broker_revision" {
   }
   documentation {
     mime_type = "text/markdown"
-    content   = "A Credential Broker revision changed, or another workload (Cloud Run, Compute, GKE) was created to run as a broker account, outside human review. Compare the image digest with `infra/gcp/environments/broker-image.json` and the deploy workflow run that made the change."
+    content   = "A Credential or Tenant Secret Broker revision changed, or another workload (Cloud Run, Compute, GKE) was created to run as a broker account, outside human review. Compare the image digest with `infra/gcp/environments/broker-image.json` and the deploy workflow run that made the change."
   }
   depends_on = [google_project_service.alerting]
 }
@@ -112,25 +140,26 @@ resource "google_monitoring_alert_policy" "broker_iam_policy" {
   }
   documentation {
     mime_type = "text/markdown"
-    content   = "The IAM policy of a Credential Broker service or service account changed. The deploy identity is denied this; investigate who else holds the permission."
+    content   = "The IAM policy of a Credential or Tenant Secret Broker service or service account changed. The deploy identity is denied this; investigate who else holds the permission."
   }
   depends_on = [google_project_service.alerting]
 }
 
-// Key Material payload reads by anyone but a broker. Failed attempts are logged
+// Any Secret Store payload read outside the broker that owns that namespace,
+// including Tenant Secrets in the same BYOK project. Failed attempts are logged
 // too. Metadata reads (GetSecret, GetSecretVersion, ListSecrets) are routine for
 // the server and deploy identities and are deliberately not alerted on.
 resource "google_monitoring_alert_policy" "byok_key_material_read" {
   count                 = local.broker_boundary ? 1 : 0
   project               = var.byok_project_id
-  display_name          = "Provider Credential Key Material read by a non-broker principal"
+  display_name          = "BYOK secret payload read outside the owning broker"
   combiner              = "OR"
   severity              = "CRITICAL"
   notification_channels = [for channel in google_monitoring_notification_channel.byok : channel.id]
   conditions {
-    display_name = "AccessSecretVersion outside the broker accounts"
+    display_name = "AccessSecretVersion outside the matching broker namespace"
     condition_matched_log {
-      filter = "logName=\"projects/${var.byok_project_id}/logs/cloudaudit.googleapis.com%2Fdata_access\" AND protoPayload.serviceName=\"secretmanager.googleapis.com\" AND protoPayload.methodName=\"google.cloud.secretmanager.v1.SecretManagerService.AccessSecretVersion\" AND NOT protoPayload.authenticationInfo.principalEmail=(${local.quoted_emails})"
+      filter = "logName=\"projects/${var.byok_project_id}/logs/cloudaudit.googleapis.com%2Fdata_access\" AND protoPayload.serviceName=\"secretmanager.googleapis.com\" AND protoPayload.methodName=\"google.cloud.secretmanager.v1.SecretManagerService.AccessSecretVersion\" AND NOT ((protoPayload.resourceName:(${local.quoted_credential_prefixes}) AND protoPayload.authenticationInfo.principalEmail=(${local.quoted_credential_emails})) OR (protoPayload.resourceName:(${local.quoted_tenant_secret_prefixes}) AND protoPayload.authenticationInfo.principalEmail=(${local.quoted_tenant_secret_emails})))"
     }
   }
   alert_strategy {
@@ -139,7 +168,7 @@ resource "google_monitoring_alert_policy" "byok_key_material_read" {
   }
   documentation {
     mime_type = "text/markdown"
-    content   = "Key Material was read, or a read was attempted, by a principal that is not a Credential Broker account."
+    content   = "A Secret Store payload (Provider Credential Key Material or a Tenant Secret) was read, or a read was attempted, by a principal other than the broker account that owns its namespace."
   }
   depends_on = [google_project_service.alerting]
 }
