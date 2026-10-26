@@ -1546,6 +1546,7 @@ pub(crate) async fn preview_ticket(
 	let result = {
 		let mut scope = crate::apps::execution::repositories::previews::Scope {
 			access: &mut access,
+			store: &f.store,
 			domain: preview.map(|preview| preview.domain.as_str()),
 			public_port: preview.and_then(|preview| preview.public_port),
 			origin: &origin,
