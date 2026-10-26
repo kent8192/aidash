@@ -350,6 +350,9 @@ impl From<aidash_application::Error> for Error {
 			ApplicationError::Plan(failure) => Self::Plan(failure),
 			ApplicationError::InferenceStalled => Self::InferenceStalled,
 			ApplicationError::TransactionPending => Self::TransactionPending,
+			// The broker fault keeps its generic operator message and correlation.
+			error @ (ApplicationError::BrokerUnavailable { .. }
+			| ApplicationError::BrokerRejected { .. }) => Self::External(error.to_string()),
 			ApplicationError::Port(error) => match error.downcast::<Self>() {
 				Ok(error) => *error,
 				Err(error) => Self::External(error.to_string()),

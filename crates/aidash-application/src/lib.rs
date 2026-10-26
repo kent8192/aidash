@@ -101,6 +101,21 @@ pub enum Error {
 	},
 	#[error("atomic transaction visibility pending; retry after recovery")]
 	TransactionPending,
+	/// The Tenant Secret broker could not serve the call. A person cannot repair
+	/// this: the message names no broker reason, only the operator-side fault
+	/// and the correlation the broker logged.
+	#[error(
+		"Tenant Secret calls are unavailable because of a Deployment operator issue (correlation: {})",
+		correlation.as_deref().unwrap_or("none")
+	)]
+	BrokerUnavailable { correlation: Option<String> },
+	/// The Tenant Secret broker refused the call as its operator configured it.
+	/// The reason stays in server logs; the caller sees only the correlation.
+	#[error(
+		"Tenant Secret calls were refused because of a Deployment operator issue (correlation: {})",
+		correlation.as_deref().unwrap_or("none")
+	)]
+	BrokerRejected { correlation: Option<String> },
 	/// Opaque adapter errors retain their identity for retry and recovery.
 	#[error(transparent)]
 	Port(Box<dyn std::error::Error + Send + Sync>),

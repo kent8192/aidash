@@ -277,13 +277,14 @@ impl ProfileConfiguration for Repository {
 		panic!("fixtures must not reach a test endpoint")
 	}
 }
+#[async_trait]
 impl RealToolTransport for Repository {
-	fn prepare(
+	async fn prepare(
 		&self,
 		_: Uuid,
 		_: &RealToolRule,
 		_: &ToolCall,
-		_: Option<&secrecy::SecretString>,
+		_: Option<&crate::tenant_secrets::CallSecret>,
 	) -> Result<Box<dyn PreparedRealRequest>> {
 		panic!("fixtures must never use transport")
 	}

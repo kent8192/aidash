@@ -20,7 +20,7 @@ async fn oversized_json_and_unterminated_sse_are_rejected_before_decoding() {
 		let server = tokio::spawn(async move {
 			axum::serve(listener, app).await.unwrap();
 		});
-		let client = BoundedClient(reqwest::Client::new());
+		let client = BoundedClient::direct(reqwest::Client::new());
 		let message = serde_json::from_value(
 			json!({"jsonrpc":"2.0","id":1,"method":"tools/list","params":{}}),
 		)
@@ -57,7 +57,7 @@ fn wrapped(error: reqwest::Error) -> DynamicTransportError {
 	DynamicTransportError {
 		transport_name: "test".into(),
 		transport_type_id: std::any::TypeId::of::<Failure>(),
-		error: Box::new(Failure::Client(error)),
+		error: Box::new(Failure::Client(McpError::Http(error))),
 	}
 }
 

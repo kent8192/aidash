@@ -812,3 +812,119 @@ async fn brokered_resolution_returns_a_route_and_never_reads_the_value() {
 	foreign.destination.origin = "https://api.example.com".into();
 	assert_eq!(grants.0.lock().await.len(), 1, "no second token was minted");
 }
+
+/// The signed destination is the endpoint path's directory, never a sibling.
+#[test]
+fn an_endpoint_signs_its_directory_and_forwards_only_the_remaining_path() {
+	for (endpoint, prefix, rest) in [
+		("https://api.example.com/tool", "/", "tool"),
+		("https://api.example.com/v1/tools/run", "/v1/tools/", "run"),
+		("https://api.example.com/v1/tools/", "/v1/tools/", ""),
+		("https://api.example.com/", "/", ""),
+	] {
+		let destination = endpoint_destination(endpoint).unwrap();
+		assert_eq!(destination.origin, "https://api.example.com");
+		assert_eq!(destination.path_prefix, prefix, "{endpoint}");
+		assert_eq!(forward_rest(endpoint).unwrap(), rest, "{endpoint}");
+	}
+}
+
+#[tokio::test]
+async fn a_brokered_call_secret_records_metadata_and_refreshes_one_route() {
+	let (s, grants, _) = service_with_calls(FakeStore {
+		seals: true,
+		..Default::default()
+	});
+	let created = s
+		.put(
+			"alpha",
+			"search",
+			put(Some("canary-value-1234"), Some(&["api.example.com"]), 0),
+			"actor",
+		)
+		.await
+		.unwrap();
+	let service = Arc::new(s);
+	let secret = service
+		.call_secret(
+			"alpha",
+			"search",
+			ENDPOINT,
+			SecretCall {
+				destination: endpoint_destination(ENDPOINT).unwrap(),
+				methods: vec!["POST".into()],
+				attach: Attach::Bearer,
+				subject: SecretSubject::Run {
+					run: "run-1".into(),
+					call: Uuid::from_u128(1),
+				},
+				max_response_bytes: Some(262_144),
+			},
+		)
+		.await
+		.unwrap();
+	let CallSecret::Brokered {
+		record,
+		source,
+		rest,
+	} = &secret
+	else {
+		panic!("a brokered call returns a route source");
+	};
+	assert_eq!(record.id, created.id);
+	assert_eq!(record.version, "1");
+	assert_eq!(record.host, "api.example.com");
+	assert_eq!(rest, "tool");
+	// The route minted for the call is used first, without another token.
+	assert_eq!(
+		source.route().await.unwrap().token.expose_secret(),
+		"canary-capability-token"
+	);
+	assert_eq!(grants.0.lock().await.len(), 1);
+	// A second request after the token's cache window re-routes through the
+	// broker adapter, which re-checks the metadata and mints another token.
+	assert_eq!(
+		source.route().await.unwrap().token.expose_secret(),
+		"canary-capability-token"
+	);
+	assert_eq!(grants.0.lock().await.len(), 2);
+}
+
+#[tokio::test]
+async fn a_self_hosted_call_secret_returns_the_value_and_records_metadata() {
+	let (s, _, _) = service_with(FakeStore::default());
+	let created = s
+		.put(
+			"alpha",
+			"search",
+			put(Some("canary-value-1234"), Some(&["api.example.com"]), 0),
+			"actor",
+		)
+		.await
+		.unwrap();
+	let secret = Arc::new(s)
+		.call_secret(
+			"alpha",
+			"search",
+			ENDPOINT,
+			SecretCall {
+				destination: endpoint_destination(ENDPOINT).unwrap(),
+				methods: vec!["POST".into()],
+				attach: Attach::Bearer,
+				subject: SecretSubject::Workbench {
+					tenant: "alpha".into(),
+					call: Uuid::from_u128(2),
+				},
+				max_response_bytes: Some(262_144),
+			},
+		)
+		.await
+		.unwrap();
+	let CallSecret::Value { record, value } = secret else {
+		panic!("a self-hosted call returns the value");
+	};
+	assert_eq!(record.id, created.id);
+	assert_eq!(record.version, "1");
+	assert_eq!(record.host, "api.example.com");
+	assert_eq!(value.expose_secret(), "canary-value-1234");
+}

@@ -1,5 +1,6 @@
 //! Tool orchestration tests use portable identities and recording effect ports.
 use super::*;
+use crate::tenant_secrets::{CallSecret, SecretRecord};
 use aidash_domain::{
 	Artifact, ArtifactInput, HumanRequest, NewTask, ReadyState, RecoveryState, Run, RunControl,
 	RunState, StateVersion, Task, TaskStatus, context::Context, registry::SkillFile,
@@ -112,20 +113,35 @@ impl ToolOperations for Operations {
 	fn skill_read_bytes(&self) -> Result<usize> {
 		panic!("unexpected tool effect: skill_read_bytes")
 	}
-	async fn tenant_secret(&self, name: &str, endpoint: &str) -> Result<secrecy::SecretString> {
+	async fn tenant_secret(
+		&self,
+		name: &str,
+		endpoint: &str,
+		call: SecretCall,
+		key: &str,
+	) -> Result<CallSecret> {
 		self.record("secret.resolve");
-		self.inputs
-			.lock()
-			.unwrap()
-			.push((format!("{name}@{endpoint}"), Value::Null));
+		self.inputs.lock().unwrap().push((
+			format!("{name}@{endpoint}"),
+			json!({
+				"key": key,
+				"methods": call.methods,
+				"subject": call.subject,
+			}),
+		));
 		if name == "missing" {
 			return Err(Error::Invalid(
 				aidash_domain::tenant_secrets::UNAVAILABLE.into(),
 			));
 		}
-		Ok(secrecy::SecretString::from(
-			"tenant-secret-value".to_owned(),
-		))
+		Ok(CallSecret::Value {
+			record: SecretRecord {
+				id: Uuid::now_v7(),
+				version: "1".into(),
+				host: "api.example.test".into(),
+			},
+			value: secrecy::SecretString::from("tenant-secret-value".to_owned()),
+		})
 	}
 }
 #[async_trait]
@@ -135,7 +151,7 @@ impl ToolTransport for Operations {
 		_config: &ToolConfig,
 		input: Value,
 		key: &str,
-		secret: Option<&secrecy::SecretString>,
+		secret: Option<&CallSecret>,
 	) -> Result<Value> {
 		self.record(if secret.is_some() {
 			"transport.invoke.with_secret"
@@ -521,6 +537,15 @@ async fn a_tool_that_names_a_tenant_secret_sends_its_value_to_its_own_endpoint(f
 		fixture.operations.inputs.lock().unwrap()[0].0,
 		"search@https://api.example.com/run"
 	);
+	assert_eq!(
+		fixture.operations.inputs.lock().unwrap()[0].1["methods"],
+		json!(["POST"])
+	);
+	assert_eq!(
+		fixture.operations.inputs.lock().unwrap()[0].1["subject"]["run"],
+		fixture.run.id.to_string()
+	);
+	assert_eq!(fixture.operations.inputs.lock().unwrap()[0].1["key"], "key");
 }
 #[rstest]
 #[tokio::test]

@@ -3669,6 +3669,54 @@ impl Store {
 		tx.commit().await?;
 		Ok(invocations)
 	}
+	/// Records the Tenant Secret one tool call carried: its id, pinned version
+	/// and destination host. The value, headers and body are never recorded.
+	pub async fn invocation_secret(
+		&self,
+		scope: &TenancyScope,
+		key: &str,
+		secret: &aidash_application::tenant_secrets::SecretRecord,
+	) -> Result<()> {
+		let mut tx = self.pool.begin(scope).await?;
+		let query_bind_1 = secret.id;
+		let query_bind_2 = secret.version.as_str();
+		let query_bind_3 = secret.host.as_str();
+		let query_bind_4 = key;
+		crate::database::native::query(
+			&Query::update()
+				.table(Alias::new("invocations"))
+				.value_expr(
+					Alias::new("tenant_secret_id"),
+					SimpleExpr::CustomWithExpr(
+						"(?)".to_owned(),
+						vec![Expr::value(query_bind_1).into()],
+					),
+				)
+				.value_expr(
+					Alias::new("tenant_secret_version"),
+					SimpleExpr::CustomWithExpr(
+						"(?)".to_owned(),
+						vec![Expr::value(query_bind_2.to_owned()).into()],
+					),
+				)
+				.value_expr(
+					Alias::new("tenant_secret_host"),
+					SimpleExpr::CustomWithExpr(
+						"(?)".to_owned(),
+						vec![Expr::value(query_bind_3.to_owned()).into()],
+					),
+				)
+				.and_where(SimpleExpr::CustomWithExpr(
+					"(idempotency_key = ?)".to_owned(),
+					vec![Expr::value(query_bind_4.to_owned()).into()],
+				))
+				.to_string(PostgresQueryBuilder),
+		)
+		.execute(&mut *tx)
+		.await?;
+		tx.commit().await?;
+		Ok(())
+	}
 	async fn persist_tool_input_in(
 		&self,
 		tx: &mut crate::database::native::Transaction,

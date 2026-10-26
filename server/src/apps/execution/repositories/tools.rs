@@ -186,9 +186,16 @@ impl ToolOperations for Operations {
 	fn skill_read_bytes(&self) -> Result<usize> {
 		Ok(self.0.store.capabilities.0.limits.read_bytes)
 	}
-	async fn tenant_secret(&self, name: &str, endpoint: &str) -> Result<secrecy::SecretString> {
-		// The value is read from this node's own Secret Store, in the Run's
-		// Tenant: under Federation it never leaves the owning Tenant's Node.
+	async fn tenant_secret(
+		&self,
+		name: &str,
+		endpoint: &str,
+		call: aidash_application::tenant_secrets::SecretCall,
+		key: &str,
+	) -> Result<aidash_application::tenant_secrets::CallSecret> {
+		// The Tenant Secret is resolved in the Run's own Tenant: under Federation
+		// it never leaves the owning Tenant's Node. A self-hosted Store reads the
+		// value; a Cloud or Dedicated Store mints a broker route instead.
 		let unavailable = || {
 			aidash_application::Error::Invalid(aidash_domain::tenant_secrets::UNAVAILABLE.into())
 		};
@@ -197,6 +204,15 @@ impl ToolOperations for Operations {
 		else {
 			return Err(unavailable());
 		};
-		service.resolve_value(tenant.as_str(), name, endpoint).await
+		let secret = service
+			.call_secret(tenant.as_str(), name, endpoint, call)
+			.await?;
+		// A call that carried a Tenant Secret records which one, its pinned
+		// version and its host. The value is never recorded.
+		self.0
+			.store
+			.invocation_secret(&self.0.scope, key, secret.record())
+			.await?;
+		Ok(secret)
 	}
 }
