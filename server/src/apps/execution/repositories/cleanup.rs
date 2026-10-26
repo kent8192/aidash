@@ -931,6 +931,22 @@ impl ErasureScope for Erasure<'_> {
 		.await;
 		result.map_err(Into::into)
 	}
+	async fn release_holds(&mut self, area: &Area) -> Result<()> {
+		let result: NativeResult<()> = async {
+			crate::database::native::query(
+				&Query::delete()
+					.from_table(Alias::new("core_retention_holds"))
+					.and_where(Expr::col(Alias::new("tenant")).eq(Expr::value(area.tenant.clone())))
+					.and_where(Expr::col(Alias::new("area_id")).eq(Expr::value(area.id)))
+					.to_string(PostgresQueryBuilder),
+			)
+			.execute(&mut *self.tx)
+			.await?;
+			Ok(())
+		}
+		.await;
+		result.map_err(Into::into)
+	}
 	async fn erase(&mut self, tenant: &str, id: Uuid) -> Result<()> {
 		self.store
 			.capabilities

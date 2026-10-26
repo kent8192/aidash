@@ -88,6 +88,8 @@ pub(crate) mod approvals;
 
 pub(crate) mod reclamation;
 
+pub(crate) mod retention;
+
 pub(crate) mod capability_areas;
 pub(crate) mod sessions;
 

@@ -1715,6 +1715,9 @@ mod content_limit_tests;
 #[path = "core_capabilities/retention_boundaries.rs"]
 mod retention_boundary_tests;
 
+#[path = "core_capabilities/retained_versions.rs"]
+mod retained_version_tests;
+
 #[cfg(feature = "capability-runtime-tests")]
 #[path = "core_capabilities/extraction_lifecycle.rs"]
 mod extraction_lifecycle_tests;

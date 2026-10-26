@@ -1836,6 +1836,12 @@ pub(crate) fn cleanup_scope<'a>(
 ) -> crate::apps::execution::repositories::cleanup::Scope<'a> {
 	crate::apps::execution::repositories::cleanup::Scope { store, access }
 }
+pub(crate) fn retention_scope<'a>(
+	store: Option<&'a Store>,
+	access: &'a mut crate::authorization::access::Access,
+) -> crate::apps::execution::repositories::retention::Scope<'a> {
+	crate::apps::execution::repositories::retention::Scope { store, access }
+}
 pub(crate) fn cleanup_repository(
 	store: &Store,
 ) -> crate::apps::execution::repositories::cleanup::Repository<'_> {

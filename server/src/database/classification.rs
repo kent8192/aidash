@@ -136,6 +136,8 @@ pub const TABLES: &[Table] = &[
 	table("execution", "context_compaction_attempts", TenantOwned),
 	table("execution", "core_areas", TenantOwned),
 	table("execution", "core_objects", TenantOwned),
+	table("execution", "core_retention_holds", TenantOwned),
+	table("execution", "core_retention_files", TenantOwned),
 	table("execution", "core_operations", TenantOwned),
 	table("execution", "egress_budgets", TenantOwned),
 	table("execution", "egress_requests", TenantOwned),

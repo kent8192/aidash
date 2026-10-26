@@ -23,6 +23,12 @@ use uuid::Uuid;
 /// The capability worker reaches every Tenant's operations and work areas.
 const MAINTENANCE: TenancyScope =
 	TenancyScope::Deployment(DeploymentScopeReason::CapabilityMaintenance);
+/// A superseded object no active hold covers. Holds expire on their own for
+/// Federation; every other holder is released explicitly or with its area.
+const ACTIVE_HOLD: &str = "NOT EXISTS (SELECT 1 FROM core_retention_files f \
+	JOIN core_retention_holds h ON h.id = f.hold_id \
+	WHERE f.file_id = core_objects.id AND f.tenant = core_objects.tenant \
+	AND (h.expires_at IS NULL OR h.expires_at > CURRENT_TIMESTAMP))";
 pub(crate) struct Repository<'a> {
 	store: &'a Store,
 	orphan_cursor: tokio::sync::Mutex<Option<tokio::fs::ReadDir>>,
@@ -81,6 +87,7 @@ let ids: Vec<Uuid> = {
 						.and_where(
 							Expr::col(Alias::new("id")).gt(Expr::value(query_bind_1.to_owned())),
 						)
+						.and_where(Expr::cust(ACTIVE_HOLD))
 						.order_by(Alias::new("id"), reinhardt::query::Order::Asc)
 						.limit(16)
 						.to_string(PostgresQueryBuilder),
@@ -89,6 +96,23 @@ let ids: Vec<Uuid> = {
 				.await?
 			};
 			Ok(ids)
+		}
+		.await;
+		result.map_err(Into::into)
+	}
+	async fn expire_holds(&self) -> Result<()> {
+		let result: NativeResult<()> = async {
+			crate::database::native::query(
+				&Query::delete()
+					.from_table(Alias::new("core_retention_holds"))
+					.and_where(Expr::cust(
+						"expires_at IS NOT NULL AND expires_at <= CURRENT_TIMESTAMP",
+					))
+					.to_string(PostgresQueryBuilder),
+			)
+			.execute(self.store.pool.in_scope(&MAINTENANCE))
+			.await?;
+			Ok(())
 		}
 		.await;
 		result.map_err(Into::into)
@@ -224,6 +248,9 @@ impl ReclamationScope for Scope<'_> {
 							Expr::col(Alias::new("kind"))
 								.eq(reinhardt::query::Expr::value("superseded_working")),
 						)
+						// A hold written between the selection and this lock refuses the
+						// erase instead of dropping the bytes a reference still names.
+						.and_where(Expr::cust(ACTIVE_HOLD))
 						.lock(LockType::Update)
 						.to_string(PostgresQueryBuilder),
 				)

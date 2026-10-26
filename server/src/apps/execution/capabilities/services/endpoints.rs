@@ -1046,11 +1046,11 @@ pub(crate) async fn file_download(
 	let mut access = access(&f, actor).await?;
 	let result = async {
 		let area = sessions::load(&mut access, id).await?;
-		service::available(&area)?;
 		let entry = if let Some(entry) = service::files(&area)?
 			.into_iter()
 			.find(|entry| entry.file_id == file)
 		{
+			service::available(&area)?;
 			entry
 		} else {
 			let meta: Option<(String, i64, String)> = {
@@ -1083,23 +1083,90 @@ pub(crate) async fn file_download(
 				.fetch_optional(&mut **access.tx)
 				.await?
 			};
-			let (digest, size, kind) =
-				meta.ok_or_else(|| Error::NotFound("file unavailable".into()))?;
-			FileEntry {
-				file_id: file,
-				path: file.to_string(),
-				digest,
-				size: size as u64,
-				media_type: if kind == "display" {
-					"image/png"
-				} else if kind == "network_output" {
-					"application/octet-stream"
-				} else {
-					"text/plain; charset=utf-8"
+			if let Some((digest, size, kind)) = meta {
+				service::available(&area)?;
+				FileEntry {
+					file_id: file,
+					path: file.to_string(),
+					digest,
+					size: size as u64,
+					media_type: if kind == "display" {
+						"image/png"
+					} else if kind == "network_output" {
+						"application/octet-stream"
+					} else {
+						"text/plain; charset=utf-8"
+					}
+					.into(),
+					scope: FileScope::Working,
+					provenance: json!({"kind":kind,"area_id":id}),
 				}
-				.into(),
-				scope: FileScope::Working,
-				provenance: json!({"kind":kind,"area_id":id}),
+			} else {
+				// A Retained version left the manifest but an active hold keeps
+				// it; its recorded path and media type serve it as it was cited.
+				let held: Option<(String, i64, String, String)> = {
+					let tenant = &access.identity.tenant;
+					crate::database::native::query_as(
+						&reinhardt::query::Query::select()
+							.column((Alias::new("o"), Alias::new("digest")))
+							.column((Alias::new("o"), Alias::new("size")))
+							.column((Alias::new("f"), Alias::new("path")))
+							.column((Alias::new("f"), Alias::new("media_type")))
+							.from_as(Alias::new("core_objects"), Alias::new("o"))
+							.join(
+								reinhardt::query::JoinType::InnerJoin,
+								reinhardt::query::TableRef::table_alias(
+									Alias::new("core_retention_files"),
+									Alias::new("f"),
+								),
+								Expr::col((Alias::new("f"), Alias::new("file_id")))
+									.equals((Alias::new("o"), Alias::new("id"))),
+							)
+							.join(
+								reinhardt::query::JoinType::InnerJoin,
+								reinhardt::query::TableRef::table_alias(
+									Alias::new("core_retention_holds"),
+									Alias::new("h"),
+								),
+								Expr::col((Alias::new("h"), Alias::new("id")))
+									.equals((Alias::new("f"), Alias::new("hold_id"))),
+							)
+							.and_where(
+								Expr::col((Alias::new("o"), Alias::new("id")))
+									.eq(Expr::value(file)),
+							)
+							.and_where(
+								Expr::col((Alias::new("o"), Alias::new("area_id")))
+									.eq(Expr::value(id)),
+							)
+							.and_where(
+								Expr::col((Alias::new("o"), Alias::new("tenant")))
+									.eq(Expr::value(tenant.to_owned())),
+							)
+							.and_where(
+								Expr::col((Alias::new("o"), Alias::new("kind")))
+									.eq(Expr::value("superseded_working")),
+							)
+							.and_where(Expr::cust(
+								"(h.expires_at IS NULL OR h.expires_at > CURRENT_TIMESTAMP)",
+							))
+							.limit(1)
+							.to_string(PostgresQueryBuilder),
+					)
+					.fetch_optional(&mut **access.tx)
+					.await?
+				};
+				let (digest, size, path, media_type) =
+					held.ok_or_else(|| Error::NotFound("file unavailable".into()))?;
+				FileEntry {
+					file_id: file,
+					path,
+					digest,
+					size: size as u64,
+					media_type,
+					scope: FileScope::Working,
+					provenance: json!({"kind":"superseded_working","area_id":id}),
+				}
 			}
 		};
 		download(&f.store, &mut access, entry, input.offset.unwrap_or(0)).await
