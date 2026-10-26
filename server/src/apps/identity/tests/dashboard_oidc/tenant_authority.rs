@@ -595,8 +595,8 @@ async fn overview_lists_item_scoped_credential_targets_without_policy_read(
 ) {
 	let t = Team::new(runtime).await;
 	let (status, response) = t.replace(|bundle| {
-  bundle["subjects"]["ci"] = json!({"kind":"service"});
-  bundle["subjects"]["other-ci"] = json!({"kind":"service"});
+  bundle["subjects"]["ci"] = json!({"kind":"service","node":t.node});
+  bundle["subjects"]["other-ci"] = json!({"kind":"service","node":t.node});
   bundle["policies"].as_array_mut().unwrap().extend([
    json!({"id":"issue-ci","effect":"allow","subjects":{"ids":["bob"]},"actions":["credential.issue"],"resources":{"kinds":["*"],"ids":["ci"]}}),
    json!({"id":"no-policy-read","effect":"deny","subjects":{"ids":["bob"]},"actions":["policy.read"],"resources":{"kinds":["*"]}}),

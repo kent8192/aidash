@@ -22,6 +22,7 @@ pub enum Root {
 	RemoteUsage,
 	Thread,
 	Operation,
+	Observation,
 }
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Ownership {
@@ -40,6 +41,7 @@ pub enum Ownership {
 	RemoteUsageRows,
 	Finalizations,
 	CascadeTasks,
+	Approvals,
 	Audit,
 	Event,
 }
@@ -75,6 +77,8 @@ pub fn ownership(name: &str) -> Result<Ownership> {
 		| "identity_approval_rules" => Subject("subject"),
 		"registry_requests" | "core_requests" => Subject("principal"),
 		"identity_thread_approval_modes" => Link("thread_id", Thread),
+		"approval_observations" | "approval_observation_population" => Approvals,
+		"approval_observation_attempts" => Link("observation", Observation),
 		"tasks"
 		| "artifacts"
 		| "messages"
@@ -132,6 +136,7 @@ pub fn ownership(name: &str) -> Result<Ownership> {
 		| "inference_usage"
 		| "invocations"
 		| "research_attempts"
+		| "research_journal_results"
 		| "research_sources"
 		| "run_inputs"
 		| "run_task_snapshots" => Link("run_id", Run),
@@ -182,6 +187,7 @@ pub fn ownership(name: &str) -> Result<Ownership> {
 		| "deployment_key_rollovers"
 		| "runner_allocation_journals" => Recovery,
 		"activation_quarantine"
+		| "approval_observer_settings"
 		| "core_quotas"
 		| "estimate_calibration_samples"
 		| "generation_policies"

@@ -45,6 +45,7 @@ impl Owners<'_> {
 			RemoteUsage => ("generation_remote_usage", "attempt_id"),
 			Thread => ("channel_threads", "id"),
 			Operation => ("core_operations", "id"),
+			Observation => ("approval_observations", "id"),
 		};
 		Ok(Expr::from(col(table, field))
 			.in_subquery(
@@ -69,6 +70,16 @@ impl Owners<'_> {
 			Node(field) => col(table, field).eq(Expr::value(self.node)),
 			Subject(field) => self.subject(table, field),
 			Link(field, root) => self.root(table, field, root)?,
+			Approvals => {
+				// Capability evidence follows the executing Run, even on a foreign
+				// Workspace. Generation evidence exists before a Run is created.
+				col(table, "approval_type")
+					.eq(Expr::value("capability"))
+					.and(self.root(table, "run_id", Root::Run)?)
+					.or(col(table, "approval_type")
+						.eq(Expr::value("generation"))
+						.and(self.root(table, "approval", Root::Request)?))
+			}
 			Areas => {
 				// A present Workspace always owns its area; subject fallback is only for
 				// genuinely absent Workspaces. home_node/agent_id are never selectors.

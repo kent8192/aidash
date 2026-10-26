@@ -176,6 +176,144 @@ async fn node_purge_erases_owned_files_and_rows_and_preserves_sibling_and_tenant
 			},
 		)
 		.await;
+	// Observation and Research bodies follow the executing Run, including
+	// when its Workspace belongs to the other Node. Tenant settings survive.
+	use reinhardt::db::orm::execution::convert_values;
+	let mut tx = d
+		.federation
+		.store
+		.pool
+		.begin(&aidash_application::tenancy::TenancyScope::tenant(&tenant).unwrap())
+		.await
+		.unwrap();
+	let research = json!({"contract":aidash_domain::research::RESULT_CONTRACT,
+		"operation":"search","data":{"sources":[],"content":"private research"}});
+	let research_reference =
+		aidash_domain::context::research::ResearchReference::from_result("fixture", &research)
+			.unwrap();
+	for (run, workspace, credential) in [
+		(target_run, work[1].0, target_credential),
+		(sibling_run, work[0].0, sibling_credential),
+	] {
+		let rows: [(&str, Vec<&str>, Vec<reinhardt::query::Value>); 4] = [
+			(
+				"approval_observations",
+				vec![
+					"id",
+					"tenant",
+					"approval",
+					"approval_type",
+					"run_id",
+					"workspace_id",
+					"credential_id",
+					"subject",
+					"frame",
+					"settlement",
+					"lease_revision",
+					"created_at",
+				],
+				vec![
+					run.into(),
+					tenant.clone().into(),
+					run.into(),
+					"capability".into(),
+					run.into(),
+					workspace.into(),
+					credential.into(),
+					"fixture".into(),
+					json!({"body":"private observation"}).into(),
+					"human_allow".into(),
+					0i64.into(),
+					chrono::Utc::now().into(),
+				],
+			),
+			(
+				"approval_observation_attempts",
+				vec![
+					"id",
+					"tenant",
+					"observation",
+					"decision",
+					"record",
+					"status",
+					"created_at",
+				],
+				vec![
+					run.into(),
+					tenant.clone().into(),
+					run.into(),
+					run.into(),
+					json!({"body":"private attempt"}).into(),
+					"completed".into(),
+					chrono::Utc::now().into(),
+				],
+			),
+			(
+				"approval_observation_population",
+				vec![
+					"approval",
+					"tenant",
+					"approval_type",
+					"kind",
+					"run_id",
+					"settlement",
+					"created_at",
+				],
+				vec![
+					run.into(),
+					tenant.clone().into(),
+					"capability".into(),
+					"tool".into(),
+					run.into(),
+					"human_allow".into(),
+					chrono::Utc::now().into(),
+				],
+			),
+			(
+				"research_journal_results",
+				vec![
+					"id",
+					"tenant",
+					"run_id",
+					"invocation_key",
+					"digest",
+					"reference",
+					"bytes",
+					"created_at",
+				],
+				vec![
+					run.into(),
+					tenant.clone().into(),
+					run.into(),
+					"fixture".into(),
+					research_reference.digest.clone().into(),
+					json!(research_reference).into(),
+					serde_json::to_vec(&research).unwrap().into(),
+					chrono::Utc::now().into(),
+				],
+			),
+		];
+		for (table, columns, values) in rows {
+			let (sql, values) = Query::insert()
+				.into_table(Alias::new(table))
+				.columns(columns.into_iter().map(Alias::new))
+				.values_panic(values)
+				.build(PostgresQueryBuilder);
+			tx.execute(&sql, convert_values(values)).await.unwrap();
+		}
+	}
+	let (sql, values) = Query::insert()
+		.into_table(Alias::new("approval_observer_settings"))
+		.columns(["tenant", "revision", "settings", "updated_at"].map(Alias::new))
+		.values_panic::<_, reinhardt::query::Value>([
+			tenant.clone().into(),
+			1i64.into(),
+			json!({"enabled":false}).into(),
+			chrono::Utc::now().into(),
+		])
+		.build(PostgresQueryBuilder);
+	tx.execute(&sql, convert_values(values)).await.unwrap();
+	tx.commit().await.unwrap();
 
 	// A present sibling Workspace outranks a target Subject on an area.
 	sqlx::query("UPDATE core_areas SET owner='purge-target' WHERE tenant=$1")
@@ -460,6 +598,36 @@ async fn node_purge_erases_owned_files_and_rows_and_preserves_sibling_and_tenant
 	assert_eq!(
 		d.count(&format!(
 			"SELECT count(*) FROM runs WHERE id='{sibling_run}'"
+		))
+		.await,
+		1
+	);
+	for (table, key) in [
+		("approval_observations", "id"),
+		("approval_observation_attempts", "id"),
+		("approval_observation_population", "approval"),
+		("research_journal_results", "id"),
+	] {
+		assert_eq!(
+			d.count(&format!(
+				"SELECT count(*) FROM {table} WHERE {key}='{target_run}'"
+			))
+			.await,
+			0,
+			"{table}"
+		);
+		assert_eq!(
+			d.count(&format!(
+				"SELECT count(*) FROM {table} WHERE {key}='{sibling_run}'"
+			))
+			.await,
+			1,
+			"{table}"
+		);
+	}
+	assert_eq!(
+		d.count(&format!(
+			"SELECT count(*) FROM approval_observer_settings WHERE tenant='{tenant}'"
 		))
 		.await,
 		1
