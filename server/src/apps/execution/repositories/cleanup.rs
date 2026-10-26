@@ -629,7 +629,11 @@ impl CleanupScope for Scope<'_> {
 						Expr::cust("data || '{\"closed_reason\":\"area_cleaned\"}'::jsonb"),
 					)
 					.and_where(Expr::col(Alias::new("area_id")).eq(Expr::value(area.id)))
-					.and_where(Expr::col(Alias::new("kind")).is_in(["disclosure", "tool_call"]))
+					.and_where(Expr::col(Alias::new("kind")).is_in([
+						"disclosure",
+						"tool_call",
+						"sampling",
+					]))
 					.and_where(Expr::col(Alias::new("state")).eq("pending"))
 					.to_string(PostgresQueryBuilder),
 			)

@@ -22,12 +22,6 @@ fn http(url: &str, headers: &[(&str, &str)]) -> McpServer {
 #[case::no_scheme(json!({"type": "streamable-http", "url": "example.com/mcp"}))]
 #[case::ftp(json!({"type": "streamable-http", "url": "ftp://example.com/mcp"}))]
 #[case::websocket(json!({"type": "streamable-http", "url": "wss://example.com/mcp"}))]
-#[case::cleartext(json!({"type": "streamable-http", "url": "http://example.com/mcp"}))]
-#[case::cleartext_ip(json!({"type": "streamable-http", "url": "http://203.0.113.5/mcp"}))]
-#[case::unspecified_address(json!({"type": "streamable-http", "url": "http://0.0.0.0/mcp"}))]
-#[case::private_address_over_http(json!({"type": "streamable-http", "url": "http://10.0.0.1/mcp"}))]
-#[case::localhost_lookalike(json!({"type": "streamable-http", "url": "http://localhost.example.com/mcp"}))]
-#[case::loopback_lookalike(json!({"type": "streamable-http", "url": "http://127.0.0.1.example.com/mcp"}))]
 #[case::username(json!({"type": "streamable-http", "url": "https://user@example.com/mcp"}))]
 #[case::password(json!({"type": "streamable-http", "url": "https://user:secret@example.com/mcp"}))]
 #[case::empty_password(json!({"type": "streamable-http", "url": "https://:@example.com/mcp"}))]
@@ -45,6 +39,19 @@ fn http(url: &str, headers: &[(&str, &str)]) -> McpServer {
 #[case::header_value_with_nul(json!({"type": "streamable-http", "url": "https://example.com/mcp", "headers": {"X-A": "a\u{0}b"}}))]
 #[case::header_value_with_delete(json!({"type": "streamable-http", "url": "https://example.com/mcp", "headers": {"X-A": "a\u{7f}"}}))]
 #[case::duplicate_header_in_two_casings(json!({"type": "streamable-http", "url": "https://example.com/mcp", "headers": {"X-Key": "1", "x-key": "2"}}))]
+#[case::reserved_host(json!({"type": "streamable-http", "url": "https://example.com/mcp", "headers": {"Host": "evil.example"}}))]
+#[case::reserved_content_length(json!({"type": "streamable-http", "url": "https://example.com/mcp", "headers": {"content-length": "0"}}))]
+#[case::reserved_content_type(json!({"type": "streamable-http", "url": "https://example.com/mcp", "headers": {"Content-Type": "text/plain"}}))]
+#[case::reserved_transfer_encoding(json!({"type": "streamable-http", "url": "https://example.com/mcp", "headers": {"Transfer-Encoding": "chunked"}}))]
+#[case::reserved_connection(json!({"type": "streamable-http", "url": "https://example.com/mcp", "headers": {"CONNECTION": "close"}}))]
+#[case::reserved_upgrade(json!({"type": "streamable-http", "url": "https://example.com/mcp", "headers": {"Upgrade": "websocket"}}))]
+#[case::reserved_te(json!({"type": "streamable-http", "url": "https://example.com/mcp", "headers": {"TE": "trailers"}}))]
+#[case::reserved_trailer(json!({"type": "streamable-http", "url": "https://example.com/mcp", "headers": {"Trailer": "X-A"}}))]
+#[case::reserved_keep_alive(json!({"type": "streamable-http", "url": "https://example.com/mcp", "headers": {"Keep-Alive": "timeout=5"}}))]
+#[case::reserved_proxy_connection(json!({"type": "streamable-http", "url": "https://example.com/mcp", "headers": {"Proxy-Connection": "keep-alive"}}))]
+#[case::reserved_accept(json!({"type": "streamable-http", "url": "https://example.com/mcp", "headers": {"Accept": "*/*"}}))]
+#[case::reserved_session_id(json!({"type": "streamable-http", "url": "https://example.com/mcp", "headers": {"Mcp-Session-Id": "1"}}))]
+#[case::reserved_protocol_version(json!({"type": "sse", "url": "https://example.com/mcp", "headers": {"MCP-Protocol-Version": "2025-06-18"}}))]
 #[case::cross_variant_command(json!({"type": "streamable-http", "url": "https://example.com/mcp", "command": "node"}))]
 #[case::cross_variant_env(json!({"type": "streamable-http", "url": "https://example.com/mcp", "env": {}}))]
 #[case::cross_variant_cwd(json!({"type": "streamable-http", "url": "https://example.com/mcp", "cwd": "./"}))]
@@ -54,6 +61,13 @@ fn a_malformed_remote_entry_is_invalid(#[case] entry: Value) {
 
 #[rstest]
 #[case::https("https://example.com/mcp", "https://example.com/mcp")]
+#[case::http_hostname("http://ollama.lan:11434/mcp", "http://ollama.lan:11434/mcp")]
+#[case::http_public_hostname("http://example.com/mcp", "http://example.com/mcp")]
+#[case::http_private_address("http://10.0.0.1/mcp", "http://10.0.0.1/mcp")]
+#[case::http_public_address("http://203.0.113.5/mcp", "http://203.0.113.5/mcp")]
+#[case::http_unspecified_address("http://0.0.0.0/mcp", "http://0.0.0.0/mcp")]
+#[case::localhost_lookalike("http://localhost.example.com/mcp", "http://localhost.example.com/mcp")]
+#[case::loopback_lookalike("http://127.0.0.1.example.com/mcp", "http://127.0.0.1.example.com/mcp")]
 #[case::https_port_and_query(
 	"https://example.com:8443/mcp?v=1",
 	"https://example.com:8443/mcp?v=1"
@@ -65,7 +79,10 @@ fn a_malformed_remote_entry_is_invalid(#[case] entry: Value) {
 #[case::loopback_mapped_v6("http://[::ffff:127.0.0.1]/mcp", "http://[::ffff:7f00:1]/mcp")]
 #[case::https_to_loopback("https://localhost/mcp", "https://localhost/mcp")]
 #[case::host_is_normalized("HTTPS://Example.COM", "https://example.com/")]
-fn a_remote_endpoint_is_https_or_loopback(#[case] url: &str, #[case] stored: &str) {
+fn remote_http_endpoints_are_retained_for_deployment_admission(
+	#[case] url: &str,
+	#[case] stored: &str,
+) {
 	assert_eq!(
 		the_only_server(json!({"type": "streamable-http", "url": url})),
 		http(stored, &[])
@@ -92,12 +109,12 @@ fn headers_keep_their_casing_and_are_listed_by_name() {
 	);
 }
 
-#[test]
-fn a_valid_sse_entry_is_skipped_as_an_unsupported_transport() {
+#[rstest]
+#[case("https://example.com/sse")]
+#[case("http://example.com/sse")]
+fn a_valid_sse_entry_is_skipped_as_an_unsupported_transport(#[case] url: &str) {
 	assert_eq!(
-		the_only_finding(
-			json!({"type": "sse", "url": "https://example.com/sse", "headers": {"X-A": "1"}})
-		),
+		the_only_finding(json!({"type": "sse", "url": url, "headers": {"X-A": "1"}})),
 		skipped(
 			Component::Server("srv".into()),
 			Reason::UnsupportedTransport,
@@ -107,7 +124,6 @@ fn a_valid_sse_entry_is_skipped_as_an_unsupported_transport() {
 }
 
 #[rstest]
-#[case::cleartext(json!({"type": "sse", "url": "http://example.com/sse"}))]
 #[case::no_url(json!({"type": "sse"}))]
 #[case::command(json!({"type": "sse", "url": "https://example.com/sse", "command": "node"}))]
 fn an_invalid_sse_entry_is_invalid_rather_than_unsupported(#[case] entry: Value) {

@@ -52,6 +52,11 @@ rmcp = { version = "=1.2.0", optional = true, default-features = false, features
   "transport-streamable-http-client-reqwest",
   "reqwest",
 ] }
+rmcp-modern = { package = "rmcp", version = "=3.7.0", default-features = false, features = [
+  "client",
+  "transport-streamable-http-client-reqwest",
+  "reqwest",
+] }
 async-stream = "0.3"
 sse-stream = "0.2.6"
 

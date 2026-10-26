@@ -10,7 +10,11 @@ use serde_json::Value;
 pub(crate) fn validate_request(kind: &str, prompt: &str) -> Result<()> {
 	if !matches!(
 		kind,
-		"QUESTION" | "APPROVAL_REQUIRED" | "CONFIRMATION" | "INFORMATION_REQUEST"
+		"QUESTION"
+			| "APPROVAL_REQUIRED"
+			| "CONFIRMATION"
+			| "INFORMATION_REQUEST"
+			| "MCP_ELICITATION"
 	) {
 		return Err(Error::Invalid("unknown human request kind".into()));
 	}
@@ -71,6 +75,29 @@ pub(crate) fn answer(
 			"tool reconciliation requires a JSON object containing result".into(),
 		));
 	}
+	if request.kind == "MCP_ELICITATION" {
+		let prompt: Value = serde_json::from_str(&request.prompt)?;
+		let deadline: DateTime<Utc> = serde_json::from_value(prompt["answer_by"].clone())?;
+		if actor != "system" && deadline <= Utc::now() {
+			return Err(Error::Conflict("MCP_INPUT_STALE_OR_EXPIRED".into()));
+		}
+		let form: aidash_domain::agent_plugin::interaction::ElicitationRequest =
+			serde_json::from_str(&request.prompt)?;
+		// Only the system's deadline closure may use the generic unanswered marker.
+		if actor != "system" || response.get("answered").is_none() {
+			if !matches!(
+				response["action"].as_str(),
+				Some("accept" | "decline" | "cancel")
+			) {
+				return Err(Error::Invalid("MCP_ELICITATION_ANSWER_INVALID".into()));
+			}
+			let value = form.response(&response)?;
+			if value["action"] == "accept" {
+				aidash_application::tools::validate_form_answer(&form.schema, &value["content"])?;
+			}
+		}
+	}
+
 	Ok(Answer::Write {
 		response,
 		actor: actor.into(),

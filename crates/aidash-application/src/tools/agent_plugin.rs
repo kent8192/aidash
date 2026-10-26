@@ -143,6 +143,32 @@ impl McpPluginTool {
 
 #[async_trait]
 impl ExecutionTool for McpPluginTool {
+	fn mcp_rounds(&self) -> bool {
+		true
+	}
+	async fn mcp_round(
+		&self,
+		run: &Run,
+		input: Value,
+		key: &str,
+		checkpoint: Option<&aidash_domain::agent_plugin::interaction::CallCheckpoint>,
+		inputs: Option<Arc<dyn crate::ports::tools::PluginInputs>>,
+	) -> Result<aidash_domain::agent_plugin::interaction::ToolRound> {
+		let admitted = self.admit(run, input).await?;
+		self.sessions
+			.round(
+				run.id,
+				&self.server,
+				&self.config,
+				&self.tool.name,
+				&self.tool.schema_digest,
+				admitted,
+				key,
+				checkpoint,
+				inputs,
+			)
+			.await
+	}
 	fn specification(&self) -> ToolSpec {
 		pinned_specification(&self.tool)
 	}

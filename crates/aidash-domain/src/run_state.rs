@@ -110,6 +110,9 @@ pub struct ToolCallState {
 	/// batch admission until adoption, so a restart resumes exactly those calls.
 	#[serde(default, skip_serializing_if = "Option::is_none")]
 	pub batch_end: Option<usize>,
+	/// Progress of the logical MCP call at this cursor, never a tool result.
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub mcp: Option<crate::agent_plugin::interaction::CallCheckpoint>,
 }
 impl ToolCallState {
 	/// Move to the call at `cursor`, leaving the approvals of earlier calls behind.
@@ -117,6 +120,7 @@ impl ToolCallState {
 		self.cursor = cursor;
 		self.home_approval = None;
 		self.approval = None;
+		self.mcp = None;
 	}
 	pub fn selected_media(&self) -> Vec<ModelMedia> {
 		self.deferred_selected_media

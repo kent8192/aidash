@@ -181,7 +181,8 @@ pub(crate) async fn control(
 		Ok(run.into())
 	}
 	.await;
-	let result = access.finish(result).await?;
+	let result: RunManagement = access.finish(result).await?;
+	f.store.run_control_committed(result.id, result.control);
 	f.notify.notify_waiters();
 	Ok(result)
 }

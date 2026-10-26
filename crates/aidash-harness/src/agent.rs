@@ -3,7 +3,7 @@ use aidash_application::{
 	Error, Result,
 	capabilities::approvals::{
 		AUTO_MODE_INSTRUCTION, DONT_ASK_HUMAN_REQUEST, INVOKE, ToolCallApproval, ToolCallRequest,
-		answer_deadline_response, answer_for_model,
+		ToolCallTarget, answer_deadline_response, answer_for_model,
 	},
 	execution::*,
 	ports::execution::*,
@@ -2135,6 +2135,7 @@ impl<'a> Executor<'a> {
 					home_approval: None,
 					approval: None,
 					batch_end: None,
+					mcp: None,
 				}));
 				run.error = None;
 				store.save_run(run, token, "model.completed").await?;
@@ -2156,7 +2157,11 @@ impl<'a> Executor<'a> {
 				// the home node while this run was already awaiting finalization.
 				self.environment.reconcile_run_messages(run).await?;
 				let included_input_seq = run.included_input_seq();
-				if store
+				// A preliminary MCP checkpoint has not admitted a wire send. It
+				// must still yield to a correction instead of retrying stale admission.
+				if run.state.tool()?.mcp.as_ref().is_none_or(|checkpoint| {
+					checkpoint.sent.is_none() && checkpoint.input.is_none()
+				}) && store
 					.run_inputs(run.id)
 					.await?
 					.last()
@@ -2686,11 +2691,14 @@ impl<'a> Executor<'a> {
 				if contract.behavior.tool_call_approval
 					|| (contract.behavior.read_only_operation && home.local() && guard.is_some())
 				{
-					let (reference_id, reference_version) = match &contract.identity {
-						ToolIdentity::Descriptor(reference) => (reference.id.clone(), reference.version.clone()),
-						ToolIdentity::Registry(reference) => (reference.id.clone(), reference.version.clone()),
+					let target = match &contract.identity {
+						ToolIdentity::Descriptor(reference) => ToolCallTarget::Registry(aidash_domain::registry::EntityRef {
+							id: reference.id.clone(),
+							version: reference.version.clone(),
+						}),
+						ToolIdentity::Registry(reference) => ToolCallTarget::Registry(reference.clone()),
 						ToolIdentity::Builtin(_) => return Err(Error::Invalid("builtin cannot require external tool approval".into())),
-						ToolIdentity::AgentPlugin(tool) => plugin_approval_reference(tool),
+						ToolIdentity::AgentPlugin(tool) => ToolCallTarget::AgentPlugin(tool.clone()),
 					};
 					if home.local() {
 						let Some(guard) = guard else {
@@ -2700,10 +2708,7 @@ impl<'a> Executor<'a> {
 						};
 						let request = ToolCallRequest {
 							key: call_key.clone(),
-							tool: aidash_domain::registry::EntityRef {
-								id: reference_id.clone(),
-								version: reference_version.clone(),
-							},
+							tool: target.clone(),
 							operation: INVOKE.into(),
 							call: call.clone(),
 							area: None,
@@ -2759,9 +2764,8 @@ impl<'a> Executor<'a> {
 						}
 						// The person who can approve is at the Node the Run executes for.
 						let prompt = format!(
-							"Approve this exact external tool action once? Tool: {}@{}; call: {}",
-							reference_id,
-							reference_version,
+							"Approve this exact external tool action once? Tool: {}; call: {}",
+							target.label(),
 							serde_json::to_string(call)?
 						);
 						let request = home
@@ -2787,7 +2791,12 @@ impl<'a> Executor<'a> {
 						return Ok(());
 					}
 				}
-				let invocation = store
+				let invocation = if tool.mcp_rounds() {
+                    let Some(guard) = guard else { return self.tool_error(run, token, call, cursor, "MCP inputs require local authority".into()).await; };
+                    let Some(output) = self.mcp_call(run, token, mcp::Call { tool: tool.as_ref(), call, key: &key, agent: &agent, guard, visibility }).await? else { return Ok(()); };
+                    InvocationOutcome { status: "COMPLETED".into(), result: Some(output) }
+                } else {
+                    store
 					.invocation_start(
 						run,
 						token,
@@ -2796,7 +2805,8 @@ impl<'a> Executor<'a> {
 						&call.arguments,
 						contract.replay_safe(),
 					)
-					.await?;
+					.await?
+                };
 				if invocation.status == "UNCERTAIN" {
 					if let Some(guard) = guard {
 						guard.action("human.request", "run", run.id).await?;
@@ -3054,7 +3064,7 @@ impl<'a> Executor<'a> {
 									&& *expires_at > chrono::Utc::now(),
 							})
 						}
-						WaitingState::Reconciliation { key, .. } => {
+						WaitingState::Reconciliation { key, resume, .. } => {
 							#[derive(serde::Deserialize)]
 							struct ReconciliationAnswer {
 								#[serde(deserialize_with = "aidash_domain::required_json")]
@@ -3066,14 +3076,20 @@ impl<'a> Executor<'a> {
 										"reconciliation response must contain result".into(),
 									)
 								})?;
-							store
-								.invocation_finish(run, token, key, &answer.result)
-								.await?;
+                            let result = if resume.mcp.as_ref().is_some_and(|checkpoint| *key == format!("{}:mcp:round:{}", checkpoint.key, checkpoint.continuation_sends)) {
+                                // A person's reconciliation is final tool data, even when
+                                // it resembles the adapter's trusted protocol envelope.
+                                serde_json::to_value(aidash_domain::agent_plugin::interaction::ToolRound::Complete(answer.result))?
+                            } else { answer.result };
+                            store.invocation_finish(run, token, key, &result).await?;
 						}
 						_ => {}
 					}
 					completion::answer_review(run, id, Some(&response));
-					if !matches!(waiting, WaitingState::Reconciliation { .. }) {
+					// MCP form data is disclosed to its server, not to the model.
+					if h.kind != "MCP_ELICITATION"
+						&& !matches!(waiting, WaitingState::Reconciliation { .. })
+					{
 						run.context.push(ContextEvent::Human {
 							request: h.prompt,
 							request_kind: h.kind,
@@ -3384,16 +3400,6 @@ fn remote_budget(guard: Option<&dyn ExecutionAuthority>, error: Error) -> Error 
 		}
 		error => error,
 	}
-}
-
-/// The `<id>@<version>` an approval prompt names for a plugin tool: its server path, and the first
-/// 12 hex digits of the digest of the plugin copy that declared it.
-fn plugin_approval_reference(tool: &aidash_domain::tool::AgentPluginTool) -> (String, String) {
-	let digest = tool.digest.strip_prefix("sha256:").unwrap_or(&tool.digest);
-	(
-		format!("agent-plugin:{}/{}/{}", tool.plugin, tool.server, tool.tool),
-		digest.chars().take(12).collect(),
-	)
 }
 
 /// The pinned snapshot and budgets of a `deferred@1` Run, read from its
@@ -3742,6 +3748,7 @@ fn summary_dependencies(
 
 mod approval;
 mod completion;
+mod mcp;
 mod progress;
 #[cfg(test)]
 mod tests;
@@ -3861,6 +3868,7 @@ fn request_source_slot(
 		slot
 	};
 	match &request.context {
+		ModelContext::Sampling(_) => None,
 		ModelContext::Legacy(context) => context.get("current")?.get(key).cloned(),
 		ModelContext::Ordered(context) => {
 			serde_json::from_str::<Value>(if key == "reference_documents" {

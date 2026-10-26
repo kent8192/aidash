@@ -1,15 +1,15 @@
 -- DDL only: the Agent Bindings contract accepts the optional Harness Contract
--- version (#531). The body keeps every rule of 0042_external_services and adds
+-- version (#531). The body keeps every rule of 0045_agent_plugin_settings and adds
 -- the `harness_contract` key: omitted or null, or one of `legacy@1`,
 -- `structured@1` and `structured@2`. AgentBindings::validate rejects a version
 -- that the Agent's Projection Version cannot render. PostgreSQL function bodies
 -- have no typed migration operation (DDL only).
 CREATE OR REPLACE FUNCTION public.aidash_agent_bindings_is_valid(value jsonb) RETURNS boolean
 LANGUAGE plpgsql IMMUTABLE STRICT AS $$
-DECLARE plugins jsonb; plugin jsonb; completion jsonb; check_item jsonb; item jsonb; removals jsonb; edges jsonb; step_count numeric; parallelism numeric; context_policy jsonb; summary jsonb; restriction jsonb; candidate jsonb; policy jsonb; deferred boolean; budget text; bound numeric; removable text[]; support text[];
+DECLARE plugins jsonb; plugin jsonb; plugin_settings jsonb; plugin_choices jsonb; server_choice jsonb; declared jsonb; completion jsonb; check_item jsonb; item jsonb; removals jsonb; edges jsonb; step_count numeric; parallelism numeric; context_policy jsonb; summary jsonb; restriction jsonb; candidate jsonb; policy jsonb; deferred boolean; budget text; bound numeric; removable text[]; support text[];
 BEGIN
  IF jsonb_typeof(value) IS DISTINCT FROM 'object'
- OR value - ARRAY['schema_version','model','instructions','bindings','remove_default','cluster','max_steps','projection_version','harness_contract','prompt_cache','exposure','tool_parallelism','context_policy','completion','agent_plugins']::text[] <> '{}'::jsonb
+ OR value - ARRAY['schema_version','model','instructions','bindings','remove_default','cluster','max_steps','projection_version','harness_contract','prompt_cache','exposure','tool_parallelism','context_policy','completion','agent_plugins','agent_plugin_settings']::text[] <> '{}'::jsonb
  OR NOT COALESCE(value->'projection_version','null'::jsonb) IN ('null'::jsonb,'"legacy"'::jsonb,'"ordered"'::jsonb,'"native"'::jsonb)
  OR NOT COALESCE(value->'harness_contract','null'::jsonb) IN ('null'::jsonb,'"legacy@1"'::jsonb,'"structured@1"'::jsonb,'"structured@2"'::jsonb)
  OR NOT COALESCE(value->'prompt_cache','null'::jsonb) IN ('null'::jsonb,'"off"'::jsonb,'"explicit"'::jsonb)
@@ -98,6 +98,32 @@ BEGIN
   OR jsonb_typeof(plugin->'findings') IS DISTINCT FROM 'array'
   OR jsonb_typeof(plugin->'servers') IS DISTINCT FROM 'object' THEN RETURN false; END IF;
  END LOOP;
+ -- Agent Plugin settings mirror PluginSettings: plugin name, then server name,
+ -- then the choices for that server.
+ IF value ? 'agent_plugin_settings' THEN
+  plugin_settings := value->'agent_plugin_settings';
+  IF jsonb_typeof(plugin_settings) <> 'object' THEN RETURN false; END IF;
+  FOR plugin_choices IN SELECT v FROM jsonb_each(plugin_settings) AS plugin_entries(k,v) LOOP
+   IF jsonb_typeof(plugin_choices) <> 'object' THEN RETURN false; END IF;
+   FOR server_choice IN SELECT v FROM jsonb_each(plugin_choices) AS server_entries(k,v) LOOP
+    IF jsonb_typeof(server_choice) <> 'object'
+    OR server_choice - ARRAY['tools','exposure','read_only']::text[] <> '{}'::jsonb THEN RETURN false; END IF;
+    IF COALESCE(server_choice->'tools','null'::jsonb) <> 'null'::jsonb
+    AND (jsonb_typeof(server_choice->'tools') <> 'array'
+     OR jsonb_path_exists(server_choice->'tools','strict $[*] ? (@.type() != "string")')) THEN RETURN false; END IF;
+    IF NOT COALESCE(server_choice->'exposure','null'::jsonb) IN ('null'::jsonb,'"eager"'::jsonb,'"deferred"'::jsonb) THEN RETURN false; END IF;
+    IF server_choice ? 'read_only' THEN
+     IF jsonb_typeof(server_choice->'read_only') <> 'array' THEN RETURN false; END IF;
+     FOR declared IN SELECT jsonb_array_elements(server_choice->'read_only') LOOP
+      IF jsonb_typeof(declared) <> 'object'
+      OR declared - ARRAY['name','schema_digest']::text[] <> '{}'::jsonb
+      OR jsonb_typeof(declared->'name') IS DISTINCT FROM 'string'
+      OR jsonb_typeof(declared->'schema_digest') IS DISTINCT FROM 'string' THEN RETURN false; END IF;
+     END LOOP;
+    END IF;
+   END LOOP;
+  END LOOP;
+ END IF;
  edges := COALESCE(value->'bindings','[]'::jsonb);
  removals := COALESCE(value->'remove_default','[]'::jsonb);
  IF jsonb_typeof(edges) <> 'array' OR jsonb_typeof(removals) <> 'array' THEN RETURN false; END IF;
