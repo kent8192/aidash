@@ -47,6 +47,9 @@ impl ProfileRepository for Repository<'_> {
 		super::authority::principal(&self.actor)
 	}
 	async fn begin_draft(&self) -> Result<Box<dyn ProfileDraftScope + '_>> {
+		self.tenant_actions()
+			.check_binding(&self.runtime.store.pool)
+			.await?;
 		Ok(Box::new(Scope {
 			configured: self.runtime.store.provider_credentials.is_some(),
 			node: self.runtime.config.deployment.to_string(),
@@ -69,9 +72,10 @@ impl ProfileRepository for Repository<'_> {
 			.await
 			.map_err(Into::into)
 	}
-	async fn administered(&self, tenant: &str) -> Result<Vec<TestProfile>> {
+	async fn administered(&self, tenant: &str, after: Option<&str>) -> Result<Vec<TestProfile>> {
 		let pool = &self.runtime.store.pool;
 		let actions = self.tenant_actions();
+		actions.check_binding(pool).await?;
 		let result = pool
 			.atomic(&TenancyScope::tenant(tenant)?, async |tx| {
 				actions
@@ -83,7 +87,7 @@ impl ProfileRepository for Repository<'_> {
 						aidash_domain::identity::tenant_administration::COLLECTION,
 					)
 					.await?;
-				AgentTestProfile::page(tx, tenant).await
+				AgentTestProfile::administered(tx, tenant, after).await
 			})
 			.await;
 		actions.record_denial(pool).await?;
@@ -92,6 +96,7 @@ impl ProfileRepository for Repository<'_> {
 	async fn authorize_update(&self, tenant: &str, id: &str) -> Result<()> {
 		let pool = &self.runtime.store.pool;
 		let actions = self.tenant_actions();
+		actions.check_binding(pool).await?;
 		let mut check = pool.begin(&TenancyScope::tenant(tenant)?).await?;
 		let result = actions
 			.require(
@@ -111,6 +116,7 @@ impl ProfileRepository for Repository<'_> {
 	async fn tenant_secret_hosts(&self, tenant: &str, name: &str) -> Result<Option<Vec<String>>> {
 		let pool = &self.runtime.store.pool;
 		let actions = self.tenant_actions();
+		actions.check_binding(pool).await?;
 		// A Subject names a Tenant Secret only with `secret.use`, which is
 		// separate from the `secret.manage` that chose its hosts (ADR 0051).
 		let result = pool
@@ -146,6 +152,7 @@ impl ProfileRepository for Repository<'_> {
 	async fn save(&self, tenant: &str, id: &str, input: &ProfileInput) -> Result<TestProfile> {
 		let pool = &self.runtime.store.pool;
 		let actions = self.tenant_actions();
+		actions.check_binding(pool).await?;
 		let result = pool
 			.atomic(&TenancyScope::tenant(tenant)?, async |tx| {
 				actions

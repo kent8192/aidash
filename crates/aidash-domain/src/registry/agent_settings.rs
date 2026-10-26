@@ -85,6 +85,15 @@ impl AgentConfig {
 	/// Callers must use this view when invoking native source/resource adapters.
 	/// Every source declaration and operation was admitted with this exact Run.
 	pub fn from_snapshot(snapshot: &BindingSnapshot) -> Result<Self> {
+		Self::context_settings(snapshot, false)
+	}
+	/// Automatic context excludes OnDemand providers before any private read.
+	/// Keep the primary provider identity for its Home-issued bank binding;
+	/// the memory owner separately decides whether that bank contributes.
+	pub fn automatic_context(snapshot: &BindingSnapshot) -> Result<Self> {
+		Self::context_settings(snapshot, true)
+	}
+	fn context_settings(snapshot: &BindingSnapshot, automatic: bool) -> Result<Self> {
 		snapshot.validate()?;
 		let definition = snapshot
 			.definitions
@@ -115,6 +124,20 @@ impl AgentConfig {
 				}
 				"skill" => result.skills.push(binding.identity.local()),
 				"memory" | "source" => {
+					let on_demand = automatic
+						&& binding
+							.definition
+							.config
+							.get("context_source")
+							.and_then(|config| {
+								serde_json::from_value::<crate::context::source::SourceDeclaration>(
+									config.clone(),
+								)
+								.ok()
+							})
+							.is_some_and(|source| {
+								matches!(source.pin, crate::context::source::PinPolicy::OnDemand)
+							});
 					if binding.definition.config.get("schema_version").is_none() {
 						if binding.definition.kind == "memory" {
 							if result.memory.replace(binding.identity.local()).is_some() {
@@ -122,16 +145,23 @@ impl AgentConfig {
 									"Agent requires one primary memory provider".into(),
 								));
 							}
-							result.conversation_memory = true;
-							result.semantic_memory = true;
-						} else {
+							result.conversation_memory |= !on_demand;
+							result.semantic_memory |= !on_demand;
+						} else if !on_demand {
 							result.sources.push(binding.identity.local());
+							if automatic {
+								result.semantic_memory = true;
+							}
 						}
 						continue;
 					}
 					let context: NativeContext =
 						serde_json::from_value(binding.definition.config.clone())?;
+					if on_demand {
+						continue;
+					}
 					match context.source {
+						NativeSource::WorkspaceObservation {} => {}
 						NativeSource::ConversationMemory {} => result.conversation_memory = true,
 						NativeSource::SemanticMemory {} => result.semantic_memory = true,
 						NativeSource::WorkspaceRetrieval { on_unavailable } => {

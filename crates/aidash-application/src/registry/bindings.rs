@@ -54,6 +54,52 @@ async fn pin_agent_plugins(
 	Ok(pinned)
 }
 
+/// Resolve explicit Decider hooks before committing the immutable normalized graph.
+/// Metadata is rebuilt from catalog documents, never accepted from the caller.
+pub async fn normalize_agent(
+	catalog: &mut dyn BindingCatalog,
+	entry: &mut Entry,
+	node: &str,
+) -> Result<()> {
+	if entry.kind != "agent" {
+		return Ok(entry.normalize_agent(node)?);
+	}
+	let config: AgentBindings = serde_json::from_value(entry.config.clone())?;
+	let mut replacement = None;
+	for binding in config
+		.bindings
+		.iter()
+		.filter(|binding| binding.kind == BindingKind::Decider)
+	{
+		if binding.target.registry_deployment != node {
+			return Err(Error::Invalid(
+				"Decider requires an execution-node Binding".into(),
+			));
+		}
+		let definition = catalog.definition(&binding.target).await?;
+		if definition.kind != "decider"
+			|| definition.id != binding.target.id
+			|| definition.version != binding.target.version
+		{
+			return Err(Error::Invalid(
+				"Decider Binding requires its exact definition".into(),
+			));
+		}
+		let decider: aidash_domain::decision::DeciderConfig =
+			serde_json::from_value(definition.config)?;
+		decider.validate()?;
+		if decider.hook == aidash_domain::decision::Hook::Compaction
+			&& replacement.replace(binding.target.clone()).is_some()
+		{
+			return Err(Error::Invalid(
+				"an Agent must bind at most one Decider per hook".into(),
+			));
+		}
+	}
+	entry.normalize_agent_with_compaction(node, replacement.as_ref())?;
+	Ok(())
+}
+
 struct Pending {
 	normalized: NormalizedBinding,
 	ancestry: BTreeSet<QualifiedRef>,
@@ -79,9 +125,16 @@ pub async fn resolve(
 	if let Some(installation) = &agent_definition.installation {
 		catalog.installation(installation).await?;
 	}
+	let agent_definition_original_normalization = agent_definition.binding_normalization.clone();
 	let mut agent_definition = agent_definition.clone();
-	if agent_definition.binding_normalization.is_none() {
-		agent_definition.normalize_agent(&agent.registry_deployment)?;
+	normalize_agent(catalog, &mut agent_definition, &agent.registry_deployment).await?;
+	if agent_definition.binding_normalization != agent_definition_original_normalization {
+		// Unnormalized drafts are allowed; persisted metadata must remain immutable.
+		if agent_definition_original_normalization.is_some() {
+			return Err(Error::Invalid(
+				"Agent normalization differs from its exact Decider definitions".into(),
+			));
+		}
 	}
 	let normalized = agent_definition.normalized_bindings(&agent.registry_deployment)?;
 	let overrides = NormalizedBinding::member_overrides(&normalized);
@@ -283,15 +336,23 @@ pub async fn resolve(
 		} else if kind == BindingKind::Decider {
 			if entry.kind != "decider"
 				|| target.registry_deployment != agent.registry_deployment
-				|| origin != BindingOrigin::Explicit
+				|| !matches!(origin, BindingOrigin::Explicit | BindingOrigin::Default)
 			{
 				return Err(Error::Invalid(
-					"Decider requires an explicit execution-node Binding".into(),
+					"Decider requires an execution-node Binding".into(),
 				));
 			}
 			let config: aidash_domain::decision::DeciderConfig =
 				serde_json::from_value(entry.config.clone())?;
 			config.validate()?;
+			if origin == BindingOrigin::Default
+				&& (target != defaults::compaction_reference(&agent.registry_deployment)
+					|| config.hook != aidash_domain::decision::Hook::Compaction)
+			{
+				return Err(Error::Invalid(
+					"only the built-in compaction Decider may be default-bound".into(),
+				));
+			}
 			if !decision_hooks.insert(config.hook) {
 				return Err(Error::Invalid(
 					"an Agent must bind at most one Decider per hook".into(),
@@ -655,6 +716,7 @@ pub fn component_action(kind: &str) -> &'static str {
 		"tool" => "tool.invoke",
 		"skill" => "skill.use",
 		"cluster" => "cluster.execute",
+		"decider" => "decision.invoke",
 		"memory" | "source" => "registry.read",
 		_ => "registry.read",
 	}

@@ -66,6 +66,11 @@ impl RunGuardScope for RunGuard<'_> {
 			.await
 			.map_err(Into::into)
 	}
+	async fn metadata(&mut self, reference: &EntityRef) -> Result<Entry> {
+		catalog::metadata(self.access, reference)
+			.await
+			.map_err(Into::into)
+	}
 	async fn task_read(&mut self, task: Uuid) -> Result<Task> {
 		self.access.task_read(task).await.map_err(Into::into)
 	}

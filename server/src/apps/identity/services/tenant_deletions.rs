@@ -208,48 +208,58 @@ impl TenantDeletions {
 		let steward = self.restorer(&headers, &tenant).await?;
 		let f = &self.runtime;
 		let scope = TenancyScope::tenant(&tenant)?;
-		// Retiring at OpenAI cannot be undone, so it waits until this caller
-		// is known to restore a deleted Tenant. The check rolls back; the
-		// restore below decides again under its locks and keeps that
-		// decision, and a denial here is audited as one there would be.
-		let mut check = f.store.pool.begin(&scope).await?;
-		let checked = async {
-			refuse_purged(&mut check, &tenant).await?;
-			steward.authorize(&mut check, &tenant, true).await?;
-			tenant_deletions::current_locked(&mut check, &tenant)
-				.await?
-				.ok_or_else(|| Error::Conflict("the Tenant is not deleted".into()))
+		// The dedicated claim pool cannot exhaust retirement's control pool.
+		// Policy and deletion locks stay in their own short transactions.
+		let mut serialization = f.store.restoration_pool.begin(&scope).await?;
+		tenant_deletions::lock_restore(&mut serialization, &tenant).await?;
+		let result = async {
+			let scope = TenancyScope::tenant(&tenant)?;
+			// Retiring at OpenAI cannot be undone, so it waits until this caller
+			// is known to restore a deleted Tenant. The check rolls back; the
+			// restore below decides again under its locks and keeps that
+			// decision, and a denial here is audited as one there would be.
+			let mut check = f.store.pool.begin(&scope).await?;
+			let checked = async {
+				refuse_purged(&mut check, &tenant).await?;
+				steward.authorize(&mut check, &tenant, true).await?;
+				tenant_deletions::current_locked(&mut check, &tenant)
+					.await?
+					.ok_or_else(|| Error::Conflict("the Tenant is not deleted".into()))
+			}
+			.await;
+			check.rollback().await?;
+			steward.finish(f, checked).await?;
+			// A retirement that failed at deletion is retried before the Tenant
+			// works again: no Plan Connection outlives its Tenant's deletion, and
+			// a failure leaves the Tenant deleted (ADR 0007).
+			if let Some(service) = &f.store.plan_connections {
+				service
+					.retire_tenant(&tenant, &steward.administration_actor().decision_actor())
+					.await?;
+			}
+			let result = f
+				.store
+				.pool
+				.atomic(&scope, async |tx| {
+					refuse_purged(tx, &tenant).await?;
+					steward.authorize(tx, &tenant, true).await?;
+					let deletion = tenant_deletions::current_locked(tx, &tenant)
+						.await?
+						.ok_or_else(|| Error::Conflict("the Tenant is not deleted".into()))?;
+					tenant_deletions::restore(tx, &deletion, steward.actor()).await?;
+					steward
+						.administration_actor()
+						.record(tx, event("tenant.restore", &tenant))
+						.await?;
+					Ok(deletion)
+				})
+				.await;
+			let deletion = steward.finish(f, result).await?;
+			Ok(deletion.into())
 		}
 		.await;
-		check.rollback().await?;
-		steward.finish(f, checked).await?;
-		// A retirement that failed at deletion is retried before the Tenant
-		// works again: no Plan Connection outlives its Tenant's deletion, and
-		// a failure leaves the Tenant deleted (ADR 0007).
-		if let Some(service) = &f.store.plan_connections {
-			service
-				.retire_tenant(&tenant, &steward.administration_actor().decision_actor())
-				.await?;
-		}
-		let result = f
-			.store
-			.pool
-			.atomic(&scope, async |tx| {
-				refuse_purged(tx, &tenant).await?;
-				steward.authorize(tx, &tenant, true).await?;
-				let deletion = tenant_deletions::current_locked(tx, &tenant)
-					.await?
-					.ok_or_else(|| Error::Conflict("the Tenant is not deleted".into()))?;
-				tenant_deletions::restore(tx, &deletion, steward.actor()).await?;
-				steward
-					.administration_actor()
-					.record(tx, event("tenant.restore", &tenant))
-					.await?;
-				Ok(deletion)
-			})
-			.await;
-		let deletion = steward.finish(f, result).await?;
-		Ok(deletion.into())
+		serialization.rollback().await?;
+		result
 	}
 
 	/// Ends the grace period of a deleted Tenant now, so its data is purged at

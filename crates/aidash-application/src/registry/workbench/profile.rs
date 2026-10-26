@@ -122,17 +122,24 @@ pub async fn list(
 		})
 		.collect())
 }
-/// Every profile of a Tenant with its rules, for those who write them (#361).
+/// One bounded page of Tenant profiles with rules, for their writers (#361).
 pub async fn administered(
 	repository: &dyn ProfileRepository,
 	tenant: String,
+	after: Option<String>,
 ) -> Result<Vec<TestProfile>> {
 	if let Principal::Subject { tenant: own, .. } = repository.principal()
 		&& own != tenant
 	{
 		return Err(Error::Forbidden);
 	}
-	repository.administered(&tenant).await
+	if after
+		.as_ref()
+		.is_some_and(|id| id.trim().is_empty() || id.len() > 100)
+	{
+		return Err(Error::Invalid("invalid test profile cursor".into()));
+	}
+	repository.administered(&tenant, after.as_deref()).await
 }
 pub async fn put(
 	repository: &dyn ProfileRepository,

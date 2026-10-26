@@ -266,6 +266,11 @@ impl ForeignSourceAuthority for NativeForeignAuthority<'_> {
 			.await
 			.map_err(Into::into)
 	}
+	async fn metadata(&mut self, reference: &EntityRef) -> Result<Entry> {
+		catalog::metadata(self.access, reference)
+			.await
+			.map_err(Into::into)
+	}
 }
 
 use reinhardt::query::QueryStatementBuilder;

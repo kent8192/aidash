@@ -2399,6 +2399,69 @@ async fn tenant_administration_works_without_a_tenant_binding(
 	expected.push(aidash_domain::identity::tenancy::TENANT_DELETE);
 	assert_eq!(overview["actions"], json!(expected));
 	assert_eq!(overview["assignable_groups"], json!(["members"]));
+	// A blocked report keeps its policy fence without monopolizing the global
+	// audit cursor. DDL holds the table lock until rollback, making this
+	// independent of report speed or machine load.
+	let pool = fixture.federation.store.pool.fixture_driver();
+	let owner = common::owner_pool(pool).await;
+	let mut blocker = owner.begin().await.unwrap();
+	let ddl = Query::alter_table()
+		.table(Alias::new("approval_observation_population"))
+		.add_column(reinhardt::query::ColumnDef::new(Alias::new("report_lock_probe")).boolean())
+		.to_string(PostgresQueryBuilder);
+	sqlx::query(&ddl).execute(&mut *blocker).await.unwrap();
+	let start = chrono::Utc::now() - chrono::Duration::hours(1);
+	let end = chrono::Utc::now() + chrono::Duration::hours(1);
+	let path = format!(
+		"/api/tenants/acme/approval-observations/report?start={}&end={}",
+		start.to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
+		end.to_rfc3339_opts(chrono::SecondsFormat::Secs, true)
+	);
+	let report_app = app.clone();
+	let report_context = alice_context.clone();
+	let report_path = path.clone();
+	let report_request = tokio::spawn(async move {
+		browser_call(
+			&report_app,
+			"GET",
+			&report_path,
+			Some("alice-session"),
+			Some(&report_context),
+			Value::Null,
+		)
+		.await
+	});
+	use reinhardt::query::{IntoIden as _, SimpleExpr};
+	let pid_query = Query::select()
+		.expr(SimpleExpr::FunctionCall(
+			"pg_backend_pid".into_iden(),
+			vec![],
+		))
+		.to_string(PostgresQueryBuilder);
+	let pid: i32 = sqlx::query_scalar(&pid_query)
+		.fetch_one(&mut *blocker)
+		.await
+		.unwrap();
+	common::wait_for_blocked(&fixture.federation.store.pool, pid, 1).await;
+	let probe = Query::select()
+		.expr(SimpleExpr::FunctionCall(
+			"pg_try_advisory_xact_lock".into_iden(),
+			vec![Expr::value(71003202_i64).into()],
+		))
+		.to_string(PostgresQueryBuilder);
+	let audit_available: bool = sqlx::query_scalar(&probe).fetch_one(pool).await.unwrap();
+	blocker.rollback().await.unwrap();
+	owner.close().await;
+	let (status, report) = report_request.await.unwrap();
+	assert!(
+		audit_available,
+		"a report must not hold the cross-Tenant audit lock while reading"
+	);
+	assert_eq!(status, 200, "{report}");
+	assert_eq!(report["metrics"]["total_approvals"], 0);
+	let (status, _) = call("bob-session", &bob_context, "GET", &path).await;
+	assert_eq!(status, 403, "a member cannot read the aggregate report");
+
 	// No Registration Request is addressed to an unbound Tenant.
 	let (status, registrations) = call(
 		"alice-session",

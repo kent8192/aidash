@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "endpoint_count": 334,
+  "endpoint_count": 338,
   "requests": [
     {
       "name": "Health reports the configured node",
@@ -14488,6 +14488,222 @@
         "Rejected input preserves committed workspace state",
         "Exact HTTP 422",
         "Rejection is diagnostic and does not disclose SQL or credentials"
+      ]
+    },
+    {
+      "name": "1320 approval-observer - Anonymous request is rejected",
+      "file": "contracts/1320-approval-observer.bru",
+      "endpoint": "GET /api/tenants/{tenant}/approval-observer",
+      "scenario": "Anonymous request is rejected",
+      "status": 401,
+      "required_checks": [
+        "Exact HTTP 401",
+        "Stable authorization error envelope"
+      ]
+    },
+    {
+      "name": "1321 approval-observer - Forged bearer cannot inspect approval observations",
+      "file": "contracts/1321-approval-observer.bru",
+      "endpoint": "GET /api/tenants/{tenant}/approval-observer",
+      "scenario": "Forged bearer cannot inspect approval observations",
+      "status": 401,
+      "required_checks": [
+        "Exact HTTP 401",
+        "Stable authorization error envelope"
+      ]
+    },
+    {
+      "name": "1322 approval-observer - Deployment Administrator bearer cannot inspect Tenant observations",
+      "file": "contracts/1322-approval-observer.bru",
+      "endpoint": "GET /api/tenants/{tenant}/approval-observer",
+      "scenario": "Deployment Administrator bearer cannot inspect Tenant observations",
+      "status": 403,
+      "required_checks": [
+        "Exact HTTP 403",
+        "Stable authorization error envelope"
+      ]
+    },
+    {
+      "name": "1323 approval-observer - Subject Credential bearer cannot administer the observer",
+      "file": "contracts/1323-approval-observer.bru",
+      "endpoint": "GET /api/tenants/{tenant}/approval-observer",
+      "scenario": "Subject Credential bearer cannot administer the observer",
+      "status": 403,
+      "required_checks": [
+        "Exact HTTP 403",
+        "Stable authorization error envelope"
+      ]
+    },
+    {
+      "name": "1324 approval-observer-update - Anonymous request is rejected",
+      "file": "contracts/1324-approval-observer-update.bru",
+      "endpoint": "PUT /api/tenants/{tenant}/approval-observer",
+      "scenario": "Anonymous request is rejected",
+      "status": 401,
+      "required_checks": [
+        "Rejected input preserves committed workspace state",
+        "Exact HTTP 401",
+        "Stable authorization error envelope"
+      ]
+    },
+    {
+      "name": "1325 approval-observer-update - Forged bearer cannot inspect approval observations",
+      "file": "contracts/1325-approval-observer-update.bru",
+      "endpoint": "PUT /api/tenants/{tenant}/approval-observer",
+      "scenario": "Forged bearer cannot inspect approval observations",
+      "status": 401,
+      "required_checks": [
+        "Rejected input preserves committed workspace state",
+        "Exact HTTP 401",
+        "Stable authorization error envelope"
+      ]
+    },
+    {
+      "name": "1326 approval-observer-update - Deployment Administrator bearer cannot inspect Tenant observations",
+      "file": "contracts/1326-approval-observer-update.bru",
+      "endpoint": "PUT /api/tenants/{tenant}/approval-observer",
+      "scenario": "Deployment Administrator bearer cannot inspect Tenant observations",
+      "status": 403,
+      "required_checks": [
+        "Rejected input preserves committed workspace state",
+        "Exact HTTP 403",
+        "Stable authorization error envelope"
+      ]
+    },
+    {
+      "name": "1327 approval-observer-update - Subject Credential bearer cannot administer the observer",
+      "file": "contracts/1327-approval-observer-update.bru",
+      "endpoint": "PUT /api/tenants/{tenant}/approval-observer",
+      "scenario": "Subject Credential bearer cannot administer the observer",
+      "status": 403,
+      "required_checks": [
+        "Rejected input preserves committed workspace state",
+        "Exact HTTP 403",
+        "Stable authorization error envelope"
+      ]
+    },
+    {
+      "name": "1328 approval-observer-update - Wrong JSON media type is rejected",
+      "file": "contracts/1328-approval-observer-update.bru",
+      "endpoint": "PUT /api/tenants/{tenant}/approval-observer",
+      "scenario": "Wrong JSON media type is rejected",
+      "status": 415,
+      "required_checks": [
+        "Rejected input preserves committed workspace state",
+        "Exact HTTP 415",
+        "Rejection is diagnostic and does not disclose SQL or credentials"
+      ]
+    },
+    {
+      "name": "1329 approval-observer-update - Malformed JSON cannot reach the use case",
+      "file": "contracts/1329-approval-observer-update.bru",
+      "endpoint": "PUT /api/tenants/{tenant}/approval-observer",
+      "scenario": "Malformed JSON cannot reach the use case",
+      "status": 400,
+      "required_checks": [
+        "Rejected input preserves committed workspace state",
+        "Exact HTTP 400",
+        "Rejection is diagnostic and does not disclose SQL or credentials"
+      ]
+    },
+    {
+      "name": "1330 approval-observer-update - Observer revision is required",
+      "file": "contracts/1330-approval-observer-update.bru",
+      "endpoint": "PUT /api/tenants/{tenant}/approval-observer",
+      "scenario": "Observer revision is required",
+      "status": 422,
+      "required_checks": [
+        "Rejected input preserves committed workspace state",
+        "Exact HTTP 422",
+        "Rejection is diagnostic and does not disclose SQL or credentials"
+      ]
+    },
+    {
+      "name": "1331 approval-observation - Anonymous request is rejected",
+      "file": "contracts/1331-approval-observation.bru",
+      "endpoint": "GET /api/tenants/{tenant}/approval-observations/{kind}/{id}",
+      "scenario": "Anonymous request is rejected",
+      "status": 401,
+      "required_checks": [
+        "Exact HTTP 401",
+        "Stable authorization error envelope"
+      ]
+    },
+    {
+      "name": "1332 approval-observation - Forged bearer cannot inspect approval observations",
+      "file": "contracts/1332-approval-observation.bru",
+      "endpoint": "GET /api/tenants/{tenant}/approval-observations/{kind}/{id}",
+      "scenario": "Forged bearer cannot inspect approval observations",
+      "status": 401,
+      "required_checks": [
+        "Exact HTTP 401",
+        "Stable authorization error envelope"
+      ]
+    },
+    {
+      "name": "1333 approval-observation - Deployment Administrator bearer cannot inspect Tenant observations",
+      "file": "contracts/1333-approval-observation.bru",
+      "endpoint": "GET /api/tenants/{tenant}/approval-observations/{kind}/{id}",
+      "scenario": "Deployment Administrator bearer cannot inspect Tenant observations",
+      "status": 403,
+      "required_checks": [
+        "Exact HTTP 403",
+        "Stable authorization error envelope"
+      ]
+    },
+    {
+      "name": "1334 approval-observation - Observation resource IDs reject malformed UUIDs",
+      "file": "contracts/1334-approval-observation.bru",
+      "endpoint": "GET /api/tenants/{tenant}/approval-observations/{kind}/{id}",
+      "scenario": "Observation resource IDs reject malformed UUIDs",
+      "status": 400,
+      "required_checks": [
+        "Exact HTTP 400",
+        "Rejection is diagnostic and does not disclose SQL or credentials"
+      ]
+    },
+    {
+      "name": "1335 approval-observation-report - Anonymous request is rejected",
+      "file": "contracts/1335-approval-observation-report.bru",
+      "endpoint": "GET /api/tenants/{tenant}/approval-observations/report",
+      "scenario": "Anonymous request is rejected",
+      "status": 401,
+      "required_checks": [
+        "Exact HTTP 401",
+        "Stable authorization error envelope"
+      ]
+    },
+    {
+      "name": "1336 approval-observation-report - Forged bearer cannot inspect approval observations",
+      "file": "contracts/1336-approval-observation-report.bru",
+      "endpoint": "GET /api/tenants/{tenant}/approval-observations/report",
+      "scenario": "Forged bearer cannot inspect approval observations",
+      "status": 401,
+      "required_checks": [
+        "Exact HTTP 401",
+        "Stable authorization error envelope"
+      ]
+    },
+    {
+      "name": "1337 approval-observation-report - Deployment Administrator bearer cannot inspect Tenant observations",
+      "file": "contracts/1337-approval-observation-report.bru",
+      "endpoint": "GET /api/tenants/{tenant}/approval-observations/report",
+      "scenario": "Deployment Administrator bearer cannot inspect Tenant observations",
+      "status": 403,
+      "required_checks": [
+        "Exact HTTP 403",
+        "Stable authorization error envelope"
+      ]
+    },
+    {
+      "name": "1338 approval-observation-report - Subject Credential bearer cannot administer the observer",
+      "file": "contracts/1338-approval-observation-report.bru",
+      "endpoint": "GET /api/tenants/{tenant}/approval-observations/report",
+      "scenario": "Subject Credential bearer cannot administer the observer",
+      "status": 403,
+      "required_checks": [
+        "Exact HTTP 403",
+        "Stable authorization error envelope"
       ]
     }
   ]

@@ -94,6 +94,23 @@ async fn inspect_in(
 		if pinned.identity.registry_deployment != access.node_id() {
 			return Err(Error::Forbidden);
 		}
+		if aidash_domain::registry::bindings::defaults::is_compaction_decider(&pinned.definition) {
+			access
+				.require(&access.entry_resource(&pinned.definition), "registry.read")
+				.await?;
+			// Retain the exact immutable definition; compaction's own dispatch
+			// checks current Catalog Approval before sending any state.
+			definitions.insert(
+				(pinned.identity.id.clone(), pinned.identity.version.clone()),
+				Definition {
+					entry: pinned.identity.local(),
+					kind: pinned.definition.kind.clone(),
+					digest: pinned.digest.clone(),
+					metadata: pinned.definition.clone(),
+				},
+			);
+			continue;
+		}
 		let action = match pinned.definition.kind.as_str() {
 			"agent" => "agent.execute",
 			"model" => "model.infer",

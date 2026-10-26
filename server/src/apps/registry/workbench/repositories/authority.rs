@@ -103,6 +103,14 @@ pub(crate) struct TenantActions {
 }
 
 impl TenantActions {
+	/// Persist a removed GCIP Binding before opening the protected transaction.
+	pub(crate) async fn check_binding(&self, pool: &Pool) -> crate::Result<()> {
+		if let Actor::Subject(identity) = &self.actor {
+			identity.check_binding(pool).await?;
+		}
+		Ok(())
+	}
+
 	pub(crate) fn new(actor: Actor, node_id: String) -> Self {
 		Self {
 			actor,

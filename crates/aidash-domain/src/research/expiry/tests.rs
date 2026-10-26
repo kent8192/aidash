@@ -18,6 +18,7 @@ fn expired() -> ExpiredResults {
 
 fn tool(seq: u64, id: &str, result: Value) -> HistoryEntry {
 	HistoryEntry {
+		research: None,
 		seq,
 		event: ContextEvent::Tool {
 			call: crate::provider::ToolCall {
@@ -103,4 +104,18 @@ fn tombstones_keep_the_operation_and_carry_no_content() {
 	assert_eq!(tombstone["error"]["code"], "result_expired");
 	assert!(tombstone.get("data").is_none());
 	assert!(!ExpiredResults::default().covers(&tombstone));
+}
+
+#[test]
+fn an_expired_placeholder_still_loses_its_disclosed_arguments_on_revocation() {
+	let mut history = vec![tool(1, "expired", ContextEvent::expired_result("expired"))];
+	assert!(crate::research::revocation::redact(
+		&mut history,
+		&Default::default()
+	));
+	let ContextEvent::Tool { call, result } = &history[0].event else {
+		panic!("tool expected")
+	};
+	assert_eq!(call.arguments, ContextEvent::revoked_arguments());
+	assert!(ContextEvent::is_revoked_result(result));
 }

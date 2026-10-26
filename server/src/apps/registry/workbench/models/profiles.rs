@@ -38,10 +38,30 @@ impl AgentTestProfile {
 		tx: &mut dyn TransactionExecutor,
 		tenant: &str,
 	) -> Result<Vec<TestProfile>> {
-		Ok(Self::objects()
+		Self::list(tx, tenant, None).await
+	}
+
+	pub(crate) async fn administered(
+		tx: &mut dyn TransactionExecutor,
+		tenant: &str,
+		after: Option<&str>,
+	) -> Result<Vec<TestProfile>> {
+		Self::list(tx, tenant, after).await
+	}
+
+	async fn list(
+		tx: &mut dyn TransactionExecutor,
+		tenant: &str,
+		after: Option<&str>,
+	) -> Result<Vec<TestProfile>> {
+		let mut query = Self::objects()
 			.filter(Self::field_tenant().eq(tenant))
 			.order_by(&["id"])
-			.limit(100)
+			.limit(100);
+		if let Some(after) = after {
+			query = query.filter(Self::field_id().gt(after.to_owned()));
+		}
+		Ok(query
 			.all_with_executor(tx)
 			.await
 			.map_err(FrameworkError::from)?
