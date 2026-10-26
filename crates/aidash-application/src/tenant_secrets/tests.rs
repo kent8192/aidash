@@ -812,3 +812,172 @@ async fn brokered_resolution_returns_a_route_and_never_reads_the_value() {
 	foreign.destination.origin = "https://api.example.com".into();
 	assert_eq!(grants.0.lock().await.len(), 1, "no second token was minted");
 }
+
+#[tokio::test]
+async fn a_resolution_reports_the_tenant_secret_id_and_pinned_version() {
+	let (s, _, _) = service_with_calls(FakeStore {
+		seals: true,
+		..Default::default()
+	});
+	let created = s
+		.put(
+			"alpha",
+			"search",
+			put(Some("canary-value-1234"), Some(&["api.example.com"]), 0),
+			"actor",
+		)
+		.await
+		.unwrap();
+	let call = SecretCall {
+		destination: Destination {
+			origin: "https://api.example.com".into(),
+			path_prefix: "/v1/".into(),
+		},
+		methods: vec!["GET".into()],
+		attach: Attach::Bearer,
+		subject: SecretSubject::Operation {
+			operation: Uuid::from_u128(3),
+			tenant: "alpha".into(),
+		},
+		max_response_bytes: None,
+	};
+	let resolution = s
+		.resolve_with_secret("alpha", "search", ENDPOINT, Some(call))
+		.await
+		.unwrap();
+	assert!(matches!(resolution.resolved, Resolved::Brokered(_)));
+	assert_eq!(
+		resolution.secret,
+		Some(SecretIdentity {
+			id: created.id,
+			version: "1".into()
+		})
+	);
+}
+
+#[tokio::test(start_paused = true)]
+async fn cached_routes_are_reissued_after_fifty_seconds() {
+	let cache = RouteCache::default();
+	let operation = Uuid::from_u128(7);
+	cache.insert(
+		operation,
+		"images",
+		CachedRoute {
+			base: Url::parse("https://broker.example/v1/forward").unwrap(),
+			token: "first-token".into(),
+			secret: SecretIdentity {
+				id: Uuid::from_u128(8),
+				version: "1".into(),
+			},
+		},
+	);
+	assert_eq!(
+		cache
+			.get(operation, "images")
+			.unwrap()
+			.token
+			.expose_secret(),
+		"first-token"
+	);
+	tokio::time::advance(std::time::Duration::from_secs(49)).await;
+	assert!(cache.get(operation, "images").is_some());
+	tokio::time::advance(std::time::Duration::from_secs(2)).await;
+	assert!(
+		cache.get(operation, "images").is_none(),
+		"a route is not reused past its 50-second cache lifetime"
+	);
+}
+
+#[tokio::test]
+async fn concurrent_route_cache_access_stays_consistent() {
+	let cache = Arc::new(RouteCache::default());
+	let operation = Uuid::from_u128(9);
+	let workers = (0..8)
+		.map(|worker| {
+			let cache = cache.clone();
+			tokio::spawn(async move {
+				for _ in 0..100 {
+					let _ = cache.get(operation, "images");
+					cache.insert(
+						operation,
+						"images",
+						CachedRoute {
+							base: Url::parse("https://broker.example/v1/forward").unwrap(),
+							token: format!("token-{worker}").into(),
+							secret: SecretIdentity {
+								id: Uuid::from_u128(10),
+								version: "1".into(),
+							},
+						},
+					);
+				}
+			})
+		})
+		.collect::<Vec<_>>();
+	for worker in workers {
+		worker.await.unwrap();
+	}
+	assert!(cache.get(operation, "images").is_some());
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_stale_operation_route_is_minted_again() {
+	let (s, grants, _) = service_with_calls(FakeStore {
+		seals: true,
+		..Default::default()
+	});
+	s.put(
+		"alpha",
+		"search",
+		put(Some("canary-value-1234"), Some(&["api.example.com"]), 0),
+		"actor",
+	)
+	.await
+	.unwrap();
+	let call = || SecretCall {
+		destination: Destination {
+			origin: "https://api.example.com".into(),
+			path_prefix: "/v1/".into(),
+		},
+		methods: vec!["GET".into()],
+		attach: Attach::Bearer,
+		subject: SecretSubject::Operation {
+			operation: Uuid::from_u128(11),
+			tenant: "alpha".into(),
+		},
+		max_response_bytes: None,
+	};
+	let first = s
+		.resolve_with_secret("alpha", "search", ENDPOINT, Some(call()))
+		.await
+		.unwrap();
+	let Resolved::Brokered(route) = first.resolved else {
+		panic!("a brokered resolution returns a route");
+	};
+	let cache = RouteCache::default();
+	cache.insert(
+		Uuid::from_u128(11),
+		"images",
+		CachedRoute {
+			base: route.base,
+			token: route.token,
+			secret: first.secret.unwrap(),
+		},
+	);
+	assert!(cache.get(Uuid::from_u128(11), "images").is_some());
+	tokio::time::advance(std::time::Duration::from_secs(50)).await;
+	assert!(
+		cache.get(Uuid::from_u128(11), "images").is_none(),
+		"the gateway re-routes once the cached route is 50 seconds old"
+	);
+	let second = s
+		.resolve_with_secret("alpha", "search", ENDPOINT, Some(call()))
+		.await
+		.unwrap();
+	assert!(matches!(second.resolved, Resolved::Brokered(_)));
+	assert_eq!(
+		grants.0.lock().await.len(),
+		2,
+		"a fresh token is minted after the cache expires"
+	);
+}

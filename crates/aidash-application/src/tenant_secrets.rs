@@ -9,7 +9,11 @@ use chrono::{DateTime, Duration, Utc};
 use hmac::{Hmac, Mac};
 use secrecy::{ExposeSecret, SecretString};
 use sha2::Sha256;
-use std::sync::Arc;
+use std::{
+	collections::HashMap,
+	sync::{Arc, Mutex},
+};
+use tokio::time::Instant;
 use url::Url;
 use uuid::Uuid;
 
@@ -65,6 +69,61 @@ pub struct SecretCallGrant {
 pub struct SecretRoute {
 	pub base: Url,
 	pub token: SecretString,
+}
+
+/// The Tenant Secret one call names, for a metadata-only record. It never
+/// carries the value.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SecretIdentity {
+	pub id: Uuid,
+	/// The numeric Secret Store version the broker reads.
+	pub version: String,
+}
+
+/// A resolution and the Tenant Secret it used, so a transport can record the
+/// id and version without a second metadata read.
+pub struct Resolution {
+	pub resolved: Resolved,
+	pub secret: Option<SecretIdentity>,
+}
+
+/// How long a minted broker route is reused. The broker token lives 60 s, so
+/// a route is re-minted before it expires even while an operation still runs.
+pub const ROUTE_TTL: std::time::Duration = std::time::Duration::from_secs(50);
+
+/// One broker route kept for less than its token's lifetime.
+#[derive(Clone)]
+pub struct CachedRoute {
+	pub base: Url,
+	pub token: SecretString,
+	pub secret: SecretIdentity,
+}
+
+/// Short-lived broker routes keyed by operation and External service. One
+/// gateway serves many requests at once, so lookups and inserts are safe
+/// across them; a race mints a second token but never reuses a stale one.
+#[derive(Default)]
+pub struct RouteCache {
+	entries: Mutex<HashMap<(Uuid, String), (CachedRoute, Instant)>>,
+}
+impl RouteCache {
+	/// The route for this operation and service, unless it is 50 seconds old
+	/// or more. Expired entries are dropped as they are seen.
+	pub fn get(&self, operation: Uuid, service: &str) -> Option<CachedRoute> {
+		let mut entries = self.entries.lock().expect("Tenant Secret route cache lock");
+		entries.retain(|_, (_, since)| since.elapsed() < ROUTE_TTL);
+		entries
+			.get(&(operation, service.to_owned()))
+			.map(|(route, _)| route.clone())
+	}
+	pub fn insert(&self, operation: Uuid, service: &str, route: CachedRoute) {
+		let mut entries = self.entries.lock().expect("Tenant Secret route cache lock");
+		entries.retain(|_, (_, since)| since.elapsed() < ROUTE_TTL);
+		// A gateway is long-lived; keep one operation's routes from growing it.
+		if entries.len() < 10_000 {
+			entries.insert((operation, service.to_owned()), (route, Instant::now()));
+		}
+	}
 }
 
 /// The Tenant Secret broker of a Cloud or Dedicated Deployment. A
@@ -436,6 +495,21 @@ impl Service {
 		endpoint: &str,
 		call: Option<SecretCall>,
 	) -> Result<Resolved> {
+		Ok(self
+			.resolve_with_secret(tenant, name, endpoint, call)
+			.await?
+			.resolved)
+	}
+
+	/// [`Service::resolve`] plus the Tenant Secret identity the resolution
+	/// used, so a transport records its record without reading the value.
+	pub async fn resolve_with_secret(
+		&self,
+		tenant: &str,
+		name: &str,
+		endpoint: &str,
+		call: Option<SecretCall>,
+	) -> Result<Resolution> {
 		let mut scope = self.repository.begin(tenant).await?;
 		let row = scope.named(name).await?;
 		scope.commit().await?;
@@ -455,11 +529,15 @@ impl Service {
 			if !tenant_secrets::permits(&row.hosts, &call.destination.origin).unwrap_or(false) {
 				return Err(unavailable());
 			}
+			let identity = SecretIdentity {
+				id: row.id,
+				version: numeric_version(&pinned)?,
+			};
 			let route = calls
 				.route(SecretCallGrant {
 					tenant: tenant.into(),
-					secret: row.id,
-					version: numeric_version(&pinned)?,
+					secret: identity.id,
+					version: identity.version.clone(),
 					destination: call.destination,
 					methods: call.methods,
 					attach: call.attach,
@@ -467,14 +545,25 @@ impl Service {
 					max_response_bytes: call.max_response_bytes,
 				})
 				.await?;
-			return Ok(Resolved::Brokered(route));
+			return Ok(Resolution {
+				resolved: Resolved::Brokered(route),
+				secret: Some(identity),
+			});
 		}
 		let reader = self
 			.reader
 			.as_ref()
 			.ok_or_else(|| Error::External("Secret Store is not readable".into()))?;
 		match reader.read(tenant, &row.secret_resource, &pinned).await {
-			Ok(value) => Ok(Resolved::Value(value)),
+			Ok(value) => Ok(Resolution {
+				resolved: Resolved::Value(value),
+				// A self-hosted record names the same numeric pin the broker
+				// would read; a pin this store cannot express stays as it is.
+				secret: Some(SecretIdentity {
+					id: row.id,
+					version: numeric_version(&pinned).unwrap_or(pinned),
+				}),
+			}),
 			// A rejected pin is permanent; a store outage stays retryable.
 			Err(Error::Invalid(_)) => Err(unavailable()),
 			Err(error) => Err(error),

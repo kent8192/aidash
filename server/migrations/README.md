@@ -639,6 +639,14 @@ single Registry leaf without rewriting either history or changing stored data.
 state-only migration preserves the durable Research result history and leaves
 a single Execution head without changing either existing branch.
 
+`execution/0061_egress_secret_records` (after the preceding Execution head)
+adds the nullable `secret_id`, `secret_version` and `secret_host` of
+`egress_requests` with typed column operations (#310, ADR 0095). A request for
+an External service without a Tenant Secret leaves them null; a brokered request
+records the Tenant Secret, the pinned version its token names and the
+destination host, never the value or a header value. The typed operations update
+the ORM snapshot, so no state-only checkpoint is needed.
+
 ## Home ledger recovery eligibility (#434)
 
 `knowledge/0036_memory_recovery_eligibility` (after
