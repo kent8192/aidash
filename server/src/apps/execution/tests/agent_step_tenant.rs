@@ -119,6 +119,7 @@ async fn a_steps_scope_controls_access_to_its_persisted_provider_credential_pin(
 	let context = Context {
 		tenant: step_tenant(scope.as_ref()),
 		run: Some(run),
+		observation: None,
 		maintenance: None,
 		provider_credential_id: None,
 		inference: None,
