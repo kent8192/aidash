@@ -889,6 +889,21 @@ fn check_polled(result: crate::Result<serde_json::Value>) -> Result<completion::
 #[cfg(test)]
 #[path = "../tests/agent_completion_checks.rs"]
 mod completion_check_tests;
+#[cfg(test)]
+#[path = "../tests/agent_step_tenant.rs"]
+mod step_tenant_tests;
+
+/// The Tenant whose Provider Credential pin a step's inference reads: the
+/// Tenant of the step's scope. A remote Run's scope names the executing node's
+/// mapped Tenant, where its peer admission pinned the Run's credentials. No
+/// usable Tenant yields the empty name, which keeps keyless inference working
+/// and refuses a Tenant credential.
+fn step_tenant(scope: Option<&TenancyScope>) -> String {
+	scope
+		.and_then(TenancyScope::tenant_name)
+		.map(|name| name.as_str().to_owned())
+		.unwrap_or_default()
+}
 
 pub(crate) struct Environment<'a> {
 	federation: &'a Federation,
@@ -1027,11 +1042,17 @@ impl ExecutionEnvironment for Environment<'_> {
 	}
 	fn provider(&self, model: ModelConfig) -> Result<Arc<dyn ModelProvider>> {
 		// Carries this node's Cache Salt Keys for salted Projection Versions.
+		// The Provider Credential pin is read in the step's own Tenant scope
+		// (#521); without an admitted authority no Tenant is usable.
 		crate::bootstrap::admitted_model_provider(
 			&self.federation.store,
 			model,
 			Some(self.step_run.id),
-			String::new(),
+			step_tenant(
+				self.authority
+					.as_ref()
+					.map(|authority| authority.guard.tenancy()),
+			),
 			None,
 		)
 		.map_err(Into::into)

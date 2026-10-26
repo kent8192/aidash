@@ -324,7 +324,7 @@ impl<'a> StreamAssembler<'a> {
 
 	fn choice(&mut self, choice: &Value) -> Result<()> {
 		let reason = choice.get("finish_reason").and_then(Value::as_str);
-		if self.finish_reason.is_some() {
+		if let Some(finish_reason) = &self.finish_reason {
 			// A completed choice takes no further output, like a whole completion.
 			let delta = choice.get("delta");
 			let output = ["content", "refusal", "tool_calls"].into_iter().any(|key| {
@@ -337,7 +337,13 @@ impl<'a> StreamAssembler<'a> {
 						_ => true,
 					})
 			});
-			if reason.is_some() || output {
+			// OpenRouter repeats the terminal reason on its usage chunk and
+			// documents that second appearance as accounting, not a new
+			// terminal event. Accept it only while it repeats the same reason
+			// and carries no output; `native_finish_reason` and every other
+			// field of that chunk are ignored.
+			let repeats = reason.is_none_or(|reason| reason == finish_reason);
+			if !repeats || output {
 				return Err(Error::External(
 					"provider stream continued after its finish reason".into(),
 				));
