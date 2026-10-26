@@ -1,5 +1,5 @@
 import { ReferenceName, RecordView } from "../record-view";
-import { useState, useSyncExternalStore } from "react";
+import { useState, useCallback, useRef, useSyncExternalStore } from "react";
 import { Alert } from "../components/patterns";
 import { useNavigate } from "@tanstack/react-router";
 import { useQuery } from "@tanstack/react-query";
@@ -46,6 +46,11 @@ import { channelAgents, terminalRun } from "./workspace-model";
 import { ChannelRequests } from "./requests";
 import { ChannelFiles } from "./attachments";
 import { RequestCanvas } from "./request/canvas";
+import {
+  FilePreviewContextProvider,
+  FilePreviewPane,
+  type FilePreviewSelection,
+} from "../capabilities/file-preview-pane";
 import { TimelineStrip } from "./request/timeline";
 import { Phase, SegmentedProgress } from "./request/progress";
 import { parseOwner, runDisplayStatus } from "./request/canvas-model";
@@ -272,6 +277,22 @@ export function Channel({
     "overview" | "work" | "results" | "activity"
   >("overview");
   const [statusOpen, setStatusOpen] = useState(false);
+  const [filePreview, setFilePreview] = useState<FilePreviewSelection | null>(
+    null,
+  );
+  const previewTrigger = useRef<HTMLElement | null>(null);
+  const openFilePreview = useCallback((selection: FilePreviewSelection) => {
+    previewTrigger.current =
+      document.activeElement instanceof HTMLElement
+        ? document.activeElement
+        : null;
+    setFilePreview(selection);
+  }, []);
+  const closeFilePreview = useCallback(() => {
+    setFilePreview(null);
+    previewTrigger.current?.focus();
+    previewTrigger.current = null;
+  }, []);
   const query = useQuery({
     queryKey: ["workspace", workspace.id],
     queryFn: ({ signal }) => workspaceGet(workspace.id, { signal }),
@@ -637,94 +658,108 @@ export function Channel({
         </div>
         {control.error && <Alert className="basis-full">{control.error}</Alert>}
       </header>
-      <Tabs
-        value={shownTab}
-        onValueChange={(value) => setTab(value as typeof tab)}
-        className="relative flex min-h-0 flex-1 flex-col md:flex-row"
-      >
-        {!desktop && (
-          <TabsList className="bg-surface">
-            <TabsTrigger value="conversation">{view.conversation}</TabsTrigger>
-            <TabsTrigger value="canvas">{view.canvas}</TabsTrigger>
-            <TabsTrigger value="tasks">
-              {view.tasks}
-              {count(tasks.length)}
-            </TabsTrigger>
-            <TabsTrigger value="results">
-              {view.results}
-              {count(artifacts.length)}
-            </TabsTrigger>
-          </TabsList>
-        )}
-        {desktop ? (
-          <div className="flex min-h-0 min-w-0 flex-1 flex-col">
-            {unavailable}
-            {canvas}
-          </div>
-        ) : (
-          <TabsContent
-            value="canvas"
-            className="flex min-h-0 flex-1 flex-col data-[state=inactive]:hidden"
-          >
-            {unavailable}
-            {canvas}
-          </TabsContent>
-        )}
-        <aside
-          ref={setThreadContainer}
-          aria-label={threadCopy[locale].thread}
-          hidden={!thread || query.isError || shownTab !== "conversation"}
-          className="absolute inset-0 z-40 flex min-h-0 flex-col bg-surface md:static md:z-auto md:w-[360px] md:shrink-0 md:border-l md:border-border"
-        />
-        <aside
-          aria-label={view.details}
-          hidden={desktop ? !dockOpen : tab === "canvas"}
-          className="flex min-h-0 flex-1 flex-col bg-surface md:w-[400px] md:flex-none md:border-l md:border-border"
+      <FilePreviewContextProvider open={openFilePreview}>
+        <Tabs
+          value={shownTab}
+          onValueChange={(value) => setTab(value as typeof tab)}
+          className="relative flex min-h-0 flex-1 flex-col md:flex-row"
         >
-          {desktop && (
-            <div className="flex items-stretch border-b border-border">
-              <TabsList className="flex-1 border-b-0">
-                <TabsTrigger value="conversation">
-                  {view.conversation}
-                  {count(query.data?.messages?.length ?? 0)}
-                </TabsTrigger>
-                <TabsTrigger value="tasks">
-                  {view.tasks}
-                  {count(tasks.length)}
-                </TabsTrigger>
-                <TabsTrigger value="results">
-                  {view.results}
-                  {count(artifacts.length)}
-                </TabsTrigger>
-              </TabsList>
-              <Button
-                variant="ghost"
-                size="icon"
-                type="button"
-                className="mr-1.5 self-center"
-                aria-label={view.hideDock}
-                onClick={() => setDockOpen(false)}
-              >
-                <PanelRightClose />
-              </Button>
-            </div>
+          {!desktop && (
+            <TabsList className="bg-surface">
+              <TabsTrigger value="conversation">
+                {view.conversation}
+              </TabsTrigger>
+              <TabsTrigger value="canvas">{view.canvas}</TabsTrigger>
+              <TabsTrigger value="tasks">
+                {view.tasks}
+                {count(tasks.length)}
+              </TabsTrigger>
+              <TabsTrigger value="results">
+                {view.results}
+                {count(artifacts.length)}
+              </TabsTrigger>
+            </TabsList>
           )}
-          {!desktop && unavailable}
-          <TabsContent
-            value="conversation"
-            forceMount
-            className="flex min-h-0 flex-1 flex-col data-[state=inactive]:hidden"
+          {desktop ? (
+            <div className="flex min-h-0 min-w-0 flex-1 flex-col">
+              {unavailable}
+              {canvas}
+            </div>
+          ) : (
+            <TabsContent
+              value="canvas"
+              className="flex min-h-0 flex-1 flex-col data-[state=inactive]:hidden"
+            >
+              {unavailable}
+              {canvas}
+            </TabsContent>
+          )}
+          <aside
+            ref={setThreadContainer}
+            aria-label={threadCopy[locale].thread}
+            hidden={!thread || query.isError || shownTab !== "conversation"}
+            className="absolute inset-0 z-40 flex min-h-0 flex-col bg-surface md:static md:z-auto md:w-[360px] md:shrink-0 md:border-l md:border-border"
+          />
+          {filePreview && shownTab === "conversation" && (
+            <FilePreviewPane
+              key={`${filePreview.area}:${filePreview.file.file_id}:${filePreview.file.digest}`}
+              selection={filePreview}
+              onClose={closeFilePreview}
+            />
+          )}
+          <aside
+            aria-label={view.details}
+            hidden={desktop ? !dockOpen : tab === "canvas"}
+            className="flex min-h-0 flex-1 flex-col bg-surface md:w-[400px] md:flex-none md:border-l md:border-border"
           >
-            {conversation}
-          </TabsContent>
-          <TabsContent value="tasks" className="flex min-h-0 flex-1 flex-col">
-            {taskPane}
-          </TabsContent>
-          <TabsContent value="results" className="flex min-h-0 flex-1 flex-col">
-            {resultPane}
-          </TabsContent>
-        </aside>
-      </Tabs>
+            {desktop && (
+              <div className="flex items-stretch border-b border-border">
+                <TabsList className="flex-1 border-b-0">
+                  <TabsTrigger value="conversation">
+                    {view.conversation}
+                    {count(query.data?.messages?.length ?? 0)}
+                  </TabsTrigger>
+                  <TabsTrigger value="tasks">
+                    {view.tasks}
+                    {count(tasks.length)}
+                  </TabsTrigger>
+                  <TabsTrigger value="results">
+                    {view.results}
+                    {count(artifacts.length)}
+                  </TabsTrigger>
+                </TabsList>
+                <Button
+                  variant="ghost"
+                  size="icon"
+                  type="button"
+                  className="mr-1.5 self-center"
+                  aria-label={view.hideDock}
+                  onClick={() => setDockOpen(false)}
+                >
+                  <PanelRightClose />
+                </Button>
+              </div>
+            )}
+            {!desktop && unavailable}
+            <TabsContent
+              value="conversation"
+              forceMount
+              className="flex min-h-0 flex-1 flex-col data-[state=inactive]:hidden"
+            >
+              {conversation}
+            </TabsContent>
+            <TabsContent value="tasks" className="flex min-h-0 flex-1 flex-col">
+              {taskPane}
+            </TabsContent>
+            <TabsContent
+              value="results"
+              className="flex min-h-0 flex-1 flex-col"
+            >
+              {resultPane}
+            </TabsContent>
+          </aside>
+        </Tabs>
+      </FilePreviewContextProvider>
       <Sheet open={statusOpen} onOpenChange={setStatusOpen}>
         <SheetContent closeLabel={t("close")} className="gap-0 p-0">
           <SheetHeader className="border-b border-border px-5 pb-3 pt-4">

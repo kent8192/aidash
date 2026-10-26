@@ -3,6 +3,7 @@ import { useEffect, useState } from "react";
 import { Alert } from "../components/patterns";
 import { useI18n } from "../ui";
 import { download, saveFile, type CoreFile } from "./client";
+import { useFilePreview } from "./file-preview-pane";
 
 /**
  * Capability panel (details or section): hairline-separated rhythm, the
@@ -15,9 +16,20 @@ export const panelClass = [
   "[&>summary]:flex [&>summary]:min-h-8 [&>summary]:cursor-pointer [&>summary]:items-center [&>summary]:gap-2 [&>summary]:text-[13px] [&>summary]:font-semibold [&>summary]:marker:text-muted-foreground [&>summary]:hover:text-brand",
 ].join(" ");
 
-export function DisplayFile({ area, file }: { area: string; file: CoreFile }) {
-  const { locale } = useI18n();
+export function DisplayFile({
+  area,
+  file,
+  files,
+  revision,
+}: {
+  area: string;
+  file: CoreFile;
+  files?: readonly CoreFile[];
+  revision?: number;
+}) {
+  const { locale, t } = useI18n();
   const ja = locale === "ja-JP";
+  const filePreview = useFilePreview();
   const [preview, setPreview] = useState<string>();
   const [error, setError] = useState("");
   const path = `/working-areas/${area}/files/${file.file_id}/download`;
@@ -58,19 +70,35 @@ export function DisplayFile({ area, file }: { area: string; file: CoreFile }) {
           {ja ? "画像を表示" : "Show image"}
         </Button>
       )}
-      <Button
-        variant="outline"
-        type="button"
-        onClick={async () => {
-          try {
-            await saveFile(path);
-          } catch (e) {
-            setError(String(e));
+      <div className="flex flex-wrap gap-2">
+        <Button
+          variant="outline"
+          type="button"
+          onClick={() =>
+            filePreview.open({
+              area,
+              file,
+              files: files ?? [file],
+              revision,
+            })
           }
-        }}
-      >
-        {ja ? "出力をダウンロード" : "Download output"}
-      </Button>
+        >
+          {t("filePreviewAction")}
+        </Button>
+        <Button
+          variant="outline"
+          type="button"
+          onClick={async () => {
+            try {
+              await saveFile(path);
+            } catch (e) {
+              setError(String(e));
+            }
+          }}
+        >
+          {ja ? "出力をダウンロード" : "Download output"}
+        </Button>
+      </div>
       {error && <Alert>{error}</Alert>}
     </figure>
   );

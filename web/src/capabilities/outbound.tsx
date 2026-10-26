@@ -7,6 +7,7 @@ import { useInfiniteQuery, useQueryClient } from "@tanstack/react-query";
 import { Field, useI18n } from "../ui";
 import { apiFetch } from "../transport";
 import { post, saveFile, type CoreFile } from "./client";
+import { useFilePreview } from "./file-preview-pane";
 type FetchResult = {
   operation_id: string;
   status: string;
@@ -20,13 +21,16 @@ export function OutboundFiles({
   run,
   area,
   revision,
+  files,
 }: {
   run: string;
   area: string;
   revision: number;
+  files: readonly CoreFile[];
 }) {
-  const { locale } = useI18n();
+  const { locale, t } = useI18n();
   const ja = locale === "ja-JP";
+  const filePreview = useFilePreview();
   const client = useQueryClient();
   const [url, setUrl] = useState("");
   const [error, setError] = useState("");
@@ -109,6 +113,20 @@ export function OutboundFiles({
             <>
               <Hint>SHA-256: {item.output_file.digest}</Hint>
               <div className={inlineFormClass}>
+                <Button
+                  variant="outline"
+                  type="button"
+                  onClick={() =>
+                    filePreview.open({
+                      area,
+                      file: item.output_file!,
+                      files,
+                      revision,
+                    })
+                  }
+                >
+                  {t("filePreviewAction")}
+                </Button>
                 <Button
                   variant="outline"
                   type="button"

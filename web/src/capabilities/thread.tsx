@@ -39,6 +39,7 @@ import { CapabilityApprovals } from "./approvals";
 import { OutboundFiles } from "./outbound";
 import { SkillFiles } from "./skills";
 import { DisplayFile, panelClass } from "./display";
+import { useFilePreview } from "./file-preview-pane";
 import { TransferHistory } from "./transfers";
 import { ResearchPanel, UrlIntentPicker, useResearch } from "./research";
 import { snapshotReadsPages, urlIntents } from "../research";
@@ -58,10 +59,12 @@ type Recipient = {
 function OperationCard({
   run,
   operation,
+  area,
   onSession,
 }: {
   run: string;
   operation: Operation;
+  area: Area;
   onSession: (id: string) => void;
 }) {
   const { locale } = useI18n();
@@ -97,8 +100,10 @@ function OperationCard({
       {value.displays?.map((file) => (
         <DisplayFile
           key={file.file_id}
-          area={value.area_id ?? ""}
+          area={value.area_id ?? area.id}
           file={file}
+          files={area.manifest}
+          revision={area.revision}
         />
       ))}
       {(query.error || error || value.error) && (
@@ -180,9 +185,10 @@ function FileOperations({
   data: State;
   refresh: () => Promise<unknown>;
 }) {
-  const { locale } = useI18n();
+  const { locale, t } = useI18n();
   const ja = locale === "ja-JP";
   const client = useQueryClient();
+  const filePreview = useFilePreview();
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
   const [read, setRead] = useState<{
@@ -447,6 +453,20 @@ function FileOperations({
                     <Button
                       variant="outline"
                       type="button"
+                      onClick={() =>
+                        filePreview.open({
+                          area: area.id,
+                          file: f,
+                          files: area.manifest,
+                          revision: area.revision,
+                        })
+                      }
+                    >
+                      {t("filePreviewAction")}
+                    </Button>
+                    <Button
+                      variant="outline"
+                      type="button"
                       onClick={() => void act(() => readFile(f))}
                     >
                       {ja ? "読む" : "Read"}
@@ -696,6 +716,7 @@ function FileOperations({
               key={op.operation_id}
               run={run}
               operation={op}
+              area={area}
               onSession={setSession}
             />
           ))}
@@ -783,7 +804,12 @@ function FileOperations({
       </details>
       <SkillFiles run={run} />
       <TransferHistory area={area.id} />
-      <OutboundFiles run={run} area={area.id} revision={area.revision} />
+      <OutboundFiles
+        run={run}
+        area={area.id}
+        revision={area.revision}
+        files={area.manifest}
+      />
       <CapabilityApprovals area={area.id} />
       {error && <Alert>{error}</Alert>}
     </>
