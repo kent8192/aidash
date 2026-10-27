@@ -1543,37 +1543,57 @@ async fn signed_data_protection_requirement_controls_all_model_bodies() {
 	legacy.as_object_mut().unwrap().remove("data_protection");
 	let legacy: Claims = serde_json::from_value(legacy).unwrap();
 	assert_eq!(legacy.data_protection, Requirement::Zdr);
-	for (requirement, provider, status) in [
-		(Requirement::Zdr, json!({"require_parameters":true}), 403),
-		(
-			Requirement::Zdr,
-			json!({"require_parameters":true,"data_collection":"deny"}),
-			403,
-		),
-		(
-			Requirement::NoTraining,
-			json!({"require_parameters":true,"data_collection":"deny"}),
-			200,
-		),
-		(
-			Requirement::NoTraining,
-			json!({"require_parameters":true,"data_collection":"allow"}),
-			403,
-		),
-		(Requirement::None, json!({"require_parameters":true}), 200),
+	for (path, is_responses) in [
+		("/api/v1/chat/completions", false),
+		("/api/v1/responses", true),
 	] {
-		let mut claims = f.claims();
-		claims.data_protection = requirement;
-		let mut body = chat();
-		body["provider"] = provider;
-		let response = f
-			.request(&claims, "POST", "/api/v1/chat/completions", body)
-			.await;
-		assert_eq!(response.status(), status);
-		json_body(response).await;
+		for (requirement, provider, status) in [
+			// Standard default and Zero both sign ZDR. Explicit Standard opt-out
+			// signs None; No Training opt-out signs NoTraining.
+			(
+				Requirement::Zdr,
+				json!({"require_parameters":true,"zdr":true}),
+				200,
+			),
+			(
+				Requirement::Zdr,
+				json!({"require_parameters":true,"zdr":false}),
+				403,
+			),
+			(
+				Requirement::NoTraining,
+				json!({"require_parameters":true,"zdr":true}),
+				200,
+			),
+			(Requirement::Zdr, json!({"require_parameters":true}), 403),
+			(
+				Requirement::Zdr,
+				json!({"require_parameters":true,"data_collection":"deny"}),
+				403,
+			),
+			(
+				Requirement::NoTraining,
+				json!({"require_parameters":true,"data_collection":"deny"}),
+				200,
+			),
+			(
+				Requirement::NoTraining,
+				json!({"require_parameters":true,"data_collection":"allow"}),
+				403,
+			),
+			(Requirement::None, json!({"require_parameters":true}), 200),
+		] {
+			let mut claims = f.claims();
+			claims.data_protection = requirement;
+			let mut body = if is_responses { responses() } else { chat() };
+			body["provider"] = provider;
+			let response = f.request(&claims, "POST", path, body).await;
+			assert_eq!(response.status(), status);
+			json_body(response).await;
+		}
 	}
 	assert_eq!(f.source.reads.load(Ordering::SeqCst), 1);
-	assert_eq!(f.provider.calls.load(Ordering::SeqCst), 2);
+	assert_eq!(f.provider.calls.load(Ordering::SeqCst), 8);
 }
 
 fn responses() -> Value {
