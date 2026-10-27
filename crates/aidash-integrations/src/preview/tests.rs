@@ -352,7 +352,7 @@ async fn websocket_traffic_refreshes_activity_but_an_idle_connection_does_not() 
 			.unwrap();
 		assert_eq!(&echoed, b"\x81\x01x");
 		tokio::time::pause();
-		tokio::time::advance(Duration::from_secs(60)).await;
+		tokio::time::advance(Duration::from_secs(61)).await;
 		for _ in 0..10 {
 			tokio::task::yield_now().await;
 		}
@@ -361,7 +361,7 @@ async fn websocket_traffic_refreshes_activity_but_an_idle_connection_does_not() 
 	}
 	tokio::time::pause();
 	let calls = authority.calls.lock().unwrap().len();
-	tokio::time::advance(Duration::from_secs(60)).await;
+	tokio::time::advance(Duration::from_secs(61)).await;
 	for _ in 0..10 {
 		tokio::task::yield_now().await;
 	}
