@@ -410,6 +410,7 @@ async fn access_uses_the_admitted_tenant_id_and_never_falls_back_to_environment(
 		provider: "openrouter".into(),
 	};
 	let mut context = Context {
+		data_protection: Default::default(),
 		tenant: "beta".into(),
 		run: Some(Uuid::now_v7()),
 		maintenance: None,
@@ -562,6 +563,7 @@ async fn reader_resolves_current_pin_after_metadata_checks() {
 		issuer: None,
 	};
 	let mut context = Context {
+		data_protection: Default::default(),
 		tenant: "alpha".into(),
 		run: Some(Uuid::now_v7()),
 		provider_credential_id: Some(row.id),
@@ -765,6 +767,7 @@ async fn revocation_commit_failure_has_no_external_effect_and_committed_cleanup_
 	let error = access
 		.resolve(
 			&Context {
+				data_protection: Default::default(),
 				tenant: "alpha".into(),
 				run: Some(Uuid::now_v7()),
 				provider_credential_id: Some(first.id),

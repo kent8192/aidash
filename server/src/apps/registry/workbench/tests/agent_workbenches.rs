@@ -232,6 +232,50 @@ async fn simulated_test_never_invokes_the_registered_external_tool(
 		2,
 		"out-of-profile call reached the endpoint"
 	);
+	// A later Tenant promise applies to the next sandbox model send as well.
+	{
+		use aidash_server::apps::identity::models::TenantDataProtection;
+		use reinhardt::db::orm::Model;
+		let policy = TenantDataProtection::build()
+			.tenant("acme")
+			.level("no_training")
+			.model_call_zdr(true)
+			.plan_connection_exempt(true)
+			.updated_at(chrono::Utc::now())
+			.updated_by("fixture")
+			.finish();
+		f.store
+			.pool
+			.atomic(&aidash_application::tenancy::TEST_FIXTURE, async |tx| {
+				TenantDataProtection::objects()
+					.insert_with_executor(tx, &policy)
+					.await
+					.map_err(reinhardt::core::exception::Error::from)?;
+				Ok(())
+			})
+			.await
+			.unwrap();
+	}
+	let (status, refused) = request(
+		&app,
+		token,
+		"POST",
+		&path,
+		json!({"expected_revision":1,"message":"Tenant content after the policy raise"}),
+	)
+	.await;
+	assert_eq!(status, 200, "{refused}");
+	let refused = finished_test(&app, token, &path, refused["id"].as_str().unwrap()).await;
+	assert_eq!(refused["status"], "failed", "{refused}");
+	assert!(
+		refused["error"]
+			.as_str()
+			.unwrap()
+			.contains("Tenant Keyless endpoints"),
+		"{refused}"
+	);
+	assert_eq!(tool_hits.load(Ordering::SeqCst), 0);
+	assert_eq!(real_hits.load(Ordering::SeqCst), 2);
 	drop(server);
 	cleanup(f, &url, &schema).await;
 }

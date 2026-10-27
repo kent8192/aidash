@@ -165,6 +165,7 @@ impl TokenIssuer for CapabilityIssuer {
 			.map_err(|_| Error::Invalid("Capability Token clock unavailable".into()))?
 			.as_secs();
 		let claims = Claims {
+			data_protection: context.data_protection.requirement(),
 			iss: self.configuration.issuer.clone(),
 			aud: self.configuration.audience.clone(),
 			iat: now,

@@ -4,6 +4,7 @@ use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
 use secrecy::ExposeSecret;
 fn claims() -> Claims {
 	Claims {
+		data_protection: Default::default(),
 		iss: "worker".into(),
 		aud: "environment".into(),
 		iat: 100,

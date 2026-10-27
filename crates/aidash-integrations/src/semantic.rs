@@ -58,7 +58,6 @@ pub async fn embed(
 	if config.provider == "openrouter" {
 		// Gemini defaults to 3072 dimensions unless the approved size is sent.
 		body["dimensions"] = json!(config.dimensions);
-		body["provider"] = json!({"zdr":true});
 	}
 	let mut context = context.clone();
 	context.inference = Some(Inference {
@@ -69,6 +68,24 @@ pub async fn embed(
 		call: None,
 		hosts: vec![],
 	});
+	let context = crate::data_protection::context(access, &context).await?;
+	if config.provider == "openrouter" {
+		let source = Source::configured(&config.provider_credential, &None);
+		let routes = crate::data_protection::zdr_routes(
+			access,
+			&context,
+			clients,
+			&config.endpoint,
+			&source,
+			&config.model,
+		)
+		.await?;
+		body["provider"] = context.data_protection.requirement().provider();
+		if !routes.is_empty() {
+			body["provider"]["only"] = json!(routes);
+			body["provider"]["allow_fallbacks"] = json!(true);
+		}
+	}
 	let access = access
 		.resolve(
 			&context,

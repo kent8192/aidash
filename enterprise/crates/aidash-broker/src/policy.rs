@@ -300,15 +300,20 @@ pub(crate) fn decision_input(
 	value: &Value,
 	decisions: bool,
 	hosts: &[String],
+	requirement: aidash_domain::data_protection::Requirement,
 ) -> Result<(), Failure> {
 	let fields = value.as_object().ok_or(Failure::ClaimViolation)?;
 	let provider = fields.get("provider");
-	let routed = if decisions {
+	let mut expected = requirement.provider();
+	if decisions {
+		expected["only"] = json!(hosts);
+		expected["allow_fallbacks"] = json!(true);
+	}
+	let routed = (if decisions {
 		!hosts.is_empty()
-			&& provider == Some(&json!({"zdr": true, "only": hosts, "allow_fallbacks": true}))
 	} else {
-		hosts.is_empty() && provider == Some(&json!({"zdr": true}))
-	};
+		hosts.is_empty()
+	}) && provider == Some(&expected);
 	if fields
 		.keys()
 		.any(|key| !matches!(key.as_str(), "model" | "state" | "questions" | "provider"))

@@ -1055,6 +1055,19 @@ def render():
                     path=uri, headers=DEPLOYMENT_ADMINISTRATOR, body=json.dumps({"unexpected": True}),
                     immutable=True)
             continue
+        if route["source"] == "server/src/apps/identity/views/data_protection.rs":
+            body = json.dumps({"level": "standard", "model_call_zdr": True, "plan_connection_exempt": True}) if route["json"] else None
+            for label, headers in [
+                ("Deployment Administrator bearer is never a Tenant Administrator", DEPLOYMENT_ADMINISTRATOR),
+                ("Subject Credential bearer is never a Tenant Administrator", SUBJECT),
+            ]:
+                add(endpoint, label, 403, headers=headers, body=body, immutable=method != "GET")
+            add(endpoint, "Forged bearer cannot read or change Data Protection policy", 401,
+                headers={"Authorization": "Bearer forged"}, body=body)
+            if route["json"]:
+                add(endpoint, "Malformed JSON cannot reach the use case", 400,
+                    headers=DEPLOYMENT_ADMINISTRATOR, body="{", immutable=True)
+            continue
         if route["source"] == "server/src/apps/identity/views/tenant_administration.rs":
             # Only a browser Mapping context can be a Tenant Administrator.
             uri = path.replace("{subject}", "alice")

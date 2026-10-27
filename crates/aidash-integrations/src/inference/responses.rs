@@ -159,6 +159,7 @@ fn openrouter_request_body(
 	request: &ModelRequest,
 	salt: Option<&str>,
 	media_routes: Vec<String>,
+	requirement: aidash_domain::data_protection::Requirement,
 ) -> Result<Value> {
 	let mut body = input::encoded_openrouter_input_body(request)?;
 	body["model"] = json!(config.model_id);
@@ -171,7 +172,7 @@ fn openrouter_request_body(
 	if request.disable_provider_transforms {
 		body["truncation"] = json!("disabled");
 	}
-	body["provider"] = super::provider_preferences(config, media_routes);
+	body["provider"] = super::provider_preferences(config, media_routes, requirement);
 	if let Some(effort) = config.reasoning_effort {
 		body["reasoning"] = json!({"effort": effort});
 	}
@@ -365,28 +366,34 @@ impl ResponsesProvider {
 				)));
 			}
 		}
+		let context = crate::data_protection::context(
+			self.access.as_ref(),
+			&self.call_context(request.max_output_tokens),
+		)
+		.await?;
 		let salt = salt_line(self, request)?;
 		let media_routes = super::verified_routes(
 			&self.clients,
 			&self.config,
-			&*self.access,
-			&self.context,
+			self.access.as_ref(),
+			&context,
 			request,
 		)
 		.await?;
-		let mut body =
-			openrouter_request_body(&self.config, request, salt.as_deref(), media_routes)?;
+		let mut body = openrouter_request_body(
+			&self.config,
+			request,
+			salt.as_deref(),
+			media_routes,
+			context.data_protection.requirement(),
+		)?;
 		let streaming = self.config.streaming();
 		if streaming {
 			body["stream"] = json!(true);
 		}
 		let access = self
 			.access
-			.resolve(
-				&self.call_context(request.max_output_tokens),
-				&self.config.endpoint,
-				&self.source(),
-			)
+			.resolve(&context, &self.config.endpoint, &self.source())
 			.await?;
 		let mut call = self
 			.clients

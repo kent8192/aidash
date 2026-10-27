@@ -100,12 +100,14 @@ pub async fn initialize(
 		.with_dashboard_policy(config.dashboard_policy())
 		.with_cache_salt(cache_salt)
 		.with_keyless_origins(settings.keyless_endpoints.origins()?)
+		.with_hosted_model_origins(settings.deployment.hosted_origins()?)
 		.with_egress(aidash_integrations::federation::Egress {
 			enabled: config.federation,
 			key: config.deployment_key.clone(),
 		})
 		// An invalid Deployment retention period refuses to start (ADR 0045).
 		.with_research_retention(settings.research_retention.rules()?)
+		.with_data_protection_floor(settings.deployment.data_protection_floor)
 		.with_test_limit_ceilings(settings.workbench_test_limits.ceilings()?);
 	configure_provider_credentials(&mut store, &settings.provider_credentials).await?;
 	configure_plan_connections(
@@ -2219,6 +2221,7 @@ impl aidash_application::ports::registry::workbench::sandbox::admission::Sandbox
 {
 	fn provider(
 		&self,
+		tenant: &str,
 		model: aidash_domain::model::ModelConfig,
 	) -> aidash_application::Result<Arc<dyn aidash_application::ports::ModelProvider>> {
 		// Sandbox requests are always Legacy, so they never need a salt.
@@ -2231,7 +2234,10 @@ impl aidash_application::ports::registry::workbench::sandbox::admission::Sandbox
 			self.clients.clone(),
 			model,
 			self.keyless.clone(),
-			Default::default(),
+			aidash_application::provider_access::Context {
+				tenant: tenant.to_owned(),
+				..Default::default()
+			},
 		)
 	}
 }
@@ -2242,7 +2248,11 @@ pub(crate) fn workbench_sandbox_models(runtime: &Federation) -> WorkbenchSandbox
 			permitted: runtime.store.provider_clients.permitted.clone(),
 			public: runtime.store.provider_clients.public.clone(),
 		},
-		keyless: keyless_provider_access(&runtime.store),
+		keyless: Arc::new(
+			crate::apps::identity::repositories::provider_credentials::AdmittedAccess {
+				store: runtime.store.clone(),
+			},
+		),
 	}
 }
 
@@ -2597,6 +2607,7 @@ pub(crate) fn admitted_model_provider(
 			},
 		),
 		aidash_application::provider_access::Context {
+			data_protection: Default::default(),
 			tenant,
 			run,
 			maintenance,
@@ -2621,6 +2632,7 @@ pub(crate) fn admitted_semantic_transport(
 		},
 	);
 	transport.embedding.context = aidash_application::provider_access::Context {
+		data_protection: Default::default(),
 		tenant,
 		run,
 		maintenance,
