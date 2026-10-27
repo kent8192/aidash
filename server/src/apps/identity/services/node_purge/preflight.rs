@@ -166,9 +166,16 @@ pub(super) async fn check(
 		"awaits confirmed command termination, output drain and runner acknowledgement",
 	)
 	.await?;
-	let python = Expr::col("kind")
-		.eq(Expr::value("python_session"))
-		.and(Expr::col("state").is_in(["initial", "running", "frozen"]));
+	// An `initial` session that never admitted an operation has no interpreter
+	// to stop (a stale `expected_session_id` leaves one behind), so it does not
+	// hold the purge open; a recorded operation still does.
+	let python = Expr::col("kind").eq(Expr::value("python_session")).and(
+		Expr::col("state")
+			.is_in(["running", "frozen"])
+			.or(Expr::col("state")
+				.eq(Expr::value("initial"))
+				.and(json(col("core_records", "data"), "operation_id").is_not_null())),
+	);
 	let extractor = Expr::col("kind")
 		.eq(Expr::value("reference"))
 		.and(json(col("core_records", "data"), "instance").is_not_null())
