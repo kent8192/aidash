@@ -59,6 +59,22 @@ pub(crate) async fn current(store: &Store, context: &Context) -> Result<DataProt
 					"Data Protection: delegation ancestry is incomplete or cyclic".into(),
 				));
 			}
+			// A remote receipt does not publish the source Tenant's current policy.
+			// Refuse rather than treating the receiving Tenant as the entire chain.
+			let (sql, values) = Query::select()
+				.column(Alias::new("id"))
+				.from(Alias::new("authorization_remote_admissions"))
+				.and_where(Expr::col("id").eq(Expr::value(run)))
+				.build(PostgresQueryBuilder);
+			if tx
+				.fetch_optional(&sql, convert_values(values))
+				.await?
+				.is_some()
+			{
+				return Err(Error::Invalid(
+					"Data Protection: current remote Tenant policy is unavailable".into(),
+				));
+			}
 			let (sql, values) = Query::select()
 				.columns(["tenant", "task_id"].map(Alias::new))
 				.from(Alias::new("runs"))
@@ -81,6 +97,21 @@ pub(crate) async fn current(store: &Store, context: &Context) -> Result<DataProt
 			let task: uuid::Uuid = row
 				.get("task_id")
 				.map_err(reinhardt::core::exception::Error::from)?;
+			let (sql, values) = Query::select()
+				.column(Alias::new("resource_id"))
+				.from(Alias::new("authorization_remote_outputs"))
+				.and_where(Expr::col("resource_kind").eq(Expr::value("task")))
+				.and_where(Expr::col("resource_id").eq(Expr::value(task)))
+				.build(PostgresQueryBuilder);
+			if tx
+				.fetch_optional(&sql, convert_values(values))
+				.await?
+				.is_some()
+			{
+				return Err(Error::Invalid(
+					"Data Protection: current remote Tenant policy is unavailable".into(),
+				));
+			}
 			let (sql, values) = Query::select()
 				.column(Alias::new("source_run_id"))
 				.from(Alias::new("authorization_task_origins"))
