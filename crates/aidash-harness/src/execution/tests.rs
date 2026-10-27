@@ -129,7 +129,15 @@ impl ExecutionRecoveryStore for Scope {
 	async fn save(&self, _: &Run, _: Uuid, _: &str) -> Result<()> {
 		panic!("authority failures must pause")
 	}
-	async fn pause(&self, run: &Run, token: Uuid, reason: &str, event: &str) -> Result<()> {
+	async fn pause(
+		&self,
+		run: &Run,
+		token: Uuid,
+		reason: &str,
+		event: &str,
+		refusal: Option<&aidash_domain::tool::AuthorityRefusal>,
+	) -> Result<()> {
+		assert!(refusal.is_none());
 		assert_eq!(run.id, self.run.id);
 		assert_eq!(token, Uuid::nil());
 		assert_eq!(reason, "execution authority denied");
@@ -166,6 +174,7 @@ impl WorkerStep for Scope {
 		assert!(matches!(error, Error::Forbidden));
 		ExecutionFailure::Authority {
 			identity_unavailable: false,
+			refusal: None,
 		}
 	}
 	async fn cancel_scoped(&mut self, _: Uuid) -> Result<bool> {

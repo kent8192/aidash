@@ -246,6 +246,7 @@ impl FailureScope for Failure {
 					"execution authority denied"
 				},
 				"run.authorization_blocked",
+				None,
 			)
 			.await
 			.map_err(Into::into)
@@ -280,9 +281,15 @@ pub(crate) fn classify_failure(error: &NativeError) -> ExecutionFailure {
 		),
 		NativeError::Forbidden | NativeError::Unauthorized => ExecutionFailure::Authority {
 			identity_unavailable: false,
+			refusal: None,
+		},
+		NativeError::AuthorityRefused(refusal) => ExecutionFailure::Authority {
+			identity_unavailable: false,
+			refusal: Some((**refusal).clone()),
 		},
 		NativeError::IdentityStatusUnavailable => ExecutionFailure::Authority {
 			identity_unavailable: true,
+			refusal: None,
 		},
 		NativeError::MediaRouteUnavailable(_) => ExecutionFailure::MediaRoute(error.to_string()),
 		NativeError::TransactionPending | NativeError::StaleInference => ExecutionFailure::Deferred,

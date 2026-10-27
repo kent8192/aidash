@@ -27,7 +27,14 @@ impl ExecutionRecoveryStore for Scope {
 	async fn save(&self, _: &Run, _: Uuid, _: &str) -> Result<()> {
 		panic!("admission must not recover a run")
 	}
-	async fn pause(&self, _: &Run, _: Uuid, _: &str, _: &str) -> Result<()> {
+	async fn pause(
+		&self,
+		_: &Run,
+		_: Uuid,
+		_: &str,
+		_: &str,
+		_: Option<&aidash_domain::tool::AuthorityRefusal>,
+	) -> Result<()> {
 		panic!("admission must not recover a run")
 	}
 	async fn pause_semantic(

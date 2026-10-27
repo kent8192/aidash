@@ -1,6 +1,7 @@
 //! Failure classifications shared by worker ports and native adapters.
 use aidash_domain::{
 	context::recovery::Failure as ContextFailure, semantic::Failure as SemanticFailure,
+	tool::AuthorityRefusal,
 };
 
 /// Adapter classification retains transport details outside the use case.
@@ -14,6 +15,8 @@ pub enum ExecutionFailure {
 	DeciderOutage,
 	Authority {
 		identity_unavailable: bool,
+		/// The tool and check that refused, when the refusal came from tool authorization.
+		refusal: Option<AuthorityRefusal>,
 	},
 	MediaRoute(String),
 	Deferred,
@@ -46,10 +49,13 @@ impl ExecutionFailure {
 			Self::Context(reason) => reason.to_string(),
 			Self::Authority {
 				identity_unavailable: true,
+				..
 			} => "external identity status is unavailable".into(),
 			Self::Authority {
-				identity_unavailable: false,
-			} => "execution authority denied".into(),
+				refusal: Some(refusal),
+				..
+			} => refusal.to_string(),
+			Self::Authority { .. } => "execution authority denied".into(),
 			Self::MediaRoute(message) | Self::Inference { message, .. } | Self::Other(message) => {
 				message.clone()
 			}

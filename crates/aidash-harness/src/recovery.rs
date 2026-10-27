@@ -98,19 +98,29 @@ pub async fn recover(
 		store.pause_context(&current, token, reason).await?;
 	} else if let ExecutionFailure::Authority {
 		identity_unavailable,
+		refusal,
 	} = failure
 	{
+		// Name the tool and the check that refused, so an operator need not read the database.
 		let reason = if identity_unavailable {
-			"identity status unavailable"
+			"identity status unavailable".to_owned()
+		} else if let Some(refusal) = &refusal {
+			refusal.to_string()
 		} else {
-			"execution authority denied"
+			"execution authority denied".to_owned()
 		};
 		store
-			.pause(&current, token, reason, "run.authorization_blocked")
+			.pause(
+				&current,
+				token,
+				&reason,
+				"run.authorization_blocked",
+				refusal.as_ref(),
+			)
 			.await?;
 	} else if let ExecutionFailure::MediaRoute(ref message) = failure {
 		store
-			.pause(&current, token, message, "run.media_route_blocked")
+			.pause(&current, token, message, "run.media_route_blocked", None)
 			.await?;
 	} else if matches!(failure, ExecutionFailure::Deferred) {
 		current.recovery.retry = Some(RetryState {
