@@ -72,12 +72,9 @@ fn send_error(error: reqwest::Error) -> Failure {
 	Failure::Client(WireError::Http(error))
 }
 fn auth_error(error: &DynamicTransportError) -> Option<Error> {
-	if let Some(Failure::Client(WireError::App(Error::Invalid(message)))) =
-		error.error.downcast_ref::<Failure>()
-	{
-		Some(Error::Invalid(message.clone()))
-	} else {
-		None
+	match error.error.downcast_ref::<Failure>() {
+		Some(Failure::Client(WireError::App(error))) => crate::tools::auth::repeat(error),
+		_ => None,
 	}
 }
 fn invalid(message: &str) -> Failure {

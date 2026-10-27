@@ -220,7 +220,11 @@ fn broker_error(error: &DynamicTransportError) -> Option<Error> {
 }
 
 fn repeat(error: &Error) -> Error {
+	if let Some(error) = super::auth::repeat(error) {
+		return error;
+	}
 	match error {
+		Error::Connection(cause) => Error::Connection(cause.clone()),
 		Error::Invalid(message) => Error::Invalid(message.clone()),
 		Error::BrokerUnavailable { correlation } => Error::BrokerUnavailable {
 			correlation: correlation.clone(),

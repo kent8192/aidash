@@ -13,6 +13,16 @@ use uuid::Uuid;
 pub(crate) struct Operations(pub(crate) crate::tool::ToolContext);
 #[async_trait]
 impl ToolOperations for Operations {
+	async fn connection_person(&self) -> Result<bool> {
+		Ok(
+			crate::apps::identity::repositories::oauth_connections::owner_of_run(
+				&self.0.store,
+				&self.0.run,
+			)
+			.await?
+			.is_some(),
+		)
+	}
 	async fn connection(
 		&self,
 		resource: &str,

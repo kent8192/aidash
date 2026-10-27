@@ -30,9 +30,16 @@ async fn oauth_connections_answer_only_unanswered_requests_of_the_resource_and_c
 	assert_eq!(status, 200, "{created}");
 	let scope = aidash_application::tenancy::TenancyScope::tenant("acme").unwrap();
 	let run = f.store.runs(&scope).await.unwrap().pop().unwrap();
-	let ids: [Uuid; 4] = std::array::from_fn(|_| Uuid::now_v7());
+	let ids: [Uuid; 6] = std::array::from_fn(|_| Uuid::now_v7());
 	let resource = "https://mcp.example/mcp";
-	let prompts = [resource, resource, "https://other.example/mcp", resource];
+	let prompts = [
+		resource,
+		resource,
+		"https://other.example/mcp",
+		resource,
+		resource,
+		resource,
+	];
 	let mut tx = f
 		.store
 		.pool
@@ -69,7 +76,12 @@ async fn oauth_connections_answer_only_unanswered_requests_of_the_resource_and_c
 				"acme".into_value(),
 				run.workspace_id.into_value(),
 				run.id.into_value(),
-				"QUESTION".into_value(),
+				(if index == 4 {
+					"QUESTION"
+				} else {
+					aidash_domain::oauth_connections::CONNECTION_REQUEST_KIND
+				})
+				.into_value(),
 				json!({"resource":prompts[index]}).to_string().into_value(),
 				format!("oauth-{id}").into_value(),
 				chrono::Utc::now().into_value(),
@@ -78,7 +90,37 @@ async fn oauth_connections_answer_only_unanswered_requests_of_the_resource_and_c
 			.build(PostgresQueryBuilder);
 		tx.execute(&sql, convert_values(values)).await.unwrap();
 	}
+	// One live wait has elapsed; even a successful OAuth callback must close it false.
+	let mut waiting_run = run.clone();
+	waiting_run.state =
+		aidash_domain::RunState::Waiting(Box::new(aidash_domain::WaitingState::Human {
+			request_id: ids[5],
+			answer_by: Some(chrono::Utc::now() - chrono::Duration::seconds(1)),
+			resume: aidash_domain::ResumeState::Thinking(Default::default()),
+		}));
+	let (sql, values) = Query::update()
+		.table(Alias::new("runs"))
+		.value(Alias::new("phase"), "WAITING")
+		.value(Alias::new("pending"), waiting_run.stored_pending().unwrap())
+		.and_where(reinhardt::query::ExprTrait::eq(
+			Expr::col("id"),
+			Expr::value(run.id),
+		))
+		.build(PostgresQueryBuilder);
+	tx.execute(&sql, convert_values(values)).await.unwrap();
 	tx.commit().await.unwrap();
+	let (status, _) = common::request(
+		&app,
+		&token,
+		"POST",
+		&format!("/api/human-requests/{}/answer", ids[0]),
+		json!({"connected":true}),
+	)
+	.await;
+	assert_eq!(
+		status, 400,
+		"ordinary answers cannot impersonate an OAuth callback"
+	);
 	let owner = Owner {
 		tenant: "acme".into(),
 		subject: "alice".into(),
@@ -90,7 +132,6 @@ async fn oauth_connections_answer_only_unanswered_requests_of_the_resource_and_c
 			tenant: "acme".into(),
 			subject: "bob".into(),
 		},
-		"QUESTION",
 		resource,
 	)
 	.await
@@ -109,15 +150,43 @@ async fn oauth_connections_answer_only_unanswered_requests_of_the_resource_and_c
 	.await
 	.unwrap();
 	assert!(before.is_none());
-	answer_pending(
-		&f.store.control_pool,
-		&f.store.pool,
-		&owner,
-		"QUESTION",
-		resource,
-	)
-	.await
-	.unwrap();
+	// Exercise complete through the real repository and encrypted Store: its
+	// committed consent, rather than a normal human answer, releases these waits.
+	let repository = std::sync::Arc::new(NativeRepository {
+		pool: f.store.control_pool.clone(),
+		execution: f.store.pool.clone(),
+	});
+	let store = std::sync::Arc::new(
+		aidash_server::apps::identity::repositories::secret_store::PostgresStore::new(
+			f.store.control_pool.clone(),
+			"11".repeat(32).into(),
+			vec![],
+		)
+		.await
+		.unwrap(),
+	);
+	let service=aidash_application::oauth_connections::Service {repository,store:store.clone(),reader:store,discovery:std::sync::Arc::new(FixtureOAuth),tokens:std::sync::Arc::new(FixtureOAuth),policy:std::sync::Arc::new(aidash_server::apps::identity::repositories::connection_policy::NativeConnectionPolicy {pool:f.store.control_pool.clone()})};
+	let began = service
+		.begin(
+			&owner,
+			resource,
+			&["read".into()],
+			None,
+			&mut NoTool,
+			&"https://aidash.example/auth/connections/callback"
+				.parse()
+				.unwrap(),
+			"/dashboard",
+		)
+		.await
+		.unwrap();
+	assert_eq!(
+		service
+			.complete(began.pending, Some("accepted"), None)
+			.await
+			.unwrap(),
+		aidash_application::oauth_connections::Outcome::Connected
+	);
 	let mut tx = f
 		.store
 		.pool
@@ -145,7 +214,7 @@ async fn oauth_connections_answer_only_unanswered_requests_of_the_resource_and_c
 			value,
 			match index {
 				0 | 1 => Some(json!({"connected":true})),
-				2 => None,
+				2 | 4 => None,
 				_ => Some(json!({"connected":false})),
 			}
 		);
@@ -162,7 +231,7 @@ async fn oauth_connections_answer_only_unanswered_requests_of_the_resource_and_c
 		id,
 		tenant: "acme".into(),
 		subject: "alice".into(),
-		resource: resource.into(),
+		resource: "https://unique.example/mcp".into(),
 		issuer: "https://auth.example".into(),
 		client: aidash_domain::oauth_connections::ClientRef::Dynamic {
 			client_id: "client".into(),
@@ -198,11 +267,22 @@ async fn oauth_connections_answer_only_unanswered_requests_of_the_resource_and_c
 	common::cleanup(f, &url, &schema).await;
 }
 
-/// These routes never need an outbound OAuth request: pending resources have
-/// no token, and a Subject Credential must fail before authorization discovery.
-struct ProbeOnlyOAuth;
+/// The OAuth side is scripted; persistence and human-request delivery are real.
+/// Subject Credential routes must still refuse before starting authorization.
+struct FixtureOAuth;
+struct NoTool;
 #[async_trait::async_trait]
-impl aidash_application::ports::oauth::OAuthDiscovery for ProbeOnlyOAuth {
+impl aidash_application::ports::registry::DefinitionLookup for NoTool {
+	async fn definition(
+		&mut self,
+		_id: &str,
+		_version: &str,
+	) -> aidash_application::Result<aidash_domain::registry::Entry> {
+		Err(aidash_application::Error::Forbidden)
+	}
+}
+#[async_trait::async_trait]
+impl aidash_application::ports::oauth::OAuthDiscovery for FixtureOAuth {
 	async fn protected_resource(
 		&self,
 		resource: &str,
@@ -217,7 +297,15 @@ impl aidash_application::ports::oauth::OAuthDiscovery for ProbeOnlyOAuth {
 		&self,
 		_: &str,
 	) -> aidash_application::Result<aidash_application::ports::oauth::AuthorizationServer> {
-		Err(aidash_application::Error::External("offline".into()))
+		Ok(aidash_application::ports::oauth::AuthorizationServer {
+			issuer: "https://auth.example".into(),
+			authorization_endpoint: "https://auth.example/authorize".parse().unwrap(),
+			token_endpoint: "https://auth.example/token".parse().unwrap(),
+			registration_endpoint: Some("https://auth.example/register".parse().unwrap()),
+			revocation_endpoint: None,
+			scopes_supported: Some(vec!["read".into(), "write".into()]),
+			code_challenge_methods_supported: vec!["S256".into()],
+		})
 	}
 	async fn register(
 		&self,
@@ -225,11 +313,14 @@ impl aidash_application::ports::oauth::OAuthDiscovery for ProbeOnlyOAuth {
 		_: &reqwest::Url,
 		_: &str,
 	) -> aidash_application::Result<aidash_application::ports::oauth::ClientCredentials> {
-		Err(aidash_application::Error::External("offline".into()))
+		Ok(aidash_application::ports::oauth::ClientCredentials {
+			client_id: "fixture-client".into(),
+			client_secret: None,
+		})
 	}
 }
 #[async_trait::async_trait]
-impl aidash_application::ports::oauth::OAuthTokens for ProbeOnlyOAuth {
+impl aidash_application::ports::oauth::OAuthTokens for FixtureOAuth {
 	async fn exchange(
 		&self,
 		_: &aidash_application::ports::oauth::AuthorizationServer,
@@ -239,7 +330,12 @@ impl aidash_application::ports::oauth::OAuthTokens for ProbeOnlyOAuth {
 		_: &reqwest::Url,
 		_: &str,
 	) -> aidash_application::Result<aidash_application::ports::oauth::Tokens> {
-		Err(aidash_application::Error::External("offline".into()))
+		Ok(aidash_application::ports::oauth::Tokens {
+			access_token: "fixture-access".into(),
+			refresh_token: None,
+			expires_in: Some(3600),
+			scope: Some("read".into()),
+		})
 	}
 	async fn refresh(
 		&self,
@@ -334,8 +430,8 @@ async fn oauth_connections_subject_credentials_manage_only_their_persons_connect
 		repository: repository.clone(),
 		store: store.clone(),
 		reader: store.clone(),
-		discovery: Arc::new(ProbeOnlyOAuth),
-		tokens: Arc::new(ProbeOnlyOAuth),
+		discovery: Arc::new(FixtureOAuth),
+		tokens: Arc::new(FixtureOAuth),
 		policy: Arc::new(
 			aidash_server::apps::identity::repositories::connection_policy::NativeConnectionPolicy {
                 pool: f.store.control_pool.clone(),
@@ -492,3 +588,104 @@ async fn oauth_connections_subject_credentials_manage_only_their_persons_connect
 }
 
 mod mcp_connection_owner;
+
+#[rstest::rstest]
+#[tokio::test]
+async fn oauth_connections_refusal_checkpoint_is_lease_fenced_and_preserves_other_attempts(
+	#[future(awt)]
+	#[from(common::native_application)]
+	fixture: common::ApplicationFixture,
+) {
+	let (f, url, schema) = fixture.runtime.parts();
+	let app = fixture.application;
+	let (_, token, _) = common::bootstrap(&f, &app, "http://127.0.0.1:9").await;
+	let (status,created)=common::request(&app,&token,"POST","/api/conversations",json!({"title":"Connect MCP","goal":"Use the connected server","target":{"id":"research","version":"1.0.0"},"target_kind":"agent"})).await;
+	assert_eq!(status, 200, "{created}");
+	let scope = aidash_application::tenancy::TenancyScope::tenant("acme").unwrap();
+	let worker = Uuid::now_v7();
+	let mut run = f.store.lease_run(worker, 600).await.unwrap().unwrap();
+	run.state = aidash_domain::RunState::ToolCall(Box::default());
+	for key in ["refused", "other-started", "already-completed"] {
+		f.store
+			.invocation_start(&scope, &run, worker, key, "crm", &json!({}), false)
+			.await
+			.unwrap();
+	}
+	f.store
+		.invocation_finish(
+			&scope,
+			&run,
+			worker,
+			"already-completed",
+			&json!({"ok":true}),
+		)
+		.await
+		.unwrap();
+	let cause = aidash_domain::agent_plugin::ConnectionCause::ConnectionRequired {
+		resource: "https://mcp.example".into(),
+	};
+	run.state.tool_mut().unwrap().connection =
+		Some(aidash_domain::run_state::ConnectionCallState {
+			cause: Some(cause.clone()),
+			refused: Some(json!({"error":"connection_required","resource":"https://mcp.example"})),
+			..Default::default()
+		});
+	aidash_application::connection_wait::record_refusal(&mut run, "crm", cause.clone(), vec![]);
+	assert!(
+		f.store
+			.connection_refused(&scope, &run, Uuid::now_v7(), "refused")
+			.await
+			.is_err()
+	);
+	let unchanged = f.store.run(&scope, run.id).await.unwrap();
+	assert!(
+		unchanged.state.tool().unwrap().connection.is_none(),
+		"a stale worker cannot persist the typed fact"
+	);
+	f.store
+		.connection_refused(&scope, &run, worker, "refused")
+		.await
+		.unwrap();
+	f.store
+		.connection_refused(&scope, &run, worker, "already-completed")
+		.await
+		.unwrap();
+	let recovered = f.store.run(&scope, run.id).await.unwrap();
+	assert_eq!(
+		recovered
+			.state
+			.tool()
+			.unwrap()
+			.connection
+			.as_ref()
+			.unwrap()
+			.cause
+			.as_ref(),
+		Some(&cause)
+	);
+	assert_eq!(recovered.recovery.connection_refusals[0].cause, cause);
+	for (key, expected) in [
+		("refused", None),
+		("other-started", Some("STARTED")),
+		("already-completed", Some("COMPLETED")),
+	] {
+		let query = Query::select()
+			.column(Alias::new("status"))
+			.from(Alias::new("invocations"))
+			.and_where(reinhardt::query::ExprTrait::eq(
+				Expr::col("run_id"),
+				Expr::value(run.id),
+			))
+			.and_where(reinhardt::query::ExprTrait::eq(
+				Expr::col("idempotency_key"),
+				Expr::value(key),
+			))
+			.to_string(PostgresQueryBuilder);
+		let status: Option<String> = aidash_server::database::native::query_scalar(&query)
+			.scalar_optional(f.store.pool.in_scope(&scope))
+			.await
+			.unwrap();
+		assert_eq!(status.as_deref(), expected, "{key}");
+	}
+	common::cleanup(f, &url, &schema).await;
+}

@@ -56,6 +56,12 @@ impl ProviderSet for Providers {
 		let descriptor: ToolDescriptor = serde_json::from_value(binding.definition.config.clone())?;
 		self.implementation(&descriptor)?;
 		let contract = self.contract(&descriptor, &binding.identity)?;
+		let connection_scopes = match &descriptor.transport {
+			Some(aidash_domain::tool::ToolConfig::Mcp { scopes, .. }) => {
+				scopes.clone().unwrap_or_default()
+			}
+			_ => Vec::new(),
+		};
 		let operation = descriptor
 			.transport
 			.is_none()
@@ -64,6 +70,7 @@ impl ProviderSet for Providers {
 			tool: self.tool(binding, descriptor, &implementations())?,
 			contract,
 			operation,
+			connection_scopes,
 			store: self.federation.store.clone(),
 			home: self.home.clone(),
 			scope: self.scope.clone(),
@@ -131,12 +138,16 @@ struct ProviderTool {
 	contract: ToolContract,
 	/// The core provider operation; integrations carry a transport instead.
 	operation: Option<String>,
+	connection_scopes: Vec<String>,
 	store: Store,
 	home: Home,
 	scope: aidash_application::tenancy::TenancyScope,
 }
 #[async_trait]
 impl ExecutionTool for ProviderTool {
+	fn connection_scopes(&self) -> Vec<String> {
+		self.connection_scopes.clone()
+	}
 	fn contract(&self) -> ToolContract {
 		self.contract.clone()
 	}

@@ -144,6 +144,10 @@ pub trait PluginInputs: Send + Sync {
 /// Memory and task operations must retain their policy locks and durable writes.
 #[async_trait]
 pub trait ToolOperations: Send + Sync {
+	/// Only locally owned Runs whose chain root is a person can request a connection.
+	async fn connection_person(&self) -> Result<bool> {
+		Ok(false)
+	}
 	async fn registered_skills(&self) -> Result<Vec<EntityRef>>;
 	async fn skill_files(&self, reference: &EntityRef) -> Result<Vec<SkillFile>>;
 	async fn discover(&self, search: &Search) -> Result<Value>;

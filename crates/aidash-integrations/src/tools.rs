@@ -240,6 +240,9 @@ impl ToolTransport for HttpTools {
 				if let Some(failure) = broker_failure(secret, response.headers()) {
 					return Err(failure.into_error());
 				}
+				if let Some(error) = auth::challenge(&response, endpoint) {
+					return Err(auth::finish(error));
+				}
 				if !response.status().is_success() {
 					return Err(Error::External(format!(
 						"HTTP tool returned {}",
@@ -274,7 +277,10 @@ impl ToolTransport for HttpTools {
 					result = mcp_call(client, endpoint, tool_name, args, secret).await;
 				}
 				match result {
-					Err(error) => auth::error_value(&error).ok_or(error),
+					Err(error) => {
+						let error = auth::finish(error);
+						auth::error_value(&error).ok_or(error)
+					}
 					value => value,
 				}
 			}

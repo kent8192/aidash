@@ -3822,6 +3822,30 @@ impl Store {
 		tx.commit().await?;
 		Ok(())
 	}
+	/// The transport proved no operation executed. Save that fact under the
+	/// worker lease and remove only this attempt's unfinished admission.
+	pub async fn connection_refused(
+		&self,
+		scope: &TenancyScope,
+		run: &Run,
+		worker: Uuid,
+		key: &str,
+	) -> Result<()> {
+		let mut tx = self.pool.begin(scope).await?;
+		self.persist_tool_input_in(&mut tx, run, worker).await?;
+		let query = Query::delete()
+			.from_table(Alias::new("invocations"))
+			.and_where(Expr::col(Alias::new("run_id")).eq(Expr::value(run.id)))
+			.and_where(Expr::col(Alias::new("idempotency_key")).eq(Expr::value(key)))
+			.and_where(Expr::col(Alias::new("status")).eq(Expr::value("STARTED")))
+			.to_string(PostgresQueryBuilder);
+		crate::database::native::query(&query)
+			.execute(&mut *tx)
+			.await?;
+		tx.commit().await?;
+		Ok(())
+	}
+
 	/// Record only the connection id; the token remains in the owner's Store.
 	pub async fn invocation_connection(
 		&self,

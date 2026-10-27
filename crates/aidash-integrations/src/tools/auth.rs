@@ -15,47 +15,73 @@ pub(crate) fn challenge(response: &reqwest::Response, endpoint: &str) -> Option<
 			.and_then(|v| v.to_str().ok()),
 	);
 	let resource = aidash_domain::oauth_connections::canonical_resource(endpoint).ok()?;
-	let value = match challenge {
+	let cause = match challenge {
 		Challenge::Unauthorized { .. } => {
-			json!({"error": CONNECTION_REQUIRED, "resource": resource, "_token_refused":true})
+			aidash_domain::agent_plugin::ConnectionCause::ConnectionRequired { resource }
 		}
 		Challenge::InsufficientScope { scope } => {
-			let mut value = json!({"error": CONNECTION_SCOPE, "resource": resource});
-			if let Some(scope) = scope {
-				value["scope"] = json!(scope);
+			aidash_domain::agent_plugin::ConnectionCause::ConnectionScopeInsufficient {
+				resource,
+				scope,
 			}
-			value
 		}
 		Challenge::None => return None,
 	};
-	Some(Error::Invalid(value.to_string()))
+	Some(
+		if matches!(
+			cause,
+			aidash_domain::agent_plugin::ConnectionCause::ConnectionRequired { .. }
+		) {
+			Error::Port(Box::new(RefusedBearer(cause)))
+		} else {
+			Error::Connection(cause)
+		},
+	)
 }
 
+/// Store outages are ordinary failures, never a waitable authentication refusal.
 pub(crate) fn error_value(error: &Error) -> Option<Value> {
 	let Error::Invalid(message) = error else {
 		return None;
 	};
-	let mut value: Value = serde_json::from_str(message).ok()?;
-	value.as_object_mut()?.remove("_token_refused");
-	(matches!(
-		value["error"].as_str(),
-		Some(CONNECTION_REQUIRED | CONNECTION_SCOPE | CONNECTION_UNAVAILABLE)
-	) && value["resource"].is_string())
-	.then_some(value)
+	let value: Value = serde_json::from_str(message).ok()?;
+	(value["error"] == CONNECTION_UNAVAILABLE && value["resource"].is_string()).then_some(value)
 }
 
-/// Only a refused bearer permits replay: invalidate once and reopen the whole session.
+/// Private transport provenance: an actual server refused a bearer. It is
+/// normalized to Connection only after the single refresh attempt is decided.
+#[derive(Debug, Clone, thiserror::Error)]
+#[error("{}", .0.code())]
+struct RefusedBearer(aidash_domain::agent_plugin::ConnectionCause);
+fn refused(error: &Error) -> Option<&RefusedBearer> {
+	if let Error::Port(error) = error {
+		error.downcast_ref::<RefusedBearer>()
+	} else {
+		None
+	}
+}
+pub(crate) fn is_connection(error: &Error) -> bool {
+	matches!(error, Error::Connection(_)) || refused(error).is_some()
+}
+pub(crate) fn repeat(error: &Error) -> Option<Error> {
+	if let Some(refused) = refused(error) {
+		return Some(Error::Port(Box::new(refused.clone())));
+	}
+	match error {
+		Error::Connection(cause) => Some(Error::Connection(cause.clone())),
+		Error::Invalid(message) => Some(Error::Invalid(message.clone())),
+		_ => None,
+	}
+}
+pub(crate) fn finish(error: Error) -> Error {
+	if let Some(refused) = refused(&error) {
+		Error::Connection(refused.0.clone())
+	} else {
+		error
+	}
+}
 pub(crate) async fn retry(error: &Error, auth: Option<&CallSecret>) -> bool {
-	let Some(value) = error_value(error) else {
-		return false;
-	};
-	let refused = match error {
-		Error::Invalid(message) => serde_json::from_str::<Value>(message)
-			.ok()
-			.is_some_and(|value| value["_token_refused"] == true),
-		_ => false,
-	};
-	if value["error"] != CONNECTION_REQUIRED || !refused {
+	if refused(error).is_none() {
 		return false;
 	}
 	if let Some(CallSecret::Connection { source, .. }) = auth {
@@ -77,7 +103,18 @@ pub(crate) fn source_error(error: Error, endpoint: &str) -> Error {
 		{
 			let resource = aidash_domain::oauth_connections::canonical_resource(endpoint)
 				.unwrap_or_else(|_| endpoint.to_owned());
-			Error::Invalid(json!({"error":code,"resource":resource}).to_string())
+			match code.as_str() {
+				CONNECTION_REQUIRED => Error::Connection(
+					aidash_domain::agent_plugin::ConnectionCause::ConnectionRequired { resource },
+				),
+				CONNECTION_SCOPE => Error::Connection(
+					aidash_domain::agent_plugin::ConnectionCause::ConnectionScopeInsufficient {
+						resource,
+						scope: None,
+					},
+				),
+				_ => Error::Invalid(json!({"error":code,"resource":resource}).to_string()),
+			}
 		}
 		other => other,
 	}

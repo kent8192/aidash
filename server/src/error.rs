@@ -16,6 +16,8 @@ pub type Result<T> = std::result::Result<T, Error>;
 
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
+	#[error("{}", .0.code())]
+	Connection(aidash_domain::agent_plugin::ConnectionCause),
 	#[error("{0}")]
 	Framework(#[from] FrameworkError),
 	#[error("{0}")]
@@ -107,6 +109,7 @@ impl Error {
 			Self::NotFound(s) => (StatusCode::NOT_FOUND, s.clone()),
 			Self::Unprocessable(s) => (StatusCode::UNPROCESSABLE_ENTITY, s.clone()),
 			Self::Unauthorized => (StatusCode::UNAUTHORIZED, "unauthorized".into()),
+			Self::Connection(cause) => (StatusCode::CONFLICT, cause.code().into()),
 			Self::Forbidden => (StatusCode::FORBIDDEN, "forbidden".into()),
 			Self::Refused(code) => (StatusCode::PAYMENT_REQUIRED, code.clone()),
 			Self::RateLimited => (StatusCode::TOO_MANY_REQUESTS, self.to_string()),
@@ -326,6 +329,7 @@ impl From<aidash_application::Error> for Error {
 	fn from(error: aidash_application::Error) -> Self {
 		use aidash_application::Error as ApplicationError;
 		match error {
+			ApplicationError::Connection(cause) => Self::Connection(cause),
 			ApplicationError::Domain(error) => error.into(),
 			ApplicationError::Json(error) => Self::Json(error),
 			ApplicationError::Invalid(message) => Self::Invalid(message),
@@ -373,6 +377,7 @@ impl From<aidash_application::Error> for Error {
 impl From<Error> for aidash_application::Error {
 	fn from(error: Error) -> Self {
 		match error {
+			Error::Connection(cause) => Self::Connection(cause),
 			Error::Invalid(message) => Self::Invalid(message),
 			Error::Conflict(message) => Self::Conflict(message),
 			Error::NotFound(message) => Self::NotFound(message),

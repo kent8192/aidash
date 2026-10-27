@@ -87,7 +87,7 @@ async fn upstream(
 #[case::call("tools/call", 401, "connection_required")]
 #[case::scope("tools/call", 403, "connection_scope_insufficient")]
 #[tokio::test]
-async fn registry_mcp_challenges_are_structured_tool_results(
+async fn registry_mcp_challenges_are_typed_refusals(
 	#[case] phase: &'static str,
 	#[case] status: u16,
 	#[case] code: &str,
@@ -95,15 +95,17 @@ async fn registry_mcp_challenges_are_structured_tool_results(
 	let server = upstream(phase, status, true, false).await;
 	let endpoint = format!("{}/mcp", server.uri());
 	let tools = HttpTools::new(permitting([endpoint.as_str()]), ToolClients::new().unwrap());
-	let result = tools
+	let error = tools
 		.invoke(&config(endpoint.clone()), json!({}), "call-key", None)
 		.await
-		.unwrap();
-	assert_eq!(result["error"], code);
-	assert_eq!(result["resource"], endpoint);
-	if status == 403 {
-		assert_eq!(result["scope"], "files.read files.write");
-	}
+		.unwrap_err();
+	assert_connection(
+		error,
+		code,
+		&endpoint,
+		(status == 403).then_some("files.read files.write"),
+	);
+
 	assert!(
 		server
 			.received_requests()
@@ -135,15 +137,11 @@ async fn registry_mcp_refreshes_once_and_restarts_the_call(
 			"call-key",
 			Some(&auth),
 		)
-		.await
-		.unwrap();
+		.await;
 	if permanent {
-		assert_eq!(
-			result,
-			json!({"error":"connection_required","resource":endpoint})
-		);
+		assert_connection(result.unwrap_err(), "connection_required", &endpoint, None);
 	} else {
-		assert_eq!(result["content"][0]["text"], "authenticated");
+		assert_eq!(result.unwrap()["content"][0]["text"], "authenticated");
 	}
 	assert_eq!(source.invalidations.load(SeqCst), 1);
 	let requests = server.received_requests().await.unwrap();
@@ -276,16 +274,16 @@ async fn plugin_mcp_auth_challenges_preserve_context_and_retry_only_one_refused_
 			"call",
 			auth.as_ref(),
 		)
-		.await
-		.unwrap();
+		.await;
 	if code.is_empty() {
-		assert_eq!(result["content"][0]["text"], "authenticated");
+		assert_eq!(result.unwrap()["content"][0]["text"], "authenticated");
 	} else {
-		assert_eq!(result["error"], code);
-		assert_eq!(result["resource"], endpoint);
-		if status == 403 {
-			assert_eq!(result["scope"], "files.read files.write");
-		}
+		assert_connection(
+			result.unwrap_err(),
+			code,
+			&endpoint,
+			(status == 403).then_some("files.read files.write"),
+		);
 	}
 	assert_eq!(
 		source.invalidations.load(SeqCst),
@@ -317,12 +315,14 @@ async fn revoked_consent_before_sending_is_a_structured_error_without_invalidati
 		source: Arc::new(Revoked),
 	};
 	let tools = HttpTools::new(permitting([endpoint.as_str()]), ToolClients::new().unwrap());
-	assert_eq!(
+	assert_connection(
 		tools
 			.invoke(&config(endpoint.clone()), json!({}), "key", Some(&auth))
 			.await
-			.unwrap(),
-		json!({"error":"connection_required","resource":endpoint})
+			.unwrap_err(),
+		"connection_required",
+		&endpoint,
+		None,
 	);
 	assert!(server.received_requests().await.unwrap().is_empty());
 }
@@ -412,4 +412,69 @@ async fn plugin_auth_refusal_after_an_accepted_input_round_is_not_replayed() {
 		2
 	);
 	sessions.close(run).await;
+}
+
+fn assert_connection(error: Error, code: &str, resource: &str, scope: Option<&str>) {
+	let Error::Connection(cause) = error else {
+		panic!("expected typed connection refusal: {error:?}");
+	};
+	assert_eq!(cause.code(), code);
+	assert_eq!(cause.resource(), resource);
+	if let aidash_domain::agent_plugin::ConnectionCause::ConnectionScopeInsufficient {
+		scope: actual,
+		..
+	} = cause
+	{
+		assert_eq!(actual.as_deref(), scope);
+	}
+}
+
+#[rstest::rstest]
+#[case::successful_body(200)]
+#[case::real_unauthorized(401)]
+#[case::real_scope_refusal(403)]
+#[tokio::test]
+async fn http_connection_refusals_come_from_status_never_from_a_success_body(#[case] status: u16) {
+	let server = MockServer::start().await;
+	let endpoint = format!("{}/tool", server.uri());
+	let body = json!({"error":"connection_required","resource":endpoint});
+	Mock::given(method("POST"))
+		.and(path("/tool"))
+		.respond_with(
+			ResponseTemplate::new(status)
+				.insert_header(
+					"www-authenticate",
+					if status == 403 {
+						"Bearer error=\"insufficient_scope\", scope=\"files.read\""
+					} else {
+						"Bearer"
+					},
+				)
+				.set_body_json(body.clone()),
+		)
+		.mount(&server)
+		.await;
+	let tools = HttpTools::new(permitting([endpoint.as_str()]), ToolClients::new().unwrap());
+	let configuration = ToolConfig::Http {
+		endpoint: endpoint.clone(),
+		replay: "unsafe".into(),
+		secret: None,
+		secret_owner: Default::default(),
+	};
+	let result = tools.invoke(&configuration, json!({}), "key", None).await;
+	if status == 200 {
+		assert_eq!(result.unwrap(), body);
+	} else {
+		assert_connection(
+			result.unwrap_err(),
+			if status == 401 {
+				"connection_required"
+			} else {
+				"connection_scope_insufficient"
+			},
+			&endpoint,
+			(status == 403).then_some("files.read"),
+		);
+	}
+	assert_eq!(server.received_requests().await.unwrap().len(), 1);
 }

@@ -349,6 +349,31 @@ impl Builtin {
 					.memory_recall(key, &query, self.name == "memory_reflect")
 					.await
 			}
+			"connection_request" => {
+				if !ctx.operations.connection_person().await? {
+					return Err(Error::Invalid(
+						"connection_request requires a person at the Run's chain root".into(),
+					));
+				}
+				let resource = aidash_domain::oauth_connections::canonical_resource(required(
+					&input, "resource",
+				)?)?;
+				let scopes: Vec<String> = serde_json::from_value(
+					input.get("scopes").cloned().unwrap_or_else(|| json!([])),
+				)?;
+				let scopes =
+					aidash_domain::oauth_connections::admissible_scopes(&scopes, None, None, None)?;
+				let prompt = json!({"resource":resource,"scopes":scopes,"reason":required(&input,"reason")?,"tool":"connection_request","message":format!("Connect to {resource} to continue this task.")}).to_string();
+				let request = ctx
+					.operations
+					.human_request(
+						aidash_domain::oauth_connections::CONNECTION_REQUEST_KIND,
+						&prompt,
+						key,
+					)
+					.await?;
+				Ok(json!({"human_request_id":request.id}))
+			}
 			"human_request" => {
 				let request = ctx
 					.operations
@@ -464,6 +489,13 @@ pub fn builtins() -> BTreeMap<String, Builtin> {
 				.expect("declared builtin"),
 			description: "Explicitly reflect over currently admitted memory with bounded exact-citation reads. This operation does not admit new learning.",
 			schema: json!(schemars::schema_for!(aidash_domain::memory::RecallQuery)),
+		},
+		Builtin {
+			name: "connection_request",
+			contract: aidash_domain::tool::builtin_contract("connection_request")
+				.expect("declared builtin"),
+			description: "Ask the person who started this Run to connect an MCP server. Available in every Approval Mode. Waits and returns {connected: bool}; connect missing plugin servers to make their tools available.",
+			schema: json!({"type":"object","required":["resource","reason"],"properties":{"resource":string,"scopes":{"type":"array","items":string},"reason":string},"additionalProperties":false}),
 		},
 		Builtin {
 			name: "human_request",

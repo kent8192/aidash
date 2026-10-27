@@ -632,12 +632,14 @@ impl Fault {
 			Self::Early(error) => error,
 			Self::Init(error) => match initialization_error(&error) {
 				Error::Forbidden => Error::Forbidden,
+				error if crate::tools::auth::is_connection(&error) => error,
 				error if crate::tools::auth::error_value(&error).is_some() => error,
 				_ if unreachable(&error) => ListFailure::Unreachable.into(),
 				_ => ListFailure::InitializeFailed.into(),
 			},
 			Self::Service(error) => match call_error(&error) {
 				Error::Forbidden => Error::Forbidden,
+				error if crate::tools::auth::is_connection(&error) => error,
 				error if crate::tools::auth::error_value(&error).is_some() => error,
 				_ => service_failure(&error).into(),
 			},
@@ -711,9 +713,12 @@ impl PluginSessions for McpPluginSessions {
 		if let Err(error) = &result
 			&& crate::tools::auth::retry(error, auth).await
 		{
-			return self.list_once(run, server, config, auth).await;
+			return self
+				.list_once(run, server, config, auth)
+				.await
+				.map_err(crate::tools::auth::finish);
 		}
-		result
+		result.map_err(crate::tools::auth::finish)
 	}
 	async fn call(
 		&self,
@@ -797,9 +802,12 @@ impl PluginSessions for McpPluginSessions {
 				.await;
 		}
 		match result {
-			Err(error) => crate::tools::auth::error_value(&error)
-				.map(ToolRound::Complete)
-				.ok_or(error),
+			Err(error) => {
+				let error = crate::tools::auth::finish(error);
+				crate::tools::auth::error_value(&error)
+					.map(ToolRound::Complete)
+					.ok_or(error)
+			}
 			value => value,
 		}
 	}

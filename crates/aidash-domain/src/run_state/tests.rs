@@ -458,3 +458,31 @@ fn a_saved_mcp_checkpoint_requires_a_worker_that_understands_its_continuation() 
 		assert!(decode(RunPhase::ToolCall, envelope(data)).is_err());
 	}
 }
+
+#[test]
+fn a_connection_wait_round_trips_only_with_a_capable_worker() {
+	let tool = ToolCallState {
+		connection: Some(ConnectionCallState {
+			attempt: 1,
+			waited_millis: 321,
+			refused: Some(json!({"error":"connection_required","resource":"https://mcp.example"})),
+			cause: Some(crate::agent_plugin::ConnectionCause::ConnectionRequired {
+				resource: "https://mcp.example".into(),
+			}),
+			..Default::default()
+		}),
+		..ToolCallState::default()
+	};
+	let state = RunState::ToolCall(Box::new(tool));
+	let recovery = RecoveryState::default();
+	let saved = encode(&state, &recovery).unwrap();
+	assert_eq!(
+		StateRequirements::from_pending(&saved).unwrap().names(),
+		["connection_wait"]
+	);
+	let (resumed, recovered) = decode(RunPhase::ToolCall, saved.clone()).unwrap();
+	assert_eq!(encode(&resumed, &recovered).unwrap(), saved);
+	let mut incapable = saved;
+	incapable["requires"] = json!([]);
+	assert!(decode(RunPhase::ToolCall, incapable).is_err());
+}

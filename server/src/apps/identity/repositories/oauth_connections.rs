@@ -223,14 +223,7 @@ impl Repository for NativeRepository {
 		Ok(())
 	}
 	async fn answer_requests(&self, owner: &Owner, resource: &str) -> Result<()> {
-		Ok(answer_pending(
-			&self.pool,
-			&self.execution,
-			owner,
-			aidash_domain::oauth_connections::CONNECTION_REQUEST_KIND,
-			resource,
-		)
-		.await?)
+		Ok(answer_pending(&self.pool, &self.execution, owner, resource).await?)
 	}
 }
 async fn cached(
@@ -397,14 +390,13 @@ impl OAuthAuthorization {
 		}
 	}
 }
-/// Generic answer path does not decode the request-kind enum (owned by W5).
+/// Answer only MCP connection requests after this owner completes OAuth consent.
 /// Both stores are scoped to the same Tenant; root ownership comes from the
 /// authoritative control grant, including child Runs.
 pub async fn answer_pending(
 	control: &crate::database::native::Pool,
 	execution: &crate::database::native::Pool,
 	owner: &Owner,
-	kind: &str,
 	resource: &str,
 ) -> crate::Result<()> {
 	use crate::apps::identity::models::AuthorizationExecution;
@@ -426,7 +418,9 @@ pub async fn answer_pending(
 			.from(Alias::new("human_requests"))
 			.and_where(Expr::col("tenant").eq(Expr::value(owner.tenant.clone())))
 			.and_where(Expr::col("run_id").eq(Expr::value(grant.run_id)))
-			.and_where(Expr::col("kind").eq(Expr::value(kind)))
+			.and_where(Expr::col("kind").eq(Expr::value(
+				aidash_domain::oauth_connections::CONNECTION_REQUEST_KIND,
+			)))
 			.and_where(Expr::col("response").is_null())
 			.order_by(Alias::new("id"), reinhardt::query::Order::Asc)
 			.lock(reinhardt::query::LockType::Update)
@@ -440,13 +434,21 @@ pub async fn answer_pending(
 				continue;
 			}
 			let id: Uuid = serde_json::from_value(value["id"].clone())?;
-			let response = serde_json::json!({"connected":true});
+			let run = crate::apps::execution::models::Run::read_in(tx.as_mut(), grant.run_id, None)
+				.await?
+				.ok_or(Error::Forbidden)?;
+			let expired = matches!(&run.state, aidash_domain::RunState::Waiting(wait) if matches!(wait.as_ref(),aidash_domain::WaitingState::Human {request_id, answer_by:Some(deadline),..} if *request_id == id && *deadline <= chrono::Utc::now()));
+			let response = serde_json::json!({"connected":!expired});
 			let (sql, values) = Query::update()
 				.table(Alias::new("human_requests"))
 				.value_expr(Alias::new("response"), Expr::value(response.clone()))
 				.value_expr(
 					Alias::new("answered_by"),
-					Expr::value(owner.subject.clone()),
+					Expr::value(if expired {
+						"system".to_owned()
+					} else {
+						owner.subject.clone()
+					}),
 				)
 				.and_where(Expr::col("id").eq(Expr::value(id)))
 				.and_where(Expr::col("response").is_null())

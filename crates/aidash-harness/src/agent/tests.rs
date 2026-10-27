@@ -625,6 +625,19 @@ impl ExecutionStore for Backend {
 		let _ = (run, token, calls);
 		unexpected("ExecutionStore.invocation_start_batch")
 	}
+	async fn connection_refused(&self, run: &Run, token: Uuid, key: &str) -> Result<()> {
+		assert_eq!(token, self.0.token);
+		{
+			let mut invocations = self.0.invocations.lock().unwrap();
+			if invocations
+				.get(key)
+				.is_some_and(|(status, _)| status == "STARTED")
+			{
+				invocations.remove(key);
+			}
+		}
+		self.save_run(run, token, "run.connection_refused").await
+	}
 	async fn invocation_finish(
 		&self,
 		run: &Run,
@@ -1283,6 +1296,15 @@ impl ExecutionEnvironment for Backend {
 		self.0
 			.plugin_listings
 			.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+		Ok(self.0.plugin_listing.clone())
+	}
+	async fn reconnect_plugin_tools(
+		&self,
+		_run: &Run,
+		resource: &str,
+	) -> Result<Option<aidash_domain::agent_plugin::PluginTools>> {
+		assert_eq!(resource, "https://example.invalid");
+		self.record("plugins.reconnect");
 		Ok(self.0.plugin_listing.clone())
 	}
 	async fn close_plugin_sessions(&self, run: Uuid) {
@@ -4045,10 +4067,14 @@ async fn url_intents_of_run_messages_taken_in_by_media_intake_are_carried_forwar
 
 /// A tool whose results the test scripts in call order; counts real invocations.
 struct Scripted {
+	mcp: bool,
 	specification: ToolSpec,
 	contract: aidash_domain::tool::ToolContract,
 	external_target: Option<String>,
 	outputs: Mutex<std::collections::VecDeque<Value>>,
+	connection_errors:
+		Mutex<std::collections::VecDeque<aidash_domain::agent_plugin::ConnectionCause>>,
+	invalid_errors: Mutex<VecDeque<String>>,
 	invocations: Mutex<usize>,
 	/// The invocation key of each call.
 	keys: Mutex<Vec<String>>,
@@ -4056,10 +4082,13 @@ struct Scripted {
 impl Scripted {
 	fn new(specification: ToolSpec, contract: &str) -> Arc<Self> {
 		Arc::new(Self {
+			mcp: false,
 			specification,
 			contract: aidash_domain::tool::builtin_contract(contract).expect("declared builtin"),
 			external_target: None,
 			outputs: Mutex::new(Default::default()),
+			connection_errors: Mutex::new(Default::default()),
+			invalid_errors: Mutex::new(Default::default()),
 			invocations: Mutex::new(0),
 			keys: Mutex::new(vec![]),
 		})
@@ -4076,6 +4105,7 @@ impl Scripted {
 			aidash_domain::tool::ToolIdentity::Descriptor(_)
 		));
 		Arc::new(Self {
+			mcp: false,
 			specification: ToolSpec {
 				name: operation.into(),
 				description: "Core capability fixture".into(),
@@ -4084,6 +4114,8 @@ impl Scripted {
 			contract,
 			external_target: None,
 			outputs: Mutex::new(Default::default()),
+			connection_errors: Mutex::new(Default::default()),
+			invalid_errors: Mutex::new(Default::default()),
 			invocations: Mutex::new(0),
 			keys: Mutex::new(vec![]),
 		})
@@ -4091,6 +4123,7 @@ impl Scripted {
 	/// A Tenant's HTTP tool, whose calls wait for a Tool call approval.
 	fn tenant(name: &str) -> Arc<Self> {
 		Arc::new(Self {
+			mcp: false,
 			specification: ToolSpec {
 				name: name.into(),
 				description: "Tenant HTTP fixture".into(),
@@ -4110,6 +4143,8 @@ impl Scripted {
 			),
 			external_target: Some("https://example.invalid".into()),
 			outputs: Mutex::new(Default::default()),
+			connection_errors: Mutex::new(Default::default()),
+			invalid_errors: Mutex::new(Default::default()),
 			invocations: Mutex::new(0),
 			keys: Mutex::new(vec![]),
 		})
@@ -4118,6 +4153,7 @@ impl Scripted {
 	fn tenant_read_only(name: &str) -> Arc<Self> {
 		let tool = Self::tenant(name);
 		Arc::new(Self {
+			mcp: false,
 			specification: tool.specification.clone(),
 			contract: aidash_domain::tool::ToolContract::registry(
 				EntityRef {
@@ -4133,6 +4169,8 @@ impl Scripted {
 			),
 			external_target: Some("https://example.invalid".into()),
 			outputs: Mutex::new(Default::default()),
+			connection_errors: Mutex::new(Default::default()),
+			invalid_errors: Mutex::new(Default::default()),
 			invocations: Mutex::new(0),
 			keys: Mutex::new(vec![]),
 		})
@@ -4145,6 +4183,7 @@ impl Scripted {
 	}
 	fn research(operation: aidash_domain::research::Operation) -> Arc<Self> {
 		Arc::new(Self {
+			mcp: false,
 			specification: ToolSpec {
 				name: aidash_domain::tool::providers::research_alias(operation).into(),
 				description: "Research fixture".into(),
@@ -4153,6 +4192,8 @@ impl Scripted {
 			contract: aidash_domain::tool::providers::research_contract(operation),
 			external_target: None,
 			outputs: Mutex::new(Default::default()),
+			connection_errors: Mutex::new(Default::default()),
+			invalid_errors: Mutex::new(Default::default()),
 			invocations: Mutex::new(0),
 			keys: Mutex::new(vec![]),
 		})
@@ -4160,6 +4201,9 @@ impl Scripted {
 }
 #[async_trait]
 impl ExecutionTool for Scripted {
+	fn mcp_rounds(&self) -> bool {
+		self.mcp
+	}
 	fn specification(&self) -> ToolSpec {
 		self.specification.clone()
 	}
@@ -4176,12 +4220,19 @@ impl ExecutionTool for Scripted {
 		let _ = (run, input);
 		self.keys.lock().unwrap().push(key.to_owned());
 		*self.invocations.lock().unwrap() += 1;
-		Ok(self
+		let output = self
 			.outputs
 			.lock()
 			.unwrap()
 			.pop_front()
-			.expect("scripted tool output"))
+			.expect("scripted tool output");
+		if let Some(cause) = self.connection_errors.lock().unwrap().pop_front() {
+			return Err(Error::Connection(cause));
+		}
+		if let Some(message) = self.invalid_errors.lock().unwrap().pop_front() {
+			return Err(Error::Invalid(message));
+		}
+		Ok(output)
 	}
 }
 
@@ -5933,3 +5984,5 @@ async fn provider_registered_sources_join_existing_lifecycle_phases(
 	};
 	assert_eq!(documents, Some(json!([])));
 }
+
+mod connections;
