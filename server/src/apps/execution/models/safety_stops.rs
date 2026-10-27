@@ -75,9 +75,7 @@ impl RunSafetyStop {
 				)],
 			))
 			.build(PostgresQueryBuilder);
-		tx.execute(&sql, convert_values(values))
-			.await
-			.map_err(FrameworkError::from)?;
+		tx.execute(&sql, convert_values(values)).await?;
 		Self::objects()
 			.filter(Self::field_tenant().eq(tenant.to_owned()))
 			.filter(Self::field_caller_key().eq(caller_key.to_owned()))
