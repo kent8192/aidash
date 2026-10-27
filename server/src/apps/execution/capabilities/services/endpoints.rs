@@ -1160,8 +1160,14 @@ pub(crate) async fn file_download(
 					.fetch_optional(&mut **access.tx)
 					.await?
 				};
-				let (digest, size, path, media_type) =
-					held.ok_or_else(|| Error::NotFound("file unavailable".into()))?;
+				let Some((digest, size, path, media_type)) = held else {
+					// No current File, output or held version: report the Area's
+					// state first, so a deleted or busy Area answers
+					// AREA_UNAVAILABLE/AREA_BUSY rather than pretending the File
+					// never existed.
+					service::available(&area)?;
+					return Err(Error::NotFound("file unavailable".into()));
+				};
 				FileEntry {
 					file_id: file,
 					path,
