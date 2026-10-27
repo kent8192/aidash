@@ -139,6 +139,7 @@ pub fn research_contract(operation: ResearchOperation) -> ToolContract {
 		}
 	};
 	ToolContract {
+		provider_owned: false,
 		identity: ToolIdentity::Builtin(format!("research:{}", operation.as_str())),
 		authorization: ToolAuthorization {
 			flag: None,
@@ -294,6 +295,7 @@ impl ToolDescriptor {
 			}
 			let mut contract = research_contract(ResearchOperation::Search);
 			contract.identity = ToolIdentity::Builtin(tool.id.into());
+			contract.provider_owned = true;
 			contract.behavior.yields = vec![];
 			contract.behavior.disclosure_approval = false;
 			contract

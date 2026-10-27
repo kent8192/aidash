@@ -77,3 +77,55 @@ pub struct ContextCompactionAttempt {
 	#[field(null = true)]
 	pub settled_at: Option<DateTime<Utc>>,
 }
+
+impl RunContextEvent {
+	/// Provider activity stays inspectable after compaction removes its projection.
+	pub(crate) async fn provider_activity_page(
+		tx: &mut dyn reinhardt::db::backends::TransactionExecutor,
+		run: Uuid,
+		offset: u64,
+	) -> crate::Result<Vec<aidash_domain::tool::provider_tools::Activity>> {
+		use super::research::{json_field, json_text};
+		use reinhardt::db::orm::{Model, QueryRow, execution::convert_values};
+		use reinhardt::query::{
+			Alias, Expr, ExprTrait, Order, PostgresQueryBuilder, Query, QueryStatementBuilder,
+		};
+		let (sql, values) = Query::select()
+			.columns([Alias::new("seq"), Alias::new("event")])
+			.from(Alias::new(Self::table_name()))
+			.and_where(Expr::col("run_id").eq(Expr::value(run)))
+			.and_where(json_text(Expr::col("event"), "kind").eq(Expr::value("assistant")))
+			.and_where(json_field(Expr::col("event"), "provider_activity").is_not_null())
+			.order_by(Alias::new("seq"), Order::Desc)
+			.offset(offset)
+			.limit(100)
+			.build(PostgresQueryBuilder);
+		tx.fetch_all(&sql, convert_values(values))
+			.await?
+			.into_iter()
+			.map(|row| {
+				let row = QueryRow::from_backend_row(row).data;
+				let seq = row["seq"].as_u64().ok_or_else(|| {
+					crate::Error::Invalid("invalid Context Journal sequence".into())
+				})?;
+				let event: aidash_domain::context::ContextEvent =
+					serde_json::from_value(row["event"].clone())?;
+				let aidash_domain::context::ContextEvent::Assistant {
+					epoch,
+					provider_activity,
+					..
+				} = event
+				else {
+					return Err(crate::Error::Invalid(
+						"unexpected Provider activity event".into(),
+					));
+				};
+				Ok(aidash_domain::tool::provider_tools::Activity::inspect(
+					seq,
+					epoch,
+					provider_activity,
+				))
+			})
+			.collect()
+	}
+}

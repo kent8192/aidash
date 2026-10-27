@@ -285,6 +285,9 @@ pub fn salted_provider(
 	config.validate_provider_route()?;
 	config.validate_estimate_diagnostics()?;
 	config.validate_wire_api()?;
+	if config.provider == "openrouter" {
+		aidash_domain::tool::provider_tools::reject_implicit_tools(&config.model_id)?;
+	}
 	aidash_domain::provider_credentials::validate_grants(
 		&config.endpoint,
 		&config.provider,

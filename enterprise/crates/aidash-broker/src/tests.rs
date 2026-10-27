@@ -1821,6 +1821,16 @@ async fn provider_tools_require_the_signed_parameters_and_spending_caps_on_both_
 				.status(),
 			403
 		);
+		let mut online_claims = claims.clone();
+		online_claims.model = "openai/gpt-4.1:online".into();
+		let mut online = valid.clone();
+		online["model"] = json!(online_claims.model);
+		assert_eq!(
+			f.request(&online_claims, "POST", path, online)
+				.await
+				.status(),
+			403
+		);
 		let response = f.request(&claims, "POST", path, valid).await;
 		assert_eq!(response.status(), 200);
 		json_body(response).await;

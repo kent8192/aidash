@@ -174,6 +174,9 @@ impl ExecutionTool for BoundTool {
 /// provider's own specification. Dispatch advertises exactly this, and the
 /// deferred exposure catalog measures it, so both always agree.
 pub fn bound_specification(binding: &ResolvedBinding, mut inner: ToolSpec) -> ToolSpec {
+	if binding.definition.config["tier"] == "provider" {
+		return provider_specification(binding);
+	}
 	if let Some(alias) = &binding.alias {
 		inner.name = alias.clone();
 	}
@@ -210,15 +213,18 @@ pub fn bound_specifications(
 }
 
 fn provider_specification(binding: &ResolvedBinding) -> ToolSpec {
+	let kind = binding.definition.config["provider"]
+		.as_str()
+		.and_then(aidash_domain::tool::provider_tools::declaration)
+		.map(|tool| tool.tool_type)
+		.unwrap_or_default();
 	ToolSpec {
 		name: binding.alias.clone().unwrap_or_default(),
-		description: binding
-			.definition
-			.description
-			.get("en")
-			.cloned()
-			.unwrap_or_default(),
-		parameters: binding.definition.schema.clone(),
+		description: format!(
+			"OpenRouter executes {kind} inside inference, with fixed Binding configuration {}. Loading exposes the provider-owned tool; this alias is not a client function. Results are not Research evidence.",
+			serde_json::json!(binding.narrow.provider_tool)
+		),
+		parameters: serde_json::json!({"type":"object","properties":{},"additionalProperties":false}),
 	}
 }
 

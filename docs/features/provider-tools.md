@@ -60,11 +60,11 @@ The Capability Token signs each type, the canonical parameter digest and the
 outer call bound. The broker and Self-hosted transport apply the same domain
 check, including Aidash's hard limits. Unknown provider-owned tools, plugin
 controls, presets and stop conditions that override the signed cap are refused.
-Old tokens omit the new authority and cannot send any Provider tool.
+Old tokens omit the new authority and cannot send any Provider tool. Legacy `:online` suffixes and preset model controls are refused, because they can add provider-owned tools after admission without the signed Binding caps.
 
 Observable activity and annotations remain in the Accepted Response and Context
 Journal and are replayed as model-authored history, one Model Turn at a time.
-Thread inspection shows them read-only. Provider-reported usage counts are stored
+Thread inspection shows them read-only from paged Context Journal entries, so compaction does not hide them. Results above 64 KiB have a bounded preview in inspection; the original journal entry remains complete. Provider-reported usage counts are stored
 on the Inference Attempt's Usage Record alongside OpenRouter's exact total cost;
 the Run-linked Usage Records remain the cost ledger. No separate tool Request
 Estimate or duplicate cost charge is manufactured. URLs, snippets and Fusion

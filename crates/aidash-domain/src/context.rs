@@ -442,8 +442,8 @@ pub fn estimated_tokens(value: &str) -> usize {
 /// measures the same encoded context growth without storing that payload.
 /// Legacy and Ordered encode `history` as the same JSON array inside one
 /// escaped text value, so the Legacy probe measures Ordered growth exactly.
-/// Only Native Runs record `Assistant` events (ADR 0015), so a history that
-/// holds one, or an Assistant event itself, is measured as Native messages.
+/// Provider activity also records Assistant events in Legacy/Ordered Runs.
+/// Such histories reserve the larger growth across both encodings.
 /// This is a preliminary quota for tool results. Responses may use different
 /// framing; complete-request fitting and the final pre-dispatch gate measure
 /// that request's actual input format before any provider I/O.
@@ -452,7 +452,9 @@ pub fn tool_event_growth(context: &Context, event: &ContextEvent) -> usize {
 		|| context
 			.events()
 			.any(|event| matches!(event, ContextEvent::Assistant { .. }));
-	let estimate = |context: &Context| {
+	let provider_activity = |event: &ContextEvent| matches!(event, ContextEvent::Assistant { provider_activity, .. } if !provider_activity.is_empty());
+	let both = provider_activity(event) || context.events().any(provider_activity);
+	let estimate = |context: &Context, native: bool| {
 		crate::provider::ModelRequest {
 			provider_tools: vec![],
 			instructions: String::new(),
@@ -478,10 +480,14 @@ pub fn tool_event_growth(context: &Context, event: &ContextEvent) -> usize {
 		}
 		.estimated_total_tokens()
 	};
-	let before = estimate(context);
 	let mut after = context.clone();
 	after.push(event.clone());
-	estimate(&after).saturating_sub(before)
+	let growth = |native| estimate(&after, native).saturating_sub(estimate(context, native));
+	if both {
+		growth(false).max(growth(true))
+	} else {
+		growth(native)
+	}
 }
 
 /// The Run's pinned Projection Version, with the Cache Scope a salted version

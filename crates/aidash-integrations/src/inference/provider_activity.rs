@@ -114,6 +114,16 @@ fn observable(mut value: Value) -> Value {
 			for key in ["reasoning", "reasoning_details", "encrypted_content"] {
 				object.remove(key);
 			}
+			// Responses function outputs may encode a tool result as JSON text.
+			// Inspect that payload before retaining it, just like object results.
+			for key in ["output", "result"] {
+				if let Some(text) = object.get(key).and_then(Value::as_str)
+					&& let Ok(parsed @ (Value::Object(_) | Value::Array(_))) =
+						serde_json::from_str::<Value>(text)
+				{
+					object.insert(key.into(), parsed);
+				}
+			}
 			for child in object.values_mut() {
 				*child = observable(std::mem::take(child));
 			}

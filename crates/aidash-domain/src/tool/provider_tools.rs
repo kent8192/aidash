@@ -203,6 +203,7 @@ impl Declaration {
 	}
 
 	pub fn eligible(&self, model: &ModelConfig) -> Result<()> {
+		reject_implicit_tools(&model.model_id)?;
 		if model.provider != "openrouter"
 			|| model.provider_credential.as_deref() != Some("openrouter")
 			|| model.uses_plan_connection()
@@ -269,6 +270,7 @@ pub fn authorize<'a>(
 	body: &Value,
 	signed: impl IntoIterator<Item = (&'a str, &'a str, u32)>,
 ) -> Result<()> {
+	reject_implicit_tools(body["model"].as_str().unwrap_or_default())?;
 	let bad = || {
 		Error::Invalid("PROVIDER_TOOL_AUTHORITY: request differs from its signed Binding".into())
 	};
@@ -373,4 +375,51 @@ impl Declaration {
 		}
 		json!({"type":"object","additionalProperties":false,"required":["max_tool_calls","parameters"],"properties":{"max_tool_calls":integer(u64::from(MAX_TOOL_CALLS)),"parameters":{"type":"object","additionalProperties":false,"required":required,"properties":properties}}})
 	}
+}
+
+/// Read-only Context Journal inspection, independent of the lossy projection.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+#[schemars(rename = "ProviderToolActivity")]
+pub struct Activity {
+	pub seq: u64,
+	pub epoch: i64,
+	pub items: Vec<Value>,
+	#[serde(skip_serializing_if = "Option::is_none")]
+	pub preview: Option<String>,
+}
+impl Activity {
+	/// Inspection pages bound large results; the journal retains the full original.
+	pub fn inspect(seq: u64, epoch: i64, items: Vec<Value>) -> Self {
+		let serialized = serde_json::to_string(&items).expect("serializable activity");
+		if serialized.len() > 65536 {
+			let end = serialized.floor_char_boundary(4096);
+			Self {
+				seq,
+				epoch,
+				items: vec![],
+				preview: Some(serialized[..end].into()),
+			}
+		} else {
+			Self {
+				seq,
+				epoch,
+				items,
+				preview: None,
+			}
+		}
+	}
+}
+
+/// Legacy model controls would add unapproved tools after request admission.
+pub fn reject_implicit_tools(model: &str) -> Result<()> {
+	if model.trim().starts_with("@preset/")
+		|| model
+			.split(':')
+			.skip(1)
+			.any(|suffix| suffix.eq_ignore_ascii_case("online"))
+	{
+		return Err(Error::Invalid("IMPLICIT_PROVIDER_TOOL: use an approved Provider tool Binding instead of :online or a preset".into()));
+	}
+	Ok(())
 }
