@@ -63,6 +63,7 @@ const TENANT_REGISTRY_MIGRATIONS: &[(&str, &str)] = &[
 	("registry", "0048_context_marketplace_merge"),
 	("registry", "0048_plugin_marketplace_merge"),
 	("registry", "0049_plugin_context_merge"),
+	("registry", "0050_provider_tools"),
 	("marketplace", "0008_remove_compatibility_gate"),
 	("marketplace", "0009_remove_compatibility_gate_state"),
 	("marketplace", "0010_row_level_security"),

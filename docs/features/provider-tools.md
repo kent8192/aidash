@@ -71,6 +71,13 @@ the Run-linked Usage Records remain the cost ledger. No separate tool Request
 Estimate or duplicate cost charge is manufactured. URLs, snippets and Fusion
 results never create Research Sources, Evidence fragments or Source citations.
 
+Registry migration `0050_provider_tools` extends the installed Tool descriptor and
+Agent Binding validation functions while preserving the earlier contracts and
+their function identities. PostgreSQL function bodies require DDL through
+Reinhardt's `RunSQL`; no application data is rewritten. Downgrade is refused while
+immutable definitions or retained Run snapshots require Provider tools. Execution
+migration `0061_provider_tool_usage` stores reported tool counts as nullable JSONB.
+
 ## OpenRouter references
 
 Verified on 2026-10-27:
