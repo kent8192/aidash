@@ -51,7 +51,9 @@ import {
   FilePreviewContextProvider,
   FilePreviewPane,
   type FilePreviewSelection,
+  type LivePreviewSelection,
 } from "../capabilities/file-preview-pane";
+import { LivePreviewPane } from "../capabilities/live-preview-pane";
 import { FileCitationProvider } from "./file-citations";
 import { corePreviewAvailability } from "../generated/aidash";
 import type { PreviewAvailability } from "../generated/models";
@@ -285,9 +287,10 @@ export function Channel({
     "overview" | "work" | "results" | "activity"
   >("overview");
   const [statusOpen, setStatusOpen] = useState(false);
-  const [filePreview, setFilePreview] = useState<FilePreviewSelection | null>(
-    null,
-  );
+  type PreviewPaneSelection =
+    | { kind: "file"; selection: FilePreviewSelection }
+    | { kind: "live"; selection: LivePreviewSelection };
+  const [preview, setPreview] = useState<PreviewPaneSelection | null>(null);
   const previewTrigger = useRef<HTMLElement | null>(null);
   const previewManifests = useRef(
     new Map<string, NonNullable<FilePreviewSelection["files"]>>(),
@@ -299,10 +302,17 @@ export function Channel({
         : null;
     if (selection.files?.length)
       previewManifests.current.set(selection.area, selection.files);
-    setFilePreview(selection);
+    setPreview({ kind: "file", selection });
+  }, []);
+  const openLivePreview = useCallback((selection: LivePreviewSelection) => {
+    previewTrigger.current =
+      document.activeElement instanceof HTMLElement
+        ? document.activeElement
+        : null;
+    setPreview({ kind: "live", selection });
   }, []);
   const closeFilePreview = useCallback(() => {
-    setFilePreview(null);
+    setPreview(null);
     previewTrigger.current?.focus();
     previewTrigger.current = null;
   }, []);
@@ -696,6 +706,7 @@ export function Channel({
       <FileCitationProvider>
         <FilePreviewContextProvider
           open={openFilePreview}
+          openLive={openLivePreview}
           manifestFor={manifestFor}
           availability={availability}
         >
@@ -740,10 +751,17 @@ export function Channel({
               hidden={!thread || query.isError || shownTab !== "conversation"}
               className="absolute inset-0 z-40 flex min-h-0 flex-col bg-surface md:static md:z-auto md:w-[360px] md:shrink-0 md:border-l md:border-border"
             />
-            {filePreview && shownTab === "conversation" && (
+            {preview?.kind === "file" && shownTab === "conversation" && (
               <FilePreviewPane
-                key={`${filePreview.area}:${filePreview.file.file_id}:${filePreview.file.digest}`}
-                selection={filePreview}
+                key={`${preview.selection.area}:${preview.selection.file.file_id}:${preview.selection.file.digest}`}
+                selection={preview.selection}
+                onClose={closeFilePreview}
+              />
+            )}
+            {preview?.kind === "live" && shownTab === "conversation" && (
+              <LivePreviewPane
+                key={`${preview.selection.run}:${preview.selection.livePreviewId}`}
+                selection={preview.selection}
                 onClose={closeFilePreview}
               />
             )}

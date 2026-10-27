@@ -45,8 +45,16 @@ export interface FilePreviewSelection {
   cited?: boolean;
 }
 
+/** A Live preview opened in the same side pane as a File preview. */
+export interface LivePreviewSelection {
+  run: string;
+  livePreviewId: string;
+  title?: string;
+}
+
 export interface FilePreviewContextValue {
   open: (selection: FilePreviewSelection) => void;
+  openLive: (selection: LivePreviewSelection) => void;
   manifestFor: (area: string) => readonly CoreFile[] | undefined;
   /** Null until the session's availability has been read. */
   availability: PreviewAvailability | null;
@@ -59,6 +67,7 @@ const unavailable: PreviewAvailability = {
 
 const FilePreviewContext = createContext<FilePreviewContextValue>({
   open: () => undefined,
+  openLive: () => undefined,
   manifestFor: () => undefined,
   availability: unavailable,
 });
@@ -69,18 +78,20 @@ export function useFilePreview(): FilePreviewContextValue {
 
 export function FilePreviewContextProvider({
   open,
+  openLive,
   manifestFor,
   availability,
   children,
 }: {
   open: (selection: FilePreviewSelection) => void;
+  openLive: (selection: LivePreviewSelection) => void;
   manifestFor: (area: string) => readonly CoreFile[] | undefined;
   availability: PreviewAvailability | null;
   children: ReactNode;
 }) {
   const value = useMemo(
-    () => ({ open, manifestFor, availability }),
-    [open, manifestFor, availability],
+    () => ({ open, openLive, manifestFor, availability }),
+    [open, openLive, manifestFor, availability],
   );
   return (
     <FilePreviewContext.Provider value={value}>

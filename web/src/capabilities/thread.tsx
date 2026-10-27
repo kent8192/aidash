@@ -40,6 +40,7 @@ import { OutboundFiles } from "./outbound";
 import { SkillFiles } from "./skills";
 import { DisplayFile, panelClass } from "./display";
 import { useFilePreview } from "./file-preview-pane";
+import { LivePreviewPanel } from "./live-preview";
 import { TransferHistory } from "./transfers";
 import { ResearchPanel, UrlIntentPicker, useResearch } from "./research";
 import { snapshotReadsPages, urlIntents } from "../research";
@@ -1135,6 +1136,7 @@ export function ThreadCapabilities({
           ))}
         </ol>
       )}
+      {area && active && <LivePreviewPanel run={active} data={data} />}
       {area && active && (
         <FileOperations
           key={`${area.id}:${active}`}
