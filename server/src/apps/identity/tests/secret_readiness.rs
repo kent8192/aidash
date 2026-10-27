@@ -293,7 +293,7 @@ async fn agent_readiness_reports_every_status_and_repair(#[future] endpoint: End
 			fact(&facts, item).status,
 			Status::SecretsUnavailableOnDeployment
 		);
-		assert_eq!(fact(&facts, item).repair, Repair::Operator);
+		assert_eq!(fact(&facts, item).repair, Repair::DeploymentAdministrator);
 	}
 
 	// A Store that seals hosts but has no broker cannot attach a value.
@@ -311,7 +311,7 @@ async fn agent_readiness_reports_every_status_and_repair(#[future] endpoint: End
 	let facts = read_facts(&f, &asking, "research").await;
 	for item in ["crm@1.0.0", "images@1.0.0", "sync@1.0.0"] {
 		assert_eq!(fact(&facts, item).status, Status::BrokerNotConfigured);
-		assert_eq!(fact(&facts, item).repair, Repair::Operator);
+		assert_eq!(fact(&facts, item).repair, Repair::DeploymentAdministrator);
 	}
 }
 

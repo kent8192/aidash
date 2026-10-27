@@ -42,8 +42,8 @@ pub enum Repair {
 	ManageSecret,
 	/// The caller cannot manage Secrets; someone who can must fix it.
 	AskAdministrator,
-	/// Only an operator of the Deployment can fix it.
-	Operator,
+	/// Only a Deployment Administrator can fix it.
+	DeploymentAdministrator,
 	/// Nothing to repair.
 	None,
 }
@@ -138,8 +138,13 @@ fn judge(
 	secrets: &[Metadata],
 ) -> (Status, Repair) {
 	match availability {
-		Availability::Unavailable => (Status::SecretsUnavailableOnDeployment, Repair::Operator),
-		Availability::BrokerNotConfigured => (Status::BrokerNotConfigured, Repair::Operator),
+		Availability::Unavailable => (
+			Status::SecretsUnavailableOnDeployment,
+			Repair::DeploymentAdministrator,
+		),
+		Availability::BrokerNotConfigured => {
+			(Status::BrokerNotConfigured, Repair::DeploymentAdministrator)
+		}
 		Availability::Available => match target.kind {
 			Kind::Slot => slot(target.endpoint.as_deref(), can_manage, secrets),
 			Kind::Tool | Kind::ExternalService => match target.tenant_secret_name.as_deref() {

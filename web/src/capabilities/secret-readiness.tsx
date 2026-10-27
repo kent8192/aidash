@@ -61,12 +61,12 @@ export function SecretReadiness({ facts }: { facts: SecretReadinessFact[] }) {
             {fact.repair === "ask_administrator" && (
               <Hint>{copy.askAdministrator}</Hint>
             )}
-            {fact.repair === "operator" && (
+            {fact.repair === "deployment_administrator" && (
               <p
                 className="text-xs leading-relaxed text-destructive"
                 role="note"
               >
-                {copy.operator}
+                {copy.deployment_administrator}
               </p>
             )}
           </li>

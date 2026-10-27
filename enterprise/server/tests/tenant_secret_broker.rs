@@ -1195,7 +1195,7 @@ async fn sealed_hosts_and_the_sealing_store_refuse_a_hosts_change_without_the_va
 }
 
 // ---------------------------------------------------------------------------
-// A.6 Version unavailable is repairable; a broker outage is an operator fault
+// A.6 Version unavailable is repairable; a broker outage is a Deployment Administrator fault
 // with no direct fallback.
 // ---------------------------------------------------------------------------
 
@@ -1256,7 +1256,8 @@ async fn an_unavailable_version_maps_to_the_repairable_secret_unavailable_error(
 }
 
 #[tokio::test]
-async fn a_broker_outage_is_an_operator_fault_and_never_falls_back_to_a_direct_call() {
+async fn a_broker_outage_is_an_deployment_administrator_fault_and_never_falls_back_to_a_direct_call()
+ {
 	let mut h = Harness::new().await;
 	h.put_secret("tenant-a", "search", &[HTTP_HOST]).await;
 	let call = h.call_secret(HTTP_ENDPOINT, &["POST"]).await;

@@ -60,6 +60,9 @@ async fn run_invocations_page_in_hundreds_and_keep_durable_payloads(
 				.status(InvocationStatus::Completed)
 				.result(Some(Json(json!({"content":"y".repeat(4096)}))))
 				.replay_safe(true)
+				.tenant_secret_id(None)
+				.tenant_secret_version(None)
+				.tenant_secret_host(None)
 				.created_at(now + Duration::milliseconds(index))
 				.finish();
 			Invocation::objects()

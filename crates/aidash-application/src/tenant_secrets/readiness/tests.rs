@@ -104,7 +104,7 @@ fn a_secret_that_records_the_host_is_ready() {
 }
 
 #[test]
-fn deployment_wide_problems_are_operator_repairs() {
+fn deployment_wide_problems_are_deployment_administrator_repairs() {
 	let secrets = [secret("crm-key", &["api.example.test"])];
 	for (availability, status) in [
 		(
@@ -124,7 +124,7 @@ fn deployment_wide_problems_are_operator_repairs() {
 				&secrets,
 			);
 			assert_eq!(fact.status, status);
-			assert_eq!(fact.repair, Repair::Operator);
+			assert_eq!(fact.repair, Repair::DeploymentAdministrator);
 		}
 	}
 }

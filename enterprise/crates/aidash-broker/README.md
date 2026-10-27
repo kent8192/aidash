@@ -203,14 +203,14 @@ through. The per-secret token bucket is keyed by Tenant and Tenant Secret.
 Broker-owned errors are `{"error":"<code>"}` with `x-aidash-broker-error` and,
 once a token is verified, `x-aidash-correlation: <jti>`:
 
-| Code                         | Status | Meaning                                                                 |
-| ---------------------------- | ------ | ----------------------------------------------------------------------- |
-| `broker_rejected`            | 401    | signature, key, type, audience, expiry or another claim violation       |
-| `secret_destination_refused` | 403    | method, path, sealed host or public-address refusal                     |
-| `secret_unavailable`         | 404    | version missing, disabled or destroyed, or a payload that is not sealed |
-| `rate_limited`               | 429    | per-Tenant-Secret token bucket                                          |
-| `upstream_unreachable`       | 502    | destination connect, TLS or timeout failure                             |
-| `broker_unavailable`         | 503    | Secret Store or another broker dependency is unavailable (operator)     |
+| Code                         | Status | Meaning                                                                             |
+| ---------------------------- | ------ | ----------------------------------------------------------------------------------- |
+| `broker_rejected`            | 401    | signature, key, type, audience, expiry or another claim violation                   |
+| `secret_destination_refused` | 403    | method, path, sealed host or public-address refusal                                 |
+| `secret_unavailable`         | 404    | version missing, disabled or destroyed, or a payload that is not sealed             |
+| `rate_limited`               | 429    | per-Tenant-Secret token bucket                                                      |
+| `upstream_unreachable`       | 502    | destination connect, TLS or timeout failure                                         |
+| `broker_unavailable`         | 503    | Secret Store or another broker dependency is unavailable (Deployment Administrator) |
 
 Upstream statuses pass through, including redirects, which are never followed.
 Each request writes one `secret_call` structured line with the Tenant, Tenant

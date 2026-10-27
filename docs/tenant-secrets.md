@@ -40,7 +40,7 @@ each Secret slot the package's install plan declares. A fact names its item,
 one is named, a `status` (`ready`, `secret_missing`,
 `secret_hosts_mismatch`, `secrets_unavailable_on_deployment` or
 `broker_not_configured`) and who can `repair` it (`manage_secret`,
-`ask_administrator`, `operator` or `none`). A slot is ready on the plan screen
+`ask_administrator`, `deployment_administrator` or `none`). A slot is ready on the plan screen
 when any active Tenant Secret records the package's destination host; after
 installation the installed copy names its chosen Secret.
 
@@ -83,7 +83,7 @@ public keys and their issuers are configured on the Tenant Secret broker.
 The application host never reads a version, and a failed broker call never
 falls back to a direct read. A person can repair `secret_unavailable` and
 `secret_destination_refused`; `broker_unavailable` and `broker_rejected` are
-operator faults. Tenant users see the operator-side message and a correlation
+Deployment Administrator faults. Tenant users see the Deployment Administrator-side message and a correlation
 id; only Deployment Administrators see reason codes.
 
 Configure the broker with `providerCredentials.settings.tenant_secret_broker`:

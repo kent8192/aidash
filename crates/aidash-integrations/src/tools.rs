@@ -36,7 +36,7 @@ fn is_brokered(secret: Option<&CallSecret>) -> bool {
 }
 
 /// A brokered call sends the value it does not have: connect failures, and a
-/// response from the broker itself, are operator faults, never a direct retry.
+/// response from the broker itself, are Deployment Administrator faults, never a direct retry.
 fn brokered_send_error(error: reqwest::Error) -> Error {
 	if crate::keyless::refused(&error) {
 		crate::keyless::send_error(error)

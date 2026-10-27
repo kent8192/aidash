@@ -38,7 +38,7 @@ impl BrokerCode {
 	}
 }
 
-/// A broker-owned failure and the correlation id its operator can search for.
+/// A broker-owned failure and the correlation id its Deployment Administrator can search for.
 #[derive(Debug, Clone)]
 pub(crate) struct BrokerFailure {
 	pub(crate) code: BrokerCode,
@@ -47,7 +47,7 @@ pub(crate) struct BrokerFailure {
 
 impl BrokerFailure {
 	/// Read a broker-owned failure. The reason code is logged with its
-	/// correlation id for Deployment operators; it is never put in the error a
+	/// correlation id for Deployment Administrators; it is never put in the error a
 	/// Tenant sees.
 	pub(crate) fn from_headers(headers: &HeaderMap) -> Option<Self> {
 		let code = headers.get(BROKER_ERROR)?.to_str().ok()?;
@@ -61,7 +61,7 @@ impl BrokerFailure {
 			other => {
 				tracing::warn!(
 					code = other,
-					"unknown Tenant Secret broker error code; treating it as an operator fault"
+					"unknown Tenant Secret broker error code; treating it as a Deployment Administrator fault"
 				);
 				BrokerCode::Unavailable
 			}
@@ -78,7 +78,7 @@ impl BrokerFailure {
 		Some(Self { code, correlation })
 	}
 
-	/// An unreachable broker is an operator fault too, with no correlation.
+	/// An unreachable broker is a Deployment Administrator fault too, with no correlation.
 	pub(crate) fn connect_failure() -> Self {
 		tracing::warn!(
 			code = BROKER_UNAVAILABLE,
@@ -109,7 +109,7 @@ impl BrokerFailure {
 	}
 
 	/// The application error a caller sees. A repairable refusal keeps its code;
-	/// an operator fault names only the correlation. The broker's reason code
+	/// a Deployment Administrator fault names only the correlation. The broker's reason code
 	/// stays in the log above.
 	pub(crate) fn into_error(self) -> Error {
 		match self.code {

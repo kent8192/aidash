@@ -10,7 +10,7 @@ export type SecretReadinessStatus =
 export type SecretReadinessRepair =
   | "manage_secret"
   | "ask_administrator"
-  | "operator"
+  | "deployment_administrator"
   | "none";
 
 export type SecretReadinessFact = {
@@ -35,7 +35,7 @@ export const secretReadinessCopy = {
     manage: "Manage Tenant Secrets",
     askAdministrator:
       "Ask an administrator who can manage this Tenant's secrets to fix it.",
-    operator: "An operator of this Deployment must fix this.",
+    deployment_administrator: "A Deployment Administrator must fix this.",
     secret: "Tenant Secret",
     tool: "Tool",
     externalService: "External service",
@@ -52,7 +52,8 @@ export const secretReadinessCopy = {
     manage: "Tenant Secret を管理",
     askAdministrator:
       "この Tenant の Secret を管理できる管理者に修正を依頼してください。",
-    operator: "この Deployment のオペレーターが修正する必要があります。",
+    deployment_administrator:
+      "この Deployment の Deployment Administrator が修正する必要があります。",
     secret: "Tenant Secret",
     tool: "ツール",
     externalService: "External service",

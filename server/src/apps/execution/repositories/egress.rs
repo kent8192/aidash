@@ -84,7 +84,7 @@ impl Gateway {
 			.await
 			.map_err(|error| match error {
 				// The repairable code stays; any other resolution or signing
-				// fault is an operator fault (ADR 0095).
+				// fault is a Deployment Administrator fault (ADR 0095).
 				aidash_application::Error::Invalid(message)
 					if message == aidash_domain::tenant_secrets::UNAVAILABLE =>
 				{

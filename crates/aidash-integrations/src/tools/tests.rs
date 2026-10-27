@@ -843,7 +843,7 @@ mod brokered {
 	}
 
 	#[tokio::test]
-	async fn a_broker_connect_failure_is_an_operator_fault() {
+	async fn a_broker_connect_failure_is_an_deployment_administrator_fault() {
 		let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
 		let base = format!("http://{}/v1/forward", listener.local_addr().unwrap());
 		drop(listener);

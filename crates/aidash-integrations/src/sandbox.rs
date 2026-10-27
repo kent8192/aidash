@@ -98,7 +98,7 @@ impl PreparedRealRequest for Request {
 		{
 			// The broker could not reach the test endpoint, limited the rate, or
 			// named a repairable Tenant Secret problem: keep the failed outcome
-			// that the test session records. An operator fault is an error.
+			// that the test session records. A Deployment Administrator fault is an error.
 			if failure.is_upstream_or_rate_limited() {
 				return Ok((
 					json!({"error":"test Tool returned an HTTP error","status":response.status().as_u16()}),

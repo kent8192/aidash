@@ -183,7 +183,7 @@ run "preview_has_its_own_namespace_and_prefix" {
     error_message = "A preview is isolated by its own namespace, taint and Workload Identity principals."
   }
   assert {
-    condition     = google_project_iam_member.provider_credential_manage[0].condition[0].expression == "resource.name.startsWith('projects/123456789012/secrets/aidash-pr-2-cred-')"
+    condition     = google_project_iam_member.provider_credential_manage[0].condition[0].expression == "resource.name.startsWith('projects/123456789012/secrets/aidash-pr-2-cred-') || resource.name.startsWith('projects/123456789012/secrets/aidash-pr-2-tsec-')"
     error_message = "Environments share the fixed role but receive distinct secret-prefix conditions."
   }
   assert {

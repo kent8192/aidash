@@ -46395,8 +46395,8 @@
             },
             {
               "type": "string",
-              "description": "Only an operator of the Deployment can fix it.",
-              "enum": ["operator"]
+              "description": "Only a Deployment Administrator can fix it.",
+              "enum": ["deployment_administrator"]
             },
             {
               "type": "string",
@@ -46486,8 +46486,8 @@
             },
             {
               "type": "string",
-              "description": "Only an operator of the Deployment can fix it.",
-              "enum": ["operator"]
+              "description": "Only a Deployment Administrator can fix it.",
+              "enum": ["deployment_administrator"]
             },
             {
               "type": "string",
