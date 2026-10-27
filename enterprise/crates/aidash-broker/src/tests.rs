@@ -1835,6 +1835,7 @@ async fn provider_tools_require_the_signed_parameters_and_spending_caps_on_both_
 		binding: declaration.defaults(),
 	};
 	let mut claims = f.claims();
+	claims.ops = vec![Operation::Chat];
 	claims.provider_tools.push(aidash_capability::ProviderTool {
 		tool_type: pinned.tool_type.clone(),
 		parameters_digest: pinned.digest(),
@@ -1904,7 +1905,8 @@ async fn provider_tools_require_the_signed_parameters_and_spending_caps_on_both_
 			403
 		);
 		let response = f.request(&claims, "POST", path, valid).await;
-		assert_eq!(response.status(), 200);
-		json_body(response).await;
+		let status = response.status();
+		let body = json_body(response).await;
+		assert_eq!(status, 200, "{path}: {body}");
 	}
 }
