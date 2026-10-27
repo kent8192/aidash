@@ -4,8 +4,8 @@
 use reinhardt::db::migrations::prelude::*;
 
 pub(super) fn migration() -> Migration {
-	Migration::new("0063_previews", "execution")
-		.add_dependency("execution", "0062_retained_versions_state")
+	Migration::new("0064_previews", "execution")
+		.add_dependency("execution", "0063_retained_versions_state")
 		.database_only(true)
 		.add_operation(Operation::CreateTable {
 			name: "core_previews".into(),

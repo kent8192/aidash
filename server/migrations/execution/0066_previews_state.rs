@@ -3,8 +3,8 @@
 use reinhardt::db::migrations::prelude::*;
 
 pub(super) fn migration() -> Migration {
-	Migration::new("0065_previews_state", "execution")
-		.add_dependency("execution", "0064_previews_row_level_security")
+	Migration::new("0066_previews_state", "execution")
+		.add_dependency("execution", "0065_previews_row_level_security")
 		.state_only(true)
 		.atomic(true)
 		.add_operation(Operation::CreateTable {

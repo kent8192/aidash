@@ -35,13 +35,13 @@ and model-visible results.
 Every fixture tool is an `integration.http@1` declaration, and such calls need
 a Tool call approval. By default the runner denies each Tool call approval it
 finds through `scripts/tool_call_approvals.py`, so the declared endpoint
-(`--tool-endpoint`, by default the unresolvable host name `tools.invalid`) is never contacted.
-The model's call is still recorded with a denial result. Direct permission
-(`tool.call_unapproved`) in the evaluated Tenant's policy would let such a call
-proceed without any approval. Use
-`--approve-external-calls` only with an endpoint that the server may reach, which must be public or listed in
-`[keyless_endpoints] permitted_private_origins`, and
-that accepts the fixture arguments. Other human requests receive a fixed
+(`--tool-endpoint`, by default the unresolvable host name `tools.invalid`) is
+never contacted. The model's call is still recorded with a denial result.
+Direct permission (`tool.call_unapproved`) in the evaluated Tenant's policy
+would let such a call proceed without any approval. Use
+`--approve-external-calls` only with an endpoint that the server may reach,
+which must be public or listed in `[keyless_endpoints] permitted_private_origins`,
+and that accepts the fixture arguments. Other human requests receive a fixed
 "no human is available" answer. A Run still running after `--run-timeout`
 seconds (default 600) is cancelled and reported with `timed_out: true`.
 

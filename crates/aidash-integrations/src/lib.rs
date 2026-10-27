@@ -50,6 +50,9 @@ pub mod nats;
 pub mod tools;
 
 #[cfg(feature = "cloud-adapters")]
+pub mod plugin_sessions;
+
+#[cfg(feature = "cloud-adapters")]
 pub mod skill_import;
 
 #[cfg(feature = "cloud-adapters")]

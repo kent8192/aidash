@@ -92,6 +92,19 @@ async fn admit(
 		.await?;
 	Ok(input)
 }
+/// The same admission a bound tool call passes before dispatch: current
+/// settings, the Run's Binding, the pin and the definition digest, then
+/// `tool.invoke` with the Binding's narrowing applied. A Live preview start
+/// must pass it exactly as a Shell operation does (ADR 0034).
+pub async fn admit_tool(
+	scope: &mut dyn FileScopePort,
+	run: &RunMetadata,
+	name: &str,
+	input: Value,
+) -> Result<Value> {
+	admit(scope, run, name, input).await
+}
+
 /// Start one Completion Gate Check (#112). It passes the same Binding,
 /// narrowing and `tool.invoke` checks as the model's own shell calls; only the
 /// operation kind differs, so the Check's files never reach the Working Area.

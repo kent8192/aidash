@@ -192,6 +192,10 @@ export const approvalCopy: Record<"en-US" | "ja-JP", ApprovalCopy> = {
     noRules: "You have no Approval Rules yet.",
     kindLabel: "Kind",
     kinds: {
+      sampling: {
+        label: "Sampling",
+        help: "Allow targets pin Agent, Agent Plugin, server, copy digest and origin in a sampling:[…] array. Deny targets contain only Agent, Agent Plugin and server, following copy changes.",
+      },
       tool_call: {
         label: "Tool call",
         help: "One operation of a Tenant tool, as tool:<tool id>#<operation>. A rule names the tool, never a version.",
@@ -373,6 +377,10 @@ export const approvalCopy: Record<"en-US" | "ja-JP", ApprovalCopy> = {
     noRules: "Approval Rule はまだありません。",
     kindLabel: "種類",
     kinds: {
+      sampling: {
+        label: "Sampling",
+        help: "許可はsampling:[Agent ID, Agent Plugin名, サーバー名, コピーdigest, origin]、拒否は先頭3項目で指定します。拒否はコピー変更後も有効です。",
+      },
       tool_call: {
         label: "ツール呼び出し",
         help: "Tenant のツールの操作を tool:<ツール ID>#<操作> で指定します。ルールが指すのはツールで、バージョンではありません。",

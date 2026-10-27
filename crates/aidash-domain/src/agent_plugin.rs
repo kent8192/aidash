@@ -10,6 +10,7 @@ mod alias;
 mod expand;
 #[cfg(test)]
 pub(crate) mod fixtures;
+pub mod interaction;
 mod manifest;
 mod mcp;
 mod paths;
@@ -32,7 +33,7 @@ pub use settings::{MAX_SERVER_TOOLS, MAX_TOOL_NAME, PluginSettings, ReadOnlyTool
 pub use skills::PluginSkill;
 pub use tools::{
 	ListedTool, Listing, MAX_DESCRIPTION_BYTES, MAX_RUN_TOOLS, MAX_SCHEMA_BYTES, PinnedServer,
-	PinnedTool, PluginFinding, PluginTools, pin, schema_digest,
+	PinnedTool, PluginFinding, PluginTools, Skipped, pin, schema_digest,
 };
 
 pub const PLUGIN_SCHEMA: &str = "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json";

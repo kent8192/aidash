@@ -366,6 +366,7 @@
       "status": 200,
       "required_checks": [
         "Exact HTTP 200",
+        "Documented response fields and types",
         "Start a bound S256 desktop handoff contract"
       ]
     },
@@ -421,6 +422,7 @@
       "status": 200,
       "required_checks": [
         "Exact HTTP 200",
+        "Documented response fields and types",
         "Exchange consumes the bound proof once contract"
       ]
     },
@@ -443,6 +445,7 @@
       "status": 200,
       "required_checks": [
         "Exact HTTP 200",
+        "Documented response fields and types",
         "Rotate the desktop credential family contract"
       ]
     },
@@ -454,6 +457,7 @@
       "status": 200,
       "required_checks": [
         "Exact HTTP 200",
+        "Documented response fields and types",
         "Recover the same prepared rotation after response loss contract"
       ]
     },
@@ -10927,6 +10931,7 @@
       "status": 200,
       "required_checks": [
         "Exact HTTP 200",
+        "Documented response fields and types",
         "Application read preserves the typed response contract contract"
       ]
     },
@@ -12090,6 +12095,7 @@
       "status": 200,
       "required_checks": [
         "Exact HTTP 200",
+        "Documented response fields and types",
         "Deployment Administrator lists every Tenant root record contract"
       ]
     },

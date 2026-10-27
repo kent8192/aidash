@@ -4,10 +4,19 @@
  * `kind`, tells a card about a Tenant's tool from the other approvals.
  */
 
+/** The Agent Plugin tool a Run pinned, when the approval is for one. */
+export type PluginTool = {
+  plugin: string;
+  server: string;
+  tool: string;
+  digest: string;
+};
+
 type ToolFields = {
   tool?: string | null;
   version?: string | null;
   operation?: string | null;
+  plugin_tool?: PluginTool | null;
 };
 
 /** Whether a card is a Tool call approval or a Run grant made from one. */
@@ -15,8 +24,19 @@ export function isToolCard(card: Pick<ToolFields, "tool">): boolean {
   return typeof card.tool === "string" && card.tool !== "";
 }
 
-/** The tool and the definition version the call runs, as `tool@version`. */
+/** The first 12 hex digits of the digest of the plugin copy that declared a tool. */
+export function copyLabel(digest: string): string {
+  return digest.replace(/^sha256:/, "").slice(0, 12);
+}
+
+/**
+ * The tool and the definition version the call runs, as `tool@version`. A
+ * plugin tool has no definition: it is `plugin/server/tool` of one plugin copy.
+ */
 export function toolLabel(card: ToolFields): string {
+  const plugin = card.plugin_tool;
+  if (plugin)
+    return `${plugin.plugin}/${plugin.server}/${plugin.tool}@${copyLabel(plugin.digest)}`;
   return card.version ? `${card.tool}@${card.version}` : (card.tool ?? "");
 }
 

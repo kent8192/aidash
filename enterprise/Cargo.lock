@@ -186,8 +186,10 @@ version = "0.1.0"
 dependencies = [
  "base64 0.22.1",
  "chrono",
+ "getrandom 0.3.4",
  "http 1.5.0",
  "jsonschema",
+ "psl",
  "ruzstd",
  "schemars 1.2.2",
  "semver",
@@ -274,6 +276,7 @@ version = "0.1.0"
 dependencies = [
  "aidash-application",
  "aidash-domain",
+ "async-trait",
  "chrono",
  "futures-util",
  "metrics",
@@ -281,6 +284,7 @@ dependencies = [
  "serde_json",
  "tokio",
  "tracing",
+ "url",
  "uuid",
 ]
 
@@ -317,7 +321,8 @@ dependencies = [
  "rand_core 0.6.4",
  "reinhardt-web",
  "reqwest 0.13.5",
- "rmcp",
+ "rmcp 1.2.0",
+ "rmcp 3.7.0",
  "secrecy",
  "serde",
  "serde_json",
@@ -6473,6 +6478,15 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "263a3f48f01e7309e857138bd47f785585b4a005e8e56c6d2824ce91195999c3"
 
 [[package]]
+name = "psl"
+version = "2.1.245"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "46cce9bc841c0eeb395275a775d11e3cc91b904e6ab370a9a42369e111b3038e"
+dependencies = [
+ "psl-types",
+]
+
+[[package]]
 name = "psl-types"
 version = "2.0.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -8202,6 +8216,31 @@ dependencies = [
  "chrono",
  "futures",
  "http 1.5.0",
+ "pin-project-lite",
+ "reqwest 0.13.5",
+ "serde",
+ "serde_json",
+ "sse-stream",
+ "thiserror 2.0.20",
+ "tokio",
+ "tokio-stream",
+ "tokio-util",
+ "tracing",
+]
+
+[[package]]
+name = "rmcp"
+version = "3.7.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ece64e19631fc38758181e637c15509a2c2709ee53bfde1e1d58f9dc991f919e"
+dependencies = [
+ "base64 0.23.1",
+ "bytes",
+ "chrono",
+ "futures",
+ "http 1.5.0",
+ "indexmap 2.14.2",
+ "libc",
  "pin-project-lite",
  "reqwest 0.13.5",
  "serde",

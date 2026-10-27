@@ -752,7 +752,7 @@ pub(crate) async fn outbound_history(
 /// Approval records that end with their Run, so a pending one whose Run has
 /// ended is closed rather than left to be decided.
 fn ends_with_run(row: &super::records::Record) -> bool {
-	matches!(row.kind.as_str(), "disclosure" | "tool_call") && row.state == "pending"
+	matches!(row.kind.as_str(), "disclosure" | "tool_call" | "sampling") && row.state == "pending"
 }
 pub(crate) async fn approval_list(
 	f: Federation,
@@ -781,10 +781,10 @@ pub(crate) async fn approval_list(
 		});
 		let (kinds, state): (&[&str], _) = match query.state {
 			Some(ApprovalState::Pending) => {
-				(&["outbound", "disclosure", "tool_call"], Some("pending"))
+				(&["outbound", "disclosure", "tool_call", "sampling"], Some("pending"))
 			}
 			Some(ApprovalState::Active) => (&["grant"], Some("active")),
-			None => (&["outbound", "grant", "disclosure", "tool_call"], None),
+			None => (&["outbound", "grant", "disclosure", "tool_call", "sampling"], None),
 		};
 		select.and_where(Expr::col(Alias::new("kind")).is_in(kinds.iter().copied()));
 		if let Some(state) = state {
@@ -797,7 +797,7 @@ pub(crate) async fn approval_list(
 			// offers one whose Run has ended, since no decision on it could take
 			// effect.
 			select.and_where(Expr::cust(
-				"(kind NOT IN ('disclosure', 'tool_call') OR NOT EXISTS (SELECT 1 FROM runs r \
+				"(kind NOT IN ('disclosure', 'tool_call', 'sampling') OR NOT EXISTS (SELECT 1 FROM runs r \
 				 WHERE r.id::text = core_records.data->>'run_id' \
 				 AND (r.phase IN ('COMPLETED', 'FAILED', 'CANCELLED') OR r.control = 'CANCELLED')))",
 			));
@@ -852,7 +852,7 @@ pub(crate) async fn approval_list(
 			// A rule can name an outbound read, a Web disclosure or a tool call, and
 			// only the person the Run's delegation chain starts at may make one.
 			let allow_always = state == "pending"
-				&& matches!(row.kind.as_str(), "outbound" | "disclosure" | "tool_call")
+				&& matches!(row.kind.as_str(), "outbound" | "disclosure" | "tool_call" | "sampling")
 				&& data["subjects"][0] == json!(subject)
 				&& super::approvals::can_allow_always(&f.store, &mut access, &row).await?;
 			// Designated approvers see only the scoped card, never Run output.
@@ -875,8 +875,11 @@ pub(crate) async fn approval_list(
 				"agent_version": data["agent_version"],
 				"tool": data["tool"],
 				"version": if data["tool"].is_string() { data["version"].clone() } else { Value::Null },
+				"plugin_tool": data["plugin_tool"],
 				"operation": data["operation"],
 				"call": if row.kind == "tool_call" { data["call"].clone() } else { Value::Null },
+				"sampling_target": data["sampling_target"],
+				"sampling": data["sampling"],
 				"provider": data["provider"],
 				"estimated_micro_usd": data["attribution"]["price_micro_usd"],
 				"query": data["query"],

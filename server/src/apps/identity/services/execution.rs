@@ -299,6 +299,18 @@ impl WorkerAuthority {
 			}
 			return Ok(json!({"stopped": true, "live_preview": previous}));
 		}
+		let input = {
+			let outer = self.access.read().await;
+			let mut access = Access::under_lease(&outer).await?;
+			let result = aidash_application::capabilities::files::admit_tool(
+				&mut crate::bootstrap::file_scope(Some(store), &mut access, Some(run)),
+				&run.metadata(),
+				name,
+				input,
+			)
+			.await;
+			access.finish(result.map_err(Into::into)).await?
+		};
 		let input: aidash_application::preview::live::Start = serde_json::from_value(input)?;
 		if let Some(port) = store.preview_pod_port
 			&& input.port != port
@@ -477,6 +489,39 @@ impl WorkerAuthority {
 			let mut scope = crate::bootstrap::approval_scope(Some(store), &mut access, None);
 			scope.run = Some(Box::new(run.clone()));
 			aidash_application::capabilities::approvals::tool_call(
+				&mut scope,
+				&run.metadata(),
+				request,
+			)
+			.await
+			.map_err(Error::from)
+		}
+		.await;
+		access.finish(result).await
+	}
+
+	pub async fn sampling_approval(
+		&self,
+		store: &Store,
+		run: &Run,
+		request: aidash_application::capabilities::approvals::SamplingApprovalRequest,
+	) -> Result<aidash_application::capabilities::approvals::ToolCallApproval> {
+		let outer = self.access.write().await;
+		let mut access = Access::under_lease(&outer).await?;
+		let result = async {
+			// A core Run's approval belongs to its Working Area, so its Thread
+			// lists it; other Runs have none.
+			let area =
+				crate::apps::execution::repositories::sessions::run_area(&mut access, run.id)
+					.await?
+					.flatten()
+					.map(|area| area.id);
+			let request = aidash_application::capabilities::approvals::SamplingApprovalRequest {
+				area,
+				..request
+			};
+			let mut scope = crate::bootstrap::approval_scope(Some(store), &mut access, None);
+			aidash_application::capabilities::approvals::sampling::request(
 				&mut scope,
 				&run.metadata(),
 				request,
