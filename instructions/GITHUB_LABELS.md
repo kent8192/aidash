@@ -47,6 +47,9 @@ Add supplementary labels only when their meaning applies:
   stay the same. Keep the PR's breaking-change assessment, migration guidance, and
   Conventional Commit `!` marker consistent with this label.
 - `accessibility`: barriers affecting people with disabilities.
+- `after-release`: work deliberately deferred until after the first release, to be
+  reconsidered then. Keep such an Issue out of release umbrellas and say in its body
+  what should be reassessed.
 - `help wanted` or `good first issue`: an explicit request for help or a bounded
   task suitable for newcomers, respectively.
 - `duplicate`, `invalid`, or `wontfix`: a recorded triage decision. Link the
