@@ -132,26 +132,21 @@ async fn live_preview_stop_authority_belongs_to_the_viewer(
 	}));
 	common::replace_policy(&c.f.store, "acme", c.policy.clone()).await;
 	let path = format!("/api/runs/{}/live-preview", run.id);
-	for (token, allowed) in [(c.token.as_str(), true), (bob, false)] {
-		let (status, body) = request(&c.app, token, "GET", &path, Value::Null).await;
-		assert_eq!(status, 200, "{body}");
-		assert_eq!(
-			body["may_stop"], allowed,
-			"requester exception uses the viewer's own identity"
-		);
-	}
+	let (status, body) = request(&c.app, &c.token, "GET", &path, Value::Null).await;
+	assert_eq!(status, 200, "{body}");
+	assert_eq!(
+		body["may_stop"], true,
+		"the requester may stop without run.control"
+	);
+	// The Area belongs to Alice, so Bob cannot read even its status. A Run's
+	// cancellation authority also requires this same visibility decision.
+	let (status, body) = request(&c.app, bob, "GET", &path, Value::Null).await;
+	assert_eq!(status, 403, "{body}");
 	let stop = format!("{path}/stop");
 	let (status, body) = request(&c.app, bob, "POST", &stop, Value::Null).await;
 	assert_eq!(status, 403, "{body}");
 	assert_eq!(live_row(&c, preview).await.0, "running");
-	// Restoring Bob's own cancellation authority enables Stop without borrowing
-	// the requester's execution grant or changing the preview's owner.
-	c.policy["policies"].as_array_mut().unwrap().pop();
-	common::replace_policy(&c.f.store, "acme", c.policy.clone()).await;
-	let (status, body) = request(&c.app, bob, "GET", &path, Value::Null).await;
-	assert_eq!(status, 200, "{body}");
-	assert_eq!(body["may_stop"], true);
-	let (status, body) = request(&c.app, bob, "POST", &stop, Value::Null).await;
+	let (status, body) = request(&c.app, &c.token, "POST", &stop, Value::Null).await;
 	assert_eq!(status, 200, "{body}");
 	assert_eq!(body["live_preview"]["state"], "stopped");
 }
