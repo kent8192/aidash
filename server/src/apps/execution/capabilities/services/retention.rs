@@ -25,6 +25,27 @@ pub async fn retain(
 	.map_err(Into::into)
 }
 
+/// Retains every File version of `revision` for a running Live preview.
+#[allow(private_interfaces)]
+pub async fn retain_revision(
+	store: &Store,
+	access: &mut Access,
+	area: Uuid,
+	revision: i64,
+	holder: Holder,
+) -> Result<RetentionHold> {
+	let hold = application::retain_revision(
+		&mut crate::bootstrap::retention_scope(Some(store), access),
+		area,
+		holder,
+	)
+	.await?;
+	if hold.revision != revision {
+		return Err(crate::Error::Conflict("AREA_REVISION_CHANGED".into()));
+	}
+	Ok(hold)
+}
+
 /// Releases every hold of `holder`, returning how many it removed.
 #[allow(private_interfaces)]
 pub async fn release(store: &Store, access: &mut Access, holder: &Holder) -> Result<u64> {

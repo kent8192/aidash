@@ -86,6 +86,8 @@ impl Limits {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum State {
+	/// A start is being dispatched: it has no Pod it can serve from yet.
+	Starting,
 	/// Its Pod is serving the revision it pinned.
 	Running,
 	/// It still serves its pinned revision, but a later publication has left it
@@ -98,6 +100,7 @@ pub enum State {
 impl State {
 	pub fn as_str(&self) -> &'static str {
 		match self {
+			Self::Starting => "starting",
 			Self::Running => "running",
 			Self::Stale => "stale",
 			Self::Stopped => "stopped",
@@ -106,6 +109,7 @@ impl State {
 
 	pub fn parse(value: &str) -> Result<Self> {
 		match value {
+			"starting" => Ok(Self::Starting),
 			"running" => Ok(Self::Running),
 			"stale" => Ok(Self::Stale),
 			"stopped" => Ok(Self::Stopped),
@@ -200,9 +204,10 @@ pub struct LivePreview {
 }
 
 impl LivePreview {
-	/// A row for a start that is being dispatched. The state stays `Stopped`
+	/// A row for a start that is being dispatched. The state stays `Starting`
 	/// until the Runner reports the port is accepting, so a crash mid-start
-	/// leaves nothing claiming to serve.
+	/// leaves nothing claiming to serve; a sweep ends it after the start
+	/// deadline.
 	#[allow(clippy::too_many_arguments)]
 	pub fn starting(
 		id: Uuid,
@@ -222,7 +227,7 @@ impl LivePreview {
 			area_id,
 			revision,
 			port,
-			state: State::Stopped,
+			state: State::Starting,
 			stop_reason: None,
 			started_at: now,
 			last_request_at: now,
@@ -252,6 +257,13 @@ impl LivePreview {
 			State::Running if area_revision > self.revision => State::Stale,
 			state => state,
 		}
+	}
+
+	/// Whether a start that never became ready has exhausted its wait. The
+	/// dispatcher waits [`START_SECONDS`], plus a margin for a slow restart.
+	pub fn start_expired(&self, now: DateTime<Utc>) -> bool {
+		self.state == State::Starting
+			&& now >= self.started_at + TimeDelta::seconds(START_SECONDS + 30)
 	}
 
 	pub fn running(&self) -> bool {

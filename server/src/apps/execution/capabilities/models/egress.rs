@@ -47,6 +47,9 @@ pub struct RequestRecord {
 	pub run_id: Uuid,
 	#[field]
 	pub operation_id: Uuid,
+	/// Set only for a request made with a Live preview's session token.
+	#[field(null = true)]
+	pub session_id: Option<Uuid>,
 	#[field(field_type = "text")]
 	pub service: String,
 	#[field(field_type = "text")]

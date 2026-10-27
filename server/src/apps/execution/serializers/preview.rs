@@ -27,6 +27,9 @@ pub struct PreviewSettings {
 	/// The public port a ticket URL names; 443 when absent.
 	#[setting(optional)]
 	pub public_port: Option<u16>,
+	/// The only Pod port the Preview NetworkPolicy admits; 3000 when absent.
+	#[setting(optional)]
+	pub pod_port: Option<u16>,
 }
 
 /// The resolved Preview configuration.
@@ -36,7 +39,11 @@ pub struct PreviewConfig {
 	pub listen: SocketAddr,
 	pub in_process: bool,
 	pub public_port: Option<u16>,
+	pub pod_port: u16,
 }
+
+/// The first non-privileged port a preview Web server usually listens on.
+pub const DEFAULT_POD_PORT: u16 = 3000;
 
 /// The gateway's loopback listener when the settings name none.
 pub const DEFAULT_LISTEN: &str = "127.0.0.1:8960";
@@ -64,11 +71,20 @@ impl PreviewSettings {
 				"preview.public_port must not be zero".into(),
 			));
 		}
+		let pod_port = self.pod_port.unwrap_or(DEFAULT_POD_PORT);
+		if let Some(port) = self.pod_port
+			&& port < aidash_domain::preview::live::MINIMUM_PORT
+		{
+			return Err(crate::Error::Invalid(
+				"preview.pod_port must be non-privileged".into(),
+			));
+		}
 		Ok(Some(PreviewConfig {
 			domain,
 			listen,
 			in_process: self.in_process.unwrap_or(true),
 			public_port: self.public_port,
+			pod_port,
 		}))
 	}
 }
@@ -91,6 +107,13 @@ impl SettingsValidation for PreviewSettings {
 				"preview.public_port must not be zero".into(),
 			));
 		}
+		if let Some(port) = self.pod_port
+			&& port < aidash_domain::preview::live::MINIMUM_PORT
+		{
+			return Err(ValidationError::Constraint(
+				"preview.pod_port must be non-privileged".into(),
+			));
+		}
 		Ok(())
 	}
 }
@@ -105,6 +128,7 @@ mod tests {
 			listen: None,
 			in_process: None,
 			public_port: None,
+			pod_port: None,
 		}
 	}
 

@@ -100,9 +100,11 @@ fn a_preview_must_declare_a_non_privileged_port() {
 #[test]
 fn a_start_is_not_serving_until_the_runner_confirms_the_port() {
 	let preview = preview();
-	assert_eq!(preview.state, State::Stopped);
-	assert_eq!(preview.view(3), State::Stopped);
+	assert_eq!(preview.state, State::Starting);
+	assert_eq!(preview.view(3), State::Starting);
 	assert!(!preview.admits(now()));
+	assert!(!preview.start_expired(now() + TimeDelta::seconds(START_SECONDS)));
+	assert!(preview.start_expired(now() + TimeDelta::seconds(START_SECONDS + 30)));
 }
 
 #[test]
@@ -169,6 +171,7 @@ fn a_stop_reason_round_trips_through_its_persisted_name() {
 	}
 	assert!(StopReason::parse("finished").is_err());
 	assert_eq!(State::parse("stale").unwrap(), State::Stale);
+	assert_eq!(State::parse("starting").unwrap(), State::Starting);
 	assert!(State::parse("frozen").is_err());
 }
 

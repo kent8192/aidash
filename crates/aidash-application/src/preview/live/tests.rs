@@ -130,7 +130,7 @@ impl Scope for Fake {
 	async fn area_revision(&mut self, _area: Uuid) -> Result<Option<i64>> {
 		Ok(Some(self.area_revision))
 	}
-	async fn egress_expiry(&mut self, _preview: Uuid, _expires: DateTime<Utc>) -> Result<()> {
+	async fn mint_egress(&mut self, _preview: &mut LivePreview) -> Result<()> {
 		Ok(())
 	}
 }
@@ -227,7 +227,6 @@ async fn a_started_preview_reports_where_it_serves_but_never_the_address() {
 		&mut scope,
 		preview,
 		"10.0.0.7",
-		None,
 		"listening on 3000",
 		Utc::now(),
 	)
@@ -249,16 +248,9 @@ async fn a_stale_preview_keeps_its_revision_and_status_says_so() {
 	let preview = start(&mut scope, &request("python3 -m http.server 3000", 3000))
 		.await
 		.unwrap();
-	serving(
-		&mut scope,
-		preview.clone(),
-		"10.0.0.7",
-		None,
-		"",
-		Utc::now(),
-	)
-	.await
-	.unwrap();
+	serving(&mut scope, preview.clone(), "10.0.0.7", "", Utc::now())
+		.await
+		.unwrap();
 	scope.area_revision = 4;
 	let status = status(&mut scope, preview.run_id).await.unwrap().unwrap();
 	assert_eq!(status.state, State::Stale);
@@ -273,16 +265,9 @@ async fn the_idle_limit_stops_it_and_releases_the_hold_only_after_the_proof() {
 		.await
 		.unwrap();
 	let started_at = Utc::now();
-	serving(
-		&mut scope,
-		preview.clone(),
-		"10.0.0.7",
-		None,
-		"",
-		started_at,
-	)
-	.await
-	.unwrap();
+	serving(&mut scope, preview.clone(), "10.0.0.7", "", started_at)
+		.await
+		.unwrap();
 	let sweep = sweep(&mut scope, started_at + chrono::TimeDelta::seconds(61))
 		.await
 		.unwrap();
@@ -301,16 +286,9 @@ async fn the_absolute_limit_stops_it_even_with_fresh_requests() {
 		.await
 		.unwrap();
 	let started_at = Utc::now();
-	serving(
-		&mut scope,
-		preview.clone(),
-		"10.0.0.7",
-		None,
-		"",
-		started_at,
-	)
-	.await
-	.unwrap();
+	serving(&mut scope, preview.clone(), "10.0.0.7", "", started_at)
+		.await
+		.unwrap();
 	// A fresh request within the idle limit, but past the absolute deadline.
 	scope
 		.rows
@@ -329,16 +307,9 @@ async fn stopping_is_idempotent_and_keeps_the_first_reason() {
 	let preview = start(&mut scope, &request("python3 -m http.server 3000", 3000))
 		.await
 		.unwrap();
-	serving(
-		&mut scope,
-		preview.clone(),
-		"10.0.0.7",
-		None,
-		"",
-		Utc::now(),
-	)
-	.await
-	.unwrap();
+	serving(&mut scope, preview.clone(), "10.0.0.7", "", Utc::now())
+		.await
+		.unwrap();
 	let stopped = stop(&mut scope, preview.id, StopReason::RunCancelled)
 		.await
 		.unwrap();
@@ -355,16 +326,9 @@ async fn a_later_revision_marks_stale_without_terminating() {
 	let preview = start(&mut scope, &request("python3 -m http.server 3000", 3000))
 		.await
 		.unwrap();
-	serving(
-		&mut scope,
-		preview.clone(),
-		"10.0.0.7",
-		None,
-		"",
-		Utc::now(),
-	)
-	.await
-	.unwrap();
+	serving(&mut scope, preview.clone(), "10.0.0.7", "", Utc::now())
+		.await
+		.unwrap();
 	scope.area_revision = 4;
 	let sweep = sweep(&mut scope, Utc::now()).await.unwrap();
 	assert_eq!(sweep.stale, 1);

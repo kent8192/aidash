@@ -7,6 +7,7 @@ pub mod research_providers;
 pub mod research_retention;
 
 pub mod preview;
+pub mod preview_limits;
 
 pub mod openrouter;
 

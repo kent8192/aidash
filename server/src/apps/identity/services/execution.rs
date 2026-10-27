@@ -220,6 +220,9 @@ impl WorkerAuthority {
 		key: &str,
 		shared_read: bool,
 	) -> Result<Value> {
+		if matches!(name, "live_preview_start" | "live_preview_stop") {
+			return self.live_preview_tool(store, run, name, input).await;
+		}
 		let outer = self.access.read().await;
 		let mut access = Access::under_lease(&outer).await?;
 		access.shared_area = shared_read;
@@ -245,6 +248,125 @@ impl WorkerAuthority {
 			}
 			Err(error) => Err(error),
 		}
+	}
+
+	/// Start or stop the Run's Live preview. A start waits up to 120 seconds for
+	/// the Pod's port, so it never holds an authority transaction across that
+	/// wait: the row is committed, the Runner is dispatched, and a second
+	/// transaction records the answer (ADR 0070).
+	async fn live_preview_tool(
+		&self,
+		store: &Store,
+		run: &Run,
+		name: &str,
+		input: Value,
+	) -> Result<Value> {
+		use crate::apps::execution::repositories::live_previews as previews;
+		use aidash_domain::preview::live::StopReason;
+		let domain = store.preview_domain.clone();
+		if name == "live_preview_stop" {
+			let previous = {
+				let outer = self.access.read().await;
+				let mut access = Access::under_lease(&outer).await?;
+				let result = previews::status(store, &mut access, run, domain.clone()).await;
+				access.finish(result).await?
+			};
+			let Some(previous) = previous else {
+				return Ok(json!({"stopped": true, "live_preview": null}));
+			};
+			if previous.state.is_stopped() {
+				return Ok(json!({"stopped": true, "live_preview": previous}));
+			}
+			let stopped = {
+				let outer = self.access.read().await;
+				let mut access = Access::under_lease(&outer).await?;
+				let result = previews::request_stop(
+					store,
+					&mut access,
+					run,
+					domain.clone(),
+					previous.id,
+					StopReason::Stopped,
+				)
+				.await;
+				access.finish(result).await?
+			};
+			if previews::terminate(store, &stopped).await.unwrap_or(false) {
+				let outer = self.access.read().await;
+				let mut access = Access::under_lease(&outer).await?;
+				let result = previews::settle(store, &mut access, run, domain, previous.id).await;
+				access.finish(result).await?;
+			}
+			return Ok(json!({"stopped": true, "live_preview": previous}));
+		}
+		let input: aidash_application::preview::live::Start = serde_json::from_value(input)?;
+		if let Some(port) = store.preview_pod_port
+			&& input.port != port
+		{
+			return Err(Error::Conflict(format!(
+				"PREVIEW_PORT_NOT_ALLOWED: this Deployment admits Live previews on port {port}"
+			)));
+		}
+		// Starting another replaces the Run's Live preview before a new row exists.
+		let previous = {
+			let outer = self.access.read().await;
+			let mut access = Access::under_lease(&outer).await?;
+			let result = previews::status(store, &mut access, run, domain.clone()).await;
+			access.finish(result).await?
+		};
+		if let Some(previous) = previous
+			&& !previous.state.is_stopped()
+		{
+			let replaced = {
+				let outer = self.access.read().await;
+				let mut access = Access::under_lease(&outer).await?;
+				let result = previews::request_stop(
+					store,
+					&mut access,
+					run,
+					domain.clone(),
+					previous.id,
+					StopReason::Replaced,
+				)
+				.await;
+				access.finish(result).await?
+			};
+			if previews::terminate(store, &replaced).await.unwrap_or(false) {
+				let outer = self.access.read().await;
+				let mut access = Access::under_lease(&outer).await?;
+				let result =
+					previews::settle(store, &mut access, run, domain.clone(), replaced.id).await;
+				access.finish(result).await?;
+			}
+		}
+		let pending = {
+			let outer = self.access.read().await;
+			let mut access = Access::under_lease(&outer).await?;
+			let result =
+				previews::prepare(store, &mut access, run, domain.clone(), input.clone()).await;
+			access.finish(result).await?
+		};
+		let files = {
+			let outer = self.access.read().await;
+			let mut access = Access::under_lease(&outer).await?;
+			let result = async {
+				let area = crate::apps::execution::capabilities::services::sessions::load(
+					&mut access,
+					pending.area_id,
+				)
+				.await?;
+				crate::apps::execution::capabilities::services::service::files(&area)
+			}
+			.await;
+			access.finish(result).await?
+		};
+		let dispatched = previews::dispatch(store, &pending, files, &input.command).await?;
+		let outer = self.access.read().await;
+		let mut access = Access::under_lease(&outer).await?;
+		let result =
+			previews::finish_start(store, &mut access, run, domain, pending, dispatched).await;
+		let started = access.finish(result).await?;
+		Ok(json!(started))
 	}
 
 	/// Start a Completion Gate Check (#112) under the worker's current

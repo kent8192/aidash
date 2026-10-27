@@ -5,7 +5,6 @@
 //! only what it needs to re-run the same decision the download endpoint runs,
 //! including the credential the ticket was issued under.
 use crate::{Error, Result};
-use aidash_domain::preview::live::StopReason;
 use aidash_domain::preview::{
 	PreviewKind, PreviewLabel, PreviewSecret, TICKET_PATH, TICKET_SECONDS, origin,
 };
@@ -118,8 +117,9 @@ pub struct Proxy {
 	pub frame_ancestor: String,
 	/// `<pod address>:<declared port>`; only the gateway reaches it.
 	pub upstream: String,
-	/// The Egress gateway token for the Run's bound External services; never
-	/// carries a Tenant Secret (ADR 0069).
+	/// The Egress gateway's internal origin and the session token for the Run's
+	/// bound External services; never carries a Tenant Secret (ADR 0069).
+	pub egress_origin: Option<String>,
 	pub egress_token: Option<String>,
 }
 
@@ -129,8 +129,9 @@ pub trait Authority: Send + Sync {
 	async fn exchange(&self, host: &str, ticket: &str) -> Result<Exchange>;
 	async fn view(&self, host: &str, cookie: &str, path: &str) -> Result<Page>;
 	/// A Live preview request: recheck authority, refresh the idle timer and
-	/// return where to proxy it. It stops the preview when authority is gone.
-	async fn live(&self, host: &str, cookie: &str) -> Result<Proxy>;
+	/// return where to proxy it. `None` when this host is not a Live preview.
+	/// It stops the preview when authority is gone.
+	async fn live(&self, host: &str, cookie: &str) -> Result<Option<Proxy>>;
 	/// Adds the bytes actually sent to the viewing session's record.
 	async fn served(&self, tenant: &str, session: Uuid, bytes: u64) -> Result<()>;
 }

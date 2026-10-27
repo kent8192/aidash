@@ -99,8 +99,10 @@ pub trait Scope: Send {
 	async fn unsettled(&mut self) -> Result<Vec<LivePreview>>;
 	/// The area revision behind each preview, so staleness is visible.
 	async fn area_revision(&mut self, area_id: Uuid) -> Result<Option<i64>>;
-	/// Stores the Egress session token's expiry, which the gateway recomputes.
-	async fn egress_expiry(&mut self, preview: Uuid, expires_at: DateTime<Utc>) -> Result<()>;
+	/// Mints the session-lifetime Egress token for the Run's bound External
+	/// services, recording its expiry on the preview. A Deployment without an
+	/// Egress gateway records nothing.
+	async fn mint_egress(&mut self, preview: &mut LivePreview) -> Result<()>;
 }
 
 /// The limits effective for `tenant`: the Deployment's ceilings, lowered by the
@@ -150,6 +152,8 @@ pub async fn start(scope: &mut dyn Scope, request: &Start) -> Result<LivePreview
 	scope
 		.retain_revision(area.id, area.revision, &holder)
 		.await?;
+	let mut preview = preview;
+	scope.mint_egress(&mut preview).await?;
 	if let Err(error) = scope.insert(&preview).await {
 		// The hold must not outlive a start that never recorded its row.
 		let _ = scope.release(&holder).await;
@@ -163,15 +167,10 @@ pub async fn serving(
 	scope: &mut dyn Scope,
 	mut preview: LivePreview,
 	pod_host: impl Into<String>,
-	egress_expires_at: Option<DateTime<Utc>>,
 	startup_log: &str,
 	now: DateTime<Utc>,
 ) -> Result<Started> {
 	preview.serving(pod_host, now);
-	if let Some(expires_at) = egress_expires_at {
-		preview.egress_expires_at = Some(expires_at);
-		scope.egress_expiry(preview.id, expires_at).await?;
-	}
 	scope.save(&preview).await?;
 	let area_revision = scope
 		.area_revision(preview.area_id)
@@ -273,6 +272,12 @@ pub async fn sweep(scope: &mut dyn Scope, now: DateTime<Utc>) -> Result<Sweep> {
 		}
 		if let Some(reason) = preview.expired(now) {
 			preview.stopping(reason);
+			scope.save(&preview).await?;
+			sweep.terminate.push(preview);
+			continue;
+		}
+		if preview.start_expired(now) {
+			preview.stopping(StopReason::StartFailed);
 			scope.save(&preview).await?;
 			sweep.terminate.push(preview);
 			continue;

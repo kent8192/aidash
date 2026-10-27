@@ -106,7 +106,15 @@ pub async fn initialize(
 		})
 		// An invalid Deployment retention period refuses to start (ADR 0045).
 		.with_research_retention(settings.research_retention.rules()?)
-		.with_test_limit_ceilings(settings.workbench_test_limits.ceilings()?);
+		.with_test_limit_ceilings(settings.workbench_test_limits.ceilings()?)
+		.with_preview_limits(settings.preview_limits.limits()?)
+		.with_preview(
+			config
+				.preview
+				.as_ref()
+				.map(|preview| preview.domain.clone()),
+			config.preview.as_ref().map(|preview| preview.pod_port),
+		);
 	configure_provider_credentials(&mut store, &settings.provider_credentials).await?;
 	configure_plan_connections(
 		&mut store,
@@ -351,6 +359,7 @@ impl RuntimeTasks {
 		let retention = federation.store.clone();
 		let research_retention = federation.store.research_retention;
 		let audit_retention_days = federation.config.tenancy.audit_retention_days;
+		let serving = event_streams.is_some();
 		tasks.spawn_service(runtime_task(async move {
 			// Inference progress expires minutes after its outcome, so attempts
 			// orphaned on unscheduled Runs are closed first; hourly workbench,
@@ -417,6 +426,12 @@ impl RuntimeTasks {
 							break;
 						}
 					}
+				}
+				if serving
+					&& let Err(error) =
+						crate::apps::execution::repositories::live_previews::sweep(&retention).await
+				{
+					tracing::warn!(%error, "Live preview sweep failed");
 				}
 				ticks = ticks.wrapping_add(1);
 				tokio::time::sleep(Duration::from_secs(60)).await;

@@ -124,6 +124,7 @@ fn values_with_oidc(
 		("domain", "AIDASH_PREVIEW_DOMAIN"),
 		("listen", "AIDASH_PREVIEW_LISTEN"),
 		("public_port", "AIDASH_PREVIEW_PUBLIC_PORT"),
+		("pod_port", "AIDASH_PREVIEW_POD_PORT"),
 	] {
 		if let Some(value) = read(name) {
 			preview.insert(key.into(), Value::String(value));

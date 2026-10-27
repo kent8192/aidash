@@ -84,6 +84,13 @@ pub struct Store {
 	/// The Deployment's ceilings on Tenants' Test Limits from
 	/// `[workbench_test_limits]` (#361).
 	pub test_limit_ceilings: aidash_domain::registry::workbench::sandbox::TestLimitCeilings,
+	/// The Deployment's ceilings on Live preview lifetimes from
+	/// `[preview_limits]` (ADR 0070).
+	pub preview_limits: aidash_domain::preview::live::Limits,
+	/// The preview domain this Deployment serves; `None` offers no Previews.
+	pub preview_domain: Option<String>,
+	/// The only Pod port the Preview NetworkPolicy admits.
+	pub preview_pod_port: Option<u16>,
 	pub(crate) recovery_cursors: std::sync::Arc<run_state::RecoveryCursors>,
 	/// Tenants found for Runs, Workspaces, tasks and grants, shared by every
 	/// clone of this Store.
@@ -468,6 +475,9 @@ impl Store {
 			egress: Default::default(),
 			research_retention: aidash_domain::retention::RetentionRules::DEFAULT,
 			test_limit_ceilings: Default::default(),
+			preview_limits: aidash_domain::preview::live::Limits::default(),
+			preview_domain: None,
+			preview_pod_port: None,
 			recovery_cursors: Default::default(),
 			tenancies: Default::default(),
 			tool_slots,
@@ -510,6 +520,17 @@ impl Store {
 		self.research_retention = rules;
 		self
 	}
+	pub fn with_preview_limits(mut self, limits: aidash_domain::preview::live::Limits) -> Self {
+		self.preview_limits = limits;
+		self
+	}
+
+	pub fn with_preview(mut self, domain: Option<String>, pod_port: Option<u16>) -> Self {
+		self.preview_domain = domain;
+		self.preview_pod_port = pod_port;
+		self
+	}
+
 	pub fn with_test_limit_ceilings(
 		mut self,
 		ceilings: aidash_domain::registry::workbench::sandbox::TestLimitCeilings,
@@ -581,6 +602,9 @@ impl Store {
 			egress: self.egress.clone(),
 			research_retention: self.research_retention,
 			test_limit_ceilings: self.test_limit_ceilings,
+			preview_limits: self.preview_limits.clone(),
+			preview_domain: self.preview_domain.clone(),
+			preview_pod_port: self.preview_pod_port,
 			recovery_cursors: self.recovery_cursors.clone(),
 			tenancies: self.tenancies.clone(),
 			tool_slots: self.tool_slots.clone(),
@@ -634,6 +658,9 @@ impl Store {
 			egress: self.egress.clone(),
 			research_retention: self.research_retention,
 			test_limit_ceilings: self.test_limit_ceilings,
+			preview_limits: self.preview_limits.clone(),
+			preview_domain: self.preview_domain.clone(),
+			preview_pod_port: self.preview_pod_port,
 			recovery_cursors: self.recovery_cursors.clone(),
 			tenancies: self.tenancies.clone(),
 			tool_slots: self.tool_slots.clone(),
@@ -3390,6 +3417,14 @@ impl Store {
 		.ok_or_else(|| {
 			Error::Conflict("run is terminal or cancellation is already requested".into())
 		})?;
+		if action == RunControlAction::Cancel {
+			crate::apps::execution::repositories::live_previews::mark_stopped_for_run(
+				tx,
+				id,
+				aidash_domain::preview::live::StopReason::RunCancelled,
+			)
+			.await?;
+		}
 		let workspace =
 			(r.metadata.is_local(self.deployment.as_str())).then_some(r.metadata.workspace_id);
 		if let Some(reason) = semantic_retry {

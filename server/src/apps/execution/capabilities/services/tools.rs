@@ -1,4 +1,5 @@
 use super::CoreCapabilities;
+use super::contracts::{LivePreviewStart, LivePreviewStop};
 use crate::{
 	Error, Result,
 	provider::ToolSpec,
@@ -126,6 +127,16 @@ pub(crate) fn implementations() -> BTreeMap<String, Arc<dyn Tool>> {
 			"file_share",
 			"Share selected immutable files with an exact authorized Agent/thread; delivery cannot recall information already read.",
 			schema::<Share>(),
+		),
+		(
+			"live_preview_start",
+			"Start this Run's Live preview: a long-lived Web server from the current Working Area revision. Waits up to 120 s for the declared port and returns its status and a bounded startup log, never a viewing address. Starting replaces a running preview.",
+			schema::<LivePreviewStart>(),
+		),
+		(
+			"live_preview_stop",
+			"Stop this Run's Live preview and release the File versions it kept.",
+			schema::<LivePreviewStop>(),
 		),
 		(
 			"skill_list",

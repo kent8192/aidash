@@ -47,9 +47,11 @@
 //! declared Rust type (e.g. `u16`) without manual parsing.
 
 use crate::apps::execution::serializers::cache_salt::CacheSaltSettings;
-use crate::apps::execution::serializers::preview::PreviewSettings;
 use crate::apps::execution::serializers::research_providers::ResearchProviderSettings;
 use crate::apps::execution::serializers::research_retention::ResearchRetentionSettings;
+use crate::apps::execution::serializers::{
+	preview::PreviewSettings, preview_limits::PreviewLimitSettings,
+};
 use crate::apps::identity::serializers::demo_data_settings::DemoDataSettings;
 use crate::apps::identity::serializers::keyless_endpoints::KeylessEndpointSettings;
 use crate::apps::identity::serializers::plan_connections::PlanConnectionSettings;
@@ -70,7 +72,7 @@ use reinhardt::settings;
 use std::env;
 
 // Add fragments to extend settings: e.g. `#[settings(core: CoreSettings | cache: CacheSettings)]`
-#[settings(core: CoreSettings | contacts: ContactSettings | migrations: MigrationSettings | dashboard: DashboardSettings | kubernetes: KubernetesSettings | provider_credentials: ProviderCredentialSettings | cache_salt: CacheSaltSettings | keyless_endpoints: KeylessEndpointSettings | tenancy: TenancySettings | demo_data: DemoDataSettings | plan_connections: PlanConnectionSettings | research_providers: ResearchProviderSettings | research_retention: ResearchRetentionSettings | preview: PreviewSettings | workbench_test_limits: WorkbenchTestLimitSettings | deployment: DeploymentSettings | marketplace: MarketplaceSettings)]
+#[settings(core: CoreSettings | contacts: ContactSettings | migrations: MigrationSettings | dashboard: DashboardSettings | kubernetes: KubernetesSettings | provider_credentials: ProviderCredentialSettings | cache_salt: CacheSaltSettings | keyless_endpoints: KeylessEndpointSettings | tenancy: TenancySettings | demo_data: DemoDataSettings | plan_connections: PlanConnectionSettings | research_providers: ResearchProviderSettings | research_retention: ResearchRetentionSettings | preview: PreviewSettings | preview_limits: PreviewLimitSettings | workbench_test_limits: WorkbenchTestLimitSettings | deployment: DeploymentSettings | marketplace: MarketplaceSettings)]
 pub struct ProjectSettings;
 
 /// Get settings based on environment variable

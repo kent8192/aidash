@@ -1556,3 +1556,262 @@ pub(crate) async fn preview_ticket(
 	};
 	access.finish(result.map_err(Into::into)).await
 }
+
+/// The Run's Live preview, or `None` when it has never started one.
+pub(crate) async fn live_preview(
+	f: Federation,
+	actor: Actor,
+	id: Uuid,
+) -> Result<crate::apps::execution::capabilities::serializers::previews::LivePreviewStatus> {
+	use crate::apps::execution::capabilities::serializers::previews::LivePreviewStatus;
+	let (mut access, run) = run_access(&f, actor, id).await?;
+	let domain = f.config.preview.as_ref().map(|p| p.domain.clone());
+	let result = crate::apps::execution::repositories::live_previews::status(
+		&f.store,
+		&mut access,
+		&run,
+		domain,
+	)
+	.await;
+	access
+		.finish(result)
+		.await
+		.map(LivePreviewStatus::from)
+		.map_err(Into::into)
+}
+
+/// Stop the Run's Live preview. Its requester and whoever may cancel the Run
+/// may stop it; viewing alone does not allow it (ADR 0070).
+pub(crate) async fn live_preview_stop(
+	f: Federation,
+	actor: Actor,
+	id: Uuid,
+) -> Result<crate::apps::execution::capabilities::serializers::previews::LivePreviewStatus> {
+	use crate::apps::execution::capabilities::serializers::previews::LivePreviewStatus;
+	use crate::apps::execution::repositories::live_previews as previews;
+	use aidash_domain::preview::live::StopReason;
+	let domain = f.config.preview.as_ref().map(|p| p.domain.clone());
+	let (mut access, run) = run_access(&f, actor.clone(), id).await?;
+	let identity = access.identity.clone();
+	let requester = aidash_application::authorization::execution::grant(
+		&crate::bootstrap::execution_grants(&f.store),
+		&run.metadata(),
+	)
+	.await?
+	.is_some_and(|grant| grant.root_subject == identity.subject);
+	let status = previews::status(&f.store, &mut access, &run, domain.clone()).await;
+	let status = access.finish(status).await?;
+	let Some(status) = status else {
+		return Ok(LivePreviewStatus { live_preview: None });
+	};
+	if !requester {
+		aidash_application::authorization::runs::authorize_run(
+			&crate::bootstrap::run_control_repository(&f, &identity),
+			id,
+		)
+		.await?;
+	}
+	if status.state.is_stopped() {
+		return Ok(LivePreviewStatus::from(Some(status)));
+	}
+	let stopped = {
+		let (mut access, run) = run_access(&f, actor.clone(), id).await?;
+		let result = previews::request_stop(
+			&f.store,
+			&mut access,
+			&run,
+			domain.clone(),
+			status.id,
+			StopReason::Stopped,
+		)
+		.await;
+		access.finish(result).await?
+	};
+	if previews::terminate(&f.store, &stopped)
+		.await
+		.unwrap_or(false)
+	{
+		let (mut access, run) = run_access(&f, actor, id).await?;
+		let result = previews::settle(&f.store, &mut access, &run, domain, stopped.id).await;
+		access.finish(result).await?;
+	}
+	let (mut access, run) = run_access(&f, actor_for(&f, &identity).await?, id).await?;
+	let result = previews::status(&f.store, &mut access, &run, None).await;
+	access
+		.finish(result)
+		.await
+		.map(LivePreviewStatus::from)
+		.map_err(Into::into)
+}
+
+async fn actor_for(
+	f: &Federation,
+	identity: &crate::authorization::identity::SubjectIdentity,
+) -> Result<Actor> {
+	let _ = f;
+	Ok(Actor::Subject(identity.clone()))
+}
+
+/// Issue a one-time ticket for a Run's Live preview under the same authority as
+/// downloading that Working Area's files.
+pub(crate) async fn preview_live_ticket(
+	f: Federation,
+	actor: Actor,
+	input: crate::apps::execution::capabilities::serializers::previews::LivePreviewTicketInput,
+	origin: String,
+) -> Result<aidash_application::preview::Issued> {
+	let mut access = access(&f, actor).await?;
+	let preview = f.config.preview.as_ref();
+	let result = {
+		let mut scope = crate::apps::execution::repositories::previews::Scope {
+			access: &mut access,
+			store: &f.store,
+			domain: preview.map(|preview| preview.domain.as_str()),
+			public_port: preview.and_then(|preview| preview.public_port),
+			origin: &origin,
+		};
+		aidash_application::preview::issue_live(&mut scope, input.live_preview_id).await
+	};
+	access.finish(result.map_err(Into::into)).await
+}
+
+/// A Tenant's stored Live preview limits and the Deployment's ceilings.
+pub(crate) async fn preview_limits(
+	f: Federation,
+	actor: Actor,
+	tenant: String,
+) -> Result<crate::apps::execution::capabilities::serializers::previews::TenantPreviewLimits> {
+	use crate::apps::execution::capabilities::{
+		models::CorePreviewLimits, serializers::previews::TenantPreviewLimits,
+	};
+	use aidash_domain::identity::tenant_administration::{COLLECTION, TEST_LIMITS_UPDATE};
+	use reinhardt::db::orm::Model;
+	let actions = crate::apps::registry::workbench::repositories::authority::TenantActions::new(
+		actor,
+		f.config.deployment.to_string(),
+	);
+	let mut tx = f
+		.store
+		.pool
+		.begin(&aidash_application::tenancy::TenancyScope::tenant(&tenant)?)
+		.await?;
+	let policy = f.store.pool.dashboard_policy();
+	actions
+		.require(
+			&mut *tx,
+			policy.as_ref(),
+			&tenant,
+			TEST_LIMITS_UPDATE,
+			COLLECTION,
+		)
+		.await?;
+	let stored = CorePreviewLimits::objects()
+		.filter(CorePreviewLimits::field_tenant().eq(&tenant))
+		.all_with_executor(&mut *tx)
+		.await
+		.map_err(reinhardt::core::exception::Error::from)?
+		.pop();
+	actions.record_denial(&f.store.pool).await?;
+	tx.commit().await?;
+	let ceilings = f.store.preview_limits.clone();
+	let (idle_seconds, absolute_seconds, revision) = stored
+		.map(|row| (row.idle_seconds, row.absolute_seconds, row.revision))
+		.unwrap_or((ceilings.idle_seconds, ceilings.absolute_seconds, 0));
+	Ok(TenantPreviewLimits {
+		tenant,
+		idle_seconds,
+		absolute_seconds,
+		revision,
+		ceiling_idle_seconds: ceilings.idle_seconds,
+		ceiling_absolute_seconds: ceilings.absolute_seconds,
+	})
+}
+
+/// Lower a Tenant's Live preview limits within the Deployment's ceilings.
+pub(crate) async fn set_preview_limits(
+	f: Federation,
+	actor: Actor,
+	input: crate::apps::execution::capabilities::serializers::previews::PreviewLimitInput,
+) -> Result<crate::apps::execution::capabilities::serializers::previews::TenantPreviewLimits> {
+	use crate::apps::execution::capabilities::{
+		models::CorePreviewLimits, serializers::previews::TenantPreviewLimits,
+	};
+	use aidash_domain::identity::tenant_administration::{COLLECTION, TEST_LIMITS_UPDATE};
+	use aidash_domain::preview::live::Limits;
+	use reinhardt::db::orm::Model;
+	if input.tenant.is_empty() {
+		return Err(Error::Invalid("tenant is required".into()));
+	}
+	let requested = Limits::new(input.idle_seconds, input.absolute_seconds)?;
+	let ceilings = f.store.preview_limits.clone();
+	let limits = requested.lower_than(&ceilings)?;
+	let actions = crate::apps::registry::workbench::repositories::authority::TenantActions::new(
+		actor,
+		f.config.deployment.to_string(),
+	);
+	let mut tx = f
+		.store
+		.pool
+		.begin(&aidash_application::tenancy::TenancyScope::tenant(
+			&input.tenant,
+		)?)
+		.await?;
+	let policy = f.store.pool.dashboard_policy();
+	actions
+		.require(
+			&mut *tx,
+			policy.as_ref(),
+			&input.tenant,
+			TEST_LIMITS_UPDATE,
+			COLLECTION,
+		)
+		.await?;
+	let stored = CorePreviewLimits::objects()
+		.filter(CorePreviewLimits::field_tenant().eq(&input.tenant))
+		.all_with_executor(&mut *tx)
+		.await
+		.map_err(reinhardt::core::exception::Error::from)?
+		.pop();
+	if stored
+		.as_ref()
+		.is_some_and(|row| row.revision != input.expected_revision)
+	{
+		return Err(Error::Conflict("PREVIEW_LIMITS_REVISION_CHANGED".into()));
+	}
+	let revision = stored.as_ref().map_or(1, |row| row.revision + 1);
+	if stored.is_some() {
+		let row = CorePreviewLimits::build()
+			.tenant(input.tenant.clone())
+			.idle_seconds(limits.idle_seconds)
+			.absolute_seconds(limits.absolute_seconds)
+			.revision(revision)
+			.updated_at(chrono::Utc::now())
+			.finish();
+		CorePreviewLimits::objects()
+			.save_with_executor(&mut *tx, &row)
+			.await
+			.map_err(reinhardt::core::exception::Error::from)?;
+	} else {
+		let row = CorePreviewLimits::build()
+			.tenant(input.tenant.clone())
+			.idle_seconds(limits.idle_seconds)
+			.absolute_seconds(limits.absolute_seconds)
+			.revision(revision)
+			.updated_at(chrono::Utc::now())
+			.finish();
+		CorePreviewLimits::objects()
+			.insert_with_executor(&mut *tx, &row)
+			.await
+			.map_err(reinhardt::core::exception::Error::from)?;
+	}
+	actions.record_denial(&f.store.pool).await?;
+	tx.commit().await?;
+	Ok(TenantPreviewLimits {
+		tenant: input.tenant,
+		idle_seconds: limits.idle_seconds,
+		absolute_seconds: limits.absolute_seconds,
+		revision,
+		ceiling_idle_seconds: ceilings.idle_seconds,
+		ceiling_absolute_seconds: ceilings.absolute_seconds,
+	})
+}

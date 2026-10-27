@@ -7,6 +7,7 @@
 use crate::{
 	Error as NativeError, Result as NativeResult,
 	apps::execution::capabilities::{
+		models::CoreLivePreviews,
 		serializers::contracts::FileEntry,
 		services::{retention, service, sessions},
 	},
@@ -19,9 +20,13 @@ use aidash_application::preview::{
 };
 use aidash_application::tenancy::{DeploymentScopeReason, TenancyScope};
 use aidash_domain::capabilities::retention::RetainedFile;
-use aidash_domain::preview::{PreviewKind, PreviewLabel, PreviewSecret, Session, label_of};
+use aidash_domain::preview::{
+	PreviewKind, PreviewLabel, PreviewSecret, Session, label_of,
+	live::{State as LiveState, StopReason},
+};
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
+use reinhardt::db::orm::Model;
 use reinhardt::query::{
 	Alias, Expr, ExprTrait as _, IntoValue as _, OnConflict, PostgresQueryBuilder, Query,
 	QueryStatementBuilder as _,
@@ -30,7 +35,14 @@ use uuid::Uuid;
 
 const PREVIEW_SCOPE: DeploymentScopeReason = DeploymentScopeReason::PreviewGateway;
 
-type ResolvedRow = (Uuid, String, String, Option<Uuid>, Option<Uuid>);
+type ResolvedRow = (
+	Uuid,
+	String,
+	String,
+	Option<Uuid>,
+	Option<Uuid>,
+	Option<Uuid>,
+);
 
 /// The ticket use case's authority and transaction.
 pub(crate) struct Scope<'a> {
@@ -203,6 +215,38 @@ impl application::Scope for Scope<'_> {
 	async fn ticket(&mut self, ticket: TicketIssue) -> aidash_application::Result<()> {
 		self.ticket_native(ticket).await.map_err(Into::into)
 	}
+	async fn authorize_area(&mut self, area_id: Uuid) -> aidash_application::Result<()> {
+		sessions::load(self.access, area_id)
+			.await
+			.map(drop)
+			.map_err(Into::into)
+	}
+	async fn live_preview(&mut self, id: Uuid) -> aidash_application::Result<Preview> {
+		let row = CoreLivePreviews::objects()
+			.filter(CoreLivePreviews::field_id().eq(id))
+			.all_with_executor(&mut **self.access.tx)
+			.await
+			.map_err(reinhardt::core::exception::Error::from)
+			.map_err(NativeError::from)?
+			.pop()
+			.ok_or_else(|| NativeError::NotFound("live preview unavailable".into()))?;
+		let live = super::live_previews::domain(row)?;
+		if !matches!(live.state, LiveState::Running | LiveState::Stale) {
+			return Err(NativeError::NotFound("live preview unavailable".into()).into());
+		}
+		self.authorize_area(live.area_id).await?;
+		let preview = match preview_of_live(self.access, id).await? {
+			Some(preview) => preview,
+			None => insert_live_preview(self.access, id, live.tenant.clone()).await?,
+		};
+		Ok(Preview {
+			id: preview.id,
+			label: preview.label,
+			kind: PreviewKind::Live {
+				live_preview_id: id,
+			},
+		})
+	}
 }
 
 struct StoredPreview {
@@ -232,6 +276,76 @@ async fn preview_of_file(access: &mut Access, file: Uuid) -> NativeResult<Option
 	}
 }
 
+/// The Preview row of a Live preview, one random subdomain for its lifetime.
+async fn preview_of_live(access: &mut Access, live: Uuid) -> NativeResult<Option<StoredPreview>> {
+	let row: Option<(Uuid, String)> = crate::database::native::query_as(
+		&Query::select()
+			.columns([Alias::new("id"), Alias::new("label")])
+			.from(Alias::new("core_previews"))
+			.and_where(Expr::col(Alias::new("kind")).eq(Expr::value("live")))
+			.and_where(Expr::col(Alias::new("live_preview_id")).eq(Expr::value(live)))
+			.limit(1)
+			.to_string(PostgresQueryBuilder),
+	)
+	.columns(&["id", "label"])
+	.fetch_optional(&mut **access.tx)
+	.await?;
+	match row {
+		Some((id, label)) => Ok(Some(StoredPreview {
+			id,
+			label: PreviewLabel::parse(label)?,
+		})),
+		None => Ok(None),
+	}
+}
+
+async fn insert_live_preview(
+	access: &mut Access,
+	live: Uuid,
+	_tenant: String,
+) -> NativeResult<StoredPreview> {
+	for _ in 0..4 {
+		let label = PreviewLabel::generate()?;
+		let query = Query::insert()
+			.into_table(Alias::new("core_previews"))
+			.columns(
+				[
+					"id",
+					"tenant",
+					"kind",
+					"live_preview_id",
+					"label",
+					"created_by",
+				]
+				.map(Alias::new),
+			)
+			.values(vec![
+				Uuid::new_v4().into(),
+				access.identity.tenant.clone().into(),
+				"live".into(),
+				live.into_value(),
+				label.as_str().to_owned().into(),
+				access.identity.subject.clone().into(),
+			])
+			.map_err(NativeError::Invalid)?
+			.on_conflict(
+				OnConflict::column(Alias::new("live_preview_id"))
+					.do_nothing()
+					.to_owned(),
+			)
+			.to_string(PostgresQueryBuilder);
+		crate::database::native::query(&query)
+			.execute(&mut **access.tx)
+			.await?;
+		if let Some(existing) = preview_of_live(access, live).await? {
+			return Ok(existing);
+		}
+	}
+	Err(NativeError::External(
+		"preview label could not be allocated".into(),
+	))
+}
+
 /// The gateway: a separate listener holding only the pool and the domain.
 pub(crate) struct Gateway {
 	pub store: Store,
@@ -244,6 +358,7 @@ struct Resolved {
 	kind: String,
 	area_id: Option<Uuid>,
 	file_id: Option<Uuid>,
+	live_preview_id: Option<Uuid>,
 }
 
 impl Gateway {
@@ -258,26 +373,36 @@ impl Gateway {
 					Alias::new("kind"),
 					Alias::new("area_id"),
 					Alias::new("file_id"),
+					Alias::new("live_preview_id"),
 				])
 				.from(Alias::new("core_previews"))
 				.and_where(Expr::col(Alias::new("label")).eq(Expr::value(label.as_str())))
 				.limit(1)
 				.to_string(PostgresQueryBuilder),
 		)
-		.columns(&["id", "tenant", "kind", "area_id", "file_id"])
+		.columns(&[
+			"id",
+			"tenant",
+			"kind",
+			"area_id",
+			"file_id",
+			"live_preview_id",
+		])
 		.fetch_optional(
 			self.store
 				.pool
 				.in_scope(&TenancyScope::Deployment(PREVIEW_SCOPE)),
 		)
 		.await?;
-		let (preview_id, tenant, kind, area_id, file_id) = row.ok_or(NativeError::Forbidden)?;
+		let (preview_id, tenant, kind, area_id, file_id, live_preview_id) =
+			row.ok_or(NativeError::Forbidden)?;
 		Ok(Resolved {
 			tenant,
 			preview_id,
 			kind,
 			area_id,
 			file_id,
+			live_preview_id,
 		})
 	}
 
@@ -498,6 +623,125 @@ impl Gateway {
 	}
 }
 
+impl Gateway {
+	async fn live_native(
+		&self,
+		host: &str,
+		cookie: &str,
+	) -> NativeResult<Option<application::Proxy>> {
+		let resolved = match self.resolve(host).await {
+			Ok(resolved) => resolved,
+			Err(NativeError::Forbidden) => return Ok(None),
+			Err(error) => return Err(error),
+		};
+		if resolved.kind != "live" {
+			return Ok(None);
+		}
+		let live_id = resolved
+			.live_preview_id
+			.ok_or_else(|| NativeError::NotFound("preview unavailable".into()))?;
+		let secret = PreviewSecret::parse(cookie)?;
+		let session: Option<(Uuid, String, Uuid, String, DateTime<Utc>)> =
+			crate::database::native::query_as(
+				&Query::select()
+					.columns([
+						Alias::new("id"),
+						Alias::new("subject"),
+						Alias::new("credential_id"),
+						Alias::new("origin"),
+						Alias::new("expires_at"),
+					])
+					.from(Alias::new("core_preview_sessions"))
+					.and_where(
+						Expr::col(Alias::new("preview_id")).eq(Expr::value(resolved.preview_id)),
+					)
+					.and_where(Expr::col(Alias::new("digest")).eq(Expr::value(secret.digest())))
+					.and_where(Expr::cust("expires_at > CURRENT_TIMESTAMP"))
+					.limit(1)
+					.to_string(PostgresQueryBuilder),
+			)
+			.columns(&["id", "subject", "credential_id", "origin", "expires_at"])
+			.fetch_optional(
+				self.store
+					.pool
+					.in_scope(&TenancyScope::tenant(&resolved.tenant)?),
+			)
+			.await?;
+		let Some((session_id, subject, credential_id, origin, expires_at)) = session else {
+			return Err(NativeError::Forbidden);
+		};
+		if (Session { expires_at }).accept(Utc::now()).is_err() {
+			return Err(NativeError::Forbidden);
+		}
+		let identity = SubjectIdentity {
+			http_session: None,
+			credential_id,
+			tenant: resolved.tenant.clone(),
+			subject,
+		};
+		let mut access = Access::begin(&self.store, &identity).await?;
+		let now = Utc::now();
+		let outcome: NativeResult<aidash_domain::preview::live::LivePreview> = async {
+			let row = CoreLivePreviews::objects()
+				.filter(CoreLivePreviews::field_id().eq(live_id))
+				.all_with_executor(&mut **access.tx)
+				.await
+				.map_err(reinhardt::core::exception::Error::from)?
+				.pop()
+				.ok_or(NativeError::Forbidden)?;
+			let mut live = super::live_previews::domain(row)?;
+			if !matches!(live.state, LiveState::Running | LiveState::Stale) {
+				return Err(NativeError::Forbidden);
+			}
+			if let Some(reason) = live.expired(now) {
+				live.stopping(reason);
+				CoreLivePreviews::objects()
+					.save_with_executor(&mut **access.tx, &super::live_previews::to_row(&live))
+					.await
+					.map_err(reinhardt::core::exception::Error::from)?;
+				return Err(NativeError::Conflict("PREVIEW_EXPIRED".into()));
+			}
+			// The cookie is not authority: the same Working Area read decides.
+			if let Err(error) = sessions::load(&mut access, live.area_id).await {
+				live.stopping(StopReason::RunAuthorityRevoked);
+				CoreLivePreviews::objects()
+					.save_with_executor(&mut **access.tx, &super::live_previews::to_row(&live))
+					.await
+					.map_err(reinhardt::core::exception::Error::from)?;
+				return Err(error);
+			}
+			live.last_request_at = now;
+			CoreLivePreviews::objects()
+				.save_with_executor(&mut **access.tx, &super::live_previews::to_row(&live))
+				.await
+				.map_err(reinhardt::core::exception::Error::from)?;
+			Ok(live)
+		}
+		.await;
+		let live = access.finish(outcome).await?;
+		let pod_host = live
+			.pod_host
+			.clone()
+			.ok_or_else(|| NativeError::NotFound("preview unavailable".into()))?;
+		let egress_token = super::live_previews::egress_token(&self.store, &live)?;
+		Ok(Some(application::Proxy {
+			preview_id: live.id,
+			tenant: live.tenant,
+			session: session_id,
+			frame_ancestor: origin,
+			upstream: format!("{pod_host}:{}", live.port),
+			egress_origin: self
+				.store
+				.capabilities
+				.0
+				.egress
+				.as_ref()
+				.map(|settings| settings.endpoint.clone()),
+			egress_token,
+		}))
+	}
+}
+
 #[async_trait]
 impl application::Authority for Gateway {
 	async fn exchange(&self, host: &str, ticket: &str) -> aidash_application::Result<Exchange> {
@@ -507,6 +751,13 @@ impl application::Authority for Gateway {
 		self.view_native(host, cookie, path)
 			.await
 			.map_err(Into::into)
+	}
+	async fn live(
+		&self,
+		host: &str,
+		cookie: &str,
+	) -> aidash_application::Result<Option<application::Proxy>> {
+		self.live_native(host, cookie).await.map_err(Into::into)
 	}
 	async fn served(
 		&self,
