@@ -143,7 +143,7 @@ impl Plugin {
 				transport.invoke(&self.config, input, key, None).await
 			}
 			ToolConfig::Native { .. } => Err(Error::Invalid("unknown native tool".into())),
-			ToolConfig::Http { .. } | ToolConfig::Mcp { .. } => {
+			ToolConfig::Http { secret_owner, .. } | ToolConfig::Mcp { secret_owner, .. } => {
 				// Resolved at dispatch, after the arguments are valid and before
 				// any effect, so a deleted Tenant Secret fails the call outright.
 				let connection = if let ToolConfig::Mcp { endpoint, .. } = &self.config {
@@ -159,11 +159,17 @@ impl Plugin {
 					(Some(connection), _) => Some(connection),
 					(None, Some((name, endpoint))) => {
 						let call = tenant_secret_call(&self.config, ctx.run, endpoint)?;
-						Some(
-							ctx.operations
-								.tenant_secret(name, endpoint, call, key)
-								.await?,
-						)
+						match ctx
+							.operations
+							.tenant_secret_for(name, endpoint, *secret_owner, call, key)
+							.await
+						{
+							Ok(secret) => Some(secret),
+							Err(error) => {
+								return crate::tenant_secrets::personal_error_value(&error)
+									.ok_or(error);
+							}
+						}
 					}
 					(None, None) => None,
 				};

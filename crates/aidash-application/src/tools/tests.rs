@@ -665,3 +665,69 @@ async fn mcp_authentication_resolution_order(
 	);
 	assert_eq!(*fixture.operations.calls.lock().unwrap(), expected);
 }
+
+#[rstest]
+#[case::http(false, false)]
+#[case::mcp(false, true)]
+#[case::connection_precedes_personal_secret(true, true)]
+#[tokio::test]
+async fn personal_only_tools_never_use_an_ownerless_shared_secret(
+	mut fixture: Fixture,
+	#[case] connected: bool,
+	#[case] mcp: bool,
+) {
+	fixture.operations.connection = connected;
+	let mut tool = secret_tool(Some("search"));
+	tool.config = if mcp {
+		ToolConfig::Mcp {
+			endpoint: "https://api.example.com/mcp".into(),
+			tool_name: "lookup".into(),
+			replay: "idempotent".into(),
+			idempotency_argument: None,
+			secret: Some("search".into()),
+			scopes: None,
+			secret_owner: aidash_domain::tool::SecretOwner::Personal,
+		}
+	} else {
+		ToolConfig::Http {
+			endpoint: "https://api.example.com/tool".into(),
+			replay: "idempotent".into(),
+			secret: Some("search".into()),
+			secret_owner: aidash_domain::tool::SecretOwner::Personal,
+		}
+	};
+	let result = tool
+		.invoke(
+			&ToolContext {
+				operations: &fixture.operations,
+				run: &fixture.run,
+			},
+			&fixture.operations,
+			json!({}),
+			"personal-call",
+		)
+		.await
+		.unwrap();
+	if connected {
+		assert!(
+			fixture
+				.operations
+				.calls
+				.lock()
+				.unwrap()
+				.contains(&"transport.invoke.with_secret")
+		);
+	} else {
+		assert_eq!(result["error"], "secret_unavailable");
+		assert!(result["hint"].as_str().unwrap().contains("personal secret"));
+		assert!(
+			!fixture
+				.operations
+				.calls
+				.lock()
+				.unwrap()
+				.iter()
+				.any(|call| call.starts_with("transport.invoke"))
+		);
+	}
+}

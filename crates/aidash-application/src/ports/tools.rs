@@ -224,4 +224,19 @@ pub trait ToolOperations: Send + Sync {
 			aidash_domain::tenant_secrets::UNAVAILABLE.into(),
 		))
 	}
+	/// Resolve a named secret using the Run's chain-root person when one exists.
+	/// An ownerless adapter may use shared secrets only for `Any`.
+	async fn tenant_secret_for(
+		&self,
+		name: &str,
+		endpoint: &str,
+		owner: aidash_domain::tool::SecretOwner,
+		call: SecretCall,
+		key: &str,
+	) -> Result<CallSecret> {
+		if owner == aidash_domain::tool::SecretOwner::Personal {
+			return Err(crate::tenant_secrets::personal_required(name));
+		}
+		self.tenant_secret(name, endpoint, call, key).await
+	}
 }

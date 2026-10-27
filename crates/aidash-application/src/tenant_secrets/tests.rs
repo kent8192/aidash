@@ -1220,3 +1220,213 @@ async fn personal_names_are_isolated_and_retiring_one_person_preserves_shared_va
 			.contains_key(&store.secret_resource(alice.id))
 	);
 }
+
+fn tool_call() -> SecretCall {
+	SecretCall {
+		destination: endpoint_destination(ENDPOINT).unwrap(),
+		methods: vec!["POST".into()],
+		attach: Attach::Bearer,
+		subject: SecretSubject::Run {
+			run: "personal-run".into(),
+			call: Uuid::from_u128(99),
+		},
+		max_response_bytes: Some(256_000),
+	}
+}
+
+#[rstest::rstest]
+#[case::alice_any(
+	Some("alice"),
+	aidash_domain::tool::SecretOwner::Any,
+	Some("alice-canary")
+)]
+#[case::alice_personal(
+	Some("alice"),
+	aidash_domain::tool::SecretOwner::Personal,
+	Some("alice-canary")
+)]
+#[case::other_person_any(
+	Some("bob"),
+	aidash_domain::tool::SecretOwner::Any,
+	Some("shared-canary")
+)]
+#[case::ownerless_any(None, aidash_domain::tool::SecretOwner::Any, Some("shared-canary"))]
+#[case::other_person_personal(Some("bob"), aidash_domain::tool::SecretOwner::Personal, None)]
+#[case::ownerless_personal(None, aidash_domain::tool::SecretOwner::Personal, None)]
+#[tokio::test]
+async fn named_tool_secrets_obey_the_person_and_secret_owner_policy(
+	#[case] subject: Option<&str>,
+	#[case] owner: aidash_domain::tool::SecretOwner,
+	#[case] expected: Option<&str>,
+) {
+	let (s, _, _) = service();
+	let shared = s
+		.put(
+			"alpha",
+			"api",
+			put(Some("shared-canary"), Some(&["api.example.com"]), 0),
+			"admin",
+		)
+		.await
+		.unwrap();
+	let personal = s
+		.put_owned(
+			"alpha",
+			Some("alice"),
+			"api",
+			put(Some("alice-canary"), Some(&["api.example.com"]), 0),
+			"alice",
+		)
+		.await
+		.unwrap();
+	let s = Arc::new(s);
+	let result = s
+		.call_secret_for("alpha", subject, "api", owner, ENDPOINT, tool_call())
+		.await;
+	if let Some(expected) = expected {
+		let CallSecret::Value { record, value } = result.unwrap() else {
+			panic!("self-hosted value")
+		};
+		assert_eq!(value.expose_secret(), expected);
+		assert_eq!(
+			record.id,
+			if expected == "alice-canary" {
+				personal.id
+			} else {
+				shared.id
+			}
+		);
+	} else {
+		let Err(Error::Invalid(message)) = result else {
+			panic!("personal-only selection must fail")
+		};
+		let error: serde_json::Value = serde_json::from_str(&message).unwrap();
+		assert_eq!(error["error"], UNAVAILABLE);
+		assert!(error["hint"].as_str().unwrap().contains("personal secret"));
+	}
+	assert_eq!(
+		s.shared("alpha", "api").await.unwrap().unwrap().id,
+		shared.id
+	);
+	let CallSecret::Value { record, .. } = s
+		.call_secret("alpha", "api", ENDPOINT, tool_call())
+		.await
+		.unwrap()
+	else {
+		panic!("shared value")
+	};
+	assert_eq!(
+		record.id, shared.id,
+		"legacy registration/workbench resolution stays shared-only"
+	);
+}
+
+#[tokio::test]
+async fn personal_dispatch_enforces_its_own_hosts_without_falling_back_to_shared() {
+	let (s, _, _) = service();
+	s.put(
+		"alpha",
+		"api",
+		put(Some("shared-canary"), Some(&["api.example.com"]), 0),
+		"admin",
+	)
+	.await
+	.unwrap();
+	s.put_owned(
+		"alpha",
+		Some("alice"),
+		"api",
+		put(Some("alice-canary"), Some(&["personal.example.com"]), 0),
+		"alice",
+	)
+	.await
+	.unwrap();
+	let s = Arc::new(s);
+	let shared = s.shared("alpha", "api").await.unwrap().unwrap();
+	admit("api", ENDPOINT, Some(&shared.hosts)).unwrap();
+	assert!(
+		matches!(s.call_secret_for("alpha", Some("alice"), "api", aidash_domain::tool::SecretOwner::Any, ENDPOINT, tool_call()).await,
+        Err(Error::Invalid(code)) if code == UNAVAILABLE)
+	);
+}
+
+#[tokio::test]
+async fn a_personal_broker_source_keeps_its_row_and_rechecks_hosts() {
+	let (s, grants, _) = service_with_calls(FakeStore {
+		seals: true,
+		..Default::default()
+	});
+	s.put(
+		"alpha",
+		"api",
+		put(Some("shared-canary"), Some(&["api.example.com"]), 0),
+		"admin",
+	)
+	.await
+	.unwrap();
+	let personal = s
+		.put_owned(
+			"alpha",
+			Some("alice"),
+			"api",
+			put(Some("alice-canary"), Some(&["api.example.com"]), 0),
+			"alice",
+		)
+		.await
+		.unwrap();
+	let s = Arc::new(s);
+	let row = s.personal("alpha", "alice", "api").await.unwrap().unwrap();
+	let CallSecret::Brokered { record, source, .. } = s
+		.call_secret_row(&row, ENDPOINT, tool_call())
+		.await
+		.unwrap()
+	else {
+		panic!("brokered row")
+	};
+	assert_eq!(record.id, personal.id);
+	source.route().await.unwrap();
+	source.route().await.unwrap();
+	assert!(
+		grants
+			.0
+			.lock()
+			.await
+			.iter()
+			.all(|grant| grant.secret == personal.id)
+	);
+	let changed = s
+		.put_owned(
+			"alpha",
+			Some("alice"),
+			"api",
+			put(
+				Some("alice-canary"),
+				Some(&["personal.example.com"]),
+				personal.revision,
+			),
+			"alice",
+		)
+		.await
+		.unwrap();
+	assert!(matches!(source.route().await, Err(Error::Invalid(code)) if code == UNAVAILABLE));
+	assert_eq!(
+		grants.0.lock().await.len(),
+		2,
+		"host refusal must not mint a shared grant"
+	);
+	s.delete_owned("alpha", Some("alice"), "api", changed.revision, "alice")
+		.await
+		.unwrap();
+	let replacement = s
+		.put_owned(
+			"alpha",
+			Some("alice"),
+			"api",
+			put(Some("new-alice-canary"), Some(&["api.example.com"]), 0),
+			"alice",
+		)
+		.await
+		.unwrap();
+	assert_ne!(replacement.id, personal.id);
+	assert!(matches!(source.route().await, Err(Error::Invalid(code)) if code == UNAVAILABLE));
+}

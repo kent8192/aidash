@@ -28675,6 +28675,40 @@
           ],
           "description": "Whether a tool's calls may share a Tool Batch. Registry configuration can\nonly lower a provider's declaration, never raise it."
         },
+        "ConnectionCause": {
+          "oneOf": [
+            {
+              "type": "object",
+              "required": ["error", "resource"],
+              "properties": {
+                "error": {
+                  "type": "string",
+                  "enum": ["connection_required"]
+                },
+                "resource": {
+                  "type": "string"
+                }
+              }
+            },
+            {
+              "type": "object",
+              "required": ["error", "resource"],
+              "properties": {
+                "error": {
+                  "type": "string",
+                  "enum": ["connection_scope_insufficient"]
+                },
+                "resource": {
+                  "type": "string"
+                },
+                "scope": {
+                  "type": ["string", "null"]
+                }
+              }
+            }
+          ],
+          "description": "A server that can contribute tools after the person connects or consents again."
+        },
         "ContextEvent": {
           "oneOf": [
             {
@@ -30027,6 +30061,17 @@
           "description": "A Run-start finding names its plugin, because [`Finding::component`] only names the server.",
           "required": ["plugin", "finding"],
           "properties": {
+            "connection": {
+              "anyOf": [
+                {
+                  "$ref": "#/components/schemas/ConnectionCause"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "An MCP authentication challenge retained for connection_request and later re-listing."
+            },
             "finding": {
               "$ref": "#/components/schemas/Finding"
             },
@@ -32479,6 +32524,40 @@
           ],
           "description": "Whether a tool's calls may share a Tool Batch. Registry configuration can\nonly lower a provider's declaration, never raise it."
         },
+        "ConnectionCause": {
+          "oneOf": [
+            {
+              "type": "object",
+              "required": ["error", "resource"],
+              "properties": {
+                "error": {
+                  "type": "string",
+                  "enum": ["connection_required"]
+                },
+                "resource": {
+                  "type": "string"
+                }
+              }
+            },
+            {
+              "type": "object",
+              "required": ["error", "resource"],
+              "properties": {
+                "error": {
+                  "type": "string",
+                  "enum": ["connection_scope_insufficient"]
+                },
+                "resource": {
+                  "type": "string"
+                },
+                "scope": {
+                  "type": ["string", "null"]
+                }
+              }
+            }
+          ],
+          "description": "A server that can contribute tools after the person connects or consents again."
+        },
         "ContextEvent": {
           "oneOf": [
             {
@@ -33702,6 +33781,17 @@
           "description": "A Run-start finding names its plugin, because [`Finding::component`] only names the server.",
           "required": ["plugin", "finding"],
           "properties": {
+            "connection": {
+              "anyOf": [
+                {
+                  "$ref": "#/components/schemas/ConnectionCause"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "An MCP authentication challenge retained for connection_request and later re-listing."
+            },
             "finding": {
               "$ref": "#/components/schemas/Finding"
             },
@@ -33980,6 +34070,17 @@
             "run_id": {
               "type": "string",
               "format": "uuid"
+            },
+            "secret_host": {
+              "type": ["string", "null"]
+            },
+            "secret_id": {
+              "type": ["string", "null"],
+              "format": "uuid",
+              "description": "The Tenant Secret and pinned version a call carried, and the host it\nwent to. Absent for a service without a Tenant Secret (ADR 0095)."
+            },
+            "secret_version": {
+              "type": ["string", "null"]
             },
             "sent_bytes": {
               "type": "integer",
@@ -35800,6 +35901,40 @@
           ],
           "description": "Whether a tool's calls may share a Tool Batch. Registry configuration can\nonly lower a provider's declaration, never raise it."
         },
+        "ConnectionCause": {
+          "oneOf": [
+            {
+              "type": "object",
+              "required": ["error", "resource"],
+              "properties": {
+                "error": {
+                  "type": "string",
+                  "enum": ["connection_required"]
+                },
+                "resource": {
+                  "type": "string"
+                }
+              }
+            },
+            {
+              "type": "object",
+              "required": ["error", "resource"],
+              "properties": {
+                "error": {
+                  "type": "string",
+                  "enum": ["connection_scope_insufficient"]
+                },
+                "resource": {
+                  "type": "string"
+                },
+                "scope": {
+                  "type": ["string", "null"]
+                }
+              }
+            }
+          ],
+          "description": "A server that can contribute tools after the person connects or consents again."
+        },
         "ContextEvent": {
           "oneOf": [
             {
@@ -36986,6 +37121,17 @@
           "description": "A Run-start finding names its plugin, because [`Finding::component`] only names the server.",
           "required": ["plugin", "finding"],
           "properties": {
+            "connection": {
+              "anyOf": [
+                {
+                  "$ref": "#/components/schemas/ConnectionCause"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "An MCP authentication challenge retained for connection_request and later re-listing."
+            },
             "finding": {
               "$ref": "#/components/schemas/Finding"
             },
