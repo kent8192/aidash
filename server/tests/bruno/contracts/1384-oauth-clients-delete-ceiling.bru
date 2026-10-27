@@ -1,18 +1,18 @@
 meta {
-  name: 1340 marketplace-secret-readiness - Malformed bearer syntax is rejected
+  name: 1384 oauth-clients-delete-ceiling - Forged bearer cannot manage OAuth settings
   type: http
-  seq: 1340
+  seq: 1384
 }
 
-get {
-  url: {{base_url}}/api/marketplace/packages/__bruno_missing__/secret-readiness
+delete {
+  url: {{base_url}}/api/tenants/{{tenant}}/connection-scope-ceilings/aHR0cHM6Ly9tY3AuZXhhbXBsZS50ZXN0
   body: none
   auth: none
 }
 
 headers {
   Accept: application/json
-  Authorization: Basic invalid
+  Authorization: Bearer forged
 }
 
 tests {

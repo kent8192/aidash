@@ -1,17 +1,18 @@
 meta {
-  name: 1339 marketplace-secret-readiness - Anonymous request is rejected
+  name: 1352 oauth-clients-list - Forged bearer cannot manage OAuth settings
   type: http
-  seq: 1339
+  seq: 1352
 }
 
 get {
-  url: {{base_url}}/api/marketplace/packages/__bruno_missing__/secret-readiness
+  url: {{base_url}}/api/tenants/{{tenant}}/oauth-clients
   body: none
   auth: none
 }
 
 headers {
   Accept: application/json
+  Authorization: Bearer forged
 }
 
 tests {

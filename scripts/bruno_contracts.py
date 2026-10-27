@@ -880,6 +880,32 @@ def render():
                 add(endpoint, "Typed resource IDs reject invalid UUIDs", 400,
                     path=path.replace("{id}", "not-a-uuid"), headers=DEPLOYMENT_ADMINISTRATOR, immutable=True)
             continue
+        if route["source"] == "server/src/apps/identity/views/oauth_clients.rs":
+            ceiling = "connection-scope-ceilings" in path
+            uri = path.replace("{resource}", "aHR0cHM6Ly9tY3AuZXhhbXBsZS50ZXN0")
+            body = json.dumps({"scopes": ["read"]} if ceiling else {
+                "owner": "me", "issuer": "https://auth.example.test", "client_id": "fixture"
+            }) if route["json"] else None
+            add(endpoint, "Forged bearer cannot manage OAuth settings", 401,
+                path=uri, headers={"Authorization": "Bearer forged"}, body=body)
+            add(endpoint, "Deployment Administrator cannot manage Tenant OAuth settings", 403,
+                path=uri, headers=DEPLOYMENT_ADMINISTRATOR, body=body, immutable=method != "GET")
+            if route["uuid_parameters"]:
+                add(endpoint, "OAuth Client IDs reject invalid UUIDs", 400,
+                    path=uri.replace("{id}", "not-a-uuid"), headers=SUBJECT, body=body, immutable=True)
+            if route["json"]:
+                add(endpoint, "Malformed JSON cannot reach OAuth settings", 400,
+                    path=uri, headers=SUBJECT, body="{", immutable=True)
+                invalid = json.loads(body)
+                invalid["unexpected"] = True
+                add(endpoint, "Unknown OAuth settings are refused", 422,
+                    path=uri, headers=SUBJECT, body=json.dumps(invalid), immutable=True)
+                if not ceiling:
+                    invalid = json.loads(body)
+                    invalid["owner"] = "someone-else"
+                    add(endpoint, "Personal clients cannot select another owner", 422,
+                        path=uri, headers=SUBJECT, body=json.dumps(invalid), immutable=True)
+            continue
         if route["source"] == "server/src/apps/identity/views/tenant_secrets.rs":
             body = json.dumps({"expected_revision": 0}) if route["json"] else None
             add(endpoint, "Forged bearer cannot manage Tenant Secrets", 401,
@@ -900,6 +926,8 @@ def render():
                     headers=SUBJECT, body="{}", immutable=True)
                 add(endpoint, "Unknown lifecycle fields are rejected", 422,
                     headers=SUBJECT, body=json.dumps({"expected_revision": 0, "unexpected": True}), immutable=True)
+                add(endpoint, "Personal secrets cannot select another owner", 422,
+                    headers=SUBJECT, body=json.dumps({"expected_revision": 0, "owner": "someone-else"}), immutable=True)
             continue
         if route["source"] == "server/src/apps/identity/views/provider_credentials.rs":
             uri = path.replace("{provider}", "openrouter")

@@ -45263,10 +45263,16 @@
         }
       },
       "definitions": {
+        "SecretOwnership": {
+          "type": "string",
+          "description": "The namespace selected by the caller; personal ownership always resolves to\nthe authenticated subject, never a subject supplied in a request.",
+          "enum": ["me", "tenant"]
+        },
         "TenantSecretMetadata": {
           "type": "object",
           "description": "What a caller may learn about a Tenant Secret.",
           "required": [
+            "owner",
             "id",
             "tenant",
             "name",
@@ -45300,6 +45306,9 @@
             },
             "name": {
               "type": "string"
+            },
+            "owner": {
+              "$ref": "#/components/schemas/SecretOwnership"
             },
             "revision": {
               "type": "integer",
@@ -45324,16 +45333,22 @@
     "source": "server/src/apps/identity/views/tenant_secrets.rs",
     "json": false,
     "uuid_parameters": [],
-    "query_parameters": [],
+    "query_parameters": ["owner"],
     "response": {
       "schema": {
         "$ref": "#/components/schemas/TenantSecretMetadata"
       },
       "definitions": {
+        "SecretOwnership": {
+          "type": "string",
+          "description": "The namespace selected by the caller; personal ownership always resolves to\nthe authenticated subject, never a subject supplied in a request.",
+          "enum": ["me", "tenant"]
+        },
         "TenantSecretMetadata": {
           "type": "object",
           "description": "What a caller may learn about a Tenant Secret.",
           "required": [
+            "owner",
             "id",
             "tenant",
             "name",
@@ -45367,6 +45382,9 @@
             },
             "name": {
               "type": "string"
+            },
+            "owner": {
+              "$ref": "#/components/schemas/SecretOwnership"
             },
             "revision": {
               "type": "integer",
@@ -45397,10 +45415,16 @@
         "$ref": "#/components/schemas/TenantSecretMetadata"
       },
       "definitions": {
+        "SecretOwnership": {
+          "type": "string",
+          "description": "The namespace selected by the caller; personal ownership always resolves to\nthe authenticated subject, never a subject supplied in a request.",
+          "enum": ["me", "tenant"]
+        },
         "TenantSecretMetadata": {
           "type": "object",
           "description": "What a caller may learn about a Tenant Secret.",
           "required": [
+            "owner",
             "id",
             "tenant",
             "name",
@@ -45434,6 +45458,9 @@
             },
             "name": {
               "type": "string"
+            },
+            "owner": {
+              "$ref": "#/components/schemas/SecretOwnership"
             },
             "revision": {
               "type": "integer",
@@ -45464,10 +45491,16 @@
         "$ref": "#/components/schemas/TenantSecretMetadata"
       },
       "definitions": {
+        "SecretOwnership": {
+          "type": "string",
+          "description": "The namespace selected by the caller; personal ownership always resolves to\nthe authenticated subject, never a subject supplied in a request.",
+          "enum": ["me", "tenant"]
+        },
         "TenantSecretMetadata": {
           "type": "object",
           "description": "What a caller may learn about a Tenant Secret.",
           "required": [
+            "owner",
             "id",
             "tenant",
             "name",
@@ -45501,6 +45534,9 @@
             },
             "name": {
               "type": "string"
+            },
+            "owner": {
+              "$ref": "#/components/schemas/SecretOwnership"
             },
             "revision": {
               "type": "integer",
@@ -46509,6 +46545,414 @@
           ]
         }
       }
+    }
+  },
+  {
+    "method": "GET",
+    "path": "/api/tenants/{tenant}/oauth-clients",
+    "name": "oauth-clients-list",
+    "source": "server/src/apps/identity/views/oauth_clients.rs",
+    "json": false,
+    "uuid_parameters": [],
+    "query_parameters": [],
+    "response": {
+      "schema": {
+        "type": "array",
+        "items": {
+          "$ref": "#/components/schemas/OAuthClientMetadata"
+        }
+      },
+      "definitions": {
+        "OAuthClientMetadata": {
+          "type": "object",
+          "required": [
+            "id",
+            "tenant",
+            "owner",
+            "issuer",
+            "client_id",
+            "has_secret",
+            "created_at",
+            "updated_at",
+            "revision"
+          ],
+          "properties": {
+            "client_id": {
+              "type": "string"
+            },
+            "created_at": {
+              "type": "string",
+              "format": "date-time"
+            },
+            "has_secret": {
+              "type": "boolean"
+            },
+            "id": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "issuer": {
+              "type": "string"
+            },
+            "owner": {
+              "$ref": "#/components/schemas/SecretOwnership"
+            },
+            "revision": {
+              "type": "integer",
+              "format": "int64"
+            },
+            "tenant": {
+              "type": "string"
+            },
+            "updated_at": {
+              "type": "string",
+              "format": "date-time"
+            }
+          }
+        },
+        "SecretOwnership": {
+          "type": "string",
+          "description": "The namespace selected by the caller; personal ownership always resolves to\nthe authenticated subject, never a subject supplied in a request.",
+          "enum": ["me", "tenant"]
+        }
+      }
+    }
+  },
+  {
+    "method": "GET",
+    "path": "/api/tenants/{tenant}/oauth-clients/{id}",
+    "name": "oauth-clients-get-record",
+    "source": "server/src/apps/identity/views/oauth_clients.rs",
+    "json": false,
+    "uuid_parameters": ["id"],
+    "query_parameters": [],
+    "response": {
+      "schema": {
+        "$ref": "#/components/schemas/OAuthClientMetadata"
+      },
+      "definitions": {
+        "OAuthClientMetadata": {
+          "type": "object",
+          "required": [
+            "id",
+            "tenant",
+            "owner",
+            "issuer",
+            "client_id",
+            "has_secret",
+            "created_at",
+            "updated_at",
+            "revision"
+          ],
+          "properties": {
+            "client_id": {
+              "type": "string"
+            },
+            "created_at": {
+              "type": "string",
+              "format": "date-time"
+            },
+            "has_secret": {
+              "type": "boolean"
+            },
+            "id": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "issuer": {
+              "type": "string"
+            },
+            "owner": {
+              "$ref": "#/components/schemas/SecretOwnership"
+            },
+            "revision": {
+              "type": "integer",
+              "format": "int64"
+            },
+            "tenant": {
+              "type": "string"
+            },
+            "updated_at": {
+              "type": "string",
+              "format": "date-time"
+            }
+          }
+        },
+        "SecretOwnership": {
+          "type": "string",
+          "description": "The namespace selected by the caller; personal ownership always resolves to\nthe authenticated subject, never a subject supplied in a request.",
+          "enum": ["me", "tenant"]
+        }
+      }
+    }
+  },
+  {
+    "method": "PUT",
+    "path": "/api/tenants/{tenant}/oauth-clients",
+    "name": "oauth-clients-put-collection",
+    "source": "server/src/apps/identity/views/oauth_clients.rs",
+    "json": true,
+    "uuid_parameters": [],
+    "query_parameters": [],
+    "response": {
+      "schema": {
+        "$ref": "#/components/schemas/OAuthClientMetadata"
+      },
+      "definitions": {
+        "OAuthClientMetadata": {
+          "type": "object",
+          "required": [
+            "id",
+            "tenant",
+            "owner",
+            "issuer",
+            "client_id",
+            "has_secret",
+            "created_at",
+            "updated_at",
+            "revision"
+          ],
+          "properties": {
+            "client_id": {
+              "type": "string"
+            },
+            "created_at": {
+              "type": "string",
+              "format": "date-time"
+            },
+            "has_secret": {
+              "type": "boolean"
+            },
+            "id": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "issuer": {
+              "type": "string"
+            },
+            "owner": {
+              "$ref": "#/components/schemas/SecretOwnership"
+            },
+            "revision": {
+              "type": "integer",
+              "format": "int64"
+            },
+            "tenant": {
+              "type": "string"
+            },
+            "updated_at": {
+              "type": "string",
+              "format": "date-time"
+            }
+          }
+        },
+        "SecretOwnership": {
+          "type": "string",
+          "description": "The namespace selected by the caller; personal ownership always resolves to\nthe authenticated subject, never a subject supplied in a request.",
+          "enum": ["me", "tenant"]
+        }
+      }
+    }
+  },
+  {
+    "method": "PUT",
+    "path": "/api/tenants/{tenant}/oauth-clients/{id}",
+    "name": "oauth-clients-put-record",
+    "source": "server/src/apps/identity/views/oauth_clients.rs",
+    "json": true,
+    "uuid_parameters": ["id"],
+    "query_parameters": [],
+    "response": {
+      "schema": {
+        "$ref": "#/components/schemas/OAuthClientMetadata"
+      },
+      "definitions": {
+        "OAuthClientMetadata": {
+          "type": "object",
+          "required": [
+            "id",
+            "tenant",
+            "owner",
+            "issuer",
+            "client_id",
+            "has_secret",
+            "created_at",
+            "updated_at",
+            "revision"
+          ],
+          "properties": {
+            "client_id": {
+              "type": "string"
+            },
+            "created_at": {
+              "type": "string",
+              "format": "date-time"
+            },
+            "has_secret": {
+              "type": "boolean"
+            },
+            "id": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "issuer": {
+              "type": "string"
+            },
+            "owner": {
+              "$ref": "#/components/schemas/SecretOwnership"
+            },
+            "revision": {
+              "type": "integer",
+              "format": "int64"
+            },
+            "tenant": {
+              "type": "string"
+            },
+            "updated_at": {
+              "type": "string",
+              "format": "date-time"
+            }
+          }
+        },
+        "SecretOwnership": {
+          "type": "string",
+          "description": "The namespace selected by the caller; personal ownership always resolves to\nthe authenticated subject, never a subject supplied in a request.",
+          "enum": ["me", "tenant"]
+        }
+      }
+    }
+  },
+  {
+    "method": "DELETE",
+    "path": "/api/tenants/{tenant}/oauth-clients/{id}",
+    "name": "oauth-clients-delete-record",
+    "source": "server/src/apps/identity/views/oauth_clients.rs",
+    "json": false,
+    "uuid_parameters": ["id"],
+    "query_parameters": [],
+    "response": {
+      "schema": {
+        "type": "null"
+      },
+      "definitions": {}
+    }
+  },
+  {
+    "method": "GET",
+    "path": "/api/tenants/{tenant}/connection-scope-ceilings/{resource}",
+    "name": "oauth-clients-ceiling",
+    "source": "server/src/apps/identity/views/oauth_clients.rs",
+    "json": false,
+    "uuid_parameters": [],
+    "query_parameters": [],
+    "response": {
+      "schema": {
+        "anyOf": [
+          {
+            "$ref": "#/components/schemas/ConnectionScopeCeiling"
+          },
+          {
+            "type": "null"
+          }
+        ]
+      },
+      "definitions": {
+        "ConnectionScopeCeiling": {
+          "type": "object",
+          "required": [
+            "tenant",
+            "resource",
+            "scopes",
+            "updated_at",
+            "revision"
+          ],
+          "properties": {
+            "resource": {
+              "type": "string"
+            },
+            "revision": {
+              "type": "integer",
+              "format": "int64"
+            },
+            "scopes": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            },
+            "tenant": {
+              "type": "string"
+            },
+            "updated_at": {
+              "type": "string",
+              "format": "date-time"
+            }
+          }
+        }
+      }
+    }
+  },
+  {
+    "method": "PUT",
+    "path": "/api/tenants/{tenant}/connection-scope-ceilings/{resource}",
+    "name": "oauth-clients-put-ceiling",
+    "source": "server/src/apps/identity/views/oauth_clients.rs",
+    "json": true,
+    "uuid_parameters": [],
+    "query_parameters": [],
+    "response": {
+      "schema": {
+        "$ref": "#/components/schemas/ConnectionScopeCeiling"
+      },
+      "definitions": {
+        "ConnectionScopeCeiling": {
+          "type": "object",
+          "required": [
+            "tenant",
+            "resource",
+            "scopes",
+            "updated_at",
+            "revision"
+          ],
+          "properties": {
+            "resource": {
+              "type": "string"
+            },
+            "revision": {
+              "type": "integer",
+              "format": "int64"
+            },
+            "scopes": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            },
+            "tenant": {
+              "type": "string"
+            },
+            "updated_at": {
+              "type": "string",
+              "format": "date-time"
+            }
+          }
+        }
+      }
+    }
+  },
+  {
+    "method": "DELETE",
+    "path": "/api/tenants/{tenant}/connection-scope-ceilings/{resource}",
+    "name": "oauth-clients-delete-ceiling",
+    "source": "server/src/apps/identity/views/oauth_clients.rs",
+    "json": false,
+    "uuid_parameters": [],
+    "query_parameters": [],
+    "response": {
+      "schema": {
+        "type": "null"
+      },
+      "definitions": {}
     }
   }
 ]

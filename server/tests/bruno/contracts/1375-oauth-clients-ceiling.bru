@@ -1,11 +1,11 @@
 meta {
-  name: 1344 registry-secret-readiness - Anonymous request is rejected
+  name: 1375 oauth-clients-ceiling - Anonymous request is rejected
   type: http
-  seq: 1344
+  seq: 1375
 }
 
 get {
-  url: {{base_url}}/api/registry/__bruno_missing__/__bruno_missing__/secret-readiness
+  url: {{base_url}}/api/tenants/{{tenant}}/connection-scope-ceilings/__bruno_missing__
   body: none
   auth: none
 }

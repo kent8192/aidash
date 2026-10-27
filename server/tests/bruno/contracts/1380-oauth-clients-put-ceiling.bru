@@ -1,17 +1,23 @@
 meta {
-  name: 1324 approval-observer-update - Anonymous request is rejected
+  name: 1380 oauth-clients-put-ceiling - Deployment Administrator cannot manage Tenant OAuth settings
   type: http
-  seq: 1324
+  seq: 1380
 }
 
 put {
-  url: {{base_url}}/api/tenants/{{tenant}}/approval-observer
-  body: none
+  url: {{base_url}}/api/tenants/{{tenant}}/connection-scope-ceilings/aHR0cHM6Ly9tY3AuZXhhbXBsZS50ZXN0
+  body: text
   auth: none
 }
 
 headers {
   Accept: application/json
+  Authorization: Bearer {{deployment_administrator_token}}
+  Content-Type: application/json
+}
+
+body:text {
+  {"scopes": ["read"]}
 }
 
 script:pre-request {
@@ -27,6 +33,6 @@ const snapshot = await bru.sendRequest({method:"GET",url:bru.getEnvVar("base_url
 }
 
 tests {
-  test("Exact HTTP 401", function () { expect(res.getStatus()).to.equal(401); });
-  test("Stable authorization error envelope", function () { expect(res.getHeader("content-type")).to.include("application/json"); expect(res.getBody()).to.eql({error:"unauthorized"}); });
+  test("Exact HTTP 403", function () { expect(res.getStatus()).to.equal(403); });
+  test("Stable authorization error envelope", function () { expect(res.getHeader("content-type")).to.include("application/json"); expect(res.getBody()).to.eql({error:"forbidden"}); });
 }

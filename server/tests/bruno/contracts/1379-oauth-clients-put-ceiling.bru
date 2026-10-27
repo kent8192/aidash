@@ -1,17 +1,23 @@
 meta {
-  name: 1320 approval-observer - Anonymous request is rejected
+  name: 1379 oauth-clients-put-ceiling - Forged bearer cannot manage OAuth settings
   type: http
-  seq: 1320
+  seq: 1379
 }
 
-get {
-  url: {{base_url}}/api/tenants/{{tenant}}/approval-observer
-  body: none
+put {
+  url: {{base_url}}/api/tenants/{{tenant}}/connection-scope-ceilings/aHR0cHM6Ly9tY3AuZXhhbXBsZS50ZXN0
+  body: text
   auth: none
 }
 
 headers {
   Accept: application/json
+  Authorization: Bearer forged
+  Content-Type: application/json
+}
+
+body:text {
+  {"scopes": ["read"]}
 }
 
 tests {

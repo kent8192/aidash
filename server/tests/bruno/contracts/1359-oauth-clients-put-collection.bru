@@ -1,18 +1,23 @@
 meta {
-  name: 1345 registry-secret-readiness - Malformed bearer syntax is rejected
+  name: 1359 oauth-clients-put-collection - Forged bearer cannot manage OAuth settings
   type: http
-  seq: 1345
+  seq: 1359
 }
 
-get {
-  url: {{base_url}}/api/registry/__bruno_missing__/__bruno_missing__/secret-readiness
-  body: none
+put {
+  url: {{base_url}}/api/tenants/{{tenant}}/oauth-clients
+  body: text
   auth: none
 }
 
 headers {
   Accept: application/json
-  Authorization: Basic invalid
+  Authorization: Bearer forged
+  Content-Type: application/json
+}
+
+body:text {
+  {"owner": "me", "issuer": "https://auth.example.test", "client_id": "fixture"}
 }
 
 tests {
