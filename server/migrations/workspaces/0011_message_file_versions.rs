@@ -8,6 +8,15 @@ pub(super) fn migration() -> Migration {
 		.add_dependency("workspaces", "0010_foreign_key_relations_state")
 		.atomic(true)
 		.database_only(true)
+		// The citation must name the same Tenant as its message; this is the
+		// composite target key for that foreign key.
+		.add_operation(Operation::AddConstraintDefinition {
+			table: "messages".into(),
+			constraint: Constraint::Unique {
+				name: "messages_tenant_id_key".into(),
+				columns: vec!["tenant".into(), "id".into()],
+			},
+		})
 		.add_operation(Operation::CreateTable {
 			name: "message_file_versions".into(),
 			columns: vec![
@@ -56,9 +65,9 @@ pub(super) fn migration() -> Migration {
 				},
 				Constraint::ForeignKey {
 					name: "message_file_versions_message_fkey".into(),
-					columns: vec!["message_id".into()],
+					columns: vec!["tenant".into(), "message_id".into()],
 					referenced_table: "messages".into(),
-					referenced_columns: vec!["id".into()],
+					referenced_columns: vec!["tenant".into(), "id".into()],
 					on_delete: ForeignKeyAction::Cascade,
 					on_update: ForeignKeyAction::Restrict,
 					deferrable: None,
