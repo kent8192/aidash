@@ -5,7 +5,11 @@ import {
   type BrowserContext,
   type Page,
 } from "@playwright/test";
-import { createTenant, defaultNode } from "./tenant-fixture";
+import {
+  createTenant,
+  defaultNode,
+  issueSubjectCredential,
+} from "./tenant-fixture";
 import {
   installBearerDashboard,
   selectDashboardLanguage,
@@ -123,9 +127,8 @@ async function createGenerationScenario(
         ],
       },
     });
-    const credential = await api(`/api/authorization/${tenant}/credentials`, {
-      subject: "alice",
-    });
+    // A Deployment Administrator holds no Tenant authority (#484): the host issues the credential.
+    const credential = issueSubjectCredential(tenant, "alice");
     cleanupHeaders.authorization = `Bearer ${credential.token}`;
     const node = await defaultNode(request, credential.token, tenant);
     await api(

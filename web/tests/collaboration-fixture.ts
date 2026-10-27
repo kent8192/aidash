@@ -237,7 +237,10 @@ export async function setup(
   page: Page,
   options: {
     failFirstMessage?: boolean;
+    /** A person's Mapping context; the default unless `administrator` is set (ADR 0102). */
     subject?: boolean;
+    /** The Deployment Administrator context, which shows no Tenant content. */
+    administrator?: boolean;
     dashboardContext?: string | null;
     olderMessages?: number;
     runMemory?: boolean;
@@ -269,6 +272,11 @@ export async function setup(
     elicitation?: { message: string; schema: Record<string, unknown> };
   } = {},
 ) {
+  // Tenant content belongs to a Tenant's Mapping (ADR 0102): a spec opens it as a
+  // subject unless it names the administrator context or selects a context itself.
+  const asSubject =
+    options.subject ??
+    (!options.administrator && options.dashboardContext === undefined);
   let data = fixture(options.referenceLayout);
   if (options.planModel)
     data.registry[1].config = {
@@ -562,7 +570,7 @@ export async function setup(
   await installBearerDashboard(
     page,
     "fixture",
-    options.subject ? { tenant: "acme", name: "alice" } : undefined,
+    asSubject ? { tenant: "acme", name: "alice" } : undefined,
     options.dashboardContext,
   );
   await page.addInitScript((locale) => {
@@ -577,7 +585,7 @@ export async function setup(
       /^\/api\/runs\/[^/]+\/inference\/stream$/.test(path)
     )
       return route.abort();
-    const access = options.subject
+    const access = asSubject
       ? { kind: "subject", tenant: "acme", subject: "alice" }
       : data.access;
     if (path === "/api/session")

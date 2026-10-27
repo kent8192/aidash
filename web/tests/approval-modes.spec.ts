@@ -579,7 +579,7 @@ test("Approvals settings read in Japanese and are absent for a Deployment Admini
 test("a Deployment Administrator has no Approvals section", async ({
   page,
 }) => {
-  await setup(page);
+  await setup(page, { administrator: true });
   await page.goto("/settings?view=approvals");
   await expect(
     page
@@ -666,7 +666,7 @@ test("a Thread's switcher lists modes the policy withholds as unavailable and re
 test("a Deployment Administrator's Thread has no Approval Mode switcher", async ({
   page,
 }) => {
-  await setup(page);
+  await setup(page, { administrator: true });
   await approvals(page);
   await page.goto("/collaboration?channel=workspace-one");
   await page

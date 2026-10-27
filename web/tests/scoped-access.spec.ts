@@ -1,5 +1,9 @@
 import { test, expect } from "@playwright/test";
-import { createTenant, defaultNode } from "./tenant-fixture";
+import {
+  createTenant,
+  defaultNode,
+  issueSubjectCredential,
+} from "./tenant-fixture";
 import {
   installBearerDashboard,
   selectDashboardLanguage,
@@ -78,15 +82,14 @@ test("subject dashboard completes a conversation and clears revoked access", asy
       "acceptance-access-token",
       `tenant-${id}`,
     );
-    const node = await defaultNode(request, "acceptance-access-token", tenant);
-    await api(`/api/authorization/${tenant}`, {
-      expected_revision: 1,
+    const policy = (
+      subjects: Record<string, { kind: string }>,
+      revision: number,
+    ) => ({
+      expected_revision: revision,
       bundle: {
         tenant,
-        subjects: {
-          alice: { kind: "user" },
-          [`${node.address}/agents/${id}@1.0.0`]: { kind: "agent" },
-        },
+        subjects,
         policies: [
           {
             id: "approved-work",
@@ -98,9 +101,25 @@ test("subject dashboard completes a conversation and clears revoked access", asy
         ],
       },
     });
-    const credential = await api(`/api/authorization/${tenant}/credentials`, {
-      subject: "alice",
-    });
+    // A Deployment Administrator holds no Tenant authority (#484): the host
+    // issues the credential, which then reads the Tenant's default Node, and
+    // the Agent subject joins the policy in a second replacement.
+    await api(
+      `/api/authorization/${tenant}`,
+      policy({ alice: { kind: "user" } }, 1),
+    );
+    const credential = issueSubjectCredential(tenant, "alice");
+    const node = await defaultNode(request, credential.token, tenant);
+    await api(
+      `/api/authorization/${tenant}`,
+      policy(
+        {
+          alice: { kind: "user" },
+          [`${node.address}/agents/${id}@1.0.0`]: { kind: "agent" },
+        },
+        2,
+      ),
+    );
     for (const [kind, entryId, config] of [
       [
         "model",

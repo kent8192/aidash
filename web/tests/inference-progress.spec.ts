@@ -250,15 +250,20 @@ test("subjects never subscribe to a foreign-home run's inference stream", async 
   expect(errors).toEqual([]);
 });
 
-for (const { subject, home } of [
-  { subject: true, home: "aidash://home/another-node" },
-  { subject: false, home: "aidash://another-deployment/another-node" },
+// A Deployment Administrator sees no Tenant content (ADR 0102), so both cases
+// are a person's Mapping.
+for (const { label, home } of [
+  { label: "other Node", home: "aidash://home/another-node" },
+  {
+    label: "foreign Deployment",
+    home: "aidash://another-deployment/another-node",
+  },
 ]) {
-  test(`${subject ? "a subject's other Node" : "a Deployment Administrator's foreign Deployment"} stays outside local execution history`, async ({
+  test(`a subject's ${label} stays outside local execution history`, async ({
     page,
   }) => {
     const { errors, revokeAgents } = await setup(page, {
-      subject,
+      subject: true,
       foreignRun: home,
       locale: "en-US",
     });

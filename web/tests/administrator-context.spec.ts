@@ -15,7 +15,7 @@ for (const path of [
   test(`the Deployment Administrator context hides Tenant content at ${path}`, async ({
     page,
   }) => {
-    const { errors } = await setup(page, {});
+    const { errors } = await setup(page, { administrator: true });
     const streams: string[] = [];
     page.on("request", (request) => {
       if (/\/api\/events\/stream|\/inference\/stream/.test(request.url()))
@@ -32,7 +32,7 @@ for (const path of [
 }
 
 test("the switch control opens the authority switcher", async ({ page }) => {
-  await setup(page, {});
+  await setup(page, { administrator: true });
   await page.goto("/collaboration");
   await page.getByRole("button", { name: "Switch to a Mapping" }).click();
   await expect(page.getByRole("combobox").first()).toBeVisible();

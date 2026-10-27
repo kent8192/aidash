@@ -33,9 +33,13 @@ async function fixture(
   paged = false,
   visual = false,
   contextTokens = 4096,
-  access: object = { kind: "deployment_administrator" },
+  // Tenant content belongs to a Tenant's Mapping, not to a Deployment Administrator (ADR 0102).
+  access: typeof tenantSubject = tenantSubject,
 ) {
-  await installBearerDashboard(page, "fixture-token");
+  await installBearerDashboard(page, "fixture-token", {
+    tenant: access.tenant,
+    name: access.subject,
+  });
   await page.addInitScript(
     (locale) => localStorage.setItem("aidash-locale", locale),
     locale,
