@@ -47,6 +47,41 @@ async fn renamed_builtin_keeps_its_grant_resource_and_agent_flag(
 }
 
 #[rstest]
+#[case::policy(Some(Error::Unauthorized), RefusalCheck::Policy)]
+#[case::catalog(Some(Error::Forbidden), RefusalCheck::Catalog)]
+#[tokio::test]
+async fn catalog_refusals_keep_policy_apart_from_catalog_approval(
+	mut repository: Repository,
+	run: RunMetadata,
+	agent: AgentConfig,
+	#[case] denial: Option<Error>,
+	#[case] expected: RefusalCheck,
+) {
+	repository.catalog_denial = denial;
+	let contract = ToolContract::registry(
+		reference(),
+		&ToolConfig::Native {
+			operation: "echo".into(),
+			allowed_hosts: vec![],
+		},
+	);
+	let result = super::authorize(
+		&repository,
+		&run,
+		&agent,
+		&call("no_index_here", json!({})),
+		&contract,
+	)
+	.await;
+	let Err(Error::AuthorityRefused(refusal)) = result else {
+		panic!("expected an authority refusal, got {result:?}");
+	};
+	assert_eq!(refusal.check, expected);
+	assert_eq!(refusal.tool, "no_index_here");
+	assert_eq!(refusal.action.as_deref(), Some("tool.invoke"));
+}
+
+#[rstest]
 #[tokio::test]
 async fn renamed_registry_alias_uses_exact_reference(
 	repository: Repository,
@@ -309,6 +344,7 @@ struct Repository {
 	subjects: Vec<String>,
 	context: Value,
 	catalog: Entry,
+	catalog_denial: Option<Error>,
 	outcomes: BTreeMap<(String, String), Outcome>,
 	journal: Arc<Mutex<Journal>>,
 	snapshot: Option<BindingSnapshot>,
@@ -327,6 +363,7 @@ fn repository() -> Repository {
 		subjects: vec!["root".into(), "delegated".into()],
 		context: json!({"current":"authority"}),
 		catalog: entry(),
+		catalog_denial: None,
 		outcomes: BTreeMap::new(),
 		journal: Arc::new(Mutex::new(Journal::default())),
 		snapshot: None,
@@ -403,6 +440,12 @@ impl AgentToolScope for Scope<'_> {
 	async fn catalog(&mut self, reference: &EntityRef, action: &str) -> Result<Entry> {
 		self.0.record(format!("catalog:{}:{action}", reference.id));
 		self.0.check("catalog")?;
+		match &self.0.catalog_denial {
+			Some(Error::Forbidden) => return Err(Error::Forbidden),
+			// Any other denial stands for a Tenant policy denial met inside the Catalog check.
+			Some(_) => return Err(crate::authorization::catalog::policy_refusal(action)),
+			None => {}
+		}
 		Ok(self.0.catalog.clone())
 	}
 	async fn require(&mut self, resource: &Resource, action: &str) -> Result<()> {

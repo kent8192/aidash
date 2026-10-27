@@ -2,7 +2,7 @@
 use serde::{Deserialize, Serialize};
 use std::fmt;
 
-/// The check that refused. A closed set so an operator can tell policy denials,
+/// The check that refused. A closed set so the Deployment Administrator can tell policy denials,
 /// which `authorization_decisions` records, from every other refusal.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]

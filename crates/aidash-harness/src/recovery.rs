@@ -101,7 +101,7 @@ pub async fn recover(
 		refusal,
 	} = failure
 	{
-		// Name the tool and the check that refused, so an operator need not read the database.
+		// Name the tool and the check that refused, so the Deployment Administrator need not read the database.
 		let reason = if identity_unavailable {
 			"identity status unavailable".to_owned()
 		} else if let Some(refusal) = &refusal {

@@ -88,6 +88,11 @@ fn named<T>(
 ) -> Result<T> {
 	result.map_err(|error| match error {
 		Error::Forbidden => refused(call, check, action),
+		// A policy denial met inside a Catalog check names no tool yet.
+		Error::AuthorityRefused(mut refusal) if refusal.tool.is_empty() => {
+			refusal.tool.clone_from(&call.name);
+			Error::AuthorityRefused(refusal)
+		}
 		error => error,
 	})
 }
