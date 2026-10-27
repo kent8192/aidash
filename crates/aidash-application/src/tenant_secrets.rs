@@ -715,6 +715,10 @@ impl Service {
 			version: numeric_version(&pinned)?,
 			host: tenant_secrets::endpoint_host(endpoint)?,
 		};
+		let recorded = SecretIdentity {
+			id: record.id,
+			version: record.version.clone(),
+		};
 		match self.resolve_row(tenant, &row, Some(call.clone())).await? {
 			Resolved::Brokered(first) => Ok(CallSecret::Brokered {
 				record,
@@ -724,6 +728,7 @@ impl Service {
 					name: name.into(),
 					endpoint: endpoint.into(),
 					call,
+					recorded,
 					first: Mutex::new(Some(first)),
 				}),
 				rest: forward_rest(endpoint)?,
@@ -846,6 +851,9 @@ struct RefreshSource {
 	name: String,
 	endpoint: String,
 	call: SecretCall,
+	/// The Tenant Secret and version the invocation recorded. A refresh mints
+	/// only for these, so every request matches the record.
+	recorded: SecretIdentity,
 	/// The route minted when the call started, used before the first refresh.
 	first: Mutex<Option<SecretRoute>>,
 }
@@ -859,13 +867,19 @@ impl SecretRouteSource for RefreshSource {
 		let service = self.service.upgrade().ok_or_else(|| {
 			Error::External("Tenant Secret broker routing is no longer available".into())
 		})?;
+		let row = service
+			.active_row(&self.tenant, &self.name, &self.endpoint)
+			.await?;
+		// A session that outlives a rotation, or a name deleted and created
+		// again, stops rather than carry a value its invocation does not
+		// record; the next call records the current one (ADR 0095).
+		if row.id != self.recorded.id
+			|| numeric_version(row.require_active()?)? != self.recorded.version
+		{
+			return Err(unavailable());
+		}
 		match service
-			.resolve(
-				&self.tenant,
-				&self.name,
-				&self.endpoint,
-				Some(self.call.clone()),
-			)
+			.resolve_row(&self.tenant, &row, Some(self.call.clone()))
 			.await?
 		{
 			Resolved::Brokered(route) => Ok(route),

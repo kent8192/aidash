@@ -888,6 +888,26 @@ async fn a_brokered_call_secret_records_metadata_and_refreshes_one_route() {
 		"canary-capability-token"
 	);
 	assert_eq!(grants.0.lock().await.len(), 2);
+	// After a rotation the session stops instead of minting a token for a
+	// version its invocation does not record.
+	service
+		.put(
+			"alpha",
+			"search",
+			put(Some("canary-value-5678"), None, created.revision),
+			"actor",
+		)
+		.await
+		.unwrap();
+	assert!(matches!(
+		source.route().await,
+		Err(Error::Invalid(message)) if message == UNAVAILABLE
+	));
+	assert_eq!(
+		grants.0.lock().await.len(),
+		2,
+		"no token for the new version"
+	);
 }
 
 #[tokio::test]

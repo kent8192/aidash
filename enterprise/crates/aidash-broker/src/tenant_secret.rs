@@ -575,7 +575,13 @@ fn forward_path(claims: &SecretClaims, uri: &Uri) -> Result<String, ()> {
 		return Err(());
 	}
 	if !rest.is_empty() {
-		for segment in rest.split('/') {
+		// A directory-style route keeps its trailing `/`, as the gateway sends
+		// it; only that final segment may be empty.
+		let segments = rest.strip_suffix('/').unwrap_or(rest);
+		if segments.is_empty() {
+			return Err(());
+		}
+		for segment in segments.split('/') {
 			if segment.is_empty() || !percent_encoding_valid(segment) {
 				return Err(());
 			}
