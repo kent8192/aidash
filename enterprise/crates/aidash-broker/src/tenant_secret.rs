@@ -161,7 +161,7 @@ pub struct TenantSecretBroker {
 	client: reqwest::Client,
 	cache: Arc<Mutex<HashMap<(String, String), CachedSealed>>>,
 	buckets: Mutex<HashMap<(String, uuid::Uuid), Bucket>>,
-	#[cfg(test)]
+	#[cfg(any(test, feature = "test-support"))]
 	test_origin: Option<String>,
 }
 impl TenantSecretBroker {
@@ -187,15 +187,19 @@ impl TenantSecretBroker {
 			client,
 			cache: Arc::default(),
 			buckets: Mutex::default(),
-			#[cfg(test)]
+			#[cfg(any(test, feature = "test-support"))]
 			test_origin: None,
 		})
 	}
 	pub fn router(self: Arc<Self>) -> Router {
 		Router::new().fallback(forward).with_state(self)
 	}
-	#[cfg(test)]
-	pub(crate) fn test_origin(&mut self, origin: String) {
+	/// Replaces the destination origin the broker connects to. This exists only
+	/// for integration tests, which run an upstream on loopback; the public
+	/// address and sealed-host checks still apply to the token's destination.
+	/// The `test-support` feature is not part of any release build.
+	#[cfg(any(test, feature = "test-support"))]
+	pub fn test_origin(&mut self, origin: String) {
 		self.test_origin = Some(origin);
 	}
 	fn rate_limit(&self, claims: &SecretClaims) -> bool {
@@ -260,7 +264,7 @@ impl TenantSecretBroker {
 		})
 	}
 	fn origin(&self, claims: &SecretClaims) -> String {
-		#[cfg(test)]
+		#[cfg(any(test, feature = "test-support"))]
 		if let Some(origin) = &self.test_origin {
 			return origin.clone();
 		}

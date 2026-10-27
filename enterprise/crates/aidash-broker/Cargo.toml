@@ -34,6 +34,12 @@ url = "2"
 uuid.workspace = true
 zeroize = "1"
 
+[features]
+default = []
+# A local upstream origin for integration tests only. It is never part of the
+# release binary: the default and release builds compile no override at all.
+test-support = []
+
 [dev-dependencies]
 chrono.workspace = true
 aidash-application.workspace = true
