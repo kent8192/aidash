@@ -93,13 +93,6 @@ pub enum WireApi {
 	Responses,
 }
 
-impl WireApi {
-	/// Whether this route keeps the Chat Completions shape.
-	pub fn is_chat(&self) -> bool {
-		*self == Self::Chat
-	}
-}
-
 /// A model route's declared prompt-caching behavior.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
@@ -333,11 +326,24 @@ impl ModelConfig {
 				self.model_id
 			)));
 		}
-		if wire_api == WireApi::Responses && self.provider != "openrouter" {
+		if self.provider != "openrouter" {
 			return Err(Error::Invalid(format!(
-				"model {} declares wire_api responses, which requires OpenRouter",
+				"model {} declares wire_api, which requires OpenRouter",
 				self.model_id
 			)));
+		}
+		if wire_api == WireApi::Responses {
+			if self.modalities.iter().any(|modality| modality == "audio") {
+				return Err(Error::Invalid(
+					"The OpenRouter Responses adapter does not accept audio input".into(),
+				));
+			}
+			if self.cache_mode == Some(CacheMode::Explicit) {
+				return Err(Error::Invalid(
+					"The OpenRouter Responses adapter does not support explicit prompt caching"
+						.into(),
+				));
+			}
 		}
 		Ok(())
 	}

@@ -1579,6 +1579,21 @@ async fn responses_rejects_unbounded_or_provider_side_authority_before_key_looku
 		{"type":"input_image","image_url":png}
 	]}]);
 	let cases = vec![
+		("web search option", {
+			let mut body = responses();
+			body["web_search_options"] = json!({});
+			body
+		}),
+		("search filter", {
+			let mut body = responses();
+			body["x_search_filter"] = json!({});
+			body
+		}),
+		("server tool stop condition", {
+			let mut body = responses();
+			body["stop_server_tools_when"] = json!([]);
+			body
+		}),
 		("missing output bound", missing_bound),
 		("over the signed bound", over_bound),
 		("alternate completion name", {

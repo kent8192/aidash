@@ -76,6 +76,33 @@ fn completed_event(output: Value) -> Value {
 }
 
 #[test]
+fn plan_keeps_its_request_bytes_and_ignores_openrouter_only_events_and_usage() {
+	let body = request_body(&config(), &request(), Some("salt-line\n")).unwrap();
+	assert_eq!(
+		body.to_string(),
+		r#"{"input":[{"content":[{"text":"{\"task\":\"summarize\"}","type":"input_text"}],"role":"user"}],"instructions":"salt-line\nBe precise.","model":"gpt-fixture","reasoning":{"effort":"high"},"store":false,"stream":true,"tools":[{"description":"Tools of this Aidash agent.","name":"aidash","tools":[{"description":"Search the workspace","name":"search","parameters":{"properties":{"q":{"type":"string"}},"type":"object"},"type":"function"}],"type":"namespace"}]}"#
+	);
+	let mut terminal = completed_event(
+		json!([{"type":"message","content":[{"type":"output_text","text":"complete"}]}]),
+	);
+	terminal["response"]["usage"]["input_tokens_details"]["cache_write_tokens"] = json!(10);
+	terminal["response"]["usage"]["cost"] = json!(0.1);
+	let mut router_done = terminal.clone();
+	router_done["type"] = json!("response.done");
+	router_done["response"]["output"][0]["content"][0]["text"] = json!("early");
+	let (result, progress) = assemble(&sse(&[
+		json!({"type":"response.content_part.delta","delta":"early"}),
+		router_done,
+		terminal,
+	]));
+	let result = result.unwrap();
+	assert_eq!(result.text, "complete");
+	assert_eq!(result.reported.cache_write_tokens, None);
+	assert_eq!(result.reported.cost, None);
+	assert!(progress.is_empty());
+}
+
+#[test]
 fn requests_carry_the_projected_context_without_server_state() {
 	let mut request = request();
 	request.content_parts = vec![ContentPart::Image {
@@ -1036,7 +1063,7 @@ mod openrouter {
 			endpoint: format!("{url}/v1"),
 			calls,
 		});
-		let provider = crate::inference::provider(
+		let provider = crate::inference::salted_provider(
 			crate::keyless::Clients::new(
 				reqwest::Client::new(),
 				std::time::Duration::from_secs(30),
@@ -1050,6 +1077,16 @@ mod openrouter {
 				run: Some(uuid::Uuid::now_v7()),
 				..Context::default()
 			},
+			Some(
+				CacheSaltKeys::new(
+					&[crate::inference::CacheSaltKey {
+						version: 1,
+						secret: "fixture-key".into(),
+					}],
+					1,
+				)
+				.unwrap(),
+			),
 		)
 		.unwrap();
 		(provider, server)
@@ -1181,6 +1218,192 @@ mod openrouter {
 	}
 
 	#[tokio::test]
+	async fn non_streaming_incomplete_keeps_billing_and_discards_partial_tools() {
+		for (reason, expected, text) in [
+			(
+				"max_output_tokens",
+				ContextFailure::OutputTruncated,
+				"partial",
+			),
+			("content_filter", ContextFailure::Refused, ""),
+		] {
+			let app = Router::new().route(
+				"/v1/responses",
+				post(move || async move {
+					let mut body = responses_body(json!([
+						{"type":"message","content":[{"type":"output_text","text":"partial"}]},
+						{"type":"function_call","call_id":"unfinished","name":"search","arguments":"{"}
+					]));
+					body["status"] = json!("incomplete");
+					body["incomplete_details"] = json!({"reason":reason});
+					Json(body)
+				}),
+			);
+			let (provider, _server) = openrouter_provider(
+				app,
+				config("http://unused", false),
+				Arc::new(AtomicUsize::new(0)),
+			)
+			.await;
+			let error = provider
+				.infer(request(), &Recorder::default())
+				.await
+				.unwrap_err();
+			let Error::TerminalResponse(failure, usage) = error else {
+				panic!("{error:?}")
+			};
+			assert_eq!(failure, expected);
+			assert_eq!(usage.text, text);
+			assert!(usage.tool_calls.is_empty());
+			assert_eq!(usage.output_tokens, 90);
+			assert_eq!(usage.reported.cost.unwrap().nanocredits, 123_400);
+		}
+	}
+
+	#[tokio::test]
+	async fn stream_rejections_preserve_explicit_status_and_known_rate_limits() {
+		for error in [
+			json!({"type":"error","error":{"code":429,"message":"rate limited"}}),
+			json!({"type":"error","code":429,"message":"rate limited; maximum context length is unrelated"}),
+			json!({"type":"error","error":{"code":"rate_limit_exceeded","message":"rate limited"}}),
+		] {
+			let app = Router::new().route(
+				"/v1/responses",
+				post(move || {
+					let error = error.clone();
+					async move { stream_response(&[error]) }
+				}),
+			);
+			let (provider, _server) = openrouter_provider(
+				app,
+				config("http://unused", true),
+				Arc::new(AtomicUsize::new(0)),
+			)
+			.await;
+			let result = provider.infer(request(), &Recorder::default()).await;
+			assert!(
+				matches!(result, Err(Error::ProviderRejected { status: 429, .. })),
+				"{result:?}"
+			);
+		}
+	}
+
+	#[tokio::test]
+	async fn native_image_requests_keep_salt_and_verified_pinned_routing() {
+		let seen = Arc::new(Mutex::new(Vec::new()));
+		let history = seen.clone();
+		let app = Router::new()
+			.route("/v1/models/vendor/model/endpoints", get(|| async { Json(json!({"data":{"architecture":{"input_modalities":["text","image"]},"endpoints":[{"tag":"vendor/route","context_length":100000}]}})) }))
+			.route("/v1/endpoints/zdr", get(|| async { Json(json!({"data":[{"model_id":"vendor/model","tag":"vendor/route"}]})) }))
+			.route("/v1/responses", post(move |Json(body): Json<Value>| {
+				let history = history.clone();
+				async move {
+					history.lock().unwrap().push(body);
+					// Some providers answer stream requests with a whole JSON response.
+					Json(responses_body(json!([{"type":"message","content":[{"type":"output_text","text":"done"}]}])))
+				}
+			}));
+		let mut config = config("http://unused", true);
+		let now = chrono::Utc::now();
+		config.projection_versions = vec![aidash_domain::projection::ProjectionVersion::Native];
+		config.provider_route = Some(ProviderRouteEvidence {
+			tag: "vendor/route".into(),
+			source: "approval".into(),
+			verified_at: now - chrono::Duration::minutes(1),
+			expires_at: now + chrono::Duration::hours(1),
+		});
+		config.media_routes = vec![aidash_domain::model::MediaRouteEvidence {
+			tag: "vendor/route".into(),
+			formats: vec!["image/png".into()],
+			source: "approval".into(),
+			verified_at: now - chrono::Duration::minutes(1),
+			expires_at: now + chrono::Duration::hours(1),
+		}];
+		let calls = Arc::new(AtomicUsize::new(0));
+		let (provider, _server) = openrouter_provider(app, config, calls.clone()).await;
+		let mut request = super::native_request();
+		request.input_format = aidash_domain::provider::InputFormat::Responses;
+		request.max_output_tokens = 512;
+		request.cache_scope = Some(aidash_domain::projection::CacheScope {
+			tenant: "tenant-a".into(),
+			key_version: 1,
+		});
+		request.content_parts = vec![ContentPart::Image {
+			media_type: "image/png".into(),
+			bytes: b"\x89PNG\r\n\x1a\n".to_vec(),
+		}];
+		request.disable_provider_transforms = true;
+		assert_eq!(
+			provider
+				.infer(request.clone(), &Recorder::default())
+				.await
+				.unwrap()
+				.text,
+			"done"
+		);
+		assert_eq!(calls.load(Ordering::SeqCst), 2);
+		{
+			let seen = seen.lock().unwrap();
+			assert_eq!(
+				seen[0]["provider"],
+				json!({"zdr":true,"require_parameters":true,"only":["vendor/route"],"allow_fallbacks":false})
+			);
+			let instructions = seen[0]["instructions"].as_str().unwrap();
+			assert!(instructions.starts_with("aidash-cache-scope:v1:"));
+			assert!(instructions.ends_with(&format!("\n{}", request.instructions)));
+			assert_eq!(seen[0]["truncation"], "disabled");
+			assert!(
+				seen[0]["input"]
+					.as_array()
+					.unwrap()
+					.iter()
+					.flat_map(|item| item["content"].as_array().into_iter().flatten())
+					.any(|part| part["type"] == "input_image")
+			);
+		}
+		request.cache_scope.as_mut().unwrap().key_version = 2;
+		assert!(matches!(
+			provider.infer(request, &Recorder::default()).await,
+			Err(Error::Invalid(_))
+		));
+		assert_eq!(
+			calls.load(Ordering::SeqCst),
+			2,
+			"missing salt key sends no discovery or inference"
+		);
+	}
+
+	#[tokio::test]
+	async fn keepalive_comments_do_not_keep_a_stalled_stream_alive() {
+		let app = Router::new().route(
+			"/v1/responses",
+			post(|| async {
+				let stream = async_stream::stream! {
+					loop {
+						yield Ok::<_, std::io::Error>(": keepalive\n\n");
+						tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+					}
+				};
+				(
+					[(header::CONTENT_TYPE, "text/event-stream")],
+					axum::body::Body::from_stream(stream),
+				)
+			}),
+		);
+		let mut config = config("http://unused", true);
+		config.stream_stall_timeout_secs = Some(1);
+		let (provider, _server) =
+			openrouter_provider(app, config, Arc::new(AtomicUsize::new(0))).await;
+		let result = tokio::time::timeout(
+			std::time::Duration::from_secs(3),
+			provider.infer(request(), &Recorder::default()),
+		)
+		.await
+		.unwrap();
+		assert!(matches!(result, Err(Error::InferenceStalled)), "{result:?}");
+	}
+
+	#[tokio::test]
 	async fn a_pinned_route_is_checked_against_zdr_before_any_response_call() {
 		let responses = Arc::new(AtomicUsize::new(0));
 		let counter = responses.clone();
@@ -1244,10 +1467,13 @@ mod openrouter {
 			let history = seen.clone();
 			let app = Router::new().route(
 				"/v1/chat/completions",
-				post(move |Json(_): Json<Value>| {
+				post(move |body: axum::body::Bytes| {
 					let history = history.clone();
 					async move {
-						history.lock().unwrap().push("chat".into());
+						history
+							.lock()
+							.unwrap()
+							.push(String::from_utf8(body.to_vec()).unwrap());
 						Json(json!({
 							"choices":[{"finish_reason":"stop","message":{"content":"chat"}}],
 							"usage":{"prompt_tokens":1,"completion_tokens":1}
@@ -1264,7 +1490,12 @@ mod openrouter {
 				.await
 				.unwrap();
 			assert_eq!(result.text, "chat");
-			assert_eq!(seen.lock().unwrap().as_slice(), ["chat"]);
+			assert_eq!(
+				seen.lock().unwrap().as_slice(),
+				[
+					r#"{"max_tokens":512,"messages":[{"content":"Be precise.","role":"system"},{"content":"{\"task\":\"summarize\"}","role":"user"}],"model":"vendor/model","provider":{"require_parameters":true,"zdr":true},"reasoning":{"effort":"high"},"tools":[{"function":{"description":"Search the workspace","name":"search","parameters":{"properties":{"q":{"type":"string"}},"type":"object"}},"type":"function"}]}"#
+				]
+			);
 		}
 	}
 

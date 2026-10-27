@@ -340,6 +340,8 @@ fn body_policy(body: &[u8], claims: &Claims, op: Operation, path: &str) -> Resul
 	if op == Operation::Chat && responses {
 		// Only client-executed function tools and no provider tool controls.
 		if value.get("plugins").is_some()
+			|| value.get("web_search_options").is_some()
+			|| value.get("x_search_filter").is_some()
 			|| value.get("preset").is_some()
 			|| value.get("deferred_tools").is_some()
 			|| value.get("max_tool_calls").is_some()

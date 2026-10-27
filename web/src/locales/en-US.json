@@ -519,7 +519,7 @@
   "modelWireApi": "Wire API",
   "modelWireApiChat": "Chat Completions (default)",
   "modelWireApiResponses": "Responses API",
-  "modelWireApiHelp": "Responses uses OpenRouter's Responses API for this model; Chat Completions keeps the existing path. Choose Responses only for models that support it.",
+  "modelWireApiHelp": "Responses uses OpenRouter's Responses API for this model; Chat Completions keeps the existing path. Choose Responses only for models that support it. Audio input and explicit cache breakpoints are not supported.",
   "clusterCoordinator": "Coordinator agent",
   "nodeNoConfiguration": "No additional settings are needed for this registry entry. Node Registrations are managed under Settings, Nodes.",
   "toolArguments": "Input arguments",

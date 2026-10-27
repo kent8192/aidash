@@ -220,6 +220,29 @@ fn openrouter_responses_follow_the_plan_projection_mapping() {
 	}
 }
 
+#[test]
+fn responses_definitions_cannot_advertise_unsupported_input_or_explicit_caching() {
+	let mut model = openrouter_model(Some("responses"));
+	model.modalities.push("audio".into());
+	assert!(
+		model
+			.validate_wire_api()
+			.unwrap_err()
+			.to_string()
+			.contains("audio")
+	);
+	model.modalities = vec!["text".into()];
+	model.model_id = "anthropic/claude-fixture".into();
+	model.cache_mode = Some(CacheMode::Explicit);
+	assert!(
+		model
+			.validate_wire_api()
+			.unwrap_err()
+			.to_string()
+			.contains("explicit")
+	);
+}
+
 #[rstest::rstest]
 fn pinned_media_admission_advertises_only_the_selected_route() {
 	let mut model = plan_model(&["text", "image"]);

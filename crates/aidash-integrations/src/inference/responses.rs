@@ -1,4 +1,4 @@
-//! OpenAI Responses API transport for ChatGPT plan usage (#159, ADR 0007).
+//! Responses API transport for ChatGPT plans and OpenRouter Provider Credentials.
 //!
 //! Plan usage requires `stream: true` and `store: false` and keeps no
 //! conversation state, so every request carries the whole projected context
@@ -152,7 +152,7 @@ pub(crate) fn request_body(
 
 /// OpenRouter's Responses body. It uses flat function tools and no namespace
 /// on calls, keeps the same provider preferences as the chat body, and never
-/// sends `store` or `previous_response_id`, which the proxy rejects. Streaming
+/// sends conversation state or a previous response ID. Streaming
 /// is added by the caller only when the model streams.
 fn openrouter_request_body(
 	config: &ModelConfig,
@@ -168,6 +168,9 @@ fn openrouter_request_body(
 		request.instructions
 	));
 	body["max_output_tokens"] = json!(request.max_output_tokens);
+	if request.disable_provider_transforms {
+		body["truncation"] = json!("disabled");
+	}
 	body["provider"] = super::provider_preferences(config, media_routes);
 	if let Some(effort) = config.reasoning_effort {
 		body["reasoning"] = json!({"effort": effort});
@@ -348,7 +351,7 @@ impl ResponsesProvider {
 				ContentPart::Image { .. } => Some("image"),
 				ContentPart::Audio { .. } => {
 					return Err(Error::Invalid(
-						"OpenRouter Responses does not accept audio input".into(),
+						"The OpenRouter Responses adapter does not accept audio input".into(),
 					));
 				}
 				ContentPart::Text(_) => None,
@@ -452,7 +455,15 @@ fn salt_line(provider: &ResponsesProvider, request: &ModelRequest) -> Result<Opt
 fn parse_response(body: &[u8]) -> Result<ModelResponse> {
 	let value: Value = serde_json::from_slice(body)
 		.map_err(|error| Error::External(format!("invalid response JSON: {error}")))?;
-	completed_with_cost(&value, super::provider_cost(body))
+	let cost = super::provider_cost(body);
+	match value["status"].as_str() {
+		Some("incomplete") => incomplete(&value, cost, true),
+		Some("failed") => Err(openrouter_stream_failure(value.get("error"))),
+		_ if value.get("error").is_some_and(Value::is_object) => {
+			Err(openrouter_stream_failure(value.get("error")))
+		}
+		_ => completed_with_cost(&value, cost, true),
+	}
 }
 
 /// Token metrics match the Chat Completions path: a billed response counts,
@@ -516,7 +527,12 @@ async fn read_stream(
 		}
 		_ => {
 			return Err(Error::External(
-				"Responses API answered without an event stream".into(),
+				if openrouter {
+					"Responses API answered without an event stream"
+				} else {
+					"ChatGPT plan usage answered without an event stream"
+				}
+				.into(),
 			));
 		}
 	}
@@ -684,7 +700,13 @@ impl<'a> Assembler<'a> {
 			.map_err(|error| Error::External(format!("invalid response JSON: {error}")))?;
 		match event["type"].as_str() {
 			// OpenRouter also emits `response.content_part.delta` for text.
-			Some("response.output_text.delta" | "response.content_part.delta") => {
+			Some("response.output_text.delta") => {
+				if let Some(text) = event["delta"].as_str() {
+					self.grow(text.len())?;
+					offer_text(self.progress, text);
+				}
+			}
+			Some("response.content_part.delta") if self.openrouter => {
 				if let Some(text) = event["delta"].as_str() {
 					self.grow(text.len())?;
 					offer_text(self.progress, text);
@@ -724,12 +746,23 @@ impl<'a> Assembler<'a> {
 			}
 			// OpenRouter names its terminal success event `response.done` in
 			// parts of its documentation; accept both spellings.
-			Some("response.completed" | "response.done") => {
+			Some("response.completed") => {
 				let cost = self
 					.openrouter
 					.then(|| super::response_provider_cost(data))
 					.flatten();
-				self.finished = Some(completed_with_cost(&event["response"], cost));
+				self.finished = Some(completed_with_cost(
+					&event["response"],
+					cost,
+					self.openrouter,
+				));
+			}
+			Some("response.done") if self.openrouter => {
+				let cost = self
+					.openrouter
+					.then(|| super::response_provider_cost(data))
+					.flatten();
+				self.finished = Some(completed_with_cost(&event["response"], cost, true));
 			}
 			Some("response.incomplete") => {
 				let response = &event["response"];
@@ -737,36 +770,7 @@ impl<'a> Assembler<'a> {
 					.openrouter
 					.then(|| super::response_provider_cost(data))
 					.flatten();
-				let failure = match response
-					.pointer("/incomplete_details/reason")
-					.and_then(Value::as_str)
-				{
-					Some("max_output_tokens" | "max_messages") => ContextFailure::OutputTruncated,
-					Some("content_filter") => ContextFailure::Refused,
-					_ => {
-						self.finished = Some(Err(Error::External(
-							"provider returned an incomplete response".into(),
-						)));
-						return Ok(());
-					}
-				};
-				let mut result = usage_only_with_cost(response, cost);
-				if failure == ContextFailure::OutputTruncated {
-					// Use only the terminal snapshot's text. Incomplete function
-					// calls are never parsed or dispatched, including by sampling.
-					for item in response["output"].as_array().into_iter().flatten() {
-						if item["type"] == "message" {
-							for part in item["content"].as_array().into_iter().flatten() {
-								if part["type"] == "output_text" {
-									result
-										.text
-										.push_str(part["text"].as_str().unwrap_or_default());
-								}
-							}
-						}
-					}
-				}
-				self.finished = Some(Err(Error::TerminalResponse(failure, Box::new(result))));
+				self.finished = Some(incomplete(response, cost, self.openrouter));
 			}
 			Some("response.failed") => {
 				let error = event.pointer("/response/error").cloned();
@@ -778,7 +782,7 @@ impl<'a> Assembler<'a> {
 			}
 			Some("error") => {
 				self.finished = Some(Err(if self.openrouter {
-					openrouter_stream_failure(Some(&event))
+					openrouter_stream_failure(event.get("error").or(Some(&event)))
 				} else {
 					stream_failure(Some(&event))
 				}));
@@ -857,24 +861,66 @@ fn stream_failure(error: Option<&Value>) -> Error {
 /// already shown.
 fn openrouter_stream_failure(error: Option<&Value>) -> Error {
 	let body = error.map(|error| json!({"error": error}));
-	let status = match error
-		.and_then(|error| error.get("code"))
-		.and_then(Value::as_str)
-	{
-		_ if body.as_ref().is_some_and(super::context_overflow) => 400,
-		Some(code) if code.ends_with("_unavailable") => 503,
-		_ => 502,
-	};
+	let code = error.and_then(|error| error.get("code"));
+	// An explicit HTTP-equivalent code takes precedence over message heuristics,
+	// just as it does for Chat Completions and pre-stream HTTP rejections.
+	let status = code
+		.and_then(Value::as_u64)
+		.and_then(|code| u16::try_from(code).ok())
+		.filter(|code| (400..=599).contains(code))
+		.unwrap_or_else(|| match code.and_then(Value::as_str) {
+			Some("rate_limit_exceeded") => 429,
+			Some(code) if code.ends_with("_unavailable") => 503,
+			_ if body.as_ref().is_some_and(super::context_overflow) => 400,
+			_ => 502,
+		});
 	super::rejection(status, body.as_ref(), true)
 }
 
-fn reported(response: &Value) -> ReportedUsage {
+fn incomplete(
+	response: &Value,
+	cost: Option<ProviderCost>,
+	openrouter: bool,
+) -> Result<ModelResponse> {
+	let failure = match response
+		.pointer("/incomplete_details/reason")
+		.and_then(Value::as_str)
+	{
+		Some("max_output_tokens" | "max_messages") => ContextFailure::OutputTruncated,
+		Some("content_filter") => ContextFailure::Refused,
+		_ => {
+			return Err(Error::External(
+				"provider returned an incomplete response".into(),
+			));
+		}
+	};
+	let mut result = usage_only_with_cost(response, cost, openrouter);
+	if failure == ContextFailure::OutputTruncated {
+		// Only terminal text is eligible for bounded sampling; partial calls never escape.
+		for item in response["output"].as_array().into_iter().flatten() {
+			if item["type"] == "message" {
+				for part in item["content"].as_array().into_iter().flatten() {
+					if part["type"] == "output_text" {
+						result
+							.text
+							.push_str(part["text"].as_str().unwrap_or_default());
+					}
+				}
+			}
+		}
+	}
+	Err(Error::TerminalResponse(failure, Box::new(result)))
+}
+
+fn reported(response: &Value, openrouter: bool) -> ReportedUsage {
 	let count = |pointer: &str| response.pointer(pointer).and_then(Value::as_u64);
 	ReportedUsage {
 		input_tokens: count("/usage/input_tokens"),
 		output_tokens: count("/usage/output_tokens"),
 		cache_read_tokens: count("/usage/input_tokens_details/cached_tokens"),
-		cache_write_tokens: count("/usage/input_tokens_details/cache_write_tokens"),
+		cache_write_tokens: openrouter
+			.then(|| count("/usage/input_tokens_details/cache_write_tokens"))
+			.flatten(),
 		reasoning_tokens: count("/usage/output_tokens_details/reasoning_tokens"),
 		// Plan usage is billed to the owner's plan: Aidash learns no cost.
 		// OpenRouter's reported cost is attached by its transport.
@@ -883,8 +929,12 @@ fn reported(response: &Value) -> ReportedUsage {
 	}
 }
 
-fn usage_only_with_cost(response: &Value, cost: Option<ProviderCost>) -> ModelResponse {
-	let mut reported = reported(response);
+fn usage_only_with_cost(
+	response: &Value,
+	cost: Option<ProviderCost>,
+	openrouter: bool,
+) -> ModelResponse {
+	let mut reported = reported(response, openrouter);
 	reported.cost = cost;
 	ModelResponse {
 		usage_complete: reported.input_tokens.is_some() && reported.output_tokens.is_some(),
@@ -899,10 +949,14 @@ fn usage_only_with_cost(response: &Value, cost: Option<ProviderCost>) -> ModelRe
 /// non-streamed Chat Completions response.
 #[cfg(test)]
 pub(crate) fn completed(response: &Value) -> Result<ModelResponse> {
-	completed_with_cost(response, None)
+	completed_with_cost(response, None, false)
 }
 
-fn completed_with_cost(response: &Value, cost: Option<ProviderCost>) -> Result<ModelResponse> {
+fn completed_with_cost(
+	response: &Value,
+	cost: Option<ProviderCost>,
+	openrouter: bool,
+) -> Result<ModelResponse> {
 	if response["status"]
 		.as_str()
 		.is_some_and(|status| status != "completed")
@@ -911,7 +965,7 @@ fn completed_with_cost(response: &Value, cost: Option<ProviderCost>) -> Result<M
 			"provider completed a response that is not complete".into(),
 		));
 	}
-	let usage = usage_only_with_cost(response, cost);
+	let usage = usage_only_with_cost(response, cost, openrouter);
 	let output = response["output"]
 		.as_array()
 		.ok_or_else(|| Error::External("provider returned no output".into()))?;
