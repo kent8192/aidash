@@ -181,6 +181,35 @@ pub async fn initialize_as(
 	Ok(federation)
 }
 
+/// The Egress gateway keeps admission, limits, recording and package-index
+/// rewriting. A Secret Manager Store seals a Tenant Secret's hosts with its
+/// value, so the gateway cannot read the value and must forward a
+/// secret-bearing request to the Tenant Secret broker (ADR 0095). Without one
+/// it refuses to start rather than silently reading nothing.
+pub fn require_egress_broker(store: &Store) -> Result<()> {
+	let secret_manager = store
+		.provider_credentials
+		.as_ref()
+		.is_some_and(|credentials| credentials.store.seals_secret_hosts());
+	let brokered = store
+		.tenant_secrets
+		.as_ref()
+		.is_some_and(|tenant_secrets| tenant_secrets.calls.is_some());
+	require_egress_broker_settings(secret_manager, brokered)
+}
+
+/// The refusal decision itself, so startup coverage names both inputs.
+pub fn require_egress_broker_settings(secret_manager: bool, brokered: bool) -> Result<()> {
+	if secret_manager && !brokered {
+		return Err(Error::Invalid(
+			"the Egress gateway needs provider_credentials.settings.tenant_secret_broker \
+			 {endpoint, issuer, audience, kid} on this Secret Manager Store (#310)"
+				.into(),
+		));
+	}
+	Ok(())
+}
+
 /// Process-owned supervisor; dropping it cancels the supervisor and its JoinSets.
 pub struct RuntimeTasks {
 	stopping: watch::Sender<bool>,
@@ -200,16 +229,11 @@ impl RuntimeTasks {
 		if event_streams.is_some()
 			&& let Some(egress) = &federation.store.capabilities.0.egress
 		{
-			if build::offering() != aidash_domain::offering::Offering::SelfHosted {
-				return Err(Error::Invalid(
-					"Cloud and Dedicated Egress gateways require the Credential Broker (#310)"
-						.into(),
-				));
-			}
+			require_egress_broker(&federation.store)?;
 			let listener = tokio::net::TcpListener::bind(egress.listen).await?;
-			let authority = Arc::new(crate::apps::execution::repositories::egress::Gateway {
-				store: federation.store.clone(),
-			});
+			let authority = Arc::new(crate::apps::execution::repositories::egress::Gateway::new(
+				federation.store.clone(),
+			));
 			let stopping = receiver.clone();
 			tasks.spawn_service(runtime_task(async move {
 				aidash_integrations::egress::serve(listener, authority, stopping)

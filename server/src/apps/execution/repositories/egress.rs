@@ -7,6 +7,10 @@ use crate::{
 };
 use aidash_application::egress::{Admission, Authority, Direction, Meter};
 use aidash_application::tenancy::{DeploymentScopeReason, TenancyScope};
+use aidash_application::tenant_secrets::{
+	CachedRoute, Resolution, Resolved, RouteCache, SecretCall, SecretIdentity, SecretRoute,
+};
+use aidash_capability::tenant_secret::{Attach, Destination, SecretSubject};
 use aidash_domain::egress::Limits;
 use async_trait::async_trait;
 use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
@@ -21,6 +25,111 @@ use uuid::Uuid;
 #[derive(Clone)]
 pub(crate) struct Gateway {
 	pub store: Store,
+	/// Broker routes live for less than their token so a long operation's next
+	/// request is routed afresh (ADR 0095).
+	routes: Arc<RouteCache>,
+}
+impl Gateway {
+	pub fn new(store: Store) -> Self {
+		Self {
+			store,
+			routes: Arc::default(),
+		}
+	}
+
+	/// The broker route for one operation and External service. A route is
+	/// reused for 50 seconds so a request in a long operation still starts
+	/// with a token that is valid; a stale one is minted again.
+	async fn brokered_route(
+		&self,
+		tenant_secrets: &aidash_application::tenant_secrets::Service,
+		tenant: &str,
+		name: &str,
+		service: &str,
+		definition: &aidash_domain::egress::ExternalService,
+		operation: Uuid,
+	) -> Result<(SecretRoute, SecretIdentity)> {
+		if let Some(cached) = self.routes.get(operation, service) {
+			return Ok((
+				SecretRoute {
+					base: cached.base,
+					token: cached.token,
+				},
+				cached.secret,
+			));
+		}
+		let base = reqwest::Url::parse(&definition.base_url).map_err(|_| Error::Forbidden)?;
+		let destination = Destination {
+			origin: base.origin().ascii_serialization(),
+			path_prefix: destination_prefix(base.path()),
+		};
+		let attach = match &definition.authentication {
+			aidash_domain::egress::Authentication::Bearer => Attach::Bearer,
+			aidash_domain::egress::Authentication::Header { name } => {
+				Attach::Header { name: name.clone() }
+			}
+		};
+		let call = SecretCall {
+			destination,
+			methods: definition.methods.clone(),
+			attach,
+			subject: SecretSubject::Operation {
+				operation,
+				tenant: tenant.to_owned(),
+			},
+			max_response_bytes: None,
+		};
+		let resolution: Resolution = tenant_secrets
+			.resolve_with_secret(tenant, name, &definition.base_url, Some(call))
+			.await
+			.map_err(|error| match error {
+				// The repairable code stays; any other resolution or signing
+				// fault is an operator fault (ADR 0095).
+				aidash_application::Error::Invalid(message)
+					if message == aidash_domain::tenant_secrets::UNAVAILABLE =>
+				{
+					aidash_application::Error::Invalid(message)
+				}
+				aidash_application::Error::Invalid(_) | aidash_application::Error::External(_) => {
+					aidash_application::Error::Invalid("broker_unavailable".into())
+				}
+				other => other,
+			})?;
+		let Resolved::Brokered(route) = resolution.resolved else {
+			return Err(Error::Invalid(
+				"this call path cannot use the Tenant Secret broker".into(),
+			));
+		};
+		let secret = resolution
+			.secret
+			.ok_or_else(|| Error::Invalid("secret_unavailable".into()))?;
+		self.routes.insert(
+			operation,
+			service,
+			CachedRoute {
+				base: route.base.clone(),
+				token: route.token.clone(),
+				secret: secret.clone(),
+			},
+		);
+		Ok((route, secret))
+	}
+}
+
+/// The External service's base path as the broker joins it: from `/`, with a
+/// trailing slash.
+fn destination_prefix(path: &str) -> String {
+	let mut prefix = path.to_owned();
+	if prefix.is_empty() {
+		prefix.push('/');
+	}
+	if !prefix.starts_with('/') {
+		prefix.insert(0, '/');
+	}
+	if !prefix.ends_with('/') {
+		prefix.push('/');
+	}
+	prefix
 }
 
 fn token_mac(store: &Store, operation: Uuid, expires: DateTime<Utc>) -> Result<Hmac<Sha256>> {
@@ -300,16 +409,40 @@ impl Authority for Gateway {
 				.limits
 				.unwrap_or(settings.limits)
 				.lower_than(settings.limits)?;
-			let credential = match &definition.secret {
-				Some(name) => Some(
-					self.store
+			let (credential, route, secret) = match &definition.secret {
+				Some(name) => {
+					let tenant_secrets = self
+						.store
 						.tenant_secrets
 						.as_ref()
-						.ok_or_else(|| Error::Invalid("secret_unavailable".into()))?
-						.resolve_value(&identity.tenant, name, &definition.base_url)
-						.await?,
-				),
-				None => None,
+						.ok_or_else(|| Error::Invalid("secret_unavailable".into()))?;
+					if tenant_secrets.calls.is_some() {
+						let (route, secret) = self
+							.brokered_route(
+								tenant_secrets,
+								&identity.tenant,
+								name,
+								service,
+								&definition,
+								operation,
+							)
+							.await?;
+						(None, Some(route), Some(secret))
+					} else {
+						let resolution = tenant_secrets
+							.resolve_with_secret(&identity.tenant, name, &definition.base_url, None)
+							.await?;
+						match resolution.resolved {
+							Resolved::Value(value) => (Some(value), None, resolution.secret),
+							Resolved::Brokered(_) => {
+								return Err(Error::Invalid(
+									"this call path cannot use the Tenant Secret broker".into(),
+								));
+							}
+						}
+					}
+				}
+				None => (None, None, None),
 			};
 			let mut total = budget(&mut access, operation, "")
 				.await?
@@ -359,6 +492,13 @@ impl Authority for Gateway {
 					.map_err(reinhardt::core::exception::Error::from)?;
 			}
 			let id = Uuid::now_v7();
+			// The record names where a value went, never what it was. A service
+			// without a Tenant Secret leaves all three columns null.
+			let secret_host = secret.as_ref().and_then(|_| {
+				reqwest::Url::parse(&definition.base_url)
+					.ok()
+					.and_then(|url| url.host_str().map(str::to_owned))
+			});
 			let record = RequestRecord::build()
 				.id(id)
 				.tenant(identity.tenant.clone())
@@ -373,6 +513,9 @@ impl Authority for Gateway {
 				.received_bytes(0)
 				.duration_ms(0)
 				.error(Some("stream_interrupted".to_owned()))
+				.secret_id(secret.as_ref().map(|secret| secret.id))
+				.secret_version(secret.as_ref().map(|secret| secret.version.clone()))
+				.secret_host(secret_host)
 				.created_at(Utc::now())
 				.finish();
 			RequestRecord::objects()
@@ -389,6 +532,7 @@ impl Authority for Gateway {
 				definition,
 				expires_at: deadline,
 				credential,
+				route,
 				meter: Arc::new(RequestMeter {
 					store: self.store.clone(),
 					identity,

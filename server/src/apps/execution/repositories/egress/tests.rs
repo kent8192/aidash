@@ -193,33 +193,27 @@ async fn native_gateway_serializes_cumulative_limits_and_refuses_revoked_binding
 	let token = request["egress"]["token"].as_str().unwrap();
 	let digest = "a".repeat(64);
 	assert!(matches!(
-		Gateway {
-			store: f.store.clone()
-		}
-		.admit(
-			&format!("{operation}.{}", "a".repeat(43)),
-			"images",
-			"GET",
-			"forged",
-			&digest
-		)
-		.await,
+		Gateway::new(f.store.clone())
+			.admit(
+				&format!("{operation}.{}", "a".repeat(43)),
+				"images",
+				"GET",
+				"forged",
+				&digest
+			)
+			.await,
 		Err(aidash_application::Error::Forbidden)
 	));
-	let first = Gateway {
-		store: f.store.clone(),
-	}
-	.admit(token, "images", "POST", "upload", &digest)
-	.await
-	.unwrap();
+	let first = Gateway::new(f.store.clone())
+		.admit(token, "images", "POST", "upload", &digest)
+		.await
+		.unwrap();
 	first.meter.charge(Direction::Sent, 6).await.unwrap();
 	// A fresh gateway instance sees the same durable operation budget.
-	let second = Gateway {
-		store: f.store.clone(),
-	}
-	.admit(token, "images", "GET", "download", &digest)
-	.await
-	.unwrap();
+	let second = Gateway::new(f.store.clone())
+		.admit(token, "images", "GET", "download", &digest)
+		.await
+		.unwrap();
 	let attempts = (0..8).map(|i| {
 		let meter = if i % 2 == 0 {
 			first.meter.clone()
@@ -235,11 +229,9 @@ async fn native_gateway_serializes_cumulative_limits_and_refuses_revoked_binding
 	first.meter.finish(201, 20, None).await.unwrap();
 	second.meter.finish(200, 25, None).await.unwrap();
 	assert!(matches!(
-		Gateway {
-			store: f.store.clone()
-		}
-		.admit(token, "images", "GET", "third", &digest)
-		.await,
+		Gateway::new(f.store.clone())
+			.admit(token, "images", "GET", "third", &digest)
+			.await,
 		Err(aidash_application::Error::Conflict(_))
 	));
 	let mut tx = f.store.pool.begin(&TEST_FIXTURE).await.unwrap();
@@ -283,11 +275,9 @@ async fn native_gateway_serializes_cumulative_limits_and_refuses_revoked_binding
 	.await
 	.unwrap();
 	assert!(matches!(
-		Gateway {
-			store: f.store.clone()
-		}
-		.admit(token, "images", "GET", "revoked", &digest)
-		.await,
+		Gateway::new(f.store.clone())
+			.admit(token, "images", "GET", "revoked", &digest)
+			.await,
 		Err(aidash_application::Error::Forbidden)
 	));
 	// Metering rechecks Run control, including on an already admitted stream.

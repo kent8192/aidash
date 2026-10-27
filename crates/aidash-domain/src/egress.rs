@@ -208,5 +208,13 @@ pub struct RequestRecord {
 	pub received_bytes: i64,
 	pub duration_ms: i64,
 	pub error: Option<String>,
+	/// The Tenant Secret and pinned version a call carried, and the host it
+	/// went to. Absent for a service without a Tenant Secret (ADR 0095).
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub secret_id: Option<uuid::Uuid>,
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub secret_version: Option<String>,
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub secret_host: Option<String>,
 	pub created_at: chrono::DateTime<chrono::Utc>,
 }
