@@ -490,3 +490,5 @@ async fn oauth_connections_subject_credentials_manage_only_their_persons_connect
 	assert_eq!(status, 403);
 	common::cleanup(f, &url, &schema).await;
 }
+
+mod mcp_connection_owner;

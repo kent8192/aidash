@@ -83,6 +83,18 @@ async fn prepare(
 	// Resolved with the same authority and checks as the dispatch it serves.
 	let secret = match &rule.secret {
 		Some(name) => {
+			let descriptor: aidash_domain::tool::providers::ToolDescriptor =
+				serde_json::from_value(tool.config.clone())?;
+			if matches!(
+				descriptor.transport,
+				Some(aidash_domain::tool::ToolConfig::Http {
+					secret_owner: aidash_domain::tool::SecretOwner::Personal,
+					..
+				})
+			) {
+				// Workbench has no Run chain-root person and cannot borrow a shared secret.
+				return Err(crate::tenant_secrets::personal_required(name));
+			}
 			let call = SecretCall {
 				destination: endpoint_destination(&rule.endpoint)?,
 				methods: vec!["POST".to_owned()],

@@ -166,6 +166,7 @@ impl ExecutionTool for McpPluginTool {
 				key,
 				checkpoint,
 				inputs,
+				None,
 			)
 			.await
 	}
@@ -204,6 +205,7 @@ impl ExecutionTool for McpPluginTool {
 				&self.tool.schema_digest,
 				admitted,
 				key,
+				None,
 			)
 			.await
 	}

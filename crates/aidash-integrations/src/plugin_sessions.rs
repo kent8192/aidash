@@ -5,7 +5,7 @@ use crate::{
 	Error, Result,
 	tools::{TOOL_TIMEOUT, ToolClients},
 };
-use aidash_application::ports::tools::PluginInputs;
+use aidash_application::{ports::tools::PluginInputs, tenant_secrets::CallSecret};
 use aidash_application::{
 	ports::tools::{ListFailure, PluginServer, PluginSessions},
 	provider_access::KeylessAccess,
@@ -32,8 +32,7 @@ use rmcp::{
 	model::{CallToolRequestParams, PaginatedRequestParams},
 	service::{ClientInitializeError, RunningService, ServiceError},
 	transport::{
-		StreamableHttpClientTransport,
-		streamable_http_client::{StreamableHttpClientTransportConfig, StreamableHttpError},
+		StreamableHttpClientTransport, streamable_http_client::StreamableHttpClientTransportConfig,
 	},
 };
 use rmcp_modern as rmcp;
@@ -53,22 +52,33 @@ struct ActiveCall {
 }
 #[derive(Default)]
 struct Inputs {
+	progress: Arc<crate::tools::auth::CallProgress>,
 	sequence: std::sync::atomic::AtomicU64,
 	active: Arc<Mutex<ActiveCall>>,
 	serial: tokio::sync::Mutex<()>,
 }
 struct InputScope(Arc<Mutex<ActiveCall>>);
+impl InputScope {
+	fn inputs(&self, input: Option<Arc<dyn PluginInputs>>) {
+		self.0.lock().unwrap_or_else(PoisonError::into_inner).input = input;
+	}
+}
 impl Drop for InputScope {
 	fn drop(&mut self) {
 		*self.0.lock().unwrap_or_else(PoisonError::into_inner) = ActiveCall::default();
 	}
 }
 impl Inputs {
-	fn enter(&self, input: Option<Arc<dyn PluginInputs>>) -> Result<InputScope> {
+	fn enter(
+		&self,
+		input: Option<Arc<dyn PluginInputs>>,
+		previously_accepted: bool,
+	) -> Result<InputScope> {
 		let mut active = self.active.lock().unwrap_or_else(PoisonError::into_inner);
 		if active.open {
 			return Err(Error::Conflict("MCP_CALL_OVERLAP".into()));
 		}
+		self.progress.begin(previously_accepted);
 		*active = ActiveCall { open: true, input };
 		Ok(InputScope(self.active.clone()))
 	}
@@ -159,7 +169,7 @@ mod wire;
 use wire::{BoundedClient, call_error, initialization_error};
 
 type Service = RunningService<RoleClient, Inputs>;
-type Failure = StreamableHttpError<reqwest::Error>;
+type Failure = wire::Failure;
 type Attempt<T> = std::result::Result<T, Fault>;
 
 /// Every Run of the process shares one instance, through an `Arc`.
@@ -176,6 +186,7 @@ const _: () = {
 
 #[derive(Clone, PartialEq, Eq, Hash)]
 struct Key {
+	connection: Option<Uuid>,
 	run: Uuid,
 	plugin: PluginName,
 	digest: String,
@@ -183,8 +194,16 @@ struct Key {
 }
 
 impl Key {
+	fn with_auth(mut self, auth: Option<&CallSecret>) -> Self {
+		self.connection = match auth {
+			Some(CallSecret::Connection { record, .. }) => Some(record.id),
+			_ => None,
+		};
+		self
+	}
 	fn new(run: Uuid, server: &PluginServer) -> Self {
 		Self {
+			connection: None,
 			run,
 			plugin: server.plugin.clone(),
 			digest: server.digest.clone(),
@@ -323,7 +342,14 @@ impl McpPluginSessions {
 	}
 
 	/// The Run's session with the server. A refused destination fails before any I/O.
-	async fn session(&self, key: &Key, config: &RemoteServer) -> Attempt<Arc<Service>> {
+	async fn session(
+		&self,
+		key: &Key,
+		config: &RemoteServer,
+		auth: Option<&CallSecret>,
+		previously_accepted: bool,
+	) -> Attempt<Arc<Service>> {
+		crate::tools::auth::validate(auth, config.url.as_str()).map_err(Fault::Early)?;
 		let live = self.state().live(key);
 		if let Some(service) = live {
 			return Ok(service);
@@ -332,7 +358,7 @@ impl McpPluginSessions {
 			.clients
 			.select_mcp(&self.origins, config.url.as_str())
 			.map_err(Fault::Early)?;
-		let service = open(client, config).await?;
+		let service = open(client, config, auth, previously_accepted).await?;
 		let service = self
 			.state()
 			.adopt(key.clone(), Arc::new(service))
@@ -381,16 +407,20 @@ impl McpPluginSessions {
 	}
 }
 
-#[async_trait]
-impl PluginSessions for McpPluginSessions {
-	async fn list(
+impl McpPluginSessions {
+	async fn list_once(
 		&self,
 		run: Uuid,
 		server: &PluginServer,
 		config: &RemoteServer,
+		auth: Option<&CallSecret>,
 	) -> Result<Vec<ListedTool>> {
-		let key = Key::new(run, server);
-		let service = self.session(&key, config).await.map_err(Fault::for_list)?;
+		let key = Key::new(run, server).with_auth(auth);
+		let service = self
+			.session(&key, config, auth, false)
+			.await
+			.map_err(Fault::for_list)?;
+		let _scope = service.service().enter(None, false)?;
 		let result = list_tools(&service).await;
 		self.state().touch(&key, &service);
 		result.map_err(|fault| {
@@ -400,42 +430,8 @@ impl PluginSessions for McpPluginSessions {
 		})
 	}
 
-	async fn call(
-		&self,
-		run: Uuid,
-		server: &PluginServer,
-		config: &RemoteServer,
-		tool: &str,
-		expected_digest: &str,
-		arguments: Value,
-		_key: &str,
-	) -> Result<Value> {
-		match timeout(
-			TOOL_TIMEOUT,
-			self.round(
-				run,
-				server,
-				config,
-				tool,
-				expected_digest,
-				arguments,
-				_key,
-				None,
-				None,
-			),
-		)
-		.await
-		.map_err(|_| Fault::Timeout.for_call())??
-		{
-			ToolRound::Complete(value) => Ok(value),
-			ToolRound::InputRequired(_) => Err(Error::Invalid(
-				"MCP_INPUT_DENIED: interactive inputs are unavailable in this execution profile"
-					.into(),
-			)),
-		}
-	}
-
-	async fn round(
+	#[allow(clippy::too_many_arguments)] // Keeps the port's complete wire-round identity and checkpoint together.
+	async fn round_once(
 		&self,
 		run: Uuid,
 		server: &PluginServer,
@@ -446,18 +442,27 @@ impl PluginSessions for McpPluginSessions {
 		_key: &str,
 		checkpoint: Option<&CallCheckpoint>,
 		inputs: Option<Arc<dyn PluginInputs>>,
+		auth: Option<&CallSecret>,
 	) -> Result<ToolRound> {
 		let arguments = arguments
 			.as_object()
 			.cloned()
 			.ok_or_else(|| Error::Invalid("tool arguments must be an object".into()))?;
-		let key = Key::new(run, server);
-		let service = self.session(&key, config).await.map_err(Fault::for_call)?;
+		let previously_accepted = checkpoint.is_some_and(|checkpoint| {
+			checkpoint.input.is_some() || checkpoint.continuation_sends > 0
+		});
+		let key = Key::new(run, server).with_auth(auth);
+		let service = self
+			.session(&key, config, auth, previously_accepted)
+			.await
+			.map_err(Fault::for_call)?;
+		let scope = service.service().enter(None, previously_accepted)?;
 		if let Err(fault) = verify(&service, tool, expected_digest).await {
 			self.state().forget(&key, &service);
 			return Err(fault.for_call());
 		}
-		let _scope = service.service().enter(inputs)?;
+		// Schema verification cannot elicit or sample; only the tool call may use these ports.
+		scope.inputs(inputs);
 		let mut request = CallToolRequestParams::new(tool.to_owned()).with_arguments(arguments);
 		if let Some(checkpoint) = checkpoint
 			&& let Some(input) = &checkpoint.input
@@ -469,7 +474,8 @@ impl PluginSessions for McpPluginSessions {
 			request.input_responses =
 				(!input.requests.is_empty()).then(|| checkpoint.responses.clone());
 		}
-		// Session recovery never replays a sent tool request. A lost result is
+		// Session recovery never replays a sent tool request, except a definitive
+		// HTTP 401 before execution; the outer authentication layer retries that once. A lost result is
 		// reconciled through the invocation journal, including Read-only tools.
 		let result = service.call_tool_once(request).await;
 		self.state().touch(&key, &service);
@@ -507,11 +513,6 @@ impl PluginSessions for McpPluginSessions {
 			}
 		}
 	}
-
-	async fn close(&self, run: Uuid) {
-		let ended = self.state().take_run(run);
-		futures_util::future::join_all(ended.into_iter().map(end)).await;
-	}
 }
 
 /// Waits for the server-side session to end when no call still holds it; otherwise the last
@@ -523,7 +524,12 @@ async fn end(service: Arc<Service>) {
 	}
 }
 
-async fn open(client: &reqwest::Client, config: &RemoteServer) -> Attempt<Service> {
+async fn open(
+	client: &reqwest::Client,
+	config: &RemoteServer,
+	auth: Option<&CallSecret>,
+	previously_accepted: bool,
+) -> Attempt<Service> {
 	let invalid = || Fault::Early(Error::Invalid("plugin server header is invalid".into()));
 	let mut headers = HashMap::new();
 	for header in &config.headers {
@@ -536,11 +542,15 @@ async fn open(client: &reqwest::Client, config: &RemoteServer) -> Attempt<Servic
 		StreamableHttpClientTransportConfig::with_uri(config.url.as_str()).custom_headers(headers);
 	transport_config.reinit_on_expired_session = false;
 	transport_config.max_sse_event_size = 256_000;
-	let transport =
-		StreamableHttpClientTransport::with_client(BoundedClient(client.clone()), transport_config);
+	let inputs = Inputs::default();
+	inputs.progress.begin(previously_accepted);
+	let transport = StreamableHttpClientTransport::with_client(
+		BoundedClient::new(client.clone(), auth, inputs.progress.clone()),
+		transport_config,
+	);
 	timeout(
 		TOOL_TIMEOUT,
-		Inputs::default().serve_with_lifecycle(
+		inputs.serve_with_lifecycle(
 			transport,
 			ClientLifecycleMode::Auto {
 				preferred_versions: vec![rmcp::model::ProtocolVersion::LATEST],
@@ -622,11 +632,13 @@ impl Fault {
 			Self::Early(error) => error,
 			Self::Init(error) => match initialization_error(&error) {
 				Error::Forbidden => Error::Forbidden,
+				error if crate::tools::auth::error_value(&error).is_some() => error,
 				_ if unreachable(&error) => ListFailure::Unreachable.into(),
 				_ => ListFailure::InitializeFailed.into(),
 			},
 			Self::Service(error) => match call_error(&error) {
 				Error::Forbidden => Error::Forbidden,
+				error if crate::tools::auth::error_value(&error).is_some() => error,
 				_ => service_failure(&error).into(),
 			},
 			Self::Limit => ListFailure::InvalidResponse.into(),
@@ -662,7 +674,9 @@ fn unreachable(error: &ClientInitializeError) -> bool {
 		return false;
 	};
 	match error.error.downcast_ref::<Failure>() {
-		Some(Failure::Client(source)) => source.is_connect() || source.is_timeout(),
+		Some(Failure::Client(wire::WireError::Http(source))) => {
+			source.is_connect() || source.is_timeout()
+		}
 		Some(Failure::Io(_)) => true,
 		_ => false,
 	}
@@ -681,6 +695,118 @@ fn service_failure(error: &ServiceError) -> ListFailure {
 		},
 		ServiceError::TransportClosed | ServiceError::Timeout { .. } => ListFailure::Unreachable,
 		_ => ListFailure::InvalidResponse,
+	}
+}
+
+#[async_trait]
+impl PluginSessions for McpPluginSessions {
+	async fn list(
+		&self,
+		run: Uuid,
+		server: &PluginServer,
+		config: &RemoteServer,
+		auth: Option<&CallSecret>,
+	) -> Result<Vec<ListedTool>> {
+		let result = self.list_once(run, server, config, auth).await;
+		if let Err(error) = &result
+			&& crate::tools::auth::retry(error, auth).await
+		{
+			return self.list_once(run, server, config, auth).await;
+		}
+		result
+	}
+	async fn call(
+		&self,
+		run: Uuid,
+		server: &PluginServer,
+		config: &RemoteServer,
+		tool: &str,
+		expected_digest: &str,
+		arguments: Value,
+		key: &str,
+		auth: Option<&CallSecret>,
+	) -> Result<Value> {
+		match timeout(
+			TOOL_TIMEOUT,
+			self.round(
+				run,
+				server,
+				config,
+				tool,
+				expected_digest,
+				arguments,
+				key,
+				None,
+				None,
+				auth,
+			),
+		)
+		.await
+		.map_err(|_| Fault::Timeout.for_call())??
+		{
+			ToolRound::Complete(value) => Ok(value),
+			ToolRound::InputRequired(_) => Err(Error::Invalid(
+				"MCP_INPUT_DENIED: interactive inputs are unavailable in this execution profile"
+					.into(),
+			)),
+		}
+	}
+	async fn round(
+		&self,
+		run: Uuid,
+		server: &PluginServer,
+		config: &RemoteServer,
+		tool: &str,
+		expected_digest: &str,
+		arguments: Value,
+		key: &str,
+		checkpoint: Option<&CallCheckpoint>,
+		inputs: Option<Arc<dyn PluginInputs>>,
+		auth: Option<&CallSecret>,
+	) -> Result<ToolRound> {
+		let mut result = self
+			.round_once(
+				run,
+				server,
+				config,
+				tool,
+				expected_digest,
+				arguments.clone(),
+				key,
+				checkpoint,
+				inputs.clone(),
+				auth,
+			)
+			.await;
+		if let Err(error) = &result
+			&& crate::tools::auth::retry(error, auth).await
+		{
+			result = self
+				.round_once(
+					run,
+					server,
+					config,
+					tool,
+					expected_digest,
+					arguments,
+					key,
+					checkpoint,
+					inputs,
+					auth,
+				)
+				.await;
+		}
+		match result {
+			Err(error) => crate::tools::auth::error_value(&error)
+				.map(ToolRound::Complete)
+				.ok_or(error),
+			value => value,
+		}
+	}
+
+	async fn close(&self, run: Uuid) {
+		let ended = self.state().take_run(run);
+		futures_util::future::join_all(ended.into_iter().map(end)).await;
 	}
 }
 

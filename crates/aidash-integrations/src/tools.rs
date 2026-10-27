@@ -17,6 +17,7 @@ use rmcp::{
 };
 use secrecy::ExposeSecret;
 use serde_json::{Value, json};
+pub(crate) mod auth;
 pub(crate) mod mcp;
 
 /// A broker-owned failure is only expected when this call is brokered. An
@@ -259,7 +260,6 @@ impl ToolTransport for HttpTools {
 				} else {
 					endpoint_client
 				};
-				let service = mcp_session(client, endpoint, secret).await?;
 				let mut args = input
 					.as_object()
 					.cloned()
@@ -267,12 +267,16 @@ impl ToolTransport for HttpTools {
 				if let Some(argument) = idempotency_argument {
 					args.insert(argument.clone(), json!(key));
 				}
-				let result = service
-					.call_tool(CallToolRequestParams::new(tool_name.clone()).with_arguments(args))
-					.await
-					.map_err(|e| mcp::call_error(&e));
-				let _ = service.cancel().await;
-				mcp::result_value(result?)
+				let mut result = mcp_call(client, endpoint, tool_name, args.clone(), secret).await;
+				if let Err(error) = &result
+					&& auth::retry(error, secret).await
+				{
+					result = mcp_call(client, endpoint, tool_name, args, secret).await;
+				}
+				match result {
+					Err(error) => auth::error_value(&error).ok_or(error),
+					value => value,
+				}
 			}
 			_ => Err(Error::Invalid(
 				"tool configuration has no external transport".into(),
@@ -280,6 +284,23 @@ impl ToolTransport for HttpTools {
 		}
 	}
 }
+async fn mcp_call(
+	client: &reqwest::Client,
+	endpoint: &str,
+	tool: &str,
+	arguments: serde_json::Map<String, Value>,
+	secret: Option<&CallSecret>,
+) -> Result<Value> {
+	auth::validate(secret, endpoint)?;
+	let service = mcp_session(client, endpoint, secret).await?;
+	let result = service
+		.call_tool(CallToolRequestParams::new(tool.to_owned()).with_arguments(arguments))
+		.await
+		.map_err(|error| mcp::call_error(&error));
+	let _ = service.cancel().await;
+	mcp::result_value(result?)
+}
+
 /// An initialized session with the MCP server at `endpoint`, over the bounded
 /// transport. Invocation and the registration form's hint share it, so both
 /// share the same bounded transport. Only invocation may attach a Tenant Secret.
@@ -294,13 +315,14 @@ async fn mcp_session(
 		// fresh Tenant Secret Capability Token instead of a bearer value.
 		Some(CallSecret::Brokered { source, rest, .. }) => {
 			let route = source.route().await?;
-			let url = broker::forward_url(&route.base, rest)?;
-			config = StreamableHttpClientTransportConfig::with_uri(url.to_string());
 			mcp::BoundedClient::brokered(client.clone(), source.clone(), rest.clone(), route)
 		}
 		Some(CallSecret::Value { value, .. }) => {
 			config = config.auth_header(value.expose_secret());
 			mcp::BoundedClient::direct(client.clone())
+		}
+		Some(CallSecret::Connection { source, .. }) => {
+			mcp::BoundedClient::connection(client.clone(), source.clone())
 		}
 		None => mcp::BoundedClient::direct(client.clone()),
 	};

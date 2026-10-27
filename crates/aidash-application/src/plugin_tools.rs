@@ -5,7 +5,9 @@ use crate::{
 	ports::tools::{PluginServer, PluginSessions},
 };
 use aidash_domain::{
-	agent_plugin::{self, Listing, McpServer, PluginName, PluginTools, ServerName},
+	agent_plugin::{
+		self, ConnectionCause, Listing, McpServer, PluginName, PluginTools, ServerName,
+	},
 	registry::bindings::{AgentBindings, BindingSnapshot},
 	tool::providers::reserved_aliases,
 };
@@ -81,12 +83,14 @@ pub async fn list_servers(
 	// compiler cannot prove this future `Send` inside a route handler that awaits it.
 	let mut answers = stream::iter(servers)
 		.map(|(server, config)| async move {
-			let listing = match timeout(SERVER_TIMEOUT, sessions.list(run, &server, &config)).await
-			{
-				Ok(Ok(tools)) => Listing::Listed(tools),
-				Ok(Err(error)) => Listing::Unavailable(cause(&error)),
-				Err(_) => Listing::Unavailable(TIMEOUT.into()),
-			};
+			let listing =
+				match timeout(SERVER_TIMEOUT, sessions.list(run, &server, &config, None)).await {
+					Ok(Ok(tools)) => Listing::Listed(tools),
+					Ok(Err(error)) => connection_cause(&error, config.url.as_str())
+						.map(Listing::Connection)
+						.unwrap_or_else(|| Listing::Unavailable(cause(&error))),
+					Err(_) => Listing::Unavailable(TIMEOUT.into()),
+				};
 			(key(&server), listing)
 		})
 		.buffer_unordered(CONCURRENCY);
@@ -128,6 +132,16 @@ pub fn pin_listed(snapshot: &BindingSnapshot, listed: &Listings) -> Result<Plugi
 
 fn key(server: &PluginServer) -> (PluginName, ServerName) {
 	(server.plugin.clone(), server.server.clone())
+}
+
+/// Only transport-created, resource-matching challenges become retained connection causes.
+fn connection_cause(error: &Error, endpoint: &str) -> Option<ConnectionCause> {
+	let Error::Invalid(message) = error else {
+		return None;
+	};
+	let cause: ConnectionCause = serde_json::from_str(message).ok()?;
+	let resource = aidash_domain::oauth_connections::canonical_resource(endpoint).ok()?;
+	(cause.resource() == resource).then_some(cause)
 }
 
 fn cause(error: &Error) -> String {

@@ -221,6 +221,7 @@ mod destinations {
 					url: format!("http://public.example:{port}/mcp").parse().unwrap(),
 					headers: vec![],
 				},
+				None,
 			)
 			.await;
 		server.abort();
@@ -1025,3 +1026,5 @@ mod brokered {
 		assert_eq!(refreshed.token.expose_secret(), "refreshed-token");
 	}
 }
+
+mod oauth;

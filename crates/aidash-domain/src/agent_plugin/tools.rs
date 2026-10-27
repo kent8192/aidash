@@ -58,6 +58,37 @@ pub struct PinnedServer {
 pub struct PluginFinding {
 	pub plugin: PluginName,
 	pub finding: Finding,
+	/// An MCP authentication challenge retained for connection_request and later re-listing.
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub connection: Option<ConnectionCause>,
+}
+
+/// A server that can contribute tools after the person connects or consents again.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(tag = "error", rename_all = "snake_case")]
+pub enum ConnectionCause {
+	ConnectionRequired {
+		resource: String,
+	},
+	ConnectionScopeInsufficient {
+		resource: String,
+		#[serde(default, skip_serializing_if = "Option::is_none")]
+		scope: Option<String>,
+	},
+}
+impl ConnectionCause {
+	pub fn resource(&self) -> &str {
+		match self {
+			Self::ConnectionRequired { resource }
+			| Self::ConnectionScopeInsufficient { resource, .. } => resource,
+		}
+	}
+	pub fn code(&self) -> &'static str {
+		match self {
+			Self::ConnectionRequired { .. } => crate::oauth_connections::CONNECTION_REQUIRED,
+			Self::ConnectionScopeInsufficient { .. } => crate::oauth_connections::CONNECTION_SCOPE,
+		}
+	}
 }
 
 /// What a Run pinned at its start: the servers it reached and everything left out.
@@ -105,8 +136,10 @@ impl PluginTools {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub enum Listing {
 	Listed(Vec<ListedTool>),
-	/// A typed cause code, never a URL or a response body.
+	/// An ordinary typed cause code, never a URL or a response body.
 	Unavailable(String),
+	/// A resource-bound authentication challenge, without response bodies or credentials.
+	Connection(ConnectionCause),
 }
 
 pub fn schema_digest(schema: &Value) -> String {
@@ -147,6 +180,17 @@ pub fn pin(
 				.unwrap_or(&unchosen);
 			match listed.get(&(plugin.name.clone(), server.clone())) {
 				Some(Listing::Listed(tools)) => pinner.server(plugin, server, choice, tools),
+				Some(Listing::Connection(cause)) => {
+					pinner.pinned.findings.push(PluginFinding {
+						plugin: plugin.name.clone(),
+						finding: Finding::skipped(
+							Component::Server(server.to_string()),
+							Reason::ServerUnavailable,
+							cause.code(),
+						),
+						connection: Some(cause.clone()),
+					});
+				}
 				Some(Listing::Unavailable(cause)) => pinner.note(
 					plugin,
 					server,
@@ -192,6 +236,7 @@ impl Pinner<'_> {
 		self.pinned.findings.push(PluginFinding {
 			plugin: plugin.name.clone(),
 			finding,
+			connection: None,
 		});
 	}
 

@@ -208,10 +208,16 @@ pub struct SecretRecord {
 	pub host: String,
 }
 
-/// One call's Tenant Secret. A brokered credential can mint a new token for
+/// One call's credential: a person's Connection or a named Tenant Secret.
+/// A brokered credential can mint a new token for
 /// the next request of a long-lived MCP session; a self-hosted one carries the
 /// value read for this call alone.
+#[derive(Clone)]
 pub enum CallSecret {
+	Connection {
+		record: ConnectionRecord,
+		source: Arc<dyn BearerSource>,
+	},
 	Value {
 		record: SecretRecord,
 		value: SecretString,
@@ -224,11 +230,28 @@ pub enum CallSecret {
 	},
 }
 impl CallSecret {
-	pub fn record(&self) -> &SecretRecord {
+	pub fn record(&self) -> Option<&SecretRecord> {
 		match self {
-			Self::Value { record, .. } | Self::Brokered { record, .. } => record,
+			Self::Value { record, .. } | Self::Brokered { record, .. } => Some(record),
+			Self::Connection { .. } => None,
 		}
 	}
+}
+
+/// Metadata of the person's OAuth Connection used by an invocation. Never a token.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ConnectionRecord {
+	pub id: Uuid,
+	pub resource: String,
+	pub host: String,
+}
+
+/// A long-lived MCP session obtains the current bearer before each request.
+#[async_trait]
+pub trait BearerSource: Send + Sync {
+	async fn bearer(&self) -> Result<SecretString>;
+	/// A server refused the bearer; the next request must force a refresh.
+	async fn invalidate(&self);
 }
 
 /// Mints another route for the same call. A transport that keeps one MCP
@@ -237,6 +260,22 @@ impl CallSecret {
 #[async_trait]
 pub trait SecretRouteSource: Send + Sync {
 	async fn route(&self) -> Result<SecretRoute>;
+}
+
+/// A missing personal secret is actionable before any tool operation executes.
+pub fn personal_required(name: &str) -> Error {
+	Error::Invalid(
+		serde_json::json!({"error":UNAVAILABLE,
+        "hint":format!("Add a personal secret named '{name}'.")})
+		.to_string(),
+	)
+}
+pub(crate) fn personal_error_value(error: &Error) -> Option<serde_json::Value> {
+	let Error::Invalid(message) = error else {
+		return None;
+	};
+	let value: serde_json::Value = serde_json::from_str(message).ok()?;
+	(value["error"] == UNAVAILABLE && value["hint"].is_string()).then_some(value)
 }
 
 pub struct Service {
@@ -840,19 +879,69 @@ impl Service {
 		call: SecretCall,
 	) -> Result<CallSecret> {
 		let row = self.active_row(tenant, name, endpoint).await?;
-		let pinned = row.require_active()?.to_owned();
+		self.call_secret_row(&row, endpoint, call).await
+	}
+
+	/// Selects the chain-root person's named secret before the shared namespace.
+	/// An existing personal row that refuses the endpoint never falls back to shared.
+	pub async fn call_secret_for(
+		self: &Arc<Self>,
+		tenant: &str,
+		subject: Option<&str>,
+		name: &str,
+		owner: aidash_domain::tool::SecretOwner,
+		endpoint: &str,
+		call: SecretCall,
+	) -> Result<CallSecret> {
+		let personal = match subject {
+			Some(subject) => self.personal(tenant, subject, name).await?,
+			None => None,
+		};
+		let shared = if owner == aidash_domain::tool::SecretOwner::Any {
+			self.shared(tenant, name).await?
+		} else {
+			None
+		};
+		let row = tenant_secrets::pick_secret(personal.as_ref(), shared.as_ref(), owner)
+			.ok_or_else(|| {
+				if owner == aidash_domain::tool::SecretOwner::Personal {
+					personal_required(name)
+				} else {
+					unavailable()
+				}
+			})?;
+		self.call_secret_row(row, endpoint, call).await
+	}
+
+	/// Resolves a repository row already selected by the caller's ownership policy.
+	/// The row's own state and hosts apply to both self-hosted and brokered calls.
+	pub async fn call_secret_row(
+		self: &Arc<Self>,
+		row: &TenantSecret,
+		endpoint: &str,
+		call: SecretCall,
+	) -> Result<CallSecret> {
+		if row.state != State::Active
+			|| !tenant_secrets::permits(&row.hosts, endpoint).unwrap_or(false)
+		{
+			return Err(unavailable());
+		}
+		let pinned = row.require_active().map_err(|_| unavailable())?.to_owned();
 		let record = SecretRecord {
 			id: row.id,
 			version: numeric_version(&pinned)?,
 			host: tenant_secrets::endpoint_host(endpoint)?,
 		};
-		match self.resolve_row(tenant, &row, Some(call.clone())).await? {
+		match self
+			.resolve_row(&row.tenant, row, Some(call.clone()))
+			.await?
+		{
 			Resolved::Brokered(first) => Ok(CallSecret::Brokered {
 				record,
 				source: Arc::new(RefreshSource {
 					service: Arc::downgrade(self),
-					tenant: tenant.into(),
-					name: name.into(),
+					tenant: row.tenant.clone(),
+					secret: row.id,
 					endpoint: endpoint.into(),
 					call,
 					first: Mutex::new(Some(first)),
@@ -1002,7 +1091,7 @@ impl Service {
 struct RefreshSource {
 	service: std::sync::Weak<Service>,
 	tenant: String,
-	name: String,
+	secret: Uuid,
 	endpoint: String,
 	call: SecretCall,
 	/// The route minted when the call started, used before the first refresh.
@@ -1018,13 +1107,19 @@ impl SecretRouteSource for RefreshSource {
 		let service = self.service.upgrade().ok_or_else(|| {
 			Error::External("Tenant Secret broker routing is no longer available".into())
 		})?;
+		// Keep the selected id across refreshes: a personal call must never re-resolve
+		// a shared name, or silently use a replacement created after deletion.
+		let mut scope = service.repository.begin(&self.tenant).await?;
+		let row = scope.by_id(self.secret).await?;
+		scope.commit().await?;
+		let row = row
+			.filter(|row| row.tenant == self.tenant && row.state == State::Active)
+			.ok_or_else(unavailable)?;
+		if !tenant_secrets::permits(&row.hosts, &self.endpoint).unwrap_or(false) {
+			return Err(unavailable());
+		}
 		match service
-			.resolve(
-				&self.tenant,
-				&self.name,
-				&self.endpoint,
-				Some(self.call.clone()),
-			)
+			.resolve_row(&self.tenant, &row, Some(self.call.clone()))
 			.await?
 		{
 			Resolved::Brokered(route) => Ok(route),

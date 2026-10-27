@@ -307,3 +307,48 @@ async fn an_agent_without_plugins_lists_nothing() {
 	assert_eq!(pinned, PluginTools::default());
 	assert!(sessions.listings().is_empty());
 }
+
+#[rstest::rstest]
+#[case::missing(None)]
+#[case::scope(Some("files.write"))]
+#[tokio::test]
+async fn pinning_retains_a_structured_authentication_finding_without_waiting(
+	#[case] scope: Option<&str>,
+) {
+	use aidash_domain::agent_plugin::ConnectionCause;
+	let snapshot = plugin_snapshot(vec![stored_plugin("acme", &[])], serde_json::Value::Null);
+	let agent = agent_bindings(&snapshot).unwrap();
+	let aidash_domain::agent_plugin::McpServer::Remote(config) =
+		agent.agent_plugins[0].servers.values().next().unwrap()
+	else {
+		panic!("remote server");
+	};
+	let resource =
+		aidash_domain::oauth_connections::canonical_resource(config.url.as_str()).unwrap();
+	let challenge = match scope {
+		Some(scope) => ConnectionCause::ConnectionScopeInsufficient {
+			resource: resource.clone(),
+			scope: Some(scope.into()),
+		},
+		None => ConnectionCause::ConnectionRequired {
+			resource: resource.clone(),
+		},
+	};
+	let sessions = FakeSessions::default();
+	sessions.script("docs", Listed::Connection(challenge.clone()));
+	let pinned = pin_for_run(&sessions, Uuid::new_v4(), &snapshot)
+		.await
+		.unwrap();
+	assert!(pinned.servers.is_empty());
+	let stored = serde_json::to_value(&pinned).unwrap();
+	assert_eq!(
+		stored["findings"][0]["connection"],
+		serde_json::to_value(&challenge).unwrap()
+	);
+	assert_eq!(pinned.findings[0].finding.reason, Reason::ServerUnavailable);
+	assert_eq!(pinned.findings[0].finding.detail, challenge.code());
+	assert_eq!(
+		pinned.findings[0].connection.as_ref().unwrap().resource(),
+		resource
+	);
+}

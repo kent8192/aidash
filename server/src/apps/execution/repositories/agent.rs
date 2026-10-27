@@ -1144,7 +1144,11 @@ impl ExecutionEnvironment for Environment<'_> {
 			aidash_application::Error::Invalid("Run has no admitted Binding snapshot".into())
 		})?;
 		aidash_application::plugin_tools::pin_for_run(
-			self.federation.store.plugin_sessions.as_ref(),
+			&super::mcp_connections::Sessions {
+				store: self.federation.store.clone(),
+				run: run.clone(),
+				scope: self.run_store.scope.clone(),
+			},
 			run.id,
 			snapshot,
 		)
@@ -1559,7 +1563,11 @@ impl aidash_application::ports::bindings::BindingResolver for Environment<'_> {
 		aidash_application::registry::bindings::execution::PinnedResolver {
 			providers,
 			authority,
-			sessions: Some(self.federation.store.plugin_sessions.clone()),
+			sessions: Some(Arc::new(super::mcp_connections::Sessions {
+				store: self.federation.store.clone(),
+				run: run.clone(),
+				scope: self.run_store.scope.clone(),
+			})),
 		}
 		.tools(run)
 		.await

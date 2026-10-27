@@ -695,3 +695,7 @@ matching model state.
 `knowledge/0036_memory_attempt_evidence` without changing either migration. It
 is an empty state-only migration: both independent column changes apply before
 the single Knowledge head, and no schema or model state is overwritten.
+
+`execution/0063_invocation_connections` (after `execution/0062_egress_secret_records`)
+adds nullable `invocations.connection_id` with a typed Reinhardt operation (#554,
+ADR 0100). It records the person's OAuth Connection used by dispatch, never a token.
