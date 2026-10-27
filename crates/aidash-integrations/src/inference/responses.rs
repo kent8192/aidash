@@ -18,7 +18,7 @@ use aidash_domain::{
 	provider::{
 		ContentPart, ModelRequest, ModelResponse, ToolCall,
 		progress::{InferenceProgress, MAX_PROGRESS_ITEM_BYTES},
-		usage::ReportedUsage,
+		usage::{ProviderCost, ReportedUsage},
 	},
 };
 use async_trait::async_trait;
@@ -51,11 +51,23 @@ impl ResponsesProvider {
 		});
 		context
 	}
+	fn is_plan(&self) -> bool {
+		self.config.uses_plan_connection()
+	}
+	/// Plan usage is a Plan Connection; every other Responses route is an
+	/// OpenRouter model served by the Tenant's Provider Credential.
 	fn source(&self) -> Source {
-		Source::configured(
-			&self.config.provider_credential,
-			&self.config.plan_connection,
-		)
+		if let Some(provider) = &self.config.plan_connection {
+			return Source::Plan {
+				provider: provider.clone(),
+			};
+		}
+		match &self.config.provider_credential {
+			Some(provider) => Source::Tenant {
+				provider: provider.clone(),
+			},
+			None => Source::Keyless,
+		}
 	}
 }
 
@@ -107,6 +119,7 @@ fn plan_unavailable() -> Error {
 
 /// The model-visible Responses body is shared with request accounting. The
 /// adapter adds only route controls, model configuration and the Tenant salt.
+/// This is the Plan Connection body and stays byte-identical (ADR 0007).
 pub(crate) fn request_body(
 	config: &ModelConfig,
 	request: &ModelRequest,
@@ -137,6 +150,31 @@ pub(crate) fn request_body(
 	Ok(body)
 }
 
+/// OpenRouter's Responses body. It uses flat function tools and no namespace
+/// on calls, keeps the same provider preferences as the chat body, and never
+/// sends `store` or `previous_response_id`, which the proxy rejects. Streaming
+/// is added by the caller only when the model streams.
+fn openrouter_request_body(
+	config: &ModelConfig,
+	request: &ModelRequest,
+	salt: Option<&str>,
+	media_routes: Vec<String>,
+) -> Result<Value> {
+	let mut body = input::encoded_openrouter_input_body(request)?;
+	body["model"] = json!(config.model_id);
+	body["instructions"] = json!(format!(
+		"{}{}",
+		salt.unwrap_or_default(),
+		request.instructions
+	));
+	body["max_output_tokens"] = json!(request.max_output_tokens);
+	body["provider"] = super::provider_preferences(config, media_routes);
+	if let Some(effort) = config.reasoning_effort {
+		body["reasoning"] = json!({"effort": effort});
+	}
+	Ok(body)
+}
+
 #[async_trait]
 impl ModelProvider for ResponsesProvider {
 	async fn infer(
@@ -154,127 +192,284 @@ impl ModelProvider for ResponsesProvider {
 					self.config.model_id
 				)));
 			}
-			// The output limit is enforced locally: plan usage ignores
-			// `max_output_tokens` (to verify, #159).
-			if request.max_output_tokens > self.config.output_token_limit() {
-				return Err(Error::Invalid(
-					"plan inference exceeds the configured output limit".into(),
-				));
+			if self.is_plan() {
+				self.infer_plan(&request, progress, deadline, stall).await
+			} else {
+				self.infer_openrouter(&request, progress, deadline, stall)
+					.await
 			}
-			for part in &request.content_parts {
-				let modality = match part {
-					ContentPart::Image { .. } => "image",
-					ContentPart::Audio { .. } => {
-						return Err(Error::Plan(Failure::Unsupported(
-							aidash_domain::plan_connections::Unsupported::Input,
-						)));
-					}
-					ContentPart::Text(_) => continue,
-				};
-				if !self.config.modalities.iter().any(|value| value == modality) {
-					return Err(Error::Invalid(format!(
-						"model {} does not support {modality} input",
-						self.config.model_id
-					)));
-				}
-			}
-			let salt = request
-				.cache_scope
-				.as_ref()
-				.map(|scope| {
-					self.cache_salt
-						.as_ref()
-						.ok_or_else(|| {
-							Error::Invalid(format!(
-								"Cache Salt Key v{} is not configured on this node",
-								scope.key_version
-							))
-						})?
-						.line(scope)
-				})
-				.transpose()?;
-			let body = request_body(&self.config, &request, salt.as_deref())?;
-			let context = self.call_context(request.max_output_tokens);
-			let source = self.source();
-			// OpenAI may reject an access token that has not expired; one
-			// forced refresh may follow before the owner is asked to reconnect.
-			for attempt in 0..2 {
-				let access = self
-					.access
-					.resolve(&context, &self.config.endpoint, &source)
-					.await?;
-				let client = self.clients.select(&access)?;
-				let started = std::time::Instant::now();
-				let response = tokio::time::timeout(
-					stall,
-					client
-						.post(format!(
-							"{}/responses",
-							access.endpoint.trim_end_matches('/')
-						))
-						.timeout(deadline)
-						.bearer_auth(access.bearer.expose_secret())
-						.json(&body)
-						.send(),
-				)
-				.await
-				.map_err(|_| Error::InferenceStalled)?
-				.map_err(crate::keyless::send_error)?;
-				metrics::histogram!("aidash_model_response_headers_seconds")
-					.record(started.elapsed().as_secs_f64());
-				if response.status().is_success() {
-					let result = within_output_cap(
-						read_stream(response, progress, stall).await,
-						request.max_output_tokens,
-					);
-					// A rejected bearer reported after the stream opened still
-					// needs its refresh or reconnection. Progress was shown, so
-					// this call is not replayed; a refreshed token serves the
-					// next attempt.
-					let disposition = match result {
-						Err(Error::Plan(Failure::Ineligible)) => Some(Disposition::MarkIneligible),
-						Err(Error::Plan(Failure::NeedsReconnection)) => {
-							Some(Disposition::RefreshThenReconnect)
-						}
-						_ => None,
-					};
-					if let Some(disposition) = disposition
-						&& self.access.plan_rejected(&context, disposition).await?
-					{
-						return Err(plan_unavailable());
-					}
-					return result;
-				}
-				let status = response.status().as_u16();
-				let body = crate::response::json::<Value>(response, 16_384).await.ok();
-				let rejection = plan_rejection(status, body.as_ref());
-				match rejection.disposition {
-					Some(Disposition::RefreshThenReconnect) if attempt == 0 => {
-						if self
-							.access
-							.plan_rejected(&context, Disposition::RefreshThenReconnect)
-							.await?
-						{
-							continue;
-						}
-					}
-					// OpenAI asks for a new sign-in only after a terminal refresh
-					// error or a confirmed revocation; a freshly refreshed token's
-					// rejection is neither, so it is retried as unavailability.
-					Some(Disposition::RefreshThenReconnect) => return Err(plan_unavailable()),
-					Some(Disposition::MarkIneligible) => {
-						self.access
-							.plan_rejected(&context, Disposition::MarkIneligible)
-							.await?;
-					}
-					_ => {}
-				}
-				return Err(rejection.error);
-			}
-			Err(plan_unavailable())
 		})
 		.await
 		.map_err(|_| Error::External("model inference timed out".into()))?
+	}
+}
+
+impl ResponsesProvider {
+	/// OpenAI's plan Responses API, with the Plan Connection refresh rules.
+	async fn infer_plan(
+		&self,
+		request: &ModelRequest,
+		progress: &dyn InferenceProgressSink,
+		deadline: std::time::Duration,
+		stall: std::time::Duration,
+	) -> Result<ModelResponse> {
+		// The output limit is enforced locally: plan usage ignores
+		// `max_output_tokens` (to verify, #159).
+		if request.max_output_tokens > self.config.output_token_limit() {
+			return Err(Error::Invalid(
+				"plan inference exceeds the configured output limit".into(),
+			));
+		}
+		for part in &request.content_parts {
+			let modality = match part {
+				ContentPart::Image { .. } => "image",
+				ContentPart::Audio { .. } => {
+					return Err(Error::Plan(Failure::Unsupported(
+						aidash_domain::plan_connections::Unsupported::Input,
+					)));
+				}
+				ContentPart::Text(_) => continue,
+			};
+			if !self.config.modalities.iter().any(|value| value == modality) {
+				return Err(Error::Invalid(format!(
+					"model {} does not support {modality} input",
+					self.config.model_id
+				)));
+			}
+		}
+		let salt = salt_line(self, request)?;
+		let body = request_body(&self.config, request, salt.as_deref())?;
+		let context = self.call_context(request.max_output_tokens);
+		let source = self.source();
+		// OpenAI may reject an access token that has not expired; one
+		// forced refresh may follow before the owner is asked to reconnect.
+		for attempt in 0..2 {
+			let access = self
+				.access
+				.resolve(&context, &self.config.endpoint, &source)
+				.await?;
+			let client = self.clients.select(&access)?;
+			let started = std::time::Instant::now();
+			let response = tokio::time::timeout(
+				stall,
+				client
+					.post(format!(
+						"{}/responses",
+						access.endpoint.trim_end_matches('/')
+					))
+					.timeout(deadline)
+					.bearer_auth(access.bearer.expose_secret())
+					.json(&body)
+					.send(),
+			)
+			.await
+			.map_err(|_| Error::InferenceStalled)?
+			.map_err(crate::keyless::send_error)?;
+			metrics::histogram!("aidash_model_response_headers_seconds")
+				.record(started.elapsed().as_secs_f64());
+			if response.status().is_success() {
+				let result = within_output_cap(
+					read_stream(response, progress, stall, false).await,
+					request.max_output_tokens,
+				);
+				// A rejected bearer reported after the stream opened still
+				// needs its refresh or reconnection. Progress was shown, so
+				// this call is not replayed; a refreshed token serves the
+				// next attempt.
+				let disposition = match result {
+					Err(Error::Plan(Failure::Ineligible)) => Some(Disposition::MarkIneligible),
+					Err(Error::Plan(Failure::NeedsReconnection)) => {
+						Some(Disposition::RefreshThenReconnect)
+					}
+					_ => None,
+				};
+				if let Some(disposition) = disposition
+					&& self.access.plan_rejected(&context, disposition).await?
+				{
+					return Err(plan_unavailable());
+				}
+				return result;
+			}
+			let status = response.status().as_u16();
+			let body = crate::response::json::<Value>(response, 16_384).await.ok();
+			let rejection = plan_rejection(status, body.as_ref());
+			match rejection.disposition {
+				Some(Disposition::RefreshThenReconnect) if attempt == 0 => {
+					if self
+						.access
+						.plan_rejected(&context, Disposition::RefreshThenReconnect)
+						.await?
+					{
+						continue;
+					}
+				}
+				// OpenAI asks for a new sign-in only after a terminal refresh
+				// error or a confirmed revocation; a freshly refreshed token's
+				// rejection is neither, so it is retried as unavailability.
+				Some(Disposition::RefreshThenReconnect) => return Err(plan_unavailable()),
+				Some(Disposition::MarkIneligible) => {
+					self.access
+						.plan_rejected(&context, Disposition::MarkIneligible)
+						.await?;
+				}
+				_ => {}
+			}
+			return Err(rejection.error);
+		}
+		Err(plan_unavailable())
+	}
+
+	/// OpenRouter's Responses API, authenticated by the Tenant's Provider
+	/// Credential. It shares the chat transport's route checks, provider
+	/// preferences, salt and rejection mapping, and reports usage and cost.
+	async fn infer_openrouter(
+		&self,
+		request: &ModelRequest,
+		progress: &dyn InferenceProgressSink,
+		deadline: std::time::Duration,
+		stall: std::time::Duration,
+	) -> Result<ModelResponse> {
+		let version = request.context.projection_version();
+		if !version.is_legacy() && !self.config.supports_projection(version) {
+			return Err(Error::UnsupportedProjection {
+				model: self.config.model_id.clone(),
+				version,
+			});
+		}
+		if self.config.provider_credential.is_some()
+			&& request.max_output_tokens > self.config.output_token_limit()
+		{
+			return Err(Error::Invalid(
+				"BYOK inference exceeds the configured output limit".into(),
+			));
+		}
+		for part in &request.content_parts {
+			let modality = match part {
+				ContentPart::Image { .. } => Some("image"),
+				ContentPart::Audio { .. } => {
+					return Err(Error::Invalid(
+						"OpenRouter Responses does not accept audio input".into(),
+					));
+				}
+				ContentPart::Text(_) => None,
+			};
+			if let Some(modality) = modality
+				&& !self.config.modalities.iter().any(|value| value == modality)
+			{
+				return Err(Error::Invalid(format!(
+					"model {} does not support {modality} input",
+					self.config.model_id
+				)));
+			}
+		}
+		let salt = salt_line(self, request)?;
+		let media_routes = super::verified_routes(
+			&self.clients,
+			&self.config,
+			&*self.access,
+			&self.context,
+			request,
+		)
+		.await?;
+		let mut body =
+			openrouter_request_body(&self.config, request, salt.as_deref(), media_routes)?;
+		let streaming = self.config.streaming();
+		if streaming {
+			body["stream"] = json!(true);
+		}
+		let access = self
+			.access
+			.resolve(
+				&self.call_context(request.max_output_tokens),
+				&self.config.endpoint,
+				&self.source(),
+			)
+			.await?;
+		let mut call = self
+			.clients
+			.select(&access)?
+			.post(format!(
+				"{}/responses",
+				access.endpoint.trim_end_matches('/')
+			))
+			.timeout(deadline)
+			.json(&body);
+		if !access.bearer.expose_secret().is_empty() {
+			call = call.bearer_auth(access.bearer.expose_secret());
+		}
+		let started = std::time::Instant::now();
+		let response = if streaming {
+			tokio::time::timeout(stall, call.send())
+				.await
+				.map_err(|_| Error::InferenceStalled)?
+		} else {
+			call.send().await
+		}
+		.map_err(crate::keyless::send_error)?;
+		metrics::histogram!("aidash_model_response_headers_seconds")
+			.record(started.elapsed().as_secs_f64());
+		if !response.status().is_success() {
+			let status = response.status().as_u16();
+			let body = crate::response::json::<Value>(response, 16_384).await.ok();
+			return Err(super::rejection(
+				status,
+				body.as_ref(),
+				self.config.provider_credential.is_some(),
+			));
+		}
+		let result = if streaming {
+			read_stream(response, progress, stall, true).await
+		} else {
+			parse_response(&crate::response::bytes(response, MAX_RESPONSE_BYTES).await?)
+		};
+		record_token_metrics(&result);
+		result
+	}
+}
+
+/// Resolve the Tenant Cache Salt line before any provider traffic: a node
+/// without the requested key version sends nothing rather than an unsalted
+/// request.
+fn salt_line(provider: &ResponsesProvider, request: &ModelRequest) -> Result<Option<String>> {
+	request
+		.cache_scope
+		.as_ref()
+		.map(|scope| {
+			provider
+				.cache_salt
+				.as_ref()
+				.ok_or_else(|| {
+					Error::Invalid(format!(
+						"Cache Salt Key v{} is not configured on this node",
+						scope.key_version
+					))
+				})?
+				.line(scope)
+		})
+		.transpose()
+}
+
+fn parse_response(body: &[u8]) -> Result<ModelResponse> {
+	let value: Value = serde_json::from_slice(body)
+		.map_err(|error| Error::External(format!("invalid response JSON: {error}")))?;
+	completed_with_cost(&value, super::provider_cost(body))
+}
+
+/// Token metrics match the Chat Completions path: a billed response counts,
+/// a failure with no reported usage does not.
+fn record_token_metrics(result: &Result<ModelResponse>) {
+	if let Some(usage) = super::billed_usage(result) {
+		for (direction, tokens) in [
+			("input", usage.reported.input_tokens),
+			("output", usage.reported.output_tokens),
+			("input_cached_read", usage.reported.cache_read_tokens),
+			("input_cached_write", usage.reported.cache_write_tokens),
+		] {
+			if let Some(tokens) = tokens {
+				metrics::counter!("aidash_model_tokens_total", "direction" => direction)
+					.increment(tokens);
+			}
+		}
 	}
 }
 
@@ -311,16 +506,25 @@ async fn read_stream(
 	mut response: reqwest::Response,
 	progress: &dyn InferenceProgressSink,
 	stall: std::time::Duration,
+	openrouter: bool,
 ) -> Result<ModelResponse> {
-	if !matches!(
-		super::stream::media_type(&response),
-		super::stream::MediaType::EventStream
-	) {
-		return Err(Error::External(
-			"ChatGPT plan usage answered without an event stream".into(),
-		));
+	match super::stream::media_type(&response) {
+		super::stream::MediaType::EventStream => {}
+		// OpenRouter may answer a streamed request with one JSON response.
+		super::stream::MediaType::Json if openrouter => {
+			return parse_response(&crate::response::bytes(response, MAX_RESPONSE_BYTES).await?);
+		}
+		_ => {
+			return Err(Error::External(
+				"Responses API answered without an event stream".into(),
+			));
+		}
 	}
-	let mut assembler = Assembler::new(progress, MAX_RESPONSE_BYTES);
+	let mut assembler = if openrouter {
+		Assembler::openrouter(progress, MAX_RESPONSE_BYTES)
+	} else {
+		Assembler::new(progress, MAX_RESPONSE_BYTES)
+	};
 	let mut last_data = tokio::time::Instant::now();
 	while !assembler.done() {
 		let chunk = tokio::time::timeout_at(last_data + stall, response.chunk())
@@ -343,6 +547,8 @@ async fn read_stream(
 pub(crate) struct Assembler<'a> {
 	progress: &'a dyn InferenceProgressSink,
 	limit: usize,
+	/// OpenRouter reports usage cost and uses its own failure table.
+	openrouter: bool,
 	line: Vec<u8>,
 	pending_cr: bool,
 	at_start: bool,
@@ -355,9 +561,18 @@ pub(crate) struct Assembler<'a> {
 
 impl<'a> Assembler<'a> {
 	pub(crate) fn new(progress: &'a dyn InferenceProgressSink, limit: usize) -> Self {
+		Self::with_mode(progress, limit, false)
+	}
+
+	pub(crate) fn openrouter(progress: &'a dyn InferenceProgressSink, limit: usize) -> Self {
+		Self::with_mode(progress, limit, true)
+	}
+
+	fn with_mode(progress: &'a dyn InferenceProgressSink, limit: usize, openrouter: bool) -> Self {
 		Self {
 			progress,
 			limit,
+			openrouter,
 			line: Vec::new(),
 			pending_cr: false,
 			at_start: true,
@@ -468,7 +683,8 @@ impl<'a> Assembler<'a> {
 		let event: Value = serde_json::from_slice(data)
 			.map_err(|error| Error::External(format!("invalid response JSON: {error}")))?;
 		match event["type"].as_str() {
-			Some("response.output_text.delta") => {
+			// OpenRouter also emits `response.content_part.delta` for text.
+			Some("response.output_text.delta" | "response.content_part.delta") => {
 				if let Some(text) = event["delta"].as_str() {
 					self.grow(text.len())?;
 					offer_text(self.progress, text);
@@ -506,11 +722,21 @@ impl<'a> Assembler<'a> {
 					self.offer_call(index);
 				}
 			}
-			Some("response.completed") => {
-				self.finished = Some(completed(&event["response"]));
+			// OpenRouter names its terminal success event `response.done` in
+			// parts of its documentation; accept both spellings.
+			Some("response.completed" | "response.done") => {
+				let cost = self
+					.openrouter
+					.then(|| super::response_provider_cost(data))
+					.flatten();
+				self.finished = Some(completed_with_cost(&event["response"], cost));
 			}
 			Some("response.incomplete") => {
 				let response = &event["response"];
+				let cost = self
+					.openrouter
+					.then(|| super::response_provider_cost(data))
+					.flatten();
 				let failure = match response
 					.pointer("/incomplete_details/reason")
 					.and_then(Value::as_str)
@@ -524,7 +750,7 @@ impl<'a> Assembler<'a> {
 						return Ok(());
 					}
 				};
-				let mut result = usage_only(response);
+				let mut result = usage_only_with_cost(response, cost);
 				if failure == ContextFailure::OutputTruncated {
 					// Use only the terminal snapshot's text. Incomplete function
 					// calls are never parsed or dispatched, including by sampling.
@@ -544,10 +770,18 @@ impl<'a> Assembler<'a> {
 			}
 			Some("response.failed") => {
 				let error = event.pointer("/response/error").cloned();
-				self.finished = Some(Err(stream_failure(error.as_ref())));
+				self.finished = Some(Err(if self.openrouter {
+					openrouter_stream_failure(error.as_ref())
+				} else {
+					stream_failure(error.as_ref())
+				}));
 			}
 			Some("error") => {
-				self.finished = Some(Err(stream_failure(Some(&event))));
+				self.finished = Some(Err(if self.openrouter {
+					openrouter_stream_failure(Some(&event))
+				} else {
+					stream_failure(Some(&event))
+				}));
 			}
 			// Lifecycle, reasoning and other events are liveness only.
 			_ => {}
@@ -618,22 +852,40 @@ fn stream_failure(error: Option<&Value>) -> Error {
 	}
 }
 
+/// An OpenRouter failure that arrived after the stream opened. It is mapped
+/// like a rejected request, but nothing is replayed because progress was
+/// already shown.
+fn openrouter_stream_failure(error: Option<&Value>) -> Error {
+	let body = error.map(|error| json!({"error": error}));
+	let status = match error
+		.and_then(|error| error.get("code"))
+		.and_then(Value::as_str)
+	{
+		_ if body.as_ref().is_some_and(super::context_overflow) => 400,
+		Some(code) if code.ends_with("_unavailable") => 503,
+		_ => 502,
+	};
+	super::rejection(status, body.as_ref(), true)
+}
+
 fn reported(response: &Value) -> ReportedUsage {
 	let count = |pointer: &str| response.pointer(pointer).and_then(Value::as_u64);
 	ReportedUsage {
 		input_tokens: count("/usage/input_tokens"),
 		output_tokens: count("/usage/output_tokens"),
 		cache_read_tokens: count("/usage/input_tokens_details/cached_tokens"),
-		cache_write_tokens: None,
+		cache_write_tokens: count("/usage/input_tokens_details/cache_write_tokens"),
 		reasoning_tokens: count("/usage/output_tokens_details/reasoning_tokens"),
 		// Plan usage is billed to the owner's plan: Aidash learns no cost.
+		// OpenRouter's reported cost is attached by its transport.
 		cost: None,
 		provider_identity: super::provider_identity(response),
 	}
 }
 
-fn usage_only(response: &Value) -> ModelResponse {
-	let reported = reported(response);
+fn usage_only_with_cost(response: &Value, cost: Option<ProviderCost>) -> ModelResponse {
+	let mut reported = reported(response);
+	reported.cost = cost;
 	ModelResponse {
 		usage_complete: reported.input_tokens.is_some() && reported.output_tokens.is_some(),
 		input_tokens: reported.input_tokens.unwrap_or(0),
@@ -645,7 +897,12 @@ fn usage_only(response: &Value) -> ModelResponse {
 
 /// The accepted result of a `response.completed` event, validated like a
 /// non-streamed Chat Completions response.
+#[cfg(test)]
 pub(crate) fn completed(response: &Value) -> Result<ModelResponse> {
+	completed_with_cost(response, None)
+}
+
+fn completed_with_cost(response: &Value, cost: Option<ProviderCost>) -> Result<ModelResponse> {
 	if response["status"]
 		.as_str()
 		.is_some_and(|status| status != "completed")
@@ -654,7 +911,7 @@ pub(crate) fn completed(response: &Value) -> Result<ModelResponse> {
 			"provider completed a response that is not complete".into(),
 		));
 	}
-	let usage = usage_only(response);
+	let usage = usage_only_with_cost(response, cost);
 	let output = response["output"]
 		.as_array()
 		.ok_or_else(|| Error::External("provider returned no output".into()))?;

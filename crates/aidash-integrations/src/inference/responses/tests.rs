@@ -971,3 +971,323 @@ async fn requests_beyond_the_configured_output_limit_are_refused_locally() {
 		Err(Error::Invalid(_))
 	));
 }
+
+mod openrouter {
+	use super::*;
+	use aidash_application::provider_access::ProviderAccess;
+	use aidash_domain::model::{ProviderRouteEvidence, WireApi};
+	use axum::routing::get;
+	use std::sync::atomic::{AtomicUsize, Ordering};
+
+	/// The Tenant's Provider Credential is the only accepted source.
+	struct TenantAccess {
+		endpoint: String,
+		calls: Arc<AtomicUsize>,
+	}
+	#[async_trait]
+	impl ProviderAccess for TenantAccess {
+		async fn resolve(
+			&self,
+			context: &Context,
+			endpoint: &str,
+			source: &Source,
+		) -> Result<Access> {
+			assert_eq!(endpoint, "https://openrouter.ai/api/v1");
+			assert!(matches!(source, Source::Tenant { provider } if provider == "openrouter"));
+			assert_eq!(context.inference.as_ref().unwrap().model, "vendor/model");
+			self.calls.fetch_add(1, Ordering::SeqCst);
+			Ok(Access {
+				endpoint: self.endpoint.clone(),
+				bearer: "tenant-openrouter-key".into(),
+				keyless: None,
+			})
+		}
+		async fn check(&self, _: &Context, _: &str, _: &Source) -> Result<()> {
+			unreachable!("inference never preflights a credential")
+		}
+	}
+
+	fn config(_endpoint: &str, streaming: bool) -> ModelConfig {
+		serde_json::from_value(json!({
+			"provider":"openrouter","model_id":"vendor/model",
+			"endpoint":"https://openrouter.ai/api/v1",
+			"provider_credential":"openrouter","wire_api":"responses",
+			"context_window":100_000,"max_output_tokens":512,
+			"modalities":["text","image"],"cost":{},
+			"streaming":streaming,"reasoning_effort":"high"
+		}))
+		.unwrap()
+	}
+
+	fn request() -> ModelRequest {
+		let mut request = super::request();
+		request.context = json!({"task":"summarize"}).into();
+		request.max_output_tokens = 512;
+		request
+	}
+
+	async fn openrouter_provider(
+		app: Router,
+		config: ModelConfig,
+		calls: Arc<AtomicUsize>,
+	) -> (Arc<dyn ModelProvider>, Server) {
+		let (url, server) = serve(app).await;
+		let access = Arc::new(TenantAccess {
+			endpoint: format!("{url}/v1"),
+			calls,
+		});
+		let provider = crate::inference::provider(
+			crate::keyless::Clients::new(
+				reqwest::Client::new(),
+				std::time::Duration::from_secs(30),
+				std::time::Duration::from_secs(5),
+			)
+			.unwrap(),
+			config,
+			access,
+			Context {
+				tenant: "brave-otter-k3m9q2xa".into(),
+				run: Some(uuid::Uuid::now_v7()),
+				..Context::default()
+			},
+		)
+		.unwrap();
+		(provider, server)
+	}
+
+	fn responses_body(output: Value) -> Value {
+		json!({
+			"id":"resp-1","object":"response","status":"completed","model":"vendor/model",
+			"provider":"Actual Provider","output":output,
+			"usage":{"input_tokens":1200,"input_tokens_details":{"cached_tokens":800,"cache_write_tokens":10},"output_tokens":90,"output_tokens_details":{"reasoning_tokens":40},"cost":0.0001234,"cost_details":{"upstream_inference_cost":0.0001}}
+		})
+	}
+
+	#[tokio::test]
+	async fn streams_from_the_responses_endpoint_with_tenant_access_and_cost() {
+		let seen = Arc::new(Mutex::new(Vec::<(String, Value)>::new()));
+		let history = seen.clone();
+		let app = Router::new().route(
+			"/v1/responses",
+			post(move |headers: HeaderMap, Json(body): Json<Value>| {
+				let history = history.clone();
+				async move {
+					let bearer = headers[header::AUTHORIZATION].to_str().unwrap().to_owned();
+					history.lock().unwrap().push((bearer, body));
+					let mut event = completed_event(json!([
+						{"type":"message","content":[{"type":"output_text","text":"done"}]},
+						{"type":"function_call","call_id":"call-1","name":"search","arguments":"{\"q\":\"x\"}"}
+					]));
+					event["response"]["usage"]["input_tokens_details"]["cache_write_tokens"] =
+						json!(10);
+					event["response"]["usage"]["cost"] = json!(0.0001234);
+					event["response"]["usage"]["cost_details"] =
+						json!({"upstream_inference_cost":0.0001});
+					stream_response(&[event])
+				}
+			}),
+		);
+		let calls = Arc::new(AtomicUsize::new(0));
+		let (provider, _server) =
+			openrouter_provider(app, config("http://unused", true), calls.clone()).await;
+		let mut request = request();
+		request.content_parts = vec![ContentPart::Image {
+			media_type: "image/png".into(),
+			bytes: b"\x89PNG\r\n\x1a\n".to_vec(),
+		}];
+		// Media routes are absent, so the route check refuses before traffic.
+		assert!(matches!(
+			provider.infer(request.clone(), &Recorder::default()).await,
+			Err(Error::Invalid(_))
+		));
+		assert_eq!(calls.load(Ordering::SeqCst), 0);
+		request.content_parts.clear();
+		let result = provider.infer(request, &Recorder::default()).await.unwrap();
+		assert_eq!(result.text, "done");
+		assert_eq!(result.tool_calls[0].name, "search");
+		assert_eq!(result.reported.cache_read_tokens, Some(800));
+		assert_eq!(result.reported.cache_write_tokens, Some(10));
+		assert_eq!(result.reported.reasoning_tokens, Some(40));
+		assert_eq!(
+			result.reported.cost,
+			Some(ProviderCost {
+				nanocredits: 123_400,
+				upstream_nanocredits: Some(100_000)
+			})
+		);
+		assert_eq!(calls.load(Ordering::SeqCst), 1);
+		let seen = seen.lock().unwrap();
+		assert_eq!(seen[0].0, "Bearer tenant-openrouter-key");
+		let body = &seen[0].1;
+		assert_eq!(body["model"], "vendor/model");
+		assert_eq!(body["stream"], true);
+		assert_eq!(body["max_output_tokens"], 512);
+		assert_eq!(body["reasoning"], json!({"effort":"high"}));
+		assert_eq!(
+			body["provider"],
+			json!({"zdr":true,"require_parameters":true})
+		);
+		assert_eq!(body["instructions"], "Be precise.");
+		assert!(body.get("store").is_none());
+		assert!(body.get("previous_response_id").is_none());
+		// OpenRouter takes flat function tools and carries no namespace.
+		assert_eq!(body["tools"][0]["type"], "function");
+		assert_eq!(body["tools"][0]["name"], "search");
+		assert!(body["tools"][0].get("tools").is_none());
+		assert!(
+			body["input"]
+				.as_array()
+				.unwrap()
+				.iter()
+				.all(|item| item.get("namespace").is_none())
+		);
+	}
+
+	#[tokio::test]
+	async fn non_streaming_parses_a_whole_response_with_cost() {
+		let seen = Arc::new(Mutex::new(Vec::<Value>::new()));
+		let history = seen.clone();
+		let app = Router::new().route(
+			"/v1/responses",
+			post(move |Json(body): Json<Value>| {
+				let history = history.clone();
+				async move {
+					history.lock().unwrap().push(body);
+					Json(responses_body(json!([
+						{"type":"message","content":[{"type":"output_text","text":"whole"}]}
+					])))
+				}
+			}),
+		);
+		let calls = Arc::new(AtomicUsize::new(0));
+		let (provider, _server) =
+			openrouter_provider(app, config("http://unused", false), calls).await;
+		let result = provider
+			.infer(request(), &Recorder::default())
+			.await
+			.unwrap();
+		assert_eq!(result.text, "whole");
+		assert_eq!((result.input_tokens, result.output_tokens), (1200, 90));
+		assert_eq!(
+			result.reported.cost,
+			Some(ProviderCost {
+				nanocredits: 123_400,
+				upstream_nanocredits: Some(100_000)
+			})
+		);
+		let seen = seen.lock().unwrap();
+		assert!(seen[0].get("stream").is_none());
+		assert_eq!(seen[0]["max_output_tokens"], 512);
+	}
+
+	#[tokio::test]
+	async fn a_pinned_route_is_checked_against_zdr_before_any_response_call() {
+		let responses = Arc::new(AtomicUsize::new(0));
+		let counter = responses.clone();
+		let app = Router::new()
+			.route(
+				"/v1/models/vendor/model/endpoints",
+				get(|| async {
+					Json(json!({"data":{"architecture":{"input_modalities":["text"]},"endpoints":[{"tag":"vendor/route","context_length":100000}]}}))
+				}),
+			)
+			.route(
+				"/v1/endpoints/zdr",
+				get(|| async { Json(json!({"data":[]})) }),
+			)
+			.route(
+				"/v1/responses",
+				post(move || {
+					responses.fetch_add(1, Ordering::SeqCst);
+					async { Json(responses_body(json!([]))) }
+				}),
+			);
+		let mut config = config("http://unused", true);
+		let now = chrono::Utc::now();
+		config.provider_route = Some(ProviderRouteEvidence {
+			tag: "vendor/route".into(),
+			source: "administrator approval".into(),
+			verified_at: now - chrono::Duration::minutes(1),
+			expires_at: now + chrono::Duration::hours(1),
+		});
+		let calls = Arc::new(AtomicUsize::new(0));
+		let (provider, _server) = openrouter_provider(app, config, calls).await;
+		let result = provider.infer(request(), &Recorder::default()).await;
+		assert!(matches!(result, Err(Error::Invalid(_))));
+		assert_eq!(counter.load(Ordering::SeqCst), 0);
+	}
+
+	#[tokio::test]
+	async fn context_overflow_and_provider_rejections_are_mapped_like_chat() {
+		let app = Router::new().route(
+			"/v1/responses",
+			post(|| async {
+				(
+					StatusCode::BAD_REQUEST,
+					Json(json!({"error":{"code":400,"message":"This endpoint's maximum context length is 8192 tokens"}})),
+				)
+			}),
+		);
+		let calls = Arc::new(AtomicUsize::new(0));
+		let (provider, _server) =
+			openrouter_provider(app, config("http://unused", true), calls).await;
+		assert!(matches!(
+			provider.infer(request(), &Recorder::default()).await,
+			Err(Error::ContextOverflow)
+		));
+	}
+
+	#[tokio::test]
+	async fn omitted_or_chat_wire_api_keeps_the_chat_completions_path() {
+		for wire_api in [None, Some(WireApi::Chat)] {
+			let seen = Arc::new(Mutex::new(Vec::<String>::new()));
+			let history = seen.clone();
+			let app = Router::new().route(
+				"/v1/chat/completions",
+				post(move |Json(_): Json<Value>| {
+					let history = history.clone();
+					async move {
+						history.lock().unwrap().push("chat".into());
+						Json(json!({
+							"choices":[{"finish_reason":"stop","message":{"content":"chat"}}],
+							"usage":{"prompt_tokens":1,"completion_tokens":1}
+						}))
+					}
+				}),
+			);
+			let mut config = config("http://unused", false);
+			config.wire_api = wire_api;
+			let calls = Arc::new(AtomicUsize::new(0));
+			let (provider, _server) = openrouter_provider(app, config, calls).await;
+			let result = provider
+				.infer(request(), &Recorder::default())
+				.await
+				.unwrap();
+			assert_eq!(result.text, "chat");
+			assert_eq!(seen.lock().unwrap().as_slice(), ["chat"]);
+		}
+	}
+
+	#[tokio::test]
+	async fn openrouter_responses_requires_a_provider_credential() {
+		let mut config = config("http://unused", true);
+		config.provider_credential = None;
+		assert!(config.validate_wire_api().is_err());
+		let result = crate::inference::salted_provider(
+			crate::keyless::Clients::new(
+				reqwest::Client::new(),
+				std::time::Duration::from_secs(5),
+				std::time::Duration::from_secs(5),
+			)
+			.unwrap(),
+			config,
+			Arc::new(TenantAccess {
+				endpoint: "http://127.0.0.1:9".into(),
+				calls: Arc::new(AtomicUsize::new(0)),
+			}),
+			Context::default(),
+			None,
+		);
+		assert!(result.is_err(), "{:?}", result.err());
+	}
+}
