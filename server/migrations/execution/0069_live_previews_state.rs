@@ -1,5 +1,5 @@
 // reinhardt-migration-source: 1
-// Logical model state; 0066 owns the physical tables, keys and indexes.
+// Logical model state; 0067 owns the physical tables, keys and indexes.
 use reinhardt::db::migrations::prelude::*;
 
 pub(super) fn migration() -> Migration {

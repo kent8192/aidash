@@ -14,7 +14,7 @@ pub(super) fn migration() -> Migration {
 				.with_unique(false)
 				.with_primary_key(false)
 				.with_auto_increment(false)
-				.with_default(Some("operation".to_string()))
+				.with_default(None)
 				.with_generated(None)
 				.with_domain_option(None),
 			mysql_options: None,

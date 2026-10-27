@@ -11,7 +11,18 @@ pub(super) fn migration() -> Migration {
 			table: "egress_requests".into(),
 			column: ColumnDefinition::new("via", FieldType::Text)
 				.with_not_null(true)
-				.with_default(Some("operation".into())),
+				.with_default(Some("'operation'".into())),
+			mysql_options: None,
+		})
+		.add_operation(Operation::AlterColumn {
+			table: "egress_requests".into(),
+			column: "via".into(),
+			old_definition: Some(
+				ColumnDefinition::new("via", FieldType::Text)
+					.with_not_null(true)
+					.with_default(Some("'operation'".into())),
+			),
+			new_definition: ColumnDefinition::new("via", FieldType::Text).with_not_null(true),
 			mysql_options: None,
 		})
 }
