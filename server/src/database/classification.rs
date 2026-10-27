@@ -307,6 +307,8 @@ pub const TABLES: &[Table] = &[
 	table("identity", "tenant_retention_rules", TenantOwned),
 	// Tenant Secret metadata (ADR 0051); the values are in the Secret Store
 	table("identity", "tenant_secrets", TenantOwned),
+	table("identity", "oauth_clients", TenantOwned),
+	table("identity", "connection_scope_ceilings", TenantOwned),
 	// Tenant Deletions outlive purge and are read while the Tenant refuses everyone (ADR 0060)
 	table("identity", "tenant_deletions", DeploymentWide),
 	// Tenant root records: the Deployment's list of Tenants (ADR 0050)

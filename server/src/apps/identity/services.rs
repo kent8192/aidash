@@ -35,3 +35,5 @@ pub mod tenant_purge;
 pub mod tenant_secret_readiness;
 pub mod tenant_secrets;
 pub mod tenants;
+
+pub mod oauth_clients;

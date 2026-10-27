@@ -42,6 +42,8 @@ pub trait Store: Send + Sync {
 	}
 	/// OAuth Client secrets are unavailable in stores that have not implemented
 	/// their namespace, including the enterprise Secret Manager adapter.
+	/// Implementations must preserve an existing resource and version counter
+	/// when a replacement or interrupted write retries this operation.
 	async fn create_oauth_client(&self, _tenant: &str, _id: Uuid) -> Result<()> {
 		Err(Error::OAuthClientSecretsUnavailable)
 	}
