@@ -26,6 +26,7 @@ pub(crate) struct ReleaseDelivery {
 	pub request: ReleaseRequest,
 }
 
+#[derive(Clone, Copy)]
 enum SourceAudience {
 	Viewer,
 	ThreadCleanup(uuid::Uuid),
@@ -51,18 +52,25 @@ async fn source_target(
 	.fetch_optional(&mut **access.tx)
 	.await?;
 	let (grant_id, task_id) = binding.ok_or(Error::Forbidden)?;
-	let grant: Option<(String, String, uuid::Uuid)> = crate::database::native::query_as(
-		&Query::select()
-			.columns(["node_id", "root_subject", "workspace_id"].map(Alias::new))
-			.from(Alias::new("authorization_remote_grants"))
-			.and_where(Expr::col("id").eq(Expr::value(grant_id)))
-			.and_where(Expr::col("task_id").eq(Expr::value(task_id)))
-			.and_where(Expr::col("tenant").eq(Expr::value(&access.identity.tenant)))
-			.to_string(PostgresQueryBuilder),
-	)
-	.columns(&["node_id", "root_subject", "workspace_id"])
-	.fetch_optional(&mut **access.tx)
-	.await?;
+	let mut grant_query = Query::select();
+	grant_query
+		.columns(["node_id", "root_subject", "workspace_id"].map(Alias::new))
+		.from(Alias::new("authorization_remote_grants"))
+		.and_where(Expr::col("id").eq(Expr::value(grant_id)))
+		.and_where(Expr::col("task_id").eq(Expr::value(task_id)))
+		.and_where(Expr::col("tenant").eq(Expr::value(&access.identity.tenant)));
+	// A release is cleanup for a previously authorized hold, so V can still
+	// notify H after the source grant expires or is revoked.
+	if matches!(audience, SourceAudience::Viewer) {
+		grant_query
+			.and_where(Expr::col("revoked").eq(Expr::value(false)))
+			.and_where(Expr::cust("expires_at > CURRENT_TIMESTAMP"));
+	}
+	let grant: Option<(String, String, uuid::Uuid)> =
+		crate::database::native::query_as(&grant_query.to_string(PostgresQueryBuilder))
+			.columns(&["node_id", "root_subject", "workspace_id"])
+			.fetch_optional(&mut **access.tx)
+			.await?;
 	let (target, requester, workspace_id) = grant.ok_or(Error::Forbidden)?;
 	match audience {
 		SourceAudience::Viewer => {
@@ -191,6 +199,7 @@ pub(crate) async fn retain(
 			|| description.source_subject != admitted.subject().ok_or(Error::Forbidden)?
 			|| description.source_node != admitted.sender.to_string()
 			|| description.target_node != admitted.receiver.to_string()
+			|| description.expires_at <= chrono::Utc::now()
 		{
 			return Err(Error::Forbidden);
 		}
@@ -346,6 +355,7 @@ pub(crate) async fn inspect(
 			|| description.source_subject != admitted.subject().ok_or(Error::Forbidden)?
 			|| description.source_node != admitted.sender.to_string()
 			|| description.target_node != admitted.receiver.to_string()
+			|| description.expires_at <= chrono::Utc::now()
 		{
 			return Err(Error::Forbidden);
 		}
@@ -455,6 +465,7 @@ pub(crate) async fn issue(
 			|| description.source_subject != admitted.subject().ok_or(Error::Forbidden)?
 			|| description.source_node != admitted.sender.to_string()
 			|| description.target_node != admitted.receiver.to_string()
+			|| description.expires_at <= chrono::Utc::now()
 		{
 			return Err(Error::Forbidden);
 		}

@@ -1105,6 +1105,27 @@ async fn remote_file_preview_reports_a_host_without_a_preview_domain(
 	.await;
 	assert_eq!(status, 409, "{body}");
 	assert!(body.to_string().contains("PREVIEW_UNAVAILABLE"), "{body}");
+	let (status, body) = request(
+		&p.aa,
+		&p.token,
+		"POST",
+		&format!("/api/tasks/{}/remote-grants/{}/revoke", p.task, p.grant),
+		json!({}),
+	)
+	.await;
+	assert_eq!(status, 200, "{body}");
+	let (status, _) = request(
+		&p.aa,
+		&p.token,
+		"GET",
+		&format!("/api/runs/{}/remote-preview", p.admission),
+		json!(null),
+	)
+	.await;
+	assert_eq!(
+		status, 403,
+		"a revoked source grant cannot inspect H's File versions"
+	);
 	p.close().await;
 }
 

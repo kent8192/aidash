@@ -538,6 +538,7 @@ impl Gateway {
 			|| description.source_subject != source_subject
 			|| description.source_node != sender
 			|| description.target_node != receiver.to_string()
+			|| description.expires_at <= Utc::now()
 		{
 			return Err(NativeError::Forbidden);
 		}

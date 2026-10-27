@@ -75,7 +75,8 @@ is a Retained version.
   runs.
 - Under Federation, the viewer's Deployment asks the hosting Node to retain a
   version for the delegated Run's subject. That hold expires after the hosting
-  Node's Retention Rules period, so a lost release cannot leak storage.
+  Node's `preview.federation_hold_days` period (30 days by default, configurable
+  from 1 through 3650 days), so a lost release cannot leak storage.
 
 Citing an HTML File version retains every File version of that Working Area's
 manifest at that revision, not just the HTML file. A page commonly refers to
@@ -91,7 +92,7 @@ Reclamation resumes when the last hold covering a File version is released:
   release it, because others may still see it.
 - A Live preview releases its revision after its Pod has stopped.
 - A Federation hold is released when the viewer's Deployment says so, or
-  expires after the hosting Node's Retention Rules period.
+  expires after the hosting Node's `preview.federation_hold_days` period.
 - Cleaning up a Working Area releases its holds. A recoverable cleanup keeps
   them until its snapshot expires; an irreversible cleanup removes them at
   once. Tenant Deletion removes them with the Tenant's other rows.
@@ -178,6 +179,8 @@ in_process = true
 public_port = 443
 # The only Pod port the Preview NetworkPolicy admits. Defaults to 3000.
 pod_port = 3000
+# Federated File citation hold lifetime on this hosting Node. Defaults to 30 days.
+federation_hold_days = 30
 ```
 
 The environment overrides are `AIDASH_PREVIEW_DOMAIN`,
@@ -220,6 +223,17 @@ Without a preview domain, the dashboard reports File previews unavailable for
 HTML and PDF, the Live preview tools are not seeded or offered to a model, and
 the dashboard formats listed above still render. A Retained version can still
 be downloaded.
+
+Under Federation, the viewer's Deployment asks the hosting Node for a
+one-time ticket. Every remote File version, including formats rendered in the
+dashboard for a local Working Area, opens on the hosting Node's preview domain;
+the viewer's Deployment does not download its bytes. The hosting Node checks
+the viewer Deployment's registered dashboard origin before setting
+`frame-ancestors`. The browser opens that ticket directly in the preview pane
+or a new tab. The desktop command obtains the ticket and preview domain from
+the viewer's authenticated server, validates them together, and opens the
+system browser. If the hosting Node has no preview domain, the viewer sees an
+explicit unavailable state.
 
 ### Helm
 

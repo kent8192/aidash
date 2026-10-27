@@ -96,6 +96,9 @@ federation = true
 # The only Pod port the Preview NetworkPolicy admits; 3000 when absent. A
 # `live_preview_start` on another port is refused.
 # pod_port = 3000
+# Days the hosting Node retains a File version cited from another Deployment
+# when the release notification is lost; 30 by default (1 through 3650).
+# federation_hold_days = 30
 
 # The Deployment's ceilings on a Live preview (ADR 0070). A Tenant may only
 # lower them through `/api/preview-limits/{tenant}`. This section is optional;
