@@ -4,7 +4,10 @@
 // by worker progress (`revision` moves with every step). `control_source` is the
 // kind of actor that last changed control: the Tenant, a Deployment
 // Administrator's Safety Stop, or the system. Existing Runs start at revision 0
-// with the Tenant as the source.
+// with the Tenant as the source. The model declares no default for the source,
+// so the logical state drops it as `execution/0050_usage_evidence` does; 0062
+// keeps the physical default for writers that name no source.
+use reinhardt::db::migrations::FieldType;
 use reinhardt::db::migrations::prelude::*;
 
 pub(super) fn migration() -> Migration {
@@ -25,11 +28,31 @@ pub(super) fn migration() -> Migration {
 				.with_default(Some("'tenant'".into())),
 			mysql_options: None,
 		})
+		.add_operation(Operation::AlterColumn {
+			table: "runs".into(),
+			column: "control_source".into(),
+			old_definition: Some(
+				ColumnDefinition::new("control_source", FieldType::Text)
+					.with_not_null(true)
+					.with_default(Some("'tenant'".into())),
+			),
+			new_definition: ColumnDefinition::new("control_source", FieldType::Text)
+				.with_not_null(true),
+			mysql_options: None,
+		})
 		.add_operation(Operation::AddConstraintDefinition {
 			table: "runs".into(),
-			constraint: Constraint::Check {
-				name: "runs_control_provenance".into(),
-				expression: "control_revision >= 0 AND control_source IN ('tenant', 'deployment_administrator', 'system')".into(),
+			constraint: Constraint::EnumDomain {
+				name: "runs_control_source_model_enum_check".into(),
+				column: "control_source".into(),
+				domain: FieldDomain::Enum {
+					repr: ModelEnumRepr::String,
+					values: vec![
+						ModelEnumValue::String("deployment_administrator".into()),
+						ModelEnumValue::String("system".into()),
+						ModelEnumValue::String("tenant".into()),
+					],
+				},
 			},
 		})
 }

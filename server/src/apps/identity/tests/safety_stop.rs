@@ -63,7 +63,8 @@ async fn world(fixture: common::ApplicationFixture) -> World {
 				.unwrap(),
 		);
 	}
-	let run = common::local_run(&f.store, &acme, &task, &agent.unwrap()).await;
+	// An admitted Run keeps its origin, so the Tenant can resume it afterwards.
+	let run = common::admitted_run(&f, "acme", &task, &agent.unwrap()).await;
 	let received = f
 		.store
 		.create_task(&acme, workspace.id, &new_task("Received"), "human", None)
@@ -153,6 +154,12 @@ impl World {
 			.execute(self.f.store.pool.fixture_driver())
 			.await
 			.unwrap();
+	}
+
+	/// DDL, which only the schema owner may run.
+	async fn alter(&self, sql: &str) {
+		let owner = common::owner_pool(self.f.store.pool.fixture_driver()).await;
+		sqlx::query(sql).execute(&owner).await.unwrap();
 	}
 }
 
@@ -448,8 +455,8 @@ async fn a_failed_audit_write_rolls_the_stop_back(
 ) {
 	let w = world(fixture).await;
 	// A real database fault on the audit insert, with no seam in production code.
-	w.execute("CREATE FUNCTION fail_audit() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN RAISE EXCEPTION 'audit unavailable'; END $$").await;
-	w.execute("CREATE TRIGGER fail_audit BEFORE INSERT ON run_safety_stops FOR EACH ROW EXECUTE FUNCTION fail_audit()").await;
+	w.alter("CREATE FUNCTION fail_audit() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN RAISE EXCEPTION 'audit unavailable'; END $$").await;
+	w.alter("CREATE TRIGGER fail_audit BEFORE INSERT ON run_safety_stops FOR EACH ROW EXECUTE FUNCTION fail_audit()").await;
 	let key = Uuid::new_v4();
 	let events = w.count("SELECT count(*) FROM events").await;
 	let (status, body) = w.stop(w.run, key, "cancel", 0).await;
@@ -458,8 +465,7 @@ async fn a_failed_audit_write_rolls_the_stop_back(
 	assert_eq!(w.facts(w.run).await["control_revision"], 0);
 	assert_eq!(w.count("SELECT count(*) FROM events").await, events);
 	assert_eq!(w.count("SELECT count(*) FROM run_safety_stops").await, 0);
-	w.execute("DROP TRIGGER fail_audit ON run_safety_stops")
-		.await;
+	w.alter("DROP TRIGGER fail_audit ON run_safety_stops").await;
 	let (status, body) = w.stop(w.run, key, "cancel", 0).await;
 	assert_eq!(status, 200, "{body}");
 	w.f.store.pool.clone().close().await;

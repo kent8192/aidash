@@ -684,12 +684,15 @@ the single Knowledge head, and no schema or model state is overwritten.
 ## Run control provenance and Safety Stops (#485, ADR 0101)
 
 `execution/0061_run_control_provenance` (after `execution/0060_plugin_research_merge`)
-adds `runs.control_revision` (bigint, default 0) and `runs.control_source` (text,
-default `'tenant'`) with typed column operations and a CHECK on both. The revision
-changes only when `control` changes, so a Safety Stop's expected revision is not made
-stale by worker progress.
+adds `runs.control_revision` (bigint, default 0) and `runs.control_source` (text) with
+typed column operations; existing Runs start at revision 0 with the Tenant as the
+source. The model declares no default for the source, so the logical state drops it
+the way `execution/0050_usage_evidence` does. The revision changes only when `control`
+changes, so a Safety Stop's expected revision is not made stale by worker progress.
 
-`execution/0062_run_control_trigger` is database-only. Reinhardt has no trigger
+`execution/0062_run_control_trigger` is database-only. It restores the physical
+`'tenant'` default of `control_source` for writers that name no source, and adds the
+CHECK that the revision is not negative. Reinhardt has no trigger
 operation, so the function `aidash_run_control_provenance` and its `BEFORE UPDATE OF
 control` trigger on `runs` are the documented raw-SQL exception. A writer that updates
 `control_revision` itself (the ordinary control path and a Safety Stop) is left alone;
