@@ -3,10 +3,22 @@ import { Alert, Loading, Notice } from "../components/patterns";
 import { Button } from "../components/ui/button";
 import { desktop, desktopAvailable } from "../desktop";
 import { corePreviewLiveTicket } from "../generated/aidash";
-import type { PreviewTicket } from "../generated/models";
 import { useI18n } from "../ui";
 import { useFilePreview, type LivePreviewSelection } from "./file-preview-pane";
 import { livePreviewTicketErrorKey } from "./live-preview-model";
+import { issueRemotePreview } from "./remote-preview";
+
+function ticketForLive(
+  selection: LivePreviewSelection,
+): Promise<{ url: string }> {
+  if (selection.remote) {
+    return issueRemotePreview(selection.run, {
+      kind: "live",
+      live_preview_id: selection.livePreviewId,
+    }).then((url) => ({ url }));
+  }
+  return corePreviewLiveTicket({ live_preview_id: selection.livePreviewId });
+}
 
 /**
  * A Live preview in the same side pane as a File preview. Each view and each
@@ -56,9 +68,9 @@ export function LivePreviewPane({
         </p>
       </header>
       <div className="min-h-0 flex-1 overflow-auto p-4">
-        {!availability ? (
+        {!selection.remote && !availability ? (
           <Loading>{t("filePreviewCheckingAvailability")}</Loading>
-        ) : !availability.available ? (
+        ) : !selection.remote && !availability?.available ? (
           <Notice tone="warning">{t("livePreviewUnavailable")}</Notice>
         ) : desktopAvailable() ? (
           <DesktopLivePreview selection={selection} />
@@ -91,14 +103,17 @@ function WebLivePreview({ selection }: { selection: LivePreviewSelection }) {
   const [retry, setRetry] = useState(0);
   const [opening, setOpening] = useState(false);
   const [actionError, setActionError] = useState("");
-  const issued = useRef<Promise<PreviewTicket> | null>(null);
+  const ticketKey = `${selection.run}:${selection.livePreviewId}:${selection.remote === true}`;
+  const issued = useRef<{
+    key: string;
+    promise: Promise<{ url: string }>;
+  } | null>(null);
 
   useEffect(() => {
     let cancelled = false;
-    issued.current ??= corePreviewLiveTicket({
-      live_preview_id: selection.livePreviewId,
-    });
-    void issued.current.then(
+    if (issued.current?.key !== ticketKey)
+      issued.current = { key: ticketKey, promise: ticketForLive(selection) };
+    void issued.current.promise.then(
       (value) => {
         if (!cancelled) setTicket({ status: "ready", url: value.url });
       },
@@ -110,7 +125,7 @@ function WebLivePreview({ selection }: { selection: LivePreviewSelection }) {
     return () => {
       cancelled = true;
     };
-  }, [retry, selection.livePreviewId]);
+  }, [retry, selection, ticketKey]);
 
   const retryTicket = () => {
     issued.current = null;
@@ -121,9 +136,7 @@ function WebLivePreview({ selection }: { selection: LivePreviewSelection }) {
     setOpening(true);
     setActionError("");
     try {
-      const value = await corePreviewLiveTicket({
-        live_preview_id: selection.livePreviewId,
-      });
+      const value = await ticketForLive(selection);
       const anchor = document.createElement("a");
       anchor.href = value.url;
       anchor.target = "_blank";
@@ -191,10 +204,17 @@ function DesktopLivePreview({
     setBusy(true);
     setError("");
     try {
-      const value = await corePreviewLiveTicket({
-        live_preview_id: selection.livePreviewId,
-      });
-      await desktop.openPreviewUrl(value.url);
+      if (selection.remote) {
+        await desktop.openRemotePreview(selection.run, {
+          kind: "live",
+          live_preview_id: selection.livePreviewId,
+        });
+      } else {
+        const value = await corePreviewLiveTicket({
+          live_preview_id: selection.livePreviewId,
+        });
+        await desktop.openPreviewUrl(value.url);
+      }
     } catch (caught) {
       setError(t(livePreviewTicketErrorKey(caught)));
     } finally {

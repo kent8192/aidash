@@ -21,5 +21,6 @@ pub fn preview_gateway_for_test(
 	std::sync::Arc::new(crate::apps::execution::repositories::previews::Gateway {
 		store,
 		domain: domain.to_owned(),
+		runtime: None,
 	})
 }

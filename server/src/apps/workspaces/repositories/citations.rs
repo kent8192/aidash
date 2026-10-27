@@ -5,7 +5,7 @@ use aidash_application::capabilities::sessions;
 use aidash_domain::capabilities::{operations::MountedFile, retention::Holder, sessions::Area};
 use aidash_domain::workspaces::channels::{ChannelCitation, CitedFileVersion};
 use reinhardt::query::{
-	Alias, Expr, ExprTrait as _, OnConflict, PostgresQueryBuilder, Query,
+	Alias, Expr, ExprTrait as _, IntoValue as _, OnConflict, PostgresQueryBuilder, Query,
 	QueryStatementBuilder as _,
 };
 use std::collections::{HashMap, HashSet};
@@ -16,6 +16,8 @@ struct CitationRow {
 	message_id: Uuid,
 	area_id: Uuid,
 	file_id: Uuid,
+	remote_run_id: Option<Uuid>,
+	remote_expires_at: Option<chrono::DateTime<chrono::Utc>>,
 	path: String,
 	digest: String,
 	size: i64,
@@ -26,6 +28,8 @@ crate::native_record!(CitationRow {
 	message_id,
 	area_id,
 	file_id,
+	remote_run_id,
+	remote_expires_at,
 	path,
 	digest,
 	size,
@@ -37,12 +41,19 @@ crate::native_record!(CitationRow {
 struct Cited {
 	area_id: Uuid,
 	file_id: Uuid,
+	remote_run_id: Option<Uuid>,
 }
-crate::native_record!(Cited { area_id, file_id });
+crate::native_record!(Cited {
+	area_id,
+	file_id,
+	remote_run_id
+});
 
 struct NewCitation {
 	message_id: Uuid,
 	file_id: Uuid,
+	remote_run_id: Option<Uuid>,
+	remote_expires_at: Option<chrono::DateTime<chrono::Utc>>,
 	tenant: String,
 	area_id: Uuid,
 	revision: i64,
@@ -56,7 +67,7 @@ fn manifest(area: &Area) -> Result<Vec<MountedFile>> {
 	Ok(serde_json::from_value(area.manifest.clone())?)
 }
 
-async fn object_digest(
+pub(crate) async fn object_digest(
 	access: &mut Access,
 	tenant: &str,
 	area: Uuid,
@@ -77,12 +88,58 @@ async fn object_digest(
 	digest.ok_or_else(|| Error::Conflict("FILE_VERSION_UNAVAILABLE".into()))
 }
 
+/// Remote references hidden when a thread is removed, for best-effort release
+/// after the local deletion transaction commits.
+pub(crate) async fn remote_for_thread(
+	access: &mut Access,
+	workspace: Uuid,
+	thread: Uuid,
+) -> Result<Vec<(Uuid, Uuid, Uuid)>> {
+	let root: Option<Uuid> = crate::database::native::query_scalar(
+		&Query::select()
+			.column(Alias::new("root_message_id"))
+			.from(Alias::new("channel_threads"))
+			.and_where(Expr::col("id").eq(Expr::value(thread)))
+			.and_where(Expr::col("workspace_id").eq(Expr::value(workspace)))
+			.to_string(PostgresQueryBuilder),
+	)
+	.scalar_optional(&mut **access.tx)
+	.await?;
+	let Some(root) = root else { return Ok(vec![]) };
+	let mut ids: Vec<Uuid> = crate::database::native::query_scalar(
+		&Query::select()
+			.column(Alias::new("message_id"))
+			.from(Alias::new("channel_message_context"))
+			.and_where(Expr::col("thread_id").eq(Expr::value(thread)))
+			.and_where(Expr::col("workspace_id").eq(Expr::value(workspace)))
+			.to_string(PostgresQueryBuilder),
+	)
+	.scalar_all(&mut **access.tx)
+	.await?;
+	ids.push(root);
+	let rows: Vec<(Uuid, Uuid, Uuid)> = crate::database::native::query_as(
+		&Query::select()
+			.column(Alias::new("message_id"))
+			.column(Alias::new("remote_run_id"))
+			.column(Alias::new("file_id"))
+			.from(Alias::new("message_file_versions"))
+			.and_where(Expr::col("remote_run_id").is_not_null())
+			.and_where(Expr::col("message_id").is_in(ids.iter().copied().map(Expr::value)))
+			.to_string(PostgresQueryBuilder),
+	)
+	.columns(&["message_id", "remote_run_id", "file_id"])
+	.fetch_all(&mut **access.tx)
+	.await?;
+	Ok(rows)
+}
+
 async fn existing(lease: &mut Lease, message: Uuid) -> Result<Vec<Cited>> {
 	let tx = lease.tx();
 	crate::database::native::query_as(
 		&Query::select()
 			.column(Alias::new("area_id"))
 			.column(Alias::new("file_id"))
+			.column(Alias::new("remote_run_id"))
 			.from(Alias::new("message_file_versions"))
 			.and_where(Expr::col(Alias::new("message_id")).eq(Expr::value(message)))
 			.to_string(PostgresQueryBuilder),
@@ -94,9 +151,11 @@ async fn existing(lease: &mut Lease, message: Uuid) -> Result<Vec<Cited>> {
 fn same_set(stored: &[Cited], requested: &[CitedFileVersion]) -> bool {
 	stored.len() == requested.len()
 		&& requested.iter().all(|citation| {
-			stored
-				.iter()
-				.any(|row| row.area_id == citation.area_id && row.file_id == citation.file_id)
+			stored.iter().any(|row| {
+				row.area_id == citation.area_id
+					&& row.file_id == citation.file_id
+					&& row.remote_run_id == citation.run_id
+			})
 		})
 }
 
@@ -107,6 +166,7 @@ fn same_set(stored: &[Cited], requested: &[CitedFileVersion]) -> bool {
 /// `FILE_VERSION_QUOTA_EXCEEDED`, which fails the whole message write.
 pub(crate) async fn record(
 	store: &Store,
+	federation: Option<&crate::federation::Federation>,
 	lease: &mut Lease,
 	message: Uuid,
 	citations: &[CitedFileVersion],
@@ -127,6 +187,35 @@ pub(crate) async fn record(
 	let access = lease.access_mut().ok_or_else(|| Error::Forbidden)?;
 	let mut rows = vec![];
 	for citation in citations {
+		if let Some(run_id) = citation.run_id {
+			let f = federation.ok_or(Error::Forbidden)?;
+			let retained =
+				crate::apps::execution::capabilities::services::federation_previews::retain_remote(
+					f,
+					crate::authorization::identity::Actor::Subject(access.identity.clone()),
+					aidash_domain::federation::preview::RetainRequest {
+						run_id,
+						area_id: citation.area_id,
+						file_id: citation.file_id,
+						message_id: message,
+					},
+				)
+				.await?;
+			rows.push(NewCitation {
+				message_id: message,
+				file_id: citation.file_id,
+				remote_run_id: Some(run_id),
+				remote_expires_at: Some(retained.expires_at),
+				tenant: access.identity.tenant.clone(),
+				area_id: citation.area_id,
+				revision: retained.revision,
+				path: retained.file.path,
+				digest: retained.file.digest,
+				size: retained.file.size,
+				media_type: retained.file.media_type,
+			});
+			continue;
+		}
 		let area = {
 			let mut scope = crate::bootstrap::session_scope(Some(store), access);
 			sessions::load(&mut scope, citation.area_id).await?
@@ -172,6 +261,8 @@ pub(crate) async fn record(
 		rows.push(NewCitation {
 			message_id: message,
 			file_id: citation.file_id,
+			remote_run_id: None,
+			remote_expires_at: None,
 			tenant: area.tenant.clone(),
 			area_id: citation.area_id,
 			revision: hold.revision,
@@ -192,6 +283,8 @@ pub(crate) async fn record(
 						"id",
 						"message_id",
 						"file_id",
+						"remote_run_id",
+						"remote_expires_at",
 						"tenant",
 						"area_id",
 						"revision",
@@ -207,6 +300,8 @@ pub(crate) async fn record(
 					id.into(),
 					row.message_id.into(),
 					row.file_id.into(),
+					row.remote_run_id.into_value(),
+					row.remote_expires_at.into_value(),
 					row.tenant.into(),
 					row.area_id.into(),
 					row.revision.into(),
@@ -235,6 +330,7 @@ pub(crate) async fn record(
 /// The citations of these messages, redacted for the current viewer.
 pub(crate) async fn for_messages(
 	store: &Store,
+	federation: Option<&crate::federation::Federation>,
 	lease: &mut Lease,
 	ids: &[Uuid],
 ) -> Result<HashMap<Uuid, Vec<ChannelCitation>>> {
@@ -248,6 +344,8 @@ pub(crate) async fn for_messages(
 				.column(Alias::new("message_id"))
 				.column(Alias::new("area_id"))
 				.column(Alias::new("file_id"))
+				.column(Alias::new("remote_run_id"))
+				.column(Alias::new("remote_expires_at"))
 				.column(Alias::new("path"))
 				.column(Alias::new("digest"))
 				.column(Alias::new("size"))
@@ -306,7 +404,12 @@ pub(crate) async fn for_messages(
 			.collect::<HashSet<_>>()
 	};
 	let readable = {
-		let areas: HashSet<Uuid> = rows.iter().map(|row| row.area_id).collect();
+		let areas: HashSet<Uuid> = rows
+			.iter()
+			.filter(|row| row.remote_run_id.is_none())
+			.map(|row| row.area_id)
+			.collect();
+		let runs: HashSet<Uuid> = rows.iter().filter_map(|row| row.remote_run_id).collect();
 		match lease.access_mut() {
 			None => HashSet::new(),
 			Some(access) => {
@@ -317,18 +420,39 @@ pub(crate) async fn for_messages(
 						readable.insert(area);
 					}
 				}
+				for run_id in runs {
+					if let Some(federation) = federation
+						&& crate::apps::execution::capabilities::services::federation_previews::source_viewer(
+							federation, access, run_id,
+						)
+						.await
+						.is_ok()
+					{
+						readable.insert(run_id);
+					}
+				}
 				readable
 			}
 		}
 	};
 	let mut out: HashMap<Uuid, Vec<ChannelCitation>> = HashMap::new();
 	for row in rows {
-		let readable = readable.contains(&row.area_id);
-		let available = readable && held.contains(&(row.message_id, row.file_id));
+		let readable = row.remote_run_id.map_or_else(
+			|| readable.contains(&row.area_id),
+			|run| readable.contains(&run),
+		);
+		let available = readable
+			&& if row.remote_run_id.is_some() {
+				row.remote_expires_at
+					.is_some_and(|expires| expires > chrono::Utc::now())
+			} else {
+				held.contains(&(row.message_id, row.file_id))
+			};
 		let citation = if readable {
 			ChannelCitation {
 				area_id: row.area_id,
 				file_id: row.file_id,
+				run_id: row.remote_run_id,
 				path: row.path,
 				digest: Some(row.digest),
 				size: u64::try_from(row.size).ok(),
@@ -341,6 +465,7 @@ pub(crate) async fn for_messages(
 			ChannelCitation {
 				area_id: row.area_id,
 				file_id: row.file_id,
+				run_id: None,
 				path: row.path,
 				digest: None,
 				size: None,

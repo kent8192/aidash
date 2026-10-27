@@ -213,6 +213,7 @@ impl RuntimeTasks {
 			let authority = Arc::new(crate::apps::execution::repositories::previews::Gateway {
 				store: federation.store.clone(),
 				domain: preview.domain.clone(),
+				runtime: Some(federation.clone()),
 			});
 			let stopping = receiver.clone();
 			tasks.spawn_service(runtime_task(async move {
@@ -792,7 +793,11 @@ pub(crate) fn channel_scope<'a>(
 	store: &'a Store,
 	lease: &'a mut crate::collaboration::access::Lease,
 ) -> crate::apps::workspaces::repositories::channels::NativeChannels<'a> {
-	crate::apps::workspaces::repositories::channels::NativeChannels { store, lease }
+	crate::apps::workspaces::repositories::channels::NativeChannels {
+		store,
+		lease,
+		federation: None,
+	}
 }
 
 /// Marketplace resolution borrows one current credential/policy/distribution lease.

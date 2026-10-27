@@ -729,6 +729,8 @@
   "nodeRegistrationsHelp": "Node Registration は、この Node が別テナントの特定の Node からのやり取りを受け入れ、その Node へリクエストを送ることを許可します。同じテナントの Node は登録不要です。登録した Node の主体は「接続ノードの主体対応付け」で対応付けます。",
   "nodeRegistrationNone": "この Node に登録された Node はありません。",
   "nodeRegistrationAdd": "Node を登録",
+  "nodeRegistrationDashboardOrigin": "相手 Deployment のダッシュボード Origin",
+  "nodeRegistrationDashboardOriginHelp": "相手のダッシュボードで、この Node の File preview と Live preview を表示する場合に登録します。",
   "nodeRegistrationSource": "Node アドレス",
   "nodeRegistrationSave": "登録",
   "nodeRegistrationAtomic": "アトミックトランザクション",
@@ -839,5 +841,9 @@
   "livePreviewAbsoluteSeconds": "絶対上限（秒）",
   "livePreviewCeiling": "Deployment の上限",
   "livePreviewLimitsSave": "上限を保存",
-  "livePreviewLimitsChanged": "ほかの人が上限を変更しました。最新の値を確認してからもう一度保存してください。"
+  "livePreviewLimitsChanged": "ほかの人が上限を変更しました。最新の値を確認してからもう一度保存してください。",
+  "remotePreviewInspectionUnavailable": "遠隔 Run の File version と Live preview を確認できませんでした。",
+  "remotePreviewDomainUnavailable": "この遠隔 Node には preview domain がありません。File version と Live preview をここで開けません。",
+  "remotePreviewFiles": "遠隔の File version",
+  "remotePreviewNoFiles": "この Run で開ける File version はありません。"
 }

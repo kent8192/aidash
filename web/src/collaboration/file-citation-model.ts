@@ -6,6 +6,7 @@ export interface FileCitation {
   key: string;
   areaId: string;
   fileId: string;
+  runId?: string;
   path: string;
   digest?: string;
   size?: number;
@@ -13,8 +14,12 @@ export interface FileCitation {
   revision?: number;
 }
 
-export function fileCitationKey(areaId: string, fileId: string): string {
-  return `${areaId}:${fileId}`;
+export function fileCitationKey(
+  areaId: string,
+  fileId: string,
+  runId?: string,
+): string {
+  return runId ? `${runId}:${areaId}:${fileId}` : `${areaId}:${fileId}`;
 }
 
 export function fileCitationFrom(
@@ -27,11 +32,13 @@ export function fileCitationFrom(
     media_type?: string;
   },
   revision?: number,
+  runId?: string,
 ): FileCitation {
   return {
-    key: fileCitationKey(areaId, file.file_id),
+    key: fileCitationKey(areaId, file.file_id, runId),
     areaId,
     fileId: file.file_id,
+    ...(runId ? { runId } : {}),
     path: file.path,
     ...(file.digest ? { digest: file.digest } : {}),
     ...(file.size !== undefined ? { size: file.size } : {}),
@@ -60,9 +67,10 @@ export function removeFileCitation(
 /** The request field for a message that cites these exact File versions. */
 export function fileCitationPayload(
   citations: readonly FileCitation[],
-): { area_id: string; file_id: string }[] {
+): { area_id: string; file_id: string; run_id?: string }[] {
   return citations.map((citation) => ({
     area_id: citation.areaId,
     file_id: citation.fileId,
+    ...(citation.runId ? { run_id: citation.runId } : {}),
   }));
 }

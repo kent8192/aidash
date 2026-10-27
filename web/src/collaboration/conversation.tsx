@@ -186,6 +186,7 @@ function MessageCitations({
                 title={citation.path}
                 onClick={() =>
                   preview.open({
+                    run: citation.run_id ?? undefined,
                     area: citation.area_id,
                     file: {
                       file_id: citation.file_id,
@@ -196,7 +197,9 @@ function MessageCitations({
                       scope: "working",
                     },
                     revision: citation.revision ?? undefined,
-                    files: preview.manifestFor(citation.area_id),
+                    files: citation.run_id
+                      ? undefined
+                      : preview.manifestFor(citation.area_id),
                     thread,
                     cited: true,
                   })

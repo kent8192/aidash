@@ -7,6 +7,54 @@ use serde::Deserialize;
 const TICKET_PATH: &str = "/__aidash/ticket";
 const MAX_AVAILABILITY_BYTES: usize = 64 * 1024;
 
+#[derive(Deserialize)]
+struct RemoteTicket {
+	url: String,
+	preview_domain: String,
+}
+
+/// The native side gets both the ticket and H's domain from V's authenticated
+/// API. Renderer-supplied URLs or domains never widen the browser opener.
+pub async fn remote_ticket(
+	client: &reqwest::Client,
+	origin: &str,
+	token: &str,
+	run: &str,
+	target: &serde_json::Value,
+) -> Result<Url, String> {
+	let run = uuid::Uuid::parse_str(run).map_err(|_| "Invalid Run identifier")?;
+	let mut response = client
+		.post(format!("{origin}/api/runs/{run}/preview-tickets"))
+		.bearer_auth(token)
+		.json(target)
+		.send()
+		.await
+		.map_err(|_| "Cannot reach Aidash. Check the connection and retry.".to_string())?;
+	if response.status() == StatusCode::UNAUTHORIZED {
+		return Err("Your saved Aidash session has expired or was revoked. Sign in again.".into());
+	}
+	if !response.status().is_success() {
+		return Err(format!(
+			"Aidash rejected the remote Preview ticket request ({})",
+			response.status().as_u16()
+		));
+	}
+	let mut bytes = Vec::new();
+	while let Some(chunk) = response
+		.chunk()
+		.await
+		.map_err(|_| "Incomplete Aidash response; retry the operation".to_string())?
+	{
+		if bytes.len() + chunk.len() > MAX_AVAILABILITY_BYTES {
+			return Err("Aidash Preview ticket response is too large".into());
+		}
+		bytes.extend_from_slice(&chunk);
+	}
+	let issued: RemoteTicket = serde_json::from_slice(&bytes)
+		.map_err(|_| "Aidash returned an incompatible Preview ticket")?;
+	validate(&issued.url, &issued.preview_domain)
+}
+
 /// The Deployment's trusted Preview configuration. The renderer never supplies
 /// or widens this value.
 #[derive(Clone, Debug, Deserialize, PartialEq, Eq)]

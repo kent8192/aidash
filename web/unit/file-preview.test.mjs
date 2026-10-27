@@ -16,6 +16,23 @@ import { SpreadsheetPreviewError } from "../src/file-preview/spreadsheet-types.t
 import { parseXlsx } from "../src/file-preview/xlsx.ts";
 import { resolveWorkingAreaPath } from "../src/file-preview/working-area-path.ts";
 import { previewTicketErrorKey } from "../src/capabilities/preview-errors.ts";
+import { remotePreviewUrl } from "../src/capabilities/remote-preview-url.ts";
+
+test("a remote File preview opens only H's vouched one-time ticket", () => {
+  const valid = {
+    url: "https://a1.preview.host.example/__aidash/ticket?t=secret",
+    preview_domain: "preview.host.example",
+  };
+  assert.equal(remotePreviewUrl(valid), valid.url);
+  for (const url of [
+    "https://preview.host.example.evil/__aidash/ticket?t=secret",
+    "http://a1.preview.host.example/__aidash/ticket?t=secret",
+    "https://a1.preview.host.example/other?t=secret",
+    "https://user@a1.preview.host.example/__aidash/ticket?t=secret",
+  ]) {
+    assert.throws(() => remotePreviewUrl({ ...valid, url }), url);
+  }
+});
 
 const bytesOf = (text) => new TextEncoder().encode(text).buffer;
 const toArrayBuffer = (value) =>

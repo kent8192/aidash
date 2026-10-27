@@ -233,3 +233,16 @@ test("a citation keeps the path and short digest the composer shows", () => {
   assert.equal(citation.digest.slice(0, 8), "aaaaaaaa");
   assert.equal(citation.revision, 7);
 });
+
+test("a remote citation pins its source Run in the message payload", () => {
+  const citation = fileCitationFrom(
+    "remote-area",
+    { file_id: "version", path: "page.html" },
+    4,
+    "source-run",
+  );
+  assert.equal(citation.key, "source-run:remote-area:version");
+  assert.deepEqual(fileCitationPayload([citation]), [
+    { area_id: "remote-area", file_id: "version", run_id: "source-run" },
+  ]);
+});

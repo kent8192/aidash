@@ -353,14 +353,14 @@ async fn generation_with_existing_sql_assets_preserves_history_and_dependency(
 	);
 	assert_eq!(std::fs::read(history).unwrap(), original);
 	let generated = FilesystemSource::new(fixture.directory.path().join("migrations"))
-		.get_migration("execution", "0074_policy_probe")
+		.get_migration("execution", "0075_policy_probe")
 		.await
 		.unwrap();
 	assert_eq!(
 		generated.dependencies,
 		vec![(
 			"execution".to_owned(),
-			"0073_egress_request_via_state".to_owned()
+			"0074_federated_preview_authority".to_owned()
 		)]
 	);
 	assert!(generated.operations.is_empty());
@@ -455,14 +455,14 @@ async fn nonempty_generation_reads_sql_assets_and_replays_only_logical_state(
 	let generated = after
 		.iter()
 		.find(|migration| {
-			migration.app_label == "workspaces" && migration.name == "0014_content_probe"
+			migration.app_label == "workspaces" && migration.name == "0015_content_probe"
 		})
 		.unwrap();
 	assert_eq!(
 		generated.dependencies,
 		vec![(
 			"workspaces".to_owned(),
-			"0013_message_file_versions_state".to_owned()
+			"0014_remote_file_version_citations".to_owned()
 		)]
 	);
 	assert_eq!(generated.operations.len(), 1);

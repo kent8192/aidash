@@ -729,6 +729,8 @@
   "nodeRegistrationsHelp": "A Node Registration lets this Node accept exchange from one Node of another Tenant, and address requests to it. Nodes of this Tenant need none. Map the registered Node's subjects under Peer identity mappings.",
   "nodeRegistrationNone": "No Node is registered at this Node.",
   "nodeRegistrationAdd": "Register a Node",
+  "nodeRegistrationDashboardOrigin": "Remote dashboard origin",
+  "nodeRegistrationDashboardOriginHelp": "Pin the other Deployment's dashboard origin to allow its subjects to frame File and Live previews from this Node.",
   "nodeRegistrationSource": "Node address",
   "nodeRegistrationSave": "Register",
   "nodeRegistrationAtomic": "Atomic transactions",
@@ -839,5 +841,9 @@
   "livePreviewAbsoluteSeconds": "Absolute limit (seconds)",
   "livePreviewCeiling": "Deployment ceiling",
   "livePreviewLimitsSave": "Save limits",
-  "livePreviewLimitsChanged": "Someone else changed the limits. The latest values are shown; review them and save again."
+  "livePreviewLimitsChanged": "Someone else changed the limits. The latest values are shown; review them and save again.",
+  "remotePreviewInspectionUnavailable": "The remote Run's File versions and Live preview could not be inspected.",
+  "remotePreviewDomainUnavailable": "This remote Node has no preview domain. Its File versions and Live preview cannot be opened here.",
+  "remotePreviewFiles": "Remote File versions",
+  "remotePreviewNoFiles": "No File versions are available for this Run."
 }

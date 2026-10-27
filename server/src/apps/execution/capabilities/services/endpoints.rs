@@ -1274,6 +1274,7 @@ pub(crate) async fn restore_new_thread(
 		super::sharing::serialize(lease.access_mut().ok_or(Error::Forbidden)?).await?;
 		let message = crate::collaboration::threads::post(
 			&f.store,
+			None,
 			&mut lease,
 			workspace,
 			crate::collaboration::ChannelMessageInput {
@@ -1508,9 +1509,30 @@ pub(crate) async fn thread_delete(
 	input: super::thread_lifecycle::DeleteThread,
 ) -> Result<DeletedThread> {
 	let mut access = access(&f, actor).await?;
+	let releases =
+		match super::federation_previews::releases_for_thread(&f, &mut access, workspace, thread)
+			.await
+		{
+			Ok(releases) => releases,
+			Err(error) => {
+				tracing::warn!(%error, "remote File version release routes could not be gathered");
+				Vec::new()
+			}
+		};
 	let result =
 		super::thread_lifecycle::delete(&f.store, &mut access, workspace, thread, input).await;
 	let result = access.finish(result).await?;
+	if tokio::time::timeout(
+		std::time::Duration::from_secs(10),
+		super::federation_previews::notify_releases(&f, releases),
+	)
+	.await
+	.is_err()
+	{
+		tracing::warn!(
+			"remote File version release notifications timed out; H expiry remains in force"
+		);
+	}
 	f.notify.notify_waiters();
 	typed(result)
 }
@@ -1568,6 +1590,7 @@ pub(crate) async fn preview_ticket(
 			domain: preview.map(|preview| preview.domain.as_str()),
 			public_port: preview.and_then(|preview| preview.public_port),
 			origin: &origin,
+			peer: None,
 		};
 		aidash_application::preview::issue(&mut scope, input.area_id, input.file_id).await
 	};
@@ -1710,6 +1733,7 @@ pub(crate) async fn preview_live_ticket(
 			domain: preview.map(|preview| preview.domain.as_str()),
 			public_port: preview.and_then(|preview| preview.public_port),
 			origin: &origin,
+			peer: None,
 		};
 		aidash_application::preview::issue_live(&mut scope, input.live_preview_id).await
 	};

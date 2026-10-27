@@ -10,6 +10,10 @@ pub struct MessageFileVersion {
 	pub id: uuid::Uuid,
 	pub message_id: uuid::Uuid,
 	pub file_id: uuid::Uuid,
+	#[field(null = true)]
+	pub remote_run_id: Option<uuid::Uuid>,
+	#[field(null = true)]
+	pub remote_expires_at: Option<DateTime<Utc>>,
 	#[field(field_type = "text")]
 	pub tenant: String,
 	pub area_id: uuid::Uuid,

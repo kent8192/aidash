@@ -129,6 +129,7 @@ pub async fn preview_gateway(settings: ProjectSettings) -> Result<()> {
 	let authority = Arc::new(crate::apps::execution::repositories::previews::Gateway {
 		store: federation.store.clone(),
 		domain: preview.domain.clone(),
+		runtime: Some(federation.clone()),
 	});
 	let (stopping, stop) = tokio::sync::watch::channel(false);
 	let serving = aidash_integrations::preview::serve(listener, authority, stop);

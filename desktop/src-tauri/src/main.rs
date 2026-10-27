@@ -128,6 +128,36 @@ async fn open_preview_url(
 		.map_err(|_| "Cannot open the system browser")?;
 	Ok(())
 }
+
+/// Open a remote Preview through V's authenticated API, which vouches for H's
+/// preview domain in the same response as the one-time ticket.
+#[tauri::command]
+async fn open_remote_preview(
+	_app: tauri::AppHandle,
+	state: State<'_, DesktopState>,
+	run: String,
+	target: serde_json::Value,
+) -> Result<(), String> {
+	let profile = state.profiles.lock().await.selected()?;
+	let access = access(&state, None)
+		.await?
+		.ok_or("Sign in to this Deployment to open a remote Preview")?;
+	let url = preview::remote_ticket(
+		&state.client,
+		&profile.origin,
+		&access.access_token,
+		&run,
+		&target,
+	)
+	.await?;
+	#[cfg(feature = "e2e")]
+	let _fixture_browser = e2e::open_browser(&url)?;
+	#[cfg(not(feature = "e2e"))]
+	_app.opener()
+		.open_url(url.as_str(), None::<&str>)
+		.map_err(|_| "Cannot open the system browser")?;
+	Ok(())
+}
 #[tauri::command]
 async fn connection_settings(state: State<'_, DesktopState>) -> Result<Settings, String> {
 	Ok(state.profiles.lock().await.settings.clone())
@@ -469,7 +499,8 @@ fn main() {
 			plan_listen,
 			plan_wait,
 			plan_cancel,
-			open_preview_url
+			open_preview_url,
+			open_remote_preview
 		])
 		.run(tauri::generate_context!())
 		.expect("run Aidash Desktop");

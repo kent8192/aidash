@@ -25,14 +25,17 @@ import {
   isSpreadsheetKind,
 } from "../file-preview";
 import { corePreviewTicket } from "../generated/aidash";
-import type { PreviewAvailability, PreviewTicket } from "../generated/models";
+import type { PreviewAvailability } from "../generated/models";
 import { useI18n } from "../ui";
 import { download, saveFile, type CoreFile } from "./client";
 import { createCurrentManifestResolver } from "./file-preview-source";
 import { previewTicketErrorKey } from "./preview-errors";
+import { issueRemotePreview } from "./remote-preview";
 
 /** One File version, opened from a Working Area file list or a citation. */
 export interface FilePreviewSelection {
+  /** Source Run whose File versions live on another Node. */
+  run?: string;
   area: string;
   file: CoreFile;
   /** The Working Area revision the file list was read at, when known. */
@@ -50,6 +53,7 @@ export interface LivePreviewSelection {
   run: string;
   livePreviewId: string;
   title?: string;
+  remote?: boolean;
 }
 
 export interface FilePreviewContextValue {
@@ -140,7 +144,8 @@ export function FilePreviewPane({
     selection.file.media_type,
   );
   const needsBytes =
-    isImageKind(kind) || kind === "markdown" || isSpreadsheetKind(kind);
+    !selection.run &&
+    (isImageKind(kind) || kind === "markdown" || isSpreadsheetKind(kind));
   const tooLarge = needsBytes && selection.file.size > FILE_PREVIEW_BYTE_LIMIT;
   const siblingFiles = useMemo(
     () => selection.files ?? manifestFor(selection.area),
@@ -157,7 +162,11 @@ export function FilePreviewPane({
   );
   const citationTarget = selection.thread ?? "channel";
   const citations = fileCitations.citationsFor(citationTarget);
-  const citationKey = fileCitationKey(selection.area, selection.file.file_id);
+  const citationKey = fileCitationKey(
+    selection.area,
+    selection.file.file_id,
+    selection.run,
+  );
   const alreadyCited = citations.some(
     (citation) => citation.key === citationKey,
   );
@@ -226,12 +235,22 @@ export function FilePreviewPane({
   const quote = () => {
     fileCitations.add(
       citationTarget,
-      fileCitationFrom(selection.area, selection.file, selection.revision),
+      fileCitationFrom(
+        selection.area,
+        selection.file,
+        selection.revision,
+        selection.run,
+      ),
     );
   };
 
   let body: ReactNode;
-  if (tooLarge || (state.status === "error" && state.code === "too-large")) {
+  if (selection.run) {
+    body = <PreviewDomainView selection={selection} />;
+  } else if (
+    tooLarge ||
+    (state.status === "error" && state.code === "too-large")
+  ) {
     body = <Notice tone="warning">{t("filePreviewTooLargeBody")}</Notice>;
   } else if (kind === "preview-domain") {
     if (!availability) {
@@ -328,7 +347,7 @@ export function FilePreviewPane({
         </dl>
       </header>
       <div className="min-h-0 flex-1 overflow-auto p-4">
-        {selection.cited && kind === "markdown" && (
+        {!selection.run && selection.cited && kind === "markdown" && (
           <Notice className="mb-3">
             {siblingFiles?.length
               ? t("filePreviewCitedCurrentSiblings")
@@ -349,14 +368,16 @@ export function FilePreviewPane({
         >
           {alreadyCited ? t("fileCitationAlready") : t("fileCitationQuote")}
         </Button>
-        <Button
-          variant="outline"
-          size="sm"
-          type="button"
-          onClick={() => void downloadFile()}
-        >
-          {t("filePreviewDownload")}
-        </Button>
+        {!selection.run && (
+          <Button
+            variant="outline"
+            size="sm"
+            type="button"
+            onClick={() => void downloadFile()}
+          >
+            {t("filePreviewDownload")}
+          </Button>
+        )}
         <Button
           variant="ghost"
           size="sm"
@@ -376,21 +397,39 @@ function PreviewDomainView({ selection }: { selection: FilePreviewSelection }) {
   return <WebPreviewDomain selection={selection} />;
 }
 
+function ticketForFile(
+  selection: FilePreviewSelection,
+): Promise<{ url: string }> {
+  if (selection.run) {
+    return issueRemotePreview(selection.run, {
+      kind: "file",
+      area_id: selection.area,
+      file_id: selection.file.file_id,
+    }).then((url) => ({ url }));
+  }
+  return corePreviewTicket({
+    area_id: selection.area,
+    file_id: selection.file.file_id,
+  });
+}
+
 function WebPreviewDomain({ selection }: { selection: FilePreviewSelection }) {
   const { t } = useI18n();
   const [ticket, setTicket] = useState<TicketState>({ status: "loading" });
   const [retry, setRetry] = useState(0);
   const [opening, setOpening] = useState(false);
   const [actionError, setActionError] = useState("");
-  const issued = useRef<Promise<PreviewTicket> | null>(null);
+  const ticketKey = `${selection.run ?? "local"}:${selection.area}:${selection.file.file_id}`;
+  const issued = useRef<{
+    key: string;
+    promise: Promise<{ url: string }>;
+  } | null>(null);
 
   useEffect(() => {
     let cancelled = false;
-    issued.current ??= corePreviewTicket({
-      area_id: selection.area,
-      file_id: selection.file.file_id,
-    });
-    void issued.current.then(
+    if (issued.current?.key !== ticketKey)
+      issued.current = { key: ticketKey, promise: ticketForFile(selection) };
+    void issued.current.promise.then(
       (issued) => {
         if (!cancelled) setTicket({ status: "ready", url: issued.url });
       },
@@ -402,7 +441,7 @@ function WebPreviewDomain({ selection }: { selection: FilePreviewSelection }) {
     return () => {
       cancelled = true;
     };
-  }, [retry, selection.area, selection.file.file_id]);
+  }, [retry, selection, ticketKey]);
 
   const retryTicket = () => {
     issued.current = null;
@@ -413,10 +452,7 @@ function WebPreviewDomain({ selection }: { selection: FilePreviewSelection }) {
     setOpening(true);
     setActionError("");
     try {
-      const issued = await corePreviewTicket({
-        area_id: selection.area,
-        file_id: selection.file.file_id,
-      });
+      const issued = await ticketForFile(selection);
       const anchor = document.createElement("a");
       anchor.href = issued.url;
       anchor.target = "_blank";
@@ -488,11 +524,19 @@ function DesktopPreviewDomain({
     setBusy(true);
     setError("");
     try {
-      const issued = await corePreviewTicket({
-        area_id: selection.area,
-        file_id: selection.file.file_id,
-      });
-      await desktop.openPreviewUrl(issued.url);
+      if (selection.run) {
+        await desktop.openRemotePreview(selection.run, {
+          kind: "file",
+          area_id: selection.area,
+          file_id: selection.file.file_id,
+        });
+      } else {
+        const issued = await corePreviewTicket({
+          area_id: selection.area,
+          file_id: selection.file.file_id,
+        });
+        await desktop.openPreviewUrl(issued.url);
+      }
     } catch (caught) {
       setError(t(previewTicketErrorKey(caught)));
     } finally {

@@ -1074,6 +1074,42 @@ async fn configure_semantic(
 
 #[rstest::rstest]
 #[tokio::test]
+async fn remote_file_preview_reports_a_host_without_a_preview_domain(
+	#[future(awt)] scoped_pair: Pair,
+) {
+	let p = scoped_pair;
+	p.step().await;
+	p.step().await;
+	let (status, inspection) = request(
+		&p.aa,
+		&p.token,
+		"GET",
+		&format!("/api/runs/{}/remote-preview", p.admission),
+		json!(null),
+	)
+	.await;
+	assert_eq!(status, 200, "{inspection}");
+	assert_eq!(inspection["preview_available"], false);
+	assert!(inspection["area_id"].is_string(), "{inspection}");
+	let (status, body) = request(
+		&p.aa,
+		&p.token,
+		"POST",
+		&format!("/api/runs/{}/preview-tickets", p.admission),
+		json!({
+			"kind": "file",
+			"area_id": Uuid::new_v4(),
+			"file_id": Uuid::new_v4(),
+		}),
+	)
+	.await;
+	assert_eq!(status, 409, "{body}");
+	assert!(body.to_string().contains("PREVIEW_UNAVAILABLE"), "{body}");
+	p.close().await;
+}
+
+#[rstest::rstest]
+#[tokio::test]
 async fn foreign_run_events_keep_the_executing_node(#[future(awt)] scoped_pair: Pair) {
 	let p = scoped_pair;
 	p.step().await;

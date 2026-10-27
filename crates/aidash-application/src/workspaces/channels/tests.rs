@@ -210,6 +210,7 @@ impl ChannelScope for Fixture {
 			.map(|citation| ChannelCitation {
 				area_id: citation.area_id,
 				file_id: citation.file_id,
+				run_id: citation.run_id,
 				path: format!("{}.html", citation.file_id),
 				digest: Some("a".repeat(64)),
 				size: Some(1),
@@ -453,10 +454,12 @@ async fn cited_versions_are_recorded_before_attachments() {
 		CitedFileVersion {
 			area_id: Uuid::from_u128(20),
 			file_id: Uuid::from_u128(21),
+			run_id: None,
 		},
 		CitedFileVersion {
 			area_id: Uuid::from_u128(20),
 			file_id: Uuid::from_u128(22),
+			run_id: None,
 		},
 	];
 	let mut scope = Fixture::default();
@@ -492,6 +495,7 @@ async fn a_denied_citation_stops_before_any_attachment_write() {
 	let citations = [CitedFileVersion {
 		area_id: Uuid::from_u128(20),
 		file_id: Uuid::from_u128(21),
+		run_id: None,
 	}];
 	let mut scope = Fixture {
 		denied: Some("citations.record"),

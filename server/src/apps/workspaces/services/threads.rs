@@ -16,14 +16,17 @@ pub(crate) async fn create(
 	.await
 	.map_err(Into::into)
 }
-pub(crate) async fn post(
-	store: &Store,
-	lease: &mut Lease,
+pub(crate) async fn post<'a>(
+	store: &'a Store,
+	federation: Option<&'a crate::federation::Federation>,
+	lease: &'a mut Lease,
 	workspace: Uuid,
 	input: ChannelMessageInput,
 ) -> Result<ChannelMessage> {
+	let mut scope = crate::bootstrap::channel_scope(store, lease);
+	scope.federation = federation;
 	aidash_application::workspaces::channels::post(
-		&mut crate::bootstrap::channel_scope(store, lease),
+		&mut scope,
 		workspace,
 		aidash_application::workspaces::channels::MessageSubmission {
 			content: &input.content,

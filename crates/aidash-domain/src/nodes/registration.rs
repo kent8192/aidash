@@ -76,6 +76,10 @@ pub struct RegistrationInput {
 	/// Deployment, absent for a Node of this one.
 	#[serde(default)]
 	pub endpoint: Option<String>,
+	/// The registered Deployment's dashboard origin, pinned for Federation
+	/// Preview tickets. Absent disables remote Preview framing from this Node.
+	#[serde(default)]
+	pub dashboard_origin: Option<String>,
 	/// The other Deployment Key's key ID, as that Deployment publishes it.
 	/// Required exactly when `endpoint` is.
 	#[serde(default)]
@@ -127,9 +131,9 @@ impl RegistrationInput {
 			};
 		}
 		if self.source_node.deployment == *own {
-			if self.endpoint.is_some() || self.key_id.is_some() {
+			if self.endpoint.is_some() || self.key_id.is_some() || self.dashboard_origin.is_some() {
 				return Err(Error::Invalid(
-					"a Node of this Deployment has no endpoint or key ID".into(),
+					"a Node of this Deployment has no endpoint, key ID or dashboard origin".into(),
 				));
 			}
 			return Ok(Requested::SameDeployment);
@@ -140,6 +144,9 @@ impl RegistrationInput {
 			));
 		};
 		validate_endpoint(endpoint)?;
+		if let Some(origin) = &self.dashboard_origin {
+			crate::preview::origin(origin)?;
+		}
 		Ok(Requested::OtherDeployment {
 			endpoint: endpoint.trim_end_matches('/').to_owned(),
 			key_id: key_id.clone(),
@@ -157,6 +164,8 @@ pub struct NodeRegistration {
 	/// The registered Node.
 	pub source_node: NodeAddress,
 	pub counterpart: Counterpart,
+	/// Pinned origin of the registered Deployment's dashboard for remote Previews.
+	pub dashboard_origin: Option<String>,
 	pub atomic_transactions: bool,
 	pub enabled: bool,
 	pub revision: i64,

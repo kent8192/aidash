@@ -1138,6 +1138,22 @@ def render():
                     headers=DEPLOYMENT_ADMINISTRATOR, checks=flag)
                 add(endpoint, "Subject bearer reads the availability flag", 200,
                     headers=SUBJECT, checks=flag)
+            elif path.endswith("/remote-preview"):
+                add(endpoint, "Anonymous remote inspection is rejected", 401)
+                add(endpoint, "Deployment Administrator cannot inspect a remote Run", 403,
+                    headers=DEPLOYMENT_ADMINISTRATOR)
+                add(endpoint, "Malformed Run identifier is rejected", 400,
+                    path=path.replace("{id}", "not-a-uuid"), headers=SUBJECT)
+            elif path.endswith("/preview-tickets"):
+                body = json.dumps({"kind": "file", "area_id": MISSING, "file_id": MISSING})
+                add(endpoint, "Anonymous remote ticket is rejected", 401, body=body)
+                add(endpoint, "Deployment Administrator cannot issue a remote ticket", 403,
+                    headers=DEPLOYMENT_ADMINISTRATOR, body=body)
+                add(endpoint, "Malformed JSON cannot reach the remote ticket service", 400,
+                    headers=SUBJECT, body="{")
+                add(endpoint, "Unknown remote ticket fields are rejected", 422,
+                    headers=SUBJECT, body=json.dumps({"kind": "file", "area_id": MISSING,
+                                                    "file_id": MISSING, "unexpected": True}))
             else:
                 body = json.dumps({"area_id": MISSING, "file_id": MISSING})
                 add(endpoint, "Deployment Administrator cannot issue a ticket", 400,

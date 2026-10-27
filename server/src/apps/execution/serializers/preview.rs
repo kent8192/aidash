@@ -31,6 +31,10 @@ pub struct PreviewSettings {
 	/// The only Pod port the Preview NetworkPolicy admits; 3000 when absent.
 	#[setting(optional)]
 	pub pod_port: Option<u16>,
+	/// How long H keeps a File version cited by a remote message when V's
+	/// release notification is lost. This is H's File Retention Rule.
+	#[setting(default = "30")]
+	pub federation_hold_days: i64,
 }
 
 /// The resolved Preview configuration.
@@ -41,6 +45,7 @@ pub struct PreviewConfig {
 	pub in_process: bool,
 	pub public_port: Option<u16>,
 	pub pod_port: u16,
+	pub federation_hold_days: i64,
 }
 
 /// The first non-privileged port a preview Web server usually listens on.
@@ -73,6 +78,11 @@ impl PreviewSettings {
 			));
 		}
 		let pod_port = self.pod_port.unwrap_or(DEFAULT_POD_PORT);
+		if !(1..=3650).contains(&self.federation_hold_days) {
+			return Err(crate::Error::Invalid(
+				"preview.federation_hold_days must be between 1 and 3650".into(),
+			));
+		}
 		if let Some(port) = self.pod_port
 			&& port < aidash_domain::preview::live::MINIMUM_PORT
 		{
@@ -86,6 +96,7 @@ impl PreviewSettings {
 			in_process: self.in_process,
 			public_port: self.public_port,
 			pod_port,
+			federation_hold_days: self.federation_hold_days,
 		}))
 	}
 }
@@ -115,6 +126,11 @@ impl SettingsValidation for PreviewSettings {
 				"preview.pod_port must be non-privileged".into(),
 			));
 		}
+		if !(1..=3650).contains(&self.federation_hold_days) {
+			return Err(ValidationError::Constraint(
+				"preview.federation_hold_days must be between 1 and 3650".into(),
+			));
+		}
 		Ok(())
 	}
 }
@@ -130,6 +146,7 @@ mod tests {
 			in_process: true,
 			public_port: None,
 			pod_port: None,
+			federation_hold_days: 30,
 		}
 	}
 

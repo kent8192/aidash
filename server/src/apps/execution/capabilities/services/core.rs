@@ -11,6 +11,8 @@ pub mod contracts;
 pub(crate) mod endpoints;
 #[path = "errors.rs"]
 pub(crate) mod errors;
+#[path = "federation_previews.rs"]
+pub(crate) mod federation_previews;
 #[path = "limits.rs"]
 pub mod limits;
 #[path = "management.rs"]

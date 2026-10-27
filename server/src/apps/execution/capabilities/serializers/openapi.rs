@@ -440,6 +440,24 @@ pub(crate) fn register(contracts: &mut Contracts, document: &mut OpenApiSchema) 
 			200,
 			"application/json",
 		)?;
+	contracts.path(document, views::previews::remote_ticket, &["Uuid"])?;
+	contracts.request::<_, aidash_domain::federation::preview::Target>(
+		document,
+		views::previews::remote_ticket,
+	)?;
+	contracts.response::<_, aidash_domain::federation::preview::Ticket>(
+		document,
+		views::previews::remote_ticket,
+		200,
+		"application/json",
+	)?;
+	contracts.path(document, views::previews::remote_inspect, &["Uuid"])?;
+	contracts.response::<_, aidash_domain::federation::preview::Inspection>(
+		document,
+		views::previews::remote_inspect,
+		200,
+		"application/json",
+	)?;
 	contracts.path(document, views::live_previews::live_preview, &["Uuid"])?;
 	contracts
 		.response::<_, crate::apps::execution::capabilities::serializers::previews::LivePreviewStatus>(

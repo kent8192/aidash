@@ -34,6 +34,9 @@ pub struct ChannelMessage {
 pub struct CitedFileVersion {
 	pub area_id: Uuid,
 	pub file_id: Uuid,
+	/// Source Run for a File version hosted on another Node.
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub run_id: Option<Uuid>,
 }
 
 /// A citation as one viewer may see it.
@@ -46,6 +49,8 @@ pub struct CitedFileVersion {
 pub struct ChannelCitation {
 	pub area_id: Uuid,
 	pub file_id: Uuid,
+	#[serde(skip_serializing_if = "Option::is_none")]
+	pub run_id: Option<Uuid>,
 	pub path: String,
 	#[serde(skip_serializing_if = "Option::is_none")]
 	pub digest: Option<String>,

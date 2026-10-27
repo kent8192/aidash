@@ -31,4 +31,6 @@ export const desktop = {
     command<string>("plan_wait", { id, authorizationUrl }),
   planCancel: (id: string) => command<void>("plan_cancel", { id }),
   openPreviewUrl: (url: string) => command<void>("open_preview_url", { url }),
+  openRemotePreview: (run: string, target: Record<string, unknown>) =>
+    command<void>("open_remote_preview", { run, target }),
 };

@@ -65,6 +65,7 @@ fn citations_are_bounded_unique_and_ordered() {
 	let citation = |area: u128, file: u128| CitedFileVersion {
 		area_id: Uuid::from_u128(area),
 		file_id: Uuid::from_u128(file),
+		run_id: None,
 	};
 	let accepted: Vec<_> = (1..=MAX_CITED_VERSIONS)
 		.map(|file| citation(1, file as u128))

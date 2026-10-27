@@ -44,6 +44,85 @@ type ResolvedRow = (
 	Option<Uuid>,
 );
 
+pub(crate) struct PeerRunAdmission {
+	pub node: String,
+	pub task_id: Uuid,
+	pub tenant: String,
+	pub credential_id: Uuid,
+	pub description: serde_json::Value,
+}
+crate::native_record!(PeerRunAdmission {
+	node,
+	task_id,
+	tenant,
+	credential_id,
+	description
+});
+
+struct ConsumedTicket {
+	preview_id: Uuid,
+	subject: String,
+	credential_id: Uuid,
+	origin: String,
+	peer_sender: Option<String>,
+	peer_receiver: Option<String>,
+	peer_subject: Option<String>,
+	peer_run_id: Option<Uuid>,
+}
+crate::native_record!(ConsumedTicket {
+	preview_id,
+	subject,
+	credential_id,
+	origin,
+	peer_sender,
+	peer_receiver,
+	peer_subject,
+	peer_run_id
+});
+
+struct PreviewSessionRow {
+	id: Uuid,
+	subject: String,
+	credential_id: Uuid,
+	origin: String,
+	expires_at: DateTime<Utc>,
+	peer_sender: Option<String>,
+	peer_receiver: Option<String>,
+	peer_subject: Option<String>,
+	peer_run_id: Option<Uuid>,
+}
+crate::native_record!(PreviewSessionRow {
+	id,
+	subject,
+	credential_id,
+	origin,
+	expires_at,
+	peer_sender,
+	peer_receiver,
+	peer_subject,
+	peer_run_id
+});
+
+pub(crate) async fn peer_run_admission(
+	access: &mut Access,
+	run_id: Uuid,
+	source: &str,
+) -> NativeResult<PeerRunAdmission> {
+	crate::database::native::query_as(
+		&Query::select()
+			.columns(["node", "task_id", "tenant", "credential_id", "description"].map(Alias::new))
+			.from(Alias::new("authorization_remote_admissions"))
+			.and_where(Expr::col("id").eq(Expr::value(run_id)))
+			.and_where(Expr::col("source_node").eq(Expr::value(source)))
+			.limit(1)
+			.to_string(PostgresQueryBuilder),
+	)
+	.columns(&["node", "task_id", "tenant", "credential_id", "description"])
+	.fetch_optional(&mut **access.tx)
+	.await?
+	.ok_or(NativeError::Forbidden)
+}
+
 /// The ticket use case's authority and transaction.
 pub(crate) struct Scope<'a> {
 	pub access: &'a mut Access,
@@ -51,6 +130,7 @@ pub(crate) struct Scope<'a> {
 	pub domain: Option<&'a str>,
 	pub public_port: Option<u16>,
 	pub origin: &'a str,
+	pub peer: Option<application::Peer>,
 }
 
 impl Scope<'_> {
@@ -149,6 +229,7 @@ impl Scope<'_> {
 	}
 
 	async fn ticket_native(&mut self, ticket: TicketIssue) -> NativeResult<()> {
+		let peer = ticket.peer.as_ref();
 		let query = Query::insert()
 			.into_table(Alias::new("core_preview_tickets"))
 			.columns(
@@ -158,6 +239,10 @@ impl Scope<'_> {
 					"preview_id",
 					"subject",
 					"credential_id",
+					"peer_sender",
+					"peer_receiver",
+					"peer_subject",
+					"peer_run_id",
 					"origin",
 					"digest",
 					"expires_at",
@@ -170,6 +255,10 @@ impl Scope<'_> {
 				ticket.preview_id.into(),
 				ticket.subject.into(),
 				ticket.credential_id.into(),
+				peer.map(|peer| peer.sender.clone()).into_value(),
+				peer.map(|peer| peer.receiver.clone()).into_value(),
+				peer.map(|peer| peer.subject.clone()).into_value(),
+				peer.map(|peer| peer.run_id).into_value(),
 				ticket.origin.into(),
 				ticket.digest.into(),
 				ticket.expires_at.into(),
@@ -199,6 +288,9 @@ impl application::Scope for Scope<'_> {
 	}
 	fn credential_id(&self) -> Uuid {
 		self.access.identity.credential_id
+	}
+	fn peer(&self) -> Option<&application::Peer> {
+		self.peer.as_ref()
 	}
 	async fn authorize_file(
 		&mut self,
@@ -350,6 +442,7 @@ async fn insert_live_preview(
 pub(crate) struct Gateway {
 	pub store: Store,
 	pub domain: String,
+	pub runtime: Option<crate::federation::Federation>,
 }
 
 struct Resolved {
@@ -362,6 +455,102 @@ struct Resolved {
 }
 
 impl Gateway {
+	async fn viewer_access(
+		&self,
+		tenant: &str,
+		subject: String,
+		credential_id: Uuid,
+		origin: &str,
+		peer: (Option<String>, Option<String>, Option<String>, Option<Uuid>),
+	) -> NativeResult<Access> {
+		let (sender, receiver, source_subject, run_id) = match peer {
+			(None, None, None, None) => {
+				return Access::begin(
+					&self.store,
+					&SubjectIdentity {
+						http_session: None,
+						credential_id,
+						tenant: tenant.to_owned(),
+						subject,
+					},
+				)
+				.await;
+			}
+			(Some(sender), Some(receiver), Some(source_subject), Some(run_id)) => {
+				(sender, receiver, source_subject, run_id)
+			}
+			_ => return Err(NativeError::Forbidden),
+		};
+		let f = self.runtime.as_ref().ok_or(NativeError::Forbidden)?;
+		let receiver = aidash_domain::nodes::NodeAddress::parse(&receiver)?;
+		let mut access = crate::apps::identity::services::peer::mapped_access(
+			f,
+			&receiver.node,
+			&sender,
+			&source_subject,
+		)
+		.await?;
+		access.set_node(receiver.node.clone());
+		if receiver.deployment != f.config.deployment
+			|| access.identity.tenant != tenant
+			|| access.identity.subject != subject
+			|| access.identity.credential_id != credential_id
+		{
+			return Err(NativeError::Forbidden);
+		}
+		let sender_node = aidash_domain::nodes::NodeAddress::parse(&sender)?;
+		let registration = crate::apps::identity::repositories::node_registrations::get_locked(
+			&mut **access.tx,
+			tenant,
+			receiver.node.as_str(),
+			&sender_node,
+			true,
+		)
+		.await?
+		.ok_or(NativeError::Forbidden)?;
+		let expected_origin = if sender_node.deployment == f.config.deployment {
+			f.config.dashboard_origin.as_str()
+		} else {
+			registration
+				.dashboard_origin
+				.as_deref()
+				.ok_or(NativeError::Forbidden)?
+		};
+		if !registration.enabled
+			|| aidash_domain::preview::origin(expected_origin)?
+				!= aidash_domain::preview::origin(origin)?
+		{
+			return Err(NativeError::Forbidden);
+		}
+		let record = peer_run_admission(&mut access, run_id, &sender).await?;
+		let description: aidash_domain::federation::execution::Description =
+			serde_json::from_value(record.description)?;
+		if record.node != receiver.node.as_str()
+			|| record.tenant != tenant
+			|| record.credential_id != credential_id
+			|| description.source_subject != source_subject
+			|| description.source_node != sender
+			|| description.target_node != receiver.to_string()
+		{
+			return Err(NativeError::Forbidden);
+		}
+		let persisted =
+			crate::apps::execution::models::Run::read_in(&mut **access.tx, run_id, None)
+				.await?
+				.ok_or(NativeError::Forbidden)?;
+		// A delegated Run is fenced by its immutable admission; H does not
+		// create a local execution grant for it. The File or Live Working Area
+		// read below still checks current mapped-subject policy on every view.
+		if persisted.node != receiver.node
+			|| persisted.home_node != sender
+			|| persisted.task_id != record.task_id
+			|| persisted.workspace_id != description.task.workspace_id
+		{
+			return Err(NativeError::Forbidden);
+		}
+		Ok(access)
+	}
+
 	async fn resolve(&self, host: &str) -> NativeResult<Resolved> {
 		let label = label_of(host, &self.domain).ok_or(NativeError::Forbidden)?;
 		let label = PreviewLabel::parse(label)?;
@@ -414,7 +603,7 @@ impl Gateway {
 			.pool
 			.begin(&TenancyScope::tenant(&preview.tenant)?)
 			.await?;
-		let consumed: Option<(Uuid, String, Uuid, String)> = crate::database::native::query_as(
+		let consumed: Option<ConsumedTicket> = crate::database::native::query_as(
 			&Query::update()
 				.table(Alias::new("core_preview_tickets"))
 				.value_expr(Alias::new("used_at"), Expr::cust("now()"))
@@ -427,13 +616,36 @@ impl Gateway {
 					Alias::new("subject"),
 					Alias::new("credential_id"),
 					Alias::new("origin"),
+					Alias::new("peer_sender"),
+					Alias::new("peer_receiver"),
+					Alias::new("peer_subject"),
+					Alias::new("peer_run_id"),
 				])
 				.to_string(PostgresQueryBuilder),
 		)
-		.columns(&["preview_id", "subject", "credential_id", "origin"])
+		.columns(&[
+			"preview_id",
+			"subject",
+			"credential_id",
+			"origin",
+			"peer_sender",
+			"peer_receiver",
+			"peer_subject",
+			"peer_run_id",
+		])
 		.fetch_optional(&mut *tenant)
 		.await?;
-		let Some((preview_id, subject, credential_id, origin)) = consumed else {
+		let Some(ConsumedTicket {
+			preview_id,
+			subject,
+			credential_id,
+			origin,
+			peer_sender: sender,
+			peer_receiver: receiver,
+			peer_subject: source,
+			peer_run_id: run_id,
+		}) = consumed
+		else {
 			tenant.rollback().await?;
 			return Err(NativeError::Forbidden);
 		};
@@ -454,6 +666,10 @@ impl Gateway {
 					"preview_id",
 					"subject",
 					"credential_id",
+					"peer_sender",
+					"peer_receiver",
+					"peer_subject",
+					"peer_run_id",
 					"origin",
 					"digest",
 					"expires_at",
@@ -466,6 +682,10 @@ impl Gateway {
 				preview.preview_id.into(),
 				subject.into(),
 				credential_id.into(),
+				sender.into_value(),
+				receiver.into_value(),
+				source.into_value(),
+				run_id.into_value(),
 				origin.into(),
 				session.digest().into(),
 				expires_at.into(),
@@ -491,33 +711,55 @@ impl Gateway {
 			return Err(NativeError::NotFound("preview unavailable".into()));
 		};
 		let secret = PreviewSecret::parse(cookie)?;
-		let session: Option<(Uuid, String, Uuid, String, DateTime<Utc>)> =
-			crate::database::native::query_as(
-				&Query::select()
-					.columns([
-						Alias::new("id"),
-						Alias::new("subject"),
-						Alias::new("credential_id"),
-						Alias::new("origin"),
-						Alias::new("expires_at"),
-					])
-					.from(Alias::new("core_preview_sessions"))
-					.and_where(
-						Expr::col(Alias::new("preview_id")).eq(Expr::value(preview.preview_id)),
-					)
-					.and_where(Expr::col(Alias::new("digest")).eq(Expr::value(secret.digest())))
-					.and_where(Expr::cust("expires_at > CURRENT_TIMESTAMP"))
-					.limit(1)
-					.to_string(PostgresQueryBuilder),
-			)
-			.columns(&["id", "subject", "credential_id", "origin", "expires_at"])
-			.fetch_optional(
-				self.store
-					.pool
-					.in_scope(&TenancyScope::tenant(&preview.tenant)?),
-			)
-			.await?;
-		let Some((session_id, subject, credential_id, origin, expires_at)) = session else {
+		let session: Option<PreviewSessionRow> = crate::database::native::query_as(
+			&Query::select()
+				.columns([
+					Alias::new("id"),
+					Alias::new("subject"),
+					Alias::new("credential_id"),
+					Alias::new("origin"),
+					Alias::new("expires_at"),
+					Alias::new("peer_sender"),
+					Alias::new("peer_receiver"),
+					Alias::new("peer_subject"),
+					Alias::new("peer_run_id"),
+				])
+				.from(Alias::new("core_preview_sessions"))
+				.and_where(Expr::col(Alias::new("preview_id")).eq(Expr::value(preview.preview_id)))
+				.and_where(Expr::col(Alias::new("digest")).eq(Expr::value(secret.digest())))
+				.and_where(Expr::cust("expires_at > CURRENT_TIMESTAMP"))
+				.limit(1)
+				.to_string(PostgresQueryBuilder),
+		)
+		.columns(&[
+			"id",
+			"subject",
+			"credential_id",
+			"origin",
+			"expires_at",
+			"peer_sender",
+			"peer_receiver",
+			"peer_subject",
+			"peer_run_id",
+		])
+		.fetch_optional(
+			self.store
+				.pool
+				.in_scope(&TenancyScope::tenant(&preview.tenant)?),
+		)
+		.await?;
+		let Some(PreviewSessionRow {
+			id: session_id,
+			subject,
+			credential_id,
+			origin,
+			expires_at,
+			peer_sender: sender,
+			peer_receiver: receiver,
+			peer_subject: source,
+			peer_run_id: run_id,
+		}) = session
+		else {
 			return Err(NativeError::Forbidden);
 		};
 		if (Session { expires_at }).accept(Utc::now()).is_err() {
@@ -525,16 +767,15 @@ impl Gateway {
 		}
 		// The cookie is not authority: re-run the download decision under the
 		// stored credential, so a revoked subject stops at the next request.
-		let mut access = Access::begin(
-			&self.store,
-			&SubjectIdentity {
-				http_session: None,
-				credential_id,
-				tenant: preview.tenant.clone(),
+		let mut access = self
+			.viewer_access(
+				&preview.tenant,
 				subject,
-			},
-		)
-		.await?;
+				credential_id,
+				&origin,
+				(sender, receiver, source, run_id),
+			)
+			.await?;
 		let result = async {
 			let area = sessions::load(&mut access, area_id).await?;
 			let current = service::files(&area)?;
@@ -582,7 +823,7 @@ impl Gateway {
 				match root_kind {
 					"text/html" | "application/xhtml+xml" => "text/html; charset=utf-8".to_owned(),
 					"application/pdf" => "application/pdf".to_owned(),
-					_ => "application/octet-stream".to_owned(),
+					_ => root.media_type.clone(),
 				}
 			} else {
 				entry.media_type.clone()
@@ -642,45 +883,69 @@ impl Gateway {
 			.live_preview_id
 			.ok_or_else(|| NativeError::NotFound("preview unavailable".into()))?;
 		let secret = PreviewSecret::parse(cookie)?;
-		let session: Option<(Uuid, String, Uuid, String, DateTime<Utc>)> =
-			crate::database::native::query_as(
-				&Query::select()
-					.columns([
-						Alias::new("id"),
-						Alias::new("subject"),
-						Alias::new("credential_id"),
-						Alias::new("origin"),
-						Alias::new("expires_at"),
-					])
-					.from(Alias::new("core_preview_sessions"))
-					.and_where(
-						Expr::col(Alias::new("preview_id")).eq(Expr::value(resolved.preview_id)),
-					)
-					.and_where(Expr::col(Alias::new("digest")).eq(Expr::value(secret.digest())))
-					.and_where(Expr::cust("expires_at > CURRENT_TIMESTAMP"))
-					.limit(1)
-					.to_string(PostgresQueryBuilder),
-			)
-			.columns(&["id", "subject", "credential_id", "origin", "expires_at"])
-			.fetch_optional(
-				self.store
-					.pool
-					.in_scope(&TenancyScope::tenant(&resolved.tenant)?),
-			)
-			.await?;
-		let Some((session_id, subject, credential_id, origin, expires_at)) = session else {
+		let session: Option<PreviewSessionRow> = crate::database::native::query_as(
+			&Query::select()
+				.columns([
+					Alias::new("id"),
+					Alias::new("subject"),
+					Alias::new("credential_id"),
+					Alias::new("origin"),
+					Alias::new("expires_at"),
+					Alias::new("peer_sender"),
+					Alias::new("peer_receiver"),
+					Alias::new("peer_subject"),
+					Alias::new("peer_run_id"),
+				])
+				.from(Alias::new("core_preview_sessions"))
+				.and_where(Expr::col(Alias::new("preview_id")).eq(Expr::value(resolved.preview_id)))
+				.and_where(Expr::col(Alias::new("digest")).eq(Expr::value(secret.digest())))
+				.and_where(Expr::cust("expires_at > CURRENT_TIMESTAMP"))
+				.limit(1)
+				.to_string(PostgresQueryBuilder),
+		)
+		.columns(&[
+			"id",
+			"subject",
+			"credential_id",
+			"origin",
+			"expires_at",
+			"peer_sender",
+			"peer_receiver",
+			"peer_subject",
+			"peer_run_id",
+		])
+		.fetch_optional(
+			self.store
+				.pool
+				.in_scope(&TenancyScope::tenant(&resolved.tenant)?),
+		)
+		.await?;
+		let Some(PreviewSessionRow {
+			id: session_id,
+			subject,
+			credential_id,
+			origin,
+			expires_at,
+			peer_sender: sender,
+			peer_receiver: receiver,
+			peer_subject: source,
+			peer_run_id: run_id,
+		}) = session
+		else {
 			return Err(NativeError::Forbidden);
 		};
 		if (Session { expires_at }).accept(Utc::now()).is_err() {
 			return Err(NativeError::Forbidden);
 		}
-		let identity = SubjectIdentity {
-			http_session: None,
-			credential_id,
-			tenant: resolved.tenant.clone(),
-			subject,
-		};
-		let mut access = Access::begin(&self.store, &identity).await?;
+		let mut access = self
+			.viewer_access(
+				&resolved.tenant,
+				subject,
+				credential_id,
+				&origin,
+				(sender, receiver, source, run_id),
+			)
+			.await?;
 		let now = Utc::now();
 		let outcome: NativeResult<aidash_domain::preview::live::LivePreview> = async {
 			let row = CoreLivePreviews::objects()

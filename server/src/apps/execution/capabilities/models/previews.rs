@@ -41,6 +41,14 @@ pub struct CorePreviewTickets {
 	#[field(field_type = "text")]
 	pub subject: String,
 	pub credential_id: Uuid,
+	#[field(field_type = "text", null = true)]
+	pub peer_sender: Option<String>,
+	#[field(field_type = "text", null = true)]
+	pub peer_receiver: Option<String>,
+	#[field(field_type = "text", null = true)]
+	pub peer_subject: Option<String>,
+	#[field(null = true)]
+	pub peer_run_id: Option<Uuid>,
 	/// The dashboard origin the ticket's `frame-ancestors` names.
 	#[field(field_type = "text")]
 	pub origin: String,
@@ -65,6 +73,14 @@ pub struct CorePreviewSessions {
 	#[field(field_type = "text")]
 	pub subject: String,
 	pub credential_id: Uuid,
+	#[field(field_type = "text", null = true)]
+	pub peer_sender: Option<String>,
+	#[field(field_type = "text", null = true)]
+	pub peer_receiver: Option<String>,
+	#[field(field_type = "text", null = true)]
+	pub peer_subject: Option<String>,
+	#[field(null = true)]
+	pub peer_run_id: Option<Uuid>,
 	#[field(field_type = "text")]
 	pub origin: String,
 	#[field(field_type = "text")]

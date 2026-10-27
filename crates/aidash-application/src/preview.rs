@@ -58,6 +58,16 @@ pub struct TicketIssue {
 	pub origin: String,
 	pub digest: String,
 	pub expires_at: DateTime<Utc>,
+	/// A Federation viewer must keep its Peer Mapping and Run admission current.
+	pub peer: Option<Peer>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Peer {
+	pub sender: String,
+	pub receiver: String,
+	pub subject: String,
+	pub run_id: Uuid,
 }
 
 /// What the dashboard opens: the Preview's ticket URL.
@@ -77,6 +87,9 @@ pub trait Scope: Send {
 	fn origin(&self) -> &str;
 	fn subject(&self) -> &str;
 	fn credential_id(&self) -> Uuid;
+	fn peer(&self) -> Option<&Peer> {
+		None
+	}
 	/// The same decision the Working Area download runs for this File version.
 	async fn authorize_file(&mut self, area_id: Uuid, file_id: Uuid) -> Result<FileVersion>;
 	/// The Preview for this viewable thing, created on first use.
@@ -140,16 +153,36 @@ pub trait Authority: Send + Sync {
 /// Issue a one-time ticket for one File version after the download authority
 /// allows it. Only HTML and PDF versions are served from the preview domain.
 pub async fn issue(scope: &mut dyn Scope, area_id: Uuid, file_id: Uuid) -> Result<Issued> {
+	issue_file(scope, area_id, file_id, false).await
+}
+
+/// A Federation viewer receives every File version through H's Preview
+/// domain, including formats the local dashboard renders from bytes.
+pub async fn issue_federated(
+	scope: &mut dyn Scope,
+	area_id: Uuid,
+	file_id: Uuid,
+) -> Result<Issued> {
+	issue_file(scope, area_id, file_id, true).await
+}
+
+async fn issue_file(
+	scope: &mut dyn Scope,
+	area_id: Uuid,
+	file_id: Uuid,
+	federated: bool,
+) -> Result<Issued> {
 	let domain = scope
 		.preview_domain()
 		.ok_or_else(|| Error::Conflict("PREVIEW_UNAVAILABLE".into()))?
 		.to_owned();
 	let version = scope.authorize_file(area_id, file_id).await?;
 	let base = media_type(&version.media_type);
-	if !matches!(
-		base,
-		"text/html" | "application/pdf" | "application/xhtml+xml"
-	) {
+	if !federated
+		&& !matches!(
+			base,
+			"text/html" | "application/pdf" | "application/xhtml+xml"
+		) {
 		return Err(Error::Invalid(
 			"only HTML and PDF File versions open on the preview domain".into(),
 		));
@@ -179,6 +212,7 @@ async fn issue_ticket(scope: &mut dyn Scope, preview: Preview, domain: &str) -> 
 			preview_id: preview.id,
 			subject: scope.subject().to_owned(),
 			credential_id: scope.credential_id(),
+			peer: scope.peer().cloned(),
 			origin,
 			digest: secret.digest(),
 			expires_at,
