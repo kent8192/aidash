@@ -137,8 +137,8 @@ pub async fn initialize_as(
 	)?;
 	build::current().extension.install(&mut store)?;
 	config.tier_limits = build::current().extension.tier_limits(&store)?;
-	// TODO(#554 W2): supply the OAuth HTTP adapter here once its slice merges.
-	configure_oauth_connections(&mut store, None)?;
+	let oauth = Arc::new(aidash_integrations::oauth::McpOAuth::new()?);
+	configure_oauth_connections(&mut store, Some((oauth.clone(), oauth)))?;
 	configure_tenant_secrets(&mut store, &settings.provider_credentials, role)?;
 	let registry = Registry::new(store.pool.clone(), &store.deployment)?
 		.with_keyless_origins(store.keyless.clone())
