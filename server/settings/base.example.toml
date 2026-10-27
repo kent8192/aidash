@@ -78,6 +78,35 @@ federation = true
 # Enterprise build only: a Cloud KMS Ed25519 key version.
 # kms = "projects/PROJECT/locations/REGION/keyRings/RING/cryptoKeys/KEY/cryptoKeyVersions/1"
 
+# Previews (ADR 0068): HTML and PDF File versions and Live previews are
+# served from one random subdomain each of a registrable domain separate from
+# the dashboard's. Leave `domain` unset to offer none. A local cluster uses
+# `localhost`, whose previews are served from `*.localhost`. The section may be
+# omitted; leaving every value unset makes previews unavailable.
+[preview]
+# domain = "aidashusercontent.app"
+# The gateway listener. In-process Self-hosted binds loopback; a Helm
+# previewGateway Deployment binds its Pod address.
+# listen = "127.0.0.1:8960"
+# Whether this process is also the gateway. Helm turns it off when it deploys
+# the gateway as its own workload.
+# in_process = true
+# The public port a ticket URL names; 443 when absent.
+# public_port = 443
+# The only Pod port the Preview NetworkPolicy admits; 3000 when absent. A
+# `live_preview_start` on another port is refused.
+# pod_port = 3000
+# Days the hosting Node retains a File version cited from another Deployment
+# when the release notification is lost; 30 by default (1 through 3650).
+# federation_hold_days = 30
+
+# The Deployment's ceilings on a Live preview (ADR 0070). A Tenant may only
+# lower them through `/api/preview-limits/{tenant}`. This section is optional;
+# the defaults are 900 and 7200 seconds. Changes take effect on restart.
+[preview_limits]
+# idle_seconds = 900
+# absolute_seconds = 7200
+
 # Tenancy Rules: how Tenants come to exist and how people join them. The
 # Offering supplies each rule left out; uncomment a rule to override it.
 # Cloud turns Personal Tenants and Tenant creation on. Identities restricted to

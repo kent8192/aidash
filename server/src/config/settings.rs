@@ -51,6 +51,9 @@
 use crate::apps::execution::serializers::cache_salt::CacheSaltSettings;
 use crate::apps::execution::serializers::research_providers::ResearchProviderSettings;
 use crate::apps::execution::serializers::research_retention::ResearchRetentionSettings;
+use crate::apps::execution::serializers::{
+	preview::PreviewSettings, preview_limits::PreviewLimitSettings,
+};
 use crate::apps::identity::serializers::demo_data_settings::DemoDataSettings;
 use crate::apps::identity::serializers::keyless_endpoints::KeylessEndpointSettings;
 use crate::apps::identity::serializers::plan_connections::PlanConnectionSettings;
@@ -73,7 +76,7 @@ use std::env;
 mod deployment;
 
 // Add fragments to extend settings: e.g. `#[settings(core: CoreSettings | cache: CacheSettings)]`
-#[settings(core: CoreSettings | contacts: ContactSettings | migrations: MigrationSettings | dashboard: DashboardSettings | kubernetes: KubernetesSettings | provider_credentials: ProviderCredentialSettings | cache_salt: CacheSaltSettings | keyless_endpoints: KeylessEndpointSettings | tenancy: TenancySettings | demo_data: DemoDataSettings | plan_connections: PlanConnectionSettings | research_providers: ResearchProviderSettings | research_retention: ResearchRetentionSettings | workbench_test_limits: WorkbenchTestLimitSettings | deployment: DeploymentSettings | marketplace: MarketplaceSettings)]
+#[settings(core: CoreSettings | contacts: ContactSettings | migrations: MigrationSettings | dashboard: DashboardSettings | kubernetes: KubernetesSettings | provider_credentials: ProviderCredentialSettings | cache_salt: CacheSaltSettings | keyless_endpoints: KeylessEndpointSettings | tenancy: TenancySettings | demo_data: DemoDataSettings | plan_connections: PlanConnectionSettings | research_providers: ResearchProviderSettings | research_retention: ResearchRetentionSettings | preview: PreviewSettings | preview_limits: PreviewLimitSettings | workbench_test_limits: WorkbenchTestLimitSettings | deployment: DeploymentSettings | marketplace: MarketplaceSettings)]
 pub struct ProjectSettings;
 
 /// Get settings based on environment variable
@@ -201,6 +204,10 @@ fn file_settings_builder(
                 .with_value("research_providers", serde_json::json!({}))
                 .with_value("research_retention", serde_json::json!({}))
                 .with_value("workbench_test_limits", serde_json::json!({}))
+                // No preview domain: File previews of HTML/PDF and Live previews stay unavailable.
+                .with_value("preview", serde_json::json!({}))
+                // An omitted [preview_limits] uses the Deployment ceilings.
+                .with_value("preview_limits", serde_json::json!({}))
                 .with_value("marketplace", serde_json::json!({}))
                 .with_value("migrations", serde_json::json!({}))
                 .with_value("deployment", serde_json::json!({})),

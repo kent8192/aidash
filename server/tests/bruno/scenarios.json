@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "endpoint_count": 346,
+  "endpoint_count": 359,
   "requests": [
     {
       "name": "Health reports the configured node",
@@ -15040,8 +15040,679 @@
       ]
     },
     {
-      "name": "1368 tenant-nodes-create - Create a disposable lifecycle Node",
-      "file": "contracts/1368-tenant-nodes-create.bru",
+      "name": "1368 core_preview_availability - Anonymous request is rejected",
+      "file": "contracts/1368-core_preview_availability.bru",
+      "endpoint": "GET /api/previews/availability",
+      "scenario": "Anonymous request is rejected",
+      "status": 401,
+      "required_checks": [
+        "Exact HTTP 401",
+        "Stable authorization error envelope"
+      ]
+    },
+    {
+      "name": "1369 core_preview_availability - Anonymous request is rejected",
+      "file": "contracts/1369-core_preview_availability.bru",
+      "endpoint": "GET /api/previews/availability",
+      "scenario": "Anonymous request is rejected",
+      "status": 401,
+      "required_checks": [
+        "Exact HTTP 401",
+        "Stable authorization error envelope"
+      ]
+    },
+    {
+      "name": "1370 core_preview_availability - Deployment Administrator reads the same availability flag",
+      "file": "contracts/1370-core_preview_availability.bru",
+      "endpoint": "GET /api/previews/availability",
+      "scenario": "Deployment Administrator reads the same availability flag",
+      "status": 200,
+      "required_checks": [
+        "Exact HTTP 200",
+        "Documented response fields and types",
+        "Deployment Administrator reads the same availability flag contract"
+      ]
+    },
+    {
+      "name": "1371 core_preview_availability - Subject bearer reads the availability flag",
+      "file": "contracts/1371-core_preview_availability.bru",
+      "endpoint": "GET /api/previews/availability",
+      "scenario": "Subject bearer reads the availability flag",
+      "status": 200,
+      "required_checks": [
+        "Exact HTTP 200",
+        "Documented response fields and types",
+        "Subject bearer reads the availability flag contract"
+      ]
+    },
+    {
+      "name": "1372 core_preview_ticket - Anonymous request is rejected",
+      "file": "contracts/1372-core_preview_ticket.bru",
+      "endpoint": "POST /api/previews/tickets",
+      "scenario": "Anonymous request is rejected",
+      "status": 401,
+      "required_checks": [
+        "Rejected input preserves committed workspace state",
+        "Exact HTTP 401",
+        "Stable authorization error envelope"
+      ]
+    },
+    {
+      "name": "1373 core_preview_ticket - Deployment Administrator cannot issue a ticket",
+      "file": "contracts/1373-core_preview_ticket.bru",
+      "endpoint": "POST /api/previews/tickets",
+      "scenario": "Deployment Administrator cannot issue a ticket",
+      "status": 400,
+      "required_checks": [
+        "Exact HTTP 400",
+        "Rejection is diagnostic and does not disclose SQL or credentials"
+      ]
+    },
+    {
+      "name": "1374 core_preview_ticket - Malformed JSON cannot reach the use case",
+      "file": "contracts/1374-core_preview_ticket.bru",
+      "endpoint": "POST /api/previews/tickets",
+      "scenario": "Malformed JSON cannot reach the use case",
+      "status": 400,
+      "required_checks": [
+        "Exact HTTP 400",
+        "Rejection is diagnostic and does not disclose SQL or credentials"
+      ]
+    },
+    {
+      "name": "1375 core_preview_ticket - Unknown Ticket fields are rejected",
+      "file": "contracts/1375-core_preview_ticket.bru",
+      "endpoint": "POST /api/previews/tickets",
+      "scenario": "Unknown Ticket fields are rejected",
+      "status": 422,
+      "required_checks": [
+        "Exact HTTP 422",
+        "Rejection is diagnostic and does not disclose SQL or credentials"
+      ]
+    },
+    {
+      "name": "1376 core_preview_ticket - Ticket input is required",
+      "file": "contracts/1376-core_preview_ticket.bru",
+      "endpoint": "POST /api/previews/tickets",
+      "scenario": "Ticket input is required",
+      "status": 422,
+      "required_checks": [
+        "Exact HTTP 422",
+        "Rejection is diagnostic and does not disclose SQL or credentials"
+      ]
+    },
+    {
+      "name": "1377 core_live_preview - Anonymous request is rejected",
+      "file": "contracts/1377-core_live_preview.bru",
+      "endpoint": "GET /api/runs/{id}/live-preview",
+      "scenario": "Anonymous request is rejected",
+      "status": 401,
+      "required_checks": [
+        "Exact HTTP 401",
+        "Stable authorization error envelope"
+      ]
+    },
+    {
+      "name": "1378 core_live_preview - Anonymous request is rejected",
+      "file": "contracts/1378-core_live_preview.bru",
+      "endpoint": "GET /api/runs/{id}/live-preview",
+      "scenario": "Anonymous request is rejected",
+      "status": 401,
+      "required_checks": [
+        "Exact HTTP 401",
+        "Stable authorization error envelope"
+      ]
+    },
+    {
+      "name": "1379 core_live_preview - Deployment Administrator cannot read a missing Run",
+      "file": "contracts/1379-core_live_preview.bru",
+      "endpoint": "GET /api/runs/{id}/live-preview",
+      "scenario": "Deployment Administrator cannot read a missing Run",
+      "status": 404,
+      "required_checks": [
+        "Exact HTTP 404",
+        "Rejection is diagnostic and does not disclose SQL or credentials"
+      ]
+    },
+    {
+      "name": "1380 core_live_preview - Subject bearer cannot read a missing Run",
+      "file": "contracts/1380-core_live_preview.bru",
+      "endpoint": "GET /api/runs/{id}/live-preview",
+      "scenario": "Subject bearer cannot read a missing Run",
+      "status": 404,
+      "required_checks": [
+        "Exact HTTP 404",
+        "Rejection is diagnostic and does not disclose SQL or credentials"
+      ]
+    },
+    {
+      "name": "1381 core_live_preview_stop - Anonymous request is rejected",
+      "file": "contracts/1381-core_live_preview_stop.bru",
+      "endpoint": "POST /api/runs/{id}/live-preview/stop",
+      "scenario": "Anonymous request is rejected",
+      "status": 401,
+      "required_checks": [
+        "Rejected input preserves committed workspace state",
+        "Exact HTTP 401",
+        "Stable authorization error envelope"
+      ]
+    },
+    {
+      "name": "1382 core_live_preview_stop - Anonymous stop is rejected",
+      "file": "contracts/1382-core_live_preview_stop.bru",
+      "endpoint": "POST /api/runs/{id}/live-preview/stop",
+      "scenario": "Anonymous stop is rejected",
+      "status": 401,
+      "required_checks": [
+        "Exact HTTP 401",
+        "Stable authorization error envelope"
+      ]
+    },
+    {
+      "name": "1383 core_live_preview_stop - Deployment Administrator cannot stop a missing Run",
+      "file": "contracts/1383-core_live_preview_stop.bru",
+      "endpoint": "POST /api/runs/{id}/live-preview/stop",
+      "scenario": "Deployment Administrator cannot stop a missing Run",
+      "status": 404,
+      "required_checks": [
+        "Exact HTTP 404",
+        "Rejection is diagnostic and does not disclose SQL or credentials"
+      ]
+    },
+    {
+      "name": "1384 core_live_preview_stop - Subject bearer cannot stop a missing Run",
+      "file": "contracts/1384-core_live_preview_stop.bru",
+      "endpoint": "POST /api/runs/{id}/live-preview/stop",
+      "scenario": "Subject bearer cannot stop a missing Run",
+      "status": 404,
+      "required_checks": [
+        "Exact HTTP 404",
+        "Rejection is diagnostic and does not disclose SQL or credentials"
+      ]
+    },
+    {
+      "name": "1385 core_preview_live_ticket - Anonymous request is rejected",
+      "file": "contracts/1385-core_preview_live_ticket.bru",
+      "endpoint": "POST /api/previews/live-tickets",
+      "scenario": "Anonymous request is rejected",
+      "status": 401,
+      "required_checks": [
+        "Rejected input preserves committed workspace state",
+        "Exact HTTP 401",
+        "Stable authorization error envelope"
+      ]
+    },
+    {
+      "name": "1386 core_preview_live_ticket - Anonymous request is rejected",
+      "file": "contracts/1386-core_preview_live_ticket.bru",
+      "endpoint": "POST /api/previews/live-tickets",
+      "scenario": "Anonymous request is rejected",
+      "status": 401,
+      "required_checks": [
+        "Exact HTTP 401",
+        "Stable authorization error envelope"
+      ]
+    },
+    {
+      "name": "1387 core_preview_live_ticket - Malformed JSON cannot reach the use case",
+      "file": "contracts/1387-core_preview_live_ticket.bru",
+      "endpoint": "POST /api/previews/live-tickets",
+      "scenario": "Malformed JSON cannot reach the use case",
+      "status": 400,
+      "required_checks": [
+        "Exact HTTP 400",
+        "Rejection is diagnostic and does not disclose SQL or credentials"
+      ]
+    },
+    {
+      "name": "1388 core_preview_live_ticket - Unknown Ticket fields are rejected",
+      "file": "contracts/1388-core_preview_live_ticket.bru",
+      "endpoint": "POST /api/previews/live-tickets",
+      "scenario": "Unknown Ticket fields are rejected",
+      "status": 422,
+      "required_checks": [
+        "Exact HTTP 422",
+        "Rejection is diagnostic and does not disclose SQL or credentials"
+      ]
+    },
+    {
+      "name": "1389 core_preview_live_ticket - Ticket input is required",
+      "file": "contracts/1389-core_preview_live_ticket.bru",
+      "endpoint": "POST /api/previews/live-tickets",
+      "scenario": "Ticket input is required",
+      "status": 422,
+      "required_checks": [
+        "Exact HTTP 422",
+        "Rejection is diagnostic and does not disclose SQL or credentials"
+      ]
+    },
+    {
+      "name": "1390 core_preview_live_ticket - A missing Live preview has no ticket",
+      "file": "contracts/1390-core_preview_live_ticket.bru",
+      "endpoint": "POST /api/previews/live-tickets",
+      "scenario": "A missing Live preview has no ticket",
+      "status": 404,
+      "required_checks": [
+        "Exact HTTP 404",
+        "Rejection is diagnostic and does not disclose SQL or credentials"
+      ]
+    },
+    {
+      "name": "1391 core_preview_limits - Anonymous request is rejected",
+      "file": "contracts/1391-core_preview_limits.bru",
+      "endpoint": "GET /api/preview-limits/{tenant}",
+      "scenario": "Anonymous request is rejected",
+      "status": 401,
+      "required_checks": [
+        "Exact HTTP 401",
+        "Stable authorization error envelope"
+      ]
+    },
+    {
+      "name": "1392 core_preview_limits - Anonymous request is rejected",
+      "file": "contracts/1392-core_preview_limits.bru",
+      "endpoint": "GET /api/preview-limits/{tenant}",
+      "scenario": "Anonymous request is rejected",
+      "status": 401,
+      "required_checks": [
+        "Exact HTTP 401",
+        "Stable authorization error envelope"
+      ]
+    },
+    {
+      "name": "1393 core_preview_limits - Deployment Administrator reads the default ceilings",
+      "file": "contracts/1393-core_preview_limits.bru",
+      "endpoint": "GET /api/preview-limits/{tenant}",
+      "scenario": "Deployment Administrator reads the default ceilings",
+      "status": 200,
+      "required_checks": [
+        "Exact HTTP 200",
+        "Documented response fields and types",
+        "Deployment Administrator reads the default ceilings contract"
+      ]
+    },
+    {
+      "name": "1394 core_preview_limits - Subject bearer is not a Tenant Administrator",
+      "file": "contracts/1394-core_preview_limits.bru",
+      "endpoint": "GET /api/preview-limits/{tenant}",
+      "scenario": "Subject bearer is not a Tenant Administrator",
+      "status": 403,
+      "required_checks": [
+        "Exact HTTP 403",
+        "Stable authorization error envelope"
+      ]
+    },
+    {
+      "name": "1395 core_preview_limits_update - Anonymous request is rejected",
+      "file": "contracts/1395-core_preview_limits_update.bru",
+      "endpoint": "PUT /api/preview-limits/{tenant}",
+      "scenario": "Anonymous request is rejected",
+      "status": 401,
+      "required_checks": [
+        "Rejected input preserves committed workspace state",
+        "Exact HTTP 401",
+        "Stable authorization error envelope"
+      ]
+    },
+    {
+      "name": "1396 core_preview_limits_update - Anonymous request is rejected",
+      "file": "contracts/1396-core_preview_limits_update.bru",
+      "endpoint": "PUT /api/preview-limits/{tenant}",
+      "scenario": "Anonymous request is rejected",
+      "status": 401,
+      "required_checks": [
+        "Rejected input preserves committed workspace state",
+        "Exact HTTP 401",
+        "Stable authorization error envelope"
+      ]
+    },
+    {
+      "name": "1397 core_preview_limits_update - Malformed JSON cannot reach the use case",
+      "file": "contracts/1397-core_preview_limits_update.bru",
+      "endpoint": "PUT /api/preview-limits/{tenant}",
+      "scenario": "Malformed JSON cannot reach the use case",
+      "status": 400,
+      "required_checks": [
+        "Rejected input preserves committed workspace state",
+        "Exact HTTP 400",
+        "Rejection is diagnostic and does not disclose SQL or credentials"
+      ]
+    },
+    {
+      "name": "1398 core_preview_limits_update - Unknown limit fields are rejected",
+      "file": "contracts/1398-core_preview_limits_update.bru",
+      "endpoint": "PUT /api/preview-limits/{tenant}",
+      "scenario": "Unknown limit fields are rejected",
+      "status": 422,
+      "required_checks": [
+        "Rejected input preserves committed workspace state",
+        "Exact HTTP 422",
+        "Rejection is diagnostic and does not disclose SQL or credentials"
+      ]
+    },
+    {
+      "name": "1399 core_preview_limits_update - Limit input is required",
+      "file": "contracts/1399-core_preview_limits_update.bru",
+      "endpoint": "PUT /api/preview-limits/{tenant}",
+      "scenario": "Limit input is required",
+      "status": 422,
+      "required_checks": [
+        "Rejected input preserves committed workspace state",
+        "Exact HTTP 422",
+        "Rejection is diagnostic and does not disclose SQL or credentials"
+      ]
+    },
+    {
+      "name": "1400 core_preview_limits_update - Subject bearer is not a Tenant Administrator",
+      "file": "contracts/1400-core_preview_limits_update.bru",
+      "endpoint": "PUT /api/preview-limits/{tenant}",
+      "scenario": "Subject bearer is not a Tenant Administrator",
+      "status": 403,
+      "required_checks": [
+        "Rejected input preserves committed workspace state",
+        "Exact HTTP 403",
+        "Stable authorization error envelope"
+      ]
+    },
+    {
+      "name": "1401 core_remote_preview_inspect - Anonymous request is rejected",
+      "file": "contracts/1401-core_remote_preview_inspect.bru",
+      "endpoint": "GET /api/runs/{id}/remote-preview",
+      "scenario": "Anonymous request is rejected",
+      "status": 401,
+      "required_checks": [
+        "Exact HTTP 401",
+        "Stable authorization error envelope"
+      ]
+    },
+    {
+      "name": "1402 core_remote_preview_inspect - Anonymous remote inspection is rejected",
+      "file": "contracts/1402-core_remote_preview_inspect.bru",
+      "endpoint": "GET /api/runs/{id}/remote-preview",
+      "scenario": "Anonymous remote inspection is rejected",
+      "status": 401,
+      "required_checks": [
+        "Exact HTTP 401",
+        "Stable authorization error envelope"
+      ]
+    },
+    {
+      "name": "1403 core_remote_preview_inspect - Deployment Administrator cannot inspect a remote Run",
+      "file": "contracts/1403-core_remote_preview_inspect.bru",
+      "endpoint": "GET /api/runs/{id}/remote-preview",
+      "scenario": "Deployment Administrator cannot inspect a remote Run",
+      "status": 403,
+      "required_checks": [
+        "Exact HTTP 403",
+        "Stable authorization error envelope"
+      ]
+    },
+    {
+      "name": "1404 core_remote_preview_inspect - Malformed Run identifier is rejected",
+      "file": "contracts/1404-core_remote_preview_inspect.bru",
+      "endpoint": "GET /api/runs/{id}/remote-preview",
+      "scenario": "Malformed Run identifier is rejected",
+      "status": 400,
+      "required_checks": [
+        "Exact HTTP 400",
+        "Rejection is diagnostic and does not disclose SQL or credentials"
+      ]
+    },
+    {
+      "name": "1405 core_remote_preview_ticket - Anonymous request is rejected",
+      "file": "contracts/1405-core_remote_preview_ticket.bru",
+      "endpoint": "POST /api/runs/{id}/preview-tickets",
+      "scenario": "Anonymous request is rejected",
+      "status": 401,
+      "required_checks": [
+        "Rejected input preserves committed workspace state",
+        "Exact HTTP 401",
+        "Stable authorization error envelope"
+      ]
+    },
+    {
+      "name": "1406 core_remote_preview_ticket - Anonymous remote ticket is rejected",
+      "file": "contracts/1406-core_remote_preview_ticket.bru",
+      "endpoint": "POST /api/runs/{id}/preview-tickets",
+      "scenario": "Anonymous remote ticket is rejected",
+      "status": 401,
+      "required_checks": [
+        "Exact HTTP 401",
+        "Stable authorization error envelope"
+      ]
+    },
+    {
+      "name": "1407 core_remote_preview_ticket - Deployment Administrator cannot issue a remote ticket",
+      "file": "contracts/1407-core_remote_preview_ticket.bru",
+      "endpoint": "POST /api/runs/{id}/preview-tickets",
+      "scenario": "Deployment Administrator cannot issue a remote ticket",
+      "status": 403,
+      "required_checks": [
+        "Exact HTTP 403",
+        "Stable authorization error envelope"
+      ]
+    },
+    {
+      "name": "1408 core_remote_preview_ticket - Malformed JSON cannot reach the remote ticket service",
+      "file": "contracts/1408-core_remote_preview_ticket.bru",
+      "endpoint": "POST /api/runs/{id}/preview-tickets",
+      "scenario": "Malformed JSON cannot reach the remote ticket service",
+      "status": 400,
+      "required_checks": [
+        "Exact HTTP 400",
+        "Rejection is diagnostic and does not disclose SQL or credentials"
+      ]
+    },
+    {
+      "name": "1409 core_remote_preview_ticket - Unknown remote ticket fields are rejected",
+      "file": "contracts/1409-core_remote_preview_ticket.bru",
+      "endpoint": "POST /api/runs/{id}/preview-tickets",
+      "scenario": "Unknown remote ticket fields are rejected",
+      "status": 422,
+      "required_checks": [
+        "Exact HTTP 422",
+        "Rejection is diagnostic and does not disclose SQL or credentials"
+      ]
+    },
+    {
+      "name": "1410 peer-preview-inspect - Reject unsupported federation protocol",
+      "file": "contracts/1410-peer-preview-inspect.bru",
+      "endpoint": "POST /federation/v0.1/scoped/previews/inspect",
+      "scenario": "Reject unsupported federation protocol",
+      "status": 400,
+      "required_checks": [
+        "Rejected input preserves committed workspace state",
+        "Exact HTTP 400",
+        "Rejection is diagnostic and does not disclose SQL or credentials",
+        "Reject unsupported federation protocol contract"
+      ]
+    },
+    {
+      "name": "1411 peer-preview-inspect - Reject the retired federation protocol 0.3",
+      "file": "contracts/1411-peer-preview-inspect.bru",
+      "endpoint": "POST /federation/v0.1/scoped/previews/inspect",
+      "scenario": "Reject the retired federation protocol 0.3",
+      "status": 400,
+      "required_checks": [
+        "Rejected input preserves committed workspace state",
+        "Exact HTTP 400",
+        "Rejection is diagnostic and does not disclose SQL or credentials"
+      ]
+    },
+    {
+      "name": "1412 peer-preview-inspect - Require the Federation token",
+      "file": "contracts/1412-peer-preview-inspect.bru",
+      "endpoint": "POST /federation/v0.1/scoped/previews/inspect",
+      "scenario": "Require the Federation token",
+      "status": 401,
+      "required_checks": [
+        "Rejected input preserves committed workspace state",
+        "Exact HTTP 401",
+        "Stable authorization error envelope"
+      ]
+    },
+    {
+      "name": "1413 peer-preview-inspect - Refuse a token that does not verify",
+      "file": "contracts/1413-peer-preview-inspect.bru",
+      "endpoint": "POST /federation/v0.1/scoped/previews/inspect",
+      "scenario": "Refuse a token that does not verify",
+      "status": 401,
+      "required_checks": [
+        "Rejected input preserves committed workspace state",
+        "Exact HTTP 401",
+        "Stable authorization error envelope"
+      ]
+    },
+    {
+      "name": "1414 peer-preview-release - Reject unsupported federation protocol",
+      "file": "contracts/1414-peer-preview-release.bru",
+      "endpoint": "POST /federation/v0.1/scoped/previews/release",
+      "scenario": "Reject unsupported federation protocol",
+      "status": 400,
+      "required_checks": [
+        "Rejected input preserves committed workspace state",
+        "Exact HTTP 400",
+        "Rejection is diagnostic and does not disclose SQL or credentials",
+        "Reject unsupported federation protocol contract"
+      ]
+    },
+    {
+      "name": "1415 peer-preview-release - Reject the retired federation protocol 0.3",
+      "file": "contracts/1415-peer-preview-release.bru",
+      "endpoint": "POST /federation/v0.1/scoped/previews/release",
+      "scenario": "Reject the retired federation protocol 0.3",
+      "status": 400,
+      "required_checks": [
+        "Rejected input preserves committed workspace state",
+        "Exact HTTP 400",
+        "Rejection is diagnostic and does not disclose SQL or credentials"
+      ]
+    },
+    {
+      "name": "1416 peer-preview-release - Require the Federation token",
+      "file": "contracts/1416-peer-preview-release.bru",
+      "endpoint": "POST /federation/v0.1/scoped/previews/release",
+      "scenario": "Require the Federation token",
+      "status": 401,
+      "required_checks": [
+        "Rejected input preserves committed workspace state",
+        "Exact HTTP 401",
+        "Stable authorization error envelope"
+      ]
+    },
+    {
+      "name": "1417 peer-preview-release - Refuse a token that does not verify",
+      "file": "contracts/1417-peer-preview-release.bru",
+      "endpoint": "POST /federation/v0.1/scoped/previews/release",
+      "scenario": "Refuse a token that does not verify",
+      "status": 401,
+      "required_checks": [
+        "Rejected input preserves committed workspace state",
+        "Exact HTTP 401",
+        "Stable authorization error envelope"
+      ]
+    },
+    {
+      "name": "1418 peer-preview-retain - Reject unsupported federation protocol",
+      "file": "contracts/1418-peer-preview-retain.bru",
+      "endpoint": "POST /federation/v0.1/scoped/previews/retain",
+      "scenario": "Reject unsupported federation protocol",
+      "status": 400,
+      "required_checks": [
+        "Rejected input preserves committed workspace state",
+        "Exact HTTP 400",
+        "Rejection is diagnostic and does not disclose SQL or credentials",
+        "Reject unsupported federation protocol contract"
+      ]
+    },
+    {
+      "name": "1419 peer-preview-retain - Reject the retired federation protocol 0.3",
+      "file": "contracts/1419-peer-preview-retain.bru",
+      "endpoint": "POST /federation/v0.1/scoped/previews/retain",
+      "scenario": "Reject the retired federation protocol 0.3",
+      "status": 400,
+      "required_checks": [
+        "Rejected input preserves committed workspace state",
+        "Exact HTTP 400",
+        "Rejection is diagnostic and does not disclose SQL or credentials"
+      ]
+    },
+    {
+      "name": "1420 peer-preview-retain - Require the Federation token",
+      "file": "contracts/1420-peer-preview-retain.bru",
+      "endpoint": "POST /federation/v0.1/scoped/previews/retain",
+      "scenario": "Require the Federation token",
+      "status": 401,
+      "required_checks": [
+        "Rejected input preserves committed workspace state",
+        "Exact HTTP 401",
+        "Stable authorization error envelope"
+      ]
+    },
+    {
+      "name": "1421 peer-preview-retain - Refuse a token that does not verify",
+      "file": "contracts/1421-peer-preview-retain.bru",
+      "endpoint": "POST /federation/v0.1/scoped/previews/retain",
+      "scenario": "Refuse a token that does not verify",
+      "status": 401,
+      "required_checks": [
+        "Rejected input preserves committed workspace state",
+        "Exact HTTP 401",
+        "Stable authorization error envelope"
+      ]
+    },
+    {
+      "name": "1422 peer-preview-ticket - Reject unsupported federation protocol",
+      "file": "contracts/1422-peer-preview-ticket.bru",
+      "endpoint": "POST /federation/v0.1/scoped/previews/tickets",
+      "scenario": "Reject unsupported federation protocol",
+      "status": 400,
+      "required_checks": [
+        "Rejected input preserves committed workspace state",
+        "Exact HTTP 400",
+        "Rejection is diagnostic and does not disclose SQL or credentials",
+        "Reject unsupported federation protocol contract"
+      ]
+    },
+    {
+      "name": "1423 peer-preview-ticket - Reject the retired federation protocol 0.3",
+      "file": "contracts/1423-peer-preview-ticket.bru",
+      "endpoint": "POST /federation/v0.1/scoped/previews/tickets",
+      "scenario": "Reject the retired federation protocol 0.3",
+      "status": 400,
+      "required_checks": [
+        "Rejected input preserves committed workspace state",
+        "Exact HTTP 400",
+        "Rejection is diagnostic and does not disclose SQL or credentials"
+      ]
+    },
+    {
+      "name": "1424 peer-preview-ticket - Require the Federation token",
+      "file": "contracts/1424-peer-preview-ticket.bru",
+      "endpoint": "POST /federation/v0.1/scoped/previews/tickets",
+      "scenario": "Require the Federation token",
+      "status": 401,
+      "required_checks": [
+        "Rejected input preserves committed workspace state",
+        "Exact HTTP 401",
+        "Stable authorization error envelope"
+      ]
+    },
+    {
+      "name": "1425 peer-preview-ticket - Refuse a token that does not verify",
+      "file": "contracts/1425-peer-preview-ticket.bru",
+      "endpoint": "POST /federation/v0.1/scoped/previews/tickets",
+      "scenario": "Refuse a token that does not verify",
+      "status": 401,
+      "required_checks": [
+        "Rejected input preserves committed workspace state",
+        "Exact HTTP 401",
+        "Stable authorization error envelope"
+      ]
+    },
+    {
+      "name": "1426 tenant-nodes-create - Create a disposable lifecycle Node",
+      "file": "contracts/1426-tenant-nodes-create.bru",
       "endpoint": "POST /api/tenants/{tenant}/nodes",
       "scenario": "Create a disposable lifecycle Node",
       "status": 201,
@@ -15052,8 +15723,8 @@
       ]
     },
     {
-      "name": "1369 tenant-node-default - Select the created Node as default",
-      "file": "contracts/1369-tenant-node-default.bru",
+      "name": "1427 tenant-node-default - Select the created Node as default",
+      "file": "contracts/1427-tenant-node-default.bru",
       "endpoint": "POST /api/tenants/{tenant}/nodes/{node}/default",
       "scenario": "Select the created Node as default",
       "status": 200,
@@ -15064,8 +15735,8 @@
       ]
     },
     {
-      "name": "1370 tenant-node-default - Restore the original default Node",
-      "file": "contracts/1370-tenant-node-default.bru",
+      "name": "1428 tenant-node-default - Restore the original default Node",
+      "file": "contracts/1428-tenant-node-default.bru",
       "endpoint": "POST /api/tenants/{tenant}/nodes/{node}/default",
       "scenario": "Restore the original default Node",
       "status": 200,
@@ -15076,8 +15747,8 @@
       ]
     },
     {
-      "name": "1371 tenant-node-deletion - Delete the disposable nondefault Node",
-      "file": "contracts/1371-tenant-node-deletion.bru",
+      "name": "1429 tenant-node-deletion - Delete the disposable nondefault Node",
+      "file": "contracts/1429-tenant-node-deletion.bru",
       "endpoint": "POST /api/tenants/{tenant}/nodes/{node}/deletion",
       "scenario": "Delete the disposable nondefault Node",
       "status": 200,
@@ -15088,8 +15759,8 @@
       ]
     },
     {
-      "name": "1372 tenant-nodes - Ordinary selection excludes the deleted lifecycle Node",
-      "file": "contracts/1372-tenant-nodes.bru",
+      "name": "1430 tenant-nodes - Ordinary selection excludes the deleted lifecycle Node",
+      "file": "contracts/1430-tenant-nodes.bru",
       "endpoint": "GET /api/tenants/{tenant}/nodes",
       "scenario": "Ordinary selection excludes the deleted lifecycle Node",
       "status": 200,
@@ -15100,8 +15771,8 @@
       ]
     },
     {
-      "name": "1373 tenant-nodes - Management reads the exact deleted lifecycle record",
-      "file": "contracts/1373-tenant-nodes.bru",
+      "name": "1431 tenant-nodes - Management reads the exact deleted lifecycle record",
+      "file": "contracts/1431-tenant-nodes.bru",
       "endpoint": "GET /api/tenants/{tenant}/nodes",
       "scenario": "Management reads the exact deleted lifecycle record",
       "status": 200,
@@ -15112,8 +15783,8 @@
       ]
     },
     {
-      "name": "1374 tenant-node-restore - Restore the same lifecycle Node",
-      "file": "contracts/1374-tenant-node-restore.bru",
+      "name": "1432 tenant-node-restore - Restore the same lifecycle Node",
+      "file": "contracts/1432-tenant-node-restore.bru",
       "endpoint": "POST /api/tenants/{tenant}/nodes/{node}/restore",
       "scenario": "Restore the same lifecycle Node",
       "status": 200,
@@ -15124,8 +15795,8 @@
       ]
     },
     {
-      "name": "1375 tenant-nodes - Selection reads the restored Node at the same address",
-      "file": "contracts/1375-tenant-nodes.bru",
+      "name": "1433 tenant-nodes - Selection reads the restored Node at the same address",
+      "file": "contracts/1433-tenant-nodes.bru",
       "endpoint": "GET /api/tenants/{tenant}/nodes",
       "scenario": "Selection reads the restored Node at the same address",
       "status": 200,
@@ -15136,8 +15807,8 @@
       ]
     },
     {
-      "name": "1376 tenant-node-deletion - Retire the disposable Node after transport verification",
-      "file": "contracts/1376-tenant-node-deletion.bru",
+      "name": "1434 tenant-node-deletion - Retire the disposable Node after transport verification",
+      "file": "contracts/1434-tenant-node-deletion.bru",
       "endpoint": "POST /api/tenants/{tenant}/nodes/{node}/deletion",
       "scenario": "Retire the disposable Node after transport verification",
       "status": 200,

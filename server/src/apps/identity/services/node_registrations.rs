@@ -202,6 +202,7 @@ impl NodeRegistrations {
 								node: node.as_str(),
 								source_node: &input.source_node,
 								counterpart: &counterpart,
+								dashboard_origin: input.dashboard_origin.as_deref(),
 								atomic_transactions: input.atomic_transactions,
 								enabled: input.enabled,
 								actor: "deployment_administrator",
@@ -249,6 +250,7 @@ impl NodeRegistrations {
 										node: node.as_str(),
 										source_node: &input.source_node,
 										counterpart: &counterpart,
+										dashboard_origin: input.dashboard_origin.as_deref(),
 										atomic_transactions: input.atomic_transactions,
 										enabled: input.enabled,
 										actor: &format!("oidc:{}", administrator.identity_id),
@@ -382,6 +384,20 @@ async fn write(
 	expected_revision: i64,
 	by: &AdministrationActor,
 ) -> Result<NodeRegistration> {
+	// A disabling write keeps the dashboard origin the receiving Node already
+	// pinned; otherwise the request names it.
+	let current = if row.enabled {
+		None
+	} else {
+		records::get(tx, row.tenant, row.node, row.source_node).await?
+	};
+	let row = &records::Write {
+		dashboard_origin: current
+			.as_ref()
+			.and_then(|current| current.dashboard_origin.as_deref())
+			.or(row.dashboard_origin),
+		..*row
+	};
 	let stored = if expected_revision == 0 {
 		records::insert(tx, row).await?
 	} else {

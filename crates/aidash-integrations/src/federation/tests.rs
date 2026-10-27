@@ -174,6 +174,15 @@ async fn fixture() -> (Server, HttpTransport, Route, Arc<TestKey>) {
 			),
 		)
 		.route(
+			"/federation/v0.1/scoped/previews/retain",
+			post(|| async {
+				(
+					StatusCode::CONFLICT,
+					Json(json!({"error":"FILE_VERSION_QUOTA_EXCEEDED: remote hold refused"})),
+				)
+			}),
+		)
+		.route(
 			"/federation/v0.1/oversize",
 			get(|| async { Response::new(axum::body::Body::from(vec![b' '; 4_194_305])) }),
 		);
@@ -415,6 +424,21 @@ async fn retry_headers_survive_the_transport_boundary(
 	assert_eq!(reply.transaction_pending, transaction_pending);
 	assert_eq!(reply.run_message_pending, run_message_pending);
 	assert_eq!(reply.body.is_null(), status != 400);
+}
+
+#[rstest]
+#[tokio::test]
+async fn remote_preview_conflict_keeps_the_public_reason() {
+	let (_server, client, route, _key) = fixture().await;
+	let reply = client
+		.request(&route, "POST", "/scoped/previews/retain", Some(&json!({})))
+		.await
+		.unwrap();
+	assert_eq!(reply.status, 409);
+	assert_eq!(
+		reply.body,
+		json!({"error":"FILE_VERSION_QUOTA_EXCEEDED: remote hold refused"})
+	);
 }
 
 #[rstest]

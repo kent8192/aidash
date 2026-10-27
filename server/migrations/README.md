@@ -520,6 +520,8 @@ pruning or summary, journals those events as `imported`.
 
 `registry/0034_research_view` (after `registry/0033_row_level_security`, and like `registry/0031_model_request_estimator` after the Tenant Registry migrations of #243) admits the research `view` operation for `research.page@1` and `research.fixture@1` in `aidash_descriptor_is_valid` (#312). The function body has no typed Reinhardt operation, so it is a reversible SQL asset; it extends the `0023_research_providers` body and rollback restores that body. It does not delete descriptors that already declare `view`, whose later rewrites the NOT VALID registry checks then reject.
 
+Before this native history is released, the same current function also admits the exact `core.preview@1` Sandboxed descriptors for `live_preview_start` and `live_preview_stop` (#405). Neither operation has a transport or lifecycle; all other providers, tiers, and descriptor fields remain subject to the existing checks.
+
 `registry/0035_decider_kind` (after `registry/0034_research_view`, and like `registry/0031_model_request_estimator` after the Tenant Registry migrations of #243) removes the `compactor` kind (#108 Part B, ADR 0042): it drops `registry_compactor_config` and replaces `registry_kind_check` with a list that names `decider` instead. A Decider's configuration is validated by the application. Aidash is undeployed, so there is no data rewrite: the new check fails while a compactor entry exists, and such entries must be registered again as Deciders. Typed constraint operations suffice. The generated state-only checkpoint `registry/0036_decider_kind_state` swaps `compactor` for `decider` in `registry_kind_model_enum_check`.
 
 `registry/0038_agent_plugin_copies` (after `registry/0037_tenant_owned_row_level_security`) creates `agent_plugin_copies` with typed operations (#414, ADR 0072): the Tenant's copy of each imported Agent Plugin, keyed by `(tenant, digest)` where `digest` is the plugin's tree digest. A row keeps the serialized loaded plugin (`plugin`), every fetched file (`files`, text or base64) and the paths the Agent Plugins specification forbids (`denied`). Checks require the `sha256:` digest form, the digest in `plugin` to equal the key and the three documents to have their JSON types. The copy exists before the Agent version that pins it, so the table has no key into `registry`; it references the Tenant root record through `agent_plugin_copies_tenant_root_fkey`. Rows are immutable: the repository inserts with `ON CONFLICT DO NOTHING` and never updates. `registry/0039_agent_plugin_copies_state` is the generated state-only checkpoint.
@@ -699,3 +701,11 @@ recovery eligibility and attempt evidence with remote-read source lifetimes.
 Each is an empty state-only migration that depends on every existing leaf of
 its app. Existing migration identities, dependencies, schema changes and
 rollback guards remain intact, with one head per app for future generation.
+
+`execution/0075_node_preview_merge` joins `execution/0061_node_plugin_merge`
+with the Live preview history ending in
+`execution/0074_federated_preview_authority`.
+`federation/0020_node_preview_origin_merge` joins Node registration recovery
+ownership with `federation/0013_registered_preview_origin`. Both are empty
+state-only migrations; existing identities, schema changes and rollback guards
+remain intact.

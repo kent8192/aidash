@@ -14,11 +14,12 @@ use reinhardt::query::{
 	QueryStatementBuilder,
 };
 
-const COLUMNS: [&str; 12] = [
+const COLUMNS: [&str; 13] = [
 	"tenant",
 	"node",
 	"source_node",
 	"source_endpoint",
+	"source_dashboard_origin",
 	"source_public_key_pem",
 	"source_key_id",
 	"atomic_transactions",
@@ -53,6 +54,7 @@ fn registration_of(row: &Row) -> Result<NodeRegistration> {
 			optional_text(row, "source_public_key_pem")?,
 			optional_text(row, "source_key_id")?,
 		)?,
+		dashboard_origin: optional_text(row, "source_dashboard_origin")?,
 		atomic_transactions: row.get("atomic_transactions").map_err(failed)?,
 		enabled: row.get("enabled").map_err(failed)?,
 		revision: row.get("revision").map_err(failed)?,
@@ -69,6 +71,7 @@ pub(crate) struct Write<'a> {
 	pub node: &'a str,
 	pub source_node: &'a NodeAddress,
 	pub counterpart: &'a Counterpart,
+	pub dashboard_origin: Option<&'a str>,
 	pub atomic_transactions: bool,
 	pub enabled: bool,
 	pub actor: &'a str,
@@ -204,6 +207,7 @@ pub(crate) async fn insert(
 				"node",
 				"source_node",
 				"source_endpoint",
+				"source_dashboard_origin",
 				"source_public_key_pem",
 				"source_key_id",
 				"source_keys",
@@ -219,6 +223,7 @@ pub(crate) async fn insert(
 			IntoValue::into_value(write.node.to_owned()),
 			IntoValue::into_value(write.source_node.to_string()),
 			IntoValue::into_value(endpoint.map(str::to_owned)),
+			IntoValue::into_value(write.dashboard_origin.map(str::to_owned)),
 			IntoValue::into_value(pem.map(str::to_owned)),
 			IntoValue::into_value(key_id.map(str::to_owned)),
 			IntoValue::into_value(source_keys),
@@ -276,6 +281,10 @@ pub(crate) async fn update(
 		// Existing trust is never reset by a permission/endpoint edit.
 	}
 	let (sql, values) = query
+		.value(
+			Alias::new("source_dashboard_origin"),
+			Expr::value(write.dashboard_origin.map(str::to_owned)),
+		)
 		.value(
 			Alias::new("atomic_transactions"),
 			Expr::value(write.atomic_transactions),

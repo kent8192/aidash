@@ -107,6 +107,7 @@ impl World {
 			node: node(RECEIVING),
 			source_node: sender,
 			counterpart,
+			dashboard_origin: None,
 			atomic_transactions: false,
 			enabled,
 			revision: 1,

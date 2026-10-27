@@ -10,6 +10,7 @@ struct State {
 	events: Vec<Value>,
 	commits: usize,
 	rollbacks: usize,
+	released_holds: usize,
 	open: usize,
 	fail_update: bool,
 }
@@ -75,6 +76,10 @@ impl ErasureScope for Scope {
 		self.record = Some(record.clone());
 		Ok(())
 	}
+	async fn release_holds(&mut self, _: &Area) -> Result<()> {
+		self.state.lock().unwrap().released_holds += 1;
+		Ok(())
+	}
 	async fn event(&mut self, _: Uuid, kind: &str, data: Value) -> Result<()> {
 		assert_eq!(kind, "capability.cleanup_changed");
 		self.events.push(data);
@@ -136,6 +141,7 @@ fn fixture(state: &str) -> Repository {
 		events: vec![],
 		commits: 0,
 		rollbacks: 0,
+		released_holds: 0,
 		open: 0,
 		fail_update: false,
 	})))
@@ -149,6 +155,7 @@ async fn deleting_preserves_the_recovery_snapshot_and_commits_its_event() {
 	assert_eq!(state.record.state, "recoverable");
 	assert_eq!(state.area.state, "recoverable");
 	assert_eq!(state.erased, vec![state.objects[1]]);
+	assert_eq!(state.released_holds, 1);
 	assert_eq!(state.events.len(), 1);
 	assert_eq!(state.commits, 1);
 	assert_eq!(state.rollbacks, 0);
@@ -199,6 +206,7 @@ async fn recovery_expiry_erases_only_snapshot_owned_bytes_and_advances_the_fence
 	assert_eq!(state.record.data["snapshot"], json!([]));
 	assert_eq!(state.record.expires_at, None);
 	assert_eq!(state.erased, vec![state.objects[0]]);
+	assert_eq!(state.released_holds, 1);
 	assert_eq!(state.area.state, "deleted");
 	assert_eq!(
 		(state.area.generation, state.area.epoch, state.area.revision),

@@ -17,6 +17,8 @@ pub struct NodeRegistrationHistory {
 	#[field(field_type = "text", null = true)]
 	pub source_endpoint: Option<String>,
 	#[field(field_type = "text", null = true)]
+	pub source_dashboard_origin: Option<String>,
+	#[field(field_type = "text", null = true)]
 	pub source_public_key_pem: Option<String>,
 	#[field(field_type = "text", null = true)]
 	pub source_key_id: Option<String>,
