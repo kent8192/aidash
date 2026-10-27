@@ -53,20 +53,12 @@ pub(crate) fn browser_deployment_administrator_allowed(method: &Method, path: &s
 	) {
 		return true;
 	}
-	// Invitations, Registrations, Mappings, Tenant Deletion and Tenant labels
-	// are administered per Tenant.
+	// Deployment Administrators issue and revoke Invitations for any Tenant.
 	if *method == Method::POST
 		&& matches!(
 			segments.as_slice(),
-			["", "tenants", _, "invitations"]
-				| ["", "tenants", _, "invitations", _, "revoke"]
-				| ["", "tenants", _, "registrations", _, "approve" | "reject"]
-				| ["", "tenants", _, "mappings", _, "disable"]
-				| ["", "tenants", _, "deletion" | "purge"]
+			["", "tenants", _, "invitations"] | ["", "tenants", _, "invitations", _, "revoke"]
 		) {
-		return true;
-	}
-	if *method == Method::PUT && matches!(segments.as_slice(), ["", "tenants", _, "label"]) {
 		return true;
 	}
 	path.starts_with("/dashboard/") || path.starts_with("/authorization/")
