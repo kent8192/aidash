@@ -73,8 +73,8 @@ resource "google_kms_crypto_key" "tenant_secret" {
   }
   lifecycle { prevent_destroy = true }
 }
-// The Key Material broker sees only -cred- secrets; the Tenant Secret broker only
-// -tsec- secrets. Neither can read the other's payloads.
+// The Key Material broker sees only -cred- secrets; the Tenant Secret broker sees
+// -tsec- and -oauth- secrets. Neither can read the other's payloads.
 resource "google_project_iam_member" "byok_broker_read" {
   for_each = local.broker_environments
   project  = var.byok_project_id
@@ -93,6 +93,18 @@ resource "google_project_iam_member" "byok_tenant_secret_broker_read" {
   condition {
     title      = "only-environment-tenant-secrets"
     expression = "resource.name.startsWith(\"projects/${data.google_project.byok[0].number}/secrets/aidash-${each.key}-tsec-\")"
+  }
+}
+// The existing Tenant Secret identity alone exchanges and rotates OAuth grants.
+// Its add-version right is confined to -oauth-, never -tsec- or -cred-.
+resource "google_project_iam_member" "byok_oauth_broker" {
+  for_each = local.broker_environments
+  project  = var.byok_project_id
+  role     = google_project_iam_custom_role.byok_oauth_broker[0].name
+  member   = "serviceAccount:${google_service_account.tenant_secret_broker[each.key].email}"
+  condition {
+    title      = "only-environment-oauth-connections"
+    expression = "resource.name.startsWith(\"projects/${data.google_project.byok[0].number}/secrets/aidash-${each.key}-oauth-\")"
   }
 }
 // Deploy plans read verification PEMs without receiving signing authority.

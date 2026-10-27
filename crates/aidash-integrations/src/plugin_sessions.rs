@@ -196,7 +196,10 @@ struct Key {
 impl Key {
 	fn with_auth(mut self, auth: Option<&CallSecret>) -> Self {
 		self.connection = match auth {
-			Some(CallSecret::Connection { record, .. }) => Some(record.id),
+			Some(
+				CallSecret::Connection { record, .. }
+				| CallSecret::BrokeredConnection { record, .. },
+			) => Some(record.id),
 			_ => None,
 		};
 		self

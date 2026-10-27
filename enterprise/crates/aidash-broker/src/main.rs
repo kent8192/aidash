@@ -6,6 +6,7 @@ use aidash_broker::{
 use aidash_capability::PublicKeys;
 use aidash_gcp::capability::{
 	MetadataTokenSource, SecretManagerKeyMaterialSource, SecretManagerTenantSecretSource,
+	connections::SecretManagerConnectionStore,
 };
 use std::{collections::BTreeMap, sync::Arc, time::Duration};
 
@@ -93,12 +94,22 @@ async fn tenant_secrets() -> Result<(), Box<dyn std::error::Error>> {
 		&prefix,
 		Arc::new(MetadataTokenSource::new()?),
 	)?;
-	let broker = Arc::new(TenantSecretBroker::new(
-		config,
-		PublicKeys::from_pems(keys)?,
-		Arc::new(source),
-		Arc::new(CloudLogging),
-	)?);
+	let connections = aidash_broker::connection::ConnectionBroker::new(Arc::new(
+		SecretManagerConnectionStore::new(
+			&project,
+			&prefix,
+			Arc::new(MetadataTokenSource::new()?),
+		)?,
+	))?;
+	let broker = Arc::new(
+		TenantSecretBroker::new(
+			config,
+			PublicKeys::from_pems(keys)?,
+			Arc::new(source),
+			Arc::new(CloudLogging),
+		)?
+		.with_connections(connections),
+	);
 	serve(broker.router()).await
 }
 fn rate() -> Result<f64, Box<dyn std::error::Error>> {

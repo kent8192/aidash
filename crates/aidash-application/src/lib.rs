@@ -2,6 +2,7 @@
 pub mod accounts;
 pub mod authorization;
 pub mod catalog;
+pub mod connection_calls;
 pub mod context;
 pub mod decision;
 pub mod deployment;

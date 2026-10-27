@@ -61,6 +61,9 @@ pub(crate) async fn retry(error: &Error, auth: Option<&CallSecret>) -> bool {
 	if let Some(CallSecret::Connection { source, .. }) = auth {
 		source.invalidate().await;
 		true
+	} else if let Some(CallSecret::BrokeredConnection { source, .. }) = auth {
+		source.invalidate().await;
+		true
 	} else {
 		false
 	}
@@ -69,7 +72,7 @@ pub(crate) async fn retry(error: &Error, auth: Option<&CallSecret>) -> bool {
 /// A forced refresh can discover revoked consent before another HTTP request is sent.
 pub(crate) fn source_error(error: Error, endpoint: &str) -> Error {
 	match error {
-		Error::Invalid(code)
+		Error::Invalid(code) | Error::External(code)
 			if matches!(
 				code.as_str(),
 				CONNECTION_REQUIRED | CONNECTION_SCOPE | CONNECTION_UNAVAILABLE
@@ -88,7 +91,10 @@ pub(crate) fn validate(
 	auth: Option<&CallSecret>,
 	endpoint: &str,
 ) -> aidash_application::Result<()> {
-	if let Some(CallSecret::Connection { record, .. }) = auth {
+	if let Some(
+		CallSecret::Connection { record, .. } | CallSecret::BrokeredConnection { record, .. },
+	) = auth
+	{
 		let resource = aidash_domain::oauth_connections::canonical_resource(endpoint)?;
 		if resource != record.resource {
 			return Err(Error::Forbidden);

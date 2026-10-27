@@ -198,6 +198,23 @@ pub fn forward_rest(endpoint: &str) -> Result<String> {
 	Ok(endpoint_path_parts(endpoint)?.1)
 }
 
+/// OAuth identity drops trailing slashes, but forwarding must preserve the
+/// original endpoint. Its signed directory retains an endpoint's trailing `/`.
+pub fn connection_forward_rest(resource: &str, destination: &Destination) -> Result<String> {
+	let url = Url::parse(resource).map_err(|_| Error::Invalid("invalid MCP resource".into()))?;
+	if url.origin().ascii_serialization() != destination.origin {
+		return Err(Error::Forbidden);
+	}
+	let prefix = &destination.path_prefix;
+	if url.path().trim_end_matches('/') == prefix.trim_end_matches('/') {
+		return Ok(String::new());
+	}
+	url.path()
+		.strip_prefix(prefix)
+		.map(str::to_owned)
+		.ok_or(Error::Forbidden)
+}
+
 /// What an invocation records about the Tenant Secret it carried. The value
 /// itself is never recorded.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -214,6 +231,11 @@ pub struct SecretRecord {
 /// value read for this call alone.
 #[derive(Clone)]
 pub enum CallSecret {
+	BrokeredConnection {
+		record: ConnectionRecord,
+		source: Arc<dyn SecretRouteSource>,
+		rest: String,
+	},
 	Connection {
 		record: ConnectionRecord,
 		source: Arc<dyn BearerSource>,
@@ -233,7 +255,7 @@ impl CallSecret {
 	pub fn record(&self) -> Option<&SecretRecord> {
 		match self {
 			Self::Value { record, .. } | Self::Brokered { record, .. } => Some(record),
-			Self::Connection { .. } => None,
+			Self::Connection { .. } | Self::BrokeredConnection { .. } => None,
 		}
 	}
 }
@@ -260,6 +282,8 @@ pub trait BearerSource: Send + Sync {
 #[async_trait]
 pub trait SecretRouteSource: Send + Sync {
 	async fn route(&self) -> Result<SecretRoute>;
+	/// A connection bearer was refused; make the next route refresh.
+	async fn invalidate(&self) {}
 }
 
 /// A missing personal secret is actionable before any tool operation executes.

@@ -333,7 +333,8 @@ async fn oauth_connections_subject_credentials_manage_only_their_persons_connect
 	f.store.oauth_connections = Some(Arc::new(aidash_application::oauth_connections::Service {
 		repository: repository.clone(),
 		store: store.clone(),
-		reader: store.clone(),
+		reader: Some(store.clone()),
+		calls: None,
 		discovery: Arc::new(ProbeOnlyOAuth),
 		tokens: Arc::new(ProbeOnlyOAuth),
 		policy: Arc::new(

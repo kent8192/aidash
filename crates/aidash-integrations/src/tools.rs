@@ -27,13 +27,18 @@ fn broker_failure(
 	headers: &reqwest::header::HeaderMap,
 ) -> Option<broker::BrokerFailure> {
 	match secret {
-		Some(CallSecret::Brokered { .. }) => broker::BrokerFailure::from_headers(headers),
+		Some(CallSecret::Brokered { .. } | CallSecret::BrokeredConnection { .. }) => {
+			broker::BrokerFailure::from_headers(headers)
+		}
 		_ => None,
 	}
 }
 
 fn is_brokered(secret: Option<&CallSecret>) -> bool {
-	matches!(secret, Some(CallSecret::Brokered { .. }))
+	matches!(
+		secret,
+		Some(CallSecret::Brokered { .. } | CallSecret::BrokeredConnection { .. })
+	)
 }
 
 /// A brokered call sends the value it does not have: connect failures, and a
@@ -206,7 +211,11 @@ impl ToolTransport for HttpTools {
 				// Keep the destination authority check even when the request goes
 				// to the broker: the endpoint must still be one this call may use.
 				let endpoint_client = self.client(endpoint)?;
-				let request = if let Some(CallSecret::Brokered { source, rest, .. }) = secret {
+				let request = if let Some(
+					CallSecret::Brokered { source, rest, .. }
+					| CallSecret::BrokeredConnection { source, rest, .. },
+				) = secret
+				{
 					// The broker is Deployment configuration, not the Tenant's
 					// choice, so it may be an in-cluster private address.
 					let route = source.route().await?;
@@ -313,7 +322,10 @@ async fn mcp_session(
 	let client = match secret {
 		// A brokered session sends every request to the broker and carries a
 		// fresh Tenant Secret Capability Token instead of a bearer value.
-		Some(CallSecret::Brokered { source, rest, .. }) => {
+		Some(
+			CallSecret::Brokered { source, rest, .. }
+			| CallSecret::BrokeredConnection { source, rest, .. },
+		) => {
 			let route = source.route().await?;
 			mcp::BoundedClient::brokered(client.clone(), source.clone(), rest.clone(), route)
 		}

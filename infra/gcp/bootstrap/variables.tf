@@ -97,7 +97,7 @@ variable "byok_broker_environments" {
     error_message = "Only isolated production bootstrap may create the production broker, and it cannot create nonproduction brokers."
   }
   validation {
-    condition     = alltrue([for left in var.byok_broker_environments : alltrue([for right in var.byok_broker_environments : left == right || !startswith("aidash-${right}-cred-", "aidash-${left}-cred-")])])
+    condition     = alltrue([for left in var.byok_broker_environments : alltrue([for right in var.byok_broker_environments : left == right || alltrue(flatten([for a in ["cred", "tsec", "oauth"] : [for b in ["cred", "tsec", "oauth"] : !startswith("aidash-${right}-${b}-", "aidash-${left}-${a}-")]]))])])
     error_message = "Broker environment credential prefixes must not overlap."
   }
 }

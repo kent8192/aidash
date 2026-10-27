@@ -125,7 +125,10 @@ impl BoundedClient {
 			};
 			return Ok((uri.to_owned(), bearer, None));
 		};
-		let route = broker.route().await.map_err(Failure::Client)?;
+		let route = broker.route().await.map_err(|e| match e {
+			McpError::App(e) => Failure::Client(McpError::App(self.progress.source_error(e, uri))),
+			other => Failure::Client(other),
+		})?;
 		let url = broker::forward_url(&route.base, &broker.rest)
 			.map_err(McpError::App)
 			.map_err(Failure::Client)?;

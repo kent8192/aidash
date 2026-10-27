@@ -6,7 +6,7 @@ use aidash_domain::agent_plugin::{RemoteServer, schema_digest};
 use std::sync::atomic::{AtomicUsize, Ordering::SeqCst};
 use wiremock::{
 	Mock, MockServer, Request, ResponseTemplate,
-	matchers::{method, path},
+	matchers::{method, path_regex},
 };
 
 #[derive(Default)]
@@ -51,11 +51,21 @@ async fn upstream(
 	permanent: bool,
 	modern: bool,
 ) -> MockServer {
+	upstream_auth(refuse_at, status, permanent, modern, false).await
+}
+async fn upstream_auth(
+	refuse_at: &'static str,
+	status: u16,
+	permanent: bool,
+	modern: bool,
+	broker: bool,
+) -> MockServer {
 	let server = MockServer::start().await;
-	Mock::given(method("POST")).and(path("/mcp")).respond_with(move |request: &Request| {
+	Mock::given(method("POST")).and(path_regex(if broker {"^/v1/forward(?:/mcp)?$"} else {"^/mcp$"})).respond_with(move |request: &Request| {
 		let message: Value = request.body_json().unwrap();
 		let method = message["method"].as_str().unwrap_or_default();
-		let bearer = request.headers.get("authorization").and_then(|h| h.to_str().ok());
+		let bearer = request.headers.get(if broker {"x-aidash-secret-call"}else{"authorization"}).and_then(|h| h.to_str().ok());
+        if broker {assert!(!request.headers.contains_key("authorization"));assert!(bearer.is_some());}
 		if refuse_at == "continuation" && method == "tools/call" {
 			if message["params"].get("requestState").is_some() {
 				return ResponseTemplate::new(401).insert_header("www-authenticate", "Bearer");
@@ -64,7 +74,7 @@ async fn upstream(
 				"resultType":"input_required","requestState":"accepted-operation","inputRequests":{}}}));
 		}
 
-		if (refuse_at == "all" || method == refuse_at) && (permanent || bearer != Some("Bearer token-1")) {
+		if (refuse_at == "all" || method == refuse_at) && (permanent || bearer != Some(if broker {"token-1"}else{"Bearer token-1"})) {
 			return ResponseTemplate::new(status).insert_header("www-authenticate",
 				if status == 403 { "Bearer error=\"insufficient_scope\", scope=\"files.read files.write\"" } else { "Bearer resource_metadata=\"https://mcp.example/.well-known/oauth-protected-resource\"" });
 		}
@@ -342,13 +352,37 @@ async fn a_connection_cannot_send_its_bearer_to_another_resource() {
 	assert!(server.received_requests().await.unwrap().is_empty());
 }
 
+#[rstest::rstest]
+#[case::direct(false)]
+#[case::brokered(true)]
 #[tokio::test]
-async fn plugin_auth_refusal_after_an_accepted_input_round_is_not_replayed() {
+async fn plugin_auth_refusal_after_an_accepted_input_round_is_not_replayed(#[case] brokered: bool) {
 	use aidash_domain::agent_plugin::interaction::{CallCheckpoint, ToolRound};
-	let server = upstream("continuation", 401, true, true).await;
-	let endpoint = format!("{}/mcp", server.uri());
+	let server = upstream_auth("continuation", 401, true, true, brokered).await;
+	let endpoint = if brokered {
+		"http://127.0.0.1:9/mcp".into()
+	} else {
+		format!("{}/mcp", server.uri())
+	};
 	let source = Arc::new(Tokens::default());
-	let auth = connection(&endpoint, source.clone());
+	let routes = Arc::new(BrokerTokens {
+		base: format!("{}/v1/forward", server.uri()).parse().unwrap(),
+		generation: AtomicUsize::new(0),
+		invalidations: AtomicUsize::new(0),
+	});
+	let auth = if brokered {
+		CallSecret::BrokeredConnection {
+			record: ConnectionRecord {
+				id: uuid::Uuid::now_v7(),
+				resource: endpoint.clone(),
+				host: "127.0.0.1".into(),
+			},
+			source: routes.clone(),
+			rest: "mcp".into(),
+		}
+	} else {
+		connection(&endpoint, source.clone())
+	};
 	let sessions = crate::plugin_sessions::McpPluginSessions::new(
 		permitting([endpoint.as_str()]),
 		ToolClients::new().unwrap(),
@@ -402,7 +436,10 @@ async fn plugin_auth_refusal_after_an_accepted_input_round_is_not_replayed() {
 		matches!(result, Err(Error::External(_))),
 		"an accepted operation must stay an uncertain MCP failure: {result:?}"
 	);
-	assert_eq!(source.invalidations.load(SeqCst), 0);
+	assert_eq!(
+		source.invalidations.load(SeqCst) + routes.invalidations.load(SeqCst),
+		0
+	);
 	let requests = server.received_requests().await.unwrap();
 	assert_eq!(
 		requests
@@ -412,4 +449,126 @@ async fn plugin_auth_refusal_after_an_accepted_input_round_is_not_replayed() {
 		2
 	);
 	sessions.close(run).await;
+}
+
+struct BrokerTokens {
+	base: reqwest::Url,
+	generation: AtomicUsize,
+	invalidations: AtomicUsize,
+}
+#[async_trait]
+impl aidash_application::tenant_secrets::SecretRouteSource for BrokerTokens {
+	async fn route(&self) -> Result<aidash_application::tenant_secrets::SecretRoute> {
+		Ok(aidash_application::tenant_secrets::SecretRoute {
+			base: self.base.clone(),
+			token: format!("token-{}", self.generation.load(SeqCst)).into(),
+		})
+	}
+	async fn invalidate(&self) {
+		self.invalidations.fetch_add(1, SeqCst);
+		self.generation.fetch_add(1, SeqCst);
+	}
+}
+#[rstest::rstest]
+#[case::registry_refresh(false, false, "tools/call", 401, false)]
+#[case::plugin_legacy_refresh(true, false, "tools/call", 401, false)]
+#[case::plugin_modern_refresh(true, true, "tools/call", 401, false)]
+#[case::registry_scope(false, false, "tools/call", 403, false)]
+#[case::plugin_modern_scope(true, true, "tools/call", 403, false)]
+#[case::registry_trailing_slash(false, false, "tools/call", 401, true)]
+#[case::plugin_trailing_slash(true, true, "tools/call", 401, true)]
+#[tokio::test]
+async fn brokered_connections_use_only_the_broker_and_preserve_replay_guards(
+	#[case] plugin: bool,
+	#[case] modern: bool,
+	#[case] phase: &'static str,
+	#[case] status: u16,
+	#[case] trailing: bool,
+) {
+	let broker = upstream_auth(phase, status, status == 403, modern, true).await;
+	// No MCP endpoint is listening here: all bytes must go through the route.
+	let endpoint = if trailing {
+		"http://127.0.0.1:9/mcp/"
+	} else {
+		"http://127.0.0.1:9/mcp"
+	};
+	let source = Arc::new(BrokerTokens {
+		base: format!("{}/v1/forward", broker.uri()).parse().unwrap(),
+		generation: AtomicUsize::new(0),
+		invalidations: AtomicUsize::new(0),
+	});
+	let auth = CallSecret::BrokeredConnection {
+		record: ConnectionRecord {
+			id: uuid::Uuid::now_v7(),
+			resource: aidash_domain::oauth_connections::canonical_resource(endpoint).unwrap(),
+			host: "127.0.0.1".into(),
+		},
+		source: source.clone(),
+		rest: aidash_application::tenant_secrets::connection_forward_rest(
+			&aidash_domain::oauth_connections::canonical_resource(endpoint).unwrap(),
+			&aidash_application::tenant_secrets::endpoint_destination(endpoint).unwrap(),
+		)
+		.unwrap(),
+	};
+	let result = if plugin {
+		let sessions = crate::plugin_sessions::McpPluginSessions::new(
+			permitting([endpoint]),
+			ToolClients::new().unwrap(),
+		);
+		let run = uuid::Uuid::new_v4();
+		let identity = PluginServer {
+			plugin: "demo".to_owned().try_into().unwrap(),
+			digest: "copy".into(),
+			server: "search".to_owned().try_into().unwrap(),
+		};
+		let remote = RemoteServer {
+			url: endpoint.parse().unwrap(),
+			headers: vec![],
+		};
+		let tools = sessions
+			.list(run, &identity, &remote, Some(&auth))
+			.await
+			.unwrap();
+		let digest = schema_digest(&tools[0].input_schema);
+		let result = sessions
+			.call(
+				run,
+				&identity,
+				&remote,
+				"lookup",
+				&digest,
+				json!({}),
+				"call",
+				Some(&auth),
+			)
+			.await;
+		sessions.close(run).await;
+		result
+	} else {
+		HttpTools::new(permitting([endpoint]), ToolClients::new().unwrap())
+			.invoke(&config(endpoint.into()), json!({}), "call", Some(&auth))
+			.await
+	};
+	if status == 403 {
+		let value = result.unwrap();
+		assert_eq!(value["error"], "connection_scope_insufficient");
+		assert_eq!(value["resource"], endpoint);
+		assert_eq!(source.invalidations.load(SeqCst), 0);
+	} else {
+		assert_eq!(result.unwrap()["content"][0]["text"], "authenticated");
+		assert_eq!(source.invalidations.load(SeqCst), 1);
+	}
+	let requests = broker.received_requests().await.unwrap();
+	let expected = if trailing {
+		"/v1/forward"
+	} else {
+		"/v1/forward/mcp"
+	};
+	assert!(requests.iter().all(|r| r.url.path() == expected));
+	assert!(
+		requests
+			.iter()
+			.all(|r| !r.headers.contains_key("authorization")
+				&& r.headers.contains_key("x-aidash-secret-call"))
+	);
 }

@@ -17,6 +17,7 @@ pub struct ProtectedResource {
 }
 
 /// RFC 8414 (or OpenID Discovery) metadata for an authorization server.
+#[derive(Clone)]
 pub struct AuthorizationServer {
 	pub issuer: String,
 	pub authorization_endpoint: Url,

@@ -2,11 +2,13 @@
 pub use crate::plan_connections::Owner;
 use crate::{
 	Error, Result,
+	connection_calls::{ConnectionCalls, ExchangeGrant, Receipt},
 	plan_connections::RefreshFailure,
 	ports::{oauth::*, registry::DefinitionLookup},
 	provider_access::KeyMaterialReader,
 	provider_authorization::{challenge, random_secret},
-	provider_credentials::Store,
+	provider_credentials::{ClientBinding, Store},
+	tenant_secrets::{SecretCall, SecretRoute},
 };
 use aidash_domain::oauth_connections::{
 	self as domain, ClientRef, ConnectionState, OAuthConnection,
@@ -190,12 +192,17 @@ fn gone(r: Result<()>) -> Result<()> {
 pub struct Service {
 	pub repository: Arc<dyn Repository>,
 	pub store: Arc<dyn Store>,
-	pub reader: Arc<dyn KeyMaterialReader>,
+	pub reader: Option<Arc<dyn KeyMaterialReader>>,
+	pub calls: Option<Arc<dyn ConnectionCalls>>,
 	pub discovery: Arc<dyn OAuthDiscovery>,
 	pub tokens: Arc<dyn OAuthTokens>,
 	pub policy: Arc<dyn ConnectionPolicy>,
 }
 impl Service {
+	fn reader(&self) -> Result<&dyn KeyMaterialReader> {
+		self.reader.as_deref().ok_or_else(unavailable)
+	}
+
 	pub async fn list(&self, owner: &Owner) -> Result<Vec<Metadata>> {
 		let mut s = self.repository.begin(owner).await?;
 		let rows = s.list().await?;
@@ -355,7 +362,10 @@ impl Service {
 			.await?;
 		if let Some(client) = domain::pick_client(person.as_ref(), tenant.as_ref()) {
 			let secret = match (&client.secret_resource, &client.pinned_version) {
-				(Some(r), Some(v)) => Some(self.reader.read(&owner.tenant, r, v).await?),
+				(Some(r), Some(v)) if self.calls.is_none() => {
+					Some(self.reader()?.read(&owner.tenant, r, v).await?)
+				}
+				(Some(_), Some(_)) => None,
 				(None, None) => None,
 				_ => return Err(unavailable()),
 			};
@@ -380,14 +390,26 @@ impl Service {
 				.await?;
 			let id = Uuid::now_v7();
 			let resource = self.store.connection_resource(id);
-			self.store.create_connection(&owner.tenant, id).await?;
-			let payload = seal(
-				&serde_json::json!({"client_secret":issued.client_secret.as_ref().map(ExposeSecret::expose_secret)}),
-			)?;
-			let pin = self
-				.store
-				.add_version(&owner.tenant, &resource, &payload)
-				.await?;
+			let pin = if issued.client_secret.is_some() {
+				self.store.create_connection(&owner.tenant, id).await?;
+				let payload = seal(
+					&serde_json::json!({"client_secret":issued.client_secret.as_ref().map(ExposeSecret::expose_secret)}),
+				)?;
+				self.store
+					.add_client_version(
+						&owner.tenant,
+						&resource,
+						ClientBinding {
+							issuer: server.issuer.clone(),
+							client_id: issued.client_id.clone(),
+							redirect_uri: Some(redirect_uri.to_string()),
+						},
+						&payload,
+					)
+					.await?
+			} else {
+				String::new()
+			};
 			let candidate = DynamicClient {
 				id,
 				tenant: owner.tenant.clone(),
@@ -409,28 +431,158 @@ impl Service {
 			}
 			winner
 		};
-		let secret = self
-			.reader
-			.read(
-				&owner.tenant,
-				&cached.secret_resource,
-				&cached.pinned_version,
-			)
-			.await?;
-		let payload: serde_json::Value =
-			serde_json::from_str(secret.expose_secret()).map_err(|_| unavailable())?;
+		let client_secret = if self.calls.is_none() && !cached.pinned_version.is_empty() {
+			let secret = self
+				.reader()?
+				.read(
+					&owner.tenant,
+					&cached.secret_resource,
+					&cached.pinned_version,
+				)
+				.await?;
+			let payload: serde_json::Value =
+				serde_json::from_str(secret.expose_secret()).map_err(|_| unavailable())?;
+			payload["client_secret"]
+				.as_str()
+				.map(|s| SecretString::from(s.to_owned()))
+		} else {
+			None
+		};
 		Ok((
 			ClientRef::Dynamic {
 				client_id: cached.client_id.clone(),
 			},
 			ClientCredentials {
 				client_id: cached.client_id,
-				client_secret: payload["client_secret"]
-					.as_str()
-					.map(|s| SecretString::from(s.to_owned())),
+				client_secret,
 			},
 		))
 	}
+	async fn exchange_grant(&self, owner: &Owner, p: &Pending) -> Result<ExchangeGrant> {
+		use aidash_capability::connection::{ClientKind, ClientSecretRef};
+		let (client_id, client) = match &p.client {
+			ClientRef::Registered { client: id } => {
+				let (person, tenant) = self
+					.policy
+					.registered_clients(&owner.tenant, &owner.subject, &p.issuer)
+					.await?;
+				let c = person
+					.into_iter()
+					.chain(tenant)
+					.find(|c| c.id == *id)
+					.ok_or_else(required)?;
+				let reference = match (c.secret_resource, c.pinned_version) {
+					(Some(_), Some(_)) => Some(ClientSecretRef {
+						kind: ClientKind::Registered,
+						id: c.id,
+					}),
+					(None, None) => None,
+					_ => return Err(unavailable()),
+				};
+				(c.client_id, reference)
+			}
+			ClientRef::Dynamic { client_id } => {
+				let c = self
+					.repository
+					.dynamic_client(&owner.tenant, &p.issuer, &p.redirect_uri)
+					.await?
+					.filter(|c| &c.client_id == client_id)
+					.ok_or_else(required)?;
+				let reference = if c.pinned_version.is_empty() {
+					None
+				} else {
+					Some(ClientSecretRef {
+						kind: ClientKind::Dynamic,
+						id: c.id,
+					})
+				};
+				(c.client_id, reference)
+			}
+		};
+		Ok(ExchangeGrant {
+			issuer: p.issuer.clone(),
+			resource: p.resource.clone(),
+			client_id,
+			client,
+			redirect_uri: p.redirect_uri.clone(),
+		})
+	}
+	/// Metadata-only resolution for Cloud. Every route rechecks the current pin.
+	pub async fn brokered_connection(&self, owner: &Owner, resource: &str) -> Result<Uuid> {
+		let resource = domain::canonical_resource(resource)?;
+		let (scope, row) = self.active_scope(owner, &resource).await?;
+		scope.commit().await?;
+		Ok(row.id)
+	}
+	pub async fn brokered_route(
+		&self,
+		owner: &Owner,
+		resource: &str,
+		call: SecretCall,
+	) -> Result<SecretRoute> {
+		self.brokered_route_inner(owner, resource, None, call).await
+	}
+	/// A cached session must never switch to a replacement connection between
+	/// its identity check and token minting. Check under the same owner lock.
+	pub async fn brokered_route_for(
+		&self,
+		owner: &Owner,
+		resource: &str,
+		connection: Uuid,
+		call: SecretCall,
+	) -> Result<SecretRoute> {
+		self.brokered_route_inner(owner, resource, Some(connection), call)
+			.await
+	}
+	async fn brokered_route_inner(
+		&self,
+		owner: &Owner,
+		resource: &str,
+		expected: Option<Uuid>,
+		call: SecretCall,
+	) -> Result<SecretRoute> {
+		let calls = self.calls.as_ref().ok_or_else(unavailable)?;
+		let resource = domain::canonical_resource(resource)?;
+		let (mut scope, mut row) = self.active_scope(owner, &resource).await?;
+		if expected.is_some_and(|id| id != row.id) {
+			return Err(required());
+		}
+		if row
+			.access_expires_at
+			.is_some_and(|t| t <= Utc::now() + Duration::seconds(60))
+		{
+			match calls
+				.refresh(&row.tenant, row.id, numeric_pin(&row.pinned_version)?)
+				.await
+			{
+				Ok(receipt) => {
+					let requested = row.scopes.clone();
+					apply_receipt(&mut row, &receipt, &requested)?;
+					scope.save(&row).await?;
+				}
+				Err(RefreshFailure::Terminal) => {
+					row.state = ConnectionState::NeedsReconnection;
+					row.updated_at = Utc::now();
+					row.revision += 1;
+					scope.save(&row).await?;
+					scope.commit().await?;
+					return Err(required());
+				}
+				// A persisted broker receipt makes replay safe after a lost
+				// response. If the AS response itself was lost, invalid_grant
+				// on a later retry will require reconnection.
+				Err(RefreshFailure::Ambiguous(_)) => return Err(unavailable()),
+				Err(RefreshFailure::Unavailable(e)) => return Err(e),
+			}
+		}
+		let route = calls
+			.route(&row.tenant, row.id, numeric_pin(&row.pinned_version)?, call)
+			.await?;
+		scope.commit().await?;
+		self.prune(&row).await?;
+		Ok(route)
+	}
+
 	async fn credentials(
 		&self,
 		owner: &Owner,
@@ -452,7 +604,9 @@ impl Service {
 				Ok(ClientCredentials {
 					client_id: c.client_id,
 					client_secret: match (c.secret_resource, c.pinned_version) {
-						(Some(r), Some(v)) => Some(self.reader.read(&owner.tenant, &r, &v).await?),
+						(Some(r), Some(v)) => {
+							Some(self.reader()?.read(&owner.tenant, &r, &v).await?)
+						}
 						(None, None) => None,
 						_ => return Err(unavailable()),
 					},
@@ -466,7 +620,7 @@ impl Service {
 					.filter(|c| c.client_id == *client_id)
 					.ok_or_else(required)?;
 				let secret = self
-					.reader
+					.reader()?
 					.read(&owner.tenant, &c.secret_resource, &c.pinned_version)
 					.await?;
 				let payload: serde_json::Value =
@@ -509,6 +663,51 @@ impl Service {
 					&& r.revision == pending.revision
 			})
 			.ok_or_else(|| Error::Conflict("connection changed while authorizing".into()))?;
+		if let Some(calls) = &self.calls {
+			let grant = self.exchange_grant(&owner, &pending).await?;
+			let receipt = calls
+				.exchange(
+					&owner.tenant,
+					row.id,
+					grant,
+					code.unwrap_or_default(),
+					&SecretString::from(pending.pkce_verifier.clone()),
+				)
+				.await?;
+			let previous = row.state != ConnectionState::Pending;
+			if let Err(error) = apply_receipt(&mut row, &receipt, &pending.scopes) {
+				let _ = calls.revoke(&owner.tenant, row.id, &receipt.version).await;
+				let _ = self
+					.store
+					.destroy(
+						&row.tenant,
+						&format!("{}/versions/{}", row.secret_resource, receipt.version),
+					)
+					.await;
+				return Err(error);
+			}
+			row.client = pending.client;
+			row.issuer = pending.issuer;
+			row.state = ConnectionState::Active;
+			let saved = async {
+				scope.save(&row).await?;
+				scope.commit().await
+			}
+			.await;
+			if let Err(e) = saved {
+				let _ = calls.revoke(&owner.tenant, row.id, &receipt.version).await;
+				return Err(e);
+			}
+			self.prune(&row).await?;
+			self.repository
+				.answer_requests(&owner, &row.resource)
+				.await?;
+			return Ok(if previous {
+				Outcome::Reconnected
+			} else {
+				Outcome::Connected
+			});
+		}
 		let server = self.discovery.authorization_server(&pending.issuer).await?;
 		let client = self
 			.credentials(
@@ -582,7 +781,7 @@ impl Service {
 	}
 	async fn read(&self, row: &OAuthConnection, pin: &str) -> Result<Journal> {
 		let secret = self
-			.reader
+			.reader()?
 			.read(&row.tenant, &row.secret_resource, pin)
 			.await
 			.map_err(|_| unavailable())?;
@@ -606,6 +805,20 @@ impl Service {
 			.store
 			.versions(&row.tenant, &row.secret_resource)
 			.await?;
+		if self.calls.is_some() {
+			let current = numeric_pin(&row.pinned_version)?;
+			for pin in versions {
+				let candidate = numeric_pin(&pin)?;
+				// A newer broker version can be the receipt of a refresh whose
+				// database commit was lost. A delayed cleanup must retain it.
+				if candidate.len() < current.len()
+					|| (candidate.len() == current.len() && candidate < current)
+				{
+					gone(self.store.destroy(&row.tenant, &pin).await)?;
+				}
+			}
+			return scope.commit().await;
+		}
 		let base = Intent {
 			connection: row.id,
 			revision: row.revision,
@@ -637,6 +850,9 @@ impl Service {
 	/// A durable intent is never replayed after an uncertain refresh. A receipt
 	/// written before a database commit can instead finish that exact rotation.
 	async fn recover(&self, scope: &mut dyn Scope, row: &mut OAuthConnection) -> Result<bool> {
+		if self.calls.is_some() {
+			return Ok(false);
+		}
 		let base = Intent {
 			connection: row.id,
 			revision: row.revision,
@@ -719,6 +935,9 @@ impl Service {
 			})
 	}
 	async fn bearer_inner(&self, owner: &Owner, resource: &str) -> Result<Bearer> {
+		if self.calls.is_some() {
+			return Err(unavailable());
+		}
 		let resource = domain::canonical_resource(resource)?;
 		let (mut scope, mut row) = self.active_scope(owner, &resource).await?;
 		let Journal::Tokens(old) = self.read(&row, &row.pinned_version).await? else {
@@ -852,7 +1071,7 @@ impl Service {
 		// Dynamic caches may contain multiple redirect URIs; the exact grant key is
 		// kept in its private Store envelope, alongside tokens.
 		let secret = self
-			.reader
+			.reader()?
 			.read(&row.tenant, &row.secret_resource, &row.pinned_version)
 			.await?;
 		let value: serde_json::Value = serde_json::from_str(secret.expose_secret())?;
@@ -886,6 +1105,27 @@ impl Service {
 			return Err(Error::Conflict(
 				"connection changed while disconnecting".into(),
 			));
+		}
+		if let Some(calls) = &self.calls {
+			let mut revoked = true;
+			for pin in self
+				.store
+				.versions(&row.tenant, &row.secret_resource)
+				.await?
+			{
+				if calls
+					.revoke(&row.tenant, row.id, numeric_pin(&pin)?)
+					.await
+					.is_err()
+				{
+					revoked = false
+				}
+				gone(self.store.destroy(&row.tenant, &pin).await)?;
+			}
+			gone(self.store.delete(&row.tenant, &row.secret_resource).await)?;
+			scope.delete(id).await?;
+			scope.commit().await?;
+			return Ok(Disconnection { revoked });
 		}
 		let mut revoked = true;
 		let server = self.discovery.authorization_server(&row.issuer).await;
@@ -954,6 +1194,39 @@ impl Service {
 		Ok(())
 	}
 }
+fn numeric_pin(pin: &str) -> Result<&str> {
+	let v = pin.rsplit('/').next().ok_or_else(unavailable)?;
+	if !aidash_capability::connection::version_valid(v) {
+		return Err(unavailable());
+	}
+	Ok(v)
+}
+fn apply_receipt(row: &mut OAuthConnection, receipt: &Receipt, requested: &[String]) -> Result<()> {
+	if !aidash_capability::connection::version_valid(&receipt.version) {
+		return Err(unavailable());
+	}
+	let scopes = receipt
+		.scope
+		.as_ref()
+		.map(|s| s.split_whitespace().map(str::to_owned).collect::<Vec<_>>())
+		.unwrap_or_else(|| requested.to_vec());
+	row.scopes = domain::admissible_scopes(&scopes, Some(requested), None, None)?;
+	row.access_expires_at = receipt
+		.expires_in
+		.map(|n| {
+			i64::try_from(n)
+				.ok()
+				.and_then(Duration::try_seconds)
+				.and_then(|d| Utc::now().checked_add_signed(d))
+				.ok_or_else(unavailable)
+		})
+		.transpose()?;
+	row.pinned_version = format!("{}/versions/{}", row.secret_resource, receipt.version);
+	row.updated_at = Utc::now();
+	row.revision += 1;
+	Ok(())
+}
+
 fn stored(
 	tokens: &Tokens,
 	old: Option<&Stored>,

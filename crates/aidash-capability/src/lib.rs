@@ -5,6 +5,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use uuid::Uuid;
 
+pub mod connection;
 pub mod federation;
 mod jws;
 pub mod tenant_secret;

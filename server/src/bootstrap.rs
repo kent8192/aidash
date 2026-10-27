@@ -138,7 +138,12 @@ pub async fn initialize_as(
 	build::current().extension.install(&mut store)?;
 	config.tier_limits = build::current().extension.tier_limits(&store)?;
 	let oauth = Arc::new(aidash_integrations::oauth::McpOAuth::new()?);
-	configure_oauth_connections(&mut store, Some((oauth.clone(), oauth)))?;
+	configure_oauth_connections(
+		&mut store,
+		Some((oauth.clone(), oauth)),
+		&settings.provider_credentials,
+		role,
+	)?;
 	configure_tenant_secrets(&mut store, &settings.provider_credentials, role)?;
 	let registry = Registry::new(store.pool.clone(), &store.deployment)?
 		.with_keyless_origins(store.keyless.clone())
@@ -2708,22 +2713,32 @@ pub(crate) fn admitted_semantic_transport(
 	transport
 }
 
-/// Installs the per-person Connection service when an OAuth adapter and a local
-/// Secret Store reader are available. Cloud supplies its broker in W7.
+/// Installs per-person Connections with a local reader on self-hosted or the
+/// existing Tenant Secret broker on Cloud and Dedicated.
 pub fn configure_oauth_connections(
 	store: &mut Store,
 	adapter: Option<(
 		Arc<dyn aidash_application::ports::oauth::OAuthDiscovery>,
 		Arc<dyn aidash_application::ports::oauth::OAuthTokens>,
 	)>,
+	settings: &crate::apps::identity::serializers::provider_credentials::Settings,
+	role: ProcessRole,
 ) -> Result<()> {
-	let (Some((discovery, tokens)), Some(credentials), Some(reader)) = (
-		adapter,
-		store.provider_credentials.as_ref(),
-		store.provider_key_material_reader.clone(),
-	) else {
+	let (Some((discovery, tokens)), Some(credentials)) =
+		(adapter, store.provider_credentials.as_ref())
+	else {
 		return Ok(());
 	};
+	let reader = store.provider_key_material_reader.clone();
+	let calls = build::current().extension.connection_calls(
+		settings.broker.as_ref(),
+		settings.tenant_secret_broker.as_ref(),
+		role == ProcessRole::Worker,
+	)?;
+	if reader.is_none() && calls.is_none() {
+		return Ok(());
+	}
+
 	store.oauth_connections = Some(Arc::new(aidash_application::oauth_connections::Service {
 		repository: Arc::new(
 			crate::apps::identity::repositories::oauth_connections::NativeRepository {
@@ -2733,6 +2748,7 @@ pub fn configure_oauth_connections(
 		),
 		store: credentials.store.clone(),
 		reader,
+		calls,
 		discovery,
 		tokens,
 		policy: Arc::new(

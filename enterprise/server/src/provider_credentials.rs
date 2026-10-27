@@ -123,6 +123,35 @@ pub fn secret_calls(
 	tenant_secret_broker: Option<&serde_json::Value>,
 	worker: bool,
 ) -> Result<Option<Arc<dyn aidash_application::tenant_secrets::SecretCalls>>> {
+	let Some((endpoint, configuration)) = call_configuration(broker, tenant_secret_broker, worker)?
+	else {
+		return Ok(None);
+	};
+	Ok(Some(Arc::new(SecretCallsAdapter::new(
+		&endpoint,
+		configuration,
+	)?)))
+}
+
+pub fn connection_calls(
+	broker: Option<&serde_json::Value>,
+	tenant_secret_broker: Option<&serde_json::Value>,
+	worker: bool,
+) -> Result<Option<Arc<dyn aidash_application::connection_calls::ConnectionCalls>>> {
+	let Some((endpoint, configuration)) = call_configuration(broker, tenant_secret_broker, worker)?
+	else {
+		return Ok(None);
+	};
+	Ok(Some(Arc::new(
+		aidash_gcp::capability::connections::ConnectionCallsAdapter::new(&endpoint, configuration)?,
+	)))
+}
+
+fn call_configuration(
+	broker: Option<&serde_json::Value>,
+	tenant_secret_broker: Option<&serde_json::Value>,
+	worker: bool,
+) -> Result<Option<(String, SecretIssuerConfiguration)>> {
 	let Some(tenant_secret_broker) = tenant_secret_broker else {
 		return Ok(None);
 	};
@@ -148,10 +177,7 @@ pub fn secret_calls(
 		kid,
 	};
 	configuration.validate()?;
-	Ok(Some(Arc::new(SecretCallsAdapter::new(
-		&tenant.endpoint,
-		configuration,
-	)?)))
+	Ok(Some((tenant.endpoint, configuration)))
 }
 
 #[cfg(test)]

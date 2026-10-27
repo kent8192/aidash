@@ -394,7 +394,8 @@ impl RealToolTransport for Repository {
 					value.expose_secret().to_owned()
 				}
 				crate::tenant_secrets::CallSecret::Brokered { .. }
-				| crate::tenant_secrets::CallSecret::Connection { .. } => {
+				| crate::tenant_secrets::CallSecret::Connection { .. }
+				| crate::tenant_secrets::CallSecret::BrokeredConnection { .. } => {
 					panic!("fixture resolves a self-hosted value")
 				}
 			}));
