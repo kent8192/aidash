@@ -669,6 +669,14 @@ def render():
                 headers={"Cookie": "__Host-aidash-login=tampered"},
             )
             continue
+        if path == "/auth/connections/callback":
+            for label, suffix, headers in [
+                ("Connection callback requires browser binding", "?state=invalid&code=invalid", {}),
+                ("Connection callback rejects missing state", "?code=invalid", {"Cookie": "aidash-connection-authorization=tampered; __Host-aidash-connection-authorization=tampered"}),
+                ("Connection callback rejects unknown state", "?state=invalid&code=invalid", {"Cookie": "aidash-connection-authorization=tampered; __Host-aidash-connection-authorization=tampered"}),
+            ]:
+                add(endpoint, label, 401, path=path + suffix, headers=headers)
+            continue
         if path == "/auth/provider-authorizations/{provider}/callback":
             # Unbound or unknown states fail before any provider exchange.
             uri = path.replace("{provider}", "openrouter")
@@ -936,6 +944,25 @@ def render():
             elif route["query_parameters"]:
                 add(endpoint, "Credential paging rejects nonnumeric offsets", 400,
                     path=uri + "?offset=invalid", headers=DEPLOYMENT_ADMINISTRATOR)
+            continue
+        if route["source"] == "server/src/apps/identity/views/oauth_connections.rs":
+            body = json.dumps({"resource": "https://mcp.example/mcp"}) if route["json"] else None
+            uri = path + "?resource=https%3A%2F%2Fmcp.example%2Fmcp" if path.endswith("/probe") else path
+            add(endpoint, "Forged bearer cannot access OAuth Connections", 401,
+                path=uri, headers={"Authorization": "Bearer forged"}, body=body)
+            if not path.endswith("/authorizations"):
+                add(endpoint, "Deployment Administrator has no person connection authority", 403,
+                    path=uri, headers=DEPLOYMENT_ADMINISTRATOR, body=body,
+                    immutable=method == "DELETE")
+            if path.endswith("/authorizations"):
+                for headers in [DEPLOYMENT_ADMINISTRATOR, SUBJECT]:
+                    add(endpoint, "Connection consent requires a browser session", 403,
+                        path=uri, headers=headers, body=body, immutable=True,
+                        checks='expect(res.getHeader("set-cookie") || "").not.to.include("connection-authorization");')
+                add(endpoint, "Connection start requires an MCP resource", 422,
+                    headers=SUBJECT, body="{}", immutable=True)
+                add(endpoint, "Pasted connection tokens are refused", 422,
+                    headers=SUBJECT, body=json.dumps({"resource": "https://mcp.example/mcp", "access_token": "pasted"}), immutable=True)
             continue
         if route["source"] == "server/src/apps/identity/views/provider_authorizations.rs":
             # Provider Authorization binds a browser session; bearer callers

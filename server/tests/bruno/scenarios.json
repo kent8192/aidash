@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "endpoint_count": 340,
+  "endpoint_count": 347,
   "requests": [
     {
       "name": "Health reports the configured node",
@@ -14819,6 +14819,281 @@
       "status": 403,
       "required_checks": [
         "Exact HTTP 403",
+        "Stable authorization error envelope"
+      ]
+    },
+    {
+      "name": "1349 connection-list - Anonymous request is rejected",
+      "file": "contracts/1349-connection-list.bru",
+      "endpoint": "GET /api/tenants/{tenant}/connections",
+      "scenario": "Anonymous request is rejected",
+      "status": 401,
+      "required_checks": [
+        "Exact HTTP 401",
+        "Stable authorization error envelope"
+      ]
+    },
+    {
+      "name": "1350 connection-list - Forged bearer cannot access OAuth Connections",
+      "file": "contracts/1350-connection-list.bru",
+      "endpoint": "GET /api/tenants/{tenant}/connections",
+      "scenario": "Forged bearer cannot access OAuth Connections",
+      "status": 401,
+      "required_checks": [
+        "Exact HTTP 401",
+        "Stable authorization error envelope"
+      ]
+    },
+    {
+      "name": "1351 connection-list - Deployment Administrator has no person connection authority",
+      "file": "contracts/1351-connection-list.bru",
+      "endpoint": "GET /api/tenants/{tenant}/connections",
+      "scenario": "Deployment Administrator has no person connection authority",
+      "status": 403,
+      "required_checks": [
+        "Exact HTTP 403",
+        "Stable authorization error envelope"
+      ]
+    },
+    {
+      "name": "1352 connection-disconnect - Anonymous request is rejected",
+      "file": "contracts/1352-connection-disconnect.bru",
+      "endpoint": "DELETE /api/tenants/{tenant}/connections/{id}",
+      "scenario": "Anonymous request is rejected",
+      "status": 401,
+      "required_checks": [
+        "Rejected input preserves committed workspace state",
+        "Exact HTTP 401",
+        "Stable authorization error envelope"
+      ]
+    },
+    {
+      "name": "1353 connection-disconnect - Forged bearer cannot access OAuth Connections",
+      "file": "contracts/1353-connection-disconnect.bru",
+      "endpoint": "DELETE /api/tenants/{tenant}/connections/{id}",
+      "scenario": "Forged bearer cannot access OAuth Connections",
+      "status": 401,
+      "required_checks": [
+        "Exact HTTP 401",
+        "Stable authorization error envelope"
+      ]
+    },
+    {
+      "name": "1354 connection-disconnect - Deployment Administrator has no person connection authority",
+      "file": "contracts/1354-connection-disconnect.bru",
+      "endpoint": "DELETE /api/tenants/{tenant}/connections/{id}",
+      "scenario": "Deployment Administrator has no person connection authority",
+      "status": 403,
+      "required_checks": [
+        "Rejected input preserves committed workspace state",
+        "Exact HTTP 403",
+        "Stable authorization error envelope"
+      ]
+    },
+    {
+      "name": "1355 connection-members - Anonymous request is rejected",
+      "file": "contracts/1355-connection-members.bru",
+      "endpoint": "GET /api/tenants/{tenant}/members/{subject}/connections",
+      "scenario": "Anonymous request is rejected",
+      "status": 401,
+      "required_checks": [
+        "Exact HTTP 401",
+        "Stable authorization error envelope"
+      ]
+    },
+    {
+      "name": "1356 connection-members - Forged bearer cannot access OAuth Connections",
+      "file": "contracts/1356-connection-members.bru",
+      "endpoint": "GET /api/tenants/{tenant}/members/{subject}/connections",
+      "scenario": "Forged bearer cannot access OAuth Connections",
+      "status": 401,
+      "required_checks": [
+        "Exact HTTP 401",
+        "Stable authorization error envelope"
+      ]
+    },
+    {
+      "name": "1357 connection-members - Deployment Administrator has no person connection authority",
+      "file": "contracts/1357-connection-members.bru",
+      "endpoint": "GET /api/tenants/{tenant}/members/{subject}/connections",
+      "scenario": "Deployment Administrator has no person connection authority",
+      "status": 403,
+      "required_checks": [
+        "Exact HTTP 403",
+        "Stable authorization error envelope"
+      ]
+    },
+    {
+      "name": "1358 connection-force-disconnect - Anonymous request is rejected",
+      "file": "contracts/1358-connection-force-disconnect.bru",
+      "endpoint": "DELETE /api/tenants/{tenant}/members/{subject}/connections/{id}",
+      "scenario": "Anonymous request is rejected",
+      "status": 401,
+      "required_checks": [
+        "Rejected input preserves committed workspace state",
+        "Exact HTTP 401",
+        "Stable authorization error envelope"
+      ]
+    },
+    {
+      "name": "1359 connection-force-disconnect - Forged bearer cannot access OAuth Connections",
+      "file": "contracts/1359-connection-force-disconnect.bru",
+      "endpoint": "DELETE /api/tenants/{tenant}/members/{subject}/connections/{id}",
+      "scenario": "Forged bearer cannot access OAuth Connections",
+      "status": 401,
+      "required_checks": [
+        "Exact HTTP 401",
+        "Stable authorization error envelope"
+      ]
+    },
+    {
+      "name": "1360 connection-force-disconnect - Deployment Administrator has no person connection authority",
+      "file": "contracts/1360-connection-force-disconnect.bru",
+      "endpoint": "DELETE /api/tenants/{tenant}/members/{subject}/connections/{id}",
+      "scenario": "Deployment Administrator has no person connection authority",
+      "status": 403,
+      "required_checks": [
+        "Rejected input preserves committed workspace state",
+        "Exact HTTP 403",
+        "Stable authorization error envelope"
+      ]
+    },
+    {
+      "name": "1361 connection-probe - Anonymous request is rejected",
+      "file": "contracts/1361-connection-probe.bru",
+      "endpoint": "GET /api/tenants/{tenant}/connections/probe",
+      "scenario": "Anonymous request is rejected",
+      "status": 401,
+      "required_checks": [
+        "Exact HTTP 401",
+        "Stable authorization error envelope"
+      ]
+    },
+    {
+      "name": "1362 connection-probe - Forged bearer cannot access OAuth Connections",
+      "file": "contracts/1362-connection-probe.bru",
+      "endpoint": "GET /api/tenants/{tenant}/connections/probe",
+      "scenario": "Forged bearer cannot access OAuth Connections",
+      "status": 401,
+      "required_checks": [
+        "Exact HTTP 401",
+        "Stable authorization error envelope"
+      ]
+    },
+    {
+      "name": "1363 connection-probe - Deployment Administrator has no person connection authority",
+      "file": "contracts/1363-connection-probe.bru",
+      "endpoint": "GET /api/tenants/{tenant}/connections/probe",
+      "scenario": "Deployment Administrator has no person connection authority",
+      "status": 403,
+      "required_checks": [
+        "Exact HTTP 403",
+        "Stable authorization error envelope"
+      ]
+    },
+    {
+      "name": "1364 connection-start - Anonymous request is rejected",
+      "file": "contracts/1364-connection-start.bru",
+      "endpoint": "POST /api/tenants/{tenant}/connections/authorizations",
+      "scenario": "Anonymous request is rejected",
+      "status": 401,
+      "required_checks": [
+        "Rejected input preserves committed workspace state",
+        "Exact HTTP 401",
+        "Stable authorization error envelope"
+      ]
+    },
+    {
+      "name": "1365 connection-start - Forged bearer cannot access OAuth Connections",
+      "file": "contracts/1365-connection-start.bru",
+      "endpoint": "POST /api/tenants/{tenant}/connections/authorizations",
+      "scenario": "Forged bearer cannot access OAuth Connections",
+      "status": 401,
+      "required_checks": [
+        "Exact HTTP 401",
+        "Stable authorization error envelope"
+      ]
+    },
+    {
+      "name": "1366 connection-start - Connection consent requires a browser session",
+      "file": "contracts/1366-connection-start.bru",
+      "endpoint": "POST /api/tenants/{tenant}/connections/authorizations",
+      "scenario": "Connection consent requires a browser session",
+      "status": 403,
+      "required_checks": [
+        "Rejected input preserves committed workspace state",
+        "Exact HTTP 403",
+        "Stable authorization error envelope",
+        "Connection consent requires a browser session contract"
+      ]
+    },
+    {
+      "name": "1367 connection-start - Connection consent requires a browser session",
+      "file": "contracts/1367-connection-start.bru",
+      "endpoint": "POST /api/tenants/{tenant}/connections/authorizations",
+      "scenario": "Connection consent requires a browser session",
+      "status": 403,
+      "required_checks": [
+        "Rejected input preserves committed workspace state",
+        "Exact HTTP 403",
+        "Stable authorization error envelope",
+        "Connection consent requires a browser session contract"
+      ]
+    },
+    {
+      "name": "1368 connection-start - Connection start requires an MCP resource",
+      "file": "contracts/1368-connection-start.bru",
+      "endpoint": "POST /api/tenants/{tenant}/connections/authorizations",
+      "scenario": "Connection start requires an MCP resource",
+      "status": 422,
+      "required_checks": [
+        "Rejected input preserves committed workspace state",
+        "Exact HTTP 422",
+        "Rejection is diagnostic and does not disclose SQL or credentials"
+      ]
+    },
+    {
+      "name": "1369 connection-start - Pasted connection tokens are refused",
+      "file": "contracts/1369-connection-start.bru",
+      "endpoint": "POST /api/tenants/{tenant}/connections/authorizations",
+      "scenario": "Pasted connection tokens are refused",
+      "status": 422,
+      "required_checks": [
+        "Rejected input preserves committed workspace state",
+        "Exact HTTP 422",
+        "Rejection is diagnostic and does not disclose SQL or credentials"
+      ]
+    },
+    {
+      "name": "1370 connection-callback - Connection callback requires browser binding",
+      "file": "contracts/1370-connection-callback.bru",
+      "endpoint": "GET /auth/connections/callback",
+      "scenario": "Connection callback requires browser binding",
+      "status": 401,
+      "required_checks": [
+        "Exact HTTP 401",
+        "Stable authorization error envelope"
+      ]
+    },
+    {
+      "name": "1371 connection-callback - Connection callback rejects missing state",
+      "file": "contracts/1371-connection-callback.bru",
+      "endpoint": "GET /auth/connections/callback",
+      "scenario": "Connection callback rejects missing state",
+      "status": 401,
+      "required_checks": [
+        "Exact HTTP 401",
+        "Stable authorization error envelope"
+      ]
+    },
+    {
+      "name": "1372 connection-callback - Connection callback rejects unknown state",
+      "file": "contracts/1372-connection-callback.bru",
+      "endpoint": "GET /auth/connections/callback",
+      "scenario": "Connection callback rejects unknown state",
+      "status": 401,
+      "required_checks": [
+        "Exact HTTP 401",
         "Stable authorization error envelope"
       ]
     }

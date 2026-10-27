@@ -252,6 +252,7 @@ pub(crate) async fn retire_unmapped(
 	subject: &str,
 	actor: &str,
 ) -> Result<()> {
+	super::oauth_connections::retire_unmapped(f, tenant, subject, actor).await?;
 	let Some(service) = &f.store.plan_connections else {
 		return Ok(());
 	};
