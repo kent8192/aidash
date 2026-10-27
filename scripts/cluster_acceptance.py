@@ -26,9 +26,12 @@ OWNER_PASSWORD = "acceptance-owner-password"
 SERVER_PASSWORD = "acceptance-server-password"
 
 
-def configure_research(base, node, fixture_url):
-    """Register and approve the research closure as its Tenant's subject."""
-    tenant, subject = tenant_subject(base, "Cluster acceptance", "alice", agents=(
+def configure_research(base, node, fixture_url, issue):
+    """Register and approve the research closure as its Tenant's subject.
+
+    `issue(tenant, subject)` mints the Tenant's first Subject Credential from the host (#484).
+    """
+    tenant, subject = tenant_subject(base, "Cluster acceptance", "alice", issue, agents=(
         "coordinator@1.0.0", "researcher@1.0.0",
     ))
     token = subject["token"]
@@ -47,7 +50,7 @@ def configure_research(base, node, fixture_url):
     for entry in entries:
         api_request(base, "/api/registry", entry, token=token)
     approve(base, tenant, token, entries)
-    return token, default_node(base, tenant)[1]
+    return token, default_node(base, tenant, token)[1]
 
 
 def main():
@@ -145,7 +148,12 @@ def main():
         base_a = bases[0]
         # Research stays on Node A, as in golden_path.py. Scoped Golden Path
         # exercises the grant/admission protocol for execution across Nodes.
-        token, address = configure_research(base_a, "aidash://ops-a", "http://fixture:8000")
+        def issue_credential(tenant, subject):
+            # A Deployment Administrator holds no Tenant authority (#484): the host command issues the first credential.
+            return json.loads(kube("exec", "deployment/ops-a-aidash-server", "--", "aidash", "issue-subject-credential",
+                                   "--tenant", tenant, "--subject", subject, "--label", "acceptance_host", "--expires-in-seconds", "3600").strip().splitlines()[-1])
+
+        token, address = configure_research(base_a, "aidash://ops-a", "http://fixture:8000", issue_credential)
         discovered = api_request(base_a, "/api/discover", {"capability": "web.search", "language": "ja"}, token=token)
         assert {a["node_id"] for a in discovered["agents"]} == {address}
 
