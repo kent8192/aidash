@@ -191,23 +191,47 @@ function object(value: unknown): Record<string, unknown> | undefined {
     : undefined;
 }
 
+function argumentRecord(value: unknown): Record<string, unknown> | undefined {
+  if (typeof value !== "string") return object(value);
+  try {
+    const parsed: unknown = JSON.parse(value);
+    return object(parsed);
+  } catch {
+    return undefined;
+  }
+}
+
 function ActivityItem({ value, ja }: { value: unknown; ja: boolean }) {
   const item = object(value);
   if (!item) return <JsonView value={value} />;
   const result = object(item.result) ?? object(item.output) ?? item;
   const citation = object(item.url_citation) ?? result;
   const action = object(item.action);
-  const type = String(item.type ?? item.name ?? "");
+  const arguments_ = argumentRecord(item.arguments);
   const labels: Record<string, [string, string]> = {
     web_search_call: ["Web search", "Web 検索"],
     web_fetch_call: ["Page retrieval", "ページの取得"],
     datetime_call: ["Current time", "現在の時刻"],
     fusion_call: ["Fusion analysis", "Fusion の分析"],
     url_citation: ["Reported source", "報告されたソース"],
+    "openrouter:web_search": ["Web search", "Web 検索"],
+    "openrouter:web_fetch": ["Page retrieval", "ページの取得"],
+    "openrouter:datetime": ["Current time", "現在の時刻"],
+    "openrouter:fusion": ["Fusion analysis", "Fusion の分析"],
   };
-  const label = labels[type]?.[ja ? 1 : 0] ?? type;
-  const query = action?.query ?? item.query;
-  const url = citation.url ?? item.url;
+  const name = typeof item.name === "string" ? item.name : "";
+  const type = name in labels ? name : String(item.type ?? "");
+  const label =
+    labels[type]?.[ja ? 1 : 0] ??
+    (type === "function_call_output"
+      ? ja
+        ? "Provider tool の結果"
+        : "Provider tool result"
+      : ja
+        ? "Provider tool の活動"
+        : "Provider tool activity");
+  const query = action?.query ?? item.query ?? arguments_?.query;
+  const url = citation.url ?? item.url ?? arguments_?.url;
   const title = citation.title ?? item.title;
   const text = result.content ?? result.datetime;
   const analysis = object(result.analysis);
