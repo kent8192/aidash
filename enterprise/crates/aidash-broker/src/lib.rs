@@ -260,6 +260,8 @@ fn route(request: &Request, claims: &Claims) -> Result<(Operation, String, usize
 	}
 	let result = match (request.method().as_str(), path) {
 		("POST", "chat/completions") => (Operation::Chat, 1024 * 1024),
+		// OpenRouter's Responses API is the same inference authority as chat.
+		("POST", "responses") => (Operation::Chat, 1024 * 1024),
 		("POST", "embeddings") => (Operation::Embeddings, 1024 * 1024),
 		// System One answers carry only probabilities and usage (ADR 0041).
 		("POST", "systemone") => (Operation::Decision, DECISION_LIMIT),
@@ -285,6 +287,8 @@ fn route(request: &Request, claims: &Claims) -> Result<(Operation, String, usize
 }
 /// The Decisions API's path under the API root.
 const DECISIONS_PATH: &str = "alpha/decisions";
+/// OpenRouter's Responses API under the API root.
+const RESPONSES_PATH: &str = "v1/responses";
 fn body_policy(body: &[u8], claims: &Claims, op: Operation, path: &str) -> Result<(), Failure> {
 	if op == Operation::Discovery {
 		return if body.is_empty() {
@@ -294,6 +298,7 @@ fn body_policy(body: &[u8], claims: &Claims, op: Operation, path: &str) -> Resul
 		};
 	}
 	let value = policy::parse(body)?;
+	let responses = path == RESPONSES_PATH;
 	// A capability authorizes one model; OpenRouter's models adds fallback models.
 	if value.get("model").and_then(Value::as_str) != Some(&claims.model)
 		|| value.get("models").is_some()
@@ -311,7 +316,18 @@ fn body_policy(body: &[u8], claims: &Claims, op: Operation, path: &str) -> Resul
 	{
 		return Err(Failure::ClaimViolation);
 	}
-	if op == Operation::Chat
+	if op == Operation::Chat && responses {
+		// Responses has one completion limit and no alternate names.
+		if value.get("max_tokens").is_some()
+			|| value.get("max_completion_tokens").is_some()
+			|| value
+				.get("max_output_tokens")
+				.and_then(Value::as_u64)
+				.is_none_or(|max| max == 0 || max > claims.max_output_tokens)
+		{
+			return Err(Failure::ClaimViolation);
+		}
+	} else if op == Operation::Chat
 		// Keep one completion limit; the provider also accepts an alternate name.
 		&& (value.get("max_completion_tokens").is_some()
 			|| value
@@ -321,9 +337,25 @@ fn body_policy(body: &[u8], claims: &Claims, op: Operation, path: &str) -> Resul
 	{
 		return Err(Failure::ClaimViolation);
 	}
-	// Only client-executed function tools are within signed inference authority.
-	// Provider tools/plugins can add external data processing and unbounded fees.
-	if op == Operation::Chat
+	if op == Operation::Chat && responses {
+		// Only client-executed function tools and no provider tool controls.
+		if value.get("plugins").is_some()
+			|| value.get("preset").is_some()
+			|| value.get("deferred_tools").is_some()
+			|| value.get("max_tool_calls").is_some()
+			|| value.get("stop_server_tools_when").is_some()
+			|| value.get("tools").is_some_and(|tools| {
+				tools.as_array().is_none_or(|tools| {
+					tools
+						.iter()
+						.any(|tool| tool.get("type").and_then(Value::as_str) != Some("function"))
+				})
+			}) {
+			return Err(Failure::ClaimViolation);
+		}
+	} else if op == Operation::Chat
+		// Only client-executed function tools are within signed inference authority.
+		// Provider tools/plugins can add external data processing and unbounded fees.
 		&& (value.get("plugins").is_some()
 			|| value.get("web_search_options").is_some()
 			|| value.get("x_search_filter").is_some()
@@ -338,8 +370,30 @@ fn body_policy(body: &[u8], claims: &Claims, op: Operation, path: &str) -> Resul
 			})) {
 		return Err(Failure::ClaimViolation);
 	}
-	// The signed completion-token bound authorizes text output only.
-	if op == Operation::Chat
+	if op == Operation::Chat && responses {
+		// The signed completion-token bound authorizes text output only. The
+		// proxy stores nothing, so stateful and stored-prompt controls are
+		// outside the signed authority.
+		if value
+			.get("modalities")
+			.is_some_and(|modalities| modalities != &json!(["text"]))
+			|| value.get("image_config").is_some()
+			|| value.get("audio").is_some()
+			|| value
+				.get("store")
+				.is_some_and(|store| store != &Value::Bool(false))
+			|| value
+				.get("previous_response_id")
+				.is_some_and(|value| !value.is_null())
+			|| value
+				.get("background")
+				.is_some_and(|value| value != &Value::Bool(false))
+			|| value.get("prompt").is_some()
+		{
+			return Err(Failure::ClaimViolation);
+		}
+	} else if op == Operation::Chat
+		// The signed completion-token bound authorizes text output only.
 		&& (value
 			.get("modalities")
 			.is_some_and(|modalities| modalities != &json!(["text"]))
@@ -357,7 +411,11 @@ fn body_policy(body: &[u8], claims: &Claims, op: Operation, path: &str) -> Resul
 		return Err(Failure::ClaimViolation);
 	}
 	if op == Operation::Chat {
-		policy::chat_input(&value, claims.cache_breakpoints)?;
+		if responses {
+			policy::responses_input(&value, claims.cache_breakpoints)?;
+		} else {
+			policy::chat_input(&value, claims.cache_breakpoints)?;
+		}
 	}
 	if op == Operation::Decision {
 		policy::decision_input(&value, path == DECISIONS_PATH, &claims.hosts)?;
@@ -387,7 +445,11 @@ fn audit(
 }
 /// Copy only numeric token usage, never arbitrary upstream fields into logs.
 fn usage(value: &Value) -> Option<Value> {
-	let v = value.get("usage")?;
+	// Chat Completions reports usage at the top level; a Responses terminal
+	// event carries it inside `response`.
+	let v = value
+		.get("usage")
+		.or_else(|| value.pointer("/response/usage"))?;
 	let mut clean = serde_json::Map::new();
 	for field in [
 		"prompt_tokens",

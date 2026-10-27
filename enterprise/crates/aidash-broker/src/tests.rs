@@ -1532,3 +1532,215 @@ async fn system_one_requires_a_decision_token_and_an_exact_body() {
 	assert_eq!(f.provider.calls.load(Ordering::SeqCst), 0);
 	assert_eq!(f.source.reads.load(Ordering::SeqCst), 0);
 }
+
+fn responses() -> Value {
+	json!({
+		"model":"author/model",
+		"max_output_tokens":10,
+		"provider":{"zdr":true,"require_parameters":true},
+		"input":[{"role":"user","content":[{"type":"input_text","text":"hello"}]}],
+		"tools":[{"type":"function","name":"search","description":"Search","parameters":{"type":"object"}}]
+	})
+}
+
+#[tokio::test]
+async fn responses_uses_chat_authority_and_reaches_the_provider_path() {
+	let f = Fixture::new().await;
+	let response = f
+		.request(&f.claims(), "POST", "/api/v1/responses", responses())
+		.await;
+	assert_eq!(response.status(), 200);
+	json_body(response).await;
+	assert_eq!(
+		f.provider.paths.lock().unwrap().last(),
+		Some(&"/api/v1/responses".to_owned())
+	);
+	assert_eq!(
+		f.provider.bearer.lock().unwrap().last(),
+		Some(&format!("Bearer {CANARY}"))
+	);
+	assert_eq!(f.source.reads.load(Ordering::SeqCst), 1);
+}
+
+#[tokio::test]
+async fn responses_rejects_unbounded_or_provider_side_authority_before_key_lookup() {
+	let f = Fixture::new().await;
+	let png = "data:image/png;base64,iVBORw0KGgo=";
+	let mut missing_bound = responses();
+	missing_bound
+		.as_object_mut()
+		.unwrap()
+		.remove("max_output_tokens");
+	let mut over_bound = responses();
+	over_bound["max_output_tokens"] = json!(11);
+	let mut media = responses();
+	media["input"] = json!([{"role":"user","content":[
+		{"type":"input_text","text":"look"},
+		{"type":"input_image","image_url":png}
+	]}]);
+	let cases = vec![
+		("missing output bound", missing_bound),
+		("over the signed bound", over_bound),
+		("alternate completion name", {
+			let mut body = responses();
+			body["max_tokens"] = json!(10);
+			body
+		}),
+		("provider tool", {
+			let mut body = responses();
+			body["tools"] = json!([{"type":"web_search"}]);
+			body
+		}),
+		("plugin", {
+			let mut body = responses();
+			body["plugins"] = json!([{"id":"web"}]);
+			body
+		}),
+		("deferred tools", {
+			let mut body = responses();
+			body["deferred_tools"] = json!({"protocol":"v1"});
+			body
+		}),
+		("stateful store", {
+			let mut body = responses();
+			body["store"] = json!(true);
+			body
+		}),
+		("previous response", {
+			let mut body = responses();
+			body["previous_response_id"] = json!("resp-1");
+			body
+		}),
+		("background", {
+			let mut body = responses();
+			body["background"] = json!(true);
+			body
+		}),
+		("stored prompt", {
+			let mut body = responses();
+			body["prompt"] = json!({"id":"prompt-1"});
+			body
+		}),
+		("image output", {
+			let mut body = responses();
+			body["modalities"] = json!(["text", "image"]);
+			body
+		}),
+		("image config", {
+			let mut body = responses();
+			body["image_config"] = json!({"aspect_ratio":"1:1"});
+			body
+		}),
+		("chat messages", {
+			let mut body = responses();
+			body["messages"] = json!([{"role":"user","content":"x"}]);
+			body
+		}),
+		("remote image", {
+			let mut body = responses();
+			body["input"] = json!([{"role":"user","content":[
+				{"type":"input_image","image_url":"https://example.invalid/x.png"}
+			]}]);
+			body
+		}),
+		("wrong image signature", {
+			let mut body = responses();
+			body["input"] = json!([{"role":"user","content":[
+				{"type":"input_image","image_url":"data:image/png;base64,d3Jvbmc="}
+			]}]);
+			body
+		}),
+		("array tool output", {
+			let mut body = responses();
+			body["input"] = json!([
+				{"type":"function_call","call_id":"call-1","name":"search","arguments":"{}"},
+				{"type":"function_call_output","call_id":"call-1","output":[{"type":"input_text","text":"x"}]}
+			]);
+			body
+		}),
+		("top level cache control", {
+			let mut body = responses();
+			body["cache_control"] = json!({"type":"ephemeral"});
+			body
+		}),
+		("cache control on an image", {
+			let mut body = responses();
+			body["input"] = json!([{"role":"user","content":[
+				{"type":"input_text","text":"look"},
+				{"type":"input_image","image_url":png,"cache_control":{"type":"ephemeral"}}
+			]}]);
+			body
+		}),
+	];
+	for (name, body) in cases {
+		let reads = f.source.reads.load(Ordering::SeqCst);
+		let calls = f.provider.calls.load(Ordering::SeqCst);
+		let response = f
+			.request(&f.claims(), "POST", "/api/v1/responses", body)
+			.await;
+		assert_eq!(response.status(), 403, "{name}");
+		assert_eq!(
+			json_body(response).await["error"]["code"],
+			"capability_claim_violation",
+			"{name}"
+		);
+		assert_eq!(f.source.reads.load(Ordering::SeqCst), reads, "{name}");
+		assert_eq!(f.provider.calls.load(Ordering::SeqCst), calls, "{name}");
+	}
+	let response = f
+		.request(&f.claims(), "POST", "/api/v1/responses", media)
+		.await;
+	assert_eq!(response.status(), 200);
+	json_body(response).await;
+	assert_eq!(f.source.reads.load(Ordering::SeqCst), 1);
+	assert_eq!(f.provider.calls.load(Ordering::SeqCst), 1);
+}
+
+#[tokio::test]
+async fn responses_admits_only_signed_text_part_breakpoints() {
+	let f = Fixture::new().await;
+	let mut granted = f.claims();
+	granted.cache_breakpoints = true;
+	let marked = |count: usize| {
+		let mut parts = vec![
+			json!({"type":"input_text","text":"cached","cache_control":{"type":"ephemeral"}});
+			count
+		];
+		parts.push(json!({"type":"input_text","text":"volatile"}));
+		let mut body = responses();
+		body["input"] = json!([{"role":"user","content":parts}]);
+		body
+	};
+	for count in 1..=4 {
+		let response = f
+			.request(&granted, "POST", "/api/v1/responses", marked(count))
+			.await;
+		assert_eq!(response.status(), 200, "{count} breakpoints");
+		json_body(response).await;
+	}
+	for count in [5] {
+		let response = f
+			.request(&granted, "POST", "/api/v1/responses", marked(count))
+			.await;
+		assert_eq!(response.status(), 403, "{count} breakpoints");
+		json_body(response).await;
+	}
+	let response = f
+		.request(&f.claims(), "POST", "/api/v1/responses", marked(1))
+		.await;
+	assert_eq!(response.status(), 403);
+	json_body(response).await;
+}
+
+#[test]
+fn responses_stream_usage_is_audited_from_the_terminal_event() {
+	let usage = usage(&json!({
+		"type":"response.completed",
+		"response":{"usage":{"input_tokens":3,"output_tokens":4,"total_tokens":7,"cost":0.000002}}
+	}))
+	.unwrap();
+	assert_eq!(usage["input_tokens"], 3);
+	assert_eq!(usage["output_tokens"], 4);
+	assert_eq!(usage["total_tokens"], 7);
+	assert_eq!(usage["cost"], 0.000002);
+}
