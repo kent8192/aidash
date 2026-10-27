@@ -200,14 +200,18 @@ async fn oauth_connections_answer_only_unanswered_requests_of_the_resource_and_c
 
 /// These routes never need an outbound OAuth request: pending resources have
 /// no token, and a Subject Credential must fail before authorization discovery.
-struct OfflineOAuth;
+struct ProbeOnlyOAuth;
 #[async_trait::async_trait]
-impl aidash_application::ports::oauth::OAuthDiscovery for OfflineOAuth {
+impl aidash_application::ports::oauth::OAuthDiscovery for ProbeOnlyOAuth {
 	async fn protected_resource(
 		&self,
-		_: &str,
+		resource: &str,
 	) -> aidash_application::Result<Option<aidash_application::ports::oauth::ProtectedResource>> {
-		Err(aidash_application::Error::External("offline".into()))
+		Ok(Some(aidash_application::ports::oauth::ProtectedResource {
+			resource: resource.into(),
+			authorization_servers: vec!["https://auth.example".into()],
+			scopes_supported: Some(vec!["read".into(), "write".into()]),
+		}))
 	}
 	async fn authorization_server(
 		&self,
@@ -225,7 +229,7 @@ impl aidash_application::ports::oauth::OAuthDiscovery for OfflineOAuth {
 	}
 }
 #[async_trait::async_trait]
-impl aidash_application::ports::oauth::OAuthTokens for OfflineOAuth {
+impl aidash_application::ports::oauth::OAuthTokens for ProbeOnlyOAuth {
 	async fn exchange(
 		&self,
 		_: &aidash_application::ports::oauth::AuthorizationServer,
@@ -276,6 +280,16 @@ async fn oauth_connections_subject_credentials_manage_only_their_persons_connect
 		common::bootstrap(&f, &fixture.application, "http://127.0.0.1:9").await;
 	policy["subjects"]["bob"] = json!({"kind":"user"});
 	policy["subjects"]["bot"] = json!({"kind":"service"});
+	policy["subjects"]["charlie"] = json!({"kind":"user"});
+	policy["policies"].as_array_mut().unwrap().push(json!({
+		"id":"bob-cannot-update-ceilings", "effect":"deny", "subjects":{"ids":["bob"]},
+		"actions":["connection.scopes.update"], "resources":{"kinds":["connection_scopes"]}
+	}));
+	policy["policies"].as_array_mut().unwrap().extend([
+        json!({"id":"alice-registry-only", "effect":"deny", "subjects":{"ids":["alice"]}, "actions":["secret.use"], "resources":{"kinds":["secret"]}}),
+        json!({"id":"bob-secret-only", "effect":"deny", "subjects":{"ids":["bob"]}, "actions":["registry.create"], "resources":{"kinds":["registry"]}}),
+        json!({"id":"charlie-cannot-probe", "effect":"deny", "subjects":{"ids":["charlie"]}, "actions":["registry.create", "secret.use"], "resources":{"kinds":["registry", "secret"]}}),
+    ]);
 	let authorization = aidash_server::authorization::Authorization {
 		pool: f.store.control_pool.clone(),
 	};
@@ -290,6 +304,11 @@ async fn oauth_connections_subject_credentials_manage_only_their_persons_connect
 		.unwrap();
 	let bob = authorization
 		.issue_credential("acme", "bob", 3600, "deployment_administrator")
+		.await
+		.unwrap()
+		.token;
+	let charlie = authorization
+		.issue_credential("acme", "charlie", 3600, "deployment_administrator")
 		.await
 		.unwrap()
 		.token;
@@ -315,8 +334,8 @@ async fn oauth_connections_subject_credentials_manage_only_their_persons_connect
 		repository: repository.clone(),
 		store: store.clone(),
 		reader: store.clone(),
-		discovery: Arc::new(OfflineOAuth),
-		tokens: Arc::new(OfflineOAuth),
+		discovery: Arc::new(ProbeOnlyOAuth),
+		tokens: Arc::new(ProbeOnlyOAuth),
 		policy: Arc::new(
 			aidash_server::apps::identity::repositories::connection_policy::NativeConnectionPolicy {
                 pool: f.store.control_pool.clone(),
@@ -356,8 +375,80 @@ async fn oauth_connections_subject_credentials_manage_only_their_persons_connect
 		owned.save(&row).await.unwrap();
 		owned.commit().await.unwrap();
 	}
+	let ceilings = aidash_application::oauth_clients::Service {
+		repository: Arc::new(
+			aidash_server::apps::identity::repositories::oauth_clients::NativeRepository {
+				pool: f.store.control_pool.clone(),
+			},
+		),
+		store: None,
+	};
+	ceilings
+		.put_ceiling("acme", "https://mcp.example/mcp", vec!["read".into()], 0)
+		.await
+		.unwrap();
 	let app = common::application(f.clone()).await;
 	let base = "/api/tenants/acme/connections";
+	let (status, _) = common::request(
+		&app,
+		&charlie,
+		"GET",
+		&format!("{base}/probe?resource=https%3A%2F%2Fmcp.example%2Fmcp"),
+		Value::Null,
+	)
+	.await;
+	assert_eq!(
+		status, 403,
+		"a member without registry.create or secret.use cannot probe"
+	);
+	let (status, probe) = common::request(
+		&app,
+		&alice,
+		"GET",
+		&format!("{base}/probe?resource=https%3A%2F%2Fmcp.example%2Fmcp"),
+		Value::Null,
+	)
+	.await;
+	assert_eq!(
+		status, 200,
+		"registry.create alone permits probing: {probe}"
+	);
+	// The picker needs Tenant bounds even when its person cannot edit them.
+	let (status, probe) = common::request(
+		&app,
+		&bob,
+		"GET",
+		&format!("{base}/probe?resource=https%3A%2F%2FMCP.example%2Fmcp%2F"),
+		Value::Null,
+	)
+	.await;
+	assert_eq!(status, 200, "{probe}");
+	assert_eq!(
+		probe,
+		json!({"oauth":true, "issuer":"https://auth.example", "scopes_supported":["read","write"], "scope_ceiling":["read"]})
+	);
+	use base64::Engine as _;
+	let encoded =
+		base64::engine::general_purpose::URL_SAFE_NO_PAD.encode("https://mcp.example/mcp");
+	let (status, _) = common::request(
+		&app,
+		&bob,
+		"GET",
+		&format!("/api/tenants/acme/connection-scope-ceilings/{encoded}"),
+		Value::Null,
+	)
+	.await;
+	assert_eq!(status, 403);
+	let (status, probe) = common::request(
+		&app,
+		&bob,
+		"GET",
+		&format!("{base}/probe?resource=https%3A%2F%2Fother.example%2Fmcp"),
+		Value::Null,
+	)
+	.await;
+	assert_eq!(status, 200, "{probe}");
+	assert!(probe.get("scope_ceiling").is_none());
 	let (status, listed) = common::request(&app, &alice, "GET", base, Value::Null).await;
 	assert_eq!(status, 200, "{listed}");
 	assert_eq!(listed.as_array().unwrap().len(), 1);

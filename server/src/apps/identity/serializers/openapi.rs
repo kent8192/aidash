@@ -400,7 +400,7 @@ pub(crate) fn register(contracts: &mut Contracts, document: &mut OpenApiSchema) 
 	)?;
 	{
 		use super::oauth_connections as c;
-		use aidash_application::oauth_connections::{Disconnection, Metadata, Probe};
+		use aidash_application::oauth_connections::{Disconnection, Metadata};
 		use views::oauth_connections as v;
 		contracts.response::<_, Vec<Metadata>>(document, v::list, 200, "application/json")?;
 		contracts.path(document, v::list, &["String"])?;
@@ -415,7 +415,7 @@ pub(crate) fn register(contracts: &mut Contracts, document: &mut OpenApiSchema) 
 			"application/json",
 		)?;
 		contracts.path(document, v::force_disconnect, &["String", "String", "Uuid"])?;
-		contracts.response::<_, Probe>(document, v::probe, 200, "application/json")?;
+		contracts.response::<_, c::Probe>(document, v::probe, 200, "application/json")?;
 		contracts.query::<_, c::ProbeQuery>(document, v::probe)?;
 		contracts.path(document, v::probe, &["String"])?;
 		contracts.request::<_, c::Start>(document, v::start)?;

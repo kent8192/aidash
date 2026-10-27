@@ -1,7 +1,7 @@
 //! Browser OAuth orchestration, ownership and live policy checks (ADR 0100).
 use super::super::{
 	models::oauth_connections::OAuthAuthorization,
-	serializers::oauth_connections::{CallbackQuery, Start, Started},
+	serializers::oauth_connections::{CallbackQuery, Probe, Start, Started},
 };
 use super::oidc::{self, BrowserOrigin};
 use crate::{
@@ -10,9 +10,10 @@ use crate::{
 	federation::Federation,
 };
 use aidash_application::{
-	oauth_connections::{Disconnection, Metadata, Outcome, Owner, Probe, Service},
+	oauth_connections::{Disconnection, Metadata, Outcome, Owner, Service},
 	tenancy::TenancyScope,
 };
+use aidash_domain::identity::tenant_administration::COLLECTION;
 use http::{HeaderMap, Method, StatusCode};
 use reinhardt::{Response, injectable};
 use secrecy::ExposeSecret;
@@ -202,15 +203,31 @@ impl Connections {
 			return Err(Error::Forbidden);
 		}
 		let mut access = NativeAccess::begin(&self.runtime.store, identity).await?;
-		let registry = access.resource("registry", "tool/*", serde_json::json!({"kind":"tool"}));
-		let secret = access.resource("secret", "*", serde_json::json!({"name":"*"}));
+		let registry = access.resource(
+			"registry",
+			format!("tool/{COLLECTION}"),
+			serde_json::json!({"kind":"tool"}),
+		);
+		let secret = access.resource("secret", COLLECTION, serde_json::json!({"name":COLLECTION}));
 		if !access.decide(&registry, "registry.create").await?
 			&& !access.decide(&secret, "secret.use").await?
 		{
 			return access.finish(Err(Error::Forbidden)).await;
 		}
-		let result = self.service()?.probe(&resource).await;
-		access.finish(result.map_err(Into::into)).await
+		let result: Result<Probe> = async {
+			let resource = aidash_domain::oauth_connections::canonical_resource(&resource)?;
+			let service = self.service()?;
+			let probe = service.probe(&resource).await?;
+			let scope_ceiling = service.policy.scope_ceiling(&tenant, &resource).await?;
+			Ok(Probe {
+				oauth: probe.oauth,
+				scopes_supported: probe.scopes_supported,
+				issuer: probe.issuer,
+				scope_ceiling,
+			})
+		}
+		.await;
+		access.finish(result).await
 	}
 	pub(crate) async fn start(
 		&self,

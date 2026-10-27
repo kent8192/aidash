@@ -26,3 +26,14 @@ pub struct CallbackQuery {
 pub struct ProbeQuery {
 	pub resource: String,
 }
+
+/// Tenant policy metadata readable with the probe's existing permission.
+#[derive(Serialize, schemars::JsonSchema)]
+#[schemars(rename = "ConnectionProbe")]
+pub struct Probe {
+	pub oauth: bool,
+	pub scopes_supported: Option<Vec<String>>,
+	pub issuer: Option<String>,
+	#[serde(skip_serializing_if = "Option::is_none")]
+	pub scope_ceiling: Option<Vec<String>>,
+}

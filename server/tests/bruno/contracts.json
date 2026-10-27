@@ -47216,6 +47216,7 @@
       "definitions": {
         "ConnectionProbe": {
           "type": "object",
+          "description": "Tenant policy metadata readable with the probe's existing permission.",
           "required": ["oauth", "scopes_supported", "issuer"],
           "properties": {
             "issuer": {
@@ -47223,6 +47224,12 @@
             },
             "oauth": {
               "type": "boolean"
+            },
+            "scope_ceiling": {
+              "type": ["array", "null"],
+              "items": {
+                "type": "string"
+              }
             },
             "scopes_supported": {
               "type": ["array", "null"],
