@@ -51,6 +51,8 @@ pub enum Error {
 	NodeLimitReached,
 	#[error("external identity status is unavailable")]
 	IdentityStatusUnavailable,
+	#[error("OAuth Client secret storage is unavailable")]
+	OAuthClientSecretsUnavailable,
 	#[error("verified model media route unavailable for {0}")]
 	MediaRouteUnavailable(String),
 	#[error("atomic transaction visibility pending; retry after recovery")]
@@ -117,9 +119,9 @@ impl Error {
 				},
 				self.to_string(),
 			),
-			Self::IdentityStatusUnavailable | Self::MediaRouteUnavailable(_) => {
-				(StatusCode::SERVICE_UNAVAILABLE, self.to_string())
-			}
+			Self::IdentityStatusUnavailable
+			| Self::OAuthClientSecretsUnavailable
+			| Self::MediaRouteUnavailable(_) => (StatusCode::SERVICE_UNAVAILABLE, self.to_string()),
 			Self::TransactionPending
 			| Self::SemanticUnavailable
 			| Self::OrchestrationUnavailable => (StatusCode::SERVICE_UNAVAILABLE, self.to_string()),
@@ -344,6 +346,7 @@ impl From<aidash_application::Error> for Error {
 			}
 			ApplicationError::SemanticUnavailable => Self::SemanticUnavailable,
 			ApplicationError::IdentityStatusUnavailable => Self::IdentityStatusUnavailable,
+			ApplicationError::OAuthClientSecretsUnavailable => Self::OAuthClientSecretsUnavailable,
 			ApplicationError::ProviderRejected { status, reason } => {
 				Self::ProviderRejected { status, reason }
 			}

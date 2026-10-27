@@ -54,6 +54,8 @@ pub enum Error {
 	Forbidden,
 	#[error("{0}")]
 	External(String),
+	#[error("OAuth Client secret storage is unavailable")]
+	OAuthClientSecretsUnavailable,
 	#[error("verified model media route unavailable for {0}")]
 	MediaRouteUnavailable(String),
 	#[error("Kubernetes observations unavailable; check service account and API connectivity")]
@@ -175,3 +177,5 @@ pub mod activation;
 pub(crate) mod test_support;
 
 pub mod egress;
+
+pub mod oauth_clients;
