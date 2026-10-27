@@ -192,13 +192,13 @@ function PolicyForm({
             }
           />
           {ja
-            ? "自分の Tenant の内容を Plan Connection に送信できるようにする"
-            : "Allow this Tenant's content through Plan Connections"}
+            ? "No Training／Zero Data Retention でも Plan Connection を許可する"
+            : "Allow Plan Connections at No Training and Zero Data Retention"}
         </label>
         <Hint>
           {ja
-            ? "ChatGPT サインインには API の ZDR 契約が適用されません。個人プランでは学習に使われる場合があります。免除は Run に記録され、委譲先を含む全 Tenant の許可が必要です。"
-            : "ChatGPT sign-in does not inherit API ZDR agreements; personal plans may train on content. Runs record the exemption, and every Tenant carrying content in a delegation must grant it."}
+            ? "ChatGPT サインインには API の ZDR 契約が適用されません。個人プランでは学習に使われる場合があります。免除は Run に記録され、委譲先を含む全 Tenant の許可が必要です。Standard ではオフでも使用でき、免除は記録されません。モデル呼出しの ZDR は適用されません。"
+            : "ChatGPT sign-in does not inherit API ZDR agreements; personal plans may train on content. Runs record the exemption, and every Tenant carrying content in a delegation must grant it. Standard permits use with this switch off and records no exemption. Model-call ZDR does not apply."}
         </Hint>
       </fieldset>
       <Hint>
