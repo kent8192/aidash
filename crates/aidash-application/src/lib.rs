@@ -61,6 +61,8 @@ pub enum Error {
 	/// This Deployment's Secret Store cannot hold MCP OAuth Connections.
 	#[error("connection_unavailable")]
 	ConnectionStoreUnavailable,
+	#[error("{}", .0.code())]
+	Connection(aidash_domain::agent_plugin::ConnectionCause),
 	#[error("verified model media route unavailable for {0}")]
 	MediaRouteUnavailable(String),
 	#[error("Kubernetes observations unavailable; check service account and API connectivity")]

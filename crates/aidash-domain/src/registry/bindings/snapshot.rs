@@ -7,6 +7,7 @@ use crate::tool::providers::{
 impl BindingSnapshot {
 	/// The pinned Agent Plugin Skills are exactly those of the copies the Agent definition names.
 	fn validate_agent_plugins(&self, config: &AgentBindings) -> Result<()> {
+		// #554 has personal-auth proxies ready; admitting plugin content, hooks and stdio remains separate.
 		if self.remote && !config.agent_plugins.is_empty() {
 			return Err(Error::Invalid(
 				"Agent Plugins are unavailable remotely".into(),

@@ -144,6 +144,15 @@ pub trait PluginInputs: Send + Sync {
 /// Memory and task operations must retain their policy locks and durable writes.
 #[async_trait]
 pub trait ToolOperations: Send + Sync {
+	/// A remote Run asks its Home to use personal authentication. `None` means
+	/// Home has no personal authentication and the local shared/anonymous path applies.
+	async fn connection_call(
+		&self,
+		_call: &aidash_domain::identity::commands::connections::ConnectionCall,
+	) -> Result<Option<Value>> {
+		Ok(None)
+	}
+
 	async fn registered_skills(&self) -> Result<Vec<EntityRef>>;
 	async fn skill_files(&self, reference: &EntityRef) -> Result<Vec<SkillFile>>;
 	async fn discover(&self, search: &Search) -> Result<Value>;

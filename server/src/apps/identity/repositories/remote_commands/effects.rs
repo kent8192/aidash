@@ -17,6 +17,45 @@ use serde_json::{Value, json};
 use uuid::Uuid;
 #[async_trait]
 impl RemoteCommandEffects for Scope<'_> {
+	async fn connection_target(
+		&mut self,
+		call: &aidash_domain::identity::commands::connections::ConnectionCall,
+		list: bool,
+	) -> Result<()> {
+		let (entry, action) = super::connections::authorization(
+			self.bindings.ok_or(aidash_application::Error::Forbidden)?,
+			call,
+			list,
+		)?;
+		let resource = crate::authorization::catalog::resource(self.access, entry);
+		self.access
+			.require(&resource, action)
+			.await
+			.map_err(Into::into)
+	}
+
+	fn connection_owner(&self) -> Option<aidash_application::oauth_connections::Owner> {
+		let root = self.access.subjects.first()?;
+		super::super::approval_preferences::is_person(&self.access.snapshot.bundle, root).then(
+			|| aidash_application::oauth_connections::Owner {
+				tenant: self.access.identity.tenant.clone(),
+				subject: root.clone(),
+			},
+		)
+	}
+
+	async fn connection_unowned(
+		&mut self,
+		call: &aidash_domain::identity::commands::connections::ConnectionCall,
+		list: bool,
+	) -> Result<Value> {
+		super::connections::unowned(
+			self.bindings.ok_or(aidash_application::Error::Forbidden)?,
+			call,
+			list,
+		)
+	}
+
 	fn local_node(&self) -> &str {
 		self.access.node_reference()
 	}
@@ -79,6 +118,24 @@ let created_by_grant: bool = { let query_bind_1 = grant; let query_bind_2 = chil
 		let result: NativeResult<Applied> = async {
 			let store = &self.runtime.store;
 			let (value, output_id) = match effect {
+				Effect::Connection {
+					owner: person,
+					call,
+					list,
+				} => {
+					let grant = self.access.read_grant.ok_or(crate::Error::Forbidden)?;
+					let value = super::connections::execute(
+						store,
+						self.bindings.ok_or(crate::Error::Forbidden)?,
+						grant,
+						admission,
+						person,
+						call,
+						list,
+					)
+					.await?;
+					(value, None)
+				}
 				Effect::HumanRequest { kind, prompt } => {
 					let grant = self.access.read_grant.ok_or(crate::Error::Forbidden)?;
 					let request = super::humans::create(

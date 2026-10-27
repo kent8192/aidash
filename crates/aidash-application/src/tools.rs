@@ -14,6 +14,18 @@ use aidash_domain::{
 use serde_json::{Value, json};
 use std::collections::BTreeMap;
 
+/// Decode only the Federation control envelope; arbitrary inner tool JSON stays untouched.
+pub fn connection_outcome(value: Value, list: bool) -> Result<Option<Value>> {
+	use aidash_domain::identity::commands::connections::Outcome;
+	match serde_json::from_value::<Outcome>(value)? {
+		Outcome::NotPersonal => Ok(None),
+		Outcome::Connection { cause } => Err(Error::Connection(cause)),
+		Outcome::Result { result } => Ok(Some(result)),
+		Outcome::Tools { tools } if list => Ok(Some(serde_json::to_value(tools)?)),
+		_ => Err(Error::Invalid("unexpected personal call outcome".into())),
+	}
+}
+
 #[derive(serde::Deserialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 struct MemoryMutationInput {
@@ -144,6 +156,62 @@ impl Plugin {
 			}
 			ToolConfig::Native { .. } => Err(Error::Invalid("unknown native tool".into())),
 			ToolConfig::Http { secret_owner, .. } | ToolConfig::Mcp { secret_owner, .. } => {
+				let (endpoint, tool_name, kind, secret) = match &self.config {
+					ToolConfig::Mcp {
+						endpoint,
+						tool_name,
+						secret,
+						..
+					} => (
+						endpoint,
+						tool_name.as_str(),
+						aidash_domain::identity::commands::connections::Kind::Connection,
+						secret.clone(),
+					),
+					ToolConfig::Http {
+						endpoint,
+						secret: Some(secret),
+						..
+					} => (
+						endpoint,
+						"",
+						aidash_domain::identity::commands::connections::Kind::PersonalSecret,
+						Some(secret.clone()),
+					),
+					_ => return transport.invoke(&self.config, input, key, None).await,
+				};
+				let call = aidash_domain::identity::commands::connections::ConnectionCall {
+					tool_key: aidash_domain::identity::commands::connections::ToolKey::Registry {
+						registry_deployment: self.entry.config["registry_deployment"]
+							.as_str()
+							.map(str::to_owned)
+							.or_else(|| {
+								ctx.run
+									.context
+									.binding_snapshot
+									.as_ref()
+									.map(|s| s.agent.registry_deployment.clone())
+							})
+							.unwrap_or_default(),
+						id: self.entry.id.clone(),
+						version: self.entry.version.clone(),
+					},
+					resource: if kind
+						== aidash_domain::identity::commands::connections::Kind::PersonalSecret
+					{
+						endpoint.clone()
+					} else {
+						aidash_domain::oauth_connections::canonical_resource(endpoint)?
+					},
+					tool_name: tool_name.into(),
+					arguments: input.clone(),
+					idempotency_key: key.into(),
+					kind,
+					secret_name: secret,
+				};
+				if let Some(result) = ctx.operations.connection_call(&call).await? {
+					return Ok(result);
+				}
 				// Resolved at dispatch, after the arguments are valid and before
 				// any effect, so a deleted Tenant Secret fails the call outright.
 				let connection = if let ToolConfig::Mcp { endpoint, .. } = &self.config {

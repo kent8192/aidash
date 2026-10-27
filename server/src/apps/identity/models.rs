@@ -109,3 +109,6 @@ pub mod tenant_secrets;
 pub mod oauth_clients;
 
 pub mod oauth_connections;
+
+mod remote_connection_calls;
+pub use remote_connection_calls::RemoteConnectionCall;

@@ -297,6 +297,7 @@ pub const TABLES: &[Table] = &[
 	table("identity", "plan_connection_hosts", DeploymentWide),
 	table("identity", "plan_connections", TenantOwned),
 	table("identity", "oauth_connections", TenantOwned),
+	table("identity", "remote_connection_calls", TenantOwned),
 	table("identity", "oauth_authorizations", TenantOwned),
 	table("identity", "oauth_dynamic_clients", TenantOwned),
 	// pending OAuth flows bound to a browser, like sign-in state
