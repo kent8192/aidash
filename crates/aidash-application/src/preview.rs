@@ -162,11 +162,13 @@ pub async fn issue(scope: &mut dyn Scope, area_id: Uuid, file_id: Uuid) -> Resul
 /// Issue a one-time ticket for a Run's Live preview, under the same authority
 /// as downloading that Working Area's files (ADR 0068, 0070).
 pub async fn issue_live(scope: &mut dyn Scope, live_preview_id: Uuid) -> Result<Issued> {
+	// Resolve the resource before checking Deployment configuration, so an
+	// unknown or invisible Live preview has the same 404 in every profile.
+	let preview = scope.live_preview(live_preview_id).await?;
 	let domain = scope
 		.preview_domain()
 		.ok_or_else(|| Error::Conflict("PREVIEW_UNAVAILABLE".into()))?
 		.to_owned();
-	let preview = scope.live_preview(live_preview_id).await?;
 	issue_ticket(scope, preview, &domain).await
 }
 

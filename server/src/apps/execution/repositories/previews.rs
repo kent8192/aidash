@@ -234,7 +234,14 @@ impl application::Scope for Scope<'_> {
 		if !matches!(live.state, LiveState::Running | LiveState::Stale) {
 			return Err(NativeError::NotFound("live preview unavailable".into()).into());
 		}
-		self.authorize_area(live.area_id).await?;
+		self.authorize_area(live.area_id)
+			.await
+			.map_err(|error| match error {
+				aidash_application::Error::Forbidden | aidash_application::Error::NotFound(_) => {
+					aidash_application::Error::NotFound("live preview unavailable".into())
+				}
+				error => error,
+			})?;
 		let preview = match preview_of_live(self.access, id).await? {
 			Some(preview) => preview,
 			None => insert_live_preview(self.access, id, live.tenant.clone()).await?,

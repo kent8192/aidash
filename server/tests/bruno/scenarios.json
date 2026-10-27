@@ -14841,10 +14841,10 @@
       "file": "contracts/1350-core_live_preview.bru",
       "endpoint": "GET /api/runs/{id}/live-preview",
       "scenario": "Deployment Administrator cannot read a missing Run",
-      "status": 403,
+      "status": 404,
       "required_checks": [
-        "Exact HTTP 403",
-        "Stable authorization error envelope"
+        "Exact HTTP 404",
+        "Rejection is diagnostic and does not disclose SQL or credentials"
       ]
     },
     {
@@ -14852,10 +14852,10 @@
       "file": "contracts/1351-core_live_preview.bru",
       "endpoint": "GET /api/runs/{id}/live-preview",
       "scenario": "Subject bearer cannot read a missing Run",
-      "status": 403,
+      "status": 404,
       "required_checks": [
-        "Exact HTTP 403",
-        "Stable authorization error envelope"
+        "Exact HTTP 404",
+        "Rejection is diagnostic and does not disclose SQL or credentials"
       ]
     },
     {
@@ -14886,10 +14886,10 @@
       "file": "contracts/1354-core_live_preview_stop.bru",
       "endpoint": "POST /api/runs/{id}/live-preview/stop",
       "scenario": "Deployment Administrator cannot stop a missing Run",
-      "status": 403,
+      "status": 404,
       "required_checks": [
-        "Exact HTTP 403",
-        "Stable authorization error envelope"
+        "Exact HTTP 404",
+        "Rejection is diagnostic and does not disclose SQL or credentials"
       ]
     },
     {
@@ -14897,10 +14897,10 @@
       "file": "contracts/1355-core_live_preview_stop.bru",
       "endpoint": "POST /api/runs/{id}/live-preview/stop",
       "scenario": "Subject bearer cannot stop a missing Run",
-      "status": 403,
+      "status": 404,
       "required_checks": [
-        "Exact HTTP 403",
-        "Stable authorization error envelope"
+        "Exact HTTP 404",
+        "Rejection is diagnostic and does not disclose SQL or credentials"
       ]
     },
     {
