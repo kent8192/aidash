@@ -535,6 +535,20 @@ impl DashboardSessions {
 	pub(crate) async fn configuration(&self) -> Result<Configuration> {
 		let f = self.runtime.clone();
 		Ok(Configuration {
+			cloud_regions: if crate::bootstrap::build::offering()
+				== aidash_domain::offering::Offering::Cloud
+			{
+				aidash_domain::data_protection::Region::ALL.into_iter().map(|region| {
+					let mut unavailable = vec!["Tenant Keyless endpoints".into(), "Research providers without matching regional terms".into(), "Plan Connections without the exemption".into(), "OpenRouter models outside the regional catalog (regional routing requires a supported account)".into()];
+					for tool in ["openrouter:web_search", "openrouter:web_fetch", "openrouter:datetime", "openrouter:fusion"] {
+						if !region.permits_openrouter_tool(tool, None) { unavailable.push(tool.into()); }
+					}
+					if region.openrouter_endpoint().is_err() { unavailable.push("All OpenRouter models (no regional endpoint)".into()); }
+					crate::apps::identity::serializers::oidc::CloudRegion { region, available: self.runtime.store.deployment_region == Some(region), restriction_unavailable: unavailable }
+				}).collect()
+			} else {
+				vec![]
+			},
 			enabled: f.config.dashboard_session().is_some(),
 			desktop_protocol: 2,
 			provider: if let Some(sign_in) = &f.config.sign_in {

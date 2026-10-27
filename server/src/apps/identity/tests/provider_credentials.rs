@@ -1341,6 +1341,46 @@ async fn admission_pins_local_tenant_id_and_reloads_state_without_environment_fa
 		assert_eq!(captured[1].0.run, None);
 		assert_eq!(captured[1].1, replacement.id);
 	}
+	// Catalogs keep an inference Run's pin, but a Decider uses the current binding.
+	enabled
+		.discovery(
+			&scoped,
+			Provider::Openrouter.base_url(),
+			&source,
+			"test/model",
+		)
+		.await
+		.unwrap();
+	let mut decision = scoped.clone();
+	decision.provider_credential_id = Some(a.id); // Not authority to select a credential.
+	decision.inference.as_mut().unwrap().operations =
+		vec![aidash_application::provider_access::Operation::Decision];
+	decision.inference.as_mut().unwrap().max_output_tokens = 0;
+	enabled
+		.discovery(
+			&decision,
+			Provider::Openrouter.base_url(),
+			&source,
+			"test/model",
+		)
+		.await
+		.unwrap();
+	{
+		let captured = mints.lock().unwrap();
+		assert_eq!(captured[2].1, b.id);
+		assert_eq!(captured[3].1, replacement.id);
+		for (scope, _, _) in &captured[2..] {
+			assert_eq!(scope.run, None);
+			assert_eq!(
+				scope.maintenance,
+				Some(aidash_application::provider_access::MaintenancePurpose::ProviderDiscovery)
+			);
+			assert_eq!(
+				scope.inference.as_ref().unwrap().operations,
+				vec![aidash_application::provider_access::Operation::Discovery]
+			);
+		}
+	}
 	service
 		.revoke("beta", b.id, rotated.revision, "actor")
 		.await

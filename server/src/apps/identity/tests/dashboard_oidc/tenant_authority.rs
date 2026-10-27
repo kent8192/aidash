@@ -654,6 +654,9 @@ async fn data_protection_settings_are_tenant_admin_only_and_apply_before_the_nex
 		defaults["policy"],
 		json!({"level":"standard","model_call_zdr":true,"plan_connection_exempt":true})
 	);
+	let (status, refused_region) = send("PUT", &path, json!({"data_region_restricted":true})).await;
+	assert_eq!(status, 400, "{refused_region}");
+	assert!(refused_region.to_string().contains("Deployment Region"));
 	let no_training =
 		json!({"level":"no_training","model_call_zdr":false,"plan_connection_exempt":false});
 	let (status, denied) = team
@@ -728,5 +731,102 @@ async fn data_protection_settings_are_tenant_admin_only_and_apply_before_the_nex
 		2
 	);
 	assert_eq!(team.d.count("SELECT count(*) FROM dashboard_administration_history WHERE action='tenant.data_protection.update'").await, 2);
+	team.finish().await;
+}
+
+#[rstest::rstest]
+#[tokio::test]
+async fn data_region_requires_a_remaining_model_and_applies_to_existing_calls(
+	#[from(common::runtime)] runtime: common::RuntimeFuture,
+) {
+	use aidash_application::provider_access::{Context, ProviderAccess, Source};
+	use aidash_domain::{data_protection::Region, keyless::PermittedOrigins};
+	use aidash_server::apps::identity::repositories::provider_credentials::AdmittedAccess;
+	use reinhardt::db::orm::{Json, Model};
+	let mut team = Team::new(runtime).await;
+	team.d.federation.store = team
+		.d
+		.federation
+		.store
+		.clone()
+		.with_deployment_region(Some(Region::Us))
+		.with_hosted_model_origins(
+			PermittedOrigins::parse(["https://deployment-model.example", "http://127.0.0.1:11434"])
+				.unwrap(),
+		);
+	team.d.app = common::application(team.d.federation.clone()).await;
+	let path = format!("/api/tenants/{}/data-protection", team.tenant);
+	let send = async |method: &str, path: &str, body| {
+		team.d
+			.as_person(&team.alice, method, path, Some(&team.alice_context), body)
+			.await
+	};
+	let (status, unavailable) = send(
+		"POST",
+		"/api/tenants",
+		json!({"label":"Unavailable", "region":"eu"}),
+	)
+	.await;
+	assert_eq!(status, 400, "{unavailable}");
+	assert!(
+		unavailable
+			.to_string()
+			.contains("No Cloud Deployment is available")
+	);
+	let register = async |id: &str, endpoint: &str| {
+		team.d.federation.store.pool.atomic(&TEST_FIXTURE, async |tx| {
+        let entry = aidash_server::apps::registry::models::Definition::build()
+            .tenant(team.tenant.clone()).id(id).version("1.0.0")
+            .kind(serde_json::from_value(json!("model"))?)
+            .metadata(Json(json!({"id":id,"version":"1.0.0","kind":"model","name":{"en":"Hosted model"},"description":{"en":"Regional model fixture"},"config":{"provider":"openrouter","model_id":"vendor/model","endpoint":endpoint,"context_window":8192,"modalities":["text"],"cost":{}}}))).finish();
+        aidash_server::apps::registry::models::Definition::objects().insert_with_executor(tx,&entry).await.map_err(reinhardt::core::exception::Error::from)?;
+        Ok(())
+    }).await.unwrap();
+	};
+	register("hosted-private", "http://127.0.0.1:11434/v1").await;
+	let enabled = json!({"data_region_restricted":true});
+	let (status, preview) = send("POST", &format!("{path}/impact"), enabled.clone()).await;
+	assert_eq!(status, 200, "{preview}");
+	assert_eq!(preview["usable_models"], 0);
+	let (status, refused) = send("PUT", &path, enabled.clone()).await;
+	assert_eq!(status, 400, "{refused}");
+	assert!(refused.to_string().contains("no usable model remains"));
+	register("hosted-model", "https://deployment-model.example/v1").await;
+	let (status, preview) = send("POST", &format!("{path}/impact"), enabled.clone()).await;
+	assert_eq!(status, 200, "{preview}");
+	assert_eq!(preview["usable_models"], 1);
+	let (status, saved) = send("PUT", &path, enabled).await;
+	assert_eq!(status, 200, "{saved}");
+	assert_eq!(saved["policy"]["data_region_restricted"], true);
+	assert_eq!(saved["deployment_region"], "us");
+	let access = AdmittedAccess {
+		store: team.d.federation.store.clone(),
+	};
+	let context = Context {
+		tenant: team.tenant.clone(),
+		..Default::default()
+	};
+	access
+		.check(
+			&context,
+			"https://deployment-model.example/v1",
+			&Source::Keyless,
+		)
+		.await
+		.unwrap();
+	assert!(
+		access
+			.check(&context, "https://other-model.example/v1", &Source::Keyless)
+			.await
+			.unwrap_err()
+			.to_string()
+			.contains("Data Region restriction")
+	);
+	let (status, saved) = send("PUT", &path, json!({"data_region_restricted":false})).await;
+	assert_eq!(status, 200, "{saved}");
+	access
+		.check(&context, "https://other-model.example/v1", &Source::Keyless)
+		.await
+		.unwrap();
 	team.finish().await;
 }

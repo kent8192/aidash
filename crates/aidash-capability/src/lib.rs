@@ -26,6 +26,7 @@ pub enum Operation {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Maintenance {
+	ProviderDiscovery,
 	MemoryIndexing,
 	MemoryRetention,
 	MemoryReflection,
@@ -55,6 +56,9 @@ pub enum TokenSubject {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Claims {
+	/// Only fixed regional catalog hosts are admitted; absent keeps global routing.
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub data_region: Option<aidash_domain::data_protection::Region>,
 	/// An omitted claim requires ZDR, as older tokens did.
 	#[serde(
 		default,
@@ -250,6 +254,16 @@ impl PublicKeys {
 		} else if claims.max_output_tokens == 0
 			|| !claims.hosts.is_empty()
 			|| matches!(claims.sub, TokenSubject::ApprovalObservation { .. })
+		{
+			return Err(Failure::ClaimViolation);
+		}
+		if matches!(
+			claims.sub,
+			TokenSubject::Maintenance {
+				maintenance: Maintenance::ProviderDiscovery,
+				..
+			}
+		) && claims.ops != [Operation::Discovery]
 		{
 			return Err(Failure::ClaimViolation);
 		}

@@ -86,6 +86,15 @@ pub async fn embed(
 			body["provider"]["allow_fallbacks"] = json!(true);
 		}
 	}
+	crate::data_protection::regional_request(
+		access,
+		&context,
+		clients,
+		&config.endpoint,
+		&Source::configured(&config.provider_credential, &None),
+		&body,
+	)
+	.await?;
 	let access = access
 		.resolve(
 			&context,

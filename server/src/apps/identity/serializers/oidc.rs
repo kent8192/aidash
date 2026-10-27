@@ -7,10 +7,19 @@ use schemars::JsonSchema;
 
 #[derive(Serialize, JsonSchema)]
 pub(crate) struct Configuration {
+	pub(crate) cloud_regions: Vec<CloudRegion>,
 	pub(crate) enabled: bool,
 	pub(crate) desktop_protocol: u8,
 	pub(crate) provider: &'static str,
 	pub(crate) login_url: Option<&'static str>,
+}
+
+#[derive(Serialize, JsonSchema)]
+pub(crate) struct CloudRegion {
+	pub(crate) region: aidash_domain::data_protection::Region,
+	pub(crate) available: bool,
+	/// Consequences of enabling the separate restriction, not of living here.
+	pub(crate) restriction_unavailable: Vec<String>,
 }
 
 #[derive(Deserialize, JsonSchema)]

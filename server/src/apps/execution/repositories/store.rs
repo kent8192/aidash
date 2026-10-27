@@ -84,6 +84,7 @@ pub struct Store {
 	pub egress: aidash_integrations::federation::Egress,
 	/// The Deployment's Retention Rules from `[research_retention]` (ADR 0045).
 	pub research_retention: aidash_domain::retention::RetentionRules,
+	pub deployment_region: Option<aidash_domain::data_protection::Region>,
 	pub data_protection_floor: aidash_domain::data_protection::Level,
 	/// The Deployment's ceilings on Tenants' Test Limits from
 	/// `[workbench_test_limits]` (#361).
@@ -489,6 +490,7 @@ impl Store {
 			keyless,
 			egress: Default::default(),
 			research_retention: aidash_domain::retention::RetentionRules::DEFAULT,
+			deployment_region: None,
 			data_protection_floor: Default::default(),
 			test_limit_ceilings: Default::default(),
 			recovery_cursors: Default::default(),
@@ -525,6 +527,15 @@ impl Store {
 		self.cache_salt = keys;
 		self
 	}
+	/// Jurisdiction of models hosted by this Deployment.
+	pub fn with_deployment_region(
+		mut self,
+		region: Option<aidash_domain::data_protection::Region>,
+	) -> Self {
+		self.deployment_region = region;
+		self.keyless = self.keyless.with_deployment_region(region);
+		self
+	}
 	/// Minimum Data Protection Level applied to every current Tenant policy.
 	pub fn with_data_protection_floor(
 		mut self,
@@ -555,7 +566,8 @@ impl Store {
 		mut self,
 		origins: aidash_domain::keyless::PermittedOrigins,
 	) -> Self {
-		self.keyless = aidash_application::provider_access::KeylessAccess::permitting(origins);
+		self.keyless = aidash_application::provider_access::KeylessAccess::permitting(origins)
+			.with_deployment_region(self.deployment_region);
 		self.plugin_sessions = plugin_sessions(&self.keyless, &self.tool_clients);
 		self
 	}
@@ -620,6 +632,7 @@ impl Store {
 			plugin_sessions: self.plugin_sessions.clone(),
 			egress: self.egress.clone(),
 			research_retention: self.research_retention,
+			deployment_region: self.deployment_region,
 			data_protection_floor: self.data_protection_floor,
 			test_limit_ceilings: self.test_limit_ceilings,
 			recovery_cursors: self.recovery_cursors.clone(),
@@ -675,6 +688,7 @@ impl Store {
 			plugin_sessions: self.plugin_sessions.clone(),
 			egress: self.egress.clone(),
 			research_retention: self.research_retention,
+			deployment_region: self.deployment_region,
 			data_protection_floor: self.data_protection_floor,
 			test_limit_ceilings: self.test_limit_ceilings,
 			recovery_cursors: self.recovery_cursors.clone(),

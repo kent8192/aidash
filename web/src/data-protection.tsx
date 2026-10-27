@@ -7,14 +7,21 @@ import { Button } from "./components/ui/button";
 
 type Level = "standard" | "no_training" | "zero_data_retention";
 type Policy = {
+  data_region_restricted?: boolean;
   level: Level;
   model_call_zdr: boolean;
   plan_connection_exempt: boolean;
 };
-type Settings = { policy: Policy; effective: Policy; deployment_floor: Level };
+type Settings = {
+  policy: Policy;
+  effective: Policy;
+  deployment_floor: Level;
+  deployment_region: "eu" | "us" | "jp" | null;
+};
 type Affected = { id: string; version: string | null; reason: string };
 type Impact = {
   effective: Policy;
+  usable_models: number;
   agents: Affected[];
   catalog_approvals: Affected[];
   destinations: Affected[];
@@ -154,6 +161,45 @@ function PolicyForm({
           </label>
         ))}
       </fieldset>
+      <fieldset disabled={frozen} className="space-y-2">
+        <legend className="text-sm font-medium">
+          {ja ? "データの送信地域" : "Data Region restriction"}
+        </legend>
+        <label className="flex gap-2 text-sm">
+          <input
+            type="radio"
+            name={`data-region-${tenant}`}
+            checked={!policy.data_region_restricted}
+            onChange={() =>
+              setPolicy({ ...policy, data_region_restricted: false })
+            }
+          />
+          Any (Recommended)
+        </label>
+        <label className="flex gap-2 text-sm">
+          <input
+            type="radio"
+            name={`data-region-${tenant}`}
+            checked={!!policy.data_region_restricted}
+            disabled={!settings.deployment_region}
+            onChange={() =>
+              setPolicy({ ...policy, data_region_restricted: true })
+            }
+          />
+          {settings.deployment_region?.toUpperCase() ??
+            (ja ? "Deployment Region 未宣言" : "No Deployment Region declared")}
+        </label>
+        <Hint>
+          {ja
+            ? "オンにすると地域外の OpenRouter モデルと Provider tools、地域が記録されていない Research サービス、Tenant の Keyless が利用できなくなります。JP には OpenRouter の地域エンドポイントがありません。Plan Connection は免除時のみ許可され、残るモデルの数には含まれません。下のプレビューは現在の地域カタログを確認します。"
+            : "Enabling blocks OpenRouter models and Provider tools unavailable in-region, Research services without matching regional terms, and Tenant Keyless endpoints. OpenRouter has no JP endpoint. Plan Connections require the exemption and never count as a remaining model. The preview below checks the current regional catalog."}
+        </Hint>
+        <Hint>
+          {ja
+            ? "Deployment Region は DB、Secret Store、バックアップ、ログ、Execution Pods、Egress gateway、broker を含みます。External Identities、Billing Accounts、Marketplace は Deployment 間で共有され、地域の対象外です。Self-hosted の宣言は Aidash では検証できません。OpenRouter の EU は EU/EEA・英国・スイスを含み、アカウント・請求・認証・運用メタデータは地域外で扱われる場合があります。BYOK の処理地域と observability 送信先は OpenRouter アカウント側でも確認してください。"
+            : "The Deployment Region covers its database, Secret Store, backups, logs, Execution Pods, Egress gateway and broker. External Identities, Billing Accounts and Marketplace are shared outside this boundary. Aidash cannot verify Self-hosted declarations. OpenRouter Europe includes EU/EEA, UK and Switzerland; account, billing, authentication and operational metadata may remain outside the region. Verify BYOK deployment regions and observability destinations in your OpenRouter account."}
+        </Hint>
+      </fieldset>
       <fieldset className="space-y-2">
         <legend className="text-sm font-medium">
           {ja ? "OpenRouter モデル呼出しの ZDR" : "OpenRouter model-call ZDR"}
@@ -192,13 +238,13 @@ function PolicyForm({
             }
           />
           {ja
-            ? "No Training／Zero Data Retention でも Plan Connection を許可する"
-            : "Allow Plan Connections at No Training and Zero Data Retention"}
+            ? "Plan Connection をレベルと送信地域の制限から免除する"
+            : "Exempt Plan Connections from the level and Data Region restriction"}
         </label>
         <Hint>
           {ja
-            ? "ChatGPT サインインには API の ZDR 契約が適用されません。個人プランでは学習に使われる場合があります。免除は Run に記録され、委譲先を含む全 Tenant の許可が必要です。Standard ではオフでも使用でき、免除は記録されません。モデル呼出しの ZDR は適用されません。"
-            : "ChatGPT sign-in does not inherit API ZDR agreements; personal plans may train on content. Runs record the exemption, and every Tenant carrying content in a delegation must grant it. Standard permits use with this switch off and records no exemption. Model-call ZDR does not apply."}
+            ? "ChatGPT サインインには API の ZDR 契約が適用されません。個人プランでは学習に使われる場合があります。免除は Run に記録され、委譲先を含む全 Tenant の許可が必要です。地域制限のない Standard ではオフでも使用でき、免除は記録されません。モデル呼出しの ZDR は適用されません。"
+            : "ChatGPT sign-in does not inherit API ZDR agreements; personal plans may train on content. Runs record the exemption, and every Tenant carrying content in a delegation must grant it. Without a region restriction, Standard permits use with this switch off and records no exemption. Model-call ZDR does not apply."}
         </Hint>
       </fieldset>
       <Hint>
@@ -242,10 +288,22 @@ function PolicyForm({
             </div>
           ))}
       </div>
+      {policy.data_region_restricted && preview.data?.usable_models === 0 && (
+        <Alert>
+          {ja
+            ? "利用可能なモデルが残らないため、地域制限を有効にできません。"
+            : "Cannot enable the restriction: no usable model remains."}
+        </Alert>
+      )}
       {save.isError && <Alert>{String(save.error)}</Alert>}
       {canUpdate && (
         <Button
-          disabled={save.isPending || !preview.isSuccess}
+          disabled={
+            save.isPending ||
+            !preview.isSuccess ||
+            (!!policy.data_region_restricted &&
+              preview.data?.usable_models === 0)
+          }
           onClick={() => save.mutate()}
         >
           {ja ? "保存" : "Save"}

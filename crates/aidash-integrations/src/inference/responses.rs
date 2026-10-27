@@ -391,6 +391,15 @@ impl ResponsesProvider {
 		if streaming {
 			body["stream"] = json!(true);
 		}
+		crate::data_protection::regional_request(
+			self.access.as_ref(),
+			&context,
+			&self.clients,
+			&self.config.endpoint,
+			&self.source(),
+			&body,
+		)
+		.await?;
 		let access = self
 			.access
 			.resolve(&context, &self.config.endpoint, &self.source())

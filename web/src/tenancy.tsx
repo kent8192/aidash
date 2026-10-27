@@ -75,6 +75,35 @@ export function CreateTenantForm({
 }) {
   const { locale } = useI18n();
   const english = locale === "en-US";
+  type RegionChoice = {
+    region: "eu" | "us" | "jp";
+    available: boolean;
+    restriction_unavailable: string[];
+  };
+  const regions = useQuery({
+    queryKey: ["cloud-regions"],
+    queryFn: async () => {
+      const response = await sessionFetch("/auth/config");
+      if (!response.ok) throw new Error(`HTTP ${response.status}`);
+      return (await response.json()) as { cloud_regions: RegionChoice[] };
+    },
+    retry: false,
+  });
+  const regionalLabels: Record<string, string> = {
+    "Tenant Keyless endpoints": "Tenant の Keyless エンドポイント",
+    "Research providers without matching regional terms":
+      "対象地域が規約に記録されていない Research サービス",
+    "Plan Connections without the exemption":
+      "免除されていない Plan Connection",
+    "OpenRouter models outside the regional catalog (regional routing requires a supported account)":
+      "地域カタログにない OpenRouter モデル（対応アカウントが必要）",
+    "All OpenRouter models (no regional endpoint)":
+      "すべての OpenRouter モデル（地域エンドポイントなし）",
+  };
+  const [selectedRegion, setSelectedRegion] = useState<string | null>(null);
+  const choices = regions.data?.cloud_regions ?? [];
+  const region =
+    selectedRegion ?? choices.find((choice) => choice.available)?.region;
   const [label, setLabel] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
@@ -95,7 +124,7 @@ export function CreateTenantForm({
               ? { "x-aidash-context": "deployment_administrator" }
               : {}),
           },
-          body: JSON.stringify({ label }),
+          body: JSON.stringify({ label, ...(region ? { region } : {}) }),
         })
           .then(async (response) => {
             if (response.status !== 201)
@@ -118,6 +147,70 @@ export function CreateTenantForm({
           onChange={(event) => setLabel(event.target.value)}
         />
       </label>
+      {regions.isPending && (
+        <Hint>
+          {english
+            ? "Loading Deployment Regions…"
+            : "Deployment の地域を確認しています…"}
+        </Hint>
+      )}
+      {regions.isError && <Alert>{String(regions.error)}</Alert>}
+      {choices.length > 0 && (
+        <fieldset className="grid gap-2 text-xs">
+          <legend>
+            {english ? "Cloud Deployment Region" : "Cloud Deployment の地域"}
+          </legend>
+          <NativeSelect
+            aria-label={
+              english ? "Cloud Deployment Region" : "Cloud Deployment の地域"
+            }
+            value={region ?? ""}
+            onChange={(event) => setSelectedRegion(event.target.value)}
+          >
+            {choices.map((choice) => (
+              <option
+                key={choice.region}
+                value={choice.region}
+                disabled={!choice.available}
+              >
+                {choice.region.toUpperCase()}
+                {!choice.available
+                  ? english
+                    ? " — unavailable"
+                    : " — 未提供"
+                  : ""}
+              </option>
+            ))}
+          </NativeSelect>
+          <Hint>
+            {english
+              ? "Choosing a region sets where this Tenant lives. The separate Data Region restriction starts off (Any, Recommended). Only existing Cloud Deployments can be selected; today the current Deployment is the nearest available one."
+              : "地域は Tenant の保存・処理場所です。送信地域の制限は別の設定で、初期値は Any (Recommended) です。提供済みの Deployment のみ選択できます。現在はこの Deployment が最も近い選択肢です。"}
+          </Hint>
+          {choices.map((choice) => (
+            <details key={choice.region} open={choice.region === region}>
+              <summary>
+                {choice.region.toUpperCase()} —{" "}
+                {english
+                  ? "Unavailable if the restriction is enabled"
+                  : "送信地域の制限をオンにすると利用できないもの"}
+              </summary>
+              <ul className="list-disc pl-5">
+                {choice.restriction_unavailable.map((item) => (
+                  <li key={item}>
+                    {english ? item : (regionalLabels[item] ?? item)}
+                  </li>
+                ))}
+              </ul>
+            </details>
+          ))}
+          <Hint>
+            {english
+              ? "External Identities, Billing Accounts and Marketplace are shared across Deployments outside this region."
+              : "External Identities、Billing Accounts、Marketplace は Deployment 間で共有され、地域の対象外です。"}
+          </Hint>
+        </fieldset>
+      )}
       {error && (
         <p role="alert" className="text-xs text-destructive">
           {error}
@@ -127,7 +220,13 @@ export function CreateTenantForm({
         type="submit"
         variant="outline"
         size="sm"
-        disabled={busy || !label.trim()}
+        disabled={
+          busy ||
+          !label.trim() ||
+          regions.isPending ||
+          regions.isError ||
+          (choices.length > 0 && !region)
+        }
       >
         {english ? "Create Tenant" : "テナントを作成"}
       </Button>
