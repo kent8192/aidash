@@ -259,6 +259,7 @@ fn a_pod_response_may_not_replace_the_confinement_headers() {
 struct LiveAuthority {
 	proxy: aidash_application::preview::Proxy,
 	calls: Mutex<Vec<tokio::time::Instant>>,
+	probes: std::sync::atomic::AtomicUsize,
 	revoked: std::sync::atomic::AtomicBool,
 }
 #[async_trait]
@@ -277,6 +278,8 @@ impl Authority for LiveAuthority {
 	) -> aidash_application::Result<Option<Proxy>> {
 		assert_eq!(host, "live.localhost");
 		assert_eq!(cookie, "viewer");
+		self.probes
+			.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
 		if activity {
 			self.calls.lock().unwrap().push(tokio::time::Instant::now());
 		}
@@ -322,6 +325,7 @@ async fn websocket_traffic_refreshes_activity_but_an_idle_connection_does_not() 
 			egress_token: None,
 		},
 		calls: Mutex::new(Vec::new()),
+		probes: std::sync::atomic::AtomicUsize::new(0),
 		revoked: std::sync::atomic::AtomicBool::new(false),
 	});
 	let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -356,6 +360,10 @@ async fn websocket_traffic_refreshes_activity_but_an_idle_connection_does_not() 
 		for _ in 0..10 {
 			tokio::task::yield_now().await;
 		}
+		assert_eq!(
+			authority.probes.load(std::sync::atomic::Ordering::Relaxed),
+			minute + 2
+		);
 		assert_eq!(authority.calls.lock().unwrap().len(), minute + 2);
 		tokio::time::resume();
 	}
@@ -369,6 +377,11 @@ async fn websocket_traffic_refreshes_activity_but_an_idle_connection_does_not() 
 		authority.calls.lock().unwrap().len(),
 		calls,
 		"a silent open socket does not extend the idle deadline"
+	);
+	assert_eq!(
+		authority.probes.load(std::sync::atomic::Ordering::Relaxed),
+		calls + 1,
+		"a silent socket still rechecks authority"
 	);
 	tokio::time::resume();
 }
