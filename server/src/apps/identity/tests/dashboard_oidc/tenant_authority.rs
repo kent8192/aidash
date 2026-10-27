@@ -632,3 +632,101 @@ async fn overview_lists_item_scoped_credential_targets_without_policy_read(
 	);
 	t.finish().await;
 }
+
+#[rstest::rstest]
+#[tokio::test]
+async fn data_protection_settings_are_tenant_admin_only_and_apply_before_the_next_send(
+	#[from(common::runtime)] runtime: common::RuntimeFuture,
+) {
+	use aidash_application::provider_access::{Context, ProviderAccess, Source};
+	use aidash_server::apps::identity::repositories::provider_credentials::AdmittedAccess;
+	use reinhardt::db::orm::{Json, Model};
+	let team = Team::new(runtime).await;
+	let path = format!("/api/tenants/{}/data-protection", team.tenant);
+	let send = async |method: &str, path: &str, body| {
+		team.d
+			.as_person(&team.alice, method, path, Some(&team.alice_context), body)
+			.await
+	};
+	let (status, defaults) = send("GET", &path, Value::Null).await;
+	assert_eq!(status, 200, "{defaults}");
+	assert_eq!(
+		defaults["policy"],
+		json!({"level":"standard","model_call_zdr":true,"plan_connection_exempt":true})
+	);
+	let no_training =
+		json!({"level":"no_training","model_call_zdr":false,"plan_connection_exempt":false});
+	let (status, denied) = team
+		.d
+		.as_person(
+			&team.bob,
+			"PUT",
+			&path,
+			Some(&team.bob_context),
+			no_training.clone(),
+		)
+		.await;
+	assert_eq!(status, 403, "{denied}");
+	// A real registered Keyless model appears in the impact preview.
+	team.d.federation.store.pool.atomic(&TEST_FIXTURE, async |tx| {
+		let entry = aidash_server::apps::registry::models::Definition::build()
+			.tenant(team.tenant.clone()).id("private-model".into()).version("1.0.0".into())
+			.kind(serde_json::from_value(json!("model"))?)
+			.metadata(Json(json!({"id":"private-model","version":"1.0.0","kind":"model","name":{},"description":{},"config":{"provider":"openrouter","model_id":"vendor/model","endpoint":"https://keyless.example/v1","context_window":8192,"modalities":["text"],"cost":{}}}))).finish();
+		aidash_server::apps::registry::models::Definition::objects().insert_with_executor(tx, &entry).await.map_err(reinhardt::core::exception::Error::from)?;
+		Ok(())
+	}).await.unwrap();
+	let (status, preview) = send("POST", &format!("{path}/impact"), no_training.clone()).await;
+	assert_eq!(status, 200, "{preview}");
+	assert!(
+		preview["destinations"]
+			.as_array()
+			.unwrap()
+			.iter()
+			.any(|item| item["id"] == "private-model")
+	);
+	let access = AdmittedAccess {
+		store: team.d.federation.store.clone(),
+	};
+	let context = Context {
+		tenant: team.tenant.clone(),
+		..Default::default()
+	};
+	access
+		.check(&context, "https://keyless.example/v1", &Source::Keyless)
+		.await
+		.unwrap();
+	let (status, updated) = send("PUT", &path, no_training).await;
+	assert_eq!(status, 200, "{updated}");
+	assert!(
+		access
+			.check(&context, "https://keyless.example/v1", &Source::Keyless)
+			.await
+			.unwrap_err()
+			.to_string()
+			.contains("Tenant Keyless")
+	);
+	let (status, _) = send(
+		"PUT",
+		&path,
+		json!({"level":"zero_data_retention","model_call_zdr":false}),
+	)
+	.await;
+	assert_eq!(status, 400);
+	let (status, _) = send("PUT", &path, defaults["policy"].clone()).await;
+	assert_eq!(status, 200);
+	access
+		.check(&context, "https://keyless.example/v1", &Source::Keyless)
+		.await
+		.unwrap();
+	let (status, _) = send("GET", "/api/tenants/other/data-protection", Value::Null).await;
+	assert_eq!(status, 403);
+	assert_eq!(
+		team.d
+			.count("SELECT count(*) FROM tenant_data_protection_history")
+			.await,
+		2
+	);
+	assert_eq!(team.d.count("SELECT count(*) FROM dashboard_administration_history WHERE action='tenant.data_protection.update'").await, 2);
+	team.finish().await;
+}
