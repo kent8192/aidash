@@ -48,7 +48,6 @@ pub(crate) async fn connection(
 	key: &str,
 ) -> Result<CallSecret> {
 	let required = || Error::Invalid(aidash_domain::oauth_connections::CONNECTION_REQUIRED.into());
-	let service = store.oauth_connections.as_ref().ok_or_else(required)?;
 	let owner = crate::apps::identity::repositories::oauth_connections::owner_of_run(store, run)
 		.await?
 		.ok_or_else(required)?;
@@ -58,8 +57,26 @@ pub(crate) async fn connection(
 	{
 		return Err(Error::Forbidden);
 	}
+	let auth = for_owner(store, &owner, resource).await?;
+	let CallSecret::Connection { record, .. } = &auth else {
+		unreachable!("connection source")
+	};
+	if !key.is_empty() {
+		store.invocation_connection(scope, key, record).await?;
+	}
+	Ok(auth)
+}
+
+/// Home-side dispatch already verified the authoritative grant's chain-root person.
+pub(crate) async fn for_owner(
+	store: &crate::store::Store,
+	owner: &Owner,
+	resource: &str,
+) -> Result<CallSecret> {
+	let required = || Error::Invalid(aidash_domain::oauth_connections::CONNECTION_REQUIRED.into());
+	let service = store.oauth_connections.as_ref().ok_or_else(required)?;
 	let resource = aidash_domain::oauth_connections::canonical_resource(resource)?;
-	let bearer = service.bearer(&owner, &resource).await?;
+	let bearer = service.bearer(owner, &resource).await?;
 	let record = ConnectionRecord {
 		id: bearer.connection,
 		host: reqwest::Url::parse(&resource)
@@ -69,15 +86,12 @@ pub(crate) async fn connection(
 			.into(),
 		resource: resource.clone(),
 	};
-	if !key.is_empty() {
-		store.invocation_connection(scope, key, &record).await?;
-	}
 	Ok(CallSecret::Connection {
 		record,
 		source: Arc::new(Source {
 			id: bearer.connection,
 			service: service.clone(),
-			owner,
+			owner: owner.clone(),
 			resource,
 		}),
 	})
@@ -87,10 +101,58 @@ pub(crate) async fn connection(
 /// the same Run. Workbench keeps the undecorated port and has no person's credentials.
 pub(crate) struct Sessions {
 	pub store: crate::store::Store,
+	pub home: crate::federation::Home,
 	pub run: Run,
 	pub scope: aidash_application::tenancy::TenancyScope,
 }
 impl Sessions {
+	#[allow(clippy::too_many_arguments)] // Mirrors the pinned server and complete logical wire round.
+	async fn proxy(
+		&self,
+		run: Uuid,
+		server: &PluginServer,
+		config: &RemoteServer,
+		tool: &str,
+		digest: Option<&str>,
+		arguments: Value,
+		key: &str,
+		list: bool,
+	) -> Result<Option<Value>> {
+		use aidash_domain::identity::commands::connections::{self, ConnectionCall, Kind, ToolKey};
+		if run != self.run.id {
+			return Err(Error::Forbidden);
+		}
+		if self.home.local() {
+			return Ok(None);
+		}
+		let call = ConnectionCall {
+			tool_key: ToolKey::Plugin {
+				plugin: server.plugin.clone(),
+				digest: server.digest.clone(),
+				server: server.server.clone(),
+				schema_digest: digest.map(Into::into),
+			},
+			resource: aidash_domain::oauth_connections::canonical_resource(config.url.as_str())?,
+			tool_name: tool.into(),
+			arguments,
+			idempotency_key: key.into(),
+			kind: Kind::Connection,
+			secret_name: None,
+		};
+		let value: Value = self
+			.home
+			.command(
+				if list {
+					connections::LIST
+				} else {
+					connections::CALL
+				},
+				serde_json::to_value(call)?,
+			)
+			.await?;
+		aidash_application::tools::connection_outcome(value, list)
+	}
+
 	async fn auth(
 		&self,
 		run: Uuid,
@@ -121,6 +183,24 @@ impl PluginSessions for Sessions {
 		config: &RemoteServer,
 		_auth: Option<&CallSecret>,
 	) -> Result<Vec<ListedTool>> {
+		if let Some(value) = self
+			.proxy(
+				run,
+				server,
+				config,
+				"",
+				None,
+				serde_json::json!({}),
+				"",
+				true,
+			)
+			.await?
+		{
+			if value.get("error").is_some() {
+				return Err(Error::Invalid(value.to_string()));
+			}
+			return Ok(serde_json::from_value(value)?);
+		}
 		let auth = self.auth(run, config, "").await?;
 		self.store
 			.plugin_sessions
@@ -138,6 +218,21 @@ impl PluginSessions for Sessions {
 		key: &str,
 		_auth: Option<&CallSecret>,
 	) -> Result<Value> {
+		if let Some(value) = self
+			.proxy(
+				run,
+				server,
+				config,
+				tool,
+				Some(schema_digest),
+				arguments.clone(),
+				key,
+				false,
+			)
+			.await?
+		{
+			return Ok(value);
+		}
 		let auth = self.auth(run, config, key).await?;
 		self.store
 			.plugin_sessions
@@ -166,6 +261,28 @@ impl PluginSessions for Sessions {
 		inputs: Option<Arc<dyn PluginInputs>>,
 		_auth: Option<&CallSecret>,
 	) -> Result<ToolRound> {
+		if !self.home.local()
+			&& checkpoint.is_some_and(|c| c.input.is_some() || c.continuation_sends > 0)
+		{
+			return Ok(ToolRound::Complete(
+				serde_json::json!({"error":"connection_remote_refused"}),
+			));
+		}
+		if let Some(value) = self
+			.proxy(
+				run,
+				server,
+				config,
+				tool,
+				Some(schema_digest),
+				arguments.clone(),
+				key,
+				false,
+			)
+			.await?
+		{
+			return Ok(ToolRound::Complete(value));
+		}
 		let auth = self.auth(run, config, key).await?;
 		self.store
 			.plugin_sessions

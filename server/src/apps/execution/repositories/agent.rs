@@ -1145,6 +1145,7 @@ impl ExecutionEnvironment for Environment<'_> {
 		})?;
 		aidash_application::plugin_tools::pin_for_run(
 			&super::mcp_connections::Sessions {
+				home: self.native_home(),
 				store: self.federation.store.clone(),
 				run: run.clone(),
 				scope: self.run_store.scope.clone(),
@@ -1564,6 +1565,7 @@ impl aidash_application::ports::bindings::BindingResolver for Environment<'_> {
 			providers,
 			authority,
 			sessions: Some(Arc::new(super::mcp_connections::Sessions {
+				home: self.native_home(),
 				store: self.federation.store.clone(),
 				run: run.clone(),
 				scope: self.run_store.scope.clone(),

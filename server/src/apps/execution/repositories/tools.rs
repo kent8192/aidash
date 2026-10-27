@@ -13,6 +13,24 @@ use uuid::Uuid;
 pub(crate) struct Operations(pub(crate) crate::tool::ToolContext);
 #[async_trait]
 impl ToolOperations for Operations {
+	async fn connection_call(
+		&self,
+		call: &aidash_domain::identity::commands::connections::ConnectionCall,
+	) -> Result<Option<Value>> {
+		if self.0.home.local() {
+			return Ok(None);
+		}
+		let value: Value = self
+			.0
+			.home
+			.command(
+				aidash_domain::identity::commands::connections::CALL,
+				serde_json::to_value(call)?,
+			)
+			.await?;
+		aidash_application::tools::connection_outcome(value, false)
+	}
+
 	async fn connection(
 		&self,
 		resource: &str,

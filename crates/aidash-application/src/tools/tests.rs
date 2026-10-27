@@ -10,6 +10,7 @@ use rstest::{fixture, rstest};
 use std::sync::Mutex;
 use uuid::Uuid;
 struct Operations {
+	proxy: Option<Value>,
 	task: Task,
 	skills: Vec<EntityRef>,
 	skill_text: String,
@@ -24,6 +25,22 @@ impl Operations {
 }
 #[async_trait]
 impl ToolOperations for Operations {
+	async fn connection_call(
+		&self,
+		call: &aidash_domain::identity::commands::connections::ConnectionCall,
+	) -> Result<Option<Value>> {
+		if let Some(result) = &self.proxy {
+			self.record("home.call");
+			self.inputs
+				.lock()
+				.unwrap()
+				.push((call.idempotency_key.clone(), serde_json::to_value(call)?));
+			Ok(Some(result.clone()))
+		} else {
+			Ok(None)
+		}
+	}
+
 	async fn registered_skills(&self) -> Result<Vec<EntityRef>> {
 		self.record("skills.authorize");
 		Ok(self.skills.clone())
@@ -238,6 +255,7 @@ fn fixture() -> Fixture {
 	};
 	Fixture {
 		operations: Operations {
+			proxy: None,
 			skill_text: "界ab".into(),
 			connection: false,
 			task,
@@ -730,4 +748,92 @@ async fn personal_only_tools_never_use_an_ownerless_shared_secret(
 				.any(|call| call.starts_with("transport.invoke"))
 		);
 	}
+}
+
+#[rstest]
+#[case::http_any(false, aidash_domain::tool::SecretOwner::Any, false)]
+#[case::http_personal(false, aidash_domain::tool::SecretOwner::Personal, false)]
+#[case::mcp(true, aidash_domain::tool::SecretOwner::Any, false)]
+#[case::literal_fallback(false, aidash_domain::tool::SecretOwner::Any, true)]
+#[tokio::test]
+async fn a_home_personal_call_returns_its_result_before_any_local_secret_or_transport(
+	mut fixture: Fixture,
+	#[case] mcp: bool,
+	#[case] owner: aidash_domain::tool::SecretOwner,
+	#[case] literal_fallback: bool,
+) {
+	let result = if literal_fallback {
+		json!({"outcome":"not_personal"})
+	} else {
+		json!({"content":[{"type":"text","text":"home result"}]})
+	};
+	fixture.operations.proxy = Some(result.clone());
+	let config = if mcp {
+		ToolConfig::Mcp {
+			endpoint: "https://api.example.com/mcp".into(),
+			tool_name: "lookup".into(),
+			replay: "idempotent".into(),
+			idempotency_argument: None,
+			secret: None,
+			scopes: None,
+			secret_owner: owner,
+		}
+	} else {
+		ToolConfig::Http {
+			endpoint: "https://api.example.com/run".into(),
+			replay: "idempotent".into(),
+			secret: Some("personal".into()),
+			secret_owner: owner,
+		}
+	};
+	let tool = plugin(config, json!({"type":"object"}));
+	assert_eq!(
+		tool.invoke(
+			&ToolContext {
+				operations: &fixture.operations,
+				run: &fixture.run
+			},
+			&fixture.operations,
+			json!({"query":"private"}),
+			"logical-key"
+		)
+		.await
+		.unwrap(),
+		result
+	);
+	assert_eq!(*fixture.operations.calls.lock().unwrap(), ["home.call"]);
+	let saved = fixture.operations.inputs.lock().unwrap();
+	assert_eq!(saved[0].1["arguments"], json!({"query":"private"}));
+	assert_eq!(saved[0].1["idempotency_key"], "logical-key");
+	assert_eq!(
+		saved[0].1["kind"],
+		if mcp { "connection" } else { "personal_secret" }
+	);
+	assert!(saved[0].1.get("authorization").is_none());
+	assert!(saved[0].1.get("token").is_none());
+}
+
+#[rstest]
+#[case::fallback(json!({"outcome":"not_personal"}))]
+#[case::connection(json!({"error":"connection_required","resource":"https://mcp.example/tools"}))]
+#[case::scope(json!({"error":"connection_scope_insufficient","resource":"https://mcp.example/tools"}))]
+#[case::null(Value::Null)]
+fn connection_envelopes_preserve_every_literal_tool_result(#[case] result: Value) {
+	assert_eq!(
+		connection_outcome(json!({"outcome":"result","result":result}), false).unwrap(),
+		Some(result)
+	);
+}
+#[test]
+fn typed_connection_envelopes_restore_the_error_provenance() {
+	let cause = aidash_domain::agent_plugin::ConnectionCause::ConnectionRequired {
+		resource: "https://mcp.example/tools".into(),
+	};
+	assert!(
+		matches!(connection_outcome(json!({"outcome":"connection","cause":cause}), false), Err(Error::Connection(received)) if received == cause)
+	);
+	assert_eq!(
+		connection_outcome(json!({"outcome":"not_personal"}), false).unwrap(),
+		None
+	);
 }
