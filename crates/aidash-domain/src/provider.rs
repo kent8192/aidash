@@ -41,11 +41,15 @@ impl InputFormat {
 
 	/// Native plan requests use Responses accounting (ADR 0083). Existing
 	/// Legacy and Ordered Runs keep their original accounting and digests.
+	/// An OpenRouter model that declares the Responses wire API follows the
+	/// same per-version mapping as a Plan Connection (ADR 0097).
 	pub fn for_model(
 		model: &crate::model::ModelConfig,
 		version: crate::projection::ProjectionVersion,
 	) -> Self {
-		if model.uses_plan_connection() && version == crate::projection::ProjectionVersion::Native {
+		let responses = model.uses_plan_connection()
+			|| model.wire_api == Some(crate::model::WireApi::Responses);
+		if responses && version == crate::projection::ProjectionVersion::Native {
 			Self::Responses
 		} else {
 			Self::Chat

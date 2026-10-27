@@ -25,6 +25,12 @@ pub struct ModelConfig {
 	/// ever falls back to the other.
 	#[serde(default, skip_serializing_if = "Option::is_none")]
 	pub plan_connection: Option<String>,
+	/// The provider API this route speaks (ADR 0097). Omitted means `chat`,
+	/// so existing model definitions keep their bytes. `responses` is accepted
+	/// only for an OpenRouter model served by a Provider Credential; Plan
+	/// Connections already use the Responses API and Keyless endpoints never do.
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub wire_api: Option<WireApi>,
 	/// Total inference request timeout in seconds, including the response body.
 	/// Omitted or null values use 900 seconds; configured values must be positive.
 	/// BYOK configurations are capped at the broker's 3600-second deadline.
@@ -73,6 +79,25 @@ pub struct ModelConfig {
 	/// never select the estimator used for execution or compaction.
 	#[serde(default, skip_serializing_if = "Option::is_none")]
 	pub estimate_diagnostics: Option<EstimateDiagnostics>,
+}
+
+/// The provider API a model route speaks. The transport never switches
+/// implicitly, so a Run's prompt prefix, Request Estimate and digests do not
+/// change mid-Run (ADR 0097).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum WireApi {
+	/// OpenRouter's Chat Completions API, the behavior when omitted.
+	Chat,
+	/// OpenRouter's Responses API. Plan Connections already use it.
+	Responses,
+}
+
+impl WireApi {
+	/// Whether this route keeps the Chat Completions shape.
+	pub fn is_chat(&self) -> bool {
+		*self == Self::Chat
+	}
 }
 
 /// A model route's declared prompt-caching behavior.
@@ -285,6 +310,36 @@ impl ModelConfig {
 	/// Whether calls are served by a Plan Connection (ADR 0007).
 	pub fn uses_plan_connection(&self) -> bool {
 		self.plan_connection.is_some()
+	}
+
+	/// The declared wire API is meaningful only for an OpenRouter model served
+	/// by a Provider Credential. Plan Connections already use the Responses API,
+	/// and a Keyless endpoint has no such choice, so neither may declare one.
+	/// An explicit `chat` is accepted on a Provider Credential model because it
+	/// preserves today's bytes.
+	pub fn validate_wire_api(&self) -> Result<()> {
+		let Some(wire_api) = self.wire_api else {
+			return Ok(());
+		};
+		if self.uses_plan_connection() {
+			return Err(Error::Invalid(format!(
+				"model {} uses a Plan Connection, which already speaks the Responses API; wire_api must be omitted",
+				self.model_id
+			)));
+		}
+		if self.provider_credential.is_none() {
+			return Err(Error::Invalid(format!(
+				"model {} declares wire_api without an OpenRouter Provider Credential",
+				self.model_id
+			)));
+		}
+		if wire_api == WireApi::Responses && self.provider != "openrouter" {
+			return Err(Error::Invalid(format!(
+				"model {} declares wire_api responses, which requires OpenRouter",
+				self.model_id
+			)));
+		}
+		Ok(())
 	}
 
 	/// Plan usage reaches only OpenAI's Responses API, which needs a stream and
