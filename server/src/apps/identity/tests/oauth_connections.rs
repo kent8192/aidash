@@ -318,7 +318,9 @@ async fn oauth_connections_subject_credentials_manage_only_their_persons_connect
 		discovery: Arc::new(OfflineOAuth),
 		tokens: Arc::new(OfflineOAuth),
 		policy: Arc::new(
-			aidash_server::apps::identity::repositories::oauth_connections::UnconfiguredPolicy,
+			aidash_server::apps::identity::repositories::connection_policy::NativeConnectionPolicy {
+                pool: f.store.control_pool.clone(),
+            },
 		),
 	}));
 	let now = chrono::Utc::now();

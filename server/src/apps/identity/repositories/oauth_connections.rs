@@ -321,26 +321,6 @@ impl Scope for NativeScope {
 		Ok(self.tx.commit().await.map_err(crate::Error::from)?)
 	}
 }
-/// W3b replaces this policy at composition with its clients/ceilings repository.
-pub struct UnconfiguredPolicy;
-#[async_trait]
-impl aidash_application::ports::oauth::ConnectionPolicy for UnconfiguredPolicy {
-	async fn registered_clients(
-		&self,
-		_: &str,
-		_: &str,
-		_: &str,
-	) -> Result<(
-		Option<aidash_domain::oauth_connections::OAuthClient>,
-		Option<aidash_domain::oauth_connections::OAuthClient>,
-	)> {
-		Ok((None, None))
-	}
-	async fn scope_ceiling(&self, _: &str, _: &str) -> Result<Option<Vec<String>>> {
-		Ok(None)
-	}
-}
-
 impl OAuthAuthorization {
 	pub(crate) async fn reserve(&self, pool: &crate::database::native::Pool) -> crate::Result<()> {
 		let scope = TenancyScope::Deployment(DeploymentScopeReason::OAuthAuthorization);

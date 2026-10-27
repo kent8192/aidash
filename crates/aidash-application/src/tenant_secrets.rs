@@ -22,8 +22,16 @@ pub mod readiness;
 /// Every mutating scope serializes one Tenant, including quota and name races.
 #[async_trait]
 pub trait Scope: Send {
-	/// The Tenant's Tenant Secret of that name that is not deleted.
+	/// The Tenant's shared Tenant Secret of that name that is not deleted.
 	async fn named(&mut self, name: &str) -> Result<Option<TenantSecret>>;
+	/// A live name in exactly one ownership namespace. `None` is shared.
+	async fn owned(&mut self, owner: Option<&str>, name: &str) -> Result<Option<TenantSecret>> {
+		Ok(self
+			.list()
+			.await?
+			.into_iter()
+			.find(|row| row.owner.as_deref() == owner && row.name == name))
+	}
 	/// A Tenant Secret in any state, for lifecycle work.
 	async fn by_id(&mut self, id: Uuid) -> Result<Option<TenantSecret>>;
 	async fn list(&mut self) -> Result<Vec<TenantSecret>>;
@@ -268,10 +276,40 @@ pub struct Service {
 	pub max_per_tenant: usize,
 }
 
+/// The namespace selected by the caller; personal ownership always resolves to
+/// the authenticated subject, never a subject supplied in a request.
+#[derive(
+	Debug,
+	Clone,
+	Copy,
+	Default,
+	PartialEq,
+	Eq,
+	serde::Serialize,
+	serde::Deserialize,
+	schemars::JsonSchema,
+)]
+#[serde(rename_all = "snake_case")]
+#[schemars(rename = "SecretOwnership")]
+pub enum Ownership {
+	Me,
+	#[default]
+	Tenant,
+}
+impl Ownership {
+	pub fn subject(self, caller: &str) -> Option<&str> {
+		match self {
+			Self::Me => Some(caller),
+			Self::Tenant => None,
+		}
+	}
+}
+
 /// What a caller may learn about a Tenant Secret.
 #[derive(Debug, Clone, serde::Serialize, schemars::JsonSchema)]
 #[schemars(rename = "TenantSecretMetadata")]
 pub struct Metadata {
+	pub owner: Ownership,
 	pub id: Uuid,
 	pub tenant: String,
 	pub name: String,
@@ -285,6 +323,11 @@ pub struct Metadata {
 impl From<TenantSecret> for Metadata {
 	fn from(v: TenantSecret) -> Self {
 		Self {
+			owner: if v.owner.is_some() {
+				Ownership::Me
+			} else {
+				Ownership::Tenant
+			},
 			id: v.id,
 			tenant: v.tenant,
 			name: v.name,
@@ -303,6 +346,15 @@ pub struct Put {
 	pub expected_revision: i64,
 	pub value: Option<SecretString>,
 	pub hosts: Option<Vec<String>>,
+}
+
+/// A validated new name and value in one ownership namespace.
+struct NewSecret<'a> {
+	tenant: &'a str,
+	owner: Option<&'a str>,
+	name: &'a str,
+	value: SecretString,
+	hosts: Vec<String>,
 }
 
 pub const RECONCILIATION_BATCH_SIZE: usize = 25;
@@ -393,7 +445,11 @@ impl Service {
 		let mut scope = self.repository.begin(tenant).await?;
 		let rows = scope.list().await?;
 		scope.commit().await?;
-		Ok(rows.into_iter().map(Metadata::from).collect())
+		Ok(rows
+			.into_iter()
+			.filter(|row| row.owner.is_none())
+			.map(Metadata::from)
+			.collect())
 	}
 
 	/// The Tenant's active Tenant Secrets, for readiness facts. A pending or
@@ -404,16 +460,54 @@ impl Service {
 		scope.commit().await?;
 		Ok(rows
 			.into_iter()
-			.filter(|row| row.state == State::Active)
+			.filter(|row| row.state == State::Active && row.owner.is_none())
 			.map(Metadata::from)
 			.collect())
 	}
-	pub async fn get(&self, tenant: &str, name: &str) -> Result<Metadata> {
+	/// Shared lookup retained for all existing callers.
+	pub async fn shared(&self, tenant: &str, name: &str) -> Result<Option<TenantSecret>> {
 		tenant_secrets::validate_name(name)?;
 		let mut scope = self.repository.begin(tenant).await?;
 		let row = scope.named(name).await?;
 		scope.commit().await?;
-		row.map(Metadata::from)
+		Ok(row)
+	}
+	pub async fn personal(
+		&self,
+		tenant: &str,
+		subject: &str,
+		name: &str,
+	) -> Result<Option<TenantSecret>> {
+		tenant_secrets::validate_name(name)?;
+		let mut scope = self.repository.begin(tenant).await?;
+		let row = scope.owned(Some(subject), name).await?;
+		scope.commit().await?;
+		Ok(row)
+	}
+	pub async fn list_for(&self, tenant: &str, subject: &str) -> Result<Vec<Metadata>> {
+		let mut scope = self.repository.begin(tenant).await?;
+		let rows = scope.list().await?;
+		scope.commit().await?;
+		Ok(rows
+			.into_iter()
+			.filter(|row| row.owner.is_none() || row.owner.as_deref() == Some(subject))
+			.map(Into::into)
+			.collect())
+	}
+	pub async fn get(&self, tenant: &str, name: &str) -> Result<Metadata> {
+		self.get_owned(tenant, None, name).await
+	}
+	pub async fn get_owned(
+		&self,
+		tenant: &str,
+		owner: Option<&str>,
+		name: &str,
+	) -> Result<Metadata> {
+		tenant_secrets::validate_name(name)?;
+		let mut scope = self.repository.begin(tenant).await?;
+		let row = scope.owned(owner, name).await?;
+		scope.commit().await?;
+		row.map(Into::into)
 			.ok_or_else(|| Error::NotFound("Tenant Secret".into()))
 	}
 
@@ -429,6 +523,16 @@ impl Service {
 	/// Stores a new Tenant Secret, or replaces the value and the hosts of an
 	/// existing one. A replacement changes no definition version.
 	pub async fn put(&self, tenant: &str, name: &str, input: Put, actor: &str) -> Result<Metadata> {
+		self.put_owned(tenant, None, name, input, actor).await
+	}
+	pub async fn put_owned(
+		&self,
+		tenant: &str,
+		owner: Option<&str>,
+		name: &str,
+		input: Put,
+		actor: &str,
+	) -> Result<Metadata> {
 		tenant_secrets::validate_name(name)?;
 		if let Some(value) = &input.value {
 			validate_value(value)?;
@@ -439,7 +543,7 @@ impl Service {
 			.map(tenant_secrets::normalize_hosts)
 			.transpose()?;
 		let mut scope = self.repository.begin(tenant).await?;
-		match scope.named(name).await? {
+		match scope.owned(owner, name).await? {
 			None => {
 				if input.expected_revision != 0 {
 					return Err(Error::Conflict("stale Tenant Secret revision".into()));
@@ -452,7 +556,18 @@ impl Service {
 				if scope.count().await? >= self.max_per_tenant {
 					return Err(Error::Conflict("Tenant Secret quota reached".into()));
 				}
-				self.create(tenant, name, value, hosts, scope, actor).await
+				self.create(
+					NewSecret {
+						tenant,
+						owner,
+						name,
+						value,
+						hosts,
+					},
+					scope,
+					actor,
+				)
+				.await
 			}
 			Some(mut row) => {
 				row.check_revision(input.expected_revision)?;
@@ -513,13 +628,17 @@ impl Service {
 
 	async fn create(
 		&self,
-		tenant: &str,
-		name: &str,
-		value: SecretString,
-		hosts: Vec<String>,
+		input: NewSecret<'_>,
 		mut scope: Box<dyn Scope>,
 		actor: &str,
 	) -> Result<Metadata> {
+		let NewSecret {
+			tenant,
+			owner,
+			name,
+			value,
+			hosts,
+		} = input;
 		let id = Uuid::now_v7();
 		let (fingerprint, last4) = self.fingerprint(tenant, &value);
 		let now = Utc::now();
@@ -528,7 +647,7 @@ impl Service {
 			tenant: tenant.into(),
 			name: name.into(),
 			hosts,
-			owner: None,
+			owner: owner.map(str::to_owned),
 			secret_resource: self.store.secret_resource(id),
 			pinned_version: None,
 			fingerprint,
@@ -546,7 +665,7 @@ impl Service {
 			.add_secret_version(tenant, &row.secret_resource, &row.hosts, &value)
 			.await?;
 		let mut scope = self.repository.begin(tenant).await?;
-		let pending = scope.named(name).await?;
+		let pending = scope.owned(owner, name).await?;
 		if pending.is_none_or(|p| p.id != id || p.state != State::Pending) {
 			// Reconciliation may win while the Secret Store write is in flight.
 			self.store.delete(tenant, &row.secret_resource).await?;
@@ -570,10 +689,21 @@ impl Service {
 		expected_revision: i64,
 		actor: &str,
 	) -> Result<Metadata> {
+		self.delete_owned(tenant, None, name, expected_revision, actor)
+			.await
+	}
+	pub async fn delete_owned(
+		&self,
+		tenant: &str,
+		owner: Option<&str>,
+		name: &str,
+		expected_revision: i64,
+		actor: &str,
+	) -> Result<Metadata> {
 		tenant_secrets::validate_name(name)?;
 		let mut scope = self.repository.begin(tenant).await?;
 		let mut row = scope
-			.named(name)
+			.owned(owner, name)
 			.await?
 			.ok_or_else(|| Error::NotFound("Tenant Secret".into()))?;
 		row.check_revision(expected_revision)?;
@@ -768,6 +898,34 @@ impl Service {
 			purged += 1;
 		}
 		Ok(purged)
+	}
+
+	/// Removes only the departing person's values, retaining shared and other
+	/// people's values. Store destruction completes before metadata is removed.
+	pub async fn retire_subject(&self, tenant: &str, subject: &str) -> Result<usize> {
+		let mut count = 0;
+		for candidate in self
+			.repository
+			.all(tenant)
+			.await?
+			.into_iter()
+			.filter(|row| row.owner.as_deref() == Some(subject))
+		{
+			let mut scope = self.repository.begin(tenant).await?;
+			// Serialize destruction with replacements. A pending create that
+			// finishes later observes the removed row and destroys its resource.
+			if let Some(row) = scope
+				.by_id(candidate.id)
+				.await?
+				.filter(|row| row.owner.as_deref() == Some(subject))
+			{
+				self.destroy_contents(&row).await?;
+				scope.remove(row.id).await?;
+				count += 1;
+			}
+			scope.commit().await?;
+		}
+		Ok(count)
 	}
 
 	async fn destroy_contents(&self, row: &TenantSecret) -> Result<()> {

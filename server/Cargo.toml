@@ -425,3 +425,7 @@ path = "src/apps/identity/tests/provider_credentials.rs"
 [[test]]
 name = "secret_readiness"
 path = "src/apps/identity/tests/secret_readiness.rs"
+
+[[test]]
+name = "oauth_clients"
+path = "src/apps/identity/tests/oauth_clients.rs"
