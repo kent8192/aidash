@@ -32,5 +32,6 @@ pub mod sign_in;
 pub mod tenant_administration;
 pub mod tenant_deletions;
 pub mod tenant_purge;
+pub mod tenant_secret_readiness;
 pub mod tenant_secrets;
 pub mod tenants;

@@ -1097,3 +1097,35 @@ async fn a_stale_operation_route_is_minted_again() {
 		"a fresh token is minted after the cache expires"
 	);
 }
+
+#[tokio::test]
+async fn active_secrets_exclude_pending_and_deleted_names() {
+	let (s, _, _) = service_with(FakeStore::default());
+	let kept = s
+		.put(
+			"alpha",
+			"kept",
+			put(Some("canary-kept-value"), Some(&["api.example.com"]), 0),
+			"actor",
+		)
+		.await
+		.unwrap();
+	let removed = s
+		.put(
+			"alpha",
+			"removed",
+			put(Some("canary-removed-value"), Some(&["api.example.com"]), 0),
+			"actor",
+		)
+		.await
+		.unwrap();
+	s.delete("alpha", "removed", removed.revision, "actor")
+		.await
+		.unwrap();
+	let active = s.active("alpha").await.unwrap();
+	assert_eq!(active.len(), 1);
+	assert_eq!(active[0].id, kept.id);
+	assert_eq!(active[0].name, "kept");
+	assert_eq!(active[0].hosts, ["api.example.com"]);
+	assert!(s.active("beta").await.unwrap().is_empty());
+}

@@ -99,3 +99,16 @@ pub async fn skill_import(
 ) -> ViewResult<Response> {
 	crate::http::json(service.skill_import(actor, request).await)
 }
+
+#[get(
+	"/api/registry/{id}/{version}/secret-readiness",
+	name = "registry-secret-readiness",
+	auth = "protected"
+)]
+pub async fn secret_readiness(
+	#[inject] service: Depends<RegistryManagement>,
+	#[inject] actor: Actor,
+	Path((id, version)): Path<(String, String)>,
+) -> ViewResult<Response> {
+	crate::http::json(service.secret_readiness(actor, (id, version)).await)
+}

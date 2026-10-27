@@ -1,4 +1,5 @@
 //! Management use cases.
+use crate::apps::identity::services::tenant_secret_readiness;
 use crate::apps::registry::serializers::agent_plugin_import::{
 	AgentPluginImportResult, PluginImportRequest,
 };
@@ -11,6 +12,7 @@ use crate::{
 	federation::Federation,
 	registry::{EntityRef, Entry, Search},
 };
+use aidash_application::tenant_secrets::readiness::{Fact, Kind, Target};
 use http::HeaderMap;
 use reinhardt::injectable;
 use uuid::Uuid;
@@ -186,6 +188,87 @@ impl RegistryManagement {
 		};
 		let source = crate::bootstrap::agent_plugin_import(&self.runtime.config, &identity.tenant)?;
 		agent_plugin_import::import(&self.runtime, &source, actor, request).await
+	}
+
+	/// Readiness facts for the Tenant Secrets this Agent version's bound tools
+	/// and External services name (decision 5 of #310). A bound tool or
+	/// External service that names no Tenant Secret needs none and has no fact.
+	/// A fact never carries a value, a Fingerprint or the last four characters.
+	pub(crate) async fn secret_readiness(
+		&self,
+		actor: Actor,
+		(id, version): (String, String),
+	) -> Result<Vec<Fact>> {
+		let f = self.runtime.clone();
+		let Actor::Subject(identity) = actor else {
+			return Err(Error::Forbidden);
+		};
+		let tenant = aidash_domain::tenancy::TenantName::new(&identity.tenant)?;
+		let mut access = Access::begin(&f.store, &identity).await?;
+		let result = async {
+			// Readiness is a management view of an Agent version, so it needs
+			// `registry.read` but not a Catalog Approval, which admits Runs. The
+			// collection decision runs before lookup, so a missing Agent is 404
+			// only for a caller that may read the Registry at all.
+			let collection = access.resource(
+				"registry",
+				format!(
+					"agent/{}",
+					aidash_domain::identity::tenant_administration::COLLECTION
+				),
+				serde_json::json!({"kind": "agent"}),
+			);
+			if !access.decide(&collection, "registry.read").await? {
+				return Err(Error::Forbidden);
+			}
+			let agent = f.registry.get(&tenant, &id, &version).await?;
+			if agent.kind != "agent" {
+				return Err(Error::NotFound("Agent".into()));
+			}
+			let resource = catalog::resource(&access, &agent);
+			if !access.decide(&resource, "registry.read").await? {
+				return Err(Error::Forbidden);
+			}
+			let node = access.node_id.clone();
+			let snapshot = crate::apps::registry::repositories::bindings::snapshot(
+				&mut access.tx,
+				&node,
+				&agent,
+				false,
+				f.store.provider_credentials.is_some(),
+			)
+			.await?;
+			let mut targets = Vec::new();
+			for resolved in snapshot.definitions {
+				let kind = match resolved.definition.kind.as_str() {
+					"tool" => Kind::Tool,
+					"external_service" => Kind::ExternalService,
+					_ => continue,
+				};
+				let resource = catalog::resource(&access, &resolved.definition);
+				if !access.decide(&resource, "registry.read").await? {
+					return Err(Error::Forbidden);
+				}
+				// A bound tool or External service that names no Tenant Secret
+				// needs none, so it has no readiness fact.
+				let Some((tenant_secret_name, endpoint)) =
+					aidash_domain::tenant_secrets::definition_target(&resolved.definition)
+				else {
+					continue;
+				};
+				targets.push(Target {
+					item: format!("{}@{}", resolved.definition.id, resolved.definition.version),
+					kind,
+					tenant_secret_name: Some(tenant_secret_name),
+					endpoint: Some(endpoint),
+				});
+			}
+			targets.sort_by(|left, right| left.item.cmp(&right.item));
+			let can_manage = tenant_secret_readiness::can_manage(&mut access).await?;
+			tenant_secret_readiness::facts(&f.store, &identity.tenant, can_manage, targets).await
+		}
+		.await;
+		access.finish(result).await
 	}
 }
 

@@ -240,3 +240,16 @@ pub async fn publication_access(
 	}
 	crate::http::response(service.publication_access(actor, input).await)
 }
+
+#[get(
+	"/api/marketplace/packages/{key}/secret-readiness",
+	name = "marketplace-secret-readiness",
+	auth = "protected"
+)]
+pub async fn secret_readiness(
+	#[inject] service: Depends<MarketplaceManagement>,
+	#[inject] actor: Actor,
+	Path(key): Path<String>,
+) -> ViewResult<Response> {
+	crate::http::response(service.secret_readiness(actor, key).await)
+}

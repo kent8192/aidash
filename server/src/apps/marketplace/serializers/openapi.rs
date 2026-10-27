@@ -2,6 +2,7 @@
 use super::super::views;
 use super::{contracts::*, management::*};
 use crate::{Result, config::openapi::Contracts, registry::Entry};
+use aidash_application::tenant_secrets::readiness::Fact;
 use reinhardt::rest::openapi::OpenApiSchema;
 pub(crate) fn register(contracts: &mut Contracts, document: &mut OpenApiSchema) -> Result<()> {
 	contracts
@@ -29,6 +30,13 @@ pub(crate) fn register(contracts: &mut Contracts, document: &mut OpenApiSchema) 
 		"application/json",
 	)?;
 	contracts.path(document, views::management::detail, &["String"])?;
+	contracts.response::<_, Vec<Fact>>(
+		document,
+		views::management::secret_readiness,
+		200,
+		"application/json",
+	)?;
+	contracts.path(document, views::management::secret_readiness, &["String"])?;
 	contracts.response::<_, serde_json::Value>(
 		document,
 		views::management::publish,

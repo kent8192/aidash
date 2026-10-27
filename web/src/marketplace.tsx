@@ -55,6 +55,8 @@ import { RecordView } from "./record-view";
 import { marketplaceCopy } from "./marketplace-copy";
 import { ApprovalSetReview } from "./marketplace-approval";
 import { TenantSecretAssignments } from "./tenant-secrets";
+import { SecretReadiness } from "./capabilities/secret-readiness";
+import type { SecretReadinessFact } from "./capabilities/secret-readiness-model";
 import {
   Alert,
   Disclosure,
@@ -189,6 +191,16 @@ export function ScopedMarketplace({
     queryKey: [...context, "detail", selected],
     queryFn: () => marketplaceDetail(selected!),
     enabled: !!selected && !denied,
+    retry: false,
+    staleTime: 0,
+  });
+  const secretReadiness = useQuery({
+    queryKey: [...context, "secret-readiness", selected],
+    queryFn: () =>
+      apiFetch<SecretReadinessFact[]>(
+        `/api/marketplace/packages/${encodeURIComponent(selected!)}/secret-readiness`,
+      ),
+    enabled: !!selected && installing && !denied,
     retry: false,
     staleTime: 0,
   });
@@ -679,6 +691,12 @@ export function ScopedMarketplace({
                   value={secrets}
                   onChange={setSecrets}
                 />
+                {secretReadiness.isError && (
+                  <Alert>{secretReadiness.error.message}</Alert>
+                )}
+                {secretReadiness.data && (
+                  <SecretReadiness facts={secretReadiness.data} />
+                )}
                 <Field label={copy.bindings}>
                   <Textarea
                     className="min-h-20 font-mono text-xs"

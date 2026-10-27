@@ -31,6 +31,19 @@ requires entering its value again in the same request (ADR 0096); on
 Self-hosted, hosts change without the value. Tenant purge removes its values
 before its rows.
 
+Readiness is read-only and never returns a value, a Fingerprint or the last
+four characters. `GET /api/registry/{id}/{version}/secret-readiness` returns
+one fact for each bound tool and External service of an Agent version, and
+`GET /api/marketplace/packages/{key}/secret-readiness` returns one fact for
+each Secret slot the package's install plan declares. A fact names its item,
+`kind` (`tool`, `external_service` or `slot`), the `tenant_secret_name` when
+one is named, a `status` (`ready`, `secret_missing`,
+`secret_hosts_mismatch`, `secrets_unavailable_on_deployment` or
+`broker_not_configured`) and who can `repair` it (`manage_secret`,
+`ask_administrator`, `operator` or `none`). A slot is ready on the plan screen
+when any active Tenant Secret records the package's destination host; after
+installation the installed copy names its chosen Secret.
+
 Naming a Secret in a definition requires `secret.use`, independently of
 `secret.manage`. HTTP/MCP tool transports use `secret: "search-key"` instead
 of a Deployment environment reference. A Workbench Test Profile rule uses the

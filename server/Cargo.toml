@@ -409,3 +409,7 @@ path = "src/apps/registry/tests/tenant_registry_acceptance.rs"
 [[test]]
 name = "provider_credentials"
 path = "src/apps/identity/tests/provider_credentials.rs"
+
+[[test]]
+name = "secret_readiness"
+path = "src/apps/identity/tests/secret_readiness.rs"
