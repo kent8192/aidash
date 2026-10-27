@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { Alert, Hint, Loading } from "../components/patterns";
+import { Alert, Hint } from "../components/patterns";
 import { Button } from "../components/ui/button";
 import { coreLivePreview, coreLivePreviewStop } from "../generated/aidash";
 import type { LivePreview } from "../generated/models";
@@ -37,6 +37,12 @@ export function LivePreviewPanel({ run }: { run: string }) {
   const remaining = value
     ? remainingSeconds(value.expires_at, query.dataUpdatedAt)
     : 0;
+  const absent =
+    query.isError &&
+    typeof query.error === "object" &&
+    query.error !== null &&
+    "status" in query.error &&
+    query.error.status === 404;
 
   const stop = async () => {
     if (!window.confirm(t("livePreviewStopConfirm"))) return;
@@ -52,6 +58,8 @@ export function LivePreviewPanel({ run }: { run: string }) {
     }
   };
 
+  if (query.isPending || absent || (query.isSuccess && !value)) return null;
+
   return (
     <details className={panelClass} open>
       <summary>
@@ -62,11 +70,7 @@ export function LivePreviewPanel({ run }: { run: string }) {
           </span>
         )}
       </summary>
-      {query.isPending && <Loading />}
-      {query.isError && (
-        <Alert retry={() => void query.refetch()}>{query.error.message}</Alert>
-      )}
-      {query.isSuccess && !value && <Hint>{t("livePreviewNone")}</Hint>}
+      {query.isError && <Hint>{t("livePreviewStatusUnavailable")}</Hint>}
       {value && (
         <div className="grid min-w-0 gap-2">
           <p className="text-[13px] text-foreground">

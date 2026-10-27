@@ -270,8 +270,16 @@ function RemotePreviewFiles({ run }: { run: string }) {
     refetchInterval: 5000,
   });
   if (inspection.isPending) return null;
-  if (inspection.isError)
-    return <Alert>{t("remotePreviewInspectionUnavailable")}</Alert>;
+  if (inspection.isError) {
+    if (
+      typeof inspection.error === "object" &&
+      inspection.error !== null &&
+      "status" in inspection.error &&
+      inspection.error.status === 404
+    )
+      return null;
+    return <Hint role="status">{t("remotePreviewInspectionUnavailable")}</Hint>;
+  }
   const value = inspection.data;
   if (!value.preview_available)
     return <Hint>{t("remotePreviewDomainUnavailable")}</Hint>;

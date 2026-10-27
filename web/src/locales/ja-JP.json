@@ -824,6 +824,7 @@
   "livePreviewStop_stopped": "停止しました",
   "livePreviewStop_unknown": "理由は不明です",
   "livePreviewNone": "この Run に Live preview はありません。",
+  "livePreviewStatusUnavailable": "Live preview の状態を一時的に取得できません。再試行しています。",
   "livePreviewStaleHelp": "新しい version があります。次のターンで再起動します。",
   "livePreviewStarted": "開始",
   "livePreviewRemaining": "残り時間",

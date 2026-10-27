@@ -824,6 +824,7 @@
   "livePreviewStop_stopped": "Stopped",
   "livePreviewStop_unknown": "Reason unavailable",
   "livePreviewNone": "This Run has no Live preview.",
+  "livePreviewStatusUnavailable": "Live preview status is temporarily unavailable. Retrying.",
   "livePreviewStaleHelp": "A newer version exists; the next turn restarts it.",
   "livePreviewStarted": "Started",
   "livePreviewRemaining": "Remaining",
