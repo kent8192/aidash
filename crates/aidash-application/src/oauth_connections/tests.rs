@@ -125,6 +125,33 @@ type SecretVersions = BTreeMap<String, String>;
 type SecretResources = BTreeMap<String, (String, SecretVersions)>;
 #[derive(Default)]
 struct Secrets(StdMutex<SecretResources>, AtomicUsize);
+/// A pre-Connection Store retains its existing operations and inherits the
+/// port's refusal for the new namespace.
+struct LegacyStore(Arc<Secrets>);
+#[async_trait]
+impl Store for LegacyStore {
+	fn resource(&self, id: Uuid) -> String {
+		self.0.resource(id)
+	}
+	async fn create(&self, t: &str, id: Uuid) -> Result<()> {
+		self.0.create(t, id).await
+	}
+	async fn add_version(&self, t: &str, r: &str, k: &SecretString) -> Result<String> {
+		self.0.add_version(t, r, k).await
+	}
+	async fn versions(&self, t: &str, r: &str) -> Result<Vec<String>> {
+		self.0.versions(t, r).await
+	}
+	async fn disable(&self, t: &str, v: &str) -> Result<()> {
+		self.0.disable(t, v).await
+	}
+	async fn destroy(&self, t: &str, v: &str) -> Result<()> {
+		self.0.destroy(t, v).await
+	}
+	async fn delete(&self, t: &str, r: &str) -> Result<()> {
+		self.0.delete(t, r).await
+	}
+}
 #[async_trait]
 impl Store for Secrets {
 	fn resource(&self, id: Uuid) -> String {
@@ -377,6 +404,27 @@ impl Fixture {
 		);
 		id
 	}
+}
+#[tokio::test]
+async fn oauth_connections_begin_refuses_a_store_without_connection_support() {
+	let mut f = Fixture::new();
+	f.service.store = Arc::new(LegacyStore(f.secrets.clone()));
+	let result = f
+		.service
+		.begin(
+			&f.owner,
+			"https://mcp.example/mcp",
+			&["read".into()],
+			None,
+			&mut Lookup,
+			&Url::parse("https://aidash.example/auth/connections/callback").unwrap(),
+			"/settings",
+		)
+		.await;
+	assert!(matches!(result, Err(Error::ConnectionStoreUnavailable)));
+	assert!(f.repo.rows.lock().await.rows.is_empty());
+	assert!(f.secrets.0.lock().unwrap().is_empty());
+	assert_eq!(f.oauth.exchanged.load(Ordering::SeqCst), 0);
 }
 #[tokio::test]
 async fn oauth_connections_owner_refresh_and_disconnect_lifecycle() {

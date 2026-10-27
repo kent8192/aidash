@@ -218,6 +218,7 @@ impl Service {
 			},
 		})
 	}
+	// Keep the browser-bound fields explicit alongside the registry read port.
 	#[allow(clippy::too_many_arguments)]
 	pub async fn begin(
 		&self,

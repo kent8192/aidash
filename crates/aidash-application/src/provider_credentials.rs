@@ -37,7 +37,7 @@ pub trait Store: Send + Sync {
 		format!("aidash-store/oauth-connections/{id}")
 	}
 	async fn create_connection(&self, _tenant: &str, _id: Uuid) -> Result<()> {
-		Err(Error::External("connection_unavailable".into()))
+		Err(Error::ConnectionStoreUnavailable)
 	}
 	/// Plan Tokens share the Store under their own namespace (ADR 0008).
 	fn plan_resource(&self, id: Uuid) -> String {

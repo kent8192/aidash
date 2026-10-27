@@ -55,6 +55,9 @@ pub enum Error {
 	Forbidden,
 	#[error("{0}")]
 	External(String),
+	/// This Deployment's Secret Store cannot hold MCP OAuth Connections.
+	#[error("connection_unavailable")]
+	ConnectionStoreUnavailable,
 	#[error("verified model media route unavailable for {0}")]
 	MediaRouteUnavailable(String),
 	#[error("Kubernetes observations unavailable; check service account and API connectivity")]
