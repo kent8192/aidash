@@ -47,7 +47,7 @@ const reference = {
     search: {
       remote: {
         url: "https://mcp.example.com/search",
-        headers: [{ name: "Authorization", value: "Bearer sk-live-secret" }],
+        headers: [{ name: "X-Workspace", value: "private-header-value" }],
       },
     },
   },
@@ -177,6 +177,15 @@ test.describe("Agent form", () => {
   test("an imported plugin is reviewed, added and registered with the Agent", async ({
     page,
   }) => {
+    await page.route("**/connections/probe?*", (route) =>
+      route.fulfill({
+        json: {
+          oauth: true,
+          scopes_supported: ["read", "write"],
+          scope_ceiling: ["read"],
+        },
+      }),
+    );
     const dialog = page.getByRole("dialog");
     const importer = dialog.getByRole("group", {
       name: "Import an Agent Plugin",
@@ -206,8 +215,8 @@ test.describe("Agent form", () => {
     await expect(importer).toContainText("${PLUGIN_DATA}/cache");
     await expect(importer).toContainText("LEVEL=debug");
     await expect(importer).toContainText("https://mcp.example.com/search");
-    await expect(importer).toContainText("Authorization");
-    await expect(importer).not.toContainText("sk-live-secret");
+    await expect(importer).toContainText("X-Workspace");
+    await expect(importer).not.toContainText("private-header-value");
     await expect(importer).toContainText("Skipped (1)");
     await expect(importer).toContainText("unsupported_transport");
     await expect(importer).toContainText("Ignored (1)");
@@ -216,6 +225,13 @@ test.describe("Agent form", () => {
       importer.getByRole("link", { name: /github\.com\/acme\/kits/ }),
     ).toHaveAttribute("href", reference.source);
 
+    await expect(
+      importer.getByRole("checkbox", { name: "read", exact: true }),
+    ).not.toBeChecked();
+    await expect(
+      importer.getByRole("checkbox", { name: "write", exact: true }),
+    ).toHaveCount(0);
+    await importer.getByRole("button", { name: "Skip", exact: true }).click();
     await importer.getByRole("button", { name: "Add to Agent" }).click();
     await expect(
       importer.getByText("Plugins in this Agent (1/8)"),
@@ -346,7 +362,7 @@ test("Catalog Approval shows the servers an Agent version's plugins admit", asyn
   await expect(plugins).toContainText("--root ${PLUGIN_DATA}");
   await expect(plugins).toContainText("LEVEL=debug");
   await expect(plugins).toContainText("https://mcp.example.com/search");
-  await expect(plugins).toContainText("Authorization");
-  await expect(plugins).not.toContainText("sk-live-secret");
+  await expect(plugins).toContainText("X-Workspace");
+  await expect(plugins).not.toContainText("private-header-value");
   await expect(plugins).toContainText("sse is not supported");
 });

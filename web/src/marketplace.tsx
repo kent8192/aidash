@@ -1,3 +1,4 @@
+import { EntryConnections } from "./connections/install";
 import { useEffect, useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { ShieldCheck } from "lucide-react";
@@ -685,6 +686,10 @@ export function ScopedMarketplace({
                     onChange={(e) => setConfig(e.target.value)}
                   />
                 </Field>
+                <EntryConnections
+                  tenant={tenant}
+                  entry={view.manifest.entity}
+                />
                 <TenantSecretAssignments
                   tenant={tenant}
                   slots={view.manifest.secrets ?? []}

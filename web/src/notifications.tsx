@@ -382,6 +382,10 @@ export function NotificationProvider({
                   </h3>
                   {group.items.map((item) => {
                     const Icon = icons[item.kind];
+                    // TODO(#554 W5): add a sibling Connect action for the human
+                    // target's MCP_CONNECTION request, outside this row Button.
+                    // Payload: {resource, scopes, reason, tool}; use connections/connect.ts.
+                    // The callback answers the request and resumes its durable wait.
                     return (
                       <Button
                         variant="ghost"
