@@ -295,5 +295,7 @@ pub fn label_of(host: &str, domain: &str) -> Option<String> {
 	(!label.is_empty() && !label.contains('.')).then(|| label.to_owned())
 }
 
+pub mod live;
+
 #[cfg(test)]
 mod tests;
