@@ -364,7 +364,8 @@ impl Fixture {
 			service: Service {
 				repository: repo.clone(),
 				store: secrets.clone(),
-				reader: secrets.clone(),
+				reader: Some(secrets.clone()),
+				calls: None,
 				discovery: oauth.clone(),
 				tokens: oauth.clone(),
 				policy: Arc::new(Policy),
@@ -682,4 +683,275 @@ async fn oauth_connections_delayed_cleanup_preserves_a_later_refresh_intent() {
 		matches!(f.service.bearer(&f.owner,"https://mcp.example/mcp").await,Err(Error::Invalid(code)) if code==domain::CONNECTION_REQUIRED)
 	);
 	assert_eq!(f.oauth.refreshed.load(Ordering::SeqCst), 0);
+}
+
+#[derive(Default)]
+struct Calls {
+	exchanges: AtomicUsize,
+	refreshes: AtomicUsize,
+	revokes: AtomicUsize,
+	mode: AtomicUsize,
+	pins: StdMutex<Vec<String>>,
+}
+#[async_trait]
+impl ConnectionCalls for Calls {
+	async fn exchange(
+		&self,
+		_: &str,
+		_: Uuid,
+		grant: ExchangeGrant,
+		code: &str,
+		verifier: &SecretString,
+	) -> Result<Receipt> {
+		assert_eq!(grant.issuer, "https://auth.example");
+		assert_eq!(grant.client_id, "dynamic-client");
+		assert_eq!(grant.resource, "https://mcp.example/mcp");
+		assert!(grant.client.is_some());
+		assert_eq!(code, "code");
+		assert!(!verifier.expose_secret().is_empty());
+		self.exchanges.fetch_add(1, Ordering::SeqCst);
+		Ok(Receipt {
+			version: "100".into(),
+			expires_in: Some(3600),
+			scope: Some("read".into()),
+			refresh: true,
+		})
+	}
+	async fn refresh(
+		&self,
+		_: &str,
+		_: Uuid,
+		version: &str,
+	) -> std::result::Result<Receipt, RefreshFailure> {
+		assert_eq!(version, "100");
+		self.refreshes.fetch_add(1, Ordering::SeqCst);
+		match self.mode.load(Ordering::SeqCst) {
+			1 => Err(RefreshFailure::Terminal),
+			2 => Err(RefreshFailure::Unavailable(unavailable())),
+			_ => Ok(Receipt {
+				version: "101".into(),
+				expires_in: Some(3600),
+				scope: None,
+				refresh: true,
+			}),
+		}
+	}
+	async fn revoke(&self, _: &str, _: Uuid, _: &str) -> Result<()> {
+		self.revokes.fetch_add(1, Ordering::SeqCst);
+		Ok(())
+	}
+	async fn route(&self, _: &str, _: Uuid, version: &str, _: SecretCall) -> Result<SecretRoute> {
+		self.pins.lock().unwrap().push(version.into());
+		Ok(SecretRoute {
+			base: Url::parse("https://broker.example/v1/forward").unwrap(),
+			token: "opaque-capability".into(),
+		})
+	}
+}
+fn broker_call() -> SecretCall {
+	use aidash_capability::tenant_secret::{Attach, SecretSubject};
+	SecretCall {
+		destination: crate::tenant_secrets::endpoint_destination("https://mcp.example/mcp")
+			.unwrap(),
+		methods: vec!["POST".into()],
+		attach: Attach::Bearer,
+		subject: SecretSubject::Run {
+			run: "run".into(),
+			call: Uuid::new_v4(),
+		},
+		max_response_bytes: None,
+	}
+}
+#[tokio::test]
+async fn brokered_complete_route_invalidate_and_refresh_use_no_local_reader_or_token_adapter() {
+	let mut f = Fixture::new();
+	let calls = Arc::new(Calls::default());
+	f.service.reader = None;
+	f.service.calls = Some(calls.clone());
+	let pending = f.begin().await.pending;
+	assert_eq!(
+		f.service
+			.complete(pending, Some("code"), None)
+			.await
+			.unwrap(),
+		Outcome::Connected
+	);
+	assert_eq!(calls.exchanges.load(Ordering::SeqCst), 1);
+	assert_eq!(f.oauth.exchanged.load(Ordering::SeqCst), 0);
+	let resource = "https://mcp.example/mcp";
+	f.service
+		.brokered_route(&f.owner, resource, broker_call())
+		.await
+		.unwrap();
+	assert_eq!(*calls.pins.lock().unwrap(), vec!["100"]);
+	f.service.invalidate(&f.owner, resource).await.unwrap();
+	let (a, b) = tokio::join!(
+		f.service.brokered_route(&f.owner, resource, broker_call()),
+		f.service.brokered_route(&f.owner, resource, broker_call())
+	);
+	a.unwrap();
+	b.unwrap();
+	assert_eq!(calls.refreshes.load(Ordering::SeqCst), 1);
+	assert_eq!(f.oauth.refreshed.load(Ordering::SeqCst), 0);
+	assert_eq!(*calls.pins.lock().unwrap(), vec!["100", "101", "101"]);
+	let row = f
+		.repo
+		.rows
+		.lock()
+		.await
+		.rows
+		.values()
+		.next()
+		.unwrap()
+		.clone();
+	assert_eq!(row.state, ConnectionState::Active);
+	assert!(row.pinned_version.ends_with("/versions/101"));
+	assert!(f.service.bearer(&f.owner, resource).await.is_err());
+	f.service.disconnect(&f.owner, row.id).await.unwrap();
+	assert!(f.repo.rows.lock().await.rows.is_empty());
+}
+#[tokio::test]
+async fn brokered_outage_keeps_the_pin_and_terminal_refresh_closes_the_connection() {
+	let mut f = Fixture::new();
+	let calls = Arc::new(Calls::default());
+	f.service.reader = None;
+	f.service.calls = Some(calls.clone());
+	f.service
+		.complete(f.begin().await.pending, Some("code"), None)
+		.await
+		.unwrap();
+	let resource = "https://mcp.example/mcp";
+	f.service.invalidate(&f.owner, resource).await.unwrap();
+	calls.mode.store(2, Ordering::SeqCst);
+	let e = f
+		.service
+		.brokered_route(&f.owner, resource, broker_call())
+		.await
+		.err()
+		.unwrap();
+	assert_eq!(e.to_string(), domain::CONNECTION_UNAVAILABLE);
+	{
+		let data = f.repo.rows.lock().await;
+		let row = data.rows.values().next().unwrap();
+		assert_eq!(row.state, ConnectionState::Active);
+		assert!(row.pinned_version.ends_with("/versions/100"));
+	}
+	calls.mode.store(1, Ordering::SeqCst);
+	let e = f
+		.service
+		.brokered_route(&f.owner, resource, broker_call())
+		.await
+		.err()
+		.unwrap();
+	assert_eq!(e.to_string(), domain::CONNECTION_REQUIRED);
+	assert_eq!(
+		f.repo.rows.lock().await.rows.values().next().unwrap().state,
+		ConnectionState::NeedsReconnection
+	);
+}
+
+#[tokio::test]
+async fn brokered_lost_database_pin_retries_the_old_pin_and_cached_sessions_cannot_switch_grants() {
+	let mut f = Fixture::new();
+	let calls = Arc::new(Calls::default());
+	f.service.reader = None;
+	f.service.calls = Some(calls.clone());
+	f.service
+		.complete(f.begin().await.pending, Some("code"), None)
+		.await
+		.unwrap();
+	let resource = "https://mcp.example/mcp";
+	assert!(
+		matches!(f.service.brokered_route_for(&f.owner,resource,Uuid::now_v7(),broker_call()).await,Err(Error::Invalid(c)) if c==domain::CONNECTION_REQUIRED)
+	);
+	assert!(calls.pins.lock().unwrap().is_empty());
+	f.service.invalidate(&f.owner, resource).await.unwrap();
+	f.repo.fail_commit.store(true, Ordering::SeqCst);
+	assert!(
+		f.service
+			.brokered_route(&f.owner, resource, broker_call())
+			.await
+			.is_err()
+	);
+	assert!(
+		f.repo
+			.rows
+			.lock()
+			.await
+			.rows
+			.values()
+			.next()
+			.unwrap()
+			.pinned_version
+			.ends_with("/versions/100")
+	);
+	f.service
+		.brokered_route(&f.owner, resource, broker_call())
+		.await
+		.unwrap();
+	assert_eq!(calls.refreshes.load(Ordering::SeqCst), 2);
+	assert!(
+		f.repo
+			.rows
+			.lock()
+			.await
+			.rows
+			.values()
+			.next()
+			.unwrap()
+			.pinned_version
+			.ends_with("/versions/101")
+	);
+}
+
+#[tokio::test]
+async fn delayed_broker_cleanup_keeps_newer_rotation_receipts_until_a_pin_commits() {
+	let mut f = Fixture::new();
+	let calls = Arc::new(Calls::default());
+	f.service.reader = None;
+	f.service.calls = Some(calls.clone());
+	f.service
+		.complete(f.begin().await.pending, Some("code"), None)
+		.await
+		.unwrap();
+	let row = f
+		.repo
+		.rows
+		.lock()
+		.await
+		.rows
+		.values()
+		.next()
+		.unwrap()
+		.clone();
+	// A broker may have written 101 while its database transaction rolled back.
+	// The application cannot read these opaque values to recognize the receipt.
+	{
+		let mut data = f.secrets.0.lock().unwrap();
+		let (_, versions) = data.get_mut(&row.secret_resource).unwrap();
+		for v in ["99", "100", "101"] {
+			versions.insert(
+				format!("{}/versions/{v}", row.secret_resource),
+				"opaque broker payload".into(),
+			);
+		}
+	}
+	f.service
+		.brokered_route(&f.owner, "https://mcp.example/mcp", broker_call())
+		.await
+		.unwrap();
+	let pins = f
+		.secrets
+		.versions(&f.owner.tenant, &row.secret_resource)
+		.await
+		.unwrap();
+	assert_eq!(
+		pins,
+		vec![
+			format!("{}/versions/100", row.secret_resource),
+			format!("{}/versions/101", row.secret_resource)
+		]
+	);
+	f.service.disconnect(&f.owner, row.id).await.unwrap();
+	assert_eq!(calls.revokes.load(Ordering::SeqCst), 2);
 }

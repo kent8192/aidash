@@ -127,6 +127,15 @@ pub trait Extension: Sync + std::fmt::Debug {
 	) -> crate::Result<Option<Arc<dyn aidash_application::tenant_secrets::SecretCalls>>> {
 		Ok(None)
 	}
+	fn connection_calls(
+		&self,
+		_broker: Option<&serde_json::Value>,
+		_tenant_secret_broker: Option<&serde_json::Value>,
+		_worker: bool,
+	) -> crate::Result<Option<Arc<dyn aidash_application::connection_calls::ConnectionCalls>>> {
+		Ok(None)
+	}
+
 	/// The Deployment Key in the Cloud KMS key version `[deployment.key] kms`
 	/// names, with its public key already fetched.
 	async fn deployment_key(&self, kms: &str) -> crate::Result<Arc<dyn DeploymentKey>>;

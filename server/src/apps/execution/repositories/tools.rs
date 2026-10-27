@@ -16,11 +16,18 @@ impl ToolOperations for Operations {
 	async fn connection(
 		&self,
 		resource: &str,
-		_call: aidash_application::tenant_secrets::SecretCall,
+		call: aidash_application::tenant_secrets::SecretCall,
 		key: &str,
 	) -> Result<aidash_application::tenant_secrets::CallSecret> {
-		super::mcp_connections::connection(&self.0.store, &self.0.run, &self.0.scope, resource, key)
-			.await
+		super::mcp_connections::connection(
+			&self.0.store,
+			&self.0.run,
+			&self.0.scope,
+			resource,
+			call,
+			key,
+		)
+		.await
 	}
 	async fn registered_skills(&self) -> Result<Vec<EntityRef>> {
 		let snapshot = self
