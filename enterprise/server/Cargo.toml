@@ -47,10 +47,12 @@ url = "2"
 uuid.workspace = true
 
 [dev-dependencies]
+aidash-broker = { workspace = true, features = ["test-support"] }
 # The Community server's test support needs the test-only ports (ADR 0006).
 aidash-application = { workspace = true, features = ["test-support"] }
 aidash-capability.workspace = true
 aidash-integrations = { workspace = true, features = ["test-support"] }
+axum = "0.8"
 base64 = "0.22"
 bytes = "1"
 futures-util.workspace = true
@@ -67,7 +69,9 @@ sqlx = { version = "0.8.6", default-features = false, features = [
   "postgres",
 ] }
 sha2 = "0.10"
+tower = { version = "0.5", features = ["util"] }
 tempfile = "3"
 tokio = { workspace = true, features = ["test-util"] }
 toml = "1.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
+zeroize = "1"

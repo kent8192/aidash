@@ -211,12 +211,14 @@ name = "aidash-enterprise-server"
 version = "0.1.0"
 dependencies = [
  "aidash-application",
+ "aidash-broker",
  "aidash-capability",
  "aidash-domain",
  "aidash-gcp",
  "aidash-integrations",
  "aidash-server",
  "async-trait",
+ "axum",
  "base64 0.22.1",
  "bytes",
  "chrono",
@@ -239,10 +241,12 @@ dependencies = [
  "tempfile",
  "tokio",
  "toml",
+ "tower",
  "tracing",
  "tracing-subscriber",
  "url",
  "uuid",
+ "zeroize",
 ]
 
 [[package]]
