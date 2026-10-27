@@ -19,7 +19,7 @@ use aidash_application::preview::{
 };
 use aidash_application::tenancy::{DeploymentScopeReason, TenancyScope};
 use aidash_domain::capabilities::retention::RetainedFile;
-use aidash_domain::preview::{PreviewKind, PreviewLabel, PreviewSecret, label_of};
+use aidash_domain::preview::{PreviewKind, PreviewLabel, PreviewSecret, Session, label_of};
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use reinhardt::query::{
@@ -395,7 +395,7 @@ impl Gateway {
 		let Some((session_id, subject, credential_id, origin, expires_at)) = session else {
 			return Err(NativeError::Forbidden);
 		};
-		if expires_at <= Utc::now() {
+		if (Session { expires_at }).accept(Utc::now()).is_err() {
 			return Err(NativeError::Forbidden);
 		}
 		// The cookie is not authority: re-run the download decision under the

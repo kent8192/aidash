@@ -159,3 +159,24 @@ fn a_label_is_suffixed_to_the_configured_domain_only() {
 		Some("abc".into())
 	);
 }
+
+#[test]
+fn a_session_stops_at_its_cookie_lifetime() {
+	let now = Utc::now();
+	Session {
+		expires_at: now + TimeDelta::seconds(SESSION_SECONDS),
+	}
+	.accept(now)
+	.unwrap();
+	assert!(
+		Session { expires_at: now }.accept(now).is_err(),
+		"a session at its deadline is expired"
+	);
+	assert!(
+		Session {
+			expires_at: now - TimeDelta::seconds(1),
+		}
+		.accept(now)
+		.is_err()
+	);
+}

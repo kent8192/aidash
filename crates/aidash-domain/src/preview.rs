@@ -134,6 +134,22 @@ impl PreviewSecret {
 	}
 }
 
+/// The persisted facts a viewing Session must satisfy at request time.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Session {
+	pub expires_at: DateTime<Utc>,
+}
+
+impl Session {
+	/// A session stops working when its cookie's `Max-Age` runs out.
+	pub fn accept(&self, now: DateTime<Utc>) -> Result<()> {
+		if self.expires_at <= now {
+			return Err(Error::Conflict("preview session expired".into()));
+		}
+		Ok(())
+	}
+}
+
 /// The persisted facts a Ticket must satisfy at exchange time.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Ticket {
