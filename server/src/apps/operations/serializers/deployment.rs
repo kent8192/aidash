@@ -14,6 +14,9 @@ use std::net::SocketAddr;
 #[settings(fragment = true, section = "deployment", validate = false)]
 #[derive(Clone, Serialize, Deserialize, Validate)]
 pub struct DeploymentSettings {
+	/// Minimum Data Protection Level for every Tenant on this Deployment.
+	#[setting(default = "aidash_domain::data_protection::Level::Standard", leaf)]
+	pub data_protection_floor: aidash_domain::data_protection::Level,
 	/// The Offering this Deployment runs. Each build accepts only its own
 	/// Offerings, so Cloud and Dedicated must state theirs.
 	#[setting(default = "Offering::SelfHosted", leaf)]

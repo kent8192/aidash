@@ -51,6 +51,8 @@ root = "staticfiles"
 # runs only the "self-hosted" Offering, the default; the Enterprise build runs
 # "cloud" or "dedicated".
 [deployment]
+# Minimum Tenant Data Protection Level: standard, no_training, zero_data_retention.
+data_protection_floor = "standard"
 offering = "self-hosted"
 id = "aidash://local"
 endpoint = "http://127.0.0.1:8000"
