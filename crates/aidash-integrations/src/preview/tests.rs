@@ -52,6 +52,13 @@ impl Authority for Fake {
 			.clone()
 			.ok_or_else(|| aidash_application::Error::NotFound("file".into()))
 	}
+	async fn live(
+		&self,
+		_: &str,
+		_: &str,
+	) -> aidash_application::Result<Option<aidash_application::preview::Proxy>> {
+		Ok(None)
+	}
 	async fn served(
 		&self,
 		tenant: &str,
@@ -210,4 +217,40 @@ async fn a_request_without_the_session_cookie_is_forbidden() {
 	.await;
 	let (status, _, _) = body(response).await;
 	assert_eq!(status, hyper::StatusCode::FORBIDDEN);
+}
+
+#[test]
+fn the_egress_prefix_is_the_page_s_own_origin_path() {
+	assert_eq!(EGRESS_PREFIX, "/__aidash/egress/");
+	assert!(EGRESS_PREFIX.starts_with("/__aidash/"));
+}
+
+#[test]
+fn a_forwarded_request_never_carries_the_viewer_s_cookies() {
+	for name in [
+		"cookie",
+		"authorization",
+		"host",
+		"x-forwarded-for",
+		"sec-fetch-site",
+	] {
+		assert!(!forwarded_request_header(name), "{name}");
+	}
+	for name in ["accept", "content-type", "range", "if-none-match"] {
+		assert!(forwarded_request_header(name), "{name}");
+	}
+}
+
+#[test]
+fn a_pod_response_may_not_replace_the_confinement_headers() {
+	for name in [
+		"content-security-policy",
+		"content-length",
+		"connection",
+		"transfer-encoding",
+	] {
+		assert!(!forwarded_response_header(name), "{name}");
+	}
+	assert!(forwarded_response_header("content-type"));
+	assert!(forwarded_response_header("set-cookie"));
 }
