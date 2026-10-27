@@ -400,10 +400,23 @@ async fn oauth_client_http_checks_personal_and_tenant_actions_and_ceiling_encodi
 	let bob_secret: serde_json::Value = bob_secret.json().await.unwrap();
 	assert_eq!(bob_secret["owner"], "me");
 	assert_ne!(bob_secret["id"], secret["id"]);
+	let shared = client
+		.get(&secrets)
+		.bearer_auth(&alice)
+		.send()
+		.await
+		.unwrap();
+	assert_eq!(shared.status(), 200);
+	let shared: serde_json::Value = shared.json().await.unwrap();
+	assert_eq!(shared["owner"], "tenant");
+	assert_eq!(shared["hosts"], json!(["api.example.test"]));
+	assert!(shared["fingerprint"].is_string());
+	assert_ne!(shared["id"], secret["id"]);
 	assert_eq!(
 		client
-			.get(&secrets)
+			.delete(&secrets)
 			.bearer_auth(&alice)
+			.json(&json!({"expected_revision":shared["revision"]}))
 			.send()
 			.await
 			.unwrap()

@@ -89,7 +89,7 @@ impl Management {
 				if owner == Ownership::Me {
 					&[SECRET_USE]
 				} else {
-					&[SECRET_MANAGE]
+					&[SECRET_MANAGE, SECRET_USE]
 				},
 			)
 			.await?;
