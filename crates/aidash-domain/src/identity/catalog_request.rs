@@ -93,34 +93,38 @@ pub fn validate_reason(reason: &str) -> Result<()> {
 	Ok(())
 }
 
+/// The fields a new open request is made from.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NewCatalogApprovalRequest {
+	pub id: Uuid,
+	pub tenant: String,
+	pub node: crate::nodes::NodeName,
+	pub root: crate::registry::EntityRef,
+	pub requester: String,
+	pub reason: String,
+	pub closure_digest: String,
+	pub now: DateTime<Utc>,
+}
+
 impl CatalogApprovalRequest {
-	pub fn new(
-		id: Uuid,
-		tenant: String,
-		node: crate::nodes::NodeName,
-		root: crate::registry::EntityRef,
-		requester: String,
-		reason: String,
-		closure_digest: String,
-		now: DateTime<Utc>,
-	) -> Result<Self> {
-		validate_reason(&reason)?;
-		if closure_digest.trim().is_empty() {
+	pub fn new(input: NewCatalogApprovalRequest) -> Result<Self> {
+		validate_reason(&input.reason)?;
+		if input.closure_digest.trim().is_empty() {
 			return Err(Error::Invalid("a request needs a closure digest".into()));
 		}
 		Ok(Self {
-			id,
-			tenant,
-			node,
-			root,
-			requester,
-			reason: reason.trim().to_owned(),
-			closure_digest,
+			id: input.id,
+			tenant: input.tenant,
+			node: input.node,
+			root: input.root,
+			requester: input.requester,
+			reason: input.reason.trim().to_owned(),
+			closure_digest: input.closure_digest,
 			state: CatalogApprovalRequestState::Open,
 			decline_reason: None,
 			decided_by: None,
-			created_at: now,
-			updated_at: now,
+			created_at: input.now,
+			updated_at: input.now,
 			revision: 1,
 		})
 	}
@@ -188,19 +192,19 @@ mod tests {
 	use super::*;
 
 	fn request() -> CatalogApprovalRequest {
-		CatalogApprovalRequest::new(
-			Uuid::nil(),
-			"acme".into(),
-			crate::nodes::NodeName::derived("acme"),
-			crate::registry::EntityRef {
+		CatalogApprovalRequest::new(NewCatalogApprovalRequest {
+			id: Uuid::nil(),
+			tenant: "acme".into(),
+			node: crate::nodes::NodeName::derived("acme"),
+			root: crate::registry::EntityRef {
 				id: "writer".into(),
 				version: "1.0.0".into(),
 			},
-			"alice".into(),
-			"Needs the writer".into(),
-			"sha256:closure".into(),
-			Utc::now(),
-		)
+			requester: "alice".into(),
+			reason: "Needs the writer".into(),
+			closure_digest: "sha256:closure".into(),
+			now: Utc::now(),
+		})
 		.unwrap()
 	}
 

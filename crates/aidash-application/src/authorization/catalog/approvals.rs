@@ -176,24 +176,26 @@ pub async fn approve_with_satisfied(
 		bindings.push(
 			super::set_in_with_restriction(
 				scope,
-				&tenant,
-				&scope_node,
-				&approval.entry,
-				approval.expected_revision,
-				approval.enabled,
-				if approval.enabled {
-					match &approval.restriction {
-						Some(restriction) => {
-							RestrictionChange::Replace(restriction.clone().normalized())
+				super::CatalogChange {
+					tenant: &tenant,
+					node: &scope_node,
+					reference: &approval.entry,
+					expected_revision: approval.expected_revision,
+					enabled: approval.enabled,
+					restriction: if approval.enabled {
+						match &approval.restriction {
+							Some(restriction) => {
+								RestrictionChange::Replace(restriction.clone().normalized())
+							}
+							None => RestrictionChange::Preserve,
 						}
-						None => RestrictionChange::Preserve,
-					}
-				} else {
-					// Withdrawal is never blocked by a restriction, and leaves
-					// any stored one for the next approval.
-					RestrictionChange::Preserve
+					} else {
+						// Withdrawal is never blocked by a restriction, and leaves
+						// any stored one for the next approval.
+						RestrictionChange::Preserve
+					},
+					actor: &actor,
 				},
-				&actor,
 			)
 			.await?,
 		);

@@ -44,7 +44,7 @@ use aidash_application::authorization::catalog::review::{
 use aidash_domain::identity::catalog_request::{
 	CATALOG_REQUEST_CREATE, CATALOG_REQUEST_DECLINE, CATALOG_REQUEST_FULFIL,
 	CATALOG_REQUEST_WITHDRAW, CatalogApprovalRequest as ApprovalRequest,
-	CatalogApprovalRequestState as RequestState,
+	CatalogApprovalRequestState as RequestState, NewCatalogApprovalRequest,
 };
 
 /// A Tenant's policy, credentials and Catalog Approvals. A Deployment
@@ -544,16 +544,16 @@ impl PolicyAdministration {
 				requests::save(&mut access.tx, &existing).await?;
 			}
 			let now = database_time(&mut *access.tx).await?;
-			let request = ApprovalRequest::new(
-				Uuid::new_v4(),
-				tenant.clone(),
-				input.node.clone(),
-				input.root.clone(),
-				requester.clone(),
-				input.reason,
-				current.closure_digest.clone(),
+			let request = ApprovalRequest::new(NewCatalogApprovalRequest {
+				id: Uuid::new_v4(),
+				tenant: tenant.clone(),
+				node: input.node.clone(),
+				root: input.root.clone(),
+				requester: requester.clone(),
+				reason: input.reason,
+				closure_digest: current.closure_digest.clone(),
 				now,
-			)?;
+			})?;
 			requests::insert(&mut access.tx, &request).await?;
 			record_request_event(
 				&mut access,
@@ -641,9 +641,9 @@ impl PolicyAdministration {
 				return Err(Error::Conflict("CATALOG_APPROVAL_REQUEST_READY".into()));
 			}
 			if request.closure_digest != current.closure_digest {
-				let now = database_time(&mut *access.tx).await?;
-				request.stale(now)?;
-				requests::save(&mut access.tx, &request).await?;
+				// Reads derive stale without writing. Returning the conflict
+				// keeps this transaction atomic; persisting stale here would be
+				// rolled back with the error.
 				return Err(Error::Conflict("CATALOG_APPROVAL_REQUEST_STALE".into()));
 			}
 			if !current
@@ -738,42 +738,71 @@ impl PolicyAdministration {
 		let limit = page.limit.clamp(1, 100);
 		let mut access = Access::begin(&f.store, &identity).await?;
 		let result = async {
-			let rows =
-				requests::open_page(&mut access.tx, &tenant, page.node.as_ref(), 512).await?;
+			// The pending filter is in memory, so scan open requests in pages
+			// until the requested window is filled or the rows are exhausted.
+			// This keeps pagination correct past any fixed batch size.
+			const BATCH: u64 = 256;
+			let mut offset = 0u64;
+			let mut matched = 0u64;
 			let mut views = vec![];
-			for request in rows {
-				let current = match request_review_for(
-					&mut access,
-					&f.store,
-					&f.config.deployment,
-					&request.node,
-					&request.root,
-				)
-				.await
-				{
-					Ok(current) => current,
-					Err(Error::Forbidden | Error::NotFound(_)) => continue,
-					Err(error) => return Err(error),
-				};
-				// Derived, never written: a stale closure or a ready review
-				// leaves the pending list.
-				if request.closure_digest != current.closure_digest || current.ready {
-					continue;
+			let mut reviews: std::collections::BTreeMap<(String, String, String), ApprovalReview> =
+				std::collections::BTreeMap::new();
+			loop {
+				let rows =
+					requests::open_page(&mut access.tx, &tenant, page.node.as_ref(), offset, BATCH)
+						.await?;
+				let count = rows.len() as u64;
+				for request in rows {
+					let key = (
+						request.node.as_str().to_owned(),
+						request.root.id.clone(),
+						request.root.version.clone(),
+					);
+					let current = if let Some(current) = reviews.get(&key) {
+						current.clone()
+					} else {
+						let current = match request_review_for(
+							&mut access,
+							&f.store,
+							&f.config.deployment,
+							&request.node,
+							&request.root,
+						)
+						.await
+						{
+							Ok(current) => current,
+							Err(Error::Forbidden | Error::NotFound(_)) => continue,
+							Err(error) => return Err(error),
+						};
+						reviews.insert(key, current.clone());
+						current
+					};
+					// Derived, never written: a stale closure or a ready review
+					// leaves the pending list.
+					if request.closure_digest != current.closure_digest || current.ready {
+						continue;
+					}
+					if current
+						.items
+						.iter()
+						.any(|item| item.can_approve && item.status != ReviewStatus::Approved)
+					{
+						if matched >= page.offset {
+							views.push(request_view(&request, Some(&current)));
+						}
+						matched += 1;
+						if views.len() as u64 > limit {
+							break;
+						}
+					}
 				}
-				if current
-					.items
-					.iter()
-					.any(|item| item.can_approve && item.status != ReviewStatus::Approved)
-				{
-					views.push(request_view(&request, Some(&current)));
+				offset += count;
+				if views.len() as u64 > limit || count < BATCH {
+					break;
 				}
 			}
-			let more = views.len() as u64 > page.offset + limit;
-			let requests = views
-				.into_iter()
-				.skip(page.offset as usize)
-				.take(limit as usize)
-				.collect();
+			let more = views.len() as u64 > limit;
+			let requests = views.into_iter().take(limit as usize).collect();
 			Ok(CatalogApprovalRequestPage {
 				requests,
 				next_offset: more.then_some(page.offset + limit),

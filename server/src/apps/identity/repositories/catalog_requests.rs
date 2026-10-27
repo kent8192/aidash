@@ -180,12 +180,14 @@ pub(crate) async fn mine(
 		.collect()
 }
 
-/// Every open request, bounded. The pending list filters after reviewing each
-/// request, so pagination happens in memory there.
+/// One page of open requests in stable order. The pending list filters after
+/// reviewing each request, so it scans these pages until it has enough visible
+/// matches.
 pub(crate) async fn open_page(
 	tx: &mut crate::database::native::Transaction,
 	tenant: &str,
 	node: Option<&NodeName>,
+	offset: u64,
 	limit: u64,
 ) -> Result<Vec<Request>> {
 	let mut query = select_request();
@@ -198,6 +200,7 @@ pub(crate) async fn open_page(
 	let query = query
 		.order_by(Alias::new("created_at"), Order::Asc)
 		.order_by(Alias::new("id"), Order::Asc)
+		.offset(offset)
 		.limit(limit)
 		.to_string(PostgresQueryBuilder);
 	crate::database::native::query_as(&query)

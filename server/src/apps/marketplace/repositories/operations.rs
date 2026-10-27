@@ -157,17 +157,18 @@ impl DeploymentAdministratorScope for NativeDeploymentAdministrator<'_> {
 			&mut crate::apps::identity::repositories::catalog_mutation::NativeMutation(
 				self.staging.tx,
 			),
-			tenant,
-			&node,
-			reference,
-			expected_revision,
-			enabled,
-			restriction,
-			&aidash_application::marketplace::operations::actor(&self.principal),
+			aidash_application::authorization::catalog::CatalogChange {
+				tenant,
+				node: &node,
+				reference,
+				expected_revision,
+				enabled,
+				restriction,
+				actor: &aidash_application::marketplace::operations::actor(&self.principal),
+			},
 		)
 		.await
 		.map(|_| ())
-		.map_err(Into::into)
 	}
 	async fn catalog_revision(
 		&mut self,

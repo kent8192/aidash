@@ -5675,8 +5675,19 @@ async fn catalog_request_turns_stale_after_a_missing_dependency_is_registered(
 		.find(|request| request["id"] == id)
 		.unwrap();
 	assert_eq!(request_view["state"], "stale");
-	// The read derived stale without writing: the row is still open, so the
-	// requester can withdraw it. That write is what persists the final state.
+	// A declined-but-stale write is refused without persisting stale; the row
+	// is still open, so the requester can withdraw it. That write is what
+	// persists the final state.
+	let (status, body) = request(
+		&app,
+		&alice,
+		"POST",
+		&format!("/api/authorization/acme/catalog/requests/{id}/decline"),
+		json!({"reason":"Too late"}),
+	)
+	.await;
+	assert_eq!(status, 409, "{body}");
+	assert!(body.to_string().contains("CATALOG_APPROVAL_REQUEST_STALE"));
 	let (status, withdrawn) = request(
 		&app,
 		&alice,
@@ -5704,5 +5715,78 @@ async fn catalog_request_turns_stale_after_a_missing_dependency_is_registered(
 			.unwrap()["state"],
 		"withdrawn"
 	);
+	cleanup(f, &url, &schema).await;
+}
+
+#[rstest::rstest]
+#[tokio::test]
+async fn catalog_request_pending_paginates_past_a_scan_batch(
+	#[future(awt)]
+	#[from(common::native_application)]
+	fixture: common::ApplicationFixture,
+) {
+	let (f, url, schema) = fixture.runtime.parts();
+	let app = fixture.application;
+	let (_, alice, _) = bootstrap(&f, &app, "http://127.0.0.1:9").await;
+	let node = aidash_domain::nodes::NodeName::derived("acme");
+	assert_eq!(
+		request(
+			&app,
+			&alice,
+			"POST",
+			"/api/authorization/acme/catalog",
+			json!({"node":node,"entry":{"id":"model","version":"1.0.0"},
+				"enabled":false,"expected_revision":1})
+		)
+		.await
+		.0,
+		200
+	);
+	let (status, review) = request(
+		&app,
+		&alice,
+		"GET",
+		&format!("/api/authorization/acme/catalog/review?node={node}&entry=agent/research@1.0.0"),
+		Value::Null,
+	)
+	.await;
+	assert_eq!(status, 200, "{review}");
+	let digest = review["closure_digest"].as_str().unwrap();
+	// More open requests than the pending scan batch, all for one reviewed
+	// root so the review is shared. The old fixed 512-row fetch lost the tail.
+	for index in 0..513 {
+		sqlx::query(
+			"INSERT INTO catalog_approval_requests \
+			 (id, tenant, node, root_id, root_version, requester, reason, \
+			  closure_digest, state, decline_reason, decided_by, created_at, \
+			  updated_at, revision) \
+			 VALUES ($1, 'acme', $2, 'research', '1.0.0', $3, 'Please', $4, \
+			  'open', NULL, NULL, now(), now(), 1)",
+		)
+		.bind(Uuid::new_v4())
+		.bind(node.as_str())
+		.bind(format!("requester-{index}"))
+		.bind(digest)
+		.execute(f.store.pool.fixture_driver())
+		.await
+		.unwrap();
+	}
+	let (status, page) = request(
+		&app,
+		&alice,
+		"GET",
+		&format!(
+			"/api/authorization/acme/catalog/requests/pending?node={node}&offset=512&limit=10"
+		),
+		Value::Null,
+	)
+	.await;
+	assert_eq!(status, 200, "{page}");
+	assert_eq!(
+		page["requests"].as_array().unwrap().len(),
+		1,
+		"the final request survives the scan"
+	);
+	assert!(page["next_offset"].is_null());
 	cleanup(f, &url, &schema).await;
 }

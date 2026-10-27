@@ -89,37 +89,43 @@ pub async fn get(scope: &mut dyn CatalogScope, reference: &EntityRef) -> Result<
 #[cfg(test)]
 mod tests;
 
-/// Shared with Marketplace activation, whose caller already holds its writer and admission lease.
-/// All effects and the resulting history remain in the caller's transaction.
+/// One exact Catalog Approval mutation. Shared with Marketplace activation,
+/// whose caller already holds its writer and admission lease.
+pub struct CatalogChange<'a> {
+	pub tenant: &'a str,
+	pub node: &'a aidash_domain::nodes::NodeName,
+	pub reference: &'a EntityRef,
+	pub expected_revision: i64,
+	pub enabled: bool,
+	pub restriction: RestrictionChange,
+	pub actor: &'a str,
+}
+
+/// Apply one mutation. All effects and the resulting history remain in the
+/// caller's transaction.
 pub async fn set_in_with_restriction(
 	scope: &mut dyn crate::ports::catalog::CatalogMutation,
-	tenant: &str,
-	node: &aidash_domain::nodes::NodeName,
-	reference: &EntityRef,
-	expected_revision: i64,
-	enabled: bool,
-	restriction: RestrictionChange,
-	actor: &str,
+	change: CatalogChange<'_>,
 ) -> Result<aidash_domain::identity::catalog::Binding> {
-	aidash_domain::identity::catalog::validate_revision(expected_revision)?;
-	if let RestrictionChange::Replace(Some(restriction)) = &restriction {
+	aidash_domain::identity::catalog::validate_revision(change.expected_revision)?;
+	if let RestrictionChange::Replace(Some(restriction)) = &change.restriction {
 		restriction.validate()?;
 	}
-	if !scope.registered(reference).await? {
+	if !scope.registered(change.reference).await? {
 		return Err(Error::NotFound("registry entry".into()));
 	}
 	let binding = scope
 		.compare_and_set(
-			tenant,
-			node,
-			reference,
-			expected_revision,
-			enabled,
-			restriction,
+			change.tenant,
+			change.node,
+			change.reference,
+			change.expected_revision,
+			change.enabled,
+			change.restriction,
 		)
 		.await?
 		.ok_or_else(|| Error::Conflict("catalog revision changed".into()))?;
-	scope.history(&binding, actor).await?;
+	scope.history(&binding, change.actor).await?;
 	Ok(binding)
 }
 
@@ -157,13 +163,15 @@ pub async fn set_in_preserving(
 ) -> Result<aidash_domain::identity::catalog::Binding> {
 	set_in_with_restriction(
 		scope,
-		tenant,
-		node,
-		reference,
-		expected_revision,
-		enabled,
-		RestrictionChange::Preserve,
-		actor,
+		CatalogChange {
+			tenant,
+			node,
+			reference,
+			expected_revision,
+			enabled,
+			restriction: RestrictionChange::Preserve,
+			actor,
+		},
 	)
 	.await
 }
@@ -187,45 +195,31 @@ pub async fn set_catalog(
 ) -> Result<aidash_domain::identity::catalog::Binding> {
 	set_catalog_with_restriction(
 		scope,
-		tenant,
-		node,
-		reference,
-		expected_revision,
-		enabled,
-		RestrictionChange::Preserve,
-		actor,
+		CatalogChange {
+			tenant,
+			node,
+			reference,
+			expected_revision,
+			enabled,
+			restriction: RestrictionChange::Preserve,
+			actor,
+		},
 	)
 	.await
 }
 
 pub async fn set_catalog_with_restriction(
 	scope: &mut dyn crate::ports::catalog::CatalogAdministrator,
-	tenant: &str,
-	node: &aidash_domain::nodes::NodeName,
-	reference: &EntityRef,
-	expected_revision: i64,
-	enabled: bool,
-	restriction: RestrictionChange,
-	actor: &str,
+	change: CatalogChange<'_>,
 ) -> Result<aidash_domain::identity::catalog::Binding> {
 	super::require_deployment_administrator(scope.principal())?;
-	aidash_domain::identity::catalog::validate_revision(expected_revision)?;
-	scope.load_tenant(tenant).await?;
-	let definition = scope.definition(reference).await?;
+	aidash_domain::identity::catalog::validate_revision(change.expected_revision)?;
+	scope.load_tenant(change.tenant).await?;
+	let definition = scope.definition(change.reference).await?;
 	if !aidash_domain::marketplace::installations::catalog_update_allowed(&definition) {
 		return Err(Error::Forbidden);
 	}
-	set_in_with_restriction(
-		scope,
-		tenant,
-		node,
-		reference,
-		expected_revision,
-		enabled,
-		restriction,
-		actor,
-	)
-	.await
+	set_in_with_restriction(scope, change).await
 }
 
 #[cfg(test)]

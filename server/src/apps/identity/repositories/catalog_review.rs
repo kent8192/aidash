@@ -29,7 +29,7 @@ impl ApprovalReviewScope for ReviewScope<'_> {
 	}
 	async fn definition(&mut self, reference: &EntityRef) -> Result<Option<Entry>> {
 		match crate::apps::registry::models::Definition::read_in(
-			&mut *self.access.tx,
+			self.access.tx.native_mut(),
 			&reference.id,
 			&reference.version,
 		)
@@ -46,7 +46,7 @@ impl ApprovalReviewScope for ReviewScope<'_> {
 			.filter(AuthorizationCatalog::field_node().eq(self.node.node.as_str().to_owned()))
 			.filter(AuthorizationCatalog::field_entry_key().eq(reference.id.clone()))
 			.filter(AuthorizationCatalog::field_entry_version().eq(reference.version.clone()))
-			.all_with_executor(&mut *self.access.tx)
+			.all_with_executor(self.access.tx.native_mut())
 			.await
 			.map_err(reinhardt::core::exception::Error::from)
 			.map_err(crate::Error::from)?
@@ -65,7 +65,7 @@ impl ApprovalReviewScope for ReviewScope<'_> {
 		}
 		let Some(installation): Option<Installation> =
 			crate::apps::marketplace::repositories::storage::get(
-				&mut *self.access.tx,
+				self.access.tx.native_mut(),
 				"marketplace_installations",
 				&projection.installation,
 			)
@@ -77,7 +77,7 @@ impl ApprovalReviewScope for ReviewScope<'_> {
 			return Ok(None);
 		}
 		let revision = match crate::apps::marketplace::repositories::installations::revision(
-			&mut *self.access.tx,
+			self.access.tx.native_mut(),
 			&projection.installation,
 			projection.revision,
 		)
@@ -145,7 +145,7 @@ impl ApprovalReviewScope for ReviewScope<'_> {
 	async fn source_slot_available(&mut self, entry: &Entry) -> Result<bool> {
 		if let Some((secret, endpoint)) = aidash_domain::tenant_secrets::definition_target(entry) {
 			let hosts = crate::apps::identity::repositories::tenant_secrets::active_hosts(
-				&mut *self.access.tx,
+				self.access.tx.native_mut(),
 				&secret,
 			)
 			.await?;
@@ -155,8 +155,6 @@ impl ApprovalReviewScope for ReviewScope<'_> {
 				return Ok(false);
 			}
 		}
-		self.validation
-			.source_slot_available(entry)
-			.map_err(Into::into)
+		self.validation.source_slot_available(entry)
 	}
 }
