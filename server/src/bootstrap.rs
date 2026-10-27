@@ -2221,6 +2221,7 @@ impl aidash_application::ports::registry::workbench::sandbox::admission::Sandbox
 {
 	fn provider(
 		&self,
+		tenant: &str,
 		model: aidash_domain::model::ModelConfig,
 	) -> aidash_application::Result<Arc<dyn aidash_application::ports::ModelProvider>> {
 		// Sandbox requests are always Legacy, so they never need a salt.
@@ -2233,7 +2234,10 @@ impl aidash_application::ports::registry::workbench::sandbox::admission::Sandbox
 			self.clients.clone(),
 			model,
 			self.keyless.clone(),
-			Default::default(),
+			aidash_application::provider_access::Context {
+				tenant: tenant.to_owned(),
+				..Default::default()
+			},
 		)
 	}
 }
@@ -2244,7 +2248,11 @@ pub(crate) fn workbench_sandbox_models(runtime: &Federation) -> WorkbenchSandbox
 			permitted: runtime.store.provider_clients.permitted.clone(),
 			public: runtime.store.provider_clients.public.clone(),
 		},
-		keyless: keyless_provider_access(&runtime.store),
+		keyless: Arc::new(
+			crate::apps::identity::repositories::provider_credentials::AdmittedAccess {
+				store: runtime.store.clone(),
+			},
+		),
 	}
 }
 
