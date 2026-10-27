@@ -1,6 +1,10 @@
 //! Registered OAuth Clients and per-resource scope ceilings. Client secrets
 //! are write-only and live in the Secret Store, never in response metadata.
-use crate::{Error, Result, provider_credentials::Store, tenant_secrets::Ownership};
+use crate::{
+	Error, Result,
+	provider_credentials::{ClientBinding, Store},
+	tenant_secrets::Ownership,
+};
 use aidash_domain::oauth_connections::{OAuthClient, admissible_scopes, canonical_resource};
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
@@ -192,7 +196,12 @@ impl Service {
 		// Persist the resource inventory before the external Store write. An
 		// interrupted write remains discoverable by retirement and purge.
 		if input.client_secret.is_some() && row.secret_resource.is_none() {
-			row.secret_resource = Some(format!("aidash-store/oauth-clients/{}", row.id));
+			row.secret_resource = Some(
+				self.store
+					.as_ref()
+					.ok_or(Error::OAuthClientSecretsUnavailable)?
+					.oauth_client_resource(row.id),
+			);
 		}
 		if new || (input.client_secret.is_some() && row.pinned_version.is_none()) {
 			tx.save_client(&row, new).await?;
@@ -215,8 +224,19 @@ impl Service {
 				.as_ref()
 				.ok_or(Error::OAuthClientSecretsUnavailable)?;
 			store.create_oauth_client(tenant, row.id).await?;
-			let resource = format!("aidash-store/oauth-clients/{}", row.id);
-			let pin = store.add_version(tenant, &resource, &secret).await?;
+			let resource = store.oauth_client_resource(row.id);
+			let pin = store
+				.add_client_version(
+					tenant,
+					&resource,
+					ClientBinding {
+						issuer: issuer.clone(),
+						client_id: input.client_id.clone(),
+						redirect_uri: None,
+					},
+					&secret,
+				)
+				.await?;
 			row.secret_resource = Some(resource);
 			row.pinned_version = Some(pin.clone());
 			Some(pin)
