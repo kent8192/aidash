@@ -71,6 +71,25 @@ fn tenant_secret_call(config: &ToolConfig, run: &Run, endpoint: &str) -> Result<
 		max_response_bytes: Some(256_000),
 	})
 }
+/// Missing connections allow the named secret or unauthenticated MCP path. Outages do not.
+async fn connection_for(
+	operations: &dyn ToolOperations,
+	endpoint: &str,
+	call: SecretCall,
+	key: &str,
+) -> Result<Option<crate::tenant_secrets::CallSecret>> {
+	let resource = aidash_domain::oauth_connections::canonical_resource(endpoint)?;
+	match operations.connection(&resource, call, key).await {
+		Ok(secret) => Ok(Some(secret)),
+		Err(Error::Invalid(code))
+			if code == aidash_domain::oauth_connections::CONNECTION_REQUIRED =>
+		{
+			Ok(None)
+		}
+		Err(error) => Err(error),
+	}
+}
+
 pub fn validate_native_http_url(raw: &str, allowed_hosts: &[String]) -> Result<url::Url> {
 	let url = url::Url::parse(raw).map_err(|_| Error::Invalid("invalid URL".into()))?;
 	let host = url
@@ -127,8 +146,18 @@ impl Plugin {
 			ToolConfig::Http { .. } | ToolConfig::Mcp { .. } => {
 				// Resolved at dispatch, after the arguments are valid and before
 				// any effect, so a deleted Tenant Secret fails the call outright.
-				let secret = match aidash_domain::tenant_secrets::named(&self.config) {
-					Some((name, endpoint)) => {
+				let connection = if let ToolConfig::Mcp { endpoint, .. } = &self.config {
+					let call = tenant_secret_call(&self.config, ctx.run, endpoint)?;
+					connection_for(ctx.operations, endpoint, call, key).await?
+				} else {
+					None
+				};
+				let secret = match (
+					connection,
+					aidash_domain::tenant_secrets::named(&self.config),
+				) {
+					(Some(connection), _) => Some(connection),
+					(None, Some((name, endpoint))) => {
 						let call = tenant_secret_call(&self.config, ctx.run, endpoint)?;
 						Some(
 							ctx.operations
@@ -136,7 +165,7 @@ impl Plugin {
 								.await?,
 						)
 					}
-					None => None,
+					(None, None) => None,
 				};
 				transport
 					.invoke(&self.config, input, key, secret.as_ref())

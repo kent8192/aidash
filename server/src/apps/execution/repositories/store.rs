@@ -3822,6 +3822,26 @@ impl Store {
 		tx.commit().await?;
 		Ok(())
 	}
+	/// Record only the connection id; the token remains in the owner's Store.
+	pub async fn invocation_connection(
+		&self,
+		scope: &TenancyScope,
+		key: &str,
+		connection: &aidash_application::tenant_secrets::ConnectionRecord,
+	) -> Result<()> {
+		let mut tx = self.pool.begin(scope).await?;
+		let query = Query::update()
+			.table(Alias::new("invocations"))
+			.value(Alias::new("connection_id"), connection.id)
+			.and_where(Expr::col(Alias::new("idempotency_key")).eq(Expr::value(key)))
+			.to_string(PostgresQueryBuilder);
+		crate::database::native::query(&query)
+			.execute(&mut *tx)
+			.await?;
+		tx.commit().await?;
+		Ok(())
+	}
+
 	async fn persist_tool_input_in(
 		&self,
 		tx: &mut crate::database::native::Transaction,
