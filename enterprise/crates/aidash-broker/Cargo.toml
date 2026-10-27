@@ -9,6 +9,9 @@ publish.workspace = true
 workspace = true
 
 [dependencies]
+aidash-application.workspace = true
+chrono.workspace = true
+async-trait.workspace = true
 aidash-domain.workspace = true
 aidash-capability.workspace = true
 aidash-gcp = { workspace = true, features = ["cloud"] }
@@ -41,8 +44,7 @@ default = []
 test-support = []
 
 [dev-dependencies]
-chrono.workspace = true
-aidash-application.workspace = true
-async-trait.workspace = true
+aidash-integrations = { workspace = true, features = ["test-support"] }
 tokio = { workspace = true, features = ["test-util"] }
 tower = { version = "0.5", features = ["util"] }
+wiremock = "0.6"

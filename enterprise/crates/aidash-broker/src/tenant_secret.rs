@@ -39,12 +39,12 @@ const FORWARD: &str = "/v1/forward";
 const CACHE_TTL: Duration = Duration::from_secs(60);
 const PATH_DIGEST_CHARS: usize = 16;
 
-const BROKER_REJECTED: &str = "broker_rejected";
-const DESTINATION_REFUSED: &str = "secret_destination_refused";
-const SECRET_UNAVAILABLE: &str = "secret_unavailable";
-const RATE_LIMITED: &str = "rate_limited";
-const BROKER_UNAVAILABLE: &str = "broker_unavailable";
-const UPSTREAM_UNREACHABLE: &str = "upstream_unreachable";
+pub(crate) const BROKER_REJECTED: &str = "broker_rejected";
+pub(crate) const DESTINATION_REFUSED: &str = "secret_destination_refused";
+pub(crate) const SECRET_UNAVAILABLE: &str = "secret_unavailable";
+pub(crate) const RATE_LIMITED: &str = "rate_limited";
+pub(crate) const BROKER_UNAVAILABLE: &str = "broker_unavailable";
+pub(crate) const UPSTREAM_UNREACHABLE: &str = "upstream_unreachable";
 
 /// The Tenant Secret role's configuration. `issuers` maps each accepted `kid`
 /// to the one issuer that key may speak for; the Key Material role has no
@@ -114,12 +114,12 @@ struct CachedSealed {
 	value: SecretString,
 	since: Instant,
 }
-struct AuditGuard {
+pub(crate) struct AuditGuard {
 	started: Instant,
 	sink: Arc<dyn SecretCallSink>,
-	entry: SecretCallAudit,
-	bytes_in: Arc<AtomicU64>,
-	bytes_out: Arc<AtomicU64>,
+	pub(crate) entry: SecretCallAudit,
+	pub(crate) bytes_in: Arc<AtomicU64>,
+	pub(crate) bytes_out: Arc<AtomicU64>,
 }
 impl Drop for AuditGuard {
 	fn drop(&mut self) {
@@ -130,7 +130,11 @@ impl Drop for AuditGuard {
 	}
 }
 impl AuditGuard {
-	fn new(sink: Arc<dyn SecretCallSink>, started: Instant, entry: SecretCallAudit) -> Self {
+	pub(crate) fn new(
+		sink: Arc<dyn SecretCallSink>,
+		started: Instant,
+		entry: SecretCallAudit,
+	) -> Self {
 		Self {
 			started,
 			sink,
@@ -142,7 +146,7 @@ impl AuditGuard {
 	fn status(&mut self, status: StatusCode) {
 		self.entry.status = status.as_u16();
 	}
-	fn error(
+	pub(crate) fn error(
 		&mut self,
 		status: StatusCode,
 		code: &'static str,
@@ -154,13 +158,14 @@ impl AuditGuard {
 }
 
 pub struct TenantSecretBroker {
-	config: TenantSecretConfig,
-	keys: PublicKeys,
+	pub(crate) connections: Option<crate::connection::ConnectionBroker>,
+	pub(crate) config: TenantSecretConfig,
+	pub(crate) keys: PublicKeys,
 	source: Arc<dyn SealedSecretSource>,
-	audit: Arc<dyn SecretCallSink>,
+	pub(crate) audit: Arc<dyn SecretCallSink>,
 	client: reqwest::Client,
 	cache: Arc<Mutex<HashMap<(String, String), CachedSealed>>>,
-	buckets: Mutex<HashMap<(String, uuid::Uuid), Bucket>>,
+	pub(crate) buckets: Mutex<HashMap<(String, uuid::Uuid), Bucket>>,
 	#[cfg(any(test, feature = "test-support"))]
 	test_origin: Option<String>,
 }
@@ -180,6 +185,7 @@ impl TenantSecretBroker {
 			aidash_integrations::keyless::public_client(config.timeout, Duration::from_secs(3))
 				.map_err(|_| "invalid broker HTTP client")?;
 		Ok(Self {
+			connections: None,
 			config,
 			keys,
 			source,
@@ -190,6 +196,10 @@ impl TenantSecretBroker {
 			#[cfg(any(test, feature = "test-support"))]
 			test_origin: None,
 		})
+	}
+	pub fn with_connections(mut self, connections: crate::connection::ConnectionBroker) -> Self {
+		self.connections = Some(connections);
+		self
 	}
 	pub fn router(self: Arc<Self>) -> Router {
 		Router::new().fallback(forward).with_state(self)
@@ -273,6 +283,9 @@ impl TenantSecretBroker {
 }
 
 async fn forward(State(broker): State<Arc<TenantSecretBroker>>, request: Request) -> Response {
+	if request.uri().path().starts_with("/v1/connections/") {
+		return crate::connection::operation(broker, request).await;
+	}
 	let started = Instant::now();
 	let method = request.method().clone();
 	let uri = request.uri().clone();
@@ -306,13 +319,53 @@ async fn forward(State(broker): State<Arc<TenantSecretBroker>>, request: Request
 	else {
 		return guard.error(StatusCode::UNAUTHORIZED, BROKER_REJECTED, None);
 	};
-	let claims =
+	let (claims, connection) =
 		match broker
 			.keys
 			.verify_secret(token, &broker.config.issuers, &broker.config.audience, now)
 		{
-			Ok(claims) => claims,
-			Err(_) => return guard.error(StatusCode::UNAUTHORIZED, BROKER_REJECTED, None),
+			Ok(c) => (c, false),
+			Err(_) => {
+				use aidash_capability::connection::ConnectionOperation;
+				let c = match broker.keys.verify_connection(
+					token,
+					&broker.config.issuers,
+					&broker.config.audience,
+					now,
+				) {
+					Ok(c) => c,
+					Err(_) => return guard.error(StatusCode::UNAUTHORIZED, BROKER_REJECTED, None),
+				};
+				let ConnectionOperation::Forward {
+					version,
+					destination,
+					methods,
+					sub,
+					max_response_bytes,
+				} = c.operation
+				else {
+					return guard.error(StatusCode::UNAUTHORIZED, BROKER_REJECTED, Some(c.jti));
+				};
+				(
+					SecretClaims {
+						iss: c.iss,
+						aud: c.aud,
+						iat: c.iat,
+						exp: c.exp,
+						jti: c.jti,
+						kid: c.kid,
+						tenant: c.tenant,
+						secret: c.connection,
+						version,
+						destination,
+						methods,
+						attach: Attach::Bearer,
+						sub,
+						max_response_bytes,
+					},
+					true,
+				)
+			}
 		};
 	guard.entry.jti = claims.jti;
 	guard.entry.tenant = claims.tenant.clone();
@@ -347,13 +400,43 @@ async fn forward(State(broker): State<Arc<TenantSecretBroker>>, request: Request
 	if !broker.rate_limit(&claims) {
 		return guard.error(StatusCode::TOO_MANY_REQUESTS, RATE_LIMITED, jti);
 	}
-	let sealed = match broker.sealed(&claims).await {
-		Ok(sealed) => sealed,
-		Err(KeyMaterialError::Unavailable) => {
-			return guard.error(StatusCode::NOT_FOUND, SECRET_UNAVAILABLE, jti);
-		}
-		Err(KeyMaterialError::StoreUnavailable) => {
+	let sealed = if connection {
+		let Some(connections) = &broker.connections else {
 			return guard.error(StatusCode::SERVICE_UNAVAILABLE, BROKER_UNAVAILABLE, jti);
+		};
+		match connections
+			.bearer(
+				&broker,
+				claims.secret,
+				&claims.version,
+				&claims.destination.origin,
+				&path,
+			)
+			.await
+		{
+			Ok(value) => CachedSealed {
+				hosts: vec![origin_host(&claims.destination.origin).unwrap_or_default()],
+				value,
+				since: Instant::now(),
+			},
+			Err(code) => {
+				let status = match code {
+					DESTINATION_REFUSED => StatusCode::FORBIDDEN,
+					SECRET_UNAVAILABLE => StatusCode::NOT_FOUND,
+					_ => StatusCode::SERVICE_UNAVAILABLE,
+				};
+				return guard.error(status, code, jti);
+			}
+		}
+	} else {
+		match broker.sealed(&claims).await {
+			Ok(sealed) => sealed,
+			Err(KeyMaterialError::Unavailable) => {
+				return guard.error(StatusCode::NOT_FOUND, SECRET_UNAVAILABLE, jti);
+			}
+			Err(KeyMaterialError::StoreUnavailable) => {
+				return guard.error(StatusCode::SERVICE_UNAVAILABLE, BROKER_UNAVAILABLE, jti);
+			}
 		}
 	};
 	let Some(host) = origin_host(&claims.destination.origin) else {
@@ -519,7 +602,11 @@ fn forward_response(
 	builder.body(Body::from_stream(output)).unwrap()
 }
 
-fn broker_error(status: StatusCode, code: &'static str, jti: Option<uuid::Uuid>) -> Response {
+pub(crate) fn broker_error(
+	status: StatusCode,
+	code: &'static str,
+	jti: Option<uuid::Uuid>,
+) -> Response {
 	let mut builder = Response::builder()
 		.status(status)
 		.header(header::CONTENT_TYPE, "application/json")
@@ -607,7 +694,7 @@ fn origin_host(origin: &str) -> Option<String> {
 	url.host_str().map(str::to_owned)
 }
 
-fn subject_kind(subject: &SecretSubject) -> &'static str {
+pub(crate) fn subject_kind(subject: &SecretSubject) -> &'static str {
 	match subject {
 		SecretSubject::Run { .. } => "run",
 		SecretSubject::Operation { .. } => "operation",
@@ -615,7 +702,7 @@ fn subject_kind(subject: &SecretSubject) -> &'static str {
 	}
 }
 
-fn path_digest(path: &str) -> String {
+pub(crate) fn path_digest(path: &str) -> String {
 	let hex: String = Sha256::digest(path.as_bytes())
 		.iter()
 		.map(|byte| format!("{byte:02x}"))

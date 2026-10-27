@@ -1,4 +1,5 @@
 //! Google Cloud REST adapters. Signing and Key Material reads use separate identities.
+pub mod connections;
 pub mod deployment_key;
 pub mod issuer;
 pub mod secret_calls;
@@ -285,17 +286,19 @@ impl SecretManagerTenantSecretSource {
 		})
 	}
 }
-#[async_trait]
-impl SealedSecretSource for SecretManagerTenantSecretSource {
-	async fn access(
+impl SecretManagerTenantSecretSource {
+	async fn access_version(
 		&self,
 		secret: &str,
 		version: &str,
-	) -> Result<Zeroizing<Vec<u8>>, KeyMaterialError> {
+		allow_latest: bool,
+	) -> Result<(String, Zeroizing<Vec<u8>>), KeyMaterialError> {
 		let id = secret
 			.strip_prefix(&self.resource_prefix)
 			.and_then(|id| uuid::Uuid::parse_str(id).ok());
-		if id.is_none_or(|id| id.is_nil()) || !numeric_version(version) {
+		if id.is_none_or(|id| id.is_nil())
+			|| !(numeric_version(version) || (allow_latest && version == "latest"))
+		{
 			return Err(KeyMaterialError::Unavailable);
 		}
 		let token = self
@@ -337,16 +340,35 @@ impl SealedSecretSource for SecretManagerTenantSecretSource {
 				.decode(data.as_bytes())
 				.map_err(|_| KeyMaterialError::StoreUnavailable)?,
 		);
-		if accessed.name != format!("{secret}/versions/{version}")
+		let resolved = accessed
+			.name
+			.strip_prefix(&format!("{secret}/versions/"))
+			.filter(|v| numeric_version(v))
+			.ok_or(KeyMaterialError::StoreUnavailable)?
+			.to_owned();
+		if (resolved != version && !(allow_latest && version == "latest"))
 			|| accessed.payload.data_crc32c.parse::<u32>().ok() != Some(crc32c::crc32c(&bytes))
 			|| bytes.is_empty()
 			|| bytes.len() > 65_536
 		{
 			return Err(KeyMaterialError::StoreUnavailable);
 		}
-		Ok(bytes)
+		Ok((resolved, bytes))
 	}
 }
+#[async_trait]
+impl SealedSecretSource for SecretManagerTenantSecretSource {
+	async fn access(
+		&self,
+		secret: &str,
+		version: &str,
+	) -> Result<Zeroizing<Vec<u8>>, KeyMaterialError> {
+		self.access_version(secret, version, false)
+			.await
+			.map(|(_, bytes)| bytes)
+	}
+}
+
 fn numeric_version(value: &str) -> bool {
 	!value.is_empty() && !value.starts_with('0') && value.bytes().all(|b| b.is_ascii_digit())
 }
