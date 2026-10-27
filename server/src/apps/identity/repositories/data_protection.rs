@@ -11,6 +11,7 @@ use reinhardt::db::{
 };
 use reinhardt::query::{
 	Alias, Expr, ExprTrait, PostgresQueryBuilder, Query, QueryStatementBuilder,
+	types::{BinOper, PgBinOper},
 };
 
 pub(crate) async fn stored(
@@ -399,7 +400,14 @@ pub(crate) async fn record_plan_exemption(
 		.column(Alias::new("id"))
 		.from(Alias::new("events"))
 		.and_where(Expr::col("kind").eq(Expr::value("run.data_protection_exemption")))
-		.and_where(Expr::cust("data ->> 'run_id'").eq(Expr::value(run.to_string())))
+		.and_where(
+			Expr::col("data")
+				.binary(
+					BinOper::PgOperator(PgBinOper::JsonGetAsText),
+					Expr::value("run_id"),
+				)
+				.eq(Expr::value(run.to_string())),
+		)
 		.limit(1)
 		.build(PostgresQueryBuilder);
 	if tx
