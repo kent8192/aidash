@@ -38,7 +38,7 @@ fn browser_deployment_administrator_registry_creation(#[case] path: &str, #[case
 #[rstest]
 #[case("/api/runs/run-id/management", true)]
 #[case("/runs/run-id/management", true)]
-#[case("/api/runs/run-id/control", true)]
+#[case("/api/runs/run-id/control", false)]
 #[case("/api/runs/run-id/resume", false)]
 #[case("/api/runs/run-id/management/extra", false)]
 #[case("/api/runs", false)]

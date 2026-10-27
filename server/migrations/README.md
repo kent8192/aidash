@@ -680,3 +680,28 @@ matching model state.
 `knowledge/0036_memory_attempt_evidence` without changing either migration. It
 is an empty state-only migration: both independent column changes apply before
 the single Knowledge head, and no schema or model state is overwritten.
+
+## Run control provenance and Safety Stops (#485, ADR 0101)
+
+`execution/0061_run_control_provenance` (after `execution/0060_plugin_research_merge`)
+adds `runs.control_revision` (bigint, default 0) and `runs.control_source` (text,
+default `'tenant'`) with typed column operations and a CHECK on both. The revision
+changes only when `control` changes, so a Safety Stop's expected revision is not made
+stale by worker progress.
+
+`execution/0062_run_control_trigger` is database-only. Reinhardt has no trigger
+operation, so the function `aidash_run_control_provenance` and its `BEFORE UPDATE OF
+control` trigger on `runs` are the documented raw-SQL exception. A writer that updates
+`control_revision` itself (the ordinary control path and a Safety Stop) is left alone;
+every other writer that changes `control` gets the revision bumped and is attributed to
+`system`. Its reverse drops the trigger and function.
+
+`execution/0063_run_safety_stops` creates the audit record and replay receipt, one row
+per accepted or no-op command, with typed operations. `run_id` has no foreign key,
+because the record is audit history that outlives the Run, its Workspace and the purge
+of its Tenant (it is classified `audit`, erased by `audit_retention_days`). Its Tenant
+reference is the usual root record. `(tenant, caller_key, operation_id)` is unique, and
+CHECKs bound the reason to 1 to 1000 characters and tie `identity_id` to a browser actor.
+`execution/0064_run_safety_stops_row_level_security` adds the tenant policy template
+through `RunSQL`, and `execution/0065_run_safety_stops_state` is the generated state-only
+snapshot that leaves the physical constraints and indexes to `0063`.

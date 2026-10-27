@@ -168,6 +168,11 @@ async fn deletion_removes_administrator_data_access_but_keeps_restore_available(
 		),
 		(
 			"GET",
+			format!("/api/authorization/{tenant}/safety-stops"),
+			Value::Null,
+		),
+		(
+			"GET",
 			format!("/api/generation/{tenant}/policies"),
 			Value::Null,
 		),
