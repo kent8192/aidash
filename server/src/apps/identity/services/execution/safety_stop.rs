@@ -64,7 +64,10 @@ fn facts_query(run: Uuid, lock: bool) -> String {
 		.from(Alias::new("runs"))
 		.and_where(Expr::col(Alias::new("id")).eq(Expr::value(run)));
 	if lock {
-		query.lock(LockType::Update);
+		// `NoKeyUpdate`, like `Run::hold_worker_lease`: a worker's retained
+		// authority transaction holds a key-share lock through its foreign keys,
+		// and `FOR UPDATE` would wait behind it. The stop never changes the key.
+		query.lock(LockType::NoKeyUpdate);
 	}
 	query.to_string(PostgresQueryBuilder)
 }

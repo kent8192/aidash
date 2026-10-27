@@ -19,3 +19,20 @@ export function safetyStopSignature(run: string, input: StopInput): string {
     input.reason,
   ]);
 }
+
+/** The Tenant and Run a lookup is for, normalised as the form submits them. */
+export function safetyStopTarget(tenant: string, run: string): string {
+  return JSON.stringify([tenant.trim(), run.trim()]);
+}
+
+/**
+ * The looked-up facts, only while the form still names the target they were
+ * read for. A control revision belongs to one Run; once the target changes the
+ * facts are gone, so a stop can never carry another Run's revision.
+ */
+export function factsForTarget<T>(
+  loaded: { target: string; facts: T } | undefined,
+  target: string,
+): T | undefined {
+  return loaded?.target === target ? loaded.facts : undefined;
+}

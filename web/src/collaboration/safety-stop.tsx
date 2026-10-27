@@ -6,7 +6,12 @@ import { Textarea } from "../components/ui/textarea";
 import { Alert, Hint } from "../components/patterns";
 import { Panel, Field, useI18n } from "../ui";
 import { apiFetch } from "../transport";
-import { safetyStopSignature, type StopInput } from "./safety-stop-model";
+import {
+  factsForTarget,
+  safetyStopSignature,
+  safetyStopTarget,
+  type StopInput,
+} from "./safety-stop-model";
 
 /** What a Deployment Administrator may read of a Run (ADR 0101). */
 type RunControlFacts = {
@@ -37,7 +42,10 @@ export function SafetyStopPanel({ run: initialRun = "" }: { run?: string }) {
   const client = useQueryClient();
   const [tenant, setTenant] = useState("");
   const [run, setRun] = useState(initialRun);
-  const [facts, setFacts] = useState<RunControlFacts>();
+  const [loaded, setLoaded] = useState<{
+    target: string;
+    facts: RunControlFacts;
+  }>();
   const [reason, setReason] = useState("");
   const [receipt, setReceipt] = useState<Receipt>();
   const [error, setError] = useState("");
@@ -45,23 +53,36 @@ export function SafetyStopPanel({ run: initialRun = "" }: { run?: string }) {
   // One operation ID per submission: a retry of the same command reuses it, so
   // the server replays the receipt instead of acting twice.
   const attempt = useRef<{ signature: string; key: string }>(undefined);
+  // Only the newest lookup may write; an older response is ignored.
+  const lookups = useRef(0);
   const path = `/api/runs/${encodeURIComponent(run.trim())}/management`;
+  const target = safetyStopTarget(tenant, run);
+  // Facts are valid only for the target they were read for, so editing the
+  // Tenant or Run ID drops them and a stop cannot reuse another Run's revision.
+  const facts = factsForTarget(loaded, target);
+
+  const read = async () => {
+    const [named, id] = JSON.parse(target) as [string, string];
+    const facts = await apiFetch<RunControlFacts>(
+      `/api/runs/${encodeURIComponent(id)}/management?tenant=${encodeURIComponent(named)}`,
+    );
+    return { target, facts };
+  };
 
   const look = async () => {
+    const lookup = ++lookups.current;
     setBusy(true);
     setError("");
     setReceipt(undefined);
+    setLoaded(undefined);
     try {
-      setFacts(
-        await apiFetch<RunControlFacts>(
-          `${path}?tenant=${encodeURIComponent(tenant.trim())}`,
-        ),
-      );
+      const result = await read();
+      if (lookup === lookups.current) setLoaded(result);
     } catch (cause) {
-      setFacts(undefined);
-      setError(cause instanceof Error ? cause.message : String(cause));
+      if (lookup === lookups.current)
+        setError(cause instanceof Error ? cause.message : String(cause));
     } finally {
-      setBusy(false);
+      if (lookup === lookups.current) setBusy(false);
     }
   };
 
@@ -101,11 +122,7 @@ export function SafetyStopPanel({ run: initialRun = "" }: { run?: string }) {
       attempt.current = undefined;
       setReason("");
       await client.invalidateQueries();
-      setFacts(
-        await apiFetch<RunControlFacts>(
-          `${path}?tenant=${encodeURIComponent(tenant.trim())}`,
-        ),
-      );
+      setLoaded(await read());
     } catch (cause) {
       // The operation ID is kept, so pressing the button again is a retry.
       setError(cause instanceof Error ? cause.message : String(cause));
@@ -130,6 +147,7 @@ export function SafetyStopPanel({ run: initialRun = "" }: { run?: string }) {
         <Field label={ja ? "Tenant ID" : "Tenant ID"}>
           <Input
             value={tenant}
+            disabled={busy}
             onChange={(event) => setTenant(event.target.value)}
             autoComplete="off"
           />
@@ -137,6 +155,7 @@ export function SafetyStopPanel({ run: initialRun = "" }: { run?: string }) {
         <Field label={ja ? "Run ID" : "Run ID"}>
           <Input
             value={run}
+            disabled={busy}
             onChange={(event) => setRun(event.target.value)}
             autoComplete="off"
           />

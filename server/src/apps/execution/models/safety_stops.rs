@@ -7,8 +7,11 @@ use aidash_domain::safety_stop::{Action, Actor, Command, Outcome, Record};
 use chrono::{DateTime, Utc};
 use reinhardt::core::exception::Error as FrameworkError;
 use reinhardt::db::backends::TransactionExecutor;
-use reinhardt::db::orm::Model;
+use reinhardt::db::orm::{Model, execution::convert_values};
 use reinhardt::model;
+use reinhardt::query::{
+	Expr, IntoIden, PostgresQueryBuilder, Query, QueryStatementBuilder as _, SimpleExpr,
+};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
@@ -43,14 +46,38 @@ pub struct RunSafetyStop {
 	pub created_at: DateTime<Utc>,
 }
 
+/// Distinct from every other advisory lock namespace in the server.
+const OPERATION_LOCK: i64 = 485_001;
+
 impl RunSafetyStop {
 	/// The earlier command of this caller with this operation ID, if any.
+	///
+	/// Takes a transaction-scoped lock on the operation key first. The Run lock
+	/// serializes commands for one Run only; the same operation ID sent for two
+	/// Runs of a Tenant would otherwise both miss here and the second insert
+	/// would fail on the unique `(tenant, caller_key, operation_id)` index
+	/// instead of answering the documented conflict.
 	pub(crate) async fn receipt(
 		tx: &mut dyn TransactionExecutor,
 		tenant: &str,
 		caller_key: &str,
 		operation: Uuid,
 	) -> Result<Option<Stored>> {
+		let (sql, values) = Query::select()
+			.expr(SimpleExpr::FunctionCall(
+				"pg_advisory_xact_lock".into_iden(),
+				vec![SimpleExpr::FunctionCall(
+					"hashtextextended".into_iden(),
+					vec![
+						Expr::value(format!("{tenant}\u{1f}{caller_key}\u{1f}{operation}")).into(),
+						Expr::value(OPERATION_LOCK).into(),
+					],
+				)],
+			))
+			.build(PostgresQueryBuilder);
+		tx.execute(&sql, convert_values(values))
+			.await
+			.map_err(FrameworkError::from)?;
 		Self::objects()
 			.filter(Self::field_tenant().eq(tenant.to_owned()))
 			.filter(Self::field_caller_key().eq(caller_key.to_owned()))

@@ -1,6 +1,10 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { safetyStopSignature } from "../src/collaboration/safety-stop-model.ts";
+import {
+  factsForTarget,
+  safetyStopSignature,
+  safetyStopTarget,
+} from "../src/collaboration/safety-stop-model.ts";
 
 const input = {
   tenant: "acme",
@@ -26,4 +30,27 @@ test("any change is a new command with its own operation ID", () => {
     safetyStopSignature("run-1", { ...input, reason: "another reason" }),
   ])
     assert.notEqual(changed, base);
+});
+
+test("facts are dropped as soon as the Tenant or Run ID changes", () => {
+  const loaded = {
+    target: safetyStopTarget("acme", "run-a"),
+    facts: { control_revision: 0 },
+  };
+  assert.deepEqual(
+    factsForTarget(loaded, safetyStopTarget(" acme ", "run-a ")),
+    loaded.facts,
+  );
+  assert.equal(
+    factsForTarget(loaded, safetyStopTarget("acme", "run-b")),
+    undefined,
+  );
+  assert.equal(
+    factsForTarget(loaded, safetyStopTarget("other", "run-a")),
+    undefined,
+  );
+  assert.equal(
+    factsForTarget(undefined, safetyStopTarget("acme", "run-a")),
+    undefined,
+  );
 });

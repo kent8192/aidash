@@ -510,3 +510,64 @@ async fn a_receiver_run_is_stoppable_and_a_deleted_tenant_is_refused(
 	let _ = TEST_FIXTURE;
 	w.f.store.pool.clone().close().await;
 }
+
+/// A worker's retained authority transaction holds a key-share lock on its Run
+/// through its foreign keys; a stop must not wait behind it.
+#[rstest::rstest]
+#[tokio::test]
+async fn a_stop_does_not_wait_for_the_workers_own_run_references(
+	#[future(awt)]
+	#[from(common::native_application)]
+	fixture: common::ApplicationFixture,
+) {
+	use reinhardt::query::{
+		Alias, Expr, ExprTrait as _, LockType, PostgresQueryBuilder, Query,
+		QueryStatementBuilder as _,
+	};
+	let w = world(fixture).await;
+	let mut authority = w.f.store.pool.fixture_driver().begin().await.unwrap();
+	sqlx::query(
+		&Query::select()
+			.column(Alias::new("id"))
+			.from(Alias::new("runs"))
+			.and_where(Expr::col(Alias::new("id")).eq(Expr::value(w.run)))
+			.lock(LockType::KeyShare)
+			.to_string(PostgresQueryBuilder),
+	)
+	.fetch_one(&mut *authority)
+	.await
+	.unwrap();
+
+	let stopped = tokio::time::timeout(
+		std::time::Duration::from_secs(10),
+		w.stop(w.run, Uuid::new_v4(), "pause", 0),
+	)
+	.await
+	.expect("the stop must not wait for the authority transaction");
+
+	authority.rollback().await.unwrap();
+	assert_eq!(stopped.0, 200, "{}", stopped.1);
+	w.f.store.pool.clone().close().await;
+}
+
+/// One operation ID sent for two Runs of a Tenant, at the same time, answers
+/// the documented conflict for one of them and never a server error.
+#[rstest::rstest]
+#[tokio::test]
+async fn one_operation_id_for_two_runs_conflicts_instead_of_failing(
+	#[future(awt)]
+	#[from(common::native_application)]
+	fixture: common::ApplicationFixture,
+) {
+	let w = world(fixture).await;
+	let key = Uuid::new_v4();
+	let (first, second) = tokio::join!(
+		w.stop(w.run, key, "pause", 0),
+		w.stop(w.receiver, key, "pause", 0),
+	);
+	let mut statuses = [first.0, second.0];
+	statuses.sort_unstable();
+	assert_eq!(statuses, [200, 409], "{first:?} {second:?}");
+	assert_eq!(w.count("SELECT count(*) FROM run_safety_stops").await, 1);
+	w.f.store.pool.clone().close().await;
+}
