@@ -47,21 +47,51 @@ impl OpenRouterProvider {
 		});
 		context
 	}
-	async fn verified_routes(&self, request: &ModelRequest) -> Result<Vec<String>> {
-		verified_routes(
-			&self.clients,
-			&self.config,
-			&*self.access,
-			&self.context,
-			request,
-		)
-		.await
-	}
 }
 
-/// The provider catalog and ZDR evidence a route must satisfy before any
-/// inference. Shared by the Chat Completions and Responses transports.
+/// Evaluate current catalog evidence and the Tenant requirement for either wire API.
 pub(crate) async fn verified_routes(
+	clients: &crate::keyless::Clients,
+	config: &ModelConfig,
+	access: &dyn ProviderAccess,
+	context: &Context,
+	request: &ModelRequest,
+) -> Result<Vec<String>> {
+	let mut media_routes = verified_media_routes(clients, config, access, context, request).await?;
+	let routes = crate::data_protection::zdr_routes(
+		access,
+		context,
+		clients,
+		&config.endpoint,
+		&Source::configured(&config.provider_credential, &None),
+		&config.model_id,
+	)
+	.await?;
+	if !routes.is_empty() {
+		if config
+			.provider_route
+			.as_ref()
+			.is_some_and(|route| !routes.contains(&route.tag))
+		{
+			return Err(Error::Invalid(
+				"Zero Data Retention: pinned route is unavailable".into(),
+			));
+		}
+		if media_routes.is_empty() {
+			media_routes = routes;
+		} else {
+			media_routes.retain(|tag| routes.contains(tag));
+			if media_routes.is_empty() {
+				return Err(Error::Invalid(
+					"Zero Data Retention: no approved media route".into(),
+				));
+			}
+		}
+	}
+	Ok(media_routes)
+}
+
+async fn verified_media_routes(
 	clients: &crate::keyless::Clients,
 	config: &ModelConfig,
 	access: &dyn ProviderAccess,
@@ -413,38 +443,14 @@ impl ModelProvider for OpenRouterProvider {
 				),
 			)
 			.await?;
-			let mut media_routes = self.verified_routes(&request).await?;
-			let routes = crate::data_protection::zdr_routes(
+			let media_routes = verified_routes(
+				&self.clients,
+				&self.config,
 				self.access.as_ref(),
 				&context,
-				&self.clients,
-				&self.config.endpoint,
-				&Source::configured(&self.config.provider_credential, &None),
-				&self.config.model_id,
+				&request,
 			)
 			.await?;
-			if !routes.is_empty() {
-				if self
-					.config
-					.provider_route
-					.as_ref()
-					.is_some_and(|route| !routes.contains(&route.tag))
-				{
-					return Err(Error::Invalid(
-						"Zero Data Retention: pinned route is unavailable".into(),
-					));
-				}
-				if media_routes.is_empty() {
-					media_routes = routes;
-				} else {
-					media_routes.retain(|tag| routes.contains(tag));
-					if media_routes.is_empty() {
-						return Err(Error::Invalid(
-							"Zero Data Retention: no approved media route".into(),
-						));
-					}
-				}
-			}
 			let mut body = request_body(
 				&self.config,
 				&request,

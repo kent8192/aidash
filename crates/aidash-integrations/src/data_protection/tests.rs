@@ -1,4 +1,4 @@
-//! The production chat adapter reloads policy and pins a currently ZDR-capable route.
+//! The production model adapters reload policy and pin a currently ZDR-capable route.
 use super::*;
 use aidash_application::{ports::NoProgress, provider_access::Access};
 use aidash_domain::{
@@ -27,10 +27,16 @@ impl ProviderAccess for Current {
 		Ok(*self.policy.lock().unwrap())
 	}
 	async fn resolve(&self, context: &Context, _: &str, _: &Source) -> Result<Access> {
-		self.signed
-			.lock()
-			.unwrap()
-			.push(context.data_protection.requirement());
+		if context
+			.inference
+			.as_ref()
+			.is_some_and(|inference| inference.operations.contains(&Operation::Chat))
+		{
+			self.signed
+				.lock()
+				.unwrap()
+				.push(context.data_protection.requirement());
+		}
 		Ok(Access {
 			endpoint: self.endpoint.clone(),
 			bearer: "fixture".to_owned().into(),
@@ -48,12 +54,18 @@ impl Drop for Server {
 	}
 }
 
+#[rstest::rstest]
+#[case(None)]
+#[case(Some(aidash_domain::model::WireApi::Responses))]
 #[tokio::test]
-async fn existing_provider_reloads_each_send_and_refuses_a_model_absent_from_the_zdr_catalog() {
+async fn existing_provider_reloads_each_send_and_refuses_a_model_absent_from_the_zdr_catalog(
+	#[case] wire_api: Option<aidash_domain::model::WireApi>,
+) {
 	let bodies = Arc::new(Mutex::new(Vec::new()));
 	let catalog_calls = Arc::new(AtomicUsize::new(0));
 	let present = Arc::new(AtomicBool::new(true));
 	let app = Router::new().route("/v1/chat/completions", post({ let bodies = bodies.clone(); move |Json(body): Json<Value>| { let bodies = bodies.clone(); async move { bodies.lock().unwrap().push(body); Json(json!({"choices":[{"finish_reason":"stop","message":{"content":"done"}}]})) } } }))
+		.route("/v1/responses", post({ let bodies = bodies.clone(); move |Json(body): Json<Value>| { let bodies = bodies.clone(); async move { bodies.lock().unwrap().push(body); Json(json!({"id":"resp-fixture","status":"completed","output":[{"type":"message","content":[{"type":"output_text","text":"done"}]}]})) } } }))
 		.route("/v1/endpoints/zdr", get({ let calls = catalog_calls.clone(); let present = present.clone(); move || { let calls = calls.clone(); let present = present.clone(); async move { calls.fetch_add(1, Ordering::SeqCst); Json(json!({"data": if present.load(Ordering::SeqCst) { vec![json!({"model_id":"vendor/model","tag":"vendor/zdr"})] } else { vec![] }})) } } }));
 	let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
 	let endpoint = format!("http://{}/v1", listener.local_addr().unwrap());
@@ -65,13 +77,15 @@ async fn existing_provider_reloads_each_send_and_refuses_a_model_absent_from_the
 		endpoint,
 		signed: Mutex::new(vec![]),
 	});
-	let config: ModelConfig = serde_json::from_value(json!({"provider":"openrouter","provider_credential":"openrouter","endpoint":"https://openrouter.ai/api/v1","model_id":"vendor/model","context_window":8192,"max_output_tokens":256,"modalities":["text"],"cost":{},"streaming":false})).unwrap();
+	let mut config: ModelConfig = serde_json::from_value(json!({"provider":"openrouter","provider_credential":"openrouter","endpoint":"https://openrouter.ai/api/v1","model_id":"vendor/model","context_window":8192,"max_output_tokens":256,"modalities":["text"],"cost":{},"streaming":false})).unwrap();
+	config.wire_api = wire_api;
+	let tenant = format!("current-policy-{wire_api:?}");
 	let provider = crate::inference::provider(
 		crate::semantic::clients().unwrap(),
 		config.clone(),
 		access.clone(),
 		Context {
-			tenant: "current-policy".into(),
+			tenant: tenant.clone(),
 			..Default::default()
 		},
 	)
@@ -110,11 +124,13 @@ async fn existing_provider_reloads_each_send_and_refuses_a_model_absent_from_the
 	}
 	provider.infer(request.clone(), &NoProgress).await.unwrap();
 	assert_eq!(
-		&access.signed.lock().unwrap()[..3],
+		&access.signed.lock().unwrap()[..],
 		&[
 			aidash_domain::data_protection::Requirement::Zdr,
 			aidash_domain::data_protection::Requirement::None,
-			aidash_domain::data_protection::Requirement::NoTraining
+			aidash_domain::data_protection::Requirement::NoTraining,
+			aidash_domain::data_protection::Requirement::Zdr,
+			aidash_domain::data_protection::Requirement::Zdr
 		]
 	);
 	let sent = bodies.lock().unwrap().clone();
@@ -143,7 +159,7 @@ async fn existing_provider_reloads_each_send_and_refuses_a_model_absent_from_the
 		absent,
 		access,
 		Context {
-			tenant: "current-policy".into(),
+			tenant: tenant.clone(),
 			..Default::default()
 		},
 	)
