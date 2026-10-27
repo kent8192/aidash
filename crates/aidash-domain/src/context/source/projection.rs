@@ -144,6 +144,8 @@ pub fn declared_present(request: &ModelRequest, contribution: &SourceContributio
 			.is_some_and(|part| contains_envelope(&part, &envelope))
 	};
 	match &request.context {
+		// Sampling carries only the requesting server's explicit messages.
+		ModelContext::Sampling(_) => false,
 		ModelContext::Legacy(context) => context
 			.get("current")
 			.is_some_and(|part| contains_envelope(part, &envelope)),
@@ -211,6 +213,7 @@ fn retain(request: &mut ModelRequest, selected: &BTreeSet<String>) {
 		*text = serde_json::to_string(&value).expect("serializable fitted projection part");
 	};
 	match &mut request.context {
+		ModelContext::Sampling(_) => {}
 		ModelContext::Legacy(context) => {
 			if let Some(current) = context.get_mut("current") {
 				filter(current);

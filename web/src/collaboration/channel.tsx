@@ -1,4 +1,5 @@
 import { ReferenceName, RecordView } from "../record-view";
+import { skippedServers } from "../agent-plugins";
 import { useState, useSyncExternalStore } from "react";
 import { Alert } from "../components/patterns";
 import { useNavigate } from "@tanstack/react-router";
@@ -100,7 +101,9 @@ const requestCopy = {
       "run.created": "実行を開始しました",
       "run.cancelled": "実行を中止しました",
       "run.semantic_degraded": "Degraded contextで続行しました",
+      "run.plugin_tools_pinned": "Agent Plugin のツールを確定しました",
     } as Record<string, string>,
+    skippedServers: "使えなかったサーバー",
   },
   "en-US": {
     actions: "Request actions",
@@ -130,7 +133,9 @@ const requestCopy = {
       "run.created": "Run started",
       "run.cancelled": "Run cancelled",
       "run.semantic_degraded": "Continued with Degraded context",
+      "run.plugin_tools_pinned": "Pinned Agent Plugin tools",
     } as Record<string, string>,
+    skippedServers: "unavailable servers",
   },
 } as const;
 
@@ -310,16 +315,22 @@ export function Channel({
       event.kind === "human.answered"
         ? deadlineLabel(event, copy.noAnswerBeforeDeadline)
         : view.events[event.kind];
-    const task = label && eventTask(event, tasks);
-    return label
-      ? [
-          {
-            id: event.id,
-            created_at: event.created_at,
-            text: task ? `${label}: ${task.title}` : label,
-          },
-        ]
-      : [];
+    if (!label) return [];
+    const task = eventTask(event, tasks);
+    const skipped =
+      event.kind === "run.plugin_tools_pinned"
+        ? skippedServers(event.data)
+        : [];
+    const text = task ? `${label}: ${task.title}` : label;
+    return [
+      {
+        id: event.id,
+        created_at: event.created_at,
+        text: skipped.length
+          ? `${text} (${view.skippedServers}: ${skipped.join(", ")})`
+          : text,
+      },
+    ];
   });
   const participantLabel = (item: (typeof agents)[number]) =>
     agentLabel(item.node, {

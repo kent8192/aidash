@@ -225,6 +225,7 @@ fn declared_mixed_sources_place_independently_and_defaults_keep_request_bytes() 
 			"{projection:?} must carry the Run declaration"
 		);
 		match &request.context {
+			ModelContext::Sampling(_) => panic!("expected a Run context"),
 			ModelContext::Ordered(context) => {
 				let stable: Value = serde_json::from_str(&context.stable).unwrap();
 				assert_eq!(

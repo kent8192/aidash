@@ -14,8 +14,11 @@ use aidash_domain::{
 use async_trait::async_trait;
 use serde_json::Value;
 use std::sync::Arc;
+use uuid::Uuid;
 #[async_trait]
 pub trait AdmissionScope: ExecutionScope {
+	/// Pin listing results into an existing running reservation; never insert or revive a slot.
+	async fn complete_listing(&mut self, id: Uuid, scenario: Value) -> Result<TestSession>;
 	/// The tenant-limits lock is held across expiry, count, active-slot insertion and commit.
 	async fn admit(
 		&mut self,

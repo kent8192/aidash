@@ -744,7 +744,7 @@ async fn deferred_discovery_never_reveals_foreign_unbound_or_unapproved_entries(
 	#[future] deferred_fixture: Deferred,
 ) {
 	let d = Box::pin(deferred_fixture).await;
-	let node = d.c.f.config.deployment.to_string();
+	let node = d.c.f.config.deployment.clone();
 	let zebra = |id: &str| json!({"id":id,"version":"1.0.0","kind":"tool","name":{"en":"Zebra ledger"},"description":{"en":"Zebra ledger secret tool"},"capabilities":[],"languages":["en"],"schema":{"type":"object"},"config":{"registry_deployment":node,"provider":"integration.http@1","operation":"invoke","default_alias":id.replace('-', "_"),"tier":"integration","transport":{"transport":"http","endpoint":"https://tools.example.com/effect","replay":"idempotent"}}});
 	// Approved for this tenant but never bound.
 	register_approved(&d.c, zebra("zebra-unbound")).await;

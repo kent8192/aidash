@@ -15,6 +15,7 @@ impl From<HumanRequestRecord> for HumanRequest {
 				HumanRequestKind::ApprovalRequired => "APPROVAL_REQUIRED",
 				HumanRequestKind::Confirmation => "CONFIRMATION",
 				HumanRequestKind::InformationRequest => "INFORMATION_REQUEST",
+				HumanRequestKind::McpElicitation => "MCP_ELICITATION",
 			}
 			.into(),
 			prompt: record.prompt,

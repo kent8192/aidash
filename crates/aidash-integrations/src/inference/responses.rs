@@ -4,8 +4,8 @@
 //! conversation state, so every request carries the whole projected context
 //! in `input`. Legacy, Ordered and Native projections retain the observable
 //! messages and tool turns without provider reasoning (ADR 0083). Output is
-//! accepted only from `response.completed`; deltas feed sanitized Inference
-//! Progress.
+//! accepted only from `response.completed`; truncated terminal responses retain
+//! text for bounded MCP sampling. Deltas feed sanitized Inference Progress.
 use super::{CacheSaltKeys, MAX_RESPONSE_BYTES, safe_upstream_reason};
 use crate::{Error, Result};
 use aidash_application::ports::{InferenceProgressSink, ModelProvider};
@@ -282,23 +282,28 @@ impl ModelProvider for ResponsesProvider {
 /// reported output: a longer response is never acted on, and only its usage
 /// settles the call.
 pub(crate) fn within_output_cap(result: Result<ModelResponse>, cap: u32) -> Result<ModelResponse> {
-	match result {
-		Ok(response)
-			if response
-				.reported
-				.output_tokens
-				.is_some_and(|n| n > u64::from(cap)) =>
-		{
-			Err(Error::TerminalResponse(
-				ContextFailure::OutputTruncated,
-				Box::new(ModelResponse {
-					text: String::new(),
-					tool_calls: Vec::new(),
-					..response
-				}),
-			))
+	let (mut response, truncated) = match result {
+		Ok(response) => (response, false),
+		Err(Error::TerminalResponse(ContextFailure::OutputTruncated, response)) => {
+			(*response, true)
 		}
-		result => result,
+		Err(error) => return Err(error),
+	};
+	let exceeded = response
+		.reported
+		.output_tokens
+		.is_some_and(|n| n > u64::from(cap));
+	if exceeded {
+		response.text.clear();
+		response.tool_calls.clear();
+	}
+	if truncated || exceeded {
+		Err(Error::TerminalResponse(
+			ContextFailure::OutputTruncated,
+			Box::new(response),
+		))
+	} else {
+		Ok(response)
 	}
 }
 
@@ -519,8 +524,23 @@ impl<'a> Assembler<'a> {
 						return Ok(());
 					}
 				};
-				let usage = usage_only(response);
-				self.finished = Some(Err(Error::TerminalResponse(failure, Box::new(usage))));
+				let mut result = usage_only(response);
+				if failure == ContextFailure::OutputTruncated {
+					// Use only the terminal snapshot's text. Incomplete function
+					// calls are never parsed or dispatched, including by sampling.
+					for item in response["output"].as_array().into_iter().flatten() {
+						if item["type"] == "message" {
+							for part in item["content"].as_array().into_iter().flatten() {
+								if part["type"] == "output_text" {
+									result
+										.text
+										.push_str(part["text"].as_str().unwrap_or_default());
+								}
+							}
+						}
+					}
+				}
+				self.finished = Some(Err(Error::TerminalResponse(failure, Box::new(result))));
 			}
 			Some("response.failed") => {
 				let error = event.pointer("/response/error").cloned();

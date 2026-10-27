@@ -50,6 +50,10 @@
           "ContextRecoveryFailure": {
             "description": "Why a Run paused instead of sending or acting on a provider request.\nEach reason is final for its step; none of them is retried as transport.",
             "enum": [
+              "source_selection_unavailable",
+              "source_selection_forbidden",
+              "source_selection_unapproved",
+              "source_selection_calls_exhausted",
               "context_unreducible",
               "decider_unapproved",
               "decider_calls_exhausted",
@@ -469,6 +473,10 @@
           "ContextRecoveryFailure": {
             "description": "Why a Run paused instead of sending or acting on a provider request.\nEach reason is final for its step; none of them is retried as transport.",
             "enum": [
+              "source_selection_unavailable",
+              "source_selection_forbidden",
+              "source_selection_unapproved",
+              "source_selection_calls_exhausted",
               "context_unreducible",
               "decider_unapproved",
               "decider_calls_exhausted",
@@ -2429,6 +2437,10 @@
           "ContextRecoveryFailure": {
             "description": "Why a Run paused instead of sending or acting on a provider request.\nEach reason is final for its step; none of them is retried as transport.",
             "enum": [
+              "source_selection_unavailable",
+              "source_selection_forbidden",
+              "source_selection_unapproved",
+              "source_selection_calls_exhausted",
               "context_unreducible",
               "decider_unapproved",
               "decider_calls_exhausted",
@@ -2686,6 +2698,10 @@
           "ContextRecoveryFailure": {
             "description": "Why a Run paused instead of sending or acting on a provider request.\nEach reason is final for its step; none of them is retried as transport.",
             "enum": [
+              "source_selection_unavailable",
+              "source_selection_forbidden",
+              "source_selection_unapproved",
+              "source_selection_calls_exhausted",
               "context_unreducible",
               "decider_unapproved",
               "decider_calls_exhausted",
@@ -3002,6 +3018,10 @@
           "ContextRecoveryFailure": {
             "description": "Why a Run paused instead of sending or acting on a provider request.\nEach reason is final for its step; none of them is retried as transport.",
             "enum": [
+              "source_selection_unavailable",
+              "source_selection_forbidden",
+              "source_selection_unapproved",
+              "source_selection_calls_exhausted",
               "context_unreducible",
               "decider_unapproved",
               "decider_calls_exhausted",
@@ -3275,6 +3295,10 @@
           "ContextRecoveryFailure": {
             "description": "Why a Run paused instead of sending or acting on a provider request.\nEach reason is final for its step; none of them is retried as transport.",
             "enum": [
+              "source_selection_unavailable",
+              "source_selection_forbidden",
+              "source_selection_unapproved",
+              "source_selection_calls_exhausted",
               "context_unreducible",
               "decider_unapproved",
               "decider_calls_exhausted",
@@ -3575,6 +3599,10 @@
           "ContextRecoveryFailure": {
             "description": "Why a Run paused instead of sending or acting on a provider request.\nEach reason is final for its step; none of them is retried as transport.",
             "enum": [
+              "source_selection_unavailable",
+              "source_selection_forbidden",
+              "source_selection_unapproved",
+              "source_selection_calls_exhausted",
               "context_unreducible",
               "decider_unapproved",
               "decider_calls_exhausted",
@@ -4921,6 +4949,10 @@
           "ContextRecoveryFailure": {
             "description": "Why a Run paused instead of sending or acting on a provider request.\nEach reason is final for its step; none of them is retried as transport.",
             "enum": [
+              "source_selection_unavailable",
+              "source_selection_forbidden",
+              "source_selection_unapproved",
+              "source_selection_calls_exhausted",
               "context_unreducible",
               "decider_unapproved",
               "decider_calls_exhausted",
@@ -11649,9 +11681,25 @@
                 "maximum": 255,
                 "minimum": 0,
                 "type": "integer"
+              },
+              "compaction_override": {
+                "anyOf": [
+                  {
+                    "$ref": "#/components/schemas/QualifiedRef"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "description": "Exact explicit compaction replacement, resolved by trusted registration."
               }
             },
-            "required": ["schema_version", "registry_deployment", "bindings"],
+            "required": [
+              "schema_version",
+              "registry_deployment",
+              "compaction_override",
+              "bindings"
+            ],
             "type": "object"
           },
           "Binding3": {
@@ -15693,6 +15741,37 @@
               "viewer_is_approver": {
                 "description": "Whether the reader is the approver this card is addressed to.",
                 "type": "boolean"
+              },
+              "plugin_tool": {
+                "anyOf": [
+                  {
+                    "$ref": "#/components/schemas/PluginToolCard"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "description": "For a Tool call approval of a tool a Run pinned from an Agent Plugin, or a Run grant\nfrom one, the plugin, server and tool, and the plugin copy that declared them. `tool` and\n`version` then hold the tool's path and the copy's digest."
+              },
+              "sampling": {
+                "anyOf": [
+                  {
+                    "$ref": "#/components/schemas/SamplingRequest"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "sampling_target": {
+                "anyOf": [
+                  {
+                    "$ref": "#/components/schemas/SamplingTarget"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
               }
             },
             "required": [
@@ -15732,6 +15811,90 @@
             },
             "required": ["items", "next_cursor"],
             "type": "object"
+          },
+          "PluginName": {
+            "description": "A plugin name: 1-64 characters of `a-z0-9.-`, starting and ending alphanumeric, with neither\n`--` nor `..`.",
+            "type": "string"
+          },
+          "PluginToolCard": {
+            "description": "The Agent Plugin tool a Tool call approval is asked for.",
+            "properties": {
+              "digest": {
+                "description": "The digest of the plugin copy the Agent version pins.",
+                "type": "string"
+              },
+              "plugin": {
+                "type": "string"
+              },
+              "server": {
+                "type": "string"
+              },
+              "tool": {
+                "description": "The server's own name for the tool.",
+                "type": "string"
+              }
+            },
+            "required": ["plugin", "server", "tool", "digest"],
+            "type": "object"
+          },
+          "SamplingMessage": {
+            "properties": {
+              "role": {
+                "type": "string"
+              },
+              "text": {
+                "type": "string"
+              }
+            },
+            "required": ["role", "text"],
+            "type": "object"
+          },
+          "SamplingRequest": {
+            "description": "Only text sampling is accepted; no roots, tools, context inclusion or model\npreferences can enlarge the Run's authority.",
+            "properties": {
+              "max_tokens": {
+                "format": "uint32",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "messages": {
+                "items": {
+                  "$ref": "#/components/schemas/SamplingMessage"
+                },
+                "type": "array"
+              },
+              "system_prompt": {
+                "type": "string"
+              }
+            },
+            "required": ["messages", "system_prompt", "max_tokens"],
+            "type": "object"
+          },
+          "SamplingTarget": {
+            "additionalProperties": false,
+            "properties": {
+              "agent": {
+                "type": "string"
+              },
+              "digest": {
+                "type": "string"
+              },
+              "origin": {
+                "type": "string"
+              },
+              "plugin": {
+                "$ref": "#/components/schemas/PluginName"
+              },
+              "server": {
+                "$ref": "#/components/schemas/ServerName"
+              }
+            },
+            "required": ["agent", "plugin", "server", "digest", "origin"],
+            "type": "object"
+          },
+          "ServerName": {
+            "description": "Aidash's name for a server: 1-64 characters of `A-Za-z0-9_.-`.",
+            "type": "string"
           }
         },
         "schema": {
@@ -15874,6 +16037,37 @@
             "viewer_is_approver": {
               "type": "boolean",
               "description": "Whether the reader is the approver this card is addressed to."
+            },
+            "plugin_tool": {
+              "anyOf": [
+                {
+                  "$ref": "#/components/schemas/PluginToolCard"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "For a Tool call approval of a tool a Run pinned from an Agent Plugin, or a Run grant\nfrom one, the plugin, server and tool, and the plugin copy that declared them. `tool` and\n`version` then hold the tool's path and the copy's digest."
+            },
+            "sampling": {
+              "anyOf": [
+                {
+                  "$ref": "#/components/schemas/SamplingRequest"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "sampling_target": {
+              "anyOf": [
+                {
+                  "$ref": "#/components/schemas/SamplingTarget"
+                },
+                {
+                  "type": "null"
+                }
+              ]
             }
           }
         },
@@ -15892,6 +16086,90 @@
               "format": "uuid"
             }
           }
+        },
+        "PluginName": {
+          "description": "A plugin name: 1-64 characters of `a-z0-9.-`, starting and ending alphanumeric, with neither\n`--` nor `..`.",
+          "type": "string"
+        },
+        "PluginToolCard": {
+          "description": "The Agent Plugin tool a Tool call approval is asked for.",
+          "properties": {
+            "digest": {
+              "description": "The digest of the plugin copy the Agent version pins.",
+              "type": "string"
+            },
+            "plugin": {
+              "type": "string"
+            },
+            "server": {
+              "type": "string"
+            },
+            "tool": {
+              "description": "The server's own name for the tool.",
+              "type": "string"
+            }
+          },
+          "required": ["plugin", "server", "tool", "digest"],
+          "type": "object"
+        },
+        "SamplingMessage": {
+          "properties": {
+            "role": {
+              "type": "string"
+            },
+            "text": {
+              "type": "string"
+            }
+          },
+          "required": ["role", "text"],
+          "type": "object"
+        },
+        "SamplingRequest": {
+          "description": "Only text sampling is accepted; no roots, tools, context inclusion or model\npreferences can enlarge the Run's authority.",
+          "properties": {
+            "max_tokens": {
+              "format": "uint32",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "messages": {
+              "items": {
+                "$ref": "#/components/schemas/SamplingMessage"
+              },
+              "type": "array"
+            },
+            "system_prompt": {
+              "type": "string"
+            }
+          },
+          "required": ["messages", "system_prompt", "max_tokens"],
+          "type": "object"
+        },
+        "SamplingTarget": {
+          "additionalProperties": false,
+          "properties": {
+            "agent": {
+              "type": "string"
+            },
+            "digest": {
+              "type": "string"
+            },
+            "origin": {
+              "type": "string"
+            },
+            "plugin": {
+              "$ref": "#/components/schemas/PluginName"
+            },
+            "server": {
+              "$ref": "#/components/schemas/ServerName"
+            }
+          },
+          "required": ["agent", "plugin", "server", "digest", "origin"],
+          "type": "object"
+        },
+        "ServerName": {
+          "description": "Aidash's name for a server: 1-64 characters of `A-Za-z0-9_.-`.",
+          "type": "string"
         }
       }
     }
@@ -22913,9 +23191,25 @@
                 "maximum": 255,
                 "minimum": 0,
                 "type": "integer"
+              },
+              "compaction_override": {
+                "anyOf": [
+                  {
+                    "$ref": "#/components/schemas/QualifiedRef"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "description": "Exact explicit compaction replacement, resolved by trusted registration."
               }
             },
-            "required": ["schema_version", "registry_deployment", "bindings"],
+            "required": [
+              "schema_version",
+              "registry_deployment",
+              "compaction_override",
+              "bindings"
+            ],
             "type": "object"
           },
           "Binding3": {
@@ -24302,9 +24596,25 @@
                 "maximum": 255,
                 "minimum": 0,
                 "type": "integer"
+              },
+              "compaction_override": {
+                "anyOf": [
+                  {
+                    "$ref": "#/components/schemas/QualifiedRef"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "description": "Exact explicit compaction replacement, resolved by trusted registration."
               }
             },
-            "required": ["schema_version", "registry_deployment", "bindings"],
+            "required": [
+              "schema_version",
+              "registry_deployment",
+              "compaction_override",
+              "bindings"
+            ],
             "type": "object"
           },
           "Binding3": {
@@ -25697,9 +26007,25 @@
                 "maximum": 255,
                 "minimum": 0,
                 "type": "integer"
+              },
+              "compaction_override": {
+                "anyOf": [
+                  {
+                    "$ref": "#/components/schemas/QualifiedRef"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "description": "Exact explicit compaction replacement, resolved by trusted registration."
               }
             },
-            "required": ["schema_version", "registry_deployment", "bindings"],
+            "required": [
+              "schema_version",
+              "registry_deployment",
+              "compaction_override",
+              "bindings"
+            ],
             "type": "object"
           },
           "Binding3": {
@@ -26766,9 +27092,25 @@
                 "maximum": 255,
                 "minimum": 0,
                 "type": "integer"
+              },
+              "compaction_override": {
+                "anyOf": [
+                  {
+                    "$ref": "#/components/schemas/QualifiedRef"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "description": "Exact explicit compaction replacement, resolved by trusted registration."
               }
             },
-            "required": ["schema_version", "registry_deployment", "bindings"],
+            "required": [
+              "schema_version",
+              "registry_deployment",
+              "compaction_override",
+              "bindings"
+            ],
             "type": "object"
           },
           "Binding3": {
@@ -27725,9 +28067,25 @@
                 "maximum": 255,
                 "minimum": 0,
                 "type": "integer"
+              },
+              "compaction_override": {
+                "anyOf": [
+                  {
+                    "$ref": "#/components/schemas/QualifiedRef"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "description": "Exact explicit compaction replacement, resolved by trusted registration."
               }
             },
-            "required": ["schema_version", "registry_deployment", "bindings"],
+            "required": [
+              "schema_version",
+              "registry_deployment",
+              "compaction_override",
+              "bindings"
+            ],
             "type": "object"
           },
           "Binding3": {
@@ -28906,9 +29264,25 @@
                 "maximum": 255,
                 "minimum": 0,
                 "type": "integer"
+              },
+              "compaction_override": {
+                "anyOf": [
+                  {
+                    "$ref": "#/components/schemas/QualifiedRef"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "description": "Exact explicit compaction replacement, resolved by trusted registration."
               }
             },
-            "required": ["schema_version", "registry_deployment", "bindings"],
+            "required": [
+              "schema_version",
+              "registry_deployment",
+              "compaction_override",
+              "bindings"
+            ],
             "type": "object"
           },
           "Binding3": {
@@ -30577,9 +30951,25 @@
                 "maximum": 255,
                 "minimum": 0,
                 "type": "integer"
+              },
+              "compaction_override": {
+                "anyOf": [
+                  {
+                    "$ref": "#/components/schemas/QualifiedRef"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "description": "Exact explicit compaction replacement, resolved by trusted registration."
               }
             },
-            "required": ["schema_version", "registry_deployment", "bindings"],
+            "required": [
+              "schema_version",
+              "registry_deployment",
+              "compaction_override",
+              "bindings"
+            ],
             "type": "object"
           },
           "Binding3": {
@@ -31580,9 +31970,25 @@
                 "maximum": 255,
                 "minimum": 0,
                 "type": "integer"
+              },
+              "compaction_override": {
+                "anyOf": [
+                  {
+                    "$ref": "#/components/schemas/QualifiedRef"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "description": "Exact explicit compaction replacement, resolved by trusted registration."
               }
             },
-            "required": ["schema_version", "registry_deployment", "bindings"],
+            "required": [
+              "schema_version",
+              "registry_deployment",
+              "compaction_override",
+              "bindings"
+            ],
             "type": "object"
           },
           "Binding3": {
@@ -32632,9 +33038,25 @@
                 "maximum": 255,
                 "minimum": 0,
                 "type": "integer"
+              },
+              "compaction_override": {
+                "anyOf": [
+                  {
+                    "$ref": "#/components/schemas/QualifiedRef"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "description": "Exact explicit compaction replacement, resolved by trusted registration."
               }
             },
-            "required": ["schema_version", "registry_deployment", "bindings"],
+            "required": [
+              "schema_version",
+              "registry_deployment",
+              "compaction_override",
+              "bindings"
+            ],
             "type": "object"
           },
           "Binding3": {
@@ -33355,9 +33777,25 @@
                 "maximum": 255,
                 "minimum": 0,
                 "type": "integer"
+              },
+              "compaction_override": {
+                "anyOf": [
+                  {
+                    "$ref": "#/components/schemas/QualifiedRef"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "description": "Exact explicit compaction replacement, resolved by trusted registration."
               }
             },
-            "required": ["schema_version", "registry_deployment", "bindings"],
+            "required": [
+              "schema_version",
+              "registry_deployment",
+              "compaction_override",
+              "bindings"
+            ],
             "type": "object"
           },
           "Binding3": {
@@ -34485,9 +34923,25 @@
                 "maximum": 255,
                 "minimum": 0,
                 "type": "integer"
+              },
+              "compaction_override": {
+                "anyOf": [
+                  {
+                    "$ref": "#/components/schemas/QualifiedRef"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "description": "Exact explicit compaction replacement, resolved by trusted registration."
               }
             },
-            "required": ["schema_version", "registry_deployment", "bindings"],
+            "required": [
+              "schema_version",
+              "registry_deployment",
+              "compaction_override",
+              "bindings"
+            ],
             "type": "object"
           },
           "Binding3": {
@@ -35444,9 +35898,25 @@
                 "maximum": 255,
                 "minimum": 0,
                 "type": "integer"
+              },
+              "compaction_override": {
+                "anyOf": [
+                  {
+                    "$ref": "#/components/schemas/QualifiedRef"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "description": "Exact explicit compaction replacement, resolved by trusted registration."
               }
             },
-            "required": ["schema_version", "registry_deployment", "bindings"],
+            "required": [
+              "schema_version",
+              "registry_deployment",
+              "compaction_override",
+              "bindings"
+            ],
             "type": "object"
           },
           "Binding3": {
@@ -36397,9 +36867,25 @@
                 "maximum": 255,
                 "minimum": 0,
                 "type": "integer"
+              },
+              "compaction_override": {
+                "anyOf": [
+                  {
+                    "$ref": "#/components/schemas/QualifiedRef"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "description": "Exact explicit compaction replacement, resolved by trusted registration."
               }
             },
-            "required": ["schema_version", "registry_deployment", "bindings"],
+            "required": [
+              "schema_version",
+              "registry_deployment",
+              "compaction_override",
+              "bindings"
+            ],
             "type": "object"
           },
           "Binding3": {
@@ -37443,9 +37929,25 @@
                 "maximum": 255,
                 "minimum": 0,
                 "type": "integer"
+              },
+              "compaction_override": {
+                "anyOf": [
+                  {
+                    "$ref": "#/components/schemas/QualifiedRef"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "description": "Exact explicit compaction replacement, resolved by trusted registration."
               }
             },
-            "required": ["schema_version", "registry_deployment", "bindings"],
+            "required": [
+              "schema_version",
+              "registry_deployment",
+              "compaction_override",
+              "bindings"
+            ],
             "type": "object"
           },
           "Binding3": {
@@ -38451,9 +38953,25 @@
                 "maximum": 255,
                 "minimum": 0,
                 "type": "integer"
+              },
+              "compaction_override": {
+                "anyOf": [
+                  {
+                    "$ref": "#/components/schemas/QualifiedRef"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "description": "Exact explicit compaction replacement, resolved by trusted registration."
               }
             },
-            "required": ["schema_version", "registry_deployment", "bindings"],
+            "required": [
+              "schema_version",
+              "registry_deployment",
+              "compaction_override",
+              "bindings"
+            ],
             "type": "object"
           },
           "Binding3": {
@@ -39176,9 +39694,25 @@
                 "maximum": 255,
                 "minimum": 0,
                 "type": "integer"
+              },
+              "compaction_override": {
+                "anyOf": [
+                  {
+                    "$ref": "#/components/schemas/QualifiedRef"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "description": "Exact explicit compaction replacement, resolved by trusted registration."
               }
             },
-            "required": ["schema_version", "registry_deployment", "bindings"],
+            "required": [
+              "schema_version",
+              "registry_deployment",
+              "compaction_override",
+              "bindings"
+            ],
             "type": "object"
           },
           "Binding3": {
@@ -39899,9 +40433,25 @@
                 "maximum": 255,
                 "minimum": 0,
                 "type": "integer"
+              },
+              "compaction_override": {
+                "anyOf": [
+                  {
+                    "$ref": "#/components/schemas/QualifiedRef"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "description": "Exact explicit compaction replacement, resolved by trusted registration."
               }
             },
-            "required": ["schema_version", "registry_deployment", "bindings"],
+            "required": [
+              "schema_version",
+              "registry_deployment",
+              "compaction_override",
+              "bindings"
+            ],
             "type": "object"
           },
           "Binding3": {
@@ -40616,9 +41166,25 @@
                 "maximum": 255,
                 "minimum": 0,
                 "type": "integer"
+              },
+              "compaction_override": {
+                "anyOf": [
+                  {
+                    "$ref": "#/components/schemas/QualifiedRef"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "description": "Exact explicit compaction replacement, resolved by trusted registration."
               }
             },
-            "required": ["schema_version", "registry_deployment", "bindings"],
+            "required": [
+              "schema_version",
+              "registry_deployment",
+              "compaction_override",
+              "bindings"
+            ],
             "type": "object"
           },
           "AgentSubject": {
@@ -41569,9 +42135,25 @@
                 "maximum": 255,
                 "minimum": 0,
                 "type": "integer"
+              },
+              "compaction_override": {
+                "anyOf": [
+                  {
+                    "$ref": "#/components/schemas/QualifiedRef"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "description": "Exact explicit compaction replacement, resolved by trusted registration."
               }
             },
-            "required": ["schema_version", "registry_deployment", "bindings"],
+            "required": [
+              "schema_version",
+              "registry_deployment",
+              "compaction_override",
+              "bindings"
+            ],
             "type": "object"
           },
           "Binding3": {
@@ -49205,9 +49787,25 @@
                 "maximum": 255,
                 "minimum": 0,
                 "type": "integer"
+              },
+              "compaction_override": {
+                "anyOf": [
+                  {
+                    "$ref": "#/components/schemas/QualifiedRef"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "description": "Exact explicit compaction replacement, resolved by trusted registration."
               }
             },
-            "required": ["schema_version", "registry_deployment", "bindings"],
+            "required": [
+              "schema_version",
+              "registry_deployment",
+              "compaction_override",
+              "bindings"
+            ],
             "type": "object"
           },
           "Binding3": {
@@ -50028,9 +50626,25 @@
                 "maximum": 255,
                 "minimum": 0,
                 "type": "integer"
+              },
+              "compaction_override": {
+                "anyOf": [
+                  {
+                    "$ref": "#/components/schemas/QualifiedRef"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "description": "Exact explicit compaction replacement, resolved by trusted registration."
               }
             },
-            "required": ["schema_version", "registry_deployment", "bindings"],
+            "required": [
+              "schema_version",
+              "registry_deployment",
+              "compaction_override",
+              "bindings"
+            ],
             "type": "object"
           },
           "Binding3": {
@@ -53102,9 +53716,25 @@
                 "maximum": 255,
                 "minimum": 0,
                 "type": "integer"
+              },
+              "compaction_override": {
+                "anyOf": [
+                  {
+                    "$ref": "#/components/schemas/QualifiedRef"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "description": "Exact explicit compaction replacement, resolved by trusted registration."
               }
             },
-            "required": ["schema_version", "registry_deployment", "bindings"],
+            "required": [
+              "schema_version",
+              "registry_deployment",
+              "compaction_override",
+              "bindings"
+            ],
             "type": "object"
           },
           "Binding3": {
@@ -54342,9 +54972,25 @@
                 "maximum": 255,
                 "minimum": 0,
                 "type": "integer"
+              },
+              "compaction_override": {
+                "anyOf": [
+                  {
+                    "$ref": "#/components/schemas/QualifiedRef"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "description": "Exact explicit compaction replacement, resolved by trusted registration."
               }
             },
-            "required": ["schema_version", "registry_deployment", "bindings"],
+            "required": [
+              "schema_version",
+              "registry_deployment",
+              "compaction_override",
+              "bindings"
+            ],
             "type": "object"
           },
           "ApprovalRef": {
@@ -55009,6 +55655,10 @@
           "ContextRecoveryFailure": {
             "description": "Why a Run paused instead of sending or acting on a provider request.\nEach reason is final for its step; none of them is retried as transport.",
             "enum": [
+              "source_selection_unavailable",
+              "source_selection_forbidden",
+              "source_selection_unapproved",
+              "source_selection_calls_exhausted",
               "context_unreducible",
               "decider_unapproved",
               "decider_calls_exhausted",
@@ -55648,7 +56298,6 @@
             "type": "object"
           },
           "HistoryEntry": {
-            "additionalProperties": false,
             "description": "One Context Projection event with its durable Context Journal sequence.\nThe journal keeps the original event; the projection may later truncate it.",
             "properties": {
               "event": {
@@ -55727,7 +56376,7 @@
             "type": "object"
           },
           "InspectionContext": {
-            "description": "Public inspection omits the durable, authority-bound Source cache.",
+            "description": "Public inspection omits source content, detail routes, selection manifests\nand delivery receipts; these execution records require source authority.",
             "properties": {
               "binding_snapshot": {
                 "anyOf": [
@@ -57523,6 +58172,17 @@
                     "type": "null"
                   }
                 ]
+              },
+              "mcp": {
+                "anyOf": [
+                  {
+                    "$ref": "#/components/schemas/CallCheckpoint"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "description": "Progress of the logical MCP call at this cursor, never a tool result."
               }
             },
             "required": [
@@ -57800,6 +58460,130 @@
               "revision",
               "created_at"
             ],
+            "type": "object"
+          },
+          "ActiveInput": {
+            "additionalProperties": false,
+            "properties": {
+              "deadline": {
+                "format": "date-time",
+                "type": "string"
+              },
+              "id": {
+                "type": "string"
+              },
+              "started_at": {
+                "format": "date-time",
+                "type": "string"
+              }
+            },
+            "required": ["id", "started_at", "deadline"],
+            "type": "object"
+          },
+          "CallCheckpoint": {
+            "additionalProperties": false,
+            "description": "Pinned to the logical call at the ToolCallState cursor. A completed wire\nrequest is journaled before this checkpoint advances, so a lost worker never\nresends an uncertain continuation.",
+            "properties": {
+              "active": {
+                "anyOf": [
+                  {
+                    "$ref": "#/components/schemas/ActiveInput"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "continuation_sends": {
+                "format": "uint32",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "input": {
+                "anyOf": [
+                  {
+                    "$ref": "#/components/schemas/RequiredInput"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "key": {
+                "type": "string"
+              },
+              "responses": {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              "sent": {
+                "anyOf": [
+                  {
+                    "$ref": "#/components/schemas/SentRound"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "description": "Exact journal identity of the admitted send. Live callbacks own `input`\nand `responses` while waiting, but must never replace this identity."
+              },
+              "waited_millis": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "wire_pending": {
+                "type": "boolean"
+              }
+            },
+            "required": [
+              "key",
+              "continuation_sends",
+              "wire_pending",
+              "input",
+              "responses",
+              "active",
+              "waited_millis"
+            ],
+            "type": "object"
+          },
+          "InputRequest": {
+            "additionalProperties": false,
+            "properties": {
+              "method": {
+                "type": "string"
+              },
+              "params": {}
+            },
+            "required": ["method", "params"],
+            "type": "object"
+          },
+          "RequiredInput": {
+            "additionalProperties": false,
+            "properties": {
+              "request_state": {
+                "description": "Opaque server data, echoed verbatim; it is never interpreted as authority.",
+                "type": ["string", "null"]
+              },
+              "requests": {
+                "additionalProperties": {
+                  "$ref": "#/components/schemas/InputRequest"
+                },
+                "type": "object"
+              }
+            },
+            "required": ["request_state", "requests"],
+            "type": "object"
+          },
+          "SentRound": {
+            "additionalProperties": false,
+            "properties": {
+              "input": {},
+              "key": {
+                "type": "string"
+              }
+            },
+            "required": ["key", "input"],
             "type": "object"
           }
         },
@@ -61074,6 +61858,17 @@
                   "type": "null"
                 }
               ]
+            },
+            "mcp": {
+              "anyOf": [
+                {
+                  "$ref": "#/components/schemas/CallCheckpoint"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Progress of the logical MCP call at this cursor, never a tool result."
             }
           },
           "additionalProperties": false
@@ -61324,6 +62119,130 @@
               "type": "string"
             }
           }
+        },
+        "ActiveInput": {
+          "additionalProperties": false,
+          "properties": {
+            "deadline": {
+              "format": "date-time",
+              "type": "string"
+            },
+            "id": {
+              "type": "string"
+            },
+            "started_at": {
+              "format": "date-time",
+              "type": "string"
+            }
+          },
+          "required": ["id", "started_at", "deadline"],
+          "type": "object"
+        },
+        "CallCheckpoint": {
+          "additionalProperties": false,
+          "description": "Pinned to the logical call at the ToolCallState cursor. A completed wire\nrequest is journaled before this checkpoint advances, so a lost worker never\nresends an uncertain continuation.",
+          "properties": {
+            "active": {
+              "anyOf": [
+                {
+                  "$ref": "#/components/schemas/ActiveInput"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "continuation_sends": {
+              "format": "uint32",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "input": {
+              "anyOf": [
+                {
+                  "$ref": "#/components/schemas/RequiredInput"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "key": {
+              "type": "string"
+            },
+            "responses": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "sent": {
+              "anyOf": [
+                {
+                  "$ref": "#/components/schemas/SentRound"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Exact journal identity of the admitted send. Live callbacks own `input`\nand `responses` while waiting, but must never replace this identity."
+            },
+            "waited_millis": {
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "wire_pending": {
+              "type": "boolean"
+            }
+          },
+          "required": [
+            "key",
+            "continuation_sends",
+            "wire_pending",
+            "input",
+            "responses",
+            "active",
+            "waited_millis"
+          ],
+          "type": "object"
+        },
+        "InputRequest": {
+          "additionalProperties": false,
+          "properties": {
+            "method": {
+              "type": "string"
+            },
+            "params": {}
+          },
+          "required": ["method", "params"],
+          "type": "object"
+        },
+        "RequiredInput": {
+          "additionalProperties": false,
+          "properties": {
+            "request_state": {
+              "description": "Opaque server data, echoed verbatim; it is never interpreted as authority.",
+              "type": ["string", "null"]
+            },
+            "requests": {
+              "additionalProperties": {
+                "$ref": "#/components/schemas/InputRequest"
+              },
+              "type": "object"
+            }
+          },
+          "required": ["request_state", "requests"],
+          "type": "object"
+        },
+        "SentRound": {
+          "additionalProperties": false,
+          "properties": {
+            "input": {},
+            "key": {
+              "type": "string"
+            }
+          },
+          "required": ["key", "input"],
+          "type": "object"
         }
       }
     }
@@ -61835,9 +62754,25 @@
                 "maximum": 255,
                 "minimum": 0,
                 "type": "integer"
+              },
+              "compaction_override": {
+                "anyOf": [
+                  {
+                    "$ref": "#/components/schemas/QualifiedRef"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "description": "Exact explicit compaction replacement, resolved by trusted registration."
               }
             },
-            "required": ["schema_version", "registry_deployment", "bindings"],
+            "required": [
+              "schema_version",
+              "registry_deployment",
+              "compaction_override",
+              "bindings"
+            ],
             "type": "object"
           },
           "ApprovalRef": {
@@ -62495,6 +63430,10 @@
           "ContextRecoveryFailure": {
             "description": "Why a Run paused instead of sending or acting on a provider request.\nEach reason is final for its step; none of them is retried as transport.",
             "enum": [
+              "source_selection_unavailable",
+              "source_selection_forbidden",
+              "source_selection_unapproved",
+              "source_selection_calls_exhausted",
               "context_unreducible",
               "decider_unapproved",
               "decider_calls_exhausted",
@@ -62952,7 +63891,6 @@
             "type": "object"
           },
           "HistoryEntry": {
-            "additionalProperties": false,
             "description": "One Context Projection event with its durable Context Journal sequence.\nThe journal keeps the original event; the projection may later truncate it.",
             "properties": {
               "event": {
@@ -62985,7 +63923,7 @@
             "type": "object"
           },
           "InspectionContext": {
-            "description": "Public inspection omits the durable, authority-bound Source cache.",
+            "description": "Public inspection omits source content, detail routes, selection manifests\nand delivery receipts; these execution records require source authority.",
             "properties": {
               "binding_snapshot": {
                 "anyOf": [
@@ -64786,6 +65724,17 @@
                     "type": "null"
                   }
                 ]
+              },
+              "mcp": {
+                "anyOf": [
+                  {
+                    "$ref": "#/components/schemas/CallCheckpoint"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "description": "Progress of the logical MCP call at this cursor, never a tool result."
               }
             },
             "required": [
@@ -65027,6 +65976,130 @@
                 "type": "object"
               }
             ]
+          },
+          "ActiveInput": {
+            "additionalProperties": false,
+            "properties": {
+              "deadline": {
+                "format": "date-time",
+                "type": "string"
+              },
+              "id": {
+                "type": "string"
+              },
+              "started_at": {
+                "format": "date-time",
+                "type": "string"
+              }
+            },
+            "required": ["id", "started_at", "deadline"],
+            "type": "object"
+          },
+          "CallCheckpoint": {
+            "additionalProperties": false,
+            "description": "Pinned to the logical call at the ToolCallState cursor. A completed wire\nrequest is journaled before this checkpoint advances, so a lost worker never\nresends an uncertain continuation.",
+            "properties": {
+              "active": {
+                "anyOf": [
+                  {
+                    "$ref": "#/components/schemas/ActiveInput"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "continuation_sends": {
+                "format": "uint32",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "input": {
+                "anyOf": [
+                  {
+                    "$ref": "#/components/schemas/RequiredInput"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "key": {
+                "type": "string"
+              },
+              "responses": {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              "sent": {
+                "anyOf": [
+                  {
+                    "$ref": "#/components/schemas/SentRound"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "description": "Exact journal identity of the admitted send. Live callbacks own `input`\nand `responses` while waiting, but must never replace this identity."
+              },
+              "waited_millis": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "wire_pending": {
+                "type": "boolean"
+              }
+            },
+            "required": [
+              "key",
+              "continuation_sends",
+              "wire_pending",
+              "input",
+              "responses",
+              "active",
+              "waited_millis"
+            ],
+            "type": "object"
+          },
+          "InputRequest": {
+            "additionalProperties": false,
+            "properties": {
+              "method": {
+                "type": "string"
+              },
+              "params": {}
+            },
+            "required": ["method", "params"],
+            "type": "object"
+          },
+          "RequiredInput": {
+            "additionalProperties": false,
+            "properties": {
+              "request_state": {
+                "description": "Opaque server data, echoed verbatim; it is never interpreted as authority.",
+                "type": ["string", "null"]
+              },
+              "requests": {
+                "additionalProperties": {
+                  "$ref": "#/components/schemas/InputRequest"
+                },
+                "type": "object"
+              }
+            },
+            "required": ["request_state", "requests"],
+            "type": "object"
+          },
+          "SentRound": {
+            "additionalProperties": false,
+            "properties": {
+              "input": {},
+              "key": {
+                "type": "string"
+              }
+            },
+            "required": ["key", "input"],
+            "type": "object"
           }
         },
         "schema": {
@@ -68040,6 +69113,17 @@
                   "type": "null"
                 }
               ]
+            },
+            "mcp": {
+              "anyOf": [
+                {
+                  "$ref": "#/components/schemas/CallCheckpoint"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Progress of the logical MCP call at this cursor, never a tool result."
             }
           },
           "additionalProperties": false
@@ -68253,6 +69337,130 @@
               "additionalProperties": false
             }
           ]
+        },
+        "ActiveInput": {
+          "additionalProperties": false,
+          "properties": {
+            "deadline": {
+              "format": "date-time",
+              "type": "string"
+            },
+            "id": {
+              "type": "string"
+            },
+            "started_at": {
+              "format": "date-time",
+              "type": "string"
+            }
+          },
+          "required": ["id", "started_at", "deadline"],
+          "type": "object"
+        },
+        "CallCheckpoint": {
+          "additionalProperties": false,
+          "description": "Pinned to the logical call at the ToolCallState cursor. A completed wire\nrequest is journaled before this checkpoint advances, so a lost worker never\nresends an uncertain continuation.",
+          "properties": {
+            "active": {
+              "anyOf": [
+                {
+                  "$ref": "#/components/schemas/ActiveInput"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "continuation_sends": {
+              "format": "uint32",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "input": {
+              "anyOf": [
+                {
+                  "$ref": "#/components/schemas/RequiredInput"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "key": {
+              "type": "string"
+            },
+            "responses": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "sent": {
+              "anyOf": [
+                {
+                  "$ref": "#/components/schemas/SentRound"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Exact journal identity of the admitted send. Live callbacks own `input`\nand `responses` while waiting, but must never replace this identity."
+            },
+            "waited_millis": {
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "wire_pending": {
+              "type": "boolean"
+            }
+          },
+          "required": [
+            "key",
+            "continuation_sends",
+            "wire_pending",
+            "input",
+            "responses",
+            "active",
+            "waited_millis"
+          ],
+          "type": "object"
+        },
+        "InputRequest": {
+          "additionalProperties": false,
+          "properties": {
+            "method": {
+              "type": "string"
+            },
+            "params": {}
+          },
+          "required": ["method", "params"],
+          "type": "object"
+        },
+        "RequiredInput": {
+          "additionalProperties": false,
+          "properties": {
+            "request_state": {
+              "description": "Opaque server data, echoed verbatim; it is never interpreted as authority.",
+              "type": ["string", "null"]
+            },
+            "requests": {
+              "additionalProperties": {
+                "$ref": "#/components/schemas/InputRequest"
+              },
+              "type": "object"
+            }
+          },
+          "required": ["request_state", "requests"],
+          "type": "object"
+        },
+        "SentRound": {
+          "additionalProperties": false,
+          "properties": {
+            "input": {},
+            "key": {
+              "type": "string"
+            }
+          },
+          "required": ["key", "input"],
+          "type": "object"
         }
       }
     }
@@ -68284,9 +69492,25 @@
                 "maximum": 255,
                 "minimum": 0,
                 "type": "integer"
+              },
+              "compaction_override": {
+                "anyOf": [
+                  {
+                    "$ref": "#/components/schemas/QualifiedRef"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "description": "Exact explicit compaction replacement, resolved by trusted registration."
               }
             },
-            "required": ["schema_version", "registry_deployment", "bindings"],
+            "required": [
+              "schema_version",
+              "registry_deployment",
+              "compaction_override",
+              "bindings"
+            ],
             "type": "object"
           },
           "ApprovalRef": {
@@ -69048,6 +70272,10 @@
           "ContextRecoveryFailure": {
             "description": "Why a Run paused instead of sending or acting on a provider request.\nEach reason is final for its step; none of them is retried as transport.",
             "enum": [
+              "source_selection_unavailable",
+              "source_selection_forbidden",
+              "source_selection_unapproved",
+              "source_selection_calls_exhausted",
               "context_unreducible",
               "decider_unapproved",
               "decider_calls_exhausted",
@@ -69644,7 +70872,6 @@
             "type": "object"
           },
           "HistoryEntry": {
-            "additionalProperties": false,
             "description": "One Context Projection event with its durable Context Journal sequence.\nThe journal keeps the original event; the projection may later truncate it.",
             "properties": {
               "event": {
@@ -71176,6 +72403,17 @@
                     "type": "null"
                   }
                 ]
+              },
+              "mcp": {
+                "anyOf": [
+                  {
+                    "$ref": "#/components/schemas/CallCheckpoint"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "description": "Progress of the logical MCP call at this cursor, never a tool result."
               }
             },
             "required": [
@@ -71417,6 +72655,130 @@
                 "type": "object"
               }
             ]
+          },
+          "ActiveInput": {
+            "additionalProperties": false,
+            "properties": {
+              "deadline": {
+                "format": "date-time",
+                "type": "string"
+              },
+              "id": {
+                "type": "string"
+              },
+              "started_at": {
+                "format": "date-time",
+                "type": "string"
+              }
+            },
+            "required": ["id", "started_at", "deadline"],
+            "type": "object"
+          },
+          "CallCheckpoint": {
+            "additionalProperties": false,
+            "description": "Pinned to the logical call at the ToolCallState cursor. A completed wire\nrequest is journaled before this checkpoint advances, so a lost worker never\nresends an uncertain continuation.",
+            "properties": {
+              "active": {
+                "anyOf": [
+                  {
+                    "$ref": "#/components/schemas/ActiveInput"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "continuation_sends": {
+                "format": "uint32",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "input": {
+                "anyOf": [
+                  {
+                    "$ref": "#/components/schemas/RequiredInput"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "key": {
+                "type": "string"
+              },
+              "responses": {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              "sent": {
+                "anyOf": [
+                  {
+                    "$ref": "#/components/schemas/SentRound"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "description": "Exact journal identity of the admitted send. Live callbacks own `input`\nand `responses` while waiting, but must never replace this identity."
+              },
+              "waited_millis": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "wire_pending": {
+                "type": "boolean"
+              }
+            },
+            "required": [
+              "key",
+              "continuation_sends",
+              "wire_pending",
+              "input",
+              "responses",
+              "active",
+              "waited_millis"
+            ],
+            "type": "object"
+          },
+          "InputRequest": {
+            "additionalProperties": false,
+            "properties": {
+              "method": {
+                "type": "string"
+              },
+              "params": {}
+            },
+            "required": ["method", "params"],
+            "type": "object"
+          },
+          "RequiredInput": {
+            "additionalProperties": false,
+            "properties": {
+              "request_state": {
+                "description": "Opaque server data, echoed verbatim; it is never interpreted as authority.",
+                "type": ["string", "null"]
+              },
+              "requests": {
+                "additionalProperties": {
+                  "$ref": "#/components/schemas/InputRequest"
+                },
+                "type": "object"
+              }
+            },
+            "required": ["request_state", "requests"],
+            "type": "object"
+          },
+          "SentRound": {
+            "additionalProperties": false,
+            "properties": {
+              "input": {},
+              "key": {
+                "type": "string"
+              }
+            },
+            "required": ["key", "input"],
+            "type": "object"
           }
         },
         "schema": {
@@ -74230,6 +75592,17 @@
                   "type": "null"
                 }
               ]
+            },
+            "mcp": {
+              "anyOf": [
+                {
+                  "$ref": "#/components/schemas/CallCheckpoint"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Progress of the logical MCP call at this cursor, never a tool result."
             }
           },
           "additionalProperties": false
@@ -74443,6 +75816,130 @@
               "additionalProperties": false
             }
           ]
+        },
+        "ActiveInput": {
+          "additionalProperties": false,
+          "properties": {
+            "deadline": {
+              "format": "date-time",
+              "type": "string"
+            },
+            "id": {
+              "type": "string"
+            },
+            "started_at": {
+              "format": "date-time",
+              "type": "string"
+            }
+          },
+          "required": ["id", "started_at", "deadline"],
+          "type": "object"
+        },
+        "CallCheckpoint": {
+          "additionalProperties": false,
+          "description": "Pinned to the logical call at the ToolCallState cursor. A completed wire\nrequest is journaled before this checkpoint advances, so a lost worker never\nresends an uncertain continuation.",
+          "properties": {
+            "active": {
+              "anyOf": [
+                {
+                  "$ref": "#/components/schemas/ActiveInput"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "continuation_sends": {
+              "format": "uint32",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "input": {
+              "anyOf": [
+                {
+                  "$ref": "#/components/schemas/RequiredInput"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "key": {
+              "type": "string"
+            },
+            "responses": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "sent": {
+              "anyOf": [
+                {
+                  "$ref": "#/components/schemas/SentRound"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Exact journal identity of the admitted send. Live callbacks own `input`\nand `responses` while waiting, but must never replace this identity."
+            },
+            "waited_millis": {
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "wire_pending": {
+              "type": "boolean"
+            }
+          },
+          "required": [
+            "key",
+            "continuation_sends",
+            "wire_pending",
+            "input",
+            "responses",
+            "active",
+            "waited_millis"
+          ],
+          "type": "object"
+        },
+        "InputRequest": {
+          "additionalProperties": false,
+          "properties": {
+            "method": {
+              "type": "string"
+            },
+            "params": {}
+          },
+          "required": ["method", "params"],
+          "type": "object"
+        },
+        "RequiredInput": {
+          "additionalProperties": false,
+          "properties": {
+            "request_state": {
+              "description": "Opaque server data, echoed verbatim; it is never interpreted as authority.",
+              "type": ["string", "null"]
+            },
+            "requests": {
+              "additionalProperties": {
+                "$ref": "#/components/schemas/InputRequest"
+              },
+              "type": "object"
+            }
+          },
+          "required": ["request_state", "requests"],
+          "type": "object"
+        },
+        "SentRound": {
+          "additionalProperties": false,
+          "properties": {
+            "input": {},
+            "key": {
+              "type": "string"
+            }
+          },
+          "required": ["key", "input"],
+          "type": "object"
         }
       }
     }
@@ -86492,6 +87989,11 @@
                 "type": "string"
               },
               {
+                "description": "An Agent Plugin server's sampling request. Individual allow rules pin\nAgent, copy and origin; individual deny rules follow its logical name.",
+                "enum": ["sampling"],
+                "type": "string"
+              },
+              {
                 "description": "An outbound read. The target is its origin.",
                 "enum": ["outbound"],
                 "type": "string"
@@ -86605,6 +88107,11 @@
             },
             {
               "type": "string",
+              "description": "An Agent Plugin server's sampling request. Individual allow rules pin\nAgent, copy and origin; individual deny rules follow its logical name.",
+              "enum": ["sampling"]
+            },
+            {
+              "type": "string",
               "description": "An outbound read. The target is its origin.",
               "enum": ["outbound"]
             },
@@ -86619,9 +88126,9 @@
               "enum": ["page_reading"]
             },
             {
-              "type": "string",
               "description": "A generated Agent request. The target is the Generation policy id.",
-              "enum": ["generation"]
+              "enum": ["generation"],
+              "type": "string"
             }
           ],
           "description": "What an approval is for. The target strings below are what a rule names and\nwhat [`resolve`] compares them with."
@@ -86714,6 +88221,11 @@
               {
                 "description": "A call of a Tenant's HTTP or MCP tool. The target is\n`tool:{registry_id}#{operation}`. A rule names the tool and never a\nversion, unlike the target of a Run grant, which includes it.",
                 "enum": ["tool_call"],
+                "type": "string"
+              },
+              {
+                "description": "An Agent Plugin server's sampling request. Individual allow rules pin\nAgent, copy and origin; individual deny rules follow its logical name.",
+                "enum": ["sampling"],
                 "type": "string"
               },
               {
@@ -86818,6 +88330,11 @@
             },
             {
               "type": "string",
+              "description": "An Agent Plugin server's sampling request. Individual allow rules pin\nAgent, copy and origin; individual deny rules follow its logical name.",
+              "enum": ["sampling"]
+            },
+            {
+              "type": "string",
               "description": "An outbound read. The target is its origin.",
               "enum": ["outbound"]
             },
@@ -86832,9 +88349,9 @@
               "enum": ["page_reading"]
             },
             {
-              "type": "string",
               "description": "A generated Agent request. The target is the Generation policy id.",
-              "enum": ["generation"]
+              "enum": ["generation"],
+              "type": "string"
             }
           ],
           "description": "What an approval is for. The target strings below are what a rule names and\nwhat [`resolve`] compares them with."
@@ -86924,6 +88441,11 @@
               {
                 "description": "A call of a Tenant's HTTP or MCP tool. The target is\n`tool:{registry_id}#{operation}`. A rule names the tool and never a\nversion, unlike the target of a Run grant, which includes it.",
                 "enum": ["tool_call"],
+                "type": "string"
+              },
+              {
+                "description": "An Agent Plugin server's sampling request. Individual allow rules pin\nAgent, copy and origin; individual deny rules follow its logical name.",
+                "enum": ["sampling"],
                 "type": "string"
               },
               {
@@ -87091,6 +88613,11 @@
             },
             {
               "type": "string",
+              "description": "An Agent Plugin server's sampling request. Individual allow rules pin\nAgent, copy and origin; individual deny rules follow its logical name.",
+              "enum": ["sampling"]
+            },
+            {
+              "type": "string",
               "description": "An outbound read. The target is its origin.",
               "enum": ["outbound"]
             },
@@ -87105,9 +88632,9 @@
               "enum": ["page_reading"]
             },
             {
-              "type": "string",
               "description": "A generated Agent request. The target is the Generation policy id.",
-              "enum": ["generation"]
+              "enum": ["generation"],
+              "type": "string"
             }
           ],
           "description": "What an approval is for. The target strings below are what a rule names and\nwhat [`resolve`] compares them with."

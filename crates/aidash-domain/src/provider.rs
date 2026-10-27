@@ -94,6 +94,12 @@ pub struct ModelRequest {
 	pub estimate: estimate::EstimateSnapshot,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct SamplingContext {
+	pub sampling_messages: Vec<crate::agent_plugin::interaction::SamplingMessage>,
+}
+
 /// Model-visible context in the shape fixed by the Run's Projection Version.
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 #[serde(untagged)]
@@ -102,6 +108,8 @@ pub enum ModelContext {
 	Ordered(OrderedContext),
 	/// Native: attachments, model-native Model Turns and a volatile message.
 	Native(crate::projection::native::NativeContext),
+	/// Sampling has server messages only and never includes the Run context.
+	Sampling(SamplingContext),
 	/// Legacy: one JSON value sent as a single text message. It must stay
 	/// the last untagged variant, since any value decodes as Legacy.
 	Legacy(Value),
@@ -123,14 +131,14 @@ impl ModelContext {
 	pub fn legacy_mut(&mut self) -> Option<&mut Value> {
 		match self {
 			Self::Legacy(value) => Some(value),
-			Self::Ordered(_) | Self::Native(_) => None,
+			Self::Ordered(_) | Self::Native(_) | Self::Sampling(_) => None,
 		}
 	}
 
 	/// The Projection Version this context was rendered under.
 	pub fn projection_version(&self) -> crate::projection::ProjectionVersion {
 		match self {
-			Self::Legacy(_) => crate::projection::ProjectionVersion::Legacy,
+			Self::Legacy(_) | Self::Sampling(_) => crate::projection::ProjectionVersion::Legacy,
 			Self::Ordered(_) => crate::projection::ProjectionVersion::Ordered,
 			Self::Native(_) => crate::projection::ProjectionVersion::Native,
 		}
@@ -150,7 +158,7 @@ impl ModelContext {
 				ordered.stable.as_str().into(),
 				ordered.volatile.as_str().into(),
 			],
-			Self::Native(_) => vec![],
+			Self::Native(_) | Self::Sampling(_) => vec![],
 		}
 	}
 }
@@ -421,6 +429,14 @@ impl ModelRequest {
 		match &self.context {
 			ModelContext::Native(native) => {
 				messages.extend(native.chat_messages(parts, breakpoints));
+			}
+			ModelContext::Sampling(sample) => {
+				messages.extend(
+					sample
+						.sampling_messages
+						.iter()
+						.map(|message| json!({"role":message.role,"content":message.text})),
+				);
 			}
 			ModelContext::Legacy(_) | ModelContext::Ordered(_) => {
 				messages

@@ -209,7 +209,11 @@ fn matches_name(values: &BTreeSet<String>, name: &str) -> bool {
 /// person's approval, so a wildcard grant, such as a Tenant Administrator's,
 /// never removes approvals by itself (ADR 0075, ADR 0076). A wildcard deny
 /// still covers them.
-pub const EXPLICIT_ACTIONS: &[&str] = &["tool.call_unapproved", crate::approval_rules::MODE_BYPASS];
+pub const EXPLICIT_ACTIONS: &[&str] = &[
+	"tool.call_unapproved",
+	"sampling.request_unapproved",
+	crate::approval_rules::MODE_BYPASS,
+];
 
 fn matches_action(values: &BTreeSet<String>, action: &str, effect: &Effect) -> bool {
 	values.contains(action)

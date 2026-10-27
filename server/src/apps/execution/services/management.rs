@@ -552,6 +552,7 @@ impl HarnessManagement {
 		}
 		let r = f.store.control_in(&mut tx, id, input.action).await?;
 		tx.commit().await?;
+		f.store.run_control_committed(r.id, r.control);
 		f.notify.notify_waiters();
 		Ok(r)
 	}
