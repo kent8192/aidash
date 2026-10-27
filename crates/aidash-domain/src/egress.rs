@@ -197,7 +197,8 @@ pub struct RequestRecord {
 	pub id: uuid::Uuid,
 	pub tenant: String,
 	pub run_id: uuid::Uuid,
-	pub operation_id: uuid::Uuid,
+	/// `None` for a request made with a Live preview's session token.
+	pub operation_id: Option<uuid::Uuid>,
 	pub service: String,
 	pub method: String,
 	pub path: String,

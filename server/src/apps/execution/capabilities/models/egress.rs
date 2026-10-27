@@ -45,8 +45,9 @@ pub struct RequestRecord {
 	pub tenant: String,
 	#[field]
 	pub run_id: Uuid,
-	#[field]
-	pub operation_id: Uuid,
+	/// `None` for a request made with a Live preview's session token.
+	#[field(null = true)]
+	pub operation_id: Option<Uuid>,
 	/// Set only for a request made with a Live preview's session token.
 	#[field(null = true)]
 	pub session_id: Option<Uuid>,
