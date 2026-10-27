@@ -983,6 +983,7 @@ class ChartsTest(unittest.TestCase):
         self.assertEqual(env['AIDASH_PREVIEW_LISTEN'], '0.0.0.0:8960')
         self.assertEqual(env['AIDASH_PREVIEW_IN_PROCESS'], 'false')
         self.assertEqual(env['AIDASH_PREVIEW_PUBLIC_PORT'], '443')
+        self.assertEqual(env['AIDASH_PREVIEW_POD_PORT'], '3000')
         self.assertTrue(container['securityContext']['readOnlyRootFilesystem'])
         ingress = select(objects, 'Ingress', '-preview')
         self.assertEqual(ingress['spec']['rules'][0]['host'], '*.aidashusercontent.app')
@@ -996,6 +997,26 @@ class ChartsTest(unittest.TestCase):
         self.assertEqual(policy['spec']['ingress'][0]['from'][0]['podSelector']['matchLabels'],
                          {'app.kubernetes.io/instance': 'fixture',
                           'app.kubernetes.io/component': 'preview'})
+
+    def test_a_live_preview_profile_names_its_pod_port_and_absolute_limit(self):
+        execution = {'createNamespaces': True, 'sandboxImage': 'sandbox' + DIGEST,
+                     'sandboxNamespace': 'fixture-sandbox', 'trustedNamespace': 'fixture-trusted',
+                     'installerNamespace': 'fixture-installer',
+                     'runtimeClass': {'create': True, 'name': 'fixture-runsc'},
+                     'runner': {'enabled': True, 'existingSecret': 'app-runner', 'image': 'control' + DIGEST},
+                     'guard': {'enabled': True, 'image': 'control' + DIGEST}}
+        values = {**self.base,
+                  'preview': {'enabled': True, 'domain': 'aidashusercontent.app', 'inProcess': False,
+                              'podPort': 3000, 'limits': {'idle_seconds': 600, 'absolute_seconds': 3600}},
+                  'execution': execution}
+        objects = render(self.aidash, values)
+        profile = json.loads(self.mounted(objects, 'server', 'AIDASH_CAPABILITY_PROFILE'))
+        self.assertEqual(profile['preview_port'], 3000)
+        self.assertEqual(profile['preview_maximum_seconds'], 3600)
+        # The gateway and the Pod exchange the same admitted port.
+        env = {item['name']: item.get('value')
+               for item in select(objects, 'Deployment', '-preview')['spec']['template']['spec']['containers'][0]['env']}
+        self.assertEqual(env['AIDASH_PREVIEW_POD_PORT'], '3000')
 
     def test_in_process_preview_gateway_reaches_no_separate_workload(self):
         values = {**self.base, 'preview': {'enabled': True, 'domain': 'localhost', 'inProcess': True}}

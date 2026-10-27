@@ -165,6 +165,7 @@ spec:
             {{- if $.Values.preview.enabled }}
             - { name: AIDASH_PREVIEW_DOMAIN, value: {{ required "preview.domain is required when preview.enabled" $.Values.preview.domain | quote }} }
             - { name: AIDASH_PREVIEW_PUBLIC_PORT, value: {{ $.Values.preview.publicPort | int64 | toString | quote }} }
+            - { name: AIDASH_PREVIEW_POD_PORT, value: {{ $.Values.preview.podPort | int64 | toString | quote }} }
             - { name: AIDASH_PREVIEW_LISTEN, value: {{ printf "0.0.0.0:%d" (int $.Values.preview.port) | quote }} }
             - { name: AIDASH_PREVIEW_IN_PROCESS, value: {{ $.Values.preview.inProcess | quote }} }
             {{- end }}

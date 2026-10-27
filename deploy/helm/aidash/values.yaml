@@ -244,6 +244,11 @@ preview:
   # The port a Live preview Pod declares. W6 wires the Pod to it; the policy
   # below is the only ingress that port admits.
   podPort: 3000
+  # The Deployment's ceilings on a Live preview (ADR 0070). A Tenant may only
+  # lower them through `/api/preview-limits/{tenant}`.
+  limits:
+    idle_seconds: 900
+    absolute_seconds: 7200
   ingress:
     enabled: false
     className: ""

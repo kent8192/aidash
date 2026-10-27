@@ -93,6 +93,15 @@ federation = true
 # in_process = true
 # The public port a ticket URL names; 443 when absent.
 # public_port = 443
+# The only Pod port the Preview NetworkPolicy admits; 3000 when absent. A
+# `live_preview_start` on another port is refused.
+# pod_port = 3000
+
+# The Deployment's ceilings on a Live preview (ADR 0070). A Tenant may only
+# lower them through `/api/preview-limits/{tenant}`. Takes effect on restart.
+# [preview_limits]
+# idle_seconds = 900
+# absolute_seconds = 7200
 
 # Tenancy Rules: how Tenants come to exist and how people join them. The
 # Offering supplies each rule left out; these are the Self-hosted Offering's.
