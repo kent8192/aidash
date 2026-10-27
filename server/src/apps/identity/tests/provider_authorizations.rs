@@ -840,7 +840,11 @@ async fn only_browser_sessions_start_and_return_paths_stay_local(
 	)
 	.await;
 	assert!(response.status().is_client_error());
-	for return_to in ["https://attacker.example/", "//attacker.example/"] {
+	for return_to in [
+		"https://attacker.example/",
+		"//attacker.example/",
+		"/\t/attacker.example/",
+	] {
 		let response = send(
 			&fixture.app,
 			"POST",
