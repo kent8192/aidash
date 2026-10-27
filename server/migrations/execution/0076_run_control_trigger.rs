@@ -9,8 +9,8 @@
 use reinhardt::db::migrations::prelude::*;
 
 pub(super) fn migration() -> Migration {
-	Migration::new("0062_run_control_trigger", "execution")
-		.add_dependency("execution", "0061_run_control_provenance")
+	Migration::new("0076_run_control_trigger", "execution")
+		.add_dependency("execution", "0075_run_control_provenance")
 		.database_only(true)
 		.atomic(true)
 		.add_operation(Operation::AlterColumn {
@@ -32,7 +32,7 @@ pub(super) fn migration() -> Migration {
 			},
 		})
 		.add_operation(Operation::RunSQL {
-			sql: include_str!("sql/forward/0062_run_control_trigger.sql").to_owned(),
-			reverse_sql: Some(include_str!("sql/backward/0062_run_control_trigger.sql").to_owned()),
+			sql: include_str!("sql/forward/0076_run_control_trigger.sql").to_owned(),
+			reverse_sql: Some(include_str!("sql/backward/0076_run_control_trigger.sql").to_owned()),
 		})
 }

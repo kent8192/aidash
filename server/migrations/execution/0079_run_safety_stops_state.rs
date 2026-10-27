@@ -1,9 +1,9 @@
 // reinhardt-migration-source: 1
-// Logical model state; 0063 owns the physical integrity constraints and indexes.
+// Logical model state; 0077 owns the physical integrity constraints and indexes.
 use reinhardt::db::migrations::prelude::*;
 pub(super) fn migration() -> Migration {
-	Migration::new("0065_run_safety_stops_state", "execution")
-		.add_dependency("execution", "0064_run_safety_stops_row_level_security")
+	Migration::new("0079_run_safety_stops_state", "execution")
+		.add_dependency("execution", "0078_run_safety_stops_row_level_security")
 		.state_only(true)
 		.atomic(true)
 		.add_operation(Operation::CreateTable {

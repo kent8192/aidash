@@ -389,6 +389,20 @@ pub struct Shell {
 
 #[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema, reinhardt::Validate)]
 #[serde(deny_unknown_fields)]
+pub struct LivePreviewStart {
+	/// The command whose Web server listens on `port`.
+	#[validate(length(min = 1, max = 64000))]
+	pub command: String,
+	/// The port the Pod declares; only the Deployment's preview Pod port is admitted.
+	pub port: u16,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema, reinhardt::Validate)]
+#[serde(deny_unknown_fields)]
+pub struct LivePreviewStop {}
+
+#[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema, reinhardt::Validate)]
+#[serde(deny_unknown_fields)]
 pub struct Patch {
 	pub idempotency_key: Uuid,
 	#[validate(range(min = 0))]

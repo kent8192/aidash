@@ -46630,5 +46630,449 @@
         }
       }
     }
+  },
+  {
+    "method": "GET",
+    "path": "/api/previews/availability",
+    "name": "core_preview_availability",
+    "source": "server/src/apps/execution/capabilities/views/previews.rs",
+    "json": false,
+    "uuid_parameters": [],
+    "query_parameters": [],
+    "response": {
+      "schema": {
+        "$ref": "#/components/schemas/PreviewAvailability"
+      },
+      "definitions": {
+        "PreviewAvailability": {
+          "type": "object",
+          "required": ["available", "preview_domain"],
+          "properties": {
+            "available": {
+              "type": "boolean"
+            },
+            "preview_domain": {
+              "type": ["string", "null"]
+            }
+          }
+        }
+      }
+    }
+  },
+  {
+    "method": "POST",
+    "path": "/api/previews/tickets",
+    "name": "core_preview_ticket",
+    "source": "server/src/apps/execution/capabilities/views/previews.rs",
+    "json": true,
+    "uuid_parameters": [],
+    "query_parameters": [],
+    "response": {
+      "schema": {
+        "$ref": "#/components/schemas/PreviewTicket"
+      },
+      "definitions": {
+        "PreviewTicket": {
+          "type": "object",
+          "required": ["url", "expires_at"],
+          "properties": {
+            "url": {
+              "type": "string"
+            },
+            "expires_at": {
+              "type": "string",
+              "format": "date-time"
+            }
+          }
+        }
+      }
+    }
+  },
+  {
+    "method": "GET",
+    "path": "/api/runs/{id}/live-preview",
+    "name": "core_live_preview",
+    "source": "server/src/apps/execution/capabilities/views/live_previews.rs",
+    "json": false,
+    "uuid_parameters": ["id"],
+    "query_parameters": [],
+    "response": {
+      "schema": {
+        "$ref": "#/components/schemas/LivePreviewStatus"
+      },
+      "definitions": {
+        "LivePreview": {
+          "type": "object",
+          "required": [
+            "id",
+            "state",
+            "stop_reason",
+            "area_id",
+            "revision",
+            "port",
+            "idle_seconds",
+            "absolute_seconds",
+            "started_at",
+            "last_request_at",
+            "expires_at"
+          ],
+          "properties": {
+            "absolute_seconds": {
+              "type": "integer",
+              "format": "int64"
+            },
+            "area_id": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "expires_at": {
+              "type": "string",
+              "format": "date-time"
+            },
+            "id": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "idle_seconds": {
+              "type": "integer",
+              "format": "int64"
+            },
+            "last_request_at": {
+              "type": "string",
+              "format": "date-time"
+            },
+            "port": {
+              "type": "integer",
+              "format": "uint16",
+              "maximum": 65535,
+              "minimum": 0
+            },
+            "revision": {
+              "type": "integer",
+              "format": "int64"
+            },
+            "started_at": {
+              "type": "string",
+              "format": "date-time"
+            },
+            "state": {
+              "type": "string"
+            },
+            "stop_reason": {
+              "type": ["string", "null"]
+            }
+          }
+        },
+        "LivePreviewStatus": {
+          "type": "object",
+          "description": "One Run's Live preview as the dashboard reads it.",
+          "required": ["live_preview", "may_stop"],
+          "properties": {
+            "live_preview": {
+              "anyOf": [
+                {
+                  "$ref": "#/components/schemas/LivePreview"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "may_stop": {
+              "type": "boolean",
+              "description": "Whether this viewer may stop it: the Run's requester or whoever may\ncancel the Run (ADR 0070). The dashboard shows Stop only then."
+            }
+          }
+        }
+      }
+    }
+  },
+  {
+    "method": "POST",
+    "path": "/api/runs/{id}/live-preview/stop",
+    "name": "core_live_preview_stop",
+    "source": "server/src/apps/execution/capabilities/views/live_previews.rs",
+    "json": false,
+    "uuid_parameters": ["id"],
+    "query_parameters": [],
+    "response": {
+      "schema": {
+        "$ref": "#/components/schemas/LivePreviewStatus"
+      },
+      "definitions": {
+        "LivePreview": {
+          "type": "object",
+          "required": [
+            "id",
+            "state",
+            "stop_reason",
+            "area_id",
+            "revision",
+            "port",
+            "idle_seconds",
+            "absolute_seconds",
+            "started_at",
+            "last_request_at",
+            "expires_at"
+          ],
+          "properties": {
+            "absolute_seconds": {
+              "type": "integer",
+              "format": "int64"
+            },
+            "area_id": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "expires_at": {
+              "type": "string",
+              "format": "date-time"
+            },
+            "id": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "idle_seconds": {
+              "type": "integer",
+              "format": "int64"
+            },
+            "last_request_at": {
+              "type": "string",
+              "format": "date-time"
+            },
+            "port": {
+              "type": "integer",
+              "format": "uint16",
+              "maximum": 65535,
+              "minimum": 0
+            },
+            "revision": {
+              "type": "integer",
+              "format": "int64"
+            },
+            "started_at": {
+              "type": "string",
+              "format": "date-time"
+            },
+            "state": {
+              "type": "string"
+            },
+            "stop_reason": {
+              "type": ["string", "null"]
+            }
+          }
+        },
+        "LivePreviewStatus": {
+          "type": "object",
+          "description": "One Run's Live preview as the dashboard reads it.",
+          "required": ["live_preview", "may_stop"],
+          "properties": {
+            "live_preview": {
+              "anyOf": [
+                {
+                  "$ref": "#/components/schemas/LivePreview"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "may_stop": {
+              "type": "boolean",
+              "description": "Whether this viewer may stop it: the Run's requester or whoever may\ncancel the Run (ADR 0070). The dashboard shows Stop only then."
+            }
+          }
+        }
+      }
+    }
+  },
+  {
+    "method": "POST",
+    "path": "/api/previews/live-tickets",
+    "name": "core_preview_live_ticket",
+    "source": "server/src/apps/execution/capabilities/views/live_previews.rs",
+    "json": true,
+    "uuid_parameters": [],
+    "query_parameters": [],
+    "response": {
+      "schema": {
+        "$ref": "#/components/schemas/PreviewTicket"
+      },
+      "definitions": {
+        "PreviewTicket": {
+          "type": "object",
+          "required": ["url", "expires_at"],
+          "properties": {
+            "expires_at": {
+              "type": "string",
+              "format": "date-time"
+            },
+            "url": {
+              "type": "string"
+            }
+          }
+        }
+      }
+    }
+  },
+  {
+    "method": "GET",
+    "path": "/api/preview-limits/{tenant}",
+    "name": "core_preview_limits",
+    "source": "server/src/apps/execution/capabilities/views/live_previews.rs",
+    "json": false,
+    "uuid_parameters": [],
+    "query_parameters": [],
+    "response": {
+      "schema": {
+        "$ref": "#/components/schemas/TenantPreviewLimits"
+      },
+      "definitions": {
+        "TenantPreviewLimits": {
+          "type": "object",
+          "description": "A Tenant's lowered Live preview limits and the Deployment's ceilings.",
+          "required": [
+            "tenant",
+            "idle_seconds",
+            "absolute_seconds",
+            "revision",
+            "ceiling_idle_seconds",
+            "ceiling_absolute_seconds"
+          ],
+          "properties": {
+            "absolute_seconds": {
+              "type": "integer",
+              "format": "int64"
+            },
+            "ceiling_absolute_seconds": {
+              "type": "integer",
+              "format": "int64"
+            },
+            "ceiling_idle_seconds": {
+              "type": "integer",
+              "format": "int64"
+            },
+            "idle_seconds": {
+              "type": "integer",
+              "format": "int64"
+            },
+            "revision": {
+              "type": "integer",
+              "format": "int64"
+            },
+            "tenant": {
+              "type": "string"
+            }
+          }
+        }
+      }
+    }
+  },
+  {
+    "method": "PUT",
+    "path": "/api/preview-limits/{tenant}",
+    "name": "core_preview_limits_update",
+    "source": "server/src/apps/execution/capabilities/views/live_previews.rs",
+    "json": true,
+    "uuid_parameters": [],
+    "query_parameters": [],
+    "response": {
+      "schema": {
+        "$ref": "#/components/schemas/TenantPreviewLimits"
+      },
+      "definitions": {
+        "TenantPreviewLimits": {
+          "type": "object",
+          "description": "A Tenant's lowered Live preview limits and the Deployment's ceilings.",
+          "required": [
+            "tenant",
+            "idle_seconds",
+            "absolute_seconds",
+            "revision",
+            "ceiling_idle_seconds",
+            "ceiling_absolute_seconds"
+          ],
+          "properties": {
+            "absolute_seconds": {
+              "type": "integer",
+              "format": "int64"
+            },
+            "ceiling_absolute_seconds": {
+              "type": "integer",
+              "format": "int64"
+            },
+            "ceiling_idle_seconds": {
+              "type": "integer",
+              "format": "int64"
+            },
+            "idle_seconds": {
+              "type": "integer",
+              "format": "int64"
+            },
+            "revision": {
+              "type": "integer",
+              "format": "int64"
+            },
+            "tenant": {
+              "type": "string"
+            }
+          }
+        }
+      }
+    }
+  },
+  {
+    "method": "GET",
+    "path": "/api/runs/{id}/remote-preview",
+    "name": "core_remote_preview_inspect",
+    "source": "server/src/apps/execution/capabilities/views/previews.rs",
+    "json": false,
+    "uuid_parameters": ["id"],
+    "query_parameters": []
+  },
+  {
+    "method": "POST",
+    "path": "/api/runs/{id}/preview-tickets",
+    "name": "core_remote_preview_ticket",
+    "source": "server/src/apps/execution/capabilities/views/previews.rs",
+    "json": true,
+    "uuid_parameters": ["id"],
+    "query_parameters": []
+  },
+  {
+    "method": "POST",
+    "path": "/federation/v0.1/scoped/previews/inspect",
+    "name": "peer-preview-inspect",
+    "source": "server/src/apps/identity/views/execution.rs",
+    "json": true,
+    "uuid_parameters": [],
+    "query_parameters": []
+  },
+  {
+    "method": "POST",
+    "path": "/federation/v0.1/scoped/previews/release",
+    "name": "peer-preview-release",
+    "source": "server/src/apps/identity/views/execution.rs",
+    "json": true,
+    "uuid_parameters": [],
+    "query_parameters": []
+  },
+  {
+    "method": "POST",
+    "path": "/federation/v0.1/scoped/previews/retain",
+    "name": "peer-preview-retain",
+    "source": "server/src/apps/identity/views/execution.rs",
+    "json": true,
+    "uuid_parameters": [],
+    "query_parameters": []
+  },
+  {
+    "method": "POST",
+    "path": "/federation/v0.1/scoped/previews/tickets",
+    "name": "peer-preview-ticket",
+    "source": "server/src/apps/identity/views/execution.rs",
+    "json": true,
+    "uuid_parameters": [],
+    "query_parameters": []
   }
 ]

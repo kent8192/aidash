@@ -23,6 +23,10 @@ pub trait TransferScope: Send {
 	async fn require_bound_operation(&mut self, run: Uuid, operation: &str) -> Result<()>;
 
 	fn limits(&self) -> Result<Limits>;
+	/// Bytes the Area keeps beyond its manifest as Retained versions.
+	async fn retained_bytes(&mut self, _area: &Area) -> Result<u64> {
+		Ok(0)
+	}
 	fn node_id(&self) -> &str;
 	fn tenant(&self) -> &str;
 	fn principal(&self) -> &str;

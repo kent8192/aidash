@@ -18,6 +18,7 @@ pub mod nodes;
 pub mod offering;
 pub mod plan_connections;
 pub mod policy;
+pub mod preview;
 pub mod projection;
 pub mod provider;
 pub mod provider_credentials;

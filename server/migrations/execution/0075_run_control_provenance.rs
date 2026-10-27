@@ -5,14 +5,14 @@
 // kind of actor that last changed control: the Tenant, a Deployment
 // Administrator's Safety Stop, or the system. Existing Runs start at revision 0
 // with the Tenant as the source. The model declares no default for the source,
-// so the logical state drops it as `execution/0050_usage_evidence` does; 0062
+// so the logical state drops it as `execution/0050_usage_evidence` does; 0076
 // keeps the physical default for writers that name no source.
 use reinhardt::db::migrations::FieldType;
 use reinhardt::db::migrations::prelude::*;
 
 pub(super) fn migration() -> Migration {
-	Migration::new("0061_run_control_provenance", "execution")
-		.add_dependency("execution", "0060_plugin_research_merge")
+	Migration::new("0075_run_control_provenance", "execution")
+		.add_dependency("execution", "0074_federated_preview_authority")
 		.atomic(true)
 		.add_operation(Operation::AddColumn {
 			table: "runs".into(),

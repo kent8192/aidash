@@ -4,12 +4,12 @@
 // the record is audit history that outlives the Run and its Workspace, and is
 // erased only by `audit_retention_days` after the Tenant is purged. The Tenant
 // root reference follows every other Tenant-owned table. The logical model
-// state is kept by 0065.
+// state is kept by 0079.
 use reinhardt::db::migrations::prelude::*;
 
 pub(super) fn migration() -> Migration {
-	Migration::new("0063_run_safety_stops", "execution")
-		.add_dependency("execution", "0062_run_control_trigger")
+	Migration::new("0077_run_safety_stops", "execution")
+		.add_dependency("execution", "0076_run_control_trigger")
 		.database_only(true)
 		.atomic(true)
 		.add_operation(Operation::CreateTable {
