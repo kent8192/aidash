@@ -15,3 +15,7 @@ Decided on 2026-10-19 while grilling Live previews. An operation's Execution Pod
 - The Live preview's Web server reaches the External services bound to its Run through the Egress gateway with a token that lasts as long as the Live preview and is revoked with it, so it keeps working after the Run completes.
 - The model never receives an address for viewing a Live preview; viewing takes a person's ticket (ADR 0068).
 - The Run's requester and whoever may cancel the Run may stop its Live preview; viewing alone does not allow it.
+
+## Amendment (2026-10-26)
+
+- A running Live preview refers to every File version of its revision, which stays retained until it stops (ADR 0095). A start that would exceed the Tenant's quota is refused with the reason.

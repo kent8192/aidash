@@ -65,6 +65,7 @@ impl Authority for FixtureAuthority {
 			destination: Destination::Permitted,
 			request: Uuid::new_v4(),
 			operation: Uuid::new_v4(),
+			session: None,
 			service: service.into(),
 			definition: ExternalService {
 				base_url: self.upstream.clone(),
@@ -409,6 +410,7 @@ impl Authority for BrokerAuthority {
 			destination: Destination::PublicOnly,
 			request: Uuid::new_v4(),
 			operation: Uuid::new_v4(),
+			session: None,
 			service: service.into(),
 			definition: self.definition.clone(),
 			expires_at: chrono::Utc::now() + chrono::Duration::seconds(30),
@@ -636,6 +638,7 @@ impl Authority for DirectAuthority {
 			destination: Destination::Permitted,
 			request: Uuid::new_v4(),
 			operation: Uuid::new_v4(),
+			session: None,
 			service: service.into(),
 			definition: ExternalService {
 				base_url: self.upstream.clone(),

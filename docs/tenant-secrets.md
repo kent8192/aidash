@@ -209,5 +209,6 @@ Integrity fields and URL hash fragments remain intact, and package files
 stream unchanged under the operation's cumulative budget. `python_install`
 and its wheel-selection API/UI have been removed; use uv through the gateway.
 
-File previews, Live preview viewing, and preview-session tokens are tracked by
-[#405](https://github.com/kent8192/aidash/issues/405).
+File previews, Retained versions and message citations are described in
+[File previews and Retained versions](file-previews-and-retained-versions.md).
+Live previews follow with [#405](https://github.com/kent8192/aidash/issues/405).

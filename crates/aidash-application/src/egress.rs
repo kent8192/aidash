@@ -11,7 +11,10 @@ pub struct Admission {
 	pub gateway_origin: String,
 	pub destination: aidash_domain::keyless::Destination,
 	pub request: Uuid,
+	/// The operation, or a Live preview's session-lifetime owner.
 	pub operation: Uuid,
+	/// Set when the token is a session token; the request record carries it.
+	pub session: Option<Uuid>,
 	pub service: String,
 	pub definition: ExternalService,
 	pub expires_at: DateTime<Utc>,

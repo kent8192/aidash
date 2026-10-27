@@ -864,6 +864,7 @@ impl Authority for GatewayAuthority {
 			destination: Address::Permitted,
 			request: Uuid::new_v4(),
 			operation: Uuid::new_v4(),
+			session: None,
 			service: service.into(),
 			definition,
 			expires_at: chrono::Utc::now() + chrono::Duration::seconds(30),
