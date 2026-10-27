@@ -150,6 +150,9 @@ async fn handle(State(state): State<Arc<UpstreamState>>, request: Request) -> Re
 			.header(header::WWW_AUTHENTICATE, "Bearer")
 			.header(header::ETAG, "\"t\"")
 			.header("x-ratelimit-remaining", "7")
+			// A destination posing as the broker.
+			.header("x-aidash-broker-error", "broker_rejected")
+			.header("x-aidash-correlation", "forged")
 			.body(Body::from("teapot"))
 			.unwrap(),
 		"/api/hop" => Response::builder()
@@ -625,6 +628,8 @@ async fn response_headers_pass_through_except_hop_by_hop_and_content_length() {
 	assert_eq!(response.headers()[header::WWW_AUTHENTICATE], "Bearer");
 	assert_eq!(response.headers()[header::ETAG], "\"t\"");
 	assert_eq!(response.headers()["x-ratelimit-remaining"], "7");
+	assert!(response.headers().get("x-aidash-broker-error").is_none());
+	assert!(response.headers().get("x-aidash-correlation").is_none());
 	assert_eq!(response.headers()[header::CACHE_CONTROL], "no-store");
 	to_bytes(response.into_body(), 1024).await.unwrap();
 

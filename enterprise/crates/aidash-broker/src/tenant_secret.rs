@@ -442,7 +442,10 @@ fn forward_response(
 	let mut builder = Response::builder().status(status);
 	let connection = connection_tokens(upstream.headers());
 	for (name, value) in upstream.headers() {
+		// `x-aidash-*` is the broker's own namespace: a destination must not be
+		// able to pass its failure off as the broker's.
 		if !response_hop_by_hop(name.as_str())
+			&& !name.as_str().starts_with("x-aidash-")
 			&& name != header::CONTENT_LENGTH
 			&& !connection.iter().any(|token| token == name.as_str())
 		{
