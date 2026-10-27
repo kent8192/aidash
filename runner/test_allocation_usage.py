@@ -117,6 +117,41 @@ class AllocationUsageTest(unittest.TestCase):
                 self.assertFalse(any(call.args[0][0] in ('delete', 'patch') for call in self.runner.kube.call_args_list))
         self.assertEqual(self.runner.allocation_receipts()['receipts'], [])
 
+    def test_housekeeping_polls_the_provider_without_the_runner_lock(self):
+        self.runner.observe_allocation(self.record, self.pod)
+        path = self.runner.allocations / (self.uid + '.json')
+        held = []
+        def kube(arguments, data=None, **_):
+            if arguments[0] == 'get':
+                # Another thread must be able to take the Runner-wide lock meanwhile.
+                acquired = []
+                def contend():
+                    acquired.append(self.runner.lock.acquire(timeout=1))
+                    if acquired[0]:
+                        self.runner.lock.release()
+                thread = threading.Thread(target=contend)
+                thread.start()
+                thread.join()
+                held.append(not acquired[0])
+                return Mock(stdout=json.dumps(self.pod).encode())
+            return Mock(stdout=b'')
+        self.runner.kube = kube
+        self.runner.allocation_housekeeping()
+        self.assertEqual(held, [False])
+        # A concurrent observation that advanced the journal discards the stale snapshot.
+        def advancing(arguments, data=None, **_):
+            if arguments[0] == 'get':
+                allocation = json.loads(path.read_bytes())
+                allocation['resource_version'] = '102'
+                save(path, allocation)
+                stale = copy.deepcopy(self.pod)
+                stale['metadata']['resourceVersion'] = '100'
+                return Mock(stdout=json.dumps(stale).encode())
+            return Mock(stdout=b'')
+        self.runner.kube = advancing
+        self.runner.allocation_housekeeping()
+        self.assertEqual(json.loads(path.read_bytes())['resource_version'], '102')
+
     def test_housekeeping_waits_for_durable_shell_output_before_cleanup(self):
         content = b'output still being harvested'
         file = dict(path='saved.txt', object_id=hashlib.sha256(content).hexdigest(),

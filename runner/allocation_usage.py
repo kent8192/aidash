@@ -324,8 +324,10 @@ class AllocationJournal:
         for uid in ids:
             path = self.allocations / (uid + '.json')
             try:
-                # Serialize journal writes with observation and acknowledgement, including
-                # the read/modify/write around a provider call and its diagnostic state.
+                # Serialize journal writes with observation and acknowledgement. The
+                # provider read runs outside the Runner-wide lock so a slow Kubernetes
+                # API cannot stall admission, cancellation or receipt reads; the
+                # journal is revalidated before the snapshot is applied.
                 with self.lock:
                     allocation = json.loads(path.read_bytes())
                     allocation['observation_attempts'] = allocation.get('observation_attempts', 0) + 1
@@ -333,8 +335,17 @@ class AllocationJournal:
                     if allocation.get('quarantined'):
                         self.allocation_diagnostic(allocation)
                         continue
-                    result = self.kube(['get', 'pod', allocation['pod_name'], '-o', 'json', '--ignore-not-found'])
-                    pod = json.loads(result.stdout) if result.stdout.strip() else None
+                    seen = allocation.get('resource_version')
+                    pod_name = allocation['pod_name']
+                result = self.kube(['get', 'pod', pod_name, '-o', 'json', '--ignore-not-found'])
+                pod = json.loads(result.stdout) if result.stdout.strip() else None
+                with self.lock:
+                    allocation = json.loads(path.read_bytes())
+                    # Another observer advanced this allocation while the provider was
+                    # read; a stale snapshot must not regress it. Retry next pass.
+                    if (allocation.get('quarantined') or allocation.get('released')
+                            or allocation.get('resource_version') != seen):
+                        continue
                     if pod is None or pod['metadata']['uid'] != uid:
                         if not allocation.get('receipt'):
                             allocation['pending_reason'] = 'allocation provider identity/evidence lost'
