@@ -79,6 +79,14 @@ impl WorkerStep for Step {
 	fn metadata(&self) -> RunMetadata {
 		self.run.metadata()
 	}
+	async fn tenant(&mut self) -> Option<String> {
+		self.federation
+			.store
+			.run_tenant(self.run.id)
+			.await
+			.ok()
+			.map(|tenant| tenant.as_str().to_owned())
+	}
 	fn recovery_store(&self) -> &dyn ExecutionRecoveryStore {
 		&self.recovery
 	}
