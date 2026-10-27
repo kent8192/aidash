@@ -1415,6 +1415,8 @@ async fn admission_pins_the_roots_connection_and_refuses_everything_else(
 				"alpha",
 				&snapshot,
 				false,
+				Default::default(),
+				&Default::default(),
 			)
 			.await,
 			Err(aidash_server::Error::Plan(Failure::NotAdmitted))

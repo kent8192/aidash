@@ -106,6 +106,7 @@ pub async fn initialize(
 		})
 		// An invalid Deployment retention period refuses to start (ADR 0045).
 		.with_research_retention(settings.research_retention.rules()?)
+		.with_data_protection_floor(settings.deployment.data_protection_floor)
 		.with_test_limit_ceilings(settings.workbench_test_limits.ceilings()?);
 	configure_provider_credentials(&mut store, &settings.provider_credentials).await?;
 	configure_plan_connections(
@@ -2597,6 +2598,7 @@ pub(crate) fn admitted_model_provider(
 			},
 		),
 		aidash_application::provider_access::Context {
+			data_protection: Default::default(),
 			tenant,
 			run,
 			maintenance,
@@ -2621,6 +2623,7 @@ pub(crate) fn admitted_semantic_transport(
 		},
 	);
 	transport.embedding.context = aidash_application::provider_access::Context {
+		data_protection: Default::default(),
 		tenant,
 		run,
 		maintenance,

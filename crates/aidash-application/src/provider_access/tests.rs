@@ -75,3 +75,37 @@ async fn a_fixture_permission_reaches_every_clone() {
 		Err(Error::Forbidden)
 	));
 }
+
+#[tokio::test]
+async fn keyless_data_protection_distinguishes_tenant_endpoints_from_deployment_origins() {
+	use aidash_domain::data_protection::{DataProtection, Level};
+	for level in [Level::NoTraining, Level::ZeroDataRetention] {
+		let context = Context {
+			data_protection: DataProtection {
+				level,
+				..Default::default()
+			},
+			..Default::default()
+		};
+		let rejected = KeylessAccess::default()
+			.resolve(&context, "https://model.example/v1", &Source::Keyless)
+			.await
+			.unwrap_err();
+		assert!(rejected.to_string().contains("Tenant Keyless endpoints"));
+		let deployment = permitting(&["http://127.0.0.1:11434"])
+			.resolve(&context, "http://127.0.0.1:11434/v1", &Source::Keyless)
+			.await
+			.unwrap();
+		assert_eq!(deployment.keyless, Some(Destination::Permitted));
+	}
+	assert!(
+		KeylessAccess::default()
+			.resolve(
+				&Context::default(),
+				"https://model.example/v1",
+				&Source::Keyless
+			)
+			.await
+			.is_ok()
+	);
+}

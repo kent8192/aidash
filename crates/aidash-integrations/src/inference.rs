@@ -70,11 +70,15 @@ impl OpenRouterProvider {
 		let access = self
 			.access
 			.resolve(
-				&self.call_context(
-					Operation::Discovery,
-					self.config.output_token_limit(),
-					false,
-				),
+				&crate::data_protection::context(
+					self.access.as_ref(),
+					&self.call_context(
+						Operation::Discovery,
+						self.config.output_token_limit(),
+						false,
+					),
+				)
+				.await?,
 				&self.config.endpoint,
 				&Source::configured(&self.config.provider_credential, &None),
 			)
@@ -354,8 +358,54 @@ impl ModelProvider for OpenRouterProvider {
 					)));
 				}
 			}
-			let media_routes = self.verified_routes(&request).await?;
-			let mut body = request_body(&self.config, &request, media_routes, salt.as_deref());
+			let context = crate::data_protection::context(
+				self.access.as_ref(),
+				&self.call_context(
+					Operation::Chat,
+					request.max_output_tokens,
+					request.cache_breakpoints,
+				),
+			)
+			.await?;
+			let mut media_routes = self.verified_routes(&request).await?;
+			let routes = crate::data_protection::zdr_routes(
+				self.access.as_ref(),
+				&context,
+				&self.clients,
+				&self.config.endpoint,
+				&Source::configured(&self.config.provider_credential, &None),
+				&self.config.model_id,
+			)
+			.await?;
+			if !routes.is_empty() {
+				if self
+					.config
+					.provider_route
+					.as_ref()
+					.is_some_and(|route| !routes.contains(&route.tag))
+				{
+					return Err(Error::Invalid(
+						"Zero Data Retention: pinned route is unavailable".into(),
+					));
+				}
+				if media_routes.is_empty() {
+					media_routes = routes;
+				} else {
+					media_routes.retain(|tag| routes.contains(tag));
+					if media_routes.is_empty() {
+						return Err(Error::Invalid(
+							"Zero Data Retention: no approved media route".into(),
+						));
+					}
+				}
+			}
+			let mut body = request_body(
+				&self.config,
+				&request,
+				media_routes,
+				salt.as_deref(),
+				context.data_protection.requirement(),
+			);
 			if streaming {
 				body["stream"] = json!(true);
 				body["stream_options"] = json!({"include_usage": true});
@@ -363,11 +413,7 @@ impl ModelProvider for OpenRouterProvider {
 			let access = self
 				.access
 				.resolve(
-					&self.call_context(
-						Operation::Chat,
-						request.max_output_tokens,
-						request.cache_breakpoints,
-					),
+					&context,
 					&self.config.endpoint,
 					&Source::configured(&self.config.provider_credential, &None),
 				)
@@ -453,6 +499,7 @@ fn request_body(
 	request: &ModelRequest,
 	media_routes: Vec<String>,
 	salt: Option<&str>,
+	requirement: aidash_domain::data_protection::Requirement,
 ) -> Value {
 	let mut body = request.input_body();
 	if let Some(salt) = salt {
@@ -470,15 +517,18 @@ fn request_body(
 	if request.disable_provider_transforms {
 		body["transforms"] = json!([]);
 	}
-	// Enforce ZDR on every call, including existing registered models. Never
-	// retry against non-ZDR endpoints if no eligible provider is available.
-	body["provider"] = if let Some(route) = &config.provider_route {
-		json!({"zdr": true, "require_parameters": true, "only": [route.tag], "allow_fallbacks": false})
-	} else if media_routes.is_empty() {
-		json!({"zdr": true, "require_parameters": true})
-	} else {
-		json!({"zdr": true, "require_parameters": true, "only": media_routes, "allow_fallbacks": true})
-	};
+	// Data policy comes from the current Tenant/delegation requirement; routing
+	// and parameter enforcement remain independent of an explicit ZDR opt-out.
+	let mut provider = requirement.provider();
+	provider["require_parameters"] = json!(true);
+	if let Some(route) = &config.provider_route {
+		provider["only"] = json!([route.tag]);
+		provider["allow_fallbacks"] = json!(false);
+	} else if !media_routes.is_empty() {
+		provider["only"] = json!(media_routes);
+		provider["allow_fallbacks"] = json!(true);
+	}
+	body["provider"] = provider;
 	if let Some(effort) = config.reasoning_effort {
 		body["reasoning"] = json!({"effort": effort});
 	}

@@ -8,6 +8,8 @@ use uuid::Uuid;
 
 #[derive(Debug, Clone, Default)]
 pub struct Context {
+	/// Current policy evaluated immediately before this call; never an admitted snapshot.
+	pub data_protection: aidash_domain::data_protection::DataProtection,
 	pub tenant: String,
 	pub run: Option<Uuid>,
 	/// Independent approval observation; never an executing Run identity.
@@ -98,6 +100,14 @@ pub struct Access {
 }
 #[async_trait]
 pub trait ProviderAccess: Send + Sync {
+	/// Reload current Tenant and delegation-chain policy before constructing a request.
+	async fn data_protection(
+		&self,
+		context: &Context,
+	) -> Result<aidash_domain::data_protection::DataProtection> {
+		Ok(context.data_protection)
+	}
+
 	async fn resolve(&self, context: &Context, endpoint: &str, source: &Source) -> Result<Access>;
 	/// Whether `resolve` would find an active credential, without minting a
 	/// Capability Token or reading Key Material. Callers use it to fail before
@@ -157,7 +167,7 @@ impl KeylessAccess {
 }
 #[async_trait]
 impl ProviderAccess for KeylessAccess {
-	async fn resolve(&self, _: &Context, endpoint: &str, source: &Source) -> Result<Access> {
+	async fn resolve(&self, context: &Context, endpoint: &str, source: &Source) -> Result<Access> {
 		match source {
 			Source::Keyless => {}
 			Source::Tenant { .. } => {
@@ -176,6 +186,13 @@ impl ProviderAccess for KeylessAccess {
 			);
 			return Err(Error::Forbidden);
 		}
+		context
+			.data_protection
+			.permits(if destination == Destination::Permitted {
+				aidash_domain::data_protection::Destination::DeploymentHosted
+			} else {
+				aidash_domain::data_protection::Destination::TenantKeyless
+			})?;
 		Ok(Access {
 			endpoint: endpoint.into(),
 			bearer: String::new().into(),
