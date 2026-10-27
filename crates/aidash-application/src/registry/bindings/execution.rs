@@ -60,7 +60,14 @@ impl BindingResolver for PinnedResolver {
 				continue;
 			};
 			let provider = super::recheck_provider(self.providers.as_ref(), binding)?;
-			let inner = self.providers.bind(run, binding).await?;
+			let inner: Arc<dyn ExecutionTool> = if binding.definition.config["tier"] == "provider" {
+				Arc::new(ProviderOwnedTool {
+					contract: provider.clone(),
+					spec: provider_specification(binding),
+				})
+			} else {
+				self.providers.bind(run, binding).await?
+			};
 			let pinned = binding
 				.provider_contract_digest
 				.as_deref()
@@ -192,8 +199,47 @@ pub fn bound_specifications(
 			continue;
 		};
 		let descriptor = serde_json::from_value(binding.definition.config.clone())?;
-		let specification = bound_specification(binding, inner(binding, descriptor)?);
+		let specification = if binding.definition.config["tier"] == "provider" {
+			provider_specification(binding)
+		} else {
+			bound_specification(binding, inner(binding, descriptor)?)
+		};
 		specifications.insert(alias.clone(), specification);
 	}
 	Ok(specifications)
+}
+
+fn provider_specification(binding: &ResolvedBinding) -> ToolSpec {
+	ToolSpec {
+		name: binding.alias.clone().unwrap_or_default(),
+		description: binding
+			.definition
+			.description
+			.get("en")
+			.cloned()
+			.unwrap_or_default(),
+		parameters: binding.definition.schema.clone(),
+	}
+}
+
+struct ProviderOwnedTool {
+	contract: ToolContract,
+	spec: ToolSpec,
+}
+#[async_trait]
+impl ExecutionTool for ProviderOwnedTool {
+	fn replay_safe(&self) -> bool {
+		false
+	}
+	fn contract(&self) -> ToolContract {
+		self.contract.clone()
+	}
+	fn specification(&self) -> ToolSpec {
+		self.spec.clone()
+	}
+	async fn invoke(&self, _: &Run, _: Value, _: &str) -> Result<Value> {
+		Err(Error::Invalid(
+			"Provider tools execute only inside the model request".into(),
+		))
+	}
 }
