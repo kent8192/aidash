@@ -808,6 +808,7 @@ def live(args, read_json=None, transport=None, clock=time.monotonic, sleep=time.
         except (OSError, subprocess.SubprocessError):
             raise evaluation.GuardRefusal("approved code-oracle image is not locally available; pull its pinned digest "
                                           "before the live campaign, then rerun preflight") from None
+        evaluation.preflight_code_oracle(corpus, planned_runs, code_oracle)
     ledger = evaluation.SpendLedger(args.max_spend_nanocredits, args.max_wall_seconds, clock, expires_at, wall_now)
     created_at = timestamp(wall_now())
     prefix = "fte" + secrets.token_hex(3)

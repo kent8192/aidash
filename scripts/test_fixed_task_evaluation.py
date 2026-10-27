@@ -357,7 +357,8 @@ class ProjectionCampaignTest(unittest.TestCase):
             Path(directory, "target.py").write_text("pass\n")
             completed = subprocess.CompletedProcess([], 0, "[42]")
             with mock.patch.object(evaluation, "bounded_subprocess", return_value=completed) as execute, \
-                    mock.patch.object(evaluation.subprocess, "run") as cleanup:
+                    mock.patch.object(evaluation.subprocess, "run",
+                                      return_value=subprocess.CompletedProcess([], 0)) as cleanup:
                 self.assertTrue(code(directory, [{"args": [], "kwargs": {}, "expected": 42}], 99,
                                      target="target.py")["passed"])
             command = execute.call_args.args[0]
@@ -365,8 +366,10 @@ class ProjectionCampaignTest(unittest.TestCase):
                                    ("--cpus", "1"), ("--user", "65534:65534"), ("--pull", "never")):
                 self.assertEqual(command[command.index(flag) + 1], expected)
             self.assertIn("--read-only", command)
+            self.assertIn("-i", command[:command.index(code.image)])
             self.assertTrue(command[command.index("--mount") + 1].endswith(",dst=/work,readonly"))
             self.assertEqual(execute.call_args.args[2], 20)
+            self.assertEqual(cleanup.call_args_list[0].args[0], ["docker", "image", "inspect", code.image])
             self.assertEqual(cleanup.call_args.args[0][:3], ["docker", "rm", "-f"])
 
 
@@ -384,6 +387,39 @@ class SchemaTest(unittest.TestCase):
             evaluation.validate({}, {"oneOf": []})
 
 
+# Drains the Docker CLI's stdin and gives the program EOF, as a container started without -i sees it.
+DETACHED_STDIN = "import os, sys; sys.stdin.buffer.read(); os.dup2(os.open(os.devnull, os.O_RDONLY), 0); " \
+                 "os.execv(sys.executable, [sys.executable, *sys.argv[1:]])"
+
+
+@contextlib.contextmanager
+def local_docker(image, image_present=True):
+    """Run `docker run` commands as local Python processes, attaching stdin only when the command passes -i."""
+    real_popen = subprocess.Popen
+    def translate(command):
+        mount = command[command.index("--mount") + 1]
+        directory = mount.split("src=", 1)[1].split(",dst=", 1)[0]
+        position = command.index(image)
+        arguments = [part.replace("/work", directory) for part in command[position + 2:]]
+        if "-i" not in command[:position]:
+            return [sys.executable, "-c", DETACHED_STDIN, *arguments], directory
+        return [sys.executable, *arguments], directory
+    def run(command, **kwargs):
+        if command[:3] == ["docker", "rm", "-f"]:
+            return subprocess.CompletedProcess(command, 0)
+        if command[:3] == ["docker", "image", "inspect"]:
+            return subprocess.CompletedProcess(command, 0 if image_present else 1)
+        raise AssertionError(f"unexpected command {command}")
+    def popen(command, **kwargs):
+        if command[0] != "docker":
+            return real_popen(command, **kwargs)
+        translated, directory = translate(command)
+        return real_popen(translated, cwd=directory, **kwargs)
+    with mock.patch.object(evaluation.subprocess, "run", side_effect=run), \
+            mock.patch.object(evaluation.subprocess, "Popen", side_effect=popen):
+        yield
+
+
 class OracleTest(unittest.TestCase):
     def test_live_code_oracle_rejects_candidate_that_disables_unittest_assertions(self):
         value = evaluation.load_corpus()
@@ -392,34 +428,73 @@ class OracleTest(unittest.TestCase):
                     "def discounted_total(prices_cents, coupon_cents=0, percent_off=0):\n    return -999\n"
         planned = next(p for p in evaluation.plan(value, [item["id"]], ["projection"]) if p["arm"] == "native")
         code = evaluation.container_code_execution("python@sha256:" + "a" * 64)
-        real_run = subprocess.run
-        real_popen = subprocess.Popen
-        def translate(command):
-            mount = command[command.index("--mount") + 1]
-            directory = mount.split("src=", 1)[1].split(",dst=", 1)[0]
-            image = command.index(code.image)
-            arguments = [part.replace("/work", directory) for part in command[image + 2:]]
-            return [sys.executable, *arguments], directory
-        def run(command, **kwargs):
-            if command[:3] == ["docker", "rm", "-f"]:
-                return subprocess.CompletedProcess(command, 0)
-            translated, directory = translate(command)
-            return real_run(translated, cwd=directory, **kwargs)
-        def popen(command, **kwargs):
-            if command[0] != "docker":
-                return real_popen(command, **kwargs)
-            translated, directory = translate(command)
-            return real_popen(translated, cwd=directory, **kwargs)
         for source, expected in ((candidate, "false_completion"),
                                  (fixture_module.PRICING_COMPLETE, "success"),
                                  (fixture_module.PRICING_VISIBLE_ONLY, "false_completion")):
-            with self.subTest(expected=expected, malicious=source == candidate), \
-                    mock.patch.object(evaluation.subprocess, "run", side_effect=run), \
-                    mock.patch.object(evaluation.subprocess, "Popen", side_effect=popen):
+            with self.subTest(expected=expected, malicious=source == candidate), local_docker(code.image):
                 result = evaluation.run_result(value, planned, 1, observation(final_answer="```python\n" + source +
                                                "```\nAll tests pass."), "live", code)
             self.assertEqual(result["outcome"], expected)
             self.assertIs(result["oracle"]["passed"], expected == "success")
+
+    def test_container_without_attached_stdin_fails_the_complete_fix(self):
+        # The #559 regression: a container started without -i reads EOF, so even the complete fix fails.
+        value = evaluation.load_corpus()
+        vectors = evaluation.independent_code_vectors(value, task(value, "code-change-verified-fix")["oracle"])
+        code = evaluation.container_code_execution("python@sha256:" + "a" * 64)
+        real_popen = subprocess.Popen
+        def without_stdin(command, **kwargs):
+            if command[0] == "docker":
+                command = [part for part in command if part != "-i"]
+            return real_popen(command, **kwargs)
+        with tempfile.TemporaryDirectory() as directory, local_docker(code.image):
+            Path(directory, "pricing.py").write_text(fixture_module.PRICING_COMPLETE)
+            self.assertTrue(code(directory, vectors["hidden"], 20, entrypoint=vectors["entrypoint"])["passed"])
+            with mock.patch.object(evaluation.subprocess, "Popen", side_effect=without_stdin):
+                self.assertFalse(code(directory, vectors["hidden"], 20, entrypoint=vectors["entrypoint"])["passed"])
+
+    def test_preflight_requires_complete_pass_and_visible_only_hidden_failure(self):
+        value = evaluation.load_corpus()
+        planned = evaluation.plan(value, ["code-change-verified-fix", "code-change-hidden-regression"], ["projection"])
+        code = evaluation.container_code_execution("python@sha256:" + "a" * 64)
+        with local_docker(code.image):
+            evaluation.preflight_code_oracle(value, planned, code)
+        def always(passed):
+            return lambda *args, **kwargs: {"passed": passed}
+        for broken in (always(True), always(False)):
+            with self.subTest(passed=broken()["passed"]), \
+                    self.assertRaisesRegex(evaluation.GuardRefusal, "the oracle is broken"):
+                evaluation.preflight_code_oracle(value, planned, broken)
+        with local_docker(code.image, image_present=False), \
+                self.assertRaisesRegex(evaluation.GuardRefusal, "preflight could not run"):
+            evaluation.preflight_code_oracle(value, planned, code)
+
+    def test_python_tests_without_reference_patches_are_refused(self):
+        value = evaluation.load_corpus()
+        planned = evaluation.plan(value, ["code-change-verified-fix"], ["projection"])
+        contract = {"image": "python@sha256:" + "a" * 64, "network": "none", "memory_mb": 128, "cpus": 1,
+                    "pids_limit": 64, "timeout_seconds": 20}
+        with mock.patch.dict(evaluation.CODE_ORACLE_REFERENCES, clear=True), \
+                self.assertRaisesRegex(evaluation.GuardRefusal, "no registered reference patches"):
+            evaluation.live_task_support({"code_oracle": contract}, value, planned, "https://fixture.test")
+
+    def test_unavailable_code_oracle_is_an_infrastructure_failure(self):
+        value = evaluation.load_corpus()
+        planned = next(p for p in evaluation.plan(value, ["code-change-verified-fix"], ["projection"])
+                       if p["arm"] == "native")
+        code = evaluation.container_code_execution("python@sha256:" + "a" * 64)
+        with local_docker(code.image, image_present=False):
+            result = evaluation.run_result(value, planned, 1, observation(
+                final_answer="```python\n" + fixture_module.PRICING_COMPLETE + "```\nAll tests pass."), "live", code)
+        self.assertEqual(result["outcome"], "infrastructure_failure")
+
+    @unittest.skipUnless(os.environ.get("AIDASH_CODE_ORACLE_IMAGE") and shutil.which("docker"),
+                         "set AIDASH_CODE_ORACLE_IMAGE to a locally pulled python@sha256 image to run against Docker")
+    def test_preflight_against_real_docker(self):
+        value = evaluation.load_corpus()
+        planned = evaluation.plan(value, ["code-change-verified-fix", "code-change-hidden-regression"], ["projection"])
+        evaluation.preflight_code_oracle(value, planned,
+                                         evaluation.container_code_execution(os.environ["AIDASH_CODE_ORACLE_IMAGE"]))
 
     def test_candidate_output_collection_has_a_hard_host_memory_bound(self):
         with self.assertRaisesRegex(ValueError, "65536-byte limit"):
