@@ -14,6 +14,8 @@ use reinhardt::rest::openapi::OpenApiSchema;
 
 pub(crate) fn register(contracts: &mut Contracts, document: &mut OpenApiSchema) -> Result<()> {
 	contracts.named::<aidash_domain::registry::Localized>(document, "BTreeMap")?;
+	// Entry.config is extensible JSON; expose its model definition contract.
+	contracts.named::<aidash_domain::model::ModelConfig>(document, "ModelConfig")?;
 	contracts.response::<_, Vec<RegistryContractsEntry>>(
 		document,
 		views::management::registry_list,

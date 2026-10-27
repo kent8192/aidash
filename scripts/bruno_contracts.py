@@ -614,6 +614,8 @@ def render():
                     checks += 'expect(res.getBody()).to.have.all.keys("enabled","provider","login_url","desktop_protocol");expect(res.getBody().enabled).to.equal(true);expect(res.getBody().login_url).to.equal("/auth/login");'
                 if path == "/api/openapi.json":
                     checks += 'expect(res.getBody().openapi).to.match(/^3\\./);expect(res.getBody().paths["/api/workspaces"]).to.have.property("post");expect(JSON.stringify(res.getBody())).not.to.include(bru.getEnvVar("deployment_administrator_token"));'
+                if path == "/api/openapi.json":
+                    checks += 'const wireApi=res.getBody().components.schemas.WireApi;expect(wireApi.enum||(wireApi.oneOf||[]).flatMap(option=>option.enum||[])).to.eql(["chat","responses"]);expect(res.getBody().components.schemas.ModelConfig.properties).to.have.property("wire_api");expect(res.getBody().components.schemas.ModelConfig.required).not.to.include("wire_api");'
                 add(endpoint, label, 200, headers=headers, checks=checks)
             continue
         if path == "/auth/login" and method == "POST":
