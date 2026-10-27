@@ -352,7 +352,7 @@ policy, and the gateway refreshes the idle timer.
 ### What needs a real cluster
 
 Starting and stopping the `serve` Pod, its readiness and log collection, the
-NetworkPolicy ingress, the node guard's termination proof, gateway HTTP/
-WebSocket proxying and Preview-to-Egress forwarding are exercised only on a
-real Kubernetes/gVisor Deployment. The domain rules, lifecycle, limits,
-retention, credentials and the dashboard API are covered without one.
+NetworkPolicy ingress, the node guard's termination proof, and end-to-end
+gateway forwarding to a real Pod and Egress gateway need a Kubernetes/gVisor
+Deployment. Gateway protocol tests, domain rules, lifecycle, limits,
+retention, credentials and the dashboard API run without one.
