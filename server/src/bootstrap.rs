@@ -100,6 +100,7 @@ pub async fn initialize(
 		.with_dashboard_policy(config.dashboard_policy())
 		.with_cache_salt(cache_salt)
 		.with_keyless_origins(settings.keyless_endpoints.origins()?)
+		.with_hosted_model_origins(settings.deployment.hosted_origins()?)
 		.with_egress(aidash_integrations::federation::Egress {
 			enabled: config.federation,
 			key: config.deployment_key.clone(),

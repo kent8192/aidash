@@ -92,7 +92,17 @@ async fn keyless_data_protection_distinguishes_tenant_endpoints_from_deployment_
 			.await
 			.unwrap_err();
 		assert!(rejected.to_string().contains("Tenant Keyless endpoints"));
-		let deployment = permitting(&["http://127.0.0.1:11434"])
+		let permitted = permitting(&["http://127.0.0.1:11434"]);
+		assert!(
+			permitted
+				.resolve(&context, "http://127.0.0.1:11434/v1", &Source::Keyless)
+				.await
+				.unwrap_err()
+				.to_string()
+				.contains("Tenant Keyless endpoints")
+		);
+		let deployment = permitted
+			.with_deployment_hosted(PermittedOrigins::parse(["http://127.0.0.1:11434"]).unwrap())
 			.resolve(&context, "http://127.0.0.1:11434/v1", &Source::Keyless)
 			.await
 			.unwrap();

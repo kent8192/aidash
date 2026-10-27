@@ -53,6 +53,11 @@ root = "staticfiles"
 [deployment]
 # Minimum Tenant Data Protection Level: standard, no_training, zero_data_retention.
 data_protection_floor = "standard"
+# Explicitly declare models hosted by this Deployment. A network permission alone
+# does not grant the Data Protection exception. Private hosts also need the
+# keyless_endpoints.permitted_private_origins permission below.
+hosted_model_origins = []
+# hosted_model_origins = ["http://ollama.lan:11434"]
 offering = "self-hosted"
 id = "aidash://local"
 endpoint = "http://127.0.0.1:8000"

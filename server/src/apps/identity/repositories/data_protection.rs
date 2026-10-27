@@ -239,12 +239,10 @@ pub(crate) async fn impact(
 				Destination::PlanConnection
 			} else if config.provider_credential.is_some() {
 				Destination::OpenRouter
-			} else if store.keyless.destination(&config.endpoint)?
-				== aidash_domain::keyless::Destination::Permitted
-			{
-				Destination::DeploymentHosted
 			} else {
-				Destination::TenantKeyless
+				store
+					.keyless
+					.data_protection_destination(&config.endpoint)?
 			};
 			if let Err(error) = policy.permits(destination) {
 				blocked.insert((entry.id, entry.version), error.to_string());

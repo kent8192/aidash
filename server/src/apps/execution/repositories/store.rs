@@ -559,6 +559,14 @@ impl Store {
 		self.plugin_sessions = plugin_sessions(&self.keyless, &self.tool_clients);
 		self
 	}
+	pub fn with_hosted_model_origins(
+		mut self,
+		origins: aidash_domain::keyless::PermittedOrigins,
+	) -> Self {
+		self.keyless = self.keyless.with_deployment_hosted(origins);
+		self.plugin_sessions = plugin_sessions(&self.keyless, &self.tool_clients);
+		self
+	}
 	pub(crate) fn with_memory_recovery(
 		mut self,
 		recovery: Option<std::sync::Arc<dyn aidash_application::ports::memory::MemoryRecovery>>,

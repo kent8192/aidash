@@ -955,7 +955,9 @@ impl reinhardt::commands::CapabilityCommand for Command {
 				)
 				.await?
 				.with_dashboard_policy(config.dashboard_policy())
-				.with_keyless_origins(settings.keyless_endpoints.origins()?),
+				.with_keyless_origins(settings.keyless_endpoints.origins()?)
+				.with_hosted_model_origins(settings.deployment.hosted_origins()?)
+				.with_data_protection_floor(settings.deployment.data_protection_floor),
 				directory.clone(),
 			)
 			.await?;

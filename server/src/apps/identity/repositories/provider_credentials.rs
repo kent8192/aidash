@@ -468,15 +468,7 @@ impl aidash_application::provider_access::ProviderAccess for AdmittedAccess {
 		let destination = match source {
 			Source::Plan { .. } => aidash_domain::data_protection::Destination::PlanConnection,
 			Source::Tenant { .. } => aidash_domain::data_protection::Destination::OpenRouter,
-			Source::Keyless => {
-				if self.store.keyless.destination(endpoint)?
-					== aidash_domain::keyless::Destination::Permitted
-				{
-					aidash_domain::data_protection::Destination::DeploymentHosted
-				} else {
-					aidash_domain::data_protection::Destination::TenantKeyless
-				}
-			}
+			Source::Keyless => self.store.keyless.data_protection_destination(endpoint)?,
 		};
 		policy.permits(destination)?;
 		if let Source::Plan { provider } = source {
@@ -528,15 +520,7 @@ impl aidash_application::provider_access::ProviderAccess for AdmittedAccess {
 		let destination = match source {
 			Source::Plan { .. } => aidash_domain::data_protection::Destination::PlanConnection,
 			Source::Tenant { .. } => aidash_domain::data_protection::Destination::OpenRouter,
-			Source::Keyless => {
-				if self.store.keyless.destination(endpoint)?
-					== aidash_domain::keyless::Destination::Permitted
-				{
-					aidash_domain::data_protection::Destination::DeploymentHosted
-				} else {
-					aidash_domain::data_protection::Destination::TenantKeyless
-				}
-			}
+			Source::Keyless => self.store.keyless.data_protection_destination(endpoint)?,
 		};
 		policy.permits(destination)?;
 		if let Source::Plan { provider } = source {
@@ -751,13 +735,7 @@ async fn permit_selected(
 		.await?
 		.with_floor(floor);
 	for endpoint in &selected.keyless {
-		policy.permits(
-			if origins.destination(endpoint)? == aidash_domain::keyless::Destination::Permitted {
-				Destination::DeploymentHosted
-			} else {
-				Destination::TenantKeyless
-			},
-		)?;
+		policy.permits(origins.data_protection_destination(endpoint)?)?;
 	}
 	if !selected.plans.is_empty() {
 		policy.permits(Destination::PlanConnection)?;
