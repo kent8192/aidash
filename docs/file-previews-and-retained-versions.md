@@ -162,7 +162,8 @@ correction request tells the agent exactly which File version it refers to.
 
 `[preview]` and `[preview_limits]` are optional settings sections. A profile
 that omits either keeps the defaults: no preview domain, and the 15-minute idle
-and 2-hour absolute Live preview ceilings. Every value below is optional.
+and 2-hour absolute Live preview ceilings. The server supplies these defaults
+even when the sections are absent from TOML. Every value below is optional.
 
 ```toml
 [preview]

@@ -193,6 +193,8 @@ fn file_settings_builder(
                 .with_value("workbench_test_limits", serde_json::json!({}))
                 // No preview domain: File previews of HTML/PDF and Live previews stay unavailable.
                 .with_value("preview", serde_json::json!({}))
+                // An omitted [preview_limits] uses the Deployment ceilings.
+                .with_value("preview_limits", serde_json::json!({}))
                 .with_value("marketplace", serde_json::json!({}))
                 .with_value("migrations", serde_json::json!({}))
                 .with_value("deployment", serde_json::json!({})),
