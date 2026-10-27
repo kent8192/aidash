@@ -212,7 +212,9 @@ The chart renders `<release>-preview-sandbox` in `execution.sandboxNamespace`:
 only the gateway Pods of this release may reach an Execution Pod, and only on
 `preview.podPort` (the port a Live preview declares; W6 sets it). Without a
 preview domain the dashboard reports Previews unavailable and opens no HTML or
-PDF File previews.
+PDF File previews. See
+[File previews and Retained versions](../../../docs/file-previews-and-retained-versions.md)
+for the user and settings contract.
 
 ## Optional execution components
 
