@@ -136,7 +136,7 @@ impl RetentionScope for Scope<'_> {
 			let tenant = self.access.identity.tenant.clone();
 			// The publication that would supersede a cited version takes the same
 			// row lock, so the manifest read here cannot change under us.
-			Ok(crate::database::native::query_as(
+			crate::database::native::query_as(
 				&Query::select()
 					.column(ColumnRef::Asterisk)
 					.from(Alias::new("core_areas"))
@@ -146,7 +146,7 @@ impl RetentionScope for Scope<'_> {
 					.to_string(PostgresQueryBuilder),
 			)
 			.fetch_optional(&mut **self.access.tx)
-			.await?)
+			.await
 		}
 		.await;
 		result.map(|area| area.map(Into::into)).map_err(Into::into)
@@ -223,7 +223,7 @@ impl RetentionScope for Scope<'_> {
 	async fn used_bytes(&mut self) -> Result<u64> {
 		let result: NativeResult<Option<i64>> = async {
 			let tenant = self.access.identity.tenant.clone();
-			Ok(crate::database::native::query_scalar(
+			crate::database::native::query_scalar(
 				&Query::select()
 					.column(Alias::new("used_bytes"))
 					.from(Alias::new("core_quotas"))
@@ -231,7 +231,7 @@ impl RetentionScope for Scope<'_> {
 					.to_string(PostgresQueryBuilder),
 			)
 			.scalar_optional(&mut **self.access.tx)
-			.await?)
+			.await
 		}
 		.await;
 		Ok(result?.map_or(0, |bytes| u64::try_from(bytes).unwrap_or(0)))
@@ -239,7 +239,7 @@ impl RetentionScope for Scope<'_> {
 	async fn reclaimable_bytes(&mut self) -> Result<u64> {
 		let result: NativeResult<i64> = async {
 			let tenant = self.access.identity.tenant.clone();
-			Ok(crate::database::native::query_scalar(
+			crate::database::native::query_scalar(
 				&Query::select()
 					.expr(Expr::cust("COALESCE(SUM(core_objects.size), 0)::bigint"))
 					.from(Alias::new("core_objects"))
@@ -254,7 +254,7 @@ impl RetentionScope for Scope<'_> {
 					.to_string(PostgresQueryBuilder),
 			)
 			.scalar_one(&mut **self.access.tx)
-			.await?)
+			.await
 		}
 		.await;
 		Ok(u64::try_from(result?).unwrap_or(0))

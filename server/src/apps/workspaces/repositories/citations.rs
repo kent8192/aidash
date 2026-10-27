@@ -79,7 +79,7 @@ async fn object_digest(
 
 async fn existing(lease: &mut Lease, message: Uuid) -> Result<Vec<Cited>> {
 	let tx = lease.tx();
-	Ok(crate::database::native::query_as(
+	crate::database::native::query_as(
 		&Query::select()
 			.column(Alias::new("area_id"))
 			.column(Alias::new("file_id"))
@@ -88,7 +88,7 @@ async fn existing(lease: &mut Lease, message: Uuid) -> Result<Vec<Cited>> {
 			.to_string(PostgresQueryBuilder),
 	)
 	.fetch_all(&mut *tx)
-	.await?)
+	.await
 }
 
 fn same_set(stored: &[Cited], requested: &[CitedFileVersion]) -> bool {
