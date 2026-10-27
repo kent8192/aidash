@@ -372,7 +372,8 @@ async fn admit_session(
 		.egress
 		.as_ref()
 		.ok_or(Error::Forbidden)?;
-	let limits = definition
+	// An External service may only lower the Deployment's session limits.
+	definition
 		.limits
 		.unwrap_or(settings.limits)
 		.lower_than(settings.limits)?;

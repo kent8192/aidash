@@ -441,6 +441,51 @@ pub(crate) fn register(contracts: &mut Contracts, document: &mut OpenApiSchema) 
 			"application/json",
 		)?;
 	contracts
+		.response::<_, crate::apps::execution::capabilities::serializers::previews::LivePreviewStatus>(
+			document,
+			views::live_previews::live_preview,
+			200,
+			"application/json",
+		)?;
+	contracts
+		.response::<_, crate::apps::execution::capabilities::serializers::previews::LivePreviewStatus>(
+			document,
+			views::live_previews::live_preview_stop,
+			200,
+			"application/json",
+		)?;
+	contracts
+		.request::<_, crate::apps::execution::capabilities::serializers::previews::LivePreviewTicketInput>(
+			document,
+			views::live_previews::live_ticket,
+		)?;
+	contracts
+		.response::<_, crate::apps::execution::capabilities::serializers::previews::PreviewTicket>(
+			document,
+			views::live_previews::live_ticket,
+			200,
+			"application/json",
+		)?;
+	contracts
+		.response::<_, crate::apps::execution::capabilities::serializers::previews::TenantPreviewLimits>(
+			document,
+			views::live_previews::preview_limits,
+			200,
+			"application/json",
+		)?;
+	contracts
+		.request::<_, crate::apps::execution::capabilities::serializers::previews::PreviewLimitInput>(
+			document,
+			views::live_previews::set_preview_limits,
+		)?;
+	contracts
+		.response::<_, crate::apps::execution::capabilities::serializers::previews::TenantPreviewLimits>(
+			document,
+			views::live_previews::set_preview_limits,
+			200,
+			"application/json",
+		)?;
+	contracts
 		.response::<_, crate::apps::execution::capabilities::serializers::cleanup::ManagementPage>(
 			document,
 			views::management::managed_areas,

@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "endpoint_count": 340,
+  "endpoint_count": 345,
   "requests": [
     {
       "name": "Health reports the configured node",
@@ -14812,6 +14812,267 @@
       "required_checks": [
         "Exact HTTP 422",
         "Rejection is diagnostic and does not disclose SQL or credentials"
+      ]
+    },
+    {
+      "name": "1348 core_live_preview - Anonymous request is rejected",
+      "file": "contracts/1348-core_live_preview.bru",
+      "endpoint": "GET /api/runs/{id}/live-preview",
+      "scenario": "Anonymous request is rejected",
+      "status": 401,
+      "required_checks": [
+        "Exact HTTP 401",
+        "Stable authorization error envelope"
+      ]
+    },
+    {
+      "name": "1349 core_live_preview - Anonymous request is rejected",
+      "file": "contracts/1349-core_live_preview.bru",
+      "endpoint": "GET /api/runs/{id}/live-preview",
+      "scenario": "Anonymous request is rejected",
+      "status": 401,
+      "required_checks": [
+        "Exact HTTP 401",
+        "Stable authorization error envelope"
+      ]
+    },
+    {
+      "name": "1350 core_live_preview - Deployment Administrator cannot read a missing Run",
+      "file": "contracts/1350-core_live_preview.bru",
+      "endpoint": "GET /api/runs/{id}/live-preview",
+      "scenario": "Deployment Administrator cannot read a missing Run",
+      "status": 403,
+      "required_checks": [
+        "Exact HTTP 403",
+        "Stable authorization error envelope"
+      ]
+    },
+    {
+      "name": "1351 core_live_preview - Subject bearer cannot read a missing Run",
+      "file": "contracts/1351-core_live_preview.bru",
+      "endpoint": "GET /api/runs/{id}/live-preview",
+      "scenario": "Subject bearer cannot read a missing Run",
+      "status": 403,
+      "required_checks": [
+        "Exact HTTP 403",
+        "Stable authorization error envelope"
+      ]
+    },
+    {
+      "name": "1352 core_live_preview_stop - Anonymous request is rejected",
+      "file": "contracts/1352-core_live_preview_stop.bru",
+      "endpoint": "POST /api/runs/{id}/live-preview/stop",
+      "scenario": "Anonymous request is rejected",
+      "status": 401,
+      "required_checks": [
+        "Rejected input preserves committed workspace state",
+        "Exact HTTP 401",
+        "Stable authorization error envelope"
+      ]
+    },
+    {
+      "name": "1353 core_live_preview_stop - Anonymous stop is rejected",
+      "file": "contracts/1353-core_live_preview_stop.bru",
+      "endpoint": "POST /api/runs/{id}/live-preview/stop",
+      "scenario": "Anonymous stop is rejected",
+      "status": 401,
+      "required_checks": [
+        "Exact HTTP 401",
+        "Stable authorization error envelope"
+      ]
+    },
+    {
+      "name": "1354 core_live_preview_stop - Deployment Administrator cannot stop a missing Run",
+      "file": "contracts/1354-core_live_preview_stop.bru",
+      "endpoint": "POST /api/runs/{id}/live-preview/stop",
+      "scenario": "Deployment Administrator cannot stop a missing Run",
+      "status": 403,
+      "required_checks": [
+        "Exact HTTP 403",
+        "Stable authorization error envelope"
+      ]
+    },
+    {
+      "name": "1355 core_live_preview_stop - Subject bearer cannot stop a missing Run",
+      "file": "contracts/1355-core_live_preview_stop.bru",
+      "endpoint": "POST /api/runs/{id}/live-preview/stop",
+      "scenario": "Subject bearer cannot stop a missing Run",
+      "status": 403,
+      "required_checks": [
+        "Exact HTTP 403",
+        "Stable authorization error envelope"
+      ]
+    },
+    {
+      "name": "1356 core_preview_live_ticket - Anonymous request is rejected",
+      "file": "contracts/1356-core_preview_live_ticket.bru",
+      "endpoint": "POST /api/previews/live-tickets",
+      "scenario": "Anonymous request is rejected",
+      "status": 401,
+      "required_checks": [
+        "Rejected input preserves committed workspace state",
+        "Exact HTTP 401",
+        "Stable authorization error envelope"
+      ]
+    },
+    {
+      "name": "1357 core_preview_live_ticket - Anonymous request is rejected",
+      "file": "contracts/1357-core_preview_live_ticket.bru",
+      "endpoint": "POST /api/previews/live-tickets",
+      "scenario": "Anonymous request is rejected",
+      "status": 401,
+      "required_checks": [
+        "Exact HTTP 401",
+        "Stable authorization error envelope"
+      ]
+    },
+    {
+      "name": "1358 core_preview_live_ticket - Malformed JSON cannot reach the use case",
+      "file": "contracts/1358-core_preview_live_ticket.bru",
+      "endpoint": "POST /api/previews/live-tickets",
+      "scenario": "Malformed JSON cannot reach the use case",
+      "status": 400,
+      "required_checks": [
+        "Exact HTTP 400",
+        "Rejection is diagnostic and does not disclose SQL or credentials"
+      ]
+    },
+    {
+      "name": "1359 core_preview_live_ticket - Unknown Ticket fields are rejected",
+      "file": "contracts/1359-core_preview_live_ticket.bru",
+      "endpoint": "POST /api/previews/live-tickets",
+      "scenario": "Unknown Ticket fields are rejected",
+      "status": 422,
+      "required_checks": [
+        "Exact HTTP 422",
+        "Rejection is diagnostic and does not disclose SQL or credentials"
+      ]
+    },
+    {
+      "name": "1360 core_preview_live_ticket - Ticket input is required",
+      "file": "contracts/1360-core_preview_live_ticket.bru",
+      "endpoint": "POST /api/previews/live-tickets",
+      "scenario": "Ticket input is required",
+      "status": 422,
+      "required_checks": [
+        "Exact HTTP 422",
+        "Rejection is diagnostic and does not disclose SQL or credentials"
+      ]
+    },
+    {
+      "name": "1361 core_preview_live_ticket - A missing Live preview has no ticket",
+      "file": "contracts/1361-core_preview_live_ticket.bru",
+      "endpoint": "POST /api/previews/live-tickets",
+      "scenario": "A missing Live preview has no ticket",
+      "status": 404,
+      "required_checks": [
+        "Exact HTTP 404",
+        "Rejection is diagnostic and does not disclose SQL or credentials"
+      ]
+    },
+    {
+      "name": "1362 core_preview_limits - Anonymous request is rejected",
+      "file": "contracts/1362-core_preview_limits.bru",
+      "endpoint": "GET /api/preview-limits/{tenant}",
+      "scenario": "Anonymous request is rejected",
+      "status": 401,
+      "required_checks": [
+        "Exact HTTP 401",
+        "Stable authorization error envelope"
+      ]
+    },
+    {
+      "name": "1363 core_preview_limits - Anonymous request is rejected",
+      "file": "contracts/1363-core_preview_limits.bru",
+      "endpoint": "GET /api/preview-limits/{tenant}",
+      "scenario": "Anonymous request is rejected",
+      "status": 401,
+      "required_checks": [
+        "Exact HTTP 401",
+        "Stable authorization error envelope"
+      ]
+    },
+    {
+      "name": "1364 core_preview_limits - Deployment Administrator reads the default ceilings",
+      "file": "contracts/1364-core_preview_limits.bru",
+      "endpoint": "GET /api/preview-limits/{tenant}",
+      "scenario": "Deployment Administrator reads the default ceilings",
+      "status": 200,
+      "required_checks": [
+        "Exact HTTP 200",
+        "Documented response fields and types",
+        "Deployment Administrator reads the default ceilings contract"
+      ]
+    },
+    {
+      "name": "1365 core_preview_limits - Subject bearer is not a Tenant Administrator",
+      "file": "contracts/1365-core_preview_limits.bru",
+      "endpoint": "GET /api/preview-limits/{tenant}",
+      "scenario": "Subject bearer is not a Tenant Administrator",
+      "status": 403,
+      "required_checks": [
+        "Exact HTTP 403",
+        "Stable authorization error envelope"
+      ]
+    },
+    {
+      "name": "1366 core_preview_limits_update - Anonymous request is rejected",
+      "file": "contracts/1366-core_preview_limits_update.bru",
+      "endpoint": "PUT /api/preview-limits/{tenant}",
+      "scenario": "Anonymous request is rejected",
+      "status": 401,
+      "required_checks": [
+        "Rejected input preserves committed workspace state",
+        "Exact HTTP 401",
+        "Stable authorization error envelope"
+      ]
+    },
+    {
+      "name": "1367 core_preview_limits_update - Anonymous request is rejected",
+      "file": "contracts/1367-core_preview_limits_update.bru",
+      "endpoint": "PUT /api/preview-limits/{tenant}",
+      "scenario": "Anonymous request is rejected",
+      "status": 401,
+      "required_checks": [
+        "Rejected input preserves committed workspace state",
+        "Exact HTTP 401",
+        "Stable authorization error envelope"
+      ]
+    },
+    {
+      "name": "1368 core_preview_limits_update - Malformed JSON cannot reach the use case",
+      "file": "contracts/1368-core_preview_limits_update.bru",
+      "endpoint": "PUT /api/preview-limits/{tenant}",
+      "scenario": "Malformed JSON cannot reach the use case",
+      "status": 400,
+      "required_checks": [
+        "Rejected input preserves committed workspace state",
+        "Exact HTTP 400",
+        "Rejection is diagnostic and does not disclose SQL or credentials"
+      ]
+    },
+    {
+      "name": "1369 core_preview_limits_update - Unknown limit fields are rejected",
+      "file": "contracts/1369-core_preview_limits_update.bru",
+      "endpoint": "PUT /api/preview-limits/{tenant}",
+      "scenario": "Unknown limit fields are rejected",
+      "status": 422,
+      "required_checks": [
+        "Rejected input preserves committed workspace state",
+        "Exact HTTP 422",
+        "Rejection is diagnostic and does not disclose SQL or credentials"
+      ]
+    },
+    {
+      "name": "1370 core_preview_limits_update - Subject bearer is not a Tenant Administrator",
+      "file": "contracts/1370-core_preview_limits_update.bru",
+      "endpoint": "PUT /api/preview-limits/{tenant}",
+      "scenario": "Subject bearer is not a Tenant Administrator",
+      "status": 403,
+      "required_checks": [
+        "Rejected input preserves committed workspace state",
+        "Exact HTTP 403",
+        "Stable authorization error envelope"
       ]
     }
   ]
