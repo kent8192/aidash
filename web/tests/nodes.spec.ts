@@ -352,6 +352,7 @@ test("registering a Node of another Deployment pins its endpoint and key ID", as
       enabled: true,
       expected_revision: 0,
       endpoint: "https://aidash.example.com",
+      dashboard_origin: null,
       key_id: "a".repeat(43),
     },
     {
