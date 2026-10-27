@@ -1,0 +1,177 @@
+{{- if .Values.preview.enabled }}
+{{- $p := .Values.preview -}}
+{{- $name := printf "%s-aidash" .Release.Name -}}
+{{- $image := printf "%s:%s" .Values.image.repository .Values.image.tag -}}
+{{- with .Values.image.digest -}}{{- $image = printf "%s@%s" $.Values.image.repository . -}}{{- end -}}
+{{- $component := ternary "server" "preview" $p.inProcess -}}
+{{- if not (regexMatch "^[a-z0-9]([a-z0-9.-]*[a-z0-9])?$" (required "preview.domain is required when preview.enabled" $p.domain)) -}}
+{{- fail "preview.domain must be a lowercase DNS name" -}}
+{{- end -}}
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ .Release.Name }}-preview
+  labels:
+    app.kubernetes.io/name: aidash
+    app.kubernetes.io/instance: {{ .Release.Name }}
+    app.kubernetes.io/component: preview
+spec:
+  type: ClusterIP
+  selector:
+    app.kubernetes.io/instance: {{ .Release.Name }}
+    app.kubernetes.io/component: {{ $component }}
+  ports:
+    - { name: preview, port: {{ $p.port | int }}, targetPort: {{ $p.port | int }} }
+
+{{ if not $p.inProcess }}
+{{- $secret := required "server.existingSecret or existingSecret is required" (.Values.server.existingSecret | default .Values.existingSecret) -}}
+{{- $profile := "" -}}
+{{ if .Values.execution.runner.enabled }}{{ $profile = include "aidash.capabilityProfile" . }}{{ end }}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ .Release.Name }}-preview
+  labels:
+    app.kubernetes.io/name: aidash
+    app.kubernetes.io/instance: {{ .Release.Name }}
+    app.kubernetes.io/component: preview
+spec:
+  replicas: 1
+  revisionHistoryLimit: 3
+  progressDeadlineSeconds: 300
+  selector:
+    matchLabels:
+      app.kubernetes.io/instance: {{ .Release.Name }}
+      app.kubernetes.io/component: preview
+  template:
+    metadata:
+      {{ if $profile }}
+      annotations:
+        checksum/settings: {{ $profile | sha256sum }}
+      {{ end }}
+      labels:
+        app.kubernetes.io/name: aidash
+        app.kubernetes.io/instance: {{ .Release.Name }}
+        app.kubernetes.io/component: preview
+    spec:
+      hostNetwork: false
+      automountServiceAccountToken: false
+      terminationGracePeriodSeconds: {{ .Values.terminationGracePeriodSeconds }}
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+        runAsGroup: 10001
+        seccompProfile: { type: RuntimeDefault }
+      {{- with .Values.image.pullSecrets }}
+      imagePullSecrets: {{ toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with mergeOverwrite (deepCopy .Values.nodeSelector) .Values.environment.nodeSelector }}
+      nodeSelector: {{ toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with concat .Values.tolerations .Values.environment.tolerations }}
+      tolerations: {{ toYaml . | nindent 8 }}
+      {{- end }}
+      containers:
+        - name: preview
+          image: {{ $image | quote }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          args: ["preview-gateway"]
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities: { drop: [ALL] }
+          envFrom:
+            - secretRef: { name: {{ $secret | quote }} }
+          env:
+            - { name: AIDASH_DEPLOYMENT_ID, value: {{ required "deployment.id is required" .Values.deployment.id | quote }} }
+            - { name: AIDASH_PREVIEW_DOMAIN, value: {{ $p.domain | quote }} }
+            - { name: AIDASH_PREVIEW_LISTEN, value: {{ printf "0.0.0.0:%d" (int $p.port) | quote }} }
+            - { name: AIDASH_PREVIEW_IN_PROCESS, value: "false" }
+            - { name: AIDASH_PREVIEW_PUBLIC_PORT, value: {{ $p.publicPort | int64 | toString | quote }} }
+            - { name: AIDASH_PREVIEW_POD_PORT, value: {{ $p.podPort | int64 | toString | quote }} }
+            - { name: AIDASH_ENDPOINT, value: {{ .Values.deployment.endpoint | default (printf "http://%s-backend.%s.svc:8080" .Release.Name .Release.Namespace) | quote }} }
+            {{- if $profile }}
+            - { name: AIDASH_CAPABILITY_PROFILE, value: /etc/aidash/capability-profile/profile.json }
+            {{- end }}
+          ports:
+            - { name: preview, containerPort: {{ $p.port | int }} }
+          readinessProbe:
+            tcpSocket: { port: preview }
+            periodSeconds: 3
+            timeoutSeconds: 3
+            failureThreshold: 2
+          livenessProbe:
+            tcpSocket: { port: preview }
+            periodSeconds: 10
+            timeoutSeconds: 2
+          resources: {{ toYaml $p.resources | nindent 12 }}
+          volumeMounts:
+            - { name: tmp, mountPath: /tmp }
+            {{- with .Values.capabilities.storage.existingClaim }}
+            - { name: capabilities, mountPath: {{ include "aidash.capabilityDirectory" $ }} }
+            {{- end }}
+            {{ if $profile }}
+            - { name: capability-profile, mountPath: /etc/aidash/capability-profile, readOnly: true }
+            {{ end }}
+      volumes:
+        - { name: tmp, emptyDir: { sizeLimit: 64Mi } }
+        {{- with .Values.capabilities.storage.existingClaim }}
+        - { name: capabilities, persistentVolumeClaim: { claimName: {{ . | quote }} } }
+        {{- end }}
+        {{ if $profile }}
+        - { name: capability-profile, configMap: { name: {{ printf "%s-capability-profile" $name | quote }} } }
+        {{ end }}
+{{ end }}
+{{ if $p.ingress.enabled }}
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: {{ .Release.Name }}-preview
+  {{- with $p.ingress.annotations }}
+  annotations: {{ toYaml . | nindent 4 }}
+  {{- end }}
+spec:
+  {{- with $p.ingress.className }}
+  ingressClassName: {{ . | quote }}
+  {{- end }}
+  rules:
+    - host: {{ printf "*.%s" $p.domain | quote }}
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: {{ .Release.Name }}-preview
+                port: { number: {{ $p.port | int }} }
+  {{- with $p.ingress.tlsSecret }}
+  tls:
+    - hosts: [{{ printf "*.%s" $p.domain | quote }}]
+      secretName: {{ . | quote }}
+  {{- end }}
+{{ end }}
+---
+# The Preview gateway is the only way into an Execution Pod, and only on the
+# port a Live preview declares. W6 sets `preview.podPort`.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ .Release.Name }}-preview-sandbox
+  namespace: {{ include "aidash.sandboxNamespace" . | quote }}
+spec:
+  podSelector:
+    matchLabels: { aidash-sandbox: "true" }
+  policyTypes: [Ingress]
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: {{ .Release.Namespace | quote }}
+          podSelector:
+            matchLabels:
+              app.kubernetes.io/instance: {{ .Release.Name }}
+              app.kubernetes.io/component: {{ $component }}
+      ports: [{ protocol: TCP, port: {{ $p.podPort | int }} }]
+{{- end }}

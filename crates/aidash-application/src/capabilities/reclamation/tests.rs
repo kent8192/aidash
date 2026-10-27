@@ -77,6 +77,10 @@ impl ReclamationRepository for Repository {
 	async fn orphans(&self) -> Result<()> {
 		Ok(())
 	}
+	async fn expire_previews(&self) -> Result<()> {
+		self.0.lock().unwrap().calls.push("expire-previews".into());
+		Ok(())
+	}
 }
 #[async_trait]
 impl ReclamationScope for Scope {
@@ -331,4 +335,22 @@ async fn positive_termination_is_acknowledged_before_reference_bytes_are_reclaim
 	assert_eq!(state.record.data["objects_released"], true);
 	assert_eq!(state.record.state, "revoked");
 	assert_eq!(state.scopes, 0);
+}
+
+#[rstest]
+#[tokio::test]
+async fn sweep_marks_expired_preview_tickets_and_sessions(
+	#[from(repository)] repository: Repository,
+) {
+	let mut cursor = Cursor::default();
+	sweep(&repository, &mut cursor).await.unwrap();
+	assert!(
+		repository
+			.0
+			.lock()
+			.unwrap()
+			.calls
+			.contains(&"expire-previews".into()),
+		"the periodic sweep removes expired Preview tickets and sessions"
+	);
 }
