@@ -6,8 +6,9 @@ use crate::{
 	},
 	authorization::identity::Actor,
 	capabilities::endpoints::{self as api, CapabilitiesManagement},
+	http::json::Json,
 };
-use reinhardt::{Depends, Json, Path, Request, Response, get, http::ViewResult, post, put};
+use reinhardt::{Depends, Path, Request, Response, get, http::ViewResult, post, put};
 use uuid::Uuid;
 
 #[get(

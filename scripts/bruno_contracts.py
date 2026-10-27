@@ -1125,6 +1125,8 @@ def render():
                     body=json.dumps({"tenant": "{{tenant}}", "idle_seconds": 600,
                                      "absolute_seconds": 3600, "expected_revision": 0,
                                      "unexpected": True}), immutable=True)
+                add(endpoint, "Limit input is required", 422, headers=SUBJECT,
+                    body="{}", immutable=True)
                 add(endpoint, "Subject bearer is not a Tenant Administrator", 403,
                     headers=SUBJECT, body=limits, immutable=True)
             continue

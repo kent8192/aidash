@@ -176,6 +176,28 @@ async fn a_deployment_without_a_preview_domain_issues_no_live_ticket(
 
 #[rstest::rstest]
 #[tokio::test]
+async fn invalid_live_preview_inputs_use_the_house_json_contract(
+	#[future] capability_fixture: CoreFixture,
+) {
+	let c = capability_fixture.await;
+	let limits =
+		json!({"tenant":"acme","idle_seconds":600,"absolute_seconds":3600,"expected_revision":0});
+	let ticket = json!({"live_preview_id":Uuid::nil()});
+	for (method, path, valid) in [
+		("POST", "/api/previews/live-tickets", ticket),
+		("PUT", "/api/preview-limits/acme", limits),
+	] {
+		let mut unknown = valid.clone();
+		unknown["unexpected"] = json!(true);
+		for input in [json!({}), unknown] {
+			let (status, body) = request(&c.app, &c.token, method, path, input).await;
+			assert_eq!(status, 422, "{method} {path}: {body}");
+		}
+	}
+}
+
+#[rstest::rstest]
+#[tokio::test]
 async fn a_tenant_lowers_its_limits_within_the_deployment_ceilings(
 	#[future] capability_fixture: CoreFixture,
 ) {

@@ -15064,8 +15064,20 @@
       ]
     },
     {
-      "name": "1370 core_preview_limits_update - Subject bearer is not a Tenant Administrator",
+      "name": "1370 core_preview_limits_update - Limit input is required",
       "file": "contracts/1370-core_preview_limits_update.bru",
+      "endpoint": "PUT /api/preview-limits/{tenant}",
+      "scenario": "Limit input is required",
+      "status": 422,
+      "required_checks": [
+        "Rejected input preserves committed workspace state",
+        "Exact HTTP 422",
+        "Rejection is diagnostic and does not disclose SQL or credentials"
+      ]
+    },
+    {
+      "name": "1371 core_preview_limits_update - Subject bearer is not a Tenant Administrator",
+      "file": "contracts/1371-core_preview_limits_update.bru",
       "endpoint": "PUT /api/preview-limits/{tenant}",
       "scenario": "Subject bearer is not a Tenant Administrator",
       "status": 403,
