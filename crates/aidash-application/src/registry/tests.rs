@@ -913,3 +913,48 @@ async fn plan_models_need_enabled_plan_connections_and_plan_usage_limits() {
 			.is_err()
 	);
 }
+
+#[rstest]
+#[case::omitted(None)]
+#[case::chat(Some("chat"))]
+#[case::responses(Some("responses"))]
+fn openrouter_models_may_declare_their_wire_api(#[case] wire_api: Option<&str>) {
+	let mut config = json!({
+		"provider":"openrouter","model_id":"vendor/model",
+		"endpoint":"https://openrouter.ai/api/v1",
+		"provider_credential":"openrouter","context_window":32768,
+		"max_output_tokens":4096,"modalities":["text"],"cost":{}
+	});
+	if let Some(wire_api) = wire_api {
+		config["wire_api"] = json!(wire_api);
+	}
+	let entry = definition("wire-api", "model", config);
+	let configured = validation().with_provider_credentials(true);
+	configured.validate_in(&entry, true).unwrap();
+	configured.validate_in(&entry, false).unwrap();
+}
+
+#[rstest]
+#[case::keyless(
+	json!({"provider":"openrouter","model_id":"vendor/model","endpoint":"https://example.test","context_window":32768,"max_output_tokens":4096,"modalities":["text"],"cost":{}}),
+	"wire_api"
+)]
+#[case::plan(
+	json!({"provider":"chatgpt","model_id":"gpt-fixture","endpoint":"https://api.openai.com/v1","plan_connection":"chatgpt","context_window":128000,"max_output_tokens":16384,"modalities":["text"],"cost":{}}),
+	"Plan Connection"
+)]
+fn wire_api_is_refused_without_a_provider_credential(
+	#[case] mut config: Value,
+	#[case] expected: &str,
+) {
+	for wire_api in ["chat", "responses"] {
+		config["wire_api"] = json!(wire_api);
+		let entry = definition("wire-api-impossible", "model", config.clone());
+		let error = validation()
+			.with_provider_credentials(true)
+			.with_plan_connections(true)
+			.validate_in(&entry, true)
+			.unwrap_err();
+		assert!(error.to_string().contains(expected), "{error}");
+	}
+}
