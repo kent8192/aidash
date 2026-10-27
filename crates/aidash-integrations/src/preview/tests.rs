@@ -56,6 +56,7 @@ impl Authority for Fake {
 		&self,
 		_: &str,
 		_: &str,
+		_: bool,
 	) -> aidash_application::Result<Option<aidash_application::preview::Proxy>> {
 		Ok(None)
 	}
@@ -253,4 +254,121 @@ fn a_pod_response_may_not_replace_the_confinement_headers() {
 	}
 	assert!(forwarded_response_header("content-type"));
 	assert!(forwarded_response_header("set-cookie"));
+}
+
+struct LiveAuthority {
+	proxy: aidash_application::preview::Proxy,
+	calls: Mutex<Vec<tokio::time::Instant>>,
+	revoked: std::sync::atomic::AtomicBool,
+}
+#[async_trait]
+impl Authority for LiveAuthority {
+	async fn exchange(&self, _: &str, _: &str) -> aidash_application::Result<Exchange> {
+		Err(aidash_application::Error::Forbidden)
+	}
+	async fn view(&self, _: &str, _: &str, _: &str) -> aidash_application::Result<Page> {
+		Err(aidash_application::Error::Forbidden)
+	}
+	async fn live(
+		&self,
+		host: &str,
+		cookie: &str,
+		activity: bool,
+	) -> aidash_application::Result<Option<Proxy>> {
+		assert_eq!(host, "live.localhost");
+		assert_eq!(cookie, "viewer");
+		if activity {
+			self.calls.lock().unwrap().push(tokio::time::Instant::now());
+		}
+		if self.revoked.load(std::sync::atomic::Ordering::Relaxed) {
+			Err(aidash_application::Error::Forbidden)
+		} else {
+			Ok(Some(self.proxy.clone()))
+		}
+	}
+	async fn served(&self, _: &str, _: uuid::Uuid, _: u64) -> aidash_application::Result<()> {
+		Ok(())
+	}
+}
+
+async fn read_head(stream: &mut TcpStream) -> String {
+	let mut bytes = Vec::new();
+	while !bytes.ends_with(b"\r\n\r\n") {
+		bytes.push(stream.read_u8().await.unwrap());
+	}
+	String::from_utf8(bytes).unwrap()
+}
+
+#[tokio::test]
+async fn websocket_traffic_refreshes_activity_but_an_idle_connection_does_not() {
+	let mut tasks = tokio::task::JoinSet::new();
+	let upstream = TcpListener::bind("127.0.0.1:0").await.unwrap();
+	let address = upstream.local_addr().unwrap();
+	tasks.spawn(async move {
+		let (mut stream, _) = upstream.accept().await.unwrap();
+		assert!(read_head(&mut stream).await.starts_with("GET /socket HTTP/1.1"));
+		stream.write_all(b"HTTP/1.1 101 Switching Protocols\r\nConnection: Upgrade\r\nUpgrade: websocket\r\nSec-WebSocket-Accept: fixture\r\n\r\n").await.unwrap();
+		let (mut read, mut write) = stream.into_split();
+		let _ = tokio::io::copy(&mut read, &mut write).await;
+	});
+	let authority = Arc::new(LiveAuthority {
+		proxy: Proxy {
+			preview_id: uuid::Uuid::new_v4(),
+			tenant: "acme".into(),
+			session: uuid::Uuid::new_v4(),
+			frame_ancestor: "https://dashboard.example".into(),
+			upstream: address.to_string(),
+			egress_origin: None,
+			egress_token: None,
+		},
+		calls: Mutex::new(Vec::new()),
+		revoked: std::sync::atomic::AtomicBool::new(false),
+	});
+	let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+	let address = listener.local_addr().unwrap();
+	let (_stop, stopping) = watch::channel(false);
+	let gateway = authority.clone();
+	tasks.spawn(async move {
+		serve(listener, gateway, stopping).await.unwrap();
+	});
+	let mut client = TcpStream::connect(address).await.unwrap();
+	client.write_all(b"GET /socket HTTP/1.1\r\nHost: live.localhost\r\nCookie: __Host-aidash-preview=viewer\r\nConnection: Upgrade\r\nUpgrade: websocket\r\nSec-WebSocket-Key: fixture\r\nSec-WebSocket-Version: 13\r\n\r\n").await.unwrap();
+	let head = tokio::time::timeout(Duration::from_secs(5), read_head(&mut client))
+		.await
+		.unwrap();
+	assert!(head.starts_with("HTTP/1.1 101"), "{head}");
+	assert!(
+		head.to_ascii_lowercase()
+			.contains("content-security-policy:")
+	);
+	// Real bytes traverse both directions; virtual minutes then exercise the
+	// activity refresh without making the test wait for the 15-minute limit.
+	for minute in 0..17 {
+		client.write_all(b"\x81\x01x").await.unwrap();
+		let mut echoed = [0; 3];
+		tokio::time::timeout(Duration::from_secs(5), client.read_exact(&mut echoed))
+			.await
+			.unwrap()
+			.unwrap();
+		assert_eq!(&echoed, b"\x81\x01x");
+		tokio::time::pause();
+		tokio::time::advance(Duration::from_secs(60)).await;
+		for _ in 0..10 {
+			tokio::task::yield_now().await;
+		}
+		assert_eq!(authority.calls.lock().unwrap().len(), minute + 2);
+		tokio::time::resume();
+	}
+	tokio::time::pause();
+	let calls = authority.calls.lock().unwrap().len();
+	tokio::time::advance(Duration::from_secs(60)).await;
+	for _ in 0..10 {
+		tokio::task::yield_now().await;
+	}
+	assert_eq!(
+		authority.calls.lock().unwrap().len(),
+		calls,
+		"a silent open socket does not extend the idle deadline"
+	);
+	tokio::time::resume();
 }

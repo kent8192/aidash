@@ -8,10 +8,19 @@ use bytes::Bytes;
 use futures_util::TryStreamExt;
 use http_body_util::{BodyExt, Empty, Full, StreamBody, combinators::UnsyncBoxBody};
 use hyper::{Request, Response, StatusCode, body::Frame, header, service::service_fn};
-use hyper_util::rt::TokioIo;
-use std::{convert::Infallible, sync::Arc, time::Duration};
+use hyper_util::rt::{TokioIo, TokioTimer};
+use std::{
+	convert::Infallible,
+	pin::Pin,
+	sync::{
+		Arc,
+		atomic::{AtomicBool, Ordering},
+	},
+	task::{Context, Poll},
+	time::Duration,
+};
 use tokio::{
-	io::{AsyncReadExt, AsyncWriteExt},
+	io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt, ReadBuf},
 	net::{TcpListener, TcpStream},
 	sync::watch,
 };
@@ -24,6 +33,43 @@ const HEADER_READ: Duration = Duration::from_secs(30);
 pub const EGRESS_PREFIX: &str = "/__aidash/egress/";
 /// The largest request or buffered response the Preview gateway forwards.
 const MAX_FORWARD_BYTES: usize = 64 * 1024 * 1024;
+
+// Observe payload bytes in either direction, excluding the opening handshake.
+struct ActiveStream<T> {
+	inner: T,
+	activity: Arc<AtomicBool>,
+}
+
+impl<T: AsyncRead + Unpin> AsyncRead for ActiveStream<T> {
+	fn poll_read(
+		mut self: Pin<&mut Self>,
+		cx: &mut Context<'_>,
+		buf: &mut ReadBuf<'_>,
+	) -> Poll<std::io::Result<()>> {
+		let before = buf.filled().len();
+		let result = Pin::new(&mut self.inner).poll_read(cx, buf);
+		if buf.filled().len() > before {
+			self.activity.store(true, Ordering::Relaxed);
+		}
+		result
+	}
+}
+
+impl<T: AsyncWrite + Unpin> AsyncWrite for ActiveStream<T> {
+	fn poll_write(
+		mut self: Pin<&mut Self>,
+		cx: &mut Context<'_>,
+		buf: &[u8],
+	) -> Poll<std::io::Result<usize>> {
+		Pin::new(&mut self.inner).poll_write(cx, buf)
+	}
+	fn poll_flush(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<std::io::Result<()>> {
+		Pin::new(&mut self.inner).poll_flush(cx)
+	}
+	fn poll_shutdown(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<std::io::Result<()>> {
+		Pin::new(&mut self.inner).poll_shutdown(cx)
+	}
+}
 
 /// The cookie a preview subdomain receives. `__Host-` requires `Secure`,
 /// `Path=/` and no `Domain`; framing the page cross-site requires `SameSite=None`.
@@ -398,31 +444,42 @@ async fn live_websocket(
 				.body(empty())
 				.unwrap();
 			let upgrade = hyper::upgrade::on(&mut request);
-			// An active socket is activity: refresh the idle timer at most once
-			// a minute so a 15-minute idle limit does not close a live app.
+			// Probe authority once a minute. Only bytes actually carried by the
+			// tunnel refresh the idle deadline; the repository coalesces updates
+			// across every socket of this preview.
 			let authority = authority.clone();
 			let host = host.to_owned();
 			let cookie = cookie.to_owned();
-			let refresh = tokio::spawn(async move {
-				loop {
-					tokio::time::sleep(Duration::from_secs(60)).await;
-					if !matches!(authority.live(&host, &cookie).await, Ok(Some(_))) {
-						return;
-					}
-				}
-			});
 			tokio::spawn(async move {
 				let Ok(upgraded) = upgrade.await else {
-					refresh.abort();
 					return;
 				};
 				let mut client = TokioIo::new(upgraded);
 				if !leftover.is_empty() && client.write_all(&leftover).await.is_err() {
-					refresh.abort();
 					return;
 				}
-				let _ = tokio::io::copy_bidirectional(&mut client, &mut stream).await;
-				refresh.abort();
+				let activity = Arc::new(AtomicBool::new(false));
+				let mut client = ActiveStream {
+					inner: client,
+					activity: activity.clone(),
+				};
+				let mut stream = ActiveStream {
+					inner: stream,
+					activity: activity.clone(),
+				};
+				let transfer = tokio::io::copy_bidirectional(&mut client, &mut stream);
+				tokio::pin!(transfer);
+				loop {
+					tokio::select! {
+						_ = &mut transfer => return,
+						_ = tokio::time::sleep(Duration::from_secs(60)) => {
+							let seen = activity.swap(false, Ordering::Relaxed);
+							if !matches!(authority.live(&host, &cookie, seen).await, Ok(Some(_))) {
+								return;
+							}
+						}
+					}
+				}
 			});
 			return response;
 		}
@@ -528,7 +585,7 @@ async fn respond(
 	let Some(cookie) = cookie.as_deref().and_then(session_value) else {
 		return plain(StatusCode::FORBIDDEN, "preview forbidden");
 	};
-	match authority.live(&host, cookie).await {
+	match authority.live(&host, cookie, true).await {
 		Ok(Some(proxy)) => live(&client, &authority, &host, cookie, proxy, request).await,
 		Ok(None) => file_view(authority.as_ref(), &host, cookie, &method, &path).await,
 		Err(error) => error_response(error),
@@ -565,9 +622,11 @@ pub async fn serve(
 						async move { Ok::<_, Infallible>(respond(client, authority, request).await) }
 					});
 					let _ = hyper::server::conn::http1::Builder::new()
+						.timer(TokioTimer::new())
 						.header_read_timeout(HEADER_READ)
 						.max_headers(64)
 						.serve_connection(TokioIo::new(socket), service)
+						.with_upgrades()
 						.await;
 				});
 			}
@@ -597,7 +656,7 @@ async fn dispatch(
 	let Some(cookie) = cookie.and_then(session_value) else {
 		return plain(StatusCode::FORBIDDEN, "preview forbidden");
 	};
-	match authority.live(host, cookie).await {
+	match authority.live(host, cookie, true).await {
 		Ok(Some(_)) => plain(StatusCode::INTERNAL_SERVER_ERROR, "live proxy under test"),
 		Ok(None) => file_view(authority, host, cookie, method, path).await,
 		Err(error) => error_response(error),

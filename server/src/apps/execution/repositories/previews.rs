@@ -628,6 +628,7 @@ impl Gateway {
 		&self,
 		host: &str,
 		cookie: &str,
+		activity: bool,
 	) -> NativeResult<Option<application::Proxy>> {
 		let resolved = match self.resolve(host).await {
 			Ok(resolved) => resolved,
@@ -684,6 +685,7 @@ impl Gateway {
 		let outcome: NativeResult<aidash_domain::preview::live::LivePreview> = async {
 			let row = CoreLivePreviews::objects()
 				.filter(CoreLivePreviews::field_id().eq(live_id))
+				.select_for_update()
 				.all_with_executor(&mut **access.tx)
 				.await
 				.map_err(reinhardt::core::exception::Error::from)?
@@ -710,11 +712,13 @@ impl Gateway {
 					.map_err(reinhardt::core::exception::Error::from)?;
 				return Err(error);
 			}
-			live.last_request_at = now;
-			CoreLivePreviews::objects()
-				.save_with_executor(&mut **access.tx, &super::live_previews::to_row(&live))
-				.await
-				.map_err(reinhardt::core::exception::Error::from)?;
+			if activity && now - live.last_request_at >= chrono::Duration::seconds(60) {
+				live.last_request_at = now;
+				CoreLivePreviews::objects()
+					.save_with_executor(&mut **access.tx, &super::live_previews::to_row(&live))
+					.await
+					.map_err(reinhardt::core::exception::Error::from)?;
+			}
 			Ok(live)
 		}
 		.await;
@@ -761,8 +765,11 @@ impl application::Authority for Gateway {
 		&self,
 		host: &str,
 		cookie: &str,
+		activity: bool,
 	) -> aidash_application::Result<Option<application::Proxy>> {
-		self.live_native(host, cookie).await.map_err(Into::into)
+		self.live_native(host, cookie, activity)
+			.await
+			.map_err(Into::into)
 	}
 	async fn served(
 		&self,

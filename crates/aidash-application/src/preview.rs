@@ -128,10 +128,11 @@ pub struct Proxy {
 pub trait Authority: Send + Sync {
 	async fn exchange(&self, host: &str, ticket: &str) -> Result<Exchange>;
 	async fn view(&self, host: &str, cookie: &str, path: &str) -> Result<Page>;
-	/// A Live preview request: recheck authority, refresh the idle timer and
-	/// return where to proxy it. `None` when this host is not a Live preview.
+	/// A Live preview request: recheck authority, refresh the idle timer only
+	/// when `activity` is true, and return where to proxy it. A silent socket
+	/// probes authority without extending the idle deadline.
 	/// It stops the preview when authority is gone.
-	async fn live(&self, host: &str, cookie: &str) -> Result<Option<Proxy>>;
+	async fn live(&self, host: &str, cookie: &str, activity: bool) -> Result<Option<Proxy>>;
 	/// Adds the bytes actually sent to the viewing session's record.
 	async fn served(&self, tenant: &str, session: Uuid, bytes: u64) -> Result<()>;
 }
