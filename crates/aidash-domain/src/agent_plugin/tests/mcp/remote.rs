@@ -60,6 +60,25 @@ fn a_malformed_remote_entry_is_invalid(#[case] entry: Value) {
 }
 
 #[rstest]
+#[case::authorization("Authorization")]
+#[case::lowercase_authorization("authorization")]
+#[case::proxy_authorization("Proxy-Authorization")]
+#[case::upper_proxy_authorization("PROXY-AUTHORIZATION")]
+fn credentials_are_never_carried_in_a_literal_header(#[case] name: &str) {
+	let mut headers = serde_json::Map::new();
+	headers.insert(name.into(), json!("Bearer secret"));
+	let finding = the_only_finding(json!({
+		"type": "streamable-http",
+		"url": "https://example.com/mcp",
+		"headers": headers,
+	}));
+	assert_eq!(finding.reason, Reason::ServerInvalid);
+	assert_eq!(
+		finding.detail,
+		format!("header {name} must not carry credentials; connect the server instead")
+	);
+}
+#[rstest]
 #[case::https("https://example.com/mcp", "https://example.com/mcp")]
 #[case::http_hostname("http://ollama.lan:11434/mcp", "http://ollama.lan:11434/mcp")]
 #[case::http_public_hostname("http://example.com/mcp", "http://example.com/mcp")]

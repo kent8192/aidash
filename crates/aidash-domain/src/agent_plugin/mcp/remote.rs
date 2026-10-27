@@ -100,8 +100,14 @@ const RESERVED_HEADERS: [&str; 13] = [
 	"mcp-protocol-version",
 ];
 
+/// Header fields that carry credentials. Authentication comes from an MCP OAuth
+/// Connection or a Tenant Secret, never from a header written into a plugin
+/// (ADR 0100).
+const CREDENTIAL_HEADERS: [&str; 2] = ["authorization", "proxy-authorization"];
+
 /// RFC 9110 token names and values without control characters other than horizontal tab; the
-/// same name in two casings is a duplicate. Names the transports own are refused.
+/// same name in two casings is a duplicate. Names the transports own are refused, and so is
+/// authentication through a literal header.
 fn headers(value: &Value) -> Result<Vec<Header>, Refusal> {
 	let invalid = || Refusal::invalid("headers must be an object of valid header fields");
 	let members = value.as_object().ok_or_else(invalid)?;
@@ -109,10 +115,16 @@ fn headers(value: &Value) -> Result<Vec<Header>, Refusal> {
 	let mut headers = Vec::with_capacity(members.len());
 	for (name, value) in members {
 		let value = value.as_str().ok_or_else(invalid)?;
+		let lower = name.to_ascii_lowercase();
+		if CREDENTIAL_HEADERS.contains(&lower.as_str()) {
+			return Err(Refusal::invalid(format!(
+				"header {name} must not carry credentials; connect the server instead"
+			)));
+		}
 		if http::header::HeaderName::from_bytes(name.as_bytes()).is_err()
 			|| http::header::HeaderValue::from_str(value).is_err()
-			|| RESERVED_HEADERS.contains(&name.to_ascii_lowercase().as_str())
-			|| !seen.insert(name.to_ascii_lowercase())
+			|| RESERVED_HEADERS.contains(&lower.as_str())
+			|| !seen.insert(lower)
 		{
 			return Err(Refusal::invalid(format!("header {name} is invalid")));
 		}
