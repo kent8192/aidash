@@ -32,8 +32,14 @@ pub trait Store: Send + Sync {
 	async fn disable(&self, tenant: &str, version: &str) -> Result<()>;
 	async fn destroy(&self, tenant: &str, version: &str) -> Result<()>;
 	async fn delete(&self, tenant: &str, resource: &str) -> Result<()>;
-	/// The resource holding one Plan Connection's Plan Tokens. Plan Tokens
-	/// share the Store with Key Material under their own namespace (ADR 0008).
+	/// One person's MCP OAuth token journal, in its own Store namespace.
+	fn connection_resource(&self, id: Uuid) -> String {
+		format!("aidash-store/oauth-connections/{id}")
+	}
+	async fn create_connection(&self, _tenant: &str, _id: Uuid) -> Result<()> {
+		Err(Error::External("connection_unavailable".into()))
+	}
+	/// Plan Tokens share the Store under their own namespace (ADR 0008).
 	fn plan_resource(&self, id: Uuid) -> String {
 		format!("aidash-store/plan-connections/{id}")
 	}
