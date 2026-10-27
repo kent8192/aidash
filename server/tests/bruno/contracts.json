@@ -6144,6 +6144,17 @@
                 "minimum": 0
               }
             },
+            "provider_tool": {
+              "anyOf": [
+                {
+                  "$ref": "#/components/schemas/Parameters"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Provider-owned tools take immutable Binding parameters, never model arguments."
+            },
             "scope": {
               "type": "object",
               "additionalProperties": {
@@ -6167,6 +6178,20 @@
             "origin": {
               "$ref": "#/components/schemas/BindingOrigin"
             }
+          },
+          "additionalProperties": false
+        },
+        "Parameters": {
+          "type": "object",
+          "description": "Binding-owned configuration, copied into the immutable Binding snapshot.\nNo default is deserialized: an author must explicitly pin every spending cap.",
+          "required": ["max_tool_calls", "parameters"],
+          "properties": {
+            "max_tool_calls": {
+              "type": "integer",
+              "format": "uint32",
+              "minimum": 0
+            },
+            "parameters": {}
           },
           "additionalProperties": false
         },
@@ -12439,6 +12464,17 @@
                 "minimum": 0
               }
             },
+            "provider_tool": {
+              "anyOf": [
+                {
+                  "$ref": "#/components/schemas/Parameters"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Provider-owned tools take immutable Binding parameters, never model arguments."
+            },
             "scope": {
               "type": "object",
               "additionalProperties": {
@@ -12462,6 +12498,20 @@
             "origin": {
               "$ref": "#/components/schemas/BindingOrigin"
             }
+          },
+          "additionalProperties": false
+        },
+        "Parameters": {
+          "type": "object",
+          "description": "Binding-owned configuration, copied into the immutable Binding snapshot.\nNo default is deserialized: an author must explicitly pin every spending cap.",
+          "required": ["max_tool_calls", "parameters"],
+          "properties": {
+            "max_tool_calls": {
+              "type": "integer",
+              "format": "uint32",
+              "minimum": 0
+            },
+            "parameters": {}
           },
           "additionalProperties": false
         },
@@ -13148,6 +13198,17 @@
                 "minimum": 0
               }
             },
+            "provider_tool": {
+              "anyOf": [
+                {
+                  "$ref": "#/components/schemas/Parameters"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Provider-owned tools take immutable Binding parameters, never model arguments."
+            },
             "scope": {
               "type": "object",
               "additionalProperties": {
@@ -13171,6 +13232,20 @@
             "origin": {
               "$ref": "#/components/schemas/BindingOrigin"
             }
+          },
+          "additionalProperties": false
+        },
+        "Parameters": {
+          "type": "object",
+          "description": "Binding-owned configuration, copied into the immutable Binding snapshot.\nNo default is deserialized: an author must explicitly pin every spending cap.",
+          "required": ["max_tool_calls", "parameters"],
+          "properties": {
+            "max_tool_calls": {
+              "type": "integer",
+              "format": "uint32",
+              "minimum": 0
+            },
+            "parameters": {}
           },
           "additionalProperties": false
         },
@@ -13710,6 +13785,17 @@
                 "minimum": 0
               }
             },
+            "provider_tool": {
+              "anyOf": [
+                {
+                  "$ref": "#/components/schemas/Parameters"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Provider-owned tools take immutable Binding parameters, never model arguments."
+            },
             "scope": {
               "type": "object",
               "additionalProperties": {
@@ -13737,6 +13823,20 @@
             "origin": {
               "$ref": "#/components/schemas/BindingOrigin"
             }
+          },
+          "additionalProperties": false
+        },
+        "Parameters": {
+          "type": "object",
+          "description": "Binding-owned configuration, copied into the immutable Binding snapshot.\nNo default is deserialized: an author must explicitly pin every spending cap.",
+          "required": ["max_tool_calls", "parameters"],
+          "properties": {
+            "max_tool_calls": {
+              "type": "integer",
+              "format": "uint32",
+              "minimum": 0
+            },
+            "parameters": {}
           },
           "additionalProperties": false
         },
@@ -14201,6 +14301,17 @@
                 "minimum": 0
               }
             },
+            "provider_tool": {
+              "anyOf": [
+                {
+                  "$ref": "#/components/schemas/Parameters"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Provider-owned tools take immutable Binding parameters, never model arguments."
+            },
             "scope": {
               "type": "object",
               "additionalProperties": {
@@ -14228,6 +14339,20 @@
             "origin": {
               "$ref": "#/components/schemas/BindingOrigin"
             }
+          },
+          "additionalProperties": false
+        },
+        "Parameters": {
+          "type": "object",
+          "description": "Binding-owned configuration, copied into the immutable Binding snapshot.\nNo default is deserialized: an author must explicitly pin every spending cap.",
+          "required": ["max_tool_calls", "parameters"],
+          "properties": {
+            "max_tool_calls": {
+              "type": "integer",
+              "format": "uint32",
+              "minimum": 0
+            },
+            "parameters": {}
           },
           "additionalProperties": false
         },
@@ -14689,6 +14814,17 @@
                 "minimum": 0
               }
             },
+            "provider_tool": {
+              "anyOf": [
+                {
+                  "$ref": "#/components/schemas/Parameters"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Provider-owned tools take immutable Binding parameters, never model arguments."
+            },
             "scope": {
               "type": "object",
               "additionalProperties": {
@@ -14716,6 +14852,20 @@
             "origin": {
               "$ref": "#/components/schemas/BindingOrigin"
             }
+          },
+          "additionalProperties": false
+        },
+        "Parameters": {
+          "type": "object",
+          "description": "Binding-owned configuration, copied into the immutable Binding snapshot.\nNo default is deserialized: an author must explicitly pin every spending cap.",
+          "required": ["max_tool_calls", "parameters"],
+          "properties": {
+            "max_tool_calls": {
+              "type": "integer",
+              "format": "uint32",
+              "minimum": 0
+            },
+            "parameters": {}
           },
           "additionalProperties": false
         },
@@ -15451,6 +15601,17 @@
                 "minimum": 0
               }
             },
+            "provider_tool": {
+              "anyOf": [
+                {
+                  "$ref": "#/components/schemas/Parameters"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Provider-owned tools take immutable Binding parameters, never model arguments."
+            },
             "scope": {
               "type": "object",
               "additionalProperties": {
@@ -15474,6 +15635,20 @@
             "origin": {
               "$ref": "#/components/schemas/BindingOrigin"
             }
+          },
+          "additionalProperties": false
+        },
+        "Parameters": {
+          "type": "object",
+          "description": "Binding-owned configuration, copied into the immutable Binding snapshot.\nNo default is deserialized: an author must explicitly pin every spending cap.",
+          "required": ["max_tool_calls", "parameters"],
+          "properties": {
+            "max_tool_calls": {
+              "type": "integer",
+              "format": "uint32",
+              "minimum": 0
+            },
+            "parameters": {}
           },
           "additionalProperties": false
         },
@@ -16061,6 +16236,17 @@
                 "minimum": 0
               }
             },
+            "provider_tool": {
+              "anyOf": [
+                {
+                  "$ref": "#/components/schemas/Parameters"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Provider-owned tools take immutable Binding parameters, never model arguments."
+            },
             "scope": {
               "type": "object",
               "additionalProperties": {
@@ -16084,6 +16270,20 @@
             "origin": {
               "$ref": "#/components/schemas/BindingOrigin"
             }
+          },
+          "additionalProperties": false
+        },
+        "Parameters": {
+          "type": "object",
+          "description": "Binding-owned configuration, copied into the immutable Binding snapshot.\nNo default is deserialized: an author must explicitly pin every spending cap.",
+          "required": ["max_tool_calls", "parameters"],
+          "properties": {
+            "max_tool_calls": {
+              "type": "integer",
+              "format": "uint32",
+              "minimum": 0
+            },
+            "parameters": {}
           },
           "additionalProperties": false
         },
@@ -16677,6 +16877,17 @@
                 "minimum": 0
               }
             },
+            "provider_tool": {
+              "anyOf": [
+                {
+                  "$ref": "#/components/schemas/Parameters"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Provider-owned tools take immutable Binding parameters, never model arguments."
+            },
             "scope": {
               "type": "object",
               "additionalProperties": {
@@ -16733,6 +16944,20 @@
               },
               "description": "The Tenant Secrets the package's tool names, which whoever installs it\nfills from their own Tenant (ADR 0051). Empty for most packages."
             }
+          },
+          "additionalProperties": false
+        },
+        "Parameters": {
+          "type": "object",
+          "description": "Binding-owned configuration, copied into the immutable Binding snapshot.\nNo default is deserialized: an author must explicitly pin every spending cap.",
+          "required": ["max_tool_calls", "parameters"],
+          "properties": {
+            "max_tool_calls": {
+              "type": "integer",
+              "format": "uint32",
+              "minimum": 0
+            },
+            "parameters": {}
           },
           "additionalProperties": false
         },
@@ -17096,6 +17321,17 @@
                 "minimum": 0
               }
             },
+            "provider_tool": {
+              "anyOf": [
+                {
+                  "$ref": "#/components/schemas/Parameters"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Provider-owned tools take immutable Binding parameters, never model arguments."
+            },
             "scope": {
               "type": "object",
               "additionalProperties": {
@@ -17119,6 +17355,20 @@
             "origin": {
               "$ref": "#/components/schemas/BindingOrigin"
             }
+          },
+          "additionalProperties": false
+        },
+        "Parameters": {
+          "type": "object",
+          "description": "Binding-owned configuration, copied into the immutable Binding snapshot.\nNo default is deserialized: an author must explicitly pin every spending cap.",
+          "required": ["max_tool_calls", "parameters"],
+          "properties": {
+            "max_tool_calls": {
+              "type": "integer",
+              "format": "uint32",
+              "minimum": 0
+            },
+            "parameters": {}
           },
           "additionalProperties": false
         },
@@ -17584,6 +17834,17 @@
                 "minimum": 0
               }
             },
+            "provider_tool": {
+              "anyOf": [
+                {
+                  "$ref": "#/components/schemas/Parameters"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Provider-owned tools take immutable Binding parameters, never model arguments."
+            },
             "scope": {
               "type": "object",
               "additionalProperties": {
@@ -17607,6 +17868,20 @@
             "origin": {
               "$ref": "#/components/schemas/BindingOrigin"
             }
+          },
+          "additionalProperties": false
+        },
+        "Parameters": {
+          "type": "object",
+          "description": "Binding-owned configuration, copied into the immutable Binding snapshot.\nNo default is deserialized: an author must explicitly pin every spending cap.",
+          "required": ["max_tool_calls", "parameters"],
+          "properties": {
+            "max_tool_calls": {
+              "type": "integer",
+              "format": "uint32",
+              "minimum": 0
+            },
+            "parameters": {}
           },
           "additionalProperties": false
         },
@@ -18174,6 +18449,17 @@
                 "minimum": 0
               }
             },
+            "provider_tool": {
+              "anyOf": [
+                {
+                  "$ref": "#/components/schemas/Parameters"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Provider-owned tools take immutable Binding parameters, never model arguments."
+            },
             "scope": {
               "type": "object",
               "additionalProperties": {
@@ -18197,6 +18483,20 @@
             "origin": {
               "$ref": "#/components/schemas/BindingOrigin"
             }
+          },
+          "additionalProperties": false
+        },
+        "Parameters": {
+          "type": "object",
+          "description": "Binding-owned configuration, copied into the immutable Binding snapshot.\nNo default is deserialized: an author must explicitly pin every spending cap.",
+          "required": ["max_tool_calls", "parameters"],
+          "properties": {
+            "max_tool_calls": {
+              "type": "integer",
+              "format": "uint32",
+              "minimum": 0
+            },
+            "parameters": {}
           },
           "additionalProperties": false
         },
@@ -18662,6 +18962,17 @@
                 "minimum": 0
               }
             },
+            "provider_tool": {
+              "anyOf": [
+                {
+                  "$ref": "#/components/schemas/Parameters"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Provider-owned tools take immutable Binding parameters, never model arguments."
+            },
             "scope": {
               "type": "object",
               "additionalProperties": {
@@ -18685,6 +18996,20 @@
             "origin": {
               "$ref": "#/components/schemas/BindingOrigin"
             }
+          },
+          "additionalProperties": false
+        },
+        "Parameters": {
+          "type": "object",
+          "description": "Binding-owned configuration, copied into the immutable Binding snapshot.\nNo default is deserialized: an author must explicitly pin every spending cap.",
+          "required": ["max_tool_calls", "parameters"],
+          "properties": {
+            "max_tool_calls": {
+              "type": "integer",
+              "format": "uint32",
+              "minimum": 0
+            },
+            "parameters": {}
           },
           "additionalProperties": false
         },
@@ -19150,6 +19475,17 @@
                 "minimum": 0
               }
             },
+            "provider_tool": {
+              "anyOf": [
+                {
+                  "$ref": "#/components/schemas/Parameters"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Provider-owned tools take immutable Binding parameters, never model arguments."
+            },
             "scope": {
               "type": "object",
               "additionalProperties": {
@@ -19173,6 +19509,20 @@
             "origin": {
               "$ref": "#/components/schemas/BindingOrigin"
             }
+          },
+          "additionalProperties": false
+        },
+        "Parameters": {
+          "type": "object",
+          "description": "Binding-owned configuration, copied into the immutable Binding snapshot.\nNo default is deserialized: an author must explicitly pin every spending cap.",
+          "required": ["max_tool_calls", "parameters"],
+          "properties": {
+            "max_tool_calls": {
+              "type": "integer",
+              "format": "uint32",
+              "minimum": 0
+            },
+            "parameters": {}
           },
           "additionalProperties": false
         },
@@ -19691,6 +20041,17 @@
                 "minimum": 0
               }
             },
+            "provider_tool": {
+              "anyOf": [
+                {
+                  "$ref": "#/components/schemas/Parameters"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Provider-owned tools take immutable Binding parameters, never model arguments."
+            },
             "scope": {
               "type": "object",
               "additionalProperties": {
@@ -19714,6 +20075,20 @@
             "origin": {
               "$ref": "#/components/schemas/BindingOrigin"
             }
+          },
+          "additionalProperties": false
+        },
+        "Parameters": {
+          "type": "object",
+          "description": "Binding-owned configuration, copied into the immutable Binding snapshot.\nNo default is deserialized: an author must explicitly pin every spending cap.",
+          "required": ["max_tool_calls", "parameters"],
+          "properties": {
+            "max_tool_calls": {
+              "type": "integer",
+              "format": "uint32",
+              "minimum": 0
+            },
+            "parameters": {}
           },
           "additionalProperties": false
         },
@@ -20089,6 +20464,17 @@
                 "minimum": 0
               }
             },
+            "provider_tool": {
+              "anyOf": [
+                {
+                  "$ref": "#/components/schemas/Parameters"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Provider-owned tools take immutable Binding parameters, never model arguments."
+            },
             "scope": {
               "type": "object",
               "additionalProperties": {
@@ -20112,6 +20498,20 @@
             "origin": {
               "$ref": "#/components/schemas/BindingOrigin"
             }
+          },
+          "additionalProperties": false
+        },
+        "Parameters": {
+          "type": "object",
+          "description": "Binding-owned configuration, copied into the immutable Binding snapshot.\nNo default is deserialized: an author must explicitly pin every spending cap.",
+          "required": ["max_tool_calls", "parameters"],
+          "properties": {
+            "max_tool_calls": {
+              "type": "integer",
+              "format": "uint32",
+              "minimum": 0
+            },
+            "parameters": {}
           },
           "additionalProperties": false
         },
@@ -20470,6 +20870,17 @@
                 "minimum": 0
               }
             },
+            "provider_tool": {
+              "anyOf": [
+                {
+                  "$ref": "#/components/schemas/Parameters"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Provider-owned tools take immutable Binding parameters, never model arguments."
+            },
             "scope": {
               "type": "object",
               "additionalProperties": {
@@ -20493,6 +20904,20 @@
             "origin": {
               "$ref": "#/components/schemas/BindingOrigin"
             }
+          },
+          "additionalProperties": false
+        },
+        "Parameters": {
+          "type": "object",
+          "description": "Binding-owned configuration, copied into the immutable Binding snapshot.\nNo default is deserialized: an author must explicitly pin every spending cap.",
+          "required": ["max_tool_calls", "parameters"],
+          "properties": {
+            "max_tool_calls": {
+              "type": "integer",
+              "format": "uint32",
+              "minimum": 0
+            },
+            "parameters": {}
           },
           "additionalProperties": false
         },
@@ -20840,6 +21265,17 @@
                 "minimum": 0
               }
             },
+            "provider_tool": {
+              "anyOf": [
+                {
+                  "$ref": "#/components/schemas/Parameters"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Provider-owned tools take immutable Binding parameters, never model arguments."
+            },
             "scope": {
               "type": "object",
               "additionalProperties": {
@@ -20863,6 +21299,20 @@
             "origin": {
               "$ref": "#/components/schemas/BindingOrigin"
             }
+          },
+          "additionalProperties": false
+        },
+        "Parameters": {
+          "type": "object",
+          "description": "Binding-owned configuration, copied into the immutable Binding snapshot.\nNo default is deserialized: an author must explicitly pin every spending cap.",
+          "required": ["max_tool_calls", "parameters"],
+          "properties": {
+            "max_tool_calls": {
+              "type": "integer",
+              "format": "uint32",
+              "minimum": 0
+            },
+            "parameters": {}
           },
           "additionalProperties": false
         },
@@ -21249,6 +21699,17 @@
                 "minimum": 0
               }
             },
+            "provider_tool": {
+              "anyOf": [
+                {
+                  "$ref": "#/components/schemas/Parameters"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Provider-owned tools take immutable Binding parameters, never model arguments."
+            },
             "scope": {
               "type": "object",
               "additionalProperties": {
@@ -21272,6 +21733,20 @@
             "origin": {
               "$ref": "#/components/schemas/BindingOrigin"
             }
+          },
+          "additionalProperties": false
+        },
+        "Parameters": {
+          "type": "object",
+          "description": "Binding-owned configuration, copied into the immutable Binding snapshot.\nNo default is deserialized: an author must explicitly pin every spending cap.",
+          "required": ["max_tool_calls", "parameters"],
+          "properties": {
+            "max_tool_calls": {
+              "type": "integer",
+              "format": "uint32",
+              "minimum": 0
+            },
+            "parameters": {}
           },
           "additionalProperties": false
         },
@@ -21698,6 +22173,17 @@
                 "minimum": 0
               }
             },
+            "provider_tool": {
+              "anyOf": [
+                {
+                  "$ref": "#/components/schemas/Parameters"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Provider-owned tools take immutable Binding parameters, never model arguments."
+            },
             "scope": {
               "type": "object",
               "additionalProperties": {
@@ -21721,6 +22207,20 @@
             "origin": {
               "$ref": "#/components/schemas/BindingOrigin"
             }
+          },
+          "additionalProperties": false
+        },
+        "Parameters": {
+          "type": "object",
+          "description": "Binding-owned configuration, copied into the immutable Binding snapshot.\nNo default is deserialized: an author must explicitly pin every spending cap.",
+          "required": ["max_tool_calls", "parameters"],
+          "properties": {
+            "max_tool_calls": {
+              "type": "integer",
+              "format": "uint32",
+              "minimum": 0
+            },
+            "parameters": {}
           },
           "additionalProperties": false
         },
@@ -25660,6 +26160,17 @@
                 "minimum": 0
               }
             },
+            "provider_tool": {
+              "anyOf": [
+                {
+                  "$ref": "#/components/schemas/Parameters"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Provider-owned tools take immutable Binding parameters, never model arguments."
+            },
             "scope": {
               "type": "object",
               "additionalProperties": {
@@ -25683,6 +26194,20 @@
             "origin": {
               "$ref": "#/components/schemas/BindingOrigin"
             }
+          },
+          "additionalProperties": false
+        },
+        "Parameters": {
+          "type": "object",
+          "description": "Binding-owned configuration, copied into the immutable Binding snapshot.\nNo default is deserialized: an author must explicitly pin every spending cap.",
+          "required": ["max_tool_calls", "parameters"],
+          "properties": {
+            "max_tool_calls": {
+              "type": "integer",
+              "format": "uint32",
+              "minimum": 0
+            },
+            "parameters": {}
           },
           "additionalProperties": false
         },
@@ -26080,6 +26605,17 @@
                 "minimum": 0
               }
             },
+            "provider_tool": {
+              "anyOf": [
+                {
+                  "$ref": "#/components/schemas/Parameters"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Provider-owned tools take immutable Binding parameters, never model arguments."
+            },
             "scope": {
               "type": "object",
               "additionalProperties": {
@@ -26103,6 +26639,20 @@
             "origin": {
               "$ref": "#/components/schemas/BindingOrigin"
             }
+          },
+          "additionalProperties": false
+        },
+        "Parameters": {
+          "type": "object",
+          "description": "Binding-owned configuration, copied into the immutable Binding snapshot.\nNo default is deserialized: an author must explicitly pin every spending cap.",
+          "required": ["max_tool_calls", "parameters"],
+          "properties": {
+            "max_tool_calls": {
+              "type": "integer",
+              "format": "uint32",
+              "minimum": 0
+            },
+            "parameters": {}
           },
           "additionalProperties": false
         },
@@ -27681,6 +28231,17 @@
                 "minimum": 0
               }
             },
+            "provider_tool": {
+              "anyOf": [
+                {
+                  "$ref": "#/components/schemas/Parameters"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Provider-owned tools take immutable Binding parameters, never model arguments."
+            },
             "scope": {
               "type": "object",
               "additionalProperties": {
@@ -27704,6 +28265,20 @@
             "origin": {
               "$ref": "#/components/schemas/BindingOrigin"
             }
+          },
+          "additionalProperties": false
+        },
+        "Parameters": {
+          "type": "object",
+          "description": "Binding-owned configuration, copied into the immutable Binding snapshot.\nNo default is deserialized: an author must explicitly pin every spending cap.",
+          "required": ["max_tool_calls", "parameters"],
+          "properties": {
+            "max_tool_calls": {
+              "type": "integer",
+              "format": "uint32",
+              "minimum": 0
+            },
+            "parameters": {}
           },
           "additionalProperties": false
         },
@@ -28791,6 +29366,10 @@
                   "type": "string",
                   "enum": ["assistant"]
                 },
+                "provider_activity": {
+                  "type": "array",
+                  "items": {}
+                },
                 "text": {
                   "type": "string"
                 }
@@ -29789,6 +30368,11 @@
               "format": "uint64",
               "minimum": 0
             },
+            "provider_activity": {
+              "type": "array",
+              "items": {},
+              "description": "Observable provider-owned activity, never Research evidence or citations."
+            },
             "text": {
               "type": "string"
             },
@@ -29842,6 +30426,17 @@
                 "format": "uint64",
                 "minimum": 0
               }
+            },
+            "provider_tool": {
+              "anyOf": [
+                {
+                  "$ref": "#/components/schemas/Parameters"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Provider-owned tools take immutable Binding parameters, never model arguments."
             },
             "scope": {
               "type": "object",
@@ -29898,6 +30493,20 @@
             "expected_digest": {
               "type": "string"
             }
+          },
+          "additionalProperties": false
+        },
+        "Parameters": {
+          "type": "object",
+          "description": "Binding-owned configuration, copied into the immutable Binding snapshot.\nNo default is deserialized: an author must explicitly pin every spending cap.",
+          "required": ["max_tool_calls", "parameters"],
+          "properties": {
+            "max_tool_calls": {
+              "type": "integer",
+              "format": "uint32",
+              "minimum": 0
+            },
+            "parameters": {}
           },
           "additionalProperties": false
         },
@@ -32595,6 +33204,10 @@
                   "type": "string",
                   "enum": ["assistant"]
                 },
+                "provider_activity": {
+                  "type": "array",
+                  "items": {}
+                },
                 "text": {
                   "type": "string"
                 }
@@ -33464,6 +34077,11 @@
               "format": "uint64",
               "minimum": 0
             },
+            "provider_activity": {
+              "type": "array",
+              "items": {},
+              "description": "Observable provider-owned activity, never Research evidence or citations."
+            },
             "text": {
               "type": "string"
             },
@@ -33517,6 +34135,17 @@
                 "format": "uint64",
                 "minimum": 0
               }
+            },
+            "provider_tool": {
+              "anyOf": [
+                {
+                  "$ref": "#/components/schemas/Parameters"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Provider-owned tools take immutable Binding parameters, never model arguments."
             },
             "scope": {
               "type": "object",
@@ -33573,6 +34202,20 @@
             "expected_digest": {
               "type": "string"
             }
+          },
+          "additionalProperties": false
+        },
+        "Parameters": {
+          "type": "object",
+          "description": "Binding-owned configuration, copied into the immutable Binding snapshot.\nNo default is deserialized: an author must explicitly pin every spending cap.",
+          "required": ["max_tool_calls", "parameters"],
+          "properties": {
+            "max_tool_calls": {
+              "type": "integer",
+              "format": "uint32",
+              "minimum": 0
+            },
+            "parameters": {}
           },
           "additionalProperties": false
         },
@@ -33731,6 +34374,30 @@
               "items": {
                 "$ref": "#/components/schemas/PinnedServer"
               }
+            }
+          },
+          "additionalProperties": false
+        },
+        "ProviderToolActivity": {
+          "type": "object",
+          "description": "Read-only Context Journal inspection, independent of the lossy projection.",
+          "required": ["seq", "epoch", "items"],
+          "properties": {
+            "epoch": {
+              "type": "integer",
+              "format": "int64"
+            },
+            "items": {
+              "type": "array",
+              "items": {}
+            },
+            "preview": {
+              "type": ["string", "null"]
+            },
+            "seq": {
+              "type": "integer",
+              "format": "uint64",
+              "minimum": 0
             }
           },
           "additionalProperties": false
@@ -34242,6 +34909,13 @@
                   "type": "null"
                 }
               ]
+            },
+            "provider_tool_activity": {
+              "type": "array",
+              "items": {
+                "$ref": "#/components/schemas/ProviderToolActivity"
+              },
+              "description": "Original provider-owned activity, newest first, paged by inspection offset."
             },
             "run": {
               "$ref": "#/components/schemas/RunInspection"
@@ -35916,6 +36590,10 @@
                   "type": "string",
                   "enum": ["assistant"]
                 },
+                "provider_activity": {
+                  "type": "array",
+                  "items": {}
+                },
                 "text": {
                   "type": "string"
                 }
@@ -36748,6 +37426,11 @@
               "format": "uint64",
               "minimum": 0
             },
+            "provider_activity": {
+              "type": "array",
+              "items": {},
+              "description": "Observable provider-owned activity, never Research evidence or citations."
+            },
             "text": {
               "type": "string"
             },
@@ -36801,6 +37484,17 @@
                 "format": "uint64",
                 "minimum": 0
               }
+            },
+            "provider_tool": {
+              "anyOf": [
+                {
+                  "$ref": "#/components/schemas/Parameters"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Provider-owned tools take immutable Binding parameters, never model arguments."
             },
             "scope": {
               "type": "object",
@@ -36857,6 +37551,20 @@
             "expected_digest": {
               "type": "string"
             }
+          },
+          "additionalProperties": false
+        },
+        "Parameters": {
+          "type": "object",
+          "description": "Binding-owned configuration, copied into the immutable Binding snapshot.\nNo default is deserialized: an author must explicitly pin every spending cap.",
+          "required": ["max_tool_calls", "parameters"],
+          "properties": {
+            "max_tool_calls": {
+              "type": "integer",
+              "format": "uint32",
+              "minimum": 0
+            },
+            "parameters": {}
           },
           "additionalProperties": false
         },

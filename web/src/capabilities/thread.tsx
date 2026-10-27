@@ -1,3 +1,4 @@
+import { ProviderToolActivity } from "../provider-tools";
 import { Input } from "../components/ui/input";
 import {
   Alert,
@@ -898,10 +899,17 @@ export function ThreadCapabilities({
   const shownRun = useQuery({
     queryKey: ["run-agent", active],
     // The Run details carry the inspection under `run`.
-    queryFn: async ({ signal }) =>
-      (await apiFetch<RunDetails>(`/api/runs/${active}`, { signal })).run,
+    queryFn: async ({ signal }) => {
+      const details = await apiFetch<RunDetails>(`/api/runs/${active}`, {
+        signal,
+      });
+      return {
+        ...details.run,
+        provider_tool_activity: details.provider_tool_activity,
+      };
+    },
     enabled: !!active,
-    staleTime: Infinity,
+    refetchInterval: 2000,
     retry: false,
   });
   const pinned = agents.find(
@@ -1121,6 +1129,12 @@ export function ThreadCapabilities({
         areas={query.data?.items ?? []}
         loaded={query.isSuccess}
         onDeleted={onDeleted}
+      />
+      <ProviderToolActivity
+        context={shownRun.isError ? undefined : shownRun.data?.context}
+        journal={
+          shownRun.isError ? undefined : shownRun.data?.provider_tool_activity
+        }
       />
       {session.data?.last_run_id &&
         !session.data?.active_run_id &&
