@@ -1,17 +1,20 @@
 //! Preview gateway: session lifetime, host folding and periodic expiry.
 use super::*;
 use aidash_domain::preview::{PreviewLabel, PreviewSecret, SESSION_SECONDS};
-use aidash_server::apps::execution::repositories::previews::Gateway;
-use aidash_server::authorization::identity::Actor;
+use aidash_server::capabilities::preview_gateway_for_test;
 use chrono::{Duration, Utc};
 
-async fn actor(c: &CoreFixture) -> Actor {
-	aidash_server::authorization::Authorization {
-		pool: c.f.store.pool.clone(),
-	}
-	.authenticate(&c.token)
+/// The fixture token's Tenant, subject and credential. The identity type is
+/// private to the server crate, so read the credential id from its store.
+async fn identity(c: &CoreFixture) -> (String, String, Uuid) {
+	let credential: Uuid = sqlx::query_scalar(
+		"SELECT id FROM authorization_credentials
+		 WHERE tenant = 'acme' AND subject = 'alice' LIMIT 1",
+	)
+	.fetch_one(c.f.store.pool.fixture_driver())
 	.await
-	.unwrap()
+	.unwrap();
+	("acme".into(), "alice".into(), credential)
 }
 
 async fn area_and_file(c: &CoreFixture) -> (Uuid, Uuid) {
@@ -131,11 +134,8 @@ async fn count(c: &CoreFixture, table: &str) -> i64 {
 		.unwrap()
 }
 
-fn gateway(c: &CoreFixture) -> Gateway {
-	Gateway {
-		store: c.f.store.clone(),
-		domain: "localhost".into(),
-	}
+fn gateway(c: &CoreFixture) -> std::sync::Arc<dyn aidash_application::preview::Authority> {
+	preview_gateway_for_test(c.f.store.clone(), "localhost")
 }
 
 #[rstest::rstest]
@@ -145,28 +145,17 @@ async fn an_expired_session_is_refused_while_a_live_one_is_served(
 ) {
 	let c = capability_fixture.await;
 	let (area, file) = area_and_file(&c).await;
-	let Actor::Subject(identity) = actor(&c).await else {
-		panic!("the fixture token is a subject");
-	};
+	let (tenant, subject, credential) = identity(&c).await;
 	let preview = Uuid::new_v4();
 	let label = PreviewLabel::generate().unwrap();
-	insert_preview(
-		&c,
-		preview,
-		&identity.tenant,
-		area,
-		file,
-		label.as_str(),
-		&identity.subject,
-	)
-	.await;
+	insert_preview(&c, preview, &tenant, area, file, label.as_str(), &subject).await;
 	let expired = "e".repeat(43);
 	insert_session(
 		&c,
 		preview,
-		&identity.tenant,
-		&identity.subject,
-		identity.credential_id,
+		&tenant,
+		&subject,
+		credential,
 		&expired,
 		Utc::now() - Duration::seconds(1),
 	)
@@ -188,9 +177,9 @@ async fn an_expired_session_is_refused_while_a_live_one_is_served(
 	insert_session(
 		&c,
 		preview,
-		&identity.tenant,
-		&identity.subject,
-		identity.credential_id,
+		&tenant,
+		&subject,
+		credential,
 		&live,
 		Utc::now() + Duration::seconds(SESSION_SECONDS),
 	)
@@ -208,28 +197,17 @@ async fn an_expired_session_is_refused_while_a_live_one_is_served(
 async fn a_preview_ticket_is_single_use_and_expires(#[future] capability_fixture: CoreFixture) {
 	let c = capability_fixture.await;
 	let (area, file) = area_and_file(&c).await;
-	let Actor::Subject(identity) = actor(&c).await else {
-		panic!("the fixture token is a subject");
-	};
+	let (tenant, subject, credential) = identity(&c).await;
 	let preview = Uuid::new_v4();
 	let label = PreviewLabel::generate().unwrap();
-	insert_preview(
-		&c,
-		preview,
-		&identity.tenant,
-		area,
-		file,
-		label.as_str(),
-		&identity.subject,
-	)
-	.await;
+	insert_preview(&c, preview, &tenant, area, file, label.as_str(), &subject).await;
 	let ticket = "t".repeat(43);
 	insert_ticket(
 		&c,
 		preview,
-		&identity.tenant,
-		&identity.subject,
-		identity.credential_id,
+		&tenant,
+		&subject,
+		credential,
 		&ticket,
 		Utc::now() + Duration::seconds(60),
 	)
@@ -247,9 +225,9 @@ async fn a_preview_ticket_is_single_use_and_expires(#[future] capability_fixture
 	insert_ticket(
 		&c,
 		preview,
-		&identity.tenant,
-		&identity.subject,
-		identity.credential_id,
+		&tenant,
+		&subject,
+		credential,
 		&expired,
 		Utc::now() - Duration::seconds(1),
 	)
@@ -271,28 +249,17 @@ async fn the_reclamation_sweep_removes_expired_tickets_and_sessions(
 ) {
 	let c = capability_fixture.await;
 	let (area, file) = area_and_file(&c).await;
-	let Actor::Subject(identity) = actor(&c).await else {
-		panic!("the fixture token is a subject");
-	};
+	let (tenant, subject, credential) = identity(&c).await;
 	let preview = Uuid::new_v4();
 	let label = PreviewLabel::generate().unwrap();
-	insert_preview(
-		&c,
-		preview,
-		&identity.tenant,
-		area,
-		file,
-		label.as_str(),
-		&identity.subject,
-	)
-	.await;
+	insert_preview(&c, preview, &tenant, area, file, label.as_str(), &subject).await;
 	let expired = Utc::now() - Duration::seconds(1);
 	insert_ticket(
 		&c,
 		preview,
-		&identity.tenant,
-		&identity.subject,
-		identity.credential_id,
+		&tenant,
+		&subject,
+		credential,
 		&"q".repeat(43),
 		expired,
 	)
@@ -300,9 +267,9 @@ async fn the_reclamation_sweep_removes_expired_tickets_and_sessions(
 	insert_session(
 		&c,
 		preview,
-		&identity.tenant,
-		&identity.subject,
-		identity.credential_id,
+		&tenant,
+		&subject,
+		credential,
 		&"r".repeat(43),
 		expired,
 	)
@@ -310,9 +277,9 @@ async fn the_reclamation_sweep_removes_expired_tickets_and_sessions(
 	insert_session(
 		&c,
 		preview,
-		&identity.tenant,
-		&identity.subject,
-		identity.credential_id,
+		&tenant,
+		&subject,
+		credential,
 		&"s".repeat(43),
 		Utc::now() + Duration::seconds(SESSION_SECONDS),
 	)
