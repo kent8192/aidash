@@ -105,3 +105,5 @@ pub mod plan_connections;
 pub mod secret_store;
 
 pub mod tenant_secrets;
+
+pub mod oauth_connections;
