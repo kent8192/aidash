@@ -259,6 +259,9 @@ fn a_pod_response_may_not_replace_the_confinement_headers() {
 struct LiveAuthority {
 	proxy: aidash_application::preview::Proxy,
 	calls: Mutex<Vec<tokio::time::Instant>>,
+	// Enforce the default 15-minute idle limit so 17 minutes of echo traffic
+	// proves the socket remains authorized only when refreshes reach us.
+	last_activity: Mutex<tokio::time::Instant>,
 	probes: std::sync::atomic::AtomicUsize,
 	revoked: std::sync::atomic::AtomicBool,
 }
@@ -278,10 +281,19 @@ impl Authority for LiveAuthority {
 	) -> aidash_application::Result<Option<Proxy>> {
 		assert_eq!(host, "live.localhost");
 		assert_eq!(cookie, "viewer");
+		let now = tokio::time::Instant::now();
+		let mut last = self.last_activity.lock().unwrap();
+		if now.duration_since(*last) >= Duration::from_secs(15 * 60) {
+			return Err(aidash_application::Error::Forbidden);
+		}
+		if activity {
+			*last = now;
+		}
+		drop(last);
 		self.probes
 			.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
 		if activity {
-			self.calls.lock().unwrap().push(tokio::time::Instant::now());
+			self.calls.lock().unwrap().push(now);
 		}
 		if self.revoked.load(std::sync::atomic::Ordering::Relaxed) {
 			Err(aidash_application::Error::Forbidden)
@@ -325,6 +337,7 @@ async fn websocket_traffic_refreshes_activity_but_an_idle_connection_does_not() 
 			egress_token: None,
 		},
 		calls: Mutex::new(Vec::new()),
+		last_activity: Mutex::new(tokio::time::Instant::now()),
 		probes: std::sync::atomic::AtomicUsize::new(0),
 		revoked: std::sync::atomic::AtomicBool::new(false),
 	});
