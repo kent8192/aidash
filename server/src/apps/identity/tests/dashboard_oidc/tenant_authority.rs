@@ -672,7 +672,7 @@ async fn data_protection_settings_are_tenant_admin_only_and_apply_before_the_nex
 		let entry = aidash_server::apps::registry::models::Definition::build()
 			.tenant(team.tenant.clone()).id("private-model").version("1.0.0")
 			.kind(serde_json::from_value(json!("model"))?)
-			.metadata(Json(json!({"id":"private-model","version":"1.0.0","kind":"model","name":{},"description":{},"config":{"provider":"openrouter","model_id":"vendor/model","endpoint":"https://keyless.example/v1","context_window":8192,"modalities":["text"],"cost":{}}}))).finish();
+			.metadata(Json(json!({"id":"private-model","version":"1.0.0","kind":"model","name":{"en":"Private model"},"description":{"en":"Keyless policy fixture"},"config":{"provider":"openrouter","model_id":"vendor/model","endpoint":"https://keyless.example/v1","context_window":8192,"modalities":["text"],"cost":{}}}))).finish();
 		aidash_server::apps::registry::models::Definition::objects().insert_with_executor(tx, &entry).await.map_err(reinhardt::core::exception::Error::from)?;
 		Ok(())
 	}).await.unwrap();
