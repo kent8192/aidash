@@ -1086,14 +1086,14 @@ def render():
             # A Live preview's status, stop, ticket and the Tenant's lowered limits.
             if path == "/api/runs/{id}/live-preview":
                 add(endpoint, "Anonymous request is rejected", 401)
-                add(endpoint, "Deployment Administrator cannot read a missing Run", 403,
+                add(endpoint, "Deployment Administrator cannot read a missing Run", 404,
                     headers=DEPLOYMENT_ADMINISTRATOR)
-                add(endpoint, "Subject bearer cannot read a missing Run", 403, headers=SUBJECT)
+                add(endpoint, "Subject bearer cannot read a missing Run", 404, headers=SUBJECT)
             elif path.endswith("/stop"):
                 add(endpoint, "Anonymous stop is rejected", 401)
-                add(endpoint, "Deployment Administrator cannot stop a missing Run", 403,
+                add(endpoint, "Deployment Administrator cannot stop a missing Run", 404,
                     headers=DEPLOYMENT_ADMINISTRATOR)
-                add(endpoint, "Subject bearer cannot stop a missing Run", 403, headers=SUBJECT)
+                add(endpoint, "Subject bearer cannot stop a missing Run", 404, headers=SUBJECT)
             elif path.endswith("/live-tickets"):
                 ticket = json.dumps({"live_preview_id": MISSING})
                 add(endpoint, "Anonymous request is rejected", 401)

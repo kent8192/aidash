@@ -58,8 +58,17 @@ async fn run_access(f: &Federation, actor: Actor, id: Uuid) -> Result<(Access, R
 // Status and Stop belong to the viewer's Run authority. They do not execute
 // tools or read the Run's Working Area under its original execution grant.
 async fn viewer_run_access(f: &Federation, actor: Actor, id: Uuid) -> Result<(Access, Run)> {
+	if matches!(&actor, Actor::DeploymentAdministrator) {
+		return Err(Error::NotFound("run unavailable".into()));
+	}
 	let mut access = access(f, actor).await?;
-	let run = access.run_for_interaction(id).await?;
+	let run = access
+		.run_for_interaction(id)
+		.await
+		.map_err(|error| match error {
+			Error::Forbidden | Error::NotFound(_) => Error::NotFound("run unavailable".into()),
+			error => error,
+		})?;
 	Ok((access, run))
 }
 

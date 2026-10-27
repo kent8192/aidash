@@ -156,13 +156,14 @@ download with the cited `file_id`. The Run-message summary given to the agent
 names each citation as `path@digest-prefix (File version <file_id>)`, so a
 correction request tells the agent exactly which File version it refers to.
 
-## Operator configuration
+## Deployment Administrator configuration
 
 ### Settings
 
 `[preview]` and `[preview_limits]` are optional settings sections. A profile
 that omits either keeps the defaults: no preview domain, and the 15-minute idle
-and 2-hour absolute Live preview ceilings. Every value below is optional.
+and 2-hour absolute Live preview ceilings. The server supplies these defaults
+even when the sections are absent from TOML. Every value below is optional.
 
 ```toml
 [preview]
@@ -256,8 +257,8 @@ preview:
   runs `aidash preview-gateway`, turns the API process's own listener off, and
   keeps the same Service.
 - `preview.ingress.enabled` renders a wildcard Ingress for `*.<domain>` and
-  names its `tlsSecret`. A self-hosted operator provides the wildcard DNS and
-  certificate; Cloud's are part of #535.
+  names its `tlsSecret`. Whoever runs the Self-hosted Deployment provides the
+  wildcard DNS and certificate; Cloud's are part of #535.
 - `preview.resources` sets the gateway Deployment's requests and limits.
 
 The chart renders `<release>-preview-sandbox` in `execution.sandboxNamespace`.

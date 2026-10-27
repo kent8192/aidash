@@ -93,17 +93,23 @@ async fn a_run_without_a_live_preview_reads_null(#[future] capability_fixture: C
 
 #[rstest::rstest]
 #[tokio::test]
-async fn stopping_a_missing_run_is_forbidden(#[future] capability_fixture: CoreFixture) {
+async fn missing_runs_have_the_same_status_for_subjects_and_deployment_administrators(
+	#[future] capability_fixture: CoreFixture,
+) {
 	let c = capability_fixture.await;
-	let (status, body) = request(
-		&c.app,
-		&c.token,
-		"POST",
-		&format!("/api/runs/{}/live-preview/stop", Uuid::nil()),
-		Value::Null,
-	)
-	.await;
-	assert_eq!(status, 403, "{body}");
+	for token in [&c.token, &c.f.config.api_token] {
+		for (method, suffix) in [("GET", ""), ("POST", "/stop")] {
+			let (status, body) = request(
+				&c.app,
+				token,
+				method,
+				&format!("/api/runs/{}/live-preview{suffix}", Uuid::nil()),
+				Value::Null,
+			)
+			.await;
+			assert_eq!(status, 404, "{method} {suffix}: {body}");
+		}
+	}
 }
 
 #[rstest::rstest]
@@ -141,10 +147,10 @@ async fn live_preview_stop_authority_belongs_to_the_viewer(
 	// The Area belongs to Alice, so Bob cannot read even its status. A Run's
 	// cancellation authority also requires this same visibility decision.
 	let (status, body) = request(&c.app, bob, "GET", &path, Value::Null).await;
-	assert_eq!(status, 403, "{body}");
+	assert_eq!(status, 404, "{body}");
 	let stop = format!("{path}/stop");
 	let (status, body) = request(&c.app, bob, "POST", &stop, Value::Null).await;
-	assert_eq!(status, 403, "{body}");
+	assert_eq!(status, 404, "{body}");
 	assert_eq!(live_row(&c, preview).await.0, "running");
 	let (status, body) = request(&c.app, &c.token, "POST", &stop, Value::Null).await;
 	assert_eq!(status, 200, "{body}");
@@ -163,6 +169,19 @@ async fn a_deployment_without_a_preview_domain_issues_no_live_ticket(
 		"POST",
 		"/api/previews/live-tickets",
 		json!({"live_preview_id": Uuid::nil()}),
+	)
+	.await;
+	assert_eq!(status, 404, "{body}");
+	let run = admit(&c).await;
+	let (area, _) = working_area(&c, run.id).await;
+	let preview = Uuid::new_v4();
+	insert_running(&c, preview, run.id, area, 1, "running").await;
+	let (status, body) = request(
+		&c.app,
+		&c.token,
+		"POST",
+		"/api/previews/live-tickets",
+		json!({"live_preview_id": preview}),
 	)
 	.await;
 	assert_eq!(status, 409, "{body}");
