@@ -15,6 +15,8 @@ mod conversations;
 pub use conversations::Conversation;
 mod messages;
 pub use messages::Message;
+mod message_file_versions;
+pub use message_file_versions::MessageFileVersion;
 mod task_dependencies;
 pub use task_dependencies::TaskDependency;
 mod tasks;

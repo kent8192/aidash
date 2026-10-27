@@ -1455,6 +1455,8 @@ async fn child_runtime(
 			common_auth: None,
 			common_issuers: None,
 			tier_limits: std::sync::Arc::new(aidash_application::ports::nodes::NoTierLimits),
+			preview: None,
+			dashboard_origin: "http://localhost:3000".into(),
 		},
 		client: reinhardt_http_client,
 		notify: Arc::new(tokio::sync::Notify::new()),

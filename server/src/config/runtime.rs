@@ -32,6 +32,11 @@ pub struct Config {
 		Option<std::sync::Arc<dyn crate::apps::identity::services::sign_in::SignInProvider>>,
 	/// The Tier's limits on a Tenant, which the Enterprise build supplies.
 	pub tier_limits: std::sync::Arc<dyn aidash_application::ports::nodes::TierLimits>,
+	/// `[preview]`: `None` when this Deployment offers no Previews.
+	pub preview: Option<crate::apps::execution::serializers::preview::PreviewConfig>,
+	/// The dashboard origin a ticket's `frame-ancestors` names when the request
+	/// carries none.
+	pub dashboard_origin: String,
 }
 
 pub use crate::apps::identity::serializers::settings::{OidcConfig, SessionConfig};
@@ -127,6 +132,16 @@ impl Config {
 				"dashboard.oidc cannot be combined with the build's own sign-in".into(),
 			));
 		}
+		let dashboard_origin = settings
+			.dashboard
+			.oidc
+			.as_ref()
+			.map(|oidc| oidc.public_origin.clone())
+			.unwrap_or_else(|| settings.deployment.endpoint.clone());
+		let dashboard_origin = reqwest::Url::parse(&dashboard_origin)
+			.map(|url| url.origin().ascii_serialization())
+			.map_err(|_| Error::Invalid("the dashboard origin is not an HTTP(S) URL".into()))?;
+		let preview = settings.preview.configured(&dashboard_origin)?;
 		let node = &settings.deployment;
 		let web_dir = settings.core.base_dir.join(&node.web_dir);
 		Ok(Self {
@@ -152,6 +167,8 @@ impl Config {
 				.as_ref()
 				.map(OidcConfig::normalized)
 				.transpose()?,
+			preview,
+			dashboard_origin,
 		})
 	}
 	/// What `/.well-known/aidash` publishes: this Deployment and its public key,

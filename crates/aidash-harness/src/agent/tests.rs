@@ -5934,3 +5934,23 @@ async fn provider_registered_sources_join_existing_lifecycle_phases(
 	};
 	assert_eq!(documents, Some(json!([])));
 }
+
+#[test]
+fn cited_file_versions_are_named_by_path_and_digest_prefix() {
+	let digest = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
+	let record = serde_json::json!({
+		"content": "please correct this",
+		"citations": [
+			{"file_id": "00000000-0000-0000-0000-000000000001", "path": "index.html", "digest": digest},
+			{"file_id": "00000000-0000-0000-0000-000000000002", "path": "no-digest"}
+		]
+	});
+	assert_eq!(
+		cited_versions(&record),
+		vec![
+			"index.html@0123456789ab (File version 00000000-0000-0000-0000-000000000001)"
+				.to_string()
+		]
+	);
+	assert!(cited_versions(&serde_json::json!({"content": "plain"})).is_empty());
+}

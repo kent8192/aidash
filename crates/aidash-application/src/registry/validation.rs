@@ -44,6 +44,9 @@ pub struct DefinitionValidation {
 	/// rule (ADR 0036, #376). Without origins, only public addresses pass.
 	keyless: KeylessAccess,
 	tenant_secrets_enabled: bool,
+	/// This Deployment serves Previews, so it offers the Live preview tools
+	/// (ADR 0068). A Deployment without a preview domain offers none.
+	preview_available: bool,
 	egress_limits: aidash_domain::egress::Limits,
 	core_tools: Arc<dyn CoreToolCatalog>,
 }
@@ -54,10 +57,22 @@ impl DefinitionValidation {
 			plan_connections_enabled: false,
 			keyless: KeylessAccess::default(),
 			tenant_secrets_enabled: false,
+			preview_available: false,
 			egress_limits: aidash_domain::egress::Limits::default(),
 			core_tools,
 		}
 	}
+	/// Whether this Deployment serves Previews and therefore offers the Live
+	/// preview tools (ADR 0068).
+	pub fn with_preview_available(mut self, available: bool) -> Self {
+		self.preview_available = available;
+		self
+	}
+
+	pub fn preview_available(&self) -> bool {
+		self.preview_available
+	}
+
 	/// The Deployment's permitted private origins. Every clone of `origins`
 	/// shares one list, so origins added later still count.
 	pub fn with_keyless_origins(mut self, origins: KeylessAccess) -> Self {

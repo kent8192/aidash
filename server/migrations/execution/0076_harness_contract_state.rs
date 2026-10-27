@@ -1,12 +1,12 @@
 // reinhardt-migration-source: 1
 // Align logical ORM metadata with the Harness Contract check. The physical
-// constraint from 0060 is enforced apart from model state, like the counts and
+// constraint from 0075 is enforced apart from model state, like the counts and
 // estimate-confidence checks of 0013_inference_usage_model_state.
 use reinhardt::db::migrations::prelude::*;
 
 pub(super) fn migration() -> Migration {
-	Migration::new("0061_harness_contract_state", "execution")
-		.add_dependency("execution", "0060_harness_contract")
+	Migration::new("0076_harness_contract_state", "execution")
+		.add_dependency("execution", "0075_harness_contract")
 		.add_operation(Operation::DropConstraintDefinition {
 			table: "inference_usage".into(),
 			constraint: Constraint::Check {

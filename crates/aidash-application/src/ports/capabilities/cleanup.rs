@@ -75,5 +75,8 @@ pub trait ErasureScope: Send {
 	async fn update_area(&mut self, area: &Area) -> Result<()>;
 	async fn update_record(&mut self, record: &mut Record) -> Result<()>;
 	async fn event(&mut self, workspace: Uuid, kind: &str, data: Value) -> Result<()>;
+	/// Removes the Working Area's retention holds, so its Retained versions
+	/// follow the same cleanup as the current manifest.
+	async fn release_holds(&mut self, area: &Area) -> Result<()>;
 	async fn finish(self: Box<Self>, result: Result<bool>) -> Result<()>;
 }

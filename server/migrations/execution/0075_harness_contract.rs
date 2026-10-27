@@ -4,8 +4,8 @@
 use reinhardt::db::migrations::prelude::*;
 
 pub(super) fn migration() -> Migration {
-	Migration::new("0060_harness_contract", "execution")
-		.add_dependency("execution", "0059_research_history_merge")
+	Migration::new("0075_harness_contract", "execution")
+		.add_dependency("execution", "0074_federated_preview_authority")
 		.add_operation(Operation::AddColumn {
 			table: "inference_usage".into(),
 			column: ColumnDefinition::new("harness_contract", FieldType::Integer)
