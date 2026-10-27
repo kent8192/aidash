@@ -1,10 +1,14 @@
 //! Admission shared by registration and each inference dispatch.
 use crate::{Error, Result, provider_access::Context};
-use aidash_domain::{model::ModelConfig, tool::provider_tools::PinnedTool};
+use aidash_domain::{
+	data_protection::{DataProtection, Destination},
+	model::ModelConfig,
+	tool::provider_tools::PinnedTool,
+};
 
-/// Integration seam for #542: Data Protection connects its effective Tenant /
-/// delegation rule here. W4 deliberately defines no parallel protection model.
-pub fn admit_data_protection() -> Result<()> {
+/// Evaluate the current Tenant/delegation policy supplied by the send adapter.
+pub fn admit_data_protection(policy: DataProtection) -> Result<()> {
+	policy.permits(Destination::ProviderTool)?;
 	Ok(())
 }
 
@@ -17,7 +21,7 @@ pub fn admit_request(model: &ModelConfig, context: &Context, tools: &[PinnedTool
 			"Provider tools require Run inference".into(),
 		));
 	}
-	admit_data_protection()?;
+	admit_data_protection(context.data_protection)?;
 	let mut seen = std::collections::BTreeSet::new();
 	for tool in tools {
 		tool.validate()?;

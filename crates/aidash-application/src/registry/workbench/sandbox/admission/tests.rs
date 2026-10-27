@@ -597,7 +597,8 @@ impl ModelProvider for NeverInfer {
 	}
 }
 impl SandboxModels for Repository {
-	fn provider(&self, model: ModelConfig) -> Result<Arc<dyn ModelProvider>> {
+	fn provider(&self, tenant: &str, model: ModelConfig) -> Result<Arc<dyn ModelProvider>> {
+		assert_eq!(tenant, draft().tenant);
 		assert_eq!(model.model_id, "model");
 		let mut s = self.state.lock().unwrap();
 		assert!(s.active);

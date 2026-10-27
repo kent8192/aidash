@@ -44,3 +44,5 @@ pub mod nodes;
 pub mod tenants;
 
 pub mod invitations;
+
+pub(crate) mod data_protection;

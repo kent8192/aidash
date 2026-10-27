@@ -5,6 +5,7 @@ use secrecy::ExposeSecret;
 fn claims() -> Claims {
 	Claims {
 		provider_tools: vec![],
+		data_protection: Default::default(),
 		iss: "worker".into(),
 		aud: "environment".into(),
 		iat: 100,

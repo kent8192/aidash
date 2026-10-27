@@ -235,10 +235,17 @@ async fn provider_rejection_and_contract_violation_keep_their_typed_reason(
 	assert!(scope.reported.lock().unwrap().is_empty());
 }
 #[rstest]
+#[case::network(|| Error::Forbidden)]
+#[case::data_protection(|| {
+	use aidash_domain::data_protection::{DataProtection, Destination, Level};
+	DataProtection { level: Level::NoTraining, ..Default::default() }
+		.permits(Destination::TenantKeyless).unwrap_err().into()
+})]
 #[tokio::test]
-async fn a_refused_keyless_destination_is_not_an_outage() {
+async fn a_refused_keyless_destination_is_not_an_outage(#[case] failure: fn() -> Error) {
 	let (calls, mut scope, mut provider) = fixture();
-	provider.failure = Some(|| Error::Forbidden);
+	provider.failure = Some(failure);
+	let reason = failure().to_string();
 	assert!(configuration().provider_credential.is_none());
 	let error = invoke(
 		&mut scope,
@@ -250,7 +257,8 @@ async fn a_refused_keyless_destination_is_not_an_outage() {
 	)
 	.await
 	.unwrap_err();
-	assert!(matches!(error, Error::Forbidden));
+	assert_eq!(error.to_string(), reason);
+	assert!(matches!(error, Error::Forbidden | Error::Domain(_)));
 	assert_eq!(*calls.lock().unwrap(), ["reserve", "provider"]);
 }
 #[rstest]

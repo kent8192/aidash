@@ -47,6 +47,11 @@ pub trait SearchProvider: Send + Sync {
 /// including addresses a public name resolves to at dispatch.
 #[async_trait]
 pub trait PageProvider: Send + Sync {
+	/// Only Aidash's own reader may bypass external account terms.
+	fn deployment_hosted(&self) -> bool {
+		false
+	}
+
 	/// Literal address checks performed before any disclosure or attempt.
 	fn admit(&self, url: &Url) -> std::result::Result<(), Failure>;
 	/// The Research account holder's current account terms, or `None` for a
@@ -143,6 +148,14 @@ pub enum Reserved {
 /// no fragment is delivered any more.
 #[async_trait]
 pub trait EvidenceStore: Send + Sync {
+	/// Current policy, reloaded before every external Research send.
+	async fn data_protection(
+		&self,
+		_run: Uuid,
+	) -> Result<aidash_domain::data_protection::DataProtection> {
+		Ok(Default::default())
+	}
+
 	/// Whether the Run's Research evidence was revoked.
 	async fn revoked(&self, run: Uuid) -> Result<bool>;
 	/// Account expiry is independent of a snapshot's first ordinary purge reason.

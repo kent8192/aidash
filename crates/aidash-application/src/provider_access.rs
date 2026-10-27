@@ -8,6 +8,8 @@ use uuid::Uuid;
 
 #[derive(Debug, Clone, Default)]
 pub struct Context {
+	/// Current policy evaluated immediately before this call; never an admitted snapshot.
+	pub data_protection: aidash_domain::data_protection::DataProtection,
 	pub tenant: String,
 	pub run: Option<Uuid>,
 	/// Independent approval observation; never an executing Run identity.
@@ -99,6 +101,14 @@ pub struct Access {
 }
 #[async_trait]
 pub trait ProviderAccess: Send + Sync {
+	/// Reload current Tenant and delegation-chain policy before constructing a request.
+	async fn data_protection(
+		&self,
+		context: &Context,
+	) -> Result<aidash_domain::data_protection::DataProtection> {
+		Ok(context.data_protection)
+	}
+
 	async fn resolve(&self, context: &Context, endpoint: &str, source: &Source) -> Result<Access>;
 	/// Whether `resolve` would find an active credential, without minting a
 	/// Capability Token or reading Key Material. Callers use it to fail before
@@ -122,12 +132,33 @@ pub struct KeylessAccess {
 	/// Shared by every clone. Production code sets it once at startup; only
 	/// test builds can add to it later (`permit_origin_of`).
 	origins: Arc<std::sync::RwLock<PermittedOrigins>>,
+	/// Explicit Deployment ownership declaration, separate from network access.
+	hosted_origins: Arc<PermittedOrigins>,
 }
 impl KeylessAccess {
 	pub fn permitting(origins: PermittedOrigins) -> Self {
 		Self {
 			origins: Arc::new(std::sync::RwLock::new(origins)),
+			hosted_origins: Arc::default(),
 		}
+	}
+	pub fn with_deployment_hosted(mut self, origins: PermittedOrigins) -> Self {
+		self.hosted_origins = Arc::new(origins);
+		self
+	}
+	pub fn data_protection_destination(
+		&self,
+		endpoint: &str,
+	) -> Result<aidash_domain::data_protection::Destination<'static>> {
+		let origin = url::Url::parse(endpoint)
+			.map_err(|_| Error::Invalid("invalid model endpoint URL".into()))?
+			.origin()
+			.ascii_serialization();
+		Ok(if self.hosted_origins.permits(&origin) {
+			aidash_domain::data_protection::Destination::DeploymentHosted
+		} else {
+			aidash_domain::data_protection::Destination::TenantKeyless
+		})
 	}
 	/// Permit the origin of `url` for this access and every clone of it, as an
 	/// Deployment Administrator would permit a private model server. Test fixtures start after
@@ -158,7 +189,7 @@ impl KeylessAccess {
 }
 #[async_trait]
 impl ProviderAccess for KeylessAccess {
-	async fn resolve(&self, _: &Context, endpoint: &str, source: &Source) -> Result<Access> {
+	async fn resolve(&self, context: &Context, endpoint: &str, source: &Source) -> Result<Access> {
 		match source {
 			Source::Keyless => {}
 			Source::Tenant { .. } => {
@@ -177,6 +208,9 @@ impl ProviderAccess for KeylessAccess {
 			);
 			return Err(Error::Forbidden);
 		}
+		context
+			.data_protection
+			.permits(self.data_protection_destination(endpoint)?)?;
 		Ok(Access {
 			endpoint: endpoint.into(),
 			bearer: String::new().into(),

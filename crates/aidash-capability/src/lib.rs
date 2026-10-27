@@ -58,6 +58,12 @@ pub struct Claims {
 	/// Exact provider-owned tools admitted for this inference; absent denies all.
 	#[serde(default, skip_serializing_if = "Vec::is_empty")]
 	pub provider_tools: Vec<ProviderTool>,
+	/// An omitted claim requires ZDR, as older tokens did.
+	#[serde(
+		default,
+		skip_serializing_if = "aidash_domain::data_protection::Requirement::is_default"
+	)]
+	pub data_protection: aidash_domain::data_protection::Requirement,
 	pub iss: String,
 	pub aud: String,
 	pub iat: u64,

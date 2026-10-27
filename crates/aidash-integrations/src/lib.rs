@@ -93,3 +93,5 @@ pub mod egress;
 
 #[cfg(feature = "cloud-adapters")]
 pub mod marketplace;
+
+pub mod data_protection;

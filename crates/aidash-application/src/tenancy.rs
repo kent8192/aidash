@@ -123,6 +123,8 @@ pub enum DeploymentScopeReason {
 	/// Finding the Tenant of a Run, a Workspace or a remote operation from the
 	/// row that records it, when the caller names only an id.
 	RunTenant,
+	/// Reading current Data Protection policies along a Run's delegation ancestry.
+	DataProtectionEvaluation,
 	/// Finding the owner, and so the Tenant, of a Plan Connection a Run's
 	/// admission pinned by id, before the owner's Tenant Scope opens.
 	PlanConnectionOwner,
@@ -172,6 +174,7 @@ impl DeploymentScopeReason {
 			Self::IdentityStatus => "identity-status",
 			Self::FederationInbound => "federation-inbound",
 			Self::RunTenant => "run-tenant",
+			Self::DataProtectionEvaluation => "data-protection-evaluation",
 			Self::PlanConnectionOwner => "plan-connection-owner",
 			Self::ActivityObserver => "activity-observer",
 			Self::MarketplaceDistribution => "marketplace-distribution",
@@ -213,6 +216,7 @@ impl DeploymentScopeReason {
 			| Self::DeploymentAdministratorList
 			| Self::FederationInbound
 			| Self::RunTenant
+			| Self::DataProtectionEvaluation
 			| Self::PlanConnectionOwner
 			| Self::ActivityObserver
 			| Self::UsageSampling => false,
@@ -262,6 +266,7 @@ mod tests {
 			DeploymentScopeReason::IdentityStatus,
 			DeploymentScopeReason::FederationInbound,
 			DeploymentScopeReason::RunTenant,
+			DeploymentScopeReason::DataProtectionEvaluation,
 			DeploymentScopeReason::PlanConnectionOwner,
 			DeploymentScopeReason::ActivityObserver,
 			DeploymentScopeReason::MarketplaceDistribution,

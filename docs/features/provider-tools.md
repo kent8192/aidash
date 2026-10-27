@@ -9,10 +9,11 @@ not use runtime Approval Rules or Web disclosure approvals.
 
 Only Run inference on OpenRouter with the Tenant's OpenRouter Provider Credential
 may send them. Plan Connections, Keyless calls, maintenance, Deciders and
-compaction do not carry them. The application admission seam in
-`aidash_application::provider_tools` connects Data Protection (#542); its effective
-Standard-only rule is integrated by that slice. Data Region admission belongs to
-#543. Provider tool support does not imply that model ZDR covers tool backends.
+compaction do not carry them. Immediately before each send, the transport reloads
+the current Tenant and delegation-chain Data Protection policy and evaluates
+`DataProtection::permits(Destination::ProviderTool)`. No Training and Zero Data
+Retention refuse Provider tools before token issuance or provider I/O. This policy
+is never pinned in a Binding. Data Region admission belongs to #543. Provider tool support does not imply that model ZDR covers tool backends.
 
 Agent Bindings pin parameters and spending caps alongside their restrictions:
 

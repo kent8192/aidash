@@ -303,7 +303,7 @@ pub async fn resolve(
 				let model: aidash_domain::model::ModelConfig =
 					serde_json::from_value(model.config.clone())?;
 				tool.eligible(&model)?;
-				crate::provider_tools::admit_data_protection()?;
+				// Mutable Tenant/delegation policy is reloaded at each send, never pinned here.
 			}
 			if let Some((provider, operation)) = &lifecycle
 				&& (descriptor.provider != *provider

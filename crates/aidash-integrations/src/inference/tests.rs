@@ -488,7 +488,7 @@ fn only_context_policy_requests_disable_openrouter_transforms(
 		input_format: Default::default(),
 		estimate: Default::default(),
 	};
-	let body = request_body(&config, &request, routes, None);
+	let body = request_body(&config, &request, routes, None, Default::default());
 	// A prune-only Agent keeps OpenRouter's default transforms unchanged.
 	assert_eq!(body.get("transforms"), opted_in.then(|| json!([])).as_ref());
 	assert_eq!(body["model"], json!("vendor/model"));

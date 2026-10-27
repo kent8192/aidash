@@ -47036,5 +47036,199 @@
         }
       }
     }
+  },
+  {
+    "method": "GET",
+    "path": "/api/tenants/{tenant}/data-protection",
+    "name": "tenant-data-protection",
+    "source": "server/src/apps/identity/views/data_protection.rs",
+    "json": false,
+    "uuid_parameters": [],
+    "query_parameters": [],
+    "response": {
+      "schema": {
+        "$ref": "#/components/schemas/TenantDataProtectionSettings"
+      },
+      "definitions": {
+        "DataProtection": {
+          "type": "object",
+          "description": "The Tenant policy. Missing settings preserve the existing OpenRouter ZDR default.",
+          "required": ["level", "model_call_zdr", "plan_connection_exempt"],
+          "properties": {
+            "level": {
+              "$ref": "#/components/schemas/Level"
+            },
+            "model_call_zdr": {
+              "type": "boolean",
+              "default": true
+            },
+            "plan_connection_exempt": {
+              "type": "boolean",
+              "default": true
+            }
+          },
+          "additionalProperties": false
+        },
+        "Level": {
+          "type": "string",
+          "enum": ["standard", "no_training", "zero_data_retention"]
+        },
+        "TenantDataProtectionSettings": {
+          "type": "object",
+          "required": ["policy", "effective", "deployment_floor"],
+          "properties": {
+            "deployment_floor": {
+              "$ref": "#/components/schemas/Level"
+            },
+            "effective": {
+              "$ref": "#/components/schemas/DataProtection"
+            },
+            "policy": {
+              "$ref": "#/components/schemas/DataProtection"
+            }
+          }
+        }
+      }
+    }
+  },
+  {
+    "method": "PUT",
+    "path": "/api/tenants/{tenant}/data-protection",
+    "name": "tenant-data-protection-update",
+    "source": "server/src/apps/identity/views/data_protection.rs",
+    "json": true,
+    "uuid_parameters": [],
+    "query_parameters": [],
+    "response": {
+      "schema": {
+        "$ref": "#/components/schemas/TenantDataProtectionSettings"
+      },
+      "definitions": {
+        "DataProtection": {
+          "type": "object",
+          "description": "The Tenant policy. Missing settings preserve the existing OpenRouter ZDR default.",
+          "required": ["level", "model_call_zdr", "plan_connection_exempt"],
+          "properties": {
+            "level": {
+              "$ref": "#/components/schemas/Level"
+            },
+            "model_call_zdr": {
+              "type": "boolean",
+              "default": true
+            },
+            "plan_connection_exempt": {
+              "type": "boolean",
+              "default": true
+            }
+          },
+          "additionalProperties": false
+        },
+        "Level": {
+          "type": "string",
+          "enum": ["standard", "no_training", "zero_data_retention"]
+        },
+        "TenantDataProtectionSettings": {
+          "type": "object",
+          "required": ["policy", "effective", "deployment_floor"],
+          "properties": {
+            "deployment_floor": {
+              "$ref": "#/components/schemas/Level"
+            },
+            "effective": {
+              "$ref": "#/components/schemas/DataProtection"
+            },
+            "policy": {
+              "$ref": "#/components/schemas/DataProtection"
+            }
+          }
+        }
+      }
+    }
+  },
+  {
+    "method": "POST",
+    "path": "/api/tenants/{tenant}/data-protection/impact",
+    "name": "tenant-data-protection-impact",
+    "source": "server/src/apps/identity/views/data_protection.rs",
+    "json": true,
+    "uuid_parameters": [],
+    "query_parameters": [],
+    "response": {
+      "schema": {
+        "$ref": "#/components/schemas/DataProtectionImpact"
+      },
+      "definitions": {
+        "DataProtection": {
+          "type": "object",
+          "description": "The Tenant policy. Missing settings preserve the existing OpenRouter ZDR default.",
+          "required": ["level", "model_call_zdr", "plan_connection_exempt"],
+          "properties": {
+            "level": {
+              "$ref": "#/components/schemas/Level"
+            },
+            "model_call_zdr": {
+              "type": "boolean",
+              "default": true
+            },
+            "plan_connection_exempt": {
+              "type": "boolean",
+              "default": true
+            }
+          },
+          "additionalProperties": false
+        },
+        "DataProtectionAffected": {
+          "type": "object",
+          "required": ["id", "version", "reason"],
+          "properties": {
+            "id": {
+              "type": "string"
+            },
+            "reason": {
+              "type": "string"
+            },
+            "version": {
+              "type": ["string", "null"]
+            }
+          }
+        },
+        "DataProtectionImpact": {
+          "type": "object",
+          "required": [
+            "effective",
+            "agents",
+            "catalog_approvals",
+            "destinations"
+          ],
+          "properties": {
+            "agents": {
+              "type": "array",
+              "items": {
+                "$ref": "#/components/schemas/DataProtectionAffected"
+              }
+            },
+            "catalog_approvals": {
+              "type": "array",
+              "items": {
+                "$ref": "#/components/schemas/DataProtectionAffected"
+              }
+            },
+            "destinations": {
+              "type": "array",
+              "items": {
+                "$ref": "#/components/schemas/DataProtectionAffected"
+              }
+            },
+            "effective": {
+              "$ref": "#/components/schemas/DataProtection"
+            }
+          }
+        },
+        "Level": {
+          "type": "string",
+          "enum": ["standard", "no_training", "zero_data_retention"]
+        }
+      }
+    }
   }
 ]

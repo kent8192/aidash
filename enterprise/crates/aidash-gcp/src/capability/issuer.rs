@@ -174,6 +174,7 @@ impl TokenIssuer for CapabilityIssuer {
 					max_tool_calls: tool.binding.max_tool_calls,
 				})
 				.collect(),
+			data_protection: context.data_protection.requirement(),
 			iss: self.configuration.issuer.clone(),
 			aud: self.configuration.audience.clone(),
 			iat: now,

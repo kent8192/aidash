@@ -164,6 +164,7 @@ fn openrouter_request_body(
 	request: &ModelRequest,
 	salt: Option<&str>,
 	media_routes: Vec<String>,
+	requirement: aidash_domain::data_protection::Requirement,
 ) -> Result<Value> {
 	let mut body = input::encoded_openrouter_input_body(request)?;
 	body["model"] = json!(config.model_id);
@@ -176,7 +177,7 @@ fn openrouter_request_body(
 	if request.disable_provider_transforms {
 		body["truncation"] = json!("disabled");
 	}
-	body["provider"] = super::provider_preferences(config, media_routes);
+	body["provider"] = super::provider_preferences(config, media_routes, requirement);
 	if let Some(effort) = config.reasoning_effort {
 		body["reasoning"] = json!({"effort": effort});
 	}
@@ -194,11 +195,7 @@ impl ModelProvider for ResponsesProvider {
 		let stall = self.config.stream_stall_timeout()?;
 		tokio::time::timeout(deadline, async {
 			request.validate()?;
-			aidash_application::provider_tools::admit_request(
-				&self.config,
-				&self.context,
-				&request.provider_tools,
-			)?;
+
 			if request.cache_breakpoints {
 				return Err(Error::Invalid(format!(
 					"model {} does not accept cache breakpoints",
@@ -206,6 +203,11 @@ impl ModelProvider for ResponsesProvider {
 				)));
 			}
 			if self.is_plan() {
+				aidash_application::provider_tools::admit_request(
+					&self.config,
+					&self.context,
+					&request.provider_tools,
+				)?;
 				self.infer_plan(&request, progress, deadline, stall).await
 			} else {
 				self.infer_openrouter(&request, progress, deadline, stall)
@@ -375,17 +377,32 @@ impl ResponsesProvider {
 				)));
 			}
 		}
+		let context = crate::data_protection::context(
+			self.access.as_ref(),
+			&self.call_context(request.max_output_tokens, request.provider_tools.clone()),
+		)
+		.await?;
+		aidash_application::provider_tools::admit_request(
+			&self.config,
+			&context,
+			&request.provider_tools,
+		)?;
 		let salt = salt_line(self, request)?;
 		let media_routes = super::verified_routes(
 			&self.clients,
 			&self.config,
-			&*self.access,
-			&self.context,
+			self.access.as_ref(),
+			&context,
 			request,
 		)
 		.await?;
-		let mut body =
-			openrouter_request_body(&self.config, request, salt.as_deref(), media_routes)?;
+		let mut body = openrouter_request_body(
+			&self.config,
+			request,
+			salt.as_deref(),
+			media_routes,
+			context.data_protection.requirement(),
+		)?;
 		super::validate_provider_tools(&body, request)?;
 		let streaming = self.config.streaming();
 		if streaming {
@@ -393,11 +410,7 @@ impl ResponsesProvider {
 		}
 		let access = self
 			.access
-			.resolve(
-				&self.call_context(request.max_output_tokens, request.provider_tools.clone()),
-				&self.config.endpoint,
-				&self.source(),
-			)
+			.resolve(&context, &self.config.endpoint, &self.source())
 			.await?;
 		let mut call = self
 			.clients

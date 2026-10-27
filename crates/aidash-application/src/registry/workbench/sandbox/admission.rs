@@ -320,7 +320,7 @@ async fn prepare(
 		));
 	}
 	let context_window = model_config.context_window;
-	let model_provider = admission.models.provider(model_config)?;
+	let model_provider = admission.models.provider(&draft.tenant, model_config)?;
 	let fixtures = serde_json::to_value(&input.fixtures)?;
 	if fixtures.to_string().len() > 65_536 {
 		return Err(Error::Invalid("test fixtures exceed 64 KiB".into()));

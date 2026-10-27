@@ -357,6 +357,7 @@ async fn the_search_credential_never_reaches_results_or_evidence(
 		review_after: now + chrono::Duration::days(1),
 		storage_permitted: true,
 		query_training_prohibited: true,
+		request_retention_prohibited: false,
 		evaluation_permitted: true,
 		retention_days: 30,
 		deletion_after_termination_days: 30,

@@ -305,6 +305,8 @@ pub const TABLES: &[Table] = &[
 	table("identity", "tenant_invitations", TenantOwned),
 	audit("identity", "tenant_retention_rule_history"),
 	table("identity", "tenant_retention_rules", TenantOwned),
+	table("identity", "tenant_data_protection", TenantOwned),
+	table("identity", "tenant_data_protection_history", TenantOwned),
 	// Tenant Secret metadata (ADR 0051); the values are in the Secret Store
 	table("identity", "tenant_secrets", TenantOwned),
 	// Tenant Deletions outlive purge and are read while the Tenant refuses everyone (ADR 0060)

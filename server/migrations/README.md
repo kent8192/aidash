@@ -680,3 +680,7 @@ matching model state.
 `knowledge/0036_memory_attempt_evidence` without changing either migration. It
 is an empty state-only migration: both independent column changes apply before
 the single Knowledge head, and no schema or model state is overwritten.
+
+`identity/0041_tenant_data_protection` adds each Tenant's current Data Protection Level and append-only setting history (#542). A missing row means Standard with model-call ZDR and the Plan Connection exemption enabled. Checks reject unknown levels and a Zero Data Retention policy with model-call ZDR disabled. `identity/0042_data_protection_row_level_security` applies the same forced Tenant-isolation policy as the other Tenant-owned tables; literal SQL is required because Reinhardt does not expose RLS policy operations.
+
+`identity/0043_tenant_data_protection_state` records those two tables in ORM migration state. It executes no DDL; references, validity checks and row-level policies remain in the preceding database-only migrations.
