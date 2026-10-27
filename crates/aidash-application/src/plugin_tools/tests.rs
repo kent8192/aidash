@@ -72,6 +72,34 @@ async fn a_listed_server_pins_its_tools_over_the_runs_session() {
 }
 
 #[tokio::test]
+async fn an_invalid_listed_schema_is_excluded_from_the_runs_provider_tools() {
+	let snapshot = plugin_snapshot(vec![stored_plugin("acme", &[])], serde_json::Value::Null);
+	let sessions = FakeSessions::default();
+	let mut invalid = listed_tool("broken");
+	invalid.input_schema = json!({"type": 7});
+	sessions.script("docs", Listed::Tools(vec![invalid, listed_tool("search")]));
+
+	let pinned = pin_for_run(&sessions, Uuid::new_v4(), &snapshot)
+		.await
+		.unwrap();
+	let offered = crate::tools::agent_plugin::pinned_specifications(Some(&pinned));
+
+	assert_eq!(
+		offered.keys().map(String::as_str).collect::<Vec<_>>(),
+		["acme__docs__search"]
+	);
+	assert_eq!(
+		findings(&pinned),
+		[(
+			"docs".into(),
+			Reason::ToolInvalid,
+			"broken: schema_invalid".into()
+		)]
+	);
+	assert_eq!(pinned.findings[0].finding.outcome, Outcome::Skipped);
+}
+
+#[tokio::test]
 async fn a_server_the_plugin_serves_over_stdio_is_not_listed() {
 	let plugin = stored_plugin_with_servers(
 		"acme",

@@ -261,7 +261,7 @@ fn an_unavailable_server_is_skipped_with_its_cause_and_the_others_still_pin() {
 }
 
 #[test]
-fn stdio_servers_are_ignored_entirely() {
+fn stdio_servers_are_reported_unavailable_and_not_pinned() {
 	let plugin = reference_with_servers(
 		"acme-tools",
 		json!({"docs": remote("docs"), "local": {"type": "stdio", "command": "node"}}),
@@ -282,10 +282,14 @@ fn stdio_servers_are_ignored_entirely() {
 
 	assert_eq!(unlisted, listed);
 	assert_eq!(
+		listed.findings[0].finding.detail,
+		"stdio_session_unavailable"
+	);
+	assert_eq!(
 		pinned_names(&listed),
 		[("acme-tools".into(), "docs".into(), vec!["a"])]
 	);
-	assert!(listed.findings.is_empty());
+	assert_eq!(listed.findings.len(), 1);
 }
 
 #[test]
@@ -373,6 +377,12 @@ fn schema_of_size(bytes: usize) -> Value {
 #[case::schema_that_is_an_array(json!([]), "schema_not_object")]
 #[case::schema_that_is_null(Value::Null, "schema_not_object")]
 #[case::schema_one_byte_over(schema_of_size(MAX_SCHEMA_BYTES + 1), "schema_too_large")]
+#[case::invalid_type(json!({"type": 7}), "schema_invalid")]
+#[case::invalid_nested_type(json!({"type": "object", "properties": {"q": {"type": 7}}}), "schema_invalid")]
+#[case::invalid_required(json!({"type": "object", "required": "q"}), "schema_invalid")]
+#[case::invalid_pattern(json!({"type": "object", "properties": {"q": {"pattern": "["}}}), "schema_invalid")]
+#[case::unresolved_reference(json!({"type": "object", "$ref": "#/$defs/missing"}), "schema_invalid")]
+#[case::remote_reference(json!({"type": "object", "$ref": "https://schema.example/tool.json"}), "schema_invalid")]
 fn a_tool_with_an_unusable_schema_is_skipped(#[case] input_schema: Value, #[case] why: &str) {
 	let plugin = acme();
 	let mut broken = tool("broken");
@@ -803,5 +813,53 @@ fn what_a_run_pinned_survives_storage() {
 	assert_eq!(
 		serde_json::to_value(Reason::AliasCollision).unwrap(),
 		json!("alias_collision")
+	);
+}
+
+#[test]
+fn an_event_reports_each_skipped_server_once_with_a_reason_code_and_no_detail() {
+	let plugin = acme();
+	let pinned = PluginTools {
+		servers: Vec::new(),
+		findings: vec![
+			finding(
+				&plugin,
+				"docs",
+				Outcome::Skipped,
+				Reason::ServerUnavailable,
+				"https://docs.example.com/mcp answered 500",
+			),
+			finding(
+				&plugin,
+				"docs",
+				Outcome::Skipped,
+				Reason::ToolInvalid,
+				"a: name",
+			),
+			finding(
+				&plugin,
+				"docs",
+				Outcome::Skipped,
+				Reason::ToolInvalid,
+				"b: name",
+			),
+			finding(
+				&plugin,
+				"docs",
+				Outcome::Ignored,
+				Reason::ToolNotListed,
+				"c",
+			),
+		],
+	};
+
+	let skipped = serde_json::to_value(pinned.skipped()).unwrap();
+
+	assert_eq!(
+		skipped,
+		json!([
+			{"plugin": "acme-tools", "server": "docs", "reason": "server_unavailable"},
+			{"plugin": "acme-tools", "server": "docs", "reason": "tool_invalid"},
+		])
 	);
 }

@@ -170,6 +170,24 @@ pub trait ExecutionStore: Send + Sync {
 	async fn pin_plugin_tools(&self, run: &mut Run, token: Uuid) -> Result<()> {
 		self.save_run(run, token, "run.plugin_tools_pinned").await
 	}
+	/// A known MCP wire outcome or input answer, retaining the current lease.
+	async fn checkpoint_mcp(&self, run: &mut Run, token: Uuid) -> Result<()> {
+		self.save_run(run, token, "run.mcp_checkpoint").await
+	}
+	/// Publish a sampling completion and finish its attempt atomically.
+	async fn finish_sampling(
+		&self,
+		run: &Run,
+		token: Uuid,
+		key: &str,
+		result: &Value,
+		attempt: InferenceAttemptId,
+	) -> Result<Value> {
+		let result = self.invocation_finish(run, token, key, result).await?;
+		self.finish_inference(run, token, attempt, ProgressOutcome::Accepted)
+			.await?;
+		Ok(result)
+	}
 	/// The newest calibration samples of one key, newest first, at most
 	/// [`aidash_domain::provider::estimate::CALIBRATION_WINDOW`]. Samples are
 	/// Deployment-wide and carry no Run, Tenant or attempt identifiers. A
@@ -204,6 +222,20 @@ pub trait ExecutionStore: Send + Sync {
 		key: &str,
 	) -> Result<HumanRequest>;
 	async fn human_request_by_id(&self, id: Uuid) -> Result<HumanRequest>;
+	/// Recall a completed invocation under the current lease without creating or
+	/// changing its journal. Verify its Run, name and exact input before reuse.
+	async fn completed_invocation(
+		&self,
+		_run: &Run,
+		_token: Uuid,
+		_key: &str,
+		_name: &str,
+		_input: &Value,
+	) -> Result<Option<Value>> {
+		Err(crate::Error::Invalid(
+			"MCP_INFERENCE_JOURNAL_UNAVAILABLE".into(),
+		))
+	}
 	async fn invocation_start(
 		&self,
 		run: &Run,
@@ -379,6 +411,22 @@ pub trait ExecutionTool: Send + Sync {
 	}
 	fn replay_safe(&self) -> bool;
 	async fn invoke(&self, run: &Run, input: Value, key: &str) -> Result<Value>;
+	fn mcp_rounds(&self) -> bool {
+		false
+	}
+	async fn mcp_round(
+		&self,
+		run: &Run,
+		input: Value,
+		key: &str,
+		checkpoint: Option<&aidash_domain::agent_plugin::interaction::CallCheckpoint>,
+		inputs: Option<Arc<dyn super::tools::PluginInputs>>,
+	) -> Result<aidash_domain::agent_plugin::interaction::ToolRound> {
+		let _ = (checkpoint, inputs);
+		self.invoke(run, input, key)
+			.await
+			.map(aidash_domain::agent_plugin::interaction::ToolRound::Complete)
+	}
 	/// Resource Claims and output bound derived by trusted provider code from
 	/// validated arguments. `None` keeps the call on the sequential path.
 	fn concurrent_call(
@@ -429,6 +477,17 @@ pub trait ExecutionAuthority: Send + Sync {
 		run: &Run,
 		request: crate::ports::capabilities::approvals::ToolCallRequest,
 	) -> Result<crate::ports::capabilities::approvals::ToolCallApproval>;
+	async fn sampling_approval(
+		&self,
+		_run: &Run,
+		_request: crate::ports::capabilities::approvals::SamplingApprovalRequest,
+	) -> Result<crate::ports::capabilities::approvals::ToolCallApproval> {
+		Ok(
+			crate::ports::capabilities::approvals::ToolCallApproval::Refused(
+				crate::ports::capabilities::approvals::Refusal::Blocked,
+			),
+		)
+	}
 	/// The Approval Mode that covers `run` now: the one of the person its
 	/// delegation chain starts at. `None` when no person's mode covers it,
 	/// such as a Run that arrived through Federation or Tenant maintenance, a
@@ -550,6 +609,9 @@ pub use super::context_source::{
 #[async_trait]
 pub trait ExecutionEnvironment: Send + Sync {
 	fn node_id(&self) -> &str;
+	fn mcp_limits(&self) -> aidash_domain::agent_plugin::interaction::InteractionLimits {
+		Default::default()
+	}
 	fn store(&self) -> &dyn ExecutionStore;
 	fn catalog(&self) -> &dyn ExecutionCatalog;
 	fn authority(&self) -> Option<&dyn ExecutionAuthority>;

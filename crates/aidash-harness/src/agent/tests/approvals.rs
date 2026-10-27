@@ -55,10 +55,10 @@ async fn an_approved_call_runs_once_under_its_ordinary_key(mut fixture: Fixture)
 	assert_eq!(request.key, base_key(&fixture.run));
 	assert_eq!(
 		request.tool,
-		EntityRef {
+		ToolCallTarget::Registry(EntityRef {
 			id: "crm".into(),
 			version: "1.0.0".into()
-		}
+		})
 	);
 	assert_eq!(request.operation, "invoke");
 	assert_eq!(request.call.arguments, arguments);

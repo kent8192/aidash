@@ -528,6 +528,8 @@ pruning or summary, journals those events as `imported`.
 
 `registry/0041_agent_plugins_definition` (after `registry/0040_agent_plugin_copies_row_level_security`) replaces the Agent Binding contract function so it accepts the Agent `agent_plugins` key of #414: an array of at most 8 objects, each with a `sha256:` `digest`, string `name` and `source`, `skills` and `findings` arrays and a `servers` object. An explicit null is rejected, and a plugin that carries Skills lets the Agent's instructions be empty, as a Skill Binding does. `AgentBindings::validate` checks the rest. It keeps the `0029_completion_policy` body otherwise. Rollback refuses with SQLSTATE `55000` while any Agent definition declares `agent_plugins` or any Run pins an Agent definition that does, then restores the `0029_completion_policy` body. The function body has no typed Reinhardt operation, so it lives in SQL assets.
 
+`registry/0045_agent_plugin_settings` (after `registry/0044_foreign_key_relations_state`) replaces the Agent Binding contract function so it accepts the Agent `agent_plugin_settings` key of #414: what an Agent version decides about the servers of the plugins it takes in (ADR 0072). The key is an object whose members are objects, plugin name to server name to settings. A settings object holds only `tools` (an array of strings, or null), `exposure` (`eager` or `deferred`, or null) and `read_only` (an array of objects with a string `name` and a string `schema_digest`). An explicit null is rejected for the key and for `read_only`, whose Rust fields have no `Option`. `AgentBindings::validate` checks the rest: that each key names an attached plugin and server, the name and count limits, and the digest format. It keeps the `0042_external_services` body otherwise, including External service Bindings. Rollback refuses with SQLSTATE `55000` while any Agent definition declares `agent_plugin_settings` or any Run pins an Agent definition that does, then restores the `0042_external_services` body. The function body has no typed Reinhardt operation, so it lives in SQL assets.
+
 `workspaces/0008_publishing_run` (after `workspaces/0007_model_state`) adds a nullable `run_id` to `messages` and `artifacts` with typed `AddColumn` operations. It records the Run that published the text on this Node, so a Source citation in it resolves only against that Run's Research evidence. It has no foreign key: the value outlives a deleted Run, so such a citation reads as unavailable rather than as text nobody published. Existing rows keep `NULL`, and rollback drops both columns.
 
 `execution/0029_research_retention` (after `execution/0028_url_intents_model_state`) adds `purged_at` and `purge_reason` to `research_snapshots` with typed operations. A check keeps both set or both null, limits the reason to `retention` or `revocation`, and requires a Purged snapshot to keep no contents (`lines = '[]'`, `text_bytes = 0`). A partial index on unpurged snapshot ids serves the retention sweep. It also creates `research_revocations`, keyed by Run with no reference to `runs`, so the audit record of an Evidence Revocation outlives its Run (ADR 0046), with a `(tenant, revoked_at)` index for listing. The generated state-only checkpoint `execution/0030_research_retention_state` records the columns and table in the ORM snapshot without the checks and indexes.
@@ -564,6 +566,12 @@ pruning or summary, journals those events as `imported`.
 
 `execution/0049_foreign_key_relations_state`, `federation/0012_foreign_key_relations_state`, `identity/0039_foreign_key_relations_state`, `knowledge/0035_foreign_key_relations_state`, `registry/0044_foreign_key_relations_state` and `workspaces/0010_foreign_key_relations_state` (each after its app's previous leaf) are state-only. They record in the ORM snapshot the foreign keys that model fields now declare with `#[rel(foreign_key, shared_fields = ["tenant"], db_constraint = ...)]`, with the names, columns and actions that the `*_references` migrations and later migrations already created in PostgreSQL. A foreign key whose column is part of the primary key, or that is a generated column, stays a plain `_id` field and out of the snapshot. `registry/0044` is listed in `TENANT_REGISTRY_MIGRATIONS`.
 
+`execution/0050_mcp_elicitation_kind` (after `0049_foreign_key_relations_state`)
+adds `MCP_ELICITATION` to the physical human-request kind check with typed
+Reinhardt constraint operations. `0051_mcp_elicitation_state` updates the ORM enum
+state. Rollback's restored check refuses existing MCP elicitation rows rather
+than deleting them. Deploy API servers and workers together before enabling
+these requests; older binaries cannot decode the new kind.
 `registry/0045_context_sources` (after `0044_foreign_key_relations_state`) validates the optional native `context_source` declaration and the required workspace-observation source (#110, ADR 0086). Exact Tool and Decider references remain admission and live-authority checks. The migration replaces PostgreSQL JSON validation functions using DDL because Reinhardt has no typed function-body operation. It changes no rows and rollback refuses while declarations requiring the new schema remain.
 
 ## Projection comparison evidence (#181)
@@ -622,6 +630,20 @@ describes the prompt-free diagnostic export, complete attempt inventories and
 remaining live acceptance requirements. These migrations do not switch the
 projection default or rewrite pinned definitions and Runs.
 
+## Merged MCP and projection histories
+
+`execution/0052_merge_mcp_and_usage_evidence` depends on both
+`0051_mcp_elicitation_state` and `0051_compaction_provider_dispatch`.
+`registry/0046_merge_agent_plugin_and_projection` depends on both
+`0045_agent_plugin_settings` and `0045_projection_measurement_config`.
+These empty merge migrations give each app one leaf while preserving the
+original migration identities, dependencies, schema changes and rollback
+guards. New migrations depend on the merged leaf. They perform no schema
+operations and change neither retained MCP state nor projection behavior.
+
+`registry/0048_plugin_marketplace_merge` joins the Registry merge above with
+`0047_marketplace_recall_constraints`. This empty state-only migration keeps a
+single Registry leaf without rewriting either history or changing stored data.
 `execution/0058_research_projection_merge` and
 `registry/0046_context_projection_merge` join the independent Research/approval
 and projection evidence histories, and the Context Source and projection
@@ -638,6 +660,12 @@ single Registry leaf without rewriting either history or changing stored data.
 `0051_research_journal_results_state` to that Execution history. This empty
 state-only migration preserves the durable Research result history and leaves
 a single Execution head without changing either existing branch.
+
+`execution/0060_plugin_research_merge` and `registry/0049_plugin_context_merge`
+join the MCP and Research/approval histories, and the Agent Plugin and Context
+Source histories, respectively. Both are empty state-only migrations. They
+preserve the existing migration identities and give each app one leaf without
+changing schema, retained inputs, or data.
 
 ## Home ledger recovery eligibility (#434)
 

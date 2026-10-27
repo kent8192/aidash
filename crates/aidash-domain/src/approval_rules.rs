@@ -35,6 +35,9 @@ pub enum ApprovalKind {
 	/// `tool:{registry_id}#{operation}`. A rule names the tool and never a
 	/// version, unlike the target of a Run grant, which includes it.
 	ToolCall,
+	/// An Agent Plugin server's sampling request. Individual allow rules pin
+	/// Agent, copy and origin; individual deny rules follow its logical name.
+	Sampling,
 	/// An outbound read. The target is its origin.
 	Outbound,
 	/// A Web search disclosure. The target is the Research provider the

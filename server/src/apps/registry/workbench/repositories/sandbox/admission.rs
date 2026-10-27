@@ -12,6 +12,7 @@ use aidash_domain::registry::workbench::{
 use async_trait::async_trait;
 
 use serde_json::Value;
+use uuid::Uuid;
 #[async_trait]
 impl AdmissionRepository for Repository {
 	async fn begin_admission(&self) -> Result<Box<dyn AdmissionScope + '_>> {
@@ -27,6 +28,11 @@ impl AdmissionRepository for Repository {
 }
 #[async_trait]
 impl AdmissionScope for Scope {
+	async fn complete_listing(&mut self, id: Uuid, scenario: Value) -> Result<TestSession> {
+		AgentTestSession::complete_listing(&mut self.tx, id, scenario)
+			.await
+			.map_err(Into::into)
+	}
 	async fn admit(
 		&mut self,
 		draft: &Draft,

@@ -3,7 +3,7 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 use std::collections::BTreeSet;
-use url::{Host, Url};
+use url::Url;
 
 pub(in crate::agent_plugin) const KEYS: [&str; 3] = ["type", "url", "headers"];
 
@@ -48,7 +48,8 @@ pub(super) fn parse(object: &Map<String, Value>) -> Result<super::McpServer, Ref
 	Ok(super::McpServer::Remote(RemoteServer { url, headers }))
 }
 
-/// An absolute HTTP(S) URL without user information or fragment; plain HTTP only for loopback.
+/// An absolute HTTP(S) URL without user information or fragment. Deployment admission decides
+/// whether the origin is permitted, including the exceptions for plain HTTP and private hosts.
 fn endpoint(raw: &str) -> Result<Url, Refusal> {
 	let invalid = |detail: &str| Refusal::invalid(format!("url {detail}"));
 	if raw.chars().any(|c| c.is_whitespace() || c.is_control()) {
@@ -64,14 +65,8 @@ fn endpoint(raw: &str) -> Result<Url, Refusal> {
 	if url.fragment().is_some() {
 		return Err(invalid("must not contain a fragment"));
 	}
-	let loopback = match url.host() {
-		Some(Host::Domain(domain)) => domain == "localhost",
-		Some(Host::Ipv4(address)) => address.is_loopback(),
-		Some(Host::Ipv6(address)) => address.to_canonical().is_loopback(),
-		None => return Err(invalid("must have a host")),
-	};
-	if url.scheme() == "http" && !loopback {
-		return Err(invalid("must use https unless the host is loopback"));
+	if url.host().is_none() {
+		return Err(invalid("must have a host"));
 	}
 	Ok(url)
 }
@@ -87,8 +82,26 @@ fn has_user_information(raw: &str, url: &Url) -> bool {
 	authority.contains('@') || !url.username().is_empty() || url.password().is_some()
 }
 
+/// The header fields HTTP and MCP transports own. A plugin that names one would break framing,
+/// negotiation or the MCP session, so the server entry is invalid.
+const RESERVED_HEADERS: [&str; 13] = [
+	"host",
+	"content-length",
+	"content-type",
+	"transfer-encoding",
+	"connection",
+	"upgrade",
+	"te",
+	"trailer",
+	"keep-alive",
+	"proxy-connection",
+	"accept",
+	"mcp-session-id",
+	"mcp-protocol-version",
+];
+
 /// RFC 9110 token names and values without control characters other than horizontal tab; the
-/// same name in two casings is a duplicate.
+/// same name in two casings is a duplicate. Names the transports own are refused.
 fn headers(value: &Value) -> Result<Vec<Header>, Refusal> {
 	let invalid = || Refusal::invalid("headers must be an object of valid header fields");
 	let members = value.as_object().ok_or_else(invalid)?;
@@ -98,6 +111,7 @@ fn headers(value: &Value) -> Result<Vec<Header>, Refusal> {
 		let value = value.as_str().ok_or_else(invalid)?;
 		if http::header::HeaderName::from_bytes(name.as_bytes()).is_err()
 			|| http::header::HeaderValue::from_str(value).is_err()
+			|| RESERVED_HEADERS.contains(&name.to_ascii_lowercase().as_str())
 			|| !seen.insert(name.to_ascii_lowercase())
 		{
 			return Err(Refusal::invalid(format!("header {name} is invalid")));
