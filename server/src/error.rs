@@ -76,6 +76,8 @@ pub enum Error {
 	/// The configured Secret Store does not support MCP OAuth Connections.
 	#[error("connection_unavailable")]
 	ConnectionStoreUnavailable,
+	#[error("{}", .0.code())]
+	Connection(aidash_domain::agent_plugin::ConnectionCause),
 	#[error("OpenRouter returned {status}: {reason}")]
 	ProviderRejected { status: u16, reason: String },
 	/// A Plan Connection could not serve a call (ADR 0007); never retried.
@@ -139,7 +141,7 @@ impl Error {
 				self.to_string(),
 			),
 			Self::StaleInference => (StatusCode::CONFLICT, self.to_string()),
-			Self::Context(_) => (StatusCode::CONFLICT, self.to_string()),
+			Self::Context(_) | Self::Connection(_) => (StatusCode::CONFLICT, self.to_string()),
 			Self::DeciderOutage => (StatusCode::SERVICE_UNAVAILABLE, self.to_string()),
 			Self::ContextOverflow => (
 				StatusCode::BAD_REQUEST,
@@ -338,6 +340,7 @@ impl From<aidash_application::Error> for Error {
 			ApplicationError::Forbidden => Self::Forbidden,
 			ApplicationError::External(message) => Self::External(message),
 			ApplicationError::ConnectionStoreUnavailable => Self::ConnectionStoreUnavailable,
+			ApplicationError::Connection(cause) => Self::Connection(cause),
 			ApplicationError::MediaRouteUnavailable(model) => Self::MediaRouteUnavailable(model),
 			ApplicationError::OrchestrationUnavailable => Self::OrchestrationUnavailable,
 			ApplicationError::RemoteSemantic(reason) => Self::RemoteSemantic(reason),
@@ -390,6 +393,7 @@ impl From<Error> for aidash_application::Error {
 			Error::SemanticUnavailable => Self::SemanticUnavailable,
 			Error::IdentityStatusUnavailable => Self::IdentityStatusUnavailable,
 			Error::ConnectionStoreUnavailable => Self::ConnectionStoreUnavailable,
+			Error::Connection(cause) => Self::Connection(cause),
 			Error::TransactionPending => Self::TransactionPending,
 			Error::InferenceStalled => Self::InferenceStalled,
 			Error::Plan(failure) => Self::Plan(failure),
