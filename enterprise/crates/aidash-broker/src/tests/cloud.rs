@@ -254,6 +254,7 @@ impl Cloud {
 			endpoint: Provider::Openrouter.base_url().into(),
 			provider_credential: Some("openrouter".into()),
 			plan_connection: None,
+			wire_api: None,
 			request_timeout_secs: Some(5),
 			// The fake upstream holds a stream open for the broker's own stream
 			// tests; these cases cover the access path of a whole completion.
