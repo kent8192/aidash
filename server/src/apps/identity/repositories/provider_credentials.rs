@@ -301,14 +301,12 @@ pub(crate) fn selected_providers(
 				.config
 				.get("plan_connection")
 				.is_none_or(serde_json::Value::is_null)
-		{
-			if let Some(endpoint) = entry
+			&& let Some(endpoint) = entry
 				.config
 				.get("endpoint")
 				.and_then(serde_json::Value::as_str)
-			{
-				keyless.push(endpoint.to_owned());
-			}
+		{
+			keyless.push(endpoint.to_owned());
 		}
 		if let Some(provider) = entry
 			.config
@@ -670,6 +668,7 @@ impl AdmittedAccess {
 	}
 }
 
+#[allow(clippy::too_many_arguments)] // Keep the workspace and current policy inputs explicit at admission.
 pub(crate) async fn admit_workspace(
 	tx: &mut dyn TransactionExecutor,
 	run: Uuid,
