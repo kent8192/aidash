@@ -108,6 +108,10 @@ pub struct TenantSecret {
 	pub name: String,
 	/// The hosts this Tenant Secret may be sent to, sorted.
 	pub hosts: Vec<String>,
+	/// The user subject that owns a personal secret; `None` means shared with
+	/// everyone in the Tenant (ADR 0100).
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub owner: Option<String>,
 	/// Adapter metadata, never part of an API projection.
 	pub secret_resource: String,
 	pub pinned_version: Option<String>,
@@ -141,6 +145,19 @@ impl TenantSecret {
 pub struct Disclosure {
 	pub secret: String,
 	pub host: String,
+}
+
+/// The secret a tool call resolves: the person's own wins; `SecretOwner::Any`
+/// falls back to the shared Tenant Secret, `SecretOwner::Personal` never does.
+pub fn pick_secret<'a>(
+	personal: Option<&'a TenantSecret>,
+	shared: Option<&'a TenantSecret>,
+	owner: crate::tool::SecretOwner,
+) -> Option<&'a TenantSecret> {
+	match owner {
+		crate::tool::SecretOwner::Any => personal.or(shared),
+		crate::tool::SecretOwner::Personal => personal,
+	}
 }
 
 /// The Tenant Secret a tool configuration names, with the endpoint it goes to.

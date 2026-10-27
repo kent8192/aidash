@@ -505,6 +505,7 @@ impl Service {
 			tenant: tenant.into(),
 			name: name.into(),
 			hosts,
+			owner: None,
 			secret_resource: self.store.secret_resource(id),
 			pinned_version: None,
 			fingerprint,

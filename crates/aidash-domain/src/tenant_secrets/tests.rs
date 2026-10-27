@@ -74,3 +74,38 @@ fn a_tool_names_its_secret_and_endpoint() {
 	.unwrap();
 	assert_eq!(named(&plain), None);
 }
+
+fn secret(id: u128, owner: Option<&str>) -> TenantSecret {
+	TenantSecret {
+		id: Uuid::from_u128(id),
+		tenant: "acme".into(),
+		name: "search".into(),
+		hosts: vec!["api.example.com".into()],
+		owner: owner.map(str::to_owned),
+		secret_resource: format!("aidash-store/tenant-secrets/{id}"),
+		pinned_version: Some("v1".into()),
+		fingerprint: "fingerprint".into(),
+		last4: "cdef".into(),
+		state: State::Active,
+		created_at: Utc::now(),
+		updated_at: Utc::now(),
+		revision: 1,
+	}
+}
+
+#[test]
+fn a_personal_secret_wins_and_may_fall_back_only_when_any_owner_is_allowed() {
+	let personal = secret(1, Some("alice"));
+	let shared = secret(2, None);
+	let owner = crate::tool::SecretOwner::Any;
+	assert_eq!(
+		pick_secret(Some(&personal), Some(&shared), owner).map(|secret| secret.id),
+		Some(personal.id)
+	);
+	assert_eq!(
+		pick_secret(None, Some(&shared), owner).map(|secret| secret.id),
+		Some(shared.id)
+	);
+	assert!(pick_secret(None, Some(&shared), crate::tool::SecretOwner::Personal).is_none());
+	assert!(pick_secret(None, None, owner).is_none());
+}
