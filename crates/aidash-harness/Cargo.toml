@@ -11,6 +11,8 @@ workspace = true
 [dependencies]
 aidash-application.workspace = true
 aidash-domain.workspace = true
+async-trait.workspace = true
+url = "2"
 chrono.workspace = true
 futures-util.workspace = true
 serde.workspace = true
@@ -22,6 +24,5 @@ metrics = "0.24"
 
 [dev-dependencies]
 aidash-domain = { workspace = true, features = ["token-encodings"] }
-async-trait.workspace = true
 rstest.workspace = true
 tokio = { workspace = true, features = ["test-util"] }

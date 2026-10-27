@@ -170,19 +170,26 @@ mod destinations {
 
 	#[tokio::test]
 	async fn legacy_public_http_endpoints_are_refused_for_http_and_mcp() {
+		use aidash_application::ports::tools::{PluginServer, PluginSessions};
+		use aidash_domain::agent_plugin::RemoteServer;
+
 		let (listener, port) = serve().await;
 		let address = listener.local_addr().unwrap();
 		let server = tokio::spawn(async move { axum::serve(listener, fixture()).await.unwrap() });
 		// Reach a local fixture if an old immutable snapshot bypasses admission.
+		let permitted = reqwest::Client::new();
+		let public = reqwest::Client::builder()
+			.no_proxy()
+			.resolve("public.example", address)
+			.build()
+			.unwrap();
 		let tools = HttpTools::new(
 			KeylessAccess::default(),
 			ToolClients {
-				permitted: reqwest::Client::new(),
-				public: reqwest::Client::builder()
-					.no_proxy()
-					.resolve("public.example", address)
-					.build()
-					.unwrap(),
+				mcp_permitted: permitted.clone(),
+				mcp_public: public.clone(),
+				permitted,
+				public,
 			},
 		);
 		let mut refused = Vec::new();
@@ -195,8 +202,27 @@ mod destinations {
 				Err(Error::Forbidden)
 			));
 		}
+		let sessions = crate::plugin_sessions::McpPluginSessions::new(
+			KeylessAccess::default(),
+			tools.clients.clone(),
+		);
+		let listed = sessions
+			.list(
+				uuid::Uuid::new_v4(),
+				&PluginServer {
+					plugin: "legacy".to_owned().try_into().unwrap(),
+					digest: "sha256:fixture".into(),
+					server: "public".to_owned().try_into().unwrap(),
+				},
+				&RemoteServer {
+					url: format!("http://public.example:{port}/mcp").parse().unwrap(),
+					headers: vec![],
+				},
+			)
+			.await;
 		server.abort();
 		assert_eq!(refused, [true, true]);
+		assert!(matches!(listed, Err(Error::Forbidden)), "{listed:?}");
 	}
 
 	#[tokio::test]

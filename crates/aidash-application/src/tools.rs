@@ -483,3 +483,8 @@ pub mod agent_plugin;
 pub mod exposure;
 #[cfg(test)]
 mod tests;
+
+/// Validate a primitive elicitation form answer through the tool argument validator.
+pub fn validate_form_answer(schema: &Value, content: &Value) -> Result<()> {
+	validate_arguments(schema, content)
+}

@@ -201,3 +201,48 @@ _Avoid_: Tenant resource grant, Marketplace installation
 **Approval set**:
 The exact pending installation revisions and permission closure a tenant's approver reviews and admits together. A set is distinct from packages that become available after that review.
 _Avoid_: Latest defaults, automatic package activation
+
+### Agent Plugin execution and approval
+
+These terms follow ADR 0072-0074; the current delivery boundary is recorded in
+[the remaining-work design](../design/agent-plugin-mcp-continuations.md#delivery-boundary).
+
+**Agent Plugin**:
+A package in the open Agent Plugins format, carrying Skills and MCP servers, that an Agent version holds as a pinned copy, together with the exact packages its stdio MCP servers need, so that only that Agent's Runs can use them. It is imported from GitHub or carried with an Agent version through Shared Package distribution. Central Marketplace distribution is designed separately. It adds no definition of its own to the Tenant's Registry, and a changed copy needs a new Agent version.
+_Avoid_: plugin (unqualified), Shared Package
+
+**Agent Plugin preparation**:
+The bounded work performed for a person attaching an Agent Plugin to fix the packages its stdio servers need. It belongs to that attachment and has its own Tenant limits.
+_Avoid_: preparation Run, installation (the separate work at session start)
+
+**Agent Plugin data**:
+The persistent data of one Agent Plugin for one Working Area scope, shared by its stdio servers and retained across Agent versions. It is separate from the Working Area's published files.
+_Avoid_: plugin state (also used for session memory), Working Area publication
+
+**Sandboxed**:
+The tier of tools that act outside Aidash (shell, code, package installs, outbound requests, patches, file sharing). They are built-in definitions, yet each needs a Catalog Approval before a Tenant uses it, through which the Tenant decides where they may be used. The stdio MCP servers of Agent Plugins are Sandboxed too, enabled by approving one built-in group rather than as definitions of their own. They run in an Execution Pod from the Deployment's runner; the Deployment sets the limits, and a Deployment without a runner offers none.
+_Avoid_: Host tier (its former name), host tools
+
+**Execution Pod**:
+A disposable, gVisor-isolated Pod in which submitted code runs for one operation, one interpreter session, the stdio MCP sessions of one Run's Agent Plugin or one Live preview. It can reach nothing but the Egress gateway, nothing but the Preview gateway reaches it, and no Tenant Secret ever enters it.
+_Avoid_: sandbox (unqualified), runner pod, container
+
+**Inference Attempt**:
+One provider call for one Run step or for one Sampling approval. It has a public identifier that is separate from the worker's lease token, owns one usage reservation, and is settled at most once. A retry or a re-execution under a new lease is a new Inference Attempt.
+_Avoid_: attempt (unqualified), request, claim
+
+**Tool call approval**:
+An eligible person's authorization for one exact call of a Tenant's HTTP or MCP tool, which the Run waits for and then makes. Like a Web disclosure approval, it is addressed to a Designated approver and may be given once or as a Run grant. A call to a remote MCP server of an Agent Plugin needs one too; a call to its stdio MCP server does not, because that server is Sandboxed.
+_Avoid_: External approval, workbench approval, external write approval
+
+**Sampling approval**:
+An eligible person's authorization for one MCP server of an Agent Plugin to have the Run's model write one completion for it, without any of the Run's context. Like a Tool call approval it is addressed to a Designated approver and may be given once or as a Run grant, while the tool operation remains unfinished within the approval and MCP waiting limits.
+_Avoid_: sampling permission, model access approval, LLM request approval
+
+**Elicitation**:
+An MCP server's request, made as part of one of its tool operations, for a person in the Run's Thread to fill in a flat form. It is never an approval: its wait is bounded by the person's Answer Deadline, the approval expiry and the MCP waiting limit, and an unanswered one is declined to the server.
+_Avoid_: human request (the model's question), server question, form prompt
+
+**Run grant**:
+An approver's decision to admit a Run's later requests of the same kind to the same destination until it expires; for Web disclosures it also ends at the Run's next user input. A Run grant for Web search therefore covers later queries through that Research provider that the approver has not seen. For Page reading the destination is the page's host, whichever Research provider reads it. For a Tool call approval the destination is one operation of the tool, and new user input does not end it. For a Sampling approval the destination is one MCP server of an Agent Plugin, and new user input does not end it either.
+_Avoid_: standing approval, allowlist, allow for this Run (the button, not the record)

@@ -62,8 +62,20 @@ impl Clients {
 /// follows no redirects and uses no proxy, because a proxy resolves names
 /// itself and would bypass the check.
 pub fn public_client(timeout: Duration, connect_timeout: Duration) -> Result<reqwest::Client> {
-	reqwest::Client::builder()
-		.timeout(timeout)
+	public_client_timeout(Some(timeout), connect_timeout)
+}
+
+pub(crate) fn public_client_timeout(
+	timeout: Option<Duration>,
+	connect_timeout: Duration,
+) -> Result<reqwest::Client> {
+	let builder = reqwest::Client::builder();
+	let builder = if let Some(timeout) = timeout {
+		builder.timeout(timeout)
+	} else {
+		builder
+	};
+	builder
 		.connect_timeout(connect_timeout)
 		.redirect(reqwest::redirect::Policy::none())
 		.no_proxy()

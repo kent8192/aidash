@@ -7,7 +7,7 @@ use aidash_application::{
 use futures_util::{StreamExt, stream::BoxStream};
 use reqwest::header::{HeaderName, HeaderValue};
 use rmcp::{
-	model::ClientJsonRpcMessage,
+	model::{CallToolResult, ClientJsonRpcMessage},
 	service::{ClientInitializeError, ServiceError},
 	transport::{
 		DynamicTransportError,
@@ -17,6 +17,7 @@ use rmcp::{
 	},
 };
 use secrecy::{ExposeSecret, SecretString};
+use serde_json::{Value, json};
 use sse_stream::{Sse, SseStream};
 use std::{
 	collections::HashMap,
@@ -206,7 +207,7 @@ fn repeat(error: &Error) -> Error {
 }
 
 /// A refused destination is an authority failure, never a retried outage.
-pub(super) fn initialization_error(error: &ClientInitializeError) -> Error {
+pub(crate) fn initialization_error(error: &ClientInitializeError) -> Error {
 	match error {
 		ClientInitializeError::TransportError { error: source, .. } if refused(source) => refusal(),
 		ClientInitializeError::TransportError { error: source, .. } => broker_error(source)
@@ -215,13 +216,21 @@ pub(super) fn initialization_error(error: &ClientInitializeError) -> Error {
 	}
 }
 
-pub(super) fn call_error(error: &ServiceError) -> Error {
+pub(crate) fn call_error(error: &ServiceError) -> Error {
 	match error {
 		ServiceError::TransportSend(source) if refused(source) => refusal(),
 		ServiceError::TransportSend(source) => broker_error(source)
 			.unwrap_or_else(|| Error::External(format!("MCP call failed: {error}"))),
 		_ => Error::External(format!("MCP call failed: {error}")),
 	}
+}
+
+/// An MCP error result is data for the model; any other result is passed on whole.
+pub(crate) fn result_value(result: CallToolResult) -> aidash_application::Result<Value> {
+	if result.is_error == Some(true) {
+		return Ok(json!({"is_error":true,"content":result.content}));
+	}
+	Ok(serde_json::to_value(result)?)
 }
 
 fn refusal() -> Error {

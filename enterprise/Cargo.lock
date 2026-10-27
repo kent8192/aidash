@@ -282,6 +282,7 @@ version = "0.1.0"
 dependencies = [
  "aidash-application",
  "aidash-domain",
+ "async-trait",
  "chrono",
  "futures-util",
  "metrics",
@@ -289,6 +290,7 @@ dependencies = [
  "serde_json",
  "tokio",
  "tracing",
+ "url",
  "uuid",
 ]
 
@@ -325,7 +327,8 @@ dependencies = [
  "rand_core 0.6.4",
  "reinhardt-web",
  "reqwest 0.13.5",
- "rmcp",
+ "rmcp 1.2.0",
+ "rmcp 3.7.0",
  "secrecy",
  "serde",
  "serde_json",
@@ -8210,6 +8213,31 @@ dependencies = [
  "chrono",
  "futures",
  "http 1.5.0",
+ "pin-project-lite",
+ "reqwest 0.13.5",
+ "serde",
+ "serde_json",
+ "sse-stream",
+ "thiserror 2.0.20",
+ "tokio",
+ "tokio-stream",
+ "tokio-util",
+ "tracing",
+]
+
+[[package]]
+name = "rmcp"
+version = "3.7.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ece64e19631fc38758181e637c15509a2c2709ee53bfde1e1d58f9dc991f919e"
+dependencies = [
+ "base64 0.23.1",
+ "bytes",
+ "chrono",
+ "futures",
+ "http 1.5.0",
+ "indexmap 2.14.2",
+ "libc",
  "pin-project-lite",
  "reqwest 0.13.5",
  "serde",

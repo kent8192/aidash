@@ -172,9 +172,10 @@ impl RunControlScope for Scope<'_> {
 			.map_err(Into::into)
 	}
 	async fn finish(self: Box<Self>, result: Result<RunInspection>) -> Result<RunInspection> {
-		self.access
-			.finish(result.map_err(Into::into))
-			.await
-			.map_err(Into::into)
+		let run = self.access.finish(result.map_err(Into::into)).await?;
+		self.federation
+			.store
+			.run_control_committed(run.id, run.control);
+		Ok(run)
 	}
 }

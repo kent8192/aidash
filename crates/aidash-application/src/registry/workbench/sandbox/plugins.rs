@@ -1,41 +1,42 @@
-//! A test offers the tools of its Agent's remote plugin servers from one listing made when it
-//! starts. The session answers them only from fixtures, so no server is called after that.
+//! A test offers the tools of its Agent's remote plugin servers from one listing made after reserving
+//! admission. The session answers them only from fixtures, so no server is called after that.
 use crate::{
-	Result,
-	plugin_tools::{agent_bindings, pin_for_run},
+	plugin_tools::{Listings, list_servers},
 	ports::tools::PluginSessions,
 };
 use aidash_domain::{
-	agent_plugin::{self, Component, PluginTools, Reason},
-	registry::bindings::BindingSnapshot,
+	agent_plugin::{Component, PluginTools, Reason},
+	registry::{bindings::AgentBindings, workbench::Draft},
 };
-use std::{
-	collections::{BTreeMap, BTreeSet},
-	sync::Arc,
-};
+use std::sync::Arc;
 use uuid::Uuid;
 
-/// What the test pins from the remote servers of the Agent's plugins. Without a session port
-/// nothing is listed and every server is reported unavailable, as a server that fails to answer is.
-/// The listing's sessions end before this returns, with the pin or without it.
-pub(super) async fn pin(
-	sessions: Option<&Arc<dyn PluginSessions>>,
-	snapshot: &BindingSnapshot,
-) -> Result<PluginTools> {
-	let Some(sessions) = sessions else {
-		let agent = agent_bindings(snapshot)?;
-		return Ok(agent_plugin::pin(
-			&agent.agent_plugins,
-			&agent.agent_plugin_settings,
-			&BTreeMap::new(),
-			&BTreeSet::new(),
-		));
-	};
-	// The test session does not exist before admission commits, so the listing has its own key.
+/// The Agent definition a draft holds, when it parses and takes in a plugin with a remote server.
+/// A draft that does not parse is for admission to refuse.
+pub(super) fn remote_plugins(draft: &Draft) -> Option<AgentBindings> {
+	let agent: AgentBindings = serde_json::from_value(draft.entry.get("config")?.clone()).ok()?;
+	agent
+		.agent_plugins
+		.iter()
+		.any(|plugin| {
+			plugin
+				.servers
+				.values()
+				.any(|server| matches!(server, aidash_domain::agent_plugin::McpServer::Remote(_)))
+		})
+		.then_some(agent)
+}
+
+/// What the remote servers of the draft's plugins list. Listing waits on other hosts for up to
+/// 30 s, so admission commits a reserved slot and releases its locks before listing. The answers
+/// are pinned only after authority and the draft revision are checked again. The listing's sessions
+/// end before this returns.
+pub(super) async fn list(sessions: &Arc<dyn PluginSessions>, agent: &AgentBindings) -> Listings {
+	// Listing uses a temporary key; it never creates a retained execution session.
 	let listing = Uuid::new_v4();
-	let pinned = pin_for_run(sessions.as_ref(), listing, snapshot).await;
+	let listed = list_servers(sessions.as_ref(), listing, agent).await;
 	sessions.close(listing).await;
-	pinned
+	listed
 }
 
 /// One line telling the model which plugin servers contribute no tools to this test.

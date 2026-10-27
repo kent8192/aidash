@@ -12,6 +12,7 @@ use aidash_domain::{
 use async_trait::async_trait;
 use serde_json::Value;
 use std::collections::BTreeMap;
+use std::sync::Arc;
 use uuid::Uuid;
 
 #[async_trait]
@@ -88,8 +89,39 @@ pub trait PluginSessions: Send + Sync {
 		arguments: Value,
 		key: &str,
 	) -> Result<Value>;
+	/// One wire round only. Modern input requests are returned to the harness;
+	/// legacy requests are delivered to `inputs` while the call remains open.
+	#[allow(clippy::too_many_arguments)]
+	async fn round(
+		&self,
+		run: Uuid,
+		server: &PluginServer,
+		config: &RemoteServer,
+		tool: &str,
+		schema_digest: &str,
+		arguments: Value,
+		key: &str,
+		checkpoint: Option<&aidash_domain::agent_plugin::interaction::CallCheckpoint>,
+		inputs: Option<Arc<dyn PluginInputs>>,
+	) -> Result<aidash_domain::agent_plugin::interaction::ToolRound> {
+		let _ = (checkpoint, inputs);
+		self.call(run, server, config, tool, schema_digest, arguments, key)
+			.await
+			.map(aidash_domain::agent_plugin::interaction::ToolRound::Complete)
+	}
 	/// Ends every session of the Run.
 	async fn close(&self, run: Uuid);
+}
+
+/// A legacy server may ask only while its logical call is open. An adapter
+/// rejects overlapping requests before it calls this port.
+#[async_trait]
+pub trait PluginInputs: Send + Sync {
+	async fn request(
+		&self,
+		id: String,
+		request: aidash_domain::agent_plugin::interaction::InputRequest,
+	) -> Result<Value>;
 }
 
 /// Implementations bind one execution identity before any read or mutation.

@@ -118,7 +118,7 @@ impl AgentTestSession {
 			)
 			.value_expr(Alias::new("updated_at"), Expr::current_timestamp())
 			.and_where(Expr::col("status").eq(Expr::value("running")))
-			.and_where(Expr::col("created_at").lt(Expr::value(deadline)));
+			.and_where(Expr::col("updated_at").lt(Expr::value(deadline)));
 		if let Some(tenant) = tenant {
 			query.and_where(Expr::col("tenant").eq(Expr::value(tenant)));
 		}
@@ -206,6 +206,26 @@ impl AgentTestSession {
 				IntoValue::into_value(draft.id),
 				IntoValue::into_value(now + Duration::days(i64::from(limits.payload_days))),
 			])
+			.returning_all()
+			.build(PostgresQueryBuilder);
+		Ok(serde_json::from_value(
+			QueryRow::from_backend_row(tx.fetch_one(&sql, convert_values(values)).await?).data,
+		)?)
+	}
+
+	/// Complete a reserved admission only while its running slot still exists.
+	pub(crate) async fn complete_listing(
+		tx: &mut dyn TransactionExecutor,
+		id: Uuid,
+		scenario: Value,
+	) -> Result<TestSession> {
+		let (sql, values) = Query::update()
+			.table(Alias::new(Self::table_name()))
+			.value_expr(Alias::new("scenario"), Expr::value(scenario))
+			.value_expr(Alias::new("updated_at"), Expr::current_timestamp())
+			.and_where(Expr::col("id").eq(Expr::value(id)))
+			.and_where(Expr::col("status").eq(Expr::value("running")))
+			.and_where(Expr::col("active_slot").is_not_null())
 			.returning_all()
 			.build(PostgresQueryBuilder);
 		Ok(serde_json::from_value(
