@@ -55,6 +55,12 @@ pub enum TokenSubject {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Claims {
+	/// An omitted claim requires ZDR, as older tokens did.
+	#[serde(
+		default,
+		skip_serializing_if = "aidash_domain::data_protection::Requirement::is_default"
+	)]
+	pub data_protection: aidash_domain::data_protection::Requirement,
 	pub iss: String,
 	pub aud: String,
 	pub iat: u64,

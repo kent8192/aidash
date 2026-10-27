@@ -348,7 +348,19 @@ fn body_policy(body: &[u8], claims: &Claims, op: Operation, path: &str) -> Resul
 	{
 		return Err(Failure::ClaimViolation);
 	}
-	if value.pointer("/provider/zdr") != Some(&Value::Bool(true)) {
+	if !match claims.data_protection {
+		aidash_domain::data_protection::Requirement::Zdr => {
+			value.pointer("/provider/zdr") == Some(&Value::Bool(true))
+		}
+		aidash_domain::data_protection::Requirement::NoTraining => {
+			value.pointer("/provider/zdr") == Some(&Value::Bool(true))
+				|| value
+					.pointer("/provider/data_collection")
+					.and_then(Value::as_str)
+					== Some("deny")
+		}
+		aidash_domain::data_protection::Requirement::None => true,
+	} {
 		return Err(Failure::ClaimViolation);
 	}
 	if op == Operation::Chat
@@ -360,7 +372,12 @@ fn body_policy(body: &[u8], claims: &Claims, op: Operation, path: &str) -> Resul
 		policy::chat_input(&value, claims.cache_breakpoints)?;
 	}
 	if op == Operation::Decision {
-		policy::decision_input(&value, path == DECISIONS_PATH, &claims.hosts)?;
+		policy::decision_input(
+			&value,
+			path == DECISIONS_PATH,
+			&claims.hosts,
+			claims.data_protection,
+		)?;
 	}
 	Ok(())
 }
