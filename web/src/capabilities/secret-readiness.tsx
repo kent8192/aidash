@@ -66,7 +66,7 @@ export function SecretReadiness({ facts }: { facts: SecretReadinessFact[] }) {
                 className="text-xs leading-relaxed text-destructive"
                 role="note"
               >
-                {copy.deployment_administrator}
+                {copy.deploymentAdministrator}
               </p>
             )}
           </li>

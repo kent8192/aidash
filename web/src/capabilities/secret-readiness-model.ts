@@ -35,7 +35,7 @@ export const secretReadinessCopy = {
     manage: "Manage Tenant Secrets",
     askAdministrator:
       "Ask an administrator who can manage this Tenant's secrets to fix it.",
-    deployment_administrator: "A Deployment Administrator must fix this.",
+    deploymentAdministrator: "A Deployment Administrator must fix this.",
     secret: "Tenant Secret",
     tool: "Tool",
     externalService: "External service",
@@ -52,7 +52,7 @@ export const secretReadinessCopy = {
     manage: "Tenant Secret を管理",
     askAdministrator:
       "この Tenant の Secret を管理できる管理者に修正を依頼してください。",
-    deployment_administrator:
+    deploymentAdministrator:
       "この Deployment の Deployment Administrator が修正する必要があります。",
     secret: "Tenant Secret",
     tool: "ツール",
