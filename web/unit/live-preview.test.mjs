@@ -69,15 +69,16 @@ test("absolute remaining time is rounded up and never negative", () => {
   assert.equal(formatDuration(90000), "25:00:00");
 });
 
-test("only a Deployment Administrator can see Stop on an active preview", () => {
+test("Stop is offered for an active preview and never for a stopped one", () => {
   assert.equal(mayStopLivePreview("deployment_administrator", "running"), true);
   assert.equal(mayStopLivePreview("deployment_administrator", "stale"), true);
   assert.equal(
     mayStopLivePreview("deployment_administrator", "stopped"),
     false,
   );
-  assert.equal(mayStopLivePreview("subject", "running"), false);
-  assert.equal(mayStopLivePreview("subject", "stale"), false);
+  assert.equal(mayStopLivePreview("subject", "running"), true);
+  assert.equal(mayStopLivePreview("subject", "stale"), true);
+  assert.equal(mayStopLivePreview("subject", "stopped"), false);
 });
 
 test("Live preview ticket failures map to actionable states", () => {

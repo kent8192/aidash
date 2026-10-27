@@ -79,18 +79,17 @@ export function formatDuration(totalSeconds: number): string {
 }
 
 /**
- * The current Live preview API has no per-viewer may_stop field. The
- * Deployment Administrator is the only viewer the dashboard can prove may
- * cancel the Run, so Stop is limited to that case until the server exposes
- * the requester's own permission.
+ * The current Live preview API has no per-viewer may_stop field, and the
+ * thread capability panel is only rendered to subjects, so the dashboard
+ * cannot know the Run's requester. Stop is offered for an active preview and
+ * the server's stop authority remains the enforcement point; a 403 is shown
+ * without stopping anything. Revisit when the server exposes may_stop.
  */
 export function mayStopLivePreview(
-  accessKind: "subject" | "deployment_administrator",
+  _accessKind: "subject" | "deployment_administrator",
   state: LivePreviewState,
 ): boolean {
-  return (
-    accessKind === "deployment_administrator" && livePreviewIsActive(state)
-  );
+  return livePreviewIsActive(state);
 }
 
 /** Ticket errors for a Live preview. */
