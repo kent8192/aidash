@@ -282,6 +282,7 @@ async fn schema_rejection_precedes_every_tool_effect(fixture: Fixture) {
 			endpoint: "http://fixture.invalid".into(),
 			replay: "idempotent".into(),
 			secret: None,
+			secret_owner: Default::default(),
 		},
 		json!({"type":"object","required":["name"]}),
 	);
@@ -506,6 +507,7 @@ fn secret_tool(secret: Option<&str>) -> Plugin {
 			endpoint: "https://api.example.com/run".into(),
 			replay: "idempotent".into(),
 			secret: secret.map(str::to_owned),
+			secret_owner: Default::default(),
 		},
 		json!({"type":"object"}),
 	)

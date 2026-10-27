@@ -858,6 +858,8 @@ mod tests {
 				tool_name: "search".into(),
 				replay: "unsafe".into(),
 				idempotency_argument: None,
+				scopes: None,
+				secret_owner: Default::default(),
 			},
 		);
 		let plugin = ToolContract::agent_plugin(plugin_tool(), false);
@@ -915,6 +917,7 @@ mod tests {
 				endpoint: "https://example.invalid".into(),
 				replay: "read_only".into(),
 				secret: None,
+				secret_owner: Default::default(),
 			},
 			ToolConfig::Mcp {
 				endpoint: "https://example.invalid".into(),
@@ -922,6 +925,8 @@ mod tests {
 				tool_name: "lookup".into(),
 				replay: "read_only".into(),
 				idempotency_argument: None,
+				scopes: None,
+				secret_owner: Default::default(),
 			},
 		] {
 			let current = ToolContract::registry(
@@ -964,6 +969,7 @@ mod tests {
 					endpoint: "https://example.invalid".into(),
 					replay: replay.into(),
 					secret: None,
+					secret_owner: Default::default(),
 				},
 				ToolConfig::Mcp {
 					endpoint: "https://example.invalid".into(),
@@ -971,6 +977,8 @@ mod tests {
 					tool_name: "lookup".into(),
 					replay: replay.into(),
 					idempotency_argument: None,
+					scopes: None,
+					secret_owner: Default::default(),
 				},
 			] {
 				let contract = ToolContract::registry(reference.clone(), &config);
