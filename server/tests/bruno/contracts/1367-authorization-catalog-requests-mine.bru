@@ -1,0 +1,22 @@
+meta {
+  name: 1367 authorization-catalog-requests-mine - Tenant subject reads an empty page of its requests
+  type: http
+  seq: 1367
+}
+
+get {
+  url: {{base_url}}/api/authorization/{{tenant}}/catalog/requests/mine?node={{tenant_node}}
+  body: none
+  auth: none
+}
+
+headers {
+  Accept: application/json
+  Authorization: Bearer {{contract_token}}
+}
+
+tests {
+  test("Exact HTTP 200", function () { expect(res.getStatus()).to.equal(200); });
+  test("Documented response fields and types", function () { const contract={"schema":{"$ref":"#/components/schemas/CatalogApprovalRequestPage"},"definitions":{"CatalogApprovalRequestPage":{"type":"object","required":["requests","next_offset"],"properties":{"next_offset":{"type":["integer","null"],"format":"uint64","minimum":0},"requests":{"type":"array","items":{"$ref":"#/components/schemas/CatalogApprovalRequestView"}}}},"CatalogApprovalRequestView":{"type":"object","required":["id","node","root","requester","reason","state","decline_reason","closure_digest","created_at","updated_at","revision","next_action","review"],"properties":{"closure_digest":{"type":"string"},"created_at":{"type":"string","format":"date-time"},"decline_reason":{"type":["string","null"]},"id":{"type":"string","format":"uuid"},"next_action":{"$ref":"#/components/schemas/CatalogRequestNextAction"},"node":{"$ref":"#/components/schemas/NodeName"},"reason":{"type":"string"},"requester":{"type":"string"},"review":{"anyOf":[{"$ref":"#/components/schemas/CatalogRequestReview"},{"type":"null"}]},"revision":{"type":"integer","format":"int64"},"root":{"$ref":"#/components/schemas/EntityRef"},"state":{"$ref":"#/components/schemas/CatalogApprovalRequestState"},"updated_at":{"type":"string","format":"date-time"}}},"CatalogRequestNextAction":{"type":"string","enum":["waiting_for_approver","ready","declined","withdrawn","stale","fulfilled"]},"NodeName":{"type":"string","description":"The identifier Aidash assigns to a Node, in the same form as a Tenant name:\n`<adjective>-<noun>-<8 random characters>`. Unique within its Deployment,\nnever changed and never reused."},"CatalogRequestReview":{"type":"object","description":"What a requester or an approver needs to know, without naming hidden items\nor the subjects that hold approval authority.","required":["ready","hidden","total","approvable"],"properties":{"approvable":{"type":"integer","format":"uint64","minimum":0},"hidden":{"type":"integer","format":"uint64","minimum":0},"ready":{"type":"boolean"},"total":{"type":"integer","format":"uint64","minimum":0}}},"EntityRef":{"type":"object","required":["id","version"],"properties":{"id":{"type":"string"},"version":{"type":"string"}}},"CatalogApprovalRequestState":{"type":"string","description":"The lifecycle of one Catalog Approval Request. Only `Open` may move, and\nevery other state is final.","enum":["open","fulfilled","declined","stale","withdrawn"]}}}; function valid(value,schema){if(schema.$ref)return valid(value,contract.definitions[schema.$ref.split("/").pop()]);if(schema.anyOf)return schema.anyOf.some(item=>valid(value,item));if(schema.oneOf)return schema.oneOf.filter(item=>valid(value,item)).length===1;if(schema.allOf&&!schema.allOf.every(item=>valid(value,item)))return false;if(schema.enum&&!schema.enum.some(item=>JSON.stringify(item)===JSON.stringify(value)))return false;const types=Array.isArray(schema.type)?schema.type:schema.type?[schema.type]:[];if(types.length&&!types.some(type=>type==="null"?value===null:type==="array"?Array.isArray(value):type==="object"?value!==null&&typeof value==="object"&&!Array.isArray(value):type==="integer"?Number.isInteger(value):typeof value===type))return false;if(value!==null&&typeof value==="object"&&!Array.isArray(value)){if((schema.required||[]).some(field=>!(field in value)))return false;for(const [field,property] of Object.entries(schema.properties||{}))if(field in value&&!valid(value[field],property))return false;}if(Array.isArray(value)&&schema.items&&!value.every(item=>valid(item,schema.items)))return false;return true;}expect(valid(res.getBody(),contract.schema)).to.equal(true); });
+  test("Tenant subject reads an empty page of its requests contract", function () { expect(res.getBody().requests).to.eql([]);expect(res.getBody().next_offset).to.equal(null); });
+}

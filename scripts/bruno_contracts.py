@@ -84,6 +84,22 @@ TENANT_ROUTES = {
         "body": {"node": "{{tenant_node}}", "approvals": [{**APPROVAL}]},
         "refusal": "Subject without catalog.approve cannot approve a closure",
     },
+    "POST /api/authorization/{tenant}/catalog/review": {
+        "body": {"node": "{{tenant_node}}", "root": AGENT, "closure_digest": "sha256:review"},
+        "refusal": "Subject without registry.read cannot review a closure",
+    },
+    "POST /api/authorization/{tenant}/catalog/requests": {
+        "body": {"node": "{{tenant_node}}", "root": AGENT, "reason": "Review the agent"},
+        "refusal": "Subject without registry.read cannot request a review",
+    },
+    "POST /api/authorization/{tenant}/catalog/requests/{id}/withdraw": {
+        "body": {},
+        "path": "/api/authorization/{{tenant}}/catalog/requests/" + MISSING + "/withdraw",
+    },
+    "POST /api/authorization/{tenant}/catalog/requests/{id}/decline": {
+        "body": {"reason": "Not needed"},
+        "refusal": "Subject without catalog.approve cannot decline a request",
+    },
     "POST /api/marketplace/installations/{id}/activation": {
         "body": {"tenant": "{{tenant}}", "revision": 1, "enabled": True,
                  "expected_activation_revision": 0, "expected_catalog_revision": 0},
@@ -140,6 +156,20 @@ SUBJECT_READS = {
          "expect(res.getBody()).to.eql([]);"),
         ("Subject without registry.read cannot read the catalog", 403, DENIED_SUBJECT,
          "/api/authorization/{{tenant}}/catalog?node={{tenant_node}}", ""),
+    ],
+    "GET /api/authorization/{tenant}/catalog/requests/mine": [
+        ("Tenant subject reads an empty page of its requests", 200, SUBJECT,
+         "/api/authorization/{{tenant}}/catalog/requests/mine?node={{tenant_node}}",
+         "expect(res.getBody().requests).to.eql([]);expect(res.getBody().next_offset).to.equal(null);"),
+        ("Denied subject cannot list its requests", 403, DENIED_SUBJECT,
+         "/api/authorization/{{tenant}}/catalog/requests/mine?node={{tenant_node}}", ""),
+    ],
+    "GET /api/authorization/{tenant}/catalog/requests/pending": [
+        ("Tenant subject reads an empty page of pending requests", 200, SUBJECT,
+         "/api/authorization/{{tenant}}/catalog/requests/pending?node={{tenant_node}}",
+         "expect(res.getBody().requests).to.eql([]);expect(res.getBody().next_offset).to.equal(null);"),
+        ("Denied subject cannot list pending requests", 403, DENIED_SUBJECT,
+         "/api/authorization/{{tenant}}/catalog/requests/pending?node={{tenant_node}}", ""),
     ],
     "GET /api/registry": [
         ("Subject discovers no definition it may not read", 200, SUBJECT, None,
@@ -842,6 +872,17 @@ def render():
                 add(endpoint, "Malformed JSON cannot reach the use case", 400,
                     path=unknown, headers=DEPLOYMENT_ADMINISTRATOR, body="{", immutable=True)
             continue
+        if route["name"] == "authorization-catalog-review":
+            uri = path + "?entry=aidash.workspace_read@1.0.0&node=" + NODE
+            add(endpoint, "Malformed bearer syntax is rejected", 401, path=uri,
+                headers={"Authorization": "Basic invalid"})
+            add(endpoint, "Deployment Administrator bearer has no Tenant authority", 403,
+                path=uri, headers=DEPLOYMENT_ADMINISTRATOR)
+            add(endpoint, "Subject without definition read cannot review a closure", 403,
+                path=uri, headers=SUBJECT)
+            add(endpoint, "Denied subject cannot review a closure", 403,
+                path=uri, headers=DENIED_SUBJECT)
+            continue
         if endpoint in TENANT_ROUTES:
             tenant_route = TENANT_ROUTES[endpoint]
             body = json.dumps(tenant_route["body"])
@@ -1212,6 +1253,8 @@ def render():
             "registry-get",
             "registry-versions",
             "authorization-catalog",
+            "authorization-catalog-requests-mine",
+            "authorization-catalog-requests-pending",
             "workbench-inspect-version",
             "workbench-export-report",
         }
@@ -1228,6 +1271,8 @@ def render():
             uri = path + "?tenant={{tenant}}"
         if route["name"] in {"authorization-catalog", "registry-versions"}:
             uri = path + "?node=" + NODE
+        if route["name"] == "authorization-catalog-review":
+            uri = path + "?entry=aidash.workspace_read@1.0.0&node=" + NODE
         if route["name"] in {
             "generation-history",
             "workbench-list-incidents",

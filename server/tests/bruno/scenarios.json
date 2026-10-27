@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "endpoint_count": 338,
+  "endpoint_count": 345,
   "requests": [
     {
       "name": "Health reports the configured node",
@@ -14706,6 +14706,423 @@
       "file": "contracts/1338-approval-observation-report.bru",
       "endpoint": "GET /api/tenants/{tenant}/approval-observations/report",
       "scenario": "Subject Credential bearer cannot administer the observer",
+      "status": 403,
+      "required_checks": [
+        "Exact HTTP 403",
+        "Stable authorization error envelope"
+      ]
+    },
+    {
+      "name": "1339 authorization-catalog-review - Anonymous request is rejected",
+      "file": "contracts/1339-authorization-catalog-review.bru",
+      "endpoint": "GET /api/authorization/{tenant}/catalog/review",
+      "scenario": "Anonymous request is rejected",
+      "status": 401,
+      "required_checks": [
+        "Exact HTTP 401",
+        "Stable authorization error envelope"
+      ]
+    },
+    {
+      "name": "1340 authorization-catalog-review - Malformed bearer syntax is rejected",
+      "file": "contracts/1340-authorization-catalog-review.bru",
+      "endpoint": "GET /api/authorization/{tenant}/catalog/review",
+      "scenario": "Malformed bearer syntax is rejected",
+      "status": 401,
+      "required_checks": [
+        "Exact HTTP 401",
+        "Stable authorization error envelope"
+      ]
+    },
+    {
+      "name": "1341 authorization-catalog-review - Deployment Administrator bearer has no Tenant authority",
+      "file": "contracts/1341-authorization-catalog-review.bru",
+      "endpoint": "GET /api/authorization/{tenant}/catalog/review",
+      "scenario": "Deployment Administrator bearer has no Tenant authority",
+      "status": 403,
+      "required_checks": [
+        "Exact HTTP 403",
+        "Stable authorization error envelope"
+      ]
+    },
+    {
+      "name": "1342 authorization-catalog-review - Subject without definition read cannot review a closure",
+      "file": "contracts/1342-authorization-catalog-review.bru",
+      "endpoint": "GET /api/authorization/{tenant}/catalog/review",
+      "scenario": "Subject without definition read cannot review a closure",
+      "status": 403,
+      "required_checks": [
+        "Exact HTTP 403",
+        "Stable authorization error envelope"
+      ]
+    },
+    {
+      "name": "1343 authorization-catalog-review - Denied subject cannot review a closure",
+      "file": "contracts/1343-authorization-catalog-review.bru",
+      "endpoint": "GET /api/authorization/{tenant}/catalog/review",
+      "scenario": "Denied subject cannot review a closure",
+      "status": 403,
+      "required_checks": [
+        "Exact HTTP 403",
+        "Stable authorization error envelope"
+      ]
+    },
+    {
+      "name": "1344 authorization-submit-catalog-review - Anonymous request is rejected",
+      "file": "contracts/1344-authorization-submit-catalog-review.bru",
+      "endpoint": "POST /api/authorization/{tenant}/catalog/review",
+      "scenario": "Anonymous request is rejected",
+      "status": 401,
+      "required_checks": [
+        "Rejected input preserves committed workspace state",
+        "Exact HTTP 401",
+        "Stable authorization error envelope"
+      ]
+    },
+    {
+      "name": "1345 authorization-submit-catalog-review - Deployment Administrator bearer has no Tenant authority",
+      "file": "contracts/1345-authorization-submit-catalog-review.bru",
+      "endpoint": "POST /api/authorization/{tenant}/catalog/review",
+      "scenario": "Deployment Administrator bearer has no Tenant authority",
+      "status": 403,
+      "required_checks": [
+        "Rejected input preserves committed workspace state",
+        "Exact HTTP 403",
+        "Stable authorization error envelope"
+      ]
+    },
+    {
+      "name": "1346 authorization-submit-catalog-review - Subject without registry.read cannot review a closure",
+      "file": "contracts/1346-authorization-submit-catalog-review.bru",
+      "endpoint": "POST /api/authorization/{tenant}/catalog/review",
+      "scenario": "Subject without registry.read cannot review a closure",
+      "status": 403,
+      "required_checks": [
+        "Rejected input preserves committed workspace state",
+        "Exact HTTP 403",
+        "Stable authorization error envelope"
+      ]
+    },
+    {
+      "name": "1347 authorization-submit-catalog-review - Wrong JSON media type is rejected",
+      "file": "contracts/1347-authorization-submit-catalog-review.bru",
+      "endpoint": "POST /api/authorization/{tenant}/catalog/review",
+      "scenario": "Wrong JSON media type is rejected",
+      "status": 415,
+      "required_checks": [
+        "Rejected input preserves committed workspace state",
+        "Exact HTTP 415",
+        "Rejection is diagnostic and does not disclose SQL or credentials"
+      ]
+    },
+    {
+      "name": "1348 authorization-submit-catalog-review - Malformed JSON cannot reach the use case",
+      "file": "contracts/1348-authorization-submit-catalog-review.bru",
+      "endpoint": "POST /api/authorization/{tenant}/catalog/review",
+      "scenario": "Malformed JSON cannot reach the use case",
+      "status": 400,
+      "required_checks": [
+        "Rejected input preserves committed workspace state",
+        "Exact HTTP 400",
+        "Rejection is diagnostic and does not disclose SQL or credentials"
+      ]
+    },
+    {
+      "name": "1349 authorization-create-catalog-request - Anonymous request is rejected",
+      "file": "contracts/1349-authorization-create-catalog-request.bru",
+      "endpoint": "POST /api/authorization/{tenant}/catalog/requests",
+      "scenario": "Anonymous request is rejected",
+      "status": 401,
+      "required_checks": [
+        "Rejected input preserves committed workspace state",
+        "Exact HTTP 401",
+        "Stable authorization error envelope"
+      ]
+    },
+    {
+      "name": "1350 authorization-create-catalog-request - Deployment Administrator bearer has no Tenant authority",
+      "file": "contracts/1350-authorization-create-catalog-request.bru",
+      "endpoint": "POST /api/authorization/{tenant}/catalog/requests",
+      "scenario": "Deployment Administrator bearer has no Tenant authority",
+      "status": 403,
+      "required_checks": [
+        "Rejected input preserves committed workspace state",
+        "Exact HTTP 403",
+        "Stable authorization error envelope"
+      ]
+    },
+    {
+      "name": "1351 authorization-create-catalog-request - Subject without registry.read cannot request a review",
+      "file": "contracts/1351-authorization-create-catalog-request.bru",
+      "endpoint": "POST /api/authorization/{tenant}/catalog/requests",
+      "scenario": "Subject without registry.read cannot request a review",
+      "status": 403,
+      "required_checks": [
+        "Rejected input preserves committed workspace state",
+        "Exact HTTP 403",
+        "Stable authorization error envelope"
+      ]
+    },
+    {
+      "name": "1352 authorization-create-catalog-request - Wrong JSON media type is rejected",
+      "file": "contracts/1352-authorization-create-catalog-request.bru",
+      "endpoint": "POST /api/authorization/{tenant}/catalog/requests",
+      "scenario": "Wrong JSON media type is rejected",
+      "status": 415,
+      "required_checks": [
+        "Rejected input preserves committed workspace state",
+        "Exact HTTP 415",
+        "Rejection is diagnostic and does not disclose SQL or credentials"
+      ]
+    },
+    {
+      "name": "1353 authorization-create-catalog-request - Malformed JSON cannot reach the use case",
+      "file": "contracts/1353-authorization-create-catalog-request.bru",
+      "endpoint": "POST /api/authorization/{tenant}/catalog/requests",
+      "scenario": "Malformed JSON cannot reach the use case",
+      "status": 400,
+      "required_checks": [
+        "Rejected input preserves committed workspace state",
+        "Exact HTTP 400",
+        "Rejection is diagnostic and does not disclose SQL or credentials"
+      ]
+    },
+    {
+      "name": "1354 authorization-withdraw-catalog-request - Anonymous request is rejected",
+      "file": "contracts/1354-authorization-withdraw-catalog-request.bru",
+      "endpoint": "POST /api/authorization/{tenant}/catalog/requests/{id}/withdraw",
+      "scenario": "Anonymous request is rejected",
+      "status": 401,
+      "required_checks": [
+        "Rejected input preserves committed workspace state",
+        "Exact HTTP 401",
+        "Stable authorization error envelope"
+      ]
+    },
+    {
+      "name": "1355 authorization-withdraw-catalog-request - Deployment Administrator bearer has no Tenant authority",
+      "file": "contracts/1355-authorization-withdraw-catalog-request.bru",
+      "endpoint": "POST /api/authorization/{tenant}/catalog/requests/{id}/withdraw",
+      "scenario": "Deployment Administrator bearer has no Tenant authority",
+      "status": 403,
+      "required_checks": [
+        "Rejected input preserves committed workspace state",
+        "Exact HTTP 403",
+        "Stable authorization error envelope"
+      ]
+    },
+    {
+      "name": "1356 authorization-withdraw-catalog-request - Typed resource IDs reject invalid UUIDs",
+      "file": "contracts/1356-authorization-withdraw-catalog-request.bru",
+      "endpoint": "POST /api/authorization/{tenant}/catalog/requests/{id}/withdraw",
+      "scenario": "Typed resource IDs reject invalid UUIDs",
+      "status": 400,
+      "required_checks": [
+        "Rejected input preserves committed workspace state",
+        "Exact HTTP 400",
+        "Rejection is diagnostic and does not disclose SQL or credentials"
+      ]
+    },
+    {
+      "name": "1357 authorization-withdraw-catalog-request - Unrecognized bearer cannot mutate state",
+      "file": "contracts/1357-authorization-withdraw-catalog-request.bru",
+      "endpoint": "POST /api/authorization/{tenant}/catalog/requests/{id}/withdraw",
+      "scenario": "Unrecognized bearer cannot mutate state",
+      "status": 401,
+      "required_checks": [
+        "Rejected input preserves committed workspace state",
+        "Exact HTTP 401",
+        "Stable authorization error envelope"
+      ]
+    },
+    {
+      "name": "1358 authorization-decline-catalog-request - Anonymous request is rejected",
+      "file": "contracts/1358-authorization-decline-catalog-request.bru",
+      "endpoint": "POST /api/authorization/{tenant}/catalog/requests/{id}/decline",
+      "scenario": "Anonymous request is rejected",
+      "status": 401,
+      "required_checks": [
+        "Rejected input preserves committed workspace state",
+        "Exact HTTP 401",
+        "Stable authorization error envelope"
+      ]
+    },
+    {
+      "name": "1359 authorization-decline-catalog-request - Deployment Administrator bearer has no Tenant authority",
+      "file": "contracts/1359-authorization-decline-catalog-request.bru",
+      "endpoint": "POST /api/authorization/{tenant}/catalog/requests/{id}/decline",
+      "scenario": "Deployment Administrator bearer has no Tenant authority",
+      "status": 403,
+      "required_checks": [
+        "Rejected input preserves committed workspace state",
+        "Exact HTTP 403",
+        "Stable authorization error envelope"
+      ]
+    },
+    {
+      "name": "1360 authorization-decline-catalog-request - Subject without catalog.approve cannot decline a request",
+      "file": "contracts/1360-authorization-decline-catalog-request.bru",
+      "endpoint": "POST /api/authorization/{tenant}/catalog/requests/{id}/decline",
+      "scenario": "Subject without catalog.approve cannot decline a request",
+      "status": 403,
+      "required_checks": [
+        "Rejected input preserves committed workspace state",
+        "Exact HTTP 403",
+        "Stable authorization error envelope"
+      ]
+    },
+    {
+      "name": "1361 authorization-decline-catalog-request - Wrong JSON media type is rejected",
+      "file": "contracts/1361-authorization-decline-catalog-request.bru",
+      "endpoint": "POST /api/authorization/{tenant}/catalog/requests/{id}/decline",
+      "scenario": "Wrong JSON media type is rejected",
+      "status": 415,
+      "required_checks": [
+        "Rejected input preserves committed workspace state",
+        "Exact HTTP 415",
+        "Rejection is diagnostic and does not disclose SQL or credentials"
+      ]
+    },
+    {
+      "name": "1362 authorization-decline-catalog-request - Malformed JSON cannot reach the use case",
+      "file": "contracts/1362-authorization-decline-catalog-request.bru",
+      "endpoint": "POST /api/authorization/{tenant}/catalog/requests/{id}/decline",
+      "scenario": "Malformed JSON cannot reach the use case",
+      "status": 400,
+      "required_checks": [
+        "Rejected input preserves committed workspace state",
+        "Exact HTTP 400",
+        "Rejection is diagnostic and does not disclose SQL or credentials"
+      ]
+    },
+    {
+      "name": "1363 authorization-catalog-requests-mine - Anonymous request is rejected",
+      "file": "contracts/1363-authorization-catalog-requests-mine.bru",
+      "endpoint": "GET /api/authorization/{tenant}/catalog/requests/mine",
+      "scenario": "Anonymous request is rejected",
+      "status": 401,
+      "required_checks": [
+        "Exact HTTP 401",
+        "Stable authorization error envelope"
+      ]
+    },
+    {
+      "name": "1364 authorization-catalog-requests-mine - Malformed bearer syntax is rejected",
+      "file": "contracts/1364-authorization-catalog-requests-mine.bru",
+      "endpoint": "GET /api/authorization/{tenant}/catalog/requests/mine",
+      "scenario": "Malformed bearer syntax is rejected",
+      "status": 401,
+      "required_checks": [
+        "Exact HTTP 401",
+        "Stable authorization error envelope"
+      ]
+    },
+    {
+      "name": "1365 authorization-catalog-requests-mine - Missing scoped authority cannot disclose application data",
+      "file": "contracts/1365-authorization-catalog-requests-mine.bru",
+      "endpoint": "GET /api/authorization/{tenant}/catalog/requests/mine",
+      "scenario": "Missing scoped authority cannot disclose application data",
+      "status": 403,
+      "required_checks": [
+        "Exact HTTP 403",
+        "Stable authorization error envelope"
+      ]
+    },
+    {
+      "name": "1366 authorization-catalog-requests-mine - Paging rejects nonnumeric or malformed cursors",
+      "file": "contracts/1366-authorization-catalog-requests-mine.bru",
+      "endpoint": "GET /api/authorization/{tenant}/catalog/requests/mine",
+      "scenario": "Paging rejects nonnumeric or malformed cursors",
+      "status": 400,
+      "required_checks": [
+        "Exact HTTP 400",
+        "Rejection is diagnostic and does not disclose SQL or credentials"
+      ]
+    },
+    {
+      "name": "1367 authorization-catalog-requests-mine - Tenant subject reads an empty page of its requests",
+      "file": "contracts/1367-authorization-catalog-requests-mine.bru",
+      "endpoint": "GET /api/authorization/{tenant}/catalog/requests/mine",
+      "scenario": "Tenant subject reads an empty page of its requests",
+      "status": 200,
+      "required_checks": [
+        "Exact HTTP 200",
+        "Documented response fields and types",
+        "Tenant subject reads an empty page of its requests contract"
+      ]
+    },
+    {
+      "name": "1368 authorization-catalog-requests-mine - Denied subject cannot list its requests",
+      "file": "contracts/1368-authorization-catalog-requests-mine.bru",
+      "endpoint": "GET /api/authorization/{tenant}/catalog/requests/mine",
+      "scenario": "Denied subject cannot list its requests",
+      "status": 403,
+      "required_checks": [
+        "Exact HTTP 403",
+        "Stable authorization error envelope"
+      ]
+    },
+    {
+      "name": "1369 authorization-catalog-requests-pending - Anonymous request is rejected",
+      "file": "contracts/1369-authorization-catalog-requests-pending.bru",
+      "endpoint": "GET /api/authorization/{tenant}/catalog/requests/pending",
+      "scenario": "Anonymous request is rejected",
+      "status": 401,
+      "required_checks": [
+        "Exact HTTP 401",
+        "Stable authorization error envelope"
+      ]
+    },
+    {
+      "name": "1370 authorization-catalog-requests-pending - Malformed bearer syntax is rejected",
+      "file": "contracts/1370-authorization-catalog-requests-pending.bru",
+      "endpoint": "GET /api/authorization/{tenant}/catalog/requests/pending",
+      "scenario": "Malformed bearer syntax is rejected",
+      "status": 401,
+      "required_checks": [
+        "Exact HTTP 401",
+        "Stable authorization error envelope"
+      ]
+    },
+    {
+      "name": "1371 authorization-catalog-requests-pending - Missing scoped authority cannot disclose application data",
+      "file": "contracts/1371-authorization-catalog-requests-pending.bru",
+      "endpoint": "GET /api/authorization/{tenant}/catalog/requests/pending",
+      "scenario": "Missing scoped authority cannot disclose application data",
+      "status": 403,
+      "required_checks": [
+        "Exact HTTP 403",
+        "Stable authorization error envelope"
+      ]
+    },
+    {
+      "name": "1372 authorization-catalog-requests-pending - Paging rejects nonnumeric or malformed cursors",
+      "file": "contracts/1372-authorization-catalog-requests-pending.bru",
+      "endpoint": "GET /api/authorization/{tenant}/catalog/requests/pending",
+      "scenario": "Paging rejects nonnumeric or malformed cursors",
+      "status": 400,
+      "required_checks": [
+        "Exact HTTP 400",
+        "Rejection is diagnostic and does not disclose SQL or credentials"
+      ]
+    },
+    {
+      "name": "1373 authorization-catalog-requests-pending - Tenant subject reads an empty page of pending requests",
+      "file": "contracts/1373-authorization-catalog-requests-pending.bru",
+      "endpoint": "GET /api/authorization/{tenant}/catalog/requests/pending",
+      "scenario": "Tenant subject reads an empty page of pending requests",
+      "status": 200,
+      "required_checks": [
+        "Exact HTTP 200",
+        "Documented response fields and types",
+        "Tenant subject reads an empty page of pending requests contract"
+      ]
+    },
+    {
+      "name": "1374 authorization-catalog-requests-pending - Denied subject cannot list pending requests",
+      "file": "contracts/1374-authorization-catalog-requests-pending.bru",
+      "endpoint": "GET /api/authorization/{tenant}/catalog/requests/pending",
+      "scenario": "Denied subject cannot list pending requests",
       "status": 403,
       "required_checks": [
         "Exact HTTP 403",
