@@ -672,7 +672,7 @@ async fn a_paused_or_cancelled_run_ends_its_retained_sessions_after_control_comm
 					"Authorization",
 					format!("Bearer {}", world.f.config.api_token),
 				)
-				.header("Idempotency-Key", Uuid::new_v4().to_string())
+				.header("Idempotency-Key", uuid::Uuid::new_v4().to_string())
 				.json(&json!({
 					"tenant": "acme",
 					"action": action,
