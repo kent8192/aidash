@@ -170,5 +170,17 @@ test("a member who cannot approve still sees the Keyless destination", async ({
     "No retention guarantee · https://embeddings.example",
   );
   await expect(approval(page).locator(".keyless-notice")).toHaveCount(0);
-  await expect(approval(page).getByRole("button")).toHaveCount(0);
+  // A consumer reaches the read-only review to request approval, but has no
+  // approve or withdraw control.
+  await expect(
+    approval(page).getByRole("button", {
+      name: "Approval Review",
+      exact: true,
+    }),
+  ).toHaveCount(1);
+  await expect(
+    approval(page).getByRole("button", {
+      name: /^(Approve|Withdraw approval)$/,
+    }),
+  ).toHaveCount(0);
 });
