@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "endpoint_count": 338,
+  "endpoint_count": 341,
   "requests": [
     {
       "name": "Health reports the configured node",
@@ -14710,6 +14710,168 @@
       "required_checks": [
         "Exact HTTP 403",
         "Stable authorization error envelope"
+      ]
+    },
+    {
+      "name": "1339 tenant-data-protection - Anonymous request is rejected",
+      "file": "contracts/1339-tenant-data-protection.bru",
+      "endpoint": "GET /api/tenants/{tenant}/data-protection",
+      "scenario": "Anonymous request is rejected",
+      "status": 401,
+      "required_checks": [
+        "Exact HTTP 401",
+        "Stable authorization error envelope"
+      ]
+    },
+    {
+      "name": "1340 tenant-data-protection - Deployment Administrator bearer is never a Tenant Administrator",
+      "file": "contracts/1340-tenant-data-protection.bru",
+      "endpoint": "GET /api/tenants/{tenant}/data-protection",
+      "scenario": "Deployment Administrator bearer is never a Tenant Administrator",
+      "status": 403,
+      "required_checks": [
+        "Exact HTTP 403",
+        "Stable authorization error envelope"
+      ]
+    },
+    {
+      "name": "1341 tenant-data-protection - Subject Credential bearer is never a Tenant Administrator",
+      "file": "contracts/1341-tenant-data-protection.bru",
+      "endpoint": "GET /api/tenants/{tenant}/data-protection",
+      "scenario": "Subject Credential bearer is never a Tenant Administrator",
+      "status": 403,
+      "required_checks": [
+        "Exact HTTP 403",
+        "Stable authorization error envelope"
+      ]
+    },
+    {
+      "name": "1342 tenant-data-protection - Forged bearer cannot read or change Data Protection policy",
+      "file": "contracts/1342-tenant-data-protection.bru",
+      "endpoint": "GET /api/tenants/{tenant}/data-protection",
+      "scenario": "Forged bearer cannot read or change Data Protection policy",
+      "status": 401,
+      "required_checks": [
+        "Exact HTTP 401",
+        "Stable authorization error envelope"
+      ]
+    },
+    {
+      "name": "1343 tenant-data-protection-update - Anonymous request is rejected",
+      "file": "contracts/1343-tenant-data-protection-update.bru",
+      "endpoint": "PUT /api/tenants/{tenant}/data-protection",
+      "scenario": "Anonymous request is rejected",
+      "status": 401,
+      "required_checks": [
+        "Rejected input preserves committed workspace state",
+        "Exact HTTP 401",
+        "Stable authorization error envelope"
+      ]
+    },
+    {
+      "name": "1344 tenant-data-protection-update - Deployment Administrator bearer is never a Tenant Administrator",
+      "file": "contracts/1344-tenant-data-protection-update.bru",
+      "endpoint": "PUT /api/tenants/{tenant}/data-protection",
+      "scenario": "Deployment Administrator bearer is never a Tenant Administrator",
+      "status": 403,
+      "required_checks": [
+        "Rejected input preserves committed workspace state",
+        "Exact HTTP 403",
+        "Stable authorization error envelope"
+      ]
+    },
+    {
+      "name": "1345 tenant-data-protection-update - Subject Credential bearer is never a Tenant Administrator",
+      "file": "contracts/1345-tenant-data-protection-update.bru",
+      "endpoint": "PUT /api/tenants/{tenant}/data-protection",
+      "scenario": "Subject Credential bearer is never a Tenant Administrator",
+      "status": 403,
+      "required_checks": [
+        "Rejected input preserves committed workspace state",
+        "Exact HTTP 403",
+        "Stable authorization error envelope"
+      ]
+    },
+    {
+      "name": "1346 tenant-data-protection-update - Forged bearer cannot read or change Data Protection policy",
+      "file": "contracts/1346-tenant-data-protection-update.bru",
+      "endpoint": "PUT /api/tenants/{tenant}/data-protection",
+      "scenario": "Forged bearer cannot read or change Data Protection policy",
+      "status": 401,
+      "required_checks": [
+        "Exact HTTP 401",
+        "Stable authorization error envelope"
+      ]
+    },
+    {
+      "name": "1347 tenant-data-protection-update - Malformed JSON cannot reach the use case",
+      "file": "contracts/1347-tenant-data-protection-update.bru",
+      "endpoint": "PUT /api/tenants/{tenant}/data-protection",
+      "scenario": "Malformed JSON cannot reach the use case",
+      "status": 400,
+      "required_checks": [
+        "Rejected input preserves committed workspace state",
+        "Exact HTTP 400",
+        "Rejection is diagnostic and does not disclose SQL or credentials"
+      ]
+    },
+    {
+      "name": "1348 tenant-data-protection-impact - Anonymous request is rejected",
+      "file": "contracts/1348-tenant-data-protection-impact.bru",
+      "endpoint": "POST /api/tenants/{tenant}/data-protection/impact",
+      "scenario": "Anonymous request is rejected",
+      "status": 401,
+      "required_checks": [
+        "Rejected input preserves committed workspace state",
+        "Exact HTTP 401",
+        "Stable authorization error envelope"
+      ]
+    },
+    {
+      "name": "1349 tenant-data-protection-impact - Deployment Administrator bearer is never a Tenant Administrator",
+      "file": "contracts/1349-tenant-data-protection-impact.bru",
+      "endpoint": "POST /api/tenants/{tenant}/data-protection/impact",
+      "scenario": "Deployment Administrator bearer is never a Tenant Administrator",
+      "status": 403,
+      "required_checks": [
+        "Rejected input preserves committed workspace state",
+        "Exact HTTP 403",
+        "Stable authorization error envelope"
+      ]
+    },
+    {
+      "name": "1350 tenant-data-protection-impact - Subject Credential bearer is never a Tenant Administrator",
+      "file": "contracts/1350-tenant-data-protection-impact.bru",
+      "endpoint": "POST /api/tenants/{tenant}/data-protection/impact",
+      "scenario": "Subject Credential bearer is never a Tenant Administrator",
+      "status": 403,
+      "required_checks": [
+        "Rejected input preserves committed workspace state",
+        "Exact HTTP 403",
+        "Stable authorization error envelope"
+      ]
+    },
+    {
+      "name": "1351 tenant-data-protection-impact - Forged bearer cannot read or change Data Protection policy",
+      "file": "contracts/1351-tenant-data-protection-impact.bru",
+      "endpoint": "POST /api/tenants/{tenant}/data-protection/impact",
+      "scenario": "Forged bearer cannot read or change Data Protection policy",
+      "status": 401,
+      "required_checks": [
+        "Exact HTTP 401",
+        "Stable authorization error envelope"
+      ]
+    },
+    {
+      "name": "1352 tenant-data-protection-impact - Malformed JSON cannot reach the use case",
+      "file": "contracts/1352-tenant-data-protection-impact.bru",
+      "endpoint": "POST /api/tenants/{tenant}/data-protection/impact",
+      "scenario": "Malformed JSON cannot reach the use case",
+      "status": 400,
+      "required_checks": [
+        "Rejected input preserves committed workspace state",
+        "Exact HTTP 400",
+        "Rejection is diagnostic and does not disclose SQL or credentials"
       ]
     }
   ]
