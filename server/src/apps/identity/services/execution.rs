@@ -372,7 +372,9 @@ impl WorkerAuthority {
 			.await;
 			access.finish(result).await?
 		};
-		let dispatched = previews::dispatch(store, &pending, files, &input.command).await?;
+		let dispatched = previews::dispatch(store, &pending, files, &input.command)
+			.await
+			.unwrap_or_else(|error| previews::Dispatch::failed(error.to_string()));
 		let outer = self.access.read().await;
 		let mut access = Access::under_lease(&outer).await?;
 		let result =

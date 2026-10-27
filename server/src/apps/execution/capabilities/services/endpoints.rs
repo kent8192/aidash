@@ -1576,11 +1576,7 @@ pub(crate) async fn live_preview(
 		domain,
 	)
 	.await;
-	access
-		.finish(result)
-		.await
-		.map(LivePreviewStatus::from)
-		.map_err(Into::into)
+	access.finish(result).await.map(LivePreviewStatus::from)
 }
 
 /// Stop the Run's Live preview. Its requester and whoever may cancel the Run
@@ -1640,11 +1636,7 @@ pub(crate) async fn live_preview_stop(
 	}
 	let (mut access, run) = run_access(&f, actor_for(&f, &identity).await?, id).await?;
 	let result = previews::status(&f.store, &mut access, &run, None).await;
-	access
-		.finish(result)
-		.await
-		.map(LivePreviewStatus::from)
-		.map_err(Into::into)
+	access.finish(result).await.map(LivePreviewStatus::from)
 }
 
 async fn actor_for(

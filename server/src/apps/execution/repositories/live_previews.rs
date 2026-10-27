@@ -74,7 +74,6 @@ pub(crate) fn to_row(preview: &LivePreview) -> Row {
 		.pod_host(preview.pod_host.clone())
 		.termination_confirmed(preview.termination_confirmed)
 		.egress_expires_at(preview.egress_expires_at)
-		.created_at(preview.started_at)
 		.updated_at(Utc::now())
 		.finish()
 }
@@ -141,7 +140,6 @@ impl application::Scope for Scope<'_> {
 			&self.run.metadata(),
 		)
 		.await
-		.map_err(Into::into)
 	}
 	async fn current(&mut self, run: Uuid) -> aidash_application::Result<Option<LivePreview>> {
 		let rows = Row::objects()
@@ -277,6 +275,19 @@ pub(crate) struct Dispatch {
 	pub failure: Option<String>,
 }
 
+impl Dispatch {
+	/// A dispatch that never reached the Runner still releases the revision's
+	/// holds through the recorded `start_failed` stop.
+	pub fn failed(message: impl Into<String>) -> Self {
+		Self {
+			pod_host: None,
+			startup_log: String::new(),
+			started_at: Utc::now(),
+			failure: Some(message.into()),
+		}
+	}
+}
+
 /// Dispatch the long-lived `serve` operation and wait up to 120 seconds for its
 /// declared port to accept. It never returns a viewing address to a model.
 pub(crate) async fn dispatch(
@@ -404,9 +415,7 @@ pub(crate) async fn finish_start(
 			pending,
 			pod_host,
 			&dispatched.startup_log,
-			dispatched
-				.started_at
-				.max(Utc::now() - chrono::TimeDelta::seconds(1)),
+			dispatched.started_at,
 		)
 		.await
 		.map_err(Into::into),
