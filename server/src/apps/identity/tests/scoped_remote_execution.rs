@@ -4358,6 +4358,7 @@ async fn deployment_administrator_content_views_cannot_bypass_both_node_subject_
 	// A receiver whose content is hidden by required Home is still stoppable
 	// here, with no message to its Home Deployment.
 	let operation = Uuid::new_v4().to_string();
+	let before_phase = control["phase"].as_str().unwrap().to_owned();
 	let stop = common::http_response(
 		&p.ba,
 		"POST",
@@ -4373,6 +4374,14 @@ async fn deployment_administrator_content_views_cannot_bypass_both_node_subject_
 	)
 	.await;
 	assert_eq!(stop.status_code(), 200, "{:?}", stop.body());
+	let receipt: Value = serde_json::from_slice(stop.body()).unwrap();
+	let ended = ["COMPLETED", "FAILED", "CANCELLED"].contains(&before_phase.as_str());
+	// A Run that has ended changes nothing; any other is paused by this stop.
+	assert_eq!(
+		receipt["outcome"],
+		if ended { "no_op" } else { "accepted" },
+		"{receipt}"
+	);
 	let (status, control) = request(
 		&p.ba,
 		&p.b.config.api_token,
@@ -4382,8 +4391,10 @@ async fn deployment_administrator_content_views_cannot_bypass_both_node_subject_
 	)
 	.await;
 	assert_eq!(status, 200, "{control}");
-	assert_eq!(control["control"], "PAUSED");
-	assert_eq!(control["control_source"], "deployment_administrator");
+	if !ended {
+		assert_eq!(control["control"], "PAUSED");
+		assert_eq!(control["control_source"], "deployment_administrator");
+	}
 	let snapshot =
 		p.a.store
 			.snapshot(&TEST_FIXTURE, task.workspace_id)

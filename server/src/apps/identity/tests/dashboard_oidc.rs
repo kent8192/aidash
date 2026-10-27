@@ -191,6 +191,7 @@ async fn call(
 }
 
 /// `call` with an `Idempotency-Key`, for the Safety Stop's operation ID.
+#[allow(clippy::too_many_arguments)]
 async fn call_keyed(
 	app: &common::TestApplication,
 	method: &str,

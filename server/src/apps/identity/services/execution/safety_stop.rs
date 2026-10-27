@@ -72,12 +72,10 @@ fn facts_query(run: Uuid, lock: bool) -> String {
 type Row = (String, String, i64, String);
 
 async fn read_row(tx: &mut Transaction, run: Uuid, lock: bool) -> Result<Option<Row>> {
-	Ok(
-		crate::database::native::query_as::<Row>(&facts_query(run, lock))
-			.columns(&["phase", "control", "control_revision", "control_source"])
-			.fetch_optional(&mut **tx)
-			.await?,
-	)
+	crate::database::native::query_as::<Row>(&facts_query(run, lock))
+		.columns(&["phase", "control", "control_revision", "control_source"])
+		.fetch_optional(&mut **tx)
+		.await
 }
 
 /// The Run's allowlisted metadata; a deleted Tenant is refused.

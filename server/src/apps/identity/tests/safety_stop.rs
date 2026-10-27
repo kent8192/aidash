@@ -119,7 +119,7 @@ impl World {
 			request = request.header("Idempotency-Key", key);
 		}
 		let response = request.send().await.unwrap();
-		let text = String::from_utf8_lossy(&response.body()).into_owned();
+		let text = String::from_utf8_lossy(response.body()).into_owned();
 		(
 			response.status_code(),
 			serde_json::from_str(&text).unwrap_or(Value::String(text)),
