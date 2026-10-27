@@ -47,6 +47,15 @@ impl Scope for Fixture {
 		self.tickets.push(ticket);
 		Ok(())
 	}
+	async fn authorize_area(&mut self, _: Uuid) -> Result<()> {
+		self.version
+			.clone()
+			.map(drop)
+			.ok_or(Error::NotFound("file".into()))
+	}
+	async fn live_preview(&mut self, _: Uuid) -> Result<Preview> {
+		Err(Error::NotFound("live preview".into()))
+	}
 }
 
 fn fixture(media: &str) -> Fixture {

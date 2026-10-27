@@ -117,6 +117,60 @@ pub async fn retain(
 	Ok(hold)
 }
 
+/// Retains every File version of the Working Area's current revision for
+/// `holder`, as a running Live preview does: its Web server may serve any of
+/// them (ADR 0095 amendment).
+///
+/// Idempotent per `(holder, revision)`: starting again over the same revision
+/// returns the existing hold. Refuses with `QUOTA_EXCEEDED` under the same
+/// rules as [`retain`].
+pub async fn retain_revision(
+	scope: &mut dyn RetentionScope,
+	area_id: Uuid,
+	holder: Holder,
+) -> Result<RetentionHold> {
+	let area = scope
+		.area(area_id)
+		.await?
+		.ok_or_else(|| Error::NotFound("working area unavailable".into()))?;
+	authorize(scope, &area).await?;
+	let manifest: Vec<MountedFile> = serde_json::from_value(area.manifest.clone())?;
+	let holds = scope.holds(area_id).await?;
+	let now = Utc::now();
+	if let Some(existing) = holds.iter().find(|hold| {
+		hold.holder.same(&holder) && !hold.holder.expired(now) && hold.revision == area.revision
+	}) {
+		return Ok(existing.clone());
+	}
+	let limits = scope.limits()?;
+	let (working_bytes, retained_limit) = quota(&limits);
+	let current = manifest.iter().map(|file| file.size).sum::<u64>();
+	let retained = retained_bytes(&holds, &manifest, now);
+	if !area_permits_retention(current, retained, working_bytes) {
+		return Err(Error::Conflict(
+			"QUOTA_EXCEEDED: a Live preview of this revision would exceed the Working Area's byte limit"
+				.into(),
+		));
+	}
+	let used = scope.used_bytes().await?;
+	let reclaimable = scope.reclaimable_bytes().await?;
+	if !permits_retention(used, reclaimable, retained_limit) {
+		return Err(Error::Conflict(
+			"QUOTA_EXCEEDED: the Tenant's storage cannot keep this revision for a Live preview"
+				.into(),
+		));
+	}
+	let hold = RetentionHold {
+		tenant: scope.tenant().to_owned(),
+		area_id,
+		revision: area.revision,
+		holder,
+		files: manifest.iter().map(RetainedFile::from).collect(),
+	};
+	scope.insert(&hold).await?;
+	Ok(hold)
+}
+
 /// Releases every hold of `holder`.
 ///
 /// Callers own the authority that holder stands for: a message's own removal,

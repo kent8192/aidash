@@ -337,3 +337,59 @@ async fn the_retained_manifest_returns_the_hold_of_the_version(#[from(plain)] mu
 			.is_none()
 	);
 }
+
+#[rstest]
+#[tokio::test]
+async fn a_live_preview_retains_every_file_version_of_its_revision(#[from(plain)] mut scope: Fake) {
+	let area = scope.area.id;
+	let holder = Holder::LivePreview {
+		live_preview_id: Uuid::from_u128(20),
+	};
+	let hold = retain_revision(&mut scope, area, holder.clone())
+		.await
+		.unwrap();
+	assert_eq!(hold.revision, 7);
+	assert_eq!(
+		hold.files
+			.iter()
+			.map(|file| file.path.as_str())
+			.collect::<Vec<_>>(),
+		vec!["report.md", "notes.txt"]
+	);
+	assert_eq!(hold.holder, holder);
+	assert_eq!(scope.inserts, 1);
+}
+
+#[rstest]
+#[tokio::test]
+async fn retaining_the_same_revision_twice_reuses_its_hold(#[from(plain)] mut scope: Fake) {
+	let area = scope.area.id;
+	let holder = Holder::LivePreview {
+		live_preview_id: Uuid::from_u128(20),
+	};
+	let first = retain_revision(&mut scope, area, holder.clone())
+		.await
+		.unwrap();
+	let second = retain_revision(&mut scope, area, holder).await.unwrap();
+	assert_eq!(first, second);
+	assert_eq!(scope.inserts, 1);
+}
+
+#[rstest]
+#[tokio::test]
+async fn a_live_preview_over_the_storage_ceiling_is_refused(#[from(plain)] mut scope: Fake) {
+	let area = scope.area.id;
+	scope.used = 200;
+	scope.retained_bytes = 150;
+	let error = retain_revision(
+		&mut scope,
+		area,
+		Holder::LivePreview {
+			live_preview_id: Uuid::from_u128(20),
+		},
+	)
+	.await
+	.unwrap_err();
+	assert!(code(error).starts_with("QUOTA_EXCEEDED"));
+	assert_eq!(scope.inserts, 0);
+}

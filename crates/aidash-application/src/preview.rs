@@ -5,6 +5,7 @@
 //! only what it needs to re-run the same decision the download endpoint runs,
 //! including the credential the ticket was issued under.
 use crate::{Error, Result};
+use aidash_domain::preview::live::StopReason;
 use aidash_domain::preview::{
 	PreviewKind, PreviewLabel, PreviewSecret, TICKET_PATH, TICKET_SECONDS, origin,
 };
@@ -82,6 +83,11 @@ pub trait Scope: Send {
 	/// The Preview for this viewable thing, created on first use.
 	async fn preview(&mut self, kind: &PreviewKind) -> Result<Preview>;
 	async fn ticket(&mut self, ticket: TicketIssue) -> Result<()>;
+	/// The same decision the Working Area download runs, over its files.
+	async fn authorize_area(&mut self, area_id: Uuid) -> Result<()>;
+	/// The Run's Live preview, after checking the viewer's authority over the
+	/// Working Area's files.
+	async fn live_preview(&mut self, id: Uuid) -> Result<Preview>;
 }
 
 /// A Preview response for one URL path.
@@ -102,11 +108,29 @@ pub struct Exchange {
 	pub max_age: i64,
 }
 
+/// A Live preview the gateway proxies to: its Pod and the Egress session token
+/// the page reaches External services with. Neither reaches the browser.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Proxy {
+	pub preview_id: Uuid,
+	pub tenant: String,
+	pub session: Uuid,
+	pub frame_ancestor: String,
+	/// `<pod address>:<declared port>`; only the gateway reaches it.
+	pub upstream: String,
+	/// The Egress gateway token for the Run's bound External services; never
+	/// carries a Tenant Secret (ADR 0069).
+	pub egress_token: Option<String>,
+}
+
 /// The gateway's authority: exchange a ticket once, then recheck every request.
 #[async_trait]
 pub trait Authority: Send + Sync {
 	async fn exchange(&self, host: &str, ticket: &str) -> Result<Exchange>;
 	async fn view(&self, host: &str, cookie: &str, path: &str) -> Result<Page>;
+	/// A Live preview request: recheck authority, refresh the idle timer and
+	/// return where to proxy it. It stops the preview when authority is gone.
+	async fn live(&self, host: &str, cookie: &str) -> Result<Proxy>;
 	/// Adds the bytes actually sent to the viewing session's record.
 	async fn served(&self, tenant: &str, session: Uuid, bytes: u64) -> Result<()>;
 }
@@ -130,6 +154,21 @@ pub async fn issue(scope: &mut dyn Scope, area_id: Uuid, file_id: Uuid) -> Resul
 	}
 	let kind = PreviewKind::File { area_id, file_id };
 	let preview = scope.preview(&kind).await?;
+	issue_ticket(scope, preview, &domain).await
+}
+
+/// Issue a one-time ticket for a Run's Live preview, under the same authority
+/// as downloading that Working Area's files (ADR 0068, 0070).
+pub async fn issue_live(scope: &mut dyn Scope, live_preview_id: Uuid) -> Result<Issued> {
+	let domain = scope
+		.preview_domain()
+		.ok_or_else(|| Error::Conflict("PREVIEW_UNAVAILABLE".into()))?
+		.to_owned();
+	let preview = scope.live_preview(live_preview_id).await?;
+	issue_ticket(scope, preview, &domain).await
+}
+
+async fn issue_ticket(scope: &mut dyn Scope, preview: Preview, domain: &str) -> Result<Issued> {
 	let origin = origin(scope.origin())?;
 	let secret = PreviewSecret::generate()?;
 	let expires_at = Utc::now() + TimeDelta::seconds(TICKET_SECONDS);
@@ -143,7 +182,7 @@ pub async fn issue(scope: &mut dyn Scope, area_id: Uuid, file_id: Uuid) -> Resul
 			expires_at,
 		})
 		.await?;
-	let host = preview.label.host(&domain);
+	let host = preview.label.host(domain);
 	let port = scope
 		.public_port()
 		.map(|port| format!(":{port}"))
@@ -153,6 +192,8 @@ pub async fn issue(scope: &mut dyn Scope, area_id: Uuid, file_id: Uuid) -> Resul
 		expires_at,
 	})
 }
+
+pub mod live;
 
 /// The media type without its parameters.
 pub fn media_type(value: &str) -> &str {
