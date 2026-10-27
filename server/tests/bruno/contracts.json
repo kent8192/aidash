@@ -46464,7 +46464,7 @@
         "LivePreviewStatus": {
           "type": "object",
           "description": "One Run's Live preview as the dashboard reads it.",
-          "required": ["live_preview"],
+          "required": ["live_preview", "may_stop"],
           "properties": {
             "live_preview": {
               "anyOf": [
@@ -46475,6 +46475,10 @@
                   "type": "null"
                 }
               ]
+            },
+            "may_stop": {
+              "type": "boolean",
+              "description": "Whether this viewer may stop it: the Run's requester or whoever may\ncancel the Run (ADR 0070). The dashboard shows Stop only then."
             }
           }
         }
@@ -46559,7 +46563,7 @@
         "LivePreviewStatus": {
           "type": "object",
           "description": "One Run's Live preview as the dashboard reads it.",
-          "required": ["live_preview"],
+          "required": ["live_preview", "may_stop"],
           "properties": {
             "live_preview": {
               "anyOf": [
@@ -46570,6 +46574,10 @@
                   "type": "null"
                 }
               ]
+            },
+            "may_stop": {
+              "type": "boolean",
+              "description": "Whether this viewer may stop it: the Run's requester or whoever may\ncancel the Run (ADR 0070). The dashboard shows Stop only then."
             }
           }
         }
