@@ -14,6 +14,7 @@ use uuid::Uuid;
 /// What a Safety Stop asks of the Run.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
+#[schemars(rename = "SafetyStopAction")]
 pub enum Action {
 	Pause,
 	Cancel,
@@ -88,6 +89,7 @@ impl Actor {
 /// How a command ended.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
+#[schemars(rename = "SafetyStopOutcome")]
 pub enum Outcome {
 	/// The control change was recorded.
 	Accepted,
@@ -171,6 +173,7 @@ impl Command {
 /// One Safety Stop as the Tenant's audit readers see it (`decision.read`). The
 /// reason is visible here and nowhere a Run's ordinary readers look.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[schemars(rename = "SafetyStopRecord")]
 pub struct Record {
 	pub id: Uuid,
 	pub run_id: Uuid,

@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "endpoint_count": 338,
+  "endpoint_count": 339,
   "requests": [
     {
       "name": "Health reports the configured node",
@@ -14710,6 +14710,50 @@
       "required_checks": [
         "Exact HTTP 403",
         "Stable authorization error envelope"
+      ]
+    },
+    {
+      "name": "1339 authorization-safety-stops - Anonymous request is rejected",
+      "file": "contracts/1339-authorization-safety-stops.bru",
+      "endpoint": "GET /api/authorization/{tenant}/safety-stops",
+      "scenario": "Anonymous request is rejected",
+      "status": 401,
+      "required_checks": [
+        "Exact HTTP 401",
+        "Stable authorization error envelope"
+      ]
+    },
+    {
+      "name": "1340 authorization-safety-stops - Malformed bearer syntax is rejected",
+      "file": "contracts/1340-authorization-safety-stops.bru",
+      "endpoint": "GET /api/authorization/{tenant}/safety-stops",
+      "scenario": "Malformed bearer syntax is rejected",
+      "status": 401,
+      "required_checks": [
+        "Exact HTTP 401",
+        "Stable authorization error envelope"
+      ]
+    },
+    {
+      "name": "1341 authorization-safety-stops - Missing scoped authority cannot disclose application data",
+      "file": "contracts/1341-authorization-safety-stops.bru",
+      "endpoint": "GET /api/authorization/{tenant}/safety-stops",
+      "scenario": "Missing scoped authority cannot disclose application data",
+      "status": 403,
+      "required_checks": [
+        "Exact HTTP 403",
+        "Stable authorization error envelope"
+      ]
+    },
+    {
+      "name": "1342 authorization-safety-stops - Paging rejects nonnumeric or malformed cursors",
+      "file": "contracts/1342-authorization-safety-stops.bru",
+      "endpoint": "GET /api/authorization/{tenant}/safety-stops",
+      "scenario": "Paging rejects nonnumeric or malformed cursors",
+      "status": 400,
+      "required_checks": [
+        "Exact HTTP 400",
+        "Rejection is diagnostic and does not disclose SQL or credentials"
       ]
     }
   ]

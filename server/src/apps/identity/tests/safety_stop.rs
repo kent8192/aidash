@@ -334,7 +334,7 @@ async fn a_stop_pauses_replays_and_never_resumes(
 		.count("SELECT count(*) FROM events WHERE kind = 'run.control' AND data->>'source' = 'deployment_administrator'")
 		.await;
 	assert_eq!(
-		recorded, 3,
+		recorded, 4,
 		"each accepted stop appends one event naming its source"
 	);
 	assert_eq!(

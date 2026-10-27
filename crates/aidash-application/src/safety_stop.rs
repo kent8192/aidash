@@ -17,6 +17,7 @@ use uuid::Uuid;
 /// What the command acknowledges. It describes the operation, not the Run's
 /// state after later commands, and does not claim that execution has stopped.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, schemars::JsonSchema)]
+#[schemars(rename = "SafetyStopReceipt")]
 pub struct Receipt {
 	pub operation_id: Uuid,
 	pub run_id: Uuid,
