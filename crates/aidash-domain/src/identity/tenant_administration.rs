@@ -58,9 +58,15 @@ pub const SECRET_MANAGE: &str = "secret.manage";
 /// Naming a Tenant Secret in a definition. Separate from `secret.manage`, so
 /// whoever writes a definition cannot also choose where a secret may go.
 pub const SECRET_USE: &str = "secret.use";
+/// Setting the Tenant's ceiling on the scopes an MCP OAuth Connection may
+/// request (ADR 0100). A person's own consent still bounds their Connection.
+pub const CONNECTION_SCOPES_UPDATE: &str = "connection.scopes.update";
+/// Force-disconnecting another subject's MCP OAuth Connection. The
+/// administrator sees metadata only, never a token.
+pub const CONNECTION_ADMINISTER: &str = "connection.administer";
 
 /// Every action a Tenant's policy can permit to make a Tenant Administrator.
-pub const ACTIONS: [&str; 25] = [
+pub const ACTIONS: [&str; 27] = [
 	REGISTRATION_READ,
 	REGISTRATION_APPROVE,
 	REGISTRATION_REJECT,
@@ -86,6 +92,8 @@ pub const ACTIONS: [&str; 25] = [
 	TEST_PROFILE_UPDATE,
 	SECRET_MANAGE,
 	APPROVAL_READ,
+	CONNECTION_SCOPES_UPDATE,
+	CONNECTION_ADMINISTER,
 ];
 
 /// The actions an administrator needs to keep a Tenant running: deciding
@@ -150,6 +158,8 @@ pub fn resource_kind(action: &str) -> &'static str {
 		REGISTRY_CREATE | CATALOG_APPROVE => "registry",
 		MARKETPLACE_INSTALL => "package",
 		SECRET_MANAGE | SECRET_USE => "secret",
+		CONNECTION_SCOPES_UPDATE => "connection_scopes",
+		CONNECTION_ADMINISTER => "connection",
 		_ => "subject",
 	}
 }
