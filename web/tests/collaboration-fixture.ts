@@ -557,10 +557,12 @@ export async function setup(
     };
   };
   page.on("pageerror", (error) => errors.push(error.message));
+  // A subject works through a Mapping: a Deployment Administrator context
+  // shows no Tenant content (ADR 0102).
   await installBearerDashboard(
     page,
     "fixture",
-    undefined,
+    options.subject ? { tenant: "acme", name: "alice" } : undefined,
     options.dashboardContext,
   );
   await page.addInitScript((locale) => {

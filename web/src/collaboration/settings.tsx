@@ -33,6 +33,7 @@ import {
   Notice,
   ScreenHeader,
 } from "../components/patterns";
+import { AdministratorTenantNotice } from "../administrator-notice";
 import { ToolSection } from "../integrated-tools";
 import { keylessOrigin } from "../keyless";
 import { groupByKind } from "../registry-kinds";
@@ -59,8 +60,8 @@ import { Badge, Empty, Panel, useEntityName, useI18n } from "../ui";
 import { collaborationCopy } from "./copy";
 import type { Selection } from "./details";
 import {
-  personalSettingsSections,
-  visibleSettingsSections,
+  settingsSectionsFor,
+  tenantContentSettingsSections,
   type IntegratedView,
   type SettingsSection,
 } from "./model";
@@ -118,13 +119,10 @@ function SettingsFrame({
   const { locale } = useI18n();
   const copy = collaborationCopy[locale];
   const label = useSectionLabel();
-  const sections = visibleSettingsSections
-    .filter((value) => value !== "planConnections" || selfHostedPlanConnections)
-    .filter((value) =>
-      deploymentAdministrator
-        ? !personalSettingsSections[value]
-        : !deploymentAdministratorSections[value],
-    );
+  const sections = settingsSectionsFor(
+    deploymentAdministrator,
+    deploymentAdministratorSections,
+  ).filter((value) => value !== "planConnections" || selfHostedPlanConnections);
   return (
     <section className="collab-settings flex h-full min-h-0 flex-col">
       <ScreenHeader
@@ -560,6 +558,8 @@ export function Configuration({
     >
       {restricted ? (
         <Notice role="status">{t("administratorsOnly")}</Notice>
+      ) : deploymentAdministrator && tenantContentSettingsSections[section] ? (
+        <AdministratorTenantNotice className="" />
       ) : (
         <>
           {section === "deployment" && deploymentAdministrator && (
