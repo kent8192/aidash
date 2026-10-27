@@ -288,17 +288,19 @@ impl Dispatch {
 	}
 }
 
-/// Dispatch the long-lived `serve` operation and wait up to 120 seconds for its
-/// declared port to accept. It never returns a viewing address to a model.
-pub(crate) async fn dispatch(
+/// Accept the long-lived `serve` operation and stage its inputs in the
+/// caller's authority transaction. The Pod starts only after every File version
+/// of the pinned revision was written; the wait for readiness happens outside.
+pub(crate) async fn dispatch_accept(
 	store: &Store,
+	access: &mut Access,
 	preview: &LivePreview,
 	files: Vec<FileEntry>,
 	command: &str,
-) -> NativeResult<Dispatch> {
+) -> NativeResult<()> {
 	use aidash_application::ports::capabilities::runner::RunnerTransport as _;
-	let files = files
-		.into_iter()
+	let wire = files
+		.iter()
 		.map(|file| {
 			serde_json::json!({"file_id":file.file_id,"path":file.path,"digest":file.digest,"scope":file.scope,"size":file.size})
 		})
@@ -311,7 +313,7 @@ pub(crate) async fn dispatch(
 		"kind": "serve",
 		"code": command,
 		"seconds": preview.limits.absolute_seconds,
-		"files": files,
+		"files": wire,
 		"port": preview.port,
 	});
 	if let Some(token) = egress_token(store, preview)? {
@@ -324,10 +326,56 @@ pub(crate) async fn dispatch(
 		input["egress"] = serde_json::json!({"url": settings.endpoint, "token": token});
 	}
 	let runner = crate::bootstrap::operation_runner(store)?;
-	runner
+	let observed = runner
 		.request("POST", "/v1/operations", Some(&input))
 		.await
 		.map_err(|error| NativeError::External(error.to_string()))?;
+	if observed["status"].as_str() != Some("awaiting_files") {
+		return Ok(());
+	}
+	for file in &files {
+		let mut offset = 0_u64;
+		loop {
+			let bytes = store.capabilities.read_chunk(access, file, offset).await?;
+			if bytes.is_empty() && offset < file.size {
+				return Err(NativeError::Conflict("OBJECT_INTEGRITY".into()));
+			}
+			use base64::Engine as _;
+			runner
+				.request(
+					"POST",
+					&format!(
+						"/v1/operations/{}/inputs/{}?offset={offset}",
+						preview.id, file.file_id
+					),
+					Some(
+						&serde_json::json!({"data": base64::engine::general_purpose::STANDARD.encode(&bytes)}),
+					),
+				)
+				.await
+				.map_err(|error| NativeError::External(error.to_string()))?;
+			offset += bytes.len() as u64;
+			if offset >= file.size {
+				break;
+			}
+		}
+	}
+	runner
+		.request(
+			"POST",
+			&format!("/v1/operations/{}/start", preview.id),
+			None,
+		)
+		.await
+		.map_err(|error| NativeError::External(error.to_string()))?;
+	Ok(())
+}
+
+/// Wait up to 120 seconds for the declared port to accept, reading only the
+/// status and the bounded startup log. Never returns a viewing address.
+pub(crate) async fn wait_ready(store: &Store, preview: &LivePreview) -> NativeResult<Dispatch> {
+	use aidash_application::ports::capabilities::runner::RunnerTransport as _;
+	let runner = crate::bootstrap::operation_runner(store)?;
 	let deadline =
 		tokio::time::Instant::now() + std::time::Duration::from_secs(START_SECONDS as u64);
 	loop {
@@ -361,7 +409,7 @@ pub(crate) async fn dispatch(
 					failure: None,
 				});
 			}
-			Some("stopped" | "failed") | None
+			Some("stopped" | "failed")
 				if matches!(
 					observed["status"].as_str(),
 					Some("failed" | "cancelled" | "uncertain")

@@ -358,7 +358,7 @@ impl WorkerAuthority {
 				previews::prepare(store, &mut access, run, domain.clone(), input.clone()).await;
 			access.finish(result).await?
 		};
-		let files = {
+		{
 			let outer = self.access.read().await;
 			let mut access = Access::under_lease(&outer).await?;
 			let result = async {
@@ -367,12 +367,13 @@ impl WorkerAuthority {
 					pending.area_id,
 				)
 				.await?;
-				crate::apps::execution::capabilities::services::service::files(&area)
+				let files = crate::apps::execution::capabilities::services::service::files(&area)?;
+				previews::dispatch_accept(store, &mut access, &pending, files, &input.command).await
 			}
 			.await;
-			access.finish(result).await?
-		};
-		let dispatched = previews::dispatch(store, &pending, files, &input.command)
+			access.finish(result).await?;
+		}
+		let dispatched = previews::wait_ready(store, &pending)
 			.await
 			.unwrap_or_else(|error| previews::Dispatch::failed(error.to_string()));
 		let outer = self.access.read().await;
