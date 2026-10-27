@@ -399,6 +399,31 @@ pub(crate) fn register(contracts: &mut Contracts, document: &mut OpenApiSchema) 
 		&["String", "String"],
 	)?;
 	{
+		use super::oauth_connections as c;
+		use aidash_application::oauth_connections::{Disconnection, Metadata, Probe};
+		use views::oauth_connections as v;
+		contracts.response::<_, Vec<Metadata>>(document, v::list, 200, "application/json")?;
+		contracts.path(document, v::list, &["String"])?;
+		contracts.response::<_, Disconnection>(document, v::disconnect, 200, "application/json")?;
+		contracts.path(document, v::disconnect, &["String", "Uuid"])?;
+		contracts.response::<_, Vec<Metadata>>(document, v::members, 200, "application/json")?;
+		contracts.path(document, v::members, &["String", "String"])?;
+		contracts.response::<_, Disconnection>(
+			document,
+			v::force_disconnect,
+			200,
+			"application/json",
+		)?;
+		contracts.path(document, v::force_disconnect, &["String", "String", "Uuid"])?;
+		contracts.response::<_, Probe>(document, v::probe, 200, "application/json")?;
+		contracts.query::<_, c::ProbeQuery>(document, v::probe)?;
+		contracts.path(document, v::probe, &["String"])?;
+		contracts.request::<_, c::Start>(document, v::start)?;
+		contracts.response::<_, c::Started>(document, v::start, 200, "application/json")?;
+		contracts.path(document, v::start, &["String"])?;
+	}
+
+	{
 		use super::provider_authorizations as pa;
 		contracts.request::<_, pa::Start>(document, views::provider_authorizations::start)?;
 		contracts.response::<_, pa::Started>(

@@ -296,6 +296,9 @@ pub const TABLES: &[Table] = &[
 	// this Deployment's Plan Connection host ID
 	table("identity", "plan_connection_hosts", DeploymentWide),
 	table("identity", "plan_connections", TenantOwned),
+	table("identity", "oauth_connections", TenantOwned),
+	table("identity", "oauth_authorizations", TenantOwned),
+	table("identity", "oauth_dynamic_clients", TenantOwned),
 	// pending OAuth flows bound to a browser, like sign-in state
 	named("identity", "provider_authorizations"),
 	table("identity", "provider_credential_bindings", TenantOwned),

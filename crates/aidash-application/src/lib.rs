@@ -9,6 +9,7 @@ pub mod execution;
 pub mod federation;
 pub mod lifecycle;
 pub mod memory;
+pub mod oauth_connections;
 pub mod plan_connections;
 pub mod plugin_tools;
 pub mod ports;
@@ -56,6 +57,9 @@ pub enum Error {
 	External(String),
 	#[error("OAuth Client secret storage is unavailable")]
 	OAuthClientSecretsUnavailable,
+	/// This Deployment's Secret Store cannot hold MCP OAuth Connections.
+	#[error("connection_unavailable")]
+	ConnectionStoreUnavailable,
 	#[error("verified model media route unavailable for {0}")]
 	MediaRouteUnavailable(String),
 	#[error("Kubernetes observations unavailable; check service account and API connectivity")]

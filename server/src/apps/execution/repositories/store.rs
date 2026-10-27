@@ -48,6 +48,8 @@ pub struct Store {
 		Option<std::sync::Arc<dyn aidash_application::provider_access::TokenIssuer>>,
 	pub provider_credentials:
 		Option<std::sync::Arc<aidash_application::provider_credentials::Service>>,
+	/// Per-person MCP OAuth grants (ADR 0100).
+	pub oauth_connections: Option<std::sync::Arc<aidash_application::oauth_connections::Service>>,
 	/// Present whenever the Store can hold Plan Tokens (PostgreSQL), so owners
 	/// can still read and disconnect their connections after
 	/// `plan_connections_enabled` is turned off (ADR 0007).
@@ -496,6 +498,7 @@ impl Store {
 			usage: std::sync::Arc::new(aidash_application::usage::NoUsage),
 			admission: std::sync::Arc::new(aidash_application::usage::AlwaysAdmit),
 			provider_credentials: None,
+			oauth_connections: None,
 			plan_connections: None,
 			plan_connections_enabled: false,
 			tenant_secrets: None,
@@ -611,6 +614,7 @@ impl Store {
 			usage: self.usage.clone(),
 			admission: self.admission.clone(),
 			provider_credentials: self.provider_credentials.clone(),
+			oauth_connections: self.oauth_connections.clone(),
 			plan_connections: self.plan_connections.clone(),
 			plan_connections_enabled: self.plan_connections_enabled,
 			tenant_secrets: self.tenant_secrets.clone(),
@@ -665,6 +669,7 @@ impl Store {
 			usage: self.usage.clone(),
 			admission: self.admission.clone(),
 			provider_credentials: self.provider_credentials.clone(),
+			oauth_connections: self.oauth_connections.clone(),
 			plan_connections: self.plan_connections.clone(),
 			plan_connections_enabled: self.plan_connections_enabled,
 			tenant_secrets: self.tenant_secrets.clone(),

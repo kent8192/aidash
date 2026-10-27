@@ -46954,5 +46954,319 @@
       },
       "definitions": {}
     }
+  },
+  {
+    "method": "GET",
+    "path": "/api/tenants/{tenant}/connections",
+    "name": "connection-list",
+    "source": "server/src/apps/identity/views/oauth_connections.rs",
+    "json": false,
+    "uuid_parameters": [],
+    "query_parameters": [],
+    "response": {
+      "schema": {
+        "type": "array",
+        "items": {
+          "$ref": "#/components/schemas/OAuthConnectionMetadata"
+        }
+      },
+      "definitions": {
+        "OAuthConnectionMetadata": {
+          "type": "object",
+          "required": [
+            "id",
+            "tenant",
+            "subject",
+            "resource",
+            "issuer",
+            "scopes",
+            "state",
+            "access_expires_at",
+            "created_at",
+            "updated_at",
+            "revision"
+          ],
+          "properties": {
+            "access_expires_at": {
+              "type": ["string", "null"],
+              "format": "date-time"
+            },
+            "created_at": {
+              "type": "string",
+              "format": "date-time"
+            },
+            "id": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "issuer": {
+              "type": "string"
+            },
+            "resource": {
+              "type": "string"
+            },
+            "revision": {
+              "type": "integer",
+              "format": "int64"
+            },
+            "scopes": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            },
+            "state": {
+              "$ref": "#/components/schemas/ConnectionState"
+            },
+            "subject": {
+              "type": "string"
+            },
+            "tenant": {
+              "type": "string"
+            },
+            "updated_at": {
+              "type": "string",
+              "format": "date-time"
+            }
+          }
+        },
+        "ConnectionState": {
+          "oneOf": [
+            {
+              "type": "string",
+              "description": "The person started the authorization; no usable token is stored yet.",
+              "enum": ["pending"]
+            },
+            {
+              "type": "string",
+              "description": "Tokens are stored and a Run whose chain starts at the owner may use them.",
+              "enum": ["active"]
+            },
+            {
+              "type": "string",
+              "description": "The refresh token is no longer usable; the owner must connect again.",
+              "enum": ["needs_reconnection"]
+            }
+          ],
+          "description": "A Connection's lifecycle."
+        }
+      }
+    }
+  },
+  {
+    "method": "DELETE",
+    "path": "/api/tenants/{tenant}/connections/{id}",
+    "name": "connection-disconnect",
+    "source": "server/src/apps/identity/views/oauth_connections.rs",
+    "json": false,
+    "uuid_parameters": ["id"],
+    "query_parameters": [],
+    "response": {
+      "schema": {
+        "$ref": "#/components/schemas/ConnectionDisconnection"
+      },
+      "definitions": {
+        "ConnectionDisconnection": {
+          "type": "object",
+          "required": ["revoked"],
+          "properties": {
+            "revoked": {
+              "type": "boolean"
+            }
+          }
+        }
+      }
+    }
+  },
+  {
+    "method": "GET",
+    "path": "/api/tenants/{tenant}/members/{subject}/connections",
+    "name": "connection-members",
+    "source": "server/src/apps/identity/views/oauth_connections.rs",
+    "json": false,
+    "uuid_parameters": [],
+    "query_parameters": [],
+    "response": {
+      "schema": {
+        "type": "array",
+        "items": {
+          "$ref": "#/components/schemas/OAuthConnectionMetadata"
+        }
+      },
+      "definitions": {
+        "OAuthConnectionMetadata": {
+          "type": "object",
+          "required": [
+            "id",
+            "tenant",
+            "subject",
+            "resource",
+            "issuer",
+            "scopes",
+            "state",
+            "access_expires_at",
+            "created_at",
+            "updated_at",
+            "revision"
+          ],
+          "properties": {
+            "access_expires_at": {
+              "type": ["string", "null"],
+              "format": "date-time"
+            },
+            "created_at": {
+              "type": "string",
+              "format": "date-time"
+            },
+            "id": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "issuer": {
+              "type": "string"
+            },
+            "resource": {
+              "type": "string"
+            },
+            "revision": {
+              "type": "integer",
+              "format": "int64"
+            },
+            "scopes": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            },
+            "state": {
+              "$ref": "#/components/schemas/ConnectionState"
+            },
+            "subject": {
+              "type": "string"
+            },
+            "tenant": {
+              "type": "string"
+            },
+            "updated_at": {
+              "type": "string",
+              "format": "date-time"
+            }
+          }
+        },
+        "ConnectionState": {
+          "oneOf": [
+            {
+              "type": "string",
+              "description": "The person started the authorization; no usable token is stored yet.",
+              "enum": ["pending"]
+            },
+            {
+              "type": "string",
+              "description": "Tokens are stored and a Run whose chain starts at the owner may use them.",
+              "enum": ["active"]
+            },
+            {
+              "type": "string",
+              "description": "The refresh token is no longer usable; the owner must connect again.",
+              "enum": ["needs_reconnection"]
+            }
+          ],
+          "description": "A Connection's lifecycle."
+        }
+      }
+    }
+  },
+  {
+    "method": "DELETE",
+    "path": "/api/tenants/{tenant}/members/{subject}/connections/{id}",
+    "name": "connection-force-disconnect",
+    "source": "server/src/apps/identity/views/oauth_connections.rs",
+    "json": false,
+    "uuid_parameters": ["id"],
+    "query_parameters": [],
+    "response": {
+      "schema": {
+        "$ref": "#/components/schemas/ConnectionDisconnection"
+      },
+      "definitions": {
+        "ConnectionDisconnection": {
+          "type": "object",
+          "required": ["revoked"],
+          "properties": {
+            "revoked": {
+              "type": "boolean"
+            }
+          }
+        }
+      }
+    }
+  },
+  {
+    "method": "GET",
+    "path": "/api/tenants/{tenant}/connections/probe",
+    "name": "connection-probe",
+    "source": "server/src/apps/identity/views/oauth_connections.rs",
+    "json": false,
+    "uuid_parameters": [],
+    "query_parameters": ["resource"],
+    "response": {
+      "schema": {
+        "$ref": "#/components/schemas/ConnectionProbe"
+      },
+      "definitions": {
+        "ConnectionProbe": {
+          "type": "object",
+          "required": ["oauth", "scopes_supported", "issuer"],
+          "properties": {
+            "issuer": {
+              "type": ["string", "null"]
+            },
+            "oauth": {
+              "type": "boolean"
+            },
+            "scopes_supported": {
+              "type": ["array", "null"],
+              "items": {
+                "type": "string"
+              }
+            }
+          }
+        }
+      }
+    }
+  },
+  {
+    "method": "POST",
+    "path": "/api/tenants/{tenant}/connections/authorizations",
+    "name": "connection-start",
+    "source": "server/src/apps/identity/views/oauth_connections.rs",
+    "json": true,
+    "uuid_parameters": [],
+    "query_parameters": [],
+    "response": {
+      "schema": {
+        "$ref": "#/components/schemas/ConnectionAuthorizationStarted"
+      },
+      "definitions": {
+        "ConnectionAuthorizationStarted": {
+          "type": "object",
+          "required": ["authorization_url"],
+          "properties": {
+            "authorization_url": {
+              "type": "string"
+            }
+          }
+        }
+      }
+    }
+  },
+  {
+    "method": "GET",
+    "path": "/auth/connections/callback",
+    "name": "connection-callback",
+    "source": "server/src/apps/identity/views/oauth_connections.rs",
+    "json": false,
+    "uuid_parameters": [],
+    "query_parameters": ["code", "error", "state"]
   }
 ]

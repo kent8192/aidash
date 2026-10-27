@@ -190,6 +190,10 @@ name = "provider_authorizations"
 path = "src/apps/identity/tests/provider_authorizations.rs"
 
 [[test]]
+name = "oauth_connections"
+path = "src/apps/identity/tests/oauth_connections.rs"
+
+[[test]]
 name = "plan_connections"
 path = "src/apps/identity/tests/plan_connections.rs"
 

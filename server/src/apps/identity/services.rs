@@ -37,3 +37,5 @@ pub mod tenant_secrets;
 pub mod tenants;
 
 pub mod oauth_clients;
+
+pub mod oauth_connections;

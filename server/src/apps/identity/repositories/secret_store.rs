@@ -85,6 +85,7 @@ fn resource_id(resource: &str) -> Result<()> {
 	let id = resource
 		.strip_prefix("aidash-store/provider-credentials/")
 		.or_else(|| resource.strip_prefix("aidash-store/plan-connections/"))
+		.or_else(|| resource.strip_prefix("aidash-store/oauth-connections/"))
 		.or_else(|| resource.strip_prefix("aidash-store/tenant-secrets/"))
 		.or_else(|| resource.strip_prefix("aidash-store/oauth-clients/"))
 		.and_then(|s| Uuid::parse_str(s).ok())
@@ -438,6 +439,10 @@ impl Store for PostgresStore {
 	}
 	async fn create(&self, tenant: &str, id: Uuid) -> Result<()> {
 		self.create_resource(tenant, self.resource(id)).await
+	}
+	async fn create_connection(&self, tenant: &str, id: Uuid) -> Result<()> {
+		self.create_resource(tenant, self.connection_resource(id))
+			.await
 	}
 	async fn create_plan(&self, tenant: &str, id: Uuid) -> Result<()> {
 		self.create_resource(tenant, self.plan_resource(id)).await

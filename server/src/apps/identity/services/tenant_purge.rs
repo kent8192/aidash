@@ -121,6 +121,9 @@ async fn run(store: &Store, deletion: &TenantDeletion, step: PurgeStep) -> Resul
 /// Ends the Tenant's Plan Connections, if deletion could not, and revokes and
 /// deletes its Provider Credentials with their stored Key Material.
 async fn provider_credentials(store: &Store, tenant: &str) -> Result<()> {
+	if let Some(service) = &store.oauth_connections {
+		service.retire_tenant(tenant).await?;
+	}
 	super::oauth_clients::service(store)
 		.retire_tenant(tenant)
 		.await?;

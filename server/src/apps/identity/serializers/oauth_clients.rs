@@ -8,6 +8,8 @@ use serde::Deserialize;
 pub struct Write {
 	#[serde(default)]
 	pub owner: Ownership,
+	/// Canonical issuer. Existing registrations cannot change issuer (409
+	/// oauth_client_issuer_immutable); create a new registration to retarget.
 	pub issuer: String,
 	pub client_id: String,
 	#[serde(default)]

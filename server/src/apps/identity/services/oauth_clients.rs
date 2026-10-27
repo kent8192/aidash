@@ -104,7 +104,7 @@ impl Management {
 				} else {
 					SECRET_MANAGE
 				};
-				let resource = access.resource("secret", &row.issuer, json!({"issuer":row.issuer}));
+				let resource = access.resource("secret", &row.issuer, json!({"name":row.issuer}));
 				if access.decide(&resource, action).await? {
 					visible.push(row);
 				}
@@ -142,10 +142,21 @@ impl Management {
 		} else {
 			SECRET_MANAGE
 		};
+		let service = service(&self.runtime.store);
+		let identity = subject(&actor, &tenant)?;
+		let stored_issuer = if let Some(id) = id {
+			let row = service.get(&tenant, &identity.subject, id).await?;
+			if row.owner.as_deref() != input.owner.subject(&identity.subject) {
+				return Err(Error::NotFound("OAuth Client".into()));
+			}
+			row.issuer
+		} else {
+			issuer.clone()
+		};
 		let access = self
-			.authorize(&actor, &tenant, "secret", &issuer, &[action])
+			.authorize(&actor, &tenant, "secret", &stored_issuer, &[action])
 			.await?;
-		let result = service(&self.runtime.store)
+		let result = service
 			.put(
 				&tenant,
 				&subject(&actor, &tenant)?.subject,

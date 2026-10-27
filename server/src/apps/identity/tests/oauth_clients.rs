@@ -256,9 +256,9 @@ async fn oauth_client_http_checks_personal_and_tenant_actions_and_ceiling_encodi
 		.await
 		.unwrap();
 	assert_eq!(unavailable.status(), 503);
-	let _store = personal_credentials::configure(&mut f.runtime).await;
+	let store = personal_credentials::configure(&mut f.runtime).await;
 	f.context.set_singleton(f.runtime.clone());
-	let body = json!({"owner":"me", "issuer":"https://AUTH.example.test/", "client_id":"personal"});
+	let body = json!({"owner":"me", "issuer":"https://AUTH.example.test/", "client_id":"personal", "client_secret":"http-client-canary"});
 	let result = client
 		.put(&url)
 		.bearer_auth(&alice)
@@ -271,6 +271,43 @@ async fn oauth_client_http_checks_personal_and_tenant_actions_and_ceiling_encodi
 	assert_eq!(row["owner"], "me");
 	assert_eq!(row["issuer"], "https://auth.example.test");
 	let id = row["id"].as_str().unwrap();
+	let service = personal_credentials::clients(&f.runtime);
+	let client_id = row["id"].as_str().unwrap().parse().unwrap();
+	let original = service.get("alpha", "alice", client_id).await.unwrap();
+	let resource = original.secret_resource.as_deref().unwrap();
+	let versions = store.versions("alpha", resource).await.unwrap();
+	for replacement in [None, Some("replacement-canary")] {
+		let rejected = client.put(format!("{url}/{id}"))
+			.bearer_auth(&alice)
+			.json(&json!({"owner":"me", "issuer":"https://other.example.test", "client_id":"retargeted", "client_secret":replacement, "expected_revision":row["revision"]}))
+			.send().await.unwrap();
+		assert_eq!(rejected.status(), 409);
+		assert_eq!(
+			rejected.json::<serde_json::Value>().await.unwrap()["error"],
+			"oauth_client_issuer_immutable"
+		);
+		let unchanged = service.get("alpha", "alice", client_id).await.unwrap();
+		assert_eq!(unchanged.issuer, original.issuer);
+		assert_eq!(unchanged.client_id, original.client_id);
+		assert_eq!(unchanged.revision, original.revision);
+		assert_eq!(unchanged.secret_resource, original.secret_resource);
+		assert_eq!(unchanged.pinned_version, original.pinned_version);
+		assert_eq!(store.versions("alpha", resource).await.unwrap(), versions);
+		let payload = f
+			.runtime
+			.store
+			.provider_key_material_reader
+			.as_ref()
+			.unwrap()
+			.read(
+				"alpha",
+				resource,
+				original.pinned_version.as_deref().unwrap(),
+			)
+			.await
+			.unwrap();
+		assert_eq!(payload.expose_secret(), "http-client-canary");
+	}
 	personal_credentials::clients(&f.runtime)
 		.put("alpha", "admin", None, input(Ownership::Tenant, None))
 		.await
@@ -457,4 +494,109 @@ async fn oauth_client_http_checks_personal_and_tenant_actions_and_ceiling_encodi
 			.status(),
 		200
 	);
+}
+
+#[rstest]
+#[timeout(Duration::from_secs(600))]
+#[tokio::test]
+async fn scoped_client_manager_uses_the_stored_issuer_for_all_record_actions(
+	#[future] endpoint: EndpointFixture,
+) {
+	let mut f = endpoint.await;
+	endpoint_fixtures::tenant_scope(&f.runtime.store, "alpha").await;
+	endpoint_fixtures::replace_policy(&f.runtime.store, "alpha", json!({
+		"tenant":"alpha", "subjects":{"alice":{"kind":"user","roles":["manager"]}},
+		"roles":{"manager":{}}, "policies":[
+			{"id":"collection", "effect":"allow", "subjects":{"roles":["manager"]}, "actions":["secret.use"], "resources":{"kinds":["secret"]}},
+			{"id":"scoped-manage", "effect":"allow", "subjects":{"roles":["manager"]}, "actions":["secret.manage"], "resources":{"kinds":["secret"]},
+			 "condition":{"op":"eq","left":{"source":"resource","path":"/name"},"right":{"source":"literal","value":"https://allowed.example.test"}}}
+		]
+	})).await;
+	let store = personal_credentials::configure(&mut f.runtime).await;
+	f.context.set_singleton(f.runtime.clone());
+	let service = personal_credentials::clients(&f.runtime);
+	let mut allowed = input(Ownership::Tenant, None);
+	allowed.issuer = "https://allowed.example.test".into();
+	let allowed = service.put("alpha", "admin", None, allowed).await.unwrap();
+	let mut blocked = input(Ownership::Tenant, Some("blocked-client-canary"));
+	blocked.issuer = "https://blocked.example.test".into();
+	let blocked = service.put("alpha", "admin", None, blocked).await.unwrap();
+	let original = service.get("alpha", "alice", blocked.id).await.unwrap();
+	let resource = original.secret_resource.as_deref().unwrap();
+	let versions = store.versions("alpha", resource).await.unwrap();
+	let authorization = aidash_server::authorization::Authorization {
+		pool: f.runtime.store.pool.clone(),
+	};
+	let token = authorization
+		.issue_credential("alpha", "alice", 3600, "admin")
+		.await
+		.unwrap()
+		.token;
+	let client = reqwest::Client::new();
+	let url = format!("{}/api/tenants/alpha/oauth-clients", f.server.url);
+	assert_eq!(
+		client
+			.get(format!("{url}/{}", allowed.id))
+			.bearer_auth(&token)
+			.send()
+			.await
+			.unwrap()
+			.status(),
+		200
+	);
+	assert_eq!(
+		client
+			.get(format!("{url}/{}", blocked.id))
+			.bearer_auth(&token)
+			.send()
+			.await
+			.unwrap()
+			.status(),
+		403
+	);
+	let rejected = client.put(format!("{url}/{}", blocked.id)).bearer_auth(&token)
+		.json(&json!({"owner":"tenant", "issuer":allowed.issuer, "client_id":"retargeted", "expected_revision":blocked.revision}))
+		.send().await.unwrap();
+	let put_status = rejected.status().as_u16();
+	assert_eq!(
+		client
+			.delete(format!("{url}/{}", blocked.id))
+			.bearer_auth(&token)
+			.send()
+			.await
+			.unwrap()
+			.status(),
+		403
+	);
+	let list = client.get(&url).bearer_auth(&token).send().await.unwrap();
+	assert_eq!(list.status(), 200);
+	let list: serde_json::Value = list.json().await.unwrap();
+	let ids: Vec<_> = list
+		.as_array()
+		.unwrap()
+		.iter()
+		.map(|row| row["id"].as_str().unwrap().to_owned())
+		.collect();
+	assert_eq!((put_status, ids), (403, vec![allowed.id.to_string()]));
+	let unchanged = service.get("alpha", "alice", blocked.id).await.unwrap();
+	assert_eq!(unchanged.issuer, original.issuer);
+	assert_eq!(unchanged.client_id, original.client_id);
+	assert_eq!(unchanged.revision, original.revision);
+	assert_eq!(unchanged.secret_resource, original.secret_resource);
+	assert_eq!(unchanged.pinned_version, original.pinned_version);
+	assert_eq!(store.versions("alpha", resource).await.unwrap(), versions);
+	let payload = f
+		.runtime
+		.store
+		.provider_key_material_reader
+		.as_ref()
+		.unwrap()
+		.read(
+			"alpha",
+			resource,
+			original.pinned_version.as_deref().unwrap(),
+		)
+		.await
+		.unwrap();
+	assert_eq!(payload.expose_secret(), "blocked-client-canary");
 }

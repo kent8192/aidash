@@ -3,7 +3,7 @@
 use reinhardt::db::migrations::prelude::*;
 pub(super) fn migration() -> Migration {
 	Migration::new("0043_oauth_clients_and_personal_secrets", "identity")
-		.add_dependency("identity", "0040_common_auth_origin_binding")
+		.add_dependency("identity", "0042_oauth_connections_state")
 		.database_only(true)
 		.atomic(true)
 		.add_operation(Operation::AddColumn {

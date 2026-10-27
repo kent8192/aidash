@@ -112,14 +112,6 @@ impl Service {
 		id: Option<Uuid>,
 		input: Put,
 	) -> Result<Metadata> {
-		if input.client_secret.is_some()
-			&& self
-				.store
-				.as_ref()
-				.is_none_or(|store| !store.supports_oauth_client_secrets())
-		{
-			return Err(Error::OAuthClientSecretsUnavailable);
-		}
 		let issuer = normalize_issuer(&input.issuer)?;
 		if input.client_id.is_empty()
 			|| input.client_id.len() > 4096
@@ -149,6 +141,19 @@ impl Service {
 				.find(|row| row.owner == owner && row.issuer == issuer)
 				.cloned(),
 		};
+		// A registration's issuer also binds its write-only secret and policy
+		// scope. Retargeting requires a new registration, never an update.
+		if current.as_ref().is_some_and(|row| row.issuer != issuer) {
+			return Err(Error::Conflict("oauth_client_issuer_immutable".into()));
+		}
+		if input.client_secret.is_some()
+			&& self
+				.store
+				.as_ref()
+				.is_none_or(|store| !store.supports_oauth_client_secrets())
+		{
+			return Err(Error::OAuthClientSecretsUnavailable);
+		}
 		if current.as_ref().map_or(0, |row| row.revision) != input.expected_revision {
 			return Err(Error::Conflict("stale OAuth Client revision".into()));
 		}
@@ -218,7 +223,6 @@ impl Service {
 		} else {
 			None
 		};
-		row.issuer = issuer;
 		row.client_id = input.client_id;
 		row.updated_at = now;
 		row.revision += 1;
