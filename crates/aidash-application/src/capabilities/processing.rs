@@ -51,7 +51,36 @@ pub async fn acknowledge(
 		let health = repository.runner_request("GET", "/v1/health", None).await?;
 		let lost = journal_lost(receipt.runner_instance.as_deref(), &health);
 		let mut ack = json!({"digest":receipt.digest});
-		if receipt.uncertain {
+		let mut uncertain = receipt.uncertain;
+		if !uncertain && !lost {
+			// A writer that Node cancellation withdrew may have reached the Runner
+			// as a stopped `uncertain` outcome. Its ACK then needs the adopted
+			// output proof, so the Runner's own outcome selects the protocol.
+			let path = format!("/v1/operations/{}/ack", receipt.id);
+			if repository
+				.runner_request("POST", &path, Some(ack.clone()))
+				.await
+				.is_ok()
+			{
+				repository.mark_acknowledged(receipt.id).await?;
+				continue;
+			}
+			let Ok(observed) = repository
+				.runner_request("GET", &format!("/v1/operations/{}", receipt.id), None)
+				.await
+			else {
+				continue;
+			};
+			if observed["operation_id"] != json!(receipt.id)
+				|| observed["digest"] != receipt.digest
+				|| observed["status"] != "uncertain"
+				|| observed["termination_confirmed"] != true
+			{
+				continue;
+			}
+			uncertain = true;
+		}
+		if uncertain {
 			// Journal loss cannot prove adoption of an uncertain result.
 			if lost {
 				continue;
@@ -87,7 +116,7 @@ pub async fn acknowledge(
 			let Ok(response) = response else {
 				continue;
 			};
-			if receipt.uncertain {
+			if uncertain {
 				if response["operation_id"] != json!(receipt.id)
 					|| response["digest"] != receipt.digest
 					|| response["status"] != "uncertain"

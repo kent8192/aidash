@@ -39,7 +39,9 @@ fn bound(operation: &Operation, receipt: &Receipt) -> bool {
 		&& operation.digest == receipt.digest
 		&& operation.runner_instance == receipt.runner_instance
 		&& operation.runner_instance.is_some()
-		&& operation.state == "uncertain"
+		// A Node cancellation withdrawal keeps its outcome while adopting the
+		// stopped output the Runner retained as `uncertain`.
+		&& matches!(operation.state.as_str(), "uncertain" | "withdrawn")
 		&& operation.result["termination_confirmed"] == true
 }
 pub(super) async fn begin<'a>(

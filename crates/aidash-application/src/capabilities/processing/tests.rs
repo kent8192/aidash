@@ -13,6 +13,7 @@ struct Trace {
 	after: Vec<Uuid>,
 	rows: VecDeque<Vec<Row>>,
 	health: Value,
+	operation: Value,
 	ack_failure: bool,
 	health_failure: bool,
 	mark_failure: bool,
@@ -36,6 +37,7 @@ fn repository() -> Repository {
 			Some("runner".into()),
 		)]]),
 		health: json!({"instance":"runner"}),
+		operation: Value::Null,
 		ack_failure: false,
 		health_failure: false,
 		mark_failure: false,
@@ -127,7 +129,9 @@ impl OperationProcessingRepository for Repository {
 		trace.calls.push(format!("{method}:{path}"));
 		if method == "GET" {
 			assert!(body.is_none());
-			if trace.health_failure {
+			if path != "/v1/health" && !trace.operation.is_null() {
+				Ok(trace.operation.clone())
+			} else if trace.health_failure {
 				Err(Error::External("health failed".into()))
 			} else {
 				Ok(trace.health.clone())
@@ -184,6 +188,36 @@ async fn failed_acknowledgement_keeps_the_database_receipt_retryable_and_advance
 	let trace = repository.0.lock().unwrap();
 	assert!(trace.marked.is_empty());
 	assert_eq!(cursor.operation, Uuid::from_u128(1));
+}
+#[rstest]
+#[tokio::test]
+async fn a_withdrawn_receipt_the_runner_holds_as_uncertain_requires_output_adoption(
+	repository: Repository,
+) {
+	let id = Uuid::from_u128(1);
+	{
+		let mut trace = repository.0.lock().unwrap();
+		trace.ack_failure = true;
+		trace.operation = json!({"operation_id":id,"digest":"digest-one","status":"uncertain",
+			"termination_confirmed":true,"output_harvested":true});
+	}
+	acknowledge(&repository, &mut ReceiptCursor::default())
+		.await
+		.unwrap();
+	let trace = repository.0.lock().unwrap();
+	// The plain ACK is refused, the Runner outcome is read, and adoption is
+	// attempted (the fixture refuses the output scope) instead of a false mark.
+	assert_eq!(
+		trace.calls,
+		vec![
+			"receipts".to_owned(),
+			"GET:/v1/health".to_owned(),
+			format!("POST:/v1/operations/{id}/ack"),
+			format!("GET:/v1/operations/{id}"),
+			format!("GET:/v1/operations/{id}"),
+		]
+	);
+	assert!(trace.marked.is_empty());
 }
 #[rstest]
 #[case::health("health")]
