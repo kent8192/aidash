@@ -67,17 +67,17 @@ failures and refuses the affected destination.
 
 ## Current Cloud infrastructure
 
-The managed Helm values declare US. Runtime and TLS secrets use user-managed
-replication in `us-central1`; Provider Credential secrets already do. Existing
-backup locations remain US. Namespace logs (including sandbox, trusted and
-installer Pods) and broker logs get regional buckets and sinks, with matching
-exclusions from `_Default` so it does not retain another copy globally. This
-does not relocate old logs or secret versions. Secret Manager
-[replication locations cannot be changed after creation](https://docs.cloud.google.com/secret-manager/docs/choosing-replication),
-so existing automatic secrets need an explicit replacement and payload migration;
-TLS/ACME secrets retain `prevent_destroy`, which intentionally blocks an
-unplanned replacement. Operators must resolve that migration, review retention
-and confirm the actual deployment boundary before enabling the declaration. No
+The managed Helm values declare US. The Secret Store values that hold Tenant
+data (Provider Credential Key Material, Plan Tokens and Tenant Secrets) use
+user-managed replication in the Deployment Region when Aidash creates them.
+The Deployment's own operational secrets that Terraform manages (the runtime
+secret and the preview TLS/ACME secrets) hold no Tenant data, so they keep
+automatic replication; Secret Manager
+[cannot change a secret's replication after creation](https://docs.cloud.google.com/secret-manager/docs/choosing-replication),
+and changing it would force their replacement. Existing backup locations remain
+US. Namespace logs (including sandbox, trusted and installer Pods) and broker
+logs get regional buckets and sinks, with matching exclusions from `_Default`
+so it does not retain another copy globally. This does not relocate old logs. No
 infrastructure has been applied by this change. Regional Cloud provisioning is
 #547.
 

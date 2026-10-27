@@ -101,9 +101,7 @@ resource "google_secret_manager_secret" "runtime" {
   secret_id = "${local.name}-runtime"
   labels    = local.labels
   replication {
-    user_managed {
-      replicas { location = "us-central1" }
-    }
+    auto {}
   }
 }
 

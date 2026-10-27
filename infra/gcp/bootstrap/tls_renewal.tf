@@ -30,9 +30,7 @@ resource "google_secret_manager_secret" "preview_tls" {
   project   = var.project_id
   secret_id = var.preview_tls_secret_id
   replication {
-    user_managed {
-      replicas { location = "us-central1" }
-    }
+    auto {}
   }
   lifecycle {
     prevent_destroy = true
@@ -49,9 +47,7 @@ resource "google_secret_manager_secret" "preview_acme_state" {
   project   = var.project_id
   secret_id = var.preview_acme_state_secret_id
   replication {
-    user_managed {
-      replicas { location = "us-central1" }
-    }
+    auto {}
   }
   lifecycle { prevent_destroy = true }
   depends_on = [google_project_service.required]
