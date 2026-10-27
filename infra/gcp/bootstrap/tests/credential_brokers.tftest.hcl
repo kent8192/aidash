@@ -89,6 +89,11 @@ run "broker_environments" {
     values = { id = "projects/aidash-fixture/locations/us-central1/keyRings/aidash-test-capability/cryptoKeys/tenant-secret" }
   }
   assert {
+    condition     = alltrue([for id, account in google_service_account.tenant_secret_broker : google_project_iam_member.byok_oauth_broker[id].member == "serviceAccount:${account.email}" && google_project_iam_member.byok_oauth_broker[id].condition[0].expression == "resource.name.startsWith(\"projects/123456789012/secrets/aidash-${id}-oauth-\")"]) && google_project_iam_custom_role.byok_oauth_broker[0].permissions == toset(["secretmanager.versions.access", "secretmanager.versions.add"])
+    error_message = "Only the Tenant Secret broker can read/write OAuth versions, scoped to its own -oauth- prefix."
+  }
+
+  assert {
     condition     = alltrue([for id, account in google_service_account.broker : account.project == var.project_id && account.account_id == "aidash-${id}-broker" && google_project_iam_member.byok_broker_read[id].project == var.byok_project_id && google_project_iam_member.byok_broker_read[id].role == google_project_iam_custom_role.byok_broker_read[0].name && google_project_iam_member.byok_broker_read[id].member == "serviceAccount:${account.email}" && google_project_iam_member.byok_broker_read[id].condition[0].expression == "resource.name.startsWith(\"projects/123456789012/secrets/aidash-${id}-cred-\")"])
     error_message = "Only dedicated broker SAs may receive prefix-conditioned BYOK read access."
   }
@@ -128,7 +133,7 @@ run "broker_environments" {
 run "brokers_opt_in_only" {
   command = apply
   assert {
-    condition     = length(google_service_account.broker) == 0 && length(google_service_account.tenant_secret_broker) == 0 && length(google_service_account_iam_member.deploy_act_as_broker) == 0 && length(google_service_account_iam_member.deploy_act_as_tenant_secret_broker) == 0 && length(google_project_iam_member.byok_broker_read) == 0 && length(google_project_iam_member.byok_tenant_secret_broker_read) == 0 && length(google_kms_crypto_key.capability) == 0 && length(google_kms_crypto_key.tenant_secret) == 0 && length(google_kms_crypto_key_iam_member.deploy_capability_public_key) == 0 && length(google_kms_crypto_key_iam_member.deploy_tenant_secret_public_key) == 0
+    condition     = length(google_service_account.broker) == 0 && length(google_service_account.tenant_secret_broker) == 0 && length(google_service_account_iam_member.deploy_act_as_broker) == 0 && length(google_service_account_iam_member.deploy_act_as_tenant_secret_broker) == 0 && length(google_project_iam_member.byok_broker_read) == 0 && length(google_project_iam_member.byok_tenant_secret_broker_read) == 0 && length(google_project_iam_member.byok_oauth_broker) == 0 && length(google_kms_crypto_key.capability) == 0 && length(google_kms_crypto_key.tenant_secret) == 0 && length(google_kms_crypto_key_iam_member.deploy_capability_public_key) == 0 && length(google_kms_crypto_key_iam_member.deploy_tenant_secret_public_key) == 0
     error_message = "No broker identity, Tenant Secret identity or read grant without explicit opt-in."
   }
 }
@@ -139,7 +144,7 @@ run "without_provider_store" {
     byok_broker_environments = ["test"]
   }
   assert {
-    condition     = length(google_service_account.broker) == 0 && length(google_service_account.tenant_secret_broker) == 0 && length(google_project_iam_member.byok_broker_read) == 0 && length(google_project_iam_member.byok_tenant_secret_broker_read) == 0 && length(google_kms_crypto_key_iam_member.deploy_capability_public_key) == 0 && length(google_kms_crypto_key_iam_member.deploy_tenant_secret_public_key) == 0 && output.broker_service_accounts == {} && output.tenant_secret_broker_service_accounts == {} && output.broker_signing_keys == {} && output.tenant_secret_signing_keys == {}
+    condition     = length(google_service_account.broker) == 0 && length(google_service_account.tenant_secret_broker) == 0 && length(google_project_iam_member.byok_broker_read) == 0 && length(google_project_iam_member.byok_tenant_secret_broker_read) == 0 && length(google_project_iam_member.byok_oauth_broker) == 0 && length(google_kms_crypto_key_iam_member.deploy_capability_public_key) == 0 && length(google_kms_crypto_key_iam_member.deploy_tenant_secret_public_key) == 0 && output.broker_service_accounts == {} && output.tenant_secret_broker_service_accounts == {} && output.broker_signing_keys == {} && output.tenant_secret_signing_keys == {}
     error_message = "Disabled BYOK must create no broker identities or payload-access grants even with an environment opt-in."
   }
 }
@@ -239,4 +244,10 @@ run "production_broker_bootstrap" {
     )
     error_message = "Production bootstrap owns only its dedicated broker identities and stable keys with production-only prefixes."
   }
+}
+
+run "overlapping_oauth_prefixes_forbidden" {
+  command = plan
+  variables { byok_broker_environments = ["prod", "prod-oauth-blue"] }
+  expect_failures = [var.byok_broker_environments]
 }

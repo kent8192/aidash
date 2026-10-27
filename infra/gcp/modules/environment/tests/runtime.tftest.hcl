@@ -111,7 +111,7 @@ run "running_pool_and_workload_identities" {
       google_project_iam_member.provider_credential_manage[0].role == "projects/aidash-byok-fixture/roles/aidashByokManage" &&
       google_project_iam_member.provider_credential_manage[0].member == "serviceAccount:${output.server_service_account}" &&
       length(google_project_iam_member.provider_credential_manage[0].condition) == 1 &&
-      google_project_iam_member.provider_credential_manage[0].condition[0].expression == "resource.name.startsWith('projects/123456789012/secrets/aidash-test-cred-') || resource.name.startsWith('projects/123456789012/secrets/aidash-test-tsec-')"
+      google_project_iam_member.provider_credential_manage[0].condition[0].expression == "resource.name.startsWith('projects/123456789012/secrets/aidash-test-cred-') || resource.name.startsWith('projects/123456789012/secrets/aidash-test-tsec-') || resource.name.startsWith('projects/123456789012/secrets/aidash-test-oauth-')"
     )
     error_message = "Only the server binds bootstrap's fixed Create/Manage roles, with management limited to its environment's Provider Credential and Tenant Secret prefixes."
   }
@@ -183,7 +183,7 @@ run "preview_has_its_own_namespace_and_prefix" {
     error_message = "A preview is isolated by its own namespace, taint and Workload Identity principals."
   }
   assert {
-    condition     = google_project_iam_member.provider_credential_manage[0].condition[0].expression == "resource.name.startsWith('projects/123456789012/secrets/aidash-pr-2-cred-') || resource.name.startsWith('projects/123456789012/secrets/aidash-pr-2-tsec-')"
+    condition     = google_project_iam_member.provider_credential_manage[0].condition[0].expression == "resource.name.startsWith('projects/123456789012/secrets/aidash-pr-2-cred-') || resource.name.startsWith('projects/123456789012/secrets/aidash-pr-2-tsec-') || resource.name.startsWith('projects/123456789012/secrets/aidash-pr-2-oauth-')"
     error_message = "Environments share the fixed role but receive distinct secret-prefix conditions."
   }
   assert {

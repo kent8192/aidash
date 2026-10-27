@@ -50,7 +50,7 @@ variable "credential_brokers" {
     error_message = "Enabled brokers must use the environment's configured Secret Store project."
   }
   validation {
-    condition     = alltrue([for id, broker in var.credential_brokers : !broker.enabled || alltrue([for other in keys(var.environments) : id == other || (!startswith("aidash-${other}-cred-", "aidash-${id}-cred-") && !startswith("aidash-${id}-cred-", "aidash-${other}-cred-"))])])
+    condition     = alltrue([for id, broker in var.credential_brokers : !broker.enabled || alltrue([for other in keys(var.environments) : id == other || alltrue(flatten([for a in ["cred", "tsec", "oauth"] : [for b in ["cred", "tsec", "oauth"] : !startswith("aidash-${other}-${b}-", "aidash-${id}-${a}-") && !startswith("aidash-${id}-${a}-", "aidash-${other}-${b}-")]]))])])
     error_message = "Broker credential prefixes must not overlap any managed environment's credential namespace."
   }
   validation {
@@ -78,6 +78,8 @@ module "credential_broker" {
   verification_versions        = each.value.verification_versions
   issuer                       = local.worker_issuer
 }
+// This same service serves /v1/connections/{exchange,refresh,revoke} and
+// /v1/forward connection claims. It derives -oauth- from its -tsec- prefix.
 module "tenant_secret_broker" {
   source   = "../modules/credential-broker"
   for_each = { for id, broker in var.credential_brokers : id => broker if broker.enabled && try(var.environments[id].kind != "pr", false) }
