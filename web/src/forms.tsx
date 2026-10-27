@@ -461,7 +461,13 @@ export function EntityForm({
                           projection_versions: ["legacy", "ordered", "native"],
                         }
                       : modelSource === "openrouter"
-                        ? { provider_credential: "openrouter" }
+                        ? {
+                            provider_credential: "openrouter",
+                            // Omitted keeps the Chat Completions bytes.
+                            ...(s("wire_api") === "responses"
+                              ? { wire_api: "responses" }
+                              : {}),
+                          }
                         : {}),
                     model_id: s("model_id"),
                     endpoint: s("endpoint"),

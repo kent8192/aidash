@@ -48,164 +48,197 @@ impl OpenRouterProvider {
 		context
 	}
 	async fn verified_routes(&self, request: &ModelRequest) -> Result<Vec<String>> {
-		self.config.validate_provider_route()?;
-		let formats: Vec<&str> = request
-			.content_parts
-			.iter()
-			.filter_map(|part| match part {
-				ContentPart::Image { media_type, .. } => Some(media_type.as_str()),
-				ContentPart::Audio { format, .. } => Some(format.as_str()),
-				ContentPart::Text(_) => None,
-			})
-			.collect();
-		if formats.is_empty() && self.config.provider_route.is_none() {
-			return Ok(Vec::new());
+		verified_routes(
+			&self.clients,
+			&self.config,
+			&*self.access,
+			&self.context,
+			request,
+		)
+		.await
+	}
+}
+
+/// The provider catalog and ZDR evidence a route must satisfy before any
+/// inference. Shared by the Chat Completions and Responses transports.
+pub(crate) async fn verified_routes(
+	clients: &crate::keyless::Clients,
+	config: &ModelConfig,
+	access: &dyn ProviderAccess,
+	context: &Context,
+	request: &ModelRequest,
+) -> Result<Vec<String>> {
+	config.validate_provider_route()?;
+	let formats: Vec<&str> = request
+		.content_parts
+		.iter()
+		.filter_map(|part| match part {
+			ContentPart::Image { media_type, .. } => Some(media_type.as_str()),
+			ContentPart::Audio { format, .. } => Some(format.as_str()),
+			ContentPart::Text(_) => None,
+		})
+		.collect();
+	if formats.is_empty() && config.provider_route.is_none() {
+		return Ok(Vec::new());
+	}
+	if !formats.is_empty() && config.media_routes.is_empty() {
+		return Err(Error::Invalid(format!(
+			"model {} has no verified media route",
+			config.model_id
+		)));
+	}
+	let access = access
+		.resolve(
+			&crate::data_protection::context(access, &discovery_context(context, config)).await?,
+			&config.endpoint,
+			&Source::configured(&config.provider_credential, &None),
+		)
+		.await?;
+	let mut url = reqwest::Url::parse(&access.endpoint)
+		.map_err(|_| Error::Invalid("invalid OpenRouter endpoint".into()))?;
+	{
+		let mut segments = url
+			.path_segments_mut()
+			.map_err(|_| Error::Invalid("invalid OpenRouter endpoint".into()))?;
+		segments.pop_if_empty().push("models");
+		for segment in config.model_id.split('/') {
+			if segment.is_empty() || segment == "." || segment == ".." {
+				return Err(Error::Invalid("invalid OpenRouter model ID".into()));
+			}
+			segments.push(segment);
 		}
-		if !formats.is_empty() && self.config.media_routes.is_empty() {
+		segments.push("endpoints");
+	}
+	let client = clients.select(&access)?;
+	let mut endpoints = client.get(url).timeout(std::time::Duration::from_secs(15));
+	let mut zdr = client
+		.get(format!(
+			"{}/endpoints/zdr",
+			access.endpoint.trim_end_matches('/')
+		))
+		.timeout(std::time::Duration::from_secs(15));
+	if !access.bearer.expose_secret().is_empty() {
+		endpoints = endpoints.bearer_auth(access.bearer.expose_secret());
+		zdr = zdr.bearer_auth(access.bearer.expose_secret());
+	}
+	let (endpoints, zdr) =
+		tokio::try_join!(endpoints.send(), zdr.send()).map_err(crate::keyless::send_error)?;
+	if !endpoints.status().is_success() {
+		return Err(crate::response::provider_rejection(
+			endpoints,
+			config.provider_credential.is_some(),
+		)
+		.await);
+	}
+	if !zdr.status().is_success() {
+		return Err(
+			crate::response::provider_rejection(zdr, config.provider_credential.is_some()).await,
+		);
+	}
+	let endpoints = crate::response::json::<Value>(endpoints, 2 * 1024 * 1024).await?;
+	let zdr = crate::response::json::<Value>(zdr, 8 * 1024 * 1024).await?;
+	let modalities = endpoints
+		.pointer("/data/architecture/input_modalities")
+		.and_then(Value::as_array)
+		.filter(|_| !formats.is_empty());
+	if !formats.is_empty() && modalities.is_none() {
+		return Err(Error::External(
+			"OpenRouter model modalities unavailable".into(),
+		));
+	}
+	for part in &request.content_parts {
+		let modality = match part {
+			ContentPart::Image { .. } => "image",
+			ContentPart::Audio { .. } => "audio",
+			ContentPart::Text(_) => continue,
+		};
+		if !modalities.is_some_and(|values| values.iter().any(|value| value == modality)) {
 			return Err(Error::Invalid(format!(
-				"model {} has no verified media route",
-				self.config.model_id
+				"OpenRouter model {} no longer supports {modality} input",
+				config.model_id
 			)));
 		}
-		let access = self
-			.access
-			.resolve(
-				&crate::data_protection::context(
-					self.access.as_ref(),
-					&self.call_context(
-						Operation::Discovery,
-						self.config.output_token_limit(),
-						false,
-					),
-				)
-				.await?,
-				&self.config.endpoint,
-				&Source::configured(&self.config.provider_credential, &None),
-			)
-			.await?;
-		let mut url = reqwest::Url::parse(&access.endpoint)
-			.map_err(|_| Error::Invalid("invalid OpenRouter endpoint".into()))?;
-		{
-			let mut segments = url
-				.path_segments_mut()
-				.map_err(|_| Error::Invalid("invalid OpenRouter endpoint".into()))?;
-			segments.pop_if_empty().push("models");
-			for segment in self.config.model_id.split('/') {
-				if segment.is_empty() || segment == "." || segment == ".." {
-					return Err(Error::Invalid("invalid OpenRouter model ID".into()));
-				}
-				segments.push(segment);
-			}
-			segments.push("endpoints");
-		}
-		let client = self.clients.select(&access)?;
-		let mut endpoints = client.get(url).timeout(std::time::Duration::from_secs(15));
-		let mut zdr = client
-			.get(format!(
-				"{}/endpoints/zdr",
-				access.endpoint.trim_end_matches('/')
-			))
-			.timeout(std::time::Duration::from_secs(15));
-		if !access.bearer.expose_secret().is_empty() {
-			endpoints = endpoints.bearer_auth(access.bearer.expose_secret());
-			zdr = zdr.bearer_auth(access.bearer.expose_secret());
-		}
-		let (endpoints, zdr) =
-			tokio::try_join!(endpoints.send(), zdr.send()).map_err(crate::keyless::send_error)?;
-		if !endpoints.status().is_success() {
-			return Err(crate::response::provider_rejection(
-				endpoints,
-				self.config.provider_credential.is_some(),
-			)
-			.await);
-		}
-		if !zdr.status().is_success() {
-			return Err(crate::response::provider_rejection(
-				zdr,
-				self.config.provider_credential.is_some(),
-			)
-			.await);
-		}
-		let endpoints = crate::response::json::<Value>(endpoints, 2 * 1024 * 1024).await?;
-		let zdr = crate::response::json::<Value>(zdr, 8 * 1024 * 1024).await?;
-		let modalities = endpoints
-			.pointer("/data/architecture/input_modalities")
-			.and_then(Value::as_array)
-			.filter(|_| !formats.is_empty());
-		if !formats.is_empty() && modalities.is_none() {
-			return Err(Error::External(
-				"OpenRouter model modalities unavailable".into(),
-			));
-		}
-		for part in &request.content_parts {
-			let modality = match part {
-				ContentPart::Image { .. } => "image",
-				ContentPart::Audio { .. } => "audio",
-				ContentPart::Text(_) => continue,
-			};
-			if !modalities.is_some_and(|values| values.iter().any(|value| value == modality)) {
-				return Err(Error::Invalid(format!(
-					"OpenRouter model {} no longer supports {modality} input",
-					self.config.model_id
-				)));
-			}
-		}
-		let endpoints = endpoints
-			.pointer("/data/endpoints")
-			.and_then(Value::as_array)
-			.ok_or_else(|| Error::External("OpenRouter endpoint list unavailable".into()))?;
-		let zdr = zdr
-			.get("data")
-			.and_then(Value::as_array)
-			.ok_or_else(|| Error::External("OpenRouter ZDR endpoint list unavailable".into()))?;
-		let now = chrono::Utc::now();
-		if let Some(route) = &self.config.provider_route {
-			let media_approved = formats.is_empty()
-				|| self.config.media_routes.iter().any(|media| {
-					media.tag == route.tag
-						&& media.verified_at <= now
-						&& media.expires_at > now
-						&& formats
-							.iter()
-							.all(|format| media.formats.iter().any(|approved| approved == format))
-				});
-			if route.verified_at > now
-				|| route.expires_at <= now
-				|| !media_approved
-				|| !eligible_route(&route.tag, endpoints, zdr, &self.config.model_id, request)
-			{
-				return Err(Error::Invalid(format!(
-					"model {} pinned provider route is unavailable",
-					self.config.model_id
-				)));
-			}
-			return Ok(vec![route.tag.clone()]);
-		}
-		let mut eligible = Vec::new();
-		for evidence in &self.config.media_routes {
-			if evidence.verified_at > now
-				|| evidence.expires_at <= now
-				|| !formats
-					.iter()
-					.all(|format| evidence.formats.iter().any(|verified| verified == format))
-			{
-				continue;
-			}
-			if eligible_route(
-				&evidence.tag,
-				endpoints,
-				zdr,
-				&self.config.model_id,
-				request,
-			) {
-				eligible.push(evidence.tag.clone());
-			}
-		}
-		if eligible.is_empty() {
-			return Err(Error::MediaRouteUnavailable(self.config.model_id.clone()));
-		}
-		Ok(eligible)
 	}
+	let endpoints = endpoints
+		.pointer("/data/endpoints")
+		.and_then(Value::as_array)
+		.ok_or_else(|| Error::External("OpenRouter endpoint list unavailable".into()))?;
+	let zdr = zdr
+		.get("data")
+		.and_then(Value::as_array)
+		.ok_or_else(|| Error::External("OpenRouter ZDR endpoint list unavailable".into()))?;
+	let now = chrono::Utc::now();
+	if let Some(route) = &config.provider_route {
+		let media_approved = formats.is_empty()
+			|| config.media_routes.iter().any(|media| {
+				media.tag == route.tag
+					&& media.verified_at <= now
+					&& media.expires_at > now
+					&& formats
+						.iter()
+						.all(|format| media.formats.iter().any(|approved| approved == format))
+			});
+		if route.verified_at > now
+			|| route.expires_at <= now
+			|| !media_approved
+			|| !eligible_route(&route.tag, endpoints, zdr, &config.model_id, request)
+		{
+			return Err(Error::Invalid(format!(
+				"model {} pinned provider route is unavailable",
+				config.model_id
+			)));
+		}
+		return Ok(vec![route.tag.clone()]);
+	}
+	let mut eligible = Vec::new();
+	for evidence in &config.media_routes {
+		if evidence.verified_at > now
+			|| evidence.expires_at <= now
+			|| !formats
+				.iter()
+				.all(|format| evidence.formats.iter().any(|verified| verified == format))
+		{
+			continue;
+		}
+		if eligible_route(&evidence.tag, endpoints, zdr, &config.model_id, request) {
+			eligible.push(evidence.tag.clone());
+		}
+	}
+	if eligible.is_empty() {
+		return Err(Error::MediaRouteUnavailable(config.model_id.clone()));
+	}
+	Ok(eligible)
+}
+
+fn discovery_context(context: &Context, config: &ModelConfig) -> Context {
+	let mut context = context.clone();
+	context.inference = Some(Inference {
+		model: config.model_id.clone(),
+		operations: vec![Operation::Discovery],
+		max_output_tokens: config.output_token_limit(),
+		cache_breakpoints: false,
+		call: None,
+		hosts: vec![],
+	});
+	context
+}
+
+/// OpenRouter data requirements and route controls shared by both transports.
+pub(crate) fn provider_preferences(
+	config: &ModelConfig,
+	media_routes: Vec<String>,
+	requirement: aidash_domain::data_protection::Requirement,
+) -> Value {
+	let mut provider = requirement.provider();
+	provider["require_parameters"] = json!(true);
+	if let Some(route) = &config.provider_route {
+		provider["only"] = json!([route.tag]);
+		provider["allow_fallbacks"] = json!(false);
+	} else if !media_routes.is_empty() {
+		provider["only"] = json!(media_routes);
+		provider["allow_fallbacks"] = json!(true);
+	}
+	provider
 }
 
 /// Every slug prefix may match descendant regions or variants. Only a leaf
@@ -252,6 +285,7 @@ pub fn salted_provider(
 ) -> Result<Arc<dyn ModelProvider>> {
 	config.validate_provider_route()?;
 	config.validate_estimate_diagnostics()?;
+	config.validate_wire_api()?;
 	aidash_domain::provider_credentials::validate_grants(
 		&config.endpoint,
 		&config.provider,
@@ -262,6 +296,18 @@ pub fn salted_provider(
 		"openrouter" if !config.uses_plan_connection() => {
 			config.request_timeout()?;
 			config.stream_stall_timeout()?;
+			// An explicit Responses declaration selects OpenRouter's Responses
+			// API. Omitted or `chat` keeps the existing Chat Completions path
+			// bytes (ADR 0097).
+			if config.wire_api == Some(aidash_domain::model::WireApi::Responses) {
+				return Ok(Arc::new(responses::ResponsesProvider {
+					clients,
+					config,
+					access,
+					context,
+					cache_salt,
+				}));
+			}
 			Ok(Arc::new(OpenRouterProvider {
 				clients,
 				config,
@@ -517,18 +563,7 @@ fn request_body(
 	if request.disable_provider_transforms {
 		body["transforms"] = json!([]);
 	}
-	// Data policy comes from the current Tenant/delegation requirement; routing
-	// and parameter enforcement remain independent of an explicit ZDR opt-out.
-	let mut provider = requirement.provider();
-	provider["require_parameters"] = json!(true);
-	if let Some(route) = &config.provider_route {
-		provider["only"] = json!([route.tag]);
-		provider["allow_fallbacks"] = json!(false);
-	} else if !media_routes.is_empty() {
-		provider["only"] = json!(media_routes);
-		provider["allow_fallbacks"] = json!(true);
-	}
-	body["provider"] = provider;
+	body["provider"] = provider_preferences(config, media_routes, requirement);
 	if let Some(effort) = config.reasoning_effort {
 		body["reasoning"] = json!({"effort": effort});
 	}
@@ -640,6 +675,34 @@ struct RawCostDetails<'a> {
 fn provider_cost(body: &[u8]) -> Option<ProviderCost> {
 	// A cost field with an unexpected shape is unknown, not a parse failure.
 	let usage = serde_json::from_slice::<RawCosts>(body).ok()?.usage?;
+	ProviderCost::from_report(
+		usage.cost.map(RawValue::get),
+		usage
+			.cost_details
+			.and_then(|details| details.upstream_inference_cost)
+			.map(RawValue::get),
+	)
+}
+
+#[derive(Deserialize)]
+struct RawResponseCosts<'a> {
+	#[serde(borrow)]
+	response: Option<RawResponseUsage<'a>>,
+}
+#[derive(Deserialize)]
+struct RawResponseUsage<'a> {
+	#[serde(borrow)]
+	usage: Option<RawUsageCosts<'a>>,
+}
+
+/// OpenRouter's reported cost inside a Responses terminal event. Parsed from
+/// the raw event bytes so the decimal keeps its exact text, as the chat path
+/// does.
+pub(crate) fn response_provider_cost(event: &[u8]) -> Option<ProviderCost> {
+	let usage = serde_json::from_slice::<RawResponseCosts>(event)
+		.ok()?
+		.response?
+		.usage?;
 	ProviderCost::from_report(
 		usage.cost.map(RawValue::get),
 		usage
