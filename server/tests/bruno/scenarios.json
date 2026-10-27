@@ -14746,25 +14746,25 @@
       ]
     },
     {
-      "name": "1342 authorization-catalog-review - Subject without definition read cannot review a closure",
+      "name": "1342 authorization-catalog-review - Subject without definition read sees the review as not found",
       "file": "contracts/1342-authorization-catalog-review.bru",
       "endpoint": "GET /api/authorization/{tenant}/catalog/review",
-      "scenario": "Subject without definition read cannot review a closure",
-      "status": 403,
+      "scenario": "Subject without definition read sees the review as not found",
+      "status": 404,
       "required_checks": [
-        "Exact HTTP 403",
-        "Stable authorization error envelope"
+        "Exact HTTP 404",
+        "Rejection is diagnostic and does not disclose SQL or credentials"
       ]
     },
     {
-      "name": "1343 authorization-catalog-review - Denied subject cannot review a closure",
+      "name": "1343 authorization-catalog-review - Denied subject sees the review as not found",
       "file": "contracts/1343-authorization-catalog-review.bru",
       "endpoint": "GET /api/authorization/{tenant}/catalog/review",
-      "scenario": "Denied subject cannot review a closure",
-      "status": 403,
+      "scenario": "Denied subject sees the review as not found",
+      "status": 404,
       "required_checks": [
-        "Exact HTTP 403",
-        "Stable authorization error envelope"
+        "Exact HTTP 404",
+        "Rejection is diagnostic and does not disclose SQL or credentials"
       ]
     },
     {
@@ -14792,15 +14792,15 @@
       ]
     },
     {
-      "name": "1346 authorization-submit-catalog-review - Subject without registry.read cannot review a closure",
+      "name": "1346 authorization-submit-catalog-review - Subject without registry.read sees the review as not found",
       "file": "contracts/1346-authorization-submit-catalog-review.bru",
       "endpoint": "POST /api/authorization/{tenant}/catalog/review",
-      "scenario": "Subject without registry.read cannot review a closure",
-      "status": 403,
+      "scenario": "Subject without registry.read sees the review as not found",
+      "status": 404,
       "required_checks": [
         "Rejected input preserves committed workspace state",
-        "Exact HTTP 403",
-        "Stable authorization error envelope"
+        "Exact HTTP 404",
+        "Rejection is diagnostic and does not disclose SQL or credentials"
       ]
     },
     {
@@ -14852,15 +14852,15 @@
       ]
     },
     {
-      "name": "1351 authorization-create-catalog-request - Subject without registry.read cannot request a review",
+      "name": "1351 authorization-create-catalog-request - Subject without registry.read sees the root as not found",
       "file": "contracts/1351-authorization-create-catalog-request.bru",
       "endpoint": "POST /api/authorization/{tenant}/catalog/requests",
-      "scenario": "Subject without registry.read cannot request a review",
-      "status": 403,
+      "scenario": "Subject without registry.read sees the root as not found",
+      "status": 404,
       "required_checks": [
         "Rejected input preserves committed workspace state",
-        "Exact HTTP 403",
-        "Stable authorization error envelope"
+        "Exact HTTP 404",
+        "Rejection is diagnostic and does not disclose SQL or credentials"
       ]
     },
     {
@@ -14960,15 +14960,15 @@
       ]
     },
     {
-      "name": "1360 authorization-decline-catalog-request - Subject without catalog.approve cannot decline a request",
+      "name": "1360 authorization-decline-catalog-request - Subject without approval authority sees the request as not found",
       "file": "contracts/1360-authorization-decline-catalog-request.bru",
       "endpoint": "POST /api/authorization/{tenant}/catalog/requests/{id}/decline",
-      "scenario": "Subject without catalog.approve cannot decline a request",
-      "status": 403,
+      "scenario": "Subject without approval authority sees the request as not found",
+      "status": 404,
       "required_checks": [
         "Rejected input preserves committed workspace state",
-        "Exact HTTP 403",
-        "Stable authorization error envelope"
+        "Exact HTTP 404",
+        "Rejection is diagnostic and does not disclose SQL or credentials"
       ]
     },
     {
@@ -15052,14 +15052,15 @@
       ]
     },
     {
-      "name": "1368 authorization-catalog-requests-mine - Denied subject cannot list its requests",
+      "name": "1368 authorization-catalog-requests-mine - Denied subject sees an empty page of its requests",
       "file": "contracts/1368-authorization-catalog-requests-mine.bru",
       "endpoint": "GET /api/authorization/{tenant}/catalog/requests/mine",
-      "scenario": "Denied subject cannot list its requests",
-      "status": 403,
+      "scenario": "Denied subject sees an empty page of its requests",
+      "status": 200,
       "required_checks": [
-        "Exact HTTP 403",
-        "Stable authorization error envelope"
+        "Exact HTTP 200",
+        "Documented response fields and types",
+        "Denied subject sees an empty page of its requests contract"
       ]
     },
     {
@@ -15119,14 +15120,15 @@
       ]
     },
     {
-      "name": "1374 authorization-catalog-requests-pending - Denied subject cannot list pending requests",
+      "name": "1374 authorization-catalog-requests-pending - Denied subject sees an empty page of pending requests",
       "file": "contracts/1374-authorization-catalog-requests-pending.bru",
       "endpoint": "GET /api/authorization/{tenant}/catalog/requests/pending",
-      "scenario": "Denied subject cannot list pending requests",
-      "status": 403,
+      "scenario": "Denied subject sees an empty page of pending requests",
+      "status": 200,
       "required_checks": [
-        "Exact HTTP 403",
-        "Stable authorization error envelope"
+        "Exact HTTP 200",
+        "Documented response fields and types",
+        "Denied subject sees an empty page of pending requests contract"
       ]
     }
   ]

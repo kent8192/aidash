@@ -86,11 +86,13 @@ TENANT_ROUTES = {
     },
     "POST /api/authorization/{tenant}/catalog/review": {
         "body": {"node": "{{tenant_node}}", "root": AGENT, "closure_digest": "sha256:review"},
-        "refusal": "Subject without registry.read cannot review a closure",
+        "refusal": "Subject without registry.read sees the review as not found",
+        "refusal_status": 404,
     },
     "POST /api/authorization/{tenant}/catalog/requests": {
         "body": {"node": "{{tenant_node}}", "root": AGENT, "reason": "Review the agent"},
-        "refusal": "Subject without registry.read cannot request a review",
+        "refusal": "Subject without registry.read sees the root as not found",
+        "refusal_status": 404,
     },
     "POST /api/authorization/{tenant}/catalog/requests/{id}/withdraw": {
         "body": {},
@@ -98,7 +100,8 @@ TENANT_ROUTES = {
     },
     "POST /api/authorization/{tenant}/catalog/requests/{id}/decline": {
         "body": {"reason": "Not needed"},
-        "refusal": "Subject without catalog.approve cannot decline a request",
+        "refusal": "Subject without approval authority sees the request as not found",
+        "refusal_status": 404,
     },
     "POST /api/marketplace/installations/{id}/activation": {
         "body": {"tenant": "{{tenant}}", "revision": 1, "enabled": True,
@@ -161,15 +164,17 @@ SUBJECT_READS = {
         ("Tenant subject reads an empty page of its requests", 200, SUBJECT,
          "/api/authorization/{{tenant}}/catalog/requests/mine?node={{tenant_node}}",
          "expect(res.getBody().requests).to.eql([]);expect(res.getBody().next_offset).to.equal(null);"),
-        ("Denied subject cannot list its requests", 403, DENIED_SUBJECT,
-         "/api/authorization/{{tenant}}/catalog/requests/mine?node={{tenant_node}}", ""),
+        ("Denied subject sees an empty page of its requests", 200, DENIED_SUBJECT,
+         "/api/authorization/{{tenant}}/catalog/requests/mine?node={{tenant_node}}",
+         "expect(res.getBody().requests).to.eql([]);expect(res.getBody().next_offset).to.equal(null);"),
     ],
     "GET /api/authorization/{tenant}/catalog/requests/pending": [
         ("Tenant subject reads an empty page of pending requests", 200, SUBJECT,
          "/api/authorization/{{tenant}}/catalog/requests/pending?node={{tenant_node}}",
          "expect(res.getBody().requests).to.eql([]);expect(res.getBody().next_offset).to.equal(null);"),
-        ("Denied subject cannot list pending requests", 403, DENIED_SUBJECT,
-         "/api/authorization/{{tenant}}/catalog/requests/pending?node={{tenant_node}}", ""),
+        ("Denied subject sees an empty page of pending requests", 200, DENIED_SUBJECT,
+         "/api/authorization/{{tenant}}/catalog/requests/pending?node={{tenant_node}}",
+         "expect(res.getBody().requests).to.eql([]);expect(res.getBody().next_offset).to.equal(null);"),
     ],
     "GET /api/registry": [
         ("Subject discovers no definition it may not read", 200, SUBJECT, None,
@@ -878,9 +883,9 @@ def render():
                 headers={"Authorization": "Basic invalid"})
             add(endpoint, "Deployment Administrator bearer has no Tenant authority", 403,
                 path=uri, headers=DEPLOYMENT_ADMINISTRATOR)
-            add(endpoint, "Subject without definition read cannot review a closure", 403,
+            add(endpoint, "Subject without definition read sees the review as not found", 404,
                 path=uri, headers=SUBJECT)
-            add(endpoint, "Denied subject cannot review a closure", 403,
+            add(endpoint, "Denied subject sees the review as not found", 404,
                 path=uri, headers=DENIED_SUBJECT)
             continue
         if endpoint in TENANT_ROUTES:
@@ -890,8 +895,8 @@ def render():
                 path=tenant_route.get("path"), headers=DEPLOYMENT_ADMINISTRATOR, body=body,
                 immutable=True)
             if "refusal" in tenant_route:
-                add(endpoint, tenant_route["refusal"], 403, path=tenant_route.get("path"),
-                    headers=SUBJECT, body=body, immutable=True)
+                add(endpoint, tenant_route["refusal"], tenant_route.get("refusal_status", 403),
+                    path=tenant_route.get("path"), headers=SUBJECT, body=body, immutable=True)
         if route["source"] == "server/src/apps/identity/views/tenants.rs":
             if method == "GET":
                 add(endpoint, "Subject Credential cannot list Tenants", 403, headers=SUBJECT)
