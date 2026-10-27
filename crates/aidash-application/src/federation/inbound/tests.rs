@@ -1,5 +1,4 @@
 use super::*;
-use crate::ports::federation::inbound::ViewerGrant;
 use aidash_capability::{
 	InMemorySigner,
 	federation::{FederationClaims, body_digest},
@@ -7,7 +6,7 @@ use aidash_capability::{
 use aidash_domain::{
 	identity::peer_mapping::Mapping,
 	nodes::{
-		DeploymentKeyId, NodeName,
+		DeploymentId, DeploymentKeyId, NodeName,
 		registration::{NodeRegistration, PinnedKey},
 	},
 };
@@ -57,7 +56,6 @@ struct World {
 	may_use: bool,
 	enabled: bool,
 	key: bool,
-	grant: Option<ViewerGrant>,
 	asked: Mutex<Vec<&'static str>>,
 }
 
@@ -76,7 +74,6 @@ impl World {
 			may_use: true,
 			enabled: true,
 			key: true,
-			grant: None,
 			asked: Mutex::new(vec![]),
 		}
 	}
@@ -170,14 +167,6 @@ impl InboundRepository for World {
 	async fn subject_may_use(&self, _: &TenantName, _: &NodeName, _: &str) -> Result<bool> {
 		self.asked.lock().unwrap().push("policy");
 		Ok(self.may_use)
-	}
-	async fn viewer_grant(
-		&self,
-		_: &TenantName,
-		_: &DeploymentId,
-		_: Uuid,
-	) -> Result<Option<ViewerGrant>> {
-		Ok(self.grant.clone())
 	}
 }
 
@@ -557,101 +546,4 @@ async fn an_unregistered_sender_and_a_missing_mapping_differ_only_after_the_sign
 	)
 	.await;
 	assert!(matches!(unmapped, Err(Error::Forbidden)));
-}
-
-fn viewer_request(world: &World) -> ViewerInbound {
-	ViewerInbound {
-		receiver: world.own.clone(),
-		viewer: DeploymentId::parse(OTHER).unwrap(),
-		tenant: tenant(TENANT),
-		identity: Uuid::from_u128(9),
-		token: String::new(),
-	}
-}
-
-async fn viewer_token(
-	signer: &InMemorySigner,
-	change: impl FnOnce(&mut FederationClaims),
-) -> String {
-	let mut claims = FederationClaims {
-		iss: OTHER.into(),
-		sub: OTHER.into(),
-		aud: OWN.into(),
-		subject: format!("oidc:{}", Uuid::from_u128(9)),
-		iat: NOW,
-		exp: NOW + 60,
-		jti: Uuid::new_v4(),
-		kid: key_id(signer).as_str().into(),
-		protocol: CURRENT.into(),
-		method: "POST".into(),
-		path: "/scoped/discover".into(),
-		body: body_digest(b"{}"),
-	};
-	change(&mut claims);
-	let signing = InMemorySigner::new(key_id(signer).as_str().into(), seed_of(signer));
-	claims
-		.mint(&signing)
-		.await
-		.unwrap()
-		.expose_secret()
-		.to_owned()
-}
-
-#[tokio::test]
-async fn a_named_deployment_administrator_is_admitted_under_its_grant_and_nothing_else() {
-	let signer = signer(1);
-	let mut world = World::new();
-	world.grant = Some(ViewerGrant {
-		key: PinnedKey {
-			key_id: key_id(&signer),
-			public_key_pem: signer.public_key_pem(),
-		},
-		revision: 4,
-	});
-	let mut request = viewer_request(&world);
-	request.token = viewer_token(&signer, |_| {}).await;
-	let admitted = accept_grant_viewer(request.clone(), &digest(), &world)
-		.await
-		.unwrap();
-	assert_eq!(admitted.grant_revision, 4);
-	assert_eq!(admitted.identity, Uuid::from_u128(9));
-
-	let mut other_identity = request.clone();
-	other_identity.identity = Uuid::from_u128(10);
-	assert!(matches!(
-		accept_grant_viewer(other_identity, &digest(), &world).await,
-		Err(Error::Unauthorized)
-	));
-	let mut as_a_node = request.clone();
-	as_a_node.token = viewer_token(&signer, |claims| {
-		claims.sub = address(OTHER, SENDING).to_string()
-	})
-	.await;
-	assert!(matches!(
-		accept_grant_viewer(as_a_node, &digest(), &world).await,
-		Err(Error::Unauthorized)
-	));
-	let mut stranger = request.clone();
-	stranger.token = viewer_token(&self::signer(2), |_| {}).await;
-	assert!(matches!(
-		accept_grant_viewer(stranger, &digest(), &world).await,
-		Err(Error::Unauthorized)
-	));
-	world.deleted.push(tenant(TENANT));
-	assert!(matches!(
-		accept_grant_viewer(request.clone(), &digest(), &world).await,
-		Err(Error::Unauthorized)
-	));
-	world.deleted.clear();
-	world.enabled = false;
-	assert!(matches!(
-		accept_grant_viewer(request.clone(), &digest(), &world).await,
-		Err(Error::Unauthorized)
-	));
-	world.enabled = true;
-	world.grant = None;
-	assert!(matches!(
-		accept_grant_viewer(request, &digest(), &world).await,
-		Err(Error::Unauthorized)
-	));
 }

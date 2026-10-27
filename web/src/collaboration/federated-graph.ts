@@ -52,7 +52,6 @@ export type GraphRequest = {
   hours: number;
   limit: number;
   cursor: string | null;
-  target_tenant: string | null;
 };
 
 export type RemoteExpansion = {

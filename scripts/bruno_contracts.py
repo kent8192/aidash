@@ -35,7 +35,7 @@ SUBJECT = {"Authorization": "Bearer {{contract_token}}"}
 # prove the boundary refuses what it cannot verify.
 PEER = {
     "Authorization": "Bearer not-a-federation-token",
-    "X-Aidash-Protocol": "0.4",
+    "X-Aidash-Protocol": "0.5",
 }
 COOKIE = {
     "Cookie": "{{session_cookie}}",
