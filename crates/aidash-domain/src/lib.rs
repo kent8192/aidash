@@ -5,6 +5,7 @@ pub mod approval_rules;
 pub mod catalog;
 pub mod completion;
 pub mod context;
+pub mod data_protection;
 pub mod decision;
 pub mod deployment;
 pub mod entities;
