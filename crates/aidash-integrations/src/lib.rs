@@ -85,6 +85,9 @@ pub mod chatgpt;
 pub mod provider_authorization;
 
 #[cfg(feature = "cloud-adapters")]
+pub mod oauth;
+
+#[cfg(feature = "cloud-adapters")]
 pub mod provider_credentials;
 
 #[cfg(feature = "cloud-adapters")]
