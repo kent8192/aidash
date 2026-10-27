@@ -55,6 +55,8 @@ pub enum Error {
 	Forbidden,
 	#[error("{0}")]
 	External(String),
+	#[error("OAuth Client secret storage is unavailable")]
+	OAuthClientSecretsUnavailable,
 	/// This Deployment's Secret Store cannot hold MCP OAuth Connections.
 	#[error("connection_unavailable")]
 	ConnectionStoreUnavailable,
@@ -179,3 +181,5 @@ pub mod activation;
 pub(crate) mod test_support;
 
 pub mod egress;
+
+pub mod oauth_clients;

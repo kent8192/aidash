@@ -124,6 +124,9 @@ async fn provider_credentials(store: &Store, tenant: &str) -> Result<()> {
 	if let Some(service) = &store.oauth_connections {
 		service.retire_tenant(tenant).await?;
 	}
+	super::oauth_clients::service(store)
+		.retire_tenant(tenant)
+		.await?;
 	if let Some(service) = &store.plan_connections {
 		service.retire_tenant(tenant, ACTOR).await?;
 	}

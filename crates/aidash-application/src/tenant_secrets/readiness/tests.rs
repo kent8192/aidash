@@ -6,6 +6,7 @@ use uuid::Uuid;
 
 fn secret(name: &str, hosts: &[&str]) -> Metadata {
 	Metadata {
+		owner: crate::tenant_secrets::Ownership::Tenant,
 		id: Uuid::now_v7(),
 		tenant: "acme".into(),
 		name: name.into(),

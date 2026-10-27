@@ -2736,7 +2736,9 @@ pub fn configure_oauth_connections(
 		discovery,
 		tokens,
 		policy: Arc::new(
-			crate::apps::identity::repositories::oauth_connections::UnconfiguredPolicy,
+			crate::apps::identity::repositories::connection_policy::NativeConnectionPolicy {
+				pool: store.control_pool.clone(),
+			},
 		),
 	}));
 	Ok(())

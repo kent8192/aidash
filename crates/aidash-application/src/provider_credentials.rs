@@ -18,7 +18,8 @@ pub trait KeyValidator: Send + Sync {
 	async fn validate(&self, provider: Provider, key: &SecretString) -> Result<Validation>;
 }
 /// The write port of the Secret Store: Key Material, Plan Tokens and Tenant
-/// Secret values. Deliberately no access/read-payload operation, even for the
+/// Secret values, MCP OAuth tokens and registered client secrets. Deliberately
+/// no access/read-payload operation, even for the
 /// fake adapter.
 #[async_trait]
 pub trait Store: Send + Sync {
@@ -32,6 +33,22 @@ pub trait Store: Send + Sync {
 	async fn disable(&self, tenant: &str, version: &str) -> Result<()>;
 	async fn destroy(&self, tenant: &str, version: &str) -> Result<()>;
 	async fn delete(&self, tenant: &str, resource: &str) -> Result<()>;
+	/// Whether this Store implements OAuth Client secret storage.
+	fn supports_oauth_client_secrets(&self) -> bool {
+		false
+	}
+	/// The resource holding one registered OAuth Client secret.
+	fn oauth_client_resource(&self, id: Uuid) -> String {
+		format!("aidash-store/oauth-clients/{id}")
+	}
+	/// OAuth Client versions contain plain UTF-8 client_secret bytes, with no JSON wrapper.
+	/// OAuth Client secrets are unavailable in stores that have not implemented
+	/// their namespace, including the enterprise Secret Manager adapter.
+	/// Implementations must preserve an existing resource and version counter
+	/// when a replacement or interrupted write retries this operation.
+	async fn create_oauth_client(&self, _tenant: &str, _id: Uuid) -> Result<()> {
+		Err(Error::OAuthClientSecretsUnavailable)
+	}
 	/// One person's MCP OAuth token journal, in its own Store namespace.
 	fn connection_resource(&self, id: Uuid) -> String {
 		format!("aidash-store/oauth-connections/{id}")

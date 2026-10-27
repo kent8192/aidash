@@ -87,6 +87,7 @@ fn resource_id(resource: &str) -> Result<()> {
 		.or_else(|| resource.strip_prefix("aidash-store/plan-connections/"))
 		.or_else(|| resource.strip_prefix("aidash-store/oauth-connections/"))
 		.or_else(|| resource.strip_prefix("aidash-store/tenant-secrets/"))
+		.or_else(|| resource.strip_prefix("aidash-store/oauth-clients/"))
 		.and_then(|s| Uuid::parse_str(s).ok())
 		.filter(|id| id.get_version_num() == 7);
 	if id.is_none() {
@@ -430,6 +431,9 @@ impl KeyMaterialReader for PostgresStore {
 }
 #[async_trait]
 impl Store for PostgresStore {
+	fn supports_oauth_client_secrets(&self) -> bool {
+		true
+	}
 	fn resource(&self, id: Uuid) -> String {
 		format!("aidash-store/provider-credentials/{id}")
 	}
@@ -442,6 +446,34 @@ impl Store for PostgresStore {
 	}
 	async fn create_plan(&self, tenant: &str, id: Uuid) -> Result<()> {
 		self.create_resource(tenant, self.plan_resource(id)).await
+	}
+	async fn create_oauth_client(&self, tenant: &str, id: Uuid) -> Result<()> {
+		// A replacement or interrupted write reuses the resource and its
+		// version counter. Other namespaces keep their existing create rules.
+		let resource = self.oauth_client_resource(id);
+		resource_id(&resource)?;
+		let mut tx = self.begin_tenant(tenant).await?;
+		let (sql, values) = Query::insert()
+			.into_table(Alias::new("credential_store_resources"))
+			.columns(["resource", "tenant", "next_version", "created_at"])
+			.from_subquery(
+				Query::select()
+					.expr(Expr::value(resource))
+					.expr(Expr::value(tenant))
+					.expr(Expr::value(1_i64))
+					.expr(Expr::value(Utc::now()))
+					.to_owned(),
+			)
+			.on_conflict(
+				OnConflict::column(Alias::new("resource"))
+					.do_nothing()
+					.to_owned(),
+			)
+			.build(PostgresQueryBuilder);
+		tx.execute(&sql, convert_values(values))
+			.await
+			.map_err(db_error)?;
+		tx.commit().await.map_err(db_error)
 	}
 	async fn create_secret(&self, tenant: &str, id: Uuid) -> Result<()> {
 		self.create_resource(tenant, self.secret_resource(id)).await

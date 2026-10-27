@@ -163,4 +163,8 @@ pub mod secret_store;
 
 pub mod tenant_secrets;
 
+pub mod oauth_clients;
+
+pub mod connection_policy;
+
 pub mod oauth_connections;

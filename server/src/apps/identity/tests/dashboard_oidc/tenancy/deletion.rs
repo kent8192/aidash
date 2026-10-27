@@ -556,7 +556,9 @@ async fn only_a_deployment_administrator_restores_a_tenant_one_deleted(
 async fn leaving_keeps_an_administrator_and_a_returning_member_gets_only_the_invitations_groups(
 	#[from(common::runtime)] runtime: common::RuntimeFuture,
 ) {
-	let d = Deployment::new(runtime, open_rules()).await;
+	let mut d = Deployment::new(runtime, open_rules()).await;
+	let store = crate::personal_credentials::configure(&mut d.federation).await;
+	d.app.context.set_singleton(d.federation.clone());
 	let alice = d.person("alice").await;
 	let bob = d.person("bob").await;
 	let (tenant, context) = d.tenant_of(&alice, "Team").await;
@@ -564,6 +566,8 @@ async fn leaving_keeps_an_administrator_and_a_returning_member_gets_only_the_inv
 		.admit(&tenant, &bob, "bob", json!(["administrators"]))
 		.await;
 	let leave = format!("/api/tenants/{tenant}/leave");
+	let contents = crate::personal_credentials::seed(&d.federation, &tenant, "bob").await;
+	let retained = crate::personal_credentials::seed(&d.federation, &tenant, "alice").await;
 
 	// Bob leaves; his administrator group stays on the subject but no
 	// enabled Mapping reaches it.
@@ -572,6 +576,8 @@ async fn leaving_keeps_an_administrator_and_a_returning_member_gets_only_the_inv
 		.await;
 	assert_eq!(status, 204, "{body}");
 	assert!(d.context_or_none(&bob, &tenant).await.is_none());
+	crate::personal_credentials::assert_present(store.as_ref(), &tenant, &contents, false).await;
+	crate::personal_credentials::assert_present(store.as_ref(), &tenant, &retained, true).await;
 	// Alice is now the last administrator and may not leave.
 	let (status, body) = d
 		.as_person(&alice, "POST", &leave, Some(&context), Value::Null)
@@ -884,3 +890,38 @@ mod purge;
 
 #[path = "deletion/restoration.rs"]
 mod restoration;
+
+/// Disabling one of several enabled mappings keeps personal contents. Removing
+/// the final mapping reaches the same retirement hook as leaving the Tenant.
+#[rstest::rstest]
+#[tokio::test]
+async fn only_disabling_the_last_mapping_destroys_personal_credentials(
+	#[from(common::runtime)] runtime: common::RuntimeFuture,
+) {
+	let mut d = Deployment::new(runtime, open_rules()).await;
+	let store = crate::personal_credentials::configure(&mut d.federation).await;
+	d.app.context.set_singleton(d.federation.clone());
+	let creator = d.person("creator").await;
+	let alice = d.person("alice").await;
+	let alternate = d.person("alternate").await;
+	let (tenant, _) = d.tenant_of(&creator, "Team").await;
+	let first = d.admit(&tenant, &alice, "alice", json!(["members"])).await;
+	let second = d
+		.admit(&tenant, &alternate, "alice", json!(["members"]))
+		.await;
+	let contents = crate::personal_credentials::seed(&d.federation, &tenant, "alice").await;
+	for (context, retained) in [(first, true), (second, false)] {
+		let mapping = context.rsplit(':').next().unwrap();
+		let (status, body) = d
+			.as_deployment_administrator(
+				"POST",
+				&format!("/api/dashboard/mappings/{mapping}/disable"),
+				json!({"expected_revision":1}),
+			)
+			.await;
+		assert_eq!(status, 204, "{body}");
+		crate::personal_credentials::assert_present(store.as_ref(), &tenant, &contents, retained)
+			.await;
+	}
+	d.finish().await;
+}

@@ -45,4 +45,6 @@ pub mod tenants;
 
 pub mod invitations;
 
+pub mod oauth_clients;
+
 pub mod oauth_connections;

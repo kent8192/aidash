@@ -63,7 +63,12 @@ impl Scope for Lease {
 			.data
 			.rows
 			.values()
-			.find(|r| r.tenant == self.tenant && r.name == name && r.state != State::Deleted)
+			.find(|r| {
+				r.tenant == self.tenant
+					&& r.name == name
+					&& r.owner.is_none()
+					&& r.state != State::Deleted
+			})
 			.cloned())
 	}
 	async fn by_id(&mut self, id: Uuid) -> Result<Option<TenantSecret>> {
@@ -1128,4 +1133,90 @@ async fn active_secrets_exclude_pending_and_deleted_names() {
 	assert_eq!(active[0].name, "kept");
 	assert_eq!(active[0].hosts, ["api.example.com"]);
 	assert!(s.active("beta").await.unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn personal_names_are_isolated_and_retiring_one_person_preserves_shared_values() {
+	let (mut service, _, store) = service();
+	service.max_per_tenant = 8;
+	let shared = service
+		.put(
+			"alpha",
+			"api",
+			put(Some("shared-canary"), Some(&["api.example.com"]), 0),
+			"admin",
+		)
+		.await
+		.unwrap();
+	let alice = service
+		.put_owned(
+			"alpha",
+			Some("alice"),
+			"api",
+			put(Some("alice-canary"), Some(&["api.example.com"]), 0),
+			"alice",
+		)
+		.await
+		.unwrap();
+	let bob = service
+		.put_owned(
+			"alpha",
+			Some("bob"),
+			"api",
+			put(Some("bob-canary"), Some(&["api.example.com"]), 0),
+			"bob",
+		)
+		.await
+		.unwrap();
+	assert_eq!(service.get("alpha", "api").await.unwrap().id, shared.id);
+	assert_eq!(
+		service
+			.personal("alpha", "alice", "api")
+			.await
+			.unwrap()
+			.unwrap()
+			.id,
+		alice.id
+	);
+	let visible = service.list_for("alpha", "alice").await.unwrap();
+	assert_eq!(visible.len(), 2);
+	assert!(
+		visible
+			.iter()
+			.any(|row| row.id == shared.id && row.owner == Ownership::Tenant)
+	);
+	assert!(
+		visible
+			.iter()
+			.any(|row| row.id == alice.id && row.owner == Ownership::Me)
+	);
+	assert_eq!(service.active("alpha").await.unwrap().len(), 1);
+	assert_eq!(service.retire_subject("alpha", "alice").await.unwrap(), 1);
+	assert!(
+		service
+			.personal("alpha", "alice", "api")
+			.await
+			.unwrap()
+			.is_none()
+	);
+	assert_eq!(
+		service
+			.personal("alpha", "bob", "api")
+			.await
+			.unwrap()
+			.unwrap()
+			.id,
+		bob.id
+	);
+	assert_eq!(
+		service.shared("alpha", "api").await.unwrap().unwrap().id,
+		shared.id
+	);
+	assert!(
+		!store
+			.state
+			.lock()
+			.await
+			.contains_key(&store.secret_resource(alice.id))
+	);
 }
