@@ -72,7 +72,7 @@ is a Retained version.
 - A thread message that cites a File version retains that File version while
   the message exists.
 - A running Live preview retains the Working Area revision it mounts while it
-  runs (once Live previews land).
+  runs.
 - Under Federation, the viewer's Deployment asks the hosting Node to retain a
   version for the delegated Run's subject. That hold expires after the hosting
   Node's Retention Rules period, so a lost release cannot leak storage.
@@ -89,7 +89,7 @@ Reclamation resumes when the last hold covering a File version is released:
 - A message's hold is released when the message row itself is removed, for
   example by Tenant Deletion. A person losing sight of the message does not
   release it, because others may still see it.
-- A Live preview releases its revision when it stops (once Live previews land).
+- A Live preview releases its revision after its Pod has stopped.
 - A Federation hold is released when the viewer's Deployment says so, or
   expires after the hosting Node's Retention Rules period.
 - Cleaning up a Working Area releases its holds. A recoverable cleanup keeps
@@ -284,7 +284,8 @@ outside a Run.
   startup log, never an address for viewing.
 - The tool is Sandboxed: the Tenant must approve the `live_preview` group
   through Catalog Approval before a Run may call it. A Deployment without a
-  Runner offers no such group.
+  Runner offers no such group. Without a preview domain, neither Live preview
+  tool is offered to models; the Catalog Approval group remains available.
 - `port` must be the Deployment's `preview.pod_port` (default 3000), the only
   port the sandbox NetworkPolicy admits; any other port is refused with
   `PREVIEW_PORT_NOT_ALLOWED`.
@@ -309,7 +310,7 @@ outside a Run.
 - Every gateway request refreshes the idle timer; an active WebSocket refreshes
   it at most once a minute. The absolute limit counts from the Runner's start.
 - It stops at the idle or absolute limit, when the Run is cancelled, when the
-  viewer's authority is revoked, when the Tenant is deleted, and when its
+  Run's authority is revoked, when the Tenant is deleted, and when its
   Working Area is cleaned up. A later Working Area revision marks it `stale`;
   it keeps serving the revision it pinned, and its status reports both the
   stale state and that revision.
