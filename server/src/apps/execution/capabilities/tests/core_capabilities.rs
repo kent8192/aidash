@@ -1721,6 +1721,9 @@ mod retained_version_tests;
 #[path = "core_capabilities/previews.rs"]
 mod preview_tests;
 
+#[path = "core_capabilities/live_previews.rs"]
+mod live_preview_tests;
+
 #[path = "core_capabilities/message_citations.rs"]
 mod message_citation_tests;
 

@@ -66,9 +66,16 @@ pub(super) fn migration() -> Migration {
 			interleave_in_parent: None,
 			partition: None,
 		})
-		.add_operation(Operation::RunSQL {
-			sql: "CREATE INDEX core_live_previews_run ON public.core_live_previews (tenant, run_id, started_at DESC)".into(),
-			reverse_sql: Some("DROP INDEX public.core_live_previews_run".into()),
+		.add_operation(Operation::CreateIndex {
+			table: "core_live_previews".into(),
+			columns: vec!["tenant".into(), "run_id".into(), "started_at".into()],
+			unique: false,
+			index_type: Some(IndexType::BTree),
+			where_clause: None,
+			concurrently: false,
+			expressions: None,
+			mysql_options: None,
+			operator_class: None,
 		})
 		.add_operation(Operation::CreateTable {
 			name: "core_preview_limits".into(),

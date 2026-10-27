@@ -99,7 +99,7 @@ federation = true
 
 # The Deployment's ceilings on a Live preview (ADR 0070). A Tenant may only
 # lower them through `/api/preview-limits/{tenant}`. Takes effect on restart.
-# [preview_limits]
+[preview_limits]
 # idle_seconds = 900
 # absolute_seconds = 7200
 
