@@ -223,19 +223,6 @@ async fn event_workspaces(
 
 use reinhardt::query::QueryStatementBuilder as _;
 
-/// Apply the required-Home exclusion before a state collection's LIMIT.
-/// `column` is a fixed query alias supplied by the caller.
-pub(crate) fn state_visible(column: &str) -> SimpleExpr {
-	let deleted = Query::select()
-		.column(Alias::new("id"))
-		.from(Alias::new("workspaces"))
-		.and_where(Expr::col("tenant").in_subquery(deleted_tenants()))
-		.to_owned();
-	Expr::cust(format!(
-		"NOT EXISTS (SELECT 1 FROM tasks v_task JOIN authorization_remote_grants v_grant ON v_grant.task_id=v_task.id WHERE v_task.workspace_id={column} AND v_grant.semantic->>'mode'='required_home') AND NOT EXISTS (SELECT 1 FROM runs v_run JOIN authorization_remote_admissions v_admission ON v_admission.id=v_run.id WHERE v_run.workspace_id={column} AND v_admission.description->'semantic'->>'mode'='required_home')"
-	)).and(Expr::cust(column).not_in_subquery(deleted))
-}
-
 pub(crate) async fn filter_events(
 	connection: &mut Transaction,
 	events: Vec<Event>,
@@ -259,36 +246,4 @@ pub(crate) async fn filter_events(
 				.then_some(event)
 		})
 		.collect())
-}
-
-pub(crate) async fn filter_state(
-	connection: &mut Transaction,
-	state: &mut crate::apps::execution::serializers::state::StateResponse,
-) -> Result<()> {
-	let ids = state
-		.workspaces
-		.iter()
-		.map(|w| w.id)
-		.chain(state.runs.iter().map(|r| r.workspace_id))
-		.chain(state.events.iter().filter_map(|e| e.workspace_id))
-		.chain(state.tasks.iter().map(|t| t.workspace_id))
-		.chain(state.artifacts.iter().map(|a| a.workspace_id))
-		.chain(state.human_requests.iter().map(|h| h.workspace_id))
-		.chain(state.conversations.iter().map(|c| c.workspace_id))
-		.collect::<Vec<_>>();
-	let denied = blocked(connection, &ids).await?;
-	state.workspaces.retain(|w| !denied.contains(&w.id));
-	state.tasks.retain(|t| !denied.contains(&t.workspace_id));
-	state.runs.retain(|r| !denied.contains(&r.workspace_id));
-	state
-		.artifacts
-		.retain(|a| !denied.contains(&a.workspace_id));
-	state
-		.human_requests
-		.retain(|h| !denied.contains(&h.workspace_id));
-	state
-		.conversations
-		.retain(|c| !denied.contains(&c.workspace_id));
-	state.events = filter_events(connection, std::mem::take(&mut state.events)).await?;
-	Ok(())
 }

@@ -12,15 +12,14 @@ use crate::{
 	federation::Federation,
 };
 use aidash_application::tenancy::{DeploymentScopeReason, TenancyScope};
-use aidash_domain::provider::progress::MARKER_PREFIX;
 use futures_util::StreamExt;
 use http::HeaderMap;
 use reinhardt::http::StreamBody;
 use reinhardt::injectable;
+use reinhardt::query::Expr;
 use reinhardt::query::PostgresQueryBuilder;
 use reinhardt::query::Query;
 use reinhardt::query::QueryStatementBuilder as _;
-use reinhardt::query::{Expr, ExprTrait as _};
 use serde_json::{Value, json};
 use uuid::Uuid;
 
@@ -77,188 +76,20 @@ impl HarnessManagement {
 			let state = scope.state(f.config.deployment_identity()).await?;
 			return crate::marketplace::state_response(&scope.store, &scope.identity, state).await;
 		}
-		let records: Vec<crate::registry::Entry> = Vec::new();
-		// Scan newest first until 100 visible events are collected. Hidden
-		// required-Home events may occupy any number of candidate pages.
-		let mut events = Vec::new();
-		let mut before = i64::MAX;
-		loop {
-			let batch: Vec<crate::domain::Event> = crate::database::query_as(
-				&reinhardt::query::Query::select()
-					.column(reinhardt::query::ColumnRef::Asterisk)
-					.from(reinhardt::query::Alias::new("events"))
-					.and_where(reinhardt::query::Expr::cust("sequence < $1"))
-					.and_where(
-						Expr::col(reinhardt::query::Alias::new("kind"))
-							.not_like(Expr::value(format!("{MARKER_PREFIX}%"))),
-					)
-					.order_by(
-						reinhardt::query::Alias::new("sequence"),
-						reinhardt::query::Order::Desc,
-					)
-					.limit(500)
-					.to_string(reinhardt::query::PostgresQueryBuilder),
-			)
-			.bind(before)
-			.fetch_all(f.store.pool.in_scope(&listing()))
-			.await?;
-			if batch.is_empty() {
-				break;
-			}
-			before = batch.last().expect("nonempty event batch").sequence;
-			let exhausted = batch.len() < 500;
-			events.extend(
-				crate::authorization::remote::deployment_administrator::filter_events(
-					&mut f.store.pool.begin(&listing()).await?,
-					batch,
-				)
-				.await?,
-			);
-			if events.len() >= 100 || exhausted {
-				break;
-			}
-		}
-		events.truncate(100);
-		events.reverse();
-		let human: Vec<HumanRequest> = crate::database::query_as(
-			&reinhardt::query::Query::select()
-				.expr(reinhardt::query::SimpleExpr::from(
-					reinhardt::query::Expr::col(reinhardt::query::ColumnRef::Asterisk),
-				))
-				.from_as(
-					reinhardt::query::Alias::new("human_requests"),
-					reinhardt::query::Alias::new("h"),
-				)
-				.and_where(
-					crate::authorization::remote::deployment_administrator::state_visible(
-						"h.workspace_id",
-					),
-				)
-				.order_by_expr(
-					reinhardt::query::SimpleExpr::from(reinhardt::query::Expr::col(
-						reinhardt::query::Alias::new("created_at"),
-					)),
-					reinhardt::query::Order::Desc,
-				)
-				.limit(500)
-				.to_string(reinhardt::query::PostgresQueryBuilder),
-		)
-		.fetch_all(f.store.pool.in_scope(&listing()))
-		.await?;
-		let conversations: Vec<Conversation> = crate::database::query_as(
-			&reinhardt::query::Query::select()
-				.expr(reinhardt::query::SimpleExpr::from(
-					reinhardt::query::Expr::col(reinhardt::query::ColumnRef::Asterisk),
-				))
-				.from_as(
-					reinhardt::query::Alias::new("conversations"),
-					reinhardt::query::Alias::new("c"),
-				)
-				.and_where(
-					crate::authorization::remote::deployment_administrator::state_visible(
-						"c.workspace_id",
-					),
-				)
-				.order_by_expr(
-					reinhardt::query::SimpleExpr::from(reinhardt::query::Expr::col(
-						reinhardt::query::Alias::new("created_at"),
-					)),
-					reinhardt::query::Order::Desc,
-				)
-				.limit(500)
-				.to_string(reinhardt::query::PostgresQueryBuilder),
-		)
-		.fetch_all(f.store.pool.in_scope(&listing()))
-		.await?;
-		let artifacts: Vec<Artifact> = crate::database::query_as(
-			&reinhardt::query::Query::select()
-				.expr(reinhardt::query::SimpleExpr::from(
-					reinhardt::query::Expr::col(reinhardt::query::ColumnRef::Asterisk),
-				))
-				.from_as(
-					reinhardt::query::Alias::new("artifacts"),
-					reinhardt::query::Alias::new("a"),
-				)
-				.and_where(
-					crate::authorization::remote::deployment_administrator::state_visible(
-						"a.workspace_id",
-					),
-				)
-				.order_by_expr(
-					reinhardt::query::SimpleExpr::from(reinhardt::query::Expr::col(
-						reinhardt::query::Alias::new("created_at"),
-					)),
-					reinhardt::query::Order::Desc,
-				)
-				.limit(500)
-				.to_string(reinhardt::query::PostgresQueryBuilder),
-		)
-		.fetch_all(f.store.pool.in_scope(&listing()))
-		.await?;
-		let mut state = StateResponse {
+		// A Deployment Administrator holds no Tenant authority (#484, #301): the
+		// state carries the access profile and the Deployment identity only.
+		let state = StateResponse {
 			access: AccessProfile::DeploymentAdministrator,
 			deployment: f.config.deployment_identity(),
-			registry: records,
-			workspaces: f.store.workspaces(&listing()).await?,
-			tasks: crate::database::query_as(
-				&reinhardt::query::Query::select()
-					.column(reinhardt::query::ColumnRef::Asterisk)
-					.from_as(
-						reinhardt::query::Alias::new("tasks"),
-						reinhardt::query::Alias::new("t"),
-					)
-					.and_where(
-						crate::authorization::remote::deployment_administrator::state_visible(
-							"t.workspace_id",
-						),
-					)
-					.order_by(
-						reinhardt::query::Alias::new("created_at"),
-						reinhardt::query::Order::Desc,
-					)
-					.order_by(
-						reinhardt::query::Alias::new("id"),
-						reinhardt::query::Order::Desc,
-					)
-					.limit(500)
-					.to_string(reinhardt::query::PostgresQueryBuilder),
-			)
-			.fetch_all(f.store.pool.in_scope(&listing()))
-			.await?,
-			runs: crate::database::query_as::<crate::domain::run_state::RawRun>(
-				&reinhardt::query::Query::select()
-					.column(reinhardt::query::ColumnRef::Asterisk)
-					.from_as(
-						reinhardt::query::Alias::new("runs"),
-						reinhardt::query::Alias::new("r"),
-					)
-					.and_where(
-						crate::authorization::remote::deployment_administrator::state_visible(
-							"r.workspace_id",
-						),
-					)
-					.order_by(
-						reinhardt::query::Alias::new("updated_at"),
-						reinhardt::query::Order::Desc,
-					)
-					.limit(500)
-					.to_string(reinhardt::query::PostgresQueryBuilder),
-			)
-			.fetch_all(f.store.pool.in_scope(&listing()))
-			.await?
-			.into_iter()
-			.map(crate::domain::run_state::RawRun::inspect)
-			.collect(),
-			human_requests: human,
-			conversations,
-			events,
-			artifacts,
+			registry: Vec::new(),
+			workspaces: Vec::new(),
+			tasks: Vec::new(),
+			runs: Vec::new(),
+			human_requests: Vec::new(),
+			conversations: Vec::new(),
+			events: Vec::new(),
+			artifacts: Vec::new(),
 		};
-		crate::authorization::remote::deployment_administrator::filter_state(
-			&mut f.store.pool.begin(&listing()).await?,
-			&mut state,
-		)
-		.await?;
 		Ok(Response::ok().with_json(&state)?)
 	}
 	/// The OpenRouter catalog for model definitions, which any member may
