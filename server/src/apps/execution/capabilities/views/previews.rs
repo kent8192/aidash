@@ -1,4 +1,5 @@
 //! Preview ticket and availability endpoints (ADR 0068).
+use crate::http::json::Json;
 use crate::{
 	apps::execution::capabilities::serializers::previews::{
 		PreviewAvailability, PreviewTicket, PreviewTicketInput,
@@ -6,7 +7,7 @@ use crate::{
 	authorization::identity::Actor,
 	capabilities::endpoints::{self as api, CapabilitiesManagement},
 };
-use reinhardt::{Depends, Json, Request, Response, get, http::ViewResult, post};
+use reinhardt::{Depends, Request, Response, get, http::ViewResult, post};
 
 #[get(
 	"/api/previews/availability",

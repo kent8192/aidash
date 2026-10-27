@@ -34,6 +34,10 @@ pub(super) fn migration() -> Migration {
 					on_update: ForeignKeyAction::NoAction,
 					deferrable: None,
 				},
+				Constraint::Unique {
+					name: "core_previews_tenant_id_key".into(),
+					columns: vec!["tenant".into(), "id".into()],
+				},
 				Constraint::Check {
 					name: "core_previews_viewable".into(),
 					expression: "(kind = 'file' AND area_id IS NOT NULL AND file_id IS NOT NULL AND live_preview_id IS NULL) OR (kind = 'live' AND live_preview_id IS NOT NULL AND area_id IS NULL AND file_id IS NULL)".into(),
@@ -73,9 +77,9 @@ pub(super) fn migration() -> Migration {
 				},
 				Constraint::ForeignKey {
 					name: "core_preview_tickets_preview_fkey".into(),
-					columns: vec!["preview_id".into()],
+					columns: vec!["tenant".into(), "preview_id".into()],
 					referenced_table: "core_previews".into(),
-					referenced_columns: vec!["id".into()],
+					referenced_columns: vec!["tenant".into(), "id".into()],
 					on_delete: ForeignKeyAction::Cascade,
 					on_update: ForeignKeyAction::NoAction,
 					deferrable: None,
@@ -120,9 +124,9 @@ pub(super) fn migration() -> Migration {
 				},
 				Constraint::ForeignKey {
 					name: "core_preview_sessions_preview_fkey".into(),
-					columns: vec!["preview_id".into()],
+					columns: vec!["tenant".into(), "preview_id".into()],
 					referenced_table: "core_previews".into(),
-					referenced_columns: vec!["id".into()],
+					referenced_columns: vec!["tenant".into(), "id".into()],
 					on_delete: ForeignKeyAction::Cascade,
 					on_update: ForeignKeyAction::NoAction,
 					deferrable: None,

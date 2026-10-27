@@ -8,6 +8,15 @@ pub(super) fn migration() -> Migration {
 		.add_dependency("execution", "0060_plugin_research_merge")
 		.atomic(true)
 		.database_only(true)
+		// The File citation and hold rows below must name the same Tenant as
+		// their parent, so the composite foreign keys need this target key.
+		.add_operation(Operation::AddConstraintDefinition {
+			table: "core_objects".into(),
+			constraint: Constraint::Unique {
+				name: "core_objects_tenant_id_key".into(),
+				columns: vec!["tenant".into(), "id".into()],
+			},
+		})
 		.add_operation(Operation::CreateTable {
 			name: "core_retention_holds".into(),
 			columns: vec![
@@ -64,6 +73,12 @@ pub(super) fn migration() -> Migration {
 						"holder_id".into(),
 						"revision".into(),
 					],
+				},
+				// A composite foreign key needs a unique target even though `id`
+				// alone is already the primary key.
+				Constraint::Unique {
+					name: "core_retention_holds_tenant_id_key".into(),
+					columns: vec!["tenant".into(), "id".into()],
 				},
 				Constraint::ForeignKey {
 					name: "core_retention_holds_tenant_fkey".into(),
@@ -124,9 +139,9 @@ pub(super) fn migration() -> Migration {
 				},
 				Constraint::ForeignKey {
 					name: "core_retention_files_hold_fkey".into(),
-					columns: vec!["hold_id".into()],
+					columns: vec!["tenant".into(), "hold_id".into()],
 					referenced_table: "core_retention_holds".into(),
-					referenced_columns: vec!["id".into()],
+					referenced_columns: vec!["tenant".into(), "id".into()],
 					on_delete: ForeignKeyAction::Cascade,
 					on_update: ForeignKeyAction::Restrict,
 					deferrable: None,
@@ -142,9 +157,9 @@ pub(super) fn migration() -> Migration {
 				},
 				Constraint::ForeignKey {
 					name: "core_retention_files_object_fkey".into(),
-					columns: vec!["file_id".into()],
+					columns: vec!["tenant".into(), "file_id".into()],
 					referenced_table: "core_objects".into(),
-					referenced_columns: vec!["id".into()],
+					referenced_columns: vec!["tenant".into(), "id".into()],
 					on_delete: ForeignKeyAction::Cascade,
 					on_update: ForeignKeyAction::Restrict,
 					deferrable: None,
