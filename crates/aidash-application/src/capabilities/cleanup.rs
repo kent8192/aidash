@@ -363,6 +363,9 @@ pub async fn erase_job(repository: &dyn CleanupRepository, snapshot: Record) -> 
 			.map(|f| f.file_id)
 			.collect::<std::collections::BTreeSet<_>>();
 		if expiring {
+			// The recoverable snapshot kept the holds until it expired; the
+			// Retained versions now follow the erased snapshot.
+			scope.release_holds(&area).await?;
 			if record.state == "recoverable"
 				&& (area.state != "recoverable" || record.data["generation"] != area.generation)
 			{
@@ -386,6 +389,9 @@ pub async fn erase_job(repository: &dyn CleanupRepository, snapshot: Record) -> 
 			{
 				return Err(Error::Conflict("CLEANUP_GENERATION_CHANGED".into()));
 			}
+			// A non-recoverable cleanup removes every hold, so the versions it
+			// keeps are erased with the rest of the Working Area.
+			scope.release_holds(&area).await?;
 			let ids: Vec<Uuid> = scope.objects(&area).await?;
 			for id in ids {
 				if !snapshot_ids.contains(&id) {

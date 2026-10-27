@@ -159,7 +159,9 @@ impl PeerTransport for HttpTransport {
 			.contains_key("x-aidash-run-message-pending");
 		let body = if status.is_success() {
 			crate::response::json(response, 4_194_304).await?
-		} else if status == reqwest::StatusCode::BAD_REQUEST {
+		} else if status == reqwest::StatusCode::BAD_REQUEST
+			|| (status == reqwest::StatusCode::CONFLICT && path.starts_with("/scoped/previews/"))
+		{
 			crate::response::json(response, 4_194_304)
 				.await
 				.unwrap_or(Value::Null)

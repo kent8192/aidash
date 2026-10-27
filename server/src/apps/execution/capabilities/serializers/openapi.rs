@@ -422,6 +422,96 @@ pub(crate) fn register(contracts: &mut Contracts, document: &mut OpenApiSchema) 
 		views::management::file_download,
 	)?;
 	contracts
+		.response::<_, crate::apps::execution::capabilities::serializers::previews::PreviewAvailability>(
+			document,
+			views::previews::availability,
+			200,
+			"application/json",
+		)?;
+	contracts
+		.request::<_, crate::apps::execution::capabilities::serializers::previews::PreviewTicketInput>(
+			document,
+			views::previews::ticket,
+		)?;
+	contracts
+		.response::<_, crate::apps::execution::capabilities::serializers::previews::PreviewTicket>(
+			document,
+			views::previews::ticket,
+			200,
+			"application/json",
+		)?;
+	contracts.path(document, views::previews::remote_ticket, &["Uuid"])?;
+	contracts.request::<_, aidash_domain::federation::preview::Target>(
+		document,
+		views::previews::remote_ticket,
+	)?;
+	contracts.response::<_, aidash_domain::federation::preview::Ticket>(
+		document,
+		views::previews::remote_ticket,
+		200,
+		"application/json",
+	)?;
+	contracts.path(document, views::previews::remote_inspect, &["Uuid"])?;
+	contracts.response::<_, aidash_domain::federation::preview::Inspection>(
+		document,
+		views::previews::remote_inspect,
+		200,
+		"application/json",
+	)?;
+	contracts.path(document, views::live_previews::live_preview, &["Uuid"])?;
+	contracts
+		.response::<_, crate::apps::execution::capabilities::serializers::previews::LivePreviewStatus>(
+			document,
+			views::live_previews::live_preview,
+			200,
+			"application/json",
+		)?;
+	contracts.path(document, views::live_previews::live_preview_stop, &["Uuid"])?;
+	contracts
+		.response::<_, crate::apps::execution::capabilities::serializers::previews::LivePreviewStatus>(
+			document,
+			views::live_previews::live_preview_stop,
+			200,
+			"application/json",
+		)?;
+	contracts
+		.request::<_, crate::apps::execution::capabilities::serializers::previews::LivePreviewTicketInput>(
+			document,
+			views::live_previews::live_ticket,
+		)?;
+	contracts
+		.response::<_, crate::apps::execution::capabilities::serializers::previews::PreviewTicket>(
+			document,
+			views::live_previews::live_ticket,
+			200,
+			"application/json",
+		)?;
+	contracts.path(document, views::live_previews::preview_limits, &["String"])?;
+	contracts
+		.response::<_, crate::apps::execution::capabilities::serializers::previews::TenantPreviewLimits>(
+			document,
+			views::live_previews::preview_limits,
+			200,
+			"application/json",
+		)?;
+	contracts
+		.request::<_, crate::apps::execution::capabilities::serializers::previews::PreviewLimitInput>(
+			document,
+			views::live_previews::set_preview_limits,
+		)?;
+	contracts.path(
+		document,
+		views::live_previews::set_preview_limits,
+		&["String"],
+	)?;
+	contracts
+		.response::<_, crate::apps::execution::capabilities::serializers::previews::TenantPreviewLimits>(
+			document,
+			views::live_previews::set_preview_limits,
+			200,
+			"application/json",
+		)?;
+	contracts
 		.response::<_, crate::apps::execution::capabilities::serializers::cleanup::ManagementPage>(
 			document,
 			views::management::managed_areas,

@@ -44,6 +44,9 @@
 
 pub mod management;
 
+pub mod live_previews;
+pub mod previews;
+
 pub mod transfers;
 
 pub mod transfer_receivers;

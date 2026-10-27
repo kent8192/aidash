@@ -60,6 +60,7 @@ impl Authority for FixtureAuthority {
 			destination: Destination::Permitted,
 			request: Uuid::new_v4(),
 			operation: Uuid::new_v4(),
+			session: None,
 			service: service.into(),
 			definition: ExternalService {
 				base_url: self.upstream.clone(),
