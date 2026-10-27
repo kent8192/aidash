@@ -83,10 +83,6 @@ fn credential_name(
 	}
 }
 
-fn session_mac(store: &Store, preview: Uuid, expires: DateTime<Utc>) -> Result<Hmac<Sha256>> {
-	egress_mac(store, SessionKind::Pod, preview, expires)
-}
-
 /// The page credential is MACed under its own domain, so a Pod's session token
 /// can never be replayed as a page token or the other way round.
 fn egress_mac(
@@ -346,8 +342,8 @@ struct RequestMeter {
 	session: Option<Uuid>,
 }
 
-/// A Live preview's session token: it names a preview, not an operation, and
-/// never attaches a Tenant Secret (ADR 0069, ADR 0070).
+/// A Live preview credential names a preview, not an operation. Only the
+/// Pod's kind may attach a bound Tenant Secret (ADR 0069, ADR 0070).
 async fn admit_session(
 	store: &Store,
 	token: &str,
@@ -386,7 +382,7 @@ async fn admit_session(
 		.pop()
 		.ok_or(Error::Forbidden)?;
 	tx.commit().await?;
-	if session.live_preview_id != preview_id {
+	if session.live_preview_id != preview_id || session.run_id != preview.run_id {
 		return Err(Error::Forbidden);
 	}
 	egress_mac(store, kind, preview_id, session.expires_at)?
@@ -440,10 +436,6 @@ async fn admit_session(
 	}
 	crate::marketplace::check_pinned(&mut access, &current).await?;
 	let definition = aidash_domain::egress::definition(&current)?;
-	if definition.secret.is_some() {
-		// A page any viewer can open must never spend a Tenant Secret.
-		return Err(Error::Forbidden);
-	}
 	let destination = store.keyless.destination(&definition.base_url)?;
 	if destination == aidash_domain::keyless::Destination::Forbidden {
 		return Err(Error::Forbidden);

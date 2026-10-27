@@ -98,6 +98,12 @@ class ServeAcceptTest(unittest.TestCase):
             request["egress"] = {"url": "http://10.0.0.2:8950",
                                  "token": "session:" + request["operation_id"] + "." + "a" * 43}
             runner.accept(request)
+            page = serve_request()
+            page["files"] = [file_entry()]
+            page["egress"] = {"url": "http://10.0.0.2:8950",
+                              "token": "page:" + page["operation_id"] + "." + "a" * 43}
+            with self.assertRaises(Rejected):
+                runner.accept(page)
             other = serve_request()
             other["files"] = [file_entry()]
             other["egress"] = {"url": "http://10.0.0.2:8950",
