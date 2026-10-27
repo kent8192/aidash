@@ -6,6 +6,8 @@ image:
   pullPolicy: IfNotPresent
   pullSecrets: []
 deployment:
+  # Closed jurisdiction: eu, us, jp; empty leaves Self-hosted undeclared.
+  region: ""
   # The Deployment id, aidash://<name>.
   id: ""
   # Stable federation URL; defaults to the internal backend Service.
