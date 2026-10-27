@@ -285,7 +285,7 @@ outside a Run.
 - The tool is Sandboxed: the Tenant must approve the `live_preview` group
   through Catalog Approval before a Run may call it. A Deployment without a
   Runner offers no such group. Without a preview domain, neither Live preview
-  tool is offered to models; the Catalog Approval group remains available.
+  tool is offered to models; with a domain, Catalog Approval still controls them.
 - `port` must be the Deployment's `preview.pod_port` (default 3000), the only
   port the sandbox NetworkPolicy admits; any other port is refused with
   `PREVIEW_PORT_NOT_ALLOWED`.
