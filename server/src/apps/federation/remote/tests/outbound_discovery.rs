@@ -160,7 +160,8 @@ async fn sibling_discovery_uses_the_receiving_nodes_catalog_and_policy_resource(
 	let fixture = Box::pin(execution).await;
 	let app = &fixture.app;
 	let second = assert_json(
-		app.deployment_administrator
+		fixture
+			.subject
 			.post(
 				"/api/tenants/acme/nodes",
 				&json!({"label":"Second"}),
@@ -274,7 +275,8 @@ async fn delegating_to_a_sibling_executes_on_that_receiving_node(
 	let fixture = Box::pin(execution).await;
 	let app = &fixture.app;
 	let second = assert_json(
-		app.deployment_administrator
+		fixture
+			.subject
 			.post(
 				"/api/tenants/acme/nodes",
 				&json!({"label":"Executor"}),
@@ -344,10 +346,36 @@ async fn delegating_to_a_sibling_executes_on_that_receiving_node(
 			.to_string()
 	);
 }
+/// Posts `body` as the right actor: the whole-policy replace stays with the
+/// Deployment Administrator, while credentials, Peer Mappings and Node
+/// registrations are Tenant settings that a Tenant Subject manages (#484).
 async fn deployment_administrator(app: &EndpointFixture, path: &str, body: Value) -> Value {
+	let tenant = path
+		.strip_prefix("/api/authorization/")
+		.or_else(|| path.strip_prefix("/api/tenants/"))
+		.map(|rest| rest.split('/').next().unwrap());
+	let tenant_setting = path.matches('/').count() > 3;
+	let (Some(tenant), true) = (tenant, tenant_setting) else {
+		return assert_json(
+			app.deployment_administrator
+				.post(path, &body, "json")
+				.await
+				.unwrap(),
+			200,
+		);
+	};
+	if path.ends_with("/credentials") {
+		let subject = body["subject"].as_str().unwrap();
+		return endpoint::issued_credential(&app.runtime.store, tenant, subject).await;
+	}
+	let token = endpoint::subject_credential(&app.runtime.store, tenant, "alice").await;
 	assert_json(
-		app.deployment_administrator
-			.post(path, &body, "json")
+		app.anonymous
+			.request(http::Method::POST, path)
+			.header("Authorization", format!("Bearer {token}"))
+			.header(http::header::CONTENT_TYPE, "application/json")
+			.body(bytes::Bytes::copy_from_slice(body.to_string().as_bytes()))
+			.send()
 			.await
 			.unwrap(),
 		200,
@@ -529,7 +557,8 @@ async fn discovery_from_a_named_node_reports_agents_by_node_addresses(
 	let a = &pair.source.app;
 	let subject = &pair.source.subject;
 	let created = assert_json(
-		a.deployment_administrator
+		pair.source
+			.subject
 			.post(
 				"/api/tenants/acme/nodes",
 				&json!({"label":"Second"}),
@@ -608,7 +637,8 @@ async fn in_flight_discovery_retains_source_authority_and_subsequent_requests_ho
 		"/api/authorization/acme/credentials/{}/revoke",
 		credential.id
 	);
-	let revoker = app.deployment_administrator.post(&path, &input, "json");
+	let (member, _) = endpoint::tenant_member(app).await;
+	let revoker = member.post(&path, &input, "json");
 	tokio::pin!(revoker);
 	// Assert
 	assert!(

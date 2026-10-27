@@ -106,8 +106,13 @@ async fn unavailable(node: &Node, workspace_id: Uuid) {
 	assert_eq!(node.get("/health").await.0, 200);
 	let (session_status, session) = node.get("/api/session").await;
 	assert_eq!(session_status, 200);
-	assert_eq!(session["access"]["kind"], "deployment_administrator");
-	assert_eq!(node.get("/api/transactions/participants").await.0, 200);
+	assert_eq!(session["access"]["kind"], "subject");
+	assert_eq!(
+		node.administrator_get("/api/transactions/participants")
+			.await
+			.0,
+		200
+	);
 	let worker = Harness {
 		federation: node.f.clone(),
 	}
@@ -574,13 +579,15 @@ async fn an_existing_sse_stream_waits_for_atomic_visibility_before_emitting_chan
 		return;
 	};
 	// reinhardt-web#6661: incremental SSE frames need the fixture-owned raw streaming client.
+	let subject =
+		crate::fixtures::tenant_roots::subject_credential(&a.f.store, "acme", "alice").await;
 	let mut response =
 		a.f.client
 			.get(format!(
 				"{}/api/events/stream?workspace_id={wa}",
 				a.f.config.endpoint
 			))
-			.bearer_auth(&a.f.config.api_token)
+			.bearer_auth(&subject)
 			.send()
 			.await
 			.unwrap();

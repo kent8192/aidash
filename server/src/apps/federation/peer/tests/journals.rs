@@ -83,8 +83,9 @@ async fn run_invocations_page_in_hundreds_and_keep_durable_payloads(
 			.await
 			.unwrap();
 	}
+	let (member, _) = crate::endpoint::tenant_member(&app).await;
 	let first = assert_json(
-		app.deployment_administrator
+		member
 			.get(&format!("/api/runs/{observed_run}"))
 			.await
 			.unwrap(),
@@ -96,7 +97,7 @@ async fn run_invocations_page_in_hundreds_and_keep_durable_payloads(
 		"aidash://journal-home:000"
 	);
 	let next = assert_json(
-		app.deployment_administrator
+		member
 			.get(&format!("/api/runs/{observed_run}?offset=100"))
 			.await
 			.unwrap(),

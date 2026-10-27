@@ -116,6 +116,7 @@ fn node(
 			f,
 			listen,
 			address: String::new(),
+			subject_token: String::new(),
 			reservation,
 			server: Some(peer.server),
 			client: peer.client,
@@ -187,6 +188,8 @@ struct Node {
 	listen: std::net::SocketAddr,
 	/// The Tenant's default Node, once `pair` has written it.
 	address: String,
+	/// A Subject Credential of the Tenant's `alice`, which the requests carry (#484).
+	subject_token: String,
 	// Real-process cases keep this socket owned across stop, SIGKILL and exec.
 	reservation: Reservation,
 	application: common::TestApplication,
@@ -303,10 +306,17 @@ impl Node {
 		path: &str,
 		body: Option<Value>,
 	) -> (u16, Value) {
-		let mut request = self.client.request(method.clone(), path).header(
-			"Authorization",
-			format!("Bearer {}", self.f.config.api_token),
-		);
+		// Participant listing administers the Deployment; every other route here is
+		// Tenant content, which only a Tenant Subject reaches.
+		let bearer = if path == "/api/transactions/participants" {
+			&self.f.config.api_token
+		} else {
+			&self.subject_token
+		};
+		let mut request = self
+			.client
+			.request(method.clone(), path)
+			.header("Authorization", format!("Bearer {bearer}"));
 		if method == reqwest::Method::POST {
 			request = request.json(&body.unwrap_or(Value::Null));
 		} else if let Some(body) = body {
@@ -332,6 +342,7 @@ impl Node {
 	/// Creates the Deployment's Tenant and records its default Node's address.
 	async fn join(&mut self) {
 		common::tenant_scope(&self.f.store, "acme").await;
+		self.subject_token = common::subject_credential(&self.f.store, "acme", "alice").await;
 		self.address = common::default_node(&self.f.store, "acme")
 			.await
 			.to_string();
@@ -566,7 +577,7 @@ async fn unavailable(node: &Node, workspace: Uuid) {
 	assert_eq!(node.get("/health").await.0, 200);
 	let (session_status, session) = node.get("/api/session").await;
 	assert_eq!(session_status, 200);
-	assert_eq!(session["access"]["kind"], "deployment_administrator");
+	assert_eq!(session["access"]["kind"], "subject");
 	assert_eq!(node.get("/api/transactions/participants").await.0, 200);
 	assert!(matches!(
 		aidash_server::harness::Harness {
@@ -1209,7 +1220,7 @@ async fn an_existing_sse_stream_waits_for_atomic_visibility_before_emitting_chan
 			a.application
 				.url(format!("/api/events/stream?workspace_id={wa}")),
 		)
-		.bearer_auth(&a.f.config.api_token)
+		.bearer_auth(&a.subject_token)
 		.send()
 		.await
 		.unwrap();
@@ -1939,8 +1950,14 @@ async fn mapped_transaction_admission_and_revocation(
 				"/api/authorization/acme/credentials/{}/revoke",
 				credential_a.id
 			);
-			let (status, body) =
-				common::request(&app_a, &a.f.config.api_token, "POST", &path, Value::Null).await;
+			let (status, body) = common::request(
+				&app_a,
+				&common::tenant_token(&a.f.store, "acme").await,
+				"POST",
+				&path,
+				Value::Null,
+			)
+			.await;
 			assert_eq!(
 				status, 202,
 				"an unknown durable admission cannot acknowledge complete revocation: {body}"
@@ -2010,8 +2027,14 @@ async fn mapped_transaction_admission_and_revocation(
 	let result = complete(&a, manifest.id).await;
 	assert_eq!(result.decision.as_deref(), Some(expected), "{result:?}");
 	if let Some(path) = reconciliation_check {
-		let (status, body) =
-			common::request(&app_a, &a.f.config.api_token, "POST", &path, Value::Null).await;
+		let (status, body) = common::request(
+			&app_a,
+			&common::tenant_token(&a.f.store, "acme").await,
+			"POST",
+			&path,
+			Value::Null,
+		)
+		.await;
 		assert_eq!(status, 200, "{body}");
 		assert_eq!(body["pending_transactions"], json!([]));
 	}

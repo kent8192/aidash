@@ -364,7 +364,7 @@ async fn real_server_sigkill_at_durable_cut(
 	} = fixture;
 	let client = a.f.client.clone();
 	let endpoint = a.f.config.endpoint.clone();
-	let token = a.f.config.api_token.clone();
+	let token = a.subject_token.clone();
 	let body = json!(manifest);
 	let submission = tokio::spawn(async move {
 		client
@@ -378,9 +378,11 @@ async fn real_server_sigkill_at_durable_cut(
 		.path()
 		.join(format!("{}.{point}.reached", manifest.id));
 	let mut observations = 0;
+	let reader_a = a.subject_token.clone();
+	let reader_b = b.subject_token.clone();
 	tokio::time::timeout(WallDuration::from_secs(40), async {
 		loop {
-			for (node, workspace) in [(&a, wa), (&b, wb)] {
+			for (node, workspace, reader) in [(&a, wa, &reader_a), (&b, wb, &reader_b)] {
 				let response = node
 					.f
 					.client
@@ -388,7 +390,7 @@ async fn real_server_sigkill_at_durable_cut(
 						"{}/api/workspaces/{workspace}",
 						node.f.config.endpoint
 					))
-					.bearer_auth(&node.f.config.api_token)
+					.bearer_auth(reader)
 					.timeout(WallDuration::from_secs(5))
 					.send()
 					.await

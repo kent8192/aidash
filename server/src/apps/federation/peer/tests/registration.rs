@@ -1,7 +1,7 @@
 //! Node Registrations through native HTTP: pinning the other Deployment's key,
 //! replacing and disabling a registration, and its revision history.
 use crate::endpoint::{
-	EndpointFixture, assert_json, default_node, endpoint, tenant_root, tenant_scope,
+	EndpointFixture, assert_json, default_node, endpoint, tenant_member, tenant_root, tenant_scope,
 };
 use crate::peering;
 use aidash_server::routes;
@@ -20,8 +20,9 @@ fn federate(app: &EndpointFixture, reachable: &[&str]) -> aidash_server::federat
 }
 
 async fn post(app: &EndpointFixture, node: &str, body: &Value, status: u16) -> Value {
-	let response = app
-		.deployment_administrator
+	// Node registrations are Tenant settings: a Tenant Subject writes them (#484).
+	let (member, _) = tenant_member(app).await;
+	let response = member
 		.post(&peering::registration_path("acme", node), body, "json")
 		.await
 		.unwrap();
@@ -87,7 +88,7 @@ async fn a_registration_pins_the_key_and_is_replaced_disabled_and_enabled_by_rev
 	assert_eq!(created["endpoint"], remote.server.url);
 	assert_eq!(created["key_id"], key_id);
 	assert_eq!(created["revision"], 1);
-	assert_eq!(created["actor"], "deployment_administrator");
+	assert_ne!(created["actor"], "deployment_administrator");
 	assert_eq!(replaced["endpoint"], relocated.url);
 	assert_eq!(replaced["revision"], 2);
 	assert_eq!(stopped["enabled"], false);
@@ -95,9 +96,9 @@ async fn a_registration_pins_the_key_and_is_replaced_disabled_and_enabled_by_rev
 	assert_eq!(stopped["key_id"], key_id);
 	assert_eq!(restored["enabled"], true);
 	assert_eq!(restored["revision"], 4);
+	let (member, _) = tenant_member(&local).await;
 	let listed = assert_json(
-		local
-			.deployment_administrator
+		member
 			.get(&format!(
 				"/api/tenants/acme/nodes/{}/registrations",
 				owner.as_str()
@@ -109,8 +110,7 @@ async fn a_registration_pins_the_key_and_is_replaced_disabled_and_enabled_by_rev
 	assert_eq!(listed.as_array().unwrap().len(), 1);
 	assert_eq!(listed[0]["revision"], 4);
 	let history = assert_json(
-		local
-			.deployment_administrator
+		member
 			.get(&format!(
 				"/api/tenants/acme/nodes/{}/registration-history",
 				owner.as_str()
@@ -226,17 +226,17 @@ async fn concurrent_first_registrations_of_one_node_create_exactly_one_revision(
 	);
 	let path = peering::registration_path("acme", owner.as_str());
 	// Act
+	let (member, _) = tenant_member(&local).await;
 	let (first, second) = tokio::join!(
-		local.deployment_administrator.post(&path, &body, "json"),
-		local.deployment_administrator.post(&path, &body, "json"),
+		member.post(&path, &body, "json"),
+		member.post(&path, &body, "json"),
 	);
 	// Assert
 	let mut statuses = [first.unwrap().status_code(), second.unwrap().status_code()];
 	statuses.sort_unstable();
 	assert_eq!(statuses, [200, 409]);
 	let history = assert_json(
-		local
-			.deployment_administrator
+		member
 			.get(&format!(
 				"/api/tenants/acme/nodes/{}/registration-history",
 				owner.as_str()

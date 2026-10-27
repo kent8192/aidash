@@ -61,8 +61,9 @@ pub async fn register(app: &EndpointFixture, source_node: &str, endpoint: &str, 
 	let owner = crate::endpoint::default_node(&app.runtime.store, "acme")
 		.await
 		.node;
-	let response = app
-		.deployment_administrator
+	// Node registrations are Tenant settings: a Tenant Subject writes them (#484).
+	let (member, _) = crate::endpoint::tenant_member(app).await;
+	let response = member
 		.post(
 			&crate::peering::registration_path("acme", owner.as_str()),
 			&crate::peering::registration(source_node, Some((endpoint, key_id))),

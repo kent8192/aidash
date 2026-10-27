@@ -54,19 +54,12 @@ async fn receiver_admission_is_idempotent_scoped_and_revalidated_after_reconnect
 		200
 	);
 	common::register_pair((&a, &aa, "acme"), (&b, &ba, "acme")).await;
-	let (_, credential) = request(
-		&ba,
-		&b.config.api_token,
-		"POST",
-		"/api/authorization/acme/credentials",
-		json!({"subject":"alice"}),
-	)
-	.await;
+	let credential = common::issued_credential(&b.store, "acme", "alice").await;
 	let mapping = json!({"node":default_node(&b.store,"acme").await.node,"source_node":default_node(&a.store,"acme").await,"source_subject":"alice","credential_id":credential["credential"]["id"],"enabled":true,"expected_revision":0});
 	assert_eq!(
 		request(
 			&ba,
-			&b.config.api_token,
+			&common::tenant_token(&b.store, "acme").await,
 			"POST",
 			"/api/authorization/acme/peer-mappings",
 			mapping.clone()
@@ -245,21 +238,14 @@ async fn receiver_admission_is_idempotent_scoped_and_revalidated_after_reconnect
 		peer(&fresh_app, (&a, &b), &verification, json!({})).await.0,
 		200
 	);
-	let (_, new_credential) = request(
-		&ba,
-		&b.config.api_token,
-		"POST",
-		"/api/authorization/acme/credentials",
-		json!({"subject":"alice"}),
-	)
-	.await;
+	let new_credential = common::issued_credential(&b.store, "acme", "alice").await;
 	let mut rotated = mapping.clone();
 	rotated["expected_revision"] = json!(1);
 	rotated["credential_id"] = new_credential["credential"]["id"].clone();
 	assert_eq!(
 		request(
 			&ba,
-			&b.config.api_token,
+			&common::tenant_token(&b.store, "acme").await,
 			"POST",
 			"/api/authorization/acme/peer-mappings",
 			rotated
@@ -277,7 +263,7 @@ async fn receiver_admission_is_idempotent_scoped_and_revalidated_after_reconnect
 	assert_eq!(
 		request(
 			&ba,
-			&b.config.api_token,
+			&common::tenant_token(&b.store, "acme").await,
 			"POST",
 			"/api/authorization/acme/peer-mappings",
 			restored

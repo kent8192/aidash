@@ -192,9 +192,10 @@ async fn subject_transaction_admission_preserves_only_accepted_obligations(
 	for _ in 0..steps_before_revocation {
 		coordinator::advance(&f, manifest.id).await.unwrap();
 	}
+	// Alice is still the Tenant's only credential holder, so list before another is issued.
 	let (_, credentials) = request(
 		&app,
-		&f.config.api_token,
+		&subject,
 		"GET",
 		"/api/authorization/acme/credentials",
 		Value::Null,
@@ -210,7 +211,7 @@ async fn subject_transaction_admission_preserves_only_accepted_obligations(
 		.unwrap();
 	let (status, body) = request(
 		&app,
-		&f.config.api_token,
+		&common::tenant_token(&f.store, "acme").await,
 		"POST",
 		&format!("/api/authorization/acme/credentials/{credential}/revoke"),
 		Value::Null,
@@ -293,7 +294,7 @@ async fn atomic_submission_validates_the_entire_manifest_before_creating_work(
 	let manifest = json!({"id":id,"coordinator":node(&f).await,"isolation":"serializable","deadline":Utc::now()+Duration::minutes(5),"participants":[{"node_id":node(&f).await,"mutations":[{"kind":"workspace_state","workspace_id":workspace.id,"expected_revision":0,"state":{"result":"committed"}}]}]});
 	let (status, response) = request(
 		&app,
-		&f.config.api_token,
+		&common::tenant_token(&f.store, "acme").await,
 		"POST",
 		"/api/transactions",
 		manifest.clone(),
@@ -305,7 +306,7 @@ async fn atomic_submission_validates_the_entire_manifest_before_creating_work(
 	assert_eq!(
 		request(
 			&app,
-			&f.config.api_token,
+			&common::tenant_token(&f.store, "acme").await,
 			"POST",
 			"/api/transactions",
 			manifest.clone()
@@ -318,7 +319,7 @@ async fn atomic_submission_validates_the_entire_manifest_before_creating_work(
 	assert_eq!(
 		request(
 			&app,
-			&f.config.api_token,
+			&common::tenant_token(&f.store, "acme").await,
 			"POST",
 			"/api/transactions",
 			changed
@@ -334,7 +335,7 @@ async fn atomic_submission_validates_the_entire_manifest_before_creating_work(
 		.unwrap()
 		.push(json!({"kind":"external_tool","endpoint":"http://127.0.0.1:9/effect"}));
 	// Native Json extraction rejects unknown mutations before transaction admission.
-	let authorization = format!("Bearer {}", f.config.api_token);
+	let authorization = format!("Bearer {}", common::tenant_token(&f.store, "acme").await);
 	// reinhardt-web#6672: do not mix shared default and per-request credentials.
 	let rejected = async {
 		let client = &(app.client());
@@ -566,7 +567,13 @@ async fn authority_control_does_not_unlock_ordinary_mutations(
 	// Authority metadata and audit can change, but neither HTTP nor a direct
 	// Store mutation may use those control paths to publish application data.
 	for operation in ["evaluate", "simulate"] {
-		let (status,body)=request(&app,&f.config.api_token,"POST",&format!("/api/authorization/acme/{operation}"),
+		// Evaluation is a Deployment-wide route; simulation is the Tenant's own.
+		let caller = if operation == "evaluate" {
+			f.config.api_token.clone()
+		} else {
+			common::tenant_token(&f.store, "acme").await
+		};
+		let (status,body)=request(&app,&caller,"POST",&format!("/api/authorization/acme/{operation}"),
 			json!({"subject":"alice","action":"transaction.read","resource":{"tenant":"acme","kind":"transaction","id":manifest.id.to_string()}})).await;
 		assert_eq!(
 			status, 200,
@@ -595,7 +602,7 @@ async fn authority_control_does_not_unlock_ordinary_mutations(
 	assert_eq!(
 		request(
 			&app,
-			&f.config.api_token,
+			&common::tenant_token(&f.store, "acme").await,
 			"POST",
 			"/api/authorization/acme/credentials",
 			json!({"subject":"alice","expires_in_seconds":3600})
@@ -628,3 +635,100 @@ async fn authority_control_does_not_unlock_ordinary_mutations(
 use reinhardt::query::QueryStatementBuilder as _;
 
 use reinhardt::query::SimpleExpr;
+
+/// A Deployment Administrator, as the shared bearer or as a browser context,
+/// holds no authority over a Tenant's transactions (#484): it submits, lists,
+/// reads and aborts nothing, and its refusals change nothing.
+#[rstest::rstest]
+#[case::shared_bearer(false)]
+#[case::browser_context(true)]
+#[tokio::test]
+async fn deployment_administrators_cannot_submit_list_read_or_abort_transactions(
+	#[future(awt)]
+	#[from(common::native_application)]
+	fixture: common::ApplicationFixture,
+	#[case] browser: bool,
+) {
+	use aidash_server::transactions::coordinator;
+	// Arrange: Alice owns one transaction; another Tenant has its own Subject.
+	let (f, url, schema) = fixture.runtime.parts();
+	let app = fixture.application;
+	let (_, token, task) = bootstrap(&f, &app, "http://localhost:1").await;
+	let workspace = f
+		.store
+		.task(&TEST_FIXTURE, task)
+		.await
+		.unwrap()
+		.workspace_id;
+	let own = manifest(node(&f).await.as_str(), workspace);
+	let own_id = own["id"].as_str().unwrap().to_owned();
+	assert_eq!(
+		request(&app, &token, "POST", "/api/transactions", own.clone())
+			.await
+			.0,
+		202
+	);
+	common::tenant_scope(&f.store, "other").await;
+	let other_token = common::tenant_token(&f.store, "other").await;
+	let browser_administrator = if browser {
+		Some(common::BrowserAdministrator::new(&f).await)
+	} else {
+		None
+	};
+	let as_administrator = async |method: &str, path: &str, body: Value| -> (u16, Value) {
+		match &browser_administrator {
+			Some(administrator) => administrator.send(method, path, body).await,
+			None => request(&app, &f.config.api_token, method, path, body).await,
+		}
+	};
+	let attempted = manifest(node(&f).await.as_str(), workspace);
+	let attempted_id = Uuid::parse_str(attempted["id"].as_str().unwrap()).unwrap();
+	// Act and assert: every administrator request is refused without content.
+	let (status, body) = as_administrator("POST", "/api/transactions", attempted).await;
+	assert_eq!(status, 403, "{body}");
+	assert!(matches!(
+		coordinator::status(&f, attempted_id).await,
+		Err(aidash_server::Error::NotFound(_))
+	));
+	let (status, body) = as_administrator("GET", "/api/transactions", Value::Null).await;
+	assert_eq!(status, 403, "{body}");
+	assert!(!body.to_string().contains(&own_id), "{body}");
+	let path = format!("/api/transactions/{own_id}");
+	let (status, body) = as_administrator("GET", &path, Value::Null).await;
+	assert_eq!(status, 403, "{body}");
+	assert!(body.get("transaction").is_none(), "{body}");
+	let (status, body) = as_administrator("POST", &format!("{path}/abort"), Value::Null).await;
+	assert_eq!(status, 403, "{body}");
+	// Another Tenant's Subject sees and changes nothing either.
+	for (method, suffix) in [("GET", ""), ("POST", "/abort")] {
+		let (status, body) = request(
+			&app,
+			&other_token,
+			method,
+			&format!("{path}{suffix}"),
+			Value::Null,
+		)
+		.await;
+		assert!(
+			matches!(status, 403 | 404),
+			"{method}{suffix}: {status} {body}"
+		);
+		assert!(body.get("transaction").is_none(), "{body}");
+	}
+	let (status, body) = request(&app, &other_token, "GET", "/api/transactions", Value::Null).await;
+	assert_eq!(status, 200, "{body}");
+	assert_eq!(body, json!([]));
+	// Assert: the owner still reads it, undecided, and may abort it.
+	let (status, listed) = request(&app, &token, "GET", "/api/transactions", Value::Null).await;
+	assert_eq!(status, 200, "{listed}");
+	assert_eq!(listed.as_array().unwrap().len(), 1);
+	assert_eq!(listed[0]["id"], json!(own_id));
+	let (status, details) = request(&app, &token, "GET", &path, Value::Null).await;
+	assert_eq!(status, 200, "{details}");
+	assert!(details["transaction"]["decision"].is_null(), "{details}");
+	let (status, aborted) =
+		request(&app, &token, "POST", &format!("{path}/abort"), Value::Null).await;
+	assert_eq!(status, 200, "{aborted}");
+	assert_eq!(aborted["decision"], "ABORT");
+	cleanup(f, &url, &schema).await;
+}

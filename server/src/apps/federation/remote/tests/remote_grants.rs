@@ -102,19 +102,13 @@ async fn durable_grants_bind_both_nodes_and_revalidate_after_restarts_and_revoca
 		200
 	);
 	common::register_pair((&a, &aa, "acme"), (&b, &ba, "acme")).await;
-	let (_, issued) = request(
-		&ba,
-		&b.config.api_token,
-		"POST",
-		"/api/authorization/acme/credentials",
-		json!({"subject":"alice"}),
-	)
-	.await;
-	assert_eq!(request(&ba,&b.config.api_token,"POST","/api/authorization/acme/peer-mappings",json!({"node":default_node(&b.store,"acme").await.node,"source_node":default_node(&a.store,"acme").await,"source_subject":"alice","credential_id":issued["credential"]["id"],"expected_revision":0,"enabled":true})).await.0,200);
+	let issued = common::issued_credential(&b.store, "acme", "alice").await;
+	assert_eq!(request(&ba,&common::tenant_token(&b.store, "acme").await,"POST","/api/authorization/acme/peer-mappings",json!({"node":default_node(&b.store,"acme").await.node,"source_node":default_node(&a.store,"acme").await,"source_subject":"alice","credential_id":issued["credential"]["id"],"expected_revision":0,"enabled":true})).await.0,200);
 	let path = format!("/api/tasks/{task}/remote-grants");
 	let id = Uuid::new_v4();
 	let input = json!({"id":id,"node_id":default_node(&b.store,"acme").await,"agent":{"id":"research","version":"1.0.0"},"ttl_seconds":300});
 	assert_eq!(
+		// A Deployment Administrator holds no authority over a Tenant's Tasks (#484).
 		request(&aa, &a.config.api_token, "POST", &path, input.clone())
 			.await
 			.0,
@@ -422,7 +416,7 @@ async fn durable_grants_bind_both_nodes_and_revalidate_after_restarts_and_revoca
 	assert_eq!(
 		request(
 			&aa,
-			&a.config.api_token,
+			&common::tenant_token(&a.store, "acme").await,
 			"POST",
 			&common::peering::registration_path("acme", owner.as_str()),
 			unrelated.registration(&unrelated_node)
@@ -538,14 +532,7 @@ async fn durable_grants_bind_both_nodes_and_revalidate_after_restarts_and_revoca
 	}
 	.unwrap();
 	assert_eq!(verify(&fresh_app, (&a, &b), current).await.0, 200);
-	let (_, replacement) = request(
-		&aa,
-		&a.config.api_token,
-		"POST",
-		"/api/authorization/acme/credentials",
-		json!({"subject":"alice"}),
-	)
-	.await;
+	let replacement = common::issued_credential(&a.store, "acme", "alice").await;
 	let replacement_token = replacement["token"].as_str().unwrap();
 	let mut same = input.clone();
 	same["id"] = json!(current);
@@ -575,7 +562,7 @@ async fn durable_grants_bind_both_nodes_and_revalidate_after_restarts_and_revoca
 	assert_eq!(
 		request(
 			&aa,
-			&a.config.api_token,
+			&common::tenant_token(&a.store, "acme").await,
 			"POST",
 			&format!("/api/authorization/acme/credentials/{source_credential}/revoke"),
 			json!({})
@@ -593,19 +580,12 @@ async fn durable_grants_bind_both_nodes_and_revalidate_after_restarts_and_revoca
 		200
 	);
 	assert_eq!(verify(&fresh_app, (&a, &b), replacement_id).await.0, 200);
-	let (_, receiver_replacement) = request(
-		&ba,
-		&b.config.api_token,
-		"POST",
-		"/api/authorization/acme/credentials",
-		json!({"subject":"alice"}),
-	)
-	.await;
+	let receiver_replacement = common::issued_credential(&b.store, "acme", "alice").await;
 	for (revision, credential, expected) in [
 		(1, &receiver_replacement["credential"]["id"], 403),
 		(2, &issued["credential"]["id"], 200),
 	] {
-		assert_eq!(request(&ba,&b.config.api_token,"POST","/api/authorization/acme/peer-mappings",json!({"node":default_node(&b.store,"acme").await.node,"source_node":default_node(&a.store,"acme").await,"source_subject":"alice","credential_id":credential,"expected_revision":revision,"enabled":true})).await.0,200);
+		assert_eq!(request(&ba,&common::tenant_token(&b.store, "acme").await,"POST","/api/authorization/acme/peer-mappings",json!({"node":default_node(&b.store,"acme").await.node,"source_node":default_node(&a.store,"acme").await,"source_subject":"alice","credential_id":credential,"expected_revision":revision,"enabled":true})).await.0,200);
 		assert_eq!(
 			verify(&fresh_app, (&a, &b), replacement_id).await.0,
 			expected,
@@ -615,7 +595,7 @@ async fn durable_grants_bind_both_nodes_and_revalidate_after_restarts_and_revoca
 	assert_eq!(
 		request(
 			&ba,
-			&b.config.api_token,
+			&common::tenant_token(&b.store, "acme").await,
 			"POST",
 			&format!(
 				"/api/authorization/acme/credentials/{}/revoke",

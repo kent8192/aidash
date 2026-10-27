@@ -111,7 +111,7 @@ async fn authorization_submission_and_abort_work_with_one_control_connection(
 		let reader = if path == "catalog" {
 			&token
 		} else {
-			&f.config.api_token
+			&common::tenant_token(&f.store, "acme").await
 		};
 		let query = if path == "catalog" {
 			format!("?node={}", aidash_domain::nodes::NodeName::derived("acme"))
@@ -131,7 +131,7 @@ async fn authorization_submission_and_abort_work_with_one_control_connection(
 	assert_eq!(
 		request(
 			&app,
-			&f.config.api_token,
+			&common::tenant_token(&f.store, "acme").await,
 			"POST",
 			"/api/authorization/acme/credentials",
 			json!({"subject":"alice"})
@@ -257,7 +257,7 @@ async fn peer_mapping_writes_work_with_one_control_connection(
 	bootstrap(&f, &app, "http://localhost:1").await;
 	let (status, credential) = request(
 		&app,
-		&f.config.api_token,
+		&common::tenant_token(&f.store, "acme").await,
 		"POST",
 		"/api/authorization/acme/credentials",
 		json!({"subject":"alice"}),
@@ -280,7 +280,7 @@ async fn peer_mapping_writes_work_with_one_control_connection(
 	old_pool.close().await;
 	let app = common::application(f.clone()).await;
 	for (revision, enabled) in [(0, true), (1, true), (2, false)] {
-		let (status, body) = request(&app, &f.config.api_token, "POST", "/api/authorization/acme/peer-mappings",
+		let (status, body) = request(&app, &common::tenant_token(&f.store, "acme").await, "POST", "/api/authorization/acme/peer-mappings",
             json!({"node":node,"source_node":source,"source_subject":"bob","credential_id":credential["credential"]["id"],"enabled":enabled,"expected_revision":revision})).await;
 		assert_eq!(
 			status, 200,
@@ -314,6 +314,8 @@ async fn subject_transaction_errors_do_not_reveal_other_owners(
 			.0,
 		202
 	);
+	// A Deployment Administrator owns no transaction: its submission is refused
+	// and leaves nothing behind (#484).
 	let deployment_administrator = manifest(node(&f).await.as_str(), workspace);
 	assert_eq!(
 		request(
@@ -325,15 +327,15 @@ async fn subject_transaction_errors_do_not_reveal_other_owners(
 		)
 		.await
 		.0,
-		202
+		403
 	);
 	// The foreign subject's binding is immutable fixture state. Its transaction
-	// exists and is visible to the Deployment Administrator, but must look absent to Alice.
+	// exists but must look absent to Alice.
 	let foreign = manifest(node(&f).await.as_str(), workspace);
 	assert_eq!(
 		request(
 			&app,
-			&f.config.api_token,
+			&common::tenant_token(&f.store, "acme").await,
 			"POST",
 			"/api/transactions",
 			foreign.clone()
@@ -436,7 +438,7 @@ async fn transaction_targets_must_belong_to_the_exact_participant_node(
 	let run = f.store.runs(&TEST_FIXTURE).await.unwrap().remove(0);
 	let (status, sibling) = request(
 		&app,
-		&f.config.api_token,
+		&common::tenant_token(&f.store, "acme").await,
 		"POST",
 		"/api/tenants/acme/nodes",
 		json!({"label":"Participant"}),

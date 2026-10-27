@@ -67,9 +67,35 @@ async fn deployment_administrator(app: &EndpointFixture, path: &str, input: Valu
 		.unwrap();
 		return (200, serde_json::to_value(binding).unwrap());
 	}
+	let tenant = path
+		.strip_prefix("/api/authorization/")
+		.map(|rest| rest.split('/').next().unwrap());
+	let Some(tenant) = tenant.filter(|_| path.matches('/').count() > 3) else {
+		// The whole-policy replace stays with the Deployment Administrator.
+		return decoded(
+			app.deployment_administrator
+				.post(path, &input, "json")
+				.await
+				.unwrap(),
+		);
+	};
+	// Credentials and Peer Mappings are Tenant settings: a Tenant Subject
+	// manages them, never the Deployment Administrator (#484).
+	if path.ends_with("/credentials") {
+		let subject = input["subject"].as_str().unwrap();
+		return (
+			200,
+			endpoint::issued_credential(&app.runtime.store, tenant, subject).await,
+		);
+	}
+	let token = endpoint::subject_credential(&app.runtime.store, tenant, "alice").await;
 	decoded(
-		app.deployment_administrator
-			.post(path, &input, "json")
+		app.anonymous
+			.request(http::Method::POST, path)
+			.header("Authorization", format!("Bearer {token}"))
+			.header(http::header::CONTENT_TYPE, "application/json")
+			.body(bytes::Bytes::copy_from_slice(input.to_string().as_bytes()))
+			.send()
 			.await
 			.unwrap(),
 	)
@@ -112,7 +138,8 @@ async fn receiver_preflight_uses_the_selected_nodes_policy_resource(
 	let receiving = endpoint::default_node(&f.store, "acme").await.node;
 	assert_eq!(
 		decoded(
-			app.deployment_administrator
+			execution
+				.subject
 				.post(
 					&peering::registration_path("acme", receiving.as_str()),
 					&remote.registration(&sender()),
@@ -198,8 +225,8 @@ async fn receiver_preflight_intersects_executor_and_mapping_without_admitting_a_
 	let f = &peering::enable(&app.runtime, &app.context);
 	peering::permit(f, &remote.endpoint);
 	let receiving = endpoint::default_node(&f.store, "acme").await.node;
-	let registered = app
-		.deployment_administrator
+	let registered = execution
+		.subject
 		.post(
 			&peering::registration_path("acme", receiving.as_str()),
 			&remote.registration(&sender()),
@@ -385,16 +412,24 @@ async fn an_agent_cannot_bind_a_foreign_agent_without_the_removed_closure_import
 		endpoint::tenant_scope(&runtime.store, "acme").await;
 		let node = endpoint::default_node(&runtime.store, "acme").await;
 		let remote = endpoint::default_node(&peer_runtime.store, "acme").await;
+		let token = endpoint::tenant_token(&runtime.store, "acme").await;
 		let registered = owner
-			.deployment_administrator
-			.post(
+			.anonymous
+			.request(
+				http::Method::POST,
 				&peering::registration_path("acme", node.node.as_str()),
-				&peering::registration(
+			)
+			.header("Authorization", format!("Bearer {token}"))
+			.header(http::header::CONTENT_TYPE, "application/json")
+			.body(bytes::Bytes::copy_from_slice(
+				peering::registration(
 					&remote.to_string(),
 					Some((&peer.server.url, &peering::key_id(peer_runtime))),
-				),
-				"json",
-			)
+				)
+				.to_string()
+				.as_bytes(),
+			))
+			.send()
 			.await
 			.unwrap();
 		assert_eq!(decoded(registered).0, 200);

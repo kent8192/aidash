@@ -50,6 +50,13 @@ pub fn pair(
 		for node in [&mut a, &mut b] {
 			// Each Deployment has one Tenant, with its default Node.
 			tenant_roots::tenant_scope(&node.f.store, "acme").await;
+			// The Node's client acts as the Tenant's Subject: a Deployment
+			// Administrator holds no authority over Tenant content (#484).
+			let token = tenant_roots::subject_credential(&node.f.store, "acme", "alice").await;
+			node.client
+				.set_header("Authorization", &format!("Bearer {token}"))
+				.await
+				.unwrap();
 			node.address = tenant_roots::default_node(&node.f.store, "acme")
 				.await
 				.to_string();
@@ -188,6 +195,25 @@ impl Node {
 
 	pub async fn get(&self, path: &str) -> (u16, Value) {
 		let response = self.client.get(path).await.unwrap();
+		(
+			response.status_code(),
+			response.json_value().unwrap_or(Value::Null),
+		)
+	}
+
+	/// A GET with the shared Deployment Administrator bearer, for the routes
+	/// that administer the Deployment and the refusals of everything else.
+	pub async fn administrator_get(&self, path: &str) -> (u16, Value) {
+		let response = self
+			.peer_client
+			.request(http::Method::GET, path)
+			.header(
+				"Authorization",
+				format!("Bearer {}", self.f.config.api_token),
+			)
+			.send()
+			.await
+			.unwrap();
 		(
 			response.status_code(),
 			response.json_value().unwrap_or(Value::Null),
