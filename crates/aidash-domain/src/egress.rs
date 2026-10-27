@@ -192,6 +192,10 @@ pub fn definition(entry: &Entry) -> Result<ExternalService> {
 #[cfg(test)]
 mod tests;
 
+fn operation_via() -> String {
+	"operation".into()
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct RequestRecord {
 	pub id: uuid::Uuid,
@@ -207,6 +211,9 @@ pub struct RequestRecord {
 	pub sent_bytes: i64,
 	pub received_bytes: i64,
 	pub duration_ms: i64,
+	/// `operation`, `pod` or `page`: which path admitted the request.
+	#[serde(default = "operation_via")]
+	pub via: String,
 	pub error: Option<String>,
 	pub created_at: chrono::DateTime<chrono::Utc>,
 }

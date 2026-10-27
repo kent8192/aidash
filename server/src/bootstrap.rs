@@ -691,6 +691,11 @@ pub fn registry_validation() -> aidash_application::registry::DefinitionValidati
 	.with_tenant_secrets(settings.as_ref().is_some_and(|s| {
 		matches!(s.provider_credentials.store, Some(StoreConfig::Postgres { .. }))
 	}))
+	.with_preview_available(
+		settings
+			.as_ref()
+			.is_some_and(|s| s.preview.domain.is_some()),
+	)
 }
 pub fn registry_validation_for(
 	store: &Store,
@@ -700,6 +705,7 @@ pub fn registry_validation_for(
 		.with_provider_credentials(store.provider_credentials.is_some())
 		.with_plan_connections(store.plan_connections_enabled && store.plan_connections.is_some())
 		.with_tenant_secrets(store.tenant_secrets.is_some())
+		.with_preview_available(store.preview_domain.is_some())
 		.with_egress_limits(
 			store
 				.capabilities

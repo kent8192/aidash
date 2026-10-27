@@ -52,7 +52,8 @@ impl PackageGroup {
 	}
 }
 /// The groups whose provider the Deployment runs. A Deployment without a
-/// runner offers no Sandboxed group (ADR 0034).
+/// runner offers no Sandboxed group (ADR 0034), and one without a preview
+/// domain offers no Live preview group (ADR 0068).
 pub fn offered(
 	validation: &DefinitionValidation,
 	providers: &dyn ProviderCatalog,
@@ -60,6 +61,7 @@ pub fn offered(
 ) -> Result<Vec<PackageGroup>> {
 	Ok(declarations(validation, node)?
 		.into_iter()
+		.filter(|group| validation.preview_available() || group.name != "live_preview")
 		.filter(|group| group.verify_provider(providers).is_ok())
 		.collect())
 }

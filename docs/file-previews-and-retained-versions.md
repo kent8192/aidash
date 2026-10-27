@@ -160,9 +160,9 @@ correction request tells the agent exactly which File version it refers to.
 
 ### Settings
 
-`[preview]` is a required settings section; the settings macro refuses to load
-a profile without it, even when every value below is left unset. All values
-are optional.
+`[preview]` and `[preview_limits]` are optional settings sections. A profile
+that omits either keeps the defaults: no preview domain, and the 15-minute idle
+and 2-hour absolute Live preview ceilings. Every value below is optional.
 
 ```toml
 [preview]
@@ -175,11 +175,24 @@ listen = "127.0.0.1:8960"
 in_process = true
 # The public port a ticket URL names. Defaults to 443 when absent.
 public_port = 443
+# The only Pod port the Preview NetworkPolicy admits. Defaults to 3000.
+pod_port = 3000
 ```
 
 The environment overrides are `AIDASH_PREVIEW_DOMAIN`,
-`AIDASH_PREVIEW_LISTEN`, `AIDASH_PREVIEW_PUBLIC_PORT` and
-`AIDASH_PREVIEW_IN_PROCESS`.
+`AIDASH_PREVIEW_LISTEN`, `AIDASH_PREVIEW_PUBLIC_PORT`,
+`AIDASH_PREVIEW_POD_PORT` and `AIDASH_PREVIEW_IN_PROCESS`.
+
+The Deployment's Live preview ceilings are separate, so a Tenant may lower
+them without restarting the gateway:
+
+```toml
+[preview_limits]
+# The longest a Live preview may sit without a gateway request.
+idle_seconds = 900
+# The longest a Live preview may run from its start.
+absolute_seconds = 7200
+```
 
 `domain` is a bare lowercase DNS name: no scheme, port, path or wildcard. It
 must be a registrable domain, and it must not share the dashboard's
@@ -203,8 +216,9 @@ subdomain carries at least 128 bits. The `__Host-` prefix requires `Secure`,
 dashboard frame the File preview.
 
 Without a preview domain, the dashboard reports File previews unavailable for
-HTML and PDF and a Live preview cannot start. The dashboard formats listed
-above still render, and a Retained version can still be downloaded.
+HTML and PDF, the Live preview tools are not seeded or offered to a model, and
+the dashboard formats listed above still render. A Retained version can still
+be downloaded.
 
 ### Helm
 
@@ -219,6 +233,9 @@ preview:
   port: 8960
   publicPort: 443
   podPort: 3000
+  limits:
+    idle_seconds: 900
+    absolute_seconds: 7200
   ingress:
     enabled: true
     className: nginx
@@ -229,7 +246,10 @@ preview:
   `preview.domain` is required when enabled.
 - `preview.port` is the Preview gateway's Service port, `preview.publicPort` is
   the port a ticket URL names, and `preview.podPort` is the port a Live preview
-  Pod declares. The sandbox policy below is the only ingress that admits it.
+  Pod declares. The sandbox policy below is the only ingress that admits it, so
+  `live_preview_start` refuses any other port. `preview.limits` carries the
+  Deployment ceilings the capability profile gives the Runner; the same values
+  belong in `[preview_limits]` for the API process.
 - `preview.inProcess` keeps the gateway in the API server process, which
   exposes `<release>-preview` and uses the API Server's Pod as its selector.
   Setting it to false renders a separate Deployment `<release>-preview` that
@@ -251,7 +271,87 @@ profile instead of Helm.
 
 ## Live previews
 
-> **Placeholder.** Live previews are not described here yet. The Live preview
-> slice will replace this section when it lands; until then a Deployment cannot
-> start a Live preview, and the Live preview lifecycle, retention and viewing
-> contract are not available.
+A Live preview is a Run's long-lived Web server, mounted on one Working Area
+revision. Only a Sandboxed tool call in a Run starts one, so the Run's
+authority governs the code it runs; a person may stop one but never start one
+outside a Run.
+
+### Starting and stopping
+
+- `live_preview_start { command, port }` starts the command's Web server in an
+  Execution Pod and waits up to 120 seconds for the declared port to accept
+  connections. It returns the preview's status and a bounded tail of the
+  startup log, never an address for viewing.
+- The tool is Sandboxed: the Tenant must approve the `live_preview` group
+  through Catalog Approval before a Run may call it. A Deployment without a
+  Runner offers no such group.
+- `port` must be the Deployment's `preview.pod_port` (default 3000), the only
+  port the sandbox NetworkPolicy admits; any other port is refused with
+  `PREVIEW_PORT_NOT_ALLOWED`.
+- A Run has at most one Live preview. A start replaces the running one, and a
+  later model turn restarts it.
+- The Pod mounts the revision current at start and never publishes what its
+  server writes. It does not take the Area's writer slot, so a later turn can
+  run while the preview keeps serving.
+- `live_preview_stop {}` and `POST /api/runs/{id}/live-preview/stop` stop it.
+  The Run's requester and whoever may cancel the Run may stop it; viewing
+  alone does not allow it. `GET /api/runs/{id}/live-preview` reports
+  `may_stop` under the viewer's authority so the dashboard shows Stop only to
+  them.
+
+### Limits and stops
+
+- The Deployment sets ceilings through `[preview_limits]` (`idle_seconds`
+  default 900, `absolute_seconds` default 7200). A Tenant may only lower them,
+  with `GET`/`PUT /api/preview-limits/{tenant}` under the same Tenant
+  administration action as Workbench Test Limits. The effective values are the
+  lower of the two at start.
+- Every gateway request refreshes the idle timer; an active WebSocket refreshes
+  it at most once a minute. The absolute limit counts from the Runner's start.
+- It stops at the idle or absolute limit, when the Run is cancelled, when the
+  viewer's authority is revoked, when the Tenant is deleted, and when its
+  Working Area is cleaned up. A later Working Area revision marks it `stale`;
+  it keeps serving the revision it pinned, and its status reports both the
+  stale state and that revision.
+
+### Retention
+
+A running Live preview retains every File version of the revision it mounts,
+not only an HTML page and its siblings. Starting refuses with the quota reason
+when the extra bytes would exceed the Working Area's byte budget or the
+Tenant's storage ceiling. Retained bytes count only once a later publication
+supersedes the object, and the hold is released only after the Runner proves
+the Pod is gone; ordinary reclamation then erases what no other hold covers.
+
+### External services
+
+The Pod's Web server reaches the External services bound to its Run through the
+Egress gateway with a session-lifetime token that ends with the Live preview.
+That token resolves a bound service's Tenant Secret exactly as an operation
+token does, and keeps working after the Run completes.
+
+The viewer's page reaches the same services only through
+`<preview-origin>/__aidash/egress/<service>/…`, which the Preview gateway
+forwards to the Egress gateway with a separate page credential the Pod never
+holds. The page path is always admitted without a Tenant Secret, because any
+viewer may open the page. Both paths still require the service to be bound to
+the Run and the method to be declared, and both are recorded in the Run's
+egress requests; the record names the path (`operation`, `pod` or `page`).
+Requests are still limited by the service's declared limits.
+
+### Viewing
+
+A ticket from `POST /api/previews/tickets` (File versions) or
+`POST /api/previews/live-tickets` (a Live preview) opens the preview domain
+after the same authority check as downloading the Working Area's files. The
+Preview gateway proxies HTTP and WebSocket traffic to the Pod's declared port;
+only the gateway reaches that port. Every response carries the confinement
+policy, and the gateway refreshes the idle timer.
+
+### What needs a real cluster
+
+Starting and stopping the `serve` Pod, its readiness and log collection, the
+NetworkPolicy ingress, the node guard's termination proof, gateway HTTP/
+WebSocket proxying and Preview-to-Egress forwarding are exercised only on a
+real Kubernetes/gVisor Deployment. The domain rules, lifecycle, limits,
+retention, credentials and the dashboard API are covered without one.

@@ -1573,7 +1573,7 @@ pub(crate) async fn live_preview(
 	id: Uuid,
 ) -> Result<crate::apps::execution::capabilities::serializers::previews::LivePreviewStatus> {
 	use crate::apps::execution::capabilities::serializers::previews::LivePreviewStatus;
-	let (mut access, run) = run_access(&f, actor, id).await?;
+	let (mut access, run) = run_access(&f, actor.clone(), id).await?;
 	let domain = f.config.preview.as_ref().map(|p| p.domain.clone());
 	let result = crate::apps::execution::repositories::live_previews::status(
 		&f.store,
@@ -1582,7 +1582,44 @@ pub(crate) async fn live_preview(
 		domain,
 	)
 	.await;
-	access.finish(result).await.map(LivePreviewStatus::from)
+	let status = access.finish(result).await?;
+	let may_stop = may_stop(&f, &actor, &run, id).await?;
+	Ok(LivePreviewStatus::of(status, may_stop))
+}
+
+/// The viewer may stop a Live preview when they requested the Run or may
+/// cancel it; viewing alone does not allow it (ADR 0070).
+async fn may_stop(
+	f: &Federation,
+	actor: &Actor,
+	run: &crate::domain::Run,
+	id: Uuid,
+) -> Result<bool> {
+	let identity = match actor {
+		Actor::DeploymentAdministrator => return Ok(false),
+		Actor::Subject(identity) => identity.clone(),
+	};
+	let requester = aidash_application::authorization::execution::grant(
+		&crate::bootstrap::execution_grants(&f.store),
+		&run.metadata(),
+	)
+	.await?
+	.is_some_and(|grant| grant.root_subject == identity.subject);
+	if requester {
+		return Ok(true);
+	}
+	match aidash_application::authorization::runs::authorize_run(
+		&crate::bootstrap::run_control_repository(f, &identity),
+		id,
+	)
+	.await
+	{
+		Ok(_) => Ok(true),
+		Err(aidash_application::Error::Forbidden | aidash_application::Error::NotFound(_)) => {
+			Ok(false)
+		}
+		Err(error) => Err(error.into()),
+	}
 }
 
 /// Stop the Run's Live preview. Its requester and whoever may cancel the Run
@@ -1607,7 +1644,7 @@ pub(crate) async fn live_preview_stop(
 	let status = previews::status(&f.store, &mut access, &run, domain.clone()).await;
 	let status = access.finish(status).await?;
 	let Some(status) = status else {
-		return Ok(LivePreviewStatus { live_preview: None });
+		return Ok(LivePreviewStatus::of(None, false));
 	};
 	if !requester {
 		aidash_application::authorization::runs::authorize_run(
@@ -1617,7 +1654,7 @@ pub(crate) async fn live_preview_stop(
 		.await?;
 	}
 	if status.state.is_stopped() {
-		return Ok(LivePreviewStatus::from(Some(status)));
+		return Ok(LivePreviewStatus::of(Some(status), false));
 	}
 	let stopped = {
 		let (mut access, run) = run_access(&f, actor.clone(), id).await?;
@@ -1640,17 +1677,12 @@ pub(crate) async fn live_preview_stop(
 		let result = previews::settle(&f.store, &mut access, &run, domain, stopped.id).await;
 		access.finish(result).await?;
 	}
-	let (mut access, run) = run_access(&f, actor_for(&f, &identity).await?, id).await?;
+	let (mut access, run) = run_access(&f, Actor::Subject(identity), id).await?;
 	let result = previews::status(&f.store, &mut access, &run, None).await;
-	access.finish(result).await.map(LivePreviewStatus::from)
-}
-
-async fn actor_for(
-	f: &Federation,
-	identity: &crate::authorization::identity::SubjectIdentity,
-) -> Result<Actor> {
-	let _ = f;
-	Ok(Actor::Subject(identity.clone()))
+	access
+		.finish(result)
+		.await
+		.map(|status| LivePreviewStatus::of(status, false))
 }
 
 /// Issue a one-time ticket for a Run's Live preview under the same authority as

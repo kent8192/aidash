@@ -129,7 +129,7 @@ pub(crate) fn implementations() -> BTreeMap<String, Arc<dyn Tool>> {
 		),
 		(
 			"live_preview_start",
-			"Start this Run's Live preview: a long-lived Web server from the current Working Area revision. Waits up to 120 s for the declared port and returns its status and a bounded startup log, never a viewing address. Starting replaces a running preview.",
+			"Start this Run's Live preview: a long-lived Web server from the current Working Area revision. 'port' must be the Deployment's preview Pod port (preview.pod_port); any other port is refused. Waits up to 120 s for the port and returns its status and a bounded startup log, never a viewing address. Starting replaces a running preview.",
 			schema::<LivePreviewStart>(),
 		),
 		(

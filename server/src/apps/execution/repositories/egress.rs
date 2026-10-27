@@ -28,20 +28,106 @@ pub(crate) struct Gateway {
 }
 
 fn token_mac(store: &Store, operation: Uuid, expires: DateTime<Utc>) -> Result<Hmac<Sha256>> {
-	let mut mac = runner_mac(store, b"aidash-operation-egress-v1\0")?;
-	mac.update(operation.as_bytes());
-	mac.update(&expires.timestamp_micros().to_be_bytes());
-	Ok(mac)
+	Ok(keyed_mac(
+		runner_key(store)?.expose_secret().as_bytes(),
+		b"aidash-operation-egress-v1\0",
+		operation,
+		expires,
+	))
+}
+
+const SESSION_DOMAIN: &[u8] = b"aidash-session-egress-v1\0";
+const PAGE_DOMAIN: &[u8] = b"aidash-page-egress-v1\0";
+
+/// Who holds a Live preview's egress credential. The Pod's session token may
+/// attach the bound service's Tenant Secret; the page token the Preview gateway
+/// mints for the viewer's browser never does (ADR 0069).
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum SessionKind {
+	Pod,
+	Page,
+}
+
+impl SessionKind {
+	fn prefix(self) -> &'static str {
+		match self {
+			Self::Pod => "session:",
+			Self::Page => "page:",
+		}
+	}
+
+	fn domain(self) -> &'static [u8] {
+		match self {
+			Self::Pod => SESSION_DOMAIN,
+			Self::Page => PAGE_DOMAIN,
+		}
+	}
+
+	fn via(self) -> &'static str {
+		match self {
+			Self::Pod => "pod",
+			Self::Page => "page",
+		}
+	}
+}
+
+/// The Tenant Secret a credential may attach: the Pod's session yes, the
+/// viewer's page never, even when the service declares one.
+fn credential_name(
+	kind: SessionKind,
+	definition: &aidash_domain::egress::ExternalService,
+) -> Option<&str> {
+	match kind {
+		SessionKind::Pod => definition.secret.as_deref(),
+		SessionKind::Page => None,
+	}
 }
 
 fn session_mac(store: &Store, preview: Uuid, expires: DateTime<Utc>) -> Result<Hmac<Sha256>> {
-	let mut mac = runner_mac(store, b"aidash-session-egress-v1\0")?;
-	mac.update(preview.as_bytes());
-	mac.update(&expires.timestamp_micros().to_be_bytes());
-	Ok(mac)
+	egress_mac(store, SessionKind::Pod, preview, expires)
 }
 
-fn runner_mac(store: &Store, domain: &[u8]) -> Result<Hmac<Sha256>> {
+/// The page credential is MACed under its own domain, so a Pod's session token
+/// can never be replayed as a page token or the other way round.
+fn egress_mac(
+	store: &Store,
+	kind: SessionKind,
+	preview: Uuid,
+	expires: DateTime<Utc>,
+) -> Result<Hmac<Sha256>> {
+	Ok(keyed_mac(
+		runner_key(store)?.expose_secret().as_bytes(),
+		kind.domain(),
+		preview,
+		expires,
+	))
+}
+
+/// The MAC a session or page token is: `domain || id || expiry`. Kept separate
+/// from the Store so the kinds can be tested against the same key.
+fn keyed_mac(key: &[u8], domain: &[u8], preview: Uuid, expires: DateTime<Utc>) -> Hmac<Sha256> {
+	let mut mac = Hmac::<Sha256>::new_from_slice(key).expect("HMAC key");
+	mac.update(domain);
+	mac.update(preview.as_bytes());
+	mac.update(&expires.timestamp_micros().to_be_bytes());
+	mac
+}
+
+fn token(
+	store: &Store,
+	kind: SessionKind,
+	preview: Uuid,
+	expires: DateTime<Utc>,
+) -> Result<String> {
+	let signature = URL_SAFE_NO_PAD.encode(
+		egress_mac(store, kind, preview, expires)?
+			.finalize()
+			.into_bytes(),
+	);
+	Ok(format!("{}{preview}.{signature}", kind.prefix()))
+}
+
+fn runner_key(store: &Store) -> Result<secrecy::SecretString> {
 	let runner = store
 		.capabilities
 		.0
@@ -50,25 +136,23 @@ fn runner_mac(store: &Store, domain: &[u8]) -> Result<Hmac<Sha256>> {
 		.ok_or_else(|| Error::Invalid("Egress gateway requires a Runner".into()))?;
 	let key = std::env::var(&runner.token_env)
 		.map_err(|_| Error::Invalid("Egress credential unavailable".into()))?;
-	let key = secrecy::SecretString::from(key);
-	let mut mac = Hmac::<Sha256>::new_from_slice(key.expose_secret().as_bytes()).expect("HMAC key");
-	mac.update(domain);
-	Ok(mac)
+	Ok(secrecy::SecretString::from(key))
 }
 
-/// The session-lifetime token a Live preview's Web server and the Preview
-/// gateway use. It is revoked when the preview stops or its budget expires.
+/// The Pod's session-lifetime token. It may attach a bound service's Tenant
+/// Secret, exactly like an operation token; it ends with the preview.
 pub(crate) fn session_token(
 	preview: Uuid,
 	expires: DateTime<Utc>,
 	store: &Store,
 ) -> Result<String> {
-	let signature = URL_SAFE_NO_PAD.encode(
-		session_mac(store, preview, expires)?
-			.finalize()
-			.into_bytes(),
-	);
-	Ok(format!("session:{preview}.{signature}"))
+	token(store, SessionKind::Pod, preview, expires)
+}
+
+/// The page token only the Preview gateway mints, for the viewer's browser. It
+/// is never admitted with a Tenant Secret, and the Pod cannot forge it.
+pub(crate) fn page_token(preview: Uuid, expires: DateTime<Utc>, store: &Store) -> Result<String> {
+	token(store, SessionKind::Page, preview, expires)
 }
 async fn budget(access: &mut Access, operation: Uuid, service: &str) -> Result<Option<Budget>> {
 	Ok(Budget::objects()
@@ -267,6 +351,7 @@ struct RequestMeter {
 async fn admit_session(
 	store: &Store,
 	token: &str,
+	kind: SessionKind,
 	service: &str,
 	method: &str,
 	path: &str,
@@ -304,7 +389,7 @@ async fn admit_session(
 	if session.live_preview_id != preview_id {
 		return Err(Error::Forbidden);
 	}
-	session_mac(store, preview_id, session.expires_at)?
+	egress_mac(store, kind, preview_id, session.expires_at)?
 		.verify_slice(&signature)
 		.map_err(|_| Error::Forbidden)?;
 	if session.expires_at <= Utc::now() {
@@ -377,6 +462,19 @@ async fn admit_session(
 		.limits
 		.unwrap_or(settings.limits)
 		.lower_than(settings.limits)?;
+	// The Pod's Web server reaches the service with its Tenant Secret; the
+	// viewer's page never does, even when the service declares one (ADR 0069).
+	let credential = match credential_name(kind, &definition) {
+		Some(name) => Some(
+			store
+				.tenant_secrets
+				.as_ref()
+				.ok_or_else(|| Error::Invalid("secret_unavailable".into()))?
+				.resolve(&identity.tenant, name, &definition.base_url)
+				.await?,
+		),
+		None => None,
+	};
 	let mut row = EgressSession::objects()
 		.filter(EgressSession::field_id().eq(preview_id))
 		.select_for_update()
@@ -404,6 +502,7 @@ async fn admit_session(
 		.run_id(run.id)
 		.operation_id(None)
 		.session_id(Some(preview_id))
+		.via(kind.via().to_owned())
 		.service(service.to_owned())
 		.method(method.to_owned())
 		.path(path.to_owned())
@@ -428,10 +527,8 @@ async fn admit_session(
 		session: Some(preview_id),
 		service: service.to_owned(),
 		definition,
-		expires_at: session
-			.expires_at
-			.min(Utc::now() + chrono::Duration::seconds(60)),
-		credential: None,
+		expires_at: session.expires_at,
+		credential,
 		meter: Arc::new(RequestMeter {
 			store: store.clone(),
 			identity,
@@ -453,10 +550,31 @@ impl Authority for Gateway {
 		path: &str,
 		query_digest: &str,
 	) -> aidash_application::Result<Admission> {
-		if let Some(session) = token.strip_prefix("session:") {
-			return admit_session(&self.store, session, service, method, path, query_digest)
-				.await
-				.map_err(Into::into);
+		if let Some(session) = token.strip_prefix(SessionKind::Pod.prefix()) {
+			return admit_session(
+				&self.store,
+				session,
+				SessionKind::Pod,
+				service,
+				method,
+				path,
+				query_digest,
+			)
+			.await
+			.map_err(Into::into);
+		}
+		if let Some(page) = token.strip_prefix(SessionKind::Page.prefix()) {
+			return admit_session(
+				&self.store,
+				page,
+				SessionKind::Page,
+				service,
+				method,
+				path,
+				query_digest,
+			)
+			.await
+			.map_err(Into::into);
 		}
 		let result: Result<Admission> = async {
 			if path.len() > 4096 || query_digest.len() != 64 {
@@ -628,6 +746,7 @@ impl Authority for Gateway {
 				.sent_bytes(0)
 				.received_bytes(0)
 				.duration_ms(0)
+				.via("operation".to_owned())
 				.error(Some("stream_interrupted".to_owned()))
 				.created_at(Utc::now())
 				.finish();
@@ -822,3 +941,6 @@ impl Meter for RequestMeter {
 		result.map_err(Into::into)
 	}
 }
+
+#[cfg(test)]
+mod session_tests;

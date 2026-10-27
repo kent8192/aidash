@@ -67,6 +67,9 @@ pub struct RequestRecord {
 	pub received_bytes: i64,
 	#[field]
 	pub duration_ms: i64,
+	/// `operation`, `pod` or `page`: which path admitted the request.
+	#[field(field_type = "text")]
+	pub via: String,
 	#[field(field_type = "text", null = true)]
 	pub error: Option<String>,
 	#[field]

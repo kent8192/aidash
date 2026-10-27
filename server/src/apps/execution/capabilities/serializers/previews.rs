@@ -44,6 +44,9 @@ impl From<aidash_application::preview::Issued> for PreviewTicket {
 #[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct LivePreviewStatus {
 	pub live_preview: Option<LivePreview>,
+	/// Whether this viewer may stop it: the Run's requester or whoever may
+	/// cancel the Run (ADR 0070). The dashboard shows Stop only then.
+	pub may_stop: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
@@ -79,10 +82,11 @@ impl From<aidash_application::preview::live::Status> for LivePreview {
 	}
 }
 
-impl From<Option<aidash_application::preview::live::Status>> for LivePreviewStatus {
-	fn from(value: Option<aidash_application::preview::live::Status>) -> Self {
+impl LivePreviewStatus {
+	pub fn of(value: Option<aidash_application::preview::live::Status>, may_stop: bool) -> Self {
 		Self {
 			live_preview: value.map(Into::into),
+			may_stop,
 		}
 	}
 }

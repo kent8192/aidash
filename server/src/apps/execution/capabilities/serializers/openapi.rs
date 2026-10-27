@@ -440,6 +440,7 @@ pub(crate) fn register(contracts: &mut Contracts, document: &mut OpenApiSchema) 
 			200,
 			"application/json",
 		)?;
+	contracts.path(document, views::live_previews::live_preview, &["Uuid"])?;
 	contracts
 		.response::<_, crate::apps::execution::capabilities::serializers::previews::LivePreviewStatus>(
 			document,
@@ -447,6 +448,7 @@ pub(crate) fn register(contracts: &mut Contracts, document: &mut OpenApiSchema) 
 			200,
 			"application/json",
 		)?;
+	contracts.path(document, views::live_previews::live_preview_stop, &["Uuid"])?;
 	contracts
 		.response::<_, crate::apps::execution::capabilities::serializers::previews::LivePreviewStatus>(
 			document,
@@ -466,6 +468,7 @@ pub(crate) fn register(contracts: &mut Contracts, document: &mut OpenApiSchema) 
 			200,
 			"application/json",
 		)?;
+	contracts.path(document, views::live_previews::preview_limits, &["String"])?;
 	contracts
 		.response::<_, crate::apps::execution::capabilities::serializers::previews::TenantPreviewLimits>(
 			document,
@@ -478,6 +481,11 @@ pub(crate) fn register(contracts: &mut Contracts, document: &mut OpenApiSchema) 
 			document,
 			views::live_previews::set_preview_limits,
 		)?;
+	contracts.path(
+		document,
+		views::live_previews::set_preview_limits,
+		&["String"],
+	)?;
 	contracts
 		.response::<_, crate::apps::execution::capabilities::serializers::previews::TenantPreviewLimits>(
 			document,

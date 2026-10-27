@@ -315,6 +315,9 @@ fn websocket_request(request: &Request<hyper::body::Incoming>) -> bool {
 /// Proxy a WebSocket handshake and tunnel both directions. Dev servers rely on
 /// this for hot reload; the gateway is the only path into the Pod (ADR 0068).
 async fn live_websocket(
+	authority: &Arc<dyn Authority>,
+	host: &str,
+	cookie: &str,
 	proxy: &Proxy,
 	mut request: Request<hyper::body::Incoming>,
 ) -> Response<Body> {
@@ -395,15 +398,31 @@ async fn live_websocket(
 				.body(empty())
 				.unwrap();
 			let upgrade = hyper::upgrade::on(&mut request);
+			// An active socket is activity: refresh the idle timer at most once
+			// a minute so a 15-minute idle limit does not close a live app.
+			let authority = authority.clone();
+			let host = host.to_owned();
+			let cookie = cookie.to_owned();
+			let refresh = tokio::spawn(async move {
+				loop {
+					tokio::time::sleep(Duration::from_secs(60)).await;
+					if !matches!(authority.live(&host, &cookie).await, Ok(Some(_))) {
+						return;
+					}
+				}
+			});
 			tokio::spawn(async move {
 				let Ok(upgraded) = upgrade.await else {
+					refresh.abort();
 					return;
 				};
 				let mut client = TokioIo::new(upgraded);
 				if !leftover.is_empty() && client.write_all(&leftover).await.is_err() {
+					refresh.abort();
 					return;
 				}
 				let _ = tokio::io::copy_bidirectional(&mut client, &mut stream).await;
+				refresh.abort();
 			});
 			return response;
 		}
@@ -415,11 +434,14 @@ async fn live_websocket(
 
 async fn live(
 	client: &reqwest::Client,
+	authority: &Arc<dyn Authority>,
+	host: &str,
+	cookie: &str,
 	proxy: Proxy,
 	request: Request<hyper::body::Incoming>,
 ) -> Response<Body> {
 	if websocket_request(&request) {
-		return live_websocket(&proxy, request).await;
+		return live_websocket(authority, host, cookie, &proxy, request).await;
 	}
 	if request.uri().path().starts_with(EGRESS_PREFIX) {
 		return egress_forward(client, &proxy, request).await;
@@ -507,7 +529,7 @@ async fn respond(
 		return plain(StatusCode::FORBIDDEN, "preview forbidden");
 	};
 	match authority.live(&host, cookie).await {
-		Ok(Some(proxy)) => live(&client, proxy, request).await,
+		Ok(Some(proxy)) => live(&client, &authority, &host, cookie, proxy, request).await,
 		Ok(None) => file_view(authority.as_ref(), &host, cookie, &method, &path).await,
 		Err(error) => error_response(error),
 	}
