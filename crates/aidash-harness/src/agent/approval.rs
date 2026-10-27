@@ -49,7 +49,10 @@ fn approval_tool(pending: &PendingCall<'_>, target: &str) -> ApprovalTool {
 	let (id, version) = match &pending.contract.identity {
 		ToolIdentity::Descriptor(reference) => (reference.id.clone(), reference.version.clone()),
 		ToolIdentity::Registry(reference) => (reference.id.clone(), reference.version.clone()),
-		ToolIdentity::AgentPlugin(tool) => plugin_approval_reference(tool),
+		ToolIdentity::AgentPlugin(tool) => {
+			let target = ToolCallTarget::AgentPlugin(tool.clone());
+			(target.id(), target.version())
+		}
 		ToolIdentity::Builtin(name) => (name.clone(), "builtin".into()),
 	};
 	let specification = pending.tool.specification();

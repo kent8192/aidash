@@ -56,6 +56,7 @@ use std::{path::PathBuf, sync::Arc};
 impl Default for Profile {
 	fn default() -> Self {
 		Self {
+			mcp: Default::default(),
 			limits: limits::ContentLimits::default(),
 			egress: None,
 			admission: false,
@@ -113,7 +114,10 @@ impl Runtime {
 				));
 			}
 		}
-		if !profile.limits.valid()
+		if !(1..=3600).contains(&profile.mcp.human_wait_seconds)
+			|| !(1..=100).contains(&profile.mcp.continuation_sends)
+			|| !(1..=1_000_000).contains(&profile.mcp.sampling_tokens)
+			|| !profile.limits.valid()
 			|| !profile.storage.is_absolute()
 			|| profile.storage.parent().is_none()
 			|| profile.working_bytes == 0

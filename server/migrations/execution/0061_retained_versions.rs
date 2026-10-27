@@ -4,8 +4,8 @@
 // cascade-release for a holder whose row the workspaces app owns.
 use reinhardt::db::migrations::prelude::*;
 pub(super) fn migration() -> Migration {
-	Migration::new("0060_retained_versions", "execution")
-		.add_dependency("execution", "0059_research_history_merge")
+	Migration::new("0061_retained_versions", "execution")
+		.add_dependency("execution", "0060_plugin_research_merge")
 		.atomic(true)
 		.database_only(true)
 		.add_operation(Operation::CreateTable {
@@ -203,9 +203,9 @@ pub(super) fn migration() -> Migration {
 			operator_class: None,
 		})
 		.add_operation(Operation::RunSQL {
-			sql: include_str!("sql/forward/0060_retained_versions.sql").to_owned(),
+			sql: include_str!("sql/forward/0061_retained_versions.sql").to_owned(),
 			reverse_sql: Some(
-				include_str!("sql/backward/0060_retained_versions.sql").to_owned(),
+				include_str!("sql/backward/0061_retained_versions.sql").to_owned(),
 			),
 		})
 }

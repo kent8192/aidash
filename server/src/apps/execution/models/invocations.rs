@@ -1,8 +1,8 @@
 //! Persistent invocations records.
 
-use crate::Result;
 use crate::apps::execution::serializers::invocations::Invocation as InvocationSummary;
 use crate::apps::execution::services::states::InvocationStatus;
+use crate::{Error, Result};
 use chrono::{DateTime, Utc};
 use reinhardt::db::associations::ForeignKeyField;
 use reinhardt::db::backends::TransactionExecutor;
@@ -44,6 +44,38 @@ pub struct Invocation {
 }
 
 impl Invocation {
+	pub(crate) async fn completed(
+		db: &mut dyn TransactionExecutor,
+		run: Uuid,
+		key: &str,
+		name: &str,
+		input: &Value,
+	) -> Result<Option<Value>> {
+		let (sql, values) = Query::select()
+			.column(reinhardt::query::ColumnRef::Asterisk)
+			.from(Alias::new("invocations"))
+			.and_where(Expr::col("run_id").eq(Expr::value(run)))
+			.and_where(Expr::col("idempotency_key").eq(Expr::value(key)))
+			.build(PostgresQueryBuilder);
+		let Some(row) = db.fetch_optional(&sql, convert_values(values)).await? else {
+			return Ok(None);
+		};
+		let saved: InvocationSummary =
+			serde_json::from_value(QueryRow::from_backend_row(row).data)?;
+		if saved.tool != name || saved.input != *input {
+			return Err(Error::Conflict(
+				"tool idempotency key reused with different input".into(),
+			));
+		}
+		if saved.status == "COMPLETED" {
+			saved
+				.result
+				.map(Some)
+				.ok_or_else(|| Error::Conflict("completed invocation has no result".into()))
+		} else {
+			Ok(None)
+		}
+	}
 	pub(crate) async fn page(
 		db: &mut dyn TransactionExecutor,
 		run: Uuid,

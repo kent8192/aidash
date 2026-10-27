@@ -2,8 +2,8 @@
 // Logical model state; 0060 owns the physical tables, keys and the message trigger.
 use reinhardt::db::migrations::prelude::*;
 pub(super) fn migration() -> Migration {
-	Migration::new("0062_retained_versions_state", "execution")
-		.add_dependency("execution", "0061_retained_versions_row_level_security")
+	Migration::new("0063_retained_versions_state", "execution")
+		.add_dependency("execution", "0062_retained_versions_row_level_security")
 		.state_only(true)
 		.atomic(true)
 		.add_operation(Operation::CreateTable {

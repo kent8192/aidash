@@ -290,7 +290,7 @@ pub(super) fn migration() -> Migration {
                 .with_domain_option(None)
             ,
                 ColumnDefinition::new("tenant", FieldType::Text)
-                	.with_not_null(true)
+					.with_not_null(true)
                 	.with_unique(false)
                 	.with_primary_key(false)
                 	.with_auto_increment(false)
@@ -309,7 +309,7 @@ pub(super) fn migration() -> Migration {
                 .with_unique(false).with_primary_key(true).with_auto_increment(false)
                 .with_default(None).with_generated(None).with_domain_option(None),
                 ColumnDefinition::new("tenant", FieldType::Text)
-                	.with_not_null(true)
+                .with_not_null(true)
                 	.with_unique(false)
                 	.with_primary_key(false)
                 	.with_auto_increment(false)
@@ -359,7 +359,7 @@ pub(super) fn migration() -> Migration {
                 .with_not_null(true).with_unique(false).with_primary_key(true)
                 .with_auto_increment(true).with_default(None).with_generated(None)
                 .with_domain_option(None), ColumnDefinition::new("tenant", FieldType::Text)
-                	.with_not_null(true)
+                .with_not_null(true)
                 	.with_unique(false)
                 	.with_primary_key(false)
                 	.with_auto_increment(false)
@@ -399,7 +399,7 @@ pub(super) fn migration() -> Migration {
                 .with_unique(false).with_primary_key(true).with_auto_increment(false)
                 .with_default(None).with_generated(None).with_domain_option(None),
                 ColumnDefinition::new("tenant", FieldType::Text)
-                	.with_not_null(true)
+                .with_not_null(true)
                 	.with_unique(false)
                 	.with_primary_key(false)
                 	.with_auto_increment(false)
@@ -451,7 +451,7 @@ pub(super) fn migration() -> Migration {
                 .with_default(None).with_generated(None).with_domain_option(None)
             ,
                 ColumnDefinition::new("tenant", FieldType::Text)
-                	.with_not_null(true)
+                .with_not_null(true)
                 	.with_unique(false)
                 	.with_primary_key(false)
                 	.with_auto_increment(false)
@@ -506,7 +506,7 @@ pub(super) fn migration() -> Migration {
                 .with_primary_key(false).with_auto_increment(false).with_default(None)
                 .with_generated(None).with_domain_option(None),
                 ColumnDefinition::new("tenant", FieldType::Text)
-                	.with_not_null(true)
+                .with_not_null(true)
                 	.with_unique(false)
                 	.with_primary_key(false)
                 	.with_auto_increment(false)
@@ -554,7 +554,7 @@ pub(super) fn migration() -> Migration {
                 .with_generated(None).with_domain_option(None)
             ,
                 ColumnDefinition::new("tenant", FieldType::Text)
-                	.with_not_null(true)
+                .with_not_null(true)
                 	.with_unique(false)
                 	.with_primary_key(false)
                 	.with_auto_increment(false)
@@ -667,7 +667,7 @@ pub(super) fn migration() -> Migration {
                 .with_primary_key(false).with_auto_increment(false).with_default(None)
                 .with_generated(None).with_domain_option(None),
                 ColumnDefinition::new("tenant", FieldType::Text)
-                	.with_not_null(true)
+                .with_not_null(true)
                 	.with_unique(false)
                 	.with_primary_key(false)
                 	.with_auto_increment(false)
@@ -697,7 +697,7 @@ pub(super) fn migration() -> Migration {
                 .with_default(None).with_generated(None).with_domain_option(None)
             ,
                 ColumnDefinition::new("tenant", FieldType::Text)
-                	.with_not_null(true)
+                .with_not_null(true)
                 	.with_unique(false)
                 	.with_primary_key(false)
                 	.with_auto_increment(false)
@@ -802,7 +802,7 @@ pub(super) fn migration() -> Migration {
                 .with_generated(None).with_domain_option(None)
             ,
                 ColumnDefinition::new("tenant", FieldType::Text)
-                	.with_not_null(true)
+                .with_not_null(true)
                 	.with_unique(false)
                 	.with_primary_key(false)
                 	.with_auto_increment(false)
@@ -967,7 +967,7 @@ pub(super) fn migration() -> Migration {
                 .with_generated(None).with_domain_option(None)
             ,
                 ColumnDefinition::new("tenant", FieldType::Text)
-                	.with_not_null(true)
+                .with_not_null(true)
                 	.with_unique(false)
                 	.with_primary_key(false)
                 	.with_auto_increment(false)
@@ -1014,7 +1014,7 @@ pub(super) fn migration() -> Migration {
                 .with_unique(false).with_primary_key(false).with_auto_increment(false)
                 .with_default(None).with_generated(None).with_domain_option(None),
                 ColumnDefinition::new("tenant", FieldType::Text)
-                	.with_not_null(true)
+                .with_not_null(true)
                 	.with_unique(false)
                 	.with_primary_key(false)
                 	.with_auto_increment(false)
@@ -1086,7 +1086,7 @@ pub(super) fn migration() -> Migration {
                 .to_string()), ModelEnumValue::String("STARTED".to_string()),
                 ModelEnumValue::String("UNCERTAIN".to_string())], })),
                 ColumnDefinition::new("tenant", FieldType::Text)
-                	.with_not_null(true)
+                .with_not_null(true)
                 	.with_unique(false)
                 	.with_primary_key(false)
                 	.with_auto_increment(false)
@@ -1194,7 +1194,7 @@ pub(super) fn migration() -> Migration {
                 .with_primary_key(false).with_auto_increment(false).with_default(None)
                 .with_generated(None).with_domain_option(None),
                 ColumnDefinition::new("tenant", FieldType::Text)
-                	.with_not_null(true)
+                .with_not_null(true)
                 	.with_unique(false)
                 	.with_primary_key(false)
                 	.with_auto_increment(false)
@@ -1242,7 +1242,7 @@ pub(super) fn migration() -> Migration {
                 .with_default(None).with_generated(None).with_domain_option(None)
             ,
                 ColumnDefinition::new("tenant", FieldType::Text)
-                	.with_not_null(true)
+                .with_not_null(true)
                 	.with_unique(false)
                 	.with_primary_key(false)
                 	.with_auto_increment(false)
@@ -1332,7 +1332,7 @@ pub(super) fn migration() -> Migration {
                 .with_primary_key(false).with_auto_increment(false).with_default(None)
                 .with_generated(None).with_domain_option(None),
                 ColumnDefinition::new("tenant", FieldType::Text)
-                	.with_not_null(true)
+                .with_not_null(true)
                 	.with_unique(false)
                 	.with_primary_key(false)
                 	.with_auto_increment(false)

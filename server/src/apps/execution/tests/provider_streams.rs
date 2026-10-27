@@ -378,20 +378,24 @@ async fn incomplete_or_invalid_streams_produce_no_response(
 }
 
 /// Truncated or refused streams end as the same typed terminal failures as
-/// non-streamed completions; their output is never acted on.
+/// non-streamed completions. Truncated text is retained for bounded Sampling;
+/// terminal responses never expose actionable tool calls.
 #[rstest::rstest]
 #[case::length(
 	vec![delta(json!({"content":"partial"})), finish("length"), done()],
 	Failure::OutputTruncated,
+	"partial",
 )]
 #[case::refusal(
 	vec![delta(json!({"refusal":"I cannot help"})), finish("stop"), done()],
 	Failure::Refused,
+	"",
 )]
 #[tokio::test]
 async fn truncated_or_refused_streams_end_as_terminal_failures(
 	#[case] _steps: Vec<Step>,
 	#[case] expected: Failure,
+	#[case] expected_text: &str,
 	#[from(stream_router)]
 	#[with(_steps.clone())]
 	_router: Arc<ServerRouter>,
@@ -410,7 +414,7 @@ async fn truncated_or_refused_streams_end_as_terminal_failures(
 		matches!(
 			&result,
 			Err(aidash_application::Error::TerminalResponse(actual, response))
-				if *actual == expected && response.text.is_empty() && response.tool_calls.is_empty()
+				if *actual == expected && response.text == expected_text && response.tool_calls.is_empty()
 		),
 		"{result:?}"
 	);
