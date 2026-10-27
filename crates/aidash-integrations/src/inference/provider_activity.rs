@@ -23,13 +23,13 @@ pub fn chat(message: &Value) -> Vec<Value> {
 		.into_iter()
 		.flatten()
 		.filter(|item| item["type"] == "url_citation")
-		.cloned()
+		.map(|item| observable(item.clone()))
 		.collect()
 }
 
 pub fn item(value: &Value) -> Option<Value> {
 	let kind = value["type"].as_str()?;
-	if !matches!(
+	if !(matches!(
 		kind,
 		"web_search_call"
 			| "web_fetch_call"
@@ -39,7 +39,7 @@ pub fn item(value: &Value) -> Option<Value> {
 			| "openrouter:web_fetch"
 			| "openrouter:datetime"
 			| "openrouter:fusion"
-	) && !(matches!(
+	) || matches!(
 		kind,
 		"server_tool_call" | "server_tool_result" | "function_call"
 	) && aidash_domain::tool::provider_tools::declaration(

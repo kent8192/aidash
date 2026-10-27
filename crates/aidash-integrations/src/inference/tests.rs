@@ -1069,7 +1069,12 @@ mod cache_salt {
 
 #[test]
 fn provider_tools_activity_survives_acceptance_and_model_authored_history() {
-	let response = parse_openai(br#"{"choices":[{"finish_reason":"stop","message":{"content":"Reported source","annotations":[{"type":"url_citation","url_citation":{"url":"https://example.com","title":"Reported"}}]}}],"usage":{"prompt_tokens":20,"completion_tokens":10,"server_tool_use":{"web_search_requests":2},"cost":0.012}}"#).unwrap();
+	let response = parse_openai(br#"{"choices":[{"finish_reason":"stop","message":{"content":"Reported source","annotations":[{"type":"url_citation","url_citation":{"url":"https://example.com","title":"Reported","reasoning_details":"private-annotation-reasoning"}}]}}],"usage":{"prompt_tokens":20,"completion_tokens":10,"server_tool_use":{"web_search_requests":2},"cost":0.012}}"#).unwrap();
+	assert!(
+		!serde_json::to_string(&response.provider_activity)
+			.unwrap()
+			.contains("private-annotation-reasoning")
+	);
 	assert_eq!(response.reported.server_tool_use["web_search_requests"], 2);
 	assert_eq!(response.reported.cost.unwrap().nanocredits, 12_000_000);
 	let accepted: ModelResponse =
