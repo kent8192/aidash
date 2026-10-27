@@ -148,7 +148,7 @@ pub struct SecretCall {
 }
 
 /// How a call's Tenant Secret was resolved. A brokered call never reads the
-/// value: W3b sends it to [`SecretRoute::base`] with [`SecretRoute::token`].
+/// value: the transport sends it to [`SecretRoute::base`] with [`SecretRoute::token`].
 pub enum Resolved {
 	/// A self-hosted node reads the pinned version to make the call.
 	Value(SecretString),

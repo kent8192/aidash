@@ -1,4 +1,4 @@
-//! #310 W7: the real Tenant Secret broker, the real server-side adapter and the
+//! The real Tenant Secret broker, the real server-side adapter and the
 //! real transports, run together over loopback. The broker's upstream origin is
 //! replaced only through the `test-support` feature; the public-address and
 //! sealed-host checks still apply to each token's destination.

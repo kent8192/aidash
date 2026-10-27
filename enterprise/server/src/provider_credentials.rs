@@ -117,7 +117,7 @@ pub struct TenantSecretBrokerConfiguration {
 /// The Tenant Secret call adapter, or `None` when no broker is configured.
 /// The server role signs with the broker's own key; the worker role reuses its
 /// existing worker broker key and takes only the endpoint and audience here
-/// (ADR 0095, plan "Deployment configuration").
+/// (ADR 0095).
 pub fn secret_calls(
 	broker: Option<&serde_json::Value>,
 	tenant_secret_broker: Option<&serde_json::Value>,
