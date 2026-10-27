@@ -103,6 +103,22 @@ async fn a_steps_scope_controls_access_to_its_persisted_provider_credential_pin(
 	store.provider_key_material_reader = Some(secrets);
 	let run = Uuid::now_v7();
 	// Current policy comes from the persisted Run's Tenant, not a synthetic pin.
+	let document: aidash_domain::policy::PolicyBundle = serde_json::from_value(
+		serde_json::json!({"tenant":"acme","subjects":{"fixture":{"kind":"user"}},"policies":[]}),
+	)
+	.unwrap();
+	let bundle = crate::apps::identity::models::AuthorizationBundle::build()
+		.tenant("acme")
+		.revision(1)
+		.document(reinhardt::db::orm::Json(serde_json::json!(document)))
+		.updated_at(chrono::Utc::now())
+		.finish();
+	let mut seed = database.begin_in(&tenant).await;
+	crate::apps::identity::models::AuthorizationBundle::objects()
+		.insert_with_executor(seed.as_mut(), &bundle)
+		.await
+		.unwrap();
+	seed.commit().await.unwrap();
 	let workspace = store
 		.create_workspace(&tenant, "fixture", "Step policy", "Tenant scope")
 		.await
