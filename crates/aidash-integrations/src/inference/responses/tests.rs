@@ -1522,3 +1522,23 @@ mod openrouter {
 		assert!(result.is_err(), "{:?}", result.err());
 	}
 }
+
+#[test]
+fn provider_tools_responses_activity_is_distinct_from_client_calls_and_reasoning() {
+	let value = json!({"status":"completed","output":[
+        {"type":"web_search_call","id":"search","status":"completed","action":{"query":"test"}},
+        {"type":"fusion_call","id":"panel","result":{"analysis":{"consensus":["Agreed"]},"responses":[{"model":"openai/gpt-4.1","content":"Panel answer","reasoning":"private"}]}},
+        {"type":"message","content":[{"type":"output_text","text":"Answer","annotations":[{"type":"url_citation","url":"https://example.com"}]}]},
+        {"type":"reasoning","summary":["private"]}
+    ],"usage":{"input_tokens":10,"output_tokens":20,"server_tool_use":{"web_search_requests":1}}});
+	let response = completed_with_cost(&value, None, true).unwrap();
+	assert!(response.tool_calls.is_empty());
+	assert_eq!(response.provider_activity.len(), 3);
+	assert_eq!(response.provider_activity[0]["action"]["query"], "test");
+	assert!(
+		response.provider_activity[1]["result"]["responses"][0]
+			.get("reasoning")
+			.is_none()
+	);
+	assert_eq!(response.reported.server_tool_use["web_search_requests"], 1);
+}

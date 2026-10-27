@@ -183,6 +183,9 @@ pub struct OrderedContext {
 #[derive(Debug, Clone, Default, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct ModelResponse {
+	/// Observable provider-owned activity, never Research evidence or citations.
+	#[serde(default, skip_serializing_if = "Vec::is_empty")]
+	pub provider_activity: Vec<Value>,
 	pub text: String,
 	pub tool_calls: Vec<ToolCall>,
 	pub input_tokens: u64,
@@ -448,6 +451,17 @@ impl ModelRequest {
 				messages
 					.push(json!({"role":"user","content":self.user_content(parts, breakpoints)}));
 			}
+		}
+		// Older Projection Versions keep their JSON snapshot, but provider-owned
+		// results also retain their model-authored role, one message per Model Turn.
+		let legacy = match &self.context {
+			ModelContext::Legacy(value) => Some(value.clone()),
+			ModelContext::Ordered(ordered) => serde_json::from_str::<Value>(&ordered.stable).ok(),
+			_ => None,
+		};
+		if let Some(legacy) = legacy {
+			let history = legacy["history"].as_array().into_iter().flatten().filter(|event| event["kind"] == "assistant" && event["provider_activity"].as_array().is_some_and(|items| !items.is_empty())).map(|event| json!({"role":"assistant","content":json!({"text":event["text"],"provider_tool_activity":event["provider_activity"],"research_evidence":false}).to_string()}));
+			messages.splice(1..1, history);
 		}
 		let mut body = json!({ "messages": messages });
 		if !self.tools.is_empty() {

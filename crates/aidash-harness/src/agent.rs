@@ -3086,7 +3086,8 @@ fn record_model_turn(
 	text: &str,
 	calls: &[aidash_domain::provider::ToolCall],
 ) -> Result<()> {
-	if version != ProjectionVersion::Native {
+	let provider_activity = run.state.tool()?.response.provider_activity.clone();
+	if version != ProjectionVersion::Native && provider_activity.is_empty() {
 		return Ok(());
 	}
 	let epoch = run.state.tool()?.response_epoch;
@@ -3097,6 +3098,7 @@ fn record_model_turn(
 		return Ok(());
 	}
 	let event = ContextEvent::Assistant {
+		provider_activity,
 		epoch,
 		text: text.to_owned(),
 		calls: calls.iter().map(|call| call.id.clone()).collect(),

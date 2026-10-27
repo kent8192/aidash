@@ -645,6 +645,7 @@ mod cache_salt {
 	fn native(scope: CacheScope) -> ModelRequest {
 		let mut context = aidash_domain::context::Context::default();
 		context.push(aidash_domain::context::ContextEvent::Assistant {
+			provider_activity: vec![],
 			epoch: 1,
 			text: String::new(),
 			calls: vec!["call-1".into()],
@@ -1064,6 +1065,62 @@ mod cache_salt {
 		);
 		assert!(upstream.bodies().is_empty());
 	}
+}
+
+#[test]
+fn provider_tools_activity_survives_acceptance_and_model_authored_history() {
+	let response = parse_openai(br#"{"choices":[{"finish_reason":"stop","message":{"content":"Reported source","annotations":[{"type":"url_citation","url_citation":{"url":"https://example.com","title":"Reported"}}]}}],"usage":{"prompt_tokens":20,"completion_tokens":10,"server_tool_use":{"web_search_requests":2},"cost":0.012}}"#).unwrap();
+	assert_eq!(response.reported.server_tool_use["web_search_requests"], 2);
+	assert_eq!(response.reported.cost.unwrap().nanocredits, 12_000_000);
+	let accepted: ModelResponse =
+		serde_json::from_value(serde_json::to_value(&response).unwrap()).unwrap();
+	assert_eq!(accepted.provider_activity.len(), 1);
+	let mut context = aidash_domain::context::Context::default();
+	context.push(aidash_domain::context::ContextEvent::Assistant {
+		epoch: 1,
+		text: accepted.text,
+		calls: vec![],
+		provider_activity: accepted.provider_activity,
+	});
+	context.push(aidash_domain::context::ContextEvent::Assistant {
+		epoch: 2,
+		text: String::new(),
+		calls: vec!["not-executed".into()],
+		provider_activity: vec![
+			json!({"type":"datetime_call","result":{"datetime":"2026-10-27T00:00:00Z"}}),
+		],
+	});
+	assert!(context.history.iter().all(|entry| entry.research.is_none()));
+	let restored = serde_json::from_value(serde_json::to_value(&context).unwrap()).unwrap();
+	let native = aidash_domain::projection::native::native_context(&restored, &json!({}));
+	let request = ModelRequest {
+		context: aidash_domain::provider::ModelContext::Native(native),
+		..Default::default()
+	};
+	let messages = request.input_body()["messages"].as_array().unwrap().clone();
+	assert_eq!(
+		messages
+			.iter()
+			.filter(|message| message["role"] == "assistant")
+			.count(),
+		2
+	);
+	let assistant = messages
+		.iter()
+		.find(|message| message["role"] == "assistant")
+		.unwrap();
+	assert!(
+		assistant["content"]
+			.as_str()
+			.unwrap()
+			.contains("https://example.com")
+	);
+	assert!(
+		assistant["content"]
+			.as_str()
+			.unwrap()
+			.contains("not Research evidence")
+	);
 }
 
 #[tokio::test]

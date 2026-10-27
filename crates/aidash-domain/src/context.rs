@@ -900,6 +900,8 @@ pub enum ContextEvent {
 	/// calls in the model's order. Each executed call's `Tool` event follows
 	/// and carries the call itself. Reasoning output is never recorded.
 	Assistant {
+		#[serde(default, skip_serializing_if = "Vec::is_empty")]
+		provider_activity: Vec<Value>,
 		epoch: i64,
 		text: String,
 		calls: Vec<String>,

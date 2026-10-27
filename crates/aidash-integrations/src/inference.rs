@@ -18,6 +18,7 @@ use std::sync::Arc;
 
 pub mod cache_salt;
 pub use cache_salt::{CacheSaltKey, CacheSaltKeys};
+mod provider_activity;
 pub mod responses;
 
 pub struct OpenRouterProvider {
@@ -685,6 +686,7 @@ pub fn parse_openai(body: &[u8]) -> Result<ModelResponse> {
 	let message = &choice["message"];
 	let count = |pointer: &str| value.pointer(pointer).and_then(Value::as_u64);
 	let reported = ReportedUsage {
+		server_tool_use: provider_activity::usage(&value),
 		input_tokens: count("/usage/prompt_tokens"),
 		output_tokens: count("/usage/completion_tokens"),
 		cache_read_tokens: count("/usage/prompt_tokens_details/cached_tokens"),
@@ -724,6 +726,7 @@ pub fn parse_openai(body: &[u8]) -> Result<ModelResponse> {
 	}
 	let content = message["content"].as_str().unwrap_or_default();
 	let mut result = ModelResponse {
+		provider_activity: provider_activity::chat(message),
 		text: if content.trim().is_empty() {
 			String::new()
 		} else {
@@ -733,6 +736,13 @@ pub fn parse_openai(body: &[u8]) -> Result<ModelResponse> {
 	};
 	if let Some(calls) = message["tool_calls"].as_array() {
 		for call in calls {
+			if call["type"].as_str().is_some_and(|kind| kind != "function") {
+				if let Some(activity) = provider_activity::item(call) {
+					result.provider_activity.push(activity);
+					continue;
+				}
+				return Err(Error::External("unknown provider tool call".into()));
+			}
 			result.tool_calls.push(ToolCall {
 				id: field(call, "id")?,
 				name: field(&call["function"], "name")?,

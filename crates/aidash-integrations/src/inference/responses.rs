@@ -926,6 +926,11 @@ fn incomplete(
 fn reported(response: &Value, openrouter: bool) -> ReportedUsage {
 	let count = |pointer: &str| response.pointer(pointer).and_then(Value::as_u64);
 	ReportedUsage {
+		server_tool_use: if openrouter {
+			super::provider_activity::usage(response)
+		} else {
+			Default::default()
+		},
 		input_tokens: count("/usage/input_tokens"),
 		output_tokens: count("/usage/output_tokens"),
 		cache_read_tokens: count("/usage/input_tokens_details/cached_tokens"),
@@ -981,6 +986,9 @@ fn completed_with_cost(
 		.as_array()
 		.ok_or_else(|| Error::External("provider returned no output".into()))?;
 	let mut result = usage.clone();
+	if openrouter {
+		result.provider_activity = super::provider_activity::responses(response);
+	}
 	let mut refused = false;
 	for item in output {
 		match item["type"].as_str() {
@@ -998,6 +1006,14 @@ fn completed_with_cost(
 				}
 			}
 			Some("function_call") => {
+				if openrouter
+					&& aidash_domain::tool::provider_tools::declaration(
+						item["name"].as_str().unwrap_or_default(),
+					)
+					.is_some()
+				{
+					continue;
+				}
 				let field = |key: &str| {
 					item[key]
 						.as_str()

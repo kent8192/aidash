@@ -11,6 +11,7 @@ fn call(id: &str) -> ToolCall {
 
 fn assistant(epoch: i64, text: &str, calls: &[&str]) -> ContextEvent {
 	ContextEvent::Assistant {
+		provider_activity: vec![],
 		epoch,
 		text: text.into(),
 		calls: calls.iter().map(|id| (*id).to_owned()).collect(),

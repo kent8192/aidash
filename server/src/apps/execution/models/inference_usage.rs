@@ -49,6 +49,8 @@ pub struct InferenceUsage {
 	pub requested_route: Option<String>,
 	#[field(null = true)]
 	pub provider_identity: Option<Json<serde_json::Value>>,
+	#[field(null = true)]
+	pub server_tool_use: Option<Json<serde_json::Value>>,
 	/// Prompt-free estimates of the same request under separately pinned snapshots.
 	#[field(null = true)]
 	pub shadow_estimates: Option<Json<serde_json::Value>>,
@@ -130,6 +132,7 @@ impl InferenceUsage {
 			.purpose(dispatch.purpose.as_str().to_owned())
 			.requested_route(dispatch.requested_route.clone())
 			.provider_identity(None)
+			.server_tool_use(None)
 			.shadow_estimates(Some(Json(serde_json::to_value(
 				&dispatch.shadow_estimates,
 			)?)))
@@ -246,6 +249,12 @@ impl InferenceUsage {
 					.map(serde_json::to_value)
 					.transpose()?;
 				update.value_expr(Alias::new("provider_identity"), Expr::value(identity));
+				let server_tool_use = if usage.server_tool_use.is_empty() {
+					None
+				} else {
+					Some(serde_json::to_value(&usage.server_tool_use)?)
+				};
+				update.value_expr(Alias::new("server_tool_use"), Expr::value(server_tool_use));
 				for (column, value) in [
 					("input_tokens", stored(usage.input_tokens)),
 					("output_tokens", stored(usage.output_tokens)),
