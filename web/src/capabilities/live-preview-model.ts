@@ -78,18 +78,12 @@ export function formatDuration(totalSeconds: number): string {
   return `${hours}:${String(minutes).padStart(2, "0")}:${String(rest).padStart(2, "0")}`;
 }
 
-/**
- * The current Live preview API has no per-viewer may_stop field, and the
- * thread capability panel is only rendered to subjects, so the dashboard
- * cannot know the Run's requester. Stop is offered for an active preview and
- * the server's stop authority remains the enforcement point; a 403 is shown
- * without stopping anything. Revisit when the server exposes may_stop.
- */
+/** Show Stop only while the server says this viewer can stop the Live preview. */
 export function mayStopLivePreview(
-  _accessKind: "subject" | "deployment_administrator",
+  mayStop: boolean,
   state: LivePreviewState,
 ): boolean {
-  return livePreviewIsActive(state);
+  return mayStop && livePreviewIsActive(state);
 }
 
 /** Ticket errors for a Live preview. */

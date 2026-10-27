@@ -1136,7 +1136,7 @@ export function ThreadCapabilities({
           ))}
         </ol>
       )}
-      {area && active && <LivePreviewPanel run={active} data={data} />}
+      {area && active && <LivePreviewPanel run={active} />}
       {area && active && (
         <FileOperations
           key={`${area.id}:${active}`}

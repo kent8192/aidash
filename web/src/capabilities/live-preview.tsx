@@ -4,7 +4,6 @@ import { Alert, Hint, Loading } from "../components/patterns";
 import { Button } from "../components/ui/button";
 import { coreLivePreview, coreLivePreviewStop } from "../generated/aidash";
 import type { LivePreview } from "../generated/models";
-import type { State } from "../types";
 import { useI18n } from "../ui";
 import { panelClass } from "./display";
 import { useFilePreview } from "./file-preview-pane";
@@ -19,12 +18,8 @@ import {
   remainingSeconds,
 } from "./live-preview-model";
 
-/**
- * The active Run's Live preview in the thread view. The API returns no
- * viewer-specific may_stop field yet, so Stop is offered only to a Deployment
- * Administrator, the viewer the dashboard can prove may cancel the Run.
- */
-export function LivePreviewPanel({ run, data }: { run: string; data: State }) {
+/** The active Run's Live preview in the thread view. */
+export function LivePreviewPanel({ run }: { run: string }) {
   const { locale, t } = useI18n();
   const client = useQueryClient();
   const preview = useFilePreview();
@@ -38,7 +33,7 @@ export function LivePreviewPanel({ run, data }: { run: string; data: State }) {
   });
   const value: LivePreview | null | undefined = query.data?.live_preview;
   const state = livePreviewState(value?.state);
-  const mayStop = mayStopLivePreview(data.access.kind, state);
+  const mayStop = mayStopLivePreview(query.data?.may_stop === true, state);
   const remaining = value
     ? remainingSeconds(value.expires_at, query.dataUpdatedAt)
     : 0;
