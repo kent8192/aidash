@@ -1,0 +1,28 @@
+# MCP servers authenticate with each person's own OAuth Connection
+
+Decided on 2026-10-27 for #554. ADR 0051 made pasted Tenant Secrets the only way a Tenant's tool authenticates, on the premise that arbitrary tool servers offer no OAuth flow. MCP servers do: the MCP authorization specification lets any client find the authorization server from the server's `401` (RFC 9728 Protected Resource Metadata, then RFC 8414), register itself (RFC 7591 Dynamic Client Registration), and obtain a token with PKCE whose audience is that server (RFC 8707 `resource`). So an MCP server, whether a Registry MCP tool or an Agent Plugin's remote server, can now be reached through an OAuth Connection: a person signs in to the server's authorization server in a popup, and Aidash keeps the resulting tokens.
+
+An OAuth Connection belongs to the person who signed in, in one Tenant, as a Plan Connection does (ADR 0007). The MCP server is shared in the Tenant; authentication is not. Only Runs whose delegation chain starts at that person, child Runs included, and Runs of schedules that person registered may use it. A Run with no person at the root of its chain sees the server as not connected. Each person chooses the scopes of their own connection, within the scopes the tool definition or package declares and an optional ceiling in the Tenant's policy; no other member's choice constrains them.
+
+The callback is an HTTPS route of the Aidash server reached by the person's browser, so unlike ADR 0031 no loopback relay or pasted URL is needed. The server keeps the `state` and the PKCE verifier and alone exchanges the code. Tokens are stored in the Secret Store under the person, never returned, and refreshed at dispatch. On Cloud and Dedicated the refresh and the attachment happen in the Credential Broker (ADR 0095), so the application host stays write-only (ADR 0002). Removing a connection, a member leaving the Tenant or an administrator's forced disconnect deletes the tokens and revokes them where the authorization server supports RFC 7009; the administrator never sees them.
+
+Authorization servers that do not support dynamic registration use a pre-registered OAuth Client, a `client_id` and `client_secret` bound to the authorization server's host. A person or the Tenant (`secret.manage`) may register one; the person's own wins. Servers without OAuth keep the pasted path, but a pasted secret is now either shared (a Tenant Secret, as in ADR 0051) or personal, owned by one person under the same Run rule as an OAuth Connection; at dispatch a personal secret wins, and a definition may require a personal one.
+
+When a call needs a connection the Run's starter has not made, Aidash follows that person's Approval Mode (ADR 0076). Under Manual and Auto the call waits before anything is sent, the person is asked to connect, and the same call proceeds afterwards; since no request reached the server, the wait is a durable checkpoint that releases the worker lease. Under Don't ask and Bypass the call fails at once with `connection_required` so the agent can try another way, unless the missing connection is fatal: the agent may call the `connection_request` tool, which waits as under Manual, and a Run about to end in failure with a missing connection among its causes waits instead of ending. A `403` with `insufficient_scope` asks the person to consent again in the same way.
+
+A Run executing on another Node never receives the tokens. The executing Node asks the owner's Node to make the MCP call and receives only the result. The executing Node's authority decides the call as for any tool (ADR 0051), and the owner's Node checks that the Run's chain starts at the connection's owner and that the call goes to the connected server.
+
+## Considered Options
+
+- **Share a connection in the Tenant**, made by the installer. Every member's Run would act as the installer on Slack or GitHub, and audit trails would name the wrong person. Rejected.
+- **The installer's scopes bound everyone's.** Authentication is personal, so its scope is too. Rejected by the maintainer.
+- **Keep OAuth out and paste tokens only.** People would copy long-lived personal tokens into Aidash by hand, the path ADR 0006 removed for Key Material. Rejected for servers that support OAuth.
+- **Fail every unconnected call.** Agents running unattended under Don't ask or Bypass would then fail tasks that only lacked one sign-in. Rejected for fatal cases.
+- **Send the tokens to the executing Node.** They would leave the owner's Node, which ADR 0051 forbids for secrets. Rejected.
+
+## Consequences
+
+- ADR 0051's premise is superseded for MCP servers. HTTP tools keep Tenant Secrets only, now shared or personal.
+- An Agent Plugin's remote server keeps `headers` for other headers, but `Authorization` and `Proxy-Authorization` are refused there; authentication comes from a connection or a secret.
+- Installation offers a skippable connect step before Catalog Approval, and Catalog Approval shows whether a tool authenticates per person or with a shared secret.
+- Tenant Deletion and member removal purge OAuth Connections, personal secrets and personal OAuth Clients with the person's other Secret Store contents.
