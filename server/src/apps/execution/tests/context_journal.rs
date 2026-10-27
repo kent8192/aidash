@@ -523,3 +523,72 @@ async fn a_source_checkpoint_is_durable_and_keeps_the_lease(
 		.unwrap();
 	cleanup(f, &url, &schema).await;
 }
+
+#[rstest::rstest]
+#[tokio::test]
+async fn provider_tools_activity_remains_inspectable_after_projection_compaction(
+	#[future(awt)]
+	#[from(native_application)]
+	fixture: ApplicationFixture,
+) {
+	let (f, url, schema) = fixture.runtime.parts();
+	let app = fixture.application.clone();
+	let (_, token, _) = bootstrap(&f, &app, "http://127.0.0.1:9").await;
+	let (mut run, worker) = leased(&f, &app, &token).await;
+	project(&mut run, 0, 0);
+	let activity = json!({"type":"web_search_call","action":{"query":"test"},"result":{"url":"https://example.com"}});
+	run.context.push(ContextEvent::Assistant {
+		epoch: 1,
+		text: "Reported source".into(),
+		calls: vec![],
+		provider_activity: vec![activity.clone()],
+	});
+	run.context.push(event(2));
+	f.store
+		.save_run(&TEST_FIXTURE, &run, worker, "run.sources_observed")
+		.await
+		.unwrap();
+	run.context.history.clear();
+	f.store
+		.save_run(&TEST_FIXTURE, &run, worker, "run.sources_observed")
+		.await
+		.unwrap();
+	let (status, details) = request(
+		&app,
+		&token,
+		"GET",
+		&format!("/api/runs/{}", run.id),
+		Value::Null,
+	)
+	.await;
+	assert_eq!(status, 200, "{details}");
+	assert!(
+		details["run"]["context"]["history"]
+			.as_array()
+			.unwrap()
+			.is_empty()
+	);
+	assert_eq!(
+		details["provider_tool_activity"].as_array().unwrap().len(),
+		1
+	);
+	assert_eq!(
+		details["provider_tool_activity"][0]["items"],
+		json!([activity])
+	);
+	let (status, page) = request(
+		&app,
+		&token,
+		"GET",
+		&format!("/api/runs/{}?offset=100", run.id),
+		Value::Null,
+	)
+	.await;
+	assert_eq!(status, 200, "{page}");
+	assert!(page.get("provider_tool_activity").is_none());
+	f.store
+		.release_lease(&TEST_FIXTURE, run.id, worker)
+		.await
+		.unwrap();
+	cleanup(f, &url, &schema).await;
+}

@@ -91,6 +91,7 @@ async fn existing_provider_reloads_each_send_and_refuses_a_model_absent_from_the
 	)
 	.unwrap();
 	let request = ModelRequest {
+		provider_tools: vec![],
 		instructions: "Answer".into(),
 		context: json!({"history":[]}).into(),
 		tools: vec![],
@@ -177,4 +178,100 @@ async fn existing_provider_reloads_each_send_and_refuses_a_model_absent_from_the
 		5,
 		"refused model sends no content"
 	);
+}
+
+#[rstest::rstest]
+#[case(None)]
+#[case(Some(aidash_domain::model::WireApi::Responses))]
+#[tokio::test]
+async fn provider_tools_reload_current_policy_and_refuse_no_training_and_zero_retention(
+	#[case] wire_api: Option<aidash_domain::model::WireApi>,
+) {
+	let sends = Arc::new(AtomicUsize::new(0));
+	let app = Router::new()
+		.route("/v1/chat/completions", post({
+			let sends = sends.clone();
+			move || { let sends = sends.clone(); async move {
+				sends.fetch_add(1, Ordering::SeqCst);
+				Json(json!({"choices":[{"finish_reason":"stop","message":{"content":"done"}}]}))
+			} }
+		}))
+		.route("/v1/responses", post({
+			let sends = sends.clone();
+			move || { let sends = sends.clone(); async move {
+				sends.fetch_add(1, Ordering::SeqCst);
+				Json(json!({"id":"resp-tool","status":"completed","output":[{"type":"message","content":[{"type":"output_text","text":"done"}]}]}))
+			} }
+		}));
+	let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+	let access = Arc::new(Current {
+		policy: Mutex::new(DataProtection::default()),
+		endpoint: format!("http://{}/v1", listener.local_addr().unwrap()),
+		signed: Mutex::new(vec![]),
+	});
+	let _server = Server(tokio::spawn(async move {
+		axum::serve(listener, app).await.unwrap();
+	}));
+	let mut config: ModelConfig = serde_json::from_value(json!({"provider":"openrouter","provider_credential":"openrouter","endpoint":"https://openrouter.ai/api/v1","model_id":"vendor/model","context_window":8192,"max_output_tokens":256,"modalities":["text"],"cost":{},"streaming":false})).unwrap();
+	config.wire_api = wire_api;
+	let provider = crate::inference::provider(
+		crate::semantic::clients().unwrap(),
+		config,
+		access.clone(),
+		Context {
+			tenant: format!("provider-policy-{wire_api:?}"),
+			run: Some(uuid::Uuid::now_v7()),
+			..Default::default()
+		},
+	)
+	.unwrap();
+	let tool = aidash_domain::tool::provider_tools::declaration("openrouter:datetime").unwrap();
+	let request = ModelRequest {
+		provider_tools: vec![aidash_domain::tool::provider_tools::PinnedTool {
+			tool_type: tool.tool_type.into(),
+			binding: tool.defaults(),
+		}],
+		instructions: "Answer".into(),
+		context: json!({"history":[]}).into(),
+		tools: vec![],
+		max_output_tokens: 32,
+		response_format: None,
+		content_parts: vec![],
+		cache_scope: None,
+		cache_breakpoints: false,
+		disable_provider_transforms: false,
+		input_format: Default::default(),
+		estimate: Default::default(),
+	};
+	provider.infer(request.clone(), &NoProgress).await.unwrap();
+	for level in [Level::NoTraining, Level::ZeroDataRetention] {
+		*access.policy.lock().unwrap() = DataProtection {
+			level,
+			..Default::default()
+		};
+		let error = provider
+			.infer(request.clone(), &NoProgress)
+			.await
+			.unwrap_err();
+		assert!(
+			error
+				.to_string()
+				.contains("Provider tools cannot meet this level"),
+			"{error}"
+		);
+	}
+	assert_eq!(
+		sends.load(Ordering::SeqCst),
+		1,
+		"tightened policies send no content"
+	);
+	assert_eq!(
+		access.signed.lock().unwrap().len(),
+		1,
+		"refusal precedes token issuance"
+	);
+	// Loosening policy also takes effect without rebuilding an admitted provider.
+	*access.policy.lock().unwrap() = DataProtection::default();
+	provider.infer(request, &NoProgress).await.unwrap();
+	assert_eq!(sends.load(Ordering::SeqCst), 2);
 }

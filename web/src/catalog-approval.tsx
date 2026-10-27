@@ -179,6 +179,9 @@ export function CatalogApprovalSection({
   const state = approvalState(version);
   const origin = keylessOrigin(entry);
   const recipients = deciderRecipients(entry);
+  const providerOwned =
+    entry.kind === "tool" &&
+    (entry.config as { tier?: string }).tier === "provider";
   const readOnly = toolReplay(entry) === "read_only";
   const plugins = agentPlugins(entry);
   const installed = !!entry.installation;
@@ -268,6 +271,13 @@ export function CatalogApprovalSection({
               : "catalogHelp",
         )}
       </Hint>
+      {providerOwned && (
+        <Hint>
+          {locale === "ja-JP"
+            ? "この Provider tool は OpenRouter が実行します。この Catalog Approval が唯一の同意です。Agent の Binding で上限を固定します。結果は Research の証拠にはなりません。"
+            : "OpenRouter executes this Provider tool. This Catalog Approval is its only consent. The Agent Binding pins spending caps. Results are not Research evidence."}
+        </Hint>
+      )}
       {origin &&
         (decides && state !== "approved" ? (
           <Notice tone="warning" role="status" className="keyless-notice">

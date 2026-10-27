@@ -61,6 +61,7 @@ pub async fn embed(
 	}
 	let mut context = context.clone();
 	context.inference = Some(Inference {
+		provider_tools: vec![],
 		model: config.model.clone(),
 		operations: vec![Operation::Embeddings],
 		max_output_tokens: 1,

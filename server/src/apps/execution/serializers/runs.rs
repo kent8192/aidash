@@ -5,6 +5,9 @@ use serde::Serialize;
 
 #[derive(Serialize, schemars::JsonSchema)]
 pub struct RunDetails {
+	/// Original provider-owned activity, newest first, paged by inspection offset.
+	#[serde(default, skip_serializing_if = "Vec::is_empty")]
+	pub provider_tool_activity: Vec<aidash_domain::tool::provider_tools::Activity>,
 	/// Metadata-only gateway requests, paged with the inspection offset.
 	#[serde(default)]
 	pub egress_requests: Vec<aidash_domain::egress::RequestRecord>,

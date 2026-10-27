@@ -275,6 +275,7 @@ impl Cloud {
 	}
 	fn request() -> aidash_domain::provider::ModelRequest {
 		aidash_domain::provider::ModelRequest {
+			provider_tools: vec![],
 			instructions: "test".into(),
 			context: json!({}).into(),
 			tools: vec![],
@@ -291,6 +292,7 @@ impl Cloud {
 	fn scoped(&self, operation: CallOperation) -> Context {
 		let mut context = self.context.clone();
 		context.inference = Some(Inference {
+			provider_tools: vec![],
 			model: "author/model".into(),
 			operations: vec![operation],
 			max_output_tokens: 10,

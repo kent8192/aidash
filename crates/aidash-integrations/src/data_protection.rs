@@ -46,6 +46,7 @@ pub async fn zdr_routes(
 	} else {
 		let mut discovery = context.clone();
 		discovery.inference = Some(Inference {
+			provider_tools: vec![],
 			model: model.into(),
 			operations: vec![Operation::Discovery],
 			max_output_tokens: 1,

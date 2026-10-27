@@ -147,6 +147,19 @@ impl RunDetailsScope for Scope<'_> {
 			.map(|row| serde_json::from_value(serde_json::to_value(row)?))
 			.collect::<std::result::Result<_, _>>()?)
 	}
+	async fn provider_tool_activity(
+		&mut self,
+		id: Uuid,
+		offset: u64,
+	) -> Result<Vec<aidash_domain::tool::provider_tools::Activity>> {
+		crate::apps::execution::models::context_journal::RunContextEvent::provider_activity_page(
+			&mut **self.access.get().tx,
+			id,
+			offset,
+		)
+		.await
+		.map_err(Into::into)
+	}
 	async fn invocations(&mut self, id: Uuid, offset: u64) -> Result<Vec<InvocationSummary>> {
 		let result: NativeResult<Vec<Invocation>> = async {
 			Ok({

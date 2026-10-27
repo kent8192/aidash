@@ -100,6 +100,7 @@ fn build(
 			json!(tools)
 		};
 	}
+	crate::tool::provider_tools::append(&mut body, &request.provider_tools);
 	if let Some(format) = &request.response_format {
 		body["text"] = json!({"format":text_format(format)?});
 	}

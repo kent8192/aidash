@@ -737,3 +737,25 @@ fn each_new_tool_call_is_charged_its_structure() {
 		!matches!(same, Err(Error::External(message)) if message.starts_with("response exceeds"))
 	);
 }
+
+#[test]
+fn provider_tools_streamed_annotations_are_retained_with_reported_usage() {
+	let bytes = sse(
+		&[
+			delta(
+				json!({"content":"Reported source","annotations":[{"type":"url_citation","url_citation":{"url":"https://example.com"}}]}),
+			),
+			finish("stop"),
+			json!({"choices":[{"index":0,"delta":{"annotations":[{"type":"url_citation","url_citation":{"url":"https://example.com"}}]},"finish_reason":"stop"}],"usage":{"prompt_tokens":12,"completion_tokens":7,"server_tool_use":{"web_search_requests":1},"cost":0.007}}),
+		],
+		true,
+	);
+	let (response, _) = assemble(&bytes, 13, 4096);
+	let response = response.unwrap();
+	assert_eq!(
+		response.provider_activity[0]["url_citation"]["url"],
+		"https://example.com"
+	);
+	assert_eq!(response.reported.server_tool_use["web_search_requests"], 1);
+	assert_eq!(response.reported.cost.unwrap().nanocredits, 7_000_000);
+}

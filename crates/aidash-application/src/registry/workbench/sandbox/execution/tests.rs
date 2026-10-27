@@ -385,6 +385,7 @@ fn job(model: Arc<Model>) -> Job {
 		agent_max_steps: 3,
 		model_provider: model,
 		request: ModelRequest {
+			provider_tools: vec![],
 			instructions: "sandbox".into(),
 			context: json!({"test_message":"original"}).into(),
 			tools: vec![],
