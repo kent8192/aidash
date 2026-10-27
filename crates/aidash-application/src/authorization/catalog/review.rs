@@ -75,6 +75,14 @@ pub struct ReviewItem {
 	pub installation: Option<ReviewInstallation>,
 }
 
+impl ReviewItem {
+	/// This principal can still move the item forward: decide or activate it,
+	/// or widen an approved restriction that no longer admits the root agent.
+	pub fn awaits_approver(&self) -> bool {
+		self.can_approve && (self.status != ReviewStatus::Approved || self.widen)
+	}
+}
+
 /// The whole review of one root on one Node.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct ApprovalReview {

@@ -39,7 +39,7 @@ use crate::apps::identity::serializers::policies::{
 	CredentialInput, CredentialPage, CredentialRevocation, PolicyReplacement,
 };
 use aidash_application::authorization::catalog::review::{
-	ApprovalReview, ApprovalReviewSubmission, ReviewStatus,
+	ApprovalReview, ApprovalReviewSubmission, ReviewItem,
 };
 use aidash_domain::identity::catalog_request::{
 	CATALOG_REQUEST_CREATE, CATALOG_REQUEST_DECLINE, CATALOG_REQUEST_FULFIL,
@@ -356,6 +356,22 @@ impl PolicyAdministration {
 			}
 			let plan = aidash_application::authorization::catalog::review::plan(&current, &input)?;
 			let mut extra_subjects = std::collections::BTreeSet::new();
+			// A dependency restriction may name the reviewed agent root before
+			// that root is approved: the review's secure default proposes it, and
+			// the root's approval may need the dependency first. Naming it only
+			// passes restriction validation; the agent becomes a policy subject
+			// when its own approval succeeds.
+			if current
+				.items
+				.iter()
+				.any(|item| item.reference == input.root && item.kind == "agent")
+			{
+				extra_subjects.insert(aidash_domain::qualified_agent(
+					&node_address,
+					&input.root.id,
+					&input.root.version,
+				));
+			}
 			for approval in &plan.approvals {
 				if let Some(item) = current
 					.items
@@ -413,7 +429,10 @@ impl PolicyAdministration {
 					}
 				}
 			}
-			let bindings =
+			// An activation-only submission has no local approval to decide.
+			let bindings = if plan.approvals.is_empty() {
+				vec![]
+			} else {
 				aidash_application::authorization::catalog::approvals::approve_with_satisfied(
 					&mut TenantCatalog {
 						access: &mut access,
@@ -423,7 +442,8 @@ impl PolicyAdministration {
 					&plan.satisfied_by_activation,
 					&extra_subjects,
 				)
-				.await?;
+				.await?
+			};
 			let mut installations = vec![];
 			if !plan.installations.is_empty() {
 				let set = aidash_application::authorization::catalog::review::approval_set(
@@ -646,11 +666,7 @@ impl PolicyAdministration {
 				// rolled back with the error.
 				return Err(Error::Conflict("CATALOG_APPROVAL_REQUEST_STALE".into()));
 			}
-			if !current
-				.items
-				.iter()
-				.any(|item| item.can_approve && item.status != ReviewStatus::Approved)
-			{
+			if !current.items.iter().any(ReviewItem::awaits_approver) {
 				return Err(Error::Forbidden);
 			}
 			let now = database_time(&mut *access.tx).await?;
@@ -782,11 +798,7 @@ impl PolicyAdministration {
 					if request.closure_digest != current.closure_digest || current.ready {
 						continue;
 					}
-					if current
-						.items
-						.iter()
-						.any(|item| item.can_approve && item.status != ReviewStatus::Approved)
-					{
+					if current.items.iter().any(ReviewItem::awaits_approver) {
 						if matched >= page.offset {
 							views.push(request_view(&request, Some(&current)));
 						}

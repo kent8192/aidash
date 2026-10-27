@@ -5,6 +5,7 @@ import type {
   RequestApprovalReviewSubmission,
   ReviewItem,
 } from "./generated/models";
+import { restrictionRequest } from "./catalog-approval-model.ts";
 
 export type RestrictionEdits = Record<string, CatalogRestriction | null>;
 
@@ -25,6 +26,18 @@ export function needsAction(item: ReviewItem): boolean {
 
 export function defaultSelection(review: ApprovalReview): string[] {
   return review.items.filter(needsAction).map(itemKey);
+}
+
+/** The restriction to send: an omitted one keeps the stored restriction, and
+ *  an explicit "Unrestricted" edit clears it with an empty restriction. */
+export function restrictionPayload(
+  item: ReviewItem,
+  edits: RestrictionEdits,
+): CatalogRestriction | null {
+  const key = itemKey(item);
+  if (!Object.prototype.hasOwnProperty.call(edits, key))
+    return item.proposed_restriction;
+  return restrictionRequest(edits[key]) ?? null;
 }
 
 export function restrictionFor(
@@ -60,14 +73,14 @@ export function reviewSubmission(
         digest: item.installation.digest,
         expected_activation_revision:
           item.installation.expected_activation_revision,
-        restriction: restrictionFor(item, edits),
+        restriction: restrictionPayload(item, edits),
       });
     } else if (item.digest) {
       items.push({
         reference: item.reference,
         digest: item.digest,
         expected_revision: item.expected_revision,
-        restriction: restrictionFor(item, edits),
+        restriction: restrictionPayload(item, edits),
       });
     }
   }
@@ -91,6 +104,46 @@ export function requestForRoot(
       request.root.id === root.id && request.root.version === root.version,
   );
   return matching.find((request) => request.state === "open") ?? matching[0];
+}
+
+/** The request a submission answers: only one still open. A final request
+ *  stays visible, but naming it would make the server refuse the submission. */
+export function answeredRequest(
+  request: CatalogApprovalRequestView | undefined,
+  requestId?: string,
+): string | undefined {
+  if (request) return request.state === "open" ? request.id : undefined;
+  return requestId;
+}
+
+/** The submission would decide something: a selected item the caller can act
+ *  on, or an approved item whose restriction the caller edited. */
+export function submittable(
+  review: ApprovalReview,
+  selected: readonly string[],
+  edits: RestrictionEdits,
+): boolean {
+  const body = reviewSubmission(review, selected, edits);
+  return (body.items?.length ?? 0) + (body.installations?.length ?? 0) > 0;
+}
+
+/** The closure still needs a decision this caller cannot make. */
+export function needsAnotherApprover(review: ApprovalReview): boolean {
+  if (review.ready) return false;
+  if (review.hidden > 0) return true;
+  return review.items.some(
+    (item) => !needsAction(item) && (item.status !== "approved" || item.widen),
+  );
+}
+
+/** Whether the requester may ask again: the pinned closure changed, or the
+ *  earlier request is final while the root is still not ready. */
+export function canRequestAgain(
+  request: CatalogApprovalRequestView,
+  review: ApprovalReview,
+): boolean {
+  if (review.ready) return false;
+  return requestChanged(request, review) || request.state !== "open";
 }
 
 /** The pinned closure changed since the requester asked. */

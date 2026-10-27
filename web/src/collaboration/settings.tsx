@@ -616,7 +616,6 @@ export function Configuration({
                   tenant={data.access.tenant}
                   node={selectedNode.name}
                   subject={data.access.subject}
-                  canApprove
                 />
               </ToolSection>
             )}
