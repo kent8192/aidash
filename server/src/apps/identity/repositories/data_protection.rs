@@ -54,6 +54,7 @@ pub(crate) async fn current(store: &Store, context: &Context) -> Result<DataProt
 			.await?;
 		let mut cursor = Some(run);
 		let mut visited = std::collections::BTreeSet::new();
+		let mut assume_remote_strictest = false;
 		while let Some(run) = cursor {
 			if visited.len() >= 128 || !visited.insert(run) {
 				return Err(Error::Invalid(
@@ -61,7 +62,7 @@ pub(crate) async fn current(store: &Store, context: &Context) -> Result<DataProt
 				));
 			}
 			// A remote receipt does not publish the source Tenant's current policy.
-			// Refuse rather than treating the receiving Tenant as the entire chain.
+			// Include its strictest possible policy while retaining the local chain.
 			let (sql, values) = Query::select()
 				.column(Alias::new("id"))
 				.from(Alias::new("authorization_remote_admissions"))
@@ -72,9 +73,8 @@ pub(crate) async fn current(store: &Store, context: &Context) -> Result<DataProt
 				.await?
 				.is_some()
 			{
-				return Err(Error::Invalid(
-					"Data Protection: current remote Tenant policy is unavailable".into(),
-				));
+				assume_remote_strictest = true;
+				tracing::warn!(run_id = %run, origin_kind = "remote_admission", assumed_level = "zero_data_retention", model_call_zdr = true, plan_connection_exempt = false, "Current remote Tenant Data Protection policy unavailable; assuming the strictest policy");
 			}
 			let (sql, values) = Query::select()
 				.columns(["tenant", "task_id"].map(Alias::new))
@@ -109,9 +109,8 @@ pub(crate) async fn current(store: &Store, context: &Context) -> Result<DataProt
 				.await?
 				.is_some()
 			{
-				return Err(Error::Invalid(
-					"Data Protection: current remote Tenant policy is unavailable".into(),
-				));
+				assume_remote_strictest = true;
+				tracing::warn!(run_id = %run, origin_kind = "remote_task_output", assumed_level = "zero_data_retention", model_call_zdr = true, plan_connection_exempt = false, "Current remote Tenant Data Protection policy unavailable; assuming the strictest policy");
 			}
 			let (sql, values) = Query::select()
 				.column(Alias::new("source_run_id"))
@@ -127,7 +126,15 @@ pub(crate) async fn current(store: &Store, context: &Context) -> Result<DataProt
 				})
 				.transpose()?;
 		}
-		let mut policies = vec![];
+		let mut policies = if assume_remote_strictest {
+			vec![DataProtection {
+				level: Level::ZeroDataRetention,
+				model_call_zdr: true,
+				plan_connection_exempt: false,
+			}]
+		} else {
+			vec![]
+		};
 		for tenant in tenants {
 			policies.push(stored(tx.as_mut(), &tenant).await?);
 		}

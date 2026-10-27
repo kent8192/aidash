@@ -1555,6 +1555,73 @@ async fn admission_pins_the_roots_connection_and_refuses_everything_else(
 		assert_eq!(events[0].data.0["exemption"], "plan_connection");
 		audit.commit().await.unwrap();
 	}
+	// With the exemption off, Standard still permits Plan usage and records no
+	// exemption. Raising this same admitted Run to either strict level refuses it.
+	{
+		use aidash_server::apps::{
+			execution::models::Event, identity::models::TenantDataProtection,
+		};
+		use reinhardt::db::orm::Model;
+		let non_exempt_run = Uuid::new_v4();
+		admit_once(non_exempt_run, "alice", false).await.unwrap();
+		let non_exempt = Context {
+			run: Some(non_exempt_run),
+			..context.clone()
+		};
+		for level in ["standard", "no_training", "zero_data_retention"] {
+			f.store
+				.pool
+				.atomic(&TenancyScope::tenant("alpha").unwrap(), async |tx| {
+					TenantDataProtection::objects()
+						.delete_with_executor(tx, "alpha".to_owned())
+						.await
+						.map_err(reinhardt::core::exception::Error::from)?;
+					let policy = TenantDataProtection::build()
+						.tenant("alpha".to_owned())
+						.level(level.to_owned())
+						.model_call_zdr(true)
+						.plan_connection_exempt(false)
+						.updated_at(chrono::Utc::now())
+						.updated_by("fixture".to_owned())
+						.finish();
+					TenantDataProtection::objects()
+						.insert_with_executor(tx, &policy)
+						.await
+						.map_err(reinhardt::core::exception::Error::from)?;
+					Ok(())
+				})
+				.await
+				.unwrap();
+			let result = access.resolve(&non_exempt, endpoint, &source).await;
+			if level == "standard" {
+				assert_eq!(result.unwrap().bearer.expose_secret(), "plan-access-101");
+			} else {
+				assert!(result.unwrap_err().to_string().contains("Plan Connections"));
+			}
+		}
+		f.store
+			.pool
+			.atomic(&TenancyScope::tenant("alpha").unwrap(), async |tx| {
+				let events = Event::objects()
+					.filter(Event::field_kind().eq("run.data_protection_exemption".to_owned()))
+					.all_with_executor(tx)
+					.await
+					.map_err(reinhardt::core::exception::Error::from)?;
+				assert_eq!(
+					events.len(),
+					1,
+					"non-exempt Standard calls create no exemption record"
+				);
+				assert_eq!(events[0].data.0["run_id"], json!(run));
+				TenantDataProtection::objects()
+					.delete_with_executor(tx, "alpha".to_owned())
+					.await
+					.map_err(reinhardt::core::exception::Error::from)?;
+				Ok(())
+			})
+			.await
+			.unwrap();
+	}
 	// Maintenance and other Runs never reach the connection.
 	let maintenance = Context {
 		tenant: "alpha".into(),
@@ -1599,7 +1666,7 @@ async fn admission_pins_the_roots_connection_and_refuses_everything_else(
 		access.resolve(&context, endpoint, &source).await,
 		Err(Error::Plan(Failure::NotConnected))
 	));
-	// A remote admission cannot silently inherit only this Deployment's policy.
+	// A remote admission contributes the strictest policy instead of refusing the Run.
 	{
 		use aidash_server::apps::federation::peer::models::AuthorizationRemoteAdmission;
 		use reinhardt::db::orm::{Json, Model};
@@ -1627,14 +1694,73 @@ async fn admission_pins_the_roots_connection_and_refuses_everything_else(
 			})
 			.await
 			.unwrap();
+		let strict = aidash_domain::data_protection::DataProtection {
+			level: aidash_domain::data_protection::Level::ZeroDataRetention,
+			model_call_zdr: true,
+			plan_connection_exempt: false,
+		};
+		assert_eq!(access.data_protection(&context).await.unwrap(), strict);
 		assert!(
 			access
-				.data_protection(&context)
+				.check(&context, endpoint, &source)
 				.await
 				.unwrap_err()
 				.to_string()
-				.contains("current remote Tenant policy is unavailable")
+				.contains("Plan Connections")
 		);
+		// A task materialized as a remote output has the same unknown source
+		// policy, independently of an incoming Run admission receipt.
+		use aidash_server::apps::identity::models::AuthorizationRemoteOutputs;
+		let (task, workspace): (Uuid, Uuid) = {
+			let mut tx = f
+				.store
+				.pool
+				.begin(&TenancyScope::tenant("alpha").unwrap())
+				.await
+				.unwrap()
+				.into_executor()
+				.await
+				.unwrap();
+			let (sql, values) = Query::select()
+				.columns(["task_id", "workspace_id"].map(Alias::new))
+				.from(Alias::new("runs"))
+				.and_where(Expr::col("id").eq(Expr::value(run)))
+				.build(PostgresQueryBuilder);
+			let row = tx
+				.fetch_optional(&sql, reinhardt::db::orm::execution::convert_values(values))
+				.await
+				.unwrap()
+				.unwrap();
+			let result = (
+				row.get("task_id").unwrap(),
+				row.get("workspace_id").unwrap(),
+			);
+			tx.commit().await.unwrap();
+			result
+		};
+		f.store
+			.pool
+			.atomic(&TenancyScope::tenant("alpha").unwrap(), async |tx| {
+				AuthorizationRemoteAdmission::objects()
+					.delete_with_executor(tx, run)
+					.await
+					.map_err(reinhardt::core::exception::Error::from)?;
+				let output = AuthorizationRemoteOutputs::build()
+					.grant_id(Uuid::new_v4())
+					.tenant("alpha".to_owned())
+					.workspace_id(workspace)
+					.resource_kind("task".to_owned())
+					.resource_id(task)
+					.finish();
+				AuthorizationRemoteOutputs::objects()
+					.insert_with_executor(tx, &output)
+					.await
+					.map_err(reinhardt::core::exception::Error::from)?;
+				Ok(())
+			})
+			.await
+			.unwrap();
+		assert_eq!(access.data_protection(&context).await.unwrap(), strict);
 	}
 	fixture.cleanup().await;
 }
