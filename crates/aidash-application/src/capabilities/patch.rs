@@ -94,7 +94,8 @@ pub async fn apply(
 		+ staged
 			.iter()
 			.map(|(_, s)| s.as_ref().map_or(0, |s| s.len() as u64))
-			.sum::<u64>();
+			.sum::<u64>()
+		+ scope.retained_bytes(area).await?;
 	if total > scope.limits()?.working_bytes
 		|| manifest.len() + staged.iter().filter(|(_, s)| s.is_some()).count() > 4096
 	{

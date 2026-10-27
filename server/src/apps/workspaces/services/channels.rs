@@ -54,7 +54,14 @@ impl Channels {
 		} else {
 			Lease::begin_message_create(&self.runtime.store, self.actor.clone(), workspace).await?
 		};
-		let result = threads::post(&self.runtime.store, &mut lease, workspace, input).await;
+		let result = threads::post(
+			&self.runtime.store,
+			Some(&self.runtime),
+			&mut lease,
+			workspace,
+			input,
+		)
+		.await;
 		lease.finish(result).await
 	}
 	pub async fn history(

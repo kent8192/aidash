@@ -88,6 +88,8 @@ pub(crate) mod approvals;
 
 pub(crate) mod reclamation;
 
+pub(crate) mod retention;
+
 pub(crate) mod capability_areas;
 pub(crate) mod sessions;
 
@@ -120,5 +122,7 @@ pub(crate) mod worker;
 pub(crate) mod research;
 
 pub(crate) mod egress;
+pub(crate) mod live_previews;
+pub(crate) mod previews;
 
 pub(crate) mod source_delivery;

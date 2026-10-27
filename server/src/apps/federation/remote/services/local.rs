@@ -228,6 +228,42 @@ async fn dispatch(
 					.await,
 			)
 		}
+		("POST", ["scoped", "previews", "tickets"]) => {
+			let input = input!(body, aidash_domain::federation::preview::TicketRequest);
+			respond(
+				crate::apps::execution::capabilities::services::federation_previews::issue(
+					f, admitted, input,
+				)
+				.await,
+			)
+		}
+		("POST", ["scoped", "previews", "inspect"]) => {
+			let input = input!(body, aidash_domain::federation::preview::InspectRequest);
+			respond(
+				crate::apps::execution::capabilities::services::federation_previews::inspect(
+					f, admitted, input,
+				)
+				.await,
+			)
+		}
+		("POST", ["scoped", "previews", "retain"]) => {
+			let input = input!(body, aidash_domain::federation::preview::RetainRequest);
+			respond(
+				crate::apps::execution::capabilities::services::federation_previews::retain(
+					f, admitted, input,
+				)
+				.await,
+			)
+		}
+		("POST", ["scoped", "previews", "release"]) => {
+			let input = input!(body, aidash_domain::federation::preview::ReleaseRequest);
+			respond(
+				crate::apps::execution::capabilities::services::federation_previews::release(
+					f, admitted, input,
+				)
+				.await,
+			)
+		}
 		("POST", ["scoped", "execution", "commands"]) => {
 			let input = checked!(body, remote_execution::commands::Input);
 			respond(remote_execution::commands::handle(f, admitted, input).await)

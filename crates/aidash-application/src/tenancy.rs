@@ -128,6 +128,10 @@ pub enum DeploymentScopeReason {
 	PlanConnectionOwner,
 	/// The activity observer, which writes this label by hand.
 	ActivityObserver,
+	/// Resolving a Preview's globally random subdomain or ticket to its Tenant
+	/// before the viewer's Tenant Scope opens. It reads only; the ticket and
+	/// session writes happen in that Tenant's scope.
+	PreviewGateway,
 	/// Writing one `marketplace.*` event for each audience Tenant of a package
 	/// when its audience changes. It writes nothing else: an event belongs to
 	/// one Tenant, and the writer's scope reaches only its own.
@@ -174,6 +178,7 @@ impl DeploymentScopeReason {
 			Self::RunTenant => "run-tenant",
 			Self::PlanConnectionOwner => "plan-connection-owner",
 			Self::ActivityObserver => "activity-observer",
+			Self::PreviewGateway => "preview-gateway",
 			Self::MarketplaceDistribution => "marketplace-distribution",
 			Self::UsageSampling => "usage-sampling",
 			Self::TenantPurge => "tenant-purge",
@@ -215,6 +220,7 @@ impl DeploymentScopeReason {
 			| Self::RunTenant
 			| Self::PlanConnectionOwner
 			| Self::ActivityObserver
+			| Self::PreviewGateway
 			| Self::UsageSampling => false,
 			#[cfg(feature = "test-support")]
 			Self::TestFixture => true,

@@ -1052,6 +1052,8 @@ pub fn runtime(execution_database: DatabaseFuture, http_client: reqwest::Client)
 				federation: true,
 				deployment_key: None,
 				tier_limits: std::sync::Arc::new(aidash_application::ports::nodes::NoTierLimits),
+				preview: None,
+				dashboard_origin: "http://localhost:3000".into(),
 			},
 			client: http_client,
 			notify: Arc::new(tokio::sync::Notify::new()),
