@@ -16,6 +16,7 @@ data "cloudflare_zone" "existing" {
 # while the entry is listed, so the record must outlive this change.
 # https://github.com/publicsuffix/list/wiki/Guidelines
 resource "cloudflare_dns_record" "psl" {
+  count   = var.psl_pull_request_url == null ? 0 : 1
   zone_id = data.cloudflare_zone.existing.zone_id
   name    = "_psl.${var.domain}"
   type    = "TXT"

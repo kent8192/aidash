@@ -13,12 +13,23 @@ run "psl_record_cites_the_pull_request" {
   command = plan
   assert {
     condition = (
-      cloudflare_dns_record.psl.name == "_psl.aidashusercontent.app" &&
-      cloudflare_dns_record.psl.type == "TXT" &&
-      cloudflare_dns_record.psl.content == "\"https://github.com/publicsuffix/list/pull/1234\"" &&
-      cloudflare_dns_record.psl.zone_id == "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+      cloudflare_dns_record.psl[0].name == "_psl.aidashusercontent.app" &&
+      cloudflare_dns_record.psl[0].type == "TXT" &&
+      cloudflare_dns_record.psl[0].content == "\"https://github.com/publicsuffix/list/pull/1234\"" &&
+      cloudflare_dns_record.psl[0].zone_id == "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
     )
     error_message = "The _psl TXT record must hold exactly the quoted publicsuffix/list pull request URL."
+  }
+}
+
+run "no_psl_record_before_the_pull_request" {
+  command = plan
+  variables {
+    psl_pull_request_url = null
+  }
+  assert {
+    condition     = length(cloudflare_dns_record.psl) == 0
+    error_message = "Without a publicsuffix/list pull request URL, no _psl record may be planned."
   }
 }
 

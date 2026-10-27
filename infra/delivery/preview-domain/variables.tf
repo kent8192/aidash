@@ -24,10 +24,11 @@ variable "domain" {
 }
 
 variable "psl_pull_request_url" {
-  description = "URL of the publicsuffix/list pull request that adds aidashusercontent.app."
+  description = "URL of the publicsuffix/list pull request that adds aidashusercontent.app; null until one is opened."
   type        = string
+  default     = null
   validation {
-    condition     = can(regex("^https://github\\.com/publicsuffix/list/pull/[1-9][0-9]*$", var.psl_pull_request_url))
+    condition     = var.psl_pull_request_url == null || can(regex("^https://github\\.com/publicsuffix/list/pull/[1-9][0-9]*$", var.psl_pull_request_url))
     error_message = "Use the exact https://github.com/publicsuffix/list/pull/<number> URL."
   }
 }

@@ -8,8 +8,9 @@ never created or deleted here.
 Today the root manages one record: the `_psl.aidashusercontent.app` TXT record that
 the [Public Suffix List](https://github.com/publicsuffix/list/wiki/Guidelines)
 uses to validate the private-section entry. Its value is the URL of the
-`publicsuffix/list` pull request, so open that pull request first, then apply this
-root with its URL. Keep the record for as long as the entry is listed; the
+`publicsuffix/list` pull request. Until that pull request exists, leave
+`psl_pull_request_url` unset: the record is not planned, and the rest of the
+root still applies. Keep the record for as long as the entry is listed; the
 resource has `prevent_destroy`.
 
 The wildcard record `*.aidashusercontent.app` and its certificate are added later,
