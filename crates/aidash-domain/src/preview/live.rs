@@ -82,7 +82,7 @@ impl Limits {
 	}
 }
 
-/// What a Live preview is doing now, as an operator reads it.
+/// What a Live preview is doing now, as a viewer reads it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum State {
