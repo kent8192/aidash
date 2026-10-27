@@ -57,6 +57,8 @@ async fn interruption_store(
 		.connect_lazy("postgres://localhost/unused")
 		.unwrap();
 	pool.close().await;
+	let tool_clients = aidash_integrations::tools::ToolClients::new().unwrap();
+	let keyless = aidash_application::provider_access::KeylessAccess::default();
 	crate::store::Store {
 		capabilities: crate::capabilities::Runtime::new(Default::default()).unwrap(),
 		pool: pool.clone().into(),
@@ -66,8 +68,9 @@ async fn interruption_store(
 			.unwrap(),
 		semantic_client: http_client.clone(),
 		provider_clients: crate::semantic::backend::clients().unwrap(),
-		tool_clients: aidash_integrations::tools::ToolClients::new().unwrap(),
-		keyless: Default::default(),
+		tool_clients: tool_clients.clone(),
+		plugin_sessions: crate::store::plugin_sessions(&keyless, &tool_clients),
+		keyless,
 		egress: Default::default(),
 		research_retention: aidash_domain::retention::RetentionRules::DEFAULT,
 		test_limit_ceilings: Default::default(),

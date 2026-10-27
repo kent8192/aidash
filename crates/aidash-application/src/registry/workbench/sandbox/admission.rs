@@ -6,12 +6,14 @@ use super::{
 };
 use crate::{
 	Error, Result,
+	plugin_tools::{Listings, pin_listed},
 	ports::{
 		registry::workbench::sandbox::admission::{AdmissionRepository, SandboxModels},
 		tools::PluginSessions,
 	},
 };
 use aidash_domain::{
+	agent_plugin::PluginTools,
 	model::ModelConfig,
 	provider::ModelRequest,
 	registry::{
@@ -35,6 +37,10 @@ pub struct Admission<'a> {
 pub struct Admitted {
 	pub session: TestSession,
 	pub job: Job,
+}
+enum Phase {
+	ListingReservation,
+	Complete,
 }
 /// Attachment text is already pinned by the admitted Source. Mounted roots have
 /// no live execution area in Workbench: their contents must be explicit fixtures.
@@ -93,8 +99,70 @@ fn skill_source_context(
 	Ok(text)
 }
 
-pub async fn admit(admission: &Admission<'_>, id: Uuid, input: TestInput) -> Result<Admitted> {
-	sandbox::validate_request(&input)?;
+pub fn admit<'a>(
+	admission: &'a Admission<'_>,
+	id: Uuid,
+	input: TestInput,
+) -> futures_util::future::BoxFuture<'a, Result<Admitted>> {
+	// Check the transport/admission future's Send bound once at its owner, rather than expanding
+	// its two transaction phases through every native HTTP handler's coroutine obligations.
+	Box::pin(async move {
+		sandbox::validate_request(&input)?;
+		let continuation = input.continue_from.is_some();
+		let phase = if admission.plugin_sessions.is_some() && !continuation {
+			Phase::ListingReservation
+		} else {
+			Phase::Complete
+		};
+		// Validate every admission constraint and reserve the Tenant slot before any network I/O.
+		let reserved = prepare(admission, id, input, &Listings::new(), None, phase).await?;
+		let Some(sessions) = admission.plugin_sessions.as_ref().filter(|_| !continuation) else {
+			return Ok(reserved);
+		};
+		let Some(agent) = plugins::remote_plugins(&reserved.job.pinned_draft) else {
+			return Ok(reserved);
+		};
+		let listed = plugins::list(sessions, &agent).await;
+		let session_id = reserved.session.id;
+		let conversation = reserved.session.conversation.clone();
+		let result = prepare(
+			admission,
+			id,
+			reserved.job.input,
+			&listed,
+			Some(&reserved.session),
+			Phase::Complete,
+		)
+		.await;
+		if result.is_err() {
+			// The second scope has been dropped, so settlement never waits on its own locks.
+			admission
+				.repository
+				.finish(
+					session_id,
+					&sandbox::TestOutcome {
+						status: "failed".into(),
+						conversation: conversation.unwrap_or_else(|| json!([])),
+						tool_calls: json!([]),
+						usage: json!({}),
+						error: Some("plugin listing admission failed".into()),
+					},
+				)
+				.await?;
+		}
+		result
+	})
+}
+
+/// With a reservation, recheck its authority and pinned dependencies, then complete the same slot.
+async fn prepare(
+	admission: &Admission<'_>,
+	id: Uuid,
+	input: TestInput,
+	listed: &Listings,
+	reserved: Option<&TestSession>,
+	phase: Phase,
+) -> Result<Admitted> {
 	let mut scope = admission.repository.begin_admission().await?;
 	let draft = scope.draft(id, true).await?;
 	scope
@@ -157,7 +225,13 @@ pub async fn admit(admission: &Admission<'_>, id: Uuid, input: TestInput) -> Res
 	// A continued session keeps what its first request pinned and never lists again.
 	let plugin_tools = match continued_tools {
 		Some(saved) => serde_json::from_value(saved)?,
-		None => plugins::pin(admission.plugin_sessions.as_ref(), &snapshot).await?,
+		None if matches!(phase, Phase::ListingReservation)
+			&& plugins::remote_plugins(&draft).is_some() =>
+		{
+			// Listing has not answered yet; do not charge synthetic unavailable warnings.
+			PluginTools::default()
+		}
+		None => pin_listed(&snapshot, listed)?,
 	};
 	let tool_references = snapshot
 		.bindings
@@ -250,10 +324,27 @@ pub async fn admit(admission: &Admission<'_>, id: Uuid, input: TestInput) -> Res
 	if fixtures.to_string().len() > 65_536 {
 		return Err(Error::Invalid("test fixtures exceed 64 KiB".into()));
 	}
-	// Keep draft, policy, credential, and tenant-concurrency locks until admission commits.
-	let session = scope.admit(&draft,&limits,
-			json!({"mode":input.mode,"profile_id":input.profile_id,"profile_revision":profile.as_ref().map(|value|value.revision),"continue_from":input.continue_from,"fixtures":fixtures,"binding_snapshot":snapshot,"plugin_tools":plugin_tools}),
-			json!(conversation)).await?;
+	let scenario = json!({"mode":input.mode,"profile_id":input.profile_id,"profile_revision":profile.as_ref().map(|value|value.revision),"continue_from":input.continue_from,"fixtures":fixtures,"binding_snapshot":snapshot,"plugin_tools":plugin_tools});
+	// Keep draft, policy, credential, and tenant-concurrency locks until each phase commits.
+	let session = if let Some(reserved) = reserved {
+		let current = scope.session(reserved.id, true).await?;
+		if current.status != "running"
+			|| current.draft_id != draft.id
+			|| current.tenant != draft.tenant
+			|| current.revision != draft.revision
+			|| current.scenario["binding_snapshot"] != scenario["binding_snapshot"]
+			|| current.scenario["profile_revision"] != scenario["profile_revision"]
+		{
+			return Err(Error::Conflict(
+				"test admission changed during plugin listing".into(),
+			));
+		}
+		scope.complete_listing(reserved.id, scenario).await?
+	} else {
+		scope
+			.admit(&draft, &limits, scenario, json!(conversation))
+			.await?
+	};
 	scope.commit().await?;
 
 	Ok(Admitted {

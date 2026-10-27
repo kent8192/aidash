@@ -33,10 +33,11 @@ struct State {
 	limits_locked: bool,
 	committed: bool,
 	admitted: Option<Value>,
+	settled: bool,
 	order: Vec<&'static str>,
 }
 struct Repository {
-	state: Mutex<State>,
+	state: Arc<Mutex<State>>,
 	failure: Option<&'static str>,
 	pause: bool,
 	skill_source: Option<Value>,
@@ -47,11 +48,12 @@ struct Repository {
 	/// What the previous session of a continuation stored in its scenario.
 	previous_tools: Option<Value>,
 	sessions: Option<Arc<dyn PluginSessions>>,
+	max_input_bytes: Option<i32>,
 }
 impl Repository {
 	fn new() -> Self {
 		Self {
-			state: Mutex::new(State::default()),
+			state: Arc::new(Mutex::new(State::default())),
 			failure: None,
 			pause: false,
 			skill_source: None,
@@ -60,10 +62,16 @@ impl Repository {
 			eager: false,
 			previous_tools: None,
 			sessions: None,
+			max_input_bytes: None,
 		}
 	}
 	fn agent(&self) -> Entry {
 		let mut entry = agent();
+		if self.failure == Some("bindings_changed_during_listing")
+			&& self.state.lock().unwrap().order.contains(&"plugin_listing")
+		{
+			entry.config["instructions"] = json!("changed while listing");
+		}
 		if !self.plugins.is_empty() {
 			entry.config["agent_plugins"] = json!(
 				self.plugins
@@ -119,10 +127,16 @@ impl Repository {
 struct Scope<'a> {
 	repository: &'a Repository,
 	pending: Option<Value>,
+	/// A scope that only reads the draft before admission, holding none of its locks.
+	reading: bool,
 }
 impl Drop for Scope<'_> {
 	fn drop(&mut self) {
-		self.repository.state.lock().unwrap().active = false;
+		if !self.reading {
+			let mut state = self.repository.state.lock().unwrap();
+			state.active = false;
+			state.limits_locked = false;
+		}
 	}
 }
 fn reference(id: &str) -> EntityRef {
@@ -227,7 +241,14 @@ impl SandboxRepository for Repository {
 		Ok(())
 	}
 	async fn begin(&self) -> Result<Box<dyn SandboxScope + '_>> {
-		panic!("admission scope required")
+		let mut s = self.state.lock().unwrap();
+		assert!(!s.active, "a draft is read before admission begins");
+		s.order.push("read_begin");
+		Ok(Box::new(Scope {
+			repository: self,
+			pending: None,
+			reading: true,
+		}))
 	}
 	async fn purge(&self) -> Result<u64> {
 		panic!("admission uses atomic abandoned-slot expiry")
@@ -250,8 +271,13 @@ impl ExecutionRepository for Repository {
 	async fn progress(&self, _: Uuid, _: Value, _: Value, _: Value) -> Result<()> {
 		panic!("admission must not execute")
 	}
-	async fn finish(&self, _: Uuid, _: &TestOutcome) -> Result<()> {
-		panic!("admission must not finish")
+	async fn finish(&self, id: Uuid, outcome: &TestOutcome) -> Result<()> {
+		assert_eq!(id, session().id);
+		assert_eq!(outcome.status, "failed");
+		let mut state = self.state.lock().unwrap();
+		assert!(!state.active, "settle after the second scope rolls back");
+		state.settled = true;
+		Ok(())
 	}
 }
 #[async_trait]
@@ -264,6 +290,7 @@ impl AdmissionRepository for Repository {
 		Ok(Box::new(Scope {
 			repository: self,
 			pending: None,
+			reading: false,
 		}))
 	}
 }
@@ -271,15 +298,24 @@ impl AdmissionRepository for Repository {
 impl SandboxScope for Scope<'_> {
 	async fn draft(&mut self, id: Uuid, lock: bool) -> Result<Draft> {
 		assert_eq!(id, draft().id);
-		assert!(lock);
-		self.repository
-			.state
-			.lock()
-			.unwrap()
-			.order
-			.push("draft_update_lock");
+		assert_eq!(lock, !self.reading);
+		self.repository.state.lock().unwrap().order.push(if lock {
+			"draft_update_lock"
+		} else {
+			"draft_read"
+		});
 		let mut row = draft();
-		if self.repository.failure == Some("revision") {
+		row.entry = json!(self.repository.agent());
+		if self.repository.failure == Some("revision")
+			|| (self.repository.failure == Some("changed_during_listing")
+				&& self
+					.repository
+					.state
+					.lock()
+					.unwrap()
+					.order
+					.contains(&"plugin_listing"))
+		{
 			row.revision = 8;
 		}
 		row.archived = self.repository.failure == Some("archived");
@@ -293,7 +329,11 @@ impl SandboxScope for Scope<'_> {
 			.lock()
 			.unwrap()
 			.order
-			.push("current_authority");
+			.push(if self.reading {
+				"read_authority"
+			} else {
+				"current_authority"
+			});
 		if self.repository.pause {
 			std::future::pending::<()>().await;
 		}
@@ -310,6 +350,9 @@ impl SandboxScope for Scope<'_> {
 		s.limits_locked = true;
 		s.order.push("tenant_limits_update_lock");
 		let mut value = limits();
+		if let Some(max_input_bytes) = self.repository.max_input_bytes {
+			value.max_input_bytes = max_input_bytes;
+		}
 		if self.repository.failure == Some("limits") {
 			value.max_total_tokens = 64;
 		}
@@ -328,6 +371,16 @@ impl SandboxScope for Scope<'_> {
 		panic!("admission must not change limits")
 	}
 	async fn session(&mut self, id: Uuid, lock: bool) -> Result<TestSession> {
+		if id == session().id {
+			assert!(lock);
+			let state = self.repository.state.lock().unwrap();
+			let mut row = session();
+			row.scenario = state.admitted.as_ref().unwrap()["scenario"].clone();
+			if self.repository.failure == Some("stopped_during_listing") {
+				row.status = "stopped".into();
+			}
+			return Ok(row);
+		}
 		assert_eq!(id, Uuid::from_u128(8));
 		assert!(!lock);
 		self.repository
@@ -359,6 +412,10 @@ impl SandboxScope for Scope<'_> {
 	}
 	async fn commit(mut self: Box<Self>) -> Result<()> {
 		let mut s = self.repository.state.lock().unwrap();
+		if self.reading {
+			s.order.push("read_commit");
+			return Ok(());
+		}
 		assert!(s.active);
 		assert!(s.limits_locked);
 		s.admitted = self.pending.take();
@@ -387,7 +444,19 @@ impl RealDispatchScope for Scope<'_> {
 		Ok(TestProfile {
 			tenant: tenant.into(),
 			id: id.into(),
-			revision: 4,
+			revision: if self.repository.failure == Some("profile_changed_during_listing")
+				&& self
+					.repository
+					.state
+					.lock()
+					.unwrap()
+					.order
+					.contains(&"plugin_listing")
+			{
+				5
+			} else {
+				4
+			},
 			enabled: self.repository.failure != Some("profile_disabled"),
 			rules: if self.repository.failure == Some("profile_empty") {
 				json!([])
@@ -468,11 +537,26 @@ impl ExecutionScope for Scope<'_> {
 			.unwrap()
 			.order
 			.push("validate_dependencies");
+		if self.repository.failure == Some("content") {
+			return Err(Error::Invalid("invalid draft content".into()));
+		}
 		Ok(self.repository.agent())
 	}
 }
 #[async_trait]
 impl AdmissionScope for Scope<'_> {
+	async fn complete_listing(&mut self, id: Uuid, scenario: Value) -> Result<TestSession> {
+		assert_eq!(id, session().id);
+		let mut state = self.repository.state.lock().unwrap();
+		assert!(state.active && state.limits_locked && state.committed);
+		state.order.push("complete_listing");
+		let mut pending = state.admitted.clone().unwrap();
+		pending["scenario"] = scenario.clone();
+		self.pending = Some(pending);
+		let mut row = session();
+		row.scenario = scenario;
+		Ok(row)
+	}
 	async fn admit(
 		&mut self,
 		pinned: &Draft,
@@ -518,7 +602,7 @@ impl SandboxModels for Repository {
 		let mut s = self.state.lock().unwrap();
 		assert!(s.active);
 		assert!(s.limits_locked);
-		assert!(!s.committed);
+		assert!(!s.committed || s.admitted.is_some());
 		s.order.push("model_factory");
 		if self.failure == Some("provider") {
 			Err(Error::Invalid("provider construction failed".into()))
@@ -981,6 +1065,71 @@ async fn a_remote_plugin_server_is_listed_once_and_its_tools_are_offered(
 }
 
 #[tokio::test]
+async fn listing_reservation_does_not_charge_an_unavailable_warning_to_the_final_request() {
+	let sessions = Arc::new(crate::test_support::FakeSessions::default());
+	sessions.script("docs", crate::test_support::Listed::Tools(vec![]));
+	let repository = plugin_repository(&["docs"], &sessions);
+	let mut request = input();
+	request.message = "x".repeat(2048);
+	let admitted = admit(&repository.admission(), draft().id, request)
+		.await
+		.unwrap();
+	let final_bytes = serde_json::to_vec(&admitted.job.request).unwrap().len();
+	assert!(
+		!admitted
+			.job
+			.request
+			.instructions
+			.contains("unavailable in this test")
+	);
+
+	let sessions = Arc::new(crate::test_support::FakeSessions::default());
+	sessions.script("docs", crate::test_support::Listed::Tools(vec![]));
+	let mut repository = plugin_repository(&["docs"], &sessions);
+	repository.max_input_bytes = Some(i32::try_from(final_bytes).unwrap());
+	let mut request = input();
+	request.message = "x".repeat(2048);
+	let admitted = admit(&repository.admission(), draft().id, request)
+		.await
+		.expect("the actual final request fits exactly within the input byte limit");
+	assert_eq!(
+		serde_json::to_vec(&admitted.job.request).unwrap().len(),
+		final_bytes
+	);
+	assert_eq!(sessions.listings().len(), 1);
+}
+
+#[tokio::test]
+async fn listing_completion_restores_the_unavailable_stdio_server_warning() {
+	let sessions = serving("search");
+	let mut repository = plugin_repository(&["docs"], &sessions);
+	let mut configured = servers(&["docs"]);
+	configured["local"] = json!({"type":"stdio","command":"node","args":["server.js"]});
+	repository.plugins = vec![crate::test_support::stored_plugin_with_servers(
+		"acme",
+		configured,
+		&[],
+	)];
+	let admitted = admit(&repository.admission(), draft().id, input())
+		.await
+		.unwrap();
+
+	assert_eq!(sessions.listings().len(), 1);
+	assert!(offered(&admitted.job.request, PLUGIN_TOOL));
+	assert!(
+		admitted
+			.job
+			.request
+			.instructions
+			.contains("acme/local are unavailable in this test")
+	);
+	assert_eq!(
+		skipped(&admitted.session.scenario["plugin_tools"]),
+		["acme/local"]
+	);
+}
+
+#[tokio::test]
 async fn a_continued_session_reuses_the_pinned_tools_and_never_lists_again() {
 	let sessions = serving("search");
 	let first = plugin_repository(&["docs"], &sessions);
@@ -1092,4 +1241,181 @@ fn skipped(stored: &Value) -> Vec<String> {
 			)
 		})
 		.collect()
+}
+
+/// Records where in the admission sequence a listing runs.
+struct Watched {
+	inner: Arc<crate::test_support::FakeSessions>,
+	state: Arc<Mutex<State>>,
+}
+#[async_trait]
+impl PluginSessions for Watched {
+	async fn list(
+		&self,
+		run: Uuid,
+		server: &crate::ports::tools::PluginServer,
+		config: &aidash_domain::agent_plugin::RemoteServer,
+	) -> Result<Vec<aidash_domain::agent_plugin::ListedTool>> {
+		{
+			let mut state = self.state.lock().unwrap();
+			assert!(
+				!state.active && !state.limits_locked,
+				"a listing may wait 30 s, so it holds no admission lock"
+			);
+			assert!(
+				state.committed && state.admitted.is_some(),
+				"listing needs a committed tenant slot"
+			);
+			state.order.push("plugin_listing");
+		}
+		self.inner.list(run, server, config).await
+	}
+	async fn call(
+		&self,
+		_: Uuid,
+		_: &crate::ports::tools::PluginServer,
+		_: &aidash_domain::agent_plugin::RemoteServer,
+		_: &str,
+		_: &str,
+		_: Value,
+		_: &str,
+	) -> Result<Value> {
+		panic!("admission must not call a plugin tool")
+	}
+	async fn close(&self, run: Uuid) {
+		self.inner.close(run).await;
+	}
+}
+
+#[tokio::test]
+async fn listing_runs_with_a_reserved_slot_and_without_database_locks() {
+	let sessions = serving("search");
+	let mut repository = plugin_repository(&["docs"], &sessions);
+	repository.sessions = Some(Arc::new(Watched {
+		inner: sessions.clone(),
+		state: repository.state.clone(),
+	}));
+	let admitted = admit(&repository.admission(), draft().id, input())
+		.await
+		.unwrap();
+	assert!(offered(&admitted.job.request, PLUGIN_TOOL));
+	let state = repository.state.lock().unwrap();
+	let listed = state
+		.order
+		.iter()
+		.position(|step| *step == "plugin_listing")
+		.unwrap();
+	assert!(state.order[..listed].contains(&"validate_dependencies"));
+	assert!(state.order[..listed].ends_with(&["admit", "commit"]));
+	assert!(state.order[listed..].contains(&"draft_update_lock"));
+	assert!(state.order.ends_with(&["complete_listing", "commit"]));
+}
+
+#[tokio::test]
+async fn a_caller_who_may_not_test_the_draft_makes_no_server_answer() {
+	let sessions = serving("search");
+	let mut repository = plugin_repository(&["docs"], &sessions);
+	repository.failure = Some("authority");
+	let refused = admit(&repository.admission(), draft().id, input()).await;
+	assert!(matches!(refused, Err(Error::Forbidden)));
+	assert!(sessions.listings().is_empty());
+	assert!(!repository.state.lock().unwrap().committed);
+}
+
+#[rstest]
+#[case::without_plugins(false)]
+#[case::stdio_only(true)]
+#[tokio::test]
+async fn an_agent_without_remote_plugin_servers_lists_nothing_and_admits_as_before(
+	#[case] stdio_only: bool,
+) {
+	let sessions = serving("search");
+	let mut repository = Repository::new();
+	if stdio_only {
+		repository.plugins = vec![crate::test_support::stored_plugin_with_servers(
+			"acme",
+			json!({"local":{"type":"stdio","command":"node","args":["server.js"]}}),
+			&[],
+		)];
+	}
+	let port: Arc<dyn PluginSessions> = sessions.clone();
+	repository.sessions = Some(port);
+	let admitted = admit(&repository.admission(), draft().id, input())
+		.await
+		.unwrap();
+	assert!(sessions.listings().is_empty());
+	assert!(admitted.job.plugin_tools.servers.is_empty());
+	assert_eq!(admitted.job.plugin_tools.findings.is_empty(), !stdio_only);
+	assert_eq!(
+		admitted
+			.job
+			.request
+			.instructions
+			.contains("acme/local are unavailable in this test"),
+		stdio_only
+	);
+	assert_eq!(
+		repository
+			.state
+			.lock()
+			.unwrap()
+			.order
+			.iter()
+			.filter(|step| **step == "admit")
+			.count(),
+		1
+	);
+}
+
+#[rstest]
+#[case("revision")]
+#[case("archived")]
+#[case("content")]
+#[case("concurrency")]
+#[tokio::test]
+async fn rejected_plugin_drafts_do_not_contact_remote_servers(#[case] failure: &'static str) {
+	let sessions = serving("search");
+	let mut repository = plugin_repository(&["docs"], &sessions);
+	repository.failure = Some(failure);
+	assert!(
+		admit(&repository.admission(), draft().id, input())
+			.await
+			.is_err()
+	);
+	assert!(
+		sessions.listings().is_empty(),
+		"rejected drafts must make no outbound listing"
+	);
+}
+
+#[rstest]
+#[case("changed_during_listing")]
+#[case("bindings_changed_during_listing")]
+#[case("profile_changed_during_listing")]
+#[case("stopped_during_listing")]
+#[tokio::test]
+async fn changed_listing_admission_is_not_delivered_and_releases_its_reservation(
+	#[case] failure: &'static str,
+) {
+	let sessions = serving("search");
+	let mut repository = plugin_repository(&["docs"], &sessions);
+	repository.failure = Some(failure);
+	repository.sessions = Some(Arc::new(Watched {
+		inner: sessions.clone(),
+		state: repository.state.clone(),
+	}));
+	let mut request = input();
+	if failure == "profile_changed_during_listing" {
+		request.mode = "real".into();
+		request.profile_id = Some("profile".into());
+	}
+	assert!(matches!(
+		admit(&repository.admission(), draft().id, request).await,
+		Err(Error::Conflict(_))
+	));
+	let state = repository.state.lock().unwrap();
+	assert!(state.order.contains(&"plugin_listing"));
+	assert!(!state.order.contains(&"complete_listing"));
+	assert!(state.settled);
+	assert!(!state.active);
 }

@@ -1,6 +1,8 @@
 //! Model reservations retain unknown usage and refund only complete bounded reports.
 use crate::{Error, Result, provider::ModelResponse};
 
+pub const TOKEN_BUDGET_EXHAUSTED: &str = "generated agent token budget exhausted";
+
 pub fn reservation_amount(window: usize, output: u32) -> Result<i64> {
 	window
 		.checked_add(output as usize)

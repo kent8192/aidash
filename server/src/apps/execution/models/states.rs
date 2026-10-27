@@ -19,6 +19,9 @@ pub enum HumanRequestKind {
 	#[model_enum(value = "INFORMATION_REQUEST")]
 	#[serde(rename = "INFORMATION_REQUEST")]
 	InformationRequest,
+	#[model_enum(value = "MCP_ELICITATION")]
+	#[serde(rename = "MCP_ELICITATION")]
+	McpElicitation,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize, ModelEnum)]

@@ -298,5 +298,31 @@ export function withoutPlugin(config: Config, name: string): Config {
   const next = { ...config };
   if (kept.length > 0) next.agent_plugins = kept;
   else delete next.agent_plugins;
+  if (isRecord(config.agent_plugin_settings)) {
+    const settings = { ...config.agent_plugin_settings };
+    delete settings[name];
+    if (Object.keys(settings).length > 0) next.agent_plugin_settings = settings;
+    else delete next.agent_plugin_settings;
+  }
   return next;
+}
+
+/**
+ * The plugin servers a `run.plugin_tools_pinned` event reports as unreachable, as
+ * `plugin/server`, once each. The event carries names and reason codes only.
+ */
+export function skippedServers(data: unknown): string[] {
+  const skipped = (data as { skipped?: unknown } | null)?.skipped;
+  if (!Array.isArray(skipped)) return [];
+  const servers = new Set<string>();
+  for (const entry of skipped) {
+    const { plugin, server, reason } = (entry ?? {}) as Record<string, unknown>;
+    if (
+      reason === "server_unavailable" &&
+      typeof plugin === "string" &&
+      typeof server === "string"
+    )
+      servers.add(`${plugin}/${server}`);
+  }
+  return [...servers];
 }

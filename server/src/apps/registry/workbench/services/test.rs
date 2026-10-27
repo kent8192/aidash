@@ -103,7 +103,7 @@ impl BehavioralTests {
 			&aidash_application::registry::workbench::sandbox::admission::Admission {
 				repository: &repository,
 				models: &models,
-				plugin_sessions: None,
+				plugin_sessions: Some(runtime.store.plugin_sessions.clone()),
 			},
 			id,
 			input,
