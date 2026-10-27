@@ -278,5 +278,24 @@ fn is_token_character(character: char) -> bool {
 		)
 }
 
+/// The Tenant's settings a Connection attempt is bounded by: the OAuth Clients
+/// registered in advance for an authorization server, and the Tenant's ceiling
+/// on the scopes a Connection to one MCP server may request.
+#[async_trait]
+pub trait ConnectionPolicy: Send + Sync {
+	/// The person's own registered client for `issuer`, then the Tenant's.
+	async fn registered_clients(
+		&self,
+		tenant: &str,
+		subject: &str,
+		issuer: &str,
+	) -> Result<(
+		Option<aidash_domain::oauth_connections::OAuthClient>,
+		Option<aidash_domain::oauth_connections::OAuthClient>,
+	)>;
+	/// The Tenant's scope ceiling for a canonical resource, if it set one.
+	async fn scope_ceiling(&self, tenant: &str, resource: &str) -> Result<Option<Vec<String>>>;
+}
+
 #[cfg(test)]
 mod tests;
