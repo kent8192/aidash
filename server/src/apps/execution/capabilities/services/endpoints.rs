@@ -55,6 +55,14 @@ async fn run_access(f: &Federation, actor: Actor, id: Uuid) -> Result<(Access, R
 	Ok((access, run))
 }
 
+// Status and Stop belong to the viewer's Run authority. They do not execute
+// tools or read the Run's Working Area under its original execution grant.
+async fn viewer_run_access(f: &Federation, actor: Actor, id: Uuid) -> Result<(Access, Run)> {
+	let mut access = access(f, actor).await?;
+	let run = access.run_for_interaction(id).await?;
+	Ok((access, run))
+}
+
 pub(crate) async fn areas(
 	f: Federation,
 	actor: Actor,
@@ -1573,7 +1581,7 @@ pub(crate) async fn live_preview(
 	id: Uuid,
 ) -> Result<crate::apps::execution::capabilities::serializers::previews::LivePreviewStatus> {
 	use crate::apps::execution::capabilities::serializers::previews::LivePreviewStatus;
-	let (mut access, run) = run_access(&f, actor.clone(), id).await?;
+	let (mut access, run) = viewer_run_access(&f, actor.clone(), id).await?;
 	let domain = f.config.preview.as_ref().map(|p| p.domain.clone());
 	let result = crate::apps::execution::repositories::live_previews::status(
 		&f.store,
@@ -1633,7 +1641,7 @@ pub(crate) async fn live_preview_stop(
 	use crate::apps::execution::repositories::live_previews as previews;
 	use aidash_domain::preview::live::StopReason;
 	let domain = f.config.preview.as_ref().map(|p| p.domain.clone());
-	let (mut access, run) = run_access(&f, actor.clone(), id).await?;
+	let (mut access, run) = viewer_run_access(&f, actor.clone(), id).await?;
 	let identity = access.identity.clone();
 	let requester = aidash_application::authorization::execution::grant(
 		&crate::bootstrap::execution_grants(&f.store),
@@ -1641,11 +1649,6 @@ pub(crate) async fn live_preview_stop(
 	)
 	.await?
 	.is_some_and(|grant| grant.root_subject == identity.subject);
-	let status = previews::status(&f.store, &mut access, &run, domain.clone()).await;
-	let status = access.finish(status).await?;
-	let Some(status) = status else {
-		return Ok(LivePreviewStatus::of(None, false));
-	};
 	if !requester {
 		aidash_application::authorization::runs::authorize_run(
 			&crate::bootstrap::run_control_repository(&f, &identity),
@@ -1653,11 +1656,16 @@ pub(crate) async fn live_preview_stop(
 		)
 		.await?;
 	}
+	let status = previews::status(&f.store, &mut access, &run, domain.clone()).await;
+	let status = access.finish(status).await?;
+	let Some(status) = status else {
+		return Ok(LivePreviewStatus::of(None, false));
+	};
 	if status.state.is_stopped() {
 		return Ok(LivePreviewStatus::of(Some(status), false));
 	}
 	let stopped = {
-		let (mut access, run) = run_access(&f, actor.clone(), id).await?;
+		let (mut access, run) = viewer_run_access(&f, actor.clone(), id).await?;
 		let result = previews::request_stop(
 			&f.store,
 			&mut access,
@@ -1673,11 +1681,11 @@ pub(crate) async fn live_preview_stop(
 		.await
 		.unwrap_or(false)
 	{
-		let (mut access, run) = run_access(&f, actor, id).await?;
+		let (mut access, run) = viewer_run_access(&f, actor, id).await?;
 		let result = previews::settle(&f.store, &mut access, &run, domain, stopped.id).await;
 		access.finish(result).await?;
 	}
-	let (mut access, run) = run_access(&f, Actor::Subject(identity), id).await?;
+	let (mut access, run) = viewer_run_access(&f, Actor::Subject(identity), id).await?;
 	let result = previews::status(&f.store, &mut access, &run, None).await;
 	access
 		.finish(result)

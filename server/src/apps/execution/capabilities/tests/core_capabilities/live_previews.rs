@@ -88,7 +88,7 @@ async fn a_run_without_a_live_preview_reads_null(#[future] capability_fixture: C
 	)
 	.await;
 	assert_eq!(status, 200, "{body}");
-	assert_eq!(body, json!({"live_preview": null}));
+	assert_eq!(body, json!({"live_preview": null, "may_stop": true}));
 }
 
 #[rstest::rstest]
@@ -104,6 +104,56 @@ async fn stopping_a_missing_run_is_forbidden(#[future] capability_fixture: CoreF
 	)
 	.await;
 	assert_eq!(status, 403, "{body}");
+}
+
+#[rstest::rstest]
+#[tokio::test]
+async fn live_preview_stop_authority_belongs_to_the_viewer(
+	#[future] capability_fixture: CoreFixture,
+) {
+	let mut c = capability_fixture.await;
+	let run = admit(&c).await;
+	let (area, _) = working_area(&c, run.id).await;
+	let preview = Uuid::new_v4();
+	insert_running(&c, preview, run.id, area, 1, "running").await;
+	let (status, credential) = request(
+		&c.app,
+		&c.f.config.api_token,
+		"POST",
+		"/api/authorization/acme/credentials",
+		json!({"subject":"bob"}),
+	)
+	.await;
+	assert_eq!(status, 200, "{credential}");
+	let bob = credential["token"].as_str().unwrap();
+	c.policy["policies"].as_array_mut().unwrap().push(json!({
+		"id":"no-run-control","effect":"deny","subjects":{"ids":["alice","bob"]},
+		"actions":["run.control"],"resources":{"kinds":["run"]}
+	}));
+	common::replace_policy(&c.f.store, "acme", c.policy.clone()).await;
+	let path = format!("/api/runs/{}/live-preview", run.id);
+	for (token, allowed) in [(c.token.as_str(), true), (bob, false)] {
+		let (status, body) = request(&c.app, token, "GET", &path, Value::Null).await;
+		assert_eq!(status, 200, "{body}");
+		assert_eq!(
+			body["may_stop"], allowed,
+			"requester exception uses the viewer's own identity"
+		);
+	}
+	let stop = format!("{path}/stop");
+	let (status, body) = request(&c.app, bob, "POST", &stop, Value::Null).await;
+	assert_eq!(status, 403, "{body}");
+	assert_eq!(live_row(&c, preview).await.0, "running");
+	// Restoring Bob's own cancellation authority enables Stop without borrowing
+	// the requester's execution grant or changing the preview's owner.
+	c.policy["policies"].as_array_mut().unwrap().pop();
+	common::replace_policy(&c.f.store, "acme", c.policy.clone()).await;
+	let (status, body) = request(&c.app, bob, "GET", &path, Value::Null).await;
+	assert_eq!(status, 200, "{body}");
+	assert_eq!(body["may_stop"], true);
+	let (status, body) = request(&c.app, bob, "POST", &stop, Value::Null).await;
+	assert_eq!(status, 200, "{body}");
+	assert_eq!(body["live_preview"]["state"], "stopped");
 }
 
 #[rstest::rstest]
