@@ -200,10 +200,16 @@ pub struct SecretRecord {
 	pub host: String,
 }
 
-/// One call's Tenant Secret. A brokered credential can mint a new token for
+/// One call's credential: a person's Connection or a named Tenant Secret.
+/// A brokered credential can mint a new token for
 /// the next request of a long-lived MCP session; a self-hosted one carries the
 /// value read for this call alone.
+#[derive(Clone)]
 pub enum CallSecret {
+	Connection {
+		record: ConnectionRecord,
+		source: Arc<dyn BearerSource>,
+	},
 	Value {
 		record: SecretRecord,
 		value: SecretString,
@@ -216,11 +222,28 @@ pub enum CallSecret {
 	},
 }
 impl CallSecret {
-	pub fn record(&self) -> &SecretRecord {
+	pub fn record(&self) -> Option<&SecretRecord> {
 		match self {
-			Self::Value { record, .. } | Self::Brokered { record, .. } => record,
+			Self::Value { record, .. } | Self::Brokered { record, .. } => Some(record),
+			Self::Connection { .. } => None,
 		}
 	}
+}
+
+/// Metadata of the person's OAuth Connection used by an invocation. Never a token.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ConnectionRecord {
+	pub id: Uuid,
+	pub resource: String,
+	pub host: String,
+}
+
+/// A long-lived MCP session obtains the current bearer before each request.
+#[async_trait]
+pub trait BearerSource: Send + Sync {
+	async fn bearer(&self) -> Result<SecretString>;
+	/// A server refused the bearer; the next request must force a refresh.
+	async fn invalidate(&self);
 }
 
 /// Mints another route for the same call. A transport that keeps one MCP

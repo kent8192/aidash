@@ -1,5 +1,8 @@
 //! Bound transport bytes before either SSE framing or JSON-RPC decoding.
-use aidash_application::Error;
+use aidash_application::{
+	Error,
+	tenant_secrets::{BearerSource, CallSecret},
+};
 use futures_util::{StreamExt, stream::BoxStream};
 use reqwest::header::{HeaderName, HeaderValue};
 use rmcp_modern::{
@@ -12,14 +15,71 @@ use rmcp_modern::{
 		},
 	},
 };
+use secrecy::ExposeSecret;
 use serde_json::{Value, json};
 use sse_stream::{Sse, SseStream};
 use std::{collections::HashMap, sync::Arc};
 
 const LIMIT: usize = 256_000;
 #[derive(Clone)]
-pub(crate) struct BoundedClient(pub reqwest::Client);
-type Failure = StreamableHttpError<reqwest::Error>;
+pub(crate) struct BoundedClient(
+	pub reqwest::Client,
+	pub Option<Arc<dyn BearerSource>>,
+	pub Arc<crate::tools::auth::CallProgress>,
+);
+#[derive(Debug, thiserror::Error)]
+pub(crate) enum WireError {
+	#[error(transparent)]
+	Http(#[from] reqwest::Error),
+	#[error(transparent)]
+	App(#[from] Error),
+}
+pub(crate) type Failure = StreamableHttpError<WireError>;
+impl BoundedClient {
+	pub(crate) fn new(
+		client: reqwest::Client,
+		auth: Option<&CallSecret>,
+		progress: Arc<crate::tools::auth::CallProgress>,
+	) -> Self {
+		Self(
+			client,
+			match auth {
+				Some(CallSecret::Connection { source, .. }) => Some(source.clone()),
+				_ => None,
+			},
+			progress,
+		)
+	}
+	async fn bearer(
+		&self,
+		token: Option<String>,
+		endpoint: &str,
+	) -> Result<Option<String>, Failure> {
+		match &self.1 {
+			Some(source) => Ok(Some(
+				source
+					.bearer()
+					.await
+					.map_err(|e| Failure::Client(WireError::App(self.2.source_error(e, endpoint))))?
+					.expose_secret()
+					.to_owned(),
+			)),
+			None => Ok(token),
+		}
+	}
+}
+fn send_error(error: reqwest::Error) -> Failure {
+	Failure::Client(WireError::Http(error))
+}
+fn auth_error(error: &DynamicTransportError) -> Option<Error> {
+	if let Some(Failure::Client(WireError::App(Error::Invalid(message)))) =
+		error.error.downcast_ref::<Failure>()
+	{
+		Some(Error::Invalid(message.clone()))
+	} else {
+		None
+	}
+}
 fn invalid(message: &str) -> Failure {
 	Failure::UnexpectedServerResponse(message.to_owned().into())
 }
@@ -29,7 +89,7 @@ fn invalid(message: &str) -> Failure {
 fn refused(error: &DynamicTransportError) -> bool {
 	matches!(
 		error.error.downcast_ref::<Failure>(),
-		Some(Failure::Client(source)) if crate::keyless::refused(source)
+		Some(Failure::Client(WireError::Http(source))) if crate::keyless::refused(source)
 	)
 }
 
@@ -37,6 +97,8 @@ fn refused(error: &DynamicTransportError) -> bool {
 pub(crate) fn initialization_error(error: &ClientInitializeError) -> Error {
 	match error {
 		ClientInitializeError::TransportError { error: source, .. } if refused(source) => refusal(),
+		ClientInitializeError::TransportError { error: source, .. } => auth_error(source)
+			.unwrap_or_else(|| Error::External(format!("MCP initialization failed: {error}"))),
 		ClientInitializeError::LegacyFallbackFailed { fallback, .. } => {
 			initialization_error(fallback)
 		}
@@ -47,6 +109,8 @@ pub(crate) fn initialization_error(error: &ClientInitializeError) -> Error {
 pub(crate) fn call_error(error: &ServiceError) -> Error {
 	match error {
 		ServiceError::TransportSend(source) if refused(source) => refusal(),
+		ServiceError::TransportSend(source) => auth_error(source)
+			.unwrap_or_else(|| Error::External(format!("MCP call failed: {error}"))),
 		_ => Error::External(format!("MCP call failed: {error}")),
 	}
 }
@@ -143,7 +207,7 @@ fn events(mut response: reqwest::Response) -> BoxStream<'static, Result<Sse, Sse
 	SseStream::from_bytes_stream(stream.map(|item: Result<_, std::io::Error>| item)).boxed()
 }
 impl StreamableHttpClient for BoundedClient {
-	type Error = reqwest::Error;
+	type Error = WireError;
 	async fn post_message(
 		&self,
 		uri: Arc<str>,
@@ -152,6 +216,8 @@ impl StreamableHttpClient for BoundedClient {
 		token: Option<String>,
 		headers: HashMap<HeaderName, HeaderValue>,
 	) -> Result<StreamableHttpPostResponse, Failure> {
+		let tool_request = matches!(&message, ClientJsonRpcMessage::Request(request)
+			if matches!(request.request, rmcp_modern::model::ClientRequest::CallToolRequest(_)));
 		let discover_id = match &message {
 			ClientJsonRpcMessage::Request(request)
 				if matches!(
@@ -163,17 +229,22 @@ impl StreamableHttpClient for BoundedClient {
 			}
 			_ => None,
 		};
-		let response = request(
+		let request = request(
 			&self.0,
 			reqwest::Method::POST,
 			&uri,
 			session.as_deref(),
-			token,
+			self.bearer(token, &uri).await?,
 			headers,
 		)
-		.json(&message)
-		.send()
-		.await?;
+		.json(&message);
+		if tool_request {
+			self.2.sent();
+		}
+		let response = request.send().await.map_err(send_error)?;
+		if let Some(error) = self.2.challenge(&response, &uri, tool_request) {
+			return Err(Failure::Client(WireError::App(error)));
+		}
 		let status = response.status();
 		if let Some(id) = discover_id
 			&& session.is_none()
@@ -207,7 +278,7 @@ impl StreamableHttpClient for BoundedClient {
 		) {
 			return Ok(StreamableHttpPostResponse::Accepted);
 		}
-		let response = response.error_for_status()?;
+		let response = response.error_for_status().map_err(send_error)?;
 		let session = response
 			.headers()
 			.get("mcp-session-id")
@@ -237,7 +308,25 @@ impl StreamableHttpClient for BoundedClient {
 		headers: HashMap<HeaderName, HeaderValue>,
 	) -> Result<(), Failure> {
 		// DELETE never decodes a response body.
-		self.0.delete_session(uri, session, token, headers).await
+		let response = request(
+			&self.0,
+			reqwest::Method::DELETE,
+			&uri,
+			Some(&session),
+			self.bearer(token, &uri).await?,
+			headers,
+		)
+		.send()
+		.await
+		.map_err(send_error)?;
+		if let Some(error) = self.2.challenge(&response, &uri, false) {
+			return Err(Failure::Client(WireError::App(error)));
+		}
+		if response.status() == reqwest::StatusCode::METHOD_NOT_ALLOWED {
+			return Err(Failure::ServerDoesNotSupportDeleteSession);
+		}
+		response.error_for_status().map_err(send_error)?;
+		Ok(())
 	}
 	async fn get_stream(
 		&self,
@@ -252,17 +341,20 @@ impl StreamableHttpClient for BoundedClient {
 			reqwest::Method::GET,
 			&uri,
 			session.as_deref(),
-			token,
+			self.bearer(token, &uri).await?,
 			headers,
 		);
 		if let Some(last) = last {
 			request = request.header("last-event-id", last);
 		}
-		let response = request.send().await?;
+		let response = request.send().await.map_err(send_error)?;
+		if let Some(error) = self.2.challenge(&response, &uri, false) {
+			return Err(Failure::Client(WireError::App(error)));
+		}
 		if response.status() == reqwest::StatusCode::METHOD_NOT_ALLOWED {
 			return Err(Failure::ServerDoesNotSupportSse);
 		}
-		Ok(events(response.error_for_status()?))
+		Ok(events(response.error_for_status().map_err(send_error)?))
 	}
 }
 

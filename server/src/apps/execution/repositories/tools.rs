@@ -13,6 +13,15 @@ use uuid::Uuid;
 pub(crate) struct Operations(pub(crate) crate::tool::ToolContext);
 #[async_trait]
 impl ToolOperations for Operations {
+	async fn connection(
+		&self,
+		resource: &str,
+		_call: aidash_application::tenant_secrets::SecretCall,
+		key: &str,
+	) -> Result<aidash_application::tenant_secrets::CallSecret> {
+		super::mcp_connections::connection(&self.0.store, &self.0.run, &self.0.scope, resource, key)
+			.await
+	}
 	async fn registered_skills(&self) -> Result<Vec<EntityRef>> {
 		let snapshot = self
 			.0
@@ -211,7 +220,11 @@ impl ToolOperations for Operations {
 		// version and its host. The value is never recorded.
 		self.0
 			.store
-			.invocation_secret(&self.0.scope, key, secret.record())
+			.invocation_secret(
+				&self.0.scope,
+				key,
+				secret.record().expect("Tenant Secret record"),
+			)
 			.await?;
 		Ok(secret)
 	}

@@ -102,3 +102,61 @@ async fn other_transport_failures_stay_outages() {
 		Error::External(_)
 	));
 }
+
+#[tokio::test]
+async fn auth_refusal_mid_stream_after_a_tool_request_was_accepted_stays_a_normal_failure() {
+	use axum::{body::Body, http::StatusCode, response::Response};
+	let app = Router::new().route(
+		"/mcp",
+		post(|| async {
+			let stream = futures_util::stream::once(async {
+				Ok::<_, std::io::Error>(bytes::Bytes::from_static(b": accepted\n\n"))
+			})
+			.chain(futures_util::stream::pending());
+			Response::builder()
+				.header("content-type", "text/event-stream")
+				.body(Body::from_stream(stream))
+				.unwrap()
+		})
+		.get(|| async {
+			(
+				StatusCode::UNAUTHORIZED,
+				[("www-authenticate", "Bearer")],
+				"refused",
+			)
+		}),
+	);
+	let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+	let uri: Arc<str> = format!("http://{}/mcp", listener.local_addr().unwrap()).into();
+	let server = tokio::spawn(async move {
+		axum::serve(listener, app).await.unwrap();
+	});
+	let client = BoundedClient::direct(reqwest::Client::new());
+	let message = serde_json::from_value(
+		json!({"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"effect","arguments":{}}}),
+	)
+	.unwrap();
+	let accepted = client
+		.post_message(uri.clone(), message, None, None, HashMap::new())
+		.await
+		.unwrap();
+	assert!(matches!(accepted, StreamableHttpPostResponse::Sse(..)));
+	let failure = match client
+		.get_stream(uri, "session".into(), None, None, HashMap::new())
+		.await
+	{
+		Err(error) => error,
+		Ok(_) => panic!("the follow-up stream must refuse authentication"),
+	};
+	let error = call_error(&ServiceError::TransportSend(DynamicTransportError {
+		transport_name: "stream-auth".into(),
+		transport_type_id: std::any::TypeId::of::<Failure>(),
+		error: Box::new(failure),
+	}));
+	assert!(
+		matches!(error, Error::External(_)),
+		"cannot reconnect and replay an accepted operation: {error:?}"
+	);
+	server.abort();
+	let _ = server.await;
+}

@@ -15,6 +15,7 @@ struct Operations {
 	skill_text: String,
 	calls: Mutex<Vec<&'static str>>,
 	inputs: Mutex<Vec<(String, Value)>>,
+	connection: bool,
 }
 impl Operations {
 	fn record(&self, name: &'static str) {
@@ -113,6 +114,29 @@ impl ToolOperations for Operations {
 	fn skill_read_bytes(&self) -> Result<usize> {
 		panic!("unexpected tool effect: skill_read_bytes")
 	}
+	async fn connection(
+		&self,
+		resource: &str,
+		_call: SecretCall,
+		_key: &str,
+	) -> Result<CallSecret> {
+		self.record("connection.resolve");
+		assert_eq!(resource, "https://api.example.com/mcp");
+		if !self.connection {
+			return Err(Error::Invalid(
+				aidash_domain::oauth_connections::CONNECTION_REQUIRED.into(),
+			));
+		}
+		Ok(CallSecret::Connection {
+			record: crate::tenant_secrets::ConnectionRecord {
+				id: Uuid::now_v7(),
+				resource: resource.into(),
+				host: "api.example.com".into(),
+			},
+			source: std::sync::Arc::new(Token),
+		})
+	}
+
 	async fn tenant_secret(
 		&self,
 		name: &str,
@@ -215,6 +239,7 @@ fn fixture() -> Fixture {
 	Fixture {
 		operations: Operations {
 			skill_text: "界ab".into(),
+			connection: false,
 			task,
 			skills: vec![],
 			calls: Mutex::new(vec![]),
@@ -591,4 +616,52 @@ async fn an_unavailable_tenant_secret_fails_the_call_before_any_request(fixture:
 		*fixture.operations.calls.lock().unwrap(),
 		["secret.resolve"]
 	);
+}
+
+struct Token;
+#[async_trait]
+impl crate::tenant_secrets::BearerSource for Token {
+	async fn bearer(&self) -> Result<secrecy::SecretString> {
+		Ok("connection-token".into())
+	}
+	async fn invalidate(&self) {}
+}
+
+/// The orchestration boundary owns precedence; wire tests own challenge/refresh behavior.
+#[rstest]
+#[case::connection_beats_named_secret(true, Some("search"), vec!["connection.resolve", "transport.invoke.with_secret"])]
+#[case::missing_connection_uses_secret(false, Some("search"), vec!["connection.resolve", "secret.resolve", "transport.invoke.with_secret"])]
+#[case::no_credentials_is_anonymous(false, None, vec!["connection.resolve", "transport.invoke"])]
+#[tokio::test]
+async fn mcp_authentication_resolution_order(
+	mut fixture: Fixture,
+	#[case] connected: bool,
+	#[case] secret: Option<&str>,
+	#[case] expected: Vec<&str>,
+) {
+	fixture.operations.connection = connected;
+	let mut tool = secret_tool(None);
+	tool.config = ToolConfig::Mcp {
+		endpoint: "https://api.example.com/mcp/".into(),
+		tool_name: "lookup".into(),
+		replay: "read_only".into(),
+		secret: secret.map(str::to_owned),
+		idempotency_argument: None,
+		scopes: None,
+		secret_owner: Default::default(),
+	};
+	assert!(
+		tool.invoke(
+			&ToolContext {
+				operations: &fixture.operations,
+				run: &fixture.run
+			},
+			&fixture.operations,
+			json!({}),
+			"mcp-key"
+		)
+		.await
+		.is_ok()
+	);
+	assert_eq!(*fixture.operations.calls.lock().unwrap(), expected);
 }

@@ -21,6 +21,33 @@ use reinhardt::{
 };
 use uuid::Uuid;
 
+/// Service subjects, remote Runs and calls without a durable Run grant have no person owner.
+pub async fn owner_of_run(
+	store: &crate::store::Store,
+	run: &aidash_domain::Run,
+) -> Result<Option<Owner>> {
+	if !run.is_local(store.deployment.as_str()) {
+		return Ok(None);
+	}
+	use aidash_application::ports::authorization::ExecutionGrantRepository;
+	let grants = super::execution::Grants { store };
+	let Some(grant) = grants.grant(run.id).await? else {
+		return Ok(None);
+	};
+	let snapshot = crate::apps::identity::services::core::Authorization {
+		pool: store.pool.clone(),
+	}
+	.snapshot(&grant.tenant)
+	.await?;
+	if !super::approval_preferences::is_person(&snapshot.bundle, &grant.root_subject) {
+		return Ok(None);
+	}
+	Ok(Some(Owner {
+		tenant: grant.tenant,
+		subject: grant.root_subject,
+	}))
+}
+
 #[derive(Clone)]
 pub struct NativeRepository {
 	pub pool: crate::database::native::Pool,
