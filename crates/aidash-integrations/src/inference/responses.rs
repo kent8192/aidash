@@ -39,9 +39,14 @@ pub struct ResponsesProvider {
 }
 
 impl ResponsesProvider {
-	fn call_context(&self, max_output_tokens: u32) -> Context {
+	fn call_context(
+		&self,
+		max_output_tokens: u32,
+		provider_tools: Vec<aidash_domain::tool::provider_tools::PinnedTool>,
+	) -> Context {
 		let mut context = self.context.clone();
 		context.inference = Some(Inference {
+			provider_tools,
 			model: self.config.model_id.clone(),
 			operations: vec![Operation::Chat],
 			max_output_tokens,
@@ -189,6 +194,11 @@ impl ModelProvider for ResponsesProvider {
 		let stall = self.config.stream_stall_timeout()?;
 		tokio::time::timeout(deadline, async {
 			request.validate()?;
+			aidash_application::provider_tools::admit_request(
+				&self.config,
+				&self.context,
+				&request.provider_tools,
+			)?;
 			if request.cache_breakpoints {
 				return Err(Error::Invalid(format!(
 					"model {} does not accept cache breakpoints",
@@ -242,7 +252,7 @@ impl ResponsesProvider {
 		}
 		let salt = salt_line(self, request)?;
 		let body = request_body(&self.config, request, salt.as_deref())?;
-		let context = self.call_context(request.max_output_tokens);
+		let context = self.call_context(request.max_output_tokens, request.provider_tools.clone());
 		let source = self.source();
 		// OpenAI may reject an access token that has not expired; one
 		// forced refresh may follow before the owner is asked to reconnect.
@@ -376,6 +386,7 @@ impl ResponsesProvider {
 		.await?;
 		let mut body =
 			openrouter_request_body(&self.config, request, salt.as_deref(), media_routes)?;
+		super::validate_provider_tools(&body, request)?;
 		let streaming = self.config.streaming();
 		if streaming {
 			body["stream"] = json!(true);
@@ -383,7 +394,7 @@ impl ResponsesProvider {
 		let access = self
 			.access
 			.resolve(
-				&self.call_context(request.max_output_tokens),
+				&self.call_context(request.max_output_tokens, request.provider_tools.clone()),
 				&self.config.endpoint,
 				&self.source(),
 			)

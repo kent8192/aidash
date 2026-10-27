@@ -1271,6 +1271,7 @@ async fn admission_pins_local_tenant_id_and_reloads_state_without_environment_fa
 	};
 	let mut scoped = context.clone();
 	scoped.inference = Some(aidash_application::provider_access::Inference {
+		provider_tools: vec![],
 		model: "test/model".into(),
 		operations: vec![aidash_application::provider_access::Operation::Chat],
 		max_output_tokens: 1024,

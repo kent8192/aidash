@@ -38,6 +38,7 @@ fn media_reservation_covers_complete_request_growth(#[case] version: ProjectionV
 		_ => history.into(),
 	};
 	let mut request = ModelRequest {
+		provider_tools: vec![],
 		instructions: "Inspect the media".into(),
 		context,
 		tools: vec![],
@@ -474,6 +475,7 @@ fn only_context_policy_requests_disable_openrouter_transforms(
 	}))
 	.unwrap();
 	let request = ModelRequest {
+		provider_tools: vec![],
 		instructions: "Answer".into(),
 		context: json!({"history":[]}).into(),
 		tools: vec![],
@@ -613,6 +615,7 @@ mod cache_salt {
 
 	fn legacy() -> ModelRequest {
 		ModelRequest {
+			provider_tools: vec![],
 			instructions: "Shared instructions".into(),
 			context: json!({"task":{"title":"Summarize"}}).into(),
 			tools: vec![],
@@ -1061,4 +1064,120 @@ mod cache_salt {
 		);
 		assert!(upstream.bodies().is_empty());
 	}
+}
+
+#[tokio::test]
+async fn provider_tools_transport_sends_only_pinned_entries_and_signs_the_same_configuration() {
+	use aidash_application::provider_access::Access;
+	use axum::{Json, Router, routing::post};
+	struct ToolAccess {
+		endpoint: String,
+		contexts: std::sync::Mutex<Vec<Inference>>,
+	}
+	#[async_trait::async_trait]
+	impl ProviderAccess for ToolAccess {
+		async fn resolve(&self, context: &Context, _: &str, source: &Source) -> Result<Access> {
+			assert!(matches!(source,Source::Tenant { provider } if provider == "openrouter"));
+			self.contexts
+				.lock()
+				.unwrap()
+				.push(context.inference.clone().unwrap());
+			Ok(Access {
+				endpoint: self.endpoint.clone(),
+				bearer: "test".to_owned().into(),
+				keyless: None,
+			})
+		}
+		async fn check(&self, _: &Context, _: &str, _: &Source) -> Result<()> {
+			Ok(())
+		}
+	}
+	struct Server(tokio::task::JoinHandle<()>);
+	impl Drop for Server {
+		fn drop(&mut self) {
+			self.0.abort();
+		}
+	}
+	let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+	let endpoint = format!("http://{}/v1", listener.local_addr().unwrap());
+	let (seen, mut bodies) = tokio::sync::mpsc::unbounded_channel();
+	let handler = move |uri: axum::http::Uri, Json(body): Json<Value>| {
+		let seen = seen.clone();
+		async move {
+			seen.send(body).unwrap();
+			Json(if uri.path().ends_with("responses") {
+				json!({"status":"completed","output":[{"type":"message","content":[{"type":"output_text","text":"done"}]}],"usage":{"input_tokens":1,"output_tokens":1}})
+			} else {
+				json!({"choices":[{"finish_reason":"stop","message":{"content":"done"}}],"usage":{"prompt_tokens":1,"completion_tokens":1}})
+			})
+		}
+	};
+	let app = Router::new()
+		.route("/v1/chat/completions", post(handler.clone()))
+		.route("/v1/responses", post(handler));
+	let _server = Server(tokio::spawn(async move {
+		axum::serve(listener, app).await.unwrap();
+	}));
+	let access = Arc::new(ToolAccess {
+		endpoint,
+		contexts: Default::default(),
+	});
+	let declaration =
+		aidash_domain::tool::provider_tools::declaration("openrouter:web_search").unwrap();
+	let pinned = aidash_domain::tool::provider_tools::PinnedTool {
+		tool_type: declaration.tool_type.into(),
+		binding: declaration.defaults(),
+	};
+	for wire_api in [None, Some(aidash_domain::model::WireApi::Responses)] {
+		let mut config: ModelConfig = serde_json::from_value(json!({"provider":"openrouter","provider_credential":"openrouter","model_id":"openai/gpt-4.1","endpoint":"https://openrouter.ai/api/v1","context_window":100000,"max_output_tokens":1000,"modalities":["text"],"cost":{},"streaming":false})).unwrap();
+		config.wire_api = wire_api;
+		let provider = provider(
+			test_clients(),
+			config,
+			access.clone(),
+			Context {
+				tenant: "tenant".into(),
+				run: Some(uuid::Uuid::new_v4()),
+				..Default::default()
+			},
+		)
+		.unwrap();
+		let request = ModelRequest {
+			instructions: "Test".into(),
+			context: json!({}).into(),
+			provider_tools: vec![pinned.clone()],
+			max_output_tokens: 100,
+			..Default::default()
+		};
+		assert_eq!(
+			provider
+				.infer(request.clone(), &aidash_application::ports::NoProgress)
+				.await
+				.unwrap()
+				.text,
+			"done"
+		);
+		let body = bodies.recv().await.unwrap();
+		assert_eq!(body["tools"], json!([pinned.entry()]));
+		assert_eq!(body["max_tool_calls"], 3);
+		let signed = access
+			.contexts
+			.lock()
+			.unwrap()
+			.last()
+			.unwrap()
+			.provider_tools
+			.clone();
+		assert_eq!(signed, vec![pinned.clone()]);
+		let mut invalid = request;
+		invalid.provider_tools[0].binding.max_tool_calls = 9;
+		assert!(
+			provider
+				.infer(invalid, &aidash_application::ports::NoProgress)
+				.await
+				.is_err()
+		);
+	}
+	assert_eq!(access.contexts.lock().unwrap().len(), 2);
+	assert!(bodies.try_recv().is_err());
 }

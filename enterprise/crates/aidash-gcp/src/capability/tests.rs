@@ -279,6 +279,7 @@ async fn issuer_copies_the_cache_breakpoint_request_into_the_signed_claims(
 		tenant: "tenant-a".into(),
 		run: Some(uuid::Uuid::from_u128(7)),
 		inference: Some(Inference {
+			provider_tools: vec![],
 			model: "anthropic/claude-fixture".into(),
 			operations: vec![Operation::Chat],
 			max_output_tokens: 64,

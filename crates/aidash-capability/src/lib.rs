@@ -55,6 +55,9 @@ pub enum TokenSubject {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Claims {
+	/// Exact provider-owned tools admitted for this inference; absent denies all.
+	#[serde(default, skip_serializing_if = "Vec::is_empty")]
+	pub provider_tools: Vec<ProviderTool>,
 	pub iss: String,
 	pub aud: String,
 	pub iat: u64,
@@ -230,6 +233,25 @@ impl PublicKeys {
 		{
 			return Err(Failure::Model);
 		}
+		if !claims.provider_tools.is_empty() {
+			let mut kinds = std::collections::BTreeSet::new();
+			if claims.ops != [Operation::Chat]
+				|| !matches!(claims.sub, TokenSubject::Run { .. })
+				|| claims.provider_tools.len() > 32
+				|| claims.provider_tools.iter().any(|tool| {
+					!kinds.insert(&tool.tool_type)
+						|| tool.max_tool_calls == 0
+						|| !tool.tool_type.starts_with("openrouter:")
+						|| tool
+							.parameters_digest
+							.strip_prefix("sha256:")
+							.is_none_or(|hash| {
+								hash.len() != 64 || !hash.bytes().all(|b| b.is_ascii_hexdigit())
+							})
+				}) {
+				return Err(Failure::ClaimViolation);
+			}
+		}
 		// A Decision Attempt returns probabilities, not completion tokens (ADR 0041).
 		if claims.ops.contains(&Operation::Decision) {
 			if claims.ops.len() != 1
@@ -325,4 +347,12 @@ impl KeyMaterialSource for InMemoryKeyMaterialSource {
 			.cloned()
 			.ok_or(KeyMaterialError::Unavailable)
 	}
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ProviderTool {
+	pub tool_type: String,
+	pub parameters_digest: String,
+	pub max_tool_calls: u32,
 }

@@ -12,6 +12,7 @@ fn tool(id: &str, result: &str) -> ContextEvent {
 #[rstest::rstest]
 fn request_check_reserves_completion_tokens() {
 	let request = provider::ModelRequest {
+		provider_tools: vec![],
 		instructions: String::new(),
 		context: json!({}).into(),
 		tools: vec![],

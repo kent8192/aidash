@@ -165,6 +165,15 @@ impl TokenIssuer for CapabilityIssuer {
 			.map_err(|_| Error::Invalid("Capability Token clock unavailable".into()))?
 			.as_secs();
 		let claims = Claims {
+			provider_tools: request
+				.provider_tools
+				.iter()
+				.map(|tool| aidash_capability::ProviderTool {
+					tool_type: tool.tool_type.clone(),
+					parameters_digest: tool.digest(),
+					max_tool_calls: tool.binding.max_tool_calls,
+				})
+				.collect(),
 			iss: self.configuration.issuer.clone(),
 			aud: self.configuration.audience.clone(),
 			iat: now,

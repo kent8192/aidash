@@ -4,6 +4,7 @@ use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
 use secrecy::ExposeSecret;
 fn claims() -> Claims {
 	Claims {
+		provider_tools: vec![],
 		iss: "worker".into(),
 		aud: "environment".into(),
 		iat: 100,
@@ -347,4 +348,42 @@ async fn observation_tokens_are_tenant_bound_decision_attempts_without_a_run() {
 			assert_eq!(verified.ops, vec![Operation::Decision]);
 		}
 	}
+}
+
+#[tokio::test]
+async fn provider_tools_authority_is_bound_to_one_run_inference_operation() {
+	let signer = InMemorySigner::new("kms/versions/1".into(), [7; 32]);
+	let mut keys = PublicKeys::default();
+	keys.insert(signer.kid().into(), signer.public_key());
+	let mut value = claims();
+	value.ops = vec![Operation::Chat];
+	value.provider_tools.push(ProviderTool {
+		tool_type: "openrouter:web_search".into(),
+		parameters_digest: format!("sha256:{}", "a".repeat(64)),
+		max_tool_calls: 3,
+	});
+	let token = mint(&value, &signer).await.unwrap();
+	let verified = keys
+		.verify(token.expose_secret(), "worker", "environment", 100)
+		.unwrap();
+	assert_eq!(
+		verified.provider_tools[0].parameters_digest,
+		value.provider_tools[0].parameters_digest
+	);
+	value.ops.push(Operation::Discovery);
+	let token = mint(&value, &signer).await.unwrap();
+	assert!(
+		keys.verify(token.expose_secret(), "worker", "environment", 100)
+			.is_err()
+	);
+	value.ops = vec![Operation::Chat];
+	value.sub = TokenSubject::Maintenance {
+		maintenance: Maintenance::MemoryIndexing,
+		tenant: value.tenant.clone(),
+	};
+	let token = mint(&value, &signer).await.unwrap();
+	assert!(
+		keys.verify(token.expose_secret(), "worker", "environment", 100)
+			.is_err()
+	);
 }

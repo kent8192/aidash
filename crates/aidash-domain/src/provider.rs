@@ -66,6 +66,8 @@ pub struct ModelRequest {
 	pub instructions: String,
 	pub context: ModelContext,
 	pub tools: Vec<ToolSpec>,
+	#[serde(default, skip_serializing_if = "Vec::is_empty")]
+	pub provider_tools: Vec<crate::tool::provider_tools::PinnedTool>,
 	pub max_output_tokens: u32,
 	/// Structured-output schema for non-tool requests such as the Summary
 	/// Stage. Absent for ordinary inference, whose body stays unchanged.
@@ -454,6 +456,7 @@ impl ModelRequest {
 		if let Some(format) = &self.response_format {
 			body["response_format"] = format.clone();
 		}
+		crate::tool::provider_tools::append(&mut body, &self.provider_tools);
 		body
 	}
 
@@ -564,6 +567,13 @@ impl ModelRequest {
 	}
 
 	pub fn validate(&self) -> Result<()> {
+		let mut seen = std::collections::BTreeSet::new();
+		for tool in &self.provider_tools {
+			tool.validate()?;
+			if !seen.insert(&tool.tool_type) {
+				return Err(Error::Invalid("duplicate Provider tool".into()));
+			}
+		}
 		if self.input_format == InputFormat::Responses {
 			self.estimate_body(&self.content_parts)?;
 		}
@@ -625,6 +635,9 @@ impl ModelRequest {
 			"instructions": self.instructions,
 			"tools": self.tools,
 		});
+		if !self.provider_tools.is_empty() {
+			identity["provider_tools"] = json!(self.provider_tools);
+		}
 		if !self.input_format.is_chat() {
 			identity["input_format"] = json!(self.input_format);
 		}

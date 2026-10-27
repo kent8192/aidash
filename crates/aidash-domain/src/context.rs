@@ -454,6 +454,7 @@ pub fn tool_event_growth(context: &Context, event: &ContextEvent) -> usize {
 			.any(|event| matches!(event, ContextEvent::Assistant { .. }));
 	let estimate = |context: &Context| {
 		crate::provider::ModelRequest {
+			provider_tools: vec![],
 			instructions: String::new(),
 			context: if native {
 				crate::provider::ModelContext::Native(crate::projection::native::native_context(
@@ -518,6 +519,30 @@ pub struct RequestBudget<'a> {
 impl RequestBudget<'_> {
 	pub fn request(&self, context: &Context, pinned: &Value) -> crate::provider::ModelRequest {
 		let context_sources = &context.source_contributions;
+		let mut tools = self.tools.to_vec();
+		let mut provider_tools = Vec::new();
+		if let Some(snapshot) = &context.binding_snapshot {
+			for binding in &snapshot.bindings {
+				if binding.excluded_reason.is_some()
+					|| !tools
+						.iter()
+						.any(|spec| Some(spec.name.as_str()) == binding.alias.as_deref())
+				{
+					continue;
+				}
+				if let Some(tool) = binding.definition.config["provider"]
+					.as_str()
+					.and_then(crate::tool::provider_tools::declaration)
+					&& let Some(parameters) = &binding.narrow.provider_tool
+				{
+					provider_tools.push(crate::tool::provider_tools::PinnedTool {
+						tool_type: tool.tool_type.into(),
+						binding: parameters.clone(),
+					});
+					tools.retain(|spec| Some(spec.name.as_str()) != binding.alias.as_deref());
+				}
+			}
+		}
 		let (context, cache_scope) = match self.projection {
 			RequestProjection::Legacy => (context.model_view(pinned).into(), None),
 			RequestProjection::Ordered(scope) => (
@@ -532,9 +557,10 @@ impl RequestBudget<'_> {
 			),
 		};
 		let mut request = crate::provider::ModelRequest {
+			provider_tools,
 			instructions: self.instructions.into(),
 			context,
-			tools: self.tools.to_vec(),
+			tools,
 			max_output_tokens: self.max_output_tokens,
 			response_format: None,
 			content_parts: vec![],

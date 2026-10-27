@@ -35,9 +35,11 @@ impl OpenRouterProvider {
 		operation: Operation,
 		max_output_tokens: u32,
 		cache_breakpoints: bool,
+		provider_tools: Vec<aidash_domain::tool::provider_tools::PinnedTool>,
 	) -> Context {
 		let mut context = self.context.clone();
 		context.inference = Some(Inference {
+			provider_tools,
 			model: self.config.model_id.clone(),
 			operations: vec![operation],
 			max_output_tokens,
@@ -213,6 +215,7 @@ pub(crate) async fn verified_routes(
 fn discovery_context(context: &Context, config: &ModelConfig) -> Context {
 	let mut context = context.clone();
 	context.inference = Some(Inference {
+		provider_tools: vec![],
 		model: config.model_id.clone(),
 		operations: vec![Operation::Discovery],
 		max_output_tokens: config.output_token_limit(),
@@ -340,6 +343,11 @@ impl ModelProvider for OpenRouterProvider {
 		let stall = self.config.stream_stall_timeout()?;
 		tokio::time::timeout(deadline, async {
 			request.validate()?;
+			aidash_application::provider_tools::admit_request(
+				&self.config,
+				&self.context,
+				&request.provider_tools,
+			)?;
 			// A Run's pinned version was checked at registration and Run
 			// creation; a request forced past them still never reaches the
 			// provider, and never falls back to Legacy (ADR 0015). Legacy is
@@ -401,6 +409,7 @@ impl ModelProvider for OpenRouterProvider {
 			}
 			let media_routes = self.verified_routes(&request).await?;
 			let mut body = request_body(&self.config, &request, media_routes, salt.as_deref());
+			validate_provider_tools(&body, &request)?;
 			if streaming {
 				body["stream"] = json!(true);
 				body["stream_options"] = json!({"include_usage": true});
@@ -412,6 +421,7 @@ impl ModelProvider for OpenRouterProvider {
 						Operation::Chat,
 						request.max_output_tokens,
 						request.cache_breakpoints,
+						request.provider_tools.clone(),
 					),
 					&self.config.endpoint,
 					&Source::configured(&self.config.provider_credential, &None),
@@ -796,3 +806,24 @@ mod stream;
 
 #[cfg(test)]
 mod tests;
+
+fn validate_provider_tools(body: &Value, request: &ModelRequest) -> Result<()> {
+	let signed = request
+		.provider_tools
+		.iter()
+		.map(|tool| {
+			(
+				tool.tool_type.as_str(),
+				tool.digest(),
+				tool.binding.max_tool_calls,
+			)
+		})
+		.collect::<Vec<_>>();
+	aidash_domain::tool::provider_tools::authorize(
+		body,
+		signed
+			.iter()
+			.map(|(kind, digest, calls)| (*kind, digest.as_str(), *calls)),
+	)?;
+	Ok(())
+}
