@@ -116,8 +116,10 @@ impl DataProtection {
 				false
 			}
 			Destination::PlanConnection if self.plan_connection_exempt => true,
-			Destination::PlanConnection => {
-				return Err(refused("Plan Connections require the Tenant exemption"));
+			Destination::PlanConnection if self.level != Level::Standard => {
+				return Err(refused(
+					"Plan Connections require the Tenant exemption at this level",
+				));
 			}
 			Destination::TenantKeyless if self.level != Level::Standard => {
 				return Err(refused("Tenant Keyless endpoints cannot meet this level"));

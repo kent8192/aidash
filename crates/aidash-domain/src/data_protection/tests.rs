@@ -58,3 +58,23 @@ fn delegation_never_weakens_any_tenants_requirements() {
 		.plan_connection_exemption
 	);
 }
+
+#[test]
+fn non_exempt_plan_connections_are_allowed_only_at_standard_even_with_model_zdr() {
+	for level in [Level::Standard, Level::NoTraining, Level::ZeroDataRetention] {
+		for model_call_zdr in [false, true] {
+			let policy = DataProtection {
+				level,
+				model_call_zdr,
+				plan_connection_exempt: false,
+			}
+			.with_floor(Level::Standard);
+			let permission = policy.permits(Destination::PlanConnection);
+			if level == Level::Standard {
+				assert!(!permission.unwrap().plan_connection_exemption);
+			} else {
+				assert!(permission.is_err());
+			}
+		}
+	}
+}
