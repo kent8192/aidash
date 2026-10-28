@@ -11,13 +11,6 @@ pub async fn visible(scope: &mut dyn GraphVisibility, candidate: &Candidate) -> 
 		Candidate::Conversation(row) => Some(row.workspace_id),
 		Candidate::Registry(_) => None,
 	};
-	if scope.deployment_administrator() {
-		return if let Some(id) = workspace {
-			scope.deployment_administrator_workspace(id).await
-		} else {
-			Ok(true)
-		};
-	}
 	if let Candidate::Registry(entry) = candidate {
 		return scope.registry(entry, "registry.read").await;
 	}
