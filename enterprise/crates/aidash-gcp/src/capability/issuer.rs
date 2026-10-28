@@ -167,6 +167,15 @@ impl TokenIssuer for CapabilityIssuer {
 			.as_secs();
 		let claims = Claims {
 			data_region: context.data_protection.region()?,
+			provider_tools: request
+				.provider_tools
+				.iter()
+				.map(|tool| aidash_capability::ProviderTool {
+					tool_type: tool.tool_type.clone(),
+					parameters_digest: tool.digest(),
+					max_tool_calls: tool.binding.max_tool_calls,
+				})
+				.collect(),
 			data_protection: context.data_protection.requirement(),
 			iss: self.configuration.issuer.clone(),
 			aud: self.configuration.audience.clone(),

@@ -285,6 +285,7 @@ async fn issuer_signs_current_cache_and_region_authority(
 		tenant: "tenant-a".into(),
 		run: Some(uuid::Uuid::from_u128(7)),
 		inference: Some(Inference {
+			provider_tools: vec![],
 			model: "anthropic/claude-fixture".into(),
 			operations: vec![Operation::Chat],
 			max_output_tokens: 64,

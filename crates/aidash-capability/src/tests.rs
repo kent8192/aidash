@@ -5,6 +5,7 @@ use secrecy::ExposeSecret;
 fn claims() -> Claims {
 	Claims {
 		data_region: None,
+		provider_tools: vec![],
 		data_protection: Default::default(),
 		iss: "worker".into(),
 		aud: "environment".into(),
@@ -378,4 +379,42 @@ async fn provider_catalogs_authorize_discovery_but_never_inference() {
 	let token = mint(&value, &signer).await.unwrap();
 	keys.verify(token.expose_secret(), "worker", "environment", 100)
 		.unwrap();
+}
+
+#[tokio::test]
+async fn provider_tools_authority_is_bound_to_one_run_inference_operation() {
+	let signer = InMemorySigner::new("kms/versions/1".into(), [7; 32]);
+	let mut keys = PublicKeys::default();
+	keys.insert(signer.kid().into(), signer.public_key());
+	let mut value = claims();
+	value.ops = vec![Operation::Chat];
+	value.provider_tools.push(ProviderTool {
+		tool_type: "openrouter:web_search".into(),
+		parameters_digest: format!("sha256:{}", "a".repeat(64)),
+		max_tool_calls: 3,
+	});
+	let token = mint(&value, &signer).await.unwrap();
+	let verified = keys
+		.verify(token.expose_secret(), "worker", "environment", 100)
+		.unwrap();
+	assert_eq!(
+		verified.provider_tools[0].parameters_digest,
+		value.provider_tools[0].parameters_digest
+	);
+	value.ops.push(Operation::Discovery);
+	let token = mint(&value, &signer).await.unwrap();
+	assert!(
+		keys.verify(token.expose_secret(), "worker", "environment", 100)
+			.is_err()
+	);
+	value.ops = vec![Operation::Chat];
+	value.sub = TokenSubject::Maintenance {
+		maintenance: Maintenance::MemoryIndexing,
+		tenant: value.tenant.clone(),
+	};
+	let token = mint(&value, &signer).await.unwrap();
+	assert!(
+		keys.verify(token.expose_secret(), "worker", "environment", 100)
+			.is_err()
+	);
 }

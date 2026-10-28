@@ -8,6 +8,7 @@ use serde_json::Value;
 use uuid::Uuid;
 #[derive(Debug)]
 pub struct RunDetails {
+	pub provider_tool_activity: Vec<aidash_domain::tool::provider_tools::Activity>,
 	pub egress_requests: Vec<aidash_domain::egress::RequestRecord>,
 	pub run: RunInspection,
 	pub invocations: Vec<InvocationSummary>,
@@ -28,6 +29,13 @@ pub trait RunDetailsScope: Send {
 		_id: Uuid,
 		_offset: u64,
 	) -> Result<Vec<aidash_domain::egress::RequestRecord>> {
+		Ok(vec![])
+	}
+	async fn provider_tool_activity(
+		&mut self,
+		_id: Uuid,
+		_offset: u64,
+	) -> Result<Vec<aidash_domain::tool::provider_tools::Activity>> {
 		Ok(vec![])
 	}
 	async fn invocations(&mut self, id: Uuid, offset: u64) -> Result<Vec<InvocationSummary>>;

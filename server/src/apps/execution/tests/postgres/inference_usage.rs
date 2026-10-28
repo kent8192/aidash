@@ -141,6 +141,7 @@ async fn usage_records_complete_once_and_stale_dispatches_become_unknown(
 	let run = store.lease_run(token, 30).await.unwrap().unwrap();
 	let completed = dispatch(token);
 	let reported = ReportedUsage {
+		server_tool_use: std::collections::BTreeMap::from([("web_search_requests".into(), 2)]),
 		input_tokens: Some(120),
 		output_tokens: Some(30),
 		cache_read_tokens: Some(100),
@@ -186,6 +187,16 @@ async fn usage_records_complete_once_and_stale_dispatches_become_unknown(
 		true,
 	);
 	assert_eq!(usage_row(&store, completed.attempt).await, expected);
+	let sql = Query::select()
+		.column(Alias::new("server_tool_use"))
+		.from(Alias::new("inference_usage"))
+		.and_where(Expr::col(Alias::new("attempt_id")).eq(Expr::value(completed.attempt)))
+		.to_string(PostgresQueryBuilder);
+	let tool_use: Option<serde_json::Value> = sqlx::query_scalar(&sql)
+		.fetch_one(store.pool.fixture_driver())
+		.await
+		.unwrap();
+	assert_eq!(tool_use, Some(json!({"web_search_requests":2})));
 
 	// Completion is at most once.
 	assert!(

@@ -93,6 +93,7 @@ fn request(encoding: TokenEncoding) -> ModelRequest {
 		})
 		.collect::<serde_json::Map<_, _>>();
 	ModelRequest {
+		provider_tools: vec![],
 		instructions: "Follow the task. Reply with the word done.".into(),
 		context: json!({
 			"task": "Summarize the notes.",

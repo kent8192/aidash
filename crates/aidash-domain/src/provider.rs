@@ -66,6 +66,8 @@ pub struct ModelRequest {
 	pub instructions: String,
 	pub context: ModelContext,
 	pub tools: Vec<ToolSpec>,
+	#[serde(default, skip_serializing_if = "Vec::is_empty")]
+	pub provider_tools: Vec<crate::tool::provider_tools::PinnedTool>,
 	pub max_output_tokens: u32,
 	/// Structured-output schema for non-tool requests such as the Summary
 	/// Stage. Absent for ordinary inference, whose body stays unchanged.
@@ -181,6 +183,9 @@ pub struct OrderedContext {
 #[derive(Debug, Clone, Default, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct ModelResponse {
+	/// Observable provider-owned activity, never Research evidence or citations.
+	#[serde(default, skip_serializing_if = "Vec::is_empty")]
+	pub provider_activity: Vec<Value>,
 	pub text: String,
 	pub tool_calls: Vec<ToolCall>,
 	pub input_tokens: u64,
@@ -447,6 +452,17 @@ impl ModelRequest {
 					.push(json!({"role":"user","content":self.user_content(parts, breakpoints)}));
 			}
 		}
+		// Older Projection Versions keep their JSON snapshot, but provider-owned
+		// results also retain their model-authored role, one message per Model Turn.
+		let legacy = match &self.context {
+			ModelContext::Legacy(value) => Some(value.clone()),
+			ModelContext::Ordered(ordered) => serde_json::from_str::<Value>(&ordered.stable).ok(),
+			_ => None,
+		};
+		if let Some(legacy) = legacy {
+			let history = legacy["history"].as_array().into_iter().flatten().filter(|event| event["kind"] == "assistant" && event["provider_activity"].as_array().is_some_and(|items| !items.is_empty())).map(|event| json!({"role":"assistant","content":json!({"text":event["text"],"provider_tool_activity":event["provider_activity"],"research_evidence":false}).to_string()}));
+			messages.splice(1..1, history);
+		}
 		let mut body = json!({ "messages": messages });
 		if !self.tools.is_empty() {
 			body["tools"] = Value::Array(self.tools.iter().map(|t| json!({"type":"function","function":{"name":t.name,"description":t.description,"parameters":t.parameters}})).collect());
@@ -454,6 +470,7 @@ impl ModelRequest {
 		if let Some(format) = &self.response_format {
 			body["response_format"] = format.clone();
 		}
+		crate::tool::provider_tools::append(&mut body, &self.provider_tools);
 		body
 	}
 
@@ -564,6 +581,13 @@ impl ModelRequest {
 	}
 
 	pub fn validate(&self) -> Result<()> {
+		let mut seen = std::collections::BTreeSet::new();
+		for tool in &self.provider_tools {
+			tool.validate()?;
+			if !seen.insert(&tool.tool_type) {
+				return Err(Error::Invalid("duplicate Provider tool".into()));
+			}
+		}
 		if self.input_format == InputFormat::Responses {
 			self.estimate_body(&self.content_parts)?;
 		}
@@ -625,6 +649,9 @@ impl ModelRequest {
 			"instructions": self.instructions,
 			"tools": self.tools,
 		});
+		if !self.provider_tools.is_empty() {
+			identity["provider_tools"] = json!(self.provider_tools);
+		}
 		if !self.input_format.is_chat() {
 			identity["input_format"] = json!(self.input_format);
 		}

@@ -272,6 +272,17 @@ pub(crate) async fn impact(
 				.map_err(reinhardt::core::exception::Error::from)?,
 		)?;
 		if entry.kind == "tool"
+			&& entry
+				.config
+				.get("provider")
+				.and_then(serde_json::Value::as_str)
+				.is_some_and(|provider| {
+					aidash_domain::tool::provider_tools::declaration(provider).is_some()
+				}) && let Err(error) = policy.permits(Destination::ProviderTool)
+		{
+			blocked.insert((entry.id.clone(), entry.version.clone()), error.to_string());
+		}
+		if entry.kind == "tool"
 			&& let Some(reason) = entry
 				.config
 				.get("provider")

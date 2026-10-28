@@ -18,6 +18,7 @@ use std::sync::Arc;
 
 pub mod cache_salt;
 pub use cache_salt::{CacheSaltKey, CacheSaltKeys};
+mod provider_activity;
 pub mod responses;
 
 pub struct OpenRouterProvider {
@@ -35,9 +36,11 @@ impl OpenRouterProvider {
 		operation: Operation,
 		max_output_tokens: u32,
 		cache_breakpoints: bool,
+		provider_tools: Vec<aidash_domain::tool::provider_tools::PinnedTool>,
 	) -> Context {
 		let mut context = self.context.clone();
 		context.inference = Some(Inference {
+			provider_tools,
 			model: self.config.model_id.clone(),
 			operations: vec![operation],
 			max_output_tokens,
@@ -243,6 +246,7 @@ async fn verified_media_routes(
 fn discovery_context(context: &Context, config: &ModelConfig) -> Context {
 	let mut context = context.clone();
 	context.inference = Some(Inference {
+		provider_tools: vec![],
 		model: config.model_id.clone(),
 		operations: vec![Operation::Discovery],
 		max_output_tokens: config.output_token_limit(),
@@ -316,6 +320,9 @@ pub fn salted_provider(
 	config.validate_provider_route()?;
 	config.validate_estimate_diagnostics()?;
 	config.validate_wire_api()?;
+	if config.provider == "openrouter" {
+		aidash_domain::tool::provider_tools::reject_implicit_tools(&config.model_id)?;
+	}
 	aidash_domain::provider_credentials::validate_grants(
 		&config.endpoint,
 		&config.provider,
@@ -375,6 +382,7 @@ impl ModelProvider for OpenRouterProvider {
 		let stall = self.config.stream_stall_timeout()?;
 		tokio::time::timeout(deadline, async {
 			request.validate()?;
+
 			// A Run's pinned version was checked at registration and Run
 			// creation; a request forced past them still never reaches the
 			// provider, and never falls back to Legacy (ADR 0015). Legacy is
@@ -440,9 +448,15 @@ impl ModelProvider for OpenRouterProvider {
 					Operation::Chat,
 					request.max_output_tokens,
 					request.cache_breakpoints,
+					request.provider_tools.clone(),
 				),
 			)
 			.await?;
+			aidash_application::provider_tools::admit_request(
+				&self.config,
+				&context,
+				&request.provider_tools,
+			)?;
 			let media_routes = verified_routes(
 				&self.clients,
 				&self.config,
@@ -458,6 +472,7 @@ impl ModelProvider for OpenRouterProvider {
 				salt.as_deref(),
 				context.data_protection.requirement(),
 			);
+			validate_provider_tools(&body, &request)?;
 			if streaming {
 				body["stream"] = json!(true);
 				body["stream_options"] = json!({"include_usage": true});
@@ -736,6 +751,7 @@ pub fn parse_openai(body: &[u8]) -> Result<ModelResponse> {
 	let message = &choice["message"];
 	let count = |pointer: &str| value.pointer(pointer).and_then(Value::as_u64);
 	let reported = ReportedUsage {
+		server_tool_use: provider_activity::usage(&value),
 		input_tokens: count("/usage/prompt_tokens"),
 		output_tokens: count("/usage/completion_tokens"),
 		cache_read_tokens: count("/usage/prompt_tokens_details/cached_tokens"),
@@ -775,6 +791,7 @@ pub fn parse_openai(body: &[u8]) -> Result<ModelResponse> {
 	}
 	let content = message["content"].as_str().unwrap_or_default();
 	let mut result = ModelResponse {
+		provider_activity: provider_activity::chat(message),
 		text: if content.trim().is_empty() {
 			String::new()
 		} else {
@@ -784,6 +801,13 @@ pub fn parse_openai(body: &[u8]) -> Result<ModelResponse> {
 	};
 	if let Some(calls) = message["tool_calls"].as_array() {
 		for call in calls {
+			if call["type"].as_str().is_some_and(|kind| kind != "function") {
+				if let Some(activity) = provider_activity::item(call) {
+					result.provider_activity.push(activity);
+					continue;
+				}
+				return Err(Error::External("unknown provider tool call".into()));
+			}
 			result.tool_calls.push(ToolCall {
 				id: field(call, "id")?,
 				name: field(&call["function"], "name")?,
@@ -857,3 +881,24 @@ mod stream;
 
 #[cfg(test)]
 mod tests;
+
+fn validate_provider_tools(body: &Value, request: &ModelRequest) -> Result<()> {
+	let signed = request
+		.provider_tools
+		.iter()
+		.map(|tool| {
+			(
+				tool.tool_type.as_str(),
+				tool.digest(),
+				tool.binding.max_tool_calls,
+			)
+		})
+		.collect::<Vec<_>>();
+	aidash_domain::tool::provider_tools::authorize(
+		body,
+		signed
+			.iter()
+			.map(|(kind, digest, calls)| (*kind, digest.as_str(), *calls)),
+	)?;
+	Ok(())
+}

@@ -4119,6 +4119,7 @@ impl Store {
 			.map(|row| serde_json::from_value(serde_json::to_value(row)?))
 			.collect::<std::result::Result<Vec<aidash_domain::egress::RequestRecord>, _>>()?;
 		Ok(RunDetails {
+            provider_tool_activity: crate::apps::execution::models::context_journal::RunContextEvent::provider_activity_page(tx,run.id,offset).await?,
 			egress_requests,
 			media_input_routes: Vec::new(),
 			run: run.into(),

@@ -18,6 +18,7 @@ fn native_context(request: &ModelRequest) -> &aidash_domain::projection::native:
 
 fn turn(epoch: i64, text: &str, calls: &[&str]) -> ContextEvent {
 	ContextEvent::Assistant {
+		provider_activity: vec![],
 		epoch,
 		text: text.into(),
 		calls: calls.iter().map(|id| (*id).to_owned()).collect(),
@@ -404,6 +405,7 @@ fn recorded_turns(turns: u32) -> Context {
 
 fn turn_event(epoch: i64, ids: &[String]) -> ContextEvent {
 	ContextEvent::Assistant {
+		provider_activity: vec![],
 		epoch,
 		text: "Reading.".into(),
 		calls: ids.to_vec(),

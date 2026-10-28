@@ -292,6 +292,7 @@ async fn prepare(
 		state,
 	});
 	let mut request = ModelRequest {
+ provider_tools: vec![],
 		content_parts: Vec::new(),
 		instructions,
 		context: json!({"test_message":input.message,"private_references":draft.documents,"test_mode":input.mode,"profile_id":input.profile_id}).into(),

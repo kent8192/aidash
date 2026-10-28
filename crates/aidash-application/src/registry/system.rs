@@ -255,7 +255,9 @@ pub fn builtin_reference(reference: &aidash_domain::registry::EntityRef) -> bool
 /// A definition the Deployment provides to every Tenant, which no Tenant changes:
 /// its identifier carries a reserved prefix (ADR 0033).
 pub fn is_deployment_definition(entry: &Entry) -> bool {
-	entry.id.starts_with("aidash.") || entry.id.starts_with("core.")
+	entry.id.starts_with("aidash.")
+		|| entry.id.starts_with("core.")
+		|| entry.id.starts_with("provider.openrouter.")
 }
 
 pub fn reject_distribution(entry: &Entry) -> Result<()> {
@@ -266,7 +268,8 @@ pub fn reject_distribution(entry: &Entry) -> Result<()> {
 }
 
 pub fn reject_owner_definition(entry: &Entry) -> Result<()> {
-	if entry.id.starts_with("aidash.")
+	if entry.id.starts_with("provider.openrouter.")
+		|| entry.id.starts_with("aidash.")
 		|| entry.id.starts_with("core.")
 		|| entry.kind == "tool"
 			&& serde_json::from_value::<aidash_domain::tool::providers::ToolDescriptor>(
@@ -276,6 +279,8 @@ pub fn reject_owner_definition(entry: &Entry) -> Result<()> {
 				// Node providers are declared only by the Node's packages.
 				descriptor.provider.starts_with("core.")
 					|| descriptor.provider.starts_with("research.")
+					|| aidash_domain::tool::provider_tools::declaration(&descriptor.provider)
+						.is_some()
 			}) {
 		return Err(crate::Error::Forbidden);
 	}

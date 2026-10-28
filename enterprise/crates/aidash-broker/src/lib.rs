@@ -362,40 +362,23 @@ fn body_policy(body: &[u8], claims: &Claims, op: Operation, path: &str) -> Resul
 	{
 		return Err(Failure::ClaimViolation);
 	}
-	if op == Operation::Chat && responses {
-		// Only client-executed function tools and no provider tool controls.
-		if value.get("plugins").is_some()
-			|| value.get("web_search_options").is_some()
-			|| value.get("x_search_filter").is_some()
-			|| value.get("preset").is_some()
-			|| value.get("deferred_tools").is_some()
-			|| value.get("max_tool_calls").is_some()
-			|| value.get("stop_server_tools_when").is_some()
-			|| value.get("tools").is_some_and(|tools| {
-				tools.as_array().is_none_or(|tools| {
-					tools
-						.iter()
-						.any(|tool| tool.get("type").and_then(Value::as_str) != Some("function"))
-				})
-			}) {
+	if op == Operation::Chat {
+		if !claims.provider_tools.is_empty()
+			&& !matches!(claims.sub, aidash_capability::TokenSubject::Run { .. })
+		{
 			return Err(Failure::ClaimViolation);
 		}
-	} else if op == Operation::Chat
-		// Only client-executed function tools are within signed inference authority.
-		// Provider tools/plugins can add external data processing and unbounded fees.
-		&& (value.get("plugins").is_some()
-			|| value.get("web_search_options").is_some()
-			|| value.get("x_search_filter").is_some()
-			// Presets merge additional provider-side authority after admission.
-			|| value.get("preset").is_some()
-			|| value.get("tools").is_some_and(|tools| {
-				tools.as_array().is_none_or(|tools| {
-					tools
-						.iter()
-						.any(|tool| tool.get("type").and_then(Value::as_str) != Some("function"))
-				})
-			})) {
-		return Err(Failure::ClaimViolation);
+		aidash_domain::tool::provider_tools::authorize(
+			&value,
+			claims.provider_tools.iter().map(|tool| {
+				(
+					tool.tool_type.as_str(),
+					tool.parameters_digest.as_str(),
+					tool.max_tool_calls,
+				)
+			}),
+		)
+		.map_err(|_| Failure::ClaimViolation)?;
 	}
 	if op == Operation::Chat && responses {
 		// The signed completion-token bound authorizes text output only. The

@@ -805,6 +805,7 @@ pub fn encoded_run_message_reservation(messages: &[Value]) -> usize {
 	}
 	let estimate = |current: Value| {
 		aidash_domain::provider::ModelRequest {
+			provider_tools: vec![],
 			instructions: String::new(),
 			context: json!({
 				"current":current,

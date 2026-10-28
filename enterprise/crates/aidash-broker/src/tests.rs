@@ -166,6 +166,7 @@ impl Fixture {
 			.as_secs();
 		Claims {
 			data_region: None,
+			provider_tools: vec![],
 			data_protection: Default::default(),
 			iss: "worker".into(),
 			aud: "environment".into(),
@@ -1237,6 +1238,7 @@ async fn cache_expiry_and_token_bucket_refill_are_bounded() {
 	let broker = Broker::new(cfg, keys, source.clone(), Arc::new(Logs::default())).unwrap();
 	let c = Claims {
 		data_region: None,
+		provider_tools: vec![],
 		data_protection: Default::default(),
 		iss: "worker".into(),
 		aud: "environment".into(),
@@ -1873,4 +1875,90 @@ async fn regional_hosts_and_catalog_discovery_require_signed_region_authority() 
 		fixture.broker.provider_base(&claims).unwrap_err(),
 		Failure::ClaimViolation
 	);
+}
+
+#[tokio::test]
+async fn provider_tools_require_the_signed_parameters_and_spending_caps_on_both_apis() {
+	let f = Fixture::new().await;
+	let declaration =
+		aidash_domain::tool::provider_tools::declaration("openrouter:web_search").unwrap();
+	let pinned = aidash_domain::tool::provider_tools::PinnedTool {
+		tool_type: declaration.tool_type.into(),
+		binding: declaration.defaults(),
+	};
+	let mut claims = f.claims();
+	claims.ops = vec![Operation::Chat];
+	claims.provider_tools.push(aidash_capability::ProviderTool {
+		tool_type: pinned.tool_type.clone(),
+		parameters_digest: pinned.digest(),
+		max_tool_calls: pinned.binding.max_tool_calls,
+	});
+	for path in ["/api/v1/chat/completions", "/api/v1/responses"] {
+		let mut valid = chat();
+		if path.ends_with("responses") {
+			let limit = valid.as_object_mut().unwrap().remove("max_tokens").unwrap();
+			valid["max_output_tokens"] = limit;
+			valid["input"] = json!([]);
+		}
+		aidash_domain::tool::provider_tools::append(&mut valid, std::slice::from_ref(&pinned));
+		for (key, replacement) in [
+			(
+				"parameters",
+				json!({"engine":"exa","max_results":1,"max_total_results":15}),
+			),
+			(
+				"parameters",
+				json!({"engine":"exa","max_results":11,"max_total_results":15}),
+			),
+			("type", json!("openrouter:shell")),
+		] {
+			let before = f.provider.calls.load(Ordering::SeqCst);
+			let mut invalid = valid.clone();
+			invalid["tools"][0][key] = replacement;
+			let response = f.request(&claims, "POST", path, invalid).await;
+			assert_eq!(response.status(), 403);
+			assert_eq!(f.provider.calls.load(Ordering::SeqCst), before);
+		}
+		// Tool authority cannot weaken the independently signed data policy.
+		let before = f.provider.calls.load(Ordering::SeqCst);
+		let mut unprotected = valid.clone();
+		unprotected["provider"] = json!({});
+		assert_eq!(
+			f.request(&claims, "POST", path, unprotected).await.status(),
+			403
+		);
+		assert_eq!(f.provider.calls.load(Ordering::SeqCst), before);
+		let mut invalid = valid.clone();
+		invalid["max_tool_calls"] = json!(4);
+		assert_eq!(
+			f.request(&claims, "POST", path, invalid).await.status(),
+			403
+		);
+		let mut invalid = valid.clone();
+		invalid["stop_server_tools_when"] = json!([]);
+		assert_eq!(
+			f.request(&claims, "POST", path, invalid).await.status(),
+			403
+		);
+		assert_eq!(
+			f.request(&f.claims(), "POST", path, valid.clone())
+				.await
+				.status(),
+			403
+		);
+		let mut online_claims = claims.clone();
+		online_claims.model = "openai/gpt-4.1:online".into();
+		let mut online = valid.clone();
+		online["model"] = json!(online_claims.model);
+		assert_eq!(
+			f.request(&online_claims, "POST", path, online)
+				.await
+				.status(),
+			403
+		);
+		let response = f.request(&claims, "POST", path, valid).await;
+		let status = response.status();
+		let body = json_body(response).await;
+		assert_eq!(status, 200, "{path}: {body}");
+	}
 }

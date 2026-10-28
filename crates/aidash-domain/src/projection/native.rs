@@ -160,7 +160,22 @@ pub fn native_context(context: &Context, pinned: &Value) -> NativeContext {
 				})
 				.collect::<Vec<_>>();
 			history.push(NativeMessage::Assistant {
-				text: turn.text.map(str::to_owned),
+				text: if let ContextEvent::Assistant {
+					provider_activity, ..
+				} = &entries[turn.start].event
+				{
+					if provider_activity.is_empty() {
+						turn.text.map(str::to_owned)
+					} else {
+						Some(format!(
+							"{}\nProvider tool activity (not Research evidence): {}",
+							turn.text.unwrap_or_default(),
+							json!(provider_activity)
+						))
+					}
+				} else {
+					turn.text.map(str::to_owned)
+				},
 				tool_calls: results.iter().map(|(_, call, _)| (*call).clone()).collect(),
 			});
 			for (seq, call, result) in results {
@@ -245,6 +260,7 @@ struct Turn<'a> {
 	end: usize,
 	/// The response text, absent when blank.
 	text: Option<&'a str>,
+	activity: bool,
 	/// Every call the response made, run or not.
 	calls: &'a [String],
 	/// The first `Tool` entry of each call that ran, in call order.
@@ -255,7 +271,13 @@ struct Turn<'a> {
 
 impl<'a> Turn<'a> {
 	fn at(entries: &'a [HistoryEntry], start: usize) -> Option<Self> {
-		let ContextEvent::Assistant { text, calls, .. } = &entries[start].event else {
+		let ContextEvent::Assistant {
+			text,
+			calls,
+			provider_activity,
+			..
+		} = &entries[start].event
+		else {
 			return None;
 		};
 		let end = entries[start + 1..]
@@ -278,6 +300,7 @@ impl<'a> Turn<'a> {
 			start,
 			end,
 			text: Some(text.as_str()).filter(|text| !text.trim().is_empty()),
+			activity: !provider_activity.is_empty(),
 			calls,
 			executed: calls
 				.iter()
@@ -287,9 +310,9 @@ impl<'a> Turn<'a> {
 		})
 	}
 
-	/// Whether the turn renders at all: it has text or an executed call.
+	/// Whether the turn renders: text, provider-owned activity or an executed call.
 	fn rendered(&self) -> bool {
-		self.text.is_some() || !self.executed.is_empty()
+		self.text.is_some() || self.activity || !self.executed.is_empty()
 	}
 }
 

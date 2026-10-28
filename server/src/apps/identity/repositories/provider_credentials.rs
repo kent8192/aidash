@@ -481,6 +481,7 @@ impl aidash_application::provider_access::ProviderAccess for AdmittedAccess {
 			},
 			maintenance: Some(MaintenancePurpose::ProviderDiscovery),
 			inference: Some(Inference {
+				provider_tools: vec![],
 				model: model.into(),
 				operations: vec![Operation::Discovery],
 				max_output_tokens: 1,

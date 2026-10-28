@@ -39,9 +39,14 @@ pub struct ResponsesProvider {
 }
 
 impl ResponsesProvider {
-	fn call_context(&self, max_output_tokens: u32) -> Context {
+	fn call_context(
+		&self,
+		max_output_tokens: u32,
+		provider_tools: Vec<aidash_domain::tool::provider_tools::PinnedTool>,
+	) -> Context {
 		let mut context = self.context.clone();
 		context.inference = Some(Inference {
+			provider_tools,
 			model: self.config.model_id.clone(),
 			operations: vec![Operation::Chat],
 			max_output_tokens,
@@ -190,6 +195,7 @@ impl ModelProvider for ResponsesProvider {
 		let stall = self.config.stream_stall_timeout()?;
 		tokio::time::timeout(deadline, async {
 			request.validate()?;
+
 			if request.cache_breakpoints {
 				return Err(Error::Invalid(format!(
 					"model {} does not accept cache breakpoints",
@@ -197,6 +203,11 @@ impl ModelProvider for ResponsesProvider {
 				)));
 			}
 			if self.is_plan() {
+				aidash_application::provider_tools::admit_request(
+					&self.config,
+					&self.context,
+					&request.provider_tools,
+				)?;
 				self.infer_plan(&request, progress, deadline, stall).await
 			} else {
 				self.infer_openrouter(&request, progress, deadline, stall)
@@ -243,7 +254,7 @@ impl ResponsesProvider {
 		}
 		let salt = salt_line(self, request)?;
 		let body = request_body(&self.config, request, salt.as_deref())?;
-		let context = self.call_context(request.max_output_tokens);
+		let context = self.call_context(request.max_output_tokens, request.provider_tools.clone());
 		let source = self.source();
 		// OpenAI may reject an access token that has not expired; one
 		// forced refresh may follow before the owner is asked to reconnect.
@@ -368,9 +379,14 @@ impl ResponsesProvider {
 		}
 		let context = crate::data_protection::context(
 			self.access.as_ref(),
-			&self.call_context(request.max_output_tokens),
+			&self.call_context(request.max_output_tokens, request.provider_tools.clone()),
 		)
 		.await?;
+		aidash_application::provider_tools::admit_request(
+			&self.config,
+			&context,
+			&request.provider_tools,
+		)?;
 		let salt = salt_line(self, request)?;
 		let media_routes = super::verified_routes(
 			&self.clients,
@@ -387,6 +403,7 @@ impl ResponsesProvider {
 			media_routes,
 			context.data_protection.requirement(),
 		)?;
+		super::validate_provider_tools(&body, request)?;
 		let streaming = self.config.streaming();
 		if streaming {
 			body["stream"] = json!(true);
@@ -931,6 +948,11 @@ fn incomplete(
 fn reported(response: &Value, openrouter: bool) -> ReportedUsage {
 	let count = |pointer: &str| response.pointer(pointer).and_then(Value::as_u64);
 	ReportedUsage {
+		server_tool_use: if openrouter {
+			super::provider_activity::usage(response)
+		} else {
+			Default::default()
+		},
 		input_tokens: count("/usage/input_tokens"),
 		output_tokens: count("/usage/output_tokens"),
 		cache_read_tokens: count("/usage/input_tokens_details/cached_tokens"),
@@ -986,6 +1008,9 @@ fn completed_with_cost(
 		.as_array()
 		.ok_or_else(|| Error::External("provider returned no output".into()))?;
 	let mut result = usage.clone();
+	if openrouter {
+		result.provider_activity = super::provider_activity::responses(response);
+	}
 	let mut refused = false;
 	for item in output {
 		match item["type"].as_str() {
@@ -1003,6 +1028,14 @@ fn completed_with_cost(
 				}
 			}
 			Some("function_call") => {
+				if openrouter
+					&& aidash_domain::tool::provider_tools::declaration(
+						item["name"].as_str().unwrap_or_default(),
+					)
+					.is_some()
+				{
+					continue;
+				}
 				let field = |key: &str| {
 					item[key]
 						.as_str()

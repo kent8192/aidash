@@ -23,6 +23,7 @@ pub struct Context {
 }
 #[derive(Debug, Clone)]
 pub struct Inference {
+	pub provider_tools: Vec<aidash_domain::tool::provider_tools::PinnedTool>,
 	pub model: String,
 	pub operations: Vec<Operation>,
 	pub max_output_tokens: u32,
@@ -121,6 +122,7 @@ pub trait ProviderAccess: Send + Sync {
 	) -> Result<Access> {
 		let mut discovery = context.clone();
 		discovery.inference = Some(Inference {
+			provider_tools: vec![],
 			model: model.into(),
 			operations: vec![Operation::Discovery],
 			max_output_tokens: 1,

@@ -222,6 +222,7 @@ impl DecisionProvider for RouteDecisionProvider {
 		let mut scope = self.context.clone();
 		scope.provider_credential_id = None;
 		scope.inference = Some(Inference {
+			provider_tools: vec![],
 			model: route.model.clone(),
 			operations: vec![Operation::Decision],
 			max_output_tokens: 0,

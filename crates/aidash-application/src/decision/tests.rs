@@ -1964,6 +1964,7 @@ async fn native_decisions_prune_whole_model_turns_and_keep_markers() {
 	let mut context = Context::default();
 	for turn in 0..12 {
 		context.push(ContextEvent::Assistant {
+			provider_activity: vec![],
 			epoch: turn as i64,
 			text: String::new(),
 			calls: ids(turn).to_vec(),

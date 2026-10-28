@@ -283,6 +283,28 @@ pub async fn resolve(
 			validate_restrictions(&descriptor.operation, &effective_narrow)?;
 			effective_narrow = descriptor.narrow.intersect(&effective_narrow)?;
 			validate_concurrency(&contract, &effective_narrow)?;
+			if let Some(tool) =
+				aidash_domain::tool::provider_tools::declaration(&descriptor.provider)
+			{
+				let parameters = effective_narrow.provider_tool.as_ref().ok_or_else(|| {
+					Error::Invalid(
+						"Provider tool Binding requires parameters and spending caps".into(),
+					)
+				})?;
+				tool.validate(parameters)?;
+				let model = definitions
+					.values()
+					.find(|entry| {
+						entry.kind == "model"
+							&& entry.id == config.model.id
+							&& entry.version == config.model.version
+					})
+					.ok_or_else(|| Error::Invalid("missing Agent model".into()))?;
+				let model: aidash_domain::model::ModelConfig =
+					serde_json::from_value(model.config.clone())?;
+				tool.eligible(&model)?;
+				// Mutable Tenant/delegation policy is reloaded at each send, never pinned here.
+			}
 			if let Some((provider, operation)) = &lifecycle
 				&& (descriptor.provider != *provider
 					|| descriptor.operation != *operation
