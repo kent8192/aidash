@@ -1,5 +1,6 @@
 //! Startup composition, without a database or a reachable authentication peer.
 use super::common;
+use aidash_domain::data_protection::Region;
 use aidash_domain::offering::Offering;
 use aidash_server::config::{Config, settings::ProjectSettings};
 use rcgen::{BasicConstraints, CertificateParams, ExtendedKeyUsagePurpose, IsCa, Issuer, KeyPair};
@@ -35,6 +36,8 @@ fn configuration(temp_dir: tempfile::TempDir) -> Configuration {
 	// This is the existing DefaultSource fixture; parsing it opens no database.
 	let mut settings = common::settings_for("postgresql://fixture:fixture@127.0.0.1:1/unused");
 	settings.deployment.offering = Offering::Cloud;
+	// Cloud and Dedicated must declare a Deployment Region.
+	settings.deployment.region = Some(Region::Us);
 	settings.dashboard = serde_json::from_value(json!({
 		"oidc": {"issuer":ISSUER,"client_id":"cloud","client_secret":"settings-fixture-client-secret",
 			"public_origin":"https://cloud.example.test"},
@@ -196,6 +199,9 @@ async fn common_composition_requires_explicit_sources_and_valid_bound_tenants(
 fn no_common_configuration_preserves_independent_deployment_startup(#[case] offering: Offering) {
 	let mut settings = common::settings_for("postgresql://fixture:fixture@127.0.0.1:1/unused");
 	settings.deployment.offering = offering;
+	if offering != Offering::SelfHosted {
+		settings.deployment.region = Some(Region::Us);
+	}
 	let runtime = Config::from_settings(&settings).unwrap();
 	assert!(runtime.common_auth.is_none());
 	assert!(runtime.common_issuers.is_none());
