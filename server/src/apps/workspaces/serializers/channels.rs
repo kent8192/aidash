@@ -13,6 +13,9 @@ pub struct ChannelMessageInput {
 	pub idempotency_key: Uuid,
 	#[serde(default)]
 	pub attachment_ids: Vec<Uuid>,
+	/// Exact File versions this message cites, in composer order.
+	#[serde(default)]
+	pub file_versions: Vec<CitedFileVersion>,
 }
 
 #[derive(Debug, Deserialize, Validate, JsonSchema)]
@@ -48,5 +51,6 @@ pub(crate) fn default_limit() -> u16 {
 use uuid::Uuid;
 
 pub use aidash_domain::workspaces::channels::{
-	ChannelAttachment, ChannelMessage, ChannelMessagePage, ChannelThread,
+	ChannelAttachment, ChannelCitation, ChannelMessage, ChannelMessagePage, ChannelThread,
+	CitedFileVersion,
 };

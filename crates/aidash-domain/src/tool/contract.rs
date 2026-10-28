@@ -549,6 +549,13 @@ pub fn builtin_contract(name: &str) -> Option<ToolContract> {
 		"file_share" => {
 			auth.core = Some(CorePermission::Sharing);
 		}
+		"live_preview_start" | "live_preview_stop" => {
+			// A Live preview runs a Sandboxed command under the shell permission;
+			// it changes state outside the model's files.
+			auth.core = Some(CorePermission::Shell);
+			behavior.effect = ToolEffect::Unsafe;
+			contract.disclosure = DisclosureBoundary::Local;
+		}
 		"outbound_get" => {
 			auth.core = Some(CorePermission::Outbound);
 			behavior.effect = ToolEffect::ReadOnly;

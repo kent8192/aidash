@@ -21,6 +21,7 @@ install limits may not exceed maximum_seconds. */ -}}
 {{- $runner := dict "endpoint" (printf "http://%s-execution-runner.%s.svc.cluster.local:8949" .Release.Name .Release.Namespace) "token_env" "AIDASH_CORE_RUNNER_TOKEN" "image" $e.sandboxImage "runtime_class" (include "aidash.runtimeClassName" .) "namespace" (include "aidash.sandboxNamespace" .) -}}
 {{- $profile := dict "admission" true "storage" (include "aidash.capabilityStorage" .) "operation_seconds" (min 120 $maximum) "install_seconds" (min 300 $maximum) "runner" $runner -}}
 {{- if $e.egress.enabled -}}{{- $_ := set $profile "egress" (include "aidash.egressSettings" . | fromJson) -}}{{- end -}}
+{{- if .Values.preview.enabled -}}{{- $_ := set $profile "preview_port" (int .Values.preview.podPort) -}}{{- $_ := set $profile "preview_maximum_seconds" (int .Values.preview.limits.absolute_seconds) -}}{{- end -}}
 {{- toJson (mergeOverwrite (omit (deepCopy $e.limits) "host_tasks") $profile) -}}
 {{- end -}}
 

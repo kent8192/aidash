@@ -832,6 +832,8 @@ export async function setup(
         },
       });
     }
+    if (/^\/api\/runs\/[^/]+\/live-preview$/.test(path))
+      return route.fulfill({ status: 404, json: { error: "not_found" } });
     const run = data.runs.find((value) => path === `/api/runs/${value.id}`);
     if (run)
       return route.fulfill({

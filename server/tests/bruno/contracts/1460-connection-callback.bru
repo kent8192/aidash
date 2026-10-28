@@ -1,0 +1,21 @@
+meta {
+  name: 1460 connection-callback - Connection callback rejects unknown state
+  type: http
+  seq: 1460
+}
+
+get {
+  url: {{base_url}}/auth/connections/callback?state=invalid&code=invalid
+  body: none
+  auth: none
+}
+
+headers {
+  Accept: application/json
+  Cookie: aidash-connection-authorization=tampered; __Host-aidash-connection-authorization=tampered
+}
+
+tests {
+  test("Exact HTTP 401", function () { expect(res.getStatus()).to.equal(401); });
+  test("Stable authorization error envelope", function () { expect(res.getHeader("content-type")).to.include("application/json"); expect(res.getBody()).to.eql({error:"unauthorized"}); });
+}

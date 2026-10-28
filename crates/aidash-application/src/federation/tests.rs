@@ -127,3 +127,54 @@ async fn malformed_peer_success_is_an_external_failure(
 		matches!(result,Err(Error::External(message)) if message.starts_with("invalid response JSON:"))
 	);
 }
+
+#[rstest]
+#[case("PREVIEW_UNAVAILABLE", "PREVIEW_UNAVAILABLE")]
+#[case(
+	"FILE_VERSION_QUOTA_EXCEEDED: remote hold refused",
+	"FILE_VERSION_QUOTA_EXCEEDED: remote hold refused"
+)]
+#[case("private host detail", "remote task state changed")]
+#[tokio::test]
+async fn preview_conflicts_preserve_only_public_reasons(
+	repository: Repository,
+	mut transport: Transport,
+	#[case] peer_reason: &str,
+	#[case] expected: &str,
+) {
+	transport.status = 409;
+	transport.pages.insert(
+		("aidash://remote".into(), "/scoped/previews/retain".into()),
+		serde_json::json!({ "error": peer_reason }),
+	);
+	let result = federation(Arc::new(repository), Arc::new(transport))
+		.request::<Value>("aidash://remote", "POST", "/scoped/previews/retain", None)
+		.await;
+	assert!(matches!(result, Err(Error::Conflict(message)) if message == expected));
+}
+
+#[rstest]
+#[tokio::test]
+async fn preview_peer_denial_reaches_the_viewer_as_forbidden(
+	repository: Repository,
+	mut transport: Transport,
+) {
+	transport.status = 403;
+	let result = federation(Arc::new(repository), Arc::new(transport))
+		.request::<Value>("aidash://remote", "POST", "/scoped/previews/inspect", None)
+		.await;
+	assert!(matches!(result, Err(Error::Forbidden)));
+}
+
+#[rstest]
+#[tokio::test]
+async fn missing_remote_preview_resource_is_not_an_internal_failure(
+	repository: Repository,
+	mut transport: Transport,
+) {
+	transport.status = 404;
+	let result = federation(Arc::new(repository), Arc::new(transport))
+		.request::<Value>("aidash://remote", "POST", "/scoped/previews/tickets", None)
+		.await;
+	assert!(matches!(result, Err(Error::NotFound(_))));
+}

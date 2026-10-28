@@ -103,6 +103,42 @@ async fn native_gateway_serializes_cumulative_limits_and_refuses_revoked_binding
 	f.store.capabilities = Runtime::new(profile).unwrap();
 	let tenant = aidash_domain::tenancy::TenantName::new("acme").unwrap();
 	let scope = tenant_roots::tenant_scope(&f.store, "acme").await;
+	let encrypted = std::sync::Arc::new(
+		crate::apps::identity::repositories::secret_store::PostgresStore::new(
+			f.store.control_pool.clone(),
+			"11".repeat(32).into(),
+			vec![],
+		)
+		.await
+		.unwrap(),
+	);
+	let secrets = std::sync::Arc::new(aidash_application::tenant_secrets::Service {
+		repository: std::sync::Arc::new(
+			crate::apps::identity::repositories::tenant_secrets::NativeRepository {
+				pool: f.store.control_pool.clone(),
+			},
+		),
+		store: encrypted.clone(),
+		reader: Some(encrypted),
+		calls: None,
+		fingerprint_key: "tenant-secret-fingerprint-fixture-32-bytes".into(),
+		max_per_tenant: 64,
+	});
+	secrets
+		.put(
+			"acme",
+			"image-key",
+			aidash_application::tenant_secrets::Put {
+				expected_revision: 0,
+				value: Some("live-preview-secret-canary".into()),
+				hosts: Some(vec!["api.example.test".into()]),
+			},
+			"alice",
+		)
+		.await
+		.unwrap();
+	f.store.tenant_secrets = Some(secrets);
+	f.registry = f.registry.clone().with_tenant_secrets(true);
 	let service = serde_json::from_value(
 		json!({"id":"images","version":"1.0.0","kind":"external_service",
         "name":{"en":"Images"},"description":{"en":"Fixture service"},
@@ -110,6 +146,18 @@ async fn native_gateway_serializes_cumulative_limits_and_refuses_revoked_binding
 	)
 	.unwrap();
 	f.registry.register(&tenant, service).await.unwrap();
+	f.registry
+		.register(
+			&tenant,
+			serde_json::from_value(json!({
+				"id":"secured-images","version":"1.0.0","kind":"external_service",
+				"name":{"en":"Secured images"},"description":{"en":"Secret-bound fixture service"},
+				"config":{"base_url":"https://api.example.test/","methods":["GET"],"secret":"image-key"}
+			}))
+			.unwrap(),
+		)
+		.await
+		.unwrap();
 	for (kind, id, config) in [
 		(
 			"model",
@@ -120,7 +168,7 @@ async fn native_gateway_serializes_cumulative_limits_and_refuses_revoked_binding
 			"agent",
 			"research",
 			json!({"schema_version":1,"model":{"id":"model","version":"1.0.0"},"instructions":"Fixture",
-            "bindings":[{"kind":"external_service","target":{"registry_deployment":f.store.deployment.to_string(),"id":"images","version":"1.0.0"}}],"remove_default":[]}),
+            "bindings":[{"kind":"external_service","target":{"registry_deployment":f.store.deployment.to_string(),"id":"images","version":"1.0.0"}}, {"kind":"external_service","target":{"registry_deployment":f.store.deployment.to_string(),"id":"secured-images","version":"1.0.0"}}],"remove_default":[]}),
 		),
 	] {
 		f.registry.register(&tenant, serde_json::from_value(json!({"id":id,"version":"1.0.0","kind":kind,"name":{"en":id},"description":{"en":"Fixture"},"config":config})).unwrap()).await.unwrap();
@@ -261,6 +309,7 @@ async fn native_gateway_serializes_cumulative_limits_and_refuses_revoked_binding
 			.all(|r| r.error.is_none() && r.query_digest == digest && r.status >= 200)
 	);
 	tx.commit().await.unwrap();
+	live_preview_credentials(&f, &identity, &run, area.id).await;
 	auth.set_catalog(
 		"acme",
 		&run.node,
@@ -303,6 +352,73 @@ async fn native_gateway_serializes_cumulative_limits_and_refuses_revoked_binding
 		first.meter.charge(Direction::Sent, 0).await,
 		Err(aidash_application::Error::Forbidden)
 	));
+}
+
+async fn live_preview_credentials(
+	f: &crate::federation::Federation,
+	identity: &crate::authorization::identity::SubjectIdentity,
+	run: &aidash_domain::Run,
+	area: Uuid,
+) {
+	use crate::apps::execution::repositories::egress::{page_token, session_token};
+	use secrecy::ExposeSecret;
+	let preview = Uuid::now_v7();
+	let now = Utc::now();
+	let expires = now + chrono::Duration::hours(2);
+	sqlx::query("INSERT INTO core_live_previews (id,tenant,run_id,area_id,revision,port,state,idle_seconds,absolute_seconds,started_at,last_request_at,expires_at) VALUES ($1,'acme',$2,$3,1,3000,'running',900,7200,$4,$4,$5)")
+		.bind(preview).bind(run.id).bind(area).bind(now).bind(expires)
+		.execute(f.store.pool.fixture_driver()).await.unwrap();
+	sqlx::query("INSERT INTO egress_sessions (id,tenant,run_id,live_preview_id,principal,credential_id,expires_at,max_sent_bytes,max_received_bytes,max_requests) VALUES ($1,'acme',$2,$1,'alice',$3,$4,100,100,10)")
+		.bind(preview).bind(run.id).bind(identity.credential_id).bind(expires)
+		.execute(f.store.pool.fixture_driver()).await.unwrap();
+	let pod = session_token(preview, expires, &f.store).unwrap();
+	let page = page_token(preview, expires, &f.store).unwrap();
+	let gateway = Gateway::new(f.store.clone());
+	let digest = "b".repeat(64);
+	// A Pod cannot change its credential's kind to impersonate the page path,
+	// and a page cannot turn its credential into one that attaches the Secret.
+	for forged in [
+		pod.replacen("session:", "page:", 1),
+		page.replacen("page:", "session:", 1),
+	] {
+		assert!(matches!(
+			gateway
+				.admit(&forged, "secured-images", "GET", "/", &digest)
+				.await,
+			Err(aidash_application::Error::Forbidden)
+		));
+	}
+	let pod = gateway
+		.admit(&pod, "secured-images", "GET", "/", &digest)
+		.await
+		.unwrap();
+	assert_eq!(
+		pod.credential.as_ref().unwrap().expose_secret(),
+		"live-preview-secret-canary"
+	);
+	let page = gateway
+		.admit(&page, "secured-images", "GET", "/", &digest)
+		.await
+		.unwrap();
+	assert!(
+		page.credential.is_none(),
+		"the page reaches the same service without its Tenant Secret"
+	);
+	for (admission, via, host) in [
+		(&pod, "pod", Some("api.example.test")),
+		(&page, "page", None),
+	] {
+		admission.meter.finish(200, 1, None).await.unwrap();
+		let (recorded, secret_host): (String, Option<String>) =
+			sqlx::query_as("SELECT via, secret_host FROM egress_requests WHERE id = $1")
+				.bind(admission.request)
+				.fetch_one(f.store.pool.fixture_driver())
+				.await
+				.unwrap();
+		assert_eq!(recorded, via);
+		// Only the request that carried the Tenant Secret names where it went.
+		assert_eq!(secret_host.as_deref(), host);
+	}
 }
 
 struct RunnerReply {

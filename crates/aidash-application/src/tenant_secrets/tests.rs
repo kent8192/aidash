@@ -818,6 +818,18 @@ async fn brokered_resolution_returns_a_route_and_never_reads_the_value() {
 	assert_eq!(grants.0.lock().await.len(), 1, "no second token was minted");
 }
 
+#[test]
+fn a_path_directory_keeps_its_last_slash() {
+	for (path, directory) in [
+		("/", "/"),
+		("/invoke", "/"),
+		("/v1/invoke", "/v1/"),
+		("/v1/", "/v1/"),
+	] {
+		assert_eq!(path_directory(path), directory, "{path}");
+	}
+}
+
 /// The signed destination is the endpoint path's directory, never a sibling.
 #[test]
 fn an_endpoint_signs_its_directory_and_forwards_only_the_remaining_path() {
@@ -893,6 +905,26 @@ async fn a_brokered_call_secret_records_metadata_and_refreshes_one_route() {
 		"canary-capability-token"
 	);
 	assert_eq!(grants.0.lock().await.len(), 2);
+	// After a rotation the session stops instead of minting a token for a
+	// version its invocation does not record.
+	service
+		.put(
+			"alpha",
+			"search",
+			put(Some("canary-value-5678"), None, created.revision),
+			"actor",
+		)
+		.await
+		.unwrap();
+	assert!(matches!(
+		source.route().await,
+		Err(Error::Invalid(message)) if message == UNAVAILABLE
+	));
+	assert_eq!(
+		grants.0.lock().await.len(),
+		2,
+		"no token for the new version"
+	);
 }
 
 #[tokio::test]

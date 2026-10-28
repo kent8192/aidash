@@ -193,12 +193,17 @@ pub fn definition(entry: &Entry) -> Result<ExternalService> {
 #[cfg(test)]
 mod tests;
 
+fn operation_via() -> String {
+	"operation".into()
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct RequestRecord {
 	pub id: uuid::Uuid,
 	pub tenant: String,
 	pub run_id: uuid::Uuid,
-	pub operation_id: uuid::Uuid,
+	/// `None` for a request made with a Live preview's session token.
+	pub operation_id: Option<uuid::Uuid>,
 	pub service: String,
 	pub method: String,
 	pub path: String,
@@ -207,6 +212,9 @@ pub struct RequestRecord {
 	pub sent_bytes: i64,
 	pub received_bytes: i64,
 	pub duration_ms: i64,
+	/// `operation`, `pod` or `page`: which path admitted the request.
+	#[serde(default = "operation_via")]
+	pub via: String,
 	pub error: Option<String>,
 	/// The Tenant Secret and pinned version a call carried, and the host it
 	/// went to. Absent for a service without a Tenant Secret (ADR 0095).

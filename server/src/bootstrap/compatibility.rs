@@ -1,5 +1,5 @@
 //! Native migration and HTTP launch paths used by the compatibility binary.
-use super::{ProcessRole, RuntimeTasks, initialize_as};
+use super::{ProcessRole, RuntimeTasks, initialize, initialize_as};
 use crate::apps::execution::services::lifecycle::{ProbeServer, ProcessLifecycle};
 use crate::{
 	Error, Result,
@@ -119,4 +119,43 @@ pub async fn serve(settings: ProjectSettings, workers: bool) -> Result<()> {
 	runtime?;
 	http?;
 	probes
+}
+
+/// A standalone Preview gateway: its own process and workload, sharing only the
+/// database, the capability storage and the preview domain with the API server.
+pub async fn preview_gateway(settings: ProjectSettings) -> Result<()> {
+	require_migrated(&settings).await?;
+	let config = Config::from_settings(&settings)?;
+	let preview = config.preview.clone().ok_or_else(|| {
+		Error::Invalid("preview.domain is required for the preview-gateway role".into())
+	})?;
+	let connection = crate::database::runtime::connect(&config.database_url, 8).await?;
+	let context = Arc::new(InjectionContext::builder(SingletonScope::new()).build());
+	let coordinator = ShutdownCoordinator::new(Duration::from_secs(20));
+	let mut stopped = coordinator.subscribe();
+	ProcessLifecycle::register(&context, coordinator.clone());
+	let federation = initialize(&context, &settings, connection).await?;
+	let listener = tokio::net::TcpListener::bind(preview.listen).await?;
+	let authority = Arc::new(crate::apps::execution::repositories::previews::Gateway {
+		store: federation.store.clone(),
+		domain: preview.domain.clone(),
+		runtime: Some(federation.clone()),
+	});
+	let (stopping, stop) = tokio::sync::watch::channel(false);
+	let serving = aidash_integrations::preview::serve(listener, authority, stop);
+	tokio::pin!(serving);
+	let finished = tokio::select! {
+		result = &mut serving => Some(result),
+		_ = shutdown_signal() => None,
+		_ = stopped.recv() => None,
+	};
+	stopping.send_replace(true);
+	coordinator.shutdown();
+	let result = match finished {
+		Some(result) => result,
+		None => tokio::time::timeout(Duration::from_secs(20), serving)
+			.await
+			.map_err(|_| Error::External("preview gateway drain deadline reached".into()))?,
+	};
+	result.map_err(Into::into)
 }

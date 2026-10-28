@@ -586,7 +586,20 @@ async fn percent_escapes_are_checked_per_segment_and_forwarded_unchanged() {
 		let seen = f.upstream.seen.lock().unwrap();
 		assert_eq!(seen[0].path, "/api/a%20b");
 	}
+	// A directory-style route keeps its trailing slash.
+	let response = f
+		.request(&f.claims(), "GET", "/v1/forward/items/", Body::empty())
+		.await;
+	assert_eq!(response.status(), 200);
+	json_body(response).await;
+	{
+		let seen = f.upstream.seen.lock().unwrap();
+		assert_eq!(seen[1].path, "/api/items/");
+	}
 	for uri in [
+		"/v1/forward//",
+		"/v1/forward/a//",
+		"/v1/forward/a//b",
 		"/v1/forward/%252e%252e/x",
 		"/v1/forward/a%00b",
 		"/v1/forward/a%0ab",
@@ -603,7 +616,8 @@ async fn percent_escapes_are_checked_per_segment_and_forwarded_unchanged() {
 		)
 		.await;
 	}
-	assert_eq!(f.upstream.calls.load(Ordering::SeqCst), 1);
+	assert_eq!(f.upstream.calls.load(Ordering::SeqCst), 2);
+	// The pinned value is read once and reused for the second forward.
 	assert_eq!(f.source.reads.load(Ordering::SeqCst), 1);
 }
 

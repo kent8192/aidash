@@ -178,6 +178,17 @@ fn endpoint_path_parts(endpoint: &str) -> Result<(String, String)> {
 	Ok((prefix.into(), path[cut..].into()))
 }
 
+/// The directory of a URL path, up to and including its last `/`: what the
+/// broker signs for an External service's base URL. `/v1/` stays `/v1/`,
+/// and an endpoint-style `/v1/invoke` signs `/v1/` so the forwarded path keeps
+/// `invoke` exactly, without a trailing slash.
+pub fn path_directory(path: &str) -> &str {
+	match path.rfind('/') {
+		Some(index) => &path[..=index],
+		None => "/",
+	}
+}
+
 /// The destination a tool or test endpoint signs. `path_prefix` is the
 /// endpoint path's directory, so the token never covers a sibling path.
 pub fn endpoint_destination(endpoint: &str) -> Result<Destination> {
@@ -956,6 +967,10 @@ impl Service {
 			version: numeric_version(&pinned)?,
 			host: tenant_secrets::endpoint_host(endpoint)?,
 		};
+		let recorded = SecretIdentity {
+			id: record.id,
+			version: record.version.clone(),
+		};
 		match self
 			.resolve_row(&row.tenant, row, Some(call.clone()))
 			.await?
@@ -968,6 +983,7 @@ impl Service {
 					secret: row.id,
 					endpoint: endpoint.into(),
 					call,
+					recorded,
 					first: Mutex::new(Some(first)),
 				}),
 				rest: forward_rest(endpoint)?,
@@ -1118,6 +1134,9 @@ struct RefreshSource {
 	secret: Uuid,
 	endpoint: String,
 	call: SecretCall,
+	/// The Tenant Secret and version the invocation recorded. A refresh mints
+	/// only for these, so every request matches the record.
+	recorded: SecretIdentity,
 	/// The route minted when the call started, used before the first refresh.
 	first: Mutex<Option<SecretRoute>>,
 }
@@ -1139,7 +1158,10 @@ impl SecretRouteSource for RefreshSource {
 		let row = row
 			.filter(|row| row.tenant == self.tenant && row.state == State::Active)
 			.ok_or_else(unavailable)?;
-		if !tenant_secrets::permits(&row.hosts, &self.endpoint).unwrap_or(false) {
+		if !tenant_secrets::permits(&row.hosts, &self.endpoint).unwrap_or(false)
+			|| row.id != self.recorded.id
+			|| numeric_version(row.require_active()?)? != self.recorded.version
+		{
 			return Err(unavailable());
 		}
 		match service

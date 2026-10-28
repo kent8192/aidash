@@ -96,9 +96,18 @@ variable "byok_broker_environments" {
     condition     = var.deployment_tier == "production" ? alltrue([for id in var.byok_broker_environments : id == "production"]) : !contains(var.byok_broker_environments, "production")
     error_message = "Only isolated production bootstrap may create the production broker, and it cannot create nonproduction brokers."
   }
+  // Each broker's read grant is a name prefix, so no environment's -cred- or
+  // -tsec- namespace may start with another environment's namespace.
   validation {
-    condition     = alltrue([for left in var.byok_broker_environments : alltrue([for right in var.byok_broker_environments : left == right || alltrue(flatten([for a in ["cred", "tsec", "oauth"] : [for b in ["cred", "tsec", "oauth"] : !startswith("aidash-${right}-${b}-", "aidash-${left}-${a}-")]]))])])
-    error_message = "Broker environment credential prefixes must not overlap."
+    condition = alltrue(flatten([
+      for left in var.byok_broker_environments : [
+        for right in var.byok_broker_environments : [
+          for pair in setproduct(["cred", "tsec", "oauth"], ["cred", "tsec", "oauth"]) :
+          left == right || !startswith("aidash-${right}-${pair[1]}-", "aidash-${left}-${pair[0]}-")
+        ]
+      ]
+    ]))
+    error_message = "Broker environment credential, Tenant Secret and OAuth prefixes must not overlap."
   }
 }
 variable "broker_signing_region" {

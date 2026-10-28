@@ -171,12 +171,22 @@ run "overlapping_credential_prefixes_forbidden" {
   variables { byok_broker_environments = ["prod", "prod-cred-blue"] }
   expect_failures = [var.byok_broker_environments]
 }
+run "overlapping_tenant_secret_prefixes_forbidden" {
+  command = plan
+  variables { byok_broker_environments = ["test", "test-tsec-blue"] }
+  expect_failures = [var.byok_broker_environments]
+}
+run "tenant_secret_prefix_overlapping_credentials_forbidden" {
+  command = plan
+  variables { byok_broker_environments = ["test", "test-tsec"] }
+  expect_failures = [var.byok_broker_environments]
+}
 run "distinct_credential_prefixes_with_shared_id_prefix" {
   command = plan
   variables { byok_broker_environments = ["development", "develop"] }
   assert {
     condition     = length(google_service_account.broker) == 2 && length(google_service_account.tenant_secret_broker) == 2
-    error_message = "Only credential-prefix overlap is forbidden; a shared ID prefix is safe."
+    error_message = "Only namespace-prefix overlap is forbidden; a shared ID prefix is safe."
   }
 }
 run "unsupported_broker_signing_region_forbidden" {

@@ -48,37 +48,20 @@ fn broker_failure(code: &str) -> (StatusCode, &'static str) {
 		_ => (StatusCode::SERVICE_UNAVAILABLE, "broker_unavailable"),
 	}
 }
-/// The broker forwards only paths under the signed prefix, which starts and
-/// ends with `/`.
-fn destination_prefix(path: &str) -> String {
-	let mut prefix = path.to_owned();
-	if prefix.is_empty() {
-		prefix.push('/');
-	}
-	if !prefix.starts_with('/') {
-		prefix.insert(0, '/');
-	}
-	if !prefix.ends_with('/') {
-		prefix.push('/');
-	}
-	prefix
-}
-/// The request's path under the service base, appended to the broker's
+/// The request's path under the service base's directory, appended to the broker's
 /// `/v1/forward` base. The broker joins it to the signed prefix in turn.
 fn broker_url(
 	route: &aidash_application::tenant_secrets::SecretRoute,
 	service: &Url,
 	base: &Url,
 ) -> Result<Url, BoxError> {
-	let prefix = destination_prefix(base.path());
-	let relative = if service.path() == base.path() {
-		""
-	} else {
-		service
-			.path()
-			.strip_prefix(&prefix)
-			.ok_or_else(|| io_error("invalid_egress_path"))?
-	};
+	// The broker signs the base path's directory, so an endpoint-style base
+	// such as `/invoke` forwards `invoke` exactly rather than `invoke/`.
+	let prefix = aidash_application::tenant_secrets::path_directory(base.path());
+	let relative = service
+		.path()
+		.strip_prefix(prefix)
+		.ok_or_else(|| io_error("invalid_egress_path"))?;
 	let mut target = route.base.as_str().trim_end_matches('/').to_owned();
 	if !relative.is_empty() {
 		target.push('/');

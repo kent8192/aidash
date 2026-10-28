@@ -5,6 +5,7 @@ import { deploymentId, parseNodeAddress } from "./node-selection.ts";
 export type RegistrationDraft = {
   source_node: string;
   endpoint: string;
+  dashboard_origin: string;
   key_id: string;
   atomic_transactions: boolean;
 };
@@ -31,7 +32,11 @@ export function newRegistration(
     enabled: true,
     expected_revision: 0,
     ...(inOtherDeployment(source_node, own)
-      ? { endpoint: draft.endpoint.trim(), key_id: draft.key_id.trim() }
+      ? {
+          endpoint: draft.endpoint.trim(),
+          dashboard_origin: draft.dashboard_origin.trim() || null,
+          key_id: draft.key_id.trim(),
+        }
       : {}),
   };
 }
@@ -54,7 +59,11 @@ export function changedRegistration(
     enabled,
     expected_revision: record.revision,
     ...(enabled && record.endpoint && record.key_id
-      ? { endpoint: record.endpoint, key_id: record.key_id }
+      ? {
+          endpoint: record.endpoint,
+          dashboard_origin: record.dashboard_origin,
+          key_id: record.key_id,
+        }
       : {}),
   };
 }

@@ -65,6 +65,7 @@ impl Authority for FixtureAuthority {
 			destination: Destination::Permitted,
 			request: Uuid::new_v4(),
 			operation: Uuid::new_v4(),
+			session: None,
 			service: service.into(),
 			definition: ExternalService {
 				base_url: self.upstream.clone(),
@@ -409,6 +410,7 @@ impl Authority for BrokerAuthority {
 			destination: Destination::PublicOnly,
 			request: Uuid::new_v4(),
 			operation: Uuid::new_v4(),
+			session: None,
 			service: service.into(),
 			definition: self.definition.clone(),
 			expires_at: chrono::Utc::now() + chrono::Duration::seconds(30),
@@ -636,6 +638,7 @@ impl Authority for DirectAuthority {
 			destination: Destination::Permitted,
 			request: Uuid::new_v4(),
 			operation: Uuid::new_v4(),
+			session: None,
 			service: service.into(),
 			definition: ExternalService {
 				base_url: self.upstream.clone(),
@@ -693,4 +696,44 @@ async fn a_service_without_a_secret_still_goes_direct() {
 	gateway.await.unwrap().unwrap();
 	upstream_task.abort();
 	let _ = upstream_task.await;
+}
+
+#[test]
+fn a_brokered_request_keeps_the_service_path_exactly() {
+	let route = aidash_application::tenant_secrets::SecretRoute {
+		base: Url::parse("https://broker.test/v1/forward").unwrap(),
+		token: "secret-call-token".into(),
+	};
+	for (base, service, forwarded) in [
+		// An endpoint-style base forwards its last segment without a slash.
+		(
+			"https://api.example.test/invoke",
+			"https://api.example.test/invoke",
+			"https://broker.test/v1/forward/invoke",
+		),
+		(
+			"https://api.example.test/v1/invoke",
+			"https://api.example.test/v1/invoke?x=1",
+			"https://broker.test/v1/forward/invoke?x=1",
+		),
+		// A directory-style base forwards what follows it.
+		(
+			"https://api.example.test/v1/",
+			"https://api.example.test/v1/",
+			"https://broker.test/v1/forward",
+		),
+		(
+			"https://api.example.test/v1/",
+			"https://api.example.test/v1/items/",
+			"https://broker.test/v1/forward/items/",
+		),
+	] {
+		let url = broker_url(
+			&route,
+			&Url::parse(service).unwrap(),
+			&Url::parse(base).unwrap(),
+		)
+		.unwrap();
+		assert_eq!(url.as_str(), forwarded, "{base} {service}");
+	}
 }

@@ -1290,9 +1290,9 @@ impl<'a> Executor<'a> {
 					})?;
 					// The same record-read path filters message.read and records the
 					// source for the later execution-boundary recheck.
-					let message: Message = serde_json::from_value(
-						home.read_record("message", &id.to_string()).await?,
-					)?;
+					let record = home.read_record("message", &id.to_string()).await?;
+					let cited = cited_versions(&record);
+					let message: Message = serde_json::from_value(record)?;
 					if message.workspace_id != run.workspace_id || message.content != input.content
 					{
 						return Err(Error::Conflict("run input message binding changed".into()));
@@ -1302,8 +1302,19 @@ impl<'a> Executor<'a> {
 						let reference = json!({"seq":input.seq,"sender":input.sender,"record":{"kind":"message","id":id},"requires_workspace_read":true});
 						run_messages.push(reference);
 					} else {
+						// A correction request must name the exact File version it
+						// corrects, including after the message is summarized.
+						let content = if cited.is_empty() {
+							message.content
+						} else {
+							format!(
+								"{}\n\nCited File versions: {}",
+								message.content,
+								cited.join("; ")
+							)
+						};
 						run_messages.push(
-							json!({"seq":input.seq,"sender":input.sender,"content":message.content}),
+							json!({"seq":input.seq,"sender":input.sender,"content":content}),
 						);
 					}
 				}
@@ -3878,4 +3889,25 @@ fn request_source_slot(
 			}
 		}
 	}
+}
+
+/// Compact citation names for the Run-message summary: `path@digest-prefix
+/// (File version <file_id>)`. Unknown or malformed entries are skipped.
+pub(crate) fn cited_versions(record: &serde_json::Value) -> Vec<String> {
+	record
+		.get("citations")
+		.and_then(serde_json::Value::as_array)
+		.map(|citations| {
+			citations
+				.iter()
+				.filter_map(|citation| {
+					let path = citation.get("path")?.as_str()?;
+					let digest = citation.get("digest")?.as_str()?;
+					let file = citation.get("file_id")?.as_str()?;
+					let prefix = &digest[..digest.len().min(12)];
+					Some(format!("{path}@{prefix} (File version {file})"))
+				})
+				.collect()
+		})
+		.unwrap_or_default()
 }

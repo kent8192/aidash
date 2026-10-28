@@ -2836,121 +2836,6 @@
     }
   },
   {
-    "method": "GET",
-    "path": "/api/authorization/{tenant}/peer-graph-grants",
-    "name": "authorization_peer_graph_grants",
-    "source": "server/src/apps/identity/views/graph.rs",
-    "json": false,
-    "uuid_parameters": [],
-    "query_parameters": ["limit", "offset"],
-    "response": {
-      "schema": {
-        "type": "array",
-        "items": {
-          "$ref": "#/components/schemas/PeerGraphGrant"
-        }
-      },
-      "definitions": {
-        "PeerGraphGrant": {
-          "type": "object",
-          "required": [
-            "source_deployment",
-            "source_identity",
-            "source_key_id",
-            "tenant",
-            "enabled",
-            "revision",
-            "updated_at"
-          ],
-          "properties": {
-            "enabled": {
-              "type": "boolean"
-            },
-            "revision": {
-              "type": "integer",
-              "format": "int64"
-            },
-            "source_deployment": {
-              "type": "string",
-              "description": "The viewer's Deployment id."
-            },
-            "source_identity": {
-              "type": "string",
-              "format": "uuid"
-            },
-            "source_key_id": {
-              "type": "string",
-              "description": "The key ID of the viewer Deployment's pinned Deployment Key."
-            },
-            "tenant": {
-              "type": "string"
-            },
-            "updated_at": {
-              "type": "string",
-              "format": "date-time"
-            }
-          }
-        }
-      }
-    }
-  },
-  {
-    "method": "POST",
-    "path": "/api/authorization/{tenant}/peer-graph-grants",
-    "name": "authorization_set_peer_graph_grant",
-    "source": "server/src/apps/identity/views/graph.rs",
-    "json": true,
-    "uuid_parameters": [],
-    "query_parameters": [],
-    "response": {
-      "schema": {
-        "$ref": "#/components/schemas/PeerGraphGrant"
-      },
-      "definitions": {
-        "PeerGraphGrant": {
-          "type": "object",
-          "required": [
-            "source_deployment",
-            "source_identity",
-            "source_key_id",
-            "tenant",
-            "enabled",
-            "revision",
-            "updated_at"
-          ],
-          "properties": {
-            "enabled": {
-              "type": "boolean"
-            },
-            "revision": {
-              "type": "integer",
-              "format": "int64"
-            },
-            "source_deployment": {
-              "type": "string",
-              "description": "The viewer's Deployment id."
-            },
-            "source_identity": {
-              "type": "string",
-              "format": "uuid"
-            },
-            "source_key_id": {
-              "type": "string",
-              "description": "The key ID of the viewer Deployment's pinned Deployment Key."
-            },
-            "tenant": {
-              "type": "string"
-            },
-            "updated_at": {
-              "type": "string",
-              "format": "date-time"
-            }
-          }
-        }
-      }
-    }
-  },
-  {
     "method": "POST",
     "path": "/federation/v0.1/scoped/graph",
     "name": "graphmanagement-project",
@@ -11474,15 +11359,71 @@
             }
           }
         },
+        "ChannelCitation": {
+          "type": "object",
+          "description": "A citation as one viewer may see it.\n\n`available` is false when the hold that kept the version is gone; the version\nis never substituted. A viewer who may not download the Working Area sees the\npath and ids only, with `reason = \"forbidden\"` and no digest, size, media type\nor revision.",
+          "required": ["area_id", "file_id", "path", "available"],
+          "properties": {
+            "area_id": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "available": {
+              "type": "boolean"
+            },
+            "digest": {
+              "type": ["string", "null"]
+            },
+            "file_id": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "media_type": {
+              "type": ["string", "null"]
+            },
+            "path": {
+              "type": "string"
+            },
+            "reason": {
+              "type": ["string", "null"]
+            },
+            "revision": {
+              "type": ["integer", "null"],
+              "format": "int64"
+            },
+            "run_id": {
+              "type": ["string", "null"],
+              "format": "uuid"
+            },
+            "size": {
+              "type": ["integer", "null"],
+              "format": "uint64",
+              "minimum": 0
+            }
+          }
+        },
         "ChannelMessage": {
           "type": "object",
-          "required": ["message", "thread_id", "is_thread_root", "attachments"],
+          "required": [
+            "message",
+            "thread_id",
+            "is_thread_root",
+            "attachments",
+            "citations"
+          ],
           "properties": {
             "attachments": {
               "type": "array",
               "items": {
                 "$ref": "#/components/schemas/ChannelAttachment"
               }
+            },
+            "citations": {
+              "type": "array",
+              "items": {
+                "$ref": "#/components/schemas/ChannelCitation"
+              },
+              "default": []
             },
             "is_thread_root": {
               "type": "boolean"
@@ -11571,15 +11512,71 @@
             }
           }
         },
+        "ChannelCitation": {
+          "type": "object",
+          "description": "A citation as one viewer may see it.\n\n`available` is false when the hold that kept the version is gone; the version\nis never substituted. A viewer who may not download the Working Area sees the\npath and ids only, with `reason = \"forbidden\"` and no digest, size, media type\nor revision.",
+          "required": ["area_id", "file_id", "path", "available"],
+          "properties": {
+            "area_id": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "available": {
+              "type": "boolean"
+            },
+            "digest": {
+              "type": ["string", "null"]
+            },
+            "file_id": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "media_type": {
+              "type": ["string", "null"]
+            },
+            "path": {
+              "type": "string"
+            },
+            "reason": {
+              "type": ["string", "null"]
+            },
+            "revision": {
+              "type": ["integer", "null"],
+              "format": "int64"
+            },
+            "run_id": {
+              "type": ["string", "null"],
+              "format": "uuid"
+            },
+            "size": {
+              "type": ["integer", "null"],
+              "format": "uint64",
+              "minimum": 0
+            }
+          }
+        },
         "ChannelMessage": {
           "type": "object",
-          "required": ["message", "thread_id", "is_thread_root", "attachments"],
+          "required": [
+            "message",
+            "thread_id",
+            "is_thread_root",
+            "attachments",
+            "citations"
+          ],
           "properties": {
             "attachments": {
               "type": "array",
               "items": {
                 "$ref": "#/components/schemas/ChannelAttachment"
               }
+            },
+            "citations": {
+              "type": "array",
+              "items": {
+                "$ref": "#/components/schemas/ChannelCitation"
+              },
+              "default": []
             },
             "is_thread_root": {
               "type": "boolean"
@@ -34292,6 +34289,7 @@
             "sent_bytes",
             "received_bytes",
             "duration_ms",
+            "via",
             "error",
             "created_at"
           ],
@@ -34315,8 +34313,9 @@
               "type": "string"
             },
             "operation_id": {
-              "type": "string",
-              "format": "uuid"
+              "type": ["string", "null"],
+              "format": "uuid",
+              "description": "`None` for a request made with a Live preview's session token."
             },
             "path": {
               "type": "string"
@@ -34356,6 +34355,11 @@
             },
             "tenant": {
               "type": "string"
+            },
+            "via": {
+              "type": "string",
+              "description": "`operation`, `pod` or `page`: which path admitted the request.",
+              "default": "operation"
             }
           }
         },
@@ -39939,7 +39943,7 @@
             }
           }
         },
-        "Inspection": {
+        "Inspection2": {
           "type": "object",
           "required": [
             "items",
@@ -40239,7 +40243,7 @@
                   "enum": ["inspection"]
                 },
                 "value": {
-                  "$ref": "#/components/schemas/Inspection"
+                  "$ref": "#/components/schemas/Inspection2"
                 }
               }
             },
@@ -43070,6 +43074,7 @@
             "node",
             "source_node",
             "endpoint",
+            "dashboard_origin",
             "key_id",
             "atomic_transactions",
             "enabled",
@@ -43089,6 +43094,10 @@
             "created_at": {
               "type": "string",
               "format": "date-time"
+            },
+            "dashboard_origin": {
+              "type": ["string", "null"],
+              "description": "Pinned dashboard origin used to validate remote Preview frame ancestors."
             },
             "enabled": {
               "type": "boolean"
@@ -43146,6 +43155,7 @@
             "node",
             "source_node",
             "endpoint",
+            "dashboard_origin",
             "key_id",
             "atomic_transactions",
             "enabled",
@@ -43165,6 +43175,10 @@
             "created_at": {
               "type": "string",
               "format": "date-time"
+            },
+            "dashboard_origin": {
+              "type": ["string", "null"],
+              "description": "Pinned dashboard origin used to validate remote Preview frame ancestors."
             },
             "enabled": {
               "type": "boolean"
@@ -43222,6 +43236,7 @@
             "node",
             "source_node",
             "endpoint",
+            "dashboard_origin",
             "key_id",
             "atomic_transactions",
             "enabled",
@@ -43241,6 +43256,10 @@
             "created_at": {
               "type": "string",
               "format": "date-time"
+            },
+            "dashboard_origin": {
+              "type": ["string", "null"],
+              "description": "Pinned dashboard origin used to validate remote Preview frame ancestors."
             },
             "enabled": {
               "type": "boolean"
@@ -47100,6 +47119,547 @@
         }
       }
     }
+  },
+  {
+    "method": "GET",
+    "path": "/api/previews/availability",
+    "name": "core_preview_availability",
+    "source": "server/src/apps/execution/capabilities/views/previews.rs",
+    "json": false,
+    "uuid_parameters": [],
+    "query_parameters": [],
+    "response": {
+      "schema": {
+        "$ref": "#/components/schemas/PreviewAvailability"
+      },
+      "definitions": {
+        "PreviewAvailability": {
+          "type": "object",
+          "required": ["available", "preview_domain"],
+          "properties": {
+            "available": {
+              "type": "boolean"
+            },
+            "preview_domain": {
+              "type": ["string", "null"]
+            }
+          }
+        }
+      }
+    }
+  },
+  {
+    "method": "POST",
+    "path": "/api/previews/tickets",
+    "name": "core_preview_ticket",
+    "source": "server/src/apps/execution/capabilities/views/previews.rs",
+    "json": true,
+    "uuid_parameters": [],
+    "query_parameters": [],
+    "response": {
+      "schema": {
+        "$ref": "#/components/schemas/PreviewTicket"
+      },
+      "definitions": {
+        "PreviewTicket": {
+          "type": "object",
+          "required": ["url", "expires_at"],
+          "properties": {
+            "url": {
+              "type": "string"
+            },
+            "expires_at": {
+              "type": "string",
+              "format": "date-time"
+            }
+          }
+        }
+      }
+    }
+  },
+  {
+    "method": "GET",
+    "path": "/api/runs/{id}/live-preview",
+    "name": "core_live_preview",
+    "source": "server/src/apps/execution/capabilities/views/live_previews.rs",
+    "json": false,
+    "uuid_parameters": ["id"],
+    "query_parameters": [],
+    "response": {
+      "schema": {
+        "$ref": "#/components/schemas/LivePreviewStatus"
+      },
+      "definitions": {
+        "LivePreview": {
+          "type": "object",
+          "required": [
+            "id",
+            "state",
+            "stop_reason",
+            "area_id",
+            "revision",
+            "port",
+            "idle_seconds",
+            "absolute_seconds",
+            "started_at",
+            "last_request_at",
+            "expires_at"
+          ],
+          "properties": {
+            "absolute_seconds": {
+              "type": "integer",
+              "format": "int64"
+            },
+            "area_id": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "expires_at": {
+              "type": "string",
+              "format": "date-time"
+            },
+            "id": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "idle_seconds": {
+              "type": "integer",
+              "format": "int64"
+            },
+            "last_request_at": {
+              "type": "string",
+              "format": "date-time"
+            },
+            "port": {
+              "type": "integer",
+              "format": "uint16",
+              "maximum": 65535,
+              "minimum": 0
+            },
+            "revision": {
+              "type": "integer",
+              "format": "int64"
+            },
+            "started_at": {
+              "type": "string",
+              "format": "date-time"
+            },
+            "state": {
+              "type": "string"
+            },
+            "stop_reason": {
+              "type": ["string", "null"]
+            }
+          }
+        },
+        "LivePreviewStatus": {
+          "type": "object",
+          "description": "One Run's Live preview as the dashboard reads it.",
+          "required": ["live_preview", "may_stop"],
+          "properties": {
+            "live_preview": {
+              "anyOf": [
+                {
+                  "$ref": "#/components/schemas/LivePreview"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "may_stop": {
+              "type": "boolean",
+              "description": "Whether this viewer may stop it: the Run's requester or whoever may\ncancel the Run (ADR 0070). The dashboard shows Stop only then."
+            }
+          }
+        }
+      }
+    }
+  },
+  {
+    "method": "POST",
+    "path": "/api/runs/{id}/live-preview/stop",
+    "name": "core_live_preview_stop",
+    "source": "server/src/apps/execution/capabilities/views/live_previews.rs",
+    "json": false,
+    "uuid_parameters": ["id"],
+    "query_parameters": [],
+    "response": {
+      "schema": {
+        "$ref": "#/components/schemas/LivePreviewStatus"
+      },
+      "definitions": {
+        "LivePreview": {
+          "type": "object",
+          "required": [
+            "id",
+            "state",
+            "stop_reason",
+            "area_id",
+            "revision",
+            "port",
+            "idle_seconds",
+            "absolute_seconds",
+            "started_at",
+            "last_request_at",
+            "expires_at"
+          ],
+          "properties": {
+            "absolute_seconds": {
+              "type": "integer",
+              "format": "int64"
+            },
+            "area_id": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "expires_at": {
+              "type": "string",
+              "format": "date-time"
+            },
+            "id": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "idle_seconds": {
+              "type": "integer",
+              "format": "int64"
+            },
+            "last_request_at": {
+              "type": "string",
+              "format": "date-time"
+            },
+            "port": {
+              "type": "integer",
+              "format": "uint16",
+              "maximum": 65535,
+              "minimum": 0
+            },
+            "revision": {
+              "type": "integer",
+              "format": "int64"
+            },
+            "started_at": {
+              "type": "string",
+              "format": "date-time"
+            },
+            "state": {
+              "type": "string"
+            },
+            "stop_reason": {
+              "type": ["string", "null"]
+            }
+          }
+        },
+        "LivePreviewStatus": {
+          "type": "object",
+          "description": "One Run's Live preview as the dashboard reads it.",
+          "required": ["live_preview", "may_stop"],
+          "properties": {
+            "live_preview": {
+              "anyOf": [
+                {
+                  "$ref": "#/components/schemas/LivePreview"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "may_stop": {
+              "type": "boolean",
+              "description": "Whether this viewer may stop it: the Run's requester or whoever may\ncancel the Run (ADR 0070). The dashboard shows Stop only then."
+            }
+          }
+        }
+      }
+    }
+  },
+  {
+    "method": "POST",
+    "path": "/api/previews/live-tickets",
+    "name": "core_preview_live_ticket",
+    "source": "server/src/apps/execution/capabilities/views/live_previews.rs",
+    "json": true,
+    "uuid_parameters": [],
+    "query_parameters": [],
+    "response": {
+      "schema": {
+        "$ref": "#/components/schemas/PreviewTicket"
+      },
+      "definitions": {
+        "PreviewTicket": {
+          "type": "object",
+          "required": ["url", "expires_at"],
+          "properties": {
+            "expires_at": {
+              "type": "string",
+              "format": "date-time"
+            },
+            "url": {
+              "type": "string"
+            }
+          }
+        }
+      }
+    }
+  },
+  {
+    "method": "GET",
+    "path": "/api/preview-limits/{tenant}",
+    "name": "core_preview_limits",
+    "source": "server/src/apps/execution/capabilities/views/live_previews.rs",
+    "json": false,
+    "uuid_parameters": [],
+    "query_parameters": [],
+    "response": {
+      "schema": {
+        "$ref": "#/components/schemas/TenantPreviewLimits"
+      },
+      "definitions": {
+        "TenantPreviewLimits": {
+          "type": "object",
+          "description": "A Tenant's lowered Live preview limits and the Deployment's ceilings.",
+          "required": [
+            "tenant",
+            "idle_seconds",
+            "absolute_seconds",
+            "revision",
+            "ceiling_idle_seconds",
+            "ceiling_absolute_seconds"
+          ],
+          "properties": {
+            "absolute_seconds": {
+              "type": "integer",
+              "format": "int64"
+            },
+            "ceiling_absolute_seconds": {
+              "type": "integer",
+              "format": "int64"
+            },
+            "ceiling_idle_seconds": {
+              "type": "integer",
+              "format": "int64"
+            },
+            "idle_seconds": {
+              "type": "integer",
+              "format": "int64"
+            },
+            "revision": {
+              "type": "integer",
+              "format": "int64"
+            },
+            "tenant": {
+              "type": "string"
+            }
+          }
+        }
+      }
+    }
+  },
+  {
+    "method": "PUT",
+    "path": "/api/preview-limits/{tenant}",
+    "name": "core_preview_limits_update",
+    "source": "server/src/apps/execution/capabilities/views/live_previews.rs",
+    "json": true,
+    "uuid_parameters": [],
+    "query_parameters": [],
+    "response": {
+      "schema": {
+        "$ref": "#/components/schemas/TenantPreviewLimits"
+      },
+      "definitions": {
+        "TenantPreviewLimits": {
+          "type": "object",
+          "description": "A Tenant's lowered Live preview limits and the Deployment's ceilings.",
+          "required": [
+            "tenant",
+            "idle_seconds",
+            "absolute_seconds",
+            "revision",
+            "ceiling_idle_seconds",
+            "ceiling_absolute_seconds"
+          ],
+          "properties": {
+            "absolute_seconds": {
+              "type": "integer",
+              "format": "int64"
+            },
+            "ceiling_absolute_seconds": {
+              "type": "integer",
+              "format": "int64"
+            },
+            "ceiling_idle_seconds": {
+              "type": "integer",
+              "format": "int64"
+            },
+            "idle_seconds": {
+              "type": "integer",
+              "format": "int64"
+            },
+            "revision": {
+              "type": "integer",
+              "format": "int64"
+            },
+            "tenant": {
+              "type": "string"
+            }
+          }
+        }
+      }
+    }
+  },
+  {
+    "method": "GET",
+    "path": "/api/runs/{id}/remote-preview",
+    "name": "core_remote_preview_inspect",
+    "source": "server/src/apps/execution/capabilities/views/previews.rs",
+    "json": false,
+    "uuid_parameters": ["id"],
+    "query_parameters": [],
+    "response": {
+      "schema": {
+        "$ref": "#/components/schemas/Inspection"
+      },
+      "definitions": {
+        "File": {
+          "type": "object",
+          "required": ["file_id", "path", "digest", "size", "media_type"],
+          "properties": {
+            "digest": {
+              "type": "string"
+            },
+            "file_id": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "media_type": {
+              "type": "string"
+            },
+            "path": {
+              "type": "string"
+            },
+            "size": {
+              "type": "integer",
+              "format": "uint64",
+              "minimum": 0
+            }
+          }
+        },
+        "Inspection": {
+          "type": "object",
+          "required": ["area_id", "files", "live_preview", "preview_available"],
+          "properties": {
+            "area_id": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "files": {
+              "type": "array",
+              "items": {
+                "$ref": "#/components/schemas/File"
+              }
+            },
+            "live_preview": {
+              "anyOf": [
+                {
+                  "$ref": "#/components/schemas/Live"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "preview_available": {
+              "type": "boolean"
+            }
+          }
+        },
+        "Live": {
+          "type": "object",
+          "required": ["id", "state"],
+          "properties": {
+            "id": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "state": {
+              "type": "string"
+            }
+          }
+        }
+      }
+    }
+  },
+  {
+    "method": "POST",
+    "path": "/api/runs/{id}/preview-tickets",
+    "name": "core_remote_preview_ticket",
+    "source": "server/src/apps/execution/capabilities/views/previews.rs",
+    "json": true,
+    "uuid_parameters": ["id"],
+    "query_parameters": [],
+    "response": {
+      "schema": {
+        "$ref": "#/components/schemas/Ticket"
+      },
+      "definitions": {
+        "Ticket": {
+          "type": "object",
+          "required": ["url", "expires_at", "preview_domain"],
+          "properties": {
+            "expires_at": {
+              "type": "string",
+              "format": "date-time"
+            },
+            "preview_domain": {
+              "type": "string",
+              "description": "V can display this domain; the desktop validates it from V's API itself."
+            },
+            "url": {
+              "type": "string"
+            }
+          }
+        }
+      }
+    }
+  },
+  {
+    "method": "POST",
+    "path": "/federation/v0.1/scoped/previews/inspect",
+    "name": "peer-preview-inspect",
+    "source": "server/src/apps/identity/views/execution.rs",
+    "json": true,
+    "uuid_parameters": [],
+    "query_parameters": []
+  },
+  {
+    "method": "POST",
+    "path": "/federation/v0.1/scoped/previews/release",
+    "name": "peer-preview-release",
+    "source": "server/src/apps/identity/views/execution.rs",
+    "json": true,
+    "uuid_parameters": [],
+    "query_parameters": []
+  },
+  {
+    "method": "POST",
+    "path": "/federation/v0.1/scoped/previews/retain",
+    "name": "peer-preview-retain",
+    "source": "server/src/apps/identity/views/execution.rs",
+    "json": true,
+    "uuid_parameters": [],
+    "query_parameters": []
+  },
+  {
+    "method": "POST",
+    "path": "/federation/v0.1/scoped/previews/tickets",
+    "name": "peer-preview-ticket",
+    "source": "server/src/apps/identity/views/execution.rs",
+    "json": true,
+    "uuid_parameters": [],
+    "query_parameters": []
   },
   {
     "method": "GET",

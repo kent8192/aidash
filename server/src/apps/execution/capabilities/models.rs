@@ -15,6 +15,9 @@ pub use core_quotas::CoreQuotas;
 mod core_objects;
 pub use core_objects::CoreObjects;
 
+mod core_retention;
+pub use core_retention::{CoreRetentionFiles, CoreRetentionHolds};
+
 mod core_requests;
 pub use core_requests::CoreRequest;
 
@@ -26,3 +29,9 @@ pub use core_operations::CoreOperations;
 
 pub(crate) mod egress;
 pub use egress::RequestRecord as EgressRequest;
+
+mod previews;
+pub use previews::{CorePreviewSessions, CorePreviewTickets, CorePreviews};
+
+mod live_previews;
+pub use live_previews::{CoreLivePreviews, CorePreviewLimits, EgressSession};
