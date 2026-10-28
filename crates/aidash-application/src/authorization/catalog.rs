@@ -112,6 +112,7 @@ pub(super) fn validate_provider_acknowledgment(
 	Ok(())
 }
 
+#[allow(clippy::too_many_arguments)]
 pub(super) async fn set_in_with_acknowledgment(
 	scope: &mut dyn crate::ports::catalog::CatalogMutation,
 	tenant: &str,

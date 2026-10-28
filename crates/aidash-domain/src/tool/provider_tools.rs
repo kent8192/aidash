@@ -291,10 +291,10 @@ impl Declaration {
 			}
 			_ => return Err(bad()),
 		};
-		if let Some(instructions) = params.get("instructions") {
-			if !instructions.as_str().is_some_and(|s| s.len() <= 8192) {
-				return Err(bad());
-			}
+		if let Some(instructions) = params.get("instructions")
+			&& instructions.as_str().is_none_or(|s| s.len() > 8192)
+		{
+			return Err(bad());
 		}
 		if params.keys().any(|key| !fields.contains(&key.as_str())) {
 			return Err(bad());

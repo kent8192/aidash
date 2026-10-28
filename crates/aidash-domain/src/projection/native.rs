@@ -189,12 +189,11 @@ pub fn native_context(context: &Context, pinned: &Value) -> NativeContext {
 			if let ContextEvent::Assistant {
 				provider_activity, ..
 			} = &entries[turn.start].event
+				&& !provider_activity.is_empty()
 			{
-				if !provider_activity.is_empty() {
-					history.push(NativeMessage::ProviderActivity {
-						items: provider_activity.clone(),
-					});
-				}
+				history.push(NativeMessage::ProviderActivity {
+					items: provider_activity.clone(),
+				});
 			}
 			markers.retain(|marker| {
 				!turn.calls.is_empty()
