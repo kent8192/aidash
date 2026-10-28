@@ -132,12 +132,6 @@ impl DashboardExecutionOrigin {
 		Ok(())
 	}
 
-	pub(crate) async fn is_human_origin(
-		db: &mut dyn TransactionExecutor,
-		run: Uuid,
-	) -> Result<bool> {
-		Ok(Self::saved_or_legacy(db, run).await?.is_some())
-	}
 	async fn saved_or_legacy(
 		db: &mut dyn TransactionExecutor,
 		run: Uuid,
