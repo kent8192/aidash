@@ -37,6 +37,8 @@ pub fn run() -> Run {
 		updated_at: Utc::now(),
 		observed_input_seq: 0,
 		ledger_worker_ready: true,
+		control_revision: 0,
+		control_source: Default::default(),
 		semantic_retry_cycle: 0,
 		pending_human_request_id: None,
 	}

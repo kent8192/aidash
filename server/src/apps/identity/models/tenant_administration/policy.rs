@@ -63,6 +63,27 @@ impl TenantAdministrator {
 		.await
 	}
 
+	/// The Tenant's Safety Stop records, under the same authority as its
+	/// decisions. The Tenant's lock refuses a deleted or purged Tenant first.
+	pub(crate) async fn safety_stops(
+		&self,
+		db: &Pool,
+		offset: u64,
+		limit: u32,
+	) -> Result<Vec<aidash_domain::safety_stop::Record>> {
+		db.atomic(&self.scope()?, async |tx| {
+			self.locked_for(tx, rules::DECISION_READ, false).await?;
+			crate::apps::execution::models::safety_stops::RunSafetyStop::list(
+				tx,
+				self.tenant(),
+				offset,
+				limit.min(200),
+			)
+			.await
+		})
+		.await
+	}
+
 	/// Replaces the whole policy. Holding `policy.update` is every authority
 	/// within the Tenant, so the replacement may change this administrator's
 	/// own subject; it still has to leave someone who can repair the policy.

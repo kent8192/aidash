@@ -335,6 +335,8 @@ pub(crate) fn run_of(snapshot: BindingSnapshot) -> aidash_domain::Run {
 		revision: 0,
 		observed_input_seq: 0,
 		ledger_worker_ready: true,
+		control_revision: 0,
+		control_source: Default::default(),
 		error: None,
 		lease_owner: None,
 		lease_until: None,
