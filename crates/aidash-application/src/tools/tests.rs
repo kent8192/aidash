@@ -17,6 +17,7 @@ struct Operations {
 	calls: Mutex<Vec<&'static str>>,
 	inputs: Mutex<Vec<(String, Value)>>,
 	connection: bool,
+	person: bool,
 }
 impl Operations {
 	fn record(&self, name: &'static str) {
@@ -39,6 +40,10 @@ impl ToolOperations for Operations {
 		} else {
 			Ok(None)
 		}
+	}
+
+	async fn connection_person(&self) -> Result<bool> {
+		Ok(self.person)
 	}
 
 	async fn registered_skills(&self) -> Result<Vec<EntityRef>> {
@@ -116,8 +121,23 @@ impl ToolOperations for Operations {
 	) -> Result<Value> {
 		panic!("unexpected native recall");
 	}
-	async fn human_request(&self, _kind: &str, _prompt: &str, _key: &str) -> Result<HumanRequest> {
-		panic!("unexpected tool effect: human_request")
+	async fn human_request(&self, kind: &str, prompt: &str, key: &str) -> Result<HumanRequest> {
+		self.record("human.request");
+		self.inputs.lock().unwrap().push((
+			key.into(),
+			json!({"kind":kind,"prompt":serde_json::from_str::<Value>(prompt)?}),
+		));
+		Ok(HumanRequest {
+			id: Uuid::now_v7(),
+			run_id: Uuid::nil(),
+			workspace_id: Uuid::nil(),
+			kind: kind.into(),
+			prompt: prompt.into(),
+			response: None,
+			created_at: chrono::Utc::now(),
+			answered_by: None,
+			answer_by: None,
+		})
 	}
 	async fn binding_specifications(&self) -> Result<BTreeMap<String, ToolSpec>> {
 		panic!("unexpected tool effect: binding_specifications")
@@ -258,6 +278,7 @@ fn fixture() -> Fixture {
 			proxy: None,
 			skill_text: "界ab".into(),
 			connection: false,
+			person: false,
 			task,
 			skills: vec![],
 			calls: Mutex::new(vec![]),
@@ -836,4 +857,39 @@ fn typed_connection_envelopes_restore_the_error_provenance() {
 		connection_outcome(json!({"outcome":"not_personal"}), false).unwrap(),
 		None
 	);
+}
+
+#[rstest]
+#[tokio::test]
+async fn connection_request_canonicalizes_consent_and_refuses_without_a_person(
+	mut fixture: Fixture,
+) {
+	let builtin = builtins().remove("connection_request").unwrap();
+	let input = json!({"resource":"https://MCP.example:443/mcp/","scopes":["write","read","read"],"reason":"This task needs documents"});
+	let ctx = ToolContext {
+		operations: &fixture.operations,
+		run: &fixture.run,
+	};
+	assert!(
+		builtin
+			.invoke(&ctx, input.clone(), "connect")
+			.await
+			.is_err()
+	);
+	assert!(fixture.operations.calls.lock().unwrap().is_empty());
+	fixture.operations.person = true;
+	let ctx = ToolContext {
+		operations: &fixture.operations,
+		run: &fixture.run,
+	};
+	let result = builtin.invoke(&ctx, input, "connect").await.unwrap();
+	assert!(result["human_request_id"].is_string());
+	let inputs = fixture.operations.inputs.lock().unwrap();
+	let (_, request) = &inputs[0];
+	assert_eq!(
+		request["kind"],
+		aidash_domain::oauth_connections::CONNECTION_REQUEST_KIND
+	);
+	assert_eq!(request["prompt"]["resource"], "https://mcp.example/mcp");
+	assert_eq!(request["prompt"]["scopes"], json!(["read", "write"]));
 }

@@ -80,7 +80,8 @@ pub(crate) async fn connection(
 		return Err(Error::Forbidden);
 	}
 	let auth = for_owner(store, &owner, resource, call).await?;
-	let (CallSecret::Connection { record, .. } | CallSecret::BrokeredConnection { record, .. }) = &auth
+	let (CallSecret::Connection { record, .. } | CallSecret::BrokeredConnection { record, .. }) =
+		&auth
 	else {
 		unreachable!("connection source")
 	};

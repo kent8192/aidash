@@ -155,10 +155,21 @@ pub fn pin(
 	listed: &BTreeMap<(PluginName, ServerName), Listing>,
 	taken: &BTreeSet<String>,
 ) -> PluginTools {
+	pin_additional(plugins, settings, listed, taken, 0)
+}
+
+/// Apply the same admission rules while retaining tools already pinned by a Run.
+pub fn pin_additional(
+	plugins: &[AgentPluginRef],
+	settings: &PluginSettings,
+	listed: &BTreeMap<(PluginName, ServerName), Listing>,
+	taken: &BTreeSet<String>,
+	existing_count: usize,
+) -> PluginTools {
 	let mut pinner = Pinner {
 		taken,
 		aliases: BTreeSet::new(),
-		count: 0,
+		count: existing_count,
 		pinned: PluginTools::default(),
 	};
 	let unchosen = ServerSettings::default();

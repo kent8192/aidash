@@ -31,6 +31,12 @@ import {
 import type { TenantState } from "./types";
 import type { ApprovalCard } from "./generated/models";
 import { approvalNotice } from "./research";
+import { connect } from "./connections/connect";
+import { connectionError, outcomeMessage } from "./connections/install";
+import {
+  connectionAction,
+  type ConnectionAction,
+} from "./notifications/connection";
 import type { Locale } from "./ui";
 import { Hint } from "./components/patterns";
 import {
@@ -43,6 +49,7 @@ import {
 
 const copy = {
   "ja-JP": {
+    connect: "接続する",
     notifications: "通知",
     description: "確認待ちの依頼と最近50件の重要な更新",
     pending: "確認待ち",
@@ -57,6 +64,7 @@ const copy = {
     close: "通知を閉じる",
   },
   "en-US": {
+    connect: "Connect",
     notifications: "Notifications",
     description: "Pending requests and the 50 most recent important updates",
     pending: "Awaiting your input",
@@ -382,33 +390,47 @@ export function NotificationProvider({
                   </h3>
                   {group.items.map((item) => {
                     const Icon = icons[item.kind];
-                    // TODO(#554 W5): add a sibling Connect action for the human
-                    // target's MCP_CONNECTION request, outside this row Button.
-                    // Payload: {resource, scopes, reason, tool}; use connections/connect.ts.
-                    // The callback answers the request and resumes its durable wait.
+                    const action =
+                      item.target.kind === "human"
+                        ? connectionAction(
+                            data?.human_requests.find(
+                              (request) => request.id === item.target.id,
+                            ),
+                            data?.access.kind === "subject"
+                              ? data.access.tenant
+                              : undefined,
+                          )
+                        : null;
                     return (
-                      <Button
-                        variant="ghost"
-                        className="intent-notification-row h-auto w-full items-start justify-start gap-3 whitespace-normal px-2 py-2 text-left text-foreground [&_svg]:size-4"
-                        key={item.id}
-                        onClick={() => visit(item)}
-                      >
-                        <Icon
-                          aria-hidden
-                          className={cn("mt-0.5", iconTone[item.kind])}
-                        />
-                        <span className="grid min-w-0 gap-0.5">
-                          <strong className="text-[13px] font-medium">
-                            {words[item.kind]}
-                          </strong>
-                          <span className="line-clamp-2 text-xs font-normal text-muted-foreground">
-                            {item.detail}
+                      <div key={item.id} className="flex items-center gap-2">
+                        <Button
+                          variant="ghost"
+                          className="intent-notification-row h-auto w-full items-start justify-start gap-3 whitespace-normal px-2 py-2 text-left text-foreground [&_svg]:size-4"
+                          onClick={() => visit(item)}
+                        >
+                          <Icon
+                            aria-hidden
+                            className={cn("mt-0.5", iconTone[item.kind])}
+                          />
+                          <span className="grid min-w-0 gap-0.5">
+                            <strong className="text-[13px] font-medium">
+                              {words[item.kind]}
+                            </strong>
+                            <span className="line-clamp-2 text-xs font-normal text-muted-foreground">
+                              {item.detail}
+                            </span>
+                            <small className="truncate font-mono text-[11px] font-normal text-faint">
+                              {item.workspaceTitle}
+                            </small>
                           </span>
-                          <small className="truncate font-mono text-[11px] font-normal text-faint">
-                            {item.workspaceTitle}
-                          </small>
-                        </span>
-                      </Button>
+                        </Button>
+                        {action && (
+                          <ConnectNotification
+                            action={action}
+                            locale={locale}
+                          />
+                        )}
+                      </div>
                     );
                   })}
                 </section>
@@ -417,5 +439,36 @@ export function NotificationProvider({
         </SheetContent>
       </Sheet>
     </NotificationContext>
+  );
+}
+
+function ConnectNotification({
+  action,
+  locale,
+}: {
+  action: ConnectionAction;
+  locale: Locale;
+}) {
+  const [busy, setBusy] = useState(false);
+  return (
+    <Button
+      variant="outline"
+      size="sm"
+      disabled={busy}
+      onClick={() => {
+        setBusy(true);
+        void connect(action)
+          .then((outcome) => {
+            const message = outcomeMessage(outcome, locale === "ja-JP");
+            if (message) toast(message);
+          })
+          .catch((reason: unknown) =>
+            toast.error(connectionError(reason, locale === "ja-JP")),
+          )
+          .finally(() => setBusy(false));
+      }}
+    >
+      {copy[locale].connect}
+    </Button>
   );
 }

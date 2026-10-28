@@ -59,7 +59,7 @@ pub fn core_provider(operation: &str) -> Option<&'static str> {
 		"workspace_read" | "workspace_observe" | "workspace_wait" | "workspace_message" => {
 			"core.workspace@1"
 		}
-		"human_request" => "core.human@1",
+		"human_request" | "connection_request" => "core.human@1",
 		"task_create" | "task_delegate" | "agent_discover" | "task_assign" => "core.tasks@1",
 		"skill_list" | "skill_load" | "skill_read" | "skill_asset_read" => "core.skills@1",
 		"capability_search" | "capability_describe" | "capability_load" | "capability_unload" => {
@@ -144,6 +144,7 @@ pub fn research_contract(operation: ResearchOperation) -> ToolContract {
 			requirements: Vec::<AuthorizationRequirement>::new(),
 		},
 		behavior: ToolBehavior {
+			connection_request: false,
 			// Reading public sources leaves user resources unchanged. A repeated
 			// invocation key reuses the recorded attempt instead of dispatching.
 			effect: ToolEffect::ReadOnly,

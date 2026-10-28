@@ -303,6 +303,12 @@ impl ExecutionStore for RunStore {
 				.collect(),
 		)
 	}
+	async fn connection_refused(&self, run: &Run, token: Uuid, key: &str) -> Result<()> {
+		self.store
+			.connection_refused(&self.scope, run, token, key)
+			.await
+			.map_err(Into::into)
+	}
 	async fn invocation_finish(
 		&self,
 		run: &Run,
@@ -668,6 +674,18 @@ impl ExecutionAuthority for Authority<'_> {
 			.ok_or(aidash_application::Error::Forbidden)?;
 		authority
 			.sampling_approval(&self.federation.store, run, request)
+			.await
+			.map_err(Into::into)
+	}
+	async fn connection_mode(
+		&self,
+		run: &Run,
+	) -> Result<Option<aidash_domain::approval_rules::ApprovalMode>> {
+		let Some(authority) = self.guard.local_authority() else {
+			return Ok(None);
+		};
+		authority
+			.connection_mode(&self.federation.store, run)
 			.await
 			.map_err(Into::into)
 	}
@@ -1152,6 +1170,32 @@ impl ExecutionEnvironment for Environment<'_> {
 			},
 			run.id,
 			snapshot,
+		)
+		.await
+		.map(Some)
+	}
+	async fn reconnect_plugin_tools(
+		&self,
+		run: &Run,
+		resource: &str,
+	) -> Result<Option<aidash_domain::agent_plugin::PluginTools>> {
+		let Some(pinned) = &run.context.plugin_tools else {
+			return Ok(None);
+		};
+		let snapshot = run.context.binding_snapshot.as_deref().ok_or_else(|| {
+			aidash_application::Error::Invalid("Run has no admitted Binding snapshot".into())
+		})?;
+		aidash_application::plugin_tools::reconnect_for_run(
+			&super::mcp_connections::Sessions {
+				home: self.native_home(),
+				store: self.federation.store.clone(),
+				run: run.clone(),
+				scope: self.run_store.scope.clone(),
+			},
+			run.id,
+			snapshot,
+			pinned,
+			resource,
 		)
 		.await
 		.map(Some)

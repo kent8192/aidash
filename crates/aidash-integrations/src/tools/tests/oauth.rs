@@ -6,7 +6,7 @@ use aidash_domain::agent_plugin::{RemoteServer, schema_digest};
 use std::sync::atomic::{AtomicUsize, Ordering::SeqCst};
 use wiremock::{
 	Mock, MockServer, Request, ResponseTemplate,
-	matchers::{method, path_regex},
+	matchers::{method, path, path_regex},
 };
 
 #[derive(Default)]
@@ -97,7 +97,7 @@ async fn upstream_auth(
 #[case::call("tools/call", 401, "connection_required")]
 #[case::scope("tools/call", 403, "connection_scope_insufficient")]
 #[tokio::test]
-async fn registry_mcp_challenges_are_structured_tool_results(
+async fn registry_mcp_challenges_are_typed_refusals(
 	#[case] phase: &'static str,
 	#[case] status: u16,
 	#[case] code: &str,
@@ -105,15 +105,17 @@ async fn registry_mcp_challenges_are_structured_tool_results(
 	let server = upstream(phase, status, true, false).await;
 	let endpoint = format!("{}/mcp", server.uri());
 	let tools = HttpTools::new(permitting([endpoint.as_str()]), ToolClients::new().unwrap());
-	let result = tools
+	let error = tools
 		.invoke(&config(endpoint.clone()), json!({}), "call-key", None)
 		.await
-		.unwrap();
-	assert_eq!(result["error"], code);
-	assert_eq!(result["resource"], endpoint);
-	if status == 403 {
-		assert_eq!(result["scope"], "files.read files.write");
-	}
+		.unwrap_err();
+	assert_connection(
+		error,
+		code,
+		&endpoint,
+		(status == 403).then_some("files.read files.write"),
+	);
+
 	assert!(
 		server
 			.received_requests()
@@ -145,15 +147,11 @@ async fn registry_mcp_refreshes_once_and_restarts_the_call(
 			"call-key",
 			Some(&auth),
 		)
-		.await
-		.unwrap();
+		.await;
 	if permanent {
-		assert_eq!(
-			result,
-			json!({"error":"connection_required","resource":endpoint})
-		);
+		assert_connection(result.unwrap_err(), "connection_required", &endpoint, None);
 	} else {
-		assert_eq!(result["content"][0]["text"], "authenticated");
+		assert_eq!(result.unwrap()["content"][0]["text"], "authenticated");
 	}
 	assert_eq!(source.invalidations.load(SeqCst), 1);
 	let requests = server.received_requests().await.unwrap();
@@ -286,16 +284,16 @@ async fn plugin_mcp_auth_challenges_preserve_context_and_retry_only_one_refused_
 			"call",
 			auth.as_ref(),
 		)
-		.await
-		.unwrap();
+		.await;
 	if code.is_empty() {
-		assert_eq!(result["content"][0]["text"], "authenticated");
+		assert_eq!(result.unwrap()["content"][0]["text"], "authenticated");
 	} else {
-		assert_eq!(result["error"], code);
-		assert_eq!(result["resource"], endpoint);
-		if status == 403 {
-			assert_eq!(result["scope"], "files.read files.write");
-		}
+		assert_connection(
+			result.unwrap_err(),
+			code,
+			&endpoint,
+			(status == 403).then_some("files.read files.write"),
+		);
 	}
 	assert_eq!(
 		source.invalidations.load(SeqCst),
@@ -327,12 +325,14 @@ async fn revoked_consent_before_sending_is_a_structured_error_without_invalidati
 		source: Arc::new(Revoked),
 	};
 	let tools = HttpTools::new(permitting([endpoint.as_str()]), ToolClients::new().unwrap());
-	assert_eq!(
+	assert_connection(
 		tools
 			.invoke(&config(endpoint.clone()), json!({}), "key", Some(&auth))
 			.await
-			.unwrap(),
-		json!({"error":"connection_required","resource":endpoint})
+			.unwrap_err(),
+		"connection_required",
+		&endpoint,
+		None,
 	);
 	assert!(server.received_requests().await.unwrap().is_empty());
 }
@@ -550,9 +550,12 @@ async fn brokered_connections_use_only_the_broker_and_preserve_replay_guards(
 			.await
 	};
 	if status == 403 {
-		let value = result.unwrap();
-		assert_eq!(value["error"], "connection_scope_insufficient");
-		assert_eq!(value["resource"], endpoint);
+		assert_connection(
+			result.unwrap_err(),
+			"connection_scope_insufficient",
+			&aidash_domain::oauth_connections::canonical_resource(endpoint).unwrap(),
+			Some("files.read"),
+		);
 		assert_eq!(source.invalidations.load(SeqCst), 0);
 	} else {
 		assert_eq!(result.unwrap()["content"][0]["text"], "authenticated");
@@ -571,4 +574,69 @@ async fn brokered_connections_use_only_the_broker_and_preserve_replay_guards(
 			.all(|r| !r.headers.contains_key("authorization")
 				&& r.headers.contains_key("x-aidash-secret-call"))
 	);
+}
+
+fn assert_connection(error: Error, code: &str, resource: &str, scope: Option<&str>) {
+	let Error::Connection(cause) = error else {
+		panic!("expected typed connection refusal: {error:?}");
+	};
+	assert_eq!(cause.code(), code);
+	assert_eq!(cause.resource(), resource);
+	if let aidash_domain::agent_plugin::ConnectionCause::ConnectionScopeInsufficient {
+		scope: actual,
+		..
+	} = cause
+	{
+		assert_eq!(actual.as_deref(), scope);
+	}
+}
+
+#[rstest::rstest]
+#[case::successful_body(200)]
+#[case::real_unauthorized(401)]
+#[case::real_scope_refusal(403)]
+#[tokio::test]
+async fn http_connection_refusals_come_from_status_never_from_a_success_body(#[case] status: u16) {
+	let server = MockServer::start().await;
+	let endpoint = format!("{}/tool", server.uri());
+	let body = json!({"error":"connection_required","resource":endpoint});
+	Mock::given(method("POST"))
+		.and(path("/tool"))
+		.respond_with(
+			ResponseTemplate::new(status)
+				.insert_header(
+					"www-authenticate",
+					if status == 403 {
+						"Bearer error=\"insufficient_scope\", scope=\"files.read\""
+					} else {
+						"Bearer"
+					},
+				)
+				.set_body_json(body.clone()),
+		)
+		.mount(&server)
+		.await;
+	let tools = HttpTools::new(permitting([endpoint.as_str()]), ToolClients::new().unwrap());
+	let configuration = ToolConfig::Http {
+		endpoint: endpoint.clone(),
+		replay: "unsafe".into(),
+		secret: None,
+		secret_owner: Default::default(),
+	};
+	let result = tools.invoke(&configuration, json!({}), "key", None).await;
+	if status == 200 {
+		assert_eq!(result.unwrap(), body);
+	} else {
+		assert_connection(
+			result.unwrap_err(),
+			if status == 401 {
+				"connection_required"
+			} else {
+				"connection_scope_insufficient"
+			},
+			&endpoint,
+			(status == 403).then_some("files.read"),
+		);
+	}
+	assert_eq!(server.received_requests().await.unwrap().len(), 1);
 }

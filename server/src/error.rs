@@ -16,6 +16,8 @@ pub type Result<T> = std::result::Result<T, Error>;
 
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
+	#[error("{}", .0.code())]
+	Connection(aidash_domain::agent_plugin::ConnectionCause),
 	#[error("{0}")]
 	Framework(#[from] FrameworkError),
 	#[error("{0}")]
@@ -76,8 +78,6 @@ pub enum Error {
 	/// The configured Secret Store does not support MCP OAuth Connections.
 	#[error("connection_unavailable")]
 	ConnectionStoreUnavailable,
-	#[error("{}", .0.code())]
-	Connection(aidash_domain::agent_plugin::ConnectionCause),
 	#[error("OpenRouter returned {status}: {reason}")]
 	ProviderRejected { status: u16, reason: String },
 	/// A Plan Connection could not serve a call (ADR 0007); never retried.
@@ -109,6 +109,7 @@ impl Error {
 			Self::NotFound(s) => (StatusCode::NOT_FOUND, s.clone()),
 			Self::Unprocessable(s) => (StatusCode::UNPROCESSABLE_ENTITY, s.clone()),
 			Self::Unauthorized => (StatusCode::UNAUTHORIZED, "unauthorized".into()),
+			Self::Connection(cause) => (StatusCode::CONFLICT, cause.code().into()),
 			Self::Forbidden => (StatusCode::FORBIDDEN, "forbidden".into()),
 			Self::Refused(code) => (StatusCode::PAYMENT_REQUIRED, code.clone()),
 			Self::RateLimited => (StatusCode::TOO_MANY_REQUESTS, self.to_string()),
@@ -141,7 +142,7 @@ impl Error {
 				self.to_string(),
 			),
 			Self::StaleInference => (StatusCode::CONFLICT, self.to_string()),
-			Self::Context(_) | Self::Connection(_) => (StatusCode::CONFLICT, self.to_string()),
+			Self::Context(_) => (StatusCode::CONFLICT, self.to_string()),
 			Self::DeciderOutage => (StatusCode::SERVICE_UNAVAILABLE, self.to_string()),
 			Self::ContextOverflow => (
 				StatusCode::BAD_REQUEST,
@@ -328,6 +329,7 @@ impl From<aidash_application::Error> for Error {
 	fn from(error: aidash_application::Error) -> Self {
 		use aidash_application::Error as ApplicationError;
 		match error {
+			ApplicationError::Connection(cause) => Self::Connection(cause),
 			ApplicationError::Domain(error) => error.into(),
 			ApplicationError::Json(error) => Self::Json(error),
 			ApplicationError::Invalid(message) => Self::Invalid(message),
@@ -340,7 +342,6 @@ impl From<aidash_application::Error> for Error {
 			ApplicationError::Forbidden => Self::Forbidden,
 			ApplicationError::External(message) => Self::External(message),
 			ApplicationError::ConnectionStoreUnavailable => Self::ConnectionStoreUnavailable,
-			ApplicationError::Connection(cause) => Self::Connection(cause),
 			ApplicationError::MediaRouteUnavailable(model) => Self::MediaRouteUnavailable(model),
 			ApplicationError::OrchestrationUnavailable => Self::OrchestrationUnavailable,
 			ApplicationError::RemoteSemantic(reason) => Self::RemoteSemantic(reason),
@@ -376,6 +377,7 @@ impl From<aidash_application::Error> for Error {
 impl From<Error> for aidash_application::Error {
 	fn from(error: Error) -> Self {
 		match error {
+			Error::Connection(cause) => Self::Connection(cause),
 			Error::Invalid(message) => Self::Invalid(message),
 			Error::Conflict(message) => Self::Conflict(message),
 			Error::NotFound(message) => Self::NotFound(message),
@@ -393,7 +395,6 @@ impl From<Error> for aidash_application::Error {
 			Error::SemanticUnavailable => Self::SemanticUnavailable,
 			Error::IdentityStatusUnavailable => Self::IdentityStatusUnavailable,
 			Error::ConnectionStoreUnavailable => Self::ConnectionStoreUnavailable,
-			Error::Connection(cause) => Self::Connection(cause),
 			Error::TransactionPending => Self::TransactionPending,
 			Error::InferenceStalled => Self::InferenceStalled,
 			Error::Plan(failure) => Self::Plan(failure),

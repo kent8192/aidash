@@ -9,6 +9,68 @@ pub struct RecoveryRepository {
 }
 #[async_trait]
 impl ExecutionRecoveryStore for RecoveryRepository {
+	async fn connection_wait_policy(
+		&self,
+		run: &Run,
+	) -> Result<Option<aidash_application::connection_wait::Policy>> {
+		let Some(owner) =
+			crate::apps::identity::repositories::oauth_connections::owner_of_run(&self.store, run)
+				.await?
+		else {
+			return Ok(None);
+		};
+		let snapshot = crate::apps::identity::services::core::Authorization {
+			pool: self.store.pool.clone(),
+		}
+		.snapshot(&owner.tenant)
+		.await?;
+		let scope = aidash_application::tenancy::TenancyScope::tenant(&owner.tenant)?;
+		let mut tx = self
+			.store
+			.control_pool
+			.begin(&scope)
+			.await?
+			.into_executor()
+			.await?;
+		let covering = crate::apps::identity::repositories::approval_preferences::covering(
+			tx.as_mut(),
+			&snapshot.bundle,
+			self.store.deployment.as_str(),
+			Some(&owner.subject),
+			&run.metadata(),
+		)
+		.await?;
+		tx.commit().await.map_err(crate::Error::from)?;
+		Ok(
+			covering.map(|covering| aidash_application::connection_wait::Policy {
+				answer_deadline_seconds: covering.answer_deadline_seconds,
+				human_wait_seconds: self.store.capabilities.0.mcp.human_wait_seconds,
+			}),
+		)
+	}
+	async fn connection_request(
+		&self,
+		run: &Run,
+		prompt: &str,
+		key: &str,
+	) -> Result<aidash_domain::HumanRequest> {
+		let Some(owner) =
+			crate::apps::identity::repositories::oauth_connections::owner_of_run(&self.store, run)
+				.await?
+		else {
+			return Err(aidash_application::Error::Forbidden);
+		};
+		self.store
+			.human_request(
+				&aidash_application::tenancy::TenancyScope::tenant(&owner.tenant)?,
+				run,
+				aidash_domain::oauth_connections::CONNECTION_REQUEST_KIND,
+				prompt,
+				key,
+			)
+			.await
+			.map_err(Into::into)
+	}
 	async fn leased_run(&self, token: Uuid) -> Result<Option<Run>> {
 		// Losing the lease while a step fails belongs to its new owner.
 		let id = match aidash_application::ports::execution::worker::WorkerLeases::current_id(

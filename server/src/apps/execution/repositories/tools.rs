@@ -31,6 +31,16 @@ impl ToolOperations for Operations {
 		aidash_application::tools::connection_outcome(value, false)
 	}
 
+	async fn connection_person(&self) -> Result<bool> {
+		Ok(
+			crate::apps::identity::repositories::oauth_connections::owner_of_run(
+				&self.0.store,
+				&self.0.run,
+			)
+			.await?
+			.is_some(),
+		)
+	}
 	async fn connection(
 		&self,
 		resource: &str,

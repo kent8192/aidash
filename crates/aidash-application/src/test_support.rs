@@ -456,7 +456,7 @@ impl crate::ports::tools::PluginSessions for FakeSessions {
 					Listed::Forbidden => Err(Error::Forbidden),
 					Listed::Failed(failure) => Err((*failure).into()),
 					Listed::Invalid => Err(Error::Invalid("not a tool list".into())),
-					Listed::Connection(cause) => Err(Error::Invalid(serde_json::to_string(cause)?)),
+					Listed::Connection(cause) => Err(Error::Connection(cause.clone())),
 					Listed::Leaky(text) => Err(Error::External(text.clone())),
 					Listed::Hang => std::future::pending().await,
 				}

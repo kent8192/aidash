@@ -352,3 +352,50 @@ async fn pinning_retains_a_structured_authentication_finding_without_waiting(
 		resource
 	);
 }
+
+#[tokio::test]
+async fn consent_relists_only_the_missing_server_and_preserves_the_other_pins() {
+	let snapshot = plugin_snapshot(
+		vec![plugin("acme", &["docs", "other"])],
+		serde_json::Value::Null,
+	);
+	let sessions = FakeSessions::default();
+	let resource = "https://docs.example.com/mcp";
+	sessions.script(
+		"docs",
+		Listed::Connection(ConnectionCause::ConnectionRequired {
+			resource: resource.into(),
+		}),
+	);
+	sessions.script("other", Listed::Tools(vec![listed_tool("kept")]));
+	let run = Uuid::now_v7();
+	let pinned = pin_for_run(&sessions, run, &snapshot).await.unwrap();
+	let kept = pinned.servers[0].clone();
+	sessions.script("docs", Listed::Tools(vec![listed_tool("search")]));
+	sessions.script("other", Listed::Tools(vec![listed_tool("changed")]));
+	let connected = reconnect_for_run(&sessions, run, &snapshot, &pinned, resource)
+		.await
+		.unwrap();
+	assert_eq!(connected.servers[0], kept);
+	assert_eq!(
+		aliases(&connected),
+		["acme__other__kept", "acme__docs__search"]
+	);
+	assert!(connected.findings.is_empty());
+	assert_eq!(
+		sessions
+			.listings()
+			.iter()
+			.filter(|(_, server)| server.server.as_str() == "other")
+			.count(),
+		1
+	);
+	assert_eq!(
+		sessions
+			.listings()
+			.iter()
+			.filter(|(_, server)| server.server.as_str() == "docs")
+			.count(),
+		2
+	);
+}

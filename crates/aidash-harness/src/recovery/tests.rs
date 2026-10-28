@@ -18,9 +18,40 @@ struct Repository {
 	run: Mutex<Option<Run>>,
 	writes: Mutex<Vec<Write>>,
 	token: Uuid,
+	person: bool,
 }
 #[async_trait]
 impl ExecutionRecoveryStore for Repository {
+	async fn connection_wait_policy(
+		&self,
+		_run: &Run,
+	) -> Result<Option<aidash_application::connection_wait::Policy>> {
+		Ok(self
+			.person
+			.then_some(aidash_application::connection_wait::Policy {
+				answer_deadline_seconds: Some(60),
+				human_wait_seconds: 900,
+			}))
+	}
+	async fn connection_request(
+		&self,
+		run: &Run,
+		prompt: &str,
+		_key: &str,
+	) -> Result<aidash_domain::HumanRequest> {
+		Ok(aidash_domain::HumanRequest {
+			id: Uuid::now_v7(),
+			run_id: run.id,
+			workspace_id: run.workspace_id,
+			kind: aidash_domain::oauth_connections::CONNECTION_REQUEST_KIND.into(),
+			prompt: prompt.into(),
+			response: None,
+			created_at: run.updated_at,
+			answered_by: None,
+			answer_by: None,
+		})
+	}
+
 	async fn leased_run(&self, token: Uuid) -> Result<Option<Run>> {
 		Ok((token == self.token)
 			.then(|| self.run.lock().unwrap().clone())
@@ -62,6 +93,7 @@ fn now() -> DateTime<Utc> {
 fn repository(now: DateTime<Utc>) -> Repository {
 	let token = Uuid::new_v4();
 	Repository {
+		person: false,
 		token,
 		writes: Mutex::new(vec![]),
 		run: Mutex::new(Some(Run {
@@ -523,4 +555,178 @@ async fn transport_failures_still_retry(repository: Repository, now: DateTime<Ut
 	let run = run.as_ref().unwrap();
 	assert_eq!(run.recovery.retry.as_ref().unwrap().count, 1);
 	assert_eq!(run.recovery.context_reason, None);
+}
+
+#[rstest]
+#[case::first(true, false, false, true)]
+#[case::already_waited(true, true, false, false)]
+#[case::service(false, false, false, false)]
+#[case::later_success(true, false, true, false)]
+#[tokio::test]
+async fn failure_defers_for_an_unsatisfied_connection_once_per_resource(
+	mut repository: Repository,
+	now: DateTime<Utc>,
+	#[case] person: bool,
+	#[case] waited: bool,
+	#[case] succeeded: bool,
+	#[case] defers: bool,
+) {
+	use aidash_domain::{context::ContextEvent, provider::ToolCall};
+	use serde_json::json;
+	let resource = "https://mcp.example";
+	repository.person = person;
+	{
+		let mut run = repository.run.lock().unwrap();
+		let run = run.as_mut().unwrap();
+		let call = ToolCall {
+			id: "call".into(),
+			name: "crm".into(),
+			arguments: json!({}),
+		};
+		run.context.push(ContextEvent::tool(
+			call.clone(),
+			json!({"error":"connection_required","resource":resource}),
+		));
+		aidash_application::connection_wait::record_refusal(
+			run,
+			"crm",
+			aidash_domain::agent_plugin::ConnectionCause::ConnectionRequired {
+				resource: resource.into(),
+			},
+			vec![],
+		);
+		if succeeded {
+			run.context
+				.push(ContextEvent::tool(call, json!({"ok":true})));
+			aidash_application::connection_wait::record_success(run, "crm");
+		}
+		if waited {
+			run.recovery.connection_waited.insert(resource.into());
+		}
+	}
+	recover(
+		&repository,
+		repository.token,
+		ExecutionFailure::Other("task cannot continue".into()),
+		now,
+	)
+	.await
+	.unwrap();
+	let run = repository.run.lock().unwrap();
+	let run = run.as_ref().unwrap();
+	assert_eq!(run.recovery.connection_wait.is_some(), defers);
+	if defers {
+		assert!(run.recovery.connection_waited.contains(resource));
+		assert!(
+			matches!(&run.state,RunState::Waiting(wait) if matches!(wait.as_ref(),WaitingState::Human {resume:aidash_domain::ResumeState::Thinking(_),..}))
+		);
+		assert_eq!(
+			*repository.writes.lock().unwrap(),
+			[Write::Save("run.failure_deferred_for_connection".into())]
+		);
+	} else {
+		assert!(run.state.failure_delivery());
+	}
+}
+
+#[rstest]
+#[tokio::test]
+async fn a_pin_time_connection_finding_can_defer_failure_without_any_tool_call(
+	mut repository: Repository,
+	now: DateTime<Utc>,
+) {
+	use aidash_domain::agent_plugin::*;
+	repository.person = true;
+	{
+		let mut run = repository.run.lock().unwrap();
+		let run = run.as_mut().unwrap();
+		run.context.plugin_tools = Some(PluginTools {
+			servers: vec![],
+			findings: vec![PluginFinding {
+				plugin: "acme".to_owned().try_into().unwrap(),
+				finding: Finding {
+					component: Component::Server("docs".into()),
+					outcome: Outcome::Skipped,
+					reason: Reason::ServerUnavailable,
+					detail: "connection_required".into(),
+				},
+				connection: Some(ConnectionCause::ConnectionRequired {
+					resource: "https://mcp.example".into(),
+				}),
+			}],
+		});
+	}
+	recover(
+		&repository,
+		repository.token,
+		ExecutionFailure::Other("no usable tools".into()),
+		now,
+	)
+	.await
+	.unwrap();
+	let saved = repository.run.lock().unwrap().clone().unwrap();
+	assert!(saved.recovery.connection_wait.is_some());
+	// A resumed failure must not ask for the same resource again, even after compaction.
+	{
+		let mut run = repository.run.lock().unwrap();
+		run.as_mut().unwrap().state = RunState::Thinking(Default::default());
+		run.as_mut().unwrap().recovery.connection_wait = None;
+	}
+	recover(
+		&repository,
+		repository.token,
+		ExecutionFailure::Other("still cannot continue".into()),
+		now,
+	)
+	.await
+	.unwrap();
+	assert!(
+		repository
+			.run
+			.lock()
+			.unwrap()
+			.as_ref()
+			.unwrap()
+			.state
+			.failure_delivery()
+	);
+}
+
+#[rstest]
+#[tokio::test]
+async fn a_connection_shaped_tool_body_is_not_a_failure_deferral_candidate(
+	mut repository: Repository,
+	now: DateTime<Utc>,
+) {
+	repository.person = true;
+	{
+		let mut run = repository.run.lock().unwrap();
+		let run = run.as_mut().unwrap();
+		run.context.push(aidash_domain::context::ContextEvent::tool(
+			aidash_domain::provider::ToolCall {
+				id: "call".into(),
+				name: "crm".into(),
+				arguments: serde_json::json!({}),
+			},
+			serde_json::json!({"error":"connection_required","resource":"https://mcp.example"}),
+		));
+	}
+	recover(
+		&repository,
+		repository.token,
+		ExecutionFailure::Other("task cannot continue".into()),
+		now,
+	)
+	.await
+	.unwrap();
+	assert!(
+		repository
+			.run
+			.lock()
+			.unwrap()
+			.as_ref()
+			.unwrap()
+			.state
+			.failure_delivery()
+	);
 }
