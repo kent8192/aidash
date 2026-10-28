@@ -58,7 +58,7 @@ async fn run_invocations_page_in_hundreds_and_keep_durable_payloads(
 				)
 				.await
 				.unwrap();
-			crate::endpoint::local_run(&app.runtime.store, &scope, &task, &agent).await
+			crate::endpoint::admitted_run(&app.runtime, "acme", &task, &agent).await
 		} else {
 			crate::endpoint::remote_run(&app.runtime.store, &task, home, "agent", "1.0.0").await
 		};

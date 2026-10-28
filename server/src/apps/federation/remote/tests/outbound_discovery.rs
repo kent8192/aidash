@@ -606,6 +606,17 @@ async fn in_flight_discovery_retains_source_authority_and_subsequent_requests_ho
 	let fixture = Box::pin(mock_discovery).await;
 	let app = &fixture.execution.app;
 	fixture.pause.store(true, Ordering::SeqCst);
+	// A separate Tenant Administrator of the same Tenant revokes alice's
+	// credential: a third party, as a Deployment Administrator once was. Alice
+	// revoking her own credential while her discovery holds it is a separate
+	// lock-order problem.
+	endpoint::replace_policy(
+		&app.runtime.store,
+		"acme",
+		json!({"tenant":"acme","subjects":{"alice":{"kind":"user"},"carol":{"kind":"user"}},
+			"policies":[{"id":"fixture","effect":"allow","subjects":{"any":true},"actions":["*"],"resources":{"kinds":["*"]}},{"id":"call-unapproved","effect":"allow","subjects":{"any":true},"actions":["tool.call_unapproved"],"resources":{"kinds":["tool"]}}]}),
+	)
+	.await;
 	let credential = app
 		.database
 		.fixture(async |tx| {
@@ -639,7 +650,7 @@ async fn in_flight_discovery_retains_source_authority_and_subsequent_requests_ho
 		"/api/authorization/acme/credentials/{}/revoke",
 		credential.id
 	);
-	let member = endpoint::browser_mapping(app, "acme", "alice").await;
+	let member = endpoint::browser_mapping(app, "acme", "carol").await;
 	let revoker = member.send("POST", &path, input.clone());
 	tokio::pin!(revoker);
 	// Assert

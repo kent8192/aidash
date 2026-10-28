@@ -1160,9 +1160,7 @@ async fn native_shared_synthesis_preserves_published_origins_and_unions_nested_b
 	semantic_fixture_1: Fixture,
 ) {
 	use aidash_domain::{memory::*, registry::EntityRef};
-	use aidash_server::{
-		authorization::identity::Actor, semantic::services::native_memory as memory,
-	};
+	use aidash_server::semantic::services::native_memory as memory;
 	use reinhardt::query::{
 		Alias, Expr, ExprTrait, PostgresQueryBuilder, Query, QueryStatementBuilder,
 	};
@@ -1523,9 +1521,7 @@ async fn model_memory_mutations_preserve_existing_human_verification(
 	semantic_fixture_1: Fixture,
 ) {
 	use aidash_domain::memory::{Bank, Change, Content, Kind, Learning, Mutation, Verification};
-	use aidash_server::{
-		authorization::identity::Actor, database::native, semantic::native_memory as memory,
-	};
+	use aidash_server::{database::native, semantic::native_memory as memory};
 	use reinhardt::query::{Alias, Expr, PostgresQueryBuilder, Query, QueryStatementBuilder};
 	let fixture = semantic_fixture_1;
 	let run = fixture.f.store.runs(&TEST_FIXTURE).await.unwrap().remove(0);
@@ -1872,10 +1868,38 @@ async fn completed_learning_origin_remains_live_through_failed_index_retry(
 		.await
 		.unwrap();
 	assert_eq!(status().await.unwrap(), "COMPLETED");
+	// Completion retires the generated Agent's Catalog Approval. A Subject writes
+	// a participant bank only while its Agent is approved (a Deployment
+	// Administrator once skipped that), so the host re-approves it first.
+	let (agent_id, agent_version, approval_revision): (String, String, i64) = sqlx::query_as(
+		"SELECT p.agent_id, p.agent_version, c.revision FROM memory_participants p \
+		 JOIN authorization_catalog c ON c.tenant = p.tenant AND c.entry_id = p.agent_id \
+		 AND c.entry_version = p.agent_version WHERE p.id = $1",
+	)
+	.bind(bank_identity.participant.expect("a participant bank"))
+	.fetch_one(fixture.f.store.pool.fixture_driver())
+	.await
+	.unwrap();
+	aidash_server::authorization::Authorization {
+		pool: fixture.f.store.pool.clone(),
+	}
+	.set_catalog(
+		"acme",
+		&aidash_domain::nodes::NodeName::derived("acme"),
+		&aidash_server::registry::EntityRef {
+			id: agent_id,
+			version: agent_version,
+		},
+		approval_revision,
+		true,
+		"deployment_administrator",
+	)
+	.await
+	.unwrap();
 	let fresh = common::subject_credential(&fixture.f.store, "acme", "alice").await;
 	let (status, deleted) = request(
 		&fixture.app,
-		&fresh,
+		&fixture.token,
 		"POST",
 		&format!("/api/workspaces/{}/memory/units/mutate", fixture.workspace),
 		json!({"operation_id":Uuid::now_v7(),"provider":provider,"bank":bank_identity,

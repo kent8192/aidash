@@ -1710,7 +1710,9 @@ async fn mapped_transaction_admission_and_revocation(
 			.await
 			.unwrap()
 			.into_iter()
-			.find(|r| r.subject == "alice")
+			// Registering the pair issued Mapping credentials too; a Peer Mapping
+			// binds the Subject's own credential, never a Mapping's.
+			.find(|r| r.subject == "alice" && r.mapping_id.is_none())
 			.unwrap();
 		write(&c.f, "acme", c.mapping(&a, credential.id, true, 0))
 			.await

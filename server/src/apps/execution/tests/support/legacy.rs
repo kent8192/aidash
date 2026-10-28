@@ -229,7 +229,7 @@ pub async fn register_default_node(
 	local: (&Federation, &TestApplication, &str),
 	other: (&Federation, &str),
 ) {
-	let (f, app, tenant) = local;
+	let (f, _app, tenant) = local;
 	let (other, other_tenant) = other;
 	let node = default_node(&f.store, tenant).await;
 	let other_node = default_node(&other.store, other_tenant).await;
@@ -253,7 +253,7 @@ pub async fn register_default_node(
 #[allow(dead_code)]
 pub async fn register_local_node(
 	f: &Federation,
-	app: &TestApplication,
+	_app: &TestApplication,
 	tenant: &str,
 	source_tenant: &str,
 ) -> aidash_domain::nodes::NodeAddress {
