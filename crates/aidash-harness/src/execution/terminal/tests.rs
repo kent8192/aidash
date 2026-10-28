@@ -31,6 +31,8 @@ fn metadata() -> RunMetadata {
 		revision: 2,
 		observed_input_seq: 3,
 		ledger_worker_ready: true,
+		control_revision: 0,
+		control_source: Default::default(),
 		error: None,
 		lease_owner: None,
 		lease_until: None,

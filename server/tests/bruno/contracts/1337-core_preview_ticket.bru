@@ -1,5 +1,5 @@
 meta {
-  name: 1337 core_preview_ticket - Ticket input is required
+  name: 1337 core_preview_ticket - Unknown Ticket fields are rejected
   type: http
   seq: 1337
 }
@@ -17,7 +17,7 @@ headers {
 }
 
 body:text {
-  {}
+  {"area_id": "11111111-1111-4111-8111-111111111111", "file_id": "11111111-1111-4111-8111-111111111111", "unexpected": true}
 }
 
 tests {

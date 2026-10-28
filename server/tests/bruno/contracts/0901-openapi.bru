@@ -1,5 +1,5 @@
 meta {
-  name: 0901 openapi - Foreign origin receives the same public contract
+  name: 0901 openapi - Untrusted bearer does not restrict public reads
   type: http
   seq: 901
 }
@@ -12,10 +12,10 @@ get {
 
 headers {
   Accept: application/json
-  Origin: https://untrusted.example
+  Authorization: Bearer invalid
 }
 
 tests {
   test("Exact HTTP 200", function () { expect(res.getStatus()).to.equal(200); });
-  test("Foreign origin receives the same public contract contract", function () { expect(res.getHeader("content-type")).to.include("application/json");expect(res.getBody()).to.be.an("object");expect(res.getBody().openapi).to.match(/^3\./);expect(res.getBody().paths["/api/workspaces"]).to.have.property("post");expect(JSON.stringify(res.getBody())).not.to.include(bru.getEnvVar("deployment_administrator_token")); });
+  test("Untrusted bearer does not restrict public reads contract", function () { expect(res.getHeader("content-type")).to.include("application/json");expect(res.getBody()).to.be.an("object");expect(res.getBody().openapi).to.match(/^3\./);expect(res.getBody().paths["/api/workspaces"]).to.have.property("post");expect(JSON.stringify(res.getBody())).not.to.include(bru.getEnvVar("deployment_administrator_token")); });
 }

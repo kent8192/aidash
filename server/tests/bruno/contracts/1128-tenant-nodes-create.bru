@@ -1,12 +1,12 @@
 meta {
-  name: 1128 tenant-nodes-create - Malformed JSON cannot reach the use case
+  name: 1128 tenant-nodes-create - Blank Node label is rejected
   type: http
   seq: 1128
 }
 
 post {
   url: {{base_url}}/api/tenants/{{tenant}}/nodes
-  body: file
+  body: text
   auth: none
 }
 
@@ -16,8 +16,8 @@ headers {
   Content-Type: application/json
 }
 
-body:file {
-  file1: @file(fixtures/malformed-json.txt) @contentType(application/json)
+body:text {
+  {"label": "   "}
 }
 
 script:pre-request {

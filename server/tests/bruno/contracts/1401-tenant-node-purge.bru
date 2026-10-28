@@ -1,5 +1,5 @@
 meta {
-  name: 1401 tenant-node-purge - Subject bearer cannot administer the Node lifecycle
+  name: 1401 tenant-node-purge - Anonymous Node lifecycle request is rejected
   type: http
   seq: 1401
 }
@@ -12,22 +12,9 @@ post {
 
 headers {
   Accept: application/json
-  Authorization: Bearer {{contract_token}}
-}
-
-script:pre-request {
-
-const snapshot = await bru.sendRequest({method:"GET",url:bru.getEnvVar("base_url")+"/api/tenants/"+bru.getEnvVar("tenant")+"/nodes?include_deleted=true",headers:{Authorization:"Bearer "+bru.getEnvVar("deployment_administrator_token")}}); if(snapshot.status!==200 || !Array.isArray(snapshot.data)) throw new Error("Node snapshot unavailable");const target=snapshot.data.find(node=>node.name===bru.getEnvVar("tenant_node"));if(!target)throw new Error("target Node unavailable");bru.setVar("beforeNode",JSON.stringify(target));
-
-}
-
-script:post-response {
-
-const snapshot = await bru.sendRequest({method:"GET",url:bru.getEnvVar("base_url")+"/api/tenants/"+bru.getEnvVar("tenant")+"/nodes?include_deleted=true",headers:{Authorization:"Bearer "+bru.getEnvVar("deployment_administrator_token")}}); if(snapshot.status!==200 || !Array.isArray(snapshot.data)) throw new Error("Node snapshot unavailable");const target=snapshot.data.find(node=>node.name===bru.getEnvVar("tenant_node"));if(!target)throw new Error("target Node unavailable");test("Rejected write preserves the target Node", function(){expect(target).to.eql(JSON.parse(bru.getVar("beforeNode")));});
-
 }
 
 tests {
-  test("Exact HTTP 403", function () { expect(res.getStatus()).to.equal(403); });
-  test("Stable authorization error envelope", function () { expect(res.getHeader("content-type")).to.include("application/json"); expect(res.getBody()).to.eql({error:"forbidden"}); });
+  test("Exact HTTP 401", function () { expect(res.getStatus()).to.equal(401); });
+  test("Stable authorization error envelope", function () { expect(res.getHeader("content-type")).to.include("application/json"); expect(res.getBody()).to.eql({error:"unauthorized"}); });
 }

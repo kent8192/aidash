@@ -1,5 +1,5 @@
 meta {
-  name: 1248 approval-rules - Subject Credential bearer never reaches approval settings
+  name: 1248 approval-rules - Deployment Administrator bearer owns no approval settings
   type: http
   seq: 1248
 }
@@ -12,7 +12,7 @@ get {
 
 headers {
   Accept: application/json
-  Authorization: Bearer {{contract_token}}
+  Authorization: Bearer {{deployment_administrator_token}}
 }
 
 tests {

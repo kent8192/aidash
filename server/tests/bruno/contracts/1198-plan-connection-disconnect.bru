@@ -1,5 +1,5 @@
 meta {
-  name: 1198 plan-connection-disconnect - Subject Credential bearer never reaches a Plan Connection
+  name: 1198 plan-connection-disconnect - Deployment Administrator bearer owns no Plan Connection
   type: http
   seq: 1198
 }
@@ -12,7 +12,7 @@ delete {
 
 headers {
   Accept: application/json
-  Authorization: Bearer {{contract_token}}
+  Authorization: Bearer {{deployment_administrator_token}}
   Content-Type: application/json
 }
 

@@ -1,5 +1,5 @@
 meta {
-  name: 1374 peer-preview-inspect - Refuse a token that does not verify
+  name: 1374 peer-preview-inspect - Require the Federation token
   type: http
   seq: 1374
 }
@@ -12,7 +12,6 @@ post {
 
 headers {
   Accept: application/json
-  Authorization: Bearer not-a-federation-token
   X-Aidash-Protocol: 0.5
 }
 

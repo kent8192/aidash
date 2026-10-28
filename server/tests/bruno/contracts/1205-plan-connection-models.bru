@@ -1,5 +1,5 @@
 meta {
-  name: 1205 plan-connection-models - Subject Credential bearer never reaches a Plan Connection
+  name: 1205 plan-connection-models - Deployment Administrator bearer owns no Plan Connection
   type: http
   seq: 1205
 }
@@ -12,7 +12,7 @@ get {
 
 headers {
   Accept: application/json
-  Authorization: Bearer {{contract_token}}
+  Authorization: Bearer {{deployment_administrator_token}}
 }
 
 tests {

@@ -187,6 +187,22 @@ async fn call(
 	bearer: bool,
 	body: Value,
 ) -> (u16, Value) {
+	call_keyed(app, method, path, cookie, csrf, context, bearer, None, body).await
+}
+
+/// `call` with an `Idempotency-Key`, for the Safety Stop's operation ID.
+#[allow(clippy::too_many_arguments)]
+async fn call_keyed(
+	app: &common::TestApplication,
+	method: &str,
+	path: &str,
+	cookie: bool,
+	csrf: bool,
+	context: Option<&str>,
+	bearer: bool,
+	key: Option<&str>,
+	body: Value,
+) -> (u16, Value) {
 	let mut request = app
 		.api_http
 		.request(
@@ -212,6 +228,9 @@ async fn call(
 			"authorization",
 			"Bearer deployment-administrator-execution-fixture",
 		);
+	}
+	if let Some(key) = key {
+		request = request.header("idempotency-key", key);
 	}
 	let response = request.json(&body).send().await.unwrap();
 	let status = response.status().as_u16();
@@ -829,7 +848,7 @@ async fn unmapped_identity_stays_denied_until_deployment_administrator_approves_
 			false,
 			Some("deployment_administrator"),
 			false,
-			json!({"action":"pause"})
+			json!({"tenant":"acme","action":"pause","expected_control_revision":0,"reason":"no csrf"})
 		)
 		.await
 		.0,
@@ -845,11 +864,31 @@ async fn unmapped_identity_stays_denied_until_deployment_administrator_approves_
 			.control,
 		aidash_server::domain::RunControl::Active
 	);
-	for (action, expected) in [
-		("pause", aidash_server::domain::RunControl::Paused),
-		("cancel", aidash_server::domain::RunControl::Cancelled),
+	// The ordinary control route refuses the browser administrator outright.
+	for action in ["pause", "resume", "cancel"] {
+		assert_eq!(
+			call(
+				&app,
+				"POST",
+				&format!("/api/runs/{}/control", run.id),
+				true,
+				true,
+				Some("deployment_administrator"),
+				false,
+				json!({"action":action})
+			)
+			.await
+			.0,
+			403,
+			"{action}"
+		);
+	}
+	for (action, revision, expected) in [
+		("pause", 0, aidash_server::domain::RunControl::Paused),
+		("cancel", 1, aidash_server::domain::RunControl::Cancelled),
 	] {
-		let (status, body) = call(
+		let key = Uuid::new_v4().to_string();
+		let (status, body) = call_keyed(
 			&app,
 			"POST",
 			&run_management,
@@ -857,11 +896,13 @@ async fn unmapped_identity_stays_denied_until_deployment_administrator_approves_
 			true,
 			Some("deployment_administrator"),
 			false,
-			json!({"action":action}),
+			Some(&key),
+			json!({"tenant":"acme","action":action,"expected_control_revision":revision,"reason":"browser safety stop"}),
 		)
 		.await;
 		assert_eq!(status, 200, "{body}");
-		assert_eq!(body["control"], json!(expected));
+		assert_eq!(body["outcome"], "accepted");
+		assert_eq!(body["operation_id"], key);
 		assert_eq!(
 			federation
 				.store
@@ -872,6 +913,15 @@ async fn unmapped_identity_stays_denied_until_deployment_administrator_approves_
 			expected
 		);
 	}
+	// The browser administrator's Identity is recorded, not the shared token.
+	let recorded: (String, Option<Uuid>) = sqlx::query_as(
+		"SELECT actor_kind, identity_id FROM run_safety_stops ORDER BY created_at LIMIT 1",
+	)
+	.fetch_one(federation.store.pool.fixture_driver())
+	.await
+	.unwrap();
+	assert_eq!(recorded.0, "browser");
+	assert_eq!(recorded.1, Some(identity_id));
 	assert_eq!(
 		call(
 			&app,

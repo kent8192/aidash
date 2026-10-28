@@ -96,12 +96,7 @@ pub(crate) fn browser_deployment_administrator_allowed(method: &Method, path: &s
 	}
 	if matches!(
 		segments.as_slice(),
-		[
-			"",
-			"runs",
-			_,
-			"control" | "management" | "research-revocation"
-		] | ["", "tasks", _, "abandon"]
+		["", "runs", _, "management" | "research-revocation"] | ["", "tasks", _, "abandon"]
 	) {
 		return true;
 	}

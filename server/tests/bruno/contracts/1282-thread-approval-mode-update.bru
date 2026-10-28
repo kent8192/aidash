@@ -1,5 +1,5 @@
 meta {
-  name: 1282 thread-approval-mode-update - Subject Credential bearer never reaches approval settings
+  name: 1282 thread-approval-mode-update - Deployment Administrator bearer owns no approval settings
   type: http
   seq: 1282
 }
@@ -12,7 +12,7 @@ put {
 
 headers {
   Accept: application/json
-  Authorization: Bearer {{contract_token}}
+  Authorization: Bearer {{deployment_administrator_token}}
   Content-Type: application/json
 }
 

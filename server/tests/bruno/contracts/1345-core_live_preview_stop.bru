@@ -1,5 +1,5 @@
 meta {
-  name: 1345 core_live_preview_stop - Subject bearer cannot stop a missing Run
+  name: 1345 core_live_preview_stop - Deployment Administrator cannot stop a missing Run
   type: http
   seq: 1345
 }
@@ -12,7 +12,7 @@ post {
 
 headers {
   Accept: application/json
-  Authorization: Bearer {{contract_token}}
+  Authorization: Bearer {{deployment_administrator_token}}
 }
 
 tests {

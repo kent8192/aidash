@@ -1,5 +1,5 @@
 meta {
-  name: 1271 approval-decider-update - Subject Credential bearer never reaches approval settings
+  name: 1271 approval-decider-update - Deployment Administrator bearer owns no approval settings
   type: http
   seq: 1271
 }
@@ -12,7 +12,7 @@ put {
 
 headers {
   Accept: application/json
-  Authorization: Bearer {{contract_token}}
+  Authorization: Bearer {{deployment_administrator_token}}
   Content-Type: application/json
 }
 

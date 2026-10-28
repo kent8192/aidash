@@ -182,6 +182,10 @@ name = "dashboard_oidc"
 path = "src/apps/identity/tests/dashboard_oidc.rs"
 
 [[test]]
+name = "safety_stop"
+path = "src/apps/identity/tests/safety_stop.rs"
+
+[[test]]
 name = "demo_data"
 path = "src/apps/identity/tests/demo_data.rs"
 

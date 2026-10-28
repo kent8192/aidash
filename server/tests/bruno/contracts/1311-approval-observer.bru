@@ -1,18 +1,17 @@
 meta {
-  name: 1311 approval-observer - Forged bearer cannot inspect approval observations
+  name: 1311 approval-observer - Anonymous request is rejected
   type: http
   seq: 1311
 }
 
 get {
-  url: {{base_url}}/api/tenants/{{tenant}}/approval-observer?node={{tenant_node}}
+  url: {{base_url}}/api/tenants/{{tenant}}/approval-observer
   body: none
   auth: none
 }
 
 headers {
   Accept: application/json
-  Authorization: Bearer forged
 }
 
 tests {

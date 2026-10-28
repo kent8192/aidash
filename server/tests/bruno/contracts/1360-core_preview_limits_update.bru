@@ -1,5 +1,5 @@
 meta {
-  name: 1360 core_preview_limits_update - Limit input is required
+  name: 1360 core_preview_limits_update - Unknown limit fields are rejected
   type: http
   seq: 1360
 }
@@ -17,7 +17,7 @@ headers {
 }
 
 body:text {
-  {}
+  {"tenant": "{{tenant}}", "idle_seconds": 600, "absolute_seconds": 3600, "expected_revision": 0, "unexpected": true}
 }
 
 script:pre-request {

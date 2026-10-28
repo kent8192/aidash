@@ -13,6 +13,12 @@ pub struct RunMetadata {
 	pub agent_version: String,
 	pub phase: RunPhase,
 	pub control: RunControl,
+	/// Counts control decisions only; worker progress does not change it.
+	#[serde(default)]
+	pub control_revision: i64,
+	/// The kind of actor that last changed `control`.
+	#[serde(default)]
+	pub control_source: crate::entities::ControlSource,
 	pub step: i32,
 	pub revision: i64,
 	pub observed_input_seq: i64,
@@ -47,6 +53,8 @@ impl RawRun {
 			state,
 			recovery,
 			control: m.control,
+			control_revision: m.control_revision,
+			control_source: m.control_source,
 			context,
 			step: m.step,
 			revision: m.revision,
@@ -108,6 +116,8 @@ impl Run {
 			agent_version: self.agent_version.clone(),
 			phase: self.phase(),
 			control: self.control,
+			control_revision: self.control_revision,
+			control_source: self.control_source,
 			step: self.step,
 			revision: self.revision,
 			observed_input_seq: self.observed_input_seq,

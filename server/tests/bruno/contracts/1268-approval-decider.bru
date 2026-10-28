@@ -1,0 +1,26 @@
+meta {
+  name: 1268 approval-decider - Subject Credential bearer never reaches approval settings
+  type: http
+  seq: 1268
+}
+
+get {
+  url: {{base_url}}/api/tenants/{{tenant}}/approval-decider?node={{tenant_node}}
+  body: text
+  auth: none
+}
+
+headers {
+  Accept: application/json
+  Authorization: Bearer {{contract_token}}
+  Content-Type: application/json
+}
+
+body:text {
+  {"expected_revision": 0, "decider": null}
+}
+
+tests {
+  test("Exact HTTP 403", function () { expect(res.getStatus()).to.equal(403); });
+  test("Stable authorization error envelope", function () { expect(res.getHeader("content-type")).to.include("application/json"); expect(res.getBody()).to.eql({error:"forbidden"}); });
+}

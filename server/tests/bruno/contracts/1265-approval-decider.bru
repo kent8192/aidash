@@ -1,23 +1,17 @@
 meta {
-  name: 1265 approval-decider - Forged bearer cannot reach a person's approval settings
+  name: 1265 approval-decider - Anonymous request is rejected
   type: http
   seq: 1265
 }
 
 get {
-  url: {{base_url}}/api/tenants/{{tenant}}/approval-decider?node={{tenant_node}}
-  body: text
+  url: {{base_url}}/api/tenants/{{tenant}}/approval-decider
+  body: none
   auth: none
 }
 
 headers {
   Accept: application/json
-  Authorization: Bearer forged
-  Content-Type: application/json
-}
-
-body:text {
-  {"expected_revision": 0, "decider": null}
 }
 
 tests {

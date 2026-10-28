@@ -8,6 +8,7 @@ pub(crate) mod inference;
 mod inspection;
 mod invocation_records;
 mod run_progress;
+pub(crate) mod safety_stops;
 pub(crate) mod task_evidence;
 
 mod events;
