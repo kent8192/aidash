@@ -206,7 +206,7 @@ async fn each_request_carries_a_token_minted_for_it() {
 		.await
 		.unwrap();
 	// Assert
-	assert_eq!(reply.body["headers"]["protocol"], "0.4");
+	assert_eq!(reply.body["headers"]["protocol"], "0.5");
 	assert_eq!(reply.body["body"], json!({"revision":42}));
 	let mut headers = HeaderMap::new();
 	headers.insert(

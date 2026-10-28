@@ -1,0 +1,26 @@
+meta {
+  name: 1377 core_remote_preview_ticket - Unknown remote ticket fields are rejected
+  type: http
+  seq: 1377
+}
+
+post {
+  url: {{base_url}}/api/runs/11111111-1111-4111-8111-111111111111/preview-tickets
+  body: text
+  auth: none
+}
+
+headers {
+  Accept: application/json
+  Authorization: Bearer {{contract_token}}
+  Content-Type: application/json
+}
+
+body:text {
+  {"kind": "file", "area_id": "11111111-1111-4111-8111-111111111111", "file_id": "11111111-1111-4111-8111-111111111111", "unexpected": true}
+}
+
+tests {
+  test("Exact HTTP 422", function () { expect(res.getStatus()).to.equal(422); });
+  test("Rejection is diagnostic and does not disclose SQL or credentials", function () { const value=res.getBody(); const text=typeof value === "string" ? value : JSON.stringify(value); expect(text.length).to.be.greaterThan(0); expect(text).not.to.match(/postgres:\/\/|SELECT .* FROM |deployment_administrator_token|peer_token/); });
+}

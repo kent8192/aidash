@@ -485,38 +485,22 @@ Generated semantic queries and background indexing use resource kind `embedding`
 
 ### Federated Graph View authority
 
-Graph View calls `GET /api/federation/graph/peers?node=<sending Node>` on the local Node to list the destination Nodes that the viewer may read. A Subject needs `federation.graph.read` on each destination Node. A Deployment Administrator has no Node and lists none. Its graph reads need a currently authenticated named browser identity; the shared recovery API token cannot read a remote graph. Topology is available to authorized Subjects.
+Graph View calls `GET /api/federation/graph/peers?node=<sending Node>` on the local Node to list the destination Nodes that the Subject may read. A Subject needs `federation.graph.read` on each destination Node. A Deployment Administrator without a Tenant Subject has no Subject, so `GET peers` and `POST expand` refuse it with 403; it opens the graph with Tenant authority, that is, through a Tenant Mapping. Topology is available to authorized Subjects.
 
 Expansion calls `POST /api/federation/graph` with one `node_id`, a Graph mode,
 an optional local `scope_workspace`, `depth: 1`, allowlisted `kinds` and `relations`, an
 activity window (`hours`), a page `limit` of 2–80 and an optional opaque
-`cursor`. A Deployment Administrator also selects exactly one `target_tenant` at the receiving
-Node. For a Deployment Administrator, `node_id` is the other Deployment's id, and `endpoint` names where that Deployment answers. The local Node checks the active viewer and selected Workspace before
-sending the request with a Federation token signed by its Deployment Key. The
-sending Node is the one named by `sending_node`, or the Tenant's default Node when that is omitted. It never accepts a caller supplied Subject or Deployment
-Administrator identity for forwarding.
+`cursor`. The local Node checks the active Subject and selected Workspace before
+sending the Graph request, which names that `subject`, with a Federation token signed by its Deployment Key. The
+sending Node is the one named by `sending_node`, or the Tenant's default Node when that is omitted. It never accepts a caller supplied Subject for forwarding.
 
 The receiving Node serves `POST /federation/v0.1/scoped/graph` only to a
-registered Node or, for a Deployment Administrator, to a named viewer under a
-Peer Graph Grant. For a Subject, its exact inbound Peer Mapping and current
-local credential, policy and delegation ancestors must allow
-`federation.graph.read` on the receiving Node. Each resource then passes its
+registered Node. A cross-Deployment Graph View needs a Subject with a Node Registration, its
+exact inbound Peer Mapping on the receiving Node and the receiving Tenant's `federation.graph.read`, and the
+current local credential, policy and delegation ancestors must allow it. Each resource then passes its
 existing read gate and tenant catalog approval. The source Node's local
 `registry.read` policy does not replace the receiver's decision for a B owned
-resource. The mapping, Node Registration and authority are rechecked on every page.
-
-For a named Deployment Administrator of another Deployment, a receiving Deployment Administrator can create or
-change a Peer Graph Grant with `POST /api/authorization/{tenant}/peer-graph-grants` and list grants
-with `GET` on the same path (`offset`, `limit`, maximum 200). The body contains
-`source_deployment` (the viewer's Deployment id), `source_identity` (the source
-browser identity UUID), `endpoint`, `key_id`, `enabled` and `expected_revision`
-(zero on creation). The server fetches `{endpoint}/.well-known/aidash` like a
-Node Registration does and pins the key whose ID was typed; the viewer's token
-must verify with it, so a changed key on the viewer's side fails until the grant
-is created again with the new key ID. A Peer Graph Grant applies to one tenant and
-one named source identity; it confers no Deployment Administrator authority and never turns a
-subject mapping into a Deployment Administrator mapping. Disabling the grant denies the next page or refresh. Catalog
-approvals and the graph display allowlist still apply under a Peer Graph Grant.
+resource. The Node Registration, mapping and authority are rechecked on every page.
 
 The projection returns only authorized display fields and edges backed by an
 authorized record. A readable Workspace's Goal node carries its full current
