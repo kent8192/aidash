@@ -45,8 +45,12 @@ pub struct RequestRecord {
 	pub tenant: String,
 	#[field]
 	pub run_id: Uuid,
-	#[field]
-	pub operation_id: Uuid,
+	/// `None` for a request made with a Live preview's session token.
+	#[field(null = true)]
+	pub operation_id: Option<Uuid>,
+	/// Set only for a request made with a Live preview's session token.
+	#[field(null = true)]
+	pub session_id: Option<Uuid>,
 	#[field(field_type = "text")]
 	pub service: String,
 	#[field(field_type = "text")]
@@ -63,6 +67,9 @@ pub struct RequestRecord {
 	pub received_bytes: i64,
 	#[field]
 	pub duration_ms: i64,
+	/// `operation`, `pod` or `page`: which path admitted the request.
+	#[field(field_type = "text")]
+	pub via: String,
 	#[field(field_type = "text", null = true)]
 	pub error: Option<String>,
 	#[field]

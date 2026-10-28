@@ -2,7 +2,9 @@
 use crate::{Result, workspaces::channels::AttachmentUpload};
 use aidash_domain::{
 	Message,
-	workspaces::channels::{AttachmentState, ChannelAttachment, ChannelThread},
+	workspaces::channels::{
+		AttachmentState, ChannelAttachment, ChannelCitation, ChannelThread, CitedFileVersion,
+	},
 };
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
@@ -107,4 +109,18 @@ pub trait ChannelScope: Send {
 		workspace: Uuid,
 		ids: &[Uuid],
 	) -> Result<HashMap<Uuid, Vec<ChannelAttachment>>>;
+	/// Retain every cited File version for the message and record the citation
+	/// in the same transaction. A quota refusal leaves no message behind.
+	async fn record_citations(
+		&mut self,
+		workspace: Uuid,
+		message: Uuid,
+		citations: &[CitedFileVersion],
+	) -> Result<Vec<ChannelCitation>>;
+	/// The citations of these messages, redacted for the current viewer.
+	async fn message_citations(
+		&mut self,
+		workspace: Uuid,
+		ids: &[Uuid],
+	) -> Result<HashMap<Uuid, Vec<ChannelCitation>>>;
 }

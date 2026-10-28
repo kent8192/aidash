@@ -3,22 +3,10 @@
 use crate::Result;
 use aidash_domain::{
 	identity::peer_mapping::Mapping,
-	nodes::{
-		DeploymentId, NodeAddress, NodeName,
-		registration::{NodeRegistration, PinnedKey},
-	},
+	nodes::{DeploymentId, NodeAddress, NodeName, registration::NodeRegistration},
 	tenancy::TenantName,
 };
 use async_trait::async_trait;
-use uuid::Uuid;
-
-/// A Peer Graph Grant as `accept_grant_viewer` needs it: the viewer
-/// Deployment's pinned key.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ViewerGrant {
-	pub key: PinnedKey,
-	pub revision: i64,
-}
 
 #[async_trait]
 pub trait InboundRepository: Send + Sync {
@@ -57,11 +45,4 @@ pub trait InboundRepository: Send + Sync {
 		receiver: &NodeName,
 		subject: &str,
 	) -> Result<bool>;
-	/// The enabled Peer Graph Grant of `identity` of `viewer` at `tenant`.
-	async fn viewer_grant(
-		&self,
-		tenant: &TenantName,
-		viewer: &DeploymentId,
-		identity: Uuid,
-	) -> Result<Option<ViewerGrant>>;
 }

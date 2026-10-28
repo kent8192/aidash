@@ -395,7 +395,7 @@ migration that creates each table, because Aidash is undeployed:
 
 Aidash is undeployed, so #241 edits each migration below in place and adds no migration file. Each paragraph names what the edited migration now creates, drops or renames. The bullets above describe the same tables by policy and key.
 
-`identity/0002_tables`, `identity/0003_keys_indexes`, `identity/0004_references` and `identity/0007_model_state` create `node_names` and `nodes` after `tenants`. `authorization_catalog` and its history gain `node`, and their primary keys start with `(tenant, node)`. `authorization_peer_graph_grants` keys on `(tenant, source_deployment, source_identity)` and stores the viewer Deployment's `source_key_id` and `source_public_key_pem`.
+`identity/0002_tables`, `identity/0003_keys_indexes`, `identity/0004_references` and `identity/0007_model_state` create `node_names` and `nodes` after `tenants`. `authorization_catalog` and its history gain `node`, and their primary keys start with `(tenant, node)`.
 
 `workspaces/0002_tables`, `workspaces/0004_references` and `workspaces/0007_model_state` add `workspaces.node`, which references `nodes(tenant, name)`.
 
@@ -519,6 +519,8 @@ pruning or summary, journals those events as `imported`.
 `registry/0032_degraded_context` (after `registry/0031_model_request_estimator`) admits the `workspace_retrieval` source key `on_unavailable: pause | degrade` of #234 (ADR 0059) by replacing `aidash_context_is_valid`; no other adapter may carry it. Rollback refuses with SQLSTATE `55000` while any source Definition or Marketplace package declares the key (the package count is skipped when `packages` lives in another database), then restores the `registry/0011_binding_contract` validator. A PostgreSQL function body has no typed Reinhardt operation, so it lives in SQL assets.
 
 `registry/0034_research_view` (after `registry/0033_row_level_security`, and like `registry/0031_model_request_estimator` after the Tenant Registry migrations of #243) admits the research `view` operation for `research.page@1` and `research.fixture@1` in `aidash_descriptor_is_valid` (#312). The function body has no typed Reinhardt operation, so it is a reversible SQL asset; it extends the `0023_research_providers` body and rollback restores that body. It does not delete descriptors that already declare `view`, whose later rewrites the NOT VALID registry checks then reject.
+
+Before this native history is released, the same current function also admits the exact `core.preview@1` Sandboxed descriptors for `live_preview_start` and `live_preview_stop` (#405). Neither operation has a transport or lifecycle; all other providers, tiers, and descriptor fields remain subject to the existing checks.
 
 `registry/0035_decider_kind` (after `registry/0034_research_view`, and like `registry/0031_model_request_estimator` after the Tenant Registry migrations of #243) removes the `compactor` kind (#108 Part B, ADR 0042): it drops `registry_compactor_config` and replaces `registry_kind_check` with a list that names `decider` instead. A Decider's configuration is validated by the application. Aidash is undeployed, so there is no data rewrite: the new check fails while a compactor entry exists, and such entries must be registered again as Deciders. Typed constraint operations suffice. The generated state-only checkpoint `registry/0036_decider_kind_state` swaps `compactor` for `decider` in `registry_kind_model_enum_check`.
 

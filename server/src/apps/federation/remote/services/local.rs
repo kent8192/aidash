@@ -13,7 +13,6 @@ use crate::{
 	apps::federation::transactions::{
 		Manifest, serializers::authority::Preflight, services::protocol::Transactions,
 	},
-	apps::identity::services::http_auth::GraphCaller,
 	federation::Federation,
 	transactions::gate::ReadLease,
 };
@@ -228,6 +227,42 @@ async fn dispatch(
 					.await,
 			)
 		}
+		("POST", ["scoped", "previews", "tickets"]) => {
+			let input = input!(body, aidash_domain::federation::preview::TicketRequest);
+			respond(
+				crate::apps::execution::capabilities::services::federation_previews::issue(
+					f, admitted, input,
+				)
+				.await,
+			)
+		}
+		("POST", ["scoped", "previews", "inspect"]) => {
+			let input = input!(body, aidash_domain::federation::preview::InspectRequest);
+			respond(
+				crate::apps::execution::capabilities::services::federation_previews::inspect(
+					f, admitted, input,
+				)
+				.await,
+			)
+		}
+		("POST", ["scoped", "previews", "retain"]) => {
+			let input = input!(body, aidash_domain::federation::preview::RetainRequest);
+			respond(
+				crate::apps::execution::capabilities::services::federation_previews::retain(
+					f, admitted, input,
+				)
+				.await,
+			)
+		}
+		("POST", ["scoped", "previews", "release"]) => {
+			let input = input!(body, aidash_domain::federation::preview::ReleaseRequest);
+			respond(
+				crate::apps::execution::capabilities::services::federation_previews::release(
+					f, admitted, input,
+				)
+				.await,
+			)
+		}
 		("POST", ["scoped", "execution", "commands"]) => {
 			let input = checked!(body, remote_execution::commands::Input);
 			respond(remote_execution::commands::handle(f, admitted, input).await)
@@ -271,7 +306,7 @@ async fn dispatch(
 		}
 		("POST", ["scoped", "graph"]) => {
 			let input = checked!(body, identity_peer::graph::GraphRequest);
-			respond(identity_peer::graph::project(f, GraphCaller::Node(admitted), input).await)
+			respond(identity_peer::graph::project(f, admitted, input).await)
 		}
 		("POST", ["scoped", "semantic", "query"]) => {
 			let input = input!(body, crate::semantic::remote::Operation);

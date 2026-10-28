@@ -149,8 +149,9 @@ non-agent task/artifact/conversation principals. Registry IDs include origin,
 kind and version. Missing exact references stay unavailable.
 
 Graph View asks the local Node for directly authorized Peer boundaries. Subjects
-can use Topology when their local policy grants `federation.graph.read`; named
-Deployment Administrators can select one authorized receiving tenant. Expand a Peer to fetch a
+can use Topology when their local policy grants `federation.graph.read`. A
+Deployment Administrator without a Tenant Subject sees no remote controls and is
+told to open the graph with Tenant authority. Expand a Peer to fetch a
 versioned, bounded projection from that Node. **Configured** describes a Peer
 boundary, not its health. An authorized empty projection, a denial, an
 unavailable Peer and an older Peer without the graph endpoint have distinct

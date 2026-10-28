@@ -2677,6 +2677,8 @@ async fn home_run_reads_survive_reindex_but_the_writer_is_invalidated_by_its_own
 			common_auth: None,
 			common_issuers: None,
 			tier_limits: std::sync::Arc::new(aidash_application::ports::nodes::NoTierLimits),
+			preview: None,
+			dashboard_origin: "http://localhost:3000".into(),
 		},
 		store,
 		client: runtime_controls.client,

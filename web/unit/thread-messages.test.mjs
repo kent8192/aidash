@@ -8,6 +8,13 @@ import {
   runMediaAccept,
   validRunMediaRoute,
 } from "../src/collaboration/conversation-model.ts";
+import {
+  MAX_FILE_CITATIONS,
+  addFileCitation,
+  fileCitationFrom,
+  fileCitationPayload,
+  removeFileCitation,
+} from "../src/collaboration/file-citation-model.ts";
 
 const message = (id, content = id) => ({
   message: { id, content, created_at: `2026-09-23T00:00:0${id}Z` },
@@ -157,4 +164,85 @@ test("participants keep node and version identity and prefer a still-active run"
     ["active", "remote", "new-version"],
   );
   assert.equal(runs[0].run.id, "recent-done");
+});
+
+test("message retry identity includes cited File versions", () => {
+  let n = 0;
+  const key = () => String(++n);
+  const first = submissionFor(
+    null,
+    "workspace",
+    null,
+    "source",
+    key,
+    [],
+    ["area:one"],
+  );
+  assert.equal(
+    submissionFor(first, "workspace", null, "source", key, [], ["area:one"])
+      .key,
+    first.key,
+  );
+  assert.notEqual(
+    submissionFor(first, "workspace", null, "source", key, [], ["area:two"])
+      .key,
+    first.key,
+  );
+  assert.notEqual(
+    submissionFor(first, "workspace", null, "source", key, [], []).key,
+    first.key,
+  );
+});
+
+test("citation chips dedupe, cap at eight and map to the request payload", () => {
+  const citation = (index) => ({
+    key: `area:${index}`,
+    areaId: "area",
+    fileId: String(index),
+    path: `notes/${index}.md`,
+  });
+  let chips = [];
+  for (let index = 0; index < MAX_FILE_CITATIONS + 2; index += 1)
+    chips = addFileCitation(chips, citation(index));
+  assert.equal(chips.length, MAX_FILE_CITATIONS);
+  assert.equal(addFileCitation(chips, citation(0)), chips);
+  assert.deepEqual(fileCitationPayload(chips).slice(0, 2), [
+    { area_id: "area", file_id: "0" },
+    { area_id: "area", file_id: "1" },
+  ]);
+  assert.deepEqual(
+    removeFileCitation(chips, "area:0").map((entry) => entry.fileId),
+    ["1", "2", "3", "4", "5", "6", "7"],
+  );
+});
+
+test("a citation keeps the path and short digest the composer shows", () => {
+  const citation = fileCitationFrom(
+    "area",
+    {
+      file_id: "file",
+      path: "reports/summary.md",
+      digest: "a".repeat(64),
+      size: 42,
+      media_type: "text/markdown",
+    },
+    7,
+  );
+  assert.equal(citation.key, "area:file");
+  assert.equal(citation.path, "reports/summary.md");
+  assert.equal(citation.digest.slice(0, 8), "aaaaaaaa");
+  assert.equal(citation.revision, 7);
+});
+
+test("a remote citation pins its source Run in the message payload", () => {
+  const citation = fileCitationFrom(
+    "remote-area",
+    { file_id: "version", path: "page.html" },
+    4,
+    "source-run",
+  );
+  assert.equal(citation.key, "source-run:remote-area:version");
+  assert.deepEqual(fileCitationPayload([citation]), [
+    { area_id: "remote-area", file_id: "version", run_id: "source-run" },
+  ]);
 });

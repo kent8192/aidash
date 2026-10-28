@@ -6,6 +6,7 @@ mod credentials;
 #[cfg(feature = "e2e")]
 mod e2e;
 mod plan_connections;
+mod preview;
 mod profiles;
 
 use auth::{Access, Cached, Endpoint, Failure, Tokens};
@@ -27,6 +28,8 @@ pub struct DesktopState {
 	profiles: Mutex<Profiles>,
 	// Serialize all credential reads, rotations and writes across IPC callers.
 	operation: Mutex<HashMap<String, Cached>>,
+	// Availability is read from the Deployment and cached per trusted origin.
+	previews: Mutex<HashMap<String, preview::Availability>>,
 	generation: AtomicU64,
 	cancel: Notify,
 	plans: plan_connections::Relay,
@@ -85,6 +88,76 @@ async fn plan_cancel(state: State<'_, DesktopState>, id: String) -> Result<(), S
 	state.plans.cancel(&id);
 	Ok(())
 }
+/// Opens a Preview ticket in the system browser. Only HTTPS ticket URLs on the
+/// configured preview domain reach the opener; the renderer cannot open others.
+#[tauri::command]
+async fn open_preview_url(
+	_app: tauri::AppHandle,
+	state: State<'_, DesktopState>,
+	url: String,
+) -> Result<(), String> {
+	let profile = state.profiles.lock().await.selected()?;
+	let origin = profile.origin.clone();
+	let availability = {
+		let cached = state.previews.lock().await.get(&origin).cloned();
+		match cached {
+			Some(availability) => availability,
+			None => {
+				let access = access(&state, None)
+					.await?
+					.ok_or("Sign in to this Deployment to open a File preview")?;
+				let fetched =
+					preview::availability(&state.client, &origin, &access.access_token).await?;
+				state
+					.previews
+					.lock()
+					.await
+					.insert(origin.clone(), fetched.clone());
+				fetched
+			}
+		}
+	};
+	// The renderer supplies only the URL; the allowed domain comes from the
+	// Deployment it is connected to, never from the IPC caller.
+	let url = preview::validate_for(&availability, &url)?;
+	#[cfg(feature = "e2e")]
+	let _fixture_browser = e2e::open_browser(&url)?;
+	#[cfg(not(feature = "e2e"))]
+	_app.opener()
+		.open_url(url.as_str(), None::<&str>)
+		.map_err(|_| "Cannot open the system browser")?;
+	Ok(())
+}
+
+/// Open a remote Preview through V's authenticated API, which vouches for H's
+/// preview domain in the same response as the one-time ticket.
+#[tauri::command]
+async fn open_remote_preview(
+	_app: tauri::AppHandle,
+	state: State<'_, DesktopState>,
+	run: String,
+	target: serde_json::Value,
+) -> Result<(), String> {
+	let profile = state.profiles.lock().await.selected()?;
+	let access = access(&state, None)
+		.await?
+		.ok_or("Sign in to this Deployment to open a remote Preview")?;
+	let url = preview::remote_ticket(
+		&state.client,
+		&profile.origin,
+		&access.access_token,
+		&run,
+		&target,
+	)
+	.await?;
+	#[cfg(feature = "e2e")]
+	let _fixture_browser = e2e::open_browser(&url)?;
+	#[cfg(not(feature = "e2e"))]
+	_app.opener()
+		.open_url(url.as_str(), None::<&str>)
+		.map_err(|_| "Cannot open the system browser")?;
+	Ok(())
+}
 #[tauri::command]
 async fn connection_settings(state: State<'_, DesktopState>) -> Result<Settings, String> {
 	Ok(state.profiles.lock().await.settings.clone())
@@ -128,6 +201,7 @@ async fn select_connection(
 	state.invalidate();
 	let mut cache = state.operation.lock().await;
 	cache.clear();
+	state.previews.lock().await.clear();
 	let mut profiles = state.profiles.lock().await;
 	let mut settings = profiles.settings.clone();
 	if id
@@ -170,6 +244,7 @@ async fn remove_connection(state: State<'_, DesktopState>, id: String) -> Result
 	// Keep the connection recoverable if the server or OS store is unavailable.
 	revoke(&state, &profile).await?;
 	cache.remove(&id);
+	state.previews.lock().await.remove(&profile.origin);
 	let mut profiles = state.profiles.lock().await;
 	let mut settings = profiles.settings.clone();
 	settings.profiles.retain(|p| p.id != id);
@@ -178,10 +253,9 @@ async fn remove_connection(state: State<'_, DesktopState>, id: String) -> Result
 	}
 	profiles.persist(settings)
 }
-#[tauri::command]
-async fn desktop_access(
-	state: State<'_, DesktopState>,
-	rejected_token: Option<String>,
+async fn access(
+	state: &DesktopState,
+	rejected_token: Option<&str>,
 ) -> Result<Option<Access>, String> {
 	let generation = state.generation.load(Ordering::SeqCst);
 	let mut cache = state.operation.lock().await;
@@ -189,9 +263,7 @@ async fn desktop_access(
 	let profile = state.profiles.lock().await.selected()?;
 	if let Some(cached) = cache.get(&profile.id)
 		&& cached.expires > Instant::now()
-		&& rejected_token
-			.as_ref()
-			.is_none_or(|rejected| rejected != cached.token.as_str())
+		&& rejected_token.is_none_or(|rejected| rejected != cached.token.as_str())
 	{
 		return Ok(Some(cached.access()));
 	}
@@ -256,6 +328,13 @@ async fn desktop_access(
 	let access = cached.access();
 	cache.insert(profile.id, cached);
 	Ok(Some(access))
+}
+#[tauri::command]
+async fn desktop_access(
+	state: State<'_, DesktopState>,
+	rejected_token: Option<String>,
+) -> Result<Option<Access>, String> {
+	access(&state, rejected_token.as_deref()).await
 }
 #[tauri::command]
 async fn desktop_login(
@@ -391,6 +470,7 @@ fn main() {
 			app.manage(DesktopState {
 				profiles: Mutex::new(profiles),
 				operation: Mutex::new(HashMap::new()),
+				previews: Mutex::new(HashMap::new()),
 				generation: AtomicU64::new(0),
 				cancel: Notify::new(),
 				plans: plan_connections::Relay::default(),
@@ -418,7 +498,9 @@ fn main() {
 			desktop_logout,
 			plan_listen,
 			plan_wait,
-			plan_cancel
+			plan_cancel,
+			open_preview_url,
+			open_remote_preview
 		])
 		.run(tauri::generate_context!())
 		.expect("run Aidash Desktop");
