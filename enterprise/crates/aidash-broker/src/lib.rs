@@ -443,7 +443,14 @@ fn body_policy(body: &[u8], claims: &Claims, op: Operation, path: &str) -> Resul
 	}
 	if op == Operation::Chat {
 		if responses {
-			policy::responses_input(&value, claims.cache_breakpoints)?;
+			// authorize() already tied the shell entry, container id included, to the signed digest.
+			let container = value["tools"]
+				.as_array()
+				.into_iter()
+				.flatten()
+				.find(|tool| tool["type"] == "openrouter:shell")
+				.and_then(|tool| tool["parameters"]["environment"]["container_id"].as_str());
+			policy::responses_input(&value, claims.cache_breakpoints, container)?;
 		} else {
 			policy::chat_input(&value, claims.cache_breakpoints)?;
 		}

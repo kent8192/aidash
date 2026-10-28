@@ -59,38 +59,7 @@ pub fn item(value: &Value) -> Option<Value> {
 		return None;
 	}
 	let mut result = json!({});
-	for key in [
-		"type",
-		"id",
-		"call_id",
-		"name",
-		"status",
-		"action",
-		"arguments",
-		"output",
-		"result",
-		"results",
-		"url",
-		"title",
-		"content",
-		"analysis",
-		"responses",
-		"instance_name",
-		"model",
-		"advice",
-		"prompt",
-		"task_name",
-		"task_description",
-		"outcome",
-		"container_id",
-		"files",
-		"models",
-		"total_results",
-		"showing",
-		"tools",
-		"error",
-		"execution",
-	] {
+	for &key in aidash_domain::tool::provider_tools::REPLAY_KEYS {
 		if let Some(value) = value.get(key) {
 			result[key] = value.clone();
 		}

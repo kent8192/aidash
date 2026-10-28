@@ -389,3 +389,141 @@ async fn provider_tools_reload_current_policy_and_refuse_no_training_and_zero_re
 	provider.infer(request, &NoProgress).await.unwrap();
 	assert_eq!(sends.load(Ordering::SeqCst), 2);
 }
+
+#[tokio::test]
+async fn regional_gate_covers_warning_tier_tools_and_engines_pinned_in_parameters() {
+	use aidash_domain::data_protection::Region;
+	let catalog = json!({"data":[
+		{"id":"openrouter:web_search","default_engine":"exa","engines":[{"id":"exa","data_regions":["us"]},{"id":"perplexity","data_regions":["global"]}]},
+		{"id":"openrouter:advisor","default_engine":"openrouter","engines":[{"id":"openrouter","data_regions":["us"]}]},
+		{"id":"openrouter:subagent","default_engine":"openrouter","engines":[{"id":"openrouter","data_regions":["us"]}]},
+		{"id":"openrouter:tool_search","default_engine":"openrouter","engines":[{"id":"openrouter","data_regions":["us"]}]},
+		{"id":"openrouter:shell","default_engine":"openrouter","engines":[{"id":"openrouter","data_regions":["us","global"]}]}
+	]});
+	let app = Router::new()
+		.route(
+			"/v1/models/user",
+			get(|| async { Json(json!({"data":[{"id":"vendor/model"}]})) }),
+		)
+		.route(
+			"/v1/tools",
+			get(move || {
+				let catalog = catalog.clone();
+				async move { Json(catalog) }
+			}),
+		);
+	let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+	let access = Current {
+		policy: Mutex::new(DataProtection::default()),
+		endpoint: format!("http://{}/v1", listener.local_addr().unwrap()),
+		signed: Mutex::default(),
+	};
+	let _server = Server(tokio::spawn(async move {
+		axum::serve(listener, app).await.unwrap();
+	}));
+	let clients = crate::semantic::clients().unwrap();
+	let source = Source::Tenant {
+		provider: "openrouter".into(),
+	};
+	let endpoint = "https://openrouter.ai/api/v1";
+	let entry = |kind: &str| {
+		let declaration = aidash_domain::tool::provider_tools::declaration(kind).unwrap();
+		let mut pinned = aidash_domain::tool::provider_tools::PinnedTool {
+			tool_type: kind.into(),
+			binding: declaration.defaults(),
+		};
+		if matches!(kind, "openrouter:advisor" | "openrouter:subagent") {
+			pinned.binding.parameters["model"] = json!("vendor/child");
+		}
+		pinned.entry()
+	};
+	let context = |region| Context {
+		tenant: uuid::Uuid::new_v4().to_string(),
+		data_protection: DataProtection {
+			data_region_restricted: true,
+			..Default::default()
+		}
+		.in_deployment(Some(region)),
+		..Default::default()
+	};
+	let us = context(Region::Us);
+	for kind in [
+		"openrouter:advisor",
+		"openrouter:subagent",
+		"openrouter:tool_search",
+	] {
+		regional_tools(
+			&access,
+			&us,
+			&clients,
+			endpoint,
+			&source,
+			&json!([entry(kind)]),
+		)
+		.await
+		.unwrap_or_else(|error| panic!("{kind}: {error}"));
+		let error = regional_tools(
+			&access,
+			&context(Region::Jp),
+			&clients,
+			endpoint,
+			&source,
+			&json!([entry(kind)]),
+		)
+		.await
+		.unwrap_err();
+		assert!(
+			error.to_string().contains("unavailable in region"),
+			"{kind}: {error}"
+		);
+	}
+	// The experimental model search is absent from this catalog: unknown means refused.
+	assert!(
+		regional_tools(
+			&access,
+			&us,
+			&clients,
+			endpoint,
+			&source,
+			&json!([entry("openrouter:experimental__search_models")]),
+		)
+		.await
+		.is_err()
+	);
+	// Shell is global-only whatever a catalog claims, so a restricted Tenant never reaches it.
+	for region in [Region::Us, Region::Eu, Region::Jp] {
+		let error = regional_tools(
+			&access,
+			&context(region),
+			&clients,
+			endpoint,
+			&source,
+			&json!([entry("openrouter:shell")]),
+		)
+		.await
+		.unwrap_err();
+		assert!(
+			error.to_string().contains("unavailable in region"),
+			"{error}"
+		);
+	}
+	// A Provider tool entry pins its engine under `parameters`; that pin is what is checked.
+	let search = |engine: &str| json!([{"type":"openrouter:web_search","parameters":{"engine":engine,"max_results":5}}]);
+	regional_tools(&access, &us, &clients, endpoint, &source, &search("exa"))
+		.await
+		.unwrap();
+	assert!(
+		regional_tools(
+			&access,
+			&us,
+			&clients,
+			endpoint,
+			&source,
+			&search("perplexity")
+		)
+		.await
+		.unwrap_err()
+		.to_string()
+		.contains("pinned engine")
+	);
+}

@@ -692,3 +692,100 @@ pub fn replayable(kind: &str) -> bool {
 			| "openrouter:experimental__search_models"
 	)
 }
+
+/// The only top-level keys of an observable provider item. The inference
+/// adapter keeps exactly these, and a replayed item may carry nothing else.
+pub const REPLAY_KEYS: &[&str] = &[
+	"type",
+	"id",
+	"call_id",
+	"name",
+	"status",
+	"action",
+	"arguments",
+	"output",
+	"result",
+	"results",
+	"url",
+	"title",
+	"content",
+	"analysis",
+	"responses",
+	"instance_name",
+	"model",
+	"advice",
+	"prompt",
+	"task_name",
+	"task_description",
+	"outcome",
+	"container_id",
+	"files",
+	"models",
+	"total_results",
+	"showing",
+	"tools",
+	"error",
+	"execution",
+];
+
+const REPLAY_DEPTH: usize = 8;
+const REPLAY_FORBIDDEN_KEYS: &[&str] = &[
+	"image_url",
+	"input_image",
+	"input_file",
+	"input_audio",
+	"file_data",
+	"file_url",
+	"video_url",
+];
+
+/// Whether a replayed provider item could have come out of the inference
+/// adapter: closed top-level keys, bounded depth, no media or remote
+/// references, no nested server tool that would widen the signed tool set, and
+/// every `container_id` equal to the Run's signed container (any well-formed id
+/// when the request carries no shell tool). The broker applies this to client
+/// input it cannot otherwise attribute.
+pub fn replay_item_is_closed(item: &Value, container: Option<&str>) -> bool {
+	fn nested(value: &Value, depth: usize, container: Option<&str>) -> bool {
+		if depth > REPLAY_DEPTH {
+			return false;
+		}
+		match value {
+			Value::Array(items) => items.iter().all(|item| nested(item, depth + 1, container)),
+			Value::Object(map) => map.iter().all(|(key, value)| {
+				if REPLAY_FORBIDDEN_KEYS.contains(&key.as_str()) {
+					return false;
+				}
+				if key == "container_id" {
+					return value.as_str().is_some_and(|id| {
+						valid_container_id(id) && container.is_none_or(|signed| signed == id)
+					});
+				}
+				if key == "type"
+					&& value.as_str().is_some_and(|kind| {
+						kind.starts_with("openrouter:")
+							|| matches!(kind, "input_image" | "input_file" | "input_audio")
+					}) {
+					return false;
+				}
+				nested(value, depth + 1, container)
+			}),
+			_ => true,
+		}
+	}
+	let Some(map) = item.as_object() else {
+		return false;
+	};
+	map.keys().all(|key| REPLAY_KEYS.contains(&key.as_str()))
+		&& map
+			.iter()
+			.filter(|(key, _)| key.as_str() != "type")
+			.all(|(key, value)| {
+				if key == "container_id" {
+					return value.as_str().is_some_and(|id| {
+						valid_container_id(id) && container.is_none_or(|signed| signed == id)
+					});
+				}
+				nested(value, 1, container)
+			})
+}

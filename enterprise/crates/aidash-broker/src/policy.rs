@@ -209,7 +209,11 @@ fn response_media(part: &Value) -> Result<ContentPart, Failure> {
 /// function calls. It has no `messages` field, and a breakpoint is allowed only
 /// on an `input_text` or `output_text` part, at most four times, exactly as in
 /// chat. Any other `cache_control` key is rejected below.
-pub(crate) fn responses_input(value: &Value, cache_breakpoints: bool) -> Result<(), Failure> {
+pub(crate) fn responses_input(
+	value: &Value,
+	cache_breakpoints: bool,
+	container: Option<&str>,
+) -> Result<(), Failure> {
 	if value.get("messages").is_some() {
 		return Err(Failure::ClaimViolation);
 	}
@@ -235,7 +239,13 @@ pub(crate) fn responses_input(value: &Value, cache_breakpoints: bool) -> Result<
 							return Err(Failure::ClaimViolation);
 						}
 					}
-					Some(kind) if aidash_domain::tool::provider_tools::replayable(kind) => {}
+					// Replayed provider items are model-authored history. They must
+					// stay inside the closed shape the inference adapter produces.
+					Some(kind)
+						if aidash_domain::tool::provider_tools::replayable(kind)
+							&& aidash_domain::tool::provider_tools::replay_item_is_closed(
+								item, container,
+							) => {}
 					Some("message") | None if item.get("role").is_some() => {
 						response_message(item, cache_breakpoints, &mut breakpoints, &mut parts)?
 					}

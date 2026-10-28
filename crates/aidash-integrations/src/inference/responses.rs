@@ -390,6 +390,17 @@ impl ResponsesProvider {
 		let mut prepared = request.clone();
 		for tool in &mut prepared.provider_tools {
 			if tool.tool_type == "openrouter:shell" {
+				// Sandbox containers are global-only: refuse a restricted Tenant
+				// before any container id is pinned to the Run.
+				crate::data_protection::regional_tools(
+					self.access.as_ref(),
+					&context,
+					&self.clients,
+					&self.config.endpoint,
+					&self.source(),
+					&json!([tool.entry()]),
+				)
+				.await?;
 				let id = self
 					.access
 					.provider_container(
