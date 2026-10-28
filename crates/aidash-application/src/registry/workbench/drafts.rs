@@ -91,12 +91,12 @@ pub async fn list<R: DraftRepository>(repository: &R, page: DraftPage) -> Result
 			));
 		}
 	};
-	let tenant = match &actor {
-		Principal::DeploymentAdministrator => None,
-		Principal::Subject { tenant, .. } => Some(tenant),
+	// Drafts are Tenant content: a Deployment Administrator lists none (#484).
+	let Principal::Subject { tenant, .. } = &actor else {
+		return Err(Error::Forbidden);
 	};
 	loop {
-		let rows = scope.page(tenant.map(String::as_str), cursor).await?;
+		let rows = scope.page(Some(tenant.as_str()), cursor).await?;
 		let more = rows.len() == 100;
 		cursor = rows.last().map(|row| (row.updated_at, row.id));
 		for row in rows {
@@ -152,7 +152,7 @@ pub async fn duplicate<R: DraftRepository>(
 		id,
 		tenant: original.tenant.clone(),
 		owner: match &actor {
-			Principal::DeploymentAdministrator => original.owner.clone(),
+			Principal::DeploymentAdministrator => return Err(Error::Forbidden),
 			Principal::Subject { subject, .. } => subject.clone(),
 		},
 		revision: 1,

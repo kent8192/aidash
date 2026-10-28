@@ -3,7 +3,6 @@ use crate::apps::execution::models::{
 	Event as EventRecord, HumanRequest as HumanRequestRecord, InferenceUsage,
 	Invocation as InvocationRecord, Run as RunRecord, RunInput as InputRecord, event_records,
 };
-use crate::apps::execution::serializers::runs::RunDetails;
 use crate::apps::execution::services::human_interaction;
 use crate::apps::federation::remote::models::RemoteRunMessageFence;
 use crate::apps::identity::models::AuthorizationRunOutput;
@@ -20,9 +19,7 @@ use crate::{
 	registry::{Entry, Search},
 };
 use aidash_application::tenancy::{DeploymentScopeReason, TenancyScope};
-use reinhardt::core::exception::Error as FrameworkError;
 use reinhardt::db::backends::TransactionExecutor;
-use reinhardt::db::orm::Model;
 use reinhardt::query::ColumnRef;
 use reinhardt::query::OnConflict;
 use reinhardt::query::SimpleExpr;
@@ -4056,64 +4053,6 @@ impl Store {
 					i32::from(projection_version),
 				)
 				.await
-			})
-			.await
-	}
-	pub(crate) async fn run_details_in(
-		&self,
-		tx: &mut dyn TransactionExecutor,
-		run: Run,
-		offset: u64,
-	) -> Result<RunDetails> {
-		let invocations = InvocationRecord::page(tx, run.id, offset).await?;
-		let memory = crate::semantic::repositories::bindings::load(tx, &run.metadata()).await?;
-		let egress_requests =
-			crate::apps::execution::capabilities::models::EgressRequest::objects()
-				.filter(
-					crate::apps::execution::capabilities::models::EgressRequest::field_run_id()
-						.eq(run.id),
-				)
-				.order_by(&["id"])
-				.offset(offset as usize)
-				.limit(100)
-				.all_with_executor(tx)
-				.await
-				.map_err(FrameworkError::from)?;
-		let egress_requests = egress_requests
-			.into_iter()
-			.map(|row| serde_json::from_value(serde_json::to_value(row)?))
-			.collect::<std::result::Result<Vec<aidash_domain::egress::RequestRecord>, _>>()?;
-		Ok(RunDetails {
-			egress_requests,
-			media_input_routes: Vec::new(),
-			run: run.into(),
-			invocations,
-			memory,
-		})
-	}
-	pub(crate) async fn run_details(
-		&self,
-		scope: &TenancyScope,
-		id: Uuid,
-		offset: u64,
-	) -> Result<RunDetails> {
-		self.pool
-			.atomic(scope, async |tx| {
-				if let Some(tenant) = scope.tenant_name() {
-					crate::authorization::remote::deployment_administrator::tenant(
-						tx,
-						tenant.as_str(),
-					)
-					.await?;
-				}
-				let run = RunRecord::objects()
-					.filter(RunRecord::field_id().eq(id))
-					.all_with_executor(tx)
-					.await
-					.map_err(FrameworkError::from)?
-					.pop()
-					.ok_or_else(|| Error::NotFound("run".into()))?;
-				self.run_details_in(tx, run.try_into()?, offset).await
 			})
 			.await
 	}

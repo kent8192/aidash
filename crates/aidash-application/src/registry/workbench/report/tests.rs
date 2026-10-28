@@ -184,34 +184,12 @@ async fn subject_context_cannot_be_overridden_after_the_authorized_inspection(
 	assert_eq!(sources.state.lock().unwrap().calls, vec!["inspection"]);
 }
 #[rstest]
-#[case(None, None, false, false)]
-#[case(Some("tenant"), Some("reader"), true, true)]
-#[case(Some("tenant"), None, false, false)]
-#[case(None, Some("reader"), false, false)]
-#[case(None, None, true, false)]
 #[tokio::test]
-async fn deployment_administrator_context_requires_the_complete_identity_pair(
-	#[case] tenant: Option<&str>,
-	#[case] selected_subject: Option<&str>,
-	#[case] workspace: bool,
-	#[case] context: bool,
-) {
+async fn a_deployment_administrator_assembles_no_report() {
 	let sources = Sources::new(Principal::DeploymentAdministrator);
-	let mut input = query();
-	input.tenant = tenant.map(str::to_owned);
-	input.subject = selected_subject.map(str::to_owned);
-	input.workspace_id = workspace.then(|| Uuid::from_u128(9));
-	let result = assemble(&sources, reference(), input).await;
-	let valid = context || tenant.is_none() && selected_subject.is_none() && !workspace;
-	assert_eq!(result.is_ok(), valid);
-	let s = sources.state.lock().unwrap();
-	if valid {
-		assert_eq!(result.unwrap().report.permission_context.is_some(), context);
-		assert_eq!(s.context.is_some(), context);
-	} else {
-		assert!(matches!(result, Err(Error::Invalid(_))));
-		assert_eq!(s.calls, vec!["inspection"]);
-	}
+	let result = assemble(&sources, reference(), query()).await;
+	assert!(matches!(result, Err(Error::Forbidden)));
+	assert_eq!(sources.state.lock().unwrap().calls, vec!["inspection"]);
 }
 #[rstest]
 #[case(false)]

@@ -384,31 +384,6 @@ async fn authorized_control_preserves_transition_and_action_mapping(
 	);
 }
 #[rstest]
-#[tokio::test]
-async fn deployment_administrator_takes_the_policy_lock_before_job_load_and_notifies_only_after_commit()
- {
-	let repo = Repository::new(false);
-	control(&repo, "tenant", Uuid::from_u128(1), &stop())
-		.await
-		.unwrap();
-	assert_eq!(&repo.calls()[..3], ["begin", "authority", "load"]);
-	assert!(!repo.calls().contains(&"visible".into()));
-	assert!(!repo.calls().contains(&"decide".into()));
-	assert_eq!(
-		repo.state.lock().unwrap().effects,
-		vec![
-			"quota.release",
-			"quota.mark",
-			"runs.cancel",
-			"authority:8:deployment_administrator",
-			"retirement:37:deployment_administrator",
-			"status:STOPPED",
-			"history:STOPPED:deployment_administrator:Deployment Administrator request",
-			"event"
-		]
-	);
-}
-#[rstest]
 #[case::approve(Action::Approve, Err(()))]
 #[case::deny(Action::Deny, Ok("DENIED"))]
 #[tokio::test]
@@ -445,8 +420,11 @@ async fn only_approval_needs_catalog_approve_on_the_published_version(
 	}
 }
 #[rstest]
+#[case::approve(Action::Approve)]
+#[case::deny(Action::Deny)]
+#[case::stop(Action::Stop)]
 #[tokio::test]
-async fn a_deployment_administrator_cannot_approve_a_generation_request() {
+async fn a_deployment_administrator_cannot_control_a_generation_request(#[case] action: Action) {
 	let repo = Repository::new(false);
 	repo.state.lock().unwrap().job.status = "PENDING_APPROVAL".into();
 	let result = control(
@@ -454,13 +432,13 @@ async fn a_deployment_administrator_cannot_approve_a_generation_request() {
 		"tenant",
 		Uuid::from_u128(1),
 		&Control {
-			action: Action::Approve,
+			action,
 			reason: "decision".into(),
 		},
 	)
 	.await;
 	assert!(matches!(result, Err(Error::Forbidden)), "{result:?}");
-	assert!(!repo.calls().contains(&"load".into()));
+	assert!(repo.calls().is_empty());
 	assert!(repo.state.lock().unwrap().effects.is_empty());
 }
 #[rstest]

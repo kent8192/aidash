@@ -17,35 +17,30 @@ pub async fn control(
 	id: Uuid,
 	input: &Control,
 ) -> Result<Request> {
-	let principal = repository.principal();
-	if let Principal::Subject { tenant: caller, .. } = principal
-		&& caller != tenant
-	{
+	// Generation requests are Tenant content: only a Subject of the Tenant
+	// controls them (#484).
+	let Principal::Subject {
+		tenant: caller,
+		subject: actor,
+		..
+	} = repository.principal()
+	else {
+		return Err(Error::Forbidden);
+	};
+	if caller != tenant {
 		return Err(Error::Forbidden);
 	}
-	let actor = match principal {
-		Principal::DeploymentAdministrator => "deployment_administrator",
-		Principal::Subject { subject, .. } => subject,
-	};
 	let mut scope = repository.begin(&TenancyScope::tenant(tenant)?).await?;
 	let result = async {
-		if matches!(principal, Principal::DeploymentAdministrator) {
-			if matches!(input.action, Action::Approve) {
-				return Err(Error::Forbidden);
-			}
-			scope.authority(tenant).await?;
-		}
 		let job = scope.load(tenant, id).await?;
-		if matches!(principal, Principal::Subject { .. }) {
-			if !scope.visible(&job).await? {
-				return Err(Error::Forbidden);
-			}
-			if !scope.decide(&job, input.action.authorization()).await? {
-				return Err(Error::Forbidden);
-			}
-			if matches!(input.action, Action::Approve) && !scope.decide_catalog(&job).await? {
-				return Err(Error::Forbidden);
-			}
+		if !scope.visible(&job).await? {
+			return Err(Error::Forbidden);
+		}
+		if !scope.decide(&job, input.action.authorization()).await? {
+			return Err(Error::Forbidden);
+		}
+		if matches!(input.action, Action::Approve) && !scope.decide_catalog(&job).await? {
+			return Err(Error::Forbidden);
 		}
 		control_in(scope.as_mut(), &job, input, actor).await
 	}

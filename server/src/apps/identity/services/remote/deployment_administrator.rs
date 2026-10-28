@@ -1,6 +1,6 @@
-//! Installation administration is not a mapped tenant reader at another node.
-//! Content in a workspace bound to required Home retrieval requires a Subject
-//! view. Deployment Administrator APIs retain content-free stop controls and infrastructure data.
+//! Deleted-Tenant and required-Home gates shared by every reader of Tenant content.
+//! A Deployment Administrator reads no Tenant content (#484); the gates here serve
+//! Subjects, the stop controls and worker scopes.
 use crate::database::native::Transaction;
 use crate::{Error, Result, domain::Event};
 use reinhardt::query::{
@@ -222,28 +222,3 @@ async fn event_workspaces(
 }
 
 use reinhardt::query::QueryStatementBuilder as _;
-
-pub(crate) async fn filter_events(
-	connection: &mut Transaction,
-	events: Vec<Event>,
-) -> Result<Vec<Event>> {
-	let deleted = deleted_events(connection, &events).await?;
-	let workspaces = event_workspaces(connection, &events).await?;
-	let denied = blocked(
-		connection,
-		&workspaces.iter().flatten().copied().collect::<Vec<_>>(),
-	)
-	.await?;
-	Ok(events
-		.into_iter()
-		.zip(workspaces)
-		.filter_map(|(event, workspace)| {
-			if deleted.contains(&event.id) {
-				return None;
-			}
-			workspace
-				.is_none_or(|id| !denied.contains(&id))
-				.then_some(event)
-		})
-		.collect())
-}

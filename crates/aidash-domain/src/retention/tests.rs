@@ -100,11 +100,6 @@ fn the_shorter_of_the_deployment_and_tenant_periods_applies() {
 
 #[rstest]
 #[case(Decider::Subject { tenant: "acme".into(), subject: "alice".into() }, "subject:acme/alice")]
-#[case(
-	Decider::DeploymentAdministrator { identity: Some(uuid::Uuid::nil()) },
-	"deployment-administrator:00000000-0000-0000-0000-000000000000"
-)]
-#[case(Decider::DeploymentAdministrator { identity: None }, "deployment-administrator")]
 fn deciders_are_recorded_with_who_acted(#[case] decider: Decider, #[case] recorded: &str) {
 	assert_eq!(decider.recorded(), recorded);
 }

@@ -36,9 +36,6 @@ impl RevocationScope for Scope<'_> {
 	fn decider(&self) -> Decider {
 		self.0.decider.clone()
 	}
-	async fn run_exists(&mut self, run: Uuid) -> Result<bool> {
-		Ok(run == self.0.run)
-	}
 	async fn require(&mut self, run: Uuid, action: &str) -> Result<()> {
 		assert_eq!(action, "research.revoke");
 		if run == self.0.run && self.0.permitted {
@@ -72,10 +69,7 @@ impl crate::ports::research::RevocationRecordScope for Records<'_> {
 	}
 	async fn permits(&mut self, _: &str, action: &str) -> Result<bool> {
 		assert_eq!(action, "research.revoke");
-		Ok(matches!(
-			(&self.0.decider, self.0.permitted),
-			(Decider::DeploymentAdministrator { .. }, _) | (_, true)
-		))
+		Ok(self.0.permitted)
 	}
 	async fn permits_run(&mut self, run: Uuid, action: &str) -> Result<bool> {
 		assert_eq!(action, "research.revoke");
@@ -177,22 +171,6 @@ async fn a_subject_without_permission_learns_nothing() {
 }
 
 #[tokio::test]
-async fn a_deployment_administrator_needs_no_tenant_policy() {
-	let runs = Runs::new(Decider::DeploymentAdministrator { identity: None }, false);
-	let revoked = revoke(&runs, runs.run, "agreement ended", None, Utc::now())
-		.await
-		.unwrap();
-	assert_eq!(
-		revoked.revoked_by,
-		Decider::DeploymentAdministrator { identity: None }
-	);
-	assert!(matches!(
-		revoke(&runs, Uuid::new_v4(), "reason", None, Utc::now()).await,
-		Err(Error::NotFound(_))
-	));
-}
-
-#[tokio::test]
 async fn a_reason_is_required_before_anything_is_opened() {
 	let runs = Runs::new(subject(), true);
 	assert!(matches!(
@@ -203,7 +181,7 @@ async fn a_reason_is_required_before_anything_is_opened() {
 }
 
 #[tokio::test]
-async fn revocation_records_are_read_by_revokers_and_deployment_administrators() {
+async fn revocation_records_are_read_by_revokers() {
 	let runs = Runs::new(subject(), true);
 	revoke(&runs, runs.run, "removal request", None, Utc::now())
 		.await
@@ -219,18 +197,11 @@ async fn revocation_records_are_read_by_revokers_and_deployment_administrators()
 		records(&reader, "acme", 0, 50).await,
 		Err(Error::Forbidden)
 	));
-	let administrator = Runs::new(Decider::DeploymentAdministrator { identity: None }, false);
-	assert!(
-		records(&administrator, "other", 0, 50)
-			.await
-			.unwrap()
-			.is_empty()
-	);
 }
 
 #[tokio::test]
 async fn a_run_of_another_tenant_than_the_one_named_is_unavailable() {
-	let runs = Runs::new(Decider::DeploymentAdministrator { identity: None }, false);
+	let runs = Runs::new(subject(), true);
 	assert!(matches!(
 		revoke(&runs, runs.run, "reason", Some("other"), Utc::now()).await,
 		Err(Error::NotFound(_))
@@ -296,7 +267,10 @@ async fn a_subject_reads_no_record_of_another_tenants_run() {
 	*runs.recorded.lock().unwrap() = Some(EvidenceRevocation {
 		run_id: runs.run,
 		tenant: Some("other".into()),
-		revoked_by: Decider::DeploymentAdministrator { identity: None },
+		revoked_by: Decider::Subject {
+			tenant: "other".into(),
+			subject: "user:eve".into(),
+		},
 		reason: "agreement ended".into(),
 		revoked_at: Utc::now(),
 		removed: Removed::default(),
@@ -305,20 +279,6 @@ async fn a_subject_reads_no_record_of_another_tenants_run() {
 		record(&runs, runs.run).await,
 		Err(Error::NotFound(_))
 	));
-	let administrator = Runs::new(Decider::DeploymentAdministrator { identity: None }, false);
-	*administrator.recorded.lock().unwrap() = runs.recorded.lock().unwrap().clone();
-	assert_eq!(
-		record(&administrator, runs.run).await.unwrap().run_id,
-		runs.run
-	);
-	assert_eq!(
-		standing(&administrator, Uuid::new_v4()).await.unwrap(),
-		Standing {
-			revoked_at: None,
-			may_revoke: true,
-			may_read_record: true,
-		}
-	);
 }
 
 #[tokio::test]
@@ -337,13 +297,5 @@ async fn the_records_audience_is_told_before_it_asks() {
 		!may_read_records(&Runs::new(subject(), false), "acme")
 			.await
 			.unwrap()
-	);
-	assert!(
-		may_read_records(
-			&Runs::new(Decider::DeploymentAdministrator { identity: None }, false),
-			"other"
-		)
-		.await
-		.unwrap()
 	);
 }

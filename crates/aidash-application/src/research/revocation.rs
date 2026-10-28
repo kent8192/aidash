@@ -28,16 +28,7 @@ pub async fn revoke(
 	let mut scope = repository.begin().await?;
 	let result = async {
 		let decider = scope.decider();
-		match decider {
-			Decider::Subject { .. } => scope.require(run, REVOKE).await?,
-			// A Deployment Administrator reads no content to revoke; only the
-			// Run's existence is checked.
-			Decider::DeploymentAdministrator { .. } => {
-				if !scope.run_exists(run).await? {
-					return Err(Error::NotFound("run unavailable".into()));
-				}
-			}
-		}
+		scope.require(run, REVOKE).await?;
 		let tenant = scope.tenant(run).await?;
 		if expected.is_some_and(|expected| tenant.as_deref() != Some(expected)) {
 			return Err(Error::NotFound("run unavailable".into()));
@@ -60,7 +51,7 @@ pub async fn revoke(
 }
 
 /// The revocation records of `tenant`, newest first, for a subject of that
-/// Tenant permitted `research.revoke` or a Deployment Administrator.
+/// Tenant permitted `research.revoke`.
 pub async fn records(
 	repository: &dyn RevocationRepository,
 	tenant: &str,
@@ -82,7 +73,7 @@ pub async fn records(
 }
 
 /// Whether the reader may read `tenant`'s revocation records: a subject of
-/// that Tenant permitted `research.revoke`, or a Deployment Administrator.
+/// that Tenant permitted `research.revoke`.
 async fn may_read(scope: &mut dyn RevocationRecordScope, tenant: &str) -> Result<bool> {
 	match scope.decider() {
 		Decider::Subject { tenant: own, .. } if own != tenant => Ok(false),
@@ -117,13 +108,11 @@ pub async fn standing(repository: &dyn RevocationRepository, run: Uuid) -> Resul
 	let mut scope = repository.begin_records().await?;
 	let result = async {
 		let record = scope.record(run).await?;
-		let (may_revoke, may_read_record) = match scope.decider() {
-			Decider::DeploymentAdministrator { .. } => (true, true),
-			Decider::Subject { tenant, .. } => (
-				scope.permits_run(run, REVOKE).await?,
-				scope.permits(&tenant, REVOKE).await?,
-			),
-		};
+		let Decider::Subject { tenant, .. } = scope.decider();
+		let (may_revoke, may_read_record) = (
+			scope.permits_run(run, REVOKE).await?,
+			scope.permits(&tenant, REVOKE).await?,
+		);
 		Ok(Standing {
 			revoked_at: record.map(|record| record.revoked_at),
 			may_revoke,
@@ -144,17 +133,12 @@ pub async fn record(
 ) -> Result<EvidenceRevocation> {
 	let mut scope = repository.begin_records().await?;
 	let result = async {
-		let own = match scope.decider() {
-			Decider::Subject { tenant, .. } => {
-				if !scope.permits(&tenant, REVOKE).await? {
-					return Err(Error::Forbidden);
-				}
-				Some(tenant)
-			}
-			Decider::DeploymentAdministrator { .. } => None,
-		};
+		let Decider::Subject { tenant: own, .. } = scope.decider();
+		if !scope.permits(&own, REVOKE).await? {
+			return Err(Error::Forbidden);
+		}
 		match scope.record(run).await? {
-			Some(record) if own.is_none() || record.tenant == own => Ok(record),
+			Some(record) if record.tenant.as_deref() == Some(own.as_str()) => Ok(record),
 			_ => Err(Error::NotFound("revocation unavailable".into())),
 		}
 	}

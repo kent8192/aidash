@@ -120,7 +120,7 @@ impl TenantActions {
 	}
 
 	/// Requires a Tenant action of a Subject of `tenant` on resource `id` in
-	/// `tx`, where its effect is written. A Deployment Administrator passes.
+	/// `tx`, where its effect is written. A Deployment Administrator holds none (#484).
 	pub(crate) async fn require(
 		&self,
 		tx: &mut dyn TransactionExecutor,
@@ -130,7 +130,7 @@ impl TenantActions {
 		id: &str,
 	) -> crate::Result<()> {
 		let Actor::Subject(identity) = &self.actor else {
-			return Ok(());
+			return Err(crate::Error::Forbidden);
 		};
 		if identity.tenant != tenant {
 			return Err(crate::Error::Forbidden);

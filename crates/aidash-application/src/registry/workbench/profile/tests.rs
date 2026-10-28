@@ -128,9 +128,7 @@ impl ProfileRepository for Repository {
 		let mut s = self.state.lock().unwrap();
 		assert!(!s.active);
 		s.calls.push("page");
-		if self.principal != Principal::DeploymentAdministrator {
-			assert!(s.committed);
-		}
+		assert!(s.committed);
 		let mut foreign = rule();
 		foreign.tool = reference("other");
 		Ok(vec![
@@ -145,7 +143,7 @@ impl ProfileRepository for Repository {
 	async fn administered(&self, tenant: &str, _after: Option<&str>) -> Result<Vec<TestProfile>> {
 		assert_eq!(tenant, "tenant");
 		self.state.lock().unwrap().calls.push("administered");
-		if self.principal != Principal::DeploymentAdministrator && !self.authorized {
+		if !self.authorized {
 			return Err(Error::Forbidden);
 		}
 		Ok(vec![profile("allowed", true, json!([rule()]))])
@@ -153,7 +151,7 @@ impl ProfileRepository for Repository {
 	async fn authorize_update(&self, tenant: &str, id: &str) -> Result<()> {
 		assert_eq!((tenant, id), ("tenant", "profile"));
 		self.state.lock().unwrap().calls.push("authorize");
-		if self.principal != Principal::DeploymentAdministrator && !self.authorized {
+		if !self.authorized {
 			return Err(Error::Forbidden);
 		}
 		Ok(())
@@ -174,7 +172,7 @@ impl ProfileRepository for Repository {
 		let mut s = self.state.lock().unwrap();
 		s.calls.push("save");
 		// The repository decides `workbench.test_profile.update` with the write.
-		if self.principal != Principal::DeploymentAdministrator && !self.authorized {
+		if !self.authorized {
 			return Err(Error::Forbidden);
 		}
 		if input.expected_revision != self.revision {
@@ -240,18 +238,9 @@ impl ProfileDraftScope for Scope<'_> {
 	}
 }
 #[rstest]
-#[case("subject")]
-#[case("deployment_administrator")]
 #[tokio::test]
-async fn profile_listing_retains_subject_rule_matching_and_deployment_administrator_visibility(
-	#[case] actor: &str,
-) {
-	let principal = if actor == "subject" {
-		subject()
-	} else {
-		Principal::DeploymentAdministrator
-	};
-	let r = Repository::new(principal);
+async fn profile_listing_retains_subject_rule_matching() {
+	let r = Repository::new(subject());
 	let rows = list(
 		&r,
 		ProfileQuery {
@@ -261,22 +250,49 @@ async fn profile_listing_retains_subject_rule_matching_and_deployment_administra
 	)
 	.await
 	.unwrap();
-	if actor == "subject" {
-		assert_eq!(
-			rows.iter().map(|p| p.id.as_str()).collect::<Vec<_>>(),
-			vec!["allowed"]
-		);
-		assert_eq!(
-			r.state.lock().unwrap().calls,
-			vec!["begin", "draft", "authority", "commit", "page"]
-		);
-	} else {
-		assert_eq!(rows.len(), 6);
-		assert_eq!(r.state.lock().unwrap().calls, vec!["page"]);
-	}
+	assert_eq!(
+		rows.iter().map(|p| p.id.as_str()).collect::<Vec<_>>(),
+		vec!["allowed"]
+	);
+	assert_eq!(
+		r.state.lock().unwrap().calls,
+		vec!["begin", "draft", "authority", "commit", "page"]
+	);
 	let wire = serde_json::to_value(&rows[0]).unwrap();
 	assert_eq!(wire.as_object().unwrap().len(), 3);
 	assert_eq!(wire["revision"], 7);
+}
+#[rstest]
+#[tokio::test]
+async fn a_deployment_administrator_reads_and_writes_no_test_profile() {
+	let r = Repository::new(Principal::DeploymentAdministrator);
+	assert!(matches!(
+		list(
+			&r,
+			ProfileQuery {
+				tenant: Some("tenant".into()),
+				draft_id: None,
+			}
+		)
+		.await,
+		Err(Error::Forbidden)
+	));
+	assert!(matches!(
+		administered(&r, "tenant".into(), None).await,
+		Err(Error::Forbidden)
+	));
+	assert!(matches!(
+		put(
+			&r,
+			&Configuration::new(),
+			"tenant".into(),
+			"profile".into(),
+			input()
+		)
+		.await,
+		Err(Error::Forbidden)
+	));
+	assert!(r.state.lock().unwrap().calls.is_empty());
 }
 #[rstest]
 #[case("tenant")]
@@ -347,7 +363,7 @@ async fn a_subject_writes_its_tenants_profile_under_the_action(#[case] authorize
 #[case("large_resource")]
 #[tokio::test]
 async fn rule_identity_and_allowlist_bounds_gate_atomic_save(#[case] boundary: &str) {
-	let r = Repository::new(Principal::DeploymentAdministrator);
+	let r = Repository::new(subject());
 	let config = Configuration::new();
 	let mut input = input();
 	match boundary {
@@ -373,7 +389,7 @@ async fn validated_profiles_forward_the_original_atomic_revision_fence(
 	#[case] expected: i64,
 	#[case] success: bool,
 ) {
-	let r = Repository::new(Principal::DeploymentAdministrator);
+	let r = Repository::new(subject());
 	let config = Configuration::new();
 	let mut input = input();
 	input.expected_revision = expected;
@@ -476,7 +492,7 @@ async fn a_rule_may_send_a_tenant_secret_only_to_one_of_its_recorded_hosts(
 	#[case] hosts: &[&str],
 	#[case] accepted: bool,
 ) {
-	let mut r = Repository::new(Principal::DeploymentAdministrator);
+	let mut r = Repository::new(subject());
 	r.secret_hosts = hosts.iter().map(|h| (*h).to_owned()).collect();
 	let mut input = input();
 	input.rules[0].secret = Some("key".into());

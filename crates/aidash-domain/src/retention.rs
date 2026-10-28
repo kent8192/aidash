@@ -5,7 +5,6 @@ use crate::{Error, Result};
 use chrono::{DateTime, Duration, Utc};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
-use uuid::Uuid;
 
 /// The policy action that permits a subject to change its Tenant's periods,
 /// evaluated on the Tenant's `retention` collection.
@@ -19,24 +18,13 @@ pub const RESOURCE: &str = "retention";
 pub enum Decider {
 	/// A subject whose Tenant policy permits the action.
 	Subject { tenant: String, subject: String },
-	/// A Deployment Administrator, who needs no Tenant policy: the dashboard
-	/// identity holding the grant, or none for the deployment's API token.
-	DeploymentAdministrator {
-		#[serde(default, skip_serializing_if = "Option::is_none")]
-		identity: Option<Uuid>,
-	},
 }
 
 impl Decider {
-	/// The form kept in history: `subject:<tenant>/<subject>`,
-	/// `deployment-administrator:<identity>` or `deployment-administrator`.
+	/// The form kept in history: `subject:<tenant>/<subject>`.
 	pub fn recorded(&self) -> String {
 		match self {
 			Self::Subject { tenant, subject } => format!("subject:{tenant}/{subject}"),
-			Self::DeploymentAdministrator {
-				identity: Some(identity),
-			} => format!("deployment-administrator:{identity}"),
-			Self::DeploymentAdministrator { identity: None } => "deployment-administrator".into(),
 		}
 	}
 }

@@ -56,8 +56,8 @@ fn native<T>(result: crate::Result<T>) -> Result<T> {
 }
 
 /// Run readability for one API reader, decided exactly as `GET /api/runs/{id}`
-/// decides it: a Subject through Run inspection's visibility decision, an
-/// Deployment Administrator through the Workspace's Deployment Administrator visibility.
+/// decides it: a Subject through Run inspection's visibility decision; a
+/// Deployment Administrator reads none (#484).
 pub(crate) struct Readers<'a> {
 	pub federation: &'a Federation,
 	pub actor: &'a Actor,
@@ -73,20 +73,8 @@ impl RunReader for Readers<'_> {
 			)
 			.await
 			.map(|_| ()),
-			Actor::DeploymentAdministrator => native(
-				async {
-					// Resolve the Run's Tenant before taking a policy lease. The
-					// cross-Tenant listing scope is read-only and cannot hold it.
-					let scope = self.federation.store.run_tenancy(run).await?;
-					let inspected = self.federation.store.inspect_run(&scope, run).await?;
-					crate::authorization::remote::deployment_administrator::require(
-						&mut self.federation.store.pool.begin(&scope).await?,
-						inspected.workspace_id,
-					)
-					.await
-				}
-				.await,
-			),
+			// Run content is Tenant content: an administrator reads none (#484).
+			Actor::DeploymentAdministrator => Err(Error::Forbidden),
 		};
 		match decision {
 			Ok(()) => Ok(true),

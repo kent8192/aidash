@@ -7,21 +7,19 @@ use aidash_domain::{
 use futures_util::{StreamExt, stream};
 use uuid::Uuid;
 
-/// None denotes Deployment Administrator authority established by a trusted authentication adapter.
+/// Transactions are Tenant content: only a Subject submits, lists, reads or
+/// aborts them (#484).
 pub async fn submit(
 	repository: &dyn ManagementRepository,
-	identity: Option<&ExecutionPrincipal>,
+	identity: &ExecutionPrincipal,
 	manifest: &Manifest,
 ) -> Result<Status> {
-	match identity {
-		Some(identity) => repository.submit_subject(identity, manifest).await,
-		None => repository.submit_deployment_administrator(manifest).await,
-	}
+	repository.submit_subject(identity, manifest).await
 }
 
 pub async fn list(
 	repository: &dyn ManagementRepository,
-	identity: Option<&ExecutionPrincipal>,
+	identity: &ExecutionPrincipal,
 ) -> Result<Vec<Status>> {
 	let mut visible = Vec::new();
 	let mut cursor = None;
@@ -29,13 +27,9 @@ pub async fn list(
 		let rows = repository.candidates(identity, cursor).await?;
 		let exhausted = rows.len() < 200;
 		let mut checked = stream::iter(rows.into_iter().map(|row| async move {
-			let result = if let Some(identity) = identity {
-				repository
-					.authorize(identity, &row, "transaction.read")
-					.await
-			} else {
-				Ok(())
-			};
+			let result = repository
+				.authorize(identity, &row, "transaction.read")
+				.await;
 			(row, result)
 		}))
 		.buffered(8);
@@ -67,18 +61,14 @@ pub async fn list(
 
 pub async fn details(
 	repository: &dyn ManagementRepository,
-	identity: Option<&ExecutionPrincipal>,
+	identity: &ExecutionPrincipal,
 	id: Uuid,
 ) -> Result<Details> {
-	if let Some(identity) = identity {
-		repository.require_owner(identity, id).await?;
-	}
+	repository.require_owner(identity, id).await?;
 	let transaction = repository.status(id).await?;
-	if let Some(identity) = identity {
-		repository
-			.authorize(identity, &transaction, "transaction.read")
-			.await?;
-	}
+	repository
+		.authorize(identity, &transaction, "transaction.read")
+		.await?;
 	let (participants, history) = repository.history(id).await?;
 	Ok(Details {
 		transaction,
@@ -89,19 +79,15 @@ pub async fn details(
 
 pub async fn abort(
 	repository: &dyn ManagementRepository,
-	identity: Option<&ExecutionPrincipal>,
+	identity: &ExecutionPrincipal,
 	id: Uuid,
 ) -> Result<Status> {
-	if let Some(identity) = identity {
-		repository.require_owner(identity, id).await?;
-		let state = repository.status(id).await?;
-		repository
-			.authorize(identity, &state, "transaction.abort")
-			.await?;
-		repository.status(id).await
-	} else {
-		repository.abort_deployment_administrator(id).await
-	}
+	repository.require_owner(identity, id).await?;
+	let state = repository.status(id).await?;
+	repository
+		.authorize(identity, &state, "transaction.abort")
+		.await?;
+	repository.status(id).await
 }
 
 pub async fn participants(repository: &dyn ManagementRepository) -> Result<Vec<LocalStatus>> {
