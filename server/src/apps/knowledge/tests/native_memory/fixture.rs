@@ -3,11 +3,11 @@ use super::DatabaseFixture;
 use aidash_application::tenancy::TEST_FIXTURE;
 use aidash_domain::{memory::*, registry::EntityRef};
 use aidash_server::{
-	apps::identity::models::{AuthorizationBundle, Tenant},
+	apps::identity::models::Tenant,
 	registry::{Entry, Registry},
 	store::Store,
 };
-use reinhardt::db::orm::{Json, Model};
+use reinhardt::db::orm::Model;
 use rstest::fixture;
 use serde_json::json;
 use uuid::Uuid;

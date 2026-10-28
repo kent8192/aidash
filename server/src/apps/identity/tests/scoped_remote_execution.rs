@@ -4174,8 +4174,8 @@ async fn deployment_administrator_content_views_cannot_bypass_both_node_subject_
 				);
 			}
 		}
-		// The notification-backed stream gives an administrator no Tenant event: it is
-		// refused at connection, or ends at once with an error frame and no content.
+		// The notification-backed stream is Tenant content: an administrator is refused
+		// at connection, as on the unpaired routes.
 		let response = app
 			.streaming_http
 			.get(app.url("/api/events/stream"))
@@ -4183,25 +4183,7 @@ async fn deployment_administrator_content_views_cannot_bypass_both_node_subject_
 			.send()
 			.await
 			.unwrap();
-		if response.status() == 200 {
-			let mut stream = response.bytes_stream();
-			let mut seen = String::new();
-			while let Ok(Some(Ok(chunk))) =
-				tokio::time::timeout(std::time::Duration::from_secs(3), stream.next()).await
-			{
-				seen.push_str(&String::from_utf8_lossy(&chunk));
-			}
-			for hidden in [
-				"ochre falcon",
-				"Scoped remote result",
-				"Scoped remote progress",
-			] {
-				assert!(!seen.contains(hidden), "stream leaked {hidden}: {seen}");
-			}
-			assert!(!seen.contains("event: event"), "{seen}");
-		} else {
-			assert_eq!(response.status(), 403);
-		}
+		assert_eq!(response.status(), 403);
 	}
 	for path in [
 		format!("/api/workspaces/{}", task.workspace_id),

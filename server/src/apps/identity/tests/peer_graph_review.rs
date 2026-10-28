@@ -38,7 +38,7 @@ fn home(deployment: &str) -> String {
 	)
 }
 
-async fn credential(f: &Federation, app: &common::TestApplication, tenant: &str) -> Uuid {
+async fn credential(f: &Federation, _app: &common::TestApplication, tenant: &str) -> Uuid {
 	let issued = common::issued_credential(&f.store, tenant, "alice").await;
 	issued["credential"]["id"]
 		.as_str()
@@ -51,7 +51,7 @@ async fn viewer(f: &Federation, app: &common::TestApplication) -> (Value, Uuid, 
 	let source = common::register_source(f, app, SOURCE, "acme").await;
 	let id = credential(f, app, "acme").await;
 	let (status, mapping) = common::set_peer_mapping(
-		&f,
+		f,
 		"acme",
 		"alice",
 		json!({

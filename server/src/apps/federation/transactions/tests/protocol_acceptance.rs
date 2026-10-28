@@ -421,6 +421,7 @@ async fn fixture_origin(node: &Node) -> Value {
 	.await
 	.unwrap()
 	.into_iter()
+	// Listed newest first: the Subject Credential the requests carry is the newest.
 	.find(|credential| credential.subject == "alice")
 	.unwrap();
 	json!({"credential_id":credential.id,"tenant":credential.tenant,"subject":credential.subject})
@@ -1639,7 +1640,7 @@ async fn mapped_transaction_admission_and_revocation(
 	let (mut a, mut b, mut manifest, _, _) = nodes.0;
 	let app_a = a.application.clone();
 	let app_b = b.application.clone();
-	let (_, token_a, task_a) = common::bootstrap(&a.f, &app_a, "http://127.0.0.1:9").await;
+	let (_, mut token_a, task_a) = common::bootstrap(&a.f, &app_a, "http://127.0.0.1:9").await;
 	let (_, _, task_b) = common::bootstrap(&b.f, &app_b, "http://127.0.0.1:9").await;
 	let wa =
 		a.f.store
@@ -1659,7 +1660,7 @@ async fn mapped_transaction_admission_and_revocation(
 	let auth_b = Authorization {
 		pool: b.f.store.control_pool.clone(),
 	};
-	let credential_a = auth_a
+	let mut credential_a = auth_a
 		.credentials("acme")
 		.await
 		.unwrap()
@@ -1694,6 +1695,17 @@ async fn mapped_transaction_admission_and_revocation(
 			(&c.f, &c.application, "acme"),
 		)
 		.await;
+		// Registering C issued Mapping credentials on A after `bootstrap`'s, which
+		// would no longer be A's newest. Requests and the revocation cases name the
+		// newest, so issue the Subject's credential again now (#484).
+		token_a = common::subject_credential(&a.f.store, "acme", "alice").await;
+		credential_a = auth_a
+			.credentials("acme")
+			.await
+			.unwrap()
+			.into_iter()
+			.find(|c| c.subject == "alice")
+			.unwrap();
 		let app_c = c.application.clone();
 		let (_, _, task) = common::bootstrap(&c.f, &app_c, "http://127.0.0.1:9").await;
 		let workspace =

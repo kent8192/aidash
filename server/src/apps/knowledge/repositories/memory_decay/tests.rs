@@ -4,7 +4,6 @@ use super::*;
 use crate::apps::execution::test_database::{DatabaseFixture, database};
 use crate::apps::knowledge::services::native_memory as memory;
 use crate::apps::registry::models::Definition;
-use crate::authorization::identity::Actor;
 use aidash_application::tenancy::TEST_FIXTURE;
 use reinhardt::db::orm::Model;
 use reinhardt::query::QueryStatementBuilder;
