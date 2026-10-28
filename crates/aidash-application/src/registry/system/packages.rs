@@ -18,6 +18,7 @@ pub const SANDBOXED_GROUPS: &[(&str, &[&str])] = &[
 	("outbound_get", &["outbound_get"]),
 	("apply_patch", &["apply_patch"]),
 	("file_share", &["file_share"]),
+	("live_preview", &["live_preview_start", "live_preview_stop"]),
 ];
 /// Research provider packages, one group per Node provider. Every group's
 /// operations share the research contract, so a Run binding the fixture group
@@ -51,7 +52,8 @@ impl PackageGroup {
 	}
 }
 /// The groups whose provider the Deployment runs. A Deployment without a
-/// runner offers no Sandboxed group (ADR 0034).
+/// runner offers no Sandboxed group (ADR 0034), and one without a preview
+/// domain offers no Live preview group (ADR 0068).
 pub fn offered(
 	validation: &DefinitionValidation,
 	providers: &dyn ProviderCatalog,
@@ -59,6 +61,7 @@ pub fn offered(
 ) -> Result<Vec<PackageGroup>> {
 	Ok(declarations(validation, node)?
 		.into_iter()
+		.filter(|group| validation.preview_available() || group.name != "live_preview")
 		.filter(|group| group.verify_provider(providers).is_ok())
 		.collect())
 }

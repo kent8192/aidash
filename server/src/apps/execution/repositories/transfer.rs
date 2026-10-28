@@ -298,6 +298,11 @@ impl TransferScope for Scope<'_> {
 	fn limits(&self) -> Result<Limits> {
 		Ok(limits(self.store.ok_or_else(missing)?))
 	}
+	async fn retained_bytes(&mut self, area: &Area) -> Result<u64> {
+		super::retention::retained_bytes_of(self.authority.get_mut(), area.id)
+			.await
+			.map_err(Into::into)
+	}
 	fn node_id(&self) -> &str {
 		self.store.map_or("", |s| s.deployment.as_str())
 	}

@@ -964,6 +964,76 @@ class ChartsTest(unittest.TestCase):
                 self.assertEqual((root / 'snapshot/database.json').exists(), published)
 
 
+    def test_preview_gateway_renders_apart_with_a_wildcard_ingress_and_sandbox_policy(self):
+        values = {**self.base,
+                  'preview': {'enabled': True, 'domain': 'aidashusercontent.app', 'inProcess': False,
+                              'port': 8960, 'publicPort': 443, 'podPort': 3000,
+                              'ingress': {'enabled': True, 'className': 'nginx', 'tlsSecret': 'preview-tls'}},
+                  'image': {'repository': 'aidash', 'digest': 'sha256:' + 'a' * 64},
+                  'execution': {'sandboxNamespace': 'fixture-sandbox'}}
+        objects = render(self.aidash, values)
+        service = select(objects, 'Service', '-preview')
+        self.assertEqual(service['spec']['selector']['app.kubernetes.io/component'], 'preview')
+        self.assertEqual(service['spec']['ports'], [{'name': 'preview', 'port': 8960, 'targetPort': 8960}])
+        deployment = select(objects, 'Deployment', '-preview')
+        container = deployment['spec']['template']['spec']['containers'][0]
+        self.assertEqual(container['args'], ['preview-gateway'])
+        env = {item['name']: item.get('value') for item in container['env']}
+        self.assertEqual(env['AIDASH_PREVIEW_DOMAIN'], 'aidashusercontent.app')
+        self.assertEqual(env['AIDASH_PREVIEW_LISTEN'], '0.0.0.0:8960')
+        self.assertEqual(env['AIDASH_PREVIEW_IN_PROCESS'], 'false')
+        self.assertEqual(env['AIDASH_PREVIEW_PUBLIC_PORT'], '443')
+        self.assertEqual(env['AIDASH_PREVIEW_POD_PORT'], '3000')
+        self.assertTrue(container['securityContext']['readOnlyRootFilesystem'])
+        ingress = select(objects, 'Ingress', '-preview')
+        self.assertEqual(ingress['spec']['rules'][0]['host'], '*.aidashusercontent.app')
+        self.assertEqual(ingress['spec']['tls'][0]['secretName'], 'preview-tls')
+        self.assertEqual(ingress['spec']['ingressClassName'], 'nginx')
+        policy = next(value for value in objects if value['kind'] == 'NetworkPolicy'
+                      and value['metadata']['name'] == 'fixture-preview-sandbox')
+        self.assertEqual(policy['metadata']['namespace'], 'fixture-sandbox')
+        self.assertEqual(policy['spec']['podSelector']['matchLabels'], {'aidash-sandbox': 'true'})
+        self.assertEqual(policy['spec']['ingress'][0]['ports'], [{'protocol': 'TCP', 'port': 3000}])
+        self.assertEqual(policy['spec']['ingress'][0]['from'][0]['podSelector']['matchLabels'],
+                         {'app.kubernetes.io/instance': 'fixture',
+                          'app.kubernetes.io/component': 'preview'})
+
+    def test_a_live_preview_profile_names_its_pod_port_and_absolute_limit(self):
+        execution = {'createNamespaces': True, 'sandboxImage': 'sandbox' + DIGEST,
+                     'sandboxNamespace': 'fixture-sandbox', 'trustedNamespace': 'fixture-trusted',
+                     'installerNamespace': 'fixture-installer',
+                     'runtimeClass': {'create': True, 'name': 'fixture-runsc'},
+                     'runner': {'enabled': True, 'existingSecret': 'app-runner', 'image': 'control' + DIGEST},
+                     'guard': {'enabled': True, 'image': 'control' + DIGEST}}
+        values = {**self.base,
+                  'preview': {'enabled': True, 'domain': 'aidashusercontent.app', 'inProcess': False,
+                              'podPort': 3000, 'limits': {'idle_seconds': 600, 'absolute_seconds': 3600}},
+                  'execution': execution}
+        objects = render(self.aidash, values)
+        profile = json.loads(self.mounted(objects, 'server', 'AIDASH_CAPABILITY_PROFILE'))
+        self.assertEqual(profile['preview_port'], 3000)
+        self.assertEqual(profile['preview_maximum_seconds'], 3600)
+        # The gateway and the Pod exchange the same admitted port.
+        env = {item['name']: item.get('value')
+               for item in select(objects, 'Deployment', '-preview')['spec']['template']['spec']['containers'][0]['env']}
+        self.assertEqual(env['AIDASH_PREVIEW_POD_PORT'], '3000')
+
+    def test_in_process_preview_gateway_reaches_no_separate_workload(self):
+        values = {**self.base, 'preview': {'enabled': True, 'domain': 'localhost', 'inProcess': True}}
+        objects = render(self.aidash, values)
+        service = select(objects, 'Service', '-preview')
+        self.assertEqual(service['spec']['selector']['app.kubernetes.io/component'], 'server')
+        self.assertFalse([value for value in objects if value['kind'] == 'Deployment'
+                          and value['metadata']['name'] == 'fixture-preview'])
+        server = select(objects, 'Deployment', '-server')
+        env = {item['name']: item.get('value')
+               for item in server['spec']['template']['spec']['containers'][0]['env']}
+        self.assertEqual(env['AIDASH_PREVIEW_IN_PROCESS'], 'true')
+        policy = next(value for value in objects if value['kind'] == 'NetworkPolicy'
+                      and value['metadata']['name'] == 'fixture-preview-sandbox')
+        self.assertEqual(policy['spec']['ingress'][0]['from'][0]['podSelector']['matchLabels']
+                         ['app.kubernetes.io/component'], 'server')
+
 class MetadataServerEgressTest(unittest.TestCase):
     """The GKE metadata server (169.254.169.254) is reachable only from server and worker."""
     # The metadata server and the address gke-metadata-server DNATs it to (169.254.169.252:988):

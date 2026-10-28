@@ -311,6 +311,12 @@ async fn stop_runs(tx: &mut dyn TransactionExecutor, tenant: &str) -> Result<()>
 		))
 		.build(PostgresQueryBuilder);
 	tx.execute(&sql, convert_values(values)).await?;
+	crate::apps::execution::repositories::live_previews::mark_stopped_for_tenant(
+		tx,
+		tenant,
+		aidash_domain::preview::live::StopReason::TenantDeleted,
+	)
+	.await?;
 	Ok(())
 }
 

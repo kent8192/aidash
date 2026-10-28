@@ -109,7 +109,15 @@ pub async fn initialize(
 		.with_research_retention(settings.research_retention.rules()?)
 		.with_deployment_region(settings.deployment.region)
 		.with_data_protection_floor(settings.deployment.data_protection_floor)
-		.with_test_limit_ceilings(settings.workbench_test_limits.ceilings()?);
+		.with_test_limit_ceilings(settings.workbench_test_limits.ceilings()?)
+		.with_preview_limits(settings.preview_limits.limits()?)
+		.with_preview(
+			config
+				.preview
+				.as_ref()
+				.map(|preview| preview.domain.clone()),
+			config.preview.as_ref().map(|preview| preview.pod_port),
+		);
 	configure_provider_credentials(&mut store, &settings.provider_credentials).await?;
 	configure_plan_connections(
 		&mut store,
@@ -194,6 +202,25 @@ impl RuntimeTasks {
 			let stopping = receiver.clone();
 			tasks.spawn_service(runtime_task(async move {
 				aidash_integrations::egress::serve(listener, authority, stopping)
+					.await
+					.map_err(Into::into)
+			}));
+		}
+		if event_streams.is_some()
+			&& let Some(preview) = &federation.config.preview
+			&& preview.in_process
+		{
+			// The Self-hosted default: the API process is also the Preview
+			// gateway. Helm runs it apart and turns `in_process` off there.
+			let listener = tokio::net::TcpListener::bind(preview.listen).await?;
+			let authority = Arc::new(crate::apps::execution::repositories::previews::Gateway {
+				store: federation.store.clone(),
+				domain: preview.domain.clone(),
+				runtime: Some(federation.clone()),
+			});
+			let stopping = receiver.clone();
+			tasks.spawn_service(runtime_task(async move {
+				aidash_integrations::preview::serve(listener, authority, stopping)
 					.await
 					.map_err(Into::into)
 			}));
@@ -336,6 +363,7 @@ impl RuntimeTasks {
 		let retention = federation.store.clone();
 		let research_retention = federation.store.research_retention;
 		let audit_retention_days = federation.config.tenancy.audit_retention_days;
+		let serving = event_streams.is_some();
 		tasks.spawn_service(runtime_task(async move {
 			// Inference progress expires minutes after its outcome, so attempts
 			// orphaned on unscheduled Runs are closed first; hourly workbench,
@@ -402,6 +430,12 @@ impl RuntimeTasks {
 							break;
 						}
 					}
+				}
+				if serving
+					&& let Err(error) =
+						crate::apps::execution::repositories::live_previews::sweep(&retention).await
+				{
+					tracing::warn!(%error, "Live preview sweep failed");
 				}
 				ticks = ticks.wrapping_add(1);
 				tokio::time::sleep(Duration::from_secs(60)).await;
@@ -498,7 +532,7 @@ pub fn model_catalog(client: reqwest::Client) -> Arc<dyn aidash_application::por
 
 mod compatibility;
 mod listener;
-pub use compatibility::{migrate, require_migrated, serve};
+pub use compatibility::{migrate, preview_gateway, require_migrated, serve};
 
 /// Legacy-only Keyless inference: no Cache Salt Keys, so any salted request is
 /// rejected without being sent. Run inference uses `admitted_model_provider`,
@@ -661,6 +695,11 @@ pub fn registry_validation() -> aidash_application::registry::DefinitionValidati
 	.with_tenant_secrets(settings.as_ref().is_some_and(|s| {
 		matches!(s.provider_credentials.store, Some(StoreConfig::Postgres { .. }))
 	}))
+	.with_preview_available(
+		settings
+			.as_ref()
+			.is_some_and(|s| s.preview.domain.is_some()),
+	)
 }
 pub fn registry_validation_for(
 	store: &Store,
@@ -670,6 +709,7 @@ pub fn registry_validation_for(
 		.with_provider_credentials(store.provider_credentials.is_some())
 		.with_plan_connections(store.plan_connections_enabled && store.plan_connections.is_some())
 		.with_tenant_secrets(store.tenant_secrets.is_some())
+		.with_preview_available(store.preview_domain.is_some())
 		.with_egress_limits(
 			store
 				.capabilities
@@ -756,7 +796,11 @@ pub(crate) fn channel_scope<'a>(
 	store: &'a Store,
 	lease: &'a mut crate::collaboration::access::Lease,
 ) -> crate::apps::workspaces::repositories::channels::NativeChannels<'a> {
-	crate::apps::workspaces::repositories::channels::NativeChannels { store, lease }
+	crate::apps::workspaces::repositories::channels::NativeChannels {
+		store,
+		lease,
+		federation: None,
+	}
 }
 
 /// Marketplace resolution borrows one current credential/policy/distribution lease.
@@ -1838,6 +1882,12 @@ pub(crate) fn cleanup_scope<'a>(
 	access: &'a mut crate::authorization::access::Access,
 ) -> crate::apps::execution::repositories::cleanup::Scope<'a> {
 	crate::apps::execution::repositories::cleanup::Scope { store, access }
+}
+pub(crate) fn retention_scope<'a>(
+	store: Option<&'a Store>,
+	access: &'a mut crate::authorization::access::Access,
+) -> crate::apps::execution::repositories::retention::Scope<'a> {
+	crate::apps::execution::repositories::retention::Scope { store, access }
 }
 pub(crate) fn cleanup_repository(
 	store: &Store,

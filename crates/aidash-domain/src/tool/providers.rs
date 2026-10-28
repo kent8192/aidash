@@ -74,6 +74,7 @@ pub fn core_provider(operation: &str) -> Option<&'static str> {
 		| "python_cancel" => "core.sandbox@1",
 		"outbound_get" => "core.egress@1",
 		"file_share" => "core.sharing@1",
+		"live_preview_start" | "live_preview_stop" => "core.preview@1",
 		_ => return None,
 	})
 }
@@ -178,6 +179,8 @@ pub fn requires_runner(operation: &str) -> bool {
 			| "code_interpreter"
 			| "python_poll"
 			| "python_cancel"
+			| "live_preview_start"
+			| "live_preview_stop"
 	)
 }
 pub fn tier(operation: &str) -> Option<ToolTier> {
@@ -194,6 +197,8 @@ pub fn tier(operation: &str) -> Option<ToolTier> {
 				| "outbound_get"
 				| "apply_patch"
 				| "file_share"
+				| "live_preview_start"
+				| "live_preview_stop"
 		) {
 			ToolTier::Sandboxed
 		} else {

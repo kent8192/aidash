@@ -128,6 +128,16 @@ pub(crate) fn implementations() -> BTreeMap<String, Arc<dyn Tool>> {
 			schema::<Share>(),
 		),
 		(
+			"live_preview_start",
+			"Start this Run's Live preview: a long-lived Web server from the current Working Area revision. 'port' must be the Deployment's preview Pod port (preview.pod_port); any other port is refused. Waits up to 120 s for the port and returns its status and a bounded startup log, never a viewing address. Starting replaces a running preview.",
+			schema::<LivePreviewStart>(),
+		),
+		(
+			"live_preview_stop",
+			"Stop this Run's Live preview and release the File versions it kept.",
+			schema::<LivePreviewStop>(),
+		),
+		(
 			"skill_list",
 			"List pinned Skill metadata. Select by UUID and origin because names can collide.",
 			schema::<SkillList>(),

@@ -1,0 +1,20 @@
+meta {
+  name: 0899 openapi - Public contract
+  type: http
+  seq: 899
+}
+
+get {
+  url: {{base_url}}/api/openapi.json
+  body: none
+  auth: none
+}
+
+headers {
+  Accept: application/json
+}
+
+tests {
+  test("Exact HTTP 200", function () { expect(res.getStatus()).to.equal(200); });
+  test("Public contract contract", function () { expect(res.getHeader("content-type")).to.include("application/json");expect(res.getBody()).to.be.an("object");expect(res.getBody().openapi).to.match(/^3\./);expect(res.getBody().paths["/api/workspaces"]).to.have.property("post");expect(JSON.stringify(res.getBody())).not.to.include(bru.getEnvVar("deployment_administrator_token"));const wireApi=res.getBody().components.schemas.WireApi;expect(wireApi.enum||(wireApi.oneOf||[]).flatMap(option=>option.enum||[])).to.eql(["chat","responses"]);expect(res.getBody().components.schemas.ModelConfig.properties).to.have.property("wire_api");expect(res.getBody().components.schemas.ModelConfig.required).not.to.include("wire_api"); });
+}

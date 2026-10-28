@@ -12,6 +12,7 @@ pub mod memory;
 pub mod plan_connections;
 pub mod plugin_tools;
 pub mod ports;
+pub mod preview;
 pub mod provider_access;
 pub mod provider_authorization;
 pub mod provider_credentials;

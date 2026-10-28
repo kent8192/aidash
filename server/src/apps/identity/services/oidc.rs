@@ -146,19 +146,36 @@ async fn provider_metadata(config: &OidcConfig) -> Result<CoreProviderMetadata> 
 		.map_err(Into::into)
 }
 
+/// Accepts a same-origin path to redirect the browser to after a flow.
+///
+/// Browsers drop tab and newline characters while parsing a URL, so
+/// `/\t/host` would become the protocol-relative `//host`. Control
+/// characters are refused outright, and the path must also stay on the origin
+/// when parsed the way a browser parses a `Location`.
 pub fn return_path(value: Option<&str>) -> Result<&str> {
 	let value = value.unwrap_or("/");
+	let invalid = || Error::Invalid("invalid return destination".into());
 	if value.len() > 1024
 		|| !value.starts_with('/')
 		|| value.starts_with("//")
 		|| value.contains('\\')
-		|| value.contains('\r')
-		|| value.contains('\n')
+		|| value.chars().any(char::is_control)
 	{
-		return Err(Error::Invalid("invalid return destination".into()));
+		return Err(invalid());
+	}
+	let base = reqwest::Url::parse(RETURN_BASE).expect("static base URL");
+	let resolved = base.join(value).map_err(|_| invalid())?;
+	if resolved.origin() != base.origin() {
+		return Err(invalid());
 	}
 	Ok(value)
 }
+
+const RETURN_BASE: &str = "https://aidash.invalid/";
+
+#[cfg(test)]
+#[path = "../tests/oidc_return_path.rs"]
+mod return_path_tests;
 
 async fn account_valid(f: &Federation, row: DashboardIdentity) -> Result<()> {
 	crate::bootstrap::dashboard_authority(f)
