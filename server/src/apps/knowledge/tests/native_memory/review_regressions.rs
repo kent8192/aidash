@@ -276,9 +276,9 @@ async fn derived_corrections_preserve_kind_and_require_derive_authority(
 	let authorization = aidash_server::authorization::Authorization {
 		pool: store.pool.clone(),
 	};
-	authorization.replace("acme", 1, serde_json::from_value(json!({"tenant":"acme","subjects":{"alice":{"kind":"user"}},"policies":[
+	authorization.replace("acme", 1, serde_json::from_value(json!({"tenant":"acme","subjects":{"alice":{"kind":"user"},"reader":{"kind":"user"}},"policies":[
         {"id":"allow","effect":"allow","subjects":{"any":true},"actions":["*"],"resources":{"kinds":["*"]}},
-        {"id":"write-only","effect":"deny","subjects":{"any":true},"actions":["memory.read","memory.derive"],"resources":{"kinds":["*"]}}
+        {"id":"write-only","effect":"deny","subjects":{"ids":["alice"]},"actions":["memory.read","memory.derive"],"resources":{"kinds":["*"]}}
     ]})).unwrap(), "deployment_administrator").await.unwrap();
 	for entry in ["m", "e", "r", "t", "p", "a"] {
 		authorization
@@ -326,7 +326,7 @@ async fn derived_corrections_preserve_kind_and_require_derive_authority(
 	));
 	let current = memory::list(
 		&store,
-		&administrator(&store).await,
+		&subject_actor(&store, "reader").await,
 		memory::ReadBank {
 			provider: reference("p"),
 			bank,
@@ -559,9 +559,9 @@ async fn restore_propagates_withholding_beyond_recall_hop_limit(
 
 	// Only the root writer loses authority. Its primary message remains current,
 	// so dependents are invalidated only after their parent is withheld.
-	authorization.replace("acme", 2, serde_json::from_value(json!({"tenant":"acme","subjects":{"alice":{"kind":"user"}},"policies":[
+	authorization.replace("acme", 2, serde_json::from_value(json!({"tenant":"acme","subjects":{"alice":{"kind":"user"},"reader":{"kind":"user"}},"policies":[
         {"id":"allow","effect":"allow","subjects":{"any":true},"actions":["*"],"resources":{"kinds":["*"]}},
-        {"id":"revoke-root-reader","effect":"deny","subjects":{"any":true},"actions":["memory.read"],"resources":{"kinds":["*"]}}
+        {"id":"revoke-root-reader","effect":"deny","subjects":{"ids":["alice"]},"actions":["memory.read"],"resources":{"kinds":["*"]}}
     ]})).unwrap(), "deployment_administrator").await.unwrap();
 	let report = recovery::restore(&store, directory, &archive)
 		.await
@@ -570,7 +570,7 @@ async fn restore_propagates_withholding_beyond_recall_hop_limit(
 	assert!(
 		memory::list(
 			&store,
-			&administrator(&store).await,
+			&subject_actor(&store, "reader").await,
 			memory::ReadBank {
 				provider: reference("p"),
 				bank

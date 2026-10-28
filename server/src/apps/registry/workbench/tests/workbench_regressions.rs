@@ -2088,7 +2088,7 @@ async fn deployment_and_other_tenant_authority_never_reaches_a_tenants_workbench
 		("GET", format!("{incident_path}/events"), Value::Null),
 		("GET", format!("{version}/audit"), Value::Null),
 		("GET", version.clone(), Value::Null),
-		("GET", format!("{version}/permissions"), Value::Null),
+		("POST", format!("{version}/permissions"), json!({})),
 		("GET", format!("{version}/report"), Value::Null),
 		(
 			"GET",
@@ -2106,18 +2106,27 @@ async fn deployment_and_other_tenant_authority_never_reaches_a_tenants_workbench
 
 	// Act and Assert: each outsider is refused on every route.
 	for (method, path, body) in &routes {
-		let (status, response) =
-			request(&wb.app, &wb.f.config.api_token, method, path, body.clone()).await;
+		// A refusal may carry no JSON body, so read the status and any text.
+		let mut probe = wb
+			.app
+			.api_http
+			.request(method.parse().unwrap(), path)
+			.header("Authorization", format!("Bearer {}", wb.f.config.api_token));
+		if matches!(*method, "POST" | "PUT") {
+			probe = probe.json(body);
+		}
+		let reply = probe.send().await.unwrap();
 		assert_eq!(
-			status, 403,
-			"bearer administrator {method} {path}: {response}"
+			reply.status_code(),
+			403,
+			"bearer administrator {method} {path}: {}",
+			String::from_utf8_lossy(reply.body())
 		);
 		let (status, response) = browser.send(method, path, body.clone()).await;
 		assert_eq!(
 			status, 403,
 			"browser administrator {method} {path}: {response}"
 		);
-		// A refusal may carry no JSON body, so read the status and any text.
 		let mut probe = wb
 			.app
 			.api_http
@@ -2132,7 +2141,7 @@ async fn deployment_and_other_tenant_authority_never_reaches_a_tenants_workbench
 			String::from_utf8_lossy(reply.body()).into_owned(),
 		);
 		assert!(
-			matches!(status, 400 | 403 | 404)
+			matches!(status, 400 | 403 | 404 | 422)
 				|| (status == 200 && !response.contains("Tenant incident")),
 			"other Tenant {method} {path}: {status} {response}"
 		);

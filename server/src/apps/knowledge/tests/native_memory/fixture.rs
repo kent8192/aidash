@@ -325,18 +325,31 @@ pub(super) fn mutation(bank: &Bank, change: Change) -> Mutation {
 /// Administrator holds no Tenant content authority (#484), so tests act as the
 /// Tenant's own Subject, "alice", whom the fixture policy defines and allows.
 pub(super) async fn administrator(store: &Store) -> aidash_server::authorization::identity::Actor {
+	subject_actor(store, "alice").await
+}
+/// Another Tenant Subject of the fixture Tenant, for tests whose policy
+/// withdraws "alice"'s authority while a reader keeps its own.
+pub(super) async fn subject_actor(
+	store: &Store,
+	subject: &str,
+) -> aidash_server::authorization::identity::Actor {
 	let authorization = aidash_server::authorization::Authorization {
 		pool: store.pool.clone(),
 	};
 	// The Subject uses only Catalog-approved entries (the Deployment
 	// Administrator's bypass is gone, #484). A test that approved an entry
 	// itself keeps its own approval, so a conflict is not an error here.
-	for entry in ["m", "e", "r", "t", "p", "a"] {
+	let entries: Vec<(String, String)> =
+		sqlx::query_as("SELECT id, version FROM registry WHERE tenant = 'acme'")
+			.fetch_all(store.pool.fixture_driver())
+			.await
+			.unwrap();
+	for (id, version) in entries {
 		let _ = authorization
 			.set_catalog(
 				"acme",
 				&aidash_domain::nodes::NodeName::derived("acme"),
-				&reference(entry),
+				&EntityRef { id, version },
 				0,
 				true,
 				"fixture",
@@ -344,7 +357,7 @@ pub(super) async fn administrator(store: &Store) -> aidash_server::authorization
 			.await;
 	}
 	let issued = authorization
-		.issue_credential("acme", "alice", 3600, "fixture")
+		.issue_credential("acme", subject, 3600, "fixture")
 		.await
 		.unwrap();
 	authorization.authenticate(&issued.token).await.unwrap()

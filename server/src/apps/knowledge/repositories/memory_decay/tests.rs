@@ -608,7 +608,8 @@ async fn person_only_actions_reject_agent_tokens_even_with_explicit_grants_and_d
 				"deployment_administrator",
 			)
 			.await
-			.unwrap();
+			// The fixture Subject may have approved it already.
+			.ok();
 	}
 	for subject in ["agent", "reader", "person"] {
 		let credential = authorization
