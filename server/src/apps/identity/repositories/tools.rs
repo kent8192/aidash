@@ -77,8 +77,8 @@ impl AgentToolScope for Scope<'_> {
 	fn resource(&self, kind: &str, id: &str, attributes: Value) -> Resource {
 		self.access.resource(kind, id, attributes)
 	}
-	async fn catalog(&mut self, reference: &EntityRef, action: &str) -> Result<Entry> {
-		catalog::tool_entry(&mut self.access, reference, action)
+	async fn catalog(&mut self, reference: &EntityRef, action: &str, tool: &str) -> Result<Entry> {
+		catalog::tool_entry(&mut self.access, reference, action, tool)
 			.await
 			.map_err(Into::into)
 	}

@@ -6,34 +6,37 @@ pub async fn entry(
 	reference: &EntityRef,
 	action: &str,
 ) -> Result<Entry> {
-	admit(scope, reference, action, |_| Error::Forbidden).await
+	admit(scope, reference, action, &|_| Error::Forbidden).await
 }
 
-/// The refusal of a Tenant policy denial met while admitting a Catalog entry for a tool
-/// call. Its tool name is empty; the tool authorization that receives it names the tool.
-pub fn policy_refusal(action: &str) -> Error {
+/// The refusal of a Tenant policy denial met while admitting a Catalog entry for `tool`'s call.
+pub fn policy_refusal(tool: &str, action: &str) -> Error {
 	Error::AuthorityRefused(Box::new(aidash_domain::tool::AuthorityRefusal {
-		tool: String::new(),
+		tool: tool.to_owned(),
 		check: aidash_domain::tool::RefusalCheck::Policy,
 		action: Some(action.to_owned()),
 	}))
 }
 
-/// [`entry`] for a tool call: a policy denial is [`policy_refusal`], so it is not
+/// [`entry`] for the call of `tool`: a policy denial is [`policy_refusal`], so it is not
 /// reported as a Catalog Approval refusal.
 pub async fn tool_entry(
 	scope: &mut dyn CatalogScope,
 	reference: &EntityRef,
 	action: &str,
+	tool: &str,
 ) -> Result<Entry> {
-	admit(scope, reference, action, policy_refusal).await
+	admit(scope, reference, action, &|action| {
+		policy_refusal(tool, action)
+	})
+	.await
 }
 
 async fn admit(
 	scope: &mut dyn CatalogScope,
 	reference: &EntityRef,
 	action: &str,
-	policy_denied: fn(&str) -> Error,
+	policy_denied: &dyn Fn(&str) -> Error,
 ) -> Result<Entry> {
 	if scope.inherited_lease()
 		&& !scope.approved(reference)

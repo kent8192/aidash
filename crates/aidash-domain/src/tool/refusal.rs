@@ -27,22 +27,6 @@ pub enum RefusalCheck {
 	AgentExecution,
 }
 
-impl RefusalCheck {
-	pub fn as_str(self) -> &'static str {
-		match self {
-			Self::Policy => "policy",
-			Self::AgentFlag => "agent_flag",
-			Self::CoreCapability => "core_capability",
-			Self::Catalog => "catalog",
-			Self::RemoteAuthority => "remote_authority",
-			Self::CallUnapprovedDeny => "call_unapproved_deny",
-			Self::RegistryTool => "registry_tool",
-			Self::PluginTool => "plugin_tool",
-			Self::AgentExecution => "agent_execution",
-		}
-	}
-}
-
 /// A tool call refused by the Run's authority. It names the tool and the check,
 /// never the resource it addressed.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -133,7 +117,7 @@ mod tests {
 	fn check_serializes_as_its_name() {
 		assert_eq!(
 			serde_json::to_value(RefusalCheck::CallUnapprovedDeny).unwrap(),
-			serde_json::json!(RefusalCheck::CallUnapprovedDeny.as_str())
+			serde_json::json!("call_unapproved_deny")
 		);
 	}
 }

@@ -61,16 +61,18 @@ pub(crate) async fn entry(
 	.map_err(Into::into)
 }
 
-/// [`entry`] for a tool call: a policy denial is not reported as a Catalog Approval refusal.
+/// [`entry`] for the call of `tool`: a policy denial is not reported as a Catalog Approval refusal.
 pub(crate) async fn tool_entry(
 	access: &mut Access,
 	reference: &EntityRef,
 	action: &str,
+	tool: &str,
 ) -> Result<Entry> {
 	aidash_application::authorization::catalog::tool_entry(
 		&mut crate::bootstrap::catalog_scope(access),
 		reference,
 		action,
+		tool,
 	)
 	.await
 	.map_err(Into::into)

@@ -330,6 +330,7 @@ struct Journal {
 #[derive(Clone, Copy)]
 enum Outcome {
 	Forbidden,
+	Unauthorized,
 	Missing,
 	Fault,
 }
@@ -437,13 +438,13 @@ impl AgentToolScope for Scope<'_> {
 	fn resource(&self, kind: &str, key: &str, attributes: Value) -> Resource {
 		resource(kind, key, attributes)
 	}
-	async fn catalog(&mut self, reference: &EntityRef, action: &str) -> Result<Entry> {
+	async fn catalog(&mut self, reference: &EntityRef, action: &str, tool: &str) -> Result<Entry> {
 		self.0.record(format!("catalog:{}:{action}", reference.id));
 		self.0.check("catalog")?;
 		match &self.0.catalog_denial {
 			Some(Error::Forbidden) => return Err(Error::Forbidden),
 			// Any other denial stands for a Tenant policy denial met inside the Catalog check.
-			Some(_) => return Err(crate::authorization::catalog::policy_refusal(action)),
+			Some(_) => return Err(crate::authorization::catalog::policy_refusal(tool, action)),
 			None => {}
 		}
 		Ok(self.0.catalog.clone())
@@ -461,6 +462,7 @@ impl AgentToolScope for Scope<'_> {
 		}
 		match self.0.outcomes.get(&(resource.id.clone(), action.into())) {
 			Some(Outcome::Forbidden) => Err(Error::Forbidden),
+			Some(Outcome::Unauthorized) => Err(Error::Unauthorized),
 			Some(Outcome::Missing) => Err(Error::NotFound("saved tool".into())),
 			Some(Outcome::Fault) => Err(Error::Port(Box::new(std::io::Error::other(
 				"require fault",
@@ -472,6 +474,7 @@ impl AgentToolScope for Scope<'_> {
 		self.0.record(format!("denied:{}:{action}", resource.id));
 		match self.0.outcomes.get(&(resource.id.clone(), action.into())) {
 			Some(Outcome::Forbidden) => Ok(true),
+			Some(Outcome::Unauthorized) => Err(Error::Unauthorized),
 			Some(Outcome::Missing) => Err(Error::NotFound("saved tool".into())),
 			Some(Outcome::Fault) => Err(Error::Port(Box::new(std::io::Error::other("deny fault")))),
 			None => Ok(false),
@@ -1119,6 +1122,35 @@ async fn an_existing_task_refused_by_policy_stays_an_authority_pause(
 }
 #[rstest]
 #[tokio::test]
+async fn an_unauthorized_policy_require_is_an_authority_pause_naming_the_tool(
+	mut repository: Repository,
+	run: RunMetadata,
+	agent: AgentConfig,
+) {
+	repository.outcomes.insert(
+		(id(9).to_string(), "task.delegate".into()),
+		Outcome::Unauthorized,
+	);
+	let result = authorize(
+		&repository,
+		&run,
+		&agent,
+		&call(
+			"task_delegate",
+			json!({"task_id":id(9),"node_id":run.home_node,"agent":reference()}),
+		),
+	)
+	.await;
+	assert!(
+		matches!(result, Err(Error::AuthorityRefused(ref refusal))
+			if refusal.check == RefusalCheck::Policy
+				&& refusal.tool == "task_delegate"
+				&& refusal.action.as_deref() == Some("task.delegate")),
+		"{result:?}"
+	);
+}
+#[rstest]
+#[tokio::test]
 async fn malformed_delegate_agent_keeps_the_json_error(
 	repository: Repository,
 	run: RunMetadata,
@@ -1218,19 +1250,22 @@ async fn a_remote_delegate_cannot_address_a_task_other_than_its_admitted_task(
 	agent: AgentConfig,
 ) {
 	repository.remote = true;
-	assert!(matches!(
-		authorize(
-			&repository,
-			&run,
-			&agent,
-			&call(
-				"task_delegate",
-				json!({"task_id":id(9),"node_id":run.home_node,"agent":reference()})
-			)
-		)
-		.await,
-		Err(Error::AuthorityRefused(ref refusal)) if refusal.check == RefusalCheck::RemoteAuthority
-	));
+	let result = authorize(
+		&repository,
+		&run,
+		&agent,
+		&call(
+			"task_delegate",
+			json!({"task_id":id(9),"node_id":run.home_node,"agent":reference()}),
+		),
+	)
+	.await;
+	// The model named another task: a Rejected Call, not an Authority Pause.
+	assert!(
+		matches!(result, Err(Error::Invalid(ref message))
+			if message.contains("was not found in this Workspace")),
+		"{result:?}"
+	);
 	assert!(
 		repository
 			.calls()
