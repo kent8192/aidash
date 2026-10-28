@@ -19,7 +19,7 @@ fn options() -> GraphOptions {
 		cursor: None,
 	}
 }
-fn viewer() -> &'static str {
+fn subject() -> &'static str {
 	"root"
 }
 fn workspace(n: u128) -> Candidate {
@@ -125,7 +125,7 @@ impl GraphProjectionScope for Scope {
 async fn hidden_first_page_does_not_end_the_visible_scan() {
 	let mut s = Scope::new(72);
 	s.deny_through = 70;
-	let p = project(&mut s, "aidash://source", viewer(), &options())
+	let p = project(&mut s, "aidash://source", subject(), &options())
 		.await
 		.unwrap();
 	assert_eq!(p.nodes.len(), 2);
@@ -140,7 +140,7 @@ async fn hidden_first_page_does_not_end_the_visible_scan() {
 async fn continuation_retries_the_first_record_that_did_not_fit() {
 	let mut s = Scope::new(5);
 	let mut o = options();
-	let first = project(&mut s, "aidash://source", viewer(), &o)
+	let first = project(&mut s, "aidash://source", subject(), &o)
 		.await
 		.unwrap();
 	let cursor = s
@@ -149,7 +149,7 @@ async fn continuation_retries_the_first_record_that_did_not_fit() {
 	assert_eq!(cursor.offset, 2);
 	assert_eq!(cursor.kind, 0);
 	o.cursor = first.next_cursor;
-	let second = project(&mut s, "aidash://source", viewer(), &o)
+	let second = project(&mut s, "aidash://source", subject(), &o)
 		.await
 		.unwrap();
 	assert_eq!(
@@ -167,7 +167,7 @@ async fn continuation_retries_the_first_record_that_did_not_fit() {
 async fn generation_change_refuses_a_mixed_snapshot() {
 	let mut s = Scope::new(1);
 	s.change_generation = true;
-	let error = project(&mut s, "aidash://source", viewer(), &options())
+	let error = project(&mut s, "aidash://source", subject(), &options())
 		.await
 		.unwrap_err();
 	assert!(matches!(error,Error::Conflict(ref text) if text=="graph projection changed"));
@@ -176,7 +176,7 @@ async fn generation_change_refuses_a_mixed_snapshot() {
 async fn adapter_failure_keeps_its_identity() {
 	let mut s = Scope::new(1);
 	s.fail = true;
-	let error = project(&mut s, "aidash://source", viewer(), &options())
+	let error = project(&mut s, "aidash://source", subject(), &options())
 		.await
 		.unwrap_err();
 	assert!(
@@ -188,7 +188,7 @@ async fn scoped_projection_uses_the_receiving_admission_authority() {
 	let mut s = Scope::new(1);
 	let mut o = options();
 	o.scope_workspace = Some(Uuid::from_u128(8));
-	project(&mut s, "aidash://source", viewer(), &o)
+	project(&mut s, "aidash://source", subject(), &o)
 		.await
 		.unwrap();
 	assert_eq!(s.scoped, vec![true]);
@@ -200,7 +200,7 @@ async fn an_oversized_first_group_is_rejected_without_advancing_a_cursor() {
 		panic!("workspace fixture")
 	};
 	w.title = "x".repeat(3_000_001);
-	let error = project(&mut s, "aidash://source", viewer(), &options())
+	let error = project(&mut s, "aidash://source", subject(), &options())
 		.await
 		.unwrap_err();
 	assert!(
@@ -258,15 +258,15 @@ fn stale_cursor_requires_restart(#[case] field: &str) {
 #[test]
 fn continuation_is_not_part_of_the_scope_digest() {
 	let mut o = options();
-	let first = cursor_binding("aidash://source", viewer(), &o).unwrap();
+	let first = cursor_binding("aidash://source", subject(), &o).unwrap();
 	o.cursor = Some("opaque".into());
 	assert_eq!(
-		cursor_binding("aidash://source", viewer(), &o).unwrap(),
+		cursor_binding("aidash://source", subject(), &o).unwrap(),
 		first
 	);
 	o.limit += 1;
 	assert_ne!(
-		cursor_binding("aidash://source", viewer(), &o).unwrap(),
+		cursor_binding("aidash://source", subject(), &o).unwrap(),
 		first
 	);
 }
