@@ -16,7 +16,6 @@ use wiremock::{
 mod personal_credentials;
 
 const CANARY: &str = "owner-only-oauth-canary";
-const EXECUTOR_SHARED: &str = "executor-shared-must-not-be-used";
 async fn mcp() -> MockServer {
 	let server = MockServer::start().await;
 	Mock::given(method("POST")).and(path("/mcp")).respond_with(|request: &Request| {
@@ -77,7 +76,7 @@ async fn install(p: &mut Pair, resource: &str) -> (Value, Value) {
 	http["config"]["operation"] = json!("invoke");
 	http["config"]["provider"] = json!("integration.http@1");
 	http["config"]["default_alias"] = json!("personal_http");
-	http["config"]["transport"] = json!({"transport":"http","endpoint":resource.replace("/mcp", "/http"),"replay":"idempotent","secret":"personal-api"});
+	http["config"]["transport"] = json!({"transport":"http","endpoint":resource.replace("/mcp", "/http"),"replay":"idempotent","secret":"personal-api","secret_owner":"personal"});
 	agent["config"]["bindings"].as_array_mut().unwrap().push(json!({"kind":"tool","target":{"registry_deployment":p.b.config.deployment,"id":"personal-http","version":"1.0.0"},"alias":"personal_http"}));
 	for entry in [tool.clone(), http.clone(), agent] {
 		let id = entry["id"].clone();
@@ -159,7 +158,6 @@ async fn peer(p: &Pair, operation: &str, data: Value) -> (u16, Value) {
 		json!({"grant_id":p.grant,"admission_id":p.admission,"operation":operation,"data":data});
 	let text = payload.to_string().to_lowercase();
 	assert!(!text.contains(CANARY));
-	assert!(!text.contains(EXECUTOR_SHARED));
 	assert!(!text.contains("authorization"));
 	assert!(!text.contains("access_token"));
 	let result = common::peer_request(
@@ -173,7 +171,6 @@ async fn peer(p: &Pair, operation: &str, data: Value) -> (u16, Value) {
 	.await;
 	let text = result.1.to_string().to_lowercase();
 	assert!(!text.contains(CANARY));
-	assert!(!text.contains(EXECUTOR_SHARED));
 	assert!(!text.contains("authorization"));
 	assert!(!text.contains("access_token"));
 	result
@@ -200,33 +197,14 @@ async fn remote_personal_mcp_calls_stay_at_home_and_replay_without_credentials_c
 	let mcp = mcp().await;
 	let resource = format!("{}/mcp", mcp.uri());
 	let store = personal_credentials::configure(&mut p.a).await;
-	// The executor admits secret-bearing definitions, but holds none of the person's values.
+	// The executor registers the personal-only HTTP tool with no shared row at all and holds
+	// none of the person's values.
 	let credentials = p.b.store.provider_credentials.clone();
 	let reader = p.b.store.provider_key_material_reader.clone();
 	personal_credentials::configure(&mut p.b).await;
 	p.b.store.provider_credentials = credentials;
 	p.b.store.provider_key_material_reader = reader;
 	p.b.registry = p.b.registry.clone().with_tenant_secrets(true);
-	// #554: remove once personal-only registration skips the shared lookup
-	// Current registration validates the named shared row even for personal-only
-	// tools. Its distinct value must never serve this personal call.
-	p.b.store
-		.tenant_secrets
-		.as_ref()
-		.unwrap()
-		.put_owned(
-			"acme",
-			None,
-			"personal-api",
-			aidash_application::tenant_secrets::Put {
-				expected_revision: 0,
-				value: Some(EXECUTOR_SHARED.into()),
-				hosts: Some(vec!["127.0.0.1".into()]),
-			},
-			"alice",
-		)
-		.await
-		.unwrap();
 	p.ba.context.set_singleton(p.b.clone());
 	let adapter = Arc::new(aidash_integrations::oauth::McpOAuth::new().unwrap());
 	// Self-hosted Home: no broker settings, so Connections use the local reader.
@@ -531,8 +509,109 @@ async fn remote_personal_mcp_calls_stay_at_home_and_replay_without_credentials_c
 	assert_eq!(result, json!({"outcome":"not_personal"}));
 	let (status, unavailable) = peer(&p, "mcp.connection_call", json!({"tool_key":{"source":"registry","registry_deployment":p.b.config.deployment,"id":"personal-http","version":"1.0.0"},"resource":http["config"]["transport"]["endpoint"],"tool_name":"","arguments":{"shape":"fallback"},"idempotency_key":"http-fallback","kind":"personal_secret","secret_name":"personal-api"})).await;
 	assert_eq!(status, 200, "{unavailable}");
-	assert_eq!(unavailable, json!({"outcome":"not_personal"}));
+	// A personal-only tool has no shared or anonymous option to fall back to: a Run that
+	// no person started is refused by name, and nothing is sent or journaled.
+	assert_eq!(
+		unavailable,
+		json!({"outcome":"result","result":{"error":"secret_unavailable","resource":http["config"]["transport"]["endpoint"]}})
+	);
 	assert_eq!(journal(&p).await, rows);
 	assert_eq!(mcp.received_requests().await.unwrap().len(), requests);
+	p.close().await;
+}
+
+/// Home's MCP server refuses every request with a real Bearer challenge.
+async fn mcp_refusing() -> MockServer {
+	let server = MockServer::start().await;
+	Mock::given(method("POST"))
+		.and(path("/mcp"))
+		.respond_with(ResponseTemplate::new(401).insert_header(
+			"www-authenticate",
+			"Bearer resource_metadata=\"https://mcp.example/.well-known/oauth-protected-resource\"",
+		))
+		.mount(&server)
+		.await;
+	server
+}
+
+#[rstest::rstest]
+#[tokio::test]
+async fn a_real_401_at_home_crosses_the_envelope_as_a_typed_connection_cause(
+	#[with(false, false, true)]
+	#[future(awt)]
+	scoped_pair: Pair,
+) {
+	let mut p = scoped_pair;
+	let mcp = mcp_refusing().await;
+	let resource = format!("{}/mcp", mcp.uri());
+	personal_credentials::configure(&mut p.a).await;
+	let credentials = p.b.store.provider_credentials.clone();
+	let reader = p.b.store.provider_key_material_reader.clone();
+	personal_credentials::configure(&mut p.b).await;
+	p.b.store.provider_credentials = credentials;
+	p.b.store.provider_key_material_reader = reader;
+	p.b.registry = p.b.registry.clone().with_tenant_secrets(true);
+	p.ba.context.set_singleton(p.b.clone());
+	let adapter = Arc::new(aidash_integrations::oauth::McpOAuth::new().unwrap());
+	let settings: aidash_server::apps::identity::serializers::provider_credentials::Settings =
+		serde_json::from_value(serde_json::json!({})).unwrap();
+	aidash_server::bootstrap::configure_oauth_connections(
+		&mut p.a.store,
+		Some((adapter.clone(), adapter)),
+		&settings,
+		aidash_server::bootstrap::ProcessRole::Server,
+	)
+	.unwrap();
+	p.aa.context.set_singleton(p.a.clone());
+	let (entry, _) = install(&mut p, &resource).await;
+	let run = p.run().await;
+	let context = ToolContext {
+		home: Home::new(p.b.clone(), run.clone()),
+		store: p.b.store.clone(),
+		run,
+		scope: aidash_application::tenancy::TenancyScope::tenant("acme").unwrap(),
+	};
+	let tool = PluginTool {
+		entry: serde_json::from_value(entry.clone()).unwrap(),
+		alias: "personal_mcp".into(),
+		config: serde_json::from_value(entry["config"]["transport"].clone()).unwrap(),
+		transport: aidash_integrations::tools::HttpTools::new(
+			p.b.store.keyless.clone(),
+			p.b.store.tool_clients.clone(),
+		),
+	};
+	// Alice is connected and her token is current, so only the server can refuse it.
+	seed_connection(&p, &resource, "alice", false).await;
+	let data = json!({"tool_key":{"source":"registry","registry_deployment":p.b.config.deployment,"id":"personal-mcp","version":"1.0.0"},"resource":resource,"tool_name":"lookup","arguments":{"query":"private-argument-canary"},"idempotency_key":"real-401","kind":"connection"});
+	let (status, reply) = peer(&p, "mcp.connection_call", data).await;
+	assert_eq!(status, 200, "{reply}");
+	assert_eq!(reply["outcome"], "connection", "{reply}");
+	assert_eq!(reply["cause"]["error"], "connection_required");
+	assert_eq!(
+		reply["cause"]["resource"],
+		aidash_domain::oauth_connections::canonical_resource(&resource).unwrap()
+	);
+	// The executing Node restores the same typed cause, not a tool result.
+	let Err(aidash_server::Error::Connection(ConnectionCause::ConnectionRequired {
+		resource: refused,
+	})) = tool
+		.invoke(
+			&context,
+			json!({"query":"private-argument-canary"}),
+			"real-401-executor",
+		)
+		.await
+	else {
+		panic!("the executing Node must get a typed connection refusal");
+	};
+	assert_eq!(
+		refused,
+		aidash_domain::oauth_connections::canonical_resource(&resource).unwrap()
+	);
+	// The refusal happened at the auth layer: no operation was sent.
+	assert!(mcp.received_requests().await.unwrap().iter().all(|r| {
+		r.body_json::<Value>()
+			.is_ok_and(|v| v["method"] != "tools/call")
+	}));
 	p.close().await;
 }

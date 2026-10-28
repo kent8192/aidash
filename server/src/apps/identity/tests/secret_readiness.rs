@@ -53,6 +53,13 @@ fn tool(node: &str, id: &str, host: &str, secret: Option<&str>) -> Entry {
 	}))
 }
 
+/// A tool that accepts only the Run's person's own secret (ADR 0100).
+fn personal_tool(node: &str, id: &str, host: &str, secret: &str) -> Entry {
+	let mut entry = tool(node, id, host, Some(secret));
+	entry.config["transport"]["secret_owner"] = json!("personal");
+	entry
+}
+
 fn external_service(secret: &str) -> Entry {
 	entry(json!({
 		"id":"images","version":"1.0.0","kind":"external_service",
@@ -313,6 +320,92 @@ async fn agent_readiness_reports_every_status_and_repair(#[future] endpoint: End
 		assert_eq!(fact(&facts, item).status, Status::BrokerNotConfigured);
 		assert_eq!(fact(&facts, item).repair, Repair::DeploymentAdministrator);
 	}
+}
+
+#[rstest]
+#[timeout(TEST_BOUND)]
+#[tokio::test]
+async fn a_personal_only_tool_registers_without_a_shared_row_and_has_no_readiness_fact(
+	#[future] endpoint: EndpointFixture,
+) {
+	let mut f = endpoint.await;
+	tenant_root(&f.runtime, "alpha").await;
+	let service = secrets(&f).await;
+	let shared = put(&service, "alpha", "shared-key", "api.example.test").await;
+	f.runtime.store.tenant_secrets = Some(service.clone());
+	f.runtime.registry = f.runtime.registry.clone().with_tenant_secrets(true);
+	f.context.set_singleton(f.runtime.clone());
+	let node = f.runtime.store.deployment.to_string();
+	let tenant = aidash_domain::tenancy::TenantName::new("alpha").unwrap();
+	// A shared definition still needs a row that exists and records its host.
+	assert!(
+		f.runtime
+			.registry
+			.register(
+				&tenant,
+				tool(&node, "orphan", "api.example.test", Some("no-row"))
+			)
+			.await
+			.is_err()
+	);
+	// A personal-only definition needs neither: no `personal-key` row exists, and
+	// `shared-key` records a different host than `elsewhere`.
+	for entry in [
+		model(&node),
+		personal_tool(&node, "mine", "api.example.test", "personal-key"),
+		personal_tool(&node, "elsewhere", "other.example.test", "shared-key"),
+		tool(&node, "shared", "api.example.test", Some("shared-key")),
+	] {
+		f.runtime.registry.register(&tenant, entry).await.unwrap();
+	}
+	// A personal-only definition still validates the secret name.
+	assert!(
+		f.runtime
+			.registry
+			.register(
+				&tenant,
+				personal_tool(&node, "badname", "api.example.test", "Not A Name"),
+			)
+			.await
+			.is_err()
+	);
+	service
+		.put(
+			"alpha",
+			"shared-key",
+			Put {
+				expected_revision: shared,
+				value: None,
+				hosts: Some(vec!["moved.example.test".into()]),
+			},
+			"actor",
+		)
+		.await
+		.unwrap();
+	f.runtime
+		.registry
+		.register(
+			&tenant,
+			agent(
+				&node,
+				"research",
+				json!([
+					binding(&node, "tool", "mine"),
+					binding(&node, "tool", "elsewhere"),
+					binding(&node, "tool", "shared")
+				]),
+			),
+		)
+		.await
+		.unwrap();
+	set_policy(&f, bundle(true)).await;
+	let managing = token(&f).await;
+	let facts = read_facts(&f, &managing, "research").await;
+	assert_eq!(facts.len(), 1, "{facts:?}");
+	assert_eq!(
+		fact(&facts, "shared@1.0.0").status,
+		Status::SecretHostsMismatch
+	);
 }
 
 #[rstest]
