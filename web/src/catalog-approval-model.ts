@@ -153,11 +153,15 @@ export function approvalRequest(
   version: RegistryVersion,
   enabled: boolean,
   groups?: string[],
+  providerWarningAcknowledged = false,
 ): RequestApproval {
   return {
     entry: { id: version.entry.id, version: version.entry.version },
     enabled,
     expected_revision: version.approval?.revision ?? 0,
     ...(groups ? { groups } : {}),
+    ...(enabled && version.provider_warning && providerWarningAcknowledged
+      ? { provider_warning_acknowledged: true }
+      : {}),
   };
 }

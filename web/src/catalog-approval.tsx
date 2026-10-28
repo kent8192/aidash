@@ -171,6 +171,7 @@ export function CatalogApprovalSection({
   // The versions list reports the selected Node's approvals, so that is the
   // Node a decision here applies to.
   const { selected } = useNodes();
+  const [acknowledged, setAcknowledged] = useState<Record<string, boolean>>({});
   const [chosen, setChosen] = useState<string[]>();
   const [closure, setClosure] = useState<Closure>();
   const [busy, setBusy] = useState(false);
@@ -226,10 +227,36 @@ export function CatalogApprovalSection({
       setBusy(false);
     }
   };
+  const accepted = (item: RegistryVersion) =>
+    !item.provider_warning ||
+    acknowledged[`${item.entry.id}@${item.entry.version}`] === true;
+  const warning = (item: RegistryVersion) =>
+    item.provider_warning && (
+      <Notice tone="warning" role="status" className="provider-tool-warning">
+        <p className="whitespace-pre-wrap">{item.provider_warning}</p>
+        <label className="mt-2 flex items-start gap-2">
+          <input
+            type="checkbox"
+            disabled={busy}
+            checked={accepted(item)}
+            onChange={(event) =>
+              setAcknowledged({
+                ...acknowledged,
+                [`${item.entry.id}@${item.entry.version}`]:
+                  event.target.checked,
+              })
+            }
+          />
+          {locale === "ja-JP"
+            ? "このバージョンについて、上記の実行境界・保存期間・費用の条件を理解し、承認します。"
+            : "I acknowledge these execution, retention and spending conditions for this exact version."}
+        </label>
+      </Notice>
+    );
   const approve = () =>
     decide(() =>
       authorizationSetCatalog(path, {
-        ...approvalRequest(version, true, sentGroups),
+        ...approvalRequest(version, true, sentGroups, accepted(version)),
         node: selected!.name,
       }),
     );
@@ -244,8 +271,10 @@ export function CatalogApprovalSection({
     decide(() =>
       authorizationApproveCatalog(path, {
         approvals: [
-          ...needed.dependencies.map((item) => approvalRequest(item, true)),
-          approvalRequest(version, true, sentGroups),
+          ...needed.dependencies.map((item) =>
+            approvalRequest(item, true, undefined, accepted(item)),
+          ),
+          approvalRequest(version, true, sentGroups, accepted(version)),
         ],
         node: selected!.name,
       }),
@@ -278,6 +307,7 @@ export function CatalogApprovalSection({
             : "OpenRouter executes this Provider tool. This Catalog Approval is its only consent. The Agent Binding pins spending caps. Results are not Research evidence."}
         </Hint>
       )}
+      {decides && state !== "approved" && !closure && warning(version)}
       {origin &&
         (decides && state !== "approved" ? (
           <Notice tone="warning" role="status" className="keyless-notice">
@@ -367,6 +397,7 @@ export function CatalogApprovalSection({
                     {label(item.entry)}
                   </span>
                   <Badge value={item.entry.kind} />
+                  {warning(item)}
                   {keyless && <KeylessOrigin origin={keyless} />}
                   {routes && <DeciderRecipients recipients={routes} />}
                   {itemPlugins && (
@@ -402,7 +433,11 @@ export function CatalogApprovalSection({
           <div className="flex flex-wrap gap-2">
             <Button
               size="sm"
-              disabled={busy || closure.blocked.length > 0}
+              disabled={
+                busy ||
+                closure.blocked.length > 0 ||
+                ![...closure.dependencies, version].every(accepted)
+              }
               onClick={() => void approveClosure(closure)}
             >
               {t("catalogApproveAll")} ({closure.dependencies.length + 1})
@@ -430,7 +465,11 @@ export function CatalogApprovalSection({
               {t("catalogWithdraw")}
             </Button>
           ) : (
-            <Button size="sm" disabled={busy} onClick={() => void approve()}>
+            <Button
+              size="sm"
+              disabled={busy || !accepted(version)}
+              onClick={() => void approve()}
+            >
               {t("catalogApprove")}
             </Button>
           )}
