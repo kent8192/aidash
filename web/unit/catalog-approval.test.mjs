@@ -9,6 +9,7 @@ import {
   restrictionLabel,
   restrictionRequest,
   unapprovedClosure,
+  unapprovedCompactionDecider,
   unapprovedDependency,
 } from "../src/catalog-approval-model.ts";
 
@@ -140,6 +141,22 @@ test("only a dependency refusal names a dependency", () => {
   );
   assert.equal(unapprovedDependency("AGENT_SUBJECT_EXISTS"), null);
   assert.equal(unapprovedDependency("forbidden"), null);
+});
+
+test("only a refused Run start names its compaction Decider", () => {
+  assert.deepEqual(
+    unapprovedCompactionDecider(
+      "COMPACTION_DECIDER_UNAPPROVED: aidash.compaction-decider@1.0.0",
+    ),
+    ref("aidash.compaction-decider"),
+  );
+  assert.equal(
+    unapprovedCompactionDecider(
+      "CATALOG_DEPENDENCY_UNAPPROVED: aidash.shell@1.0.0",
+    ),
+    null,
+  );
+  assert.equal(unapprovedCompactionDecider("forbidden"), null);
 });
 
 test("a new agent version starts from the latest approved earlier version's groups", () => {
