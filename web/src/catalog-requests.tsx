@@ -28,12 +28,10 @@ export function CatalogRequestQueue({
   tenant,
   node,
   subject,
-  canApprove,
 }: {
   tenant: string;
   node: string;
   subject?: string;
-  canApprove: boolean;
 }) {
   const { t, locale } = useI18n();
   const relative = new Intl.RelativeTimeFormat(locale, { numeric: "auto" });
@@ -44,8 +42,22 @@ export function CatalogRequestQueue({
   const [message, setMessage] = useState("");
   const pending = useQuery({
     queryKey: ["catalog-requests-pending", tenant, node],
-    queryFn: () =>
-      authorizationCatalogRequestsPending(tenant, { node, limit: 100 }),
+    // The server lists oldest first; follow every page so newer requests are
+    // reachable while older ones still wait for another approver.
+    queryFn: async () => {
+      const requests: CatalogApprovalRequestView[] = [];
+      let offset: number | null = 0;
+      while (offset != null) {
+        const page = await authorizationCatalogRequestsPending(tenant, {
+          node,
+          limit: 100,
+          offset,
+        });
+        requests.push(...page.requests);
+        offset = page.next_offset ?? null;
+      }
+      return { requests };
+    },
     staleTime: 0,
     retry: false,
   });
@@ -76,7 +88,6 @@ export function CatalogRequestQueue({
         root={open.root}
         requestId={open.id}
         subject={subject}
-        canApprove={canApprove}
         onClose={() => setOpen(undefined)}
         onChanged={async () => {
           await pending.refetch();

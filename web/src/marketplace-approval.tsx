@@ -98,7 +98,6 @@ export function ApprovalSetReview({
           id: reviewing.entry.id,
           version: reviewing.entry.version,
         }}
-        canApprove
         onClose={() => setReviewing(undefined)}
         onChanged={() => onSaved()}
       />

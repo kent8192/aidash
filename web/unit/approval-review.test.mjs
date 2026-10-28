@@ -1,14 +1,18 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import {
+  answeredRequest,
+  canRequestAgain,
   defaultSelection,
   itemKey,
   needsAction,
+  needsAnotherApprover,
   requestChanged,
   requestForRoot,
   restrictionFor,
   reviewSubmission,
   statusKeys,
+  submittable,
 } from "../src/approval-review-model.ts";
 
 const item = (id, status, can_approve = true, extra = {}) => ({
@@ -160,4 +164,76 @@ test("every review status has a label and an explanation", () => {
     const [label, help] = statusKeys[status];
     assert.ok(label && help);
   }
+});
+
+test("an explicit Unrestricted edit clears the restriction", () => {
+  const approved = item("model", "approved", true, {
+    restriction: { subjects: ["alice"], groups: [] },
+  });
+  const body = reviewSubmission(review([approved]), [itemKey(approved)], {
+    [itemKey(approved)]: null,
+  });
+  assert.deepEqual(body.items[0].restriction, { subjects: [], groups: [] });
+  const untouched = reviewSubmission(
+    review([item("other", "approvable")]),
+    ["other@1.0.0"],
+    {},
+  );
+  assert.deepEqual(untouched.items[0].restriction, {
+    subjects: ["agent@1"],
+    groups: [],
+  });
+});
+
+test("only an open request is answered by a submission", () => {
+  const open = { id: "r1", state: "open" };
+  assert.equal(answeredRequest(open, "r1"), "r1");
+  for (const state of ["declined", "withdrawn", "fulfilled", "stale"])
+    assert.equal(answeredRequest({ id: "r1", state }, "r1"), undefined);
+  assert.equal(answeredRequest(undefined, "queued"), "queued");
+  assert.equal(answeredRequest(undefined), undefined);
+});
+
+test("an edited approved item can be submitted without other work", () => {
+  const approved = item("model", "approved");
+  const current = review([approved], { ready: true });
+  assert.equal(submittable(current, [], {}), false);
+  assert.equal(
+    submittable(current, [itemKey(approved)], {
+      [itemKey(approved)]: { subjects: ["bob"], groups: [] },
+    }),
+    true,
+  );
+});
+
+test("a partially authorized approver can still ask another approver", () => {
+  const mixed = review([
+    item("agent", "approvable"),
+    item("model", "needs_other_approver", false),
+  ]);
+  assert.equal(needsAnotherApprover(mixed), true);
+  assert.equal(
+    needsAnotherApprover(review([item("agent", "approvable")])),
+    false,
+  );
+  assert.equal(
+    needsAnotherApprover(review([item("agent", "approvable")], { hidden: 1 })),
+    true,
+  );
+  assert.equal(needsAnotherApprover(review([], { ready: true })), false);
+});
+
+test("a final request lets the requester ask again while unready", () => {
+  const current = review([item("model", "needs_other_approver", false)]);
+  const request = (state) => ({
+    state,
+    closure_digest: current.closure_digest,
+  });
+  assert.equal(canRequestAgain(request("open"), current), false);
+  assert.equal(canRequestAgain(request("declined"), current), true);
+  assert.equal(canRequestAgain(request("withdrawn"), current), true);
+  assert.equal(
+    canRequestAgain(request("declined"), { ...current, ready: true }),
+    false,
+  );
 });

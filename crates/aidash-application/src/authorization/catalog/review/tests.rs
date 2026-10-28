@@ -340,6 +340,8 @@ async fn an_approved_dependency_restricted_to_others_is_marked_widen() {
 	assert!(model.widen);
 	assert_eq!(model.status, ReviewStatus::Approved);
 	assert!(!review.ready);
+	// Widening is still work for an approver, so the request stays pending.
+	assert!(model.awaits_approver());
 }
 
 #[rstest]

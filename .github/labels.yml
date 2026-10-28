@@ -23,6 +23,10 @@
   color: "D93F0B"
   description: "Changes existing behavior or compatibility"
 
+- name: after-release
+  color: "C5DEF5"
+  description: "Deferred until after the first release; reconsider then."
+
 - name: accessibility
   color: "f143ab"
   description: "Barrier affecting people with disabilities"

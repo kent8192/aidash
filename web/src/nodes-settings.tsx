@@ -217,6 +217,7 @@ function Registrations({
   const [draft, setDraft] = useState<RegistrationDraft>({
     source_node: "",
     endpoint: "",
+    dashboard_origin: "",
     key_id: "",
     atomic_transactions: false,
   });
@@ -276,6 +277,7 @@ function Registrations({
                 setDraft({
                   source_node: "",
                   endpoint: "",
+                  dashboard_origin: "",
                   key_id: "",
                   atomic_transactions: false,
                 });
@@ -311,6 +313,12 @@ function Registrations({
                   {row.endpoint && (
                     <span className="truncate font-mono text-[11px] text-muted-foreground">
                       {row.endpoint}
+                    </span>
+                  )}
+                  {row.key_id && (
+                    <span className="truncate text-[11px] text-faint">
+                      {t("nodeRegistrationDashboardOrigin")}:{" "}
+                      {row.dashboard_origin ?? "—"}
                     </span>
                   )}
                   {row.key_id && (
@@ -491,6 +499,21 @@ function Registrations({
                     }
                   />
                 </Field>
+                <Field label={t("nodeRegistrationDashboardOrigin")}>
+                  <Input
+                    type="url"
+                    className="font-mono"
+                    placeholder="https://dashboard.example.com"
+                    value={draft.dashboard_origin}
+                    onChange={(event) =>
+                      setDraft({
+                        ...draft,
+                        dashboard_origin: event.target.value,
+                      })
+                    }
+                  />
+                </Field>
+                <Hint>{t("nodeRegistrationDashboardOriginHelp")}</Hint>
                 <Hint>{t("nodeKeyIdHelp")}</Hint>
               </>
             )}

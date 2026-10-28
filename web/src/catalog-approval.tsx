@@ -435,7 +435,6 @@ export function CatalogApprovalSection({
           node={selected.name}
           root={{ id: entry.id, version: entry.version }}
           subject={access.kind === "subject" ? access.subject : undefined}
-          canApprove={can("catalog.approve")}
           onClose={() => setReviewOpen(false)}
           onChanged={() =>
             client.invalidateQueries({ queryKey: ["registry-versions"] })

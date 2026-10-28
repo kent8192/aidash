@@ -117,7 +117,13 @@ impl ApprovalReviewScope for ReviewScope<'_> {
 			.map_err(Into::into)
 	}
 	async fn can_approve(&mut self, entry: &Entry) -> Result<bool> {
-		let resource = super::super::services::catalog::resource(self.access, entry);
+		// The same `registry` resource `TenantCatalog::require` and Marketplace
+		// `require_approval` check, so a denial on it is never missed here.
+		let resource = self.access.resource(
+			"registry",
+			format!("{}/{}@{}", entry.kind, entry.id, entry.version),
+			aidash_application::authorization::catalog::attributes(entry),
+		);
 		self.access
 			.decide(
 				&resource,

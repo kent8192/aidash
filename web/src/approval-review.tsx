@@ -21,15 +21,19 @@ import { Textarea } from "./components/ui/textarea";
 import { Alert, Check, GroupChoice, Hint, Notice } from "./components/patterns";
 import { restrictionLabel } from "./catalog-approval-model";
 import {
+  answeredRequest,
+  canRequestAgain,
   defaultSelection,
   itemKey,
   needsAction,
+  needsAnotherApprover,
   requestActionKey,
   requestChanged,
   requestForRoot,
   restrictionFor,
   reviewSubmission,
   statusKeys,
+  submittable,
   type RestrictionEdits,
 } from "./approval-review-model";
 
@@ -171,7 +175,6 @@ export function ApprovalReviewPanel({
   root,
   requestId,
   subject,
-  canApprove,
   onClose,
   onChanged,
 }: {
@@ -180,7 +183,6 @@ export function ApprovalReviewPanel({
   root: { id: string; version: string };
   requestId?: string;
   subject?: string;
-  canApprove: boolean;
   onClose?: () => void;
   onChanged?: () => void | Promise<void>;
 }) {
@@ -227,10 +229,13 @@ export function ApprovalReviewPanel({
     : current
       ? requestForRoot(mine.data?.requests ?? [], current.root)
       : undefined;
-  const canApproveAny =
-    canApprove &&
-    (current?.items.some((item) => item.can_approve && needsAction(item)) ??
-      false);
+  // Item-level authority comes from the server: a grant on specific
+  // definitions is enough, without collection-wide `catalog.approve`.
+  const canApproveAny = current?.items.some(needsAction) ?? false;
+  const canSubmit =
+    current !== undefined &&
+    (canApproveAny || submittable(current, selected, edits));
+  const askAnother = current !== undefined && needsAnotherApprover(current);
   const reload = async () => {
     await review.refetch();
     await mine.refetch();
@@ -247,9 +252,13 @@ export function ApprovalReviewPanel({
         current,
         selected,
         edits,
-        requestId ?? request?.id,
+        answeredRequest(request, requestId),
       );
       await authorizationSubmitCatalogReview(tenant, body);
+      // The refreshed review may keep the same closure digest; start from its
+      // actionable items again instead of resubmitting decided ones.
+      setSelection(undefined);
+      setEdits({});
       await reload();
       setMessage(t("approvalReviewSubmitted"));
     } catch (error) {
@@ -373,9 +382,10 @@ export function ApprovalReviewPanel({
           const key = itemKey(item);
           const checked = selected.includes(key);
           const restriction = restrictionFor(item, edits);
-          const actionable = canApproveAny && needsAction(item);
+          const actionable = needsAction(item);
           const editable =
-            canApprove && (needsAction(item) || item.status === "approved");
+            item.can_approve &&
+            (needsAction(item) || item.status === "approved");
           return (
             <li
               className="approval-review-item grid min-w-0 gap-1.5 px-3 py-2.5"
@@ -458,7 +468,7 @@ export function ApprovalReviewPanel({
         })}
       </ul>
       {message && <Notice role="status">{message}</Notice>}
-      {canApproveAny && (
+      {canSubmit && (
         <div className="flex flex-wrap gap-2">
           <Button
             size="sm"
@@ -478,7 +488,7 @@ export function ApprovalReviewPanel({
             busy={busy}
             withdraw={() => void withdraw()}
           />
-          {requestChanged(request, current) && !current.ready && (
+          {canRequestAgain(request, current) && (
             <div
               className="grid gap-1.5"
               role="group"
@@ -505,7 +515,7 @@ export function ApprovalReviewPanel({
         </>
       ) : (
         !current.ready &&
-        !canApproveAny && (
+        (!canApproveAny || askAnother) && (
           <div
             className="grid gap-1.5"
             role="group"
