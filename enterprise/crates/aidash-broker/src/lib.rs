@@ -368,6 +368,15 @@ fn body_policy(body: &[u8], claims: &Claims, op: Operation, path: &str) -> Resul
 		{
 			return Err(Failure::ClaimViolation);
 		}
+		if !responses
+			&& value["tools"].as_array().into_iter().flatten().any(|tool| {
+				tool["type"]
+					.as_str()
+					.and_then(aidash_domain::tool::provider_tools::declaration)
+					.is_some_and(|d| d.requires_responses)
+			}) {
+			return Err(Failure::ClaimViolation);
+		}
 		aidash_domain::tool::provider_tools::authorize(
 			&value,
 			claims.provider_tools.iter().map(|tool| {
@@ -434,7 +443,14 @@ fn body_policy(body: &[u8], claims: &Claims, op: Operation, path: &str) -> Resul
 	}
 	if op == Operation::Chat {
 		if responses {
-			policy::responses_input(&value, claims.cache_breakpoints)?;
+			// authorize() already tied the shell entry, container id included, to the signed digest.
+			let container = value["tools"]
+				.as_array()
+				.into_iter()
+				.flatten()
+				.find(|tool| tool["type"] == "openrouter:shell")
+				.and_then(|tool| tool["parameters"]["environment"]["container_id"].as_str());
+			policy::responses_input(&value, claims.cache_breakpoints, container)?;
 		} else {
 			policy::chat_input(&value, claims.cache_breakpoints)?;
 		}

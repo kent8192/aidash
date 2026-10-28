@@ -1138,6 +1138,9 @@ async fn provider_tools_transport_sends_only_pinned_entries_and_signs_the_same_c
 	}
 	#[async_trait::async_trait]
 	impl ProviderAccess for ToolAccess {
+		async fn provider_container(&self, context: &Context, _: &Value) -> Result<String> {
+			Ok(format!("aidash_{}", context.run.unwrap().simple()))
+		}
 		async fn resolve(&self, context: &Context, _: &str, source: &Source) -> Result<Access> {
 			assert!(matches!(source,Source::Tenant { provider } if provider == "openrouter"));
 			self.contexts
@@ -1184,13 +1187,41 @@ async fn provider_tools_transport_sends_only_pinned_entries_and_signs_the_same_c
 		endpoint,
 		contexts: Default::default(),
 	});
-	let declaration =
-		aidash_domain::tool::provider_tools::declaration("openrouter:web_search").unwrap();
-	let pinned = aidash_domain::tool::provider_tools::PinnedTool {
-		tool_type: declaration.tool_type.into(),
-		binding: declaration.defaults(),
-	};
-	for wire_api in [None, Some(aidash_domain::model::WireApi::Responses)] {
+	for (kind, wire_api) in [
+		("openrouter:web_search", None),
+		(
+			"openrouter:web_search",
+			Some(aidash_domain::model::WireApi::Responses),
+		),
+		(
+			"openrouter:advisor",
+			Some(aidash_domain::model::WireApi::Responses),
+		),
+		(
+			"openrouter:subagent",
+			Some(aidash_domain::model::WireApi::Responses),
+		),
+		(
+			"openrouter:experimental__search_models",
+			Some(aidash_domain::model::WireApi::Responses),
+		),
+		(
+			"openrouter:tool_search",
+			Some(aidash_domain::model::WireApi::Responses),
+		),
+		(
+			"openrouter:shell",
+			Some(aidash_domain::model::WireApi::Responses),
+		),
+	] {
+		let declaration = aidash_domain::tool::provider_tools::declaration(kind).unwrap();
+		let mut pinned = aidash_domain::tool::provider_tools::PinnedTool {
+			tool_type: kind.into(),
+			binding: declaration.defaults(),
+		};
+		if matches!(kind, "openrouter:advisor" | "openrouter:subagent") {
+			pinned.binding.parameters["model"] = json!("vendor/fixed-child");
+		}
 		let mut config: ModelConfig = serde_json::from_value(json!({"provider":"openrouter","provider_credential":"openrouter","model_id":"openai/gpt-4.1","endpoint":"https://openrouter.ai/api/v1","context_window":100000,"max_output_tokens":1000,"modalities":["text"],"cost":{},"streaming":false})).unwrap();
 		config.wire_api = wire_api;
 		let provider = provider(
@@ -1220,6 +1251,13 @@ async fn provider_tools_transport_sends_only_pinned_entries_and_signs_the_same_c
 			"done"
 		);
 		let body = bodies.recv().await.unwrap();
+		if kind == "openrouter:shell" {
+			let id = body["tools"][0]["parameters"]["environment"]["container_id"]
+				.as_str()
+				.unwrap();
+			assert!(id.starts_with("aidash_"));
+			pinned.binding.parameters["environment"]["container_id"] = json!(id);
+		}
 		assert_eq!(body["tools"], json!([pinned.entry()]));
 		assert_eq!(body["max_tool_calls"], 3);
 		let signed = access
@@ -1240,6 +1278,6 @@ async fn provider_tools_transport_sends_only_pinned_entries_and_signs_the_same_c
 				.is_err()
 		);
 	}
-	assert_eq!(access.contexts.lock().unwrap().len(), 2);
+	assert_eq!(access.contexts.lock().unwrap().len(), 7);
 	assert!(bodies.try_recv().is_err());
 }

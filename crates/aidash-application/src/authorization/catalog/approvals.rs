@@ -21,6 +21,9 @@ pub struct Approval {
 	pub entry: EntityRef,
 	pub enabled: bool,
 	pub expected_revision: i64,
+	/// Explicit acceptance of this exact warning-tier Provider tool's disclosure.
+	#[serde(default)]
+	pub provider_warning_acknowledged: bool,
 	/// Assignable Groups for the subject of an approved agent version; the
 	/// default (`members`) applies when absent.
 	#[serde(default, skip_serializing_if = "Option::is_none")]
@@ -68,6 +71,11 @@ pub async fn approve(
 			return Err(Error::Forbidden);
 		}
 		scope.require(&entry, CATALOG_APPROVE).await?;
+		super::validate_provider_acknowledgment(
+			&approval.entry,
+			approval.enabled,
+			approval.provider_warning_acknowledged,
+		)?;
 		definitions.insert(key, entry);
 	}
 	let requested: BTreeMap<_, _> = approvals
@@ -101,13 +109,14 @@ pub async fn approve(
 	let mut bindings = Vec::with_capacity(approvals.len());
 	for approval in approvals {
 		bindings.push(
-			super::set_in(
+			super::set_in_with_acknowledgment(
 				scope,
 				&tenant,
 				&scope_node,
 				&approval.entry,
 				approval.expected_revision,
 				approval.enabled,
+				approval.provider_warning_acknowledged,
 				&actor,
 			)
 			.await?,

@@ -9,12 +9,24 @@ export type ProviderToolParameters = {
 };
 
 export function providerTool(id: string | undefined): string | undefined {
-  const name = id
+  const stripped = id
     ?.replace(/@1$/, "")
     .replace(/^aidash\.bundle\.provider_/, "provider.openrouter.");
-  return ["web_search", "web_fetch", "datetime", "fusion"].find(
-    (tool) => name === `provider.openrouter.${tool}`,
-  );
+  const name =
+    stripped === "provider.openrouter.experimental__search_models"
+      ? "provider.openrouter.search_models"
+      : stripped;
+  return [
+    "web_search",
+    "web_fetch",
+    "datetime",
+    "fusion",
+    "advisor",
+    "subagent",
+    "search_models",
+    "tool_search",
+    "shell",
+  ].find((tool) => name === `provider.openrouter.${tool}`);
 }
 
 export function providerToolDefaults(tool: string): ProviderToolParameters {
@@ -25,12 +37,37 @@ export function providerToolDefaults(tool: string): ProviderToolParameters {
         ? { engine: "openrouter", max_content_tokens: 8192 }
         : tool === "datetime"
           ? { timezone: "UTC" }
-          : {
-              analysis_models: [],
-              model: "",
-              max_tool_calls: 2,
-              max_completion_tokens: 4096,
-            };
+          : tool === "advisor"
+            ? {
+                model: "",
+                max_completion_tokens: 4096,
+                forward_transcript: false,
+                stream: false,
+              }
+            : tool === "subagent"
+              ? {
+                  model: "",
+                  max_completion_tokens: 4096,
+                  max_tool_calls: 2,
+                  tools: [],
+                  inherit_functions: false,
+                }
+              : ["search_models", "tool_search"].includes(tool)
+                ? { max_results: 5 }
+                : tool === "shell"
+                  ? {
+                      engine: "openrouter",
+                      environment: {
+                        type: "container_reference",
+                        network_policy: { type: "disabled" },
+                      },
+                    }
+                  : {
+                      analysis_models: [],
+                      model: "",
+                      max_tool_calls: 2,
+                      max_completion_tokens: 4096,
+                    };
   return { max_tool_calls: 3, parameters };
 }
 
@@ -136,6 +173,99 @@ export function ProviderToolFields({
           />
         </Field>
       )}
+      {["advisor", "subagent"].includes(tool) && (
+        <>
+          <Field label={ja ? "子モデル（固定）" : "Pinned child model"}>
+            <Input
+              required
+              value={String(parameters.model ?? "")}
+              onChange={(event) => set("model", event.target.value)}
+            />
+          </Field>
+          {count(
+            "max_completion_tokens",
+            8192,
+            ja
+              ? "子モデルの最大出力トークン数"
+              : "Maximum child completion tokens",
+          )}
+          {tool === "subagent" &&
+            count(
+              "max_tool_calls",
+              4,
+              ja ? "子モデルの最大ツール回数" : "Maximum child tool calls",
+            )}
+          <Field
+            label={
+              ja ? "子モデルへの指示（任意）" : "Child instructions (optional)"
+            }
+          >
+            <Input
+              maxLength={8192}
+              value={String(parameters.instructions ?? "")}
+              onChange={(event) => set("instructions", event.target.value)}
+            />
+          </Field>
+          {tool === "advisor" && (
+            <label className="flex items-center gap-2 text-xs">
+              <input
+                type="checkbox"
+                checked={parameters.forward_transcript === true}
+                onChange={(event) =>
+                  set("forward_transcript", event.target.checked)
+                }
+              />
+              {ja
+                ? "会話全体を advisor に送信する"
+                : "Forward the full conversation to the advisor"}
+            </label>
+          )}
+        </>
+      )}
+      {["search_models", "tool_search"].includes(tool) &&
+        count(
+          "max_results",
+          10,
+          ja ? "最大検索結果数" : "Maximum search results",
+        )}
+      {tool === "shell" && (
+        <>
+          <Hint>
+            {ja
+              ? "コンテナ ID は Run ごとに固定します。OpenRouter の上限: 1回100コマンド、各コマンド300000 ms、各出力ストリーム65536文字。モデルリクエスト全体にもタイムアウトが適用されます。"
+              : "Container identity is pinned per Run. OpenRouter limits: 100 commands per call, 300000 ms per command, 65536 characters per output stream. The model request also has a total timeout."}
+          </Hint>
+          <Field
+            label={
+              ja
+                ? "ネットワークの許可先（空欄で無効、ホスト名をカンマ区切り、最大32件）"
+                : "Network allowlist (empty disables network; comma separated exact hosts, at most 32)"
+            }
+          >
+            <Input
+              value={(
+                (
+                  parameters.environment as
+                    | { network_policy?: { allowed_domains?: string[] } }
+                    | undefined
+                )?.network_policy?.allowed_domains ?? []
+              ).join(", ")}
+              onChange={(event) => {
+                const hosts = event.target.value
+                  .split(",")
+                  .map((host) => host.trim())
+                  .filter(Boolean);
+                set("environment", {
+                  type: "container_reference",
+                  network_policy: hosts.length
+                    ? { type: "allowlist", allowed_domains: hosts }
+                    : { type: "disabled" },
+                });
+              }}
+            />
+          </Field>
+        </>
+      )}
       {tool === "fusion" && (
         <>
           <Field
@@ -218,6 +348,15 @@ function ActivityItem({ value, ja }: { value: unknown; ja: boolean }) {
     "openrouter:web_fetch": ["Page retrieval", "ページの取得"],
     "openrouter:datetime": ["Current time", "現在の時刻"],
     "openrouter:fusion": ["Fusion analysis", "Fusion の分析"],
+    "openrouter:advisor": ["Advisor", "Advisor の助言"],
+    "openrouter:subagent": ["Subagent", "Subagent の結果"],
+    "openrouter:experimental__search_models": ["Model search", "モデル検索"],
+    "openrouter:tool_search": ["Tool search", "ツール検索"],
+    "openrouter:shell": ["Provider shell", "Provider shell"],
+    shell_call: ["Shell commands", "コマンド"],
+    shell_call_output: ["Shell output and files", "出力とファイル一覧"],
+    tool_search_call: ["Tool search", "ツール検索"],
+    tool_search_output: ["Tool search results", "ツール検索結果"],
   };
   const name = typeof item.name === "string" ? item.name : "";
   const type = name in labels ? name : String(item.type ?? "");

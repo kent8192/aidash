@@ -34,3 +34,35 @@ pub fn admit_request(model: &ModelConfig, context: &Context, tools: &[PinnedTool
 	}
 	Ok(())
 }
+
+#[cfg(test)]
+mod tests {
+	use super::*;
+	use aidash_domain::{data_protection::Level, model::WireApi, tool::provider_tools};
+	#[test]
+	fn shell_requires_responses_and_current_standard_policy() {
+		let mut model:ModelConfig = serde_json::from_value(serde_json::json!({"provider":"openrouter","provider_credential":"openrouter","model_id":"vendor/model","endpoint":"https://openrouter.ai/api/v1","context_window":100000,"max_output_tokens":1000,"modalities":["text"],"cost":{}})).unwrap();
+		let declaration = provider_tools::declaration("openrouter:shell").unwrap();
+		let tools = [PinnedTool {
+			tool_type: declaration.tool_type.into(),
+			binding: declaration.defaults(),
+		}];
+		let mut context = Context {
+			tenant: "acme".into(),
+			run: Some(uuid::Uuid::new_v4()),
+			..Default::default()
+		};
+		assert!(admit_request(&model, &context, &tools).is_err());
+		model.wire_api = Some(WireApi::Responses);
+		admit_request(&model, &context, &tools).unwrap();
+		for level in [Level::NoTraining, Level::ZeroDataRetention] {
+			context.data_protection.level = level;
+			assert!(
+				admit_request(&model, &context, &tools)
+					.unwrap_err()
+					.to_string()
+					.contains("Provider tools cannot meet this level")
+			);
+		}
+	}
+}

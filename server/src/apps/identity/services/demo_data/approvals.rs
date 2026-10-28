@@ -65,6 +65,7 @@ pub(super) async fn approve(
 			let groups =
 				(!snapshot.bundle.subjects.contains_key(&subject)).then(|| want.groups.clone());
 			pending.push(Approval {
+				provider_warning_acknowledged: false,
 				entry,
 				enabled: true,
 				expected_revision: 0,
@@ -117,8 +118,15 @@ impl CatalogMutation for DemoCatalog<'_> {
 			.compare_and_set(tenant, node, reference, expected_revision, enabled)
 			.await
 	}
-	async fn history(&mut self, binding: &Binding, actor: &str) -> aidash_application::Result<()> {
-		NativeMutation(self.tx).history(binding, actor).await
+	async fn history(
+		&mut self,
+		binding: &Binding,
+		actor: &str,
+		provider_warning_acknowledgment: Option<&str>,
+	) -> aidash_application::Result<()> {
+		NativeMutation(self.tx)
+			.history(binding, actor, provider_warning_acknowledgment)
+			.await
 	}
 }
 

@@ -64,6 +64,7 @@ const TENANT_REGISTRY_MIGRATIONS: &[(&str, &str)] = &[
 	("registry", "0048_plugin_marketplace_merge"),
 	("registry", "0049_plugin_context_merge"),
 	("registry", "0050_provider_tools"),
+	("registry", "0051_provider_warning_tools"),
 	("marketplace", "0008_remove_compatibility_gate"),
 	("marketplace", "0009_remove_compatibility_gate_state"),
 	("marketplace", "0010_row_level_security"),
@@ -354,15 +355,12 @@ async fn generation_with_existing_sql_assets_preserves_history_and_dependency(
 	);
 	assert_eq!(std::fs::read(history).unwrap(), original);
 	let generated = FilesystemSource::new(fixture.directory.path().join("migrations"))
-		.get_migration("execution", "0062_policy_probe")
+		.get_migration("execution", "0063_policy_probe")
 		.await
 		.unwrap();
 	assert_eq!(
 		generated.dependencies,
-		vec![(
-			"execution".to_owned(),
-			"0061_provider_tool_usage".to_owned()
-		)]
+		vec![("execution".to_owned(), "0062_provider_container".to_owned())]
 	);
 	assert!(generated.operations.is_empty());
 }

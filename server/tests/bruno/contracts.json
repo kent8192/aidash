@@ -21455,6 +21455,9 @@
             "enabled": {
               "type": "boolean"
             },
+            "provider_warning_acknowledgment": {
+              "type": ["string", "null"]
+            },
             "revision": {
               "type": "integer",
               "format": "int64"
@@ -21799,6 +21802,10 @@
             "needs_approval": {
               "type": "boolean",
               "description": "Whether the Tenant must approve it before use: every Tenant definition,\nand the Sandboxed, research and Decider built-ins."
+            },
+            "provider_warning": {
+              "type": ["string", "null"],
+              "description": "Disclosure shown only when approving this exact Provider tool version."
             },
             "subject": {
               "anyOf": [

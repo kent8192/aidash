@@ -592,3 +592,167 @@ async fn provider_tools_activity_remains_inspectable_after_projection_compaction
 		.unwrap();
 	cleanup(f, &url, &schema).await;
 }
+
+#[rstest::rstest]
+#[tokio::test]
+async fn provider_container_pin_survives_recovery_and_terminal_state(
+	#[future(awt)]
+	#[from(native_application)]
+	fixture: ApplicationFixture,
+) {
+	use aidash_application::{
+		provider_access::{Context, ProviderAccess},
+		tenancy::TenancyScope,
+	};
+	use aidash_server::apps::{
+		execution::models::{
+			Run as Record,
+			states::{RunControl, RunPhase},
+		},
+		identity::repositories::provider_credentials::AdmittedAccess,
+	};
+	use reinhardt::db::orm::Model;
+	let (f, url, schema) = fixture.runtime.parts();
+	let app = fixture.application.clone();
+	let (_, token, _) = bootstrap(&f, &app, "http://127.0.0.1:9").await;
+	let (run, worker) = leased(&f, &app, &token).await;
+	let context = Context {
+		tenant: "acme".into(),
+		run: Some(run.id),
+		..Default::default()
+	};
+	let policy = json!({"type":"disabled"});
+	let first = AdmittedAccess {
+		store: f.store.clone(),
+	}
+	.provider_container(&context, &policy)
+	.await
+	.unwrap();
+	assert_eq!(first, format!("aidash_{}", run.id.simple()));
+	let recovered = AdmittedAccess {
+		store: f.store.clone(),
+	};
+	assert_eq!(
+		recovered
+			.provider_container(&context, &policy)
+			.await
+			.unwrap(),
+		first
+	);
+	assert!(
+		recovered
+			.provider_container(
+				&context,
+				&json!({"type":"allowlist","allowed_domains":["example.com"]})
+			)
+			.await
+			.unwrap_err()
+			.to_string()
+			.contains("NETWORK_CHANGED")
+	);
+	let scope = TenancyScope::tenant("acme").unwrap();
+	for (phase, control) in [
+		(RunPhase::Failed, RunControl::Active),
+		(RunPhase::Cancelled, RunControl::Cancelled),
+	] {
+		f.store
+			.control_pool
+			.atomic(&scope, async |tx| {
+				Record::objects()
+					.filter(Record::field_id().eq(run.id))
+					.update_fields_with_conn(tx, [(Record::field_phase(), phase)])
+					.await?;
+				Record::objects()
+					.filter(Record::field_id().eq(run.id))
+					.update_fields_with_conn(tx, [(Record::field_control(), control)])
+					.await?;
+				Ok(())
+			})
+			.await
+			.unwrap();
+		assert!(
+			recovered
+				.provider_container(&context, &policy)
+				.await
+				.unwrap_err()
+				.to_string()
+				.contains("RUN_ENDED")
+		);
+		let pin = f
+			.store
+			.control_pool
+			.atomic(&scope, async |tx| {
+				let row = Record::objects()
+					.filter(Record::field_id().eq(run.id))
+					.all_with_executor(tx)
+					.await
+					.map_err(reinhardt::core::exception::Error::from)?
+					.pop()
+					.unwrap();
+				Ok(row.provider_container.unwrap().0)
+			})
+			.await
+			.unwrap();
+		assert_eq!(pin, json!({"id":first,"network_policy":policy}));
+	}
+	f.store
+		.release_lease(&TEST_FIXTURE, run.id, worker)
+		.await
+		.unwrap();
+	cleanup(f, &url, &schema).await;
+}
+
+#[rstest::rstest]
+#[tokio::test]
+async fn provider_warning_approval_persists_its_exact_disclosure(
+	#[future(awt)]
+	#[from(native_application)]
+	fixture: ApplicationFixture,
+) {
+	use aidash_application::tenancy::TenancyScope;
+	use aidash_server::apps::identity::models::AuthorizationCatalogHistory;
+	use reinhardt::db::orm::Model;
+	let (f, url, schema) = fixture.runtime.parts();
+	let app = fixture.application.clone();
+	let (_, token, _) = bootstrap(&f, &app, "http://127.0.0.1:9").await;
+	let (run, worker) = leased(&f, &app, &token).await;
+	let mut input = json!({"node":run.node,"entry":{"id":"provider.openrouter.shell","version":"1.0.0"},"enabled":true,"expected_revision":0});
+	let path = "/api/authorization/acme/catalog".to_owned();
+	let (status, body) = request(&app, &token, "POST", &path, input.clone()).await;
+	assert_eq!(status, 400, "{body}");
+	assert!(
+		body.to_string()
+			.contains("PROVIDER_TOOL_ACKNOWLEDGMENT_REQUIRED")
+	);
+	input["provider_warning_acknowledged"] = json!(true);
+	let (status, body) = request(&app, &token, "POST", &path, input).await;
+	assert_eq!(status, 200, "{body}");
+	let records = f
+		.store
+		.control_pool
+		.atomic(&TenancyScope::tenant("acme").unwrap(), async |tx| {
+			Ok(AuthorizationCatalogHistory::objects()
+				.filter(
+					AuthorizationCatalogHistory::field_entry_key().eq("provider.openrouter.shell"),
+				)
+				.all_with_executor(tx)
+				.await
+				.map_err(reinhardt::core::exception::Error::from)?)
+		})
+		.await
+		.unwrap();
+	assert_eq!(records.len(), 1);
+	assert_eq!(records[0].revision, 1);
+	assert_eq!(
+		records[0].provider_warning_acknowledgment,
+		aidash_domain::tool::provider_tools::warning_acknowledgment(
+			"provider.openrouter.shell",
+			"1.0.0"
+		)
+	);
+	f.store
+		.release_lease(&TEST_FIXTURE, run.id, worker)
+		.await
+		.unwrap();
+	cleanup(f, &url, &schema).await;
+}

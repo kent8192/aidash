@@ -39,6 +39,15 @@ pub fn item(value: &Value) -> Option<Value> {
 			| "openrouter:web_fetch"
 			| "openrouter:datetime"
 			| "openrouter:fusion"
+			| "openrouter:advisor"
+			| "openrouter:subagent"
+			| "openrouter:experimental__search_models"
+			| "openrouter:tool_search"
+			| "openrouter:shell"
+			| "shell_call"
+			| "shell_call_output"
+			| "tool_search_call"
+			| "tool_search_output"
 	) || matches!(
 		kind,
 		"server_tool_call" | "server_tool_result" | "function_call"
@@ -50,23 +59,7 @@ pub fn item(value: &Value) -> Option<Value> {
 		return None;
 	}
 	let mut result = json!({});
-	for key in [
-		"type",
-		"id",
-		"call_id",
-		"name",
-		"status",
-		"action",
-		"arguments",
-		"output",
-		"result",
-		"results",
-		"url",
-		"title",
-		"content",
-		"analysis",
-		"responses",
-	] {
+	for &key in aidash_domain::tool::provider_tools::REPLAY_KEYS {
 		if let Some(value) = value.get(key) {
 			result[key] = value.clone();
 		}

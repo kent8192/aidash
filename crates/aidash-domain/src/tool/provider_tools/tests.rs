@@ -77,3 +77,110 @@ fn provider_activity_growth_covers_both_legacy_and_native_replay() {
 		);
 	}
 }
+
+#[test]
+fn warning_pins_bound_child_models_and_forbid_inherited_authority() {
+	for kind in ["openrouter:advisor", "openrouter:subagent"] {
+		let tool = declaration(kind).unwrap();
+		let mut pin = tool.defaults();
+		pin.parameters["model"] = json!("vendor/fixed-model");
+		tool.validate(&pin).unwrap();
+		for (key, value) in [
+			("model", json!("openrouter/auto")),
+			("max_completion_tokens", json!(8193)),
+			("tools", json!([{"type":"openrouter:shell"}])),
+			("inherit_functions", json!(true)),
+			("inherited_function_names", json!(["tenant_secret_read"])),
+		] {
+			let mut invalid = pin.clone();
+			invalid.parameters[key] = value;
+			assert!(tool.validate(&invalid).is_err(), "{kind}: {key}");
+		}
+	}
+}
+
+#[test]
+fn shell_wire_identity_is_signed_and_never_authorable() {
+	let tool = declaration("openrouter:shell").unwrap();
+	let mut pin = PinnedTool {
+		tool_type: tool.tool_type.into(),
+		binding: tool.defaults(),
+	};
+	pin.validate().unwrap();
+	pin.binding.parameters["environment"]["container_id"] = json!("aidash_run1");
+	assert!(
+		pin.validate().is_err(),
+		"authors must not select another Run's container"
+	);
+	let mut body = json!({"model":"vendor/model"});
+	append(&mut body, &[pin.clone()]);
+	let digest = pin.digest();
+	let signed = || [(tool.tool_type, digest.as_str(), pin.binding.max_tool_calls)];
+	authorize(&body, signed()).unwrap();
+	body["tools"][0]["parameters"]["environment"]["container_id"] = json!("another_run");
+	assert!(authorize(&body, signed()).is_err());
+	body["tools"][0]["parameters"]["environment"]["container_id"] = json!("aidash_run1");
+	body["tools"][0]["parameters"]["engine"] = json!("auto");
+	assert!(authorize(&body, signed()).is_err());
+	for policy in [
+		json!({"type":"allowlist","allowed_domains":["*"]}),
+		json!({"type":"disabled","extra":true}),
+		json!({"type":"allowlist","allowed_domains":vec!["example.com";33]}),
+	] {
+		let mut invalid = tool.defaults();
+		invalid.parameters["environment"]["network_policy"] = policy;
+		assert!(tool.validate(&invalid).is_err());
+	}
+}
+
+#[test]
+fn shell_binding_schema_accepts_exact_hosts_and_refuses_wildcards() {
+	let tool = declaration("openrouter:shell").unwrap();
+	let mut pin = tool.defaults();
+	pin.parameters["environment"]["network_policy"] =
+		json!({"type":"allowlist","allowed_domains":["pypi.org","files.pythonhosted.org"]});
+	let schema = tool.binding_schema();
+	let validator = jsonschema::validator_for(&schema).unwrap();
+	assert!(validator.is_valid(&serde_json::to_value(&pin).unwrap()));
+	tool.validate(&pin).unwrap();
+	pin.parameters["environment"]["network_policy"]["allowed_domains"] = json!(["*.example.com"]);
+	assert!(!validator.is_valid(&serde_json::to_value(&pin).unwrap()));
+	assert!(tool.validate(&pin).is_err());
+}
+
+#[test]
+fn replayed_provider_items_must_stay_inside_the_closed_observable_shape() {
+	let ok = [
+		json!({"type":"openrouter:advisor","instance_name":"advisor_0","model":"vendor/advisor","advice":"bounded"}),
+		json!({"type":"shell_call","call_id":"c1","action":{"commands":["ls"],"timeout_ms":100}}),
+		json!({"type":"shell_call_output","call_id":"c1","container_id":"aidash_run1","output":[{"stdout":"x","stderr":"","outcome":{"type":"exit","exit_code":0}}],"files":[{"type":"container_file_citation","container_id":"aidash_run1","file_id":"cfile_a","filename":"a.txt"}]}),
+		json!({"type":"tool_search_output","tools":[{"type":"function","name":"approved"}]}),
+		json!({"type":"openrouter:experimental__search_models","models":[{"id":"vendor/m"}],"total_results":1}),
+	];
+	for item in &ok {
+		assert!(replay_item_is_closed(item, Some("aidash_run1")), "{item}");
+		assert!(replay_item_is_closed(item, None), "{item}");
+	}
+	let forged = [
+		json!("shell"),
+		json!({"type":"openrouter:advisor","instructions":"extra top-level key"}),
+		json!({"type":"shell_call_output","container_id":"other","output":[]}),
+		json!({"type":"shell_call_output","container_id":"bad id!","output":[]}),
+		json!({"type":"shell_call_output","output":[{"container_id":"other"}]}),
+		json!({"type":"tool_search_output","tools":[{"type":"openrouter:shell"}]}),
+		json!({"type":"openrouter:advisor","advice":[{"type":"input_image","image_url":"https://example.com/x"}]}),
+		json!({"type":"openrouter:advisor","advice":{"a":{"b":{"c":{"d":{"e":{"f":{"g":{"h":{"i":1}}}}}}}}}}),
+	];
+	for item in &forged {
+		assert!(!replay_item_is_closed(item, Some("aidash_run1")), "{item}");
+	}
+	// Without a signed shell container, only the id format is checked.
+	assert!(replay_item_is_closed(
+		&json!({"type":"shell_call_output","container_id":"aidash_run1","output":[]}),
+		None
+	));
+	assert!(!replay_item_is_closed(
+		&json!({"type":"shell_call_output","container_id":"bad id!","output":[]}),
+		None
+	));
+}

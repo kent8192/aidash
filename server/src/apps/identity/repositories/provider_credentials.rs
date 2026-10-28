@@ -446,6 +446,25 @@ pub struct AdmittedAccess {
 }
 #[async_trait]
 impl aidash_application::provider_access::ProviderAccess for AdmittedAccess {
+	async fn provider_container(
+		&self,
+		context: &aidash_application::provider_access::Context,
+		network_policy: &serde_json::Value,
+	) -> Result<String> {
+		crate::apps::execution::observation::provider_scope(&self.store, context, true).await?;
+		super::data_protection::current(&self.store, context)
+			.await?
+			.permits(aidash_domain::data_protection::Destination::ProviderTool)?;
+		let run = context
+			.run
+			.filter(|_| context.observation.is_none() && context.maintenance.is_none())
+			.ok_or_else(|| Error::Invalid("Provider shell requires a Run".into()))?;
+		self.store
+			.provider_container(&context.tenant, run, network_policy)
+			.await
+			.map_err(Into::into)
+	}
+
 	async fn discovery(
 		&self,
 		context: &aidash_application::provider_access::Context,

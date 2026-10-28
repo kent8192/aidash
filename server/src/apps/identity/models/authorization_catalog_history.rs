@@ -22,6 +22,8 @@ pub struct AuthorizationCatalogHistory {
 	pub enabled: bool,
 	#[field(field_type = "text")]
 	pub actor: String,
+	#[field(field_type = "text", null = true)]
+	pub provider_warning_acknowledgment: Option<String>,
 	#[field(auto_now_add = true)]
 	pub created_at: DateTime<Utc>,
 }

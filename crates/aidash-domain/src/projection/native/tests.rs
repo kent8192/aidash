@@ -42,6 +42,7 @@ fn shape(history: &[NativeMessage]) -> Vec<String> {
 	history
 		.iter()
 		.map(|message| match message {
+			NativeMessage::ProviderActivity { .. } => "provider_activity".into(),
 			NativeMessage::Human { .. } => "human".into(),
 			NativeMessage::Data { envelope } => format!("data:{:?}", envelope.source),
 			NativeMessage::Assistant { tool_calls, text } => format!(

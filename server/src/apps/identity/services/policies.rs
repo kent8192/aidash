@@ -118,6 +118,7 @@ impl PolicyAdministration {
 			enabled: input.enabled,
 			expected_revision: input.expected_revision,
 			groups: input.groups,
+			provider_warning_acknowledged: input.provider_warning_acknowledged,
 		};
 		Ok(self
 			.approve(actor, tenant, input.node, vec![approval])

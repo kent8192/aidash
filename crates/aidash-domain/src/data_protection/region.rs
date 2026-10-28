@@ -44,6 +44,9 @@ impl Region {
 			"openrouter:web_search" => {
 				self == Self::Us && matches!(engine, None | Some("auto" | "exa"))
 			}
+			// Sandbox containers (shell, bash) are served by the global endpoint
+			// only; OpenRouter rejects them on the in-region hosts.
+			"openrouter:shell" | "openrouter:bash" => false,
 			_ => false,
 		}
 	}

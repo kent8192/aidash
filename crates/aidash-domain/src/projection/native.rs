@@ -86,6 +86,8 @@ impl Envelope {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum NativeMessage {
+	/// Observable provider-owned exchanges, never local tool invocations or Research evidence.
+	ProviderActivity { items: Vec<Value> },
 	/// A Human answer, sent as a user message. The answer is the only
 	/// non-system instruction channel and is not wrapped; the request it
 	/// replies to is.
@@ -182,6 +184,15 @@ pub fn native_context(context: &Context, pinned: &Value) -> NativeContext {
 				history.push(NativeMessage::Tool {
 					tool_call_id: call.id.clone(),
 					envelope: tool_envelope(seq, call, result.clone()),
+				});
+			}
+			if let ContextEvent::Assistant {
+				provider_activity, ..
+			} = &entries[turn.start].event
+				&& !provider_activity.is_empty()
+			{
+				history.push(NativeMessage::ProviderActivity {
+					items: provider_activity.clone(),
 				});
 			}
 			markers.retain(|marker| {
@@ -436,7 +447,12 @@ impl NativeContext {
 			messages.push(json!({"role": "user", "content": Value::Array(parts)}));
 		}
 		messages.extend(self.history.iter().map(NativeMessage::chat));
-		if breakpoint && let Some(last) = messages.last_mut() {
+		if breakpoint
+			&& let Some(last) = messages
+				.iter_mut()
+				.rev()
+				.find(|message| !message["content"].is_null())
+		{
 			let part = match &mut last["content"] {
 				Value::Array(parts) => parts.last_mut(),
 				content @ Value::String(_) => {
@@ -489,6 +505,9 @@ impl NativeMessage {
 				r#"{{"in_reply_to":{},"response":{response}}}"#,
 				request.text()
 			)}),
+			Self::ProviderActivity { items } => {
+				json!({"role":"assistant","content":null,"_provider_activity":items})
+			}
 			Self::Data { envelope } => json!({"role": "user", "content": envelope.text()}),
 			Self::Assistant { text, tool_calls } => {
 				let mut message = json!({"role": "assistant", "content": text});
@@ -540,7 +559,9 @@ pub fn check_model_turns(history: &[NativeMessage]) -> Result<()> {
 					"Native request has an orphan tool result {tool_call_id}"
 				)));
 			}
-			NativeMessage::Human { .. } | NativeMessage::Data { .. } => index += 1,
+			NativeMessage::Human { .. }
+			| NativeMessage::Data { .. }
+			| NativeMessage::ProviderActivity { .. } => index += 1,
 		}
 	}
 	Ok(())

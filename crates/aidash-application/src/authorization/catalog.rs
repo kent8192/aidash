@@ -83,6 +83,47 @@ pub async fn set_in(
 	enabled: bool,
 	actor: &str,
 ) -> Result<aidash_domain::identity::catalog::Binding> {
+	set_in_with_acknowledgment(
+		scope,
+		tenant,
+		node,
+		reference,
+		expected_revision,
+		enabled,
+		false,
+		actor,
+	)
+	.await
+}
+
+pub(super) fn validate_provider_acknowledgment(
+	reference: &EntityRef,
+	enabled: bool,
+	acknowledged: bool,
+) -> Result<()> {
+	if enabled
+		&& aidash_domain::tool::provider_tools::warning_reference(&reference.id, &reference.version)
+		&& !acknowledged
+	{
+		return Err(Error::Invalid(
+			"PROVIDER_TOOL_ACKNOWLEDGMENT_REQUIRED".into(),
+		));
+	}
+	Ok(())
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(super) async fn set_in_with_acknowledgment(
+	scope: &mut dyn crate::ports::catalog::CatalogMutation,
+	tenant: &str,
+	node: &aidash_domain::nodes::NodeName,
+	reference: &EntityRef,
+	expected_revision: i64,
+	enabled: bool,
+	acknowledged: bool,
+	actor: &str,
+) -> Result<aidash_domain::identity::catalog::Binding> {
+	validate_provider_acknowledgment(reference, enabled, acknowledged)?;
 	aidash_domain::identity::catalog::validate_revision(expected_revision)?;
 	if !scope.registered(reference).await? {
 		return Err(Error::NotFound("registry entry".into()));
@@ -91,7 +132,17 @@ pub async fn set_in(
 		.compare_and_set(tenant, node, reference, expected_revision, enabled)
 		.await?
 		.ok_or_else(|| Error::Conflict("catalog revision changed".into()))?;
-	scope.history(&binding, actor).await?;
+	let disclosure = if enabled && acknowledged {
+		aidash_domain::tool::provider_tools::warning_acknowledgment(
+			&reference.id,
+			&reference.version,
+		)
+	} else {
+		None
+	};
+	scope
+		.history(&binding, actor, disclosure.as_deref())
+		.await?;
 	Ok(binding)
 }
 

@@ -1548,3 +1548,59 @@ fn provider_tools_responses_activity_is_distinct_from_client_calls_and_reasoning
 	assert!(output.get("reasoning").is_none());
 	assert!(output.get("encrypted_content").is_none());
 }
+
+#[test]
+fn warning_activity_retains_observable_results_and_replays_advisor_identity() {
+	let items = vec![
+		json!({"type":"openrouter:advisor","id":"a1","instance_name":"advisor_0","model":"vendor/advisor","status":"ok","prompt":"review","advice":"bounded advice"}),
+		json!({"type":"openrouter:subagent","id":"s1","model":"vendor/worker","task_name":"summarize","task_description":"public input","outcome":"bounded outcome","reasoning_details":["private"]}),
+		json!({"type":"shell_call","id":"cmd1","call_id":"c1","action":{"commands":["printf hello"],"timeout_ms":100,"max_output_length":32}}),
+		json!({"type":"shell_call_output","call_id":"c1","container_id":"aidash_run","output":[{"stdout":"hello","stderr":"","outcome":{"type":"exit","exit_code":0}}],"files":[{"type":"container_file_citation","file_id":"cfile_report","filename":"report.txt"}]}),
+		json!({"type":"openrouter:experimental__search_models","models":[{"id":"vendor/model"}],"total_results":1,"showing":1}),
+		json!({"type":"tool_search_output","id":"t1","tools":[{"type":"function","name":"approved_function"}]}),
+	];
+	let mut output = items.clone();
+	output.push(json!({"type":"message","content":[{"type":"output_text","text":"done"}]}));
+	let response = completed_with_cost(&json!({"status":"completed","output":output,"usage":{"server_tool_use":{"shell_requests":1},"input_tokens":10,"output_tokens":20}}),None,true).unwrap();
+	assert!(response.tool_calls.is_empty());
+	assert_eq!(response.provider_activity.len(), 6);
+	assert_eq!(response.provider_activity[0], items[0]);
+	assert_eq!(response.provider_activity[3], items[3]);
+	assert!(
+		!serde_json::to_string(&response.provider_activity)
+			.unwrap()
+			.contains("private")
+	);
+	let mut context = aidash_domain::context::Context::default();
+	context.push(aidash_domain::context::ContextEvent::Assistant {
+		epoch: 1,
+		text: response.text,
+		calls: vec![],
+		provider_activity: response.provider_activity.clone(),
+	});
+	let request = ModelRequest {
+		context: aidash_domain::provider::ModelContext::Native(
+			aidash_domain::projection::native::native_context(&context, &Value::Null),
+		),
+		..Default::default()
+	};
+	let body = input::encoded_openrouter_input_body(&request).unwrap();
+	let replayed: Vec<_> = body["input"]
+		.as_array()
+		.unwrap()
+		.iter()
+		.filter(|item| {
+			item["type"]
+				.as_str()
+				.is_some_and(aidash_domain::tool::provider_tools::replayable)
+		})
+		.cloned()
+		.collect();
+	assert_eq!(replayed, response.provider_activity);
+	assert!(
+		!request
+			.input_body()
+			.to_string()
+			.contains("_provider_activity")
+	);
+}

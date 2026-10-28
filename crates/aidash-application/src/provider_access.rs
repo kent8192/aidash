@@ -111,6 +111,16 @@ pub trait ProviderAccess: Send + Sync {
 		Ok(context.data_protection)
 	}
 
+	/// Persist/reload the Run's sole provider container before signing any shell request.
+	/// Adapters without a durable Run repository cannot enable shell.
+	async fn provider_container(
+		&self,
+		_context: &Context,
+		_network_policy: &serde_json::Value,
+	) -> Result<String> {
+		Err(Error::Invalid("PROVIDER_CONTAINER_UNAVAILABLE".into()))
+	}
+
 	/// Resolve read-only catalog authority while preserving the caller's purpose.
 	/// Native adapters authorize the original Decision/Run before narrowing it.
 	async fn discovery(
