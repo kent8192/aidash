@@ -1,4 +1,5 @@
 use super::*;
+use aidash_application::recovery::AuthorityFailure;
 use aidash_domain::{
 	RecoveryState, Run, StateVersion, ThinkingState,
 	context::{Context, recovery::Failure as ContextFailure},
@@ -252,22 +253,19 @@ async fn provider_contract_and_transient_failures_have_distinct_recovery(
 	}
 }
 #[rstest]
-#[case(false, "execution authority denied")]
-#[case(true, "identity status unavailable")]
+#[case(AuthorityFailure::Denied(None), "execution authority denied")]
+#[case(AuthorityFailure::IdentityUnavailable, "identity status unavailable")]
 #[tokio::test]
 async fn lost_authority_pauses_instead_of_replaying_work(
 	repository: Repository,
 	now: DateTime<Utc>,
-	#[case] identity_unavailable: bool,
+	#[case] failure: AuthorityFailure,
 	#[case] reason: &str,
 ) {
 	let retry = recover(
 		&repository,
 		repository.token,
-		ExecutionFailure::Authority {
-			identity_unavailable,
-			refusal: None,
-		},
+		ExecutionFailure::Authority(failure),
 		now,
 	)
 	.await
@@ -295,10 +293,7 @@ async fn a_refused_tool_pauses_naming_the_tool_and_the_check(
 	let retry = recover(
 		&repository,
 		repository.token,
-		ExecutionFailure::Authority {
-			identity_unavailable: false,
-			refusal: Some(refusal.clone()),
-		},
+		ExecutionFailure::Authority(AuthorityFailure::Denied(Some(refusal.clone()))),
 		now,
 	)
 	.await

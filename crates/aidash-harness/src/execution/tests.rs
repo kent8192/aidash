@@ -1,5 +1,9 @@
 use super::*;
-use aidash_application::{Error, ports::ExecutionRecoveryStore, recovery::ExecutionFailure};
+use aidash_application::{
+	Error,
+	ports::ExecutionRecoveryStore,
+	recovery::{AuthorityFailure, ExecutionFailure},
+};
 use aidash_domain::{
 	RecoveryState, Run, RunControl, RunMetadata, RunState, StateVersion, ThinkingState,
 	context::Context,
@@ -172,10 +176,7 @@ impl WorkerStep for Scope {
 	}
 	fn classify_failure(&self, error: Error) -> ExecutionFailure {
 		assert!(matches!(error, Error::Forbidden));
-		ExecutionFailure::Authority {
-			identity_unavailable: false,
-			refusal: None,
-		}
+		ExecutionFailure::Authority(AuthorityFailure::Denied(None))
 	}
 	async fn cancel_scoped(&mut self, _: Uuid) -> Result<bool> {
 		self.trace.lock().unwrap().push("cancel");

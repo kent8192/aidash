@@ -4921,13 +4921,12 @@ impl Store {
 			event_kind,
 			// The tool and the check only; never what the call addressed.
 			match refusal {
-				Some(refusal) => json!({
-					"run_id": run.id,
-					"task_id": run.task_id,
-					"tool": refusal.tool,
-					"check": refusal.check,
-					"action": refusal.action,
-				}),
+				Some(refusal) => {
+					let mut payload = serde_json::to_value(refusal)?;
+					payload["run_id"] = json!(run.id);
+					payload["task_id"] = json!(run.task_id);
+					payload
+				}
 				None => json!({"run_id":run.id,"task_id":run.task_id}),
 			},
 		)

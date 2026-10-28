@@ -1,5 +1,8 @@
 use super::*;
-use aidash_domain::{RunMetadata, RunPhase, Task};
+use aidash_domain::{
+	RunMetadata, RunPhase, Task,
+	tool::{AuthorityRefusal, RefusalCheck},
+};
 use async_trait::async_trait;
 use rstest::{fixture, rstest};
 use std::sync::Mutex;
@@ -13,7 +16,7 @@ struct Scope {
 	input_failed: bool,
 	status: TaskStatus,
 	finished: Option<TaskStatus>,
-	paused: Option<bool>,
+	paused: Option<AuthorityFailure>,
 }
 fn metadata() -> RunMetadata {
 	RunMetadata {
@@ -105,9 +108,9 @@ impl FailureScope for Scope {
 		self.calls.push("authority");
 		result
 	}
-	async fn pause_authority(&mut self, identity_unavailable: bool) -> Result<()> {
+	async fn pause_authority(&mut self, failure: &AuthorityFailure) -> Result<()> {
 		self.calls.push("pause");
-		self.paused = Some(identity_unavailable);
+		self.paused = Some(failure.clone());
 		Ok(())
 	}
 	async fn finish(&mut self, result: Result<TaskStatus>) -> Result<()> {
@@ -174,22 +177,37 @@ async fn denied_background_delivery_has_no_remote_or_task_effects(mut scope: Sco
 	let result = deliver(&mut scope).await;
 	settle(&mut scope, result).await.unwrap();
 	assert_eq!(scope.calls, ["admit", "pause"]);
-	assert_eq!(scope.paused, Some(false));
+	assert_eq!(scope.paused, Some(AuthorityFailure::Denied(None)));
 	assert_eq!(scope.finished, None);
 }
 
+fn refusal() -> AuthorityRefusal {
+	AuthorityRefusal {
+		tool: "task_delegate".into(),
+		check: RefusalCheck::Policy,
+		action: Some("task.delegate".into()),
+	}
+}
+
 #[rstest]
-#[case(Error::Forbidden, false)]
-#[case(Error::Unauthorized, false)]
-#[case(Error::IdentityStatusUnavailable, true)]
+#[case(Error::Forbidden, AuthorityFailure::Denied(None))]
+#[case(Error::Unauthorized, AuthorityFailure::Denied(None))]
+#[case(
+	Error::IdentityStatusUnavailable,
+	AuthorityFailure::IdentityUnavailable
+)]
+#[case(
+	Error::AuthorityRefused(Box::new(refusal())),
+	AuthorityFailure::Denied(Some(refusal()))
+)]
 #[tokio::test]
 async fn lost_authority_pauses_instead_of_settling_failure(
 	mut scope: Scope,
 	#[case] error: Error,
-	#[case] identity: bool,
+	#[case] expected: AuthorityFailure,
 ) {
 	settle(&mut scope, Err(error)).await.unwrap();
-	assert_eq!(scope.paused, Some(identity));
+	assert_eq!(scope.paused, Some(expected));
 	assert_eq!(scope.finished, None);
 	assert_eq!(scope.calls, ["pause"]);
 }

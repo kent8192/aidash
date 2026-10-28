@@ -96,26 +96,14 @@ pub async fn recover(
 		// emits `run.context_blocked`, like every other execution pause.
 		current.recovery.context_reason = Some(reason);
 		store.pause_context(&current, token, reason).await?;
-	} else if let ExecutionFailure::Authority {
-		identity_unavailable,
-		refusal,
-	} = failure
-	{
-		// Name the tool and the check that refused, so the Deployment Administrator need not read the database.
-		let reason = if identity_unavailable {
-			"identity status unavailable".to_owned()
-		} else if let Some(refusal) = &refusal {
-			refusal.to_string()
-		} else {
-			"execution authority denied".to_owned()
-		};
+	} else if let ExecutionFailure::Authority(authority) = failure {
 		store
 			.pause(
 				&current,
 				token,
-				&reason,
+				&authority.reason(),
 				"run.authorization_blocked",
-				refusal.as_ref(),
+				authority.refusal(),
 			)
 			.await?;
 	} else if let ExecutionFailure::MediaRoute(ref message) = failure {
