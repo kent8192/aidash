@@ -670,6 +670,7 @@
   "catalogWithdrawAgents": "Agents that can no longer start",
   "catalogWithdrawRuns": "Running Runs that pause at their next compaction",
   "catalogWithdrawNoImpact": "No approved agent on this Node uses it.",
+  "catalogWithdrawImpactUnavailable": "The impact could not be read. You can still withdraw the approval.",
   "catalogWithdrawConfirm": "Withdraw anyway",
   "catalogHistory": "Approval history",
   "catalogNoHistory": "No approval decisions yet.",

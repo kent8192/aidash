@@ -670,6 +670,7 @@
   "catalogWithdrawAgents": "開始できなくなるエージェント",
   "catalogWithdrawRuns": "次のコンパクションで一時停止する実行中の Run",
   "catalogWithdrawNoImpact": "このノードで承認済みのエージェントはこれを使っていません。",
+  "catalogWithdrawImpactUnavailable": "影響を取得できませんでした。承認の取り下げはこのまま行えます。",
   "catalogWithdrawConfirm": "それでも取り下げる",
   "catalogHistory": "承認履歴",
   "catalogNoHistory": "承認の記録はまだありません。",

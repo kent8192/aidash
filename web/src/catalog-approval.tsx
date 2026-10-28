@@ -215,7 +215,8 @@ export function CatalogApprovalSection({
   const [subjectNames, setSubjectNames] = useState<string>();
   const [restrictedGroups, setRestrictedGroups] = useState<string[]>();
   const [reviewOpen, setReviewOpen] = useState(false);
-  const [impact, setImpact] = useState<WithdrawalImpact>();
+  // `null`: the impact could not be read; withdrawal is still offered.
+  const [impact, setImpact] = useState<WithdrawalImpact | null>();
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const entry = version.entry;
@@ -303,8 +304,8 @@ export function CatalogApprovalSection({
           version: version.entry.version,
         }),
       );
-    } catch (reason) {
-      setError(reason instanceof Error ? reason.message : String(reason));
+    } catch {
+      setImpact(null);
     } finally {
       setBusy(false);
     }
@@ -507,11 +508,13 @@ export function CatalogApprovalSection({
           }
         />
       )}
-      {impact && state === "approved" && (
+      {impact !== undefined && state === "approved" && (
         <Notice tone="warning" role="status" className="withdraw-impact">
           <div className="grid gap-1">
             <span className={subheading}>{t("catalogWithdrawImpact")}</span>
-            {withdrawalHasNoImpact(impact) ? (
+            {impact === null ? (
+              <span>{t("catalogWithdrawImpactUnavailable")}</span>
+            ) : withdrawalHasNoImpact(impact) ? (
               <span>{t("catalogWithdrawNoImpact")}</span>
             ) : (
               <>
