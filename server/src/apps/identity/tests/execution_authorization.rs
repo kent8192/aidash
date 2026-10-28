@@ -5211,6 +5211,35 @@ async fn approval_review_submission_rejects_a_dependency_changed_after_the_revie
 
 #[rstest::rstest]
 #[tokio::test]
+async fn withdrawal_impact_names_dependent_agents_and_needs_the_right_to_withdraw(
+	#[future(awt)]
+	#[from(common::native_application)]
+	fixture: common::ApplicationFixture,
+) {
+	let (f, url, schema) = fixture.runtime.parts();
+	let app = fixture.application;
+	let (_, alice, _) = bootstrap(&f, &app, "http://127.0.0.1:9").await;
+	let node = aidash_domain::nodes::NodeName::derived("acme");
+	let path = format!("/api/authorization/acme/catalog/impact?node={node}&id=model&version=1.0.0");
+	let (status, impact) = request(&app, &alice, "GET", &path, Value::Null).await;
+	assert_eq!(status, 200, "{impact}");
+	assert_eq!(
+		impact["agents"],
+		json!([{"id":"research","version":"1.0.0"}])
+	);
+	assert_eq!(impact["running_runs"], 0);
+	// An unknown version is not found, never an empty impact.
+	let missing =
+		format!("/api/authorization/acme/catalog/impact?node={node}&id=absent&version=1.0.0");
+	assert_eq!(
+		request(&app, &alice, "GET", &missing, Value::Null).await.0,
+		404
+	);
+	cleanup(f, &url, &schema).await;
+}
+
+#[rstest::rstest]
+#[tokio::test]
 async fn catalog_request_creation_needs_read_is_idempotent_and_refuses_a_ready_review(
 	#[future(awt)]
 	#[from(common::native_application)]

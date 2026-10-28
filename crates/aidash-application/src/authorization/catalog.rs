@@ -228,6 +228,7 @@ mod mutation_tests;
 pub mod approvals;
 pub mod retained;
 pub mod review;
+pub mod withdrawal;
 
 pub fn attributes(entry: &Entry) -> serde_json::Value {
 	serde_json::json!({"version":entry.version,"capabilities":entry.capabilities,"tags":entry.tags,"languages":entry.languages,"config":entry.config})

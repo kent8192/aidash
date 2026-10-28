@@ -46591,6 +46591,54 @@
     }
   },
   {
+    "method": "GET",
+    "path": "/api/authorization/{tenant}/catalog/impact",
+    "name": "authorization-catalog-impact",
+    "source": "server/src/apps/identity/views/policies.rs",
+    "json": false,
+    "uuid_parameters": [],
+    "query_parameters": ["id", "node", "version"],
+    "response": {
+      "schema": {
+        "$ref": "#/components/schemas/WithdrawalImpact"
+      },
+      "definitions": {
+        "EntityRef": {
+          "type": "object",
+          "required": ["id", "version"],
+          "properties": {
+            "id": {
+              "type": "string"
+            },
+            "version": {
+              "type": "string"
+            }
+          }
+        },
+        "WithdrawalImpact": {
+          "type": "object",
+          "description": "Who loses what when `entry` is withdrawn on the Node.",
+          "required": ["agents", "running_runs"],
+          "properties": {
+            "agents": {
+              "type": "array",
+              "items": {
+                "$ref": "#/components/schemas/EntityRef"
+              },
+              "description": "Approved Agent versions that depend on the withdrawn version."
+            },
+            "running_runs": {
+              "type": "integer",
+              "format": "uint64",
+              "description": "Non-terminal Runs of those Agent versions on the Node.",
+              "minimum": 0
+            }
+          }
+        }
+      }
+    }
+  },
+  {
     "method": "POST",
     "path": "/api/authorization/{tenant}/catalog/review",
     "name": "authorization-submit-catalog-review",

@@ -180,6 +180,7 @@ pub mod marketplace;
 
 pub mod catalog;
 pub mod catalog_review;
+pub mod catalog_withdrawal;
 
 pub mod generation;
 

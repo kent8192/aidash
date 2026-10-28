@@ -114,6 +114,7 @@ pub(crate) mod catalog_mutation;
 pub(crate) mod catalog_approvals;
 pub(crate) mod catalog_requests;
 pub(crate) mod catalog_review;
+pub(crate) mod catalog_withdrawal;
 
 pub(crate) mod dependencies;
 

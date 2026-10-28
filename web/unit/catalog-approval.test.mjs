@@ -11,6 +11,8 @@ import {
   unapprovedClosure,
   unapprovedCompactionDecider,
   unapprovedDependency,
+  withdrawalAgentLabels,
+  withdrawalHasNoImpact,
 } from "../src/catalog-approval-model.ts";
 
 const version = (id, kind, config = {}, state = {}) => ({
@@ -279,4 +281,23 @@ test("an approval carries a named restriction and omits an absent one", () => {
     subjects: [],
     groups: [],
   });
+});
+
+test("a withdrawal with no dependent Agent and no Run stops nothing", () => {
+  assert.equal(withdrawalHasNoImpact({ agents: [], running_runs: 0 }), true);
+  assert.equal(
+    withdrawalHasNoImpact({ agents: [ref("a")], running_runs: 0 }),
+    false,
+  );
+  assert.equal(withdrawalHasNoImpact({ agents: [], running_runs: 2 }), false);
+});
+
+test("a withdrawal lists the Agents it stops in a stable order", () => {
+  assert.deepEqual(
+    withdrawalAgentLabels({
+      agents: [ref("b", "2.0.0"), ref("a")],
+      running_runs: 1,
+    }),
+    ["a@1.0.0", "b@2.0.0"],
+  );
 });

@@ -34,6 +34,15 @@ pub(crate) struct CatalogReviewQuery {
 	pub(crate) entry: String,
 }
 
+/// One approved version on one Node whose withdrawal impact is read.
+#[derive(Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct CatalogImpactQuery {
+	pub(crate) node: aidash_domain::nodes::NodeName,
+	pub(crate) id: String,
+	pub(crate) version: String,
+}
+
 /// What one review submission wrote, in the caller's transaction.
 #[derive(Serialize, JsonSchema)]
 pub(crate) struct CatalogReviewResult {

@@ -2,9 +2,9 @@
 use crate::apps::identity::oidc::BrowserOrigin;
 use crate::apps::identity::policy::Evaluation;
 use crate::apps::identity::serializers::policies::{
-	AuthorizationPage, AuthorizationUpdate, CatalogApprovals, CatalogInput, CatalogQuery,
-	CatalogRequestDecline, CatalogRequestInput, CatalogRequestPage, CatalogReviewQuery,
-	CredentialInput, CredentialPage,
+	AuthorizationPage, AuthorizationUpdate, CatalogApprovals, CatalogImpactQuery, CatalogInput,
+	CatalogQuery, CatalogRequestDecline, CatalogRequestInput, CatalogRequestPage,
+	CatalogReviewQuery, CredentialInput, CredentialPage,
 };
 use crate::apps::identity::services::policies::PolicyAdministration;
 use crate::authorization::identity::Actor;
@@ -75,6 +75,21 @@ pub async fn catalog_review(
 	Query(query): Query<CatalogReviewQuery>,
 ) -> ViewResult<Response> {
 	crate::http::json(service.review(actor, tenant, query).await)
+}
+
+/// What withdrawing one approved version would stop, read before the decision.
+#[get(
+	"/api/authorization/{tenant}/catalog/impact",
+	name = "authorization-catalog-impact",
+	auth = "protected"
+)]
+pub async fn catalog_impact(
+	#[inject] service: Depends<PolicyAdministration>,
+	#[inject] actor: crate::authorization::identity::Actor,
+	Path(tenant): Path<String>,
+	Query(query): Query<CatalogImpactQuery>,
+) -> ViewResult<Response> {
+	crate::http::json(service.withdrawal_impact(actor, tenant, query).await)
 }
 
 #[post(

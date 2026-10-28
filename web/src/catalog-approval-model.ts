@@ -1,4 +1,8 @@
-import type { RegistryVersion, RequestApproval } from "./generated/models";
+import type {
+  RegistryVersion,
+  RequestApproval,
+  WithdrawalImpact,
+} from "./generated/models";
 import type { EntityRef } from "./types";
 
 /** Where one version of the Tenant's Registry stands for Catalog Approval. */
@@ -205,4 +209,18 @@ export function approvalRequest(
     ...(groups ? { groups } : {}),
     ...(named ? { restriction: named } : {}),
   };
+}
+
+/** Whether withdrawing an approval stops nothing: no approved Agent depends on
+ *  it and no Run of one is in flight (#540). */
+export function withdrawalHasNoImpact(impact: WithdrawalImpact): boolean {
+  return impact.agents.length === 0 && impact.running_runs === 0;
+}
+
+/** The Agents a withdrawal stops from starting, as `id@version` labels in a
+ *  stable order. */
+export function withdrawalAgentLabels(impact: WithdrawalImpact): string[] {
+  return impact.agents
+    .map((agent) => `${agent.id}@${agent.version}`)
+    .sort((left, right) => left.localeCompare(right));
 }

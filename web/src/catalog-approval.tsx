@@ -2,8 +2,12 @@ import { RegisteredCompactionDetails } from "./compaction-details";
 import { SecretDisclosure } from "./tenant-secrets";
 import { useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { authorizationSetCatalog, registryVersions } from "./generated/aidash";
-import type { RegistryVersion } from "./generated/models";
+import {
+  authorizationCatalogImpact,
+  authorizationSetCatalog,
+  registryVersions,
+} from "./generated/aidash";
+import type { RegistryVersion, WithdrawalImpact } from "./generated/models";
 import type { EntityRef, Entry, State } from "./types";
 import { ApiError } from "./transport";
 import { keylessOrigin } from "./keyless";
@@ -28,6 +32,8 @@ import {
   earlierAgentGroups,
   requestedGroups,
   restrictionLabel,
+  withdrawalAgentLabels,
+  withdrawalHasNoImpact,
   type ApprovalState,
   type Restriction,
 } from "./catalog-approval-model";
@@ -209,6 +215,7 @@ export function CatalogApprovalSection({
   const [subjectNames, setSubjectNames] = useState<string>();
   const [restrictedGroups, setRestrictedGroups] = useState<string[]>();
   const [reviewOpen, setReviewOpen] = useState(false);
+  const [impact, setImpact] = useState<WithdrawalImpact>();
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const entry = version.entry;
@@ -282,13 +289,34 @@ export function CatalogApprovalSection({
         node: selected!.name,
       }),
     );
+  // Withdrawal is never blocked: it shows what it stops, then waits for the
+  // approver to confirm or cancel (#540).
+  const showImpact = async () => {
+    if (busy) return;
+    setBusy(true);
+    setError("");
+    try {
+      setImpact(
+        await authorizationCatalogImpact(path, {
+          node: selected!.name,
+          id: version.entry.id,
+          version: version.entry.version,
+        }),
+      );
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : String(reason));
+    } finally {
+      setBusy(false);
+    }
+  };
   const withdraw = () =>
-    decide(() =>
-      authorizationSetCatalog(path, {
+    decide(async () => {
+      await authorizationSetCatalog(path, {
         ...approvalRequest(version, false),
         node: selected!.name,
-      }),
-    );
+      });
+      setImpact(undefined);
+    });
   const subheading = "text-xs font-semibold text-foreground";
   return (
     <section
@@ -448,7 +476,7 @@ export function CatalogApprovalSection({
                 size="sm"
                 variant="outline"
                 disabled={busy}
-                onClick={() => void withdraw()}
+                onClick={() => void showImpact()}
               >
                 {t("catalogWithdraw")}
               </Button>
@@ -478,6 +506,46 @@ export function CatalogApprovalSection({
             client.invalidateQueries({ queryKey: ["registry-versions"] })
           }
         />
+      )}
+      {impact && state === "approved" && (
+        <Notice tone="warning" role="status" className="withdraw-impact">
+          <div className="grid gap-1">
+            <span className={subheading}>{t("catalogWithdrawImpact")}</span>
+            {withdrawalHasNoImpact(impact) ? (
+              <span>{t("catalogWithdrawNoImpact")}</span>
+            ) : (
+              <>
+                <span>
+                  {t("catalogWithdrawAgents")}:{" "}
+                  <span className="font-mono [overflow-wrap:anywhere]">
+                    {withdrawalAgentLabels(impact).join(", ") || "0"}
+                  </span>
+                </span>
+                <span>
+                  {t("catalogWithdrawRuns")}: {impact.running_runs}
+                </span>
+              </>
+            )}
+            <div className="flex flex-wrap gap-2">
+              <Button
+                size="sm"
+                variant="outline"
+                disabled={busy}
+                onClick={() => void withdraw()}
+              >
+                {t("catalogWithdrawConfirm")}
+              </Button>
+              <Button
+                size="sm"
+                variant="outline"
+                disabled={busy}
+                onClick={() => setImpact(undefined)}
+              >
+                {t("cancel")}
+              </Button>
+            </div>
+          </div>
+        </Notice>
       )}
       {error && <Alert>{error}</Alert>}
       {version.needs_approval && (
