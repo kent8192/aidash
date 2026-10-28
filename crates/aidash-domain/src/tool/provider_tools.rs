@@ -11,6 +11,11 @@ pub const MAX_ANALYSIS_MODELS: usize = 4;
 pub const MAX_COMPLETION_TOKENS: u64 = 8192;
 pub const MAX_INNER_TOOL_CALLS: u64 = 4;
 pub const MAX_CONTENT_TOKENS: u64 = 16384;
+pub const MAX_NETWORK_HOSTS: usize = 32;
+/// OpenRouter clamps model-generated shell arguments to these limits.
+pub const SHELL_TIMEOUT_MS: u64 = 300_000;
+pub const SHELL_COMMANDS: u64 = 100;
+pub const SHELL_OUTPUT_LENGTH: u64 = 65_536;
 
 #[derive(Debug, Clone, Copy)]
 pub struct Declaration {
@@ -18,6 +23,7 @@ pub struct Declaration {
 	pub tool_type: &'static str,
 	pub alias: &'static str,
 	pub requires_responses: bool,
+	pub warning: bool,
 }
 
 pub const TOOLS: &[Declaration] = &[
@@ -26,24 +32,63 @@ pub const TOOLS: &[Declaration] = &[
 		tool_type: "openrouter:web_search",
 		alias: "provider_web_search",
 		requires_responses: false,
+		warning: false,
 	},
 	Declaration {
 		id: "provider.openrouter.web_fetch@1",
 		tool_type: "openrouter:web_fetch",
 		alias: "provider_web_fetch",
 		requires_responses: false,
+		warning: false,
 	},
 	Declaration {
 		id: "provider.openrouter.datetime@1",
 		tool_type: "openrouter:datetime",
 		alias: "provider_datetime",
 		requires_responses: false,
+		warning: false,
 	},
 	Declaration {
 		id: "provider.openrouter.fusion@1",
 		tool_type: "openrouter:fusion",
 		alias: "provider_fusion",
 		requires_responses: false,
+		warning: false,
+	},
+	Declaration {
+		id: "provider.openrouter.advisor@1",
+		tool_type: "openrouter:advisor",
+		alias: "provider_advisor",
+		requires_responses: true,
+		warning: true,
+	},
+	Declaration {
+		id: "provider.openrouter.subagent@1",
+		tool_type: "openrouter:subagent",
+		alias: "provider_subagent",
+		requires_responses: true,
+		warning: true,
+	},
+	Declaration {
+		id: "provider.openrouter.experimental__search_models@1",
+		tool_type: "openrouter:experimental__search_models",
+		alias: "provider_search_models",
+		requires_responses: true,
+		warning: true,
+	},
+	Declaration {
+		id: "provider.openrouter.tool_search@1",
+		tool_type: "openrouter:tool_search",
+		alias: "provider_tool_search",
+		requires_responses: true,
+		warning: true,
+	},
+	Declaration {
+		id: "provider.openrouter.shell@1",
+		tool_type: "openrouter:shell",
+		alias: "provider_shell",
+		requires_responses: true,
+		warning: true,
 	},
 ];
 
@@ -80,6 +125,18 @@ impl Declaration {
 				}
 				"openrouter:web_fetch" => json!({"engine":"openrouter","max_content_tokens":8192}),
 				"openrouter:datetime" => json!({"timezone":"UTC"}),
+				"openrouter:advisor" => {
+					json!({"model":"", "max_completion_tokens":4096, "forward_transcript":false, "stream":false})
+				}
+				"openrouter:subagent" => {
+					json!({"model":"", "max_completion_tokens":4096, "max_tool_calls":2, "tools":[], "inherit_functions":false})
+				}
+				"openrouter:experimental__search_models" | "openrouter:tool_search" => {
+					json!({"max_results":5})
+				}
+				"openrouter:shell" => {
+					json!({"engine":"openrouter","environment":{"type":"container_reference","network_policy":{"type":"disabled"}}})
+				}
 				// A panel and analyst must be chosen explicitly, never an upstream preset.
 				_ => {
 					json!({"analysis_models":[],"model":"","max_tool_calls":2,"max_completion_tokens":4096})
@@ -174,8 +231,71 @@ impl Declaration {
 					"max_completion_tokens",
 				]
 			}
+			"openrouter:advisor" => {
+				if !params.get("model").is_some_and(model_id)
+					|| !bounded("max_completion_tokens", MAX_COMPLETION_TOKENS)
+					|| params
+						.get("forward_transcript")
+						.and_then(Value::as_bool)
+						.is_none() || params.get("stream") != Some(&json!(false))
+				{
+					return Err(bad());
+				}
+				&[
+					"model",
+					"max_completion_tokens",
+					"forward_transcript",
+					"stream",
+					"instructions",
+				]
+			}
+			"openrouter:subagent" => {
+				if !params.get("model").is_some_and(model_id)
+					|| !bounded("max_completion_tokens", MAX_COMPLETION_TOKENS)
+					|| !bounded("max_tool_calls", MAX_INNER_TOOL_CALLS)
+					|| params.get("tools") != Some(&json!([]))
+					|| params.get("inherit_functions") != Some(&json!(false))
+				{
+					return Err(bad());
+				}
+				&[
+					"model",
+					"max_completion_tokens",
+					"max_tool_calls",
+					"tools",
+					"inherit_functions",
+					"instructions",
+				]
+			}
+			"openrouter:experimental__search_models" | "openrouter:tool_search" => {
+				if !bounded("max_results", MAX_RESULTS) {
+					return Err(bad());
+				}
+				&["max_results"]
+			}
+			"openrouter:shell" => {
+				let env = params
+					.get("environment")
+					.and_then(Value::as_object)
+					.ok_or_else(bad)?;
+				if params.get("engine") != Some(&json!("openrouter"))
+					|| env.get("type") != Some(&json!("container_reference"))
+					|| env
+						.keys()
+						.any(|key| !["type", "network_policy"].contains(&key.as_str()))
+				{
+					return Err(bad());
+				}
+				validate_network_policy(env.get("network_policy").ok_or_else(bad)?)?;
+				&["engine", "environment"]
+			}
 			_ => return Err(bad()),
 		};
+		if let Some(instructions) = params.get("instructions") {
+			if !instructions.as_str().is_some_and(|s| s.len() <= 8192) {
+				return Err(bad());
+			}
+		}
 		if params.keys().any(|key| !fields.contains(&key.as_str())) {
 			return Err(bad());
 		}
@@ -252,7 +372,29 @@ pub fn append(body: &mut Value, tools: &[PinnedTool]) {
 		.or_insert_with(|| json!([]))
 		.as_array_mut()
 		.expect("tools array");
-	entries.extend(tools.iter().map(PinnedTool::entry));
+	if tools
+		.iter()
+		.any(|tool| tool.tool_type == "openrouter:tool_search")
+	{
+		for entry in entries
+			.iter_mut()
+			.filter(|entry| entry["type"] == "function")
+		{
+			entry["defer_loading"] = json!(true);
+		}
+	}
+	for tool in tools
+		.iter()
+		.filter(|tool| tool.tool_type == "openrouter:advisor")
+	{
+		entries.insert(0, tool.entry());
+	}
+	entries.extend(
+		tools
+			.iter()
+			.filter(|tool| tool.tool_type != "openrouter:advisor")
+			.map(PinnedTool::entry),
+	);
 	body["max_tool_calls"] = json!(
 		tools
 			.iter()
@@ -293,7 +435,15 @@ pub fn authorize<'a>(
 		.collect();
 	let mut seen = std::collections::BTreeSet::new();
 	if let Some(tools) = body.get("tools") {
-		for entry in tools.as_array().ok_or_else(bad)? {
+		let entries = tools.as_array().ok_or_else(bad)?;
+		if entries
+			.iter()
+			.position(|entry| entry["type"] == "openrouter:advisor")
+			.is_some_and(|index| index != 0)
+		{
+			return Err(bad());
+		}
+		for entry in entries {
 			let kind = entry["type"].as_str().ok_or_else(bad)?;
 			if kind == "function" {
 				continue;
@@ -314,7 +464,17 @@ pub fn authorize<'a>(
 					parameters: entry["parameters"].clone(),
 				},
 			};
-			pinned.validate()?;
+			let mut authored = pinned.clone();
+			if kind == "openrouter:shell" {
+				let id = authored.binding.parameters["environment"]
+					.as_object_mut()
+					.and_then(|env| env.remove("container_id"))
+					.ok_or_else(bad)?;
+				if !id.as_str().is_some_and(valid_container_id) {
+					return Err(bad());
+				}
+			}
+			authored.validate()?;
 			if pinned.digest() != *digest {
 				return Err(bad());
 			}
@@ -340,6 +500,7 @@ impl Declaration {
 		let integer = |max| json!({"type":"integer","minimum":1,"maximum":max});
 		let model = json!({"type":"string","minLength":3,"maxLength":200,"pattern":"^[a-zA-Z0-9_~.-]+/[a-zA-Z0-9_~./-]+$"});
 		let domains = json!({"type":"array","minItems":1,"maxItems":32,"items":{"type":"string","minLength":1,"maxLength":253,"pattern":"^[a-zA-Z0-9.-]+$"}});
+		let hosts = json!({"type":"array","minItems":1,"maxItems":MAX_NETWORK_HOSTS,"items":{"type":"string","minLength":1,"maxLength":253,"pattern":"^[a-z0-9]([a-z0-9-]*[a-z0-9])?(\\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)*$"}});
 		let (mut properties, required) = match self.tool_type {
 			"openrouter:web_search" => (
 				json!({"engine":{"enum":["exa","parallel","perplexity"]},"max_results":integer(MAX_RESULTS),"max_total_results":integer(MAX_TOTAL_RESULTS),"allowed_domains":domains,"excluded_domains":domains}),
@@ -352,6 +513,33 @@ impl Declaration {
 			"openrouter:datetime" => (
 				json!({"timezone":{"type":"string","minLength":1,"maxLength":128}}),
 				json!(["timezone"]),
+			),
+			"openrouter:advisor" => (
+				json!({"model":model,"max_completion_tokens":integer(MAX_COMPLETION_TOKENS),"forward_transcript":{"type":"boolean"},"stream":{"const":false},"instructions":{"type":"string","maxLength":8192}}),
+				json!([
+					"model",
+					"max_completion_tokens",
+					"forward_transcript",
+					"stream"
+				]),
+			),
+			"openrouter:subagent" => (
+				json!({"model":model,"max_completion_tokens":integer(MAX_COMPLETION_TOKENS),"max_tool_calls":integer(MAX_INNER_TOOL_CALLS),"tools":{"const":[]},"inherit_functions":{"const":false},"instructions":{"type":"string","maxLength":8192}}),
+				json!([
+					"model",
+					"max_completion_tokens",
+					"max_tool_calls",
+					"tools",
+					"inherit_functions"
+				]),
+			),
+			"openrouter:experimental__search_models" | "openrouter:tool_search" => (
+				json!({"max_results":integer(MAX_RESULTS)}),
+				json!(["max_results"]),
+			),
+			"openrouter:shell" => (
+				json!({"engine":{"const":"openrouter"},"environment":{"type":"object","additionalProperties":false,"required":["type","network_policy"],"properties":{"type":{"const":"container_reference"},"network_policy":{"oneOf":[{"type":"object","additionalProperties":false,"required":["type"],"properties":{"type":{"const":"disabled"}}},{"type":"object","additionalProperties":false,"required":["type","allowed_domains"],"properties":{"type":{"const":"allowlist"},"allowed_domains":hosts}}]}}}}),
+				json!(["engine", "environment"]),
 			),
 			_ => (
 				json!({"analysis_models":{"type":"array","minItems":1,"maxItems":MAX_ANALYSIS_MODELS,"items":model},"model":model,"max_tool_calls":integer(MAX_INNER_TOOL_CALLS),"max_completion_tokens":integer(MAX_COMPLETION_TOKENS)}),
@@ -422,4 +610,85 @@ pub fn reject_implicit_tools(model: &str) -> Result<()> {
 		return Err(Error::Invalid("IMPLICIT_PROVIDER_TOOL: use an approved Provider tool Binding instead of :online or a preset".into()));
 	}
 	Ok(())
+}
+
+/// A custom id is persisted before any request; arbitrary upstream container ids are never authored.
+pub fn valid_container_id(id: &str) -> bool {
+	!id.is_empty()
+		&& id.len() <= 40
+		&& id
+			.bytes()
+			.all(|c| c.is_ascii_alphanumeric() || b"_-".contains(&c))
+}
+
+pub fn validate_network_policy(policy: &Value) -> Result<()> {
+	let bad = || {
+		Error::Invalid(
+			"PROVIDER_TOOL_NETWORK: use disabled or a bounded exact-host allowlist".into(),
+		)
+	};
+	let object = policy.as_object().ok_or_else(bad)?;
+	match policy["type"].as_str() {
+		Some("disabled") if object.len() == 1 => Ok(()),
+		Some("allowlist") if object.len() == 2 => {
+			let hosts = policy["allowed_domains"].as_array().ok_or_else(bad)?;
+			if hosts.is_empty()
+				|| hosts.len() > MAX_NETWORK_HOSTS
+				|| !hosts.iter().all(|v| {
+					v.as_str().is_some_and(|host| {
+						!host.is_empty()
+							&& host.len() <= 253 && host.split('.').all(|label| {
+							!label.is_empty()
+								&& !label.starts_with('-')
+								&& !label.ends_with('-') && label.bytes().all(|c| {
+								(c.is_ascii_lowercase() || c.is_ascii_digit()) || c == b'-'
+							})
+						})
+					})
+				}) {
+				return Err(bad());
+			}
+			Ok(())
+		}
+		_ => Err(bad()),
+	}
+}
+
+/// Closed exact system identities; tags or descriptions cannot bypass acknowledgment.
+pub fn warning_reference(id: &str, version: &str) -> bool {
+	version == "1.0.0"
+		&& TOOLS
+			.iter()
+			.any(|d| d.warning && d.id.strip_suffix("@1") == Some(id))
+}
+
+/// The exact disclosure recorded on the approval revision. No runtime consent is added.
+pub fn warning_acknowledgment(id: &str, version: &str) -> Option<String> {
+	if !warning_reference(id, version) {
+		return None;
+	}
+	let mut text = "OpenRouter executes this tool outside Aidash's Execution Pod, gVisor sandbox and Egress gateway. Aidash sandbox protections and the restriction on access to Tenant Secrets do not apply there. Aidash does not provision Tenant Secrets to it. Outputs are not Research evidence. The Agent Binding fixes spending caps; provider activity and billed usage are recorded.".to_owned();
+	if id.ends_with("advisor") || id.ends_with("subagent") {
+		text.push_str(" The child model runs outside Aidash's delegation chain and per-agent budgets. Only the pinned model and completion budget apply; subagent function inheritance and nested tools are disabled.");
+	}
+	if id.ends_with("shell") {
+		text.push_str(" Aidash creates at most one OpenRouter container per Run, lazily, and reuses it. Containers are not deleted by Aidash. OpenRouter sleeps them after five idle minutes; files persist at OpenRouter up to 30 days after last use. There are no Aidash sandbox protections. Produced files are only listed and never imported into the Working Area. Network is disabled unless the Binding pins an allowlist. Spending is bounded by max_tool_calls (Aidash maximum 8), OpenRouter clamps of 100 commands per call, 300000 ms per command and 65536 characters per output stream, and the model request timeout. Sandbox seconds are billed only while a request runs, with OpenRouter's minimum charge for a new or sleeping sandbox.");
+	}
+	Some(text)
+}
+
+/// Observable Responses history types; accepting history never grants a new tool entry.
+pub fn replayable(kind: &str) -> bool {
+	matches!(
+		kind,
+		"openrouter:advisor"
+			| "openrouter:subagent"
+			| "openrouter:shell"
+			| "shell_call"
+			| "shell_call_output"
+			| "openrouter:tool_search"
+			| "tool_search_call"
+			| "tool_search_output"
+			| "openrouter:experimental__search_models"
+	)
 }

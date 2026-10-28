@@ -409,19 +409,47 @@ impl ModelRequest {
 	/// Context is encoded as message text, including its JSON escaping. A salted
 	/// request's Tenant Cache Salt is prepended by the transport adapter only.
 	pub fn input_body(&self) -> Value {
-		self.body(
+		let mut body = self.body(
 			self.content_parts.iter().map(ContentPart::openrouter),
 			self.cache_breakpoints,
-		)
+		);
+		for message in body["messages"].as_array_mut().into_iter().flatten() {
+			if let Some(object) = message.as_object_mut() {
+				object.remove("_provider_activity");
+			}
+		}
+		body["messages"]
+			.as_array_mut()
+			.expect("messages")
+			.retain(|message| {
+				message["content"] != Value::Null || message.get("tool_calls").is_some()
+			});
+		body
 	}
 
 	fn estimate_body(&self, parts: &[ContentPart]) -> Result<Value> {
-		match self.input_format {
-			InputFormat::Chat => Ok(self.body(parts.iter().map(ContentPart::estimate_frame), true)),
+		let mut body = match self.input_format {
+			InputFormat::Chat => self.body(parts.iter().map(ContentPart::estimate_frame), true),
 			InputFormat::Responses => {
-				responses::input_body(self, parts.iter().map(ContentPart::estimate_frame))
+				responses::input_body(self, parts.iter().map(ContentPart::estimate_frame))?
+			}
+		};
+		// The durable id is resolved only at send time; reserve its maximum wire size now.
+		for tool in body
+			.get_mut("tools")
+			.and_then(Value::as_array_mut)
+			.into_iter()
+			.flatten()
+		{
+			if tool["type"] == "openrouter:shell"
+				&& tool["parameters"]["environment"]
+					.get("container_id")
+					.is_none()
+			{
+				tool["parameters"]["environment"]["container_id"] = json!("x".repeat(40));
 			}
 		}
+		Ok(body)
 	}
 
 	/// `breakpoints` marks `system` and the end of the Stable Prefix: the
@@ -460,7 +488,7 @@ impl ModelRequest {
 			_ => None,
 		};
 		if let Some(legacy) = legacy {
-			let history = legacy["history"].as_array().into_iter().flatten().filter(|event| event["kind"] == "assistant" && event["provider_activity"].as_array().is_some_and(|items| !items.is_empty())).map(|event| json!({"role":"assistant","content":json!({"text":event["text"],"provider_tool_activity":event["provider_activity"],"research_evidence":false}).to_string()}));
+			let history = legacy["history"].as_array().into_iter().flatten().filter(|event| event["kind"] == "assistant" && event["provider_activity"].as_array().is_some_and(|items| !items.is_empty())).map(|event| json!({"role":"assistant","content":json!({"text":event["text"],"provider_tool_activity":event["provider_activity"],"research_evidence":false}).to_string(),"_provider_activity":event["provider_activity"]}));
 			messages.splice(1..1, history);
 		}
 		let mut body = json!({ "messages": messages });

@@ -56,6 +56,20 @@ fn build(
 		.ok_or_else(|| Error::Invalid("model request has no messages".into()))?;
 	let mut input = Vec::new();
 	for message in messages.iter().skip(1) {
+		if !namespaced {
+			for item in message["_provider_activity"]
+				.as_array()
+				.into_iter()
+				.flatten()
+			{
+				if item["type"]
+					.as_str()
+					.is_some_and(crate::tool::provider_tools::replayable)
+				{
+					input.push(item.clone());
+				}
+			}
+		}
 		match message["role"].as_str() {
 			Some(role @ ("user" | "assistant")) => {
 				// A call-only assistant turn has no text message. Each call is
