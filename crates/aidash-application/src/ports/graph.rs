@@ -38,8 +38,6 @@ pub trait GraphProjectionScope: Send {
 /// Candidate routing uses the current viewer's caller-owned authority scope.
 #[async_trait]
 pub trait GraphVisibility: Send {
-	fn deployment_administrator(&self) -> bool;
-	async fn deployment_administrator_workspace(&mut self, id: Uuid) -> Result<bool>;
 	async fn registry(
 		&mut self,
 		entry: &aidash_domain::registry::Entry,

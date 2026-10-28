@@ -7,22 +7,16 @@ use crate::apps::identity::repositories::{
 };
 use crate::federation::Federation;
 use aidash_application::{
-	Result,
-	ports::federation::inbound::{InboundRepository, ViewerGrant},
-	tenancy::TenancyScope,
+	Result, ports::federation::inbound::InboundRepository, tenancy::TenancyScope,
 };
 use aidash_domain::{
 	identity::{peer_mapping::Mapping, tenant_administration::NODE_USE},
-	nodes::{
-		DeploymentId, NodeAddress, NodeName,
-		registration::{NodeRegistration, PinnedKey},
-	},
+	nodes::{DeploymentId, NodeAddress, NodeName, registration::NodeRegistration},
 	policy::{Evaluation, Resource},
 	tenancy::TenantName,
 };
 use async_trait::async_trait;
 use serde_json::json;
-use uuid::Uuid;
 
 #[async_trait]
 impl InboundRepository for Federation {
@@ -121,30 +115,5 @@ impl InboundRepository for Federation {
 				Ok(snapshot.bundle.evaluate(&evaluation).allowed)
 			})
 			.await?)
-	}
-
-	async fn viewer_grant(
-		&self,
-		tenant: &TenantName,
-		viewer: &DeploymentId,
-		identity: Uuid,
-	) -> Result<Option<ViewerGrant>> {
-		let row = crate::apps::identity::repositories::graph::persistence::viewer_grant(
-			self,
-			tenant.as_str(),
-			viewer.as_str(),
-			identity,
-		)
-		.await?;
-		row.map(|(key_id, public_key_pem, revision)| {
-			Ok(ViewerGrant {
-				key: PinnedKey {
-					key_id: aidash_domain::nodes::DeploymentKeyId::parse(&key_id)?,
-					public_key_pem,
-				},
-				revision,
-			})
-		})
-		.transpose()
 	}
 }

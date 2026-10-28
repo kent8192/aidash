@@ -6,7 +6,7 @@
 
 /// The version this Deployment advertises on `/.well-known/aidash` and every
 /// Federation token carries.
-pub const CURRENT: &str = "0.4";
+pub const CURRENT: &str = "0.5";
 
 /// Whether a Node speaking `local` serves a request that names `peer`.
 pub fn compatible(local: &str, peer: &str) -> bool {
