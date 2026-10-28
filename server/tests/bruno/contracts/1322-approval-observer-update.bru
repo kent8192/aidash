@@ -1,5 +1,5 @@
 meta {
-  name: 1322 approval-observer-update - Deployment Administrator bearer cannot inspect Tenant observations
+  name: 1322 approval-observer-update - Subject Credential bearer cannot administer the observer
   type: http
   seq: 1322
 }
@@ -12,7 +12,7 @@ put {
 
 headers {
   Accept: application/json
-  Authorization: Bearer {{deployment_administrator_token}}
+  Authorization: Bearer {{contract_token}}
   Content-Type: application/json
 }
 

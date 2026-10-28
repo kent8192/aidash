@@ -1,29 +1,23 @@
 meta {
-  name: 1173 provider-authorization-start - Anonymous request is rejected
+  name: 1173 provider-authorization-start - Forged bearer cannot start Provider Authorization
   type: http
   seq: 1173
 }
 
 post {
-  url: {{base_url}}/api/tenants/{{tenant}}/provider-authorizations/__bruno_missing__
-  body: none
+  url: {{base_url}}/api/tenants/{{tenant}}/provider-authorizations/openrouter
+  body: text
   auth: none
 }
 
 headers {
   Accept: application/json
+  Authorization: Bearer forged
+  Content-Type: application/json
 }
 
-script:pre-request {
-
-const snapshot = await bru.sendRequest({method:"GET",url:bru.getEnvVar("base_url")+"/api/workspaces/"+bru.getVar("workspace_id"),headers:{Authorization:"Bearer "+bru.getVar("contract_token")}}); if(snapshot.status!==200 || !Number.isInteger(snapshot.data.workspace.revision)) throw new Error("fixture snapshot unavailable"); bru.setVar("beforeWorkspace",JSON.stringify({revision:snapshot.data.workspace.revision,state:snapshot.data.workspace.state}));
-
-}
-
-script:post-response {
-
-const snapshot = await bru.sendRequest({method:"GET",url:bru.getEnvVar("base_url")+"/api/workspaces/"+bru.getVar("workspace_id"),headers:{Authorization:"Bearer "+bru.getVar("contract_token")}}); test("Rejected input preserves committed workspace state", function(){expect(snapshot.status).to.equal(200);expect(JSON.stringify({revision:snapshot.data.workspace.revision,state:snapshot.data.workspace.state})).to.equal(bru.getVar("beforeWorkspace"));});
-
+body:text {
+  {}
 }
 
 tests {

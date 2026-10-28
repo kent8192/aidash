@@ -1,5 +1,5 @@
 meta {
-  name: 1373 core_remote_preview_ticket - Anonymous remote ticket is rejected
+  name: 1373 core_remote_preview_ticket - Deployment Administrator cannot issue a remote ticket
   type: http
   seq: 1373
 }
@@ -12,6 +12,7 @@ post {
 
 headers {
   Accept: application/json
+  Authorization: Bearer {{deployment_administrator_token}}
   Content-Type: application/json
 }
 
@@ -20,6 +21,6 @@ body:text {
 }
 
 tests {
-  test("Exact HTTP 401", function () { expect(res.getStatus()).to.equal(401); });
-  test("Stable authorization error envelope", function () { expect(res.getHeader("content-type")).to.include("application/json"); expect(res.getBody()).to.eql({error:{"code": "UNAUTHORIZED", "message": "unauthorized", "retryable": false}}); });
+  test("Exact HTTP 403", function () { expect(res.getStatus()).to.equal(403); });
+  test("Stable authorization error envelope", function () { expect(res.getHeader("content-type")).to.include("application/json"); expect(res.getBody()).to.eql({error:{"code": "FORBIDDEN", "message": "forbidden", "retryable": false}}); });
 }

@@ -1,21 +1,25 @@
 meta {
-  name: 0936 stream - Deployment Administrator cannot subscribe to Tenant events
+  name: 0936 stream - Initial event replay
   type: http
-  seq: 936
+  seq: 10001
 }
 
 get {
-  url: {{base_url}}/api/events/stream?after=0
+  url: {{stream_base_1}}/api/events/stream?after=0
   body: none
   auth: none
 }
 
 headers {
   Accept: application/json
-  Authorization: Bearer {{deployment_administrator_token}}
+  Authorization: Bearer {{contract_token}}
+}
+
+script:pre-request {
+await bru.sendRequest({method:"POST",url:bru.getEnvVar("control_url")+"/drain/1"});
 }
 
 tests {
-  test("Exact HTTP 403", function () { expect(res.getStatus()).to.equal(403); });
-  test("Stable authorization error envelope", function () { expect(res.getHeader("content-type")).to.include("application/json"); expect(res.getBody()).to.eql({error:"forbidden"}); });
+  test("Exact HTTP 200", function () { expect(res.getStatus()).to.equal(200); });
+  test("Initial event replay contract", function () { expect(res.getHeader("content-type")).to.include("text/event-stream");expect(res.getHeader("cache-control")).to.equal("no-store");const ids=String(res.getBody()).split("\n").filter(line=>line.startsWith("id: ")).map(line=>Number(line.slice(4)));expect(ids.length).to.be.greaterThan(0);expect(ids).to.eql([...ids].sort((a,b)=>a-b));bru.setVar("resume_cursor",ids[0]); });
 }

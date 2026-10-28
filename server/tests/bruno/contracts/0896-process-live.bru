@@ -1,5 +1,5 @@
 meta {
-  name: 0896 process-live - Untrusted bearer does not restrict public reads
+  name: 0896 process-live - Foreign origin receives the same public contract
   type: http
   seq: 896
 }
@@ -12,10 +12,10 @@ get {
 
 headers {
   Accept: application/json
-  Authorization: Bearer invalid
+  Origin: https://untrusted.example
 }
 
 tests {
   test("Exact HTTP 200", function () { expect(res.getStatus()).to.equal(200); });
-  test("Untrusted bearer does not restrict public reads contract", function () { expect(res.getBody()).to.equal(""); });
+  test("Foreign origin receives the same public contract contract", function () { expect(res.getBody()).to.equal(""); });
 }

@@ -1,5 +1,5 @@
 meta {
-  name: 1164 invitations-redeem - No opaque session cannot open an Invitation
+  name: 1164 invitations-redeem - Forged opaque session cannot open an Invitation
   type: http
   seq: 1164
 }
@@ -12,6 +12,7 @@ post {
 
 headers {
   Accept: application/json
+  Cookie: __Host-aidash-session=forged
   Content-Type: application/json
 }
 

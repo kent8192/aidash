@@ -1,5 +1,5 @@
 meta {
-  name: 1360 core_preview_limits - Deployment Administrator cannot read Tenant limits
+  name: 1360 core_preview_limits - Subject bearer is not a Tenant Administrator
   type: http
   seq: 1360
 }
@@ -12,7 +12,7 @@ get {
 
 headers {
   Accept: application/json
-  Authorization: Bearer {{deployment_administrator_token}}
+  Authorization: Bearer {{contract_token}}
 }
 
 tests {

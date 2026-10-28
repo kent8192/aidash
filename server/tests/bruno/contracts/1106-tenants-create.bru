@@ -1,12 +1,12 @@
 meta {
-  name: 1106 tenants-create - Blank Tenant label is rejected
+  name: 1106 tenants-create - Malformed JSON cannot reach the use case
   type: http
   seq: 1106
 }
 
 post {
   url: {{base_url}}/api/tenants
-  body: text
+  body: file
   auth: none
 }
 
@@ -16,8 +16,8 @@ headers {
   Content-Type: application/json
 }
 
-body:text {
-  {"label": "   "}
+body:file {
+  file1: @file(fixtures/malformed-json.txt) @contentType(application/json)
 }
 
 script:pre-request {

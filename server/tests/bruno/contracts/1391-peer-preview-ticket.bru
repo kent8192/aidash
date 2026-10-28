@@ -1,5 +1,5 @@
 meta {
-  name: 1391 peer-preview-ticket - Require the Federation token
+  name: 1391 peer-preview-ticket - Refuse a token that does not verify
   type: http
   seq: 1391
 }
@@ -12,6 +12,7 @@ post {
 
 headers {
   Accept: application/json
+  Authorization: Bearer not-a-federation-token
   X-Aidash-Protocol: 0.5
 }
 

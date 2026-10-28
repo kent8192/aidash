@@ -1,5 +1,5 @@
 meta {
-  name: 0886 workbench-inspect-version - Anonymous request is rejected
+  name: 0886 workbench-inspect-version - Malformed bearer syntax is rejected
   type: http
   seq: 886
 }
@@ -12,6 +12,7 @@ get {
 
 headers {
   Accept: application/json
+  Authorization: Basic invalid
 }
 
 tests {

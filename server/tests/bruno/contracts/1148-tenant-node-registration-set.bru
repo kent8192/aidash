@@ -1,23 +1,23 @@
 meta {
-  name: 1148 tenant-node-registration-set - Wrong JSON media type is rejected
+  name: 1148 tenant-node-registration-set - Malformed JSON cannot reach the use case
   type: http
   seq: 1148
 }
 
 post {
   url: {{base_url}}/api/tenants/{{tenant}}/nodes/brave-otter-k3m9q2xa/registrations
-  body: text
+  body: file
   auth: none
 }
 
 headers {
   Accept: application/json
   Authorization: Bearer {{contract_token}}
-  Content-Type: text/plain
+  Content-Type: application/json
 }
 
-body:text {
-  {}
+body:file {
+  file1: @file(fixtures/malformed-json.txt) @contentType(application/json)
 }
 
 script:pre-request {
@@ -33,6 +33,6 @@ const snapshot = await bru.sendRequest({method:"GET",url:bru.getEnvVar("base_url
 }
 
 tests {
-  test("Exact HTTP 415", function () { expect(res.getStatus()).to.equal(415); });
+  test("Exact HTTP 400", function () { expect(res.getStatus()).to.equal(400); });
   test("Rejection is diagnostic and does not disclose SQL or credentials", function () { const value=res.getBody(); const text=typeof value === "string" ? value : JSON.stringify(value); expect(text.length).to.be.greaterThan(0); expect(text).not.to.match(/postgres:\/\/|SELECT .* FROM |deployment_administrator_token|peer_token/); });
 }

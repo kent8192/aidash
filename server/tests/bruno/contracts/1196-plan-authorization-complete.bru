@@ -1,5 +1,5 @@
 meta {
-  name: 1196 plan-authorization-complete - Deployment Administrator bearer owns no Plan Connection
+  name: 1196 plan-authorization-complete - Subject Credential bearer never reaches a Plan Connection
   type: http
   seq: 1196
 }
@@ -12,7 +12,7 @@ post {
 
 headers {
   Accept: application/json
-  Authorization: Bearer {{deployment_administrator_token}}
+  Authorization: Bearer {{contract_token}}
   Content-Type: application/json
 }
 

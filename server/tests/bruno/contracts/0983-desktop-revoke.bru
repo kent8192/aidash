@@ -1,5 +1,5 @@
 meta {
-  name: 0983 desktop-revoke - Revocation requires its input envelope
+  name: 0983 desktop-revoke - Unknown refresh revocation remains idempotent
   type: http
   seq: 983
 }
@@ -16,10 +16,10 @@ headers {
 }
 
 body:text {
-  {}
+  {"refresh_token": "unknown"}
 }
 
 tests {
-  test("Exact HTTP 422", function () { expect(res.getStatus()).to.equal(422); });
-  test("Rejection is diagnostic and does not disclose SQL or credentials", function () { const value=res.getBody(); const text=typeof value === "string" ? value : JSON.stringify(value); expect(text.length).to.be.greaterThan(0); expect(text).not.to.match(/postgres:\/\/|SELECT .* FROM |deployment_administrator_token|peer_token/); });
+  test("Exact HTTP 204", function () { expect(res.getStatus()).to.equal(204); });
+  test("Unknown refresh revocation remains idempotent contract", function () { expect(res.getBody()).to.equal(""); });
 }

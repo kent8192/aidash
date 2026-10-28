@@ -1,5 +1,5 @@
 meta {
-  name: 1139 tenant-node-registrations - Anonymous request is rejected
+  name: 1139 tenant-node-registrations - Malformed bearer syntax is rejected
   type: http
   seq: 1139
 }
@@ -12,6 +12,7 @@ get {
 
 headers {
   Accept: application/json
+  Authorization: Basic invalid
 }
 
 tests {

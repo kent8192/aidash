@@ -6,12 +6,17 @@ meta {
 
 put {
   url: {{base_url}}/api/preview-limits/{{tenant}}
-  body: none
+  body: text
   auth: none
 }
 
 headers {
   Accept: application/json
+  Content-Type: application/json
+}
+
+body:text {
+  {"tenant": "{{tenant}}", "idle_seconds": 600, "absolute_seconds": 3600, "expected_revision": 0}
 }
 
 script:pre-request {

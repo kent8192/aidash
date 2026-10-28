@@ -1,5 +1,5 @@
 meta {
-  name: 1365 core_preview_limits_update - Unknown limit fields are rejected
+  name: 1365 core_preview_limits_update - Limit input is required
   type: http
   seq: 1365
 }
@@ -17,7 +17,7 @@ headers {
 }
 
 body:text {
-  {"tenant": "{{tenant}}", "idle_seconds": 600, "absolute_seconds": 3600, "expected_revision": 0, "unexpected": true}
+  {}
 }
 
 script:pre-request {

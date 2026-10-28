@@ -1,21 +1,19 @@
 meta {
-  name: 0961 frontend-asset - Stale conditional request serves current content
+  name: 0961 frontend-asset - Missing asset does not fall back to the SPA
   type: http
   seq: 961
 }
 
 get {
-  url: {{base_url}}/assets/probe.txt
+  url: {{base_url}}/assets/missing.txt
   body: none
   auth: none
 }
 
 headers {
   Accept: application/json
-  If-None-Match: "stale"
 }
 
 tests {
-  test("Exact HTTP 200", function () { expect(res.getStatus()).to.equal(200); });
-  test("Stale conditional request serves current content contract", function () { expect(res.getBody()).to.equal("bruno-asset\n"); });
+  test("Exact HTTP 404", function () { expect(res.getStatus()).to.equal(404); });
 }

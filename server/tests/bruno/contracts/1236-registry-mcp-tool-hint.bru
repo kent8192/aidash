@@ -1,5 +1,5 @@
 meta {
-  name: 1236 registry-mcp-tool-hint - Deployment Administrator bearer has no Tenant authority
+  name: 1236 registry-mcp-tool-hint - Subject without registry.create cannot read an MCP tool's hint
   type: http
   seq: 1236
 }
@@ -12,7 +12,7 @@ post {
 
 headers {
   Accept: application/json
-  Authorization: Bearer {{deployment_administrator_token}}
+  Authorization: Bearer {{contract_token}}
   Content-Type: application/json
 }
 

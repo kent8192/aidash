@@ -1,5 +1,5 @@
 meta {
-  name: 1116 tenants-personal - Deployment Administrator bearer cannot recreate a Personal Tenant
+  name: 1116 tenants-personal - Subject Credential bearer cannot recreate a Personal Tenant
   type: http
   seq: 1116
 }
@@ -12,7 +12,7 @@ post {
 
 headers {
   Accept: application/json
-  Authorization: Bearer {{deployment_administrator_token}}
+  Authorization: Bearer {{contract_token}}
 }
 
 script:pre-request {

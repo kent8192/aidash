@@ -1,5 +1,5 @@
 meta {
-  name: 1281 thread-approval-mode - Anonymous request is rejected
+  name: 1281 thread-approval-mode - Forged bearer cannot reach a person's approval settings
   type: http
   seq: 1281
 }
@@ -12,6 +12,7 @@ get {
 
 headers {
   Accept: application/json
+  Authorization: Bearer forged
 }
 
 tests {

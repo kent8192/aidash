@@ -1,5 +1,5 @@
 meta {
-  name: 1266 approval-settings - Anonymous request is rejected
+  name: 1266 approval-settings - Forged bearer cannot reach a person's approval settings
   type: http
   seq: 1266
 }
@@ -12,6 +12,7 @@ get {
 
 headers {
   Accept: application/json
+  Authorization: Bearer forged
 }
 
 tests {

@@ -1,12 +1,12 @@
 meta {
-  name: 1120 tenants-delete - Deletion requires the typed Tenant name
+  name: 1120 tenants-delete - Malformed JSON cannot reach the use case
   type: http
   seq: 1120
 }
 
 post {
   url: {{base_url}}/api/tenants/{{tenant}}/deletion
-  body: text
+  body: file
   auth: none
 }
 
@@ -16,8 +16,8 @@ headers {
   Content-Type: application/json
 }
 
-body:text {
-  {"confirmation": "bruno-other-tenant"}
+body:file {
+  file1: @file(fixtures/malformed-json.txt) @contentType(application/json)
 }
 
 script:pre-request {

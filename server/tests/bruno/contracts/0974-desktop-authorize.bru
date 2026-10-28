@@ -1,11 +1,11 @@
 meta {
-  name: 0974 desktop-authorize - Consent requires a request identity
+  name: 0974 desktop-authorize - Malformed handoff identity is rejected
   type: http
   seq: 974
 }
 
 get {
-  url: {{base_url}}/auth/desktop/authorize
+  url: {{base_url}}/auth/desktop/authorize?request=invalid
   body: none
   auth: none
 }

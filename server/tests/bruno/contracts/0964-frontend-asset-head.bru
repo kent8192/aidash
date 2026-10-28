@@ -1,5 +1,5 @@
 meta {
-  name: 0964 frontend-asset-head - Serve the configured frontend content
+  name: 0964 frontend-asset-head - Conditional request matches the content ETag
   type: http
   seq: 964
 }
@@ -12,9 +12,10 @@ head {
 
 headers {
   Accept: application/json
+  If-None-Match: {{frontendEtag}}
 }
 
 tests {
-  test("Exact HTTP 200", function () { expect(res.getStatus()).to.equal(200); });
-  test("Serve the configured frontend content contract", function () { expect(res.getBody()).to.equal("");expect(res.getHeader("x-content-type-options")).to.equal("nosniff");bru.setVar("frontendEtag",res.getHeader("etag")); });
+  test("Exact HTTP 304", function () { expect(res.getStatus()).to.equal(304); });
+  test("Conditional request matches the content ETag contract", function () { expect(res.getBody()).to.equal(""); });
 }

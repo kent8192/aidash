@@ -1,5 +1,5 @@
 meta {
-  name: 0907 openrouter-models - Anonymous request is rejected
+  name: 0907 openrouter-models - Malformed bearer syntax is rejected
   type: http
   seq: 907
 }
@@ -12,6 +12,7 @@ get {
 
 headers {
   Accept: application/json
+  Authorization: Basic invalid
 }
 
 tests {

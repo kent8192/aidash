@@ -1,5 +1,5 @@
 meta {
-  name: 1264 approval-rule-delete - Deployment Administrator bearer owns no approval settings
+  name: 1264 approval-rule-delete - Subject Credential bearer never reaches approval settings
   type: http
   seq: 1264
 }
@@ -12,7 +12,7 @@ delete {
 
 headers {
   Accept: application/json
-  Authorization: Bearer {{deployment_administrator_token}}
+  Authorization: Bearer {{contract_token}}
 }
 
 script:pre-request {

@@ -1,5 +1,5 @@
 meta {
-  name: 0929 events - Anonymous request is rejected
+  name: 0929 events - Malformed bearer syntax is rejected
   type: http
   seq: 929
 }
@@ -12,6 +12,7 @@ get {
 
 headers {
   Accept: application/json
+  Authorization: Basic invalid
 }
 
 tests {

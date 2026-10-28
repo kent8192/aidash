@@ -1,17 +1,23 @@
 meta {
-  name: 1240 approval-preferences - Anonymous request is rejected
+  name: 1240 approval-preferences - Forged bearer cannot reach a person's approval settings
   type: http
   seq: 1240
 }
 
 get {
-  url: {{base_url}}/api/tenants/{{tenant}}/approval-preferences/mine
-  body: none
+  url: {{base_url}}/api/tenants/{{tenant}}/approval-preferences/mine?node={{tenant_node}}
+  body: text
   auth: none
 }
 
 headers {
   Accept: application/json
+  Authorization: Bearer forged
+  Content-Type: application/json
+}
+
+body:text {
+  {"expected_revision": 0, "default_mode": "manual"}
 }
 
 tests {

@@ -1,23 +1,23 @@
 meta {
-  name: 1324 approval-observer-update - Wrong JSON media type is rejected
+  name: 1324 approval-observer-update - Malformed JSON cannot reach the use case
   type: http
   seq: 1324
 }
 
 put {
   url: {{base_url}}/api/tenants/{{tenant}}/approval-observer?node={{tenant_node}}
-  body: text
+  body: file
   auth: none
 }
 
 headers {
   Accept: application/json
   Authorization: Bearer {{contract_token}}
-  Content-Type: text/plain
+  Content-Type: application/json
 }
 
-body:text {
-  {"expected_revision": 0, "decider": null}
+body:file {
+  file1: @file(fixtures/malformed-json.txt) @contentType(application/json)
 }
 
 script:pre-request {
@@ -33,6 +33,6 @@ const snapshot = await bru.sendRequest({method:"GET",url:bru.getEnvVar("base_url
 }
 
 tests {
-  test("Exact HTTP 415", function () { expect(res.getStatus()).to.equal(415); });
+  test("Exact HTTP 400", function () { expect(res.getStatus()).to.equal(400); });
   test("Rejection is diagnostic and does not disclose SQL or credentials", function () { const value=res.getBody(); const text=typeof value === "string" ? value : JSON.stringify(value); expect(text.length).to.be.greaterThan(0); expect(text).not.to.match(/postgres:\/\/|SELECT .* FROM |deployment_administrator_token|peer_token/); });
 }

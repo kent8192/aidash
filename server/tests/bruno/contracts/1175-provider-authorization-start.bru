@@ -1,5 +1,5 @@
 meta {
-  name: 1175 provider-authorization-start - Deployment Administrator bearer has no browser session to bind
+  name: 1175 provider-authorization-start - Subject bearer has no browser session to bind
   type: http
   seq: 1175
 }
@@ -12,7 +12,7 @@ post {
 
 headers {
   Accept: application/json
-  Authorization: Bearer {{deployment_administrator_token}}
+  Authorization: Bearer {{contract_token}}
   Content-Type: application/json
 }
 
@@ -35,5 +35,5 @@ const snapshot = await bru.sendRequest({method:"GET",url:bru.getEnvVar("base_url
 tests {
   test("Exact HTTP 403", function () { expect(res.getStatus()).to.equal(403); });
   test("Stable authorization error envelope", function () { expect(res.getHeader("content-type")).to.include("application/json"); expect(res.getBody()).to.eql({error:"forbidden"}); });
-  test("Deployment Administrator bearer has no browser session to bind contract", function () { expect(res.getHeader("set-cookie") || "").not.to.include("provider-authorization"); });
+  test("Subject bearer has no browser session to bind contract", function () { expect(res.getHeader("set-cookie") || "").not.to.include("provider-authorization"); });
 }

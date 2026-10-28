@@ -1,5 +1,5 @@
 meta {
-  name: 1115 tenants-personal - Anonymous request is rejected
+  name: 1115 tenants-personal - Deployment Administrator bearer cannot recreate a Personal Tenant
   type: http
   seq: 1115
 }
@@ -12,6 +12,7 @@ post {
 
 headers {
   Accept: application/json
+  Authorization: Bearer {{deployment_administrator_token}}
 }
 
 script:pre-request {

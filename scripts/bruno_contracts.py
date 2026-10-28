@@ -1425,7 +1425,8 @@ def render():
             ),
             None,
         )
-        if numeric:
+        # This cursor is an arbitrary profile ID, not a numeric page offset.
+        if numeric and route["name"] != "workbench-tenant-test-profiles":
             add(
                 endpoint,
                 "Paging rejects nonnumeric or malformed cursors",

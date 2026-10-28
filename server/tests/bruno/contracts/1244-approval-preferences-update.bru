@@ -1,29 +1,23 @@
 meta {
-  name: 1244 approval-preferences-update - Anonymous request is rejected
+  name: 1244 approval-preferences-update - Forged bearer cannot reach a person's approval settings
   type: http
   seq: 1244
 }
 
 put {
-  url: {{base_url}}/api/tenants/{{tenant}}/approval-preferences/mine
-  body: none
+  url: {{base_url}}/api/tenants/{{tenant}}/approval-preferences/mine?node={{tenant_node}}
+  body: text
   auth: none
 }
 
 headers {
   Accept: application/json
+  Authorization: Bearer forged
+  Content-Type: application/json
 }
 
-script:pre-request {
-
-const snapshot = await bru.sendRequest({method:"GET",url:bru.getEnvVar("base_url")+"/api/workspaces/"+bru.getVar("workspace_id"),headers:{Authorization:"Bearer "+bru.getVar("contract_token")}}); if(snapshot.status!==200 || !Number.isInteger(snapshot.data.workspace.revision)) throw new Error("fixture snapshot unavailable"); bru.setVar("beforeWorkspace",JSON.stringify({revision:snapshot.data.workspace.revision,state:snapshot.data.workspace.state}));
-
-}
-
-script:post-response {
-
-const snapshot = await bru.sendRequest({method:"GET",url:bru.getEnvVar("base_url")+"/api/workspaces/"+bru.getVar("workspace_id"),headers:{Authorization:"Bearer "+bru.getVar("contract_token")}}); test("Rejected input preserves committed workspace state", function(){expect(snapshot.status).to.equal(200);expect(JSON.stringify({revision:snapshot.data.workspace.revision,state:snapshot.data.workspace.state})).to.equal(bru.getVar("beforeWorkspace"));});
-
+body:text {
+  {"expected_revision": 0, "default_mode": "manual"}
 }
 
 tests {

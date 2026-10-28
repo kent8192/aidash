@@ -1,11 +1,11 @@
 meta {
-  name: 1181 provider-authorization-callback - Tampered browser binding cannot complete an authorization
+  name: 1181 provider-authorization-callback - Callback without state is rejected
   type: http
   seq: 1181
 }
 
 get {
-  url: {{base_url}}/auth/provider-authorizations/openrouter/callback?state=invalid&code=invalid
+  url: {{base_url}}/auth/provider-authorizations/openrouter/callback?code=invalid
   body: none
   auth: none
 }
