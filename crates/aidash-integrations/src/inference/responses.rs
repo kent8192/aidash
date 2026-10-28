@@ -377,7 +377,7 @@ impl ResponsesProvider {
 				)));
 			}
 		}
-		let context = crate::data_protection::context(
+		let mut context = crate::data_protection::context(
 			self.access.as_ref(),
 			&self.call_context(request.max_output_tokens, request.provider_tools.clone()),
 		)
@@ -387,6 +387,28 @@ impl ResponsesProvider {
 			&context,
 			&request.provider_tools,
 		)?;
+		let mut prepared = request.clone();
+		for tool in &mut prepared.provider_tools {
+			if tool.tool_type == "openrouter:shell" {
+				let id = self
+					.access
+					.provider_container(
+						&context,
+						&tool.binding.parameters["environment"]["network_policy"],
+					)
+					.await?;
+				if !aidash_domain::tool::provider_tools::valid_container_id(&id) {
+					return Err(Error::Invalid("invalid provider container id".into()));
+				}
+				tool.binding.parameters["environment"]["container_id"] = json!(id);
+			}
+		}
+		context
+			.inference
+			.as_mut()
+			.expect("inference context")
+			.provider_tools = prepared.provider_tools.clone();
+		let request = &prepared;
 		let salt = salt_line(self, request)?;
 		let media_routes = super::verified_routes(
 			&self.clients,
@@ -1019,6 +1041,11 @@ fn completed_with_cost(
 				}
 			}
 			Some("function_call") => {
+				if item.get("subagent_id").is_some() || item.get("subagent_items").is_some() {
+					return Err(Error::External(
+						"Subagent function inheritance is not supported".into(),
+					));
+				}
 				if openrouter
 					&& aidash_domain::tool::provider_tools::declaration(
 						item["name"].as_str().unwrap_or_default(),

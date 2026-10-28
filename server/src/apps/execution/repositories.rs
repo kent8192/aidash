@@ -122,3 +122,5 @@ pub(crate) mod research;
 pub(crate) mod egress;
 
 pub(crate) mod source_delivery;
+
+pub(crate) mod provider_container;

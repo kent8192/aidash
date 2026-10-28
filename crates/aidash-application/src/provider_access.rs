@@ -109,6 +109,16 @@ pub trait ProviderAccess: Send + Sync {
 		Ok(context.data_protection)
 	}
 
+	/// Persist/reload the Run's sole provider container before signing any shell request.
+	/// Adapters without a durable Run repository cannot enable shell.
+	async fn provider_container(
+		&self,
+		_context: &Context,
+		_network_policy: &serde_json::Value,
+	) -> Result<String> {
+		Err(Error::Invalid("PROVIDER_CONTAINER_UNAVAILABLE".into()))
+	}
+
 	async fn resolve(&self, context: &Context, endpoint: &str, source: &Source) -> Result<Access>;
 	/// Whether `resolve` would find an active credential, without minting a
 	/// Capability Token or reading Key Material. Callers use it to fail before
