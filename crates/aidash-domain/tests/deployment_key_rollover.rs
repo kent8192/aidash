@@ -145,6 +145,7 @@ fn registration_refresh_preserves_authorization_and_cannot_cross_deployments() {
 				public_key_pem: "adapter-owned-pem".into(),
 			},
 		},
+		dashboard_origin: None,
 		atomic_transactions: false,
 		enabled: false,
 		revision: 8,
