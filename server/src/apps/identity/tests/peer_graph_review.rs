@@ -15,19 +15,18 @@ const SOURCE: &str = "aidash://source";
 async fn project(
 	app: &common::TestApplication,
 	source: &common::Source,
-	viewer: Value,
+	subject: &str,
 	options: Value,
 ) -> (u16, Value) {
 	let mut input = json!({
-		"viewer":viewer,"scope_workspace":null,"mode":"mesh",
+		"subject":subject,"scope_workspace":null,"mode":"mesh",
 		"kinds":["workspace"],"relations":[],"hours":0,"limit":80,"cursor":null,
-		"target_tenant":if viewer["kind"] == "deployment_administrator" { Some("acme") } else { None },
 	});
 	input
 		.as_object_mut()
 		.unwrap()
 		.extend(options.as_object().unwrap().clone());
-	common::post_graph(app, source, &viewer, &input).await
+	common::post_graph(app, source, subject, &input).await
 }
 
 /// The address of the Node of `deployment` that a stand-in sends from.
@@ -47,7 +46,10 @@ async fn credential(f: &Federation, _app: &common::TestApplication, tenant: &str
 		.unwrap()
 }
 
-async fn viewer(f: &Federation, app: &common::TestApplication) -> (Value, Uuid, common::Source) {
+async fn viewer(
+	f: &Federation,
+	app: &common::TestApplication,
+) -> (&'static str, Uuid, common::Source) {
 	let source = common::register_source(f, app, SOURCE, "acme").await;
 	let id = credential(f, app, "acme").await;
 	let (status, mapping) = common::set_peer_mapping(
@@ -61,11 +63,7 @@ async fn viewer(f: &Federation, app: &common::TestApplication) -> (Value, Uuid, 
 	)
 	.await;
 	assert_eq!(status, 200, "{mapping}");
-	(
-		json!({"kind":"subject","subject":"source-subject"}),
-		id,
-		source,
-	)
+	("source-subject", id, source)
 }
 
 /// Activation writes a receiver run and an admission, not a local workspace/task.
@@ -387,7 +385,7 @@ async fn admitted_graph_runs_use_receiver_authority_and_scope_bound_generations(
 	.await;
 	let options =
 		json!({"scope_workspace":workspace,"kinds":["run","agent"],"relations":["executes"]});
-	let (status, page) = project(&app, &source, subject.clone(), options.clone()).await;
+	let (status, page) = project(&app, &source, subject, options.clone()).await;
 	assert_eq!(status, 200, "{page}");
 	let mut actual = run_ids(&page);
 	actual.sort();
@@ -420,32 +418,9 @@ async fn admitted_graph_runs_use_receiver_authority_and_scope_bound_generations(
 	}
 	.unwrap();
 	assert_eq!(local_workspace_count, 0);
-	let deployment_administrator = Uuid::new_v4();
-	let (status, grant) = request(
-		&app,
-		&f.config.api_token,
-		"POST",
-		"/api/authorization/acme/peer-graph-grants",
-		json!({
-			"source_deployment":SOURCE,"source_identity":deployment_administrator,"endpoint":source.remote.endpoint,"key_id":source.remote.key_id(),"enabled":true,"expected_revision":0,
-		}),
-	)
-	.await;
-	assert_eq!(status, 200, "{grant}");
-	let (status, deployment_administrator_page) = project(
-		&app,
-		&source,
-		json!({"kind":"deployment_administrator","id":deployment_administrator}),
-		options.clone(),
-	)
-	.await;
-	assert_eq!(status, 200, "{deployment_administrator_page}");
-	let mut actual = run_ids(&deployment_administrator_page);
-	actual.sort();
-	assert_eq!(actual, expected);
 	let mut paged = options.clone();
 	paged["limit"] = json!(2);
-	let (status, first) = project(&app, &source, subject.clone(), paged.clone()).await;
+	let (status, first) = project(&app, &source, subject, paged.clone()).await;
 	assert_eq!(status, 200, "{first}");
 	assert!(first["next_cursor"].is_string(), "{first}");
 	paged["cursor"] = first["next_cursor"].clone();
@@ -469,10 +444,10 @@ async fn admitted_graph_runs_use_receiver_authority_and_scope_bound_generations(
 		1,
 	)
 	.await;
-	let (status, continued) = project(&app, &source, subject.clone(), paged.clone()).await;
+	let (status, continued) = project(&app, &source, subject, paged.clone()).await;
 	assert_eq!(status, 200, "{continued}");
 	bump_run(&f, expected[0]).await;
-	assert_eq!(project(&app, &source, subject.clone(), paged).await.0, 409);
+	assert_eq!(project(&app, &source, subject, paged).await.0, 409);
 	policy["policies"].as_array_mut().unwrap().push(json!({
 		"id":"deny-remote-run","effect":"deny","subjects":{"ids":["alice"]},
 		"actions":["run.read"],"resources":{"kinds":["run"]},
@@ -546,7 +521,7 @@ async fn graph_activity_is_newest_first_and_checks_workspace_events_once(
 		.await;
 	}
 	let before = event_decisions(&f).await;
-	let (status, page) = project(&app, &source, subject.clone(), json!({})).await;
+	let (status, page) = project(&app, &source, subject, json!({})).await;
 	assert_eq!(status, 200, "{page}");
 	assert_eq!(event_decisions(&f).await - before, 1);
 	let activity = page["activity"].as_array().unwrap();

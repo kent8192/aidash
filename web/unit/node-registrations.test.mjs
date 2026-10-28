@@ -11,6 +11,7 @@ const own = "aidash://home";
 const draft = {
   source_node: " aidash://home/sibling ",
   endpoint: " https://other.example.com ",
+  dashboard_origin: " https://dashboard.away.example.com ",
   key_id: " K ",
   atomic_transactions: false,
 };
@@ -47,6 +48,7 @@ test("registering a Node of another Deployment pins its endpoint and key ID", ()
       enabled: true,
       expected_revision: 0,
       endpoint: "https://other.example.com",
+      dashboard_origin: "https://dashboard.away.example.com",
       key_id: "K",
     },
   );
@@ -56,6 +58,7 @@ const record = (overrides = {}) => ({
   node: "mine",
   source_node: "aidash://away/a",
   endpoint: "https://other.example.com",
+  dashboard_origin: "https://dashboard.away.example.com",
   key_id: "K",
   atomic_transactions: false,
   enabled: true,
@@ -84,6 +87,7 @@ test("enabling again sends back what the registration pinned", () => {
       enabled: true,
       expected_revision: 3,
       endpoint: "https://other.example.com",
+      dashboard_origin: "https://dashboard.away.example.com",
       key_id: "K",
     },
   );

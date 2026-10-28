@@ -117,6 +117,46 @@ const projected = {
   next_cursor: null,
 };
 
+test("Deployment Administrator is told to use Tenant authority and sees no remote controls", async ({
+  page,
+}) => {
+  const scene = meshScene();
+  await installBearerDashboard(page, "synthetic-federated-tenant");
+  await page.addInitScript(() =>
+    localStorage.setItem("aidash-locale", "en-US"),
+  );
+  const requests: string[] = [];
+  await page.route("**/api/**", async (route) => {
+    const path = new URL(route.request().url()).pathname;
+    if (path === "/api/events/stream") return route.abort();
+    if (path.startsWith("/api/federation/graph")) {
+      requests.push(path);
+      return route.fulfill({ status: 403, json: { error: "forbidden" } });
+    }
+    return route.fulfill({
+      json:
+        path === "/api/session"
+          ? { access: scene.data.access, node_id: scene.data.deployment.id }
+          : path === "/api/state"
+            ? scene.data
+            : path === "/api/discover"
+              ? scene.discovery
+              : [],
+    });
+  });
+  await page.goto("/graph");
+  await expect(
+    page.getByText(
+      "Remote graphs need Tenant authority. Open the graph through a Tenant Mapping.",
+    ),
+  ).toBeVisible();
+  await expect(page.getByLabel("Peer tenant")).toHaveCount(0);
+  await expect(page.getByRole("button", { name: "Expand node" })).toHaveCount(
+    0,
+  );
+  expect(requests).toEqual([]);
+});
+
 test("subject expands only direct authorized peers and clears remote details on denial", async ({
   page,
 }) => {
@@ -263,11 +303,9 @@ test("subject expands only direct authorized peers and clears remote details on 
   await expect(page.getByText("Remote graph access denied.")).toBeVisible();
   await expect(list).not.toContainText("B Task");
   await expect(inspector).not.toContainText("B Task");
-  expect(
-    requests.every(
-      (body) => (body as { target_tenant: null }).target_tenant === null,
-    ),
-  ).toBe(true);
+  expect(requests.every((body) => !("target_tenant" in (body as object)))).toBe(
+    true,
+  );
   expect(
     requests.every(
       (body) => (body as { node_id: string }).node_id !== "aidash://unknown",

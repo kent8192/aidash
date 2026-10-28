@@ -295,10 +295,19 @@ async fn write(
 	by: &AdministrationActor,
 	stamp: &str,
 ) -> Result<NodeRegistration> {
+	let current = if input.enabled {
+		None
+	} else {
+		records::get(tx, tenant, node.as_str(), &input.source_node).await?
+	};
 	let row = records::Write {
 		tenant,
 		node: node.as_str(),
 		source_node: &input.source_node,
+		dashboard_origin: current
+			.as_ref()
+			.and_then(|row| row.dashboard_origin.as_deref())
+			.or(input.dashboard_origin.as_deref()),
 		counterpart,
 		atomic_transactions: input.atomic_transactions,
 		enabled: input.enabled,

@@ -102,7 +102,7 @@ async fn expand(
 		json!({
 			"node_id":target,"scope_workspace":null,"mode":"mesh",
 			"kinds":kinds,"relations":["goal","contains","tool","model"],
-			"hours":0,"limit":2,"cursor":cursor,"target_tenant":null,
+			"hours":0,"limit":2,"cursor":cursor,
 		}),
 	)
 	.await

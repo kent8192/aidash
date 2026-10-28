@@ -12,6 +12,8 @@ import type {
 import { apiFetch } from "../transport";
 import { Alert, Facts, Hint, formClass } from "../components/patterns";
 import { Badge, Field, useI18n } from "../ui";
+import { useFilePreview } from "../capabilities/file-preview-pane";
+import { inspectRemotePreview } from "../capabilities/remote-preview";
 
 /**
  * Whether the remote Run's typed semantic recovery authorizes `action`. Without
@@ -192,6 +194,9 @@ export function RemoteExecutions({ task }: { task: string }) {
                       : execution.error}
                   </Alert>
                 )}
+                {execution && execution.phase !== "ADMITTED" && (
+                  <RemotePreviewFiles run={execution.run_id} />
+                )}
                 {!terminal && (
                   <div className="flex min-w-0 flex-wrap gap-2">
                     {live && (!execution || execution.phase === "ADMITTED") && (
@@ -252,6 +257,79 @@ export function RemoteExecutions({ task }: { task: string }) {
         )}
       </div>
     </section>
+  );
+}
+
+function RemotePreviewFiles({ run }: { run: string }) {
+  const { t } = useI18n();
+  const preview = useFilePreview();
+  const inspection = useQuery({
+    queryKey: ["remote-preview", run],
+    queryFn: ({ signal }) => inspectRemotePreview(run, signal),
+    retry: false,
+    refetchInterval: 5000,
+  });
+  if (inspection.isPending) return null;
+  if (inspection.isError) {
+    if (
+      typeof inspection.error === "object" &&
+      inspection.error !== null &&
+      "status" in inspection.error &&
+      inspection.error.status === 404
+    )
+      return null;
+    return <Hint role="status">{t("remotePreviewInspectionUnavailable")}</Hint>;
+  }
+  const value = inspection.data;
+  if (!value.preview_available)
+    return <Hint>{t("remotePreviewDomainUnavailable")}</Hint>;
+  return (
+    <div className="grid min-w-0 gap-2">
+      <h4 className="text-xs font-semibold">{t("remotePreviewFiles")}</h4>
+      {value.files.length === 0 && <Hint>{t("remotePreviewNoFiles")}</Hint>}
+      <div className="flex min-w-0 flex-wrap gap-2">
+        {value.files.map((file) => (
+          <Button
+            key={file.file_id}
+            variant="outline"
+            size="sm"
+            type="button"
+            onClick={() =>
+              preview.open({
+                run,
+                area: value.area_id,
+                file: { ...file, scope: "working" },
+              })
+            }
+          >
+            {file.path}
+          </Button>
+        ))}
+      </div>
+      {value.live_preview && (
+        <div className="flex items-center gap-2 text-xs">
+          <span>
+            {t("livePreviewTitle")}: {value.live_preview.state}
+          </span>
+          {["running", "stale"].includes(value.live_preview.state) && (
+            <Button
+              variant="outline"
+              size="sm"
+              type="button"
+              onClick={() =>
+                preview.openLive({
+                  run,
+                  livePreviewId: value.live_preview!.id,
+                  remote: true,
+                })
+              }
+            >
+              {t("livePreviewView")}
+            </Button>
+          )}
+        </div>
+      )}
+    </div>
   );
 }
 

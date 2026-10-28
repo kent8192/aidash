@@ -85,7 +85,7 @@ class PeerProxy:
                 try:
                     text = raw.decode()
                     assert self.headers.get("Authorization", "").startswith("Bearer "), "Peer transport must send a Federation token"
-                    assert self.headers.get("x-aidash-protocol") == "0.4", "Peer transport must speak the current protocol"
+                    assert self.headers.get("x-aidash-protocol") == "0.5", "Peer transport must speak the current protocol"
                     assert not any(token in text or token in str(self.headers) for token in proxy.forbidden_tokens), "Subject credential forwarded to a peer"
                     body = json.loads(raw)
                     started = time.monotonic()
@@ -320,7 +320,7 @@ def verify(base_a, base_b, node_a, node_b, worker, provider_socket, launch_worke
             # token that a registered Node signed is refused. #371 removed the
             # legacy route, so the dashboard's GET-only asset route answers the
             # POST with 405.
-            peer_headers = {"x-aidash-protocol": "0.4"}
+            peer_headers = {"x-aidash-protocol": "0.5"}
             denied(base_b, "/federation/v0.1/offers", {"task": task, "agent": agent}, codes=(401, 403, 404, 405), token="not-a-federation-token", headers=peer_headers)
             denied(base_a, "/federation/v0.1/scoped/execution/commands", {"grant_id": grant, "admission_id": run_id, "operation": "workspace_record", "data": {"kind": "task", "id": rejected_task["id"]}}, codes=(401, 403, 404), token="not-a-federation-token", headers=peer_headers)
             def run(run_id=run_id):

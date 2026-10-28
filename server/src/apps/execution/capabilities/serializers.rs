@@ -2,6 +2,8 @@
 
 pub mod endpoints;
 
+pub mod previews;
+
 pub mod packages;
 
 pub mod core;

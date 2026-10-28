@@ -28,11 +28,6 @@ ALTER TABLE public.authorization_execution FORCE ROW LEVEL SECURITY;
 CREATE POLICY tenant_isolation ON public.authorization_execution AS PERMISSIVE FOR ALL TO PUBLIC
     USING ((SELECT public.aidash_deployment_scope()) OR tenant = (SELECT public.aidash_scope_tenant()))
     WITH CHECK ((SELECT public.aidash_deployment_scope()) OR tenant = (SELECT public.aidash_scope_tenant()));
-ALTER TABLE public.authorization_peer_graph_grants ENABLE ROW LEVEL SECURITY;
-ALTER TABLE public.authorization_peer_graph_grants FORCE ROW LEVEL SECURITY;
-CREATE POLICY tenant_isolation ON public.authorization_peer_graph_grants AS PERMISSIVE FOR ALL TO PUBLIC
-    USING ((SELECT public.aidash_deployment_scope()) OR tenant = (SELECT public.aidash_scope_tenant()))
-    WITH CHECK ((SELECT public.aidash_deployment_scope()) OR tenant = (SELECT public.aidash_scope_tenant()));
 ALTER TABLE public.authorization_revisions ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.authorization_revisions FORCE ROW LEVEL SECURITY;
 CREATE POLICY tenant_isolation ON public.authorization_revisions AS PERMISSIVE FOR ALL TO PUBLIC

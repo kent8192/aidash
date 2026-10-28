@@ -28,13 +28,12 @@ DEPLOYMENT_ADMINISTRATOR = {"Authorization": "Bearer {{deployment_administrator_
 ADMIN_ADMITTED = {
     "session", "state", "run-management-get", "run-management-control", "run-control",
     "authorization-snapshot", "authorization-replace", "authorization-evaluate",
-    "authorization_peer_graph_grants", "authorization_set_peer_graph_grant",
     "transaction_revocations", "transaction-participants",
     "tenant-administration", "tenant-registrations", "tenant-registration-approve",
     "tenant-registration-reject", "tenant-mappings", "tenant-mapping-disable",
     "tenant-invitations-issue", "tenant-invitations", "tenant-invitations-revoke",
     "tenants-label", "tenants-delete", "tenants-list", "tenants-purge",
-    "federated_graph_expand", "federated_graph_peers", "openrouter-models",
+    "openrouter-models",
     "deployment-status", "marketplace-administration",
     "sessions-admin-approve", "sessions-admin-disable-mapping",
     "sessions-admin-erase-display", "sessions-admin-identities", "sessions-admin-identity",
@@ -48,7 +47,7 @@ SUBJECT = {"Authorization": "Bearer {{contract_token}}"}
 # prove the boundary refuses what it cannot verify.
 PEER = {
     "Authorization": "Bearer not-a-federation-token",
-    "X-Aidash-Protocol": "0.4",
+    "X-Aidash-Protocol": "0.5",
 }
 COOKIE = {
     "Cookie": "{{session_cookie}}",
@@ -624,7 +623,7 @@ def render():
                 if path == "/health":
                     checks += 'expect(res.getBody()).to.eql({status:"ok",deployment:bru.getEnvVar("node_id")});'
                 if path == "/.well-known/aidash":
-                    checks += 'expect(res.getBody().id).to.equal(bru.getEnvVar("node_id"));expect(res.getBody().protocol_version).to.equal("0.4");'
+                    checks += 'expect(res.getBody().id).to.equal(bru.getEnvVar("node_id"));expect(res.getBody().protocol_version).to.equal("0.5");'
                 if path == "/auth/config":
                     checks += 'expect(res.getBody()).to.have.all.keys("enabled","provider","login_url","desktop_protocol");expect(res.getBody().enabled).to.equal(true);expect(res.getBody().login_url).to.equal("/auth/login");'
                 if path == "/api/openapi.json":
@@ -1101,6 +1100,84 @@ def render():
             elif route["query_parameters"]:
                 add(endpoint, "Paging rejects nonnumeric offsets", 400,
                     path=uri + "?offset=invalid", headers=actor)
+            continue
+        if route["source"] == "server/src/apps/execution/capabilities/views/live_previews.rs":
+            # A Live preview's status, stop, ticket and the Tenant's lowered limits.
+            if path == "/api/runs/{id}/live-preview":
+                add(endpoint, "Anonymous request is rejected", 401)
+                add(endpoint, "Deployment Administrator cannot read a missing Run", 403,
+                    headers=DEPLOYMENT_ADMINISTRATOR)
+                add(endpoint, "Subject bearer cannot read a missing Run", 404, headers=SUBJECT)
+            elif path.endswith("/stop"):
+                add(endpoint, "Anonymous stop is rejected", 401)
+                add(endpoint, "Deployment Administrator cannot stop a missing Run", 403,
+                    headers=DEPLOYMENT_ADMINISTRATOR)
+                add(endpoint, "Subject bearer cannot stop a missing Run", 404, headers=SUBJECT)
+            elif path.endswith("/live-tickets"):
+                ticket = json.dumps({"live_preview_id": MISSING})
+                add(endpoint, "Anonymous request is rejected", 401)
+                add(endpoint, "Malformed JSON cannot reach the use case", 400,
+                    headers=SUBJECT, body="{")
+                add(endpoint, "Unknown Ticket fields are rejected", 422, headers=SUBJECT,
+                    body=json.dumps({"live_preview_id": MISSING, "unexpected": True}))
+                add(endpoint, "Ticket input is required", 422, headers=SUBJECT, body="{}")
+                add(endpoint, "A missing Live preview has no ticket", 404,
+                    headers=SUBJECT, body=ticket)
+            elif method == "GET":
+                add(endpoint, "Anonymous request is rejected", 401)
+                add(endpoint, "Deployment Administrator cannot read Tenant limits", 403,
+                    headers=DEPLOYMENT_ADMINISTRATOR)
+                add(endpoint, "Subject bearer is not a Tenant Administrator", 403,
+                    headers=SUBJECT)
+            else:
+                limits = json.dumps({"tenant": "{{tenant}}", "idle_seconds": 600,
+                                     "absolute_seconds": 3600, "expected_revision": 0})
+                add(endpoint, "Anonymous request is rejected", 401,
+                    body=limits, immutable=True)
+                add(endpoint, "Malformed JSON cannot reach the use case", 400,
+                    headers=SUBJECT, body="{", immutable=True)
+                add(endpoint, "Unknown limit fields are rejected", 422, headers=SUBJECT,
+                    body=json.dumps({"tenant": "{{tenant}}", "idle_seconds": 600,
+                                     "absolute_seconds": 3600, "expected_revision": 0,
+                                     "unexpected": True}), immutable=True)
+                add(endpoint, "Limit input is required", 422, headers=SUBJECT,
+                    body="{}", immutable=True)
+                add(endpoint, "Subject bearer is not a Tenant Administrator", 403,
+                    headers=SUBJECT, body=limits, immutable=True)
+            continue
+        if route["source"] == "server/src/apps/execution/capabilities/views/previews.rs":
+            flag = 'expect(res.getBody()).to.have.all.keys("available","preview_domain");expect(res.getBody().available).to.equal(false);expect(res.getBody().preview_domain).to.equal(null);'
+            if path.endswith("/availability"):
+                add(endpoint, "Anonymous request is rejected", 401)
+                add(endpoint, "Deployment Administrator cannot read preview availability", 403,
+                    headers=DEPLOYMENT_ADMINISTRATOR)
+                add(endpoint, "Subject bearer reads the availability flag", 200,
+                    headers=SUBJECT, checks=flag)
+            elif path.endswith("/remote-preview"):
+                add(endpoint, "Anonymous remote inspection is rejected", 401)
+                add(endpoint, "Deployment Administrator cannot inspect a remote Run", 403,
+                    headers=DEPLOYMENT_ADMINISTRATOR)
+                add(endpoint, "Malformed Run identifier is rejected", 400,
+                    path=path.replace("{id}", "not-a-uuid"), headers=SUBJECT)
+            elif path.endswith("/preview-tickets"):
+                body = json.dumps({"kind": "file", "area_id": MISSING, "file_id": MISSING})
+                add(endpoint, "Anonymous remote ticket is rejected", 401, body=body)
+                add(endpoint, "Deployment Administrator cannot issue a remote ticket", 403,
+                    headers=DEPLOYMENT_ADMINISTRATOR, body=body)
+                add(endpoint, "Malformed JSON cannot reach the remote ticket service", 400,
+                    headers=SUBJECT, body="{")
+                add(endpoint, "Unknown remote ticket fields are rejected", 422,
+                    headers=SUBJECT, body=json.dumps({"kind": "file", "area_id": MISSING,
+                                                    "file_id": MISSING, "unexpected": True}))
+            else:
+                body = json.dumps({"area_id": MISSING, "file_id": MISSING})
+                add(endpoint, "Deployment Administrator cannot issue a ticket", 403,
+                    headers=DEPLOYMENT_ADMINISTRATOR, body=body)
+                add(endpoint, "Malformed JSON cannot reach the use case", 400,
+                    headers=SUBJECT, body="{")
+                add(endpoint, "Unknown Ticket fields are rejected", 422,
+                    headers=SUBJECT, body=json.dumps({"area_id": MISSING, "file_id": MISSING, "unexpected": True}))
+                add(endpoint, "Ticket input is required", 422, headers=SUBJECT, body="{}")
             continue
         if route["json"]:
             add(

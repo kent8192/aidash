@@ -14,6 +14,8 @@ pub(crate) struct RegistrationRecord {
 	pub(crate) source_node: String,
 	/// Where the other Deployment answers; absent for a Node of this one.
 	pub(crate) endpoint: Option<String>,
+	/// Pinned dashboard origin used to validate remote Preview frame ancestors.
+	pub(crate) dashboard_origin: Option<String>,
 	/// The pinned Deployment Key's key ID; absent for a Node of this Deployment.
 	pub(crate) key_id: Option<String>,
 	pub(crate) atomic_transactions: bool,
@@ -38,6 +40,7 @@ impl From<aidash_domain::nodes::registration::NodeRegistration> for Registration
 		let (endpoint, _, key_id) = row.counterpart.columns();
 		Self {
 			endpoint: endpoint.map(str::to_owned),
+			dashboard_origin: row.dashboard_origin,
 			key_id: key_id.map(str::to_owned),
 			node: row.node.into_string(),
 			source_node: row.source_node.to_string(),

@@ -119,7 +119,31 @@ fn values_with_oidc(
 		// partial configuration visible so settings validation rejects it.
 		kubernetes.insert("enabled".into(), Value::Bool(true));
 	}
+	let mut preview = serde_json::Map::new();
+	for (key, name) in [
+		("domain", "AIDASH_PREVIEW_DOMAIN"),
+		("listen", "AIDASH_PREVIEW_LISTEN"),
+		("public_port", "AIDASH_PREVIEW_PUBLIC_PORT"),
+		("pod_port", "AIDASH_PREVIEW_POD_PORT"),
+	] {
+		if let Some(value) = read(name) {
+			preview.insert(key.into(), Value::String(value));
+		}
+	}
+	if let Some(value) = read("AIDASH_PREVIEW_IN_PROCESS") {
+		// A value that is not a boolean stays text, so settings deserialization
+		// refuses it instead of this layer reading it as false.
+		let in_process = match value.trim().to_ascii_lowercase().as_str() {
+			"true" | "1" => Value::Bool(true),
+			"false" | "0" => Value::Bool(false),
+			_ => Value::String(value),
+		};
+		preview.insert("in_process".into(), in_process);
+	}
 	let mut result = IndexMap::new();
+	if !preview.is_empty() {
+		result.insert("preview".into(), Value::Object(preview));
+	}
 	if !node.is_empty() {
 		result.insert("deployment".into(), Value::Object(node));
 	}

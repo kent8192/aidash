@@ -10,6 +10,7 @@ pub struct MessageSubmission<'a> {
 	pub thread_id: Option<Uuid>,
 	pub idempotency_key: Uuid,
 	pub attachment_ids: &'a [Uuid],
+	pub citations: &'a [CitedFileVersion],
 }
 pub struct HistoryRequest {
 	pub thread_id: Option<Uuid>,
@@ -60,6 +61,7 @@ pub async fn post(
 	workspace: Uuid,
 	input: MessageSubmission<'_>,
 ) -> Result<ChannelMessage> {
+	validate_citations(input.citations)?;
 	if input.attachment_ids.is_empty() {
 		nonempty(input.content, "message")?;
 	}
@@ -103,6 +105,13 @@ pub async fn post(
 			));
 		}
 	}
+	let citations = if input.citations.is_empty() {
+		Vec::new()
+	} else {
+		scope
+			.record_citations(workspace, message.id, input.citations)
+			.await?
+	};
 	let attachments = attach(scope, workspace, message.id, input.attachment_ids).await?;
 	let root_thread = scope.root_thread(message.id).await?;
 	Ok(ChannelMessage {
@@ -110,6 +119,7 @@ pub async fn post(
 		thread_id: context.thread_id.or(root_thread),
 		is_thread_root: root_thread.is_some(),
 		attachments,
+		citations,
 	})
 }
 async fn attach(
@@ -260,6 +270,7 @@ pub async fn history(
 					thread_id: row.reply_thread_id.or(row.root_thread_id),
 					is_thread_root: row.root_thread_id.is_some(),
 					attachments: Vec::new(),
+					citations: Vec::new(),
 				});
 				if result.len() > usize::from(input.limit) {
 					break;
@@ -291,10 +302,12 @@ pub async fn history(
 	result.reverse();
 	let message_ids: Vec<_> = result.iter().map(|item| item.message.id).collect();
 	let mut message_attachments = scope.message_attachments(workspace, &message_ids).await?;
+	let mut citations = scope.message_citations(workspace, &message_ids).await?;
 	for item in &mut result {
 		item.attachments = message_attachments
 			.remove(&item.message.id)
 			.unwrap_or_default();
+		item.citations = citations.remove(&item.message.id).unwrap_or_default();
 	}
 	Ok(ChannelMessagePage {
 		messages: result,

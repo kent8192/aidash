@@ -2,11 +2,9 @@
 //! A Deployment Administrator reads no Tenant content (#484); the gates here serve
 //! Subjects, the stop controls and worker scopes.
 use crate::database::native::Transaction;
-use crate::{Error, Result, domain::Event};
-use reinhardt::query::{
-	Alias, Expr, ExprTrait as _, JoinType, PostgresQueryBuilder, Query, SimpleExpr,
-};
-use std::collections::{BTreeMap, BTreeSet};
+use crate::{Error, Result};
+use reinhardt::query::{Alias, Expr, ExprTrait as _, JoinType, PostgresQueryBuilder, Query};
+use std::collections::BTreeSet;
 use uuid::Uuid;
 
 fn deleted_tenants() -> reinhardt::query::SelectStatement {
@@ -85,23 +83,6 @@ async fn deleted_workspaces(
 	Ok(ids.into_iter().collect())
 }
 
-/// Tenant events need this check even when they name no local Workspace or Run.
-async fn deleted_events(connection: &mut Transaction, events: &[Event]) -> Result<BTreeSet<Uuid>> {
-	if events.is_empty() {
-		return Ok(BTreeSet::new());
-	}
-	let query = Query::select()
-		.column(Alias::new("id"))
-		.from(Alias::new("events"))
-		.and_where(Expr::col("id").is_in(events.iter().map(|event| Expr::value(event.id))))
-		.and_where(Expr::col("tenant").in_subquery(deleted_tenants()))
-		.to_string(PostgresQueryBuilder);
-	let ids: Vec<Uuid> = crate::database::native::query_scalar(&query)
-		.scalar_all(&mut *connection)
-		.await?;
-	Ok(ids.into_iter().collect())
-}
-
 pub(crate) async fn blocked(
 	connection: &mut Transaction,
 	workspaces: &[Uuid],
@@ -160,65 +141,6 @@ pub(crate) async fn require(connection: &mut Transaction, workspace: Uuid) -> Re
 	} else {
 		Err(Error::Forbidden)
 	}
-}
-
-pub(crate) async fn event_visible(connection: &mut Transaction, event: &Event) -> Result<bool> {
-	if deleted_events(connection, std::slice::from_ref(event))
-		.await?
-		.contains(&event.id)
-	{
-		return Ok(false);
-	}
-	if let Some(workspace) = event_workspaces(connection, std::slice::from_ref(event)).await?[0] {
-		return visible(connection, workspace).await;
-	}
-	Ok(true)
-}
-
-async fn event_workspaces(
-	connection: &mut Transaction,
-	events: &[Event],
-) -> Result<Vec<Option<Uuid>>> {
-	// Foreign Run events have no local Workspace FK. Resolve the durable Run
-	// binding instead of treating a NULL event.workspace_id as global content.
-	let run_id = |event: &Event| {
-		event
-			.data
-			.get("run_id")
-			.or_else(|| {
-				(event.kind == "run.created")
-					.then(|| event.data.get("id"))
-					.flatten()
-			})
-			.and_then(serde_json::Value::as_str)
-			.and_then(|id| id.parse::<Uuid>().ok())
-	};
-	let ids: Vec<_> = events.iter().filter_map(run_id).collect();
-	let runs: Vec<(Uuid, Uuid)> = {
-		let query_bind_1 = &ids;
-		crate::database::native::query_as(
-			&Query::select()
-				.columns(["id", "workspace_id"].map(Alias::new))
-				.from(Alias::new("runs"))
-				.and_where(SimpleExpr::CustomWithExpr(
-					"(id=ANY(?))".to_owned(),
-					vec![crate::database::uuid_array(query_bind_1.to_owned())],
-				))
-				.to_string(PostgresQueryBuilder),
-		)
-		.columns(&["id", "workspace_id"])
-		.fetch_all(connection)
-		.await?
-	};
-	let runs: BTreeMap<_, _> = runs.into_iter().collect();
-	Ok(events
-		.iter()
-		.map(|event| {
-			event
-				.workspace_id
-				.or_else(|| run_id(event).and_then(|id| runs.get(&id).copied()))
-		})
-		.collect())
 }
 
 use reinhardt::query::QueryStatementBuilder as _;

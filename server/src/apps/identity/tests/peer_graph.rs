@@ -16,31 +16,30 @@ use common::Source;
 async fn graph(
 	app: &common::TestApplication,
 	source: &Source,
-	viewer: Value,
+	subject: &str,
 	cursor: Option<&str>,
 	limit: u16,
 ) -> (u16, Value) {
-	graph_custom(app, source, viewer, json!({"cursor":cursor,"limit":limit})).await
+	graph_custom(app, source, subject, json!({"cursor":cursor,"limit":limit})).await
 }
 
 async fn graph_custom(
 	app: &common::TestApplication,
 	source: &Source,
-	viewer: Value,
+	subject: &str,
 	overrides: Value,
 ) -> (u16, Value) {
 	let mut payload = json!({
-		"viewer":viewer,"scope_workspace":null,"mode":"mesh",
+		"subject":subject,"scope_workspace":null,"mode":"mesh",
 		"kinds":["workspace","goal","task","agent","tool","model"],
 		"relations":["goal","contains","tool","model"],
 		"hours":0,"limit":80,"cursor":null,
-		"target_tenant":if viewer["kind"] == "deployment_administrator" { Some("acme") } else { None },
 	});
 	payload
 		.as_object_mut()
 		.unwrap()
 		.extend(overrides.as_object().unwrap().clone());
-	common::post_graph(app, source, &viewer, &payload).await
+	common::post_graph(app, source, subject, &payload).await
 }
 
 #[rstest::rstest]
@@ -89,9 +88,25 @@ async fn scoped_graph_sends_only_authorized_projection_and_full_goal(
 		.0,
 		403
 	);
+	// A Deployment Administrator has no Subject, so it expands no remote Node.
+	assert_eq!(
+		request(
+			&app,
+			&f.config.api_token,
+			"POST",
+			"/api/federation/graph",
+			json!({
+				"node_id":source.address(),"scope_workspace":null,"mode":"mesh",
+				"kinds":["workspace","goal"],"relations":[],"hours":0,"limit":80,"cursor":null,
+			}),
+		)
+		.await
+		.0,
+		403
+	);
 	let _third = common::register_source(&f, &app, "aidash://third", "acme").await;
-	let viewer = json!({"kind":"subject","subject":"source-subject"});
-	assert_eq!(graph(&app, &source, viewer.clone(), None, 80).await.0, 403);
+	let viewer = "source-subject";
+	assert_eq!(graph(&app, &source, viewer, None, 80).await.0, 403);
 	let issued = common::issued_credential(&f.store, "acme", "alice").await;
 	let (status, mapping) = common::set_peer_mapping(
 		&f,
@@ -104,7 +119,7 @@ async fn scoped_graph_sends_only_authorized_projection_and_full_goal(
 	)
 	.await;
 	assert_eq!(status, 200, "{mapping}");
-	let (status, page) = graph(&app, &source, viewer.clone(), None, 80).await;
+	let (status, page) = graph(&app, &source, viewer, None, 80).await;
 	assert_eq!(status, 200, "{page}");
 	let nodes = page["nodes"].as_array().unwrap();
 	assert!(
@@ -135,7 +150,7 @@ async fn scoped_graph_sends_only_authorized_projection_and_full_goal(
 	let (status, goals) = graph_custom(
 		&app,
 		&source,
-		viewer.clone(),
+		viewer,
 		json!({"kinds":["goal"],"relations":["goal"]}),
 	)
 	.await;
@@ -154,23 +169,15 @@ async fn scoped_graph_sends_only_authorized_projection_and_full_goal(
 			.iter()
 			.any(|node| node["goal_body"] == long_goal)
 	);
-	let (status, first) = graph(&app, &source, viewer.clone(), None, 2).await;
+	let (status, first) = graph(&app, &source, viewer, None, 2).await;
 	assert_eq!(status, 200, "{first}");
 	let cursor = first["next_cursor"]
 		.as_str()
 		.expect("additional authorized data");
-	assert_eq!(
-		graph(&app, &source, viewer.clone(), Some(cursor), 2)
-			.await
-			.0,
-		200
-	);
+	assert_eq!(graph(&app, &source, viewer, Some(cursor), 2).await.0, 200);
 	let mut bad = cursor.to_owned();
 	bad.push('x');
-	assert_eq!(
-		graph(&app, &source, viewer.clone(), Some(&bad), 2).await.0,
-		403
-	);
+	assert_eq!(graph(&app, &source, viewer, Some(&bad), 2).await.0, 403);
 	let mut other_policy = common::policy(f.config.deployment.as_str());
 	other_policy["tenant"] = json!("other");
 	common::tenant_root(&f, "other").await;
@@ -266,15 +273,10 @@ async fn scoped_graph_sends_only_authorized_projection_and_full_goal(
 	.execute(f.store.pool.fixture_driver())
 	.await
 	.unwrap();
-	let (status, after_other_tenant) = graph(&app, &source, viewer.clone(), None, 80).await;
+	let (status, after_other_tenant) = graph(&app, &source, viewer, None, 80).await;
 	assert_eq!(status, 200, "{after_other_tenant}");
 	assert_eq!(after_other_tenant["generation"], page["generation"]);
-	assert_eq!(
-		graph(&app, &source, viewer.clone(), Some(cursor), 2)
-			.await
-			.0,
-		200
-	);
+	assert_eq!(graph(&app, &source, viewer, Some(cursor), 2).await.0, 200);
 	let workspace_id = f
 		.store
 		.tasks(&TEST_FIXTURE, None)
@@ -352,7 +354,7 @@ async fn scoped_graph_sends_only_authorized_projection_and_full_goal(
 	let mut options = json!({"kinds":["task","run","agent"],"relations":["executes"],"limit":80});
 	let mut run_page = Value::Null;
 	for _ in 0..4 {
-		let (status, page) = graph_custom(&app, &source, viewer.clone(), options.clone()).await;
+		let (status, page) = graph_custom(&app, &source, viewer, options.clone()).await;
 		assert_eq!(status, 200, "{page}");
 		if page["nodes"]
 			.as_array()
@@ -411,7 +413,7 @@ async fn scoped_graph_sends_only_authorized_projection_and_full_goal(
 	let (status, unapproved) = graph_custom(
 		&app,
 		&source,
-		viewer.clone(),
+		viewer,
 		json!({"kinds":["run","agent"],"relations":["executes"],"limit":80}),
 	)
 	.await;
@@ -451,7 +453,7 @@ async fn scoped_graph_sends_only_authorized_projection_and_full_goal(
 	)
 	.await;
 	assert_eq!(status, 200, "{mapping}");
-	assert_eq!(graph(&app, &source, viewer.clone(), None, 80).await.0, 403);
+	assert_eq!(graph(&app, &source, viewer, None, 80).await.0, 403);
 	let (status, mapping) = common::set_peer_mapping(
 		&f,
 		"acme",
@@ -463,12 +465,7 @@ async fn scoped_graph_sends_only_authorized_projection_and_full_goal(
 	)
 	.await;
 	assert_eq!(status, 200, "{mapping}");
-	assert_eq!(
-		graph(&app, &source, viewer.clone(), Some(cursor), 2)
-			.await
-			.0,
-		409
-	);
+	assert_eq!(graph(&app, &source, viewer, Some(cursor), 2).await.0, 409);
 	aidash_server::authorization::Authorization {
 		pool: f.store.pool.clone(),
 	}
@@ -485,7 +482,7 @@ async fn scoped_graph_sends_only_authorized_projection_and_full_goal(
 	)
 	.await
 	.unwrap();
-	let (status, without_agent) = graph(&app, &source, viewer.clone(), None, 80).await;
+	let (status, without_agent) = graph(&app, &source, viewer, None, 80).await;
 	assert_eq!(status, 200, "{without_agent}");
 	assert!(
 		!without_agent["nodes"]
@@ -525,7 +522,7 @@ async fn scoped_graph_sends_only_authorized_projection_and_full_goal(
 	)
 	.await;
 	assert_eq!(status, 200, "{written}");
-	let (status, without_goal) = graph(&app, &source, viewer.clone(), None, 80).await;
+	let (status, without_goal) = graph(&app, &source, viewer, None, 80).await;
 	assert_eq!(status, 200, "{without_goal}");
 	assert!(
 		!without_goal["nodes"]
@@ -534,46 +531,13 @@ async fn scoped_graph_sends_only_authorized_projection_and_full_goal(
 			.iter()
 			.any(|node| node["kind"] == "goal")
 	);
-	let deployment_administrator = Uuid::new_v4();
-	assert_eq!(
-		graph(
-			&app,
-			&source,
-			json!({"kind":"deployment_administrator","id":deployment_administrator}),
-			None,
-			80
-		)
-		.await
-		.0,
-		401
-	);
-	let (status, grant) = request(
-		&app,
-		&f.config.api_token,
-		"POST",
-		"/api/authorization/acme/peer-graph-grants",
-		json!({
-			"source_deployment":SOURCE,"source_identity":deployment_administrator,"endpoint":source.remote.endpoint,"key_id":source.remote.key_id(),"enabled":true,"expected_revision":0,
-		}),
-	)
-	.await;
-	assert_eq!(status, 200, "{grant}");
-	let (status, deployment_administrator_page) = graph(
-		&app,
-		&source,
-		json!({"kind":"deployment_administrator","id":deployment_administrator}),
-		None,
-		80,
-	)
-	.await;
-	assert_eq!(status, 200, "{deployment_administrator_page}");
-	assert!(
-		deployment_administrator_page["nodes"]
-			.as_array()
-			.unwrap()
-			.iter()
-			.any(|node| node["kind"] == "goal" && node["goal_body"] == long_goal)
-	);
+	// A continuation taken before the deny must not carry the old decision.
+	let (status, before_deny) = graph(&app, &source, viewer, None, 2).await;
+	assert_eq!(status, 200, "{before_deny}");
+	let continuation = before_deny["next_cursor"]
+		.as_str()
+		.expect("additional authorized data")
+		.to_owned();
 	policy["policies"].as_array_mut().unwrap().push(json!({
 		"id":"deny-graph","effect":"deny","subjects":{"ids":["alice"]},
 		"actions":["federation.graph.read"],"resources":{"kinds":["node"]},
@@ -587,19 +551,12 @@ async fn scoped_graph_sends_only_authorized_projection_and_full_goal(
 	)
 	.await;
 	assert_eq!(status, 200, "{written}");
-	assert_eq!(graph(&app, &source, viewer.clone(), None, 80).await.0, 403);
+	assert_eq!(graph(&app, &source, viewer, None, 80).await.0, 403);
 	assert_eq!(
-		graph(
-			&app,
-			&source,
-			json!({"kind":"deployment_administrator","id":deployment_administrator}),
-			None,
-			80
-		)
-		.await
-		.0,
-		200
+		graph(&app, &source, viewer, Some(&continuation), 2).await.0,
+		403
 	);
+
 	policy["policies"]
 		.as_array_mut()
 		.unwrap()
@@ -614,7 +571,7 @@ async fn scoped_graph_sends_only_authorized_projection_and_full_goal(
 	)
 	.await;
 	assert_eq!(status, 200, "{written}");
-	assert_eq!(graph(&app, &source, viewer.clone(), None, 80).await.0, 403);
+	assert_eq!(graph(&app, &source, viewer, None, 80).await.0, 403);
 	policy["subjects"]["alice"]["enabled"] = json!(true);
 	let (status, written) = request(
 		&app,
@@ -625,7 +582,7 @@ async fn scoped_graph_sends_only_authorized_projection_and_full_goal(
 	)
 	.await;
 	assert_eq!(status, 200, "{written}");
-	assert_eq!(graph(&app, &source, viewer.clone(), None, 80).await.0, 200);
+	assert_eq!(graph(&app, &source, viewer, None, 80).await.0, 200);
 	// A host-issued credential that lives for one second.
 	let short = aidash_server::apps::identity::services::subject_credential_command::issue(
 		&f.store.pool,
@@ -648,84 +605,69 @@ async fn scoped_graph_sends_only_authorized_projection_and_full_goal(
 	.await;
 	assert_eq!(status, 200, "{mapping}");
 	tokio::time::sleep(std::time::Duration::from_millis(1200)).await;
-	assert_eq!(graph(&app, &source, viewer.clone(), None, 80).await.0, 403);
-	let gate = Uuid::new_v4();
-	sqlx::query(
-		&Query::insert()
-			.into_table(Alias::new("atomic_participants"))
-			.columns(["id", "coordinator", "digest", "manifest", "phase"].map(Alias::new))
-			.values_panic([
-				IntoValue::into_value(gate),
-				IntoValue::into_value(common::default_node(&f.store, "acme").await.to_string()),
-				IntoValue::into_value("fixture"),
-				IntoValue::into_value(json!({})),
-				IntoValue::into_value("PREPARED"),
-			])
-			.to_string(PostgresQueryBuilder),
-	)
-	.execute(f.store.control_pool.fixture_driver())
-	.await
-	.unwrap();
-	{
-		let query_bind_1 = gate;
-		sqlx::query(
-			&Query::update()
-				.table(Alias::new("atomic_gate"))
-				.value_expr(
-					Alias::new("transaction_id"),
-					SimpleExpr::CustomWithExpr(
-						"(?)".to_owned(),
-						vec![Expr::value(query_bind_1.to_owned()).into()],
-					),
-				)
-				.to_string(PostgresQueryBuilder),
-		)
-		.execute(f.store.control_pool.fixture_driver())
-		.await
-	}
-	.unwrap();
-	let (status, _) = request(
-		&app,
-		&f.config.api_token,
-		"POST",
-		"/api/authorization/acme/peer-graph-grants",
-		json!({
-			"source_deployment":SOURCE,"source_identity":deployment_administrator,"enabled":false,"expected_revision":1,
-		}),
+	assert_eq!(graph(&app, &source, viewer, None, 80).await.0, 403);
+	let _ = subject_token;
+	cleanup(f, &url, &schema).await;
+}
+
+/// #486: no Deployment Administrator authority reads a Tenant's graph, so the
+/// old administrator token and the grant routes are gone.
+#[rstest::rstest]
+#[tokio::test]
+async fn the_removed_administrator_token_and_grant_routes_admit_nothing(
+	#[future(awt)]
+	#[from(common::native_application)]
+	fixture: common::ApplicationFixture,
+) {
+	let (f, url, schema) = fixture.runtime.parts();
+	let app = fixture.application;
+	bootstrap(&f, &app, "http://localhost:1").await;
+	let source = common::register_source(&f, &app, SOURCE, "acme").await;
+	let identity = Uuid::new_v4();
+	let payload = json!({
+		"subject":format!("oidc:{identity}"),"scope_workspace":null,"mode":"mesh",
+		"kinds":["workspace","goal"],"relations":[],"hours":0,"limit":80,"cursor":null,
+	});
+	let response = common::peering::post_as(
+		&app.client(),
+		source.receiver.deployment.as_ref(),
+		common::peering::Bearer::Deployment(&source.remote, identity),
+		"",
+		"/federation/v0.1/scoped/graph",
+		&payload,
 	)
 	.await;
-	{
-		let query_bind_1 = Option::<Uuid>::None;
-		sqlx::query(
-			&Query::update()
-				.table(Alias::new("atomic_gate"))
-				.value_expr(
-					Alias::new("transaction_id"),
-					SimpleExpr::CustomWithExpr(
-						"(?)".to_owned(),
-						vec![Expr::value(query_bind_1.to_owned()).into()],
-					),
-				)
-				.to_string(PostgresQueryBuilder),
-		)
-		.execute(f.store.control_pool.fixture_driver())
-		.await
+	assert_eq!(response.status_code(), 401);
+	// The routes are gone, so each method gets the answer of a path no route
+	// serves (404 for a read, 405 from the frontend fallback for a write).
+	let status = async |method: &http::Method, path: &str| {
+		app.client()
+			.request(method.clone(), path)
+			.header(
+				http::header::AUTHORIZATION,
+				format!("Bearer {}", f.config.api_token),
+			)
+			.body(bytes::Bytes::new())
+			.send()
+			.await
+			.unwrap()
+			.status_code()
+	};
+	for method in [http::Method::GET, http::Method::POST] {
+		assert_eq!(
+			status(&method, "/api/authorization/acme/peer-graph-grants").await,
+			status(&method, "/api/authorization/acme/no-such-route").await,
+			"{method}"
+		);
 	}
-	.unwrap();
-	assert_eq!(status, 200);
 	assert_eq!(
-		graph(
-			&app,
-			&source,
-			json!({"kind":"deployment_administrator","id":deployment_administrator}),
-			None,
-			80
+		status(
+			&http::Method::GET,
+			"/api/authorization/acme/peer-graph-grants"
 		)
-		.await
-		.0,
-		401
+		.await,
+		404
 	);
-	let _ = subject_token;
 	cleanup(f, &url, &schema).await;
 }
 
@@ -900,15 +842,15 @@ async fn sparse_goal_pages_advance_and_activity_reaches_older_page_events(
 		.execute(f.store.pool.fixture_driver())
 		.await
 		.unwrap();
-	let viewer = json!({"kind":"subject","subject":"sparse-subject"});
+	let viewer = "sparse-subject";
 	let options = json!({"kinds":["goal"],"relations":[]});
-	let (status, first) = graph_custom(&app, &source, viewer.clone(), options.clone()).await;
+	let (status, first) = graph_custom(&app, &source, viewer, options.clone()).await;
 	assert_eq!(status, 200, "{first}");
 	assert!(first["nodes"].as_array().unwrap().is_empty());
 	let cursor = first["next_cursor"].as_str().expect("scan continuation");
 	let mut next_options = options;
 	next_options["cursor"] = json!(cursor);
-	let (status, second) = graph_custom(&app, &source, viewer.clone(), next_options).await;
+	let (status, second) = graph_custom(&app, &source, viewer, next_options).await;
 	assert_eq!(status, 200, "{second}");
 	assert!(
 		second["nodes"]
@@ -918,7 +860,7 @@ async fn sparse_goal_pages_advance_and_activity_reaches_older_page_events(
 			.any(|node| node["goal_body"] == "Reachable goal")
 	);
 	let options = json!({"kinds":["workspace","goal"],"relations":[],"limit":2});
-	let (status, first) = graph_custom(&app, &source, viewer.clone(), options.clone()).await;
+	let (status, first) = graph_custom(&app, &source, viewer, options.clone()).await;
 	assert_eq!(status, 200, "{first}");
 	assert!(first["nodes"].as_array().unwrap().is_empty());
 	let mut options = options;
