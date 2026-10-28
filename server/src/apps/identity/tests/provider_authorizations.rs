@@ -840,23 +840,43 @@ async fn only_browser_sessions_start_and_return_paths_stay_local(
 	)
 	.await;
 	assert!(response.status().is_client_error());
-	for return_to in ["https://attacker.example/", "//attacker.example/"] {
-		let response = send(
-			&fixture.app,
-			"POST",
-			"/api/tenants/alpha/provider-authorizations/openrouter",
-			&[
-				("content-type", "application/json"),
-				("cookie", "__Host-aidash-session=browser-a"),
-				("origin", ORIGIN),
-				("x-aidash-csrf", "csrf-a"),
-				("x-aidash-context", "deployment_administrator"),
-			],
+	// Browsers drop tab and newline characters from a `Location`, so these
+	// would become `//attacker.example/`; every control character is refused.
+	for return_to in [
+		"https://attacker.example/",
+		"//attacker.example/",
+		"/\\attacker.example/",
+		"/\t/attacker.example/",
+		"/\n/attacker.example/",
+		"/\r/attacker.example/",
+		"/\u{0}/attacker.example/",
+		"/\u{7f}/attacker.example/",
+		"/\u{85}/attacker.example/",
+	] {
+		let response = start_request(
+			&fixture,
+			"browser-a",
+			"deployment_administrator",
 			json!({"return_to": return_to}),
+			None,
 		)
 		.await;
-		assert!(response.status().is_client_error(), "{return_to}");
+		assert_eq!(response.status(), 400, "{return_to:?}");
 	}
+	assert_eq!(pending_authorizations(&fixture).await, 0);
+	// A local path with a query is kept and receives the outcome.
+	let started = start(
+		&fixture,
+		"browser-a",
+		json!({"return_to": "/settings?view=providerCredentials"}),
+		None,
+	)
+	.await;
+	let response = callback(&fixture, "browser-a", &started.browser, "").await;
+	assert_eq!(
+		location(&response),
+		"/settings?view=providerCredentials&provider_authorization=denied"
+	);
 	assert_eq!(credentials(&fixture).await.len(), 0);
 	common::cleanup(fixture.f, &fixture.url, &fixture.schema).await;
 }

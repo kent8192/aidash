@@ -29,4 +29,5 @@ registration: the Tenant's policy decides over the sender's own subject.
 - `/.well-known/aidash` publishes the Deployment identity and its public key, never a list of
   Nodes. A Node's address names its Deployment and its Node name, never its Tenant, and the
   sending Tenant's name leaves the protocol and the Peer Mapping key.
-- A Peer Graph Grant also pins the other Deployment's key.
+
+Amended 2026-10-27 (#486): this ADR once also let a Peer Graph Grant pin the other Deployment's key, so a named Deployment Administrator of another Deployment could read one Tenant's graph. #301 removed Peer Graph Grants and #486 deleted the token variant, the grant table and the grant routes. Every inbound caller is now a Node with a Node Registration, and protocol `0.5` refuses `0.4`.

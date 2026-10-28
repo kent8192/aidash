@@ -15,7 +15,7 @@ async fn serve(app: Router) -> (String, tokio::task::JoinHandle<()>) {
 fn identity() -> Router {
 	Router::new().route(
 		"/.well-known/aidash",
-		get(|| async { Json(json!({"id":"aidash://remote","protocol_version":"0.4"})) }),
+		get(|| async { Json(json!({"id":"aidash://remote","protocol_version":"0.5"})) }),
 	)
 }
 
