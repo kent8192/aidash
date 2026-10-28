@@ -437,22 +437,19 @@ pub(crate) async fn project_activity(
 		.await;
 	}
 	let visible: BTreeSet<&str> = nodes.iter().map(|node| node.id.as_str()).collect();
-	let workspaces: Vec<Uuid> = nodes
+	let mut workspaces = Vec::new();
+	for workspace in nodes
 		.iter()
 		.filter_map(|node| node.workspace_id)
 		.collect::<BTreeSet<_>>()
-		.into_iter()
-		.collect();
-	let mut allowed = Vec::new();
-	for workspace in workspaces {
+	{
 		if authority
 			.workspace_allowed(workspace, "workspace.events")
 			.await?
 		{
-			allowed.push(workspace);
+			workspaces.push(workspace);
 		}
 	}
-	let workspaces = allowed;
 	if workspaces.is_empty() {
 		return Ok(vec![]);
 	}
