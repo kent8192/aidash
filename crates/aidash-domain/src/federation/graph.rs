@@ -1,7 +1,7 @@
 //! Scoped graph identity, bounds, and projection rules independent of transport.
 use crate::{
 	Artifact, Conversation, Error, Event, Result, RunControl, RunMetadata, Task, Workspace,
-	policy::identifier, registry::Entry,
+	registry::Entry,
 };
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
@@ -27,18 +27,6 @@ pub struct GraphOptions {
 	pub limit: u16,
 	#[schemars(length(max = 4096))]
 	pub cursor: Option<String>,
-	pub target_tenant: Option<String>,
-}
-#[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
-#[serde(tag = "kind", rename_all = "snake_case")]
-pub enum GraphViewer {
-	/// A subject of the sending Tenant, the one its Federation token names.
-	Subject {
-		subject: String,
-	},
-	DeploymentAdministrator {
-		id: Uuid,
-	},
 }
 #[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct GraphNode {
@@ -132,9 +120,6 @@ impl GraphOptions {
 			)
 		}) {
 			return Err(Error::Invalid("invalid graph bounds".into()));
-		}
-		if let Some(tenant) = &self.target_tenant {
-			identifier(tenant)?;
 		}
 		Ok(())
 	}

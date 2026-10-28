@@ -27,7 +27,7 @@ fn claims() -> FederationClaims {
 		exp: NOW + 60,
 		jti: Uuid::new_v4(),
 		kid: KID.into(),
-		protocol: "0.4".into(),
+		protocol: "0.5".into(),
 		method: "POST".into(),
 		path: "/scoped/discover?limit=5".into(),
 		body: body_digest(b"{\"query\":\"x\"}"),
@@ -36,7 +36,7 @@ fn claims() -> FederationClaims {
 
 fn request() -> RequestBinding<'static> {
 	RequestBinding {
-		protocol: "0.4",
+		protocol: "0.5",
 		method: "POST",
 		path: "/scoped/discover?limit=5",
 		body: b"{\"query\":\"x\"}",
