@@ -1896,7 +1896,6 @@ async fn completed_learning_origin_remains_live_through_failed_index_retry(
 	)
 	.await
 	.unwrap();
-	let fresh = common::subject_credential(&fixture.f.store, "acme", "alice").await;
 	let (status, deleted) = request(
 		&fixture.app,
 		&fixture.token,
