@@ -35,7 +35,7 @@ SUBJECT = {"Authorization": "Bearer {{contract_token}}"}
 # prove the boundary refuses what it cannot verify.
 PEER = {
     "Authorization": "Bearer not-a-federation-token",
-    "X-Aidash-Protocol": "0.4",
+    "X-Aidash-Protocol": "0.5",
 }
 COOKIE = {
     "Cookie": "{{session_cookie}}",
@@ -609,7 +609,7 @@ def render():
                 if path == "/health":
                     checks += 'expect(res.getBody()).to.eql({status:"ok",deployment:bru.getEnvVar("node_id")});'
                 if path == "/.well-known/aidash":
-                    checks += 'expect(res.getBody().id).to.equal(bru.getEnvVar("node_id"));expect(res.getBody().protocol_version).to.equal("0.4");'
+                    checks += 'expect(res.getBody().id).to.equal(bru.getEnvVar("node_id"));expect(res.getBody().protocol_version).to.equal("0.5");'
                 if path == "/auth/config":
                     checks += 'expect(res.getBody()).to.have.all.keys("enabled","provider","login_url","desktop_protocol");expect(res.getBody().enabled).to.equal(true);expect(res.getBody().login_url).to.equal("/auth/login");'
                 if path == "/api/openapi.json":
@@ -1294,6 +1294,7 @@ def render():
             "registry-get",
             "registry-versions",
             "authorization-catalog",
+            "authorization-safety-stops",
             "workbench-inspect-version",
             "workbench-export-report",
         }
@@ -1306,7 +1307,12 @@ def render():
             status = 403
             checks = ""
             label = "Subject without file transfer permission cannot list recipients"
-        if route["name"] in {"marketplace-administration", "workbench-test-profiles"}:
+        # A Deployment Administrator names the Tenant of the Run it reads (ADR 0101).
+        if route["name"] in {
+            "marketplace-administration",
+            "workbench-test-profiles",
+            "run-management-get",
+        }:
             uri = path + "?tenant={{tenant}}"
         if route["name"] in {"authorization-catalog", "registry-versions"}:
             uri = path + "?node=" + NODE

@@ -197,6 +197,8 @@ pub const TABLES: &[Table] = &[
 	table("execution", "run_activations", TenantOwned),
 	table("execution", "run_context_events", TenantOwned),
 	table("execution", "run_inputs", TenantOwned),
+	// Safety Stop audit and replay receipts; no key to a Run (ADR 0101)
+	audit("execution", "run_safety_stops"),
 	table("execution", "run_task_snapshots", TenantOwned),
 	table("execution", "runs", TenantOwned),
 	table("execution", "url_intents", TenantOwned),
@@ -236,7 +238,6 @@ pub const TABLES: &[Table] = &[
 	table("identity", "authorization_credentials", TenantOwned),
 	audit("identity", "authorization_decisions"),
 	table("identity", "authorization_execution", TenantOwned),
-	table("identity", "authorization_peer_graph_grants", TenantOwned),
 	table("identity", "authorization_remote_commands", TenantOwned),
 	table("identity", "authorization_remote_execution", TenantOwned),
 	table("identity", "authorization_remote_outputs", TenantOwned),

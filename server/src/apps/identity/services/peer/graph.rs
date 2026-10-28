@@ -1,7 +1,7 @@
 //! Scoped graph projection. A peer connection authenticates the source Node;
-//! a mapped Subject or a typed Deployment Administrator grant supplies the receiving authority.
+//! a mapped Subject supplies the receiving authority.
 pub(crate) use crate::apps::identity::repositories::graph::persistence::{
-	GraphAuthority, deployment_administrator_grant, list_grants, set_grant, source_peer_lease,
+	GraphAuthority, source_peer_lease,
 };
 
 use crate::{
@@ -10,12 +10,9 @@ use crate::{
 	authorization::{access::Access, identity::Actor},
 	federation::Federation,
 };
+use aidash_application::federation::inbound::Admitted;
 use aidash_domain::federation::route::Sender;
 use serde_json::json;
-
-pub(crate) fn grant_page_size() -> u64 {
-	100
-}
 
 /// The Sender for work the caller's Tenant does from `node` (its default Node
 /// when none is named).
@@ -36,7 +33,6 @@ fn sender(
 pub(crate) async fn peers(
 	f: Federation,
 	actor: Actor,
-	origin: Option<crate::dashboard_auth::BrowserOrigin>,
 	node: Option<String>,
 ) -> Result<Vec<GraphPeer>> {
 	match actor {
@@ -61,8 +57,8 @@ pub(crate) async fn peers(
 			.await;
 			access.finish(result).await
 		}
-		// A Deployment Administrator has no Node, so it addresses none.
-		Actor::DeploymentAdministrator if origin.is_some() => Ok(vec![]),
+		// Cross-Tenant Graph View needs a Subject; a Deployment Administrator
+		// has none and gets no Tenant content (#486).
 		Actor::DeploymentAdministrator => Err(Error::Forbidden),
 	}
 }
@@ -70,16 +66,12 @@ pub(crate) async fn peers(
 pub(crate) async fn expand(
 	f: Federation,
 	actor: Actor,
-	origin: Option<crate::dashboard_auth::BrowserOrigin>,
 	input: GraphExpandInput,
 ) -> Result<GraphPage> {
 	input.options.validate()?;
 	match actor {
 		Actor::Subject(identity) => {
 			aidash_domain::nodes::NodeAddress::parse(&input.node_id)?;
-			if input.options.target_tenant.is_some() {
-				return Err(Error::Forbidden);
-			}
 			let sender = sender(&identity, input.sending_node.as_deref(), true)?;
 			let mut access = Access::begin(&f.store, &identity).await?;
 			let result = async {
@@ -98,63 +90,13 @@ pub(crate) async fn expand(
 					&input.node_id,
 				)
 				.await?;
-				remote_page(
-					&f,
-					&input,
-					GraphViewer::Subject {
-						subject: identity.subject,
-					},
-					Route::Node(&sender),
-				)
-				.await
+				remote_page(&f, &input, identity.subject, &sender).await
 			}
 			.await;
 			access.finish(result).await
 		}
-		Actor::DeploymentAdministrator => {
-			let id = origin.ok_or(Error::Forbidden)?.identity_id;
-			if input.options.target_tenant.is_none() {
-				return Err(Error::Invalid("target tenant required".into()));
-			}
-			let target = aidash_domain::nodes::DeploymentId::parse(&input.node_id)?;
-			let endpoint = input.endpoint.clone().ok_or_else(|| {
-				Error::Invalid("the other Deployment's endpoint is required".into())
-			})?;
-			// The other Deployment must be the one named, as a registration checks.
-			let document = aidash_application::ports::federation::registrations::DeploymentDirectory::identity(
-				&aidash_integrations::federation::directory::HttpDirectory::new(f.store.keyless.clone())?,
-				&endpoint,
-			)
-			.await?;
-			if document["id"] != target.as_str() {
-				return Err(Error::Unprocessable(
-					"the endpoint is not the Deployment named".into(),
-				));
-			}
-			remote_page(
-				&f,
-				&input,
-				GraphViewer::DeploymentAdministrator { id },
-				Route::Viewer {
-					target: &target,
-					endpoint: &endpoint,
-					identity: id,
-				},
-			)
-			.await
-		}
+		Actor::DeploymentAdministrator => Err(Error::Forbidden),
 	}
-}
-
-/// How a graph request leaves: as a Node of the caller's Tenant, or as a
-/// Deployment Administrator named by a Peer Graph Grant.
-enum Route<'a> {
-	Node(&'a Sender),
-	Viewer {
-		target: &'a aidash_domain::nodes::DeploymentId,
-		endpoint: &'a str,
-		identity: uuid::Uuid,
-	},
 }
 
 fn valid_remote_page(page: &GraphPage, input: &GraphExpandInput) -> bool {
@@ -164,43 +106,24 @@ fn valid_remote_page(page: &GraphPage, input: &GraphExpandInput) -> bool {
 async fn remote_page(
 	f: &Federation,
 	input: &GraphExpandInput,
-	viewer: GraphViewer,
-	via: Route<'_>,
+	subject: String,
+	sender: &Sender,
 ) -> Result<GraphPage> {
 	let request = GraphRequest {
-		viewer,
+		subject,
 		options: input.options.clone(),
 	};
 	let body = serde_json::to_value(request)?;
-	let response = match via {
-		Route::Node(sender) => {
-			f.peer_response(
-				sender,
-				&input.node_id,
-				reqwest::Method::POST,
-				"/scoped/graph",
-				Some(&body),
-			)
-			.await
-		}
-		Route::Viewer {
-			target,
-			endpoint,
-			identity,
-		} => crate::apps::federation::remote::services::wire::Wire::of(f)
-			.http
-			.send_viewer(
-				target,
-				endpoint,
-				identity,
-				"POST",
-				"/scoped/graph",
-				Some(&body),
-			)
-			.await
-			.map_err(Into::into),
-	}
-	.map_err(|_| Error::External("remote graph unavailable".into()))?;
+	let response = f
+		.peer_response(
+			sender,
+			&input.node_id,
+			reqwest::Method::POST,
+			"/scoped/graph",
+			Some(&body),
+		)
+		.await
+		.map_err(|_| Error::External("remote graph unavailable".into()))?;
 	let status = response.status().as_u16();
 	let page: GraphPage = match status {
 		200 => crate::response::json(response, 4_194_304)
@@ -222,20 +145,11 @@ async fn remote_page(
 	Ok(page)
 }
 
-pub(crate) async fn project(
-	f: Federation,
-	caller: crate::apps::identity::services::http_auth::GraphCaller,
-	input: GraphRequest,
-) -> Result<GraphPage> {
-	input.options.validate()?;
-	project_page(&f, caller, input).await
-}
-
 async fn project_in(
 	f: &Federation,
 	source_node: &str,
 	receiver: &str,
-	viewer: &GraphViewer,
+	subject: &str,
 	options: &GraphOptions,
 	authority: &mut GraphAuthority<'_>,
 	authority_revision: &str,
@@ -249,99 +163,62 @@ async fn project_in(
 			authority_revision,
 		),
 		source_node,
-		viewer,
+		subject,
 		options,
 	)
 	.await
 	.map_err(Into::into)
 }
 
-async fn project_page(
-	f: &Federation,
-	caller: crate::apps::identity::services::http_auth::GraphCaller,
+pub(crate) async fn project(
+	f: Federation,
+	admitted: Admitted,
 	input: GraphRequest,
 ) -> Result<GraphPage> {
-	use crate::apps::identity::services::http_auth::GraphCaller;
-	match (&input.viewer, caller) {
-		(GraphViewer::Subject { subject }, GraphCaller::Node(admitted)) => {
-			// The token names the subject; the body only repeats it.
-			if input.options.target_tenant.is_some() || admitted.subject() != Some(subject) {
-				return Err(Error::Forbidden);
-			}
-			let node = admitted.sender.to_string();
-			let mut access = super::access(f, &admitted).await?;
-			let result = async {
-				let receiving = crate::apps::identity::repositories::nodes::get(
-					&mut *access.tx,
-					admitted.tenant.as_str(),
-					admitted.receiver.node.as_str(),
-				)
-				.await?;
-				let resource = access.resource(
-					"node",
-					receiving.name.as_str(),
-					json!({"label":receiving.label,"default":receiving.default}),
-				);
-				access.require(&resource, "federation.graph.read").await?;
-				let mapping_revision =
-					crate::apps::identity::repositories::graph::persistence::mapping_revision(
-						&mut access,
-						&admitted,
-						subject,
-					)
-					.await?;
-				let revision = format!(
-					"{}:{}:{}",
-					access.snapshot.revision, access.identity.credential_id, mapping_revision
-				);
-				project_in(
-					f,
-					&node,
-					&admitted.receiver.to_string(),
-					&input.viewer,
-					&input.options,
-					&mut GraphAuthority::Subject(&mut access),
-					&revision,
-				)
-				.await
-			}
-			.await;
-			access.finish(result).await
-		}
-		(GraphViewer::DeploymentAdministrator { id }, GraphCaller::Viewer(viewer)) => {
-			let tenant = input
-				.options
-				.target_tenant
-				.as_deref()
-				.ok_or(Error::Forbidden)?;
-			if viewer.identity != *id || viewer.tenant.as_str() != tenant {
-				return Err(Error::Forbidden);
-			}
-			let node = viewer.viewer.to_string();
-			let (mut tx, grant) = deployment_administrator_grant(f, &node, *id, tenant).await?;
-			let revision = format!("{}:{}", grant.source_identity, grant.revision);
-			let result = project_in(
-				f,
-				&node,
-				f.config.deployment.as_str(),
-				&input.viewer,
-				&input.options,
-				&mut GraphAuthority::DeploymentAdministrator {
-					tenant,
-					tx: &mut tx,
-				},
-				&revision,
-			)
-			.await;
-			if result.is_ok() {
-				tx.commit().await?;
-			} else {
-				tx.rollback().await?;
-			}
-			result
-		}
-		_ => Err(Error::Forbidden),
+	input.options.validate()?;
+	// The token names the subject; the body only repeats it.
+	if admitted.subject() != Some(input.subject.as_str()) {
+		return Err(Error::Forbidden);
 	}
+	let node = admitted.sender.to_string();
+	let mut access = super::access(&f, &admitted).await?;
+	let result = async {
+		let receiving = crate::apps::identity::repositories::nodes::get(
+			&mut *access.tx,
+			admitted.tenant.as_str(),
+			admitted.receiver.node.as_str(),
+		)
+		.await?;
+		let resource = access.resource(
+			"node",
+			receiving.name.as_str(),
+			json!({"label":receiving.label,"default":receiving.default}),
+		);
+		access.require(&resource, "federation.graph.read").await?;
+		let mapping_revision =
+			crate::apps::identity::repositories::graph::persistence::mapping_revision(
+				&mut access,
+				&admitted,
+				&input.subject,
+			)
+			.await?;
+		let revision = format!(
+			"{}:{}:{}",
+			access.snapshot.revision, access.identity.credential_id, mapping_revision
+		);
+		project_in(
+			&f,
+			&node,
+			&admitted.receiver.to_string(),
+			&input.subject,
+			&input.options,
+			&mut GraphAuthority(&mut access),
+			&revision,
+		)
+		.await
+	}
+	.await;
+	access.finish(result).await
 }
 
 #[derive(Clone)]
@@ -358,10 +235,8 @@ pub async fn provide(#[inject] runtime: Federation) -> GraphManagement {
 use reinhardt::injectable;
 
 pub use crate::apps::identity::serializers::peer_graph::{
-	GraphExpandInput, GraphOptions, GraphPage, GraphPeer, GraphRequest, PeerGraphGrantInput,
+	GraphExpandInput, GraphOptions, GraphPage, GraphPeer, GraphRequest,
 };
-
-pub(crate) use crate::apps::identity::serializers::peer_graph::{GrantPage, GraphViewer};
 
 #[cfg(test)]
 #[path = "../../tests/services_peer_graph_tests.rs"]

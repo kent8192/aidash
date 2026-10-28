@@ -112,7 +112,7 @@ async fn transaction_rpc_signs_each_call_for_its_method_and_body() {
 	assert_eq!(calls[1].0, "GET");
 	assert_eq!(calls[1].2, Value::Null);
 	for (method, headers, body) in calls.iter() {
-		assert_eq!(headers["x-aidash-protocol"], "0.4");
+		assert_eq!(headers["x-aidash-protocol"], "0.5");
 		let bytes = if body.is_null() {
 			vec![]
 		} else {

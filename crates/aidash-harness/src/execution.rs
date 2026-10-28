@@ -11,6 +11,7 @@ use aidash_application::{
 };
 use std::{future::Future, sync::Arc, time::Duration};
 use tokio::{sync::watch, task::JoinSet};
+use tracing::Instrument as _;
 use uuid::Uuid;
 
 enum Completion<T> {
@@ -65,6 +66,21 @@ async fn keepalive<T>(
 
 /// Visibility must resume before recovery can read and update the committed run.
 pub async fn advance(
+	mut scope: Box<dyn WorkerStep>,
+	leases: &dyn WorkerLeases,
+	token: Uuid,
+	seconds: i32,
+) -> Result<()> {
+	// Every line logged during the step names the Run and its Tenant, so an
+	// administrator can name both in a Safety Stop (ADR 0101).
+	let tenant = scope.tenant().await.unwrap_or_default();
+	let span = tracing::info_span!("worker_step", run_id = %scope.metadata().id, %tenant);
+	advance_step(scope, leases, token, seconds)
+		.instrument(span)
+		.await
+}
+
+async fn advance_step(
 	mut scope: Box<dyn WorkerStep>,
 	leases: &dyn WorkerLeases,
 	token: Uuid,

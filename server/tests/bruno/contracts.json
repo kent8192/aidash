@@ -6,10 +6,10 @@
     "source": "server/src/apps/identity/views/state_management.rs",
     "json": false,
     "uuid_parameters": ["id"],
-    "query_parameters": [],
+    "query_parameters": ["tenant"],
     "response": {
       "schema": {
-        "$ref": "#/components/schemas/RunManagement"
+        "$ref": "#/components/schemas/ManagementView"
       },
       "definitions": {
         "CleanupStatus": {
@@ -70,6 +70,37 @@
             "refused"
           ]
         },
+        "ControlSource": {
+          "oneOf": [
+            {
+              "type": "string",
+              "description": "A Tenant Subject, or the Run's creation.",
+              "enum": ["tenant"]
+            },
+            {
+              "type": "string",
+              "description": "A Deployment Administrator's Safety Stop.",
+              "enum": ["deployment_administrator"]
+            },
+            {
+              "type": "string",
+              "description": "Aidash itself, such as the pause for an identity status outage.",
+              "enum": ["system"]
+            }
+          ],
+          "description": "The kind of actor that last changed a Run's control. It is shown to anyone\nwho can see the Run; the person and the reason are not."
+        },
+        "ManagementView": {
+          "anyOf": [
+            {
+              "$ref": "#/components/schemas/RunManagement"
+            },
+            {
+              "$ref": "#/components/schemas/RunControlFacts"
+            }
+          ],
+          "description": "What `GET` returns: a Subject's diagnostics, or an administrator's metadata."
+        },
         "RemoteSemanticFailure": {
           "oneOf": [
             {
@@ -98,6 +129,37 @@
         "RunControl": {
           "type": "string",
           "enum": ["ACTIVE", "PAUSED", "CANCELLED"]
+        },
+        "RunControlFacts": {
+          "type": "object",
+          "description": "The only facts a Deployment Administrator reads of a Run.",
+          "required": [
+            "id",
+            "phase",
+            "control",
+            "control_revision",
+            "control_source"
+          ],
+          "properties": {
+            "control": {
+              "$ref": "#/components/schemas/RunControl"
+            },
+            "control_revision": {
+              "type": "integer",
+              "format": "int64",
+              "description": "Changes only when control changes; send it back with a stop."
+            },
+            "control_source": {
+              "$ref": "#/components/schemas/ControlSource"
+            },
+            "id": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "phase": {
+              "$ref": "#/components/schemas/RunPhase"
+            }
+          }
         },
         "RunManagement": {
           "type": "object",
@@ -224,7 +286,7 @@
     "query_parameters": [],
     "response": {
       "schema": {
-        "$ref": "#/components/schemas/RunManagement"
+        "$ref": "#/components/schemas/ManagementResult"
       },
       "definitions": {
         "CleanupStatus": {
@@ -284,6 +346,17 @@
             "output_truncated",
             "refused"
           ]
+        },
+        "ManagementResult": {
+          "anyOf": [
+            {
+              "$ref": "#/components/schemas/RunManagement"
+            },
+            {
+              "$ref": "#/components/schemas/SafetyStopReceipt"
+            }
+          ],
+          "description": "What `POST` returns: the Run for a Subject, or the receipt for an administrator."
         },
         "RemoteSemanticFailure": {
           "oneOf": [
@@ -389,6 +462,50 @@
             "FAILED",
             "CANCELLED"
           ]
+        },
+        "SafetyStopAction": {
+          "type": "string",
+          "description": "What a Safety Stop asks of the Run.",
+          "enum": ["pause", "cancel"]
+        },
+        "SafetyStopOutcome": {
+          "oneOf": [
+            {
+              "type": "string",
+              "description": "The control change was recorded.",
+              "enum": ["accepted"]
+            },
+            {
+              "type": "string",
+              "description": "The Run had already ended or its cancellation was already requested.",
+              "enum": ["no_op"]
+            }
+          ],
+          "description": "How a command ended."
+        },
+        "SafetyStopReceipt": {
+          "type": "object",
+          "description": "What the command acknowledges. It describes the operation, not the Run's\nstate after later commands, and does not claim that execution has stopped.",
+          "required": ["operation_id", "run_id", "tenant", "action", "outcome"],
+          "properties": {
+            "action": {
+              "$ref": "#/components/schemas/SafetyStopAction"
+            },
+            "operation_id": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "outcome": {
+              "$ref": "#/components/schemas/SafetyStopOutcome"
+            },
+            "run_id": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "tenant": {
+              "type": "string"
+            }
+          }
         },
         "SemanticRecovery": {
           "type": "object",
@@ -2829,121 +2946,6 @@
               "items": {
                 "$ref": "#/components/schemas/GraphNode"
               }
-            }
-          }
-        }
-      }
-    }
-  },
-  {
-    "method": "GET",
-    "path": "/api/authorization/{tenant}/peer-graph-grants",
-    "name": "authorization_peer_graph_grants",
-    "source": "server/src/apps/identity/views/graph.rs",
-    "json": false,
-    "uuid_parameters": [],
-    "query_parameters": ["limit", "offset"],
-    "response": {
-      "schema": {
-        "type": "array",
-        "items": {
-          "$ref": "#/components/schemas/PeerGraphGrant"
-        }
-      },
-      "definitions": {
-        "PeerGraphGrant": {
-          "type": "object",
-          "required": [
-            "source_deployment",
-            "source_identity",
-            "source_key_id",
-            "tenant",
-            "enabled",
-            "revision",
-            "updated_at"
-          ],
-          "properties": {
-            "enabled": {
-              "type": "boolean"
-            },
-            "revision": {
-              "type": "integer",
-              "format": "int64"
-            },
-            "source_deployment": {
-              "type": "string",
-              "description": "The viewer's Deployment id."
-            },
-            "source_identity": {
-              "type": "string",
-              "format": "uuid"
-            },
-            "source_key_id": {
-              "type": "string",
-              "description": "The key ID of the viewer Deployment's pinned Deployment Key."
-            },
-            "tenant": {
-              "type": "string"
-            },
-            "updated_at": {
-              "type": "string",
-              "format": "date-time"
-            }
-          }
-        }
-      }
-    }
-  },
-  {
-    "method": "POST",
-    "path": "/api/authorization/{tenant}/peer-graph-grants",
-    "name": "authorization_set_peer_graph_grant",
-    "source": "server/src/apps/identity/views/graph.rs",
-    "json": true,
-    "uuid_parameters": [],
-    "query_parameters": [],
-    "response": {
-      "schema": {
-        "$ref": "#/components/schemas/PeerGraphGrant"
-      },
-      "definitions": {
-        "PeerGraphGrant": {
-          "type": "object",
-          "required": [
-            "source_deployment",
-            "source_identity",
-            "source_key_id",
-            "tenant",
-            "enabled",
-            "revision",
-            "updated_at"
-          ],
-          "properties": {
-            "enabled": {
-              "type": "boolean"
-            },
-            "revision": {
-              "type": "integer",
-              "format": "int64"
-            },
-            "source_deployment": {
-              "type": "string",
-              "description": "The viewer's Deployment id."
-            },
-            "source_identity": {
-              "type": "string",
-              "format": "uuid"
-            },
-            "source_key_id": {
-              "type": "string",
-              "description": "The key ID of the viewer Deployment's pinned Deployment Key."
-            },
-            "tenant": {
-              "type": "string"
-            },
-            "updated_at": {
-              "type": "string",
-              "format": "date-time"
             }
           }
         }
@@ -28911,6 +28913,26 @@
           },
           "additionalProperties": false
         },
+        "ControlSource": {
+          "oneOf": [
+            {
+              "type": "string",
+              "description": "A Tenant Subject, or the Run's creation.",
+              "enum": ["tenant"]
+            },
+            {
+              "type": "string",
+              "description": "A Deployment Administrator's Safety Stop.",
+              "enum": ["deployment_administrator"]
+            },
+            {
+              "type": "string",
+              "description": "Aidash itself, such as the pause for an identity status outage.",
+              "enum": ["system"]
+            }
+          ],
+          "description": "The kind of actor that last changed a Run's control. It is shown to anyone\nwho can see the Run; the person and the reason are not."
+        },
         "Conversation": {
           "type": "object",
           "required": [
@@ -30466,6 +30488,8 @@
             "agent_version",
             "phase",
             "control",
+            "control_revision",
+            "control_source",
             "step",
             "revision",
             "observed_input_seq",
@@ -30498,6 +30522,16 @@
             },
             "control": {
               "$ref": "#/components/schemas/RunControl"
+            },
+            "control_revision": {
+              "type": "integer",
+              "format": "int64",
+              "description": "Counts control decisions only; worker progress does not change it.",
+              "default": 0
+            },
+            "control_source": {
+              "$ref": "#/components/schemas/ControlSource",
+              "description": "The kind of actor that last changed `control`."
             },
             "error": {
               "type": ["string", "null"]
@@ -32715,6 +32749,26 @@
           },
           "additionalProperties": false
         },
+        "ControlSource": {
+          "oneOf": [
+            {
+              "type": "string",
+              "description": "A Tenant Subject, or the Run's creation.",
+              "enum": ["tenant"]
+            },
+            {
+              "type": "string",
+              "description": "A Deployment Administrator's Safety Stop.",
+              "enum": ["deployment_administrator"]
+            },
+            {
+              "type": "string",
+              "description": "Aidash itself, such as the pause for an identity status outage.",
+              "enum": ["system"]
+            }
+          ],
+          "description": "The kind of actor that last changed a Run's control. It is shown to anyone\nwho can see the Run; the person and the reason are not."
+        },
         "DeferredRead": {
           "type": "object",
           "required": ["message", "call"],
@@ -34261,6 +34315,8 @@
             "agent_version",
             "phase",
             "control",
+            "control_revision",
+            "control_source",
             "step",
             "revision",
             "observed_input_seq",
@@ -34293,6 +34349,16 @@
             },
             "control": {
               "$ref": "#/components/schemas/RunControl"
+            },
+            "control_revision": {
+              "type": "integer",
+              "format": "int64",
+              "description": "Counts control decisions only; worker progress does not change it.",
+              "default": 0
+            },
+            "control_source": {
+              "$ref": "#/components/schemas/ControlSource",
+              "description": "The kind of actor that last changed `control`."
             },
             "error": {
               "type": ["string", "null"]
@@ -36036,6 +36102,26 @@
           },
           "additionalProperties": false
         },
+        "ControlSource": {
+          "oneOf": [
+            {
+              "type": "string",
+              "description": "A Tenant Subject, or the Run's creation.",
+              "enum": ["tenant"]
+            },
+            {
+              "type": "string",
+              "description": "A Deployment Administrator's Safety Stop.",
+              "enum": ["deployment_administrator"]
+            },
+            {
+              "type": "string",
+              "description": "Aidash itself, such as the pause for an identity status outage.",
+              "enum": ["system"]
+            }
+          ],
+          "description": "The kind of actor that last changed a Run's control. It is shown to anyone\nwho can see the Run; the person and the reason are not."
+        },
         "DeferredRead": {
           "type": "object",
           "required": ["message", "call"],
@@ -37425,6 +37511,8 @@
             "agent_version",
             "phase",
             "control",
+            "control_revision",
+            "control_source",
             "step",
             "revision",
             "observed_input_seq",
@@ -37457,6 +37545,16 @@
             },
             "control": {
               "$ref": "#/components/schemas/RunControl"
+            },
+            "control_revision": {
+              "type": "integer",
+              "format": "int64",
+              "description": "Counts control decisions only; worker progress does not change it.",
+              "default": 0
+            },
+            "control_source": {
+              "$ref": "#/components/schemas/ControlSource",
+              "description": "The kind of actor that last changed `control`."
             },
             "error": {
               "type": ["string", "null"]
@@ -46325,6 +46423,95 @@
             }
           },
           "additionalProperties": false
+        }
+      }
+    }
+  },
+  {
+    "method": "GET",
+    "path": "/api/authorization/{tenant}/safety-stops",
+    "name": "authorization-safety-stops",
+    "source": "server/src/apps/identity/views/policies.rs",
+    "json": false,
+    "uuid_parameters": [],
+    "query_parameters": ["offset", "limit"],
+    "response": {
+      "schema": {
+        "type": "array",
+        "items": {
+          "$ref": "#/components/schemas/SafetyStopRecord"
+        }
+      },
+      "definitions": {
+        "SafetyStopAction": {
+          "type": "string",
+          "description": "What a Safety Stop asks of the Run.",
+          "enum": ["pause", "cancel"]
+        },
+        "SafetyStopOutcome": {
+          "oneOf": [
+            {
+              "type": "string",
+              "description": "The control change was recorded.",
+              "enum": ["accepted"]
+            },
+            {
+              "type": "string",
+              "description": "The Run had already ended or its cancellation was already requested.",
+              "enum": ["no_op"]
+            }
+          ],
+          "description": "How a command ended."
+        },
+        "SafetyStopRecord": {
+          "type": "object",
+          "description": "One Safety Stop as the Tenant's audit readers see it (`decision.read`). The\nreason is visible here and nowhere a Run's ordinary readers look.",
+          "required": [
+            "id",
+            "run_id",
+            "action",
+            "actor_kind",
+            "identity_id",
+            "reason",
+            "operation_id",
+            "outcome",
+            "created_at"
+          ],
+          "properties": {
+            "action": {
+              "$ref": "#/components/schemas/SafetyStopAction"
+            },
+            "actor_kind": {
+              "type": "string"
+            },
+            "created_at": {
+              "type": "string",
+              "format": "date-time"
+            },
+            "id": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "identity_id": {
+              "type": ["string", "null"],
+              "format": "uuid",
+              "description": "The browser Identity of a named administrator; absent for the shared token."
+            },
+            "operation_id": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "outcome": {
+              "$ref": "#/components/schemas/SafetyStopOutcome"
+            },
+            "reason": {
+              "type": "string"
+            },
+            "run_id": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
         }
       }
     }

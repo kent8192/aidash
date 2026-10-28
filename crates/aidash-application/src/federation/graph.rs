@@ -21,11 +21,11 @@ pub fn checked_cursor(
 	}
 	Ok(cursor)
 }
-fn cursor_binding(node: &str, viewer: &GraphViewer, options: &GraphOptions) -> Result<String> {
+fn cursor_binding(node: &str, subject: &str, options: &GraphOptions) -> Result<String> {
 	let mut scope = options.clone();
 	scope.cursor = None;
 	Ok(aidash_domain::registry::rules::digest(
-		&json!({"node":node,"viewer":viewer,"scope":scope}),
+		&json!({"node":node,"subject":subject,"scope":scope}),
 	))
 }
 async fn linked_candidates(
@@ -162,13 +162,13 @@ async fn linked_candidates(
 pub async fn project(
 	scope: &mut dyn GraphProjectionScope,
 	source_node: &str,
-	viewer: &GraphViewer,
+	subject: &str,
 	options: &GraphOptions,
 ) -> Result<GraphPage> {
 	options.validate()?;
 	let node_id = scope.node_id().to_owned();
 	let generation = scope.generation(options).await?;
-	let binding = cursor_binding(source_node, viewer, options)?;
+	let binding = cursor_binding(source_node, subject, options)?;
 	let mut cursor = match &options.cursor {
 		Some(token) => checked_cursor(
 			scope.decode_cursor(token)?,

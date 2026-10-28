@@ -85,9 +85,6 @@ pub use authorization_remote_commands::AuthorizationRemoteCommands;
 mod authorization_remote_outputs;
 pub use authorization_remote_outputs::AuthorizationRemoteOutputs;
 
-mod authorization_peer_graph_grants;
-pub use authorization_peer_graph_grants::AuthorizationPeerGraphGrants;
-
 pub mod byte_key;
 
 mod desktop_handoffs;

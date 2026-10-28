@@ -25,6 +25,7 @@ pub mod provider_credentials;
 pub mod retention;
 pub mod run_input;
 pub mod run_state;
+pub mod safety_stop;
 pub mod semantic;
 pub mod tenancy;
 pub mod tenant_secrets;
