@@ -57,6 +57,22 @@ pub enum RunControl {
 	Cancelled,
 }
 
+/// Persistence form of the domain's `ControlSource`.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize, ModelEnum)]
+#[model_enum(repr = "string")]
+pub enum ControlSource {
+	#[default]
+	#[model_enum(value = "tenant")]
+	#[serde(rename = "tenant")]
+	Tenant,
+	#[model_enum(value = "deployment_administrator")]
+	#[serde(rename = "deployment_administrator")]
+	DeploymentAdministrator,
+	#[model_enum(value = "system")]
+	#[serde(rename = "system")]
+	System,
+}
+
 #[derive(Clone, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize, ModelEnum)]
 #[model_enum(repr = "string")]
 pub enum RunPhase {

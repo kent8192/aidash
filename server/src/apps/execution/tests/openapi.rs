@@ -183,8 +183,6 @@ fn openapi_distinguishes_input_defaults_from_serialized_responses(document: Valu
 }
 
 #[rstest]
-#[case("/api/runs/{id}/management", "get", "run-management-get")]
-#[case("/api/runs/{id}/management", "post", "run-management-control")]
 #[case("/api/runs/{id}/semantic", "get", "remote-semantic-run-provenance")]
 #[case(
 	"/api/tasks/{task}/remote-grants/{id}/semantic",
@@ -220,6 +218,64 @@ fn openapi_retains_current_management_endpoints(
 	assert!(parameters.iter().all(|parameter| parameter["in"] == "path"
 		&& parameter["required"] == true
 		&& parameter["schema"]["format"] == "uuid"));
+}
+
+/// One route serves a Tenant Subject and a Deployment Administrator's Safety
+/// Stop (ADR 0101), so each side's contract is a separate schema.
+#[rstest]
+fn openapi_separates_the_subject_and_safety_stop_management_contracts(document: Value) {
+	let schemas = &document["components"]["schemas"];
+	let get = &document["paths"]["/api/runs/{id}/management"]["get"];
+	let post = &document["paths"]["/api/runs/{id}/management"]["post"];
+	assert_eq!(get["operationId"], "run-management-get");
+	assert_eq!(post["operationId"], "run-management-control");
+	let named = |operation: &Value, location: &str| -> Vec<String> {
+		operation["parameters"]
+			.as_array()
+			.unwrap()
+			.iter()
+			.filter(|parameter| parameter["in"] == location)
+			.map(|parameter| parameter["name"].as_str().unwrap().to_owned())
+			.collect()
+	};
+	assert_eq!(named(get, "path"), ["id"]);
+	assert_eq!(named(get, "query"), ["tenant"]);
+	assert_eq!(named(post, "path"), ["id"]);
+	assert_eq!(named(post, "header"), ["Idempotency-Key"]);
+	// An administrator's metadata is its own projection, never RunManagement.
+	let facts = schemas["RunControlFacts"]["properties"]
+		.as_object()
+		.unwrap();
+	let mut fields = facts.keys().map(String::as_str).collect::<Vec<_>>();
+	fields.sort_unstable();
+	assert_eq!(
+		fields,
+		[
+			"control",
+			"control_revision",
+			"control_source",
+			"id",
+			"phase"
+		]
+	);
+	let receipt = schemas["SafetyStopReceipt"]["properties"]
+		.as_object()
+		.unwrap();
+	let mut fields = receipt.keys().map(String::as_str).collect::<Vec<_>>();
+	fields.sort_unstable();
+	assert_eq!(
+		fields,
+		["action", "operation_id", "outcome", "run_id", "tenant"]
+	);
+	assert_eq!(schemas["SafetyStopInput"]["additionalProperties"], false);
+	assert!(
+		schemas["SafetyStopInput"]["required"]
+			.as_array()
+			.unwrap()
+			.iter()
+			.any(|name| name == "reason")
+	);
+	assert!(document["paths"]["/api/authorization/{tenant}/safety-stops"]["get"].is_object());
 }
 
 /// The Node a read is made for and the paging of the Node Registration reads

@@ -218,6 +218,8 @@ pub fn url_patterns() -> UnifiedRouter {
 			.with_route_middleware(AccessBoundary::authenticated().with_visibility())
 			.endpoint(policies::decisions)
 			.with_route_middleware(AccessBoundary::authenticated().with_visibility())
+			.endpoint(policies::safety_stops)
+			.with_route_middleware(AccessBoundary::authenticated().with_visibility())
 			.endpoint(peer_mappings::history)
 			.with_route_middleware(AccessBoundary::authenticated())
 			.endpoint(peer_mappings::list)

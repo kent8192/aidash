@@ -638,7 +638,7 @@ async fn a_run_continues_without_the_tools_of_a_server_that_is_down_and_the_even
 #[case::cancel(None, false, RunControlAction::Cancel)]
 #[case::pause_store(None, false, RunControlAction::Pause)]
 #[case::pause_subject_control(Some("control"), false, RunControlAction::Pause)]
-#[case::pause_administrator_control(Some("control"), true, RunControlAction::Pause)]
+#[case::pause_administrator_safety_stop(Some("management"), true, RunControlAction::Pause)]
 #[case::pause_subject_management(Some("management"), false, RunControlAction::Pause)]
 #[tokio::test]
 async fn a_paused_or_cancelled_run_ends_its_retained_sessions_after_control_commits(
@@ -658,19 +658,45 @@ async fn a_paused_or_cancelled_run_ends_its_retained_sessions_after_control_comm
 	assert!(world.mcp.ended().is_empty());
 
 	if let Some(endpoint) = endpoint {
-		let token = if administrator {
-			&world.f.config.api_token
+		let (status, body) = if administrator {
+			// A Deployment Administrator stops a Run only through the content-free
+			// Safety Stop (ADR 0101), which names the Tenant and a revision.
+			let response = world
+				.app
+				.api_http
+				.request(
+					"POST".parse().unwrap(),
+					&format!("/api/runs/{}/{endpoint}", world.run.id),
+				)
+				.header(
+					"Authorization",
+					format!("Bearer {}", world.f.config.api_token),
+				)
+				.header("Idempotency-Key", uuid::Uuid::new_v4().to_string())
+				.json(&json!({
+					"tenant": "acme",
+					"action": action,
+					"expected_control_revision": 0,
+					"reason": "runaway spend",
+				}))
+				.send()
+				.await
+				.unwrap();
+			let text = String::from_utf8_lossy(response.body()).into_owned();
+			(
+				response.status_code(),
+				serde_json::from_str(&text).unwrap_or(Value::String(text)),
+			)
 		} else {
-			&world.token
+			request(
+				&world.app,
+				&world.token,
+				"POST",
+				&format!("/api/runs/{}/{endpoint}", world.run.id),
+				json!({"action":action}),
+			)
+			.await
 		};
-		let (status, body) = request(
-			&world.app,
-			token,
-			"POST",
-			&format!("/api/runs/{}/{endpoint}", world.run.id),
-			json!({"action":action}),
-		)
-		.await;
 		assert_eq!(status, 200, "{body}");
 	} else {
 		world

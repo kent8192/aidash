@@ -33,3 +33,9 @@ inside a Tenant, through a Mapping or a Subject Credential, like anyone else.
   `/api/remote` are removed together with Deployment Administrator execution, because they
   admit work only into workspaces that belong to no Tenant. Scoped remote delegation, through
   durable source grants and receiver admissions, remains, and peer configuration is unchanged.
+
+## Amendment (2026-10-27, #485)
+
+- A Deployment Administrator's one remaining control over a Run is the content-free Safety Stop (pause or cancel
+  with a reason, never resume), recorded in ADR 0101. The ordinary `/api/runs/{id}/control` route refuses every
+  Deployment Administrator.

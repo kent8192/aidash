@@ -1,4 +1,4 @@
-//! Workspace permission precedes record-specific disclosure for mapped viewers.
+//! Workspace permission precedes record-specific disclosure for mapped Subjects.
 use crate::{Result, ports::graph::GraphVisibility};
 use aidash_domain::federation::graph::Candidate;
 
