@@ -1,21 +1,19 @@
 meta {
-  name: 0964 frontend-asset - Conditional request matches the content ETag
+  name: 0964 frontend-asset - Missing asset does not fall back to the SPA
   type: http
   seq: 964
 }
 
 get {
-  url: {{base_url}}/assets/probe.txt
+  url: {{base_url}}/assets/missing.txt
   body: none
   auth: none
 }
 
 headers {
   Accept: application/json
-  If-None-Match: {{frontendEtag}}
 }
 
 tests {
-  test("Exact HTTP 304", function () { expect(res.getStatus()).to.equal(304); });
-  test("Conditional request matches the content ETag contract", function () { expect(res.getBody()).to.equal(""); });
+  test("Exact HTTP 404", function () { expect(res.getStatus()).to.equal(404); });
 }

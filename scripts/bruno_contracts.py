@@ -17,18 +17,31 @@ COLLECTION = ROOT / "server/tests/bruno"
 CATALOG = COLLECTION / "contracts.json"
 MANIFEST = COLLECTION / "scenarios.json"
 MISSING = "11111111-1111-4111-8111-111111111111"
-# A Deployment Administrator works in the Tenant of the Workspace it names, and
-# an unknown Workspace has none (#265), so these reads would answer 404 for
-# MISSING. They name the Workspace that journey 08 creates, which keeps their
-# own response checks (an empty list, a typed cleanup status, an empty page, a
-# task that is not found) in force.
-FIXTURE_WORKSPACE_READS = {
-    "semantic-history",
-    "semantic-cleanup",
-    "memory-participants",
-    "memory-participant-current",
-}
 DEPLOYMENT_ADMINISTRATOR = {"Authorization": "Bearer {{deployment_administrator_token}}"}
+# A Deployment Administrator holds no Tenant content or settings authority
+# (#484, ADR 0102): the access boundary refuses it with 403 before a handler or
+# an extractor runs. Only these routes admit it (`AccessBoundary::administered()`
+# and `deployment_administrator()` in the apps' urls.rs, plus the session and
+# run-management routes registered with the same boundary). Every other /api
+# route is checked with the contract subject, which passes the boundary, so
+# extractor errors such as 415 and 422 still reach the response.
+ADMIN_ADMITTED = {
+    "session", "state", "run-management-get", "run-management-control", "run-control",
+    "authorization-snapshot", "authorization-replace", "authorization-evaluate",
+    "authorization_peer_graph_grants", "authorization_set_peer_graph_grant",
+    "transaction_revocations", "transaction-participants",
+    "tenant-administration", "tenant-registrations", "tenant-registration-approve",
+    "tenant-registration-reject", "tenant-mappings", "tenant-mapping-disable",
+    "tenant-invitations-issue", "tenant-invitations", "tenant-invitations-revoke",
+    "tenants-label", "tenants-delete", "tenants-list", "tenants-purge",
+    "federated_graph_expand", "federated_graph_peers", "openrouter-models",
+    "deployment-status", "marketplace-administration",
+    "sessions-admin-approve", "sessions-admin-disable-mapping",
+    "sessions-admin-erase-display", "sessions-admin-identities", "sessions-admin-identity",
+    "sessions-admin-mappings", "sessions-admin-registrations", "sessions-admin-reject",
+    "sessions-admin-restore-identity", "sessions-deployment-administrator-grant",
+    "sessions-deployment-administrator-grants",
+}
 SUBJECT = {"Authorization": "Bearer {{contract_token}}"}
 # A Federation token (ADR 0064) is signed with a Deployment Key and bound to its
 # request, so a Bruno request cannot carry a valid one: these scenarios only
@@ -308,8 +321,8 @@ def render():
         if checks:
             js.append('test("' + label + ' contract", function () { ' + checks + " });")
         if immutable:
-            pre += '\nconst snapshot = await bru.sendRequest({method:"GET",url:bru.getEnvVar("base_url")+"/api/workspaces/"+bru.getVar("workspace_id"),headers:{Authorization:"Bearer "+bru.getEnvVar("deployment_administrator_token")}}); if(snapshot.status!==200 || !Number.isInteger(snapshot.data.workspace.revision)) throw new Error("fixture snapshot unavailable"); bru.setVar("beforeWorkspace",JSON.stringify({revision:snapshot.data.workspace.revision,state:snapshot.data.workspace.state}));\n'
-            after += '\nconst snapshot = await bru.sendRequest({method:"GET",url:bru.getEnvVar("base_url")+"/api/workspaces/"+bru.getVar("workspace_id"),headers:{Authorization:"Bearer "+bru.getEnvVar("deployment_administrator_token")}}); test("Rejected input preserves committed workspace state", function(){expect(snapshot.status).to.equal(200);expect(JSON.stringify({revision:snapshot.data.workspace.revision,state:snapshot.data.workspace.state})).to.equal(bru.getVar("beforeWorkspace"));});\n'
+            pre += '\nconst snapshot = await bru.sendRequest({method:"GET",url:bru.getEnvVar("base_url")+"/api/workspaces/"+bru.getVar("workspace_id"),headers:{Authorization:"Bearer "+bru.getVar("contract_token")}}); if(snapshot.status!==200 || !Number.isInteger(snapshot.data.workspace.revision)) throw new Error("fixture snapshot unavailable"); bru.setVar("beforeWorkspace",JSON.stringify({revision:snapshot.data.workspace.revision,state:snapshot.data.workspace.state}));\n'
+            after += '\nconst snapshot = await bru.sendRequest({method:"GET",url:bru.getEnvVar("base_url")+"/api/workspaces/"+bru.getVar("workspace_id"),headers:{Authorization:"Bearer "+bru.getVar("contract_token")}}); test("Rejected input preserves committed workspace state", function(){expect(snapshot.status).to.equal(200);expect(JSON.stringify({revision:snapshot.data.workspace.revision,state:snapshot.data.workspace.state})).to.equal(bru.getVar("beforeWorkspace"));});\n'
         text = (
             f"meta {{\n  name: {name}\n  type: http\n  seq: {seq if seq is not None else sequence}\n}}\n\n{method} {{\n  url: {url}\n  body: {kind}\n  auth: none\n}}\n\nheaders {{\n"
             + "\n".join("  " + k + ": " + v for k, v in fields.items())
@@ -379,17 +392,19 @@ def render():
         )
 
     # Refresh the deliberately revoked bearer/session before the expanded suite.
+    # A Deployment Administrator cannot issue it (#484): the harness minted a
+    # spare credential for alice with `manage issue-subject-credential`.
     seed = "POST /api/authorization/{tenant}/credentials"
     add(
         seed,
-        "Issue a fresh subject credential",
-        200,
+        "Deployment Administrator cannot issue a fresh subject credential",
+        403,
         headers=DEPLOYMENT_ADMINISTRATOR,
         body='{"subject":"alice","expires_in_seconds":3600}',
-        checks='expect(res.getBody().credential.subject).to.equal("alice");expect(res.getBody().token).to.be.a("string");bru.setVar("contract_token",res.getBody().token);',
+        checks='bru.setVar("contract_token",bru.getEnvVar("contract_alice_token"));',
         seq=35,
     )
-    for old, seq in [(20, 36), (21, 37), (22, 38)]:
+    for old, seq in [(18, 36), (19, 37), (20, 38)]:
         path = next((COLLECTION / "journeys").glob(f"{old:02}-*.bru"))
         text = path.read_text()
         old_name = re.search(r"^  name: (.+)$", text, re.M)[1]
@@ -787,6 +802,9 @@ def render():
                 headers=DEPLOYMENT_ADMINISTRATOR, body="{", immutable=True)
             continue
         add(endpoint, "Anonymous request is rejected", 401, immutable=method != "GET")
+        admitted = route["name"] in ADMIN_ADMITTED
+        # The caller for scenarios that must reach an extractor or a handler.
+        actor = DEPLOYMENT_ADMINISTRATOR if admitted else SUBJECT
         if route["name"] == "tenants-personal":
             # Only a signed-in browser session recreates its Personal Tenant.
             add(endpoint, "Deployment Administrator bearer cannot recreate a Personal Tenant", 401,
@@ -819,28 +837,28 @@ def render():
                 headers=DEPLOYMENT_ADMINISTRATOR, immutable=True)
             continue
         if route["source"] == "server/src/apps/identity/views/nodes.rs":
-            # Creating a Node as a Deployment Administrator would change the shared Tenant.
+            # Reading Nodes needs node.read; creating or relabelling one needs a
+            # Tenant Administrator, which only a browser Mapping can be (#484).
+            refusal = "Deployment Administrator has no Tenant authority over its Nodes"
             if method == "GET":
                 add(endpoint, "Subject without node.read cannot list the Nodes", 403, headers=SUBJECT)
-                add(endpoint, "Deployment Administrator lists the Tenant's one default Node", 200,
-                    headers=DEPLOYMENT_ADMINISTRATOR,
-                    checks='expect(res.getBody()).to.be.an("array");expect(res.getBody().filter(node => node.default)).to.have.lengthOf(1);')
+                add(endpoint, refusal, 403, headers=DEPLOYMENT_ADMINISTRATOR)
             elif method == "POST":
                 add(endpoint, "Subject Credential bearer never creates a Node", 403,
                     headers=SUBJECT, body=json.dumps({"label": "Bruno node"}), immutable=True)
-                add(endpoint, "Blank Node label is rejected", 400,
-                    headers=DEPLOYMENT_ADMINISTRATOR, body=json.dumps({"label": "   "}), immutable=True)
+                add(endpoint, refusal, 403, headers=DEPLOYMENT_ADMINISTRATOR,
+                    body=json.dumps({"label": "Bruno node"}), immutable=True)
                 add(endpoint, "Malformed JSON cannot reach the use case", 400,
-                    headers=DEPLOYMENT_ADMINISTRATOR, body="{", immutable=True)
+                    headers=SUBJECT, body="{", immutable=True)
             else:
                 unknown = "/api/tenants/{{tenant}}/nodes/" + NODE
                 body = json.dumps({"label": "Renamed"})
                 add(endpoint, "Subject Credential bearer never relabels a Node", 403,
                     path=unknown, headers=SUBJECT, body=body, immutable=True)
-                add(endpoint, "An unknown Node cannot be relabelled", 404,
-                    path=unknown, headers=DEPLOYMENT_ADMINISTRATOR, body=body, immutable=True)
+                add(endpoint, refusal, 403, path=unknown,
+                    headers=DEPLOYMENT_ADMINISTRATOR, body=body, immutable=True)
                 add(endpoint, "Malformed JSON cannot reach the use case", 400,
-                    path=unknown, headers=DEPLOYMENT_ADMINISTRATOR, body="{", immutable=True)
+                    path=unknown, headers=SUBJECT, body="{", immutable=True)
             continue
         if endpoint in TENANT_ROUTES:
             tenant_route = TENANT_ROUTES[endpoint]
@@ -884,8 +902,9 @@ def render():
             body = json.dumps({"expected_revision": 0}) if route["json"] else None
             add(endpoint, "Forged bearer cannot manage Tenant Secrets", 401,
                 headers={"Authorization": "Bearer forged"}, body=body)
+            add(endpoint, "Deployment Administrator has no Tenant Secret authority", 403,
+                headers=DEPLOYMENT_ADMINISTRATOR, body=body, immutable=method != "GET")
             for label, headers in [
-                ("Missing Store fails closed for the Deployment Administrator", DEPLOYMENT_ADMINISTRATOR),
                 ("Missing Store fails closed for the subject", SUBJECT),
             ]:
                 add(endpoint, label, 404, headers=headers, body=body,
@@ -912,8 +931,9 @@ def render():
             )
             add(endpoint, "Forged bearer cannot manage Provider Credentials", 401,
                 path=uri, headers={"Authorization": "Bearer forged"}, body=body)
+            add(endpoint, "Deployment Administrator has no Provider Credential authority", 403,
+                path=uri, headers=DEPLOYMENT_ADMINISTRATOR, body=body, immutable=method != "GET")
             for label, headers in [
-                ("Missing Store fails closed for the Deployment Administrator", DEPLOYMENT_ADMINISTRATOR),
                 ("Missing Store fails closed for the subject", SUBJECT),
             ]:
                 add(endpoint, label, 404, path=uri, headers=headers, body=body,
@@ -921,21 +941,21 @@ def render():
                     immutable=method != "GET")
             if route["json"]:
                 add(endpoint, "Wrong JSON media type is rejected", 415,
-                    path=uri, headers=DEPLOYMENT_ADMINISTRATOR, body=body, media="text/plain", immutable=True)
+                    path=uri, headers=actor, body=body, media="text/plain", immutable=True)
                 add(endpoint, "Malformed JSON cannot reach the use case", 400,
-                    path=uri, headers=DEPLOYMENT_ADMINISTRATOR, body="{", immutable=True)
+                    path=uri, headers=actor, body="{", immutable=True)
                 add(endpoint, "Required lifecycle fields cannot be omitted", 422,
-                    path=uri, headers=DEPLOYMENT_ADMINISTRATOR, body="{}", immutable=True)
+                    path=uri, headers=actor, body="{}", immutable=True)
                 invalid = json.loads(body)
                 invalid["unexpected"] = True
                 add(endpoint, "Unknown lifecycle fields are rejected", 422,
-                    path=uri, headers=DEPLOYMENT_ADMINISTRATOR, body=json.dumps(invalid), immutable=True)
+                    path=uri, headers=actor, body=json.dumps(invalid), immutable=True)
             elif route["uuid_parameters"]:
                 add(endpoint, "Typed credential IDs reject invalid UUIDs", 400,
-                    path=uri.replace("{id}", "not-a-uuid"), headers=DEPLOYMENT_ADMINISTRATOR)
+                    path=uri.replace("{id}", "not-a-uuid"), headers=actor)
             elif route["query_parameters"]:
                 add(endpoint, "Credential paging rejects nonnumeric offsets", 400,
-                    path=uri + "?offset=invalid", headers=DEPLOYMENT_ADMINISTRATOR)
+                    path=uri + "?offset=invalid", headers=actor)
             continue
         if route["source"] == "server/src/apps/identity/views/provider_authorizations.rs":
             # Provider Authorization binds a browser session; bearer callers
@@ -951,11 +971,11 @@ def render():
                     checks='expect(res.getHeader("set-cookie") || "").not.to.include("provider-authorization");',
                     immutable=True)
             add(endpoint, "Wrong JSON media type is rejected", 415,
-                path=uri, headers=DEPLOYMENT_ADMINISTRATOR, body="{}", media="text/plain", immutable=True)
+                path=uri, headers=actor, body="{}", media="text/plain", immutable=True)
             add(endpoint, "Malformed JSON cannot reach the use case", 400,
-                path=uri, headers=DEPLOYMENT_ADMINISTRATOR, body="{", immutable=True)
+                path=uri, headers=actor, body="{", immutable=True)
             add(endpoint, "Pasted Key Material is not an accepted field", 422,
-                path=uri, headers=DEPLOYMENT_ADMINISTRATOR, body=json.dumps({"key_material": "sk-or-v1-pasted"}),
+                path=uri, headers=actor, body=json.dumps({"key_material": "sk-or-v1-pasted"}),
                 immutable=True)
             continue
         if route["source"] == "server/src/apps/identity/views/plan_connections.rs":
@@ -982,11 +1002,11 @@ def render():
                     immutable=method != "GET")
             if route["json"]:
                 add(endpoint, "Wrong JSON media type is rejected", 415,
-                    path=uri, headers=DEPLOYMENT_ADMINISTRATOR, body=body, media="text/plain", immutable=True)
+                    path=uri, headers=actor, body=body, media="text/plain", immutable=True)
                 add(endpoint, "Malformed JSON cannot reach the use case", 400,
-                    path=uri, headers=DEPLOYMENT_ADMINISTRATOR, body="{", immutable=True)
+                    path=uri, headers=actor, body="{", immutable=True)
                 add(endpoint, "Plan Tokens are not an accepted field", 422,
-                    path=uri, headers=DEPLOYMENT_ADMINISTRATOR, body=json.dumps({"access_token": "pasted"}),
+                    path=uri, headers=actor, body=json.dumps({"access_token": "pasted"}),
                     immutable=True)
             continue
         if route["source"] == "server/src/apps/execution/observation/views.rs":
@@ -1011,15 +1031,15 @@ def render():
                     path=uri, headers=SUBJECT, body=body, immutable=method != "GET")
             else:
                 add(endpoint, "Observation resource IDs reject malformed UUIDs", 400,
-                    path=uri.replace("{id}", "not-a-uuid"), headers=DEPLOYMENT_ADMINISTRATOR)
+                    path=uri.replace("{id}", "not-a-uuid"), headers=actor)
             if route["json"]:
                 add(endpoint, "Wrong JSON media type is rejected", 415,
-                    path=uri, headers=DEPLOYMENT_ADMINISTRATOR, body=body,
+                    path=uri, headers=actor, body=body,
                     media="text/plain", immutable=True)
                 add(endpoint, "Malformed JSON cannot reach the use case", 400,
-                    path=uri, headers=DEPLOYMENT_ADMINISTRATOR, body="{", immutable=True)
+                    path=uri, headers=actor, body="{", immutable=True)
                 add(endpoint, "Observer revision is required", 422,
-                    path=uri, headers=DEPLOYMENT_ADMINISTRATOR, body="{}", immutable=True)
+                    path=uri, headers=actor, body="{}", immutable=True)
             continue
         if route["source"] == "server/src/apps/identity/views/approval_preferences.rs":
             # A person's Approval Mode and Approval Rules are their own: only the
@@ -1046,11 +1066,11 @@ def render():
                 add(endpoint, label, 403, path=uri, headers=headers, body=body, immutable=method != "GET")
             if route["json"]:
                 add(endpoint, "Wrong JSON media type is rejected", 415,
-                    path=uri, headers=DEPLOYMENT_ADMINISTRATOR, body=body, media="text/plain", immutable=True)
+                    path=uri, headers=actor, body=body, media="text/plain", immutable=True)
                 add(endpoint, "Malformed JSON cannot reach the use case", 400,
-                    path=uri, headers=DEPLOYMENT_ADMINISTRATOR, body="{", immutable=True)
+                    path=uri, headers=actor, body="{", immutable=True)
                 add(endpoint, "Unknown approval fields are rejected", 422,
-                    path=uri, headers=DEPLOYMENT_ADMINISTRATOR, body=json.dumps({"unexpected": True}),
+                    path=uri, headers=actor, body=json.dumps({"unexpected": True}),
                     immutable=True)
             continue
         if route["source"] == "server/src/apps/identity/views/tenant_administration.rs":
@@ -1073,21 +1093,21 @@ def render():
                     immutable=method != "GET")
             if route["json"]:
                 add(endpoint, "Malformed JSON cannot reach the use case", 400,
-                    path=uri, headers=DEPLOYMENT_ADMINISTRATOR, body="{", immutable=True)
+                    path=uri, headers=actor, body="{", immutable=True)
             if route["uuid_parameters"]:
                 add(endpoint, "Typed resource IDs reject invalid UUIDs", 400,
-                    path=uri.replace("{id}", "not-a-uuid"), headers=DEPLOYMENT_ADMINISTRATOR,
+                    path=uri.replace("{id}", "not-a-uuid"), headers=actor,
                     body=body, immutable=method != "GET")
             elif route["query_parameters"]:
                 add(endpoint, "Paging rejects nonnumeric offsets", 400,
-                    path=uri + "?offset=invalid", headers=DEPLOYMENT_ADMINISTRATOR)
+                    path=uri + "?offset=invalid", headers=actor)
             continue
         if route["json"]:
             add(
                 endpoint,
                 "Wrong JSON media type is rejected",
                 415,
-                headers=DEPLOYMENT_ADMINISTRATOR,
+                headers=actor,
                 body="{}",
                 media="text/plain",
                 immutable=True,
@@ -1096,13 +1116,13 @@ def render():
                 endpoint,
                 "Malformed JSON cannot reach the use case",
                 400,
-                headers=DEPLOYMENT_ADMINISTRATOR,
+                headers=actor,
                 body="{",
                 immutable=True,
             )
             if route["source"] == "server/src/apps/knowledge/views/memory.rs":
                 add(endpoint, "Incomplete native memory envelope is rejected", 422,
-                    headers=DEPLOYMENT_ADMINISTRATOR, body="{}", immutable=True)
+                    headers=actor, body="{}", immutable=True)
 
             continue
         if route["uuid_parameters"]:
@@ -1121,7 +1141,7 @@ def render():
                 "Typed resource IDs reject invalid UUIDs",
                 400,
                 path=bad,
-                headers=DEPLOYMENT_ADMINISTRATOR,
+                headers=actor,
                 immutable=method != "GET",
             )
         else:
@@ -1145,7 +1165,7 @@ def render():
                     endpoint,
                     "Attachment upload requires its typed query",
                     400,
-                    headers=DEPLOYMENT_ADMINISTRATOR,
+                    headers=actor,
                     body="bruno",
                     media="application/octet-stream",
                     immutable=True,
@@ -1153,7 +1173,7 @@ def render():
             continue
         # The positive/missing-resource read reaches the application and database,
         # rather than merely confirming that the router has a matching endpoint.
-        headers = DEPLOYMENT_ADMINISTRATOR
+        headers = actor
         status = (
             404 if "{" in path and path.count("{") > path.count("{tenant}") else 200
         )
@@ -1182,8 +1202,6 @@ def render():
             if not route["uuid_parameters"]:
                 status = 200
                 checks += 'expect(res.getBody().items).to.be.an("array");expect(res.getBody().next_cursor).to.equal(null);'
-        if route["name"] in FIXTURE_WORKSPACE_READS:
-            uri = path.replace("{workspace}", "{{workspace_id}}")
         label = "Application read preserves the typed response contract"
         # Authority is checked before disclosing missing resources on these routes.
         # Sources: identity remote/graph, generation reads, capability run_access,
@@ -1254,6 +1272,13 @@ def render():
                 "SSE rejects an invalid query cursor",
                 400,
                 path=path + "?after=invalid",
+                headers=SUBJECT,
+            )
+            add(
+                endpoint,
+                "Deployment Administrator cannot subscribe to Tenant events",
+                403,
+                path=path + "?after=0",
                 headers=DEPLOYMENT_ADMINISTRATOR,
             )
             for number, label in [
@@ -1286,6 +1311,21 @@ def render():
                     ),
                 )
             continue
+        # Tenant content is read as the contract subject on the few routes whose
+        # response the journeys fix; every other Tenant route is shown to refuse
+        # the administrator (#484).
+        subject_read = (
+            path in ("/api/workspaces/{id}", "/api/tasks", "/api/events")
+            or path.endswith("/message-history")
+        )
+        if not admitted and not core:
+            if subject_read:
+                headers = SUBJECT
+            else:
+                label = "Deployment Administrator has no Tenant authority"
+                status = 403
+                headers = DEPLOYMENT_ADMINISTRATOR
+                checks = ""
         add(
             endpoint,
             label,
@@ -1311,7 +1351,7 @@ def render():
                 + ("&" if "?" in (uri or path) else "?")
                 + numeric
                 + "=invalid",
-                headers=headers,
+                headers=actor,
             )
         for read_label, read_status, read_headers, read_path, read_checks in SUBJECT_READS.get(
             endpoint, []

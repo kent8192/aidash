@@ -375,11 +375,62 @@ def create_tenant(base, deployment_administrator, label):
         return json.load(response)["name"]
 
 
-def default_node(base, deployment_administrator, tenant):
-    """Use the Tenant's assigned Node for writes that check its existence."""
+def administer_policy(base, deployment_administrator, tenant, revision, bundle):
+    """Replace the Tenant's policy as the Deployment Administrator.
+
+    The policy snapshot and whole-policy replacement are administered routes
+    (ADR 0026); the administrator holds no other Tenant authority (#484).
+    """
+    request = urllib.request.Request(
+        base + f"/api/authorization/{tenant}",
+        data=json.dumps({"expected_revision": revision, "bundle": bundle}).encode(),
+        headers={
+            "Authorization": "Bearer " + deployment_administrator,
+            "Content-Type": "application/json",
+        },
+        method="POST",
+    )
+    with urllib.request.urlopen(request, timeout=10) as response:
+        if response.status != 200:
+            raise RuntimeError("the policy replacement API did not accept the policy")
+
+
+def issue_subject_credential(manage, environment, tenant, subject):
+    """Mint a Subject Credential from the host, never over HTTP (#484).
+
+    A Deployment Administrator cannot issue a Tenant's credentials, so the
+    harness plays the host operator: the command opens the database with the
+    server's own settings and prints the credential once as JSON.
+    """
+    output = checked(
+        [
+            str(manage),
+            "issue-subject-credential",
+            "--tenant",
+            tenant,
+            "--subject",
+            subject,
+            "--label",
+            "bruno_host",
+            "--expires-in-seconds",
+            "3600",
+        ],
+        cwd=ROOT / "server",
+        env=environment,
+        text=True,
+    ).stdout
+    issued = json.loads(output.strip().splitlines()[-1])
+    return issued["token"], issued["credential"]["id"]
+
+
+def default_node(base, subject_token, tenant):
+    """Use the Tenant's assigned Node for writes that check its existence.
+
+    Listing Nodes needs `node.read`, which only a Tenant subject can hold.
+    """
     request = urllib.request.Request(
         base + f"/api/tenants/{tenant}/nodes",
-        headers={"Authorization": "Bearer " + deployment_administrator},
+        headers={"Authorization": "Bearer " + subject_token},
     )
     with urllib.request.urlopen(request, timeout=10) as response:
         nodes = [node for node in json.load(response) if node["default"]]
@@ -748,14 +799,50 @@ def main():
                 stream_bases.append(stream_base)
             control = resources.enter_context(StreamController(stream_factories))
             tenant = create_tenant(base, deployment_administrator, "bruno-" + run_id)
+            # The Deployment Administrator writes a bootstrap policy (revision 1
+            # to 2) that lets alice read the Tenant's Nodes and revoke
+            # credentials; journey 05 replaces it with the scoped policy.
+            administer_policy(
+                base,
+                deployment_administrator,
+                tenant,
+                1,
+                {
+                    "tenant": tenant,
+                    "subjects": {"alice": {"kind": "user"}, "bob": {"kind": "user"}},
+                    "policies": [
+                        {
+                            "id": "bootstrap-node-read",
+                            "effect": "allow",
+                            "subjects": {"ids": ["alice"]},
+                            "actions": ["node.read"],
+                            "resources": {"kinds": ["node"]},
+                        }
+                    ],
+                },
+            )
+            alice_token, alice_credential = issue_subject_credential(
+                manage, environment, tenant, "alice"
+            )
+            bob_token, bob_credential = issue_subject_credential(
+                manage, environment, tenant, "bob"
+            )
+            contract_token, _ = issue_subject_credential(
+                manage, environment, tenant, "alice"
+            )
             variables = {
                 "base_url": base,
                 "browser_origin": browser_origin,
                 "node_id": node_id,
                 "tenant": tenant,
-                "tenant_node": default_node(base, deployment_administrator, tenant),
+                "tenant_node": default_node(base, alice_token, tenant),
                 "issuer": provider.issuer,
                 "deployment_administrator_token": deployment_administrator,
+                "alice_token": alice_token,
+                "alice_credential_id": alice_credential,
+                "bob_token": bob_token,
+                "bob_credential_id": bob_credential,
+                "contract_alice_token": contract_token,
                 "control_url": control.origin,
                 **{
                     f"stream_base_{number}": value
