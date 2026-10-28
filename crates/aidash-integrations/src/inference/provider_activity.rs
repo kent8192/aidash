@@ -39,6 +39,15 @@ pub fn item(value: &Value) -> Option<Value> {
 			| "openrouter:web_fetch"
 			| "openrouter:datetime"
 			| "openrouter:fusion"
+			| "openrouter:advisor"
+			| "openrouter:subagent"
+			| "openrouter:experimental__search_models"
+			| "openrouter:tool_search"
+			| "openrouter:shell"
+			| "shell_call"
+			| "shell_call_output"
+			| "tool_search_call"
+			| "tool_search_output"
 	) || matches!(
 		kind,
 		"server_tool_call" | "server_tool_result" | "function_call"
@@ -66,6 +75,21 @@ pub fn item(value: &Value) -> Option<Value> {
 		"content",
 		"analysis",
 		"responses",
+		"instance_name",
+		"model",
+		"advice",
+		"prompt",
+		"task_name",
+		"task_description",
+		"outcome",
+		"container_id",
+		"files",
+		"models",
+		"total_results",
+		"showing",
+		"tools",
+		"error",
+		"execution",
 	] {
 		if let Some(value) = value.get(key) {
 			result[key] = value.clone();
