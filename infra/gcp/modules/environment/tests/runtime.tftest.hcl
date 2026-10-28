@@ -16,6 +16,14 @@ variables {
 
 run "running_pool_and_workload_identities" {
   command = apply
+  assert {
+    condition = (
+      google_logging_project_bucket_config.data_region.location == "us-central1" &&
+      google_logging_project_sink.data_region.filter == google_logging_project_exclusion.data_region.filter &&
+      strcontains(google_logging_project_exclusion.data_region.filter, "^aidash-test(-sandbox|-trusted|-installer)?$")
+    )
+    error_message = "Namespace logs must stay in US, without a global _Default log copy."
+  }
   override_resource {
     target = google_service_account.workload["server"]
     values = {

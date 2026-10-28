@@ -119,3 +119,28 @@ async fn keyless_data_protection_distinguishes_tenant_endpoints_from_deployment_
 			.is_ok()
 	);
 }
+
+#[tokio::test]
+async fn keyless_residency_uses_the_deployments_hosting_region() {
+	use aidash_domain::data_protection::{DataProtection, Region};
+	let context = Context {
+		data_protection: DataProtection {
+			data_region_restricted: true,
+			..Default::default()
+		}
+		.in_deployment(Some(Region::Eu)),
+		..Default::default()
+	};
+	for region in [None, Some(Region::Us), Some(Region::Eu)] {
+		let access = KeylessAccess::default()
+			.with_deployment_hosted(PermittedOrigins::parse(["https://model.example"]).unwrap())
+			.with_deployment_region(region);
+		let result = access
+			.resolve(&context, "https://model.example/v1", &Source::Keyless)
+			.await;
+		assert_eq!(result.is_ok(), region == Some(Region::Eu));
+		if let Err(error) = result {
+			assert!(error.to_string().contains("outside the required region"));
+		}
+	}
+}

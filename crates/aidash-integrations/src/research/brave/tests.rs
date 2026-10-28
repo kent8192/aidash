@@ -5,6 +5,7 @@ use rstest::{fixture, rstest};
 fn profile() -> AccountTerms {
 	let now = Utc::now();
 	AccountTerms {
+		data_region: None,
 		account_id: "brave-account".into(),
 		agreement_reference: "approved-contract-record".into(),
 		verified_by: "deployment_administrator".into(),

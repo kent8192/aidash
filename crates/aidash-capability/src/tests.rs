@@ -4,6 +4,7 @@ use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
 use secrecy::ExposeSecret;
 fn claims() -> Claims {
 	Claims {
+		data_region: None,
 		provider_tools: vec![],
 		data_protection: Default::default(),
 		iss: "worker".into(),
@@ -349,6 +350,35 @@ async fn observation_tokens_are_tenant_bound_decision_attempts_without_a_run() {
 			assert_eq!(verified.ops, vec![Operation::Decision]);
 		}
 	}
+}
+
+#[tokio::test]
+async fn provider_catalogs_authorize_discovery_but_never_inference() {
+	let signer = InMemorySigner::new("kms/versions/1".into(), [7; 32]);
+	let mut keys = PublicKeys::default();
+	keys.insert(signer.kid().into(), signer.public_key());
+	let mut value = claims();
+	value.sub = TokenSubject::Maintenance {
+		maintenance: Maintenance::ProviderDiscovery,
+		tenant: value.tenant.clone(),
+	};
+	value.data_region = Some(aidash_domain::data_protection::Region::Us);
+	value.ops = vec![Operation::Discovery];
+	let token = mint(&value, &signer).await.unwrap();
+	keys.verify(token.expose_secret(), "worker", "environment", 100)
+		.unwrap();
+	value.ops = vec![Operation::Chat];
+	let token = mint(&value, &signer).await.unwrap();
+	assert_eq!(
+		keys.verify(token.expose_secret(), "worker", "environment", 100)
+			.unwrap_err(),
+		Failure::ClaimViolation
+	);
+	value.ops = vec![Operation::Discovery];
+	value.data_region = None;
+	let token = mint(&value, &signer).await.unwrap();
+	keys.verify(token.expose_secret(), "worker", "environment", 100)
+		.unwrap();
 }
 
 #[tokio::test]

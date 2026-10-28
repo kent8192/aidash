@@ -1,6 +1,9 @@
 //! The production model adapters reload policy and pin a currently ZDR-capable route.
 use super::*;
-use aidash_application::{ports::NoProgress, provider_access::Access};
+use aidash_application::{
+	ports::NoProgress,
+	provider_access::{Access, Operation},
+};
 use aidash_domain::{
 	data_protection::{DataProtection, Level},
 	model::ModelConfig,
@@ -66,6 +69,7 @@ async fn existing_provider_reloads_each_send_and_refuses_a_model_absent_from_the
 	let present = Arc::new(AtomicBool::new(true));
 	let app = Router::new().route("/v1/chat/completions", post({ let bodies = bodies.clone(); move |Json(body): Json<Value>| { let bodies = bodies.clone(); async move { bodies.lock().unwrap().push(body); Json(json!({"choices":[{"finish_reason":"stop","message":{"content":"done"}}]})) } } }))
 		.route("/v1/responses", post({ let bodies = bodies.clone(); move |Json(body): Json<Value>| { let bodies = bodies.clone(); async move { bodies.lock().unwrap().push(body); Json(json!({"id":"resp-fixture","status":"completed","output":[{"type":"message","content":[{"type":"output_text","text":"done"}]}]})) } } }))
+		.route("/v1/models/user", get(|| async { Json(json!({"data":[{"id":"vendor/model"}]})) }))
 		.route("/v1/endpoints/zdr", get({ let calls = catalog_calls.clone(); let present = present.clone(); move || { let calls = calls.clone(); let present = present.clone(); async move { calls.fetch_add(1, Ordering::SeqCst); Json(json!({"data": if present.load(Ordering::SeqCst) { vec![json!({"model_id":"vendor/model","tag":"vendor/zdr"})] } else { vec![] }})) } } }));
 	let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
 	let endpoint = format!("http://{}/v1", listener.local_addr().unwrap());
@@ -158,7 +162,7 @@ async fn existing_provider_reloads_each_send_and_refuses_a_model_absent_from_the
 	let provider = crate::inference::provider(
 		crate::semantic::clients().unwrap(),
 		absent,
-		access,
+		access.clone(),
 		Context {
 			tenant: tenant.clone(),
 			..Default::default()
@@ -167,7 +171,7 @@ async fn existing_provider_reloads_each_send_and_refuses_a_model_absent_from_the
 	.unwrap();
 	assert!(
 		provider
-			.infer(request, &NoProgress)
+			.infer(request.clone(), &NoProgress)
 			.await
 			.unwrap_err()
 			.to_string()
@@ -177,6 +181,116 @@ async fn existing_provider_reloads_each_send_and_refuses_a_model_absent_from_the
 		bodies.lock().unwrap().len(),
 		5,
 		"refused model sends no content"
+	);
+	*access.policy.lock().unwrap() = DataProtection {
+		data_region_restricted: true,
+		..Default::default()
+	}
+	.in_deployment(Some(aidash_domain::data_protection::Region::Us));
+	assert!(
+		provider
+			.infer(request, &NoProgress)
+			.await
+			.unwrap_err()
+			.to_string()
+			.contains("unavailable in region")
+	);
+	assert_eq!(
+		bodies.lock().unwrap().len(),
+		5,
+		"regional refusal also precedes content on both model transports"
+	);
+}
+
+#[tokio::test]
+async fn regional_catalogs_gate_models_and_pinned_tool_engines_without_sending_content() {
+	use aidash_domain::data_protection::Region;
+	let model_calls = Arc::new(AtomicUsize::new(0));
+	let tool_calls = Arc::new(AtomicUsize::new(0));
+	let app = Router::new()
+      .route("/v1/models/user", get({ let calls = model_calls.clone(); move || { let calls=calls.clone(); async move { calls.fetch_add(1,Ordering::SeqCst); Json(json!({"data":[{"id":"vendor/model"}]})) } } }))
+      .route("/v1/tools", get({ let calls = tool_calls.clone(); move || { let calls=calls.clone(); async move { calls.fetch_add(1,Ordering::SeqCst); Json(json!({"data":[{"id":"openrouter:web_search","default_engine":"native","engines":[{"id":"exa","data_regions":["us"]},{"id":"native","data_regions":["global"]}]}]})) } } }));
+	let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+	let endpoint = format!("http://{}/v1", listener.local_addr().unwrap());
+	let _server = Server(tokio::spawn(async move {
+		axum::serve(listener, app).await.unwrap();
+	}));
+	let access = Current {
+		policy: Mutex::new(DataProtection::default()),
+		endpoint,
+		signed: Mutex::default(),
+	};
+	let clients = crate::semantic::clients().unwrap();
+	let source = Source::Tenant {
+		provider: "openrouter".into(),
+	};
+	let mut context = Context {
+		tenant: uuid::Uuid::new_v4().to_string(),
+		..Default::default()
+	};
+	let endpoint = "https://openrouter.ai/api/v1";
+	let body = json!({"model":"vendor/model","tools":[{"type":"openrouter:web_search","engine":"exa"}],"messages":[{"role":"user","content":"private content"}]});
+	// With restriction off there is no additional discovery, preserving today's requests.
+	regional_request(&access, &context, &clients, endpoint, &source, &body)
+		.await
+		.unwrap();
+	assert_eq!(model_calls.load(Ordering::SeqCst), 0);
+	context.data_protection = DataProtection {
+		data_region_restricted: true,
+		..Default::default()
+	}
+	.in_deployment(Some(Region::Us));
+	regional_request(&access, &context, &clients, endpoint, &source, &body)
+		.await
+		.unwrap();
+	regional_request(&access, &context, &clients, endpoint, &source, &body)
+		.await
+		.unwrap();
+	let mut native = body.clone();
+	native["tools"][0]["engine"] = json!("native");
+	assert!(
+		regional_request(&access, &context, &clients, endpoint, &source, &native)
+			.await
+			.unwrap_err()
+			.to_string()
+			.contains("pinned engine")
+	);
+	let mut absent = body;
+	absent["model"] = json!("vendor/absent");
+	assert!(
+		regional_request(&access, &context, &clients, endpoint, &source, &absent)
+			.await
+			.unwrap_err()
+			.to_string()
+			.contains("unavailable in region")
+	);
+	assert_eq!(model_calls.load(Ordering::SeqCst), 1);
+	assert_eq!(tool_calls.load(Ordering::SeqCst), 1);
+	context.data_protection = DataProtection {
+		data_region_restricted: true,
+		..Default::default()
+	}
+	.in_deployment(Some(Region::Eu));
+	assert!(
+		regional_request(
+			&access,
+			&context,
+			&clients,
+			endpoint,
+			&source,
+			&json!({"model":"vendor/model","tools":[{"type":"openrouter:web_search"}]})
+		)
+		.await
+		.is_err()
+	);
+	assert_eq!(
+		model_calls.load(Ordering::SeqCst),
+		2,
+		"each region has its own short cache"
+	);
+	assert!(
+		access.signed.lock().unwrap().is_empty(),
+		"only discovery authority was used"
 	);
 }
 

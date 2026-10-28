@@ -1381,6 +1381,7 @@ async fn semantic_lifecycle_is_durable_revisioned_and_not_keyword_search(
 			.level("no_training")
 			.model_call_zdr(true)
 			.plan_connection_exempt(true)
+			.data_region_restricted(false)
 			.updated_at(chrono::Utc::now())
 			.updated_by("fixture")
 			.finish();

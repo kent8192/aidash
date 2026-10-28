@@ -51,6 +51,9 @@ root = "staticfiles"
 # runs only the "self-hosted" Offering, the default; the Enterprise build runs
 # "cloud" or "dedicated".
 [deployment]
+# Closed jurisdiction: eu, us or jp. Required for Cloud/Dedicated; optional for Self-hosted.
+# Without a declaration, Tenants cannot enable the Data Region restriction.
+# region = "us"
 # Minimum Tenant Data Protection Level: standard, no_training, zero_data_retention.
 data_protection_floor = "standard"
 # Explicitly declare models hosted by this Deployment. A network permission alone
@@ -219,6 +222,8 @@ enabled = false
 # review_after = "2027-01-01T00:00:00Z"
 # storage_permitted = true
 # query_training_prohibited = true
+# Processing jurisdiction must be explicitly recorded in the account agreement.
+# data_region = "us"
 # evaluation_permitted = true
 # retention_days = 90
 # deletion_after_termination_days = 30
