@@ -6,6 +6,8 @@ use serde::Deserialize;
 #[derive(Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct CatalogInput {
+	#[serde(default)]
+	pub provider_warning_acknowledged: bool,
 	/// The Node the approval applies to.
 	pub(crate) node: aidash_domain::nodes::NodeName,
 	pub(crate) entry: EntityRef,
