@@ -557,6 +557,9 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+      # CLI protocol/process tests run in foundation; its HTTP binary and
+      # Registry schema tests run in server-unit. Neither calls real models.
+      - run: python3 -m unittest discover -s scripts -p test_cli_backend_examples.py
       - run: python3 -m unittest discover -s scripts -p test_check_community_bundle.py
       - run: python3 -m unittest discover -s scripts -p test_transaction_cluster_acceptance.py
       - run: python3 -m unittest discover -s scripts -p test_core_capability_evidence.py

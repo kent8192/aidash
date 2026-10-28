@@ -1,0 +1,5 @@
+# Merge into the settings used by BOTH host server and host Worker.
+# Restart both processes after changing this list. Exact origins have no /v1.
+[keyless_endpoints]
+permitted_private_origins = ["http://127.0.0.1:18190"]
+# Codex is blocked; only add its exact origin once its isolation is supported.

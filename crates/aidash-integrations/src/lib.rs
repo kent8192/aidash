@@ -1,5 +1,7 @@
 //! External service adapters implementing application ports.
 #[cfg(feature = "cloud-adapters")]
+pub mod cli_backend;
+#[cfg(feature = "cloud-adapters")]
 pub mod decision;
 #[cfg(feature = "cloud-adapters")]
 pub mod federation;

@@ -101,6 +101,17 @@ Identity UUIDs before the Cloud cutover; Marketplace sign-in creates no Cloud Te
 
 ## Run locally
 
+### Personal CLI backend (experimental)
+
+The [CLI backend guide](docs/operations/cli-backends.md) and
+[configuration examples](examples/cli-backends/README.md) cover a separate local
+Keyless process using official CLI authentication. The implementation is incomplete:
+Claude's candidate profile requires unmanaged Linux and personal saved login, with
+live acceptance still outstanding; Codex inference fails closed pending verified
+native-tool and automatic-discovery isolation. CLI secrets never belong in the
+server's root `.env`. See the guide for initialization, diagnostics and explicit live
+smoke commands, limitations and patch application.
+
 ### One-command Kubernetes start
 
 With Docker, kind, kubectl, Helm, curl, Python 3, and cargo-make installed, run:

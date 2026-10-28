@@ -9,6 +9,8 @@ publish.workspace = true
 workspace = true
 
 [dependencies]
+tempfile = "3"
+jsonschema = { version = "0.33", default-features = false }
 reinhardt = { workspace = true, features = ["grpc-tls"], optional = true }
 prost = { version = "0.14", optional = true }
 tonic-prost = { version = "0.14", optional = true }

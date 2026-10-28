@@ -1,0 +1,25 @@
+{
+  "id": "__MODEL_ENTRY__",
+  "version": "1.0.0",
+  "kind": "model",
+  "name": {
+    "en": "Personal CLI model"
+  },
+  "description": {
+    "en": "Personal CLI endpoint; requires Catalog Approval"
+  },
+  "config": {
+    "provider": "openrouter",
+    "model_id": "__MODEL_ID__",
+    "endpoint": "http://127.0.0.1:18190/v1",
+    "request_timeout_secs": 185,
+    "streaming": false,
+    "stream_stall_timeout_secs": 185,
+    "context_window": "__CONTEXT_WINDOW__",
+    "max_output_tokens": 4096,
+    "modalities": ["text"],
+    "cost": {},
+    "projection_versions": ["legacy"],
+    "cache_mode": "none"
+  }
+}
