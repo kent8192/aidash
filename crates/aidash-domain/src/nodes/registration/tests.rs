@@ -17,6 +17,7 @@ fn input(source: &str, endpoint: Option<&str>, key: Option<&str>) -> Registratio
 	RegistrationInput {
 		source_node: NodeAddress::parse(source).unwrap(),
 		endpoint: endpoint.map(str::to_owned),
+		dashboard_origin: None,
 		key_id: key.map(|key| DeploymentKeyId::parse(key).unwrap()),
 		atomic_transactions: false,
 		enabled: true,
@@ -78,6 +79,21 @@ fn a_node_of_another_deployment_needs_both_its_endpoint_and_its_key_id() {
 			.is_err(),
 		"an endpoint that is not HTTP(S)"
 	);
+}
+
+#[test]
+fn a_remote_preview_origin_must_be_an_origin_and_is_not_pinned_for_local_nodes() {
+	let source = "aidash://calm-heron/able-oak-abcd1234";
+	let mut request = input(source, Some("https://peer.example.com"), Some(KEY));
+	request.dashboard_origin = Some("https://dashboard.example.com".into());
+	assert!(request.requested(&own(), &owner()).is_ok());
+	for origin in ["https://dashboard.example.com/path", "javascript:alert(1)"] {
+		request.dashboard_origin = Some(origin.into());
+		assert!(request.requested(&own(), &owner()).is_err(), "{origin}");
+	}
+	let mut local = input("aidash://brave-otter/calm-heron-e5f6g7h8", None, None);
+	local.dashboard_origin = Some("https://dashboard.example.com".into());
+	assert!(local.requested(&own(), &owner()).is_err());
 }
 
 #[rstest]

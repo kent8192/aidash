@@ -92,22 +92,12 @@ pub(crate) mod persistence;
 pub(crate) struct Visibility<'a, 'scope>(pub(crate) &'a mut GraphAuthority<'scope>);
 #[async_trait]
 impl aidash_application::ports::graph::GraphVisibility for Visibility<'_, '_> {
-	fn deployment_administrator(&self) -> bool {
-		matches!(self.0, GraphAuthority::DeploymentAdministrator { .. })
-	}
-	async fn deployment_administrator_workspace(&mut self, id: Uuid) -> Result<bool> {
-		crate::authorization::remote::deployment_administrator::visible(self.0.connection(), id)
-			.await
-			.map_err(Into::into)
-	}
 	async fn registry(
 		&mut self,
 		entry: &aidash_domain::registry::Entry,
 		action: &str,
 	) -> Result<bool> {
-		let GraphAuthority::Subject(access) = &mut self.0 else {
-			return Err(aidash_application::Error::Forbidden);
-		};
+		let GraphAuthority(access) = &mut *self.0;
 		let resource = crate::authorization::catalog::resource(access, entry);
 		access.decide(&resource, action).await.map_err(Into::into)
 	}
@@ -118,9 +108,7 @@ impl aidash_application::ports::graph::GraphVisibility for Visibility<'_, '_> {
 			.map_err(Into::into)
 	}
 	async fn record(&mut self, candidate: &Candidate) -> Result<bool> {
-		let GraphAuthority::Subject(access) = &mut self.0 else {
-			return Err(aidash_application::Error::Forbidden);
-		};
+		let GraphAuthority(access) = &mut *self.0;
 		match candidate {
 			Candidate::Task(row) => access.task_visible(row).await.map_err(Into::into),
 			Candidate::Run(row) => access.run_visible(row).await.map_err(Into::into),
@@ -135,9 +123,7 @@ impl aidash_application::ports::graph::GraphVisibility for Visibility<'_, '_> {
 		conversation: &aidash_domain::Conversation,
 		action: &str,
 	) -> Result<bool> {
-		let GraphAuthority::Subject(access) = &mut self.0 else {
-			return Err(aidash_application::Error::Forbidden);
-		};
+		let GraphAuthority(access) = &mut *self.0;
 		let resource = access.conversation_resource(conversation).await?;
 		access.decide(&resource, action).await.map_err(Into::into)
 	}

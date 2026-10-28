@@ -22,3 +22,9 @@
 # session_cookie_secure = false
 # csrf_cookie_secure = false
 # secure_ssl_redirect = false
+
+# [preview]
+# A local preview domain; the gateway serves `https://<label>.localhost:8960`.
+# domain = "localhost"
+# listen = "127.0.0.1:8960"
+# public_port = 8960

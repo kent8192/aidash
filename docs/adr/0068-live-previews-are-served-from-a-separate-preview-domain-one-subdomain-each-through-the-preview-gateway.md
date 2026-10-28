@@ -19,6 +19,7 @@ Decided on 2026-10-19 while grilling Live previews. A Live preview runs code an 
 - The Preview gateway runs as its own role of the server binary, apart from the API server, so that untrusted traffic and long-lived WebSockets do not share its process. A Self-hosted Deployment may run both roles in one process, as with the Egress gateway.
 - A preview may be framed only by the dashboard origin that requested its ticket, which under Federation is the viewer's Deployment. The dashboard shows it in a pane beside the thread and can open it in a new tab. The desktop client, whose WebView frames nothing, opens the ticket in the system browser.
 - Under Federation every File preview, whatever its format, is served from the hosting Deployment's preview domain, so the ticket is the only preview mechanism Federation adds. Run inspection across Federation lists the files and the Live preview that can be viewed.
+- The hosting Node compares the requesting dashboard origin with its pinned Node Registration and uses that origin as `frame-ancestors`. The viewer's server forwards only the signed peer reply. The web client checks that the ticket URL is an HTTPS ticket on the returned preview domain; the desktop native command obtains both values itself from the authenticated viewer server and never accepts a remote URL or domain from the renderer.
 
 ## Amendment (2026-10-26, File previews for the first useful task)
 

@@ -174,7 +174,9 @@ async function exchange(state: string, token: string) {
   if (
     !result.return_to.startsWith("/") ||
     result.return_to.startsWith("//") ||
-    result.return_to.includes("\\")
+    result.return_to.includes("\\") ||
+    // Browsers drop tabs and newlines while parsing, so `/\t/host` is `//host`.
+    /\p{Cc}/u.test(result.return_to)
   )
     throw new Error();
   return result.return_to;

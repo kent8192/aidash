@@ -5,7 +5,7 @@ use crate::{
 	capabilities::CoreCapabilities,
 	registry::{AgentConfig, EntityRef},
 };
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
@@ -101,7 +101,7 @@ pub enum ToolIdentity {
 	AgentPlugin(AgentPluginTool),
 }
 /// A tool of a remote MCP server that a Run pinned from an Agent Plugin copy.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AgentPluginTool {
 	pub plugin: PluginName,
 	/// The [`crate::agent_plugin::AgentPluginRef::digest`] of the copy.
@@ -542,6 +542,13 @@ pub fn builtin_contract(name: &str) -> Option<ToolContract> {
 		}
 		"file_share" => {
 			auth.core = Some(CorePermission::Sharing);
+		}
+		"live_preview_start" | "live_preview_stop" => {
+			// A Live preview runs a Sandboxed command under the shell permission;
+			// it changes state outside the model's files.
+			auth.core = Some(CorePermission::Shell);
+			behavior.effect = ToolEffect::Unsafe;
+			contract.disclosure = DisclosureBoundary::Local;
 		}
 		"outbound_get" => {
 			auth.core = Some(CorePermission::Outbound);

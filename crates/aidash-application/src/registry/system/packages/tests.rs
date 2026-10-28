@@ -175,3 +175,22 @@ fn owners_cannot_declare_research_node_providers() {
 		Err(Error::Forbidden)
 	));
 }
+
+#[test]
+fn a_deployment_without_a_preview_domain_offers_no_live_preview_group() {
+	let without = validation(true);
+	let offered: Vec<_> = offered(&without, &without, "aidash://node")
+		.unwrap()
+		.into_iter()
+		.map(|group| group.name)
+		.collect();
+	assert!(!offered.contains(&"live_preview".to_owned()));
+	let with = validation(true).with_preview_available(true);
+	let with_previews: Vec<_> = super::offered(&with, &with, "aidash://node")
+		.unwrap()
+		.into_iter()
+		.map(|group| group.name)
+		.collect();
+	assert!(with_previews.contains(&"live_preview".to_owned()));
+	assert!(with_previews.contains(&"shell".to_owned()));
+}

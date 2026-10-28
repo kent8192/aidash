@@ -135,7 +135,6 @@ fn deferred_budgets_must_fit_the_model_window_where_legacy_fits() {
 mod endpoints {
 	use super::*;
 	use crate::provider_access::KeylessAccess;
-	use aidash_domain::agent_plugin::{McpServer, RemoteServer, ServerName};
 
 	fn permitting(origins: &[&str]) -> DefinitionValidation {
 		validation().with_keyless_origins(KeylessAccess::permitting(
@@ -259,15 +258,13 @@ mod endpoints {
 	}
 
 	fn agent_with_server(name: &str, url: &str) -> Entry {
-		let stored = crate::test_support::stored_plugin("acme-tools", &[("lint", "Lint it.")]);
-		let mut reference = crate::test_support::plugin_reference(&stored);
-		reference.servers.insert(
-			ServerName::try_from(name.to_owned()).unwrap(),
-			McpServer::Remote(RemoteServer {
-				url: url.parse().unwrap(),
-				headers: vec![],
-			}),
+		let stored = crate::test_support::stored_plugin_with_servers(
+			"acme-tools",
+			json!({name: {"type": "streamable-http", "url": url}}),
+			&[("lint", "Lint it.")],
 		);
+		let reference = crate::test_support::plugin_reference(&stored);
+		assert_eq!(reference.servers.len(), 1, "{:?}", stored.plugin.findings);
 		let mut agent = crate::test_support::agent("agent");
 		agent.config["agent_plugins"] = json!([reference]);
 		agent
@@ -303,17 +300,32 @@ mod endpoints {
 	}
 
 	#[rstest]
-	fn a_plugin_server_needs_https_unless_its_origin_is_permitted() {
-		let agent = agent_with_server("local", "http://localhost:8080/mcp");
+	#[case("http://localhost:8080/mcp", "http://localhost:8080")]
+	#[case("http://ollama.lan:11434/mcp", "http://ollama.lan:11434")]
+	#[case("http://tools.example.com/mcp", "http://tools.example.com")]
+	fn a_plugin_server_needs_https_unless_its_origin_is_permitted(
+		#[case] url: &str,
+		#[case] origin: &str,
+	) {
+		let agent = agent_with_server("local", url);
 		let message = refusal(validation().validate_in(&agent, true));
 		assert!(
 			message.contains("AGENT_PLUGIN_SERVER_FORBIDDEN: acme-tools/local"),
 			"{message}"
 		);
 		assert!(message.contains("HTTPS"), "{message}");
-		permitting(&["http://localhost:8080"])
-			.validate_in(&agent, true)
-			.unwrap();
+		permitting(&[origin]).validate_in(&agent, true).unwrap();
+		for other_origin in [
+			"https://ollama.lan:11434",
+			"http://ollama.lan:11435",
+			"http://other.lan:11434",
+		] {
+			let message = refusal(permitting(&[other_origin]).validate_in(&agent, true));
+			assert!(
+				message.contains("AGENT_PLUGIN_SERVER_FORBIDDEN"),
+				"{message}"
+			);
+		}
 	}
 
 	#[rstest]

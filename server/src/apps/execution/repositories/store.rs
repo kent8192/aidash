@@ -75,6 +75,9 @@ pub struct Store {
 	pub tool_clients: aidash_integrations::tools::ToolClients,
 	/// Keyless provider access with this Deployment's permitted private origins.
 	pub keyless: aidash_application::provider_access::KeylessAccess,
+	/// The MCP sessions of Runs with their Agent Plugins' remote servers, shared by every
+	/// clone of this Store and connecting under the same Keyless rule as `tool_clients`.
+	pub plugin_sessions: std::sync::Arc<aidash_integrations::plugin_sessions::McpPluginSessions>,
 	/// The Deployment Key and the switch Federation requests to other
 	/// Deployments are signed and gated by, for callers that hold a Store and
 	/// no Federation runtime (ADR 0064).
@@ -84,6 +87,13 @@ pub struct Store {
 	/// The Deployment's ceilings on Tenants' Test Limits from
 	/// `[workbench_test_limits]` (#361).
 	pub test_limit_ceilings: aidash_domain::registry::workbench::sandbox::TestLimitCeilings,
+	/// The Deployment's ceilings on Live preview lifetimes from
+	/// `[preview_limits]` (ADR 0070).
+	pub preview_limits: aidash_domain::preview::live::Limits,
+	/// The preview domain this Deployment serves; `None` offers no Previews.
+	pub preview_domain: Option<String>,
+	/// The only Pod port the Preview NetworkPolicy admits.
+	pub preview_pod_port: Option<u16>,
 	pub(crate) recovery_cursors: std::sync::Arc<run_state::RecoveryCursors>,
 	/// Tenants found for Runs, Workspaces, tasks and grants, shared by every
 	/// clone of this Store.
@@ -132,6 +142,19 @@ pub(crate) fn tool_parallelism(value: Option<&str>, pool_connections: usize) -> 
 		));
 	}
 	Ok(ceiling)
+}
+
+/// Sessions that connect under the Deployment's Keyless rule, as `keyless` and `clients` say.
+pub(crate) fn plugin_sessions(
+	keyless: &aidash_application::provider_access::KeylessAccess,
+	clients: &aidash_integrations::tools::ToolClients,
+) -> std::sync::Arc<aidash_integrations::plugin_sessions::McpPluginSessions> {
+	std::sync::Arc::new(
+		aidash_integrations::plugin_sessions::McpPluginSessions::new(
+			keyless.clone(),
+			clients.clone(),
+		),
+	)
 }
 
 pub use crate::apps::execution::serializers::run_inputs::RunInput;
@@ -456,6 +479,10 @@ impl Store {
 			let _ = recovery.verify().await;
 		}
 		let provider_clients = crate::semantic::backend::clients()?;
+		let tool_clients = aidash_integrations::tools::ToolClients::new()?;
+		// One access, shared by the sessions and by everything that reads `keyless`, so that
+		// an origin permitted later reaches both.
+		let keyless = aidash_application::provider_access::KeylessAccess::default();
 		Ok(Self {
 			pool: pool.into(),
 			control_pool: control_pool.into(),
@@ -463,11 +490,15 @@ impl Store {
 			deployment,
 			semantic_client: provider_clients.direct.clone(),
 			provider_clients,
-			tool_clients: aidash_integrations::tools::ToolClients::new()?,
-			keyless: Default::default(),
+			plugin_sessions: plugin_sessions(&keyless, &tool_clients),
+			tool_clients,
+			keyless,
 			egress: Default::default(),
 			research_retention: aidash_domain::retention::RetentionRules::DEFAULT,
 			test_limit_ceilings: Default::default(),
+			preview_limits: aidash_domain::preview::live::Limits::default(),
+			preview_domain: None,
+			preview_pod_port: None,
 			recovery_cursors: Default::default(),
 			tenancies: Default::default(),
 			tool_slots,
@@ -510,6 +541,17 @@ impl Store {
 		self.research_retention = rules;
 		self
 	}
+	pub fn with_preview_limits(mut self, limits: aidash_domain::preview::live::Limits) -> Self {
+		self.preview_limits = limits;
+		self
+	}
+
+	pub fn with_preview(mut self, domain: Option<String>, pod_port: Option<u16>) -> Self {
+		self.preview_domain = domain;
+		self.preview_pod_port = pod_port;
+		self
+	}
+
 	pub fn with_test_limit_ceilings(
 		mut self,
 		ceilings: aidash_domain::registry::workbench::sandbox::TestLimitCeilings,
@@ -526,6 +568,7 @@ impl Store {
 		origins: aidash_domain::keyless::PermittedOrigins,
 	) -> Self {
 		self.keyless = aidash_application::provider_access::KeylessAccess::permitting(origins);
+		self.plugin_sessions = plugin_sessions(&self.keyless, &self.tool_clients);
 		self
 	}
 	pub(crate) fn with_memory_recovery(
@@ -578,9 +621,13 @@ impl Store {
 			provider_clients: self.provider_clients.clone(),
 			tool_clients: self.tool_clients.clone(),
 			keyless: self.keyless.clone(),
+			plugin_sessions: self.plugin_sessions.clone(),
 			egress: self.egress.clone(),
 			research_retention: self.research_retention,
 			test_limit_ceilings: self.test_limit_ceilings,
+			preview_limits: self.preview_limits.clone(),
+			preview_domain: self.preview_domain.clone(),
+			preview_pod_port: self.preview_pod_port,
 			recovery_cursors: self.recovery_cursors.clone(),
 			tenancies: self.tenancies.clone(),
 			tool_slots: self.tool_slots.clone(),
@@ -631,9 +678,13 @@ impl Store {
 			provider_clients: self.provider_clients.clone(),
 			tool_clients: self.tool_clients.clone(),
 			keyless: self.keyless.clone(),
+			plugin_sessions: self.plugin_sessions.clone(),
 			egress: self.egress.clone(),
 			research_retention: self.research_retention,
 			test_limit_ceilings: self.test_limit_ceilings,
+			preview_limits: self.preview_limits.clone(),
+			preview_domain: self.preview_domain.clone(),
+			preview_pod_port: self.preview_pod_port,
 			recovery_cursors: self.recovery_cursors.clone(),
 			tenancies: self.tenancies.clone(),
 			tool_slots: self.tool_slots.clone(),
@@ -3087,6 +3138,8 @@ impl Store {
 				| "run.semantic_degraded"
 				| "run.semantic_recovered"
 				| "run.estimate_pinned"
+				| "run.plugin_tools_pinned"
+				| "run.mcp_checkpoint"
 				| "context.summary_revoked"
 		);
 		let mut safe_context = run.context.clone();
@@ -3138,6 +3191,19 @@ impl Store {
 		{
 			// Only the typed cause: no endpoint, upstream body or query (ADR 0059).
 			data["cause"] = serde_json::to_value(degraded.cause)?;
+		}
+		if kind == "run.plugin_tools_pinned" {
+			// Only names and reason codes: no URL, header, finding detail or server answer (ADR 0073).
+			data["skipped"] = serde_json::to_value(
+				run.context
+					.plugin_tools
+					.as_ref()
+					.map(aidash_domain::agent_plugin::PluginTools::skipped)
+					.unwrap_or_default(),
+			)?;
+		}
+		if saved.phase().is_terminal() {
+			self.close_plugin_sessions_soon(saved.id);
 		}
 		self.run_event(
 			tx,
@@ -3325,7 +3391,25 @@ impl Store {
 		.await?;
 		tx.commit().await?;
 		crate::apps::execution::repositories::inference::record_interruptions(&closed);
+		self.close_plugin_sessions_soon(run.id);
 		Ok(())
+	}
+
+	/// Ends the Run's MCP sessions with its plugin servers without making the caller wait for
+	/// them. A Run that pauses, fails, expires or is cancelled may not reach the harness's close, and
+	/// a session closed too early reopens on the next call.
+	fn close_plugin_sessions_soon(&self, run: Uuid) {
+		let sessions = self.plugin_sessions.clone();
+		tokio::spawn(async move {
+			aidash_application::ports::tools::PluginSessions::close(sessions.as_ref(), run).await;
+		});
+	}
+
+	/// Release retained sessions only after the caller's control transaction has committed.
+	pub(crate) fn run_control_committed(&self, run: Uuid, control: RunControl) {
+		if control == RunControl::Paused {
+			self.close_plugin_sessions_soon(run);
+		}
 	}
 
 	pub async fn control(
@@ -3337,6 +3421,7 @@ impl Store {
 		let mut tx = self.pool.begin(scope).await?;
 		let run = self.control_in(&mut tx, id, action).await?;
 		tx.commit().await?;
+		self.run_control_committed(run.id, run.control);
 		Ok(run)
 	}
 
@@ -3390,6 +3475,14 @@ impl Store {
 		.ok_or_else(|| {
 			Error::Conflict("run is terminal or cancellation is already requested".into())
 		})?;
+		if action == RunControlAction::Cancel {
+			crate::apps::execution::repositories::live_previews::mark_stopped_for_run(
+				tx,
+				id,
+				aidash_domain::preview::live::StopReason::RunCancelled,
+			)
+			.await?;
+		}
 		let workspace =
 			(r.metadata.is_local(self.deployment.as_str())).then_some(r.metadata.workspace_id);
 		if let Some(reason) = semantic_retry {
@@ -3637,8 +3730,50 @@ impl Store {
 		replay_safe: bool,
 	) -> Result<Invocation> {
 		let mut tx = self.pool.begin(scope).await?;
-		self.ensure_run_response_current_in(&mut tx, run.id, worker, run.included_input_seq())
-			.await?;
+		// An acknowledged MCP input continues the already admitted logical
+		// call. New user input is consumed after it finishes, as for a live call.
+		let continuation = matches!(tool, "mcp.round" | "mcp.sampling")
+			&& run
+				.state
+				.tool()
+				.ok()
+				.and_then(|state| state.mcp.as_ref())
+				.is_some_and(|checkpoint| {
+					checkpoint.input.is_some()
+						&& key.starts_with(&format!("{}:mcp:", checkpoint.key))
+				});
+		// A recovered send also retains its admission across newer user input.
+		// The checkpoint alone cannot grant that exemption: a newly prepared
+		// send is persisted together with its first journal row below.
+		let sent = tool == "mcp.round"
+			&& run
+				.state
+				.tool()
+				.ok()
+				.and_then(|state| state.mcp.as_ref())
+				.and_then(|checkpoint| checkpoint.sent.as_ref())
+				.is_some_and(|sent| sent.key == key && sent.input == *input);
+		let admitted_send = if !continuation && sent {
+			crate::database::native::query_scalar::<bool>(
+				&Query::select()
+					.expr(Expr::value(true))
+					.from(Alias::new("invocations"))
+					.and_where(Expr::col(Alias::new("idempotency_key")).eq(Expr::value(key)))
+					.and_where(Expr::col(Alias::new("run_id")).eq(Expr::value(run.id)))
+					.and_where(Expr::col(Alias::new("tool")).eq(Expr::value(tool)))
+					.and_where(Expr::col(Alias::new("input")).eq(Expr::value(input.clone())))
+					.to_string(PostgresQueryBuilder),
+			)
+			.scalar_optional(&mut *tx)
+			.await?
+			.unwrap_or(false)
+		} else {
+			false
+		};
+		if !continuation && !admitted_send {
+			self.ensure_run_response_current_in(&mut tx, run.id, worker, run.included_input_seq())
+				.await?;
+		}
 		self.persist_tool_input_in(&mut tx, run, worker).await?;
 		let invocation = self
 			.start_invocation_in(&mut tx, run, key, tool, input, replay_safe)
@@ -3855,6 +3990,19 @@ impl Store {
 		key: &str,
 		result: &Value,
 	) -> Result<Value> {
+		self.finish_invocation(scope, run, worker, key, result, None)
+			.await
+	}
+	#[allow(clippy::too_many_arguments)]
+	pub(crate) async fn finish_invocation(
+		&self,
+		scope: &TenancyScope,
+		run: &Run,
+		worker: Uuid,
+		key: &str,
+		result: &Value,
+		sampling: Option<aidash_domain::provider::progress::InferenceAttemptId>,
+	) -> Result<Value> {
 		let mut tx = self.pool.begin(scope).await?.into_executor().await?;
 		if !RunRecord::hold_worker(tx.as_mut(), run.id, worker).await? {
 			return Err(Error::Conflict(
@@ -3878,6 +4026,15 @@ impl Store {
 				(run.is_local(self.deployment.as_str())).then_some(run.workspace_id),
 				"tool.completed",
 				json!({"run_id":run.id,"idempotency_key":key,"result":result}),
+			)
+			.await?;
+		}
+		if let Some(attempt) = sampling {
+			super::inference::accept_sampling(
+				tx.as_mut(),
+				self.deployment.as_str(),
+				run.id,
+				attempt,
 			)
 			.await?;
 		}

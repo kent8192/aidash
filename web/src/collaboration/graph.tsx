@@ -88,10 +88,6 @@ const projectionKinds = meshKinds.filter(
   (kind) => kind !== "human" && kind !== "remote",
 );
 
-const validGraphTenant = (value: string) =>
-  value.length > 0 &&
-  new TextEncoder().encode(value).length <= 256 &&
-  !/[\s\p{Cc}*]/u.test(value);
 export function Graph({
   data,
   channel,
@@ -137,7 +133,6 @@ export function Graph({
   const [expansions, setExpansions] = useState<Record<string, RemoteExpansion>>(
     {},
   );
-  const [targetTenant, setTargetTenant] = useState("");
   const [graphWorkspace, setGraphWorkspace] = useState(channel);
   const [refreshTick, setRefreshTick] = useState(0);
   const requests = useRef(new Map<string, number>());
@@ -154,12 +149,7 @@ export function Graph({
   }, []);
   const graphMode = mode === "neighborhood" ? "mesh" : mode;
   const expandedKey = Object.keys(expansions).sort().join("\u0000");
-  const scope = JSON.stringify([
-    graphWorkspace,
-    hours,
-    targetTenant,
-    sendingNode,
-  ]);
+  const scope = JSON.stringify([graphWorkspace, hours, sendingNode]);
   useEffect(() => {
     setExpansions((previous) => {
       if (Object.values(previous).every((value) => value.scope === scope))
@@ -195,7 +185,15 @@ export function Graph({
     );
     return () => window.clearTimeout(timer);
   }, [expansions]);
+  const needsTenantAuthority = data.access.kind === "deployment_administrator";
   useEffect(() => {
+    // A Deployment Administrator has no Subject, so the server refuses its
+    // remote Graph reads; it reads a Tenant's graph with Tenant authority.
+    if (needsTenantAuthority) {
+      setPeerIds([]);
+      setExpansions({});
+      return;
+    }
     let live = true;
     const refresh = async () => {
       try {
@@ -225,7 +223,7 @@ export function Graph({
       live = false;
       window.clearInterval(timer);
     };
-  }, [sendingNode]);
+  }, [sendingNode, needsTenantAuthority]);
   const requestPeer = useCallback(
     async (peer: string, cursor: string | null, requestScope: string) => {
       if (document.hidden) return;
@@ -262,10 +260,6 @@ export function Graph({
           relations: supportedRelations,
           hours,
           limit: 80,
-          target_tenant:
-            data.access.kind === "deployment_administrator"
-              ? targetTenant
-              : null,
         };
         try {
           page = await graphPage({ ...options, cursor });
@@ -311,7 +305,7 @@ export function Graph({
         );
       }
     },
-    [graphWorkspace, hours, targetTenant, sendingNode, data.access.kind],
+    [graphWorkspace, hours, sendingNode],
   );
   useEffect(() => {
     if (mode === "neighborhood" || document.hidden) return;
@@ -1032,6 +1026,16 @@ export function Graph({
                       ),
                     ),
                   )}
+                  {needsTenantAuthority &&
+                    group(
+                      copy.peers,
+                      <p
+                        className="mesh-peer-authority px-1.5 text-[11px] text-faint"
+                        role="note"
+                      >
+                        {copy.peerTenantAuthority}
+                      </p>,
+                    )}
                   {peerIds.length > 0 &&
                     group(
                       copy.peers,
@@ -1040,31 +1044,6 @@ export function Graph({
                         role="group"
                         aria-label={copy.peers}
                       >
-                        {data.access.kind === "deployment_administrator" && (
-                          <label className="grid gap-1 text-[11px] text-faint">
-                            {copy.peerScope}
-                            <Input
-                              aria-label={copy.peerScope}
-                              aria-invalid={
-                                targetTenant.length > 0 &&
-                                !validGraphTenant(targetTenant)
-                              }
-                              value={targetTenant}
-                              className="h-7 font-mono text-xs"
-                              onChange={(event) => {
-                                setTargetTenant(event.target.value);
-                                setExpansions({});
-                                setSelectedId("");
-                              }}
-                            />
-                            {targetTenant.length > 0 &&
-                              !validGraphTenant(targetTenant) && (
-                                <span role="alert" className="text-destructive">
-                                  {copy.peerInvalidTenant}
-                                </span>
-                              )}
-                          </label>
-                        )}
                         {peerIds.map((peer) => {
                           const expansion = expansions[peer];
                           const state = expansion?.state;
@@ -1082,7 +1061,7 @@ export function Graph({
                                     : state === "oversized"
                                       ? copy.peerOversized
                                       : state === "invalid"
-                                        ? copy.peerInvalidTenant
+                                        ? copy.peerUnavailable
                                         : state === "unavailable"
                                           ? copy.peerUnavailable
                                           : "";
@@ -1097,11 +1076,6 @@ export function Graph({
                                   size="sm"
                                   type="button"
                                   onClick={() => togglePeer(peer)}
-                                  disabled={
-                                    data.access.kind ===
-                                      "deployment_administrator" &&
-                                    !validGraphTenant(targetTenant)
-                                  }
                                 >
                                   {expansion
                                     ? copy.collapsePeer

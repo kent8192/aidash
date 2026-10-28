@@ -11,6 +11,8 @@ pub mod contracts;
 pub(crate) mod endpoints;
 #[path = "errors.rs"]
 pub(crate) mod errors;
+#[path = "federation_previews.rs"]
+pub(crate) mod federation_previews;
 #[path = "limits.rs"]
 pub mod limits;
 #[path = "management.rs"]
@@ -28,11 +30,13 @@ pub(crate) mod patch;
 #[path = "python.rs"]
 pub(crate) mod python;
 #[path = "reclamation.rs"]
-pub(crate) mod reclamation;
+pub mod reclamation;
 #[path = "records.rs"]
 pub(crate) mod records;
 #[path = "references.rs"]
 pub(crate) mod references;
+#[path = "retention.rs"]
+pub mod retention;
 #[path = "service.rs"]
 pub(crate) mod service;
 #[path = "sessions.rs"]
@@ -54,6 +58,7 @@ use std::{path::PathBuf, sync::Arc};
 impl Default for Profile {
 	fn default() -> Self {
 		Self {
+			mcp: Default::default(),
 			limits: limits::ContentLimits::default(),
 			egress: None,
 			admission: false,
@@ -75,6 +80,8 @@ impl Default for Profile {
 			approval_seconds: 86400,
 			output_bytes: 8 << 20,
 			staging_seconds: 86400,
+			preview_port: None,
+			preview_maximum_seconds: None,
 			runner: None,
 		}
 	}
@@ -111,7 +118,10 @@ impl Runtime {
 				));
 			}
 		}
-		if !profile.limits.valid()
+		if !(1..=3600).contains(&profile.mcp.human_wait_seconds)
+			|| !(1..=100).contains(&profile.mcp.continuation_sends)
+			|| !(1..=1_000_000).contains(&profile.mcp.sampling_tokens)
+			|| !profile.limits.valid()
 			|| !profile.storage.is_absolute()
 			|| profile.storage.parent().is_none()
 			|| profile.working_bytes == 0

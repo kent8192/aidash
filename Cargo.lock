@@ -127,8 +127,10 @@ version = "0.1.0"
 dependencies = [
  "base64 0.22.1",
  "chrono",
+ "getrandom 0.3.4",
  "http 1.5.0",
  "jsonschema",
+ "psl",
  "rstest",
  "ruzstd",
  "schemars 1.2.2",
@@ -159,6 +161,7 @@ dependencies = [
  "serde_json",
  "tokio",
  "tracing",
+ "url",
  "uuid",
 ]
 
@@ -198,7 +201,8 @@ dependencies = [
  "rcgen",
  "reinhardt-web",
  "reqwest 0.13.5",
- "rmcp",
+ "rmcp 1.2.0",
+ "rmcp 3.7.0",
  "rstest",
  "secrecy",
  "serde",
@@ -5388,7 +5392,7 @@ version = "5.0.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "51e219e79014df21a225b1860a479e2dcd7cbd9130f4defd4bd0e191ea31d67d"
 dependencies = [
- "base64 0.21.7",
+ "base64 0.22.1",
  "chrono",
  "getrandom 0.2.17",
  "http 1.5.0",
@@ -6621,6 +6625,15 @@ name = "protoc-bin-vendored-win32"
 version = "3.3.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "263a3f48f01e7309e857138bd47f785585b4a005e8e56c6d2824ce91195999c3"
+
+[[package]]
+name = "psl"
+version = "2.1.245"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "46cce9bc841c0eeb395275a775d11e3cc91b904e6ab370a9a42369e111b3038e"
+dependencies = [
+ "psl-types",
+]
 
 [[package]]
 name = "psl-types"
@@ -9123,6 +9136,31 @@ dependencies = [
 ]
 
 [[package]]
+name = "rmcp"
+version = "3.7.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ece64e19631fc38758181e637c15509a2c2709ee53bfde1e1d58f9dc991f919e"
+dependencies = [
+ "base64 0.23.1",
+ "bytes",
+ "chrono",
+ "futures",
+ "http 1.5.0",
+ "indexmap 2.14.2",
+ "libc",
+ "pin-project-lite",
+ "reqwest 0.13.5",
+ "serde",
+ "serde_json",
+ "sse-stream",
+ "thiserror 2.0.20",
+ "tokio",
+ "tokio-stream",
+ "tokio-util",
+ "tracing",
+]
+
+[[package]]
 name = "rmp"
 version = "0.8.15"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -9729,7 +9767,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b8050abb251097357e24aff63ba2c52a6309ecb7d23a5474023df960a02694d8"
 dependencies = [
  "annotate-snippets",
- "base64 0.21.7",
+ "base64 0.23.1",
  "encoding_rs_io",
  "granit-parser",
  "nohash-hasher",

@@ -10,7 +10,6 @@ fn options() -> GraphOptions {
 		hours: 24,
 		limit: 20,
 		cursor: None,
-		target_tenant: None,
 	}
 }
 #[rstest]
@@ -24,7 +23,6 @@ fn options() -> GraphOptions {
 #[case("cursor")]
 #[case("kind")]
 #[case("relation")]
-#[case("tenant")]
 fn projection_bounds_reject_invalid_input(#[case] field: &str) {
 	let mut o = options();
 	match field {
@@ -38,7 +36,6 @@ fn projection_bounds_reject_invalid_input(#[case] field: &str) {
 		"cursor" => o.cursor = Some("x".repeat(4097)),
 		"kind" => o.kinds = vec!["unknown".into()],
 		"relation" => o.relations = vec!["unknown".into()],
-		"tenant" => o.target_tenant = Some("bad tenant".into()),
 		_ => panic!("invalid case"),
 	};
 	assert!(o.validate().is_err());
