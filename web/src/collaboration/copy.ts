@@ -41,6 +41,9 @@ export const collaborationCopy = {
     answer: "回答する",
     graphLink: "グラフで確認",
     channelLink: "チャンネルを開く",
+    pausedByAdministrator:
+      "Deployment Administrator が一時停止しました。再開できるのは Tenant の権限を持つ人だけです。",
+    cancelledByAdministrator: "Deployment Administrator が取り消しました。",
     relatedChannels: "関連チャンネル",
     noRelated: "現在取得できる情報には関連チャンネルがありません。",
     graphMode: "グラフ表示の切り替え",
@@ -139,6 +142,9 @@ export const collaborationCopy = {
     answer: "Respond",
     graphLink: "View in graph",
     channelLink: "Open channel",
+    pausedByAdministrator:
+      "Paused by a Deployment Administrator. Only someone with Tenant authority can resume it.",
+    cancelledByAdministrator: "Cancelled by a Deployment Administrator.",
     relatedChannels: "Related channels",
     noRelated: "No related channels in the currently available information.",
     graphMode: "Graph mode",

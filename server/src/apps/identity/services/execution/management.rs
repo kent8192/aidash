@@ -63,6 +63,82 @@ pub struct RunManagementInput {
 	pub action: ManagementAction,
 }
 
+/// `GET` query. Only an administrator names the Tenant.
+#[derive(Deserialize, schemars::JsonSchema)]
+pub struct ManagementQuery {
+	pub tenant: Option<String>,
+}
+
+/// What `GET` returns: a Subject's diagnostics, or an administrator's metadata.
+#[derive(Serialize, schemars::JsonSchema)]
+#[serde(untagged)]
+pub enum ManagementView {
+	Subject(RunManagement),
+	Administrator(super::safety_stop::RunControlFacts),
+}
+
+/// What `POST` returns: the Run for a Subject, or the receipt for an administrator.
+#[derive(Serialize, schemars::JsonSchema)]
+#[serde(untagged)]
+pub enum ManagementResult {
+	Subject(RunManagement),
+	Administrator(aidash_application::safety_stop::Receipt),
+}
+
+/// The body of `POST`. The two contracts share the route; the actor decides
+/// which applies, so an unmatched body is kept for a precise refusal.
+#[derive(Deserialize, schemars::JsonSchema)]
+#[serde(untagged)]
+pub enum ManagementRequest {
+	Subject(RunManagementInput),
+	Administrator(super::safety_stop::SafetyStopInput),
+	#[schemars(skip)]
+	Unmatched(serde_json::Value),
+}
+
+const ADMINISTRATOR_ONLY: [&str; 3] = ["tenant", "expected_control_revision", "reason"];
+
+impl ManagementRequest {
+	/// The Subject contract, unchanged; administrator-only fields are refused.
+	pub fn for_subject(self) -> Result<RunManagementInput> {
+		match self {
+			Self::Subject(input) => Ok(input),
+			Self::Administrator(_) => Err(administrator_only()),
+			Self::Unmatched(value) => {
+				if value.as_object().is_some_and(|fields| {
+					ADMINISTRATOR_ONLY
+						.iter()
+						.any(|name| fields.contains_key(*name))
+				}) {
+					return Err(administrator_only());
+				}
+				match serde_json::from_value::<RunManagementInput>(value) {
+					Ok(input) => Ok(input),
+					Err(error) => Err(Error::Unprocessable(error.to_string())),
+				}
+			}
+		}
+	}
+
+	/// The administrator contract: Tenant, action, expected control revision, reason.
+	pub fn for_administrator(self) -> Result<super::safety_stop::SafetyStopInput> {
+		match self {
+			Self::Administrator(input) => Ok(input),
+			Self::Subject(_) | Self::Unmatched(_) => Err(Error::Invalid(
+				"a Deployment Administrator stop names the tenant, action, \
+				 expected_control_revision and reason"
+					.into(),
+			)),
+		}
+	}
+}
+
+fn administrator_only() -> Error {
+	Error::Invalid(
+		"tenant, expected_control_revision and reason are for Deployment Administrators".into(),
+	)
+}
+
 async fn authorized(access: &mut Access, id: Uuid, node: &str) -> Result<RunInspection> {
 	let raw: crate::domain::run_state::RawRun = {
 		let query_bind_1 = id;
@@ -125,15 +201,10 @@ async fn authorized(access: &mut Access, id: Uuid, node: &str) -> Result<RunInsp
 }
 
 pub(crate) async fn get(f: Federation, actor: Actor, id: Uuid) -> Result<RunManagement> {
+	// A Deployment Administrator's stop has its own content-free route handlers
+	// (`safety_stop`); it never reaches the Subject diagnostics below.
 	let Actor::Subject(identity) = actor else {
-		// A Deployment Administrator names a Run; it works in the Run's Tenant.
-		let scope = f.store.run_tenancy(id).await?;
-		let mut result: RunManagement = f.store.inspect_run(&scope, id).await?.into();
-		let mut tx = f.store.control_pool.begin(&scope).await?;
-		result.memory_cleanup =
-			crate::apps::knowledge::repositories::receiver_caches::status(&mut tx, id).await?;
-		tx.rollback().await?;
-		return Ok(result);
+		return Err(Error::Forbidden);
 	};
 	let mut access = Access::begin(&f.store, &identity).await?;
 	let result = async {
@@ -160,15 +231,7 @@ pub(crate) async fn control(
 		ManagementAction::Cancel => RunControlAction::Cancel,
 	};
 	let Actor::Subject(identity) = actor else {
-		let scope = f.store.run_tenancy(id).await?;
-		let current = f.store.inspect_run(&scope, id).await?;
-		let run = if current.control == RunControl::Cancelled {
-			current
-		} else {
-			f.store.control(&scope, id, action).await?
-		};
-		f.notify.notify_waiters();
-		return Ok(run.into());
+		return Err(Error::Forbidden);
 	};
 	let mut access = Access::begin(&f.store, &identity).await?;
 	let result = async {
