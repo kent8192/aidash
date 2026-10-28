@@ -1309,6 +1309,7 @@ def render():
             "registry-get",
             "registry-versions",
             "authorization-catalog",
+            "authorization-safety-stops",
             "workbench-inspect-version",
             "workbench-export-report",
         }
@@ -1321,7 +1322,12 @@ def render():
             status = 403
             checks = ""
             label = "Subject without file transfer permission cannot list recipients"
-        if route["name"] in {"marketplace-administration", "workbench-test-profiles"}:
+        # A Deployment Administrator names the Tenant of the Run it reads (ADR 0101).
+        if route["name"] in {
+            "marketplace-administration",
+            "workbench-test-profiles",
+            "run-management-get",
+        }:
             uri = path + "?tenant={{tenant}}"
         if route["name"] in {"authorization-catalog", "registry-versions"}:
             uri = path + "?node=" + NODE

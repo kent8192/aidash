@@ -200,6 +200,21 @@ pub async fn decisions(
 }
 
 #[get(
+	"/api/authorization/{tenant}/safety-stops",
+	name = "authorization-safety-stops",
+	auth = "protected"
+)]
+pub async fn safety_stops(
+	#[inject] service: Depends<PolicyAdministration>,
+	#[inject] actor: Actor,
+	#[inject] origin: Option<BrowserOrigin>,
+	Path(tenant): Path<String>,
+	Query(page): Query<crate::apps::execution::serializers::research::HistoryPage>,
+) -> ViewResult<Response> {
+	crate::http::json(service.safety_stops(actor, origin, tenant, page).await)
+}
+
+#[get(
 	"/api/authorization/{tenant}/transaction-revocations",
 	name = "!transaction_revocations",
 	auth = "protected"

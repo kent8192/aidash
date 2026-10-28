@@ -19,6 +19,7 @@ pub mod provider_credentials;
 pub mod recovery;
 pub mod research;
 pub mod retention;
+pub mod safety_stop;
 pub mod tenancy;
 pub mod tenant_secrets;
 pub mod usage;

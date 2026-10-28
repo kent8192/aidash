@@ -387,4 +387,37 @@ impl PolicyAdministration {
 			})
 			.await
 	}
+	/// Safety Stops of the Tenant's Runs (ADR 0101), for holders of
+	/// `decision.read`. A Deployment Administrator's receipt grants no access to
+	/// the Tenant's audit history, so an administrator is refused.
+	pub(crate) async fn safety_stops(
+		&self,
+		actor: Actor,
+		origin: Option<BrowserOrigin>,
+		tenant: String,
+		page: crate::apps::execution::serializers::research::HistoryPage,
+	) -> Result<Vec<aidash_domain::safety_stop::Record>> {
+		let f = self.runtime.clone();
+		if matches!(actor, Actor::DeploymentAdministrator) {
+			// A deleted Tenant answers 410 to everyone before any other refusal.
+			f.store
+				.pool
+				.atomic(
+					&aidash_application::tenancy::TenancyScope::tenant(&tenant)?,
+					async |tx| {
+						crate::authorization::remote::deployment_administrator::tenant(tx, &tenant)
+							.await
+					},
+				)
+				.await?;
+			return Err(Error::Forbidden);
+		}
+		self.administrations()
+			.run(actor, origin, &tenant, async |administrator| {
+				administrator
+					.safety_stops(&f.store.pool, page.offset, page.limit)
+					.await
+			})
+			.await
+	}
 }

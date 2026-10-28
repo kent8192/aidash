@@ -687,4 +687,32 @@ the single Knowledge head, and no schema or model state is overwritten.
 
 `identity/0043_tenant_data_protection_state` records those two tables in ORM migration state. It executes no DDL; references, validity checks and row-level policies remain in the preceding database-only migrations.
 
-`registry/0051_provider_warning_tools` extends the closed Provider tool validation functions with the warning-tier tools (advisor, subagent, model search, tool search, shell) without replacing the previous contracts; its reverse refuses to run while any such definition or pinned Run exists. `identity/0045_provider_warning_acknowledgment` adds the nullable exact disclosure text to `authorization_catalog_history`, filled only when a warning tool is approved. `execution/0076_provider_container` adds the nullable `runs.provider_container` pin (OpenRouter container id and network policy). OpenRouter has no container delete API, so the pin is kept after the Run ends.
+`registry/0051_provider_warning_tools` extends the closed Provider tool validation functions with the warning-tier tools (advisor, subagent, model search, tool search, shell) without replacing the previous contracts; its reverse refuses to run while any such definition or pinned Run exists. `identity/0045_provider_warning_acknowledgment` adds the nullable exact disclosure text to `authorization_catalog_history`, filled only when a warning tool is approved. `execution/0081_provider_container` adds the nullable `runs.provider_container` pin (OpenRouter container id and network policy). OpenRouter has no container delete API, so the pin is kept after the Run ends.
+
+## Run control provenance and Safety Stops (#485, ADR 0101)
+
+`execution/0075_run_control_provenance` (after `execution/0074_federated_preview_authority`)
+adds `runs.control_revision` (bigint, default 0) and `runs.control_source` (text) with
+typed column operations; existing Runs start at revision 0 with the Tenant as the
+source. The model declares no default for the source, so the logical state drops it
+the way `execution/0050_usage_evidence` does. The revision changes only when `control`
+changes, so a Safety Stop's expected revision is not made stale by worker progress.
+
+`execution/0076_run_control_trigger` is database-only. It restores the physical
+`'tenant'` default of `control_source` for writers that name no source, and adds the
+CHECK that the revision is not negative. Reinhardt has no trigger
+operation, so the function `aidash_run_control_provenance` and its `BEFORE UPDATE OF
+control` trigger on `runs` are the documented raw-SQL exception. A writer that updates
+`control_revision` itself (the ordinary control path and a Safety Stop) is left alone;
+every other writer that changes `control` gets the revision bumped and is attributed to
+`system`. Its reverse drops the trigger and function.
+
+`execution/0077_run_safety_stops` creates the audit record and replay receipt, one row
+per accepted or no-op command, with typed operations. `run_id` has no foreign key,
+because the record is audit history that outlives the Run, its Workspace and the purge
+of its Tenant (it is classified `audit`, erased by `audit_retention_days`). Its Tenant
+reference is the usual root record. `(tenant, caller_key, operation_id)` is unique, and
+CHECKs bound the reason to 1 to 1000 characters and tie `identity_id` to a browser actor.
+`execution/0078_run_safety_stops_row_level_security` adds the tenant policy template
+through `RunSQL`, and `execution/0079_run_safety_stops_state` is the generated state-only
+snapshot that leaves the physical constraints and indexes to `0077`.
