@@ -242,14 +242,6 @@ impl Node {
 		)
 	}
 
-	pub async fn post(&self, path: &str, body: &impl serde::Serialize) -> (u16, Value) {
-		let response = self.client.post(path, body, "json").await.unwrap();
-		(
-			response.status_code(),
-			response.json_value().unwrap_or(Value::Null),
-		)
-	}
-
 	/// The Sender for work the Tenant's default Node does as its subject.
 	pub fn sender(&self) -> aidash_domain::federation::route::Sender {
 		aidash_domain::federation::route::Sender {
