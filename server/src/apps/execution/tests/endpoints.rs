@@ -72,6 +72,18 @@ async fn event_stream_flushes_live_changes_and_resumes_from_last_event_id(
 ) {
 	// Arrange
 	let app = endpoint.await;
+	// The endpoint fixture has no broker listener. Reconcile sooner than the
+	// frame deadline so this exercises fallback delivery deterministically.
+	app.context
+		.set_singleton(reinhardt::di::KeyedFactoryOutput::<
+			reinhardt::di::SelfKey<aidash_server::sse::Service>,
+			aidash_server::sse::Service,
+		>::new(aidash_server::sse::Service::new(
+			aidash_server::sse::Settings {
+				reconcile_interval: std::time::Duration::from_millis(250),
+				..Default::default()
+			},
+		)));
 	let (member, token) = crate::endpoint::tenant_member(&app).await;
 	let selected = workspace(&member, "Stream selection").await;
 	let id = selected["id"].as_str().unwrap();
