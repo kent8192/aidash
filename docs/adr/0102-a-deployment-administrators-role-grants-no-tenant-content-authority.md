@@ -18,7 +18,7 @@ A refused administrator request returns 403 with no Tenant content; routes that 
 
 - A Deployment Administrator can still obtain a Mapping into any Tenant by deciding a Registration Request (#363). That path is visible and audited but not closed here; it is tracked in #561.
 - The dashboard hides Tenant content views and Tenant pickers in the Deployment Administrator context and directs the person to switch to a Mapping.
-- Ordinary administrator `/api/runs/{id}/control`, including shared-bearer resume, is refused by #485 together with the narrowed safety contract.
+- Ordinary `/api/runs/{id}/control` refuses Deployment Administrators, including shared-bearer resume, under #485's Safety Stop contract (ADR 0101).
 - Routes deny a Deployment Administrator by default; only routes that serve a retained authority admit one. A new route is Tenant-only unless it is deliberately marked otherwise.
 - Headless setups issue a Tenant's first Subject Credential with a host-side `manage` command. Host access already reaches the database, so this opens no new route; over HTTP, issuance still needs Tenant authority (ADR 0063).
 - Workbench adoption, which let an administrator place a registered agent into a Tenant's Creator, is removed rather than moved: it was an administrator-only Tenant mutation.
