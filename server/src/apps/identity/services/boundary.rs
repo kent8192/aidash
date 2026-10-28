@@ -1,5 +1,5 @@
 //! Authentication and transaction visibility at the HTTP boundary.
-use super::http_auth::{InboundCall, ViewerCall, bearer, browser_deployment_administrator_allowed};
+use super::http_auth::{InboundCall, bearer, browser_deployment_administrator_allowed};
 use crate::apps::identity::models::DashboardRegistrationRequest;
 use crate::{
 	Error, Result,
@@ -10,15 +10,12 @@ use crate::{
 	transactions::gate::ReadLease,
 };
 use aidash_application::{
-	federation::inbound::{Inbound, Proof, ViewerInbound, accept, accept_grant_viewer},
+	federation::inbound::{Inbound, Proof, accept},
 	tenancy::TenancyScope,
 };
 use aidash_capability::federation::FederationClaims;
 use aidash_domain::federation::protocol::compatible;
-use aidash_domain::{
-	nodes::{DeploymentId, NodeAddress},
-	tenancy::TenantName,
-};
+use aidash_domain::nodes::NodeAddress;
 use async_trait::async_trait;
 use http::Method;
 use http::header::{AUTHORIZATION, CACHE_CONTROL};
@@ -246,56 +243,19 @@ impl Middleware for AccessBoundary {
 async fn admit_peer(runtime: &Federation, request: &Request) -> Result<()> {
 	let token = bearer(&request.headers).ok_or(Error::Unauthorized)?;
 	let claims = FederationClaims::unverified(token).map_err(|_| Error::Unauthorized)?;
-	let body = request.body();
-	let path = request
-		.uri
-		.path()
-		.strip_prefix("/federation/v0.1")
-		.ok_or(Error::Unauthorized)?;
 	let digest = super::http_auth::peer_request(request).ok_or(Error::Unauthorized)?;
-	let receiver = NodeAddress::parse(&claims.aud);
-	if let (Ok(sender), Ok(receiver)) = (NodeAddress::parse(&claims.sub), &receiver) {
-		let admitted = accept(
-			Inbound {
-				receiver: receiver.clone(),
-				sender: sender.clone(),
-				subject: claims.subject,
-				proof: Proof::Token(token.to_owned()),
-			},
-			&digest,
-			runtime,
-		)
-		.await?;
-		request
-			.extensions
-			.insert(crate::http::AuthenticatedPeer(sender.to_string()));
-		request.extensions.insert(InboundCall(admitted));
-		return Ok(());
-	}
-	// A Deployment Administrator of another Deployment reading a graph under a
-	// Peer Graph Grant names two Deployments and no Node (ADR 0043).
-	if path != "/scoped/graph" {
+	let (Ok(sender), Ok(receiver)) = (
+		NodeAddress::parse(&claims.sub),
+		NodeAddress::parse(&claims.aud),
+	) else {
 		return Err(Error::Unauthorized);
-	}
-	let identity = claims
-		.subject
-		.strip_prefix("oidc:")
-		.and_then(|id| uuid::Uuid::parse_str(id).ok())
-		.ok_or(Error::Unauthorized)?;
-	let tenant = serde_json::from_slice::<serde_json::Value>(body)
-		.ok()
-		.and_then(|body| body.get("target_tenant")?.as_str().map(str::to_owned))
-		.and_then(|tenant| TenantName::new(tenant).ok())
-		.ok_or(Error::Unauthorized)?;
-	let viewer = DeploymentId::parse(&claims.sub).map_err(|_| Error::Unauthorized)?;
-	let receiver = DeploymentId::parse(&claims.aud).map_err(|_| Error::Unauthorized)?;
-	let admitted = accept_grant_viewer(
-		ViewerInbound {
+	};
+	let admitted = accept(
+		Inbound {
 			receiver,
-			viewer: viewer.clone(),
-			tenant,
-			identity,
-			token: token.to_owned(),
+			sender: sender.clone(),
+			subject: claims.subject,
+			proof: Proof::Token(token.to_owned()),
 		},
 		&digest,
 		runtime,
@@ -303,7 +263,7 @@ async fn admit_peer(runtime: &Federation, request: &Request) -> Result<()> {
 	.await?;
 	request
 		.extensions
-		.insert(crate::http::AuthenticatedPeer(viewer.to_string()));
-	request.extensions.insert(ViewerCall(admitted));
+		.insert(crate::http::AuthenticatedPeer(sender.to_string()));
+	request.extensions.insert(InboundCall(admitted));
 	Ok(())
 }

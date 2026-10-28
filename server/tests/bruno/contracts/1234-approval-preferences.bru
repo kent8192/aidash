@@ -1,0 +1,20 @@
+meta {
+  name: 1234 approval-preferences - Anonymous request is rejected
+  type: http
+  seq: 1234
+}
+
+get {
+  url: {{base_url}}/api/tenants/{{tenant}}/approval-preferences/mine
+  body: none
+  auth: none
+}
+
+headers {
+  Accept: application/json
+}
+
+tests {
+  test("Exact HTTP 401", function () { expect(res.getStatus()).to.equal(401); });
+  test("Stable authorization error envelope", function () { expect(res.getHeader("content-type")).to.include("application/json"); expect(res.getBody()).to.eql({error:"unauthorized"}); });
+}

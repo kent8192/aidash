@@ -23,17 +23,6 @@ fn selector(owner: &ReceivingKeyOwner) -> (&'static str, Condition) {
 				.add(Expr::col("node").eq(Expr::value(node.as_str())))
 				.add(Expr::col("source_node").eq(Expr::value(source_node.to_string()))),
 		),
-		ReceivingKeyOwner::ViewerGrant {
-			tenant,
-			viewer,
-			identity,
-		} => (
-			"authorization_peer_graph_grants",
-			Condition::all()
-				.add(Expr::col("tenant").eq(Expr::value(tenant.as_str())))
-				.add(Expr::col("source_deployment").eq(Expr::value(viewer.as_str())))
-				.add(Expr::col("source_identity").eq(Expr::value(*identity))),
-		),
 	}
 }
 

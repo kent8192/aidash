@@ -13,7 +13,6 @@ use crate::{
 	apps::federation::transactions::{
 		Manifest, serializers::authority::Preflight, services::protocol::Transactions,
 	},
-	apps::identity::services::http_auth::GraphCaller,
 	federation::Federation,
 	transactions::gate::ReadLease,
 };
@@ -309,7 +308,7 @@ async fn dispatch(
 		}
 		("POST", ["scoped", "graph"]) => {
 			let input = checked!(body, identity_peer::graph::GraphRequest);
-			respond(identity_peer::graph::project(f, GraphCaller::Node(admitted), input).await)
+			respond(identity_peer::graph::project(f, admitted, input).await)
 		}
 		("POST", ["scoped", "semantic", "query"]) => {
 			let input = input!(body, crate::semantic::remote::Operation);

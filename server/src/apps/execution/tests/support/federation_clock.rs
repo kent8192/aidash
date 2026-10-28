@@ -1,8 +1,6 @@
 use aidash_application::{
 	federation::inbound::RequestDigest,
-	ports::federation::inbound::{
-		InboundRepository, ReceivingKeyOwner, ReceivingKeys, ViewerGrant,
-	},
+	ports::federation::inbound::{InboundRepository, ReceivingKeyOwner, ReceivingKeys},
 };
 use aidash_domain::{
 	identity::peer_mapping::Mapping,
@@ -14,7 +12,6 @@ use aidash_domain::{
 };
 use aidash_server::federation::Federation;
 use async_trait::async_trait;
-use uuid::Uuid;
 
 /// Only time is virtual. All authority/key reads and writes delegate to the
 /// restarted production PostgreSQL adapter, with no production test seam.
@@ -83,14 +80,6 @@ impl InboundRepository for Clock<'_> {
 		subject: &str,
 	) -> aidash_application::Result<bool> {
 		self.0.subject_may_use(tenant, receiver, subject).await
-	}
-	async fn viewer_grant(
-		&self,
-		tenant: &TenantName,
-		viewer: &DeploymentId,
-		identity: Uuid,
-	) -> aidash_application::Result<Option<ViewerGrant>> {
-		self.0.viewer_grant(tenant, viewer, identity).await
 	}
 	async fn receiving_keys(
 		&self,

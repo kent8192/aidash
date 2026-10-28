@@ -1,7 +1,6 @@
 import type {
   ReceivingKeyStatus as KeyStatus,
   RegistrationKeySelector,
-  GraphKeySelector,
 } from "./generated/models";
 import { useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
@@ -16,15 +15,11 @@ import {
   Pager,
   RowList,
 } from "./components/patterns";
-import {
-  authorizationPeerGraphGrants,
-  tenantNodeRegistrations,
-  tenantNodes,
-} from "./generated/aidash";
+import { tenantNodeRegistrations, tenantNodes } from "./generated/aidash";
 import { ApiError, apiFetch } from "./transport";
 import { Field, Modal, Panel, useI18n } from "./ui";
 
-type Selector = RegistrationKeySelector | GraphKeySelector;
+type Selector = RegistrationKeySelector;
 
 /** Each opening reads both revisions. A conflict consumes consent, and never
  * retries the previous confirmation against a newly read crypto snapshot. */
@@ -93,7 +88,6 @@ export function ReceivingKeyControl({
         }),
       );
       await client.invalidateQueries({ queryKey: ["node-registrations"] });
-      await client.invalidateQueries({ queryKey: ["graph-grant-keys"] });
     } catch (reason) {
       if (reason instanceof ApiError && reason.status === 409) {
         setStatus(null);
@@ -387,51 +381,5 @@ function DeletedRegistrationKeys({
         }}
       />
     </>
-  );
-}
-
-export function GraphGrantKeyControls({ tenant }: { tenant: string }) {
-  const { t } = useI18n();
-  const [offset, setOffset] = useState(0);
-  const records = useQuery({
-    queryKey: ["graph-grant-keys", tenant, offset],
-    queryFn: () => authorizationPeerGraphGrants(tenant, { limit: 25, offset }),
-  });
-  return (
-    <Panel title={t("receivingKeyGraphGrants")}>
-      <Hint>{t("receivingKeyHelp")}</Hint>
-      {records.isError && <Alert>{records.error.message}</Alert>}
-      <RowList>
-        {records.data?.map((row) => (
-          <div
-            key={`${row.source_deployment}/${row.source_identity}`}
-            className="flex min-w-0 items-center justify-between gap-3 py-2"
-          >
-            <span className="break-all font-mono text-xs">
-              {row.source_deployment} / {row.source_identity}
-            </span>
-            <ReceivingKeyControl
-              endpoint={`/api/authorization/${encodeURIComponent(tenant)}/peer-graph-grant-keys`}
-              selector={{
-                source_deployment: row.source_deployment,
-                source_identity: row.source_identity,
-              }}
-            />
-          </div>
-        ))}
-      </RowList>
-      <Pager
-        page={offset / 25 + 1}
-        previous={{
-          disabled: offset === 0 || records.isFetching,
-          go: () => setOffset(Math.max(0, offset - 25)),
-        }}
-        next={{
-          disabled:
-            !records.data || records.data.length < 25 || records.isFetching,
-          go: () => setOffset(offset + 25),
-        }}
-      />
-    </Panel>
   );
 }

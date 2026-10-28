@@ -1,0 +1,22 @@
+meta {
+  name: 0478 core_file_management - Application read preserves the typed response contract
+  type: http
+  seq: 478
+}
+
+get {
+  url: {{base_url}}/api/working-files
+  body: none
+  auth: none
+}
+
+headers {
+  Accept: application/json
+  Authorization: Bearer {{contract_token}}
+}
+
+tests {
+  test("Exact HTTP 200", function () { expect(res.getStatus()).to.equal(200); });
+  test("Documented response fields and types", function () { const contract={"definitions":{"ManagedArea":{"properties":{"agent_id":{"type":"string"},"area_id":{"format":"uuid","type":"string"},"bytes":{"format":"uint64","minimum":0,"type":"integer"},"cleanup_operation_id":{"format":"uuid","type":["string","null"]},"files":{"format":"uint","minimum":0,"type":"integer"},"generation":{"format":"int64","type":"integer"},"owner":{"type":"string"},"recovery_expires_at":{"format":"date-time","type":["string","null"]},"revision":{"format":"int64","type":"integer"},"snapshot_id":{"format":"uuid","type":["string","null"]},"state":{"type":"string"},"thread_id":{"format":"uuid","type":"string"},"workspace_id":{"format":"uuid","type":"string"}},"required":["area_id","workspace_id","thread_id","agent_id","owner","state","revision","generation","files","bytes","snapshot_id","recovery_expires_at","cleanup_operation_id"],"type":"object"},"ManagementPage":{"properties":{"items":{"items":{"$ref":"#/components/schemas/ManagedArea"},"type":"array"},"next_cursor":{"format":"uuid","type":["string","null"]}},"required":["items","next_cursor"],"type":"object"}},"schema":{"$ref":"#/components/schemas/ManagementPage"}}; function valid(value,schema){if(schema===true)return true;if(schema===false)return false;if(schema.$ref)return valid(value,contract.definitions[schema.$ref.split("/").pop().replace(/~1/g,"/").replace(/~0/g,"~")]);if(schema.anyOf)return schema.anyOf.some(item=>valid(value,item));if(schema.oneOf)return schema.oneOf.filter(item=>valid(value,item)).length===1;if(schema.allOf&&!schema.allOf.every(item=>valid(value,item)))return false;if(schema.enum&&!schema.enum.some(item=>JSON.stringify(item)===JSON.stringify(value)))return false;const types=Array.isArray(schema.type)?schema.type:schema.type?[schema.type]:[];if(types.length&&!types.some(type=>type==="null"?value===null:type==="array"?Array.isArray(value):type==="object"?value!==null&&typeof value==="object"&&!Array.isArray(value):type==="integer"?Number.isInteger(value):typeof value===type))return false;if(value!==null&&typeof value==="object"&&!Array.isArray(value)){if((schema.required||[]).some(field=>!(field in value)))return false;for(const [field,property] of Object.entries(schema.properties||{}))if(field in value&&!valid(value[field],property))return false;}if(Array.isArray(value)&&schema.items&&!value.every(item=>valid(item,schema.items)))return false;return true;}expect(valid(res.getBody(),contract.schema)).to.equal(true); });
+  test("Application read preserves the typed response contract contract", function () { expect(res.getHeader("content-type")).to.include("application/json");expect(res.getBody().items).to.be.an("array");expect(res.getBody().next_cursor).to.equal(null); });
+}

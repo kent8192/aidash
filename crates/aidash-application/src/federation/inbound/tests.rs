@@ -1,5 +1,5 @@
 use super::*;
-use crate::ports::federation::inbound::{ReceivingKeys, ViewerGrant};
+use crate::ports::federation::inbound::ReceivingKeys;
 use aidash_capability::federation::rollover::{RolloverClaims, mint_transition};
 use aidash_capability::{
 	InMemorySigner,
@@ -8,7 +8,7 @@ use aidash_capability::{
 use aidash_domain::{
 	identity::peer_mapping::Mapping,
 	nodes::{
-		DeploymentKeyId, NodeName,
+		DeploymentId, DeploymentKeyId, NodeName,
 		registration::{NodeRegistration, PinnedKey},
 	},
 };
@@ -60,7 +60,6 @@ struct World {
 	may_use: bool,
 	enabled: bool,
 	key: bool,
-	grant: Option<ViewerGrant>,
 	trust: Mutex<Vec<(ReceivingKeyOwner, ReceivingKeys)>>,
 	cas_conflict: bool,
 	asked: Mutex<Vec<&'static str>>,
@@ -81,7 +80,6 @@ impl World {
 			may_use: true,
 			enabled: true,
 			key: true,
-			grant: None,
 			trust: Mutex::new(vec![]),
 			cas_conflict: false,
 			asked: Mutex::new(vec![]),
@@ -206,14 +204,6 @@ impl InboundRepository for World {
 		self.asked.lock().unwrap().push("policy");
 		Ok(self.may_use)
 	}
-	async fn viewer_grant(
-		&self,
-		_: &TenantName,
-		_: &DeploymentId,
-		_: Uuid,
-	) -> Result<Option<ViewerGrant>> {
-		Ok(self.grant.clone())
-	}
 	async fn receiving_keys(&self, owner: &ReceivingKeyOwner) -> Result<Option<ReceivingKeys>> {
 		Ok(self
 			.trust
@@ -256,7 +246,6 @@ impl InboundRepository for World {
 				})
 				.filter(|row| row.enabled)
 				.map(|row| row.revision),
-			ReceivingKeyOwner::ViewerGrant { .. } => self.grant.as_ref().map(|row| row.revision),
 		};
 		if self.cas_conflict || authorization != Some(expected_authorization_revision) {
 			return Ok(false);
@@ -653,117 +642,6 @@ async fn an_unregistered_sender_and_a_missing_mapping_differ_only_after_the_sign
 	assert!(matches!(unmapped, Err(Error::Forbidden)));
 }
 
-fn viewer_request(world: &World) -> ViewerInbound {
-	ViewerInbound {
-		receiver: world.own.clone(),
-		viewer: DeploymentId::parse(OTHER).unwrap(),
-		tenant: tenant(TENANT),
-		identity: Uuid::from_u128(9),
-		token: String::new(),
-	}
-}
-
-async fn viewer_token(
-	signer: &InMemorySigner,
-	change: impl FnOnce(&mut FederationClaims),
-) -> String {
-	let mut claims = FederationClaims {
-		iss: OTHER.into(),
-		sub: OTHER.into(),
-		aud: OWN.into(),
-		subject: format!("oidc:{}", Uuid::from_u128(9)),
-		iat: NOW,
-		exp: NOW + 60,
-		jti: Uuid::new_v4(),
-		kid: key_id(signer).as_str().into(),
-		protocol: CURRENT.into(),
-		method: "POST".into(),
-		path: "/scoped/discover".into(),
-		body: body_digest(b"{}"),
-		transition: None,
-	};
-	change(&mut claims);
-	let signing = InMemorySigner::new(key_id(signer).as_str().into(), seed_of(signer));
-	claims
-		.mint(&signing)
-		.await
-		.unwrap()
-		.expose_secret()
-		.to_owned()
-}
-
-#[tokio::test]
-async fn a_named_deployment_administrator_is_admitted_under_its_grant_and_nothing_else() {
-	let signer = signer(1);
-	let mut world = World::new();
-	world.grant = Some(ViewerGrant {
-		key: PinnedKey {
-			key_id: key_id(&signer),
-			public_key_pem: signer.public_key_pem(),
-		},
-		revision: 4,
-	});
-	world.trust.get_mut().unwrap().push((
-		ReceivingKeyOwner::ViewerGrant {
-			tenant: tenant(TENANT),
-			viewer: DeploymentId::parse(OTHER).unwrap(),
-			identity: Uuid::from_u128(9),
-		},
-		ReceivingKeys {
-			keys: super::super::registrations::trusted_keys(&world.grant.as_ref().unwrap().key)
-				.unwrap(),
-			keys_revision: 1,
-		},
-	));
-
-	let mut request = viewer_request(&world);
-	request.token = viewer_token(&signer, |_| {}).await;
-	let admitted = accept_grant_viewer(request.clone(), &digest(), &world)
-		.await
-		.unwrap();
-	assert_eq!(admitted.grant_revision, 4);
-	assert_eq!(admitted.identity, Uuid::from_u128(9));
-
-	let mut other_identity = request.clone();
-	other_identity.identity = Uuid::from_u128(10);
-	assert!(matches!(
-		accept_grant_viewer(other_identity, &digest(), &world).await,
-		Err(Error::Unauthorized)
-	));
-	let mut as_a_node = request.clone();
-	as_a_node.token = viewer_token(&signer, |claims| {
-		claims.sub = address(OTHER, SENDING).to_string()
-	})
-	.await;
-	assert!(matches!(
-		accept_grant_viewer(as_a_node, &digest(), &world).await,
-		Err(Error::Unauthorized)
-	));
-	let mut stranger = request.clone();
-	stranger.token = viewer_token(&self::signer(2), |_| {}).await;
-	assert!(matches!(
-		accept_grant_viewer(stranger, &digest(), &world).await,
-		Err(Error::Unauthorized)
-	));
-	world.deleted.push(tenant(TENANT));
-	assert!(matches!(
-		accept_grant_viewer(request.clone(), &digest(), &world).await,
-		Err(Error::Unauthorized)
-	));
-	world.deleted.clear();
-	world.enabled = false;
-	assert!(matches!(
-		accept_grant_viewer(request.clone(), &digest(), &world).await,
-		Err(Error::Unauthorized)
-	));
-	world.enabled = true;
-	world.grant = None;
-	assert!(matches!(
-		accept_grant_viewer(request, &digest(), &world).await,
-		Err(Error::Unauthorized)
-	));
-}
-
 // Owner-boundary regression: a valid successor request must reach admission
 // without looking up the public endpoint; capability owns proof cryptography.
 #[tokio::test]
@@ -863,63 +741,4 @@ async fn rejected_successor_requests_never_replace_receiving_trust() {
 		}
 		assert_eq!(world.trust.lock().unwrap()[0].1, before, "{refusal}");
 	}
-}
-
-#[tokio::test]
-async fn grant_rollover_preserves_its_authorization_revision_and_registration_trust() {
-	let predecessor = signer(1);
-	let successor = signer(2);
-	let mut world = World::new();
-	remote(&mut world, &predecessor);
-	let key = PinnedKey {
-		key_id: key_id(&predecessor),
-		public_key_pem: predecessor.public_key_pem(),
-	};
-	world.grant = Some(ViewerGrant {
-		key: key.clone(),
-		revision: 4,
-	});
-	let owner = ReceivingKeyOwner::ViewerGrant {
-		tenant: tenant(TENANT),
-		viewer: DeploymentId::parse(OTHER).unwrap(),
-		identity: Uuid::from_u128(9),
-	};
-	world.trust.get_mut().unwrap().push((
-		owner.clone(),
-		ReceivingKeys {
-			keys: super::super::registrations::trusted_keys(&key).unwrap(),
-			keys_revision: 1,
-		},
-	));
-	let transition = transition(&predecessor, &successor).await;
-	let mut request = viewer_request(&world);
-	request.token = viewer_token(&successor, |claims| claims.transition = Some(transition)).await;
-	let admitted = accept_grant_viewer(request.clone(), &digest(), &world)
-		.await
-		.unwrap();
-	assert_eq!(admitted.grant_revision, 4);
-	assert_eq!(
-		world
-			.receiving_keys(&owner)
-			.await
-			.unwrap()
-			.unwrap()
-			.keys
-			.current
-			.key_id,
-		key_id(&successor)
-	);
-	assert_eq!(
-		world.trust.lock().unwrap()[0].1.keys.current.key_id,
-		key_id(&predecessor)
-	);
-	world.cas_conflict = true;
-	// A duplicate is already trusted and does not attempt another CAS.
-	assert_eq!(
-		accept_grant_viewer(request, &digest(), &world)
-			.await
-			.unwrap()
-			.grant_revision,
-		4
-	);
 }

@@ -1,0 +1,21 @@
+meta {
+  name: 1392 tenant-registration-keys - Missing foreign receiving tuple is not a trust confirmation
+  type: http
+  seq: 1392
+}
+
+get {
+  url: {{base_url}}/api/tenants/{{tenant}}/nodes/{{tenant_node}}/registration-keys?source_node=aidash://bruno-unknown/brave-otter-k3m9q2xa
+  body: none
+  auth: none
+}
+
+headers {
+  Accept: application/json
+  Authorization: Bearer {{deployment_administrator_token}}
+}
+
+tests {
+  test("Exact HTTP 404", function () { expect(res.getStatus()).to.equal(404); });
+  test("Rejection is diagnostic and does not disclose SQL or credentials", function () { const value=res.getBody(); const text=typeof value === "string" ? value : JSON.stringify(value); expect(text.length).to.be.greaterThan(0); expect(text).not.to.match(/postgres:\/\/|SELECT .* FROM |deployment_administrator_token|peer_token/); });
+}

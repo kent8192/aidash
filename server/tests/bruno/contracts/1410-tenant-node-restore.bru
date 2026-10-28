@@ -1,0 +1,33 @@
+meta {
+  name: 1410 tenant-node-restore - Only a deleted Node can be restored
+  type: http
+  seq: 1410
+}
+
+post {
+  url: {{base_url}}/api/tenants/{{tenant}}/nodes/{{tenant_node}}/restore
+  body: none
+  auth: none
+}
+
+headers {
+  Accept: application/json
+  Authorization: Bearer {{deployment_administrator_token}}
+}
+
+script:pre-request {
+
+const snapshot = await bru.sendRequest({method:"GET",url:bru.getEnvVar("base_url")+"/api/tenants/"+bru.getEnvVar("tenant")+"/nodes?include_deleted=true",headers:{Authorization:"Bearer "+bru.getEnvVar("deployment_administrator_token")}}); if(snapshot.status!==200 || !Array.isArray(snapshot.data)) throw new Error("Node snapshot unavailable");const target=snapshot.data.find(node=>node.name===bru.getEnvVar("tenant_node"));if(!target)throw new Error("target Node unavailable");bru.setVar("beforeNode",JSON.stringify(target));
+
+}
+
+script:post-response {
+
+const snapshot = await bru.sendRequest({method:"GET",url:bru.getEnvVar("base_url")+"/api/tenants/"+bru.getEnvVar("tenant")+"/nodes?include_deleted=true",headers:{Authorization:"Bearer "+bru.getEnvVar("deployment_administrator_token")}}); if(snapshot.status!==200 || !Array.isArray(snapshot.data)) throw new Error("Node snapshot unavailable");const target=snapshot.data.find(node=>node.name===bru.getEnvVar("tenant_node"));if(!target)throw new Error("target Node unavailable");test("Rejected write preserves the target Node", function(){expect(target).to.eql(JSON.parse(bru.getVar("beforeNode")));});
+
+}
+
+tests {
+  test("Exact HTTP 409", function () { expect(res.getStatus()).to.equal(409); });
+  test("Rejection is diagnostic and does not disclose SQL or credentials", function () { const value=res.getBody(); const text=typeof value === "string" ? value : JSON.stringify(value); expect(text.length).to.be.greaterThan(0); expect(text).not.to.match(/postgres:\/\/|SELECT .* FROM |deployment_administrator_token|peer_token/); });
+}

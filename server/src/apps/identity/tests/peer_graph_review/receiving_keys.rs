@@ -15,7 +15,7 @@ use aidash_capability::{
 };
 use aidash_domain::{
 	nodes::{
-		DeploymentId, DeploymentKeyId, NodeAddress, NodeName,
+		DeploymentKeyId, NodeAddress, NodeName,
 		keys::{PublicDeploymentKey, RolloverSchedule},
 	},
 	tenancy::TenantName,
@@ -80,9 +80,8 @@ async fn token(
 	.to_owned()
 }
 
-fn graph(viewer: Value, limit: u64, cursor: Value) -> Value {
-	let target = (viewer["kind"] == "deployment_administrator").then_some("acme");
-	json!({"viewer":viewer,"target_tenant":target,"scope_workspace":null,"mode":"mesh","kinds":["workspace"],"relations":[],"hours":0,"limit":limit,"cursor":cursor})
+fn graph(subject: &str, limit: u64, cursor: Value) -> Value {
+	json!({"subject":subject,"scope_workspace":null,"mode":"mesh","kinds":["workspace"],"relations":[],"hours":0,"limit":limit,"cursor":cursor})
 }
 
 async fn post(app: &common::TestApplication, raw: &str, body: &Value) -> (u16, Value) {
@@ -127,9 +126,6 @@ async fn receiving_rollover_survives_discovery_outage_restart_and_cursor_continu
 		.await;
 		assert_eq!(status, 200, "{body}");
 	}
-	let identity = Uuid::new_v4();
-	let (status, body) = request(&app, &f.config.api_token, "POST", "/api/authorization/acme/peer-graph-grants", json!({"source_deployment":SOURCE,"source_identity":identity,"endpoint":source.remote.endpoint,"key_id":source.remote.key_id(),"enabled":true,"expected_revision":0})).await;
-	assert_eq!(status, 200, "{body}");
 	let predecessor = FileDeploymentKey::load(&source.remote.key.path).unwrap();
 	let sender = NodeAddress::parse(&source.address()).unwrap();
 	let receiver = source.receiver.clone();
@@ -150,12 +146,7 @@ async fn receiving_rollover_survives_discovery_outage_restart_and_cursor_continu
 		node: receiver.node.clone(),
 		source_node: sender.clone(),
 	};
-	let grant_owner = ReceivingKeyOwner::ViewerGrant {
-		tenant: TenantName::new("acme").unwrap(),
-		viewer: DeploymentId::parse(SOURCE).unwrap(),
-		identity,
-	};
-	let subject_first = graph(subject.clone(), 2, Value::Null);
+	let subject_first = graph(subject, 2, Value::Null);
 	let pred = token(
 		&Signing(&predecessor),
 		&sender.to_string(),
@@ -220,14 +211,6 @@ async fn receiving_rollover_survives_discovery_outage_restart_and_cursor_continu
 			.revision,
 		1
 	);
-	assert_eq!(
-		f.receiving_keys(&grant_owner)
-			.await
-			.unwrap()
-			.unwrap()
-			.keys_revision,
-		1
-	);
 	assert_eq!(post(&app, &raw, &body).await.0, 200); // duplicate does not advance again
 	assert_eq!(f.receiving_keys(&owner).await.unwrap().unwrap(), learned);
 	let history: i64 =
@@ -236,64 +219,6 @@ async fn receiving_rollover_survives_discovery_outage_restart_and_cursor_continu
 			.await
 			.unwrap();
 	assert_eq!(history, 1);
-	let first_body = graph(
-		json!({"kind":"deployment_administrator","id":identity}),
-		2,
-		Value::Null,
-	);
-	let pred = token(
-		&Signing(&predecessor),
-		SOURCE,
-		f.config.deployment.as_str(),
-		&format!("oidc:{identity}"),
-		&RequestDigest {
-			method: "POST",
-			path: "/scoped/graph",
-			body: first_body.to_string().as_bytes(),
-		},
-		None,
-		now,
-	)
-	.await;
-	let (status, first) = post(&app, &pred, &first_body).await;
-	assert_eq!(status, 200, "{first}");
-	assert!(first["next_cursor"].is_string(), "{first}");
-	let continued_body = graph(
-		json!({"kind":"deployment_administrator","id":identity}),
-		2,
-		first["next_cursor"].clone(),
-	);
-	let raw = token(
-		&next,
-		SOURCE,
-		f.config.deployment.as_str(),
-		&format!("oidc:{identity}"),
-		&RequestDigest {
-			method: "POST",
-			path: "/scoped/graph",
-			body: continued_body.to_string().as_bytes(),
-		},
-		Some(proof.clone()),
-		now,
-	)
-	.await;
-	let (status, continued) = post(&app, &raw, &continued_body).await;
-	assert_eq!(
-		status, 200,
-		"crypto-only update preserves cursor: {continued}"
-	);
-	assert_eq!(
-		f.viewer_grant(
-			&TenantName::new("acme").unwrap(),
-			&DeploymentId::parse(SOURCE).unwrap(),
-			identity
-		)
-		.await
-		.unwrap()
-		.unwrap()
-		.revision,
-		1
-	);
 
 	let mut restarted = f.clone();
 	restarted.store = aidash_server::store::Store::from_pool(
@@ -359,99 +284,6 @@ async fn receiving_rollover_survives_discovery_outage_restart_and_cursor_continu
 				sender: sender.clone(),
 				subject: "source-subject".into(),
 				proof: inbound::Proof::Token(old_raw)
-			},
-			&digest,
-			&clock
-		)
-		.await,
-		Err(aidash_application::Error::Unauthorized)
-	));
-	let grant_body = graph(
-		json!({"kind":"deployment_administrator","id":identity}),
-		2,
-		Value::Null,
-	);
-	let grant_raw = token(
-		&next,
-		SOURCE,
-		f.config.deployment.as_str(),
-		&format!("oidc:{identity}"),
-		&RequestDigest {
-			method: "POST",
-			path: "/scoped/graph",
-			body: grant_body.to_string().as_bytes(),
-		},
-		None,
-		after_overlap,
-	)
-	.await;
-	let grant_bytes = grant_body.to_string();
-	let grant_digest = RequestDigest {
-		method: "POST",
-		path: "/scoped/graph",
-		body: grant_bytes.as_bytes(),
-	};
-	let grant_admitted = inbound::accept_grant_viewer(
-		inbound::ViewerInbound {
-			receiver: f.config.deployment.clone(),
-			viewer: DeploymentId::parse(SOURCE).unwrap(),
-			tenant: TenantName::new("acme").unwrap(),
-			identity,
-			token: grant_raw,
-		},
-		&grant_digest,
-		&clock,
-	)
-	.await
-	.unwrap();
-	assert_eq!(grant_admitted.grant_revision, 1);
-	let grant_keys = restarted
-		.receiving_keys(&grant_owner)
-		.await
-		.unwrap()
-		.unwrap();
-	assert_eq!(grant_keys.keys.current.key_id.as_str(), next.kid());
-	assert_eq!(grant_keys.keys_revision, 2);
-
-	// An independent unlearned grant missed the overlap, so the old proof is
-	// refused even though its outer token is fresh and correctly request-bound.
-	let missed = Uuid::new_v4();
-	let initial = serde_json::to_string(&before.keys).unwrap();
-	sqlx::query("INSERT INTO authorization_peer_graph_grants(tenant,source_deployment,source_identity,source_key_id,source_public_key_pem,source_keys,enabled,revision) VALUES('acme',$1,$2,$3,$4,$5,true,1)")
-        .bind(SOURCE).bind(missed).bind(predecessor.key_id().to_string()).bind(predecessor.public_key_pem()).bind(initial).execute(f.store.pool.fixture_driver()).await.unwrap();
-	let body = graph(
-		json!({"kind":"deployment_administrator","id":missed}),
-		2,
-		Value::Null,
-	);
-	let raw = token(
-		&next,
-		SOURCE,
-		f.config.deployment.as_str(),
-		&format!("oidc:{missed}"),
-		&RequestDigest {
-			method: "POST",
-			path: "/scoped/graph",
-			body: body.to_string().as_bytes(),
-		},
-		Some(proof),
-		after_overlap,
-	)
-	.await;
-	let body_bytes = body.to_string();
-	let digest = RequestDigest {
-		method: "POST",
-		path: "/scoped/graph",
-		body: body_bytes.as_bytes(),
-	};
-	assert!(matches!(
-		inbound::accept_grant_viewer(
-			inbound::ViewerInbound {
-				receiver: f.config.deployment.clone(),
-				viewer: DeploymentId::parse(SOURCE).unwrap(),
-				tenant: TenantName::new("acme").unwrap(),
-				identity: missed,
-				token: raw
 			},
 			&digest,
 			&clock
@@ -676,247 +508,5 @@ async fn receiving_cas_preserves_concurrent_disable_quarantine_and_newer_keys(
 
 	drop(source);
 	drop(app);
-	cleanup(f, &url, &schema).await;
-}
-
-#[rstest::rstest]
-#[tokio::test]
-async fn manual_graph_keys_preserve_cursor_authority_and_refuse_stale_normal_proofs(
-	#[future(awt)]
-	#[from(common::native_application)]
-	fixture: common::ApplicationFixture,
-) {
-	let (f, url, schema) = fixture.runtime.parts();
-	let app = fixture.application;
-	let (_, member, _) = bootstrap(&f, &app, "http://localhost:1").await;
-	let (_, _, source) = viewer(&f, &app).await;
-	for title in ["second", "third"] {
-		assert_eq!(
-			request(
-				&app,
-				&member,
-				"POST",
-				"/api/workspaces",
-				json!({"title":title,"goal":"cursor"})
-			)
-			.await
-			.0,
-			200
-		);
-	}
-	let identity = Uuid::new_v4();
-	let endpoint = source.remote.endpoint.clone();
-	let old = FileDeploymentKey::load(&source.remote.key.path).unwrap();
-	assert_eq!(request(&app, &f.config.api_token, "POST", "/api/authorization/acme/peer-graph-grants",
-        json!({"source_deployment":SOURCE,"source_identity":identity,"endpoint":endpoint,"key_id":old.key_id().as_str(),"enabled":true,"expected_revision":0})).await.0, 200);
-	drop(source);
-	let owner = ReceivingKeyOwner::ViewerGrant {
-		tenant: TenantName::new("acme").unwrap(),
-		viewer: DeploymentId::parse(SOURCE).unwrap(),
-		identity,
-	};
-	let route = "/api/authorization/acme/peer-graph-grant-keys";
-	let now = chrono::Utc::now().timestamp() as u64;
-	let body = graph(
-		json!({"kind":"deployment_administrator","id":identity}),
-		2,
-		Value::Null,
-	);
-	let old_token = token(
-		&Signing(&old),
-		SOURCE,
-		f.config.deployment.as_str(),
-		&format!("oidc:{identity}"),
-		&RequestDigest {
-			method: "POST",
-			path: "/scoped/graph",
-			body: body.to_string().as_bytes(),
-		},
-		None,
-		now,
-	)
-	.await;
-	let (status, page) = post(&app, &old_token, &body).await;
-	assert_eq!(status, 200, "{page}");
-	assert!(page["next_cursor"].is_string());
-	let quarantine = json!({"source_deployment":SOURCE,"source_identity":identity,"expected_keys_revision":1,"expected_authorization_revision":1,"action":"quarantine"});
-	let (status, state) =
-		request(&app, &f.config.api_token, "POST", route, quarantine.clone()).await;
-	assert_eq!(status, 200, "{state}");
-	assert_eq!(state["quarantined"], true);
-	let query = format!("{route}?source_deployment={SOURCE}&source_identity={identity}");
-	let (status, current) = request(&app, &f.config.api_token, "GET", &query, Value::Null).await;
-	assert_eq!(status, 200, "{current}");
-	assert_eq!(current, state);
-	assert_eq!(
-		request(&app, &member, "GET", &query, Value::Null).await.0,
-		403
-	);
-	assert_eq!(
-		request(&app, &member, "POST", route, quarantine).await.0,
-		403
-	);
-	let next = successor();
-	let transition = proof(&old, &next, now).await;
-	let next_token = token(
-		&next,
-		SOURCE,
-		f.config.deployment.as_str(),
-		&format!("oidc:{identity}"),
-		&RequestDigest {
-			method: "POST",
-			path: "/scoped/graph",
-			body: body.to_string().as_bytes(),
-		},
-		Some(transition),
-		now,
-	)
-	.await;
-	let quarantined = f.receiving_keys(&owner).await.unwrap().unwrap();
-	assert_eq!(post(&app, &next_token, &body).await.0, 401);
-	assert_eq!(
-		f.receiving_keys(&owner).await.unwrap().unwrap(),
-		quarantined
-	);
-	assert_eq!(request(&app, &f.config.api_token, "POST", "/api/authorization/acme/peer-graph-grants",
-        json!({"source_deployment":SOURCE,"source_identity":identity,"endpoint":endpoint,"key_id":next.kid(),"enabled":true,"expected_revision":1})).await.0, 409);
-	let confirm = json!({"source_deployment":SOURCE,"source_identity":identity,"expected_keys_revision":2,"expected_authorization_revision":1,"action":"confirm","public_key_pem":next.public_key_pem(),"expected_key_id":next.kid()});
-	let (first, second) = tokio::join!(
-		request(&app, &f.config.api_token, "POST", route, confirm.clone()),
-		request(&app, &f.config.api_token, "POST", route, confirm),
-	);
-	let mut statuses = [first.0, second.0];
-	statuses.sort();
-	assert_eq!(
-		statuses,
-		[200, 409],
-		"one concurrent confirmation wins: {first:?} {second:?}"
-	);
-	let state = if first.0 == 200 { first.1 } else { second.1 };
-	assert_eq!(state["keys_revision"], 3);
-	assert_eq!(state["authorization_revision"], 1);
-	let continuation = graph(
-		json!({"kind":"deployment_administrator","id":identity}),
-		2,
-		page["next_cursor"].clone(),
-	);
-	let raw = token(
-		&next,
-		SOURCE,
-		f.config.deployment.as_str(),
-		&format!("oidc:{identity}"),
-		&RequestDigest {
-			method: "POST",
-			path: "/scoped/graph",
-			body: continuation.to_string().as_bytes(),
-		},
-		None,
-		now,
-	)
-	.await;
-	let (status, continued) = post(&app, &raw, &continuation).await;
-	assert_eq!(
-		status, 200,
-		"crypto-only confirmation preserves the cursor: {continued}"
-	);
-	let temporary = InMemorySigner::new("unused".into(), [10; 32]);
-	let third = InMemorySigner::new(
-		DeploymentKeyId::of_public_key(temporary.public_key().as_bytes()).to_string(),
-		[10; 32],
-	);
-	let stale = token(
-		&third,
-		SOURCE,
-		f.config.deployment.as_str(),
-		&format!("oidc:{identity}"),
-		&RequestDigest {
-			method: "POST",
-			path: "/scoped/graph",
-			body: body.to_string().as_bytes(),
-		},
-		Some(proof(&old, &third, now).await),
-		now,
-	)
-	.await;
-	let pinned = f.receiving_keys(&owner).await.unwrap().unwrap();
-	assert_eq!(post(&app, &stale, &body).await.0, 401);
-	assert_eq!(f.receiving_keys(&owner).await.unwrap().unwrap(), pinned);
-	assert_eq!(request(&app, &f.config.api_token, "POST", "/api/authorization/acme/peer-graph-grants",
-        json!({"source_deployment":SOURCE,"source_identity":identity,"enabled":false,"expected_revision":1})).await.0, 200);
-	let (status, disabled) = request(&app, &f.config.api_token, "POST", route,
-        json!({"source_deployment":SOURCE,"source_identity":identity,"expected_keys_revision":3,"expected_authorization_revision":2,"action":"confirm","public_key_pem":next.public_key_pem(),"expected_key_id":next.kid()})).await;
-	assert_eq!(status, 200, "{disabled}");
-	assert_eq!(disabled["enabled"], false);
-	assert_eq!(disabled["authorization_revision"], 2);
-
-	{
-		// This grant is disabled. Queue a real independent re-pin first, then an
-		// enabled=false -> true update whose repeated pin still names the old key.
-		let mut blocker = f.store.pool.fixture_driver().begin().await.unwrap();
-		let pid: i32 = sqlx::query_scalar("SELECT pg_backend_pid()")
-			.fetch_one(&mut *blocker)
-			.await
-			.unwrap();
-		sqlx::query("SELECT 1 FROM authorization_peer_graph_grants WHERE tenant='acme' AND source_deployment=$1 AND source_identity=$2 FOR UPDATE")
-			.bind(SOURCE).bind(identity).fetch_one(&mut *blocker).await.unwrap();
-		let manual = request(
-			&app,
-			&f.config.api_token,
-			"POST",
-			route,
-			json!({"source_deployment":SOURCE,"source_identity":identity,"expected_keys_revision":4,"expected_authorization_revision":2,"action":"confirm","public_key_pem":third.public_key_pem(),"expected_key_id":third.kid()}),
-		);
-		tokio::pin!(manual);
-		tokio::select! {
-			result = &mut manual => panic!("manual confirmation did not wait for its row: {result:?}"),
-			() = common::wait_for_blocked(&f.store.pool, pid, 1) => {},
-		}
-		let permission = request(
-			&app,
-			&f.config.api_token,
-			"POST",
-			"/api/authorization/acme/peer-graph-grants",
-			json!({"source_deployment":SOURCE,"source_identity":identity,"endpoint":endpoint,"key_id":next.kid(),"enabled":true,"expected_revision":2}),
-		);
-		tokio::pin!(permission);
-		tokio::select! {
-			result = &mut manual => panic!("manual confirmation escaped its row lock: {result:?}"),
-			result = &mut permission => panic!("permission edit did not wait behind confirmation: {result:?}"),
-			() = common::wait_for_blocked(&f.store.pool, pid, 2) => {},
-		}
-		blocker.commit().await.unwrap();
-		let ((manual_status, confirmed), (permission_status, edited)) =
-			tokio::join!(manual, permission);
-		assert_eq!(manual_status, 200, "{confirmed}");
-		assert_eq!(
-			confirmed["enabled"], false,
-			"confirmation itself keeps the grant disabled"
-		);
-		assert_eq!(confirmed["authorization_revision"], 2);
-		assert_eq!(confirmed["keys_revision"], 5);
-		assert_eq!(permission_status, 200, "{edited}");
-		assert_eq!(
-			edited["enabled"], true,
-			"false -> true is an actual permission change"
-		);
-		assert_eq!(edited["revision"], 3);
-		assert_eq!(edited["source_key_id"], third.kid());
-		let (encoded, keys_revision, key_id, public_pem, authorization_revision, enabled):
-			(String, i64, String, String, i64, bool) = sqlx::query_as(
-			"SELECT source_keys,keys_revision,source_key_id,source_public_key_pem,revision,enabled FROM authorization_peer_graph_grants WHERE tenant='acme' AND source_deployment=$1 AND source_identity=$2")
-			.bind(SOURCE).bind(identity).fetch_one(f.store.pool.fixture_driver()).await.unwrap();
-		assert_eq!(authorization_revision, 3);
-		assert!(enabled);
-		assert_eq!(keys_revision, 5);
-		assert_eq!(key_id, third.kid());
-		assert_eq!(public_pem, third.public_key_pem());
-		assert_eq!(
-			serde_json::from_str::<Value>(&encoded).unwrap(),
-			json!({
-				"current":{"key_id":third.kid(),"public_key":third.public_key().to_bytes()},
-				"retiring":null,"quarantined":false,
-			})
-		);
-	}
 	cleanup(f, &url, &schema).await;
 }

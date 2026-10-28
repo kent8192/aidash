@@ -768,7 +768,6 @@
   "receivingKeyReceiver": "Receiving Node name",
   "receivingKeySource": "Original source Node address",
   "receivingKeyLookup": "Look up key",
-  "receivingKeyGraphGrants": "Peer Graph Grant keys",
   "nodeLifecycle": "Node lifecycle",
   "nodeLifecycleHelp": "Move the default to another live Node before deletion. The last live Node cannot be deleted. Restoring uses current capacity and permissions; it does not restart cancelled work or restore revoked access.",
   "nodeLifecycleEmpty": "No Nodes on this page.",

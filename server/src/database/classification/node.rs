@@ -213,7 +213,6 @@ pub fn ownership(name: &str) -> Result<Ownership> {
 		| "research_account_terminations"
 		| "authorization_bundles"
 		| "authorization_decisions"
-		| "authorization_peer_graph_grants"
 		| "authorization_revisions"
 		| "credential_store_keys"
 		| "credential_store_resources"

@@ -35,7 +35,7 @@ SUBJECT = {"Authorization": "Bearer {{contract_token}}"}
 # prove the boundary refuses what it cannot verify.
 PEER = {
     "Authorization": "Bearer not-a-federation-token",
-    "X-Aidash-Protocol": "0.4",
+    "X-Aidash-Protocol": "0.5",
 }
 COOKIE = {
     "Cookie": "{{session_cookie}}",
@@ -619,7 +619,7 @@ def render():
                 if path == "/health":
                     checks += 'expect(res.getBody()).to.eql({status:"ok",deployment:bru.getEnvVar("node_id")});'
                 if path == "/.well-known/aidash":
-                    checks += 'expect(res.getBody().id).to.equal(bru.getEnvVar("node_id"));expect(res.getBody().protocol_version).to.equal("0.4");'
+                    checks += 'expect(res.getBody().id).to.equal(bru.getEnvVar("node_id"));expect(res.getBody().protocol_version).to.equal("0.5");'
                 if path == "/auth/config":
                     checks += 'expect(res.getBody()).to.have.all.keys("enabled","provider","login_url","desktop_protocol");expect(res.getBody().enabled).to.equal(true);expect(res.getBody().login_url).to.equal("/auth/login");'
                 if path == "/api/openapi.json":
@@ -799,19 +799,9 @@ def render():
         if endpoint in {
             "GET /api/tenants/{tenant}/nodes/{node}/registration-keys",
             "POST /api/tenants/{tenant}/nodes/{node}/registration-keys",
-            "GET /api/authorization/{tenant}/peer-graph-grant-keys",
-            "POST /api/authorization/{tenant}/peer-graph-grant-keys",
         }:
-            registration = "/registration-keys" in path
-            selector = (
-                {"source_node": "aidash://bruno-unknown/" + NODE}
-                if registration else
-                {"source_deployment": "aidash://bruno-unknown", "source_identity": MISSING}
-            )
-            uri = (
-                "/api/tenants/{{tenant}}/nodes/{{tenant_node}}/registration-keys"
-                if registration else "/api/authorization/{{tenant}}/peer-graph-grant-keys"
-            )
+            selector = {"source_node": "aidash://bruno-unknown/" + NODE}
+            uri = "/api/tenants/{{tenant}}/nodes/{{tenant_node}}/registration-keys"
             body = None
             if method == "GET":
                 uri += "?" + "&".join(name + "=" + value for name, value in selector.items())

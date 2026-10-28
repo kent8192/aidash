@@ -5560,222 +5560,6 @@
     }
   },
   {
-    "json": false,
-    "method": "GET",
-    "name": "authorization_peer_graph_grants",
-    "path": "/api/authorization/{tenant}/peer-graph-grants",
-    "query_parameters": ["limit", "offset"],
-    "responses": {
-      "200": {
-        "definitions": {
-          "PeerGraphGrant": {
-            "properties": {
-              "enabled": {
-                "type": "boolean"
-              },
-              "revision": {
-                "format": "int64",
-                "type": "integer"
-              },
-              "source_deployment": {
-                "description": "The viewer's Deployment id.",
-                "type": "string"
-              },
-              "source_identity": {
-                "format": "uuid",
-                "type": "string"
-              },
-              "source_key_id": {
-                "description": "The key ID of the viewer Deployment's pinned Deployment Key.",
-                "type": "string"
-              },
-              "tenant": {
-                "type": "string"
-              },
-              "updated_at": {
-                "format": "date-time",
-                "type": "string"
-              }
-            },
-            "required": [
-              "source_deployment",
-              "source_identity",
-              "source_key_id",
-              "tenant",
-              "enabled",
-              "revision",
-              "updated_at"
-            ],
-            "type": "object"
-          }
-        },
-        "schema": {
-          "items": {
-            "$ref": "#/components/schemas/PeerGraphGrant"
-          },
-          "type": "array"
-        }
-      }
-    },
-    "source": "server/src/apps/identity/views/graph.rs",
-    "uuid_parameters": [],
-    "response": {
-      "schema": {
-        "type": "array",
-        "items": {
-          "$ref": "#/components/schemas/PeerGraphGrant"
-        }
-      },
-      "definitions": {
-        "PeerGraphGrant": {
-          "type": "object",
-          "required": [
-            "source_deployment",
-            "source_identity",
-            "source_key_id",
-            "tenant",
-            "enabled",
-            "revision",
-            "updated_at"
-          ],
-          "properties": {
-            "enabled": {
-              "type": "boolean"
-            },
-            "revision": {
-              "type": "integer",
-              "format": "int64"
-            },
-            "source_deployment": {
-              "type": "string",
-              "description": "The viewer's Deployment id."
-            },
-            "source_identity": {
-              "type": "string",
-              "format": "uuid"
-            },
-            "source_key_id": {
-              "type": "string",
-              "description": "The key ID of the viewer Deployment's pinned Deployment Key."
-            },
-            "tenant": {
-              "type": "string"
-            },
-            "updated_at": {
-              "type": "string",
-              "format": "date-time"
-            }
-          }
-        }
-      }
-    }
-  },
-  {
-    "json": true,
-    "method": "POST",
-    "name": "authorization_set_peer_graph_grant",
-    "path": "/api/authorization/{tenant}/peer-graph-grants",
-    "query_parameters": [],
-    "responses": {
-      "200": {
-        "definitions": {
-          "PeerGraphGrant": {
-            "properties": {
-              "enabled": {
-                "type": "boolean"
-              },
-              "revision": {
-                "format": "int64",
-                "type": "integer"
-              },
-              "source_deployment": {
-                "description": "The viewer's Deployment id.",
-                "type": "string"
-              },
-              "source_identity": {
-                "format": "uuid",
-                "type": "string"
-              },
-              "source_key_id": {
-                "description": "The key ID of the viewer Deployment's pinned Deployment Key.",
-                "type": "string"
-              },
-              "tenant": {
-                "type": "string"
-              },
-              "updated_at": {
-                "format": "date-time",
-                "type": "string"
-              }
-            },
-            "required": [
-              "source_deployment",
-              "source_identity",
-              "source_key_id",
-              "tenant",
-              "enabled",
-              "revision",
-              "updated_at"
-            ],
-            "type": "object"
-          }
-        },
-        "schema": {
-          "$ref": "#/components/schemas/PeerGraphGrant"
-        }
-      }
-    },
-    "source": "server/src/apps/identity/views/graph.rs",
-    "uuid_parameters": [],
-    "response": {
-      "schema": {
-        "$ref": "#/components/schemas/PeerGraphGrant"
-      },
-      "definitions": {
-        "PeerGraphGrant": {
-          "type": "object",
-          "required": [
-            "source_deployment",
-            "source_identity",
-            "source_key_id",
-            "tenant",
-            "enabled",
-            "revision",
-            "updated_at"
-          ],
-          "properties": {
-            "enabled": {
-              "type": "boolean"
-            },
-            "revision": {
-              "type": "integer",
-              "format": "int64"
-            },
-            "source_deployment": {
-              "type": "string",
-              "description": "The viewer's Deployment id."
-            },
-            "source_identity": {
-              "type": "string",
-              "format": "uuid"
-            },
-            "source_key_id": {
-              "type": "string",
-              "description": "The key ID of the viewer Deployment's pinned Deployment Key."
-            },
-            "tenant": {
-              "type": "string"
-            },
-            "updated_at": {
-              "type": "string",
-              "format": "date-time"
-            }
-          }
-        }
-      }
-    }
-  },
-  {
     "json": true,
     "method": "POST",
     "name": "graphmanagement-project",
@@ -81413,123 +81197,6 @@
   {
     "json": true,
     "method": "POST",
-    "name": "remote_human_answer",
-    "path": "/api/tasks/{task}/remote-grants/{grant}/human-requests/answer",
-    "query_parameters": [],
-    "responses": {
-      "200": {
-        "definitions": {
-          "HumanRequest": {
-            "properties": {
-              "answer_by": {
-                "description": "When the Run waiting for this question continues without an answer, if\nits person set an Answer Deadline. Only the dashboard state fills it in,\nfrom the Run's waiting state.",
-                "format": "date-time",
-                "type": ["string", "null"]
-              },
-              "answered_by": {
-                "type": ["string", "null"]
-              },
-              "created_at": {
-                "format": "date-time",
-                "type": "string"
-              },
-              "id": {
-                "format": "uuid",
-                "type": "string"
-              },
-              "kind": {
-                "type": "string"
-              },
-              "prompt": {
-                "type": "string"
-              },
-              "response": {},
-              "run_id": {
-                "format": "uuid",
-                "type": "string"
-              },
-              "workspace_id": {
-                "format": "uuid",
-                "type": "string"
-              }
-            },
-            "required": [
-              "answered_by",
-              "id",
-              "workspace_id",
-              "run_id",
-              "kind",
-              "prompt",
-              "response",
-              "created_at"
-            ],
-            "type": "object"
-          }
-        },
-        "schema": {
-          "$ref": "#/components/schemas/HumanRequest"
-        }
-      }
-    },
-    "source": "server/src/apps/identity/views/remote_execution.rs",
-    "uuid_parameters": ["grant", "task"],
-    "response": {
-      "schema": {
-        "$ref": "#/components/schemas/HumanRequest"
-      },
-      "definitions": {
-        "HumanRequest": {
-          "type": "object",
-          "required": [
-            "answered_by",
-            "id",
-            "workspace_id",
-            "run_id",
-            "kind",
-            "prompt",
-            "response",
-            "created_at"
-          ],
-          "properties": {
-            "answer_by": {
-              "type": ["string", "null"],
-              "format": "date-time",
-              "description": "When the Run waiting for this question continues without an answer, if\nits person set an Answer Deadline. Only the dashboard state fills it in,\nfrom the Run's waiting state."
-            },
-            "answered_by": {
-              "type": ["string", "null"]
-            },
-            "created_at": {
-              "type": "string",
-              "format": "date-time"
-            },
-            "id": {
-              "type": "string",
-              "format": "uuid"
-            },
-            "kind": {
-              "type": "string"
-            },
-            "prompt": {
-              "type": "string"
-            },
-            "response": {},
-            "run_id": {
-              "type": "string",
-              "format": "uuid"
-            },
-            "workspace_id": {
-              "type": "string",
-              "format": "uuid"
-            }
-          }
-        }
-      }
-    }
-  },
-  {
-    "json": true,
-    "method": "POST",
     "name": "remote-agent-inspection",
     "path": "/api/tasks/{id}/remote-grants/inspect",
     "query_parameters": [],
@@ -89970,1334 +89637,6 @@
     }
   },
   {
-    "json": false,
-    "method": "GET",
-    "name": "peer-graph-grant-keys",
-    "path": "/api/authorization/{tenant}/peer-graph-grant-keys",
-    "query_parameters": ["source_deployment", "source_identity"],
-    "responses": {
-      "200": {
-        "definitions": {
-          "ReceivingKeyStatus": {
-            "properties": {
-              "authorization_revision": {
-                "format": "int64",
-                "type": "integer"
-              },
-              "enabled": {
-                "type": "boolean"
-              },
-              "key_id": {
-                "type": "string"
-              },
-              "keys_revision": {
-                "format": "int64",
-                "type": "integer"
-              },
-              "quarantined": {
-                "type": "boolean"
-              }
-            },
-            "required": [
-              "key_id",
-              "quarantined",
-              "keys_revision",
-              "authorization_revision",
-              "enabled"
-            ],
-            "type": "object"
-          }
-        },
-        "schema": {
-          "$ref": "#/components/schemas/ReceivingKeyStatus"
-        }
-      }
-    },
-    "source": "server/src/apps/identity/views/manual_keys.rs",
-    "uuid_parameters": [],
-    "response": {
-      "schema": {
-        "$ref": "#/components/schemas/ReceivingKeyStatus"
-      },
-      "definitions": {
-        "ReceivingKeyStatus": {
-          "type": "object",
-          "required": [
-            "key_id",
-            "quarantined",
-            "keys_revision",
-            "authorization_revision",
-            "enabled"
-          ],
-          "properties": {
-            "authorization_revision": {
-              "type": "integer",
-              "format": "int64"
-            },
-            "enabled": {
-              "type": "boolean"
-            },
-            "key_id": {
-              "type": "string"
-            },
-            "keys_revision": {
-              "type": "integer",
-              "format": "int64"
-            },
-            "quarantined": {
-              "type": "boolean"
-            }
-          }
-        }
-      }
-    }
-  },
-  {
-    "json": false,
-    "method": "GET",
-    "name": "tenant-registration-keys",
-    "path": "/api/tenants/{tenant}/nodes/{node}/registration-keys",
-    "query_parameters": ["source_node"],
-    "responses": {
-      "200": {
-        "definitions": {
-          "ReceivingKeyStatus": {
-            "properties": {
-              "authorization_revision": {
-                "format": "int64",
-                "type": "integer"
-              },
-              "enabled": {
-                "type": "boolean"
-              },
-              "key_id": {
-                "type": "string"
-              },
-              "keys_revision": {
-                "format": "int64",
-                "type": "integer"
-              },
-              "quarantined": {
-                "type": "boolean"
-              }
-            },
-            "required": [
-              "key_id",
-              "quarantined",
-              "keys_revision",
-              "authorization_revision",
-              "enabled"
-            ],
-            "type": "object"
-          }
-        },
-        "schema": {
-          "$ref": "#/components/schemas/ReceivingKeyStatus"
-        }
-      }
-    },
-    "source": "server/src/apps/identity/views/manual_keys.rs",
-    "uuid_parameters": [],
-    "response": {
-      "schema": {
-        "$ref": "#/components/schemas/ReceivingKeyStatus"
-      },
-      "definitions": {
-        "ReceivingKeyStatus": {
-          "type": "object",
-          "required": [
-            "key_id",
-            "quarantined",
-            "keys_revision",
-            "authorization_revision",
-            "enabled"
-          ],
-          "properties": {
-            "authorization_revision": {
-              "type": "integer",
-              "format": "int64"
-            },
-            "enabled": {
-              "type": "boolean"
-            },
-            "key_id": {
-              "type": "string"
-            },
-            "keys_revision": {
-              "type": "integer",
-              "format": "int64"
-            },
-            "quarantined": {
-              "type": "boolean"
-            }
-          }
-        }
-      }
-    }
-  },
-  {
-    "json": true,
-    "method": "POST",
-    "name": "peer-graph-grant-keys-change",
-    "path": "/api/authorization/{tenant}/peer-graph-grant-keys",
-    "query_parameters": [],
-    "responses": {
-      "200": {
-        "definitions": {
-          "ReceivingKeyStatus": {
-            "properties": {
-              "authorization_revision": {
-                "format": "int64",
-                "type": "integer"
-              },
-              "enabled": {
-                "type": "boolean"
-              },
-              "key_id": {
-                "type": "string"
-              },
-              "keys_revision": {
-                "format": "int64",
-                "type": "integer"
-              },
-              "quarantined": {
-                "type": "boolean"
-              }
-            },
-            "required": [
-              "key_id",
-              "quarantined",
-              "keys_revision",
-              "authorization_revision",
-              "enabled"
-            ],
-            "type": "object"
-          }
-        },
-        "schema": {
-          "$ref": "#/components/schemas/ReceivingKeyStatus"
-        }
-      }
-    },
-    "source": "server/src/apps/identity/views/manual_keys.rs",
-    "uuid_parameters": [],
-    "response": {
-      "schema": {
-        "$ref": "#/components/schemas/ReceivingKeyStatus"
-      },
-      "definitions": {
-        "ReceivingKeyStatus": {
-          "type": "object",
-          "required": [
-            "key_id",
-            "quarantined",
-            "keys_revision",
-            "authorization_revision",
-            "enabled"
-          ],
-          "properties": {
-            "authorization_revision": {
-              "type": "integer",
-              "format": "int64"
-            },
-            "enabled": {
-              "type": "boolean"
-            },
-            "key_id": {
-              "type": "string"
-            },
-            "keys_revision": {
-              "type": "integer",
-              "format": "int64"
-            },
-            "quarantined": {
-              "type": "boolean"
-            }
-          }
-        }
-      }
-    }
-  },
-  {
-    "json": false,
-    "method": "POST",
-    "name": "tenant-node-default",
-    "path": "/api/tenants/{tenant}/nodes/{node}/default",
-    "query_parameters": [],
-    "responses": {
-      "200": {
-        "definitions": {
-          "NodeDeletionRecord": {
-            "properties": {
-              "deleted_at": {
-                "format": "date-time",
-                "type": "string"
-              },
-              "deleted_by_kind": {
-                "type": "string"
-              },
-              "id": {
-                "format": "uuid",
-                "type": "string"
-              },
-              "purge_after": {
-                "format": "date-time",
-                "type": "string"
-              },
-              "purge_error": {
-                "type": ["string", "null"]
-              },
-              "purge_failed_at": {
-                "format": "date-time",
-                "type": ["string", "null"]
-              },
-              "purge_failures": {
-                "format": "int64",
-                "type": "integer"
-              },
-              "purge_step": {
-                "type": ["string", "null"]
-              },
-              "purged_at": {
-                "format": "date-time",
-                "type": ["string", "null"]
-              }
-            },
-            "required": [
-              "id",
-              "deleted_at",
-              "deleted_by_kind",
-              "purge_after",
-              "purged_at",
-              "purge_step",
-              "purge_failures",
-              "purge_error",
-              "purge_failed_at"
-            ],
-            "type": "object"
-          },
-          "NodeRecord": {
-            "description": "A Node as its Tenant sees it.",
-            "properties": {
-              "address": {
-                "description": "`aidash://<deployment>/<name>`, what other Nodes register.",
-                "type": "string"
-              },
-              "created_at": {
-                "format": "date-time",
-                "type": "string"
-              },
-              "default": {
-                "description": "The current default Node; Workspaces go there unless another is chosen.",
-                "type": "boolean"
-              },
-              "deletion": {
-                "anyOf": [
-                  {
-                    "$ref": "#/components/schemas/NodeDeletionRecord"
-                  },
-                  {
-                    "type": "null"
-                  }
-                ]
-              },
-              "label": {
-                "type": "string"
-              },
-              "name": {
-                "description": "The Node name Aidash assigned. It never changes.",
-                "type": "string"
-              },
-              "retained_storage_bytes": {
-                "description": "Actual retained storage in authorized management/lifecycle snapshots.\nOrdinary Node selectors omit this private activity projection (`null`).",
-                "format": "uint64",
-                "minimum": 0,
-                "type": ["integer", "null"]
-              },
-              "state": {
-                "$ref": "#/components/schemas/NodeState"
-              },
-              "storage_retained_until_purge": {
-                "description": "Retained data is physically removed by the purge worker. Offering and\nTenant deletion rules determine whether retained bytes are billable.",
-                "type": "boolean"
-              }
-            },
-            "required": [
-              "name",
-              "address",
-              "label",
-              "default",
-              "created_at",
-              "state",
-              "deletion",
-              "storage_retained_until_purge",
-              "retained_storage_bytes"
-            ],
-            "type": "object"
-          },
-          "NodeState": {
-            "enum": ["live", "deleted", "deleting", "purged"],
-            "type": "string"
-          }
-        },
-        "schema": {
-          "$ref": "#/components/schemas/NodeRecord"
-        }
-      }
-    },
-    "source": "server/src/apps/identity/views/nodes.rs",
-    "uuid_parameters": [],
-    "response": {
-      "schema": {
-        "$ref": "#/components/schemas/NodeRecord"
-      },
-      "definitions": {
-        "NodeDeletionRecord": {
-          "type": "object",
-          "required": [
-            "id",
-            "deleted_at",
-            "deleted_by_kind",
-            "purge_after",
-            "purged_at",
-            "purge_step",
-            "purge_failures",
-            "purge_error",
-            "purge_failed_at"
-          ],
-          "properties": {
-            "deleted_at": {
-              "type": "string",
-              "format": "date-time"
-            },
-            "deleted_by_kind": {
-              "type": "string"
-            },
-            "id": {
-              "type": "string",
-              "format": "uuid"
-            },
-            "purge_after": {
-              "type": "string",
-              "format": "date-time"
-            },
-            "purge_error": {
-              "type": ["string", "null"]
-            },
-            "purge_failed_at": {
-              "type": ["string", "null"],
-              "format": "date-time"
-            },
-            "purge_failures": {
-              "type": "integer",
-              "format": "int64"
-            },
-            "purge_step": {
-              "type": ["string", "null"]
-            },
-            "purged_at": {
-              "type": ["string", "null"],
-              "format": "date-time"
-            }
-          }
-        },
-        "NodeRecord": {
-          "type": "object",
-          "description": "A Node as its Tenant sees it.",
-          "required": [
-            "name",
-            "address",
-            "label",
-            "default",
-            "created_at",
-            "state",
-            "deletion",
-            "storage_retained_until_purge",
-            "retained_storage_bytes"
-          ],
-          "properties": {
-            "address": {
-              "type": "string",
-              "description": "`aidash://<deployment>/<name>`, what other Nodes register."
-            },
-            "created_at": {
-              "type": "string",
-              "format": "date-time"
-            },
-            "default": {
-              "type": "boolean",
-              "description": "The current default Node; Workspaces go there unless another is chosen."
-            },
-            "deletion": {
-              "anyOf": [
-                {
-                  "$ref": "#/components/schemas/NodeDeletionRecord"
-                },
-                {
-                  "type": "null"
-                }
-              ]
-            },
-            "label": {
-              "type": "string"
-            },
-            "name": {
-              "type": "string",
-              "description": "The Node name Aidash assigned. It never changes."
-            },
-            "retained_storage_bytes": {
-              "type": ["integer", "null"],
-              "format": "uint64",
-              "description": "Actual retained storage in authorized management/lifecycle snapshots.\nOrdinary Node selectors omit this private activity projection (`null`).",
-              "minimum": 0
-            },
-            "state": {
-              "$ref": "#/components/schemas/NodeState"
-            },
-            "storage_retained_until_purge": {
-              "type": "boolean",
-              "description": "Retained data is physically removed by the purge worker. Offering and\nTenant deletion rules determine whether retained bytes are billable."
-            }
-          }
-        },
-        "NodeState": {
-          "type": "string",
-          "enum": ["live", "deleted", "deleting", "purged"]
-        }
-      }
-    }
-  },
-  {
-    "json": true,
-    "method": "POST",
-    "name": "tenant-node-deletion",
-    "path": "/api/tenants/{tenant}/nodes/{node}/deletion",
-    "query_parameters": [],
-    "responses": {
-      "200": {
-        "definitions": {
-          "NodeDeletionRecord": {
-            "properties": {
-              "deleted_at": {
-                "format": "date-time",
-                "type": "string"
-              },
-              "deleted_by_kind": {
-                "type": "string"
-              },
-              "id": {
-                "format": "uuid",
-                "type": "string"
-              },
-              "purge_after": {
-                "format": "date-time",
-                "type": "string"
-              },
-              "purge_error": {
-                "type": ["string", "null"]
-              },
-              "purge_failed_at": {
-                "format": "date-time",
-                "type": ["string", "null"]
-              },
-              "purge_failures": {
-                "format": "int64",
-                "type": "integer"
-              },
-              "purge_step": {
-                "type": ["string", "null"]
-              },
-              "purged_at": {
-                "format": "date-time",
-                "type": ["string", "null"]
-              }
-            },
-            "required": [
-              "id",
-              "deleted_at",
-              "deleted_by_kind",
-              "purge_after",
-              "purged_at",
-              "purge_step",
-              "purge_failures",
-              "purge_error",
-              "purge_failed_at"
-            ],
-            "type": "object"
-          },
-          "NodeRecord": {
-            "description": "A Node as its Tenant sees it.",
-            "properties": {
-              "address": {
-                "description": "`aidash://<deployment>/<name>`, what other Nodes register.",
-                "type": "string"
-              },
-              "created_at": {
-                "format": "date-time",
-                "type": "string"
-              },
-              "default": {
-                "description": "The current default Node; Workspaces go there unless another is chosen.",
-                "type": "boolean"
-              },
-              "deletion": {
-                "anyOf": [
-                  {
-                    "$ref": "#/components/schemas/NodeDeletionRecord"
-                  },
-                  {
-                    "type": "null"
-                  }
-                ]
-              },
-              "label": {
-                "type": "string"
-              },
-              "name": {
-                "description": "The Node name Aidash assigned. It never changes.",
-                "type": "string"
-              },
-              "retained_storage_bytes": {
-                "description": "Actual retained storage in authorized management/lifecycle snapshots.\nOrdinary Node selectors omit this private activity projection (`null`).",
-                "format": "uint64",
-                "minimum": 0,
-                "type": ["integer", "null"]
-              },
-              "state": {
-                "$ref": "#/components/schemas/NodeState"
-              },
-              "storage_retained_until_purge": {
-                "description": "Retained data is physically removed by the purge worker. Offering and\nTenant deletion rules determine whether retained bytes are billable.",
-                "type": "boolean"
-              }
-            },
-            "required": [
-              "name",
-              "address",
-              "label",
-              "default",
-              "created_at",
-              "state",
-              "deletion",
-              "storage_retained_until_purge",
-              "retained_storage_bytes"
-            ],
-            "type": "object"
-          },
-          "NodeState": {
-            "enum": ["live", "deleted", "deleting", "purged"],
-            "type": "string"
-          }
-        },
-        "schema": {
-          "$ref": "#/components/schemas/NodeRecord"
-        }
-      }
-    },
-    "source": "server/src/apps/identity/views/nodes.rs",
-    "uuid_parameters": [],
-    "response": {
-      "schema": {
-        "$ref": "#/components/schemas/NodeRecord"
-      },
-      "definitions": {
-        "NodeDeletionRecord": {
-          "type": "object",
-          "required": [
-            "id",
-            "deleted_at",
-            "deleted_by_kind",
-            "purge_after",
-            "purged_at",
-            "purge_step",
-            "purge_failures",
-            "purge_error",
-            "purge_failed_at"
-          ],
-          "properties": {
-            "deleted_at": {
-              "type": "string",
-              "format": "date-time"
-            },
-            "deleted_by_kind": {
-              "type": "string"
-            },
-            "id": {
-              "type": "string",
-              "format": "uuid"
-            },
-            "purge_after": {
-              "type": "string",
-              "format": "date-time"
-            },
-            "purge_error": {
-              "type": ["string", "null"]
-            },
-            "purge_failed_at": {
-              "type": ["string", "null"],
-              "format": "date-time"
-            },
-            "purge_failures": {
-              "type": "integer",
-              "format": "int64"
-            },
-            "purge_step": {
-              "type": ["string", "null"]
-            },
-            "purged_at": {
-              "type": ["string", "null"],
-              "format": "date-time"
-            }
-          }
-        },
-        "NodeRecord": {
-          "type": "object",
-          "description": "A Node as its Tenant sees it.",
-          "required": [
-            "name",
-            "address",
-            "label",
-            "default",
-            "created_at",
-            "state",
-            "deletion",
-            "storage_retained_until_purge",
-            "retained_storage_bytes"
-          ],
-          "properties": {
-            "address": {
-              "type": "string",
-              "description": "`aidash://<deployment>/<name>`, what other Nodes register."
-            },
-            "created_at": {
-              "type": "string",
-              "format": "date-time"
-            },
-            "default": {
-              "type": "boolean",
-              "description": "The current default Node; Workspaces go there unless another is chosen."
-            },
-            "deletion": {
-              "anyOf": [
-                {
-                  "$ref": "#/components/schemas/NodeDeletionRecord"
-                },
-                {
-                  "type": "null"
-                }
-              ]
-            },
-            "label": {
-              "type": "string"
-            },
-            "name": {
-              "type": "string",
-              "description": "The Node name Aidash assigned. It never changes."
-            },
-            "retained_storage_bytes": {
-              "type": ["integer", "null"],
-              "format": "uint64",
-              "description": "Actual retained storage in authorized management/lifecycle snapshots.\nOrdinary Node selectors omit this private activity projection (`null`).",
-              "minimum": 0
-            },
-            "state": {
-              "$ref": "#/components/schemas/NodeState"
-            },
-            "storage_retained_until_purge": {
-              "type": "boolean",
-              "description": "Retained data is physically removed by the purge worker. Offering and\nTenant deletion rules determine whether retained bytes are billable."
-            }
-          }
-        },
-        "NodeState": {
-          "type": "string",
-          "enum": ["live", "deleted", "deleting", "purged"]
-        }
-      }
-    }
-  },
-  {
-    "json": false,
-    "method": "POST",
-    "name": "tenant-node-purge",
-    "path": "/api/tenants/{tenant}/nodes/{node}/purge",
-    "query_parameters": [],
-    "responses": {
-      "200": {
-        "definitions": {
-          "NodeDeletionRecord": {
-            "properties": {
-              "deleted_at": {
-                "format": "date-time",
-                "type": "string"
-              },
-              "deleted_by_kind": {
-                "type": "string"
-              },
-              "id": {
-                "format": "uuid",
-                "type": "string"
-              },
-              "purge_after": {
-                "format": "date-time",
-                "type": "string"
-              },
-              "purge_error": {
-                "type": ["string", "null"]
-              },
-              "purge_failed_at": {
-                "format": "date-time",
-                "type": ["string", "null"]
-              },
-              "purge_failures": {
-                "format": "int64",
-                "type": "integer"
-              },
-              "purge_step": {
-                "type": ["string", "null"]
-              },
-              "purged_at": {
-                "format": "date-time",
-                "type": ["string", "null"]
-              }
-            },
-            "required": [
-              "id",
-              "deleted_at",
-              "deleted_by_kind",
-              "purge_after",
-              "purged_at",
-              "purge_step",
-              "purge_failures",
-              "purge_error",
-              "purge_failed_at"
-            ],
-            "type": "object"
-          },
-          "NodeRecord": {
-            "description": "A Node as its Tenant sees it.",
-            "properties": {
-              "address": {
-                "description": "`aidash://<deployment>/<name>`, what other Nodes register.",
-                "type": "string"
-              },
-              "created_at": {
-                "format": "date-time",
-                "type": "string"
-              },
-              "default": {
-                "description": "The current default Node; Workspaces go there unless another is chosen.",
-                "type": "boolean"
-              },
-              "deletion": {
-                "anyOf": [
-                  {
-                    "$ref": "#/components/schemas/NodeDeletionRecord"
-                  },
-                  {
-                    "type": "null"
-                  }
-                ]
-              },
-              "label": {
-                "type": "string"
-              },
-              "name": {
-                "description": "The Node name Aidash assigned. It never changes.",
-                "type": "string"
-              },
-              "retained_storage_bytes": {
-                "description": "Actual retained storage in authorized management/lifecycle snapshots.\nOrdinary Node selectors omit this private activity projection (`null`).",
-                "format": "uint64",
-                "minimum": 0,
-                "type": ["integer", "null"]
-              },
-              "state": {
-                "$ref": "#/components/schemas/NodeState"
-              },
-              "storage_retained_until_purge": {
-                "description": "Retained data is physically removed by the purge worker. Offering and\nTenant deletion rules determine whether retained bytes are billable.",
-                "type": "boolean"
-              }
-            },
-            "required": [
-              "name",
-              "address",
-              "label",
-              "default",
-              "created_at",
-              "state",
-              "deletion",
-              "storage_retained_until_purge",
-              "retained_storage_bytes"
-            ],
-            "type": "object"
-          },
-          "NodeState": {
-            "enum": ["live", "deleted", "deleting", "purged"],
-            "type": "string"
-          }
-        },
-        "schema": {
-          "$ref": "#/components/schemas/NodeRecord"
-        }
-      }
-    },
-    "source": "server/src/apps/identity/views/nodes.rs",
-    "uuid_parameters": [],
-    "response": {
-      "schema": {
-        "$ref": "#/components/schemas/NodeRecord"
-      },
-      "definitions": {
-        "NodeDeletionRecord": {
-          "type": "object",
-          "required": [
-            "id",
-            "deleted_at",
-            "deleted_by_kind",
-            "purge_after",
-            "purged_at",
-            "purge_step",
-            "purge_failures",
-            "purge_error",
-            "purge_failed_at"
-          ],
-          "properties": {
-            "deleted_at": {
-              "type": "string",
-              "format": "date-time"
-            },
-            "deleted_by_kind": {
-              "type": "string"
-            },
-            "id": {
-              "type": "string",
-              "format": "uuid"
-            },
-            "purge_after": {
-              "type": "string",
-              "format": "date-time"
-            },
-            "purge_error": {
-              "type": ["string", "null"]
-            },
-            "purge_failed_at": {
-              "type": ["string", "null"],
-              "format": "date-time"
-            },
-            "purge_failures": {
-              "type": "integer",
-              "format": "int64"
-            },
-            "purge_step": {
-              "type": ["string", "null"]
-            },
-            "purged_at": {
-              "type": ["string", "null"],
-              "format": "date-time"
-            }
-          }
-        },
-        "NodeRecord": {
-          "type": "object",
-          "description": "A Node as its Tenant sees it.",
-          "required": [
-            "name",
-            "address",
-            "label",
-            "default",
-            "created_at",
-            "state",
-            "deletion",
-            "storage_retained_until_purge",
-            "retained_storage_bytes"
-          ],
-          "properties": {
-            "address": {
-              "type": "string",
-              "description": "`aidash://<deployment>/<name>`, what other Nodes register."
-            },
-            "created_at": {
-              "type": "string",
-              "format": "date-time"
-            },
-            "default": {
-              "type": "boolean",
-              "description": "The current default Node; Workspaces go there unless another is chosen."
-            },
-            "deletion": {
-              "anyOf": [
-                {
-                  "$ref": "#/components/schemas/NodeDeletionRecord"
-                },
-                {
-                  "type": "null"
-                }
-              ]
-            },
-            "label": {
-              "type": "string"
-            },
-            "name": {
-              "type": "string",
-              "description": "The Node name Aidash assigned. It never changes."
-            },
-            "retained_storage_bytes": {
-              "type": ["integer", "null"],
-              "format": "uint64",
-              "description": "Actual retained storage in authorized management/lifecycle snapshots.\nOrdinary Node selectors omit this private activity projection (`null`).",
-              "minimum": 0
-            },
-            "state": {
-              "$ref": "#/components/schemas/NodeState"
-            },
-            "storage_retained_until_purge": {
-              "type": "boolean",
-              "description": "Retained data is physically removed by the purge worker. Offering and\nTenant deletion rules determine whether retained bytes are billable."
-            }
-          }
-        },
-        "NodeState": {
-          "type": "string",
-          "enum": ["live", "deleted", "deleting", "purged"]
-        }
-      }
-    }
-  },
-  {
-    "json": true,
-    "method": "POST",
-    "name": "tenant-registration-keys-change",
-    "path": "/api/tenants/{tenant}/nodes/{node}/registration-keys",
-    "query_parameters": [],
-    "responses": {
-      "200": {
-        "definitions": {
-          "ReceivingKeyStatus": {
-            "properties": {
-              "authorization_revision": {
-                "format": "int64",
-                "type": "integer"
-              },
-              "enabled": {
-                "type": "boolean"
-              },
-              "key_id": {
-                "type": "string"
-              },
-              "keys_revision": {
-                "format": "int64",
-                "type": "integer"
-              },
-              "quarantined": {
-                "type": "boolean"
-              }
-            },
-            "required": [
-              "key_id",
-              "quarantined",
-              "keys_revision",
-              "authorization_revision",
-              "enabled"
-            ],
-            "type": "object"
-          }
-        },
-        "schema": {
-          "$ref": "#/components/schemas/ReceivingKeyStatus"
-        }
-      }
-    },
-    "source": "server/src/apps/identity/views/manual_keys.rs",
-    "uuid_parameters": [],
-    "response": {
-      "schema": {
-        "$ref": "#/components/schemas/ReceivingKeyStatus"
-      },
-      "definitions": {
-        "ReceivingKeyStatus": {
-          "type": "object",
-          "required": [
-            "key_id",
-            "quarantined",
-            "keys_revision",
-            "authorization_revision",
-            "enabled"
-          ],
-          "properties": {
-            "authorization_revision": {
-              "type": "integer",
-              "format": "int64"
-            },
-            "enabled": {
-              "type": "boolean"
-            },
-            "key_id": {
-              "type": "string"
-            },
-            "keys_revision": {
-              "type": "integer",
-              "format": "int64"
-            },
-            "quarantined": {
-              "type": "boolean"
-            }
-          }
-        }
-      }
-    }
-  },
-  {
-    "json": false,
-    "method": "POST",
-    "name": "tenant-node-restore",
-    "path": "/api/tenants/{tenant}/nodes/{node}/restore",
-    "query_parameters": [],
-    "responses": {
-      "200": {
-        "definitions": {
-          "NodeDeletionRecord": {
-            "properties": {
-              "deleted_at": {
-                "format": "date-time",
-                "type": "string"
-              },
-              "deleted_by_kind": {
-                "type": "string"
-              },
-              "id": {
-                "format": "uuid",
-                "type": "string"
-              },
-              "purge_after": {
-                "format": "date-time",
-                "type": "string"
-              },
-              "purge_error": {
-                "type": ["string", "null"]
-              },
-              "purge_failed_at": {
-                "format": "date-time",
-                "type": ["string", "null"]
-              },
-              "purge_failures": {
-                "format": "int64",
-                "type": "integer"
-              },
-              "purge_step": {
-                "type": ["string", "null"]
-              },
-              "purged_at": {
-                "format": "date-time",
-                "type": ["string", "null"]
-              }
-            },
-            "required": [
-              "id",
-              "deleted_at",
-              "deleted_by_kind",
-              "purge_after",
-              "purged_at",
-              "purge_step",
-              "purge_failures",
-              "purge_error",
-              "purge_failed_at"
-            ],
-            "type": "object"
-          },
-          "NodeRecord": {
-            "description": "A Node as its Tenant sees it.",
-            "properties": {
-              "address": {
-                "description": "`aidash://<deployment>/<name>`, what other Nodes register.",
-                "type": "string"
-              },
-              "created_at": {
-                "format": "date-time",
-                "type": "string"
-              },
-              "default": {
-                "description": "The current default Node; Workspaces go there unless another is chosen.",
-                "type": "boolean"
-              },
-              "deletion": {
-                "anyOf": [
-                  {
-                    "$ref": "#/components/schemas/NodeDeletionRecord"
-                  },
-                  {
-                    "type": "null"
-                  }
-                ]
-              },
-              "label": {
-                "type": "string"
-              },
-              "name": {
-                "description": "The Node name Aidash assigned. It never changes.",
-                "type": "string"
-              },
-              "retained_storage_bytes": {
-                "description": "Actual retained storage in authorized management/lifecycle snapshots.\nOrdinary Node selectors omit this private activity projection (`null`).",
-                "format": "uint64",
-                "minimum": 0,
-                "type": ["integer", "null"]
-              },
-              "state": {
-                "$ref": "#/components/schemas/NodeState"
-              },
-              "storage_retained_until_purge": {
-                "description": "Retained data is physically removed by the purge worker. Offering and\nTenant deletion rules determine whether retained bytes are billable.",
-                "type": "boolean"
-              }
-            },
-            "required": [
-              "name",
-              "address",
-              "label",
-              "default",
-              "created_at",
-              "state",
-              "deletion",
-              "storage_retained_until_purge",
-              "retained_storage_bytes"
-            ],
-            "type": "object"
-          },
-          "NodeState": {
-            "enum": ["live", "deleted", "deleting", "purged"],
-            "type": "string"
-          }
-        },
-        "schema": {
-          "$ref": "#/components/schemas/NodeRecord"
-        }
-      }
-    },
-    "source": "server/src/apps/identity/views/nodes.rs",
-    "uuid_parameters": [],
-    "response": {
-      "schema": {
-        "$ref": "#/components/schemas/NodeRecord"
-      },
-      "definitions": {
-        "NodeDeletionRecord": {
-          "type": "object",
-          "required": [
-            "id",
-            "deleted_at",
-            "deleted_by_kind",
-            "purge_after",
-            "purged_at",
-            "purge_step",
-            "purge_failures",
-            "purge_error",
-            "purge_failed_at"
-          ],
-          "properties": {
-            "deleted_at": {
-              "type": "string",
-              "format": "date-time"
-            },
-            "deleted_by_kind": {
-              "type": "string"
-            },
-            "id": {
-              "type": "string",
-              "format": "uuid"
-            },
-            "purge_after": {
-              "type": "string",
-              "format": "date-time"
-            },
-            "purge_error": {
-              "type": ["string", "null"]
-            },
-            "purge_failed_at": {
-              "type": ["string", "null"],
-              "format": "date-time"
-            },
-            "purge_failures": {
-              "type": "integer",
-              "format": "int64"
-            },
-            "purge_step": {
-              "type": ["string", "null"]
-            },
-            "purged_at": {
-              "type": ["string", "null"],
-              "format": "date-time"
-            }
-          }
-        },
-        "NodeRecord": {
-          "type": "object",
-          "description": "A Node as its Tenant sees it.",
-          "required": [
-            "name",
-            "address",
-            "label",
-            "default",
-            "created_at",
-            "state",
-            "deletion",
-            "storage_retained_until_purge",
-            "retained_storage_bytes"
-          ],
-          "properties": {
-            "address": {
-              "type": "string",
-              "description": "`aidash://<deployment>/<name>`, what other Nodes register."
-            },
-            "created_at": {
-              "type": "string",
-              "format": "date-time"
-            },
-            "default": {
-              "type": "boolean",
-              "description": "The current default Node; Workspaces go there unless another is chosen."
-            },
-            "deletion": {
-              "anyOf": [
-                {
-                  "$ref": "#/components/schemas/NodeDeletionRecord"
-                },
-                {
-                  "type": "null"
-                }
-              ]
-            },
-            "label": {
-              "type": "string"
-            },
-            "name": {
-              "type": "string",
-              "description": "The Node name Aidash assigned. It never changes."
-            },
-            "retained_storage_bytes": {
-              "type": ["integer", "null"],
-              "format": "uint64",
-              "description": "Actual retained storage in authorized management/lifecycle snapshots.\nOrdinary Node selectors omit this private activity projection (`null`).",
-              "minimum": 0
-            },
-            "state": {
-              "$ref": "#/components/schemas/NodeState"
-            },
-            "storage_retained_until_purge": {
-              "type": "boolean",
-              "description": "Retained data is physically removed by the purge worker. Offering and\nTenant deletion rules determine whether retained bytes are billable."
-            }
-          }
-        },
-        "NodeState": {
-          "type": "string",
-          "enum": ["live", "deleted", "deleting", "purged"]
-        }
-      }
-    }
-  },
-  {
     "method": "GET",
     "path": "/api/tenants/{tenant}/approval-observer",
     "name": "approval-observer",
@@ -92551,5 +90890,1284 @@
     "json": true,
     "uuid_parameters": [],
     "query_parameters": []
+  },
+  {
+    "json": true,
+    "method": "POST",
+    "name": "remote_human_answer",
+    "path": "/api/tasks/{task}/remote-grants/{grant}/human-requests/answer",
+    "query_parameters": [],
+    "responses": {
+      "200": {
+        "definitions": {
+          "HumanRequest": {
+            "properties": {
+              "answer_by": {
+                "description": "When the Run waiting for this question continues without an answer, if\nits person set an Answer Deadline. Only the dashboard state fills it in,\nfrom the Run's waiting state.",
+                "format": "date-time",
+                "type": ["string", "null"]
+              },
+              "answered_by": {
+                "type": ["string", "null"]
+              },
+              "created_at": {
+                "format": "date-time",
+                "type": "string"
+              },
+              "id": {
+                "format": "uuid",
+                "type": "string"
+              },
+              "kind": {
+                "type": "string"
+              },
+              "prompt": {
+                "type": "string"
+              },
+              "response": {},
+              "run_id": {
+                "format": "uuid",
+                "type": "string"
+              },
+              "workspace_id": {
+                "format": "uuid",
+                "type": "string"
+              }
+            },
+            "required": [
+              "answered_by",
+              "id",
+              "workspace_id",
+              "run_id",
+              "kind",
+              "prompt",
+              "response",
+              "created_at"
+            ],
+            "type": "object"
+          }
+        },
+        "schema": {
+          "$ref": "#/components/schemas/HumanRequest"
+        }
+      }
+    },
+    "source": "server/src/apps/identity/views/remote_execution.rs",
+    "uuid_parameters": ["grant", "task"],
+    "response": {
+      "schema": {
+        "$ref": "#/components/schemas/HumanRequest"
+      },
+      "definitions": {
+        "HumanRequest": {
+          "type": "object",
+          "required": [
+            "answered_by",
+            "id",
+            "workspace_id",
+            "run_id",
+            "kind",
+            "prompt",
+            "response",
+            "created_at"
+          ],
+          "properties": {
+            "answer_by": {
+              "type": ["string", "null"],
+              "format": "date-time",
+              "description": "When the Run waiting for this question continues without an answer, if\nits person set an Answer Deadline. Only the dashboard state fills it in,\nfrom the Run's waiting state."
+            },
+            "answered_by": {
+              "type": ["string", "null"]
+            },
+            "created_at": {
+              "type": "string",
+              "format": "date-time"
+            },
+            "id": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "kind": {
+              "type": "string"
+            },
+            "prompt": {
+              "type": "string"
+            },
+            "response": {},
+            "run_id": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "workspace_id": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        }
+      }
+    }
+  },
+  {
+    "json": false,
+    "method": "GET",
+    "name": "tenant-registration-keys",
+    "path": "/api/tenants/{tenant}/nodes/{node}/registration-keys",
+    "query_parameters": ["source_node"],
+    "responses": {
+      "200": {
+        "definitions": {
+          "ReceivingKeyStatus": {
+            "properties": {
+              "authorization_revision": {
+                "format": "int64",
+                "type": "integer"
+              },
+              "enabled": {
+                "type": "boolean"
+              },
+              "key_id": {
+                "type": "string"
+              },
+              "keys_revision": {
+                "format": "int64",
+                "type": "integer"
+              },
+              "quarantined": {
+                "type": "boolean"
+              }
+            },
+            "required": [
+              "key_id",
+              "quarantined",
+              "keys_revision",
+              "authorization_revision",
+              "enabled"
+            ],
+            "type": "object"
+          }
+        },
+        "schema": {
+          "$ref": "#/components/schemas/ReceivingKeyStatus"
+        }
+      }
+    },
+    "source": "server/src/apps/identity/views/manual_keys.rs",
+    "uuid_parameters": [],
+    "response": {
+      "schema": {
+        "$ref": "#/components/schemas/ReceivingKeyStatus"
+      },
+      "definitions": {
+        "ReceivingKeyStatus": {
+          "type": "object",
+          "required": [
+            "key_id",
+            "quarantined",
+            "keys_revision",
+            "authorization_revision",
+            "enabled"
+          ],
+          "properties": {
+            "authorization_revision": {
+              "type": "integer",
+              "format": "int64"
+            },
+            "enabled": {
+              "type": "boolean"
+            },
+            "key_id": {
+              "type": "string"
+            },
+            "keys_revision": {
+              "type": "integer",
+              "format": "int64"
+            },
+            "quarantined": {
+              "type": "boolean"
+            }
+          }
+        }
+      }
+    }
+  },
+  {
+    "json": false,
+    "method": "POST",
+    "name": "tenant-node-default",
+    "path": "/api/tenants/{tenant}/nodes/{node}/default",
+    "query_parameters": [],
+    "responses": {
+      "200": {
+        "definitions": {
+          "NodeDeletionRecord": {
+            "properties": {
+              "deleted_at": {
+                "format": "date-time",
+                "type": "string"
+              },
+              "deleted_by_kind": {
+                "type": "string"
+              },
+              "id": {
+                "format": "uuid",
+                "type": "string"
+              },
+              "purge_after": {
+                "format": "date-time",
+                "type": "string"
+              },
+              "purge_error": {
+                "type": ["string", "null"]
+              },
+              "purge_failed_at": {
+                "format": "date-time",
+                "type": ["string", "null"]
+              },
+              "purge_failures": {
+                "format": "int64",
+                "type": "integer"
+              },
+              "purge_step": {
+                "type": ["string", "null"]
+              },
+              "purged_at": {
+                "format": "date-time",
+                "type": ["string", "null"]
+              }
+            },
+            "required": [
+              "id",
+              "deleted_at",
+              "deleted_by_kind",
+              "purge_after",
+              "purged_at",
+              "purge_step",
+              "purge_failures",
+              "purge_error",
+              "purge_failed_at"
+            ],
+            "type": "object"
+          },
+          "NodeRecord": {
+            "description": "A Node as its Tenant sees it.",
+            "properties": {
+              "address": {
+                "description": "`aidash://<deployment>/<name>`, what other Nodes register.",
+                "type": "string"
+              },
+              "created_at": {
+                "format": "date-time",
+                "type": "string"
+              },
+              "default": {
+                "description": "The current default Node; Workspaces go there unless another is chosen.",
+                "type": "boolean"
+              },
+              "deletion": {
+                "anyOf": [
+                  {
+                    "$ref": "#/components/schemas/NodeDeletionRecord"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "label": {
+                "type": "string"
+              },
+              "name": {
+                "description": "The Node name Aidash assigned. It never changes.",
+                "type": "string"
+              },
+              "retained_storage_bytes": {
+                "description": "Actual retained storage in authorized management/lifecycle snapshots.\nOrdinary Node selectors omit this private activity projection (`null`).",
+                "format": "uint64",
+                "minimum": 0,
+                "type": ["integer", "null"]
+              },
+              "state": {
+                "$ref": "#/components/schemas/NodeState"
+              },
+              "storage_retained_until_purge": {
+                "description": "Retained data is physically removed by the purge worker. Offering and\nTenant deletion rules determine whether retained bytes are billable.",
+                "type": "boolean"
+              }
+            },
+            "required": [
+              "name",
+              "address",
+              "label",
+              "default",
+              "created_at",
+              "state",
+              "deletion",
+              "storage_retained_until_purge",
+              "retained_storage_bytes"
+            ],
+            "type": "object"
+          },
+          "NodeState": {
+            "enum": ["live", "deleted", "deleting", "purged"],
+            "type": "string"
+          }
+        },
+        "schema": {
+          "$ref": "#/components/schemas/NodeRecord"
+        }
+      }
+    },
+    "source": "server/src/apps/identity/views/nodes.rs",
+    "uuid_parameters": [],
+    "response": {
+      "schema": {
+        "$ref": "#/components/schemas/NodeRecord"
+      },
+      "definitions": {
+        "NodeDeletionRecord": {
+          "type": "object",
+          "required": [
+            "id",
+            "deleted_at",
+            "deleted_by_kind",
+            "purge_after",
+            "purged_at",
+            "purge_step",
+            "purge_failures",
+            "purge_error",
+            "purge_failed_at"
+          ],
+          "properties": {
+            "deleted_at": {
+              "type": "string",
+              "format": "date-time"
+            },
+            "deleted_by_kind": {
+              "type": "string"
+            },
+            "id": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "purge_after": {
+              "type": "string",
+              "format": "date-time"
+            },
+            "purge_error": {
+              "type": ["string", "null"]
+            },
+            "purge_failed_at": {
+              "type": ["string", "null"],
+              "format": "date-time"
+            },
+            "purge_failures": {
+              "type": "integer",
+              "format": "int64"
+            },
+            "purge_step": {
+              "type": ["string", "null"]
+            },
+            "purged_at": {
+              "type": ["string", "null"],
+              "format": "date-time"
+            }
+          }
+        },
+        "NodeRecord": {
+          "type": "object",
+          "description": "A Node as its Tenant sees it.",
+          "required": [
+            "name",
+            "address",
+            "label",
+            "default",
+            "created_at",
+            "state",
+            "deletion",
+            "storage_retained_until_purge",
+            "retained_storage_bytes"
+          ],
+          "properties": {
+            "address": {
+              "type": "string",
+              "description": "`aidash://<deployment>/<name>`, what other Nodes register."
+            },
+            "created_at": {
+              "type": "string",
+              "format": "date-time"
+            },
+            "default": {
+              "type": "boolean",
+              "description": "The current default Node; Workspaces go there unless another is chosen."
+            },
+            "deletion": {
+              "anyOf": [
+                {
+                  "$ref": "#/components/schemas/NodeDeletionRecord"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "label": {
+              "type": "string"
+            },
+            "name": {
+              "type": "string",
+              "description": "The Node name Aidash assigned. It never changes."
+            },
+            "retained_storage_bytes": {
+              "type": ["integer", "null"],
+              "format": "uint64",
+              "description": "Actual retained storage in authorized management/lifecycle snapshots.\nOrdinary Node selectors omit this private activity projection (`null`).",
+              "minimum": 0
+            },
+            "state": {
+              "$ref": "#/components/schemas/NodeState"
+            },
+            "storage_retained_until_purge": {
+              "type": "boolean",
+              "description": "Retained data is physically removed by the purge worker. Offering and\nTenant deletion rules determine whether retained bytes are billable."
+            }
+          }
+        },
+        "NodeState": {
+          "type": "string",
+          "enum": ["live", "deleted", "deleting", "purged"]
+        }
+      }
+    }
+  },
+  {
+    "json": true,
+    "method": "POST",
+    "name": "tenant-node-deletion",
+    "path": "/api/tenants/{tenant}/nodes/{node}/deletion",
+    "query_parameters": [],
+    "responses": {
+      "200": {
+        "definitions": {
+          "NodeDeletionRecord": {
+            "properties": {
+              "deleted_at": {
+                "format": "date-time",
+                "type": "string"
+              },
+              "deleted_by_kind": {
+                "type": "string"
+              },
+              "id": {
+                "format": "uuid",
+                "type": "string"
+              },
+              "purge_after": {
+                "format": "date-time",
+                "type": "string"
+              },
+              "purge_error": {
+                "type": ["string", "null"]
+              },
+              "purge_failed_at": {
+                "format": "date-time",
+                "type": ["string", "null"]
+              },
+              "purge_failures": {
+                "format": "int64",
+                "type": "integer"
+              },
+              "purge_step": {
+                "type": ["string", "null"]
+              },
+              "purged_at": {
+                "format": "date-time",
+                "type": ["string", "null"]
+              }
+            },
+            "required": [
+              "id",
+              "deleted_at",
+              "deleted_by_kind",
+              "purge_after",
+              "purged_at",
+              "purge_step",
+              "purge_failures",
+              "purge_error",
+              "purge_failed_at"
+            ],
+            "type": "object"
+          },
+          "NodeRecord": {
+            "description": "A Node as its Tenant sees it.",
+            "properties": {
+              "address": {
+                "description": "`aidash://<deployment>/<name>`, what other Nodes register.",
+                "type": "string"
+              },
+              "created_at": {
+                "format": "date-time",
+                "type": "string"
+              },
+              "default": {
+                "description": "The current default Node; Workspaces go there unless another is chosen.",
+                "type": "boolean"
+              },
+              "deletion": {
+                "anyOf": [
+                  {
+                    "$ref": "#/components/schemas/NodeDeletionRecord"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "label": {
+                "type": "string"
+              },
+              "name": {
+                "description": "The Node name Aidash assigned. It never changes.",
+                "type": "string"
+              },
+              "retained_storage_bytes": {
+                "description": "Actual retained storage in authorized management/lifecycle snapshots.\nOrdinary Node selectors omit this private activity projection (`null`).",
+                "format": "uint64",
+                "minimum": 0,
+                "type": ["integer", "null"]
+              },
+              "state": {
+                "$ref": "#/components/schemas/NodeState"
+              },
+              "storage_retained_until_purge": {
+                "description": "Retained data is physically removed by the purge worker. Offering and\nTenant deletion rules determine whether retained bytes are billable.",
+                "type": "boolean"
+              }
+            },
+            "required": [
+              "name",
+              "address",
+              "label",
+              "default",
+              "created_at",
+              "state",
+              "deletion",
+              "storage_retained_until_purge",
+              "retained_storage_bytes"
+            ],
+            "type": "object"
+          },
+          "NodeState": {
+            "enum": ["live", "deleted", "deleting", "purged"],
+            "type": "string"
+          }
+        },
+        "schema": {
+          "$ref": "#/components/schemas/NodeRecord"
+        }
+      }
+    },
+    "source": "server/src/apps/identity/views/nodes.rs",
+    "uuid_parameters": [],
+    "response": {
+      "schema": {
+        "$ref": "#/components/schemas/NodeRecord"
+      },
+      "definitions": {
+        "NodeDeletionRecord": {
+          "type": "object",
+          "required": [
+            "id",
+            "deleted_at",
+            "deleted_by_kind",
+            "purge_after",
+            "purged_at",
+            "purge_step",
+            "purge_failures",
+            "purge_error",
+            "purge_failed_at"
+          ],
+          "properties": {
+            "deleted_at": {
+              "type": "string",
+              "format": "date-time"
+            },
+            "deleted_by_kind": {
+              "type": "string"
+            },
+            "id": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "purge_after": {
+              "type": "string",
+              "format": "date-time"
+            },
+            "purge_error": {
+              "type": ["string", "null"]
+            },
+            "purge_failed_at": {
+              "type": ["string", "null"],
+              "format": "date-time"
+            },
+            "purge_failures": {
+              "type": "integer",
+              "format": "int64"
+            },
+            "purge_step": {
+              "type": ["string", "null"]
+            },
+            "purged_at": {
+              "type": ["string", "null"],
+              "format": "date-time"
+            }
+          }
+        },
+        "NodeRecord": {
+          "type": "object",
+          "description": "A Node as its Tenant sees it.",
+          "required": [
+            "name",
+            "address",
+            "label",
+            "default",
+            "created_at",
+            "state",
+            "deletion",
+            "storage_retained_until_purge",
+            "retained_storage_bytes"
+          ],
+          "properties": {
+            "address": {
+              "type": "string",
+              "description": "`aidash://<deployment>/<name>`, what other Nodes register."
+            },
+            "created_at": {
+              "type": "string",
+              "format": "date-time"
+            },
+            "default": {
+              "type": "boolean",
+              "description": "The current default Node; Workspaces go there unless another is chosen."
+            },
+            "deletion": {
+              "anyOf": [
+                {
+                  "$ref": "#/components/schemas/NodeDeletionRecord"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "label": {
+              "type": "string"
+            },
+            "name": {
+              "type": "string",
+              "description": "The Node name Aidash assigned. It never changes."
+            },
+            "retained_storage_bytes": {
+              "type": ["integer", "null"],
+              "format": "uint64",
+              "description": "Actual retained storage in authorized management/lifecycle snapshots.\nOrdinary Node selectors omit this private activity projection (`null`).",
+              "minimum": 0
+            },
+            "state": {
+              "$ref": "#/components/schemas/NodeState"
+            },
+            "storage_retained_until_purge": {
+              "type": "boolean",
+              "description": "Retained data is physically removed by the purge worker. Offering and\nTenant deletion rules determine whether retained bytes are billable."
+            }
+          }
+        },
+        "NodeState": {
+          "type": "string",
+          "enum": ["live", "deleted", "deleting", "purged"]
+        }
+      }
+    }
+  },
+  {
+    "json": false,
+    "method": "POST",
+    "name": "tenant-node-purge",
+    "path": "/api/tenants/{tenant}/nodes/{node}/purge",
+    "query_parameters": [],
+    "responses": {
+      "200": {
+        "definitions": {
+          "NodeDeletionRecord": {
+            "properties": {
+              "deleted_at": {
+                "format": "date-time",
+                "type": "string"
+              },
+              "deleted_by_kind": {
+                "type": "string"
+              },
+              "id": {
+                "format": "uuid",
+                "type": "string"
+              },
+              "purge_after": {
+                "format": "date-time",
+                "type": "string"
+              },
+              "purge_error": {
+                "type": ["string", "null"]
+              },
+              "purge_failed_at": {
+                "format": "date-time",
+                "type": ["string", "null"]
+              },
+              "purge_failures": {
+                "format": "int64",
+                "type": "integer"
+              },
+              "purge_step": {
+                "type": ["string", "null"]
+              },
+              "purged_at": {
+                "format": "date-time",
+                "type": ["string", "null"]
+              }
+            },
+            "required": [
+              "id",
+              "deleted_at",
+              "deleted_by_kind",
+              "purge_after",
+              "purged_at",
+              "purge_step",
+              "purge_failures",
+              "purge_error",
+              "purge_failed_at"
+            ],
+            "type": "object"
+          },
+          "NodeRecord": {
+            "description": "A Node as its Tenant sees it.",
+            "properties": {
+              "address": {
+                "description": "`aidash://<deployment>/<name>`, what other Nodes register.",
+                "type": "string"
+              },
+              "created_at": {
+                "format": "date-time",
+                "type": "string"
+              },
+              "default": {
+                "description": "The current default Node; Workspaces go there unless another is chosen.",
+                "type": "boolean"
+              },
+              "deletion": {
+                "anyOf": [
+                  {
+                    "$ref": "#/components/schemas/NodeDeletionRecord"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "label": {
+                "type": "string"
+              },
+              "name": {
+                "description": "The Node name Aidash assigned. It never changes.",
+                "type": "string"
+              },
+              "retained_storage_bytes": {
+                "description": "Actual retained storage in authorized management/lifecycle snapshots.\nOrdinary Node selectors omit this private activity projection (`null`).",
+                "format": "uint64",
+                "minimum": 0,
+                "type": ["integer", "null"]
+              },
+              "state": {
+                "$ref": "#/components/schemas/NodeState"
+              },
+              "storage_retained_until_purge": {
+                "description": "Retained data is physically removed by the purge worker. Offering and\nTenant deletion rules determine whether retained bytes are billable.",
+                "type": "boolean"
+              }
+            },
+            "required": [
+              "name",
+              "address",
+              "label",
+              "default",
+              "created_at",
+              "state",
+              "deletion",
+              "storage_retained_until_purge",
+              "retained_storage_bytes"
+            ],
+            "type": "object"
+          },
+          "NodeState": {
+            "enum": ["live", "deleted", "deleting", "purged"],
+            "type": "string"
+          }
+        },
+        "schema": {
+          "$ref": "#/components/schemas/NodeRecord"
+        }
+      }
+    },
+    "source": "server/src/apps/identity/views/nodes.rs",
+    "uuid_parameters": [],
+    "response": {
+      "schema": {
+        "$ref": "#/components/schemas/NodeRecord"
+      },
+      "definitions": {
+        "NodeDeletionRecord": {
+          "type": "object",
+          "required": [
+            "id",
+            "deleted_at",
+            "deleted_by_kind",
+            "purge_after",
+            "purged_at",
+            "purge_step",
+            "purge_failures",
+            "purge_error",
+            "purge_failed_at"
+          ],
+          "properties": {
+            "deleted_at": {
+              "type": "string",
+              "format": "date-time"
+            },
+            "deleted_by_kind": {
+              "type": "string"
+            },
+            "id": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "purge_after": {
+              "type": "string",
+              "format": "date-time"
+            },
+            "purge_error": {
+              "type": ["string", "null"]
+            },
+            "purge_failed_at": {
+              "type": ["string", "null"],
+              "format": "date-time"
+            },
+            "purge_failures": {
+              "type": "integer",
+              "format": "int64"
+            },
+            "purge_step": {
+              "type": ["string", "null"]
+            },
+            "purged_at": {
+              "type": ["string", "null"],
+              "format": "date-time"
+            }
+          }
+        },
+        "NodeRecord": {
+          "type": "object",
+          "description": "A Node as its Tenant sees it.",
+          "required": [
+            "name",
+            "address",
+            "label",
+            "default",
+            "created_at",
+            "state",
+            "deletion",
+            "storage_retained_until_purge",
+            "retained_storage_bytes"
+          ],
+          "properties": {
+            "address": {
+              "type": "string",
+              "description": "`aidash://<deployment>/<name>`, what other Nodes register."
+            },
+            "created_at": {
+              "type": "string",
+              "format": "date-time"
+            },
+            "default": {
+              "type": "boolean",
+              "description": "The current default Node; Workspaces go there unless another is chosen."
+            },
+            "deletion": {
+              "anyOf": [
+                {
+                  "$ref": "#/components/schemas/NodeDeletionRecord"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "label": {
+              "type": "string"
+            },
+            "name": {
+              "type": "string",
+              "description": "The Node name Aidash assigned. It never changes."
+            },
+            "retained_storage_bytes": {
+              "type": ["integer", "null"],
+              "format": "uint64",
+              "description": "Actual retained storage in authorized management/lifecycle snapshots.\nOrdinary Node selectors omit this private activity projection (`null`).",
+              "minimum": 0
+            },
+            "state": {
+              "$ref": "#/components/schemas/NodeState"
+            },
+            "storage_retained_until_purge": {
+              "type": "boolean",
+              "description": "Retained data is physically removed by the purge worker. Offering and\nTenant deletion rules determine whether retained bytes are billable."
+            }
+          }
+        },
+        "NodeState": {
+          "type": "string",
+          "enum": ["live", "deleted", "deleting", "purged"]
+        }
+      }
+    }
+  },
+  {
+    "json": true,
+    "method": "POST",
+    "name": "tenant-registration-keys-change",
+    "path": "/api/tenants/{tenant}/nodes/{node}/registration-keys",
+    "query_parameters": [],
+    "responses": {
+      "200": {
+        "definitions": {
+          "ReceivingKeyStatus": {
+            "properties": {
+              "authorization_revision": {
+                "format": "int64",
+                "type": "integer"
+              },
+              "enabled": {
+                "type": "boolean"
+              },
+              "key_id": {
+                "type": "string"
+              },
+              "keys_revision": {
+                "format": "int64",
+                "type": "integer"
+              },
+              "quarantined": {
+                "type": "boolean"
+              }
+            },
+            "required": [
+              "key_id",
+              "quarantined",
+              "keys_revision",
+              "authorization_revision",
+              "enabled"
+            ],
+            "type": "object"
+          }
+        },
+        "schema": {
+          "$ref": "#/components/schemas/ReceivingKeyStatus"
+        }
+      }
+    },
+    "source": "server/src/apps/identity/views/manual_keys.rs",
+    "uuid_parameters": [],
+    "response": {
+      "schema": {
+        "$ref": "#/components/schemas/ReceivingKeyStatus"
+      },
+      "definitions": {
+        "ReceivingKeyStatus": {
+          "type": "object",
+          "required": [
+            "key_id",
+            "quarantined",
+            "keys_revision",
+            "authorization_revision",
+            "enabled"
+          ],
+          "properties": {
+            "authorization_revision": {
+              "type": "integer",
+              "format": "int64"
+            },
+            "enabled": {
+              "type": "boolean"
+            },
+            "key_id": {
+              "type": "string"
+            },
+            "keys_revision": {
+              "type": "integer",
+              "format": "int64"
+            },
+            "quarantined": {
+              "type": "boolean"
+            }
+          }
+        }
+      }
+    }
+  },
+  {
+    "json": false,
+    "method": "POST",
+    "name": "tenant-node-restore",
+    "path": "/api/tenants/{tenant}/nodes/{node}/restore",
+    "query_parameters": [],
+    "responses": {
+      "200": {
+        "definitions": {
+          "NodeDeletionRecord": {
+            "properties": {
+              "deleted_at": {
+                "format": "date-time",
+                "type": "string"
+              },
+              "deleted_by_kind": {
+                "type": "string"
+              },
+              "id": {
+                "format": "uuid",
+                "type": "string"
+              },
+              "purge_after": {
+                "format": "date-time",
+                "type": "string"
+              },
+              "purge_error": {
+                "type": ["string", "null"]
+              },
+              "purge_failed_at": {
+                "format": "date-time",
+                "type": ["string", "null"]
+              },
+              "purge_failures": {
+                "format": "int64",
+                "type": "integer"
+              },
+              "purge_step": {
+                "type": ["string", "null"]
+              },
+              "purged_at": {
+                "format": "date-time",
+                "type": ["string", "null"]
+              }
+            },
+            "required": [
+              "id",
+              "deleted_at",
+              "deleted_by_kind",
+              "purge_after",
+              "purged_at",
+              "purge_step",
+              "purge_failures",
+              "purge_error",
+              "purge_failed_at"
+            ],
+            "type": "object"
+          },
+          "NodeRecord": {
+            "description": "A Node as its Tenant sees it.",
+            "properties": {
+              "address": {
+                "description": "`aidash://<deployment>/<name>`, what other Nodes register.",
+                "type": "string"
+              },
+              "created_at": {
+                "format": "date-time",
+                "type": "string"
+              },
+              "default": {
+                "description": "The current default Node; Workspaces go there unless another is chosen.",
+                "type": "boolean"
+              },
+              "deletion": {
+                "anyOf": [
+                  {
+                    "$ref": "#/components/schemas/NodeDeletionRecord"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "label": {
+                "type": "string"
+              },
+              "name": {
+                "description": "The Node name Aidash assigned. It never changes.",
+                "type": "string"
+              },
+              "retained_storage_bytes": {
+                "description": "Actual retained storage in authorized management/lifecycle snapshots.\nOrdinary Node selectors omit this private activity projection (`null`).",
+                "format": "uint64",
+                "minimum": 0,
+                "type": ["integer", "null"]
+              },
+              "state": {
+                "$ref": "#/components/schemas/NodeState"
+              },
+              "storage_retained_until_purge": {
+                "description": "Retained data is physically removed by the purge worker. Offering and\nTenant deletion rules determine whether retained bytes are billable.",
+                "type": "boolean"
+              }
+            },
+            "required": [
+              "name",
+              "address",
+              "label",
+              "default",
+              "created_at",
+              "state",
+              "deletion",
+              "storage_retained_until_purge",
+              "retained_storage_bytes"
+            ],
+            "type": "object"
+          },
+          "NodeState": {
+            "enum": ["live", "deleted", "deleting", "purged"],
+            "type": "string"
+          }
+        },
+        "schema": {
+          "$ref": "#/components/schemas/NodeRecord"
+        }
+      }
+    },
+    "source": "server/src/apps/identity/views/nodes.rs",
+    "uuid_parameters": [],
+    "response": {
+      "schema": {
+        "$ref": "#/components/schemas/NodeRecord"
+      },
+      "definitions": {
+        "NodeDeletionRecord": {
+          "type": "object",
+          "required": [
+            "id",
+            "deleted_at",
+            "deleted_by_kind",
+            "purge_after",
+            "purged_at",
+            "purge_step",
+            "purge_failures",
+            "purge_error",
+            "purge_failed_at"
+          ],
+          "properties": {
+            "deleted_at": {
+              "type": "string",
+              "format": "date-time"
+            },
+            "deleted_by_kind": {
+              "type": "string"
+            },
+            "id": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "purge_after": {
+              "type": "string",
+              "format": "date-time"
+            },
+            "purge_error": {
+              "type": ["string", "null"]
+            },
+            "purge_failed_at": {
+              "type": ["string", "null"],
+              "format": "date-time"
+            },
+            "purge_failures": {
+              "type": "integer",
+              "format": "int64"
+            },
+            "purge_step": {
+              "type": ["string", "null"]
+            },
+            "purged_at": {
+              "type": ["string", "null"],
+              "format": "date-time"
+            }
+          }
+        },
+        "NodeRecord": {
+          "type": "object",
+          "description": "A Node as its Tenant sees it.",
+          "required": [
+            "name",
+            "address",
+            "label",
+            "default",
+            "created_at",
+            "state",
+            "deletion",
+            "storage_retained_until_purge",
+            "retained_storage_bytes"
+          ],
+          "properties": {
+            "address": {
+              "type": "string",
+              "description": "`aidash://<deployment>/<name>`, what other Nodes register."
+            },
+            "created_at": {
+              "type": "string",
+              "format": "date-time"
+            },
+            "default": {
+              "type": "boolean",
+              "description": "The current default Node; Workspaces go there unless another is chosen."
+            },
+            "deletion": {
+              "anyOf": [
+                {
+                  "$ref": "#/components/schemas/NodeDeletionRecord"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "label": {
+              "type": "string"
+            },
+            "name": {
+              "type": "string",
+              "description": "The Node name Aidash assigned. It never changes."
+            },
+            "retained_storage_bytes": {
+              "type": ["integer", "null"],
+              "format": "uint64",
+              "description": "Actual retained storage in authorized management/lifecycle snapshots.\nOrdinary Node selectors omit this private activity projection (`null`).",
+              "minimum": 0
+            },
+            "state": {
+              "$ref": "#/components/schemas/NodeState"
+            },
+            "storage_retained_until_purge": {
+              "type": "boolean",
+              "description": "Retained data is physically removed by the purge worker. Offering and\nTenant deletion rules determine whether retained bytes are billable."
+            }
+          }
+        },
+        "NodeState": {
+          "type": "string",
+          "enum": ["live", "deleted", "deleting", "purged"]
+        }
+      }
+    }
   }
 ]

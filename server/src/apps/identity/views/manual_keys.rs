@@ -43,36 +43,3 @@ pub async fn registration_change(
 			.await,
 	)
 }
-#[get(
-	"/api/authorization/{tenant}/peer-graph-grant-keys",
-	name = "peer-graph-grant-keys",
-	auth = "protected"
-)]
-pub async fn graph_status(
-	#[inject] service: Depends<ManualKeys>,
-	#[inject] actor: Actor,
-	#[inject] origin: Option<BrowserOrigin>,
-	Path(tenant): Path<String>,
-	Query(selector): Query<GraphKeySelector>,
-) -> ViewResult<Response> {
-	crate::http::json(service.graph(actor, origin, tenant, selector, None).await)
-}
-#[post(
-	"/api/authorization/{tenant}/peer-graph-grant-keys",
-	name = "peer-graph-grant-keys-change",
-	auth = "protected"
-)]
-pub async fn graph_change(
-	#[inject] service: Depends<ManualKeys>,
-	#[inject] actor: Actor,
-	#[inject] origin: Option<BrowserOrigin>,
-	Path(tenant): Path<String>,
-	Json(input): Json<GraphKeyChange>,
-) -> ViewResult<Response> {
-	let (selector, change) = input.into_parts();
-	crate::http::json(
-		service
-			.graph(actor, origin, tenant, selector, Some(change))
-			.await,
-	)
-}

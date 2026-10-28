@@ -3,19 +3,11 @@ use crate::{Error, Result};
 use aidash_domain::nodes::{DeploymentKeyId, keys::PublicDeploymentKey};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
-use uuid::Uuid;
 
 #[derive(Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct RegistrationKeySelector {
 	pub source_node: String,
-}
-
-#[derive(Deserialize, JsonSchema)]
-#[serde(deny_unknown_fields)]
-pub(crate) struct GraphKeySelector {
-	pub source_deployment: String,
-	pub source_identity: Uuid,
 }
 
 #[derive(Deserialize, JsonSchema)]
@@ -29,19 +21,6 @@ pub(crate) enum KeyAction {
 #[serde(deny_unknown_fields)]
 pub(crate) struct RegistrationKeyChange {
 	pub source_node: String,
-	pub action: KeyAction,
-	pub expected_keys_revision: i64,
-	pub expected_authorization_revision: i64,
-	pub public_key_pem: Option<String>,
-	/// Independently supplied fingerprint; never inferred from a public fetch.
-	pub expected_key_id: Option<String>,
-}
-
-#[derive(Deserialize, JsonSchema)]
-#[serde(deny_unknown_fields)]
-pub(crate) struct GraphKeyChange {
-	pub source_deployment: String,
-	pub source_identity: Uuid,
 	pub action: KeyAction,
 	pub expected_keys_revision: i64,
 	pub expected_authorization_revision: i64,
@@ -72,24 +51,6 @@ impl RegistrationKeyChange {
 		)
 	}
 }
-impl GraphKeyChange {
-	pub fn into_parts(self) -> (GraphKeySelector, KeyChange) {
-		(
-			GraphKeySelector {
-				source_deployment: self.source_deployment,
-				source_identity: self.source_identity,
-			},
-			KeyChange {
-				action: self.action,
-				expected_keys_revision: self.expected_keys_revision,
-				expected_authorization_revision: self.expected_authorization_revision,
-				public_key_pem: self.public_key_pem,
-				expected_key_id: self.expected_key_id,
-			},
-		)
-	}
-}
-
 impl KeyChange {
 	pub fn replacement(&self) -> Result<Option<PublicDeploymentKey>> {
 		if !(1..i64::MAX).contains(&self.expected_keys_revision)
@@ -122,12 +83,10 @@ impl KeyChange {
 			}
 		}
 	}
-	pub fn action_name(&self, registration: bool) -> &'static str {
-		match (registration, &self.action) {
-			(true, KeyAction::Quarantine) => "node_registration.key_quarantine",
-			(true, KeyAction::Confirm) => "node_registration.key_confirm",
-			(false, KeyAction::Quarantine) => "peer_graph_grant.key_quarantine",
-			(false, KeyAction::Confirm) => "peer_graph_grant.key_confirm",
+	pub fn action_name(&self) -> &'static str {
+		match self.action {
+			KeyAction::Quarantine => "node_registration.key_quarantine",
+			KeyAction::Confirm => "node_registration.key_confirm",
 		}
 	}
 }

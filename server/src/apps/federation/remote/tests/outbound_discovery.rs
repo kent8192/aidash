@@ -91,7 +91,7 @@ async fn outbound_graph_requires_use_of_its_sending_node(
 	)
 	.await;
 	let path = format!("/api/federation/graph/peers?node={}", source.node);
-	let input = json!({"node_id":target,"sending_node":source.node,"scope_workspace":null,"mode":"mesh","kinds":["workspace"],"relations":[],"hours":0,"limit":80,"cursor":null,"target_tenant":null});
+	let input = json!({"node_id":target,"sending_node":source.node,"scope_workspace":null,"mode":"mesh","kinds":["workspace"],"relations":[],"hours":0,"limit":80,"cursor":null});
 	for denied in [false, true] {
 		if denied {
 			let mut policy = pair.source.policy.clone();
@@ -438,7 +438,7 @@ async fn discovery_intersects_both_nodes_without_forwarding_subject_tokens(
 			&sender_keys,
 			chrono::Utc::now().timestamp() as u64,
 			&aidash_capability::federation::RequestBinding {
-				protocol: "0.4",
+				protocol: "0.5",
 				method: "POST",
 				path: "/scoped/discover",
 				body: request.raw.as_bytes(),
@@ -449,7 +449,7 @@ async fn discovery_intersects_both_nodes_without_forwarding_subject_tokens(
 		assert_eq!(claims.sub, source_node.to_string());
 		assert_eq!(claims.aud, destination_node.to_string());
 		assert_eq!(claims.subject, "alice");
-		assert_eq!(request.protocol, "0.4");
+		assert_eq!(request.protocol, "0.5");
 		let mut keys: Vec<_> = request
 			.body
 			.as_object()

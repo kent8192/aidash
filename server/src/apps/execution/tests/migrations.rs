@@ -3528,11 +3528,7 @@ async fn node_purge_receiving_keysets_roundtrip_with_registered_model_state(
 	let before = recorded_keys(&fixture.connection).await;
 	let logical = build_state_from_files(&source).await.unwrap();
 	let registered = ProjectState::from_global_registry();
-	let tables = [
-		"node_registrations",
-		"node_registration_history",
-		"authorization_peer_graph_grants",
-	];
+	let tables = ["node_registrations", "node_registration_history"];
 	for table in tables {
 		for field in ["source_keys", "keys_revision"] {
 			let actual = &logical.find_model_by_table(table).unwrap().fields[field];
@@ -3588,16 +3584,7 @@ async fn node_purge_receiving_keysets_roundtrip_with_registered_model_state(
 				columns,
 				vec![
 					("keys_revision".into(), "bigint".into(), "NO".into()),
-					(
-						"source_keys".into(),
-						"text".into(),
-						if table == "authorization_peer_graph_grants" {
-							"NO"
-						} else {
-							"YES"
-						}
-						.into()
-					)
+					("source_keys".into(), "text".into(), "YES".into())
 				],
 				"{table}"
 			);

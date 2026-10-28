@@ -6,7 +6,7 @@ use crate::apps::identity::{
 	models::{AdministrationActor, AdministrationEvent},
 	oidc::BrowserOrigin,
 	repositories::{manual_keys as records, node_recovery, node_registrations, nodes},
-	serializers::manual_keys::{GraphKeySelector, KeyChange, ReceivingKeyStatus},
+	serializers::manual_keys::{KeyChange, ReceivingKeyStatus},
 };
 use crate::authorization::identity::Actor;
 use crate::federation::Federation;
@@ -86,33 +86,6 @@ impl ManualKeys {
 			}).await,
 		}
 	}
-
-	pub(crate) async fn graph(
-		&self,
-		actor: Actor,
-		origin: Option<BrowserOrigin>,
-		tenant: String,
-		selector: GraphKeySelector,
-		change: Option<KeyChange>,
-	) -> Result<ReceivingKeyStatus> {
-		if !matches!(actor, Actor::DeploymentAdministrator) {
-			return Err(Error::Forbidden);
-		}
-		let owner = ReceivingKeyOwner::ViewerGrant {
-			tenant: TenantName::new(&tenant)?,
-			viewer: DeploymentId::parse(&selector.source_deployment)?,
-			identity: selector.source_identity,
-		};
-		self.runtime
-			.store
-			.control_pool
-			.atomic(&TenancyScope::tenant(&tenant)?, async |tx| {
-				super::remote::deployment_administrator::tenant(tx, &tenant).await?;
-				let by = deployment_actor(tx, origin.as_ref()).await?;
-				apply(tx, &owner, change.as_ref(), &by).await
-			})
-			.await
-	}
 }
 
 /// Only this manual control may use an exact retained dependency when the
@@ -154,20 +127,14 @@ async fn apply(
 ) -> Result<ReceivingKeyStatus> {
 	let status = records::control(tx, owner, change).await?;
 	if let Some(change) = change {
-		let (tenant, subject, node) = match owner {
-			ReceivingKeyOwner::Registration {
-				tenant,
-				node,
-				source_node,
-			} => (tenant, source_node.to_string(), Some(node.as_str())),
-			ReceivingKeyOwner::ViewerGrant {
-				tenant,
-				viewer,
-				identity,
-			} => (tenant, format!("{viewer}/oidc:{identity}"), None),
-		};
+		let ReceivingKeyOwner::Registration {
+			tenant,
+			node,
+			source_node,
+		} = owner;
+		let subject = source_node.to_string();
 		let event = AdministrationEvent {
-			action: change.action_name(node.is_some()),
+			action: change.action_name(),
 			identity: None,
 			registration: None,
 			mapping: None,
@@ -175,11 +142,7 @@ async fn apply(
 			subject: Some(&subject),
 			invitation: None,
 		};
-		if let Some(node) = node {
-			by.record_node(tx, event, node).await?;
-		} else {
-			by.record(tx, event).await?;
-		}
+		by.record_node(tx, event, node.as_str()).await?;
 	}
 	Ok(status)
 }

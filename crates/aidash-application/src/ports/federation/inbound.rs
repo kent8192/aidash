@@ -4,36 +4,21 @@ use crate::Result;
 use aidash_domain::{
 	identity::peer_mapping::Mapping,
 	nodes::{
-		DeploymentId, NodeAddress, NodeName,
-		keys::TrustedDeploymentKeys,
-		registration::{NodeRegistration, PinnedKey},
+		DeploymentId, NodeAddress, NodeName, keys::TrustedDeploymentKeys,
+		registration::NodeRegistration,
 	},
 	tenancy::TenantName,
 };
 use async_trait::async_trait;
-use uuid::Uuid;
-
-/// A Peer Graph Grant as `accept_grant_viewer` needs it: the viewer
-/// Deployment's pinned key.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ViewerGrant {
-	pub key: PinnedKey,
-	pub revision: i64,
-}
 
 /// Receiving trust belongs to this exact authority record, never globally to
-/// the sending Deployment. Node registrations and Graph grants are independent.
+/// the sending Deployment.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ReceivingKeyOwner {
 	Registration {
 		tenant: TenantName,
 		node: NodeName,
 		source_node: NodeAddress,
-	},
-	ViewerGrant {
-		tenant: TenantName,
-		viewer: DeploymentId,
-		identity: Uuid,
 	},
 }
 
@@ -92,15 +77,8 @@ pub trait InboundRepository: Send + Sync {
 		receiver: &NodeName,
 		subject: &str,
 	) -> Result<bool>;
-	/// The enabled Peer Graph Grant of `identity` of `viewer` at `tenant`.
-	async fn viewer_grant(
-		&self,
-		tenant: &TenantName,
-		viewer: &DeploymentId,
-		identity: Uuid,
-	) -> Result<Option<ViewerGrant>>;
 	/// Authentication material only. This read does not establish enabled
-	/// authority; admission must separately check the registration or grant.
+	/// authority; admission must separately check the registration.
 	async fn receiving_keys(&self, owner: &ReceivingKeyOwner) -> Result<Option<ReceivingKeys>>;
 	/// Atomically advances only this owner's authentication material and its
 	/// keys revision. Match BOTH revisions, enabled authority and non-quarantine

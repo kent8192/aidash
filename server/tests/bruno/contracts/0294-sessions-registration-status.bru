@@ -1,0 +1,21 @@
+meta {
+  name: 0294 sessions-registration-status - Revoked browser session
+  type: http
+  seq: 294
+}
+
+get {
+  url: {{base_url}}/auth/registration
+  body: none
+  auth: none
+}
+
+headers {
+  Accept: application/json
+  Cookie: {{session_cookie}}
+}
+
+tests {
+  test("Exact HTTP 401", function () { expect(res.getStatus()).to.equal(401); });
+  test("Stable authorization error envelope", function () { expect(res.getHeader("content-type")).to.include("application/json"); expect(res.getBody()).to.eql({error:"unauthorized"}); });
+}

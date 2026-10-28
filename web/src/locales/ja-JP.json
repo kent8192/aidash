@@ -768,7 +768,6 @@
   "receivingKeyReceiver": "受信側 Node 名",
   "receivingKeySource": "元の送信元 Node アドレス",
   "receivingKeyLookup": "キーを検索",
-  "receivingKeyGraphGrants": "Peer Graph Grant のキー",
   "nodeLifecycle": "Node の削除と復元",
   "nodeLifecycleHelp": "削除する前に、別の有効な Node を既定にしてください。最後の有効な Node は削除できません。復元には現在の容量と権限が適用され、取り消された作業や失効したアクセスは戻りません。",
   "nodeLifecycleEmpty": "このページに Node はありません。",

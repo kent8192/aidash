@@ -8,21 +8,15 @@ use crate::apps::identity::services::receiving_keys;
 use crate::federation::Federation;
 use aidash_application::{
 	Result,
-	ports::federation::inbound::{
-		InboundRepository, ReceivingKeyOwner, ReceivingKeys, ViewerGrant,
-	},
+	ports::federation::inbound::{InboundRepository, ReceivingKeyOwner, ReceivingKeys},
 	tenancy::TenancyScope,
 };
 use aidash_domain::{
 	identity::peer_mapping::Mapping,
-	nodes::{
-		DeploymentId, NodeAddress, NodeName,
-		registration::{NodeRegistration, PinnedKey},
-	},
+	nodes::{DeploymentId, NodeAddress, NodeName, registration::NodeRegistration},
 	tenancy::TenantName,
 };
 use async_trait::async_trait;
-use uuid::Uuid;
 
 #[async_trait]
 impl InboundRepository for Federation {
@@ -133,30 +127,6 @@ impl InboundRepository for Federation {
 		Ok(receiving_keys::subject_may_use(&self.store.pool, tenant, receiver, subject).await?)
 	}
 
-	async fn viewer_grant(
-		&self,
-		tenant: &TenantName,
-		viewer: &DeploymentId,
-		identity: Uuid,
-	) -> Result<Option<ViewerGrant>> {
-		let row = crate::apps::identity::repositories::graph::persistence::viewer_grant(
-			self,
-			tenant.as_str(),
-			viewer.as_str(),
-			identity,
-		)
-		.await?;
-		row.map(|(key_id, public_key_pem, revision)| {
-			Ok(ViewerGrant {
-				key: PinnedKey {
-					key_id: aidash_domain::nodes::DeploymentKeyId::parse(&key_id)?,
-					public_key_pem,
-				},
-				revision,
-			})
-		})
-		.transpose()
-	}
 	async fn receiving_keys(&self, owner: &ReceivingKeyOwner) -> Result<Option<ReceivingKeys>> {
 		Ok(receiving_keys::get(&self.store.pool, owner).await?)
 	}
@@ -220,10 +190,7 @@ impl receiving_keys::RecoveryProof for DurableRequest<'_, '_> {
 			tenant,
 			node,
 			source_node,
-		} = owner
-		else {
-			return Ok(false);
-		};
+		} = owner;
 		let receiver = self.deployment.node(node.clone());
 		super::super::repositories::routes::closed_node_request_in(
 			tx,

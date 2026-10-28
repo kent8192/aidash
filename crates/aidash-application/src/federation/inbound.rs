@@ -7,7 +7,7 @@ use crate::{
 use aidash_capability::federation::RequestBinding;
 use aidash_domain::{
 	federation::protocol::CURRENT,
-	nodes::{DeploymentId, NodeAddress, registration::Counterpart},
+	nodes::{NodeAddress, registration::Counterpart},
 	tenancy::TenantName,
 };
 use uuid::Uuid;
@@ -291,95 +291,6 @@ pub async fn require_node_authority(
 		return Ok(false);
 	}
 	Err(Error::Unauthorized)
-}
-
-/// A Deployment Administrator of another Deployment reading a Tenant's graph
-/// (ADR 0043): the one inbound caller that is not a Node.
-#[derive(Debug, Clone)]
-pub struct ViewerInbound {
-	pub receiver: DeploymentId,
-	pub viewer: DeploymentId,
-	/// The Tenant the viewer names; a Deployment Administrator selects one.
-	pub tenant: TenantName,
-	/// The viewer's browser identity, from `oidc:<uuid>` in the token.
-	pub identity: Uuid,
-	pub token: String,
-}
-
-/// An admitted viewer, with the grant revision its projection binds.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct AdmittedViewer {
-	pub tenant: TenantName,
-	pub viewer: DeploymentId,
-	pub identity: Uuid,
-	pub grant_revision: i64,
-}
-
-pub async fn accept_grant_viewer(
-	inbound: ViewerInbound,
-	request: &RequestDigest<'_>,
-	repository: &dyn InboundRepository,
-) -> Result<AdmittedViewer> {
-	let ViewerInbound {
-		receiver,
-		viewer,
-		tenant,
-		identity,
-		token,
-	} = inbound;
-	if !repository.federation_enabled()
-		|| !repository.holds_key()
-		|| receiver != *repository.deployment()
-		|| viewer == *repository.deployment()
-		|| !repository.tenant_live(&tenant).await?
-	{
-		return Err(Error::Unauthorized);
-	}
-	let grant = repository
-		.viewer_grant(&tenant, &viewer, identity)
-		.await?
-		.ok_or(Error::Unauthorized)?;
-	let owner = ReceivingKeyOwner::ViewerGrant {
-		tenant: tenant.clone(),
-		viewer: viewer.clone(),
-		identity,
-	};
-	let stored = repository
-		.receiving_keys(&owner)
-		.await?
-		.ok_or(Error::Unauthorized)?;
-	let (claims, candidate) = super::registrations::verify_request(
-		&token,
-		&viewer,
-		&stored.keys,
-		repository.now(),
-		&RequestBinding {
-			protocol: CURRENT,
-			method: request.method,
-			path: request.path,
-			body: request.body,
-		},
-	)?;
-	if claims.iss != viewer.as_str()
-		|| claims.sub != viewer.as_str()
-		|| claims.aud != receiver.as_str()
-		|| claims.subject != format!("oidc:{identity}")
-	{
-		return Err(Error::Unauthorized);
-	}
-	if let Some(keys) = candidate
-		&& !repository
-			.advance_keys(&owner, stored.keys_revision, grant.revision, &keys)
-			.await?
-	{
-		return Err(Error::Unauthorized);
-	}
-	Ok(AdmittedViewer {
-		tenant,
-		viewer,
-		identity,
-		grant_revision: grant.revision,
-	})
 }
 
 #[cfg(test)]

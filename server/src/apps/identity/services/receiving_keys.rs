@@ -85,13 +85,12 @@ pub(crate) async fn advance(
 				other?;
 			}
 		}
-		if let ReceivingKeyOwner::Registration { node, .. } = owner {
-			nodes::lock_tenant(tx, tenant.as_str()).await?;
-			match nodes::get_live(tx, tenant.as_str(), node.as_str()).await {
-				Err(crate::Error::NotFound(_)) => return Ok(false),
-				other => {
-					other?;
-				}
+		let ReceivingKeyOwner::Registration { node, .. } = owner;
+		nodes::lock_tenant(tx, tenant.as_str()).await?;
+		match nodes::get_live(tx, tenant.as_str(), node.as_str()).await {
+			Err(crate::Error::NotFound(_)) => return Ok(false),
+			other => {
+				other?;
 			}
 		}
 		receiving_keys::advance(
@@ -114,9 +113,7 @@ pub(crate) async fn advance_recovery(
 	keys: &aidash_domain::nodes::keys::TrustedDeploymentKeys,
 	proof: &dyn RecoveryProof,
 ) -> Result<bool> {
-	let ReceivingKeyOwner::Registration { tenant, .. } = owner else {
-		return Ok(false);
-	};
+	let ReceivingKeyOwner::Registration { tenant, .. } = owner;
 	pool.atomic(&TenancyScope::Tenant(tenant.clone()), async |tx| {
 		match AuthorizationBundle::lock_snapshot(tx, tenant.as_str(), false).await {
 			Err(crate::Error::TenantDeleted | crate::Error::NotFound(_)) => {
