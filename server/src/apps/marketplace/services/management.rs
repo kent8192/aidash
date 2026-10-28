@@ -487,10 +487,18 @@ impl MarketplaceManagement {
 			let detail =
 				distribution::detail(&mut access, &key, f.store.deployment.as_str()).await?;
 			let can_manage = tenant_secret_readiness::can_manage(&mut access).await?;
-			let target = aidash_domain::tenant_secrets::definition_target(&detail.manifest.entity);
-			let targets: Vec<Target> = detail
-				.manifest
-				.secrets
+			let target =
+				aidash_domain::tenant_secrets::definition_shared_target(&detail.manifest.entity);
+			// A personal-only package is satisfied by each person's own secret, so
+			// it has no shared Tenant Secret to report on.
+			let slots =
+				if aidash_domain::tenant_secrets::definition_personal_only(&detail.manifest.entity)
+				{
+					Vec::new()
+				} else {
+					detail.manifest.secrets
+				};
+			let targets: Vec<Target> = slots
 				.into_iter()
 				.map(|slot| {
 					let endpoint = target

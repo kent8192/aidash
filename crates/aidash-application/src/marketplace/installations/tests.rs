@@ -696,9 +696,15 @@ async fn provenance_propagation_preserves_ancestor_edges_without_manufacturing_e
 const NODE: &str = "aidash://node";
 /// A published Tool whose endpoint needs a Tenant Secret the installer fills.
 fn published_with_secret_slot() -> Fixture {
+	published_with_secret_owner(false)
+}
+fn published_with_secret_owner(personal: bool) -> Fixture {
 	let mut scope = published();
 	let mut tool = crate::test_support::http_tool(NODE, "source", "lookup");
 	tool.config["transport"]["secret"] = json!("publisher-key");
+	if personal {
+		tool.config["transport"]["secret_owner"] = json!("personal");
+	}
 	scope.entries.insert("source".into(), tool.clone());
 	let package = aidash_domain::registry::Package {
 		entity: tool.clone(),
@@ -769,6 +775,33 @@ async fn the_installer_fills_each_declared_secret_with_a_tenant_secret_that_reco
 		Some("mine")
 	);
 	assert!(scope.calls.iter().any(|c| c == "secret.use"));
+}
+
+#[rstest]
+#[tokio::test]
+async fn a_personal_only_package_installs_with_no_shared_row_and_still_maps_its_slot() {
+	let validation = validation().with_tenant_secrets(true);
+	// No shared Tenant Secret `mine` exists: each person's own row is checked at dispatch.
+	let mut scope = published_with_secret_owner(true);
+	let command = with_secrets(&scope, &[("publisher-key", "mine")]);
+	let installed = install(&mut scope, &validation, "package", &command, NODE)
+		.await
+		.unwrap();
+	assert_eq!(
+		aidash_domain::tenant_secrets::definition_secret(&installed.entry).as_deref(),
+		Some("mine")
+	);
+	assert!(aidash_domain::tenant_secrets::definition_personal_only(
+		&installed.entry
+	));
+	// The name is still validated.
+	let mut scope = published_with_secret_owner(true);
+	let command = with_secrets(&scope, &[("publisher-key", "Not A Name")]);
+	assert!(
+		install(&mut scope, &validation, "package", &command, NODE)
+			.await
+			.is_err()
+	);
 }
 
 #[rstest]

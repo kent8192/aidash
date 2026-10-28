@@ -75,6 +75,52 @@ fn a_tool_names_its_secret_and_endpoint() {
 	assert_eq!(named(&plain), None);
 }
 
+#[test]
+fn a_personal_only_definition_has_no_shared_target_in_either_shape() {
+	let entry = |config: serde_json::Value| -> crate::registry::Entry {
+		serde_json::from_value(serde_json::json!({
+			"id":"t","version":"1.0.0","kind":"tool",
+			"name":{"en":"t"},"description":{"en":"t"},"config":config
+		}))
+		.unwrap()
+	};
+	let legacy = |owner: Option<&str>| {
+		let mut config = serde_json::json!({
+			"transport":"http","endpoint":"https://api.example.com/run",
+			"replay":"safe","secret":"search"
+		});
+		if let Some(owner) = owner {
+			config["secret_owner"] = owner.into();
+		}
+		entry(config)
+	};
+	let descriptor = |owner: Option<&str>| {
+		let mut transport = serde_json::json!({
+			"transport":"mcp","endpoint":"https://api.example.com/mcp","tool_name":"x",
+			"replay":"safe","secret":"search"
+		});
+		if let Some(owner) = owner {
+			transport["secret_owner"] = owner.into();
+		}
+		entry(serde_json::json!({"provider":"integration.mcp@1","transport":transport}))
+	};
+	for (shared, personal) in [
+		(legacy(None), legacy(Some("personal"))),
+		(descriptor(None), descriptor(Some("personal"))),
+	] {
+		assert!(!definition_personal_only(&shared));
+		assert!(definition_shared_target(&shared).is_some());
+		assert_eq!(definition_secret(&shared).as_deref(), Some("search"));
+		assert!(definition_personal_only(&personal));
+		assert_eq!(definition_shared_target(&personal), None);
+		// The name stays available for validation and Marketplace slot mapping.
+		assert_eq!(definition_secret(&personal).as_deref(), Some("search"));
+	}
+	assert!(!definition_personal_only(&entry(
+		serde_json::json!({"x":1})
+	)));
+}
+
 fn secret(id: u128, owner: Option<&str>) -> TenantSecret {
 	TenantSecret {
 		id: Uuid::from_u128(id),
