@@ -619,17 +619,24 @@ impl Service {
 					.await?
 					.filter(|c| c.client_id == *client_id)
 					.ok_or_else(required)?;
-				let secret = self
-					.reader()?
-					.read(&owner.tenant, &c.secret_resource, &c.pinned_version)
-					.await?;
-				let payload: serde_json::Value =
-					serde_json::from_str(secret.expose_secret()).map_err(|_| unavailable())?;
+				// A public Dynamic client pins no version, and the broker holds a
+				// Cloud client's secret: both mirror the cached-client path above.
+				let client_secret = if self.calls.is_none() && !c.pinned_version.is_empty() {
+					let secret = self
+						.reader()?
+						.read(&owner.tenant, &c.secret_resource, &c.pinned_version)
+						.await?;
+					let payload: serde_json::Value =
+						serde_json::from_str(secret.expose_secret()).map_err(|_| unavailable())?;
+					payload["client_secret"]
+						.as_str()
+						.map(|s| SecretString::from(s.to_owned()))
+				} else {
+					None
+				};
 				Ok(ClientCredentials {
 					client_id: c.client_id,
-					client_secret: payload["client_secret"]
-						.as_str()
-						.map(|s| SecretString::from(s.to_owned())),
+					client_secret,
 				})
 			}
 		}
