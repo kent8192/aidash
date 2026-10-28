@@ -1872,21 +1872,17 @@ async fn completed_learning_origin_remains_live_through_failed_index_retry(
 		.await
 		.unwrap();
 	assert_eq!(status().await.unwrap(), "COMPLETED");
-	aidash_server::semantic::native_memory::mutate(
-		&fixture.f.store,
-		&subject_actor(&fixture).await,
-		aidash_domain::memory::Mutation {
-			operation_id: Uuid::now_v7(),
-			provider: provider.clone(),
-			bank: bank_identity.clone(),
-			changes: vec![aidash_domain::memory::Change::Delete {
-				id: other.id,
-				expected_revision: other.revision,
-			}],
-		},
+	let fresh = common::subject_credential(&fixture.f.store, "acme", "alice").await;
+	let (status, deleted) = request(
+		&fixture.app,
+		&fresh,
+		"POST",
+		&format!("/api/workspaces/{}/memory/units/mutate", fixture.workspace),
+		json!({"operation_id":Uuid::now_v7(),"provider":provider,"bank":bank_identity,
+			"changes":[{"operation":"delete","id":other.id,"expected_revision":other.revision}]}),
 	)
-	.await
-	.unwrap();
+	.await;
+	assert_eq!(status, 200, "{deleted}");
 	let calls = fixture.inference.load(Ordering::SeqCst);
 	let operation_id = Uuid::now_v7();
 	let mut derived = source.content.clone();

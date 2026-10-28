@@ -157,6 +157,15 @@ async fn deployment_administrators_and_other_tenants_read_no_events_or_event_str
 		assert_eq!(response.status(), 403, "{cursor:?}");
 		assert!(!response.text().await.unwrap().contains(id), "{cursor:?}");
 	}
+	// Without a Workspace filter the stream is still Tenant content: refused.
+	let unfiltered = http_client
+		.get(format!("{}/api/events/stream", app.server.url))
+		.bearer_auth(administrator)
+		.send()
+		.await
+		.unwrap();
+	assert_eq!(unfiltered.status(), 403, "unfiltered event stream");
+	assert!(!unfiltered.text().await.unwrap().contains(id));
 	// Another Tenant's Subject sees none of this Tenant's events.
 	let response = http_client
 		.get(format!(
