@@ -78,6 +78,9 @@ async function dashboard(
           installations: [],
         },
       });
+    // Withdrawal first shows what it stops (#540).
+    if (path.endsWith("/catalog/impact"))
+      return route.fulfill({ json: { agents: [], running_runs: 0 } });
     if (
       path.startsWith("/api/authorization/") &&
       route.request().method() === "POST"
@@ -370,6 +373,13 @@ test("withdrawing fences on the approval revision and reports a conflict", async
   await row(page, "search").click();
   await approval(page)
     .getByRole("button", { name: "Withdraw approval", exact: true })
+    .click();
+  await expect(approval(page)).toContainText(
+    "No approved agent on this Node uses it.",
+  );
+  expect(decisions).toHaveLength(0);
+  await approval(page)
+    .getByRole("button", { name: "Withdraw anyway", exact: true })
     .click();
   await expect(approval(page).getByRole("alert")).toHaveText(
     "The approval changed. Review the current state and try again.",
