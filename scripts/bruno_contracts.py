@@ -26,7 +26,7 @@ DEPLOYMENT_ADMINISTRATOR = {"Authorization": "Bearer {{deployment_administrator_
 # route is checked with the contract subject, which passes the boundary, so
 # extractor errors such as 415 and 422 still reach the response.
 ADMIN_ADMITTED = {
-    "session", "state", "run-management-get", "run-management-control", "run-control",
+    "session", "state", "run-management-get", "run-management-control",
     "authorization-snapshot", "authorization-replace", "authorization-evaluate",
     "transaction_revocations", "transaction-participants",
     "tenant-administration", "tenant-registrations", "tenant-registration-approve",
@@ -1307,6 +1307,7 @@ def render():
             "registry-get",
             "registry-versions",
             "authorization-catalog",
+            "authorization-safety-stops",
             "workbench-inspect-version",
             "workbench-export-report",
         }
@@ -1319,7 +1320,12 @@ def render():
             status = 403
             checks = ""
             label = "Subject without file transfer permission cannot list recipients"
-        if route["name"] in {"marketplace-administration", "workbench-test-profiles"}:
+        # A Deployment Administrator names the Tenant of the Run it reads (ADR 0101).
+        if route["name"] in {
+            "marketplace-administration",
+            "workbench-test-profiles",
+            "run-management-get",
+        }:
             uri = path + "?tenant={{tenant}}"
         if route["name"] in {"authorization-catalog", "registry-versions"}:
             uri = path + "?node=" + NODE

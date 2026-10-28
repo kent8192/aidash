@@ -34,7 +34,7 @@ pub fn url_patterns() -> UnifiedRouter {
 				.endpoint(super::views::research::retention_history)
 				.with_route_middleware(AccessBoundary::authenticated().with_visibility())
 				.endpoint(management::run_control)
-				.with_route_middleware(AccessBoundary::administered().with_visibility())
+				.with_route_middleware(AccessBoundary::authenticated().with_visibility())
 				.endpoint(management::run_message)
 				.with_route_middleware(AccessBoundary::authenticated().with_visibility())
 				.endpoint(management::human_answer)

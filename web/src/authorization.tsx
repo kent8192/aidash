@@ -27,7 +27,7 @@ import type {
   PolicyBundle,
   Snapshot,
 } from "./generated/models";
-import { ApiError } from "./transport";
+import { ApiError, apiFetch } from "./transport";
 import {
   Badge,
   Empty,
@@ -500,6 +500,9 @@ function TenantAuthorization({
             kind="decisions"
           />
         )}
+        {access.can("decision.read") && (
+          <SafetyStopHistory key={`${tenant}-safety-stops`} tenant={tenant} />
+        )}
       </>
       {current && editor && (
         <Modal title={t("authEditPolicy")} close={close}>
@@ -971,6 +974,84 @@ function EvaluationPanel({
           )}
         </div>
       </form>
+    </Panel>
+  );
+}
+
+type SafetyStopRecord = {
+  id: string;
+  run_id: string;
+  action: "pause" | "cancel";
+  actor_kind: "shared_bearer" | "browser";
+  identity_id: string | null;
+  reason: string;
+  operation_id: string;
+  outcome: "accepted" | "no_op";
+  created_at: string;
+};
+
+/** Deployment Administrators' Safety Stops of this Tenant's Runs, with their reasons (ADR 0101). */
+function SafetyStopHistory({ tenant }: { tenant: string }) {
+  const { locale } = useI18n();
+  const ja = locale === "ja-JP";
+  const [page, setPage] = useState(0);
+  const query = useQuery({
+    queryKey: ["authorization", tenant, "safety-stops", page],
+    queryFn: () =>
+      apiFetch<SafetyStopRecord[]>(
+        `/api/authorization/${encodeURIComponent(tenant)}/safety-stops?offset=${page * PAGE_SIZE}&limit=${PAGE_SIZE}`,
+      ),
+    refetchInterval: 5000,
+  });
+  const records = !query.isError ? query.data : undefined;
+  return (
+    <Panel title={ja ? "安全停止の履歴" : "Safety Stop history"}>
+      {query.isError && <Alert>{query.error.message}</Alert>}
+      {query.isPending && <Loading />}
+      {records?.length === 0 && (
+        <p className="text-xs text-muted-foreground">
+          {ja ? "安全停止の記録はありません。" : "No Safety Stops recorded."}
+        </p>
+      )}
+      {!!records?.length && (
+        <RowList>
+          {records.map((record) => (
+            <HistoryRow
+              className="auth-history"
+              key={record.id}
+              time={new Date(record.created_at).toLocaleString(locale)}
+              summary={
+                <>
+                  <span className="font-mono">
+                    {record.action} · {record.outcome}
+                  </span>
+                  <span className="text-muted-foreground">
+                    {" · "}
+                    {record.actor_kind === "browser"
+                      ? (record.identity_id ?? "")
+                      : ja
+                        ? "共有トークン"
+                        : "shared token"}
+                  </span>
+                </>
+              }
+            >
+              <RecordView value={record} />
+            </HistoryRow>
+          ))}
+        </RowList>
+      )}
+      <Pager
+        page={page + 1}
+        previous={{
+          disabled: page === 0 || query.isFetching,
+          go: () => setPage(page - 1),
+        }}
+        next={{
+          disabled: records?.length !== PAGE_SIZE || query.isFetching,
+          go: () => setPage(page + 1),
+        }}
+      />
     </Panel>
   );
 }

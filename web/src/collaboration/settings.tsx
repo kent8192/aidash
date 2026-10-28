@@ -1,3 +1,4 @@
+import { SafetyStopPanel } from "./safety-stop";
 import { selfHostedPlanConnections } from "@slots/plan-connections";
 import {
   Bot,
@@ -565,6 +566,7 @@ export function Configuration({
           {section === "deployment" && deploymentAdministrator && (
             <>
               <DeploymentPage />
+              <SafetyStopPanel />
               <UsagePanel />
             </>
           )}

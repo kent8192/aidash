@@ -54,7 +54,7 @@ fn browser_deployment_administrator_writes_only_on_administered_routes(
 #[rstest]
 #[case("/api/runs/run-id/management", true)]
 #[case("/runs/run-id/management", true)]
-#[case("/api/runs/run-id/control", true)]
+#[case("/api/runs/run-id/control", false)]
 #[case("/api/runs/run-id/resume", false)]
 #[case("/api/runs/run-id/management/extra", false)]
 #[case("/api/runs", false)]

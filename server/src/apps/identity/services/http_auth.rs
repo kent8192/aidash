@@ -47,10 +47,7 @@ pub(crate) fn browser_deployment_administrator_allowed(method: &Method, path: &s
 	let segments: Vec<&str> = path.split('/').collect();
 	// Browser Deployment Administrator mode administers the installation and may stop work.
 	// It cannot silently become a tenant subject for new work or resumption.
-	if matches!(
-		segments.as_slice(),
-		["", "runs", _, "control" | "management"]
-	) {
+	if matches!(segments.as_slice(), ["", "runs", _, "management"]) {
 		return true;
 	}
 	// Deployment Administrators issue and revoke Invitations for any Tenant.

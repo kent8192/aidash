@@ -292,47 +292,17 @@ impl HarnessManagement {
 	pub(crate) async fn run_control(
 		&self,
 		actor: Actor,
-		browser: Option<crate::dashboard_auth::BrowserOrigin>,
 		id: Uuid,
 		input: ControlInput,
 	) -> Result<crate::domain::RunInspection> {
 		let f = self.runtime.clone();
-		if matches!(actor, Actor::DeploymentAdministrator)
-			&& browser.is_some()
-			&& input.action == crate::domain::RunControlAction::Resume
-		{
+		// A Deployment Administrator controls a Run only through a Safety Stop
+		// (`/management`, ADR 0101): no resume, and no `RunInspection` returned.
+		// The refusal comes before any mutation or serialization.
+		let Actor::Subject(identity) = actor else {
 			return Err(Error::Forbidden);
-		}
-		if let Actor::Subject(identity) = actor {
-			return execution::control(&f, &identity, id, input.action).await;
-		}
-		let scope = f.store.run_tenancy(id).await?;
-		let existing = f.store.inspect_run(&scope, id).await?;
-		let mut tx = f.store.pool.begin(&scope).await?;
-		crate::authorization::remote::deployment_administrator::require(
-			&mut tx,
-			existing.workspace_id,
-		)
-		.await?;
-		if input.action == crate::domain::RunControlAction::Resume
-			&& f.store
-				.pool
-				.dashboard_policy()
-				.is_some_and(|policy| policy.authority.is_some())
-			&& crate::apps::identity::models::DashboardExecutionOrigin::is_human_origin(
-				&mut *tx, id,
-			)
-			.await?
-		{
-			// Common-auth human work is readmitted only by a current interactive
-			// session of its original source, through the Subject control path.
-			return Err(Error::Forbidden);
-		}
-		let r = f.store.control_in(&mut tx, id, input.action).await?;
-		tx.commit().await?;
-		f.store.run_control_committed(r.id, r.control);
-		f.notify.notify_waiters();
-		Ok(r)
+		};
+		execution::control(&f, &identity, id, input.action).await
 	}
 	pub(crate) async fn run_message(
 		&self,

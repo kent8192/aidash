@@ -166,6 +166,33 @@ impl Deployment {
 		(status, body)
 	}
 
+	/// A Deployment Administrator command that carries an `Idempotency-Key`.
+	async fn as_deployment_administrator_keyed(
+		&self,
+		path: &str,
+		key: Uuid,
+		body: Value,
+	) -> (u16, Value) {
+		let response = self
+			.app
+			.api_http
+			.request("POST".parse().unwrap(), &self.app.url(path))
+			.header("content-type", "application/json")
+			.header(
+				"authorization",
+				format!("Bearer {DEPLOYMENT_ADMINISTRATOR}"),
+			)
+			.header("idempotency-key", key.to_string())
+			.json(&body)
+			.send()
+			.await
+			.unwrap();
+		(
+			response.status().as_u16(),
+			serde_json::from_slice(response.body()).unwrap_or(Value::Null),
+		)
+	}
+
 	async fn as_person(
 		&self,
 		person: &Person,

@@ -233,6 +233,7 @@ async fn members_without_the_actions_are_refused_with_an_audit(
 		("GET", "/revisions", "policy.read"),
 		("POST", "/simulate", "policy.read"),
 		("GET", "/decisions", "decision.read"),
+		("GET", "/safety-stops", "decision.read"),
 		("GET", "/credentials", "credential.read"),
 		("GET", "/peer-mappings", "peer_mapping.read"),
 	] {
@@ -271,6 +272,43 @@ async fn members_without_the_actions_are_refused_with_an_audit(
 		)
 		.await;
 	assert_eq!(status, 403);
+	t.finish().await;
+}
+
+#[rstest::rstest]
+#[tokio::test]
+async fn safety_stops_are_audited_to_the_tenant_and_not_to_a_deployment_administrator(
+	#[from(common::runtime)] runtime: common::RuntimeFuture,
+) {
+	let t = Team::new(runtime).await;
+	let (status, empty) = t.alice("GET", "/safety-stops", Value::Null).await;
+	assert_eq!(status, 200, "{empty}");
+	assert_eq!(empty, json!([]));
+	let record = Uuid::new_v4();
+	sqlx::query(
+		"INSERT INTO run_safety_stops (id, tenant, run_id, action, expected_control_revision, actor_kind, identity_id, reason, operation_id, caller_key, fingerprint, outcome, created_at) \
+		 VALUES ($1, $2, $3, 'pause', 0, 'shared_bearer', NULL, 'runaway spend', $4, 'shared_bearer', 'digest', 'accepted', clock_timestamp())",
+	)
+	.bind(record)
+	.bind(&t.tenant)
+	.bind(Uuid::new_v4())
+	.bind(Uuid::new_v4())
+	.execute(t.d.federation.store.pool.fixture_driver())
+	.await
+	.unwrap();
+	let (status, listed) = t.alice("GET", "/safety-stops", Value::Null).await;
+	assert_eq!(status, 200, "{listed}");
+	assert_eq!(listed[0]["id"], record.to_string());
+	assert_eq!(listed[0]["reason"], "runaway spend");
+	assert_eq!(listed[0]["actor_kind"], "shared_bearer");
+	assert!(listed[0]["identity_id"].is_null());
+	// Without `decision.read` the member is refused; so is a Deployment
+	// Administrator, whose receipt grants no read of the Tenant's audit history.
+	assert_eq!(t.bob("GET", "/safety-stops", Value::Null).await.0, 403);
+	let (status, body) =
+		t.d.as_deployment_administrator("GET", &t.path("/safety-stops"), Value::Null)
+			.await;
+	assert_eq!(status, 403, "{body}");
 	t.finish().await;
 }
 

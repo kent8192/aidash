@@ -24,6 +24,12 @@ pub const REVOKE: &str = "research.revoke";
 /// A revocation's required reason: trimmed, non-empty, bounded and free of
 /// control characters other than line breaks.
 pub fn reason(input: &str) -> Result<String> {
+	bounded_reason(input, "a revocation")
+}
+
+/// The reason rules shared by every audited administrative act that records
+/// why it happened; `subject` names the act in the refusal message.
+pub fn bounded_reason(input: &str, subject: &str) -> Result<String> {
 	let reason = input.trim();
 	if reason.is_empty()
 		|| reason.chars().count() > MAX_REASON_CHARS
@@ -32,7 +38,7 @@ pub fn reason(input: &str) -> Result<String> {
 			.any(|c| c.is_control() && c != '\n' && c != '\r' && c != '\t')
 	{
 		return Err(Error::Invalid(format!(
-			"a revocation needs a reason of 1 to {MAX_REASON_CHARS} characters"
+			"{subject} needs a reason of 1 to {MAX_REASON_CHARS} characters"
 		)));
 	}
 	Ok(reason.to_owned())
