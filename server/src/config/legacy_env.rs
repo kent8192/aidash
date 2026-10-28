@@ -42,6 +42,7 @@ fn values_with_oidc(
 	let mut node = serde_json::Map::new();
 	for (key, name) in [
 		("id", "AIDASH_DEPLOYMENT_ID"),
+		("region", "AIDASH_DEPLOYMENT_REGION"),
 		("endpoint", "AIDASH_ENDPOINT"),
 		("api_token", "AIDASH_API_TOKEN"),
 		("nats_url", "NATS_URL"),

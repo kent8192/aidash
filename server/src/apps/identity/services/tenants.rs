@@ -135,6 +135,11 @@ impl Tenants {
 		input: TenantCreation,
 	) -> Result<CreatedTenant> {
 		validate(&input)?;
+		if input.region.is_some() && input.region != self.runtime.store.deployment_region {
+			return Err(Error::Invalid(
+				"No Cloud Deployment is available in the selected region".into(),
+			));
+		}
 		let label = tenancy::label(&input.label)?;
 		let (creator, origin) = self.creator(&headers).await?;
 		let f = self.runtime.clone();

@@ -322,7 +322,8 @@ pub async fn admit(
 	}
 	let policy = super::data_protection::stored(tx, &grant.tenant)
 		.await?
-		.with_floor(store.data_protection_floor);
+		.with_floor(store.data_protection_floor)
+		.in_deployment(store.deployment_region);
 	policy.permits(aidash_domain::data_protection::Destination::PlanConnection)?;
 	let (tenant, subject) = (&grant.tenant, &grant.root_subject);
 	for provider in plans {

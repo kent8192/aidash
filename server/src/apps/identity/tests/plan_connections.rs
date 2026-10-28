@@ -1581,6 +1581,7 @@ async fn admission_pins_the_roots_connection_and_refuses_everything_else(
 						.level(level.to_owned())
 						.model_call_zdr(true)
 						.plan_connection_exempt(false)
+						.data_region_restricted(false)
 						.updated_at(chrono::Utc::now())
 						.updated_by("fixture".to_owned())
 						.finish();
@@ -1698,6 +1699,7 @@ async fn admission_pins_the_roots_connection_and_refuses_everything_else(
 			level: aidash_domain::data_protection::Level::ZeroDataRetention,
 			model_call_zdr: true,
 			plan_connection_exempt: false,
+			..Default::default()
 		};
 		assert_eq!(access.data_protection(&context).await.unwrap(), strict);
 		assert!(

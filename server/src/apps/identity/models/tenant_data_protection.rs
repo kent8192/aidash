@@ -14,6 +14,8 @@ pub struct TenantDataProtection {
 	pub model_call_zdr: bool,
 	#[field]
 	pub plan_connection_exempt: bool,
+	#[field(default = false)]
+	pub data_region_restricted: bool,
 	#[field]
 	pub updated_at: DateTime<Utc>,
 	#[field(field_type = "text")]
@@ -33,6 +35,8 @@ pub struct TenantDataProtectionHistory {
 	pub model_call_zdr: bool,
 	#[field]
 	pub plan_connection_exempt: bool,
+	#[field(default = false)]
+	pub data_region_restricted: bool,
 	#[field]
 	pub changed_at: DateTime<Utc>,
 	#[field(field_type = "text")]

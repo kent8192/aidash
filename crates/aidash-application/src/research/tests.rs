@@ -807,6 +807,7 @@ fn terms(
 ) -> AccountTerms {
 	let now = Utc::now();
 	AccountTerms {
+		data_region: None,
 		account_id: account.into(),
 		agreement_reference: "contract".into(),
 		verified_by: "deployment_administrator".into(),

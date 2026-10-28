@@ -465,6 +465,53 @@ impl aidash_application::provider_access::ProviderAccess for AdmittedAccess {
 			.map_err(Into::into)
 	}
 
+	async fn discovery(
+		&self,
+		context: &aidash_application::provider_access::Context,
+		endpoint: &str,
+		source: &aidash_application::provider_access::Source,
+		model: &str,
+	) -> Result<aidash_application::provider_access::Access> {
+		use aidash_application::provider_access::{
+			Context, Inference, MaintenancePurpose, Operation, Source,
+		};
+		let Source::Tenant { provider } = source else {
+			return Err(Error::Invalid(
+				"provider catalogs require a Provider Credential".into(),
+			));
+		};
+		// Validate the original charged observation/Decision before changing operations.
+		crate::apps::execution::observation::provider_scope(&self.store, context, true).await?;
+		let policy = super::data_protection::current(&self.store, context).await?;
+		if policy != context.data_protection {
+			return Err(Error::Invalid(
+				"Data Protection policy changed; retry discovery".into(),
+			));
+		}
+		policy.permits(aidash_domain::data_protection::Destination::OpenRouter)?;
+		let scoped = self.scoped(context, provider).await?;
+		let discovery = Context {
+			tenant: scoped.tenant,
+			data_protection: policy,
+			provider_credential_id: if context.is_decision() {
+				None
+			} else {
+				scoped.provider_credential_id
+			},
+			maintenance: Some(MaintenancePurpose::ProviderDiscovery),
+			inference: Some(Inference {
+				provider_tools: vec![],
+				model: model.into(),
+				operations: vec![Operation::Discovery],
+				max_output_tokens: 1,
+				cache_breakpoints: false,
+				call: None,
+				hosts: vec![],
+			}),
+			..Default::default()
+		};
+		self.tenant()?.resolve(&discovery, endpoint, source).await
+	}
 	async fn data_protection(
 		&self,
 		context: &aidash_application::provider_access::Context,
@@ -687,7 +734,10 @@ impl AdmittedAccess {
 	}
 }
 
-#[allow(clippy::too_many_arguments)] // Keep the workspace and current policy inputs explicit at admission.
+#[expect(
+	clippy::too_many_arguments,
+	reason = "Admission keeps transaction, snapshot, credential and Plan authorities explicit"
+)]
 pub(crate) async fn admit_workspace(
 	tx: &mut dyn TransactionExecutor,
 	run: Uuid,
@@ -751,7 +801,8 @@ async fn permit_selected(
 	use aidash_domain::data_protection::Destination;
 	let policy = super::data_protection::stored(tx, tenant)
 		.await?
-		.with_floor(floor);
+		.with_floor(floor)
+		.in_deployment(origins.deployment_region());
 	for endpoint in &selected.keyless {
 		policy.permits(origins.data_protection_destination(endpoint)?)?;
 	}

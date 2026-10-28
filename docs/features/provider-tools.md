@@ -173,7 +173,7 @@ admission remains owned by #543.
 
 Registry migration `0051_provider_warning_tools` extends the previous closed union
 without replacing old validation contracts. Identity migration
-`0044_provider_warning_acknowledgment` adds the nullable exact disclosure to
+`0045_provider_warning_acknowledgment` adds the nullable exact disclosure to
 approval history; execution migration `0062_provider_container` adds the nullable
 Run pin. Existing approvals and Runs acquire neither acknowledgment nor container
 implicitly.

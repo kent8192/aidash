@@ -752,7 +752,7 @@ def app_values(cluster, identity, output, release, sha, settings):
                         pruneServiceAccount={"annotations": {"iam.gke.io/gcp-service-account": protection["prune_service_account"]}})
     return {
         "image": {"repository": repository, "digest": digest},
-        "deployment": {"id": "aidash://" + output["runtime_secret"], "endpoint": "https://" + output["hostname"]},
+        "deployment": {"region": "us", "id": "aidash://" + output["runtime_secret"], "endpoint": "https://" + output["hostname"]},
         "existingSecret": "app-runtime",
         "memoryRecovery": {
             "existingClaim": "memory-recovery",

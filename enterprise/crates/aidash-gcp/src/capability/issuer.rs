@@ -137,6 +137,7 @@ impl TokenIssuer for CapabilityIssuer {
 			},
 			(None, Some(purpose), None) => TokenSubject::Maintenance {
 				maintenance: match purpose {
+					MaintenancePurpose::ProviderDiscovery => Maintenance::ProviderDiscovery,
 					MaintenancePurpose::MemoryIndexing => Maintenance::MemoryIndexing,
 					MaintenancePurpose::MemoryRetention => Maintenance::MemoryRetention,
 					MaintenancePurpose::MemoryReflection => Maintenance::MemoryReflection,
@@ -165,6 +166,7 @@ impl TokenIssuer for CapabilityIssuer {
 			.map_err(|_| Error::Invalid("Capability Token clock unavailable".into()))?
 			.as_secs();
 		let claims = Claims {
+			data_region: context.data_protection.region()?,
 			provider_tools: request
 				.provider_tools
 				.iter()
