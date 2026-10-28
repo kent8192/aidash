@@ -506,10 +506,12 @@ async fn cached_skill_context_rechecks_descriptor_authority_before_model_retry(
 		1,
 		"revocation must prevent redisclosure to the model"
 	);
-	// The pause names the tool and the check that refused it (#530).
+	// The pause names the tool and the check that refused it (#530). The
+	// withdrawal is a Tenant policy deny, so the check is `policy`, not
+	// Catalog Approval.
 	assert_eq!(
 		blocked.error.as_deref(),
-		Some("skill_list: Catalog Approval refused tool.invoke")
+		Some("skill_list: tool.invoke was denied")
 	);
 	assert_eq!(
 		blocked.context.source_observation.as_ref().unwrap().content,
