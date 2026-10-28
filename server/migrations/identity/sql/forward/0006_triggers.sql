@@ -6,7 +6,6 @@ CREATE TRIGGER atomic_write_guard BEFORE INSERT OR DELETE OR UPDATE OR TRUNCATE 
 CREATE TRIGGER atomic_write_guard BEFORE INSERT OR DELETE OR UPDATE OR TRUNCATE ON public.authorization_credentials FOR EACH STATEMENT EXECUTE FUNCTION public.atomic_write_guard();
 CREATE TRIGGER atomic_write_guard BEFORE INSERT OR DELETE OR UPDATE OR TRUNCATE ON public.authorization_decisions FOR EACH STATEMENT EXECUTE FUNCTION public.atomic_write_guard();
 CREATE TRIGGER atomic_write_guard BEFORE INSERT OR DELETE OR UPDATE OR TRUNCATE ON public.authorization_execution FOR EACH STATEMENT EXECUTE FUNCTION public.atomic_write_guard();
-CREATE TRIGGER atomic_write_guard BEFORE INSERT OR DELETE OR UPDATE OR TRUNCATE ON public.authorization_peer_graph_grants FOR EACH STATEMENT EXECUTE FUNCTION public.atomic_write_guard();
 CREATE TRIGGER atomic_write_guard BEFORE INSERT OR DELETE OR UPDATE OR TRUNCATE ON public.authorization_remote_commands FOR EACH STATEMENT EXECUTE FUNCTION public.atomic_write_guard();
 CREATE TRIGGER atomic_write_guard BEFORE INSERT OR DELETE OR UPDATE OR TRUNCATE ON public.authorization_remote_execution FOR EACH STATEMENT EXECUTE FUNCTION public.atomic_write_guard();
 CREATE TRIGGER atomic_write_guard BEFORE INSERT OR DELETE OR UPDATE OR TRUNCATE ON public.authorization_remote_outputs FOR EACH STATEMENT EXECUTE FUNCTION public.atomic_write_guard();

@@ -724,28 +724,6 @@ pub(crate) fn register(contracts: &mut Contracts, document: &mut OpenApiSchema) 
 		document,
 		views::graph::expand,
 	)?;
-	contracts.response::<_, Vec<crate::apps::identity::serializers::peer_graph::PeerGraphGrant>>(
-		document,
-		views::graph::list_grants,
-		200,
-		"application/json",
-	)?;
-	contracts.path(document, views::graph::list_grants, &["String"])?;
-	contracts.query::<_, crate::apps::identity::serializers::peer_graph::GrantPage>(
-		document,
-		views::graph::list_grants,
-	)?;
-	contracts.response::<_, crate::apps::identity::serializers::peer_graph::PeerGraphGrant>(
-		document,
-		views::graph::set_grant,
-		200,
-		"application/json",
-	)?;
-	contracts.request::<_, crate::apps::identity::serializers::peer_graph::PeerGraphGrantInput>(
-		document,
-		views::graph::set_grant,
-	)?;
-	contracts.path(document, views::graph::set_grant, &["String"])?;
 	contracts.response::<_, crate::apps::identity::serializers::remote_execution::RemoteExecutionMessageReceipt>(document,views::remote_execution::message,200,"application/json")?;
 	contracts
 		.request::<_, crate::apps::identity::serializers::remote_execution::RemoteExecutionMessageInput>(

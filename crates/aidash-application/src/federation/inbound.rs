@@ -7,7 +7,7 @@ use aidash_capability::{
 };
 use aidash_domain::{
 	federation::protocol::CURRENT,
-	nodes::{DeploymentId, NodeAddress, registration::Counterpart},
+	nodes::{NodeAddress, registration::Counterpart},
 	tenancy::TenantName,
 };
 use std::collections::BTreeMap;
@@ -214,84 +214,6 @@ pub async fn accept(
 			credential_id: mapping.credential_id,
 			subject,
 		},
-	})
-}
-
-/// A Deployment Administrator of another Deployment reading a Tenant's graph
-/// (ADR 0043): the one inbound caller that is not a Node.
-#[derive(Debug, Clone)]
-pub struct ViewerInbound {
-	pub receiver: DeploymentId,
-	pub viewer: DeploymentId,
-	/// The Tenant the viewer names; a Deployment Administrator selects one.
-	pub tenant: TenantName,
-	/// The viewer's browser identity, from `oidc:<uuid>` in the token.
-	pub identity: Uuid,
-	pub token: String,
-}
-
-/// An admitted viewer, with the grant revision its projection binds.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct AdmittedViewer {
-	pub tenant: TenantName,
-	pub viewer: DeploymentId,
-	pub identity: Uuid,
-	pub grant_revision: i64,
-}
-
-pub async fn accept_grant_viewer(
-	inbound: ViewerInbound,
-	request: &RequestDigest<'_>,
-	repository: &dyn InboundRepository,
-) -> Result<AdmittedViewer> {
-	let ViewerInbound {
-		receiver,
-		viewer,
-		tenant,
-		identity,
-		token,
-	} = inbound;
-	if !repository.federation_enabled()
-		|| !repository.holds_key()
-		|| receiver != *repository.deployment()
-		|| viewer == *repository.deployment()
-		|| !repository.tenant_live(&tenant).await?
-	{
-		return Err(Error::Unauthorized);
-	}
-	let grant = repository
-		.viewer_grant(&tenant, &viewer, identity)
-		.await?
-		.ok_or(Error::Unauthorized)?;
-	let keys = PublicKeys::from_pems(BTreeMap::from([(
-		grant.key.key_id.as_str().to_owned(),
-		grant.key.public_key_pem.clone(),
-	)]))
-	.map_err(|_| Error::Unauthorized)?;
-	let claims = FederationClaims::verify(
-		&token,
-		&keys,
-		repository.now(),
-		&RequestBinding {
-			protocol: CURRENT,
-			method: request.method,
-			path: request.path,
-			body: request.body,
-		},
-	)
-	.map_err(|_| Error::Unauthorized)?;
-	if claims.iss != viewer.as_str()
-		|| claims.sub != viewer.as_str()
-		|| claims.aud != receiver.as_str()
-		|| claims.subject != format!("oidc:{identity}")
-	{
-		return Err(Error::Unauthorized);
-	}
-	Ok(AdmittedViewer {
-		tenant,
-		viewer,
-		identity,
-		grant_revision: grant.revision,
 	})
 }
 

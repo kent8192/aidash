@@ -410,7 +410,7 @@ migration that creates each table, because Aidash is undeployed:
 
 Aidash is undeployed, so #241 edits each migration below in place and adds no migration file. Each paragraph names what the edited migration now creates, drops or renames. The bullets above describe the same tables by policy and key.
 
-`identity/0002_tables`, `identity/0003_keys_indexes`, `identity/0004_references` and `identity/0007_model_state` create `node_names` and `nodes` after `tenants`. `authorization_catalog` and its history gain `node`, and their primary keys start with `(tenant, node)`. `authorization_peer_graph_grants` keys on `(tenant, source_deployment, source_identity)` and stores the viewer Deployment's `source_key_id` and `source_public_key_pem`.
+`identity/0002_tables`, `identity/0003_keys_indexes`, `identity/0004_references` and `identity/0007_model_state` create `node_names` and `nodes` after `tenants`. `authorization_catalog` and its history gain `node`, and their primary keys start with `(tenant, node)`.
 
 `workspaces/0002_tables`, `workspaces/0004_references` and `workspaces/0007_model_state` add `workspaces.node`, which references `nodes(tenant, name)`.
 

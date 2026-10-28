@@ -265,9 +265,9 @@ pub async fn signed(
 pub enum Bearer<'a> {
 	/// A Federation token the stand-in Deployment signs for one of its Nodes.
 	Signed(&'a Remote, String),
-	/// A Peer Graph Grant's viewer: a Deployment Administrator of the stand-in
-	/// Deployment, who has no Node.
-	Viewer(&'a Remote, uuid::Uuid),
+	/// The token shape of the removed Peer Graph Grant viewer (#486): both
+	/// parties are Deployments and no Node signs. Only a refusal test sends it.
+	Deployment(&'a Remote, uuid::Uuid),
 	/// Anything else, sent as is.
 	Raw(&'a str),
 }
@@ -292,9 +292,9 @@ pub async fn post_as(
 				.headers(&node, receiver, subject, ("POST", target, bytes.as_bytes()))
 				.await
 		}
-		Bearer::Viewer(remote, identity) => {
+		Bearer::Deployment(remote, identity) => {
 			remote
-				.viewer_headers(receiver, identity, ("POST", target, bytes.as_bytes()))
+				.deployment_headers(receiver, identity, ("POST", target, bytes.as_bytes()))
 				.await
 		}
 		Bearer::Raw(token) => peer_headers(token),
@@ -397,10 +397,10 @@ impl Remote {
 }
 
 impl Remote {
-	/// The headers of a request that a Deployment Administrator of this
-	/// Deployment sends to the Deployment `receiver` under a Peer Graph Grant:
-	/// the token names the two Deployments and the browser identity, no Node.
-	pub async fn viewer_headers(
+	/// The headers of a token that names this Deployment and the Deployment
+	/// `receiver` and a browser identity, and no Node: the removed Peer Graph
+	/// Grant shape, which no route admits any more.
+	pub async fn deployment_headers(
 		&self,
 		receiver: &str,
 		identity: uuid::Uuid,

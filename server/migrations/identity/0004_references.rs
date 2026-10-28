@@ -131,18 +131,6 @@ pub(super) fn migration() -> Migration {
 			},
 		})
 		.add_operation(Operation::AddConstraintDefinition {
-			table: "authorization_peer_graph_grants".to_owned(),
-			constraint: Constraint::ForeignKey {
-				name: "authorization_peer_graph_grants_tenant_fkey".to_owned(),
-				columns: vec!["tenant".to_owned()],
-				referenced_table: "authorization_bundles".to_owned(),
-				referenced_columns: vec!["tenant".to_owned()],
-				on_delete: ForeignKeyAction::NoAction,
-				on_update: ForeignKeyAction::NoAction,
-				deferrable: None,
-			},
-		})
-		.add_operation(Operation::AddConstraintDefinition {
 			table: "authorization_run_outputs".to_owned(),
 			constraint: Constraint::ForeignKey {
 				name: "authorization_run_outputs_run_id_fkey".to_owned(),
@@ -434,18 +422,6 @@ pub(super) fn migration() -> Migration {
 			table: "authorization_execution".to_owned(),
 			constraint: Constraint::ForeignKey {
 				name: "authorization_execution_tenant_root_fkey".to_owned(),
-				columns: vec!["tenant".to_owned()],
-				referenced_table: "tenants".to_owned(),
-				referenced_columns: vec!["name".to_owned()],
-				on_delete: ForeignKeyAction::NoAction,
-				on_update: ForeignKeyAction::NoAction,
-				deferrable: None,
-			},
-		})
-		.add_operation(Operation::AddConstraintDefinition {
-			table: "authorization_peer_graph_grants".to_owned(),
-			constraint: Constraint::ForeignKey {
-				name: "authorization_peer_graph_grants_tenant_root_fkey".to_owned(),
 				columns: vec!["tenant".to_owned()],
 				referenced_table: "tenants".to_owned(),
 				referenced_columns: vec!["name".to_owned()],
