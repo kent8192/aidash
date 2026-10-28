@@ -45,8 +45,23 @@ async fn run_invocations_page_in_hundreds_and_keep_durable_payloads(
 			)
 			.await
 			.unwrap();
-		let run =
-			crate::endpoint::remote_run(&app.runtime.store, &task, home, "agent", "1.0.0").await;
+		// A Subject reads only Runs it may see at their home, so the observed Run is
+		// a local one; the journal keys keep the fixture's home name.
+		let run = if count > 1 {
+			let agent = app
+				.runtime
+				.registry
+				.get(
+					&aidash_domain::tenancy::TenantName::new("acme").unwrap(),
+					"agent",
+					"1.0.0",
+				)
+				.await
+				.unwrap();
+			crate::endpoint::local_run(&app.runtime.store, &scope, &task, &agent).await
+		} else {
+			crate::endpoint::remote_run(&app.runtime.store, &task, home, "agent", "1.0.0").await
+		};
 		if count > 1 {
 			observed_run = run.id;
 		}

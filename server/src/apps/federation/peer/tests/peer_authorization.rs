@@ -48,16 +48,16 @@ fn discovery(
 		let owner = crate::endpoint::default_node(&runtime.store, "acme")
 			.await
 			.node;
-		let registered = execution
-			.subject
-			.post(
-				&peering::registration_path("acme", owner.as_str()),
-				&remote.registration(&sender()),
-				"json",
-			)
-			.await
-			.unwrap();
-		crate::endpoint::assert_json(registered, 200);
+		let (status, registered) =
+			crate::endpoint::browser_mapping(&execution.app, "acme", "alice")
+				.await
+				.send(
+					"POST",
+					&peering::registration_path("acme", owner.as_str()),
+					remote.registration(&sender()),
+				)
+				.await;
+		assert_eq!(status, 200, "{registered}");
 		(execution, remote)
 	}
 }
@@ -137,8 +137,31 @@ async fn inbound_discovery_requires_exact_mapping_and_current_local_authority(
 			.0,
 		403
 	);
-	let issued = crate::endpoint::issued_credential(&f.store, "acme", "alice").await;
 	let subject_token = execution.subject_token.as_str();
+	// Peer Mappings are administered through a Tenant Administrator Mapping, which
+	// binds only the credential of a service or agent subject (#484).
+	policy["subjects"]["peer"] = json!({"kind":"service"});
+	assert_eq!(
+		request(
+			app,
+			&f.config.api_token,
+			"POST",
+			"/api/authorization/acme",
+			json!({"expected_revision":1,"bundle":policy})
+		)
+		.await
+		.0,
+		200
+	);
+	let acme_admin = endpoint::browser_mapping(app, "acme", "alice").await;
+	let (status, issued) = acme_admin
+		.send(
+			"POST",
+			"/api/authorization/acme/credentials",
+			json!({"subject":"peer"}),
+		)
+		.await;
+	assert_eq!(status, 200, "{issued}");
 	let credential = &issued["credential"]["id"];
 	let mut mapping = json!({"node":receiving_node(f).await,"source_node":remote.node(&sender()),"source_subject":"bob","credential_id":credential,"enabled":true,"expected_revision":0});
 	let path = "/api/authorization/acme/peer-mappings";
@@ -148,40 +171,37 @@ async fn inbound_discovery_requires_exact_mapping_and_current_local_authority(
 			.0,
 		403
 	);
-	let (status, binding) = request(app, subject_token, "POST", path, mapping.clone()).await;
+	let (status, binding) = acme_admin.send("POST", path, mapping.clone()).await;
 	assert_eq!(status, 200, "{binding}");
 	assert_eq!(binding["revision"], 1);
-	let (status, mappings) = request(
-		app,
-		subject_token,
-		"GET",
-		"/api/authorization/acme/peer-mappings?offset=0&limit=1",
-		json!({}),
-	)
-	.await;
+	let (status, mappings) = acme_admin
+		.send(
+			"GET",
+			"/api/authorization/acme/peer-mappings?offset=0&limit=1",
+			json!({}),
+		)
+		.await;
 	assert_eq!(status, 200, "{mappings}");
 	assert_eq!(mappings, json!([binding]));
-	let (status, mappings) = request(
-		app,
-		subject_token,
-		"GET",
-		"/api/authorization/acme/peer-mappings?offset=1&limit=1",
-		json!({}),
-	)
-	.await;
+	let (status, mappings) = acme_admin
+		.send(
+			"GET",
+			"/api/authorization/acme/peer-mappings?offset=1&limit=1",
+			json!({}),
+		)
+		.await;
 	assert_eq!(status, 200, "{mappings}");
 	assert_eq!(mappings, json!([]));
 	// Another Tenant's mappings are not an acme Subject's to read.
 	assert_eq!(
-		request(
-			app,
-			subject_token,
-			"GET",
-			"/api/authorization/other/peer-mappings?limit=1",
-			json!({})
-		)
-		.await
-		.0,
+		acme_admin
+			.send(
+				"GET",
+				"/api/authorization/other/peer-mappings?limit=1",
+				json!({})
+			)
+			.await
+			.0,
 		403
 	);
 	assert_eq!(
@@ -197,15 +217,10 @@ async fn inbound_discovery_requires_exact_mapping_and_current_local_authority(
 		"/api/authorization/acme/peer-mapping-history?after=-1",
 		"/api/authorization/acme/peer-mapping-history?limit=0",
 	] {
-		let (status, body) = request(app, subject_token, "GET", path, json!({})).await;
+		let (status, body) = acme_admin.send("GET", path, json!({})).await;
 		assert_eq!(status, 400, "{path}: {body}");
 	}
-	assert_eq!(
-		request(app, subject_token, "POST", path, mapping.clone())
-			.await
-			.0,
-		409
-	);
+	assert_eq!(acme_admin.send("POST", path, mapping.clone()).await.0, 409);
 	let stranger = Remote::start(SOURCE).await;
 	let unregistered = aidash_domain::nodes::NodeName::derived("forged").to_string();
 	for (bearer, subject, expected) in [
@@ -226,12 +241,7 @@ async fn inbound_discovery_requires_exact_mapping_and_current_local_authority(
 	}
 	mapping["expected_revision"] = json!(1);
 	mapping["enabled"] = json!(false);
-	assert_eq!(
-		request(app, subject_token, "POST", path, mapping.clone())
-			.await
-			.0,
-		200
-	);
+	assert_eq!(acme_admin.send("POST", path, mapping.clone()).await.0, 200);
 	assert_eq!(
 		discover(app, Bearer::Signed(&remote, sender()), "bob")
 			.await
@@ -240,12 +250,7 @@ async fn inbound_discovery_requires_exact_mapping_and_current_local_authority(
 	);
 	mapping["expected_revision"] = json!(2);
 	mapping["enabled"] = json!(true);
-	assert_eq!(
-		request(app, subject_token, "POST", path, mapping.clone())
-			.await
-			.0,
-		200
-	);
+	assert_eq!(acme_admin.send("POST", path, mapping.clone()).await.0, 200);
 	// Tenant approval is independent of the mapped subject's wildcard policy.
 	aidash_server::authorization::Authorization {
 		pool: f.store.pool.clone(),
@@ -293,7 +298,7 @@ async fn inbound_discovery_requires_exact_mapping_and_current_local_authority(
 			&f.config.api_token,
 			"POST",
 			"/api/authorization/acme",
-			json!({"expected_revision":1,"bundle":policy})
+			json!({"expected_revision":2,"bundle":policy})
 		)
 		.await
 		.0,
@@ -304,18 +309,17 @@ async fn inbound_discovery_requires_exact_mapping_and_current_local_authority(
 	assert_eq!(entries, json!([]));
 	// Credential revocation invalidates even an enabled, previously used map.
 	assert_eq!(
-		request(
-			app,
-			subject_token,
-			"POST",
-			&format!(
-				"/api/authorization/acme/credentials/{}/revoke",
-				credential.as_str().unwrap()
-			),
-			json!({})
-		)
-		.await
-		.0,
+		acme_admin
+			.send(
+				"POST",
+				&format!(
+					"/api/authorization/acme/credentials/{}/revoke",
+					credential.as_str().unwrap()
+				),
+				json!({})
+			)
+			.await
+			.0,
 		200
 	);
 	assert_eq!(
@@ -325,17 +329,9 @@ async fn inbound_discovery_requires_exact_mapping_and_current_local_authority(
 		403
 	);
 	mapping["expected_revision"] = json!(3);
-	assert_eq!(
-		request(app, subject_token, "POST", path, mapping.clone())
-			.await
-			.0,
-		403
-	);
+	assert_eq!(acme_admin.send("POST", path, mapping.clone()).await.0, 403);
 	mapping["enabled"] = json!(false);
-	assert_eq!(
-		request(app, subject_token, "POST", path, mapping).await.0,
-		200
-	);
+	assert_eq!(acme_admin.send("POST", path, mapping).await.0, 200);
 	let count = app
 		.database
 		.fixture(async |tx| {
@@ -347,28 +343,26 @@ async fn inbound_discovery_requires_exact_mapping_and_current_local_authority(
 		.await
 		.len();
 	assert_eq!(count, 4, "failed writes must not create history");
-	let (status, first) = request(
-		app,
-		subject_token,
-		"GET",
-		"/api/authorization/acme/peer-mapping-history?limit=2",
-		json!({}),
-	)
-	.await;
+	let (status, first) = acme_admin
+		.send(
+			"GET",
+			"/api/authorization/acme/peer-mapping-history?limit=2",
+			json!({}),
+		)
+		.await;
 	assert_eq!(status, 200);
 	assert_eq!(first.as_array().unwrap().len(), 2);
 	assert_eq!(first[0]["revision"], 1);
-	let (_, second) = request(
-		app,
-		subject_token,
-		"GET",
-		&format!(
-			"/api/authorization/acme/peer-mapping-history?after={}&limit=2",
-			first[1]["sequence"]
-		),
-		json!({}),
-	)
-	.await;
+	let (_, second) = acme_admin
+		.send(
+			"GET",
+			&format!(
+				"/api/authorization/acme/peer-mapping-history?after={}&limit=2",
+				first[1]["sequence"]
+			),
+			json!({}),
+		)
+		.await;
 	assert_eq!(second.as_array().unwrap().len(), 2);
 	assert_eq!(second[0]["revision"], 3);
 	assert_eq!(
@@ -384,15 +378,14 @@ async fn inbound_discovery_requires_exact_mapping_and_current_local_authority(
 		403
 	);
 	assert_eq!(
-		request(
-			app,
-			subject_token,
-			"GET",
-			"/api/authorization/acme/peer-mapping-history?limit=201",
-			json!({})
-		)
-		.await
-		.0,
+		acme_admin
+			.send(
+				"GET",
+				"/api/authorization/acme/peer-mapping-history?limit=201",
+				json!({})
+			)
+			.await
+			.0,
 		400
 	);
 }
@@ -406,9 +399,30 @@ async fn mappings_cannot_cross_tenants_and_expiry_or_disabled_subject_denies_dis
 	let app = &execution.app;
 	let f = &app.runtime;
 	let mut policy = execution.policy;
-	let issued = crate::endpoint::issued_credential(&f.store, "acme", "alice").await;
+	policy["subjects"]["peer"] = json!({"kind":"service"});
+	assert_eq!(
+		request(
+			app,
+			&f.config.api_token,
+			"POST",
+			"/api/authorization/acme",
+			json!({"expected_revision":1,"bundle":policy})
+		)
+		.await
+		.0,
+		200
+	);
+	// The Mapping binds the credential of a service subject (#484).
+	let acme_admin = endpoint::browser_mapping(app, "acme", "alice").await;
+	let (status, issued) = acme_admin
+		.send(
+			"POST",
+			"/api/authorization/acme/credentials",
+			json!({"subject":"peer"}),
+		)
+		.await;
+	assert_eq!(status, 200, "{issued}");
 	let credential = issued["credential"]["id"].clone();
-	let subject_token = execution.subject_token.as_str();
 	let mapping = json!({"node":receiving_node(f).await,"source_node":remote.node(&sender()),"source_subject":"bob","credential_id":credential,"enabled":true,"expected_revision":0});
 	let mut other_policy = policy.clone();
 	other_policy["tenant"] = json!("other");
@@ -425,82 +439,84 @@ async fn mappings_cannot_cross_tenants_and_expiry_or_disabled_subject_denies_dis
 		.0,
 		200
 	);
-	let other_token = crate::endpoint::subject_credential(&f.store, "other", "alice").await;
+	let other_admin = endpoint::browser_mapping(app, "other", "alice").await;
 	assert_eq!(
-		request(
-			app,
-			&other_token,
-			"POST",
-			"/api/authorization/other/peer-mappings",
-			mapping.clone()
-		)
-		.await
-		.0,
+		other_admin
+			.send(
+				"POST",
+				"/api/authorization/other/peer-mappings",
+				mapping.clone()
+			)
+			.await
+			.0,
 		403
 	);
 	assert_eq!(
-		request(
-			app,
-			subject_token,
-			"POST",
-			"/api/authorization/acme/peer-mappings",
-			mapping.clone()
-		)
-		.await
-		.0,
+		acme_admin
+			.send(
+				"POST",
+				"/api/authorization/acme/peer-mappings",
+				mapping.clone()
+			)
+			.await
+			.0,
 		200
 	);
-	let other_issued = crate::endpoint::issued_credential(&f.store, "other", "alice").await;
+	let (status, other_issued) = other_admin
+		.send(
+			"POST",
+			"/api/authorization/other/credentials",
+			json!({"subject":"peer"}),
+		)
+		.await;
+	assert_eq!(status, 200, "{other_issued}");
 	// The same sending subject may be mapped at another Tenant's Node once that
 	// Node registers the sender; a conflict within one Node answers 409.
 	let other_node = crate::endpoint::default_node(&f.store, "other").await.node;
 	assert_eq!(
-		request(
-			app,
-			&other_token,
-			"POST",
-			&peering::registration_path("other", other_node.as_str()),
-			remote.registration(&sender())
-		)
-		.await
-		.0,
+		other_admin
+			.send(
+				"POST",
+				&peering::registration_path("other", other_node.as_str()),
+				remote.registration(&sender())
+			)
+			.await
+			.0,
 		200
 	);
 	let mut other_mapping = mapping.clone();
 	other_mapping["node"] = json!(other_node);
 	other_mapping["credential_id"] = other_issued["credential"]["id"].clone();
 	assert_eq!(
-		request(
-			app,
-			&other_token,
-			"POST",
-			"/api/authorization/other/peer-mappings",
-			other_mapping.clone()
-		)
-		.await
-		.0,
+		other_admin
+			.send(
+				"POST",
+				"/api/authorization/other/peer-mappings",
+				other_mapping.clone()
+			)
+			.await
+			.0,
 		200
 	);
 	assert_eq!(
-		request(
-			app,
-			&other_token,
-			"POST",
-			"/api/authorization/other/peer-mappings",
-			other_mapping
-		)
-		.await
-		.0,
+		other_admin
+			.send(
+				"POST",
+				"/api/authorization/other/peer-mappings",
+				other_mapping
+			)
+			.await
+			.0,
 		409
 	);
-	policy["subjects"]["alice"]["enabled"] = json!(false);
+	policy["subjects"]["peer"]["enabled"] = json!(false);
 	assert_eq!(
 		request(
 			app,
 			&f.config.api_token,
 			"POST",
 			"/api/authorization/acme",
-			json!({"expected_revision":1,"bundle":policy})
+			json!({"expected_revision":2,"bundle":policy})
 		)
 		.await
 		.0,
@@ -512,7 +528,7 @@ async fn mappings_cannot_cross_tenants_and_expiry_or_disabled_subject_denies_dis
 			.0,
 		403
 	);
-	policy["subjects"]["alice"]["enabled"] = json!(true);
+	policy["subjects"]["peer"]["enabled"] = json!(true);
 	policy["policies"][0]["condition"] = json!({"op":"eq","left":{"source":"environment","path":"/transport"},"right":{"source":"literal","value":"federation"}});
 	assert_eq!(
 		request(
@@ -520,7 +536,7 @@ async fn mappings_cannot_cross_tenants_and_expiry_or_disabled_subject_denies_dis
 			&f.config.api_token,
 			"POST",
 			"/api/authorization/acme",
-			json!({"expected_revision":2,"bundle":policy})
+			json!({"expected_revision":3,"bundle":policy})
 		)
 		.await
 		.0,

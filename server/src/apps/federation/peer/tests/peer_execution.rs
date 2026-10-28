@@ -79,8 +79,8 @@ async fn deployment_administrator(app: &EndpointFixture, path: &str, input: Valu
 				.unwrap(),
 		);
 	};
-	// Credentials and Peer Mappings are Tenant settings: a Tenant Subject
-	// manages them, never the Deployment Administrator (#484).
+	// Peer Mappings and revocations are administered through a Tenant
+	// Administrator Mapping, never by a Deployment Administrator (#484).
 	if path.ends_with("/credentials") {
 		let subject = input["subject"].as_str().unwrap();
 		return (
@@ -88,17 +88,27 @@ async fn deployment_administrator(app: &EndpointFixture, path: &str, input: Valu
 			endpoint::issued_credential(&app.runtime.store, tenant, subject).await,
 		);
 	}
-	let token = endpoint::subject_credential(&app.runtime.store, tenant, "alice").await;
-	decoded(
-		app.anonymous
-			.request(http::Method::POST, path)
-			.header("Authorization", format!("Bearer {token}"))
-			.header(http::header::CONTENT_TYPE, "application/json")
-			.body(bytes::Bytes::copy_from_slice(input.to_string().as_bytes()))
-			.send()
-			.await
-			.unwrap(),
-	)
+	if path.ends_with("/peer-mappings") {
+		return host_peer_mapping(app, tenant, input).await;
+	}
+	endpoint::browser_mapping(app, tenant, "alice")
+		.await
+		.send("POST", path, input)
+		.await
+}
+
+/// Writes a Peer Mapping as the host would: a Tenant's HTTP route binds only
+/// credentials of service and agent subjects, and a Deployment Administrator
+/// has no route to it (#484).
+async fn host_peer_mapping(app: &EndpointFixture, tenant: &str, body: Value) -> (u16, Value) {
+	let input = serde_json::from_value(body).expect("the Peer Mapping input is well formed");
+	match aidash_server::apps::identity::services::peer::write(&app.runtime, tenant, input).await {
+		Ok(mapping) => (200, serde_json::to_value(mapping).unwrap()),
+		Err(error) => (
+			error.http_response().status.as_u16(),
+			json!({"error": "refused"}),
+		),
+	}
 }
 
 async fn inspect(
@@ -137,18 +147,15 @@ async fn receiver_preflight_uses_the_selected_nodes_policy_resource(
 	peering::permit(f, &remote.endpoint);
 	let receiving = endpoint::default_node(&f.store, "acme").await.node;
 	assert_eq!(
-		decoded(
-			execution
-				.subject
-				.post(
-					&peering::registration_path("acme", receiving.as_str()),
-					&remote.registration(&sender()),
-					"json",
-				)
-				.await
-				.unwrap()
-		)
-		.0,
+		endpoint::browser_mapping(app, "acme", "alice")
+			.await
+			.send(
+				"POST",
+				&peering::registration_path("acme", receiving.as_str()),
+				remote.registration(&sender()),
+			)
+			.await
+			.0,
 		200,
 	);
 	let (_, issued) = deployment_administrator(
@@ -225,16 +232,15 @@ async fn receiver_preflight_intersects_executor_and_mapping_without_admitting_a_
 	let f = &peering::enable(&app.runtime, &app.context);
 	peering::permit(f, &remote.endpoint);
 	let receiving = endpoint::default_node(&f.store, "acme").await.node;
-	let registered = execution
-		.subject
-		.post(
-			&peering::registration_path("acme", receiving.as_str()),
-			&remote.registration(&sender()),
-			"json",
-		)
+	let registered = endpoint::browser_mapping(app, "acme", "alice")
 		.await
-		.unwrap();
-	assert_eq!(decoded(registered).0, 200);
+		.send(
+			"POST",
+			&peering::registration_path("acme", receiving.as_str()),
+			remote.registration(&sender()),
+		)
+		.await;
+	assert_eq!(registered.0, 200, "{}", registered.1);
 	let signed = || Bearer::Signed(&remote, sender());
 	let input = json!({"agent":{"id":"research","version":"1.0.0"},"requirements":{}});
 	assert_eq!(inspect(app, signed(), "bob", input.clone()).await.0, 403);
@@ -412,27 +418,18 @@ async fn an_agent_cannot_bind_a_foreign_agent_without_the_removed_closure_import
 		endpoint::tenant_scope(&runtime.store, "acme").await;
 		let node = endpoint::default_node(&runtime.store, "acme").await;
 		let remote = endpoint::default_node(&peer_runtime.store, "acme").await;
-		let token = endpoint::tenant_token(&runtime.store, "acme").await;
-		let registered = owner
-			.anonymous
-			.request(
-				http::Method::POST,
+		let registered = endpoint::browser_mapping(owner, "acme", "alice")
+			.await
+			.send(
+				"POST",
 				&peering::registration_path("acme", node.node.as_str()),
-			)
-			.header("Authorization", format!("Bearer {token}"))
-			.header(http::header::CONTENT_TYPE, "application/json")
-			.body(bytes::Bytes::copy_from_slice(
 				peering::registration(
 					&remote.to_string(),
 					Some((&peer.server.url, &peering::key_id(peer_runtime))),
-				)
-				.to_string()
-				.as_bytes(),
-			))
-			.send()
-			.await
-			.unwrap();
-		assert_eq!(decoded(registered).0, 200);
+				),
+			)
+			.await;
+		assert_eq!(registered.0, 200, "{}", registered.1);
 	}
 	let tool = json!({"id":"foreign-tool","version":"1.0.0","kind":"tool","name":{"en":"Foreign child"},"description":{"en":"Pinned public child"},"config":{"registry_deployment":home.runtime.config.deployment,"provider":"integration.agent@1","operation":"invoke","default_alias":"foreign_child","tier":"integration","transport":{"transport":"agent","node_id":child.runtime.config.deployment,"agent":{"id":"public-child","version":"1.0.0"}}}});
 	let registered = deployment_administrator(&home, "/api/registry", tool).await;

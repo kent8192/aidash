@@ -388,13 +388,16 @@ impl Node {
 		);
 		body["atomic_transactions"] = json!(enabled);
 		body["expected_revision"] = json!(revision);
-		self.request(
-			reqwest::Method::POST,
-			&common::peering::registration_path("acme", owner),
-			Some(body),
-		)
-		.await
-		.0
+		// Registrations are administered through a Tenant Administrator Mapping (#484).
+		common::BrowserMapping::new(&self.f, "acme", "alice")
+			.await
+			.send(
+				"POST",
+				&common::peering::registration_path("acme", owner),
+				body,
+			)
+			.await
+			.0
 	}
 	async fn cleanup(mut self) {
 		self.close("clean up").await;
@@ -1950,14 +1953,10 @@ async fn mapped_transaction_admission_and_revocation(
 				"/api/authorization/acme/credentials/{}/revoke",
 				credential_a.id
 			);
-			let (status, body) = common::request(
-				&app_a,
-				&common::tenant_token(&a.f.store, "acme").await,
-				"POST",
-				&path,
-				Value::Null,
-			)
-			.await;
+			let (status, body) = common::BrowserMapping::new(&a.f, "acme", "alice")
+				.await
+				.send("POST", &path, Value::Null)
+				.await;
 			assert_eq!(
 				status, 202,
 				"an unknown durable admission cannot acknowledge complete revocation: {body}"
@@ -2027,14 +2026,10 @@ async fn mapped_transaction_admission_and_revocation(
 	let result = complete(&a, manifest.id).await;
 	assert_eq!(result.decision.as_deref(), Some(expected), "{result:?}");
 	if let Some(path) = reconciliation_check {
-		let (status, body) = common::request(
-			&app_a,
-			&common::tenant_token(&a.f.store, "acme").await,
-			"POST",
-			&path,
-			Value::Null,
-		)
-		.await;
+		let (status, body) = common::BrowserMapping::new(&a.f, "acme", "alice")
+			.await
+			.send("POST", &path, Value::Null)
+			.await;
 		assert_eq!(status, 200, "{body}");
 		assert_eq!(body["pending_transactions"], json!([]));
 	}

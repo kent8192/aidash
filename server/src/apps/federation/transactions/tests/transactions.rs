@@ -192,35 +192,35 @@ async fn subject_transaction_admission_preserves_only_accepted_obligations(
 	for _ in 0..steps_before_revocation {
 		coordinator::advance(&f, manifest.id).await.unwrap();
 	}
-	// Alice is still the Tenant's only credential holder, so list before another is issued.
-	let (_, credentials) = request(
-		&app,
-		&subject,
-		"GET",
-		"/api/authorization/acme/credentials",
-		Value::Null,
-	)
-	.await;
-	let credential = credentials
+	// Alice's credentials are administered through her browser Mapping; every
+	// one but the Mapping's own is revoked, which includes the submitter's.
+	let administrator = common::BrowserMapping::new(&f, "acme", "alice").await;
+	let (_, credentials) = administrator
+		.send("GET", "/api/authorization/acme/credentials", Value::Null)
+		.await;
+	let revocable: Vec<String> = credentials
 		.as_array()
 		.unwrap()
 		.iter()
-		.find(|value| value["subject"] == "alice")
-		.unwrap()["id"]
-		.as_str()
-		.unwrap();
-	let (status, body) = request(
-		&app,
-		&common::tenant_token(&f.store, "acme").await,
-		"POST",
-		&format!("/api/authorization/acme/credentials/{credential}/revoke"),
-		Value::Null,
-	)
-	.await;
-	assert_eq!(
-		status, 200,
-		"revocation must remain available during a reservation: {body}"
-	);
+		.filter(|value| {
+			value["subject"] == "alice" && value["id"] != json!(administrator.credential)
+		})
+		.map(|value| value["id"].as_str().unwrap().to_owned())
+		.collect();
+	assert!(!revocable.is_empty(), "{credentials}");
+	for credential in revocable {
+		let (status, body) = administrator
+			.send(
+				"POST",
+				&format!("/api/authorization/acme/credentials/{credential}/revoke"),
+				Value::Null,
+			)
+			.await;
+		assert_eq!(
+			status, 200,
+			"revocation must remain available during a reservation: {body}"
+		);
+	}
 	for _ in 0..12 {
 		if coordinator::advance(&f, manifest.id)
 			.await
@@ -294,7 +294,7 @@ async fn atomic_submission_validates_the_entire_manifest_before_creating_work(
 	let manifest = json!({"id":id,"coordinator":node(&f).await,"isolation":"serializable","deadline":Utc::now()+Duration::minutes(5),"participants":[{"node_id":node(&f).await,"mutations":[{"kind":"workspace_state","workspace_id":workspace.id,"expected_revision":0,"state":{"result":"committed"}}]}]});
 	let (status, response) = request(
 		&app,
-		&common::tenant_token(&f.store, "acme").await,
+		&subject,
 		"POST",
 		"/api/transactions",
 		manifest.clone(),
@@ -306,7 +306,7 @@ async fn atomic_submission_validates_the_entire_manifest_before_creating_work(
 	assert_eq!(
 		request(
 			&app,
-			&common::tenant_token(&f.store, "acme").await,
+			&subject,
 			"POST",
 			"/api/transactions",
 			manifest.clone()
@@ -317,15 +317,9 @@ async fn atomic_submission_validates_the_entire_manifest_before_creating_work(
 	let mut changed = manifest.clone();
 	changed["participants"][0]["mutations"][0]["state"] = json!({"different":true});
 	assert_eq!(
-		request(
-			&app,
-			&common::tenant_token(&f.store, "acme").await,
-			"POST",
-			"/api/transactions",
-			changed
-		)
-		.await
-		.0,
+		request(&app, &subject, "POST", "/api/transactions", changed)
+			.await
+			.0,
 		409
 	);
 	let mut external = manifest;
@@ -335,7 +329,7 @@ async fn atomic_submission_validates_the_entire_manifest_before_creating_work(
 		.unwrap()
 		.push(json!({"kind":"external_tool","endpoint":"http://127.0.0.1:9/effect"}));
 	// Native Json extraction rejects unknown mutations before transaction admission.
-	let authorization = format!("Bearer {}", common::tenant_token(&f.store, "acme").await);
+	let authorization = format!("Bearer {}", subject.clone());
 	// reinhardt-web#6672: do not mix shared default and per-request credentials.
 	let rejected = async {
 		let client = &(app.client());
@@ -568,13 +562,16 @@ async fn authority_control_does_not_unlock_ordinary_mutations(
 	// Store mutation may use those control paths to publish application data.
 	for operation in ["evaluate", "simulate"] {
 		// Evaluation is a Deployment-wide route; simulation is the Tenant's own.
-		let caller = if operation == "evaluate" {
-			f.config.api_token.clone()
+		let path = format!("/api/authorization/acme/{operation}");
+		let input = json!({"subject":"alice","action":"transaction.read","resource":{"tenant":"acme","kind":"transaction","id":manifest.id.to_string()}});
+		let (status, body) = if operation == "evaluate" {
+			request(&app, &f.config.api_token, "POST", &path, input).await
 		} else {
-			common::tenant_token(&f.store, "acme").await
+			common::BrowserMapping::new(&f, "acme", "alice")
+				.await
+				.send("POST", &path, input)
+				.await
 		};
-		let (status,body)=request(&app,&caller,"POST",&format!("/api/authorization/acme/{operation}"),
-			json!({"subject":"alice","action":"transaction.read","resource":{"tenant":"acme","kind":"transaction","id":manifest.id.to_string()}})).await;
 		assert_eq!(
 			status, 200,
 			"authority evaluation during the barrier: {body}"
@@ -600,15 +597,15 @@ async fn authority_control_does_not_unlock_ordinary_mutations(
 			.is_err()
 	);
 	assert_eq!(
-		request(
-			&app,
-			&common::tenant_token(&f.store, "acme").await,
-			"POST",
-			"/api/authorization/acme/credentials",
-			json!({"subject":"alice","expires_in_seconds":3600})
-		)
-		.await
-		.0,
+		common::BrowserMapping::new(&f, "acme", "alice")
+			.await
+			.send(
+				"POST",
+				"/api/authorization/acme/credentials",
+				json!({"subject":"alice","expires_in_seconds":3600})
+			)
+			.await
+			.0,
 		503
 	);
 	coordinator::abort(&f, manifest.id).await.unwrap();
@@ -660,7 +657,7 @@ async fn deployment_administrators_cannot_submit_list_read_or_abort_transactions
 		.await
 		.unwrap()
 		.workspace_id;
-	let own = manifest(node(&f).await.as_str(), workspace);
+	let own = review::manifest(node(&f).await.as_str(), workspace);
 	let own_id = own["id"].as_str().unwrap().to_owned();
 	assert_eq!(
 		request(&app, &token, "POST", "/api/transactions", own.clone())
@@ -681,7 +678,7 @@ async fn deployment_administrators_cannot_submit_list_read_or_abort_transactions
 			None => request(&app, &f.config.api_token, method, path, body).await,
 		}
 	};
-	let attempted = manifest(node(&f).await.as_str(), workspace);
+	let attempted = review::manifest(node(&f).await.as_str(), workspace);
 	let attempted_id = Uuid::parse_str(attempted["id"].as_str().unwrap()).unwrap();
 	// Act and assert: every administrator request is refused without content.
 	let (status, body) = as_administrator("POST", "/api/transactions", attempted).await;

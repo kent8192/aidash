@@ -159,18 +159,11 @@ async fn sibling_discovery_uses_the_receiving_nodes_catalog_and_policy_resource(
 	// Arrange
 	let fixture = Box::pin(execution).await;
 	let app = &fixture.app;
-	let second = assert_json(
-		fixture
-			.subject
-			.post(
-				"/api/tenants/acme/nodes",
-				&json!({"label":"Second"}),
-				"json",
-			)
-			.await
-			.unwrap(),
-		201,
-	);
+	let (status, second) = endpoint::browser_mapping(app, "acme", "alice")
+		.await
+		.send("POST", "/api/tenants/acme/nodes", json!({"label":"Second"}))
+		.await;
+	assert_eq!(status, 201, "{second}");
 	let name = aidash_domain::nodes::NodeName::parse(second["name"].as_str().unwrap()).unwrap();
 	let authorization = aidash_server::authorization::Authorization {
 		pool: app.runtime.store.pool.clone(),
@@ -274,18 +267,15 @@ async fn delegating_to_a_sibling_executes_on_that_receiving_node(
 	// is needed between Nodes belonging to this Tenant.
 	let fixture = Box::pin(execution).await;
 	let app = &fixture.app;
-	let second = assert_json(
-		fixture
-			.subject
-			.post(
-				"/api/tenants/acme/nodes",
-				&json!({"label":"Executor"}),
-				"json",
-			)
-			.await
-			.unwrap(),
-		201,
-	);
+	let (status, second) = endpoint::browser_mapping(app, "acme", "alice")
+		.await
+		.send(
+			"POST",
+			"/api/tenants/acme/nodes",
+			json!({"label":"Executor"}),
+		)
+		.await;
+	assert_eq!(status, 201, "{second}");
 	let name = aidash_domain::nodes::NodeName::parse(second["name"].as_str().unwrap()).unwrap();
 	let address = second["address"].as_str().unwrap();
 	let authorization = aidash_server::authorization::Authorization {
@@ -347,8 +337,9 @@ async fn delegating_to_a_sibling_executes_on_that_receiving_node(
 	);
 }
 /// Posts `body` as the right actor: the whole-policy replace stays with the
-/// Deployment Administrator, while credentials, Peer Mappings and Node
-/// registrations are Tenant settings that a Tenant Subject manages (#484).
+/// Deployment Administrator, while Peer Mappings, Node registrations and
+/// revocations go through a Tenant Administrator Mapping (#484). The first
+/// credentials are issued from the host.
 async fn deployment_administrator(app: &EndpointFixture, path: &str, body: Value) -> Value {
 	let tenant = path
 		.strip_prefix("/api/authorization/")
@@ -368,18 +359,31 @@ async fn deployment_administrator(app: &EndpointFixture, path: &str, body: Value
 		let subject = body["subject"].as_str().unwrap();
 		return endpoint::issued_credential(&app.runtime.store, tenant, subject).await;
 	}
-	let token = endpoint::subject_credential(&app.runtime.store, tenant, "alice").await;
-	assert_json(
-		app.anonymous
-			.request(http::Method::POST, path)
-			.header("Authorization", format!("Bearer {token}"))
-			.header(http::header::CONTENT_TYPE, "application/json")
-			.body(bytes::Bytes::copy_from_slice(body.to_string().as_bytes()))
-			.send()
-			.await
-			.unwrap(),
-		200,
-	)
+	if path.ends_with("/peer-mappings") {
+		let (status, response) = host_peer_mapping(app, tenant, body).await;
+		assert_eq!(status, 200, "{response}");
+		return response;
+	}
+	let (status, response) = endpoint::browser_mapping(app, tenant, "alice")
+		.await
+		.send("POST", path, body)
+		.await;
+	assert_eq!(status, 200, "{response}");
+	response
+}
+
+/// Writes a Peer Mapping as the host would: a Tenant's HTTP route binds only
+/// credentials of service and agent subjects, and a Deployment Administrator
+/// has no route to it (#484).
+async fn host_peer_mapping(app: &EndpointFixture, tenant: &str, body: Value) -> (u16, Value) {
+	let input = serde_json::from_value(body).expect("the Peer Mapping input is well formed");
+	match aidash_server::apps::identity::services::peer::write(&app.runtime, tenant, input).await {
+		Ok(mapping) => (200, serde_json::to_value(mapping).unwrap()),
+		Err(error) => (
+			error.http_response().status.as_u16(),
+			json!({"error": "refused"}),
+		),
+	}
 }
 
 #[rstest]
@@ -556,18 +560,11 @@ async fn discovery_from_a_named_node_reports_agents_by_node_addresses(
 	let pair = Box::pin(discovery_pair).await;
 	let a = &pair.source.app;
 	let subject = &pair.source.subject;
-	let created = assert_json(
-		pair.source
-			.subject
-			.post(
-				"/api/tenants/acme/nodes",
-				&json!({"label":"Second"}),
-				"json",
-			)
-			.await
-			.unwrap(),
-		201,
-	);
+	let (status, created) = endpoint::browser_mapping(a, "acme", "alice")
+		.await
+		.send("POST", "/api/tenants/acme/nodes", json!({"label":"Second"}))
+		.await;
+	assert_eq!(status, 201, "{created}");
 	let second = created["name"].as_str().unwrap();
 	let default = endpoint::default_node(&a.runtime.store, "acme").await;
 	let discover_from = |node: String| async move {
@@ -612,10 +609,15 @@ async fn in_flight_discovery_retains_source_authority_and_subsequent_requests_ho
 	let credential = app
 		.database
 		.fixture(async |tx| {
+			// The fixture Subject's credential is the oldest: the Mappings that
+			// register Nodes issue their own afterwards.
 			Ok(AuthorizationCredential::objects()
 				.filter(AuthorizationCredential::field_subject().eq("alice".to_owned()))
-				.get_with_db(tx)
-				.await?)
+				.all_with_db(tx)
+				.await?
+				.into_iter()
+				.min_by_key(|credential| credential.created_at)
+				.expect("the fixture Subject holds a credential"))
 		})
 		.await;
 	let input = json!({});
@@ -637,8 +639,8 @@ async fn in_flight_discovery_retains_source_authority_and_subsequent_requests_ho
 		"/api/authorization/acme/credentials/{}/revoke",
 		credential.id
 	);
-	let (member, _) = endpoint::tenant_member(app).await;
-	let revoker = member.post(&path, &input, "json");
+	let member = endpoint::browser_mapping(app, "acme", "alice").await;
+	let revoker = member.send("POST", &path, input.clone());
 	tokio::pin!(revoker);
 	// Assert
 	assert!(
@@ -656,13 +658,8 @@ async fn in_flight_discovery_retains_source_authority_and_subsequent_requests_ho
 		200,
 	);
 	assert_eq!(result["agents"].as_array().unwrap().len(), 2);
-	assert_json(
-		timeout(Duration::from_secs(5), revoker)
-			.await
-			.unwrap()
-			.unwrap(),
-		200,
-	);
+	let (status, revoked) = timeout(Duration::from_secs(5), revoker).await.unwrap();
+	assert_eq!(status, 200, "{revoked}");
 	assert_json(
 		fixture
 			.execution

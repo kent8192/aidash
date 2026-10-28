@@ -103,7 +103,7 @@ async fn durable_grants_bind_both_nodes_and_revalidate_after_restarts_and_revoca
 	);
 	common::register_pair((&a, &aa, "acme"), (&b, &ba, "acme")).await;
 	let issued = common::issued_credential(&b.store, "acme", "alice").await;
-	assert_eq!(request(&ba,&common::tenant_token(&b.store, "acme").await,"POST","/api/authorization/acme/peer-mappings",json!({"node":default_node(&b.store,"acme").await.node,"source_node":default_node(&a.store,"acme").await,"source_subject":"alice","credential_id":issued["credential"]["id"],"expected_revision":0,"enabled":true})).await.0,200);
+	assert_eq!(common::host_peer_mapping(&b, "acme", json!({"node":default_node(&b.store,"acme").await.node,"source_node":default_node(&a.store,"acme").await,"source_subject":"alice","credential_id":issued["credential"]["id"],"expected_revision":0,"enabled":true})).await.0,200);
 	let path = format!("/api/tasks/{task}/remote-grants");
 	let id = Uuid::new_v4();
 	let input = json!({"id":id,"node_id":default_node(&b.store,"acme").await,"agent":{"id":"research","version":"1.0.0"},"ttl_seconds":300});
@@ -414,15 +414,15 @@ async fn durable_grants_bind_both_nodes_and_revalidate_after_restarts_and_revoca
 	common::peering::permit(&a, &unrelated.endpoint);
 	let owner = default_node(&a.store, "acme").await.node;
 	assert_eq!(
-		request(
-			&aa,
-			&common::tenant_token(&a.store, "acme").await,
-			"POST",
-			&common::peering::registration_path("acme", owner.as_str()),
-			unrelated.registration(&unrelated_node)
-		)
-		.await
-		.0,
+		common::BrowserMapping::new(&a, "acme", "alice")
+			.await
+			.send(
+				"POST",
+				&common::peering::registration_path("acme", owner.as_str()),
+				unrelated.registration(&unrelated_node)
+			)
+			.await
+			.0,
 		200
 	);
 	common::set_node_enabled((&a, &aa, "acme"), (&b, "acme"), false, 1).await;
@@ -560,15 +560,15 @@ async fn durable_grants_bind_both_nodes_and_revalidate_after_restarts_and_revoca
 	}
 	.unwrap();
 	assert_eq!(
-		request(
-			&aa,
-			&common::tenant_token(&a.store, "acme").await,
-			"POST",
-			&format!("/api/authorization/acme/credentials/{source_credential}/revoke"),
-			json!({})
-		)
-		.await
-		.0,
+		common::BrowserMapping::new(&a, "acme", "alice")
+			.await
+			.send(
+				"POST",
+				&format!("/api/authorization/acme/credentials/{source_credential}/revoke"),
+				json!({})
+			)
+			.await
+			.0,
 		200
 	);
 	assert_eq!(verify(&fresh_app, (&a, &b), current).await.0, 403);
@@ -585,7 +585,7 @@ async fn durable_grants_bind_both_nodes_and_revalidate_after_restarts_and_revoca
 		(1, &receiver_replacement["credential"]["id"], 403),
 		(2, &issued["credential"]["id"], 200),
 	] {
-		assert_eq!(request(&ba,&common::tenant_token(&b.store, "acme").await,"POST","/api/authorization/acme/peer-mappings",json!({"node":default_node(&b.store,"acme").await.node,"source_node":default_node(&a.store,"acme").await,"source_subject":"alice","credential_id":credential,"expected_revision":revision,"enabled":true})).await.0,200);
+		assert_eq!(common::host_peer_mapping(&b, "acme", json!({"node":default_node(&b.store,"acme").await.node,"source_node":default_node(&a.store,"acme").await,"source_subject":"alice","credential_id":credential,"expected_revision":revision,"enabled":true})).await.0,200);
 		assert_eq!(
 			verify(&fresh_app, (&a, &b), replacement_id).await.0,
 			expected,
@@ -593,18 +593,18 @@ async fn durable_grants_bind_both_nodes_and_revalidate_after_restarts_and_revoca
 		);
 	}
 	assert_eq!(
-		request(
-			&ba,
-			&common::tenant_token(&b.store, "acme").await,
-			"POST",
-			&format!(
-				"/api/authorization/acme/credentials/{}/revoke",
-				issued["credential"]["id"].as_str().unwrap()
-			),
-			json!({})
-		)
-		.await
-		.0,
+		common::BrowserMapping::new(&b, "acme", "alice")
+			.await
+			.send(
+				"POST",
+				&format!(
+					"/api/authorization/acme/credentials/{}/revoke",
+					issued["credential"]["id"].as_str().unwrap()
+				),
+				json!({})
+			)
+			.await
+			.0,
 		200
 	);
 	assert_ne!(verify(&fresh_app, (&a, &b), replacement_id).await.0, 200);

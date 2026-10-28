@@ -61,17 +61,16 @@ pub async fn register(app: &EndpointFixture, source_node: &str, endpoint: &str, 
 	let owner = crate::endpoint::default_node(&app.runtime.store, "acme")
 		.await
 		.node;
-	// Node registrations are Tenant settings: a Tenant Subject writes them (#484).
-	let (member, _) = crate::endpoint::tenant_member(app).await;
-	let response = member
-		.post(
-			&crate::peering::registration_path("acme", owner.as_str()),
-			&crate::peering::registration(source_node, Some((endpoint, key_id))),
-			"json",
-		)
+	// Node registrations are administered through a Tenant Administrator Mapping (#484).
+	let (status, response) = crate::endpoint::browser_mapping(app, "acme", "alice")
 		.await
-		.unwrap();
-	crate::endpoint::assert_json(response, 200);
+		.send(
+			"POST",
+			&crate::peering::registration_path("acme", owner.as_str()),
+			crate::peering::registration(source_node, Some((endpoint, key_id))),
+		)
+		.await;
+	assert_eq!(status, 200, "{response}");
 }
 
 pub struct DiscoveryPair {

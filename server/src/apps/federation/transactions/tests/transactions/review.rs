@@ -2,7 +2,7 @@ use super::*;
 use aidash_application::tenancy::TEST_FIXTURE;
 use reinhardt::query::{Alias, Expr, ExprTrait, PostgresQueryBuilder, Query};
 
-fn manifest(node: &str, workspace: Uuid) -> Value {
+pub(super) fn manifest(node: &str, workspace: Uuid) -> Value {
 	json!({"id":Uuid::new_v4(),"coordinator":node,"isolation":"serializable", "deadline":Utc::now()+Duration::minutes(5),
 		"participants":[{"node_id":node,"mutations":[{"kind":"workspace_state","workspace_id":workspace,"expected_revision":0,"state":{}}]}]})
 }
@@ -108,36 +108,40 @@ async fn authorization_submission_and_abort_work_with_one_control_connection(
 	let app = common::application(f.clone()).await;
 	// Each ordinary route holds its visibility lease in the only control slot.
 	for path in ["catalog", "revisions", "decisions"] {
-		let reader = if path == "catalog" {
-			&token
+		// The catalog is the Subject's; revisions and decisions are read through
+		// a Tenant Administrator Mapping.
+		let (status, body) = if path == "catalog" {
+			let query = format!("?node={}", aidash_domain::nodes::NodeName::derived("acme"));
+			request(
+				&app,
+				&token,
+				"GET",
+				&format!("/api/authorization/acme/{path}{query}"),
+				Value::Null,
+			)
+			.await
 		} else {
-			&common::tenant_token(&f.store, "acme").await
+			common::BrowserMapping::new(&f, "acme", "alice")
+				.await
+				.send(
+					"GET",
+					&format!("/api/authorization/acme/{path}"),
+					Value::Null,
+				)
+				.await
 		};
-		let query = if path == "catalog" {
-			format!("?node={}", aidash_domain::nodes::NodeName::derived("acme"))
-		} else {
-			String::new()
-		};
-		let (status, body) = request(
-			&app,
-			reader,
-			"GET",
-			&format!("/api/authorization/acme/{path}{query}"),
-			Value::Null,
-		)
-		.await;
 		assert_eq!(status, 200, "{path}: {body}");
 	}
 	assert_eq!(
-		request(
-			&app,
-			&common::tenant_token(&f.store, "acme").await,
-			"POST",
-			"/api/authorization/acme/credentials",
-			json!({"subject":"alice"})
-		)
-		.await
-		.0,
+		common::BrowserMapping::new(&f, "acme", "alice")
+			.await
+			.send(
+				"POST",
+				"/api/authorization/acme/credentials",
+				json!({"subject":"alice"})
+			)
+			.await
+			.0,
 		200
 	);
 	let manifest = manifest(node(&f).await.as_str(), workspace);
@@ -255,15 +259,7 @@ async fn peer_mapping_writes_work_with_one_control_connection(
 	let (mut f, url, schema) = fixture.runtime.parts();
 	let app = fixture.application;
 	bootstrap(&f, &app, "http://localhost:1").await;
-	let (status, credential) = request(
-		&app,
-		&common::tenant_token(&f.store, "acme").await,
-		"POST",
-		"/api/authorization/acme/credentials",
-		json!({"subject":"alice"}),
-	)
-	.await;
-	assert_eq!(status, 200);
+	let credential = common::issued_credential(&f.store, "acme", "alice").await;
 	let source = common::register_local_node(&f, &app, "acme", "remote").await;
 	let node = common::default_node(&f.store, "acme").await.node;
 	let old_pool = f.store.control_pool.clone();
@@ -280,8 +276,7 @@ async fn peer_mapping_writes_work_with_one_control_connection(
 	old_pool.close().await;
 	let app = common::application(f.clone()).await;
 	for (revision, enabled) in [(0, true), (1, true), (2, false)] {
-		let (status, body) = request(&app, &common::tenant_token(&f.store, "acme").await, "POST", "/api/authorization/acme/peer-mappings",
-            json!({"node":node,"source_node":source,"source_subject":"bob","credential_id":credential["credential"]["id"],"enabled":enabled,"expected_revision":revision})).await;
+		let (status, body) = common::host_peer_mapping(&f, "acme", json!({"node":node,"source_node":source,"source_subject":"bob","credential_id":credential["credential"]["id"],"enabled":enabled,"expected_revision":revision})).await;
 		assert_eq!(
 			status, 200,
 			"mapping change must not acquire a second control slot: {body}"
@@ -346,6 +341,16 @@ async fn subject_transaction_errors_do_not_reveal_other_owners(
 	);
 	{
 		let query_bind_1 = Uuid::parse_str(foreign["id"].as_str().unwrap()).unwrap();
+		// The submission bound the transaction to Alice; the fixture rebinds it to Bob.
+		sqlx::query(
+			&Query::delete()
+				.from_table(Alias::new("atomic_subjects"))
+				.and_where(Expr::col(Alias::new("id")).eq(Expr::value(query_bind_1)))
+				.to_string(PostgresQueryBuilder),
+		)
+		.execute(f.store.control_pool.fixture_driver())
+		.await
+		.unwrap();
 		let query_bind_2 = json!({"tenant":"acme","subject":"bob","credential_id":Uuid::new_v4()});
 		sqlx::query(
 			&Query::insert()
@@ -436,14 +441,14 @@ async fn transaction_targets_must_belong_to_the_exact_participant_node(
 	.await;
 	assert_eq!(status, 200, "{body}");
 	let run = f.store.runs(&TEST_FIXTURE).await.unwrap().remove(0);
-	let (status, sibling) = request(
-		&app,
-		&common::tenant_token(&f.store, "acme").await,
-		"POST",
-		"/api/tenants/acme/nodes",
-		json!({"label":"Participant"}),
-	)
-	.await;
+	let (status, sibling) = common::BrowserMapping::new(&f, "acme", "alice")
+		.await
+		.send(
+			"POST",
+			"/api/tenants/acme/nodes",
+			json!({"label":"Participant"}),
+		)
+		.await;
 	assert_eq!(status, 201, "{sibling}");
 	let mutation = match kind {
 		"workspace_state" => {
