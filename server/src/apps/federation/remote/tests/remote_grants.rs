@@ -103,7 +103,7 @@ async fn durable_grants_bind_both_nodes_and_revalidate_after_restarts_and_revoca
 	);
 	common::register_pair((&a, &aa, "acme"), (&b, &ba, "acme")).await;
 	let issued = common::issued_credential(&b.store, "acme", "alice").await;
-	assert_eq!(common::host_peer_mapping(&b, "acme", json!({"node":default_node(&b.store,"acme").await.node,"source_node":default_node(&a.store,"acme").await,"source_subject":"alice","credential_id":issued["credential"]["id"],"expected_revision":0,"enabled":true})).await.0,200);
+	assert_eq!(common::set_peer_mapping(&b, "acme", "alice", json!({"node":default_node(&b.store,"acme").await.node,"source_node":default_node(&a.store,"acme").await,"source_subject":"alice","credential_id":issued["credential"]["id"],"expected_revision":0,"enabled":true})).await.0,200);
 	let path = format!("/api/tasks/{task}/remote-grants");
 	let id = Uuid::new_v4();
 	let input = json!({"id":id,"node_id":default_node(&b.store,"acme").await,"agent":{"id":"research","version":"1.0.0"},"ttl_seconds":300});
@@ -585,7 +585,7 @@ async fn durable_grants_bind_both_nodes_and_revalidate_after_restarts_and_revoca
 		(1, &receiver_replacement["credential"]["id"], 403),
 		(2, &issued["credential"]["id"], 200),
 	] {
-		assert_eq!(common::host_peer_mapping(&b, "acme", json!({"node":default_node(&b.store,"acme").await.node,"source_node":default_node(&a.store,"acme").await,"source_subject":"alice","credential_id":credential,"expected_revision":revision,"enabled":true})).await.0,200);
+		assert_eq!(common::set_peer_mapping(&b, "acme", "alice", json!({"node":default_node(&b.store,"acme").await.node,"source_node":default_node(&a.store,"acme").await,"source_subject":"alice","credential_id":credential,"expected_revision":revision,"enabled":true})).await.0,200);
 		assert_eq!(
 			verify(&fresh_app, (&a, &b), replacement_id).await.0,
 			expected,

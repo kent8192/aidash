@@ -78,7 +78,7 @@ async fn worker_remote_discovery_dependencies_survive_restart_and_hide_revoked_j
 	let issued = common::issued_credential(&b.store, "acme", "alice").await;
 	let b_node = common::default_node(&b.store, "acme").await;
 	let a_node = common::default_node(&a.store, "acme").await;
-	assert_eq!(common::host_peer_mapping(&b, "acme", json!({"node":b_node.node,"source_node":a_node,"source_subject":"alice","credential_id":issued["credential"]["id"],"expected_revision":0,"enabled":true})).await.0,200);
+	assert_eq!(common::set_peer_mapping(&b, "acme", "alice", json!({"node":b_node.node,"source_node":a_node,"source_subject":"alice","credential_id":issued["credential"]["id"],"expected_revision":0,"enabled":true})).await.0,200);
 	common::register_default_node((&a, &a_app, "acme"), (&b, "acme")).await;
 	assert_eq!(
 		request(

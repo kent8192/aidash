@@ -452,17 +452,9 @@ async fn seed_existing_scoped_transaction(
 	use aidash_server::apps::federation::transactions::models::{AtomicPreflights, AtomicSubjects};
 	use reinhardt::db::orm::Model;
 	assert_eq!(participants.len(), manifest.participants.len());
-	let (status, body) = source
-		.request(
-			reqwest::Method::POST,
-			"/api/transactions",
-			Some(json!(manifest)),
-		)
-		.await;
-	assert_eq!(
-		status, 202,
-		"Deployment Administrator fixture admission: {body}"
-	);
+	// Admitted as the host does: a Deployment Administrator has no HTTP route to
+	// submit a transaction (#484).
+	coordinator::submit(&source.f, manifest).await.unwrap();
 	let origin = fixture_origin(source).await;
 	let lease =
 		DatabaseConnectionLease::register(source.f.store.control_pool.connection()).unwrap();
@@ -633,19 +625,12 @@ async fn abort_records_a_durable_decision_while_recovery_owns_the_transition_lea
 		.await
 	}
 	.unwrap();
-	// A recovery step can hold this lease during slow peer I/O. A Deployment Administrator's
-	// durable abort must not be lost merely because that step is in flight.
-	let (status, body) = a
-		.request(
-			reqwest::Method::POST,
-			&format!("/api/transactions/{}/abort", manifest.id),
-			None,
-		)
-		.await;
+	// A recovery step can hold this lease during slow peer I/O. A durable abort
+	// must not be lost merely because that step is in flight.
+	let aborted = coordinator::abort(&a.f, manifest.id).await.unwrap();
 	transition.commit().await.unwrap();
-	assert_eq!(status, 200, "{body}");
-	assert_eq!(body["decision"], "ABORT");
-	assert!(!body["complete"].as_bool().unwrap());
+	assert_eq!(aborted.decision.as_deref(), Some("ABORT"));
+	assert!(!aborted.complete);
 	assert_eq!(
 		coordinator::abort(&a.f, manifest.id)
 			.await

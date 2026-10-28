@@ -459,14 +459,7 @@ async fn real_server_sigkill_at_durable_cut(
 	}
 	let restored = Instant::now();
 	// Submission-before-commit legitimately left no coordinator record.
-	let (status, body) = a
-		.request(
-			reqwest::Method::POST,
-			"/api/transactions",
-			Some(json!(manifest)),
-		)
-		.await;
-	assert_eq!(status, 202, "{body}");
+	coordinator::submit(&a.f, &manifest).await.unwrap();
 	tokio::time::timeout(WallDuration::from_secs(180), async {
 		loop {
 			if coordinator::status(&a.f, manifest.id)

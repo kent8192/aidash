@@ -165,18 +165,12 @@ async fn abort_records_a_durable_decision_while_recovery_owns_the_transition_lea
 		.execute(&sql, convert_values(values))
 		.await
 		.unwrap();
-	// A recovery step can hold this lease during slow peer I/O. A Deployment Administrator's
-	// durable abort must not be lost merely because that step is in flight.
-	let (status, body) = a
-		.post(
-			&format!("/api/transactions/{}/abort", manifest.id),
-			&json!({}),
-		)
-		.await;
+	// A recovery step can hold this lease during slow peer I/O. A durable abort
+	// must not be lost merely because that step is in flight.
+	let aborted = coordinator::abort(&a.f, manifest.id).await.unwrap();
 	transition.commit().await.unwrap();
-	assert_eq!(status, 200, "{body}");
-	assert_eq!(body["decision"], "ABORT");
-	assert!(!body["complete"].as_bool().unwrap());
+	assert_eq!(aborted.decision.as_deref(), Some("ABORT"));
+	assert!(!aborted.complete);
 	assert_eq!(
 		coordinator::abort(&a.f, manifest.id)
 			.await

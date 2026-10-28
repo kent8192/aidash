@@ -57,7 +57,7 @@ async fn receiver_admission_is_idempotent_scoped_and_revalidated_after_reconnect
 	let credential = common::issued_credential(&b.store, "acme", "alice").await;
 	let mapping = json!({"node":default_node(&b.store,"acme").await.node,"source_node":default_node(&a.store,"acme").await,"source_subject":"alice","credential_id":credential["credential"]["id"],"enabled":true,"expected_revision":0});
 	assert_eq!(
-		common::host_peer_mapping(&b, "acme", mapping.clone())
+		common::set_peer_mapping(&b, "acme", "alice", mapping.clone())
 			.await
 			.0,
 		200
@@ -236,14 +236,14 @@ async fn receiver_admission_is_idempotent_scoped_and_revalidated_after_reconnect
 	let mut rotated = mapping.clone();
 	rotated["expected_revision"] = json!(1);
 	rotated["credential_id"] = new_credential["credential"]["id"].clone();
-	assert_eq!(common::host_peer_mapping(&b, "acme", rotated).await.0, 200);
+	assert_eq!(common::set_peer_mapping(&b, "acme", "alice", rotated).await.0, 200);
 	assert_ne!(
 		peer(&fresh_app, (&a, &b), &verification, json!({})).await.0,
 		200
 	);
 	let mut restored = mapping;
 	restored["expected_revision"] = json!(2);
-	assert_eq!(common::host_peer_mapping(&b, "acme", restored).await.0, 200);
+	assert_eq!(common::set_peer_mapping(&b, "acme", "alice", restored).await.0, 200);
 	assert_eq!(
 		peer(&fresh_app, (&a, &b), &verification, json!({})).await.0,
 		200

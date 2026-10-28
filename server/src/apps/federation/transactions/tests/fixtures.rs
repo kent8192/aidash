@@ -276,16 +276,20 @@ impl Node {
 			.0
 	}
 
+	/// Admits `manifest` as the host does: a transaction with no owning Subject.
+	/// A Deployment Administrator has no HTTP route to submit one (#484); the
+	/// Subject routes are covered by the scoped suites.
 	pub async fn submit(&self, manifest: &Manifest) {
-		let (status, body) = self.post("/api/transactions", manifest).await;
-		assert_eq!(status, 202, "{body}");
-		assert_eq!(body["id"], json!(manifest.id));
+		let status = aidash_server::transactions::coordinator::submit(&self.f, manifest)
+			.await
+			.unwrap();
+		assert_eq!(status.id, manifest.id);
 	}
 
 	pub async fn status(&self, id: Uuid) -> Status {
-		let (status, body) = self.get(&format!("/api/transactions/{id}")).await;
-		assert_eq!(status, 200, "{body}");
-		serde_json::from_value(body["transaction"].clone()).unwrap()
+		aidash_server::transactions::coordinator::status(&self.f, id)
+			.await
+			.unwrap()
 	}
 }
 

@@ -276,7 +276,7 @@ async fn peer_mapping_writes_work_with_one_control_connection(
 	old_pool.close().await;
 	let app = common::application(f.clone()).await;
 	for (revision, enabled) in [(0, true), (1, true), (2, false)] {
-		let (status, body) = common::host_peer_mapping(&f, "acme", json!({"node":node,"source_node":source,"source_subject":"bob","credential_id":credential["credential"]["id"],"enabled":enabled,"expected_revision":revision})).await;
+		let (status, body) = common::set_peer_mapping(&f, "acme", "alice", json!({"node":node,"source_node":source,"source_subject":"bob","credential_id":credential["credential"]["id"],"enabled":enabled,"expected_revision":revision})).await;
 		assert_eq!(
 			status, 200,
 			"mapping change must not acquire a second control slot: {body}"
