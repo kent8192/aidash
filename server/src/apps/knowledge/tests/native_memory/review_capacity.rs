@@ -6,7 +6,7 @@ async fn bank(store: &Store, workspace: Uuid, participant: bool) -> Bank {
 	if participant {
 		memory::create_participant(
 			store,
-			&Actor::DeploymentAdministrator,
+			&administrator(store).await,
 			workspace,
 			memory::CreateParticipant {
 				agent: reference("a"),
@@ -25,7 +25,7 @@ async fn bank(store: &Store, workspace: Uuid, participant: bool) -> Bank {
 		};
 		memory::operate(
 			store,
-			&Actor::DeploymentAdministrator,
+			&administrator(store).await,
 			memory::Operation {
 				operation_id: Uuid::now_v7(),
 				provider: reference("p"),
@@ -45,7 +45,7 @@ async fn add(store: &Store, bank: &Bank, evidence: Vec<Evidence>) -> Unit {
 	body.evidence = evidence;
 	memory::mutate(
 		store,
-		&Actor::DeploymentAdministrator,
+		&administrator(store).await,
 		mutation(
 			bank,
 			Change::Add {
@@ -77,23 +77,23 @@ async fn index_configuration_preserves_every_pinned_bank_embedding(
 	if populated {
 		add(&store, &bank, vec![]).await;
 	}
-	let before = service::get_index(&store, &Actor::DeploymentAdministrator, workspace)
+	let before = service::get_index(&store, &administrator(&store).await, workspace)
 		.await
 		.unwrap();
 	let mut disabled = before.configuration().unwrap();
 	disabled.enabled = false;
 	assert!(
-		matches!(service::configure(&store, &aidash_server::authorization::identity::Actor::DeploymentAdministrator, workspace, aidash_server::semantic::ConfigureIndex {
+		matches!(service::configure(&store, &administrator(&store).await, workspace, aidash_server::semantic::ConfigureIndex {
 		expected_revision: before.revision, spec: disabled }).await,
 		Err(aidash_server::Error::Conflict(message)) if message.contains("remain enabled"))
 	);
 	let mut spec = before.configuration().unwrap();
 	spec.embedding.model = "incompatible-model".into();
 	assert!(
-		matches!(service::configure(&store, &aidash_server::authorization::identity::Actor::DeploymentAdministrator, workspace, aidash_server::semantic::ConfigureIndex { expected_revision: before.revision, spec }).await,
+		matches!(service::configure(&store, &administrator(&store).await, workspace, aidash_server::semantic::ConfigureIndex { expected_revision: before.revision, spec }).await,
 		Err(aidash_server::Error::Conflict(message)) if message.contains("pinned memory bank"))
 	);
-	let unchanged = service::get_index(&store, &Actor::DeploymentAdministrator, workspace)
+	let unchanged = service::get_index(&store, &administrator(&store).await, workspace)
 		.await
 		.unwrap();
 	assert_eq!(unchanged.revision, before.revision);
@@ -103,7 +103,7 @@ async fn index_configuration_preserves_every_pinned_bank_embedding(
 	spec.max_results = 2;
 	let compatible = service::configure(
 		&store,
-		&aidash_server::authorization::identity::Actor::DeploymentAdministrator,
+		&administrator(&store).await,
 		workspace,
 		aidash_server::semantic::ConfigureIndex {
 			expected_revision: before.revision,
@@ -155,7 +155,7 @@ async fn index_configuration_preserves_every_pinned_bank_embedding(
 		..bank.clone()
 	};
 	assert!(
-		matches!(memory::operate(&store, &Actor::DeploymentAdministrator, memory::Operation {
+		matches!(memory::operate(&store, &administrator(&store).await, memory::Operation {
 		operation_id: Uuid::now_v7(), provider: reference("different-provider"), bank: shared,
 		action: memory::Action::ConfigureBank { expected_revision: if participant { 0 } else { 1 } },
 	}).await, Err(aidash_server::Error::Conflict(message)) if message.contains("Workspace index"))
@@ -163,7 +163,7 @@ async fn index_configuration_preserves_every_pinned_bank_embedding(
 	assert_eq!(
 		memory::list(
 			&store,
-			&Actor::DeploymentAdministrator,
+			&administrator(&store).await,
 			memory::ReadBank {
 				provider: reference("p"),
 				bank
@@ -212,12 +212,12 @@ async fn dependency_admission_keeps_roots_correctable_and_deletable(
 	}];
 	let id = Uuid::now_v7();
 	assert!(
-		matches!(memory::mutate(&store, &Actor::DeploymentAdministrator, mutation(&bank, Change::Add { id, content: rejected })).await,
+		matches!(memory::mutate(&store, &administrator(&store).await, mutation(&bank, Change::Add { id, content: rejected })).await,
 		Err(aidash_server::Error::Conflict(message)) if message.contains("dependency impact"))
 	);
 	let current = memory::list(
 		&store,
-		&Actor::DeploymentAdministrator,
+		&administrator(&store).await,
 		memory::ReadBank {
 			provider: reference("p"),
 			bank: bank.clone(),
@@ -241,7 +241,7 @@ async fn dependency_admission_keeps_roots_correctable_and_deletable(
 	};
 	let result = memory::mutate(
 		&store,
-		&Actor::DeploymentAdministrator,
+		&administrator(&store).await,
 		mutation(&bank, change),
 	)
 	.await
@@ -250,7 +250,7 @@ async fn dependency_admission_keeps_roots_correctable_and_deletable(
 	assert_eq!(result[0].deleted, delete);
 	let current = memory::list(
 		&store,
-		&Actor::DeploymentAdministrator,
+		&administrator(&store).await,
 		memory::ReadBank {
 			provider: reference("p"),
 			bank,
@@ -282,7 +282,7 @@ async fn batched_root_corrections_each_keep_their_bounded_impact(
 	add(&store, &bank, vec![b.evidence()]).await;
 	let changed = memory::mutate(
 		&store,
-		&Actor::DeploymentAdministrator,
+		&administrator(&store).await,
 		Mutation {
 			operation_id: Uuid::now_v7(),
 			provider: reference("p"),
@@ -302,7 +302,7 @@ async fn batched_root_corrections_each_keep_their_bounded_impact(
 	assert_eq!(changed.len(), 2);
 	let current = memory::list(
 		&store,
-		&Actor::DeploymentAdministrator,
+		&administrator(&store).await,
 		memory::ReadBank {
 			provider: reference("p"),
 			bank,
@@ -348,12 +348,12 @@ async fn policy_replacement_cannot_shrink_below_existing_reverse_impact(
 		.await
 		.unwrap();
 	assert!(
-		matches!(memory::operate(&store, &Actor::DeploymentAdministrator, memory::Operation { operation_id: Uuid::now_v7(), provider: reference("small-impact"), bank: bank.clone(), action: memory::Action::ConfigureBank { expected_revision: 1 } }).await,
+		matches!(memory::operate(&store, &administrator(&store).await, memory::Operation { operation_id: Uuid::now_v7(), provider: reference("small-impact"), bank: bank.clone(), action: memory::Action::ConfigureBank { expected_revision: 1 } }).await,
 		Err(aidash_server::Error::Conflict(message)) if message.contains("dependency impact"))
 	);
 	memory::mutate(
 		&store,
-		&Actor::DeploymentAdministrator,
+		&administrator(&store).await,
 		mutation(
 			&bank,
 			Change::Delete {
@@ -367,7 +367,7 @@ async fn policy_replacement_cannot_shrink_below_existing_reverse_impact(
 	assert!(
 		memory::list(
 			&store,
-			&Actor::DeploymentAdministrator,
+			&administrator(&store).await,
 			memory::ReadBank {
 				provider: reference("p"),
 				bank
@@ -442,7 +442,7 @@ async fn recovery_shards_keep_home_ledgers_above_64_mib_writable(
 	assert_eq!((report.restored, report.withheld), (1, 0));
 	let changed = memory::mutate(
 		&store,
-		&Actor::DeploymentAdministrator,
+		&administrator(&store).await,
 		mutation(
 			&bank,
 			Change::Correct {
@@ -457,7 +457,7 @@ async fn recovery_shards_keep_home_ledgers_above_64_mib_writable(
 	assert_eq!(changed[0].revision, 2);
 	memory::mutate(
 		&store,
-		&Actor::DeploymentAdministrator,
+		&administrator(&store).await,
 		mutation(
 			&bank,
 			Change::Delete {
@@ -471,7 +471,7 @@ async fn recovery_shards_keep_home_ledgers_above_64_mib_writable(
 	assert!(
 		memory::list(
 			&store,
-			&Actor::DeploymentAdministrator,
+			&administrator(&store).await,
 			memory::ReadBank {
 				provider: reference("p"),
 				bank

@@ -18,7 +18,7 @@ async fn retention_skips_a_full_busy_page_and_retries_after_release(
 	for _ in 0..32 {
 		let bank = memory::create_participant(
 			&store,
-			&Actor::DeploymentAdministrator,
+			&administrator(&store).await,
 			workspace,
 			memory::CreateParticipant {
 				agent: reference("a"),
@@ -40,14 +40,14 @@ async fn retention_skips_a_full_busy_page_and_retries_after_release(
 		.unwrap();
 	let index = aidash_server::semantic::service::get_index(
 		&store,
-		&Actor::DeploymentAdministrator,
+		&administrator(&store).await,
 		workspace,
 	)
 	.await
 	.unwrap();
 	aidash_server::semantic::service::configure(
 		&store,
-		&aidash_server::authorization::identity::Actor::DeploymentAdministrator,
+		&administrator(&store).await,
 		later_workspace.id,
 		aidash_server::semantic::ConfigureIndex {
 			expected_revision: 0,
@@ -58,7 +58,7 @@ async fn retention_skips_a_full_busy_page_and_retries_after_release(
 	.unwrap();
 	let later_bank = memory::create_participant(
 		&store,
-		&Actor::DeploymentAdministrator,
+		&administrator(&store).await,
 		later_workspace.id,
 		memory::CreateParticipant {
 			agent: reference("a"),
@@ -191,7 +191,7 @@ async fn derived_corrections_preserve_kind_and_require_derive_authority(
 	let (store, _, workspace) = setup_endpoint(&database, bounds, &endpoint).await;
 	let bank = memory::create_participant(
 		&store,
-		&Actor::DeploymentAdministrator,
+		&administrator(&store).await,
 		workspace,
 		memory::CreateParticipant {
 			agent: reference("a"),
@@ -202,7 +202,7 @@ async fn derived_corrections_preserve_kind_and_require_derive_authority(
 	.bank;
 	let source = memory::mutate(
 		&store,
-		&Actor::DeploymentAdministrator,
+		&administrator(&store).await,
 		mutation(
 			&bank,
 			Change::Add {
@@ -227,7 +227,7 @@ async fn derived_corrections_preserve_kind_and_require_derive_authority(
 	let input = mutation(&bank, Change::Add { id, content: draft });
 	let memory::Outcome::Units(derived) = memory::operate(
 		&store,
-		&Actor::DeploymentAdministrator,
+		&administrator(&store).await,
 		memory::Operation {
 			operation_id: input.operation_id,
 			provider: reference("p"),
@@ -256,7 +256,7 @@ async fn derived_corrections_preserve_kind_and_require_derive_authority(
 	);
 	let result = memory::operate(
 		&store,
-		&Actor::DeploymentAdministrator,
+		&administrator(&store).await,
 		memory::Operation {
 			operation_id: reviewed.operation_id,
 			provider: reference("p"),
@@ -291,14 +291,15 @@ async fn derived_corrections_preserve_kind_and_require_derive_authority(
 				"deployment_administrator",
 			)
 			.await
-			.unwrap();
+			// The fixture Subject may have approved it already.
+			.ok();
 	}
 	let credential = authorization
 		.issue_credential("acme", "alice", 3600, "deployment_administrator")
 		.await
 		.unwrap();
 	let writer = authorization.authenticate(&credential.token).await.unwrap();
-	for actor in [&Actor::DeploymentAdministrator, &writer] {
+	for actor in [&writer] {
 		let mut body = derived[0].content.clone();
 		body.kind = replacement;
 		body.mental_model = None;
@@ -325,7 +326,7 @@ async fn derived_corrections_preserve_kind_and_require_derive_authority(
 	));
 	let current = memory::list(
 		&store,
-		&Actor::DeploymentAdministrator,
+		&administrator(&store).await,
 		memory::ReadBank {
 			provider: reference("p"),
 			bank,
@@ -359,18 +360,15 @@ async fn run_journal_above_1024_checks_revisions_on_later_pages(
 		.await
 		.unwrap()
 		.id;
-	let configured = aidash_server::semantic::service::get_index(
-		&store,
-		&Actor::DeploymentAdministrator,
-		indexed,
-	)
-	.await
-	.unwrap();
+	let configured =
+		aidash_server::semantic::service::get_index(&store, &administrator(&store).await, indexed)
+			.await
+			.unwrap();
 	let mut spec = configured.configuration().unwrap();
 	spec.max_sources = 64;
 	aidash_server::semantic::service::configure(
 		&store,
-		&aidash_server::authorization::identity::Actor::DeploymentAdministrator,
+		&administrator(&store).await,
 		workspace,
 		aidash_server::semantic::ConfigureIndex {
 			expected_revision: 0,
@@ -381,7 +379,7 @@ async fn run_journal_above_1024_checks_revisions_on_later_pages(
 	.unwrap();
 	let bank = memory::create_participant(
 		&store,
-		&Actor::DeploymentAdministrator,
+		&administrator(&store).await,
 		workspace,
 		memory::CreateParticipant {
 			agent: reference("a"),
@@ -408,7 +406,7 @@ async fn run_journal_above_1024_checks_revisions_on_later_pages(
 	for batch in ids.chunks(32) {
 		memory::mutate(
 			&store,
-			&Actor::DeploymentAdministrator,
+			&administrator(&store).await,
 			Mutation {
 				operation_id: Uuid::now_v7(),
 				provider: reference("p"),
@@ -432,7 +430,7 @@ async fn run_journal_above_1024_checks_revisions_on_later_pages(
 	);
 	memory::mutate(
 		&store,
-		&Actor::DeploymentAdministrator,
+		&administrator(&store).await,
 		mutation(
 			&bank,
 			Change::Correct {
@@ -475,7 +473,8 @@ async fn restore_propagates_withholding_beyond_recall_hop_limit(
 				"deployment_administrator",
 			)
 			.await
-			.unwrap();
+			// The fixture Subject may have approved it already.
+			.ok();
 	}
 	let credential = authorization
 		.issue_credential("acme", "alice", 3600, "deployment_administrator")
@@ -484,7 +483,7 @@ async fn restore_propagates_withholding_beyond_recall_hop_limit(
 	let writer = authorization.authenticate(&credential.token).await.unwrap();
 	let bank = memory::create_participant(
 		&store,
-		&Actor::DeploymentAdministrator,
+		&administrator(&store).await,
 		workspace,
 		memory::CreateParticipant {
 			agent: reference("a"),
@@ -539,11 +538,7 @@ async fn restore_propagates_withholding_beyond_recall_hop_limit(
 		body.evidence = vec![evidence];
 		let unit = memory::mutate(
 			&store,
-			if offset == 0 {
-				&writer
-			} else {
-				&Actor::DeploymentAdministrator
-			},
+			&writer,
 			mutation(
 				&bank,
 				Change::Add {
@@ -575,7 +570,7 @@ async fn restore_propagates_withholding_beyond_recall_hop_limit(
 	assert!(
 		memory::list(
 			&store,
-			&Actor::DeploymentAdministrator,
+			&administrator(&store).await,
 			memory::ReadBank {
 				provider: reference("p"),
 				bank
@@ -612,7 +607,7 @@ async fn candidate_expiry_erases_occurrence_dates_without_repeating_cas(
 	let (store, _, workspace) = setup(&database, bounds).await;
 	let bank = memory::create_participant(
 		&store,
-		&Actor::DeploymentAdministrator,
+		&administrator(&store).await,
 		workspace,
 		memory::CreateParticipant {
 			agent: reference("a"),
@@ -623,7 +618,7 @@ async fn candidate_expiry_erases_occurrence_dates_without_repeating_cas(
 	.bank;
 	memory::mutate(
 		&store,
-		&Actor::DeploymentAdministrator,
+		&administrator(&store).await,
 		mutation(
 			&bank,
 			Change::Add {
@@ -793,7 +788,7 @@ async fn stale_ordinary_dependents_retire_without_ttl_and_release_live_capacity(
 	let (store, _, workspace) = setup(&database, bounds).await;
 	let bank = memory::create_participant(
 		&store,
-		&Actor::DeploymentAdministrator,
+		&administrator(&store).await,
 		workspace,
 		memory::CreateParticipant {
 			agent: reference("a"),
@@ -804,7 +799,7 @@ async fn stale_ordinary_dependents_retire_without_ttl_and_release_live_capacity(
 	.bank;
 	let root = memory::mutate(
 		&store,
-		&Actor::DeploymentAdministrator,
+		&administrator(&store).await,
 		mutation(
 			&bank,
 			Change::Add {
@@ -821,7 +816,7 @@ async fn stale_ordinary_dependents_retire_without_ttl_and_release_live_capacity(
 	dependent.evidence = vec![root.evidence()];
 	let dependent = memory::mutate(
 		&store,
-		&Actor::DeploymentAdministrator,
+		&administrator(&store).await,
 		mutation(
 			&bank,
 			Change::Add {
@@ -835,7 +830,7 @@ async fn stale_ordinary_dependents_retire_without_ttl_and_release_live_capacity(
 	.remove(0);
 	memory::mutate(
 		&store,
-		&Actor::DeploymentAdministrator,
+		&administrator(&store).await,
 		mutation(
 			&bank,
 			Change::Correct {
@@ -893,7 +888,7 @@ async fn stale_ordinary_dependents_retire_without_ttl_and_release_live_capacity(
 	assert_eq!(state, "purged");
 	let replaced = memory::mutate(
 		&store,
-		&Actor::DeploymentAdministrator,
+		&administrator(&store).await,
 		mutation(
 			&bank,
 			Change::Add {
@@ -908,7 +903,7 @@ async fn stale_ordinary_dependents_retire_without_ttl_and_release_live_capacity(
 	assert_eq!(
 		memory::list(
 			&store,
-			&Actor::DeploymentAdministrator,
+			&administrator(&store).await,
 			memory::ReadBank {
 				provider: reference("p"),
 				bank

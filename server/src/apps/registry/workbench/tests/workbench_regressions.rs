@@ -202,16 +202,7 @@ fn workbench(
 				.unwrap();
 		}
 		assert_eq!(request(&app, &f.config.api_token, "POST", "/api/authorization/acme", json!({"expected_revision":0,"bundle":{"tenant":"acme","subjects":{"alice":{"kind":"user"},"bob":{"kind":"user"}},"policies":[{"id":"fixture","effect":"allow","subjects":{"any":true},"actions":["*"],"resources":{"kinds":["*"]}}]}})).await.0, 200);
-		let (status, credential) = request(
-			&app,
-			&f.config.api_token,
-			"POST",
-			"/api/authorization/acme/credentials",
-			json!({"subject":"alice"}),
-		)
-		.await;
-		assert_eq!(status, 200);
-		let token = credential["token"].as_str().unwrap().to_owned();
+		let token = common::subject_credential(&f.store, "acme", "alice").await;
 		let (status, draft) = request(&app, &token, "POST", "/api/workbench/drafts", json!({"entry":{"id":"","version":"1.0.0","kind":"agent","name":{"en":"Regression fixture"},"description":{"en":"Fixture"},"config":{"model":{"id":"fixture-model","version":"1.0.0"},"instructions":"Summarize","schema_version":1,"bindings":[{"kind":"tool","target":{"registry_deployment":f.config.deployment,"id":"fixture-tool","version":"1.0.0"},"alias":"plugin_0","narrow":{}}],"remove_default":["memory_mutate","memory_recall","memory_reflect"],"cluster":null,"max_steps":8}}})).await;
 		assert_eq!(status, 200, "draft: {draft}");
 		Workbench {
@@ -424,7 +415,7 @@ async fn expired_real_tests_keep_profile_and_continuation_metadata_in_trust(
 	#[future(awt)] workbench: Workbench,
 ) {
 	let wb = workbench;
-	assert_eq!(request(&wb.app, &wb.f.config.api_token, "PUT", "/api/workbench/test-profiles/acme/sandbox", json!({"expected_revision":0,"enabled":true,"rules":[{"tool":{"id":"fixture-tool","version":"1.0.0"},"endpoint":format!("{}/test-effect", wb.endpoint),"read_only_verified":true,"allowed_actions":["read"],"allowed_resources":["sandbox"]}]})).await.0, 200);
+	assert_eq!(request(&wb.app, &wb.token, "PUT", "/api/workbench/test-profiles/acme/sandbox", json!({"expected_revision":0,"enabled":true,"rules":[{"tool":{"id":"fixture-tool","version":"1.0.0"},"endpoint":format!("{}/test-effect", wb.endpoint),"read_only_verified":true,"allowed_actions":["read"],"allowed_resources":["sandbox"]}]})).await.0, 200);
 	let first = wb
 		.finished(
 			json!({"expected_revision":1,"message":"First","mode":"real","profile_id":"sandbox"}),
@@ -773,8 +764,16 @@ async fn hidden_incident_backlog(
 		wb.f.registry.register(&other, agent).await.unwrap();
 	}
 	let mut hidden = Vec::new();
+	// Bob files the incidents in his own Tenant: a Deployment Administrator
+	// holds no Tenant content authority (#484).
+	let bob = common::subject_credential(
+		&wb.f.store,
+		if other_tenant { "other" } else { "acme" },
+		"bob",
+	)
+	.await;
 	for _ in 0..101 {
-		let (status, incident) = request(&wb.app, &wb.f.config.api_token, "POST", &path, json!({"tenant":if other_tenant {"other"} else {"acme"},"severity":"medium","owner":"bob","notes":"Inaccessible incident"})).await;
+		let (status, incident) = request(&wb.app, &bob, "POST", &path, json!({"tenant":if other_tenant {"other"} else {"acme"},"severity":"medium","owner":"bob","notes":"Inaccessible incident"})).await;
 		assert_eq!(status, 200, "incident: {incident}");
 		hidden.push(incident["id"].clone());
 	}
@@ -822,7 +821,7 @@ fn model_waiting_for_real_tool(
 		*wb.responses.lock().await = VecDeque::from([
 			json!({"choices":[{"finish_reason":"tool_calls","message":{"content":"","tool_calls":[{"id":"real-call","function":{"name":"plugin_0","arguments":"{\"action\":\"read\",\"resource\":\"sandbox\"}"}}]}}],"usage":{"prompt_tokens":30,"completion_tokens":5}}),
 		]);
-		assert_eq!(request(&wb.app, &wb.f.config.api_token, "PUT", "/api/workbench/test-profiles/acme/sandbox", json!({"expected_revision":0,"enabled":true,"rules":[{"tool":{"id":"fixture-tool","version":"1.0.0"},"endpoint":format!("{}/test-effect",wb.endpoint),"read_only_verified":true,"allowed_actions":["read"],"allowed_resources":["sandbox"]}]})).await.0, 200);
+		assert_eq!(request(&wb.app, &wb.token, "PUT", "/api/workbench/test-profiles/acme/sandbox", json!({"expected_revision":0,"enabled":true,"rules":[{"tool":{"id":"fixture-tool","version":"1.0.0"},"endpoint":format!("{}/test-effect",wb.endpoint),"read_only_verified":true,"allowed_actions":["read"],"allowed_resources":["sandbox"]}]})).await.0, 200);
 		let token = if shared {
 			wb.call(
 				"POST",
@@ -830,15 +829,7 @@ fn model_waiting_for_real_tool(
 				json!({"subject":"bob","can_edit":true,"enabled":true,"include_documents":false}),
 			)
 			.await;
-			let (_, credential) = request(
-				&wb.app,
-				&wb.f.config.api_token,
-				"POST",
-				"/api/authorization/acme/credentials",
-				json!({"subject":"bob"}),
-			)
-			.await;
-			credential["token"].as_str().unwrap().to_owned()
+			common::subject_credential(&wb.f.store, "acme", "bob").await
 		} else {
 			wb.token.clone()
 		};
@@ -870,7 +861,7 @@ async fn pre_dispatch_revocation_is_denied_without_an_unknown_external_outcome(
 ) {
 	let (wb, started) = model_waiting_for_real_tool;
 	match revoked {
-		"profile" => assert_eq!(request(&wb.app, &wb.f.config.api_token, "PUT", "/api/workbench/test-profiles/acme/sandbox", json!({"expected_revision":1,"enabled":false,"rules":[]})).await.0, 200),
+		"profile" => assert_eq!(request(&wb.app, &wb.token, "PUT", "/api/workbench/test-profiles/acme/sandbox", json!({"expected_revision":1,"enabled":false,"rules":[]})).await.0, 200),
 		"credential" => {
 			let authorization = aidash_server::authorization::Authorization {pool:wb.f.store.pool.clone()};
 			let credential = authorization.credentials("acme").await.unwrap().remove(0);
@@ -926,7 +917,7 @@ async fn real_test_profiles_require_a_distinct_canonical_destination(
 	#[case] expected: u16,
 ) {
 	let wb = production_endpoint_workbench;
-	let (status, body) = request(&wb.app, &wb.f.config.api_token, "PUT", "/api/workbench/test-profiles/acme/canonical", json!({"expected_revision":0,"enabled":true,"rules":[{"tool":{"id":"production-tool","version":"1.0.0"},"endpoint":endpoint,"read_only_verified":true,"allowed_actions":["read"],"allowed_resources":["sandbox"]}]})).await;
+	let (status, body) = request(&wb.app, &wb.token, "PUT", "/api/workbench/test-profiles/acme/canonical", json!({"expected_revision":0,"enabled":true,"rules":[{"tool":{"id":"production-tool","version":"1.0.0"},"endpoint":endpoint,"read_only_verified":true,"allowed_actions":["read"],"allowed_resources":["sandbox"]}]})).await;
 	assert_eq!(status, expected, "profile: {body}");
 	wb.cleanup().await;
 }
@@ -1424,16 +1415,7 @@ async fn shared_transfer_workbench(
 		json!({"subject":"bob","can_edit":can_edit,"enabled":true,"include_documents":false}),
 	)
 	.await;
-	let (status, credential) = request(
-		&wb.app,
-		&wb.f.config.api_token,
-		"POST",
-		"/api/authorization/acme/credentials",
-		json!({"subject":"bob"}),
-	)
-	.await;
-	assert_eq!(status, 200);
-	let token = credential["token"].as_str().unwrap().to_owned();
+	let token = common::subject_credential(&wb.f.store, "acme", "bob").await;
 	(wb, token)
 }
 
@@ -2057,4 +2039,117 @@ async fn recent_workbench_activity_preserves_an_old_sessions_running_slot(
 	wb.cleanup().await;
 	assert_eq!(retained, ("running".into(), Some(draft_id)));
 	assert_eq!(finished["status"], "completed", "{finished}");
+}
+
+/// A Deployment Administrator, by shared bearer or browser context, and a
+/// Subject of another Tenant hold no authority over a Tenant's Workbench
+/// records, incidents, audit, reports, Test Profiles or Test Limits (#484).
+#[rstest::rstest]
+#[tokio::test]
+async fn deployment_and_other_tenant_authority_never_reaches_a_tenants_workbench_records(
+	#[future(awt)] workbench: Workbench,
+) {
+	// Arrange: a registered version with one incident, and a second Tenant.
+	let wb = workbench;
+	wb.register().await;
+	let version = format!(
+		"/api/workbench/versions/{}/1.0.0",
+		wb.draft["entry"]["id"].as_str().unwrap()
+	);
+	let incidents = format!("{version}/incidents");
+	let incident = wb
+		.call(
+			"POST",
+			&incidents,
+			json!({"severity":"medium","owner":"alice","notes":"Tenant incident"}),
+		)
+		.await;
+	let incident_path = format!(
+		"/api/workbench/incidents/{}",
+		incident["id"].as_str().unwrap()
+	);
+	let profile = "/api/workbench/test-profiles/acme/administrator";
+	let limits = "/api/workbench/test-limits/acme";
+	let current = wb.call("GET", limits, Value::Null).await;
+	common::tenant_root(&wb.f, "other").await;
+	assert_eq!(request(&wb.app, &wb.f.config.api_token, "POST", "/api/authorization/other", json!({"expected_revision":0,"bundle":{"tenant":"other","subjects":{"bob":{"kind":"user"}},"policies":[{"id":"fixture","effect":"allow","subjects":{"any":true},"actions":["*"],"resources":{"kinds":["*"]}}]}})).await.0, 200);
+	let bob = common::subject_credential(&wb.f.store, "other", "bob").await;
+	let browser = common::BrowserAdministrator::new(&wb.f).await;
+	let mut changed = current["limits"].clone();
+	changed["max_concurrent"] = json!(7);
+	let routes = [
+		("GET", incidents.clone(), Value::Null),
+		(
+			"POST",
+			incidents.clone(),
+			json!({"severity":"high","owner":"alice","notes":"Forged incident"}),
+		),
+		("GET", incident_path.clone(), Value::Null),
+		("GET", format!("{incident_path}/events"), Value::Null),
+		("GET", format!("{version}/audit"), Value::Null),
+		("GET", version.clone(), Value::Null),
+		("GET", format!("{version}/permissions"), Value::Null),
+		("GET", format!("{version}/report"), Value::Null),
+		(
+			"GET",
+			"/api/workbench/test-profiles/acme".into(),
+			Value::Null,
+		),
+		(
+			"PUT",
+			profile.into(),
+			json!({"expected_revision":0,"enabled":true,"rules":[]}),
+		),
+		("GET", limits.into(), Value::Null),
+		("PUT", limits.into(), changed),
+	];
+
+	// Act and Assert: each outsider is refused on every route.
+	for (method, path, body) in &routes {
+		let (status, response) =
+			request(&wb.app, &wb.f.config.api_token, method, path, body.clone()).await;
+		assert_eq!(
+			status, 403,
+			"bearer administrator {method} {path}: {response}"
+		);
+		let (status, response) = browser.send(method, path, body.clone()).await;
+		assert_eq!(
+			status, 403,
+			"browser administrator {method} {path}: {response}"
+		);
+		// A refusal may carry no JSON body, so read the status and any text.
+		let mut probe = wb
+			.app
+			.api_http
+			.request(method.parse().unwrap(), path)
+			.header("Authorization", format!("Bearer {bob}"));
+		if matches!(*method, "POST" | "PUT") {
+			probe = probe.json(body);
+		}
+		let reply = probe.send().await.unwrap();
+		let (status, response) = (
+			reply.status_code(),
+			String::from_utf8_lossy(reply.body()).into_owned(),
+		);
+		assert!(
+			matches!(status, 400 | 403 | 404)
+				|| (status == 200 && !response.contains("Tenant incident")),
+			"other Tenant {method} {path}: {status} {response}"
+		);
+	}
+
+	// Assert: nothing changed, and the Tenant's own Subject still works.
+	let listed = wb.call("GET", &incidents, Value::Null).await;
+	assert_eq!(listed.as_array().unwrap().len(), 1, "{listed}");
+	assert_eq!(wb.call("GET", limits, Value::Null).await, current);
+	let profiles = wb
+		.call("GET", "/api/workbench/test-profiles/acme", Value::Null)
+		.await;
+	assert!(
+		!profiles.to_string().contains("administrator"),
+		"the administrator wrote no profile: {profiles}"
+	);
+	wb.call("GET", &format!("{version}/audit"), Value::Null)
+		.await;
+	wb.cleanup().await;
 }

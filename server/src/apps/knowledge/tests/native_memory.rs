@@ -88,7 +88,7 @@ async fn native_memory_banks_cannot_spoof_the_workspaces_home_node(
 	let id = Uuid::now_v7();
 	memory::mutate(
 		&store,
-		&Actor::DeploymentAdministrator,
+		&administrator(&store).await,
 		mutation(
 			&bank,
 			Change::Add {
@@ -106,7 +106,7 @@ async fn native_memory_banks_cannot_spoof_the_workspaces_home_node(
 	if write {
 		let result = memory::mutate(
 			&store,
-			&Actor::DeploymentAdministrator,
+			&administrator(&store).await,
 			mutation(
 				&spoofed,
 				Change::Add {
@@ -123,7 +123,7 @@ async fn native_memory_banks_cannot_spoof_the_workspaces_home_node(
 	} else {
 		let result = memory::list(
 			&store,
-			&Actor::DeploymentAdministrator,
+			&administrator(&store).await,
 			memory::ReadBank {
 				provider: reference("p"),
 				bank: spoofed,
@@ -137,7 +137,7 @@ async fn native_memory_banks_cannot_spoof_the_workspaces_home_node(
 	}
 	let visible = memory::list(
 		&store,
-		&Actor::DeploymentAdministrator,
+		&administrator(&store).await,
 		memory::ReadBank {
 			provider: reference("p"),
 			bank,
@@ -167,7 +167,7 @@ async fn memory_ttl_withholds_units_and_dependents_before_cleanup_and_after_rest
 	.await;
 	let bank = memory::create_participant(
 		&store,
-		&Actor::DeploymentAdministrator,
+		&administrator(&store).await,
 		workspace,
 		memory::CreateParticipant {
 			agent: reference("a"),
@@ -184,7 +184,7 @@ async fn memory_ttl_withholds_units_and_dependents_before_cleanup_and_after_rest
 			content: content("期限のある知見 / Expiring findings"),
 		},
 	);
-	let original = memory::mutate(&store, &Actor::DeploymentAdministrator, admission.clone())
+	let original = memory::mutate(&store, &administrator(&store).await, admission.clone())
 		.await
 		.unwrap();
 	let derived = Uuid::now_v7();
@@ -193,7 +193,7 @@ async fn memory_ttl_withholds_units_and_dependents_before_cleanup_and_after_rest
 	observation.evidence = vec![original[0].evidence()];
 	memory::mutate(
 		&store,
-		&Actor::DeploymentAdministrator,
+		&administrator(&store).await,
 		mutation(
 			&bank,
 			Change::Add {
@@ -238,7 +238,7 @@ async fn memory_ttl_withholds_units_and_dependents_before_cleanup_and_after_rest
 		bank: bank.clone(),
 	};
 	assert!(
-		memory::list(&store, &Actor::DeploymentAdministrator, read.clone())
+		memory::list(&store, &administrator(&store).await, read.clone())
 			.await
 			.unwrap()
 			.is_empty(),
@@ -246,14 +246,14 @@ async fn memory_ttl_withholds_units_and_dependents_before_cleanup_and_after_rest
 	);
 	assert!(
 		matches!(
-			memory::mutate(&store, &Actor::DeploymentAdministrator, admission).await,
+			memory::mutate(&store, &administrator(&store).await, admission).await,
 			Err(aidash_server::Error::Conflict(_))
 		),
 		"an old receipt cannot deliver an expired body"
 	);
 	let history = memory::operate(
 		&store,
-		&Actor::DeploymentAdministrator,
+		&administrator(&store).await,
 		memory::Operation {
 			operation_id: Uuid::now_v7(),
 			provider: reference("p"),
@@ -277,7 +277,7 @@ async fn memory_ttl_withholds_units_and_dependents_before_cleanup_and_after_rest
 		.unwrap();
 	assert_eq!((report.restored, report.withheld), (0, 2));
 	assert!(
-		memory::list(&store, &Actor::DeploymentAdministrator, read)
+		memory::list(&store, &administrator(&store).await, read)
 			.await
 			.unwrap()
 			.is_empty()
@@ -320,7 +320,7 @@ async fn memory_restore_withholds_removed_primary_messages_and_prunes_expired_ar
 	let (store, _, workspace) = setup(&database, bounds).await;
 	let participant = memory::create_participant(
 		&store,
-		&Actor::DeploymentAdministrator,
+		&administrator(&store).await,
 		workspace,
 		memory::CreateParticipant {
 			agent: reference("a"),
@@ -372,7 +372,7 @@ async fn memory_restore_withholds_removed_primary_messages_and_prunes_expired_ar
 	}];
 	memory::mutate(
 		&store,
-		&Actor::DeploymentAdministrator,
+		&administrator(&store).await,
 		mutation(
 			&participant.bank,
 			Change::Add {
@@ -419,7 +419,7 @@ async fn memory_restore_withholds_removed_primary_messages_and_prunes_expired_ar
 	assert!(
 		memory::list(
 			&store,
-			&Actor::DeploymentAdministrator,
+			&administrator(&store).await,
 			memory::ReadBank {
 				provider: reference("p"),
 				bank: participant.bank,
@@ -498,7 +498,7 @@ async fn memory_restore_process_sigkill_keeps_the_external_gate_closed_until_val
 	let (store, _, workspace) = setup_endpoint(&database, bounds, &endpoint).await;
 	let participant = memory::create_participant(
 		&store,
-		&Actor::DeploymentAdministrator,
+		&administrator(&store).await,
 		workspace,
 		memory::CreateParticipant {
 			agent: reference("a"),
@@ -509,7 +509,7 @@ async fn memory_restore_process_sigkill_keeps_the_external_gate_closed_until_val
 	let id = Uuid::now_v7();
 	let admitted = memory::mutate(
 		&store,
-		&Actor::DeploymentAdministrator,
+		&administrator(&store).await,
 		mutation(
 			&participant.bank,
 			Change::Add {
@@ -615,7 +615,7 @@ async fn memory_restore_process_sigkill_keeps_the_external_gate_closed_until_val
 			if matches!(
 				tokio::time::timeout(
 					std::time::Duration::from_millis(100),
-					memory::list(&store, &Actor::DeploymentAdministrator, read)
+					memory::list(&store, &administrator(&store).await, read)
 				)
 				.await,
 				Ok(Err(aidash_server::Error::SemanticUnavailable))
@@ -644,7 +644,7 @@ async fn memory_restore_process_sigkill_keeps_the_external_gate_closed_until_val
 		bank: participant.bank,
 	};
 	assert!(
-		memory::list(&reopened, &Actor::DeploymentAdministrator, read.clone())
+		memory::list(&reopened, &administrator(&reopened).await, read.clone())
 			.await
 			.is_err()
 	);
@@ -653,7 +653,7 @@ async fn memory_restore_process_sigkill_keeps_the_external_gate_closed_until_val
 		.unwrap();
 	assert_eq!((report.restored, report.withheld), (1, 0));
 	assert_eq!(
-		memory::list(&reopened, &Actor::DeploymentAdministrator, read)
+		memory::list(&reopened, &administrator(&reopened).await, read)
 			.await
 			.unwrap(),
 		admitted
@@ -676,7 +676,7 @@ async fn old_memory_archive_cannot_revive_deleted_corrected_or_dependent_bodies(
 	let (store, _, workspace) = setup(&database, bounds).await;
 	let participant = memory::create_participant(
 		&store,
-		&Actor::DeploymentAdministrator,
+		&administrator(&store).await,
 		workspace,
 		memory::CreateParticipant {
 			agent: reference("a"),
@@ -690,7 +690,7 @@ async fn old_memory_archive_cannot_revive_deleted_corrected_or_dependent_bodies(
 	let d = Uuid::now_v7();
 	let first = memory::mutate(
 		&store,
-		&Actor::DeploymentAdministrator,
+		&administrator(&store).await,
 		mutation(
 			&bank,
 			Change::Add {
@@ -704,7 +704,7 @@ async fn old_memory_archive_cannot_revive_deleted_corrected_or_dependent_bodies(
 	.remove(0);
 	memory::mutate(
 		&store,
-		&Actor::DeploymentAdministrator,
+		&administrator(&store).await,
 		mutation(
 			&bank,
 			Change::Add {
@@ -720,7 +720,7 @@ async fn old_memory_archive_cannot_revive_deleted_corrected_or_dependent_bodies(
 	derived.evidence = vec![first.evidence()];
 	memory::mutate(
 		&store,
-		&Actor::DeploymentAdministrator,
+		&administrator(&store).await,
 		mutation(
 			&bank,
 			Change::Add {
@@ -747,7 +747,7 @@ async fn old_memory_archive_cannot_revive_deleted_corrected_or_dependent_bodies(
 	);
 	memory::operate(
 		&store,
-		&Actor::DeploymentAdministrator,
+		&administrator(&store).await,
 		memory::Operation {
 			operation_id: operation.operation_id,
 			provider: reference("p"),
@@ -783,7 +783,7 @@ async fn old_memory_archive_cannot_revive_deleted_corrected_or_dependent_bodies(
 		],
 	};
 	assert!(
-		memory::mutate(&store, &Actor::DeploymentAdministrator, failed)
+		memory::mutate(&store, &administrator(&store).await, failed)
 			.await
 			.is_err()
 	);
@@ -792,7 +792,7 @@ async fn old_memory_archive_cannot_revive_deleted_corrected_or_dependent_bodies(
 		.unwrap();
 	memory::mutate(
 		&store,
-		&Actor::DeploymentAdministrator,
+		&administrator(&store).await,
 		mutation(
 			&bank,
 			Change::Correct {
@@ -806,7 +806,7 @@ async fn old_memory_archive_cannot_revive_deleted_corrected_or_dependent_bodies(
 	.unwrap();
 	memory::mutate(
 		&store,
-		&Actor::DeploymentAdministrator,
+		&administrator(&store).await,
 		mutation(
 			&bank,
 			Change::Delete {
@@ -910,7 +910,7 @@ async fn old_memory_archive_cannot_revive_deleted_corrected_or_dependent_bodies(
 	}
 	let memory::Outcome::Settings(Some(_)) = memory::operate(
 		&store,
-		&Actor::DeploymentAdministrator,
+		&administrator(&store).await,
 		memory::Operation {
 			operation_id: Uuid::now_v7(),
 			provider: reference("p"),
@@ -943,7 +943,7 @@ async fn memory_restore_rebuilds_missing_vectors_and_checks_open_epoch_reads(
 	let (store, _, workspace) = setup_endpoint(&database, bounds, &endpoint).await;
 	let bank = memory::create_participant(
 		&store,
-		&Actor::DeploymentAdministrator,
+		&administrator(&store).await,
 		workspace,
 		memory::CreateParticipant {
 			agent: reference("a"),
@@ -955,7 +955,7 @@ async fn memory_restore_rebuilds_missing_vectors_and_checks_open_epoch_reads(
 	let id = Uuid::now_v7();
 	let original = memory::mutate(
 		&store,
-		&Actor::DeploymentAdministrator,
+		&administrator(&store).await,
 		mutation(
 			&bank,
 			Change::Add {
@@ -999,7 +999,7 @@ async fn memory_restore_rebuilds_missing_vectors_and_checks_open_epoch_reads(
 	};
 	assert!(
 		matches!(
-			memory::list(&store, &Actor::DeploymentAdministrator, read.clone()).await,
+			memory::list(&store, &administrator(&store).await, read.clone()).await,
 			Err(aidash_server::Error::SemanticUnavailable)
 		),
 		"an open epoch still checks the external body fence"
@@ -1010,14 +1010,14 @@ async fn memory_restore_rebuilds_missing_vectors_and_checks_open_epoch_reads(
 	assert_eq!(report.restored, 1);
 	assert_eq!(report.withheld, 0);
 	assert_eq!(
-		memory::list(&store, &Actor::DeploymentAdministrator, read)
+		memory::list(&store, &administrator(&store).await, read)
 			.await
 			.unwrap(),
 		original
 	);
 	let memory::Outcome::Recall(Recall::Ready { units }) = memory::operate(
 		&store,
-		&Actor::DeploymentAdministrator,
+		&administrator(&store).await,
 		memory::Operation {
 			operation_id: Uuid::now_v7(),
 			provider: reference("p"),
@@ -1051,7 +1051,7 @@ async fn memory_restore_gate_survives_reopen_and_missing_external_state_never_in
 	let (store, _, workspace) = setup(&database, bounds).await;
 	let participant = memory::create_participant(
 		&store,
-		&Actor::DeploymentAdministrator,
+		&administrator(&store).await,
 		workspace,
 		memory::CreateParticipant {
 			agent: reference("a"),
@@ -1062,7 +1062,7 @@ async fn memory_restore_gate_survives_reopen_and_missing_external_state_never_in
 	let bank = participant.bank;
 	memory::operate(
 		&store,
-		&Actor::DeploymentAdministrator,
+		&administrator(&store).await,
 		memory::Operation {
 			operation_id: Uuid::now_v7(),
 			bank: bank.clone(),
@@ -1084,7 +1084,7 @@ async fn memory_restore_gate_survives_reopen_and_missing_external_state_never_in
 	};
 	let epoch = recovery::prepare_restore(&store, directory).await.unwrap();
 	assert!(matches!(
-		memory::operate(&store, &Actor::DeploymentAdministrator, query()).await,
+		memory::operate(&store, &administrator(&store).await, query()).await,
 		Err(aidash_server::Error::SemanticUnavailable)
 	));
 	let mut reopened = Store::from_pool(
@@ -1100,20 +1100,20 @@ async fn memory_restore_gate_survives_reopen_and_missing_external_state_never_in
 		.unwrap();
 
 	assert!(matches!(
-		memory::operate(&reopened, &Actor::DeploymentAdministrator, query()).await,
+		memory::operate(&reopened, &administrator(&reopened).await, query()).await,
 		Err(aidash_server::Error::SemanticUnavailable)
 	));
 	let report = recovery::restore(&reopened, directory, &archive)
 		.await
 		.unwrap();
 	assert_eq!(report.epoch, epoch);
-	memory::operate(&reopened, &Actor::DeploymentAdministrator, query())
+	memory::operate(&reopened, &administrator(&reopened).await, query())
 		.await
 		.unwrap();
 	let bytes = std::fs::read(directory.join("ledger.cbor")).unwrap();
 	std::fs::write(directory.join("ledger.cbor"), &bytes[..bytes.len() / 2]).unwrap();
 	assert!(matches!(
-		memory::operate(&reopened, &Actor::DeploymentAdministrator, query()).await,
+		memory::operate(&reopened, &administrator(&reopened).await, query()).await,
 		Err(aidash_server::Error::SemanticUnavailable)
 	));
 	assert!(
@@ -1138,7 +1138,7 @@ async fn memory_restore_gate_survives_reopen_and_missing_external_state_never_in
 			.is_err()
 	);
 	assert!(matches!(
-		memory::operate(&reopened, &Actor::DeploymentAdministrator, query()).await,
+		memory::operate(&reopened, &administrator(&reopened).await, query()).await,
 		Err(aidash_server::Error::SemanticUnavailable)
 	));
 	assert!(
@@ -1172,14 +1172,14 @@ async fn shared_policy_changes_are_idempotent_and_compare_the_observed_revision(
 		},
 	};
 	let memory::Outcome::Settings(Some(first)) =
-		memory::operate(&store, &Actor::DeploymentAdministrator, input.clone())
+		memory::operate(&store, &administrator(&store).await, input.clone())
 			.await
 			.unwrap()
 	else {
 		panic!()
 	};
 	let memory::Outcome::Settings(Some(replay)) =
-		memory::operate(&store, &Actor::DeploymentAdministrator, input.clone())
+		memory::operate(&store, &administrator(&store).await, input.clone())
 			.await
 			.unwrap()
 	else {
@@ -1192,13 +1192,13 @@ async fn shared_policy_changes_are_idempotent_and_compare_the_observed_revision(
 		expected_revision: 1,
 	};
 	assert!(
-		memory::operate(&store, &Actor::DeploymentAdministrator, changed.clone())
+		memory::operate(&store, &administrator(&store).await, changed.clone())
 			.await
 			.is_err()
 	);
 	changed.operation_id = Uuid::now_v7();
 	let memory::Outcome::Settings(Some(second)) =
-		memory::operate(&store, &Actor::DeploymentAdministrator, changed)
+		memory::operate(&store, &administrator(&store).await, changed)
 			.await
 			.unwrap()
 	else {
@@ -1206,7 +1206,7 @@ async fn shared_policy_changes_are_idempotent_and_compare_the_observed_revision(
 	};
 	assert_eq!(second.revision, 2);
 	assert!(
-		memory::operate(&store, &Actor::DeploymentAdministrator, input)
+		memory::operate(&store, &administrator(&store).await, input)
 			.await
 			.is_err(),
 		"superseded retries cannot restore old policy"
@@ -1224,7 +1224,7 @@ async fn crash_recovery_preserves_japanese_search_and_purge_erases_shared_quotes
 	let (store, _, workspace) = setup(&database, bounds).await;
 	let participant = memory::create_participant(
 		&store,
-		&Actor::DeploymentAdministrator,
+		&administrator(&store).await,
 		workspace,
 		memory::CreateParticipant {
 			agent: reference("a"),
@@ -1236,7 +1236,7 @@ async fn crash_recovery_preserves_japanese_search_and_purge_erases_shared_quotes
 	let id = Uuid::now_v7();
 	let original = memory::mutate(
 		&store,
-		&Actor::DeploymentAdministrator,
+		&administrator(&store).await,
 		mutation(
 			&bank,
 			Change::Add {
@@ -1254,7 +1254,7 @@ async fn crash_recovery_preserves_japanese_search_and_purge_erases_shared_quotes
 	let operation = Uuid::now_v7();
 	memory::operate(
 		&store,
-		&Actor::DeploymentAdministrator,
+		&administrator(&store).await,
 		memory::Operation {
 			operation_id: operation,
 			provider: reference("p"),
@@ -1310,12 +1310,12 @@ async fn crash_recovery_preserves_japanese_search_and_purge_erases_shared_quotes
 			expected_revision: 1,
 		},
 	);
-	memory::mutate(&store, &Actor::DeploymentAdministrator, deletion.clone())
+	memory::mutate(&store, &administrator(&store).await, deletion.clone())
 		.await
 		.unwrap();
 	let shared_units = memory::list(
 		&store,
-		&Actor::DeploymentAdministrator,
+		&administrator(&store).await,
 		memory::ReadBank {
 			provider: reference("p"),
 			bank: shared,
@@ -1365,14 +1365,14 @@ async fn crash_recovery_preserves_japanese_search_and_purge_erases_shared_quotes
 	.unwrap();
 	assert_eq!(remaining, 0);
 	let store = database.kill_and_restart(&store).await;
-	let removed = memory::mutate(&store, &Actor::DeploymentAdministrator, deletion)
+	let removed = memory::mutate(&store, &administrator(&store).await, deletion)
 		.await
 		.unwrap();
 	assert!(removed[0].deleted);
 	assert!(
 		memory::mutate(
 			&store,
-			&Actor::DeploymentAdministrator,
+			&administrator(&store).await,
 			mutation(
 				&bank,
 				Change::Add {
@@ -1406,7 +1406,7 @@ async fn extracted_causal_batch_is_atomic_and_replays_stable_admitted_identities
 	let (store, _, workspace) = setup_endpoint(&database, bounds, &endpoint).await;
 	let bank = memory::create_participant(
 		&store,
-		&Actor::DeploymentAdministrator,
+		&administrator(&store).await,
 		workspace,
 		memory::CreateParticipant {
 			agent: reference("a"),
@@ -1417,7 +1417,7 @@ async fn extracted_causal_batch_is_atomic_and_replays_stable_admitted_identities
 	.bank;
 	let seed = memory::mutate(
 		&store,
-		&Actor::DeploymentAdministrator,
+		&administrator(&store).await,
 		mutation(
 			&bank,
 			Change::Add {
@@ -1439,14 +1439,14 @@ async fn extracted_causal_batch_is_atomic_and_replays_stable_admitted_identities
 		},
 	};
 	let memory::Outcome::Units(first) =
-		memory::operate(&store, &Actor::DeploymentAdministrator, operation.clone())
+		memory::operate(&store, &administrator(&store).await, operation.clone())
 			.await
 			.unwrap()
 	else {
 		panic!("retention must return admitted units")
 	};
 	let memory::Outcome::Units(replay) =
-		memory::operate(&store, &Actor::DeploymentAdministrator, operation)
+		memory::operate(&store, &administrator(&store).await, operation)
 			.await
 			.unwrap()
 	else {
@@ -1508,13 +1508,13 @@ async fn extracted_causal_batch_is_atomic_and_replays_stable_admitted_identities
 		],
 	};
 	assert!(
-		memory::mutate(&store, &Actor::DeploymentAdministrator, failed)
+		memory::mutate(&store, &administrator(&store).await, failed)
 			.await
 			.is_err()
 	);
 	let current = memory::list(
 		&store,
-		&Actor::DeploymentAdministrator,
+		&administrator(&store).await,
 		memory::ReadBank {
 			bank,
 			provider: reference("p"),
@@ -1545,7 +1545,7 @@ async fn unit_cas_receipts_participant_separation_and_derived_fences(
 	let (store, _, workspace) = setup(&database, bounds).await;
 	let participant = memory::create_participant(
 		&store,
-		&Actor::DeploymentAdministrator,
+		&administrator(&store).await,
 		workspace,
 		memory::CreateParticipant {
 			agent: reference("a"),
@@ -1555,7 +1555,7 @@ async fn unit_cas_receipts_participant_separation_and_derived_fences(
 	.unwrap();
 	let clone = memory::create_participant(
 		&store,
-		&Actor::DeploymentAdministrator,
+		&administrator(&store).await,
 		workspace,
 		memory::CreateParticipant {
 			agent: reference("a"),
@@ -1573,9 +1573,10 @@ async fn unit_cas_receipts_participant_separation_and_derived_fences(
 			content: content("東京では地下鉄で移動する。"),
 		},
 	);
+	let actor = administrator(&store).await;
 	let (first, replay) = tokio::join!(
-		memory::mutate(&store, &Actor::DeploymentAdministrator, add.clone()),
-		memory::mutate(&store, &Actor::DeploymentAdministrator, add.clone())
+		memory::mutate(&store, &actor, add.clone()),
+		memory::mutate(&store, &actor, add.clone())
 	);
 	assert_eq!(first.unwrap(), replay.unwrap());
 	let mut changed = add.clone();
@@ -1584,14 +1585,14 @@ async fn unit_cas_receipts_participant_separation_and_derived_fences(
 		content: content("Different request"),
 	}];
 	assert!(
-		memory::mutate(&store, &Actor::DeploymentAdministrator, changed)
+		memory::mutate(&store, &administrator(&store).await, changed)
 			.await
 			.is_err()
 	);
 	assert!(
 		memory::list(
 			&store,
-			&Actor::DeploymentAdministrator,
+			&administrator(&store).await,
 			memory::ReadBank {
 				provider: reference("p"),
 				bank: clone.bank
@@ -1611,7 +1612,7 @@ async fn unit_cas_receipts_participant_separation_and_derived_fences(
 	let observation = Uuid::now_v7();
 	memory::mutate(
 		&store,
-		&Actor::DeploymentAdministrator,
+		&administrator(&store).await,
 		mutation(
 			&bank,
 			Change::Add {
@@ -1638,9 +1639,10 @@ async fn unit_cas_receipts_participant_separation_and_derived_fences(
 			content: content("東京ではバスで移動する。"),
 		},
 	);
+	let actor = administrator(&store).await;
 	let (a, b) = tokio::join!(
-		memory::mutate(&store, &Actor::DeploymentAdministrator, a),
-		memory::mutate(&store, &Actor::DeploymentAdministrator, b)
+		memory::mutate(&store, &actor, a),
+		memory::mutate(&store, &actor, b)
 	);
 	assert_ne!(
 		a.is_ok(),
@@ -1649,7 +1651,7 @@ async fn unit_cas_receipts_participant_separation_and_derived_fences(
 	);
 	let visible = memory::list(
 		&store,
-		&Actor::DeploymentAdministrator,
+		&administrator(&store).await,
 		memory::ReadBank {
 			provider: reference("p"),
 			bank: bank.clone(),
@@ -1660,13 +1662,10 @@ async fn unit_cas_receipts_participant_separation_and_derived_fences(
 	assert_eq!(visible.len(), 1);
 	assert_eq!(visible[0].revision, 2);
 	assert_eq!(visible[0].id, id);
-	let entries = aidash_server::semantic::service::entries(
-		&store,
-		&Actor::DeploymentAdministrator,
-		workspace,
-	)
-	.await
-	.unwrap();
+	let entries =
+		aidash_server::semantic::service::entries(&store, &administrator(&store).await, workspace)
+			.await
+			.unwrap();
 	let source = entries.iter().find(|entry| entry.id == id).unwrap();
 	assert_eq!(
 		source.source,
@@ -1692,7 +1691,7 @@ async fn unit_cas_receipts_participant_separation_and_derived_fences(
 	assert_eq!(stale, "REVOKED");
 	projection_tx.rollback().await.unwrap();
 	assert!(
-		memory::mutate(&store, &Actor::DeploymentAdministrator, add)
+		memory::mutate(&store, &administrator(&store).await, add)
 			.await
 			.is_err(),
 		"an old receipt cannot deliver an obsolete body"
@@ -1702,7 +1701,7 @@ async fn unit_cas_receipts_participant_separation_and_derived_fences(
 	assert!(
 		memory::list(
 			&store,
-			&Actor::DeploymentAdministrator,
+			&administrator(&store).await,
 			memory::ReadBank {
 				provider: reference("p"),
 				bank: foreign
@@ -1713,7 +1712,7 @@ async fn unit_cas_receipts_participant_separation_and_derived_fences(
 	);
 	let removed = memory::mutate(
 		&store,
-		&Actor::DeploymentAdministrator,
+		&administrator(&store).await,
 		mutation(
 			&bank,
 			Change::Delete {
@@ -1743,7 +1742,7 @@ async fn unit_cas_receipts_participant_separation_and_derived_fences(
 	assert!(
 		memory::list(
 			&store,
-			&Actor::DeploymentAdministrator,
+			&administrator(&store).await,
 			memory::ReadBank {
 				provider: reference("p"),
 				bank
@@ -1883,7 +1882,7 @@ async fn four_arm_recall_is_native_bounded_and_model_calls_are_memoized(
 	let (store, registry, workspace) = setup_endpoint(&database, bounds, &endpoint).await;
 	let participant = memory::create_participant(
 		&store,
-		&Actor::DeploymentAdministrator,
+		&administrator(&store).await,
 		workspace,
 		memory::CreateParticipant {
 			agent: reference("a"),
@@ -1895,7 +1894,7 @@ async fn four_arm_recall_is_native_bounded_and_model_calls_are_memoized(
 	let id = Uuid::now_v7();
 	let added = memory::mutate(
 		&store,
-		&Actor::DeploymentAdministrator,
+		&administrator(&store).await,
 		mutation(
 			&bank,
 			Change::Add {
@@ -1945,7 +1944,7 @@ async fn four_arm_recall_is_native_bounded_and_model_calls_are_memoized(
 		},
 	};
 	let memory::Outcome::Recall(Recall::Ready { units }) =
-		memory::operate(&store, &Actor::DeploymentAdministrator, operation.clone())
+		memory::operate(&store, &administrator(&store).await, operation.clone())
 			.await
 			.unwrap()
 	else {
@@ -1957,7 +1956,7 @@ async fn four_arm_recall_is_native_bounded_and_model_calls_are_memoized(
 		2,
 		"one indexing call and one Recall embedding"
 	);
-	let _ = memory::operate(&store, &Actor::DeploymentAdministrator, operation)
+	let _ = memory::operate(&store, &administrator(&store).await, operation)
 		.await
 		.unwrap();
 	assert_eq!(
@@ -1979,7 +1978,7 @@ async fn four_arm_recall_is_native_bounded_and_model_calls_are_memoized(
 		},
 	};
 	assert!(matches!(
-		memory::operate(&store, &Actor::DeploymentAdministrator, no_space)
+		memory::operate(&store, &administrator(&store).await, no_space)
 			.await
 			.unwrap(),
 		memory::Outcome::Recall(Recall::NoSpace)
@@ -2009,7 +2008,7 @@ async fn four_arm_recall_is_native_bounded_and_model_calls_are_memoized(
 	);
 	let published = memory::operate(
 		&store,
-		&Actor::DeploymentAdministrator,
+		&administrator(&store).await,
 		memory::Operation {
 			operation_id: publish.operation_id,
 			provider: reference("p"),
@@ -2025,7 +2024,7 @@ async fn four_arm_recall_is_native_bounded_and_model_calls_are_memoized(
 	assert!(matches!(published,memory::Outcome::Units(ref units) if units.len()==1));
 	memory::mutate(
 		&store,
-		&Actor::DeploymentAdministrator,
+		&administrator(&store).await,
 		mutation(
 			&bank,
 			Change::Correct {
@@ -2040,7 +2039,7 @@ async fn four_arm_recall_is_native_bounded_and_model_calls_are_memoized(
 	assert!(
 		memory::list(
 			&store,
-			&Actor::DeploymentAdministrator,
+			&administrator(&store).await,
 			memory::ReadBank {
 				provider: reference("p"),
 				bank: shared
@@ -2090,7 +2089,7 @@ async fn native_recall_types_vector_and_embedding_outages_as_transient(
 	let (store, _, workspace) = setup_endpoint(&database, bounds, &endpoint).await;
 	let bank = memory::create_participant(
 		&store,
-		&Actor::DeploymentAdministrator,
+		&administrator(&store).await,
 		workspace,
 		memory::CreateParticipant {
 			agent: reference("a"),
@@ -2102,7 +2101,7 @@ async fn native_recall_types_vector_and_embedding_outages_as_transient(
 	let id = Uuid::now_v7();
 	memory::mutate(
 		&store,
-		&Actor::DeploymentAdministrator,
+		&administrator(&store).await,
 		mutation(
 			&bank,
 			Change::Add {
@@ -2162,7 +2161,7 @@ async fn native_recall_types_vector_and_embedding_outages_as_transient(
 		},
 	};
 	// Act
-	let result = memory::operate(&store, &Actor::DeploymentAdministrator, recall.clone()).await;
+	let result = memory::operate(&store, &administrator(&store).await, recall.clone()).await;
 	// Assert
 	assert!(
 		matches!(
@@ -2176,8 +2175,7 @@ async fn native_recall_types_vector_and_embedding_outages_as_transient(
 	if !missing_points {
 		// Act: the Run's retry replays the operation while the failed
 		// attempt is still inside its call deadline.
-		let replayed =
-			memory::operate(&store, &Actor::DeploymentAdministrator, recall.clone()).await;
+		let replayed = memory::operate(&store, &administrator(&store).await, recall.clone()).await;
 		// Assert
 		assert!(
 			matches!(
@@ -2209,7 +2207,7 @@ async fn native_recall_types_vector_and_embedding_outages_as_transient(
 			.unwrap();
 			// Act
 			let replayed =
-				memory::operate(&store, &Actor::DeploymentAdministrator, recall.clone()).await;
+				memory::operate(&store, &administrator(&store).await, recall.clone()).await;
 			// Assert
 			assert!(
 				matches!(
@@ -2385,7 +2383,7 @@ async fn home_run_reads_survive_reindex_but_the_writer_is_invalidated_by_its_own
 		};
 		memory::operate(
 			&store,
-			&Actor::DeploymentAdministrator,
+			&administrator(&store).await,
 			memory::Operation {
 				operation_id: Uuid::now_v7(),
 				provider: if delivery == "later_bank" {
@@ -2458,7 +2456,8 @@ async fn home_run_reads_survive_reindex_but_the_writer_is_invalidated_by_its_own
 				"deployment_administrator",
 			)
 			.await
-			.unwrap();
+			// The fixture Subject may have approved it already.
+			.ok();
 	}
 	if shared_source {
 		for reference in [
@@ -2476,7 +2475,8 @@ async fn home_run_reads_survive_reindex_but_the_writer_is_invalidated_by_its_own
 					"deployment_administrator",
 				)
 				.await
-				.unwrap();
+			// The fixture Subject may have approved it already.
+			.ok();
 		}
 	}
 	if delivery == "primary_on_demand" {
@@ -2490,7 +2490,8 @@ async fn home_run_reads_survive_reindex_but_the_writer_is_invalidated_by_its_own
 				"deployment_administrator",
 			)
 			.await
-			.unwrap();
+			// The fixture Subject may have approved it already.
+			.ok();
 	}
 	if roomy_model {
 		authorization
@@ -2503,7 +2504,8 @@ async fn home_run_reads_survive_reindex_but_the_writer_is_invalidated_by_its_own
 				"deployment_administrator",
 			)
 			.await
-			.unwrap();
+			// The fixture Subject may have approved it already.
+			.ok();
 	}
 	let issued = authorization
 		.issue_credential("acme", "alice", 3600, "deployment_administrator")
@@ -3052,7 +3054,7 @@ async fn home_run_reads_survive_reindex_but_the_writer_is_invalidated_by_its_own
 	let configuration = serde_json::from_value(index.spec.clone()).unwrap();
 	aidash_server::semantic::service::configure(
 		&f.store,
-		&aidash_server::authorization::identity::Actor::DeploymentAdministrator,
+		&administrator(&f.store).await,
 		workspace,
 		aidash_server::semantic::ConfigureIndex {
 			expected_revision: index.revision,
@@ -3255,7 +3257,7 @@ async fn durable_derived_jobs_refresh_questions_and_never_revive_deleted_sources
 		setup_endpoint_flags(&database, bounds, &endpoint, (false, true, true)).await;
 	let participant = memory::create_participant(
 		&store,
-		&Actor::DeploymentAdministrator,
+		&administrator(&store).await,
 		workspace,
 		memory::CreateParticipant {
 			agent: reference("a"),
@@ -3267,7 +3269,7 @@ async fn durable_derived_jobs_refresh_questions_and_never_revive_deleted_sources
 	let id = Uuid::now_v7();
 	let first = memory::mutate(
 		&store,
-		&Actor::DeploymentAdministrator,
+		&administrator(&store).await,
 		mutation(
 			&bank,
 			Change::Add {
@@ -3284,7 +3286,7 @@ async fn durable_derived_jobs_refresh_questions_and_never_revive_deleted_sources
 		.unwrap();
 	let all = memory::list(
 		&store,
-		&Actor::DeploymentAdministrator,
+		&administrator(&store).await,
 		memory::ReadBank {
 			provider: reference("p"),
 			bank: bank.clone(),
@@ -3305,7 +3307,7 @@ async fn durable_derived_jobs_refresh_questions_and_never_revive_deleted_sources
 	draft.evidence = vec![first.evidence()];
 	let memory::Outcome::Units(model) = memory::operate(
 		&store,
-		&Actor::DeploymentAdministrator,
+		&administrator(&store).await,
 		memory::Operation {
 			operation_id: operation,
 			provider: reference("p"),
@@ -3332,7 +3334,7 @@ async fn durable_derived_jobs_refresh_questions_and_never_revive_deleted_sources
 	assert_eq!(model[0].revision, 1);
 	memory::mutate(
 		&store,
-		&Actor::DeploymentAdministrator,
+		&administrator(&store).await,
 		mutation(
 			&bank,
 			Change::Correct {
@@ -3371,7 +3373,7 @@ async fn durable_derived_jobs_refresh_questions_and_never_revive_deleted_sources
 	tx.commit().await.unwrap();
 	memory::mutate(
 		&store,
-		&Actor::DeploymentAdministrator,
+		&administrator(&store).await,
 		mutation(
 			&bank,
 			Change::Correct {
@@ -3407,7 +3409,7 @@ async fn durable_derived_jobs_refresh_questions_and_never_revive_deleted_sources
 		.unwrap();
 	let all = memory::list(
 		&store,
-		&Actor::DeploymentAdministrator,
+		&administrator(&store).await,
 		memory::ReadBank {
 			provider: reference("p"),
 			bank: bank.clone(),
@@ -3433,7 +3435,7 @@ async fn durable_derived_jobs_refresh_questions_and_never_revive_deleted_sources
 	);
 	memory::mutate(
 		&store,
-		&Actor::DeploymentAdministrator,
+		&administrator(&store).await,
 		mutation(
 			&bank,
 			Change::Delete {
@@ -3450,7 +3452,7 @@ async fn durable_derived_jobs_refresh_questions_and_never_revive_deleted_sources
 	assert_eq!(calls.load(Ordering::SeqCst), refreshed_calls);
 	let all = memory::list(
 		&store,
-		&Actor::DeploymentAdministrator,
+		&administrator(&store).await,
 		memory::ReadBank {
 			provider: reference("p"),
 			bank: bank.clone(),
@@ -3464,7 +3466,7 @@ async fn durable_derived_jobs_refresh_questions_and_never_revive_deleted_sources
 	);
 	let memory::Outcome::Jobs(jobs) = memory::operate(
 		&store,
-		&Actor::DeploymentAdministrator,
+		&administrator(&store).await,
 		memory::Operation {
 			operation_id: Uuid::now_v7(),
 			provider: reference("p"),
@@ -3553,7 +3555,8 @@ async fn learning_rejects_uncertain_effects_and_reads_complete_canonical_results
 				"deployment_administrator",
 			)
 			.await
-			.unwrap();
+			// The fixture Subject may have approved it already.
+			.ok();
 	}
 	let credential = authorization
 		.issue_credential("acme", "alice", 3600, "deployment_administrator")
@@ -3565,7 +3568,7 @@ async fn learning_rejects_uncertain_effects_and_reads_complete_canonical_results
 	};
 	let participant = memory::create_participant(
 		&store,
-		&Actor::DeploymentAdministrator,
+		&administrator(&store).await,
 		workspace,
 		memory::CreateParticipant {
 			agent: reference("a"),
@@ -3576,7 +3579,7 @@ async fn learning_rejects_uncertain_effects_and_reads_complete_canonical_results
 	let source_id = Uuid::now_v7();
 	memory::mutate(
 		&store,
-		&Actor::DeploymentAdministrator,
+		&administrator(&store).await,
 		mutation(
 			&participant.bank,
 			Change::Add {
@@ -3828,7 +3831,7 @@ async fn learning_rejects_uncertain_effects_and_reads_complete_canonical_results
 		action: memory::Action::Learn { run: proof.clone() },
 	};
 	assert!(
-		memory::operate(&store, &Actor::DeploymentAdministrator, operation.clone())
+		memory::operate(&store, &administrator(&store).await, operation.clone())
 			.await
 			.is_err()
 	);
@@ -3853,7 +3856,7 @@ async fn learning_rejects_uncertain_effects_and_reads_complete_canonical_results
 			review_pressure::retry_learning(&store, &participant.bank, &proof).await,
 		)
 	} else {
-		memory::operate(&store, &Actor::DeploymentAdministrator, operation)
+		memory::operate(&store, &administrator(&store).await, operation)
 			.await
 			.unwrap()
 	};
@@ -3886,7 +3889,7 @@ async fn learning_rejects_uncertain_effects_and_reads_complete_canonical_results
 	assert!(
 		memory::list(
 			&store,
-			&Actor::DeploymentAdministrator,
+			&administrator(&store).await,
 			memory::ReadBank {
 				provider: reference("p"),
 				bank: participant.bank.clone()
@@ -4072,7 +4075,7 @@ async fn learning_rejects_uncertain_effects_and_reads_complete_canonical_results
 	}
 	memory::mutate(
 		&store,
-		&Actor::DeploymentAdministrator,
+		&administrator(&store).await,
 		mutation(
 			&participant.bank,
 			Change::Correct {
@@ -4087,7 +4090,7 @@ async fn learning_rejects_uncertain_effects_and_reads_complete_canonical_results
 	assert!(
 		memory::operate(
 			&store,
-			&Actor::DeploymentAdministrator,
+			&administrator(&store).await,
 			memory::Operation {
 				operation_id: Uuid::now_v7(),
 				provider: reference("p"),
@@ -4106,7 +4109,7 @@ async fn learning_rejects_uncertain_effects_and_reads_complete_canonical_results
 	);
 	let memory::Outcome::Candidates(hidden) = memory::operate(
 		&store,
-		&Actor::DeploymentAdministrator,
+		&administrator(&store).await,
 		memory::Operation {
 			operation_id: Uuid::now_v7(),
 			provider: reference("p"),
@@ -4183,7 +4186,7 @@ async fn observation_consolidation_keeps_conflicts_and_recomputes_surviving_evid
 		setup_endpoint_flags(&database, bounds, &endpoint, (false, true, false)).await;
 	let participant = memory::create_participant(
 		&store,
-		&Actor::DeploymentAdministrator,
+		&administrator(&store).await,
 		workspace,
 		memory::CreateParticipant {
 			agent: reference("a"),
@@ -4212,7 +4215,7 @@ async fn observation_consolidation_keeps_conflicts_and_recomputes_surviving_evid
 		};
 		memory::mutate(
 			&store,
-			&Actor::DeploymentAdministrator,
+			&administrator(&store).await,
 			mutation(
 				&bank,
 				Change::Add {
@@ -4228,7 +4231,7 @@ async fn observation_consolidation_keeps_conflicts_and_recomputes_surviving_evid
 			.unwrap();
 		let units = memory::list(
 			&store,
-			&Actor::DeploymentAdministrator,
+			&administrator(&store).await,
 			memory::ReadBank {
 				bank: bank.clone(),
 				provider: reference("p"),
@@ -4273,7 +4276,7 @@ async fn observation_consolidation_keeps_conflicts_and_recomputes_surviving_evid
 	}];
 	memory::mutate(
 		&store,
-		&Actor::DeploymentAdministrator,
+		&administrator(&store).await,
 		mutation(
 			&bank,
 			Change::Correct {
@@ -4290,7 +4293,7 @@ async fn observation_consolidation_keeps_conflicts_and_recomputes_surviving_evid
 		.unwrap();
 	let units = memory::list(
 		&store,
-		&Actor::DeploymentAdministrator,
+		&administrator(&store).await,
 		memory::ReadBank {
 			bank: bank.clone(),
 			provider: reference("p"),
@@ -4307,7 +4310,7 @@ async fn observation_consolidation_keeps_conflicts_and_recomputes_surviving_evid
 	supported.store(false, Ordering::SeqCst);
 	memory::mutate(
 		&store,
-		&Actor::DeploymentAdministrator,
+		&administrator(&store).await,
 		mutation(
 			&bank,
 			Change::Delete {
@@ -4323,7 +4326,7 @@ async fn observation_consolidation_keeps_conflicts_and_recomputes_surviving_evid
 		.unwrap();
 	let units = memory::list(
 		&store,
-		&Actor::DeploymentAdministrator,
+		&administrator(&store).await,
 		memory::ReadBank {
 			bank: bank.clone(),
 			provider: reference("p"),
@@ -4372,7 +4375,7 @@ async fn listing_enforces_the_provenance_budget_separately_from_bank_unit_count(
 	let (store, _, workspace) = setup(&database, bounds).await;
 	let bank = memory::create_participant(
 		&store,
-		&Actor::DeploymentAdministrator,
+		&administrator(&store).await,
 		workspace,
 		memory::CreateParticipant {
 			agent: reference("a"),
@@ -4391,7 +4394,7 @@ async fn listing_enforces_the_provenance_budget_separately_from_bank_unit_count(
 		last = Uuid::now_v7();
 		let units = memory::mutate(
 			&store,
-			&Actor::DeploymentAdministrator,
+			&administrator(&store).await,
 			mutation(
 				&bank,
 				Change::Add {
@@ -4423,7 +4426,7 @@ async fn listing_enforces_the_provenance_budget_separately_from_bank_unit_count(
 		bank,
 	};
 	assert!(matches!(
-		memory::list(&store, &Actor::DeploymentAdministrator, read.clone()).await,
+		memory::list(&store, &administrator(&store).await, read.clone()).await,
 		Err(aidash_server::Error::Invalid(message)) if message == "memory evidence traversal exceeds its bound"
 	));
 	assert!(
@@ -4438,7 +4441,7 @@ async fn listing_enforces_the_provenance_budget_separately_from_bank_unit_count(
 		.update_with_conn(&mut db, &provider)
 		.await
 		.unwrap();
-	let units = memory::list(&store, &Actor::DeploymentAdministrator, read)
+	let units = memory::list(&store, &administrator(&store).await, read)
 		.await
 		.unwrap();
 	assert_eq!(units.len(), 4);
@@ -4464,7 +4467,7 @@ async fn participant_memory_requires_an_enabled_provider_initially_and_after_upg
 		.unwrap();
 	let initial = memory::create_participant(
 		&store,
-		&Actor::DeploymentAdministrator,
+		&administrator(&store).await,
 		workspace,
 		memory::CreateParticipant {
 			agent: reference("disabled"),
@@ -4474,7 +4477,7 @@ async fn participant_memory_requires_an_enabled_provider_initially_and_after_upg
 	.unwrap();
 	let enabled = memory::create_participant(
 		&store,
-		&Actor::DeploymentAdministrator,
+		&administrator(&store).await,
 		workspace,
 		memory::CreateParticipant {
 			agent: reference("a"),
@@ -4484,7 +4487,7 @@ async fn participant_memory_requires_an_enabled_provider_initially_and_after_upg
 	.unwrap();
 	memory::mutate(
 		&store,
-		&Actor::DeploymentAdministrator,
+		&administrator(&store).await,
 		mutation(
 			&enabled.bank,
 			Change::Add {
@@ -4506,7 +4509,7 @@ async fn participant_memory_requires_an_enabled_provider_initially_and_after_upg
 		.unwrap();
 	let upgraded = memory::upgrade_participant(
 		&store,
-		&Actor::DeploymentAdministrator,
+		&administrator(&store).await,
 		enabled.bank,
 		memory::UpgradeParticipant {
 			agent: EntityRef {
@@ -4521,7 +4524,7 @@ async fn participant_memory_requires_an_enabled_provider_initially_and_after_upg
 	for bank in [initial.bank, upgraded.bank] {
 		let read = memory::list(
 			&store,
-			&Actor::DeploymentAdministrator,
+			&administrator(&store).await,
 			memory::ReadBank {
 				provider: reference("p"),
 				bank: bank.clone(),
@@ -4531,7 +4534,7 @@ async fn participant_memory_requires_an_enabled_provider_initially_and_after_upg
 		assert!(matches!(read, Err(aidash_server::Error::Conflict(_))));
 		let write = memory::mutate(
 			&store,
-			&Actor::DeploymentAdministrator,
+			&administrator(&store).await,
 			mutation(
 				&bank,
 				Change::Add {
@@ -4544,7 +4547,7 @@ async fn participant_memory_requires_an_enabled_provider_initially_and_after_upg
 		assert!(matches!(write, Err(aidash_server::Error::Conflict(_))));
 		let recall = memory::operate(
 			&store,
-			&Actor::DeploymentAdministrator,
+			&administrator(&store).await,
 			memory::Operation {
 				operation_id: Uuid::now_v7(),
 				provider: reference("p"),
