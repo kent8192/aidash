@@ -218,7 +218,12 @@ impl ToolTransport for HttpTools {
 				{
 					// The broker is Deployment configuration, not the Tenant's
 					// choice, so it may be an in-cluster private address.
-					let route = source.route().await?;
+					// A broker-owned `connection_required` (the grant ended at refresh) is
+					// typed here, never inferred from a body.
+					let route = source
+						.route()
+						.await
+						.map_err(|error| auth::source_error(error, endpoint))?;
 					let url = broker::forward_url(&route.base, rest)?;
 					self.clients
 						.permitted
@@ -332,7 +337,10 @@ async fn mcp_session(
 			CallSecret::Brokered { source, rest, .. }
 			| CallSecret::BrokeredConnection { source, rest, .. },
 		) => {
-			let route = source.route().await?;
+			let route = source
+				.route()
+				.await
+				.map_err(|error| auth::source_error(error, endpoint))?;
 			mcp::BoundedClient::brokered(client.clone(), source.clone(), rest.clone(), route)
 		}
 		Some(CallSecret::Value { value, .. }) => {

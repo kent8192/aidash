@@ -554,7 +554,7 @@ async fn brokered_connections_use_only_the_broker_and_preserve_replay_guards(
 			result.unwrap_err(),
 			"connection_scope_insufficient",
 			&aidash_domain::oauth_connections::canonical_resource(endpoint).unwrap(),
-			Some("files.read"),
+			Some("files.read files.write"),
 		);
 		assert_eq!(source.invalidations.load(SeqCst), 0);
 	} else {
@@ -639,4 +639,120 @@ async fn http_connection_refusals_come_from_status_never_from_a_success_body(#[c
 		);
 	}
 	assert_eq!(server.received_requests().await.unwrap().len(), 1);
+}
+
+/// A route source whose broker refuses to mint a token: the grant ended at refresh.
+struct EndedGrant(&'static str);
+#[async_trait]
+impl aidash_application::tenant_secrets::SecretRouteSource for EndedGrant {
+	async fn route(&self) -> Result<aidash_application::tenant_secrets::SecretRoute> {
+		Err(Error::Invalid(self.0.into()))
+	}
+	async fn invalidate(&self) {}
+}
+
+fn brokered_connection(
+	endpoint: &str,
+	source: Arc<dyn aidash_application::tenant_secrets::SecretRouteSource>,
+) -> CallSecret {
+	let resource = aidash_domain::oauth_connections::canonical_resource(endpoint).unwrap();
+	CallSecret::BrokeredConnection {
+		record: ConnectionRecord {
+			id: uuid::Uuid::now_v7(),
+			resource: resource.clone(),
+			host: "127.0.0.1".into(),
+		},
+		source,
+		rest: aidash_application::tenant_secrets::connection_forward_rest(
+			&resource,
+			&aidash_application::tenant_secrets::endpoint_destination(endpoint).unwrap(),
+		)
+		.unwrap(),
+	}
+}
+
+fn http_config(endpoint: &str) -> ToolConfig {
+	ToolConfig::Http {
+		endpoint: endpoint.into(),
+		replay: "unsafe".into(),
+		secret: None,
+		secret_owner: Default::default(),
+	}
+}
+
+#[rstest::rstest]
+#[case::successful_body(200)]
+#[case::real_unauthorized(401)]
+#[case::real_scope_refusal(403)]
+#[tokio::test]
+async fn brokered_http_refusals_come_from_status_never_from_a_success_body(#[case] status: u16) {
+	let broker = MockServer::start().await;
+	let endpoint = "http://127.0.0.1:9/tool";
+	let body = json!({"error":"connection_required","resource":endpoint});
+	Mock::given(method("POST"))
+		.and(path_regex("^/v1/forward"))
+		.respond_with({
+			let template = ResponseTemplate::new(status).set_body_json(body.clone());
+			match status {
+				401 => template.insert_header("www-authenticate", "Bearer"),
+				403 => template.insert_header(
+					"www-authenticate",
+					"Bearer error=\"insufficient_scope\", scope=\"files.read\"",
+				),
+				_ => template,
+			}
+		})
+		.mount(&broker)
+		.await;
+	let source = Arc::new(BrokerTokens {
+		base: format!("{}/v1/forward", broker.uri()).parse().unwrap(),
+		generation: AtomicUsize::new(0),
+		invalidations: AtomicUsize::new(0),
+	});
+	let auth = brokered_connection(endpoint, source);
+	let result = HttpTools::new(permitting([endpoint]), ToolClients::new().unwrap())
+		.invoke(&http_config(endpoint), json!({}), "key", Some(&auth))
+		.await;
+	let resource = aidash_domain::oauth_connections::canonical_resource(endpoint).unwrap();
+	match status {
+		200 => assert_eq!(result.unwrap(), body),
+		401 => assert_connection(result.unwrap_err(), "connection_required", &resource, None),
+		_ => assert_connection(
+			result.unwrap_err(),
+			"connection_scope_insufficient",
+			&resource,
+			Some("files.read"),
+		),
+	}
+	assert_eq!(broker.received_requests().await.unwrap().len(), 1);
+}
+
+#[rstest::rstest]
+#[case::http_required(false, "connection_required")]
+#[case::http_scope(false, "connection_scope_insufficient")]
+#[case::mcp_required(true, "connection_required")]
+#[case::mcp_scope(true, "connection_scope_insufficient")]
+#[tokio::test]
+async fn a_broker_that_ended_the_grant_is_a_typed_refusal_before_any_request(
+	#[case] mcp: bool,
+	#[case] code: &'static str,
+) {
+	let endpoint = "http://127.0.0.1:9/tool";
+	let auth = brokered_connection(endpoint, Arc::new(EndedGrant(code)));
+	let tools = HttpTools::new(permitting([endpoint]), ToolClients::new().unwrap());
+	let result = if mcp {
+		tools
+			.invoke(&config(endpoint.into()), json!({}), "key", Some(&auth))
+			.await
+	} else {
+		tools
+			.invoke(&http_config(endpoint), json!({}), "key", Some(&auth))
+			.await
+	};
+	assert_connection(
+		result.unwrap_err(),
+		code,
+		&aidash_domain::oauth_connections::canonical_resource(endpoint).unwrap(),
+		None,
+	);
 }
