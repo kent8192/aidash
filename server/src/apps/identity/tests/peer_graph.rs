@@ -541,6 +541,13 @@ async fn scoped_graph_sends_only_authorized_projection_and_full_goal(
 			.iter()
 			.any(|node| node["kind"] == "goal")
 	);
+	// A continuation taken before the deny must not carry the old decision.
+	let (status, before_deny) = graph(&app, &source, viewer, None, 2).await;
+	assert_eq!(status, 200, "{before_deny}");
+	let continuation = before_deny["next_cursor"]
+		.as_str()
+		.expect("additional authorized data")
+		.to_owned();
 	policy["policies"].as_array_mut().unwrap().push(json!({
 		"id":"deny-graph","effect":"deny","subjects":{"ids":["alice"]},
 		"actions":["federation.graph.read"],"resources":{"kinds":["node"]},
@@ -555,6 +562,10 @@ async fn scoped_graph_sends_only_authorized_projection_and_full_goal(
 	.await;
 	assert_eq!(status, 200, "{written}");
 	assert_eq!(graph(&app, &source, viewer, None, 80).await.0, 403);
+	assert_eq!(
+		graph(&app, &source, viewer, Some(&continuation), 2).await.0,
+		403
+	);
 
 	policy["policies"]
 		.as_array_mut()
