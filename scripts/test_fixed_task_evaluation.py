@@ -442,12 +442,13 @@ class OracleTest(unittest.TestCase):
         value = evaluation.load_corpus()
         vectors = evaluation.independent_code_vectors(value, task(value, "code-change-verified-fix")["oracle"])
         code = evaluation.container_code_execution("python@sha256:" + "a" * 64)
-        real_popen = subprocess.Popen
-        def without_stdin(command, **kwargs):
-            if command[0] == "docker":
-                command = [part for part in command if part != "-i"]
-            return real_popen(command, **kwargs)
         with tempfile.TemporaryDirectory() as directory, local_docker(code.image):
+            # Captured inside local_docker so the stripped command still runs through its simulation.
+            simulated_popen = evaluation.subprocess.Popen
+            def without_stdin(command, **kwargs):
+                if command[0] == "docker":
+                    command = [part for part in command if part != "-i"]
+                return simulated_popen(command, **kwargs)
             Path(directory, "pricing.py").write_text(fixture_module.PRICING_COMPLETE)
             self.assertTrue(code(directory, vectors["hidden"], 20, entrypoint=vectors["entrypoint"])["passed"])
             with mock.patch.object(evaluation.subprocess, "Popen", side_effect=without_stdin):
@@ -477,6 +478,14 @@ class OracleTest(unittest.TestCase):
         with mock.patch.dict(evaluation.CODE_ORACLE_REFERENCES, clear=True), \
                 self.assertRaisesRegex(evaluation.GuardRefusal, "no registered reference patches"):
             evaluation.live_task_support({"code_oracle": contract}, value, planned, "https://fixture.test")
+
+    def test_code_oracle_specs_check_each_target_sharing_vectors(self):
+        value = evaluation.load_corpus()
+        planned = evaluation.plan(value, ["code-change-verified-fix", "code-change-hidden-regression"], ["projection"])
+        moved = next(item for item in planned if item["task"]["id"] == "code-change-hidden-regression")
+        moved["task"] = dict(moved["task"], oracle=dict(moved["task"]["oracle"], target="billing.py"))
+        self.assertEqual(sorted(evaluation.code_oracle_specs(planned)),
+                         [("oracles/pricing_cases.json", "billing.py"), ("oracles/pricing_cases.json", "pricing.py")])
 
     def test_unavailable_code_oracle_is_an_infrastructure_failure(self):
         value = evaluation.load_corpus()

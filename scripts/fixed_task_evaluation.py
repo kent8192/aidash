@@ -1045,7 +1045,7 @@ class ContainerCodeOracle:
 
     def __call__(self, directory, cases, timeout, target="pricing.py", entrypoint="discounted_total"):
         # Checked before every candidate, so a missing image or stopped daemon cannot be scored as the
-        # Agent's failure. Candidate code has not run yet and cannot forge this result.
+        # Agent's failure. Candidate code runs only in network-less containers and cannot affect this result.
         try:
             inspected = subprocess.run(["docker", "image", "inspect", self.image], capture_output=True, timeout=20)
         except (OSError, subprocess.SubprocessError):
@@ -1122,7 +1122,7 @@ CODE_ORACLE_REFERENCE_VERDICTS = {"complete": (True, True), "visible_only": (Tru
 
 
 def code_oracle_specs(planned):
-    """The distinct python-tests oracles in a plan, each with its registered reference patches."""
+    """The distinct python-tests oracles in a plan, keyed by vector file and candidate target."""
     specs = {}
     for item in planned:
         oracle = item["task"]["oracle"]
@@ -1131,13 +1131,14 @@ def code_oracle_specs(planned):
         if oracle.get("cases") not in CODE_ORACLE_REFERENCES:
             raise GuardRefusal(f"python-tests vectors {oracle.get('cases')!r} have no registered reference patches; "
                                "the code oracle cannot be checked before the live campaign")
-        specs[oracle["cases"]] = oracle
+        # Tasks sharing vectors may write the candidate to different targets; each pair is checked.
+        specs[(oracle["cases"], oracle["target"])] = oracle
     return specs
 
 
 def preflight_code_oracle(corpus, planned, execute):
     """Refuse the live tier unless the container oracle passes the complete fix and fails the visible-only fix."""
-    for cases, oracle in code_oracle_specs(planned).items():
+    for (cases, target), oracle in code_oracle_specs(planned).items():
         vectors = independent_code_vectors(corpus, oracle)
         for label, patch in CODE_ORACLE_REFERENCES[cases].items():
             observed = []
@@ -1151,7 +1152,7 @@ def preflight_code_oracle(corpus, planned, execute):
                         raise GuardRefusal(f"code oracle preflight could not run: {error}") from None
                 observed.append(result["passed"])
             if tuple(observed) != CODE_ORACLE_REFERENCE_VERDICTS[label]:
-                raise GuardRefusal(f"code oracle preflight for {cases}: the {label} reference patch graded "
+                raise GuardRefusal(f"code oracle preflight for {cases} ({target}): the {label} reference patch graded "
                                    f"(visible, hidden) = {tuple(observed)}, expected "
                                    f"{CODE_ORACLE_REFERENCE_VERDICTS[label]}; the oracle is broken")
 
