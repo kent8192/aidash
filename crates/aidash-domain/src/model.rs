@@ -25,7 +25,7 @@ pub struct ModelConfig {
 	/// ever falls back to the other.
 	#[serde(default, skip_serializing_if = "Option::is_none")]
 	pub plan_connection: Option<String>,
-	/// The provider API this route speaks (ADR 0097). Omitted means `chat`,
+	/// The provider API this route speaks (ADR 0103). Omitted means `chat`,
 	/// so existing model definitions keep their bytes. `responses` is accepted
 	/// only for an OpenRouter model served by a Provider Credential; Plan
 	/// Connections already use the Responses API and Keyless endpoints never do.
@@ -83,7 +83,7 @@ pub struct ModelConfig {
 
 /// The provider API a model route speaks. The transport never switches
 /// implicitly, so a Run's prompt prefix, Request Estimate and digests do not
-/// change mid-Run (ADR 0097).
+/// change mid-Run (ADR 0103).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum WireApi {

@@ -335,7 +335,7 @@ pub fn salted_provider(
 			config.stream_stall_timeout()?;
 			// An explicit Responses declaration selects OpenRouter's Responses
 			// API. Omitted or `chat` keeps the existing Chat Completions path
-			// bytes (ADR 0097).
+			// bytes (ADR 0103).
 			if config.wire_api == Some(aidash_domain::model::WireApi::Responses) {
 				return Ok(Arc::new(responses::ResponsesProvider {
 					clients,
