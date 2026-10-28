@@ -1,6 +1,6 @@
 //! The Deployment's answers to `accept` (ADR 0064): which Node names a Tenant,
 //! whether that Tenant is deleted, and what its Node Registrations, Peer
-//! Mappings, policy and Peer Graph Grants say.
+//! Mappings and policy say.
 use crate::apps::identity::repositories::{
 	node_registrations as registrations, nodes, tenant_deletions,
 };
