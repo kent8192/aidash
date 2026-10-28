@@ -398,7 +398,7 @@ class Cluster:
                     f"http://tx-{remote}:8080/.well-known/aidash").stdout
                 key_id = json.loads(key_id)["key"]["id"]
                 owner = self.nodes[local]
-                # TODO(#484): a Node Registration needs a Tenant Administrator, a browser
+                # TODO(#578): a Node Registration needs a Tenant Administrator, a browser
                 # Mapping session through a test OIDC issuer the Pods can reach
                 # (oidc_fixture.py). The api_token is a Deployment Administrator and is
                 # refused, so this fails until that issuer runs in the cluster.

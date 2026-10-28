@@ -171,7 +171,7 @@ class RemoteMemory(Cluster):
             self.ok(self.api(node, f"/api/authorization/{self.tenants[node]}", {"expected_revision": 1, "bundle": bundle}))
             credential = self.issue_credential(node, self.tenants[node], "alice")
             self.tokens.append(credential["token"])
-            # TODO(#484): a Peer Mapping needs a Tenant Administrator, a browser Mapping
+            # TODO(#578): a Peer Mapping needs a Tenant Administrator, a browser Mapping
             # session through a test OIDC issuer the Pods can reach (oidc_fixture.py);
             # the shared api_token below is a Deployment Administrator and is refused,
             # so this acceptance cannot pass until that issuer runs in the cluster.
