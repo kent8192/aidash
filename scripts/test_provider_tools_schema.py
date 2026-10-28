@@ -117,13 +117,15 @@ class ProviderToolSchema(unittest.TestCase):
         result = subprocess.run(
             [
                 "docker", "run", "--rm", "-d", "--name",
-                "aidash-w4-provider-schema-" + uuid.uuid4().hex[:12],
+                "aidash-w5-provider-schema-" + uuid.uuid4().hex[:12],
                 "-e", "POSTGRES_PASSWORD=provider-schema-test-only", image,
             ],
-            check=True,
+            check=False,
             capture_output=True,
             text=True,
         )
+        if result.returncode:
+            raise RuntimeError(f"Disposable PostgreSQL creation failed: {result.stderr}")
         cls.container = result.stdout.strip()
         if not re.fullmatch("[0-9a-f]{64}", cls.container):
             raise AssertionError("Docker did not return an owned container id")
@@ -162,6 +164,7 @@ class ProviderToolSchema(unittest.TestCase):
         """)
         cls.before = cls.signature()
         cls.sql((SQL / "forward/0050_provider_tools.sql").read_text())
+        cls.sql((SQL / "forward/0051_provider_warning_tools.sql").read_text())
 
     @classmethod
     def signature(cls):
@@ -179,6 +182,32 @@ class ProviderToolSchema(unittest.TestCase):
     def valid(self, function_name, value):
         return self.sql(f"SELECT public.{function_name}({literal(value)});").stdout.strip() == "t"
 
+
+    def test_warning_tools_are_closed_at_database_constraints(self):
+        for tool in ["advisor", "subagent", "experimental__search_models", "tool_search", "shell"]:
+            value = descriptor(tool)
+            if tool == "experimental__search_models":
+                value["operation"] = value["default_alias"] = "provider_search_models"
+            self.assertTrue(self.valid("aidash_descriptor_is_valid", value))
+            self.sql("INSERT INTO registry VALUES ('tool'," + literal({"config": value}) + ");")
+        pins = [
+            {"model":"vendor/model","max_completion_tokens":4096,"forward_transcript":False,"stream":False},
+            {"model":"vendor/model","max_completion_tokens":4096,"max_tool_calls":2,"tools":[],"inherit_functions":False},
+            {"max_results":5},
+            {"engine":"openrouter","environment":{"type":"container_reference","network_policy":{"type":"disabled"}}},
+        ]
+        for parameters in pins:
+            pin = {"max_tool_calls":3,"parameters":parameters}
+            self.assertTrue(self.valid("aidash_provider_tool_binding_is_valid", pin))
+            self.sql("INSERT INTO registry VALUES ('agent'," + literal({"config":agent(pin)}) + ");")
+            for key, value in [("max_tool_calls",9),("parameters",{**parameters,"inherit_functions":True})]:
+                rejected = self.sql("INSERT INTO registry VALUES ('agent'," + literal({"config":agent({**pin,key:value})}) + ");",check=False)
+                self.assertNotEqual(rejected.returncode,0)
+        for change in [{"container_id":"another_run"},{"network_policy":{"type":"allowlist","allowed_domains":["*"]}}]:
+            bad = copy.deepcopy(pins[-1])
+            bad["environment"].update(change)
+            self.assertFalse(self.valid("aidash_provider_tool_binding_is_valid",{"max_tool_calls":3,"parameters":bad}))
+
     def test_closed_descriptors_and_actual_check_constraints(self):
         for tool in ["web_search", "web_fetch", "datetime", "fusion"]:
             value = descriptor(tool)
@@ -189,7 +218,7 @@ class ProviderToolSchema(unittest.TestCase):
                     + literal({"config": value}) + ");"
                 )
                 for key, replacement in [
-                    ("provider", "provider.openrouter.shell@1"),
+                    ("provider", "provider.openrouter.unknown@1"),
                     ("operation", "shell"),
                     ("default_alias", "apply_patch"),
                     ("tier", "builtin"),
@@ -269,7 +298,7 @@ class ProviderToolSchema(unittest.TestCase):
         self.assertTrue(self.valid("aidash_descriptor_is_valid", legacy))
 
     def test_rollback_refuses_history_then_restores_original_contracts(self):
-        reverse = (SQL / "backward/0050_provider_tools.sql").read_text()
+        reverse = (SQL / "backward/0051_provider_warning_tools.sql").read_text() + (SQL / "backward/0050_provider_tools.sql").read_text()
         self.sql("INSERT INTO registry VALUES ('tool'," + literal({"config": descriptor("datetime")}) + ");")
         blocked = self.sql(reverse, check=False)
         self.assertNotEqual(blocked.returncode, 0)
@@ -284,6 +313,7 @@ class ProviderToolSchema(unittest.TestCase):
         self.assertFalse(self.valid("aidash_descriptor_is_valid", descriptor("datetime")))
         self.assertFalse(self.valid("aidash_agent_bindings_is_valid", agent(PINS[2])))
         self.sql((SQL / "forward/0050_provider_tools.sql").read_text())
+        self.sql((SQL / "forward/0051_provider_warning_tools.sql").read_text())
 
 
 if __name__ == "__main__":
