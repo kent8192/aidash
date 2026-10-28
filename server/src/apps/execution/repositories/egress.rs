@@ -65,7 +65,7 @@ impl Gateway {
 		let base = reqwest::Url::parse(&definition.base_url).map_err(|_| Error::Forbidden)?;
 		let destination = Destination {
 			origin: base.origin().ascii_serialization(),
-			path_prefix: destination_prefix(base.path()),
+			path_prefix: aidash_application::tenant_secrets::path_directory(base.path()).to_owned(),
 		};
 		let attach = match &definition.authentication {
 			aidash_domain::egress::Authentication::Bearer => Attach::Bearer,
@@ -172,22 +172,6 @@ fn secret_host(
 			.ok()
 			.and_then(|url| url.host_str().map(str::to_owned))
 	})
-}
-
-/// The External service's base path as the broker joins it: from `/`, with a
-/// trailing slash.
-fn destination_prefix(path: &str) -> String {
-	let mut prefix = path.to_owned();
-	if prefix.is_empty() {
-		prefix.push('/');
-	}
-	if !prefix.starts_with('/') {
-		prefix.insert(0, '/');
-	}
-	if !prefix.ends_with('/') {
-		prefix.push('/');
-	}
-	prefix
 }
 
 fn token_mac(store: &Store, operation: Uuid, expires: DateTime<Utc>) -> Result<Hmac<Sha256>> {

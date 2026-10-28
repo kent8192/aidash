@@ -813,6 +813,18 @@ async fn brokered_resolution_returns_a_route_and_never_reads_the_value() {
 	assert_eq!(grants.0.lock().await.len(), 1, "no second token was minted");
 }
 
+#[test]
+fn a_path_directory_keeps_its_last_slash() {
+	for (path, directory) in [
+		("/", "/"),
+		("/invoke", "/"),
+		("/v1/invoke", "/v1/"),
+		("/v1/", "/v1/"),
+	] {
+		assert_eq!(path_directory(path), directory, "{path}");
+	}
+}
+
 /// The signed destination is the endpoint path's directory, never a sibling.
 #[test]
 fn an_endpoint_signs_its_directory_and_forwards_only_the_remaining_path() {

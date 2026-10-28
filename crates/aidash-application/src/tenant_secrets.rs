@@ -170,6 +170,17 @@ fn endpoint_path_parts(endpoint: &str) -> Result<(String, String)> {
 	Ok((prefix.into(), path[cut..].into()))
 }
 
+/// The directory of a URL path, up to and including its last `/`: what the
+/// broker signs for an External service's base URL. `/v1/` stays `/v1/`,
+/// and an endpoint-style `/v1/invoke` signs `/v1/` so the forwarded path keeps
+/// `invoke` exactly, without a trailing slash.
+pub fn path_directory(path: &str) -> &str {
+	match path.rfind('/') {
+		Some(index) => &path[..=index],
+		None => "/",
+	}
+}
+
 /// The destination a tool or test endpoint signs. `path_prefix` is the
 /// endpoint path's directory, so the token never covers a sibling path.
 pub fn endpoint_destination(endpoint: &str) -> Result<Destination> {
