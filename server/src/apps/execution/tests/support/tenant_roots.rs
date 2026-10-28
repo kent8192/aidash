@@ -333,6 +333,27 @@ pub async fn subject_credential(
 	.token
 }
 
+/// The same issuance as [`subject_credential`], returned in the JSON shape the
+/// HTTP issuance route used (`{"credential": {..}, "token": ".."}`) for tests
+/// that also need the credential's id or its recorded issuer.
+#[allow(dead_code)]
+pub async fn issued_credential(
+	store: &aidash_server::store::Store,
+	tenant: &str,
+	subject: &str,
+) -> serde_json::Value {
+	let issued = aidash_server::apps::identity::services::subject_credential_command::issue(
+		&store.pool,
+		tenant,
+		subject,
+		aidash_server::apps::identity::services::subject_credential_command::DEFAULT_LIFETIME_SECONDS,
+		aidash_server::apps::identity::services::subject_credential_command::DEFAULT_LABEL,
+	)
+	.await
+	.expect("the Subject Credential is issued");
+	serde_json::to_value(issued).expect("the issued credential serializes")
+}
+
 #[allow(dead_code)]
 pub async fn approve_agent(f: &Federation, tenant: &str, agent: &aidash_server::registry::Entry) {
 	let node = default_node(&f.store, tenant).await;

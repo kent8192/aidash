@@ -72,19 +72,14 @@ async fn event_stream_flushes_live_changes_and_resumes_from_last_event_id(
 ) {
 	// Arrange
 	let app = endpoint.await;
-	let (member, _) = crate::endpoint::tenant_member(&app).await;
+	let (member, token) = crate::endpoint::tenant_member(&app).await;
 	let selected = workspace(&member, "Stream selection").await;
 	let id = selected["id"].as_str().unwrap();
 	workspace(&member, "Excluded from stream").await;
 	let client = http_client.clone();
 	let url = format!("{}/api/events/stream?workspace_id={id}", app.server.url);
 	// Act
-	let mut response = client
-		.get(&url)
-		.bearer_auth(&app.runtime.config.api_token)
-		.send()
-		.await
-		.unwrap();
+	let mut response = client.get(&url).bearer_auth(&token).send().await.unwrap();
 	// Assert
 	assert_eq!(response.status(), 200);
 	assert_eq!(response.headers()["content-type"], "text/event-stream");
@@ -115,7 +110,7 @@ async fn event_stream_flushes_live_changes_and_resumes_from_last_event_id(
 	drop(response);
 	let mut resumed = client
 		.get(&url)
-		.bearer_auth(&app.runtime.config.api_token)
+		.bearer_auth(&token)
 		.header("Last-Event-ID", cursor)
 		.send()
 		.await
@@ -126,6 +121,65 @@ async fn event_stream_flushes_live_changes_and_resumes_from_last_event_id(
 		"{resumed_frame}"
 	);
 	assert!(!resumed_frame.contains("workspace.created"));
+}
+
+#[rstest]
+#[tokio::test]
+async fn deployment_administrators_and_other_tenants_read_no_events_or_event_streams(
+	#[future] endpoint: EndpointFixture,
+	#[from(reinhardt::test::fixtures::http_client)] http_client: reqwest::Client,
+) {
+	// Arrange: a Tenant Subject has a Workspace with events.
+	let app = endpoint.await;
+	let (member, _) = crate::endpoint::tenant_member(&app).await;
+	let selected = workspace(&member, "Private to the Tenant").await;
+	let id = selected["id"].as_str().unwrap();
+	let other = crate::endpoint::tenant_token(&app.runtime.store, "globex").await;
+	let administrator = &app.runtime.config.api_token;
+	let stream = format!("{}/api/events/stream?workspace_id={id}", app.server.url);
+
+	// Act and Assert: the shared bearer is refused on event reads.
+	for path in [
+		"/api/events".to_owned(),
+		format!("/api/events?workspace_id={id}&after=0"),
+	] {
+		let response = app.deployment_administrator.get(&path).await.unwrap();
+		assert_eq!(response.status_code(), 403, "{path}");
+		assert!(!response.text().contains(id), "{path}");
+	}
+	// It is refused on the event stream, fresh and when resuming from a cursor.
+	for cursor in [None, Some("0"), Some("1")] {
+		let mut request = http_client.get(&stream).bearer_auth(administrator);
+		if let Some(cursor) = cursor {
+			request = request.header("Last-Event-ID", cursor);
+		}
+		let response = request.send().await.unwrap();
+		assert_eq!(response.status(), 403, "{cursor:?}");
+		assert!(!response.text().await.unwrap().contains(id), "{cursor:?}");
+	}
+	// Another Tenant's Subject sees none of this Tenant's events.
+	let response = http_client
+		.get(format!(
+			"{}/api/events?workspace_id={id}&after=0",
+			app.server.url
+		))
+		.bearer_auth(&other)
+		.send()
+		.await
+		.unwrap();
+	let status = response.status();
+	let body = response.text().await.unwrap();
+	assert!(!status.is_success() || body == "[]", "{status}: {body}");
+	assert!(!body.contains(id), "{body}");
+	// The authorized Tenant Subject still reads them.
+	let events = assert_json(
+		member
+			.get(&format!("/api/events?workspace_id={id}&after=0"))
+			.await
+			.unwrap(),
+		200,
+	);
+	assert_eq!(events.as_array().unwrap().len(), 1);
 }
 
 async fn next_frame(response: &mut reqwest::Response) -> String {

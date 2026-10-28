@@ -85,7 +85,7 @@ async fn policy(
 	let spec = json!({"enabled":true,"template":template,"permissions":{"roles":[],"groups":[],"attributes":{}},"approval_required":false,"limits":{"max_agents":4,"max_concurrent":4,"max_depth":2,"token_budget":2000000,"tokens_per_agent":400000,"lifetime_seconds":3600},"compaction":{"provider":{"id":"jev","version":"1.0.0"},"calls_per_agent":2,"call_budget":4}});
 	let (status, body) = request(
 		app,
-		&f.config.api_token,
+		&token,
 		"POST",
 		"/api/generation/acme/policies/research",
 		json!({"expected_revision":0,"spec":spec}),
@@ -218,7 +218,7 @@ async fn generated_agent_budget_includes_the_models_full_output_limit(
 	spec["limits"]["tokens_per_agent"] = json!(1_114_111);
 	let (status, _) = request(
 		&app,
-		&f.config.api_token,
+		&token,
 		"POST",
 		"/api/generation/acme/policies/research",
 		json!({"expected_revision":1,"spec":spec}),
@@ -228,7 +228,7 @@ async fn generated_agent_budget_includes_the_models_full_output_limit(
 	spec["limits"]["tokens_per_agent"] = json!(1_114_112);
 	let (status, body) = request(
 		&app,
-		&f.config.api_token,
+		&token,
 		"POST",
 		"/api/generation/acme/policies/research",
 		json!({"expected_revision":1,"spec":spec}),
@@ -259,7 +259,7 @@ async fn approved_compaction_is_pinned_bounded_and_accounted_before_http(
 	assert_eq!(
 		request(
 			&app,
-			&f.config.api_token,
+			&token,
 			"POST",
 			"/api/generation/acme/policies/research",
 			json!({"expected_revision":1,"spec":spec})
@@ -738,7 +738,7 @@ async fn nested_generation_intersects_compaction_approval_and_charges_both_ances
 		assert_eq!(
 			request(
 				&app,
-				&f.config.api_token,
+				&token,
 				"POST",
 				"/api/generation/acme/policies/research",
 				json!({"expected_revision":1,"spec":spec})
