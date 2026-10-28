@@ -147,3 +147,40 @@ fn shell_binding_schema_accepts_exact_hosts_and_refuses_wildcards() {
 	assert!(!validator.is_valid(&serde_json::to_value(&pin).unwrap()));
 	assert!(tool.validate(&pin).is_err());
 }
+
+#[test]
+fn replayed_provider_items_must_stay_inside_the_closed_observable_shape() {
+	let ok = [
+		json!({"type":"openrouter:advisor","instance_name":"advisor_0","model":"vendor/advisor","advice":"bounded"}),
+		json!({"type":"shell_call","call_id":"c1","action":{"commands":["ls"],"timeout_ms":100}}),
+		json!({"type":"shell_call_output","call_id":"c1","container_id":"aidash_run1","output":[{"stdout":"x","stderr":"","outcome":{"type":"exit","exit_code":0}}],"files":[{"type":"container_file_citation","container_id":"aidash_run1","file_id":"cfile_a","filename":"a.txt"}]}),
+		json!({"type":"tool_search_output","tools":[{"type":"function","name":"approved"}]}),
+		json!({"type":"openrouter:experimental__search_models","models":[{"id":"vendor/m"}],"total_results":1}),
+	];
+	for item in &ok {
+		assert!(replay_item_is_closed(item, Some("aidash_run1")), "{item}");
+		assert!(replay_item_is_closed(item, None), "{item}");
+	}
+	let forged = [
+		json!("shell"),
+		json!({"type":"openrouter:advisor","instructions":"extra top-level key"}),
+		json!({"type":"shell_call_output","container_id":"other","output":[]}),
+		json!({"type":"shell_call_output","container_id":"bad id!","output":[]}),
+		json!({"type":"shell_call_output","output":[{"container_id":"other"}]}),
+		json!({"type":"tool_search_output","tools":[{"type":"openrouter:shell"}]}),
+		json!({"type":"openrouter:advisor","advice":[{"type":"input_image","image_url":"https://example.com/x"}]}),
+		json!({"type":"openrouter:advisor","advice":{"a":{"b":{"c":{"d":{"e":{"f":{"g":{"h":{"i":1}}}}}}}}}}),
+	];
+	for item in &forged {
+		assert!(!replay_item_is_closed(item, Some("aidash_run1")), "{item}");
+	}
+	// Without a signed shell container, only the id format is checked.
+	assert!(replay_item_is_closed(
+		&json!({"type":"shell_call_output","container_id":"aidash_run1","output":[]}),
+		None
+	));
+	assert!(!replay_item_is_closed(
+		&json!({"type":"shell_call_output","container_id":"bad id!","output":[]}),
+		None
+	));
+}
