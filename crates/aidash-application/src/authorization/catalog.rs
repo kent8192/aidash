@@ -6,7 +6,7 @@ pub async fn entry(
 	reference: &EntityRef,
 	action: &str,
 ) -> Result<Entry> {
-	admit(scope, reference, action, &|_| Error::Forbidden).await
+	admit(scope, reference, action, None).await
 }
 
 /// The refusal of a Tenant policy denial met while admitting a Catalog entry for `tool`'s call.
@@ -26,17 +26,14 @@ pub async fn tool_entry(
 	action: &str,
 	tool: &str,
 ) -> Result<Entry> {
-	admit(scope, reference, action, &|action| {
-		policy_refusal(tool, action)
-	})
-	.await
+	admit(scope, reference, action, Some(tool)).await
 }
 
 async fn admit(
 	scope: &mut dyn CatalogScope,
 	reference: &EntityRef,
 	action: &str,
-	policy_denied: &dyn Fn(&str) -> Error,
+	tool: Option<&str>,
 ) -> Result<Entry> {
 	if scope.inherited_lease()
 		&& !scope.approved(reference)
@@ -65,7 +62,7 @@ async fn admit(
 		.require(&resource, action)
 		.await
 		.map_err(|error| match error {
-			Error::Forbidden => policy_denied(action),
+			Error::Forbidden => tool.map_or(Error::Forbidden, |tool| policy_refusal(tool, action)),
 			error => error,
 		})?;
 	scope.remember(reference);
