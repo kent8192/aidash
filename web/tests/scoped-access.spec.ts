@@ -12,11 +12,13 @@ import { createServer } from "node:http";
 import { KeylessFixture, serveKeyless } from "./keyless-ports";
 import { randomUUID } from "node:crypto";
 
-test("subject dashboard completes a conversation and clears revoked access", async ({
+test("subject dashboard completes a conversation and clears expired access", async ({
   page,
   request,
 }) => {
-  test.setTimeout(60000);
+  // The dashboard session's credential expires on its own (below), so the
+  // test waits for that after its last step.
+  test.setTimeout(150000);
   const provider = createServer(async (req, res) => {
     const chunks: Buffer[] = [];
     for await (const chunk of req) chunks.push(Buffer.from(chunk));
@@ -180,7 +182,12 @@ test("subject dashboard completes a conversation and clears revoked access", asy
       if (/\/api\/marketplace(?:\?|$)/.test(req.url()))
         administrativeRequests.push(req.url());
     });
-    await installBearerDashboard(page, credential.token, {
+    // A Deployment Administrator holds no Tenant authority (#484) and a
+    // Subject Credential cannot revoke itself, so the dashboard session runs on
+    // a short-lived credential that simply expires; the client reports an
+    // expired and a revoked credential the same way.
+    const session = issueSubjectCredential(tenant, "alice", 75);
+    await installBearerDashboard(page, session.token, {
       tenant,
       name: "alice",
     });
@@ -250,14 +257,10 @@ test("subject dashboard completes a conversation and clears revoked access", asy
       path: "../private/dashboard-scoped-access.png",
       fullPage: true,
     });
-    await api(
-      `/api/authorization/${tenant}/credentials/${credential.credential.id}/revoke`,
-      {},
-    );
     await expect(
       page.getByRole("button", { name: "Sign in with Google" }),
     ).toBeVisible({
-      timeout: 15000,
+      timeout: 90000,
     });
     await expect(page.getByRole("alert")).toContainText("expired or revoked");
     expect(
