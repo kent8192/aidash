@@ -169,9 +169,12 @@ class RemoteMemory(Cluster):
             subjects = {"alice": {"kind": "user"}, **{f"{self.nodes[n]['address']}/agents/research@1.0.0": {"kind": "agent"} for n in range(2)}}
             bundle = {"tenant": self.tenants[node], "subjects": subjects, "policies": [{"id": "approved-work", "effect": "allow", "subjects": {"any": True}, "actions": ["*"], "resources": {"kinds": ["*"]}}]}
             self.ok(self.api(node, f"/api/authorization/{self.tenants[node]}", {"expected_revision": 1, "bundle": bundle}))
-            credential = self.ok(self.api(node, f"/api/authorization/{self.tenants[node]}/credentials", {"subject": "alice"}))
+            credential = self.issue_credential(node, self.tenants[node], "alice")
             self.tokens.append(credential["token"])
-            # Peer Mappings require an administrator; a Subject bearer cannot create them.
+            # TODO(#484): a Peer Mapping needs a Tenant Administrator, a browser Mapping
+            # session through a test OIDC issuer the Pods can reach (oidc_fixture.py);
+            # the shared api_token below is a Deployment Administrator and is refused,
+            # so this acceptance cannot pass until that issuer runs in the cluster.
             self.ok(self.api(node, f"/api/authorization/{self.tenants[node]}/peer-mappings", {"node": self.nodes[node]["node"], "source_node": self.nodes[1 - node]["address"], "source_subject": "alice", "credential_id": credential["credential"]["id"], "enabled": True, "expected_revision": 0}))
             self.register(node, "model", "model", {"provider": "openrouter", "model_id": "fixture", "endpoint": "http://provider:8080/v1", "context_window": 128000, "max_output_tokens": 4096, "modalities": ["text"], "cost": {}})
             self.register(node, "memory", "home-memory", {"schema_version": 1, "source": {"adapter": "semantic_memory"}})
