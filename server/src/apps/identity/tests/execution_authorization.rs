@@ -5098,7 +5098,8 @@ async fn approval_review_approves_local_items_and_activates_marketplace_on_a_non
 	)
 	.await;
 	assert_eq!(status, 200, "{result}");
-	assert_eq!(result["bindings"].as_array().unwrap().len(), 2);
+	// The Agent's default compaction Decider is a local review item too (#540).
+	assert_eq!(result["bindings"].as_array().unwrap().len(), 3);
 	assert_eq!(result["installations"].as_array().unwrap().len(), 1);
 	assert_eq!(
 		result["installations"][0]["active_revision"],

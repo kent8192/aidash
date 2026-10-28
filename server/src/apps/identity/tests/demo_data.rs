@@ -240,6 +240,7 @@ async fn demo_data_loads_once_and_adds_only_what_is_missing(#[future] database: 
 	assert_eq!(
 		loaded.approved[acme],
 		[
+			"aidash.compaction-decider@1.0.0",
 			"demo-gpt-4o-mini@1.0.0",
 			"research-assistant@1.0.0",
 			"summarizer@1.0.0",
@@ -248,9 +249,13 @@ async fn demo_data_loads_once_and_adds_only_what_is_missing(#[future] database: 
 	);
 	assert_eq!(
 		loaded.approved[globex],
-		["demo-gpt-4o-mini@1.0.0", "support-triage@1.0.0"]
+		[
+			"aidash.compaction-decider@1.0.0",
+			"demo-gpt-4o-mini@1.0.0",
+			"support-triage@1.0.0"
+		]
 	);
-	assert_eq!(loaded.history, 6);
+	assert_eq!(loaded.history, 8);
 	// The Registry holds the entries, with the tool bound to this Deployment.
 	let registry = aidash_server::apps::registry::repositories::Registry::new(
 		f.pool().await,

@@ -737,6 +737,9 @@ async fn bootstrap_with_policy(
 			),
 		);
 	}
+	// The Node binds the built-in compaction Decider to every Agent by default,
+	// so a Run starts only once the Tenant approves it (#540).
+	approve(aidash_application::registry::system::COMPACTION_DECIDER_ID).await;
 	for (kind, id, config) in definitions {
 		let entry = json!({"id":id,"version":"1.0.0","kind":kind,"name":{"en":id},"description":{"en":"fixture"},"capabilities":[],"languages":["en"],"schema":{"type":"object"},"config":config});
 		f.registry

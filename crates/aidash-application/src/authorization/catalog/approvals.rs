@@ -9,7 +9,10 @@ use aidash_domain::{
 		tenant_administration as rules,
 	},
 	policy::SubjectKind,
-	registry::{EntityRef, Entry, bindings::AgentBindings},
+	registry::{
+		EntityRef, Entry,
+		bindings::{AgentBindings, BindingKind, BindingOrigin},
+	},
 };
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
@@ -38,7 +41,8 @@ pub struct Approval {
 /// The exact versions a definition names directly, which must be approved (or
 /// be built-ins that need no approval) before it is: the edges Marketplace
 /// distribution follows, plus an agent's context summarizer, which Run
-/// admission also resolves.
+/// admission also resolves, and the Deciders this Node binds to the Agent by
+/// default (the compaction Decider), read from its registered normalization.
 pub fn dependencies(entry: &Entry, node: &str) -> Result<Vec<EntityRef>> {
 	let mut dependencies: Vec<_> = crate::marketplace::definitions::refs(entry, node)?
 		.into_iter()
@@ -52,6 +56,16 @@ pub fn dependencies(entry: &Entry, node: &str) -> Result<Vec<EntityRef>> {
 				.context_summary()
 				.map(|summary| summary.model.clone()),
 		);
+		for bound in entry.normalized_bindings(node)? {
+			// Explicit Bindings are authored edges, already listed above.
+			if bound.origin == BindingOrigin::Default && bound.binding.kind == BindingKind::Decider
+			{
+				let reference = bound.binding.target.local();
+				if !dependencies.contains(&reference) {
+					dependencies.push(reference);
+				}
+			}
+		}
 	}
 	Ok(dependencies)
 }
