@@ -1,3 +1,4 @@
+import { SafetyStopPanel } from "./safety-stop";
 import { ElicitationForm, elicitationMessage } from "./elicitation";
 import { RunCompactionDetails } from "../compaction-details";
 import { RunPlanUsage } from "../model-source";
@@ -506,6 +507,9 @@ function RunPanel({
   const managed =
     run.home_node !== data.node.id && data.access.kind === "subject";
   const controllable = !terminal && !managed;
+  // A Deployment Administrator stops a Run only through a Safety Stop, with a
+  // reason, and never resumes it (ADR 0101).
+  const administrator = data.access.kind === "deployment_administrator";
   const home = isLocalRun(run, data);
   return (
     <>
@@ -523,7 +527,7 @@ function RunPanel({
       </header>
       {(controllable || home) && (
         <div className="flex min-w-0 flex-wrap gap-2">
-          {controllable && (
+          {controllable && !administrator && (
             <>
               <Button
                 variant="outline"
@@ -555,6 +559,15 @@ function RunPanel({
           )}
         </div>
       )}
+      {controllable && administrator && <SafetyStopPanel run={id} />}
+      {run.control !== "ACTIVE" &&
+        run.control_source === "deployment_administrator" && (
+          <Hint role="status">
+            {run.control === "CANCELLED"
+              ? copy.cancelledByAdministrator
+              : copy.pausedByAdministrator}
+          </Hint>
+        )}
       <RunPlanUsage run={run} data={data} />
       {run.state_error && <Alert>{run.state_error}</Alert>}
       {run.error && (

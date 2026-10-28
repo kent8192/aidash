@@ -1060,11 +1060,10 @@ export function Graph({
                                     ? copy.peerUnsupported
                                     : state === "oversized"
                                       ? copy.peerOversized
-                                      : state === "invalid"
+                                      : state === "invalid" ||
+                                          state === "unavailable"
                                         ? copy.peerUnavailable
-                                        : state === "unavailable"
-                                          ? copy.peerUnavailable
-                                          : "";
+                                        : "";
                           return (
                             <div className="mesh-peer grid gap-1.5" key={peer}>
                               <span className="truncate font-mono text-xs text-muted-foreground">
