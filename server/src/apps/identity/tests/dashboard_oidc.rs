@@ -13,7 +13,7 @@ use aidash_server::{
 };
 
 use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
-use futures_util::{StreamExt, future::join_all};
+use futures_util::future::join_all;
 use reinhardt::query::{Alias, Expr, LockType, PostgresQueryBuilder, Query};
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
