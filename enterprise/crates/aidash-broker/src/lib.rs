@@ -1,7 +1,9 @@
 //! Stateless Credential Broker: capability admission, fixed Provider Catalog and bounded relay.
 use aidash_capability::{
-	Claims, Failure, KeyMaterialError, KeyMaterialSource, Operation, PublicKeys,
+	Claims, DataProtectionRequirement, DataRegion, Failure, KeyMaterialError, KeyMaterialSource,
+	Operation, PublicKeys,
 };
+use aidash_domain::data_protection::{Region, Requirement};
 use axum::{
 	Router,
 	body::{Body, Bytes, to_bytes},
@@ -152,7 +154,7 @@ impl Broker {
 	}
 	fn provider_base(&self, claims: &Claims) -> Result<&str, Failure> {
 		let base = self.catalog.get(&claims.provider).ok_or(Failure::Tenant)?;
-		match claims.data_region {
+		match signed_region(claims) {
 			Some(region) if claims.provider == "openrouter" => region
 				.openrouter_endpoint()
 				.map_err(|_| Failure::ClaimViolation),
@@ -302,6 +304,21 @@ fn route(request: &Request, claims: &Claims) -> Result<(Operation, String, usize
 const DECISIONS_PATH: &str = "alpha/decisions";
 /// OpenRouter's Responses API under the API root.
 const RESPONSES_PATH: &str = "v1/responses";
+/// The domain Region a token signs; capability claims carry only a wire copy.
+fn signed_region(claims: &Claims) -> Option<Region> {
+	claims.data_region.map(|region| match region {
+		DataRegion::Eu => Region::Eu,
+		DataRegion::Us => Region::Us,
+		DataRegion::Jp => Region::Jp,
+	})
+}
+fn signed_requirement(claims: &Claims) -> Requirement {
+	match claims.data_protection {
+		DataProtectionRequirement::Zdr => Requirement::Zdr,
+		DataProtectionRequirement::NoTraining => Requirement::NoTraining,
+		DataProtectionRequirement::None => Requirement::None,
+	}
+}
 fn body_policy(body: &[u8], claims: &Claims, op: Operation, path: &str) -> Result<(), Failure> {
 	if op == Operation::Discovery {
 		return if body.is_empty() {
@@ -311,7 +328,7 @@ fn body_policy(body: &[u8], claims: &Claims, op: Operation, path: &str) -> Resul
 		};
 	}
 	let value = policy::parse(body)?;
-	if let Some(region) = claims.data_region {
+	if let Some(region) = signed_region(claims) {
 		if region.openrouter_endpoint().is_err() {
 			return Err(Failure::ClaimViolation);
 		}
@@ -422,17 +439,17 @@ fn body_policy(body: &[u8], claims: &Claims, op: Operation, path: &str) -> Resul
 		return Err(Failure::ClaimViolation);
 	}
 	if !match claims.data_protection {
-		aidash_domain::data_protection::Requirement::Zdr => {
+		DataProtectionRequirement::Zdr => {
 			value.pointer("/provider/zdr") == Some(&Value::Bool(true))
 		}
-		aidash_domain::data_protection::Requirement::NoTraining => {
+		DataProtectionRequirement::NoTraining => {
 			value.pointer("/provider/zdr") == Some(&Value::Bool(true))
 				|| value
 					.pointer("/provider/data_collection")
 					.and_then(Value::as_str)
 					== Some("deny")
 		}
-		aidash_domain::data_protection::Requirement::None => true,
+		DataProtectionRequirement::None => true,
 	} {
 		return Err(Failure::ClaimViolation);
 	}
@@ -460,7 +477,7 @@ fn body_policy(body: &[u8], claims: &Claims, op: Operation, path: &str) -> Resul
 			&value,
 			path == DECISIONS_PATH,
 			&claims.hosts,
-			claims.data_protection,
+			signed_requirement(claims),
 		)?;
 	}
 	Ok(())

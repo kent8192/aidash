@@ -169,7 +169,6 @@ dependencies = [
 name = "aidash-capability"
 version = "0.1.0"
 dependencies = [
- "aidash-domain",
  "async-trait",
  "base64 0.22.1",
  "ed25519-dalek",

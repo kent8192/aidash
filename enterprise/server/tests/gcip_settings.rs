@@ -13,7 +13,7 @@ fn managed_gcip_settings_are_validated_at_startup() {
 		)
 		.replace(
 			"[deployment]\n",
-			"[deployment]\napi_token = 'startup-fixture-deployment-administrator-0123456789'\n",
+			"[deployment]\napi_token = 'startup-fixture-deployment-administrator-0123456789'\nregion = 'us'\n",
 		)
 		.replace("offering = \"self-hosted\"", "offering = \"cloud\"");
 	std::fs::write(settings.path().join("base.toml"), base).unwrap();
@@ -71,7 +71,7 @@ fn managed_direct_gcip_cannot_be_combined_with_another_sign_in(
 		)
 		.replace(
 			"[deployment]\n",
-			"[deployment]\napi_token = 'mixed-sign-in-fixture-deployment-administrator'\n",
+			"[deployment]\napi_token = 'mixed-sign-in-fixture-deployment-administrator'\nregion = 'us'\n",
 		)
 		.replace("offering = \"self-hosted\"", "offering = \"cloud\"");
 	let mut source: toml::Value = toml::from_str(&base).unwrap();

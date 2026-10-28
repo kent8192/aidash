@@ -320,7 +320,7 @@ async fn issuer_signs_current_cache_and_region_authority(
 		.verify(access.bearer.expose_secret(), "worker", "test", now)
 		.unwrap();
 	assert_eq!(claims.cache_breakpoints, requested);
-	assert_eq!(claims.data_region, region);
+	assert_eq!(claims.data_region, region.map(super::issuer::signed_region));
 	let payload = access.bearer.expose_secret().split('.').nth(1).unwrap();
 	let payload: serde_json::Value = serde_json::from_slice(
 		&base64::engine::general_purpose::URL_SAFE_NO_PAD

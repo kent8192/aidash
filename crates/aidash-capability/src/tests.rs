@@ -362,7 +362,7 @@ async fn provider_catalogs_authorize_discovery_but_never_inference() {
 		maintenance: Maintenance::ProviderDiscovery,
 		tenant: value.tenant.clone(),
 	};
-	value.data_region = Some(aidash_domain::data_protection::Region::Us);
+	value.data_region = Some(crate::DataRegion::Us);
 	value.ops = vec![Operation::Discovery];
 	let token = mint(&value, &signer).await.unwrap();
 	keys.verify(token.expose_secret(), "worker", "environment", 100)

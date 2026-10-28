@@ -4,6 +4,25 @@ import { setup } from "./collaboration-fixture";
 import { builtInApprovalDecider, defaultNode } from "./registry-fixture";
 
 const access = { kind: "subject", tenant: "alpha", subject: "alice" };
+// A `policy.read` holder's Trust page also loads the Data Protection Level.
+const dataProtectionPolicy = {
+  level: "standard",
+  model_call_zdr: true,
+  plan_connection_exempt: true,
+};
+const dataProtection = {
+  policy: dataProtectionPolicy,
+  effective: dataProtectionPolicy,
+  deployment_floor: "standard",
+  deployment_region: null,
+};
+const dataProtectionImpact = {
+  effective: dataProtectionPolicy,
+  usable_models: 1,
+  agents: [],
+  catalog_approvals: [],
+  destinations: [],
+};
 const mapping = (
   id: string,
   identity: string,
@@ -605,6 +624,10 @@ test("a member issues its own API token, and a policy reader simulates without r
       });
     if (path === "/api/tenants/alpha/approval-decider")
       return route.fulfill({ json: builtInApprovalDecider });
+    if (path === "/api/tenants/alpha/data-protection")
+      return route.fulfill({ json: dataProtection });
+    if (path === "/api/tenants/alpha/data-protection/impact")
+      return route.fulfill({ json: dataProtectionImpact });
     if (path === "/api/tenants/alpha/administration")
       return route.fulfill({
         json: {
@@ -715,6 +738,10 @@ test("a policy reader allowed to issue credentials but not to list them can stil
       });
     if (path === "/api/tenants/alpha/approval-decider")
       return route.fulfill({ json: builtInApprovalDecider });
+    if (path === "/api/tenants/alpha/data-protection")
+      return route.fulfill({ json: dataProtection });
+    if (path === "/api/tenants/alpha/data-protection/impact")
+      return route.fulfill({ json: dataProtectionImpact });
     if (path === "/api/tenants/alpha/administration")
       return route.fulfill({
         json: {

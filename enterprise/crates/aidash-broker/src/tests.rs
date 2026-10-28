@@ -1541,7 +1541,7 @@ async fn system_one_requires_a_decision_token_and_an_exact_body() {
 
 #[tokio::test]
 async fn signed_data_protection_requirement_controls_all_model_bodies() {
-	use aidash_domain::data_protection::Requirement;
+	use aidash_capability::DataProtectionRequirement as Requirement;
 	let f = Fixture::new().await;
 	let mut legacy = serde_json::to_value(f.claims()).unwrap();
 	legacy.as_object_mut().unwrap().remove("data_protection");
@@ -1829,7 +1829,7 @@ fn responses_stream_usage_is_audited_from_the_terminal_event() {
 
 #[tokio::test]
 async fn regional_hosts_and_catalog_discovery_require_signed_region_authority() {
-	use aidash_domain::data_protection::Region;
+	use aidash_capability::DataRegion as Region;
 	let fixture = Fixture::new().await;
 	let mut claims = fixture.claims();
 	let request = || {

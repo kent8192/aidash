@@ -3,7 +3,11 @@ use aidash_application::{
 	Error, Result,
 	provider_access::{Access, Context, MaintenancePurpose, Operation, TokenIssuer},
 };
-use aidash_capability::{Claims, Maintenance, TOKEN_TTL_SECS, TokenSigner, TokenSubject};
+use aidash_capability::{
+	Claims, DataProtectionRequirement, DataRegion, Maintenance, TOKEN_TTL_SECS, TokenSigner,
+	TokenSubject,
+};
+use aidash_domain::data_protection::{Region, Requirement};
 use aidash_domain::provider_credentials::ProviderCredential;
 use std::{
 	sync::Arc,
@@ -166,7 +170,7 @@ impl TokenIssuer for CapabilityIssuer {
 			.map_err(|_| Error::Invalid("Capability Token clock unavailable".into()))?
 			.as_secs();
 		let claims = Claims {
-			data_region: context.data_protection.region()?,
+			data_region: context.data_protection.region()?.map(signed_region),
 			provider_tools: request
 				.provider_tools
 				.iter()
@@ -176,7 +180,7 @@ impl TokenIssuer for CapabilityIssuer {
 					max_tool_calls: tool.binding.max_tool_calls,
 				})
 				.collect(),
-			data_protection: context.data_protection.requirement(),
+			data_protection: signed_requirement(context.data_protection.requirement()),
 			iss: self.configuration.issuer.clone(),
 			aud: self.configuration.audience.clone(),
 			iat: now,
@@ -212,5 +216,21 @@ impl TokenIssuer for CapabilityIssuer {
 			bearer,
 			keyless: None,
 		})
+	}
+}
+
+/// Capability claims carry wire copies of the domain Region and requirement.
+pub(crate) fn signed_region(region: Region) -> DataRegion {
+	match region {
+		Region::Eu => DataRegion::Eu,
+		Region::Us => DataRegion::Us,
+		Region::Jp => DataRegion::Jp,
+	}
+}
+fn signed_requirement(requirement: Requirement) -> DataProtectionRequirement {
+	match requirement {
+		Requirement::Zdr => DataProtectionRequirement::Zdr,
+		Requirement::NoTraining => DataProtectionRequirement::NoTraining,
+		Requirement::None => DataProtectionRequirement::None,
 	}
 }

@@ -2,7 +2,7 @@
 
 `[deployment] region` declares `eu`, `us` or `jp`. Cloud and Dedicated must
 declare one; Self-hosted may omit it, in which case the Tenant restriction is
-unavailable. This is an operator declaration, not a location detector. Aidash
+unavailable. The Deployment Administrator declares it; it is not a location detector. Aidash
 cannot verify a Self-hosted declaration. The declaration covers the database,
 Secret Store, backups, logs, Execution Pods, Egress gateway and broker.
 External Identities, Billing Accounts and Marketplace are shared across
@@ -85,7 +85,7 @@ The log configuration follows the
 [bucket](https://registry.terraform.io/providers/hashicorp/google/latest/docs/resources/logging_project_bucket_config)
 and [sink](https://registry.terraform.io/providers/hashicorp/google/latest/docs/resources/logging_project_sink)
 contracts; [project exclusions](https://docs.cloud.google.com/logging/docs/reference/v2/rest/v2/projects.exclusions/create)
-apply specifically to `_Default`. Operator-defined additional sinks must also
+apply specifically to `_Default`. Additional sinks the Deployment Administrator defines must also
 stay in region. Same-project log buckets are
 [automatically authorized as sink destinations](https://docs.cloud.google.com/logging/docs/export/configure_export_v2),
 so these sinks do not require a cross-project writer grant.
