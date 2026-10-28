@@ -146,6 +146,11 @@ impl NodeRegistrations {
 		let stored = self
 			.administrations()
 			.run(actor, origin, &tenant, async |administrator| {
+				// The decision below is audited as an authority write, which exempts
+				// this transaction from the table's atomic write guard. Hold the
+				// visibility lease instead, so a registration changes only while no
+				// atomic transaction is pending (503 otherwise).
+				let _visibility = crate::transactions::gate::ReadLease::begin(&f.store).await?;
 				let decide = async |tx: &mut reinhardt::db::orm::AtomicTransaction| {
 					let snapshot = administrator.lock(tx, false).await?;
 					administrator
