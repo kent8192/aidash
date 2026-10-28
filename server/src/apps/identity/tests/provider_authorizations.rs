@@ -335,8 +335,77 @@ struct Started {
 	state: String,
 	challenge: String,
 }
+/// The dashboard context of the Tenant member the browser identity is mapped to.
+/// A Deployment Administrator holds no Tenant authority (#484), so a Provider
+/// Credential authorization starts under a Mapping into the Tenant. The first
+/// call maps the identity to Tenant subject alice through the normal
+/// registration and approval, and lets alice manage Provider Credentials.
+async fn member_context(fixture: &Fixture) -> String {
+	let existing: Option<(String, Uuid)> =
+		sqlx::query_as("SELECT tenant, id FROM dashboard_mappings WHERE tenant = 'alpha' LIMIT 1")
+			.fetch_optional(fixture.f.store.pool.fixture_driver())
+			.await
+			.unwrap();
+	if let Some((tenant, id)) = existing {
+		return format!("mapping:{tenant}:{id}");
+	}
+	let registration = send(
+		&fixture.app,
+		"POST",
+		"/auth/registration",
+		&[
+			("cookie", "__Host-aidash-session=browser-a"),
+			("origin", ORIGIN),
+			("x-aidash-csrf", "csrf-a"),
+		],
+		Value::Null,
+	)
+	.await;
+	let registration: Value = serde_json::from_slice(registration.body()).unwrap();
+	let mapping = send(
+		&fixture.app,
+		"POST",
+		&format!(
+			"/api/dashboard/registrations/{}/approve",
+			registration["id"].as_str().unwrap()
+		),
+		&[
+			("content-type", "application/json"),
+			(
+				"authorization",
+				&format!("Bearer {}", fixture.f.config.api_token),
+			),
+		],
+		json!({"tenant":"alpha","subject":"alice"}),
+	)
+	.await;
+	let status = mapping.status();
+	let mapping: Value = serde_json::from_slice(mapping.body()).unwrap();
+	assert_eq!(status, 200, "{mapping}");
+	let service = Authorization {
+		pool: fixture.f.store.pool.clone(),
+	};
+	let revision = service.snapshot("alpha").await.unwrap().revision;
+	let policy: PolicyBundle = serde_json::from_value(json!({
+		"tenant":"alpha","subjects":{"alice":{"kind":"user"}},
+		"policies":[{"id":"provider-management","effect":"allow","subjects":{"ids":["alice"]},
+			"actions":["provider_credential.create","provider_credential.read","provider_credential.rotate","provider_credential.revoke","provider_credential.delete","provider_credential_binding.read","provider_credential_binding.update"],
+			"resources":{"kinds":["provider_credential","provider_credential_binding"]}}]
+	}))
+	.unwrap();
+	service
+		.replace("alpha", revision, policy, "deployment_administrator")
+		.await
+		.unwrap();
+	format!(
+		"mapping:{}:{}",
+		mapping["tenant"].as_str().unwrap(),
+		mapping["id"].as_str().unwrap()
+	)
+}
 async fn start(fixture: &Fixture, session: &str, body: Value, browser: Option<&str>) -> Started {
-	start_as(fixture, session, "deployment_administrator", body, browser).await
+	let context = member_context(fixture).await;
+	start_as(fixture, session, &context, body, browser).await
 }
 /// The browser request that starts an authorization under a dashboard context.
 async fn start_request(
@@ -421,7 +490,7 @@ fn location(response: &TestResponse) -> &str {
 async fn credentials(fixture: &Fixture) -> Vec<Value> {
 	let (status, rows) = common::request(
 		&fixture.app,
-		&fixture.f.config.api_token,
+		&common::tenant_token(&fixture.f.store, "alpha").await,
 		"GET",
 		"/api/tenants/alpha/provider-credentials",
 		Value::Null,
@@ -566,7 +635,7 @@ async fn connect_and_reconnect_write_only_through_oauth_and_never_disclose_keys(
 	// connection replaces it instead of leaving the new key unbound.
 	let (status, revoked) = common::request(
 		&fixture.app,
-		&fixture.f.config.api_token,
+		&common::tenant_token(&fixture.f.store, "alpha").await,
 		"POST",
 		&format!(
 			"/api/tenants/alpha/provider-credentials/{}/revoke",
@@ -608,7 +677,10 @@ async fn bound_credential(fixture: &Fixture) -> Value {
 		"/api/tenants/alpha/provider-credential-bindings/openrouter",
 		&[(
 			"authorization",
-			&format!("Bearer {}", fixture.f.config.api_token),
+			&format!(
+				"Bearer {}",
+				common::tenant_token(&fixture.f.store, "alpha").await
+			),
 		)],
 		Value::Null,
 	)

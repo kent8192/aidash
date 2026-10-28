@@ -4,7 +4,7 @@ use super::*;
 
 impl Deployment {
 	/// A Tenant `person` creates, and its Tenant Creator's context selector.
-	async fn tenant_of(&self, person: &Person, label: &str) -> (String, String) {
+	pub(crate) async fn tenant_of(&self, person: &Person, label: &str) -> (String, String) {
 		let (status, created) = self
 			.as_person(person, "POST", "/api/tenants", None, json!({"label":label}))
 			.await;
@@ -115,7 +115,7 @@ async fn deletion_removes_administrator_data_access_but_keeps_restore_available(
 		.await
 		.unwrap();
 	let (status, body) = d
-		.as_deployment_administrator("GET", &path, Value::Null)
+		.as_person(&alice, "GET", &path, Some(&context), Value::Null)
 		.await;
 	assert_eq!(status, 200, "{body}");
 	// A protected read waits for the same policy lock that deletion owns.
@@ -133,7 +133,7 @@ async fn deletion_removes_administrator_data_access_but_keeps_restore_available(
 			.scalar_one(&mut *policy_lock)
 			.await
 			.unwrap();
-		let read = d.as_deployment_administrator("GET", &path, Value::Null);
+		let read = d.as_person(&alice, "GET", &path, Some(&context), Value::Null);
 		tokio::pin!(read);
 		assert!(
 			tokio::time::timeout(std::time::Duration::from_millis(250), &mut read)
@@ -197,10 +197,16 @@ async fn deletion_removes_administrator_data_access_but_keeps_restore_available(
 			json!({"action":"stop","reason":"Deleted Tenant"}),
 		),
 	] {
+		// The Tenant's own member learns the Tenant is deleted.
+		let (status, body) = d
+			.as_person(&alice, method, &endpoint, Some(&context), input.clone())
+			.await;
+		assert_eq!(status, 410, "{method} {endpoint}: {body}");
+		// A Deployment Administrator holds no Tenant authority, deleted or not.
 		let (status, body) = d
 			.as_deployment_administrator(method, &endpoint, input.clone())
 			.await;
-		assert_eq!(status, 410, "{method} {endpoint}: {body}");
+		assert_eq!(status, 403, "{method} {endpoint}: {body}");
 		let (status, body) = d
 			.as_person(
 				&carol,
@@ -210,10 +216,21 @@ async fn deletion_removes_administrator_data_access_but_keeps_restore_available(
 				input,
 			)
 			.await;
-		assert_eq!(status, 410, "browser {method} {endpoint}: {body}");
+		assert_eq!(status, 403, "browser {method} {endpoint}: {body}");
 	}
 
 	for method in ["GET", "PATCH"] {
+		let (status, body) = d
+			.as_person(
+				&alice,
+				method,
+				&path,
+				Some(&context),
+				json!({"revision":workspace.revision,"state":{}}),
+			)
+			.await;
+		assert_eq!(status, 410, "{method}: {body}");
+		assert_eq!(body["error"], "tenant_deleted");
 		let (status, body) = d
 			.as_deployment_administrator(
 				method,
@@ -221,8 +238,7 @@ async fn deletion_removes_administrator_data_access_but_keeps_restore_available(
 				json!({"revision":workspace.revision,"state":{}}),
 			)
 			.await;
-		assert_eq!(status, 410, "{method}: {body}");
-		assert_eq!(body["error"], "tenant_deleted");
+		assert_eq!(status, 403, "{method}: {body}");
 		let (status, body) = d
 			.as_person(
 				&carol,
@@ -232,21 +248,21 @@ async fn deletion_removes_administrator_data_access_but_keeps_restore_available(
 				json!({"revision":workspace.revision,"state":{}}),
 			)
 			.await;
-		assert_eq!(status, 410, "browser {method}: {body}");
-		assert_eq!(body["error"], "tenant_deleted");
+		assert_eq!(status, 403, "browser {method}: {body}");
+		assert!(!body.to_string().contains("Private"), "{body}");
 	}
+	// The Task list is Tenant content: an Administrator is refused, deleted or not.
 	let (status, page) = d
 		.as_deployment_administrator("GET", "/api/tasks", Value::Null)
 		.await;
-	assert_eq!(status, 200, "{page}");
-	assert!(
-		page["tasks"]
-			.as_array()
-			.unwrap()
-			.iter()
-			.all(|row| row["id"] != task.id.to_string()),
-		"{page}"
-	);
+	assert_eq!(status, 403, "{page}");
+	assert!(!page.to_string().contains(&task.id.to_string()), "{page}");
+	// The Tenant's own member sees no Task of the deleted Tenant either.
+	let (status, page) = d
+		.as_person(&alice, "GET", "/api/tasks", Some(&context), Value::Null)
+		.await;
+	assert!(matches!(status, 200 | 410), "{status} {page}");
+	assert!(!page.to_string().contains(&task.id.to_string()), "{page}");
 	let (status, state) = d
 		.as_deployment_administrator("GET", "/api/state", Value::Null)
 		.await;
@@ -284,8 +300,19 @@ async fn deletion_removes_administrator_data_access_but_keeps_restore_available(
 		)
 		.await;
 	assert_eq!(status, 200, "{body}");
+	// The Tenant's audit API reopens with the restore; the member reads again.
 	let (status, body) = d
-		.as_deployment_administrator("GET", &path, Value::Null)
+		.as_person(&alice, "GET", &path, Some(&context), Value::Null)
+		.await;
+	assert_eq!(status, 200, "{body}");
+	let (status, body) = d
+		.as_person(
+			&alice,
+			"GET",
+			&format!("/api/authorization/{tenant}/decisions"),
+			Some(&context),
+			Value::Null,
+		)
 		.await;
 	assert_eq!(status, 200, "{body}");
 	d.finish().await;
@@ -301,14 +328,7 @@ async fn a_deleted_tenant_refuses_everyone_until_its_administrator_restores_it(
 	let bob = d.person("bob").await;
 	let (tenant, context) = d.tenant_of(&alice, "Team").await;
 	let bob_context = d.admit(&tenant, &bob, "bob", json!(["members"])).await;
-	let (status, issued) = d
-		.as_deployment_administrator(
-			"POST",
-			&format!("/api/authorization/{tenant}/credentials"),
-			json!({"subject":"bob"}),
-		)
-		.await;
-	assert_eq!(status, 200, "{issued}");
+	let issued = common::issued_credential(&d.federation.store, &tenant, "bob").await;
 	let token = issued["token"].as_str().unwrap().to_owned();
 	let (status, invitation) = d
 		.as_person(
@@ -348,6 +368,7 @@ async fn a_deleted_tenant_refuses_everyone_until_its_administrator_restores_it(
 		serde_json::from_value(deletion["purge_after"].clone()).unwrap();
 	assert_eq!(purge_after - deleted_at, chrono::Duration::days(30));
 	for (method, path) in [
+		("GET", format!("/api/authorization/{tenant}/decisions")),
 		("GET", format!("/api/authorization/{tenant}/credentials")),
 		(
 			"POST",
@@ -357,10 +378,15 @@ async fn a_deleted_tenant_refuses_everyone_until_its_administrator_restores_it(
 			),
 		),
 	] {
+		// The Tenant's own member sees it closed; an Administrator holds no Tenant authority.
+		let (status, body) = d
+			.as_person(&alice, method, &path, Some(&context), Value::Null)
+			.await;
+		assert_eq!(status, 410, "{method} {path}: {body}");
 		let (status, body) = d
 			.as_deployment_administrator(method, &path, Value::Null)
 			.await;
-		assert_eq!(status, 410, "{method} {path}: {body}");
+		assert_eq!(status, 403, "{method} {path}: {body}");
 	}
 
 	// Every way in is refused: the members' browsers learn why, while a
@@ -426,6 +452,17 @@ async fn a_deleted_tenant_refuses_everyone_until_its_administrator_restores_it(
 		.send("GET", "/api/session", None, None, Some(&token), Value::Null)
 		.await;
 	assert_eq!(status, 200);
+	// The ordinary Tenant audit API reopens with the restore.
+	let (status, body) = d
+		.as_person(
+			&alice,
+			"GET",
+			&format!("/api/authorization/{tenant}/decisions"),
+			Some(&context),
+			Value::Null,
+		)
+		.await;
+	assert_eq!(status, 200, "{body}");
 	let (status, invitation_preview) = d
 		.as_person(
 			&bob,
@@ -818,7 +855,17 @@ async fn deletion_stops_the_tenants_runs_and_a_restore_cancels_them(
 			.scalar_one(&mut *row_lock)
 			.await
 			.unwrap();
-		let operation = d.as_deployment_administrator("POST", &endpoint, input);
+		// Run control stays a Deployment administration route; abandoning a Task is
+		// the Tenant member's act (#484).
+		let operation = async {
+			if table == "tasks" {
+				d.as_person(&alice, "POST", &endpoint, Some(&context), input)
+					.await
+			} else {
+				d.as_deployment_administrator("POST", &endpoint, input)
+					.await
+			}
+		};
 		tokio::pin!(operation);
 		tokio::select! {
 			result = &mut operation => panic!("mutation did not wait for its row: {result:?}"),

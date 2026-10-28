@@ -930,16 +930,7 @@ async fn subject_credentials_and_deployment_administrators_never_reach_them(
 	let fixture = Fixture::new(application);
 	let people = people(&fixture).await;
 	let administrator = fixture.f.config.api_token.clone();
-	let (status, issued) = common::request(
-		&fixture.app,
-		&administrator,
-		"POST",
-		&format!("/api/authorization/{TENANT}/credentials"),
-		json!({"subject": "member"}),
-	)
-	.await;
-	assert_eq!(status, 200, "{issued}");
-	let credential = issued["token"].as_str().unwrap().to_owned();
+	let credential = common::subject_credential(&fixture.f.store, TENANT, "member").await;
 	let thread = format!(
 		"/api/workspaces/{}/threads/{}/approval-mode",
 		Uuid::new_v4(),

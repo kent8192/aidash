@@ -92,19 +92,11 @@ async fn scoped_graph_sends_only_authorized_projection_and_full_goal(
 	let _third = common::register_source(&f, &app, "aidash://third", "acme").await;
 	let viewer = json!({"kind":"subject","subject":"source-subject"});
 	assert_eq!(graph(&app, &source, viewer.clone(), None, 80).await.0, 403);
-	let (_, issued) = request(
-		&app,
-		&f.config.api_token,
-		"POST",
-		"/api/authorization/acme/credentials",
-		json!({"subject":"alice"}),
-	)
-	.await;
-	let (status, mapping) = request(
-		&app,
-		&f.config.api_token,
-		"POST",
-		"/api/authorization/acme/peer-mappings",
+	let issued = common::issued_credential(&f.store, "acme", "alice").await;
+	let (status, mapping) = common::set_peer_mapping(
+		&f,
+		"acme",
+		"alice",
 		json!({
 			"node":source.receiver.node,"source_node":source.address(),"source_subject":"source-subject",
 			"credential_id":issued["credential"]["id"],"enabled":true,"expected_revision":0,
@@ -448,11 +440,10 @@ async fn scoped_graph_sends_only_authorized_projection_and_full_goal(
 	)
 	.await
 	.unwrap();
-	let (status, mapping) = request(
-		&app,
-		&f.config.api_token,
-		"POST",
-		"/api/authorization/acme/peer-mappings",
+	let (status, mapping) = common::set_peer_mapping(
+		&f,
+		"acme",
+		"alice",
 		json!({
 			"node":source.receiver.node,"source_node":source.address(),"source_subject":"source-subject",
 			"credential_id":issued["credential"]["id"],"enabled":false,"expected_revision":1,
@@ -461,11 +452,10 @@ async fn scoped_graph_sends_only_authorized_projection_and_full_goal(
 	.await;
 	assert_eq!(status, 200, "{mapping}");
 	assert_eq!(graph(&app, &source, viewer.clone(), None, 80).await.0, 403);
-	let (status, mapping) = request(
-		&app,
-		&f.config.api_token,
-		"POST",
-		"/api/authorization/acme/peer-mappings",
+	let (status, mapping) = common::set_peer_mapping(
+		&f,
+		"acme",
+		"alice",
 		json!({
 			"node":source.receiver.node,"source_node":source.address(),"source_subject":"source-subject",
 			"credential_id":issued["credential"]["id"],"enabled":true,"expected_revision":2,
@@ -636,25 +626,23 @@ async fn scoped_graph_sends_only_authorized_projection_and_full_goal(
 	.await;
 	assert_eq!(status, 200, "{written}");
 	assert_eq!(graph(&app, &source, viewer.clone(), None, 80).await.0, 200);
-	let (status, short) = request(
-		&app,
-		&f.config.api_token,
-		"POST",
-		"/api/authorization/acme/credentials",
-		json!({
-			"subject":"alice","expires_in_seconds":1,
-		}),
+	// A host-issued credential that lives for one second.
+	let short = aidash_server::apps::identity::services::subject_credential_command::issue(
+		&f.store.pool,
+		"acme",
+		"alice",
+		1,
+		"host_operator",
 	)
-	.await;
-	assert_eq!(status, 200, "{short}");
-	let (status, mapping) = request(
-		&app,
-		&f.config.api_token,
-		"POST",
-		"/api/authorization/acme/peer-mappings",
+	.await
+	.unwrap();
+	let (status, mapping) = common::set_peer_mapping(
+		&f,
+		"acme",
+		"alice",
 		json!({
 			"node":source.receiver.node,"source_node":source.address(),"source_subject":"source-subject",
-			"credential_id":short["credential"]["id"],"enabled":true,"expected_revision":3,
+			"credential_id":short.credential.id,"enabled":true,"expected_revision":3,
 		}),
 	)
 	.await;
@@ -757,6 +745,10 @@ async fn sparse_goal_pages_advance_and_activity_reaches_older_page_events(
 		"policies":[
 			{"id":"graph-read","effect":"allow","subjects":{"any":true},
 			 "actions":["federation.graph.read"],"resources":{"kinds":["node"]}},
+			// Tenant administration by alice's Mapping (#484): never by the Deployment Administrator.
+			{"id":"tenant-administration","effect":"allow","subjects":{"ids":["alice"]},
+			 "actions":["node_registration.read","node_registration.update","peer_mapping.read","peer_mapping.update","credential.create","credential.read","credential.revoke"],
+			 "resources":{"kinds":["node_registration","peer_mapping","credential"]}},
 			{"id":"final-workspace","effect":"allow","subjects":{"any":true},
 			 "actions":["workspace.read","workspace.events"],
 			 "resources":{"kinds":["workspace"],"ids":[final_id.to_string()]}}
@@ -773,20 +765,8 @@ async fn sparse_goal_pages_advance_and_activity_reaches_older_page_events(
 	.await;
 	assert_eq!(status, 200, "{written}");
 	let source = common::register_source(&f, &app, SOURCE, "sparse").await;
-	let (status, issued) = request(
-		&app,
-		&f.config.api_token,
-		"POST",
-		"/api/authorization/sparse/credentials",
-		json!({"subject":"alice"}),
-	)
-	.await;
-	assert_eq!(status, 200, "{issued}");
-	let (status, mapping) = request(
-		&app,
-		&f.config.api_token,
-		"POST",
-		"/api/authorization/sparse/peer-mappings",
+	let issued = common::issued_credential(&f.store, "sparse", "alice").await;
+	let (status, mapping) = common::set_peer_mapping(&f, "sparse", "alice",
 		json!({"node":source.receiver.node,"source_node":source.address(),"source_subject":"sparse-subject",
 			"credential_id":issued["credential"]["id"],"enabled":true,"expected_revision":0}),
 	)
