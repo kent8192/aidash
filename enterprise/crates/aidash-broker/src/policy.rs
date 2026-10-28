@@ -235,6 +235,7 @@ pub(crate) fn responses_input(value: &Value, cache_breakpoints: bool) -> Result<
 							return Err(Failure::ClaimViolation);
 						}
 					}
+					Some(kind) if aidash_domain::tool::provider_tools::replayable(kind) => {}
 					Some("message") | None if item.get("role").is_some() => {
 						response_message(item, cache_breakpoints, &mut breakpoints, &mut parts)?
 					}

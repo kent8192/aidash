@@ -1910,3 +1910,113 @@ async fn provider_tools_require_the_signed_parameters_and_spending_caps_on_both_
 		assert_eq!(status, 200, "{path}: {body}");
 	}
 }
+
+#[tokio::test]
+async fn warning_shell_is_responses_only_and_binds_its_run_container() {
+	let f = Fixture::new().await;
+	let declaration = aidash_domain::tool::provider_tools::declaration("openrouter:shell").unwrap();
+	let mut pinned = aidash_domain::tool::provider_tools::PinnedTool {
+		tool_type: declaration.tool_type.into(),
+		binding: declaration.defaults(),
+	};
+	pinned.binding.parameters["environment"]["container_id"] = json!("aidash_run_one");
+	let mut claims = f.claims();
+	claims.ops = vec![Operation::Chat];
+	claims.provider_tools.push(aidash_capability::ProviderTool {
+		tool_type: pinned.tool_type.clone(),
+		parameters_digest: pinned.digest(),
+		max_tool_calls: 3,
+	});
+	let mut body = chat();
+	let cap = body.as_object_mut().unwrap().remove("max_tokens").unwrap();
+	body["max_output_tokens"] = cap;
+	body["input"] = json!([{ "type":"openrouter:advisor","instance_name":"advisor_0","advice":"prior observable advice" }]);
+	aidash_domain::tool::provider_tools::append(&mut body, &[pinned]);
+	for (key, value) in [
+		("container_id", json!("different_run")),
+		(
+			"network_policy",
+			json!({"type":"allowlist","allowed_domains":["example.com"]}),
+		),
+	] {
+		let before = f.provider.calls.load(Ordering::SeqCst);
+		let mut invalid = body.clone();
+		invalid["tools"][0]["parameters"]["environment"][key] = value;
+		assert_eq!(
+			f.request(&claims, "POST", "/api/v1/responses", invalid)
+				.await
+				.status(),
+			403
+		);
+		assert_eq!(f.provider.calls.load(Ordering::SeqCst), before);
+	}
+	let mut image = body.clone();
+	image["modalities"] = json!(["text", "image"]);
+	assert_eq!(
+		f.request(&claims, "POST", "/api/v1/responses", image)
+			.await
+			.status(),
+		403
+	);
+	assert_eq!(
+		f.request(&claims, "POST", "/api/v1/chat/completions", body.clone())
+			.await
+			.status(),
+		403
+	);
+	let response = f.request(&claims, "POST", "/api/v1/responses", body).await;
+	assert_eq!(response.status(), 200);
+}
+
+#[tokio::test]
+async fn warning_child_and_search_caps_are_checked_before_forwarding() {
+	let f = Fixture::new().await;
+	for kind in [
+		"openrouter:advisor",
+		"openrouter:subagent",
+		"openrouter:experimental__search_models",
+		"openrouter:tool_search",
+	] {
+		let tool = aidash_domain::tool::provider_tools::declaration(kind).unwrap();
+		let mut pinned = aidash_domain::tool::provider_tools::PinnedTool {
+			tool_type: kind.into(),
+			binding: tool.defaults(),
+		};
+		if matches!(kind, "openrouter:advisor" | "openrouter:subagent") {
+			pinned.binding.parameters["model"] = json!("vendor/pinned-child");
+		}
+		let mut claims = f.claims();
+		claims.ops = vec![Operation::Chat];
+		claims.provider_tools.push(aidash_capability::ProviderTool {
+			tool_type: kind.into(),
+			parameters_digest: pinned.digest(),
+			max_tool_calls: 3,
+		});
+		let mut body = chat();
+		let cap = body.as_object_mut().unwrap().remove("max_tokens").unwrap();
+		body["max_output_tokens"] = cap;
+		body["input"] = json!([]);
+		aidash_domain::tool::provider_tools::append(&mut body, &[pinned]);
+		let mut changed = body.clone();
+		let key = if matches!(kind, "openrouter:advisor" | "openrouter:subagent") {
+			"max_completion_tokens"
+		} else {
+			"max_results"
+		};
+		changed["tools"][0]["parameters"][key] = json!(1);
+		let before = f.provider.calls.load(Ordering::SeqCst);
+		assert_eq!(
+			f.request(&claims, "POST", "/api/v1/responses", changed)
+				.await
+				.status(),
+			403
+		);
+		assert_eq!(f.provider.calls.load(Ordering::SeqCst), before);
+		assert_eq!(
+			f.request(&claims, "POST", "/api/v1/responses", body)
+				.await
+				.status(),
+			200
+		);
+	}
+}

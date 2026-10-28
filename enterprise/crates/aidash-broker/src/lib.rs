@@ -343,6 +343,15 @@ fn body_policy(body: &[u8], claims: &Claims, op: Operation, path: &str) -> Resul
 		{
 			return Err(Failure::ClaimViolation);
 		}
+		if !responses
+			&& value["tools"].as_array().into_iter().flatten().any(|tool| {
+				tool["type"]
+					.as_str()
+					.and_then(aidash_domain::tool::provider_tools::declaration)
+					.is_some_and(|d| d.requires_responses)
+			}) {
+			return Err(Failure::ClaimViolation);
+		}
 		aidash_domain::tool::provider_tools::authorize(
 			&value,
 			claims.provider_tools.iter().map(|tool| {
