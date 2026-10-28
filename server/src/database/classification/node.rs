@@ -23,6 +23,11 @@ pub enum Root {
 	Thread,
 	Operation,
 	Observation,
+	Message,
+	RetentionHold,
+	Preview,
+	LivePreview,
+	EgressSession,
 }
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Ownership {
@@ -31,6 +36,8 @@ pub enum Ownership {
 	Node(&'static str),
 	Subject(&'static str),
 	Link(&'static str, Root),
+	/// Owned through either nullable link; each row sets at least one.
+	Either(&'static str, Root, &'static str, Root),
 	Areas,
 	Records,
 	Objects,
@@ -174,7 +181,16 @@ pub fn ownership(name: &str) -> Result<Ownership> {
 		"memory_unit_origins" | "memory_unit_run_origins" => Link("unit_id", Unit),
 		"memory_model_attempts" => Link("operation_id", MemoryOperation),
 		"remote_run_message_fences" => Link("task_id", Task),
-		"egress_requests" | "egress_budgets" => Link("operation_id", Operation),
+		// A Live preview's Egress request has no core operation (develop #405).
+		"egress_requests" => Either("operation_id", Operation, "session_id", EgressSession),
+		"egress_budgets" => Link("operation_id", Operation),
+		"core_retention_holds" => Link("area_id", Area),
+		"core_retention_files" => Link("hold_id", RetentionHold),
+		"message_file_versions" => Link("message_id", Message),
+		"core_previews" => Either("area_id", Area, "live_preview_id", LivePreview),
+		"core_preview_tickets" | "core_preview_sessions" => Link("preview_id", Preview),
+		"core_live_previews" => Either("run_id", Run, "area_id", Area),
+		"egress_sessions" => Either("run_id", Run, "live_preview_id", LivePreview),
 		"events" => Event,
 		"atomic_authority_attempts"
 		| "atomic_coordinators"
@@ -189,6 +205,7 @@ pub fn ownership(name: &str) -> Result<Ownership> {
 		"activation_quarantine"
 		| "approval_observer_settings"
 		| "core_quotas"
+		| "core_preview_limits"
 		| "estimate_calibration_samples"
 		| "generation_policies"
 		| "generation_policy_history"

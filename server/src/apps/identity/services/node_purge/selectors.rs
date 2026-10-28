@@ -46,6 +46,11 @@ impl Owners<'_> {
 			Thread => ("channel_threads", "id"),
 			Operation => ("core_operations", "id"),
 			Observation => ("approval_observations", "id"),
+			Message => ("messages", "id"),
+			RetentionHold => ("core_retention_holds", "id"),
+			Preview => ("core_previews", "id"),
+			LivePreview => ("core_live_previews", "id"),
+			EgressSession => ("egress_sessions", "id"),
 		};
 		Ok(Expr::from(col(table, field))
 			.in_subquery(
@@ -70,6 +75,9 @@ impl Owners<'_> {
 			Node(field) => col(table, field).eq(Expr::value(self.node)),
 			Subject(field) => self.subject(table, field),
 			Link(field, root) => self.root(table, field, root)?,
+			Either(first, one, second, other) => self
+				.root(table, first, one)?
+				.or(self.root(table, second, other)?),
 			Approvals => {
 				// Capability evidence follows the executing Run, even on a foreign
 				// Workspace. Generation evidence exists before a Run is created.
