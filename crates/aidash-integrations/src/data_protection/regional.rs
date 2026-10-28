@@ -128,12 +128,19 @@ pub async fn regional_request(
 }
 
 /// A Provider tool entry pins its engine under `parameters`; a top-level
-/// `engine` is the legacy spelling and is still honoured so neither can hide a
-/// non-regional engine.
-fn pinned_engine(tool: &Value) -> Option<&str> {
-	tool["parameters"]["engine"]
-		.as_str()
-		.or_else(|| tool["engine"].as_str())
+/// `engine` is the legacy spelling. Both are honoured and must agree, so
+/// neither can hide a non-regional engine from the check.
+fn pinned_engine(tool: &Value) -> Result<Option<&str>> {
+	let invalid = || Error::Invalid("Data Region restriction: invalid pinned tool engine".into());
+	let mut engines = [&tool["parameters"]["engine"], &tool["engine"]]
+		.into_iter()
+		.filter(|value| !value.is_null())
+		.map(|value| value.as_str().ok_or_else(invalid));
+	let first = engines.next().transpose()?;
+	match engines.next().transpose()? {
+		Some(second) if first != Some(second) => Err(invalid()),
+		_ => Ok(first),
+	}
 }
 
 /// Regional tool discovery is also available before a Tenant has chosen a model.
@@ -159,7 +166,7 @@ pub async fn regional_tools(
 	}
 	for tool in &tools {
 		let kind = tool["type"].as_str().unwrap_or("");
-		if !region.permits_openrouter_tool(kind, pinned_engine(tool)) {
+		if !region.permits_openrouter_tool(kind, pinned_engine(tool)?) {
 			return Err(Error::Invalid(format!(
 				"Data Region restriction {region:?}: Provider tool {kind} or its pinned engine is unavailable in region"
 			)));
@@ -171,15 +178,7 @@ pub async fn regional_tools(
 	.await?;
 	for tool in tools {
 		let kind = tool["type"].as_str().unwrap_or("");
-		if [&tool["engine"], &tool["parameters"]["engine"]]
-			.iter()
-			.any(|value| !value.is_null() && !value.is_string())
-		{
-			return Err(Error::Invalid(
-				"Data Region restriction: invalid pinned tool engine".into(),
-			));
-		}
-		let engine = pinned_engine(tool);
+		let engine = pinned_engine(tool)?;
 		let entry = catalog["data"]
 			.as_array()
 			.expect("validated catalog")
