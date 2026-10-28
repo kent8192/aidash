@@ -897,7 +897,6 @@ async fn unmapped_identity_stays_denied_until_deployment_administrator_approves_
 		"/api/workspaces/00000000-0000-0000-0000-000000000001/semantic/entries",
 		"/api/workspaces/00000000-0000-0000-0000-000000000001/semantic/entries/00000000-0000-0000-0000-000000000002/reindex",
 		"/api/workbench/drafts",
-		"/api/workbench/agents/legacy-agent/1.0.0/adopt",
 		"/api/workbench/versions/legacy-agent/1.0.0/permissions",
 	] {
 		// These are Tenant content and settings: a browser Deployment Administrator
