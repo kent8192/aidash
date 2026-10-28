@@ -4244,30 +4244,33 @@ async fn deployment_administrator_content_views_cannot_bypass_both_node_subject_
 			.await
 			.unwrap();
 	let artifact = snapshot.artifacts.first().unwrap();
-	let (status,_)=request(&p.aa,&common::tenant_token(&p.a.store, "acme").await,"POST",&format!("/api/workspaces/{}/semantic/entries",task.workspace_id),json!({"key":"deployment-administrator-bypass","expected_revision":0,"source":{"kind":"artifact","id":artifact.id},"metadata":{}})).await;
+	let (status,_)=request(&p.aa,&p.a.config.api_token,"POST",&format!("/api/workspaces/{}/semantic/entries",task.workspace_id),json!({"key":"deployment-administrator-bypass","expected_revision":0,"source":{"kind":"artifact","id":artifact.id},"metadata":{}})).await;
 	assert_eq!(status, 403);
 	let (status, independent) = request(
 		&p.aa,
-		&common::tenant_token(&p.a.store, "acme").await,
+		&p.a.config.api_token,
 		"POST",
 		"/api/workspaces",
 		json!({"title":"Independent Deployment Administrator work","goal":"Unrelated legacy access"}),
 	)
 	.await;
 	assert_eq!(status, 403, "{independent}");
-	// Required-Home content stays protected, while installation administration
-	// may still configure the live Tenant's index without reading its contents.
+	// Required-Home content stays protected, and the Tenant's index is configured by
+	// its Subject, never by a Deployment Administrator (#484).
 	let index_path = format!("/api/workspaces/{}/semantic/index", task.workspace_id);
 	let (status, index) = request(&p.aa, &p.token, "GET", &index_path, Value::Null).await;
 	assert_eq!(status, 200, "{index}");
-	let (status, configured) = request(
+	let update = json!({"expected_revision":index["revision"],"spec":index["spec"]});
+	let (status, refused) = request(
 		&p.aa,
 		&p.a.config.api_token,
 		"POST",
 		&index_path,
-		json!({"expected_revision":index["revision"],"spec":index["spec"]}),
+		update.clone(),
 	)
 	.await;
+	assert_eq!(status, 403, "{refused}");
+	let (status, configured) = request(&p.aa, &p.token, "POST", &index_path, update).await;
 	assert_eq!(status, 200, "{configured}");
 	p.close().await;
 }
