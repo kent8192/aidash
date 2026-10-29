@@ -177,8 +177,12 @@ impl ToolTransport for HttpTools {
 			ToolConfig::Http {
 				endpoint, replay, ..
 			} => {
-				let mut request = self
-					.client(endpoint)?
+				let client = match self.client(endpoint) {
+					Ok(client) => client,
+					Err(Error::Forbidden) => return Ok(tool_policy_refusal()),
+					Err(error) => return Err(error),
+				};
+				let mut request = client
 					.post(endpoint)
 					.header("idempotency-key", key)
 					.json(&input);
@@ -187,7 +191,13 @@ impl ToolTransport for HttpTools {
 				if let Some(secret) = secret {
 					request = request.bearer_auth(secret.expose_secret());
 				}
-				let mut response = request.send().await.map_err(crate::keyless::send_error)?;
+				let mut response = match request.send().await {
+					Ok(response) => response,
+					Err(error) if crate::keyless::refused(&error) => {
+						return Ok(tool_policy_refusal());
+					}
+					Err(error) => return Err(crate::keyless::send_error(error)),
+				};
 				let status = response.status();
 				let unsafe_failure = status.is_server_error()
 					&& !matches!(replay.as_str(), "read_only" | "idempotent");
@@ -226,7 +236,16 @@ impl ToolTransport for HttpTools {
 				idempotency_argument,
 				..
 			} => {
-				let service = mcp_session(self.client(endpoint)?, endpoint, secret).await?;
+				let client = match self.client(endpoint) {
+					Ok(client) => client,
+					Err(Error::Forbidden) => return Ok(tool_policy_refusal()),
+					Err(error) => return Err(error),
+				};
+				let service = match mcp_session(client, endpoint, secret).await {
+					Ok(service) => service,
+					Err(Error::Forbidden) => return Ok(tool_policy_refusal()),
+					Err(error) => return Err(error),
+				};
 				let mut args = input
 					.as_object()
 					.cloned()
@@ -239,13 +258,20 @@ impl ToolTransport for HttpTools {
 					.await
 					.map_err(|e| mcp::call_error(&e));
 				let _ = service.cancel().await;
-				mcp::result_value(result?)
+				match result {
+					Ok(result) => mcp::result_value(result),
+					Err(Error::Forbidden) => Ok(tool_policy_refusal()),
+					Err(error) => Err(error),
+				}
 			}
 			_ => Err(Error::Invalid(
 				"tool configuration has no external transport".into(),
 			)),
 		}
 	}
+}
+fn tool_policy_refusal() -> Value {
+	json!({"error":{"kind":"outbound_policy","message":"The deployment's outbound policy refused this destination."}})
 }
 /// An initialized session with the MCP server at `endpoint`, over the bounded
 /// transport. Invocation and the registration form's hint share it, so both

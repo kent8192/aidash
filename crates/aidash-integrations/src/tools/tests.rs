@@ -73,6 +73,22 @@ mod destinations {
 	use std::time::Duration;
 
 	#[tokio::test]
+	async fn refused_http_destination_is_a_failed_call() {
+		let (listener, port) = serve().await;
+		let result = tools(&[])
+			.invoke(
+				&http(format!("http://127.0.0.1:{port}/")),
+				json!({}),
+				"key",
+				None,
+			)
+			.await
+			.unwrap();
+		assert_eq!(result["error"]["kind"], "outbound_policy");
+		never_accepts(&listener).await;
+	}
+
+	#[tokio::test]
 	async fn unsafe_http_server_failure_warns_that_change_may_have_started() {
 		let (listener, port) = serve().await;
 		let server = tokio::spawn(async move {
@@ -277,10 +293,10 @@ mod destinations {
 			http(format!("http://public.example:{port}/echo")),
 			mcp(format!("http://public.example:{port}/mcp")),
 		] {
-			refused.push(matches!(
-				tools.invoke(&config, json!({}), "key", None).await,
-				Err(Error::Forbidden)
-			));
+			refused.push(
+				tools.invoke(&config, json!({}), "key", None).await.unwrap()["error"]["kind"]
+					== "outbound_policy",
+			);
 		}
 		let sessions = crate::plugin_sessions::McpPluginSessions::new(
 			KeylessAccess::default(),
@@ -313,10 +329,10 @@ mod destinations {
 			http(format!("http://127.0.0.1:{port}/echo")),
 			mcp(format!("http://127.0.0.1:{port}/mcp")),
 		] {
-			assert!(matches!(
-				tools.invoke(&config, json!({}), "key", None).await,
-				Err(Error::Forbidden)
-			));
+			assert_eq!(
+				tools.invoke(&config, json!({}), "key", None).await.unwrap()["error"]["kind"],
+				"outbound_policy"
+			);
 		}
 		never_accepts(&listener).await;
 	}
@@ -325,7 +341,7 @@ mod destinations {
 	async fn permitting_one_origin_does_not_permit_another_port() {
 		let (listener, port) = serve().await;
 		let tools = tools(&[&format!("http://127.0.0.1:{}", port.wrapping_add(1))]);
-		assert!(matches!(
+		assert_eq!(
 			tools
 				.invoke(
 					&http(format!("http://127.0.0.1:{port}/echo")),
@@ -333,9 +349,10 @@ mod destinations {
 					"key",
 					None,
 				)
-				.await,
-			Err(Error::Forbidden)
-		));
+				.await
+				.unwrap()["error"]["kind"],
+			"outbound_policy"
+		);
 		never_accepts(&listener).await;
 	}
 
@@ -347,10 +364,10 @@ mod destinations {
 			http(format!("https://localhost:{port}/echo")),
 			mcp(format!("https://localhost:{port}/mcp")),
 		] {
-			assert!(matches!(
-				tools.invoke(&config, json!({}), "key", None).await,
-				Err(Error::Forbidden)
-			));
+			assert_eq!(
+				tools.invoke(&config, json!({}), "key", None).await.unwrap()["error"]["kind"],
+				"outbound_policy"
+			);
 		}
 		never_accepts(&listener).await;
 	}
