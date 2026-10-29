@@ -7,6 +7,9 @@
 # The snapshot service is HTTPS-only and the base has no CA bundle; borrow one
 # from the repository's other digest-pinned base. Package integrity still rests
 # on the archive's signed InRelease and the exact versions below.
+# The snapshot service sometimes answers 503. apt retries each file, and
+# --error-on=any makes a failed index fetch fail the update instead of leaving
+# an empty package list, so the update is retried with backoff before failing.
 FROM python:3.13-slim-bookworm@sha256:2325bb286ec344af3e5898cc224b5844e2707ac6e26b1632516fd3edc84a5e26 AS certificates
 FROM ubuntu:24.04@sha256:534baea6a22c03a63003dbc8dbe78fe34bc0d7e595d9a9dc9834884ff530eb55
 COPY --from=certificates /etc/ssl/certs/ca-certificates.crt /etc/aidash-apt-ca.crt
@@ -16,8 +19,11 @@ COPY --from=certificates /etc/ssl/certs/ca-certificates.crt /etc/aidash-apt-ca.c
 RUN printf '%s\n' 'Types: deb' 'URIs: https://snapshot.ubuntu.com/ubuntu/20261001T000000Z' \
        'Suites: noble noble-updates noble-security' 'Components: main universe' \
        'Signed-By: /usr/share/keyrings/ubuntu-archive-keyring.gpg' > /etc/apt/sources.list.d/ubuntu.sources \
-    && printf 'Acquire::https::CAInfo "/etc/aidash-apt-ca.crt";\n' > /etc/apt/apt.conf.d/99aidash-ca \
-    && apt-get update \
+    && printf 'Acquire::https::CAInfo "/etc/aidash-apt-ca.crt";\nAcquire::Retries "5";\n' > /etc/apt/apt.conf.d/99aidash-ca \
+    && for attempt in 1 2 3 4; do \
+         apt-get update --error-on=any && break; \
+         [ "$attempt" = 4 ] && exit 1; sleep $((attempt * 30)); \
+       done \
     && apt-get install -y --no-install-recommends \
        nginx=1.24.0-2ubuntu7.18 libnginx-mod-http-lua=1:0.10.26-2 lua-cjson=2.1.0+dfsg-2.2 \
        ca-certificates=20260601~24.04.1 curl=8.5.0-2ubuntu10.15 \

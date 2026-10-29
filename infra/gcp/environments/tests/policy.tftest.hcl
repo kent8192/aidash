@@ -165,7 +165,7 @@ run "identities_are_separated" {
   assert {
     condition = (
       google_container_node_pool.system.node_count == 1 &&
-      google_container_node_pool.system.node_config[0].machine_type == "e2-medium" &&
+      google_container_node_pool.system.node_config[0].machine_type == "e2-standard-2" &&
       google_container_node_pool.system.node_config[0].labels == tomap({ "aidash.run/pool" = "system" }) &&
       length(google_container_node_pool.system.node_config[0].taint) == 0
     )

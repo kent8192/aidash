@@ -19,6 +19,7 @@ export type MessageSubmission = {
   content: string;
   key: string;
   attachments: string[];
+  citations: string[];
 };
 
 /** Retries retain identity only while channel, thread and payload agree. */
@@ -29,18 +30,28 @@ export function submissionFor(
   draft: string,
   newKey: () => string,
   attachments: readonly string[] = [],
+  citations: readonly string[] = [],
 ): MessageSubmission {
   const content = draft.trim();
   const canonical = [...attachments];
+  const cited = [...citations];
   if (
     previous?.workspace === workspace &&
     previous.thread === thread &&
     previous.content === content &&
-    JSON.stringify(previous.attachments) === JSON.stringify(canonical)
+    JSON.stringify(previous.attachments) === JSON.stringify(canonical) &&
+    JSON.stringify(previous.citations) === JSON.stringify(cited)
   ) {
     return previous;
   }
-  return { workspace, thread, content, key: newKey(), attachments: canonical };
+  return {
+    workspace,
+    thread,
+    content,
+    key: newKey(),
+    attachments: canonical,
+    citations: cited,
+  };
 }
 
 export const MAX_ATTACHMENT_BYTES = 1024 * 1024;

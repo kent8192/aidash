@@ -114,7 +114,12 @@ pub(crate) async fn wait_for_inference_interruption(
 			Ok(Some(interruption)) => return Ok(interruption),
 			Ok(None) => {}
 			Err(error) => {
-				tracing::warn!(run_id = %id, %error, "inference interruption poll failed; retrying")
+				tracing::warn!(
+					run_id = %id,
+					tenant = scope.tenant_name().map_or("", |tenant| tenant.as_str()),
+					%error,
+					"inference interruption poll failed; retrying"
+				)
 			}
 		}
 		tokio::time::sleep(INTERRUPTION_POLL).await;

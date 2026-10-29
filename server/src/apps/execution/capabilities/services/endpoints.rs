@@ -55,6 +55,23 @@ async fn run_access(f: &Federation, actor: Actor, id: Uuid) -> Result<(Access, R
 	Ok((access, run))
 }
 
+// Status and Stop belong to the viewer's Run authority. They do not execute
+// tools or read the Run's Working Area under its original execution grant.
+async fn viewer_run_access(f: &Federation, actor: Actor, id: Uuid) -> Result<(Access, Run)> {
+	if matches!(&actor, Actor::DeploymentAdministrator) {
+		return Err(Error::NotFound("run unavailable".into()));
+	}
+	let mut access = access(f, actor).await?;
+	let run = access
+		.run_for_interaction(id)
+		.await
+		.map_err(|error| match error {
+			Error::Forbidden | Error::NotFound(_) => Error::NotFound("run unavailable".into()),
+			error => error,
+		})?;
+	Ok((access, run))
+}
+
 pub(crate) async fn areas(
 	f: Federation,
 	actor: Actor,
@@ -1049,11 +1066,11 @@ pub(crate) async fn file_download(
 	let mut access = access(&f, actor).await?;
 	let result = async {
 		let area = sessions::load(&mut access, id).await?;
-		service::available(&area)?;
 		let entry = if let Some(entry) = service::files(&area)?
 			.into_iter()
 			.find(|entry| entry.file_id == file)
 		{
+			service::available(&area)?;
 			entry
 		} else {
 			let meta: Option<(String, i64, String)> = {
@@ -1086,23 +1103,97 @@ pub(crate) async fn file_download(
 				.fetch_optional(&mut **access.tx)
 				.await?
 			};
-			let (digest, size, kind) =
-				meta.ok_or_else(|| Error::NotFound("file unavailable".into()))?;
-			FileEntry {
-				file_id: file,
-				path: file.to_string(),
-				digest,
-				size: size as u64,
-				media_type: if kind == "display" {
-					"image/png"
-				} else if kind == "network_output" {
-					"application/octet-stream"
-				} else {
-					"text/plain; charset=utf-8"
+			if let Some((digest, size, kind)) = meta {
+				service::available(&area)?;
+				FileEntry {
+					file_id: file,
+					path: file.to_string(),
+					digest,
+					size: size as u64,
+					media_type: if kind == "display" {
+						"image/png"
+					} else if kind == "network_output" {
+						"application/octet-stream"
+					} else {
+						"text/plain; charset=utf-8"
+					}
+					.into(),
+					scope: FileScope::Working,
+					provenance: json!({"kind":kind,"area_id":id}),
 				}
-				.into(),
-				scope: FileScope::Working,
-				provenance: json!({"kind":kind,"area_id":id}),
+			} else {
+				// A Retained version left the manifest but an active hold keeps
+				// it; its recorded path and media type serve it as it was cited.
+				let held: Option<(String, i64, String, String)> = {
+					let tenant = &access.identity.tenant;
+					crate::database::native::query_as(
+						&reinhardt::query::Query::select()
+							.column((Alias::new("o"), Alias::new("digest")))
+							.column((Alias::new("o"), Alias::new("size")))
+							.column((Alias::new("f"), Alias::new("path")))
+							.column((Alias::new("f"), Alias::new("media_type")))
+							.from_as(Alias::new("core_objects"), Alias::new("o"))
+							.join(
+								reinhardt::query::JoinType::InnerJoin,
+								reinhardt::query::TableRef::table_alias(
+									Alias::new("core_retention_files"),
+									Alias::new("f"),
+								),
+								Expr::col((Alias::new("f"), Alias::new("file_id")))
+									.equals((Alias::new("o"), Alias::new("id"))),
+							)
+							.join(
+								reinhardt::query::JoinType::InnerJoin,
+								reinhardt::query::TableRef::table_alias(
+									Alias::new("core_retention_holds"),
+									Alias::new("h"),
+								),
+								Expr::col((Alias::new("h"), Alias::new("id")))
+									.equals((Alias::new("f"), Alias::new("hold_id"))),
+							)
+							.and_where(
+								Expr::col((Alias::new("o"), Alias::new("id")))
+									.eq(Expr::value(file)),
+							)
+							.and_where(
+								Expr::col((Alias::new("o"), Alias::new("area_id")))
+									.eq(Expr::value(id)),
+							)
+							.and_where(
+								Expr::col((Alias::new("o"), Alias::new("tenant")))
+									.eq(Expr::value(tenant.to_owned())),
+							)
+							.and_where(
+								Expr::col((Alias::new("o"), Alias::new("kind")))
+									.eq(Expr::value("superseded_working")),
+							)
+							.and_where(Expr::cust(
+								"(h.expires_at IS NULL OR h.expires_at > CURRENT_TIMESTAMP)",
+							))
+							.limit(1)
+							.to_string(PostgresQueryBuilder),
+					)
+					.columns(&["digest", "size", "path", "media_type"])
+					.fetch_optional(&mut **access.tx)
+					.await?
+				};
+				let Some((digest, size, path, media_type)) = held else {
+					// No current File, output or held version: report the Area's
+					// state first, so a deleted or busy Area answers
+					// AREA_UNAVAILABLE/AREA_BUSY rather than pretending the File
+					// never existed.
+					service::available(&area)?;
+					return Err(Error::NotFound("file unavailable".into()));
+				};
+				FileEntry {
+					file_id: file,
+					path,
+					digest,
+					size: size as u64,
+					media_type,
+					scope: FileScope::Working,
+					provenance: json!({"kind":"superseded_working","area_id":id}),
+				}
 			}
 		};
 		download(&f.store, &mut access, entry, input.offset.unwrap_or(0)).await
@@ -1192,6 +1283,7 @@ pub(crate) async fn restore_new_thread(
 		super::sharing::serialize(lease.access_mut().ok_or(Error::Forbidden)?).await?;
 		let message = crate::collaboration::threads::post(
 			&f.store,
+			None,
 			&mut lease,
 			workspace,
 			crate::collaboration::ChannelMessageInput {
@@ -1199,6 +1291,7 @@ pub(crate) async fn restore_new_thread(
 				thread_id: None,
 				idempotency_key: input.idempotency_key,
 				attachment_ids: vec![],
+				file_versions: vec![],
 			},
 		)
 		.await?;
@@ -1425,9 +1518,30 @@ pub(crate) async fn thread_delete(
 	input: super::thread_lifecycle::DeleteThread,
 ) -> Result<DeletedThread> {
 	let mut access = access(&f, actor).await?;
+	let releases =
+		match super::federation_previews::releases_for_thread(&f, &mut access, workspace, thread)
+			.await
+		{
+			Ok(releases) => releases,
+			Err(error) => {
+				tracing::warn!(%error, "remote File version release routes could not be gathered");
+				Vec::new()
+			}
+		};
 	let result =
 		super::thread_lifecycle::delete(&f.store, &mut access, workspace, thread, input).await;
 	let result = access.finish(result).await?;
+	if tokio::time::timeout(
+		std::time::Duration::from_secs(10),
+		super::federation_previews::notify_releases(&f, releases),
+	)
+	.await
+	.is_err()
+	{
+		tracing::warn!(
+			"remote File version release notifications timed out; H expiry remains in force"
+		);
+	}
 	f.notify.notify_waiters();
 	typed(result)
 }
@@ -1458,3 +1572,320 @@ pub(crate) use crate::apps::execution::capabilities::serializers::endpoints::{
 };
 
 use reinhardt::query::SimpleExpr;
+
+/// Whether this Deployment offers Previews and where.
+pub(crate) fn preview_availability(f: &Federation) -> aidash_application::preview::Availability {
+	aidash_application::preview::Availability::of(
+		f.config
+			.preview
+			.as_ref()
+			.map(|preview| preview.domain.as_str()),
+	)
+}
+
+/// Authorize the File version as a download, then issue its one-time ticket.
+pub(crate) async fn preview_ticket(
+	f: Federation,
+	actor: Actor,
+	input: crate::apps::execution::capabilities::serializers::previews::PreviewTicketInput,
+	origin: String,
+) -> Result<aidash_application::preview::Issued> {
+	let mut access = access(&f, actor).await?;
+	let preview = f.config.preview.as_ref();
+	let result = {
+		let mut scope = crate::apps::execution::repositories::previews::Scope {
+			access: &mut access,
+			store: &f.store,
+			domain: preview.map(|preview| preview.domain.as_str()),
+			public_port: preview.and_then(|preview| preview.public_port),
+			origin: &origin,
+			peer: None,
+		};
+		aidash_application::preview::issue(&mut scope, input.area_id, input.file_id).await
+	};
+	access.finish(result.map_err(Into::into)).await
+}
+
+/// The Run's Live preview, or `None` when it has never started one.
+pub(crate) async fn live_preview(
+	f: Federation,
+	actor: Actor,
+	id: Uuid,
+) -> Result<crate::apps::execution::capabilities::serializers::previews::LivePreviewStatus> {
+	use crate::apps::execution::capabilities::serializers::previews::LivePreviewStatus;
+	let (mut access, run) = viewer_run_access(&f, actor.clone(), id).await?;
+	let domain = f.config.preview.as_ref().map(|p| p.domain.clone());
+	let result = crate::apps::execution::repositories::live_previews::status(
+		&f.store,
+		&mut access,
+		&run,
+		domain,
+	)
+	.await;
+	let status = access.finish(result).await?;
+	let may_stop = may_stop(&f, &actor, &run, id).await?;
+	Ok(LivePreviewStatus::of(status, may_stop))
+}
+
+/// The viewer may stop a Live preview when they requested the Run or may
+/// cancel it; viewing alone does not allow it (ADR 0070).
+async fn may_stop(
+	f: &Federation,
+	actor: &Actor,
+	run: &crate::domain::Run,
+	id: Uuid,
+) -> Result<bool> {
+	let identity = match actor {
+		Actor::DeploymentAdministrator => return Ok(false),
+		Actor::Subject(identity) => identity.clone(),
+	};
+	let requester = aidash_application::authorization::execution::grant(
+		&crate::bootstrap::execution_grants(&f.store),
+		&run.metadata(),
+	)
+	.await?
+	.is_some_and(|grant| grant.root_subject == identity.subject);
+	if requester {
+		return Ok(true);
+	}
+	match aidash_application::authorization::runs::authorize_run(
+		&crate::bootstrap::run_control_repository(f, &identity),
+		id,
+	)
+	.await
+	{
+		Ok(_) => Ok(true),
+		Err(aidash_application::Error::Forbidden | aidash_application::Error::NotFound(_)) => {
+			Ok(false)
+		}
+		Err(error) => Err(error.into()),
+	}
+}
+
+/// Stop the Run's Live preview. Its requester and whoever may cancel the Run
+/// may stop it; viewing alone does not allow it (ADR 0070).
+pub(crate) async fn live_preview_stop(
+	f: Federation,
+	actor: Actor,
+	id: Uuid,
+) -> Result<crate::apps::execution::capabilities::serializers::previews::LivePreviewStatus> {
+	use crate::apps::execution::capabilities::serializers::previews::LivePreviewStatus;
+	use crate::apps::execution::repositories::live_previews as previews;
+	use aidash_domain::preview::live::StopReason;
+	let domain = f.config.preview.as_ref().map(|p| p.domain.clone());
+	let (mut access, run) = viewer_run_access(&f, actor.clone(), id).await?;
+	let identity = access.identity.clone();
+	let requester = aidash_application::authorization::execution::grant(
+		&crate::bootstrap::execution_grants(&f.store),
+		&run.metadata(),
+	)
+	.await?
+	.is_some_and(|grant| grant.root_subject == identity.subject);
+	if !requester {
+		aidash_application::authorization::runs::authorize_run(
+			&crate::bootstrap::run_control_repository(&f, &identity),
+			id,
+		)
+		.await?;
+	}
+	let status = previews::status(&f.store, &mut access, &run, domain.clone()).await;
+	let status = access.finish(status).await?;
+	let Some(status) = status else {
+		return Ok(LivePreviewStatus::of(None, false));
+	};
+	if status.state.is_stopped() {
+		return Ok(LivePreviewStatus::of(Some(status), false));
+	}
+	let stopped = {
+		let (mut access, run) = viewer_run_access(&f, actor.clone(), id).await?;
+		let result = previews::request_stop(
+			&f.store,
+			&mut access,
+			&run,
+			domain.clone(),
+			status.id,
+			StopReason::Stopped,
+		)
+		.await;
+		access.finish(result).await?
+	};
+	if previews::terminate(&f.store, &stopped)
+		.await
+		.unwrap_or(false)
+	{
+		let (mut access, run) = viewer_run_access(&f, actor, id).await?;
+		let result = previews::settle(&f.store, &mut access, &run, domain, stopped.id).await;
+		access.finish(result).await?;
+	}
+	let (mut access, run) = viewer_run_access(&f, Actor::Subject(identity), id).await?;
+	let result = previews::status(&f.store, &mut access, &run, None).await;
+	access
+		.finish(result)
+		.await
+		.map(|status| LivePreviewStatus::of(status, false))
+}
+
+/// Issue a one-time ticket for a Run's Live preview under the same authority as
+/// downloading that Working Area's files.
+pub(crate) async fn preview_live_ticket(
+	f: Federation,
+	actor: Actor,
+	input: crate::apps::execution::capabilities::serializers::previews::LivePreviewTicketInput,
+	origin: String,
+) -> Result<aidash_application::preview::Issued> {
+	let mut access = access(&f, actor).await?;
+	let preview = f.config.preview.as_ref();
+	let result = {
+		let mut scope = crate::apps::execution::repositories::previews::Scope {
+			access: &mut access,
+			store: &f.store,
+			domain: preview.map(|preview| preview.domain.as_str()),
+			public_port: preview.and_then(|preview| preview.public_port),
+			origin: &origin,
+			peer: None,
+		};
+		aidash_application::preview::issue_live(&mut scope, input.live_preview_id).await
+	};
+	access.finish(result.map_err(Into::into)).await
+}
+
+/// A Tenant's stored Live preview limits and the Deployment's ceilings.
+pub(crate) async fn preview_limits(
+	f: Federation,
+	actor: Actor,
+	tenant: String,
+) -> Result<crate::apps::execution::capabilities::serializers::previews::TenantPreviewLimits> {
+	use crate::apps::execution::capabilities::{
+		models::CorePreviewLimits, serializers::previews::TenantPreviewLimits,
+	};
+	use aidash_domain::identity::tenant_administration::{COLLECTION, TEST_LIMITS_UPDATE};
+	use reinhardt::db::orm::Model;
+	let actions = crate::apps::registry::workbench::repositories::authority::TenantActions::new(
+		actor,
+		f.config.deployment.to_string(),
+	);
+	let mut tx = f
+		.store
+		.pool
+		.begin(&aidash_application::tenancy::TenancyScope::tenant(&tenant)?)
+		.await?;
+	let policy = f.store.pool.dashboard_policy();
+	actions
+		.require(
+			&mut *tx,
+			policy.as_ref(),
+			&tenant,
+			TEST_LIMITS_UPDATE,
+			COLLECTION,
+		)
+		.await?;
+	let stored = CorePreviewLimits::objects()
+		.filter(CorePreviewLimits::field_tenant().eq(&tenant))
+		.all_with_executor(&mut *tx)
+		.await
+		.map_err(reinhardt::core::exception::Error::from)?
+		.pop();
+	actions.record_denial(&f.store.pool).await?;
+	tx.commit().await?;
+	let ceilings = f.store.preview_limits.clone();
+	let (idle_seconds, absolute_seconds, revision) = stored
+		.map(|row| (row.idle_seconds, row.absolute_seconds, row.revision))
+		.unwrap_or((ceilings.idle_seconds, ceilings.absolute_seconds, 0));
+	Ok(TenantPreviewLimits {
+		tenant,
+		idle_seconds,
+		absolute_seconds,
+		revision,
+		ceiling_idle_seconds: ceilings.idle_seconds,
+		ceiling_absolute_seconds: ceilings.absolute_seconds,
+	})
+}
+
+/// Lower a Tenant's Live preview limits within the Deployment's ceilings.
+pub(crate) async fn set_preview_limits(
+	f: Federation,
+	actor: Actor,
+	input: crate::apps::execution::capabilities::serializers::previews::PreviewLimitInput,
+) -> Result<crate::apps::execution::capabilities::serializers::previews::TenantPreviewLimits> {
+	use crate::apps::execution::capabilities::{
+		models::CorePreviewLimits, serializers::previews::TenantPreviewLimits,
+	};
+	use aidash_domain::identity::tenant_administration::{COLLECTION, TEST_LIMITS_UPDATE};
+	use aidash_domain::preview::live::Limits;
+	use reinhardt::db::orm::Model;
+	if input.tenant.is_empty() {
+		return Err(Error::Invalid("tenant is required".into()));
+	}
+	let requested = Limits::new(input.idle_seconds, input.absolute_seconds)?;
+	let ceilings = f.store.preview_limits.clone();
+	let limits = requested.lower_than(&ceilings)?;
+	let actions = crate::apps::registry::workbench::repositories::authority::TenantActions::new(
+		actor,
+		f.config.deployment.to_string(),
+	);
+	let mut tx = f
+		.store
+		.pool
+		.begin(&aidash_application::tenancy::TenancyScope::tenant(
+			&input.tenant,
+		)?)
+		.await?;
+	let policy = f.store.pool.dashboard_policy();
+	actions
+		.require(
+			&mut *tx,
+			policy.as_ref(),
+			&input.tenant,
+			TEST_LIMITS_UPDATE,
+			COLLECTION,
+		)
+		.await?;
+	let stored = CorePreviewLimits::objects()
+		.filter(CorePreviewLimits::field_tenant().eq(&input.tenant))
+		.all_with_executor(&mut *tx)
+		.await
+		.map_err(reinhardt::core::exception::Error::from)?
+		.pop();
+	if stored
+		.as_ref()
+		.is_some_and(|row| row.revision != input.expected_revision)
+	{
+		return Err(Error::Conflict("PREVIEW_LIMITS_REVISION_CHANGED".into()));
+	}
+	let revision = stored.as_ref().map_or(1, |row| row.revision + 1);
+	if stored.is_some() {
+		let row = CorePreviewLimits::build()
+			.tenant(input.tenant.clone())
+			.idle_seconds(limits.idle_seconds)
+			.absolute_seconds(limits.absolute_seconds)
+			.revision(revision)
+			.updated_at(chrono::Utc::now())
+			.finish();
+		CorePreviewLimits::objects()
+			.save_with_executor(&mut *tx, &row)
+			.await
+			.map_err(reinhardt::core::exception::Error::from)?;
+	} else {
+		let row = CorePreviewLimits::build()
+			.tenant(input.tenant.clone())
+			.idle_seconds(limits.idle_seconds)
+			.absolute_seconds(limits.absolute_seconds)
+			.revision(revision)
+			.updated_at(chrono::Utc::now())
+			.finish();
+		CorePreviewLimits::objects()
+			.insert_with_executor(&mut *tx, &row)
+			.await
+			.map_err(reinhardt::core::exception::Error::from)?;
+	}
+	actions.record_denial(&f.store.pool).await?;
+	tx.commit().await?;
+	Ok(TenantPreviewLimits {
+		tenant: input.tenant,
+		idle_seconds: limits.idle_seconds,
+		absolute_seconds: limits.absolute_seconds,
+		revision,
+		ceiling_idle_seconds: ceilings.idle_seconds,
+		ceiling_absolute_seconds: ceilings.absolute_seconds,
+	})
+}

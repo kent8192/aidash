@@ -5,6 +5,8 @@ import { Input } from "./components/ui/input";
 import { NativeSelect } from "./components/ui/native-select";
 import { Textarea } from "./components/ui/textarea";
 import {
+  corePreviewLimits,
+  corePreviewLimitsUpdate,
   workbenchPutTestProfile,
   workbenchSetTestLimits,
   workbenchTenantTestLimits,
@@ -48,7 +50,12 @@ export function WorkbenchTestSettings({
 }) {
   return (
     <>
-      {can("workbench.test_limits.update") && <TestLimits tenant={tenant} />}
+      {can("workbench.test_limits.update") && (
+        <>
+          <TestLimits tenant={tenant} />
+          <LivePreviewLimits tenant={tenant} />
+        </>
+      )}
       {can("workbench.test_profile.update") && (
         <TestProfiles key={tenant} tenant={tenant} />
       )}
@@ -141,6 +148,109 @@ function TestLimits({ tenant }: { tenant: string }) {
           </fieldset>
           <div className="flex justify-end">
             <Button disabled={busy}>{t("testLimitsSave")}</Button>
+          </div>
+        </form>
+      )}
+    </Panel>
+  );
+}
+
+function LivePreviewLimits({ tenant }: { tenant: string }) {
+  const { t } = useI18n();
+  const client = useQueryClient();
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+  const [saved, setSaved] = useState(false);
+  const query = useQuery({
+    queryKey: ["preview-limits", tenant],
+    queryFn: () => corePreviewLimits(encodeURIComponent(tenant)),
+  });
+  const current = !query.isError ? query.data : undefined;
+  return (
+    <Panel title={t("livePreviewLimits")}>
+      <Hint>{t("livePreviewLimitsHelp")}</Hint>
+      {query.isPending && <Loading />}
+      {query.isError && (
+        <Alert retry={() => void query.refetch()}>{query.error.message}</Alert>
+      )}
+      {error && <Alert>{error}</Alert>}
+      {saved && !error && <Hint role="status">{t("saved")}</Hint>}
+      {current && (
+        <form
+          key={current.revision}
+          className="grid min-w-0 gap-3 sm:grid-cols-2"
+          onChange={() => setSaved(false)}
+          onSubmit={(event) => {
+            event.preventDefault();
+            if (busy) return;
+            const data = new FormData(event.currentTarget);
+            setBusy(true);
+            setError("");
+            void corePreviewLimitsUpdate(encodeURIComponent(tenant), {
+              tenant,
+              idle_seconds: Number(data.get("idle_seconds")),
+              absolute_seconds: Number(data.get("absolute_seconds")),
+              expected_revision: current.revision,
+            })
+              .then(() => setSaved(true))
+              .catch((reason) =>
+                setError(
+                  reason instanceof ApiError && reason.status === 409
+                    ? t("livePreviewLimitsChanged")
+                    : reason instanceof Error
+                      ? reason.message
+                      : String(reason),
+                ),
+              )
+              .finally(() => {
+                setBusy(false);
+                void client.invalidateQueries({
+                  queryKey: ["preview-limits", tenant],
+                });
+              });
+          }}
+        >
+          <fieldset
+            disabled={busy}
+            className="grid min-w-0 gap-3 sm:col-span-2 sm:grid-cols-2"
+          >
+            {(
+              [
+                [
+                  "idle_seconds",
+                  t("livePreviewIdleSeconds"),
+                  current.ceiling_idle_seconds,
+                  current.idle_seconds,
+                ],
+                [
+                  "absolute_seconds",
+                  t("livePreviewAbsoluteSeconds"),
+                  current.ceiling_absolute_seconds,
+                  current.absolute_seconds,
+                ],
+              ] as const
+            ).map(([field, label, ceiling, value]) => (
+              <div key={field} className="grid min-w-0 gap-1">
+                <Field label={label}>
+                  <Input
+                    name={field}
+                    type="number"
+                    required
+                    min={60}
+                    max={ceiling}
+                    defaultValue={value}
+                    className="font-mono tabular"
+                  />
+                </Field>
+                <span className="text-[11px] text-faint">
+                  {t("livePreviewCeiling")}{" "}
+                  <span className="font-mono tabular">{ceiling}</span>
+                </span>
+              </div>
+            ))}
+          </fieldset>
+          <div className="flex justify-end sm:col-span-2">
+            <Button disabled={busy}>{t("livePreviewLimitsSave")}</Button>
           </div>
         </form>
       )}

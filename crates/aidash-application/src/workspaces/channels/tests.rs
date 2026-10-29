@@ -1,6 +1,7 @@
 use super::*;
 use crate::ports::channels::{AttachmentLink, HistoryRow, MessageContext};
 use aidash_domain::Message;
+use aidash_domain::workspaces::channels::{ChannelCitation, CitedFileVersion};
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use rstest::rstest;
@@ -197,6 +198,37 @@ impl ChannelScope for Fixture {
 		self.record("history.attachments")?;
 		Ok(ids.iter().map(|id| (*id, vec![metadata(10)])).collect())
 	}
+	async fn record_citations(
+		&mut self,
+		_: Uuid,
+		_: Uuid,
+		citations: &[CitedFileVersion],
+	) -> Result<Vec<ChannelCitation>> {
+		self.record("citations.record")?;
+		Ok(citations
+			.iter()
+			.map(|citation| ChannelCitation {
+				area_id: citation.area_id,
+				file_id: citation.file_id,
+				run_id: citation.run_id,
+				path: format!("{}.html", citation.file_id),
+				digest: Some("a".repeat(64)),
+				size: Some(1),
+				media_type: Some("text/html".into()),
+				revision: Some(1),
+				available: true,
+				reason: None,
+			})
+			.collect())
+	}
+	async fn message_citations(
+		&mut self,
+		_: Uuid,
+		ids: &[Uuid],
+	) -> Result<HashMap<Uuid, Vec<ChannelCitation>>> {
+		self.record("history.citations")?;
+		Ok(ids.iter().map(|id| (*id, vec![])).collect())
+	}
 }
 fn submission<'a>(ids: &'a [Uuid]) -> MessageSubmission<'a> {
 	MessageSubmission {
@@ -204,6 +236,7 @@ fn submission<'a>(ids: &'a [Uuid]) -> MessageSubmission<'a> {
 		thread_id: None,
 		idempotency_key: Uuid::from_u128(100),
 		attachment_ids: ids,
+		citations: &[],
 	}
 }
 
@@ -412,4 +445,82 @@ async fn foreign_thread_cursor_is_rejected_before_scanning_history() {
 	.await;
 	assert!(matches!(result,Err(Error::NotFound(ref value)) if value=="message unavailable"));
 	assert_eq!(scope.calls, vec!["message.read", "reply.read"]);
+}
+
+#[rstest]
+#[tokio::test]
+async fn cited_versions_are_recorded_before_attachments() {
+	let citations = [
+		CitedFileVersion {
+			area_id: Uuid::from_u128(20),
+			file_id: Uuid::from_u128(21),
+			run_id: None,
+		},
+		CitedFileVersion {
+			area_id: Uuid::from_u128(20),
+			file_id: Uuid::from_u128(22),
+			run_id: None,
+		},
+	];
+	let mut scope = Fixture::default();
+	let result = post(
+		&mut scope,
+		workspace(),
+		MessageSubmission {
+			content: "correct the page",
+			thread_id: None,
+			idempotency_key: Uuid::from_u128(100),
+			attachment_ids: &[],
+			citations: &citations,
+		},
+	)
+	.await
+	.unwrap();
+	assert_eq!(result.citations.len(), 2);
+	assert_eq!(result.citations[0].file_id, citations[0].file_id);
+	assert_eq!(
+		scope.calls,
+		vec![
+			"message.insert",
+			"message.context",
+			"citations.record",
+			"root.read"
+		]
+	);
+}
+
+#[rstest]
+#[tokio::test]
+async fn a_denied_citation_stops_before_any_attachment_write() {
+	let citations = [CitedFileVersion {
+		area_id: Uuid::from_u128(20),
+		file_id: Uuid::from_u128(21),
+		run_id: None,
+	}];
+	let mut scope = Fixture {
+		denied: Some("citations.record"),
+		links: vec![AttachmentLink {
+			attachment: metadata(10),
+			message_id: None,
+		}],
+		..Default::default()
+	};
+	let result = post(
+		&mut scope,
+		workspace(),
+		MessageSubmission {
+			content: "cite",
+			thread_id: None,
+			idempotency_key: Uuid::from_u128(100),
+			attachment_ids: &[Uuid::from_u128(10)],
+			citations: &citations,
+		},
+	)
+	.await;
+	assert!(matches!(result, Err(Error::Forbidden)));
+	assert_eq!(
+		scope.calls,
+		vec!["message.insert", "message.context", "citations.record"]
+	);
+	assert!(scope.bind_order.is_empty());
 }

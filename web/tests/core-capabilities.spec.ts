@@ -550,6 +550,31 @@ async function openThread(page: Page) {
   await expect(page.getByRole("heading", { name: "Agent work" })).toBeVisible();
 }
 
+test("Live preview background status is quiet when absent or unavailable", async ({
+  page,
+}) => {
+  const { errors } = await core(page);
+  let status = 404;
+  let requests = 0;
+  await page.route("**/api/runs/run-0/live-preview", (route) => {
+    requests++;
+    return route.fulfill({
+      status,
+      json: { error: status === 404 ? "not_found" : "unavailable" },
+    });
+  });
+  await openThread(page);
+  await expect.poll(() => requests).toBeGreaterThan(0);
+  await expect(page.getByText("Live preview", { exact: true })).toHaveCount(0);
+
+  status = 503;
+  await expect(
+    page.getByText("Live preview status is temporarily unavailable. Retrying."),
+  ).toBeVisible();
+  await expect(page.getByRole("alert")).toHaveCount(0);
+  expect(errors).toEqual([]);
+});
+
 test("retained-work Files link keeps the originating request instead of the first workspace", async ({
   page,
 }) => {

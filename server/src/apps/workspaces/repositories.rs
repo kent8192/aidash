@@ -2,6 +2,7 @@
 pub(crate) mod conversations;
 
 pub(crate) mod channels;
+pub(crate) mod citations;
 
 pub mod mutations;
 

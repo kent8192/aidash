@@ -45,7 +45,7 @@ fn executable_contracts_are_derived_and_disabled_by_default() {
 			sharing: true,
 		},
 	);
-	assert_eq!(tools.len(), 14);
+	assert_eq!(tools.len(), 16);
 	for (name, tool) in &tools {
 		let schema = tool.specification().parameters;
 		assert!(!schema.to_string().contains("$ref"), "{name}");

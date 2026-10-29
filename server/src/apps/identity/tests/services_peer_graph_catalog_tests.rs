@@ -11,7 +11,6 @@ fn options(mode: &str, kinds: &[&str]) -> GraphOptions {
 		hours: 0,
 		limit: 80,
 		cursor: None,
-		target_tenant: None,
 	}
 }
 
