@@ -363,6 +363,8 @@ test(
     await expect(
       dialog.getByLabel("Receiving node", { exact: true }),
     ).toHaveValue(home.name);
+    // The Source node is a free-text field until the registrations load.
+    await expect(dialog.locator('select[name="source_node"]')).toBeVisible();
     await dialog
       .getByLabel("Source node", { exact: true })
       .selectOption(source.address);

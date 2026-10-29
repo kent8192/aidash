@@ -27,7 +27,14 @@ impl ExecutionRecoveryStore for Scope {
 	async fn save(&self, _: &Run, _: Uuid, _: &str) -> Result<()> {
 		panic!("admission must not recover a run")
 	}
-	async fn pause(&self, _: &Run, _: Uuid, _: &str, _: &str) -> Result<()> {
+	async fn pause(
+		&self,
+		_: &Run,
+		_: Uuid,
+		_: &str,
+		_: &str,
+		_: Option<&aidash_domain::tool::AuthorityRefusal>,
+	) -> Result<()> {
 		panic!("admission must not recover a run")
 	}
 	async fn pause_semantic(
@@ -64,6 +71,8 @@ impl WorkerStep for Scope {
 			revision: 0,
 			observed_input_seq: 0,
 			ledger_worker_ready: true,
+			control_revision: 0,
+			control_source: Default::default(),
 			error: None,
 			lease_owner: None,
 			lease_until: None,

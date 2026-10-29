@@ -123,13 +123,15 @@ record!(
 		revision,
 		observed_input_seq,
 		ledger_worker_ready,
+		control_revision,
 		error,
 		lease_owner,
 		lease_until,
 		updated_at
 	},
 	phase = |row| text(row, "phase"),
-	control = |row| text(row, "control")
+	control = |row| text(row, "control"),
+	control_source = |row| text(row, "control_source")
 );
 
 impl Record for TaskStatus {

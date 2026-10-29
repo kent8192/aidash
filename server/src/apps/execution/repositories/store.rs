@@ -20,6 +20,7 @@ use crate::{
 	registry::{Entry, Search},
 };
 use aidash_application::tenancy::{DeploymentScopeReason, TenancyScope};
+use aidash_domain::ControlSource;
 use reinhardt::core::exception::Error as FrameworkError;
 use reinhardt::db::backends::TransactionExecutor;
 use reinhardt::db::orm::Model;
@@ -3227,8 +3228,9 @@ impl Store {
 		worker: Uuid,
 		reason: &str,
 		event_kind: &str,
+		refusal: Option<&aidash_domain::tool::AuthorityRefusal>,
 	) -> Result<()> {
-		self.pause_for_execution_reason(run, worker, reason, event_kind, None)
+		self.pause_for_execution_reason(run, worker, reason, event_kind, None, refusal)
 			.await
 	}
 	pub(crate) async fn cancel_execution(
@@ -3431,6 +3433,20 @@ impl Store {
 		id: Uuid,
 		action: RunControlAction,
 	) -> Result<RunInspection> {
+		self.control_in_as(tx, id, action, ControlSource::Tenant)
+			.await
+	}
+
+	/// Applies a control decision and records who made it: the control revision
+	/// increases and the control source is replaced, even when control itself
+	/// keeps its value (a Safety Stop of an already paused Run).
+	pub(crate) async fn control_in_as(
+		&self,
+		tx: &mut crate::database::native::Transaction,
+		id: Uuid,
+		action: RunControlAction,
+		source: ControlSource,
+	) -> Result<RunInspection> {
 		let control = action.control();
 		let mut resumed_pending = None;
 		let mut semantic_retry = None;
@@ -3465,8 +3481,8 @@ impl Store {
 		)
 		.scalar_one(&mut **tx)
 		.await?;
-		let r: RawRun = { let query_bind_1 = id; let query_bind_2 = control; let query_bind_3 = resumed_pending; aidash_server::database::query_as(&reinhardt::query::Query::update()
-				.table(reinhardt::query::Alias::new("runs")).value_expr(reinhardt::query::Alias::new("pending"), SimpleExpr::CustomWithExpr("(COALESCE(?::jsonb, pending))".to_owned(), vec![Expr::value(query_bind_3.to_owned()).into()])).value_expr(reinhardt::query::Alias::new("control"), SimpleExpr::CustomWithExpr("(?)".to_owned(), vec![Expr::value(query_bind_2.as_str()).into()])).value_expr(reinhardt::query::Alias::new("error"), SimpleExpr::CustomWithExpr("(CASE WHEN ?::jsonb IS NOT NULL OR (? = 'PAUSED' AND error = 'identity status unavailable') THEN NULL ELSE error END)".to_owned(), vec![Expr::value(query_bind_3.to_owned()).into(), Expr::value(query_bind_2.as_str()).into()])).value_expr(reinhardt::query::Alias::new("revision"), reinhardt::query::Expr::cust("revision + 1")).value_expr(reinhardt::query::Alias::new("updated_at"), reinhardt::query::Expr::cust("CURRENT_TIMESTAMP"))
+		let r: RawRun = { let query_bind_1 = id; let query_bind_2 = control; let query_bind_3 = resumed_pending; let query_bind_4 = source.as_str(); aidash_server::database::query_as(&reinhardt::query::Query::update()
+				.table(reinhardt::query::Alias::new("runs")).value_expr(reinhardt::query::Alias::new("pending"), SimpleExpr::CustomWithExpr("(COALESCE(?::jsonb, pending))".to_owned(), vec![Expr::value(query_bind_3.to_owned()).into()])).value_expr(reinhardt::query::Alias::new("control"), SimpleExpr::CustomWithExpr("(?)".to_owned(), vec![Expr::value(query_bind_2.as_str()).into()])).value_expr(reinhardt::query::Alias::new("error"), SimpleExpr::CustomWithExpr("(CASE WHEN ?::jsonb IS NOT NULL OR (? = 'PAUSED' AND error = 'identity status unavailable') THEN NULL ELSE error END)".to_owned(), vec![Expr::value(query_bind_3.to_owned()).into(), Expr::value(query_bind_2.as_str()).into()])).value_expr(reinhardt::query::Alias::new("revision"), reinhardt::query::Expr::cust("revision + 1")).value_expr(reinhardt::query::Alias::new("control_revision"), reinhardt::query::Expr::cust("control_revision + 1")).value_expr(reinhardt::query::Alias::new("control_source"), SimpleExpr::CustomWithExpr("(?)".to_owned(), vec![Expr::value(query_bind_4).into()])).value_expr(reinhardt::query::Alias::new("updated_at"), reinhardt::query::Expr::cust("CURRENT_TIMESTAMP"))
 				.and_where(SimpleExpr::CustomWithExpr("(id = ? AND NOT phase IN ('COMPLETED', 'FAILED', 'CANCELLED') AND control <> 'CANCELLED')".to_owned(), vec![Expr::value(query_bind_1.to_owned()).into()]))
 				.returning_all()
 				.to_string(reinhardt::query::PostgresQueryBuilder))
@@ -3516,7 +3532,12 @@ impl Store {
 			id,
 			workspace,
 			"run.control",
-			json!({"run_id":id,"action":action}),
+			// Only a decision of someone other than the Tenant names its source.
+			if source == ControlSource::Tenant {
+				json!({"run_id":id,"action":action})
+			} else {
+				json!({"run_id":id,"action":action,"source":source})
+			},
 		)
 		.await?;
 		Ok(r.inspect())
@@ -4888,6 +4909,7 @@ impl Store {
 			&reason.to_string(),
 			"run.semantic_blocked",
 			Some(("semantic_reason", serde_json::to_value(reason)?)),
+			None,
 		)
 		.await
 	}
@@ -4905,6 +4927,7 @@ impl Store {
 			&reason.to_string(),
 			"run.context_blocked",
 			Some(("context_reason", serde_json::to_value(reason)?)),
+			None,
 		)
 		.await
 	}
@@ -4920,6 +4943,7 @@ impl Store {
 		reason: &str,
 		event_kind: &str,
 		recovery_reason: Option<(&'static str, Value)>,
+		refusal: Option<&aidash_domain::tool::AuthorityRefusal>,
 	) -> Result<()> {
 		let run = run.into();
 		// Pausing a claimed Run is the worker's lease bookkeeping.
@@ -4950,7 +4974,16 @@ impl Store {
 			run.id,
 			(run.is_local(self.deployment.as_str())).then_some(run.workspace_id),
 			event_kind,
-			json!({"run_id":run.id,"task_id":run.task_id}),
+			// The tool and the check only; never what the call addressed.
+			match refusal {
+				Some(refusal) => {
+					let mut payload = serde_json::to_value(refusal)?;
+					payload["run_id"] = json!(run.id);
+					payload["task_id"] = json!(run.task_id);
+					payload
+				}
+				None => json!({"run_id":run.id,"task_id":run.task_id}),
+			},
 		)
 		.await?;
 		// Pausing releases the lease; the worker can no longer finish its attempt.

@@ -1,5 +1,9 @@
 use super::*;
-use aidash_application::{Error, ports::ExecutionRecoveryStore, recovery::ExecutionFailure};
+use aidash_application::{
+	Error,
+	ports::ExecutionRecoveryStore,
+	recovery::{AuthorityFailure, ExecutionFailure},
+};
 use aidash_domain::{
 	RecoveryState, Run, RunControl, RunMetadata, RunState, StateVersion, ThinkingState,
 	context::Context,
@@ -106,6 +110,8 @@ impl Scope {
 				revision: 1,
 				observed_input_seq: 0,
 				ledger_worker_ready: true,
+				control_revision: 0,
+				control_source: Default::default(),
 				error: None,
 				lease_owner: Some(Uuid::nil()),
 				lease_until: None,
@@ -129,7 +135,15 @@ impl ExecutionRecoveryStore for Scope {
 	async fn save(&self, _: &Run, _: Uuid, _: &str) -> Result<()> {
 		panic!("authority failures must pause")
 	}
-	async fn pause(&self, run: &Run, token: Uuid, reason: &str, event: &str) -> Result<()> {
+	async fn pause(
+		&self,
+		run: &Run,
+		token: Uuid,
+		reason: &str,
+		event: &str,
+		refusal: Option<&aidash_domain::tool::AuthorityRefusal>,
+	) -> Result<()> {
+		assert!(refusal.is_none());
 		assert_eq!(run.id, self.run.id);
 		assert_eq!(token, Uuid::nil());
 		assert_eq!(reason, "execution authority denied");
@@ -164,9 +178,7 @@ impl WorkerStep for Scope {
 	}
 	fn classify_failure(&self, error: Error) -> ExecutionFailure {
 		assert!(matches!(error, Error::Forbidden));
-		ExecutionFailure::Authority {
-			identity_unavailable: false,
-		}
+		ExecutionFailure::Authority(AuthorityFailure::Denied(None))
 	}
 	async fn cancel_scoped(&mut self, _: Uuid) -> Result<bool> {
 		self.trace.lock().unwrap().push("cancel");
@@ -396,6 +408,8 @@ async fn terminal_delivery_drains_a_burst_without_per_run_sleep(leases: Leases) 
 			revision: 1,
 			observed_input_seq: 0,
 			ledger_worker_ready: true,
+			control_revision: 0,
+			control_source: Default::default(),
 			error: None,
 			lease_owner: None,
 			lease_until: None,
