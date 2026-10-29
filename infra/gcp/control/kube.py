@@ -291,7 +291,7 @@ def live_pods(cluster, namespace, selector=None):
 
 
 def running_producers(cluster, namespace):
-    """Writer and Runner Pods with a currently running container."""
+    """Writer and Runner Pods with a running container, including init containers."""
     return [
         pod
         for selector in (WRITER_PODS, RUNNER_PODS)
@@ -952,8 +952,8 @@ def seal(cluster, identity, force=False, idle_only=False, keepalive_at=0):
     only after this returns True. Any doubt restores service and defers. A
     namespace without live Pods (stopped, or a stop whose node pool apply
     failed) has no producer to drain and is already sealed; one whose writers
-    and Runner have no running process may be sealed only with evidence that
-    the Runner has no durable journal or sandbox Pods.
+    and Runner have no running process may be sealed when the Runner is scaled
+    to zero and no Runner or sandbox Pods remain.
     """
     namespace = namespace_of(identity)
     if cluster.get("namespace", namespace) is None:
@@ -962,13 +962,15 @@ def seal(cluster, identity, force=False, idle_only=False, keepalive_at=0):
         desired_admission(cluster, namespace, "closed")
         return True
     runner = cluster.get("deployment", "app-execution-runner", namespace)
+    sandbox = namespaces(identity)[1]
     if (not force and runner is not None and runner.get("spec", {}).get("replicas") == 0
-            and not live_pods(cluster, namespace, RUNNER_PODS)
+            and not cluster.items("pods", namespace, RUNNER_PODS)
             and not running_producers(cluster, namespace)
-            and cluster.get("persistentvolumeclaim", JOURNAL_CLAIM, namespace) is None
-            and not cluster.items("pods", namespaces(identity)[1])):
-        # A missing journal and empty sandbox are required: a stopped Runner
-        # can otherwise have durable operations or independent execution Pods.
+            and cluster.get("namespace", sandbox) is not None
+            and not cluster.items("pods", sandbox)):
+        # No Runner or sandbox Pod can execute work. Drain, stop and deploy
+        # retain the journal PVC; unsettled operations survive for Runner
+        # startup recovery. Missing namespace evidence cannot authorize this.
         admission(cluster, identity, "close")
         drain(cluster, identity)
         return True

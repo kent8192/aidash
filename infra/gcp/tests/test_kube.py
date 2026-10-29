@@ -435,6 +435,7 @@ class SealAndMigrationTests(unittest.TestCase):
             context.start()
             self.addCleanup(context.stop)
         self.cluster.put({"kind": "Namespace", "metadata": {"name": "aidash-test"}})
+        self.cluster.put({"kind": "Namespace", "metadata": {"name": "aidash-test-sandbox"}})
         self.cluster.put({"kind": "CronJob", "metadata": {"name": "env-environment-activity", "namespace": "aidash-test"}, "spec": {}})
         self.cluster.put({"kind": "ConfigMap", "metadata": {"name": "env-environment-activity", "namespace": "aidash-test"}})
 
@@ -463,12 +464,14 @@ class SealAndMigrationTests(unittest.TestCase):
         self.workloads(edge=1, writers=1, dependencies=1)
         self.cluster.workload("deployment", "aidash-test", "app-execution-runner", 0)
         self.cluster.crashing |= {"app-aidash-server", "app-aidash-worker"}
+        self.cluster.dynamic_claim("aidash-test", kube.JOURNAL_CLAIM)
         self.cluster.script = ["error"]
         self.assertTrue(kube.seal(self.cluster, "test"))
         self.assertEqual(self.calls, [
             ("admission", "test", "close"), ("scale", "test", "server", 0), ("scale", "test", "worker", 0),
         ])
         self.assertEqual(self.cluster.replicas("aidash-test", "deployment", "app-aidash-server"), 0)
+        self.assertIsNotNone(self.cluster.get("persistentvolumeclaim", kube.JOURNAL_CLAIM, "aidash-test"))
 
     def test_a_started_runner_still_requires_an_idle_observation(self):
         # Crashing writers alone do not prove the Environment idle: the Runner may hold a Run.
@@ -479,11 +482,11 @@ class SealAndMigrationTests(unittest.TestCase):
         self.assertIn(("observe", "test"), self.calls)
         self.assertEqual(self.cluster.replicas("aidash-test", "deployment", "app-aidash-server"), 1)
 
-    def test_unavailable_runner_with_existing_journal_cannot_skip_observation(self):
+    def test_missing_sandbox_namespace_cannot_skip_observation(self):
         self.workloads(edge=1, writers=1, dependencies=1)
         self.cluster.workload("deployment", "aidash-test", "app-execution-runner", 0)
         self.cluster.crashing |= {"app-aidash-server", "app-aidash-worker"}
-        self.cluster.dynamic_claim("aidash-test", kube.JOURNAL_CLAIM)
+        del self.cluster.objects[self.cluster.key("namespace", "aidash-test-sandbox")]
         self.cluster.script = ["error"]
         self.assertFalse(kube.seal(self.cluster, "test"))
 
@@ -494,13 +497,14 @@ class SealAndMigrationTests(unittest.TestCase):
         self.cluster.workload("deployment", "aidash-test-sandbox", "surviving-execution", 1)
         self.cluster.script = ["error"]
         self.assertFalse(kube.seal(self.cluster, "test"))
+        self.assertIn(("observe", "test"), self.calls)
 
-    def test_crash_looping_runner_with_sandbox_pod_cannot_skip_observation(self):
+    def test_crash_looping_runner_cannot_skip_observation(self):
         self.workloads(edge=1, writers=1, dependencies=1)
         self.cluster.crashing |= {"app-aidash-server", "app-aidash-worker", "app-execution-runner"}
-        self.cluster.workload("deployment", "aidash-test-sandbox", "surviving-execution", 1)
         self.cluster.script = ["error"]
         self.assertFalse(kube.seal(self.cluster, "test"))
+        self.assertIn(("observe", "test"), self.calls)
 
     def test_admission_is_closed_only_through_a_live_edge(self):
         self.workloads(edge=0, writers=1)
