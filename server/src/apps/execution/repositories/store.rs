@@ -5106,6 +5106,9 @@ pub(crate) fn invocation_summary(alias: Option<&str>) -> reinhardt::query::Selec
 		"tool",
 		"status",
 		"replay_safe",
+		"delivery_failures",
+		"delivery_pending",
+		"uncertain_reason",
 		"created_at",
 	] {
 		if let Some(table) = alias {
