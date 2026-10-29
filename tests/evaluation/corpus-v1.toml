@@ -24,7 +24,7 @@ max_output_tokens = 4096
 # Sized so the base request plus seven reference pages fits and plus eight does
 # not: the eighth page outgrows the window in both arms. Ordinary Runs are not
 # pruned until #108 binds the built-in compaction Decider (ADR 0041), so the
-# Run stops there with `prune_unavailable`.
+# Run stops there.
 [models.small-window]
 context_window = 62000
 max_output_tokens = 1024

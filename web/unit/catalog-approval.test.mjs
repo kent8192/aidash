@@ -9,7 +9,10 @@ import {
   restrictionLabel,
   restrictionRequest,
   unapprovedClosure,
+  unapprovedCompactionDecider,
   unapprovedDependency,
+  withdrawalAgentLabels,
+  withdrawalHasNoImpact,
 } from "../src/catalog-approval-model.ts";
 
 const version = (id, kind, config = {}, state = {}) => ({
@@ -142,6 +145,22 @@ test("only a dependency refusal names a dependency", () => {
   assert.equal(unapprovedDependency("forbidden"), null);
 });
 
+test("only a refused Run start names its compaction Decider", () => {
+  assert.deepEqual(
+    unapprovedCompactionDecider(
+      "COMPACTION_DECIDER_UNAPPROVED: aidash.compaction-decider@1.0.0",
+    ),
+    ref("aidash.compaction-decider"),
+  );
+  assert.equal(
+    unapprovedCompactionDecider(
+      "CATALOG_DEPENDENCY_UNAPPROVED: aidash.shell@1.0.0",
+    ),
+    null,
+  );
+  assert.equal(unapprovedCompactionDecider("forbidden"), null);
+});
+
 test("a new agent version starts from the latest approved earlier version's groups", () => {
   const agent = (number, groups, enabled = true) =>
     version(
@@ -262,4 +281,23 @@ test("an approval carries a named restriction and omits an absent one", () => {
     subjects: [],
     groups: [],
   });
+});
+
+test("a withdrawal with no dependent Agent and no Run stops nothing", () => {
+  assert.equal(withdrawalHasNoImpact({ agents: [], running_runs: 0 }), true);
+  assert.equal(
+    withdrawalHasNoImpact({ agents: [ref("a")], running_runs: 0 }),
+    false,
+  );
+  assert.equal(withdrawalHasNoImpact({ agents: [], running_runs: 2 }), false);
+});
+
+test("a withdrawal lists the Agents it stops in a stable order", () => {
+  assert.deepEqual(
+    withdrawalAgentLabels({
+      agents: [ref("b", "2.0.0"), ref("a")],
+      running_runs: 1,
+    }),
+    ["a@1.0.0", "b@2.0.0"],
+  );
 });

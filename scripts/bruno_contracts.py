@@ -877,6 +877,15 @@ def render():
                 add(endpoint, "Malformed JSON cannot reach the use case", 400,
                     path=unknown, headers=DEPLOYMENT_ADMINISTRATOR, body="{", immutable=True)
             continue
+        if route["name"] == "authorization-catalog-impact":
+            uri = path + "?id=aidash.workspace_read&version=1.0.0&node=" + NODE
+            add(endpoint, "Malformed bearer syntax is rejected", 401, path=uri,
+                headers={"Authorization": "Basic invalid"})
+            add(endpoint, "Deployment Administrator bearer has no Tenant authority", 403,
+                path=uri, headers=DEPLOYMENT_ADMINISTRATOR)
+            add(endpoint, "Subject sees the impact of an unknown Node as not found", 404,
+                path=uri, headers=SUBJECT)
+            continue
         if route["name"] == "authorization-catalog-review":
             uri = path + "?entry=aidash.workspace_read@1.0.0&node=" + NODE
             add(endpoint, "Malformed bearer syntax is rejected", 401, path=uri,
@@ -1366,6 +1375,8 @@ def render():
             uri = path + "?node=" + NODE
         if route["name"] == "authorization-catalog-review":
             uri = path + "?entry=aidash.workspace_read@1.0.0&node=" + NODE
+        if route["name"] == "authorization-catalog-impact":
+            uri = path + "?id=aidash.workspace_read&version=1.0.0&node=" + NODE
         if route["name"] in {
             "generation-history",
             "workbench-list-incidents",

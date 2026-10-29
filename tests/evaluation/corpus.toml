@@ -23,9 +23,9 @@ context_window = 128000
 max_output_tokens = 4096
 
 # Sized so the base request plus seven reference pages fits and plus eight does
-# not: the eighth page outgrows the window in both arms. Ordinary Runs are not
-# pruned until #108 binds the built-in compaction Decider (ADR 0041), so the
-# Run stops there with `prune_unavailable`.
+# not: the eighth page outgrows the window in both arms. The evaluator's Agents
+# remove the default compaction binding and carry no Summary Stage, so nothing
+# can reduce the context and the Run pauses there with `context_unreducible`.
 [models.small-window]
 context_window = 62000
 max_output_tokens = 1024
@@ -248,8 +248,8 @@ claimed_success = true
 # ------------------------------------------------- long conversation, context
 # Corrections arrive as human answers; filler reference pages outgrow the small
 # context window. With pruning, only the human answers would carry the
-# corrections forward. Until #108 binds the built-in compaction Decider, an
-# ordinary Run is not pruned and stops unresolved at the eighth page.
+# corrections forward. The evaluator's Agent has no compaction Decider, so the Run
+# pauses with `context_unreducible` at the eighth page and is counted unresolved.
 [[tasks]]
 id = "long-conversation-corrections"
 primary_weight = 0.25
@@ -276,11 +276,13 @@ budget_usd = 300
 excluded_vendors = ["Contoso", "Northwind"]
 [tasks.expected]
 outcome = "unresolved"
+context_reason = "context_unreducible"
 long_context = "none"
 
 # The same correction arrives only inside an early tool result. Pruning would
 # drop it, so a retention failure must be detected rather than graded as
-# success. Until #108 the Run stops unresolved at the eighth page instead.
+# success. Without a compaction Decider the Run is counted unresolved at the
+# eighth page instead (`context_unreducible`).
 [[tasks]]
 id = "correction-lost-in-pruned-tool-result"
 primary_weight = 0.25
@@ -306,11 +308,13 @@ budget_usd = 300
 excluded_vendors = ["Contoso", "Northwind"]
 [tasks.expected]
 outcome = "unresolved"
+context_reason = "context_unreducible"
 long_context = "none"
 
 # Retained content (the human answer) cannot fit the window even after every
 # prunable tool result is dropped: with pruning, compaction must fail as a
-# terminal overflow. Until #108 the Run stops unresolved before any pruning.
+# terminal overflow. Without a compaction Decider the Run pauses with
+# `context_unreducible` and is counted unresolved before any pruning.
 [[tasks]]
 id = "terminal-context-overflow"
 kind = "long-context"
@@ -332,6 +336,7 @@ budget_usd = 500
 excluded_vendors = []
 [tasks.expected]
 outcome = "unresolved"
+context_reason = "context_unreducible"
 long_context = "none"
 
 # ------------------------------------------------------- tool and Skill choice

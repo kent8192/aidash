@@ -37,8 +37,14 @@ fn agent(model: &str, tools: &[&str]) -> Entry {
 	entry(
 		json!({"id":"agent","version":"1.0.0","kind":"agent","name":{"en":"Agent"},
 		"description":{"en":"Fixture"},
-		"config":{"schema_version":1,"model":{"id":model,"version":"1.0.0"},"instructions":"Help","bindings":bindings}}),
+		"config":{"schema_version":1,"model":{"id":model,"version":"1.0.0"},"instructions":"Help","bindings":bindings,"remove_default":["compaction"]}}),
 	)
+}
+/// An Agent that keeps the Node's default compaction Binding.
+fn agent_with_default_compaction() -> Entry {
+	let mut agent = agent("model", &[]);
+	agent.config["remove_default"] = json!([]);
+	agent
 }
 fn model() -> Entry {
 	entry(
@@ -442,4 +448,68 @@ async fn a_restriction_may_name_the_agent_subject_this_request_creates() {
 		.unwrap();
 	// Assert
 	assert_eq!(bindings[1].restriction, restricted(&[&subject()], &[]));
+}
+
+#[rstest]
+#[tokio::test]
+async fn the_default_compaction_decider_is_a_dependency_of_the_agent() {
+	// Arrange
+	let mut fixture = Fixture::new(vec![agent_with_default_compaction(), model()]);
+	fixture.approved.insert(("model".into(), "1.0.0".into()));
+	// Act
+	let dependencies = dependencies(
+		&agent_with_default_compaction(),
+		fixture.node().deployment.as_str(),
+	)
+	.unwrap();
+	let result = approve(&mut fixture, &[approval("agent", true)]).await;
+	// Assert
+	assert!(dependencies.contains(&reference("aidash.compaction-decider")));
+	assert!(
+		matches!(&result, Err(Error::Invalid(message)) if message == "CATALOG_DEPENDENCY_UNAPPROVED: aidash.compaction-decider@1.0.0"),
+		"{result:?}"
+	);
+	assert!(fixture.writes.is_empty());
+}
+
+#[rstest]
+#[tokio::test]
+async fn an_agent_is_approved_once_its_compaction_decider_is_approved() {
+	// Arrange
+	let decider = crate::registry::system::compaction_decider().unwrap();
+	let mut fixture = Fixture::new(vec![agent_with_default_compaction(), model(), decider]);
+	fixture.approved.insert(("model".into(), "1.0.0".into()));
+	// Act
+	let together = approve(
+		&mut fixture,
+		&[
+			approval("agent", true),
+			approval("aidash.compaction-decider", true),
+		],
+	)
+	.await;
+	// Assert
+	assert_eq!(together.unwrap().len(), 2);
+	// Arrange
+	let decider = crate::registry::system::compaction_decider().unwrap();
+	let mut fixture = Fixture::new(vec![agent_with_default_compaction(), model(), decider]);
+	fixture.approved.insert(("model".into(), "1.0.0".into()));
+	fixture
+		.approved
+		.insert(("aidash.compaction-decider".into(), "1.0.0".into()));
+	// Act
+	let already = approve(&mut fixture, &[approval("agent", true)]).await;
+	// Assert
+	assert_eq!(already.unwrap().len(), 1);
+}
+
+#[rstest]
+#[tokio::test]
+async fn an_agent_without_the_default_has_no_compaction_dependency() {
+	// Arrange
+	let entry = agent("model", &[]);
+	// Act
+	let dependencies = dependencies(&entry, "aidash://node-a").unwrap();
+	// Assert
+	assert!(!dependencies.contains(&reference("aidash.compaction-decider")));
 }

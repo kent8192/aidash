@@ -85,6 +85,16 @@ pub(crate) async fn metadata(access: &mut Access, reference: &EntityRef) -> Resu
 		.require(&resource(access, &entry), "registry.read")
 		.await?;
 	crate::marketplace::check_pinned(access, &entry).await?;
+	if aidash_domain::registry::bindings::defaults::is_compaction_decider(&entry) {
+		// A child Run admitted under this lease starts only with its own
+		// compaction Decider approved (#540). The inherited-lease fence admits
+		// a definition only when the parent's closure names it; this one is a
+		// closure member although its approval is checked when needed. The
+		// current approval is still read by the child's own start check.
+		access
+			.approved_catalog
+			.insert((reference.id.clone(), reference.version.clone()));
+	}
 	Ok(entry)
 }
 

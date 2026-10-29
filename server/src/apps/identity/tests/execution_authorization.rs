@@ -5120,7 +5120,8 @@ async fn approval_review_approves_local_items_and_activates_marketplace_on_a_non
 	)
 	.await;
 	assert_eq!(status, 200, "{result}");
-	assert_eq!(result["bindings"].as_array().unwrap().len(), 2);
+	// The Agent's default compaction Decider is a local review item too (#540).
+	assert_eq!(result["bindings"].as_array().unwrap().len(), 3);
 	assert_eq!(result["installations"].as_array().unwrap().len(), 1);
 	assert_eq!(
 		result["installations"][0]["active_revision"],
@@ -5227,6 +5228,35 @@ async fn approval_review_submission_rejects_a_dependency_changed_after_the_revie
 		.unwrap();
 	assert_eq!(model["enabled"], true);
 	assert_eq!(model["revision"], 3);
+	cleanup(f, &url, &schema).await;
+}
+
+#[rstest::rstest]
+#[tokio::test]
+async fn withdrawal_impact_names_dependent_agents_and_needs_the_right_to_withdraw(
+	#[future(awt)]
+	#[from(common::native_application)]
+	fixture: common::ApplicationFixture,
+) {
+	let (f, url, schema) = fixture.runtime.parts();
+	let app = fixture.application;
+	let (_, alice, _) = bootstrap(&f, &app, "http://127.0.0.1:9").await;
+	let node = aidash_domain::nodes::NodeName::derived("acme");
+	let path = format!("/api/authorization/acme/catalog/impact?node={node}&id=model&version=1.0.0");
+	let (status, impact) = request(&app, &alice, "GET", &path, Value::Null).await;
+	assert_eq!(status, 200, "{impact}");
+	assert_eq!(
+		impact["agents"],
+		json!([{"id":"research","version":"1.0.0"}])
+	);
+	assert_eq!(impact["running_runs"], 0);
+	// An unknown version is not found, never an empty impact.
+	let missing =
+		format!("/api/authorization/acme/catalog/impact?node={node}&id=absent&version=1.0.0");
+	assert_eq!(
+		request(&app, &alice, "GET", &missing, Value::Null).await.0,
+		404
+	);
 	cleanup(f, &url, &schema).await;
 }
 

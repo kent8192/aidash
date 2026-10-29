@@ -13,9 +13,9 @@ use crate::apps::identity::serializers::policies::AuthorizationPage;
 use crate::apps::identity::serializers::policies::AuthorizationUpdate;
 use crate::apps::identity::serializers::policies::CredentialInput;
 use crate::apps::identity::serializers::policies::{
-	CatalogApprovalRequestPage, CatalogApprovalRequestView, CatalogApprovals, CatalogInput,
-	CatalogRequestDecline, CatalogRequestInput, CatalogRequestPage, CatalogReviewQuery,
-	CatalogReviewResult,
+	CatalogApprovalRequestPage, CatalogApprovalRequestView, CatalogApprovals, CatalogImpactQuery,
+	CatalogInput, CatalogRequestDecline, CatalogRequestInput, CatalogRequestPage,
+	CatalogReviewQuery, CatalogReviewResult,
 };
 use crate::apps::identity::serializers::remote::PrepareInput;
 use crate::apps::identity::serializers::remote::Prepared;
@@ -495,6 +495,15 @@ pub(crate) fn register(contracts: &mut Contracts, document: &mut OpenApiSchema) 
 	)?;
 	contracts.query::<_, CatalogReviewQuery>(document, views::policies::catalog_review)?;
 	contracts.path(document, views::policies::catalog_review, &["String"])?;
+	contracts
+		.response::<_, aidash_application::authorization::catalog::withdrawal::WithdrawalImpact>(
+			document,
+			views::policies::catalog_impact,
+			200,
+			"application/json",
+		)?;
+	contracts.query::<_, CatalogImpactQuery>(document, views::policies::catalog_impact)?;
+	contracts.path(document, views::policies::catalog_impact, &["String"])?;
 	contracts.response::<_, CatalogReviewResult>(
 		document,
 		views::policies::submit_catalog_review,

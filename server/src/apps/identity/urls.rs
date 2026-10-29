@@ -170,6 +170,8 @@ pub fn url_patterns() -> UnifiedRouter {
 			.with_route_middleware(AccessBoundary::authenticated().with_visibility())
 			.endpoint(policies::catalog_review)
 			.with_route_middleware(AccessBoundary::authenticated().with_visibility())
+			.endpoint(policies::catalog_impact)
+			.with_route_middleware(AccessBoundary::authenticated().with_visibility())
 			.endpoint(policies::submit_catalog_review)
 			.with_route_middleware(AccessBoundary::authenticated().with_visibility())
 			.endpoint(policies::create_catalog_request)

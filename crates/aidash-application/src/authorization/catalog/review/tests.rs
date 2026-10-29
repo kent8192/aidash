@@ -58,9 +58,15 @@ fn agent(model: &str, dependencies: &[(&str, &str)]) -> Entry {
 				"target": {"registry_deployment": "aidash://test-deployment", "id": id, "version": "1.0.0"},
 				"narrow": {},
 			})).collect::<Vec<_>>(),
-			"remove_default": [],
+			"remove_default": ["compaction"],
 		}),
 	)
+}
+/// An Agent that keeps the Node's default compaction Binding.
+fn agent_with_default_compaction() -> Entry {
+	let mut agent = agent("model", &[]);
+	agent.config["remove_default"] = json!([]);
+	agent
 }
 impl Fixture {
 	fn new(entries: Vec<Entry>) -> Self {
@@ -483,5 +489,49 @@ async fn an_installation_plan_uses_the_review_node_and_restriction() {
 	assert!(
 		plan.satisfied_by_activation
 			.contains(&("copy".into(), "1.0.0".into()))
+	);
+}
+
+#[rstest]
+#[tokio::test]
+async fn the_review_includes_the_compaction_decider_the_node_binds_by_default() {
+	// Arrange
+	let mut fixture = Fixture::new(vec![
+		agent_with_default_compaction(),
+		entry("model", "model", json!({})),
+		crate::registry::system::compaction_decider().unwrap(),
+	]);
+	fixture.approve("writer", None);
+	fixture.approve("model", None);
+	// Act
+	let pending = review(&mut fixture, &reference("writer")).await.unwrap();
+	fixture.approve("aidash.compaction-decider", None);
+	let approved = review(&mut fixture, &reference("writer")).await.unwrap();
+	// Assert
+	let decider = pending
+		.items
+		.iter()
+		.find(|item| item.reference.id == "aidash.compaction-decider")
+		.expect("the default compaction Decider is a review item");
+	assert!(!decider.approved && !pending.ready);
+	assert!(approved.ready);
+}
+
+#[rstest]
+#[tokio::test]
+async fn the_review_omits_the_compaction_decider_when_the_default_is_removed() {
+	// Arrange
+	let mut fixture = Fixture::new(vec![
+		agent("model", &[]),
+		entry("model", "model", json!({})),
+	]);
+	// Act
+	let review = review(&mut fixture, &reference("writer")).await.unwrap();
+	// Assert
+	assert!(
+		review
+			.items
+			.iter()
+			.all(|item| item.reference.id != "aidash.compaction-decider")
 	);
 }

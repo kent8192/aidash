@@ -457,6 +457,11 @@ impl ExecutionAdmissionSession for Admission<'_> {
 			.await
 			.map_err(Into::into)
 	}
+	async fn decider_entry(&mut self, reference: &EntityRef) -> Result<Entry> {
+		catalog::entry(self.access, reference, aidash_domain::decision::INVOKE)
+			.await
+			.map_err(Into::into)
+	}
 	async fn active_installation(&mut self, entry: &Entry) -> Result<bool> {
 		crate::marketplace::active(self.access, entry)
 			.await

@@ -34,9 +34,9 @@ fn control_service(f: Federation) -> Authorization {
 
 use crate::apps::identity::serializers::policies::{
 	AuthorizationPage, AuthorizationUpdate, CatalogApprovalRequestPage, CatalogApprovalRequestView,
-	CatalogInput, CatalogRequestDecline, CatalogRequestInput, CatalogRequestNextAction,
-	CatalogRequestPage, CatalogRequestReview, CatalogReviewQuery, CatalogReviewResult,
-	CredentialInput, CredentialPage, CredentialRevocation, PolicyReplacement,
+	CatalogImpactQuery, CatalogInput, CatalogRequestDecline, CatalogRequestInput,
+	CatalogRequestNextAction, CatalogRequestPage, CatalogRequestReview, CatalogReviewQuery,
+	CatalogReviewResult, CredentialInput, CredentialPage, CredentialRevocation, PolicyReplacement,
 };
 use aidash_application::authorization::catalog::review::{
 	ApprovalReview, ApprovalReviewSubmission, ReviewItem,
@@ -305,6 +305,46 @@ impl PolicyAdministration {
 			Ok(
 				aidash_application::authorization::catalog::review::review(&mut scope, &root)
 					.await?,
+			)
+		}
+		.await;
+		access.finish(result).await
+	}
+
+	/// What withdrawing one approved version affects on one Node. Reading it
+	/// needs the right to withdraw it; the withdrawal itself is never blocked.
+	pub(crate) async fn withdrawal_impact(
+		&self,
+		actor: Actor,
+		tenant: String,
+		query: CatalogImpactQuery,
+	) -> Result<aidash_application::authorization::catalog::withdrawal::WithdrawalImpact> {
+		let f = self.runtime.clone();
+		let identity = tenant_subject(actor, &tenant)?;
+		let mut access = Access::begin(&f.store, &identity).await?;
+		let result = async {
+			let node = query.node;
+			crate::apps::identity::repositories::nodes::get(
+				&mut **access.tx,
+				&tenant,
+				node.as_str(),
+			)
+			.await?;
+			access.set_node(node.clone());
+			let reference = crate::registry::EntityRef {
+				id: query.id,
+				version: query.version,
+			};
+			let mut scope =
+				crate::apps::identity::repositories::catalog_withdrawal::WithdrawalScope {
+					access: &mut access,
+					node: f.config.deployment.node(node),
+				};
+			Ok(
+				aidash_application::authorization::catalog::withdrawal::impact(
+					&mut scope, &reference,
+				)
+				.await?,
 			)
 		}
 		.await;
