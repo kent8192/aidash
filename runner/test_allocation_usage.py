@@ -568,6 +568,23 @@ class AllocationUsageTest(unittest.TestCase):
         self.assertTrue(allocation['released'])
         self.assertNotIn('cleanup_blocker', allocation)
 
+    def test_restart_replays_the_serve_cleanup_handoff_lost_after_the_terminal_save(self):
+        self.record.update(container_id='a'*64, serve={'status':'running', 'pod_host':'10.0.0.9'},
+                           request={'usage_tenant':'acme', 'kind':'serve'})
+        save(self.runner.path(self.operation), self.record)
+        self.runner.observe_allocation(self.record, self.pod)
+        self.runner.guard = Mock(return_value={'termination_confirmed':True})
+        self.runner.startup_log = Mock(return_value='listening')
+        self.runner.pod = Mock(return_value=None)
+        # Crash after the terminal save, before the handoff call.
+        self.runner.allocation_harvested = Mock()
+        self.runner.stop_serve(self.runner.get(self.operation), 'cancelled', 'cancelled')
+        allocation_path = self.root / 'allocations' / (self.uid+'.json')
+        self.assertFalse(json.loads(allocation_path.read_bytes()).get('cleanup_ready', False))
+        runner = self.restart()
+        runner.recover()
+        self.assertTrue(json.loads(allocation_path.read_bytes())['cleanup_ready'])
+
     def test_cleanup_preconditions_preserve_a_same_name_replacement_and_expose_the_blocker(self):
         with patch('allocation_usage.time.time', return_value=1000):
             self.runner.observe_allocation(self.record, self.pod)

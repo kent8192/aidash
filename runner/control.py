@@ -838,8 +838,10 @@ class Runner(AllocationJournal):
                 confirmed = True
         except Exception as error:
             print(f"Live preview stop {operation}: {error}", file=sys.stderr, flush=True)
+        # The terminal status and startup log are the preview's whole durable
+        # output; marking it harvested lets restart recovery replay the handoff.
         self.update(operation, status=status, finished_at=time.time(),
-                    termination_confirmed=confirmed,
+                    termination_confirmed=confirmed, output_harvested=True,
                     serve={"status": "stopped" if confirmed else "stopping",
                            "startup_log": log, "reason": reason,
                            "pod_host": (record.get("serve") or {}).get("pod_host")})
