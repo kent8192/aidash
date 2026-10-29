@@ -323,36 +323,22 @@ pub async fn register_source(
 	}
 }
 
-/// POSTs a Peer Graph View request. A subject viewer is a Node's request as
-/// that subject; a Deployment Administrator viewer has no Node, names the
-/// receiving Deployment and acts under a Peer Graph Grant.
+/// POSTs a Peer Graph View request as `subject` of the sending Node.
 #[allow(dead_code)]
 pub async fn post_graph(
 	app: &TestApplication,
 	source: &Source,
-	viewer: &Value,
+	subject: &str,
 	payload: &Value,
 ) -> (u16, Value) {
 	use peering::Bearer;
-	let (receiver, bearer, subject) = if viewer["kind"] == "deployment_administrator" {
-		let identity = viewer["id"].as_str().unwrap().parse().unwrap();
-		(
-			source.receiver.deployment.to_string(),
-			Bearer::Viewer(&source.remote, identity),
-			String::new(),
-		)
-	} else {
-		(
-			source.receiver.to_string(),
-			Bearer::Signed(&source.remote, source.node.clone()),
-			viewer["subject"].as_str().unwrap().to_owned(),
-		)
-	};
+	let receiver = source.receiver.to_string();
+	let bearer = Bearer::Signed(&source.remote, source.node.clone());
 	let response = peering::post_as(
 		&app.client(),
 		&receiver,
 		bearer,
-		&subject,
+		subject,
 		"/federation/v0.1/scoped/graph",
 		payload,
 	)
@@ -1052,6 +1038,8 @@ pub fn runtime(execution_database: DatabaseFuture, http_client: reqwest::Client)
 				federation: true,
 				deployment_key: None,
 				tier_limits: std::sync::Arc::new(aidash_application::ports::nodes::NoTierLimits),
+				preview: None,
+				dashboard_origin: "http://localhost:3000".into(),
 			},
 			client: http_client,
 			notify: Arc::new(tokio::sync::Notify::new()),

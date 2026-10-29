@@ -16,6 +16,12 @@ pub trait WorkerLeases: Send + Sync {
 #[async_trait]
 pub trait WorkerStep: Send {
 	fn metadata(&self) -> RunMetadata;
+	/// The Tenant that owns the Run, for log context only. A Deployment
+	/// Administrator who finds a runaway `run_id` in the logs needs it to name
+	/// the Run in a Safety Stop (ADR 0101).
+	async fn tenant(&mut self) -> Option<String> {
+		None
+	}
 	fn recovery_store(&self) -> &dyn ExecutionRecoveryStore;
 	fn classify_failure(&self, error: Error) -> ExecutionFailure;
 	async fn cancel_scoped(&mut self, token: Uuid) -> Result<bool>;

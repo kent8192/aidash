@@ -435,6 +435,8 @@ async fn admission_must_exist_and_match_its_bound_grant_before_visibility(
 			revision: 0,
 			observed_input_seq: 0,
 			ledger_worker_ready: true,
+			control_revision: 0,
+			control_source: Default::default(),
 			error: None,
 			lease_owner: None,
 			lease_until: None,

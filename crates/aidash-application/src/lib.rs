@@ -12,12 +12,14 @@ pub mod memory;
 pub mod plan_connections;
 pub mod plugin_tools;
 pub mod ports;
+pub mod preview;
 pub mod provider_access;
 pub mod provider_authorization;
 pub mod provider_credentials;
 pub mod recovery;
 pub mod research;
 pub mod retention;
+pub mod safety_stop;
 pub mod tenancy;
 pub mod tenant_secrets;
 pub mod usage;
@@ -52,6 +54,10 @@ pub enum Error {
 	Unauthorized,
 	#[error("forbidden")]
 	Forbidden,
+	/// The Run's authority refused a tool call; it pauses naming the tool and
+	/// the check. Everywhere else it is a [`Error::Forbidden`].
+	#[error("forbidden")]
+	AuthorityRefused(Box<aidash_domain::tool::AuthorityRefusal>),
 	#[error("{0}")]
 	External(String),
 	#[error("verified model media route unavailable for {0}")]

@@ -280,7 +280,7 @@ Scoped workspace creation saves tenant and owner independently of editable works
 
 For example, an allow policy with `subjects: {"ids":["alice"]}`, these actions, `resources: {"kinds":["workspace"]}` and a condition comparing resource `/owner` to literal `"alice"` grants Alice access to her workspaces in that tenant. Another tenant's Alice cannot access them. Workspace read opens the workspace. Its tasks, artifacts and messages additionally require `task.read`, `artifact.read` and `message.read` on each stored record. Artifact reads also require the producing task to be readable. Existing policies that only grant workspace actions must explicitly add these resource actions; no implicit content grant is retained.
 
-Collection responses filter by persisted tenant/ownership and the active policy. Scoped `/api/state` includes only approved, readable Registry entries and omits installation data. Run details, control responses, state collections, human-request listings and run-related events also require the run's `task.read`, `run.read`, `memory.read`, `human.read` for its human requests, and current read permission for recorded sources. The human-read gate also protects prompts and answers copied into a run journal. These filters apply to API snapshots, SSE frames and the workspace snapshots supplied to models and observation tools. Node Registrations belong to a Tenant and need `node_registration.update`; a Tenant's policy, Subject Credentials and Peer Mappings are managed under the policy actions above. Every workspace, task and Run belongs to a Tenant: the Deployment Administrator token cannot create workspaces, tasks, messages or conversations, claim or delegate tasks, or answer a Run's human requests, and a Run without an authorization record never executes (ADR 0043). A Deployment Administrator who wants to run work does so inside a Tenant, through a Mapping or a Subject Credential. The Deployment Administrator token retains privileged bootstrap, administration, reads, Run controls and recovery access.
+Collection responses filter by persisted tenant/ownership and the active policy. Scoped `/api/state` includes only approved, readable Registry entries and omits installation data. Run details, control responses, state collections, human-request listings and run-related events also require the run's `task.read`, `run.read`, `memory.read`, `human.read` for its human requests, and current read permission for recorded sources. The human-read gate also protects prompts and answers copied into a run journal. These filters apply to API snapshots, SSE frames and the workspace snapshots supplied to models and observation tools. Node Registrations belong to a Tenant and need `node_registration.update`; a Tenant's policy, Subject Credentials and Peer Mappings are managed under the policy actions above. Every workspace, task and Run belongs to a Tenant: the Deployment Administrator token cannot create workspaces, tasks, messages or conversations, claim or delegate tasks, or answer a Run's human requests, and a Run without an authorization record never executes (ADR 0043). A Deployment Administrator who wants to run work does so inside a Tenant, through a Mapping or a Subject Credential. The Deployment Administrator token retains privileged bootstrap, administration, reads and recovery access. Its only Run control is the content-free Safety Stop below; `POST /api/runs/{id}/control` refuses every Deployment Administrator, browser session and shared token alike, for every action.
 
 SSE validates scope before sending HTTP 200 and reloads credential/policy authority before each event frame, including already buffered events. It holds no database lock while yielding a frame. Polling without delivery does not append repeated decision audits. Credential revocation interrupts the stream; permission revocation prevents further matching delivery and denies reconnection to the revoked workspace.
 
@@ -341,6 +341,20 @@ Each worker boundary reloads and locks the current policy, credential, grant, wo
 The `serve` process reserves a separate database pool for workers so API requests waiting to revoke authority cannot exhaust the connections needed to finish an effect. Embedded runners should construct their worker Federation with `Federation::for_workers()` before starting workers. Pool settings and connection initialization hooks are preserved. Deploy this version to all workers before admitting scoped runs; older workers do not enforce execution grants.
 
 Scoped remote delegation uses durable source grants, receiver admissions and scoped Worker/Home boundaries, described below. It is the only remote delegation: the unscoped peer offer, workspace-command and control endpoints are removed (ADR 0043).
+
+### Safety Stop
+
+A Deployment Administrator can pause or cancel one Run this Deployment executes, without seeing its content and never resuming it (ADR 0101). The route is `GET`/`POST /api/runs/{id}/management`, and the request names the Tenant and the Run.
+
+- `GET /api/runs/{id}/management?tenant=<tenant>` returns only `id`, `phase`, `control`, `control_revision` and `control_source`. A Run that does not exist and a Run of another Tenant give the same 404. A deleted Tenant answers `410 tenant_deleted`.
+- `POST` takes `{"tenant", "action": "pause"|"cancel", "expected_control_revision", "reason"}` and an `Idempotency-Key` UUID header. The reason is 1 to 1000 characters after trimming. The receipt is `{operation_id, run_id, tenant, action, outcome}`, where `outcome` is `accepted` or `no_op`. It acknowledges the command and says nothing about the Run's state afterwards.
+- `control_revision` changes only when control changes, never with worker progress. A mismatch answers `409` and needs a fresh read. A Run that has ended, or whose cancellation is already requested, answers a `no_op` receipt whatever the revision. Pausing an already paused Run is accepted: it stays paused, `control_source` becomes `deployment_administrator`, and the revision increases.
+- The same `Idempotency-Key` from the same caller with the same input returns the original receipt with no second effect, even after a Tenant resumed the Run. Different input under that key answers `409`. Every holder of the shared recovery token is one caller; each named browser administrator is another.
+- The control change, the audit record and the receipt commit together, and workers are told only after the commit. A browser administrator's Identity is recorded; the shared token is recorded as a shared actor and names nobody.
+- Pause prevents later scheduling and does not interrupt an inference in progress. Cancel asks the existing mechanisms to interrupt current work and cannot undo a call already sent to an external system. A manual pause is never resumed by the automatic recovery from an identity-status outage; only fresh Tenant authority resumes it.
+- A Run is stopped on the Deployment that executes it, including a receiver of required-Home work whose content is hidden. The command is not forwarded to another Deployment.
+- Anyone who can see the Run sees `control_source` (`tenant`, `deployment_administrator` or `system`). The reason is visible only to holders of `decision.read` through `GET /api/authorization/{tenant}/safety-stops`, which is closed while the Tenant is deleted or purged and which a Deployment Administrator cannot read. The records are audit history, kept for `audit_retention_days` after a purge.
+- A Tenant Subject keeps the supported contract of the route (`{"action"}` under `run.control`); a Subject request carrying `tenant`, `expected_control_revision` or `reason` answers `400`, and it is not added to the Safety Stop audit.
 
 ## Approval Rules and Modes
 
@@ -471,38 +485,22 @@ Generated semantic queries and background indexing use resource kind `embedding`
 
 ### Federated Graph View authority
 
-Graph View calls `GET /api/federation/graph/peers?node=<sending Node>` on the local Node to list the destination Nodes that the viewer may read. A Subject needs `federation.graph.read` on each destination Node. A Deployment Administrator has no Node and lists none. Its graph reads need a currently authenticated named browser identity; the shared recovery API token cannot read a remote graph. Topology is available to authorized Subjects.
+Graph View calls `GET /api/federation/graph/peers?node=<sending Node>` on the local Node to list the destination Nodes that the Subject may read. A Subject needs `federation.graph.read` on each destination Node. A Deployment Administrator without a Tenant Subject has no Subject, so `GET peers` and `POST expand` refuse it with 403; it opens the graph with Tenant authority, that is, through a Tenant Mapping. Topology is available to authorized Subjects.
 
 Expansion calls `POST /api/federation/graph` with one `node_id`, a Graph mode,
 an optional local `scope_workspace`, `depth: 1`, allowlisted `kinds` and `relations`, an
 activity window (`hours`), a page `limit` of 2–80 and an optional opaque
-`cursor`. A Deployment Administrator also selects exactly one `target_tenant` at the receiving
-Node. For a Deployment Administrator, `node_id` is the other Deployment's id, and `endpoint` names where that Deployment answers. The local Node checks the active viewer and selected Workspace before
-sending the request with a Federation token signed by its Deployment Key. The
-sending Node is the one named by `sending_node`, or the Tenant's default Node when that is omitted. It never accepts a caller supplied Subject or Deployment
-Administrator identity for forwarding.
+`cursor`. The local Node checks the active Subject and selected Workspace before
+sending the Graph request, which names that `subject`, with a Federation token signed by its Deployment Key. The
+sending Node is the one named by `sending_node`, or the Tenant's default Node when that is omitted. It never accepts a caller supplied Subject for forwarding.
 
 The receiving Node serves `POST /federation/v0.1/scoped/graph` only to a
-registered Node or, for a Deployment Administrator, to a named viewer under a
-Peer Graph Grant. For a Subject, its exact inbound Peer Mapping and current
-local credential, policy and delegation ancestors must allow
-`federation.graph.read` on the receiving Node. Each resource then passes its
+registered Node. A cross-Deployment Graph View needs a Subject with a Node Registration, its
+exact inbound Peer Mapping on the receiving Node and the receiving Tenant's `federation.graph.read`, and the
+current local credential, policy and delegation ancestors must allow it. Each resource then passes its
 existing read gate and tenant catalog approval. The source Node's local
 `registry.read` policy does not replace the receiver's decision for a B owned
-resource. The mapping, Node Registration and authority are rechecked on every page.
-
-For a named Deployment Administrator of another Deployment, a receiving Deployment Administrator can create or
-change a Peer Graph Grant with `POST /api/authorization/{tenant}/peer-graph-grants` and list grants
-with `GET` on the same path (`offset`, `limit`, maximum 200). The body contains
-`source_deployment` (the viewer's Deployment id), `source_identity` (the source
-browser identity UUID), `endpoint`, `key_id`, `enabled` and `expected_revision`
-(zero on creation). The server fetches `{endpoint}/.well-known/aidash` like a
-Node Registration does and pins the key whose ID was typed; the viewer's token
-must verify with it, so a changed key on the viewer's side fails until the grant
-is created again with the new key ID. A Peer Graph Grant applies to one tenant and
-one named source identity; it confers no Deployment Administrator authority and never turns a
-subject mapping into a Deployment Administrator mapping. Disabling the grant denies the next page or refresh. Catalog
-approvals and the graph display allowlist still apply under a Peer Graph Grant.
+resource. The Node Registration, mapping and authority are rechecked on every page.
 
 The projection returns only authorized display fields and edges backed by an
 authorized record. A readable Workspace's Goal node carries its full current

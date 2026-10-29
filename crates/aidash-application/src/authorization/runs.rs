@@ -17,11 +17,20 @@ pub async fn control(
 	repository.notify();
 	Ok(run)
 }
-pub async fn control_in(
-	scope: &mut dyn RunControlScope,
+/// Whether the caller may control `id`, committing the authority read.
+pub async fn authorize_run(
+	repository: &dyn RunControlRepository,
 	id: Uuid,
-	action: RunControlAction,
 ) -> Result<RunInspection> {
+	let mut scope = repository.begin().await?;
+	let result = authorize(scope.as_mut(), id).await;
+	scope.finish(result).await
+}
+
+/// The current authority to control `id`: the Run is visible and `run.control`
+/// is allowed. A caller that may stop its Live preview without controlling the
+/// Run checks its own requester relation instead (ADR 0070).
+pub async fn authorize(scope: &mut dyn RunControlScope, id: Uuid) -> Result<RunInspection> {
 	let raw = scope.run(id).await?.ok_or(Error::Forbidden)?;
 	let run = raw.inspect();
 	let workspace = scope.workspace(run.workspace_id).await?;
@@ -32,6 +41,15 @@ pub async fn control_in(
 	}
 	let resource = scope.resource("run", &id.to_string(), json!({}));
 	scope.require(&resource, "run.control").await?;
+	Ok(run)
+}
+
+pub async fn control_in(
+	scope: &mut dyn RunControlScope,
+	id: Uuid,
+	action: RunControlAction,
+) -> Result<RunInspection> {
+	authorize(scope, id).await?;
 	if action == RunControlAction::Resume {
 		let grant = scope
 			.lock_execution_grant(id)

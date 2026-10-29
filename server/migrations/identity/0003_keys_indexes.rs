@@ -86,17 +86,6 @@ pub(super) fn migration() -> Migration {
 			},
 		})
 		.add_operation(Operation::AddConstraintDefinition {
-			table: "authorization_peer_graph_grants".to_owned(),
-			constraint: Constraint::PrimaryKey {
-				name: "authorization_peer_graph_grants_pkey".to_owned(),
-				columns: vec![
-					"tenant".to_owned(),
-					"source_deployment".to_owned(),
-					"source_identity".to_owned(),
-				],
-			},
-		})
-		.add_operation(Operation::AddConstraintDefinition {
 			table: "authorization_remote_commands".to_owned(),
 			constraint: Constraint::PrimaryKey {
 				name: "authorization_remote_commands_pkey".to_owned(),

@@ -35,6 +35,22 @@ impl Federation {
 				.map_err(|error| Error::External(format!("invalid response JSON: {error}"))),
 			503 if reply.transaction_pending => Err(Error::TransactionPending),
 			409 if reply.run_message_pending => Err(Error::TransactionPending),
+			403 if path.starts_with("/scoped/previews/") => Err(Error::Forbidden),
+			404 if path.starts_with("/scoped/previews/") => Err(Error::NotFound(
+				"remote preview resource unavailable".into(),
+			)),
+			409 if path.starts_with("/scoped/previews/") => {
+				let message = reply.body.get("error").and_then(Value::as_str);
+				match message {
+					Some("PREVIEW_UNAVAILABLE") => {
+						Err(Error::Conflict("PREVIEW_UNAVAILABLE".into()))
+					}
+					Some(message) if message.starts_with("FILE_VERSION_QUOTA_EXCEEDED:") => {
+						Err(Error::Conflict(message.into()))
+					}
+					_ => Err(Error::Conflict("remote task state changed".into())),
+				}
+			}
 			409 => Err(Error::Conflict("remote task state changed".into())),
 			_ => Err(Error::External(format!(
 				"peer {node} returned {}",

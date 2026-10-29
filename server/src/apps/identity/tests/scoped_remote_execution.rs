@@ -1074,6 +1074,63 @@ async fn configure_semantic(
 
 #[rstest::rstest]
 #[tokio::test]
+async fn remote_file_preview_reports_a_host_without_a_preview_domain(
+	#[future(awt)] scoped_pair: Pair,
+) {
+	let p = scoped_pair;
+	p.step().await;
+	p.step().await;
+	let (status, inspection) = request(
+		&p.aa,
+		&p.token,
+		"GET",
+		&format!("/api/runs/{}/remote-preview", p.admission),
+		json!(null),
+	)
+	.await;
+	assert_eq!(status, 200, "{inspection}");
+	assert_eq!(inspection["preview_available"], false);
+	assert!(inspection["area_id"].is_string(), "{inspection}");
+	let (status, body) = request(
+		&p.aa,
+		&p.token,
+		"POST",
+		&format!("/api/runs/{}/preview-tickets", p.admission),
+		json!({
+			"kind": "file",
+			"area_id": Uuid::new_v4(),
+			"file_id": Uuid::new_v4(),
+		}),
+	)
+	.await;
+	assert_eq!(status, 409, "{body}");
+	assert!(body.to_string().contains("PREVIEW_UNAVAILABLE"), "{body}");
+	let (status, body) = request(
+		&p.aa,
+		&p.token,
+		"POST",
+		&format!("/api/tasks/{}/remote-grants/{}/revoke", p.task, p.grant),
+		json!({}),
+	)
+	.await;
+	assert_eq!(status, 200, "{body}");
+	let (status, _) = request(
+		&p.aa,
+		&p.token,
+		"GET",
+		&format!("/api/runs/{}/remote-preview", p.admission),
+		json!(null),
+	)
+	.await;
+	assert_eq!(
+		status, 403,
+		"a revoked source grant cannot inspect H's File versions"
+	);
+	p.close().await;
+}
+
+#[rstest::rstest]
+#[tokio::test]
 async fn foreign_run_events_keep_the_executing_node(#[future(awt)] scoped_pair: Pair) {
 	let p = scoped_pair;
 	p.step().await;
@@ -4337,14 +4394,64 @@ async fn deployment_administrator_content_views_cannot_bypass_both_node_subject_
 		&p.ba,
 		&p.b.config.api_token,
 		"GET",
-		&format!("/api/runs/{}/management", p.admission),
+		&format!("/api/runs/{}/management?tenant=acme", p.admission),
 		Value::Null,
 	)
 	.await;
 	assert_eq!(status, 200, "{control}");
-	assert!(control.get("context").is_none());
-	assert!(control.get("pending").is_none());
-	assert!(control.get("error").is_none());
+	let mut keys: Vec<_> = control.as_object().unwrap().keys().cloned().collect();
+	keys.sort();
+	assert_eq!(
+		keys,
+		[
+			"control",
+			"control_revision",
+			"control_source",
+			"id",
+			"phase"
+		],
+		"the administrator reads the allowlisted metadata only"
+	);
+	// A receiver whose content is hidden by required Home is still stoppable
+	// here, with no message to its Home Deployment.
+	let operation = Uuid::new_v4().to_string();
+	let before_phase = control["phase"].as_str().unwrap().to_owned();
+	let stop = common::http_response(
+		&p.ba,
+		"POST",
+		&format!("/api/runs/{}/management", p.admission),
+		&[
+			("authorization", &format!("Bearer {}", p.b.config.api_token)),
+			("content-type", "application/json"),
+			("idempotency-key", &operation),
+		],
+		json!({"tenant":"acme","action":"pause","expected_control_revision":control["control_revision"],"reason":"stop the receiver"})
+			.to_string()
+			.as_bytes(),
+	)
+	.await;
+	assert_eq!(stop.status_code(), 200, "{:?}", stop.body());
+	let receipt: Value = serde_json::from_slice(stop.body()).unwrap();
+	let ended = ["COMPLETED", "FAILED", "CANCELLED"].contains(&before_phase.as_str());
+	// A Run that has ended changes nothing; any other is paused by this stop.
+	assert_eq!(
+		receipt["outcome"],
+		if ended { "no_op" } else { "accepted" },
+		"{receipt}"
+	);
+	let (status, control) = request(
+		&p.ba,
+		&p.b.config.api_token,
+		"GET",
+		&format!("/api/runs/{}/management?tenant=acme", p.admission),
+		Value::Null,
+	)
+	.await;
+	assert_eq!(status, 200, "{control}");
+	if !ended {
+		assert_eq!(control["control"], "PAUSED");
+		assert_eq!(control["control_source"], "deployment_administrator");
+	}
 	let snapshot =
 		p.a.store
 			.snapshot(&TEST_FIXTURE, task.workspace_id)

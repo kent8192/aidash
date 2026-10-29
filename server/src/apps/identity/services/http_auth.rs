@@ -64,12 +64,7 @@ pub(crate) fn browser_deployment_administrator_allowed(method: &Method, path: &s
 	}
 	if matches!(
 		segments.as_slice(),
-		[
-			"",
-			"runs",
-			_,
-			"control" | "management" | "research-revocation"
-		] | ["", "tasks", _, "abandon"]
+		["", "runs", _, "management" | "research-revocation"] | ["", "tasks", _, "abandon"]
 	) {
 		return true;
 	}
@@ -112,32 +107,3 @@ pub(crate) fn browser_deployment_administrator_allowed(method: &Method, path: &s
 #[cfg(test)]
 #[path = "../tests/http_auth.rs"]
 mod tests;
-
-/// The viewer a Peer Graph Grant admitted: a Deployment Administrator of
-/// another Deployment, which has no Node.
-#[derive(Clone)]
-pub(crate) struct ViewerCall(pub aidash_application::federation::inbound::AdmittedViewer);
-
-/// Who called the one route that serves both a Node and a grant's viewer.
-#[derive(Clone)]
-pub(crate) enum GraphCaller {
-	Node(aidash_application::federation::inbound::Admitted),
-	Viewer(aidash_application::federation::inbound::AdmittedViewer),
-}
-
-#[async_trait::async_trait]
-impl reinhardt::Injectable for GraphCaller {
-	async fn inject(ctx: &reinhardt::InjectionContext) -> reinhardt::DiResult<Self> {
-		let request = ctx
-			.get_http_request()
-			.ok_or_else(|| reinhardt::DiError::NotFound("admitted Federation caller".into()))?;
-		if let Some(call) = request.extensions.get::<InboundCall>() {
-			return Ok(Self::Node(call.0));
-		}
-		request
-			.extensions
-			.get::<ViewerCall>()
-			.map(|call| Self::Viewer(call.0))
-			.ok_or_else(|| reinhardt::DiError::NotFound("admitted Federation caller".into()))
-	}
-}

@@ -69,6 +69,8 @@ fn repository() -> Repository {
 		revision: 7,
 		observed_input_seq: 4,
 		ledger_worker_ready: true,
+		control_revision: 0,
+		control_source: Default::default(),
 		error: Some("paused reason".into()),
 		lease_owner: None,
 		lease_until: None,

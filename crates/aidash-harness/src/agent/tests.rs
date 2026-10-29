@@ -236,6 +236,8 @@ struct State {
 	failing_save: Mutex<Option<&'static str>>,
 	/// The authority's tool checks pass instead of being unexpected.
 	permit_tools: bool,
+	/// The authority's tool checks refuse the call with this argument error.
+	reject_tools: Option<String>,
 	/// Answers of `tool_call_approval` in call order.
 	tool_call_approvals: Mutex<VecDeque<ToolCallApproval>>,
 	/// The requests `tool_call_approval` received.
@@ -1007,6 +1009,9 @@ impl ExecutionAuthority for Backend {
 		_contract: &aidash_domain::tool::ToolContract,
 	) -> Result<()> {
 		let _ = call;
+		if let Some(message) = &self.0.reject_tools {
+			return Err(Error::Invalid(message.clone()));
+		}
 		if self.0.permit_tools {
 			return Ok(());
 		}
@@ -1655,6 +1660,8 @@ fn fixture() -> Fixture {
 		revision: 0,
 		observed_input_seq: 0,
 		ledger_worker_ready: true,
+		control_revision: 0,
+		control_source: Default::default(),
 		error: None,
 		lease_owner: Some(token),
 		lease_until: Some(now),
@@ -1776,6 +1783,7 @@ fn fixture() -> Fixture {
 		closed_sessions: Mutex::new(vec![]),
 		failing_save: Mutex::new(None),
 		permit_tools: false,
+		reject_tools: None,
 		tool_call_approvals: Mutex::new(VecDeque::new()),
 		tool_call_requests: Mutex::new(vec![]),
 		approval_mode: None,
@@ -5930,4 +5938,24 @@ async fn provider_registered_sources_join_existing_lifecycle_phases(
 			.map(|item| item.content.clone()),
 	};
 	assert_eq!(documents, Some(json!([])));
+}
+
+#[test]
+fn cited_file_versions_are_named_by_path_and_digest_prefix() {
+	let digest = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
+	let record = serde_json::json!({
+		"content": "please correct this",
+		"citations": [
+			{"file_id": "00000000-0000-0000-0000-000000000001", "path": "index.html", "digest": digest},
+			{"file_id": "00000000-0000-0000-0000-000000000002", "path": "no-digest"}
+		]
+	});
+	assert_eq!(
+		cited_versions(&record),
+		vec![
+			"index.html@0123456789ab (File version 00000000-0000-0000-0000-000000000001)"
+				.to_string()
+		]
+	);
+	assert!(cited_versions(&serde_json::json!({"content": "plain"})).is_empty());
 }
