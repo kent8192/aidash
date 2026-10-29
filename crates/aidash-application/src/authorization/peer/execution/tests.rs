@@ -233,3 +233,18 @@ async fn denied_bound_tool_invocation_prevents_remote_preflight() {
 	);
 	assert!(!scope.calls.iter().any(|(name, _)| name == "lineage"));
 }
+
+/// The executing Node requires its own Catalog Approval of the Agent's
+/// compaction Decider before a Run may start there (#540).
+#[rstest]
+#[tokio::test]
+async fn an_unapproved_compaction_decider_refuses_remote_preflight_on_the_executing_node() {
+	let mut scope = Scope::new();
+	scope.denied_action = Some(aidash_domain::decision::INVOKE.into());
+	let result = inspect(&mut scope, "aidash://home", &input()).await;
+	assert!(
+		matches!(&result, Err(Error::Conflict(message)) if message == "COMPACTION_DECIDER_UNAPPROVED: aidash.compaction-decider@1.0.0"),
+		"{result:?}"
+	);
+	assert!(!scope.calls.iter().any(|(name, _)| name == "lineage"));
+}

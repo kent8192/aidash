@@ -69,6 +69,23 @@ pub fn execution(
 			.keyless
 			.permit_origin_of(endpoint)
 			.unwrap();
+		// The Node binds its compaction Decider to every Agent by default, so a
+		// Run starts only once the Tenant approves it (#540).
+		authorization
+			.set_catalog(
+				"acme",
+				&aidash_domain::nodes::NodeName::derived("acme"),
+				&EntityRef {
+					id: aidash_application::registry::system::COMPACTION_DECIDER_ID.into(),
+					version: aidash_application::registry::system::COMPACTION_DECIDER_VERSION
+						.into(),
+				},
+				0,
+				true,
+				"deployment_administrator",
+			)
+			.await
+			.unwrap();
 		for (kind, id, config) in [
 			(
 				"model",

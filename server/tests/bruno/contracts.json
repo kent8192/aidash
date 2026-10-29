@@ -3163,6 +3163,17 @@
                 "$ref": "#/components/schemas/NodeName",
                 "description": "The Node the approval applies to."
               },
+              "restriction": {
+                "anyOf": [
+                  {
+                    "$ref": "#/components/schemas/CatalogRestriction"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "description": "Who may use the definition on this Node; absent means everyone the\nTenant's policy allows."
+              },
               "revision": {
                 "format": "int64",
                 "type": "integer"
@@ -3179,6 +3190,30 @@
               "enabled",
               "revision"
             ],
+            "type": "object"
+          },
+          "CatalogRestriction": {
+            "additionalProperties": false,
+            "description": "Who may use an approved definition on its Node (ADR 0029, ADR 0095). A\nrestriction names subjects directly and/or Assignable Groups; their\nmembers may use it. It only narrows what the Tenant's policy already\nallows, so it can never grant authority.",
+            "properties": {
+              "groups": {
+                "default": [],
+                "items": {
+                  "type": "string"
+                },
+                "type": "array",
+                "uniqueItems": true
+              },
+              "subjects": {
+                "default": [],
+                "items": {
+                  "type": "string"
+                },
+                "type": "array",
+                "uniqueItems": true
+              }
+            },
+            "required": ["subjects", "groups"],
             "type": "object"
           },
           "NodeName": {
@@ -3221,6 +3256,17 @@
                 "$ref": "#/components/schemas/NodeName",
                 "description": "The Node the approval applies to."
               },
+              "restriction": {
+                "anyOf": [
+                  {
+                    "$ref": "#/components/schemas/CatalogRestriction"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "description": "Who may use the definition on this Node; absent means everyone the\nTenant's policy allows."
+              },
               "revision": {
                 "format": "int64",
                 "type": "integer"
@@ -3237,6 +3283,30 @@
               "enabled",
               "revision"
             ],
+            "type": "object"
+          },
+          "CatalogRestriction": {
+            "additionalProperties": false,
+            "description": "Who may use an approved definition on its Node (ADR 0029, ADR 0095). A\nrestriction names subjects directly and/or Assignable Groups; their\nmembers may use it. It only narrows what the Tenant's policy already\nallows, so it can never grant authority.",
+            "properties": {
+              "groups": {
+                "default": [],
+                "items": {
+                  "type": "string"
+                },
+                "type": "array",
+                "uniqueItems": true
+              },
+              "subjects": {
+                "default": [],
+                "items": {
+                  "type": "string"
+                },
+                "type": "array",
+                "uniqueItems": true
+              }
+            },
+            "required": ["subjects", "groups"],
             "type": "object"
           },
           "NodeName": {
@@ -3276,6 +3346,17 @@
                 "$ref": "#/components/schemas/NodeName",
                 "description": "The Node the approval applies to."
               },
+              "restriction": {
+                "anyOf": [
+                  {
+                    "$ref": "#/components/schemas/CatalogRestriction"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "description": "Who may use the definition on this Node; absent means everyone the\nTenant's policy allows."
+              },
               "revision": {
                 "format": "int64",
                 "type": "integer"
@@ -3292,6 +3373,30 @@
               "enabled",
               "revision"
             ],
+            "type": "object"
+          },
+          "CatalogRestriction": {
+            "additionalProperties": false,
+            "description": "Who may use an approved definition on its Node (ADR 0029, ADR 0095). A\nrestriction names subjects directly and/or Assignable Groups; their\nmembers may use it. It only narrows what the Tenant's policy already\nallows, so it can never grant authority.",
+            "properties": {
+              "groups": {
+                "default": [],
+                "items": {
+                  "type": "string"
+                },
+                "type": "array",
+                "uniqueItems": true
+              },
+              "subjects": {
+                "default": [],
+                "items": {
+                  "type": "string"
+                },
+                "type": "array",
+                "uniqueItems": true
+              }
+            },
+            "required": ["subjects", "groups"],
             "type": "object"
           },
           "NodeName": {
@@ -21927,12 +22032,29 @@
               "enabled": {
                 "type": "boolean"
               },
+              "restriction": {
+                "anyOf": [
+                  {
+                    "$ref": "#/components/schemas/CatalogRestriction"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "description": "The restriction this revision recorded."
+              },
               "revision": {
                 "format": "int64",
                 "type": "integer"
               }
             },
-            "required": ["revision", "enabled", "actor", "created_at"],
+            "required": [
+              "revision",
+              "enabled",
+              "actor",
+              "created_at",
+              "restriction"
+            ],
             "type": "object"
           },
           "Binding3": {
@@ -21999,6 +22121,30 @@
               "companion"
             ],
             "type": "string"
+          },
+          "CatalogRestriction": {
+            "additionalProperties": false,
+            "description": "Who may use an approved definition on its Node (ADR 0029, ADR 0095). A\nrestriction names subjects directly and/or Assignable Groups; their\nmembers may use it. It only narrows what the Tenant's policy already\nallows, so it can never grant authority.",
+            "properties": {
+              "groups": {
+                "default": [],
+                "items": {
+                  "type": "string"
+                },
+                "type": "array",
+                "uniqueItems": true
+              },
+              "subjects": {
+                "default": [],
+                "items": {
+                  "type": "string"
+                },
+                "type": "array",
+                "uniqueItems": true
+              }
+            },
+            "required": ["subjects", "groups"],
+            "type": "object"
           },
           "Concurrency": {
             "description": "Whether a tool's calls may share a Tool Batch. Registry configuration can\nonly lower a provider's declaration, never raise it.",
@@ -22321,12 +22467,23 @@
               "enabled": {
                 "type": "boolean"
               },
+              "restriction": {
+                "anyOf": [
+                  {
+                    "$ref": "#/components/schemas/CatalogRestriction"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "description": "Who may use the version on this Node; absent means everyone the\nTenant's policy allows (ADR 0095)."
+              },
               "revision": {
                 "format": "int64",
                 "type": "integer"
               }
             },
-            "required": ["enabled", "revision"],
+            "required": ["enabled", "revision", "restriction"],
             "type": "object"
           }
         },
@@ -49223,6 +49380,1221 @@
             "$ref": "#/components/schemas/SafetyStopRecord"
           },
           "type": "array"
+        }
+      }
+    },
+    "source": "server/src/apps/identity/views/policies.rs",
+    "uuid_parameters": []
+  },
+  {
+    "json": false,
+    "method": "GET",
+    "name": "authorization-catalog-review",
+    "path": "/api/authorization/{tenant}/catalog/review",
+    "query_parameters": ["entry", "node"],
+    "responses": {
+      "200": {
+        "definitions": {
+          "ApprovalReview": {
+            "description": "The whole review of one root on one Node.",
+            "properties": {
+              "closure_digest": {
+                "description": "Stable hash over every reviewed exact version and its digest.",
+                "type": "string"
+              },
+              "hidden": {
+                "description": "Closure definitions this principal may not read, counted but never named.",
+                "format": "uint",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "items": {
+                "items": {
+                  "$ref": "#/components/schemas/ReviewItem"
+                },
+                "type": "array"
+              },
+              "node": {
+                "$ref": "#/components/schemas/NodeName"
+              },
+              "ready": {
+                "description": "Every named item is approved, admits the root agent and needs no widening.",
+                "type": "boolean"
+              },
+              "root": {
+                "$ref": "#/components/schemas/EntityRef"
+              }
+            },
+            "required": [
+              "node",
+              "root",
+              "items",
+              "hidden",
+              "closure_digest",
+              "ready"
+            ],
+            "type": "object"
+          },
+          "CatalogRestriction": {
+            "additionalProperties": false,
+            "description": "Who may use an approved definition on its Node (ADR 0029, ADR 0095). A\nrestriction names subjects directly and/or Assignable Groups; their\nmembers may use it. It only narrows what the Tenant's policy already\nallows, so it can never grant authority.",
+            "properties": {
+              "groups": {
+                "default": [],
+                "items": {
+                  "type": "string"
+                },
+                "type": "array",
+                "uniqueItems": true
+              },
+              "subjects": {
+                "default": [],
+                "items": {
+                  "type": "string"
+                },
+                "type": "array",
+                "uniqueItems": true
+              }
+            },
+            "required": ["subjects", "groups"],
+            "type": "object"
+          },
+          "EntityRef": {
+            "properties": {
+              "id": {
+                "type": "string"
+              },
+              "version": {
+                "type": "string"
+              }
+            },
+            "required": ["id", "version"],
+            "type": "object"
+          },
+          "NodeName": {
+            "description": "The identifier Aidash assigns to a Node, in the same form as a Tenant name:\n`<adjective>-<noun>-<8 random characters>`. Unique within its Deployment,\nnever changed and never reused.",
+            "type": "string"
+          },
+          "ReviewInstallation": {
+            "description": "The installed copy a review item can activate.",
+            "properties": {
+              "active_revision": {
+                "format": "int64",
+                "type": ["integer", "null"]
+              },
+              "digest": {
+                "description": "The immutable revision digest the activation fences on.",
+                "type": "string"
+              },
+              "expected_activation_revision": {
+                "format": "int64",
+                "type": "integer"
+              },
+              "installation": {
+                "type": "string"
+              },
+              "revision": {
+                "format": "int64",
+                "type": "integer"
+              }
+            },
+            "required": [
+              "installation",
+              "revision",
+              "digest",
+              "expected_activation_revision",
+              "active_revision"
+            ],
+            "type": "object"
+          },
+          "ReviewItem": {
+            "description": "One exact definition in the reviewed closure.",
+            "properties": {
+              "approved": {
+                "type": "boolean"
+              },
+              "can_approve": {
+                "description": "Whether this principal holds `catalog.approve` on it.",
+                "type": "boolean"
+              },
+              "description": {
+                "additionalProperties": {
+                  "type": "string"
+                },
+                "type": "object"
+              },
+              "digest": {
+                "description": "`digest(entry)`; absent only when the dependency is missing.",
+                "type": ["string", "null"]
+              },
+              "expected_revision": {
+                "description": "The current Catalog Approval revision, `0` when none exists.",
+                "format": "int64",
+                "type": "integer"
+              },
+              "installation": {
+                "anyOf": [
+                  {
+                    "$ref": "#/components/schemas/ReviewInstallation"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "kind": {
+                "type": "string"
+              },
+              "name": {
+                "additionalProperties": {
+                  "type": "string"
+                },
+                "type": "object"
+              },
+              "proposed_restriction": {
+                "anyOf": [
+                  {
+                    "$ref": "#/components/schemas/CatalogRestriction"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "description": "The restriction this Review proposes, defaulting a dependency of an\nagent root to that agent's subject."
+              },
+              "reference": {
+                "$ref": "#/components/schemas/EntityRef"
+              },
+              "restriction": {
+                "anyOf": [
+                  {
+                    "$ref": "#/components/schemas/CatalogRestriction"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "description": "The restriction already stored on this Node."
+              },
+              "status": {
+                "$ref": "#/components/schemas/ReviewStatus"
+              },
+              "widen": {
+                "description": "An approved restriction would gain members the root agent needs.",
+                "type": "boolean"
+              }
+            },
+            "required": [
+              "reference",
+              "kind",
+              "name",
+              "description",
+              "digest",
+              "status",
+              "approved",
+              "can_approve",
+              "expected_revision",
+              "restriction",
+              "proposed_restriction",
+              "widen",
+              "installation"
+            ],
+            "type": "object"
+          },
+          "ReviewStatus": {
+            "description": "Whether one exact version can be used now, and if not, what stands in the\nway. `Approved` means the Node's approval is enabled; a separate `widen`\nreports an approved restriction that no longer admits the root agent.",
+            "oneOf": [
+              {
+                "enum": ["approved"],
+                "type": "string"
+              },
+              {
+                "description": "This principal holds `catalog.approve` and can decide it.",
+                "enum": ["approvable"],
+                "type": "string"
+              },
+              {
+                "description": "Another subject holds `catalog.approve`.",
+                "enum": ["needs_other_approver"],
+                "type": "string"
+              },
+              {
+                "description": "An installed copy whose installation must be activated on this Node.",
+                "enum": ["needs_marketplace_activation"],
+                "type": "string"
+              },
+              {
+                "description": "The dependency is not registered in the Tenant.",
+                "enum": ["missing"],
+                "type": "string"
+              },
+              {
+                "description": "The Deployment does not offer the provider the definition needs.",
+                "enum": ["provider_unavailable"],
+                "type": "string"
+              },
+              {
+                "description": "A Tenant Secret or connection the definition names is absent.",
+                "enum": ["secret_or_connection_missing"],
+                "type": "string"
+              }
+            ]
+          }
+        },
+        "schema": {
+          "$ref": "#/components/schemas/ApprovalReview"
+        }
+      }
+    },
+    "source": "server/src/apps/identity/views/policies.rs",
+    "uuid_parameters": []
+  },
+  {
+    "json": false,
+    "method": "GET",
+    "name": "authorization-catalog-impact",
+    "path": "/api/authorization/{tenant}/catalog/impact",
+    "query_parameters": ["id", "node", "version"],
+    "responses": {
+      "200": {
+        "definitions": {
+          "EntityRef": {
+            "properties": {
+              "id": {
+                "type": "string"
+              },
+              "version": {
+                "type": "string"
+              }
+            },
+            "required": ["id", "version"],
+            "type": "object"
+          },
+          "WithdrawalImpact": {
+            "description": "Who loses what when `entry` is withdrawn on the Node.",
+            "properties": {
+              "agents": {
+                "description": "Approved Agent versions that depend on the withdrawn version.",
+                "items": {
+                  "$ref": "#/components/schemas/EntityRef"
+                },
+                "type": "array"
+              },
+              "running_runs": {
+                "description": "Non-terminal Runs of those Agent versions on the Node.",
+                "format": "uint64",
+                "minimum": 0,
+                "type": "integer"
+              }
+            },
+            "required": ["agents", "running_runs"],
+            "type": "object"
+          }
+        },
+        "schema": {
+          "$ref": "#/components/schemas/WithdrawalImpact"
+        }
+      }
+    },
+    "source": "server/src/apps/identity/views/policies.rs",
+    "uuid_parameters": []
+  },
+  {
+    "json": true,
+    "method": "POST",
+    "name": "authorization-submit-catalog-review",
+    "path": "/api/authorization/{tenant}/catalog/review",
+    "query_parameters": [],
+    "responses": {
+      "200": {
+        "definitions": {
+          "Binding": {
+            "properties": {
+              "enabled": {
+                "type": "boolean"
+              },
+              "entry_id": {
+                "type": "string"
+              },
+              "entry_version": {
+                "type": "string"
+              },
+              "node": {
+                "$ref": "#/components/schemas/NodeName",
+                "description": "The Node the approval applies to."
+              },
+              "restriction": {
+                "anyOf": [
+                  {
+                    "$ref": "#/components/schemas/CatalogRestriction"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "description": "Who may use the definition on this Node; absent means everyone the\nTenant's policy allows."
+              },
+              "revision": {
+                "format": "int64",
+                "type": "integer"
+              },
+              "tenant": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "tenant",
+              "node",
+              "entry_id",
+              "entry_version",
+              "enabled",
+              "revision"
+            ],
+            "type": "object"
+          },
+          "CatalogRestriction": {
+            "additionalProperties": false,
+            "description": "Who may use an approved definition on its Node (ADR 0029, ADR 0095). A\nrestriction names subjects directly and/or Assignable Groups; their\nmembers may use it. It only narrows what the Tenant's policy already\nallows, so it can never grant authority.",
+            "properties": {
+              "groups": {
+                "default": [],
+                "items": {
+                  "type": "string"
+                },
+                "type": "array",
+                "uniqueItems": true
+              },
+              "subjects": {
+                "default": [],
+                "items": {
+                  "type": "string"
+                },
+                "type": "array",
+                "uniqueItems": true
+              }
+            },
+            "required": ["subjects", "groups"],
+            "type": "object"
+          },
+          "CatalogReviewResult": {
+            "description": "What one review submission wrote, in the caller's transaction.",
+            "properties": {
+              "bindings": {
+                "items": {
+                  "$ref": "#/components/schemas/Binding"
+                },
+                "type": "array"
+              },
+              "installations": {
+                "items": {
+                  "$ref": "#/components/schemas/MarketplaceInstallation"
+                },
+                "type": "array"
+              }
+            },
+            "required": ["bindings", "installations"],
+            "type": "object"
+          },
+          "MarketplaceInstallation": {
+            "properties": {
+              "activation_revision": {
+                "format": "int64",
+                "type": "integer"
+              },
+              "active_revision": {
+                "format": "int64",
+                "type": ["integer", "null"]
+              },
+              "id": {
+                "type": "string"
+              },
+              "latest_revision": {
+                "format": "int64",
+                "type": "integer"
+              },
+              "package_key": {
+                "type": "string"
+              },
+              "tenant": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "id",
+              "tenant",
+              "package_key",
+              "latest_revision",
+              "active_revision",
+              "activation_revision"
+            ],
+            "type": "object"
+          },
+          "NodeName": {
+            "description": "The identifier Aidash assigns to a Node, in the same form as a Tenant name:\n`<adjective>-<noun>-<8 random characters>`. Unique within its Deployment,\nnever changed and never reused.",
+            "type": "string"
+          }
+        },
+        "schema": {
+          "$ref": "#/components/schemas/CatalogReviewResult"
+        }
+      }
+    },
+    "source": "server/src/apps/identity/views/policies.rs",
+    "uuid_parameters": []
+  },
+  {
+    "json": true,
+    "method": "POST",
+    "name": "authorization-create-catalog-request",
+    "path": "/api/authorization/{tenant}/catalog/requests",
+    "query_parameters": [],
+    "responses": {
+      "200": {
+        "definitions": {
+          "CatalogApprovalRequestState": {
+            "description": "The lifecycle of one Catalog Approval Request. Only `Open` may move, and\nevery other state is final.",
+            "enum": ["open", "fulfilled", "declined", "stale", "withdrawn"],
+            "type": "string"
+          },
+          "CatalogApprovalRequestView": {
+            "properties": {
+              "closure_digest": {
+                "type": "string"
+              },
+              "created_at": {
+                "format": "date-time",
+                "type": "string"
+              },
+              "decline_reason": {
+                "type": ["string", "null"]
+              },
+              "id": {
+                "format": "uuid",
+                "type": "string"
+              },
+              "next_action": {
+                "$ref": "#/components/schemas/CatalogRequestNextAction"
+              },
+              "node": {
+                "$ref": "#/components/schemas/NodeName"
+              },
+              "reason": {
+                "type": "string"
+              },
+              "requester": {
+                "type": "string"
+              },
+              "review": {
+                "anyOf": [
+                  {
+                    "$ref": "#/components/schemas/CatalogRequestReview"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "revision": {
+                "format": "int64",
+                "type": "integer"
+              },
+              "root": {
+                "$ref": "#/components/schemas/EntityRef"
+              },
+              "state": {
+                "$ref": "#/components/schemas/CatalogApprovalRequestState"
+              },
+              "updated_at": {
+                "format": "date-time",
+                "type": "string"
+              }
+            },
+            "required": [
+              "id",
+              "node",
+              "root",
+              "requester",
+              "reason",
+              "state",
+              "decline_reason",
+              "closure_digest",
+              "created_at",
+              "updated_at",
+              "revision",
+              "next_action",
+              "review"
+            ],
+            "type": "object"
+          },
+          "CatalogRequestNextAction": {
+            "enum": [
+              "waiting_for_approver",
+              "ready",
+              "declined",
+              "withdrawn",
+              "stale",
+              "fulfilled"
+            ],
+            "type": "string"
+          },
+          "CatalogRequestReview": {
+            "description": "What a requester or an approver needs to know, without naming hidden items\nor the subjects that hold approval authority.",
+            "properties": {
+              "approvable": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "hidden": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "ready": {
+                "type": "boolean"
+              },
+              "total": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": "integer"
+              }
+            },
+            "required": ["ready", "hidden", "total", "approvable"],
+            "type": "object"
+          },
+          "EntityRef": {
+            "properties": {
+              "id": {
+                "type": "string"
+              },
+              "version": {
+                "type": "string"
+              }
+            },
+            "required": ["id", "version"],
+            "type": "object"
+          },
+          "NodeName": {
+            "description": "The identifier Aidash assigns to a Node, in the same form as a Tenant name:\n`<adjective>-<noun>-<8 random characters>`. Unique within its Deployment,\nnever changed and never reused.",
+            "type": "string"
+          }
+        },
+        "schema": {
+          "$ref": "#/components/schemas/CatalogApprovalRequestView"
+        }
+      }
+    },
+    "source": "server/src/apps/identity/views/policies.rs",
+    "uuid_parameters": []
+  },
+  {
+    "json": false,
+    "method": "POST",
+    "name": "authorization-withdraw-catalog-request",
+    "path": "/api/authorization/{tenant}/catalog/requests/{id}/withdraw",
+    "query_parameters": [],
+    "responses": {
+      "200": {
+        "definitions": {
+          "CatalogApprovalRequestState": {
+            "description": "The lifecycle of one Catalog Approval Request. Only `Open` may move, and\nevery other state is final.",
+            "enum": ["open", "fulfilled", "declined", "stale", "withdrawn"],
+            "type": "string"
+          },
+          "CatalogApprovalRequestView": {
+            "properties": {
+              "closure_digest": {
+                "type": "string"
+              },
+              "created_at": {
+                "format": "date-time",
+                "type": "string"
+              },
+              "decline_reason": {
+                "type": ["string", "null"]
+              },
+              "id": {
+                "format": "uuid",
+                "type": "string"
+              },
+              "next_action": {
+                "$ref": "#/components/schemas/CatalogRequestNextAction"
+              },
+              "node": {
+                "$ref": "#/components/schemas/NodeName"
+              },
+              "reason": {
+                "type": "string"
+              },
+              "requester": {
+                "type": "string"
+              },
+              "review": {
+                "anyOf": [
+                  {
+                    "$ref": "#/components/schemas/CatalogRequestReview"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "revision": {
+                "format": "int64",
+                "type": "integer"
+              },
+              "root": {
+                "$ref": "#/components/schemas/EntityRef"
+              },
+              "state": {
+                "$ref": "#/components/schemas/CatalogApprovalRequestState"
+              },
+              "updated_at": {
+                "format": "date-time",
+                "type": "string"
+              }
+            },
+            "required": [
+              "id",
+              "node",
+              "root",
+              "requester",
+              "reason",
+              "state",
+              "decline_reason",
+              "closure_digest",
+              "created_at",
+              "updated_at",
+              "revision",
+              "next_action",
+              "review"
+            ],
+            "type": "object"
+          },
+          "CatalogRequestNextAction": {
+            "enum": [
+              "waiting_for_approver",
+              "ready",
+              "declined",
+              "withdrawn",
+              "stale",
+              "fulfilled"
+            ],
+            "type": "string"
+          },
+          "CatalogRequestReview": {
+            "description": "What a requester or an approver needs to know, without naming hidden items\nor the subjects that hold approval authority.",
+            "properties": {
+              "approvable": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "hidden": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "ready": {
+                "type": "boolean"
+              },
+              "total": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": "integer"
+              }
+            },
+            "required": ["ready", "hidden", "total", "approvable"],
+            "type": "object"
+          },
+          "EntityRef": {
+            "properties": {
+              "id": {
+                "type": "string"
+              },
+              "version": {
+                "type": "string"
+              }
+            },
+            "required": ["id", "version"],
+            "type": "object"
+          },
+          "NodeName": {
+            "description": "The identifier Aidash assigns to a Node, in the same form as a Tenant name:\n`<adjective>-<noun>-<8 random characters>`. Unique within its Deployment,\nnever changed and never reused.",
+            "type": "string"
+          }
+        },
+        "schema": {
+          "$ref": "#/components/schemas/CatalogApprovalRequestView"
+        }
+      }
+    },
+    "source": "server/src/apps/identity/views/policies.rs",
+    "uuid_parameters": ["id"]
+  },
+  {
+    "json": true,
+    "method": "POST",
+    "name": "authorization-decline-catalog-request",
+    "path": "/api/authorization/{tenant}/catalog/requests/{id}/decline",
+    "query_parameters": [],
+    "responses": {
+      "200": {
+        "definitions": {
+          "CatalogApprovalRequestState": {
+            "description": "The lifecycle of one Catalog Approval Request. Only `Open` may move, and\nevery other state is final.",
+            "enum": ["open", "fulfilled", "declined", "stale", "withdrawn"],
+            "type": "string"
+          },
+          "CatalogApprovalRequestView": {
+            "properties": {
+              "closure_digest": {
+                "type": "string"
+              },
+              "created_at": {
+                "format": "date-time",
+                "type": "string"
+              },
+              "decline_reason": {
+                "type": ["string", "null"]
+              },
+              "id": {
+                "format": "uuid",
+                "type": "string"
+              },
+              "next_action": {
+                "$ref": "#/components/schemas/CatalogRequestNextAction"
+              },
+              "node": {
+                "$ref": "#/components/schemas/NodeName"
+              },
+              "reason": {
+                "type": "string"
+              },
+              "requester": {
+                "type": "string"
+              },
+              "review": {
+                "anyOf": [
+                  {
+                    "$ref": "#/components/schemas/CatalogRequestReview"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "revision": {
+                "format": "int64",
+                "type": "integer"
+              },
+              "root": {
+                "$ref": "#/components/schemas/EntityRef"
+              },
+              "state": {
+                "$ref": "#/components/schemas/CatalogApprovalRequestState"
+              },
+              "updated_at": {
+                "format": "date-time",
+                "type": "string"
+              }
+            },
+            "required": [
+              "id",
+              "node",
+              "root",
+              "requester",
+              "reason",
+              "state",
+              "decline_reason",
+              "closure_digest",
+              "created_at",
+              "updated_at",
+              "revision",
+              "next_action",
+              "review"
+            ],
+            "type": "object"
+          },
+          "CatalogRequestNextAction": {
+            "enum": [
+              "waiting_for_approver",
+              "ready",
+              "declined",
+              "withdrawn",
+              "stale",
+              "fulfilled"
+            ],
+            "type": "string"
+          },
+          "CatalogRequestReview": {
+            "description": "What a requester or an approver needs to know, without naming hidden items\nor the subjects that hold approval authority.",
+            "properties": {
+              "approvable": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "hidden": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "ready": {
+                "type": "boolean"
+              },
+              "total": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": "integer"
+              }
+            },
+            "required": ["ready", "hidden", "total", "approvable"],
+            "type": "object"
+          },
+          "EntityRef": {
+            "properties": {
+              "id": {
+                "type": "string"
+              },
+              "version": {
+                "type": "string"
+              }
+            },
+            "required": ["id", "version"],
+            "type": "object"
+          },
+          "NodeName": {
+            "description": "The identifier Aidash assigns to a Node, in the same form as a Tenant name:\n`<adjective>-<noun>-<8 random characters>`. Unique within its Deployment,\nnever changed and never reused.",
+            "type": "string"
+          }
+        },
+        "schema": {
+          "$ref": "#/components/schemas/CatalogApprovalRequestView"
+        }
+      }
+    },
+    "source": "server/src/apps/identity/views/policies.rs",
+    "uuid_parameters": ["id"]
+  },
+  {
+    "json": false,
+    "method": "GET",
+    "name": "authorization-catalog-requests-mine",
+    "path": "/api/authorization/{tenant}/catalog/requests/mine",
+    "query_parameters": ["limit", "node", "offset"],
+    "responses": {
+      "200": {
+        "definitions": {
+          "CatalogApprovalRequestPage": {
+            "properties": {
+              "next_offset": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": ["integer", "null"]
+              },
+              "requests": {
+                "items": {
+                  "$ref": "#/components/schemas/CatalogApprovalRequestView"
+                },
+                "type": "array"
+              }
+            },
+            "required": ["requests", "next_offset"],
+            "type": "object"
+          },
+          "CatalogApprovalRequestState": {
+            "description": "The lifecycle of one Catalog Approval Request. Only `Open` may move, and\nevery other state is final.",
+            "enum": ["open", "fulfilled", "declined", "stale", "withdrawn"],
+            "type": "string"
+          },
+          "CatalogApprovalRequestView": {
+            "properties": {
+              "closure_digest": {
+                "type": "string"
+              },
+              "created_at": {
+                "format": "date-time",
+                "type": "string"
+              },
+              "decline_reason": {
+                "type": ["string", "null"]
+              },
+              "id": {
+                "format": "uuid",
+                "type": "string"
+              },
+              "next_action": {
+                "$ref": "#/components/schemas/CatalogRequestNextAction"
+              },
+              "node": {
+                "$ref": "#/components/schemas/NodeName"
+              },
+              "reason": {
+                "type": "string"
+              },
+              "requester": {
+                "type": "string"
+              },
+              "review": {
+                "anyOf": [
+                  {
+                    "$ref": "#/components/schemas/CatalogRequestReview"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "revision": {
+                "format": "int64",
+                "type": "integer"
+              },
+              "root": {
+                "$ref": "#/components/schemas/EntityRef"
+              },
+              "state": {
+                "$ref": "#/components/schemas/CatalogApprovalRequestState"
+              },
+              "updated_at": {
+                "format": "date-time",
+                "type": "string"
+              }
+            },
+            "required": [
+              "id",
+              "node",
+              "root",
+              "requester",
+              "reason",
+              "state",
+              "decline_reason",
+              "closure_digest",
+              "created_at",
+              "updated_at",
+              "revision",
+              "next_action",
+              "review"
+            ],
+            "type": "object"
+          },
+          "CatalogRequestNextAction": {
+            "enum": [
+              "waiting_for_approver",
+              "ready",
+              "declined",
+              "withdrawn",
+              "stale",
+              "fulfilled"
+            ],
+            "type": "string"
+          },
+          "CatalogRequestReview": {
+            "description": "What a requester or an approver needs to know, without naming hidden items\nor the subjects that hold approval authority.",
+            "properties": {
+              "approvable": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "hidden": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "ready": {
+                "type": "boolean"
+              },
+              "total": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": "integer"
+              }
+            },
+            "required": ["ready", "hidden", "total", "approvable"],
+            "type": "object"
+          },
+          "EntityRef": {
+            "properties": {
+              "id": {
+                "type": "string"
+              },
+              "version": {
+                "type": "string"
+              }
+            },
+            "required": ["id", "version"],
+            "type": "object"
+          },
+          "NodeName": {
+            "description": "The identifier Aidash assigns to a Node, in the same form as a Tenant name:\n`<adjective>-<noun>-<8 random characters>`. Unique within its Deployment,\nnever changed and never reused.",
+            "type": "string"
+          }
+        },
+        "schema": {
+          "$ref": "#/components/schemas/CatalogApprovalRequestPage"
+        }
+      }
+    },
+    "source": "server/src/apps/identity/views/policies.rs",
+    "uuid_parameters": []
+  },
+  {
+    "json": false,
+    "method": "GET",
+    "name": "authorization-catalog-requests-pending",
+    "path": "/api/authorization/{tenant}/catalog/requests/pending",
+    "query_parameters": ["limit", "node", "offset"],
+    "responses": {
+      "200": {
+        "definitions": {
+          "CatalogApprovalRequestPage": {
+            "properties": {
+              "next_offset": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": ["integer", "null"]
+              },
+              "requests": {
+                "items": {
+                  "$ref": "#/components/schemas/CatalogApprovalRequestView"
+                },
+                "type": "array"
+              }
+            },
+            "required": ["requests", "next_offset"],
+            "type": "object"
+          },
+          "CatalogApprovalRequestState": {
+            "description": "The lifecycle of one Catalog Approval Request. Only `Open` may move, and\nevery other state is final.",
+            "enum": ["open", "fulfilled", "declined", "stale", "withdrawn"],
+            "type": "string"
+          },
+          "CatalogApprovalRequestView": {
+            "properties": {
+              "closure_digest": {
+                "type": "string"
+              },
+              "created_at": {
+                "format": "date-time",
+                "type": "string"
+              },
+              "decline_reason": {
+                "type": ["string", "null"]
+              },
+              "id": {
+                "format": "uuid",
+                "type": "string"
+              },
+              "next_action": {
+                "$ref": "#/components/schemas/CatalogRequestNextAction"
+              },
+              "node": {
+                "$ref": "#/components/schemas/NodeName"
+              },
+              "reason": {
+                "type": "string"
+              },
+              "requester": {
+                "type": "string"
+              },
+              "review": {
+                "anyOf": [
+                  {
+                    "$ref": "#/components/schemas/CatalogRequestReview"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "revision": {
+                "format": "int64",
+                "type": "integer"
+              },
+              "root": {
+                "$ref": "#/components/schemas/EntityRef"
+              },
+              "state": {
+                "$ref": "#/components/schemas/CatalogApprovalRequestState"
+              },
+              "updated_at": {
+                "format": "date-time",
+                "type": "string"
+              }
+            },
+            "required": [
+              "id",
+              "node",
+              "root",
+              "requester",
+              "reason",
+              "state",
+              "decline_reason",
+              "closure_digest",
+              "created_at",
+              "updated_at",
+              "revision",
+              "next_action",
+              "review"
+            ],
+            "type": "object"
+          },
+          "CatalogRequestNextAction": {
+            "enum": [
+              "waiting_for_approver",
+              "ready",
+              "declined",
+              "withdrawn",
+              "stale",
+              "fulfilled"
+            ],
+            "type": "string"
+          },
+          "CatalogRequestReview": {
+            "description": "What a requester or an approver needs to know, without naming hidden items\nor the subjects that hold approval authority.",
+            "properties": {
+              "approvable": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "hidden": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "ready": {
+                "type": "boolean"
+              },
+              "total": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": "integer"
+              }
+            },
+            "required": ["ready", "hidden", "total", "approvable"],
+            "type": "object"
+          },
+          "EntityRef": {
+            "properties": {
+              "id": {
+                "type": "string"
+              },
+              "version": {
+                "type": "string"
+              }
+            },
+            "required": ["id", "version"],
+            "type": "object"
+          },
+          "NodeName": {
+            "description": "The identifier Aidash assigns to a Node, in the same form as a Tenant name:\n`<adjective>-<noun>-<8 random characters>`. Unique within its Deployment,\nnever changed and never reused.",
+            "type": "string"
+          }
+        },
+        "schema": {
+          "$ref": "#/components/schemas/CatalogApprovalRequestPage"
         }
       }
     },

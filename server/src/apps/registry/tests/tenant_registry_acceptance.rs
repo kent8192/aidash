@@ -95,7 +95,13 @@ fn model(id: &str) -> Value {
 }
 fn agent(id: &str, version: &str, model: &str) -> Value {
 	json!({"id":id,"version":version,"kind":"agent","name":{"en":id},"description":{"en":"Acceptance"},"schema":{},
-		"config":{"schema_version":1,"model":{"id":model,"version":"1.0.0"},"instructions":"Help","bindings":[],"remove_default":[]}})
+		"config":{"schema_version":1,"model":{"id":model,"version":"1.0.0"},"instructions":"Help","bindings":[],"remove_default":["compaction"]}})
+}
+/// The same agent keeping the Node's default compaction Binding, which needs
+/// its Decider approved first (#540).
+fn with_default_compaction(mut agent: Value) -> Value {
+	agent["config"]["remove_default"] = json!([]);
+	agent
 }
 /// A single-entry catalog request for the default Node of `tenant`.
 fn node_approval(tenant: &str, id: &str, version: &str, enabled: bool) -> Value {
@@ -163,8 +169,8 @@ async fn a_tenant_registers_approves_and_runs_its_own_agent_without_a_deployment
 	// Act: two versions of one agent and its model, registered by the Tenant.
 	for entry in [
 		model("model"),
-		agent("helper", "1.0.0", "model"),
-		agent("helper", "1.1.0", "model"),
+		with_default_compaction(agent("helper", "1.0.0", "model")),
+		with_default_compaction(agent("helper", "1.1.0", "model")),
 	] {
 		let (status, body) = register(&owner, &entry).await;
 		assert_eq!(status, 200, "{body}");
@@ -176,7 +182,9 @@ async fn a_tenant_registers_approves_and_runs_its_own_agent_without_a_deployment
 		"acme",
 		json!([
 			approval("helper", "1.1.0", true),
-			approval("model", "1.0.0", true)
+			approval("model", "1.0.0", true),
+			// The Node binds its compaction Decider to the Agent by default.
+			approval("aidash.compaction-decider", "1.0.0", true)
 		]),
 	)
 	.await;

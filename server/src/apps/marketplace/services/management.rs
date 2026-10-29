@@ -387,6 +387,20 @@ impl MarketplaceManagement {
 		let identity = approving_subject(&actor, &input.tenant)?;
 		let mut access = Access::begin_exclusive(&f.store, &identity).await?;
 		let result = async {
+			// An absent Node keeps the existing default-Node behaviour.
+			let node = match &input.node {
+				Some(node) => {
+					crate::apps::identity::repositories::nodes::get(
+						&mut **access.tx,
+						&identity.tenant,
+						node.as_str(),
+					)
+					.await?;
+					access.set_node(node.clone());
+					node.clone()
+				}
+				None => access.catalog_address().await?.node,
+			};
 			let mut entries = Vec::with_capacity(input.installations.len());
 			for selection in &input.installations {
 				let revision = crate::apps::marketplace::repositories::installations::revision(
@@ -400,21 +414,21 @@ impl MarketplaceManagement {
 			}
 			let installations =
 				aidash_application::marketplace::operations::approval_set::approve_and_activate(
-					&mut crate::bootstrap::marketplace_tenant_activation_scope(
+					&mut crate::bootstrap::marketplace_tenant_activation_scope_at(
 						&f.store,
 						&mut access.tx,
 						principal(&actor),
 						identity.tenant.clone(),
+						node.clone(),
 					),
 					&crate::bootstrap::registry_validation_for(&f.store),
 					&input,
 					f.store.deployment.as_str(),
 				)
 				.await?;
-			let node = access.catalog_address().await?;
 			crate::apps::identity::repositories::catalog_approvals::admit_agents(
 				&mut access,
-				&node,
+				&f.config.deployment.node(node),
 				&entries,
 			)
 			.await?;

@@ -22,6 +22,9 @@ pub trait ExecutionAdmissionSession: ExecutionGrantSession {
 	async fn task_resource(&mut self, task: &Task) -> Result<Resource>;
 	async fn require_live_agent(&mut self, task: Uuid, agent: &EntityRef) -> Result<()>;
 	async fn executable_entry(&mut self, agent: &EntityRef) -> Result<Entry>;
+	/// A pinned Decider's current entry, once the Run's subject may invoke it on
+	/// this Node (`decision.invoke`): its Catalog Approval.
+	async fn decider_entry(&mut self, reference: &EntityRef) -> Result<Entry>;
 	async fn active_installation(&mut self, entry: &Entry) -> Result<bool>;
 	async fn check_pinned_installation(&mut self, entry: &Entry) -> Result<()>;
 	async fn bindings(

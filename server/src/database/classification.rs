@@ -244,6 +244,7 @@ pub const TABLES: &[Table] = &[
 	// identity
 	table("identity", "authorization_bundles", TenantOwned),
 	table("identity", "authorization_catalog", TenantOwned),
+	table("identity", "catalog_approval_requests", TenantOwned),
 	audit("identity", "authorization_catalog_history"),
 	table("identity", "authorization_credentials", TenantOwned),
 	audit("identity", "authorization_decisions"),

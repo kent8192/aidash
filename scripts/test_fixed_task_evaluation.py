@@ -1137,30 +1137,98 @@ class RunnerTest(unittest.TestCase):
         self.assertTrue(node.cancelled)
         self.assertTrue(observed["interrupted"])
 
-    def test_a_mandatory_context_block_is_preserved_as_local_overflow_after_cancellation(self):
-        for active_phase in ("WAITING", "THINKING"):
-            with self.subTest(active_phase=active_phase):
-                node = FakeNode([active_phase])
-                reason = "Mandatory context cannot fit the model window; reduce instructions, tools or pinned context"
+    def blocked_run(self, active_phase, context_reason, reason=""):
+        """Run a Run that reports `recovery.context_reason` while `active_phase`; return node, clock and result."""
+        node = FakeNode([active_phase])
 
-                def blocked(method, path, body, token, timeout=None, node=node, active_phase=active_phase, reason=reason):
+        def blocked(method, path, body, token, timeout=None):
+            status, payload = node.call(method, path, body, token)
+            if method == "GET" and path == "/api/runs/run-1" and payload["run"]["phase"] == active_phase:
+                payload["run"]["recovery"] = {"context_reason": context_reason}
+                if reason:
+                    payload["run"]["state_error"] = reason
+            return status, payload
+
+        clock = Clock()
+        experiment = self.experiment(node)
+        experiment.api = runner.Api(blocked, "deployment-administrator")
+        observed = runner.run_task(experiment.api, experiment, self.planned, 1,
+                                   {"id": "a", "version": "1.0.0"}, timeout=1.5, clock=clock, sleep=clock.sleep)
+        return node, clock, evaluation.run_result(self.corpus, self.planned, 1, observed, "live", False)
+
+    def test_every_context_pause_is_cancelled_and_counted_unresolved_with_its_reason(self):
+        for context_reason in evaluation.CONTEXT_REASONS:
+            for active_phase in ("WAITING", "THINKING"):
+                with self.subTest(context_reason=context_reason, active_phase=active_phase):
+                    node, clock, graded = self.blocked_run(active_phase, context_reason)
+                    self.assertTrue(node.cancelled, "the paused Run must not remain active")
+                    self.assertEqual(graded["phase"], "CANCELLED", "preserve the actual cancellation phase")
+                    self.assertEqual(graded["outcome"], "unresolved")
+                    self.assertEqual(graded["context_reason"], context_reason)
+                    self.assertFalse(graded["interrupted"], "a typed context pause is not an observer timeout")
+                    self.assertEqual(clock.now, 0, "do not wait for the observer deadline")
+
+    def test_a_context_pause_is_unresolved_even_when_its_message_reads_as_overflow(self):
+        reason = "Mandatory context cannot fit the model window; reduce instructions, tools or pinned context"
+        _, _, graded = self.blocked_run("THINKING", "context_unreducible", reason)
+        self.assertEqual(graded["error"], reason, "preserve the authoritative pre-cancellation cause")
+        self.assertEqual(graded["outcome"], "unresolved")
+        self.assertEqual(graded["context_reason"], "context_unreducible")
+
+    def test_a_run_without_a_context_reason_still_times_out(self):
+        for recovery in (None, {}, {"context_reason": None}):
+            with self.subTest(recovery=recovery):
+                node = FakeNode(["THINKING"])
+
+                def plain(method, path, body, token, timeout=None, node=node, recovery=recovery):
                     status, payload = node.call(method, path, body, token)
-                    if method == "GET" and path == "/api/runs/run-1" and payload["run"]["phase"] == active_phase:
-                        payload["run"]["state_error"] = reason
+                    if method == "GET" and path == "/api/runs/run-1" and recovery is not None:
+                        payload["run"]["recovery"] = recovery
                     return status, payload
 
                 clock = Clock()
                 experiment = self.experiment(node)
-                experiment.api = runner.Api(blocked, "deployment-administrator")
+                experiment.api = runner.Api(plain, "deployment-administrator")
                 observed = runner.run_task(experiment.api, experiment, self.planned, 1,
-                                           {"id": "a", "version": "1.0.0"}, timeout=1.5, clock=clock, sleep=clock.sleep)
+                                           {"id": "a", "version": "1.0.0"}, timeout=1.5, clock=clock,
+                                           sleep=clock.sleep)
                 graded = evaluation.run_result(self.corpus, self.planned, 1, observed, "live", False)
-                self.assertTrue(node.cancelled, "the blocked Run must not remain active")
-                self.assertEqual(graded["phase"], "CANCELLED", "preserve the actual cancellation phase")
-                self.assertEqual(graded["error"], reason, "preserve the authoritative pre-cancellation cause")
-                self.assertEqual(graded["outcome"], "overflow_failure")
-                self.assertFalse(graded["interrupted"], "a known local fitting failure is not an observer timeout")
-                self.assertEqual(clock.now, 0, "do not retry a mandatory window block until the observer deadline")
+                self.assertTrue(observed["interrupted"])
+                self.assertIsNone(graded["context_reason"])
+                self.assertEqual(graded["outcome"], "interrupted")
+                self.assertGreaterEqual(clock.now, 1.5)
+
+    def test_a_context_reason_expectation_mismatch_fails_calibration(self):
+        value = evaluation.load_corpus(evaluation.EVALUATION / "corpus.toml")
+        item = task(value, "terminal-context-overflow")
+        self.assertEqual(item["expected"]["context_reason"], "context_unreducible")
+        planned = {"task": item, "comparison": {"id": "projection"}, "arm": "baseline", "label": "legacy"}
+        for observed_reason, failures in (("context_unreducible", 0), ("decider_unapproved", 1), (None, 1)):
+            with self.subTest(observed_reason=observed_reason):
+                observed = observation(phase="CANCELLED", error="paused", context_reason=observed_reason)
+                result = evaluation.run_result(value, planned, 1, observed, "deterministic", True)
+                self.assertEqual(len(evaluation.calibrate(value, [result])), failures)
+
+    def test_an_unknown_expected_context_reason_is_a_corpus_error(self):
+        with tempfile.TemporaryDirectory() as directory:
+            copied = Path(directory) / "evaluation"
+            shutil.copytree(evaluation.EVALUATION, copied)
+            path = copied / "corpus.toml"
+            path.write_text(path.read_text().replace('context_reason = "context_unreducible"',
+                                                     'context_reason = "pruned"', 1))
+            with self.assertRaisesRegex(evaluation.CorpusError, "unknown expected context_reason"):
+                evaluation.load_corpus(path)
+
+    def test_agents_remove_the_default_compaction_unless_they_bind_a_decider(self):
+        plain = {"bindings": [{"kind": "tool"}]}
+        self.assertIn(evaluation.COMPACTION_DEFAULT, runner.minimal_defaults(plain))
+        explicit = {"bindings": [{"kind": "tool"}, {"kind": "decider"}]}
+        removed = runner.minimal_defaults(explicit)
+        self.assertNotIn(evaluation.COMPACTION_DEFAULT, removed)
+        self.assertTrue(set(evaluation.DEFAULT_TOOLS) <= set(removed))
+        self.assertEqual(runner.with_compaction_removed(plain, ["file_read"]), ["file_read", "compaction"])
+        self.assertEqual(runner.with_compaction_removed(explicit, ["file_read"]), ["file_read"])
+        self.assertEqual(runner.with_compaction_removed(plain, ["compaction"]), ["compaction"])
 
     def test_cancellation_waits_for_terminal_acknowledgement_and_preserves_a_completion_race(self):
         for terminal in ("CANCELLED", "COMPLETED"):
@@ -1883,7 +1951,8 @@ class LiveGuardTest(unittest.TestCase):
         self.run_live(capturing)
         self.assertTrue(agents)
         for config in agents:
-            self.assertEqual(sorted(config["remove_default"]), sorted(evaluation.DEFAULT_TOOLS))
+            self.assertEqual(sorted(config["remove_default"]),
+                             sorted([*evaluation.DEFAULT_TOOLS, evaluation.COMPACTION_DEFAULT]))
         legacy_skill = {"bindings": [{"kind": "skill"}]}
         self.assertEqual(set(evaluation.DEFAULT_TOOLS) - set(runner.minimal_defaults(legacy_skill)),
                          set(evaluation.SKILL_TOOLS), "bound Skills keep their support tools")

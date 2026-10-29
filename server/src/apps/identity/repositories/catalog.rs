@@ -5,6 +5,7 @@ use crate::{
 	registry::{EntityRef, Entry},
 };
 use aidash_application::ports::catalog::CatalogScope;
+use aidash_domain::identity::catalog::CatalogRestriction;
 use aidash_domain::policy::Resource;
 use async_trait::async_trait;
 use reinhardt::query::{
@@ -13,6 +14,10 @@ use reinhardt::query::{
 };
 use serde_json::Value;
 pub(crate) struct NativeCatalog<'a>(pub(crate) &'a mut Access);
+fn agent_tail_matches(tail: &str, reference: &EntityRef) -> bool {
+	tail == format!("{}@{}", reference.id, reference.version)
+}
+
 async fn document(access: &mut Access, reference: &EntityRef) -> Result<Option<Value>> {
 	if aidash_application::registry::system::builtin_reference(reference) {
 		return system_document(access, reference).await.map(Some);
@@ -328,6 +333,67 @@ impl CatalogScope for NativeCatalog<'_> {
 		self.0
 			.approved_catalog
 			.insert((reference.id.clone(), reference.version.clone()));
+	}
+	fn direct_user(&self, reference: &EntityRef) -> String {
+		// A Run's subject chain ends with the agent that is executing. The
+		// agent version itself is used by the subject before it (whoever
+		// started or delegated the Run); a dependency is used by the agent.
+		let identity = self.0.identity.subject.clone();
+		let Some(last) = self.0.subjects.last() else {
+			return identity;
+		};
+		let agent = last
+			.rsplit_once("/agents/")
+			.is_some_and(|(_, tail)| agent_tail_matches(tail, reference));
+		if agent {
+			self.0
+				.subjects
+				.iter()
+				.rev()
+				.nth(1)
+				.cloned()
+				.unwrap_or(identity)
+		} else {
+			last.clone()
+		}
+	}
+	async fn permits_restriction(
+		&mut self,
+		reference: &EntityRef,
+		direct_user: &str,
+	) -> aidash_application::Result<bool> {
+		let node = self.0.catalog_node().await?;
+		let restriction: Option<Value> = crate::database::native::query_scalar(
+			&Query::select()
+				.column(Alias::new("restriction"))
+				.from(Alias::new("authorization_catalog"))
+				.and_where(Expr::col(Alias::new("tenant")).eq(Expr::cust("$1")))
+				.and_where(Expr::col(Alias::new("entry_id")).eq(Expr::cust("$2")))
+				.and_where(Expr::col(Alias::new("entry_version")).eq(Expr::cust("$3")))
+				.and_where(Expr::col(Alias::new("node")).eq(Expr::cust("$4")))
+				.and_where(Expr::col(Alias::new("enabled")))
+				.to_string(PostgresQueryBuilder),
+		)
+		.bind(&self.0.identity.tenant)
+		.bind(&reference.id)
+		.bind(&reference.version)
+		.bind(node.as_str())
+		.scalar_optional(&mut **self.0.tx)
+		.await?;
+		let Some(restriction) = restriction.filter(|value| !value.is_null()) else {
+			return Ok(true);
+		};
+		let restriction: CatalogRestriction =
+			serde_json::from_value(restriction).map_err(aidash_application::Error::from)?;
+		let groups = self
+			.0
+			.snapshot
+			.bundle
+			.subjects
+			.get(direct_user)
+			.map(|subject| subject.groups.clone())
+			.unwrap_or_default();
+		Ok(restriction.allows(direct_user, &groups))
 	}
 	fn admitted(&self, reference: &EntityRef, action: &str) -> Option<Entry> {
 		self.0

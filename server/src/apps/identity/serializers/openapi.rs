@@ -12,7 +12,11 @@ use crate::apps::identity::serializers::peer::PeerMappingInput;
 use crate::apps::identity::serializers::policies::AuthorizationPage;
 use crate::apps::identity::serializers::policies::AuthorizationUpdate;
 use crate::apps::identity::serializers::policies::CredentialInput;
-use crate::apps::identity::serializers::policies::{CatalogApprovals, CatalogInput};
+use crate::apps::identity::serializers::policies::{
+	CatalogApprovalRequestPage, CatalogApprovalRequestView, CatalogApprovals, CatalogImpactQuery,
+	CatalogInput, CatalogRequestDecline, CatalogRequestInput, CatalogRequestPage,
+	CatalogReviewQuery, CatalogReviewResult,
+};
 use crate::apps::identity::serializers::remote::PrepareInput;
 use crate::apps::identity::serializers::remote::Prepared;
 use crate::apps::identity::serializers::services_policy::Decision;
@@ -20,6 +24,9 @@ use crate::apps::identity::serializers::services_policy::Evaluation;
 use crate::apps::identity::serializers::session::SessionResponse;
 use crate::apps::workspaces::serializers::tasks::PageQuery;
 use crate::{Result, config::openapi::Contracts};
+use aidash_application::authorization::catalog::review::{
+	ApprovalReview, ApprovalReviewSubmission,
+};
 use reinhardt::rest::openapi::OpenApiSchema;
 use serde_json::Value;
 
@@ -530,6 +537,98 @@ pub(crate) fn register(contracts: &mut Contracts, document: &mut OpenApiSchema) 
 	)?;
 	contracts.request::<_, CatalogApprovals>(document, views::policies::approve_catalog)?;
 	contracts.path(document, views::policies::approve_catalog, &["String"])?;
+	contracts.response::<_, ApprovalReview>(
+		document,
+		views::policies::catalog_review,
+		200,
+		"application/json",
+	)?;
+	contracts.query::<_, CatalogReviewQuery>(document, views::policies::catalog_review)?;
+	contracts.path(document, views::policies::catalog_review, &["String"])?;
+	contracts
+		.response::<_, aidash_application::authorization::catalog::withdrawal::WithdrawalImpact>(
+			document,
+			views::policies::catalog_impact,
+			200,
+			"application/json",
+		)?;
+	contracts.query::<_, CatalogImpactQuery>(document, views::policies::catalog_impact)?;
+	contracts.path(document, views::policies::catalog_impact, &["String"])?;
+	contracts.response::<_, CatalogReviewResult>(
+		document,
+		views::policies::submit_catalog_review,
+		200,
+		"application/json",
+	)?;
+	contracts
+		.request::<_, ApprovalReviewSubmission>(document, views::policies::submit_catalog_review)?;
+	contracts.path(
+		document,
+		views::policies::submit_catalog_review,
+		&["String"],
+	)?;
+	contracts.response::<_, CatalogApprovalRequestView>(
+		document,
+		views::policies::create_catalog_request,
+		200,
+		"application/json",
+	)?;
+	contracts
+		.request::<_, CatalogRequestInput>(document, views::policies::create_catalog_request)?;
+	contracts.path(
+		document,
+		views::policies::create_catalog_request,
+		&["String"],
+	)?;
+	contracts.response::<_, CatalogApprovalRequestView>(
+		document,
+		views::policies::withdraw_catalog_request,
+		200,
+		"application/json",
+	)?;
+	contracts.path(
+		document,
+		views::policies::withdraw_catalog_request,
+		&["String", "Uuid"],
+	)?;
+	contracts.response::<_, CatalogApprovalRequestView>(
+		document,
+		views::policies::decline_catalog_request,
+		200,
+		"application/json",
+	)?;
+	contracts
+		.request::<_, CatalogRequestDecline>(document, views::policies::decline_catalog_request)?;
+	contracts.path(
+		document,
+		views::policies::decline_catalog_request,
+		&["String", "Uuid"],
+	)?;
+	contracts.response::<_, CatalogApprovalRequestPage>(
+		document,
+		views::policies::catalog_requests_mine,
+		200,
+		"application/json",
+	)?;
+	contracts.query::<_, CatalogRequestPage>(document, views::policies::catalog_requests_mine)?;
+	contracts.path(
+		document,
+		views::policies::catalog_requests_mine,
+		&["String"],
+	)?;
+	contracts.response::<_, CatalogApprovalRequestPage>(
+		document,
+		views::policies::catalog_requests_pending,
+		200,
+		"application/json",
+	)?;
+	contracts
+		.query::<_, CatalogRequestPage>(document, views::policies::catalog_requests_pending)?;
+	contracts.path(
+		document,
+		views::policies::catalog_requests_pending,
+		&["String"],
+	)?;
 	contracts.response::<_, IssuedCredential>(
 		document,
 		views::policies::issue_credential,

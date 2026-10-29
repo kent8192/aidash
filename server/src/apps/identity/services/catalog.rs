@@ -102,6 +102,16 @@ pub(crate) async fn metadata(access: &mut Access, reference: &EntityRef) -> Resu
 		.require(&resource(access, &entry), "registry.read")
 		.await?;
 	crate::marketplace::check_pinned(access, &entry).await?;
+	if aidash_domain::registry::bindings::defaults::is_compaction_decider(&entry) {
+		// A child Run admitted under this lease starts only with its own
+		// compaction Decider approved (#540). The inherited-lease fence admits
+		// a definition only when the parent's closure names it; this one is a
+		// closure member although its approval is checked when needed. The
+		// current approval is still read by the child's own start check.
+		access
+			.approved_catalog
+			.insert((reference.id.clone(), reference.version.clone()));
+	}
 	Ok(entry)
 }
 
@@ -164,27 +174,3 @@ pub async fn get(
 }
 
 pub use crate::apps::identity::serializers::catalog::Binding;
-
-// The caller retains the tenant, compatibility and resource locks until commit.
-// Marketplace callers retain their writer and resource locks through commit.
-pub(crate) async fn set_in(
-	tx: &mut crate::database::native::Transaction,
-	tenant: &str,
-	node: &aidash_domain::nodes::NodeName,
-	entry: &EntityRef,
-	expected_revision: i64,
-	enabled: bool,
-	actor: &str,
-) -> Result<Binding> {
-	aidash_application::authorization::catalog::set_in(
-		&mut crate::bootstrap::catalog_mutation_scope(tx),
-		tenant,
-		node,
-		entry,
-		expected_revision,
-		enabled,
-		actor,
-	)
-	.await
-	.map_err(Into::into)
-}

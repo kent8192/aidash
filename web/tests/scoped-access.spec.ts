@@ -166,7 +166,9 @@ test("subject dashboard completes a conversation and clears expired access", asy
         credential.token,
       );
     }
-    for (const entryId of [`${id}-model`, id]) {
+    // The Node binds its compaction Decider to the Agent by default, so the
+    // Agent's approval needs that Decider approved first.
+    for (const entryId of [`${id}-model`, "aidash.compaction-decider", id]) {
       await api(
         `/api/authorization/${tenant}/catalog`,
         {

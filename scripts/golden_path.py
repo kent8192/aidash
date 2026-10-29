@@ -36,6 +36,8 @@ TOKEN = "acceptance-access-token"
 # A Tenant subject's /api/state waits about 15 s before it is served on a
 # CI runner while the research cluster runs, then takes about 5 s (#404).
 API_TIMEOUT = 60
+# Every Agent depends on the compaction Decider its Node binds by default (ADR 0102).
+COMPACTION_DECIDER = {"id": "aidash.compaction-decider", "version": "1.0.0"}
 
 
 def api_request(base, path, body=None, token=TOKEN, headers=None, timeout=API_TIMEOUT):
@@ -84,7 +86,8 @@ def tenant_subject(base, label, subject, issue, agents=(), subject_kind="user", 
     Only Tenant subjects register definitions and run work (#371). The
     Deployment Administrator creates the Tenant and writes its policy, but holds
     no Tenant authority (#484): `issue(tenant, subject)` mints the credential
-    from the host. `agents` name Agents as subjects: `id@version` for one that
+    from the host, which then approves the compaction Decider every Agent
+    depends on. `agents` name Agents as subjects: `id@version` for one that
     executes on the Tenant's default Node, or the full subject of one that
     executes elsewhere. Every Agent subject belongs to this Tenant's local
     default Node, even when its subject name identifies a remote Agent. The
@@ -110,6 +113,7 @@ def tenant_subject(base, label, subject, issue, agents=(), subject_kind="user", 
         node, address = default_node(base, tenant, token=credential["token"])
         subjects.update({(agent if "/agents/" in agent else f"{address}/agents/{agent}"): {"kind": "agent", "node": node} for agent in agents})
         replace(subjects, api_request(base, f"/api/authorization/{tenant}")["revision"])
+    approve(base, tenant, credential["token"], [COMPACTION_DECIDER])
     return tenant, credential
 
 

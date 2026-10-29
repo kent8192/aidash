@@ -60,6 +60,12 @@ impl AccessTransaction {
 		self.transaction.is_some()
 	}
 
+	/// The native transaction, for a trait object that cannot use the wrapper's
+	/// `Deref` coercion directly.
+	pub(crate) fn native_mut(&mut self) -> &mut crate::database::native::Transaction {
+		self
+	}
+
 	fn install(&mut self, transaction: crate::database::native::Transaction) {
 		debug_assert!(self.transaction.is_none());
 		self.admissions.clear();
