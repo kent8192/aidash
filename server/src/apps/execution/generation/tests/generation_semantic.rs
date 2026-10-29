@@ -23,6 +23,18 @@ use std::sync::{
 };
 use uuid::Uuid;
 
+/// The Tenant Subject the fixture's token authenticates: store-level memory
+/// reads act as it, since a Deployment Administrator holds no Tenant content
+/// authority (#484).
+async fn subject_actor(fixture: &Fixture) -> aidash_server::authorization::identity::Actor {
+	aidash_server::authorization::Authorization {
+		pool: fixture.f.store.pool.clone(),
+	}
+	.authenticate(&fixture.token)
+	.await
+	.expect("the fixture's Subject Credential authenticates")
+}
+
 #[derive(Clone)]
 struct Fixture {
 	f: Federation,
@@ -235,7 +247,7 @@ async fn generated_embeddings_are_pinned_reserved_and_limited_with_reported_usag
 	let fixture = semantic_fixture_1;
 	let (_, policies) = request(
 		&fixture.app,
-		&fixture.f.config.api_token,
+		&fixture.token,
 		"GET",
 		"/api/generation/acme/policies",
 		Value::Null,
@@ -245,7 +257,7 @@ async fn generated_embeddings_are_pinned_reserved_and_limited_with_reported_usag
 	spec["embedding"] = Value::Null;
 	let (status, value) = request(
 		&fixture.app,
-		&fixture.f.config.api_token,
+		&fixture.token,
 		"POST",
 		"/api/generation/acme/policies/semantic",
 		json!({"expected_revision":1,"spec":spec}),
@@ -267,7 +279,7 @@ async fn generated_embeddings_are_pinned_reserved_and_limited_with_reported_usag
 		.unwrap();
 	let (_, policies) = request(
 		&fixture.app,
-		&fixture.f.config.api_token,
+		&fixture.token,
 		"GET",
 		"/api/generation/acme/policies",
 		Value::Null,
@@ -380,7 +392,7 @@ async fn generated_embedding_catalog_policy_and_provider_changes_cannot_increase
 		spec["embedding"]["model_version"] = json!("2");
 		let (status, index) = request(
 			&fixture.app,
-			&fixture.f.config.api_token,
+			&fixture.token,
 			"POST",
 			&format!("/api/workspaces/{}/semantic/index", fixture.workspace),
 			json!({"expected_revision":1,"spec":spec}),
@@ -393,7 +405,7 @@ async fn generated_embedding_catalog_policy_and_provider_changes_cannot_increase
 		);
 		let (_, unchanged) = request(
 			&fixture.app,
-			&fixture.f.config.api_token,
+			&fixture.token,
 			"GET",
 			&format!("/api/workspaces/{}/semantic/index", fixture.workspace),
 			Value::Null,
@@ -1148,9 +1160,7 @@ async fn native_shared_synthesis_preserves_published_origins_and_unions_nested_b
 	semantic_fixture_1: Fixture,
 ) {
 	use aidash_domain::{memory::*, registry::EntityRef};
-	use aidash_server::{
-		authorization::identity::Actor, semantic::services::native_memory as memory,
-	};
+	use aidash_server::semantic::services::native_memory as memory;
 	use reinhardt::query::{
 		Alias, Expr, ExprTrait, PostgresQueryBuilder, Query, QueryStatementBuilder,
 	};
@@ -1286,7 +1296,7 @@ async fn native_shared_synthesis_preserves_published_origins_and_unions_nested_b
 		};
 		let unit = memory::list(
 			&fixture.f.store,
-			&Actor::DeploymentAdministrator,
+			&subject_actor(&fixture).await,
 			memory::ReadBank {
 				provider: provider.clone(),
 				bank: private,
@@ -1511,9 +1521,7 @@ async fn model_memory_mutations_preserve_existing_human_verification(
 	semantic_fixture_1: Fixture,
 ) {
 	use aidash_domain::memory::{Bank, Change, Content, Kind, Learning, Mutation, Verification};
-	use aidash_server::{
-		authorization::identity::Actor, database::native, semantic::native_memory as memory,
-	};
+	use aidash_server::{database::native, semantic::native_memory as memory};
 	use reinhardt::query::{Alias, Expr, PostgresQueryBuilder, Query, QueryStatementBuilder};
 	let fixture = semantic_fixture_1;
 	let run = fixture.f.store.runs(&TEST_FIXTURE).await.unwrap().remove(0);
@@ -1561,7 +1569,7 @@ async fn model_memory_mutations_preserve_existing_human_verification(
 			};
 			memory::mutate(
 				&fixture.f.store,
-				&Actor::DeploymentAdministrator,
+				&subject_actor(&fixture).await,
 				Mutation {
 					operation_id: Uuid::now_v7(),
 					provider: aidash_server::registry::EntityRef {
@@ -1670,7 +1678,7 @@ async fn completed_learning_origin_remains_live_through_failed_index_retry(
 	.unwrap();
 	let (code, response) = request(
 		&fixture.app,
-		&fixture.f.config.api_token,
+		&fixture.token,
 		"POST",
 		&format!("/api/workspaces/{}/memory/operate", fixture.workspace),
 		json!({"operation_id":Uuid::now_v7(),"provider":metadata["provider"],"bank":metadata["bank"],"action":{"action":"reindex","expected_index_revision":fixture.index["revision"]}}),
@@ -1814,7 +1822,7 @@ async fn completed_learning_origin_remains_live_through_failed_index_retry(
 	};
 	let learned = aidash_server::semantic::native_memory::list(
 		&fixture.f.store,
-		&aidash_server::authorization::identity::Actor::DeploymentAdministrator,
+		&subject_actor(&fixture).await,
 		read,
 	)
 	.await
@@ -1830,7 +1838,7 @@ async fn completed_learning_origin_remains_live_through_failed_index_retry(
 	unrelated.links.clear();
 	let other = aidash_server::semantic::native_memory::mutate(
 		&fixture.f.store,
-		&aidash_server::authorization::identity::Actor::DeploymentAdministrator,
+		&subject_actor(&fixture).await,
 		aidash_domain::memory::Mutation {
 			operation_id: Uuid::now_v7(),
 			provider: provider.clone(),
@@ -1860,21 +1868,44 @@ async fn completed_learning_origin_remains_live_through_failed_index_retry(
 		.await
 		.unwrap();
 	assert_eq!(status().await.unwrap(), "COMPLETED");
-	aidash_server::semantic::native_memory::mutate(
-		&fixture.f.store,
-		&aidash_server::authorization::identity::Actor::DeploymentAdministrator,
-		aidash_domain::memory::Mutation {
-			operation_id: Uuid::now_v7(),
-			provider: provider.clone(),
-			bank: bank_identity.clone(),
-			changes: vec![aidash_domain::memory::Change::Delete {
-				id: other.id,
-				expected_revision: other.revision,
-			}],
+	// Completion retires the generated Agent's Catalog Approval. A Subject writes
+	// a participant bank only while its Agent is approved (a Deployment
+	// Administrator once skipped that), so the host re-approves it first.
+	let (agent_id, agent_version, approval_revision): (String, String, i64) = sqlx::query_as(
+		"SELECT p.agent_id, p.agent_version, c.revision FROM memory_participants p \
+		 JOIN authorization_catalog c ON c.tenant = p.tenant AND c.entry_id = p.agent_id \
+		 AND c.entry_version = p.agent_version WHERE p.id = $1",
+	)
+	.bind(bank_identity.participant.expect("a participant bank"))
+	.fetch_one(fixture.f.store.pool.fixture_driver())
+	.await
+	.unwrap();
+	aidash_server::authorization::Authorization {
+		pool: fixture.f.store.pool.clone(),
+	}
+	.set_catalog(
+		"acme",
+		&aidash_domain::nodes::NodeName::derived("acme"),
+		&aidash_server::registry::EntityRef {
+			id: agent_id,
+			version: agent_version,
 		},
+		approval_revision,
+		true,
+		"deployment_administrator",
 	)
 	.await
 	.unwrap();
+	let (status, deleted) = request(
+		&fixture.app,
+		&fixture.token,
+		"POST",
+		&format!("/api/workspaces/{}/memory/units/mutate", fixture.workspace),
+		json!({"operation_id":Uuid::now_v7(),"provider":provider,"bank":bank_identity,
+			"changes":[{"operation":"delete","id":other.id,"expected_revision":other.revision}]}),
+	)
+	.await;
+	assert_eq!(status, 200, "{deleted}");
 	let calls = fixture.inference.load(Ordering::SeqCst);
 	let operation_id = Uuid::now_v7();
 	let mut derived = source.content.clone();
@@ -1882,7 +1913,7 @@ async fn completed_learning_origin_remains_live_through_failed_index_retry(
 	derived.evidence = vec![source.evidence()];
 	let (code, response) = request(
 		&fixture.app,
-		&fixture.f.config.api_token,
+		&fixture.token,
 		"POST",
 		&format!("/api/workspaces/{}/memory/operate", fixture.workspace),
 		json!({"operation_id":operation_id,"provider":provider,"bank":bank_identity,
@@ -2173,23 +2204,23 @@ mod semantic_fixture_composition {
 		let spec = json!({"enabled":true,"template":template,"permissions":{"roles":[],"groups":[],"attributes":{}},"approval_required":false,"limits":{"max_agents":2,"max_concurrent":2,"max_depth":2,"token_budget":1000000,"tokens_per_agent":400000,"lifetime_seconds":3600},"embedding":allowance.map(|calls| json!({"provider":{"id":"embedding","version":"1.0.0"},"calls_per_agent":calls,"call_budget":calls*2}))});
 		let (status, response) = request(
 			&app,
-			&f.config.api_token,
+			&token,
 			"POST",
 			"/api/generation/acme/policies/semantic",
 			json!({"expected_revision":0,"spec":spec}),
 		)
 		.await;
 		assert_eq!(status, 200, "{response}");
-		let (status, index) = request(&app,&f.config.api_token,"POST",&format!("/api/workspaces/{workspace}/semantic/index"),json!({"expected_revision":0,"spec":{"embedding":{"provider":"openai","endpoint":format!("{endpoint}/v1"),"model":"fixture-embedding","model_version":"1","dimensions":3},"vector":{"provider":"postgres","endpoint":"local","credential_env":null},"enabled":true,"auto_context":true,"max_sources":64,"max_results":10,"max_result_tokens":4096,"max_input_bytes":8192}})).await;
+		let (status, index) = request(&app,&token,"POST",&format!("/api/workspaces/{workspace}/semantic/index"),json!({"expected_revision":0,"spec":{"embedding":{"provider":"openai","endpoint":format!("{endpoint}/v1"),"model":"fixture-embedding","model_version":"1","dimensions":3},"vector":{"provider":"postgres","endpoint":"local","credential_env":null},"enabled":true,"auto_context":true,"max_sources":64,"max_results":10,"max_result_tokens":4096,"max_input_bytes":8192}})).await;
 		assert_eq!(status, 200, "{index}");
 
 		if maintenance {
 			assert_eq!(request(&app,&token,"POST",&format!("/api/workspaces/{workspace}/semantic/entries"),json!({"key":"reference","expected_revision":0,"source":{"kind":"memory","text":"A car carries passengers."},"metadata":{}})).await.0,200);
 		} else {
 			let bank = json!({"home":aidash_domain::nodes::NodeAddress::derived(f.store.deployment.as_str(),"acme").to_string(),"tenant":"acme","workspace":workspace,"participant":null});
-			let (status,response)=request(&app,&f.config.api_token,"POST",&format!("/api/workspaces/{workspace}/memory/operate"),json!({"operation_id":Uuid::now_v7(),"provider":{"id":"memory","version":"1.0.0"},"bank":bank,"action":{"action":"configure_bank","expected_revision":0}})).await;
+			let (status,response)=request(&app,&token,"POST",&format!("/api/workspaces/{workspace}/memory/operate"),json!({"operation_id":Uuid::now_v7(),"provider":{"id":"memory","version":"1.0.0"},"bank":bank,"action":{"action":"configure_bank","expected_revision":0}})).await;
 			assert_eq!(status, 200, "{response}");
-			let (status,response)=request(&app,&f.config.api_token,"POST",&format!("/api/workspaces/{workspace}/memory/units/mutate"),json!({"operation_id":Uuid::now_v7(),"provider":{"id":"memory","version":"1.0.0"},"bank":bank,"changes":[{"operation":"add","id":Uuid::now_v7(),"content":{"text":"A car carries passengers.","kind":"world","learning":"fact","verification":"unverified","occurred":null,"entities":[],"evidence":[],"links":[]}}]})).await;
+			let (status,response)=request(&app,&token,"POST",&format!("/api/workspaces/{workspace}/memory/units/mutate"),json!({"operation_id":Uuid::now_v7(),"provider":{"id":"memory","version":"1.0.0"},"bank":bank,"changes":[{"operation":"add","id":Uuid::now_v7(),"content":{"text":"A car carries passengers.","kind":"world","learning":"fact","verification":"unverified","occurred":null,"entities":[],"evidence":[],"links":[]}}]})).await;
 			assert_eq!(status, 200, "{response}");
 		}
 

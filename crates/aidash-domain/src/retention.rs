@@ -19,7 +19,26 @@ pub const RESOURCE: &str = "retention";
 pub enum Decider {
 	/// A subject whose Tenant policy permits the action.
 	Subject { tenant: String, subject: String },
-	/// A Deployment Administrator, who needs no Tenant policy: the dashboard
+}
+
+impl Decider {
+	/// The form kept in history: `subject:<tenant>/<subject>`.
+	pub fn recorded(&self) -> String {
+		match self {
+			Self::Subject { tenant, subject } => format!("subject:{tenant}/{subject}"),
+		}
+	}
+}
+
+/// Who decided a change already kept in history. Before ADR 0102 a
+/// Deployment Administrator could decide one, so records may still name one;
+/// they stay readable although no Deployment Administrator decides anymore.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+pub enum RecordedDecider {
+	/// A subject whose Tenant policy permitted the action.
+	Subject { tenant: String, subject: String },
+	/// A Deployment Administrator, recorded before ADR 0102: the dashboard
 	/// identity holding the grant, or none for the deployment's API token.
 	DeploymentAdministrator {
 		#[serde(default, skip_serializing_if = "Option::is_none")]
@@ -27,7 +46,7 @@ pub enum Decider {
 	},
 }
 
-impl Decider {
+impl RecordedDecider {
 	/// The form kept in history: `subject:<tenant>/<subject>`,
 	/// `deployment-administrator:<identity>` or `deployment-administrator`.
 	pub fn recorded(&self) -> String {
@@ -37,6 +56,14 @@ impl Decider {
 				identity: Some(identity),
 			} => format!("deployment-administrator:{identity}"),
 			Self::DeploymentAdministrator { identity: None } => "deployment-administrator".into(),
+		}
+	}
+}
+
+impl From<Decider> for RecordedDecider {
+	fn from(decider: Decider) -> Self {
+		match decider {
+			Decider::Subject { tenant, subject } => Self::Subject { tenant, subject },
 		}
 	}
 }

@@ -33,22 +33,15 @@ pub(crate) struct Repository<'a> {
 	pub(crate) runtime: &'a Federation,
 	pub(crate) actor: Actor,
 }
-// Opening another audited transaction while this lease is live would wait on its own advisory lock.
-enum Lease {
-	DeploymentAdministrator(Box<dyn TransactionExecutor>),
-	Subject(Box<NativeAccess>),
-}
 struct Scope {
 	policy: Option<aidash_application::ports::authorization::dashboard::AccountPolicy>,
-	lease: Lease,
+	// Opening another audited transaction while this lease is live would wait on its own advisory lock.
+	lease: Box<NativeAccess>,
 	actor: Actor,
 }
 impl Scope {
 	fn tx(&mut self) -> &mut dyn TransactionExecutor {
-		match &mut self.lease {
-			Lease::DeploymentAdministrator(tx) => tx.as_mut(),
-			Lease::Subject(access) => access.tx.as_mut(),
-		}
+		self.lease.tx.as_mut()
 	}
 }
 #[async_trait]
@@ -57,18 +50,11 @@ impl InspectionRepository for Repository<'_> {
 		self.runtime.config.deployment.as_str()
 	}
 	async fn begin(&self) -> Result<Box<dyn InspectionScope + '_>> {
-		let lease = match &self.actor {
-			Actor::DeploymentAdministrator => Lease::DeploymentAdministrator(Box::new(
-				self.runtime
-					.store
-					.pool
-					.begin(&self.actor.tenancy()?)
-					.await?,
-			)),
-			Actor::Subject(identity) => Lease::Subject(Box::new(
-				NativeAccess::begin(&self.runtime.store, identity).await?,
-			)),
+		// Agent versions are Tenant content: only a Subject inspects them (#484).
+		let Actor::Subject(identity) = &self.actor else {
+			return Err(aidash_application::Error::Forbidden);
 		};
+		let lease = Box::new(NativeAccess::begin(&self.runtime.store, identity).await?);
 		Ok(Box::new(Scope {
 			policy: self.runtime.config.dashboard_policy(),
 			lease,
@@ -98,11 +84,13 @@ impl InspectionScope for Scope {
 		)
 		.await
 		.map_err(aidash_application::Error::from)?;
-		if entry.installation.is_some()
-			&& let Lease::Subject(access) = &mut self.lease
-		{
-			crate::apps::identity::services::catalog::entry(access, reference, "registry.read")
-				.await?;
+		if entry.installation.is_some() {
+			crate::apps::identity::services::catalog::entry(
+				&mut self.lease,
+				reference,
+				"registry.read",
+			)
+			.await?;
 		}
 		Ok(entry)
 	}
@@ -116,25 +104,16 @@ impl InspectionScope for Scope {
 			.map_err(Into::into)
 	}
 	async fn workspace(&mut self, id: Uuid) -> Result<Resource> {
-		match &mut self.lease {
-			Lease::Subject(access) => access.workspace(id).await.map_err(Into::into),
-			Lease::DeploymentAdministrator(_) => Err(aidash_application::Error::Invalid(
-				"Deployment Administrator inspection does not require a subject workspace resource"
-					.into(),
-			)),
-		}
+		self.lease.workspace(id).await.map_err(Into::into)
 	}
 	async fn decide(&mut self, resource: &Resource, action: &str) -> Result<bool> {
-		match &mut self.lease {
-			Lease::Subject(access) => access.decide(resource, action).await.map_err(Into::into),
-			Lease::DeploymentAdministrator(_) => Ok(true),
-		}
+		self.lease
+			.decide(resource, action)
+			.await
+			.map_err(Into::into)
 	}
 	async fn run_visible(&mut self, run: &RunMetadata) -> Result<bool> {
-		match &mut self.lease {
-			Lease::Subject(access) => access.run_visible(run).await.map_err(Into::into),
-			Lease::DeploymentAdministrator(_) => Ok(true),
-		}
+		self.lease.run_visible(run).await.map_err(Into::into)
 	}
 	async fn workspace_title(&mut self, id: Uuid) -> Result<Option<String>> {
 		Workspace::title_in(self.tx(), id).await.map_err(Into::into)
@@ -189,12 +168,9 @@ impl InspectionScope for Scope {
 		)
 	}
 	async fn finish(self: Box<Self>, inspection: Inspection) -> Result<Inspection> {
-		match self.lease {
-			Lease::DeploymentAdministrator(tx) => {
-				tx.commit().await.map_err(crate::Error::from)?;
-				Ok(inspection)
-			}
-			Lease::Subject(access) => (*access).finish(Ok(inspection)).await.map_err(Into::into),
-		}
+		(*self.lease)
+			.finish(Ok(inspection))
+			.await
+			.map_err(Into::into)
 	}
 }

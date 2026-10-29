@@ -12,7 +12,7 @@ post {
 
 headers {
   Accept: application/json
-  Authorization: Bearer {{deployment_administrator_token}}
+  Authorization: Bearer {{contract_token}}
   Content-Type: application/json
 }
 
@@ -22,13 +22,13 @@ body:file {
 
 script:pre-request {
 
-const snapshot = await bru.sendRequest({method:"GET",url:bru.getEnvVar("base_url")+"/api/workspaces/"+bru.getVar("workspace_id"),headers:{Authorization:"Bearer "+bru.getEnvVar("deployment_administrator_token")}}); if(snapshot.status!==200 || !Number.isInteger(snapshot.data.workspace.revision)) throw new Error("fixture snapshot unavailable"); bru.setVar("beforeWorkspace",JSON.stringify({revision:snapshot.data.workspace.revision,state:snapshot.data.workspace.state}));
+const snapshot = await bru.sendRequest({method:"GET",url:bru.getEnvVar("base_url")+"/api/workspaces/"+bru.getVar("workspace_id"),headers:{Authorization:"Bearer "+bru.getVar("contract_token")}}); if(snapshot.status!==200 || !Number.isInteger(snapshot.data.workspace.revision)) throw new Error("fixture snapshot unavailable"); bru.setVar("beforeWorkspace",JSON.stringify({revision:snapshot.data.workspace.revision,state:snapshot.data.workspace.state}));
 
 }
 
 script:post-response {
 
-const snapshot = await bru.sendRequest({method:"GET",url:bru.getEnvVar("base_url")+"/api/workspaces/"+bru.getVar("workspace_id"),headers:{Authorization:"Bearer "+bru.getEnvVar("deployment_administrator_token")}}); test("Rejected input preserves committed workspace state", function(){expect(snapshot.status).to.equal(200);expect(JSON.stringify({revision:snapshot.data.workspace.revision,state:snapshot.data.workspace.state})).to.equal(bru.getVar("beforeWorkspace"));});
+const snapshot = await bru.sendRequest({method:"GET",url:bru.getEnvVar("base_url")+"/api/workspaces/"+bru.getVar("workspace_id"),headers:{Authorization:"Bearer "+bru.getVar("contract_token")}}); test("Rejected input preserves committed workspace state", function(){expect(snapshot.status).to.equal(200);expect(JSON.stringify({revision:snapshot.data.workspace.revision,state:snapshot.data.workspace.state})).to.equal(bru.getVar("beforeWorkspace"));});
 
 }
 

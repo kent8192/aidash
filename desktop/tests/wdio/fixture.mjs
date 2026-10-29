@@ -7,6 +7,16 @@ const secret = () => randomBytes(32).toString("base64url");
 /** Synthetic broker/API only. No Google account or deployment secrets are used. */
 export async function startFixture() {
   const scene = meshScene();
+  const subject = { kind: "subject", tenant: "acme", subject: "alice" };
+  scene.data.access = subject;
+  const node = {
+    name: "default",
+    label: "Default",
+    default: true,
+    address: `${scene.data.deployment.id}/default`,
+  };
+  scene.data.workspaces[0].node = node.name;
+  for (const run of scene.data.runs) run.home_node = node.address;
   const pending = new Map();
   const codes = new Map();
   const refresh = new Set();
@@ -125,17 +135,19 @@ export async function startFixture() {
           return reply(200, {
             id: `session-${server.address().port}`,
             deployment_administrator: true,
-            mappings: [],
+            mappings: [{ id: "alice", tenant: "acme", subject: "alice" }],
           });
         case "/auth/registration":
           return reply(200, null);
         case "/api/session":
           return reply(200, {
-            access: { kind: "deployment_administrator" },
+            access: subject,
             node_id: scene.data.deployment.id,
           });
         case "/api/state":
           return reply(200, scene.data);
+        case "/api/tenants/acme/nodes":
+          return reply(200, [node]);
         case "/api/mesh":
           return reply(200, { nodes: [], errors: [] });
         case "/api/discover":

@@ -20,7 +20,7 @@ async fn remote_prune_preserves_archives_created_after_its_cut(
 	};
 	memory::operate(
 		&store,
-		&Actor::DeploymentAdministrator,
+		&administrator(&store).await,
 		memory::Operation {
 			operation_id: Uuid::now_v7(),
 			provider: reference("p"),
@@ -75,7 +75,7 @@ async fn remote_prune_preserves_archives_created_after_its_cut(
 	// A later pass must still remove it when the live policy retires its revision.
 	memory::operate(
 		&store,
-		&Actor::DeploymentAdministrator,
+		&administrator(&store).await,
 		memory::Operation {
 			operation_id: Uuid::now_v7(),
 			provider: reference("p"),

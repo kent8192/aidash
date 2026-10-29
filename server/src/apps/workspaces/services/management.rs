@@ -9,7 +9,6 @@ use crate::{
 	domain::*,
 	federation::Federation,
 };
-use aidash_application::tenancy::{DeploymentScopeReason, TenancyScope};
 use http::HeaderMap;
 use reinhardt::injectable;
 use uuid::Uuid;
@@ -33,24 +32,11 @@ pub async fn provide(#[inject] runtime: Federation) -> CollaborationManagement {
 impl CollaborationManagement {
 	pub(crate) async fn task_list(&self, actor: Actor, page: PageQuery) -> Result<TaskPage> {
 		let f = self.runtime.clone();
-		if let Some(scope) = scoped(&f, actor) {
-			return scope.task_page(page.offset).await;
-		}
-		// A Deployment Administrator lists tasks across Tenants.
-		let listing = TenancyScope::Deployment(DeploymentScopeReason::DeploymentAdministratorList);
-		let mut page = f.store.task_page(&listing, page.offset).await?;
-		let denied = crate::authorization::remote::deployment_administrator::blocked(
-			&mut f.store.pool.begin(&listing).await?,
-			&page
-				.tasks
-				.iter()
-				.map(|task| task.workspace_id)
-				.collect::<Vec<_>>(),
-		)
-		.await?;
-		page.tasks
-			.retain(|task| !denied.contains(&task.workspace_id));
-		Ok(page)
+		// Tasks are Tenant content: an administrator lists none (#484).
+		let Some(scope) = scoped(&f, actor) else {
+			return Err(Error::Forbidden);
+		};
+		scope.task_page(page.offset).await
 	}
 	pub(crate) async fn workspace_create(
 		&self,
@@ -68,16 +54,10 @@ impl CollaborationManagement {
 	}
 	pub(crate) async fn workspace_get(&self, actor: Actor, id: Uuid) -> Result<WorkspaceSnapshot> {
 		let f = self.runtime.clone();
-		if let Some(scope) = scoped(&f, actor) {
-			return scope.snapshot(id).await;
-		}
-		let scope = f.store.workspace_tenancy(id).await?;
-		crate::authorization::remote::deployment_administrator::require(
-			&mut f.store.pool.begin(&scope).await?,
-			id,
-		)
-		.await?;
-		f.store.snapshot(&scope, id).await
+		let Some(scope) = scoped(&f, actor) else {
+			return Err(Error::Forbidden);
+		};
+		scope.snapshot(id).await
 	}
 	pub(crate) async fn workspace_update(
 		&self,
@@ -86,15 +66,6 @@ impl CollaborationManagement {
 		input: StateInput,
 	) -> Result<Workspace> {
 		let f = self.runtime.clone();
-		if matches!(actor, Actor::DeploymentAdministrator) {
-			let scope = f.store.workspace_tenancy(id).await?;
-			crate::authorization::remote::deployment_administrator::require(
-				&mut f.store.pool.begin(&scope).await?,
-				id,
-			)
-			.await?;
-			return Err(Error::Forbidden);
-		}
 		let Some(scope) = scoped(&f, actor) else {
 			return Err(Error::Forbidden);
 		};
@@ -146,26 +117,10 @@ impl CollaborationManagement {
 		input: AbandonInput,
 	) -> Result<Task> {
 		let f = self.runtime.clone();
-		if let Actor::Subject(identity) = actor {
-			return interaction::abandon(&f, &identity, id, input.revision, &input.reason).await;
-		}
-		// A task names its Workspace; read it across Tenants first.
-		let listing = TenancyScope::Deployment(DeploymentScopeReason::DeploymentAdministratorList);
-		let existing = f.store.task(&listing, id).await?;
-		let scope = f.store.workspace_tenancy(existing.workspace_id).await?;
-		let mut tx = f.store.pool.begin(&scope).await?;
-		crate::authorization::remote::deployment_administrator::require(
-			&mut tx,
-			existing.workspace_id,
-		)
-		.await?;
-		let task = f
-			.store
-			.abandon_task_in(&mut tx, id, input.revision, &input.reason, "human")
-			.await?;
-		tx.commit().await?;
-		f.notify.notify_waiters();
-		Ok(task)
+		let Actor::Subject(identity) = actor else {
+			return Err(Error::Forbidden);
+		};
+		interaction::abandon(&f, &identity, id, input.revision, &input.reason).await
 	}
 	pub(crate) async fn conversation_create(
 		&self,

@@ -818,6 +818,52 @@ async fn brokered_resolution_returns_a_route_and_never_reads_the_value() {
 	assert_eq!(grants.0.lock().await.len(), 1, "no second token was minted");
 }
 
+#[tokio::test]
+async fn corrupt_pinned_versions_are_never_sent_to_the_broker() {
+	let (mut service, repo, _) = service_with(FakeStore::default());
+	let grants = RecordedGrant::default();
+	service.calls = Some(Arc::new(FakeCalls(grants.clone())));
+	service.reader = None;
+	let created = service
+		.put(
+			"alpha",
+			"search",
+			put(Some("canary-value"), Some(&["api.example.com"]), 0),
+			"actor",
+		)
+		.await
+		.unwrap();
+	let call = SecretCall {
+		destination: endpoint_destination(ENDPOINT).unwrap(),
+		methods: vec!["POST".into()],
+		attach: Attach::Bearer,
+		subject: SecretSubject::Run {
+			run: "run-1".into(),
+			call: Uuid::from_u128(1),
+		},
+		max_response_bytes: None,
+	};
+	for pinned in [
+		"invalid",
+		"resource/versions/",
+		"resource/versions/01",
+		"resource/versions/latest",
+	] {
+		repo.0
+			.lock()
+			.await
+			.rows
+			.get_mut(&created.id)
+			.unwrap()
+			.pinned_version = Some(pinned.into());
+		assert!(
+			matches!(service.resolve("alpha", "search", ENDPOINT, Some(call.clone())).await, Err(Error::Invalid(message)) if message.contains("invalid pinned version")),
+			"{pinned}"
+		);
+	}
+	assert!(grants.0.lock().await.is_empty());
+}
+
 #[test]
 fn a_path_directory_keeps_its_last_slash() {
 	for (path, directory) in [
@@ -925,6 +971,11 @@ async fn a_brokered_call_secret_records_metadata_and_refreshes_one_route() {
 		2,
 		"no token for the new version"
 	);
+	drop(service);
+	assert!(
+		matches!(source.route().await, Err(Error::External(message)) if message.contains("no longer available"))
+	);
+	assert_eq!(grants.0.lock().await.len(), 2);
 }
 
 #[tokio::test]

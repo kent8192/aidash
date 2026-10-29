@@ -9,6 +9,18 @@ ownership, atomic revision conflicts, task creation and paging, strict JSON,
 content types, credential revocation, browser registration, Deployment Administrator approval,
 opaque cookies, origin and CSRF enforcement, and server-side logout.
 
+A Deployment Administrator holds no Tenant content or settings authority (#484, ADR 0102),
+so the harness plays the host operator: it creates the Tenant and writes a bootstrap
+policy as the administrator, then mints the journeys' Subject Credentials (alice, bob and a
+spare for the expanded suite) with `manage issue-subject-credential`, using the server's own
+settings. Journeys 06, 07 and the seed request assert that the administrator cannot issue
+them, and pass the host-minted credentials on through the environment. Journey 25 revokes
+alice's credential through her browser Mapping, the only way to administer a Tenant's
+credentials, which is why the browser login journeys run before it. Requests that must reach
+an extractor on a Tenant route use the contract subject, because the access boundary
+answers the administrator with 403 first; the administered routes keep using the
+administrator.
+
 The harness starts the compiled `manage server` custom command with isolated settings and
 a unique empty PostgreSQL database. It uses the normal Reinhardt bootstrap and
 migrations. Federation routes only prove that the boundary refuses what it cannot

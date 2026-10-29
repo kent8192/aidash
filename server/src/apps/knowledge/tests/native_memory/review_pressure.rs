@@ -91,7 +91,7 @@ pub(super) async fn retry_learning(store: &Store, bank: &Bank, proof: &Evidence)
 	}
 	memory::operate(
 		store,
-		&Actor::DeploymentAdministrator,
+		&administrator(store).await,
 		memory::Operation {
 			operation_id: Uuid::now_v7(),
 			provider: reference("p"),
@@ -123,7 +123,7 @@ pub(super) async fn retry_learning(store: &Store, bank: &Bank, proof: &Evidence)
 	);
 	let memory::Outcome::Candidates(candidates) = memory::operate(
 		store,
-		&Actor::DeploymentAdministrator,
+		&administrator(store).await,
 		memory::Operation {
 			operation_id: Uuid::now_v7(),
 			provider: reference("p"),

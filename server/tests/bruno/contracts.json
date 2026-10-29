@@ -3345,7 +3345,7 @@
     "source": "server/src/apps/identity/views/policies.rs",
     "json": false,
     "uuid_parameters": [],
-    "query_parameters": ["mine", "offset"],
+    "query_parameters": ["active", "mine", "offset"],
     "response": {
       "schema": {
         "type": "array",
@@ -25149,72 +25149,6 @@
   },
   {
     "method": "POST",
-    "path": "/api/workbench/agents/{id}/{version}/adopt",
-    "name": "workbench-adopt-agent",
-    "source": "server/src/apps/registry/workbench/views/drafts.rs",
-    "json": true,
-    "uuid_parameters": [],
-    "query_parameters": [],
-    "response": {
-      "schema": {
-        "$ref": "#/components/schemas/Draft"
-      },
-      "definitions": {
-        "Draft": {
-          "type": "object",
-          "required": [
-            "id",
-            "tenant",
-            "owner",
-            "revision",
-            "entry",
-            "documents",
-            "release_notes",
-            "source_id",
-            "source_version",
-            "archived",
-            "updated_at"
-          ],
-          "properties": {
-            "archived": {
-              "type": "boolean"
-            },
-            "documents": {},
-            "entry": {},
-            "id": {
-              "type": "string",
-              "format": "uuid"
-            },
-            "owner": {
-              "type": "string"
-            },
-            "release_notes": {
-              "type": "string"
-            },
-            "revision": {
-              "type": "integer",
-              "format": "int64"
-            },
-            "source_id": {
-              "type": ["string", "null"]
-            },
-            "source_version": {
-              "type": ["string", "null"]
-            },
-            "tenant": {
-              "type": "string"
-            },
-            "updated_at": {
-              "type": "string",
-              "format": "date-time"
-            }
-          }
-        }
-      }
-    }
-  },
-  {
-    "method": "POST",
     "path": "/api/workbench/drafts/{id}/shares",
     "name": "workbench-share-draft",
     "source": "server/src/apps/registry/workbench/views/drafts.rs",
@@ -26938,7 +26872,7 @@
     "source": "server/src/apps/registry/workbench/views/profile.rs",
     "json": false,
     "uuid_parameters": [],
-    "query_parameters": [],
+    "query_parameters": ["after"],
     "response": {
       "schema": {
         "type": "array",
@@ -46724,7 +46658,7 @@
     "source": "server/src/apps/execution/observation/views.rs",
     "json": false,
     "uuid_parameters": [],
-    "query_parameters": ["start", "end"],
+    "query_parameters": ["end", "start"],
     "response": {
       "schema": {
         "$ref": "#/components/schemas/ObservationReport"
@@ -47340,7 +47274,7 @@
     "source": "server/src/apps/identity/views/policies.rs",
     "json": false,
     "uuid_parameters": [],
-    "query_parameters": ["offset", "limit"],
+    "query_parameters": ["limit", "offset"],
     "response": {
       "schema": {
         "type": "array",
@@ -47467,12 +47401,12 @@
           "type": "object",
           "required": ["url", "expires_at"],
           "properties": {
-            "url": {
-              "type": "string"
-            },
             "expires_at": {
               "type": "string",
               "format": "date-time"
+            },
+            "url": {
+              "type": "string"
             }
           }
         }

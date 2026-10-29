@@ -41,7 +41,13 @@ async function dashboard(
     json: unknown;
   } = () => ({ json: [] }),
 ) {
-  await installBearerDashboard(page, "fixture");
+  await installBearerDashboard(
+    page,
+    "fixture",
+    "tenant" in access && "subject" in access
+      ? { tenant: String(access.tenant), name: String(access.subject) }
+      : undefined,
+  );
   await page.addInitScript(() =>
     localStorage.setItem("aidash-locale", "en-US"),
   );
@@ -118,8 +124,8 @@ for (const locale of ["en-US", "ja-JP"] as const) {
         page.getByRole("status").filter({
           hasText:
             locale === "ja-JP"
-              ? "定義は各テナントに属します。登録と承認は、それぞれのテナントのレジストリで行います。"
-              : "Definitions belong to Tenants. Each Tenant registers and approves its own in its Registry.",
+              ? "Deployment Administrator はテナントの内容を表示できません。"
+              : "Tenant content is not available to a Deployment Administrator.",
         }),
       ).toBeVisible();
       await expect(

@@ -96,21 +96,19 @@ pub async fn recover(
 		// emits `run.context_blocked`, like every other execution pause.
 		current.recovery.context_reason = Some(reason);
 		store.pause_context(&current, token, reason).await?;
-	} else if let ExecutionFailure::Authority {
-		identity_unavailable,
-	} = failure
-	{
-		let reason = if identity_unavailable {
-			"identity status unavailable"
-		} else {
-			"execution authority denied"
-		};
+	} else if let ExecutionFailure::Authority(authority) = failure {
 		store
-			.pause(&current, token, reason, "run.authorization_blocked")
+			.pause(
+				&current,
+				token,
+				&authority.reason(),
+				"run.authorization_blocked",
+				authority.refusal(),
+			)
 			.await?;
 	} else if let ExecutionFailure::MediaRoute(ref message) = failure {
 		store
-			.pause(&current, token, message, "run.media_route_blocked")
+			.pause(&current, token, message, "run.media_route_blocked", None)
 			.await?;
 	} else if matches!(failure, ExecutionFailure::Deferred) {
 		current.recovery.retry = Some(RetryState {

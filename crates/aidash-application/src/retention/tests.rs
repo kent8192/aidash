@@ -39,10 +39,7 @@ impl RetentionScope for Scope<'_> {
 	}
 	async fn permits(&mut self, _: &str, action: &str) -> Result<bool> {
 		assert_eq!(action, "retention.update");
-		Ok(matches!(
-			(&self.tenants.decider, self.tenants.permitted),
-			(Decider::DeploymentAdministrator { .. }, _) | (_, true)
-		))
+		Ok(self.tenants.permitted)
 	}
 	async fn stored(&mut self, tenant: &str) -> Result<Option<RetentionRules>> {
 		Ok(self.tenants.stored.lock().unwrap().get(tenant).copied())
@@ -145,7 +142,7 @@ async fn a_permitted_subject_shortens_its_tenants_periods_with_history() {
 
 #[tokio::test]
 async fn clearing_the_periods_applies_the_deployments_again() {
-	let tenants = Tenants::new(Decider::DeploymentAdministrator { identity: None }, false);
+	let tenants = Tenants::new(subject("acme"), true);
 	update(&tenants, "acme", Some(shorter())).await.unwrap();
 	let cleared = update(&tenants, "acme", None).await.unwrap();
 	assert_eq!(cleared.tenant_rules, None);
@@ -234,12 +231,9 @@ async fn a_dashboard_learns_who_may_change_the_periods() {
 			.unwrap()
 	);
 	assert!(
-		may_update(
-			&Tenants::new(Decider::DeploymentAdministrator { identity: None }, false),
-			"acme"
-		)
-		.await
-		.unwrap()
+		may_update(&Tenants::new(subject("acme"), true), "acme")
+			.await
+			.unwrap()
 	);
 	// Another Tenant's periods stay as closed as they are to `rules`.
 	assert!(matches!(

@@ -1,5 +1,5 @@
 meta {
-  name: 1462 connection-callback - Connection callback requires browser binding
+  name: 1462 connection-callback - Connection callback rejects unknown state
   type: http
   seq: 1462
 }
@@ -12,6 +12,7 @@ get {
 
 headers {
   Accept: application/json
+  Cookie: aidash-connection-authorization=tampered; __Host-aidash-connection-authorization=tampered
 }
 
 tests {

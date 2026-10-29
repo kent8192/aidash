@@ -117,7 +117,8 @@ async fn prepared_completion_rolls_back_outputs_and_commit_retains_source_revoca
 
 	// Preparation validates the complete write set without publishing any output.
 	assert_json(
-		app.deployment_administrator
+		execution
+			.subject
 			.post("/api/transactions", &manifest, "json")
 			.await
 			.unwrap(),
@@ -272,13 +273,7 @@ async fn prepared_completion_rolls_back_outputs_and_commit_retains_source_revoca
 	);
 	let hidden = assert_json(execution.subject.get(&path).await.unwrap(), 200);
 	assert_eq!(hidden["artifacts"], json!([]));
-	let deployment_administrator =
-		assert_json(app.deployment_administrator.get(&path).await.unwrap(), 200);
-	assert_eq!(
-		deployment_administrator["artifacts"]
-			.as_array()
-			.unwrap()
-			.len(),
-		1
-	);
+	// A Deployment Administrator holds no Tenant content authority (#484).
+	let refused = assert_json(app.deployment_administrator.get(&path).await.unwrap(), 403);
+	assert!(refused.get("artifacts").is_none(), "{refused}");
 }

@@ -16,8 +16,6 @@ pub fn url_patterns() -> UnifiedRouter {
 			.with_route_middleware(AccessBoundary::authenticated().with_visibility())
 			.endpoint(drafts::duplicate)
 			.with_route_middleware(AccessBoundary::authenticated().with_visibility())
-			.endpoint(drafts::adopt)
-			.with_route_middleware(AccessBoundary::authenticated().with_visibility())
 			.endpoint(drafts::share)
 			.with_route_middleware(AccessBoundary::authenticated().with_visibility())
 			.endpoint(drafts::shares)

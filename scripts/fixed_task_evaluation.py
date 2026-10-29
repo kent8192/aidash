@@ -28,7 +28,7 @@ import sys
 import tempfile
 import tomllib
 
-from fixed_task_fixture import FIXTURE_PATCHES
+from fixed_task_fixture import FIXTURE_PATCHES, PRICING_COMPLETE, PRICING_VISIBLE_ONLY
 
 ROOT = Path(__file__).resolve().parent.parent
 EVALUATION = ROOT / "tests/evaluation"
@@ -1032,6 +1032,10 @@ sys.stdout.write(json.dumps(values, allow_nan=False))
 """
 
 
+class CodeOracleUnavailable(RuntimeError):
+    """Docker or the pinned image is unavailable before candidate code runs; the grader, not the Agent, failed."""
+
+
 class ContainerCodeOracle:
     """Compare isolated candidate outputs with trusted, frozen expected values."""
     def __init__(self, image):
@@ -1040,8 +1044,17 @@ class ContainerCodeOracle:
         self.image = image
 
     def __call__(self, directory, cases, timeout, target="pricing.py", entrypoint="discounted_total"):
+        # Checked before every candidate, so a missing image or stopped daemon cannot be scored as the
+        # Agent's failure. Candidate code runs only in network-less containers and cannot affect this result.
+        try:
+            inspected = subprocess.run(["docker", "image", "inspect", self.image], capture_output=True, timeout=20)
+        except (OSError, subprocess.SubprocessError):
+            inspected = None
+        if inspected is None or inspected.returncode != 0:
+            raise CodeOracleUnavailable("the pinned code-oracle image or Docker is unavailable")
         name = "aidash-code-oracle-" + uuid.uuid4().hex
-        command = ["docker", "run", "--rm", "--pull", "never", "--name", name, "--network", "none",
+        # -i attaches stdin: without it the container reads EOF instead of the input vectors (#559).
+        command = ["docker", "run", "-i", "--rm", "--pull", "never", "--name", name, "--network", "none",
                    "--read-only", "--pids-limit", "64", "--cpus", "1", "--memory", "128m",
                    "--memory-swap", "128m", "--cap-drop", "ALL", "--security-opt", "no-new-privileges",
                    "--user", "65534:65534", "--tmpfs", "/tmp:rw,nosuid,nodev,size=16m", "--mount",
@@ -1097,6 +1110,51 @@ def independent_code_vectors(corpus, oracle):
 
 def container_code_execution(image):
     return ContainerCodeOracle(image)
+
+
+# Known answers that prove a code oracle grades correctly before any provider work, keyed by vector file.
+# A python-tests task whose vectors have no entry here cannot be graded live.
+CODE_ORACLE_REFERENCES = {
+    "oracles/pricing_cases.json": {"complete": PRICING_COMPLETE, "visible_only": PRICING_VISIBLE_ONLY},
+}
+# Expected (visible, hidden) verdicts for each reference patch.
+CODE_ORACLE_REFERENCE_VERDICTS = {"complete": (True, True), "visible_only": (True, False)}
+
+
+def code_oracle_specs(planned):
+    """The distinct python-tests oracles in a plan, keyed by vector file and candidate target."""
+    specs = {}
+    for item in planned:
+        oracle = item["task"]["oracle"]
+        if oracle["kind"] != "python-tests":
+            continue
+        if oracle.get("cases") not in CODE_ORACLE_REFERENCES:
+            raise GuardRefusal(f"python-tests vectors {oracle.get('cases')!r} have no registered reference patches; "
+                               "the code oracle cannot be checked before the live campaign")
+        # Tasks sharing vectors may write the candidate to different targets; each pair is checked.
+        specs[(oracle["cases"], oracle["target"])] = oracle
+    return specs
+
+
+def preflight_code_oracle(corpus, planned, execute):
+    """Refuse the live tier unless the container oracle passes the complete fix and fails the visible-only fix."""
+    for (cases, target), oracle in code_oracle_specs(planned).items():
+        vectors = independent_code_vectors(corpus, oracle)
+        for label, patch in CODE_ORACLE_REFERENCES[cases].items():
+            observed = []
+            for suite in ("visible", "hidden"):
+                with tempfile.TemporaryDirectory(prefix="aidash-fixed-task-preflight-") as directory:
+                    Path(directory, oracle["target"]).write_text(patch)
+                    try:
+                        result = execute(directory, vectors[suite], oracle.get("timeout_seconds", 20),
+                                         oracle["target"], vectors["entrypoint"])
+                    except CodeOracleUnavailable as error:
+                        raise GuardRefusal(f"code oracle preflight could not run: {error}") from None
+                observed.append(result["passed"])
+            if tuple(observed) != CODE_ORACLE_REFERENCE_VERDICTS[label]:
+                raise GuardRefusal(f"code oracle preflight for {cases} ({target}): the {label} reference patch graded "
+                                   f"(visible, hidden) = {tuple(observed)}, expected "
+                                   f"{CODE_ORACLE_REFERENCE_VERDICTS[label]}; the oracle is broken")
 
 
 def oracle_python_tests(corpus, oracle, answer, allow_code_execution):
@@ -1760,9 +1818,8 @@ def live_task_support(approval, corpus, planned, fixture_endpoint):
             raise GuardRefusal("python-tests oracles run model-written code; an explicit code_oracle approval for a "
                                "pinned disposable Docker image, network none, 128 MiB, 1 CPU, 64 pids and 20s is required")
         code = ContainerCodeOracle(contract["image"])
-        for item in planned:
-            if item["task"]["oracle"]["kind"] == "python-tests":
-                independent_code_vectors(corpus, item["task"]["oracle"])
+        for oracle in code_oracle_specs(planned).values():
+            independent_code_vectors(corpus, oracle)
     return endpoint, code
 
 

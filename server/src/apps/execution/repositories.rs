@@ -97,9 +97,16 @@ impl ExecutionRecoveryStore for RecoveryRepository {
 			.map(|_| ())
 			.map_err(Into::into)
 	}
-	async fn pause(&self, run: &Run, token: Uuid, reason: &str, event: &str) -> Result<()> {
+	async fn pause(
+		&self,
+		run: &Run,
+		token: Uuid,
+		reason: &str,
+		event: &str,
+		refusal: Option<&aidash_domain::tool::AuthorityRefusal>,
+	) -> Result<()> {
 		self.store
-			.pause_for_execution(run, token, reason, event)
+			.pause_for_execution(run, token, reason, event, refusal)
 			.await
 			.map_err(Into::into)
 	}

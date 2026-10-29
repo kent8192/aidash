@@ -75,17 +75,8 @@ async fn control_rotates_credentials_atomically_and_cancellation_remains_termina
 	// A fresh credential becomes the durable grant only with successful resume.
 	let mut accepted = Uuid::nil();
 	for (action, status) in [("resume", 200), ("resume", 409)] {
-		let credential = assert_json(
-			app.deployment_administrator
-				.post(
-					"/api/authorization/acme/credentials",
-					&json!({"subject":"alice"}),
-					"json",
-				)
-				.await
-				.unwrap(),
-			200,
-		);
+		let credential =
+			crate::endpoint::issued_credential(&app.runtime.store, "acme", "alice").await;
 		execution
 			.subject
 			.set_header(

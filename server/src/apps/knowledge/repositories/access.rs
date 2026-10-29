@@ -17,8 +17,7 @@ use uuid::Uuid;
 pub(crate) const WITHOUT_SUBJECT: &str = "without_subject";
 
 pub(crate) enum Lease<'a> {
-	/// A transaction that no Subject's authority limits, for a Deployment
-	/// Administrator or for Aidash's own work.
+	/// A transaction that no Subject's authority limits, for Aidash's own work.
 	WithoutSubject(crate::database::native::Transaction),
 	BorrowedWithoutSubject(&'a mut crate::database::native::Transaction),
 	/// Recovery revalidation retains this mode through credentialless lineage.
@@ -29,21 +28,11 @@ pub(crate) enum Lease<'a> {
 }
 impl Lease<'_> {
 	/// Begin as `actor`. A Subject works in its own Tenant; a Deployment
-	/// Administrator works in the Tenant of `workspace`.
-	pub(crate) async fn begin(store: &Store, actor: &Actor, workspace: Uuid) -> Result<Self> {
+	/// Administrator has no knowledge authority.
+	pub(crate) async fn begin(store: &Store, actor: &Actor, _workspace: Uuid) -> Result<Self> {
 		match actor {
-			Actor::DeploymentAdministrator => {
-				let scope = store.workspace_tenancy(workspace).await?;
-				let tenant = scope.tenant_name().ok_or(Error::Forbidden)?;
-				let mut tx = store.pool.begin(&scope).await?;
-				// Match deletion's lock order before an index mutation locks its Workspace.
-				crate::authorization::remote::deployment_administrator::tenant(
-					&mut *tx,
-					tenant.as_str(),
-				)
-				.await?;
-				Ok(Self::WithoutSubject(tx))
-			}
+			// Knowledge is Tenant content: a Deployment Administrator has none (#484).
+			Actor::DeploymentAdministrator => Err(Error::Forbidden),
 			Actor::Subject(identity) => Ok(Self::Scoped(Box::new(
 				Access::begin(store, identity).await?,
 			))),

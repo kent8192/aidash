@@ -267,6 +267,27 @@ async fn a_preliminary_mcp_checkpoint_does_not_admit_stale_tool_calls(mut fixtur
 
 #[rstest]
 #[tokio::test]
+async fn a_rejected_call_returns_to_the_model_and_the_run_goes_on(mut fixture: Fixture) {
+	plugin_call(&mut fixture, true);
+	state(&mut fixture).reject_tools = Some("node_id \"x\" does not name this Node".into());
+
+	advance(&mut fixture).await.unwrap();
+
+	// The call never ran; the refusal is the call's result and the Run moves to the next call.
+	assert_eq!(scripted(&fixture).invocations(), 0);
+	let (event, saved) = last_write(&fixture);
+	assert_eq!(event, "run.tool_recorded");
+	assert!(matches!(
+		saved.context.events().last(),
+		Some(ContextEvent::Tool { result, .. })
+			if *result == json!({"error":"node_id \"x\" does not name this Node"})
+	));
+	assert!(matches!(&saved.state, RunState::ToolCall(state) if state.cursor == 1));
+	assert_ne!(fixture.run.control, RunControl::Paused);
+}
+
+#[rstest]
+#[tokio::test]
 async fn a_plugin_call_waits_for_a_tool_call_approval(mut fixture: Fixture) {
 	let call = plugin_call(&mut fixture, false);
 	let approval = Uuid::from_u128(0xa1);

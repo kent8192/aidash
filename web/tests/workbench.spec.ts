@@ -28,7 +28,7 @@ async function editableDrafts(
   page: Page,
   secondRevision = 7,
   paginated = false,
-  subject = false,
+  subject = true,
   withRestrictions = false,
 ) {
   await setup(page, { locale: "en-US", subject });
@@ -205,7 +205,7 @@ test("Creator discards edits and hydrates a selected draft with another revision
 test("switching drafts keeps the selected Binding restrictions through save", async ({
   page,
 }) => {
-  const { saves } = await editableDrafts(page, 7, false, false, true);
+  const { saves } = await editableDrafts(page, 7, false, true, true);
   const restrictions = page.getByLabel("Restrictions (JSON)");
   await expect(restrictions).toHaveValue('{"allowed_hosts":["first.example"]}');
   await page
@@ -538,8 +538,8 @@ for (const [viewport, locale] of [
         name: locale === "ja-JP" ? "ポリシー" : "Policies",
       })
       .click();
-    await page.locator(".wb-policy input").nth(0).fill("acme");
-    await page.locator(".wb-policy input").nth(1).fill("alice");
+    await expect(page.locator(".wb-policy input").nth(0)).toHaveValue("acme");
+    await expect(page.locator(".wb-policy input").nth(1)).toHaveValue("alice");
     await page
       .getByRole("button", {
         name:
@@ -1324,8 +1324,12 @@ for (const [width, locale] of [
       expect(permissionRequests).toBe(0);
       if (dependencies.length) {
         await dependencyCard.getByRole("button").click();
-        await page.locator(".wb-policy input").nth(0).fill("acme");
-        await page.locator(".wb-policy input").nth(1).fill("alice");
+        await expect(page.locator(".wb-policy input").nth(0)).toHaveValue(
+          "acme",
+        );
+        await expect(page.locator(".wb-policy input").nth(1)).toHaveValue(
+          "alice",
+        );
         await page
           .getByRole("button", {
             name: text("Check this context", "この条件で権限を確認"),

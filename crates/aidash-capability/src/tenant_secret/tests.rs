@@ -275,6 +275,10 @@ fn apply(value: &mut SecretClaims, case: usize) {
 		34 => value.exp = 161,
 		35 => value.iat = 101,
 		36 => value.jti = Uuid::nil(),
+		37 => value.destination.origin = "https://api.example.com:invalid".into(),
+		38 => value.destination.origin = "https://".into(),
+		39 => value.destination.path_prefix = "/v1/?x/".into(),
+		40 => value.version.clear(),
 		_ => unreachable!(),
 	}
 }
@@ -321,6 +325,10 @@ async fn rejects_each_violation_with_its_own_code() {
 		(34, Failure::ClaimViolation),
 		(35, Failure::ClaimViolation),
 		(36, Failure::ClaimViolation),
+		(37, Failure::Destination),
+		(38, Failure::Destination),
+		(39, Failure::Destination),
+		(40, Failure::ClaimViolation),
 	] {
 		let mut value = claims();
 		apply(&mut value, case);

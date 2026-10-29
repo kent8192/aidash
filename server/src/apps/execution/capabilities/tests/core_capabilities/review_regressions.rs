@@ -173,13 +173,12 @@ async fn extraction_queue_fixture(
 
 	let mut uploads = vec![];
 	for index in 0..9 {
-		let (status, credential) = request(
-			&c.app,
-			&c.f.config.api_token,
-			"POST",
-			"/api/authorization/acme/credentials",
-			json!({"subject":"alice"}),
-		)
+		let (status, credential) = async {
+			(
+				200_u16,
+				common::issued_credential(&c.f.store, "acme", "alice").await,
+			)
+		}
 		.await;
 		assert_eq!(status, 200, "{credential}");
 		let token = credential["token"].as_str().unwrap();
@@ -240,14 +239,14 @@ async fn extraction_queue_fixture(
 		.clone();
 	for (id, _, credential) in uploads {
 		if first.contains(&id) {
-			let (status, revoked) = request(
-				&c.app,
-				&c.f.config.api_token,
-				"POST",
-				&format!("/api/authorization/acme/credentials/{credential}/revoke"),
-				json!({}),
-			)
-			.await;
+			let (status, revoked) = common::BrowserMapping::new(&c.f, "acme", "alice")
+				.await
+				.send(
+					"POST",
+					&format!("/api/authorization/acme/credentials/{credential}/revoke"),
+					json!({}),
+				)
+				.await;
 			assert_eq!(status, 200, "{revoked}");
 		}
 	}
@@ -506,7 +505,13 @@ async fn cached_skill_context_rechecks_descriptor_authority_before_model_retry(
 		1,
 		"revocation must prevent redisclosure to the model"
 	);
-	assert_eq!(blocked.error.as_deref(), Some("execution authority denied"));
+	// The pause names the tool and the check that refused it (#530). The
+	// withdrawal is a Tenant policy deny, so the check is `policy`, not
+	// Catalog Approval.
+	assert_eq!(
+		blocked.error.as_deref(),
+		Some("skill_list: tool.invoke was denied")
+	);
 	assert_eq!(
 		blocked.context.source_observation.as_ref().unwrap().content,
 		content,

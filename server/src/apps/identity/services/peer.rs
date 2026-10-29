@@ -1,8 +1,7 @@
 //! Explicit inbound identity mappings. Peer authentication alone grants no
 //! tenant authority, and local subject bearer tokens never cross this boundary.
-use crate::apps::federation::peer::services::mapping_records::PeerMappingRecords;
 use aidash_application::federation::inbound::Admitted;
-use reinhardt::{Depends, injectable};
+use reinhardt::injectable;
 #[path = "peer/admission.rs"]
 pub(crate) mod admission;
 #[path = "peer/discovery.rs"]
@@ -23,8 +22,9 @@ pub async fn write(f: &Federation, tenant: &str, input: PeerMappingInput) -> Res
 	write_as(f, tenant, input, None).await
 }
 
-/// Writes a Peer Mapping as a Deployment Administrator, or as a Tenant
-/// Administrator acting through its Mapping (#359).
+/// Writes a Peer Mapping as the host (fixtures and `manage` work, which no
+/// HTTP route reaches), or as a Tenant Administrator acting through its
+/// Mapping (#359). A Deployment Administrator has no HTTP route to either (#484).
 pub(crate) async fn write_as(
 	f: &Federation,
 	tenant: &str,
@@ -170,18 +170,11 @@ use crate::authorization::identity::Actor;
 #[derive(Clone)]
 pub struct PeerMappings {
 	pub(crate) runtime: Federation,
-	records: PeerMappingRecords,
 }
 
 #[injectable(scope = "request")]
-pub(crate) async fn provide_peer_mappings(
-	#[inject] runtime: Federation,
-	#[inject] records: Depends<PeerMappingRecords>,
-) -> PeerMappings {
-	PeerMappings {
-		runtime,
-		records: records.into_inner(),
-	}
+pub(crate) async fn provide_peer_mappings(#[inject] runtime: Federation) -> PeerMappings {
+	PeerMappings { runtime }
 }
 
 impl PeerMappings {
@@ -199,12 +192,6 @@ impl PeerMappings {
 	) -> Result<Vec<MappingRevision>> {
 		identifier(&tenant)?;
 		crate::http::validate(&page)?;
-		if matches!(actor, Actor::DeploymentAdministrator) {
-			return self
-				.records
-				.history(&tenant, page.after, page.limit as usize)
-				.await;
-		}
 		let pool = self.runtime.store.pool.clone();
 		self.administrations()
 			.run(actor, origin, &tenant, async |administrator| {
@@ -223,12 +210,6 @@ impl PeerMappings {
 	) -> Result<Vec<PeerMapping>> {
 		identifier(&tenant)?;
 		crate::http::validate(&page)?;
-		if matches!(actor, Actor::DeploymentAdministrator) {
-			return self
-				.records
-				.list(&tenant, page.offset as usize, page.limit as usize)
-				.await;
-		}
 		let pool = self.runtime.store.pool.clone();
 		self.administrations()
 			.run(actor, origin, &tenant, async |administrator| {
@@ -246,9 +227,6 @@ impl PeerMappings {
 		input: PeerMappingInput,
 	) -> Result<PeerMapping> {
 		let f = self.runtime.clone();
-		if matches!(actor, Actor::DeploymentAdministrator) {
-			return write(&f, &tenant, input).await;
-		}
 		self.administrations()
 			.run(actor, origin, &tenant, async |administrator| {
 				write_as(&f, &tenant, input, Some(administrator.clone())).await
