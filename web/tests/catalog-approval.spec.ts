@@ -688,6 +688,36 @@ test("a dependency review retains the chosen groups for a new root agent", async
   expect(decisions[1].body.root_groups).toEqual(["reviewers"]);
 });
 
+test("canceling a restriction edit leaves the approved item out of the submission", async ({
+  page,
+}) => {
+  const current = reviewBody([
+    reviewItem("writer", "agent", "approved", {
+      restriction: { subjects: ["alice"], groups: [] },
+      proposed_restriction: { subjects: ["alice"], groups: [] },
+    }),
+    reviewItem("model", "model", "approvable"),
+  ]);
+  const { decisions } = await reviewDashboard(page, {
+    actions: ["catalog.approve"],
+    review: () => current,
+    answer: () => ({ json: { bindings: [], installations: [] } }),
+  });
+  const review = await openReview(page);
+  const item = review
+    .locator("li")
+    .filter({ has: page.getByText("writer definition", { exact: true }) });
+  await item.getByRole("button", { name: "Edit restriction" }).click();
+  await item.getByRole("button", { name: "Cancel" }).click();
+  await review.getByRole("button", { name: /Approve selected \(1\)/ }).click();
+  await expect.poll(() => decisions.length).toBe(1);
+  expect(
+    (decisions[0].body as { items: { reference: { id: string } }[] }).items.map(
+      (value) => value.reference.id,
+    ),
+  ).toEqual(["model"]);
+});
+
 test("partial authority submits only the items the principal may approve and stays not ready", async ({
   page,
 }) => {

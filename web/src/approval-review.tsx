@@ -50,10 +50,12 @@ function RestrictionEditor({
   assignable,
   value,
   save,
+  cancel,
 }: {
   assignable: string[];
   value: CatalogRestriction | null;
   save: (value: CatalogRestriction | null) => void;
+  cancel: () => void;
 }) {
   const { t } = useI18n();
   const [subjects, setSubjects] = useState(value?.subjects.join(", ") ?? "");
@@ -104,7 +106,7 @@ function RestrictionEditor({
         >
           {t("save")}
         </Button>
-        <Button size="sm" variant="ghost" onClick={() => save(value)}>
+        <Button size="sm" variant="ghost" onClick={cancel}>
           {t("cancel")}
         </Button>
         <Button
@@ -457,6 +459,7 @@ export function ApprovalReviewPanel({
                 <RestrictionEditor
                   assignable={assignable}
                   value={restriction}
+                  cancel={() => setEditing(null)}
                   save={(value) => {
                     setEdits((edits) => ({ ...edits, [key]: value }));
                     if (!selected.includes(key))
