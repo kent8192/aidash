@@ -208,4 +208,59 @@ mod tests {
 		server.abort();
 		let _ = server.await;
 	}
+	#[tokio::test]
+	async fn workbench_classifies_broker_failures_without_exposing_the_body() {
+		let router = Router::new().fallback(|uri: Uri| async move {
+			let code = uri.path().trim_start_matches('/').to_owned();
+			(
+				axum::http::StatusCode::BAD_GATEWAY,
+				[
+					("x-aidash-broker-error", code),
+					("x-aidash-correlation", "trace-1".to_owned()),
+				],
+				"secret broker body",
+			)
+		});
+		let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+		let base = format!("http://{}", listener.local_addr().unwrap());
+		let server = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
+		for code in [
+			"secret_unavailable",
+			"secret_destination_refused",
+			"upstream_unreachable",
+			"rate_limited",
+			"broker_rejected",
+			"broker_unavailable",
+			"unexpected",
+		] {
+			let request = Request {
+				request: reqwest::Client::new().post(format!("{base}/{code}")),
+				brokered: true,
+			};
+			let result = Box::new(request).send().await;
+			match code {
+				"secret_unavailable" | "secret_destination_refused" => {
+					let (body, outcome) = result.unwrap();
+					assert_eq!(outcome, "failed");
+					assert_eq!(body, json!({"error": code}));
+				}
+				"upstream_unreachable" | "rate_limited" => {
+					let (body, outcome) = result.unwrap();
+					assert_eq!(outcome, "failed");
+					assert_eq!(
+						body,
+						json!({"error":"test Tool returned an HTTP error", "status":502})
+					);
+				}
+				"broker_rejected" => assert!(
+					matches!(result, Err(aidash_application::Error::BrokerRejected { correlation: Some(id) }) if id == "trace-1")
+				),
+				_ => assert!(
+					matches!(result, Err(aidash_application::Error::BrokerUnavailable { correlation: Some(id) }) if id == "trace-1")
+				),
+			}
+		}
+		server.abort();
+		let _ = server.await;
+	}
 }
