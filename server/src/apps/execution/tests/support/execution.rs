@@ -124,19 +124,10 @@ pub fn execution(
 				.await
 				.unwrap();
 		}
-		let credential = assert_json(
-			app.deployment_administrator
-				.post(
-					"/api/authorization/acme/credentials",
-					&json!({"subject":"alice"}),
-					"json",
-				)
-				.await
-				.unwrap(),
-			200,
-		);
+		// The first Subject Credential of a Tenant comes from the host (#484).
 		let subject = subject_client.await;
-		let subject_token = credential["token"].as_str().unwrap().to_owned();
+		let subject_token =
+			crate::endpoint::subject_credential(&app.runtime.store, "acme", "alice").await;
 		subject
 			.set_header("Authorization", &format!("Bearer {subject_token}"))
 			.await

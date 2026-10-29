@@ -328,7 +328,6 @@ async fn credential_revocation_can_finish_during_inference_and_blocks_result(
 	let mut server = releasable_provider;
 	let app = fixture.application;
 	let (_, subject_token, task_id) = bootstrap(&f, &app, &server.endpoint).await;
-	let deployment_administrator_token = f.config.api_token.clone();
 	let (status, claimed) = request(
 		&app,
 		&subject_token,
@@ -416,26 +415,25 @@ async fn credential_revocation_can_finish_during_inference_and_blocks_result(
 		idle_transactions_during_inference, idle_transactions_before_inference,
 		"inference must not hold an idle authorization transaction"
 	);
-	let (status, credentials) = request(
-		&app,
-		&deployment_administrator_token,
-		"GET",
-		"/api/authorization/acme/credentials",
-		json!({}),
-	)
-	.await;
+	// Credentials are administered by the Tenant's Administrator through a
+	// Mapping; it revokes the credential the worker's Run acts under (#484).
+	let administrator = common::BrowserMapping::new(&f, "acme", "alice").await;
+	let (status, credentials) = administrator
+		.send("GET", "/api/authorization/acme/credentials", json!({}))
+		.await;
 	assert_eq!(status, 200, "{credentials}");
-	let credential_id = credentials[0]["id"].as_str().unwrap();
+	let credential_id = credentials
+		.as_array()
+		.unwrap()
+		.iter()
+		.find(|credential| credential["id"] != json!(administrator.credential))
+		.unwrap()["id"]
+		.as_str()
+		.unwrap();
 	let revoke = format!("/api/authorization/acme/credentials/{credential_id}/revoke");
 	let (status, revoked) = timeout(
 		Duration::from_secs(5),
-		request(
-			&app,
-			&deployment_administrator_token,
-			"POST",
-			&revoke,
-			json!({}),
-		),
+		administrator.send("POST", &revoke, json!({})),
 	)
 	.await
 	.expect("credential revocation must not wait for the provider");

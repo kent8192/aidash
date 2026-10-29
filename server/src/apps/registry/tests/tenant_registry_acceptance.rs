@@ -77,24 +77,12 @@ async fn tenant(fixture: &EndpointFixture, name: &str) {
 }
 
 async fn credential(fixture: &EndpointFixture, tenant: &str, subject: &str) -> Arc<APIClient> {
-	let issued = assert_json(
-		fixture
-			.deployment_administrator
-			.post(
-				&format!("/api/authorization/{tenant}/credentials"),
-				&json!({"subject":subject}),
-				"json",
-			)
-			.await
-			.unwrap(),
-		200,
-	);
+	// Credentials come from the host, never from Deployment Administrator
+	// authority over the Tenant's settings (#484).
+	let token = support::subject_credential(&fixture.runtime.store, tenant, subject).await;
 	let client = api_client_from_url(&fixture.server.url);
 	client
-		.set_header(
-			"Authorization",
-			&format!("Bearer {}", issued["token"].as_str().unwrap()),
-		)
+		.set_header("Authorization", &format!("Bearer {token}"))
 		.await
 		.unwrap();
 	Arc::new(client)
@@ -256,18 +244,12 @@ async fn the_versions_list_reports_the_approvals_of_the_node_it_names(
 			.0,
 		200
 	);
-	let second = assert_json(
-		fixture
-			.deployment_administrator
-			.post(
-				"/api/tenants/acme/nodes",
-				&json!({"label":"Second"}),
-				"json",
-			)
-			.await
-			.unwrap(),
-		201,
-	);
+	// Nodes are administered by a Tenant Administrator Mapping in a browser (#484).
+	let administrator = support::browser_mapping(&fixture, "acme", "owner").await;
+	let (status, second) = administrator
+		.send("POST", "/api/tenants/acme/nodes", json!({"label":"Second"}))
+		.await;
+	assert_eq!(status, 201, "{second}");
 	let second = second["name"].as_str().unwrap();
 	let approval_of = |listed: &Value| {
 		listed["versions"]
@@ -947,22 +929,13 @@ async fn actor(
 	tenant: &str,
 	subject: &str,
 ) -> aidash_server::authorization::identity::Actor {
-	let issued = assert_json(
-		fixture
-			.deployment_administrator
-			.post(
-				&format!("/api/authorization/{tenant}/credentials"),
-				&json!({"subject":subject}),
-				"json",
-			)
-			.await
-			.unwrap(),
-		200,
-	);
+	// Credentials come from the host, never from Deployment Administrator
+	// authority over the Tenant's settings (#484).
+	let token = support::subject_credential(&fixture.runtime.store, tenant, subject).await;
 	aidash_server::authorization::Authorization {
 		pool: fixture.runtime.store.pool.clone(),
 	}
-	.authenticate(issued["token"].as_str().unwrap())
+	.authenticate(&token)
 	.await
 	.unwrap()
 }

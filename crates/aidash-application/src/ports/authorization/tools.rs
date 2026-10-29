@@ -28,7 +28,8 @@ pub trait AgentToolScope: Send {
 	fn context(&self) -> &Value;
 	fn subjects(&self) -> &[String];
 	fn resource(&self, kind: &str, id: &str, attributes: Value) -> Resource;
-	async fn catalog(&mut self, reference: &EntityRef, action: &str) -> Result<Entry>;
+	/// Admit a Registry entry for the call of `tool`; a policy denial names that tool.
+	async fn catalog(&mut self, reference: &EntityRef, action: &str, tool: &str) -> Result<Entry>;
 	async fn require(&mut self, resource: &Resource, action: &str) -> Result<()>;
 	/// Whether the policy explicitly denies `action` on `resource` for any
 	/// subject of the current authority. A missing allow is not a denial.

@@ -57,13 +57,12 @@ async fn subject_configuration_creates_an_immutable_version_without_catalog_gran
 	let mut policy = c.policy.clone();
 	policy["policies"].as_array_mut().unwrap().push(json!({"id":"deny-bob-configuration","effect":"deny","subjects":{"ids":["bob"]},"actions":["agent.configure"],"resources":{"kinds":["agent"]}}));
 	crate::common::replace_policy(&c.f.store, "acme", policy.clone()).await;
-	let (_, bob) = request(
-		&c.app,
-		&c.f.config.api_token,
-		"POST",
-		"/api/authorization/acme/credentials",
-		json!({"subject":"bob"}),
-	)
+	let (_, bob) = async {
+		(
+			200_u16,
+			common::issued_credential(&c.f.store, "acme", "bob").await,
+		)
+	}
 	.await;
 	assert_eq!(
 		request(&c.app, bob["token"].as_str().unwrap(), "POST", path, input)

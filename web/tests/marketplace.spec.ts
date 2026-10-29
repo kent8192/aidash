@@ -3,7 +3,8 @@ import { installBearerDashboard } from "./auth-fixture";
 import { routeTenantActions } from "./registry-fixture";
 
 async function approvingTenant(page: Page, locale: "en-US" | "ja-JP") {
-  await installBearerDashboard(page, "fixture");
+  // Installations and consent belong to a Tenant's Mapping (ADR 0102).
+  await installBearerDashboard(page, "fixture", { tenant: "a", name: "alice" });
   await page.addInitScript(
     (value) => localStorage.setItem("aidash-locale", value),
     locale,

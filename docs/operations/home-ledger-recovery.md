@@ -294,8 +294,9 @@ The target remains unverified until that complete drill passes for the recorded
 production profile; this document creates no throughput or scale guarantee.
 
 Coordinate the case with #435's disposable drill without changing its supported
-Pre-update Backup boundary. PR #473 was still open at the 2026-10-23 source
-inspection; its existing-ledger drill does not by itself prove this case. Neither
+Pre-update Backup boundary. That drill (PR #473) keeps an existing ledger and does
+not by itself prove this case. [#562](https://github.com/kent8192/aidash/issues/562)
+runs both drills in one supervised session before activation. Neither
 this procedure nor its RTO makes daily database rewind a supported recovery.
 
 ## Implementation boundaries

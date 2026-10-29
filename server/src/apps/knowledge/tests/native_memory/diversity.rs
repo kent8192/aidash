@@ -27,7 +27,7 @@ async fn recalled(database: &DatabaseFixture, endpoint: &str, lambda: Option<u32
 	.await;
 	let bank = memory::create_participant(
 		&store,
-		&Actor::DeploymentAdministrator,
+		&administrator(&store).await,
 		workspace,
 		memory::CreateParticipant {
 			agent: reference("a"),
@@ -51,7 +51,7 @@ async fn recalled(database: &DatabaseFixture, endpoint: &str, lambda: Option<u32
 	}
 	let mut admission = mutation(&bank, changes.remove(0));
 	admission.changes.extend(changes);
-	let admitted = memory::mutate(&store, &Actor::DeploymentAdministrator, admission)
+	let admitted = memory::mutate(&store, &administrator(&store).await, admission)
 		.await
 		.unwrap();
 	tokio::time::timeout(std::time::Duration::from_secs(20), async {
@@ -84,7 +84,7 @@ async fn recalled(database: &DatabaseFixture, endpoint: &str, lambda: Option<u32
 	.expect("the native vector projection must become ready");
 	let memory::Outcome::Recall(Recall::Ready { units }) = memory::operate(
 		&store,
-		&Actor::DeploymentAdministrator,
+		&administrator(&store).await,
 		memory::Operation {
 			operation_id: Uuid::now_v7(),
 			provider: reference("p"),

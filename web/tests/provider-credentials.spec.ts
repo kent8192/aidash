@@ -30,14 +30,15 @@ async function setup(
     startedTenant?: string;
     /** Holds the credential list until this settles. */
     holdRows?: Promise<void>;
-    /** Do not open a Tenant through the Deployment Administrator picker. */
-    keepTenant?: boolean;
   } = {},
 ) {
+  // Provider Credentials belong to a Tenant: a Mapping by default, since a
+  // Deployment Administrator has no Tenant content authority (ADR 0102).
+  const subject = options.subject ?? true;
   await installBearerDashboard(
     page,
     "fixture",
-    options.subject ? { tenant: "alpha", name: "alice" } : undefined,
+    subject ? { tenant: "alpha", name: "alice" } : undefined,
   );
   await page.addInitScript(
     (locale) => localStorage.setItem("aidash-locale", locale),
@@ -50,7 +51,7 @@ async function setup(
         sessionStorage.setItem("aidash-provider-authorization-tenant", tenant),
       options.startedTenant ?? "alpha",
     );
-  const access = options.subject
+  const access = subject
     ? { kind: "subject", tenant: "alpha", subject: "alice" }
     : { kind: "deployment_administrator" };
   let records: (typeof metadata & { key_settings_url?: string | null })[] = [
@@ -185,10 +186,6 @@ async function setup(
     }),
   );
   await page.goto(options.path ?? "/settings?view=providerCredentials");
-  if (!options.subject && !options.keepTenant) {
-    await page.getByLabel("Tenant", { exact: true }).fill("alpha");
-    await page.getByRole("button", { name: "Open", exact: true }).click();
-  }
 }
 async function cachedBrowserData(page: Page) {
   return page.evaluate(() => {
@@ -419,17 +416,16 @@ test("a connection left unbound is not reported as connected", async ({
   await expect(notice).toBeVisible();
   await expect(notice).not.toContainText("OpenRouter is connected.");
 });
-test("a Deployment Administrator returns to the Tenant the authorization started for", async ({
+test("a Deployment Administrator sees no Provider Credentials or Tenant picker", async ({
   page,
 }) => {
-  await setup(page, {
-    keepTenant: true,
-    path: "/settings?view=providerCredentials&provider_authorization=connected",
-  });
-  await expect(page.getByLabel("Tenant", { exact: true })).toHaveValue("alpha");
-  await expect(page.getByRole("status")).toContainText(
-    "OpenRouter is connected.",
-  );
+  await setup(page, { subject: false });
+  await expect(
+    page.getByText(
+      "Tenant content is not available to a Deployment Administrator.",
+    ),
+  ).toBeVisible();
+  await expect(page.getByLabel("Tenant", { exact: true })).toHaveCount(0);
 });
 test("an outcome is never shown for another Tenant", async ({ page }) => {
   await setup(page, {

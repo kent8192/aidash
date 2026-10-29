@@ -57,22 +57,6 @@ impl DraftRepository for Repository {
 	fn node_id(&self) -> &str {
 		self.runtime.config.deployment.as_str()
 	}
-	async fn original_entry(&self, id: &str, version: &str) -> Result<Entry> {
-		self.runtime
-			.registry
-			.get(&self.actor.registry_tenant()?, id, version)
-			.await
-			.map_err(Into::into)
-	}
-	async fn original_documents(&self, entry: &Entry) -> Result<Value> {
-		crate::knowledge::load(
-			&self.runtime.registry,
-			&self.actor.registry_tenant()?,
-			entry,
-		)
-		.await
-		.map_err(Into::into)
-	}
 	async fn begin(&self) -> Result<Scope> {
 		let result: crate::Result<Scope> = async {
 			Ok(Scope {
@@ -164,11 +148,6 @@ impl DraftScope for Scope {
 			.into_iter()
 			.map(Into::into)
 			.collect())
-	}
-	async fn managed(&mut self, agent: &str) -> Result<bool> {
-		AgentDraft::managed(&mut self.tx, agent)
-			.await
-			.map_err(Into::into)
 	}
 	async fn append_event(&mut self, kind: &str, payload: Value) -> Result<()> {
 		crate::apps::execution::models::event_records::append(&mut self.tx, None, kind, payload)

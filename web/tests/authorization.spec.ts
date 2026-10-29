@@ -1,12 +1,12 @@
 import { test, expect } from "@playwright/test";
-import { createTenant } from "./tenant-fixture";
+import { createTenant, issueSubjectCredential } from "./tenant-fixture";
 import {
   installBearerDashboard,
   selectDashboardLanguage,
 } from "./auth-fixture";
 import { randomUUID } from "node:crypto";
 
-test("authorization dashboard manages revisions, RBAC/ABAC decisions and credential revocation", async ({
+test("the Deployment Administrator replaces whole policies and holds no credential, simulation or decision authority", async ({
   page,
   request,
   browser,
@@ -62,7 +62,7 @@ test("authorization dashboard manages revisions, RBAC/ABAC decisions and credent
   await page.goto("/authorization");
   await expect(page).toHaveURL(/\/trust\?view=authorization$/);
   await expect(
-    page.getByRole("heading", { name: "Trust Workbench", exact: true }),
+    page.getByRole("button", { name: "アクセス権とアカウント" }),
   ).toBeVisible();
   await page.getByLabel("テナント", { exact: true }).fill(tenant);
   await page.getByRole("button", { name: "開く", exact: true }).click();
@@ -79,35 +79,35 @@ test("authorization dashboard manages revisions, RBAC/ABAC decisions and credent
     .getByRole("button", { name: "ポリシーを適用", exact: true })
     .click();
   await expect(dialog).toHaveCount(0);
-  const testPanel = page.locator(".panel").filter({
-    has: page.getByRole("heading", { name: "権限判定を確認", exact: true }),
-  });
-  await testPanel
-    .getByLabel("リソース属性（JSON）")
-    .fill('{"team":"research"}');
-  await testPanel
-    .getByRole("button", { name: "ドライラン", exact: true })
-    .click();
-  await expect(testPanel.locator(".auth-decision")).toContainText("許可");
-  await expect(testPanel.locator(".auth-decision")).toContainText(
-    "reader, researcher",
-  );
-  expect(await api(`${base}/decisions`)).toEqual([]);
-  await testPanel.getByLabel("リソース属性（JSON）").fill('{"team":"sales"}');
-  await expect(testPanel.locator(".auth-decision")).toHaveCount(0);
-  await testPanel
-    .getByRole("button", { name: "ドライラン", exact: true })
-    .click();
-  await expect(testPanel.locator(".auth-decision")).toContainText(
-    "一致する許可ルールがありません",
-  );
-  await testPanel.getByLabel("この判定を監査履歴に保存する").check();
-  await testPanel
-    .getByRole("button", { name: "判定して記録", exact: true })
-    .click();
-  await expect
-    .poll(async () => (await api(`${base}/decisions`)).length)
-    .toBe(1);
+  // A Deployment Administrator holds no Tenant authority beyond the policy as
+  // a whole (#484, ADR 0102): the page offers no simulation, decision history
+  // or credential controls, and the server refuses those routes.
+  await expect(
+    page.getByRole("heading", { name: "権限判定を確認", exact: true }),
+  ).toHaveCount(0);
+  await expect(
+    page.getByRole("heading", { name: "権限判定の監査履歴", exact: true }),
+  ).toHaveCount(0);
+  await expect(
+    page.getByRole("button", { name: "認証情報を発行", exact: true }),
+  ).toHaveCount(0);
+  for (const path of [
+    `${base}/decisions`,
+    `${base}/revisions`,
+    `${base}/credentials`,
+    `${base}/peer-mappings`,
+  ])
+    expect((await request.get(path, { headers })).status(), path).toBe(403);
+  for (const path of [`${base}/simulate`, `${base}/credentials`])
+    expect(
+      (
+        await request.post(path, {
+          headers,
+          data: { subject: "alice", action: "workspace.read" },
+        })
+      ).status(),
+      path,
+    ).toBe(403);
 
   // A concurrent Deployment Administrator update must not overwrite the editor's pinned revision.
   await page
@@ -152,26 +152,11 @@ test("authorization dashboard manages revisions, RBAC/ABAC decisions and credent
     .getByRole("button", { name: "ポリシーを適用", exact: true })
     .click();
   await expect(dialog).toHaveCount(0);
-  await testPanel
-    .getByLabel("リソース属性（JSON）")
-    .fill('{"team":"research"}');
-  await testPanel
-    .getByRole("button", { name: "ドライラン", exact: true })
-    .click();
-  await expect(testPanel.locator(".auth-decision")).toContainText(
-    "明示的な拒否",
-  );
+  expect((await api(base)).revision).toBe(4);
 
-  await page
-    .getByRole("button", { name: "認証情報を発行", exact: true })
-    .click();
-  await dialog.getByLabel("有効期間（秒）").fill("120");
-  await dialog
-    .getByRole("button", { name: "認証情報を発行", exact: true })
-    .click();
-  const token = await dialog.getByLabel("発行したトークン").inputValue();
+  // The host mints alice's first credential (`manage issue-subject-credential`).
+  const token = issueSubjectCredential(tenant, "alice", 120).token;
   expect(token).toBeTruthy();
-  await expect(dialog).toContainText("この画面でのみ表示");
   expect(
     (
       await request.get("/api/session", {
@@ -179,10 +164,6 @@ test("authorization dashboard manages revisions, RBAC/ABAC decisions and credent
       })
     ).status(),
   ).toBe(200);
-  await dialog
-    .getByRole("button", { name: "保存したので閉じる", exact: true })
-    .click();
-  await expect(page.getByLabel("発行したトークン")).toHaveCount(0);
   expect(
     await page.evaluate(() =>
       JSON.stringify({ ...localStorage, ...sessionStorage }),
@@ -223,51 +204,18 @@ test("authorization dashboard manages revisions, RBAC/ABAC decisions and credent
   } finally {
     await subjectContext.close();
   }
-  await page.getByRole("button", { name: "失効", exact: true }).click();
-  await dialog.getByRole("button", { name: "失効を確定", exact: true }).click();
-  await expect(dialog).toHaveCount(0);
-  await expect(
-    page.locator(".auth-row").filter({ hasText: "alice" }),
-  ).toContainText("失効済み");
-  expect(
-    (
-      await request.get("/api/session", {
-        headers: { authorization: `Bearer ${token}` },
-      })
-    ).status(),
-  ).toBe(401);
-
-  for (let i = 0; i < 26; i++)
-    await api(`${base}/evaluate`, {
-      subject: "alice",
-      action: "workspace.read",
-      resource: {
-        tenant,
-        kind: "workspace",
-        id: `audit-${i}`,
-        attributes: { team: "research" },
-      },
-    });
-  const auditRecords = await api(`${base}/decisions?limit=200`);
-  const history = page.locator(".panel").filter({
-    has: page.getByRole("heading", {
-      name: "権限判定の監査履歴",
-      exact: true,
-    }),
+  // Policy evaluation stays a Deployment-wide administered route.
+  const evaluated = await api(`${base}/evaluate`, {
+    subject: "alice",
+    action: "workspace.read",
+    resource: {
+      tenant,
+      kind: "workspace",
+      id: "audit-0",
+      attributes: { team: "research" },
+    },
   });
-  await expect(
-    history.getByRole("button", { name: "次のページ", exact: true }),
-  ).toBeEnabled({ timeout: 10000 });
-  await history
-    .getByRole("button", { name: "次のページ", exact: true })
-    .click();
-  await expect(history.locator(".auth-history")).toHaveCount(
-    Math.min(25, auditRecords.length - 25),
-  );
-  await history
-    .getByRole("button", { name: "前のページ", exact: true })
-    .click();
-  await expect(history.locator(".auth-history")).toHaveCount(25);
+  expect(evaluated.allowed).toBe(false);
   await selectDashboardLanguage(page, "en-US");
   await expect(
     page.getByRole("heading", { name: "Policy bundle", exact: true }),
@@ -297,10 +245,12 @@ test("authorization dashboard manages revisions, RBAC/ABAC decisions and credent
   expect(errors).toEqual([]);
 });
 
-// The mapped subject belongs to a Node of another Tenant of the same
-// Deployment, which this Tenant's default Node registers.
+// Peer Mappings and Node Registrations belong to a Tenant Administrator, which
+// only a browser Mapping can be (#484, ADR 0102). The Deployment Administrator
+// neither sees nor reaches them; the Mapping flow with its revisions and
+// bilingual copy is covered by tenant-administration.spec.ts.
 test(
-  "peer identity mappings preserve revisions, credential rotation and bilingual administration",
+  "the Deployment Administrator is offered no peer mappings or node registrations",
   { tag: "@golden-path" },
   async ({ page, request }) => {
     const tenant = await createTenant(
@@ -310,126 +260,37 @@ test(
     );
     const base = `/api/authorization/${tenant}`;
     const headers = { authorization: "Bearer acceptance-access-token" };
-    const api = async (path: string, data?: unknown) => {
-      const response =
-        data === undefined
-          ? await request.get(path, { headers })
-          : await request.post(path, { headers, data });
-      expect(response.status(), await response.text()).toBe(200);
-      return response.json();
-    };
-    const otherTenant = await createTenant(
-      request,
-      "acceptance-access-token",
-      `peer-source-${randomUUID()}`,
-    );
-    const [home] = (await api(`/api/tenants/${tenant}/nodes`)) as {
-      name: string;
-    }[];
-    const [source] = (await api(`/api/tenants/${otherTenant}/nodes`)) as {
-      address: string;
-    }[];
-    await api(`/api/tenants/${tenant}/nodes/${home.name}/registrations`, {
-      source_node: source.address,
-      atomic_transactions: false,
-      enabled: true,
-      expected_revision: 0,
-    });
-    await api(base, {
-      expected_revision: 1,
-      bundle: { tenant, subjects: { bridge: { kind: "user" } }, policies: [] },
-    });
-    const first = await api(`${base}/credentials`, { subject: "bridge" });
-    const second = await api(`${base}/credentials`, { subject: "bridge" });
+    const refused = async (method: "get" | "post", path: string) =>
+      (
+        await request[method](path, {
+          headers,
+          ...(method === "post" ? { data: {} } : {}),
+        })
+      ).status();
+    expect(await refused("get", `${base}/peer-mappings`)).toBe(403);
+    expect(await refused("post", `${base}/peer-mappings`)).toBe(403);
+    expect(await refused("get", `${base}/peer-mapping-history`)).toBe(403);
+    expect(await refused("get", `/api/tenants/${tenant}/nodes`)).toBe(403);
     await installBearerDashboard(page, "acceptance-access-token");
     await page.addInitScript(() => {
       localStorage.setItem("aidash-locale", "en-US");
     });
     await page.goto("/authorization");
     await expect(page).toHaveURL(/\/trust\?view=authorization$/);
-    await expect(
-      page.getByRole("heading", { name: "Trust Workbench", exact: true }),
-    ).toBeVisible();
     await page.getByLabel("Tenant", { exact: true }).fill(tenant);
     await page.getByRole("button", { name: "Open", exact: true }).click();
-    const panel = page.locator(".panel").filter({
-      has: page.getByRole("heading", {
+    await expect(
+      page.getByRole("button", { name: "Edit access policy", exact: true }),
+    ).toBeVisible();
+    await expect(
+      page.getByRole("heading", {
         name: "Peer identity mappings",
         exact: true,
       }),
-    });
-    await panel.getByRole("button", { name: "Add peer mapping" }).click();
-    const dialog = page.getByRole("dialog");
+    ).toHaveCount(0);
     await expect(
-      dialog.getByLabel("Receiving node", { exact: true }),
-    ).toHaveValue(home.name);
-    // The Source node is a free-text field until the registrations load.
-    await expect(dialog.locator('select[name="source_node"]')).toBeVisible();
-    await dialog
-      .getByLabel("Source node", { exact: true })
-      .selectOption(source.address);
-    await dialog
-      .getByLabel("Source subject", { exact: true })
-      .fill("remote-user");
-    await dialog
-      .getByLabel("Local credential", { exact: true })
-      .selectOption(first.credential.id);
-    await dialog
-      .getByRole("button", { name: "Save and enable mapping" })
-      .click();
-    await expect(dialog).toHaveCount(0);
-    await expect(panel).toContainText("bridge");
-    await expect(panel).not.toContainText(first.credential.id);
-    expect((await api(`${base}/peer-mappings`))[0].revision).toBe(1);
-    await panel.getByRole("button", { name: "Edit peer mapping" }).click();
-    await expect(
-      dialog.getByLabel("Source node", { exact: true }),
-    ).not.toBeEditable();
-    // A Deployment Administrator on another session advances the revision while this form is open.
-    const current = (await api(`${base}/peer-mappings`))[0];
-    const input = {
-      node: current.node,
-      source_node: current.source_node,
-      source_subject: current.source_subject,
-      credential_id: current.credential_id,
-      expected_revision: 1,
-      enabled: false,
-    };
-    await api(`${base}/peer-mappings`, input);
-    await dialog
-      .getByRole("button", { name: "Save and enable mapping" })
-      .click();
-    await expect(dialog.getByRole("alert")).toBeVisible();
-    expect((await api(`${base}/peer-mappings`))[0].enabled).toBe(false);
-    await dialog.getByRole("button", { name: "Close", exact: true }).click();
-    await panel.getByRole("button", { name: "Edit peer mapping" }).click();
-    await dialog
-      .getByLabel("Local credential", { exact: true })
-      .selectOption(second.credential.id);
-    await dialog
-      .getByRole("button", { name: "Save and enable mapping" })
-      .click();
-    await expect(dialog).toHaveCount(0);
-    await expect(panel).toContainText("bridge");
-    await expect(panel).not.toContainText(second.credential.id);
-    await api(`${base}/credentials/${second.credential.id}/revoke`, {});
-    await panel.getByRole("button", { name: "Disable approval" }).click();
-    await expect(
-      panel.getByRole("button", { name: "Approve", exact: true }),
-    ).toBeVisible();
-    await panel.getByRole("button", { name: "Approve", exact: true }).click();
-    await expect(panel.getByRole("alert")).toBeVisible();
-    expect((await api(`${base}/peer-mappings`))[0].enabled).toBe(false);
-    const history = await api(`${base}/peer-mapping-history`);
-    expect(
-      history.map((value: { revision: number }) => value.revision),
-    ).toEqual([1, 2, 3, 4]);
-    expect(JSON.stringify(history)).not.toContain(first.token);
-    await panel.scrollIntoViewIfNeeded();
-    await page.screenshot({
-      path: "../private/dashboard-peer-mappings-en.png",
-      fullPage: true,
-    });
+      page.getByRole("button", { name: "Add peer mapping" }),
+    ).toHaveCount(0);
     await selectDashboardLanguage(page, "ja-JP");
     await page.setViewportSize({ width: 390, height: 844 });
     await expect(
@@ -437,15 +298,11 @@ test(
         name: "接続ノードの主体対応付け",
         exact: true,
       }),
-    ).toBeVisible();
+    ).toHaveCount(0);
     expect(
       await page.evaluate(
         () => document.documentElement.scrollWidth <= window.innerWidth,
       ),
     ).toBe(true);
-    await page.screenshot({
-      path: "../private/dashboard-peer-mappings-ja.png",
-      fullPage: true,
-    });
   },
 );

@@ -75,17 +75,10 @@ async fn worker_remote_discovery_dependencies_survive_restart_and_hide_revoked_j
 		200
 	);
 	common::register_sender_only((&b, &b_app, "acme"), (&a, "acme")).await;
-	let (_, issued) = request(
-		&b_app,
-		&b.config.api_token,
-		"POST",
-		"/api/authorization/acme/credentials",
-		json!({"subject":"alice"}),
-	)
-	.await;
+	let issued = common::issued_credential(&b.store, "acme", "alice").await;
 	let b_node = common::default_node(&b.store, "acme").await;
 	let a_node = common::default_node(&a.store, "acme").await;
-	assert_eq!(request(&b_app,&b.config.api_token,"POST","/api/authorization/acme/peer-mappings",json!({"node":b_node.node,"source_node":a_node,"source_subject":"alice","credential_id":issued["credential"]["id"],"expected_revision":0,"enabled":true})).await.0,200);
+	assert_eq!(common::set_peer_mapping(&b, "acme", "alice", json!({"node":b_node.node,"source_node":a_node,"source_subject":"alice","credential_id":issued["credential"]["id"],"expected_revision":0,"enabled":true})).await.0,200);
 	common::register_default_node((&a, &a_app, "acme"), (&b, "acme")).await;
 	assert_eq!(
 		request(
@@ -328,18 +321,18 @@ async fn worker_remote_discovery_dependencies_survive_restart_and_hide_revoked_j
 		.unwrap();
 
 	assert_eq!(
-		request(
-			&b_app,
-			&b.config.api_token,
-			"POST",
-			&format!(
-				"/api/authorization/acme/credentials/{}/revoke",
-				issued["credential"]["id"].as_str().unwrap()
-			),
-			json!({})
-		)
-		.await
-		.0,
+		common::BrowserMapping::new(&b, "acme", "alice")
+			.await
+			.send(
+				"POST",
+				&format!(
+					"/api/authorization/acme/credentials/{}/revoke",
+					issued["credential"]["id"].as_str().unwrap()
+				),
+				json!({})
+			)
+			.await
+			.0,
 		200
 	);
 	assert_eq!(

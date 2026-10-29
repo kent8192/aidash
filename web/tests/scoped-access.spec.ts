@@ -1,5 +1,9 @@
 import { test, expect } from "@playwright/test";
-import { createTenant, defaultNode } from "./tenant-fixture";
+import {
+  createTenant,
+  defaultNode,
+  issueSubjectCredential,
+} from "./tenant-fixture";
 import {
   installBearerDashboard,
   selectDashboardLanguage,
@@ -8,11 +12,13 @@ import { createServer } from "node:http";
 import { KeylessFixture, serveKeyless } from "./keyless-ports";
 import { randomUUID } from "node:crypto";
 
-test("subject dashboard completes a conversation and clears revoked access", async ({
+test("subject dashboard completes a conversation and clears expired access", async ({
   page,
   request,
 }) => {
-  test.setTimeout(60000);
+  // The dashboard session's credential expires on its own (below), so the
+  // test waits for that after its last step.
+  test.setTimeout(150000);
   const provider = createServer(async (req, res) => {
     const chunks: Buffer[] = [];
     for await (const chunk of req) chunks.push(Buffer.from(chunk));
@@ -78,15 +84,14 @@ test("subject dashboard completes a conversation and clears revoked access", asy
       "acceptance-access-token",
       `tenant-${id}`,
     );
-    const node = await defaultNode(request, "acceptance-access-token", tenant);
-    await api(`/api/authorization/${tenant}`, {
-      expected_revision: 1,
+    const policy = (
+      subjects: Record<string, { kind: string }>,
+      revision: number,
+    ) => ({
+      expected_revision: revision,
       bundle: {
         tenant,
-        subjects: {
-          alice: { kind: "user" },
-          [`${node.address}/agents/${id}@1.0.0`]: { kind: "agent" },
-        },
+        subjects,
         policies: [
           {
             id: "approved-work",
@@ -98,9 +103,25 @@ test("subject dashboard completes a conversation and clears revoked access", asy
         ],
       },
     });
-    const credential = await api(`/api/authorization/${tenant}/credentials`, {
-      subject: "alice",
-    });
+    // A Deployment Administrator holds no Tenant authority (#484): the host
+    // issues the credential, which then reads the Tenant's default Node, and
+    // the Agent subject joins the policy in a second replacement.
+    await api(
+      `/api/authorization/${tenant}`,
+      policy({ alice: { kind: "user" } }, 1),
+    );
+    const credential = issueSubjectCredential(tenant, "alice");
+    const node = await defaultNode(request, credential.token, tenant);
+    await api(
+      `/api/authorization/${tenant}`,
+      policy(
+        {
+          alice: { kind: "user" },
+          [`${node.address}/agents/${id}@1.0.0`]: { kind: "agent" },
+        },
+        2,
+      ),
+    );
     for (const [kind, entryId, config] of [
       [
         "model",
@@ -163,7 +184,12 @@ test("subject dashboard completes a conversation and clears revoked access", asy
       if (/\/api\/marketplace(?:\?|$)/.test(req.url()))
         administrativeRequests.push(req.url());
     });
-    await installBearerDashboard(page, credential.token, {
+    // A Deployment Administrator holds no Tenant authority (#484) and a
+    // Subject Credential cannot revoke itself, so the dashboard session runs on
+    // a short-lived credential that simply expires; the client reports an
+    // expired and a revoked credential the same way.
+    const session = issueSubjectCredential(tenant, "alice", 75);
+    await installBearerDashboard(page, session.token, {
       tenant,
       name: "alice",
     });
@@ -233,14 +259,10 @@ test("subject dashboard completes a conversation and clears revoked access", asy
       path: "../private/dashboard-scoped-access.png",
       fullPage: true,
     });
-    await api(
-      `/api/authorization/${tenant}/credentials/${credential.credential.id}/revoke`,
-      {},
-    );
     await expect(
       page.getByRole("button", { name: "Sign in with Google" }),
     ).toBeVisible({
-      timeout: 15000,
+      timeout: 90000,
     });
     await expect(page.getByRole("alert")).toContainText("expired or revoked");
     expect(

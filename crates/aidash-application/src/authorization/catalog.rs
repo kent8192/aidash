@@ -9,6 +9,35 @@ pub async fn entry(
 	reference: &EntityRef,
 	action: &str,
 ) -> Result<Entry> {
+	admit(scope, reference, action, None).await
+}
+
+/// The refusal of a Tenant policy denial met while admitting a Catalog entry for `tool`'s call.
+pub fn policy_refusal(tool: &str, action: &str) -> Error {
+	Error::AuthorityRefused(Box::new(aidash_domain::tool::AuthorityRefusal {
+		tool: tool.to_owned(),
+		check: aidash_domain::tool::RefusalCheck::Policy,
+		action: Some(action.to_owned()),
+	}))
+}
+
+/// [`entry`] for the call of `tool`: a policy denial is [`policy_refusal`], so it is not
+/// reported as a Catalog Approval refusal.
+pub async fn tool_entry(
+	scope: &mut dyn CatalogScope,
+	reference: &EntityRef,
+	action: &str,
+	tool: &str,
+) -> Result<Entry> {
+	admit(scope, reference, action, Some(tool)).await
+}
+
+async fn admit(
+	scope: &mut dyn CatalogScope,
+	reference: &EntityRef,
+	action: &str,
+	tool: Option<&str>,
+) -> Result<Entry> {
 	if scope.inherited_lease()
 		&& !scope.approved(reference)
 		&& !crate::registry::system::builtin_reference(reference)
@@ -43,7 +72,14 @@ pub async fn entry(
 	{
 		return Err(Error::Forbidden);
 	}
-	scope.require(&scope.resource(&entry), action).await?;
+	let resource = scope.resource(&entry);
+	scope
+		.require(&resource, action)
+		.await
+		.map_err(|error| match error {
+			Error::Forbidden => tool.map_or(Error::Forbidden, |tool| policy_refusal(tool, action)),
+			error => error,
+		})?;
 	scope.remember(reference);
 	scope.admit(reference, action, &entry);
 	Ok(entry)

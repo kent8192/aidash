@@ -768,7 +768,7 @@ impl Access {
 			if let Some(tx) = tx {
 				tx.rollback().await?;
 			}
-			if matches!(result, Err(Error::Forbidden)) {
+			if matches!(result, Err(Error::Forbidden | Error::AuthorityRefused(_))) {
 				// Denials survive rollback with the evaluated policy revision.
 				let mut audit: Box<dyn TransactionExecutor> = self
 					.pool

@@ -239,16 +239,7 @@ async fn world(fixture: ApplicationFixture, down: bool) -> World {
 			.unwrap();
 	}
 
-	let (status, credential) = request(
-		&app,
-		deployment_administrator,
-		"POST",
-		"/api/authorization/acme/credentials",
-		json!({"subject":"alice"}),
-	)
-	.await;
-	assert_eq!(status, 200);
-	let token = credential["token"].as_str().unwrap().to_owned();
+	let token = common::subject_credential(&f.store, "acme", "alice").await;
 	let (status, workspace) = request(
 		&app,
 		&token,

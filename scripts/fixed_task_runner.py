@@ -122,24 +122,44 @@ class Experiment:
     def ref(self, identifier):
         return {"registry_deployment": self.node, "id": identifier, "version": "1.0.0"}
 
-    def authorize(self, agent_ids):
+    def authorize(self, agent_ids, issue=None):
         """Create the Tenant policy on a fresh disposable Node (deterministic tier only).
 
         The allow-all policy is acceptable only because the Node, its database
         and its Tenant exist solely for this invocation. The live tier never
         calls this and uses the evaluator's existing Tenant policy.
+
+        A Deployment Administrator holds no Tenant authority (#484), so a real
+        Node needs `issue(tenant, subject)`, which mints the first Subject
+        Credential from the host (`manage issue-subject-credential`). The Node's
+        address is then read with that credential and the Agent subjects join
+        the policy in a second replacement. Without `issue` the administrator
+        route is used, which only a double that does not enforce (#484) accepts.
         """
         # Aidash assigns both Tenant and Node names.
         self.tenant = self.api.post("/api/tenants", {"label": self.tenant}, accept=(201,))["name"]
-        self.default_node()
+
+        def replace(subjects, revision):
+            bundle = {"tenant": self.tenant, "subjects": subjects,
+                      "policies": [{"id": "evaluation-work", "effect": "allow", "subjects": {"any": True},
+                                    "actions": ["*"], "resources": {"kinds": ["*"]}}]}
+            self.api.post(f"/api/authorization/{self.tenant}", {"expected_revision": revision, "bundle": bundle})
+
+        if issue is None:
+            self.default_node()
+            subjects = {self.subject: {"kind": "user"}}
+            for agent in agent_ids:
+                subjects[f"{self.node_address}/agents/{agent}@1.0.0"] = {"kind": "agent"}
+            replace(subjects, 1)
+            self.token = self.api.post(f"/api/authorization/{self.tenant}/credentials", {"subject": self.subject})["token"]
+            return
         subjects = {self.subject: {"kind": "user"}}
+        replace(subjects, 1)
+        self.token = issue(self.tenant, self.subject)["token"]
+        self.default_node()
         for agent in agent_ids:
             subjects[f"{self.node_address}/agents/{agent}@1.0.0"] = {"kind": "agent"}
-        bundle = {"tenant": self.tenant, "subjects": subjects,
-                  "policies": [{"id": "evaluation-work", "effect": "allow", "subjects": {"any": True},
-                                "actions": ["*"], "resources": {"kinds": ["*"]}}]}
-        self.api.post(f"/api/authorization/{self.tenant}", {"expected_revision": 1, "bundle": bundle})
-        self.token = self.api.post(f"/api/authorization/{self.tenant}/credentials", {"subject": self.subject})["token"]
+        replace(subjects, self.api.get(f"/api/authorization/{self.tenant}")["revision"])
 
     def default_node(self):
         """Resolve the Tenant's actual Node once, including for a live experiment."""
@@ -826,12 +846,12 @@ def live_runs(api, experiment, corpus, planned_runs, repeats, ledger, models, pr
     return skipped
 
 
-def binding_guard(tenant, provider, expected):
+def binding_guard(tenant, provider, expected, token=None):
     """A `binding_check` for live_runs: the binding must still name `expected` credential id and revision."""
     from fixed_task_evaluation import GuardRefusal
 
     def check(api):
-        current = api.get(f"/api/tenants/{tenant}/provider-credential-bindings/{provider}")
+        current = api.get(f"/api/tenants/{tenant}/provider-credential-bindings/{provider}", token)
         observed = (current.get("provider_credential_id"), current.get("revision")) if isinstance(current, dict) \
             else None
         if observed != expected:

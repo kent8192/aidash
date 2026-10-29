@@ -48,7 +48,8 @@ async fn reader(store: &Store, bank: &Bank, unit: Uuid) -> (Uuid, Actor) {
 				"deployment_administrator",
 			)
 			.await
-			.unwrap();
+			// The fixture Subject may have approved it already.
+			.ok();
 	}
 	let credential = authorization
 		.issue_credential("acme", "alice", 3600, "deployment_administrator")
@@ -185,7 +186,7 @@ async fn a_failed_read_journal_reports_its_exact_cause(
 	let (store, _, workspace) = setup(&database, bounds).await;
 	let bank = memory::create_participant(
 		&store,
-		&Actor::DeploymentAdministrator,
+		&administrator(&store).await,
 		workspace,
 		memory::CreateParticipant {
 			agent: reference("a"),
@@ -198,7 +199,7 @@ async fn a_failed_read_journal_reports_its_exact_cause(
 	let original = content("Rotate the signing key every quarter.");
 	memory::mutate(
 		&store,
-		&Actor::DeploymentAdministrator,
+		&administrator(&store).await,
 		mutation(
 			&bank,
 			Change::Add {
@@ -229,13 +230,13 @@ async fn a_failed_read_journal_reports_its_exact_cause(
 		"unchanged" => {}
 		"correction" => {
 			let change = corrected(|next| next.text = "Rotate the signing key monthly.".into());
-			memory::mutate(&store, &Actor::DeploymentAdministrator, change)
+			memory::mutate(&store, &administrator(&store).await, change)
 				.await
 				.unwrap();
 		}
 		"withdrawal" => {
 			let change = corrected(|next| next.verification = Verification::Contradicted);
-			memory::mutate(&store, &Actor::DeploymentAdministrator, change)
+			memory::mutate(&store, &administrator(&store).await, change)
 				.await
 				.unwrap();
 		}
@@ -247,7 +248,7 @@ async fn a_failed_read_journal_reports_its_exact_cause(
 					expected_revision: 1,
 				},
 			);
-			memory::mutate(&store, &Actor::DeploymentAdministrator, change)
+			memory::mutate(&store, &administrator(&store).await, change)
 				.await
 				.unwrap();
 		}

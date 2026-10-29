@@ -76,7 +76,10 @@ const otherReference = {
 };
 
 async function dashboard(page: Page, registry: unknown[]) {
-  await installBearerDashboard(page, "fixture");
+  await installBearerDashboard(page, "fixture", {
+    tenant: tenantSubject.tenant,
+    name: tenantSubject.subject,
+  });
   await page.addInitScript(() =>
     localStorage.setItem("aidash-locale", "en-US"),
   );

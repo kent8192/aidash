@@ -146,6 +146,7 @@ pub trait ExecutionRecoveryStore: Send + Sync {
 		token: uuid::Uuid,
 		reason: &str,
 		event: &str,
+		refusal: Option<&aidash_domain::tool::AuthorityRefusal>,
 	) -> Result<()>;
 	async fn pause_semantic(
 		&self,

@@ -400,7 +400,7 @@ async fn incident_storage_failure_is_not_silently_classified_as_hidden_history()
 #[rstest]
 #[case(0, Some(50), 50)]
 #[case(50, Some(100), 50)]
-#[case(100, None, 20)]
+#[case(100, None, 18)]
 #[tokio::test]
 async fn offset_paging_counts_only_visible_sources(
 	#[case] offset: usize,
@@ -409,7 +409,6 @@ async fn offset_paging_counts_only_visible_sources(
 ) {
 	let mut repo = Repository::new();
 	repo.count = 60;
-	repo.principal = Principal::DeploymentAdministrator;
 	repo.catalog_allowed = false;
 	repo.incident_denied = true;
 	let page = read(
@@ -424,12 +423,4 @@ async fn offset_paging_counts_only_visible_sources(
 	.unwrap();
 	assert_eq!(page.items.len(), length);
 	assert_eq!(page.next_offset, next);
-	assert!(
-		!repo
-			.state
-			.lock()
-			.unwrap()
-			.calls
-			.contains(&"catalog_authority")
-	);
 }

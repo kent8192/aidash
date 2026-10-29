@@ -4,6 +4,8 @@ use futures_util::{
 	FutureExt,
 	future::{BoxFuture, Shared},
 };
+#[path = "browser_context.rs"]
+mod browser_context;
 #[path = "settings.rs"]
 mod settings;
 #[path = "tenant_roots.rs"]
@@ -19,9 +21,9 @@ pub use settings::settings_for;
 use std::sync::Arc;
 #[allow(unused_imports)] // Only suites that create Tenants under fixed names use these.
 pub use tenant_roots::{
-	admitted_run, approve_agent, approve_agent_on, default_node, local_run, remote_run,
-	remote_run_in, replace_policy, second_node_in, subject_claim, tenant_root, tenant_root_in,
-	tenant_scope, tenant_token,
+	admitted_run, approve_agent, approve_agent_on, default_node, issued_credential, local_run,
+	remote_run, remote_run_in, replace_policy, second_node_in, subject_claim, subject_credential,
+	tenant_root, tenant_root_in, tenant_scope, tenant_token,
 };
 
 #[allow(dead_code)] // Each app suite consumes a different subset of the shared fixture.
@@ -215,23 +217,9 @@ pub async fn subject(
 			.unwrap(),
 		200,
 	);
-	let issued = assert_json(
-		fixture
-			.deployment_administrator
-			.post(
-				"/api/authorization/endpoint/credentials",
-				&json!({"subject":name}),
-				"json",
-			)
-			.await
-			.unwrap(),
-		200,
-	);
+	let token = subject_credential(&fixture.runtime.store, "endpoint", name).await;
 	client
-		.set_header(
-			"Authorization",
-			&format!("Bearer {}", issued["token"].as_str().unwrap()),
-		)
+		.set_header("Authorization", &format!("Bearer {token}"))
 		.await
 		.unwrap();
 	client
@@ -308,4 +296,38 @@ pub async fn register_fixture_agent(fixture: &EndpointFixture, id: &str) {
 	] {
 		fixture.runtime.registry.register(&tenant, serde_json::from_value(json!({"id":key,"version":"1.0.0","kind":kind,"name":{"en":key},"description":{"en":"Native Run fixture"},"schema":{},"config":config})).unwrap()).await.unwrap();
 	}
+}
+
+/// A Tenant Administrator acting through a browser Mapping of `tenant` for
+/// `subject`, against this fixture's server (#484). Credentials, Nodes, Node
+/// registrations and Peer Mappings are administered only this way. Browser
+/// sign-in is turned on in the fixture's application from here on.
+#[allow(dead_code)]
+pub async fn browser_mapping(
+	fixture: &EndpointFixture,
+	tenant: &str,
+	subject: &str,
+) -> browser_context::BrowserMapping {
+	browser_context::BrowserMapping::on(
+		&fixture.runtime,
+		&fixture.context,
+		fixture.anonymous.clone(),
+		tenant,
+		subject,
+	)
+	.await
+}
+
+/// A Deployment Administrator acting through a browser session, against this
+/// fixture's server (#484).
+#[allow(dead_code)]
+pub async fn browser_administrator(
+	fixture: &EndpointFixture,
+) -> browser_context::BrowserAdministrator {
+	browser_context::BrowserAdministrator::on(
+		&fixture.runtime,
+		&fixture.context,
+		fixture.anonymous.clone(),
+	)
+	.await
 }
