@@ -211,6 +211,48 @@ fn threshold_is_inclusive_and_result_precedes_call() {
 	assert_eq!(branch(half, half, half), Branch::Keep);
 }
 #[test]
+fn the_fit_rule_is_an_opt_in_alternative_for_compaction_only() {
+	let mut fit = config();
+	fit.rule = FIT_RULE.into();
+	fit.validate().unwrap();
+	assert_ne!(
+		fit.contract_digest().unwrap(),
+		config().contract_digest().unwrap()
+	);
+	assert!(Hook::Compaction.allows_rule(RULE));
+	for hook in [
+		Hook::Approval,
+		Hook::ContextSelection,
+		Hook::ApprovalObservation,
+	] {
+		assert!(!hook.allows_rule(FIT_RULE), "{hook:?}");
+	}
+}
+#[test]
+fn fit_order_ranks_kept_unprotected_results_below_the_ceiling_lowest_first() {
+	let p = |value| Probability::new(value).unwrap();
+	let candidate = |history_index, keep_result, branch, protected| FitCandidate {
+		history_index,
+		keep_result: p(keep_result),
+		branch,
+		protected,
+	};
+	let order = fit_order(&[
+		candidate(1, 0.55, Branch::Keep, false),
+		candidate(3, 0.51, Branch::Keep, false),
+		// Already below the threshold: `branch` dropped or truncated it.
+		candidate(5, 0.30, Branch::Drop, false),
+		candidate(7, 0.51, Branch::Keep, false),
+		// At the ceiling: never truncated, however tight the window.
+		candidate(9, FIT_CEILING, Branch::Keep, false),
+		// Protected tail.
+		candidate(11, 0.40, Branch::Keep, true),
+		candidate(13, 0.69, Branch::Keep, false),
+	]);
+	// Lowest keep probability first, older history first on ties.
+	assert_eq!(order, vec![3, 7, 1, 13]);
+}
+#[test]
 fn narrowing_cannot_increase_deletion_and_intersections_preserve_both_constraints() {
 	let c = config();
 	let a = Restrictions {

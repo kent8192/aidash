@@ -73,6 +73,14 @@ Those branches can leave short results unchanged, so their count is an upper
 bound rather than an exact truncation count. The complete candidate must fit
 before Enforce can apply it; Shadow records the proposal without applying it.
 
+A compaction Decider version names its rule. `compaction.keep/1` reads each
+candidate against the threshold alone. The opt-in `compaction.fit/1` (ADR 0105,
+#611) starts from those branches. While the candidate does not fit, it turns
+still-kept, unprotected candidates whose keep-result probability is below 0.7
+into `TruncateResult`, lowest probability first and older history first on ties.
+Replay recomputes the threshold branches and then requires the truncated ones to
+be exactly the first ones in that order.
+
 Rust consumers must include the required `Evidence::configuration_parameters_digest`
 field and obtain configuration pins through `DeciderConfig::digest()`. Earlier
 development revisions that hashed the configuration directly must reconstruct
