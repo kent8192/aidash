@@ -5,8 +5,12 @@
 //! its next compaction); they are not stopped here.
 use super::approvals::dependencies;
 use crate::{Error, Result, ports::catalog_withdrawal::WithdrawalImpactScope};
-use aidash_domain::registry::EntityRef;
+use aidash_domain::registry::{
+	EntityRef, Entry,
+	bindings::{MAX_BINDINGS, QualifiedRef, definition_references},
+};
 use serde::{Deserialize, Serialize};
+use std::collections::{BTreeMap, BTreeSet};
 
 /// Who loses what when `entry` is withdrawn on the Node.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
@@ -30,18 +34,25 @@ pub async fn impact(
 		return Err(Error::Forbidden);
 	}
 	let node = scope.node().deployment.as_str().to_owned();
+	let mut definitions = BTreeMap::new();
 	let mut agents = Vec::new();
 	for agent in scope.approved_agents().await? {
 		let own = EntityRef {
 			id: agent.id.clone(),
 			version: agent.version.clone(),
 		};
+		// Withdrawing the Agent's own approval stops it from starting and
+		// fails its running Runs at their next `agent.execute` check.
+		if own == *reference {
+			agents.push(own);
+			continue;
+		}
 		// An agent that no longer resolves its dependencies cannot start
 		// anyway, so it is not an impact of this withdrawal.
-		let Ok(needs) = dependencies(&agent, &node) else {
+		let Some(needs) = closure(scope, &mut definitions, &agent, &node).await? else {
 			continue;
 		};
-		if needs.contains(reference) && own != *reference {
+		if needs.contains(&(reference.id.clone(), reference.version.clone())) {
 			agents.push(own);
 		}
 	}
@@ -55,6 +66,62 @@ pub async fn impact(
 		agents,
 		running_runs,
 	})
+}
+
+/// Every local version Run admission loads for `agent` and checks for
+/// approval: its direct dependencies, then each definition's own references
+/// (every Bundle member, Tool companions, a Cluster's coordinator) until the
+/// closure is complete. Admission reads every member of a bound Bundle, not
+/// only the selected ones, so selections do not narrow the closure. `None`
+/// when the closure no longer resolves. Versions are keyed by `(id, version)`;
+/// `definitions` caches lookups across agents.
+async fn closure(
+	scope: &mut dyn WithdrawalImpactScope,
+	definitions: &mut BTreeMap<(String, String), Option<Entry>>,
+	agent: &Entry,
+	node: &str,
+) -> Result<Option<BTreeSet<(String, String)>>> {
+	let Ok(mut pending) = dependencies(agent, node) else {
+		return Ok(None);
+	};
+	let mut closure = BTreeSet::new();
+	while let Some(reference) = pending.pop() {
+		let key = (reference.id.clone(), reference.version.clone());
+		if !closure.insert(key.clone()) {
+			continue;
+		}
+		if closure.len() > MAX_BINDINGS {
+			return Ok(None);
+		}
+		let entry = match definitions.get(&key) {
+			Some(entry) => entry.clone(),
+			None => {
+				let entry = scope.definition(&reference).await?;
+				definitions.insert(key, entry.clone());
+				entry
+			}
+		};
+		// A missing version stays a leaf: it is still a dependency.
+		let Some(entry) = entry else {
+			continue;
+		};
+		let identity = QualifiedRef {
+			registry_deployment: node.to_owned(),
+			id: entry.id.clone(),
+			version: entry.version.clone(),
+		};
+		let Ok(references) = definition_references(&identity, &entry) else {
+			return Ok(None);
+		};
+		pending.extend(
+			references
+				.into_iter()
+				// Another Node's Agent is admitted against that Node's catalog.
+				.filter(|(target, _)| target.registry_deployment == node)
+				.map(|(target, _)| target.local()),
+		);
+	}
+	Ok(Some(closure))
 }
 
 #[cfg(test)]
