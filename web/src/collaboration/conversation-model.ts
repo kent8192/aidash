@@ -54,7 +54,7 @@ export function submissionFor(
   };
 }
 
-export const MAX_ATTACHMENT_BYTES = 1024 * 1024;
+export const MAX_ATTACHMENT_BYTES = 8 * 1024 * 1024;
 export const MAX_ATTACHMENTS = 8;
 export const RUN_MEDIA_ACCEPT =
   "image/png,image/jpeg,image/gif,image/webp,audio/wav,audio/x-wav,audio/mpeg,audio/mp4,audio/x-m4a,audio/aac,audio/ogg,audio/webm,audio/flac,audio/x-flac";

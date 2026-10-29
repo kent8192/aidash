@@ -105,8 +105,8 @@ pub fn validate_attachment(filename: &str, media_type: &str, content: &[u8]) -> 
 	if content.is_empty() {
 		return Err(Error::Invalid("attachment must not be empty".into()));
 	}
-	if content.len() > 1024 * 1024 {
-		return Err(Error::Invalid("attachment exceeds 1 MiB".into()));
+	if content.len() > 8 * 1024 * 1024 {
+		return Err(Error::Invalid("attachment exceeds 8 MiB".into()));
 	}
 	if filename.is_empty()
 		|| filename.len() > 255
