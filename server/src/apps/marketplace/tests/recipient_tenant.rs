@@ -261,6 +261,29 @@ async fn a_recipient_fills_the_author_slot_with_its_own_secret_and_every_grant_n
 	.await;
 	assert_eq!(shared.0, 200, "{shared:?}");
 
+	let readiness = request(
+		&f,
+		&recipient_token,
+		"GET",
+		&format!(
+			"/api/marketplace/packages/{}/secret-readiness",
+			published.1["key"].as_str().unwrap()
+		),
+		Value::Null,
+	)
+	.await;
+	assert_eq!(readiness.0, 200, "{readiness:?}");
+	assert_eq!(
+		readiness.1,
+		json!([{
+			"item": "publisher-key", "kind": "slot", "status": "ready", "repair": "none"
+		}])
+	);
+	let disclosure = readiness.1.to_string();
+	assert!(!disclosure.contains("recipient-own-secret-canary"));
+	assert!(!disclosure.contains("author-secret-never-reused"));
+	assert!(!disclosure.contains("recipient-key"));
+
 	let installed = request(
 		&f,
 		&recipient_token,
