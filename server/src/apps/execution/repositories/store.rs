@@ -20,6 +20,7 @@ use crate::{
 	registry::{Entry, Search},
 };
 use aidash_application::tenancy::{DeploymentScopeReason, TenancyScope};
+use aidash_domain::ControlSource;
 use reinhardt::core::exception::Error as FrameworkError;
 use reinhardt::db::backends::TransactionExecutor;
 use reinhardt::db::orm::Model;
@@ -87,6 +88,13 @@ pub struct Store {
 	/// The Deployment's ceilings on Tenants' Test Limits from
 	/// `[workbench_test_limits]` (#361).
 	pub test_limit_ceilings: aidash_domain::registry::workbench::sandbox::TestLimitCeilings,
+	/// The Deployment's ceilings on Live preview lifetimes from
+	/// `[preview_limits]` (ADR 0070).
+	pub preview_limits: aidash_domain::preview::live::Limits,
+	/// The preview domain this Deployment serves; `None` offers no Previews.
+	pub preview_domain: Option<String>,
+	/// The only Pod port the Preview NetworkPolicy admits.
+	pub preview_pod_port: Option<u16>,
 	pub(crate) recovery_cursors: std::sync::Arc<run_state::RecoveryCursors>,
 	/// Tenants found for Runs, Workspaces, tasks and grants, shared by every
 	/// clone of this Store.
@@ -489,6 +497,9 @@ impl Store {
 			egress: Default::default(),
 			research_retention: aidash_domain::retention::RetentionRules::DEFAULT,
 			test_limit_ceilings: Default::default(),
+			preview_limits: aidash_domain::preview::live::Limits::default(),
+			preview_domain: None,
+			preview_pod_port: None,
 			recovery_cursors: Default::default(),
 			tenancies: Default::default(),
 			tool_slots,
@@ -531,6 +542,17 @@ impl Store {
 		self.research_retention = rules;
 		self
 	}
+	pub fn with_preview_limits(mut self, limits: aidash_domain::preview::live::Limits) -> Self {
+		self.preview_limits = limits;
+		self
+	}
+
+	pub fn with_preview(mut self, domain: Option<String>, pod_port: Option<u16>) -> Self {
+		self.preview_domain = domain;
+		self.preview_pod_port = pod_port;
+		self
+	}
+
 	pub fn with_test_limit_ceilings(
 		mut self,
 		ceilings: aidash_domain::registry::workbench::sandbox::TestLimitCeilings,
@@ -604,6 +626,9 @@ impl Store {
 			egress: self.egress.clone(),
 			research_retention: self.research_retention,
 			test_limit_ceilings: self.test_limit_ceilings,
+			preview_limits: self.preview_limits.clone(),
+			preview_domain: self.preview_domain.clone(),
+			preview_pod_port: self.preview_pod_port,
 			recovery_cursors: self.recovery_cursors.clone(),
 			tenancies: self.tenancies.clone(),
 			tool_slots: self.tool_slots.clone(),
@@ -658,6 +683,9 @@ impl Store {
 			egress: self.egress.clone(),
 			research_retention: self.research_retention,
 			test_limit_ceilings: self.test_limit_ceilings,
+			preview_limits: self.preview_limits.clone(),
+			preview_domain: self.preview_domain.clone(),
+			preview_pod_port: self.preview_pod_port,
 			recovery_cursors: self.recovery_cursors.clone(),
 			tenancies: self.tenancies.clone(),
 			tool_slots: self.tool_slots.clone(),
@@ -3405,6 +3433,20 @@ impl Store {
 		id: Uuid,
 		action: RunControlAction,
 	) -> Result<RunInspection> {
+		self.control_in_as(tx, id, action, ControlSource::Tenant)
+			.await
+	}
+
+	/// Applies a control decision and records who made it: the control revision
+	/// increases and the control source is replaced, even when control itself
+	/// keeps its value (a Safety Stop of an already paused Run).
+	pub(crate) async fn control_in_as(
+		&self,
+		tx: &mut crate::database::native::Transaction,
+		id: Uuid,
+		action: RunControlAction,
+		source: ControlSource,
+	) -> Result<RunInspection> {
 		let control = action.control();
 		let mut resumed_pending = None;
 		let mut semantic_retry = None;
@@ -3439,8 +3481,8 @@ impl Store {
 		)
 		.scalar_one(&mut **tx)
 		.await?;
-		let r: RawRun = { let query_bind_1 = id; let query_bind_2 = control; let query_bind_3 = resumed_pending; aidash_server::database::query_as(&reinhardt::query::Query::update()
-				.table(reinhardt::query::Alias::new("runs")).value_expr(reinhardt::query::Alias::new("pending"), SimpleExpr::CustomWithExpr("(COALESCE(?::jsonb, pending))".to_owned(), vec![Expr::value(query_bind_3.to_owned()).into()])).value_expr(reinhardt::query::Alias::new("control"), SimpleExpr::CustomWithExpr("(?)".to_owned(), vec![Expr::value(query_bind_2.as_str()).into()])).value_expr(reinhardt::query::Alias::new("error"), SimpleExpr::CustomWithExpr("(CASE WHEN ?::jsonb IS NOT NULL OR (? = 'PAUSED' AND error = 'identity status unavailable') THEN NULL ELSE error END)".to_owned(), vec![Expr::value(query_bind_3.to_owned()).into(), Expr::value(query_bind_2.as_str()).into()])).value_expr(reinhardt::query::Alias::new("revision"), reinhardt::query::Expr::cust("revision + 1")).value_expr(reinhardt::query::Alias::new("updated_at"), reinhardt::query::Expr::cust("CURRENT_TIMESTAMP"))
+		let r: RawRun = { let query_bind_1 = id; let query_bind_2 = control; let query_bind_3 = resumed_pending; let query_bind_4 = source.as_str(); aidash_server::database::query_as(&reinhardt::query::Query::update()
+				.table(reinhardt::query::Alias::new("runs")).value_expr(reinhardt::query::Alias::new("pending"), SimpleExpr::CustomWithExpr("(COALESCE(?::jsonb, pending))".to_owned(), vec![Expr::value(query_bind_3.to_owned()).into()])).value_expr(reinhardt::query::Alias::new("control"), SimpleExpr::CustomWithExpr("(?)".to_owned(), vec![Expr::value(query_bind_2.as_str()).into()])).value_expr(reinhardt::query::Alias::new("error"), SimpleExpr::CustomWithExpr("(CASE WHEN ?::jsonb IS NOT NULL OR (? = 'PAUSED' AND error = 'identity status unavailable') THEN NULL ELSE error END)".to_owned(), vec![Expr::value(query_bind_3.to_owned()).into(), Expr::value(query_bind_2.as_str()).into()])).value_expr(reinhardt::query::Alias::new("revision"), reinhardt::query::Expr::cust("revision + 1")).value_expr(reinhardt::query::Alias::new("control_revision"), reinhardt::query::Expr::cust("control_revision + 1")).value_expr(reinhardt::query::Alias::new("control_source"), SimpleExpr::CustomWithExpr("(?)".to_owned(), vec![Expr::value(query_bind_4).into()])).value_expr(reinhardt::query::Alias::new("updated_at"), reinhardt::query::Expr::cust("CURRENT_TIMESTAMP"))
 				.and_where(SimpleExpr::CustomWithExpr("(id = ? AND NOT phase IN ('COMPLETED', 'FAILED', 'CANCELLED') AND control <> 'CANCELLED')".to_owned(), vec![Expr::value(query_bind_1.to_owned()).into()]))
 				.returning_all()
 				.to_string(reinhardt::query::PostgresQueryBuilder))
@@ -3449,6 +3491,14 @@ impl Store {
 		.ok_or_else(|| {
 			Error::Conflict("run is terminal or cancellation is already requested".into())
 		})?;
+		if action == RunControlAction::Cancel {
+			crate::apps::execution::repositories::live_previews::mark_stopped_for_run(
+				tx,
+				id,
+				aidash_domain::preview::live::StopReason::RunCancelled,
+			)
+			.await?;
+		}
 		let workspace =
 			(r.metadata.is_local(self.deployment.as_str())).then_some(r.metadata.workspace_id);
 		if let Some(reason) = semantic_retry {
@@ -3482,7 +3532,12 @@ impl Store {
 			id,
 			workspace,
 			"run.control",
-			json!({"run_id":id,"action":action}),
+			// Only a decision of someone other than the Tenant names its source.
+			if source == ControlSource::Tenant {
+				json!({"run_id":id,"action":action})
+			} else {
+				json!({"run_id":id,"action":action,"source":source})
+			},
 		)
 		.await?;
 		Ok(r.inspect())

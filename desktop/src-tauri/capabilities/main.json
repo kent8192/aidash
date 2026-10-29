@@ -13,6 +13,8 @@
     "allow-desktop-logout",
     "allow-plan-listen",
     "allow-plan-wait",
-    "allow-plan-cancel"
+    "allow-plan-cancel",
+    "allow-open-preview-url",
+    "allow-open-remote-preview"
   ]
 }

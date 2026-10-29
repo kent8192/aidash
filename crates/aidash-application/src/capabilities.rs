@@ -120,6 +120,8 @@ pub mod approvals;
 
 pub mod reclamation;
 
+pub mod retention;
+
 pub mod sessions;
 
 pub mod cleanup;

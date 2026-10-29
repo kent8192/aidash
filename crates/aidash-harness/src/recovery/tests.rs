@@ -91,6 +91,8 @@ fn repository(now: DateTime<Utc>) -> Repository {
 			revision: 9,
 			observed_input_seq: 7,
 			ledger_worker_ready: true,
+			control_revision: 0,
+			control_source: Default::default(),
 			error: None,
 			lease_owner: Some(token),
 			lease_until: Some(now + chrono::Duration::seconds(60)),

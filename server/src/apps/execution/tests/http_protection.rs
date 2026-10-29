@@ -138,7 +138,7 @@ async fn production_router_enforces_auth_validation_rate_and_sse_resume(
 	assert_eq!(peer_denied.status_code(), 401);
 	assert_eq!(peer_denied.headers()["cache-control"], "no-store");
 	assert_eq!(peer_denied.headers()["referrer-policy"], "no-referrer");
-	for version in ["0.2", "0.3"] {
+	for version in ["0.2", "0.3", "0.4"] {
 		let refused = server
 			.request(http::Method::POST, "/federation/v0.1/scoped/discover")
 			.body(bytes::Bytes::copy_from_slice(b"{}"))

@@ -38,7 +38,7 @@ fn browser_deployment_administrator_registry_creation(#[case] path: &str, #[case
 #[rstest]
 #[case("/api/runs/run-id/management", true)]
 #[case("/runs/run-id/management", true)]
-#[case("/api/runs/run-id/control", true)]
+#[case("/api/runs/run-id/control", false)]
 #[case("/api/runs/run-id/resume", false)]
 #[case("/api/runs/run-id/management/extra", false)]
 #[case("/api/runs", false)]
@@ -55,5 +55,22 @@ fn browser_deployment_administrator_run_writes_preserve_management_without_subje
 	assert_eq!(
 		browser_deployment_administrator_allowed(&request.method, request.uri.path()),
 		permitted
+	);
+}
+
+/// #486: a browser Deployment Administrator cannot expand a remote graph. Its
+/// peer list is a read, so it reaches the handler, which refuses any caller
+/// without a Subject with 403 (pinned with the shared bearer in `peer_graph`).
+#[rstest]
+#[case::expand(Method::POST, "/api/federation/graph", false)]
+#[case::peers(Method::GET, "/api/federation/graph/peers", true)]
+fn browser_deployment_administrator_remote_graph(
+	#[case] method: Method,
+	#[case] path: &str,
+	#[case] reaches_handler: bool,
+) {
+	assert_eq!(
+		browser_deployment_administrator_allowed(&method, path),
+		reaches_handler
 	);
 }

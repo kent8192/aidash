@@ -49,6 +49,8 @@ pub mod graph;
 
 pub mod protocol;
 
+pub mod preview;
+
 pub mod registry_reads;
 
 pub mod route;

@@ -52,12 +52,17 @@ impl Workspace {
 				.first_with_db(db)
 				.await?
 				.map(|row| json!(ArtifactContract::from(row))),
-			"message" => Message::objects()
-				.filter(Message::field_id().eq(id))
-				.filter(Message::field_workspace_id().eq(workspace))
-				.first_with_db(db)
-				.await?
-				.map(|row| json!(MessageContract::from(row))),
+			"message" => {
+				let row = Message::objects()
+					.filter(Message::field_id().eq(id))
+					.filter(Message::field_workspace_id().eq(workspace))
+					.first_with_db(db)
+					.await?;
+				match row {
+					Some(row) => Some(message_record(db, row).await?),
+					None => None,
+				}
+			}
 			_ => return Err(Error::Invalid("unknown workspace record kind".into())),
 		};
 		record.ok_or_else(|| Error::Invalid("workspace record not available".into()))
@@ -158,4 +163,23 @@ impl Message {
 		messages.reverse();
 		Ok(messages)
 	}
+}
+
+/// The message contract plus the exact File versions it cites, as a compact
+/// record for the Run-message summary and workspace reads.
+async fn message_record<E: OrmExecutor>(db: &mut E, row: Message) -> Result<Value> {
+	let (sql, values) = Query::select()
+		.columns(["file_id", "path", "digest"].map(Alias::new))
+		.from(Alias::new("message_file_versions"))
+		.and_where(Expr::col(Alias::new("message_id")).eq(Expr::value(row.id)))
+		.build(PostgresQueryBuilder);
+	let citations = db.fetch_all(&sql, convert_values(values)).await?;
+	let mut value = json!(MessageContract::from(row));
+	value["citations"] = json!(
+		citations
+			.into_iter()
+			.map(|row| QueryRow::from_backend_row(row).data)
+			.collect::<Vec<_>>()
+	);
+	Ok(value)
 }

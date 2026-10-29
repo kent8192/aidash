@@ -1224,17 +1224,39 @@ async fn child_execution_retains_parent_authority_and_supports_credential_rotati
 		.0,
 		200
 	);
-	assert_eq!(
-		request(
-			&app,
-			&f.config.api_token,
-			"POST",
-			&format!("/api/runs/{}/control", child_run.id),
-			json!({"action":"cancel"})
+	// A Deployment Administrator cancels through the content-free Safety Stop
+	// (ADR 0101), which names the Tenant and the Run's current control revision.
+	let (status, facts) = request(
+		&app,
+		&f.config.api_token,
+		"GET",
+		&format!("/api/runs/{}/management?tenant=acme", child_run.id),
+		Value::Null,
+	)
+	.await;
+	assert_eq!(status, 200, "{facts}");
+	let response = app
+		.api_http
+		.request(
+			"POST".parse().unwrap(),
+			&format!("/api/runs/{}/management", child_run.id),
 		)
+		.header("Authorization", format!("Bearer {}", f.config.api_token))
+		.header("Idempotency-Key", Uuid::new_v4().to_string())
+		.json(&json!({
+			"tenant": "acme",
+			"action": "cancel",
+			"expected_control_revision": facts["control_revision"],
+			"reason": "revoked credentials cleanup",
+		}))
+		.send()
 		.await
-		.0,
-		200
+		.unwrap();
+	assert_eq!(
+		response.status_code(),
+		200,
+		"{}",
+		String::from_utf8_lossy(response.body())
 	);
 	harness.worker_once().await.unwrap();
 	assert_eq!(

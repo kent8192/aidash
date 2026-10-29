@@ -291,27 +291,43 @@ class Runner:
         return {k: v for k, v in record.items() if k not in ("request", "pod_uid")}
 
     def accept(self, request, admission_probe=False):
-        if set(request) - {"session_id", "egress"} != {"operation_id", "area_id", "epoch", "digest", "kind", "code", "seconds", "files"}:
+        kind = request.get("kind")
+        optional = {"session_id", "egress"} | ({"port"} if kind == "serve" else set())
+        if set(request) - optional != {"operation_id", "area_id", "epoch", "digest", "kind", "code", "seconds", "files"}:
             raise Rejected(400, "invalid runner contract")
         operation, area = identity(request["operation_id"]), identity(request["area_id"])
         if 'egress' in request:
             lease = request['egress']
             settings = self.config.get('egress') or {}
+            # A Live preview's Web server holds a session-lifetime token; an
+            # operation holds one that ends with its command (ADR 0070).
+            owner = 'session:' + operation if kind == "serve" else operation
             if (not isinstance(lease, dict) or set(lease) != {'url', 'token'}
                     or lease['url'] != settings.get('endpoint')
                     or not isinstance(lease['token'], str)
-                    or not re.fullmatch(re.escape(operation) + r'\.[A-Za-z0-9_-]{43}', lease['token'])):
+                    or not re.fullmatch(re.escape(owner) + r'\.[A-Za-z0-9_-]{43}', lease['token'])):
                 raise Rejected(400, 'invalid Egress lease')
         # "verify" runs like "shell" but never exports /work: a Completion Gate
-        # Check must not change the Working Area it verifies.
-        if request["kind"] not in ("shell", "verify", "python") or not isinstance(request["code"], str):
+        # Check must not change the Working Area it verifies. "serve" is a
+        # long-lived Live preview whose writes are never published (ADR 0070).
+        if kind not in ("shell", "verify", "python", "serve") or not isinstance(request["code"], str):
             raise Rejected(400, "invalid command kind")
         if len(request["code"].encode()) > self.config.get("limits", {}).get("command_bytes", 65536) or len(request["files"]) > 4096:
             raise Rejected(400, "command or file limit")
         if not isinstance(request["epoch"], int) or request["epoch"] < 1:
             raise Rejected(400, "invalid epoch")
-        if not isinstance(request["seconds"], int) or not 1 <= request["seconds"] <= self.config["maximum_seconds"]:
+        maximum = (self.config.get("preview_maximum_seconds", 7200) if kind == "serve"
+                   else self.config["maximum_seconds"])
+        if not isinstance(request["seconds"], int) or not 1 <= request["seconds"] <= maximum:
             raise Rejected(400, "operation time limit")
+        port = None
+        if kind == "serve":
+            port = request.get("port")
+            if not isinstance(port, int) or not 1024 <= port <= 65535:
+                raise Rejected(400, "invalid preview port")
+            allowed = self.config.get("preview_port")
+            if allowed is not None and port != allowed:
+                raise Rejected(400, "preview port not allowed")
         session = None
         if request["kind"] == "python":
             if not self.config.get("node_guard"):
@@ -350,28 +366,35 @@ class Runner:
                 if old["wire_digest"] != wire_digest:
                     raise Rejected(409, "IDEMPOTENCY_CONFLICT")
                 return self.public(old)
-            pods = self.kube_json(["get", "pods", "-l", "aidash-area=" + area, "-o", "json"])["items"]
-            for pod in pods:
-                if session and pod["metadata"]["uid"] == session["pod_uid"]:
-                    continue
-                execution = next((s.get("state", {}) for s in pod.get("status", {}).get("containerStatuses", [])
-                                  if s["name"] == "execution"), {})
-                if "terminated" not in execution or pod["metadata"]["name"] == self.pod_name(operation):
-                    raise Rejected(409, "AREA_BUSY: unaccounted sandbox requires reconciliation")
-            area_path = self.root / f"area-{area}.json"
-            previous = json.loads(area_path.read_bytes()) if area_path.exists() else None
-            if previous:
-                if request["epoch"] < previous["epoch"]:
-                    raise Rejected(409, "STALE_EPOCH")
-                old = self.get(previous["operation_id"])
-                if old["status"] not in TERMINAL or not (old.get("termination_confirmed", False) or old.get("writer_frozen", False)):
-                    raise Rejected(409, "AREA_BUSY: previous writer has not been confirmed stopped")
+            # A Live preview is a long-lived reader that never publishes its
+            # writes, so it takes no writer slot in the Area and does not fence
+            # later turns (ADR 0070).
+            if kind != "serve":
+                pods = self.kube_json(["get", "pods", "-l", "aidash-area=" + area, "-o", "json"])["items"]
+                for pod in pods:
+                    if session and pod["metadata"]["uid"] == session["pod_uid"]:
+                        continue
+                    execution = next((s.get("state", {}) for s in pod.get("status", {}).get("containerStatuses", [])
+                                      if s["name"] == "execution"), {})
+                    if "terminated" not in execution or pod["metadata"]["name"] == self.pod_name(operation):
+                        raise Rejected(409, "AREA_BUSY: unaccounted sandbox requires reconciliation")
+                area_path = self.root / f"area-{area}.json"
+                previous = json.loads(area_path.read_bytes()) if area_path.exists() else None
+                if previous:
+                    if request["epoch"] < previous["epoch"]:
+                        raise Rejected(409, "STALE_EPOCH")
+                    old = self.get(previous["operation_id"])
+                    if old["status"] not in TERMINAL or not (old.get("termination_confirmed", False) or old.get("writer_frozen", False)):
+                        raise Rejected(409, "AREA_BUSY: previous writer has not been confirmed stopped")
             record = {"operation_id": operation, "area_id": area, "epoch": request["epoch"],
                       "image": self.config['image'],
                       "digest": request["digest"], "wire_digest": wire_digest, "status": "awaiting_files" if request["files"] and not session else "accepted",
                       "request": request, "created_at": time.time(), "cancel_requested": False,
                       "termination_confirmed": False, "stdout": "", "truncated": False,
                       "files": [], "error": None, "executed": False}
+            if kind == "serve":
+                record["port"] = port
+                record["serve"] = {"status": "starting", "startup_log": "", "reason": None}
             # Only verify_isolation sets this; no request field can claim it.
             if admission_probe:
                 record["admission_probe"] = True
@@ -383,7 +406,8 @@ class Runner:
                     record["container_id"] = session["container_id"]
             save(self.path(operation), record)
             self.aggregate.track(operation, record)
-            save(area_path, {"epoch": request["epoch"], "operation_id": operation})
+            if kind != "serve":
+                save(area_path, {"epoch": request["epoch"], "operation_id": operation})
             if not request["files"] or session:
                 self.start(operation)
             return self.public(record)
@@ -465,7 +489,9 @@ class Runner:
         with self.lock:
             if operation not in self.active:
                 self.active.add(operation)
-                threading.Thread(target=self.reconcile_python if self.get(operation)["request"]["kind"] == "python" else self.reconcile, args=(operation,), daemon=True).start()
+                kind = self.get(operation)["request"]["kind"]
+                target = {"python": self.reconcile_python, "serve": self.reconcile_serve}.get(kind, self.reconcile)
+                threading.Thread(target=target, args=(operation,), daemon=True).start()
 
     def pod_name(self, operation):
         return "operation-" + operation
@@ -515,6 +541,14 @@ class Runner:
         if record["request"]["kind"] == "python":
             worker.pop("livenessProbe")
             worker.pop("startupProbe")
+        if record["request"]["kind"] == "serve":
+            # Declare the port the Preview gateway proxies to. Only a TCP
+            # readiness probe decides "the port accepts connections": a Web
+            # server may answer 404 for /, which an HTTP probe would refuse.
+            port = record["request"]["port"]
+            worker["ports"] = [{"name": "preview", "containerPort": port}]
+            worker["readinessProbe"] = {"tcpSocket": {"port": port}, "periodSeconds": 1,
+                                        "timeoutSeconds": 1, "failureThreshold": 120}
         collector = container("collector", ["python", "-I", "/opt/aidash/collector.py", "serve"], "250m", "256Mi", collector_mounts)
         collector["env"].append({"name": "AIDASH_OUTPUT_BYTES", "value": str(profile["output_bytes"])})
         volumes = [{"name": name, "emptyDir": {"medium": "Memory", "sizeLimit": str(size)}} for name, size in (
@@ -733,6 +767,156 @@ class Runner:
                 self.kube(["delete", "pod", self.pod_name(pod_operation), "--wait=false", "--force", "--grace-period=0"], check=False)
         except Exception as error:
             self.update(operation, status="uncertain", error=str(error)[-2000:])
+        finally:
+            with self.lock:
+                self.active.discard(operation)
+
+    def startup_log(self, operation):
+        """A bounded tail of the Web server's own startup output."""
+        try:
+            result = self.kube(["logs", self.pod_name(operation), "-c", "execution",
+                                "--limit-bytes=16384"], check=False, timeout=20)
+            return result.stdout.decode(errors="replace")[-16384:]
+        except Exception:
+            return ""
+
+    def stop_serve(self, record, status, reason):
+        """Stop a Live preview's Pod. Termination is confirmed only by the
+        independent node proof; an unconfirmed stop stays retryable."""
+        operation = record["operation_id"]
+        log = self.startup_log(operation)
+        confirmed = False
+        try:
+            if record.get("container_id") and record.get("pod_uid"):
+                self.guard(record, "terminate")
+                confirmed = True
+                arguments = ["delete", "pod", self.pod_name(operation), "--wait=false",
+                             "--force", "--grace-period=0"]
+            else:
+                # Nothing ran yet: a completed graceful deletion is the proof
+                # that the kubelet stopped every container.
+                arguments = ["delete", "pod", self.pod_name(operation), "--wait=true",
+                             "--timeout=60s"]
+            self.kube(arguments, timeout=70, check=False)
+            if self.pod(operation) is None:
+                confirmed = True
+        except Exception as error:
+            print(f"Live preview stop {operation}: {error}", file=sys.stderr, flush=True)
+        self.update(operation, status=status, finished_at=time.time(),
+                    termination_confirmed=confirmed,
+                    serve={"status": "stopped" if confirmed else "stopping",
+                           "startup_log": log, "reason": reason,
+                           "pod_host": (record.get("serve") or {}).get("pod_host")})
+
+    def reconcile_serve(self, operation):
+        """Hold a Live preview's Pod open and stop it on cancel or its absolute
+        deadline. It never exports /work: its writes are not published."""
+        try:
+            record = self.get(operation)
+            pod = self.pod(operation)
+            if pod is None:
+                if record["status"] != "accepted":
+                    raise RuntimeError("preview creation outcome uncertain; no replay")
+                record = self.update(operation, status="starting")
+                result = self.kube(["create", "-f", "-"], json.dumps(self.manifest(record)).encode(), check=False)
+                pod = self.pod(operation)
+                if pod is None:
+                    raise RuntimeError("preview creation outcome unknown: " + result.stderr.decode(errors="replace")[-500:])
+            uid = pod["metadata"]["uid"]
+            if record.get("pod_uid", uid) != uid:
+                raise RuntimeError("preview env replaced")
+            deadline = record["created_at"] + record["request"]["seconds"]
+            while True:
+                current = self.get(operation)
+                if current["cancel_requested"]:
+                    self.stop_serve(current, "cancelled", "cancelled")
+                    return
+                pod = self.pod(operation)
+                if pod is None or pod["metadata"]["uid"] != uid:
+                    raise RuntimeError("preview Pod disappeared before it was ready")
+                statuses = {s["name"]: s for s in pod.get("status", {}).get("containerStatuses", [])}
+                execution = statuses.get("execution", {}).get("state", {})
+                if "terminated" in execution:
+                    raise RuntimeError("preview server stopped during startup")
+                if "running" in execution and not record.get("executed"):
+                    record = self.update(operation, pod_uid=uid,
+                                         container_id=statuses['execution']['containerID'].split('://', 1)[1],
+                                         cluster_node=pod['spec']['nodeName'],
+                                         image=pod['spec']['containers'][0]['image'])
+                    limits = self.guard(record, 'limits', **self.execution_limits(record))
+                    self.update(operation, resource_evidence=limits)
+                    prepared = json.loads(self.exec_collector(operation, ["prepared"]).stdout)
+                    if prepared["digest"] is None:
+                        for file in record["request"]["files"]:
+                            with (self.root / (operation + ".inputs") / file["file_id"]).open("rb") as source:
+                                offset = 0
+                                while True:
+                                    data = source.read(4194304)
+                                    if not data and offset:
+                                        break
+                                    self.exec_collector(operation, ["write", file["scope"], file["path"], str(offset)], data)
+                                    offset += len(data)
+                                    if not data:
+                                        break
+                    elif prepared["digest"] != record["request"]["digest"]:
+                        raise RuntimeError("preview input identity changed")
+                    payload = dict(record["request"], working_bytes=self.config["working_bytes"],
+                                   processes=self.config["processes"])
+                    reply = json.loads(self.exec_collector(
+                        operation, ["hydrate"], json.dumps(payload).encode(), timeout=120).stdout)
+                    now = time.time()
+                    record = self.update(operation, executed=True, status="running", running_at=now,
+                                         started_at=reply.get("started_at") or now)
+                    deadline = record["started_at"] + record["request"]["seconds"]
+                ready = any(condition["type"] == "Ready" and condition["status"] == "True"
+                            for condition in pod.get("status", {}).get("conditions", []))
+                if ready:
+                    self.update(operation, serve={"status": "running",
+                                                  "startup_log": self.startup_log(operation),
+                                                  "reason": None,
+                                                  "pod_host": pod["status"].get("podIP")})
+                    break
+                if time.monotonic() - record.get("running_at", time.monotonic()) > 120:
+                    self.stop_serve(self.get(operation), "failed", "port_timeout")
+                    return
+                time.sleep(.25)
+            while True:
+                current = self.get(operation)
+                if current["cancel_requested"]:
+                    self.stop_serve(current, "cancelled", "cancelled")
+                    return
+                if time.time() >= deadline:
+                    self.stop_serve(current, "cancelled", "absolute")
+                    return
+                pod = self.pod(operation)
+                if pod is None:
+                    raise RuntimeError("preview Pod disappeared")
+                statuses = {s["name"]: s for s in pod.get("status", {}).get("containerStatuses", [])}
+                if any("terminated" in status.get("state", {}) for status in statuses.values()):
+                    self.kube(["delete", "pod", self.pod_name(operation), "--wait=false"], check=False)
+                    self.update(operation, status="failed", finished_at=time.time(),
+                                termination_confirmed=True,
+                                serve={"status": "stopped", "startup_log": self.startup_log(operation),
+                                       "reason": "server_exited",
+                                       "pod_host": (current.get("serve") or {}).get("pod_host")})
+                    return
+                time.sleep(1)
+        except Exception as error:
+            print(f"Live preview reconciliation {operation}: {error}", file=sys.stderr, flush=True)
+            try:
+                record = self.get(operation)
+                if record.get("container_id") and record.get("pod_uid"):
+                    self.stop_serve(record, "failed", "start_failed")
+                else:
+                    self.kube(["delete", "pod", self.pod_name(operation), "--wait=false",
+                               "--force", "--grace-period=0"], check=False)
+                    self.update(operation, status="failed", finished_at=time.time(),
+                                termination_confirmed=True,
+                                serve={"status": "stopped", "startup_log": self.startup_log(operation),
+                                       "reason": "start_failed"})
+            except Exception as failed:
+                print(f"Live preview cleanup {operation}: {failed}", file=sys.stderr, flush=True)
+                self.update(operation, status="failed", error=str(failed)[-2000:])
         finally:
             with self.lock:
                 self.active.discard(operation)
