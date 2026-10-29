@@ -304,5 +304,19 @@ test(
         () => document.documentElement.scrollWidth <= window.innerWidth,
       ),
     ).toBe(true);
+    // The graph, including its node topology, is Tenant content (#599). The
+    // init script restores en-US on every load.
+    await page.goto("/graph");
+    await expect(
+      page.getByText(
+        "To see a Tenant's content, switch to a Mapping in that Tenant.",
+      ),
+    ).toBeVisible();
+    await expect(
+      page.getByRole("button", {
+        name: "Node topology and communication",
+        exact: true,
+      }),
+    ).toHaveCount(0);
   },
 );
