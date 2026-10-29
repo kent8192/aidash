@@ -920,6 +920,11 @@ async fn a_brokered_call_secret_records_metadata_and_refreshes_one_route() {
 		2,
 		"no token for the new version"
 	);
+	drop(service);
+	assert!(
+		matches!(source.route().await, Err(Error::External(message)) if message.contains("no longer available"))
+	);
+	assert_eq!(grants.0.lock().await.len(), 2);
 }
 
 #[tokio::test]
