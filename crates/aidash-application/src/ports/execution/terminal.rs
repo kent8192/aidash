@@ -1,5 +1,5 @@
 //! Failure and terminal-input outboxes remain independent of runnable activation.
-use crate::Result;
+use crate::{Result, recovery::AuthorityFailure};
 use aidash_domain::{RunMetadata, Task, TaskStatus};
 use async_trait::async_trait;
 use uuid::Uuid;
@@ -14,7 +14,7 @@ pub trait FailureScope: Send {
 	async fn task(&mut self) -> Result<Task>;
 	async fn transition(&mut self, status: TaskStatus) -> Result<Task>;
 	async fn finish_authority(&mut self, result: Result<TaskStatus>) -> Result<TaskStatus>;
-	async fn pause_authority(&mut self, identity_unavailable: bool) -> Result<()>;
+	async fn pause_authority(&mut self, failure: &AuthorityFailure) -> Result<()>;
 	async fn finish(&mut self, result: Result<TaskStatus>) -> Result<()>;
 }
 

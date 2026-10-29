@@ -13,8 +13,8 @@ use aidash_domain::{
 		bindings::{QualifiedRef, SKILL_ASSET_READ},
 	},
 	tool::{
-		AuthorizationRequirement, CorePermission, ResourceTarget, ToolConfig, ToolContract,
-		ToolIdentity,
+		AuthorityRefusal, AuthorizationRequirement, CorePermission, RefusalCheck, ResourceTarget,
+		ToolConfig, ToolContract, ToolIdentity,
 	},
 };
 use serde_json::json;
@@ -34,6 +34,13 @@ pub async fn refresh(repository: &dyn AgentToolRepository) -> Result<()> {
 		return Err(Error::Forbidden);
 	}
 	Ok(())
+}
+
+/// The model named a task the Run cannot address; it can clear this by naming another.
+fn task_not_found(id: &str) -> Error {
+	Error::Invalid(format!(
+		"task {id} was not found in this Workspace; use a task_id that task_create returned"
+	))
 }
 
 /// Foreign execution can address only its admitted Task and Workspace.
@@ -70,6 +77,29 @@ fn approval_reference(contract: &ToolContract) -> Option<(String, String)> {
 	}
 }
 
+/// The Run's authority refused `call`: an Authority Pause that names the tool and the check.
+fn refused(call: &ToolCall, check: RefusalCheck, action: Option<&str>) -> Error {
+	Error::AuthorityRefused(Box::new(AuthorityRefusal {
+		tool: call.name.clone(),
+		check,
+		action: action.map(str::to_owned),
+	}))
+}
+
+/// Name the check behind a plain refusal (`Forbidden` or `Unauthorized`); every other outcome,
+/// a refusal already named included, passes through.
+fn named<T>(
+	result: Result<T>,
+	call: &ToolCall,
+	check: RefusalCheck,
+	action: Option<&str>,
+) -> Result<T> {
+	result.map_err(|error| match error {
+		Error::Forbidden | Error::Unauthorized => refused(call, check, action),
+		error => error,
+	})
+}
+
 pub async fn authorize(
 	repository: &dyn AgentToolRepository,
 	run: &RunMetadata,
@@ -77,20 +107,33 @@ pub async fn authorize(
 	call: &ToolCall,
 	contract: &ToolContract,
 ) -> Result<()> {
-	refresh(repository).await?;
+	named(
+		refresh(repository).await,
+		call,
+		RefusalCheck::RemoteAuthority,
+		None,
+	)?;
 	if contract
 		.authorization
 		.flag
 		.is_some_and(|flag| !flag.permitted(configuration))
 	{
-		return Err(Error::Forbidden);
+		return Err(refused(call, RefusalCheck::AgentFlag, None));
 	}
+	// Taking the lease only waits for the Access guard; it refuses nothing.
 	let mut scope = repository.lease().await?;
 	let mut current;
 	let mut operation = None;
 	let authorization = match &contract.identity {
 		ToolIdentity::Descriptor(reference) => {
-			let entry = scope.catalog(&reference.local(), "tool.invoke").await?;
+			let entry = named(
+				scope
+					.catalog(&reference.local(), "tool.invoke", &call.name)
+					.await,
+				call,
+				RefusalCheck::Catalog,
+				Some("tool.invoke"),
+			)?;
 			let descriptor: aidash_domain::tool::providers::ToolDescriptor =
 				serde_json::from_value(entry.config)?;
 			current = descriptor.declared_contract(reference.clone())?;
@@ -107,17 +150,30 @@ pub async fn authorize(
 			&current.authorization
 		}
 		ToolIdentity::Registry(reference) => {
+			// The model picks tools from the Run's own tool list, so a Registry tool the
+			// configuration lacks means the agent's configuration changed: an authority change,
+			// unlike a `skill` argument, which the model types.
 			if !configuration.tools.contains(reference) {
-				return Err(Error::Forbidden);
+				return Err(refused(call, RefusalCheck::RegistryTool, None));
 			}
-			let entry = scope.catalog(reference, "tool.invoke").await?;
+			let entry = named(
+				scope.catalog(reference, "tool.invoke", &call.name).await,
+				call,
+				RefusalCheck::Catalog,
+				Some("tool.invoke"),
+			)?;
 			let config: ToolConfig = serde_json::from_value(entry.config)?;
 			current = ToolContract::registry(reference.clone(), &config);
 			&current.authorization
 		}
 		ToolIdentity::Builtin(grant) => {
 			let resource = scope.resource("tool", grant, json!({}));
-			scope.require(&resource, "tool.invoke").await?;
+			named(
+				scope.require(&resource, "tool.invoke").await,
+				call,
+				RefusalCheck::Policy,
+				Some("tool.invoke"),
+			)?;
 			operation = grant.strip_prefix("builtin:").map(str::to_owned);
 			&contract.authorization
 		}
@@ -143,7 +199,7 @@ pub async fn authorize(
 						.find(|tool| tool.name == identity.tool)
 				})
 				.flatten()
-				.ok_or(Error::Forbidden)?;
+				.ok_or_else(|| refused(call, RefusalCheck::PluginTool, None))?;
 			current = ToolContract::agent_plugin(identity.clone(), pinned.read_only);
 			if current != *contract {
 				return Err(Error::Conflict(
@@ -166,30 +222,48 @@ pub async fn authorize(
 			.core
 			.is_some_and(|permission| !permission.permitted(&configuration.core_capabilities))
 	{
-		return Err(Error::Forbidden);
+		return Err(refused(call, RefusalCheck::CoreCapability, None));
 	}
 	for requirement in &authorization.requirements {
 		match requirement {
 			AuthorizationRequirement::AgentExecution { node_id, agent } => {
+				// The Node comes from the agent's configuration, not from the model.
 				if configuration.allow_task_delegation == Some(false)
 					|| !aidash_domain::nodes::names_home(node_id, &run.home_node)
 				{
-					return Err(Error::Forbidden);
+					return Err(refused(call, RefusalCheck::AgentExecution, None));
 				}
-				scope.catalog(agent, "agent.execute").await?;
+				named(
+					scope.catalog(agent, "agent.execute", &call.name).await,
+					call,
+					RefusalCheck::Catalog,
+					Some("agent.execute"),
+				)?;
 				let resource =
 					scope.resource("workspace", &run.workspace_id.to_string(), json!({}));
-				scope.require(&resource, "task.create").await?;
+				named(
+					scope.require(&resource, "task.create").await,
+					call,
+					RefusalCheck::Policy,
+					Some("task.create"),
+				)?;
 			}
 			AuthorizationRequirement::ConfiguredSkill => {
 				if asset_read {
 					match asset_skill(repository, call)? {
 						Some(reference) => {
 							let reference = reference.local();
-							if !configuration.skills.contains(&reference)
-								|| scope.catalog(&reference, "skill.use").await?.kind != "skill"
-							{
-								return Err(Error::Forbidden);
+							if !configuration.skills.contains(&reference) {
+								return Err(unconfigured_skill(&reference));
+							}
+							let entry = named(
+								scope.catalog(&reference, "skill.use", &call.name).await,
+								call,
+								RefusalCheck::Catalog,
+								Some("skill.use"),
+							)?;
+							if entry.kind != "skill" {
+								return Err(not_a_skill(&reference));
 							}
 						}
 						None => {
@@ -202,7 +276,7 @@ pub async fn authorize(
 								&& !CorePermission::Skills
 									.permitted(&configuration.core_capabilities)
 							{
-								return Err(Error::Forbidden);
+								return Err(refused(call, RefusalCheck::CoreCapability, None));
 							}
 						}
 					}
@@ -214,10 +288,16 @@ pub async fn authorize(
 				let reference: EntityRef = serde_json::from_value(call.arguments["skill"].clone())
 					.map_err(|e| Error::Invalid(e.to_string()))?;
 				if !configuration.skills.contains(&reference) {
-					return Err(Error::Forbidden);
+					return Err(unconfigured_skill(&reference));
 				}
-				if scope.catalog(&reference, "skill.use").await?.kind != "skill" {
-					return Err(Error::Forbidden);
+				let entry = named(
+					scope.catalog(&reference, "skill.use", &call.name).await,
+					call,
+					RefusalCheck::Catalog,
+					Some("skill.use"),
+				)?;
+				if entry.kind != "skill" {
+					return Err(not_a_skill(&reference));
 				}
 			}
 			AuthorizationRequirement::LocalDelegation => {
@@ -225,39 +305,74 @@ pub async fn authorize(
 					.as_str()
 					.and_then(|s| s.parse::<Uuid>().ok())
 					.ok_or_else(|| Error::Invalid("invalid task id".into()))?;
-				if !call.arguments["node_id"]
-					.as_str()
-					.is_some_and(|node| aidash_domain::nodes::names_home(node, &run.home_node))
+				// A Node address other than the home Node's, short name included, is
+				// the model's mistake; only the address `agent_discover` returned names it.
+				let node = call.arguments["node_id"].as_str();
+				if !node.is_some_and(|node| aidash_domain::nodes::names_home(node, &run.home_node))
 				{
-					return Err(Error::Forbidden);
+					return Err(Error::Invalid(format!(
+						"node_id {} does not name this Node; pass the node_id that agent_discover returned ({})",
+						node.map_or_else(|| "(missing)".to_owned(), |node| format!("{node:?}")),
+						run.home_node,
+					)));
 				}
 				let reference: EntityRef = serde_json::from_value(call.arguments["agent"].clone())?;
-				scope.catalog(&reference, "agent.execute").await?;
+				named(
+					scope.catalog(&reference, "agent.execute", &call.name).await,
+					call,
+					RefusalCheck::Catalog,
+					Some("agent.execute"),
+				)?;
 			}
 			AuthorizationRequirement::Resource {
 				action,
 				kind,
 				target,
 			} => {
+				let mut named_task = false;
 				let id = match target {
 					ResourceTarget::Workspace => run.workspace_id.to_string(),
 					ResourceTarget::Task => run.task_id.to_string(),
 					ResourceTarget::Agent => run.agent_id.clone(),
 					ResourceTarget::Run => run.id.to_string(),
-					ResourceTarget::ArgumentUuid(field) => call.arguments[field]
-						.as_str()
-						.and_then(|s| s.parse::<Uuid>().ok())
-						.ok_or_else(|| Error::Invalid("invalid task id".into()))?
-						.to_string(),
+					ResourceTarget::ArgumentUuid(field) => {
+						named_task = *kind == "task";
+						call.arguments[field]
+							.as_str()
+							.and_then(|s| s.parse::<Uuid>().ok())
+							.ok_or_else(|| Error::Invalid("invalid task id".into()))?
+							.to_string()
+					}
 					ResourceTarget::Argument(field) => call.arguments[field]
 						.as_str()
 						.ok_or_else(|| Error::Invalid("missing generation policy".into()))?
 						.to_owned(),
 				};
-				let resource =
-					protected_resource(scope.as_mut(), repository.is_remote(), run, kind, &id)
-						.await?;
-				scope.require(&resource, action).await?;
+				let resource = protected_resource(
+					scope.as_mut(),
+					repository.is_remote(),
+					run,
+					kind,
+					&id,
+					named_task,
+				)
+				.await;
+				let resource = named(
+					resource,
+					call,
+					if repository.is_remote() {
+						RefusalCheck::RemoteAuthority
+					} else {
+						RefusalCheck::Policy
+					},
+					Some(action),
+				)?;
+				named(
+					scope.require(&resource, action).await,
+					call,
+					RefusalCheck::Policy,
+					Some(action),
+				)?;
 			}
 		}
 	}
@@ -278,11 +393,40 @@ pub async fn authorize(
 				"action": CALL_UNAPPROVED,
 			}),
 		);
-		if scope.explicitly_denied(&resource, CALL_UNAPPROVED).await? {
-			return Err(Error::Forbidden);
+		let denied = named(
+			scope.explicitly_denied(&resource, CALL_UNAPPROVED).await,
+			call,
+			RefusalCheck::CallUnapprovedDeny,
+			Some(CALL_UNAPPROVED),
+		)?;
+		if denied {
+			return Err(refused(
+				call,
+				RefusalCheck::CallUnapprovedDeny,
+				Some(CALL_UNAPPROVED),
+			));
 		}
 	}
 	Ok(())
+}
+
+/// A Skill the agent is not configured with is the model's mistake, not a change of authority.
+fn unconfigured_skill(reference: &EntityRef) -> Error {
+	Error::Invalid(format!(
+		"skill {} is not configured for this agent; use a skill listed for this agent",
+		reference_label(reference),
+	))
+}
+
+fn not_a_skill(reference: &EntityRef) -> Error {
+	Error::Invalid(format!(
+		"{} is not a skill; use a skill listed for this agent",
+		reference_label(reference),
+	))
+}
+
+fn reference_label(reference: &EntityRef) -> String {
+	format!("{}@{}", reference.id, reference.version)
 }
 
 /// The Registry Skill a `skill_asset_read` alias names in the Run's snapshot;
@@ -349,8 +493,14 @@ async fn protected_resource(
 	run: &RunMetadata,
 	kind: &str,
 	id: &str,
+	named_task: bool,
 ) -> Result<aidash_domain::policy::Resource> {
 	Ok(if remote {
+		// A foreign Run's admitted Task is the only one it can name; another is the model's
+		// mistake, like a task the local Workspace does not hold.
+		if named_task && kind == "task" && id != run.task_id.to_string() {
+			return Err(task_not_found(id));
+		}
 		scope.resource(
 			kind,
 			&remote_identifier(run, kind, id)?,
@@ -361,7 +511,17 @@ async fn protected_resource(
 			"task" => {
 				let task = scope
 					.task_read(id.parse().map_err(|_| Error::Forbidden)?)
-					.await?;
+					.await;
+				// The model named this task. One it cannot read looks like one that
+				// does not exist, the same answer for both.
+				let task = if named_task {
+					task.map_err(|error| match error {
+						Error::Forbidden | Error::NotFound(_) => task_not_found(id),
+						error => error,
+					})?
+				} else {
+					task?
+				};
 				scope.task_resource(&task).await?
 			}
 			"artifact" => {
@@ -387,7 +547,7 @@ pub async fn action(
 	refresh(repository).await?;
 	let mut scope = repository.lease().await?;
 	let resource =
-		protected_resource(scope.as_mut(), repository.is_remote(), run, kind, id).await?;
+		protected_resource(scope.as_mut(), repository.is_remote(), run, kind, id, false).await?;
 	scope.require(&resource, action).await
 }
 
