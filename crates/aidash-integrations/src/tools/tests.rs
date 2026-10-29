@@ -72,6 +72,32 @@ mod destinations {
 	};
 	use std::time::Duration;
 
+	#[tokio::test]
+	async fn http_validation_failure_is_returned_as_a_tool_result() {
+		let (listener, port) = serve().await;
+		let server = tokio::spawn(async move {
+			axum::serve(
+				listener,
+				Router::new().route(
+					"/",
+					post(|| async { (StatusCode::UNPROCESSABLE_ENTITY, "invalid input") }),
+				),
+			)
+			.await
+			.unwrap()
+		});
+		let endpoint = format!("http://127.0.0.1:{port}");
+		let result = tools(&[&endpoint])
+			.invoke(&http(endpoint.clone()), json!({}), "key", None)
+			.await
+			.unwrap();
+		assert_eq!(
+			result,
+			json!({"error":{"kind":"http_status","status":422,"body":"invalid input"}})
+		);
+		server.abort();
+	}
+
 	fn tools(permitted: &[&str]) -> HttpTools {
 		HttpTools::new(
 			KeylessAccess::permitting(PermittedOrigins::parse(permitted).unwrap()),

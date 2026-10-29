@@ -185,7 +185,21 @@ impl ToolTransport for HttpTools {
 				if let Some(secret) = secret {
 					request = request.bearer_auth(secret.expose_secret());
 				}
-				let response = request.send().await.map_err(crate::keyless::send_error)?;
+				let mut response = request.send().await.map_err(crate::keyless::send_error)?;
+				let status = response.status();
+				if status.is_client_error() && !matches!(status.as_u16(), 408 | 429) {
+					let mut body = Vec::new();
+					while body.len() < 4096 {
+						let Ok(Some(chunk)) = response.chunk().await else {
+							break;
+						};
+						let remaining = 4096 - body.len();
+						body.extend_from_slice(&chunk[..chunk.len().min(remaining)]);
+					}
+					return Ok(
+						json!({"error":{"kind":"http_status","status":status.as_u16(),"body":String::from_utf8_lossy(&body)}}),
+					);
+				}
 				if !response.status().is_success() {
 					return Err(Error::External(format!(
 						"HTTP tool returned {}",
