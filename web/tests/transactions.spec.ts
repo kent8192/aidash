@@ -69,7 +69,10 @@ test("transaction dashboard aborts a stale change safely and displays committed 
       .click();
     const dialog = page.getByRole("dialog");
     const mutation = value.participants[0].mutations[0];
-    await dialog.getByLabel("Node", { exact: true }).selectOption(nodeId);
+    await expect(dialog.getByLabel("Node", { exact: true })).toHaveValue(
+      nodeId,
+    );
+    await expect(dialog.getByLabel("Node", { exact: true })).toBeDisabled();
     await dialog
       .getByLabel("Workspace", { exact: true })
       .selectOption(workspace.id);

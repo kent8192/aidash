@@ -62,7 +62,7 @@ test("the Deployment Administrator replaces whole policies and holds no credenti
   await page.goto("/authorization");
   await expect(page).toHaveURL(/\/trust\?view=authorization$/);
   await expect(
-    page.getByRole("heading", { name: "Trust Workbench", exact: true }),
+    page.getByRole("button", { name: "アクセス権とアカウント" }),
   ).toBeVisible();
   await page.getByLabel("テナント", { exact: true }).fill(tenant);
   await page.getByRole("button", { name: "開く", exact: true }).click();

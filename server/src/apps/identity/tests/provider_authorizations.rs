@@ -880,17 +880,16 @@ async fn only_browser_sessions_start_and_return_paths_stay_local(
 	application: common::ApplicationFixture,
 ) {
 	let fixture = Fixture::new(application, parts);
-	// The Deployment Administrator bearer has no browser to bind.
+	let context = member_context(&fixture).await;
+	// A Tenant Subject bearer has no browser to bind.
+	let token = common::tenant_token(&fixture.f.store, "alpha").await;
 	let response = send(
 		&fixture.app,
 		"POST",
 		"/api/tenants/alpha/provider-authorizations/openrouter",
 		&[
 			("content-type", "application/json"),
-			(
-				"authorization",
-				&format!("Bearer {}", fixture.f.config.api_token),
-			),
+			("authorization", &format!("Bearer {token}")),
 		],
 		json!({}),
 	)
@@ -906,7 +905,7 @@ async fn only_browser_sessions_start_and_return_paths_stay_local(
 			("cookie", "__Host-aidash-session=browser-a"),
 			("origin", ORIGIN),
 			("x-aidash-csrf", "csrf-a"),
-			("x-aidash-context", "deployment_administrator"),
+			("x-aidash-context", &context),
 		],
 		json!({"key_material": "sk-or-v1-pasted"}),
 	)
@@ -928,7 +927,7 @@ async fn only_browser_sessions_start_and_return_paths_stay_local(
 		let response = start_request(
 			&fixture,
 			"browser-a",
-			"deployment_administrator",
+			&context,
 			json!({"return_to": return_to}),
 			None,
 		)

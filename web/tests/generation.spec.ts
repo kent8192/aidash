@@ -427,23 +427,27 @@ async function createGenerationScenario(
       (item: { title: string }) => item.title === id,
     );
     semanticRoot = `/api/workspaces/${workspace.id}/semantic`;
-    semanticIndex = await api(`${semanticRoot}/index`, {
-      expected_revision: 0,
-      spec: {
-        embedding: embeddingConfig,
-        vector: {
-          provider: "postgres",
-          endpoint: "local",
-          credential_env: null,
+    semanticIndex = await api(
+      `${semanticRoot}/index`,
+      {
+        expected_revision: 0,
+        spec: {
+          embedding: embeddingConfig,
+          vector: {
+            provider: "postgres",
+            endpoint: "local",
+            credential_env: null,
+          },
+          enabled: true,
+          auto_context: true,
+          max_sources: 64,
+          max_results: 10,
+          max_result_tokens: 4096,
+          max_input_bytes: 8192,
         },
-        enabled: true,
-        auto_context: true,
-        max_sources: 64,
-        max_results: 10,
-        max_result_tokens: 4096,
-        max_input_bytes: 8192,
       },
-    });
+      credential.token,
+    );
     const memory = await api(
       `${semanticRoot}/entries`,
       {

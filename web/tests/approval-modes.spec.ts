@@ -663,19 +663,19 @@ test("a Thread's switcher lists modes the policy withholds as unavailable and re
   await expect(mode).toHaveValue("default");
 });
 
-test("a Deployment Administrator's Thread has no Approval Mode switcher", async ({
+test("a Deployment Administrator cannot open a Tenant Thread", async ({
   page,
 }) => {
   await setup(page, { administrator: true });
-  await approvals(page);
   await page.goto("/collaboration?channel=workspace-one");
-  await page
-    .getByRole("button", { name: "Reply in thread", exact: true })
-    .first()
-    .click();
   await expect(
-    page.getByRole("heading", { name: "Thread", exact: true }),
+    page.getByText(
+      "Tenant content is not available to a Deployment Administrator.",
+    ),
   ).toBeVisible();
+  await expect(
+    page.getByRole("button", { name: "Reply in thread", exact: true }),
+  ).toHaveCount(0);
   await expect(
     page.getByRole("combobox", { name: "Approval Mode for this Thread" }),
   ).toHaveCount(0);

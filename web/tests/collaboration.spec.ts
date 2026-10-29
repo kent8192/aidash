@@ -971,7 +971,7 @@ test("message attachments show their names and download in the selected tab cont
   ]);
   expect(download.suggestedFilename()).toBe("evidence.txt");
   expect(request.headers()["x-aidash-context"]).toBe(
-    "deployment_administrator",
+    "mapping:acme:fixture-mapping",
   );
   expect(request.headers()["authorization"]).toBeUndefined();
   expect(errors).toEqual([]);

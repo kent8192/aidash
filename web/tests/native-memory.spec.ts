@@ -446,9 +446,6 @@ for (const locale of ["en-US", "ja-JP"] as const) {
           .getByLabel(ja ? "記憶の所有者" : "Memory bank")
           .selectOption("");
         await page
-          .getByLabel(ja ? "テナント" : "Tenant", { exact: true })
-          .fill("acme");
-        await page
           .getByLabel(
             ja ? "メモリプロバイダのバージョン" : "Memory provider version",
           )
