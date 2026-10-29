@@ -62,7 +62,8 @@ impl From<ListFailure> for crate::Error {
 ///
 /// A refused destination is [`Error::Forbidden`](crate::Error::Forbidden). `list` reports every
 /// other failure as a [`ListFailure`] (through `From`) so the Run's findings can name its cause.
-/// Only [`Error::Invalid`](crate::Error::Invalid) becomes a recoverable tool result in the harness.
+/// Tool calls return definitive failures as results and report delivery failures through the
+/// application error type. `replay_safe` comes from the Run's pinned tool contract.
 #[async_trait]
 pub trait PluginSessions: Send + Sync {
 	/// `tools/list` over the Run's session, opening it when needed.
