@@ -13,7 +13,8 @@ names subjects or Assignable Groups and is checked against whoever uses the defi
 For an agent version, that is who may start its Runs. For a definition an agent depends on, it is
 which agents may use it. An Approval Review proposes the nearest agent above each item on each
 closure path, possibly several agents, unless the approver chooses otherwise. A restriction only
-narrows what the Tenant's policy allows. A Catalog Approval can be withdrawn but never recorded as a standing refusal.
+narrows what the Tenant's policy allows. A Catalog Approval can be withdrawn but never recorded
+as a standing refusal.
 
 ## Considered Options
 
