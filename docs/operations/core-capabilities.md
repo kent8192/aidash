@@ -96,8 +96,8 @@ secret bytes belong only in the trusted services' environment.
    reference Sources, create a Binding-only version of a selected Agent and
    approve that exact Registry version. Saving configuration does not grant
    execution or file permissions. Follow the [drained fleet rollout](registry-capabilities.md#drained-fleet-rollout-and-rollback).
-4. Test with a tenant subject credential. Deployment Administrator configuration access does not
-   become access to users' private working files or originals.
+4. Test with a tenant subject credential. A Deployment Administrator holds no Tenant authority and
+   reaches no users' private working files or originals (ADR 0102).
 5. Expand Agent/catalog/policy scope explicitly only after the acceptance and
    Binding and isolation evidence passes.
 

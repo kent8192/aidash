@@ -1,5 +1,5 @@
 meta {
-  name: 1246 approval-rules - Anonymous request is rejected
+  name: 1246 approval-rules - Subject Credential bearer never reaches approval settings
   type: http
   seq: 1246
 }
@@ -12,9 +12,10 @@ get {
 
 headers {
   Accept: application/json
+  Authorization: Bearer {{contract_token}}
 }
 
 tests {
-  test("Exact HTTP 401", function () { expect(res.getStatus()).to.equal(401); });
-  test("Stable authorization error envelope", function () { expect(res.getHeader("content-type")).to.include("application/json"); expect(res.getBody()).to.eql({error:"unauthorized"}); });
+  test("Exact HTTP 403", function () { expect(res.getStatus()).to.equal(403); });
+  test("Stable authorization error envelope", function () { expect(res.getHeader("content-type")).to.include("application/json"); expect(res.getBody()).to.eql({error:"forbidden"}); });
 }

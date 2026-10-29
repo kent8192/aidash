@@ -21,7 +21,9 @@ const PAGE_SIZE = 25;
 type Confirmation = { node: NodeRecord; action: "delete" | "purge" };
 
 /** Bounded lifecycle management has its own cache; selectors keep the complete
- * live list. Deployment Administrators pass the Tenant they explicitly opened. */
+ * live list. Deployment Administrators pass the Tenant they explicitly opened;
+ * they only purge a deleted Node (ADR 0083). The rest of the lifecycle is
+ * Tenant administration, which they do not hold (ADR 0102). */
 export function NodeLifecycleSettings({
   tenant,
   canUpdate,
@@ -37,7 +39,9 @@ export function NodeLifecycleSettings({
 }) {
   const { t, locale } = useI18n();
   const client = useQueryClient();
-  const live = useTenantNodes(tenant);
+  // A Deployment Administrator reads only the deleted Node view.
+  const live = useTenantNodes(deploymentAdministrator ? null : tenant);
+  const tenantAdministration = !deploymentAdministrator;
   const [now, setNow] = useState(() => Date.now());
   useEffect(() => {
     const timer = window.setInterval(() => setNow(Date.now()), 5000);
@@ -161,7 +165,7 @@ export function NodeLifecycleSettings({
               node.state === "deleted" &&
               deletion &&
               new Date(deletion.purge_after).getTime() > now &&
-              (!administratorDeletion || deploymentAdministrator);
+              !administratorDeletion;
             return (
               <div
                 key={node.name}
@@ -177,27 +181,31 @@ export function NodeLifecycleSettings({
                     )}
                   </span>
                   <div className="flex flex-wrap gap-1.5">
-                    {node.state === "live" && !node.default && canUpdate && (
-                      <Button
-                        size="sm"
-                        variant="outline"
-                        disabled={busy}
-                        onClick={() =>
-                          void act(() =>
-                            tenantNodeDefault(
-                              path,
-                              encodeURIComponent(node.name),
-                            ),
-                          )
-                        }
-                      >
-                        {t("nodeMakeDefault")}
-                      </Button>
-                    )}
+                    {node.state === "live" &&
+                      !node.default &&
+                      canUpdate &&
+                      tenantAdministration && (
+                        <Button
+                          size="sm"
+                          variant="outline"
+                          disabled={busy}
+                          onClick={() =>
+                            void act(() =>
+                              tenantNodeDefault(
+                                path,
+                                encodeURIComponent(node.name),
+                              ),
+                            )
+                          }
+                        >
+                          {t("nodeMakeDefault")}
+                        </Button>
+                      )}
                     {node.state === "live" &&
                       !node.default &&
                       liveCount > 1 &&
-                      canDelete && (
+                      canDelete &&
+                      tenantAdministration && (
                         <Button
                           size="sm"
                           variant="outline"
@@ -207,7 +215,7 @@ export function NodeLifecycleSettings({
                           {t("nodeDelete")}
                         </Button>
                       )}
-                    {canDelete && restorable && (
+                    {canDelete && restorable && tenantAdministration && (
                       <Button
                         size="sm"
                         variant="outline"

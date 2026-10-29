@@ -1,4 +1,5 @@
-//! Manual receiving trust uses the existing record's management authority.
+//! Manual receiving trust uses the existing record's management authority,
+//! which is Tenant administration (#484, ADR 0102).
 //! Current authority also covers exact retained recovery registrations after
 //! finite Node catalog expiry; neither missing Nodes nor history imply access.
 use super::tenant_administration::TenantAdministrations;
@@ -11,13 +12,13 @@ use crate::apps::identity::{
 use crate::authorization::identity::Actor;
 use crate::federation::Federation;
 use crate::{Error, Result};
-use aidash_application::{ports::federation::inbound::ReceivingKeyOwner, tenancy::TenancyScope};
+use aidash_application::ports::federation::inbound::ReceivingKeyOwner;
 use aidash_domain::{
 	identity::tenant_administration as rules,
 	nodes::{DeploymentId, NodeAddress, NodeName},
 	tenancy::TenantName,
 };
-use reinhardt::db::{backends::TransactionExecutor, orm::AtomicTransaction};
+use reinhardt::db::backends::TransactionExecutor;
 use serde_json::json;
 
 pub struct ManualKeys {
@@ -26,20 +27,6 @@ pub struct ManualKeys {
 #[reinhardt::injectable(scope = "request")]
 pub async fn provide(#[inject] runtime: Federation) -> ManualKeys {
 	ManualKeys { runtime }
-}
-
-async fn deployment_actor(
-	tx: &mut AtomicTransaction,
-	origin: Option<&BrowserOrigin>,
-) -> Result<AdministrationActor> {
-	if let Some(origin) = origin {
-		origin.require_deployment_administrator(tx, true).await?;
-		Ok(AdministrationActor::DeploymentAdministrator {
-			identity: origin.identity_id,
-		})
-	} else {
-		Ok(AdministrationActor::DeploymentAdministratorBearer)
-	}
 }
 
 impl ManualKeys {
@@ -61,13 +48,8 @@ impl ManualKeys {
 		};
 		let f = &self.runtime;
 		match actor {
-			Actor::DeploymentAdministrator => f.store.control_pool.atomic(&TenancyScope::tenant(&tenant)?, async |tx| {
-				super::remote::deployment_administrator::tenant(tx, &tenant).await?;
-				let by = deployment_actor(tx, origin.as_ref()).await?;
-				nodes::lock_tenant(tx, &tenant).await?;
-				registration_owner(tx, &f.config.deployment, &tenant, &node, &source).await?;
-				apply(tx, &owner, change.as_ref(), &by).await
-			}).await,
+			// Registration records are Tenant administration (#484, ADR 0102).
+			Actor::DeploymentAdministrator => Err(Error::Forbidden),
 			actor => TenantAdministrations { runtime: f.clone() }.run(actor, origin, &tenant, async |administrator| {
 				f.store.control_pool.atomic(&administrator.scope()?, async |tx| {
 					let snapshot = administrator.lock(tx, false).await?;

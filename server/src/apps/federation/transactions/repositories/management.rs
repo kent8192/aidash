@@ -3,10 +3,8 @@ use super::coordination::plumbing;
 use crate::apps::federation::transactions::models::{AtomicParticipant, coordinator_records};
 use crate::{Error, federation::Federation};
 use aidash_application::{
-	Result,
-	ports::transactions::authority::AuthorityRepository,
-	ports::transactions::management::ManagementRepository,
-	transactions::{admission, authority::control},
+	Result, ports::transactions::authority::AuthorityRepository,
+	ports::transactions::management::ManagementRepository, transactions::authority::control,
 };
 use aidash_domain::{
 	identity::execution::ExecutionPrincipal,
@@ -27,14 +25,6 @@ pub(crate) struct Repository {
 
 #[async_trait]
 impl ManagementRepository for Repository {
-	async fn submit_deployment_administrator(&self, manifest: &Manifest) -> Result<Status> {
-		admission::submit(
-			&crate::bootstrap::transaction_admission_repository(&self.runtime),
-			manifest,
-			None,
-		)
-		.await
-	}
 	async fn submit_subject(
 		&self,
 		identity: &ExecutionPrincipal,
@@ -60,7 +50,7 @@ impl ManagementRepository for Repository {
 	}
 	async fn candidates(
 		&self,
-		identity: Option<&ExecutionPrincipal>,
+		identity: &ExecutionPrincipal,
 		cursor: Option<(DateTime<Utc>, Uuid)>,
 	) -> Result<Vec<Status>> {
 		plumbing(&self.runtime, async |tx| {
@@ -121,11 +111,6 @@ impl ManagementRepository for Repository {
 			Ok((votes, history))
 		})
 		.await?)
-	}
-	async fn abort_deployment_administrator(&self, id: Uuid) -> Result<Status> {
-		crate::bootstrap::transaction_coordinator(&self.runtime)
-			.abort(id)
-			.await
 	}
 	async fn participants(&self) -> Result<Vec<LocalStatus>> {
 		plumbing(&self.runtime, async |tx| AtomicParticipant::page(tx).await)

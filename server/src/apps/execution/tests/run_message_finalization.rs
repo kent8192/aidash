@@ -954,7 +954,7 @@ async fn the_commit_fence_persists_the_completion_basis(
 				Value::Null,
 			),
 		] {
-			let (status, body) = request(&app, &f.config.api_token, "POST", &path, body).await;
+			let (status, body) = common::administer_node(&f, "acme", &path, body).await;
 			assert_eq!(status, 200, "{body}");
 		}
 		// Exercise the Task job first, while its exact saved Run settlement

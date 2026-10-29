@@ -1,4 +1,5 @@
 import { lazy, Suspense, type ReactNode } from "react";
+import { AdministratorTenantNotice } from "./administrator-notice";
 import { ChevronDown } from "lucide-react";
 import {
   Collapsible,
@@ -176,12 +177,17 @@ export function TrustTools({
         }
         initiallyOpen={evidenceOpen}
       >
-        <Suspense fallback={loading}>
-          <ResearchEvidenceGovernance
-            tenant={tenant}
-            deploymentAdministrator={deploymentAdministrator}
-          />
-        </Suspense>
+        {deploymentAdministrator ? (
+          // Retention Rules and Evidence Revocation are Tenant content (ADR 0102).
+          <AdministratorTenantNotice className="" />
+        ) : (
+          <Suspense fallback={loading}>
+            <ResearchEvidenceGovernance
+              tenant={tenant}
+              deploymentAdministrator={false}
+            />
+          </Suspense>
+        )}
       </ToolSection>
     </>
   );

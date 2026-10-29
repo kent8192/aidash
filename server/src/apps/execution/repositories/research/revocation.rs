@@ -1,6 +1,6 @@
 //! Evidence Revocation of all of one Run's Research evidence, and the audit
 //! records it leaves (ADR 0046). A subject acts through its Tenant policy in
-//! the authorization transaction; a Deployment Administrator needs none.
+//! the authorization transaction; a Deployment Administrator has none (#484).
 use super::{native, run_lock};
 use crate::apps::execution::models::research::{
 	ResearchAttempt, ResearchFragment, ResearchOriginal, ResearchPageImage, ResearchRevocation,
@@ -319,20 +319,12 @@ pub(crate) async fn scrub_revoked_projections(store: &Store) -> Result<u32> {
 pub(crate) struct Revocations<'a> {
 	pub federation: &'a Federation,
 	pub actor: &'a Actor,
-	/// The dashboard identity of a Deployment Administrator acting in a
-	/// browser; none for the deployment's API token.
-	pub administrator: Option<Uuid>,
-}
-
-enum Transaction {
-	Subject { access: Box<NativeAccess> },
-	Administrator(Box<dyn TransactionExecutor>),
 }
 
 struct Scope<'a> {
 	federation: &'a Federation,
 	decider: Decider,
-	tx: Transaction,
+	tx: Box<NativeAccess>,
 	/// The revoked Run whose projection a worker's step held locked, scrubbed
 	/// again once the revocation commits.
 	locked: Option<Uuid>,
@@ -340,36 +332,15 @@ struct Scope<'a> {
 
 impl Revocations<'_> {
 	async fn open(&self) -> Result<Scope<'_>> {
-		let (decider, tx) = match self.actor {
-			Actor::Subject(identity) => (
-				Decider::Subject {
-					tenant: identity.tenant.clone(),
-					subject: identity.subject.clone(),
-				},
-				Transaction::Subject {
-					access: Box::new(NativeAccess::begin(&self.federation.store, identity).await?),
-				},
-			),
-			Actor::DeploymentAdministrator => (
-				Decider::DeploymentAdministrator {
-					identity: self.administrator,
-				},
-				// A Deployment Administrator revokes any Tenant's Run, as its
-				// other work without a Workspace does.
-				Transaction::Administrator(native(
-					async {
-						self.federation
-							.store
-							.pool
-							.begin(&self.actor.tenancy()?)
-							.await?
-							.into_executor()
-							.await
-					}
-					.await,
-				)?),
-			),
+		// Evidence Revocation is Tenant content: only a Subject revokes (#484).
+		let Actor::Subject(identity) = self.actor else {
+			return Err(Error::Forbidden);
 		};
+		let decider = Decider::Subject {
+			tenant: identity.tenant.clone(),
+			subject: identity.subject.clone(),
+		};
+		let tx = Box::new(NativeAccess::begin(&self.federation.store, identity).await?);
 		Ok(Scope {
 			federation: self.federation,
 			decider,
@@ -381,36 +352,17 @@ impl Revocations<'_> {
 
 impl Scope<'_> {
 	fn executor(&mut self) -> &mut dyn TransactionExecutor {
-		match &mut self.tx {
-			Transaction::Subject { access, .. } => access.tenant_transaction().0,
-			Transaction::Administrator(tx) => tx.as_mut(),
-		}
+		self.tx.tenant_transaction().0
 	}
 
 	async fn complete<T>(self, result: Result<T>) -> Result<T> {
-		match self.tx {
-			Transaction::Subject { access, .. } => access
-				.finish(result.map_err(crate::Error::from))
-				.await
-				.map_err(Into::into),
-			Transaction::Administrator(tx) => {
-				native(
-					async {
-						match &result {
-							Ok(_) => tx.commit().await?,
-							Err(_) => tx.rollback().await?,
-						}
-						Ok(())
-					}
-					.await,
-				)?;
-				result
-			}
-		}
+		self.tx
+			.finish(result.map_err(crate::Error::from))
+			.await
+			.map_err(Into::into)
 	}
 
-	/// A subject must be permitted `action` on `resource`; a Deployment
-	/// Administrator needs no Tenant policy.
+	/// A subject must be permitted `action` on `resource`.
 	async fn permit(&mut self, kind: &str, id: &str, action: &str) -> Result<()> {
 		if self.permits_on(kind, id, action).await? {
 			Ok(())
@@ -420,11 +372,8 @@ impl Scope<'_> {
 	}
 
 	async fn permits_on(&mut self, kind: &str, id: &str, action: &str) -> Result<bool> {
-		let Transaction::Subject { access, .. } = &mut self.tx else {
-			return Ok(true);
-		};
-		let resource = access.resource(kind, id, json!({}));
-		native(access.decide(&resource, action).await)
+		let resource = self.tx.resource(kind, id, json!({}));
+		native(self.tx.decide(&resource, action).await)
 	}
 
 	/// Remove the exact content from every Web disclosure approval of the Run,
@@ -482,24 +431,8 @@ impl RevocationScope for Scope<'_> {
 	fn decider(&self) -> Decider {
 		self.decider.clone()
 	}
-	async fn run_exists(&mut self, run: Uuid) -> Result<bool> {
-		let (sql, values) = Query::select()
-			.column(Alias::new("id"))
-			.from(Alias::new("runs"))
-			.and_where(Expr::col("id").eq(Expr::value(run)))
-			.build(PostgresQueryBuilder);
-		Ok(native(
-			self.executor()
-				.fetch_optional(&sql, convert_values(values))
-				.await
-				.map_err(crate::Error::from),
-		)?
-		.is_some())
-	}
 	async fn require(&mut self, run: Uuid, action: &str) -> Result<()> {
-		let Transaction::Subject { access, .. } = &mut self.tx else {
-			return Ok(());
-		};
+		let access = &mut self.tx;
 		// The subject must see the Run exactly as `GET /api/runs/{id}` decides,
 		// in this transaction, so the dependency locks that decision takes
 		// also cover the revocation; an invisible and a missing Run are the

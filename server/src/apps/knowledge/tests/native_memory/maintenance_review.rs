@@ -13,7 +13,7 @@ async fn local_archive_maintenance_reuses_verified_history_during_an_object_outa
 	let (store, _, workspace) = setup(&database, bounds).await;
 	let participant = memory::create_participant(
 		&store,
-		&Actor::DeploymentAdministrator,
+		&administrator(&store).await,
 		workspace,
 		memory::CreateParticipant {
 			agent: reference("a"),
@@ -28,7 +28,7 @@ async fn local_archive_maintenance_reuses_verified_history_during_an_object_outa
 	};
 	memory::mutate(
 		&store,
-		&Actor::DeploymentAdministrator,
+		&administrator(&store).await,
 		mutation(
 			&bank,
 			Change::Add {
@@ -45,7 +45,7 @@ async fn local_archive_maintenance_reuses_verified_history_during_an_object_outa
 		.unwrap();
 	memory::operate(
 		&store,
-		&Actor::DeploymentAdministrator,
+		&administrator(&store).await,
 		memory::Operation {
 			operation_id: Uuid::now_v7(),
 			provider: reference("p"),
@@ -74,7 +74,7 @@ async fn local_archive_maintenance_reuses_verified_history_during_an_object_outa
 	);
 	let units = memory::list(
 		&store,
-		&Actor::DeploymentAdministrator,
+		&administrator(&store).await,
 		memory::ReadBank {
 			provider: reference("p"),
 			bank,

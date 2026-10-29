@@ -138,9 +138,11 @@ async fn deleted_tenants_refuse_node_administration_before_external_requests(
 		.unwrap();
 	let registrations = format!("/api/tenants/{tenant}/nodes/{node}/registrations");
 	let (status, body) = d
-		.as_deployment_administrator(
+		.as_person(
+			&alice,
 			"POST",
 			&registrations,
+			Some(&context),
 			json!({"source_node":"aidash://calm-heron/able-oak-abcd1234","endpoint":endpoint,"key_id":key_id.as_str(),"atomic_transactions":false,"enabled":true,"expected_revision":0}),
 		)
 		.await;
@@ -201,12 +203,10 @@ async fn deleted_tenants_refuse_node_administration_before_external_requests(
 	} else {
 		json!({"label":"Deleted Tenant mutation"})
 	};
-	// Browser installation administration permits these reads; its existing
-	// request guard refuses Node mutations before they reach the service.
-	for browser in [false, true]
-		.into_iter()
-		.filter(|browser| !browser || method == "GET")
-	{
+	// A Deployment Administrator holds no Tenant authority over Nodes, so it is
+	// refused before the Tenant's deletion is even reported; the Tenant's own
+	// administrator learns the Tenant is deleted.
+	for browser in [false, true] {
 		let (status, body) = if browser {
 			d.as_person(
 				&carol,
@@ -221,14 +221,27 @@ async fn deleted_tenants_refuse_node_administration_before_external_requests(
 				.await
 		};
 		assert_eq!(
-			requests.load(Ordering::SeqCst),
-			before,
-			"deleted Tenant administration must not contact another Deployment"
-		);
-		assert_eq!(
-			status, 410,
+			status, 403,
 			"browser={browser} purged={purged} {method} {path}: {body}"
 		);
+	}
+	let (status, body) = d
+		.as_person(&alice, method, &path, Some(&context), input.clone())
+		.await;
+	assert_eq!(
+		requests.load(Ordering::SeqCst),
+		before,
+		"deleted Tenant administration must not contact another Deployment"
+	);
+	if purged {
+		// A purge removes the Tenant's Mappings, so its own administrator has
+		// no standing left and is refused outright.
+		assert!(
+			matches!(status, 403 | 410),
+			"purged={purged} {method} {path}: {status} {body}"
+		);
+	} else {
+		assert_eq!(status, 410, "purged={purged} {method} {path}: {body}");
 		assert_eq!(body["error"], "tenant_deleted");
 	}
 	d.finish().await;
@@ -454,15 +467,15 @@ async fn only_a_tenant_administrator_reads_or_writes_registrations(
 	let (status, created) = d.register(&alice, &context, &tenant, &node, body).await;
 	assert_eq!(status, 200, "{created}");
 
-	let (status, created) = d
+	let (status, refused) = d
 		.as_deployment_administrator(
 			"POST",
 			&format!("/api/tenants/{tenant}/nodes/{node}/registrations"),
 			json!({"source_node":source,"atomic_transactions":false,"enabled":true,"expected_revision":1}),
 		)
 		.await;
-	assert_eq!(status, 200, "{created}");
-	assert_eq!(created["actor"], "deployment_administrator");
+	// Node Registrations are Tenant settings: refused to a Deployment Administrator.
+	assert_eq!(status, 403, "{refused}");
 	d.finish().await;
 }
 
@@ -928,14 +941,29 @@ async fn manual_registration_keys_require_record_authority_and_independent_confi
 		.execute(d.federation.store.pool.driver())
 		.await
 		.unwrap();
-	let (status, confirmed) = d.as_person(&carol, "POST", &route, Some("deployment_administrator"), json!({"source_node":source,"expected_keys_revision":4,"expected_authorization_revision":2,"action":"confirm","public_key_pem":new.public_key_pem(),"expected_key_id":new_id.as_str()})).await;
+	let confirm = json!({"source_node":source,"expected_keys_revision":4,"expected_authorization_revision":2,"action":"confirm","public_key_pem":new.public_key_pem(),"expected_key_id":new_id.as_str()});
+	// Registration records are Tenant administration (#484, ADR 0102): the
+	// browser Deployment Administrator is refused and nothing is recorded.
+	let (status, refused) = d
+		.as_person(
+			&carol,
+			"POST",
+			&route,
+			Some("deployment_administrator"),
+			confirm.clone(),
+		)
+		.await;
+	assert_eq!(status, 403, "{refused}");
+	assert_eq!(d.count(&format!("SELECT count(*) FROM dashboard_administration_history WHERE tenant = '{tenant}' AND node = '{node}' AND actor_kind = 'deployment_administrator' AND action LIKE 'node_registration.key_%'")).await, 0);
+	let (status, confirmed) = d
+		.as_person(&alice, "POST", &route, Some(&context), confirm)
+		.await;
 	assert_eq!(
 		status, 200,
-		"browser administrator retains record authority: {confirmed}"
+		"the Tenant Administrator retains record authority: {confirmed}"
 	);
 	assert_eq!(confirmed["enabled"], false);
 	assert_eq!(d.count(&format!("SELECT count(*) FROM dashboard_administration_history WHERE tenant = '{tenant}' AND node = '{node}' AND action IN ('node_registration.key_quarantine','node_registration.key_confirm')")).await, 5);
-	assert_eq!(d.count(&format!("SELECT count(*) FROM dashboard_administration_history WHERE tenant = '{tenant}' AND node = '{node}' AND action = 'node_registration.key_confirm' AND actor_identity_id = '{}' AND actor_kind = 'deployment_administrator'", carol.identity)).await, 1);
 	// Public purge followed by the real worker and finite catalog/all-cycle audit
 	// expiry physically removes the Node while its replayable participant remains.
 	use aidash_server::apps::identity::services::node_purge;

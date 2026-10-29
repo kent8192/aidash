@@ -32,7 +32,7 @@ async fn memory_byte_limit_and_index_revisions_are_enforced_over_http(
 	let index_path = format!("{base}/index");
 	let entries_path = format!("{base}/entries");
 	assert_json(
-		app.deployment_administrator
+		member
 			.post(
 				&index_path,
 				&json!({"expected_revision":0,"spec":index_spec}),
@@ -53,8 +53,7 @@ async fn memory_byte_limit_and_index_revisions_are_enforced_over_http(
 	// Act
 	let saved = assert_json(member.post(&entries_path, &json!({"key":"memory","expected_revision":0,"source":{"kind":"memory","text":"あ".repeat(80)},"metadata":{}}), "json").await.unwrap(), 200);
 	index_spec["max_input_bytes"] = json!(128);
-	let reduced = app
-		.deployment_administrator
+	let reduced = member
 		.post(
 			&index_path,
 			&json!({"expected_revision":1,"spec":index_spec}),
@@ -63,8 +62,7 @@ async fn memory_byte_limit_and_index_revisions_are_enforced_over_http(
 		.await
 		.unwrap();
 	index_spec["max_sources"] = json!(0);
-	let invalid_spec = app
-		.deployment_administrator
+	let invalid_spec = member
 		.post(
 			&index_path,
 			&json!({"expected_revision":1,"spec":index_spec}),
@@ -185,8 +183,7 @@ async fn index_contract_validation_precedes_persistence_and_accepts_boundary_val
 		invalid.push((wrong, 400));
 	}
 	for (spec, status) in invalid {
-		let response = app
-			.deployment_administrator
+		let response = member
 			.post(&path, &json!({"expected_revision":0,"spec":spec}), "json")
 			.await
 			.unwrap();
@@ -207,7 +204,7 @@ async fn index_contract_validation_precedes_persistence_and_accepts_boundary_val
 			let mut boundary = index_spec.clone();
 			boundary[field] = json!(value);
 			let saved = assert_json(
-				app.deployment_administrator
+				member
 					.post(
 						&path,
 						&json!({"expected_revision":revision,"spec":boundary}),
@@ -226,7 +223,7 @@ async fn index_contract_validation_precedes_persistence_and_accepts_boundary_val
 		let mut boundary = index_spec.clone();
 		boundary["embedding"]["dimensions"] = json!(dimensions);
 		let saved = assert_json(
-			app.deployment_administrator
+			member
 				.post(
 					&path,
 					&json!({"expected_revision":revision,"spec":boundary}),
@@ -255,7 +252,7 @@ async fn malformed_sources_and_client_authority_cannot_create_semantic_entries(
 		workspace["id"].as_str().unwrap()
 	);
 	assert_json(
-		app.deployment_administrator
+		member
 			.post(
 				&format!("{base}/index"),
 				&json!({"expected_revision":0,"spec":index_spec}),
@@ -347,7 +344,7 @@ async fn index_generation_replay_and_cleanup_retries_keep_durable_tombstones(
 	let entries_path = format!("{base}/entries");
 	let cleanup_path = format!("{base}/cleanup");
 	let first = assert_json(
-		app.deployment_administrator
+		member
 			.post(
 				&index_path,
 				&json!({"expected_revision":0,"spec":index_spec}),
@@ -361,7 +358,7 @@ async fn index_generation_replay_and_cleanup_retries_keep_durable_tombstones(
 		&json!({"key":"memory","expected_revision":0,"source":{"kind":"memory","text":"first"},"metadata":{}}), "json").await.unwrap(), 200);
 	index_spec["embedding"]["model_version"] = json!("2");
 	let second = assert_json(
-		app.deployment_administrator
+		member
 			.post(
 				&index_path,
 				&json!({"expected_revision":1,"spec":index_spec}),
@@ -372,7 +369,7 @@ async fn index_generation_replay_and_cleanup_retries_keep_durable_tombstones(
 		200,
 	);
 	let replay = assert_json(
-		app.deployment_administrator
+		member
 			.post(
 				&index_path,
 				&json!({"expected_revision":1,"spec":index_spec}),
@@ -467,13 +464,7 @@ async fn index_generation_replay_and_cleanup_retries_keep_durable_tombstones(
 		&json!({"key":"memory","expected_revision":1,"source":{"kind":"memory","text":"second"},"metadata":{}}), "json").await.unwrap(), 200);
 	let pending = json!({"points":{"retired":1,"pending":1,"failed":0},"collections":{"retired":1,"pending":1,"failed":0}});
 	assert_eq!(
-		assert_json(
-			app.deployment_administrator
-				.get(&cleanup_path)
-				.await
-				.unwrap(),
-			200
-		),
+		assert_json(member.get(&cleanup_path).await.unwrap(), 200),
 		pending
 	);
 
@@ -481,13 +472,7 @@ async fn index_generation_replay_and_cleanup_retries_keep_durable_tombstones(
 	worker::sweep(&app.runtime.store).await.unwrap();
 	let failed = json!({"points":{"retired":1,"pending":1,"failed":1},"collections":{"retired":1,"pending":1,"failed":1}});
 	assert_eq!(
-		assert_json(
-			app.deployment_administrator
-				.get(&cleanup_path)
-				.await
-				.unwrap(),
-			200
-		),
+		assert_json(member.get(&cleanup_path).await.unwrap(), 200),
 		failed
 	);
 	let mut db = app.database.lease.handle();
@@ -505,13 +490,7 @@ async fn index_generation_replay_and_cleanup_retries_keep_durable_tombstones(
 		.next_attempt;
 	worker::sweep(&app.runtime.store).await.unwrap();
 	assert_eq!(
-		assert_json(
-			app.deployment_administrator
-				.get(&cleanup_path)
-				.await
-				.unwrap(),
-			200
-		),
+		assert_json(member.get(&cleanup_path).await.unwrap(), 200),
 		failed
 	);
 	assert_eq!(
@@ -575,13 +554,7 @@ async fn index_generation_replay_and_cleanup_retries_keep_durable_tombstones(
 	// Assert: replay did not duplicate a generation, and acknowledgements keep tombstones.
 	let cleaned = json!({"points":{"retired":1,"pending":0,"failed":0},"collections":{"retired":1,"pending":0,"failed":0}});
 	assert_eq!(
-		assert_json(
-			app.deployment_administrator
-				.get(&cleanup_path)
-				.await
-				.unwrap(),
-			200
-		),
+		assert_json(member.get(&cleanup_path).await.unwrap(), 200),
 		cleaned
 	);
 	let points = SemanticPoint::objects()
@@ -638,7 +611,7 @@ async fn corpus_digest_changes_with_entries_but_not_with_the_index_revision(
 		let workspace = workspace(&member, title).await;
 		let id: Uuid = serde_json::from_value(workspace["id"].clone()).unwrap();
 		assert_json(
-			app.deployment_administrator
+			member
 				.post(
 					&format!("/api/workspaces/{id}/semantic/index"),
 					&json!({"expected_revision":0,"spec":index_spec}),
@@ -824,7 +797,107 @@ async fn a_keyless_endpoint_at_an_unpermitted_private_address_is_refused_when_co
 		"/api/workspaces/{}/semantic/index",
 		workspace["id"].as_str().unwrap()
 	);
-	for client in [&member, &app.deployment_administrator] {
-		assert_json(client.post(&path, &body, "json").await.unwrap(), 400);
+	assert_json(member.post(&path, &body, "json").await.unwrap(), 400);
+	// A Deployment Administrator holds no Tenant settings authority (#484), so
+	// the refusal precedes the address check.
+	assert_json(
+		app.deployment_administrator
+			.post(&path, &body, "json")
+			.await
+			.unwrap(),
+		403,
+	);
+}
+
+#[rstest]
+#[tokio::test]
+async fn deployment_and_other_tenant_authority_never_reaches_a_tenants_semantic_content(
+	#[future] endpoint: EndpointFixture,
+	index_spec: Value,
+) {
+	// Arrange: a member of the Tenant with a configured index and one stored entry.
+	let app = endpoint.await;
+	let member = crate::endpoint::tenant_subject(&app, "member").await;
+	let workspace = workspace(&member, "Administrator refusal").await;
+	let base = format!(
+		"/api/workspaces/{}/semantic",
+		workspace["id"].as_str().unwrap()
+	);
+	let index_path = format!("{base}/index");
+	let entries_path = format!("{base}/entries");
+	let cleanup_path = format!("{base}/cleanup");
+	assert_json(
+		member
+			.post(
+				&index_path,
+				&json!({"expected_revision":0,"spec":index_spec}),
+				"json",
+			)
+			.await
+			.unwrap(),
+		200,
+	);
+	let entry = json!({"key":"memory","expected_revision":0,"source":{"kind":"memory","text":"private"},"metadata":{}});
+	assert_json(
+		member.post(&entries_path, &entry, "json").await.unwrap(),
+		200,
+	);
+	// A second Tenant with its own Subject.
+	crate::endpoint::tenant_root(&app.runtime, "other").await;
+	assert_json(
+		app.deployment_administrator
+			.post(
+				"/api/authorization/other",
+				&json!({"expected_revision":0,"bundle":{"tenant":"other","subjects":{"bob":{"kind":"user"}},"policies":[{"id":"test-work","effect":"allow","subjects":{"any":true},"actions":["*"],"resources":{"kinds":["*"]}}]}}),
+				"json",
+			)
+			.await
+			.unwrap(),
+		200,
+	);
+	let other_token = crate::endpoint::subject_credential(&app.runtime.store, "other", "bob").await;
+	let other = reinhardt::test::fixtures::api_client_from_url(&app.server.url);
+	other
+		.set_header("Authorization", &format!("Bearer {other_token}"))
+		.await
+		.unwrap();
+	let mut changed = index_spec.clone();
+	changed["max_results"] = json!(1);
+	let reconfigure = json!({"expected_revision":1,"spec":changed});
+	let overwrite = json!({"key":"memory","expected_revision":1,"source":{"kind":"memory","text":"overwritten"},"metadata":{}});
+
+	// Act and Assert: neither the Deployment Administrator nor another Tenant's
+	// Subject reads or changes the index, its entries or its cleanup state.
+	for client in [&app.deployment_administrator, &other] {
+		for path in [&index_path, &entries_path, &cleanup_path] {
+			assert_json(client.get(path).await.unwrap(), 403);
+		}
+		assert_json(
+			client
+				.post(&index_path, &reconfigure, "json")
+				.await
+				.unwrap(),
+			403,
+		);
+		assert_json(
+			client
+				.post(&entries_path, &overwrite, "json")
+				.await
+				.unwrap(),
+			403,
+		);
 	}
+	// A browser Deployment Administrator context is refused the same way.
+	let browser = crate::endpoint::browser_administrator(&app).await;
+	for path in [&index_path, &entries_path, &cleanup_path] {
+		assert_eq!(browser.send("GET", path, Value::Null).await.0, 403);
+	}
+	assert_eq!(browser.send("POST", &index_path, reconfigure).await.0, 403);
+	assert_eq!(browser.send("POST", &entries_path, overwrite).await.0, 403);
+	let index = assert_json(member.get(&index_path).await.unwrap(), 200);
+	assert_eq!(index["revision"], 1);
+	assert_eq!(index["spec"]["max_results"], index_spec["max_results"]);
+	let entries = assert_json(member.get(&entries_path).await.unwrap(), 200);
+	assert_eq!(entries.as_array().unwrap().len(), 1);
+	assert_eq!(entries[0]["revision"], 1);
 }

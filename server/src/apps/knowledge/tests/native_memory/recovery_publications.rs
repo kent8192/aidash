@@ -51,7 +51,8 @@ async fn read_only_backup_revalidates_selected_publishers_through_credentialless
 				"deployment_administrator",
 			)
 			.await
-			.unwrap();
+			// The fixture Subject may have approved it already.
+			.ok();
 	}
 	let credential = authorization
 		.issue_credential("acme", "alice", 3600, "deployment_administrator")
@@ -90,7 +91,7 @@ async fn read_only_backup_revalidates_selected_publishers_through_credentialless
 	let selected = publish(&store, &actor, &shared, &original).await;
 	let dependent_bank = memory::create_participant(
 		&store,
-		&Actor::DeploymentAdministrator,
+		&administrator(&store).await,
 		workspace,
 		memory::CreateParticipant {
 			agent: reference("a"),
@@ -103,7 +104,7 @@ async fn read_only_backup_revalidates_selected_publishers_through_credentialless
 	dependent.evidence = selected.content.evidence.clone();
 	let dependent = memory::mutate(
 		&store,
-		&Actor::DeploymentAdministrator,
+		&administrator(&store).await,
 		mutation(
 			&dependent_bank,
 			Change::Add {
@@ -121,7 +122,7 @@ async fn read_only_backup_revalidates_selected_publishers_through_credentialless
 		// the negative control must reach the nested publisher credential.
 		memory::mutate(
 			&store,
-			&Actor::DeploymentAdministrator,
+			&administrator(&store).await,
 			mutation(
 				&shared,
 				Change::Delete {
@@ -132,7 +133,7 @@ async fn read_only_backup_revalidates_selected_publishers_through_credentialless
 		)
 		.await
 		.unwrap();
-		publish(&store, &Actor::DeploymentAdministrator, &shared, &dependent).await;
+		publish(&store, &administrator(&store).await, &shared, &dependent).await;
 		shared
 	} else {
 		dependent_bank

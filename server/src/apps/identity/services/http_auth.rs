@@ -51,89 +51,37 @@ pub(crate) fn bearer(headers: &HeaderMap) -> Option<&str> {
 		.split_once(' ')?;
 	scheme.eq_ignore_ascii_case("Bearer").then_some(token)
 }
+/// The writes a browser Deployment Administrator may send. They are exactly the
+/// writes on routes the boundary admits administrators to (`administered()` and
+/// `deployment_administrator()`); Tenant content is refused by the boundary
+/// itself, so nothing here grants Tenant authority (#484, #301).
 pub(crate) fn browser_deployment_administrator_allowed(method: &Method, path: &str) -> bool {
 	if matches!(*method, Method::GET | Method::HEAD | Method::OPTIONS) {
 		return true;
 	}
 	let path = path.strip_prefix("/api").unwrap_or(path);
-	if path.starts_with("/tenants/")
-		&& (path.contains("/provider-credentials")
-			|| path.contains("/provider-credential-bindings")
-			|| path.contains("/provider-authorizations/")
-			|| path.ends_with("/retention"))
-	{
+	let segments: Vec<&str> = path.split('/').collect();
+	// Browser Deployment Administrator mode administers the installation and may stop work.
+	// It cannot silently become a tenant subject for new work or resumption.
+	if matches!(segments.as_slice(), ["", "runs", _, "management"]) {
 		return true;
 	}
 	// Deployment Administrators issue and revoke Invitations for any Tenant.
 	if *method == Method::POST
 		&& matches!(
-			path.split('/').collect::<Vec<_>>().as_slice(),
+			segments.as_slice(),
 			["", "tenants", _, "invitations"] | ["", "tenants", _, "invitations", _, "revoke"]
 		) {
 		return true;
 	}
-	let segments: Vec<&str> = path.split('/').collect();
-	// Node lifecycle administration never starts or resumes Tenant work.
-	// Keep these paths exact; no general Tenant mutation authority is implied.
+	// Deployment Administrators purge a deleted Node before its grace period
+	// ends (ADR 0083); every other Node change is Tenant administration.
 	if *method == Method::POST
-		&& matches!(
-			segments.as_slice(),
-			[
-				"",
-				"tenants",
-				_,
-				"nodes",
-				_,
-				"default" | "deletion" | "restore" | "purge" | "registration-keys"
-			]
-		) {
+		&& matches!(segments.as_slice(), ["", "tenants", _, "nodes", _, "purge"])
+	{
 		return true;
 	}
-	// The Workspace handler reports Tenant Deletion before its ordinary refusal
-	// of administrator writes. It still grants no mutation authority.
-	if *method == Method::PATCH && matches!(segments.as_slice(), ["", "workspaces", _]) {
-		return true;
-	}
-	if matches!(
-		segments.as_slice(),
-		["", "runs", _, "management" | "research-revocation"] | ["", "tasks", _, "abandon"]
-	) {
-		return true;
-	}
-	if *method == Method::POST
-		&& matches!(
-			segments.as_slice(),
-			["", "agents", "personal"]
-				| ["", "skills", "import"]
-				| ["", "generation", _, "policies", _]
-				| ["", "generation", _, "requests", _, "control"]
-				| ["", "workspaces", _, "semantic", "index"]
-				| ["", "workspaces", _, "semantic", "search"]
-				| ["", "workspaces", _, "semantic", "entries"]
-				| ["", "workspaces", _, "semantic", "entries", _, "reindex"]
-				| ["", "remote"]
-		) {
-		return true;
-	}
-	if *method == Method::DELETE
-		&& matches!(
-			segments.as_slice(),
-			["", "workspaces", _, "semantic", "entries", _]
-		) {
-		return true;
-	}
-	// Browser Deployment Administrator mode administers the installation and may stop work.
-	// It cannot silently become a tenant subject for new work or resumption.
-	path.starts_with("/dashboard/")
-		|| path.starts_with("/authorization/")
-		|| path.starts_with("/registry/")
-		|| path.starts_with("/marketplace/")
-		|| path.starts_with("/transactions/")
-		|| path.starts_with("/workbench/")
-		|| matches!(
-			path,
-			"/registry" | "/peers" | "/marketplace" | "/transactions"
-		)
+	path.starts_with("/dashboard/") || path.starts_with("/authorization/")
 }
 
 #[cfg(test)]

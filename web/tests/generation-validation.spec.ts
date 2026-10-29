@@ -17,7 +17,10 @@ for (const context of [
       tenant: "fixture-tenant",
       subject: "alice",
     };
-    await installBearerDashboard(page, "fixture-token");
+    await installBearerDashboard(page, "fixture-token", {
+      tenant: subject.tenant,
+      name: subject.subject,
+    });
     await page.addInitScript(() => {
       localStorage.setItem("aidash-locale", "ja-JP");
     });

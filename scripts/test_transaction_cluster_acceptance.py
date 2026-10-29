@@ -10,7 +10,7 @@ import sys
 import tempfile
 import threading
 import unittest
-from unittest.mock import Mock, patch
+from unittest.mock import Mock, call, patch
 from urllib.parse import urlsplit
 
 from native_memory_cluster_acceptance import NativeMemory
@@ -135,13 +135,17 @@ class MemoryNodeContractTests(unittest.TestCase):
                 def api(node, path, body):
                     if path == "/api/tenants":
                         return 201, {"name": "unregistered-new-tenant"}
-                    return 200, {"token": "alice-token", "credential": {"id": "alice-credential"}}
+                    return 200, {}
                 fixture.api = Mock(side_effect=api)
+                # The first credential comes from the host, never over HTTP (#484).
+                fixture.issue_credential = Mock(return_value={"token": "alice-token", "credential": {"id": "alice-credential"}})
 
                 fixture.configure()
 
                 self.assertEqual(fixture.tenants, ["home-tenant", "worker-tenant"])
                 self.assertFalse(any(call.args[1] == "/api/tenants" for call in fixture.api.call_args_list))
+                self.assertFalse(any(call.args[1].endswith("/credentials") for call in fixture.api.call_args_list))
+                self.assertEqual(fixture.issue_credential.call_args_list, [call(0, "home-tenant", "alice"), call(1, "worker-tenant", "alice")])
                 for node in range(2):
                     policy = next(call for call in fixture.api.call_args_list
                                   if call.args[:2] == (node, f"/api/authorization/{fixture.tenants[node]}"))

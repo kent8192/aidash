@@ -56,6 +56,8 @@ mod workbench;
 mod authorization_openapi;
 #[path = "../../identity/tests/policies.rs"]
 mod authorization_policies;
+#[path = "../../identity/tests/tenant_authority.rs"]
+mod tenant_authority;
 
 #[path = "../../workspaces/tests/channel_attachments.rs"]
 mod channel_attachments;

@@ -45,19 +45,7 @@ pub async fn assemble(
 				workspace_id: query.workspace_id,
 			})
 		}
-		Principal::DeploymentAdministrator => match (query.tenant, query.subject) {
-			(Some(tenant), Some(subject)) => Some(PermissionInput {
-				tenant,
-				subject,
-				workspace_id: query.workspace_id,
-			}),
-			(None, None) if query.workspace_id.is_none() => None,
-			_ => {
-				return Err(Error::Invalid(
-					"report permission context requires tenant and subject together".into(),
-				));
-			}
-		},
+		Principal::DeploymentAdministrator => return Err(Error::Forbidden),
 	};
 	let context = if let Some(input) = context_input {
 		Some(sources.permission_context(&reference, input).await?)

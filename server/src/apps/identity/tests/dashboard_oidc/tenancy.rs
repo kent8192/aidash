@@ -222,6 +222,17 @@ impl Deployment {
 		format!("mapping:{tenant}:{}", mapping["id"].as_str().unwrap())
 	}
 
+	/// The Tenant's policy revision history, read from the host: a Deployment
+	/// Administrator may not read it over HTTP (#484).
+	async fn revisions(&self, tenant: &str) -> Vec<Value> {
+		aidash_server::authorization::Authorization {
+			pool: self.federation.store.pool.clone(),
+		}
+		.revisions(tenant, 0, 50)
+		.await
+		.unwrap()
+	}
+
 	async fn count(&self, sql: &str) -> i64 {
 		sqlx::query_scalar(sql)
 			.fetch_one(self.federation.store.pool.fixture_driver())
@@ -281,14 +292,16 @@ async fn deployment_administrators_create_tenants_under_assigned_names(
 	);
 	assert_eq!(policy["bundle"]["groups"]["members"]["assignable"], true);
 	assert!(policy["bundle"]["subjects"].as_object().unwrap().is_empty());
-	let (status, revisions) = d
+	// The revision history is Tenant content: refused over HTTP to an Administrator.
+	let (status, refused) = d
 		.as_deployment_administrator(
 			"GET",
 			&format!("/api/authorization/{name}/revisions"),
 			Value::Null,
 		)
 		.await;
-	assert_eq!(status, 200, "{revisions}");
+	assert_eq!(status, 403, "{refused}");
+	let revisions = d.revisions(&name).await;
 	assert_eq!(revisions[0]["actor"], "deployment_administrator");
 	let (status, tenants) = d
 		.as_deployment_administrator("GET", "/api/tenants", Value::Null)
@@ -461,24 +474,18 @@ async fn a_tenant_creator_administers_the_tenant_it_created(
 			.unwrap()
 			.contains(&json!("invitation.create"))
 	);
-	let (status, revisions) = d
+	let (status, refused) = d
 		.as_deployment_administrator(
 			"GET",
 			&format!("/api/authorization/{tenant}/revisions"),
 			Value::Null,
 		)
 		.await;
-	assert_eq!(status, 200, "{revisions}");
+	assert_eq!(status, 403, "{refused}");
+	let revisions = d.revisions(&tenant).await;
 	assert_eq!(revisions[0]["actor"], format!("oidc:{}", alice.identity));
 	// A Subject Credential never creates a Tenant, even with every action.
-	let (status, issued) = d
-		.as_deployment_administrator(
-			"POST",
-			&format!("/api/authorization/{tenant}/credentials"),
-			json!({"subject":"owner"}),
-		)
-		.await;
-	assert_eq!(status, 200, "{issued}");
+	let issued = common::issued_credential(&d.federation.store, &tenant, "owner").await;
 	let token = issued["token"].as_str().unwrap();
 	let (status, _, _) = d
 		.send(

@@ -308,13 +308,50 @@ pub async fn remote_run_in(
 #[allow(dead_code)]
 pub async fn tenant_token(store: &aidash_server::store::Store, tenant: &str) -> String {
 	tenant_scope(store, tenant).await;
-	aidash_server::authorization::Authorization {
-		pool: store.pool.clone(),
-	}
-	.issue_credential(tenant, "alice", 3600, "deployment_administrator")
+	subject_credential(store, tenant, "alice").await
+}
+
+/// A Subject Credential of `tenant` for `subject`, issued the way
+/// `manage issue-subject-credential` issues it: from the host, through the
+/// store, never through HTTP administrator authority (#484, #301). The Tenant's
+/// policy must already define and enable `subject`.
+#[allow(dead_code)]
+pub async fn subject_credential(
+	store: &aidash_server::store::Store,
+	tenant: &str,
+	subject: &str,
+) -> String {
+	aidash_server::apps::identity::services::subject_credential_command::issue(
+		&store.pool,
+		tenant,
+		subject,
+		aidash_server::apps::identity::services::subject_credential_command::DEFAULT_LIFETIME_SECONDS,
+		aidash_server::apps::identity::services::subject_credential_command::DEFAULT_LABEL,
+	)
 	.await
 	.expect("the Subject Credential is issued")
 	.token
+}
+
+/// The same issuance as [`subject_credential`], returned in the JSON shape the
+/// HTTP issuance route used (`{"credential": {..}, "token": ".."}`) for tests
+/// that also need the credential's id or its recorded issuer.
+#[allow(dead_code)]
+pub async fn issued_credential(
+	store: &aidash_server::store::Store,
+	tenant: &str,
+	subject: &str,
+) -> serde_json::Value {
+	let issued = aidash_server::apps::identity::services::subject_credential_command::issue(
+		&store.pool,
+		tenant,
+		subject,
+		aidash_server::apps::identity::services::subject_credential_command::DEFAULT_LIFETIME_SECONDS,
+		aidash_server::apps::identity::services::subject_credential_command::DEFAULT_LABEL,
+	)
+	.await
+	.expect("the Subject Credential is issued");
+	serde_json::to_value(issued).expect("the issued credential serializes")
 }
 
 #[allow(dead_code)]

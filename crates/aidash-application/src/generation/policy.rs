@@ -14,13 +14,12 @@ use aidash_domain::{
 };
 use serde_json::json;
 
+/// Generation Policies are Tenant settings: a Deployment Administrator has none (#484).
 fn same_tenant(principal: &Principal, tenant: &str) -> Result<()> {
-	if let Principal::Subject { tenant: caller, .. } = principal
-		&& caller != tenant
-	{
-		return Err(Error::Forbidden);
+	match principal {
+		Principal::Subject { tenant: caller, .. } if caller == tenant => Ok(()),
+		_ => Err(Error::Forbidden),
 	}
-	Ok(())
 }
 fn actor(principal: &Principal) -> &str {
 	match principal {
@@ -43,9 +42,7 @@ pub async fn set(
 		.begin(&TenancyScope::tenant(tenant)?, true)
 		.await?;
 	let result = async {
-		if matches!(repository.principal(), Principal::Subject { .. })
-			&& !scope.decide(id, "generation.manage").await?
-		{
+		if !scope.decide(id, "generation.manage").await? {
 			return Err(Error::Forbidden);
 		}
 		write_in(
@@ -73,9 +70,7 @@ pub async fn list(repository: &dyn GenerationPolicies, tenant: &str) -> Result<V
 	let result = async {
 		let mut result = vec![];
 		for id in ids {
-			if matches!(repository.principal(), Principal::DeploymentAdministrator)
-				|| scope.decide(&id, "generation.read").await?
-			{
+			if scope.decide(&id, "generation.read").await? {
 				result.push(scope.load(tenant, &id, false).await?);
 			}
 		}

@@ -591,7 +591,7 @@ export function DeploymentTenants({
           <NodeLifecycleSettings
             key={nodeTenant}
             tenant={nodeTenant}
-            canUpdate
+            canUpdate={false}
             canDelete
             offering={offering}
             deploymentAdministrator

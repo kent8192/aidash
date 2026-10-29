@@ -1,5 +1,7 @@
 //! Two native HTTP nodes with disposable databases and controllable network links.
 use crate::native_database::{DatabaseFixture, DatabaseFuture, database};
+#[path = "../../../execution/tests/support/browser_context.rs"]
+pub(crate) mod browser_context;
 #[path = "../../../execution/tests/support/federation.rs"]
 pub(crate) mod peering;
 #[path = "../../../execution/tests/support/tenant_roots.rs"]
@@ -50,6 +52,13 @@ pub fn pair(
 		for node in [&mut a, &mut b] {
 			// Each Deployment has one Tenant, with its default Node.
 			tenant_roots::tenant_scope(&node.f.store, "acme").await;
+			// The Node's client acts as the Tenant's Subject: a Deployment
+			// Administrator holds no authority over Tenant content (#484).
+			let token = tenant_roots::subject_credential(&node.f.store, "acme", "alice").await;
+			node.client
+				.set_header("Authorization", &format!("Bearer {token}"))
+				.await
+				.unwrap();
 			node.address = tenant_roots::default_node(&node.f.store, "acme")
 				.await
 				.to_string();
@@ -99,10 +108,15 @@ pub async fn connect(a: &mut Node, b: &mut Node) {
 		.push(a_endpoint);
 	for (local, remote) in [(&*a, &*b), (&*b, &*a)] {
 		let owner = local.address.rsplit('/').next().unwrap();
-		let (status, body) = local
-			.post(
+		// Registrations and Peer Mappings are administered through a Tenant
+		// Administrator Mapping (#484); the credential the mapping binds is
+		// issued from the host.
+		let administrator = local.administrator().await;
+		let (status, body) = administrator
+			.send(
+				"POST",
 				&peering::registration_path("acme", owner),
-				&peering::registration(
+				peering::registration(
 					&remote.address,
 					Some((&remote.f.config.endpoint, &peering::key_id(&remote.f))),
 				),
@@ -110,23 +124,17 @@ pub async fn connect(a: &mut Node, b: &mut Node) {
 			.await;
 		assert_eq!(status, 200, "{body}");
 		// The Tenant's subject `alice` on the other side maps to a local one.
-		let (status, issued) = local
-			.post(
-				"/api/authorization/acme/credentials",
-				&json!({"subject":"alice"}),
-			)
-			.await;
-		assert_eq!(status, 200, "{issued}");
-		let (status, mapping) = local
-			.post(
-				"/api/authorization/acme/peer-mappings",
-				&json!({
-					"node":owner,"source_node":remote.address,"source_subject":"alice",
-					"credential_id":issued["credential"]["id"],"enabled":true,"expected_revision":0,
-				}),
-			)
-			.await;
-		assert_eq!(status, 200, "{mapping}");
+		let issued = tenant_roots::issued_credential(&local.f.store, "acme", "alice").await;
+		let input = serde_json::from_value(json!({
+			"node":owner,"source_node":remote.address,"source_subject":"alice",
+			"credential_id":issued["credential"]["id"],"enabled":true,"expected_revision":0,
+		}))
+		.unwrap();
+		// The Tenant's HTTP route binds only service and agent credentials, so the
+		// host writes this Mapping (#484).
+		aidash_server::apps::identity::services::peer::write(&local.f, "acme", input)
+			.await
+			.unwrap();
 	}
 }
 
@@ -135,6 +143,8 @@ pub struct Node {
 	server: Option<Arc<TestServerGuard>>,
 	link: Link,
 	pub client: Arc<APIClient>,
+	/// The DI context the running server resolves its services from.
+	context: Arc<reinhardt::InjectionContext>,
 	pub peer_client: Arc<APIClient>,
 	pub f: Federation,
 	settings: ProjectSettings,
@@ -149,21 +159,39 @@ impl Node {
 		settings: &ProjectSettings,
 		connection: BackendConnection,
 		link: &mut Link,
-	) -> (Federation, TestServerGuard) {
+	) -> (
+		Federation,
+		TestServerGuard,
+		Arc<reinhardt::InjectionContext>,
+	) {
 		// Act: rebuild DI and production routes after closing the participant pools.
 		let context = injection_context(singleton_scope());
 		let f = bootstrap::initialize(&context, settings, connection)
 			.await
 			.unwrap();
+		let context = Arc::new(context);
 		let router = aidash_server::routes()
-			.with_di_context(Arc::new(context))
+			.with_di_context(context.clone())
 			.into_server();
 		let server = test_server_guard(router).await;
 		link.route(Some(
 			server.url.strip_prefix("http://").unwrap().parse().unwrap(),
 		))
 		.await;
-		(f, server)
+		(f, server, context)
+	}
+
+	/// A Tenant Administrator acting through a browser Mapping of `alice`,
+	/// which administers Node registrations and Peer Mappings (#484).
+	pub async fn administrator(&self) -> browser_context::BrowserMapping {
+		browser_context::BrowserMapping::on(
+			&self.f,
+			&self.context,
+			self.peer_client.clone(),
+			"acme",
+			"alice",
+		)
+		.await
 	}
 
 	pub async fn stop(&mut self) {
@@ -181,8 +209,9 @@ impl Node {
 				.unwrap();
 		self.database.lease = DatabaseConnectionLease::register(connection.clone()).unwrap();
 		self.database.connection = connection.clone();
-		let (f, server) = Self::serve(&self.settings, connection, &mut self.link).await;
+		let (f, server, context) = Self::serve(&self.settings, connection, &mut self.link).await;
 		self.f = f;
+		self.context = context;
 		self.server = Some(Arc::new(server));
 	}
 
@@ -194,8 +223,48 @@ impl Node {
 		)
 	}
 
-	pub async fn post(&self, path: &str, body: &impl serde::Serialize) -> (u16, Value) {
-		let response = self.client.post(path, body, "json").await.unwrap();
+	/// A POST of Tenant administration (Nodes, Node registrations) as the
+	/// Tenant Administrator's browser Mapping (#484, ADR 0102).
+	pub async fn post(&self, path: &str, body: &Value) -> (u16, Value) {
+		self.administrator()
+			.await
+			.send("POST", path, body.clone())
+			.await
+	}
+
+	/// A GET with the shared Deployment Administrator bearer, for the routes
+	/// that administer the Deployment and the refusals of everything else.
+	pub async fn administrator_get(&self, path: &str) -> (u16, Value) {
+		let response = self
+			.peer_client
+			.request(http::Method::GET, path)
+			.header(
+				"Authorization",
+				format!("Bearer {}", self.f.config.api_token),
+			)
+			.send()
+			.await
+			.unwrap();
+		(
+			response.status_code(),
+			response.json_value().unwrap_or(Value::Null),
+		)
+	}
+
+	/// A POST with the shared Deployment Administrator bearer, such as an
+	/// immediate Node purge (ADR 0083).
+	pub async fn administrator_post(&self, path: &str, body: &Value) -> (u16, Value) {
+		let response = self
+			.peer_client
+			.request(http::Method::POST, path)
+			.header(
+				"Authorization",
+				format!("Bearer {}", self.f.config.api_token),
+			)
+			.json(body)
+			.send()
+			.await
+			.unwrap();
 		(
 			response.status_code(),
 			response.json_value().unwrap_or(Value::Null),
@@ -221,21 +290,27 @@ impl Node {
 		);
 		body["atomic_transactions"] = json!(enabled);
 		body["expected_revision"] = json!(revision);
-		self.post(&peering::registration_path("acme", owner), &body)
+		self.administrator()
+			.await
+			.send("POST", &peering::registration_path("acme", owner), body)
 			.await
 			.0
 	}
 
+	/// Admits `manifest` as the host does: a transaction with no owning Subject.
+	/// A Deployment Administrator has no HTTP route to submit one (#484); the
+	/// Subject routes are covered by the scoped suites.
 	pub async fn submit(&self, manifest: &Manifest) {
-		let (status, body) = self.post("/api/transactions", manifest).await;
-		assert_eq!(status, 202, "{body}");
-		assert_eq!(body["id"], json!(manifest.id));
+		let status = aidash_server::transactions::coordinator::submit(&self.f, manifest)
+			.await
+			.unwrap();
+		assert_eq!(status.id, manifest.id);
 	}
 
 	pub async fn status(&self, id: Uuid) -> Status {
-		let (status, body) = self.get(&format!("/api/transactions/{id}")).await;
-		assert_eq!(status, 200, "{body}");
-		serde_json::from_value(body["transaction"].clone()).unwrap()
+		aidash_server::transactions::coordinator::status(&self.f, id)
+			.await
+			.unwrap()
 	}
 }
 
@@ -475,6 +550,7 @@ fn node(
 			server: Some(server),
 			link,
 			client: client.await,
+			context: runtime.context.clone(),
 			peer_client: peer_client.await,
 			f: runtime.f,
 			settings: runtime.settings,

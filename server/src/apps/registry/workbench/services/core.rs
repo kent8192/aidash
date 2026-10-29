@@ -19,8 +19,8 @@ pub use test::purge_expired;
 
 pub(crate) use crate::apps::registry::workbench::serializers::contracts::DraftPage;
 pub use crate::apps::registry::workbench::serializers::contracts::{
-	AdoptInput, ArchiveInput, CreateDraft, Draft, DraftShare, RegisteredVersion, Registration,
-	RevisionInput, SaveDraft, ShareInput, TransferInput, Validation,
+	ArchiveInput, CreateDraft, Draft, DraftShare, RegisteredVersion, Registration, RevisionInput,
+	SaveDraft, ShareInput, TransferInput, Validation,
 };
 
 #[derive(Clone)]
@@ -78,20 +78,6 @@ impl Drafts {
 		Ok(aidash_application::registry::workbench::drafts::duplicate(
 			&crate::bootstrap::draft_repository(&self.runtime, actor),
 			id,
-			input,
-		)
-		.await?
-		.into())
-	}
-	pub(crate) async fn adopt(
-		&self,
-		actor: Actor,
-		reference: (String, String),
-		input: AdoptInput,
-	) -> Result<Draft> {
-		Ok(aidash_application::registry::workbench::drafts::adopt(
-			&crate::bootstrap::draft_repository(&self.runtime, actor),
-			reference,
 			input,
 		)
 		.await?

@@ -27,6 +27,7 @@ import urllib.request
 import uuid
 
 import tool_call_approvals
+from oidc_fixture import IdentityProvider, oidc_environment, tenant_administrator
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 TOKEN = "acceptance-access-token"
@@ -47,34 +48,68 @@ def api_request(base, path, body=None, token=TOKEN, headers=None, timeout=API_TI
         return json.load(response)
 
 
-def default_node(base, tenant, token=TOKEN):
-    """The name and the address of the Tenant's default Node, which new Workspaces and Runs use."""
+def default_node(base, tenant, token):
+    """The name and the address of the Tenant's default Node, which new Workspaces and Runs use.
+
+    `token` must be a Tenant subject's (#484).
+    """
     node = next(node for node in api_request(base, f"/api/tenants/{tenant}/nodes", token=token) if node["default"])
     return node["name"], node["address"]
 
 
-def tenant_subject(base, label, subject, agents=()):
+def host_credential_issuer(manage, env):
+    """An `issue(tenant, subject)` that mints a Subject Credential with `manage issue-subject-credential` (#484).
+
+    A Deployment Administrator holds no Tenant authority, so the first
+    credential of a Tenant comes from the host: the command opens the
+    Deployment's database with `env` (the server's own settings) and never goes
+    through HTTP or the shared `api_token`.
+    """
+    def issue(tenant, subject):
+        output = subprocess.run([str(manage), "issue-subject-credential", "--tenant", tenant, "--subject", subject,
+                                 "--label", "acceptance_host", "--expires-in-seconds", "3600"],
+                                cwd=ROOT, env=env, capture_output=True, text=True, check=True, timeout=120).stdout
+        return json.loads(output.strip().splitlines()[-1])
+    return issue
+
+
+def host_issuer_env(manage, env):
+    """Playwright's AIDASH_E2E_MANAGE and AIDASH_E2E_HOST_ENV, which let a live spec issue a Tenant's first Subject Credential (#484)."""
+    return {"AIDASH_E2E_MANAGE": str(manage), "AIDASH_E2E_HOST_ENV": json.dumps({key: value for key, value in env.items() if os.environ.get(key) != value})}
+
+
+def tenant_subject(base, label, subject, issue, agents=(), subject_kind="user", extra_subjects=None):
     """Create a Tenant whose policy lets its subjects do anything, and issue `subject` a credential.
 
-    Only Tenant subjects register definitions and run work (#371); the
-    Deployment Administrator creates the Tenant, writes its first policy and
-    issues the credential. `agents` name Agents as subjects: `id@version` for
-    one that executes on the Tenant's default Node, or the full subject of one
-    that executes elsewhere. Every Agent subject belongs to this Tenant's
-    local default Node, even when its subject name identifies a remote Agent.
+    Only Tenant subjects register definitions and run work (#371). The
+    Deployment Administrator creates the Tenant and writes its policy, but holds
+    no Tenant authority (#484): `issue(tenant, subject)` mints the credential
+    from the host. `agents` name Agents as subjects: `id@version` for one that
+    executes on the Tenant's default Node, or the full subject of one that
+    executes elsewhere. Every Agent subject belongs to this Tenant's local
+    default Node, even when its subject name identifies a remote Agent. The
+    default Node is read with the credential, so Agent subjects join the policy
+    in a second replacement.
     """
     tenant = api_request(base, "/api/tenants", {"label": label})["name"]
-    node, address = default_node(base, tenant)
-    subjects = {subject: {"kind": "user", "node": None}, **{(agent if "/agents/" in agent else f"{address}/agents/{agent}"): {"kind": "agent", "node": node} for agent in agents}}
-    bundle = {"tenant": tenant, "subjects": subjects, "policies": [{"id": "fixture-work", "effect": "allow", "subjects": {"any": True}, "actions": ["*"], "resources": {"kinds": ["*"]}}]}
-    api_request(base, f"/api/authorization/{tenant}", {"expected_revision": 1, "bundle": bundle})
-    credential = api_request(base, f"/api/authorization/{tenant}/credentials", {"subject": subject, "expires_in_seconds": 3600})
+
+    def replace(subjects, revision):
+        bundle = {"tenant": tenant, "subjects": subjects, "policies": [{"id": "fixture-work", "effect": "allow", "subjects": {"any": True}, "actions": ["*"], "resources": {"kinds": ["*"]}}]}
+        api_request(base, f"/api/authorization/{tenant}", {"expected_revision": revision, "bundle": bundle})
+
+    subjects = {subject: {"kind": subject_kind, "node": None}, **(extra_subjects or {})}
+    replace(subjects, 1)
+    credential = issue(tenant, subject)
+    if agents:
+        node, address = default_node(base, tenant, token=credential["token"])
+        subjects.update({(agent if "/agents/" in agent else f"{address}/agents/{agent}"): {"kind": "agent", "node": node} for agent in agents})
+        replace(subjects, api_request(base, f"/api/authorization/{tenant}")["revision"])
     return tenant, credential
 
 
 def approve(base, tenant, token, entries):
     """Approve definitions in the Tenant's catalog as one dependency closure, so its subjects may run them."""
-    node, _ = default_node(base, tenant)
+    node, _ = default_node(base, tenant, token)
     approvals = [{"entry": {"id": entry["id"], "version": entry["version"]}, "enabled": True, "expected_revision": 0} for entry in entries]
     api_request(base, f"/api/authorization/{tenant}/catalog/approvals", {"node": node, "approvals": approvals}, token=token)
 
@@ -84,18 +119,20 @@ def deployment_key_id(endpoint):
     return api_request(endpoint, "/.well-known/aidash")["key"]["id"]
 
 
-def register_node(base, tenant, source_address, endpoint, reachable=None):
+def register_node(base, tenant, source_address, endpoint, administrator, reachable=None):
     """Let the Tenant's default Node accept `source_address`, reached at `endpoint`.
 
-    The registration pins the key the Deployment at `endpoint` publishes now,
-    and allows atomic transactions. A registration that exists is replaced.
-    `reachable` is where this script can read the key from when `endpoint` is
-    only reachable from inside the cluster.
+    Only a Tenant Administrator registers a Node (#484), so `administrator` is
+    a `BrowserSession` acting through the Tenant's Mapping (see
+    `oidc_fixture.tenant_administrator`). The registration pins the key the
+    Deployment at `endpoint` publishes now, and allows atomic transactions. A
+    registration that exists is replaced. `reachable` is where this script can
+    read the key from when `endpoint` is only reachable from inside the cluster.
     """
-    node, _ = default_node(base, tenant)
+    node = next(node for node in administrator.api(f"/api/tenants/{tenant}/nodes") if node["default"])["name"]
     path = f"/api/tenants/{tenant}/nodes/{node}/registrations"
-    existing = [row for row in api_request(base, path) if row["source_node"] == source_address]
-    return api_request(base, path, {"source_node": source_address, "endpoint": endpoint, "key_id": deployment_key_id(reachable or endpoint),
+    existing = [row for row in administrator.api(path) if row["source_node"] == source_address]
+    return administrator.api(path, {"source_node": source_address, "endpoint": endpoint, "key_id": deployment_key_id(reachable or endpoint),
                                     "atomic_transactions": True, "enabled": True, "expected_revision": existing[0]["revision"] if existing else 0})
 
 
@@ -127,7 +164,7 @@ def wait_for(fn, timeout=120, label="condition"):
     raise AssertionError(f"Timed out waiting for {label}: {last}")
 
 
-def reconcile_uncertain_http(base, run_id, effects, token=TOKEN):
+def reconcile_uncertain_http(base, run_id, effects, token):
     """Confirm a lost HTTP result from the fixture's recorded external receipt."""
     def uncertain():
         run = api_request(base, f"/api/runs/{run_id}", token=token)["run"]
@@ -154,7 +191,7 @@ def fixture_approval(request):
     )
 
 
-def approve_fixture_external_requests(base, token=TOKEN):
+def approve_fixture_external_requests(base, token):
     """Approve only the owned fixture's exact external-call continuations of Runs executing for another Node.
 
     Such a Run asks this Node through a human request; a Run on this Node raises a Tool call
@@ -210,11 +247,11 @@ def diagnose(base, token, tenant, workspace, database):
                 detail = api_request(base, f"/api/runs/{run['id']}", token=token)["run"]
                 response = ((detail.get("state") or {}).get("data") or {}).get("response") or {}
                 show(f"run {run['id']}", {**{key: detail.get(key) for key in ("agent_id", "phase", "control", "step", "error")}, "tool_calls": response.get("tool_calls")})
-        show("policy", api_request(base, f"/api/authorization/{tenant}"))
+        show("policy", api_request(base, f"/api/authorization/{tenant}", token=token))
         node, _ = default_node(base, tenant, token=token)
         show("catalog", api_request(base, f"/api/authorization/{tenant}/catalog?node={node}", token=token))
         decisions, after = [], 0
-        while page := api_request(base, f"/api/authorization/{tenant}/decisions?after={after}&limit=100"):
+        while page := api_request(base, f"/api/authorization/{tenant}/decisions?after={after}&limit=100", token=token):
             decisions += page
             after = page[-1]["sequence"]
         show("decisions", [[d["sequence"], d["created_at"][11:23], d["action"], d["decision"]["allowed"], d["subject"], d["resource_id"]] for d in decisions])
@@ -562,6 +599,13 @@ def main():
     # Compaction Deciders name the Tenant's OpenRouter Provider Credential
     # (ADR 0041), so each Node runs a disposable PostgreSQL Provider Credential
     # Store whose keys exist only for this run.
+    # The private OIDC issuer lets this script log in as a Tenant Administrator:
+    # Node Registrations and Peer Mappings need a browser Mapping, which neither
+    # the shared api_token nor a Subject Credential can stand in for (#484).
+    issuer = IdentityProvider(pathlib.Path(profile_directory.name))
+    issuer.__enter__()
+    # A session outlives the whole run, however long the browser phase takes.
+    oidc_environments = {}
     provider_credentials = pathlib.Path(profile_directory.name) / "provider-credentials.json"
     provider_credentials.write_text(json.dumps({"provider_credentials": {
         "fingerprint_key": {"env": "AIDASH_PROVIDER_FINGERPRINT_KEY"},
@@ -668,6 +712,9 @@ def main():
         if keyed:
             env["REINHARDT_SETTINGS_DIR"] = str(key_directories[node])
         env.update(provider_credential_keys)
+        # The dashboard's public origin is HTTPS, as the issuer requires; the
+        # Node itself listens on plain HTTP and sessions carry their cookies by hand.
+        env.update(oidc_environments.setdefault(port, oidc_environment(issuer, f"https://127.0.0.1:{port}", idle_seconds=86400)))
         # These disposable Node IDs own their JetStream streams and consumers.
         # When the outage proxy opens, recover real activation delivery as well
         # as event publication instead of retaining fallback for the whole run.
@@ -679,11 +726,16 @@ def main():
             subprocess.run([args.binary, "migrate"], cwd=ROOT, env=node_env(node, database, port, OWNER_LOGIN),
                            stdout=log, stderr=log, check=True, timeout=600)
 
+    def administrator(base, tenant, subject):
+        """A Tenant Administrator session: `subject` of `tenant` on the Node at `base`, through a browser Mapping."""
+        port = int(base.rsplit(":", 1)[1])
+        return tenant_administrator(base, f"https://127.0.0.1:{port}", issuer, TOKEN, tenant, subject)
+
     def browser(grep_args):
         for proxy in browser_provider_proxies:
             proxy.start()
         browser_report = logs / "browser-report.json"
-        browser_env = {**os.environ, "PLAYWRIGHT_JSON_OUTPUT_FILE": str(browser_report), "AIDASH_E2E_URL": base_a, "AIDASH_E2E_REMOTE_URL": base_b, "AIDASH_E2E_KEYLESS_PORTS": ",".join(map(str, browser_provider_ports)), "AIDASH_E2E_KEYLESS_UPSTREAMS": keyless_upstreams.name, "AIDASH_E2E_TOKEN": tokens[base_a], "AIDASH_E2E_TENANT": tenant_a, "AIDASH_E2E_SUBJECT": "alice"}
+        browser_env = {**os.environ, "PLAYWRIGHT_JSON_OUTPUT_FILE": str(browser_report), "AIDASH_E2E_URL": base_a, "AIDASH_E2E_REMOTE_URL": base_b, "AIDASH_E2E_KEYLESS_PORTS": ",".join(map(str, browser_provider_ports)), "AIDASH_E2E_KEYLESS_UPSTREAMS": keyless_upstreams.name, "AIDASH_E2E_TOKEN": tokens[base_a], "AIDASH_E2E_TENANT": tenant_a, "AIDASH_E2E_SUBJECT": "alice", **host_issuer_env(pathlib.Path(args.binary).resolve().parent / "manage", node_env(node_a, db_a, port_a, SERVER_LOGIN))}
         lifecycle_stop = threading.Event()
         lifecycle_errors = []
         lifecycle_thread = None
@@ -692,12 +744,18 @@ def main():
             # DB, Deployment Key and provider settings remain in node_env/launch.
             lifecycle_dir = pathlib.Path(profile_directory.name) / "node-lifecycle"
             lifecycle_dir.mkdir(mode=0o700)
-            lifecycle_tenant, lifecycle_subject = tenant_subject(base_a, f"Node lifecycle {run_id}", "lifecycle-member")
-            sibling, _ = default_node(base_a, lifecycle_tenant)
-            target = api_request(base_a, f"/api/tenants/{lifecycle_tenant}/nodes", {"label": "Lifecycle target"})["name"]
+            # Node creation, default, deletion and restore are Tenant administration
+            # (ADR 0102): a Tenant Administrator acts through its browser Mapping.
+            lifecycle_tenant, lifecycle_subject = tenant_subject(
+                base_a, f"Node lifecycle {run_id}", "lifecycle-member", issue_a,
+                extra_subjects={"lifecycle-administrator": {"kind": "user", "node": None}})
+            lifecycle_administrator = administrator(base_a, lifecycle_tenant, "lifecycle-administrator")
+            sibling, _ = default_node(base_a, lifecycle_tenant, lifecycle_subject["token"])
+            target = lifecycle_administrator.api(f"/api/tenants/{lifecycle_tenant}/nodes", {"label": "Lifecycle target"})["name"]
             context_path = lifecycle_dir / "context.json"
             context_path.write_text(json.dumps({"tenant": lifecycle_tenant, "target": target, "sibling": sibling,
-                                                "subject": {"name": "lifecycle-member", "token": lifecycle_subject["token"]}}))
+                                                "subject": {"name": "lifecycle-member", "token": lifecycle_subject["token"]},
+                                                "administrator": lifecycle_administrator.headers()}))
             context_path.chmod(0o600)
             browser_env["AIDASH_E2E_NODE_LIFECYCLE_FIXTURE"] = str(context_path)
 
@@ -812,11 +870,14 @@ def main():
         launch(node_b, db_b, port_b, "server")
         wait_for(lambda: api_request(base_a, "/health"), label="Node A")
         wait_for(lambda: api_request(base_b, "/health"), label="Node B")
-        tenant_a, subject_a = tenant_subject(base_a, "golden-research", "alice")
-        tenant_b, subject_b = tenant_subject(base_b, "golden-plugins", "bob")
+        manage = pathlib.Path(args.binary).resolve().parent / "manage"
+        issue_a = host_credential_issuer(manage, node_env(node_a, db_a, port_a, SERVER_LOGIN))
+        issue_b = host_credential_issuer(manage, node_env(node_b, db_b, port_b, SERVER_LOGIN))
+        tenant_a, subject_a = tenant_subject(base_a, "golden-research", "alice", issue_a)
+        tenant_b, subject_b = tenant_subject(base_b, "golden-plugins", "bob", issue_b)
         tokens.update({base_a: subject_a["token"], base_b: subject_b["token"]})
         tenants = {base_a: tenant_a, base_b: tenant_b}
-        _, address_a = default_node(base_a, tenant_a)
+        _, address_a = default_node(base_a, tenant_a, tokens[base_a])
         fixture.node_a = fixture.node_b = address_a
 
         def register(base, entries):
@@ -935,7 +996,7 @@ def main():
                         lambda: launch(node_b, db_b, port_b, "worker"),
                         lambda: {"admissions": int(psql(db_b, queries["remote_admissions"])),
                                  "bindings": int(psql(db_a, queries["remote_bindings"]))},
-                        scoped_proxy_sockets)
+                        scoped_proxy_sockets, issue_a, issue_b, administrator)
         report = {"node_a": base_a, "node_b": base_b, "node_ids": [node_a, node_b], "workspace_id": workspace, "tasks": len(snapshot["tasks"]), "artifacts": len(snapshot["artifacts"]), "external_effects": len(fixture.effects), "tool_requests": dict(fixture.requests), "provider_calls": dict(fixture.provider_calls), "recovered_run_id": recovered["id"], "sse_events": len(stream_events), "database_a": db_a, "database_b": db_b, "goal_entry": "dashboard" if args.dashboard else "api", "nats_outage_startup_and_recovery": "passed", "events_queued_during_outage": pending_events, "additional_plugins": plugin_runs}
         report.update(source=source, binary_sha256=binary_sha256, scoped_remote_execution=scoped)
         local_approvals.set()
@@ -970,6 +1031,7 @@ def main():
         for db in [db_a, db_b]:
             psql("aidash_a", f"DROP DATABASE IF EXISTS {db} WITH (FORCE)")
         (ROOT / "private/e2e-ready.json").unlink(missing_ok=True)
+        issuer.__exit__(None, None, None)
         profile_directory.cleanup()
 
 

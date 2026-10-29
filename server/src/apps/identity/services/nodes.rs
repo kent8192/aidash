@@ -1,6 +1,7 @@
 //! A Tenant's Nodes: listing, creating within "Nodes per Tenant" and
-//! relabeling (#241). Members list them; Tenant Administrators create and
-//! relabel them, as do Deployment Administrators.
+//! relabeling (#241). Members list them; Tenant Administrators create,
+//! relabel, delete and restore them. A Deployment Administrator only lists
+//! deleted Nodes and purges one immediately (ADR 0083, ADR 0102).
 use crate::apps::identity::models::{AdministrationActor, AdministrationEvent, NodeDeletion};
 use crate::apps::identity::oidc::BrowserOrigin;
 use crate::apps::identity::repositories::{node_deletions, nodes, tenants::Creator};
@@ -124,7 +125,9 @@ impl Nodes {
 		crate::http::validate(&page)?;
 		let f = &self.runtime;
 		let rows = match actor {
-			Actor::DeploymentAdministrator => {
+			// Only immediate purge is retained for a Deployment Administrator
+			// (ADR 0083, ADR 0102); it lists deleted Nodes to choose one.
+			Actor::DeploymentAdministrator if page.include_deleted => {
 				let scope = TenancyScope::tenant(&tenant)?;
 				f.store
 					.pool
@@ -134,6 +137,7 @@ impl Nodes {
 					})
 					.await?
 			}
+			Actor::DeploymentAdministrator => return Err(Error::Forbidden),
 			Actor::Subject(identity) => {
 				if identity.tenant != tenant {
 					return Err(Error::Forbidden);
@@ -170,53 +174,30 @@ impl Nodes {
 	) -> Result<NodeRecord> {
 		let label = domain::label(&input.label)?;
 		let f = self.runtime.clone();
-		let node = match actor {
-			Actor::DeploymentAdministrator => {
-				let scope = TenancyScope::tenant(&tenant)?;
+		let node = self
+			.administrations()
+			.run(actor, origin, &tenant, async |administrator| {
 				f.store
 					.pool
-					.atomic(&scope, async |tx| {
-						super::remote::deployment_administrator::tenant(tx, &tenant).await?;
-						let actor = AdministrationActor::DeploymentAdministratorBearer;
+					.atomic(&administrator.scope()?, async |tx| {
+						let snapshot = administrator.lock(tx, false).await?;
+						administrator
+							.require(tx, &snapshot, rules::NODE_CREATE, &tenant, json!({}))
+							.await?;
+						let actor = AdministrationActor::TenantAdministrator(administrator.clone());
 						create_in(
 							&f,
 							tx,
 							&tenant,
 							&label,
-							Creator::DeploymentAdministrator(None),
+							Creator::Identity(administrator.identity_id),
 							&actor,
 						)
 						.await
 					})
-					.await?
-			}
-			actor => {
-				self.administrations()
-					.run(actor, origin, &tenant, async |administrator| {
-						f.store
-							.pool
-							.atomic(&administrator.scope()?, async |tx| {
-								let snapshot = administrator.lock(tx, false).await?;
-								administrator
-									.require(tx, &snapshot, rules::NODE_CREATE, &tenant, json!({}))
-									.await?;
-								let actor =
-									AdministrationActor::TenantAdministrator(administrator.clone());
-								create_in(
-									&f,
-									tx,
-									&tenant,
-									&label,
-									Creator::Identity(administrator.identity_id),
-									&actor,
-								)
-								.await
-							})
-							.await
-					})
-					.await?
-			}
-		};
+					.await
+			})
+			.await?;
 		Ok(self.record(node, None))
 	}
 
@@ -231,57 +212,35 @@ impl Nodes {
 		let label = domain::label(&input.label)?;
 		let name = domain::NodeName::parse(&node)?;
 		let f = self.runtime.clone();
-		let node = match actor {
-			Actor::DeploymentAdministrator => {
-				let scope = TenancyScope::tenant(&tenant)?;
+		let node = self
+			.administrations()
+			.run(actor, origin, &tenant, async |administrator| {
 				f.store
 					.pool
-					.atomic(&scope, async |tx| {
-						super::remote::deployment_administrator::tenant(tx, &tenant).await?;
+					.atomic(&administrator.scope()?, async |tx| {
+						let snapshot = administrator.lock(tx, false).await?;
+						let current = nodes::get_live(tx, &tenant, name.as_str()).await?;
+						administrator
+							.require(
+								tx,
+								&snapshot,
+								rules::NODE_UPDATE,
+								name.as_str(),
+								json!({"label": current.label, "default": current.default}),
+							)
+							.await?;
 						relabel_in(
 							tx,
 							&tenant,
 							name.as_str(),
 							&label,
-							&AdministrationActor::DeploymentAdministratorBearer,
+							&AdministrationActor::TenantAdministrator(administrator.clone()),
 						)
 						.await
 					})
-					.await?
-			}
-			actor => {
-				self.administrations()
-					.run(actor, origin, &tenant, async |administrator| {
-						f.store
-							.pool
-							.atomic(&administrator.scope()?, async |tx| {
-								let snapshot = administrator.lock(tx, false).await?;
-								let current = nodes::get_live(tx, &tenant, name.as_str()).await?;
-								administrator
-									.require(
-										tx,
-										&snapshot,
-										rules::NODE_UPDATE,
-										name.as_str(),
-										json!({"label": current.label, "default": current.default}),
-									)
-									.await?;
-								relabel_in(
-									tx,
-									&tenant,
-									name.as_str(),
-									&label,
-									&AdministrationActor::TenantAdministrator(
-										administrator.clone(),
-									),
-								)
-								.await
-							})
-							.await
-					})
-					.await?
-			}
-		};
+					.await
+			})
+			.await?;
 		Ok(self.record(node, None))
 	}
 
@@ -344,6 +303,11 @@ impl Nodes {
 		let name = domain::NodeName::parse(&name)?;
 		let f = self.runtime.clone();
 		let (node, deletion, bytes) = match actor {
+			// A Deployment Administrator only bypasses the grace period (ADR
+			// 0083); the rest of the lifecycle is Tenant administration (ADR 0102).
+			Actor::DeploymentAdministrator if !matches!(change, Change::Purge) => {
+				return Err(Error::Forbidden);
+			}
 			Actor::DeploymentAdministrator => {
 				f.store
 					.pool

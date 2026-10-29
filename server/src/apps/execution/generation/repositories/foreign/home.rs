@@ -62,14 +62,13 @@ impl Scope {
 	}
 }
 impl NativeHome {
-	/// A subject reads its own Tenant's intents; a Deployment Administrator
-	/// and a request that a peer Node authenticated read across Tenants.
+	/// A subject reads its own Tenant's intents; a request that a peer Node
+	/// authenticated reads across Tenants. A Deployment Administrator reads
+	/// none (#484).
 	fn tenancy(&self) -> crate::Result<TenancyScope> {
 		match &self.actor {
 			Some(Actor::Subject(identity)) => identity.tenancy(),
-			Some(Actor::DeploymentAdministrator) => Ok(TenancyScope::Deployment(
-				aidash_application::tenancy::DeploymentScopeReason::DeploymentAdministratorList,
-			)),
+			Some(Actor::DeploymentAdministrator) => Err(crate::Error::Forbidden),
 			None => Ok(TenancyScope::Deployment(
 				aidash_application::tenancy::DeploymentScopeReason::FederationInbound,
 			)),

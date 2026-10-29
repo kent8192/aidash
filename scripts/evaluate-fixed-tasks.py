@@ -315,7 +315,7 @@ def memory_matrix_deterministic(api, experiment, corpus, memory_corpus, model_re
                     "embedding": embedding_config, "vector": {"provider": "postgres", "endpoint": "local",
                                                               "credential_env": None},
                     "enabled": True, "auto_context": False, "max_sources": 100, "max_results": 10,
-                    "max_result_tokens": 32768, "max_input_bytes": 32768}})
+                    "max_result_tokens": 32768, "max_input_bytes": 32768}}, experiment.token)
                 participant = api.post(f"/api/workspaces/{workspace}/memory/participants",
                                        {"agent": {"id": agent["id"], "version": "1.0.0"}}, experiment.token)
                 provider_ref = {"id": provider["id"], "version": "1.0.0"}
@@ -592,7 +592,14 @@ def run_deterministic(args, binary_directory):
             experiment = runner.Experiment(api, node_id, "evaluation", prefix)
             agent_ids = [runner.agent_id(prefix, planned) for planned in planned_runs]
             agent_ids += [f"{prefix}-memory-agent-{variant['id']}" for variant in memory_corpus["variants"]]
-            experiment.authorize(agent_ids)
+
+            def issue_credential(tenant, subject):
+                # The Deployment Administrator holds no Tenant authority (#484): the host mints the first credential.
+                issued = subprocess.run([str(binary), "issue-subject-credential", "--tenant", tenant, "--subject", subject,
+                                         "--label", "evaluation_host", "--expires-in-seconds", "86400"],
+                                        cwd=ROOT, env=environment, capture_output=True, text=True, check=True, timeout=120)
+                return json.loads(issued.stdout.strip().splitlines()[-1])
+            experiment.authorize(agent_ids, issue_credential)
             for name, spec in corpus["models"].items():
                 config = runner.model_config(dict(spec, model_id=model_ids[name]), fixture_url, name)
                 model_refs[name] = dict(experiment.register("model", f"{prefix}-model-{name}", config),
@@ -750,11 +757,11 @@ def live(args, read_json=None, transport=None, clock=time.monotonic, sleep=time.
         raise evaluation.GuardRefusal("at least one --model mapping is required")
     require_https(args.base_url)
     api = runner.Api(transport or http_transport(args.base_url), deployment_administrator)
-    credential = api.get(f"/api/tenants/{args.tenant}/provider-credentials/{args.provider_credential}")
+    credential = api.get(f"/api/tenants/{args.tenant}/provider-credentials/{args.provider_credential}", subject)
     binding = None
     if isinstance(credential, dict) and credential.get("provider"):
         try:
-            binding = api.get(f"/api/tenants/{args.tenant}/provider-credential-bindings/{credential['provider']}")
+            binding = api.get(f"/api/tenants/{args.tenant}/provider-credential-bindings/{credential['provider']}", subject)
         except runner.ApiError as missing:
             if missing.status != 404:
                 raise
@@ -842,7 +849,7 @@ def live(args, read_json=None, transport=None, clock=time.monotonic, sleep=time.
             skipped = runner.live_runs(api, experiment, corpus, planned_runs, args.repeats, ledger, models,
                                        approval["prices"], args.run_timeout, observations, clock, sleep,
                                        runner.binding_guard(args.tenant, credential["provider"],
-                                                            (binding["provider_credential_id"], binding["revision"])),
+                                                            (binding["provider_credential_id"], binding["revision"]), subject),
                                        execution_seed=args.execution_seed,
                                        auxiliary=auxiliary, approve_fixture_tools=fixture_endpoint is not None)
     except (KeyboardInterrupt, Terminated) as stop:

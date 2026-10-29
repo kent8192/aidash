@@ -607,7 +607,7 @@ async fn opened_thread_events_retain_their_root_message_read_dependency(
 	}
 	let (status, thread) = request(
 		&app,
-		&f.config.api_token,
+		&common::tenant_token(&f.store, "acme").await,
 		"POST",
 		&format!("/api/workspaces/{workspace}/threads"),
 		json!({"root_message_id":root}),
@@ -749,14 +749,7 @@ async fn stored_message_author_controls_visibility_and_forged_authorship_is_reje
 		.0,
 		200
 	);
-	let (_, bob) = request(
-		&app,
-		&f.config.api_token,
-		"POST",
-		"/api/authorization/acme/credentials",
-		json!({"subject":"bob"}),
-	)
-	.await;
+	let bob = common::issued_credential(&f.store, "acme", "bob").await;
 	let bob = bob["token"].as_str().unwrap();
 	let path = format!("/api/workspaces/{workspace}/messages");
 	let authorization = format!("Bearer {bob}");

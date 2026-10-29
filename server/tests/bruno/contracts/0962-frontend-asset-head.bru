@@ -1,11 +1,11 @@
 meta {
-  name: 0962 frontend-asset-head - Serve the configured frontend content
+  name: 0962 frontend-asset-head - Missing asset does not fall back to the SPA
   type: http
   seq: 962
 }
 
 head {
-  url: {{base_url}}/assets/probe.txt
+  url: {{base_url}}/assets/missing.txt
   body: none
   auth: none
 }
@@ -15,6 +15,5 @@ headers {
 }
 
 tests {
-  test("Exact HTTP 200", function () { expect(res.getStatus()).to.equal(200); });
-  test("Serve the configured frontend content contract", function () { expect(res.getBody()).to.equal("");expect(res.getHeader("x-content-type-options")).to.equal("nosniff");bru.setVar("frontendEtag",res.getHeader("etag")); });
+  test("Exact HTTP 404", function () { expect(res.getStatus()).to.equal(404); });
 }

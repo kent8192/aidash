@@ -228,7 +228,8 @@ async fn manual_retry_renews_only_the_retry_ledger_and_preserves_durable_budgets
 				"deployment_administrator",
 			)
 			.await
-			.unwrap();
+			// The fixture Subject may have approved it already.
+			.ok();
 	}
 	let issued = authorization
 		.issue_credential("acme", "alice", 3600, "deployment_administrator")

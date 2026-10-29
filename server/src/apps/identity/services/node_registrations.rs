@@ -54,11 +54,22 @@ impl NodeRegistrations {
 		crate::http::validate(&page)?;
 		let node = NodeName::parse(&node)?;
 		let f = self.runtime.clone();
-		let rows = match actor {
-			Actor::DeploymentAdministrator => {
+		let rows = self
+			.administrations()
+			.run(actor, origin, &tenant, async |administrator| {
 				f.store
 					.pool
-					.atomic(&TenancyScope::tenant(&tenant)?, async |tx| {
+					.atomic(&administrator.scope()?, async |tx| {
+						let snapshot = administrator.lock(tx, false).await?;
+						administrator
+							.require(
+								tx,
+								&snapshot,
+								rules::NODE_REGISTRATION_READ,
+								node.as_str(),
+								json!({"node": node.as_str()}),
+							)
+							.await?;
 						require_node(tx, &tenant, &node).await?;
 						records::list(
 							tx,
@@ -69,39 +80,9 @@ impl NodeRegistrations {
 						)
 						.await
 					})
-					.await?
-			}
-			actor => {
-				self.administrations()
-					.run(actor, origin, &tenant, async |administrator| {
-						f.store
-							.pool
-							.atomic(&administrator.scope()?, async |tx| {
-								let snapshot = administrator.lock(tx, false).await?;
-								administrator
-									.require(
-										tx,
-										&snapshot,
-										rules::NODE_REGISTRATION_READ,
-										node.as_str(),
-										json!({"node": node.as_str()}),
-									)
-									.await?;
-								require_node(tx, &tenant, &node).await?;
-								records::list(
-									tx,
-									&tenant,
-									node.as_str(),
-									page.offset as u64,
-									page.limit as u64,
-								)
-								.await
-							})
-							.await
-					})
-					.await?
-			}
-		};
+					.await
+			})
+			.await?;
 		Ok(rows.into_iter().map(Into::into).collect())
 	}
 
@@ -116,48 +97,29 @@ impl NodeRegistrations {
 		crate::http::validate(&page)?;
 		let node = NodeName::parse(&node)?;
 		let f = self.runtime.clone();
-		let rows = match actor {
-			Actor::DeploymentAdministrator => {
+		let rows = self
+			.administrations()
+			.run(actor, origin, &tenant, async |administrator| {
 				f.store
 					.pool
-					.atomic(&TenancyScope::tenant(&tenant)?, async |tx| {
+					.atomic(&administrator.scope()?, async |tx| {
+						let snapshot = administrator.lock(tx, false).await?;
+						administrator
+							.require(
+								tx,
+								&snapshot,
+								rules::NODE_REGISTRATION_READ,
+								node.as_str(),
+								json!({"node": node.as_str()}),
+							)
+							.await?;
 						require_node(tx, &tenant, &node).await?;
 						records::history(tx, &tenant, node.as_str(), page.after, page.limit as u64)
 							.await
 					})
-					.await?
-			}
-			actor => {
-				self.administrations()
-					.run(actor, origin, &tenant, async |administrator| {
-						f.store
-							.pool
-							.atomic(&administrator.scope()?, async |tx| {
-								let snapshot = administrator.lock(tx, false).await?;
-								administrator
-									.require(
-										tx,
-										&snapshot,
-										rules::NODE_REGISTRATION_READ,
-										node.as_str(),
-										json!({"node": node.as_str()}),
-									)
-									.await?;
-								require_node(tx, &tenant, &node).await?;
-								records::history(
-									tx,
-									&tenant,
-									node.as_str(),
-									page.after,
-									page.limit as u64,
-								)
-								.await
-							})
-							.await
-					})
-					.await?
-			}
-		};
+					.await
+			})
+			.await?;
 		Ok(rows
 			.into_iter()
 			.map(|(sequence, registration)| RegistrationRevision {
@@ -181,20 +143,40 @@ impl NodeRegistrations {
 		let node = NodeName::parse(&node)?;
 		let requested = input.requested(&self.runtime.config.deployment, &node)?;
 		let f = self.runtime.clone();
-		let stored = match actor {
-			Actor::DeploymentAdministrator => {
+		let stored = self
+			.administrations()
+			.run(actor, origin, &tenant, async |administrator| {
+				let decide = async |tx: &mut reinhardt::db::orm::AtomicTransaction| {
+					let snapshot = administrator.lock(tx, false).await?;
+					administrator
+						.require(
+							tx,
+							&snapshot,
+							rules::NODE_REGISTRATION_UPDATE,
+							&input.source_node.to_string(),
+							attributes(node.as_str(), &input.source_node),
+						)
+						.await
+				};
 				f.store
 					.pool
-					.atomic(&TenancyScope::tenant(&tenant)?, async |tx| {
+					.atomic(&administrator.scope()?, async |tx| {
+						decide(tx).await?;
 						require_node(tx, &tenant, &node).await
 					})
 					.await?;
 				let (counterpart, preserve_keys) =
 					self.counterpart(&tenant, &node, &input, &requested).await?;
+				// The decision below is audited as an authority write, which exempts
+				// this transaction from the table's atomic write guard. Hold the
+				// visibility lease instead, so a registration changes only while no
+				// atomic transaction is pending (503 otherwise). Take it only for the
+				// write: the counterpart fetch above may wait on another Deployment.
+				let _visibility = crate::transactions::gate::ReadLease::begin(&f.store).await?;
 				f.store
 					.pool
-					.atomic(&TenancyScope::tenant(&tenant)?, async |tx| {
-						require_node(tx, &tenant, &node).await?;
+					.atomic(&administrator.scope()?, async |tx| {
+						decide(tx).await?;
 						write(
 							tx,
 							&records::Write {
@@ -205,69 +187,17 @@ impl NodeRegistrations {
 								dashboard_origin: input.dashboard_origin.as_deref(),
 								atomic_transactions: input.atomic_transactions,
 								enabled: input.enabled,
-								actor: "deployment_administrator",
+								actor: &format!("oidc:{}", administrator.identity_id),
 								preserve_keys,
 							},
 							input.expected_revision,
-							&AdministrationActor::DeploymentAdministratorBearer,
+							&AdministrationActor::TenantAdministrator(administrator.clone()),
 						)
 						.await
 					})
-					.await?
-			}
-			actor => {
-				self.administrations()
-					.run(actor, origin, &tenant, async |administrator| {
-						let decide = async |tx: &mut reinhardt::db::orm::AtomicTransaction| {
-							let snapshot = administrator.lock(tx, false).await?;
-							administrator
-								.require(
-									tx,
-									&snapshot,
-									rules::NODE_REGISTRATION_UPDATE,
-									&input.source_node.to_string(),
-									attributes(node.as_str(), &input.source_node),
-								)
-								.await
-						};
-						f.store
-							.pool
-							.atomic(&administrator.scope()?, async |tx| {
-								decide(tx).await?;
-								require_node(tx, &tenant, &node).await
-							})
-							.await?;
-						let (counterpart, preserve_keys) =
-							self.counterpart(&tenant, &node, &input, &requested).await?;
-						f.store
-							.pool
-							.atomic(&administrator.scope()?, async |tx| {
-								decide(tx).await?;
-								write(
-									tx,
-									&records::Write {
-										tenant: &tenant,
-										node: node.as_str(),
-										source_node: &input.source_node,
-										counterpart: &counterpart,
-										dashboard_origin: input.dashboard_origin.as_deref(),
-										atomic_transactions: input.atomic_transactions,
-										enabled: input.enabled,
-										actor: &format!("oidc:{}", administrator.identity_id),
-										preserve_keys,
-									},
-									input.expected_revision,
-									&AdministrationActor::TenantAdministrator(
-										administrator.clone(),
-									),
-								)
-								.await
-							})
-							.await
-					})
-					.await?
-			}
-		};
+					.await
+			})
+			.await?;
 		Ok(stored.into())
 	}
 

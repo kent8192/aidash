@@ -26,9 +26,12 @@ OWNER_PASSWORD = "acceptance-owner-password"
 SERVER_PASSWORD = "acceptance-server-password"
 
 
-def configure_research(base, node, fixture_url):
-    """Register and approve the research closure as its Tenant's subject."""
-    tenant, subject = tenant_subject(base, "Cluster acceptance", "alice", agents=(
+def configure_research(base, node, fixture_url, issue):
+    """Register and approve the research closure as its Tenant's subject.
+
+    `issue(tenant, subject)` mints the Tenant's first Subject Credential from the host (#484).
+    """
+    tenant, subject = tenant_subject(base, "Cluster acceptance", "alice", issue, agents=(
         "coordinator@1.0.0", "researcher@1.0.0",
     ))
     token = subject["token"]
@@ -47,7 +50,7 @@ def configure_research(base, node, fixture_url):
     for entry in entries:
         api_request(base, "/api/registry", entry, token=token)
     approve(base, tenant, token, entries)
-    return token, default_node(base, tenant)[1]
+    return token, default_node(base, tenant, token)[1]
 
 
 def main():
@@ -113,7 +116,7 @@ def main():
         kube("create", "namespace", namespace)
         created = True
         print(f"Created {args.distribution} acceptance namespace {namespace}", flush=True)
-        apply({"apiVersion": "v1", "kind": "ConfigMap", "metadata": {"name": "fixture-code"}, "data": {name: (ROOT / "scripts" / name).read_text() for name in ["golden_path.py", "tool_call_approvals.py", "cluster_fixture.py"]}})
+        apply({"apiVersion": "v1", "kind": "ConfigMap", "metadata": {"name": "fixture-code"}, "data": {name: (ROOT / "scripts" / name).read_text() for name in ["golden_path.py", "tool_call_approvals.py", "oidc_fixture.py", "cluster_fixture.py"]}})
         database = stateful("postgres", args.postgres_image, 5432, {"args": ["-c", "max_connections=400"], "env": [{"name": "POSTGRES_USER", "value": "aidash"}, {"name": "POSTGRES_PASSWORD", "value": "acceptance-local-password"}, {"name": "POSTGRES_DB", "value": "aidash_a"}, {"name": "AIDASH_OWNER_PASSWORD", "value": OWNER_PASSWORD}, {"name": "AIDASH_SERVER_PASSWORD", "value": SERVER_PASSWORD}], "readinessProbe": {"exec": {"command": ["pg_isready", "-h", "127.0.0.1", "-U", "aidash", "-d", "aidash_a"]}, "periodSeconds": 2}}, "/var/lib/postgresql/data")
         nats = stateful("nats", "nats:2.12-alpine", 4222, {"args": ["-js", "-sd", "/data"], "readinessProbe": {"tcpSocket": {"port": 4222}, "periodSeconds": 2}}, "/data")
         fixture = {"apiVersion": "apps/v1", "kind": "Deployment", "metadata": {"name": "fixture"}, "spec": {"replicas": 1, "selector": {"matchLabels": {"app": "fixture"}}, "template": {"metadata": {"labels": {"app": "fixture"}}, "spec": {"automountServiceAccountToken": False, "containers": [{"name": "fixture", "image": "python:3.13-alpine", "command": ["python3", "/scripts/cluster_fixture.py"], "ports": [{"containerPort": 8000}], "volumeMounts": [{"name": "code", "mountPath": "/scripts", "readOnly": True}], "readinessProbe": {"httpGet": {"path": "/status", "port": 8000}}, "resources": {"requests": {"cpu": "50m", "memory": "64Mi"}, "limits": {"cpu": "1", "memory": "256Mi"}}}], "volumes": [{"name": "code", "configMap": {"name": "fixture-code"}}]}}}}
@@ -145,7 +148,12 @@ def main():
         base_a = bases[0]
         # Research stays on Node A, as in golden_path.py. Scoped Golden Path
         # exercises the grant/admission protocol for execution across Nodes.
-        token, address = configure_research(base_a, "aidash://ops-a", "http://fixture:8000")
+        def issue_credential(tenant, subject):
+            # A Deployment Administrator holds no Tenant authority (#484): the host command issues the first credential.
+            return json.loads(kube("exec", "deployment/ops-a-aidash-server", "--", "manage", "issue-subject-credential",
+                                   "--tenant", tenant, "--subject", subject, "--label", "acceptance_host", "--expires-in-seconds", "3600").strip().splitlines()[-1])
+
+        token, address = configure_research(base_a, "aidash://ops-a", "http://fixture:8000", issue_credential)
         discovered = api_request(base_a, "/api/discover", {"capability": "web.search", "language": "ja"}, token=token)
         assert {a["node_id"] for a in discovered["agents"]} == {address}
 

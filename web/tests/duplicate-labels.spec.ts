@@ -7,7 +7,7 @@ test("same-name generation policies stay distinguishable without showing IDs", a
   const { errors } = await setup(page);
   const policy = (id: string) => ({
     id,
-    tenant: "fixture-tenant",
+    tenant: "acme",
     revision: 1,
     generated_count: 0,
     allocated_tokens: 0,
@@ -19,12 +19,10 @@ test("same-name generation policies stay distinguishable without showing IDs", a
       limits: { max_agents: 2, token_budget: 1000 },
     },
   });
-  await page.route("**/api/generation/fixture-tenant/policies", (route) =>
+  await page.route("**/api/generation/acme/policies", (route) =>
     route.fulfill({ json: [policy("policy-b"), policy("policy-a")] }),
   );
   await page.goto("/generation");
-  await page.locator('input[name="tenant"]').fill("fixture-tenant");
-  await page.getByRole("button", { name: "Open", exact: true }).click();
   await expect(page.locator(".generation-policy h3")).toHaveText([
     "Shared policy (#2)",
     "Shared policy (#1)",

@@ -6,87 +6,29 @@ import { installBearerDashboard } from "./auth-fixture";
 import { acceptanceSubject } from "./tenant-fixture";
 import type { ChannelAttachment, NodeRecord } from "../src/generated/models";
 
-// A Tenant Administrator adds Nodes. A Bearer subject has no Mapping, so it
-// cannot administer, and the Deployment Administrator adds the second Node.
+// Only a Tenant Administrator adds Nodes, and only a browser Mapping can be one
+// (#484, ADR 0102): neither the Deployment Administrator nor a Bearer subject
+// can, so the live stack has no way to create the second Node yet.
 const administrator = { authorization: "Bearer acceptance-access-token" };
 
-test("a Workspace created in a second Node belongs to that Node and to no other", async ({
-  page,
+test("a Deployment Administrator cannot add or list a Tenant's Nodes", async ({
   request,
 }) => {
-  // A Tenant subject's state can take seconds to refresh (#404).
-  test.setTimeout(120000);
   const subject = acceptanceSubject();
-  const label = `Lab ${randomUUID().slice(0, 8)}`;
   const added = await request.post(`/api/tenants/${subject.tenant}/nodes`, {
     headers: administrator,
-    data: { label },
+    data: { label: `Lab ${randomUUID().slice(0, 8)}` },
   });
-  expect(added.status(), await added.text()).toBe(201);
-  const second = (await added.json()) as { name: string; label: string };
-  const nodes = (await (
-    await request.get(`/api/tenants/${subject.tenant}/nodes`, {
-      headers: administrator,
-    })
-  ).json()) as { name: string; label: string; default: boolean }[];
-  const home = nodes.find((node) => node.default)!;
-  expect(home.name).not.toBe(second.name);
-
-  await installBearerDashboard(page, subject.token, {
-    tenant: subject.tenant,
-    name: subject.name,
+  expect(added.status(), await added.text()).toBe(403);
+  const listed = await request.get(`/api/tenants/${subject.tenant}/nodes`, {
+    headers: administrator,
   });
-  await page.addInitScript(() =>
-    localStorage.setItem("aidash-locale", "en-US"),
-  );
-  await page.goto("/collaboration");
-  await page.getByRole("button", { name: "Account settings" }).click();
-  const selector = page.getByTestId("node-selector");
-  await expect(selector).toHaveValue(home.name);
-  await selector.selectOption(second.name);
-  await page.keyboard.press("Escape");
-
-  const title = `Second Node workspace ${Date.now()}`;
-  await page.getByRole("button", { name: "Settings", exact: true }).click();
-  await page.getByRole("button", { name: "Prepare a channel" }).click();
-  const dialog = page.getByRole("dialog");
-  await expect(dialog.getByLabel("Node", { exact: true })).toHaveValue(
-    second.name,
-  );
-  await dialog.getByLabel("Title", { exact: true }).fill(title);
-  await dialog.getByLabel("Goal", { exact: true }).fill("Live in the Lab Node");
-  const previousChannel = new URL(page.url()).searchParams.get("channel");
-  await dialog.getByRole("button", { name: "Create", exact: true }).click();
-  await expect(page.getByRole("dialog")).not.toBeVisible({ timeout: 30000 });
-  await expect(page).toHaveURL((url) => {
-    const channel = url.searchParams.get("channel");
-    return !!channel && channel !== previousChannel;
-  });
-  const workspaceId = new URL(page.url()).searchParams.get("channel");
-  expect(workspaceId).toBeTruthy();
-
-  const read = await request.get(`/api/workspaces/${workspaceId}`, {
+  expect(listed.status(), await listed.text()).toBe(403);
+  const own = await request.post(`/api/tenants/${subject.tenant}/nodes`, {
     headers: { authorization: `Bearer ${subject.token}` },
+    data: { label: "Bearer Lab" },
   });
-  expect(read.status(), await read.text()).toBe(200);
-  expect(
-    ((await read.json()) as { workspace: { node: string; title: string } })
-      .workspace,
-  ).toMatchObject({ node: second.name, title });
-
-  const listed = () =>
-    page
-      .getByRole("button", { name: /^Switch request/ })
-      .click()
-      .then(() => page.getByRole("navigation", { name: "Workspaces" }));
-  await expect(await listed()).toContainText(title);
-  await page.keyboard.press("Escape");
-
-  // The default Node does not list it.
-  await page.getByRole("button", { name: "Account settings" }).click();
-  await page.getByTestId("node-selector").selectOption(home.name);
-  await page.keyboard.press("Escape");
-  await expect(await listed()).not.toContainText(title);
+  expect(own.status(), await own.text()).toBe(403);
 });
 
 test("an isolated Node retains real attachment bytes until a normal worker purges it through the DA panel", async ({
@@ -104,7 +46,12 @@ test("an isolated Node retains real attachment bytes until a normal worker purge
     target: string;
     sibling: string;
     subject: { name: string; token: string };
+    administrator: Record<string, string>;
   } = JSON.parse(await readFile(contextPath, "utf8"));
+  // Default, deletion and restore are Tenant administration (ADR 0102): the
+  // fixture's Tenant Administrator acts through its browser Mapping headers.
+  // The Deployment Administrator only reads deleted Nodes and purges (ADR 0083).
+  const tenantAdministrator = fixture.administrator;
   const tenantPath = `/api/tenants/${fixture.tenant}/nodes`;
   const managementPath = `${tenantPath}?include_deleted=true&offset=0&limit=25`;
   const subject = { authorization: `Bearer ${fixture.subject.token}` };
@@ -234,7 +181,6 @@ test("an isolated Node retains real attachment bytes until a normal worker purge
   };
   await openManagement();
   const target = page.locator(`[data-lifecycle-node="${fixture.target}"]`);
-  const sibling = page.locator(`[data-lifecycle-node="${fixture.sibling}"]`);
   const mutation = (node: string, action: string) =>
     page.waitForResponse(
       (response) =>
@@ -242,109 +188,41 @@ test("an isolated Node retains real attachment bytes until a normal worker purge
           `${tenantPath}/${node}/${action}` &&
         response.request().method() === "POST",
     );
-  for (const [row, name] of [
-    [target, fixture.target],
-    [sibling, fixture.sibling],
-  ] as const) {
-    const changed = mutation(name, "default");
-    await row
-      .getByRole("button", { name: "Make default", exact: true })
-      .click();
-    expect((await changed).status()).toBe(200);
-  }
+  const administer = async (node: string, action: string, data?: object) => {
+    const response = await request.post(`${tenantPath}/${node}/${action}`, {
+      headers: tenantAdministrator,
+      data,
+    });
+    expect(response.status(), await response.text()).toBe(200);
+    return (await response.json()) as NodeRecord;
+  };
+  // The panel offers the Deployment Administrator no Tenant administration.
+  await expect(
+    target.getByRole("button", { name: "Make default", exact: true }),
+  ).toHaveCount(0);
   await expect(
     target.getByRole("button", { name: "Delete Node", exact: true }),
-  ).toBeEnabled();
-
-  // Hold only the actual management request, commit a genuine concurrent
-  // default change, then continue through the Bearer bridge to the real server.
-  let release = () => {};
-  const gate = new Promise<void>((resolve) => {
-    release = resolve;
-  });
-  let held = () => {};
-  const intercepted = new Promise<void>((resolve) => {
-    held = resolve;
-  });
-  let blocking = true;
-  const managementUrl = (url: URL) =>
-    url.pathname === tenantPath &&
-    url.searchParams.get("include_deleted") === "true";
-  await page.route(managementUrl, async (route) => {
-    if (blocking) {
-      held();
-      await gate;
-    }
-    await route.fallback();
-  });
-  const deletionDialog = page.getByRole("dialog", {
-    name: "Delete Node",
-    exact: true,
-  });
-  try {
-    await target
-      .getByRole("button", { name: "Delete Node", exact: true })
-      .click();
-    await intercepted;
-    await deletionDialog
-      .getByLabel("Type the Node name to confirm")
-      .fill(fixture.target);
-    await expect(
-      deletionDialog.getByRole("button", { name: "Delete Node", exact: true }),
-    ).toBeDisabled();
-    const changed = await request.post(
-      `${tenantPath}/${fixture.target}/default`,
-      { headers: administrator },
+  ).toHaveCount(0);
+  for (const action of ["default", "deletion", "restore"]) {
+    const refused = await request.post(
+      `${tenantPath}/${fixture.target}/${action}`,
+      {
+        headers: administrator,
+        data:
+          action === "deletion" ? { confirmation: fixture.target } : undefined,
+      },
     );
-    expect(changed.status()).toBe(200);
-    const refreshed = page.waitForResponse((response) =>
-      managementUrl(new URL(response.url())),
-    );
-    blocking = false;
-    release();
-    const freshResponse = await refreshed;
-    expect(freshResponse.status()).toBe(200);
-    const freshRows: NodeRecord[] = await freshResponse.json();
-    expect(
-      freshRows.find((node) => node.name === fixture.target)?.default,
-    ).toBe(true);
-    await expect(target).toContainText("Default");
-    await expect(
-      deletionDialog.getByRole("button", { name: "Delete Node", exact: true }),
-    ).toBeDisabled();
-    await page.keyboard.press("Escape");
-    await expect(deletionDialog).toHaveCount(0);
-  } finally {
-    blocking = false;
-    release();
-    await page.unroute(managementUrl);
+    expect(refused.status(), await refused.text()).toBe(403);
   }
-  const away = await request.post(`${tenantPath}/${fixture.sibling}/default`, {
-    headers: administrator,
-  });
-  expect(away.status()).toBe(200);
-  await openManagement();
+  expect((await administer(fixture.sibling, "default")).default).toBe(true);
 
   const remove = async () => {
-    await target
-      .getByRole("button", { name: "Delete Node", exact: true })
-      .click();
-    await expect(deletionDialog).toContainText(
-      `Stored data: ${targetBytes.byteLength.toLocaleString("en-US")} bytes`,
-    );
-    await deletionDialog
-      .getByLabel("Type the Node name to confirm")
-      .fill(fixture.target);
-    const deleted = mutation(fixture.target, "deletion");
-    await deletionDialog
-      .getByRole("button", { name: "Delete Node", exact: true })
-      .click();
-    const response = await deleted;
-    expect(response.status()).toBe(200);
-    const record: NodeRecord = await response.json();
+    const record = await administer(fixture.target, "deletion", {
+      confirmation: fixture.target,
+    });
     expect(record.state).toBe("deleted");
     expect(record.retained_storage_bytes).toBe(targetBytes.byteLength);
-    await expect(deletionDialog).toHaveCount(0);
+    await openManagement();
     return record;
   };
   const deleted = await remove();
@@ -374,11 +252,10 @@ test("an isolated Node retains real attachment bytes until a normal worker purge
   expect(fallback.status()).toBe(200);
   expect((await fallback.json()).node).toBe(fixture.sibling);
 
-  const restored = mutation(fixture.target, "restore");
-  await target
-    .getByRole("button", { name: "Restore Node", exact: true })
-    .click();
-  expect((await restored).status()).toBe(200);
+  await expect(
+    target.getByRole("button", { name: "Restore Node", exact: true }),
+  ).toHaveCount(0);
+  expect((await administer(fixture.target, "restore")).state).toBe("live");
   const recovered = await request.get(targetData.path, { headers: subject });
   expect(recovered.status()).toBe(200);
   expect(await recovered.body()).toEqual(targetBytes);
@@ -476,3 +353,86 @@ test("an isolated Node retains real attachment bytes until a normal worker purge
     contentType: "application/json",
   });
 });
+
+// FIXME(#484): needs a Tenant Administrator Mapping (or a host-side Node
+// command) in the live stack to create the second Node.
+test.fixme(
+  "a Workspace created in a second Node belongs to that Node and to no other",
+  async ({ page, request }) => {
+    // A Tenant subject's state can take seconds to refresh (#404).
+    test.setTimeout(120000);
+    const subject = acceptanceSubject();
+    const label = `Lab ${randomUUID().slice(0, 8)}`;
+    const added = await request.post(`/api/tenants/${subject.tenant}/nodes`, {
+      headers: { authorization: `Bearer ${subject.token}` },
+      data: { label },
+    });
+    expect(added.status(), await added.text()).toBe(201);
+    const second = (await added.json()) as { name: string; label: string };
+    const nodes = (await (
+      await request.get(`/api/tenants/${subject.tenant}/nodes`, {
+        headers: { authorization: `Bearer ${subject.token}` },
+      })
+    ).json()) as { name: string; label: string; default: boolean }[];
+    const home = nodes.find((node) => node.default)!;
+    expect(home.name).not.toBe(second.name);
+
+    await installBearerDashboard(page, subject.token, {
+      tenant: subject.tenant,
+      name: subject.name,
+    });
+    await page.addInitScript(() =>
+      localStorage.setItem("aidash-locale", "en-US"),
+    );
+    await page.goto("/collaboration");
+    await page.getByRole("button", { name: "Account settings" }).click();
+    const selector = page.getByTestId("node-selector");
+    await expect(selector).toHaveValue(home.name);
+    await selector.selectOption(second.name);
+    await page.keyboard.press("Escape");
+
+    const title = `Second Node workspace ${Date.now()}`;
+    await page.getByRole("button", { name: "Settings", exact: true }).click();
+    await page.getByRole("button", { name: "Prepare a channel" }).click();
+    const dialog = page.getByRole("dialog");
+    await expect(dialog.getByLabel("Node", { exact: true })).toHaveValue(
+      second.name,
+    );
+    await dialog.getByLabel("Title", { exact: true }).fill(title);
+    await dialog
+      .getByLabel("Goal", { exact: true })
+      .fill("Live in the Lab Node");
+    const previousChannel = new URL(page.url()).searchParams.get("channel");
+    await dialog.getByRole("button", { name: "Create", exact: true }).click();
+    await expect(page.getByRole("dialog")).not.toBeVisible({ timeout: 30000 });
+    await expect(page).toHaveURL((url) => {
+      const channel = url.searchParams.get("channel");
+      return !!channel && channel !== previousChannel;
+    });
+    const workspaceId = new URL(page.url()).searchParams.get("channel");
+    expect(workspaceId).toBeTruthy();
+
+    const read = await request.get(`/api/workspaces/${workspaceId}`, {
+      headers: { authorization: `Bearer ${subject.token}` },
+    });
+    expect(read.status(), await read.text()).toBe(200);
+    expect(
+      ((await read.json()) as { workspace: { node: string; title: string } })
+        .workspace,
+    ).toMatchObject({ node: second.name, title });
+
+    const listed = () =>
+      page
+        .getByRole("button", { name: /^Switch request/ })
+        .click()
+        .then(() => page.getByRole("navigation", { name: "Workspaces" }));
+    await expect(await listed()).toContainText(title);
+    await page.keyboard.press("Escape");
+
+    // The default Node does not list it.
+    await page.getByRole("button", { name: "Account settings" }).click();
+    await page.getByTestId("node-selector").selectOption(home.name);
+    await page.keyboard.press("Escape");
+    await expect(await listed()).not.toContainText(title);
+  },
+);

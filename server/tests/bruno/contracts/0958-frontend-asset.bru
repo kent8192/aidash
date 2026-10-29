@@ -1,21 +1,20 @@
 meta {
-  name: 0958 frontend-asset - Conditional request matches the content ETag
+  name: 0958 frontend-asset - Client route falls back to the SPA
   type: http
   seq: 958
 }
 
 get {
-  url: {{base_url}}/assets/probe.txt
+  url: {{base_url}}/bruno-client-route
   body: none
   auth: none
 }
 
 headers {
   Accept: application/json
-  If-None-Match: {{frontendEtag}}
 }
 
 tests {
-  test("Exact HTTP 304", function () { expect(res.getStatus()).to.equal(304); });
-  test("Conditional request matches the content ETag contract", function () { expect(res.getBody()).to.equal(""); });
+  test("Exact HTTP 200", function () { expect(res.getStatus()).to.equal(200); });
+  test("Client route falls back to the SPA contract", function () { expect(res.getBody()).to.include("Bruno frontend fixture"); });
 }

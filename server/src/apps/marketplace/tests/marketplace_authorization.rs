@@ -477,36 +477,21 @@ async fn node_resources_do_not_acquire_subject_credentials(
 	let (f, url, schema) = application_fixture.runtime.parts();
 	let app = application_fixture.application.clone();
 	let agent = token(&f, "a", "agent").await;
-	let nodes = request(
-		&app,
-		&f.config.api_token,
-		"GET",
-		"/api/tenants/a/nodes",
-		Value::Null,
-	)
-	.await;
-	assert_eq!(nodes.0, 200, "{nodes:?}");
-	let node = nodes
-		.1
-		.as_array()
-		.unwrap()
-		.iter()
-		.find(|node| node["default"] == true)
-		.unwrap();
-	let credential = request(
-		&app,
-		&f.config.api_token,
-		"POST",
-		"/api/authorization/a/credentials",
-		json!({"subject":node["name"]}),
-	)
-	.await;
-	assert_eq!(
-		credential,
-		(
-			400,
-			json!({"error":"credential subject must exist and be enabled, including its delegators"})
-		)
+	// A Deployment Administrator holds no Tenant credential authority (#484):
+	// the host-side issuance refuses a Node name as a credential subject too.
+	let node = common::default_node(&f.store, "a").await;
+	let refused = Authorization {
+		pool: f.store.pool.clone(),
+	}
+	.issue_credential("a", node.node.as_str(), 3600, "deployment_administrator")
+	.await
+	.err()
+	.map(|error| error.to_string());
+	assert!(
+		refused
+			.as_deref()
+			.is_some_and(|error| error.contains("credential subject must exist and be enabled")),
+		"{refused:?}"
 	);
 	assert_eq!(
 		request(

@@ -102,9 +102,11 @@ type PolicyAccess = {
   issuableSubjects?: string[];
   can: (action: string) => boolean;
 };
+// ADR 0102: the role keeps only whole-policy read and replacement. Credentials,
+// Peer Mappings, simulation, revisions and decisions are Tenant authority.
 const DEPLOYMENT_ADMINISTRATOR: PolicyAccess = {
   deploymentAdministrator: true,
-  can: () => true,
+  can: (action) => action === "policy.read" || action === "policy.update",
 };
 
 /** A Tenant's policy, credentials and Peer Mappings, each shown under the
@@ -249,10 +251,9 @@ function TenantAuthorization({
     enabled: access.can("credential.read"),
     refetchInterval: 5000,
   });
+  // A Deployment Administrator issues no Subject Credentials (ADR 0063/0102).
   const issueSubjects = access.deploymentAdministrator
-    ? Object.entries(current?.bundle.subjects ?? {})
-        .filter(([, subject]) => subject.enabled !== false)
-        .map(([id]) => id)
+    ? []
     : (access.issuableSubjects ?? []);
   const canIssue = issueSubjects.length > 0;
   const mappingCredentials = [
@@ -376,7 +377,7 @@ function TenantAuthorization({
         />
       )}
       <>
-        {current && (
+        {current && !access.deploymentAdministrator && (
           <EvaluationPanel
             key={current.revision}
             tenant={tenant}
@@ -488,7 +489,7 @@ function TenantAuthorization({
             editable={access.can("peer_mapping.update")}
           />
         )}
-        {current && (
+        {current && !access.deploymentAdministrator && (
           <HistoryPanel
             key={`${tenant}-revisions`}
             tenant={tenant}

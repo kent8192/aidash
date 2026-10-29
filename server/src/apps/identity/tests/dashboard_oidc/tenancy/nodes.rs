@@ -225,8 +225,9 @@ async fn members_list_nodes_and_administrators_create_and_relabel_them(
 			json!({"label":"Deployment CI"}),
 		)
 		.await;
-	assert_eq!(status, 200, "{body}");
-	assert_eq!(d.count(&format!("SELECT count(*) FROM dashboard_administration_history WHERE tenant = '{tenant}' AND action = 'node.update' AND actor_kind = 'deployment_administrator'")).await, 1);
+	// Tenant Nodes are Tenant settings: a Deployment Administrator relabels none (#484).
+	assert_eq!(status, 403, "{body}");
+	assert_eq!(d.count(&format!("SELECT count(*) FROM dashboard_administration_history WHERE tenant = '{tenant}' AND action = 'node.update' AND actor_kind = 'deployment_administrator'")).await, 0);
 	for label in ["", "   ", "line\nbreak"] {
 		let (status, _) = d.create_node(&alice, &context, &tenant, label).await;
 		assert_eq!(status, 400, "{label:?}");
@@ -395,14 +396,7 @@ async fn catalog_approvals_belong_to_one_node(
 		.to_owned();
 	let (_, created) = d.create_node(&alice, &context, &tenant, "Build").await;
 	let second = created["name"].as_str().unwrap().to_owned();
-	let (status, issued) = d
-		.as_deployment_administrator(
-			"POST",
-			&format!("/api/authorization/{tenant}/credentials"),
-			json!({"subject":"owner"}),
-		)
-		.await;
-	assert_eq!(status, 200, "{issued}");
+	let issued = common::issued_credential(&d.federation.store, &tenant, "owner").await;
 	let token = issued["token"].as_str().unwrap().to_owned();
 	let send = async |method: &str, path: String, body: Value| {
 		let (status, body, _) = d.send(method, &path, None, None, Some(&token), body).await;

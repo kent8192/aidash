@@ -91,12 +91,12 @@ pub async fn list<R: DraftRepository>(repository: &R, page: DraftPage) -> Result
 			));
 		}
 	};
-	let tenant = match &actor {
-		Principal::DeploymentAdministrator => None,
-		Principal::Subject { tenant, .. } => Some(tenant),
+	// Drafts are Tenant content: a Deployment Administrator lists none (#484).
+	let Principal::Subject { tenant, .. } = &actor else {
+		return Err(Error::Forbidden);
 	};
 	loop {
-		let rows = scope.page(tenant.map(String::as_str), cursor).await?;
+		let rows = scope.page(Some(tenant.as_str()), cursor).await?;
 		let more = rows.len() == 100;
 		cursor = rows.last().map(|row| (row.updated_at, row.id));
 		for row in rows {
@@ -124,10 +124,7 @@ pub async fn get<R: DraftRepository>(repository: &R, id: Uuid) -> Result<Draft> 
 	Ok(draft)
 }
 
-use aidash_domain::registry::{
-	Entry,
-	workbench::{AdoptInput, RevisionInput},
-};
+use aidash_domain::registry::{Entry, workbench::RevisionInput};
 use serde_json::json;
 pub async fn duplicate<R: DraftRepository>(
 	repository: &R,
@@ -152,7 +149,7 @@ pub async fn duplicate<R: DraftRepository>(
 		id,
 		tenant: original.tenant.clone(),
 		owner: match &actor {
-			Principal::DeploymentAdministrator => original.owner.clone(),
+			Principal::DeploymentAdministrator => return Err(Error::Forbidden),
 			Principal::Subject { subject, .. } => subject.clone(),
 		},
 		revision: 1,
@@ -170,56 +167,6 @@ pub async fn duplicate<R: DraftRepository>(
 	scope.commit().await?;
 	Ok(copied)
 }
-pub async fn adopt<R: DraftRepository>(
-	repository: &R,
-	(id, version): (String, String),
-	input: AdoptInput,
-) -> Result<Draft> {
-	let actor = repository.principal();
-	if !matches!(actor, Principal::DeploymentAdministrator) {
-		return Err(Error::Forbidden);
-	}
-	let (tenant, owner) = author_identity(&actor, Some(&input.tenant), Some(&input.owner))?;
-	let mut entry = repository.original_entry(&id, &version).await?;
-	if entry.kind != "agent" {
-		return Err(Error::Invalid(
-			"only agents can be assigned to Creator".into(),
-		));
-	}
-
-	let documents = repository.original_documents(&entry).await?;
-	new_draft_defaults(&mut entry)?;
-	let mut scope = repository.begin().await?;
-	target_enabled(&mut scope, &tenant, &owner).await?;
-	let existing = scope.managed(&id).await?;
-	if existing {
-		return Err(Error::Conflict("agent identity is already managed".into()));
-	}
-	let draft_id = Uuid::now_v7();
-	let prospective = Draft {
-		id: draft_id,
-		tenant: tenant.clone(),
-		owner: owner.clone(),
-		revision: 1,
-		entry: serde_json::to_value(&entry)?,
-		documents,
-		release_notes: String::new(),
-		source_id: Some(id.clone()),
-		source_version: Some(version.clone()),
-		archived: false,
-		updated_at: Utc::now(),
-	};
-	let draft = scope.insert(&prospective, &id).await?;
-	scope
-		.append_event(
-			"agent_draft.adopted",
-			json!({"draft_id":draft_id,"agent_id":id,"version":version,"tenant":tenant,"owner":owner}),
-		)
-		.await?;
-	scope.commit().await?;
-	Ok(draft)
-}
-
 use super::owner_only;
 use aidash_domain::registry::{
 	knowledge::digest,

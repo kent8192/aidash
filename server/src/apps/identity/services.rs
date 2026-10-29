@@ -30,6 +30,7 @@ pub mod provider_credentials;
 pub(crate) mod receiving_keys;
 pub mod secret_store_recovery;
 pub mod sign_in;
+pub mod subject_credential_command;
 pub mod tenant_administration;
 pub mod tenant_deletions;
 pub mod tenant_purge;

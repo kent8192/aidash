@@ -251,7 +251,9 @@ async fn purge_and_expire(node: &Node, target: &str) {
 		.post(&format!("{path}/deletion"), &json!({"confirmation":target}))
 		.await;
 	assert_eq!(status, 200, "{deleted}");
-	let (status, purging) = node.post(&format!("{path}/purge"), &json!({})).await;
+	let (status, purging) = node
+		.administrator_post(&format!("{path}/purge"), &json!({}))
+		.await;
 	assert_eq!(status, 200, "{purging}");
 	let deletion = node_purge::claim(&node.f.store)
 		.await

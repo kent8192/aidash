@@ -107,8 +107,13 @@ async fn unavailable(node: &Node, workspace_id: Uuid) {
 	assert_eq!(node.get("/health").await.0, 200);
 	let (session_status, session) = node.get("/api/session").await;
 	assert_eq!(session_status, 200);
-	assert_eq!(session["access"]["kind"], "deployment_administrator");
-	assert_eq!(node.get("/api/transactions/participants").await.0, 200);
+	assert_eq!(session["access"]["kind"], "subject");
+	assert_eq!(
+		node.administrator_get("/api/transactions/participants")
+			.await
+			.0,
+		200
+	);
 	let worker = Harness {
 		federation: node.f.clone(),
 	}
@@ -161,18 +166,12 @@ async fn abort_records_a_durable_decision_while_recovery_owns_the_transition_lea
 		.execute(&sql, convert_values(values))
 		.await
 		.unwrap();
-	// A recovery step can hold this lease during slow peer I/O. A Deployment Administrator's
-	// durable abort must not be lost merely because that step is in flight.
-	let (status, body) = a
-		.post(
-			&format!("/api/transactions/{}/abort", manifest.id),
-			&json!({}),
-		)
-		.await;
+	// A recovery step can hold this lease during slow peer I/O. A durable abort
+	// must not be lost merely because that step is in flight.
+	let aborted = coordinator::abort(&a.f, manifest.id).await.unwrap();
 	transition.commit().await.unwrap();
-	assert_eq!(status, 200, "{body}");
-	assert_eq!(body["decision"], "ABORT");
-	assert!(!body["complete"].as_bool().unwrap());
+	assert_eq!(aborted.decision.as_deref(), Some("ABORT"));
+	assert!(!aborted.complete);
 	assert_eq!(
 		coordinator::abort(&a.f, manifest.id)
 			.await
@@ -656,13 +655,15 @@ async fn an_existing_sse_stream_waits_for_atomic_visibility_before_emitting_chan
 		return;
 	};
 	// reinhardt-web#6661: incremental SSE frames need the fixture-owned raw streaming client.
+	let subject =
+		crate::fixtures::tenant_roots::subject_credential(&a.f.store, "acme", "alice").await;
 	let mut response =
 		a.f.client
 			.get(format!(
 				"{}/api/events/stream?workspace_id={wa}",
 				a.f.config.endpoint
 			))
-			.bearer_auth(&a.f.config.api_token)
+			.bearer_auth(&subject)
 			.send()
 			.await
 			.unwrap();

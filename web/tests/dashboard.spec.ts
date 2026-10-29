@@ -41,9 +41,7 @@ test("restarts the event stream when the tab selects another authority", async (
     exact: true,
   });
   await expect(selector).toHaveValue("deployment_administrator");
-  await expect
-    .poll(() => contexts.includes("deployment_administrator"))
-    .toBeTruthy();
+  expect(contexts).not.toContain("deployment_administrator");
   await selector.selectOption("mapping:acme:fixture-mapping");
   await expect
     .poll(() => contexts.includes("mapping:acme:fixture-mapping"))
@@ -82,6 +80,12 @@ test(
   "observes the execution and all management screens",
   { tag: "@golden-path" },
   async ({ page }) => {
+    const subject = acceptanceSubject();
+    await installBearerDashboard(page, subject.token, {
+      tenant: subject.tenant,
+      name: subject.name,
+    });
+    await page.goto("/");
     const errors: string[] = [];
     page.on("pageerror", (e) => errors.push(e.message));
     await expect(page.locator(".stream-status")).toHaveText("接続中");
@@ -241,6 +245,11 @@ test("creates a workspace and task and receives live assignment changes", async 
 test("preserves a draft after a failed message request and clears it after success", async ({
   page,
 }) => {
+  const subject = acceptanceSubject();
+  await installBearerDashboard(page, subject.token, {
+    tenant: subject.tenant,
+    name: subject.name,
+  });
   await page.goto("/collaboration");
   const input = page
     .getByRole("textbox", { name: "メッセージ", exact: true })

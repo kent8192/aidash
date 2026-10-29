@@ -27,6 +27,7 @@ use std::sync::Arc;
 enum Requirement {
 	Public,
 	Authenticated,
+	Administered,
 	DeploymentAdministrator,
 	Peer,
 }
@@ -45,9 +46,23 @@ impl AccessBoundary {
 			visibility: false,
 		}
 	}
+	/// A Tenant route: only a Tenant Subject (browser Mapping or Subject
+	/// Credential) is admitted. A Deployment Administrator, whether a browser
+	/// grant context or the shared `api_token` bearer, is refused with 403
+	/// before the handler runs, so Tenant content never reaches it (#484, #301).
 	pub fn authenticated() -> Self {
 		Self {
 			requirement: Requirement::Authenticated,
+			visibility: false,
+		}
+	}
+	/// A route that is part of administering the Deployment: both Tenant
+	/// Subjects and Deployment Administrators are admitted, and the handler
+	/// keeps its own per-actor checks. Use it only where an administrator is
+	/// meant to act, never for Tenant content (#484, #301).
+	pub fn administered() -> Self {
+		Self {
+			requirement: Requirement::Administered,
 			visibility: false,
 		}
 	}
@@ -83,7 +98,9 @@ impl AccessBoundary {
 				admit_peer(runtime, request).await?;
 				return Ok(());
 			}
-			Requirement::Authenticated | Requirement::DeploymentAdministrator => {}
+			Requirement::Authenticated
+			| Requirement::Administered
+			| Requirement::DeploymentAdministrator => {}
 		}
 		let token = bearer(&request.headers);
 		let actor = if token.is_some_and(|token| same_secret(token, &runtime.config.api_token)) {
@@ -120,6 +137,11 @@ impl AccessBoundary {
 		}
 		if matches!(self.requirement, Requirement::DeploymentAdministrator)
 			&& !matches!(actor, Actor::DeploymentAdministrator)
+		{
+			return Err(Error::Forbidden);
+		}
+		if matches!(self.requirement, Requirement::Authenticated)
+			&& matches!(actor, Actor::DeploymentAdministrator)
 		{
 			return Err(Error::Forbidden);
 		}
@@ -220,7 +242,9 @@ impl Middleware for AccessBoundary {
 			}
 			if matches!(
 				self.requirement,
-				Requirement::Authenticated | Requirement::DeploymentAdministrator
+				Requirement::Authenticated
+					| Requirement::Administered
+					| Requirement::DeploymentAdministrator
 			) {
 				response
 					.headers

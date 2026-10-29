@@ -8,7 +8,7 @@ composition, authorization, cookies, CSRF, persistence and migrations are real.
 import argparse
 from collections import Counter
 from bruno_contracts import load_manifest, inventory
-import base64
+from oidc_fixture import IdentityProvider, checked, oidc_environment
 import contextlib
 import hashlib
 import http.server
@@ -32,14 +32,6 @@ ROOT = pathlib.Path(__file__).resolve().parents[1]
 COLLECTION = ROOT / "server/tests/bruno"
 
 
-def base64url(value):
-    return base64.urlsafe_b64encode(value).rstrip(b"=").decode("ascii")
-
-
-def checked(command, **kwargs):
-    return subprocess.run(command, check=True, capture_output=True, **kwargs)
-
-
 def inventory_difference(required, observed):
     """Only registered method/path multiplicities enter failure diagnostics."""
     def entries(counter):
@@ -52,209 +44,6 @@ def inventory_difference(required, observed):
         "missing_from_native": entries(required - observed),
         "extra_in_native": entries(observed - required),
     }
-
-
-class IdentityProvider:
-    """A private RS256 issuer with bound authorization codes and S256 PKCE."""
-
-    def __init__(self, directory):
-        self.key = directory / "issuer-key.pem"
-        checked(
-            [
-                "openssl",
-                "genpkey",
-                "-algorithm",
-                "RSA",
-                "-pkeyopt",
-                "rsa_keygen_bits:2048",
-                "-out",
-                str(self.key),
-            ]
-        )
-        self.key.chmod(0o600)
-        modulus = (
-            checked(
-                ["openssl", "rsa", "-in", str(self.key), "-noout", "-modulus"],
-                text=True,
-            )
-            .stdout.strip()
-            .split("=", 1)[1]
-        )
-        self.jwk = {
-            "kty": "RSA",
-            "use": "sig",
-            "alg": "RS256",
-            "kid": "bruno-fixture",
-            "n": base64url(bytes.fromhex(modulus)),
-            "e": "AQAB",
-        }
-        self.codes = {}
-        self.lock = threading.Lock()
-        self.calls = {
-            "discovery": 0,
-            "authorization": 0,
-            "exchange": 0,
-            "jwks": 0,
-        }
-        self.server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), self.handler())
-        self.server.daemon_threads = True
-        self.origin = f"http://127.0.0.1:{self.server.server_port}"
-        self.issuer = self.origin + "/issuer"
-        self.thread = threading.Thread(
-            target=self.server.serve_forever, kwargs={"poll_interval": 0.1}, daemon=True
-        )
-
-    def __enter__(self):
-        try:
-            self.thread.start()
-        except BaseException:
-            self.server.server_close()
-            raise
-        return self
-
-    def __exit__(self, *_):
-        self.server.shutdown()
-        self.server.server_close()
-        self.thread.join(timeout=5)
-
-    def count(self, name):
-        with self.lock:
-            self.calls[name] += 1
-
-    def token(self, nonce):
-        now = int(time.time())
-        header = base64url(
-            json.dumps(
-                {"alg": "RS256", "kid": "bruno-fixture"}, separators=(",", ":")
-            ).encode()
-        )
-        claims = base64url(
-            json.dumps(
-                {
-                    "iss": self.issuer,
-                    "aud": "aidash-bruno",
-                    "sub": "bruno-user",
-                    "nonce": nonce,
-                    "iat": now,
-                    "exp": now + 600,
-                    "sid": "bruno-provider-session",
-                },
-                separators=(",", ":"),
-            ).encode()
-        )
-        payload = f"{header}.{claims}".encode()
-        signature = checked(
-            ["openssl", "dgst", "-sha256", "-sign", str(self.key)], input=payload
-        ).stdout
-        return payload.decode() + "." + base64url(signature)
-
-    def handler(self):
-        provider = self
-
-        class Handler(http.server.BaseHTTPRequestHandler):
-            def log_message(self, *_):
-                pass
-
-            def respond(self, status, value=None, location=None):
-                body = b"" if value is None else json.dumps(value).encode()
-                self.send_response(status)
-                self.send_header("Content-Type", "application/json")
-                self.send_header("Content-Length", str(len(body)))
-                if location:
-                    self.send_header("Location", location)
-                self.end_headers()
-                self.wfile.write(body)
-
-            def do_GET(self):
-                parsed = urllib.parse.urlsplit(self.path)
-                if parsed.path == "/issuer/.well-known/openid-configuration":
-                    provider.count("discovery")
-                    self.respond(
-                        200,
-                        {
-                            "issuer": provider.issuer,
-                            "authorization_endpoint": provider.issuer + "/authorize",
-                            "token_endpoint": provider.issuer + "/token",
-                            "jwks_uri": provider.issuer + "/certs",
-                            "response_types_supported": ["code"],
-                            "subject_types_supported": ["public"],
-                            "id_token_signing_alg_values_supported": ["RS256"],
-                            "token_endpoint_auth_methods_supported": [
-                                "client_secret_basic",
-                                "client_secret_post",
-                            ],
-                            "code_challenge_methods_supported": ["S256"],
-                        },
-                    )
-                elif parsed.path == "/issuer/certs":
-                    provider.count("jwks")
-                    self.respond(200, {"keys": [provider.jwk]})
-                elif parsed.path == "/issuer/authorize":
-                    query = urllib.parse.parse_qs(parsed.query)
-                    if query.get("client_id") != ["aidash-bruno"] or query.get(
-                        "code_challenge_method"
-                    ) != ["S256"]:
-                        self.respond(400, {"error": "invalid_authorization_request"})
-                        return
-                    redirect = query.get("redirect_uri", [""])[0]
-                    if (
-                        not redirect.startswith("https://127.0.0.1:")
-                        or urllib.parse.urlsplit(redirect).path != "/auth/callback"
-                    ):
-                        self.respond(400, {"error": "invalid_redirect"})
-                        return
-                    code = secrets.token_urlsafe(24)
-                    with provider.lock:
-                        provider.codes[code] = {
-                            "challenge": query["code_challenge"][0],
-                            "nonce": query["nonce"][0],
-                            "redirect": redirect,
-                        }
-                    provider.count("authorization")
-                    self.respond(
-                        307,
-                        location=redirect
-                        + "?"
-                        + urllib.parse.urlencode(
-                            {"code": code, "state": query["state"][0]}
-                        ),
-                    )
-                else:
-                    self.respond(404, {"error": "not_found"})
-
-            def do_POST(self):
-                if self.path != "/issuer/token":
-                    self.respond(404, {"error": "not_found"})
-                    return
-                form = urllib.parse.parse_qs(
-                    self.rfile.read(
-                        int(self.headers.get("Content-Length", "0"))
-                    ).decode()
-                )
-                with provider.lock:
-                    code = provider.codes.pop(form.get("code", [""])[0], None)
-                verifier = form.get("code_verifier", [""])[0]
-                if (
-                    code is None
-                    or form.get("grant_type") != ["authorization_code"]
-                    or form.get("redirect_uri") != [code["redirect"]]
-                    or base64url(hashlib.sha256(verifier.encode()).digest())
-                    != code["challenge"]
-                ):
-                    self.respond(400, {"error": "invalid_grant"})
-                    return
-                provider.count("exchange")
-                self.respond(
-                    200,
-                    {
-                        "access_token": "local-login-fixture",
-                        "token_type": "Bearer",
-                        "expires_in": 600,
-                        "id_token": provider.token(code["nonce"]),
-                    },
-                )
-
-        return Handler
 
 
 @contextlib.contextmanager
@@ -389,11 +178,62 @@ def create_tenant(base, deployment_administrator, label):
         return json.load(response)["name"]
 
 
-def default_node(base, deployment_administrator, tenant):
-    """Use the Tenant's assigned Node for writes that check its existence."""
+def administer_policy(base, deployment_administrator, tenant, revision, bundle):
+    """Replace the Tenant's policy as the Deployment Administrator.
+
+    The policy snapshot and whole-policy replacement are administered routes
+    (ADR 0026); the administrator holds no other Tenant authority (#484).
+    """
+    request = urllib.request.Request(
+        base + f"/api/authorization/{tenant}",
+        data=json.dumps({"expected_revision": revision, "bundle": bundle}).encode(),
+        headers={
+            "Authorization": "Bearer " + deployment_administrator,
+            "Content-Type": "application/json",
+        },
+        method="POST",
+    )
+    with urllib.request.urlopen(request, timeout=10) as response:
+        if response.status != 200:
+            raise RuntimeError("the policy replacement API did not accept the policy")
+
+
+def issue_subject_credential(manage, environment, tenant, subject):
+    """Mint a Subject Credential from the host, never over HTTP (#484).
+
+    A Deployment Administrator cannot issue a Tenant's credentials, so the
+    harness plays the host operator: the command opens the database with the
+    server's own settings and prints the credential once as JSON.
+    """
+    output = checked(
+        [
+            str(manage),
+            "issue-subject-credential",
+            "--tenant",
+            tenant,
+            "--subject",
+            subject,
+            "--label",
+            "bruno_host",
+            "--expires-in-seconds",
+            "3600",
+        ],
+        cwd=ROOT / "server",
+        env=environment,
+        text=True,
+    ).stdout
+    issued = json.loads(output.strip().splitlines()[-1])
+    return issued["token"], issued["credential"]["id"]
+
+
+def default_node(base, subject_token, tenant):
+    """Use the Tenant's assigned Node for writes that check its existence.
+
+    Listing Nodes needs `node.read`, which only a Tenant subject can hold.
+    """
     request = urllib.request.Request(
         base + f"/api/tenants/{tenant}/nodes",
-        headers={"Authorization": "Bearer " + deployment_administrator},
+        headers={"Authorization": "Bearer " + subject_token},
     )
     with urllib.request.urlopen(request, timeout=10) as response:
         nodes = [node for node in json.load(response) if node["default"]]
@@ -707,10 +547,7 @@ def main():
                     "AIDASH_API_TOKEN": deployment_administrator,
                     "AIDASH_API_RATE_BURST": "10000",
                     "AIDASH_WEB_DIR": str(web),
-                    "AIDASH_OIDC_ISSUER": provider.issuer,
-                    "AIDASH_OIDC_CLIENT_ID": "aidash-bruno",
-                    "AIDASH_OIDC_CLIENT_SECRET": secrets.token_urlsafe(32),
-                    "AIDASH_OIDC_PUBLIC_ORIGIN": browser_origin,
+                    **oidc_environment(provider, browser_origin),
                 }
             )
             environment["NO_PROXY"] = environment["no_proxy"] = "127.0.0.1,localhost"
@@ -763,14 +600,50 @@ def main():
                 stream_bases.append(stream_base)
             control = resources.enter_context(StreamController(stream_factories))
             tenant = create_tenant(base, deployment_administrator, "bruno-" + run_id)
+            # The Deployment Administrator writes a bootstrap policy (revision 1
+            # to 2) that lets alice read the Tenant's Nodes and revoke
+            # credentials; journey 05 replaces it with the scoped policy.
+            administer_policy(
+                base,
+                deployment_administrator,
+                tenant,
+                1,
+                {
+                    "tenant": tenant,
+                    "subjects": {"alice": {"kind": "user"}, "bob": {"kind": "user"}},
+                    "policies": [
+                        {
+                            "id": "bootstrap-node-read",
+                            "effect": "allow",
+                            "subjects": {"ids": ["alice"]},
+                            "actions": ["node.read"],
+                            "resources": {"kinds": ["node"]},
+                        }
+                    ],
+                },
+            )
+            alice_token, alice_credential = issue_subject_credential(
+                manage, environment, tenant, "alice"
+            )
+            bob_token, bob_credential = issue_subject_credential(
+                manage, environment, tenant, "bob"
+            )
+            contract_token, _ = issue_subject_credential(
+                manage, environment, tenant, "alice"
+            )
             variables = {
                 "base_url": base,
                 "browser_origin": browser_origin,
                 "node_id": node_id,
                 "tenant": tenant,
-                "tenant_node": default_node(base, deployment_administrator, tenant),
+                "tenant_node": default_node(base, alice_token, tenant),
                 "issuer": provider.issuer,
                 "deployment_administrator_token": deployment_administrator,
+                "alice_token": alice_token,
+                "alice_credential_id": alice_credential,
+                "bob_token": bob_token,
+                "bob_credential_id": bob_credential,
+                "contract_alice_token": contract_token,
                 "control_url": control.origin,
                 **{
                     f"stream_base_{number}": value

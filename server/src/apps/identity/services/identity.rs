@@ -204,17 +204,6 @@ impl Actor {
 			)),
 		}
 	}
-
-	/// The Tenant whose Registry the actor reads and writes: a Subject's own.
-	/// A Deployment Administrator has none (ADR 0029).
-	pub(crate) fn registry_tenant(&self) -> Result<aidash_domain::tenancy::TenantName> {
-		match self {
-			Self::Subject(identity) => Ok(aidash_domain::tenancy::TenantName::new(
-				identity.tenant.clone(),
-			)?),
-			Self::DeploymentAdministrator => Err(crate::Error::Forbidden),
-		}
-	}
 }
 
 impl SubjectIdentity {

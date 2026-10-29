@@ -463,9 +463,11 @@ async fn node_purge_erases_owned_files_and_rows_and_preserves_sibling_and_tenant
 	// The initial default Node has only Tenant-creation history. Produce an
 	// actual separable sibling management event before testing its retention.
 	let (status, relabeled) = d
-		.as_deployment_administrator(
+		.as_person(
+			&alice,
 			"PATCH",
 			&format!("/api/tenants/{tenant}/nodes/{sibling}"),
+			Some(&context),
 			json!({"label":"Retained sibling"}),
 		)
 		.await;
@@ -835,9 +837,11 @@ async fn node_purge_erases_owned_files_and_rows_and_preserves_sibling_and_tenant
 	assert_eq!(live[0]["name"], sibling);
 	for suffix in ["default", "restore"] {
 		let (status, body) = d
-			.as_deployment_administrator(
+			.as_person(
+				&alice,
 				"POST",
 				&format!("/api/tenants/{tenant}/nodes/{target}/{suffix}"),
+				Some(&context),
 				Value::Null,
 			)
 			.await;

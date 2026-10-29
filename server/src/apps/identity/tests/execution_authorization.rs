@@ -387,14 +387,7 @@ async fn catalog_approval_and_run_read_denials_cover_search_collections_and_even
 		.0,
 		200
 	);
-	let (_, other_credential) = request(
-		&app,
-		&f.config.api_token,
-		"POST",
-		"/api/authorization/other/credentials",
-		json!({"subject":"alice"}),
-	)
-	.await;
+	let other_credential = common::issued_credential(&f.store, "other", "alice").await;
 	let other_token = other_credential["token"].as_str().unwrap();
 	let (status, other_catalog) =
 		request(&app, other_token, "GET", "/api/registry", Value::Null).await;
@@ -1149,35 +1142,25 @@ async fn child_execution_retains_parent_authority_and_supports_credential_rotati
 		invocations, 0,
 		"authorization must precede durable invocation admission"
 	);
-	let (_, credentials) = request(
-		&app,
-		&f.config.api_token,
-		"GET",
-		"/api/authorization/acme/credentials",
-		Value::Null,
-	)
-	.await;
-	let old_id = credentials[0]["id"].as_str().unwrap();
-	assert_eq!(
-		request(
-			&app,
-			&f.config.api_token,
-			"POST",
-			&format!("/api/authorization/acme/credentials/{old_id}/revoke"),
-			json!({})
-		)
+	// Listing and revoking a Tenant's credentials is Tenant authority: the host
+	// does it through the service, never a Deployment Administrator over HTTP (#484).
+	let credentials = serde_json::to_value(
+		aidash_server::authorization::Authorization {
+			pool: f.store.pool.clone(),
+		}
+		.credentials("acme")
 		.await
-		.0,
-		200
-	);
-	let (_, fresh) = request(
-		&app,
-		&f.config.api_token,
-		"POST",
-		"/api/authorization/acme/credentials",
-		json!({"subject":"alice"}),
+		.unwrap(),
 	)
-	.await;
+	.unwrap();
+	let old_id = credentials[0]["id"].as_str().unwrap();
+	aidash_server::authorization::Authorization {
+		pool: f.store.pool.clone(),
+	}
+	.revoke_credential("acme", old_id.parse().unwrap())
+	.await
+	.unwrap();
+	let fresh = common::issued_credential(&f.store, "acme", "alice").await;
 	assert_eq!(
 		request(
 			&app,
@@ -1214,18 +1197,12 @@ async fn child_execution_retains_parent_authority_and_supports_credential_rotati
 	);
 	// Deployment Administrator cancellation is cleanup and must remain possible after every
 	// source credential has been revoked; it must never invoke the provider.
-	assert_eq!(
-		request(
-			&app,
-			&f.config.api_token,
-			"POST",
-			&format!("/api/authorization/acme/credentials/{credential}/revoke"),
-			json!({})
-		)
-		.await
-		.0,
-		200
-	);
+	aidash_server::authorization::Authorization {
+		pool: f.store.pool.clone(),
+	}
+	.revoke_credential("acme", credential)
+	.await
+	.unwrap();
 	// A Deployment Administrator cancels through the content-free Safety Stop
 	// (ADR 0101), which names the Tenant and the Run's current control revision.
 	let (status, facts) = request(
@@ -1438,18 +1415,18 @@ async fn worker_effect_boundary_serializes_revocation_and_persists_audit_before_
 		2,
 		"root and agent authorization must be durable before the HTTP effect starts"
 	);
-	let (_, credentials) = request(
-		&app,
-		&f.config.api_token,
-		"GET",
-		"/api/authorization/acme/credentials",
-		Value::Null,
+	// Listing and revoking a Tenant's credentials is Tenant authority: the host
+	// does it through the service, never a Deployment Administrator over HTTP (#484).
+	let credentials = serde_json::to_value(
+		aidash_server::authorization::Authorization {
+			pool: f.store.pool.clone(),
+		}
+		.credentials("acme")
+		.await
+		.unwrap(),
 	)
-	.await;
-	let revoke_path = format!(
-		"/api/authorization/acme/credentials/{}/revoke",
-		credentials[0]["id"].as_str().unwrap()
-	);
+	.unwrap();
+	let revoke_id = credentials[0]["id"].as_str().unwrap().to_owned();
 	policy["subjects"][qualified_agent(
 		&aidash_domain::nodes::NodeAddress::derived(f.config.deployment.as_str(), "acme"),
 		"research",
@@ -1475,18 +1452,11 @@ async fn worker_effect_boundary_serializes_revocation_and_persists_audit_before_
 		});
 	}
 	let revoke = tokio::spawn({
-		let app = app.clone();
-		let deployment_administrator = f.config.api_token.clone();
-		async move {
-			request(
-				&app,
-				&deployment_administrator,
-				"POST",
-				&revoke_path,
-				json!({}),
-			)
-			.await
-		}
+		let service = aidash_server::authorization::Authorization {
+			pool: f.store.pool.clone(),
+		};
+		let credential: Uuid = revoke_id.parse().unwrap();
+		async move { service.revoke_credential("acme", credential).await }
 	});
 	tokio::time::timeout(Duration::from_secs(5),async {
         loop {
@@ -1512,7 +1482,7 @@ async fn worker_effect_boundary_serializes_revocation_and_persists_audit_before_
 		}
 	}
 	assert_eq!(replaced, 1);
-	assert_eq!(revoke.await.unwrap().0, 200);
+	revoke.await.unwrap().unwrap();
 	let invocation: String = {
 		let query_bind_1 = run.id;
 		sqlx::query_scalar(
@@ -4714,10 +4684,9 @@ async fn node_closure_fences_existing_authority_and_preserves_the_sibling(
 	let (mut policy, token, task) = bootstrap(&f, &app, "http://127.0.0.1:9").await;
 	let target = NodeName::derived("acme");
 	let admin = &f.config.api_token;
-	let (status, sibling) = request(
-		&app,
-		admin,
-		"POST",
+	let (status, sibling) = common::administer_node(
+		&f,
+		"acme",
 		"/api/tenants/acme/nodes",
 		json!({"label":"Sibling"}),
 	)
@@ -4843,10 +4812,9 @@ async fn node_closure_fences_existing_authority_and_preserves_the_sibling(
 		.unwrap();
 	assert!(!frame.is_empty());
 	assert_eq!(
-		request(
-			&app,
-			admin,
-			"POST",
+		common::administer_node(
+			&f,
+			"acme",
 			&format!("/api/tenants/acme/nodes/{sibling}/default"),
 			Value::Null
 		)
@@ -4854,10 +4822,9 @@ async fn node_closure_fences_existing_authority_and_preserves_the_sibling(
 		.0,
 		200
 	);
-	let deleted = request(
-		&app,
-		admin,
-		"POST",
+	let deleted = common::administer_node(
+		&f,
+		"acme",
 		&format!("/api/tenants/acme/nodes/{target}/deletion"),
 		json!({"confirmation":target}),
 	)
@@ -4886,10 +4853,9 @@ async fn node_closure_fences_existing_authority_and_preserves_the_sibling(
 				.await
 				.unwrap();
 			assert_eq!(
-				request(
-					&app,
-					admin,
-					"POST",
+				common::administer_node(
+					&f,
+					"acme",
 					&format!("/api/tenants/acme/nodes/{target}/restore"),
 					Value::Null
 				)

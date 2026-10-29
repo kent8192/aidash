@@ -344,14 +344,8 @@ async fn receiving_cas_preserves_concurrent_disable_quarantine_and_newer_keys(
 	let name = NodeName::derived("permission-edit").to_string();
 	let source_node = source.remote.node(&name);
 	let path = common::peering::registration_path("acme", source.receiver.node.as_str());
-	let (status, body) = request(
-		&app,
-		&f.config.api_token,
-		"POST",
-		&path,
-		source.remote.registration(&name),
-	)
-	.await;
+	let (status, body) =
+		common::administer_node(&f, "acme", &path, source.remote.registration(&name)).await;
 	assert_eq!(status, 200, "{body}");
 	let edit_owner = ReceivingKeyOwner::Registration {
 		tenant: TenantName::new("acme").unwrap(),
@@ -382,10 +376,9 @@ async fn receiving_cas_preserves_concurrent_disable_quarantine_and_newer_keys(
 	let mut input = source.remote.registration(&name);
 	input["expected_revision"] = json!(1);
 	input["atomic_transactions"] = json!(true);
-	let owned_app = app.clone();
-	let bearer = f.config.api_token.clone();
-	let edit =
-		tokio::spawn(async move { request(&owned_app, &bearer, "POST", &path, input).await });
+	// Registrations are Tenant administration, held through a Mapping (#484).
+	let administrator = common::BrowserMapping::new(&f, "acme", "alice").await;
+	let edit = tokio::spawn(async move { administrator.send("POST", &path, input).await });
 	common::wait_for_blocked(&f.store.pool, pid, 2).await;
 	blocker.commit().await.unwrap();
 	assert!(advancement.await.unwrap().unwrap());
@@ -404,10 +397,9 @@ async fn receiving_cas_preserves_concurrent_disable_quarantine_and_newer_keys(
 	for failure in ["auth_revision", "keys_revision", "disable", "quarantine"] {
 		let name = NodeName::derived(failure).to_string();
 		let source_node = source.remote.node(&name);
-		let (status, body) = request(
-			&app,
-			&f.config.api_token,
-			"POST",
+		let (status, body) = common::administer_node(
+			&f,
+			"acme",
 			&common::peering::registration_path("acme", source.receiver.node.as_str()),
 			source.remote.registration(&name),
 		)

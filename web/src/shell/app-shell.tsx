@@ -51,7 +51,8 @@ import {
 } from "../components/ui/tooltip";
 import { collaborationCopy } from "../collaboration/copy";
 import {
-  personalSettingsSections,
+  OPEN_CONTEXT_SWITCHER,
+  settingsSectionsFor,
   visibleSettingsSections,
   type Destination,
   type SettingsSection,
@@ -159,14 +160,12 @@ function SettingsLinks({
   const copy = shellCopy[locale];
   return (
     <div className="grid gap-px">
-      {visibleSettingsSections
+      {settingsSectionsFor(
+        deploymentAdministrator,
+        deploymentAdministratorSettings,
+      )
         .filter(
           (value) => value !== "planConnections" || selfHostedPlanConnections,
-        )
-        .filter((value) =>
-          deploymentAdministrator
-            ? !personalSettingsSections[value]
-            : !deploymentAdministratorSettings[value],
         )
         .map((value) => {
           const Icon = settingsIcons[value];
@@ -251,6 +250,16 @@ export function AppShell({
     closeMenus();
     go(target, context);
   };
+  // A notice elsewhere in the dashboard can ask for the authority switcher.
+  useEffect(() => {
+    const open = () => {
+      closeMenus();
+      if (window.matchMedia("(min-width: 768px)").matches) setAccountOpen(true);
+      else setMobileOpen(true);
+    };
+    window.addEventListener(OPEN_CONTEXT_SWITCHER, open);
+    return () => window.removeEventListener(OPEN_CONTEXT_SWITCHER, open);
+  }, []);
   const latest = useRef({ navigate, section });
   useEffect(() => {
     latest.current = { navigate, section };

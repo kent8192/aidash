@@ -1,25 +1,26 @@
 meta {
-  name: 1404 tenant-registration-keys-change - Anonymous receiving-key request is rejected
+  name: 1404 tenant-registration-keys-change - Malformed key change cannot reach record control
   type: http
   seq: 1404
 }
 
 post {
   url: {{base_url}}/api/tenants/{{tenant}}/nodes/{{tenant_node}}/registration-keys
-  body: text
+  body: file
   auth: none
 }
 
 headers {
   Accept: application/json
+  Authorization: Bearer {{contract_token}}
   Content-Type: application/json
 }
 
-body:text {
-  {"source_node": "aidash://bruno-unknown/brave-otter-k3m9q2xa", "action": "quarantine", "expected_keys_revision": 1, "expected_authorization_revision": 1}
+body:file {
+  file1: @file(fixtures/malformed-json.txt) @contentType(application/json)
 }
 
 tests {
-  test("Exact HTTP 401", function () { expect(res.getStatus()).to.equal(401); });
-  test("Stable authorization error envelope", function () { expect(res.getHeader("content-type")).to.include("application/json"); expect(res.getBody()).to.eql({error:"unauthorized"}); });
+  test("Exact HTTP 400", function () { expect(res.getStatus()).to.equal(400); });
+  test("Rejection is diagnostic and does not disclose SQL or credentials", function () { const value=res.getBody(); const text=typeof value === "string" ? value : JSON.stringify(value); expect(text.length).to.be.greaterThan(0); expect(text).not.to.match(/postgres:\/\/|SELECT .* FROM |deployment_administrator_token|peer_token/); });
 }
