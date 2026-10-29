@@ -67,7 +67,19 @@ therefore tells the model to read one page per turn.
 | `correction-lost-in-pruned-tool-result` | 2 unreducible, 1 infrastructure (`/api/state` 504)                 |           2 |
 | `terminal-context-overflow`             | 3 unreducible (expected)                                           |           0 |
 
-v3 gives these tasks 40 steps. It has not been run: the shared Node's `/api/state` began timing out.
+### v3: the same, with 40 steps (SHA-256 `8a8e0a55…`, release build `hc534r`)
+
+| Task                                    | Outcomes (n = 3)                                                                                      | Compactions |
+| --------------------------------------- | ----------------------------------------------------------------------------------------------------- | ----------: |
+| `actual-pruning-correction-retention`   | 2 success (constraints kept), 1 unreducible                                                           |           9 |
+| `summary-recovery-correction-retention` | 1 success (constraints kept), 1 step limit, 1 `summary_invalid` (`changed_item`); 4 Summaries adopted |          16 |
+| `long-conversation-corrections`         | 1 unreducible, 2 step limit                                                                           |          13 |
+| `correction-lost-in-pruned-tool-result` | 3 unreducible                                                                                         |          13 |
+| `terminal-context-overflow`             | 3 unreducible (expected)                                                                              |           0 |
+
+3 of the 12 recoverable Runs finished, and all 3 kept the corrected constraints. Six paused with
+`context_unreducible` after 2–6 compactions. Two `long-conversation` Runs and one `summary-recovery` Run
+reached 40 steps: after pruning, the model read the dropped pages again. Jev made 57 decisions for USD 0.0061.
 
 ### Why Runs pause
 
