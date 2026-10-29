@@ -165,7 +165,6 @@ impl Fixture {
 			.unwrap()
 			.as_secs();
 		Claims {
-			data_region: None,
 			provider_tools: vec![],
 			data_protection: Default::default(),
 			iss: "worker".into(),
@@ -1237,7 +1236,6 @@ async fn cache_expiry_and_token_bucket_refill_are_bounded() {
 	cfg.requests_per_second = 1.0;
 	let broker = Broker::new(cfg, keys, source.clone(), Arc::new(Logs::default())).unwrap();
 	let c = Claims {
-		data_region: None,
 		provider_tools: vec![],
 		data_protection: Default::default(),
 		iss: "worker".into(),
@@ -1825,56 +1823,6 @@ fn responses_stream_usage_is_audited_from_the_terminal_event() {
 	assert_eq!(usage["output_tokens"], 4);
 	assert_eq!(usage["total_tokens"], 7);
 	assert_eq!(usage["cost"], 0.000002);
-}
-
-#[tokio::test]
-async fn regional_hosts_and_catalog_discovery_require_signed_region_authority() {
-	use aidash_capability::DataRegion as Region;
-	let fixture = Fixture::new().await;
-	let mut claims = fixture.claims();
-	let request = || {
-		Request::builder()
-			.method("GET")
-			.uri("/api/v1/models/user")
-			.body(Body::empty())
-			.unwrap()
-	};
-	assert_eq!(route(&request(), &claims).unwrap_err(), Failure::Operation);
-	let global = fixture.broker.provider_base(&claims).unwrap().to_owned();
-	assert!(global.starts_with("http://127.0.0.1:"));
-	for (region, host) in [
-		(Region::Eu, "https://eu.openrouter.ai/api/v1"),
-		(Region::Us, "https://us.openrouter.ai/api/v1"),
-	] {
-		claims.data_region = Some(region);
-		assert_eq!(fixture.broker.provider_base(&claims).unwrap(), host);
-		assert_eq!(route(&request(), &claims).unwrap().0, Operation::Discovery);
-		let tools = Request::builder()
-			.method("GET")
-			.uri("/api/v1/tools")
-			.body(Body::empty())
-			.unwrap();
-		assert_eq!(route(&tools, &claims).unwrap().0, Operation::Discovery);
-		let token = mint(&claims, &fixture.signer).await.unwrap();
-		let now = SystemTime::now()
-			.duration_since(UNIX_EPOCH)
-			.unwrap()
-			.as_secs();
-		assert_eq!(
-			fixture
-				.broker
-				.keys
-				.verify(token.expose_secret(), "worker", "environment", now)
-				.unwrap()
-				.data_region,
-			Some(region)
-		);
-	}
-	claims.data_region = Some(Region::Jp);
-	assert_eq!(
-		fixture.broker.provider_base(&claims).unwrap_err(),
-		Failure::ClaimViolation
-	);
 }
 
 #[tokio::test]

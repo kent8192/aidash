@@ -1,6 +1,6 @@
 //! Per-send policy evaluation and the short-lived OpenRouter ZDR catalog.
 use crate::{Error, Result};
-use aidash_application::provider_access::{Context, ProviderAccess, Source};
+use aidash_application::provider_access::{Context, Inference, Operation, ProviderAccess, Source};
 use aidash_domain::data_protection::Level;
 use secrecy::ExposeSecret;
 use serde_json::Value;
@@ -9,9 +9,6 @@ use std::{
 	sync::{Arc, Mutex, OnceLock},
 	time::{Duration, Instant},
 };
-
-mod regional;
-pub use regional::{regional_model, regional_request, regional_tools};
 
 pub async fn context(access: &dyn ProviderAccess, context: &Context) -> Result<Context> {
 	let mut current = context.clone();
@@ -37,10 +34,7 @@ pub async fn zdr_routes(
 	}
 	static CATALOGS: OnceLock<Mutex<Catalogs>> = OnceLock::new();
 	let catalogs = CATALOGS.get_or_init(Mutex::default);
-	let key = (
-		format!("{endpoint}:{:?}", context.data_protection.region()?),
-		context.tenant.clone(),
-	);
+	let key = (endpoint.to_owned(), context.tenant.clone());
 	let cached = catalogs
 		.lock()
 		.expect("ZDR catalog lock")
@@ -50,7 +44,17 @@ pub async fn zdr_routes(
 	let catalog = if let Some(catalog) = cached {
 		catalog
 	} else {
-		let access = access.discovery(context, endpoint, source, model).await?;
+		let mut discovery = context.clone();
+		discovery.inference = Some(Inference {
+			provider_tools: vec![],
+			model: model.into(),
+			operations: vec![Operation::Discovery],
+			max_output_tokens: 1,
+			cache_breakpoints: false,
+			call: None,
+			hosts: vec![],
+		});
+		let access = access.resolve(&discovery, endpoint, source).await?;
 		let mut request = clients.select(&access)?.get(format!(
 			"{}/endpoints/zdr",
 			access.endpoint.trim_end_matches('/')

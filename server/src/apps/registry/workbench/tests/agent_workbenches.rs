@@ -241,7 +241,6 @@ async fn simulated_test_never_invokes_the_registered_external_tool(
 			.level("no_training")
 			.model_call_zdr(true)
 			.plan_connection_exempt(true)
-			.data_region_restricted(false)
 			.updated_at(chrono::Utc::now())
 			.updated_by("fixture")
 			.finish();

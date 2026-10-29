@@ -31,8 +31,6 @@ pub(crate) async fn stored(
 				level,
 				model_call_zdr: row.model_call_zdr,
 				plan_connection_exempt: row.plan_connection_exempt,
-				data_region_restricted: row.data_region_restricted,
-				..Default::default()
 			};
 			policy.validate()?;
 			Ok(policy)
@@ -76,7 +74,7 @@ pub(crate) async fn current(store: &Store, context: &Context) -> Result<DataProt
 				.is_some()
 			{
 				assume_remote_strictest = true;
-				tracing::warn!(run_id = %run, origin_kind = "remote_admission", assumed_level = "zero_data_retention", model_call_zdr = true, plan_connection_exempt = false, assumed_data_region_restricted = false, "Current remote Tenant Data Protection policy unavailable; assuming the strictest level and no region restriction");
+				tracing::warn!(run_id = %run, origin_kind = "remote_admission", assumed_level = "zero_data_retention", model_call_zdr = true, plan_connection_exempt = false, "Current remote Tenant Data Protection policy unavailable; assuming the strictest policy");
 			}
 			let (sql, values) = Query::select()
 				.columns(["tenant", "task_id"].map(Alias::new))
@@ -112,7 +110,7 @@ pub(crate) async fn current(store: &Store, context: &Context) -> Result<DataProt
 				.is_some()
 			{
 				assume_remote_strictest = true;
-				tracing::warn!(run_id = %run, origin_kind = "remote_task_output", assumed_level = "zero_data_retention", model_call_zdr = true, plan_connection_exempt = false, assumed_data_region_restricted = false, "Current remote Tenant Data Protection policy unavailable; assuming the strictest level and no region restriction");
+				tracing::warn!(run_id = %run, origin_kind = "remote_task_output", assumed_level = "zero_data_retention", model_call_zdr = true, plan_connection_exempt = false, "Current remote Tenant Data Protection policy unavailable; assuming the strictest policy");
 			}
 			let (sql, values) = Query::select()
 				.column(Alias::new("source_run_id"))
@@ -133,17 +131,12 @@ pub(crate) async fn current(store: &Store, context: &Context) -> Result<DataProt
 				level: Level::ZeroDataRetention,
 				model_call_zdr: true,
 				plan_connection_exempt: false,
-				..Default::default()
 			}]
 		} else {
 			vec![]
 		};
 		for tenant in tenants {
-			policies.push(
-				stored(tx.as_mut(), &tenant)
-					.await?
-					.in_deployment(store.deployment_region),
-			);
+			policies.push(stored(tx.as_mut(), &tenant).await?);
 		}
 		tx.commit().await?;
 		return Ok(DataProtection::combine(
@@ -154,8 +147,7 @@ pub(crate) async fn current(store: &Store, context: &Context) -> Result<DataProt
 	if tenants.is_empty() {
 		return Ok(context
 			.data_protection
-			.with_floor(store.data_protection_floor)
-			.in_deployment(store.deployment_region));
+			.with_floor(store.data_protection_floor));
 	}
 	let tenant = tenants.first().expect("nonempty tenant set");
 	let mut tx = store
@@ -166,9 +158,7 @@ pub(crate) async fn current(store: &Store, context: &Context) -> Result<DataProt
 		.await?;
 	let policy = stored(tx.as_mut(), tenant).await?;
 	tx.commit().await?;
-	Ok(policy
-		.with_floor(store.data_protection_floor)
-		.in_deployment(store.deployment_region))
+	Ok(policy.with_floor(store.data_protection_floor))
 }
 
 pub(crate) async fn save(
@@ -193,7 +183,6 @@ pub(crate) async fn save(
 		.level(level.clone())
 		.model_call_zdr(policy.model_call_zdr)
 		.plan_connection_exempt(policy.plan_connection_exempt)
-		.data_region_restricted(policy.data_region_restricted)
 		.updated_at(now)
 		.updated_by(by.to_owned())
 		.finish();
@@ -207,7 +196,6 @@ pub(crate) async fn save(
 		.level(level)
 		.model_call_zdr(policy.model_call_zdr)
 		.plan_connection_exempt(policy.plan_connection_exempt)
-		.data_region_restricted(policy.data_region_restricted)
 		.changed_at(now)
 		.changed_by(by.to_owned())
 		.finish();
@@ -226,8 +214,6 @@ pub(crate) async fn impact(
 ) -> Result<super::super::serializers::data_protection::Impact> {
 	use super::super::serializers::data_protection::{Affected, Impact};
 	use aidash_domain::data_protection::Destination;
-	let policy = policy.in_deployment(store.deployment_region);
-	policy.region()?;
 	let (sql, values) = Query::select()
 		.expr_as(
 			Expr::col("metadata").cast_as(Alias::new("text")),
@@ -237,35 +223,9 @@ pub(crate) async fn impact(
 		.and_where(Expr::col("tenant").eq(Expr::value(tenant)))
 		.build(PostgresQueryBuilder);
 	let rows = tx.fetch_all(&sql, convert_values(values)).await?;
-	let mut research =
+	let research =
 		crate::apps::execution::services::research::providers().data_protection_denials(policy);
-	if policy.data_region_restricted {
-		for name in ["web_search", "web_fetch", "datetime", "fusion"] {
-			let kind = format!("openrouter:{name}");
-			let result = async {
-				policy.permits(Destination::ProviderTool)?;
-				let (access, context, clients) = regional_preview(store, tenant, policy)?;
-				aidash_integrations::data_protection::regional_tools(
-					&access,
-					&context,
-					&clients,
-					aidash_domain::provider_credentials::Provider::Openrouter.base_url(),
-					&aidash_application::provider_access::Source::Tenant {
-						provider: "openrouter".into(),
-					},
-					&serde_json::json!([{"type":kind}]),
-				)
-				.await?;
-				Ok::<(), Error>(())
-			}
-			.await;
-			if let Err(error) = result {
-				research.insert(format!("provider.openrouter.{name}"), error.to_string());
-			}
-		}
-	}
 	let mut blocked = std::collections::BTreeMap::new();
-	let mut usable_models = 0;
 	for row in rows {
 		let entry: aidash_domain::registry::Entry = serde_json::from_str(
 			&row.get::<String>("metadata_json")
@@ -291,11 +251,6 @@ pub(crate) async fn impact(
 		{
 			blocked.insert((entry.id.clone(), entry.version.clone()), reason.clone());
 		}
-		if entry.kind == "tool"
-			&& let Some(reason) = research.get(entry.id.split('@').next().unwrap_or(&entry.id))
-		{
-			blocked.insert((entry.id.clone(), entry.version.clone()), reason.clone());
-		}
 		if entry.kind == "model" {
 			let config: aidash_domain::model::ModelConfig = serde_json::from_value(entry.config)?;
 			let destination = if config.plan_connection.is_some() {
@@ -307,33 +262,12 @@ pub(crate) async fn impact(
 					.keyless
 					.data_protection_destination(&config.endpoint)?
 			};
-			let permission = policy.permits(destination);
-			let permission = if permission.is_ok()
-				&& policy.data_region_restricted
-				&& config.provider_credential.is_some()
-			{
-				preview_regional_model(store, tenant, policy, &config).await
-			} else if permission.is_ok()
-				&& policy.data_region_restricted
-				&& config.plan_connection.is_none()
-				&& store.keyless.destination(&config.endpoint)?
-					== aidash_domain::keyless::Destination::Forbidden
-			{
-				Err(Error::Invalid(
-					"Deployment-hosted model's private origin is not network-permitted".into(),
-				))
-			} else {
-				permission.map(|_| ()).map_err(Into::into)
-			};
-			if let Err(error) = permission {
+			if let Err(error) = policy.permits(destination) {
 				blocked.insert((entry.id, entry.version), error.to_string());
-			} else if config.plan_connection.is_none() {
-				usable_models += 1;
 			}
 		}
 	}
 	let mut impact = Impact {
-		usable_models,
 		effective: policy,
 		agents: vec![],
 		catalog_approvals: vec![],
@@ -435,84 +369,6 @@ pub(crate) async fn impact(
 		.agents
 		.dedup_by(|a, b| a.id == b.id && a.version == b.version && a.reason == b.reason);
 	Ok(impact)
-}
-
-/// Authorized previews use read-only catalog authority, never a fictitious Run.
-async fn preview_regional_model(
-	store: &Store,
-	tenant: &str,
-	policy: DataProtection,
-	config: &aidash_domain::model::ModelConfig,
-) -> Result<()> {
-	let (access, context, clients) = regional_preview(store, tenant, policy)?;
-	let source =
-		aidash_application::provider_access::Source::configured(&config.provider_credential, &None);
-	// A cached catalog must not make a revoked or disconnected credential count.
-	aidash_application::provider_access::ProviderAccess::check(
-		&access,
-		&context,
-		&config.endpoint,
-		&source,
-	)
-	.await?;
-	aidash_integrations::data_protection::regional_model(
-		&access,
-		&context,
-		&clients,
-		&config.endpoint,
-		&source,
-		&config.model_id,
-	)
-	.await?;
-	aidash_integrations::data_protection::zdr_routes(
-		&access,
-		&context,
-		&clients,
-		&config.endpoint,
-		&source,
-		&config.model_id,
-	)
-	.await?;
-	Ok(())
-}
-
-fn regional_preview(
-	store: &Store,
-	tenant: &str,
-	policy: DataProtection,
-) -> Result<(
-	aidash_application::provider_access::TenantAccess,
-	Context,
-	aidash_integrations::keyless::Clients,
-)> {
-	use aidash_application::provider_access::{Context, MaintenancePurpose, TenantAccess};
-	let service = store
-		.provider_credentials
-		.as_ref()
-		.ok_or_else(|| Error::Invalid("Secret Store is not configured".into()))?;
-	let access = TenantAccess {
-		keyless: store.keyless.clone(),
-		repository: service.repository.clone(),
-		reader: store.provider_key_material_reader.clone(),
-		issuer: store.capability_issuer.clone(),
-	};
-	let context = Context {
-		tenant: tenant.into(),
-		data_protection: policy,
-		maintenance: Some(MaintenancePurpose::ProviderDiscovery),
-		..Default::default()
-	};
-	let client = reqwest::Client::builder()
-		.redirect(reqwest::redirect::Policy::none())
-		.timeout(std::time::Duration::from_secs(30))
-		.build()
-		.map_err(|_| Error::Invalid("regional discovery client unavailable".into()))?;
-	let clients = aidash_integrations::keyless::Clients::new(
-		client,
-		std::time::Duration::from_secs(30),
-		std::time::Duration::from_secs(3),
-	)?;
-	Ok((access, context, clients))
 }
 
 /// Durable Run event is both the Thread disclosure and the audit record. One

@@ -326,15 +326,6 @@ impl RouteDispatch {
 					.expect("policy object")
 					.clone(),
 			);
-			crate::data_protection::regional_request(
-				self.access.as_ref(),
-				&scope,
-				&clients,
-				Provider::Openrouter.base_url(),
-				&self.source,
-				&body,
-			)
-			.await?;
 			let encoded = serde_json::to_vec(&body).map_err(Error::from)?;
 			if !self
 				.capacity

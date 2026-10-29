@@ -56,8 +56,6 @@ impl Context {
 }
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MaintenancePurpose {
-	/// Read-only provider catalogs for current sends and authorized policy previews.
-	ProviderDiscovery,
 	MemoryIndexing,
 	MemoryRetention,
 	MemoryReflection,
@@ -121,27 +119,6 @@ pub trait ProviderAccess: Send + Sync {
 		Err(Error::Invalid("PROVIDER_CONTAINER_UNAVAILABLE".into()))
 	}
 
-	/// Resolve read-only catalog authority while preserving the caller's purpose.
-	/// Native adapters authorize the original Decision/Run before narrowing it.
-	async fn discovery(
-		&self,
-		context: &Context,
-		endpoint: &str,
-		source: &Source,
-		model: &str,
-	) -> Result<Access> {
-		let mut discovery = context.clone();
-		discovery.inference = Some(Inference {
-			provider_tools: vec![],
-			model: model.into(),
-			operations: vec![Operation::Discovery],
-			max_output_tokens: 1,
-			cache_breakpoints: false,
-			call: None,
-			hosts: vec![],
-		});
-		self.resolve(&discovery, endpoint, source).await
-	}
 	async fn resolve(&self, context: &Context, endpoint: &str, source: &Source) -> Result<Access>;
 	/// Whether `resolve` would find an active credential, without minting a
 	/// Capability Token or reading Key Material. Callers use it to fail before
@@ -167,24 +144,12 @@ pub struct KeylessAccess {
 	origins: Arc<std::sync::RwLock<PermittedOrigins>>,
 	/// Explicit Deployment ownership declaration, separate from network access.
 	hosted_origins: Arc<PermittedOrigins>,
-	deployment_region: Option<aidash_domain::data_protection::Region>,
 }
 impl KeylessAccess {
-	pub fn with_deployment_region(
-		mut self,
-		region: Option<aidash_domain::data_protection::Region>,
-	) -> Self {
-		self.deployment_region = region;
-		self
-	}
-	pub fn deployment_region(&self) -> Option<aidash_domain::data_protection::Region> {
-		self.deployment_region
-	}
 	pub fn permitting(origins: PermittedOrigins) -> Self {
 		Self {
 			origins: Arc::new(std::sync::RwLock::new(origins)),
 			hosted_origins: Arc::default(),
-			deployment_region: None,
 		}
 	}
 	pub fn with_deployment_hosted(mut self, origins: PermittedOrigins) -> Self {
@@ -200,7 +165,7 @@ impl KeylessAccess {
 			.origin()
 			.ascii_serialization();
 		Ok(if self.hosted_origins.permits(&origin) {
-			aidash_domain::data_protection::Destination::DeploymentHosted(self.deployment_region)
+			aidash_domain::data_protection::Destination::DeploymentHosted
 		} else {
 			aidash_domain::data_protection::Destination::TenantKeyless
 		})
@@ -319,10 +284,7 @@ impl TenantAccess {
 			));
 		}
 		let mut scope = self.repository.begin(&context.tenant).await?;
-		let id = if (context.run.is_some() && !context.is_decision())
-			|| (context.maintenance == Some(MaintenancePurpose::ProviderDiscovery)
-				&& context.provider_credential_id.is_some())
-		{
+		let id = if context.run.is_some() && !context.is_decision() {
 			context.provider_credential_id.ok_or_else(|| {
 				Error::Invalid("Provider Credential access has no resolved ID".into())
 			})?
@@ -369,13 +331,7 @@ impl ProviderAccess for TenantAccess {
 			.read(&context.tenant, &row.secret_resource, &version)
 			.await?;
 		Ok(Access {
-			endpoint: context
-				.data_protection
-				.region()?
-				.map(|region| region.openrouter_endpoint())
-				.transpose()?
-				.unwrap_or(row.provider.base_url())
-				.into(),
+			endpoint: row.provider.base_url().into(),
 			bearer,
 			keyless: None,
 		})

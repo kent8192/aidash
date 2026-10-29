@@ -47256,10 +47256,6 @@
           "description": "The Tenant policy. Missing settings preserve the existing OpenRouter ZDR default.",
           "required": ["level", "model_call_zdr", "plan_connection_exempt"],
           "properties": {
-            "data_region_restricted": {
-              "type": "boolean",
-              "description": "Restricts content to this Tenant's Deployment Region; never names a host."
-            },
             "level": {
               "$ref": "#/components/schemas/Level"
             },
@@ -47278,31 +47274,12 @@
           "type": "string",
           "enum": ["standard", "no_training", "zero_data_retention"]
         },
-        "Region": {
-          "type": "string",
-          "enum": ["eu", "us", "jp"]
-        },
         "TenantDataProtectionSettings": {
           "type": "object",
-          "required": [
-            "deployment_region",
-            "policy",
-            "effective",
-            "deployment_floor"
-          ],
+          "required": ["policy", "effective", "deployment_floor"],
           "properties": {
             "deployment_floor": {
               "$ref": "#/components/schemas/Level"
-            },
-            "deployment_region": {
-              "anyOf": [
-                {
-                  "$ref": "#/components/schemas/Region"
-                },
-                {
-                  "type": "null"
-                }
-              ]
             },
             "effective": {
               "$ref": "#/components/schemas/DataProtection"
@@ -47333,10 +47310,6 @@
           "description": "The Tenant policy. Missing settings preserve the existing OpenRouter ZDR default.",
           "required": ["level", "model_call_zdr", "plan_connection_exempt"],
           "properties": {
-            "data_region_restricted": {
-              "type": "boolean",
-              "description": "Restricts content to this Tenant's Deployment Region; never names a host."
-            },
             "level": {
               "$ref": "#/components/schemas/Level"
             },
@@ -47355,31 +47328,12 @@
           "type": "string",
           "enum": ["standard", "no_training", "zero_data_retention"]
         },
-        "Region": {
-          "type": "string",
-          "enum": ["eu", "us", "jp"]
-        },
         "TenantDataProtectionSettings": {
           "type": "object",
-          "required": [
-            "deployment_region",
-            "policy",
-            "effective",
-            "deployment_floor"
-          ],
+          "required": ["policy", "effective", "deployment_floor"],
           "properties": {
             "deployment_floor": {
               "$ref": "#/components/schemas/Level"
-            },
-            "deployment_region": {
-              "anyOf": [
-                {
-                  "$ref": "#/components/schemas/Region"
-                },
-                {
-                  "type": "null"
-                }
-              ]
             },
             "effective": {
               "$ref": "#/components/schemas/DataProtection"
@@ -47410,10 +47364,6 @@
           "description": "The Tenant policy. Missing settings preserve the existing OpenRouter ZDR default.",
           "required": ["level", "model_call_zdr", "plan_connection_exempt"],
           "properties": {
-            "data_region_restricted": {
-              "type": "boolean",
-              "description": "Restricts content to this Tenant's Deployment Region; never names a host."
-            },
             "level": {
               "$ref": "#/components/schemas/Level"
             },
@@ -47446,7 +47396,6 @@
         "DataProtectionImpact": {
           "type": "object",
           "required": [
-            "usable_models",
             "effective",
             "agents",
             "catalog_approvals",
@@ -47473,12 +47422,6 @@
             },
             "effective": {
               "$ref": "#/components/schemas/DataProtection"
-            },
-            "usable_models": {
-              "type": "integer",
-              "format": "uint",
-              "description": "Plan Connection exemptions never count as a remaining model.",
-              "minimum": 0
             }
           }
         },

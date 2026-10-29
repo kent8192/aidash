@@ -477,15 +477,6 @@ impl ModelProvider for OpenRouterProvider {
 				body["stream"] = json!(true);
 				body["stream_options"] = json!({"include_usage": true});
 			}
-			crate::data_protection::regional_request(
-				self.access.as_ref(),
-				&context,
-				&self.clients,
-				&self.config.endpoint,
-				&Source::configured(&self.config.provider_credential, &None),
-				&body,
-			)
-			.await?;
 			let access = self
 				.access
 				.resolve(

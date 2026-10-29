@@ -14,9 +14,6 @@ use std::net::SocketAddr;
 #[settings(fragment = true, section = "deployment", validate = false)]
 #[derive(Clone, Serialize, Deserialize, Validate)]
 pub struct DeploymentSettings {
-	/// Storage and processing jurisdiction. Required for managed Offerings.
-	#[setting(default = "None", leaf)]
-	pub region: Option<aidash_domain::data_protection::Region>,
 	/// Minimum Data Protection Level for every Tenant on this Deployment.
 	#[setting(default = "aidash_domain::data_protection::Level::Standard", leaf)]
 	pub data_protection_floor: aidash_domain::data_protection::Level,
@@ -118,11 +115,6 @@ impl SettingsValidation for DeploymentSettings {
 			.map_err(|error| ValidationError::Constraint(error.to_string()))?;
 		self.hosted_origins()
 			.map_err(|error| ValidationError::Constraint(error.to_string()))?;
-		if self.offering != Offering::SelfHosted && self.region.is_none() {
-			return Err(ValidationError::Constraint(
-				"deployment.region is required for Cloud and Dedicated".into(),
-			));
-		}
 		DeploymentId::parse(&self.id)
 			.map_err(|error| ValidationError::Constraint(error.to_string()))?;
 		validate_endpoint(&self.endpoint)
@@ -174,23 +166,6 @@ mod tests {
 
 	fn problem(extra: serde_json::Value) -> String {
 		check(&settings(extra)).unwrap_err().to_string()
-	}
-
-	#[test]
-	fn managed_deployments_require_a_closed_region_but_self_hosted_may_omit_it() {
-		check(&settings(json!({}))).unwrap();
-		for offering in ["cloud", "dedicated"] {
-			assert!(
-				problem(json!({"offering":offering})).contains("deployment.region is required")
-			);
-			for region in ["eu", "us", "jp"] {
-				check(&settings(json!({"offering":offering,"region":region}))).unwrap();
-			}
-		}
-		assert!(
-			serde_json::from_value::<DeploymentSettings>(json!({"id":"aidash://test","endpoint":"http://localhost","api_token":"0123456789abcdef","region":"arbitrary-host"}))
-				.is_err()
-		);
 	}
 
 	#[test]

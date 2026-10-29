@@ -8,9 +8,6 @@ use uuid::Uuid;
 #[derive(Deserialize, JsonSchema, Validate)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct TenantCreation {
-	/// Only a region with a Cloud Deployment may be selected.
-	#[serde(default)]
-	pub(crate) region: Option<aidash_domain::data_protection::Region>,
 	/// The Tenant label: 1–64 characters after trimming, without control characters.
 	#[validate(length(min = 1, max = 256))]
 	pub(crate) label: String,

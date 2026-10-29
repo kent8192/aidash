@@ -82,9 +82,6 @@ spec:
               envFrom:
                 - secretRef: { name: {{ $p.existingSecret | quote }} }
               env:
-                {{- with $root.Values.deployment.region }}
-                - { name: AIDASH_DEPLOYMENT_REGION, value: {{ . | quote }} }
-                {{- end }}
                 - { name: AIDASH_DEPLOYMENT_ID, value: {{ $root.Values.deployment.id | quote }} }
                 - { name: AIDASH_ENDPOINT, value: {{ $root.Values.deployment.endpoint | default (printf "http://%s-backend.%s.svc:8080" $root.Release.Name $root.Release.Namespace) | quote }} }
                 {{- if $gcip }}

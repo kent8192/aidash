@@ -47,7 +47,6 @@ impl PageProvider for Termed {
 fn terms(account: &str) -> AccountTerms {
 	let now = chrono::Utc::now();
 	AccountTerms {
-		data_region: None,
 		account_id: account.into(),
 		agreement_reference: "contract".into(),
 		verified_by: "deployment_administrator".into(),

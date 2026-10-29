@@ -26,7 +26,6 @@ pub enum Operation {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Maintenance {
-	ProviderDiscovery,
 	MemoryIndexing,
 	MemoryRetention,
 	MemoryReflection,
@@ -53,17 +52,6 @@ pub enum TokenSubject {
 	},
 }
 
-/// The signed Deployment Region. It mirrors `aidash_domain::data_protection::Region`
-/// on the wire because this crate depends on no other workspace layer; issuers and
-/// verifiers map between the two.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum DataRegion {
-	Eu,
-	Us,
-	Jp,
-}
-
 /// The signed data protection requirement, mirroring
 /// `aidash_domain::data_protection::Requirement` on the wire.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -83,9 +71,6 @@ impl DataProtectionRequirement {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Claims {
-	/// Only fixed regional catalog hosts are admitted; absent keeps global routing.
-	#[serde(default, skip_serializing_if = "Option::is_none")]
-	pub data_region: Option<DataRegion>,
 	/// Exact provider-owned tools admitted for this inference; absent denies all.
 	#[serde(default, skip_serializing_if = "Vec::is_empty")]
 	pub provider_tools: Vec<ProviderTool>,
@@ -300,16 +285,6 @@ impl PublicKeys {
 		} else if claims.max_output_tokens == 0
 			|| !claims.hosts.is_empty()
 			|| matches!(claims.sub, TokenSubject::ApprovalObservation { .. })
-		{
-			return Err(Failure::ClaimViolation);
-		}
-		if matches!(
-			claims.sub,
-			TokenSubject::Maintenance {
-				maintenance: Maintenance::ProviderDiscovery,
-				..
-			}
-		) && claims.ops != [Operation::Discovery]
 		{
 			return Err(Failure::ClaimViolation);
 		}

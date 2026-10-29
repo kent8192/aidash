@@ -1,9 +1,9 @@
 //! Stateless Credential Broker: capability admission, fixed Provider Catalog and bounded relay.
 use aidash_capability::{
-	Claims, DataProtectionRequirement, DataRegion, Failure, KeyMaterialError, KeyMaterialSource,
-	Operation, PublicKeys,
+	Claims, DataProtectionRequirement, Failure, KeyMaterialError, KeyMaterialSource, Operation,
+	PublicKeys,
 };
-use aidash_domain::data_protection::{Region, Requirement};
+use aidash_domain::data_protection::Requirement;
 use axum::{
 	Router,
 	body::{Body, Bytes, to_bytes},
@@ -152,16 +152,6 @@ impl Broker {
 			)]),
 		})
 	}
-	fn provider_base(&self, claims: &Claims) -> Result<&str, Failure> {
-		let base = self.catalog.get(&claims.provider).ok_or(Failure::Tenant)?;
-		match signed_region(claims) {
-			Some(region) if claims.provider == "openrouter" => region
-				.openrouter_endpoint()
-				.map_err(|_| Failure::ClaimViolation),
-			Some(_) => Err(Failure::ClaimViolation),
-			None => Ok(base),
-		}
-	}
 	pub fn router(self: Arc<Self>) -> Router {
 		Router::new().fallback(relay).with_state(self)
 	}
@@ -278,9 +268,6 @@ fn route(request: &Request, claims: &Claims) -> Result<(Operation, String, usize
 		// System One answers carry only probabilities and usage (ADR 0041).
 		("POST", "systemone") => (Operation::Decision, DECISION_LIMIT),
 		("GET", "endpoints/zdr") => (Operation::Discovery, 8 * 1024 * 1024),
-		("GET", "models/user" | "tools") if claims.data_region.is_some() => {
-			(Operation::Discovery, 8 * 1024 * 1024)
-		}
 		("GET", p) if p.starts_with("models/") && p.ends_with("/endpoints") => {
 			let model = p
 				.strip_prefix("models/")
@@ -304,14 +291,6 @@ fn route(request: &Request, claims: &Claims) -> Result<(Operation, String, usize
 const DECISIONS_PATH: &str = "alpha/decisions";
 /// OpenRouter's Responses API under the API root.
 const RESPONSES_PATH: &str = "v1/responses";
-/// The domain Region a token signs; capability claims carry only a wire copy.
-fn signed_region(claims: &Claims) -> Option<Region> {
-	claims.data_region.map(|region| match region {
-		DataRegion::Eu => Region::Eu,
-		DataRegion::Us => Region::Us,
-		DataRegion::Jp => Region::Jp,
-	})
-}
 fn signed_requirement(claims: &Claims) -> Requirement {
 	match claims.data_protection {
 		DataProtectionRequirement::Zdr => Requirement::Zdr,
@@ -328,18 +307,6 @@ fn body_policy(body: &[u8], claims: &Claims, op: Operation, path: &str) -> Resul
 		};
 	}
 	let value = policy::parse(body)?;
-	if let Some(region) = signed_region(claims) {
-		if region.openrouter_endpoint().is_err() {
-			return Err(Failure::ClaimViolation);
-		}
-		for tool in value["tools"].as_array().into_iter().flatten() {
-			let kind = tool["type"].as_str().ok_or(Failure::ClaimViolation)?;
-			if kind != "function" && !region.permits_openrouter_tool(kind, tool["engine"].as_str())
-			{
-				return Err(Failure::ClaimViolation);
-			}
-		}
-	}
 	let responses = path == RESPONSES_PATH;
 	// A capability authorizes one model; OpenRouter's models adds fallback models.
 	if value.get("model").and_then(Value::as_str) != Some(&claims.model)
@@ -588,9 +555,8 @@ async fn relay(State(broker): State<Arc<Broker>>, request: Request) -> Response 
 		Ok(r) => r,
 		Err(e) => return failure(e),
 	};
-	let base = match broker.provider_base(&claims) {
-		Ok(base) => base,
-		Err(error) => return failure(error),
+	let Some(base) = broker.catalog.get(&claims.provider) else {
+		return failure(Failure::Tenant);
 	};
 	let start = Instant::now();
 	let deadline = start + broker.config.inference_deadline;

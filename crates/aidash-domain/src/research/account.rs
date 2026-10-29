@@ -20,9 +20,6 @@ pub const MAX_MICRO_USD: u64 = i64::MAX as u64;
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct AccountTerms {
-	/// Jurisdiction recorded in the account agreement; absence promises no region.
-	#[serde(default, skip_serializing_if = "Option::is_none")]
-	pub data_region: Option<crate::data_protection::Region>,
 	pub account_id: String,
 	pub agreement_reference: String,
 	pub verified_by: String,

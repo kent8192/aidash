@@ -3,9 +3,6 @@ use crate::{Error, Result};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
-mod region;
-pub use region::{Region, RegionRestriction};
-
 #[derive(
 	Debug, Clone, Copy, Default, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize, JsonSchema,
 )]
@@ -21,12 +18,6 @@ pub enum Level {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(default, deny_unknown_fields)]
 pub struct DataProtection {
-	/// Restricts content to this Tenant's Deployment Region; never names a host.
-	#[serde(skip_serializing_if = "std::ops::Not::not")]
-	pub data_region_restricted: bool,
-	/// Bound by the Deployment, then intersected across the delegation chain.
-	#[serde(skip)]
-	pub region_restriction: RegionRestriction,
 	pub level: Level,
 	pub model_call_zdr: bool,
 	pub plan_connection_exempt: bool,
@@ -34,8 +25,6 @@ pub struct DataProtection {
 impl Default for DataProtection {
 	fn default() -> Self {
 		Self {
-			data_region_restricted: false,
-			region_restriction: RegionRestriction::Any,
 			level: Level::Standard,
 			model_call_zdr: true,
 			plan_connection_exempt: true,
@@ -73,7 +62,7 @@ pub enum Destination<'a> {
 	PlanConnection,
 	ProviderTool,
 	Research(&'a crate::research::account::AccountTerms),
-	DeploymentHosted(Option<Region>),
+	DeploymentHosted,
 	/// Tenant HTTP/MCP tools and remote MCP servers are outside this policy.
 	TenantTool,
 }
@@ -83,20 +72,6 @@ pub struct Permission {
 	pub plan_connection_exemption: bool,
 }
 impl DataProtection {
-	pub fn in_deployment(mut self, region: Option<Region>) -> Self {
-		self.region_restriction = if self.data_region_restricted {
-			region.map_or(RegionRestriction::Unsatisfiable, RegionRestriction::Within)
-		} else {
-			RegionRestriction::Any
-		};
-		self
-	}
-	pub fn region(self) -> Result<Option<Region>> {
-		if self.data_region_restricted && self.region_restriction == RegionRestriction::Any {
-			return RegionRestriction::Unsatisfiable.region();
-		}
-		self.region_restriction.region()
-	}
 	pub fn validate(self) -> Result<()> {
 		if self.level == Level::ZeroDataRetention && !self.model_call_zdr {
 			return Err(Error::Invalid(
@@ -116,19 +91,7 @@ impl DataProtection {
 		let Some(mut combined) = policies.next() else {
 			return Self::default().with_floor(floor);
 		};
-		if combined.data_region_restricted && combined.region_restriction == RegionRestriction::Any
-		{
-			combined.region_restriction = RegionRestriction::Unsatisfiable;
-		}
-		for mut policy in policies {
-			if policy.data_region_restricted && policy.region_restriction == RegionRestriction::Any
-			{
-				policy.region_restriction = RegionRestriction::Unsatisfiable;
-			}
-			combined.region_restriction = combined
-				.region_restriction
-				.intersect(policy.region_restriction);
-			combined.data_region_restricted |= policy.data_region_restricted;
+		for policy in policies {
 			combined.level = combined.level.max(policy.level);
 			combined.model_call_zdr |= policy.model_call_zdr;
 			combined.plan_connection_exempt &= policy.plan_connection_exempt;
@@ -145,40 +108,13 @@ impl DataProtection {
 		}
 	}
 	pub fn permits(self, destination: Destination<'_>) -> Result<Permission> {
-		let region = self.region()?;
-		if let Some(region) = region {
-			let reason = match destination {
-				Destination::OpenRouter => {
-					region.openrouter_endpoint()?;
-					None
-				}
-				Destination::DeploymentHosted(hosted) if hosted != Some(region) => {
-					Some("Deployment-hosted model is outside the required region")
-				}
-				Destination::TenantKeyless => {
-					Some("Tenant Keyless endpoints have no verified region")
-				}
-				Destination::PlanConnection if !self.plan_connection_exempt => Some(
-					"Plan Connections require the Tenant exemption under the Data Region restriction",
-				),
-				Destination::Research(terms) if terms.data_region != Some(region) => {
-					Some("Research account terms do not record the required region")
-				}
-				_ => None,
-			};
-			if let Some(reason) = reason {
-				return Err(Error::Invalid(format!(
-					"Data Region restriction {region:?}: {reason}"
-				)));
-			}
-		}
 		let refused = |reason: &str| {
 			Error::Invalid(format!("Data Protection Level {:?}: {reason}", self.level))
 		};
 		let exemption = match destination {
-			Destination::OpenRouter
-			| Destination::DeploymentHosted(_)
-			| Destination::TenantTool => false,
+			Destination::OpenRouter | Destination::DeploymentHosted | Destination::TenantTool => {
+				false
+			}
 			Destination::PlanConnection if self.plan_connection_exempt => true,
 			Destination::PlanConnection if self.level != Level::Standard => {
 				return Err(refused(

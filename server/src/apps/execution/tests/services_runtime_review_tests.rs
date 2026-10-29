@@ -73,7 +73,6 @@ async fn interruption_store(
 		keyless,
 		egress: Default::default(),
 		research_retention: aidash_domain::retention::RetentionRules::DEFAULT,
-		deployment_region: None,
 		data_protection_floor: Default::default(),
 		test_limit_ceilings: Default::default(),
 		preview_limits: Default::default(),

@@ -3,9 +3,6 @@
 {{- $frontend := printf "%s-frontend" .Release.Name -}}
 {{- $nginxConfig := $.Files.Get "files/default.conf" | replace "http://aidash-backend:8080" (printf "http://%s:8080" $backend) -}}
 {{- $id := required "deployment.id must be a stable aidash:// identity" .Values.deployment.id -}}
-{{- with .Values.deployment.region -}}
-{{- if not (has . (list "eu" "us" "jp")) -}}{{ fail "deployment.region must be eu, us or jp" }}{{- end -}}
-{{- end -}}
 {{- if gt (len .Release.Name) 49 -}}
 {{- fail "release name must be at most 49 characters" -}}
 {{- end -}}
@@ -188,9 +185,6 @@ spec:
             {{- if $commonAuth }}
             - { name: REINHARDT_SETTINGS_DIR, value: /app/server/settings }
             - { name: REINHARDT_ENV, value: managed-common-auth }
-            {{- end }}
-            {{- with $.Values.deployment.region }}
-            - { name: AIDASH_DEPLOYMENT_REGION, value: {{ . | quote }} }
             {{- end }}
             - name: AIDASH_ENDPOINT
               value: {{ $.Values.deployment.endpoint | default (printf "http://%s.%s.svc:8080" $backend $.Release.Namespace) | quote }}

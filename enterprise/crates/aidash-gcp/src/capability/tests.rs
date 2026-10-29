@@ -248,12 +248,11 @@ fn production_constructors_reject_resource_traversal_and_latest_versions() {
 }
 
 #[rstest::rstest]
-#[case::requested(true, Some(aidash_domain::data_protection::Region::Eu))]
-#[case::not_requested(false, None)]
+#[case::requested(true)]
+#[case::not_requested(false)]
 #[tokio::test]
-async fn issuer_signs_current_cache_and_region_authority(
+async fn issuer_copies_the_cache_breakpoint_request_into_the_signed_claims(
 	#[case] requested: bool,
-	#[case] region: Option<aidash_domain::data_protection::Region>,
 ) {
 	use aidash_application::provider_access::{Context, Inference, Operation, TokenIssuer};
 	use aidash_domain::provider_credentials::{Provider, ProviderCredential, State};
@@ -277,11 +276,6 @@ async fn issuer_signs_current_cache_and_region_authority(
 		revision: 1,
 	};
 	let context = Context {
-		data_protection: aidash_domain::data_protection::DataProtection {
-			data_region_restricted: region.is_some(),
-			..Default::default()
-		}
-		.in_deployment(region),
 		tenant: "tenant-a".into(),
 		run: Some(uuid::Uuid::from_u128(7)),
 		inference: Some(Inference {
@@ -320,7 +314,6 @@ async fn issuer_signs_current_cache_and_region_authority(
 		.verify(access.bearer.expose_secret(), "worker", "test", now)
 		.unwrap();
 	assert_eq!(claims.cache_breakpoints, requested);
-	assert_eq!(claims.data_region, region.map(super::issuer::signed_region));
 	let payload = access.bearer.expose_secret().split('.').nth(1).unwrap();
 	let payload: serde_json::Value = serde_json::from_slice(
 		&base64::engine::general_purpose::URL_SAFE_NO_PAD

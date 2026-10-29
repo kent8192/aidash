@@ -99,7 +99,7 @@ resource "google_project_iam_member" "deploy" {
     "roles/container.admin", "roles/iam.serviceAccountAdmin",
     "roles/secretmanager.admin", "roles/artifactregistry.reader",
     "roles/serviceusage.serviceUsageConsumer",
-    "roles/run.admin", "roles/cloudkms.admin", "roles/logging.configWriter",
+    "roles/run.admin", "roles/cloudkms.admin",
   ])
   project = var.project_id
   role    = each.value

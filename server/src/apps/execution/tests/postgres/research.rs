@@ -350,7 +350,6 @@ async fn the_search_credential_never_reaches_results_or_evidence(
 	});
 	let now = chrono::Utc::now();
 	let profile = aidash_domain::research::account::AccountTerms {
-		data_region: None,
 		account_id: "deployment_administrator".into(),
 		agreement_reference: "contract".into(),
 		verified_by: "deployment_administrator".into(),

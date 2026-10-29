@@ -107,7 +107,6 @@ pub async fn initialize(
 		})
 		// An invalid Deployment retention period refuses to start (ADR 0045).
 		.with_research_retention(settings.research_retention.rules()?)
-		.with_deployment_region(settings.deployment.region)
 		.with_data_protection_floor(settings.deployment.data_protection_floor)
 		.with_test_limit_ceilings(settings.workbench_test_limits.ceilings()?)
 		.with_preview_limits(settings.preview_limits.limits()?)

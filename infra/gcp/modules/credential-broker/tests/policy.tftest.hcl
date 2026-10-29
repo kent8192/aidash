@@ -32,14 +32,6 @@ run "production" {
   command = apply
   variables { enabled = true }
   assert {
-    condition = (
-      google_logging_project_bucket_config.data_region[0].location == "us-central1" &&
-      google_logging_project_sink.data_region[0].filter == google_logging_project_exclusion.data_region[0].filter &&
-      strcontains(google_logging_project_exclusion.data_region[0].filter, "aidash-production-credential-broker")
-    )
-    error_message = "Broker logs must have one regional destination and be excluded from global _Default."
-  }
-  assert {
     condition     = google_cloud_run_v2_service.broker[0].ingress == "INGRESS_TRAFFIC_INTERNAL_ONLY" && google_cloud_run_v2_service.broker[0].invoker_iam_disabled
     error_message = "Only Capability Tokens may authenticate internal broker ingress."
   }

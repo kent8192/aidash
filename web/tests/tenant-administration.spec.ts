@@ -14,11 +14,9 @@ const dataProtection = {
   policy: dataProtectionPolicy,
   effective: dataProtectionPolicy,
   deployment_floor: "standard",
-  deployment_region: null,
 };
 const dataProtectionImpact = {
   effective: dataProtectionPolicy,
-  usable_models: 1,
   agents: [],
   catalog_approvals: [],
   destinations: [],

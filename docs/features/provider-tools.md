@@ -13,7 +13,7 @@ compaction do not carry them. Immediately before each send, the transport reload
 the current Tenant and delegation-chain Data Protection policy and evaluates
 `DataProtection::permits(Destination::ProviderTool)`. No Training and Zero Data
 Retention refuse Provider tools before token issuance or provider I/O. This policy
-is never pinned in a Binding. Data Region admission is described under [Data Region restriction](#data-region-restriction). Provider tool support does not imply that model ZDR covers tool backends.
+is never pinned in a Binding. Provider tool support does not imply that model ZDR covers tool backends.
 
 Agent Bindings pin parameters and spending caps alongside their restrictions:
 
@@ -160,19 +160,6 @@ only lists these files, never downloads, promotes or imports them into the Worki
 Area. The existing 1 MiB response limit and journal limits still apply to very large
 results; exceeding the transport limit fails the request instead of truncating
 and accepting a partial tool transcript.
-
-### Data Region restriction
-
-The Data Region gate in [data-regions.md](../data-regions.md) applies to every
-Provider tool entry of a request, standard and warning tier alike. Shell
-containers are served by OpenRouter's global endpoint only and are rejected on
-the in-region hosts, so a Tenant with the restriction on is refused before a
-container id is pinned to the Run; no code-defined or catalog entry can admit
-shell. Advisor, subagent, tool search and model search are admitted outside Japan
-only when the Tenant's regional `/tools` catalog also lists the tool with the
-region in an engine's `data_regions`; an absent or unreadable entry refuses the
-send and never falls back to the global host. The pinned engine is read from the
-entry's `parameters`.
 
 Replayed provider items are model-authored history. The broker accepts one only
 if it has the closed key set that the inference adapter retains, bounded depth,

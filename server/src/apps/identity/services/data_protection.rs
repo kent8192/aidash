@@ -47,13 +47,6 @@ impl TenantAdministrations {
 					)
 					.await?;
 				if let Some(policy) = update {
-					if policy.data_region_restricted {
-						policy.in_deployment(self.runtime.store.deployment_region).region()?;
-						let impact = repository::impact(tx, &self.runtime.store, &tenant, policy.with_floor(floor)).await?;
-						if impact.usable_models == 0 {
-							return Err(Error::Invalid("Data Region restriction cannot be enabled: no usable model remains (Plan Connections do not count)".into()));
-						}
-					}
 					let by = AdministrationActor::TenantAdministrator(administrator.clone());
 					repository::save(tx, &tenant, policy, &by.decision_actor()).await?;
 					by.record(
@@ -72,7 +65,6 @@ impl TenantAdministrations {
 				}
 				let policy = repository::stored(tx, &tenant).await?;
 				Ok(Settings {
-					deployment_region: self.runtime.store.deployment_region,
 					policy,
 					effective: policy.with_floor(floor),
 					deployment_floor: floor,
