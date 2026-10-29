@@ -1,18 +1,17 @@
 meta {
-  name: 1179 provider-authorization-callback - Callback without state is rejected
+  name: 1179 provider-authorization-callback - Callback without a browser binding is rejected
   type: http
   seq: 1179
 }
 
 get {
-  url: {{base_url}}/auth/provider-authorizations/openrouter/callback?code=invalid
+  url: {{base_url}}/auth/provider-authorizations/openrouter/callback?state=invalid&code=invalid
   body: none
   auth: none
 }
 
 headers {
   Accept: application/json
-  Cookie: aidash-provider-authorization=tampered; __Host-aidash-provider-authorization=tampered
 }
 
 tests {

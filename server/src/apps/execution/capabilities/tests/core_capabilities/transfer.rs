@@ -17,14 +17,14 @@ async fn sibling_file_transfers_require_their_own_node_authority(
 	let c = Box::pin(capability_fixture).await;
 	let home = common::default_node(&c.f.store, "acme").await;
 	let sender = admit(&c).await;
-	let (status, second) = request(
-		&c.app,
-		&c.f.config.api_token,
-		"POST",
-		"/api/tenants/acme/nodes",
-		json!({"label":"Sibling"}),
-	)
-	.await;
+	let (status, second) = common::BrowserMapping::new(&c.f, "acme", "alice")
+		.await
+		.send(
+			"POST",
+			"/api/tenants/acme/nodes",
+			json!({"label":"Sibling"}),
+		)
+		.await;
 	assert_eq!(status, 201, "{second}");
 	let name = second["name"].as_str().unwrap();
 	let address = second["address"].as_str().unwrap();
@@ -662,16 +662,10 @@ a.f.config.endpoint = format!("http://{}", al.local_addr().unwrap());
  // Both servers answer, so each Deployment can fetch the other's identity.
  common::register_pair((&a.f, &a.app, "acme"), (&b.f, &b.app, "acme")).await;
 	for (home, peer) in [(&a, &b), (&b, &a)] {
-		let (status, credential) = request(
-			&home.app,
-			&home.f.config.api_token,
-			"POST",
-			"/api/authorization/acme/credentials",
-			json!({"subject":"alice"}),
-		)
+		let (status, credential) = async { (200_u16, common::issued_credential(&home.f.store, "acme", "alice").await) }
 		.await;
 		assert_eq!(status, 200, "{credential}");
-		let (status, result) = request(&home.app, &home.f.config.api_token, "POST", "/api/authorization/acme/peer-mappings", json!({"node":common::default_node(&home.f.store,"acme").await.node,"source_node":common::default_node(&peer.f.store,"acme").await,"source_subject":"alice","credential_id":credential["credential"]["id"],"expected_revision":0,"enabled":true})).await;
+		let (status, result) = common::set_peer_mapping(&home.f, "acme", "alice", json!({"node":common::default_node(&home.f.store,"acme").await.node,"source_node":common::default_node(&peer.f.store,"acme").await,"source_subject":"alice","credential_id":credential["credential"]["id"],"expected_revision":0,"enabled":true})).await;
 		assert_eq!(status, 200, "{result}");
 	}
 
@@ -1176,14 +1170,14 @@ async fn remote_recipients_use_the_sending_runs_node_and_its_registration(
 	let c = Box::pin(two_nodes).await;
 	let home = common::default_node(&c.a.f.store, "acme").await;
 	let target = common::default_node(&c.b.f.store, "acme").await;
-	let (status, sibling) = request(
-		&c.a.app,
-		&c.a.f.config.api_token,
-		"POST",
-		"/api/tenants/acme/nodes",
-		json!({"label":"Sending Node"}),
-	)
-	.await;
+	let (status, sibling) = common::BrowserMapping::new(&c.a.f, "acme", "alice")
+		.await
+		.send(
+			"POST",
+			"/api/tenants/acme/nodes",
+			json!({"label":"Sending Node"}),
+		)
+		.await;
 	assert_eq!(status, 201, "{sibling}");
 	let sibling_name = sibling["name"].as_str().unwrap();
 	let sibling_address = sibling["address"].as_str().unwrap();
@@ -1259,27 +1253,27 @@ async fn remote_recipients_use_the_sending_runs_node_and_its_registration(
 		&target.to_string(),
 		Some((&c.b.f.config.endpoint, &peering::key_id(&c.b.f))),
 	);
-	let (status, body) = request(
-		&c.a.app,
-		&c.a.f.config.api_token,
-		"POST",
-		&peering::registration_path("acme", sibling_name),
-		registration,
-	)
-	.await;
+	let (status, body) = common::BrowserMapping::new(&c.a.f, "acme", "alice")
+		.await
+		.send(
+			"POST",
+			&peering::registration_path("acme", sibling_name),
+			registration,
+		)
+		.await;
 	assert_eq!(status, 200, "{body}");
 	let registration = peering::registration(
 		sibling_address,
 		Some((&c.a.f.config.endpoint, &peering::key_id(&c.a.f))),
 	);
-	let (status, body) = request(
-		&c.b.app,
-		&c.b.f.config.api_token,
-		"POST",
-		&peering::registration_path("acme", target.node.as_str()),
-		registration,
-	)
-	.await;
+	let (status, body) = common::BrowserMapping::new(&c.b.f, "acme", "alice")
+		.await
+		.send(
+			"POST",
+			&peering::registration_path("acme", target.node.as_str()),
+			registration,
+		)
+		.await;
 	assert_eq!(status, 200, "{body}");
 	let credential = aidash_server::authorization::Authorization {
 		pool: c.b.f.store.control_pool.clone(),
@@ -1290,7 +1284,7 @@ async fn remote_recipients_use_the_sending_runs_node_and_its_registration(
 	.into_iter()
 	.find(|credential| credential.subject == "alice")
 	.unwrap();
-	let (status, body) = request(&c.b.app, &c.b.f.config.api_token, "POST", "/api/authorization/acme/peer-mappings", json!({"node":target.node,"source_node":sibling_address,"source_subject":"alice","credential_id":credential.id,"expected_revision":0,"enabled":true})).await;
+	let (status, body) = common::set_peer_mapping(&c.b.f, "acme", "alice", json!({"node":target.node,"source_node":sibling_address,"source_subject":"alice","credential_id":credential.id,"expected_revision":0,"enabled":true})).await;
 	assert_eq!(status, 200, "{body}");
 	let (status, body) = request(&c.a.app, &c.a.token, "GET", &path, Value::Null).await;
 	assert_eq!(status, 200, "{body}");

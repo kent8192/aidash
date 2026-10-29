@@ -9,9 +9,11 @@ const graphSearch = (page: Page) =>
     name: "Search nodes, tasks, agents, or artifacts…",
   });
 
+// The Deployment Administrator context shows no Tenant content (#484, ADR
+// 0102), so the graph is exercised through a Mapping by default.
 async function setup(
   page: Page,
-  subject = false,
+  subject = true,
   extraWorkspace = false,
   locale = "en-US",
 ) {
@@ -103,7 +105,7 @@ async function setup(
 }
 
 test("inspector follows the selected graph workspace", async ({ page }) => {
-  const { errors } = await setup(page, false, true);
+  const { errors } = await setup(page, true, true);
   await page.getByLabel("Graph workspace").selectOption("other-workspace");
   await page
     .locator(".mesh-node-label")
@@ -232,14 +234,18 @@ test("connected local node opens topology and relationship controls only show ac
   await expect(graphSearch(page)).toHaveCount(0);
   await expect(page.getByLabel("Activity window")).toHaveCount(0);
   await expect(page.getByLabel("Layout", { exact: true })).toHaveCount(0);
-  await page
-    .getByRole("button", {
+  // The neighborhood's Node topology tab is the Deployment Administrator's,
+  // and that context shows no Tenant graph (#484, ADR 0102): a Mapping is
+  // offered the agent relationships only.
+  await expect(
+    page.getByRole("button", {
       name: "Node topology and communication",
       exact: true,
-    })
-    .click();
-  await expect(page.locator(".mesh-canvas svg > g")).toHaveCount(2);
-  await expect(page.locator(".collab-run-grid button")).not.toHaveCount(0);
+    }),
+  ).toHaveCount(0);
+  await expect(
+    page.getByRole("button", { name: "Agent relationships", exact: true }),
+  ).toHaveAttribute("aria-pressed", "true");
   expect(errors).toEqual([]);
 });
 test("leaving a focused agent relationship view clears its URL without changing the chosen perspective", async ({
@@ -470,7 +476,7 @@ for (const locale of ["en-US", "ja-JP"]) {
     page,
   }) => {
     await page.setViewportSize({ width: 390, height: 844 });
-    await setup(page, false, false, locale);
+    await setup(page, true, false, locale);
     const canvas = page.locator(".mesh-canvas");
     const fit = page.getByRole("button", {
       name: locale === "ja-JP" ? "全体表示" : "Fit entire graph",

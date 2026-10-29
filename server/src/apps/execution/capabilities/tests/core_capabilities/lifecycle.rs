@@ -667,13 +667,12 @@ async fn deleted_thread_retains_files_and_restores_only_into_a_new_authorized_th
 	)
 	.await;
 	let input = json!({"idempotency_key":Uuid::new_v4(),"expected_revision":retained["revision"],"snapshot_id":retained["snapshot_id"],"thread_id":new_thread["id"]});
-	let (_, bob) = request(
-		&c.app,
-		&c.f.config.api_token,
-		"POST",
-		"/api/authorization/acme/credentials",
-		json!({"subject":"bob"}),
-	)
+	let (_, bob) = async {
+		(
+			200_u16,
+			common::issued_credential(&c.f.store, "acme", "bob").await,
+		)
+	}
 	.await;
 	assert_eq!(
 		request(

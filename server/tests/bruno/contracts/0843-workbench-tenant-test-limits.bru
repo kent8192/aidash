@@ -1,5 +1,5 @@
 meta {
-  name: 0843 workbench-tenant-test-limits - Application read preserves the typed response contract
+  name: 0843 workbench-tenant-test-limits - Malformed bearer syntax is rejected
   type: http
   seq: 843
 }
@@ -12,11 +12,10 @@ get {
 
 headers {
   Accept: application/json
-  Authorization: Bearer {{deployment_administrator_token}}
+  Authorization: Basic invalid
 }
 
 tests {
-  test("Exact HTTP 200", function () { expect(res.getStatus()).to.equal(200); });
-  test("Documented response fields and types", function () { const contract={"schema":{"$ref":"#/components/schemas/TenantTestLimits"},"definitions":{"TenantTestLimits":{"type":"object","description":"A Tenant's Test Limits as it set them, with the Deployment's ceilings.","required":["limits","ceilings"],"properties":{"ceilings":{"$ref":"#/components/schemas/TestLimitCeilings"},"limits":{"$ref":"#/components/schemas/TestLimits2"}}},"TestLimitCeilings":{"type":"object","description":"The Deployment's ceilings on every Tenant's Test Limits (#361). Tests run\non workers the Tenants share, so the Deployment bounds what one Tenant may\ntake, and each Tenant sets its own values within the ceilings.","required":["max_input_bytes","max_output_tokens","max_total_tokens","max_steps","max_duration_secs","max_concurrent","payload_days","incident_evidence_days"],"properties":{"incident_evidence_days":{"type":"integer","format":"int32"},"max_concurrent":{"type":"integer","format":"int32"},"max_duration_secs":{"type":"integer","format":"int32"},"max_input_bytes":{"type":"integer","format":"int32"},"max_output_tokens":{"type":"integer","format":"int32"},"max_steps":{"type":"integer","format":"int32"},"max_total_tokens":{"type":"integer","format":"int32"},"payload_days":{"type":"integer","format":"int32"}},"additionalProperties":false},"TestLimits2":{"type":"object","required":["tenant","max_input_bytes","max_output_tokens","max_total_tokens","max_steps","max_duration_secs","max_concurrent","payload_days","incident_evidence_days","revision"],"properties":{"incident_evidence_days":{"type":"integer","format":"int32"},"max_concurrent":{"type":"integer","format":"int32"},"max_duration_secs":{"type":"integer","format":"int32"},"max_input_bytes":{"type":"integer","format":"int32"},"max_output_tokens":{"type":"integer","format":"int32"},"max_steps":{"type":"integer","format":"int32"},"max_total_tokens":{"type":"integer","format":"int32"},"payload_days":{"type":"integer","format":"int32"},"revision":{"type":"integer","format":"int64","description":"The revision the limits were read at. A write sends it back and fails\nwith a conflict when another write came first.","default":0},"tenant":{"type":"string"}},"additionalProperties":false}}}; function valid(value,schema){if(schema.$ref)return valid(value,contract.definitions[schema.$ref.split("/").pop()]);if(schema.anyOf)return schema.anyOf.some(item=>valid(value,item));if(schema.oneOf)return schema.oneOf.filter(item=>valid(value,item)).length===1;if(schema.allOf&&!schema.allOf.every(item=>valid(value,item)))return false;if(schema.enum&&!schema.enum.some(item=>JSON.stringify(item)===JSON.stringify(value)))return false;const types=Array.isArray(schema.type)?schema.type:schema.type?[schema.type]:[];if(types.length&&!types.some(type=>type==="null"?value===null:type==="array"?Array.isArray(value):type==="object"?value!==null&&typeof value==="object"&&!Array.isArray(value):type==="integer"?Number.isInteger(value):typeof value===type))return false;if(value!==null&&typeof value==="object"&&!Array.isArray(value)){if((schema.required||[]).some(field=>!(field in value)))return false;for(const [field,property] of Object.entries(schema.properties||{}))if(field in value&&!valid(value[field],property))return false;}if(Array.isArray(value)&&schema.items&&!value.every(item=>valid(item,schema.items)))return false;return true;}expect(valid(res.getBody(),contract.schema)).to.equal(true); });
-  test("Application read preserves the typed response contract contract", function () { expect(res.getHeader("content-type")).to.include("application/json"); });
+  test("Exact HTTP 401", function () { expect(res.getStatus()).to.equal(401); });
+  test("Stable authorization error envelope", function () { expect(res.getHeader("content-type")).to.include("application/json"); expect(res.getBody()).to.eql({error:"unauthorized"}); });
 }

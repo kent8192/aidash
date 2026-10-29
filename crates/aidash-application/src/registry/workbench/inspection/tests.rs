@@ -85,21 +85,20 @@ async fn inspection_requires_current_identity_and_exact_agent_version_policy(
 }
 #[rstest]
 #[tokio::test]
-async fn deployment_administrator_inspection_preserves_its_existing_authority_without_subject_reads()
- {
+async fn a_deployment_administrator_inspects_no_agent_version() {
 	let mut scope = Scope {
 		principal: Principal::DeploymentAdministrator,
-		allowed: false,
+		allowed: true,
 		calls: vec![],
 	};
-	require(
+	let result = require(
 		&mut scope,
 		&EntityRef {
 			id: "agent".into(),
 			version: "1".into(),
 		},
 	)
-	.await
-	.unwrap();
+	.await;
+	assert!(matches!(result, Err(Error::Forbidden)));
 	assert!(scope.calls.is_empty());
 }

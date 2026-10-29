@@ -5,16 +5,15 @@ use crate::{
 	domain::Message,
 	store::Store,
 };
-use reinhardt::query::{Alias, Expr, LockType, PostgresQueryBuilder, Query};
+use reinhardt::query::{Alias, Expr, PostgresQueryBuilder, Query};
 use reinhardt::query::{ExprTrait as _, QueryStatementBuilder as _};
 use serde_json::json;
 
 use uuid::Uuid;
 
-pub(crate) enum Lease {
-	Scoped(Box<Access>),
-	DeploymentAdministrator(crate::database::native::Transaction),
-}
+/// The lease of a Subject. Workspaces are Tenant content: a Deployment
+/// Administrator holds none (#484).
+pub(crate) struct Lease(Box<Access>);
 
 impl Lease {
 	pub async fn begin(store: &Store, actor: Actor, workspace: Uuid, action: &str) -> Result<Self> {
@@ -36,98 +35,52 @@ impl Lease {
 		action: &str,
 		require_workspace_read: bool,
 	) -> Result<Self> {
-		match actor {
-			Actor::Subject(identity) => {
-				let mut access = Access::begin(store, &identity).await?;
-				let result = async {
-					let resource = access.workspace(workspace).await?;
-					if require_workspace_read || action == "workspace.read" {
-						access.require(&resource, "workspace.read").await?;
-					}
-					if action != "workspace.read" {
-						access.require(&resource, action).await?;
-					}
-					Ok(())
-				}
-				.await;
-				if let Err(error) = result {
-					let error = if action == "workspace.read" && matches!(error, Error::Forbidden) {
-						Error::NotFound("channel unavailable".into())
-					} else {
-						error
-					};
-					return access.finish(Err(error)).await;
-				}
-				Ok(Self::Scoped(Box::new(access)))
+		let Actor::Subject(identity) = actor else {
+			return Err(Error::Forbidden);
+		};
+		let mut access = Access::begin(store, &identity).await?;
+		let result = async {
+			let resource = access.workspace(workspace).await?;
+			if require_workspace_read || action == "workspace.read" {
+				access.require(&resource, "workspace.read").await?;
 			}
-			Actor::DeploymentAdministrator => {
-				let scope = store.workspace_tenancy(workspace).await?;
-				let mut tx = store.pool.begin(&scope).await?;
-				crate::authorization::remote::deployment_administrator::require(&mut tx, workspace)
-					.await?;
-				let exists: Option<Uuid> = {
-					let query_bind_1 = workspace;
-					crate::database::native::query_scalar(
-						&Query::select()
-							.column(Alias::new("id"))
-							.from(Alias::new("workspaces"))
-							.and_where(
-								reinhardt::query::SimpleExpr::from(Expr::col(Alias::new("id"))).eq(
-									SimpleExpr::CustomWithExpr(
-										"(?)".to_owned(),
-										vec![Expr::value(query_bind_1.to_owned()).into()],
-									),
-								),
-							)
-							.lock(LockType::Share)
-							.to_string(PostgresQueryBuilder),
-					)
-					.scalar_optional(&mut *tx)
-					.await?
-				};
-				if exists.is_none() {
-					return Err(Error::NotFound("channel unavailable".into()));
-				}
-				Ok(Self::DeploymentAdministrator(tx))
+			if action != "workspace.read" {
+				access.require(&resource, action).await?;
 			}
+			Ok(())
 		}
+		.await;
+		if let Err(error) = result {
+			let error = if action == "workspace.read" && matches!(error, Error::Forbidden) {
+				Error::NotFound("channel unavailable".into())
+			} else {
+				error
+			};
+			return access.finish(Err(error)).await;
+		}
+		Ok(Self(Box::new(access)))
 	}
 
 	pub fn tx(&mut self) -> &mut crate::database::native::Transaction {
-		match self {
-			Self::Scoped(access) => &mut access.tx,
-			Self::DeploymentAdministrator(tx) => tx,
-		}
+		&mut self.0.tx
 	}
 
-	pub fn access_mut(&mut self) -> Option<&mut Access> {
-		match self {
-			Self::Scoped(access) => Some(access.as_mut()),
-			Self::DeploymentAdministrator(_) => None,
-		}
+	pub fn access_mut(&mut self) -> &mut Access {
+		&mut self.0
 	}
 
 	pub fn sender(&self) -> String {
-		match self {
-			Self::Scoped(access) => access.identity.subject.clone(),
-			Self::DeploymentAdministrator(_) => "human".into(),
-		}
+		self.0.identity.subject.clone()
 	}
 
 	pub fn principal(&self) -> String {
-		match self {
-			Self::Scoped(access) => crate::registry::digest(&json!({
-				"tenant":access.identity.tenant, "subject":access.identity.subject,
-			})),
-			Self::DeploymentAdministrator(_) => "deployment_administrator".into(),
-		}
+		crate::registry::digest(&json!({
+			"tenant":self.0.identity.tenant, "subject":self.0.identity.subject,
+		}))
 	}
 
 	pub async fn visible(&mut self, message: &Message) -> Result<bool> {
-		match self {
-			Self::Scoped(access) => access.message_visible(message).await,
-			Self::DeploymentAdministrator(_) => Ok(true),
-		}
+		self.0.message_visible(message).await
 	}
 
 	pub async fn message(&mut self, workspace: Uuid, id: Uuid) -> Result<Message> {
@@ -140,14 +93,14 @@ impl Lease {
 					.from(Alias::new("messages"))
 					.and_where(
 						reinhardt::query::SimpleExpr::from(Expr::col(Alias::new("workspace_id")))
-							.eq(SimpleExpr::CustomWithExpr(
+							.eq(reinhardt::query::SimpleExpr::CustomWithExpr(
 								"(?)".to_owned(),
 								vec![Expr::value(query_bind_1.to_owned()).into()],
 							)),
 					)
 					.and_where(
 						reinhardt::query::SimpleExpr::from(Expr::col(Alias::new("id"))).eq(
-							SimpleExpr::CustomWithExpr(
+							reinhardt::query::SimpleExpr::CustomWithExpr(
 								"(?)".to_owned(),
 								vec![Expr::value(query_bind_2.to_owned()).into()],
 							),
@@ -165,19 +118,7 @@ impl Lease {
 	}
 
 	pub async fn finish<T>(self, result: Result<T>) -> Result<T> {
-		match self {
-			Self::Scoped(access) => (*access).finish(result).await,
-			Self::DeploymentAdministrator(tx) => match result {
-				Ok(value) => {
-					tx.commit().await?;
-					Ok(value)
-				}
-				Err(error) => {
-					tx.rollback().await?;
-					Err(error)
-				}
-			},
-		}
+		(*self.0).finish(result).await
 	}
 }
 
@@ -185,42 +126,17 @@ use reinhardt::query::ColumnRef;
 
 use crate::authorization::access::NativeAccess;
 use reinhardt::db::backends::TransactionExecutor;
-pub(crate) enum NativeLease {
-	Scoped(Box<NativeAccess>),
-	DeploymentAdministrator(Box<dyn TransactionExecutor>),
-}
+pub(crate) struct NativeLease(Box<NativeAccess>);
 impl Lease {
 	pub(crate) async fn into_native(self) -> Result<NativeLease> {
-		match self {
-			Self::Scoped(access) => Ok(NativeLease::Scoped(Box::new((*access).into_native()?))),
-			Self::DeploymentAdministrator(tx) => Ok(NativeLease::DeploymentAdministrator(
-				tx.into_executor().await?,
-			)),
-		}
+		Ok(NativeLease(Box::new((*self.0).into_native()?)))
 	}
 }
 impl NativeLease {
 	pub(crate) fn tx(&mut self) -> &mut dyn TransactionExecutor {
-		match self {
-			Self::Scoped(access) => access.tx.as_mut(),
-			Self::DeploymentAdministrator(tx) => tx.as_mut(),
-		}
+		self.0.tx.as_mut()
 	}
 	pub(crate) async fn finish<T>(self, result: Result<T>) -> Result<T> {
-		match self {
-			Self::Scoped(access) => (*access).finish(result).await,
-			Self::DeploymentAdministrator(tx) => match result {
-				Ok(value) => {
-					tx.commit().await?;
-					Ok(value)
-				}
-				Err(error) => {
-					tx.rollback().await?;
-					Err(error)
-				}
-			},
-		}
+		(*self.0).finish(result).await
 	}
 }
-
-use reinhardt::query::SimpleExpr;

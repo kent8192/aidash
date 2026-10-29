@@ -13,7 +13,7 @@ use aidash_server::{
 };
 
 use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
-use futures_util::{StreamExt, future::join_all};
+use futures_util::future::join_all;
 use reinhardt::query::{Alias, Expr, LockType, PostgresQueryBuilder, Query};
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
@@ -569,7 +569,8 @@ async fn unmapped_identity_stays_denied_until_deployment_administrator_approves_
 		)
 		.await
 		.0,
-		404
+		// A Deployment Administrator holds no authority over a Tenant's credentials.
+		403
 	);
 	let (_, generic_credentials) = call(
 		&app,
@@ -938,7 +939,6 @@ async fn unmapped_identity_stays_denied_until_deployment_administrator_approves_
 		409
 	);
 	for path in [
-		"/api/marketplace",
 		"/api/transactions",
 		"/api/generation/acme/policies/research",
 		"/api/generation/acme/requests/00000000-0000-0000-0000-000000000001/control",
@@ -946,29 +946,25 @@ async fn unmapped_identity_stays_denied_until_deployment_administrator_approves_
 		"/api/workspaces/00000000-0000-0000-0000-000000000001/semantic/search",
 		"/api/workspaces/00000000-0000-0000-0000-000000000001/semantic/entries",
 		"/api/workspaces/00000000-0000-0000-0000-000000000001/semantic/entries/00000000-0000-0000-0000-000000000002/reindex",
-		"/api/remote",
 		"/api/workbench/drafts",
-		"/api/workbench/agents/legacy-agent/1.0.0/adopt",
 		"/api/workbench/versions/legacy-agent/1.0.0/permissions",
 	] {
-		assert_ne!(
-			call(
-				&app,
-				"POST",
-				path,
-				true,
-				true,
-				Some("deployment_administrator"),
-				false,
-				Value::Null
-			)
-			.await
-			.0,
-			403,
-			"Deployment Administrator route {path} must reach its handler"
-		);
+		// These are Tenant content and settings: a browser Deployment Administrator
+		// holds no authority over them and is refused before any handler runs (#484).
+		let (status, body) = call(
+			&app,
+			"POST",
+			path,
+			true,
+			true,
+			Some("deployment_administrator"),
+			false,
+			Value::Null,
+		)
+		.await;
+		assert_eq!(status, 403, "{path}: {body}");
 	}
-	assert_ne!(
+	assert_eq!(
 		call(
 			&app,
 			"DELETE",
@@ -1054,8 +1050,9 @@ async fn unmapped_identity_stays_denied_until_deployment_administrator_approves_
 		.send()
 		.await
 		.unwrap();
-	assert_eq!(stream_response.status(), 200);
-	let mut deployment_administrator_stream = stream_response.bytes_stream();
+	// The Tenant event stream is Tenant content: a browser Deployment Administrator
+	// context is refused at connection and never receives a frame (#484).
+	assert_eq!(stream_response.status(), 403);
 	assert_eq!(
 		call(
 			&app,
@@ -1099,15 +1096,6 @@ async fn unmapped_identity_stays_denied_until_deployment_administrator_approves_
 		.0,
 		403,
 		"a revoked Deployment Administrator grant must still deny management writes"
-	);
-	assert!(
-		tokio::time::timeout(
-			std::time::Duration::from_secs(7),
-			deployment_administrator_stream.next()
-		)
-		.await
-		.unwrap()
-		.is_none()
 	);
 	assert_eq!(
 		call(

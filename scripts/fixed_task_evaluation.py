@@ -28,7 +28,7 @@ import sys
 import tempfile
 import tomllib
 
-from fixed_task_fixture import FIXTURE_PATCHES
+from fixed_task_fixture import FIXTURE_PATCHES, PRICING_COMPLETE, PRICING_VISIBLE_ONLY
 
 ROOT = Path(__file__).resolve().parent.parent
 EVALUATION = ROOT / "tests/evaluation"
@@ -59,6 +59,13 @@ DEFAULT_TOOLS = ("workspace_observe", "workspace_wait", "skill_list", "skill_loa
                  "file_read", "task_create", "task_delegate", "agent_discover", "artifact_publish",
                  "workspace_message", "memory_mutate", "memory_recall", "memory_reflect")
 SKILL_TOOLS = ("skill_list", "skill_load", "skill_read")
+# The built-in compaction Decider every ordinary Agent is bound to; `remove_default` names it like a tool.
+COMPACTION_DEFAULT = "compaction"
+# `Failure::label` (crates/aidash-domain/src/context/recovery.rs): why a Run's context pause was recorded.
+CONTEXT_REASONS = ("source_selection_unavailable", "source_selection_forbidden", "source_selection_unapproved",
+                   "source_selection_calls_exhausted", "context_unreducible", "decider_unapproved",
+                   "decider_calls_exhausted", "decider_unavailable", "summary_unavailable", "summary_invalid",
+                   "overflow_retries_exhausted", "output_truncated", "refused")
 SKILL_ASSET_READ = "skill_asset_read"
 EXPOSURE_TOOLS = ("capability_search", "capability_describe", "capability_load", "capability_unload")
 ORACLE_KINDS = ("python-tests", "json-overdue-totals", "constraint-retention", "tool-selection",
@@ -659,8 +666,9 @@ def classification_errors(run):
         expected = "false_completion" if oracle["passed"] is not True else \
             "policy_compliant_escalation" if oracle["kind"] == "escalation" else "success"
     elif phase in ("FAILED", "CANCELLED"):
-        # Without an infrastructure error, `error` is the Run's own error.
-        expected = "overflow_failure" if is_overflow(run["error"]) else "unresolved"
+        # Without an infrastructure error, `error` is the Run's own error; a context pause is never overflow.
+        expected = "unresolved" if run.get("context_reason") else \
+            "overflow_failure" if is_overflow(run["error"]) else "unresolved"
     else:
         expected = "interrupted"
     if outcome != expected:
@@ -776,6 +784,9 @@ def load_corpus(path=None):
             errors += oracle_problems
         if task.get("expected", {}).get("outcome") not in OUTCOMES:
             errors.append(f"task {tid} declares an unknown expected outcome")
+        reason = task.get("expected", {}).get("context_reason")
+        if reason is not None and reason not in CONTEXT_REASONS:
+            errors.append(f"task {tid} declares an unknown expected context_reason")
         declared = task.get("tools", [])
         for alias in ([] if declared == "all" else declared) + [task.get("expected_tool")] * ("expected_tool" in task):
             if alias not in tools:
@@ -1032,6 +1043,10 @@ sys.stdout.write(json.dumps(values, allow_nan=False))
 """
 
 
+class CodeOracleUnavailable(RuntimeError):
+    """Docker or the pinned image is unavailable before candidate code runs; the grader, not the Agent, failed."""
+
+
 class ContainerCodeOracle:
     """Compare isolated candidate outputs with trusted, frozen expected values."""
     def __init__(self, image):
@@ -1040,8 +1055,17 @@ class ContainerCodeOracle:
         self.image = image
 
     def __call__(self, directory, cases, timeout, target="pricing.py", entrypoint="discounted_total"):
+        # Checked before every candidate, so a missing image or stopped daemon cannot be scored as the
+        # Agent's failure. Candidate code runs only in network-less containers and cannot affect this result.
+        try:
+            inspected = subprocess.run(["docker", "image", "inspect", self.image], capture_output=True, timeout=20)
+        except (OSError, subprocess.SubprocessError):
+            inspected = None
+        if inspected is None or inspected.returncode != 0:
+            raise CodeOracleUnavailable("the pinned code-oracle image or Docker is unavailable")
         name = "aidash-code-oracle-" + uuid.uuid4().hex
-        command = ["docker", "run", "--rm", "--pull", "never", "--name", name, "--network", "none",
+        # -i attaches stdin: without it the container reads EOF instead of the input vectors (#559).
+        command = ["docker", "run", "-i", "--rm", "--pull", "never", "--name", name, "--network", "none",
                    "--read-only", "--pids-limit", "64", "--cpus", "1", "--memory", "128m",
                    "--memory-swap", "128m", "--cap-drop", "ALL", "--security-opt", "no-new-privileges",
                    "--user", "65534:65534", "--tmpfs", "/tmp:rw,nosuid,nodev,size=16m", "--mount",
@@ -1097,6 +1121,51 @@ def independent_code_vectors(corpus, oracle):
 
 def container_code_execution(image):
     return ContainerCodeOracle(image)
+
+
+# Known answers that prove a code oracle grades correctly before any provider work, keyed by vector file.
+# A python-tests task whose vectors have no entry here cannot be graded live.
+CODE_ORACLE_REFERENCES = {
+    "oracles/pricing_cases.json": {"complete": PRICING_COMPLETE, "visible_only": PRICING_VISIBLE_ONLY},
+}
+# Expected (visible, hidden) verdicts for each reference patch.
+CODE_ORACLE_REFERENCE_VERDICTS = {"complete": (True, True), "visible_only": (True, False)}
+
+
+def code_oracle_specs(planned):
+    """The distinct python-tests oracles in a plan, keyed by vector file and candidate target."""
+    specs = {}
+    for item in planned:
+        oracle = item["task"]["oracle"]
+        if oracle["kind"] != "python-tests":
+            continue
+        if oracle.get("cases") not in CODE_ORACLE_REFERENCES:
+            raise GuardRefusal(f"python-tests vectors {oracle.get('cases')!r} have no registered reference patches; "
+                               "the code oracle cannot be checked before the live campaign")
+        # Tasks sharing vectors may write the candidate to different targets; each pair is checked.
+        specs[(oracle["cases"], oracle["target"])] = oracle
+    return specs
+
+
+def preflight_code_oracle(corpus, planned, execute):
+    """Refuse the live tier unless the container oracle passes the complete fix and fails the visible-only fix."""
+    for (cases, target), oracle in code_oracle_specs(planned).items():
+        vectors = independent_code_vectors(corpus, oracle)
+        for label, patch in CODE_ORACLE_REFERENCES[cases].items():
+            observed = []
+            for suite in ("visible", "hidden"):
+                with tempfile.TemporaryDirectory(prefix="aidash-fixed-task-preflight-") as directory:
+                    Path(directory, oracle["target"]).write_text(patch)
+                    try:
+                        result = execute(directory, vectors[suite], oracle.get("timeout_seconds", 20),
+                                         oracle["target"], vectors["entrypoint"])
+                    except CodeOracleUnavailable as error:
+                        raise GuardRefusal(f"code oracle preflight could not run: {error}") from None
+                observed.append(result["passed"])
+            if tuple(observed) != CODE_ORACLE_REFERENCE_VERDICTS[label]:
+                raise GuardRefusal(f"code oracle preflight for {cases} ({target}): the {label} reference patch graded "
+                                   f"(visible, hidden) = {tuple(observed)}, expected "
+                                   f"{CODE_ORACLE_REFERENCE_VERDICTS[label]}; the oracle is broken")
 
 
 def oracle_python_tests(corpus, oracle, answer, allow_code_execution):
@@ -1328,6 +1397,8 @@ def classify(task, observation, oracle):
             return "policy_compliant_escalation" if task["oracle"]["kind"] == "escalation" else "success"
         return "false_completion"
     if phase in ("FAILED", "CANCELLED"):
+        if observation.get("context_reason"):
+            return "unresolved"  # Paused for a typed context reason: the evaluator cancelled it.
         return "overflow_failure" if is_overflow(observation.get("error")) else "unresolved"
     return "interrupted"
 
@@ -1495,7 +1566,8 @@ def record_run_result(corpus, planned, repeat, observation, tier, oracle):
         # The provenance `classify` used, so validation can recompute the outcome exactly.
         "interrupted": bool(observation.get("interrupted")),
         "infrastructure_error": observation.get("infrastructure_error") or None,
-        "outcome": outcome, "claimed_success": claimed_success(answer), "oracle": oracle,
+        "outcome": outcome, "context_reason": observation.get("context_reason"),
+        "claimed_success": claimed_success(answer), "oracle": oracle,
         "long_context": long_context(observation, outcome), "constraint_retention": retention,
         "tool_selection": selection, "wall_ms": float(observation.get("wall_ms", 0.0)),
         "steps": observation.get("steps"), "compactions": observation.get("compactions"),
@@ -1628,7 +1700,8 @@ def calibrate(corpus, runs):
     failures = []
     for run in runs:
         expected = tasks[run["task"]]["expected"]
-        observed = {"outcome": run["outcome"], "claimed_success": run["claimed_success"],
+        observed = {"outcome": run["outcome"], "context_reason": run.get("context_reason"),
+                    "claimed_success": run["claimed_success"],
                     "long_context": run["long_context"], "constraint_retention": run["constraint_retention"],
                     "tool_selection_correct": run["tool_selection"]["correct"] if run["tool_selection"] else None}
         for name, value in expected.items():
@@ -1760,9 +1833,8 @@ def live_task_support(approval, corpus, planned, fixture_endpoint):
             raise GuardRefusal("python-tests oracles run model-written code; an explicit code_oracle approval for a "
                                "pinned disposable Docker image, network none, 128 MiB, 1 CPU, 64 pids and 20s is required")
         code = ContainerCodeOracle(contract["image"])
-        for item in planned:
-            if item["task"]["oracle"]["kind"] == "python-tests":
-                independent_code_vectors(corpus, item["task"]["oracle"])
+        for oracle in code_oracle_specs(planned).values():
+            independent_code_vectors(corpus, oracle)
     return endpoint, code
 
 

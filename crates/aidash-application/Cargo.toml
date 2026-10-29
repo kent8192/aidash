@@ -37,7 +37,7 @@ metrics = "0.24"
 
 [features]
 # Test-only Provider Credential write port (ADR 0006). Production dependencies
-# never enable it; see scripts/check-workspace-boundaries.py.
+# never enable it.
 test-support = []
 
 [dev-dependencies]

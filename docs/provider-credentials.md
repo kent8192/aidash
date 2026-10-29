@@ -126,8 +126,8 @@ Reconnect for OpenRouter. The server runs OpenRouter's OAuth PKCE flow:
 4. The callback redirects (303) to the requested same-origin `return_to`
    with `provider_authorization=connected|unbound|reconnected|denied|failed`
    (and the parameters below) added to its query, before any fragment. The
-   dashboard reopens the Tenant the authorization started for, including an
-   Deployment Administrator's selected Tenant, and shows the outcome only there.
+   dashboard reopens the Tenant the authorization started for and shows the
+   outcome only there.
    A connection reports `connected` only when the new Provider Credential is
    bound afterwards; when another active binding wins (for example a
    concurrent connection) or the actor may not update the binding, the key is
@@ -160,8 +160,8 @@ Tests and CI register Provider Credentials with fixture Key Material through
 `provider_credentials::testing::KeyMaterialWritePort` and point the exchange
 at a fake provider with `OpenRouterAuthorization::at`. Both exist only in
 test builds or behind the `test-support` features of `aidash-application` and
-`aidash-integrations`. `scripts/check-workspace-boundaries.py` rejects any
-production (normal or build) dependency or feature that enables them.
+`aidash-integrations`. No production (normal or build) dependency or feature
+enables them.
 
 For self-hosted PostgreSQL storage:
 
@@ -288,8 +288,9 @@ Public policy actions are `provider_credential.read`, `.revoke`, `.delete`, and
 `.create` (connect) and `.rotate` (reconnect) when it starts and again at the
 callback; these are the Provider Credential management permissions. Resources
 carry the provider attribute and UUID or Provider Catalog ID respectively.
-Authenticated Subjects may operate only within their Tenant; authenticated
-Deployment Administrators retain explicit policy decision audits. Responses use
+Authenticated Subjects may operate only within their Tenant. A Deployment
+Administrator holds no Provider Credential authority and is refused with 403
+(ADR 0102). Responses use
 `Cache-Control: no-store`.
 
 Tenant settings show Provider connections (Connect, Reconnect), metadata,

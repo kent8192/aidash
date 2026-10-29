@@ -51,7 +51,7 @@ async function add(name, origin) {
 }
 async function authorize() {
   await button("Sign in with Google");
-  await button("Deployment Administrator");
+  await button("acme / alice");
   // The navigation rail names its destinations through aria-label only.
   await $('button[aria-label="Graph View"]').waitForExist();
 }

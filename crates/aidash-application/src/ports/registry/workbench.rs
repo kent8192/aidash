@@ -39,7 +39,6 @@ pub trait DraftScope: DraftAuthority + Sized {
 		tenant: Option<&str>,
 		cursor: Option<(DateTime<Utc>, Uuid)>,
 	) -> Result<Vec<Draft>>;
-	async fn managed(&mut self, agent: &str) -> Result<bool>;
 	async fn append_event(&mut self, kind: &str, payload: Value) -> Result<()>;
 	async fn shares(&mut self, draft: Uuid) -> Result<Vec<ShareRecord>>;
 	async fn save_share(
@@ -59,8 +58,6 @@ pub trait DraftRepository: Send + Sync {
 	type Scope: DraftScope;
 	fn principal(&self) -> Principal;
 	fn node_id(&self) -> &str;
-	async fn original_entry(&self, id: &str, version: &str) -> Result<Entry>;
-	async fn original_documents(&self, entry: &Entry) -> Result<Value>;
 	async fn begin(&self) -> Result<Self::Scope>;
 }
 

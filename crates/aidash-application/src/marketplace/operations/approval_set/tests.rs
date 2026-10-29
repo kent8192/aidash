@@ -11,15 +11,18 @@ async fn selection() -> (DeploymentAdministratorFixture, ApprovalSet) {
 	scope.inner.calls.clear();
 	let input = ApprovalSet {
 		tenant: revision.tenant,
+		node: None,
 		installations: vec![PendingSelection {
 			installation: id,
 			revision: 1,
 			digest: revision.digest,
 			expected_activation_revision: 0,
+			restriction: None,
 		}],
 		approvals: vec![ApprovalSelection {
 			reference: reference(&revision.entry),
 			expected_catalog_revision: 0,
+			restriction: None,
 		}],
 	};
 	(scope, input)
@@ -55,6 +58,7 @@ async fn stale_selections_and_extra_approvals_fail_before_approval_or_activation
 					version: "1.0.0".into(),
 				},
 				expected_catalog_revision: 0,
+				restriction: None,
 			}),
 			_ => input.installations.push(input.installations[0].clone()),
 		}

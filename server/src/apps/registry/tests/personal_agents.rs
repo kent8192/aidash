@@ -62,7 +62,7 @@ async fn personal_agent_roundtrip(mut execution: ExecutionFixture, large_documen
 			.status_code(),
 		200
 	);
-	let mut input = json!({"entry":{"id":"","version":"1.0.0","kind":"agent","name":{"en":"Personal"},"description":{"en":"Skills first"},"config":{"model":{"id":"model","version":"1.0.0"},"schema_version":1,"bindings":[{"kind":"skill","target":{"registry_deployment":f.config.deployment,"id":"writing","version":"1.0.0"},"narrow":{}}],"remove_default":[]}},"documents":[{"name":"private.pdf","media_type":"application/pdf","text":"PRIVATE-REFERENCE-123"}]});
+	let mut input = json!({"entry":{"id":"","version":"1.0.0","kind":"agent","name":{"en":"Personal"},"description":{"en":"Skills first"},"config":{"model":{"id":"model","version":"1.0.0"},"schema_version":1,"bindings":[{"kind":"skill","target":{"registry_deployment":f.config.deployment,"id":"writing","version":"1.0.0"},"narrow":{}}],"remove_default":["compaction"]}},"documents":[{"name":"private.pdf","media_type":"application/pdf","text":"PRIVATE-REFERENCE-123"}]});
 	if large_documents {
 		let mut model = f.registry.get(&tenant, "model", "1.0.0").await.unwrap();
 		model.id = "small-model".into();
@@ -186,13 +186,7 @@ async fn personal_agent_roundtrip(mut execution: ExecutionFixture, large_documen
 			break;
 		}
 	}
-	let diagnostic_state = assert_json(
-		app.deployment_administrator
-			.get("/api/state")
-			.await
-			.unwrap(),
-		200,
-	);
+	let diagnostic_state = assert_json(subject.get("/api/state").await.unwrap(), 200);
 	let body = execution
 		.provider
 		.received

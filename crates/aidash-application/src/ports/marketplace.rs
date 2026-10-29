@@ -205,6 +205,7 @@ pub trait DeploymentAdministratorScope: StagingScope {
 		reference: &EntityRef,
 		expected_revision: i64,
 		enabled: bool,
+		restriction: aidash_domain::identity::catalog::RestrictionChange,
 	) -> Result<()>;
 	async fn save_installation(&mut self, installation: &Installation) -> Result<()>;
 	async fn event(&mut self, kind: &str, payload: serde_json::Value) -> Result<()>;

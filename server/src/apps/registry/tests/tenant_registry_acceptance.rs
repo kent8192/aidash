@@ -77,24 +77,12 @@ async fn tenant(fixture: &EndpointFixture, name: &str) {
 }
 
 async fn credential(fixture: &EndpointFixture, tenant: &str, subject: &str) -> Arc<APIClient> {
-	let issued = assert_json(
-		fixture
-			.deployment_administrator
-			.post(
-				&format!("/api/authorization/{tenant}/credentials"),
-				&json!({"subject":subject}),
-				"json",
-			)
-			.await
-			.unwrap(),
-		200,
-	);
+	// Credentials come from the host, never from Deployment Administrator
+	// authority over the Tenant's settings (#484).
+	let token = support::subject_credential(&fixture.runtime.store, tenant, subject).await;
 	let client = api_client_from_url(&fixture.server.url);
 	client
-		.set_header(
-			"Authorization",
-			&format!("Bearer {}", issued["token"].as_str().unwrap()),
-		)
+		.set_header("Authorization", &format!("Bearer {token}"))
 		.await
 		.unwrap();
 	Arc::new(client)
@@ -106,7 +94,13 @@ fn model(id: &str) -> Value {
 }
 fn agent(id: &str, version: &str, model: &str) -> Value {
 	json!({"id":id,"version":version,"kind":"agent","name":{"en":id},"description":{"en":"Acceptance"},"schema":{},
-		"config":{"schema_version":1,"model":{"id":model,"version":"1.0.0"},"instructions":"Help","bindings":[],"remove_default":[]}})
+		"config":{"schema_version":1,"model":{"id":model,"version":"1.0.0"},"instructions":"Help","bindings":[],"remove_default":["compaction"]}})
+}
+/// The same agent keeping the Node's default compaction Binding, which needs
+/// its Decider approved first (#540).
+fn with_default_compaction(mut agent: Value) -> Value {
+	agent["config"]["remove_default"] = json!([]);
+	agent
 }
 /// A single-entry catalog request for the default Node of `tenant`.
 fn node_approval(tenant: &str, id: &str, version: &str, enabled: bool) -> Value {
@@ -174,8 +168,8 @@ async fn a_tenant_registers_approves_and_runs_its_own_agent_without_a_deployment
 	// Act: two versions of one agent and its model, registered by the Tenant.
 	for entry in [
 		model("model"),
-		agent("helper", "1.0.0", "model"),
-		agent("helper", "1.1.0", "model"),
+		with_default_compaction(agent("helper", "1.0.0", "model")),
+		with_default_compaction(agent("helper", "1.1.0", "model")),
 	] {
 		let (status, body) = register(&owner, &entry).await;
 		assert_eq!(status, 200, "{body}");
@@ -187,7 +181,9 @@ async fn a_tenant_registers_approves_and_runs_its_own_agent_without_a_deployment
 		"acme",
 		json!([
 			approval("helper", "1.1.0", true),
-			approval("model", "1.0.0", true)
+			approval("model", "1.0.0", true),
+			// The Node binds its compaction Decider to the Agent by default.
+			approval("aidash.compaction-decider", "1.0.0", true)
 		]),
 	)
 	.await;
@@ -248,18 +244,12 @@ async fn the_versions_list_reports_the_approvals_of_the_node_it_names(
 			.0,
 		200
 	);
-	let second = assert_json(
-		fixture
-			.deployment_administrator
-			.post(
-				"/api/tenants/acme/nodes",
-				&json!({"label":"Second"}),
-				"json",
-			)
-			.await
-			.unwrap(),
-		201,
-	);
+	// Nodes are administered by a Tenant Administrator Mapping in a browser (#484).
+	let administrator = support::browser_mapping(&fixture, "acme", "owner").await;
+	let (status, second) = administrator
+		.send("POST", "/api/tenants/acme/nodes", json!({"label":"Second"}))
+		.await;
+	assert_eq!(status, 201, "{second}");
 	let second = second["name"].as_str().unwrap();
 	let approval_of = |listed: &Value| {
 		listed["versions"]
@@ -939,22 +929,13 @@ async fn actor(
 	tenant: &str,
 	subject: &str,
 ) -> aidash_server::authorization::identity::Actor {
-	let issued = assert_json(
-		fixture
-			.deployment_administrator
-			.post(
-				&format!("/api/authorization/{tenant}/credentials"),
-				&json!({"subject":subject}),
-				"json",
-			)
-			.await
-			.unwrap(),
-		200,
-	);
+	// Credentials come from the host, never from Deployment Administrator
+	// authority over the Tenant's settings (#484).
+	let token = support::subject_credential(&fixture.runtime.store, tenant, subject).await;
 	aidash_server::authorization::Authorization {
 		pool: fixture.runtime.store.pool.clone(),
 	}
-	.authenticate(issued["token"].as_str().unwrap())
+	.authenticate(&token)
 	.await
 	.unwrap()
 }

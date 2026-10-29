@@ -2,7 +2,7 @@
 use crate::apps::registry::workbench::Drafts;
 use crate::apps::registry::workbench::serializers::contracts::DraftPage;
 use crate::apps::registry::workbench::serializers::contracts::{
-	AdoptInput, ArchiveInput, CreateDraft, RevisionInput, SaveDraft, ShareInput, TransferInput,
+	ArchiveInput, CreateDraft, RevisionInput, SaveDraft, ShareInput, TransferInput,
 };
 use crate::authorization::identity::Actor;
 use crate::http::json::Json;
@@ -79,20 +79,6 @@ pub async fn duplicate(
 	Json(input): Json<RevisionInput>,
 ) -> ViewResult<Response> {
 	crate::http::json(service.duplicate(actor, id, input).await)
-}
-
-#[post(
-	"/api/workbench/agents/{id}/{version}/adopt",
-	name = "workbench-adopt-agent",
-	auth = "protected"
-)]
-pub async fn adopt(
-	#[inject] service: Depends<Drafts>,
-	#[inject] actor: Actor,
-	Path((id, version)): Path<(String, String)>,
-	Json(input): Json<AdoptInput>,
-) -> ViewResult<Response> {
-	crate::http::json(service.adopt(actor, (id, version), input).await)
 }
 
 #[post(

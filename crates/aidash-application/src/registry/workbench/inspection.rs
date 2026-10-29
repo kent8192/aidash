@@ -7,8 +7,9 @@ use aidash_domain::{
 };
 use serde_json::json;
 pub async fn require(scope: &mut dyn DraftAuthority, reference: &EntityRef) -> Result<()> {
+	// Agent versions are Tenant content: a Deployment Administrator has none (#484).
 	let Principal::Subject { tenant, subject } = scope.principal() else {
-		return Ok(());
+		return Err(Error::Forbidden);
 	};
 	scope.lock_identity().await?;
 	let decision = scope

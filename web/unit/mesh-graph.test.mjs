@@ -19,13 +19,21 @@ const project = (s) =>
     channel: "product-lab",
     now,
   });
+// The graph screen always passes the authorized peers, which places the local
+// Node and the entities it hosts.
+const projectWithPeers = (s, authorizedPeers = []) =>
+  buildMeshGraph(nodeView(s.data, undefined), {
+    channel: "product-lab",
+    authorizedPeers,
+    now,
+  });
 const node = (g, id) =>
   g.nodes.find((n) => n.entity?.id === id || n.resourceId === id);
 const visible = (g, options = {}) =>
   filterMeshGraph(g, { mode: "mesh", kinds: meshKinds, query: "", ...options });
 
 test("projects explicit workspace, task hierarchy, dependencies, tools, artifacts and conversation links", () => {
-  const graph = project(scene());
+  const graph = projectWithPeers(scene());
   for (const kind of meshKinds)
     assert.ok(
       graph.nodes.some((n) => n.kind === kind),
@@ -342,7 +350,7 @@ test("inspector events stay within the selected workspace for agents and the loc
     workspace_id: "other-workspace",
     data: { run_id: "other-run" },
   });
-  const graph = project(s);
+  const graph = projectWithPeers(s);
   for (const selected of [
     node(graph, "planner"),
     graph.nodes.find((n) => n.kind === "remote" && !n.remote),

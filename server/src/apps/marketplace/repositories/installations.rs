@@ -15,7 +15,8 @@ use aidash_domain::{
 };
 use async_trait::async_trait;
 use reinhardt::query::{
-	Alias, Expr, LockType, PostgresQueryBuilder, Query, QueryStatementBuilder, SimpleExpr,
+	Alias, Expr, ExprTrait, LockType, PostgresQueryBuilder, Query, QueryStatementBuilder,
+	SimpleExpr,
 };
 use serde_json::{Value, json};
 
@@ -70,7 +71,7 @@ impl<Events: Send> InstallationRead for NativeDefinitions<'_, Events> {
 		tenant: &str,
 		reference: &EntityRef,
 	) -> aidash_application::Result<bool> {
-		approved(&mut self.access.tx, tenant, reference)
+		approved(&mut self.access.tx, tenant, reference, None)
 			.await
 			.map_err(Into::into)
 	}
@@ -430,22 +431,40 @@ pub(crate) async fn approved(
 	tx: &mut crate::database::native::Transaction,
 	tenant: &str,
 	entry: &EntityRef,
+	node: Option<&aidash_domain::nodes::NodeName>,
 ) -> Result<bool> {
+	let node = match node {
+		Some(node) => node.clone(),
+		None => {
+			let name: String = crate::database::native::query_scalar(
+				&Query::select()
+					.column(Alias::new("name"))
+					.from(Alias::new("nodes"))
+					.and_where(Expr::col(Alias::new("tenant")).eq(Expr::value(tenant.to_owned())))
+					.and_where(Expr::col(Alias::new("is_default")))
+					.to_string(PostgresQueryBuilder),
+			)
+			.scalar_one(&mut **tx)
+			.await?;
+			aidash_domain::nodes::NodeName::parse(&name)?
+		}
+	};
 	let approved: Option<bool> = {
 		let query_bind_1 = tenant;
 		let query_bind_2 = &entry.id;
 		let query_bind_3 = &entry.version;
+		let query_bind_4 = node.as_str();
 		crate::database::native::query_scalar(
 			&Query::select()
 				.column(Alias::new("enabled"))
 				.from(Alias::new("authorization_catalog"))
 				.and_where(SimpleExpr::CustomWithExpr(
-					"(tenant=? AND entry_id=? AND entry_version=? AND node=(SELECT name FROM nodes WHERE tenant=? AND is_default))".to_owned(),
+					"(tenant=? AND entry_id=? AND entry_version=? AND node=?)".to_owned(),
 					vec![
 						Expr::value(query_bind_1.to_owned()).into(),
 						Expr::value(query_bind_2.to_owned()).into(),
 						Expr::value(query_bind_3.to_owned()).into(),
-						Expr::value(query_bind_1.to_owned()).into(),
+						Expr::value(query_bind_4.to_owned()).into(),
 					],
 				))
 				.lock(LockType::Share)
