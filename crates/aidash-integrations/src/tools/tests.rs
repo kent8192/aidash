@@ -73,6 +73,41 @@ mod destinations {
 	use std::time::Duration;
 
 	#[tokio::test]
+	async fn unsafe_http_server_failure_warns_that_change_may_have_started() {
+		let (listener, port) = serve().await;
+		let server = tokio::spawn(async move {
+			axum::serve(
+				listener,
+				Router::new().route(
+					"/",
+					post(|| async { (StatusCode::INTERNAL_SERVER_ERROR, "failure") }),
+				),
+			)
+			.await
+			.unwrap()
+		});
+		let endpoint = format!("http://127.0.0.1:{port}");
+		let config = ToolConfig::Http {
+			endpoint: endpoint.clone(),
+			replay: "unsafe".into(),
+			secret: None,
+		};
+		let result = tools(&[&endpoint])
+			.invoke(&config, json!({}), "key", None)
+			.await
+			.unwrap();
+		assert_eq!(result["error"]["status"], 500);
+		assert_eq!(result["error"]["kind"], "http_status");
+		assert!(
+			result["error"]["message"]
+				.as_str()
+				.unwrap()
+				.contains("may have started")
+		);
+		server.abort();
+	}
+
+	#[tokio::test]
 	async fn http_success_with_unreadable_result_is_completed() {
 		let (listener, port) = serve().await;
 		let server = tokio::spawn(async move {

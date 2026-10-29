@@ -174,7 +174,9 @@ impl ToolTransport for HttpTools {
 					.map_err(crate::http_error)?;
 				web_fetch_response(response, &url).await
 			}
-			ToolConfig::Http { endpoint, .. } => {
+			ToolConfig::Http {
+				endpoint, replay, ..
+			} => {
 				let mut request = self
 					.client(endpoint)?
 					.post(endpoint)
@@ -187,7 +189,11 @@ impl ToolTransport for HttpTools {
 				}
 				let mut response = request.send().await.map_err(crate::keyless::send_error)?;
 				let status = response.status();
-				if status.is_client_error() && !matches!(status.as_u16(), 408 | 429) {
+				let unsafe_failure = status.is_server_error()
+					&& !matches!(replay.as_str(), "read_only" | "idempotent");
+				if (status.is_client_error() && !matches!(status.as_u16(), 408 | 429))
+					|| unsafe_failure
+				{
 					let mut body = Vec::new();
 					while body.len() < 4096 {
 						let Ok(Some(chunk)) = response.chunk().await else {
@@ -196,9 +202,11 @@ impl ToolTransport for HttpTools {
 						let remaining = 4096 - body.len();
 						body.extend_from_slice(&chunk[..chunk.len().min(remaining)]);
 					}
-					return Ok(
-						json!({"error":{"kind":"http_status","status":status.as_u16(),"body":String::from_utf8_lossy(&body)}}),
-					);
+					let mut error = json!({"kind":"http_status","status":status.as_u16(),"body":String::from_utf8_lossy(&body)});
+					if unsafe_failure {
+						error["message"] = json!("The change may have started.");
+					}
+					return Ok(json!({"error":error}));
 				}
 				if !response.status().is_success() {
 					return Err(Error::External(format!(
