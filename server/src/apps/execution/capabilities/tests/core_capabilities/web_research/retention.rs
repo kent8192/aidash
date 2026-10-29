@@ -28,6 +28,13 @@ fn digest(name: &str) -> SimpleExpr {
 }
 
 impl Research {
+	/// Gives Alice Evidence Revocation and retention authority again after
+	/// `require_disclosure_approval` removed the research kinds from the
+	/// wildcard: a Deployment Administrator revokes nothing (#484).
+	async fn let_alice_revoke(&mut self) {
+		self.c.policy["policies"].as_array_mut().unwrap().push(json!({"id":"alice-revokes","effect":"allow","subjects":{"ids":["alice"]},"actions":["research.revoke","research.read","retention.update"],"resources":{"kinds":["research","retention"]}}));
+		crate::common::replace_policy(&self.c.f.store, "acme", self.c.policy.clone()).await;
+	}
 	/// Bob, a member of the Tenant whose policy refuses him `research.revoke`
 	/// and `retention.update`; returns his token.
 	/// Deny `subject` Evidence Revocation and retention updates.
@@ -53,13 +60,12 @@ impl Research {
 	}
 	async fn refuse_bob(&mut self) -> String {
 		self.refuse("bob").await;
-		let (status, bob) = request(
-			&self.c.app,
-			&self.c.f.config.api_token,
-			"POST",
-			"/api/authorization/acme/credentials",
-			json!({"subject":"bob"}),
-		)
+		let (status, bob) = async {
+			(
+				200_u16,
+				common::issued_credential(&self.c.f.store, "acme", "bob").await,
+			)
+		}
 		.await;
 		assert_eq!(status, 200, "{bob}");
 		bob["token"].as_str().unwrap().to_owned()
@@ -226,7 +232,7 @@ async fn revocation_scrubs_every_stored_copy_and_keeps_an_audit_record(
 	// A Run ID pasted into another Tenant's form revokes nothing.
 	let (status, body) = request(
 		&r.c.app,
-		&r.c.f.config.api_token,
+		&r.c.token,
 		"POST",
 		&revoke,
 		json!({"reason":"removal request","tenant":"other"}),
@@ -280,7 +286,7 @@ async fn revocation_scrubs_every_stored_copy_and_keeps_an_audit_record(
 	// Revocation is irreversible: a second one returns the first record.
 	let (status, again) = request(
 		&r.c.app,
-		&r.c.f.config.api_token,
+		&r.c.token,
 		"POST",
 		&revoke,
 		json!({"reason":"again"}),
@@ -365,7 +371,8 @@ async fn revocation_scrubs_every_stored_copy_and_keeps_an_audit_record(
 		"no delivered fragment survives in the projection"
 	);
 
-	// The audit record is read by revokers and Deployment Administrators only.
+	// The audit record is read by revokers only. A Deployment Administrator
+	// holds no Tenant content authority (#484).
 	let records = "/api/tenants/acme/research-revocations";
 	let (status, list) = request(&r.c.app, &r.c.token, "GET", records, json!(null)).await;
 	assert_eq!(status, 200, "{list}");
@@ -378,14 +385,23 @@ async fn revocation_scrubs_every_stored_copy_and_keeps_an_audit_record(
 		json!(null),
 	)
 	.await;
-	assert_eq!((status, list.as_array().map(Vec::len)), (200, Some(1)));
+	assert_eq!(status, 403, "{list}");
+	assert!(!list.to_string().contains(&run.id.to_string()), "{list}");
 	let (status, _) = request(&r.c.app, &bob, "GET", records, json!(null)).await;
 	assert_eq!(status, 403);
-	for token in [&r.c.token, &r.c.f.config.api_token] {
-		let (status, read) = request(&r.c.app, token, "GET", &revoke, json!(null)).await;
-		assert_eq!(status, 200, "{read}");
-		assert_eq!(read, record);
-	}
+	let (status, read) = request(&r.c.app, &r.c.token, "GET", &revoke, json!(null)).await;
+	assert_eq!(status, 200, "{read}");
+	assert_eq!(read, record);
+	let (status, read) = request(
+		&r.c.app,
+		&r.c.f.config.api_token,
+		"GET",
+		&revoke,
+		json!(null),
+	)
+	.await;
+	assert_eq!(status, 403, "{read}");
+	assert_eq!(read.get("reason"), None, "{read}");
 	// Every reader of the Run learns that and when, but not who or why: once
 	// Alice may no longer revoke, she reads only the revoked state.
 	r.refuse("alice").await;
@@ -404,6 +420,114 @@ async fn revocation_scrubs_every_stored_copy_and_keeps_an_audit_record(
 	r.close().await;
 }
 
+/// A Deployment Administrator, whether the shared bearer or a browser context,
+/// holds no Tenant content authority (#484): Run details, research, evidence,
+/// retention rules and history, and Evidence Revocation all refuse it. Nothing
+/// is revoked or changed, and another Tenant's Subject is refused as well.
+#[rstest::rstest]
+#[case::shared_bearer(false)]
+#[case::browser_context(true)]
+#[tokio::test]
+async fn deployment_administrators_cannot_read_or_change_a_tenants_research_and_retention(
+	#[future]
+	#[with(Default::default(), citing_router())]
+	research_fixture: Research,
+	#[case] browser: bool,
+) {
+	// Arrange: a completed Run cited the page it read.
+	let r = research_fixture.await;
+	let (run, reference) = r.cited().await;
+	let administrator = common::BrowserAdministrator::new(&r.c.f).await;
+	let other = common::tenant_token(&r.c.f.store, "globex").await;
+	let routes = [
+		("GET", format!("/api/runs/{}", run.id), json!(null)),
+		("GET", format!("/api/runs/{}/research", run.id), json!(null)),
+		(
+			"GET",
+			format!("/api/runs/{}/evidence/{reference}", run.id),
+			json!(null),
+		),
+		(
+			"GET",
+			format!("/api/runs/{}/research-revocation", run.id),
+			json!(null),
+		),
+		(
+			"POST",
+			format!("/api/runs/{}/research-revocation", run.id),
+			json!({"reason":"administrator"}),
+		),
+		(
+			"GET",
+			"/api/tenants/acme/research-revocations".to_owned(),
+			json!(null),
+		),
+		("GET", "/api/tenants/acme/retention".to_owned(), json!(null)),
+		(
+			"PUT",
+			"/api/tenants/acme/retention".to_owned(),
+			json!({"rules":null}),
+		),
+		(
+			"GET",
+			"/api/tenants/acme/retention-history".to_owned(),
+			json!(null),
+		),
+	];
+
+	// Act and Assert: the administrator reads and changes nothing.
+	for (method, path, body) in &routes {
+		let (status, response) = if browser {
+			administrator.send(method, path, body.clone()).await
+		} else {
+			request(
+				&r.c.app,
+				&r.c.f.config.api_token,
+				method,
+				path,
+				body.clone(),
+			)
+			.await
+		};
+		assert_eq!(status, 403, "{method} {path}: {response}");
+		assert!(
+			!response.to_string().contains(&reference),
+			"{method} {path}: {response}"
+		);
+	}
+	let revoked: i64 = sqlx::query_scalar(
+		&reinhardt::query::Query::select()
+			.expr(Expr::cust("count(*)"))
+			.from(Alias::new("research_revocations"))
+			.to_string(reinhardt::query::PostgresQueryBuilder),
+	)
+	.fetch_one(r.c.f.store.pool.fixture_driver())
+	.await
+	.unwrap();
+	assert_eq!(revoked, 0, "no Evidence Revocation was recorded");
+	// Another Tenant's Subject reads this Tenant's Run evidence as an absence.
+	let (status, body) = request(
+		&r.c.app,
+		&other,
+		"GET",
+		&format!("/api/runs/{}/evidence/{reference}", run.id),
+		json!(null),
+	)
+	.await;
+	assert!(matches!(status, 403 | 404), "{status}: {body}");
+	// The authorized Tenant Subject still reads its own evidence.
+	let (status, body) = request(
+		&r.c.app,
+		&r.c.token,
+		"GET",
+		&format!("/api/runs/{}/evidence/{reference}", run.id),
+		json!(null),
+	)
+	.await;
+	assert_eq!(status, 200, "{body}");
+	r.close().await;
+}
+
 #[rstest::rstest]
 #[tokio::test]
 async fn revocation_closes_a_pending_disclosure_and_the_run_continues_without_research(
@@ -414,9 +538,10 @@ async fn revocation_closes_a_pending_disclosure_and_the_run_continues_without_re
 	let run = r.delegate().await;
 	r.require_disclosure_approval().await;
 	let approval = r.until_waiting(run.id).await;
+	r.let_alice_revoke().await;
 
-	// Act: a Deployment Administrator revokes without reading any content.
-	let (status, record) = request(
+	// Act: a Tenant Subject revokes. A Deployment Administrator is refused (#484).
+	let (status, refused) = request(
 		&r.c.app,
 		&r.c.f.config.api_token,
 		"POST",
@@ -424,8 +549,17 @@ async fn revocation_closes_a_pending_disclosure_and_the_run_continues_without_re
 		json!({"reason":"The agreement with the source ended."}),
 	)
 	.await;
+	assert_eq!(status, 403, "{refused}");
+	let (status, record) = request(
+		&r.c.app,
+		&r.c.token,
+		"POST",
+		&format!("/api/runs/{}/research-revocation", run.id),
+		json!({"reason":"The agreement with the source ended."}),
+	)
+	.await;
 	assert_eq!(status, 200, "{record}");
-	assert_eq!(record["revoked_by"], "deployment-administrator");
+	assert_eq!(record["revoked_by"], "subject:acme/alice");
 
 	// Assert: the waiting call's stored invocation, an approval_required
 	// result without `limits`, no longer names the query.
@@ -510,6 +644,7 @@ async fn revocation_closes_an_approved_disclosure_and_redacts_a_call_in_flight(
 	let mut r = research_fixture.await;
 	let run = r.delegate().await;
 	r.require_disclosure_approval().await;
+	r.let_alice_revoke().await;
 	let approval = r.until_waiting(run.id).await;
 	let card = |approvals: &Value| {
 		approvals["items"]
@@ -545,7 +680,7 @@ async fn revocation_closes_an_approved_disclosure_and_redacts_a_call_in_flight(
 	// Act
 	let (status, record) = request(
 		&r.c.app,
-		&r.c.f.config.api_token,
+		&r.c.token,
 		"POST",
 		&format!("/api/runs/{}/research-revocation", run.id),
 		json!({"reason":"The agreement with the source ended."}),
@@ -706,9 +841,10 @@ async fn a_tenant_shortens_its_periods_and_the_sweep_purges_content_already_kept
 		"a Purged snapshot is purged once"
 	);
 
-	// A Deployment Administrator clears the periods; history is newest first
-	// and read only by those who may change the periods.
-	let (status, rules) = request(
+	// A Deployment Administrator may not change them (#484); a Tenant Subject
+	// clears the periods. History is newest first and read only by those who
+	// may change the periods.
+	let (status, refused) = request(
 		&r.c.app,
 		&r.c.f.config.api_token,
 		"PUT",
@@ -716,25 +852,34 @@ async fn a_tenant_shortens_its_periods_and_the_sweep_purges_content_already_kept
 		json!({"rules":null}),
 	)
 	.await;
+	assert_eq!(status, 403, "{refused}");
+	let (status, rules) = request(&r.c.app, &r.c.token, "PUT", path, json!({"rules":null})).await;
 	assert_eq!(status, 200, "{rules}");
 	assert_eq!(rules["effective"], defaults);
 	assert_eq!(can(&rules), [json!(true), json!(true), json!(true)]);
 	// Rules are never stored for a Tenant that does not exist, which a Tenant
-	// created later under that name would inherit.
+	// created later under that name would inherit. Alice is no Subject of it.
 	let (status, body) = request(
 		&r.c.app,
-		&r.c.f.config.api_token,
+		&r.c.token,
 		"PUT",
 		"/api/tenants/no-such-tenant/retention",
 		shorter.clone(),
 	)
 	.await;
-	assert_eq!(status, 404, "{body}");
+	assert_eq!(status, 403, "{body}");
+	let stored: i64 = sqlx::query_scalar(
+		"SELECT count(*) FROM tenant_retention_rules WHERE tenant = 'no-such-tenant'",
+	)
+	.fetch_one(r.c.f.store.pool.fixture_driver())
+	.await
+	.unwrap();
+	assert_eq!(stored, 0);
 	let history = "/api/tenants/acme/retention-history";
 	let (status, changes) = request(&r.c.app, &r.c.token, "GET", history, json!(null)).await;
 	assert_eq!(status, 200, "{changes}");
 	assert_eq!(changes[0]["rules"], json!(null));
-	assert_eq!(changes[0]["changed_by"], "deployment-administrator");
+	assert_eq!(changes[0]["changed_by"], "subject:acme/alice");
 	assert_eq!(changes[1]["rules"], shorter["rules"]);
 	assert_eq!(changes[1]["changed_by"], "subject:acme/alice");
 	let (status, _) = request(&r.c.app, &bob, "GET", history, json!(null)).await;

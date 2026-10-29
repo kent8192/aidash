@@ -1,5 +1,5 @@
 meta {
-  name: 1346 core_preview_availability - Anonymous request is rejected
+  name: 1346 core_preview_availability - Deployment Administrator cannot read preview availability
   type: http
   seq: 1346
 }
@@ -12,9 +12,10 @@ get {
 
 headers {
   Accept: application/json
+  Authorization: Bearer {{deployment_administrator_token}}
 }
 
 tests {
-  test("Exact HTTP 401", function () { expect(res.getStatus()).to.equal(401); });
-  test("Stable authorization error envelope", function () { expect(res.getHeader("content-type")).to.include("application/json"); expect(res.getBody()).to.eql({error:{"code": "UNAUTHORIZED", "message": "unauthorized", "retryable": false}}); });
+  test("Exact HTTP 403", function () { expect(res.getStatus()).to.equal(403); });
+  test("Stable authorization error envelope", function () { expect(res.getHeader("content-type")).to.include("application/json"); expect(res.getBody()).to.eql({error:{"code": "FORBIDDEN", "message": "forbidden", "retryable": false}}); });
 }

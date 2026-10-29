@@ -112,7 +112,10 @@ impl AuthorizationCredential {
 		.await
 	}
 
-	/// An exportable credential of `tenant`, never a Mapping's own.
+	/// An exportable credential of `tenant`, never a Mapping's own, locked for
+	/// update. The revoker waits for readers that retain the credential here,
+	/// before it appends its audit decision: holding the global audit cursor
+	/// while waiting would deadlock with a reader that audits afterwards.
 	pub(crate) async fn exportable(
 		tx: &mut AtomicTransaction,
 		tenant: &str,
@@ -122,8 +125,10 @@ impl AuthorizationCredential {
 			.filter(Self::field_id().eq(id))
 			.filter(Self::field_tenant().eq(tenant))
 			.filter(Self::field_issued_by().ne("dashboard-oidc"))
-			.all_with_db(tx)
-			.await?
+			.select_for_update()
+			.all_with_executor(tx)
+			.await
+			.map_err(FrameworkError::from)?
 			.pop())
 	}
 

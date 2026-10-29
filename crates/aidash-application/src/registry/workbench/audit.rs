@@ -19,8 +19,9 @@ pub async fn read(
 		return Err(Error::Invalid("audit offset too large".into()));
 	}
 	let actor = repository.principal();
+	// Registry audit trails mix in Tenant content: only a Subject reads them (#484).
 	let tenant = match &actor {
-		Principal::DeploymentAdministrator => query.tenant.clone(),
+		Principal::DeploymentAdministrator => return Err(Error::Forbidden),
 		Principal::Subject { tenant, .. } => {
 			if query.tenant.as_ref().is_some_and(|t| t != tenant) {
 				return Err(Error::Forbidden);
@@ -66,7 +67,6 @@ pub async fn read(
 		}
 	}
 	let may_read_catalog_history = match (&actor, &tenant) {
-		(Principal::DeploymentAdministrator, _) => true,
 		(Principal::Subject { subject, .. }, Some(tenant)) => {
 			scope
 				.evaluate(

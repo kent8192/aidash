@@ -25,7 +25,7 @@ async fn smaller_candidate_policy_preserves_review_and_participant_upgrade_atomi
 	let (store, registry, workspace) = setup(&database, bounds).await;
 	let participant = memory::create_participant(
 		&store,
-		&Actor::DeploymentAdministrator,
+		&administrator(&store).await,
 		workspace,
 		memory::CreateParticipant {
 			agent: reference("a"),
@@ -111,13 +111,11 @@ async fn smaller_candidate_policy_preserves_review_and_participant_upgrade_atomi
 		bank: bank.clone(),
 		action: memory::Action::Candidates,
 	};
-	let memory::Outcome::Candidates(before) = memory::operate(
-		&store,
-		&Actor::DeploymentAdministrator,
-		list(reference("p")),
-	)
-	.await
-	.unwrap() else {
+	let memory::Outcome::Candidates(before) =
+		memory::operate(&store, &administrator(&store).await, list(reference("p")))
+			.await
+			.unwrap()
+	else {
 		panic!("candidate list");
 	};
 	assert_eq!(before.len(), 2);
@@ -159,7 +157,7 @@ async fn smaller_candidate_policy_preserves_review_and_participant_upgrade_atomi
 	};
 	let result = memory::upgrade_participant(
 		&store,
-		&Actor::DeploymentAdministrator,
+		&administrator(&store).await,
 		bank.clone(),
 		upgrade(),
 	)
@@ -168,19 +166,17 @@ async fn smaller_candidate_policy_preserves_review_and_participant_upgrade_atomi
 		matches!(result, Err(aidash_server::Error::Conflict(message))
 		if message == "replacement memory policy is below the pending candidate queue")
 	);
-	let memory::Outcome::Candidates(after) = memory::operate(
-		&store,
-		&Actor::DeploymentAdministrator,
-		list(reference("p")),
-	)
-	.await
-	.unwrap() else {
+	let memory::Outcome::Candidates(after) =
+		memory::operate(&store, &administrator(&store).await, list(reference("p")))
+			.await
+			.unwrap()
+	else {
 		panic!("preserved candidate list");
 	};
 	assert_eq!(after, before);
 	memory::operate(
 		&store,
-		&Actor::DeploymentAdministrator,
+		&administrator(&store).await,
 		memory::Operation {
 			operation_id: Uuid::now_v7(),
 			provider: reference("p"),
@@ -196,7 +192,7 @@ async fn smaller_candidate_policy_preserves_review_and_participant_upgrade_atomi
 	.unwrap();
 	let upgraded = memory::upgrade_participant(
 		&store,
-		&Actor::DeploymentAdministrator,
+		&administrator(&store).await,
 		bank.clone(),
 		upgrade(),
 	)
@@ -208,7 +204,7 @@ async fn smaller_candidate_policy_preserves_review_and_participant_upgrade_atomi
 	);
 	let memory::Outcome::Candidates(remaining) = memory::operate(
 		&store,
-		&Actor::DeploymentAdministrator,
+		&administrator(&store).await,
 		list(reference("small-queue")),
 	)
 	.await
@@ -232,7 +228,7 @@ async fn replacement_history_count_is_enforced_for_unchanged_units_during_mainte
 	let bank = if participant {
 		memory::create_participant(
 			&store,
-			&Actor::DeploymentAdministrator,
+			&administrator(&store).await,
 			workspace,
 			memory::CreateParticipant {
 				agent: reference("a"),
@@ -266,7 +262,7 @@ async fn replacement_history_count_is_enforced_for_unchanged_units_during_mainte
 			};
 			memory::mutate(
 				&store,
-				&Actor::DeploymentAdministrator,
+				&administrator(&store).await,
 				mutation(&bank, change),
 			)
 			.await
@@ -276,7 +272,7 @@ async fn replacement_history_count_is_enforced_for_unchanged_units_during_mainte
 	}
 	let before = memory::list(
 		&store,
-		&Actor::DeploymentAdministrator,
+		&administrator(&store).await,
 		memory::ReadBank {
 			provider: reference("p"),
 			bank: bank.clone(),
@@ -316,7 +312,7 @@ async fn replacement_history_count_is_enforced_for_unchanged_units_during_mainte
 			.unwrap();
 		memory::upgrade_participant(
 			&store,
-			&Actor::DeploymentAdministrator,
+			&administrator(&store).await,
 			bank.clone(),
 			memory::UpgradeParticipant {
 				agent: EntityRef {
@@ -331,7 +327,7 @@ async fn replacement_history_count_is_enforced_for_unchanged_units_during_mainte
 	} else {
 		memory::operate(
 			&store,
-			&Actor::DeploymentAdministrator,
+			&administrator(&store).await,
 			memory::Operation {
 				operation_id: Uuid::now_v7(),
 				provider: reference("short-history"),
@@ -353,7 +349,7 @@ async fn replacement_history_count_is_enforced_for_unchanged_units_during_mainte
 	assert_eq!(
 		memory::list(
 			&store,
-			&Actor::DeploymentAdministrator,
+			&administrator(&store).await,
 			memory::ReadBank {
 				provider: reference("short-history"),
 				bank
@@ -396,7 +392,7 @@ async fn smaller_storage_policy_rolls_back_shared_changes_and_participant_upgrad
 	let bank = if participant {
 		memory::create_participant(
 			&store,
-			&Actor::DeploymentAdministrator,
+			&administrator(&store).await,
 			workspace,
 			memory::CreateParticipant {
 				agent: reference("a"),
@@ -419,7 +415,7 @@ async fn smaller_storage_policy_rolls_back_shared_changes_and_participant_upgrad
 		let id = Uuid::now_v7();
 		memory::mutate(
 			&store,
-			&Actor::DeploymentAdministrator,
+			&administrator(&store).await,
 			mutation(
 				&bank,
 				Change::Add {
@@ -436,7 +432,7 @@ async fn smaller_storage_policy_rolls_back_shared_changes_and_participant_upgrad
 		for id in &ids[..2] {
 			memory::mutate(
 				&store,
-				&Actor::DeploymentAdministrator,
+				&administrator(&store).await,
 				mutation(
 					&bank,
 					Change::Delete {
@@ -471,7 +467,7 @@ async fn smaller_storage_policy_rolls_back_shared_changes_and_participant_upgrad
 		action: memory::Action::Settings,
 	};
 	let memory::Outcome::Settings(Some(before)) =
-		memory::operate(&store, &Actor::DeploymentAdministrator, settings())
+		memory::operate(&store, &administrator(&store).await, settings())
 			.await
 			.unwrap()
 	else {
@@ -494,7 +490,7 @@ async fn smaller_storage_policy_rolls_back_shared_changes_and_participant_upgrad
 			.unwrap();
 		memory::upgrade_participant(
 			&store,
-			&Actor::DeploymentAdministrator,
+			&administrator(&store).await,
 			bank.clone(),
 			memory::UpgradeParticipant {
 				agent: EntityRef {
@@ -509,7 +505,7 @@ async fn smaller_storage_policy_rolls_back_shared_changes_and_participant_upgrad
 	} else {
 		memory::operate(
 			&store,
-			&Actor::DeploymentAdministrator,
+			&administrator(&store).await,
 			memory::Operation {
 				operation_id: Uuid::now_v7(),
 				provider: reference("small"),
@@ -527,7 +523,7 @@ async fn smaller_storage_policy_rolls_back_shared_changes_and_participant_upgrad
 		if message == "replacement memory policy is below existing bank storage")
 	);
 	let memory::Outcome::Settings(Some(after)) =
-		memory::operate(&store, &Actor::DeploymentAdministrator, settings())
+		memory::operate(&store, &administrator(&store).await, settings())
 			.await
 			.unwrap()
 	else {
@@ -539,7 +535,7 @@ async fn smaller_storage_policy_rolls_back_shared_changes_and_participant_upgrad
 		// The failed provider replacement must roll back the Agent CAS as well.
 		let still_current = memory::upgrade_participant(
 			&store,
-			&Actor::DeploymentAdministrator,
+			&administrator(&store).await,
 			bank.clone(),
 			memory::UpgradeParticipant {
 				agent: reference("a"),
@@ -553,7 +549,7 @@ async fn smaller_storage_policy_rolls_back_shared_changes_and_participant_upgrad
 	}
 	memory::mutate(
 		&store,
-		&Actor::DeploymentAdministrator,
+		&administrator(&store).await,
 		mutation(
 			&bank,
 			Change::Delete {
@@ -585,7 +581,7 @@ async fn smaller_operation_policy_preserves_durable_capacity_and_participant_rev
 	let bank = if participant {
 		memory::create_participant(
 			&store,
-			&Actor::DeploymentAdministrator,
+			&administrator(&store).await,
 			workspace,
 			memory::CreateParticipant {
 				agent: reference("a"),
@@ -606,7 +602,7 @@ async fn smaller_operation_policy_preserves_durable_capacity_and_participant_rev
 	let id = Uuid::now_v7();
 	let admitted = memory::mutate(
 		&store,
-		&Actor::DeploymentAdministrator,
+		&administrator(&store).await,
 		mutation(
 			&bank,
 			Change::Add {
@@ -624,7 +620,7 @@ async fn smaller_operation_policy_preserves_durable_capacity_and_participant_rev
 			assert!(
 				memory::operate(
 					&store,
-					&Actor::DeploymentAdministrator,
+					&administrator(&store).await,
 					memory::Operation {
 						operation_id: Uuid::now_v7(),
 						provider: reference("p"),
@@ -643,7 +639,7 @@ async fn smaller_operation_policy_preserves_durable_capacity_and_participant_rev
 		for revision in 1..=2 {
 			memory::mutate(
 				&store,
-				&Actor::DeploymentAdministrator,
+				&administrator(&store).await,
 				mutation(
 					&bank,
 					Change::Correct {
@@ -691,7 +687,7 @@ async fn smaller_operation_policy_preserves_durable_capacity_and_participant_rev
 		action: memory::Action::Settings,
 	};
 	let memory::Outcome::Settings(Some(before)) =
-		memory::operate(&store, &Actor::DeploymentAdministrator, settings())
+		memory::operate(&store, &administrator(&store).await, settings())
 			.await
 			.unwrap()
 	else {
@@ -713,7 +709,7 @@ async fn smaller_operation_policy_preserves_durable_capacity_and_participant_rev
 			.unwrap();
 		memory::upgrade_participant(
 			&store,
-			&Actor::DeploymentAdministrator,
+			&administrator(&store).await,
 			bank.clone(),
 			memory::UpgradeParticipant {
 				agent: EntityRef {
@@ -728,7 +724,7 @@ async fn smaller_operation_policy_preserves_durable_capacity_and_participant_rev
 	} else {
 		memory::operate(
 			&store,
-			&Actor::DeploymentAdministrator,
+			&administrator(&store).await,
 			memory::Operation {
 				operation_id: Uuid::now_v7(),
 				provider: reference("small"),
@@ -745,7 +741,7 @@ async fn smaller_operation_policy_preserves_durable_capacity_and_participant_rev
 		matches!(result, Err(aidash_server::Error::Conflict(message)) if message == "replacement memory policy is below existing bank storage")
 	);
 	let memory::Outcome::Settings(Some(after)) =
-		memory::operate(&store, &Actor::DeploymentAdministrator, settings())
+		memory::operate(&store, &administrator(&store).await, settings())
 			.await
 			.unwrap()
 	else {
@@ -758,7 +754,7 @@ async fn smaller_operation_policy_preserves_durable_capacity_and_participant_rev
 	if participant {
 		let retained = memory::upgrade_participant(
 			&store,
-			&Actor::DeploymentAdministrator,
+			&administrator(&store).await,
 			bank.clone(),
 			memory::UpgradeParticipant {
 				agent: reference("a"),
@@ -771,7 +767,7 @@ async fn smaller_operation_policy_preserves_durable_capacity_and_participant_rev
 	}
 	memory::mutate(
 		&store,
-		&Actor::DeploymentAdministrator,
+		&administrator(&store).await,
 		mutation(
 			&bank,
 			Change::Delete {
@@ -803,7 +799,7 @@ async fn expiry_drains_in_batches_no_larger_than_mutation_capacity(
 	.await;
 	let bank = memory::create_participant(
 		&store,
-		&Actor::DeploymentAdministrator,
+		&administrator(&store).await,
 		workspace,
 		memory::CreateParticipant {
 			agent: reference("a"),
@@ -817,7 +813,7 @@ async fn expiry_drains_in_batches_no_larger_than_mutation_capacity(
 		units.extend(
 			memory::mutate(
 				&store,
-				&Actor::DeploymentAdministrator,
+				&administrator(&store).await,
 				mutation(
 					&bank,
 					Change::Add {
@@ -911,7 +907,7 @@ async fn semantic_sources_allow_the_pinned_provenance_limit_above_1024(
 	let (store, _, workspace) = setup_endpoint(&database, bounds, &endpoint).await;
 	let bank = memory::create_participant(
 		&store,
-		&Actor::DeploymentAdministrator,
+		&administrator(&store).await,
 		workspace,
 		memory::CreateParticipant {
 			agent: reference("a"),
@@ -934,7 +930,7 @@ async fn semantic_sources_allow_the_pinned_provenance_limit_above_1024(
 			last = Uuid::now_v7();
 			let unit = memory::mutate(
 				&store,
-				&Actor::DeploymentAdministrator,
+				&administrator(&store).await,
 				mutation(
 					&bank,
 					Change::Add {
@@ -954,13 +950,10 @@ async fn semantic_sources_allow_the_pinned_provenance_limit_above_1024(
 	aidash_server::semantic::worker::sweep(&store)
 		.await
 		.unwrap();
-	let entries = aidash_server::semantic::service::entries(
-		&store,
-		&Actor::DeploymentAdministrator,
-		workspace,
-	)
-	.await
-	.unwrap();
+	let entries =
+		aidash_server::semantic::service::entries(&store, &administrator(&store).await, workspace)
+			.await
+			.unwrap();
 	assert_eq!(
 		entries.iter().find(|entry| entry.id == last).unwrap().state,
 		"READY"
@@ -987,18 +980,15 @@ async fn deleting_an_unprojected_unit_does_not_consume_full_search_capacity(
 		.await
 		.unwrap()
 		.id;
-	let configured = aidash_server::semantic::service::get_index(
-		&store,
-		&Actor::DeploymentAdministrator,
-		indexed,
-	)
-	.await
-	.unwrap();
+	let configured =
+		aidash_server::semantic::service::get_index(&store, &administrator(&store).await, indexed)
+			.await
+			.unwrap();
 	let mut spec = configured.configuration().unwrap();
 	spec.max_sources = 1;
 	aidash_server::semantic::service::configure(
 		&store,
-		&aidash_server::authorization::identity::Actor::DeploymentAdministrator,
+		&administrator(&store).await,
 		workspace,
 		aidash_server::semantic::ConfigureIndex {
 			expected_revision: 0,
@@ -1009,7 +999,7 @@ async fn deleting_an_unprojected_unit_does_not_consume_full_search_capacity(
 	.unwrap();
 	let bank = memory::create_participant(
 		&store,
-		&Actor::DeploymentAdministrator,
+		&administrator(&store).await,
 		workspace,
 		memory::CreateParticipant {
 			agent: reference("a"),
@@ -1021,7 +1011,7 @@ async fn deleting_an_unprojected_unit_does_not_consume_full_search_capacity(
 	let old = Uuid::now_v7();
 	memory::mutate(
 		&store,
-		&Actor::DeploymentAdministrator,
+		&administrator(&store).await,
 		mutation(
 			&bank,
 			Change::Add {
@@ -1057,7 +1047,7 @@ async fn deleting_an_unprojected_unit_does_not_consume_full_search_capacity(
 	let current = Uuid::now_v7();
 	memory::mutate(
 		&store,
-		&Actor::DeploymentAdministrator,
+		&administrator(&store).await,
 		mutation(
 			&bank,
 			Change::Add {
@@ -1070,7 +1060,7 @@ async fn deleting_an_unprojected_unit_does_not_consume_full_search_capacity(
 	.unwrap();
 	let deleted = memory::mutate(
 		&store,
-		&Actor::DeploymentAdministrator,
+		&administrator(&store).await,
 		mutation(
 			&bank,
 			Change::Delete {
@@ -1082,13 +1072,10 @@ async fn deleting_an_unprojected_unit_does_not_consume_full_search_capacity(
 	.await
 	.unwrap();
 	assert!(deleted[0].deleted);
-	let entries = aidash_server::semantic::service::entries(
-		&store,
-		&Actor::DeploymentAdministrator,
-		workspace,
-	)
-	.await
-	.unwrap();
+	let entries =
+		aidash_server::semantic::service::entries(&store, &administrator(&store).await, workspace)
+			.await
+			.unwrap();
 	assert_eq!(entries.iter().filter(|entry| !entry.deleted).count(), 1);
 	let tombstone = aidash_server::apps::knowledge::models::SemanticEntry::objects()
 		.get(old)
@@ -1115,7 +1102,7 @@ async fn deleting_an_unprojected_unit_does_not_consume_full_search_capacity(
 	assert_eq!(jobs, 1);
 	let denied = memory::mutate(
 		&store,
-		&Actor::DeploymentAdministrator,
+		&administrator(&store).await,
 		mutation(
 			&bank,
 			Change::Add {
@@ -1166,7 +1153,8 @@ pub(super) async fn recorded_run(
 				"deployment_administrator",
 			)
 			.await
-			.unwrap();
+			// The fixture Subject may have approved it already.
+			.ok();
 	}
 	let credential = authorization
 		.issue_credential("acme", "alice", 3600, "deployment_administrator")
@@ -1333,7 +1321,7 @@ async fn smaller_content_policy_rejects_existing_units_atomically(
 	let bank = if participant {
 		memory::create_participant(
 			&store,
-			&Actor::DeploymentAdministrator,
+			&administrator(&store).await,
 			workspace,
 			memory::CreateParticipant {
 				agent: reference("a"),
@@ -1356,7 +1344,7 @@ async fn smaller_content_policy_rejects_existing_units_atomically(
 		parents.push(
 			memory::mutate(
 				&store,
-				&Actor::DeploymentAdministrator,
+				&administrator(&store).await,
 				mutation(
 					&bank,
 					Change::Add {
@@ -1398,7 +1386,7 @@ async fn smaller_content_policy_rejects_existing_units_atomically(
 	}
 	memory::mutate(
 		&store,
-		&Actor::DeploymentAdministrator,
+		&administrator(&store).await,
 		mutation(
 			&bank,
 			Change::Add {
@@ -1411,7 +1399,7 @@ async fn smaller_content_policy_rejects_existing_units_atomically(
 	.unwrap();
 	let before = memory::list(
 		&store,
-		&Actor::DeploymentAdministrator,
+		&administrator(&store).await,
 		memory::ReadBank {
 			provider: reference("p"),
 			bank: bank.clone(),
@@ -1435,7 +1423,7 @@ async fn smaller_content_policy_rejects_existing_units_atomically(
 		action: memory::Action::Settings,
 	};
 	let memory::Outcome::Settings(Some(original)) =
-		memory::operate(&store, &Actor::DeploymentAdministrator, settings())
+		memory::operate(&store, &administrator(&store).await, settings())
 			.await
 			.unwrap()
 	else {
@@ -1457,7 +1445,7 @@ async fn smaller_content_policy_rejects_existing_units_atomically(
 			.unwrap();
 		memory::upgrade_participant(
 			&store,
-			&Actor::DeploymentAdministrator,
+			&administrator(&store).await,
 			bank.clone(),
 			memory::UpgradeParticipant {
 				agent: EntityRef {
@@ -1472,7 +1460,7 @@ async fn smaller_content_policy_rejects_existing_units_atomically(
 	} else {
 		memory::operate(
 			&store,
-			&Actor::DeploymentAdministrator,
+			&administrator(&store).await,
 			memory::Operation {
 				operation_id: Uuid::now_v7(),
 				provider: reference("small-content"),
@@ -1489,7 +1477,7 @@ async fn smaller_content_policy_rejects_existing_units_atomically(
 		matches!(result, Err(aidash_server::Error::Conflict(message)) if message == "replacement memory policy is below existing unit content bounds")
 	);
 	let memory::Outcome::Settings(Some(after)) =
-		memory::operate(&store, &Actor::DeploymentAdministrator, settings())
+		memory::operate(&store, &administrator(&store).await, settings())
 			.await
 			.unwrap()
 	else {
@@ -1502,7 +1490,7 @@ async fn smaller_content_policy_rejects_existing_units_atomically(
 	assert_eq!(
 		memory::list(
 			&store,
-			&Actor::DeploymentAdministrator,
+			&administrator(&store).await,
 			memory::ReadBank {
 				provider: reference("p"),
 				bank: bank.clone()
@@ -1515,7 +1503,7 @@ async fn smaller_content_policy_rejects_existing_units_atomically(
 	if participant {
 		let unchanged = memory::upgrade_participant(
 			&store,
-			&Actor::DeploymentAdministrator,
+			&administrator(&store).await,
 			bank,
 			memory::UpgradeParticipant {
 				agent: reference("a"),

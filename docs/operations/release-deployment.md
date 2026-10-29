@@ -414,6 +414,13 @@ unseals. Read its diagnostic, repair the cause, then dispatch on `main` with
 `retry_failed=true`. A retry is a new generation and takes a new backup.
 Production refuses to update without this plan. Apply it in step 7 of the
 activation checklist before the second production update.
+Staging takes no Pre-update Backup, so the first cluster to accept the `aidash`
+ProtectedApplication selector is production. Run one production update after
+step 7 and before activation: if the cluster refuses the selector, that update
+fails at `kube.protect` while nobody uses production yet. Confirm that its backup
+leaves out the Home recovery ledger claim and its volume.
+[#562](https://github.com/kent8192/aidash/issues/562) tracks this check and the
+first drills.
 
 The update entry in the lifecycle state records `pre_update_backup` (the backup's
 full name). It records `writers_started` before any writer starts again: the new

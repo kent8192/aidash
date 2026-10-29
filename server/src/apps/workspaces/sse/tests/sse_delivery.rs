@@ -378,18 +378,12 @@ async fn unpolled_output_expires_but_idle_streams_and_authority_checks_remain_li
 	);
 	until(|| fixture.service.snapshot().query_causes[0] == 5).await;
 	let before = fixture.service.snapshot();
-	let (status, value) = request(
-		&fixture.app,
-		&fixture.f.config.api_token,
-		"POST",
-		&format!(
-			"/api/authorization/acme/credentials/{}/revoke",
-			fixture.credential
-		),
-		json!({}),
-	)
-	.await;
-	assert_eq!(status, 200, "{value}");
+	aidash_server::authorization::Authorization {
+		pool: fixture.f.store.control_pool.clone(),
+	}
+	.revoke_credential("acme", fixture.credential)
+	.await
+	.unwrap();
 	until(|| fixture.service.snapshot().registered_scopes == 0).await;
 	let after = fixture.service.snapshot();
 	assert!(after.authority_checks > before.authority_checks);
@@ -506,15 +500,7 @@ async fn global_stream_filters_revoked_workspaces_without_rewinding_on_restore(
 		),
 		(3, policy(fixture.f.config.deployment.as_str())),
 	] {
-		let (status, value) = request(
-			&fixture.app,
-			&fixture.f.config.api_token,
-			"POST",
-			"/api/authorization/acme",
-			json!({"expected_revision":revision,"bundle":bundle}),
-		)
-		.await;
-		assert_eq!(status, 200, "{value}");
+		common::replace_policy(&fixture.f.store, "acme", bundle).await;
 		match revision {
 			1 => {
 				fixture.emit(ws, 11).await;
@@ -628,26 +614,19 @@ fn sse_fixture(
 		let application_fixture = application.await;
 		let (f, url, schema) = application_fixture.runtime.parts();
 		let app = application_fixture.application.clone();
-		let deployment_administrator = &f.config.api_token;
 		common::tenant_root(&f, "acme").await;
-		let (status, value) = request(
-			&app,
-			deployment_administrator,
-			"POST",
-			"/api/authorization/acme",
-			json!({"expected_revision":0,"bundle":policy(f.config.deployment.as_str())}),
+		aidash_server::authorization::Authorization {
+			pool: f.store.pool.clone(),
+		}
+		.replace(
+			"acme",
+			0,
+			serde_json::from_value(policy(f.config.deployment.as_str())).unwrap(),
+			"deployment_administrator",
 		)
-		.await;
-		assert_eq!(status, 200, "{value}");
-		let (status, credential) = request(
-			&app,
-			deployment_administrator,
-			"POST",
-			"/api/authorization/acme/credentials",
-			json!({"subject":"alice"}),
-		)
-		.await;
-		assert_eq!(status, 200, "{credential}");
+		.await
+		.unwrap();
+		let credential = common::issued_credential(&f.store, "acme", "alice").await;
 		let token = credential["token"].as_str().unwrap().to_owned();
 		let credential = credential["credential"]["id"]
 			.as_str()

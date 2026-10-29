@@ -20,7 +20,7 @@ fn policy() -> Decay {
 async fn participant(store: &Store, workspace: Uuid) -> Bank {
 	memory::create_participant(
 		store,
-		&Actor::DeploymentAdministrator,
+		&administrator(store).await,
 		workspace,
 		memory::CreateParticipant {
 			agent: reference("a"),
@@ -33,7 +33,7 @@ async fn participant(store: &Store, workspace: Uuid) -> Bank {
 async fn operate(store: &Store, bank: &Bank, action: memory::Action) -> memory::Outcome {
 	memory::operate(
 		store,
-		&Actor::DeploymentAdministrator,
+		&administrator(store).await,
 		memory::Operation {
 			operation_id: Uuid::now_v7(),
 			provider: reference("p"),
@@ -122,7 +122,7 @@ async fn retention_controls_replay_without_renewing_reactivation_and_reject_reus
 		id: ids[1],
 		content: content("A different Unit cannot reuse the same control request"),
 	});
-	let admitted = memory::mutate(&store, &Actor::DeploymentAdministrator, admission)
+	let admitted = memory::mutate(&store, &administrator(&store).await, admission)
 		.await
 		.unwrap();
 	let anchor = (Utc::now() - Duration::days(3)).trunc_subsecs(6);
@@ -138,7 +138,7 @@ async fn retention_controls_replay_without_renewing_reactivation_and_reject_reus
 			action,
 		};
 		let memory::Outcome::Units(result) =
-			memory::operate(&store, &Actor::DeploymentAdministrator, request.clone())
+			memory::operate(&store, &administrator(&store).await, request.clone())
 				.await
 				.unwrap()
 		else {
@@ -164,7 +164,7 @@ async fn retention_controls_replay_without_renewing_reactivation_and_reject_reus
 		.unwrap();
 		tx.commit().await.unwrap();
 		let memory::Outcome::Units(replayed) =
-			memory::operate(&store, &Actor::DeploymentAdministrator, request.clone())
+			memory::operate(&store, &administrator(&store).await, request.clone())
 				.await
 				.unwrap()
 		else {
@@ -182,7 +182,7 @@ async fn retention_controls_replay_without_renewing_reactivation_and_reject_reus
 			assert!(matches!(
 				memory::operate(
 					&store,
-					&Actor::DeploymentAdministrator,
+					&administrator(&store).await,
 					memory::Operation {
 						action,
 						..request.clone()
@@ -227,7 +227,7 @@ async fn retention_controls_replay_without_renewing_reactivation_and_reject_reus
 	assert!(matches!(
 		memory::operate(
 			&store,
-			&Actor::DeploymentAdministrator,
+			&administrator(&store).await,
 			memory::Operation {
 				operation_id: Uuid::nil(),
 				provider: reference("p"),
@@ -265,7 +265,7 @@ async fn completed_control_replays_report_changed_visibility_as_conflicts(
 			if state == "stale" {
 				let admitted_source = memory::mutate(
 					&store,
-					&Actor::DeploymentAdministrator,
+					&administrator(&store).await,
 					mutation(
 						&bank,
 						Change::Add {
@@ -280,7 +280,7 @@ async fn completed_control_replays_report_changed_visibility_as_conflicts(
 			}
 			let admitted = memory::mutate(
 				&store,
-				&Actor::DeploymentAdministrator,
+				&administrator(&store).await,
 				mutation(
 					&bank,
 					Change::Add {
@@ -302,7 +302,7 @@ async fn completed_control_replays_report_changed_visibility_as_conflicts(
 					_ => unreachable!(),
 				},
 			};
-			memory::operate(&store, &Actor::DeploymentAdministrator, request.clone())
+			memory::operate(&store, &administrator(&store).await, request.clone())
 				.await
 				.unwrap();
 			// Use the public mutation path so canonical state, projections, and
@@ -329,7 +329,7 @@ async fn completed_control_replays_report_changed_visibility_as_conflicts(
 			};
 			memory::mutate(
 				&store,
-				&Actor::DeploymentAdministrator,
+				&administrator(&store).await,
 				mutation(&bank, change),
 			)
 			.await
@@ -348,7 +348,7 @@ async fn completed_control_replays_report_changed_visibility_as_conflicts(
 					.await
 					.unwrap();
 			let replay =
-				memory::operate(&store, &Actor::DeploymentAdministrator, request.clone()).await;
+				memory::operate(&store, &administrator(&store).await, request.clone()).await;
 			assert!(
 				matches!(replay, Err(aidash_server::Error::Conflict(_))),
 				"{action}/{state}: {replay:?}"
@@ -358,7 +358,7 @@ async fn completed_control_replays_report_changed_visibility_as_conflicts(
 				..request.clone()
 			};
 			assert!(matches!(
-				memory::operate(&store, &Actor::DeploymentAdministrator, fresh.clone()).await,
+				memory::operate(&store, &administrator(&store).await, fresh.clone()).await,
 				Err(aidash_server::Error::Forbidden)
 			));
 			let after: (chrono::DateTime<Utc>, bool, Option<serde_json::Value>) =
@@ -417,7 +417,7 @@ async fn dormant_is_recall_only_and_pin_correction_and_manual_reactivation_prese
 	let source = Uuid::now_v7();
 	let admitted = memory::mutate(
 		&store,
-		&Actor::DeploymentAdministrator,
+		&administrator(&store).await,
 		mutation(
 			&bank,
 			Change::Add {
@@ -440,7 +440,7 @@ async fn dormant_is_recall_only_and_pin_correction_and_manual_reactivation_prese
 		bank: bank.clone(),
 	};
 	assert_eq!(
-		memory::list(&store, &Actor::DeploymentAdministrator, read.clone())
+		memory::list(&store, &administrator(&store).await, read.clone())
 			.await
 			.unwrap(),
 		admitted
@@ -504,7 +504,7 @@ async fn dormant_is_recall_only_and_pin_correction_and_manual_reactivation_prese
 	sweep(&store).await;
 	let corrected = memory::mutate(
 		&store,
-		&Actor::DeploymentAdministrator,
+		&administrator(&store).await,
 		mutation(
 			&bank,
 			Change::Correct {
@@ -522,7 +522,7 @@ async fn dormant_is_recall_only_and_pin_correction_and_manual_reactivation_prese
 	sweep(&store).await;
 	let deleted = memory::mutate(
 		&store,
-		&Actor::DeploymentAdministrator,
+		&administrator(&store).await,
 		mutation(
 			&bank,
 			Change::Delete {
@@ -535,7 +535,7 @@ async fn dormant_is_recall_only_and_pin_correction_and_manual_reactivation_prese
 	.unwrap();
 	assert!(deleted[0].deleted);
 	assert!(
-		memory::list(&store, &Actor::DeploymentAdministrator, read)
+		memory::list(&store, &administrator(&store).await, read)
 			.await
 			.unwrap()
 			.is_empty()
@@ -573,7 +573,7 @@ async fn dormancy_pages_resume_fixed_clock_and_exempt_pinned_preference_and_proc
 		body.learning = learning;
 		memory::mutate(
 			&store,
-			&Actor::DeploymentAdministrator,
+			&administrator(&store).await,
 			mutation(&bank, Change::Add { id, content: body }),
 		)
 		.await
@@ -698,7 +698,7 @@ async fn dormancy_and_reactivation_keep_existing_run_dependencies_valid(
 	let source = Uuid::now_v7();
 	let admitted = memory::mutate(
 		&store,
-		&Actor::DeploymentAdministrator,
+		&administrator(&store).await,
 		mutation(
 			&bank,
 			Change::Add {

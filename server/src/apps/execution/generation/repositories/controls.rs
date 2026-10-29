@@ -26,22 +26,15 @@ pub(crate) struct NativeControls {
 	pub actor: Actor,
 	pub principal: Principal,
 }
-enum Mode {
-	DeploymentAdministrator(crate::database::native::Transaction),
-	Subject(Box<Access>),
-}
 struct Scope {
 	runtime: Federation,
-	mode: Mode,
+	access: Box<Access>,
 }
 impl Scope {
 	fn lifecycle(&mut self) -> NativeLifecycle<'_> {
 		NativeLifecycle {
 			runtime: &self.runtime,
-			transaction: match &mut self.mode {
-				Mode::DeploymentAdministrator(tx) => tx,
-				Mode::Subject(access) => &mut access.tx,
-			},
+			transaction: &mut self.access.tx,
 		}
 	}
 }
@@ -54,35 +47,17 @@ impl GenerationControls for NativeControls {
 		&self,
 		scope: &TenancyScope,
 	) -> aidash_application::Result<Box<dyn GenerationControlScope>> {
-		let mode = match &self.actor {
-			// A Deployment Administrator controls a job in the named Tenant's scope.
-			Actor::DeploymentAdministrator => {
-				let tenant = scope
-					.tenant_name()
-					.ok_or(aidash_application::Error::Forbidden)?;
-				let mut tx = self.runtime.store.pool.begin(scope).await?;
-				crate::authorization::remote::deployment_administrator::tenant(
-					&mut *tx,
-					tenant.as_str(),
-				)
-				.await
-				.map_err(
-					crate::authorization::remote::deployment_administrator::application_error,
-				)?;
-				Mode::DeploymentAdministrator(tx)
-			}
-			Actor::Subject(identity) => {
-				if identity.tenancy()? != *scope {
-					return Err(aidash_application::Error::Forbidden);
-				}
-				Mode::Subject(Box::new(
-					Access::begin_exclusive(&self.runtime.store, identity).await?,
-				))
-			}
+		// Generation requests are Tenant content: only a Subject controls them (#484).
+		let Actor::Subject(identity) = &self.actor else {
+			return Err(aidash_application::Error::Forbidden);
 		};
+		if identity.tenancy()? != *scope {
+			return Err(aidash_application::Error::Forbidden);
+		}
+		let access = Box::new(Access::begin_exclusive(&self.runtime.store, identity).await?);
 		Ok(Box::new(Scope {
 			runtime: self.runtime.clone(),
-			mode,
+			access,
 		}))
 	}
 	fn notify(&self) {
@@ -92,9 +67,7 @@ impl GenerationControls for NativeControls {
 #[async_trait]
 impl GenerationControlScope for Scope {
 	async fn visible(&mut self, job: &Request) -> aidash_application::Result<bool> {
-		let Mode::Subject(access) = &mut self.mode else {
-			return Err(aidash_application::Error::Forbidden);
-		};
+		let access = &mut self.access;
 		aidash_application::generation::visibility::visible(
 			&mut crate::bootstrap::generation_visibility_scope(access),
 			job,
@@ -102,9 +75,7 @@ impl GenerationControlScope for Scope {
 		.await
 	}
 	async fn decide(&mut self, job: &Request, action: &str) -> aidash_application::Result<bool> {
-		let Mode::Subject(access) = &mut self.mode else {
-			return Err(aidash_application::Error::Forbidden);
-		};
+		let access = &mut self.access;
 		access
 			.decide(
 				&access.resource("generation", job.id, job.resource_attributes()),
@@ -114,9 +85,7 @@ impl GenerationControlScope for Scope {
 			.map_err(Into::into)
 	}
 	async fn decide_catalog(&mut self, job: &Request) -> aidash_application::Result<bool> {
-		let Mode::Subject(access) = &mut self.mode else {
-			return Err(aidash_application::Error::Forbidden);
-		};
+		let access = &mut self.access;
 		let entry: crate::registry::Entry = serde_json::from_value(job.definition.clone())?;
 		let resource = access.resource(
 			"registry",
@@ -132,19 +101,10 @@ impl GenerationControlScope for Scope {
 		self: Box<Self>,
 		result: aidash_application::Result<Request>,
 	) -> aidash_application::Result<Request> {
-		match self.mode {
-			Mode::DeploymentAdministrator(tx) => match result {
-				Ok(job) => {
-					tx.commit().await?;
-					Ok(job)
-				}
-				Err(error) => Err(error),
-			},
-			Mode::Subject(access) => access
-				.finish(result.map_err(Error::from))
-				.await
-				.map_err(Into::into),
-		}
+		self.access
+			.finish(result.map_err(Error::from))
+			.await
+			.map_err(Into::into)
 	}
 }
 #[async_trait]
@@ -218,7 +178,17 @@ impl GenerationLifecycleScope for Scope {
 		self.lifecycle().history(job, status, actor, reason).await?;
 		// This adapter is exclusively the explicit Approve/Deny/Stop/Delete control.
 		// Generic lifecycle transitions never emit human calibration labels.
-		let person = matches!(&self.mode,Mode::Subject(access) if access.snapshot.bundle.subjects.get(&access.identity.subject).is_some_and(|subject|subject.enabled&&subject.kind==aidash_domain::policy::SubjectKind::User));
+		let person = {
+			let access = &self.access;
+			access
+				.snapshot
+				.bundle
+				.subjects
+				.get(&access.identity.subject)
+				.is_some_and(|subject| {
+					subject.enabled && subject.kind == aidash_domain::policy::SubjectKind::User
+				})
+		};
 		if person && job.status == "PENDING_APPROVAL" {
 			let human = match status {
 				"QUEUED" => Some(aidash_domain::decision::observation::HumanLabel::Allow),

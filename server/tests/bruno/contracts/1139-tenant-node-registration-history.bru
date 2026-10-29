@@ -1,0 +1,21 @@
+meta {
+  name: 1139 tenant-node-registration-history - Malformed bearer syntax is rejected
+  type: http
+  seq: 1139
+}
+
+get {
+  url: {{base_url}}/api/tenants/{{tenant}}/nodes/brave-otter-k3m9q2xa/registration-history
+  body: none
+  auth: none
+}
+
+headers {
+  Accept: application/json
+  Authorization: Basic invalid
+}
+
+tests {
+  test("Exact HTTP 401", function () { expect(res.getStatus()).to.equal(401); });
+  test("Stable authorization error envelope", function () { expect(res.getHeader("content-type")).to.include("application/json"); expect(res.getBody()).to.eql({error:"unauthorized"}); });
+}

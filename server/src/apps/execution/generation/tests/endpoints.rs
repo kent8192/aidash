@@ -59,7 +59,8 @@ async fn generated_execution_reports_charged_usage_and_releases_unused_quota_ove
 		"limits":{"max_agents":2,"max_concurrent":2,"max_depth":2,"token_budget":400000,
 			"tokens_per_agent":200000,"lifetime_seconds":3600}});
 	assert_json(
-		app.deployment_administrator
+		fixture
+			.subject
 			.post(
 				"/api/generation/acme/policies/research",
 				&json!({"expected_revision":0,"spec":spec}),

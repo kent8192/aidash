@@ -25,7 +25,7 @@ async fn every_unit_change_fences_a_dependent_run_regardless_of_its_shape(
 	let (store, _, workspace) = setup(&database, bounds).await;
 	let bank = memory::create_participant(
 		&store,
-		&Actor::DeploymentAdministrator,
+		&administrator(&store).await,
 		workspace,
 		memory::CreateParticipant {
 			agent: reference("a"),
@@ -38,7 +38,7 @@ async fn every_unit_change_fences_a_dependent_run_regardless_of_its_shape(
 	let original = content("Deploy from the release branch only.");
 	memory::mutate(
 		&store,
-		&Actor::DeploymentAdministrator,
+		&administrator(&store).await,
 		mutation(
 			&bank,
 			Change::Add {
@@ -85,7 +85,7 @@ async fn every_unit_change_fences_a_dependent_run_regardless_of_its_shape(
 	};
 	memory::mutate(
 		&store,
-		&Actor::DeploymentAdministrator,
+		&administrator(&store).await,
 		mutation(&bank, change),
 	)
 	.await
@@ -98,7 +98,7 @@ async fn every_unit_change_fences_a_dependent_run_regardless_of_its_shape(
 	);
 	let current = memory::list(
 		&store,
-		&Actor::DeploymentAdministrator,
+		&administrator(&store).await,
 		memory::ReadBank {
 			provider: reference("p"),
 			bank: bank.clone(),
@@ -132,7 +132,7 @@ async fn concurrent_writers_on_one_unit_have_a_single_winner_and_fence_readers(
 	let (store, _, workspace) = setup(&database, bounds).await;
 	let bank = memory::create_participant(
 		&store,
-		&Actor::DeploymentAdministrator,
+		&administrator(&store).await,
 		workspace,
 		memory::CreateParticipant {
 			agent: reference("a"),
@@ -144,7 +144,7 @@ async fn concurrent_writers_on_one_unit_have_a_single_winner_and_fence_readers(
 	let id = Uuid::now_v7();
 	memory::mutate(
 		&store,
-		&Actor::DeploymentAdministrator,
+		&administrator(&store).await,
 		mutation(
 			&bank,
 			Change::Add {
@@ -170,15 +170,16 @@ async fn concurrent_writers_on_one_unit_have_a_single_winner_and_fence_readers(
 	};
 
 	// Act
+	let actor = administrator(&store).await;
 	let (left, right) = tokio::join!(
 		memory::mutate(
 			&store,
-			&Actor::DeploymentAdministrator,
+			&actor,
 			correct("Shared runbook step one, writer A.")
 		),
 		memory::mutate(
 			&store,
-			&Actor::DeploymentAdministrator,
+			&actor,
 			correct("Shared runbook step one, writer B.")
 		),
 	);
@@ -205,7 +206,7 @@ async fn concurrent_writers_on_one_unit_have_a_single_winner_and_fence_readers(
 	}
 	let current = memory::list(
 		&store,
-		&Actor::DeploymentAdministrator,
+		&administrator(&store).await,
 		memory::ReadBank {
 			provider: reference("p"),
 			bank,
@@ -337,7 +338,7 @@ async fn impact_lists_visible_dependents_before_and_after_a_change(
 	let (store, _, workspace) = setup_endpoint(&database, bounds, &endpoint).await;
 	let bank = memory::create_participant(
 		&store,
-		&Actor::DeploymentAdministrator,
+		&administrator(&store).await,
 		workspace,
 		memory::CreateParticipant {
 			agent: reference("a"),
@@ -348,7 +349,7 @@ async fn impact_lists_visible_dependents_before_and_after_a_change(
 	.bank;
 	let source = memory::mutate(
 		&store,
-		&Actor::DeploymentAdministrator,
+		&administrator(&store).await,
 		mutation(
 			&bank,
 			Change::Add {
@@ -372,7 +373,7 @@ async fn impact_lists_visible_dependents_before_and_after_a_change(
 	);
 	let memory::Outcome::Units(derived) = memory::operate(
 		&store,
-		&Actor::DeploymentAdministrator,
+		&administrator(&store).await,
 		memory::Operation {
 			operation_id: derivation.operation_id,
 			provider: reference("p"),
@@ -427,7 +428,7 @@ async fn impact_lists_visible_dependents_before_and_after_a_change(
 	// Act: change, then the post-change view
 	memory::mutate(
 		&store,
-		&Actor::DeploymentAdministrator,
+		&administrator(&store).await,
 		mutation(
 			&bank,
 			Change::Correct {
@@ -500,7 +501,7 @@ async fn impact_answers_a_foreign_unit_like_an_unknown_id(
 	let (store, _, workspace) = setup(&database, bounds).await;
 	let bank = memory::create_participant(
 		&store,
-		&Actor::DeploymentAdministrator,
+		&administrator(&store).await,
 		workspace,
 		memory::CreateParticipant {
 			agent: reference("a"),
@@ -511,7 +512,7 @@ async fn impact_answers_a_foreign_unit_like_an_unknown_id(
 	.bank;
 	let foreign = memory::mutate(
 		&store,
-		&Actor::DeploymentAdministrator,
+		&administrator(&store).await,
 		mutation(
 			&bank,
 			Change::Add {
@@ -527,7 +528,7 @@ async fn impact_answers_a_foreign_unit_like_an_unknown_id(
 	let actor = Actor::Subject(scope.identity.clone());
 	memory::operate(
 		&store,
-		&Actor::DeploymentAdministrator,
+		&administrator(&store).await,
 		memory::Operation {
 			operation_id: Uuid::now_v7(),
 			provider: reference("p"),
@@ -596,7 +597,7 @@ async fn impact_reports_only_live_units_and_fences_expired_reads(
 	.await;
 	let bank = memory::create_participant(
 		&store,
-		&Actor::DeploymentAdministrator,
+		&administrator(&store).await,
 		workspace,
 		memory::CreateParticipant {
 			agent: reference("a"),
@@ -619,7 +620,7 @@ async fn impact_reports_only_live_units_and_fences_expired_reads(
 	};
 	let source = memory::mutate(
 		&store,
-		&Actor::DeploymentAdministrator,
+		&administrator(&store).await,
 		add("Root finding", vec![]),
 	)
 	.await
@@ -634,7 +635,7 @@ async fn impact_reports_only_live_units_and_fences_expired_reads(
 		derived.push(
 			memory::mutate(
 				&store,
-				&Actor::DeploymentAdministrator,
+				&administrator(&store).await,
 				add(text, vec![source.evidence()]),
 			)
 			.await
@@ -646,7 +647,7 @@ async fn impact_reports_only_live_units_and_fences_expired_reads(
 	withdrawn.verification = Verification::Contradicted;
 	memory::mutate(
 		&store,
-		&Actor::DeploymentAdministrator,
+		&administrator(&store).await,
 		mutation(
 			&bank,
 			Change::Correct {

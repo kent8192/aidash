@@ -186,13 +186,7 @@ async fn personal_agent_roundtrip(mut execution: ExecutionFixture, large_documen
 			break;
 		}
 	}
-	let diagnostic_state = assert_json(
-		app.deployment_administrator
-			.get("/api/state")
-			.await
-			.unwrap(),
-		200,
-	);
+	let diagnostic_state = assert_json(subject.get("/api/state").await.unwrap(), 200);
 	let body = execution
 		.provider
 		.received

@@ -74,18 +74,12 @@ async fn invalid_test_limits_leave_the_saved_tenant_policy_unchanged(
 	_credential_client_0: crate::endpoint::ClientFuture,
 ) {
 	let app = endpoint.await;
-	let _alice = subject(&app, "alice", _credential_client_0.await).await;
+	let alice = subject(&app, "alice", _credential_client_0.await).await;
 	let path = "/api/workbench/test-limits/endpoint";
 	let valid = json!({"tenant":"endpoint","max_input_bytes":4096,"max_output_tokens":128,
 		"max_total_tokens":512,"max_steps":4,"max_duration_secs":30,"max_concurrent":1,
 		"payload_days":7,"incident_evidence_days":14});
-	assert_json(
-		app.deployment_administrator
-			.put(path, &valid, "json")
-			.await
-			.unwrap(),
-		200,
-	);
+	assert_json(alice.put(path, &valid, "json").await.unwrap(), 200);
 	for (field, rejected) in [
 		("max_input_bytes", 1023),
 		("max_steps", 65),
@@ -93,23 +87,11 @@ async fn invalid_test_limits_leave_the_saved_tenant_policy_unchanged(
 	] {
 		let mut invalid = valid.clone();
 		invalid[field] = json!(rejected);
-		assert_json(
-			app.deployment_administrator
-				.put(path, &invalid, "json")
-				.await
-				.unwrap(),
-			400,
-		);
+		assert_json(alice.put(path, &invalid, "json").await.unwrap(), 400);
 	}
 	let mut invalid = valid;
 	invalid["max_output_tokens"] = json!(1024);
-	assert_json(
-		app.deployment_administrator
-			.put(path, &invalid, "json")
-			.await
-			.unwrap(),
-		400,
-	);
+	assert_json(alice.put(path, &invalid, "json").await.unwrap(), 400);
 	let saved = app
 		.database
 		.fixture(async |tx| {
@@ -241,8 +223,8 @@ async fn administration_lists_profiles_beyond_the_first_hundred(
 		})
 		.await;
 	let page = assert_json(
-		app.deployment_administrator
-			.get("/api/workbench/test-profiles?tenant=endpoint")
+		alice
+			.get("/api/workbench/test-profiles/endpoint")
 			.await
 			.unwrap(),
 		200,
@@ -269,4 +251,65 @@ async fn administration_lists_profiles_beyond_the_first_hundred(
 	assert_eq!(next.as_array().unwrap().len(), 1);
 	assert_eq!(next[0]["id"], "profile-100");
 	assert_eq!(next[0]["enabled"], false);
+}
+
+#[rstest]
+#[tokio::test]
+async fn deployment_and_other_tenant_authority_never_reaches_test_limits_or_profiles(
+	endpoint: crate::endpoint::EndpointFuture,
+	#[from(crate::endpoint::anonymous_client)]
+	#[with(endpoint.clone())]
+	credential_client: crate::endpoint::ClientFuture,
+) {
+	// Arrange: the Tenant's own Subject saves limits; a second Tenant has its own Subject.
+	let app = endpoint.await;
+	let alice = subject(&app, "alice", credential_client.await).await;
+	let path = "/api/workbench/test-limits/endpoint";
+	let profiles = "/api/workbench/test-profiles/endpoint";
+	let read = assert_json(alice.get(path).await.unwrap(), 200);
+	let mut limits = read["limits"].clone();
+	limits["max_concurrent"] = json!(3);
+	assert_json(alice.put(path, &limits, "json").await.unwrap(), 200);
+	crate::endpoint::tenant_root(&app.runtime, "other").await;
+	assert_json(
+		app.deployment_administrator
+			.post(
+				"/api/authorization/other",
+				&json!({"expected_revision":0,"bundle":{"tenant":"other","subjects":{"bob":{"kind":"user"}},"policies":[{"id":"test-work","effect":"allow","subjects":{"any":true},"actions":["*"],"resources":{"kinds":["*"]}}]}}),
+				"json",
+			)
+			.await
+			.unwrap(),
+		200,
+	);
+	let bob_token = crate::endpoint::subject_credential(&app.runtime.store, "other", "bob").await;
+	let bob = reinhardt::test::fixtures::api_client_from_url(&app.server.url);
+	bob.set_header("Authorization", &format!("Bearer {bob_token}"))
+		.await
+		.unwrap();
+	let mut changed = limits.clone();
+	changed["max_concurrent"] = json!(5);
+	changed["revision"] = json!(1);
+
+	// Act and Assert: only the Tenant's own Subject reads or changes them.
+	for client in [&app.deployment_administrator, &bob] {
+		assert_json(client.get(path).await.unwrap(), 403);
+		assert_json(client.put(path, &changed, "json").await.unwrap(), 403);
+		assert_json(client.get(profiles).await.unwrap(), 403);
+	}
+	let browser = crate::endpoint::browser_administrator(&app).await;
+	assert_eq!(browser.send("GET", path, Value::Null).await.0, 403);
+	assert_eq!(browser.send("PUT", path, changed).await.0, 403);
+	assert_eq!(browser.send("GET", profiles, Value::Null).await.0, 403);
+	let saved = app
+		.database
+		.fixture(async |tx| {
+			Ok(AgentTestLimit::objects()
+				.filter(AgentTestLimit::field_tenant().eq("endpoint"))
+				.get_with_db(tx)
+				.await?)
+		})
+		.await;
+	assert_eq!((saved.max_concurrent, saved.revision), (3, 1));
+	assert_json(alice.get(profiles).await.unwrap(), 200);
 }

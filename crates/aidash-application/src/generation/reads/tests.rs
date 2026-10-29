@@ -188,37 +188,6 @@ impl GenerationReads for Repository {
 			completed: false,
 		}))
 	}
-	async fn deployment_administrator_history(
-		&self,
-		_tenant: &str,
-		_id: Uuid,
-	) -> Result<Vec<History>> {
-		self.state
-			.lock()
-			.unwrap()
-			.calls
-			.push("deployment_administrator.history".into());
-		Ok(vec![])
-	}
-	async fn deployment_administrator_usage(&self, _tenant: &str, _id: Uuid) -> Result<Usage> {
-		self.state
-			.lock()
-			.unwrap()
-			.calls
-			.push("deployment_administrator.usage".into());
-		Ok(usage_value())
-	}
-	async fn deployment_administrator_specification(
-		&self,
-		_tenant: &str,
-		_id: Uuid,
-	) -> Result<Value> {
-		let mut state = self.state.lock().unwrap();
-		state
-			.calls
-			.push("deployment_administrator.specification".into());
-		Ok(state.document.clone())
-	}
 }
 #[async_trait]
 impl GenerationVisibility for Scope {
@@ -317,15 +286,18 @@ async fn subject_scan_skips_denied_rows_and_stops_after_200_visible_requests_und
 }
 #[rstest]
 #[tokio::test]
-async fn deployment_administrator_keeps_one_unfiltered_page_and_does_not_open_subject_authority() {
+async fn a_deployment_administrator_reads_no_generation_request() {
 	let repo = Repository::new(false);
-	repo.seed(550);
-	repo.state.lock().unwrap().denied = (1..=550).map(Uuid::from_u128).collect();
-	let rows = list(&repo, "tenant").await.unwrap();
-	assert_eq!(rows.len(), 200);
-	assert_eq!(rows[0].id, Uuid::from_u128(1));
-	assert_eq!(rows[199].id, Uuid::from_u128(200));
-	assert_eq!(repo.calls(), vec!["pages", "page:0", "pages.drop"]);
+	repo.seed(5);
+	assert!(matches!(list(&repo, "tenant").await, Err(Error::Forbidden)));
+	for operation in ["history", "usage", "specification"] {
+		assert!(matches!(
+			detail(&repo, "tenant", operation).await,
+			Err(Error::Forbidden)
+		));
+	}
+	assert!(!repo.calls().contains(&"begin".into()));
+	assert!(!repo.calls().iter().any(|c| c.starts_with("page:")));
 }
 #[rstest]
 #[tokio::test]
@@ -415,12 +387,7 @@ async fn direct_subject_detail_requires_current_visibility_before_any_ledger_rea
 		detail(&repo, "tenant", operation).await,
 		Err(Error::Forbidden)
 	));
-	assert!(
-		!repo
-			.calls()
-			.iter()
-			.any(|c| c == operation || c.starts_with("deployment_administrator."))
-	);
+	assert!(!repo.calls().iter().any(|c| c == operation));
 	assert_eq!(repo.calls().last().unwrap(), "finish");
 	assert_eq!(repo.state.lock().unwrap().rollbacks, 1);
 }
@@ -443,9 +410,7 @@ async fn missing_subject_request_returns_forbidden_and_never_reads_detail(#[case
 #[case("usage")]
 #[case("specification")]
 #[tokio::test]
-async fn cross_tenant_detail_rejects_before_authority_or_deployment_administrator_query(
-	#[case] operation: &str,
-) {
+async fn cross_tenant_detail_rejects_before_authority_or_ledger_query(#[case] operation: &str) {
 	let repo = Repository::new(true);
 	assert!(matches!(
 		detail(&repo, "other", operation).await,
@@ -454,11 +419,9 @@ async fn cross_tenant_detail_rejects_before_authority_or_deployment_administrato
 	assert!(repo.calls().is_empty());
 }
 #[rstest]
-#[case::subject(true)]
-#[case::deployment_administrator(false)]
 #[tokio::test]
-async fn usage_and_pinned_specification_preserve_the_saved_contract(#[case] subject: bool) {
-	let repo = Repository::new(subject);
+async fn usage_and_pinned_specification_preserve_the_saved_contract() {
+	let repo = Repository::new(true);
 	let usage = usage(&repo, "tenant", Uuid::from_u128(1)).await.unwrap();
 	assert_eq!(
 		serde_json::to_value(usage).unwrap(),
@@ -471,24 +434,16 @@ async fn usage_and_pinned_specification_preserve_the_saved_contract(#[case] subj
 		serde_json::to_value(spec).unwrap(),
 		test_support::specification()
 	);
-	if subject {
-		assert_eq!(repo.state.lock().unwrap().commits, 2);
-	} else {
-		assert!(!repo.calls().contains(&"begin".into()));
-	}
+	assert_eq!(repo.state.lock().unwrap().commits, 2);
 }
 #[rstest]
-#[case::subject(true)]
-#[case::deployment_administrator(false)]
 #[tokio::test]
-async fn malformed_pinned_specification_retains_json_failure(#[case] subject: bool) {
-	let repo = Repository::new(subject);
+async fn malformed_pinned_specification_retains_json_failure() {
+	let repo = Repository::new(true);
 	repo.state.lock().unwrap().document = serde_json::json!({"corrupt":true});
 	assert!(matches!(
 		specification(&repo, "tenant", Uuid::from_u128(1)).await,
 		Err(Error::Json(_))
 	));
-	if subject {
-		assert_eq!(repo.state.lock().unwrap().rollbacks, 1);
-	}
+	assert_eq!(repo.state.lock().unwrap().rollbacks, 1);
 }

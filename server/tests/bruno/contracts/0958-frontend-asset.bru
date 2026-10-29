@@ -1,21 +1,20 @@
 meta {
-  name: 0958 frontend-asset - Stale conditional request serves current content
+  name: 0958 frontend-asset - Client route falls back to the SPA
   type: http
   seq: 958
 }
 
 get {
-  url: {{base_url}}/assets/probe.txt
+  url: {{base_url}}/bruno-client-route
   body: none
   auth: none
 }
 
 headers {
   Accept: application/json
-  If-None-Match: "stale"
 }
 
 tests {
   test("Exact HTTP 200", function () { expect(res.getStatus()).to.equal(200); });
-  test("Stale conditional request serves current content contract", function () { expect(res.getBody()).to.equal("bruno-asset\n"); });
+  test("Client route falls back to the SPA contract", function () { expect(res.getBody()).to.include("Bruno frontend fixture"); });
 }

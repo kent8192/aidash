@@ -1,7 +1,8 @@
 //! Node Registrations through native HTTP: pinning the other Deployment's key,
 //! replacing and disabling a registration, and its revision history.
 use crate::endpoint::{
-	EndpointFixture, assert_json, default_node, endpoint, tenant_root, tenant_scope,
+	EndpointFixture, browser_mapping, default_node, endpoint, tenant_member, tenant_root,
+	tenant_scope,
 };
 use crate::peering;
 use aidash_server::routes;
@@ -20,18 +21,17 @@ fn federate(app: &EndpointFixture, reachable: &[&str]) -> aidash_server::federat
 }
 
 async fn post(app: &EndpointFixture, node: &str, body: &Value, status: u16) -> Value {
-	let response = app
-		.deployment_administrator
-		.post(&peering::registration_path("acme", node), body, "json")
-		.await
-		.unwrap();
-	assert_eq!(
-		response.status_code(),
-		status,
-		"{body}: {}",
-		response.text()
-	);
-	response.json_value().unwrap_or(Value::Null)
+	// Node registrations are administered by a Tenant Administrator Mapping (#484).
+	let mapping = browser_mapping(app, "acme", "alice").await;
+	let (code, response) = mapping
+		.send(
+			"POST",
+			&peering::registration_path("acme", node),
+			body.clone(),
+		)
+		.await;
+	assert_eq!(code, status, "{body}: {response}");
+	response
 }
 
 #[rstest]
@@ -87,7 +87,7 @@ async fn a_registration_pins_the_key_and_is_replaced_disabled_and_enabled_by_rev
 	assert_eq!(created["endpoint"], remote.server.url);
 	assert_eq!(created["key_id"], key_id);
 	assert_eq!(created["revision"], 1);
-	assert_eq!(created["actor"], "deployment_administrator");
+	assert_ne!(created["actor"], "deployment_administrator");
 	assert_eq!(replaced["endpoint"], relocated.url);
 	assert_eq!(replaced["revision"], 2);
 	assert_eq!(stopped["enabled"], false);
@@ -95,30 +95,28 @@ async fn a_registration_pins_the_key_and_is_replaced_disabled_and_enabled_by_rev
 	assert_eq!(stopped["key_id"], key_id);
 	assert_eq!(restored["enabled"], true);
 	assert_eq!(restored["revision"], 4);
-	let listed = assert_json(
-		local
-			.deployment_administrator
-			.get(&format!(
-				"/api/tenants/acme/nodes/{}/registrations",
-				owner.as_str()
-			))
-			.await
-			.unwrap(),
-		200,
-	);
+	let member = browser_mapping(&local, "acme", "alice").await;
+	let (status, listed) = member
+		.send(
+			"GET",
+			&format!("/api/tenants/acme/nodes/{}/registrations", owner.as_str()),
+			Value::Null,
+		)
+		.await;
+	assert_eq!(status, 200, "{listed}");
 	assert_eq!(listed.as_array().unwrap().len(), 1);
 	assert_eq!(listed[0]["revision"], 4);
-	let history = assert_json(
-		local
-			.deployment_administrator
-			.get(&format!(
+	let (status, history) = member
+		.send(
+			"GET",
+			&format!(
 				"/api/tenants/acme/nodes/{}/registration-history",
 				owner.as_str()
-			))
-			.await
-			.unwrap(),
-		200,
-	);
+			),
+			Value::Null,
+		)
+		.await;
+	assert_eq!(status, 200, "{history}");
 	assert_eq!(
 		history
 			.as_array()
@@ -226,24 +224,76 @@ async fn concurrent_first_registrations_of_one_node_create_exactly_one_revision(
 	);
 	let path = peering::registration_path("acme", owner.as_str());
 	// Act
+	let member = browser_mapping(&local, "acme", "alice").await;
 	let (first, second) = tokio::join!(
-		local.deployment_administrator.post(&path, &body, "json"),
-		local.deployment_administrator.post(&path, &body, "json"),
+		member.send("POST", &path, body.clone()),
+		member.send("POST", &path, body.clone()),
 	);
 	// Assert
-	let mut statuses = [first.unwrap().status_code(), second.unwrap().status_code()];
+	let mut statuses = [first.0, second.0];
 	statuses.sort_unstable();
 	assert_eq!(statuses, [200, 409]);
-	let history = assert_json(
-		local
-			.deployment_administrator
-			.get(&format!(
+	let (status, history) = member
+		.send(
+			"GET",
+			&format!(
 				"/api/tenants/acme/nodes/{}/registration-history",
 				owner.as_str()
-			))
-			.await
-			.unwrap(),
-		200,
-	);
+			),
+			Value::Null,
+		)
+		.await;
+	assert_eq!(status, 200, "{history}");
 	assert_eq!(history.as_array().unwrap().len(), 1);
+}
+
+#[rstest]
+#[tokio::test]
+async fn bearer_actors_cannot_register_a_node_and_nothing_is_recorded(
+	#[future]
+	#[from(endpoint)]
+	#[with("aidash://local")]
+	local: EndpointFixture,
+	#[future]
+	#[from(endpoint)]
+	#[with("aidash://remote")]
+	remote: EndpointFixture,
+) {
+	// Arrange
+	let local = Box::pin(local).await;
+	let remote = Box::pin(remote).await;
+	let remote_runtime = federate(&remote, &[]);
+	let local_runtime = federate(&local, &[&remote.server.url]);
+	tenant_scope(&local_runtime.store, "acme").await;
+	tenant_root(&remote_runtime, "other").await;
+	let owner = default_node(&local_runtime.store, "acme").await.node;
+	let source = default_node(&remote_runtime.store, "other")
+		.await
+		.to_string();
+	let body = peering::registration(
+		&source,
+		Some((&remote.server.url, &peering::key_id(&remote_runtime))),
+	);
+	let path = peering::registration_path("acme", owner.as_str());
+	let (subject, _) = tenant_member(&local).await;
+	// Act
+	let by_administrator = local
+		.deployment_administrator
+		.post(&path, &body, "json")
+		.await
+		.unwrap();
+	let by_subject = subject.post(&path, &body, "json").await.unwrap();
+	// Assert: neither bearer is a Tenant Administrator Mapping (#484).
+	assert_eq!(by_administrator.status_code(), 403);
+	assert_eq!(by_subject.status_code(), 403);
+	let mapping = browser_mapping(&local, "acme", "alice").await;
+	let (status, listed) = mapping
+		.send(
+			"GET",
+			&format!("/api/tenants/acme/nodes/{}/registrations", owner.as_str()),
+			Value::Null,
+		)
+		.await;
+	assert_eq!(status, 200, "{listed}");
+	assert_eq!(listed, json!([]));
 }

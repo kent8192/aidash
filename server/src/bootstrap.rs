@@ -51,6 +51,9 @@ pub fn management_commands() -> reinhardt::commands::CommandRegistry {
 	registry.register_capability(Box::new(
 		crate::apps::identity::services::demo_data::Command,
 	));
+	registry.register_capability(Box::new(
+		crate::apps::identity::services::subject_credential_command::Command,
+	));
 	registry
 }
 

@@ -43,7 +43,7 @@ async fn generation_policy_is_revisioned_and_requests_reserve_deduplicated_quota
 	let spec = definition(&app, &token).await;
 	let (status, created) = request(
 		&app,
-		&f.config.api_token,
+		&token,
 		"POST",
 		"/api/generation/acme/policies/research",
 		json!({"expected_revision":0,"spec":spec}),
@@ -54,7 +54,7 @@ async fn generation_policy_is_revisioned_and_requests_reserve_deduplicated_quota
 	assert_eq!(
 		request(
 			&app,
-			&f.config.api_token,
+			&token,
 			"POST",
 			"/api/generation/acme/policies/research",
 			json!({"expected_revision":0,"spec":spec})
@@ -129,7 +129,7 @@ async fn generation_policy_is_revisioned_and_requests_reserve_deduplicated_quota
 		let update = || {
 			request(
 				&app,
-				&f.config.api_token,
+				&token,
 				"POST",
 				"/api/generation/acme/policies/research",
 				json!({"expected_revision":1,"spec":spec}),
@@ -179,7 +179,7 @@ async fn approval_activation_and_stop_are_atomic_and_audited(
 	assert_eq!(
 		request(
 			&app,
-			&f.config.api_token,
+			&token,
 			"POST",
 			"/api/generation/acme/policies/research",
 			json!({"expected_revision":0,"spec":spec})
@@ -432,7 +432,7 @@ async fn generated_agent_completes_with_pinned_definition_and_refunds_unused_all
 	assert_eq!(
 		request(
 			&app,
-			&f.config.api_token,
+			&token,
 			"POST",
 			"/api/generation/acme/policies/research",
 			json!({"expected_revision":0,"spec":spec})
@@ -456,7 +456,7 @@ async fn generated_agent_completes_with_pinned_definition_and_refunds_unused_all
 	assert_eq!(
 		request(
 			&app,
-			&f.config.api_token,
+			&token,
 			"POST",
 			"/api/generation/acme/policies/research",
 			json!({"expected_revision":1,"spec":spec})
@@ -601,7 +601,7 @@ async fn concurrent_requests_obey_quota_and_denial_releases_it_once(
 	assert_eq!(
 		request(
 			&app,
-			&f.config.api_token,
+			&token,
 			"POST",
 			"/api/generation/acme/policies/research",
 			json!({"expected_revision":0,"spec":spec})
@@ -707,7 +707,7 @@ async fn agent_created_tasks_keep_generation_depth_when_requested_by_root(
 	assert_eq!(
 		request(
 			&app,
-			&f.config.api_token,
+			&token,
 			"POST",
 			"/api/generation/acme/policies/research",
 			json!({"expected_revision":0,"spec":spec})
@@ -814,7 +814,7 @@ async fn revoked_requester_cannot_activate_and_failed_admission_leaves_no_agent(
 	assert_eq!(
 		request(
 			&app,
-			&f.config.api_token,
+			&token,
 			"POST",
 			"/api/generation/acme/policies/research",
 			json!({"expected_revision":0,"spec":spec})
@@ -848,9 +848,11 @@ async fn revoked_requester_cannot_activate_and_failed_admission_leaves_no_agent(
 	aidash_server::generation::provision::reconcile(&f)
 		.await
 		.unwrap();
+	// Every credential of Alice is revoked, so a new one reads the outcome.
+	let reader = common::subject_credential(&f.store, "acme", "alice").await;
 	let (_, jobs) = request(
 		&app,
-		&f.config.api_token,
+		&reader,
 		"GET",
 		"/api/generation/acme/requests",
 		Value::Null,
@@ -870,7 +872,7 @@ async fn revoked_requester_cannot_activate_and_failed_admission_leaves_no_agent(
 	);
 	let (_, policies) = request(
 		&app,
-		&f.config.api_token,
+		&reader,
 		"GET",
 		"/api/generation/acme/policies",
 		Value::Null,
@@ -898,7 +900,7 @@ async fn missing_usage_keeps_reservation_and_stops_before_another_model_call(
 	assert_eq!(
 		request(
 			&app,
-			&f.config.api_token,
+			&token,
 			"POST",
 			"/api/generation/acme/policies/research",
 			json!({"expected_revision":0,"spec":spec})
@@ -981,7 +983,7 @@ async fn worker_can_request_nested_generation_without_dropping_parent_authority(
 	assert_eq!(
 		request(
 			&app,
-			&f.config.api_token,
+			&token,
 			"POST",
 			"/api/generation/acme/policies/research",
 			json!({"expected_revision":0,"spec":spec})
@@ -1056,7 +1058,7 @@ async fn generation_reads_and_events_respect_denial_and_tenant_boundaries(
 	assert_eq!(
 		request(
 			&app,
-			&f.config.api_token,
+			&token,
 			"POST",
 			"/api/generation/acme/policies/research",
 			json!({"expected_revision":0,"spec":spec})
@@ -1186,15 +1188,24 @@ async fn generation_reads_and_events_respect_denial_and_tenant_boundaries(
 		.0,
 		403
 	);
-	let (_, policies) = request(
+	// The denied Subject reads no policy, and the Deployment Administrator
+	// never could (#484): the count is read from the store.
+	let (_, hidden) = request(
 		&app,
-		&f.config.api_token,
+		&token,
 		"GET",
 		"/api/generation/acme/policies",
 		Value::Null,
 	)
 	.await;
-	assert_eq!(policies[0]["generated_count"], 1);
+	assert_eq!(hidden, json!([]));
+	let generated: i64 = sqlx::query_scalar(
+		"SELECT generated_count FROM generation_policies WHERE tenant = 'acme' AND id = 'research'",
+	)
+	.fetch_one(f.store.pool.fixture_driver())
+	.await
+	.unwrap();
+	assert_eq!(generated, 1);
 	cleanup(f, &url, &schema).await;
 }
 
@@ -1213,7 +1224,7 @@ async fn expiration_cancels_generated_run_before_any_provider_call(
 	assert_eq!(
 		request(
 			&app,
-			&f.config.api_token,
+			&token,
 			"POST",
 			"/api/generation/acme/policies/research",
 			json!({"expected_revision":0,"spec":spec})
@@ -1310,7 +1321,7 @@ async fn stop_commits_during_inflight_inference_and_discards_its_result(
 	assert_eq!(
 		request(
 			&app,
-			&f.config.api_token,
+			&token,
 			"POST",
 			"/api/generation/acme/policies/research",
 			json!({"expected_revision":0,"spec":spec})
@@ -1423,7 +1434,7 @@ async fn atomic_commit_discards_generated_output_but_settles_its_usage(
 	spec["approval_required"] = json!(false);
 	let (status, response) = request(
 		&app,
-		&f.config.api_token,
+		&token,
 		"POST",
 		"/api/generation/acme/policies/research",
 		json!({"expected_revision":0,"spec":spec}),
@@ -1574,7 +1585,7 @@ async fn matching_ordinary_agent_is_reused_without_generation_or_quota(
 	assert_eq!(
 		request(
 			&app,
-			&f.config.api_token,
+			&token,
 			"POST",
 			"/api/generation/acme/policies/research",
 			json!({"expected_revision":0,"spec":spec})
@@ -1675,14 +1686,11 @@ async fn disabling_an_existing_policy_remains_possible_after_component_revocatio
 }
 
 #[rstest::rstest]
-#[case::deployment_administrator(false)]
-#[case::subject(true)]
 #[tokio::test]
 async fn policy_history_constraint_failure_rolls_back_revision_and_preserves_retry(
 	#[future(awt)]
 	#[from(common::native_application)]
 	fixture: common::ApplicationFixture,
-	#[case] subject: bool,
 ) {
 	use reinhardt::query::{
 		Alias, Expr, ExprTrait, Order, PostgresQueryBuilder, Query, QueryStatementBuilder,
@@ -1692,7 +1700,8 @@ async fn policy_history_constraint_failure_rolls_back_revision_and_preserves_ret
 	let (f, url, schema) = fixture.runtime.parts();
 	let app = fixture.application;
 	let (_, token, _) = bootstrap(&f, &app, "http://127.0.0.1:9").await;
-	let actor = if subject { &token } else { &f.config.api_token };
+	// Only a Tenant Subject writes Generation policy (#484).
+	let actor = &token;
 	let spec = definition(&app, &token).await;
 	let path = "/api/generation/acme/policies/research";
 	let (status, initial) = request(
@@ -1732,7 +1741,7 @@ async fn policy_history_constraint_failure_rolls_back_revision_and_preserves_ret
 	)
 	.await;
 	assert_eq!(status, 500, "{failure}");
-	// Assert: both authority paths roll back the protected policy update.
+	// Assert: the failure rolls back the protected policy update.
 	let (_, saved) = request(
 		&app,
 		actor,
@@ -1753,11 +1762,7 @@ async fn policy_history_constraint_failure_rolls_back_revision_and_preserves_ret
 		.fetch_all(f.store.pool.fixture_driver())
 		.await
 		.unwrap();
-	let expected_actor = if subject {
-		"alice"
-	} else {
-		"deployment_administrator"
-	};
+	let expected_actor = "alice";
 	assert_eq!(
 		history,
 		vec![
@@ -1821,7 +1826,7 @@ async fn count_concurrency_and_total_token_limits_are_independent(
 	assert_eq!(
 		request(
 			&app,
-			&f.config.api_token,
+			&token,
 			"POST",
 			"/api/generation/acme/policies/research",
 			json!({"expected_revision":0,"spec":spec})
@@ -1882,7 +1887,7 @@ async fn count_concurrency_and_total_token_limits_are_independent(
 	assert_eq!(
 		request(
 			&app,
-			&f.config.api_token,
+			&token,
 			"POST",
 			"/api/generation/acme/policies/research",
 			json!({"expected_revision":1,"spec":spec})
@@ -1930,7 +1935,7 @@ async fn generated_permission_attributes_deny_tools_without_losing_the_pending_c
 	assert_eq!(
 		request(
 			&app,
-			&f.config.api_token,
+			&token,
 			"POST",
 			"/api/generation/acme/policies/research",
 			json!({"expected_revision":0,"spec":spec})
@@ -2033,7 +2038,7 @@ async fn generation_visibility_paginates_and_cannot_override_later_event_ownersh
 	assert_eq!(
 		request(
 			&app,
-			&f.config.api_token,
+			&token,
 			"POST",
 			"/api/generation/acme/policies/research",
 			json!({"expected_revision":0,"spec":spec})
@@ -2667,4 +2672,114 @@ fn provider_7(
 		}
 	}
 	.boxed()
+}
+
+/// A Deployment Administrator, whether the shared bearer or a browser context,
+/// holds no Tenant content authority (#484): Agent Generation policy, requests
+/// and controls refuse it before any handler runs, nothing is written, and
+/// another Tenant's Subject is refused as well.
+#[rstest::rstest]
+#[case::shared_bearer(false)]
+#[case::browser_context(true)]
+#[tokio::test]
+async fn deployment_administrators_cannot_read_write_or_control_agent_generation(
+	#[future(awt)]
+	#[from(common::native_application)]
+	fixture: common::ApplicationFixture,
+	#[case] browser: bool,
+) {
+	// Arrange: a Tenant Subject has saved one Generation policy.
+	let (f, url, schema) = fixture.runtime.parts();
+	let app = fixture.application;
+	let (_, token, _) = bootstrap(&f, &app, "http://127.0.0.1:9").await;
+	let spec = definition(&app, &token).await;
+	let (status, created) = request(
+		&app,
+		&token,
+		"POST",
+		"/api/generation/acme/policies/research",
+		json!({"expected_revision":0,"spec":spec}),
+	)
+	.await;
+	assert_eq!(status, 200, "{created}");
+	let administrator = common::BrowserAdministrator::new(&f).await;
+	let other = uuid::Uuid::new_v4();
+	let routes = [
+		(
+			"GET",
+			"/api/generation/acme/policies".to_owned(),
+			Value::Null,
+		),
+		(
+			"POST",
+			"/api/generation/acme/policies/research".to_owned(),
+			json!({"expected_revision":1,"spec":spec}),
+		),
+		(
+			"GET",
+			"/api/generation/acme/requests".to_owned(),
+			Value::Null,
+		),
+		(
+			"POST",
+			format!("/api/generation/acme/tasks/{other}/assign"),
+			json!({"policy_id":"research","reason":"administrator"}),
+		),
+		(
+			"POST",
+			format!("/api/generation/acme/requests/{other}/control"),
+			json!({"action":"cancel"}),
+		),
+		(
+			"GET",
+			format!("/api/generation/acme/requests/{other}/history"),
+			Value::Null,
+		),
+		(
+			"GET",
+			format!("/api/generation/acme/requests/{other}/usage"),
+			Value::Null,
+		),
+		(
+			"GET",
+			format!("/api/generation/acme/requests/{other}/spec"),
+			Value::Null,
+		),
+	];
+
+	// Act and Assert: every route refuses the administrator and leaks nothing.
+	for (method, path, body) in routes {
+		let (status, response) = if browser {
+			administrator.send(method, &path, body).await
+		} else {
+			request(&app, &f.config.api_token, method, &path, body).await
+		};
+		assert_eq!(status, 403, "{method} {path}: {response}");
+		assert!(
+			!response.to_string().contains("research-template"),
+			"{method} {path}: {response}"
+		);
+	}
+	// The policy was not changed, and another Tenant's Subject reads nothing.
+	let (status, saved) = request(
+		&app,
+		&token,
+		"GET",
+		"/api/generation/acme/policies",
+		Value::Null,
+	)
+	.await;
+	assert_eq!(status, 200, "{saved}");
+	assert_eq!(saved[0]["revision"], 1);
+	let globex = common::tenant_token(&f.store, "globex").await;
+	let (status, response) = request(
+		&app,
+		&globex,
+		"GET",
+		"/api/generation/acme/policies",
+		Value::Null,
+	)
+	.await;
+	assert_eq!(status, 403, "{response}");
+	cleanup(f, &url, &schema).await;
 }

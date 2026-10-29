@@ -35,6 +35,32 @@ export const visibleSettingsSections = [
 export const personalSettingsSections: Partial<
   Record<(typeof settingsSections)[number], true>
 > = { approvals: true, planConnections: true };
+/** Settings sections that edit a Tenant's content or settings. A Deployment
+ *  Administrator's role grants no authority over them (ADR 0102): they stay
+ *  hidden in that context and point at a Tenant Mapping instead. */
+export const tenantContentSettingsSections: Partial<
+  Record<(typeof settingsSections)[number], true>
+> = {
+  agents: true,
+  registry: true,
+  clusters: true,
+  providerCredentials: true,
+  nodes: true,
+};
+/** The Settings sections the signed-in authority can open. */
+export function settingsSectionsFor(
+  deploymentAdministrator: boolean,
+  deploymentOnly: Partial<Record<(typeof settingsSections)[number], true>>,
+) {
+  return visibleSettingsSections.filter((value) =>
+    deploymentAdministrator
+      ? !personalSettingsSections[value] &&
+        !tenantContentSettingsSections[value]
+      : !deploymentOnly[value],
+  );
+}
+/** Window event asking the shell to open the authority (context) switcher. */
+export const OPEN_CONTEXT_SWITCHER = "aidash:open-context-switcher";
 export type IntegratedView =
   | "files"
   | "progress"
