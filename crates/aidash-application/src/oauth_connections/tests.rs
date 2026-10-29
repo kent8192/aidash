@@ -594,6 +594,7 @@ async fn oauth_connections_recovered_rotation_commits_before_a_second_external_r
 struct ToolLookup {
 	endpoint: &'static str,
 	scopes: Vec<String>,
+	descriptor: bool,
 }
 #[async_trait]
 impl DefinitionLookup for ToolLookup {
@@ -602,8 +603,14 @@ impl DefinitionLookup for ToolLookup {
 		id: &str,
 		version: &str,
 	) -> Result<aidash_domain::registry::Entry> {
+		let transport = serde_json::json!({"transport":"mcp","endpoint":self.endpoint,"tool_name":"read","replay":"read_only","idempotency_argument":null,"scopes":self.scopes});
+		let config = if self.descriptor {
+			serde_json::json!({"registry_deployment":"local", "provider":"mcp@1", "operation":"read", "default_alias":"read", "tier":"integration", "transport":transport})
+		} else {
+			transport
+		};
 		Ok(serde_json::from_value(
-			serde_json::json!({"id":id,"version":version,"kind":"tool","name":{"en":"MCP tool"},"description":{"en":"MCP tool"},"config":{"transport":"mcp","endpoint":self.endpoint,"tool_name":"read","replay":"read_only","idempotency_argument":null,"scopes":self.scopes}}),
+			serde_json::json!({"id":id,"version":version,"kind":"tool","name":{"en":"MCP tool"},"description":{"en":"MCP tool"},"config":config}),
 		)?)
 	}
 }
@@ -625,7 +632,11 @@ async fn oauth_connections_tool_reference_bounds_scopes_and_the_exact_resource()
 					id: "tool".into(),
 					version: "1.0.0".into(),
 				}),
-				&mut ToolLookup { endpoint, scopes },
+				&mut ToolLookup {
+					endpoint,
+					scopes,
+					descriptor: false,
+				},
 				&Url::parse("https://aidash.example/auth/connections/callback").unwrap(),
 				"/settings",
 			)
@@ -637,6 +648,36 @@ async fn oauth_connections_tool_reference_bounds_scopes_and_the_exact_resource()
 		);
 	}
 }
+
+#[rstest::rstest]
+#[case(false)]
+#[case(true)]
+#[tokio::test]
+async fn tool_reference_accepts_legacy_and_descriptor_transport(#[case] descriptor: bool) {
+	let f = Fixture::new();
+	let mut lookup = ToolLookup {
+		endpoint: "https://mcp.example/mcp",
+		scopes: vec!["read".into()],
+		descriptor,
+	};
+	let result = f
+		.service
+		.begin(
+			&f.owner,
+			"https://mcp.example/mcp",
+			&["read".into()],
+			Some(&ToolRef {
+				id: "tool".into(),
+				version: "1.0.0".into(),
+			}),
+			&mut lookup,
+			&Url::parse("https://aidash.example/auth/connections/callback").unwrap(),
+			"/settings",
+		)
+		.await;
+	assert!(result.is_ok());
+}
+
 #[tokio::test]
 async fn oauth_connections_rejects_and_revokes_unusable_grants() {
 	for mode in [4, 5, 6] {

@@ -559,3 +559,49 @@ async fn a_replaced_client_bound_to_another_issuer_cannot_receive_existing_grant
 	}
 	assert!(server.received_requests().await.unwrap().is_empty());
 }
+
+#[rstest::rstest]
+#[case::discovery_failure(false)]
+#[case::revocation_failure(true)]
+#[tokio::test]
+async fn revocation_reports_upstream_failure(#[case] discovery_succeeds: bool) {
+	let server = MockServer::start().await;
+	if discovery_succeeds {
+		metadata(&server).await;
+		Mock::given(method("POST"))
+			.and(path("/revoke"))
+			.respond_with(ResponseTemplate::new(500))
+			.expect(1)
+			.mount(&server)
+			.await;
+	}
+	let f = Fixture::new(&server.uri());
+	let payload = sealed::seal(Payload::Connection {
+		issuer: server.uri(),
+		resource: "https://mcp.example/mcp".into(),
+		client_id: "public".into(),
+		client: None,
+		redirect_uri: None,
+		access_token: "token".into(),
+		refresh_token: None,
+		expires_at: None,
+		scope: None,
+		previous: None,
+	})
+	.unwrap();
+	f.store
+		.0
+		.lock()
+		.unwrap()
+		.insert((f.resource(f.connection), "1".into()), payload.to_vec());
+	let response = f
+		.call(
+			"/v1/connections/revoke",
+			ConnectionOperation::Revoke {
+				version: "1".into(),
+			},
+			"{}",
+		)
+		.await;
+	assert!(!response.status().is_success());
+}

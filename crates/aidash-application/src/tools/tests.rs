@@ -895,3 +895,43 @@ async fn connection_request_canonicalizes_consent_and_refuses_without_a_person(
 	assert_eq!(request["prompt"]["resource"], "https://mcp.example/mcp");
 	assert_eq!(request["prompt"]["scopes"], json!(["read", "write"]));
 }
+
+#[rstest]
+#[case("http://ollama.lan:11434/mcp", None)]
+#[case("https://api.example.com/mcp?tenant=one", Some("search"))]
+#[tokio::test]
+async fn non_oauth_mcp_endpoint_uses_existing_transport(
+	fixture: Fixture,
+	#[case] endpoint: &str,
+	#[case] secret: Option<&str>,
+) {
+	let mut tool = secret_tool(None);
+	tool.config = ToolConfig::Mcp {
+		endpoint: endpoint.into(),
+		tool_name: "lookup".into(),
+		replay: "read_only".into(),
+		secret: secret.map(str::to_owned),
+		idempotency_argument: None,
+		scopes: None,
+		secret_owner: Default::default(),
+	};
+	let result = tool
+		.invoke(
+			&ToolContext {
+				operations: &fixture.operations,
+				run: &fixture.run,
+			},
+			&fixture.operations,
+			json!({}),
+			"key",
+		)
+		.await;
+	assert!(result.is_ok(), "{result:?}");
+	let calls = fixture.operations.calls.lock().unwrap();
+	assert!(!calls.contains(&"connection.resolve"));
+	assert!(calls.contains(&if secret.is_some() {
+		"transport.invoke.with_secret"
+	} else {
+		"transport.invoke"
+	}));
+}

@@ -44,6 +44,7 @@ default = []
 test-support = []
 
 [dev-dependencies]
+rstest.workspace = true
 aidash-integrations = { workspace = true, features = ["test-support"] }
 tokio = { workspace = true, features = ["test-util"] }
 tower = { version = "0.5", features = ["util"] }

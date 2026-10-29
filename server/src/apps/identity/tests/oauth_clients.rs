@@ -34,7 +34,7 @@ fn input(owner: Ownership, secret: Option<&str>) -> Put {
 #[rstest]
 #[timeout(Duration::from_secs(600))]
 #[tokio::test]
-async fn registered_clients_are_private_normalized_and_destroyed_on_retirement(
+async fn registered_clients_are_private_issuer_bound_and_destroyed_on_retirement(
 	#[future] endpoint: EndpointFixture,
 ) {
 	let mut f = endpoint.await;
@@ -74,7 +74,7 @@ async fn registered_clients_are_private_normalized_and_destroyed_on_retirement(
 	assert!(public_row.secret_resource.is_none());
 	assert!(public_row.pinned_version.is_none());
 	let (personal, tenant) = policy
-		.registered_clients("alpha", "alice", "https://auth.example.test/issuer/")
+		.registered_clients("alpha", "alice", "https://AUTH.example.test/issuer/")
 		.await
 		.unwrap();
 	assert_eq!(personal.unwrap().id, alice.id);
@@ -125,7 +125,7 @@ async fn registered_clients_are_private_normalized_and_destroyed_on_retirement(
 	service.retire_subject("alpha", "alice").await.unwrap();
 	assert!(store.versions("alpha", &resource).await.unwrap().is_empty());
 	let (personal, tenant) = policy
-		.registered_clients("alpha", "alice", "https://auth.example.test/issuer")
+		.registered_clients("alpha", "alice", "https://AUTH.example.test/issuer/")
 		.await
 		.unwrap();
 	assert!(personal.is_none());
@@ -269,7 +269,7 @@ async fn oauth_client_http_checks_personal_and_tenant_actions_and_ceiling_encodi
 	assert_eq!(result.status(), 200);
 	let row: serde_json::Value = result.json().await.unwrap();
 	assert_eq!(row["owner"], "me");
-	assert_eq!(row["issuer"], "https://auth.example.test");
+	assert_eq!(row["issuer"], "https://AUTH.example.test/");
 	let id = row["id"].as_str().unwrap();
 	let service = personal_credentials::clients(&f.runtime);
 	let client_id = row["id"].as_str().unwrap().parse().unwrap();

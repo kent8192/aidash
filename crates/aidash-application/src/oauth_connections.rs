@@ -245,10 +245,19 @@ impl Service {
 					"connection tool must name an MCP tool".into(),
 				));
 			}
-			match serde_json::from_value::<aidash_domain::tool::ToolConfig>(entry.config)? {
-				aidash_domain::tool::ToolConfig::Mcp {
+			let config = match aidash_domain::tool::legacy_config(&entry.config)? {
+				Some(config) => Some(config),
+				None => {
+					serde_json::from_value::<aidash_domain::tool::providers::ToolDescriptor>(
+						entry.config,
+					)?
+					.transport
+				}
+			};
+			match config {
+				Some(aidash_domain::tool::ToolConfig::Mcp {
 					endpoint, scopes, ..
-				} if domain::canonical_resource(&endpoint)? == resource => scopes,
+				}) if domain::canonical_resource(&endpoint)? == resource => scopes,
 				_ => {
 					return Err(Error::Invalid(
 						"connection tool does not name this MCP resource".into(),

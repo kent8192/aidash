@@ -155,6 +155,7 @@ dependencies = [
  "futures-util",
  "percent-encoding",
  "reqwest 0.13.5",
+ "rstest",
  "secrecy",
  "serde",
  "serde_json",

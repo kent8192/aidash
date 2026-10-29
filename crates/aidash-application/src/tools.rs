@@ -90,7 +90,9 @@ async fn connection_for(
 	call: SecretCall,
 	key: &str,
 ) -> Result<Option<crate::tenant_secrets::CallSecret>> {
-	let resource = aidash_domain::oauth_connections::canonical_resource(endpoint)?;
+	let Ok(resource) = aidash_domain::oauth_connections::canonical_resource(endpoint) else {
+		return Ok(None);
+	};
 	match operations.connection(&resource, call, key).await {
 		Ok(secret) => Ok(Some(secret)),
 		Err(Error::Invalid(code))
@@ -180,37 +182,41 @@ impl Plugin {
 					),
 					_ => return transport.invoke(&self.config, input, key, None).await,
 				};
-				let call = aidash_domain::identity::commands::connections::ConnectionCall {
-					tool_key: aidash_domain::identity::commands::connections::ToolKey::Registry {
-						registry_deployment: self.entry.config["registry_deployment"]
-							.as_str()
-							.map(str::to_owned)
-							.or_else(|| {
-								ctx.run
-									.context
-									.binding_snapshot
-									.as_ref()
-									.map(|s| s.agent.registry_deployment.clone())
-							})
-							.unwrap_or_default(),
-						id: self.entry.id.clone(),
-						version: self.entry.version.clone(),
-					},
-					resource: if kind
-						== aidash_domain::identity::commands::connections::Kind::PersonalSecret
-					{
-						endpoint.clone()
-					} else {
-						aidash_domain::oauth_connections::canonical_resource(endpoint)?
-					},
-					tool_name: tool_name.into(),
-					arguments: input.clone(),
-					idempotency_key: key.into(),
-					kind,
-					secret_name: secret,
+				let resource = if kind
+					== aidash_domain::identity::commands::connections::Kind::PersonalSecret
+				{
+					Some(endpoint.clone())
+				} else {
+					aidash_domain::oauth_connections::canonical_resource(endpoint).ok()
 				};
-				if let Some(result) = ctx.operations.connection_call(&call).await? {
-					return Ok(result);
+				if let Some(resource) = resource {
+					let call = aidash_domain::identity::commands::connections::ConnectionCall {
+						tool_key:
+							aidash_domain::identity::commands::connections::ToolKey::Registry {
+								registry_deployment: self.entry.config["registry_deployment"]
+									.as_str()
+									.map(str::to_owned)
+									.or_else(|| {
+										ctx.run
+											.context
+											.binding_snapshot
+											.as_ref()
+											.map(|s| s.agent.registry_deployment.clone())
+									})
+									.unwrap_or_default(),
+								id: self.entry.id.clone(),
+								version: self.entry.version.clone(),
+							},
+						resource,
+						tool_name: tool_name.into(),
+						arguments: input.clone(),
+						idempotency_key: key.into(),
+						kind,
+						secret_name: secret,
+					};
+					if let Some(result) = ctx.operations.connection_call(&call).await? {
+						return Ok(result);
+					}
 				}
 				// Resolved at dispatch, after the arguments are valid and before
 				// any effect, so a deleted Tenant Secret fails the call outright.

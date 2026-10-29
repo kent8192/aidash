@@ -336,7 +336,7 @@ impl ConnectionBroker {
 			ConnectionOperation::Revoke { version } => {
 				// Validate the latest client binding even on best-effort revoke.
 				// AS failure must not prevent destroying local grant versions.
-				if let Ok(Payload::Connection {
+				let Payload::Connection {
 					issuer,
 					client_id,
 					client,
@@ -344,32 +344,32 @@ impl ConnectionBroker {
 					access_token,
 					refresh_token,
 					..
-				}) = self.read(broker, c.connection, version).await
-				{
-					let credentials = self
-						.credentials(
-							broker,
-							&issuer,
-							&client_id,
-							redirect_uri.as_deref(),
-							&client,
-						)
-						.await?;
-					if let Ok(server) = self.metadata(&issuer).await {
-						if let Some(endpoint) = &server.revocation_endpoint {
-							audit.entry.host = endpoint.host_str().unwrap_or_default().into();
-							audit.entry.path_sha256 = path_digest(endpoint.path());
-						}
-						let _ = self
-							.oauth
-							.revoke(
-								&server,
-								&credentials,
-								refresh_token.as_ref().unwrap_or(&access_token),
-							)
-							.await;
-					}
+				} = self.read(broker, c.connection, version).await?
+				else {
+					return Err(SECRET_UNAVAILABLE);
+				};
+				let credentials = self
+					.credentials(
+						broker,
+						&issuer,
+						&client_id,
+						redirect_uri.as_deref(),
+						&client,
+					)
+					.await?;
+				let server = self.metadata(&issuer).await?;
+				if let Some(endpoint) = &server.revocation_endpoint {
+					audit.entry.host = endpoint.host_str().unwrap_or_default().into();
+					audit.entry.path_sha256 = path_digest(endpoint.path());
 				}
+				self.oauth
+					.revoke(
+						&server,
+						&credentials,
+						refresh_token.as_ref().unwrap_or(&access_token),
+					)
+					.await
+					.map_err(|_| UPSTREAM_UNREACHABLE)?;
 				Ok(None)
 			}
 			ConnectionOperation::Forward { .. } => Err(BROKER_REJECTED),

@@ -12,10 +12,10 @@ use secrecy::{ExposeSecret, SecretString};
 use std::sync::Arc;
 use uuid::Uuid;
 
-/// OAuth issuers use the same secure transport boundary as resources. Query,
-/// fragment and credentials are refused; paths are retained and normalized.
+/// Validate the transport boundary without changing the issuer's exact identity.
 pub fn normalize_issuer(issuer: &str) -> Result<String> {
-	canonical_resource(issuer).map_err(|error| Error::Invalid(error.to_string()))
+	canonical_resource(issuer).map_err(|error| Error::Invalid(error.to_string()))?;
+	Ok(issuer.to_owned())
 }
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize, schemars::JsonSchema)]
@@ -374,5 +374,16 @@ impl Service {
 		let mut tx = self.repository.begin(tenant).await?;
 		tx.remove_ceiling(&resource).await?;
 		tx.commit().await
+	}
+}
+
+#[cfg(test)]
+mod issuer_tests {
+	#[rstest::rstest]
+	#[case("https://auth.example/")]
+	#[case("https://auth.example/realm/")]
+	fn registered_client_preserves_advertised_issuer(#[case] issuer: &str) {
+		let stored = super::normalize_issuer(issuer).unwrap();
+		assert_eq!(stored, issuer);
 	}
 }
