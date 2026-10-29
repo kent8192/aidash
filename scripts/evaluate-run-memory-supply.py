@@ -166,8 +166,11 @@ class Campaign:
             agent = self.experiment.register("agent", f"{prefix}-agent-{arm}", {
                 "schema_version": 1, "model": self.model, "instructions": self.corpus["instructions"],
                 "bindings": bindings,
-                # Supply is measured without context pruning, so no compaction Decider is involved.
-                "remove_default": ["file_search", "file_read", runner.COMPACTION_DEFAULT],
+                # Supply is measured without context pruning, so no compaction Decider is involved. Every
+                # Agent is offered the memory builtins by default; the control must not see them (a call
+                # without a memory binding is an authority pause), and no arm writes memory.
+                "remove_default": ["file_search", "file_read", runner.COMPACTION_DEFAULT, "memory_mutate"] +
+                                  (["memory_recall", "memory_reflect"] if arm == "none" else []),
                 "max_steps": self.corpus["max_steps"], "projection_version": self.projection_version})
             self.agents[arm] = {"id": agent["id"], "version": "1.0.0"}
 
@@ -267,26 +270,36 @@ class Campaign:
         return record
 
     def wait_run(self, task):
+        """Wait for the Task's Run; a paused, timed-out or interrupted Run is cancelled, never left behind."""
         deadline = time.monotonic() + self.run_timeout
         run_id = None
-        while time.monotonic() < deadline:
-            if run_id is None:
-                run_id = next((run["id"] for run in self.api.get("/api/state", self.token)["runs"]
-                               if run["task_id"] == task), None)
-            if run_id is not None:
-                run = self.api.get(f"/api/runs/{run_id}", self.token)["run"]
-                if run["phase"] in runner.TERMINAL:
-                    return run
-                if run["phase"] == "WAITING":
-                    for request in self.api.get("/api/state", self.token)["human_requests"]:
-                        if request["run_id"] == run_id and request.get("response") is None:
-                            answer = {"approved": False} if request["kind"] == "APPROVAL_REQUIRED" else \
-                                {"answer": runner.NO_HUMAN}
-                            self.api.post(f"/api/human-requests/{request['id']}/answer", answer, self.token)
-            time.sleep(1.0)
-        if run_id is not None:
-            self.api.post(f"/api/runs/{run_id}/control", {"action": "cancel"}, self.token)
-        raise RuntimeError(f"Run for Task {task} did not finish within {self.run_timeout}s")
+        finished = False
+        try:
+            while time.monotonic() < deadline:
+                if run_id is None:
+                    run_id = next((run["id"] for run in self.api.get("/api/state", self.token)["runs"]
+                                   if run["task_id"] == task), None)
+                if run_id is not None:
+                    run = self.api.get(f"/api/runs/{run_id}", self.token)["run"]
+                    if run["phase"] in runner.TERMINAL:
+                        finished = True
+                        return run
+                    if run.get("control") == "PAUSED":
+                        raise RuntimeError(f"Run {run_id} paused: {run.get('error') or run.get('state_error')}")
+                    if run["phase"] == "WAITING":
+                        for request in self.api.get("/api/state", self.token)["human_requests"]:
+                            if request["run_id"] == run_id and request.get("response") is None:
+                                answer = {"approved": False} if request["kind"] == "APPROVAL_REQUIRED" else \
+                                    {"answer": runner.NO_HUMAN}
+                                self.api.post(f"/api/human-requests/{request['id']}/answer", answer, self.token)
+                time.sleep(1.0)
+            raise RuntimeError(f"Run for Task {task} did not finish within {self.run_timeout}s")
+        finally:
+            if run_id is not None and not finished:
+                try:
+                    self.api.post(f"/api/runs/{run_id}/control", {"action": "cancel"}, self.token)
+                except Exception as error:  # Reported; the caller records the Run as an error anyway.
+                    print(f"warning: could not cancel Run {run_id}: {error}", file=sys.stderr, flush=True)
 
 
 def main(argv=None):

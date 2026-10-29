@@ -323,15 +323,16 @@ the separate campaign report. No live-provider campaign was run for the
 
 `tests/evaluation/` is versioned with the code:
 
-| Path                   | Content                                                                                                        |
-| ---------------------- | -------------------------------------------------------------------------------------------------------------- |
-| `corpus.toml`          | Tasks, fixture models, fixture tools and matched comparisons (`fixed-task-corpus-v2`).                         |
-| `corpus-v1.toml`       | Archived `fixed-task-corpus-v1` for historical result validation.                                              |
-| `memory.toml`          | The memory matrix corpus (`memory-corpus-v1`).                                                                 |
-| `memory-supply.toml`   | Run memory supply cases (`memory-supply-v1`); see [memory evaluation](memory-evaluation.md#run-memory-supply). |
-| `snapshots/`           | Controlled task inputs. They are embedded in the Task text.                                                    |
-| `oracles/`             | Held-out checks. They are never sent to an Agent.                                                              |
-| `schema/*.schema.json` | JSON Schemas of the experiment and result manifests.                                                           |
+| Path                           | Content                                                                                                        |
+| ------------------------------ | -------------------------------------------------------------------------------------------------------------- |
+| `corpus.toml`                  | Tasks, fixture models, fixture tools and matched comparisons (`fixed-task-corpus-v2`).                         |
+| `corpus-v1.toml`               | Archived `fixed-task-corpus-v1` for historical result validation.                                              |
+| `memory.toml`                  | The memory matrix corpus (`memory-corpus-v1`).                                                                 |
+| `corpus-context-recovery.toml` | Live context-recovery variant of the five long-context tasks (`context-recovery-live-v3`).                     |
+| `memory-supply.toml`           | Run memory supply cases (`memory-supply-v1`); see [memory evaluation](memory-evaluation.md#run-memory-supply). |
+| `snapshots/`                   | Controlled task inputs. They are embedded in the Task text.                                                    |
+| `oracles/`                     | Held-out checks. They are never sent to an Agent.                                                              |
+| `schema/*.schema.json`         | JSON Schemas of the experiment and result manifests.                                                           |
 
 The corpus SHA-256 covers `corpus.toml` and every input and oracle file it
 references. The memory corpus has its own SHA-256. Changing a task, an input,
