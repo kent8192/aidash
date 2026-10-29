@@ -160,8 +160,8 @@ Tests and CI register Provider Credentials with fixture Key Material through
 `provider_credentials::testing::KeyMaterialWritePort` and point the exchange
 at a fake provider with `OpenRouterAuthorization::at`. Both exist only in
 test builds or behind the `test-support` features of `aidash-application` and
-`aidash-integrations`. `scripts/check-workspace-boundaries.py` rejects any
-production (normal or build) dependency or feature that enables them.
+`aidash-integrations`. No production (normal or build) dependency or feature
+enables them.
 
 For self-hosted PostgreSQL storage:
 
