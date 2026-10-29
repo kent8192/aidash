@@ -5094,6 +5094,63 @@ async fn approval_review_reports_readiness_and_hides_unreadable_dependencies(
 
 #[rstest::rstest]
 #[tokio::test]
+async fn approval_review_creates_root_agent_with_selected_groups(
+	#[future(awt)]
+	#[from(common::native_application)]
+	fixture: common::ApplicationFixture,
+) {
+	let (f, url, schema) = fixture.runtime.parts();
+	let app = fixture.application;
+	let (mut policy, alice, _) = bootstrap(&f, &app, "http://127.0.0.1:9").await;
+	let admin = f.config.api_token.clone();
+	policy["groups"] = json!({"members":{"assignable":true}, "operators":{"assignable":true}});
+	let (status, body) = request(
+		&app,
+		&admin,
+		"POST",
+		"/api/authorization/acme",
+		json!({"expected_revision":1,"bundle":policy}),
+	)
+	.await;
+	assert_eq!(status, 200, "{body}");
+	let node = aidash_domain::nodes::NodeName::derived("acme");
+	let entry = json!({"id":"review-groups","version":"1.0.0","kind":"agent","name":{"en":"Review groups"},"description":{"en":"fixture"},"config":{"schema_version":1,"model":{"id":"model","version":"1.0.0"},"instructions":"Write","bindings":[],"remove_default":[]}});
+	let (status, body) = request(&app, &alice, "POST", "/api/registry", entry).await;
+	assert_eq!(status, 200, "{body}");
+	let path = format!(
+		"/api/authorization/acme/catalog/review?node={node}&entry=agent/review-groups@1.0.0"
+	);
+	let (status, review) = request(&app, &alice, "GET", &path, Value::Null).await;
+	assert_eq!(status, 200, "{review}");
+	let root = review["items"]
+		.as_array()
+		.unwrap()
+		.iter()
+		.find(|item| item["reference"]["id"] == "review-groups")
+		.unwrap();
+	let input = json!({"node":node,"root":root["reference"],"closure_digest":review["closure_digest"],"root_groups":["operators"],"items":[{"reference":root["reference"],"digest":root["digest"],"expected_revision":root["expected_revision"]}]});
+	let (status, body) = request(
+		&app,
+		&alice,
+		"POST",
+		"/api/authorization/acme/catalog/review",
+		input,
+	)
+	.await;
+	assert_eq!(status, 200, "{body}");
+	let (status, snapshot) =
+		request(&app, &admin, "GET", "/api/authorization/acme", Value::Null).await;
+	assert_eq!(status, 200, "{snapshot}");
+	let subject = qualified_agent(&f.config.deployment.node(node), "review-groups", "1.0.0");
+	assert_eq!(
+		snapshot["bundle"]["subjects"][subject]["groups"],
+		json!(["operators"])
+	);
+	cleanup(f, &url, &schema).await;
+}
+
+#[rstest::rstest]
+#[tokio::test]
 async fn approval_review_submission_fences_stale_authority_and_approves_a_subset(
 	#[future(awt)]
 	#[from(common::native_application)]

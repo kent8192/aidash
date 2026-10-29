@@ -174,6 +174,7 @@ export function ApprovalReviewPanel({
   node,
   root,
   requestId,
+  rootGroups,
   subject,
   onClose,
   onChanged,
@@ -182,6 +183,7 @@ export function ApprovalReviewPanel({
   node: string;
   root: { id: string; version: string };
   requestId?: string;
+  rootGroups?: string[];
   subject?: string;
   onClose?: () => void;
   onChanged?: () => void | Promise<void>;
@@ -254,7 +256,10 @@ export function ApprovalReviewPanel({
         edits,
         answeredRequest(request, requestId),
       );
-      await authorizationSubmitCatalogReview(tenant, body);
+      await authorizationSubmitCatalogReview(tenant, {
+        ...body,
+        ...(rootGroups !== undefined ? { root_groups: rootGroups } : {}),
+      });
       // The refreshed review may keep the same closure digest; start from its
       // actionable items again instead of resubmitting decided ones.
       setSelection(undefined);

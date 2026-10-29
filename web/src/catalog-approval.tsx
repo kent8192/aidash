@@ -501,6 +501,7 @@ export function CatalogApprovalSection({
           tenant={tenant}
           node={selected.name}
           root={{ id: entry.id, version: entry.version }}
+          rootGroups={sentGroups}
           subject={access.kind === "subject" ? access.subject : undefined}
           onClose={() => setReviewOpen(false)}
           onChanged={() =>

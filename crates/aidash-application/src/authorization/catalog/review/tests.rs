@@ -423,6 +423,7 @@ fn submission(review: &ApprovalReview, ids: &[&str]) -> ApprovalReviewSubmission
 		root: review.root.clone(),
 		closure_digest: review.closure_digest.clone(),
 		request: None,
+		root_groups: None,
 		items: ids
 			.iter()
 			.map(|id| {
@@ -441,6 +442,32 @@ fn submission(review: &ApprovalReview, ids: &[&str]) -> ApprovalReviewSubmission
 			.collect(),
 		installations: vec![],
 	}
+}
+
+#[rstest]
+#[tokio::test]
+async fn root_agent_groups_are_carried_only_to_its_approval() {
+	let mut fixture = Fixture::new(vec![
+		agent("model", &[]),
+		entry("model", "model", json!({})),
+	]);
+	let review = review(&mut fixture, &reference("writer")).await.unwrap();
+	let mut value = serde_json::to_value(submission(&review, &["writer", "model"])).unwrap();
+	value["root_groups"] = json!(["operators"]);
+	let input: ApprovalReviewSubmission = serde_json::from_value(value).unwrap();
+	let plan = plan(&review, &input).unwrap();
+	let root = plan
+		.approvals
+		.iter()
+		.find(|a| a.entry.id == "writer")
+		.unwrap();
+	let model = plan
+		.approvals
+		.iter()
+		.find(|a| a.entry.id == "model")
+		.unwrap();
+	assert_eq!(root.groups, Some(BTreeSet::from(["operators".into()])));
+	assert_eq!(model.groups, None);
 }
 
 #[rstest]

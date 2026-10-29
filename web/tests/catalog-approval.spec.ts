@@ -654,6 +654,40 @@ test("the Review shows the whole closure and approves local items and activation
   await expect(review).toContainText("Ready to use on this Node.");
 });
 
+test("a dependency review retains the chosen groups for a new root agent", async ({
+  page,
+}) => {
+  const current = reviewBody([
+    reviewItem("writer", "agent", "approvable"),
+    reviewItem("model", "model", "approvable"),
+  ]);
+  const { decisions } = await reviewDashboard(page, {
+    actions: ["catalog.approve", "subject.group.update"],
+    review: () => current,
+    answer: ({ path }) =>
+      path.endsWith("/catalog")
+        ? { status: 400, json: { error: "dependency unapproved" } }
+        : { json: { bindings: [], installations: [] } },
+  });
+  await routeTenantActions(page, ["catalog.approve", "subject.group.update"], {
+    assignable: ["members", "reviewers"],
+  });
+  await page.goto("/settings?view=agents");
+  await row(page, "writer").click();
+  const groups = approval(page).getByRole("group", {
+    name: "Groups for the agent subject",
+  });
+  await groups.getByLabel("members", { exact: true }).uncheck();
+  await groups.getByLabel("reviewers", { exact: true }).check();
+  await approval(page)
+    .getByRole("button", { name: "Approve", exact: true })
+    .click();
+  const review = page.getByRole("region", { name: "Approval Review" });
+  await review.getByRole("button", { name: /Approve selected/ }).click();
+  await expect.poll(() => decisions.length).toBe(2);
+  expect(decisions[1].body.root_groups).toEqual(["reviewers"]);
+});
+
 test("partial authority submits only the items the principal may approve and stays not ready", async ({
   page,
 }) => {

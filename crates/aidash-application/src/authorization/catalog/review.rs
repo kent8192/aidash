@@ -130,6 +130,9 @@ pub struct ApprovalReviewSubmission {
 	pub node: NodeName,
 	pub root: EntityRef,
 	pub closure_digest: String,
+	/// Groups for a newly approved root agent subject.
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub root_groups: Option<BTreeSet<String>>,
 	/// An open Catalog Approval Request this submission answers.
 	#[serde(default, skip_serializing_if = "Option::is_none")]
 	pub request: Option<uuid::Uuid>,
@@ -462,7 +465,11 @@ pub fn plan(review: &ApprovalReview, submission: &ApprovalReviewSubmission) -> R
 			entry: item.reference.clone(),
 			enabled: true,
 			expected_revision: item.expected_revision,
-			groups: None,
+			groups: if item.reference == review.root && reviewed.kind == "agent" {
+				submission.root_groups.clone()
+			} else {
+				None
+			},
 			restriction: item.restriction.clone(),
 		});
 	}
