@@ -290,6 +290,26 @@ def live_pods(cluster, namespace, selector=None):
     ]
 
 
+def running_producers(cluster, namespace):
+    """Writer and Runner Pods with a started process, the only ones that can hold work.
+
+    A Pod whose every container is waiting (CrashLoopBackOff, image pull) or not yet
+    created has no process that could have accepted a request or claimed a Run.
+    """
+    return [
+        pod
+        for selector in (WRITER_PODS, RUNNER_PODS)
+        for pod in live_pods(cluster, namespace, selector)
+        if any(
+            "running" in (container.get("state") or {})
+            for container in (
+                *pod.get("status", {}).get("initContainerStatuses", []),
+                *pod.get("status", {}).get("containerStatuses", []),
+            )
+        )
+    ]
+
+
 def exists(cluster, namespace, workload):
     kind, name = workload.split("/", 1)
     return cluster.get(kind, name, namespace) is not None
@@ -935,13 +955,23 @@ def seal(cluster, identity, force=False, idle_only=False, keepalive_at=0):
     The Runner, edge, dependencies and collector keep running; they are stopped
     only after this returns True. Any doubt restores service and defers. A
     namespace without live Pods (stopped, or a stop whose node pool apply
-    failed) has no producer to drain and is already sealed.
+    failed) has no producer to drain and is already sealed; one whose writers
+    and Runner have no started process is sealed by draining them.
     """
     namespace = namespace_of(identity)
     if cluster.get("namespace", namespace) is None:
         return True
     if not live_pods(cluster, namespace):
         desired_admission(cluster, namespace, "closed")
+        return True
+    if not force and not running_producers(cluster, namespace):
+        # A failed deployment leaves writers that crash at startup against the
+        # unmigrated database and a Runner at zero. None holds work, the
+        # collector cannot observe a Runner at zero, and rolling back would
+        # start writers that never become ready, so every retry would time out
+        # in the rollback. Draining them is the seal; there is nothing to restore.
+        admission(cluster, identity, "close")
+        drain(cluster, identity)
         return True
     try:
         admission(cluster, identity, "close")

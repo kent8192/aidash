@@ -456,6 +456,29 @@ class SealAndMigrationTests(unittest.TestCase):
         self.assertEqual(self.calls, [])
         self.assertEqual(self.cluster.replicas("aidash-test", "deployment", "app-aidash-server"), 0)
 
+    def test_failed_deployment_without_started_producers_is_sealed_by_draining(self):
+        # After a failed migration the writers crash at startup and the Runner is at
+        # zero. The collector cannot observe the Runner, so requiring a fresh idle
+        # observation would roll back into writers that never become ready.
+        self.workloads(edge=1, writers=1, dependencies=1)
+        self.cluster.workload("deployment", "aidash-test", "app-execution-runner", 0)
+        self.cluster.crashing |= {"app-aidash-server", "app-aidash-worker"}
+        self.cluster.script = ["error"]
+        self.assertTrue(kube.seal(self.cluster, "test"))
+        self.assertEqual(self.calls, [
+            ("admission", "test", "close"), ("scale", "test", "server", 0), ("scale", "test", "worker", 0),
+        ])
+        self.assertEqual(self.cluster.replicas("aidash-test", "deployment", "app-aidash-server"), 0)
+
+    def test_a_started_runner_still_requires_an_idle_observation(self):
+        # Crashing writers alone do not prove the Environment idle: the Runner may hold a Run.
+        self.workloads(edge=1, writers=1, dependencies=1)
+        self.cluster.crashing |= {"app-aidash-server", "app-aidash-worker"}
+        self.cluster.script = ["error"]
+        self.assertFalse(kube.seal(self.cluster, "test"))
+        self.assertIn(("observe", "test"), self.calls)
+        self.assertEqual(self.cluster.replicas("aidash-test", "deployment", "app-aidash-server"), 1)
+
     def test_admission_is_closed_only_through_a_live_edge(self):
         self.workloads(edge=0, writers=1)
         self.assertTrue(kube.seal(self.cluster, "test"))
