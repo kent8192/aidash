@@ -721,7 +721,7 @@ omitted and explicit null are accepted so definitions written before #531 keep
 their bytes. `AgentBindings::validate` rejects a structured version whose
 Projection Version is not Native. PostgreSQL function bodies have no typed
 Reinhardt operation, so the replacement and its 0045 restore live in reversible
-SQL assets. It is database-only and changes no model state.
+SQL assets. Rollback refuses while definitions, packages, or Run Binding snapshots declare the key; restore the pre-upgrade backup to recover. It is database-only and changes no model state.
 
 `execution/0080_harness_contract` (after `execution/0079_run_safety_stops_state`)
 adds `inference_usage.harness_contract` with typed column operations. Historical

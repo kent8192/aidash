@@ -1,6 +1,37 @@
 -- DDL only: restore the Agent Bindings contract of 0045_agent_plugin_settings.
 -- Keep Agent Plugin settings and compaction rules while removing the optional
 -- Harness Contract version. PostgreSQL function bodies have no typed operation.
+-- Refuse reversal while stored definitions or snapshots need the new key.
+DO $$
+BEGIN
+ IF EXISTS(SELECT 1 FROM registry WHERE kind = 'agent' AND metadata->'config' ? 'harness_contract') THEN
+  RAISE EXCEPTION 'registry 0049_harness_contract cannot be reversed: Agent definitions declare harness_contract'
+   USING ERRCODE = '55000', HINT = 'Earlier binaries cannot read these definitions; restore the pre-upgrade database backup instead of reversing this migration.';
+ END IF;
+ -- The legacy packages table is removed by 0026 and may be absent.
+ IF to_regclass('public.packages') IS NOT NULL THEN
+  IF EXISTS(SELECT 1 FROM public.packages WHERE manifest #> '{entity,config}' ? 'harness_contract') THEN
+   RAISE EXCEPTION 'registry 0049_harness_contract cannot be reversed: packages declare harness_contract'
+    USING ERRCODE = '55000', HINT = 'Earlier binaries cannot read these packages; restore the pre-upgrade database backup instead of reversing this migration.';
+  END IF;
+ END IF;
+ IF to_regclass('public.marketplace_versions') IS NOT NULL THEN
+  IF EXISTS(SELECT 1 FROM public.marketplace_versions WHERE kind = 'agent' AND (document->>'manifest_source')::jsonb #> '{entity,config}' ? 'harness_contract') THEN
+   RAISE EXCEPTION 'registry 0049_harness_contract cannot be reversed: packages declare harness_contract'
+    USING ERRCODE = '55000', HINT = 'Earlier binaries cannot read these packages; restore the pre-upgrade database backup instead of reversing this migration.';
+  END IF;
+ END IF;
+ -- Nest the query so PostgreSQL does not plan it when the table is absent.
+ IF to_regclass('public.runs') IS NOT NULL THEN
+  IF EXISTS(SELECT 1 FROM public.runs WHERE
+   jsonb_path_exists(context, 'lax $.binding_snapshot.definitions[*].definition ? (@.kind == "agent" && exists(@.config.harness_contract))')
+   OR jsonb_path_exists(context, 'lax $.binding_snapshot.foreign_agents[*].definitions[*].definition ? (@.kind == "agent" && exists(@.config.harness_contract))')) THEN
+   RAISE EXCEPTION 'registry 0049_harness_contract cannot be reversed: Runs pin Agent definitions declaring harness_contract'
+    USING ERRCODE = '55000', HINT = 'Earlier binaries cannot read these Runs; restore the pre-upgrade database backup instead of reversing this migration.';
+  END IF;
+ END IF;
+END
+$$;
 CREATE OR REPLACE FUNCTION public.aidash_agent_bindings_is_valid(value jsonb) RETURNS boolean
 LANGUAGE plpgsql IMMUTABLE STRICT AS $$
 DECLARE plugins jsonb; plugin jsonb; plugin_settings jsonb; plugin_choices jsonb; server_choice jsonb; declared jsonb; completion jsonb; check_item jsonb; item jsonb; removals jsonb; edges jsonb; step_count numeric; parallelism numeric; context_policy jsonb; summary jsonb; restriction jsonb; candidate jsonb; policy jsonb; deferred boolean; budget text; bound numeric; removable text[]; support text[];
