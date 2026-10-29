@@ -73,6 +73,29 @@ mod destinations {
 	use std::time::Duration;
 
 	#[tokio::test]
+	async fn http_success_with_unreadable_result_is_completed() {
+		let (listener, port) = serve().await;
+		let server = tokio::spawn(async move {
+			axum::serve(
+				listener,
+				Router::new().route("/", post(|| async { "not json" })),
+			)
+			.await
+			.unwrap()
+		});
+		let endpoint = format!("http://127.0.0.1:{port}");
+		let result = tools(&[&endpoint])
+			.invoke(&http(endpoint.clone()), json!({}), "key", None)
+			.await
+			.unwrap();
+		assert_eq!(
+			result,
+			json!({"message":"The call succeeded but its result could not be read."})
+		);
+		server.abort();
+	}
+
+	#[tokio::test]
 	async fn http_validation_failure_is_returned_as_a_tool_result() {
 		let (listener, port) = serve().await;
 		let server = tokio::spawn(async move {

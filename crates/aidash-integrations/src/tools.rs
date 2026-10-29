@@ -206,7 +206,11 @@ impl ToolTransport for HttpTools {
 						response.status()
 					)));
 				}
-				crate::response::json(response, 256_000).await
+				Ok(crate::response::json(response, 256_000)
+					.await
+					.unwrap_or_else(
+						|_| json!({"message":"The call succeeded but its result could not be read."}),
+					))
 			}
 			ToolConfig::Mcp {
 				endpoint,
