@@ -3228,8 +3228,9 @@ impl Store {
 		worker: Uuid,
 		reason: &str,
 		event_kind: &str,
+		refusal: Option<&aidash_domain::tool::AuthorityRefusal>,
 	) -> Result<()> {
-		self.pause_for_execution_reason(run, worker, reason, event_kind, None)
+		self.pause_for_execution_reason(run, worker, reason, event_kind, None, refusal)
 			.await
 	}
 	pub(crate) async fn cancel_execution(
@@ -4908,6 +4909,7 @@ impl Store {
 			&reason.to_string(),
 			"run.semantic_blocked",
 			Some(("semantic_reason", serde_json::to_value(reason)?)),
+			None,
 		)
 		.await
 	}
@@ -4925,6 +4927,7 @@ impl Store {
 			&reason.to_string(),
 			"run.context_blocked",
 			Some(("context_reason", serde_json::to_value(reason)?)),
+			None,
 		)
 		.await
 	}
@@ -4940,6 +4943,7 @@ impl Store {
 		reason: &str,
 		event_kind: &str,
 		recovery_reason: Option<(&'static str, Value)>,
+		refusal: Option<&aidash_domain::tool::AuthorityRefusal>,
 	) -> Result<()> {
 		let run = run.into();
 		// Pausing a claimed Run is the worker's lease bookkeeping.
@@ -4970,7 +4974,16 @@ impl Store {
 			run.id,
 			(run.is_local(self.deployment.as_str())).then_some(run.workspace_id),
 			event_kind,
-			json!({"run_id":run.id,"task_id":run.task_id}),
+			// The tool and the check only; never what the call addressed.
+			match refusal {
+				Some(refusal) => {
+					let mut payload = serde_json::to_value(refusal)?;
+					payload["run_id"] = json!(run.id);
+					payload["task_id"] = json!(run.task_id);
+					payload
+				}
+				None => json!({"run_id":run.id,"task_id":run.task_id}),
+			},
 		)
 		.await?;
 		// Pausing releases the lease; the worker can no longer finish its attempt.
