@@ -31,7 +31,7 @@ A running request is `ACTIVE`. Completed, failed, denied, stopped and expired re
 
 ## Dashboard
 
-Open **Agent generation** with a tenant subject credential to manage that tenant. A Deployment Administrator selects the tenant explicitly. Create or edit a policy using the model, tool and skill selectors, role/group IDs, permission attributes and numeric limits. The list shows each policy revision, lifetime definition count and allocated token/call allowances, with enable/disable controls. Compaction and embedding selectors use tenant-approved providers and expose per-agent and total call limits.
+Open **Agent generation** with a tenant subject credential to manage that tenant; a Deployment Administrator has no Tenant authority over it (ADR 0102). Create or edit a policy using the model, tool and skill selectors, role/group IDs, permission attributes and numeric limits. The list shows each policy revision, lifetime definition count and allocated token/call allowances, with enable/disable controls. Compaction and embedding selectors use tenant-approved providers and expose per-agent and total call limits.
 
 On an open task, choose **Assign with policy** and record the reason. The generation page shows pending, running and terminal requests. Before approval, its detail view loads the immutable request-time policy snapshot, including permissions and limits; a later policy edit cannot change the displayed approval target. Approve, deny, stop and archive actions require a recorded reason. The same view shows charged tokens, inference attempts, compaction and embedding calls/limits, origin chain, definition and lifecycle history. Archiving retains the record and task journals. Controls and responsive layouts support Japanese and English.
 

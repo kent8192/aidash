@@ -3,7 +3,6 @@ use crate::apps::execution::models::{
 	Event as EventRecord, HumanRequest as HumanRequestRecord, InferenceUsage,
 	Invocation as InvocationRecord, Run as RunRecord, RunInput as InputRecord, event_records,
 };
-use crate::apps::execution::serializers::runs::RunDetails;
 use crate::apps::execution::services::human_interaction;
 use crate::apps::federation::remote::models::RemoteRunMessageFence;
 use crate::apps::identity::models::AuthorizationRunOutput;
@@ -21,9 +20,7 @@ use crate::{
 };
 use aidash_application::tenancy::{DeploymentScopeReason, TenancyScope};
 use aidash_domain::ControlSource;
-use reinhardt::core::exception::Error as FrameworkError;
 use reinhardt::db::backends::TransactionExecutor;
-use reinhardt::db::orm::Model;
 use reinhardt::query::ColumnRef;
 use reinhardt::query::OnConflict;
 use reinhardt::query::SimpleExpr;
@@ -3249,8 +3246,9 @@ impl Store {
 		worker: Uuid,
 		reason: &str,
 		event_kind: &str,
+		refusal: Option<&aidash_domain::tool::AuthorityRefusal>,
 	) -> Result<()> {
-		self.pause_for_execution_reason(run, worker, reason, event_kind, None)
+		self.pause_for_execution_reason(run, worker, reason, event_kind, None, refusal)
 			.await
 	}
 	pub(crate) async fn cancel_execution(
@@ -4135,65 +4133,6 @@ impl Store {
 			})
 			.await
 	}
-	pub(crate) async fn run_details_in(
-		&self,
-		tx: &mut dyn TransactionExecutor,
-		run: Run,
-		offset: u64,
-	) -> Result<RunDetails> {
-		let invocations = InvocationRecord::page(tx, run.id, offset).await?;
-		let memory = crate::semantic::repositories::bindings::load(tx, &run.metadata()).await?;
-		let egress_requests =
-			crate::apps::execution::capabilities::models::EgressRequest::objects()
-				.filter(
-					crate::apps::execution::capabilities::models::EgressRequest::field_run_id()
-						.eq(run.id),
-				)
-				.order_by(&["id"])
-				.offset(offset as usize)
-				.limit(100)
-				.all_with_executor(tx)
-				.await
-				.map_err(FrameworkError::from)?;
-		let egress_requests = egress_requests
-			.into_iter()
-			.map(|row| serde_json::from_value(serde_json::to_value(row)?))
-			.collect::<std::result::Result<Vec<aidash_domain::egress::RequestRecord>, _>>()?;
-		Ok(RunDetails {
-            provider_tool_activity: crate::apps::execution::models::context_journal::RunContextEvent::provider_activity_page(tx,run.id,offset).await?,
-			egress_requests,
-			media_input_routes: Vec::new(),
-			run: run.into(),
-			invocations,
-			memory,
-		})
-	}
-	pub(crate) async fn run_details(
-		&self,
-		scope: &TenancyScope,
-		id: Uuid,
-		offset: u64,
-	) -> Result<RunDetails> {
-		self.pool
-			.atomic(scope, async |tx| {
-				if let Some(tenant) = scope.tenant_name() {
-					crate::authorization::remote::deployment_administrator::tenant(
-						tx,
-						tenant.as_str(),
-					)
-					.await?;
-				}
-				let run = RunRecord::objects()
-					.filter(RunRecord::field_id().eq(id))
-					.all_with_executor(tx)
-					.await
-					.map_err(FrameworkError::from)?
-					.pop()
-					.ok_or_else(|| Error::NotFound("run".into()))?;
-				self.run_details_in(tx, run.try_into()?, offset).await
-			})
-			.await
-	}
 	#[allow(clippy::too_many_arguments)]
 	pub(crate) async fn transition_remote_terminal_in(
 		&self,
@@ -4930,6 +4869,7 @@ impl Store {
 			&reason.to_string(),
 			"run.semantic_blocked",
 			Some(("semantic_reason", serde_json::to_value(reason)?)),
+			None,
 		)
 		.await
 	}
@@ -4947,6 +4887,7 @@ impl Store {
 			&reason.to_string(),
 			"run.context_blocked",
 			Some(("context_reason", serde_json::to_value(reason)?)),
+			None,
 		)
 		.await
 	}
@@ -4962,6 +4903,7 @@ impl Store {
 		reason: &str,
 		event_kind: &str,
 		recovery_reason: Option<(&'static str, Value)>,
+		refusal: Option<&aidash_domain::tool::AuthorityRefusal>,
 	) -> Result<()> {
 		let run = run.into();
 		// Pausing a claimed Run is the worker's lease bookkeeping.
@@ -4992,7 +4934,16 @@ impl Store {
 			run.id,
 			(run.is_local(self.deployment.as_str())).then_some(run.workspace_id),
 			event_kind,
-			json!({"run_id":run.id,"task_id":run.task_id}),
+			// The tool and the check only; never what the call addressed.
+			match refusal {
+				Some(refusal) => {
+					let mut payload = serde_json::to_value(refusal)?;
+					payload["run_id"] = json!(run.id);
+					payload["task_id"] = json!(run.task_id);
+					payload
+				}
+				None => json!({"run_id":run.id,"task_id":run.task_id}),
+			},
 		)
 		.await?;
 		// Pausing releases the lease; the worker can no longer finish its attempt.

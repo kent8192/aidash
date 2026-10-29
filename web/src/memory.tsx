@@ -114,9 +114,9 @@ export function MemoryWorkspace({
   const ja = locale === "ja-JP";
   const text = (en: string, jp: string) => (ja ? jp : en);
   const client = useQueryClient();
-  const [tenant, setTenant] = useState(
-    data.access.kind === "subject" ? data.access.tenant : "",
-  );
+  // Memory belongs to the Tenant of the signed-in Mapping; a Deployment
+  // Administrator has no Tenant content authority and picks none (ADR 0102).
+  const tenant = data.access.kind === "subject" ? data.access.tenant : "";
   const [participantId, setParticipantId] = useState("");
   const [providerKey, setProviderKey] = useState("");
   const [agentKey, setAgentKey] = useState("");
@@ -438,16 +438,6 @@ export function MemoryWorkspace({
         )}
       </Hint>
       <div className="grid items-end gap-3 sm:grid-cols-2 lg:grid-cols-3">
-        {data.access.kind === "deployment_administrator" && (
-          <Field label={text("Tenant", "テナント")}>
-            <Input
-              className="font-mono"
-              disabled={blocked}
-              value={tenant}
-              onChange={(e) => setTenant(e.target.value)}
-            />
-          </Field>
-        )}
         <Field label={text("Memory bank", "記憶の所有者")}>
           <NativeSelect
             value={participantId}

@@ -233,14 +233,7 @@ async fn a_viewer_without_download_authority_sees_no_digest(
 	)
 	.await;
 	assert_eq!(status, 200, "{posted}");
-	let (_, bob) = request(
-		&c.app,
-		&c.f.config.api_token,
-		"POST",
-		"/api/authorization/acme/credentials",
-		json!({"subject":"bob"}),
-	)
-	.await;
+	let bob = common::issued_credential(&c.f.store, "acme", "bob").await;
 	let token = bob["token"].as_str().unwrap();
 	let history = history(&c, run.workspace_id, token).await;
 	let cited = message(&history, "Read this but do not download it")["citations"][0].clone();

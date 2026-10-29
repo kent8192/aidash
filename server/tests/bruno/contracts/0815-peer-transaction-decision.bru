@@ -1,0 +1,21 @@
+meta {
+  name: 0815 peer-transaction-decision - Require the Federation token
+  type: http
+  seq: 815
+}
+
+get {
+  url: {{base_url}}/federation/v0.1/transactions/11111111-1111-4111-8111-111111111111/decision
+  body: none
+  auth: none
+}
+
+headers {
+  Accept: application/json
+  X-Aidash-Protocol: 0.5
+}
+
+tests {
+  test("Exact HTTP 401", function () { expect(res.getStatus()).to.equal(401); });
+  test("Stable authorization error envelope", function () { expect(res.getHeader("content-type")).to.include("application/json"); expect(res.getBody()).to.eql({error:"unauthorized"}); });
+}

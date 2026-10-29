@@ -48,7 +48,10 @@ async function registry(page: Page, actions: string[]) {
       registryVersion(value, approved.has(value.id) ? {} : pending),
     );
   const decisions: Record<string, unknown>[] = [];
-  await installBearerDashboard(page, "fixture");
+  await installBearerDashboard(page, "fixture", {
+    tenant: tenantSubject.tenant,
+    name: tenantSubject.subject,
+  });
   await page.addInitScript(() =>
     localStorage.setItem("aidash-locale", "en-US"),
   );

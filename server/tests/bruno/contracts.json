@@ -3345,7 +3345,7 @@
     "source": "server/src/apps/identity/views/policies.rs",
     "json": false,
     "uuid_parameters": [],
-    "query_parameters": ["mine", "offset"],
+    "query_parameters": ["active", "mine", "offset"],
     "response": {
       "schema": {
         "type": "array",
@@ -4471,6 +4471,289 @@
         "items": {}
       },
       "definitions": {}
+    }
+  },
+  {
+    "method": "GET",
+    "path": "/api/authorization/{tenant}/safety-stops",
+    "name": "authorization-safety-stops",
+    "source": "server/src/apps/identity/views/policies.rs",
+    "json": false,
+    "uuid_parameters": [],
+    "query_parameters": ["limit", "offset"],
+    "response": {
+      "schema": {
+        "type": "array",
+        "items": {
+          "$ref": "#/components/schemas/SafetyStopRecord"
+        }
+      },
+      "definitions": {
+        "SafetyStopAction": {
+          "type": "string",
+          "description": "What a Safety Stop asks of the Run.",
+          "enum": ["pause", "cancel"]
+        },
+        "SafetyStopOutcome": {
+          "oneOf": [
+            {
+              "type": "string",
+              "description": "The control change was recorded.",
+              "enum": ["accepted"]
+            },
+            {
+              "type": "string",
+              "description": "The Run had already ended or its cancellation was already requested.",
+              "enum": ["no_op"]
+            }
+          ],
+          "description": "How a command ended."
+        },
+        "SafetyStopRecord": {
+          "type": "object",
+          "description": "One Safety Stop as the Tenant's audit readers see it (`decision.read`). The\nreason is visible here and nowhere a Run's ordinary readers look.",
+          "required": [
+            "id",
+            "run_id",
+            "action",
+            "actor_kind",
+            "identity_id",
+            "reason",
+            "operation_id",
+            "outcome",
+            "created_at"
+          ],
+          "properties": {
+            "action": {
+              "$ref": "#/components/schemas/SafetyStopAction"
+            },
+            "actor_kind": {
+              "type": "string"
+            },
+            "created_at": {
+              "type": "string",
+              "format": "date-time"
+            },
+            "id": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "identity_id": {
+              "type": ["string", "null"],
+              "format": "uuid",
+              "description": "The browser Identity of a named administrator; absent for the shared token."
+            },
+            "operation_id": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "outcome": {
+              "$ref": "#/components/schemas/SafetyStopOutcome"
+            },
+            "reason": {
+              "type": "string"
+            },
+            "run_id": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        }
+      }
+    }
+  },
+  {
+    "method": "GET",
+    "path": "/api/tenants/{tenant}/data-protection",
+    "name": "tenant-data-protection",
+    "source": "server/src/apps/identity/views/data_protection.rs",
+    "json": false,
+    "uuid_parameters": [],
+    "query_parameters": [],
+    "response": {
+      "schema": {
+        "$ref": "#/components/schemas/TenantDataProtectionSettings"
+      },
+      "definitions": {
+        "DataProtection": {
+          "type": "object",
+          "description": "The Tenant policy. Missing settings preserve the existing OpenRouter ZDR default.",
+          "required": ["level", "model_call_zdr", "plan_connection_exempt"],
+          "properties": {
+            "level": {
+              "$ref": "#/components/schemas/Level"
+            },
+            "model_call_zdr": {
+              "type": "boolean",
+              "default": true
+            },
+            "plan_connection_exempt": {
+              "type": "boolean",
+              "default": true
+            }
+          },
+          "additionalProperties": false
+        },
+        "Level": {
+          "type": "string",
+          "enum": ["standard", "no_training", "zero_data_retention"]
+        },
+        "TenantDataProtectionSettings": {
+          "type": "object",
+          "required": ["policy", "effective", "deployment_floor"],
+          "properties": {
+            "deployment_floor": {
+              "$ref": "#/components/schemas/Level"
+            },
+            "effective": {
+              "$ref": "#/components/schemas/DataProtection"
+            },
+            "policy": {
+              "$ref": "#/components/schemas/DataProtection"
+            }
+          }
+        }
+      }
+    }
+  },
+  {
+    "method": "PUT",
+    "path": "/api/tenants/{tenant}/data-protection",
+    "name": "tenant-data-protection-update",
+    "source": "server/src/apps/identity/views/data_protection.rs",
+    "json": true,
+    "uuid_parameters": [],
+    "query_parameters": [],
+    "response": {
+      "schema": {
+        "$ref": "#/components/schemas/TenantDataProtectionSettings"
+      },
+      "definitions": {
+        "DataProtection": {
+          "type": "object",
+          "description": "The Tenant policy. Missing settings preserve the existing OpenRouter ZDR default.",
+          "required": ["level", "model_call_zdr", "plan_connection_exempt"],
+          "properties": {
+            "level": {
+              "$ref": "#/components/schemas/Level"
+            },
+            "model_call_zdr": {
+              "type": "boolean",
+              "default": true
+            },
+            "plan_connection_exempt": {
+              "type": "boolean",
+              "default": true
+            }
+          },
+          "additionalProperties": false
+        },
+        "Level": {
+          "type": "string",
+          "enum": ["standard", "no_training", "zero_data_retention"]
+        },
+        "TenantDataProtectionSettings": {
+          "type": "object",
+          "required": ["policy", "effective", "deployment_floor"],
+          "properties": {
+            "deployment_floor": {
+              "$ref": "#/components/schemas/Level"
+            },
+            "effective": {
+              "$ref": "#/components/schemas/DataProtection"
+            },
+            "policy": {
+              "$ref": "#/components/schemas/DataProtection"
+            }
+          }
+        }
+      }
+    }
+  },
+  {
+    "method": "POST",
+    "path": "/api/tenants/{tenant}/data-protection/impact",
+    "name": "tenant-data-protection-impact",
+    "source": "server/src/apps/identity/views/data_protection.rs",
+    "json": true,
+    "uuid_parameters": [],
+    "query_parameters": [],
+    "response": {
+      "schema": {
+        "$ref": "#/components/schemas/DataProtectionImpact"
+      },
+      "definitions": {
+        "DataProtection": {
+          "type": "object",
+          "description": "The Tenant policy. Missing settings preserve the existing OpenRouter ZDR default.",
+          "required": ["level", "model_call_zdr", "plan_connection_exempt"],
+          "properties": {
+            "level": {
+              "$ref": "#/components/schemas/Level"
+            },
+            "model_call_zdr": {
+              "type": "boolean",
+              "default": true
+            },
+            "plan_connection_exempt": {
+              "type": "boolean",
+              "default": true
+            }
+          },
+          "additionalProperties": false
+        },
+        "DataProtectionAffected": {
+          "type": "object",
+          "required": ["id", "version", "reason"],
+          "properties": {
+            "id": {
+              "type": "string"
+            },
+            "reason": {
+              "type": "string"
+            },
+            "version": {
+              "type": ["string", "null"]
+            }
+          }
+        },
+        "DataProtectionImpact": {
+          "type": "object",
+          "required": [
+            "effective",
+            "agents",
+            "catalog_approvals",
+            "destinations"
+          ],
+          "properties": {
+            "agents": {
+              "type": "array",
+              "items": {
+                "$ref": "#/components/schemas/DataProtectionAffected"
+              }
+            },
+            "catalog_approvals": {
+              "type": "array",
+              "items": {
+                "$ref": "#/components/schemas/DataProtectionAffected"
+              }
+            },
+            "destinations": {
+              "type": "array",
+              "items": {
+                "$ref": "#/components/schemas/DataProtectionAffected"
+              }
+            },
+            "effective": {
+              "$ref": "#/components/schemas/DataProtection"
+            }
+          }
+        },
+        "Level": {
+          "type": "string",
+          "enum": ["standard", "no_training", "zero_data_retention"]
+        }
+      }
     }
   },
   {
@@ -11501,15 +11784,71 @@
             }
           }
         },
+        "ChannelCitation": {
+          "type": "object",
+          "description": "A citation as one viewer may see it.\n\n`available` is false when the hold that kept the version is gone; the version\nis never substituted. A viewer who may not download the Working Area sees the\npath and ids only, with `reason = \"forbidden\"` and no digest, size, media type\nor revision.",
+          "required": ["area_id", "file_id", "path", "available"],
+          "properties": {
+            "area_id": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "available": {
+              "type": "boolean"
+            },
+            "digest": {
+              "type": ["string", "null"]
+            },
+            "file_id": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "media_type": {
+              "type": ["string", "null"]
+            },
+            "path": {
+              "type": "string"
+            },
+            "reason": {
+              "type": ["string", "null"]
+            },
+            "revision": {
+              "type": ["integer", "null"],
+              "format": "int64"
+            },
+            "run_id": {
+              "type": ["string", "null"],
+              "format": "uuid"
+            },
+            "size": {
+              "type": ["integer", "null"],
+              "format": "uint64",
+              "minimum": 0
+            }
+          }
+        },
         "ChannelMessage": {
           "type": "object",
-          "required": ["message", "thread_id", "is_thread_root", "attachments"],
+          "required": [
+            "message",
+            "thread_id",
+            "is_thread_root",
+            "attachments",
+            "citations"
+          ],
           "properties": {
             "attachments": {
               "type": "array",
               "items": {
                 "$ref": "#/components/schemas/ChannelAttachment"
               }
+            },
+            "citations": {
+              "type": "array",
+              "items": {
+                "$ref": "#/components/schemas/ChannelCitation"
+              },
+              "default": []
             },
             "is_thread_root": {
               "type": "boolean"
@@ -11598,15 +11937,71 @@
             }
           }
         },
+        "ChannelCitation": {
+          "type": "object",
+          "description": "A citation as one viewer may see it.\n\n`available` is false when the hold that kept the version is gone; the version\nis never substituted. A viewer who may not download the Working Area sees the\npath and ids only, with `reason = \"forbidden\"` and no digest, size, media type\nor revision.",
+          "required": ["area_id", "file_id", "path", "available"],
+          "properties": {
+            "area_id": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "available": {
+              "type": "boolean"
+            },
+            "digest": {
+              "type": ["string", "null"]
+            },
+            "file_id": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "media_type": {
+              "type": ["string", "null"]
+            },
+            "path": {
+              "type": "string"
+            },
+            "reason": {
+              "type": ["string", "null"]
+            },
+            "revision": {
+              "type": ["integer", "null"],
+              "format": "int64"
+            },
+            "run_id": {
+              "type": ["string", "null"],
+              "format": "uuid"
+            },
+            "size": {
+              "type": ["integer", "null"],
+              "format": "uint64",
+              "minimum": 0
+            }
+          }
+        },
         "ChannelMessage": {
           "type": "object",
-          "required": ["message", "thread_id", "is_thread_root", "attachments"],
+          "required": [
+            "message",
+            "thread_id",
+            "is_thread_root",
+            "attachments",
+            "citations"
+          ],
           "properties": {
             "attachments": {
               "type": "array",
               "items": {
                 "$ref": "#/components/schemas/ChannelAttachment"
               }
+            },
+            "citations": {
+              "type": "array",
+              "items": {
+                "$ref": "#/components/schemas/ChannelCitation"
+              },
+              "default": []
             },
             "is_thread_root": {
               "type": "boolean"
@@ -25544,72 +25939,6 @@
   },
   {
     "method": "POST",
-    "path": "/api/workbench/agents/{id}/{version}/adopt",
-    "name": "workbench-adopt-agent",
-    "source": "server/src/apps/registry/workbench/views/drafts.rs",
-    "json": true,
-    "uuid_parameters": [],
-    "query_parameters": [],
-    "response": {
-      "schema": {
-        "$ref": "#/components/schemas/Draft"
-      },
-      "definitions": {
-        "Draft": {
-          "type": "object",
-          "required": [
-            "id",
-            "tenant",
-            "owner",
-            "revision",
-            "entry",
-            "documents",
-            "release_notes",
-            "source_id",
-            "source_version",
-            "archived",
-            "updated_at"
-          ],
-          "properties": {
-            "archived": {
-              "type": "boolean"
-            },
-            "documents": {},
-            "entry": {},
-            "id": {
-              "type": "string",
-              "format": "uuid"
-            },
-            "owner": {
-              "type": "string"
-            },
-            "release_notes": {
-              "type": "string"
-            },
-            "revision": {
-              "type": "integer",
-              "format": "int64"
-            },
-            "source_id": {
-              "type": ["string", "null"]
-            },
-            "source_version": {
-              "type": ["string", "null"]
-            },
-            "tenant": {
-              "type": "string"
-            },
-            "updated_at": {
-              "type": "string",
-              "format": "date-time"
-            }
-          }
-        }
-      }
-    }
-  },
-  {
-    "method": "POST",
     "path": "/api/workbench/drafts/{id}/shares",
     "name": "workbench-share-draft",
     "source": "server/src/apps/registry/workbench/views/drafts.rs",
@@ -27383,7 +27712,7 @@
     "source": "server/src/apps/registry/workbench/views/profile.rs",
     "json": false,
     "uuid_parameters": [],
-    "query_parameters": [],
+    "query_parameters": ["after"],
     "response": {
       "schema": {
         "type": "array",
@@ -40205,7 +40534,7 @@
             }
           }
         },
-        "Inspection": {
+        "Inspection2": {
           "type": "object",
           "required": [
             "items",
@@ -40505,7 +40834,7 @@
                   "enum": ["inspection"]
                 },
                 "value": {
-                  "$ref": "#/components/schemas/Inspection"
+                  "$ref": "#/components/schemas/Inspection2"
                 }
               }
             },
@@ -43336,6 +43665,7 @@
             "node",
             "source_node",
             "endpoint",
+            "dashboard_origin",
             "key_id",
             "atomic_transactions",
             "enabled",
@@ -43355,6 +43685,10 @@
             "created_at": {
               "type": "string",
               "format": "date-time"
+            },
+            "dashboard_origin": {
+              "type": ["string", "null"],
+              "description": "Pinned dashboard origin used to validate remote Preview frame ancestors."
             },
             "enabled": {
               "type": "boolean"
@@ -43412,6 +43746,7 @@
             "node",
             "source_node",
             "endpoint",
+            "dashboard_origin",
             "key_id",
             "atomic_transactions",
             "enabled",
@@ -43431,6 +43766,10 @@
             "created_at": {
               "type": "string",
               "format": "date-time"
+            },
+            "dashboard_origin": {
+              "type": ["string", "null"],
+              "description": "Pinned dashboard origin used to validate remote Preview frame ancestors."
             },
             "enabled": {
               "type": "boolean"
@@ -43488,6 +43827,7 @@
             "node",
             "source_node",
             "endpoint",
+            "dashboard_origin",
             "key_id",
             "atomic_transactions",
             "enabled",
@@ -43507,6 +43847,10 @@
             "created_at": {
               "type": "string",
               "format": "date-time"
+            },
+            "dashboard_origin": {
+              "type": ["string", "null"],
+              "description": "Pinned dashboard origin used to validate remote Preview frame ancestors."
             },
             "enabled": {
               "type": "boolean"
@@ -46722,7 +47066,7 @@
     "source": "server/src/apps/execution/observation/views.rs",
     "json": false,
     "uuid_parameters": [],
-    "query_parameters": ["start", "end"],
+    "query_parameters": ["end", "start"],
     "response": {
       "schema": {
         "$ref": "#/components/schemas/ObservationReport"
@@ -47151,289 +47495,6 @@
   },
   {
     "method": "GET",
-    "path": "/api/authorization/{tenant}/safety-stops",
-    "name": "authorization-safety-stops",
-    "source": "server/src/apps/identity/views/policies.rs",
-    "json": false,
-    "uuid_parameters": [],
-    "query_parameters": ["offset", "limit"],
-    "response": {
-      "schema": {
-        "type": "array",
-        "items": {
-          "$ref": "#/components/schemas/SafetyStopRecord"
-        }
-      },
-      "definitions": {
-        "SafetyStopAction": {
-          "type": "string",
-          "description": "What a Safety Stop asks of the Run.",
-          "enum": ["pause", "cancel"]
-        },
-        "SafetyStopOutcome": {
-          "oneOf": [
-            {
-              "type": "string",
-              "description": "The control change was recorded.",
-              "enum": ["accepted"]
-            },
-            {
-              "type": "string",
-              "description": "The Run had already ended or its cancellation was already requested.",
-              "enum": ["no_op"]
-            }
-          ],
-          "description": "How a command ended."
-        },
-        "SafetyStopRecord": {
-          "type": "object",
-          "description": "One Safety Stop as the Tenant's audit readers see it (`decision.read`). The\nreason is visible here and nowhere a Run's ordinary readers look.",
-          "required": [
-            "id",
-            "run_id",
-            "action",
-            "actor_kind",
-            "identity_id",
-            "reason",
-            "operation_id",
-            "outcome",
-            "created_at"
-          ],
-          "properties": {
-            "action": {
-              "$ref": "#/components/schemas/SafetyStopAction"
-            },
-            "actor_kind": {
-              "type": "string"
-            },
-            "created_at": {
-              "type": "string",
-              "format": "date-time"
-            },
-            "id": {
-              "type": "string",
-              "format": "uuid"
-            },
-            "identity_id": {
-              "type": ["string", "null"],
-              "format": "uuid",
-              "description": "The browser Identity of a named administrator; absent for the shared token."
-            },
-            "operation_id": {
-              "type": "string",
-              "format": "uuid"
-            },
-            "outcome": {
-              "$ref": "#/components/schemas/SafetyStopOutcome"
-            },
-            "reason": {
-              "type": "string"
-            },
-            "run_id": {
-              "type": "string",
-              "format": "uuid"
-            }
-          }
-        }
-      }
-    }
-  },
-  {
-    "method": "GET",
-    "path": "/api/tenants/{tenant}/data-protection",
-    "name": "tenant-data-protection",
-    "source": "server/src/apps/identity/views/data_protection.rs",
-    "json": false,
-    "uuid_parameters": [],
-    "query_parameters": [],
-    "response": {
-      "schema": {
-        "$ref": "#/components/schemas/TenantDataProtectionSettings"
-      },
-      "definitions": {
-        "DataProtection": {
-          "type": "object",
-          "description": "The Tenant policy. Missing settings preserve the existing OpenRouter ZDR default.",
-          "required": ["level", "model_call_zdr", "plan_connection_exempt"],
-          "properties": {
-            "level": {
-              "$ref": "#/components/schemas/Level"
-            },
-            "model_call_zdr": {
-              "type": "boolean",
-              "default": true
-            },
-            "plan_connection_exempt": {
-              "type": "boolean",
-              "default": true
-            }
-          },
-          "additionalProperties": false
-        },
-        "Level": {
-          "type": "string",
-          "enum": ["standard", "no_training", "zero_data_retention"]
-        },
-        "TenantDataProtectionSettings": {
-          "type": "object",
-          "required": ["policy", "effective", "deployment_floor"],
-          "properties": {
-            "deployment_floor": {
-              "$ref": "#/components/schemas/Level"
-            },
-            "effective": {
-              "$ref": "#/components/schemas/DataProtection"
-            },
-            "policy": {
-              "$ref": "#/components/schemas/DataProtection"
-            }
-          }
-        }
-      }
-    }
-  },
-  {
-    "method": "PUT",
-    "path": "/api/tenants/{tenant}/data-protection",
-    "name": "tenant-data-protection-update",
-    "source": "server/src/apps/identity/views/data_protection.rs",
-    "json": true,
-    "uuid_parameters": [],
-    "query_parameters": [],
-    "response": {
-      "schema": {
-        "$ref": "#/components/schemas/TenantDataProtectionSettings"
-      },
-      "definitions": {
-        "DataProtection": {
-          "type": "object",
-          "description": "The Tenant policy. Missing settings preserve the existing OpenRouter ZDR default.",
-          "required": ["level", "model_call_zdr", "plan_connection_exempt"],
-          "properties": {
-            "level": {
-              "$ref": "#/components/schemas/Level"
-            },
-            "model_call_zdr": {
-              "type": "boolean",
-              "default": true
-            },
-            "plan_connection_exempt": {
-              "type": "boolean",
-              "default": true
-            }
-          },
-          "additionalProperties": false
-        },
-        "Level": {
-          "type": "string",
-          "enum": ["standard", "no_training", "zero_data_retention"]
-        },
-        "TenantDataProtectionSettings": {
-          "type": "object",
-          "required": ["policy", "effective", "deployment_floor"],
-          "properties": {
-            "deployment_floor": {
-              "$ref": "#/components/schemas/Level"
-            },
-            "effective": {
-              "$ref": "#/components/schemas/DataProtection"
-            },
-            "policy": {
-              "$ref": "#/components/schemas/DataProtection"
-            }
-          }
-        }
-      }
-    }
-  },
-  {
-    "method": "POST",
-    "path": "/api/tenants/{tenant}/data-protection/impact",
-    "name": "tenant-data-protection-impact",
-    "source": "server/src/apps/identity/views/data_protection.rs",
-    "json": true,
-    "uuid_parameters": [],
-    "query_parameters": [],
-    "response": {
-      "schema": {
-        "$ref": "#/components/schemas/DataProtectionImpact"
-      },
-      "definitions": {
-        "DataProtection": {
-          "type": "object",
-          "description": "The Tenant policy. Missing settings preserve the existing OpenRouter ZDR default.",
-          "required": ["level", "model_call_zdr", "plan_connection_exempt"],
-          "properties": {
-            "level": {
-              "$ref": "#/components/schemas/Level"
-            },
-            "model_call_zdr": {
-              "type": "boolean",
-              "default": true
-            },
-            "plan_connection_exempt": {
-              "type": "boolean",
-              "default": true
-            }
-          },
-          "additionalProperties": false
-        },
-        "DataProtectionAffected": {
-          "type": "object",
-          "required": ["id", "version", "reason"],
-          "properties": {
-            "id": {
-              "type": "string"
-            },
-            "reason": {
-              "type": "string"
-            },
-            "version": {
-              "type": ["string", "null"]
-            }
-          }
-        },
-        "DataProtectionImpact": {
-          "type": "object",
-          "required": [
-            "effective",
-            "agents",
-            "catalog_approvals",
-            "destinations"
-          ],
-          "properties": {
-            "agents": {
-              "type": "array",
-              "items": {
-                "$ref": "#/components/schemas/DataProtectionAffected"
-              }
-            },
-            "catalog_approvals": {
-              "type": "array",
-              "items": {
-                "$ref": "#/components/schemas/DataProtectionAffected"
-              }
-            },
-            "destinations": {
-              "type": "array",
-              "items": {
-                "$ref": "#/components/schemas/DataProtectionAffected"
-              }
-            },
-            "effective": {
-              "$ref": "#/components/schemas/DataProtection"
-            }
-          }
-        },
-        "Level": {
-          "type": "string",
-          "enum": ["standard", "no_training", "zero_data_retention"]
-        }
-      }
-    }
-  },
-  {
-    "method": "GET",
     "path": "/api/previews/availability",
     "name": "core_preview_availability",
     "source": "server/src/apps/execution/capabilities/views/previews.rs",
@@ -47829,7 +47890,80 @@
     "source": "server/src/apps/execution/capabilities/views/previews.rs",
     "json": false,
     "uuid_parameters": ["id"],
-    "query_parameters": []
+    "query_parameters": [],
+    "response": {
+      "schema": {
+        "$ref": "#/components/schemas/Inspection"
+      },
+      "definitions": {
+        "File": {
+          "type": "object",
+          "required": ["file_id", "path", "digest", "size", "media_type"],
+          "properties": {
+            "digest": {
+              "type": "string"
+            },
+            "file_id": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "media_type": {
+              "type": "string"
+            },
+            "path": {
+              "type": "string"
+            },
+            "size": {
+              "type": "integer",
+              "format": "uint64",
+              "minimum": 0
+            }
+          }
+        },
+        "Inspection": {
+          "type": "object",
+          "required": ["area_id", "files", "live_preview", "preview_available"],
+          "properties": {
+            "area_id": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "files": {
+              "type": "array",
+              "items": {
+                "$ref": "#/components/schemas/File"
+              }
+            },
+            "live_preview": {
+              "anyOf": [
+                {
+                  "$ref": "#/components/schemas/Live"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "preview_available": {
+              "type": "boolean"
+            }
+          }
+        },
+        "Live": {
+          "type": "object",
+          "required": ["id", "state"],
+          "properties": {
+            "id": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "state": {
+              "type": "string"
+            }
+          }
+        }
+      }
+    }
   },
   {
     "method": "POST",
@@ -47838,7 +47972,31 @@
     "source": "server/src/apps/execution/capabilities/views/previews.rs",
     "json": true,
     "uuid_parameters": ["id"],
-    "query_parameters": []
+    "query_parameters": [],
+    "response": {
+      "schema": {
+        "$ref": "#/components/schemas/Ticket"
+      },
+      "definitions": {
+        "Ticket": {
+          "type": "object",
+          "required": ["url", "expires_at", "preview_domain"],
+          "properties": {
+            "expires_at": {
+              "type": "string",
+              "format": "date-time"
+            },
+            "preview_domain": {
+              "type": "string",
+              "description": "V can display this domain; the desktop validates it from V's API itself."
+            },
+            "url": {
+              "type": "string"
+            }
+          }
+        }
+      }
+    }
   },
   {
     "method": "POST",

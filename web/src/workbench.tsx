@@ -525,7 +525,6 @@ export function Workbench({
   const [shareIncludesDocuments, setShareIncludesDocuments] = useState(false);
   const [draftShares, setDraftShares] = useState<DraftShare[]>([]);
   const [transferOwner, setTransferOwner] = useState("");
-  const [adoptRef, setAdoptRef] = useState("");
   const [inspection, setInspection] = useState<Inspection | null>(null);
   const [incidentsLoaded, setIncidentsLoaded] = useState(false);
   const [incidents, setIncidents] = useState<Incident[]>([]);
@@ -1111,30 +1110,6 @@ export function Workbench({
       );
       setTransferOwner("");
       if (!isDeploymentAdministrator) select("");
-    } catch (cause) {
-      setError(String(cause));
-    } finally {
-      setBusy(false);
-    }
-  };
-  const adoptLegacy = async () => {
-    const [id, version] = adoptRef.split("@");
-    if (!isDeploymentAdministrator || !id || !version || !tenant || !owner)
-      return;
-    setBusy(true);
-    setError("");
-    try {
-      const result = await apiFetch<Draft>(
-        `/api/workbench/agents/${encodeURIComponent(id)}/${encodeURIComponent(version)}/adopt`,
-        {
-          method: "POST",
-          headers: { "content-type": "application/json" },
-          body: JSON.stringify({ tenant, owner }),
-        },
-      );
-      setDrafts((previous) => [result, ...previous]);
-      select(`${result.entry.id}@${result.entry.version}`);
-      setCreatorTab("build");
     } catch (cause) {
       setError(String(cause));
     } finally {
@@ -3326,40 +3301,6 @@ export function Workbench({
           >
             <RefreshCw aria-hidden />
           </Button>
-          {isDeploymentAdministrator && agents.length > 0 && (
-            <div className="flex w-full flex-wrap items-end gap-2 sm:w-auto lg:ml-auto">
-              <div className="min-w-0 flex-1 sm:w-56 sm:flex-none">
-                <Field
-                  label={
-                    ja ? "既存エージェントを割り当て" : "Assign existing agent"
-                  }
-                >
-                  <NativeSelect
-                    value={adoptRef}
-                    onChange={(event) => setAdoptRef(event.target.value)}
-                  >
-                    <option value="">{t.select}</option>
-                    {agents.map((agent) => (
-                      <option
-                        key={`${agent.id}@${agent.version}`}
-                        value={`${agent.id}@${agent.version}`}
-                      >
-                        {label(agent, locale)} · {agent.version}
-                      </option>
-                    ))}
-                  </NativeSelect>
-                </Field>
-              </div>
-              <Button
-                variant="outline"
-                type="button"
-                disabled={busy || !adoptRef || !tenant || !owner}
-                onClick={() => void adoptLegacy()}
-              >
-                {ja ? "Creatorに割り当て" : "Assign to Creator"}
-              </Button>
-            </div>
-          )}
         </div>
         {notices}
         {!models.length && (

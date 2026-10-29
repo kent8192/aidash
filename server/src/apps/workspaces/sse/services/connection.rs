@@ -6,7 +6,6 @@ use crate::{
 	federation::Federation,
 	transactions::gate::ReadLease,
 };
-use aidash_application::tenancy::{DeploymentScopeReason, TenancyScope};
 use futures_util::{Stream, StreamExt, stream::BoxStream};
 use http::{HeaderMap, Method};
 use std::{
@@ -184,7 +183,7 @@ impl<T> Stream for EventStream<T> {
 #[derive(Clone)]
 struct Context {
 	f: Federation,
-	scope: Option<Workspaces>,
+	scope: Workspaces,
 	browser: Option<BrowserOrigin>,
 	headers: HeaderMap,
 	workspace: Option<Uuid>,
@@ -201,10 +200,7 @@ impl Context {
 			Ok((actor, current)) => {
 				current.identity_id == origin.identity_id
 					&& current.mapping_id == origin.mapping_id
-					&& matches!(
-						(self.scope.is_none(), actor),
-						(true, Actor::DeploymentAdministrator) | (false, Actor::Subject(_))
-					)
+					&& matches!(actor, Actor::Subject(_))
 			}
 			Err(_) => false,
 		}
@@ -216,9 +212,7 @@ impl Context {
 			.checks
 			.fetch_add(1, Ordering::Relaxed);
 		metrics::counter!("aidash_sse_authority_checks_total").increment(1);
-		if let Some(scope) = &self.scope {
-			scope.stream_authority(self.workspace).await?;
-		}
+		self.scope.stream_authority(self.workspace).await?;
 		if browser && !self.browser_authorized().await {
 			return Err(Error::Unauthorized);
 		}
@@ -254,15 +248,15 @@ impl Watch<Event> for Context {
 					if !self.browser_authorized().await {
 						return Err(Closed::Browser);
 					}
-					let payload = match &self.scope {
-						Some(scope) if event.kind.starts_with("marketplace.") => {
-							// The Marketplace boundary serializes and queues the frame
-							// while distribution and browser-session leases are held.
-							crate::marketplace::events::frame(&scope.store, &scope.identity, event)
-								.await
-								.map_err(|_| Closed::Authority)?
-						}
-						Some(scope) => scope
+					let scope = &self.scope;
+					let payload = if event.kind.starts_with("marketplace.") {
+						// The Marketplace boundary serializes and queues the frame
+						// while distribution and browser-session leases are held.
+						crate::marketplace::events::frame(&scope.store, &scope.identity, event)
+							.await
+							.map_err(|_| Closed::Authority)?
+					} else {
+						scope
 							.can_emit(event)
 							.await
 							.map_err(|_| Closed::Authority)?
@@ -270,31 +264,7 @@ impl Watch<Event> for Context {
 								event
 									.cloud_event(self.f.store.deployment.as_str())
 									.to_string()
-							}),
-						None => {
-							// The Deployment Administrator's stream observes every Tenant's events.
-							let scope = aidash_application::tenancy::TenancyScope::Deployment(
-								aidash_application::tenancy::DeploymentScopeReason::DeploymentAdministratorList,
-							);
-							let mut connection = self
-								.f
-								.store
-								.pool
-								.begin(&scope)
-								.await
-								.map_err(|_| Closed::Database)?;
-							crate::authorization::remote::deployment_administrator::event_visible(
-								&mut connection,
-								event,
-							)
-							.await
-							.map_err(|_| Closed::Authority)?
-							.then(|| {
-								event
-									.cloud_event(self.f.store.deployment.as_str())
-									.to_string()
 							})
-						}
 					};
 					drop(visibility);
 					return Ok(payload.map(|payload| {
@@ -340,22 +310,14 @@ impl Service {
 		} = request;
 		// Register before validation/high-water lookup/initial read.
 		let observation = self.register(workspace);
-		// The initial cursor reads the actor's events: the Deployment Administrator's stream
-		// observes every Tenant's.
-		let tenancy = match &actor {
-			Actor::DeploymentAdministrator => {
-				aidash_application::tenancy::TenancyScope::Deployment(
-					aidash_application::tenancy::DeploymentScopeReason::DeploymentAdministratorList,
-				)
-			}
-			Actor::Subject(identity) => identity.tenancy()?,
+		// The event stream is Tenant content: an administrator reads none (#484).
+		let Actor::Subject(identity) = actor else {
+			return Err(Error::Forbidden);
 		};
-		let scope = match actor {
-			Actor::DeploymentAdministrator => None,
-			Actor::Subject(identity) => Some(Workspaces {
-				store: f.store.clone(),
-				identity,
-			}),
+		let tenancy = identity.tenancy()?;
+		let scope = Workspaces {
+			store: f.store.clone(),
+			identity,
 		};
 		let context = Context {
 			f,
@@ -507,29 +469,12 @@ async fn read(
 			Err(error) => return Err(error),
 		};
 		control.waiting_for_gate(&context.service, false);
-		let (events, scanned, more) = if let Some(scope) = &context.scope {
-			scope
-				.stream_page(cursor, context.workspace, || {
-					context.service.record_read(reasons)
-				})
-				.await?
-		} else {
-			context.service.record_read(reasons);
-			let events = context
-				.f
-				.store
-				.events(
-					// A Deployment Administrator's stream spans Tenants.
-					&TenancyScope::Deployment(DeploymentScopeReason::DeploymentAdministratorList),
-					cursor,
-					context.workspace,
-					100,
-				)
-				.await?;
-			let scanned = events.last().map_or(cursor, |event| event.sequence);
-			let more = events.len() == 100;
-			(events, scanned, more)
-		};
+		let (events, scanned, more) = context
+			.scope
+			.stream_page(cursor, context.workspace, || {
+				context.service.record_read(reasons)
+			})
+			.await?;
 		drop(visibility);
 		context.service.reconciled();
 		// Reads can satisfy a due reconciliation but hints cannot postpone it.
