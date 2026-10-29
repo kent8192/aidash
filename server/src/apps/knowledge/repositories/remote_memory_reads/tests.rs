@@ -227,9 +227,16 @@ async fn node_purge_entry_only_cache_invalidation_fences_real_reply_persistence(
 	.unwrap();
 	sqlx::query("INSERT INTO runs(id,tenant,task_id,workspace_id,node,home_node,agent_id,agent_version,phase,pending,revision) VALUES ($1,'acme',$2,$3,$4,$5,'a','1.0.0','COMPLETED',$6,1)").bind(run).bind(task).bind(workspace).bind(node.as_str()).bind(&home).bind(pending).execute(pool).await.unwrap();
 	sqlx::query("INSERT INTO authorization_remote_grants(id,tenant,task_id,task_revision,workspace_id,node,node_id,credential_id,root_subject,subject_chain,inspection,expires_at,revoked,semantic) VALUES ($1,'acme',$2,1,$3,$4,'aidash://peer',$5,'reader',ARRAY['reader'],'{}',clock_timestamp()+interval '1 day',false,'{\"mode\":\"disabled\"}')").bind(grant).bind(task).bind(workspace).bind(node.as_str()).bind(credential).execute(pool).await.unwrap();
-	let entry = crate::semantic::service::put(
+	// A fixture Entry written as system work in the Tenant: knowledge is
+	// Tenant content and a Deployment Administrator holds none (#484).
+	let mut lease = crate::apps::knowledge::repositories::access::Lease::within(
 		&store,
-		&crate::authorization::identity::Actor::DeploymentAdministrator,
+		&aidash_application::tenancy::TenancyScope::tenant("acme").unwrap(),
+	)
+	.await
+	.unwrap();
+	let put = aidash_application::semantic::mutations::put(
+		&mut crate::bootstrap::semantic_entries_scope(&mut lease),
 		workspace,
 		crate::semantic::PutEntry {
 			key: "source".into(),
@@ -239,11 +246,12 @@ async fn node_purge_entry_only_cache_invalidation_fences_real_reply_persistence(
 			},
 			agent: None,
 			metadata: serde_json::json!({}),
-		},
+		}
+		.into(),
 	)
 	.await
-	.unwrap()
-	.id;
+	.map_err(crate::Error::from);
+	let entry = lease.finish(put).await.unwrap().id;
 	let binding = Binding::RequiredHome {
 		home_lineage: vec![],
 		execution_lineage: vec![],

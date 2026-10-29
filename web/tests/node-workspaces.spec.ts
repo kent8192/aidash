@@ -141,7 +141,7 @@ test("an isolated Node retains real attachment bytes until a normal worker purge
   await page.addInitScript(() =>
     localStorage.setItem("aidash-locale", "en-US"),
   );
-  const openManagement = async () => {
+  const openManagement = async (stored = "Stored data") => {
     const initial = page.waitForResponse(
       (response) =>
         new URL(response.url()).pathname === "/api/tenants" &&
@@ -176,7 +176,7 @@ test("an isolated Node retains real attachment bytes until a normal worker purge
     await expect(
       page.locator(`[data-lifecycle-node="${fixture.target}"]`),
     ).toContainText(
-      `Stored data: ${targetBytes.byteLength.toLocaleString("en-US")} bytes`,
+      `${stored}: ${targetBytes.byteLength.toLocaleString("en-US")} bytes`,
     );
   };
   await openManagement();
@@ -222,7 +222,7 @@ test("an isolated Node retains real attachment bytes until a normal worker purge
     });
     expect(record.state).toBe("deleted");
     expect(record.retained_storage_bytes).toBe(targetBytes.byteLength);
-    await openManagement();
+    await openManagement("Retained data");
     return record;
   };
   const deleted = await remove();

@@ -944,9 +944,10 @@ test("a Deployment Administrator explicitly opens a Tenant's Node management and
   ).toHaveCount(0);
   await page.getByRole("button", { name: "Manage Nodes", exact: true }).click();
   const retained = page.locator('[data-lifecycle-node="recoverable"]');
+  // Restore is Tenant administration; the administrator only purges (ADR 0083, ADR 0102).
   await expect(
     retained.getByRole("button", { name: "Restore Node", exact: true }),
-  ).toBeVisible();
+  ).toHaveCount(0);
   await retained
     .getByRole("button", { name: "Purge Node now", exact: true })
     .click();

@@ -97,7 +97,13 @@ def tenant_subject(base, label, subject, issue, agents=(), subject_kind="user", 
         bundle = {"tenant": tenant, "subjects": subjects, "policies": [{"id": "fixture-work", "effect": "allow", "subjects": {"any": True}, "actions": ["*"], "resources": {"kinds": ["*"]}}]}
         api_request(base, f"/api/authorization/{tenant}", {"expected_revision": revision, "bundle": bundle})
 
-    subjects = {subject: {"kind": subject_kind, "node": None}, **(extra_subjects or {})}
+    # A non-user subject names its owning Node. Before any credential exists the
+    # Deployment Administrator reads it from the deleted-Node view purge uses.
+    owner = None
+    if subject_kind != "user":
+        owner = next(row for row in api_request(base, f"/api/tenants/{tenant}/nodes?include_deleted=true")
+                     if row["default"])["name"]
+    subjects = {subject: {"kind": subject_kind, "node": owner}, **(extra_subjects or {})}
     replace(subjects, 1)
     credential = issue(tenant, subject)
     if agents:

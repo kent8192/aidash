@@ -140,7 +140,8 @@ async fn inbound_discovery_requires_exact_mapping_and_current_local_authority(
 	let subject_token = execution.subject_token.as_str();
 	// Peer Mappings are administered through a Tenant Administrator Mapping, which
 	// binds only the credential of a service or agent subject (#484).
-	policy["subjects"]["peer"] = json!({"kind":"service"});
+	// A non-user subject names the Node that owns it, here the receiving Node.
+	policy["subjects"]["peer"] = json!({"kind":"service","node":receiving_node(f).await});
 	assert_eq!(
 		request(
 			app,
@@ -399,7 +400,8 @@ async fn mappings_cannot_cross_tenants_and_expiry_or_disabled_subject_denies_dis
 	let app = &execution.app;
 	let f = &app.runtime;
 	let mut policy = execution.policy;
-	policy["subjects"]["peer"] = json!({"kind":"service"});
+	// A non-user subject names the Node that owns it, here the receiving Node.
+	policy["subjects"]["peer"] = json!({"kind":"service","node":receiving_node(f).await});
 	assert_eq!(
 		request(
 			app,
@@ -427,6 +429,9 @@ async fn mappings_cannot_cross_tenants_and_expiry_or_disabled_subject_denies_dis
 	let mut other_policy = policy.clone();
 	other_policy["tenant"] = json!("other");
 	crate::endpoint::tenant_root(f, "other").await;
+	// The other Tenant's service subject is owned by that Tenant's own Node.
+	other_policy["subjects"]["peer"]["node"] =
+		json!(crate::endpoint::default_node(&f.store, "other").await.node);
 	assert_eq!(
 		request(
 			app,
