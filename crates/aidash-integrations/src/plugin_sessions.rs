@@ -452,10 +452,17 @@ impl PluginSessions for McpPluginSessions {
 			.cloned()
 			.ok_or_else(|| Error::Invalid("tool arguments must be an object".into()))?;
 		let key = Key::new(run, server);
-		let service = self.session(&key, config).await.map_err(Fault::for_call)?;
+		let service = match self.session(&key, config).await {
+			Ok(service) => service,
+			Err(fault) => {
+				return crate::tools::tool_setup_failure(fault.for_call(), false)
+					.map(ToolRound::Complete);
+			}
+		};
 		if let Err(fault) = verify(&service, tool, expected_digest).await {
 			self.state().forget(&key, &service);
-			return Err(fault.for_call());
+			return crate::tools::tool_setup_failure(fault.for_call(), false)
+				.map(ToolRound::Complete);
 		}
 		let _scope = service.service().enter(inputs)?;
 		let mut request = CallToolRequestParams::new(tool.to_owned()).with_arguments(arguments);
@@ -501,9 +508,13 @@ impl PluginSessions for McpPluginSessions {
 				Ok(ToolRound::InputRequired(input))
 			}
 			Ok(_) => Err(Error::Invalid("MCP_TASKS_UNSUPPORTED".into())),
+			Err(ServiceError::McpError(error)) => {
+				crate::tools::mcp_protocol_result(&error.message).map(ToolRound::Complete)
+			}
 			Err(error) => {
 				self.state().forget(&key, &service);
-				Err(call_error(&error))
+				crate::tools::tool_service_failure(call_error(&error), false)
+					.map(ToolRound::Complete)
 			}
 		}
 	}
