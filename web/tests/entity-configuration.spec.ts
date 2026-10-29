@@ -7,7 +7,10 @@ import {
 } from "./registry-fixture";
 
 test.beforeEach(async ({ page }) => {
-  await installBearerDashboard(page, "fixture-token");
+  await installBearerDashboard(page, "fixture-token", {
+    tenant: tenantSubject.tenant,
+    name: tenantSubject.subject,
+  });
   await page.addInitScript(() => {
     localStorage.setItem("aidash-locale", "en-US");
   });

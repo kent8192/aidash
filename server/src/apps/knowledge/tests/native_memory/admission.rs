@@ -17,7 +17,7 @@ async fn full_bank_replacement_uses_the_final_live_count(
 	let (store, _, workspace) = setup(&database, bounds).await;
 	let bank = memory::create_participant(
 		&store,
-		&Actor::DeploymentAdministrator,
+		&administrator(&store).await,
 		workspace,
 		memory::CreateParticipant {
 			agent: reference("a"),
@@ -31,7 +31,7 @@ async fn full_bank_replacement_uses_the_final_live_count(
 		original.extend(
 			memory::mutate(
 				&store,
-				&Actor::DeploymentAdministrator,
+				&administrator(&store).await,
 				mutation(
 					&bank,
 					Change::Add {
@@ -64,11 +64,11 @@ async fn full_bank_replacement_uses_the_final_live_count(
 		bank: bank.clone(),
 		changes,
 	};
-	let saved = memory::mutate(&store, &Actor::DeploymentAdministrator, input.clone())
+	let saved = memory::mutate(&store, &administrator(&store).await, input.clone())
 		.await
 		.unwrap();
 	assert_eq!(
-		memory::mutate(&store, &Actor::DeploymentAdministrator, input)
+		memory::mutate(&store, &administrator(&store).await, input)
 			.await
 			.unwrap(),
 		saved
@@ -77,17 +77,17 @@ async fn full_bank_replacement_uses_the_final_live_count(
 		provider: reference("p"),
 		bank: bank.clone(),
 	};
-	let current = memory::list(&store, &Actor::DeploymentAdministrator, read.clone())
+	let current = memory::list(&store, &administrator(&store).await, read.clone())
 		.await
 		.unwrap();
 	assert_eq!(current.len(), 2);
 	assert!(current.iter().any(|unit| unit.id == target));
 	assert!(current.iter().any(|unit| unit.id == original[1].id));
 	assert!(
-		matches!(memory::mutate(&store, &Actor::DeploymentAdministrator, mutation(&bank, Change::Add { id: Uuid::now_v7(), content: content("Still over capacity") })).await, Err(aidash_server::Error::Conflict(message)) if message == "memory bank storage limit reached")
+		matches!(memory::mutate(&store, &administrator(&store).await, mutation(&bank, Change::Add { id: Uuid::now_v7(), content: content("Still over capacity") })).await, Err(aidash_server::Error::Conflict(message)) if message == "memory bank storage limit reached")
 	);
 	assert_eq!(
-		memory::list(&store, &Actor::DeploymentAdministrator, read)
+		memory::list(&store, &administrator(&store).await, read)
 			.await
 			.unwrap(),
 		current
@@ -108,7 +108,7 @@ async fn smaller_provenance_policy_rolls_back_shared_and_participant_changes(
 	let bank = if participant {
 		memory::create_participant(
 			&store,
-			&Actor::DeploymentAdministrator,
+			&administrator(&store).await,
 			workspace,
 			memory::CreateParticipant {
 				agent: reference("a"),
@@ -135,7 +135,7 @@ async fn smaller_provenance_policy_rolls_back_shared_and_participant_changes(
 		chain.extend(
 			memory::mutate(
 				&store,
-				&Actor::DeploymentAdministrator,
+				&administrator(&store).await,
 				mutation(
 					&bank,
 					Change::Add {
@@ -183,9 +183,18 @@ async fn smaller_provenance_policy_rolls_back_shared_and_participant_changes(
 			)
 			.await
 			.unwrap();
+		approve_entry(&store, &reference("small-graph")).await;
+		approve_entry(
+			&store,
+			&EntityRef {
+				id: "a".into(),
+				version: "1.1.0".into(),
+			},
+		)
+		.await;
 		memory::upgrade_participant(
 			&store,
-			&Actor::DeploymentAdministrator,
+			&administrator(&store).await,
 			bank.clone(),
 			memory::UpgradeParticipant {
 				agent: EntityRef {
@@ -198,9 +207,10 @@ async fn smaller_provenance_policy_rolls_back_shared_and_participant_changes(
 		.await
 		.map(|_| ())
 	} else {
+		approve_entry(&store, &reference("small-graph")).await;
 		memory::operate(
 			&store,
-			&Actor::DeploymentAdministrator,
+			&administrator(&store).await,
 			memory::Operation {
 				operation_id: Uuid::now_v7(),
 				provider: reference("small-graph"),
@@ -218,7 +228,7 @@ async fn smaller_provenance_policy_rolls_back_shared_and_participant_changes(
 	);
 	let mut current = memory::list(
 		&store,
-		&Actor::DeploymentAdministrator,
+		&administrator(&store).await,
 		memory::ReadBank {
 			provider: reference("p"),
 			bank: bank.clone(),
@@ -231,7 +241,7 @@ async fn smaller_provenance_policy_rolls_back_shared_and_participant_changes(
 	assert_eq!(current, chain);
 	let memory::Outcome::Settings(Some(settings)) = memory::operate(
 		&store,
-		&Actor::DeploymentAdministrator,
+		&administrator(&store).await,
 		memory::Operation {
 			operation_id: Uuid::now_v7(),
 			provider: reference("p"),
@@ -248,7 +258,7 @@ async fn smaller_provenance_policy_rolls_back_shared_and_participant_changes(
 	if participant {
 		let retained = memory::upgrade_participant(
 			&store,
-			&Actor::DeploymentAdministrator,
+			&administrator(&store).await,
 			bank,
 			memory::UpgradeParticipant {
 				agent: reference("a"),
@@ -277,7 +287,7 @@ async fn direct_writes_cannot_create_derived_memory_or_transition_a_base_kind(
 	let (store, _, workspace) = setup(&database, bounds).await;
 	let bank = memory::create_participant(
 		&store,
-		&Actor::DeploymentAdministrator,
+		&administrator(&store).await,
 		workspace,
 		memory::CreateParticipant {
 			agent: reference("a"),
@@ -291,7 +301,7 @@ async fn direct_writes_cannot_create_derived_memory_or_transition_a_base_kind(
 		base.extend(
 			memory::mutate(
 				&store,
-				&Actor::DeploymentAdministrator,
+				&administrator(&store).await,
 				mutation(
 					&bank,
 					Change::Add {
@@ -327,11 +337,11 @@ async fn direct_writes_cannot_create_derived_memory_or_transition_a_base_kind(
 	};
 	// Even a Deployment Administrator must use the separately validated Derive operation.
 	assert!(
-		matches!(memory::mutate(&store, &Actor::DeploymentAdministrator, mutation(&bank, change)).await, Err(aidash_server::Error::Invalid(message)) if message.contains("derive operation"))
+		matches!(memory::mutate(&store, &administrator(&store).await, mutation(&bank, change)).await, Err(aidash_server::Error::Invalid(message)) if message.contains("derive operation"))
 	);
 	let mut current = memory::list(
 		&store,
-		&Actor::DeploymentAdministrator,
+		&administrator(&store).await,
 		memory::ReadBank {
 			provider: reference("p"),
 			bank,

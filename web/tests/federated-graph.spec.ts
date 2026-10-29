@@ -147,7 +147,7 @@ test("Deployment Administrator is told to use Tenant authority and sees no remot
   await page.goto("/graph");
   await expect(
     page.getByText(
-      "Remote graphs need Tenant authority. Open the graph through a Tenant Mapping.",
+      "Tenant content is not available to a Deployment Administrator.",
     ),
   ).toBeVisible();
   await expect(page.getByLabel("Peer tenant")).toHaveCount(0);

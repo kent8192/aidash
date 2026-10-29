@@ -10,7 +10,7 @@ use aidash_application::{
 	provider_credentials::{AuthorizationFailure, Metadata, Service, Validated},
 };
 use aidash_domain::{
-	policy::{Evaluation, Resource},
+	policy::Resource,
 	provider_credentials::{Binding, Provider, State},
 };
 use reinhardt::injectable;
@@ -124,36 +124,8 @@ impl Management {
 				}
 				Ok(Authority(Some(access)))
 			}
-			Actor::DeploymentAdministrator => {
-				use crate::apps::identity::{
-					models::AuthorizationDecision, repositories::NativePolicyScope,
-				};
-				use aidash_application::ports::AuthorizationScope;
-				// A Deployment Administrator acts on this one Tenant, in its scope.
-				let scope = aidash_application::tenancy::TenancyScope::tenant(tenant)?;
-				let mut tx = self
-					.runtime
-					.store
-					.control_pool
-					.begin(&scope)
-					.await?
-					.into_executor()
-					.await?;
-				let snapshot = NativePolicyScope(tx.as_mut()).load(tenant).await?;
-				let evaluation = Evaluation {
-					subject: "deployment_administrator".into(),
-					action,
-					resource,
-					environment: json!({"deployment_administrator":true}),
-				};
-				let mut decision = snapshot.bundle.evaluate(&evaluation);
-				decision.allowed = true;
-				decision.reason = "authenticated Deployment Administrator authority".into();
-				decision.revision = snapshot.revision;
-				AuthorizationDecision::append(tx.as_mut(), tenant, &evaluation, &decision).await?;
-				tx.commit().await?;
-				Ok(Authority(None))
-			}
+			// Tenant content: the boundary refuses administrators first (#484).
+			Actor::DeploymentAdministrator => Err(Error::Forbidden),
 		}
 	}
 	fn actor(actor: &Actor) -> &str {
@@ -308,7 +280,7 @@ impl Management {
 			Actor::Subject(identity) => {
 				Some(NativeAccess::begin(&self.runtime.store, identity).await?)
 			}
-			Actor::DeploymentAdministrator => None,
+			Actor::DeploymentAdministrator => return Err(Error::Forbidden),
 		};
 		let mut audit = ListAudit {
 			access,
@@ -316,18 +288,9 @@ impl Management {
 		};
 		let result = async {
 			let limit = page.limit.clamp(1, 200);
-			let deployment_administrator = matches!(actor, Actor::DeploymentAdministrator);
-			let mut source_offset = if deployment_administrator {
-				page.offset
-			} else {
-				0
-			};
-			let mut visible_offset = if deployment_administrator {
-				0
-			} else {
-				page.offset
-			};
-			let batch_size = if deployment_administrator { limit } else { 200 };
+			let mut source_offset = 0;
+			let mut visible_offset = page.offset;
+			let batch_size = 200;
 			let mut result = Vec::new();
 			loop {
 				let mut scope = service.repository.begin(&tenant).await?;
@@ -345,18 +308,6 @@ impl Management {
 						if !access.decide(&resource, "provider_credential.read").await? {
 							continue;
 						}
-					} else {
-						self.authorize(
-							&actor,
-							&tenant,
-							&row.id.to_string(),
-							row.provider,
-							"provider_credential",
-							"read",
-						)
-						.await?
-						.finish(Ok(()))
-						.await?;
 					}
 					// Pagination counts only records visible to this actor.
 					if visible_offset > 0 {

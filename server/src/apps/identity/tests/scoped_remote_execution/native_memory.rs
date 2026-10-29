@@ -600,7 +600,7 @@ async fn ordinary_native_remote_context_uses_home_units_and_deletion_stops_infer
 	assert_eq!(status, 200, "{index}");
 	let (status, body) = request(
 		&p.aa,
-		&p.a.config.api_token,
+		&common::tenant_token(&p.a.store, "acme").await,
 		"POST",
 		&format!("/api/workspaces/{workspace}/semantic/index"),
 		json!({"expected_revision":index["revision"],"spec":index["spec"]}),

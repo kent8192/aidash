@@ -328,8 +328,12 @@ async fn child_listener_conflicts_fail_with_endpoint_diagnostics(
 	b.cleanup().await;
 }
 
+// Submission has no real-process cut: no Deployment Administrator route
+// submits anymore and new cross-Deployment Subject submissions are suspended
+// (#484), so the host submits in this process and server A's coordinator
+// recovery drives every later cut. The admission unit tests cover the
+// `coordinator.submit` cuts.
 #[rstest::rstest]
-#[case::submit("coordinator.submit", false)]
 #[case::vote("coordinator.vote", false)]
 #[case::commit("coordinator.commit", false)]
 #[case::abort_decision("coordinator.abort", true)]
@@ -362,25 +366,16 @@ async fn real_server_sigkill_at_durable_cut(
 		point,
 		participant,
 	} = fixture;
-	let client = a.f.client.clone();
-	let endpoint = a.f.config.endpoint.clone();
-	let token = a.f.config.api_token.clone();
-	let body = json!(manifest);
-	let submission = tokio::spawn(async move {
-		client
-			.post(format!("{endpoint}/api/transactions"))
-			.bearer_auth(token)
-			.json(&body)
-			.send()
-			.await
-	});
+	coordinator::submit(&a.f, &manifest).await.unwrap();
 	let marker = directory
 		.path()
 		.join(format!("{}.{point}.reached", manifest.id));
 	let mut observations = 0;
+	let reader_a = a.subject_token.clone();
+	let reader_b = b.subject_token.clone();
 	tokio::time::timeout(WallDuration::from_secs(40), async {
 		loop {
-			for (node, workspace) in [(&a, wa), (&b, wb)] {
+			for (node, workspace, reader) in [(&a, wa, &reader_a), (&b, wb, &reader_b)] {
 				let response = node
 					.f
 					.client
@@ -388,7 +383,7 @@ async fn real_server_sigkill_at_durable_cut(
 						"{}/api/workspaces/{workspace}",
 						node.f.config.endpoint
 					))
-					.bearer_auth(&node.f.config.api_token)
+					.bearer_auth(reader)
 					.timeout(WallDuration::from_secs(5))
 					.send()
 					.await
@@ -446,8 +441,6 @@ async fn real_server_sigkill_at_durable_cut(
 	} else {
 		drop(process_a.take());
 	}
-	submission.abort();
-	let _ = submission.await;
 	if participant {
 		process_b = Some(Server::start(&b, None, replacements.1.clone()));
 		healthy(&b, process_b.as_mut().unwrap(), "restored").await;
@@ -456,15 +449,8 @@ async fn real_server_sigkill_at_durable_cut(
 		healthy(&a, process_a.as_mut().unwrap(), "restored").await;
 	}
 	let restored = Instant::now();
-	// Submission-before-commit legitimately left no coordinator record.
-	let (status, body) = a
-		.request(
-			reqwest::Method::POST,
-			"/api/transactions",
-			Some(json!(manifest)),
-		)
-		.await;
-	assert_eq!(status, 202, "{body}");
+	// Resubmitting the same manifest is idempotent.
+	coordinator::submit(&a.f, &manifest).await.unwrap();
 	tokio::time::timeout(WallDuration::from_secs(180), async {
 		loop {
 			if coordinator::status(&a.f, manifest.id)
@@ -579,7 +565,7 @@ struct CutFixture {
 }
 #[fixture]
 async fn cut_fixture(
-	#[default("coordinator.submit")] phase: &str,
+	#[default("coordinator.vote")] phase: &str,
 	#[default(false)] abort: bool,
 	#[default("before")] edge: &str,
 	#[future(awt)] isolated_pair: Pair,

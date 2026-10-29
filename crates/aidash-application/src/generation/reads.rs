@@ -1,4 +1,5 @@
 //! Paginated generation disclosure always rechecks current subject authority.
+//! Generation requests are Tenant content: a Deployment Administrator reads none (#484).
 use super::visibility;
 use crate::{Error, Result, ports::generation::reads::GenerationReads};
 use aidash_domain::{
@@ -10,20 +11,15 @@ use aidash_domain::{
 };
 use uuid::Uuid;
 fn same_tenant(principal: &Principal, tenant: &str) -> Result<()> {
-	if let Principal::Subject { tenant: caller, .. } = principal
-		&& caller != tenant
-	{
-		return Err(Error::Forbidden);
+	match principal {
+		Principal::Subject { tenant: caller, .. } if caller == tenant => Ok(()),
+		_ => Err(Error::Forbidden),
 	}
-	Ok(())
 }
 pub async fn list(repository: &dyn GenerationReads, tenant: &str) -> Result<Vec<Request>> {
-	// The existing ORM lease is acquired before principal dispatch. Deployment Administrator
-	// reads retain one page; subject reads scan until 200 visible rows or EOF.
+	// The existing ORM lease is acquired before principal dispatch. Subject reads
+	// scan until 200 visible rows or EOF.
 	let mut pages = repository.pages().await?;
-	if matches!(repository.principal(), Principal::DeploymentAdministrator) {
-		return pages.page(tenant, 0).await;
-	}
 	same_tenant(repository.principal(), tenant)?;
 	let mut scope = repository.begin_subject().await?;
 	let result = async {
@@ -55,11 +51,6 @@ pub async fn history(
 	tenant: &str,
 	id: Uuid,
 ) -> Result<Vec<History>> {
-	if matches!(repository.principal(), Principal::DeploymentAdministrator) {
-		return repository
-			.deployment_administrator_history(tenant, id)
-			.await;
-	}
 	same_tenant(repository.principal(), tenant)?;
 	let mut scope = repository.begin_subject().await?;
 	let result = async {
@@ -73,9 +64,6 @@ pub async fn history(
 	scope.finish_history(result).await
 }
 pub async fn usage(repository: &dyn GenerationReads, tenant: &str, id: Uuid) -> Result<Usage> {
-	if matches!(repository.principal(), Principal::DeploymentAdministrator) {
-		return repository.deployment_administrator_usage(tenant, id).await;
-	}
 	same_tenant(repository.principal(), tenant)?;
 	let mut scope = repository.begin_subject().await?;
 	let result = async {
@@ -93,13 +81,6 @@ pub async fn specification(
 	tenant: &str,
 	id: Uuid,
 ) -> Result<Spec> {
-	if matches!(repository.principal(), Principal::DeploymentAdministrator) {
-		return Ok(serde_json::from_value(
-			repository
-				.deployment_administrator_specification(tenant, id)
-				.await?,
-		)?);
-	}
 	same_tenant(repository.principal(), tenant)?;
 	let mut scope = repository.begin_subject().await?;
 	let result = async {

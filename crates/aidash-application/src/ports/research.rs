@@ -317,9 +317,6 @@ pub trait DisclosureGate: Send + Sync {
 pub trait RevocationScope: Send {
 	/// Who is revoking.
 	fn decider(&self) -> Decider;
-	/// Whether the Run exists. A subject is told `Forbidden` instead of
-	/// `NotFound` by [`RevocationScope::require`], so it learns nothing.
-	async fn run_exists(&mut self, run: Uuid) -> Result<bool>;
 	/// A subject must read the Run's workspace, see the Run, and be permitted
 	/// `action` on the Run's `research` resource.
 	async fn require(&mut self, run: Uuid, action: &str) -> Result<()>;

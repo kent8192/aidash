@@ -10,7 +10,10 @@ import {
 test.beforeEach(async ({ page }) => {
   const errors: string[] = [];
   page.on("pageerror", (error) => errors.push(error.message));
-  await installBearerDashboard(page, "fixture-token");
+  await installBearerDashboard(page, "fixture-token", {
+    tenant: tenantSubject.tenant,
+    name: tenantSubject.subject,
+  });
   await page.addInitScript(() => {
     localStorage.setItem("aidash-locale", "ja-JP");
   });

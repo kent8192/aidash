@@ -116,6 +116,7 @@ fn node(
 			f,
 			listen,
 			address: String::new(),
+			subject_token: String::new(),
 			reservation,
 			server: Some(peer.server),
 			client: peer.client,
@@ -187,6 +188,8 @@ struct Node {
 	listen: std::net::SocketAddr,
 	/// The Tenant's default Node, once `pair` has written it.
 	address: String,
+	/// A Subject Credential of the Tenant's `alice`, which the requests carry (#484).
+	subject_token: String,
 	// Real-process cases keep this socket owned across stop, SIGKILL and exec.
 	reservation: Reservation,
 	application: common::TestApplication,
@@ -303,10 +306,17 @@ impl Node {
 		path: &str,
 		body: Option<Value>,
 	) -> (u16, Value) {
-		let mut request = self.client.request(method.clone(), path).header(
-			"Authorization",
-			format!("Bearer {}", self.f.config.api_token),
-		);
+		// Participant listing administers the Deployment; every other route here is
+		// Tenant content, which only a Tenant Subject reaches.
+		let bearer = if path == "/api/transactions/participants" {
+			&self.f.config.api_token
+		} else {
+			&self.subject_token
+		};
+		let mut request = self
+			.client
+			.request(method.clone(), path)
+			.header("Authorization", format!("Bearer {bearer}"));
 		if method == reqwest::Method::POST {
 			request = request.json(&body.unwrap_or(Value::Null));
 		} else if let Some(body) = body {
@@ -332,6 +342,7 @@ impl Node {
 	/// Creates the Deployment's Tenant and records its default Node's address.
 	async fn join(&mut self) {
 		common::tenant_scope(&self.f.store, "acme").await;
+		self.subject_token = common::subject_credential(&self.f.store, "acme", "alice").await;
 		self.address = common::default_node(&self.f.store, "acme")
 			.await
 			.to_string();
@@ -377,13 +388,16 @@ impl Node {
 		);
 		body["atomic_transactions"] = json!(enabled);
 		body["expected_revision"] = json!(revision);
-		self.request(
-			reqwest::Method::POST,
-			&common::peering::registration_path("acme", owner),
-			Some(body),
-		)
-		.await
-		.0
+		// Registrations are administered through a Tenant Administrator Mapping (#484).
+		common::BrowserMapping::new(&self.f, "acme", "alice")
+			.await
+			.send(
+				"POST",
+				&common::peering::registration_path("acme", owner),
+				body,
+			)
+			.await
+			.0
 	}
 	async fn cleanup(mut self) {
 		self.close("clean up").await;
@@ -407,6 +421,7 @@ async fn fixture_origin(node: &Node) -> Value {
 	.await
 	.unwrap()
 	.into_iter()
+	// Listed newest first: the Subject Credential the requests carry is the newest.
 	.find(|credential| credential.subject == "alice")
 	.unwrap();
 	json!({"credential_id":credential.id,"tenant":credential.tenant,"subject":credential.subject})
@@ -438,17 +453,9 @@ async fn seed_existing_scoped_transaction(
 	use aidash_server::apps::federation::transactions::models::{AtomicPreflights, AtomicSubjects};
 	use reinhardt::db::orm::Model;
 	assert_eq!(participants.len(), manifest.participants.len());
-	let (status, body) = source
-		.request(
-			reqwest::Method::POST,
-			"/api/transactions",
-			Some(json!(manifest)),
-		)
-		.await;
-	assert_eq!(
-		status, 202,
-		"Deployment Administrator fixture admission: {body}"
-	);
+	// Admitted as the host does: a Deployment Administrator has no HTTP route to
+	// submit a transaction (#484).
+	coordinator::submit(&source.f, manifest).await.unwrap();
 	let origin = fixture_origin(source).await;
 	let lease =
 		DatabaseConnectionLease::register(source.f.store.control_pool.connection()).unwrap();
@@ -566,7 +573,7 @@ async fn unavailable(node: &Node, workspace: Uuid) {
 	assert_eq!(node.get("/health").await.0, 200);
 	let (session_status, session) = node.get("/api/session").await;
 	assert_eq!(session_status, 200);
-	assert_eq!(session["access"]["kind"], "deployment_administrator");
+	assert_eq!(session["access"]["kind"], "subject");
 	assert_eq!(node.get("/api/transactions/participants").await.0, 200);
 	assert!(matches!(
 		aidash_server::harness::Harness {
@@ -619,19 +626,12 @@ async fn abort_records_a_durable_decision_while_recovery_owns_the_transition_lea
 		.await
 	}
 	.unwrap();
-	// A recovery step can hold this lease during slow peer I/O. A Deployment Administrator's
-	// durable abort must not be lost merely because that step is in flight.
-	let (status, body) = a
-		.request(
-			reqwest::Method::POST,
-			&format!("/api/transactions/{}/abort", manifest.id),
-			None,
-		)
-		.await;
+	// A recovery step can hold this lease during slow peer I/O. A durable abort
+	// must not be lost merely because that step is in flight.
+	let aborted = coordinator::abort(&a.f, manifest.id).await.unwrap();
 	transition.commit().await.unwrap();
-	assert_eq!(status, 200, "{body}");
-	assert_eq!(body["decision"], "ABORT");
-	assert!(!body["complete"].as_bool().unwrap());
+	assert_eq!(aborted.decision.as_deref(), Some("ABORT"));
+	assert!(!aborted.complete);
 	assert_eq!(
 		coordinator::abort(&a.f, manifest.id)
 			.await
@@ -1209,7 +1209,7 @@ async fn an_existing_sse_stream_waits_for_atomic_visibility_before_emitting_chan
 			a.application
 				.url(format!("/api/events/stream?workspace_id={wa}")),
 		)
-		.bearer_auth(&a.f.config.api_token)
+		.bearer_auth(&a.subject_token)
 		.send()
 		.await
 		.unwrap();
@@ -1640,7 +1640,7 @@ async fn mapped_transaction_admission_and_revocation(
 	let (mut a, mut b, mut manifest, _, _) = nodes.0;
 	let app_a = a.application.clone();
 	let app_b = b.application.clone();
-	let (_, token_a, task_a) = common::bootstrap(&a.f, &app_a, "http://127.0.0.1:9").await;
+	let (_, mut token_a, task_a) = common::bootstrap(&a.f, &app_a, "http://127.0.0.1:9").await;
 	let (_, _, task_b) = common::bootstrap(&b.f, &app_b, "http://127.0.0.1:9").await;
 	let wa =
 		a.f.store
@@ -1660,7 +1660,7 @@ async fn mapped_transaction_admission_and_revocation(
 	let auth_b = Authorization {
 		pool: b.f.store.control_pool.clone(),
 	};
-	let credential_a = auth_a
+	let mut credential_a = auth_a
 		.credentials("acme")
 		.await
 		.unwrap()
@@ -1695,6 +1695,17 @@ async fn mapped_transaction_admission_and_revocation(
 			(&c.f, &c.application, "acme"),
 		)
 		.await;
+		// Registering C issued Mapping credentials on A after `bootstrap`'s, which
+		// would no longer be A's newest. Requests and the revocation cases name the
+		// newest, so issue the Subject's credential again now (#484).
+		token_a = common::subject_credential(&a.f.store, "acme", "alice").await;
+		credential_a = auth_a
+			.credentials("acme")
+			.await
+			.unwrap()
+			.into_iter()
+			.find(|c| c.subject == "alice")
+			.unwrap();
 		let app_c = c.application.clone();
 		let (_, _, task) = common::bootstrap(&c.f, &app_c, "http://127.0.0.1:9").await;
 		let workspace =
@@ -1711,7 +1722,9 @@ async fn mapped_transaction_admission_and_revocation(
 			.await
 			.unwrap()
 			.into_iter()
-			.find(|r| r.subject == "alice")
+			// Registering the pair issued Mapping credentials too; a Peer Mapping
+			// binds the Subject's own credential, never a Mapping's.
+			.find(|r| r.subject == "alice" && r.mapping_id.is_none())
 			.unwrap();
 		write(&c.f, "acme", c.mapping(&a, credential.id, true, 0))
 			.await
@@ -1939,8 +1952,10 @@ async fn mapped_transaction_admission_and_revocation(
 				"/api/authorization/acme/credentials/{}/revoke",
 				credential_a.id
 			);
-			let (status, body) =
-				common::request(&app_a, &a.f.config.api_token, "POST", &path, Value::Null).await;
+			let (status, body) = common::BrowserMapping::new(&a.f, "acme", "alice")
+				.await
+				.send("POST", &path, Value::Null)
+				.await;
 			assert_eq!(
 				status, 202,
 				"an unknown durable admission cannot acknowledge complete revocation: {body}"
@@ -2010,8 +2025,10 @@ async fn mapped_transaction_admission_and_revocation(
 	let result = complete(&a, manifest.id).await;
 	assert_eq!(result.decision.as_deref(), Some(expected), "{result:?}");
 	if let Some(path) = reconciliation_check {
-		let (status, body) =
-			common::request(&app_a, &a.f.config.api_token, "POST", &path, Value::Null).await;
+		let (status, body) = common::BrowserMapping::new(&a.f, "acme", "alice")
+			.await
+			.send("POST", &path, Value::Null)
+			.await;
 		assert_eq!(status, 200, "{body}");
 		assert_eq!(body["pending_transactions"], json!([]));
 	}

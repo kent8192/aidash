@@ -37,16 +37,8 @@ fn home(deployment: &str) -> String {
 	)
 }
 
-async fn credential(f: &Federation, app: &common::TestApplication, tenant: &str) -> Uuid {
-	let (status, issued) = request(
-		app,
-		&f.config.api_token,
-		"POST",
-		&format!("/api/authorization/{tenant}/credentials"),
-		json!({"subject":"alice"}),
-	)
-	.await;
-	assert_eq!(status, 200, "{issued}");
+async fn credential(f: &Federation, _app: &common::TestApplication, tenant: &str) -> Uuid {
+	let issued = common::issued_credential(&f.store, tenant, "alice").await;
 	issued["credential"]["id"]
 		.as_str()
 		.unwrap()
@@ -60,11 +52,10 @@ async fn viewer(
 ) -> (&'static str, Uuid, common::Source) {
 	let source = common::register_source(f, app, SOURCE, "acme").await;
 	let id = credential(f, app, "acme").await;
-	let (status, mapping) = request(
-		app,
-		&f.config.api_token,
-		"POST",
-		"/api/authorization/acme/peer-mappings",
+	let (status, mapping) = common::set_peer_mapping(
+		f,
+		"acme",
+		"alice",
 		json!({
 			"node":source.receiver.node,"source_node":source.address(),"source_subject":"source-subject",
 			"credential_id":id,"enabled":true,"expected_revision":0,

@@ -138,9 +138,11 @@ async fn deleted_tenants_refuse_node_administration_before_external_requests(
 		.unwrap();
 	let registrations = format!("/api/tenants/{tenant}/nodes/{node}/registrations");
 	let (status, body) = d
-		.as_deployment_administrator(
+		.as_person(
+			&alice,
 			"POST",
 			&registrations,
+			Some(&context),
 			json!({"source_node":"aidash://calm-heron/able-oak-abcd1234","endpoint":endpoint,"key_id":key_id.as_str(),"atomic_transactions":false,"enabled":true,"expected_revision":0}),
 		)
 		.await;
@@ -201,12 +203,10 @@ async fn deleted_tenants_refuse_node_administration_before_external_requests(
 	} else {
 		json!({"label":"Deleted Tenant mutation"})
 	};
-	// Browser installation administration permits these reads; its existing
-	// request guard refuses Node mutations before they reach the service.
-	for browser in [false, true]
-		.into_iter()
-		.filter(|browser| !browser || method == "GET")
-	{
+	// A Deployment Administrator holds no Tenant authority over Nodes, so it is
+	// refused before the Tenant's deletion is even reported; the Tenant's own
+	// administrator learns the Tenant is deleted.
+	for browser in [false, true] {
 		let (status, body) = if browser {
 			d.as_person(
 				&carol,
@@ -221,14 +221,27 @@ async fn deleted_tenants_refuse_node_administration_before_external_requests(
 				.await
 		};
 		assert_eq!(
-			requests.load(Ordering::SeqCst),
-			before,
-			"deleted Tenant administration must not contact another Deployment"
-		);
-		assert_eq!(
-			status, 410,
+			status, 403,
 			"browser={browser} purged={purged} {method} {path}: {body}"
 		);
+	}
+	let (status, body) = d
+		.as_person(&alice, method, &path, Some(&context), input.clone())
+		.await;
+	assert_eq!(
+		requests.load(Ordering::SeqCst),
+		before,
+		"deleted Tenant administration must not contact another Deployment"
+	);
+	if purged {
+		// A purge removes the Tenant's Mappings, so its own administrator has
+		// no standing left and is refused outright.
+		assert!(
+			matches!(status, 403 | 410),
+			"purged={purged} {method} {path}: {status} {body}"
+		);
+	} else {
+		assert_eq!(status, 410, "purged={purged} {method} {path}: {body}");
 		assert_eq!(body["error"], "tenant_deleted");
 	}
 	d.finish().await;
@@ -454,15 +467,15 @@ async fn only_a_tenant_administrator_reads_or_writes_registrations(
 	let (status, created) = d.register(&alice, &context, &tenant, &node, body).await;
 	assert_eq!(status, 200, "{created}");
 
-	let (status, created) = d
+	let (status, refused) = d
 		.as_deployment_administrator(
 			"POST",
 			&format!("/api/tenants/{tenant}/nodes/{node}/registrations"),
 			json!({"source_node":source,"atomic_transactions":false,"enabled":true,"expected_revision":1}),
 		)
 		.await;
-	assert_eq!(status, 200, "{created}");
-	assert_eq!(created["actor"], "deployment_administrator");
+	// Node Registrations are Tenant settings: refused to a Deployment Administrator.
+	assert_eq!(status, 403, "{refused}");
 	d.finish().await;
 }
 

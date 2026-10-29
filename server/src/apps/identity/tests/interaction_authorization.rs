@@ -200,14 +200,7 @@ async fn human_interactions_enforce_tenant_actions_read_visibility_and_actor_att
 		.0,
 		200
 	);
-	let (_, credential) = request(
-		&app,
-		&f.config.api_token,
-		"POST",
-		"/api/authorization/other/credentials",
-		json!({"subject":"alice"}),
-	)
-	.await;
+	let credential = common::issued_credential(&f.store, "other", "alice").await;
 	let foreign = credential["token"].as_str().unwrap();
 	for (path, body) in [
 		(
