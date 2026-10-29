@@ -555,6 +555,17 @@ pub(crate) fn register(contracts: &mut Contracts, document: &mut OpenApiSchema) 
 	)?;
 	contracts.query::<_, AuthorizationPage>(document, views::policies::decisions)?;
 	contracts.path(document, views::policies::decisions, &["String"])?;
+	contracts.response::<_, Vec<aidash_domain::safety_stop::Record>>(
+		document,
+		views::policies::safety_stops,
+		200,
+		"application/json",
+	)?;
+	contracts.query::<_, crate::apps::execution::serializers::research::HistoryPage>(
+		document,
+		views::policies::safety_stops,
+	)?;
+	contracts.path(document, views::policies::safety_stops, &["String"])?;
 	contracts.response::<_, Vec<AuthorizationPeerMappingRevision>>(
 		document,
 		views::peer_mappings::history,
@@ -625,28 +636,6 @@ pub(crate) fn register(contracts: &mut Contracts, document: &mut OpenApiSchema) 
 		document,
 		views::graph::expand,
 	)?;
-	contracts.response::<_, Vec<crate::apps::identity::serializers::peer_graph::PeerGraphGrant>>(
-		document,
-		views::graph::list_grants,
-		200,
-		"application/json",
-	)?;
-	contracts.path(document, views::graph::list_grants, &["String"])?;
-	contracts.query::<_, crate::apps::identity::serializers::peer_graph::GrantPage>(
-		document,
-		views::graph::list_grants,
-	)?;
-	contracts.response::<_, crate::apps::identity::serializers::peer_graph::PeerGraphGrant>(
-		document,
-		views::graph::set_grant,
-		200,
-		"application/json",
-	)?;
-	contracts.request::<_, crate::apps::identity::serializers::peer_graph::PeerGraphGrantInput>(
-		document,
-		views::graph::set_grant,
-	)?;
-	contracts.path(document, views::graph::set_grant, &["String"])?;
 	contracts.response::<_, crate::apps::identity::serializers::remote_execution::RemoteExecutionMessageReceipt>(document,views::remote_execution::message,200,"application/json")?;
 	contracts
 		.request::<_, crate::apps::identity::serializers::remote_execution::RemoteExecutionMessageInput>(
@@ -803,23 +792,28 @@ pub(crate) fn register(contracts: &mut Contracts, document: &mut OpenApiSchema) 
 		document,
 		views::remote_execution::activation_binding,
 	)?;
-	contracts.response::<_, crate::authorization::execution::management::RunManagement>(
+	contracts.response::<_, crate::authorization::execution::management::ManagementView>(
 		document,
 		views::state_management::get,
 		200,
 		"application/json",
 	)?;
+	contracts.query::<_, crate::authorization::execution::management::ManagementQuery>(
+		document,
+		views::state_management::get,
+	)?;
 	contracts.path(document, views::state_management::get, &["Uuid"])?;
-	contracts.response::<_, crate::authorization::execution::management::RunManagement>(
+	contracts.response::<_, crate::authorization::execution::management::ManagementResult>(
 		document,
 		views::state_management::control,
 		200,
 		"application/json",
 	)?;
-	contracts.request::<_, crate::authorization::execution::management::RunManagementInput>(
+	contracts.request::<_, crate::authorization::execution::management::ManagementRequest>(
 		document,
 		views::state_management::control,
 	)?;
+	contracts.idempotency(document, views::state_management::control)?;
 	contracts.path(document, views::state_management::control, &["Uuid"])?;
 	contracts.response::<_, Option<crate::semantic::remote::status::Provenance>>(
 		document,

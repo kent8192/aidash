@@ -187,27 +187,30 @@ test("a reader who loses the permission no longer sees the record read before", 
   );
 });
 
-test("a Deployment Administrator reads a local Node Run's research audit record", async ({
+// ADR 0102: a Deployment Administrator holds no Tenant content authority, so
+// Runs and their research audit records are not opened in that context.
+test("a Deployment Administrator is shown no Run or research audit record", async ({
   page,
 }) => {
-  const { errors, revokeAgents } = await setup(page, { locale: "en-US" });
-  revokeAgents();
-  await page.route("**/api/runs/*/research**", (route) => {
-    const path = new URL(route.request().url()).pathname;
-    return route.fulfill({
-      json: path.endsWith("/research")
-        ? research("2026-10-17T09:00:00Z", true)
-        : { ...record("run-0", "subject:acme/alice"), tenant: "acme" },
-    });
+  const { errors } = await setup(page, {
+    administrator: true,
+    locale: "en-US",
   });
-  await openRun(page, "Unavailable item");
-  const section = page.getByRole("region", {
-    name: "Research evidence",
-    exact: true,
+  const research: string[] = [];
+  page.on("request", (request) => {
+    if (/\/api\/runs\/[^/]+\/research/.test(request.url()))
+      research.push(request.url());
   });
-  await expect(section).toContainText(
-    "The rights holder asked us to remove the page.",
-  );
+  await page.goto("/collaboration?channel=workspace-one");
+  await expect(
+    page.getByText(
+      "Tenant content is not available to a Deployment Administrator.",
+    ),
+  ).toBeVisible();
+  await expect(
+    page.getByRole("button", { name: "Execution history", exact: true }),
+  ).toHaveCount(0);
+  expect(research).toEqual([]);
   expect(errors).toEqual([]);
 });
 
@@ -469,7 +472,7 @@ test("rules changed elsewhere replace the draft read before them", async ({
   await expect(after).toHaveValue("1");
 });
 
-test("a Deployment Administrator revokes by Run ID only within the chosen Tenant", async ({
+test("a Deployment Administrator cannot revoke evidence by Run ID", async ({
   page,
 }) => {
   const { writes } = await trust(
@@ -478,27 +481,16 @@ test("a Deployment Administrator revokes by Run ID only within the chosen Tenant
     { tenant_rules: null, can: true },
   );
   await page.goto("/trust?view=evidence");
-  await page.getByLabel("Tenant", { exact: true }).last().fill("alpha");
-  await page.getByRole("button", { name: "Open", exact: true }).last().click();
-  const records = page.getByRole("region", { name: "Evidence revocations" });
-  await expect(records.locator("details")).toContainText(
-    "Deployment Administrator (7c1d)",
-  );
-  await records.getByLabel("Revoke by Run ID", { exact: true }).fill(RUN);
-  await records.getByRole("button", { name: "Review revocation" }).click();
-  const dialog = page.getByRole("dialog", {
-    name: "Revoke this Run's research evidence",
-  });
-  await expect(dialog).toContainText("alpha");
-  await expect(dialog).toContainText(RUN);
-  await dialog.getByLabel("Reason (required)").fill("Agreement ended.");
-  await dialog.getByRole("button", { name: "Revoke evidence" }).click();
-  // The stub answers as the server does for a Run of another Tenant.
-  await expect(dialog.getByRole("alert")).toContainText("run unavailable");
-  expect(writes).toEqual([
-    {
-      path: `/api/runs/${RUN}/research-revocation`,
-      body: { reason: "Agreement ended.", tenant: "alpha" },
-    },
-  ]);
+  await expect(
+    page.getByText(
+      "Tenant content is not available to a Deployment Administrator.",
+    ),
+  ).toBeVisible();
+  await expect(
+    page.getByRole("region", { name: "Evidence revocations" }),
+  ).toHaveCount(0);
+  await expect(
+    page.getByRole("button", { name: "Review revocation" }),
+  ).toHaveCount(0);
+  expect(writes).toEqual([]);
 });

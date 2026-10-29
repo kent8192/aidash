@@ -237,7 +237,10 @@ export async function setup(
   page: Page,
   options: {
     failFirstMessage?: boolean;
+    /** A person's Mapping context; the default unless `administrator` is set (ADR 0102). */
     subject?: boolean;
+    /** The Deployment Administrator context, which shows no Tenant content. */
+    administrator?: boolean;
     dashboardContext?: string | null;
     olderMessages?: number;
     runMemory?: boolean;
@@ -266,8 +269,14 @@ export async function setup(
     tenantActions?: string[];
     /** When the Run waiting for the question continues without an answer. */
     answerBy?: string;
+    elicitation?: { message: string; schema: Record<string, unknown> };
   } = {},
 ) {
+  // Tenant content belongs to a Tenant's Mapping (ADR 0102): a spec opens it as a
+  // subject unless it names the administrator context or selects a context itself.
+  const asSubject =
+    options.subject ??
+    (!options.administrator && options.dashboardContext === undefined);
   let data = fixture(options.referenceLayout);
   if (options.planModel)
     data.registry[1].config = {
@@ -421,6 +430,10 @@ export async function setup(
   }
   if (options.approval) data.human_requests[0].kind = "APPROVAL_REQUIRED";
   if (options.answerBy) data.human_requests[0].answer_by = options.answerBy;
+  if (options.elicitation) {
+    data.human_requests[0].kind = "MCP_ELICITATION";
+    data.human_requests[0].prompt = JSON.stringify(options.elicitation);
+  }
   const deadlineEvents: unknown[] = [];
   const messages: Record<string, Message[]> = {
     "workspace-one": [
@@ -552,10 +565,12 @@ export async function setup(
     };
   };
   page.on("pageerror", (error) => errors.push(error.message));
+  // A subject works through a Mapping: a Deployment Administrator context
+  // shows no Tenant content (ADR 0102).
   await installBearerDashboard(
     page,
     "fixture",
-    undefined,
+    asSubject ? { tenant: "acme", name: "alice" } : undefined,
     options.dashboardContext,
   );
   await page.addInitScript((locale) => {
@@ -570,7 +585,7 @@ export async function setup(
       /^\/api\/runs\/[^/]+\/inference\/stream$/.test(path)
     )
       return route.abort();
-    const access = options.subject
+    const access = asSubject
       ? { kind: "subject", tenant: "acme", subject: "alice" }
       : data.access;
     if (path === "/api/session")
@@ -827,6 +842,8 @@ export async function setup(
         },
       });
     }
+    if (/^\/api\/runs\/[^/]+\/live-preview$/.test(path))
+      return route.fulfill({ status: 404, json: { error: "not_found" } });
     const run = data.runs.find((value) => path === `/api/runs/${value.id}`);
     if (run)
       return route.fulfill({

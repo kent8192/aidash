@@ -18,10 +18,6 @@ use serde_json::Value;
 
 use uuid::Uuid;
 
-fn service(f: Federation) -> Authorization {
-	Authorization { pool: f.store.pool }
-}
-
 fn control_service(f: Federation) -> Authorization {
 	Authorization {
 		pool: f.store.control_pool,
@@ -163,16 +159,6 @@ impl PolicyAdministration {
 		input: CredentialInput,
 	) -> Result<IssuedCredential> {
 		let f = self.runtime.clone();
-		if matches!(actor, Actor::DeploymentAdministrator) {
-			return service(f)
-				.issue_credential(
-					&tenant,
-					&input.subject,
-					input.expires_in_seconds,
-					"deployment_administrator",
-				)
-				.await;
-		}
 		self.administrations()
 			.run(actor, origin, &tenant, async |administrator| {
 				administrator
@@ -189,11 +175,6 @@ impl PolicyAdministration {
 		page: CredentialPage,
 	) -> Result<Vec<Credential>> {
 		let f = self.runtime.clone();
-		if matches!(actor, Actor::DeploymentAdministrator) {
-			return control_service(f)
-				.credentials_page(&tenant, page.offset, page.active)
-				.await;
-		}
 		self.administrations()
 			.run(actor, origin, &tenant, async |administrator| {
 				administrator
@@ -209,21 +190,15 @@ impl PolicyAdministration {
 		(tenant, id): (String, Uuid),
 	) -> Result<(reinhardt::StatusCode, CredentialRevocation)> {
 		let f = self.runtime.clone();
-		let credential = if matches!(actor, Actor::DeploymentAdministrator) {
-			control_service(f.clone())
-				.revoke_credential(&tenant, id)
-				.await?
-		} else {
-			self.administrations()
-				.run(actor, origin, &tenant, async |administrator| {
-					// Revocation keeps its own pool, as a Deployment
-					// Administrator's does, so a busy API pool cannot delay it.
-					administrator
-						.revoke_credential(&f.store.control_pool, id)
-						.await
-				})
-				.await?
-		};
+		let credential = self
+			.administrations()
+			.run(actor, origin, &tenant, async |administrator| {
+				// Revocation keeps its own pool so a busy API pool cannot delay it.
+				administrator
+					.revoke_credential(&f.store.control_pool, id)
+					.await
+			})
+			.await?;
 		let pending_transactions =
 			crate::transactions::authority::pending(&f, &tenant, Some(id)).await?;
 		let status = if pending_transactions.is_empty() {
@@ -339,9 +314,6 @@ impl PolicyAdministration {
 		input: Evaluation,
 	) -> Result<Decision> {
 		let f = self.runtime.clone();
-		if matches!(actor, Actor::DeploymentAdministrator) {
-			return control_service(f).simulate(&tenant, &input).await;
-		}
 		self.administrations()
 			.run(actor, origin, &tenant, async |administrator| {
 				administrator.simulate(&f.store.pool, &input).await
@@ -356,9 +328,6 @@ impl PolicyAdministration {
 		page: AuthorizationPage,
 	) -> Result<Vec<Value>> {
 		let f = self.runtime.clone();
-		if matches!(actor, Actor::DeploymentAdministrator) {
-			return service(f).revisions(&tenant, page.after, page.limit).await;
-		}
 		self.administrations()
 			.run(actor, origin, &tenant, async |administrator| {
 				administrator
@@ -375,13 +344,43 @@ impl PolicyAdministration {
 		page: AuthorizationPage,
 	) -> Result<Vec<Value>> {
 		let f = self.runtime.clone();
-		if matches!(actor, Actor::DeploymentAdministrator) {
-			return service(f).decisions(&tenant, page.after, page.limit).await;
-		}
 		self.administrations()
 			.run(actor, origin, &tenant, async |administrator| {
 				administrator
 					.decisions(&f.store.pool, page.after, page.limit)
+					.await
+			})
+			.await
+	}
+	/// Safety Stops of the Tenant's Runs (ADR 0101), for holders of
+	/// `decision.read`. A Deployment Administrator's receipt grants no access to
+	/// the Tenant's audit history, so an administrator is refused.
+	pub(crate) async fn safety_stops(
+		&self,
+		actor: Actor,
+		origin: Option<BrowserOrigin>,
+		tenant: String,
+		page: crate::apps::execution::serializers::research::HistoryPage,
+	) -> Result<Vec<aidash_domain::safety_stop::Record>> {
+		let f = self.runtime.clone();
+		if matches!(actor, Actor::DeploymentAdministrator) {
+			// A deleted Tenant answers 410 to everyone before any other refusal.
+			f.store
+				.pool
+				.atomic(
+					&aidash_application::tenancy::TenancyScope::tenant(&tenant)?,
+					async |tx| {
+						crate::authorization::remote::deployment_administrator::tenant(tx, &tenant)
+							.await
+					},
+				)
+				.await?;
+			return Err(Error::Forbidden);
+		}
+		self.administrations()
+			.run(actor, origin, &tenant, async |administrator| {
+				administrator
+					.safety_stops(&f.store.pool, page.offset, page.limit)
 					.await
 			})
 			.await

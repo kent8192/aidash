@@ -343,6 +343,207 @@ that exceeds its limits. Other tools still need fixtures or a real-tool profile.
 To measure both policies on the same tools against a running server, see the
 [capability exposure evaluation](../capability-exposure-evaluation.md).
 
+## Agent Plugins
+
+An Agent version can take in Agent Plugins: packages in the open Agent Plugins
+1.0.0 format with a root `plugin.json`, Skills under `skills/` and MCP servers
+in a root `mcp.json` (ADR 0072, ADR 0073). Only that Agent's Runs use what the
+package carries. An Agent Plugin is a pinned copy inside the Agent version and
+adds no definition to the Tenant's Registry.
+
+### Import and the pinned copy
+
+`POST /api/agent-plugins/import` takes a public `github.com` HTTPS URL, finds
+the `plugin.json` files in the repository, and lets the caller choose one. It
+fetches the tree at a commit SHA within 512 files and 8 MiB per plugin. A
+`plugin.json` that violates the vendored 1.0.0 schema refuses the plugin;
+nothing is fetched while loading. A Skill or server entry that does not conform,
+and a transport the Deployment does not support (`sse`), is skipped, and an
+unknown top-level field is ignored. The response reports every component as
+accepted, skipped or ignored with its reason.
+
+The copy is stored in the Tenant under its tree digest and never changes. The
+Agent definition holds up to 8 references in `agent_plugins`, each equal to the
+stored copy. Registering the Agent compares the reference with the copy
+(`AGENT_PLUGIN_MISSING`, `AGENT_PLUGIN_CHANGED`), so changing a plugin needs a
+new Agent version.
+
+A header a remote server's `headers` names and HTTP or MCP own (`host`,
+`content-length`, `content-type`, `transfer-encoding`, `connection`, `upgrade`,
+`te`, `trailer`, `keep-alive`, `proxy-connection`, `accept`, `mcp-session-id`
+and `mcp-protocol-version`, in any casing) makes the server entry invalid, so
+the server is skipped and reported. A copy imported before this rule keeps the
+findings it was imported with.
+
+### Catalog Approval
+
+The Catalog Approval of an Agent version lists every MCP server of its plugins,
+with a remote server's URL and headers, and every entry the import skipped, and
+approving it admits that they exist. A plugin is not a Registry definition, so
+it adds no dependency to approve first.
+
+### Skills
+
+A plugin's Skills behave as direct Skills of the Agent. They are pinned with the
+Run, within the direct Skill limits of 64 files and 256 KiB per Skill, and they
+are Discoverable capabilities under `deferred@1`. Loading a Skill never executes
+anything, `allowed-tools` never raises authority, and an Agent with plugin
+Skills may have empty instructions, as one with a Skill Binding may.
+
+### Remote MCP servers at a Run's first step
+
+Only `streamable-http` servers are called from the server process. A Run lists
+every remote server of its Agent's plugins (`tools/list`) at its first step,
+before its first model request and outside any transaction, at most four at a
+time, for up to 15 s per server and 30 s in all. The per-server budget includes the modern discovery probe and legacy fallback. The result is the Run's
+`plugin_tools`. It is saved with `run.plugin_tools_pinned`, so a recovered Run
+never lists again, and the Binding snapshot stays what admission resolved.
+
+The tools a server listed are pinned as follows.
+
+- A tool's Model alias is `<plugin>__<server>__<tool>`, limited to
+  `[A-Za-z0-9_-]` and 64 characters; a longer alias keeps its first 55
+  characters, `_` and eight hex digits of a hash. A tool whose alias another
+  Binding, a reserved name or an earlier plugin tool already uses is skipped
+  and reported.
+- A server contributes at most 64 tools, a Run at most 128, and a tool's input
+  schema must be an object of at most 16,384 bytes with a description of at
+  most 8,192 bytes. A tool beyond a limit is skipped and reported.
+- `agent_plugin_settings` holds the Agent's choices, plugin name then server
+  name. `tools` is an allowlist that can only narrow what the server lists.
+  `exposure` is `eager` or `deferred` under `deferred@1`, like a Binding's;
+  without it a tool is a Discoverable capability.
+- `read_only` declares tools Read-only, each with the digest of the
+  `inputSchema` it was declared against. The digest decides: a tool whose schema
+  changed since the declaration is not Read-only for the Run, and that is
+  reported. What a server says about its own tools, such as `readOnlyHint`, never
+  declares anything.
+
+A server that times out, is refused, cannot initialize or answers nonsense is
+left out with a typed cause and the Run continues without its tools. The event
+`run.plugin_tools_pinned` carries `skipped`, a list of `plugin`, `server` and
+`reason` codes, and no URL, header, detail or server answer. The Run channel
+shows which servers could not be reached.
+
+A Run keeps one MCP session per server. If a session is lost the next call
+opens another, lists the tools again and answers `CAPABILITY_CHANGED` for a
+tool whose input schema no longer has the pinned digest. A call that may already
+have run is never sent again. All of a Run's sessions end when it finishes,
+fails or expires, and an idle session ends on its own.
+
+### MCP client inputs and continuations
+
+Agent Plugin servers may use MCP 2025-06-18's initialized session or MCP
+2026-07-28's discovery and self-contained requests. The package format remains
+Agent Plugins 1.0.0. Modern HTTP has no protocol session. A recognized modern
+version or authentication rejection never causes a downgrade. All connections
+retain the public-address rule below.
+
+A modern `input_required` result is a checkpoint of the original logical tool
+call. Its opaque `requestState`, required inputs, responses and deadlines are
+saved in the Run, separately from model-visible tool results. Inputs are handled
+one at a time, up to 16 in a batch; every required response must be ready before
+a continuation is sent. The original tool, arguments, pinned server, schema and
+Tool call approval remain in force. The worker releases its lease during a
+modern human wait. A legacy callback instead keeps the call and lease open;
+overlapping or out-of-call requests are refused. Roots are not advertised and
+root requests are refused; resources, prompts, URL elicitation and sampling tools
+are not used.
+
+Sampling is addressed to a Designated approver through the existing capability
+approval API, with `kind: sampling`. Its card shows the server, copy, origin,
+messages, system prompt and capped maxTokens. `includeContext` is always `none`,
+model preferences are ignored, and the completion uses the Run's model and
+Provider Credential Binding without prompt caching. Each sampling request has
+its own inference reservation, Inference Attempt and Usage Record. There is no
+automatic provider retry. A journaled completion is reused after a worker restart;
+an uncertain attempt is never sampled again.
+
+A sampling Run grant covers one Agent Plugin server of this Run until its grant
+expiry; new user input does not end it. `sampling.request_unapproved` requires an
+explicit policy action on a resource of kind `sampling`; a wildcard allow does
+not bypass this approval. The resource id is the logical target
+`sampling:["<agent>","<plugin>","<server>"]`. An individual allow or ask Approval
+Rule adds the copy digest and origin to that array. An individual deny rule
+keeps only the first three elements, following copy/origin changes. Explicit
+`every` rules retain their stated scope. Don't ask refuses, Bypass works within
+the policy ceiling, and Auto asks a person instead of the approval Decider.
+
+Form elicitation appears in the Thread with primitive fields and
+accept/decline/cancel actions. Answers are schema-checked and the form warns
+against entering secrets. The deadline is the shorter of the person's Answer
+Deadline and the remaining MCP human-wait allowance; expiry declines the form.
+Late answers are rejected atomically under the request lock.
+
+The capability profile (`AIDASH_CAPABILITY_PROFILE`) accepts an optional `mcp`
+object. Defaults are `human_wait_seconds: 900`, `continuation_sends: 10`, and
+`sampling_tokens: 4096`. Human waiting is cumulative across all inputs and rounds
+of one logical call and is also capped by `approval_seconds`; sampling output is
+further capped by the Run model's output limit. Supported Deployment ranges are
+1-3600 seconds, 1-100 continuation sends, and 1-1,000,000 sampling tokens. Initial
+requests do not count as continuations; state-only continuation rounds do.
+Exhaustion produces `MCP_CONTINUATION_LIMIT` and an `mcp.input_failed` event.
+
+A modern sampling refusal, expiry, budget failure or provider failure ends the
+logical call locally without a continuation. Legacy replies with an MCP error
+and lets its open tool call continue. Elicitation decline/cancel are normal
+responses in both protocols. Lost sent calls and continuations are reconciled;
+even Read-only calls are never automatically replayed.
+
+Stdio servers are currently left out with `stdio_session_unavailable`. Their
+runner, package preparation/installation, PLUGIN_DATA and remote Tenant Secret
+bindings follow the remaining #405-dependent phase; importing their package
+still executes nothing. See [the accepted remaining-work decisions](../design/agent-plugin-mcp-continuations.md).
+
+### Tool call approval
+
+A call of a plugin tool needs a Tool call approval, like a call of a Tenant's
+HTTP or MCP tool, unless the Agent declares the tool Read-only against the
+pinned schema digest. The approval is addressed to a Designated approver, who
+sees the plugin, the server, the tool, the copy of the plugin and the exact
+call, and decides through the capability approval API. The approved call runs as
+asked.
+
+The target of the approval is the plugin tool, not a Registry entry: Tenant
+policy and the approver name it `agent-plugin:<plugin>/<server>/<tool>`, and
+`tool.call_unapproved` on a resource of kind `tool` with that id permits it
+directly. A Run grant covers one operation of that plugin tool of one copy of
+the plugin, until its expiry and across new user input; another tool of the
+same server, or the same tool of another copy, needs its own approval. Approval
+Rules target a plugin tool with the same kind as a Tenant's tools, and a rule
+for every target of that kind covers it.
+
+A Read-only declaration only removes the approval. The tool stays `Unsafe` and
+Sequential, so a worker that stops during its call asks a person to reconcile
+it instead of calling again, as for any Tenant tool.
+
+### The public-address rule
+
+A remote server follows the same rule as a Tenant's HTTP and MCP tool endpoints
+and the Keyless endpoints (#376, ADR 0036). Registering an Agent that takes in
+the plugin refuses a server at a non-public address literal
+(`AGENT_PLUGIN_SERVER_FORBIDDEN`), and one over plain HTTP unless its origin is
+permitted. An exact origin in `[keyless_endpoints] permitted_private_origins` is
+the exception for private and loopback addresses. Every connection resolves the
+host and pins public addresses, a proxy is never used, and a redirect is not
+followed.
+
+### Federation
+
+An Agent that takes in an Agent Plugin runs only on its home Node. Resolving its
+Bindings for remote admission refuses it ("Agent Plugins are unavailable
+remotely"), so a Run for another Node never carries a plugin.
+
+### Workbench
+
+A Workbench test lists the draft's remote servers once, when it starts and before
+it takes its draft and Tenant-limit locks, and only for a caller who may test the
+draft. The test offers the tools that listing pinned, with their aliases and
+Read-only declarations, and answers them only from fixtures keyed by alias; it
+never calls a server after the listing. A server that does not answer is left
+out and the test tells the model so. A continuation reuses the tools its first
+request pinned.
+
 ## Home protocol and Human continuations
 
 Peer execution requires protocol `0.2` or later; the `/v0.1/` URL namespace remains
@@ -359,7 +560,7 @@ excluded on a remote executor. Calling a Home command directly does not restore
 an excluded operation or broaden that contract.
 
 Scoped Home Human requests are stored on the existing remote execution binding.
-Deployment Administrator delegations keep their bounded journal on the existing task delegation,
+Delegations keep their bounded journal on the existing task delegation,
 and mirror each request under the receiver's real Run for Mesh inspection and
 answer controls. Receiver answers are first committed at Home. Neither route
 creates a shadow Run at Home. Lost replies replay the same request only for identical input.
@@ -391,8 +592,7 @@ unscoped offer path that carried `delegations.binding_snapshot` is removed
 External HTTP test connections require a Test Profile of the Tenant whose
 `read_only_verified` field is true. A subject of the Tenant writes it with
 `PUT /api/workbench/test-profiles/{tenant}/{id}` under
-`workbench.test_profile.update`; a Deployment Administrator may write any
-Tenant's. `read_only_verified` is the writer's own claim: set it only after
+`workbench.test_profile.update`; a Deployment Administrator may not (ADR 0102). `read_only_verified` is the writer's own claim: set it only after
 independently checking the exact connection's supported operations and
 read-only contract. A publisher's `transport.replay` claim does not establish
 this guarantee. Unattested external calls require fixtures. Binding digests,

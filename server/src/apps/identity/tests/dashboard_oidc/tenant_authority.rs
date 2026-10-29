@@ -233,6 +233,7 @@ async fn members_without_the_actions_are_refused_with_an_audit(
 		("GET", "/revisions", "policy.read"),
 		("POST", "/simulate", "policy.read"),
 		("GET", "/decisions", "decision.read"),
+		("GET", "/safety-stops", "decision.read"),
 		("GET", "/credentials", "credential.read"),
 		("GET", "/peer-mappings", "peer_mapping.read"),
 	] {
@@ -271,6 +272,43 @@ async fn members_without_the_actions_are_refused_with_an_audit(
 		)
 		.await;
 	assert_eq!(status, 403);
+	t.finish().await;
+}
+
+#[rstest::rstest]
+#[tokio::test]
+async fn safety_stops_are_audited_to_the_tenant_and_not_to_a_deployment_administrator(
+	#[from(common::runtime)] runtime: common::RuntimeFuture,
+) {
+	let t = Team::new(runtime).await;
+	let (status, empty) = t.alice("GET", "/safety-stops", Value::Null).await;
+	assert_eq!(status, 200, "{empty}");
+	assert_eq!(empty, json!([]));
+	let record = Uuid::new_v4();
+	sqlx::query(
+		"INSERT INTO run_safety_stops (id, tenant, run_id, action, expected_control_revision, actor_kind, identity_id, reason, operation_id, caller_key, fingerprint, outcome, created_at) \
+		 VALUES ($1, $2, $3, 'pause', 0, 'shared_bearer', NULL, 'runaway spend', $4, 'shared_bearer', 'digest', 'accepted', clock_timestamp())",
+	)
+	.bind(record)
+	.bind(&t.tenant)
+	.bind(Uuid::new_v4())
+	.bind(Uuid::new_v4())
+	.execute(t.d.federation.store.pool.fixture_driver())
+	.await
+	.unwrap();
+	let (status, listed) = t.alice("GET", "/safety-stops", Value::Null).await;
+	assert_eq!(status, 200, "{listed}");
+	assert_eq!(listed[0]["id"], record.to_string());
+	assert_eq!(listed[0]["reason"], "runaway spend");
+	assert_eq!(listed[0]["actor_kind"], "shared_bearer");
+	assert!(listed[0]["identity_id"].is_null());
+	// Without `decision.read` the member is refused; so is a Deployment
+	// Administrator, whose receipt grants no read of the Tenant's audit history.
+	assert_eq!(t.bob("GET", "/safety-stops", Value::Null).await.0, 403);
+	let (status, body) =
+		t.d.as_deployment_administrator("GET", &t.path("/safety-stops"), Value::Null)
+			.await;
+	assert_eq!(status, 403, "{body}");
 	t.finish().await;
 }
 
@@ -630,5 +668,256 @@ async fn overview_lists_item_scoped_credential_targets_without_policy_read(
 			.0,
 		403
 	);
+	t.finish().await;
+}
+
+/// A Deployment Administrator, by the shared bearer or by a browser context, is
+/// refused on Tenant content and settings, and nothing changes (#484, #301).
+#[rstest::rstest]
+#[tokio::test]
+async fn a_deployment_administrator_holds_no_tenant_content_or_settings_authority(
+	#[from(common::runtime)] runtime: common::RuntimeFuture,
+) {
+	let t = Team::new(runtime).await;
+	let carol = t.d.person("carol").await;
+	sqlx::query("INSERT INTO dashboard_deployment_administrator_grants (identity_id) VALUES ($1)")
+		.bind(carol.identity)
+		.execute(t.d.federation.store.pool.driver())
+		.await
+		.unwrap();
+	let scope = aidash_application::tenancy::TenancyScope::tenant(&t.tenant).unwrap();
+	let store = &t.d.federation.store;
+	let workspace = store
+		.create_workspace(&scope, "alice", "Confidential plan", "Tenant content")
+		.await
+		.unwrap();
+	let task = store
+		.create_task(
+			&scope,
+			workspace.id,
+			&aidash_domain::NewTask {
+				title: "Confidential task".into(),
+				description: "Tenant content".into(),
+				requirements: json!({}),
+				dependencies: vec![],
+				parent_id: None,
+			},
+			"alice",
+			None,
+		)
+		.await
+		.unwrap();
+	let tenant = &t.tenant;
+	let workspace_path = format!("/api/workspaces/{}", workspace.id);
+	let routes: Vec<(&str, String, Value)> = vec![
+		("GET", workspace_path.clone(), Value::Null),
+		("GET", "/api/tasks".into(), Value::Null),
+		(
+			"POST",
+			format!("/api/tasks/{}/abandon", task.id),
+			json!({"revision":task.revision,"reason":"administrator attempt"}),
+		),
+		(
+			"GET",
+			format!("{workspace_path}/message-history"),
+			Value::Null,
+		),
+		(
+			"GET",
+			format!("{workspace_path}/attachments/{}", Uuid::new_v4()),
+			Value::Null,
+		),
+		(
+			"GET",
+			format!("/api/authorization/{tenant}/credentials"),
+			Value::Null,
+		),
+		(
+			"POST",
+			format!("/api/authorization/{tenant}/credentials"),
+			json!({"subject":"bob"}),
+		),
+		(
+			"POST",
+			format!(
+				"/api/authorization/{tenant}/credentials/{}/revoke",
+				Uuid::new_v4()
+			),
+			Value::Null,
+		),
+		(
+			"POST",
+			format!("/api/authorization/{tenant}/simulate"),
+			simulation(tenant, "bob"),
+		),
+		(
+			"GET",
+			format!("/api/authorization/{tenant}/revisions"),
+			Value::Null,
+		),
+		(
+			"GET",
+			format!("/api/authorization/{tenant}/decisions"),
+			Value::Null,
+		),
+		(
+			"GET",
+			format!("/api/authorization/{tenant}/peer-mappings"),
+			Value::Null,
+		),
+		(
+			"POST",
+			format!("/api/authorization/{tenant}/peer-mappings"),
+			json!({}),
+		),
+		("GET", format!("/api/tenants/{tenant}/nodes"), Value::Null),
+		(
+			"GET",
+			format!(
+				"/api/tenants/{tenant}/nodes/{}/registrations",
+				aidash_domain::nodes::NodeName::derived("x")
+			),
+			Value::Null,
+		),
+		(
+			"GET",
+			format!("/api/tenants/{tenant}/provider-credentials"),
+			Value::Null,
+		),
+		(
+			"GET",
+			format!("/api/tenants/{tenant}/provider-credential-bindings"),
+			Value::Null,
+		),
+		(
+			"PUT",
+			format!("/api/tenants/{tenant}/provider-credential-bindings/openrouter"),
+			json!({"provider_credential_id":null,"expected_revision":0}),
+		),
+		(
+			"POST",
+			format!("/api/tenants/{tenant}/provider-authorizations/openrouter"),
+			json!({}),
+		),
+	];
+	let credentials_before =
+		t.d.count(&format!(
+			"SELECT count(*) FROM authorization_credentials WHERE tenant = '{tenant}'"
+		))
+		.await;
+	for (method, path, body) in &routes {
+		let (status, refused) =
+			t.d.as_deployment_administrator(method, path, body.clone())
+				.await;
+		assert_eq!(status, 403, "bearer {method} {path}: {refused}");
+		for secret in ["Confidential", "token"] {
+			assert!(!refused.to_string().contains(secret), "{path}: {refused}");
+		}
+		let (status, refused) =
+			t.d.as_person(
+				&carol,
+				method,
+				path,
+				Some("deployment_administrator"),
+				body.clone(),
+			)
+			.await;
+		assert_eq!(status, 403, "browser {method} {path}: {refused}");
+		for secret in ["Confidential", "token"] {
+			assert!(!refused.to_string().contains(secret), "{path}: {refused}");
+		}
+	}
+	// Nothing changed: no credential was issued and the Task was not abandoned.
+	assert_eq!(
+		t.d.count(&format!(
+			"SELECT count(*) FROM authorization_credentials WHERE tenant = '{tenant}'"
+		))
+		.await,
+		credentials_before
+	);
+	assert_eq!(
+		t.d.count(&format!(
+			"SELECT count(*) FROM tasks WHERE id = '{}' AND status = 'ABANDONED'",
+			task.id
+		))
+		.await,
+		0,
+		"the refused abandon left the Task alone"
+	);
+	// The state projection carries no Tenant collections to an administrator.
+	for state in [
+		t.d.as_deployment_administrator("GET", "/api/state", Value::Null)
+			.await,
+		t.d.as_person(
+			&carol,
+			"GET",
+			"/api/state",
+			Some("deployment_administrator"),
+			Value::Null,
+		)
+		.await,
+	] {
+		assert_eq!(state.0, 200, "{}", state.1);
+		for collection in [
+			"workspaces",
+			"tasks",
+			"runs",
+			"events",
+			"artifacts",
+			"conversations",
+		] {
+			assert_eq!(state.1[collection], json!([]), "{collection}: {}", state.1);
+		}
+		assert!(!state.1.to_string().contains("Confidential"));
+	}
+	// An authorized Tenant Subject, by Mapping or by Subject Credential, still succeeds.
+	let (status, mine) = t.alice("GET", "", Value::Null).await;
+	assert_eq!(status, 200, "{mine}");
+	let (status, body, _) =
+		t.d.send(
+			"GET",
+			&workspace_path,
+			Some(&t.alice),
+			Some(&t.alice_context),
+			None,
+			Value::Null,
+		)
+		.await;
+	assert_eq!(status, 200, "{body}");
+	assert!(body.to_string().contains("Confidential plan"), "{body}");
+	let token = common::subject_credential(store, tenant, "owner").await;
+	let (status, body, _) =
+		t.d.send("GET", "/api/tasks", None, None, Some(&token), Value::Null)
+			.await;
+	assert_eq!(status, 200, "{body}");
+	assert!(body.to_string().contains("Confidential task"), "{body}");
+	// A Subject of a second Tenant is refused on this Tenant's content.
+	let dave = t.d.person("dave").await;
+	let (other, other_context) = t.d.tenant_of(&dave, "Elsewhere").await;
+	assert_ne!(&other, tenant);
+	let (status, body, _) =
+		t.d.send(
+			"GET",
+			&workspace_path,
+			Some(&dave),
+			Some(&other_context),
+			None,
+			Value::Null,
+		)
+		.await;
+	assert!(matches!(status, 403 | 404), "{status} {body}");
+	assert!(!body.to_string().contains("Confidential"));
+	let (status, body, _) =
+		t.d.send(
+			"GET",
+			"/api/state",
+			Some(&dave),
+			Some(&other_context),
+			None,
+			Value::Null,
+		)
+		.await;
+	assert_eq!(status, 200, "{body}");
+	assert!(!body.to_string().contains("Confidential"), "{body}");
 	t.finish().await;
 }

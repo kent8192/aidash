@@ -3,11 +3,11 @@ use super::DatabaseFixture;
 use aidash_application::tenancy::TEST_FIXTURE;
 use aidash_domain::{memory::*, registry::EntityRef};
 use aidash_server::{
-	apps::identity::models::{AuthorizationBundle, Tenant},
+	apps::identity::models::Tenant,
 	registry::{Entry, Registry},
 	store::Store,
 };
-use reinhardt::db::orm::{Json, Model};
+use reinhardt::db::orm::Model;
 use rstest::fixture;
 use serde_json::json;
 use uuid::Uuid;
@@ -265,23 +265,15 @@ pub(super) async fn setup_endpoint_policy(
 			.unwrap();
 	}
 	let bundle: aidash_domain::policy::PolicyBundle =
-		serde_json::from_value(json!({"tenant":"acme"})).unwrap();
-	let authority = AuthorizationBundle::build()
-		.tenant("acme")
-		.revision(1)
-		.document(Json(serde_json::to_value(bundle).unwrap()))
-		.finish();
-	// Authorization tables hold row-level policies, so seed them in a scope.
-	store
-		.pool
-		.atomic(&TEST_FIXTURE, async |tx| {
-			AuthorizationBundle::objects()
-				.create_with_conn(tx, &authority)
-				.await?;
-			Ok(())
-		})
-		.await
-		.unwrap();
+		serde_json::from_value(json!({"tenant":"acme","subjects":{"alice":{"kind":"user"}},"policies":[{"id":"fixture","effect":"allow","subjects":{"any":true},"actions":["*"],"resources":{"kinds":["*"]}}]})).unwrap();
+	// Written through the Authorization service so the revision history and the
+	// decision log's revision reference exist, as for a real Tenant.
+	aidash_server::authorization::Authorization {
+		pool: store.pool.clone(),
+	}
+	.replace("acme", 0, bundle, "fixture")
+	.await
+	.unwrap();
 	let workspace = store
 		.create_workspace(
 			&aidash_application::tenancy::TenancyScope::tenant("acme").unwrap(),
@@ -293,7 +285,7 @@ pub(super) async fn setup_endpoint_policy(
 		.unwrap();
 	aidash_server::semantic::service::configure(
 		&store,
-		&aidash_server::authorization::identity::Actor::DeploymentAdministrator,
+		&administrator(&store).await,
 		workspace.id,
 		aidash_server::semantic::ConfigureIndex {
 			expected_revision: 0,
@@ -327,4 +319,64 @@ pub(super) fn mutation(bank: &Bank, change: Change) -> Mutation {
 		bank: bank.clone(),
 		changes: vec![change],
 	}
+}
+
+/// The Tenant Subject that carries the fixture's memory work. A Deployment
+/// Administrator holds no Tenant content authority (#484), so tests act as the
+/// Tenant's own Subject, "alice", whom the fixture policy defines and allows.
+pub(super) async fn administrator(store: &Store) -> aidash_server::authorization::identity::Actor {
+	subject_actor(store, "alice").await
+}
+/// Another Tenant Subject of the fixture Tenant, for tests whose policy
+/// withdraws "alice"'s authority while a reader keeps its own.
+pub(super) async fn subject_actor(
+	store: &Store,
+	subject: &str,
+) -> aidash_server::authorization::identity::Actor {
+	let authorization = aidash_server::authorization::Authorization {
+		pool: store.pool.clone(),
+	};
+	// The Subject uses only Catalog-approved entries (the Deployment
+	// Administrator's bypass is gone, #484). A test that approved an entry
+	// itself keeps its own approval, so a conflict is not an error here.
+	let entries: Vec<(String, String)> =
+		sqlx::query_as("SELECT id, version FROM registry WHERE tenant = 'acme'")
+			.fetch_all(store.pool.fixture_driver())
+			.await
+			.unwrap();
+	for (id, version) in entries {
+		let _ = authorization
+			.set_catalog(
+				"acme",
+				&aidash_domain::nodes::NodeName::derived("acme"),
+				&EntityRef { id, version },
+				0,
+				true,
+				"fixture",
+			)
+			.await;
+	}
+	let issued = authorization
+		.issue_credential("acme", subject, 3600, "fixture")
+		.await
+		.unwrap();
+	authorization.authenticate(&issued.token).await.unwrap()
+}
+
+/// Approves a registered entry in the Tenant's Catalog, as a Tenant Subject
+/// needs before it may use the entry (#484).
+pub(super) async fn approve_entry(store: &Store, entry: &EntityRef) {
+	aidash_server::authorization::Authorization {
+		pool: store.pool.clone(),
+	}
+	.set_catalog(
+		"acme",
+		&aidash_domain::nodes::NodeName::derived("acme"),
+		entry,
+		0,
+		true,
+		"fixture",
+	)
+	.await
+	.unwrap();
 }

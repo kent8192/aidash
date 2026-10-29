@@ -71,48 +71,38 @@ pub async fn list(
 	repository: &dyn ProfileRepository,
 	query: ProfileQuery,
 ) -> Result<Vec<ProfileSummary>> {
-	let mut draft_tools = None;
-	let tenant = match repository.principal() {
-		Principal::DeploymentAdministrator => query
-			.tenant
-			.ok_or_else(|| Error::Invalid("tenant is required".into()))?,
-		Principal::Subject { tenant, .. } => {
-			if query.tenant.as_deref().is_some_and(|value| value != tenant) {
-				return Err(Error::Forbidden);
-			}
-			let draft_id = query
-				.draft_id
-				.ok_or_else(|| Error::Invalid("draft_id is required".into()))?;
-			let mut scope = repository.begin_draft().await?;
-			let draft = scope.draft(draft_id).await?;
-			scope.authorize(&draft, "agent_draft.test", true).await?;
-			let entry: Entry = serde_json::from_value(draft.entry.clone())?;
-			let snapshot = scope.bindings(&entry).await?;
-			draft_tools = Some(
-				snapshot
-					.bindings
-					.iter()
-					.filter(|b| b.definition.kind == "tool" && b.excluded_reason.is_none())
-					.map(|b| b.identity.local())
-					.collect::<Vec<_>>(),
-			);
-			scope.commit().await?;
-			tenant
-		}
+	// Profiles are Tenant content: only a Subject lists them (#484).
+	let Principal::Subject { tenant, .. } = repository.principal() else {
+		return Err(Error::Forbidden);
 	};
+	if query.tenant.as_deref().is_some_and(|value| value != tenant) {
+		return Err(Error::Forbidden);
+	}
+	let draft_id = query
+		.draft_id
+		.ok_or_else(|| Error::Invalid("draft_id is required".into()))?;
+	let mut scope = repository.begin_draft().await?;
+	let draft = scope.draft(draft_id).await?;
+	scope.authorize(&draft, "agent_draft.test", true).await?;
+	let entry: Entry = serde_json::from_value(draft.entry.clone())?;
+	let snapshot = scope.bindings(&entry).await?;
+	let draft_tools = snapshot
+		.bindings
+		.iter()
+		.filter(|b| b.definition.kind == "tool" && b.excluded_reason.is_none())
+		.map(|b| b.identity.local())
+		.collect::<Vec<_>>();
+	scope.commit().await?;
 	Ok(repository
 		.page(&tenant)
 		.await?
 		.into_iter()
 		.filter(|row| {
-			let Some(tools) = &draft_tools else {
-				return true;
-			};
 			if !row.enabled {
 				return false;
 			}
 			serde_json::from_value::<Vec<RealToolRule>>(row.rules.clone()).is_ok_and(|rules| {
-				!rules.is_empty() && rules.iter().all(|rule| tools.contains(&rule.tool))
+				!rules.is_empty() && rules.iter().all(|rule| draft_tools.contains(&rule.tool))
 			})
 		})
 		.map(|row| ProfileSummary {
@@ -128,10 +118,9 @@ pub async fn administered(
 	tenant: String,
 	after: Option<String>,
 ) -> Result<Vec<TestProfile>> {
-	if let Principal::Subject { tenant: own, .. } = repository.principal()
-		&& own != tenant
-	{
-		return Err(Error::Forbidden);
+	match repository.principal() {
+		Principal::Subject { tenant: own, .. } if own == tenant => {}
+		_ => return Err(Error::Forbidden),
 	}
 	if after
 		.as_ref()
@@ -150,10 +139,9 @@ pub async fn put(
 ) -> Result<TestProfile> {
 	// A Subject writes only its own Tenant's profiles, under
 	// `workbench.test_profile.update`, which the repository checks with the write.
-	if let Principal::Subject { tenant: own, .. } = repository.principal()
-		&& own != tenant
-	{
-		return Err(Error::Forbidden);
+	match repository.principal() {
+		Principal::Subject { tenant: own, .. } if own == tenant => {}
+		_ => return Err(Error::Forbidden),
 	}
 	if tenant.trim().is_empty() || id.trim().is_empty() || id.len() > 100 || input.rules.len() > 32
 	{

@@ -56,8 +56,8 @@ use uuid::Uuid;
 
 pub(crate) use aidash_domain::registry::workbench::DraftPage;
 pub use aidash_domain::registry::workbench::{
-	AdoptInput, ArchiveInput, CreateDraft, DraftShare, RegisteredVersion, Registration,
-	RevisionInput, SaveDraft, ShareInput, TransferInput, Validation,
+	ArchiveInput, CreateDraft, DraftShare, RegisteredVersion, Registration, RevisionInput,
+	SaveDraft, ShareInput, TransferInput, Validation,
 };
 
 impl From<Draft> for aidash_domain::registry::workbench::Draft {

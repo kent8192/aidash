@@ -672,13 +672,12 @@ async fn files_preserve_unicode_revision_and_source_authority(
 			.0,
 		409
 	);
-	let (_, bob) = request(
-		&c.app,
-		&c.f.config.api_token,
-		"POST",
-		"/api/authorization/acme/credentials",
-		json!({"subject":"bob"}),
-	)
+	let (_, bob) = async {
+		(
+			200_u16,
+			common::issued_credential(&c.f.store, "acme", "bob").await,
+		)
+	}
 	.await;
 	let (status, result) = request(
 		&c.app,
@@ -747,13 +746,12 @@ async fn queued_runs_keep_order_and_cancellation_bypasses_queue(
 	let (status, result) = request(&c.app, &c.token, "POST", &steer_path, json!({"idempotency_key":Uuid::new_v4(),"expected_run_id":queue["queue"][1]["run_id"],"content":"Must not reach a queued run"})).await;
 	assert_eq!(status, 409, "{result}");
 	let steer = json!({"idempotency_key":Uuid::new_v4(),"expected_run_id":run.id,"content":"Prioritize the current question"});
-	let (_, bob) = request(
-		&c.app,
-		&c.f.config.api_token,
-		"POST",
-		"/api/authorization/acme/credentials",
-		json!({"subject":"bob"}),
-	)
+	let (_, bob) = async {
+		(
+			200_u16,
+			common::issued_credential(&c.f.store, "acme", "bob").await,
+		)
+	}
 	.await;
 	assert_eq!(
 		request(
@@ -1034,13 +1032,12 @@ async fn approvals_bind_invocations_and_never_override_upper_denials(
 		"/api/capabilities/approvals/{}/decide",
 		pending["approval_id"].as_str().unwrap()
 	);
-	let (_, bob) = request(
-		&c.app,
-		&c.f.config.api_token,
-		"POST",
-		"/api/authorization/acme/credentials",
-		json!({"subject":"bob"}),
-	)
+	let (_, bob) = async {
+		(
+			200_u16,
+			common::issued_credential(&c.f.store, "acme", "bob").await,
+		)
+	}
 	.await;
 	let decision = json!({"idempotency_key":Uuid::new_v4(),"expected_revision":1});
 	assert_eq!(
@@ -1714,6 +1711,18 @@ mod content_limit_tests;
 
 #[path = "core_capabilities/retention_boundaries.rs"]
 mod retention_boundary_tests;
+
+#[path = "core_capabilities/retained_versions.rs"]
+mod retained_version_tests;
+
+#[path = "core_capabilities/previews.rs"]
+mod preview_tests;
+
+#[path = "core_capabilities/live_previews.rs"]
+mod live_preview_tests;
+
+#[path = "core_capabilities/message_citations.rs"]
+mod message_citation_tests;
 
 #[cfg(feature = "capability-runtime-tests")]
 #[path = "core_capabilities/extraction_lifecycle.rs"]

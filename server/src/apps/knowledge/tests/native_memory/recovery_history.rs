@@ -10,7 +10,7 @@ async fn a_protected_home_never_silently_downgrades_to_local_only_memory(
 	let (store, _, workspace) = setup(&database, bounds).await;
 	let bank = memory::create_participant(
 		&store,
-		&Actor::DeploymentAdministrator,
+		&administrator(&store).await,
 		workspace,
 		memory::CreateParticipant {
 			agent: reference("a"),
@@ -21,7 +21,7 @@ async fn a_protected_home_never_silently_downgrades_to_local_only_memory(
 	.bank;
 	memory::mutate(
 		&store,
-		&Actor::DeploymentAdministrator,
+		&administrator(&store).await,
 		mutation(
 			&bank,
 			Change::Add {
@@ -37,7 +37,7 @@ async fn a_protected_home_never_silently_downgrades_to_local_only_memory(
 		bank,
 	};
 	assert_eq!(
-		memory::list(&store, &Actor::DeploymentAdministrator, read.clone())
+		memory::list(&store, &administrator(&store).await, read.clone())
 			.await
 			.unwrap()
 			.len(),
@@ -54,7 +54,7 @@ async fn a_protected_home_never_silently_downgrades_to_local_only_memory(
 	)
 	.unwrap();
 	assert!(
-		memory::list(&store, &Actor::DeploymentAdministrator, read)
+		memory::list(&store, &administrator(&store).await, read)
 			.await
 			.is_err(),
 		"a protected Home must fail closed when only its local ledger is configured"
@@ -209,7 +209,7 @@ async fn uncertain_floor_publication_stays_closed_across_restart_and_preserves_t
 	let (store, _, workspace) = setup(&database, bounds).await;
 	let bank = memory::create_participant(
 		&store,
-		&Actor::DeploymentAdministrator,
+		&administrator(&store).await,
 		workspace,
 		memory::CreateParticipant {
 			agent: reference("a"),
@@ -221,7 +221,7 @@ async fn uncertain_floor_publication_stays_closed_across_restart_and_preserves_t
 	let id = Uuid::now_v7();
 	memory::mutate(
 		&store,
-		&Actor::DeploymentAdministrator,
+		&administrator(&store).await,
 		mutation(
 			&bank,
 			Change::Add {
@@ -243,7 +243,7 @@ async fn uncertain_floor_publication_stays_closed_across_restart_and_preserves_t
 		bank: bank.clone(),
 	};
 	assert_eq!(
-		memory::list(&store, &Actor::DeploymentAdministrator, read.clone())
+		memory::list(&store, &administrator(&store).await, read.clone())
 			.await
 			.unwrap()
 			.len(),
@@ -258,7 +258,7 @@ async fn uncertain_floor_publication_stays_closed_across_restart_and_preserves_t
 	}
 	let result = memory::mutate(
 		&store,
-		&Actor::DeploymentAdministrator,
+		&administrator(&store).await,
 		mutation(
 			&bank,
 			Change::Correct {
@@ -278,7 +278,7 @@ async fn uncertain_floor_publication_stays_closed_across_restart_and_preserves_t
 	assert!(!notification.contains("uncertain revision"));
 	assert!(directory.join("publication-pending.cbor").exists());
 	assert!(
-		memory::list(&store, &Actor::DeploymentAdministrator, read.clone())
+		memory::list(&store, &administrator(&store).await, read.clone())
 			.await
 			.is_err()
 	);
@@ -296,14 +296,14 @@ async fn uncertain_floor_publication_stays_closed_across_restart_and_preserves_t
 	assert!(!directory.join("publication-pending.cbor").exists());
 	// SQL rolled back to revision one; the durable attempted revision two is never rewound.
 	assert!(
-		memory::list(&restarted, &Actor::DeploymentAdministrator, read)
+		memory::list(&restarted, &administrator(&restarted).await, read)
 			.await
 			.is_err()
 	);
 	assert!(
 		memory::mutate(
 			&restarted,
-			&Actor::DeploymentAdministrator,
+			&administrator(&restarted).await,
 			mutation(
 				&bank,
 				Change::Correct {
@@ -328,7 +328,7 @@ async fn an_unavailable_preflight_rejects_writes_without_closing_proven_reads(
 	let (store, _, workspace) = setup(&database, bounds).await;
 	let bank = memory::create_participant(
 		&store,
-		&Actor::DeploymentAdministrator,
+		&administrator(&store).await,
 		workspace,
 		memory::CreateParticipant {
 			agent: reference("a"),
@@ -340,7 +340,7 @@ async fn an_unavailable_preflight_rejects_writes_without_closing_proven_reads(
 	let id = Uuid::now_v7();
 	memory::mutate(
 		&store,
-		&Actor::DeploymentAdministrator,
+		&administrator(&store).await,
 		mutation(
 			&bank,
 			Change::Add {
@@ -361,7 +361,7 @@ async fn an_unavailable_preflight_rejects_writes_without_closing_proven_reads(
 	assert!(
 		memory::mutate(
 			&store,
-			&Actor::DeploymentAdministrator,
+			&administrator(&store).await,
 			mutation(
 				&bank,
 				Change::Correct {
@@ -380,7 +380,7 @@ async fn an_unavailable_preflight_rejects_writes_without_closing_proven_reads(
 		bank,
 	};
 	assert_eq!(
-		memory::list(&store, &Actor::DeploymentAdministrator, read)
+		memory::list(&store, &administrator(&store).await, read)
 			.await
 			.unwrap()[0]
 			.content
@@ -405,7 +405,7 @@ async fn a_failed_sql_commit_is_preserved_in_independent_history(
 	let (store, _, workspace) = setup(&database, bounds).await;
 	let bank = memory::create_participant(
 		&store,
-		&Actor::DeploymentAdministrator,
+		&administrator(&store).await,
 		workspace,
 		memory::CreateParticipant {
 			agent: reference("a"),
@@ -417,7 +417,7 @@ async fn a_failed_sql_commit_is_preserved_in_independent_history(
 	let id = Uuid::now_v7();
 	memory::mutate(
 		&store,
-		&Actor::DeploymentAdministrator,
+		&administrator(&store).await,
 		mutation(
 			&bank,
 			Change::Add {
@@ -456,7 +456,7 @@ async fn a_failed_sql_commit_is_preserved_in_independent_history(
 	assert!(
 		memory::mutate(
 			&store,
-			&Actor::DeploymentAdministrator,
+			&administrator(&store).await,
 			mutation(
 				&bank,
 				if deleting {
@@ -548,7 +548,7 @@ async fn a_failed_sql_commit_is_preserved_in_independent_history(
 		bank,
 	};
 	assert!(
-		memory::list(&restarted, &Actor::DeploymentAdministrator, read)
+		memory::list(&restarted, &administrator(&restarted).await, read)
 			.await
 			.unwrap()
 			.is_empty()
@@ -573,7 +573,7 @@ async fn lost_ledger_recovery_uses_current_bodies_and_never_revives_an_old_archi
 	let (store, _, workspace) = setup_endpoint(&database, bounds, &endpoint).await;
 	let bank = memory::create_participant(
 		&store,
-		&Actor::DeploymentAdministrator,
+		&administrator(&store).await,
 		workspace,
 		memory::CreateParticipant {
 			agent: reference("a"),
@@ -590,7 +590,7 @@ async fn lost_ledger_recovery_uses_current_bodies_and_never_revives_an_old_archi
 	] {
 		memory::mutate(
 			&store,
-			&Actor::DeploymentAdministrator,
+			&administrator(&store).await,
 			mutation(
 				&bank,
 				Change::Add {
@@ -622,7 +622,7 @@ async fn lost_ledger_recovery_uses_current_bodies_and_never_revives_an_old_archi
 	}
 	memory::mutate(
 		&store,
-		&Actor::DeploymentAdministrator,
+		&administrator(&store).await,
 		mutation(
 			&bank,
 			Change::Delete {
@@ -644,7 +644,7 @@ async fn lost_ledger_recovery_uses_current_bodies_and_never_revives_an_old_archi
 		bank,
 	};
 	assert!(
-		memory::list(&store, &Actor::DeploymentAdministrator, read.clone())
+		memory::list(&store, &administrator(&store).await, read.clone())
 			.await
 			.is_err()
 	);
@@ -677,7 +677,7 @@ async fn lost_ledger_recovery_uses_current_bodies_and_never_revives_an_old_archi
 			.is_err()
 	);
 	assert!(
-		memory::list(&store, &Actor::DeploymentAdministrator, read.clone())
+		memory::list(&store, &administrator(&store).await, read.clone())
 			.await
 			.is_err()
 	);
@@ -687,7 +687,7 @@ async fn lost_ledger_recovery_uses_current_bodies_and_never_revives_an_old_archi
 	let store = management::attach_protected(store, directory.to_owned(), history)
 		.await
 		.unwrap();
-	let served = memory::list(&store, &Actor::DeploymentAdministrator, read.clone())
+	let served = memory::list(&store, &administrator(&store).await, read.clone())
 		.await
 		.unwrap();
 	assert_eq!(served.len(), 1);
@@ -703,7 +703,7 @@ async fn lost_ledger_recovery_uses_current_bodies_and_never_revives_an_old_archi
 		Err(aidash_server::Error::Conflict(_))
 	));
 	assert!(
-		memory::list(&store, &Actor::DeploymentAdministrator, read)
+		memory::list(&store, &administrator(&store).await, read)
 			.await
 			.is_err()
 	);
@@ -721,7 +721,7 @@ async fn all_bank_archives_continue_after_a_failure_and_prune_without_the_ledger
 	let (store, _, workspace) = setup(&database, bounds).await;
 	let bank = memory::create_participant(
 		&store,
-		&Actor::DeploymentAdministrator,
+		&administrator(&store).await,
 		workspace,
 		memory::CreateParticipant {
 			agent: reference("a"),
@@ -736,7 +736,7 @@ async fn all_bank_archives_continue_after_a_failure_and_prune_without_the_ledger
 	};
 	memory::operate(
 		&store,
-		&Actor::DeploymentAdministrator,
+		&administrator(&store).await,
 		memory::Operation {
 			operation_id: Uuid::now_v7(),
 			provider: reference("p"),
@@ -791,7 +791,7 @@ async fn all_bank_archives_continue_after_a_failure_and_prune_without_the_ledger
 	// copy is independently deleted, and losing the ledger cannot stop either.
 	memory::operate(
 		&store,
-		&Actor::DeploymentAdministrator,
+		&administrator(&store).await,
 		memory::Operation {
 			operation_id: Uuid::now_v7(),
 			provider: reference("p"),
@@ -848,7 +848,7 @@ async fn a_delayed_old_writer_cannot_publish_after_the_replacement_disk_barrier(
 	let (store, _, workspace) = setup(&database, bounds).await;
 	let bank = memory::create_participant(
 		&store,
-		&Actor::DeploymentAdministrator,
+		&administrator(&store).await,
 		workspace,
 		memory::CreateParticipant {
 			agent: reference("a"),
@@ -875,7 +875,7 @@ async fn a_delayed_old_writer_cannot_publish_after_the_replacement_disk_barrier(
 		},
 	);
 	let task = tokio::spawn(async move {
-		memory::mutate(&writer, &Actor::DeploymentAdministrator, change).await
+		memory::mutate(&writer, &administrator(&writer).await, change).await
 	});
 	tokio::time::timeout(std::time::Duration::from_secs(10), entered.notified())
 		.await
@@ -926,7 +926,7 @@ async fn lost_ledger_reconciliation_fills_a_matching_missing_body_from_its_off_d
 	let (store, _, workspace) = setup_endpoint(&database, bounds, &endpoint).await;
 	let bank = memory::create_participant(
 		&store,
-		&Actor::DeploymentAdministrator,
+		&administrator(&store).await,
 		workspace,
 		memory::CreateParticipant {
 			agent: reference("a"),
@@ -938,7 +938,7 @@ async fn lost_ledger_reconciliation_fills_a_matching_missing_body_from_its_off_d
 	let id = Uuid::now_v7();
 	memory::mutate(
 		&store,
-		&Actor::DeploymentAdministrator,
+		&administrator(&store).await,
 		mutation(
 			&bank,
 			Change::Add {
@@ -988,7 +988,7 @@ async fn lost_ledger_reconciliation_fills_a_matching_missing_body_from_its_off_d
 		.unwrap();
 	let units = memory::list(
 		&store,
-		&Actor::DeploymentAdministrator,
+		&administrator(&store).await,
 		memory::ReadBank {
 			bank,
 			provider: reference("p"),
@@ -1010,7 +1010,7 @@ async fn interrupted_protection_seeding_can_finish_without_reopening_an_unrelate
 	let (store, _, workspace) = setup(&database, bounds).await;
 	let bank = memory::create_participant(
 		&store,
-		&Actor::DeploymentAdministrator,
+		&administrator(&store).await,
 		workspace,
 		memory::CreateParticipant {
 			agent: reference("a"),
@@ -1021,7 +1021,7 @@ async fn interrupted_protection_seeding_can_finish_without_reopening_an_unrelate
 	.bank;
 	memory::mutate(
 		&store,
-		&Actor::DeploymentAdministrator,
+		&administrator(&store).await,
 		mutation(
 			&bank,
 			Change::Add {
@@ -1044,13 +1044,13 @@ async fn interrupted_protection_seeding_can_finish_without_reopening_an_unrelate
 		bank,
 	};
 	assert!(
-		memory::list(&store, &Actor::DeploymentAdministrator, read.clone())
+		memory::list(&store, &administrator(&store).await, read.clone())
 			.await
 			.is_err()
 	);
 	let protected = management::protect(&store, directory).await.unwrap();
 	assert_eq!(
-		memory::list(&protected, &Actor::DeploymentAdministrator, read.clone())
+		memory::list(&protected, &administrator(&protected).await, read.clone())
 			.await
 			.unwrap()
 			.len(),
@@ -1062,7 +1062,7 @@ async fn interrupted_protection_seeding_can_finish_without_reopening_an_unrelate
 		.unwrap();
 	let protected = management::protect(&protected, directory).await.unwrap();
 	assert!(
-		memory::list(&protected, &Actor::DeploymentAdministrator, read)
+		memory::list(&protected, &administrator(&protected).await, read)
 			.await
 			.is_err()
 	);
@@ -1085,7 +1085,7 @@ async fn a_killed_archive_temporary_cannot_bypass_spool_bounds_or_block_policy_e
 	};
 	memory::operate(
 		&store,
-		&Actor::DeploymentAdministrator,
+		&administrator(&store).await,
 		memory::Operation {
 			operation_id: Uuid::now_v7(),
 			provider: reference("p"),
@@ -1141,7 +1141,7 @@ async fn a_killed_archive_temporary_cannot_bypass_spool_bounds_or_block_policy_e
 	);
 	memory::operate(
 		&store,
-		&Actor::DeploymentAdministrator,
+		&administrator(&store).await,
 		memory::Operation {
 			operation_id: Uuid::now_v7(),
 			provider: reference("p"),
@@ -1204,7 +1204,8 @@ async fn scheduled_backup_revalidates_subject_authority_with_the_actual_read_onl
 				"deployment_administrator",
 			)
 			.await
-			.unwrap();
+			// The fixture Subject may have approved it already.
+			.ok();
 	}
 	let credential = authorization
 		.issue_credential("acme", "alice", 3600, "deployment_administrator")

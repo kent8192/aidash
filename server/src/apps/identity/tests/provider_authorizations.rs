@@ -335,8 +335,77 @@ struct Started {
 	state: String,
 	challenge: String,
 }
+/// The dashboard context of the Tenant member the browser identity is mapped to.
+/// A Deployment Administrator holds no Tenant authority (#484), so a Provider
+/// Credential authorization starts under a Mapping into the Tenant. The first
+/// call maps the identity to Tenant subject alice through the normal
+/// registration and approval, and lets alice manage Provider Credentials.
+async fn member_context(fixture: &Fixture) -> String {
+	let existing: Option<(String, Uuid)> =
+		sqlx::query_as("SELECT tenant, id FROM dashboard_mappings WHERE tenant = 'alpha' LIMIT 1")
+			.fetch_optional(fixture.f.store.pool.fixture_driver())
+			.await
+			.unwrap();
+	if let Some((tenant, id)) = existing {
+		return format!("mapping:{tenant}:{id}");
+	}
+	let registration = send(
+		&fixture.app,
+		"POST",
+		"/auth/registration",
+		&[
+			("cookie", "__Host-aidash-session=browser-a"),
+			("origin", ORIGIN),
+			("x-aidash-csrf", "csrf-a"),
+		],
+		Value::Null,
+	)
+	.await;
+	let registration: Value = serde_json::from_slice(registration.body()).unwrap();
+	let mapping = send(
+		&fixture.app,
+		"POST",
+		&format!(
+			"/api/dashboard/registrations/{}/approve",
+			registration["id"].as_str().unwrap()
+		),
+		&[
+			("content-type", "application/json"),
+			(
+				"authorization",
+				&format!("Bearer {}", fixture.f.config.api_token),
+			),
+		],
+		json!({"tenant":"alpha","subject":"alice"}),
+	)
+	.await;
+	let status = mapping.status();
+	let mapping: Value = serde_json::from_slice(mapping.body()).unwrap();
+	assert_eq!(status, 200, "{mapping}");
+	let service = Authorization {
+		pool: fixture.f.store.pool.clone(),
+	};
+	let revision = service.snapshot("alpha").await.unwrap().revision;
+	let policy: PolicyBundle = serde_json::from_value(json!({
+		"tenant":"alpha","subjects":{"alice":{"kind":"user"}},
+		"policies":[{"id":"provider-management","effect":"allow","subjects":{"ids":["alice"]},
+			"actions":["provider_credential.create","provider_credential.read","provider_credential.rotate","provider_credential.revoke","provider_credential.delete","provider_credential_binding.read","provider_credential_binding.update"],
+			"resources":{"kinds":["provider_credential","provider_credential_binding"]}}]
+	}))
+	.unwrap();
+	service
+		.replace("alpha", revision, policy, "deployment_administrator")
+		.await
+		.unwrap();
+	format!(
+		"mapping:{}:{}",
+		mapping["tenant"].as_str().unwrap(),
+		mapping["id"].as_str().unwrap()
+	)
+}
 async fn start(fixture: &Fixture, session: &str, body: Value, browser: Option<&str>) -> Started {
-	start_as(fixture, session, "deployment_administrator", body, browser).await
+	let context = member_context(fixture).await;
+	start_as(fixture, session, &context, body, browser).await
 }
 /// The browser request that starts an authorization under a dashboard context.
 async fn start_request(
@@ -421,7 +490,7 @@ fn location(response: &TestResponse) -> &str {
 async fn credentials(fixture: &Fixture) -> Vec<Value> {
 	let (status, rows) = common::request(
 		&fixture.app,
-		&fixture.f.config.api_token,
+		&common::tenant_token(&fixture.f.store, "alpha").await,
 		"GET",
 		"/api/tenants/alpha/provider-credentials",
 		Value::Null,
@@ -566,7 +635,7 @@ async fn connect_and_reconnect_write_only_through_oauth_and_never_disclose_keys(
 	// connection replaces it instead of leaving the new key unbound.
 	let (status, revoked) = common::request(
 		&fixture.app,
-		&fixture.f.config.api_token,
+		&common::tenant_token(&fixture.f.store, "alpha").await,
 		"POST",
 		&format!(
 			"/api/tenants/alpha/provider-credentials/{}/revoke",
@@ -608,7 +677,10 @@ async fn bound_credential(fixture: &Fixture) -> Value {
 		"/api/tenants/alpha/provider-credential-bindings/openrouter",
 		&[(
 			"authorization",
-			&format!("Bearer {}", fixture.f.config.api_token),
+			&format!(
+				"Bearer {}",
+				common::tenant_token(&fixture.f.store, "alpha").await
+			),
 		)],
 		Value::Null,
 	)
@@ -808,17 +880,16 @@ async fn only_browser_sessions_start_and_return_paths_stay_local(
 	application: common::ApplicationFixture,
 ) {
 	let fixture = Fixture::new(application, parts);
-	// The Deployment Administrator bearer has no browser to bind.
+	let context = member_context(&fixture).await;
+	// A Tenant Subject bearer has no browser to bind.
+	let token = common::tenant_token(&fixture.f.store, "alpha").await;
 	let response = send(
 		&fixture.app,
 		"POST",
 		"/api/tenants/alpha/provider-authorizations/openrouter",
 		&[
 			("content-type", "application/json"),
-			(
-				"authorization",
-				&format!("Bearer {}", fixture.f.config.api_token),
-			),
+			("authorization", &format!("Bearer {token}")),
 		],
 		json!({}),
 	)
@@ -834,29 +905,49 @@ async fn only_browser_sessions_start_and_return_paths_stay_local(
 			("cookie", "__Host-aidash-session=browser-a"),
 			("origin", ORIGIN),
 			("x-aidash-csrf", "csrf-a"),
-			("x-aidash-context", "deployment_administrator"),
+			("x-aidash-context", &context),
 		],
 		json!({"key_material": "sk-or-v1-pasted"}),
 	)
 	.await;
 	assert!(response.status().is_client_error());
-	for return_to in ["https://attacker.example/", "//attacker.example/"] {
-		let response = send(
-			&fixture.app,
-			"POST",
-			"/api/tenants/alpha/provider-authorizations/openrouter",
-			&[
-				("content-type", "application/json"),
-				("cookie", "__Host-aidash-session=browser-a"),
-				("origin", ORIGIN),
-				("x-aidash-csrf", "csrf-a"),
-				("x-aidash-context", "deployment_administrator"),
-			],
+	// Browsers drop tab and newline characters from a `Location`, so these
+	// would become `//attacker.example/`; every control character is refused.
+	for return_to in [
+		"https://attacker.example/",
+		"//attacker.example/",
+		"/\\attacker.example/",
+		"/\t/attacker.example/",
+		"/\n/attacker.example/",
+		"/\r/attacker.example/",
+		"/\u{0}/attacker.example/",
+		"/\u{7f}/attacker.example/",
+		"/\u{85}/attacker.example/",
+	] {
+		let response = start_request(
+			&fixture,
+			"browser-a",
+			&context,
 			json!({"return_to": return_to}),
+			None,
 		)
 		.await;
-		assert!(response.status().is_client_error(), "{return_to}");
+		assert_eq!(response.status(), 400, "{return_to:?}");
 	}
+	assert_eq!(pending_authorizations(&fixture).await, 0);
+	// A local path with a query is kept and receives the outcome.
+	let started = start(
+		&fixture,
+		"browser-a",
+		json!({"return_to": "/settings?view=providerCredentials"}),
+		None,
+	)
+	.await;
+	let response = callback(&fixture, "browser-a", &started.browser, "").await;
+	assert_eq!(
+		location(&response),
+		"/settings?view=providerCredentials&provider_authorization=denied"
+	);
 	assert_eq!(credentials(&fixture).await.len(), 0);
 	common::cleanup(fixture.f, &fixture.url, &fixture.schema).await;
 }

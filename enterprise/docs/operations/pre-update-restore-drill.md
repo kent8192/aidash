@@ -1,9 +1,11 @@
 # Pre-update Backup restore drill
 
 Run this before production activation, then quarterly, and after a material change
-to backup selection, storage, the Home ledger or restoration. #435 requires an
+to backup selection, storage, the Home ledger or restoration. Acceptance needs an
 actual supervised run; offline tests and Terraform configuration are not its
-acceptance evidence. Production is not deployed yet, so the first run is pending.
+evidence. Production is not deployed yet, so the first run is pending in
+[#562](https://github.com/kent8192/aidash/issues/562), together with the
+lost-ledger drill.
 
 Use a quiesced Pre-update Backup and its exact update entry. Keep that environment
 sealed: the supported baseline has no `writers_started` marker. A failed update

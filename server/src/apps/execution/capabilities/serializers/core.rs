@@ -7,6 +7,7 @@ use std::path::PathBuf;
 #[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema, reinhardt::Validate)]
 #[serde(default, deny_unknown_fields)]
 pub struct Profile {
+	pub mcp: aidash_domain::agent_plugin::interaction::InteractionLimits,
 	pub egress: Option<EgressSettings>,
 	pub limits: limits::ContentLimits,
 	pub admission: bool,
@@ -28,6 +29,10 @@ pub struct Profile {
 	pub approval_seconds: u64,
 	pub output_bytes: u64,
 	pub staging_seconds: u64,
+	/// The only Pod port the Preview NetworkPolicy admits, and the absolute
+	/// lifetime the Runner allows a `serve` operation (ADR 0070).
+	pub preview_port: Option<u16>,
+	pub preview_maximum_seconds: Option<i64>,
 	pub runner: Option<RunnerProfile>,
 }
 

@@ -1,3 +1,5 @@
+import { SafetyStopPanel } from "./safety-stop";
+import { ElicitationForm, elicitationMessage } from "./elicitation";
 import { RunCompactionDetails } from "../compaction-details";
 import { RunPlanUsage } from "../model-source";
 import { X } from "lucide-react";
@@ -224,48 +226,52 @@ export function OperationsDialog({
               (request &&
               request.response === null &&
               (!d.node || d.node === data.node.id) ? (
-                <form
-                  className={formClass}
-                  onSubmit={(event) => {
-                    event.preventDefault();
-                    const raw = String(
-                      new FormData(event.currentTarget).get("answer"),
-                    );
-                    let response: unknown = raw;
-                    try {
-                      response = JSON.parse(raw);
-                    } catch {
-                      /* A plain text answer is valid. */
-                    }
-                    void submit(() => humanAnswer(request.id, response));
-                  }}
-                >
-                  <div className="grid min-w-0 justify-items-start gap-2">
-                    <Badge value={request.kind} />
-                    <p className="whitespace-pre-wrap text-[13px] leading-relaxed text-foreground [overflow-wrap:anywhere]">
-                      {request.prompt}
-                    </p>
-                    {continues && (
-                      <Hint>
-                        {copy.continuesAt.replace(
-                          "{time}",
-                          deadlineTime(continues, locale),
-                        )}
-                      </Hint>
-                    )}
-                  </div>
-                  <Field label={t("answer")}>
-                    <Textarea name="answer" rows={5} required />
-                  </Field>
-                  <div className="flex justify-end">
-                    <Button type="submit">{copy.send}</Button>
-                  </div>
-                </form>
+                request.kind === "MCP_ELICITATION" ? (
+                  <ElicitationForm request={request} submit={submit} />
+                ) : (
+                  <form
+                    className={formClass}
+                    onSubmit={(event) => {
+                      event.preventDefault();
+                      const raw = String(
+                        new FormData(event.currentTarget).get("answer"),
+                      );
+                      let response: unknown = raw;
+                      try {
+                        response = JSON.parse(raw);
+                      } catch {
+                        /* A plain text answer is valid. */
+                      }
+                      void submit(() => humanAnswer(request.id, response));
+                    }}
+                  >
+                    <div className="grid min-w-0 justify-items-start gap-2">
+                      <Badge value={request.kind} />
+                      <p className="whitespace-pre-wrap text-[13px] leading-relaxed text-foreground [overflow-wrap:anywhere]">
+                        {elicitationMessage(request)}
+                      </p>
+                      {continues && (
+                        <Hint>
+                          {copy.continuesAt.replace(
+                            "{time}",
+                            deadlineTime(continues, locale),
+                          )}
+                        </Hint>
+                      )}
+                    </div>
+                    <Field label={t("answer")}>
+                      <Textarea name="answer" rows={5} required />
+                    </Field>
+                    <div className="flex justify-end">
+                      <Button type="submit">{copy.send}</Button>
+                    </div>
+                  </form>
+                )
               ) : request && answeredAtDeadline(request) ? (
                 <div className="grid min-w-0 justify-items-start gap-2">
                   <Badge value={request.kind} />
                   <p className="whitespace-pre-wrap text-[13px] leading-relaxed text-foreground [overflow-wrap:anywhere]">
-                    {request.prompt}
+                    {elicitationMessage(request)}
                   </p>
                   <Hint role="status">{copy.noAnswerBeforeDeadline}</Hint>
                 </div>
@@ -501,6 +507,9 @@ function RunPanel({
   const managed =
     run.home_node !== data.node.id && data.access.kind === "subject";
   const controllable = !terminal && !managed;
+  // A Deployment Administrator stops a Run only through a Safety Stop, with a
+  // reason, and never resumes it (ADR 0101).
+  const administrator = data.access.kind === "deployment_administrator";
   const home = isLocalRun(run, data);
   return (
     <>
@@ -518,7 +527,7 @@ function RunPanel({
       </header>
       {(controllable || home) && (
         <div className="flex min-w-0 flex-wrap gap-2">
-          {controllable && (
+          {controllable && !administrator && (
             <>
               <Button
                 variant="outline"
@@ -550,6 +559,15 @@ function RunPanel({
           )}
         </div>
       )}
+      {controllable && administrator && <SafetyStopPanel run={id} />}
+      {run.control !== "ACTIVE" &&
+        run.control_source === "deployment_administrator" && (
+          <Hint role="status">
+            {run.control === "CANCELLED"
+              ? copy.cancelledByAdministrator
+              : copy.pausedByAdministrator}
+          </Hint>
+        )}
       <RunPlanUsage run={run} data={data} />
       {run.state_error && <Alert>{run.state_error}</Alert>}
       {run.error && (

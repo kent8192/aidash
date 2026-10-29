@@ -141,28 +141,6 @@ pub(super) fn migration() -> Migration {
 			partition: None,
 		})
 		.add_operation(Operation::CreateTable {
-			name: "authorization_peer_graph_grants".to_owned(),
-			columns: vec![
-				ColumnDefinition::new("source_deployment", FieldType::Text).with_not_null(true),
-				ColumnDefinition::new("source_identity", FieldType::Uuid).with_not_null(true),
-				ColumnDefinition::new("source_key_id", FieldType::Text).with_not_null(true),
-				ColumnDefinition::new("source_public_key_pem", FieldType::Text).with_not_null(true),
-				ColumnDefinition::new("tenant", FieldType::Text).with_not_null(true),
-				ColumnDefinition::new("enabled", FieldType::Boolean).with_not_null(true),
-				ColumnDefinition::new("revision", FieldType::BigInteger).with_not_null(true),
-				ColumnDefinition::new("updated_at", FieldType::TimestampTz)
-					.with_not_null(true)
-					.with_default(Some(r#"clock_timestamp()"#.to_owned())),
-			],
-			constraints: vec![Constraint::Check {
-				name: "authorization_peer_graph_grants_revision_check".to_owned(),
-				expression: r#"(revision > 0)"#.to_owned(),
-			}],
-			without_rowid: None,
-			interleave_in_parent: None,
-			partition: None,
-		})
-		.add_operation(Operation::CreateTable {
 			name: "authorization_remote_commands".to_owned(),
 			columns: vec![
 				ColumnDefinition::new("grant_id", FieldType::Uuid).with_not_null(true),

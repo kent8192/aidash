@@ -112,10 +112,6 @@ impl Drop for Active {
 }
 #[async_trait]
 impl ManagementRepository for Repository {
-	async fn submit_deployment_administrator(&self, manifest: &Manifest) -> Result<Status> {
-		self.event("submit:deployment_administrator")?;
-		Ok(status(manifest.id))
-	}
 	async fn submit_subject(
 		&self,
 		identity: &ExecutionPrincipal,
@@ -127,14 +123,10 @@ impl ManagementRepository for Repository {
 	}
 	async fn candidates(
 		&self,
-		identity: Option<&ExecutionPrincipal>,
+		_identity: &ExecutionPrincipal,
 		cursor: Option<(DateTime<Utc>, Uuid)>,
 	) -> Result<Vec<Status>> {
-		self.event(if identity.is_some() {
-			"candidates:subject"
-		} else {
-			"candidates:deployment_administrator"
-		})?;
+		self.event("candidates:subject")?;
 		let mut state = self.state.lock().unwrap();
 		state.cursors.push(cursor);
 		Ok(state
@@ -205,12 +197,6 @@ impl ManagementRepository for Repository {
 			}],
 		))
 	}
-	async fn abort_deployment_administrator(&self, id: Uuid) -> Result<Status> {
-		self.event("abort:deployment_administrator")?;
-		let mut row = status(id);
-		row.decision = Some("ABORT".into());
-		Ok(row)
-	}
 	async fn participants(&self) -> Result<Vec<LocalStatus>> {
 		self.event("participants")?;
 		Ok(vec![])
@@ -218,24 +204,17 @@ impl ManagementRepository for Repository {
 }
 
 #[rstest]
-#[case::deployment_administrator(false, "submit:deployment_administrator")]
-#[case::subject(true, "submit:subject")]
 #[tokio::test]
 async fn authenticated_authority_selects_the_shared_submission_workflow(
 	repository: Repository,
 	identity: ExecutionPrincipal,
-	#[case] subject: bool,
-	#[case] call: &str,
 ) {
 	let manifest = manifest(Uuid::from_u128(1));
 	assert_eq!(
-		submit(&repository, subject.then_some(&identity), &manifest)
-			.await
-			.unwrap()
-			.id,
+		submit(&repository, &identity, &manifest).await.unwrap().id,
 		manifest.id
 	);
-	assert_eq!(repository.calls(), [call]);
+	assert_eq!(repository.calls(), ["submit:subject"]);
 }
 
 #[rstest]
@@ -257,7 +236,7 @@ async fn list_suppresses_only_existing_disclosure_failures(
 		.unwrap()
 		.denials
 		.insert(Uuid::from_u128(1), category);
-	assert!(list(&repository, Some(&identity)).await.unwrap().is_empty());
+	assert!(list(&repository, &identity).await.unwrap().is_empty());
 	assert_eq!(
 		repository.calls(),
 		["candidates:subject", "transaction.read"]
@@ -281,7 +260,7 @@ async fn unexpected_contract_and_database_failures_are_not_hidden(
 		.unwrap()
 		.denials
 		.insert(Uuid::from_u128(1), category);
-	let error = list(&repository, Some(&identity)).await.unwrap_err();
+	let error = list(&repository, &identity).await.unwrap_err();
 	assert_eq!(error.to_string(), failure(category).to_string());
 	if category == "opaque" {
 		assert!(matches!(error, Error::Port(_)));
@@ -305,7 +284,7 @@ async fn keyset_paging_fills_200_visible_rows_in_order_with_eight_live_checks(
 			.map(|id| (Uuid::from_u128(id), "forbidden"))
 			.collect();
 	}
-	let rows = list(&repository, Some(&identity)).await.unwrap();
+	let rows = list(&repository, &identity).await.unwrap();
 	assert_eq!(
 		rows.iter().map(|row| row.id).collect::<Vec<_>>(),
 		(101..=300).rev().map(Uuid::from_u128).collect::<Vec<_>>()
@@ -316,21 +295,6 @@ async fn keyset_paging_fills_200_visible_rows_in_order_with_eight_live_checks(
 	);
 	assert_eq!(repository.peak.load(Ordering::SeqCst), 8);
 	assert_eq!(repository.active.load(Ordering::SeqCst), 0);
-}
-
-#[rstest]
-#[tokio::test]
-async fn deployment_administrator_list_uses_durable_rows_without_subject_disclosure(
-	repository: Repository,
-) {
-	repository
-		.state
-		.lock()
-		.unwrap()
-		.denials
-		.insert(Uuid::from_u128(1), "forbidden");
-	assert_eq!(list(&repository, None).await.unwrap().len(), 1);
-	assert_eq!(repository.calls(), ["candidates:deployment_administrator"]);
 }
 
 #[rstest]
@@ -346,7 +310,7 @@ async fn details_fail_before_disclosing_vote_or_audit_history(
 ) {
 	repository.state.lock().unwrap().failure = Some(failure);
 	assert!(
-		details(&repository, Some(&identity), Uuid::from_u128(1))
+		details(&repository, &identity, Uuid::from_u128(1))
 			.await
 			.is_err()
 	);
@@ -360,7 +324,7 @@ async fn authorized_details_preserve_vote_and_audit_facts(
 	identity: ExecutionPrincipal,
 ) {
 	let id = Uuid::from_u128(1);
-	let details = details(&repository, Some(&identity), id).await.unwrap();
+	let details = details(&repository, &identity, id).await.unwrap();
 	assert_eq!(details.transaction, status(id));
 	assert_eq!(
 		details.participants,
@@ -378,28 +342,23 @@ async fn authorized_details_preserve_vote_and_audit_facts(
 }
 
 #[rstest]
-#[case::subject(true, & ["owner", "status", "transaction.abort", "status"])]
-#[case::deployment_administrator(false, & ["abort:deployment_administrator"])]
 #[tokio::test]
 async fn abort_returns_the_new_decision_after_its_existing_authority_workflow(
 	repository: Repository,
 	identity: ExecutionPrincipal,
-	#[case] subject: bool,
-	#[case] calls: &[&str],
 ) {
 	assert_eq!(
-		abort(
-			&repository,
-			subject.then_some(&identity),
-			Uuid::from_u128(1)
-		)
-		.await
-		.unwrap()
-		.decision
-		.as_deref(),
+		abort(&repository, &identity, Uuid::from_u128(1))
+			.await
+			.unwrap()
+			.decision
+			.as_deref(),
 		Some("ABORT")
 	);
-	assert_eq!(repository.calls(), calls);
+	assert_eq!(
+		repository.calls(),
+		["owner", "status", "transaction.abort", "status"]
+	);
 }
 
 #[rstest]

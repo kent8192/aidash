@@ -28,7 +28,7 @@ Visibility is defined per application operation. Separate reads do not form a gl
 
 ## Authority and acceptance
 
-Deployment Administrators retain transaction administration and all supported mutations. Subjects may submit Workspace updates, Task completion and paired Run finalization. Registry registration and the local participant inventory remain Deployment Administrator-only.
+A Deployment Administrator holds no Tenant authority (ADR 0102): it reads the local participant inventory (`GET /api/transactions/participants`) and a Tenant's transaction revocations, and is refused with 403 when it submits, lists, reads or aborts a transaction. Subjects submit Workspace updates, Task completion and paired Run finalization, and read and abort the transactions their authority covers.
 
 Scoped submission requires `transaction.submit` plus the underlying read/mutation permissions. Task completion also requires `artifact.create` using the stored Task owner. Run finalization inherits the stored execution chain; intersecting permissions cannot be replaced by the caller's root subject alone. Source policies additionally authorize `transaction.submit` or `transaction.read` on foreign resources identified as `<Node address>:<resource UUID>`. Each receiver requires an explicit Peer Mapping of the source Node and subject, at the receiving Node, to a live local credential and independently evaluates its local policy.
 

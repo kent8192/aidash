@@ -395,7 +395,7 @@ migration that creates each table, because Aidash is undeployed:
 
 Aidash is undeployed, so #241 edits each migration below in place and adds no migration file. Each paragraph names what the edited migration now creates, drops or renames. The bullets above describe the same tables by policy and key.
 
-`identity/0002_tables`, `identity/0003_keys_indexes`, `identity/0004_references` and `identity/0007_model_state` create `node_names` and `nodes` after `tenants`. `authorization_catalog` and its history gain `node`, and their primary keys start with `(tenant, node)`. `authorization_peer_graph_grants` keys on `(tenant, source_deployment, source_identity)` and stores the viewer Deployment's `source_key_id` and `source_public_key_pem`.
+`identity/0002_tables`, `identity/0003_keys_indexes`, `identity/0004_references` and `identity/0007_model_state` create `node_names` and `nodes` after `tenants`. `authorization_catalog` and its history gain `node`, and their primary keys start with `(tenant, node)`.
 
 `workspaces/0002_tables`, `workspaces/0004_references` and `workspaces/0007_model_state` add `workspaces.node`, which references `nodes(tenant, name)`.
 
@@ -520,6 +520,8 @@ pruning or summary, journals those events as `imported`.
 
 `registry/0034_research_view` (after `registry/0033_row_level_security`, and like `registry/0031_model_request_estimator` after the Tenant Registry migrations of #243) admits the research `view` operation for `research.page@1` and `research.fixture@1` in `aidash_descriptor_is_valid` (#312). The function body has no typed Reinhardt operation, so it is a reversible SQL asset; it extends the `0023_research_providers` body and rollback restores that body. It does not delete descriptors that already declare `view`, whose later rewrites the NOT VALID registry checks then reject.
 
+Before this native history is released, the same current function also admits the exact `core.preview@1` Sandboxed descriptors for `live_preview_start` and `live_preview_stop` (#405). Neither operation has a transport or lifecycle; all other providers, tiers, and descriptor fields remain subject to the existing checks.
+
 `registry/0035_decider_kind` (after `registry/0034_research_view`, and like `registry/0031_model_request_estimator` after the Tenant Registry migrations of #243) removes the `compactor` kind (#108 Part B, ADR 0042): it drops `registry_compactor_config` and replaces `registry_kind_check` with a list that names `decider` instead. A Decider's configuration is validated by the application. Aidash is undeployed, so there is no data rewrite: the new check fails while a compactor entry exists, and such entries must be registered again as Deciders. Typed constraint operations suffice. The generated state-only checkpoint `registry/0036_decider_kind_state` swaps `compactor` for `decider` in `registry_kind_model_enum_check`.
 
 `registry/0038_agent_plugin_copies` (after `registry/0037_tenant_owned_row_level_security`) creates `agent_plugin_copies` with typed operations (#414, ADR 0072): the Tenant's copy of each imported Agent Plugin, keyed by `(tenant, digest)` where `digest` is the plugin's tree digest. A row keeps the serialized loaded plugin (`plugin`), every fetched file (`files`, text or base64) and the paths the Agent Plugins specification forbids (`denied`). Checks require the `sha256:` digest form, the digest in `plugin` to equal the key and the three documents to have their JSON types. The copy exists before the Agent version that pins it, so the table has no key into `registry`; it references the Tenant root record through `agent_plugin_copies_tenant_root_fkey`. Rows are immutable: the repository inserts with `ON CONFLICT DO NOTHING` and never updates. `registry/0039_agent_plugin_copies_state` is the generated state-only checkpoint.
@@ -527,6 +529,8 @@ pruning or summary, journals those events as `imported`.
 `registry/0040_agent_plugin_copies_row_level_security` (after `registry/0039_agent_plugin_copies_state` and `identity/0028_tenancy_policy_functions`) enforces the forced Tenant policy on `agent_plugin_copies`, as `registry/0037` does for the tables that gained a `tenant` column in #265. It is a database-only `RunSQL` migration whose assets are the policy template rendered for the one table.
 
 `registry/0041_agent_plugins_definition` (after `registry/0040_agent_plugin_copies_row_level_security`) replaces the Agent Binding contract function so it accepts the Agent `agent_plugins` key of #414: an array of at most 8 objects, each with a `sha256:` `digest`, string `name` and `source`, `skills` and `findings` arrays and a `servers` object. An explicit null is rejected, and a plugin that carries Skills lets the Agent's instructions be empty, as a Skill Binding does. `AgentBindings::validate` checks the rest. It keeps the `0029_completion_policy` body otherwise. Rollback refuses with SQLSTATE `55000` while any Agent definition declares `agent_plugins` or any Run pins an Agent definition that does, then restores the `0029_completion_policy` body. The function body has no typed Reinhardt operation, so it lives in SQL assets.
+
+`registry/0045_agent_plugin_settings` (after `registry/0044_foreign_key_relations_state`) replaces the Agent Binding contract function so it accepts the Agent `agent_plugin_settings` key of #414: what an Agent version decides about the servers of the plugins it takes in (ADR 0072). The key is an object whose members are objects, plugin name to server name to settings. A settings object holds only `tools` (an array of strings, or null), `exposure` (`eager` or `deferred`, or null) and `read_only` (an array of objects with a string `name` and a string `schema_digest`). An explicit null is rejected for the key and for `read_only`, whose Rust fields have no `Option`. `AgentBindings::validate` checks the rest: that each key names an attached plugin and server, the name and count limits, and the digest format. It keeps the `0042_external_services` body otherwise, including External service Bindings. Rollback refuses with SQLSTATE `55000` while any Agent definition declares `agent_plugin_settings` or any Run pins an Agent definition that does, then restores the `0042_external_services` body. The function body has no typed Reinhardt operation, so it lives in SQL assets.
 
 `workspaces/0008_publishing_run` (after `workspaces/0007_model_state`) adds a nullable `run_id` to `messages` and `artifacts` with typed `AddColumn` operations. It records the Run that published the text on this Node, so a Source citation in it resolves only against that Run's Research evidence. It has no foreign key: the value outlives a deleted Run, so such a citation reads as unavailable rather than as text nobody published. Existing rows keep `NULL`, and rollback drops both columns.
 
@@ -564,6 +568,12 @@ pruning or summary, journals those events as `imported`.
 
 `execution/0049_foreign_key_relations_state`, `federation/0012_foreign_key_relations_state`, `identity/0039_foreign_key_relations_state`, `knowledge/0035_foreign_key_relations_state`, `registry/0044_foreign_key_relations_state` and `workspaces/0010_foreign_key_relations_state` (each after its app's previous leaf) are state-only. They record in the ORM snapshot the foreign keys that model fields now declare with `#[rel(foreign_key, shared_fields = ["tenant"], db_constraint = ...)]`, with the names, columns and actions that the `*_references` migrations and later migrations already created in PostgreSQL. A foreign key whose column is part of the primary key, or that is a generated column, stays a plain `_id` field and out of the snapshot. `registry/0044` is listed in `TENANT_REGISTRY_MIGRATIONS`.
 
+`execution/0050_mcp_elicitation_kind` (after `0049_foreign_key_relations_state`)
+adds `MCP_ELICITATION` to the physical human-request kind check with typed
+Reinhardt constraint operations. `0051_mcp_elicitation_state` updates the ORM enum
+state. Rollback's restored check refuses existing MCP elicitation rows rather
+than deleting them. Deploy API servers and workers together before enabling
+these requests; older binaries cannot decode the new kind.
 `registry/0045_context_sources` (after `0044_foreign_key_relations_state`) validates the optional native `context_source` declaration and the required workspace-observation source (#110, ADR 0086). Exact Tool and Decider references remain admission and live-authority checks. The migration replaces PostgreSQL JSON validation functions using DDL because Reinhardt has no typed function-body operation. It changes no rows and rollback refuses while declarations requiring the new schema remain.
 
 ## Projection comparison evidence (#181)
@@ -622,6 +632,20 @@ describes the prompt-free diagnostic export, complete attempt inventories and
 remaining live acceptance requirements. These migrations do not switch the
 projection default or rewrite pinned definitions and Runs.
 
+## Merged MCP and projection histories
+
+`execution/0052_merge_mcp_and_usage_evidence` depends on both
+`0051_mcp_elicitation_state` and `0051_compaction_provider_dispatch`.
+`registry/0046_merge_agent_plugin_and_projection` depends on both
+`0045_agent_plugin_settings` and `0045_projection_measurement_config`.
+These empty merge migrations give each app one leaf while preserving the
+original migration identities, dependencies, schema changes and rollback
+guards. New migrations depend on the merged leaf. They perform no schema
+operations and change neither retained MCP state nor projection behavior.
+
+`registry/0048_plugin_marketplace_merge` joins the Registry merge above with
+`0047_marketplace_recall_constraints`. This empty state-only migration keeps a
+single Registry leaf without rewriting either history or changing stored data.
 `execution/0058_research_projection_merge` and
 `registry/0046_context_projection_merge` join the independent Research/approval
 and projection evidence histories, and the Context Source and projection
@@ -639,6 +663,12 @@ single Registry leaf without rewriting either history or changing stored data.
 state-only migration preserves the durable Research result history and leaves
 a single Execution head without changing either existing branch.
 
+`execution/0060_plugin_research_merge` and `registry/0049_plugin_context_merge`
+join the MCP and Research/approval histories, and the Agent Plugin and Context
+Source histories, respectively. Both are empty state-only migrations. They
+preserve the existing migration identities and give each app one leaf without
+changing schema, retained inputs, or data.
+
 ## Home ledger recovery eligibility (#434)
 
 `knowledge/0036_memory_recovery_eligibility` (after
@@ -652,3 +682,31 @@ matching model state.
 `knowledge/0036_memory_attempt_evidence` without changing either migration. It
 is an empty state-only migration: both independent column changes apply before
 the single Knowledge head, and no schema or model state is overwritten.
+
+## Run control provenance and Safety Stops (#485, ADR 0101)
+
+`execution/0075_run_control_provenance` (after `execution/0074_federated_preview_authority`)
+adds `runs.control_revision` (bigint, default 0) and `runs.control_source` (text) with
+typed column operations; existing Runs start at revision 0 with the Tenant as the
+source. The model declares no default for the source, so the logical state drops it
+the way `execution/0050_usage_evidence` does. The revision changes only when `control`
+changes, so a Safety Stop's expected revision is not made stale by worker progress.
+
+`execution/0076_run_control_trigger` is database-only. It restores the physical
+`'tenant'` default of `control_source` for writers that name no source, and adds the
+CHECK that the revision is not negative. Reinhardt has no trigger
+operation, so the function `aidash_run_control_provenance` and its `BEFORE UPDATE OF
+control` trigger on `runs` are the documented raw-SQL exception. A writer that updates
+`control_revision` itself (the ordinary control path and a Safety Stop) is left alone;
+every other writer that changes `control` gets the revision bumped and is attributed to
+`system`. Its reverse drops the trigger and function.
+
+`execution/0077_run_safety_stops` creates the audit record and replay receipt, one row
+per accepted or no-op command, with typed operations. `run_id` has no foreign key,
+because the record is audit history that outlives the Run, its Workspace and the purge
+of its Tenant (it is classified `audit`, erased by `audit_retention_days`). Its Tenant
+reference is the usual root record. `(tenant, caller_key, operation_id)` is unique, and
+CHECKs bound the reason to 1 to 1000 characters and tie `identity_id` to a browser actor.
+`execution/0078_run_safety_stops_row_level_security` adds the tenant policy template
+through `RunSQL`, and `execution/0079_run_safety_stops_state` is the generated state-only
+snapshot that leaves the physical constraints and indexes to `0077`.

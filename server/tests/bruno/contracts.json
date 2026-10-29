@@ -6,10 +6,10 @@
     "source": "server/src/apps/identity/views/state_management.rs",
     "json": false,
     "uuid_parameters": ["id"],
-    "query_parameters": [],
+    "query_parameters": ["tenant"],
     "response": {
       "schema": {
-        "$ref": "#/components/schemas/RunManagement"
+        "$ref": "#/components/schemas/ManagementView"
       },
       "definitions": {
         "CleanupStatus": {
@@ -70,6 +70,37 @@
             "refused"
           ]
         },
+        "ControlSource": {
+          "oneOf": [
+            {
+              "type": "string",
+              "description": "A Tenant Subject, or the Run's creation.",
+              "enum": ["tenant"]
+            },
+            {
+              "type": "string",
+              "description": "A Deployment Administrator's Safety Stop.",
+              "enum": ["deployment_administrator"]
+            },
+            {
+              "type": "string",
+              "description": "Aidash itself, such as the pause for an identity status outage.",
+              "enum": ["system"]
+            }
+          ],
+          "description": "The kind of actor that last changed a Run's control. It is shown to anyone\nwho can see the Run; the person and the reason are not."
+        },
+        "ManagementView": {
+          "anyOf": [
+            {
+              "$ref": "#/components/schemas/RunManagement"
+            },
+            {
+              "$ref": "#/components/schemas/RunControlFacts"
+            }
+          ],
+          "description": "What `GET` returns: a Subject's diagnostics, or an administrator's metadata."
+        },
         "RemoteSemanticFailure": {
           "oneOf": [
             {
@@ -98,6 +129,37 @@
         "RunControl": {
           "type": "string",
           "enum": ["ACTIVE", "PAUSED", "CANCELLED"]
+        },
+        "RunControlFacts": {
+          "type": "object",
+          "description": "The only facts a Deployment Administrator reads of a Run.",
+          "required": [
+            "id",
+            "phase",
+            "control",
+            "control_revision",
+            "control_source"
+          ],
+          "properties": {
+            "control": {
+              "$ref": "#/components/schemas/RunControl"
+            },
+            "control_revision": {
+              "type": "integer",
+              "format": "int64",
+              "description": "Changes only when control changes; send it back with a stop."
+            },
+            "control_source": {
+              "$ref": "#/components/schemas/ControlSource"
+            },
+            "id": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "phase": {
+              "$ref": "#/components/schemas/RunPhase"
+            }
+          }
         },
         "RunManagement": {
           "type": "object",
@@ -224,7 +286,7 @@
     "query_parameters": [],
     "response": {
       "schema": {
-        "$ref": "#/components/schemas/RunManagement"
+        "$ref": "#/components/schemas/ManagementResult"
       },
       "definitions": {
         "CleanupStatus": {
@@ -284,6 +346,17 @@
             "output_truncated",
             "refused"
           ]
+        },
+        "ManagementResult": {
+          "anyOf": [
+            {
+              "$ref": "#/components/schemas/RunManagement"
+            },
+            {
+              "$ref": "#/components/schemas/SafetyStopReceipt"
+            }
+          ],
+          "description": "What `POST` returns: the Run for a Subject, or the receipt for an administrator."
         },
         "RemoteSemanticFailure": {
           "oneOf": [
@@ -389,6 +462,50 @@
             "FAILED",
             "CANCELLED"
           ]
+        },
+        "SafetyStopAction": {
+          "type": "string",
+          "description": "What a Safety Stop asks of the Run.",
+          "enum": ["pause", "cancel"]
+        },
+        "SafetyStopOutcome": {
+          "oneOf": [
+            {
+              "type": "string",
+              "description": "The control change was recorded.",
+              "enum": ["accepted"]
+            },
+            {
+              "type": "string",
+              "description": "The Run had already ended or its cancellation was already requested.",
+              "enum": ["no_op"]
+            }
+          ],
+          "description": "How a command ended."
+        },
+        "SafetyStopReceipt": {
+          "type": "object",
+          "description": "What the command acknowledges. It describes the operation, not the Run's\nstate after later commands, and does not claim that execution has stopped.",
+          "required": ["operation_id", "run_id", "tenant", "action", "outcome"],
+          "properties": {
+            "action": {
+              "$ref": "#/components/schemas/SafetyStopAction"
+            },
+            "operation_id": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "outcome": {
+              "$ref": "#/components/schemas/SafetyStopOutcome"
+            },
+            "run_id": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "tenant": {
+              "type": "string"
+            }
+          }
         },
         "SemanticRecovery": {
           "type": "object",
@@ -1195,7 +1312,11 @@
     "source": "server/src/apps/identity/views/remote_commands.rs",
     "json": true,
     "uuid_parameters": [],
-    "query_parameters": []
+    "query_parameters": [],
+    "response": {
+      "schema": {},
+      "definitions": {}
+    }
   },
   {
     "method": "POST",
@@ -2832,121 +2953,6 @@
     }
   },
   {
-    "method": "GET",
-    "path": "/api/authorization/{tenant}/peer-graph-grants",
-    "name": "authorization_peer_graph_grants",
-    "source": "server/src/apps/identity/views/graph.rs",
-    "json": false,
-    "uuid_parameters": [],
-    "query_parameters": ["limit", "offset"],
-    "response": {
-      "schema": {
-        "type": "array",
-        "items": {
-          "$ref": "#/components/schemas/PeerGraphGrant"
-        }
-      },
-      "definitions": {
-        "PeerGraphGrant": {
-          "type": "object",
-          "required": [
-            "source_deployment",
-            "source_identity",
-            "source_key_id",
-            "tenant",
-            "enabled",
-            "revision",
-            "updated_at"
-          ],
-          "properties": {
-            "enabled": {
-              "type": "boolean"
-            },
-            "revision": {
-              "type": "integer",
-              "format": "int64"
-            },
-            "source_deployment": {
-              "type": "string",
-              "description": "The viewer's Deployment id."
-            },
-            "source_identity": {
-              "type": "string",
-              "format": "uuid"
-            },
-            "source_key_id": {
-              "type": "string",
-              "description": "The key ID of the viewer Deployment's pinned Deployment Key."
-            },
-            "tenant": {
-              "type": "string"
-            },
-            "updated_at": {
-              "type": "string",
-              "format": "date-time"
-            }
-          }
-        }
-      }
-    }
-  },
-  {
-    "method": "POST",
-    "path": "/api/authorization/{tenant}/peer-graph-grants",
-    "name": "authorization_set_peer_graph_grant",
-    "source": "server/src/apps/identity/views/graph.rs",
-    "json": true,
-    "uuid_parameters": [],
-    "query_parameters": [],
-    "response": {
-      "schema": {
-        "$ref": "#/components/schemas/PeerGraphGrant"
-      },
-      "definitions": {
-        "PeerGraphGrant": {
-          "type": "object",
-          "required": [
-            "source_deployment",
-            "source_identity",
-            "source_key_id",
-            "tenant",
-            "enabled",
-            "revision",
-            "updated_at"
-          ],
-          "properties": {
-            "enabled": {
-              "type": "boolean"
-            },
-            "revision": {
-              "type": "integer",
-              "format": "int64"
-            },
-            "source_deployment": {
-              "type": "string",
-              "description": "The viewer's Deployment id."
-            },
-            "source_identity": {
-              "type": "string",
-              "format": "uuid"
-            },
-            "source_key_id": {
-              "type": "string",
-              "description": "The key ID of the viewer Deployment's pinned Deployment Key."
-            },
-            "tenant": {
-              "type": "string"
-            },
-            "updated_at": {
-              "type": "string",
-              "format": "date-time"
-            }
-          }
-        }
-      }
-    }
-  },
-  {
     "method": "POST",
     "path": "/federation/v0.1/scoped/graph",
     "name": "graphmanagement-project",
@@ -3339,7 +3345,7 @@
     "source": "server/src/apps/identity/views/policies.rs",
     "json": false,
     "uuid_parameters": [],
-    "query_parameters": ["mine", "offset"],
+    "query_parameters": ["active", "mine", "offset"],
     "response": {
       "schema": {
         "type": "array",
@@ -4465,6 +4471,95 @@
         "items": {}
       },
       "definitions": {}
+    }
+  },
+  {
+    "method": "GET",
+    "path": "/api/authorization/{tenant}/safety-stops",
+    "name": "authorization-safety-stops",
+    "source": "server/src/apps/identity/views/policies.rs",
+    "json": false,
+    "uuid_parameters": [],
+    "query_parameters": ["limit", "offset"],
+    "response": {
+      "schema": {
+        "type": "array",
+        "items": {
+          "$ref": "#/components/schemas/SafetyStopRecord"
+        }
+      },
+      "definitions": {
+        "SafetyStopAction": {
+          "type": "string",
+          "description": "What a Safety Stop asks of the Run.",
+          "enum": ["pause", "cancel"]
+        },
+        "SafetyStopOutcome": {
+          "oneOf": [
+            {
+              "type": "string",
+              "description": "The control change was recorded.",
+              "enum": ["accepted"]
+            },
+            {
+              "type": "string",
+              "description": "The Run had already ended or its cancellation was already requested.",
+              "enum": ["no_op"]
+            }
+          ],
+          "description": "How a command ended."
+        },
+        "SafetyStopRecord": {
+          "type": "object",
+          "description": "One Safety Stop as the Tenant's audit readers see it (`decision.read`). The\nreason is visible here and nowhere a Run's ordinary readers look.",
+          "required": [
+            "id",
+            "run_id",
+            "action",
+            "actor_kind",
+            "identity_id",
+            "reason",
+            "operation_id",
+            "outcome",
+            "created_at"
+          ],
+          "properties": {
+            "action": {
+              "$ref": "#/components/schemas/SafetyStopAction"
+            },
+            "actor_kind": {
+              "type": "string"
+            },
+            "created_at": {
+              "type": "string",
+              "format": "date-time"
+            },
+            "id": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "identity_id": {
+              "type": ["string", "null"],
+              "format": "uuid",
+              "description": "The browser Identity of a named administrator; absent for the shared token."
+            },
+            "operation_id": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "outcome": {
+              "$ref": "#/components/schemas/SafetyStopOutcome"
+            },
+            "reason": {
+              "type": "string"
+            },
+            "run_id": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        }
+      }
     }
   },
   {
@@ -7996,6 +8091,17 @@
               "type": ["string", "null"],
               "description": "The research operation of a Web disclosure approval, or of the\napproval a Web disclosure Run grant came from; for a Tool call\napproval, the operation of the tool the call invokes."
             },
+            "plugin_tool": {
+              "anyOf": [
+                {
+                  "$ref": "#/components/schemas/PluginToolCard"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "For a Tool call approval of a tool a Run pinned from an Agent Plugin, or a Run grant\nfrom one, the plugin, server and tool, and the plugin copy that declared them. `tool` and\n`version` then hold the tool's path and the copy's digest."
+            },
             "provider": {
               "type": ["string", "null"]
             },
@@ -8015,6 +8121,26 @@
             "run_id": {
               "type": "string",
               "format": "uuid"
+            },
+            "sampling": {
+              "anyOf": [
+                {
+                  "$ref": "#/components/schemas/SamplingRequest"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "sampling_target": {
+              "anyOf": [
+                {
+                  "$ref": "#/components/schemas/SamplingTarget"
+                },
+                {
+                  "type": "null"
+                }
+              ]
             },
             "state": {
               "type": "string"
@@ -8053,6 +8179,90 @@
               "format": "uuid"
             }
           }
+        },
+        "PluginName": {
+          "type": "string",
+          "description": "A plugin name: 1-64 characters of `a-z0-9.-`, starting and ending alphanumeric, with neither\n`--` nor `..`."
+        },
+        "PluginToolCard": {
+          "type": "object",
+          "description": "The Agent Plugin tool a Tool call approval is asked for.",
+          "required": ["plugin", "server", "tool", "digest"],
+          "properties": {
+            "digest": {
+              "type": "string",
+              "description": "The digest of the plugin copy the Agent version pins."
+            },
+            "plugin": {
+              "type": "string"
+            },
+            "server": {
+              "type": "string"
+            },
+            "tool": {
+              "type": "string",
+              "description": "The server's own name for the tool."
+            }
+          }
+        },
+        "SamplingMessage": {
+          "type": "object",
+          "required": ["role", "text"],
+          "properties": {
+            "role": {
+              "type": "string"
+            },
+            "text": {
+              "type": "string"
+            }
+          }
+        },
+        "SamplingRequest": {
+          "type": "object",
+          "description": "Only text sampling is accepted; no roots, tools, context inclusion or model\npreferences can enlarge the Run's authority.",
+          "required": ["messages", "system_prompt", "max_tokens"],
+          "properties": {
+            "max_tokens": {
+              "type": "integer",
+              "format": "uint32",
+              "minimum": 0
+            },
+            "messages": {
+              "type": "array",
+              "items": {
+                "$ref": "#/components/schemas/SamplingMessage"
+              }
+            },
+            "system_prompt": {
+              "type": "string"
+            }
+          }
+        },
+        "SamplingTarget": {
+          "type": "object",
+          "required": ["agent", "plugin", "server", "digest", "origin"],
+          "properties": {
+            "agent": {
+              "type": "string"
+            },
+            "digest": {
+              "type": "string"
+            },
+            "origin": {
+              "type": "string"
+            },
+            "plugin": {
+              "$ref": "#/components/schemas/PluginName"
+            },
+            "server": {
+              "$ref": "#/components/schemas/ServerName"
+            }
+          },
+          "additionalProperties": false
+        },
+        "ServerName": {
+          "type": "string",
+          "description": "Aidash's name for a server: 1-64 characters of `A-Za-z0-9_.-`."
         }
       }
     }
@@ -9395,7 +9605,11 @@
     "source": "server/src/apps/execution/capabilities/views/management.rs",
     "json": true,
     "uuid_parameters": ["workspace", "id"],
-    "query_parameters": []
+    "query_parameters": [],
+    "response": {
+      "schema": {},
+      "definitions": {}
+    }
   },
   {
     "method": "GET",
@@ -11351,15 +11565,71 @@
             }
           }
         },
+        "ChannelCitation": {
+          "type": "object",
+          "description": "A citation as one viewer may see it.\n\n`available` is false when the hold that kept the version is gone; the version\nis never substituted. A viewer who may not download the Working Area sees the\npath and ids only, with `reason = \"forbidden\"` and no digest, size, media type\nor revision.",
+          "required": ["area_id", "file_id", "path", "available"],
+          "properties": {
+            "area_id": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "available": {
+              "type": "boolean"
+            },
+            "digest": {
+              "type": ["string", "null"]
+            },
+            "file_id": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "media_type": {
+              "type": ["string", "null"]
+            },
+            "path": {
+              "type": "string"
+            },
+            "reason": {
+              "type": ["string", "null"]
+            },
+            "revision": {
+              "type": ["integer", "null"],
+              "format": "int64"
+            },
+            "run_id": {
+              "type": ["string", "null"],
+              "format": "uuid"
+            },
+            "size": {
+              "type": ["integer", "null"],
+              "format": "uint64",
+              "minimum": 0
+            }
+          }
+        },
         "ChannelMessage": {
           "type": "object",
-          "required": ["message", "thread_id", "is_thread_root", "attachments"],
+          "required": [
+            "message",
+            "thread_id",
+            "is_thread_root",
+            "attachments",
+            "citations"
+          ],
           "properties": {
             "attachments": {
               "type": "array",
               "items": {
                 "$ref": "#/components/schemas/ChannelAttachment"
               }
+            },
+            "citations": {
+              "type": "array",
+              "items": {
+                "$ref": "#/components/schemas/ChannelCitation"
+              },
+              "default": []
             },
             "is_thread_root": {
               "type": "boolean"
@@ -11448,15 +11718,71 @@
             }
           }
         },
+        "ChannelCitation": {
+          "type": "object",
+          "description": "A citation as one viewer may see it.\n\n`available` is false when the hold that kept the version is gone; the version\nis never substituted. A viewer who may not download the Working Area sees the\npath and ids only, with `reason = \"forbidden\"` and no digest, size, media type\nor revision.",
+          "required": ["area_id", "file_id", "path", "available"],
+          "properties": {
+            "area_id": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "available": {
+              "type": "boolean"
+            },
+            "digest": {
+              "type": ["string", "null"]
+            },
+            "file_id": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "media_type": {
+              "type": ["string", "null"]
+            },
+            "path": {
+              "type": "string"
+            },
+            "reason": {
+              "type": ["string", "null"]
+            },
+            "revision": {
+              "type": ["integer", "null"],
+              "format": "int64"
+            },
+            "run_id": {
+              "type": ["string", "null"],
+              "format": "uuid"
+            },
+            "size": {
+              "type": ["integer", "null"],
+              "format": "uint64",
+              "minimum": 0
+            }
+          }
+        },
         "ChannelMessage": {
           "type": "object",
-          "required": ["message", "thread_id", "is_thread_root", "attachments"],
+          "required": [
+            "message",
+            "thread_id",
+            "is_thread_root",
+            "attachments",
+            "citations"
+          ],
           "properties": {
             "attachments": {
               "type": "array",
               "items": {
                 "$ref": "#/components/schemas/ChannelAttachment"
               }
+            },
+            "citations": {
+              "type": "array",
+              "items": {
+                "$ref": "#/components/schemas/ChannelCitation"
+              },
+              "default": []
             },
             "is_thread_root": {
               "type": "boolean"
@@ -16674,7 +17000,11 @@
     "source": "server/src/apps/marketplace/views/management.rs",
     "json": true,
     "uuid_parameters": [],
-    "query_parameters": []
+    "query_parameters": [],
+    "response": {
+      "schema": {},
+      "definitions": {}
+    }
   },
   {
     "method": "GET",
@@ -21808,7 +22138,7 @@
             },
             "source": {
               "type": "string",
-              "description": "The commit-pinned GitHub URL of the plugin root."
+              "description": "The commit-pinned GitHub URL or immutable Marketplace plugin/version URI."
             },
             "version": {
               "type": ["string", "null"]
@@ -23494,7 +23824,195 @@
     "source": "server/src/apps/federation/transactions/views/protocol.rs",
     "json": true,
     "uuid_parameters": [],
-    "query_parameters": []
+    "query_parameters": [],
+    "response": {
+      "schema": {
+        "$ref": "#/components/schemas/AtomicTransaction"
+      },
+      "definitions": {
+        "ArtifactInput": {
+          "type": "object",
+          "required": ["kind", "name", "content"],
+          "properties": {
+            "content": {},
+            "kind": {
+              "type": "string"
+            },
+            "name": {
+              "type": "string"
+            }
+          }
+        },
+        "AtomicTransaction": {
+          "type": "object",
+          "required": [
+            "id",
+            "digest",
+            "manifest",
+            "decision",
+            "visible",
+            "complete",
+            "last_error",
+            "created_at"
+          ],
+          "properties": {
+            "complete": {
+              "type": "boolean"
+            },
+            "created_at": {
+              "type": "string",
+              "format": "date-time"
+            },
+            "decision": {
+              "type": ["string", "null"]
+            },
+            "digest": {
+              "type": "string"
+            },
+            "id": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "last_error": {
+              "type": ["string", "null"]
+            },
+            "manifest": {
+              "$ref": "#/components/schemas/TransactionManifest"
+            },
+            "visible": {
+              "type": "boolean"
+            }
+          }
+        },
+        "TransactionIsolation": {
+          "type": "string",
+          "enum": ["serializable"]
+        },
+        "TransactionManifest": {
+          "type": "object",
+          "required": [
+            "id",
+            "coordinator",
+            "isolation",
+            "deadline",
+            "participants"
+          ],
+          "properties": {
+            "coordinator": {
+              "type": "string"
+            },
+            "deadline": {
+              "type": "string",
+              "format": "date-time"
+            },
+            "id": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "isolation": {
+              "$ref": "#/components/schemas/TransactionIsolation"
+            },
+            "participants": {
+              "type": "array",
+              "items": {
+                "$ref": "#/components/schemas/TransactionParticipant"
+              }
+            }
+          },
+          "additionalProperties": false
+        },
+        "TransactionMutation": {
+          "oneOf": [
+            {
+              "type": "object",
+              "required": [
+                "kind",
+                "workspace_id",
+                "expected_revision",
+                "state"
+              ],
+              "properties": {
+                "expected_revision": {
+                  "type": "integer",
+                  "format": "int64"
+                },
+                "kind": {
+                  "type": "string",
+                  "enum": ["workspace_state"]
+                },
+                "state": {},
+                "workspace_id": {
+                  "type": "string",
+                  "format": "uuid"
+                }
+              },
+              "additionalProperties": false
+            },
+            {
+              "type": "object",
+              "required": ["kind", "task_id", "expected_revision", "artifact"],
+              "properties": {
+                "artifact": {
+                  "$ref": "#/components/schemas/ArtifactInput"
+                },
+                "expected_revision": {
+                  "type": "integer",
+                  "format": "int64"
+                },
+                "kind": {
+                  "type": "string",
+                  "enum": ["complete_task"]
+                },
+                "task_id": {
+                  "type": "string",
+                  "format": "uuid"
+                }
+              },
+              "additionalProperties": false
+            },
+            {
+              "type": "object",
+              "required": ["kind", "run_id", "task_id", "expected_revision"],
+              "properties": {
+                "expected_revision": {
+                  "type": "integer",
+                  "format": "int64"
+                },
+                "kind": {
+                  "type": "string",
+                  "enum": ["finish_run"]
+                },
+                "run_id": {
+                  "type": "string",
+                  "format": "uuid"
+                },
+                "task_id": {
+                  "type": "string",
+                  "format": "uuid"
+                }
+              },
+              "additionalProperties": false
+            }
+          ]
+        },
+        "TransactionParticipant": {
+          "type": "object",
+          "required": ["node_id", "mutations"],
+          "properties": {
+            "mutations": {
+              "type": "array",
+              "items": {
+                "$ref": "#/components/schemas/TransactionMutation"
+              }
+            },
+            "node_id": {
+              "type": "string"
+            }
+          },
+          "additionalProperties": false
+        }
+      }
+    }
   },
   {
     "method": "GET",
@@ -24659,72 +25177,6 @@
     "source": "server/src/apps/registry/workbench/views/drafts.rs",
     "json": true,
     "uuid_parameters": ["id"],
-    "query_parameters": [],
-    "response": {
-      "schema": {
-        "$ref": "#/components/schemas/Draft"
-      },
-      "definitions": {
-        "Draft": {
-          "type": "object",
-          "required": [
-            "id",
-            "tenant",
-            "owner",
-            "revision",
-            "entry",
-            "documents",
-            "release_notes",
-            "source_id",
-            "source_version",
-            "archived",
-            "updated_at"
-          ],
-          "properties": {
-            "archived": {
-              "type": "boolean"
-            },
-            "documents": {},
-            "entry": {},
-            "id": {
-              "type": "string",
-              "format": "uuid"
-            },
-            "owner": {
-              "type": "string"
-            },
-            "release_notes": {
-              "type": "string"
-            },
-            "revision": {
-              "type": "integer",
-              "format": "int64"
-            },
-            "source_id": {
-              "type": ["string", "null"]
-            },
-            "source_version": {
-              "type": ["string", "null"]
-            },
-            "tenant": {
-              "type": "string"
-            },
-            "updated_at": {
-              "type": "string",
-              "format": "date-time"
-            }
-          }
-        }
-      }
-    }
-  },
-  {
-    "method": "POST",
-    "path": "/api/workbench/agents/{id}/{version}/adopt",
-    "name": "workbench-adopt-agent",
-    "source": "server/src/apps/registry/workbench/views/drafts.rs",
-    "json": true,
-    "uuid_parameters": [],
     "query_parameters": [],
     "response": {
       "schema": {
@@ -26509,7 +26961,7 @@
     "source": "server/src/apps/registry/workbench/views/profile.rs",
     "json": false,
     "uuid_parameters": [],
-    "query_parameters": [],
+    "query_parameters": ["after"],
     "response": {
       "schema": {
         "type": "array",
@@ -27757,6 +28209,24 @@
             }
           ]
         },
+        "ActiveInput": {
+          "type": "object",
+          "required": ["id", "started_at", "deadline"],
+          "properties": {
+            "deadline": {
+              "type": "string",
+              "format": "date-time"
+            },
+            "id": {
+              "type": "string"
+            },
+            "started_at": {
+              "type": "string",
+              "format": "date-time"
+            }
+          },
+          "additionalProperties": false
+        },
         "AgentNormalization": {
           "type": "object",
           "description": "Read-only registration metadata is compiled by the Node before publication.",
@@ -28021,6 +28491,73 @@
               "format": "uint8",
               "maximum": 255,
               "minimum": 0
+            }
+          },
+          "additionalProperties": false
+        },
+        "CallCheckpoint": {
+          "type": "object",
+          "description": "Pinned to the logical call at the ToolCallState cursor. A completed wire\nrequest is journaled before this checkpoint advances, so a lost worker never\nresends an uncertain continuation.",
+          "required": [
+            "key",
+            "continuation_sends",
+            "wire_pending",
+            "input",
+            "responses",
+            "active",
+            "waited_millis"
+          ],
+          "properties": {
+            "active": {
+              "anyOf": [
+                {
+                  "$ref": "#/components/schemas/ActiveInput"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "continuation_sends": {
+              "type": "integer",
+              "format": "uint32",
+              "minimum": 0
+            },
+            "input": {
+              "anyOf": [
+                {
+                  "$ref": "#/components/schemas/RequiredInput"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "key": {
+              "type": "string"
+            },
+            "responses": {
+              "type": "object",
+              "additionalProperties": true
+            },
+            "sent": {
+              "anyOf": [
+                {
+                  "$ref": "#/components/schemas/SentRound"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Exact journal identity of the admitted send. Live callbacks own `input`\nand `responses` while waiting, but must never replace this identity."
+            },
+            "waited_millis": {
+              "type": "integer",
+              "format": "uint64",
+              "minimum": 0
+            },
+            "wire_pending": {
+              "type": "boolean"
             }
           },
           "additionalProperties": false
@@ -28510,6 +29047,26 @@
             }
           },
           "additionalProperties": false
+        },
+        "ControlSource": {
+          "oneOf": [
+            {
+              "type": "string",
+              "description": "A Tenant Subject, or the Run's creation.",
+              "enum": ["tenant"]
+            },
+            {
+              "type": "string",
+              "description": "A Deployment Administrator's Safety Stop.",
+              "enum": ["deployment_administrator"]
+            },
+            {
+              "type": "string",
+              "description": "Aidash itself, such as the pause for an identity status outage.",
+              "enum": ["system"]
+            }
+          ],
+          "description": "The kind of actor that last changed a Run's control. It is shown to anyone\nwho can see the Run; the person and the reason are not."
         },
         "Conversation": {
           "type": "object",
@@ -29109,6 +29666,17 @@
               "format": "uuid"
             }
           }
+        },
+        "InputRequest": {
+          "type": "object",
+          "required": ["method", "params"],
+          "properties": {
+            "method": {
+              "type": "string"
+            },
+            "params": {}
+          },
+          "additionalProperties": false
         },
         "InspectionContext": {
           "type": "object",
@@ -29840,6 +30408,23 @@
           },
           "additionalProperties": false
         },
+        "RequiredInput": {
+          "type": "object",
+          "required": ["request_state", "requests"],
+          "properties": {
+            "request_state": {
+              "type": ["string", "null"],
+              "description": "Opaque server data, echoed verbatim; it is never interpreted as authority."
+            },
+            "requests": {
+              "type": "object",
+              "additionalProperties": {
+                "$ref": "#/components/schemas/InputRequest"
+              }
+            }
+          },
+          "additionalProperties": false
+        },
         "ResolvedBinding": {
           "type": "object",
           "required": [
@@ -30038,6 +30623,8 @@
             "agent_version",
             "phase",
             "control",
+            "control_revision",
+            "control_source",
             "step",
             "revision",
             "observed_input_seq",
@@ -30070,6 +30657,16 @@
             },
             "control": {
               "$ref": "#/components/schemas/RunControl"
+            },
+            "control_revision": {
+              "type": "integer",
+              "format": "int64",
+              "description": "Counts control decisions only; worker progress does not change it.",
+              "default": 0
+            },
+            "control_source": {
+              "$ref": "#/components/schemas/ControlSource",
+              "description": "The kind of actor that last changed `control`."
             },
             "error": {
               "type": ["string", "null"]
@@ -30293,6 +30890,17 @@
           "type": "string",
           "description": "The outage that waiting can fix. Missing vector points are not one: the\nindex needs repair, so they pause the Run instead.",
           "enum": ["embedding_provider", "vector_backend"]
+        },
+        "SentRound": {
+          "type": "object",
+          "required": ["key", "input"],
+          "properties": {
+            "input": {},
+            "key": {
+              "type": "string"
+            }
+          },
+          "additionalProperties": false
         },
         "ServerName": {
           "type": "string",
@@ -30828,6 +31436,17 @@
               "items": {
                 "$ref": "#/components/schemas/ModelMedia"
               }
+            },
+            "mcp": {
+              "anyOf": [
+                {
+                  "$ref": "#/components/schemas/CallCheckpoint"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Progress of the logical MCP call at this cursor, never a tool result."
             },
             "media_inferred_seq_before_response": {
               "type": "integer",
@@ -31433,6 +32052,24 @@
         "$ref": "#/components/schemas/RunDetails"
       },
       "definitions": {
+        "ActiveInput": {
+          "type": "object",
+          "required": ["id", "started_at", "deadline"],
+          "properties": {
+            "deadline": {
+              "type": "string",
+              "format": "date-time"
+            },
+            "id": {
+              "type": "string"
+            },
+            "started_at": {
+              "type": "string",
+              "format": "date-time"
+            }
+          },
+          "additionalProperties": false
+        },
         "AgentNormalization": {
           "type": "object",
           "description": "Read-only registration metadata is compiled by the Node before publication.",
@@ -31690,6 +32327,73 @@
               "format": "uint8",
               "maximum": 255,
               "minimum": 0
+            }
+          },
+          "additionalProperties": false
+        },
+        "CallCheckpoint": {
+          "type": "object",
+          "description": "Pinned to the logical call at the ToolCallState cursor. A completed wire\nrequest is journaled before this checkpoint advances, so a lost worker never\nresends an uncertain continuation.",
+          "required": [
+            "key",
+            "continuation_sends",
+            "wire_pending",
+            "input",
+            "responses",
+            "active",
+            "waited_millis"
+          ],
+          "properties": {
+            "active": {
+              "anyOf": [
+                {
+                  "$ref": "#/components/schemas/ActiveInput"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "continuation_sends": {
+              "type": "integer",
+              "format": "uint32",
+              "minimum": 0
+            },
+            "input": {
+              "anyOf": [
+                {
+                  "$ref": "#/components/schemas/RequiredInput"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "key": {
+              "type": "string"
+            },
+            "responses": {
+              "type": "object",
+              "additionalProperties": true
+            },
+            "sent": {
+              "anyOf": [
+                {
+                  "$ref": "#/components/schemas/SentRound"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Exact journal identity of the admitted send. Live callbacks own `input`\nand `responses` while waiting, but must never replace this identity."
+            },
+            "waited_millis": {
+              "type": "integer",
+              "format": "uint64",
+              "minimum": 0
+            },
+            "wire_pending": {
+              "type": "boolean"
             }
           },
           "additionalProperties": false
@@ -32180,6 +32884,26 @@
           },
           "additionalProperties": false
         },
+        "ControlSource": {
+          "oneOf": [
+            {
+              "type": "string",
+              "description": "A Tenant Subject, or the Run's creation.",
+              "enum": ["tenant"]
+            },
+            {
+              "type": "string",
+              "description": "A Deployment Administrator's Safety Stop.",
+              "enum": ["deployment_administrator"]
+            },
+            {
+              "type": "string",
+              "description": "Aidash itself, such as the pause for an identity status outage.",
+              "enum": ["system"]
+            }
+          ],
+          "description": "The kind of actor that last changed a Run's control. It is shown to anyone\nwho can see the Run; the person and the reason are not."
+        },
         "DeferredRead": {
           "type": "object",
           "required": ["message", "call"],
@@ -32610,6 +33334,17 @@
             "key": {
               "type": "string"
             }
+          },
+          "additionalProperties": false
+        },
+        "InputRequest": {
+          "type": "object",
+          "required": ["method", "params"],
+          "properties": {
+            "method": {
+              "type": "string"
+            },
+            "params": {}
           },
           "additionalProperties": false
         },
@@ -33395,6 +34130,7 @@
             "sent_bytes",
             "received_bytes",
             "duration_ms",
+            "via",
             "error",
             "created_at"
           ],
@@ -33418,8 +34154,9 @@
               "type": "string"
             },
             "operation_id": {
-              "type": "string",
-              "format": "uuid"
+              "type": ["string", "null"],
+              "format": "uuid",
+              "description": "`None` for a request made with a Live preview's session token."
             },
             "path": {
               "type": "string"
@@ -33448,8 +34185,30 @@
             },
             "tenant": {
               "type": "string"
+            },
+            "via": {
+              "type": "string",
+              "description": "`operation`, `pod` or `page`: which path admitted the request.",
+              "default": "operation"
             }
           }
+        },
+        "RequiredInput": {
+          "type": "object",
+          "required": ["request_state", "requests"],
+          "properties": {
+            "request_state": {
+              "type": ["string", "null"],
+              "description": "Opaque server data, echoed verbatim; it is never interpreted as authority."
+            },
+            "requests": {
+              "type": "object",
+              "additionalProperties": {
+                "$ref": "#/components/schemas/InputRequest"
+              }
+            }
+          },
+          "additionalProperties": false
         },
         "ResolvedBinding": {
           "type": "object",
@@ -33698,6 +34457,8 @@
             "agent_version",
             "phase",
             "control",
+            "control_revision",
+            "control_source",
             "step",
             "revision",
             "observed_input_seq",
@@ -33730,6 +34491,16 @@
             },
             "control": {
               "$ref": "#/components/schemas/RunControl"
+            },
+            "control_revision": {
+              "type": "integer",
+              "format": "int64",
+              "description": "Counts control decisions only; worker progress does not change it.",
+              "default": 0
+            },
+            "control_source": {
+              "$ref": "#/components/schemas/ControlSource",
+              "description": "The kind of actor that last changed `control`."
             },
             "error": {
               "type": ["string", "null"]
@@ -33953,6 +34724,17 @@
           "type": "string",
           "description": "The outage that waiting can fix. Missing vector points are not one: the\nindex needs repair, so they pause the Run instead.",
           "enum": ["embedding_provider", "vector_backend"]
+        },
+        "SentRound": {
+          "type": "object",
+          "required": ["key", "input"],
+          "properties": {
+            "input": {},
+            "key": {
+              "type": "string"
+            }
+          },
+          "additionalProperties": false
         },
         "ServerName": {
           "type": "string",
@@ -34342,6 +35124,17 @@
                 "$ref": "#/components/schemas/ModelMedia"
               }
             },
+            "mcp": {
+              "anyOf": [
+                {
+                  "$ref": "#/components/schemas/CallCheckpoint"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Progress of the logical MCP call at this cursor, never a tool result."
+            },
             "media_inferred_seq_before_response": {
               "type": "integer",
               "format": "int64"
@@ -34662,6 +35455,24 @@
         "$ref": "#/components/schemas/RunInspection"
       },
       "definitions": {
+        "ActiveInput": {
+          "type": "object",
+          "required": ["id", "started_at", "deadline"],
+          "properties": {
+            "deadline": {
+              "type": "string",
+              "format": "date-time"
+            },
+            "id": {
+              "type": "string"
+            },
+            "started_at": {
+              "type": "string",
+              "format": "date-time"
+            }
+          },
+          "additionalProperties": false
+        },
         "AgentNormalization": {
           "type": "object",
           "description": "Read-only registration metadata is compiled by the Node before publication.",
@@ -34876,6 +35687,73 @@
               "format": "uint8",
               "maximum": 255,
               "minimum": 0
+            }
+          },
+          "additionalProperties": false
+        },
+        "CallCheckpoint": {
+          "type": "object",
+          "description": "Pinned to the logical call at the ToolCallState cursor. A completed wire\nrequest is journaled before this checkpoint advances, so a lost worker never\nresends an uncertain continuation.",
+          "required": [
+            "key",
+            "continuation_sends",
+            "wire_pending",
+            "input",
+            "responses",
+            "active",
+            "waited_millis"
+          ],
+          "properties": {
+            "active": {
+              "anyOf": [
+                {
+                  "$ref": "#/components/schemas/ActiveInput"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "continuation_sends": {
+              "type": "integer",
+              "format": "uint32",
+              "minimum": 0
+            },
+            "input": {
+              "anyOf": [
+                {
+                  "$ref": "#/components/schemas/RequiredInput"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "key": {
+              "type": "string"
+            },
+            "responses": {
+              "type": "object",
+              "additionalProperties": true
+            },
+            "sent": {
+              "anyOf": [
+                {
+                  "$ref": "#/components/schemas/SentRound"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Exact journal identity of the admitted send. Live callbacks own `input`\nand `responses` while waiting, but must never replace this identity."
+            },
+            "waited_millis": {
+              "type": "integer",
+              "format": "uint64",
+              "minimum": 0
+            },
+            "wire_pending": {
+              "type": "boolean"
             }
           },
           "additionalProperties": false
@@ -35366,6 +36244,26 @@
           },
           "additionalProperties": false
         },
+        "ControlSource": {
+          "oneOf": [
+            {
+              "type": "string",
+              "description": "A Tenant Subject, or the Run's creation.",
+              "enum": ["tenant"]
+            },
+            {
+              "type": "string",
+              "description": "A Deployment Administrator's Safety Stop.",
+              "enum": ["deployment_administrator"]
+            },
+            {
+              "type": "string",
+              "description": "Aidash itself, such as the pause for an identity status outage.",
+              "enum": ["system"]
+            }
+          ],
+          "description": "The kind of actor that last changed a Run's control. It is shown to anyone\nwho can see the Run; the person and the reason are not."
+        },
         "DeferredRead": {
           "type": "object",
           "required": ["message", "call"],
@@ -35796,6 +36694,17 @@
             "key": {
               "type": "string"
             }
+          },
+          "additionalProperties": false
+        },
+        "InputRequest": {
+          "type": "object",
+          "required": ["method", "params"],
+          "properties": {
+            "method": {
+              "type": "string"
+            },
+            "params": {}
           },
           "additionalProperties": false
         },
@@ -36529,6 +37438,23 @@
           },
           "additionalProperties": false
         },
+        "RequiredInput": {
+          "type": "object",
+          "required": ["request_state", "requests"],
+          "properties": {
+            "request_state": {
+              "type": ["string", "null"],
+              "description": "Opaque server data, echoed verbatim; it is never interpreted as authority."
+            },
+            "requests": {
+              "type": "object",
+              "additionalProperties": {
+                "$ref": "#/components/schemas/InputRequest"
+              }
+            }
+          },
+          "additionalProperties": false
+        },
         "ResolvedBinding": {
           "type": "object",
           "required": [
@@ -36727,6 +37653,8 @@
             "agent_version",
             "phase",
             "control",
+            "control_revision",
+            "control_source",
             "step",
             "revision",
             "observed_input_seq",
@@ -36759,6 +37687,16 @@
             },
             "control": {
               "$ref": "#/components/schemas/RunControl"
+            },
+            "control_revision": {
+              "type": "integer",
+              "format": "int64",
+              "description": "Counts control decisions only; worker progress does not change it.",
+              "default": 0
+            },
+            "control_source": {
+              "$ref": "#/components/schemas/ControlSource",
+              "description": "The kind of actor that last changed `control`."
             },
             "error": {
               "type": ["string", "null"]
@@ -36982,6 +37920,17 @@
           "type": "string",
           "description": "The outage that waiting can fix. Missing vector points are not one: the\nindex needs repair, so they pause the Run instead.",
           "enum": ["embedding_provider", "vector_backend"]
+        },
+        "SentRound": {
+          "type": "object",
+          "required": ["key", "input"],
+          "properties": {
+            "input": {},
+            "key": {
+              "type": "string"
+            }
+          },
+          "additionalProperties": false
         },
         "ServerName": {
           "type": "string",
@@ -37370,6 +38319,17 @@
               "items": {
                 "$ref": "#/components/schemas/ModelMedia"
               }
+            },
+            "mcp": {
+              "anyOf": [
+                {
+                  "$ref": "#/components/schemas/CallCheckpoint"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Progress of the logical MCP call at this cursor, never a tool result."
             },
             "media_inferred_seq_before_response": {
               "type": "integer",
@@ -38225,7 +39185,23 @@
     "source": "server/src/apps/identity/views/desktop.rs",
     "json": true,
     "uuid_parameters": [],
-    "query_parameters": []
+    "query_parameters": [],
+    "response": {
+      "schema": {
+        "$ref": "#/components/schemas/Started"
+      },
+      "definitions": {
+        "Started": {
+          "type": "object",
+          "required": ["authorization_url"],
+          "properties": {
+            "authorization_url": {
+              "type": "string"
+            }
+          }
+        }
+      }
+    }
   },
   {
     "method": "GET",
@@ -38252,7 +39228,30 @@
     "source": "server/src/apps/identity/views/desktop.rs",
     "json": true,
     "uuid_parameters": [],
-    "query_parameters": []
+    "query_parameters": [],
+    "response": {
+      "schema": {
+        "$ref": "#/components/schemas/Tokens"
+      },
+      "definitions": {
+        "Tokens": {
+          "type": "object",
+          "required": ["access_token", "refresh_token", "expires_in"],
+          "properties": {
+            "access_token": {
+              "type": "string"
+            },
+            "expires_in": {
+              "type": "integer",
+              "format": "int64"
+            },
+            "refresh_token": {
+              "type": "string"
+            }
+          }
+        }
+      }
+    }
   },
   {
     "method": "POST",
@@ -38261,7 +39260,30 @@
     "source": "server/src/apps/identity/views/desktop.rs",
     "json": true,
     "uuid_parameters": [],
-    "query_parameters": []
+    "query_parameters": [],
+    "response": {
+      "schema": {
+        "$ref": "#/components/schemas/Tokens"
+      },
+      "definitions": {
+        "Tokens": {
+          "type": "object",
+          "required": ["access_token", "refresh_token", "expires_in"],
+          "properties": {
+            "access_token": {
+              "type": "string"
+            },
+            "expires_in": {
+              "type": "integer",
+              "format": "int64"
+            },
+            "refresh_token": {
+              "type": "string"
+            }
+          }
+        }
+      }
+    }
   },
   {
     "method": "POST",
@@ -38280,7 +39302,906 @@
     "json": true,
     "uuid_parameters": ["workspace"],
     "query_parameters": [],
-    "response": null
+    "response": {
+      "schema": {
+        "$ref": "#/components/schemas/Outcome2"
+      },
+      "definitions": {
+        "Bank": {
+          "type": "object",
+          "description": "Issued by the Home authority for a participant, independently of a definition version.",
+          "required": ["home", "tenant", "workspace", "participant"],
+          "properties": {
+            "home": {
+              "type": "string"
+            },
+            "participant": {
+              "type": ["string", "null"],
+              "format": "uuid",
+              "description": "`None` is the explicitly published Workspace bank."
+            },
+            "tenant": {
+              "type": "string"
+            },
+            "workspace": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          "additionalProperties": false
+        },
+        "Candidate": {
+          "type": "object",
+          "required": ["id", "bank", "revision", "run", "content", "state"],
+          "properties": {
+            "bank": {
+              "$ref": "#/components/schemas/Bank"
+            },
+            "content": {
+              "$ref": "#/components/schemas/Content"
+            },
+            "id": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "revision": {
+              "type": "integer",
+              "format": "int64"
+            },
+            "run": {
+              "$ref": "#/components/schemas/Evidence"
+            },
+            "state": {
+              "$ref": "#/components/schemas/CandidateState"
+            }
+          },
+          "additionalProperties": false
+        },
+        "CandidateState": {
+          "type": "string",
+          "enum": ["pending", "admitted", "rejected", "invalidated"]
+        },
+        "Content": {
+          "type": "object",
+          "required": [
+            "mental_model",
+            "text",
+            "kind",
+            "learning",
+            "verification",
+            "occurred",
+            "entities",
+            "evidence",
+            "links"
+          ],
+          "properties": {
+            "entities": {
+              "type": "array",
+              "items": {
+                "$ref": "#/components/schemas/Entity"
+              }
+            },
+            "evidence": {
+              "type": "array",
+              "items": {
+                "$ref": "#/components/schemas/Evidence"
+              }
+            },
+            "kind": {
+              "$ref": "#/components/schemas/Kind"
+            },
+            "learning": {
+              "$ref": "#/components/schemas/Learning"
+            },
+            "links": {
+              "type": "array",
+              "items": {
+                "$ref": "#/components/schemas/Link"
+              }
+            },
+            "mental_model": {
+              "anyOf": [
+                {
+                  "$ref": "#/components/schemas/MentalModel"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "A recurring question, retained independently of the current generated answer."
+            },
+            "occurred": {
+              "anyOf": [
+                {
+                  "$ref": "#/components/schemas/TimeRange"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "text": {
+              "type": "string"
+            },
+            "verification": {
+              "$ref": "#/components/schemas/Verification"
+            }
+          },
+          "additionalProperties": false
+        },
+        "Entity": {
+          "type": "object",
+          "required": ["name", "category", "aliases"],
+          "properties": {
+            "aliases": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "description": "Explicit source/model-resolved names, including cross-language aliases.",
+              "default": []
+            },
+            "category": {
+              "type": "string"
+            },
+            "name": {
+              "type": "string"
+            }
+          },
+          "additionalProperties": false
+        },
+        "EntityRef": {
+          "type": "object",
+          "required": ["id", "version"],
+          "properties": {
+            "id": {
+              "type": "string"
+            },
+            "version": {
+              "type": "string"
+            }
+          }
+        },
+        "Evidence": {
+          "oneOf": [
+            {
+              "type": "object",
+              "description": "Exact selected disclosure grant; source lineage is resolved at the Home.",
+              "required": ["kind", "id", "revision"],
+              "properties": {
+                "id": {
+                  "type": "string",
+                  "format": "uuid"
+                },
+                "kind": {
+                  "type": "string",
+                  "enum": ["publication"]
+                },
+                "revision": {
+                  "type": "integer",
+                  "format": "int64"
+                }
+              },
+              "additionalProperties": false
+            },
+            {
+              "type": "object",
+              "required": ["kind", "bank", "id", "revision"],
+              "properties": {
+                "bank": {
+                  "$ref": "#/components/schemas/Bank"
+                },
+                "id": {
+                  "type": "string",
+                  "format": "uuid"
+                },
+                "kind": {
+                  "type": "string",
+                  "enum": ["unit"]
+                },
+                "revision": {
+                  "type": "integer",
+                  "format": "int64"
+                }
+              },
+              "additionalProperties": false
+            },
+            {
+              "type": "object",
+              "required": ["kind", "id", "revision", "digest"],
+              "properties": {
+                "digest": {
+                  "type": "string"
+                },
+                "id": {
+                  "type": "string",
+                  "format": "uuid"
+                },
+                "kind": {
+                  "type": "string",
+                  "enum": ["message"]
+                },
+                "revision": {
+                  "type": "integer",
+                  "format": "int64"
+                }
+              },
+              "additionalProperties": false
+            },
+            {
+              "type": "object",
+              "required": ["kind", "id", "revision", "digest"],
+              "properties": {
+                "digest": {
+                  "type": "string"
+                },
+                "id": {
+                  "type": "string",
+                  "format": "uuid"
+                },
+                "kind": {
+                  "type": "string",
+                  "enum": ["artifact"]
+                },
+                "revision": {
+                  "type": "integer",
+                  "format": "int64"
+                }
+              },
+              "additionalProperties": false
+            },
+            {
+              "type": "object",
+              "required": ["kind", "id", "revision", "digest"],
+              "properties": {
+                "digest": {
+                  "type": "string"
+                },
+                "id": {
+                  "type": "string",
+                  "format": "uuid"
+                },
+                "kind": {
+                  "type": "string",
+                  "enum": ["run"]
+                },
+                "revision": {
+                  "type": "integer",
+                  "format": "int64"
+                }
+              },
+              "additionalProperties": false
+            }
+          ]
+        },
+        "History": {
+          "type": "object",
+          "required": [
+            "unit_id",
+            "revision",
+            "operation_id",
+            "actor",
+            "updated_at",
+            "deleted",
+            "stale",
+            "content"
+          ],
+          "properties": {
+            "actor": {
+              "type": "string"
+            },
+            "content": {
+              "anyOf": [
+                {
+                  "$ref": "#/components/schemas/Content"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Body is withheld after deletion or when its exact evidence is no longer disclosable."
+            },
+            "deleted": {
+              "type": "boolean"
+            },
+            "operation_id": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "revision": {
+              "type": "integer",
+              "format": "int64"
+            },
+            "stale": {
+              "type": "boolean"
+            },
+            "unit_id": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "updated_at": {
+              "type": "string",
+              "format": "date-time"
+            }
+          }
+        },
+        "Inspection2": {
+          "type": "object",
+          "required": [
+            "items",
+            "next",
+            "purge_jobs",
+            "model_operations",
+            "pending_candidates"
+          ],
+          "properties": {
+            "items": {
+              "type": "array",
+              "items": {
+                "$ref": "#/components/schemas/UnitStatus"
+              }
+            },
+            "model_operations": {
+              "type": "integer",
+              "format": "int64"
+            },
+            "next": {
+              "type": ["string", "null"],
+              "format": "uuid"
+            },
+            "pending_candidates": {
+              "type": "integer",
+              "format": "int64"
+            },
+            "purge_jobs": {
+              "type": "array",
+              "items": {
+                "$ref": "#/components/schemas/PurgeStatus"
+              }
+            }
+          }
+        },
+        "Kind": {
+          "type": "string",
+          "enum": ["world", "experience", "observation", "mental_model"]
+        },
+        "Learning": {
+          "type": "string",
+          "enum": ["fact", "preference", "procedure", "failure"]
+        },
+        "Link": {
+          "type": "object",
+          "required": ["target", "revision", "kind", "weight"],
+          "properties": {
+            "kind": {
+              "$ref": "#/components/schemas/LinkKind"
+            },
+            "revision": {
+              "type": "integer",
+              "format": "int64"
+            },
+            "target": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "weight": {
+              "type": "number",
+              "format": "double"
+            }
+          },
+          "additionalProperties": false
+        },
+        "LinkKind": {
+          "type": "string",
+          "enum": ["entity", "semantic", "temporal", "causes", "caused_by"]
+        },
+        "MemoryJobPage": {
+          "type": "object",
+          "description": "Job metadata is visible through the bank's history permission; input proofs\nand saved credentials are never included in the operational view.",
+          "required": ["items", "next"],
+          "properties": {
+            "items": {
+              "type": "array",
+              "items": {
+                "$ref": "#/components/schemas/MemoryJobStatus"
+              }
+            },
+            "next": {
+              "type": ["string", "null"],
+              "format": "uuid"
+            }
+          }
+        },
+        "MemoryJobStatus": {
+          "type": "object",
+          "required": [
+            "id",
+            "kind",
+            "state",
+            "attempts",
+            "next_attempt",
+            "last_error",
+            "updated_at"
+          ],
+          "properties": {
+            "attempts": {
+              "type": "integer",
+              "format": "int32"
+            },
+            "id": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "kind": {
+              "type": "string"
+            },
+            "last_error": {
+              "type": ["string", "null"]
+            },
+            "next_attempt": {
+              "type": "string",
+              "format": "date-time"
+            },
+            "state": {
+              "type": "string"
+            },
+            "updated_at": {
+              "type": "string",
+              "format": "date-time"
+            }
+          }
+        },
+        "MemoryOperationUsage": {
+          "type": "object",
+          "required": [
+            "id",
+            "provider",
+            "calls",
+            "tokens",
+            "cost_micros",
+            "created_at"
+          ],
+          "properties": {
+            "calls": {
+              "type": "integer",
+              "format": "int64"
+            },
+            "cost_micros": {
+              "type": "integer",
+              "format": "int64"
+            },
+            "created_at": {
+              "type": "string",
+              "format": "date-time"
+            },
+            "id": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "provider": {
+              "$ref": "#/components/schemas/EntityRef"
+            },
+            "tokens": {
+              "type": "integer",
+              "format": "int64"
+            }
+          }
+        },
+        "MemoryUsagePage": {
+          "type": "object",
+          "required": ["items", "next"],
+          "properties": {
+            "items": {
+              "type": "array",
+              "items": {
+                "$ref": "#/components/schemas/MemoryOperationUsage"
+              }
+            },
+            "next": {
+              "type": ["string", "null"],
+              "format": "uuid"
+            }
+          }
+        },
+        "MentalModel": {
+          "type": "object",
+          "required": ["question", "automatic_refresh"],
+          "properties": {
+            "automatic_refresh": {
+              "type": "boolean"
+            },
+            "question": {
+              "type": "string"
+            }
+          },
+          "additionalProperties": false
+        },
+        "Outcome2": {
+          "oneOf": [
+            {
+              "type": "object",
+              "required": ["result", "value"],
+              "properties": {
+                "result": {
+                  "type": "string",
+                  "enum": ["recall"]
+                },
+                "value": {
+                  "$ref": "#/components/schemas/Recall"
+                }
+              }
+            },
+            {
+              "type": "object",
+              "required": ["result", "value"],
+              "properties": {
+                "result": {
+                  "type": "string",
+                  "enum": ["reflection"]
+                },
+                "value": {
+                  "$ref": "#/components/schemas/Reflection"
+                }
+              }
+            },
+            {
+              "type": "object",
+              "required": ["result", "value"],
+              "properties": {
+                "result": {
+                  "type": "string",
+                  "enum": ["units"]
+                },
+                "value": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/Unit"
+                  }
+                }
+              }
+            },
+            {
+              "type": "object",
+              "required": ["result", "value"],
+              "properties": {
+                "result": {
+                  "type": "string",
+                  "enum": ["candidates"]
+                },
+                "value": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/Candidate"
+                  }
+                }
+              }
+            },
+            {
+              "type": "object",
+              "required": ["result", "value"],
+              "properties": {
+                "result": {
+                  "type": "string",
+                  "enum": ["reviewed"]
+                },
+                "value": {
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/Unit"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                }
+              }
+            },
+            {
+              "type": "object",
+              "required": ["result", "value"],
+              "properties": {
+                "result": {
+                  "type": "string",
+                  "enum": ["settings"]
+                },
+                "value": {
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/Settings"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                }
+              }
+            },
+            {
+              "type": "object",
+              "required": ["result", "value"],
+              "properties": {
+                "result": {
+                  "type": "string",
+                  "enum": ["inspection"]
+                },
+                "value": {
+                  "$ref": "#/components/schemas/Inspection2"
+                }
+              }
+            },
+            {
+              "type": "object",
+              "required": ["result", "value"],
+              "properties": {
+                "result": {
+                  "type": "string",
+                  "enum": ["history"]
+                },
+                "value": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/History"
+                  }
+                }
+              }
+            },
+            {
+              "type": "object",
+              "required": ["result", "value"],
+              "properties": {
+                "result": {
+                  "type": "string",
+                  "enum": ["jobs"]
+                },
+                "value": {
+                  "$ref": "#/components/schemas/MemoryJobPage"
+                }
+              }
+            },
+            {
+              "type": "object",
+              "required": ["result", "value"],
+              "properties": {
+                "result": {
+                  "type": "string",
+                  "enum": ["usage"]
+                },
+                "value": {
+                  "$ref": "#/components/schemas/MemoryUsagePage"
+                }
+              }
+            }
+          ]
+        },
+        "PurgeStatus": {
+          "type": "object",
+          "required": [
+            "unit_id",
+            "revision",
+            "state",
+            "purge_after",
+            "backup_until",
+            "attempts",
+            "next_attempt",
+            "last_error"
+          ],
+          "properties": {
+            "attempts": {
+              "type": "integer",
+              "format": "int32"
+            },
+            "backup_until": {
+              "type": "string",
+              "format": "date-time"
+            },
+            "last_error": {
+              "type": ["string", "null"]
+            },
+            "next_attempt": {
+              "type": "string",
+              "format": "date-time"
+            },
+            "purge_after": {
+              "type": "string",
+              "format": "date-time"
+            },
+            "revision": {
+              "type": "integer",
+              "format": "int64"
+            },
+            "state": {
+              "type": "string"
+            },
+            "unit_id": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        },
+        "Recall": {
+          "oneOf": [
+            {
+              "type": "object",
+              "required": ["status"],
+              "properties": {
+                "status": {
+                  "type": "string",
+                  "enum": ["disabled"]
+                }
+              }
+            },
+            {
+              "type": "object",
+              "required": ["status"],
+              "properties": {
+                "status": {
+                  "type": "string",
+                  "enum": ["empty"]
+                }
+              }
+            },
+            {
+              "type": "object",
+              "required": ["status"],
+              "properties": {
+                "status": {
+                  "type": "string",
+                  "enum": ["no_space"]
+                }
+              }
+            },
+            {
+              "type": "object",
+              "required": ["status", "units"],
+              "properties": {
+                "status": {
+                  "type": "string",
+                  "enum": ["ready"]
+                },
+                "units": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/Unit"
+                  }
+                }
+              }
+            }
+          ]
+        },
+        "Reflection": {
+          "type": "object",
+          "required": ["text", "evidence"],
+          "properties": {
+            "evidence": {
+              "type": "array",
+              "items": {
+                "$ref": "#/components/schemas/Evidence"
+              }
+            },
+            "text": {
+              "type": "string"
+            }
+          },
+          "additionalProperties": false
+        },
+        "Settings": {
+          "type": "object",
+          "required": ["provider", "revision"],
+          "properties": {
+            "provider": {
+              "$ref": "#/components/schemas/EntityRef"
+            },
+            "revision": {
+              "type": "integer",
+              "format": "int64"
+            }
+          }
+        },
+        "TimeRange": {
+          "type": "object",
+          "required": ["start", "end"],
+          "properties": {
+            "end": {
+              "type": "string",
+              "format": "date-time"
+            },
+            "start": {
+              "type": "string",
+              "format": "date-time"
+            }
+          },
+          "additionalProperties": false
+        },
+        "Unit": {
+          "type": "object",
+          "required": [
+            "id",
+            "bank",
+            "revision",
+            "content",
+            "learned_at",
+            "updated_at",
+            "deleted",
+            "stale"
+          ],
+          "properties": {
+            "bank": {
+              "$ref": "#/components/schemas/Bank"
+            },
+            "content": {
+              "$ref": "#/components/schemas/Content"
+            },
+            "deleted": {
+              "type": "boolean"
+            },
+            "id": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "learned_at": {
+              "type": "string",
+              "format": "date-time"
+            },
+            "revision": {
+              "type": "integer",
+              "format": "int64"
+            },
+            "stale": {
+              "type": "boolean"
+            },
+            "updated_at": {
+              "type": "string",
+              "format": "date-time"
+            }
+          },
+          "additionalProperties": false
+        },
+        "UnitStatus": {
+          "type": "object",
+          "required": [
+            "id",
+            "revision",
+            "deleted",
+            "stale",
+            "disclosure_current",
+            "dependent_units",
+            "dependent_runs"
+          ],
+          "properties": {
+            "deleted": {
+              "type": "boolean"
+            },
+            "dependent_runs": {
+              "type": "integer",
+              "format": "int64"
+            },
+            "dependent_units": {
+              "type": "integer",
+              "format": "int64"
+            },
+            "disclosure_current": {
+              "type": "boolean"
+            },
+            "id": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "revision": {
+              "type": "integer",
+              "format": "int64"
+            },
+            "stale": {
+              "type": "boolean"
+            }
+          }
+        },
+        "Verification": {
+          "type": "string",
+          "description": "Verification is separate from admission and model confidence.",
+          "enum": ["unverified", "supported", "contradicted"]
+        }
+      }
+    }
   },
   {
     "method": "POST",
@@ -38290,7 +40211,69 @@
     "json": true,
     "uuid_parameters": ["workspace", "participant"],
     "query_parameters": [],
-    "response": null
+    "response": {
+      "schema": {
+        "$ref": "#/components/schemas/Participant"
+      },
+      "definitions": {
+        "Bank": {
+          "type": "object",
+          "description": "Issued by the Home authority for a participant, independently of a definition version.",
+          "required": ["home", "tenant", "workspace", "participant"],
+          "properties": {
+            "home": {
+              "type": "string"
+            },
+            "participant": {
+              "type": ["string", "null"],
+              "format": "uuid",
+              "description": "`None` is the explicitly published Workspace bank."
+            },
+            "tenant": {
+              "type": "string"
+            },
+            "workspace": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          "additionalProperties": false
+        },
+        "EntityRef": {
+          "type": "object",
+          "required": ["id", "version"],
+          "properties": {
+            "id": {
+              "type": "string"
+            },
+            "version": {
+              "type": "string"
+            }
+          }
+        },
+        "Participant": {
+          "type": "object",
+          "required": ["id", "bank", "agent", "revision"],
+          "properties": {
+            "agent": {
+              "$ref": "#/components/schemas/EntityRef"
+            },
+            "bank": {
+              "$ref": "#/components/schemas/Bank"
+            },
+            "id": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "revision": {
+              "type": "integer",
+              "format": "int64"
+            }
+          },
+          "additionalProperties": false
+        }
+      }
+    }
   },
   {
     "method": "POST",
@@ -38300,7 +40283,351 @@
     "json": true,
     "uuid_parameters": ["workspace"],
     "query_parameters": [],
-    "response": null
+    "response": {
+      "schema": {
+        "type": "array",
+        "items": {
+          "$ref": "#/components/schemas/Unit"
+        }
+      },
+      "definitions": {
+        "Bank": {
+          "type": "object",
+          "description": "Issued by the Home authority for a participant, independently of a definition version.",
+          "required": ["home", "tenant", "workspace", "participant"],
+          "properties": {
+            "home": {
+              "type": "string"
+            },
+            "participant": {
+              "type": ["string", "null"],
+              "format": "uuid",
+              "description": "`None` is the explicitly published Workspace bank."
+            },
+            "tenant": {
+              "type": "string"
+            },
+            "workspace": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          "additionalProperties": false
+        },
+        "Content": {
+          "type": "object",
+          "required": [
+            "mental_model",
+            "text",
+            "kind",
+            "learning",
+            "verification",
+            "occurred",
+            "entities",
+            "evidence",
+            "links"
+          ],
+          "properties": {
+            "entities": {
+              "type": "array",
+              "items": {
+                "$ref": "#/components/schemas/Entity"
+              }
+            },
+            "evidence": {
+              "type": "array",
+              "items": {
+                "$ref": "#/components/schemas/Evidence"
+              }
+            },
+            "kind": {
+              "$ref": "#/components/schemas/Kind"
+            },
+            "learning": {
+              "$ref": "#/components/schemas/Learning"
+            },
+            "links": {
+              "type": "array",
+              "items": {
+                "$ref": "#/components/schemas/Link"
+              }
+            },
+            "mental_model": {
+              "anyOf": [
+                {
+                  "$ref": "#/components/schemas/MentalModel"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "A recurring question, retained independently of the current generated answer."
+            },
+            "occurred": {
+              "anyOf": [
+                {
+                  "$ref": "#/components/schemas/TimeRange"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "text": {
+              "type": "string"
+            },
+            "verification": {
+              "$ref": "#/components/schemas/Verification"
+            }
+          },
+          "additionalProperties": false
+        },
+        "Entity": {
+          "type": "object",
+          "required": ["name", "category", "aliases"],
+          "properties": {
+            "aliases": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "description": "Explicit source/model-resolved names, including cross-language aliases.",
+              "default": []
+            },
+            "category": {
+              "type": "string"
+            },
+            "name": {
+              "type": "string"
+            }
+          },
+          "additionalProperties": false
+        },
+        "Evidence": {
+          "oneOf": [
+            {
+              "type": "object",
+              "description": "Exact selected disclosure grant; source lineage is resolved at the Home.",
+              "required": ["kind", "id", "revision"],
+              "properties": {
+                "id": {
+                  "type": "string",
+                  "format": "uuid"
+                },
+                "kind": {
+                  "type": "string",
+                  "enum": ["publication"]
+                },
+                "revision": {
+                  "type": "integer",
+                  "format": "int64"
+                }
+              },
+              "additionalProperties": false
+            },
+            {
+              "type": "object",
+              "required": ["kind", "bank", "id", "revision"],
+              "properties": {
+                "bank": {
+                  "$ref": "#/components/schemas/Bank"
+                },
+                "id": {
+                  "type": "string",
+                  "format": "uuid"
+                },
+                "kind": {
+                  "type": "string",
+                  "enum": ["unit"]
+                },
+                "revision": {
+                  "type": "integer",
+                  "format": "int64"
+                }
+              },
+              "additionalProperties": false
+            },
+            {
+              "type": "object",
+              "required": ["kind", "id", "revision", "digest"],
+              "properties": {
+                "digest": {
+                  "type": "string"
+                },
+                "id": {
+                  "type": "string",
+                  "format": "uuid"
+                },
+                "kind": {
+                  "type": "string",
+                  "enum": ["message"]
+                },
+                "revision": {
+                  "type": "integer",
+                  "format": "int64"
+                }
+              },
+              "additionalProperties": false
+            },
+            {
+              "type": "object",
+              "required": ["kind", "id", "revision", "digest"],
+              "properties": {
+                "digest": {
+                  "type": "string"
+                },
+                "id": {
+                  "type": "string",
+                  "format": "uuid"
+                },
+                "kind": {
+                  "type": "string",
+                  "enum": ["artifact"]
+                },
+                "revision": {
+                  "type": "integer",
+                  "format": "int64"
+                }
+              },
+              "additionalProperties": false
+            },
+            {
+              "type": "object",
+              "required": ["kind", "id", "revision", "digest"],
+              "properties": {
+                "digest": {
+                  "type": "string"
+                },
+                "id": {
+                  "type": "string",
+                  "format": "uuid"
+                },
+                "kind": {
+                  "type": "string",
+                  "enum": ["run"]
+                },
+                "revision": {
+                  "type": "integer",
+                  "format": "int64"
+                }
+              },
+              "additionalProperties": false
+            }
+          ]
+        },
+        "Kind": {
+          "type": "string",
+          "enum": ["world", "experience", "observation", "mental_model"]
+        },
+        "Learning": {
+          "type": "string",
+          "enum": ["fact", "preference", "procedure", "failure"]
+        },
+        "Link": {
+          "type": "object",
+          "required": ["target", "revision", "kind", "weight"],
+          "properties": {
+            "kind": {
+              "$ref": "#/components/schemas/LinkKind"
+            },
+            "revision": {
+              "type": "integer",
+              "format": "int64"
+            },
+            "target": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "weight": {
+              "type": "number",
+              "format": "double"
+            }
+          },
+          "additionalProperties": false
+        },
+        "LinkKind": {
+          "type": "string",
+          "enum": ["entity", "semantic", "temporal", "causes", "caused_by"]
+        },
+        "MentalModel": {
+          "type": "object",
+          "required": ["question", "automatic_refresh"],
+          "properties": {
+            "automatic_refresh": {
+              "type": "boolean"
+            },
+            "question": {
+              "type": "string"
+            }
+          },
+          "additionalProperties": false
+        },
+        "TimeRange": {
+          "type": "object",
+          "required": ["start", "end"],
+          "properties": {
+            "end": {
+              "type": "string",
+              "format": "date-time"
+            },
+            "start": {
+              "type": "string",
+              "format": "date-time"
+            }
+          },
+          "additionalProperties": false
+        },
+        "Unit": {
+          "type": "object",
+          "required": [
+            "id",
+            "bank",
+            "revision",
+            "content",
+            "learned_at",
+            "updated_at",
+            "deleted",
+            "stale"
+          ],
+          "properties": {
+            "bank": {
+              "$ref": "#/components/schemas/Bank"
+            },
+            "content": {
+              "$ref": "#/components/schemas/Content"
+            },
+            "deleted": {
+              "type": "boolean"
+            },
+            "id": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "learned_at": {
+              "type": "string",
+              "format": "date-time"
+            },
+            "revision": {
+              "type": "integer",
+              "format": "int64"
+            },
+            "stale": {
+              "type": "boolean"
+            },
+            "updated_at": {
+              "type": "string",
+              "format": "date-time"
+            }
+          },
+          "additionalProperties": false
+        },
+        "Verification": {
+          "type": "string",
+          "description": "Verification is separate from admission and model confidence.",
+          "enum": ["unverified", "supported", "contradicted"]
+        }
+      }
+    }
   },
   {
     "method": "POST",
@@ -38310,7 +40637,351 @@
     "json": true,
     "uuid_parameters": ["workspace"],
     "query_parameters": [],
-    "response": null
+    "response": {
+      "schema": {
+        "type": "array",
+        "items": {
+          "$ref": "#/components/schemas/Unit"
+        }
+      },
+      "definitions": {
+        "Bank": {
+          "type": "object",
+          "description": "Issued by the Home authority for a participant, independently of a definition version.",
+          "required": ["home", "tenant", "workspace", "participant"],
+          "properties": {
+            "home": {
+              "type": "string"
+            },
+            "participant": {
+              "type": ["string", "null"],
+              "format": "uuid",
+              "description": "`None` is the explicitly published Workspace bank."
+            },
+            "tenant": {
+              "type": "string"
+            },
+            "workspace": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          "additionalProperties": false
+        },
+        "Content": {
+          "type": "object",
+          "required": [
+            "mental_model",
+            "text",
+            "kind",
+            "learning",
+            "verification",
+            "occurred",
+            "entities",
+            "evidence",
+            "links"
+          ],
+          "properties": {
+            "entities": {
+              "type": "array",
+              "items": {
+                "$ref": "#/components/schemas/Entity"
+              }
+            },
+            "evidence": {
+              "type": "array",
+              "items": {
+                "$ref": "#/components/schemas/Evidence"
+              }
+            },
+            "kind": {
+              "$ref": "#/components/schemas/Kind"
+            },
+            "learning": {
+              "$ref": "#/components/schemas/Learning"
+            },
+            "links": {
+              "type": "array",
+              "items": {
+                "$ref": "#/components/schemas/Link"
+              }
+            },
+            "mental_model": {
+              "anyOf": [
+                {
+                  "$ref": "#/components/schemas/MentalModel"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "A recurring question, retained independently of the current generated answer."
+            },
+            "occurred": {
+              "anyOf": [
+                {
+                  "$ref": "#/components/schemas/TimeRange"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "text": {
+              "type": "string"
+            },
+            "verification": {
+              "$ref": "#/components/schemas/Verification"
+            }
+          },
+          "additionalProperties": false
+        },
+        "Entity": {
+          "type": "object",
+          "required": ["name", "category", "aliases"],
+          "properties": {
+            "aliases": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "description": "Explicit source/model-resolved names, including cross-language aliases.",
+              "default": []
+            },
+            "category": {
+              "type": "string"
+            },
+            "name": {
+              "type": "string"
+            }
+          },
+          "additionalProperties": false
+        },
+        "Evidence": {
+          "oneOf": [
+            {
+              "type": "object",
+              "description": "Exact selected disclosure grant; source lineage is resolved at the Home.",
+              "required": ["kind", "id", "revision"],
+              "properties": {
+                "id": {
+                  "type": "string",
+                  "format": "uuid"
+                },
+                "kind": {
+                  "type": "string",
+                  "enum": ["publication"]
+                },
+                "revision": {
+                  "type": "integer",
+                  "format": "int64"
+                }
+              },
+              "additionalProperties": false
+            },
+            {
+              "type": "object",
+              "required": ["kind", "bank", "id", "revision"],
+              "properties": {
+                "bank": {
+                  "$ref": "#/components/schemas/Bank"
+                },
+                "id": {
+                  "type": "string",
+                  "format": "uuid"
+                },
+                "kind": {
+                  "type": "string",
+                  "enum": ["unit"]
+                },
+                "revision": {
+                  "type": "integer",
+                  "format": "int64"
+                }
+              },
+              "additionalProperties": false
+            },
+            {
+              "type": "object",
+              "required": ["kind", "id", "revision", "digest"],
+              "properties": {
+                "digest": {
+                  "type": "string"
+                },
+                "id": {
+                  "type": "string",
+                  "format": "uuid"
+                },
+                "kind": {
+                  "type": "string",
+                  "enum": ["message"]
+                },
+                "revision": {
+                  "type": "integer",
+                  "format": "int64"
+                }
+              },
+              "additionalProperties": false
+            },
+            {
+              "type": "object",
+              "required": ["kind", "id", "revision", "digest"],
+              "properties": {
+                "digest": {
+                  "type": "string"
+                },
+                "id": {
+                  "type": "string",
+                  "format": "uuid"
+                },
+                "kind": {
+                  "type": "string",
+                  "enum": ["artifact"]
+                },
+                "revision": {
+                  "type": "integer",
+                  "format": "int64"
+                }
+              },
+              "additionalProperties": false
+            },
+            {
+              "type": "object",
+              "required": ["kind", "id", "revision", "digest"],
+              "properties": {
+                "digest": {
+                  "type": "string"
+                },
+                "id": {
+                  "type": "string",
+                  "format": "uuid"
+                },
+                "kind": {
+                  "type": "string",
+                  "enum": ["run"]
+                },
+                "revision": {
+                  "type": "integer",
+                  "format": "int64"
+                }
+              },
+              "additionalProperties": false
+            }
+          ]
+        },
+        "Kind": {
+          "type": "string",
+          "enum": ["world", "experience", "observation", "mental_model"]
+        },
+        "Learning": {
+          "type": "string",
+          "enum": ["fact", "preference", "procedure", "failure"]
+        },
+        "Link": {
+          "type": "object",
+          "required": ["target", "revision", "kind", "weight"],
+          "properties": {
+            "kind": {
+              "$ref": "#/components/schemas/LinkKind"
+            },
+            "revision": {
+              "type": "integer",
+              "format": "int64"
+            },
+            "target": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "weight": {
+              "type": "number",
+              "format": "double"
+            }
+          },
+          "additionalProperties": false
+        },
+        "LinkKind": {
+          "type": "string",
+          "enum": ["entity", "semantic", "temporal", "causes", "caused_by"]
+        },
+        "MentalModel": {
+          "type": "object",
+          "required": ["question", "automatic_refresh"],
+          "properties": {
+            "automatic_refresh": {
+              "type": "boolean"
+            },
+            "question": {
+              "type": "string"
+            }
+          },
+          "additionalProperties": false
+        },
+        "TimeRange": {
+          "type": "object",
+          "required": ["start", "end"],
+          "properties": {
+            "end": {
+              "type": "string",
+              "format": "date-time"
+            },
+            "start": {
+              "type": "string",
+              "format": "date-time"
+            }
+          },
+          "additionalProperties": false
+        },
+        "Unit": {
+          "type": "object",
+          "required": [
+            "id",
+            "bank",
+            "revision",
+            "content",
+            "learned_at",
+            "updated_at",
+            "deleted",
+            "stale"
+          ],
+          "properties": {
+            "bank": {
+              "$ref": "#/components/schemas/Bank"
+            },
+            "content": {
+              "$ref": "#/components/schemas/Content"
+            },
+            "deleted": {
+              "type": "boolean"
+            },
+            "id": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "learned_at": {
+              "type": "string",
+              "format": "date-time"
+            },
+            "revision": {
+              "type": "integer",
+              "format": "int64"
+            },
+            "stale": {
+              "type": "boolean"
+            },
+            "updated_at": {
+              "type": "string",
+              "format": "date-time"
+            }
+          },
+          "additionalProperties": false
+        },
+        "Verification": {
+          "type": "string",
+          "description": "Verification is separate from admission and model confidence.",
+          "enum": ["unverified", "supported", "contradicted"]
+        }
+      }
+    }
   },
   {
     "method": "POST",
@@ -38320,7 +40991,189 @@
     "json": true,
     "uuid_parameters": ["workspace"],
     "query_parameters": [],
-    "response": null
+    "response": {
+      "schema": {
+        "$ref": "#/components/schemas/MemoryImpact"
+      },
+      "definitions": {
+        "Bank": {
+          "type": "object",
+          "description": "Issued by the Home authority for a participant, independently of a definition version.",
+          "required": ["home", "tenant", "workspace", "participant"],
+          "properties": {
+            "home": {
+              "type": "string"
+            },
+            "participant": {
+              "type": ["string", "null"],
+              "format": "uuid",
+              "description": "`None` is the explicitly published Workspace bank."
+            },
+            "tenant": {
+              "type": "string"
+            },
+            "workspace": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          "additionalProperties": false
+        },
+        "Kind": {
+          "type": "string",
+          "enum": ["world", "experience", "observation", "mental_model"]
+        },
+        "MemoryAffectedRun": {
+          "type": "object",
+          "required": [
+            "id",
+            "task_id",
+            "phase",
+            "control",
+            "read_revision",
+            "fenced"
+          ],
+          "properties": {
+            "control": {
+              "$ref": "#/components/schemas/RunControl"
+            },
+            "fenced": {
+              "type": "boolean",
+              "description": "The read no longer holds: the next boundary stops this Run. Otherwise a\nchange to the Unit would fence it."
+            },
+            "id": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "phase": {
+              "$ref": "#/components/schemas/RunPhase"
+            },
+            "read_revision": {
+              "type": "integer",
+              "format": "int64"
+            },
+            "task_id": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          "additionalProperties": false
+        },
+        "MemoryDerivedUnit": {
+          "type": "object",
+          "required": ["id", "bank", "revision", "kind"],
+          "properties": {
+            "bank": {
+              "$ref": "#/components/schemas/Bank"
+            },
+            "id": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "kind": {
+              "$ref": "#/components/schemas/Kind"
+            },
+            "revision": {
+              "type": "integer",
+              "format": "int64"
+            }
+          },
+          "additionalProperties": false
+        },
+        "MemoryImpact": {
+          "type": "object",
+          "required": ["units", "complete", "limits", "observed_at"],
+          "properties": {
+            "complete": {
+              "type": "boolean",
+              "description": "False when a declared bound stopped a scan before every dependent was\nexamined. It covers only what the requester may see: hidden Runs and\nUnits are never listed or counted, and a bound reached while skipping\nthem also reports `false`."
+            },
+            "limits": {
+              "$ref": "#/components/schemas/MemoryImpactLimits"
+            },
+            "observed_at": {
+              "type": "string",
+              "format": "date-time",
+              "description": "When this view was taken. A later mutation rechecks everything itself."
+            },
+            "units": {
+              "type": "array",
+              "items": {
+                "$ref": "#/components/schemas/MemoryUnitImpact"
+              }
+            }
+          },
+          "additionalProperties": false
+        },
+        "MemoryImpactLimits": {
+          "type": "object",
+          "required": ["runs_per_unit", "run_scan_per_unit", "derived_visits"],
+          "properties": {
+            "derived_visits": {
+              "type": "integer",
+              "format": "uint",
+              "description": "The pinned `max_graph_visits` that bounds derived-content traversal.",
+              "minimum": 0
+            },
+            "run_scan_per_unit": {
+              "type": "integer",
+              "format": "uint",
+              "minimum": 0
+            },
+            "runs_per_unit": {
+              "type": "integer",
+              "format": "uint",
+              "minimum": 0
+            }
+          },
+          "additionalProperties": false
+        },
+        "MemoryUnitImpact": {
+          "type": "object",
+          "required": ["id", "readable_revision", "runs", "derived"],
+          "properties": {
+            "derived": {
+              "type": "array",
+              "items": {
+                "$ref": "#/components/schemas/MemoryDerivedUnit"
+              }
+            },
+            "id": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "readable_revision": {
+              "type": ["integer", "null"],
+              "format": "int64",
+              "description": "The revision a Run may still read; `None` once the Unit is deleted,\nwithdrawn or retired, so every earlier read is fenced."
+            },
+            "runs": {
+              "type": "array",
+              "items": {
+                "$ref": "#/components/schemas/MemoryAffectedRun"
+              }
+            }
+          },
+          "additionalProperties": false
+        },
+        "RunControl": {
+          "type": "string",
+          "enum": ["ACTIVE", "PAUSED", "CANCELLED"]
+        },
+        "RunPhase": {
+          "type": "string",
+          "enum": [
+            "READY",
+            "THINKING",
+            "TOOL_CALL",
+            "WAITING",
+            "COMPLETED",
+            "FAILED",
+            "CANCELLED"
+          ]
+        }
+      }
+    }
   },
   {
     "method": "POST",
@@ -38330,7 +41183,69 @@
     "json": true,
     "uuid_parameters": ["workspace"],
     "query_parameters": [],
-    "response": null
+    "response": {
+      "schema": {
+        "$ref": "#/components/schemas/Participant"
+      },
+      "definitions": {
+        "Bank": {
+          "type": "object",
+          "description": "Issued by the Home authority for a participant, independently of a definition version.",
+          "required": ["home", "tenant", "workspace", "participant"],
+          "properties": {
+            "home": {
+              "type": "string"
+            },
+            "participant": {
+              "type": ["string", "null"],
+              "format": "uuid",
+              "description": "`None` is the explicitly published Workspace bank."
+            },
+            "tenant": {
+              "type": "string"
+            },
+            "workspace": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          "additionalProperties": false
+        },
+        "EntityRef": {
+          "type": "object",
+          "required": ["id", "version"],
+          "properties": {
+            "id": {
+              "type": "string"
+            },
+            "version": {
+              "type": "string"
+            }
+          }
+        },
+        "Participant": {
+          "type": "object",
+          "required": ["id", "bank", "agent", "revision"],
+          "properties": {
+            "agent": {
+              "$ref": "#/components/schemas/EntityRef"
+            },
+            "bank": {
+              "$ref": "#/components/schemas/Bank"
+            },
+            "id": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "revision": {
+              "type": "integer",
+              "format": "int64"
+            }
+          },
+          "additionalProperties": false
+        }
+      }
+    }
   },
   {
     "method": "GET",
@@ -38340,7 +41255,85 @@
     "json": false,
     "uuid_parameters": ["workspace"],
     "query_parameters": ["after"],
-    "response": null
+    "response": {
+      "schema": {
+        "$ref": "#/components/schemas/ParticipantPage"
+      },
+      "definitions": {
+        "Bank": {
+          "type": "object",
+          "description": "Issued by the Home authority for a participant, independently of a definition version.",
+          "required": ["home", "tenant", "workspace", "participant"],
+          "properties": {
+            "home": {
+              "type": "string"
+            },
+            "participant": {
+              "type": ["string", "null"],
+              "format": "uuid",
+              "description": "`None` is the explicitly published Workspace bank."
+            },
+            "tenant": {
+              "type": "string"
+            },
+            "workspace": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          "additionalProperties": false
+        },
+        "EntityRef": {
+          "type": "object",
+          "required": ["id", "version"],
+          "properties": {
+            "id": {
+              "type": "string"
+            },
+            "version": {
+              "type": "string"
+            }
+          }
+        },
+        "Participant": {
+          "type": "object",
+          "required": ["id", "bank", "agent", "revision"],
+          "properties": {
+            "agent": {
+              "$ref": "#/components/schemas/EntityRef"
+            },
+            "bank": {
+              "$ref": "#/components/schemas/Bank"
+            },
+            "id": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "revision": {
+              "type": "integer",
+              "format": "int64"
+            }
+          },
+          "additionalProperties": false
+        },
+        "ParticipantPage": {
+          "type": "object",
+          "required": ["items", "next"],
+          "properties": {
+            "items": {
+              "type": "array",
+              "items": {
+                "$ref": "#/components/schemas/Participant"
+              }
+            },
+            "next": {
+              "type": ["string", "null"],
+              "format": "uuid"
+            }
+          }
+        }
+      }
+    }
   },
   {
     "method": "POST",
@@ -38350,7 +41343,35 @@
     "json": true,
     "uuid_parameters": ["workspace", "task"],
     "query_parameters": [],
-    "response": null
+    "response": {
+      "schema": {
+        "anyOf": [
+          {
+            "$ref": "#/components/schemas/AssignedParticipant"
+          },
+          {
+            "type": "null"
+          }
+        ]
+      },
+      "definitions": {
+        "AssignedParticipant": {
+          "type": "object",
+          "required": ["participant_id", "participant_revision"],
+          "properties": {
+            "participant_id": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "participant_revision": {
+              "type": "integer",
+              "format": "int64"
+            }
+          },
+          "additionalProperties": false
+        }
+      }
+    }
   },
   {
     "method": "GET",
@@ -38360,7 +41381,48 @@
     "json": false,
     "uuid_parameters": ["workspace", "task"],
     "query_parameters": [],
-    "response": null
+    "response": {
+      "schema": {
+        "$ref": "#/components/schemas/TaskAssignment"
+      },
+      "definitions": {
+        "AssignedParticipant": {
+          "type": "object",
+          "required": ["participant_id", "participant_revision"],
+          "properties": {
+            "participant_id": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "participant_revision": {
+              "type": "integer",
+              "format": "int64"
+            }
+          },
+          "additionalProperties": false
+        },
+        "TaskAssignment": {
+          "type": "object",
+          "required": ["task_revision", "participant"],
+          "properties": {
+            "participant": {
+              "anyOf": [
+                {
+                  "$ref": "#/components/schemas/AssignedParticipant"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "task_revision": {
+              "type": "integer",
+              "format": "int64"
+            }
+          }
+        }
+      }
+    }
   },
   {
     "method": "POST",
@@ -38369,7 +41431,51 @@
     "source": "server/src/apps/marketplace/views/management.rs",
     "json": true,
     "uuid_parameters": [],
-    "query_parameters": []
+    "query_parameters": [],
+    "response": {
+      "schema": {
+        "type": "array",
+        "items": {
+          "$ref": "#/components/schemas/MarketplaceInstallation"
+        }
+      },
+      "definitions": {
+        "MarketplaceInstallation": {
+          "type": "object",
+          "required": [
+            "id",
+            "tenant",
+            "package_key",
+            "latest_revision",
+            "active_revision",
+            "activation_revision"
+          ],
+          "properties": {
+            "activation_revision": {
+              "type": "integer",
+              "format": "int64"
+            },
+            "active_revision": {
+              "type": ["integer", "null"],
+              "format": "int64"
+            },
+            "id": {
+              "type": "string"
+            },
+            "latest_revision": {
+              "type": "integer",
+              "format": "int64"
+            },
+            "package_key": {
+              "type": "string"
+            },
+            "tenant": {
+              "type": "string"
+            }
+          }
+        }
+      }
+    }
   },
   {
     "method": "POST",
@@ -39105,7 +42211,36 @@
     "source": "server/src/apps/identity/views/tenants.rs",
     "json": true,
     "uuid_parameters": [],
-    "query_parameters": []
+    "query_parameters": [],
+    "response": {
+      "schema": {
+        "$ref": "#/components/schemas/CreatedTenant"
+      },
+      "definitions": {
+        "CreatedTenant": {
+          "type": "object",
+          "required": ["name", "label", "created_at", "mapping_id"],
+          "properties": {
+            "created_at": {
+              "type": "string",
+              "format": "date-time"
+            },
+            "label": {
+              "type": "string"
+            },
+            "mapping_id": {
+              "type": ["string", "null"],
+              "format": "uuid",
+              "description": "The Tenant Creator's Mapping; absent when a Deployment Administrator created it."
+            },
+            "name": {
+              "type": "string",
+              "description": "The Tenant name Aidash assigned."
+            }
+          }
+        }
+      }
+    }
   },
   {
     "method": "GET",
@@ -39114,7 +42249,144 @@
     "source": "server/src/apps/identity/views/tenants.rs",
     "json": false,
     "uuid_parameters": [],
-    "query_parameters": ["offset"]
+    "query_parameters": ["offset"],
+    "response": {
+      "schema": {
+        "type": "array",
+        "items": {
+          "$ref": "#/components/schemas/TenantRecord"
+        }
+      },
+      "definitions": {
+        "PurgeProgress": {
+          "type": "object",
+          "description": "A purge that started, for Deployment Administrators (ADR 0061).",
+          "required": ["step", "failures", "error", "failed_at", "stalled"],
+          "properties": {
+            "error": {
+              "type": ["string", "null"],
+              "description": "Why the step last failed."
+            },
+            "failed_at": {
+              "type": ["string", "null"],
+              "format": "date-time"
+            },
+            "failures": {
+              "type": "integer",
+              "format": "uint32",
+              "description": "Consecutive failures of that step.",
+              "minimum": 0
+            },
+            "stalled": {
+              "type": "boolean",
+              "description": "The purge failed several times in a row and needs attention."
+            },
+            "step": {
+              "type": ["string", "null"],
+              "description": "The step that runs next, or that keeps failing: `provider_credentials`,\n`capability_objects`, `rows` or `finish`."
+            }
+          }
+        },
+        "TenantDeletionView": {
+          "type": "object",
+          "description": "A recorded Tenant Deletion.",
+          "required": [
+            "tenant",
+            "deleted_at",
+            "deleted_by_kind",
+            "purge_after",
+            "purged_at"
+          ],
+          "properties": {
+            "deleted_at": {
+              "type": "string",
+              "format": "date-time"
+            },
+            "deleted_by_kind": {
+              "type": "string",
+              "description": "`tenant_administrator` or `deployment_administrator`."
+            },
+            "purge_after": {
+              "type": "string",
+              "format": "date-time",
+              "description": "The end of the grace period: restoring is possible until then."
+            },
+            "purged_at": {
+              "type": ["string", "null"],
+              "format": "date-time",
+              "description": "When the Tenant's data was purged; it can no longer be restored."
+            },
+            "tenant": {
+              "type": "string"
+            }
+          }
+        },
+        "TenantRecord": {
+          "type": "object",
+          "description": "A Tenant's root record as Deployment Administrators see it.",
+          "required": [
+            "name",
+            "label",
+            "personal",
+            "created_at",
+            "created_by_kind",
+            "deletion",
+            "restorable",
+            "purgeable",
+            "purge"
+          ],
+          "properties": {
+            "created_at": {
+              "type": "string",
+              "format": "date-time"
+            },
+            "created_by_kind": {
+              "type": "string",
+              "description": "`identity` for a Tenant Creator, `deployment_administrator` for a Deployment Administrator."
+            },
+            "deletion": {
+              "anyOf": [
+                {
+                  "$ref": "#/components/schemas/TenantDeletionView"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "The Tenant's current deletion; absent while the Tenant is in use."
+            },
+            "label": {
+              "type": ["string", "null"]
+            },
+            "name": {
+              "type": "string"
+            },
+            "personal": {
+              "type": "boolean"
+            },
+            "purge": {
+              "anyOf": [
+                {
+                  "$ref": "#/components/schemas/PurgeProgress"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "How far the Tenant's purge got, once it started or failed."
+            },
+            "purgeable": {
+              "type": "boolean",
+              "description": "Whether a Deployment Administrator may purge the Tenant now: it is\ndeleted and its data is not purged yet."
+            },
+            "restorable": {
+              "type": "boolean",
+              "description": "Whether a Deployment Administrator may restore the Tenant now, decided\nby the database clock rather than the reader's."
+            }
+          }
+        }
+      }
+    }
   },
   {
     "method": "PUT",
@@ -39123,7 +42395,26 @@
     "source": "server/src/apps/identity/views/tenants.rs",
     "json": true,
     "uuid_parameters": [],
-    "query_parameters": []
+    "query_parameters": [],
+    "response": {
+      "schema": {
+        "$ref": "#/components/schemas/TenantLabel"
+      },
+      "definitions": {
+        "TenantLabel": {
+          "type": "object",
+          "required": ["name", "label"],
+          "properties": {
+            "label": {
+              "type": "string"
+            },
+            "name": {
+              "type": "string"
+            }
+          }
+        }
+      }
+    }
   },
   {
     "method": "POST",
@@ -39132,7 +42423,36 @@
     "source": "server/src/apps/identity/views/tenants.rs",
     "json": false,
     "uuid_parameters": [],
-    "query_parameters": []
+    "query_parameters": [],
+    "response": {
+      "schema": {
+        "$ref": "#/components/schemas/CreatedTenant"
+      },
+      "definitions": {
+        "CreatedTenant": {
+          "type": "object",
+          "required": ["name", "label", "created_at", "mapping_id"],
+          "properties": {
+            "created_at": {
+              "type": "string",
+              "format": "date-time"
+            },
+            "label": {
+              "type": "string"
+            },
+            "mapping_id": {
+              "type": ["string", "null"],
+              "format": "uuid",
+              "description": "The Tenant Creator's Mapping; absent when a Deployment Administrator created it."
+            },
+            "name": {
+              "type": "string",
+              "description": "The Tenant name Aidash assigned."
+            }
+          }
+        }
+      }
+    }
   },
   {
     "method": "POST",
@@ -39141,7 +42461,48 @@
     "source": "server/src/apps/identity/views/tenants.rs",
     "json": true,
     "uuid_parameters": [],
-    "query_parameters": []
+    "query_parameters": [],
+    "response": {
+      "schema": {
+        "$ref": "#/components/schemas/TenantDeletionView"
+      },
+      "definitions": {
+        "TenantDeletionView": {
+          "type": "object",
+          "description": "A recorded Tenant Deletion.",
+          "required": [
+            "tenant",
+            "deleted_at",
+            "deleted_by_kind",
+            "purge_after",
+            "purged_at"
+          ],
+          "properties": {
+            "deleted_at": {
+              "type": "string",
+              "format": "date-time"
+            },
+            "deleted_by_kind": {
+              "type": "string",
+              "description": "`tenant_administrator` or `deployment_administrator`."
+            },
+            "purge_after": {
+              "type": "string",
+              "format": "date-time",
+              "description": "The end of the grace period: restoring is possible until then."
+            },
+            "purged_at": {
+              "type": ["string", "null"],
+              "format": "date-time",
+              "description": "When the Tenant's data was purged; it can no longer be restored."
+            },
+            "tenant": {
+              "type": "string"
+            }
+          }
+        }
+      }
+    }
   },
   {
     "method": "POST",
@@ -39150,7 +42511,48 @@
     "source": "server/src/apps/identity/views/tenants.rs",
     "json": false,
     "uuid_parameters": [],
-    "query_parameters": []
+    "query_parameters": [],
+    "response": {
+      "schema": {
+        "$ref": "#/components/schemas/TenantDeletionView"
+      },
+      "definitions": {
+        "TenantDeletionView": {
+          "type": "object",
+          "description": "A recorded Tenant Deletion.",
+          "required": [
+            "tenant",
+            "deleted_at",
+            "deleted_by_kind",
+            "purge_after",
+            "purged_at"
+          ],
+          "properties": {
+            "deleted_at": {
+              "type": "string",
+              "format": "date-time"
+            },
+            "deleted_by_kind": {
+              "type": "string",
+              "description": "`tenant_administrator` or `deployment_administrator`."
+            },
+            "purge_after": {
+              "type": "string",
+              "format": "date-time",
+              "description": "The end of the grace period: restoring is possible until then."
+            },
+            "purged_at": {
+              "type": ["string", "null"],
+              "format": "date-time",
+              "description": "When the Tenant's data was purged; it can no longer be restored."
+            },
+            "tenant": {
+              "type": "string"
+            }
+          }
+        }
+      }
+    }
   },
   {
     "method": "POST",
@@ -39159,7 +42561,48 @@
     "source": "server/src/apps/identity/views/tenants.rs",
     "json": false,
     "uuid_parameters": [],
-    "query_parameters": []
+    "query_parameters": [],
+    "response": {
+      "schema": {
+        "$ref": "#/components/schemas/TenantDeletionView"
+      },
+      "definitions": {
+        "TenantDeletionView": {
+          "type": "object",
+          "description": "A recorded Tenant Deletion.",
+          "required": [
+            "tenant",
+            "deleted_at",
+            "deleted_by_kind",
+            "purge_after",
+            "purged_at"
+          ],
+          "properties": {
+            "deleted_at": {
+              "type": "string",
+              "format": "date-time"
+            },
+            "deleted_by_kind": {
+              "type": "string",
+              "description": "`tenant_administrator` or `deployment_administrator`."
+            },
+            "purge_after": {
+              "type": "string",
+              "format": "date-time",
+              "description": "The end of the grace period: restoring is possible until then."
+            },
+            "purged_at": {
+              "type": ["string", "null"],
+              "format": "date-time",
+              "description": "When the Tenant's data was purged; it can no longer be restored."
+            },
+            "tenant": {
+              "type": "string"
+            }
+          }
+        }
+      }
+    }
   },
   {
     "method": "GET",
@@ -39213,7 +42656,40 @@
     "source": "server/src/apps/identity/views/nodes.rs",
     "json": true,
     "uuid_parameters": [],
-    "query_parameters": []
+    "query_parameters": [],
+    "response": {
+      "schema": {
+        "$ref": "#/components/schemas/NodeRecord"
+      },
+      "definitions": {
+        "NodeRecord": {
+          "type": "object",
+          "description": "A Node as its Tenant sees it.",
+          "required": ["name", "address", "label", "default", "created_at"],
+          "properties": {
+            "address": {
+              "type": "string",
+              "description": "`aidash://<deployment>/<name>`, what other Nodes register."
+            },
+            "created_at": {
+              "type": "string",
+              "format": "date-time"
+            },
+            "default": {
+              "type": "boolean",
+              "description": "The Node the Tenant started with; Workspaces go there unless another is chosen."
+            },
+            "label": {
+              "type": "string"
+            },
+            "name": {
+              "type": "string",
+              "description": "The Node name Aidash assigned. It never changes."
+            }
+          }
+        }
+      }
+    }
   },
   {
     "method": "PATCH",
@@ -39280,6 +42756,7 @@
             "node",
             "source_node",
             "endpoint",
+            "dashboard_origin",
             "key_id",
             "atomic_transactions",
             "enabled",
@@ -39299,6 +42776,10 @@
             "created_at": {
               "type": "string",
               "format": "date-time"
+            },
+            "dashboard_origin": {
+              "type": ["string", "null"],
+              "description": "Pinned dashboard origin used to validate remote Preview frame ancestors."
             },
             "enabled": {
               "type": "boolean"
@@ -39356,6 +42837,7 @@
             "node",
             "source_node",
             "endpoint",
+            "dashboard_origin",
             "key_id",
             "atomic_transactions",
             "enabled",
@@ -39375,6 +42857,10 @@
             "created_at": {
               "type": "string",
               "format": "date-time"
+            },
+            "dashboard_origin": {
+              "type": ["string", "null"],
+              "description": "Pinned dashboard origin used to validate remote Preview frame ancestors."
             },
             "enabled": {
               "type": "boolean"
@@ -39432,6 +42918,7 @@
             "node",
             "source_node",
             "endpoint",
+            "dashboard_origin",
             "key_id",
             "atomic_transactions",
             "enabled",
@@ -39451,6 +42938,10 @@
             "created_at": {
               "type": "string",
               "format": "date-time"
+            },
+            "dashboard_origin": {
+              "type": ["string", "null"],
+              "description": "Pinned dashboard origin used to validate remote Preview frame ancestors."
             },
             "enabled": {
               "type": "boolean"
@@ -39491,7 +42982,52 @@
     "source": "server/src/apps/identity/views/invitations.rs",
     "json": true,
     "uuid_parameters": [],
-    "query_parameters": []
+    "query_parameters": [],
+    "response": {
+      "schema": {
+        "$ref": "#/components/schemas/IssuedInvitation"
+      },
+      "definitions": {
+        "IssuedInvitation": {
+          "type": "object",
+          "description": "An issued Invitation. `link` and `secret` are shown only in this response.",
+          "required": [
+            "id",
+            "tenant",
+            "link",
+            "secret",
+            "groups",
+            "expires_at"
+          ],
+          "properties": {
+            "expires_at": {
+              "type": "string",
+              "format": "date-time"
+            },
+            "groups": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "uniqueItems": true
+            },
+            "id": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "link": {
+              "type": "string"
+            },
+            "secret": {
+              "type": "string"
+            },
+            "tenant": {
+              "type": "string"
+            }
+          }
+        }
+      }
+    }
   },
   {
     "method": "GET",
@@ -39500,7 +43036,57 @@
     "source": "server/src/apps/identity/views/invitations.rs",
     "json": false,
     "uuid_parameters": [],
-    "query_parameters": []
+    "query_parameters": [],
+    "response": {
+      "schema": {
+        "type": "array",
+        "items": {
+          "$ref": "#/components/schemas/InvitationView"
+        }
+      },
+      "definitions": {
+        "InvitationView": {
+          "type": "object",
+          "required": [
+            "id",
+            "groups",
+            "created_at",
+            "expires_at",
+            "state",
+            "registration_id"
+          ],
+          "properties": {
+            "created_at": {
+              "type": "string",
+              "format": "date-time"
+            },
+            "expires_at": {
+              "type": "string",
+              "format": "date-time"
+            },
+            "groups": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "uniqueItems": true
+            },
+            "id": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "registration_id": {
+              "type": ["string", "null"],
+              "format": "uuid"
+            },
+            "state": {
+              "type": "string",
+              "description": "`active`, `redeemed`, `revoked` or `expired`."
+            }
+          }
+        }
+      }
+    }
   },
   {
     "method": "POST",
@@ -39509,7 +43095,54 @@
     "source": "server/src/apps/identity/views/invitations.rs",
     "json": false,
     "uuid_parameters": ["id"],
-    "query_parameters": []
+    "query_parameters": [],
+    "response": {
+      "schema": {
+        "$ref": "#/components/schemas/InvitationView"
+      },
+      "definitions": {
+        "InvitationView": {
+          "type": "object",
+          "required": [
+            "id",
+            "groups",
+            "created_at",
+            "expires_at",
+            "state",
+            "registration_id"
+          ],
+          "properties": {
+            "created_at": {
+              "type": "string",
+              "format": "date-time"
+            },
+            "expires_at": {
+              "type": "string",
+              "format": "date-time"
+            },
+            "groups": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "uniqueItems": true
+            },
+            "id": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "registration_id": {
+              "type": ["string", "null"],
+              "format": "uuid"
+            },
+            "state": {
+              "type": "string",
+              "description": "`active`, `redeemed`, `revoked` or `expired`."
+            }
+          }
+        }
+      }
+    }
   },
   {
     "method": "POST",
@@ -39518,7 +43151,27 @@
     "source": "server/src/apps/identity/views/invitations.rs",
     "json": true,
     "uuid_parameters": [],
-    "query_parameters": []
+    "query_parameters": [],
+    "response": {
+      "schema": {
+        "$ref": "#/components/schemas/InvitationPreview"
+      },
+      "definitions": {
+        "InvitationPreview": {
+          "type": "object",
+          "description": "What a signed-in person sees before requesting to join.",
+          "required": ["tenant", "label"],
+          "properties": {
+            "label": {
+              "type": ["string", "null"]
+            },
+            "tenant": {
+              "type": "string"
+            }
+          }
+        }
+      }
+    }
   },
   {
     "method": "POST",
@@ -39527,7 +43180,55 @@
     "source": "server/src/apps/identity/views/invitations.rs",
     "json": true,
     "uuid_parameters": [],
-    "query_parameters": []
+    "query_parameters": [],
+    "response": {
+      "schema": {
+        "$ref": "#/components/schemas/AuthorizationOidcRegistration"
+      },
+      "definitions": {
+        "AuthorizationOidcRegistration": {
+          "type": "object",
+          "required": [
+            "id",
+            "identity_id",
+            "status",
+            "created_at",
+            "expires_at",
+            "decided_at",
+            "tenant"
+          ],
+          "properties": {
+            "created_at": {
+              "type": "string",
+              "format": "date-time"
+            },
+            "decided_at": {
+              "type": ["string", "null"],
+              "format": "date-time"
+            },
+            "expires_at": {
+              "type": "string",
+              "format": "date-time"
+            },
+            "id": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "identity_id": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "status": {
+              "type": "string"
+            },
+            "tenant": {
+              "type": ["string", "null"],
+              "description": "The Tenant the request is addressed to; absent when only Deployment\nAdministrators may decide it."
+            }
+          }
+        }
+      }
+    }
   },
   {
     "method": "POST",
@@ -39635,7 +43336,8 @@
               "format": "int64"
             },
             "state": {
-              "$ref": "#/components/schemas/PlanConnectionState"
+              "$ref": "#/components/schemas/PlanConnectionState",
+              "description": "Effective state, including the connecting identity's current Mapping\neligibility. The stored grant state is preserved while identity use pauses."
             },
             "subject": {
               "type": "string"
@@ -39818,7 +43520,8 @@
               "format": "int64"
             },
             "state": {
-              "$ref": "#/components/schemas/PlanConnectionState"
+              "$ref": "#/components/schemas/PlanConnectionState",
+              "description": "Effective state, including the connecting identity's current Mapping\neligibility. The stored grant state is preserved while identity use pauses."
             },
             "subject": {
               "type": "string"
@@ -41050,6 +44753,11 @@
             },
             {
               "type": "string",
+              "description": "An Agent Plugin server's sampling request. Individual allow rules pin\nAgent, copy and origin; individual deny rules follow its logical name.",
+              "enum": ["sampling"]
+            },
+            {
+              "type": "string",
               "description": "An outbound read. The target is its origin.",
               "enum": ["outbound"]
             },
@@ -41151,7 +44859,107 @@
     "source": "server/src/apps/identity/views/approval_preferences.rs",
     "json": true,
     "uuid_parameters": [],
-    "query_parameters": []
+    "query_parameters": [],
+    "response": {
+      "schema": {
+        "$ref": "#/components/schemas/ApprovalRuleView"
+      },
+      "definitions": {
+        "ApprovalKind": {
+          "oneOf": [
+            {
+              "type": "string",
+              "description": "A call of a Tenant's HTTP or MCP tool. The target is\n`tool:{registry_id}#{operation}`. A rule names the tool and never a\nversion, unlike the target of a Run grant, which includes it.",
+              "enum": ["tool_call"]
+            },
+            {
+              "type": "string",
+              "description": "An Agent Plugin server's sampling request. Individual allow rules pin\nAgent, copy and origin; individual deny rules follow its logical name.",
+              "enum": ["sampling"]
+            },
+            {
+              "type": "string",
+              "description": "An outbound read. The target is its origin.",
+              "enum": ["outbound"]
+            },
+            {
+              "type": "string",
+              "description": "A Web search disclosure. The target is the Research provider the\nRun's Binding names, such as `research.brave@1`.",
+              "enum": ["web_search"]
+            },
+            {
+              "type": "string",
+              "description": "A Page reading disclosure. The target is the page host.",
+              "enum": ["page_reading"]
+            },
+            {
+              "type": "string",
+              "description": "A generated Agent request. The target is the Generation policy id.",
+              "enum": ["generation"]
+            }
+          ],
+          "description": "What an approval is for. The target strings below are what a rule names and\nwhat [`resolve`] compares them with."
+        },
+        "ApprovalRuleView": {
+          "type": "object",
+          "description": "A stored Approval Rule, and whether the Tenant's policy still lets its\nowner approve what it names in advance.",
+          "required": [
+            "id",
+            "kind",
+            "target",
+            "effect",
+            "effective",
+            "created_at"
+          ],
+          "properties": {
+            "created_at": {
+              "type": "string",
+              "format": "date-time"
+            },
+            "effect": {
+              "$ref": "#/components/schemas/RuleEffect"
+            },
+            "effective": {
+              "type": "boolean",
+              "description": "`false` for an allow rule when the ceiling no longer lets the owner\napprove this kind and target in advance: it is kept but has no effect.\nA deny or ask rule always holds, as it relaxes nothing."
+            },
+            "id": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "kind": {
+              "$ref": "#/components/schemas/ApprovalKind"
+            },
+            "target": {
+              "$ref": "#/components/schemas/RuleTarget"
+            }
+          }
+        },
+        "RuleEffect": {
+          "type": "string",
+          "enum": ["allow", "ask", "deny"]
+        },
+        "RuleTarget": {
+          "oneOf": [
+            {
+              "type": "string",
+              "enum": ["every"]
+            },
+            {
+              "type": "object",
+              "required": ["exact"],
+              "properties": {
+                "exact": {
+                  "type": "string"
+                }
+              },
+              "additionalProperties": false
+            }
+          ],
+          "description": "The targets of one kind that a rule covers. Serialized as the string\n`\"every\"` or as `{\"exact\": \"<target>\"}`, so no target string can be mistaken\nfor the wildcard."
+        }
+      }
+    }
   },
   {
     "method": "DELETE",
@@ -41181,6 +44989,11 @@
               "type": "string",
               "description": "A call of a Tenant's HTTP or MCP tool. The target is\n`tool:{registry_id}#{operation}`. A rule names the tool and never a\nversion, unlike the target of a Run grant, which includes it.",
               "enum": ["tool_call"]
+            },
+            {
+              "type": "string",
+              "description": "An Agent Plugin server's sampling request. Individual allow rules pin\nAgent, copy and origin; individual deny rules follow its logical name.",
+              "enum": ["sampling"]
             },
             {
               "type": "string",
@@ -41696,7 +45509,68 @@
     "source": "server/src/apps/identity/views/tenant_secrets.rs",
     "json": false,
     "uuid_parameters": [],
-    "query_parameters": []
+    "query_parameters": [],
+    "response": {
+      "schema": {
+        "type": "array",
+        "items": {
+          "$ref": "#/components/schemas/TenantSecretMetadata"
+        }
+      },
+      "definitions": {
+        "TenantSecretMetadata": {
+          "type": "object",
+          "description": "What a caller may learn about a Tenant Secret.",
+          "required": [
+            "id",
+            "tenant",
+            "name",
+            "hosts",
+            "fingerprint",
+            "last4",
+            "created_at",
+            "updated_at",
+            "revision"
+          ],
+          "properties": {
+            "created_at": {
+              "type": "string",
+              "format": "date-time"
+            },
+            "fingerprint": {
+              "type": "string"
+            },
+            "hosts": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            },
+            "id": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "last4": {
+              "type": "string"
+            },
+            "name": {
+              "type": "string"
+            },
+            "revision": {
+              "type": "integer",
+              "format": "int64"
+            },
+            "tenant": {
+              "type": "string"
+            },
+            "updated_at": {
+              "type": "string",
+              "format": "date-time"
+            }
+          }
+        }
+      }
+    }
   },
   {
     "method": "GET",
@@ -41705,7 +45579,65 @@
     "source": "server/src/apps/identity/views/tenant_secrets.rs",
     "json": false,
     "uuid_parameters": [],
-    "query_parameters": []
+    "query_parameters": [],
+    "response": {
+      "schema": {
+        "$ref": "#/components/schemas/TenantSecretMetadata"
+      },
+      "definitions": {
+        "TenantSecretMetadata": {
+          "type": "object",
+          "description": "What a caller may learn about a Tenant Secret.",
+          "required": [
+            "id",
+            "tenant",
+            "name",
+            "hosts",
+            "fingerprint",
+            "last4",
+            "created_at",
+            "updated_at",
+            "revision"
+          ],
+          "properties": {
+            "created_at": {
+              "type": "string",
+              "format": "date-time"
+            },
+            "fingerprint": {
+              "type": "string"
+            },
+            "hosts": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            },
+            "id": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "last4": {
+              "type": "string"
+            },
+            "name": {
+              "type": "string"
+            },
+            "revision": {
+              "type": "integer",
+              "format": "int64"
+            },
+            "tenant": {
+              "type": "string"
+            },
+            "updated_at": {
+              "type": "string",
+              "format": "date-time"
+            }
+          }
+        }
+      }
+    }
   },
   {
     "method": "PUT",
@@ -41714,7 +45646,65 @@
     "source": "server/src/apps/identity/views/tenant_secrets.rs",
     "json": true,
     "uuid_parameters": [],
-    "query_parameters": []
+    "query_parameters": [],
+    "response": {
+      "schema": {
+        "$ref": "#/components/schemas/TenantSecretMetadata"
+      },
+      "definitions": {
+        "TenantSecretMetadata": {
+          "type": "object",
+          "description": "What a caller may learn about a Tenant Secret.",
+          "required": [
+            "id",
+            "tenant",
+            "name",
+            "hosts",
+            "fingerprint",
+            "last4",
+            "created_at",
+            "updated_at",
+            "revision"
+          ],
+          "properties": {
+            "created_at": {
+              "type": "string",
+              "format": "date-time"
+            },
+            "fingerprint": {
+              "type": "string"
+            },
+            "hosts": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            },
+            "id": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "last4": {
+              "type": "string"
+            },
+            "name": {
+              "type": "string"
+            },
+            "revision": {
+              "type": "integer",
+              "format": "int64"
+            },
+            "tenant": {
+              "type": "string"
+            },
+            "updated_at": {
+              "type": "string",
+              "format": "date-time"
+            }
+          }
+        }
+      }
+    }
   },
   {
     "method": "DELETE",
@@ -41723,7 +45713,65 @@
     "source": "server/src/apps/identity/views/tenant_secrets.rs",
     "json": true,
     "uuid_parameters": [],
-    "query_parameters": []
+    "query_parameters": [],
+    "response": {
+      "schema": {
+        "$ref": "#/components/schemas/TenantSecretMetadata"
+      },
+      "definitions": {
+        "TenantSecretMetadata": {
+          "type": "object",
+          "description": "What a caller may learn about a Tenant Secret.",
+          "required": [
+            "id",
+            "tenant",
+            "name",
+            "hosts",
+            "fingerprint",
+            "last4",
+            "created_at",
+            "updated_at",
+            "revision"
+          ],
+          "properties": {
+            "created_at": {
+              "type": "string",
+              "format": "date-time"
+            },
+            "fingerprint": {
+              "type": "string"
+            },
+            "hosts": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            },
+            "id": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "last4": {
+              "type": "string"
+            },
+            "name": {
+              "type": "string"
+            },
+            "revision": {
+              "type": "integer",
+              "format": "int64"
+            },
+            "tenant": {
+              "type": "string"
+            },
+            "updated_at": {
+              "type": "string",
+              "format": "date-time"
+            }
+          }
+        }
+      }
+    }
   },
   {
     "method": "GET",
@@ -42109,7 +46157,7 @@
     "source": "server/src/apps/execution/observation/views.rs",
     "json": false,
     "uuid_parameters": [],
-    "query_parameters": ["start", "end"],
+    "query_parameters": ["end", "start"],
     "response": {
       "schema": {
         "$ref": "#/components/schemas/ObservationReport"
@@ -42535,5 +46583,546 @@
         }
       }
     }
+  },
+  {
+    "method": "GET",
+    "path": "/api/previews/availability",
+    "name": "core_preview_availability",
+    "source": "server/src/apps/execution/capabilities/views/previews.rs",
+    "json": false,
+    "uuid_parameters": [],
+    "query_parameters": [],
+    "response": {
+      "schema": {
+        "$ref": "#/components/schemas/PreviewAvailability"
+      },
+      "definitions": {
+        "PreviewAvailability": {
+          "type": "object",
+          "required": ["available", "preview_domain"],
+          "properties": {
+            "available": {
+              "type": "boolean"
+            },
+            "preview_domain": {
+              "type": ["string", "null"]
+            }
+          }
+        }
+      }
+    }
+  },
+  {
+    "method": "POST",
+    "path": "/api/previews/tickets",
+    "name": "core_preview_ticket",
+    "source": "server/src/apps/execution/capabilities/views/previews.rs",
+    "json": true,
+    "uuid_parameters": [],
+    "query_parameters": [],
+    "response": {
+      "schema": {
+        "$ref": "#/components/schemas/PreviewTicket"
+      },
+      "definitions": {
+        "PreviewTicket": {
+          "type": "object",
+          "required": ["url", "expires_at"],
+          "properties": {
+            "expires_at": {
+              "type": "string",
+              "format": "date-time"
+            },
+            "url": {
+              "type": "string"
+            }
+          }
+        }
+      }
+    }
+  },
+  {
+    "method": "GET",
+    "path": "/api/runs/{id}/live-preview",
+    "name": "core_live_preview",
+    "source": "server/src/apps/execution/capabilities/views/live_previews.rs",
+    "json": false,
+    "uuid_parameters": ["id"],
+    "query_parameters": [],
+    "response": {
+      "schema": {
+        "$ref": "#/components/schemas/LivePreviewStatus"
+      },
+      "definitions": {
+        "LivePreview": {
+          "type": "object",
+          "required": [
+            "id",
+            "state",
+            "stop_reason",
+            "area_id",
+            "revision",
+            "port",
+            "idle_seconds",
+            "absolute_seconds",
+            "started_at",
+            "last_request_at",
+            "expires_at"
+          ],
+          "properties": {
+            "absolute_seconds": {
+              "type": "integer",
+              "format": "int64"
+            },
+            "area_id": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "expires_at": {
+              "type": "string",
+              "format": "date-time"
+            },
+            "id": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "idle_seconds": {
+              "type": "integer",
+              "format": "int64"
+            },
+            "last_request_at": {
+              "type": "string",
+              "format": "date-time"
+            },
+            "port": {
+              "type": "integer",
+              "format": "uint16",
+              "maximum": 65535,
+              "minimum": 0
+            },
+            "revision": {
+              "type": "integer",
+              "format": "int64"
+            },
+            "started_at": {
+              "type": "string",
+              "format": "date-time"
+            },
+            "state": {
+              "type": "string"
+            },
+            "stop_reason": {
+              "type": ["string", "null"]
+            }
+          }
+        },
+        "LivePreviewStatus": {
+          "type": "object",
+          "description": "One Run's Live preview as the dashboard reads it.",
+          "required": ["live_preview", "may_stop"],
+          "properties": {
+            "live_preview": {
+              "anyOf": [
+                {
+                  "$ref": "#/components/schemas/LivePreview"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "may_stop": {
+              "type": "boolean",
+              "description": "Whether this viewer may stop it: the Run's requester or whoever may\ncancel the Run (ADR 0070). The dashboard shows Stop only then."
+            }
+          }
+        }
+      }
+    }
+  },
+  {
+    "method": "POST",
+    "path": "/api/runs/{id}/live-preview/stop",
+    "name": "core_live_preview_stop",
+    "source": "server/src/apps/execution/capabilities/views/live_previews.rs",
+    "json": false,
+    "uuid_parameters": ["id"],
+    "query_parameters": [],
+    "response": {
+      "schema": {
+        "$ref": "#/components/schemas/LivePreviewStatus"
+      },
+      "definitions": {
+        "LivePreview": {
+          "type": "object",
+          "required": [
+            "id",
+            "state",
+            "stop_reason",
+            "area_id",
+            "revision",
+            "port",
+            "idle_seconds",
+            "absolute_seconds",
+            "started_at",
+            "last_request_at",
+            "expires_at"
+          ],
+          "properties": {
+            "absolute_seconds": {
+              "type": "integer",
+              "format": "int64"
+            },
+            "area_id": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "expires_at": {
+              "type": "string",
+              "format": "date-time"
+            },
+            "id": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "idle_seconds": {
+              "type": "integer",
+              "format": "int64"
+            },
+            "last_request_at": {
+              "type": "string",
+              "format": "date-time"
+            },
+            "port": {
+              "type": "integer",
+              "format": "uint16",
+              "maximum": 65535,
+              "minimum": 0
+            },
+            "revision": {
+              "type": "integer",
+              "format": "int64"
+            },
+            "started_at": {
+              "type": "string",
+              "format": "date-time"
+            },
+            "state": {
+              "type": "string"
+            },
+            "stop_reason": {
+              "type": ["string", "null"]
+            }
+          }
+        },
+        "LivePreviewStatus": {
+          "type": "object",
+          "description": "One Run's Live preview as the dashboard reads it.",
+          "required": ["live_preview", "may_stop"],
+          "properties": {
+            "live_preview": {
+              "anyOf": [
+                {
+                  "$ref": "#/components/schemas/LivePreview"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "may_stop": {
+              "type": "boolean",
+              "description": "Whether this viewer may stop it: the Run's requester or whoever may\ncancel the Run (ADR 0070). The dashboard shows Stop only then."
+            }
+          }
+        }
+      }
+    }
+  },
+  {
+    "method": "POST",
+    "path": "/api/previews/live-tickets",
+    "name": "core_preview_live_ticket",
+    "source": "server/src/apps/execution/capabilities/views/live_previews.rs",
+    "json": true,
+    "uuid_parameters": [],
+    "query_parameters": [],
+    "response": {
+      "schema": {
+        "$ref": "#/components/schemas/PreviewTicket"
+      },
+      "definitions": {
+        "PreviewTicket": {
+          "type": "object",
+          "required": ["url", "expires_at"],
+          "properties": {
+            "expires_at": {
+              "type": "string",
+              "format": "date-time"
+            },
+            "url": {
+              "type": "string"
+            }
+          }
+        }
+      }
+    }
+  },
+  {
+    "method": "GET",
+    "path": "/api/preview-limits/{tenant}",
+    "name": "core_preview_limits",
+    "source": "server/src/apps/execution/capabilities/views/live_previews.rs",
+    "json": false,
+    "uuid_parameters": [],
+    "query_parameters": [],
+    "response": {
+      "schema": {
+        "$ref": "#/components/schemas/TenantPreviewLimits"
+      },
+      "definitions": {
+        "TenantPreviewLimits": {
+          "type": "object",
+          "description": "A Tenant's lowered Live preview limits and the Deployment's ceilings.",
+          "required": [
+            "tenant",
+            "idle_seconds",
+            "absolute_seconds",
+            "revision",
+            "ceiling_idle_seconds",
+            "ceiling_absolute_seconds"
+          ],
+          "properties": {
+            "absolute_seconds": {
+              "type": "integer",
+              "format": "int64"
+            },
+            "ceiling_absolute_seconds": {
+              "type": "integer",
+              "format": "int64"
+            },
+            "ceiling_idle_seconds": {
+              "type": "integer",
+              "format": "int64"
+            },
+            "idle_seconds": {
+              "type": "integer",
+              "format": "int64"
+            },
+            "revision": {
+              "type": "integer",
+              "format": "int64"
+            },
+            "tenant": {
+              "type": "string"
+            }
+          }
+        }
+      }
+    }
+  },
+  {
+    "method": "PUT",
+    "path": "/api/preview-limits/{tenant}",
+    "name": "core_preview_limits_update",
+    "source": "server/src/apps/execution/capabilities/views/live_previews.rs",
+    "json": true,
+    "uuid_parameters": [],
+    "query_parameters": [],
+    "response": {
+      "schema": {
+        "$ref": "#/components/schemas/TenantPreviewLimits"
+      },
+      "definitions": {
+        "TenantPreviewLimits": {
+          "type": "object",
+          "description": "A Tenant's lowered Live preview limits and the Deployment's ceilings.",
+          "required": [
+            "tenant",
+            "idle_seconds",
+            "absolute_seconds",
+            "revision",
+            "ceiling_idle_seconds",
+            "ceiling_absolute_seconds"
+          ],
+          "properties": {
+            "absolute_seconds": {
+              "type": "integer",
+              "format": "int64"
+            },
+            "ceiling_absolute_seconds": {
+              "type": "integer",
+              "format": "int64"
+            },
+            "ceiling_idle_seconds": {
+              "type": "integer",
+              "format": "int64"
+            },
+            "idle_seconds": {
+              "type": "integer",
+              "format": "int64"
+            },
+            "revision": {
+              "type": "integer",
+              "format": "int64"
+            },
+            "tenant": {
+              "type": "string"
+            }
+          }
+        }
+      }
+    }
+  },
+  {
+    "method": "GET",
+    "path": "/api/runs/{id}/remote-preview",
+    "name": "core_remote_preview_inspect",
+    "source": "server/src/apps/execution/capabilities/views/previews.rs",
+    "json": false,
+    "uuid_parameters": ["id"],
+    "query_parameters": [],
+    "response": {
+      "schema": {
+        "$ref": "#/components/schemas/Inspection"
+      },
+      "definitions": {
+        "File": {
+          "type": "object",
+          "required": ["file_id", "path", "digest", "size", "media_type"],
+          "properties": {
+            "digest": {
+              "type": "string"
+            },
+            "file_id": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "media_type": {
+              "type": "string"
+            },
+            "path": {
+              "type": "string"
+            },
+            "size": {
+              "type": "integer",
+              "format": "uint64",
+              "minimum": 0
+            }
+          }
+        },
+        "Inspection": {
+          "type": "object",
+          "required": ["area_id", "files", "live_preview", "preview_available"],
+          "properties": {
+            "area_id": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "files": {
+              "type": "array",
+              "items": {
+                "$ref": "#/components/schemas/File"
+              }
+            },
+            "live_preview": {
+              "anyOf": [
+                {
+                  "$ref": "#/components/schemas/Live"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "preview_available": {
+              "type": "boolean"
+            }
+          }
+        },
+        "Live": {
+          "type": "object",
+          "required": ["id", "state"],
+          "properties": {
+            "id": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "state": {
+              "type": "string"
+            }
+          }
+        }
+      }
+    }
+  },
+  {
+    "method": "POST",
+    "path": "/api/runs/{id}/preview-tickets",
+    "name": "core_remote_preview_ticket",
+    "source": "server/src/apps/execution/capabilities/views/previews.rs",
+    "json": true,
+    "uuid_parameters": ["id"],
+    "query_parameters": [],
+    "response": {
+      "schema": {
+        "$ref": "#/components/schemas/Ticket"
+      },
+      "definitions": {
+        "Ticket": {
+          "type": "object",
+          "required": ["url", "expires_at", "preview_domain"],
+          "properties": {
+            "expires_at": {
+              "type": "string",
+              "format": "date-time"
+            },
+            "preview_domain": {
+              "type": "string",
+              "description": "V can display this domain; the desktop validates it from V's API itself."
+            },
+            "url": {
+              "type": "string"
+            }
+          }
+        }
+      }
+    }
+  },
+  {
+    "method": "POST",
+    "path": "/federation/v0.1/scoped/previews/inspect",
+    "name": "peer-preview-inspect",
+    "source": "server/src/apps/identity/views/execution.rs",
+    "json": true,
+    "uuid_parameters": [],
+    "query_parameters": []
+  },
+  {
+    "method": "POST",
+    "path": "/federation/v0.1/scoped/previews/release",
+    "name": "peer-preview-release",
+    "source": "server/src/apps/identity/views/execution.rs",
+    "json": true,
+    "uuid_parameters": [],
+    "query_parameters": []
+  },
+  {
+    "method": "POST",
+    "path": "/federation/v0.1/scoped/previews/retain",
+    "name": "peer-preview-retain",
+    "source": "server/src/apps/identity/views/execution.rs",
+    "json": true,
+    "uuid_parameters": [],
+    "query_parameters": []
+  },
+  {
+    "method": "POST",
+    "path": "/federation/v0.1/scoped/previews/tickets",
+    "name": "peer-preview-ticket",
+    "source": "server/src/apps/identity/views/execution.rs",
+    "json": true,
+    "uuid_parameters": [],
+    "query_parameters": []
   }
 ]

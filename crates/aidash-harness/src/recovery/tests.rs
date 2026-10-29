@@ -1,7 +1,9 @@
 use super::*;
+use aidash_application::recovery::AuthorityFailure;
 use aidash_domain::{
 	RecoveryState, Run, StateVersion, ThinkingState,
 	context::{Context, recovery::Failure as ContextFailure},
+	tool::{AuthorityRefusal, RefusalCheck},
 };
 use async_trait::async_trait;
 use rstest::{fixture, rstest};
@@ -11,6 +13,7 @@ use std::sync::Mutex;
 enum Write {
 	Save(String),
 	Pause(String, String),
+	Refused(String, String, AuthorityRefusal),
 	Semantic(SemanticFailure),
 	Context(ContextFailure),
 }
@@ -32,13 +35,20 @@ impl ExecutionRecoveryStore for Repository {
 		self.writes.lock().unwrap().push(Write::Save(event.into()));
 		Ok(())
 	}
-	async fn pause(&self, run: &Run, token: Uuid, reason: &str, event: &str) -> Result<()> {
+	async fn pause(
+		&self,
+		run: &Run,
+		token: Uuid,
+		reason: &str,
+		event: &str,
+		refusal: Option<&AuthorityRefusal>,
+	) -> Result<()> {
 		assert_eq!(token, self.token);
 		*self.run.lock().unwrap() = Some(run.clone());
-		self.writes
-			.lock()
-			.unwrap()
-			.push(Write::Pause(reason.into(), event.into()));
+		self.writes.lock().unwrap().push(match refusal {
+			Some(refusal) => Write::Refused(reason.into(), event.into(), refusal.clone()),
+			None => Write::Pause(reason.into(), event.into()),
+		});
 		Ok(())
 	}
 	async fn pause_semantic(&self, run: &Run, token: Uuid, reason: SemanticFailure) -> Result<()> {
@@ -81,6 +91,8 @@ fn repository(now: DateTime<Utc>) -> Repository {
 			revision: 9,
 			observed_input_seq: 7,
 			ledger_worker_ready: true,
+			control_revision: 0,
+			control_source: Default::default(),
 			error: None,
 			lease_owner: Some(token),
 			lease_until: Some(now + chrono::Duration::seconds(60)),
@@ -243,21 +255,19 @@ async fn provider_contract_and_transient_failures_have_distinct_recovery(
 	}
 }
 #[rstest]
-#[case(false, "execution authority denied")]
-#[case(true, "identity status unavailable")]
+#[case(AuthorityFailure::Denied(None), "execution authority denied")]
+#[case(AuthorityFailure::IdentityUnavailable, "identity status unavailable")]
 #[tokio::test]
 async fn lost_authority_pauses_instead_of_replaying_work(
 	repository: Repository,
 	now: DateTime<Utc>,
-	#[case] identity_unavailable: bool,
+	#[case] failure: AuthorityFailure,
 	#[case] reason: &str,
 ) {
 	let retry = recover(
 		&repository,
 		repository.token,
-		ExecutionFailure::Authority {
-			identity_unavailable,
-		},
+		ExecutionFailure::Authority(failure),
 		now,
 	)
 	.await
@@ -268,6 +278,35 @@ async fn lost_authority_pauses_instead_of_replaying_work(
 		[Write::Pause(
 			reason.into(),
 			"run.authorization_blocked".into()
+		)]
+	);
+}
+#[rstest]
+#[tokio::test]
+async fn a_refused_tool_pauses_naming_the_tool_and_the_check(
+	repository: Repository,
+	now: DateTime<Utc>,
+) {
+	let refusal = AuthorityRefusal {
+		tool: "task_delegate".into(),
+		check: RefusalCheck::Policy,
+		action: Some("task.delegate".into()),
+	};
+	let retry = recover(
+		&repository,
+		repository.token,
+		ExecutionFailure::Authority(AuthorityFailure::Denied(Some(refusal.clone()))),
+		now,
+	)
+	.await
+	.unwrap();
+	assert!(!retry);
+	assert_eq!(
+		*repository.writes.lock().unwrap(),
+		[Write::Refused(
+			"task_delegate: task.delegate was denied".into(),
+			"run.authorization_blocked".into(),
+			refusal,
 		)]
 	);
 }

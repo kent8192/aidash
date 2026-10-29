@@ -629,7 +629,11 @@ impl CleanupScope for Scope<'_> {
 						Expr::cust("data || '{\"closed_reason\":\"area_cleaned\"}'::jsonb"),
 					)
 					.and_where(Expr::col(Alias::new("area_id")).eq(Expr::value(area.id)))
-					.and_where(Expr::col(Alias::new("kind")).is_in(["disclosure", "tool_call"]))
+					.and_where(Expr::col(Alias::new("kind")).is_in([
+						"disclosure",
+						"tool_call",
+						"sampling",
+					]))
 					.and_where(Expr::col(Alias::new("state")).eq("pending"))
 					.to_string(PostgresQueryBuilder),
 			)
@@ -927,6 +931,22 @@ impl ErasureScope for Erasure<'_> {
 				.await?
 			};
 			Ok(ids)
+		}
+		.await;
+		result.map_err(Into::into)
+	}
+	async fn release_holds(&mut self, area: &Area) -> Result<()> {
+		let result: NativeResult<()> = async {
+			crate::database::native::query(
+				&Query::delete()
+					.from_table(Alias::new("core_retention_holds"))
+					.and_where(Expr::col(Alias::new("tenant")).eq(Expr::value(area.tenant.clone())))
+					.and_where(Expr::col(Alias::new("area_id")).eq(Expr::value(area.id)))
+					.to_string(PostgresQueryBuilder),
+			)
+			.execute(&mut *self.tx)
+			.await?;
+			Ok(())
 		}
 		.await;
 		result.map_err(Into::into)

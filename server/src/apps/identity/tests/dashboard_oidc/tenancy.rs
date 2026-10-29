@@ -166,6 +166,33 @@ impl Deployment {
 		(status, body)
 	}
 
+	/// A Deployment Administrator command that carries an `Idempotency-Key`.
+	async fn as_deployment_administrator_keyed(
+		&self,
+		path: &str,
+		key: Uuid,
+		body: Value,
+	) -> (u16, Value) {
+		let response = self
+			.app
+			.api_http
+			.request("POST".parse().unwrap(), &self.app.url(path))
+			.header("content-type", "application/json")
+			.header(
+				"authorization",
+				format!("Bearer {DEPLOYMENT_ADMINISTRATOR}"),
+			)
+			.header("idempotency-key", key.to_string())
+			.json(&body)
+			.send()
+			.await
+			.unwrap();
+		(
+			response.status().as_u16(),
+			serde_json::from_slice(response.body()).unwrap_or(Value::Null),
+		)
+	}
+
 	async fn as_person(
 		&self,
 		person: &Person,
@@ -193,6 +220,17 @@ impl Deployment {
 			.find(|mapping| mapping["tenant"] == tenant)
 			.unwrap_or_else(|| panic!("no Mapping into {tenant}: {session}"));
 		format!("mapping:{tenant}:{}", mapping["id"].as_str().unwrap())
+	}
+
+	/// The Tenant's policy revision history, read from the host: a Deployment
+	/// Administrator may not read it over HTTP (#484).
+	async fn revisions(&self, tenant: &str) -> Vec<Value> {
+		aidash_server::authorization::Authorization {
+			pool: self.federation.store.pool.clone(),
+		}
+		.revisions(tenant, 0, 50)
+		.await
+		.unwrap()
 	}
 
 	async fn count(&self, sql: &str) -> i64 {
@@ -254,14 +292,16 @@ async fn deployment_administrators_create_tenants_under_assigned_names(
 	);
 	assert_eq!(policy["bundle"]["groups"]["members"]["assignable"], true);
 	assert!(policy["bundle"]["subjects"].as_object().unwrap().is_empty());
-	let (status, revisions) = d
+	// The revision history is Tenant content: refused over HTTP to an Administrator.
+	let (status, refused) = d
 		.as_deployment_administrator(
 			"GET",
 			&format!("/api/authorization/{name}/revisions"),
 			Value::Null,
 		)
 		.await;
-	assert_eq!(status, 200, "{revisions}");
+	assert_eq!(status, 403, "{refused}");
+	let revisions = d.revisions(&name).await;
 	assert_eq!(revisions[0]["actor"], "deployment_administrator");
 	let (status, tenants) = d
 		.as_deployment_administrator("GET", "/api/tenants", Value::Null)
@@ -434,24 +474,18 @@ async fn a_tenant_creator_administers_the_tenant_it_created(
 			.unwrap()
 			.contains(&json!("invitation.create"))
 	);
-	let (status, revisions) = d
+	let (status, refused) = d
 		.as_deployment_administrator(
 			"GET",
 			&format!("/api/authorization/{tenant}/revisions"),
 			Value::Null,
 		)
 		.await;
-	assert_eq!(status, 200, "{revisions}");
+	assert_eq!(status, 403, "{refused}");
+	let revisions = d.revisions(&tenant).await;
 	assert_eq!(revisions[0]["actor"], format!("oidc:{}", alice.identity));
 	// A Subject Credential never creates a Tenant, even with every action.
-	let (status, issued) = d
-		.as_deployment_administrator(
-			"POST",
-			&format!("/api/authorization/{tenant}/credentials"),
-			json!({"subject":"owner"}),
-		)
-		.await;
-	assert_eq!(status, 200, "{issued}");
+	let issued = common::issued_credential(&d.federation.store, &tenant, "owner").await;
 	let token = issued["token"].as_str().unwrap();
 	let (status, _, _) = d
 		.send(

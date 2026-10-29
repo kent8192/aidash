@@ -54,6 +54,42 @@ pub enum RunControl {
 	Paused,
 	Cancelled,
 }
+/// The kind of actor that last changed a Run's control. It is shown to anyone
+/// who can see the Run; the person and the reason are not.
+#[derive(
+	Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq, schemars::JsonSchema,
+)]
+#[serde(rename_all = "snake_case")]
+pub enum ControlSource {
+	/// A Tenant Subject, or the Run's creation.
+	#[default]
+	Tenant,
+	/// A Deployment Administrator's Safety Stop.
+	DeploymentAdministrator,
+	/// Aidash itself, such as the pause for an identity status outage.
+	System,
+}
+impl ControlSource {
+	pub fn as_str(self) -> &'static str {
+		match self {
+			Self::Tenant => "tenant",
+			Self::DeploymentAdministrator => "deployment_administrator",
+			Self::System => "system",
+		}
+	}
+}
+impl std::fmt::Display for ControlSource {
+	fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+		f.write_str(self.as_str())
+	}
+}
+impl TryFrom<String> for ControlSource {
+	type Error = crate::Error;
+	fn try_from(value: String) -> crate::Result<Self> {
+		serde_json::from_value(serde_json::Value::String(value)).map_err(Into::into)
+	}
+}
+
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, schemars::JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum RunControlAction {
@@ -308,6 +344,12 @@ pub struct Run {
 	pub state: RunState,
 	pub recovery: RecoveryState,
 	pub control: RunControl,
+	/// Counts control decisions only; worker progress does not change it.
+	#[serde(default)]
+	pub control_revision: i64,
+	/// The kind of actor that last changed `control`.
+	#[serde(default)]
+	pub control_source: ControlSource,
 	pub context: crate::context::Context,
 	pub step: i32,
 	pub revision: i64,

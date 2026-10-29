@@ -19,6 +19,9 @@ pub enum HumanRequestKind {
 	#[model_enum(value = "INFORMATION_REQUEST")]
 	#[serde(rename = "INFORMATION_REQUEST")]
 	InformationRequest,
+	#[model_enum(value = "MCP_ELICITATION")]
+	#[serde(rename = "MCP_ELICITATION")]
+	McpElicitation,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize, ModelEnum)]
@@ -49,6 +52,22 @@ pub enum RunControl {
 	#[model_enum(value = "CANCELLED")]
 	#[serde(rename = "CANCELLED")]
 	Cancelled,
+}
+
+/// Persistence form of the domain's `ControlSource`.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize, ModelEnum)]
+#[model_enum(repr = "string")]
+pub enum ControlSource {
+	#[default]
+	#[model_enum(value = "tenant")]
+	#[serde(rename = "tenant")]
+	Tenant,
+	#[model_enum(value = "deployment_administrator")]
+	#[serde(rename = "deployment_administrator")]
+	DeploymentAdministrator,
+	#[model_enum(value = "system")]
+	#[serde(rename = "system")]
+	System,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize, ModelEnum)]

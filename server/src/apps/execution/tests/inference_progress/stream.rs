@@ -355,31 +355,32 @@ async fn revocation_closes_the_stream_and_denies_reconnect(
 			assert_eq!(status, 200, "{value}");
 		}
 		Revocation::Credential => {
-			let (status, credentials) = request(
-				&c.app,
-				deployment_administrator,
-				"GET",
-				"/api/authorization/acme/credentials",
-				json!(null),
-			)
-			.await;
+			// Credentials are a Tenant's own: its Administrator, acting through a
+			// Mapping, revokes every other credential, including the one the
+			// stream uses (#484).
+			let administrator = common::BrowserMapping::new(&c.f, "acme", "alice").await;
+			let (status, credentials) = administrator
+				.send("GET", "/api/authorization/acme/credentials", json!(null))
+				.await;
 			assert_eq!(status, 200, "{credentials}");
 			let listed = credentials
 				.as_array()
 				.or_else(|| credentials["items"].as_array())
 				.expect("credential list");
-			for credential in listed {
-				let (status, value) = request(
-					&c.app,
-					deployment_administrator,
-					"POST",
-					&format!(
-						"/api/authorization/acme/credentials/{}/revoke",
-						credential["id"].as_str().unwrap()
-					),
-					json!({}),
-				)
-				.await;
+			for credential in listed
+				.iter()
+				.filter(|credential| credential["id"] != json!(administrator.credential))
+			{
+				let (status, value) = administrator
+					.send(
+						"POST",
+						&format!(
+							"/api/authorization/acme/credentials/{}/revoke",
+							credential["id"].as_str().unwrap()
+						),
+						json!({}),
+					)
+					.await;
 				assert_eq!(status, 200, "{value}");
 			}
 		}
@@ -431,5 +432,96 @@ async fn an_unread_stream_is_closed_by_backpressure(
 	let mut healthy = fixture.stream(None, None).await;
 	assert_eq!(healthy.frame().await.id, Some(1));
 	drop((response, healthy));
+	fixture.finish().await;
+}
+
+/// A Deployment Administrator, whether the shared bearer or a browser context,
+/// holds no Tenant content authority (#484): the Run's inference stream, its
+/// replay cursors, the Tenant's events and its event stream all refuse it before
+/// any frame is produced. Another Tenant's Subject is refused too.
+#[rstest::rstest]
+#[case::shared_bearer(false)]
+#[case::browser_context(true)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn deployment_administrators_cannot_open_or_resume_the_inference_stream(
+	#[case] browser: bool,
+	#[future(awt)]
+	#[from(stream_fixture)]
+	fixture: Fixture,
+) {
+	// Arrange
+	let c = &fixture.c;
+	let worker = Uuid::new_v4();
+	c.lease(worker).await;
+	let attempt = c.start(worker).await;
+	c.text(worker, attempt, "private progress").await;
+	let administrator = common::BrowserAdministrator::new(&c.f).await;
+	let run_stream = format!("/api/runs/{}/inference/stream", c.run.id);
+	let workspace = c.run.workspace_id;
+
+	// Act and Assert: every cursor of the Run stream is refused.
+	for (query, last_event_id) in [
+		("", None),
+		("?after=0", None),
+		("", Some("0")),
+		("?after=1", Some("1")),
+	] {
+		let path = format!("{run_stream}{query}");
+		let (status, body) = if browser {
+			let mut request = Request::get(&path);
+			for (name, value) in administrator.headers() {
+				request = request.header(name, value);
+			}
+			if let Some(id) = last_event_id {
+				request = request.header("last-event-id", id);
+			}
+			let response = administrator
+				.app
+				.clone()
+				.native_oneshot(request.body(bytes::Bytes::new()).unwrap())
+				.await
+				.unwrap();
+			(response.status, format!("{:?}", response.body))
+		} else {
+			let response = Stream::request(
+				&c.app,
+				&c.f.config.api_token,
+				c.run.id,
+				query
+					.strip_prefix("?after=")
+					.map(|after| after.parse().unwrap()),
+				last_event_id.map(|id| id.parse().unwrap()),
+			)
+			.await;
+			(response.status, format!("{:?}", response.body))
+		};
+		assert_eq!(status, 403, "{path}: {body}");
+		assert!(!body.contains("private progress"), "{path}: {body}");
+	}
+	// The Tenant's events and event stream, replayed from a cursor, refuse it too.
+	for path in [
+		"/api/events".to_owned(),
+		format!("/api/events?workspace_id={workspace}&after=0"),
+		format!("/api/events/stream?workspace_id={workspace}"),
+	] {
+		let (status, body) = if browser {
+			administrator.send("GET", &path, Value::Null).await
+		} else {
+			request(&c.app, &c.f.config.api_token, "GET", &path, Value::Null).await
+		};
+		assert_eq!(status, 403, "{path}: {body}");
+	}
+	// Another Tenant's Subject is refused as well.
+	let other = common::tenant_token(&c.f.store, "globex").await;
+	let response = Stream::request(&c.app, &other, c.run.id, None, None).await;
+	assert!(
+		matches!(response.status.as_u16(), 403 | 404),
+		"{}",
+		response.status
+	);
+	// The authorized Tenant Subject still reads its own stream.
+	let mut stream = fixture.stream(None, None).await;
+	assert_eq!(stream.frame().await.id, Some(1));
+	drop(stream);
 	fixture.finish().await;
 }

@@ -245,6 +245,8 @@ fn scope(extra: Value) -> Fake {
 			revision: 1,
 			observed_input_seq: 0,
 			ledger_worker_ready: true,
+			control_revision: 0,
+			control_source: Default::default(),
 			error: None,
 			lease_owner: None,
 			lease_until: None,
@@ -786,10 +788,10 @@ fn tool_scope(extra: Value) -> Fake {
 fn tool_request(key: &str, arguments: Value) -> ToolCallRequest {
 	ToolCallRequest {
 		key: key.into(),
-		tool: aidash_domain::registry::EntityRef {
+		tool: ToolCallTarget::Registry(aidash_domain::registry::EntityRef {
 			id: "crm".into(),
 			version: "1.0.0".into(),
-		},
+		}),
 		operation: INVOKE.into(),
 		call: aidash_domain::provider::ToolCall {
 			id: "call-0".into(),
@@ -1091,7 +1093,10 @@ async fn a_run_grant_covers_later_calls_of_the_operation_across_new_user_input()
 	let mut other_operation = tool_request("run:1:1", json!({}));
 	other_operation.operation = "other".into();
 	let mut other_version = tool_request("run:1:2", json!({}));
-	other_version.tool.version = "1.1.0".into();
+	other_version.tool = ToolCallTarget::Registry(aidash_domain::registry::EntityRef {
+		id: "crm".into(),
+		version: "1.1.0".into(),
+	});
 	for request in [other_operation, other_version] {
 		assert!(matches!(
 			ask(&mut scope, request).await,
@@ -1239,6 +1244,144 @@ async fn a_cancelled_run_asks_for_no_approval() {
 	assert!(scope.records.is_empty());
 }
 
+fn plugin_tool(tool: &str, copy: char) -> ToolCallTarget {
+	ToolCallTarget::AgentPlugin(aidash_domain::tool::AgentPluginTool {
+		plugin: "acme".to_owned().try_into().unwrap(),
+		digest: format!("sha256:{}", copy.to_string().repeat(64)),
+		server: "docs".to_owned().try_into().unwrap(),
+		tool: tool.into(),
+	})
+}
+
+fn plugin_request(key: &str, tool: ToolCallTarget) -> ToolCallRequest {
+	ToolCallRequest {
+		tool,
+		..tool_request(key, json!({"q":"rust"}))
+	}
+}
+
+const PLUGIN_TARGET: &str = "tool:agent-plugin:acme/docs/search@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa#invoke";
+
+#[tokio::test]
+async fn a_plugin_tool_call_waits_for_the_designated_approver_and_names_the_tool_it_asks_for() {
+	let mut scope = tool_scope(Value::Null);
+	let run = scope.run.clone();
+
+	let ToolCallApproval::Pending { approval_id, .. } = ask(
+		&mut scope,
+		plugin_request("run:0:0", plugin_tool("search", 'a')),
+	)
+	.await
+	else {
+		panic!("a designated approver must decide first");
+	};
+
+	let record = scope.records[&approval_id].clone();
+	assert_eq!(record.kind, TOOL_CALL);
+	assert_eq!(record.data["targets"], json!([PLUGIN_TARGET]));
+	assert_eq!(record.data["tool"], "agent-plugin:acme/docs/search");
+	assert_eq!(record.data["plugin_tool"]["plugin"], "acme");
+	assert_eq!(record.data["plugin_tool"]["server"], "docs");
+	assert_eq!(record.data["plugin_tool"]["tool"], "search");
+	assert_eq!(record.data["approver"], "bob");
+	let card = view(&mut scope, &run, &record).await.unwrap();
+	assert_eq!(card["plugin_tool"], record.data["plugin_tool"]);
+	assert_eq!(card["call"]["arguments"], json!({"q":"rust"}));
+	// A Registry tool's approval names no plugin.
+	let registry = pending_call(&mut scope, "run:0:1").await;
+	assert!(scope.records[&registry].data["plugin_tool"].is_null());
+}
+
+#[tokio::test]
+async fn a_run_grant_covers_one_plugin_tool_of_one_copy_and_no_other() {
+	let mut scope = tool_scope(Value::Null);
+	let ToolCallApproval::Pending { approval_id, .. } = ask(
+		&mut scope,
+		plugin_request("run:0:0", plugin_tool("search", 'a')),
+	)
+	.await
+	else {
+		panic!("a designated approver must decide first");
+	};
+	let decided = {
+		scope.principal = "bob".into();
+		let revision = scope.records[&approval_id].revision;
+		let decided = decide(
+			&mut scope,
+			approval_id,
+			ApprovalDecision {
+				idempotency_key: Uuid::new_v4(),
+				expected_revision: revision,
+				choice: ApprovalChoice::AllowRun,
+				targets: Some(vec![PLUGIN_TARGET.to_owned()]),
+				expires_at: Some(Utc::now() + Duration::minutes(30)),
+			},
+		)
+		.await
+		.unwrap();
+		scope.principal = "alice".into();
+		decided
+	};
+	let grant: Uuid = serde_json::from_value(decided["grant_id"].clone()).unwrap();
+	assert_eq!(
+		scope.records[&grant].data["plugin_tool"],
+		scope.records[&approval_id].data["plugin_tool"]
+	);
+
+	// The same tool of the same copy, with other arguments, runs under the grant.
+	assert!(matches!(
+		ask(
+			&mut scope,
+			plugin_request("run:1:0", plugin_tool("search", 'a'))
+		)
+		.await,
+		ToolCallApproval::Approved {
+			approval_id: Some(_)
+		}
+	));
+	// Another tool of the server, another copy of the plugin, and a Registry tool were not approved.
+	for other in [
+		plugin_tool("fetch", 'a'),
+		plugin_tool("search", 'b'),
+		ToolCallTarget::Registry(aidash_domain::registry::EntityRef {
+			id: "agent-plugin:acme/docs/search".into(),
+			version: format!("sha256:{}", "a".repeat(64)),
+		}),
+	] {
+		assert!(
+			matches!(
+				ask(&mut scope, plugin_request("run:1:1", other.clone())).await,
+				ToolCallApproval::Pending { .. }
+			),
+			"{other:?}"
+		);
+	}
+}
+
+#[tokio::test]
+async fn policy_can_permit_one_plugin_tool_directly_by_its_path() {
+	let mut scope = tool_scope(
+		json!({"id":"search-direct","effect":"allow","subjects":{"ids":["alice"]},"actions":[CALL_UNAPPROVED],"resources":{"kinds":["tool"],"ids":["agent-plugin:acme/docs/search"]}}),
+	);
+
+	assert_eq!(
+		ask(
+			&mut scope,
+			plugin_request("run:0:0", plugin_tool("search", 'a'))
+		)
+		.await,
+		ToolCallApproval::Approved { approval_id: None }
+	);
+	assert!(matches!(
+		ask(
+			&mut scope,
+			plugin_request("run:0:1", plugin_tool("fetch", 'a'))
+		)
+		.await,
+		ToolCallApproval::Pending { .. }
+	));
+}
+
 /// Alice, who runs the Run, may also approve and advance approvals of the
 /// given kinds herself.
 fn allow_alice(scope: &mut Fake, actions: &[&str], kinds: &[&str]) {
@@ -1343,9 +1486,15 @@ async fn a_rule_names_a_tool_and_never_one_of_its_versions() {
 		vec![tool_rule(5, RuleEffect::Allow)],
 	);
 	let mut newer = tool_request("run:0:0", json!({}));
-	newer.tool.version = "9.0.0".into();
+	newer.tool = ToolCallTarget::Registry(aidash_domain::registry::EntityRef {
+		id: "crm".into(),
+		version: "9.0.0".into(),
+	});
 	let mut other_tool = tool_request("run:0:1", json!({}));
-	other_tool.tool.id = "billing".into();
+	other_tool.tool = ToolCallTarget::Registry(aidash_domain::registry::EntityRef {
+		id: "billing".into(),
+		version: "1.0.0".into(),
+	});
 	let mut other_operation = tool_request("run:0:2", json!({}));
 	other_operation.operation = "other".into();
 
@@ -1374,7 +1523,10 @@ async fn a_rule_for_every_tool_covers_each_one() {
 		}],
 	);
 	let mut other_tool = tool_request("run:0:0", json!({}));
-	other_tool.tool.id = "billing".into();
+	other_tool.tool = ToolCallTarget::Registry(aidash_domain::registry::EntityRef {
+		id: "billing".into(),
+		version: "1.0.0".into(),
+	});
 
 	assert!(matches!(
 		ask(&mut scope, other_tool).await,
@@ -2640,3 +2792,5 @@ async fn the_approver_sees_which_rule_or_mode_gave_an_approval() {
 	assert_eq!(card["given_by"], json!({"mode":"bypass"}));
 	assert!(card.get("refused_by").is_none());
 }
+
+mod sampling;

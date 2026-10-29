@@ -116,6 +116,11 @@ impl FileScopePort for Scope<'_> {
 			search_seconds: p.limits.search_seconds,
 		})
 	}
+	async fn retained_bytes(&mut self, area: &Area) -> Result<u64> {
+		super::retention::retained_bytes_of(&mut *self.access, area.id)
+			.await
+			.map_err(Into::into)
+	}
 	fn policy_revision(&self) -> i64 {
 		self.access.snapshot.revision
 	}

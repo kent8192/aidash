@@ -68,6 +68,39 @@ pub struct PluginTools {
 	pub findings: Vec<PluginFinding>,
 }
 
+/// A server or tool a Run left out, as its event reports it: names and a reason code, never the
+/// finding's detail, which can carry what a server answered.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct Skipped<'a> {
+	pub plugin: &'a PluginName,
+	pub server: &'a str,
+	pub reason: Reason,
+}
+
+impl PluginTools {
+	/// What the Run left out, once per plugin, server and reason, in finding order.
+	pub fn skipped(&self) -> Vec<Skipped<'_>> {
+		let mut skipped: Vec<Skipped<'_>> = Vec::new();
+		for entry in &self.findings {
+			let Component::Server(server) = &entry.finding.component else {
+				continue;
+			};
+			if entry.finding.outcome != Outcome::Skipped {
+				continue;
+			}
+			let item = Skipped {
+				plugin: &entry.plugin,
+				server,
+				reason: entry.finding.reason,
+			};
+			if !skipped.contains(&item) {
+				skipped.push(item);
+			}
+		}
+		skipped
+	}
+}
+
 /// What listing one server produced, as the application hands it over.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub enum Listing {
@@ -99,6 +132,13 @@ pub fn pin(
 	for plugin in plugins {
 		for (server, kind) in &plugin.servers {
 			if !matches!(kind, McpServer::Remote(_)) {
+				pinner.note(
+					plugin,
+					server,
+					Outcome::Skipped,
+					Reason::ServerUnavailable,
+					"stdio_session_unavailable".into(),
+				);
 				continue;
 			}
 			let choice = settings
@@ -256,6 +296,10 @@ fn refusal(tool: &ListedTool) -> Option<&'static str> {
 		.is_some_and(|description| description.len() > MAX_DESCRIPTION_BYTES)
 	{
 		Some("description_too_large")
+	} else if jsonschema::validator_for(&tool.input_schema).is_err() {
+		// Check the complete schema before it reaches the model provider or argument validation.
+		// External schema retrieval is disabled in this crate.
+		Some("schema_invalid")
 	} else {
 		None
 	}

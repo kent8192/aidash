@@ -175,6 +175,14 @@ pub async fn sweep(repository: &dyn ReclamationRepository, cursor: &mut Cursor) 
 	if let Err(error) = repository.orphans().await {
 		tracing::warn!(%error,"object ownership reconciliation pending");
 	}
+	// An expired Federation hold stops keeping its File versions; the objects
+	// become ordinary superseded versions for the next `working_objects` pass.
+	if let Err(error) = repository.expire_holds().await {
+		tracing::warn!(%error,"retention hold expiry pending");
+	}
+	if let Err(error) = repository.expire_previews().await {
+		tracing::warn!(%error,"preview ticket and session expiry pending");
+	}
 	let ids = repository.retained(cursor.records).await?;
 	if ids.is_empty() {
 		cursor.records = Uuid::nil();

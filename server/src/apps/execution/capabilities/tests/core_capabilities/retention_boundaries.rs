@@ -80,13 +80,12 @@ fn recovery_fixture(
 		.await;
 		assert_eq!(status, 200, "{cleaned}");
 		assert_eq!(cleaned["state"], "recoverable");
-		let (_, credential) = request(
-			&c.app,
-			&c.f.config.api_token,
-			"POST",
-			"/api/authorization/acme/credentials",
-			json!({"subject":"bob"}),
-		)
+		let (_, credential) = async {
+			(
+				200_u16,
+				common::issued_credential(&c.f.store, "acme", "bob").await,
+			)
+		}
 		.await;
 		let bob = credential["token"].as_str().unwrap().to_owned();
 		RecoveryFixture {

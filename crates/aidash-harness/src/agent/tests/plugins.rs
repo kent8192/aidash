@@ -245,6 +245,46 @@ fn approvals(fixture: &Fixture, answers: impl IntoIterator<Item = ToolCallApprov
 
 #[rstest]
 #[tokio::test]
+async fn a_preliminary_mcp_checkpoint_does_not_admit_stale_tool_calls(mut fixture: Fixture) {
+	plugin_call(&mut fixture, true);
+	approvals(&fixture, [ToolCallApproval::Approved { approval_id: None }]);
+	fixture.run.state.tool_mut().unwrap().mcp =
+		Some(aidash_domain::agent_plugin::interaction::CallCheckpoint::new("preliminary".into()));
+	fixture
+		.backend
+		.add_input("Correct the request before calling the tool");
+
+	advance(&mut fixture).await.unwrap();
+
+	assert_eq!(scripted(&fixture).invocations(), 0);
+	assert_eq!(fixture.run.phase(), RunPhase::Thinking);
+	assert_eq!(fixture.backend.events(), ["run.message_received"]);
+	assert!(fixture.backend.0.invocations.lock().unwrap().is_empty());
+}
+
+#[rstest]
+#[tokio::test]
+async fn a_rejected_call_returns_to_the_model_and_the_run_goes_on(mut fixture: Fixture) {
+	plugin_call(&mut fixture, true);
+	state(&mut fixture).reject_tools = Some("node_id \"x\" does not name this Node".into());
+
+	advance(&mut fixture).await.unwrap();
+
+	// The call never ran; the refusal is the call's result and the Run moves to the next call.
+	assert_eq!(scripted(&fixture).invocations(), 0);
+	let (event, saved) = last_write(&fixture);
+	assert_eq!(event, "run.tool_recorded");
+	assert!(matches!(
+		saved.context.events().last(),
+		Some(ContextEvent::Tool { result, .. })
+			if *result == json!({"error":"node_id \"x\" does not name this Node"})
+	));
+	assert!(matches!(&saved.state, RunState::ToolCall(state) if state.cursor == 1));
+	assert_ne!(fixture.run.control, RunControl::Paused);
+}
+
+#[rstest]
+#[tokio::test]
 async fn a_plugin_call_waits_for_a_tool_call_approval(mut fixture: Fixture) {
 	let call = plugin_call(&mut fixture, false);
 	let approval = Uuid::from_u128(0xa1);
@@ -271,12 +311,11 @@ async fn a_plugin_call_waits_for_a_tool_call_approval(mut fixture: Fixture) {
 	let [request] = requests.as_slice() else {
 		panic!("one approval request");
 	};
+	assert_eq!(request.tool, ToolCallTarget::AgentPlugin(identity()));
+	assert_eq!(request.tool.id(), "agent-plugin:acme/docs/search");
 	assert_eq!(
-		request.tool,
-		EntityRef {
-			id: "agent-plugin:acme/docs/search".into(),
-			version: "0123456789ab".into()
-		}
+		request.tool.label(),
+		"agent-plugin:acme/docs/search@0123456789ab"
 	);
 	assert_eq!(request.operation, "invoke");
 	assert_eq!(request.call, call);
@@ -327,6 +366,46 @@ async fn a_read_only_plugin_call_proceeds_without_approval(mut fixture: Fixture)
 			.contains(&"run.waiting_for_tool_approval".into())
 	);
 	assert!(fixture.backend.0.human.lock().unwrap().is_none());
+}
+
+#[rstest]
+#[tokio::test]
+async fn a_run_executing_for_another_node_asks_that_node_with_the_prompt_prefix_it_always_had(
+	mut fixture: Fixture,
+) {
+	let call = plugin_call(&mut fixture, false);
+	Arc::get_mut(&mut fixture.backend.0).unwrap().remote_home = true;
+
+	advance(&mut fixture).await.unwrap();
+
+	assert_eq!(fixture.backend.events(), ["run.waiting_for_tool_approval"]);
+	assert!(
+		fixture
+			.backend
+			.0
+			.tool_call_requests
+			.lock()
+			.unwrap()
+			.is_empty(),
+		"a capability approval needs the executing Node's own authority"
+	);
+	let prompt = fixture
+		.backend
+		.0
+		.human
+		.lock()
+		.unwrap()
+		.as_ref()
+		.expect("the Home Node is asked")
+		.prompt
+		.clone();
+	assert_eq!(
+		prompt,
+		format!(
+			"Approve this exact external tool action once? Tool: agent-plugin:acme/docs/search@0123456789ab; call: {}",
+			serde_json::to_string(&call).unwrap()
+		)
+	);
 }
 
 #[rstest]

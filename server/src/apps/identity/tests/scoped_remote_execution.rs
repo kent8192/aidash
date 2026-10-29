@@ -425,25 +425,11 @@ mod scoped_pair_composition {
 		// Each Deployment registers the other's default Node, and keeps the
 		// Tenant policy it just wrote.
 		common::register_pair((&a, &aa, "acme"), (&b, &ba, "acme")).await;
-		let (_, credential) = request(
-			&ba,
-			&b.config.api_token,
-			"POST",
-			"/api/authorization/acme/credentials",
-			json!({"subject":"alice"}),
-		)
-		.await;
-		assert_eq!(request(&ba,&b.config.api_token,"POST","/api/authorization/acme/peer-mappings",json!({"node":aidash_domain::nodes::NodeName::derived("acme"),"source_node":node_of(&a),"source_subject":"alice","credential_id":credential["credential"]["id"],"enabled":true,"expected_revision":0})).await.0,200);
+		let credential = common::issued_credential(&b.store, "acme", "alice").await;
+		assert_eq!(common::set_peer_mapping(&b, "acme", "alice",json!({"node":aidash_domain::nodes::NodeName::derived("acme"),"source_node":node_of(&a),"source_subject":"alice","credential_id":credential["credential"]["id"],"enabled":true,"expected_revision":0})).await.0,200);
 		if semantic {
-			let (_, home_reader) = request(
-				&aa,
-				&a.config.api_token,
-				"POST",
-				"/api/authorization/acme/credentials",
-				json!({"subject":"alice"}),
-			)
-			.await;
-			let (status,body) = request(&aa,&a.config.api_token,"POST","/api/authorization/acme/peer-mappings",json!({"node":aidash_domain::nodes::NodeName::derived("acme"),"source_node":node_of(&b),"source_subject":"alice","credential_id":home_reader["credential"]["id"],"enabled":true,"expected_revision":0})).await;
+			let home_reader = common::issued_credential(&a.store, "acme", "alice").await;
+			let (status,body) = common::set_peer_mapping(&a, "acme", "alice",json!({"node":aidash_domain::nodes::NodeName::derived("acme"),"source_node":node_of(&b),"source_subject":"alice","credential_id":home_reader["credential"]["id"],"enabled":true,"expected_revision":0})).await;
 			assert_eq!(status, 200, "{body}");
 		}
 		let servers = vec![_aserver, _bserver];
@@ -935,7 +921,7 @@ async fn native_remote_fixture(
 			.await
 			.unwrap();
 		}
-		let (status, body) = request(aa, &a.config.api_token, "POST", &format!("/api/workspaces/{workspace}/semantic/index"), json!({"expected_revision":0,"spec":{
+		let (status, body) = request(aa, &common::tenant_token(&a.store, "acme").await, "POST", &format!("/api/workspaces/{workspace}/semantic/index"), json!({"expected_revision":0,"spec":{
 			"embedding":embedding["config"],"vector":{"provider":"postgres","endpoint":"local","credential_env":null},
 			"enabled":true,"auto_context":false,"max_sources":100,"max_results":10,"max_result_tokens":32768,"max_input_bytes":32768
 		}})).await;
@@ -1014,7 +1000,7 @@ async fn configure_semantic(
 	)
 	.await;
 	assert_eq!(status, 200, "{body}");
-	let (status, body) = request(app, &a.config.api_token, "POST", &format!("/api/workspaces/{workspace}/semantic/index"), json!({"expected_revision":0,"spec":{
+	let (status, body) = request(app, &common::tenant_token(&a.store, "acme").await, "POST", &format!("/api/workspaces/{workspace}/semantic/index"), json!({"expected_revision":0,"spec":{
 		"embedding":embedding,"vector":{"provider":"postgres","endpoint":"local","credential_env":null},
 		"enabled":true,"auto_context":!native,"max_sources":100,"max_results":10,"max_result_tokens":if native {32768} else {4096},"max_input_bytes":32768
 	}})).await;
@@ -1070,6 +1056,63 @@ async fn configure_semantic(
 		},
 		server,
 	)
+}
+
+#[rstest::rstest]
+#[tokio::test]
+async fn remote_file_preview_reports_a_host_without_a_preview_domain(
+	#[future(awt)] scoped_pair: Pair,
+) {
+	let p = scoped_pair;
+	p.step().await;
+	p.step().await;
+	let (status, inspection) = request(
+		&p.aa,
+		&p.token,
+		"GET",
+		&format!("/api/runs/{}/remote-preview", p.admission),
+		json!(null),
+	)
+	.await;
+	assert_eq!(status, 200, "{inspection}");
+	assert_eq!(inspection["preview_available"], false);
+	assert!(inspection["area_id"].is_string(), "{inspection}");
+	let (status, body) = request(
+		&p.aa,
+		&p.token,
+		"POST",
+		&format!("/api/runs/{}/preview-tickets", p.admission),
+		json!({
+			"kind": "file",
+			"area_id": Uuid::new_v4(),
+			"file_id": Uuid::new_v4(),
+		}),
+	)
+	.await;
+	assert_eq!(status, 409, "{body}");
+	assert!(body.to_string().contains("PREVIEW_UNAVAILABLE"), "{body}");
+	let (status, body) = request(
+		&p.aa,
+		&p.token,
+		"POST",
+		&format!("/api/tasks/{}/remote-grants/{}/revoke", p.task, p.grant),
+		json!({}),
+	)
+	.await;
+	assert_eq!(status, 200, "{body}");
+	let (status, _) = request(
+		&p.aa,
+		&p.token,
+		"GET",
+		&format!("/api/runs/{}/remote-preview", p.admission),
+		json!(null),
+	)
+	.await;
+	assert_eq!(
+		status, 403,
+		"a revoked source grant cannot inspect H's File versions"
+	);
+	p.close().await;
 }
 
 #[rstest::rstest]
@@ -1955,14 +1998,7 @@ async fn semantic_journal_reads_require_the_current_viewer_at_home(
 		.await;
 		assert_eq!(status, 200, "{body}");
 	}
-	let (_, viewer) = request(
-		&p.ba,
-		&p.b.config.api_token,
-		"POST",
-		"/api/authorization/acme/credentials",
-		json!({"subject":"bob"}),
-	)
-	.await;
+	let viewer = common::issued_credential(&p.b.store, "acme", "bob").await;
 	let token = viewer["token"].as_str().unwrap();
 	let path = format!("/api/runs/{}", p.admission);
 	assert_eq!(
@@ -1970,15 +2006,8 @@ async fn semantic_journal_reads_require_the_current_viewer_at_home(
 		403,
 		"producer authority must not stand in for an unmapped reader"
 	);
-	let (_, home_viewer) = request(
-		&p.aa,
-		&p.a.config.api_token,
-		"POST",
-		"/api/authorization/acme/credentials",
-		json!({"subject":"bob"}),
-	)
-	.await;
-	let (status,body)=request(&p.aa,&p.a.config.api_token,"POST","/api/authorization/acme/peer-mappings",json!({"node":aidash_domain::nodes::NodeName::derived("acme"),"source_node":node_of(&p.b),"source_subject":"bob","credential_id":home_viewer["credential"]["id"],"enabled":true,"expected_revision":0})).await;
+	let home_viewer = common::issued_credential(&p.a.store, "acme", "bob").await;
+	let (status,body)=common::set_peer_mapping(&p.a, "acme", "alice",json!({"node":aidash_domain::nodes::NodeName::derived("acme"),"source_node":node_of(&p.b),"source_subject":"bob","credential_id":home_viewer["credential"]["id"],"enabled":true,"expected_revision":0})).await;
 	assert_eq!(status, 200, "{body}");
 	let (status, body) = request(&p.ba, token, "GET", &path, json!({})).await;
 	assert_eq!(status, 200, "{body}");
@@ -2703,18 +2732,14 @@ async fn a_changed_execution_boundary_stops_before_inference(
 				.await
 			}
 			.unwrap();
-			assert_eq!(
-				request(
-					&p.aa,
-					&p.a.config.api_token,
-					"POST",
-					&format!("/api/authorization/acme/credentials/{id}/revoke"),
-					json!({})
-				)
-				.await
-				.0,
-				200
-			);
+			// Revoking a Tenant's credential is a member's act through a Mapping or
+			// the host's through the service; the credential is the host's here (#484).
+			aidash_server::authorization::Authorization {
+				pool: p.a.store.pool.clone(),
+			}
+			.revoke_credential("acme", id)
+			.await
+			.unwrap();
 		}
 		"receiver_mapping" => {
 			let id: Uuid = {
@@ -2733,7 +2758,7 @@ async fn a_changed_execution_boundary_stops_before_inference(
 				.await
 			}
 			.unwrap();
-			assert_eq!(request(&p.ba,&p.b.config.api_token,"POST","/api/authorization/acme/peer-mappings",json!({"node":aidash_domain::nodes::NodeName::derived("acme"),"source_node":node_of(&p.a),"source_subject":"alice","credential_id":id,"enabled":false,"expected_revision":1})).await.0,200);
+			assert_eq!(common::set_peer_mapping(&p.b, "acme", "alice",json!({"node":aidash_domain::nodes::NodeName::derived("acme"),"source_node":node_of(&p.a),"source_subject":"alice","credential_id":id,"enabled":false,"expected_revision":1})).await.0,200);
 		}
 		"task_revision" => {
 			{
@@ -3298,7 +3323,7 @@ async fn prepare_generated_pair(
 	parent_spec["remote"] = json!({"inference":[model_descriptor],"compaction":{"provider":decider_descriptor,"calls_per_agent":2,"call_budget":8},"memory":if native {vec![embedding_descriptor.clone().unwrap()]} else {vec![]}});
 	let (status, body) = request(
 		aa,
-		&a.config.api_token,
+		&common::tenant_token(&a.store, "acme").await,
 		"POST",
 		"/api/generation/acme/policies/remote-parent",
 		json!({"expected_revision":0,"spec":parent_spec}),
@@ -3409,7 +3434,7 @@ async fn prepare_generated_pair(
 	}
 	let (status, body) = request(
 		ba,
-		&b.config.api_token,
+		&common::tenant_token(&b.store, "acme").await,
 		"POST",
 		"/api/generation/acme/policies/remote-child",
 		json!({"expected_revision":0,"spec":child_spec}),
@@ -3623,7 +3648,7 @@ async fn foreign_preparation_termination_releases_unused_allocations_once(
 			"deny" => {
 				let (status, body) = request(
 					&p.ba,
-					&p.b.config.api_token,
+					&common::tenant_token(&p.b.store, "acme").await,
 					"POST",
 					&route,
 					json!({"action":"deny","reason":"Decline foreign preparation"}),
@@ -4071,7 +4096,7 @@ async fn embedding_callback_rejects_a_nonexact_reservation(
 
 #[rstest::rstest]
 #[tokio::test]
-async fn deployment_administrator_polling_advances_past_hidden_event_pages(
+async fn event_polling_refuses_a_deployment_administrator_and_shows_a_subject_no_hidden_events(
 	#[future(awt)]
 	#[with(true)]
 	scoped_pair: Pair,
@@ -4092,20 +4117,10 @@ async fn deployment_administrator_polling_advances_past_hidden_event_pages(
 	.fetch_one(p.a.store.pool.fixture_driver())
 	.await
 	.unwrap();
-	// An event that concerns no Workspace takes the Tenant of its transaction.
 	let tenant = aidash_application::tenancy::TenancyScope::Tenant(
 		aidash_domain::tenancy::TenantName::new("acme").unwrap(),
 	);
 	let mut tx = p.a.store.pool.begin(&tenant).await.unwrap();
-	p.a.store
-		.event(
-			&mut tx,
-			None,
-			"test.visible",
-			json!({"marker":"before-hidden-burst"}),
-		)
-		.await
-		.unwrap();
 	for _ in 0..501 {
 		p.a.store
 			.event(
@@ -4127,20 +4142,24 @@ async fn deployment_administrator_polling_advances_past_hidden_event_pages(
 		.await
 		.unwrap();
 	tx.commit().await.unwrap();
+	let path = format!("/api/events?after={cursor}");
+	// A Deployment Administrator holds no Tenant authority: polling is refused
+	// and carries no event, however many hidden pages precede a visible one.
+	let (status, refused) = request(&p.aa, &p.a.config.api_token, "GET", &path, Value::Null).await;
+	assert_eq!(status, 403, "{refused}");
+	assert!(!refused.to_string().contains("secret"), "{refused}");
+	// A Tenant Subject polls the same cursor and sees no hidden event.
 	let (status, page) = request(
 		&p.aa,
-		&p.a.config.api_token,
+		&common::tenant_token(&p.a.store, "acme").await,
 		"GET",
-		&format!("/api/events?after={cursor}"),
+		&path,
 		Value::Null,
 	)
 	.await;
 	assert_eq!(status, 200, "{page}");
-	assert!(
-		page.to_string().contains("after-hidden-burst"),
-		"Deployment Administrator polling stalled behind hidden events: {page}"
-	);
-	assert!(!page.to_string().contains("\"secret\""));
+	assert!(!page.to_string().contains("\"secret\""), "{page}");
+	// The State keeps the Deployment's identity for an administrator and no Tenant event.
 	let (status, state) = request(
 		&p.aa,
 		&p.a.config.api_token,
@@ -4150,64 +4169,7 @@ async fn deployment_administrator_polling_advances_past_hidden_event_pages(
 	)
 	.await;
 	assert_eq!(status, 200, "{state}");
-	assert!(
-		state["events"].to_string().contains("before-hidden-burst"),
-		"{state}"
-	);
-	assert!(!state["events"].to_string().contains("\"secret\""));
-	assert_eq!(
-		state["deployment"]["id"],
-		p.a.config.deployment.as_str(),
-		"the State names its Deployment, not a Node"
-	);
-	assert!(state.get("node").is_none(), "{state}");
-
-	// A full visible page may span hidden candidate pages. Its cursor must
-	// retain visible events beyond the response limit for the next request.
-	let mut tx = p.a.store.pool.begin(&tenant).await.unwrap();
-	for index in 0..600 {
-		p.a.store
-			.event(&mut tx, None, "test.visible", json!({"index": index}))
-			.await
-			.unwrap();
-	}
-	tx.commit().await.unwrap();
-	let first = async {
-		let client = &(p.aa.client());
-		let mut request = client.request(http::Method::GET, &format!("/api/events?after={cursor}"));
-		request = request.header("authorization", format!("Bearer {}", p.a.config.api_token));
-		request.send().await
-	}
-	.await
-	.unwrap();
-	assert_eq!(first.status(), 200);
-	let first_cursor: i64 = first.headers()["x-aidash-event-cursor"]
-		.to_str()
-		.unwrap()
-		.parse()
-		.unwrap();
-	let first_events: Vec<Value> = serde_json::from_slice(first.body()).unwrap();
-	assert_eq!(first_events.len(), 500);
-	assert_eq!(first_events.last().unwrap()["sequence"], first_cursor);
-	let second = async {
-		let client = &(p.aa.client());
-		let mut request = client.request(
-			http::Method::GET,
-			&format!("/api/events?after={first_cursor}"),
-		);
-		request = request.header("authorization", format!("Bearer {}", p.a.config.api_token));
-		request.send().await
-	}
-	.await
-	.unwrap();
-	assert_eq!(second.status(), 200);
-	let second_events: Vec<Value> = serde_json::from_slice(second.body()).unwrap();
-	let indices: Vec<i64> = first_events
-		.iter()
-		.chain(&second_events)
-		.filter_map(|event| event["data"]["index"].as_i64())
-		.collect();
-	assert_eq!(indices, (0..600).collect::<Vec<_>>());
+	assert_eq!(state["events"], json!([]), "{state}");
 	p.close().await;
 }
 
@@ -4248,8 +4210,11 @@ async fn deployment_administrator_content_views_cannot_bypass_both_node_subject_
 			"/api/events".into(),
 			"/api/tasks".into(),
 		] {
+			// `/api/state` answers an administrator with no Tenant content; the
+			// Tenant's own content routes refuse it.
 			let (status, body) = request(app, &f.config.api_token, "GET", &path, Value::Null).await;
-			assert_eq!(status, 200, "{path}: {body}");
+			let expected = if path == "/api/state" { 200 } else { 403 };
+			assert_eq!(status, expected, "{path}: {body}");
 			for hidden in [
 				"ochre falcon",
 				"Scoped remote result",
@@ -4266,18 +4231,8 @@ async fn deployment_administrator_content_views_cannot_bypass_both_node_subject_
 				);
 			}
 		}
-		// The notification-backed stream must enforce the same boundary at
-		// delivery, including receiver Run events without a Workspace FK.
-		let (status, body) = request(
-			app,
-			&common::tenant_token(&f.store, "acme").await,
-			"POST",
-			"/api/workspaces",
-			json!({"title":"deployment-administrator-stream-tail","goal":"Independent stream marker"}),
-		)
-		.await;
-		assert_eq!(status, 200, "{body}");
-		// Unbounded SSE uses the fixture-owned streaming client without buffering the body.
+		// The notification-backed stream is Tenant content: an administrator is refused
+		// at connection, as on the unpaired routes.
 		let response = app
 			.streaming_http
 			.get(app.url("/api/events/stream"))
@@ -4285,30 +4240,7 @@ async fn deployment_administrator_content_views_cannot_bypass_both_node_subject_
 			.send()
 			.await
 			.unwrap();
-		assert_eq!(response.status(), 200);
-		let mut stream = response.bytes_stream();
-		tokio::time::timeout(std::time::Duration::from_secs(20), async {
-			loop {
-				let chunk = stream.next().await.unwrap().unwrap();
-				let frame = String::from_utf8_lossy(&chunk);
-				for hidden in [
-					"ochre falcon",
-					"Scoped remote result",
-					"Scoped remote progress",
-				] {
-					assert!(
-						!frame.contains(hidden),
-						"Deployment Administrator stream leaked {hidden}: {frame}"
-					);
-				}
-				if frame.contains("deployment-administrator-stream-tail") {
-					break;
-				}
-			}
-		})
-		.await
-		.unwrap();
-		drop(stream);
+		assert_eq!(response.status(), 403);
 	}
 	for path in [
 		format!("/api/workspaces/{}", task.workspace_id),
@@ -4337,14 +4269,64 @@ async fn deployment_administrator_content_views_cannot_bypass_both_node_subject_
 		&p.ba,
 		&p.b.config.api_token,
 		"GET",
-		&format!("/api/runs/{}/management", p.admission),
+		&format!("/api/runs/{}/management?tenant=acme", p.admission),
 		Value::Null,
 	)
 	.await;
 	assert_eq!(status, 200, "{control}");
-	assert!(control.get("context").is_none());
-	assert!(control.get("pending").is_none());
-	assert!(control.get("error").is_none());
+	let mut keys: Vec<_> = control.as_object().unwrap().keys().cloned().collect();
+	keys.sort();
+	assert_eq!(
+		keys,
+		[
+			"control",
+			"control_revision",
+			"control_source",
+			"id",
+			"phase"
+		],
+		"the administrator reads the allowlisted metadata only"
+	);
+	// A receiver whose content is hidden by required Home is still stoppable
+	// here, with no message to its Home Deployment.
+	let operation = Uuid::new_v4().to_string();
+	let before_phase = control["phase"].as_str().unwrap().to_owned();
+	let stop = common::http_response(
+		&p.ba,
+		"POST",
+		&format!("/api/runs/{}/management", p.admission),
+		&[
+			("authorization", &format!("Bearer {}", p.b.config.api_token)),
+			("content-type", "application/json"),
+			("idempotency-key", &operation),
+		],
+		json!({"tenant":"acme","action":"pause","expected_control_revision":control["control_revision"],"reason":"stop the receiver"})
+			.to_string()
+			.as_bytes(),
+	)
+	.await;
+	assert_eq!(stop.status_code(), 200, "{:?}", stop.body());
+	let receipt: Value = serde_json::from_slice(stop.body()).unwrap();
+	let ended = ["COMPLETED", "FAILED", "CANCELLED"].contains(&before_phase.as_str());
+	// A Run that has ended changes nothing; any other is paused by this stop.
+	assert_eq!(
+		receipt["outcome"],
+		if ended { "no_op" } else { "accepted" },
+		"{receipt}"
+	);
+	let (status, control) = request(
+		&p.ba,
+		&p.b.config.api_token,
+		"GET",
+		&format!("/api/runs/{}/management?tenant=acme", p.admission),
+		Value::Null,
+	)
+	.await;
+	assert_eq!(status, 200, "{control}");
+	if !ended {
+		assert_eq!(control["control"], "PAUSED");
+		assert_eq!(control["control_source"], "deployment_administrator");
+	}
 	let snapshot =
 		p.a.store
 			.snapshot(&TEST_FIXTURE, task.workspace_id)
@@ -4362,19 +4344,22 @@ async fn deployment_administrator_content_views_cannot_bypass_both_node_subject_
 	)
 	.await;
 	assert_eq!(status, 403, "{independent}");
-	// Required-Home content stays protected, while installation administration
-	// may still configure the live Tenant's index without reading its contents.
+	// Required-Home content stays protected, and the Tenant's index is configured by
+	// its Subject, never by a Deployment Administrator (#484).
 	let index_path = format!("/api/workspaces/{}/semantic/index", task.workspace_id);
 	let (status, index) = request(&p.aa, &p.token, "GET", &index_path, Value::Null).await;
 	assert_eq!(status, 200, "{index}");
-	let (status, configured) = request(
+	let update = json!({"expected_revision":index["revision"],"spec":index["spec"]});
+	let (status, refused) = request(
 		&p.aa,
 		&p.a.config.api_token,
 		"POST",
 		&index_path,
-		json!({"expected_revision":index["revision"],"spec":index["spec"]}),
+		update.clone(),
 	)
 	.await;
+	assert_eq!(status, 403, "{refused}");
+	let (status, configured) = request(&p.aa, &p.token, "POST", &index_path, update).await;
 	assert_eq!(status, 200, "{configured}");
 	p.close().await;
 }
@@ -4470,7 +4455,7 @@ async fn generated_foreign_terminal_runs_retain_reads_with_current_dependency_au
 	} else if let Some(action) = control {
 		let (status, body) = request(
 			&p.ba,
-			&p.b.config.api_token,
+			&common::tenant_token(&p.b.store, "acme").await,
 			"POST",
 			&format!(
 				"/api/generation/acme/requests/{}/control",
@@ -5149,7 +5134,7 @@ async fn generated_home_lineage_is_rechecked_when_semantic_memory_is_disabled(
 		spec["enabled"] = json!(false);
 		let (status, body) = request(
 			&p.aa,
-			&p.a.config.api_token,
+			&common::tenant_token(&p.a.store, "acme").await,
 			"POST",
 			"/api/generation/acme/policies/remote-parent",
 			json!({"expected_revision":1,"spec":spec}),

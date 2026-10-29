@@ -117,7 +117,7 @@ const projected = {
   next_cursor: null,
 };
 
-test("Deployment Administrator tenant input distinguishes invalid IDs from oversized resources", async ({
+test("Deployment Administrator is told to use Tenant authority and sees no remote controls", async ({
   page,
 }) => {
   const scene = meshScene();
@@ -125,23 +125,13 @@ test("Deployment Administrator tenant input distinguishes invalid IDs from overs
   await page.addInitScript(() =>
     localStorage.setItem("aidash-locale", "en-US"),
   );
-  let requests = 0;
+  const requests: string[] = [];
   await page.route("**/api/**", async (route) => {
     const path = new URL(route.request().url()).pathname;
     if (path === "/api/events/stream") return route.abort();
-    if (path === "/api/federation/graph/peers")
-      return route.fulfill({ json: [{ node_id: firstPeer }] });
-    if (path === "/api/federation/graph") {
-      requests++;
-      return route.fulfill({
-        status: 400,
-        json: {
-          error:
-            requests === 1
-              ? "identifiers require 1..256 bytes without whitespace or wildcards"
-              : "remote graph resource exceeds page limit",
-        },
-      });
+    if (path.startsWith("/api/federation/graph")) {
+      requests.push(path);
+      return route.fulfill({ status: 403, json: { error: "forbidden" } });
     }
     return route.fulfill({
       json:
@@ -155,23 +145,16 @@ test("Deployment Administrator tenant input distinguishes invalid IDs from overs
     });
   });
   await page.goto("/graph");
-  const tenant = page.getByLabel("Peer tenant");
-  await tenant.fill("acme tenant");
-  await expect(tenant).toHaveAttribute("aria-invalid", "true");
-  await expect(page.getByRole("alert")).toContainText("without spaces");
   await expect(
-    page.getByRole("button", { name: "Expand node" }),
-  ).toBeDisabled();
-  expect(requests).toBe(0);
-  await tenant.fill("acme");
-  await page.getByRole("button", { name: "Expand node" }).click();
-  await expect(
-    page.getByRole("status").filter({ hasText: "tenant ID" }),
+    page.getByText(
+      "Tenant content is not available to a Deployment Administrator.",
+    ),
   ).toBeVisible();
-  await page.getByRole("button", { name: "Refresh node" }).click();
-  await expect(
-    page.getByText("An authorized resource exceeds the graph page limit."),
-  ).toBeVisible();
+  await expect(page.getByLabel("Peer tenant")).toHaveCount(0);
+  await expect(page.getByRole("button", { name: "Expand node" })).toHaveCount(
+    0,
+  );
+  expect(requests).toEqual([]);
 });
 
 test("subject expands only direct authorized peers and clears remote details on denial", async ({
@@ -320,11 +303,9 @@ test("subject expands only direct authorized peers and clears remote details on 
   await expect(page.getByText("Remote graph access denied.")).toBeVisible();
   await expect(list).not.toContainText("B Task");
   await expect(inspector).not.toContainText("B Task");
-  expect(
-    requests.every(
-      (body) => (body as { target_tenant: null }).target_tenant === null,
-    ),
-  ).toBe(true);
+  expect(requests.every((body) => !("target_tenant" in (body as object)))).toBe(
+    true,
+  );
   expect(
     requests.every(
       (body) => (body as { node_id: string }).node_id !== "aidash://unknown",

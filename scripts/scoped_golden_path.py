@@ -85,7 +85,7 @@ class PeerProxy:
                 try:
                     text = raw.decode()
                     assert self.headers.get("Authorization", "").startswith("Bearer "), "Peer transport must send a Federation token"
-                    assert self.headers.get("x-aidash-protocol") == "0.4", "Peer transport must speak the current protocol"
+                    assert self.headers.get("x-aidash-protocol") == "0.5", "Peer transport must speak the current protocol"
                     assert not any(token in text or token in str(self.headers) for token in proxy.forbidden_tokens), "Subject credential forwarded to a peer"
                     body = json.loads(raw)
                     started = time.monotonic()
@@ -206,11 +206,15 @@ class Providers:
         self.server.server_close()
 
 
-def verify(base_a, base_b, node_a, node_b, worker, provider_socket, launch_worker, counts, proxy_sockets):
+def verify(base_a, base_b, node_a, node_b, worker, provider_socket, launch_worker, counts, proxy_sockets, issue_a, issue_b, administrator):
     """Required Golden Path branch; any missing assertion fails the parent run.
 
     The model provider listens on the already bound `provider_socket`, whose
-    origin the nodes permit for Keyless endpoints.
+    origin the nodes permit for Keyless endpoints. `issue_a` and `issue_b` mint
+    a Tenant's first Subject Credential on each Node from the host (#484).
+    `administrator(base, tenant, subject)` returns a browser session acting as a
+    Tenant Administrator of the Tenant on that Node; it registers the Nodes and
+    maps the peers, which no Subject Credential may do.
     """
     source_tenant, receiver_tenant = "golden-source", "golden-receiver"
     agent = {"id": "scoped-researcher", "version": "1.0.0"}
@@ -241,9 +245,9 @@ def verify(base_a, base_b, node_a, node_b, worker, provider_socket, launch_worke
                 except Exception as error:
                     fixture.errors.append(str(error))
 
-    def policy(base, label, subject, agents):
+    def policy(base, label, subject, agents, subject_kind="user", extra_subjects=None):
         # Aidash assigns Tenant names; the fixture's names become labels.
-        tenant, credential = tenant_subject(base, label, subject, agents=agents)
+        tenant, credential = tenant_subject(base, label, subject, issue_a if base == base_a else issue_b, agents=agents, subject_kind=subject_kind, extra_subjects=extra_subjects)
         subject_tokens.append(credential["token"])
         tokens.append(credential["token"])
         return tenant, credential
@@ -255,17 +259,22 @@ def verify(base_a, base_b, node_a, node_b, worker, provider_socket, launch_worke
     try:
         # The receiver's Agent executes on its Tenant's default Node, which the
         # source Tenant's policy names as a subject too.
-        receiver_tenant, mapped = policy(base_b, receiver_tenant, "remote-alice", agents=(agent_ref,))
-        receiver_node, address_b = default_node(base_b, receiver_tenant)
+        # Exportable peer credentials belong to service subjects, never to a person.
+        receiver_tenant, mapped = policy(base_b, receiver_tenant, "remote-alice", agents=(agent_ref,), subject_kind="service", extra_subjects={"administrator": {"kind": "user"}})
+        receiver_node, address_b = default_node(base_b, receiver_tenant, mapped["token"])
         source_tenant, source = policy(base_a, source_tenant, "alice", agents=(f"{address_b}/agents/{agent_ref}",))
         _, outsider = policy(base_a, "golden-outsider", "alice", agents=())
-        source_node, address_a = default_node(base_a, source_tenant)
+        source_node, address_a = default_node(base_a, source_tenant, source["token"])
         token = source["token"]
-        # Each Tenant's default Node accepts the other's, reaching it through the observing proxies.
-        register_node(base_a, source_tenant, address_b, receiver.url)
-        register_node(base_b, receiver_tenant, address_a, home.url)
+        # Each Tenant's default Node accepts the other's, reaching it through the
+        # observing proxies. The receiving Tenant's administrator also maps the
+        # source's subject onto its own (#484).
+        source_administrator = administrator(base_a, source_tenant, "alice")
+        receiver_administrator = administrator(base_b, receiver_tenant, "administrator")
+        register_node(base_a, source_tenant, address_b, receiver.url, source_administrator)
+        register_node(base_b, receiver_tenant, address_a, home.url, receiver_administrator)
         registered = True
-        api_request(base_b, f"/api/authorization/{receiver_tenant}/peer-mappings", {"node": receiver_node, "source_node": address_a, "source_subject": "alice", "credential_id": mapped["credential"]["id"], "enabled": True, "expected_revision": 0})
+        receiver_administrator.api(f"/api/authorization/{receiver_tenant}/peer-mappings", {"node": receiver_node, "source_node": address_a, "source_subject": "alice", "credential_id": mapped["credential"]["id"], "enabled": True, "expected_revision": 0})
         entries = [
             entity("model", "scoped-model", {"provider": "openrouter", "model_id": "fixture", "endpoint": fixture.url + "/v1", "context_window": 128000, "max_output_tokens": 4096, "modalities": ["text"], "cost": {}}),
             entity("tool", "scoped-effect", tool_descriptor(node_b, {"transport": "http", "endpoint": fixture.url + "/effect", "replay": "unsafe"}, "scoped_effect")),
@@ -311,7 +320,7 @@ def verify(base_a, base_b, node_a, node_b, worker, provider_socket, launch_worke
             # token that a registered Node signed is refused. #371 removed the
             # legacy route, so the dashboard's GET-only asset route answers the
             # POST with 405.
-            peer_headers = {"x-aidash-protocol": "0.4"}
+            peer_headers = {"x-aidash-protocol": "0.5"}
             denied(base_b, "/federation/v0.1/offers", {"task": task, "agent": agent}, codes=(401, 403, 404, 405), token="not-a-federation-token", headers=peer_headers)
             denied(base_a, "/federation/v0.1/scoped/execution/commands", {"grant_id": grant, "admission_id": run_id, "operation": "workspace_record", "data": {"kind": "task", "id": rejected_task["id"]}}, codes=(401, 403, 404), token="not-a-federation-token", headers=peer_headers)
             def run(run_id=run_id):
@@ -379,10 +388,12 @@ def verify(base_a, base_b, node_a, node_b, worker, provider_socket, launch_worke
                 assert receipts and len(set(receipts)) == 1, "Recovery changed a committed Home command"
                 assert api_request(base_a, f"{path}/{grant}/activate", {}, token=token)["run_id"] == run_id
             # The receiver holds no row for the source-owned workspace, so a
-            # receiver subject's state never lists this Run. Count Node B's
-            # Runs from the Deployment Administrator's Node-wide view.
-            matching = [item for item in api_request(base_b, "/api/state")["runs"] if item["task_id"] == task["id"] and item["home_node"] == address_a]
-            assert len(matching) == 1 and matching[0]["id"] == run_id
+            # receiver subject's state never lists this Run, and a Deployment
+            # Administrator holds no Tenant content (#484): read the admitted
+            # Run by id as the receiver's mapped subject. The admission and Home
+            # binding counts below catch a duplicate.
+            admitted = run()
+            assert admitted["id"] == run_id and admitted.get("home_node", address_a) == address_a
             statuses = api_request(base_a, f"/api/tasks/{task['id']}/remote-executions", token=token)
             assert len(statuses) == 1 and statuses[0]["execution"]["run_id"] == run_id
             assert statuses[0]["execution"]["phase"] == run()["phase"]
@@ -405,8 +416,8 @@ def verify(base_a, base_b, node_a, node_b, worker, provider_socket, launch_worke
         home.unavailable.clear()
         if registered:
             # Leave the Nodes reaching one another directly, as other branches expect.
-            register_node(base_a, source_tenant, address_b, base_b)
-            register_node(base_b, receiver_tenant, address_a, base_a)
+            register_node(base_a, source_tenant, address_b, base_b, source_administrator)
+            register_node(base_b, receiver_tenant, address_a, base_a, receiver_administrator)
         home.close()
         receiver.close()
         fixture.close()

@@ -10,7 +10,6 @@ use crate::apps::identity::services::tenant_administration::TenantAdministration
 use crate::authorization::identity::Actor;
 use crate::federation::Federation;
 use crate::{Error, Result};
-use aidash_application::tenancy::TenancyScope;
 use aidash_domain::identity::tenant_administration as rules;
 use aidash_domain::nodes::{self as domain, Node};
 use aidash_domain::tenancy::TenantName;
@@ -50,16 +49,7 @@ impl Nodes {
 	pub(crate) async fn list(&self, actor: Actor, tenant: String) -> Result<Vec<NodeRecord>> {
 		let f = &self.runtime;
 		let rows = match actor {
-			Actor::DeploymentAdministrator => {
-				let scope = TenancyScope::tenant(&tenant)?;
-				f.store
-					.pool
-					.atomic(&scope, async |tx| {
-						super::remote::deployment_administrator::tenant(tx, &tenant).await?;
-						nodes::list(tx, &tenant).await
-					})
-					.await?
-			}
+			Actor::DeploymentAdministrator => return Err(Error::Forbidden),
 			Actor::Subject(identity) => {
 				if identity.tenant != tenant {
 					return Err(Error::Forbidden);
@@ -87,53 +77,30 @@ impl Nodes {
 	) -> Result<NodeRecord> {
 		let label = domain::label(&input.label)?;
 		let f = self.runtime.clone();
-		let node = match actor {
-			Actor::DeploymentAdministrator => {
-				let scope = TenancyScope::tenant(&tenant)?;
+		let node = self
+			.administrations()
+			.run(actor, origin, &tenant, async |administrator| {
 				f.store
 					.pool
-					.atomic(&scope, async |tx| {
-						super::remote::deployment_administrator::tenant(tx, &tenant).await?;
-						let actor = AdministrationActor::DeploymentAdministratorBearer;
+					.atomic(&administrator.scope()?, async |tx| {
+						let snapshot = administrator.lock(tx, false).await?;
+						administrator
+							.require(tx, &snapshot, rules::NODE_CREATE, &tenant, json!({}))
+							.await?;
+						let actor = AdministrationActor::TenantAdministrator(administrator.clone());
 						create_in(
 							&f,
 							tx,
 							&tenant,
 							&label,
-							Creator::DeploymentAdministrator(None),
+							Creator::Identity(administrator.identity_id),
 							&actor,
 						)
 						.await
 					})
-					.await?
-			}
-			actor => {
-				self.administrations()
-					.run(actor, origin, &tenant, async |administrator| {
-						f.store
-							.pool
-							.atomic(&administrator.scope()?, async |tx| {
-								let snapshot = administrator.lock(tx, false).await?;
-								administrator
-									.require(tx, &snapshot, rules::NODE_CREATE, &tenant, json!({}))
-									.await?;
-								let actor =
-									AdministrationActor::TenantAdministrator(administrator.clone());
-								create_in(
-									&f,
-									tx,
-									&tenant,
-									&label,
-									Creator::Identity(administrator.identity_id),
-									&actor,
-								)
-								.await
-							})
-							.await
-					})
-					.await?
-			}
-		};
+					.await
+			})
+			.await?;
 		Ok(self.record(node))
 	}
 
@@ -148,57 +115,35 @@ impl Nodes {
 		let label = domain::label(&input.label)?;
 		let name = domain::NodeName::parse(&node)?;
 		let f = self.runtime.clone();
-		let node = match actor {
-			Actor::DeploymentAdministrator => {
-				let scope = TenancyScope::tenant(&tenant)?;
+		let node = self
+			.administrations()
+			.run(actor, origin, &tenant, async |administrator| {
 				f.store
 					.pool
-					.atomic(&scope, async |tx| {
-						super::remote::deployment_administrator::tenant(tx, &tenant).await?;
+					.atomic(&administrator.scope()?, async |tx| {
+						let snapshot = administrator.lock(tx, false).await?;
+						let current = nodes::get(tx, &tenant, name.as_str()).await?;
+						administrator
+							.require(
+								tx,
+								&snapshot,
+								rules::NODE_UPDATE,
+								name.as_str(),
+								json!({"label": current.label, "default": current.default}),
+							)
+							.await?;
 						relabel_in(
 							tx,
 							&tenant,
 							name.as_str(),
 							&label,
-							&AdministrationActor::DeploymentAdministratorBearer,
+							&AdministrationActor::TenantAdministrator(administrator.clone()),
 						)
 						.await
 					})
-					.await?
-			}
-			actor => {
-				self.administrations()
-					.run(actor, origin, &tenant, async |administrator| {
-						f.store
-							.pool
-							.atomic(&administrator.scope()?, async |tx| {
-								let snapshot = administrator.lock(tx, false).await?;
-								let current = nodes::get(tx, &tenant, name.as_str()).await?;
-								administrator
-									.require(
-										tx,
-										&snapshot,
-										rules::NODE_UPDATE,
-										name.as_str(),
-										json!({"label": current.label, "default": current.default}),
-									)
-									.await?;
-								relabel_in(
-									tx,
-									&tenant,
-									name.as_str(),
-									&label,
-									&AdministrationActor::TenantAdministrator(
-										administrator.clone(),
-									),
-								)
-								.await
-							})
-							.await
-					})
-					.await?
-			}
-		};
+					.await
+			})
+			.await?;
 		Ok(self.record(node))
 	}
 }

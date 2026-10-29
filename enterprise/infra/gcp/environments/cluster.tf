@@ -154,7 +154,11 @@ resource "google_container_node_pool" "system" {
     auto_upgrade = true
   }
   node_config {
-    machine_type = "e2-medium"
+    # GKE's own add-ons already request about 940m CPU, all an e2-medium can
+    # allocate, so konnectivity-agent stayed Pending and `kubectl exec`/logs
+    # failed, crash-looping the Runner's isolation probe. e2-standard-2 leaves
+    # room for every add-on; it uses two E2 vCPUs of the quota.
+    machine_type = "e2-standard-2"
     # GKE's 100 GB pd-balanced default counts against the regional SSD quota
     # (250 GB by default) shared with every Environment pool and retained disk.
     disk_type       = "pd-standard"
@@ -184,7 +188,8 @@ resource "google_container_node_pool" "system_standby" {
     auto_upgrade = true
   }
   node_config {
-    machine_type = "e2-medium"
+    # Sized like the primary system pool; see its machine type.
+    machine_type = "e2-standard-2"
     # GKE's 100 GB pd-balanced default counts against the regional SSD quota
     # (250 GB by default) shared with every Environment pool and retained disk.
     disk_type       = "pd-standard"

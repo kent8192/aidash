@@ -32,12 +32,28 @@ async fn oversized_payload_uses_an_http_replay_reference_without_blocking_later_
 	let fixture = event_bus.await;
 	let store = &fixture.app.runtime.store;
 	let scope = acme(&fixture).await;
+	// A Subject replays only the events of Workspaces it may read (#484), so
+	// the events are Workspace events of the Tenant. Creating the Workspace
+	// emits a first event of its own.
+	let (member, _) = endpoint::tenant_member(&fixture.app).await;
+	let selected = endpoint::workspace(&member, "Event bus replay").await;
+	let workspace = uuid::Uuid::parse_str(selected["id"].as_str().unwrap()).unwrap();
 	let large = store
-		.emit(&scope, None, "large", json!({"text":"x".repeat(2_000_000)}))
+		.emit(
+			&scope,
+			Some(workspace),
+			"workspace.updated",
+			json!({"text":"x".repeat(2_000_000)}),
+		)
 		.await
 		.unwrap();
 	let small = store
-		.emit(&scope, None, "small", json!({"ok":true}))
+		.emit(
+			&scope,
+			Some(workspace),
+			"workspace.updated",
+			json!({"ok":true}),
+		)
 		.await
 		.unwrap();
 	// Act
@@ -47,7 +63,7 @@ async fn oversized_payload_uses_an_http_replay_reference_without_blocking_later_
 			.publish_once(&fixture.app.runtime)
 			.await
 			.unwrap(),
-		2
+		3
 	);
 	// Assert
 	let stream = fixture
@@ -57,7 +73,7 @@ async fn oversized_payload_uses_an_http_replay_reference_without_blocking_later_
 		.await
 		.unwrap();
 	let mut reference = None;
-	for sequence in 1..=2 {
+	for sequence in 1..=3 {
 		let message = stream.get_raw_message(sequence).await.unwrap();
 		let envelope: Value = serde_json::from_slice(&message.payload).unwrap();
 		if envelope["id"] == large.id.to_string() {
@@ -67,27 +83,35 @@ async fn oversized_payload_uses_an_http_replay_reference_without_blocking_later_
 				format!("/api/events?after={}", large.sequence - 1)
 			);
 			reference = Some(envelope["dataref"].as_str().unwrap().to_owned());
-		} else {
-			assert_eq!(envelope["id"], small.id.to_string());
+		} else if envelope["id"] == small.id.to_string() {
 			assert_eq!(envelope["data"], small.data);
+		} else {
+			// The Workspace's own event, published before the two above.
+			assert!(envelope["id"].is_string());
 		}
 	}
-	let replay = assert_json(
-		fixture
-			.app
-			.deployment_administrator
-			.get(&reference.expect("oversized event has a reference"))
-			.await
-			.unwrap(),
-		200,
-	);
+	// The reference replays only to a Tenant Subject; a Deployment Administrator
+	// holds no Tenant content authority (#484).
+	let reference = reference.expect("oversized event has a reference");
+	let refused = fixture
+		.app
+		.deployment_administrator
+		.get(&reference)
+		.await
+		.unwrap();
+	assert_eq!(refused.status_code(), 403, "{}", refused.text());
+	assert!(!refused.text().contains("xxxxxxxx"));
+	let replay = assert_json(member.get(&reference).await.unwrap(), 200);
 	assert_eq!(
 		replay
 			.as_array()
 			.unwrap()
 			.iter()
 			.find(|event| event["id"] == large.id.to_string())
-			.unwrap()["data"],
+			.unwrap_or_else(|| panic!(
+				"{}",
+				replay.to_string().chars().take(600).collect::<String>()
+			))["data"],
 		large.data
 	);
 	let records = Event::objects()
@@ -95,7 +119,7 @@ async fn oversized_payload_uses_an_http_replay_reference_without_blocking_later_
 		.all_with_db(&mut fixture.app.database.lease.handle())
 		.await
 		.unwrap();
-	assert_eq!(records.len(), 2);
+	assert_eq!(records.len(), 3);
 	assert!(
 		records
 			.iter()

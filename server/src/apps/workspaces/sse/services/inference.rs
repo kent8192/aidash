@@ -65,21 +65,7 @@ impl RunContext {
 
 	async fn visible(&self) -> Result<bool> {
 		let probe = self.probe();
-		match &self.base.scope {
-			Some(scope) => scope.can_emit(&probe).await,
-			None => {
-				// The Deployment Administrator's stream observes every Tenant's inference.
-				let scope = aidash_application::tenancy::TenancyScope::Deployment(
-					aidash_application::tenancy::DeploymentScopeReason::DeploymentAdministratorList,
-				);
-				let mut connection = self.base.f.store.pool.begin(&scope).await?;
-				crate::authorization::remote::deployment_administrator::event_visible(
-					&mut connection,
-					&probe,
-				)
-				.await
-			}
-		}
+		self.base.scope.can_emit(&probe).await
 	}
 
 	fn render(&self, delivery: &Delivery) -> Frame {
@@ -213,26 +199,21 @@ impl Service {
 		} = request;
 		// Subjects cannot distinguish a missing Run from one they may not read,
 		// matching the subject run-detail read.
-		// A subject reads within its own Tenant; a Deployment Administrator
-		// names a Run and reads it in that Run's Tenant.
-		let tenancy = match &actor {
-			Actor::Subject(identity) => identity.tenancy()?,
-			Actor::DeploymentAdministrator => f.store.run_tenancy(run).await?,
+		// A subject reads within its own Tenant. Inference Progress is Tenant
+		// content: an administrator reads none (#484).
+		let Actor::Subject(identity) = actor else {
+			return Err(Error::Forbidden);
 		};
+		let tenancy = identity.tenancy()?;
 		let target = match f.store.inference_run(&tenancy, run).await {
-			Err(Error::NotFound(_)) if matches!(actor, Actor::Subject(_)) => {
-				return Err(Error::Forbidden);
-			}
+			Err(Error::NotFound(_)) => return Err(Error::Forbidden),
 			target => target?,
 		};
 		// Register before validation and the initial read; marker events wake it.
 		let observation = self.register(Some(target.workspace_id));
-		let scope = match actor {
-			Actor::DeploymentAdministrator => None,
-			Actor::Subject(identity) => Some(Workspaces {
-				store: f.store.clone(),
-				identity,
-			}),
+		let scope = Workspaces {
+			store: f.store.clone(),
+			identity,
 		};
 		let context = RunContext {
 			base: Context {

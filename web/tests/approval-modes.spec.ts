@@ -579,7 +579,7 @@ test("Approvals settings read in Japanese and are absent for a Deployment Admini
 test("a Deployment Administrator has no Approvals section", async ({
   page,
 }) => {
-  await setup(page);
+  await setup(page, { administrator: true });
   await page.goto("/settings?view=approvals");
   await expect(
     page
@@ -663,19 +663,19 @@ test("a Thread's switcher lists modes the policy withholds as unavailable and re
   await expect(mode).toHaveValue("default");
 });
 
-test("a Deployment Administrator's Thread has no Approval Mode switcher", async ({
+test("a Deployment Administrator cannot open a Tenant Thread", async ({
   page,
 }) => {
-  await setup(page);
-  await approvals(page);
+  await setup(page, { administrator: true });
   await page.goto("/collaboration?channel=workspace-one");
-  await page
-    .getByRole("button", { name: "Reply in thread", exact: true })
-    .first()
-    .click();
   await expect(
-    page.getByRole("heading", { name: "Thread", exact: true }),
+    page.getByText(
+      "Tenant content is not available to a Deployment Administrator.",
+    ),
   ).toBeVisible();
+  await expect(
+    page.getByRole("button", { name: "Reply in thread", exact: true }),
+  ).toHaveCount(0);
   await expect(
     page.getByRole("combobox", { name: "Approval Mode for this Thread" }),
   ).toHaveCount(0);
@@ -793,6 +793,56 @@ test("Allow for this Run still carries its targets and expiry", async ({
     targets: ["tool:crm@1.0.0#invoke"],
   });
   expect(typeof decisions[0].expires_at).toBe("string");
+});
+
+test("Sampling approval shows the server messages and grants only the pinned server", async ({
+  page,
+}) => {
+  const { errors } = await setup(page, { subject: true });
+  const digest = `sha256:${"ab".repeat(32)}`;
+  const target = `sampling:${JSON.stringify(["researcher", "reports", "writer", digest, "https://mcp.example.com"])}`;
+  const decisions = await inbox(page, [
+    pending({
+      kind: "sampling",
+      tool: null,
+      version: null,
+      action: "sampling.request_unapproved",
+      targets: [target],
+      sampling_target: {
+        agent: "researcher",
+        plugin: "reports",
+        server: "writer",
+        digest,
+        origin: "https://mcp.example.com",
+      },
+      sampling: {
+        system_prompt: "Summarize only this server request",
+        messages: [{ role: "user", text: "Server report draft" }],
+        max_tokens: 64,
+      },
+    }),
+  ]);
+  await page.goto("/collaboration?channel=workspace-one");
+  await page.getByRole("button", { name: /Decisions/ }).click();
+  const card = page.getByRole("article", {
+    name: "Sampling approval",
+    exact: true,
+  });
+  await expect(card).toContainText("Summarize only this server request");
+  await expect(card).toContainText("Server report draft");
+  await expect(card).toContainText("includeContext: none");
+  await expect(card).toContainText("Run's model and budget");
+  await expect(card).toContainText(digest);
+  await card.getByRole("checkbox").check();
+  await card
+    .getByRole("button", { name: "Allow for this Run", exact: true })
+    .click();
+  await expect.poll(() => decisions.length).toBe(1);
+  expect(decisions[0]).toMatchObject({
+    choice: "allow_run",
+    targets: [target],
+  });
+  expect(errors).toEqual([]);
 });
 
 /** A Thread whose Run shows `items` among its approvals and grants. */

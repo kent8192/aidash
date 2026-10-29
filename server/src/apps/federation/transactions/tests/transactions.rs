@@ -192,34 +192,35 @@ async fn subject_transaction_admission_preserves_only_accepted_obligations(
 	for _ in 0..steps_before_revocation {
 		coordinator::advance(&f, manifest.id).await.unwrap();
 	}
-	let (_, credentials) = request(
-		&app,
-		&f.config.api_token,
-		"GET",
-		"/api/authorization/acme/credentials",
-		Value::Null,
-	)
-	.await;
-	let credential = credentials
+	// Alice's credentials are administered through her browser Mapping; every
+	// one but the Mapping's own is revoked, which includes the submitter's.
+	let administrator = common::BrowserMapping::new(&f, "acme", "alice").await;
+	let (_, credentials) = administrator
+		.send("GET", "/api/authorization/acme/credentials", Value::Null)
+		.await;
+	let revocable: Vec<String> = credentials
 		.as_array()
 		.unwrap()
 		.iter()
-		.find(|value| value["subject"] == "alice")
-		.unwrap()["id"]
-		.as_str()
-		.unwrap();
-	let (status, body) = request(
-		&app,
-		&f.config.api_token,
-		"POST",
-		&format!("/api/authorization/acme/credentials/{credential}/revoke"),
-		Value::Null,
-	)
-	.await;
-	assert_eq!(
-		status, 200,
-		"revocation must remain available during a reservation: {body}"
-	);
+		.filter(|value| {
+			value["subject"] == "alice" && value["id"] != json!(administrator.credential)
+		})
+		.map(|value| value["id"].as_str().unwrap().to_owned())
+		.collect();
+	assert!(!revocable.is_empty(), "{credentials}");
+	for credential in revocable {
+		let (status, body) = administrator
+			.send(
+				"POST",
+				&format!("/api/authorization/acme/credentials/{credential}/revoke"),
+				Value::Null,
+			)
+			.await;
+		assert_eq!(
+			status, 200,
+			"revocation must remain available during a reservation: {body}"
+		);
+	}
 	for _ in 0..12 {
 		if coordinator::advance(&f, manifest.id)
 			.await
@@ -293,7 +294,7 @@ async fn atomic_submission_validates_the_entire_manifest_before_creating_work(
 	let manifest = json!({"id":id,"coordinator":node(&f).await,"isolation":"serializable","deadline":Utc::now()+Duration::minutes(5),"participants":[{"node_id":node(&f).await,"mutations":[{"kind":"workspace_state","workspace_id":workspace.id,"expected_revision":0,"state":{"result":"committed"}}]}]});
 	let (status, response) = request(
 		&app,
-		&f.config.api_token,
+		&subject,
 		"POST",
 		"/api/transactions",
 		manifest.clone(),
@@ -305,7 +306,7 @@ async fn atomic_submission_validates_the_entire_manifest_before_creating_work(
 	assert_eq!(
 		request(
 			&app,
-			&f.config.api_token,
+			&subject,
 			"POST",
 			"/api/transactions",
 			manifest.clone()
@@ -316,15 +317,9 @@ async fn atomic_submission_validates_the_entire_manifest_before_creating_work(
 	let mut changed = manifest.clone();
 	changed["participants"][0]["mutations"][0]["state"] = json!({"different":true});
 	assert_eq!(
-		request(
-			&app,
-			&f.config.api_token,
-			"POST",
-			"/api/transactions",
-			changed
-		)
-		.await
-		.0,
+		request(&app, &subject, "POST", "/api/transactions", changed)
+			.await
+			.0,
 		409
 	);
 	let mut external = manifest;
@@ -334,7 +329,7 @@ async fn atomic_submission_validates_the_entire_manifest_before_creating_work(
 		.unwrap()
 		.push(json!({"kind":"external_tool","endpoint":"http://127.0.0.1:9/effect"}));
 	// Native Json extraction rejects unknown mutations before transaction admission.
-	let authorization = format!("Bearer {}", f.config.api_token);
+	let authorization = format!("Bearer {}", subject.clone());
 	// reinhardt-web#6672: do not mix shared default and per-request credentials.
 	let rejected = async {
 		let client = &(app.client());
@@ -566,8 +561,17 @@ async fn authority_control_does_not_unlock_ordinary_mutations(
 	// Authority metadata and audit can change, but neither HTTP nor a direct
 	// Store mutation may use those control paths to publish application data.
 	for operation in ["evaluate", "simulate"] {
-		let (status,body)=request(&app,&f.config.api_token,"POST",&format!("/api/authorization/acme/{operation}"),
-			json!({"subject":"alice","action":"transaction.read","resource":{"tenant":"acme","kind":"transaction","id":manifest.id.to_string()}})).await;
+		// Evaluation is a Deployment-wide route; simulation is the Tenant's own.
+		let path = format!("/api/authorization/acme/{operation}");
+		let input = json!({"subject":"alice","action":"transaction.read","resource":{"tenant":"acme","kind":"transaction","id":manifest.id.to_string()}});
+		let (status, body) = if operation == "evaluate" {
+			request(&app, &f.config.api_token, "POST", &path, input).await
+		} else {
+			common::BrowserMapping::new(&f, "acme", "alice")
+				.await
+				.send("POST", &path, input)
+				.await
+		};
 		assert_eq!(
 			status, 200,
 			"authority evaluation during the barrier: {body}"
@@ -593,15 +597,15 @@ async fn authority_control_does_not_unlock_ordinary_mutations(
 			.is_err()
 	);
 	assert_eq!(
-		request(
-			&app,
-			&f.config.api_token,
-			"POST",
-			"/api/authorization/acme/credentials",
-			json!({"subject":"alice","expires_in_seconds":3600})
-		)
-		.await
-		.0,
+		common::BrowserMapping::new(&f, "acme", "alice")
+			.await
+			.send(
+				"POST",
+				"/api/authorization/acme/credentials",
+				json!({"subject":"alice","expires_in_seconds":3600})
+			)
+			.await
+			.0,
 		503
 	);
 	coordinator::abort(&f, manifest.id).await.unwrap();
@@ -628,3 +632,100 @@ async fn authority_control_does_not_unlock_ordinary_mutations(
 use reinhardt::query::QueryStatementBuilder as _;
 
 use reinhardt::query::SimpleExpr;
+
+/// A Deployment Administrator, as the shared bearer or as a browser context,
+/// holds no authority over a Tenant's transactions (#484): it submits, lists,
+/// reads and aborts nothing, and its refusals change nothing.
+#[rstest::rstest]
+#[case::shared_bearer(false)]
+#[case::browser_context(true)]
+#[tokio::test]
+async fn deployment_administrators_cannot_submit_list_read_or_abort_transactions(
+	#[future(awt)]
+	#[from(common::native_application)]
+	fixture: common::ApplicationFixture,
+	#[case] browser: bool,
+) {
+	use aidash_server::transactions::coordinator;
+	// Arrange: Alice owns one transaction; another Tenant has its own Subject.
+	let (f, url, schema) = fixture.runtime.parts();
+	let app = fixture.application;
+	let (_, token, task) = bootstrap(&f, &app, "http://localhost:1").await;
+	let workspace = f
+		.store
+		.task(&TEST_FIXTURE, task)
+		.await
+		.unwrap()
+		.workspace_id;
+	let own = review::manifest(node(&f).await.as_str(), workspace);
+	let own_id = own["id"].as_str().unwrap().to_owned();
+	assert_eq!(
+		request(&app, &token, "POST", "/api/transactions", own.clone())
+			.await
+			.0,
+		202
+	);
+	common::tenant_scope(&f.store, "other").await;
+	let other_token = common::tenant_token(&f.store, "other").await;
+	let browser_administrator = if browser {
+		Some(common::BrowserAdministrator::new(&f).await)
+	} else {
+		None
+	};
+	let as_administrator = async |method: &str, path: &str, body: Value| -> (u16, Value) {
+		match &browser_administrator {
+			Some(administrator) => administrator.send(method, path, body).await,
+			None => request(&app, &f.config.api_token, method, path, body).await,
+		}
+	};
+	let attempted = review::manifest(node(&f).await.as_str(), workspace);
+	let attempted_id = Uuid::parse_str(attempted["id"].as_str().unwrap()).unwrap();
+	// Act and assert: every administrator request is refused without content.
+	let (status, body) = as_administrator("POST", "/api/transactions", attempted).await;
+	assert_eq!(status, 403, "{body}");
+	assert!(matches!(
+		coordinator::status(&f, attempted_id).await,
+		Err(aidash_server::Error::NotFound(_))
+	));
+	let (status, body) = as_administrator("GET", "/api/transactions", Value::Null).await;
+	assert_eq!(status, 403, "{body}");
+	assert!(!body.to_string().contains(&own_id), "{body}");
+	let path = format!("/api/transactions/{own_id}");
+	let (status, body) = as_administrator("GET", &path, Value::Null).await;
+	assert_eq!(status, 403, "{body}");
+	assert!(body.get("transaction").is_none(), "{body}");
+	let (status, body) = as_administrator("POST", &format!("{path}/abort"), Value::Null).await;
+	assert_eq!(status, 403, "{body}");
+	// Another Tenant's Subject sees and changes nothing either.
+	for (method, suffix) in [("GET", ""), ("POST", "/abort")] {
+		let (status, body) = request(
+			&app,
+			&other_token,
+			method,
+			&format!("{path}{suffix}"),
+			Value::Null,
+		)
+		.await;
+		assert!(
+			matches!(status, 403 | 404),
+			"{method}{suffix}: {status} {body}"
+		);
+		assert!(body.get("transaction").is_none(), "{body}");
+	}
+	let (status, body) = request(&app, &other_token, "GET", "/api/transactions", Value::Null).await;
+	assert_eq!(status, 200, "{body}");
+	assert_eq!(body, json!([]));
+	// Assert: the owner still reads it, undecided, and may abort it.
+	let (status, listed) = request(&app, &token, "GET", "/api/transactions", Value::Null).await;
+	assert_eq!(status, 200, "{listed}");
+	assert_eq!(listed.as_array().unwrap().len(), 1);
+	assert_eq!(listed[0]["id"], json!(own_id));
+	let (status, details) = request(&app, &token, "GET", &path, Value::Null).await;
+	assert_eq!(status, 200, "{details}");
+	assert!(details["transaction"]["decision"].is_null(), "{details}");
+	let (status, aborted) =
+		request(&app, &token, "POST", &format!("{path}/abort"), Value::Null).await;
+	assert_eq!(status, 200, "{aborted}");
+	assert_eq!(aborted["decision"], "ABORT");
+	cleanup(f, &url, &schema).await;
+}

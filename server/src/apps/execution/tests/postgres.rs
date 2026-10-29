@@ -762,6 +762,8 @@ fn federation(
 				federation: true,
 				deployment_key: None,
 				tier_limits: std::sync::Arc::new(aidash_application::ports::nodes::NoTierLimits),
+				preview: None,
+				dashboard_origin: "http://localhost:3000".into(),
 			},
 			client: peer_client,
 			notify: Arc::new(tokio::sync::Notify::new()),
@@ -861,6 +863,7 @@ async fn parent_can_finish_after_explicit_child_abandonment(
 ) {
 	let (store, url, schema) = _store_fixture.clone().await.parts();
 	let f = _federation.await.federation;
+	let token = common::tenant_token(&store, "acme").await;
 	let agent = seed(&f.registry).await;
 	let workspace = store
 		.create_workspace(
@@ -954,10 +957,10 @@ async fn parent_can_finish_after_explicit_child_abandonment(
 				Method::POST,
 				app.url(format!("/api/tasks/{}/abandon", child.id)),
 			)
-			.header("authorization", "Bearer test-access-token")
+			.header("authorization", format!("Bearer {token}"))
 			.header("content-type", "application/json")
 			.body(
-				json!({"revision":child.revision,"reason":"Deployment Administrator accepts partial results"})
+				json!({"revision":child.revision,"reason":"Tenant subject accepts partial results"})
 					.to_string(),
 			)
 			.send()
@@ -2194,6 +2197,8 @@ fn authenticated_runtime(
 			federation: true,
 			deployment_key: None,
 			tier_limits: std::sync::Arc::new(aidash_application::ports::nodes::NoTierLimits),
+			preview: None,
+			dashboard_origin: "http://localhost:3000".into(),
 		};
 		runtime.federation.client = http_client;
 		runtime

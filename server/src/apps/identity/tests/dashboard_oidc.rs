@@ -13,7 +13,7 @@ use aidash_server::{
 };
 
 use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
-use futures_util::{StreamExt, future::join_all};
+use futures_util::future::join_all;
 use reinhardt::query::{Alias, Expr, LockType, PostgresQueryBuilder, Query};
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
@@ -187,6 +187,22 @@ async fn call(
 	bearer: bool,
 	body: Value,
 ) -> (u16, Value) {
+	call_keyed(app, method, path, cookie, csrf, context, bearer, None, body).await
+}
+
+/// `call` with an `Idempotency-Key`, for the Safety Stop's operation ID.
+#[allow(clippy::too_many_arguments)]
+async fn call_keyed(
+	app: &common::TestApplication,
+	method: &str,
+	path: &str,
+	cookie: bool,
+	csrf: bool,
+	context: Option<&str>,
+	bearer: bool,
+	key: Option<&str>,
+	body: Value,
+) -> (u16, Value) {
 	let mut request = app
 		.api_http
 		.request(
@@ -212,6 +228,9 @@ async fn call(
 			"authorization",
 			"Bearer deployment-administrator-execution-fixture",
 		);
+	}
+	if let Some(key) = key {
+		request = request.header("idempotency-key", key);
 	}
 	let response = request.json(&body).send().await.unwrap();
 	let status = response.status().as_u16();
@@ -550,7 +569,8 @@ async fn unmapped_identity_stays_denied_until_deployment_administrator_approves_
 		)
 		.await
 		.0,
-		404
+		// A Deployment Administrator holds no authority over a Tenant's credentials.
+		403
 	);
 	let (_, generic_credentials) = call(
 		&app,
@@ -829,7 +849,7 @@ async fn unmapped_identity_stays_denied_until_deployment_administrator_approves_
 			false,
 			Some("deployment_administrator"),
 			false,
-			json!({"action":"pause"})
+			json!({"tenant":"acme","action":"pause","expected_control_revision":0,"reason":"no csrf"})
 		)
 		.await
 		.0,
@@ -845,11 +865,31 @@ async fn unmapped_identity_stays_denied_until_deployment_administrator_approves_
 			.control,
 		aidash_server::domain::RunControl::Active
 	);
-	for (action, expected) in [
-		("pause", aidash_server::domain::RunControl::Paused),
-		("cancel", aidash_server::domain::RunControl::Cancelled),
+	// The ordinary control route refuses the browser administrator outright.
+	for action in ["pause", "resume", "cancel"] {
+		assert_eq!(
+			call(
+				&app,
+				"POST",
+				&format!("/api/runs/{}/control", run.id),
+				true,
+				true,
+				Some("deployment_administrator"),
+				false,
+				json!({"action":action})
+			)
+			.await
+			.0,
+			403,
+			"{action}"
+		);
+	}
+	for (action, revision, expected) in [
+		("pause", 0, aidash_server::domain::RunControl::Paused),
+		("cancel", 1, aidash_server::domain::RunControl::Cancelled),
 	] {
-		let (status, body) = call(
+		let key = Uuid::new_v4().to_string();
+		let (status, body) = call_keyed(
 			&app,
 			"POST",
 			&run_management,
@@ -857,11 +897,13 @@ async fn unmapped_identity_stays_denied_until_deployment_administrator_approves_
 			true,
 			Some("deployment_administrator"),
 			false,
-			json!({"action":action}),
+			Some(&key),
+			json!({"tenant":"acme","action":action,"expected_control_revision":revision,"reason":"browser safety stop"}),
 		)
 		.await;
 		assert_eq!(status, 200, "{body}");
-		assert_eq!(body["control"], json!(expected));
+		assert_eq!(body["outcome"], "accepted");
+		assert_eq!(body["operation_id"], key);
 		assert_eq!(
 			federation
 				.store
@@ -872,6 +914,15 @@ async fn unmapped_identity_stays_denied_until_deployment_administrator_approves_
 			expected
 		);
 	}
+	// The browser administrator's Identity is recorded, not the shared token.
+	let recorded: (String, Option<Uuid>) = sqlx::query_as(
+		"SELECT actor_kind, identity_id FROM run_safety_stops ORDER BY created_at LIMIT 1",
+	)
+	.fetch_one(federation.store.pool.fixture_driver())
+	.await
+	.unwrap();
+	assert_eq!(recorded.0, "browser");
+	assert_eq!(recorded.1, Some(identity_id));
 	assert_eq!(
 		call(
 			&app,
@@ -888,7 +939,6 @@ async fn unmapped_identity_stays_denied_until_deployment_administrator_approves_
 		409
 	);
 	for path in [
-		"/api/marketplace",
 		"/api/transactions",
 		"/api/generation/acme/policies/research",
 		"/api/generation/acme/requests/00000000-0000-0000-0000-000000000001/control",
@@ -896,29 +946,25 @@ async fn unmapped_identity_stays_denied_until_deployment_administrator_approves_
 		"/api/workspaces/00000000-0000-0000-0000-000000000001/semantic/search",
 		"/api/workspaces/00000000-0000-0000-0000-000000000001/semantic/entries",
 		"/api/workspaces/00000000-0000-0000-0000-000000000001/semantic/entries/00000000-0000-0000-0000-000000000002/reindex",
-		"/api/remote",
 		"/api/workbench/drafts",
-		"/api/workbench/agents/legacy-agent/1.0.0/adopt",
 		"/api/workbench/versions/legacy-agent/1.0.0/permissions",
 	] {
-		assert_ne!(
-			call(
-				&app,
-				"POST",
-				path,
-				true,
-				true,
-				Some("deployment_administrator"),
-				false,
-				Value::Null
-			)
-			.await
-			.0,
-			403,
-			"Deployment Administrator route {path} must reach its handler"
-		);
+		// These are Tenant content and settings: a browser Deployment Administrator
+		// holds no authority over them and is refused before any handler runs (#484).
+		let (status, body) = call(
+			&app,
+			"POST",
+			path,
+			true,
+			true,
+			Some("deployment_administrator"),
+			false,
+			Value::Null,
+		)
+		.await;
+		assert_eq!(status, 403, "{path}: {body}");
 	}
-	assert_ne!(
+	assert_eq!(
 		call(
 			&app,
 			"DELETE",
@@ -1004,8 +1050,9 @@ async fn unmapped_identity_stays_denied_until_deployment_administrator_approves_
 		.send()
 		.await
 		.unwrap();
-	assert_eq!(stream_response.status(), 200);
-	let mut deployment_administrator_stream = stream_response.bytes_stream();
+	// The Tenant event stream is Tenant content: a browser Deployment Administrator
+	// context is refused at connection and never receives a frame (#484).
+	assert_eq!(stream_response.status(), 403);
 	assert_eq!(
 		call(
 			&app,
@@ -1049,15 +1096,6 @@ async fn unmapped_identity_stays_denied_until_deployment_administrator_approves_
 		.0,
 		403,
 		"a revoked Deployment Administrator grant must still deny management writes"
-	);
-	assert!(
-		tokio::time::timeout(
-			std::time::Duration::from_secs(7),
-			deployment_administrator_stream.next()
-		)
-		.await
-		.unwrap()
-		.is_none()
 	);
 	assert_eq!(
 		call(

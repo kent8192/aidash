@@ -19,6 +19,8 @@ pub fn author_identity(
 	owner: Option<&str>,
 ) -> Result<(String, String)> {
 	match actor {
+		// Workbench drafts are Tenant content (#484); `adopt` alone still names
+		// its Tenant and owner.
 		Principal::DeploymentAdministrator => {
 			let tenant = tenant
 				.filter(|s| !s.trim().is_empty())
@@ -43,7 +45,6 @@ pub fn author_identity(
 }
 pub fn owner_only(actor: &Principal, draft: &Draft) -> Result<()> {
 	match actor {
-		Principal::DeploymentAdministrator => Ok(()),
 		Principal::Subject { tenant, subject }
 			if tenant == &draft.tenant && subject == &draft.owner =>
 		{
@@ -206,21 +207,22 @@ pub async fn validate_content(
 		.await?
 	};
 	validation.bound_prompt_headroom(&snapshot, &json!({"reference_documents":draft.documents}))?;
-	if let Principal::Subject { subject, .. } = scope.principal() {
-		for dependency in &snapshot.definitions {
-			if dependency.identity == snapshot.agent
-				|| source.as_ref().is_some_and(|s| {
-					dependency.identity.registry_deployment == node
-						&& s.id == dependency.identity.id
-						&& s.version == dependency.identity.version
-				}) {
-				continue;
-			}
-			let reference = dependency.identity.local();
-			let decision = scope.evaluate(&draft.tenant, &Evaluation { subject: subject.clone(), action: "agent_dependency.read".into(), resource: Resource { tenant: draft.tenant.clone(), kind: "registry_entry".into(), id: ref_key(&reference), attributes: json!({"id":reference.id,"version":reference.version,"registry_deployment":dependency.identity.registry_deployment}) }, environment: json!({}) }).await?;
-			if !decision.allowed {
-				return Err(Error::Forbidden);
-			}
+	let Principal::Subject { subject, .. } = scope.principal() else {
+		return Err(Error::Forbidden);
+	};
+	for dependency in &snapshot.definitions {
+		if dependency.identity == snapshot.agent
+			|| source.as_ref().is_some_and(|s| {
+				dependency.identity.registry_deployment == node
+					&& s.id == dependency.identity.id
+					&& s.version == dependency.identity.version
+			}) {
+			continue;
+		}
+		let reference = dependency.identity.local();
+		let decision = scope.evaluate(&draft.tenant, &Evaluation { subject: subject.clone(), action: "agent_dependency.read".into(), resource: Resource { tenant: draft.tenant.clone(), kind: "registry_entry".into(), id: ref_key(&reference), attributes: json!({"id":reference.id,"version":reference.version,"registry_deployment":dependency.identity.registry_deployment}) }, environment: json!({}) }).await?;
+		if !decision.allowed {
+			return Err(Error::Forbidden);
 		}
 	}
 	entry.binding_normalization = snapshot

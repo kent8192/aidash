@@ -2,7 +2,6 @@
 use super::super::views;
 use crate::apps::registry::workbench::serializers::audit::AuditPage;
 use crate::apps::registry::workbench::serializers::audit::AuditQuery;
-use crate::apps::registry::workbench::serializers::contracts::AdoptInput;
 use crate::apps::registry::workbench::serializers::contracts::ArchiveInput;
 use crate::apps::registry::workbench::serializers::contracts::CreateDraft;
 use crate::apps::registry::workbench::serializers::contracts::Draft;
@@ -42,9 +41,6 @@ pub(crate) fn register(contracts: &mut Contracts, document: &mut OpenApiSchema) 
 	contracts.response::<_, Draft>(document, views::drafts::duplicate, 200, "application/json")?;
 	contracts.request::<_, RevisionInput>(document, views::drafts::duplicate)?;
 	contracts.path(document, views::drafts::duplicate, &["Uuid"])?;
-	contracts.response::<_, Draft>(document, views::drafts::adopt, 200, "application/json")?;
-	contracts.request::<_, AdoptInput>(document, views::drafts::adopt)?;
-	contracts.path(document, views::drafts::adopt, &["String", "String"])?;
 	contracts.response::<_, Draft>(document, views::drafts::share, 200, "application/json")?;
 	contracts.request::<_, ShareInput>(document, views::drafts::share)?;
 	contracts.path(document, views::drafts::share, &["Uuid"])?;

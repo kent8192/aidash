@@ -19,7 +19,7 @@ async fn nanosecond_occurrence_is_canonical_across_admission_replay_and_restore(
 	let (store, _, workspace) = setup_endpoint(&database, bounds, &endpoint).await;
 	let bank = memory::create_participant(
 		&store,
-		&Actor::DeploymentAdministrator,
+		&administrator(&store).await,
 		workspace,
 		memory::CreateParticipant {
 			agent: reference("a"),
@@ -39,7 +39,7 @@ async fn nanosecond_occurrence_is_canonical_across_admission_replay_and_restore(
 			content: input,
 		},
 	);
-	let admitted = memory::mutate(&store, &Actor::DeploymentAdministrator, request.clone())
+	let admitted = memory::mutate(&store, &administrator(&store).await, request.clone())
 		.await
 		.unwrap();
 	let unit = &admitted[0];
@@ -55,10 +55,10 @@ async fn nanosecond_occurrence_is_canonical_across_admission_replay_and_restore(
 		provider: reference("p"),
 		bank: bank.clone(),
 	};
-	let persisted = memory::list(&store, &Actor::DeploymentAdministrator, read.clone())
+	let persisted = memory::list(&store, &administrator(&store).await, read.clone())
 		.await
 		.unwrap();
-	let replayed = memory::mutate(&store, &Actor::DeploymentAdministrator, request)
+	let replayed = memory::mutate(&store, &administrator(&store).await, request)
 		.await
 		.unwrap();
 	for actual in [&persisted[0], &replayed[0]] {
@@ -79,7 +79,7 @@ async fn nanosecond_occurrence_is_canonical_across_admission_replay_and_restore(
 			.await
 			.unwrap();
 	assert_eq!((report.restored, report.withheld), (1, 0));
-	let restored = memory::list(&store, &Actor::DeploymentAdministrator, read)
+	let restored = memory::list(&store, &administrator(&store).await, read)
 		.await
 		.unwrap();
 	assert_eq!(restored[0].content, unit.content);

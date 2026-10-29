@@ -228,7 +228,8 @@ async fn manual_retry_renews_only_the_retry_ledger_and_preserves_durable_budgets
 				"deployment_administrator",
 			)
 			.await
-			.unwrap();
+			// The fixture Subject may have approved it already.
+			.ok();
 	}
 	let issued = authorization
 		.issue_credential("acme", "alice", 3600, "deployment_administrator")
@@ -323,6 +324,8 @@ async fn manual_retry_renews_only_the_retry_ledger_and_preserves_durable_budgets
 			common_auth: None,
 			common_issuers: None,
 			tier_limits: std::sync::Arc::new(aidash_application::ports::nodes::NoTierLimits),
+			preview: None,
+			dashboard_origin: "http://localhost:3000".into(),
 		},
 		store,
 		client: runtime_controls.client,

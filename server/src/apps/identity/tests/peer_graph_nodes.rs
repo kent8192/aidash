@@ -102,7 +102,7 @@ async fn expand(
 		json!({
 			"node_id":target,"scope_workspace":null,"mode":"mesh",
 			"kinds":kinds,"relations":["goal","contains","tool","model"],
-			"hours":0,"limit":2,"cursor":cursor,"target_tenant":null,
+			"hours":0,"limit":2,"cursor":cursor,
 		}),
 	)
 	.await
@@ -151,15 +151,7 @@ async fn three_databases_enforce_two_subjects_and_no_transitive_graph(
 		.0,
 		200
 	);
-	let (status, bob_a) = request(
-		&a.app,
-		&a.f.config.api_token,
-		"POST",
-		"/api/authorization/acme/credentials",
-		json!({"subject":"bob"}),
-	)
-	.await;
-	assert_eq!(status, 200, "{bob_a}");
+	let bob_a = common::issued_credential(&a.f.store, "acme", "bob").await;
 	let bob_a = bob_a["token"].as_str().unwrap().to_owned();
 
 	b_policy["subjects"]["bob"] = json!({"kind":"user"});
@@ -179,30 +171,13 @@ async fn three_databases_enforce_two_subjects_and_no_transitive_graph(
 		.0,
 		200
 	);
-	let (status, alice_b) = request(
-		&b.app,
-		&b.f.config.api_token,
-		"POST",
-		"/api/authorization/acme/credentials",
-		json!({"subject":"alice"}),
-	)
-	.await;
-	assert_eq!(status, 200, "{alice_b}");
-	let (status, bob_b) = request(
-		&b.app,
-		&b.f.config.api_token,
-		"POST",
-		"/api/authorization/acme/credentials",
-		json!({"subject":"bob"}),
-	)
-	.await;
-	assert_eq!(status, 200, "{bob_b}");
+	let alice_b = common::issued_credential(&b.f.store, "acme", "alice").await;
+	let bob_b = common::issued_credential(&b.f.store, "acme", "bob").await;
 	for (subject, credential) in [("alice", &alice_b), ("bob", &bob_b)] {
-		let (status, mapping) = request(
-			&b.app,
-			&b.f.config.api_token,
-			"POST",
-			"/api/authorization/acme/peer-mappings",
+		let (status, mapping) = common::set_peer_mapping(
+			&b.f,
+			"acme",
+			"alice",
 			json!({
 				"node":b_node.node,"source_node":a_node,"source_subject":subject,
 				"credential_id":credential["credential"]["id"],"enabled":true,"expected_revision":0,
@@ -354,11 +329,10 @@ async fn three_databases_enforce_two_subjects_and_no_transitive_graph(
 		.0,
 		409
 	);
-	let (status, denied) = request(
-		&b.app,
-		&b.f.config.api_token,
-		"POST",
-		"/api/authorization/acme/peer-mappings",
+	let (status, denied) = common::set_peer_mapping(
+		&b.f,
+		"acme",
+		"alice",
 		json!({
 			"node":b_node.node,"source_node":a_node,"source_subject":"alice",
 			"credential_id":alice_b["credential"]["id"],"enabled":false,"expected_revision":1,
@@ -367,11 +341,10 @@ async fn three_databases_enforce_two_subjects_and_no_transitive_graph(
 	.await;
 	assert_eq!(status, 200, "{denied}");
 	assert_eq!(expand(&a, &target, &alice_a, None, &["agent"]).await.0, 403);
-	let (status, _) = request(
-		&b.app,
-		&b.f.config.api_token,
-		"POST",
-		"/api/authorization/acme/peer-mappings",
+	let (status, _) = common::set_peer_mapping(
+		&b.f,
+		"acme",
+		"alice",
 		json!({
 			"node":b_node.node,"source_node":a_node,"source_subject":"alice",
 			"credential_id":alice_b["credential"]["id"],"enabled":true,"expected_revision":2,
@@ -385,18 +358,21 @@ async fn three_databases_enforce_two_subjects_and_no_transitive_graph(
 	common::set_node_enabled((&b.f, &b.app, "acme"), (&a.f, "acme"), false, 1).await;
 	assert_eq!(expand(&a, &target, &alice_a, None, &["agent"]).await.0, 403);
 	common::set_node_enabled((&b.f, &b.app, "acme"), (&a.f, "acme"), true, 2).await;
-	let (status, _) = request(
-		&b.app,
-		&b.f.config.api_token,
-		"POST",
-		&format!(
-			"/api/authorization/acme/credentials/{}/revoke",
-			alice_b["credential"]["id"].as_str().unwrap()
-		),
-		Value::Null,
+	// Revoking a Tenant's credential is a member's act through a Mapping, or the
+	// host's through the service; never an HTTP Deployment Administrator's (#484).
+	aidash_server::authorization::Authorization {
+		pool: b.f.store.pool.clone(),
+	}
+	.revoke_credential(
+		"acme",
+		alice_b["credential"]["id"]
+			.as_str()
+			.unwrap()
+			.parse()
+			.unwrap(),
 	)
-	.await;
-	assert_eq!(status, 200);
+	.await
+	.unwrap();
 	assert_eq!(expand(&a, &target, &alice_a, None, &["agent"]).await.0, 403);
 
 	a.close().await;

@@ -1,5 +1,6 @@
 import { ReferenceName, RecordView } from "../record-view";
-import { useState, useSyncExternalStore } from "react";
+import { skippedServers } from "../agent-plugins";
+import { useState, useCallback, useRef, useSyncExternalStore } from "react";
 import { Alert } from "../components/patterns";
 import { useNavigate } from "@tanstack/react-router";
 import { useQuery } from "@tanstack/react-query";
@@ -46,6 +47,16 @@ import { channelAgents, terminalRun } from "./workspace-model";
 import { ChannelRequests } from "./requests";
 import { ChannelFiles } from "./attachments";
 import { RequestCanvas } from "./request/canvas";
+import {
+  FilePreviewContextProvider,
+  FilePreviewPane,
+  type FilePreviewSelection,
+  type LivePreviewSelection,
+} from "../capabilities/file-preview-pane";
+import { LivePreviewPane } from "../capabilities/live-preview-pane";
+import { FileCitationProvider } from "./file-citations";
+import { corePreviewAvailability } from "../generated/aidash";
+import type { PreviewAvailability } from "../generated/models";
 import { TimelineStrip } from "./request/timeline";
 import { Phase, SegmentedProgress } from "./request/progress";
 import { parseOwner, runDisplayStatus } from "./request/canvas-model";
@@ -100,7 +111,9 @@ const requestCopy = {
       "run.created": "実行を開始しました",
       "run.cancelled": "実行を中止しました",
       "run.semantic_degraded": "Degraded contextで続行しました",
+      "run.plugin_tools_pinned": "Agent Plugin のツールを確定しました",
     } as Record<string, string>,
+    skippedServers: "使えなかったサーバー",
   },
   "en-US": {
     actions: "Request actions",
@@ -130,7 +143,9 @@ const requestCopy = {
       "run.created": "Run started",
       "run.cancelled": "Run cancelled",
       "run.semantic_degraded": "Continued with Degraded context",
+      "run.plugin_tools_pinned": "Pinned Agent Plugin tools",
     } as Record<string, string>,
+    skippedServers: "unavailable servers",
   },
 } as const;
 
@@ -272,6 +287,51 @@ export function Channel({
     "overview" | "work" | "results" | "activity"
   >("overview");
   const [statusOpen, setStatusOpen] = useState(false);
+  type PreviewPaneSelection =
+    | { kind: "file"; selection: FilePreviewSelection }
+    | { kind: "live"; selection: LivePreviewSelection };
+  const [preview, setPreview] = useState<PreviewPaneSelection | null>(null);
+  const previewTrigger = useRef<HTMLElement | null>(null);
+  const previewManifests = useRef(
+    new Map<string, NonNullable<FilePreviewSelection["files"]>>(),
+  );
+  const openFilePreview = useCallback((selection: FilePreviewSelection) => {
+    previewTrigger.current =
+      document.activeElement instanceof HTMLElement
+        ? document.activeElement
+        : null;
+    if (selection.files?.length)
+      previewManifests.current.set(selection.area, selection.files);
+    setPreview({ kind: "file", selection });
+  }, []);
+  const openLivePreview = useCallback((selection: LivePreviewSelection) => {
+    previewTrigger.current =
+      document.activeElement instanceof HTMLElement
+        ? document.activeElement
+        : null;
+    setPreview({ kind: "live", selection });
+  }, []);
+  const closeFilePreview = useCallback(() => {
+    setPreview(null);
+    previewTrigger.current?.focus();
+    previewTrigger.current = null;
+  }, []);
+  const manifestFor = useCallback(
+    (area: string) => previewManifests.current.get(area),
+    [],
+  );
+  const previewAvailability = useQuery({
+    queryKey: ["preview-availability"],
+    queryFn: ({ signal }) => corePreviewAvailability({ signal }),
+    staleTime: Infinity,
+    gcTime: Infinity,
+    retry: false,
+  });
+  const availability: PreviewAvailability | null =
+    previewAvailability.data ??
+    (previewAvailability.isError
+      ? { available: false, preview_domain: null }
+      : null);
   const query = useQuery({
     queryKey: ["workspace", workspace.id],
     queryFn: ({ signal }) => workspaceGet(workspace.id, { signal }),
@@ -310,16 +370,22 @@ export function Channel({
       event.kind === "human.answered"
         ? deadlineLabel(event, copy.noAnswerBeforeDeadline)
         : view.events[event.kind];
-    const task = label && eventTask(event, tasks);
-    return label
-      ? [
-          {
-            id: event.id,
-            created_at: event.created_at,
-            text: task ? `${label}: ${task.title}` : label,
-          },
-        ]
-      : [];
+    if (!label) return [];
+    const task = eventTask(event, tasks);
+    const skipped =
+      event.kind === "run.plugin_tools_pinned"
+        ? skippedServers(event.data)
+        : [];
+    const text = task ? `${label}: ${task.title}` : label;
+    return [
+      {
+        id: event.id,
+        created_at: event.created_at,
+        text: skipped.length
+          ? `${text} (${view.skippedServers}: ${skipped.join(", ")})`
+          : text,
+      },
+    ];
   });
   const participantLabel = (item: (typeof agents)[number]) =>
     agentLabel(item.node, {
@@ -637,57 +703,24 @@ export function Channel({
         </div>
         {control.error && <Alert className="basis-full">{control.error}</Alert>}
       </header>
-      <Tabs
-        value={shownTab}
-        onValueChange={(value) => setTab(value as typeof tab)}
-        className="relative flex min-h-0 flex-1 flex-col md:flex-row"
-      >
-        {!desktop && (
-          <TabsList className="bg-surface">
-            <TabsTrigger value="conversation">{view.conversation}</TabsTrigger>
-            <TabsTrigger value="canvas">{view.canvas}</TabsTrigger>
-            <TabsTrigger value="tasks">
-              {view.tasks}
-              {count(tasks.length)}
-            </TabsTrigger>
-            <TabsTrigger value="results">
-              {view.results}
-              {count(artifacts.length)}
-            </TabsTrigger>
-          </TabsList>
-        )}
-        {desktop ? (
-          <div className="flex min-h-0 min-w-0 flex-1 flex-col">
-            {unavailable}
-            {canvas}
-          </div>
-        ) : (
-          <TabsContent
-            value="canvas"
-            className="flex min-h-0 flex-1 flex-col data-[state=inactive]:hidden"
-          >
-            {unavailable}
-            {canvas}
-          </TabsContent>
-        )}
-        <aside
-          ref={setThreadContainer}
-          aria-label={threadCopy[locale].thread}
-          hidden={!thread || query.isError || shownTab !== "conversation"}
-          className="absolute inset-0 z-40 flex min-h-0 flex-col bg-surface md:static md:z-auto md:w-[360px] md:shrink-0 md:border-l md:border-border"
-        />
-        <aside
-          aria-label={view.details}
-          hidden={desktop ? !dockOpen : tab === "canvas"}
-          className="flex min-h-0 flex-1 flex-col bg-surface md:w-[400px] md:flex-none md:border-l md:border-border"
+      <FileCitationProvider>
+        <FilePreviewContextProvider
+          open={openFilePreview}
+          openLive={openLivePreview}
+          manifestFor={manifestFor}
+          availability={availability}
         >
-          {desktop && (
-            <div className="flex items-stretch border-b border-border">
-              <TabsList className="flex-1 border-b-0">
+          <Tabs
+            value={shownTab}
+            onValueChange={(value) => setTab(value as typeof tab)}
+            className="relative flex min-h-0 flex-1 flex-col md:flex-row"
+          >
+            {!desktop && (
+              <TabsList className="bg-surface">
                 <TabsTrigger value="conversation">
                   {view.conversation}
-                  {count(query.data?.messages?.length ?? 0)}
                 </TabsTrigger>
+                <TabsTrigger value="canvas">{view.canvas}</TabsTrigger>
                 <TabsTrigger value="tasks">
                   {view.tasks}
                   {count(tasks.length)}
@@ -697,34 +730,98 @@ export function Channel({
                   {count(artifacts.length)}
                 </TabsTrigger>
               </TabsList>
-              <Button
-                variant="ghost"
-                size="icon"
-                type="button"
-                className="mr-1.5 self-center"
-                aria-label={view.hideDock}
-                onClick={() => setDockOpen(false)}
+            )}
+            {desktop ? (
+              <div className="flex min-h-0 min-w-0 flex-1 flex-col">
+                {unavailable}
+                {canvas}
+              </div>
+            ) : (
+              <TabsContent
+                value="canvas"
+                className="flex min-h-0 flex-1 flex-col data-[state=inactive]:hidden"
               >
-                <PanelRightClose />
-              </Button>
-            </div>
-          )}
-          {!desktop && unavailable}
-          <TabsContent
-            value="conversation"
-            forceMount
-            className="flex min-h-0 flex-1 flex-col data-[state=inactive]:hidden"
-          >
-            {conversation}
-          </TabsContent>
-          <TabsContent value="tasks" className="flex min-h-0 flex-1 flex-col">
-            {taskPane}
-          </TabsContent>
-          <TabsContent value="results" className="flex min-h-0 flex-1 flex-col">
-            {resultPane}
-          </TabsContent>
-        </aside>
-      </Tabs>
+                {unavailable}
+                {canvas}
+              </TabsContent>
+            )}
+            <aside
+              ref={setThreadContainer}
+              aria-label={threadCopy[locale].thread}
+              hidden={!thread || query.isError || shownTab !== "conversation"}
+              className="absolute inset-0 z-40 flex min-h-0 flex-col bg-surface md:static md:z-auto md:w-[360px] md:shrink-0 md:border-l md:border-border"
+            />
+            {preview?.kind === "file" && shownTab === "conversation" && (
+              <FilePreviewPane
+                key={`${preview.selection.area}:${preview.selection.file.file_id}:${preview.selection.file.digest}`}
+                selection={preview.selection}
+                onClose={closeFilePreview}
+              />
+            )}
+            {preview?.kind === "live" && shownTab === "conversation" && (
+              <LivePreviewPane
+                key={`${preview.selection.run}:${preview.selection.livePreviewId}`}
+                selection={preview.selection}
+                onClose={closeFilePreview}
+              />
+            )}
+            <aside
+              aria-label={view.details}
+              hidden={desktop ? !dockOpen : tab === "canvas"}
+              className="flex min-h-0 flex-1 flex-col bg-surface md:w-[400px] md:flex-none md:border-l md:border-border"
+            >
+              {desktop && (
+                <div className="flex items-stretch border-b border-border">
+                  <TabsList className="flex-1 border-b-0">
+                    <TabsTrigger value="conversation">
+                      {view.conversation}
+                      {count(query.data?.messages?.length ?? 0)}
+                    </TabsTrigger>
+                    <TabsTrigger value="tasks">
+                      {view.tasks}
+                      {count(tasks.length)}
+                    </TabsTrigger>
+                    <TabsTrigger value="results">
+                      {view.results}
+                      {count(artifacts.length)}
+                    </TabsTrigger>
+                  </TabsList>
+                  <Button
+                    variant="ghost"
+                    size="icon"
+                    type="button"
+                    className="mr-1.5 self-center"
+                    aria-label={view.hideDock}
+                    onClick={() => setDockOpen(false)}
+                  >
+                    <PanelRightClose />
+                  </Button>
+                </div>
+              )}
+              {!desktop && unavailable}
+              <TabsContent
+                value="conversation"
+                forceMount
+                className="flex min-h-0 flex-1 flex-col data-[state=inactive]:hidden"
+              >
+                {conversation}
+              </TabsContent>
+              <TabsContent
+                value="tasks"
+                className="flex min-h-0 flex-1 flex-col"
+              >
+                {taskPane}
+              </TabsContent>
+              <TabsContent
+                value="results"
+                className="flex min-h-0 flex-1 flex-col"
+              >
+                {resultPane}
+              </TabsContent>
+            </aside>
+          </Tabs>
+        </FilePreviewContextProvider>
+      </FileCitationProvider>
       <Sheet open={statusOpen} onOpenChange={setStatusOpen}>
         <SheetContent closeLabel={t("close")} className="gap-0 p-0">
           <SheetHeader className="border-b border-border px-5 pb-3 pt-4">

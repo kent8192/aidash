@@ -1,4 +1,4 @@
-//! Bounded HTTP transport for Federation v0.4 (ADR 0064). Every request carries
+//! Bounded HTTP transport for Federation v0.5 (ADR 0064). Every request carries
 //! a Federation token minted for it, signed with the Deployment Key.
 use aidash_application::{
 	Error, Result,
@@ -57,32 +57,6 @@ impl HttpTransport {
 				sub: route.sender.to_string(),
 				aud: route.target.to_string(),
 				subject: route.subject.clone().unwrap_or_default(),
-			},
-			method,
-			path,
-			body,
-		)
-		.await
-	}
-
-	/// A Deployment Administrator of this Deployment reading another
-	/// Deployment's graph under a Peer Graph Grant (ADR 0043): the token names
-	/// the two Deployments and the viewer's browser identity, and no Node.
-	pub async fn send_viewer(
-		&self,
-		target: &DeploymentId,
-		endpoint: &str,
-		identity: uuid::Uuid,
-		method: &str,
-		path: &str,
-		body: Option<&Value>,
-	) -> Result<reqwest::Response> {
-		self.dispatch(
-			endpoint,
-			Party {
-				sub: self.deployment.to_string(),
-				aud: target.to_string(),
-				subject: format!("oidc:{identity}"),
 			},
 			method,
 			path,
@@ -185,7 +159,9 @@ impl PeerTransport for HttpTransport {
 			.contains_key("x-aidash-run-message-pending");
 		let body = if status.is_success() {
 			crate::response::json(response, 4_194_304).await?
-		} else if status == reqwest::StatusCode::BAD_REQUEST {
+		} else if status == reqwest::StatusCode::BAD_REQUEST
+			|| (status == reqwest::StatusCode::CONFLICT && path.starts_with("/scoped/previews/"))
+		{
 			crate::response::json(response, 4_194_304)
 				.await
 				.unwrap_or(Value::Null)

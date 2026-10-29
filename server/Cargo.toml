@@ -155,6 +155,10 @@ capability-runtime-tests = []
 # not independent test binaries. Cargo still provides CARGO_BIN_EXE_manage.
 
 [[test]]
+name = "agent_plugin_runs"
+path = "src/apps/execution/tests/agent_plugin_runs.rs"
+
+[[test]]
 name = "agent_workbenches"
 path = "src/apps/registry/workbench/tests/agent_workbenches.rs"
 
@@ -177,6 +181,10 @@ path = "src/apps/execution/tests/decision_journal.rs"
 [[test]]
 name = "dashboard_oidc"
 path = "src/apps/identity/tests/dashboard_oidc.rs"
+
+[[test]]
+name = "safety_stop"
+path = "src/apps/identity/tests/safety_stop.rs"
 
 [[test]]
 name = "demo_data"

@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 kent8192
+# SPDX-License-Identifier: BUSL-1.1
+# See enterprise/LICENSE.
+
 # cargo-deny policy for the Enterprise workspace (root/deny.toml plus BUSL-1.1).
 #
 # The allow list is derived from the licenses that Cargo actually resolves in

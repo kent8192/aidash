@@ -1,5 +1,5 @@
 meta {
-  name: 0802 peer-transaction-decision - Reject unsupported federation protocol
+  name: 0802 peer-transaction-decision - Refuse a token that does not verify
   type: http
   seq: 802
 }
@@ -13,11 +13,10 @@ get {
 headers {
   Accept: application/json
   Authorization: Bearer not-a-federation-token
-  X-Aidash-Protocol: 9.9
+  X-Aidash-Protocol: 0.5
 }
 
 tests {
-  test("Exact HTTP 400", function () { expect(res.getStatus()).to.equal(400); });
-  test("Rejection is diagnostic and does not disclose SQL or credentials", function () { const value=res.getBody(); const text=typeof value === "string" ? value : JSON.stringify(value); expect(text.length).to.be.greaterThan(0); expect(text).not.to.match(/postgres:\/\/|SELECT .* FROM |deployment_administrator_token|peer_token/); });
-  test("Reject unsupported federation protocol contract", function () { expect(res.getBody().error).to.equal("unsupported federation protocol"); });
+  test("Exact HTTP 401", function () { expect(res.getStatus()).to.equal(401); });
+  test("Stable authorization error envelope", function () { expect(res.getHeader("content-type")).to.include("application/json"); expect(res.getBody()).to.eql({error:"unauthorized"}); });
 }

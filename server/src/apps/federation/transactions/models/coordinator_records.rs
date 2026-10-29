@@ -333,7 +333,7 @@ pub(crate) async fn status_in(tx: &mut dyn TransactionExecutor, id: Uuid) -> Res
 /// Stable keyset pages preserve capacity after live authority filtering.
 pub(crate) async fn visible_candidates<E: OrmExecutor>(
 	db: &mut E,
-	identity: Option<&aidash_domain::identity::execution::ExecutionPrincipal>,
+	identity: &aidash_domain::identity::execution::ExecutionPrincipal,
 	cursor: Option<(chrono::DateTime<Utc>, Uuid)>,
 ) -> Result<Vec<Status>> {
 	use reinhardt::query::{Cond, ExprTrait, Order};
@@ -344,23 +344,18 @@ pub(crate) async fn visible_candidates<E: OrmExecutor>(
 		.order_by((Alias::new("c"), Alias::new("created_at")), Order::Desc)
 		.order_by((Alias::new("c"), Alias::new("id")), Order::Desc)
 		.limit(200);
-	if let Some(identity) = identity {
-		query.and_where(Expr::exists(
-			Query::select()
-				.expr(Expr::value(1_i64))
-				.from_as(Alias::new("atomic_subjects"), Alias::new("s"))
-				.and_where(
-					reinhardt::query::SimpleExpr::from(Expr::col((
-						Alias::new("s"),
-						Alias::new("id"),
-					)))
+	query.and_where(Expr::exists(
+		Query::select()
+			.expr(Expr::value(1_i64))
+			.from_as(Alias::new("atomic_subjects"), Alias::new("s"))
+			.and_where(
+				reinhardt::query::SimpleExpr::from(Expr::col((Alias::new("s"), Alias::new("id"))))
 					.eq(Expr::col((Alias::new("c"), Alias::new("id")))),
-				)
-				.and_where(Expr::cust("s.binding->>'tenant'").eq(Expr::value(&identity.tenant)))
-				.and_where(Expr::cust("s.binding->>'subject'").eq(Expr::value(&identity.subject)))
-				.to_owned(),
-		));
-	}
+			)
+			.and_where(Expr::cust("s.binding->>'tenant'").eq(Expr::value(&identity.tenant)))
+			.and_where(Expr::cust("s.binding->>'subject'").eq(Expr::value(&identity.subject)))
+			.to_owned(),
+	));
 	if let Some((created, id)) = cursor {
 		query.and_where(
 			Cond::any()

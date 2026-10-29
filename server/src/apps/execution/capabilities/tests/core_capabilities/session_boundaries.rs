@@ -195,13 +195,12 @@ async fn approver_fixture(
 	c.policy["subjects"]["bob"]["attributes"] = json!({"capability_approver":true});
 	c.policy["policies"].as_array_mut().unwrap().push(json!({"id":"requester-not-an-approver","effect":"deny","subjects":{"ids":["alice"]},"actions":["capability.approve"],"resources":{"kinds":["outbound"]}}));
 	crate::common::replace_policy(&c.f.store, "acme", c.policy.clone()).await;
-	let (status, credential) = request(
-		&c.app,
-		&c.f.config.api_token,
-		"POST",
-		"/api/authorization/acme/credentials",
-		json!({"subject":"bob"}),
-	)
+	let (status, credential) = async {
+		(
+			200_u16,
+			common::issued_credential(&c.f.store, "acme", "bob").await,
+		)
+	}
 	.await;
 	assert_eq!(status, 200, "{credential}");
 	(c, run, credential["token"].as_str().unwrap().to_owned())

@@ -35,9 +35,16 @@ impl ExecutionRecoveryStore for RecoveryRepository {
 			.map(|_| ())
 			.map_err(Into::into)
 	}
-	async fn pause(&self, run: &Run, token: Uuid, reason: &str, event: &str) -> Result<()> {
+	async fn pause(
+		&self,
+		run: &Run,
+		token: Uuid,
+		reason: &str,
+		event: &str,
+		refusal: Option<&aidash_domain::tool::AuthorityRefusal>,
+	) -> Result<()> {
 		self.store
-			.pause_for_execution(run, token, reason, event)
+			.pause_for_execution(run, token, reason, event, refusal)
 			.await
 			.map_err(Into::into)
 	}
@@ -88,6 +95,8 @@ pub(crate) mod approvals;
 
 pub(crate) mod reclamation;
 
+pub(crate) mod retention;
+
 pub(crate) mod capability_areas;
 pub(crate) mod sessions;
 
@@ -120,5 +129,7 @@ pub(crate) mod worker;
 pub(crate) mod research;
 
 pub(crate) mod egress;
+pub(crate) mod live_previews;
+pub(crate) mod previews;
 
 pub(crate) mod source_delivery;

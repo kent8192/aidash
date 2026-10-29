@@ -12,7 +12,6 @@ fn rejects_multihop_graph_requests() {
 		hours: 24,
 		limit: 20,
 		cursor: None,
-		target_tenant: None,
 	};
 	assert!(options.validate().is_err());
 }
@@ -22,7 +21,6 @@ fn source_rejects_cross_node_and_dangling_projection() {
 	let input = GraphExpandInput {
 		node_id: "aidash://b".into(),
 		sending_node: None,
-		endpoint: None,
 		options: GraphOptions {
 			scope_workspace: None,
 			depth: 1,
@@ -32,7 +30,6 @@ fn source_rejects_cross_node_and_dangling_projection() {
 			hours: 24,
 			limit: 20,
 			cursor: None,
-			target_tenant: None,
 		},
 	};
 	let mut page = GraphPage {

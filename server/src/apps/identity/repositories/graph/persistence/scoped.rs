@@ -144,9 +144,7 @@ pub(crate) async fn visible(
 	{
 		return Ok(false);
 	}
-	let GraphAuthority::Subject(access) = authority else {
-		return Ok(description.semantic.disabled());
-	};
+	let GraphAuthority(access) = authority;
 	let workspace = workspace_resource(access, &run.home_node, run.workspace_id, &description);
 	let task = access.resource(
 		"task",
@@ -230,7 +228,7 @@ pub(super) async fn activity(
 	if visible_nodes.is_empty() {
 		return Ok(vec![]);
 	}
-	if matches!(authority, GraphAuthority::Subject(_)) {
+	{
 		let tenant = authority.tenant().to_owned();
 		let mut allowed = Vec::new();
 		for node in visible_nodes {
@@ -261,9 +259,7 @@ pub(super) async fn activity(
 			{
 				continue;
 			}
-			let GraphAuthority::Subject(access) = authority else {
-				unreachable!()
-			};
+			let GraphAuthority(access) = &mut *authority;
 			let resource = workspace_resource(access, source_node, workspace, &description);
 			if access.decide(&resource, "workspace.events").await? {
 				allowed.push(node);
