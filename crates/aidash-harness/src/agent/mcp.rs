@@ -156,10 +156,20 @@ impl Executor<'_> {
 			// retains the exact request that was sent.
 			run.state.tool_mut()?.mcp = Some(checkpoint.clone());
 			let invocation = store
-				.invocation_start(run, token, &round_key, "mcp.round", &wire_input, false)
+				.invocation_start(
+					run,
+					token,
+					&round_key,
+					"mcp.round",
+					&wire_input,
+					call.tool.replay_safe(),
+				)
 				.await?;
 			if invocation.status == "UNCERTAIN"
-				|| (recovering_send && invocation.status != "COMPLETED" && !invocation.retrying)
+				|| (recovering_send
+					&& invocation.status != "COMPLETED"
+					&& !invocation.retrying
+					&& !call.tool.replay_safe())
 			{
 				let reason = if invocation.uncertain_reason.as_deref() == Some("answer_lost") {
 					"its answer was lost after the request was sent"

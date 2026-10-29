@@ -443,6 +443,7 @@ impl Fixture {
 				&self.config,
 				tool,
 				digest,
+				false,
 				arguments,
 				"key-1",
 			)
@@ -658,6 +659,20 @@ async fn a_call_that_failed_after_the_server_got_it_is_not_sent_again() {
 			.contains("may have started")
 	);
 	assert_eq!(fixture.fake.count("tools/call"), 1);
+	let retryable = fixture
+		.sessions
+		.call(
+			fixture.run,
+			&server("demo"),
+			&fixture.config,
+			"alpha",
+			&digest(&alpha()),
+			true,
+			json!({"q": "x"}),
+			"read-only-key",
+		)
+		.await;
+	assert!(matches!(retryable, Err(Error::ToolNotDelivered { .. })));
 }
 
 #[tokio::test]
@@ -769,6 +784,7 @@ async fn an_origin_the_deployment_did_not_permit_is_refused_before_any_connectio
 			&config,
 			"alpha",
 			"digest",
+			false,
 			json!({}),
 			"key-1",
 		)
@@ -822,6 +838,7 @@ async fn a_server_nobody_answers_for_is_reported_as_unreachable() {
 			&remote(&origin, &[]),
 			"alpha",
 			&digest(&alpha()),
+			false,
 			json!({}),
 			"key",
 		)
@@ -952,6 +969,7 @@ async fn modern_http_returns_one_input_batch_and_only_an_explicit_continuation_s
 			&fixture.config,
 			"alpha",
 			&digest(&alpha()),
+			false,
 			json!({"q":"original"}),
 			"call",
 			None,
@@ -979,6 +997,7 @@ async fn modern_http_returns_one_input_batch_and_only_an_explicit_continuation_s
 			&fixture.config,
 			"alpha",
 			&digest(&alpha()),
+			false,
 			json!({"q":"original"}),
 			"call",
 			Some(&checkpoint),
@@ -1038,6 +1057,7 @@ async fn legacy_inputs_are_answered_inside_the_live_call_and_overlaps_are_refuse
 				&fixture.config,
 				"alpha",
 				&digest(&alpha()),
+				false,
 				json!({}),
 				"call",
 				None,
@@ -1094,6 +1114,7 @@ async fn a_live_input_wait_is_not_evicted_by_idle_or_session_capacity_and_can_st
 		&fixture.config,
 		"alpha",
 		&schema,
+		false,
 		json!({}),
 		"call",
 		None,

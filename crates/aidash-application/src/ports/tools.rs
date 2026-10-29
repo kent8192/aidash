@@ -85,6 +85,7 @@ pub trait PluginSessions: Send + Sync {
 		config: &RemoteServer,
 		tool: &str,
 		schema_digest: &str,
+		replay_safe: bool,
 		arguments: Value,
 		key: &str,
 	) -> Result<Value>;
@@ -98,15 +99,25 @@ pub trait PluginSessions: Send + Sync {
 		config: &RemoteServer,
 		tool: &str,
 		schema_digest: &str,
+		replay_safe: bool,
 		arguments: Value,
 		key: &str,
 		checkpoint: Option<&aidash_domain::agent_plugin::interaction::CallCheckpoint>,
 		inputs: Option<Arc<dyn PluginInputs>>,
 	) -> Result<aidash_domain::agent_plugin::interaction::ToolRound> {
 		let _ = (checkpoint, inputs);
-		self.call(run, server, config, tool, schema_digest, arguments, key)
-			.await
-			.map(aidash_domain::agent_plugin::interaction::ToolRound::Complete)
+		self.call(
+			run,
+			server,
+			config,
+			tool,
+			schema_digest,
+			replay_safe,
+			arguments,
+			key,
+		)
+		.await
+		.map(aidash_domain::agent_plugin::interaction::ToolRound::Complete)
 	}
 	/// Ends every session of the Run.
 	async fn close(&self, run: Uuid);

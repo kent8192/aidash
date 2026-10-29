@@ -407,6 +407,7 @@ impl PluginSessions for McpPluginSessions {
 		config: &RemoteServer,
 		tool: &str,
 		expected_digest: &str,
+		replay_safe: bool,
 		arguments: Value,
 		_key: &str,
 	) -> Result<Value> {
@@ -418,6 +419,7 @@ impl PluginSessions for McpPluginSessions {
 				config,
 				tool,
 				expected_digest,
+				replay_safe,
 				arguments,
 				_key,
 				None,
@@ -442,6 +444,7 @@ impl PluginSessions for McpPluginSessions {
 		config: &RemoteServer,
 		tool: &str,
 		expected_digest: &str,
+		replay_safe: bool,
 		arguments: Value,
 		_key: &str,
 		checkpoint: Option<&CallCheckpoint>,
@@ -455,13 +458,13 @@ impl PluginSessions for McpPluginSessions {
 		let service = match self.session(&key, config).await {
 			Ok(service) => service,
 			Err(fault) => {
-				return crate::tools::tool_setup_failure(fault.for_call(), false)
+				return crate::tools::tool_setup_failure(fault.for_call(), replay_safe)
 					.map(ToolRound::Complete);
 			}
 		};
 		if let Err(fault) = verify(&service, tool, expected_digest).await {
 			self.state().forget(&key, &service);
-			return crate::tools::tool_setup_failure(fault.for_call(), false)
+			return crate::tools::tool_setup_failure(fault.for_call(), replay_safe)
 				.map(ToolRound::Complete);
 		}
 		let _scope = service.service().enter(inputs)?;
@@ -476,8 +479,7 @@ impl PluginSessions for McpPluginSessions {
 			request.input_responses =
 				(!input.requests.is_empty()).then(|| checkpoint.responses.clone());
 		}
-		// Session recovery never replays a sent tool request. A lost result is
-		// reconciled through the invocation journal, including Read-only tools.
+		// The invocation journal decides whether a lost result may be replayed.
 		let result = service.call_tool_once(request).await;
 		self.state().touch(&key, &service);
 		match result {
@@ -513,7 +515,7 @@ impl PluginSessions for McpPluginSessions {
 			}
 			Err(error) => {
 				self.state().forget(&key, &service);
-				crate::tools::tool_service_failure(call_error(&error), false)
+				crate::tools::tool_service_failure(call_error(&error), replay_safe)
 					.map(ToolRound::Complete)
 			}
 		}
