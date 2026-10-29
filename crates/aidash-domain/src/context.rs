@@ -454,7 +454,7 @@ pub fn tool_event_growth(context: &Context, event: &ContextEvent) -> usize {
 			.any(|event| matches!(event, ContextEvent::Assistant { .. }));
 	let provider_activity = |event: &ContextEvent| matches!(event, ContextEvent::Assistant { provider_activity, .. } if !provider_activity.is_empty());
 	let both = provider_activity(event) || context.events().any(provider_activity);
-	let estimate = |context: &Context, native: bool| {
+	let estimate = |context: &Context, native: bool, input_format| {
 		crate::provider::ModelRequest {
 			provider_tools: vec![],
 			instructions: String::new(),
@@ -473,7 +473,7 @@ pub fn tool_event_growth(context: &Context, event: &ContextEvent) -> usize {
 			cache_scope: None,
 			cache_breakpoints: false,
 			disable_provider_transforms: false,
-			input_format: Default::default(),
+			input_format,
 			// Growth is in the unit of the Run's current byte quotas, so a
 			// tokenized Run does not count its whole context per event.
 			estimate: context.estimate.current().quota(),
@@ -482,11 +482,29 @@ pub fn tool_event_growth(context: &Context, event: &ContextEvent) -> usize {
 	};
 	let mut after = context.clone();
 	after.push(event.clone());
-	let growth = |native| estimate(&after, native).saturating_sub(estimate(context, native));
+	let growth = |native, input_format| {
+		estimate(&after, native, input_format).saturating_sub(estimate(
+			context,
+			native,
+			input_format,
+		))
+	};
 	if both {
-		growth(false).max(growth(true))
+		// Only an OpenRouter Responses body replays Provider activity next to
+		// its text disclosure, so its growth can exceed the Chat form's.
+		use crate::provider::InputFormat::{Chat, Responses};
+		[
+			(false, Chat),
+			(true, Chat),
+			(false, Responses),
+			(true, Responses),
+		]
+		.into_iter()
+		.map(|(native, input_format)| growth(native, input_format))
+		.max()
+		.unwrap_or_default()
 	} else {
-		growth(native)
+		growth(native, Default::default())
 	}
 }
 

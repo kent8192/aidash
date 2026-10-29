@@ -20,7 +20,6 @@ tests {
   });
   test("JSON response contract", function () {
     expect(res.getHeader("content-type")).to.include("application/json");
-    // A Self-hosted Deployment lists no Cloud regions.
-    expect(res.getBody()).to.eql({cloud_regions:[],enabled:true,desktop_protocol:2,provider:"oidc",login_url:"/auth/login"});
+    expect(res.getBody()).to.eql({enabled:true,desktop_protocol:2,provider:"oidc",login_url:"/auth/login"});
   });
 }

@@ -143,7 +143,9 @@ pub struct KeylessAccess {
 	/// test builds can add to it later (`permit_origin_of`).
 	origins: Arc<std::sync::RwLock<PermittedOrigins>>,
 	/// Explicit Deployment ownership declaration, separate from network access.
-	hosted_origins: Arc<PermittedOrigins>,
+	/// Shared like `origins`; only test builds add to it later
+	/// (`declare_hosted_origin_of`).
+	hosted_origins: Arc<std::sync::RwLock<PermittedOrigins>>,
 }
 impl KeylessAccess {
 	pub fn permitting(origins: PermittedOrigins) -> Self {
@@ -153,7 +155,7 @@ impl KeylessAccess {
 		}
 	}
 	pub fn with_deployment_hosted(mut self, origins: PermittedOrigins) -> Self {
-		self.hosted_origins = Arc::new(origins);
+		self.hosted_origins = Arc::new(std::sync::RwLock::new(origins));
 		self
 	}
 	pub fn data_protection_destination(
@@ -164,7 +166,12 @@ impl KeylessAccess {
 			.map_err(|_| Error::Invalid("invalid model endpoint URL".into()))?
 			.origin()
 			.ascii_serialization();
-		Ok(if self.hosted_origins.permits(&origin) {
+		let hosted = self
+			.hosted_origins
+			.read()
+			.expect("Deployment-hosted origins lock")
+			.permits(&origin);
+		Ok(if hosted {
 			aidash_domain::data_protection::Destination::DeploymentHosted
 		} else {
 			aidash_domain::data_protection::Destination::TenantKeyless
@@ -184,6 +191,23 @@ impl KeylessAccess {
 		*origins = std::mem::take(&mut *origins).with(added);
 		Ok(())
 	}
+	/// Declare the origin of `url` a model server the Deployment runs itself,
+	/// for this access and every clone of it, as a Deployment Administrator
+	/// would list it in `hosted_model_origins`.
+	#[cfg(any(test, feature = "test-support"))]
+	pub fn declare_hosted_origin_of(&self, url: &str) -> Result<()> {
+		let origin = url::Url::parse(url)
+			.map_err(|_| Error::Invalid("invalid fixture URL".into()))?
+			.origin()
+			.ascii_serialization();
+		let added = PermittedOrigins::parse([origin])?;
+		let mut hosted = self
+			.hosted_origins
+			.write()
+			.expect("Deployment-hosted origins lock");
+		*hosted = std::mem::take(&mut *hosted).with(added);
+		Ok(())
+	}
 	/// How `endpoint` may connect under the Deployment's permitted origins.
 	pub fn destination(&self, endpoint: &str) -> Result<Destination> {
 		let origins = self.origins.read().expect("Keyless origins lock");
@@ -195,6 +219,16 @@ impl KeylessAccess {
 	pub fn permitted_origins(&self) -> Vec<String> {
 		let origins = self.origins.read().expect("Keyless origins lock");
 		origins.iter().map(str::to_owned).collect()
+	}
+
+	/// The Deployment-hosted origins, so that a test can configure a child process alike.
+	#[cfg(any(test, feature = "test-support"))]
+	pub fn hosted_origins(&self) -> Vec<String> {
+		let hosted = self
+			.hosted_origins
+			.read()
+			.expect("Deployment-hosted origins lock");
+		hosted.iter().map(str::to_owned).collect()
 	}
 }
 #[async_trait]

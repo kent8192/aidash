@@ -611,7 +611,7 @@ def render():
                 if path == "/.well-known/aidash":
                     checks += 'expect(res.getBody().id).to.equal(bru.getEnvVar("node_id"));expect(res.getBody().protocol_version).to.equal("0.5");'
                 if path == "/auth/config":
-                    checks += 'expect(res.getBody()).to.have.all.keys("cloud_regions","enabled","provider","login_url","desktop_protocol");expect(res.getBody().cloud_regions).to.eql([]);expect(res.getBody().enabled).to.equal(true);expect(res.getBody().login_url).to.equal("/auth/login");'
+                    checks += 'expect(res.getBody()).to.have.all.keys("enabled","provider","login_url","desktop_protocol");expect(res.getBody().enabled).to.equal(true);expect(res.getBody().login_url).to.equal("/auth/login");'
                 if path == "/api/openapi.json":
                     checks += 'expect(res.getBody().openapi).to.match(/^3\\./);expect(res.getBody().paths["/api/workspaces"]).to.have.property("post");expect(JSON.stringify(res.getBody())).not.to.include(bru.getEnvVar("deployment_administrator_token"));'
                 if path == "/api/openapi.json":

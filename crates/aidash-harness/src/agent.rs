@@ -3095,14 +3095,15 @@ async fn answer_at_deadline(home: &dyn ExecutionHome, request: Uuid) -> Result<H
 
 /// Provider activity belongs to the accepted response, even if a later gate
 /// rejects its proposed answer. It is model-authored history, not evidence.
+/// The turn opens without text: the citation gate has not yet decided what of
+/// it may be kept, and [`record_model_turn`] adds what it keeps.
 fn record_provider_turn(run: &mut Run, version: ProjectionVersion) -> Result<()> {
 	let response = &run.state.tool()?.response;
 	if response.provider_activity.is_empty() {
 		return Ok(());
 	}
-	let text = response.text.clone();
 	let calls = response.tool_calls.clone();
-	record_model_turn(run, version, &text, &calls)
+	record_model_turn(run, version, "", &calls)
 }
 
 /// Open the Model Turn of a response, with the text it may keep and its
@@ -3120,10 +3121,32 @@ fn record_model_turn(
 		return Ok(());
 	}
 	let epoch = run.state.tool()?.response_epoch;
-	let recorded = run.context.events().rev().any(
-		|event| matches!(event, ContextEvent::Assistant { epoch: recorded, .. } if *recorded == epoch),
+	let recorded = run.context.history.iter().rposition(
+		|entry| matches!(entry.event, ContextEvent::Assistant { epoch: recorded, .. } if recorded == epoch),
 	);
-	if recorded {
+	if let Some(index) = recorded {
+		// A Provider turn opened before the citation gate holds no text; add
+		// the text the gate kept. Its journal entry stays textless, as journal
+		// entries of superseded repair diagnostics keep their originals.
+		if text.is_empty() {
+			return Ok(());
+		}
+		let growth = context::tool_event_growth(
+			&run.context,
+			&ContextEvent::Assistant {
+				provider_activity: vec![],
+				epoch,
+				text: text.to_owned(),
+				calls: vec![],
+			},
+		);
+		if let ContextEvent::Assistant { text: kept, .. } = &mut run.context.history[index].event
+			&& kept.is_empty()
+		{
+			text.clone_into(kept);
+			let pending = run.state.tool_mut()?;
+			pending.request_tokens = pending.request_tokens.saturating_add(growth);
+		}
 		return Ok(());
 	}
 	let event = ContextEvent::Assistant {

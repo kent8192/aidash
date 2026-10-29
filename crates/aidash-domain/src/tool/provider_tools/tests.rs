@@ -38,44 +38,82 @@ fn activity_inspection_bounds_large_results_without_splitting_utf8() {
 	assert!(inspection.preview.is_none());
 }
 
-#[test]
-fn provider_activity_growth_covers_both_legacy_and_native_replay() {
+#[rstest::rstest]
+#[case::citation(json!({"type":"url_citation","url":"https://example.com","content":"quoted \\\"日本語\\\" ".repeat(200)}))]
+#[case::replayed_shell_output(json!({"type":"shell_call_output","call_id":"call_1","output":"quoted \\\"日本語\\\" ".repeat(200)}))]
+fn provider_activity_growth_covers_every_replay(#[case] activity: Value) {
 	use crate::{
 		context::{Context, ContextEvent},
-		provider::{ModelContext, ModelRequest},
+		provider::{InputFormat, ModelContext, ModelRequest},
 	};
 	let before = Context::default();
 	let event = ContextEvent::Assistant {
 		epoch: 1,
 		text: "Reported".into(),
 		calls: vec![],
-		provider_activity: vec![
-			json!({"type":"url_citation","url":"https://example.com","content":"quoted \\\"日本語\\\" ".repeat(200)}),
-		],
+		provider_activity: vec![activity],
 	};
 	let mut after = before.clone();
 	after.push(event.clone());
 	let reserved = crate::context::tool_event_growth(&before, &event);
 	for native in [false, true] {
-		let request = |context: &Context| ModelRequest {
-			context: if native {
-				ModelContext::Native(crate::projection::native::native_context(
-					context,
-					&Value::Null,
-				))
-			} else {
-				context.model_view(&Value::Null).into()
-			},
-			..Default::default()
-		};
-		let actual = request(&after)
-			.estimated_total_tokens()
-			.saturating_sub(request(&before).estimated_total_tokens());
-		assert!(
-			reserved >= actual,
-			"reserved {reserved}, actual {actual}, native {native}"
-		);
+		for input_format in [InputFormat::Chat, InputFormat::Responses] {
+			let request = |context: &Context| ModelRequest {
+				context: if native {
+					ModelContext::Native(crate::projection::native::native_context(
+						context,
+						&Value::Null,
+					))
+				} else {
+					context.model_view(&Value::Null).into()
+				},
+				input_format,
+				..Default::default()
+			};
+			let actual = request(&after)
+				.estimated_total_tokens()
+				.saturating_sub(request(&before).estimated_total_tokens());
+			assert!(
+				reserved >= actual,
+				"reserved {reserved}, actual {actual}, native {native}, {input_format:?}"
+			);
+		}
 	}
+}
+
+#[test]
+fn responses_estimates_count_the_openrouter_activity_replay() {
+	use crate::{
+		context::{Context, ContextEvent},
+		provider::{InputFormat, ModelContext, ModelRequest, responses},
+	};
+	let mut context = Context::default();
+	context.push(ContextEvent::Assistant {
+		epoch: 1,
+		text: "Ran it".into(),
+		calls: vec![],
+		provider_activity: vec![
+			json!({"type":"shell_call_output","call_id":"call_1","output":"x".repeat(20_000)}),
+		],
+	});
+	let request = ModelRequest {
+		context: ModelContext::Native(crate::projection::native::native_context(
+			&context,
+			&Value::Null,
+		)),
+		input_format: InputFormat::Responses,
+		..Default::default()
+	};
+	let openrouter = responses::encoded_openrouter_input_body(&request).unwrap();
+	let plan_connection = responses::encoded_input_body(&request).unwrap();
+	assert!(openrouter.to_string().len() > plan_connection.to_string().len() + 20_000);
+	// The estimate covers the larger OpenRouter body, replay included.
+	let estimate = request.byte_estimate();
+	assert!(
+		estimate.basis >= openrouter.to_string().len(),
+		"{}",
+		estimate.basis
+	);
 }
 
 #[test]

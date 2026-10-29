@@ -2024,6 +2024,7 @@ fn initial_environment(
 		settings.dashboard.oidc = f.config.oidc.clone();
 		// A child process must reach the same Keyless fixtures (ADR 0036).
 		settings.keyless_endpoints.permitted_private_origins = f.store.keyless.permitted_origins();
+		settings.deployment.hosted_model_origins = f.store.keyless.hosted_origins();
 		let destination = directory.join(format!("settings-{}", Uuid::new_v4()));
 		std::fs::create_dir_all(&destination).unwrap();
 		std::fs::write(destination.join("base.toml"), process_settings(&settings)).unwrap();

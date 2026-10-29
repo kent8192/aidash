@@ -811,4 +811,14 @@ async fn provider_tools_reported_sources_cannot_publish_source_citations(mut fix
 			)),
 		"a rejected citation must not discard accepted Provider activity"
 	);
+	assert!(
+		last_write(&fixture)
+			.1
+			.context
+			.events()
+			.all(|event| !matches!(
+				event, ContextEvent::Assistant { text, .. } if text.contains("Reported source")
+			)),
+		"the answer the citation gate rejected must not be recorded"
+	);
 }

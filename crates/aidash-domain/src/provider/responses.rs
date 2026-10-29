@@ -32,7 +32,18 @@ pub fn encoded_openrouter_input_body(request: &ModelRequest) -> Result<Value> {
 /// Runtime callers supply encoded media, while budgets supply empty payload
 /// frames and reserve their provider-side media allowance separately.
 pub fn input_body(request: &ModelRequest, parts: impl Iterator<Item = Value>) -> Result<Value> {
-	build(request, parts, true)
+	build(request, parts, true, false)
+}
+
+/// The body request budgets measure: the namespaced tools of [`input_body`]
+/// plus the replayed Provider activity that only the OpenRouter body carries,
+/// so the estimate covers whichever Responses transport sends the request.
+/// Without Provider activity it equals [`input_body`].
+pub(crate) fn estimate_input_body(
+	request: &ModelRequest,
+	parts: impl Iterator<Item = Value>,
+) -> Result<Value> {
+	build(request, parts, true, true)
 }
 
 /// OpenRouter's Responses API accepts flat function tools and carries no
@@ -42,13 +53,14 @@ pub fn openrouter_input_body(
 	request: &ModelRequest,
 	parts: impl Iterator<Item = Value>,
 ) -> Result<Value> {
-	build(request, parts, false)
+	build(request, parts, false, true)
 }
 
 fn build(
 	request: &ModelRequest,
 	parts: impl Iterator<Item = Value>,
 	namespaced: bool,
+	replay_activity: bool,
 ) -> Result<Value> {
 	let chat = request.body(parts, false);
 	let messages = chat["messages"]
@@ -56,7 +68,7 @@ fn build(
 		.ok_or_else(|| Error::Invalid("model request has no messages".into()))?;
 	let mut input = Vec::new();
 	for message in messages.iter().skip(1) {
-		if !namespaced {
+		if replay_activity {
 			for item in message["_provider_activity"]
 				.as_array()
 				.into_iter()

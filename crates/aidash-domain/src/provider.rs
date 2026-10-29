@@ -405,7 +405,8 @@ impl ModelRequest {
 	}
 
 	/// Canonical Chat payload, shared by Chat transport and accounting.
-	/// Responses transport and accounting share [`responses::input_body`].
+	/// Responses accounting measures [`responses::estimate_input_body`], which
+	/// covers both Responses transports.
 	/// Context is encoded as message text, including its JSON escaping. A salted
 	/// request's Tenant Cache Salt is prepended by the transport adapter only.
 	pub fn input_body(&self) -> Value {
@@ -431,7 +432,7 @@ impl ModelRequest {
 		let mut body = match self.input_format {
 			InputFormat::Chat => self.body(parts.iter().map(ContentPart::estimate_frame), true),
 			InputFormat::Responses => {
-				responses::input_body(self, parts.iter().map(ContentPart::estimate_frame))?
+				responses::estimate_input_body(self, parts.iter().map(ContentPart::estimate_frame))?
 			}
 		};
 		// The durable id is resolved only at send time; reserve its maximum wire size now.
