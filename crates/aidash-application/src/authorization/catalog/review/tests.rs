@@ -271,6 +271,41 @@ async fn unreadable_dependencies_are_counted_and_never_named() {
 
 #[rstest]
 #[tokio::test]
+async fn missing_references_from_unreadable_definitions_are_anonymous() {
+	let bundle = entry(
+		"bundle",
+		"secret",
+		json!({"members": [
+		 {"registry_deployment": "aidash://test-deployment", "id": "absent", "version": "1.0.0"}
+		]}),
+	);
+	let mut fixture = Fixture::new(vec![
+		agent("model", &[("bundle", "secret")]),
+		entry("model", "model", json!({})),
+		bundle,
+	]);
+	fixture.unreadable.insert(key("secret", "1.0.0"));
+	let hidden = review(&mut fixture, &reference("writer")).await.unwrap();
+	assert_eq!(hidden.hidden, 2);
+	assert!(
+		hidden
+			.items
+			.iter()
+			.all(|item| item.reference.id != "absent")
+	);
+	fixture.unreadable.clear();
+	let visible = review(&mut fixture, &reference("writer")).await.unwrap();
+	assert_eq!(visible.closure_digest, hidden.closure_digest);
+	assert!(
+		visible
+			.items
+			.iter()
+			.any(|item| item.reference.id == "absent" && item.status == ReviewStatus::Missing)
+	);
+}
+
+#[rstest]
+#[tokio::test]
 async fn the_closure_digest_changes_with_an_exact_definition() {
 	let mut first = Fixture::new(vec![
 		agent("model", &[]),

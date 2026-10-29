@@ -164,7 +164,7 @@ pub async fn review(
 	let mut queue = vec![root_entry.clone()];
 	let mut seen = BTreeSet::new();
 	let mut entries: BTreeMap<(String, String), Entry> = BTreeMap::new();
-	let mut missing: BTreeSet<(String, String)> = BTreeSet::new();
+	let mut missing: BTreeMap<(String, String), bool> = BTreeMap::new();
 	let mut readability: BTreeMap<(String, String), bool> = BTreeMap::new();
 	let mut hidden = 0usize;
 	while let Some(entry) = queue.pop() {
@@ -187,13 +187,17 @@ pub async fn review(
 		entries.insert(key.clone(), entry.clone());
 		for dependency in dependencies {
 			let key = (dependency.id.clone(), dependency.version.clone());
-			if seen.contains(&key) || missing.contains(&key) {
+			if seen.contains(&key) {
+				continue;
+			}
+			if let Some(visible) = missing.get_mut(&key) {
+				*visible |= readable;
 				continue;
 			}
 			match scope.definition(&dependency).await? {
 				Some(entry) => queue.push(entry),
 				None => {
-					missing.insert(key);
+					missing.insert(key, readable);
 				}
 			}
 		}
@@ -212,7 +216,7 @@ pub async fn review(
 			));
 		}
 	}
-	for key in &missing {
+	for key in missing.keys() {
 		digest_parts.push(format!("{}@{}:missing", key.0, key.1));
 	}
 	digest_parts.sort();
@@ -247,7 +251,11 @@ pub async fn review(
 			.await?,
 		);
 	}
-	for key in &missing {
+	for (key, visible) in &missing {
+		if !visible {
+			hidden += 1;
+			continue;
+		}
 		items.push(ReviewItem {
 			reference: EntityRef {
 				id: key.0.clone(),
