@@ -643,12 +643,15 @@ mod destinations {
 		let server = tokio::spawn(async move { axum::serve(listener, fixture()).await.unwrap() });
 		let base = format!("http://127.0.0.1:{port}");
 		let tools = tools(&[&base]);
-		for config in [http(format!("{base}/moved")), mcp(format!("{base}/moved"))] {
-			assert!(matches!(
-				tools.invoke(&config, json!({}), "key", None).await,
-				Err(Error::External(_))
-			));
-		}
+		let http_result = tools
+			.invoke(&http(format!("{base}/moved")), json!({}), "key", None)
+			.await;
+		assert!(matches!(http_result, Err(Error::External(_))));
+		// Initialization failed before the MCP tools/call was sent.
+		let mcp_result = tools
+			.invoke(&mcp(format!("{base}/moved")), json!({}), "key", None)
+			.await;
+		assert!(matches!(mcp_result, Err(Error::ToolNotDelivered { .. })));
 		server.abort();
 	}
 
