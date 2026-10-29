@@ -64,6 +64,7 @@ pub fn ownership(name: &str) -> Result<Ownership> {
 		| "generation_requests"
 		| "node_cancellation_jobs"
 		| "authorization_catalog"
+		| "catalog_approval_requests"
 		| "node_registration_history"
 		| "authorization_peer_mappings"
 		| "authorization_peer_mapping_history"
