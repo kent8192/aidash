@@ -84,8 +84,10 @@ checked-in configuration. A full live comparison is not established by a
 fixture report or by this implementation. In particular, the current Decider
 transport has no enforceable upstream monetary ceiling for an individual call.
 Declaring `max_nanocredits_per_call` alone does not enforce it. Bounded live
-Decider execution is therefore refused before dispatch; the complete recovery
-matrix remains blocked until that bound is enforceable. Actual Rust recovery
+Decider execution is therefore refused before dispatch unless the approval
+explicitly accepts the declared amount as a reservation
+(`external_compaction.cost_enforcement`, see [evaluation](evaluation.md));
+such a campaign must say so wherever its cost is reported. Actual Rust recovery
 tests provide separate deterministic evidence and do not substitute for this
 live requirement.
 

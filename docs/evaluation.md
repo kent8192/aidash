@@ -235,9 +235,27 @@ violates the declared experiment: the manifest records the error and no further
 Run is dispatched. A bounded auxiliary-work declaration pins exact Decider and
 Summary configurations, call limits and per-call price bounds separately from
 main inference. A declaration alone cannot enforce a provider's monetary cost:
-current live Decider execution is refused until an actual monetary upper bound
-is enforceable. See the [comparison admission requirements](projection-comparison.md#live-admission-and-shared-limits).
+the Node enforces only the call counts (`max_calls_per_run`, the Context
+Policy's `call_budget`). Live Decider and Summary execution is therefore refused
+unless the approval also sets `"cost_enforcement": "declared-reservation-accepted"`
+inside `external_compaction`. The approver then accepts the declared
+`max_nanocredits_per_call` as a reservation: each Run reserves every permitted
+auxiliary call at that amount against the hard ceiling, and the manifest's
+`harness.jev_classifier` records the acceptance. Pin the Decider to one Route;
+a Decider version with fallback Routes is refused. See the
+[comparison admission requirements](projection-comparison.md#live-admission-and-shared-limits).
 Never replace unknown Decider cost with zero or a reservation amount.
+
+```json
+"external_compaction": {
+  "mode": "bounded",
+  "cost_enforcement": "declared-reservation-accepted",
+  "decider": {"reference": "DECIDER_ID@VERSION", "config_sha256": "<sha256>",
+              "max_calls_per_run": 20, "max_nanocredits_per_call": 5000000},
+  "summary": {"reference": "MODEL_ID@VERSION", "config_sha256": "<sha256>",
+              "max_calls_per_run": 8, "max_nanocredits_per_call": 19814400}
+}
+```
 
 Run admission pins the Tenant's binding inside the claim, and the claim API
 takes no expected credential. The evaluator therefore reads the binding just
@@ -305,14 +323,15 @@ the separate campaign report. No live-provider campaign was run for the
 
 `tests/evaluation/` is versioned with the code:
 
-| Path                   | Content                                                                                |
-| ---------------------- | -------------------------------------------------------------------------------------- |
-| `corpus.toml`          | Tasks, fixture models, fixture tools and matched comparisons (`fixed-task-corpus-v2`). |
-| `corpus-v1.toml`       | Archived `fixed-task-corpus-v1` for historical result validation.                      |
-| `memory.toml`          | The memory matrix corpus (`memory-corpus-v1`).                                         |
-| `snapshots/`           | Controlled task inputs. They are embedded in the Task text.                            |
-| `oracles/`             | Held-out checks. They are never sent to an Agent.                                      |
-| `schema/*.schema.json` | JSON Schemas of the experiment and result manifests.                                   |
+| Path                   | Content                                                                                                        |
+| ---------------------- | -------------------------------------------------------------------------------------------------------------- |
+| `corpus.toml`          | Tasks, fixture models, fixture tools and matched comparisons (`fixed-task-corpus-v2`).                         |
+| `corpus-v1.toml`       | Archived `fixed-task-corpus-v1` for historical result validation.                                              |
+| `memory.toml`          | The memory matrix corpus (`memory-corpus-v1`).                                                                 |
+| `memory-supply.toml`   | Run memory supply cases (`memory-supply-v1`); see [memory evaluation](memory-evaluation.md#run-memory-supply). |
+| `snapshots/`           | Controlled task inputs. They are embedded in the Task text.                                                    |
+| `oracles/`             | Held-out checks. They are never sent to an Agent.                                                              |
+| `schema/*.schema.json` | JSON Schemas of the experiment and result manifests.                                                           |
 
 The corpus SHA-256 covers `corpus.toml` and every input and oracle file it
 references. The memory corpus has its own SHA-256. Changing a task, an input,
@@ -385,8 +404,9 @@ are reported as `feature-not-available`. `context-recovery` (#113),
 standalone comparisons. The v2 projection comparisons include frozen pruning
 and Summary diagnostics, but the Python deterministic tier has no approved
 fixture Decider route and reports those diagnostic Runs as skipped rather than
-claiming recovery evidence. Actual Rust recovery tests are separate evidence;
-complete live diagnostics require enforceable auxiliary bounds. The scripted
+claiming recovery evidence. Actual Rust recovery tests are separate evidence.
+The live tier runs those diagnostics only under an approved bounded
+`external_compaction` contract (above). The scripted
 provider does not stream. A comparison whose Agent
 definition the Node rejects at registration is an error and fails the command;
 only with `--allow-unavailable-arms` is it reported as `feature-not-available`
@@ -538,8 +558,10 @@ utility; this branch measures only the first deterministically.
   exists.
 - The memory matrix's retrieval-quality rows need the live tier and an
   approved embedding model.
-- The live tier cannot reserve or price Jev compaction calls; it relies on the
-  evaluator's attestation that the evaluated Tenant approves no compaction Decider and
-  stops dispatching when a Run shows an applied compaction.
-- Neither tier measures pruning: the evaluated Agents bind no compaction
-  Decider.
+- The live tier reserves Jev compaction and Summary calls only at their declared
+  per-call amounts, which no provider enforces, and only when the approval
+  accepts that. Without a bounded contract it relies on the evaluator's
+  attestation that the evaluated Tenant approves no compaction Decider and stops
+  dispatching when a Run shows an applied compaction.
+- The deterministic tier does not measure pruning: its Agents bind no
+  compaction Decider.

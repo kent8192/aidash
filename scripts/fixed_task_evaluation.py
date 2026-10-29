@@ -41,6 +41,9 @@ EVALUATOR_FILES = ("scripts/fixed_task_evaluation.py", "scripts/fixed_task_fixtu
                    "tests/evaluation/schema/experiment.schema.json", "tests/evaluation/schema/result.schema.json")
 OUTCOMES = ("success", "false_completion", "policy_compliant_escalation", "unresolved",
             "overflow_failure", "interrupted", "infrastructure_failure")
+# The approver accepts that only Decider/Summary call counts are enforced; each call's
+# declared amount is reserved against the campaign ceiling, never proven as a cap.
+DECLARED_RESERVATION_ACCEPTED = "declared-reservation-accepted"
 LONG_CONTEXT = ("none", "pruning", "summary_recovery", "terminal_overflow")
 TERMINAL_PHASES = ("COMPLETED", "FAILED", "CANCELLED")
 CONCLUSION_SCOPE = ("Conclusions are limited to the tested tasks, fixture or model configuration and "
@@ -1739,15 +1742,20 @@ def auxiliary_allowance(approval):
 
     Call counts are checked against pinned Registry configurations. The declared
     per-call amount is only a reservation, not proof of an upstream monetary cap.
-    Execution must additionally pass require_enforceable_auxiliary_bound; until an
-    enforced provider/broker contract exists, live auxiliary dispatch is refused.
+    Execution must additionally pass require_enforceable_auxiliary_bound: live
+    auxiliary dispatch is refused unless the approval explicitly accepts the
+    declared reservation as the only per-call bound (`cost_enforcement`).
     """
     value = approval.get("external_compaction")
     if value == "disabled":
         return {"decider": None, "summary": None, "worst_case_nanocredits": 0}
     prefix = "disclosure approval external_compaction"
-    if not isinstance(value, dict) or set(value) != {"mode", "decider", "summary"} or value.get("mode") != "bounded":
+    if not isinstance(value, dict) or set(value) - {"cost_enforcement"} != {"mode", "decider", "summary"} or \
+            value.get("mode") != "bounded":
         raise GuardRefusal(prefix + ' must be "disabled" or an exact bounded decider/summary contract')
+    enforcement = value.get("cost_enforcement")
+    if enforcement is not None and enforcement != DECLARED_RESERVATION_ACCEPTED:
+        raise GuardRefusal(prefix + f' cost_enforcement must be "{DECLARED_RESERVATION_ACCEPTED}" when present')
     total = 0
     for kind in ("decider", "summary"):
         item = value[kind]
@@ -1768,16 +1776,26 @@ def auxiliary_allowance(approval):
         total += item["max_calls_per_run"] * item["max_nanocredits_per_call"]
     if value["decider"] is None:
         raise GuardRefusal(prefix + " bounded mode requires an approved compaction Decider")
-    return {"decider": value["decider"], "summary": value["summary"], "worst_case_nanocredits": total}
+    return {"decider": value["decider"], "summary": value["summary"], "worst_case_nanocredits": total,
+            "cost_enforcement": enforcement}
 
 
 def require_enforceable_auxiliary_bound(auxiliary):
-    """Refuse paid Decider work until an upstream-enforced monetary bound exists."""
-    if auxiliary.get("decider") or auxiliary.get("summary"):
+    """Refuse paid Decider work unless its approval accepts an unenforced per-call amount.
+
+    No provider or broker caps one Decider or Summary call in money: the Node
+    enforces only the call count (`max_calls_per_run`, the Context Policy's
+    `call_budget`). An approver may accept the declared `max_nanocredits_per_call`
+    as a reservation against the campaign ceiling instead, with
+    `cost_enforcement: "declared-reservation-accepted"`; the manifest records it.
+    """
+    if (auxiliary.get("decider") or auxiliary.get("summary")) and \
+            auxiliary.get("cost_enforcement") != DECLARED_RESERVATION_ACCEPTED:
         raise GuardRefusal("bounded Decider/Summary live dispatch is unavailable: max_nanocredits_per_call is an "
                            "declared reservation, not an enforceable per-physical-request monetary limit "
-                           "or receipt. An enforced provider/broker bound is required before the hard campaign "
-                           "ceiling can authorize these calls; retain recovery diagnostics as not measured")
+                           "or receipt. Either an enforced provider/broker bound or an approval with "
+                           f'external_compaction.cost_enforcement "{DECLARED_RESERVATION_ACCEPTED}" is required '
+                           "before the hard campaign ceiling can authorize these calls")
 
 
 def verify_auxiliary_configs(auxiliary, entries, provider):

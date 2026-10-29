@@ -80,6 +80,45 @@ exceeds a replacement policy's graph bound. A full candidate review queue leaves
 learning pending for retry after review frees capacity; this wait preserves the
 charged model receipt and does not consume a model failure attempt.
 
+## Run memory supply
+
+`scripts/evaluate-run-memory-supply.py` checks that memory actually reaches a
+live Run, which the matrix above does not: it operates banks directly. For each
+case in `tests/evaluation/memory-supply.toml` and each arm it creates a
+Workspace with a semantic index and a fresh participant, seeds the bank (then
+applies the case's corrections and deletions), waits until every live Unit is
+`READY`, assigns the participant to a new Task and claims it.
+
+| Arm         | Agent binding                                                    |
+| ----------- | ---------------------------------------------------------------- |
+| `auto`      | the memory provider with its default source, recalled every step |
+| `on-demand` | the same policy with `pin: on_demand`; only `memory_recall`      |
+| `none`      | no memory binding (control)                                      |
+
+A Run passes when its answer matches the case's `expect` and none of its
+`forbid` patterns, and `/memory/units/impact` lists the Run against every
+required Unit at its current revision. A read of a superseded revision or of a
+deleted Unit fails the Run, and so does any read by the control. A correct
+answer without a read is a guess and fails. The Agents remove the default
+compaction binding, so no Decider is involved.
+
+```sh
+AIDASH_EVALUATION_TOKEN=... AIDASH_EVALUATION_SUBJECT_TOKEN=... \
+python3 scripts/evaluate-run-memory-supply.py --base-url http://127.0.0.1:18083 \
+  --tenant TENANT --model MODEL_ID@VERSION \
+  --embedding-endpoint http://host.docker.internal:18777/v1 --repeats 3 \
+  --output private/evaluation/memory-supply.json
+```
+
+The embedding endpoint must be an OpenAI-compatible origin the Node may reach.
+With the fixture's 8-dimension hash embedding, retrieval is driven by keywords,
+so this measures supply, not semantic recall quality. The output is created
+exclusively with mode 0600 and contains the synthetic answers.
+
+A debug build overflows tokio's default 2 MiB worker stack on the automatic
+recall path (Run step → context sources → recall → embedding → Run row decode);
+run debug Nodes with `RUST_MIN_STACK=16777216` (#597). Release builds are unaffected.
+
 Usage-aware retention (#140) has a separate deterministic paired fixture,
 `stale-relevant-versus-recent-noisy`, in the same TOML corpus. Its clock,
 activation time, relevance arms, Unit identities and 24 periodic local Deliveries

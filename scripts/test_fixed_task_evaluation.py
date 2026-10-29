@@ -322,6 +322,14 @@ class ProjectionCampaignTest(unittest.TestCase):
         with self.assertRaisesRegex(evaluation.GuardRefusal, "not an enforceable"):
             evaluation.require_enforceable_auxiliary_bound(auxiliary)
         evaluation.require_enforceable_auxiliary_bound(evaluation.auxiliary_allowance({"external_compaction": "disabled"}))
+        accepted = {"external_compaction": dict(approval["external_compaction"],
+                                                cost_enforcement="declared-reservation-accepted")}
+        evaluation.require_enforceable_auxiliary_bound(evaluation.auxiliary_allowance(accepted))
+        self.assertEqual(runner.run_worst_case(item, value, model, prices, evaluation.auxiliary_allowance(accepted)),
+                         main + 2700)
+        with self.assertRaisesRegex(evaluation.GuardRefusal, "cost_enforcement must be"):
+            evaluation.auxiliary_allowance({"external_compaction": dict(approval["external_compaction"],
+                                                                        cost_enforcement="provider-capped")})
         larger = dict(config, max_calls_per_run=5)
         oversized = {**auxiliary, "decider": dict(auxiliary["decider"], config_sha256=evaluation.canonical_sha256(larger))}
         with self.assertRaisesRegex(evaluation.GuardRefusal, "exactly the approved"):
