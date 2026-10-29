@@ -22,10 +22,9 @@
 # first_public_date:   The UTC date of first_public_commit. The same follow-up
 #                      PR records it.
 #
-# first_public_commit and first_public_date are absent for 0.1.0 because the
-# cutover merge commit does not exist until this PR merges. The follow-up PR
-# records them, and CI derives the commit from git as the first commit that
-# added enterprise/LICENSE.
+# first_public_commit and first_public_date are absent for 0.1.0 until the
+# cutover merges. A follow-up PR records them, and CI derives the commit from
+# git as the first commit that added enterprise/LICENSE.
 
 [[version]]
 version = "0.1.0"

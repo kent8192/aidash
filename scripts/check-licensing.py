@@ -95,7 +95,7 @@ SPDX_HEADER = re.compile(
     r"SPDX-License-Identifier\s*:\s*([^\r\n]+)",
     re.IGNORECASE,
 )
-SPDX_OPERATOR = re.compile(r"\b(?:OR|AND|WITH)\b")
+SPDX_COMBINATOR = re.compile(r"\b(?:OR|AND|WITH)\b")
 COMMENT_CLOSERS = ("*/", "-->", "---", "#", "*")
 
 
@@ -393,7 +393,7 @@ def check_scope(root: Path) -> list[str]:
                 f"{path}: license {resolution.license!r} from {resolution.source}, "
                 f"expected {expected}"
             )
-        elif SPDX_OPERATOR.search(resolution.license):
+        elif SPDX_COMBINATOR.search(resolution.license):
             errors.append(f"{path}: compound license expression {resolution.license!r}")
     return errors
 
@@ -424,7 +424,7 @@ def check_expression(root: Path) -> list[str]:
             continue
         header = headers[0]
         expected = expected_license(path)
-        if SPDX_OPERATOR.search(header):
+        if SPDX_COMBINATOR.search(header):
             errors.append(f"{path}: compound SPDX license expression {header!r}")
         elif header != expected:
             errors.append(f"{path}: SPDX header {header!r}, expected {expected}")
@@ -493,7 +493,7 @@ def manifest_expression(root: Path, path: str, absolute: Path) -> list[str]:
             continue
         if value != expected:
             errors.append(f"{path}: license {value!r}, expected {expected}")
-        if SPDX_OPERATOR.search(value):
+        if SPDX_COMBINATOR.search(value):
             errors.append(f"{path}: compound license expression {value!r}")
     return errors
 
@@ -510,7 +510,7 @@ def npm_expression(path: str, absolute: Path) -> list[str]:
     errors = []
     if license != expected:
         errors.append(f"{path}: license {license!r}, expected {expected}")
-    if SPDX_OPERATOR.search(license):
+    if SPDX_COMBINATOR.search(license):
         errors.append(f"{path}: compound license expression {license!r}")
     return errors
 
@@ -531,7 +531,7 @@ def tauri_expression(path: str, absolute: Path) -> list[str]:
         return []
     if license != expected:
         return [f"{path}: bundle.license {license!r}, expected {expected}"]
-    if SPDX_OPERATOR.search(license):
+    if SPDX_COMBINATOR.search(license):
         return [f"{path}: compound bundle.license {license!r}"]
     return []
 
@@ -574,7 +574,7 @@ def dockerfile_expression(path: str, absolute: Path) -> list[str]:
     for label in labels:
         if label != expected:
             errors.append(f"{path}: OCI licenses label {label!r}, expected {expected}")
-        if SPDX_OPERATOR.search(label):
+        if SPDX_COMBINATOR.search(label):
             errors.append(f"{path}: compound OCI licenses label {label!r}")
     return errors
 

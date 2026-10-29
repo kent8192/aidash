@@ -74,7 +74,7 @@ from then it is available under Apache-2.0.
 [enterprise/VERSIONS.toml](../enterprise/VERSIONS.toml) records each version's
 Change Date and Change License. It also records the first public commit and its
 date. For 0.1.0 the cutover PR fixes the Change Date at 2030-10-26, and a
-follow-up PR records the commit and its date after the merge. CI derives the
+follow-up PR records the commit and its date after the cutover merges. CI derives the
 first public commit from git as the first commit that added
 `enterprise/LICENSE`, and rejects a record that moves a date later.
 
@@ -83,8 +83,9 @@ not put newer code under Apache-2.0.
 
 ## Known limitations
 
-- No counsel reviewed these terms. The Licensor's merge of the cutover PR
-  (#255) is the approval. Nothing in this repository is legal advice.
+- No counsel reviewed these terms. The Licensor approved the final content of
+  the cutover (#255) before its first push, and that push made the terms
+  public. Nothing in this repository is legal advice.
 - Copyright in AI-generated code is uncertain. Much of the code was written by
   AI agents under the author's account, and the Licensor's authority rests on
   being the sole author account.
