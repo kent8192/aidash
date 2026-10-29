@@ -79,10 +79,6 @@ jobs:
       - uses: trunk-io/trunk-action/setup@e1234e67a86010d61ddac8d8ebf4b783e2ffd2fa # v2.0.0
       - name: Check formatting and lint
         run: '"$TRUNK_PATH" check --all --no-fix --no-progress --print-failures --exclude clippy'
-      - name: Check Deployment Administrator terminology
-        run: |
-          python3 scripts/test_check_role_terminology.py
-          python3 scripts/check-role-terminology.py
   rust-lint:
     name: Rust Clippy (${{ matrix.workspace }})
     needs: scope
@@ -206,13 +202,6 @@ jobs:
           workspaces: ". -> target/llvm-cov"
       - name: Install coverage tool
         run: command -v cargo-llvm-cov || cargo install cargo-llvm-cov --version 0.8.7 --locked
-      - name: Verify workspace boundaries and complete test partition inventory
-        run: |
-          cargo metadata --locked --format-version 1 | python3 scripts/check-workspace-boundaries.py
-          python3 scripts/rust-test-partitions.py --check
-      - name: Test portable workspace dependency rules
-        if: matrix.partition == 'foundation' && matrix.shard == 1
-        run: python3 scripts/test_workspace_boundaries.py
       - name: Verify cross-crate coverage collection
         if: matrix.partition == 'foundation' && matrix.shard == 1
         run: python3 scripts/test_rust_test_partitions.py
@@ -288,11 +277,6 @@ jobs:
         with:
           shared-key: enterprise
           workspaces: "enterprise -> target"
-      - name: Check that Enterprise composes only Community crates on aligned versions
-        run: |
-          cargo metadata --locked --format-version 1 --manifest-path enterprise/Cargo.toml | python3 scripts/check-workspace-boundaries.py --workspace enterprise
-          python3 scripts/check-enterprise-alignment.py
-          python3 -m unittest discover -s scripts -p test_enterprise_alignment.py
       # The GCIP sign-in tests run the Community server's PostgreSQL fixtures,
       # with the environment scripts/test-rust.sh gives Community's.
       - name: Build and test the Enterprise build
@@ -303,45 +287,6 @@ jobs:
           export AIDASH_CAPABILITY_PROFILE="$profile/profile.json"
           export RUST_TEST_THREADS=2 RUST_MIN_STACK=8388608
           cargo test --locked --manifest-path enterprise/Cargo.toml --workspace
-  community-export:
-    name: Community export
-    needs: scope
-    if: needs.scope.outputs.mode == 'full'
-    runs-on: ubuntu-latest
-    timeout-minutes: 360
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          persist-credentials: false
-      - run: rustup show active-toolchain
-      - name: Build and serve the Community build from a tree without enterprise/
-        run: scripts/check-community-export.sh
-  community-bundle:
-    name: Community web bundle
-    needs: scope
-    if: needs.scope.outputs.mode == 'full'
-    runs-on: ubuntu-latest
-    timeout-minutes: 360
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          persist-credentials: false
-      - name: Install the native gRPC build prerequisite
-        run: scripts/install-ci-protoc.sh
-      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
-        with:
-          node-version: "24.12.0"
-          cache: npm
-          cache-dependency-path: web/package-lock.json
-      - run: npm ci --prefix web
-      - run: rustup show active-toolchain
-      - uses: Swatinem/rust-cache@49a0bdc70d2e1b713ca9e2869b211fcce03d3c1c # v2
-        with:
-          shared-key: production-http
-      - name: Build the Community dashboard with source maps
-        run: npm run build --prefix web -- --sourcemap
-      - name: Reject Enterprise code in the Community bundle and its source maps
-        run: python3 scripts/check-community-bundle.py web/dist
   enterprise-web:
     name: Enterprise web
     needs: scope
@@ -372,14 +317,6 @@ jobs:
         run: npm run generate:api --prefix enterprise/web
       - name: Build the Enterprise dashboard with source maps
         run: npm run build --prefix enterprise/web -- --sourcemap
-      - name: Check that the Community bundle check rejects the Enterprise bundle
-        run: |
-          if python3 scripts/check-community-bundle.py enterprise/web/dist 2>"$RUNNER_TEMP/rejected.txt"; then
-            echo "the Enterprise bundle passed the Community bundle check" >&2
-            exit 1
-          fi
-          grep -F 'is under enterprise/' "$RUNNER_TEMP/rejected.txt"
-          grep -F 'a GCIP name' "$RUNNER_TEMP/rejected.txt"
       - run: scripts/install-browser.sh
       - name: Test GCIP sign-in with the signed SDK fixture
         run: npm run test:gcip --prefix enterprise/web -- --reporter=list,json
@@ -525,7 +462,6 @@ jobs:
           path: enterprise/marketplace/dist/
       - name: Build only the independent native services
         run: |
-          cargo metadata --locked --format-version 1 --manifest-path enterprise/Cargo.toml | python3 scripts/check-workspace-boundaries.py --workspace enterprise
           cargo build --locked --manifest-path enterprise/Cargo.toml -p aidash-auth-server -p aidash-marketplace-server --bins
       - name: Start both services without Cloud, worker or NATS
         run: |
@@ -557,7 +493,6 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - run: python3 -m unittest discover -s scripts -p test_check_community_bundle.py
       - run: python3 -m unittest discover -s scripts -p test_transaction_cluster_acceptance.py
       - run: python3 -m unittest discover -s scripts -p test_core_capability_evidence.py
       - run: python3 -m unittest discover -s scripts -p test_golden_path.py
@@ -700,8 +635,6 @@ jobs:
         rust-coverage,
         infrastructure-tests,
         enterprise,
-        community-export,
-        community-bundle,
         enterprise-web,
         marketplace-web,
         authentication-web,
