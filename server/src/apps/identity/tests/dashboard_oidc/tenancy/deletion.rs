@@ -168,6 +168,11 @@ async fn deletion_removes_administrator_data_access_but_keeps_restore_available(
 		),
 		(
 			"GET",
+			format!("/api/authorization/{tenant}/safety-stops"),
+			Value::Null,
+		),
+		(
+			"GET",
 			format!("/api/generation/{tenant}/policies"),
 			Value::Null,
 		),
@@ -771,8 +776,8 @@ async fn deletion_stops_the_tenants_runs_and_a_restore_cancels_them(
 		(
 			"runs",
 			run,
-			format!("/api/runs/{run}/control"),
-			json!({"action":"pause"}),
+			format!("/api/runs/{run}/management"),
+			json!({"tenant":tenant,"action":"pause","expected_control_revision":0,"reason":"Deployment Administrator cleanup"}),
 		),
 		(
 			"tasks",
@@ -818,7 +823,15 @@ async fn deletion_stops_the_tenants_runs_and_a_restore_cancels_them(
 			.scalar_one(&mut *row_lock)
 			.await
 			.unwrap();
-		let operation = d.as_deployment_administrator("POST", &endpoint, input);
+		let operation = async {
+			if table == "runs" {
+				d.as_deployment_administrator_keyed(&endpoint, Uuid::new_v4(), input.clone())
+					.await
+			} else {
+				d.as_deployment_administrator("POST", &endpoint, input.clone())
+					.await
+			}
+		};
 		tokio::pin!(operation);
 		tokio::select! {
 			result = &mut operation => panic!("mutation did not wait for its row: {result:?}"),

@@ -10,8 +10,7 @@ pub(crate) struct Projection<'a, 'scope> {
 	pub f: &'a Federation,
 	pub authority: &'a mut GraphAuthority<'scope>,
 	pub source_node: &'a str,
-	/// What a page names as its own: the receiving Node's address, or the
-	/// Deployment id for a Peer Graph Grant's viewer.
+	/// What a page names as its own: the receiving Node's address.
 	pub node: &'a str,
 	pub revision: &'a str,
 }

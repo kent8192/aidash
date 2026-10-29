@@ -1,6 +1,7 @@
 //! Persistent runs records.
 
 use crate::Result;
+use crate::apps::execution::services::states::ControlSource;
 use crate::apps::execution::services::states::RunControl;
 use crate::apps::execution::services::states::RunPhase;
 use chrono::{DateTime, Utc};
@@ -61,6 +62,13 @@ pub struct Run {
 	/// ledger without changing their operation ID (ADR 0057).
 	#[field(default = 0)]
 	pub semantic_retry_cycle: i32,
+	/// Counts control decisions only; worker progress does not change it, so a
+	/// Safety Stop's expected revision stays current while the Run works.
+	#[field(default = 0)]
+	pub control_revision: i64,
+	/// The kind of actor that last changed `control` (ADR 0101).
+	#[field(field_type = "text", max_length = 64)]
+	pub control_source: ControlSource,
 
 	/// Local continuations retain their owning-Run FK; remote continuations live at Home.
 	/// DDL exception: SchemaExpr cannot express JSON extraction and CASE yet.
