@@ -1,5 +1,6 @@
 use super::*;
 use crate::ports::research::RevocationScope;
+use aidash_domain::retention::RecordedDecider;
 use async_trait::async_trait;
 use std::sync::{
 	Mutex,
@@ -138,7 +139,7 @@ async fn a_permitted_subject_revokes_and_workers_are_woken() {
 		.unwrap();
 	assert_eq!(revoked.run_id, runs.run);
 	assert_eq!(revoked.tenant.as_deref(), Some("acme"));
-	assert_eq!(revoked.revoked_by, subject());
+	assert_eq!(revoked.revoked_by, subject().into());
 	assert_eq!(revoked.reason, "Removal request");
 	assert_eq!(revoked.revoked_at, now);
 	assert!(runs.committed.load(Ordering::SeqCst));
@@ -267,7 +268,7 @@ async fn a_subject_reads_no_record_of_another_tenants_run() {
 	*runs.recorded.lock().unwrap() = Some(EvidenceRevocation {
 		run_id: runs.run,
 		tenant: Some("other".into()),
-		revoked_by: Decider::Subject {
+		revoked_by: RecordedDecider::Subject {
 			tenant: "other".into(),
 			subject: "user:eve".into(),
 		},

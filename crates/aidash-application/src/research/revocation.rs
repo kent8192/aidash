@@ -37,7 +37,7 @@ pub async fn revoke(
 			.revoke(&EvidenceRevocation {
 				run_id: run,
 				tenant,
-				revoked_by: decider,
+				revoked_by: decider.into(),
 				reason,
 				revoked_at: now,
 				removed: Removed::default(),

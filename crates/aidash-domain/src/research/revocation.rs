@@ -6,7 +6,7 @@ use super::{Failure, Operation};
 use crate::{
 	Error, Result,
 	context::{ContextEvent, HistoryEntry},
-	retention::Decider,
+	retention::RecordedDecider,
 };
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
@@ -62,7 +62,7 @@ pub struct EvidenceRevocation {
 	pub run_id: Uuid,
 	/// The Run's Tenant, when the Run has one.
 	pub tenant: Option<String>,
-	pub revoked_by: Decider,
+	pub revoked_by: RecordedDecider,
 	pub reason: String,
 	pub revoked_at: DateTime<Utc>,
 	pub removed: Removed,
