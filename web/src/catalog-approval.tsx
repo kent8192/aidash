@@ -262,6 +262,12 @@ export function CatalogApprovalSection({
     }
     return { subjects: restrictionSubjects, groups: restrictionGroups };
   };
+  // Only an approver's edit reaches the Approval Review; an untouched form
+  // leaves the root's stored restriction to the server's proposal.
+  const restrictionEdited =
+    restricting !== undefined ||
+    subjectNames !== undefined ||
+    restrictedGroups !== undefined;
   const path = encodeURIComponent(tenant ?? "");
   const decide = async (action: () => Promise<unknown>) => {
     if (busy) return;
@@ -502,6 +508,9 @@ export function CatalogApprovalSection({
           node={selected.name}
           root={{ id: entry.id, version: entry.version }}
           rootGroups={sentGroups}
+          rootRestriction={
+            restrictionEdited ? requestedRestriction() : undefined
+          }
           subject={access.kind === "subject" ? access.subject : undefined}
           onClose={() => setReviewOpen(false)}
           onChanged={() =>

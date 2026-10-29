@@ -688,6 +688,45 @@ test("a dependency review retains the chosen groups for a new root agent", async
   expect(decisions[1].body.root_groups).toEqual(["reviewers"]);
 });
 
+test("a dependency review retains the chosen restriction for a new root agent", async ({
+  page,
+}) => {
+  const current = reviewBody([
+    reviewItem("writer", "agent", "approvable", { proposed_restriction: null }),
+    reviewItem("model", "model", "approvable"),
+  ]);
+  const { decisions } = await reviewDashboard(page, {
+    actions: ["catalog.approve"],
+    review: () => current,
+    answer: ({ path }) =>
+      path.endsWith("/catalog")
+        ? { status: 400, json: { error: "dependency unapproved" } }
+        : { json: { bindings: [], installations: [] } },
+  });
+  await page.goto("/settings?view=agents");
+  await row(page, "writer").click();
+  await approval(page)
+    .getByRole("checkbox", { name: "Who may use it" })
+    .check();
+  await approval(page)
+    .getByLabel("Subjects (comma separated)")
+    .fill("alice, bob");
+  await approval(page)
+    .getByRole("button", { name: "Approve", exact: true })
+    .click();
+  const review = page.getByRole("region", { name: "Approval Review" });
+  await review.getByRole("button", { name: /Approve selected/ }).click();
+  await expect.poll(() => decisions.length).toBe(2);
+  const items = (
+    decisions[1].body as {
+      items: { reference: { id: string }; restriction: unknown }[];
+    }
+  ).items;
+  expect(
+    items.find((item) => item.reference.id === "writer")?.restriction,
+  ).toEqual({ subjects: ["alice", "bob"], groups: [] });
+});
+
 test("canceling a restriction edit leaves the approved item out of the submission", async ({
   page,
 }) => {

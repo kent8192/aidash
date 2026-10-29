@@ -177,6 +177,7 @@ export function ApprovalReviewPanel({
   root,
   requestId,
   rootGroups,
+  rootRestriction,
   subject,
   onClose,
   onChanged,
@@ -186,6 +187,9 @@ export function ApprovalReviewPanel({
   root: { id: string; version: string };
   requestId?: string;
   rootGroups?: string[];
+  /** The root's restriction chosen before falling back to this review;
+   *  `undefined` keeps the server's proposal, `null` clears it. */
+  rootRestriction?: CatalogRestriction | null;
   subject?: string;
   onClose?: () => void;
   onChanged?: () => void | Promise<void>;
@@ -215,7 +219,11 @@ export function ApprovalReviewPanel({
     digest: string;
     keys: string[];
   }>();
-  const [edits, setEdits] = useState<RestrictionEdits>({});
+  const [edits, setEdits] = useState<RestrictionEdits>(() =>
+    rootRestriction === undefined
+      ? {}
+      : { [itemKey({ reference: root })]: rootRestriction },
+  );
   const [editing, setEditing] = useState<string | null>(null);
   const [reason, setReason] = useState("");
   const [busy, setBusy] = useState(false);
