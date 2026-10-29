@@ -133,12 +133,15 @@ class ProviderCredentialIamTests(unittest.TestCase):
         self.assertEqual(set(readers), {
             ("bootstrap/provider_credentials.tf", "byok_broker_read"),
             ("bootstrap/provider_credentials.tf", "byok_tenant_secret_broker_read"),
+            # ADR 0100 permits the Tenant Secret broker to read OAuth payloads.
+            ("bootstrap/provider_credentials.tf", "byok_oauth_broker"),
             ("bootstrap/tls_renewal.tf", "tls_renewer"),
         })
         self.assertEqual(set(byok_grants), {
             ("bootstrap/provider_credentials.tf", "byok_deploy"),
             ("bootstrap/credential_brokers.tf", "byok_broker_read"),
             ("bootstrap/credential_brokers.tf", "byok_tenant_secret_broker_read"),
+            ("bootstrap/credential_brokers.tf", "byok_oauth_broker"),
             ("bootstrap/provider_credentials.tf", "byok_retire"),
             ("bootstrap/provider_credentials.tf", "byok_retire_inventory"),
             ("modules/environment/provider_credentials.tf", "provider_credential_create"),

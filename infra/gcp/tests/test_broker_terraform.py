@@ -98,7 +98,8 @@ class CredentialBrokerTerraformTests(unittest.TestCase):
                 resources = self.bootstrap_states[run]
                 roles = {r["values"]["name"]: r["values"] for r in resources if r["type"] == "google_project_iam_custom_role"}
                 readers = [r["values"] for r in resources if r["type"] == "google_project_iam_member" and "secretmanager.versions.access" in roles.get(r["values"]["role"], {}).get("permissions", [])]
-                self.assertEqual(len(readers), 2 * len(environments))
+                # The Tenant Secret broker also reads and rotates its own OAuth secrets (ADR 0100).
+                self.assertEqual(len(readers), 3 * len(environments))
                 expected = {
                     f"serviceAccount:aidash-{env}-{suffix}@aidash-fixture.iam.gserviceaccount.com"
                     for env in environments for suffix in ("broker", "tsec")
@@ -108,7 +109,9 @@ class CredentialBrokerTerraformTests(unittest.TestCase):
                     self.assertEqual(grant["project"], "aidash-byok-fixture")
                     suffix = "tsec" if "-tsec@" in grant["member"] else "broker"
                     environment = next(env for env in environments if f"aidash-{env}-{suffix}@" in grant["member"])
-                    prefix = "tsec" if suffix == "tsec" else "cred"
+                    prefix = "oauth" if "secretmanager.versions.add" in roles[grant["role"]]["permissions"] else ("tsec" if suffix == "tsec" else "cred")
+                    if prefix == "oauth":
+                        self.assertEqual(suffix, "tsec")
                     self.assertEqual(grant["condition"][0]["expression"], f'resource.name.startsWith("projects/123456789012/secrets/aidash-{environment}-{prefix}-")')
         disabled = self.bootstrap_states["brokers_opt_in_only"]
         self.assertFalse([r for r in disabled if r["address"].startswith((

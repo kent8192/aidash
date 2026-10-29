@@ -204,7 +204,7 @@ async fn broker_store_resolves_latest_with_checksum_and_writes_only_oauth_connec
 }
 
 #[tokio::test]
-async fn broker_faults_keep_operator_correlation_while_invalid_grant_is_terminal() {
+async fn broker_faults_keep_deployment_administrator_correlation_while_invalid_grant_is_terminal() {
 	for (code, status) in [
 		("broker_rejected", 401),
 		("broker_unavailable", 503),

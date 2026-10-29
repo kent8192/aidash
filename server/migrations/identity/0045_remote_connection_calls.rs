@@ -30,6 +30,15 @@ pub(super) fn migration() -> Migration {
 			],
 			constraints: vec![
                 Constraint::ForeignKey {
+                    name: "remote_connection_calls_tenant_root_fkey".into(),
+                    columns: vec!["tenant".into()],
+                    referenced_table: "tenants".into(),
+                    referenced_columns: vec!["name".into()],
+                    on_delete: ForeignKeyAction::NoAction,
+                    on_update: ForeignKeyAction::NoAction,
+                    deferrable: None,
+                },
+                Constraint::ForeignKey {
                     name: "remote_connection_calls_grant_fkey".into(),
                     columns: vec!["tenant".into(), "grant_id".into()],
                     referenced_table: "authorization_remote_grants".into(),
