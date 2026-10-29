@@ -291,11 +291,7 @@ def live_pods(cluster, namespace, selector=None):
 
 
 def running_producers(cluster, namespace):
-    """Writer and Runner Pods with a started process, the only ones that can hold work.
-
-    A Pod whose every container is waiting (CrashLoopBackOff, image pull) or not yet
-    created has no process that could have accepted a request or claimed a Run.
-    """
+    """Writer and Runner Pods with a currently running container."""
     return [
         pod
         for selector in (WRITER_PODS, RUNNER_PODS)
@@ -956,7 +952,8 @@ def seal(cluster, identity, force=False, idle_only=False, keepalive_at=0):
     only after this returns True. Any doubt restores service and defers. A
     namespace without live Pods (stopped, or a stop whose node pool apply
     failed) has no producer to drain and is already sealed; one whose writers
-    and Runner have no started process is sealed by draining them.
+    and Runner have no running process may be sealed only with evidence that
+    the Runner has no durable journal or sandbox Pods.
     """
     namespace = namespace_of(identity)
     if cluster.get("namespace", namespace) is None:
@@ -964,12 +961,14 @@ def seal(cluster, identity, force=False, idle_only=False, keepalive_at=0):
     if not live_pods(cluster, namespace):
         desired_admission(cluster, namespace, "closed")
         return True
-    if not force and not running_producers(cluster, namespace):
-        # A failed deployment leaves writers that crash at startup against the
-        # unmigrated database and a Runner at zero. None holds work, the
-        # collector cannot observe a Runner at zero, and rolling back would
-        # start writers that never become ready, so every retry would time out
-        # in the rollback. Draining them is the seal; there is nothing to restore.
+    runner = cluster.get("deployment", "app-execution-runner", namespace)
+    if (not force and runner is not None and runner.get("spec", {}).get("replicas") == 0
+            and not live_pods(cluster, namespace, RUNNER_PODS)
+            and not running_producers(cluster, namespace)
+            and cluster.get("persistentvolumeclaim", JOURNAL_CLAIM, namespace) is None
+            and not cluster.items("pods", namespaces(identity)[1])):
+        # A missing journal and empty sandbox are required: a stopped Runner
+        # can otherwise have durable operations or independent execution Pods.
         admission(cluster, identity, "close")
         drain(cluster, identity)
         return True
