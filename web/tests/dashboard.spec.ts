@@ -41,9 +41,7 @@ test("restarts the event stream when the tab selects another authority", async (
     exact: true,
   });
   await expect(selector).toHaveValue("deployment_administrator");
-  await expect
-    .poll(() => contexts.includes("deployment_administrator"))
-    .toBeTruthy();
+  expect(contexts).not.toContain("deployment_administrator");
   await selector.selectOption("mapping:acme:fixture-mapping");
   await expect
     .poll(() => contexts.includes("mapping:acme:fixture-mapping"))
@@ -82,6 +80,15 @@ test(
   "observes the execution and all management screens",
   { tag: "@golden-path" },
   async ({ page }) => {
+    // Every full page load waits for the Tenant subject's state, which took
+    // up to 7 s in CI after the golden path's Runs (#404).
+    test.setTimeout(120000);
+    const subject = acceptanceSubject();
+    await installBearerDashboard(page, subject.token, {
+      tenant: subject.tenant,
+      name: subject.name,
+    });
+    await page.goto("/");
     const errors: string[] = [];
     page.on("pageerror", (e) => errors.push(e.message));
     await expect(page.locator(".stream-status")).toHaveText("接続中");
@@ -93,11 +100,14 @@ test(
     await page
       .getByLabel("グラフの視点", { exact: true })
       .selectOption("neighborhood");
-    await page
-      .getByRole("button", { name: "ノード構成と通信", exact: true })
-      .click();
-    await expect(page.locator(".mesh-canvas svg > g")).toHaveCount(1);
-    await expect(page.locator(".collab-run-grid button")).not.toHaveCount(0);
+    // Node topology is a Deployment Administrator view; a Tenant subject sees
+    // only its relationships (#484).
+    await expect(
+      page.getByRole("button", { name: "エージェントの関係", exact: true }),
+    ).toHaveAttribute("aria-pressed", "true");
+    await expect(
+      page.getByRole("button", { name: "ノード構成と通信", exact: true }),
+    ).toHaveCount(0);
     for (const view of [
       "agents",
       "clusters",
@@ -108,12 +118,15 @@ test(
       await page.goto(`/settings?view=${view}`);
       await expect(page.locator(".collab-settings-select select")).toHaveValue(
         view,
+        { timeout: 30000 },
       );
       await expect(page.locator(".collab-settings h1")).toHaveText("設定");
     }
     await page.goto("/settings?view=generation");
     await expect(page).toHaveURL(/\/creator\?.*view=generation/);
-    await expect(page.locator(".generation-page")).toBeVisible();
+    await expect(page.locator(".generation-page")).toBeVisible({
+      timeout: 30000,
+    });
     await page.goto("/collaboration");
     await selectDashboardLanguage(page, "en-US");
     await expect(
@@ -241,6 +254,11 @@ test("creates a workspace and task and receives live assignment changes", async 
 test("preserves a draft after a failed message request and clears it after success", async ({
   page,
 }) => {
+  const subject = acceptanceSubject();
+  await installBearerDashboard(page, subject.token, {
+    tenant: subject.tenant,
+    name: subject.name,
+  });
   await page.goto("/collaboration");
   const input = page
     .getByRole("textbox", { name: "メッセージ", exact: true })

@@ -53,19 +53,6 @@ impl AgentDraft {
 		Self::read(tx, draft.id, false).await
 	}
 
-	pub(crate) async fn managed(
-		tx: &mut dyn TransactionExecutor,
-		managed_id: &str,
-	) -> Result<bool> {
-		Ok(!Self::objects()
-			.filter(Self::field_managed_id().eq(managed_id))
-			.limit(1)
-			.all_with_executor(tx)
-			.await
-			.map_err(FrameworkError::from)?
-			.is_empty())
-	}
-
 	pub(crate) async fn save_content(
 		tx: &mut dyn TransactionExecutor,
 		id: Uuid,

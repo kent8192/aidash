@@ -184,7 +184,7 @@ pub(crate) async fn record(
 			))
 		};
 	}
-	let access = lease.access_mut().ok_or_else(|| Error::Forbidden)?;
+	let access = lease.access_mut();
 	let mut rows = vec![];
 	for citation in citations {
 		if let Some(run_id) = citation.run_id {
@@ -410,18 +410,17 @@ pub(crate) async fn for_messages(
 			.map(|row| row.area_id)
 			.collect();
 		let runs: HashSet<Uuid> = rows.iter().filter_map(|row| row.remote_run_id).collect();
-		match lease.access_mut() {
-			None => HashSet::new(),
-			Some(access) => {
-				let mut readable = HashSet::new();
-				for area in areas {
-					let mut scope = crate::bootstrap::session_scope(Some(store), access);
-					if sessions::load(&mut scope, area).await.is_ok() {
-						readable.insert(area);
-					}
+		{
+			let access = lease.access_mut();
+			let mut readable = HashSet::new();
+			for area in areas {
+				let mut scope = crate::bootstrap::session_scope(Some(store), access);
+				if sessions::load(&mut scope, area).await.is_ok() {
+					readable.insert(area);
 				}
-				for run_id in runs {
-					if let Some(federation) = federation
+			}
+			for run_id in runs {
+				if let Some(federation) = federation
 						&& crate::apps::execution::capabilities::services::federation_previews::source_viewer(
 							federation, access, run_id,
 						)
@@ -430,9 +429,8 @@ pub(crate) async fn for_messages(
 					{
 						readable.insert(run_id);
 					}
-				}
-				readable
 			}
+			readable
 		}
 	};
 	let mut out: HashMap<Uuid, Vec<ChannelCitation>> = HashMap::new();

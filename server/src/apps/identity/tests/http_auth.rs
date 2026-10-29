@@ -25,10 +25,26 @@ fn bearer_schemes_preserve_case_sensitive_credentials(
 }
 
 #[rstest]
-#[case("/api/skills/import", true)]
-#[case("/api/agents/personal", true)]
-#[case("/api/agents", false)]
-fn browser_deployment_administrator_registry_creation(#[case] path: &str, #[case] permitted: bool) {
+#[case::invitation("/api/tenants/t/invitations", true)]
+#[case::invitation_revoke("/api/tenants/t/invitations/i/revoke", true)]
+#[case::registration("/api/tenants/t/registrations/r/approve", false)]
+#[case::deletion("/api/tenants/t/deletion", false)]
+#[case::policy("/api/authorization/t", true)]
+#[case::skills_import("/api/skills/import", false)]
+#[case::personal_agents("/api/agents/personal", false)]
+#[case::provider_credentials("/api/tenants/t/provider-credentials", false)]
+#[case::bindings("/api/tenants/t/provider-credential-bindings/b", false)]
+#[case::retention("/api/tenants/t/retention", false)]
+#[case::tasks_abandon("/api/tasks/x/abandon", false)]
+#[case::research_revocation("/api/runs/r/research-revocation", false)]
+#[case::workbench("/api/workbench/drafts", false)]
+#[case::registry("/api/registry", false)]
+#[case::transactions("/api/transactions", false)]
+#[case::remote("/api/remote", false)]
+fn browser_deployment_administrator_writes_only_on_administered_routes(
+	#[case] path: &str,
+	#[case] permitted: bool,
+) {
 	assert_eq!(
 		browser_deployment_administrator_allowed(&Method::POST, path),
 		permitted

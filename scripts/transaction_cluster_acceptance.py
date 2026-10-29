@@ -274,6 +274,18 @@ class Cluster:
                     previous[2].close()
             raise
 
+    def issue_credential(self, node, tenant, subject):
+        """A Tenant's Subject Credential, minted on the host (#484).
+
+        A Deployment Administrator holds no Tenant authority, so the api_token
+        cannot issue one over HTTP: the command opens the Node's database with
+        the server's own settings.
+        """
+        output = self.kube("exec", f"deployment/tx-{node}-server", "--", "manage", "issue-subject-credential",
+                           "--tenant", tenant, "--subject", subject, "--label", "acceptance_host",
+                           "--expires-in-seconds", "3600").stdout
+        return json.loads(output.strip().splitlines()[-1])
+
     def ready(self, node):
         self.until(lambda: self.api(node, "/health")[0] == 200, "Node health")
 
@@ -386,6 +398,10 @@ class Cluster:
                     f"http://tx-{remote}:8080/.well-known/aidash").stdout
                 key_id = json.loads(key_id)["key"]["id"]
                 owner = self.nodes[local]
+                # TODO(#578): a Node Registration needs a Tenant Administrator, a browser
+                # Mapping session through a test OIDC issuer the Pods can reach
+                # (oidc_fixture.py). The api_token is a Deployment Administrator and is
+                # refused, so this fails until that issuer runs in the cluster.
                 status, response = self.api(local, f"/api/tenants/{owner['tenant']}/nodes/{owner['node']}/registrations",
                     {"source_node": self.nodes[remote]["address"], "endpoint": f"http://tx-{remote}:8080", "key_id": key_id,
                      "atomic_transactions": True, "enabled": True, "expected_revision": 0})

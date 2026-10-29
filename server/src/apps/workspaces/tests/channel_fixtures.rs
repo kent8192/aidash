@@ -37,18 +37,7 @@ pub fn scoped_channel(#[future] endpoint: EndpointFixture) -> impl Future<Output
 				.unwrap(),
 			200,
 		);
-		let issued = assert_json(
-			app.deployment_administrator
-				.post(
-					"/api/authorization/acme/credentials",
-					&json!({"subject":"alice"}),
-					"json",
-				)
-				.await
-				.unwrap(),
-			200,
-		);
-		let token = issued["token"].as_str().unwrap().to_owned();
+		let token = crate::endpoint::subject_credential(&app.runtime.store, "acme", "alice").await;
 		let client = client_for(&app.server.url, &token).await;
 		let created = workspace(&client, "Channel access fixture").await;
 		ScopedChannel {

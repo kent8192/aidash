@@ -89,13 +89,98 @@ pub(crate) use application::{process_settings, settings_for};
 #[allow(unused_imports)] // Only federation suites consume fixed-origin application fixtures.
 pub use peer::{FixedServerGuard as PeerServerGuard, PeerFixture, PeerFuture, native_peer};
 
+#[path = "browser_context.rs"]
+mod browser_context;
+
+/// A Tenant Administrator acting through a browser Mapping, in an application
+/// whose browser sign-in is on (#484). See [`browser_context::BrowserMapping`].
+#[allow(dead_code)] // Only suites that administer a Tenant over HTTP build one.
+pub struct BrowserMapping {
+	pub app: TestApplication,
+	/// The id of the credential the Mapping is bound to.
+	pub credential: String,
+	inner: browser_context::BrowserMapping,
+}
+
+#[allow(dead_code)]
+impl BrowserMapping {
+	pub async fn new(f: &Federation, tenant: &str, subject: &str) -> Self {
+		let app = application(browser_context::configured(f)).await;
+		let inner =
+			browser_context::BrowserMapping::on(f, &app.context, app.client(), tenant, subject)
+				.await;
+		Self {
+			credential: inner.credential.clone(),
+			app,
+			inner,
+		}
+	}
+
+	pub async fn send(&self, method: &str, path: &str, body: Value) -> (u16, Value) {
+		self.inner.send(method, path, body).await
+	}
+}
+
+/// Sets a Peer Mapping of `tenant` as the host, the way fixtures and `manage`
+/// do (#484). A Tenant Administrator may enable one only for a service or
+/// agent subject's credential, and no HTTP route writes one for a person's.
+#[allow(dead_code)]
+pub async fn set_peer_mapping(
+	f: &Federation,
+	tenant: &str,
+	_subject: &str,
+	body: Value,
+) -> (u16, Value) {
+	let input = serde_json::from_value(body).expect("a Peer Mapping input");
+	match aidash_server::apps::identity::services::peer::write(f, tenant, input).await {
+		Ok(mapping) => (
+			200,
+			serde_json::to_value(mapping).expect("the Peer Mapping serializes"),
+		),
+		Err(error) => {
+			let message = error.to_string();
+			(
+				error.http_response().status.as_u16(),
+				json!({"error": message}),
+			)
+		}
+	}
+}
+
+/// A Deployment Administrator acting through a browser session, in an
+/// application whose browser sign-in is on (#484).
+#[allow(dead_code)] // Only refusal regressions build a browser administrator.
+pub struct BrowserAdministrator {
+	pub app: TestApplication,
+	inner: browser_context::BrowserAdministrator,
+}
+
+#[allow(dead_code)]
+impl BrowserAdministrator {
+	pub async fn new(f: &Federation) -> Self {
+		let app = application(browser_context::configured(f)).await;
+		let inner = browser_context::BrowserAdministrator::on(f, &app.context, app.client()).await;
+		Self { app, inner }
+	}
+
+	pub async fn send(&self, method: &str, path: &str, body: Value) -> (u16, Value) {
+		self.inner.send(method, path, body).await
+	}
+
+	/// The request headers of this browser context, for SSE reads.
+	pub fn headers(&self) -> Vec<(&'static str, String)> {
+		self.inner.headers()
+	}
+}
 #[path = "tenant_roots.rs"]
 mod tenant_roots;
+#[allow(unused_imports)] // Only suites that issue the first Subject Credential use it.
+pub use tenant_roots::issued_credential;
 #[allow(unused_imports)] // Only suites that create Tenants under fixed names use these.
 pub use tenant_roots::{
 	admitted_run, approve_agent, approve_agent_on, default_node, local_run, remote_run,
-	remote_run_in, replace_policy, second_node_in, subject_claim, tenant_root, tenant_root_in,
-	tenant_scope, tenant_token,
+	remote_run_in, replace_policy, second_node_in, subject_claim, subject_credential, tenant_root,
+	tenant_root_in, tenant_scope, tenant_token,
 };
 
 #[allow(dead_code)] // Header-sensitive browser and peer tests share this request dispatcher.
@@ -144,22 +229,22 @@ pub async fn register_default_node(
 	local: (&Federation, &TestApplication, &str),
 	other: (&Federation, &str),
 ) {
-	let (f, app, tenant) = local;
+	let (f, _app, tenant) = local;
 	let (other, other_tenant) = other;
 	let node = default_node(&f.store, tenant).await;
 	let other_node = default_node(&other.store, other_tenant).await;
 	peering::permit(f, &other.config.endpoint);
-	let (status, body) = request(
-		app,
-		&f.config.api_token,
-		"POST",
-		&peering::registration_path(tenant, node.node.as_str()),
-		peering::registration(
-			&other_node.to_string(),
-			Some((&other.config.endpoint, &peering::key_id(other))),
-		),
-	)
-	.await;
+	let (status, body) = BrowserMapping::new(f, tenant, "alice")
+		.await
+		.send(
+			"POST",
+			&peering::registration_path(tenant, node.node.as_str()),
+			peering::registration(
+				&other_node.to_string(),
+				Some((&other.config.endpoint, &peering::key_id(other))),
+			),
+		)
+		.await;
 	assert_eq!(status, 200, "{body}");
 }
 
@@ -168,21 +253,21 @@ pub async fn register_default_node(
 #[allow(dead_code)]
 pub async fn register_local_node(
 	f: &Federation,
-	app: &TestApplication,
+	_app: &TestApplication,
 	tenant: &str,
 	source_tenant: &str,
 ) -> aidash_domain::nodes::NodeAddress {
 	tenant_root(f, source_tenant).await;
 	let node = default_node(&f.store, tenant).await;
 	let source = default_node(&f.store, source_tenant).await;
-	let (status, body) = request(
-		app,
-		&f.config.api_token,
-		"POST",
-		&peering::registration_path(tenant, node.node.as_str()),
-		peering::registration(&source.to_string(), None),
-	)
-	.await;
+	let (status, body) = BrowserMapping::new(f, tenant, "alice")
+		.await
+		.send(
+			"POST",
+			&peering::registration_path(tenant, node.node.as_str()),
+			peering::registration(&source.to_string(), None),
+		)
+		.await;
 	assert_eq!(status, 200, "{body}");
 	source
 }
@@ -195,7 +280,7 @@ pub async fn register_sender_only(
 	local: (&Federation, &TestApplication, &str),
 	other: (&Federation, &str),
 ) {
-	let (f, app, tenant) = local;
+	let (f, _, tenant) = local;
 	let (other, other_tenant) = other;
 	let stand_in =
 		peering::Remote::standing_in(other.config.deployment.as_str(), peering::key_of(other))
@@ -203,14 +288,14 @@ pub async fn register_sender_only(
 	let node = default_node(&f.store, tenant).await;
 	let other_node = default_node(&other.store, other_tenant).await;
 	peering::permit(f, &stand_in.endpoint);
-	let (status, body) = request(
-		app,
-		&f.config.api_token,
-		"POST",
-		&peering::registration_path(tenant, node.node.as_str()),
-		stand_in.registration(other_node.node.as_str()),
-	)
-	.await;
+	let (status, body) = BrowserMapping::new(f, tenant, "alice")
+		.await
+		.send(
+			"POST",
+			&peering::registration_path(tenant, node.node.as_str()),
+			stand_in.registration(other_node.node.as_str()),
+		)
+		.await;
 	assert_eq!(status, 200, "{body}");
 }
 
@@ -225,7 +310,7 @@ pub async fn set_node_enabled(
 	enabled: bool,
 	revision: i64,
 ) {
-	let (f, app, tenant) = local;
+	let (f, _, tenant) = local;
 	let (other, other_tenant) = other;
 	let node = default_node(&f.store, tenant).await;
 	let other_node = default_node(&other.store, other_tenant).await;
@@ -235,14 +320,14 @@ pub async fn set_node_enabled(
 	);
 	body["enabled"] = json!(enabled);
 	body["expected_revision"] = json!(revision);
-	let (status, response) = request(
-		app,
-		&f.config.api_token,
-		"POST",
-		&peering::registration_path(tenant, node.node.as_str()),
-		body,
-	)
-	.await;
+	let (status, response) = BrowserMapping::new(f, tenant, "alice")
+		.await
+		.send(
+			"POST",
+			&peering::registration_path(tenant, node.node.as_str()),
+			body,
+		)
+		.await;
 	assert_eq!(status, 200, "{response}");
 }
 
@@ -256,7 +341,7 @@ pub async fn repoint_node(
 	endpoint: &str,
 	revision: i64,
 ) {
-	let (f, app, tenant) = local;
+	let (f, _, tenant) = local;
 	let (other, other_tenant) = other;
 	let node = default_node(&f.store, tenant).await;
 	let other_node = default_node(&other.store, other_tenant).await;
@@ -266,14 +351,14 @@ pub async fn repoint_node(
 		Some((endpoint, &peering::key_id(other))),
 	);
 	body["expected_revision"] = json!(revision);
-	let (status, response) = request(
-		app,
-		&f.config.api_token,
-		"POST",
-		&peering::registration_path(tenant, node.node.as_str()),
-		body,
-	)
-	.await;
+	let (status, response) = BrowserMapping::new(f, tenant, "alice")
+		.await
+		.send(
+			"POST",
+			&peering::registration_path(tenant, node.node.as_str()),
+			body,
+		)
+		.await;
 	assert_eq!(status, 200, "{response}");
 }
 
@@ -299,7 +384,7 @@ impl Source {
 #[allow(dead_code)]
 pub async fn register_source(
 	f: &Federation,
-	app: &TestApplication,
+	_app: &TestApplication,
 	deployment: &str,
 	tenant: &str,
 ) -> Source {
@@ -307,14 +392,14 @@ pub async fn register_source(
 	let node = aidash_domain::nodes::NodeName::derived(&format!("{deployment}-sender")).to_string();
 	let receiver = default_node(&f.store, tenant).await;
 	peering::permit(f, &remote.endpoint);
-	let (status, body) = request(
-		app,
-		&f.config.api_token,
-		"POST",
-		&peering::registration_path(tenant, receiver.node.as_str()),
-		remote.registration(&node),
-	)
-	.await;
+	let (status, body) = BrowserMapping::new(f, tenant, "alice")
+		.await
+		.send(
+			"POST",
+			&peering::registration_path(tenant, receiver.node.as_str()),
+			remote.registration(&node),
+		)
+		.await;
 	assert_eq!(status, 200, "{body}");
 	Source {
 		remote,
@@ -357,22 +442,15 @@ pub async fn map_subject(
 	other: (&Federation, &str),
 	subject: &str,
 ) {
-	let (f, app, tenant) = local;
+	let (f, _, tenant) = local;
 	let (other, other_tenant) = other;
-	let (status, issued) = request(
-		app,
-		&f.config.api_token,
-		"POST",
-		&format!("/api/authorization/{tenant}/credentials"),
-		json!({"subject":subject}),
-	)
-	.await;
-	assert_eq!(status, 200, "{issued}");
-	let (status, mapping) = request(
-		app,
-		&f.config.api_token,
-		"POST",
-		&format!("/api/authorization/{tenant}/peer-mappings"),
+	// The host issues the credential and writes the Peer Mapping, as fixtures
+	// and `manage` do: no HTTP route maps a person's subject for a peer (#484).
+	let issued = issued_credential(&f.store, tenant, subject).await;
+	let (status, mapping) = set_peer_mapping(
+		f,
+		tenant,
+		subject,
 		json!({
 			"node":default_node(&f.store, tenant).await.node,
 			"source_node":default_node(&other.store, other_tenant).await,
@@ -723,6 +801,9 @@ async fn bootstrap_with_policy(
 			),
 		);
 	}
+	// The Node binds the built-in compaction Decider to every Agent by default,
+	// so a Run starts only once the Tenant approves it (#540).
+	approve(aidash_application::registry::system::COMPACTION_DECIDER_ID).await;
 	for (kind, id, config) in definitions {
 		let entry = json!({"id":id,"version":"1.0.0","kind":kind,"name":{"en":id},"description":{"en":"fixture"},"capabilities":[],"languages":["en"],"schema":{"type":"object"},"config":config});
 		f.registry
@@ -731,16 +812,9 @@ async fn bootstrap_with_policy(
 			.unwrap();
 		approve(id).await;
 	}
-	let (status, credential) = request(
-		app,
-		deployment_administrator,
-		"POST",
-		"/api/authorization/acme/credentials",
-		json!({"subject":"alice"}),
-	)
-	.await;
-	assert_eq!(status, 200);
-	let token = credential["token"].as_str().unwrap().to_owned();
+	// The first Subject Credential of a Tenant comes from the host, never from
+	// administrator authority over HTTP (#484, #301).
+	let token = subject_credential(&f.store, "acme", "alice").await;
 	let (status, workspace) = request(
 		app,
 		&token,

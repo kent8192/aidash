@@ -167,15 +167,7 @@ async fn buffered_resource_revocation_filters_without_rewinding(
 		(1, denied),
 		(2, policy(fixture.f.config.deployment.as_str())),
 	] {
-		let (status, value) = request(
-			&fixture.app,
-			&fixture.f.config.api_token,
-			"POST",
-			"/api/authorization/acme",
-			json!({"expected_revision":revision,"bundle":bundle}),
-		)
-		.await;
-		assert_eq!(status, 200, "{value}");
+		common::replace_policy(&fixture.f.store, "acme", bundle).await;
 		let allowed = fixture.emit(ws, 100 + revision).await;
 		assert_eq!(
 			frame(&mut stream).await,
@@ -264,18 +256,12 @@ async fn duplicate_flood_preserves_fallback_and_idle_revocation(
 	// After revocation, a reader may detect denial and close the stream before
 	// the next monitor tick, so that tick is not a condition of safe closure.
 	until(|| fixture.service.snapshot().authority_checks > before.authority_checks).await;
-	let (status, value) = request(
-		&fixture.app,
-		&fixture.f.config.api_token,
-		"POST",
-		&format!(
-			"/api/authorization/acme/credentials/{}/revoke",
-			fixture.credential
-		),
-		json!({}),
-	)
-	.await;
-	assert_eq!(status, 200, "{value}");
+	aidash_server::authorization::Authorization {
+		pool: fixture.f.store.control_pool.clone(),
+	}
+	.revoke_credential("acme", fixture.credential)
+	.await
+	.unwrap();
 	// Neither body is polled while notifications continue. Revocation must
 	// close both connections and remove registrations independently.
 	until(|| fixture.service.snapshot().registered_scopes == 0).await;
@@ -503,6 +489,13 @@ async fn browser_invalidation_closes_idle_and_unpolled_buffered_streams(
 			)
 			.await
 			.unwrap();
+		// A Deployment Administrator context reads no Tenant Workspace, so it
+		// never holds a stream for the grant removal to close (#484).
+		if change == "deployment_administrator" {
+			assert_eq!(response.status, 403);
+			fixture.finish().await;
+			return;
+		}
 		assert_eq!(response.status, 200);
 		responses.push(response);
 	}
@@ -551,10 +544,7 @@ async fn browser_invalidation_closes_idle_and_unpolled_buffered_streams(
 		.clone()
 		.native_oneshot(
 			Request::get("/api/events/stream?after=-1")
-				.header(
-					"authorization",
-					format!("Bearer {}", fixture.f.config.api_token),
-				)
+				.header("authorization", format!("Bearer {}", fixture.token))
 				.body(bytes::Bytes::new())
 				.unwrap(),
 		)
@@ -576,22 +566,27 @@ async fn browser_invalidation_closes_idle_and_unpolled_buffered_streams(
 		.unwrap();
 		assert!(!String::from_utf8_lossy(&body).contains("event: mesh"));
 	}
-	let deployment_administrator = fixture
+	// The fixture credential backs the mapping, so it inherits a disabled
+	// mapping or identity. A credential outside the mapping proves the closed
+	// streams released their admissions.
+	let replacement_token =
+		common::issued_credential(&fixture.f.store, "acme", "alice").await["token"]
+			.as_str()
+			.unwrap()
+			.to_owned();
+	let replacement = fixture
 		.app
 		.clone()
 		.native_oneshot(
 			Request::get("/api/events/stream?after=-1")
-				.header(
-					"authorization",
-					format!("Bearer {}", fixture.f.config.api_token),
-				)
+				.header("authorization", format!("Bearer {replacement_token}"))
 				.body(bytes::Bytes::new())
 				.unwrap(),
 		)
 		.await
 		.unwrap();
-	assert_eq!(deployment_administrator.status, 200);
-	drop(deployment_administrator);
+	assert_eq!(replacement.status, 200);
+	drop(replacement);
 	fixture.finish().await;
 }
 

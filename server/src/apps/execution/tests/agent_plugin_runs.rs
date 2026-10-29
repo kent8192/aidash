@@ -212,7 +212,7 @@ async fn world(fixture: ApplicationFixture, down: bool) -> World {
 			json!({
 				"schema_version":1,"model":{"id":"model","version":"1.0.0"},
 				"instructions":"Use the docs server","bindings":[],
-				"remove_default":["file_search","file_read"],
+				"remove_default":["file_search","file_read","compaction"],
 				"agent_plugins":[reference],
 				"agent_plugin_settings":{PLUGIN:{SERVER:{"read_only":[{"name":"lookup","schema_digest":lookup_digest}]}}}
 			}),
@@ -239,16 +239,7 @@ async fn world(fixture: ApplicationFixture, down: bool) -> World {
 			.unwrap();
 	}
 
-	let (status, credential) = request(
-		&app,
-		deployment_administrator,
-		"POST",
-		"/api/authorization/acme/credentials",
-		json!({"subject":"alice"}),
-	)
-	.await;
-	assert_eq!(status, 200);
-	let token = credential["token"].as_str().unwrap().to_owned();
+	let token = common::subject_credential(&f.store, "acme", "alice").await;
 	let (status, workspace) = request(
 		&app,
 		&token,

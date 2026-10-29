@@ -34,13 +34,12 @@ fn shared_thread(
 		)
 		.await;
 		let thread: Uuid = serde_json::from_value(thread["id"].clone()).unwrap();
-		let (_, credential) = request(
-			&c.app,
-			&c.f.config.api_token,
-			"POST",
-			"/api/authorization/acme/credentials",
-			json!({"subject":"bob"}),
-		)
+		let (_, credential) = async {
+			(
+				200_u16,
+				common::issued_credential(&c.f.store, "acme", "bob").await,
+			)
+		}
 		.await;
 		let bob = credential["token"].as_str().unwrap().to_owned();
 		let mut areas = vec![];

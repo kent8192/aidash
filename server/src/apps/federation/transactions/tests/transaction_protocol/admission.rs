@@ -104,7 +104,8 @@ async fn invalid_deadline_cannot_bypass_cross_node_submission_suspension(
 	.await;
 	assert_eq!(status, 403, "{body}");
 	assert_no_transaction_state(&[&a, &b], manifest.id).await;
-	// The Deployment Administrator route still performs normal deadline validation.
+	// A Deployment Administrator owns no transactions: it is refused before the
+	// deadline is looked at, so it cannot step around the suspension (#484).
 	let (status, body) = common::request(
 		&app_a,
 		&a.f.config.api_token,
@@ -113,7 +114,7 @@ async fn invalid_deadline_cannot_bypass_cross_node_submission_suspension(
 		json!(manifest),
 	)
 	.await;
-	assert_eq!(status, 400, "{body}");
+	assert_eq!(status, 403, "{body}");
 	assert_no_transaction_state(&[&a, &b], manifest.id).await;
 	manifest.deadline = Utc::now() + Duration::minutes(5);
 	let (retry, body) = common::request(
@@ -138,9 +139,10 @@ async fn invalid_deadline_cannot_bypass_cross_node_submission_suspension(
 	)
 	.await;
 	assert_eq!(
-		retry, 202,
-		"the Deployment Administrator can reuse the corrected ID: {body}"
+		retry, 403,
+		"a Deployment Administrator cannot reuse the corrected ID either: {body}"
 	);
+	assert_no_transaction_state(&[&a, &b], manifest.id).await;
 	a.cleanup().await;
 	b.cleanup().await;
 }

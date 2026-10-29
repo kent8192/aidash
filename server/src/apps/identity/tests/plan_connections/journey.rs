@@ -166,13 +166,7 @@ async fn http_claim_persists_owner_authority_for_native_streams_and_disconnect_s
 	)
 	.await;
 	common::approve_agent(&fixture.f, "alpha", &agent).await;
-	let credential = owner_request(
-		&fixture,
-		&fixture.f.config.api_token,
-		"/api/authorization/alpha/credentials",
-		json!({"subject":"alice"}),
-	)
-	.await;
+	let credential = common::issued_credential(&fixture.f.store, "alpha", "alice").await;
 	let token = credential["token"].as_str().unwrap();
 	let workspace = owner_request(
 		&fixture,

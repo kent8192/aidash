@@ -32,12 +32,4 @@ pub trait GenerationReads: Send + Sync {
 	fn principal(&self) -> &Principal;
 	async fn pages(&self) -> Result<Box<dyn GenerationPages>>;
 	async fn begin_subject(&self) -> Result<Box<dyn GenerationReadScope>>;
-	async fn deployment_administrator_history(
-		&self,
-		tenant: &str,
-		id: Uuid,
-	) -> Result<Vec<History>>;
-	async fn deployment_administrator_usage(&self, tenant: &str, id: Uuid) -> Result<Usage>;
-	async fn deployment_administrator_specification(&self, tenant: &str, id: Uuid)
-	-> Result<Value>;
 }

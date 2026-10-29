@@ -386,14 +386,7 @@ async fn catalog_approval_and_run_read_denials_cover_search_collections_and_even
 		.0,
 		200
 	);
-	let (_, other_credential) = request(
-		&app,
-		&f.config.api_token,
-		"POST",
-		"/api/authorization/other/credentials",
-		json!({"subject":"alice"}),
-	)
-	.await;
+	let other_credential = common::issued_credential(&f.store, "other", "alice").await;
 	let other_token = other_credential["token"].as_str().unwrap();
 	let (status, other_catalog) =
 		request(&app, other_token, "GET", "/api/registry", Value::Null).await;
@@ -1147,35 +1140,25 @@ async fn child_execution_retains_parent_authority_and_supports_credential_rotati
 		invocations, 0,
 		"authorization must precede durable invocation admission"
 	);
-	let (_, credentials) = request(
-		&app,
-		&f.config.api_token,
-		"GET",
-		"/api/authorization/acme/credentials",
-		Value::Null,
-	)
-	.await;
-	let old_id = credentials[0]["id"].as_str().unwrap();
-	assert_eq!(
-		request(
-			&app,
-			&f.config.api_token,
-			"POST",
-			&format!("/api/authorization/acme/credentials/{old_id}/revoke"),
-			json!({})
-		)
+	// Listing and revoking a Tenant's credentials is Tenant authority: the host
+	// does it through the service, never a Deployment Administrator over HTTP (#484).
+	let credentials = serde_json::to_value(
+		aidash_server::authorization::Authorization {
+			pool: f.store.pool.clone(),
+		}
+		.credentials("acme")
 		.await
-		.0,
-		200
-	);
-	let (_, fresh) = request(
-		&app,
-		&f.config.api_token,
-		"POST",
-		"/api/authorization/acme/credentials",
-		json!({"subject":"alice"}),
+		.unwrap(),
 	)
-	.await;
+	.unwrap();
+	let old_id = credentials[0]["id"].as_str().unwrap();
+	aidash_server::authorization::Authorization {
+		pool: f.store.pool.clone(),
+	}
+	.revoke_credential("acme", old_id.parse().unwrap())
+	.await
+	.unwrap();
+	let fresh = common::issued_credential(&f.store, "acme", "alice").await;
 	assert_eq!(
 		request(
 			&app,
@@ -1212,18 +1195,12 @@ async fn child_execution_retains_parent_authority_and_supports_credential_rotati
 	);
 	// Deployment Administrator cancellation is cleanup and must remain possible after every
 	// source credential has been revoked; it must never invoke the provider.
-	assert_eq!(
-		request(
-			&app,
-			&f.config.api_token,
-			"POST",
-			&format!("/api/authorization/acme/credentials/{credential}/revoke"),
-			json!({})
-		)
-		.await
-		.0,
-		200
-	);
+	aidash_server::authorization::Authorization {
+		pool: f.store.pool.clone(),
+	}
+	.revoke_credential("acme", credential)
+	.await
+	.unwrap();
 	// A Deployment Administrator cancels through the content-free Safety Stop
 	// (ADR 0101), which names the Tenant and the Run's current control revision.
 	let (status, facts) = request(
@@ -1436,18 +1413,18 @@ async fn worker_effect_boundary_serializes_revocation_and_persists_audit_before_
 		2,
 		"root and agent authorization must be durable before the HTTP effect starts"
 	);
-	let (_, credentials) = request(
-		&app,
-		&f.config.api_token,
-		"GET",
-		"/api/authorization/acme/credentials",
-		Value::Null,
+	// Listing and revoking a Tenant's credentials is Tenant authority: the host
+	// does it through the service, never a Deployment Administrator over HTTP (#484).
+	let credentials = serde_json::to_value(
+		aidash_server::authorization::Authorization {
+			pool: f.store.pool.clone(),
+		}
+		.credentials("acme")
+		.await
+		.unwrap(),
 	)
-	.await;
-	let revoke_path = format!(
-		"/api/authorization/acme/credentials/{}/revoke",
-		credentials[0]["id"].as_str().unwrap()
-	);
+	.unwrap();
+	let revoke_id = credentials[0]["id"].as_str().unwrap().to_owned();
 	policy["subjects"][qualified_agent(
 		&aidash_domain::nodes::NodeAddress::derived(f.config.deployment.as_str(), "acme"),
 		"research",
@@ -1473,18 +1450,11 @@ async fn worker_effect_boundary_serializes_revocation_and_persists_audit_before_
 		});
 	}
 	let revoke = tokio::spawn({
-		let app = app.clone();
-		let deployment_administrator = f.config.api_token.clone();
-		async move {
-			request(
-				&app,
-				&deployment_administrator,
-				"POST",
-				&revoke_path,
-				json!({}),
-			)
-			.await
-		}
+		let service = aidash_server::authorization::Authorization {
+			pool: f.store.pool.clone(),
+		};
+		let credential: Uuid = revoke_id.parse().unwrap();
+		async move { service.revoke_credential("acme", credential).await }
 	});
 	tokio::time::timeout(Duration::from_secs(5),async {
         loop {
@@ -1510,7 +1480,7 @@ async fn worker_effect_boundary_serializes_revocation_and_persists_audit_before_
 		}
 	}
 	assert_eq!(replaced, 1);
-	assert_eq!(revoke.await.unwrap().0, 200);
+	revoke.await.unwrap().unwrap();
 	let invocation: String = {
 		let query_bind_1 = run.id;
 		sqlx::query_scalar(
@@ -1827,6 +1797,280 @@ async fn malformed_scoped_delegation_arguments_remain_model_correctable(
 			.status
 			.as_str(),
 		"RUNNING"
+	);
+	cleanup(f, &url, &schema).await;
+}
+
+/// Claim `task` for the `research` agent, run its first step, and put `call` pending in the
+/// Run's `TOOL_CALL` phase as the model's response would; `paused` also stores the pause the
+/// Run showed before Rejected Calls existed.
+async fn run_with_pending_call(
+	f: &aidash_server::federation::Federation,
+	app: &common::TestApplication,
+	token: &str,
+	task: Uuid,
+	harness: &Harness,
+	call: aidash_server::provider::ToolCall,
+	paused: bool,
+) -> aidash_server::domain::Run {
+	assert_eq!(
+		request(
+			app,
+			token,
+			"POST",
+			&format!("/api/tasks/{task}/claim"),
+			json!({"revision":0,"agent":{"id":"research","version":"1.0.0"}})
+		)
+		.await
+		.0,
+		200
+	);
+	harness.worker_once().await.unwrap();
+	let run = f.store.runs(&TEST_FIXTURE).await.unwrap().remove(0);
+	let response = aidash_server::provider::ModelResponse {
+		tool_calls: vec![call],
+		..Default::default()
+	};
+	let mut update = reinhardt::query::Query::update();
+	update
+		.table(reinhardt::query::Alias::new("runs"))
+		.value_expr(
+			reinhardt::query::Alias::new("phase"),
+			reinhardt::query::Expr::cust("'TOOL_CALL'"),
+		)
+		.value_expr(
+			reinhardt::query::Alias::new("pending"),
+			SimpleExpr::CustomWithExpr(
+				"(?)".to_owned(),
+				vec![
+					Expr::value(common::tool_pending(
+						json!({"response":response,"cursor":0}),
+					))
+					.into(),
+				],
+			),
+		)
+		.and_where(SimpleExpr::CustomWithExpr(
+			"(id = ?)".to_owned(),
+			vec![Expr::value(run.id).into()],
+		));
+	if paused {
+		update
+			.value_expr(
+				reinhardt::query::Alias::new("control"),
+				reinhardt::query::Expr::cust("'PAUSED'"),
+			)
+			.value_expr(
+				reinhardt::query::Alias::new("error"),
+				reinhardt::query::Expr::cust("'execution authority denied'"),
+			);
+	}
+	sqlx::query(&update.to_string(reinhardt::query::PostgresQueryBuilder))
+		.execute(f.store.pool.fixture_driver())
+		.await
+		.unwrap();
+	run
+}
+
+#[rstest::rstest]
+#[tokio::test]
+async fn a_delegation_naming_a_task_the_run_cannot_read_is_rejected_and_its_denial_is_audited(
+	#[future(awt)]
+	#[from(common::native_application)]
+	fixture: common::ApplicationFixture,
+) {
+	let (f, url, schema) = fixture.runtime.parts();
+	let app = fixture.application;
+	let (mut policy, token, task) = bootstrap(&f, &app, "http://127.0.0.1:9").await;
+	let workspace = f
+		.store
+		.task(&TEST_FIXTURE, task)
+		.await
+		.unwrap()
+		.workspace_id;
+	let (status, hidden) = request(
+		&app,
+		&token,
+		"POST",
+		&format!("/api/workspaces/{workspace}/tasks"),
+		json!({"title":"Hidden","description":"Policy hides this task from Runs"}),
+	)
+	.await;
+	assert_eq!(status, 200, "{hidden}");
+	let hidden = hidden["id"].as_str().unwrap().to_owned();
+	policy["policies"].as_array_mut().unwrap().push(json!({"id":"hide-task","effect":"deny","subjects":{"any":true},"actions":["task.read"],"resources":{"kinds":["task"],"ids":[hidden]}}));
+	assert_eq!(
+		request(
+			&app,
+			&f.config.api_token,
+			"POST",
+			"/api/authorization/acme",
+			json!({"expected_revision":1,"bundle":policy})
+		)
+		.await
+		.0,
+		200
+	);
+	let harness = Harness {
+		federation: f.clone(),
+	};
+	let run = run_with_pending_call(
+		&f,
+		&app,
+		&token,
+		task,
+		&harness,
+		aidash_server::provider::ToolCall {
+			id: "hidden-task".into(),
+			name: "task_delegate".into(),
+			arguments: json!({"task_id":hidden,"node_id":f.config.deployment,"agent":{"id":"research","version":"1.0.0"}}),
+		},
+		false,
+	)
+	.await;
+	harness.worker_once().await.unwrap();
+	let run = f.store.run(&TEST_FIXTURE, run.id).await.unwrap();
+	assert_eq!(run.control.as_str(), "ACTIVE", "error={:?}", run.error);
+	assert_eq!(run.phase().as_str(), "TOOL_CALL");
+	assert_eq!(json!(run.state)["data"]["cursor"], 1);
+	let error = json!(run.context)["history"][0]["event"]["result"]["error"]
+		.as_str()
+		.unwrap_or_else(|| panic!("{}", json!(run.context)["history"][0]))
+		.to_owned();
+	assert!(error.contains("was not found in this Workspace"), "{error}");
+	let denials: i64 = sqlx::query_scalar(
+		&reinhardt::query::Query::select()
+			.expr(reinhardt::query::Expr::cust("COUNT(*)"))
+			.from(reinhardt::query::Alias::new("authorization_decisions"))
+			.and_where(reinhardt::query::Expr::cust(format!(
+				"action = 'task.read' AND resource_id LIKE '%{hidden}' AND decision ->> 'allowed' = 'false'"
+			)))
+			.to_string(reinhardt::query::PostgresQueryBuilder),
+	)
+	.fetch_one(f.store.pool.fixture_driver())
+	.await
+	.unwrap();
+	assert!(
+		denials >= 1,
+		"the task.read denial must survive the Rejected Call"
+	);
+	cleanup(f, &url, &schema).await;
+}
+
+#[rstest::rstest]
+#[tokio::test]
+async fn a_run_paused_by_a_short_node_name_resumes_into_a_rejected_call(
+	#[future(awt)]
+	#[from(common::native_application)]
+	fixture: common::ApplicationFixture,
+) {
+	let (f, url, schema) = fixture.runtime.parts();
+	let app = fixture.application;
+	let (_, token, task) = bootstrap(&f, &app, "http://127.0.0.1:9").await;
+	let harness = Harness {
+		federation: f.clone(),
+	};
+	let run = run_with_pending_call(
+		&f,
+		&app,
+		&token,
+		task,
+		&harness,
+		aidash_server::provider::ToolCall {
+			id: "short-node".into(),
+			name: "task_delegate".into(),
+			arguments: json!({"task_id":task,"node_id":"short-name","agent":{"id":"research","version":"1.0.0"}}),
+		},
+		true,
+	)
+	.await;
+	assert_eq!(
+		request(
+			&app,
+			&token,
+			"POST",
+			&format!("/api/runs/{}/control", run.id),
+			json!({"action":"resume"})
+		)
+		.await
+		.0,
+		200
+	);
+	harness.worker_once().await.unwrap();
+	let run = f.store.run(&TEST_FIXTURE, run.id).await.unwrap();
+	assert_eq!(run.control.as_str(), "ACTIVE", "error={:?}", run.error);
+	assert_eq!(run.phase().as_str(), "TOOL_CALL");
+	assert_eq!(json!(run.state)["data"]["cursor"], 1);
+	let error = json!(run.context)["history"][0]["event"]["result"]["error"]
+		.as_str()
+		.unwrap_or_default()
+		.to_owned();
+	assert!(error.contains("does not name this Node"), "{error}");
+	cleanup(f, &url, &schema).await;
+}
+
+#[rstest::rstest]
+#[tokio::test]
+async fn a_policy_denied_delegation_pauses_the_run_naming_the_tool_and_the_check(
+	#[future(awt)]
+	#[from(common::native_application)]
+	fixture: common::ApplicationFixture,
+) {
+	let (f, url, schema) = fixture.runtime.parts();
+	let app = fixture.application;
+	let (mut policy, token, task) = bootstrap(&f, &app, "http://127.0.0.1:9").await;
+	policy["policies"].as_array_mut().unwrap().push(json!({"id":"deny-delegation","effect":"deny","subjects":{"any":true},"actions":["task.delegate"],"resources":{"kinds":["task"]}}));
+	assert_eq!(
+		request(
+			&app,
+			&f.config.api_token,
+			"POST",
+			"/api/authorization/acme",
+			json!({"expected_revision":1,"bundle":policy})
+		)
+		.await
+		.0,
+		200
+	);
+	let harness = Harness {
+		federation: f.clone(),
+	};
+	let run = run_with_pending_call(
+		&f,
+		&app,
+		&token,
+		task,
+		&harness,
+		aidash_server::provider::ToolCall {
+			id: "denied".into(),
+			name: "task_delegate".into(),
+			arguments: json!({"task_id":task,"node_id":f.config.deployment,"agent":{"id":"research","version":"1.0.0"}}),
+		},
+		false,
+	)
+	.await;
+	harness.worker_once().await.unwrap();
+	let paused = f.store.run(&TEST_FIXTURE, run.id).await.unwrap();
+	assert_eq!(paused.control.as_str(), "PAUSED");
+	assert_eq!(
+		paused.error.as_deref(),
+		Some("task_delegate: task.delegate was denied")
+	);
+	let events = f.store.events(&TEST_FIXTURE, 0, None, 1000).await.unwrap();
+	let blocked: Vec<_> = events
+		.iter()
+		.filter(|event| event.kind == "run.authorization_blocked")
+		.collect();
+	assert_eq!(blocked.len(), 1, "{events:?}");
+	assert_eq!(
+		blocked[0].data,
+		json!({
+			"run_id": run.id,
+			"task_id": task,
+			"tool": "task_delegate",
+			"check": "policy",
+			"action": "task.delegate",
+		})
 	);
 	cleanup(f, &url, &schema).await;
 }
@@ -4418,4 +4662,1447 @@ mod approval_modes {
 		drop(t.server);
 		cleanup(f, &url, &schema).await;
 	}
+}
+
+#[rstest::rstest]
+#[tokio::test]
+async fn catalog_restrictions_are_persisted_with_their_history_and_fenced_by_revision(
+	#[future(awt)]
+	#[from(common::native_application)]
+	fixture: common::ApplicationFixture,
+) {
+	let (f, url, schema) = fixture.runtime.parts();
+	let app = fixture.application;
+	let (mut policy, token, _) = bootstrap(&f, &app, "http://127.0.0.1:9").await;
+	let deployment_administrator = f.config.api_token.clone();
+	let node = aidash_domain::nodes::NodeName::derived("acme");
+	let agent = json!({"id":"research","version":"1.0.0"});
+	// Give the Tenant one Assignable Group a restriction may name.
+	policy["groups"] = json!({"members":{"assignable":true}});
+	assert_eq!(
+		request(
+			&app,
+			&deployment_administrator,
+			"POST",
+			"/api/authorization/acme",
+			json!({"expected_revision":1,"bundle":policy})
+		)
+		.await
+		.0,
+		200
+	);
+
+	// A single approval records who may use the agent version.
+	let (status, binding) = request(
+		&app,
+		&token,
+		"POST",
+		"/api/authorization/acme/catalog",
+		json!({"node":node,"entry":agent,"enabled":true,"expected_revision":1,
+			"restriction":{"subjects":["alice"],"groups":[]}}),
+	)
+	.await;
+	assert_eq!(status, 200, "{binding}");
+	assert_eq!(binding["revision"], 2);
+	assert_eq!(binding["restriction"]["subjects"], json!(["alice"]));
+
+	// A stale revision cannot change the restriction.
+	let (status, stale) = request(
+		&app,
+		&token,
+		"POST",
+		"/api/authorization/acme/catalog",
+		json!({"node":node,"entry":agent,"enabled":true,"expected_revision":1,
+			"restriction":{"subjects":["alice"],"groups":[]}}),
+	)
+	.await;
+	assert_eq!(status, 409, "{stale}");
+
+	// A batch approval can replace the restriction with an Assignable Group.
+	let (status, bindings) = request(
+		&app,
+		&token,
+		"POST",
+		"/api/authorization/acme/catalog/approvals",
+		json!({"node":node,"approvals":[{"entry":agent,"enabled":true,"expected_revision":2,
+			"restriction":{"subjects":[],"groups":["members"]}}]}),
+	)
+	.await;
+	assert_eq!(status, 200, "{bindings}");
+	assert_eq!(bindings[0]["revision"], 3);
+	assert_eq!(bindings[0]["restriction"]["groups"], json!(["members"]));
+
+	let (status, catalog) = request(
+		&app,
+		&token,
+		"GET",
+		&format!("/api/authorization/acme/catalog?node={node}"),
+		Value::Null,
+	)
+	.await;
+	assert_eq!(status, 200, "{catalog}");
+	let approval = catalog
+		.as_array()
+		.unwrap()
+		.iter()
+		.find(|binding| binding["entry_id"] == "research")
+		.unwrap();
+	assert_eq!(approval["restriction"]["groups"], json!(["members"]));
+
+	let (status, versions) = request(
+		&app,
+		&token,
+		"GET",
+		&format!("/api/registry/versions?node={node}"),
+		Value::Null,
+	)
+	.await;
+	assert_eq!(status, 200, "{versions}");
+	let version = versions["versions"]
+		.as_array()
+		.unwrap()
+		.iter()
+		.find(|version| version["entry"]["id"] == "research")
+		.unwrap();
+	assert_eq!(
+		version["approval"]["restriction"]["groups"],
+		json!(["members"])
+	);
+	assert_eq!(
+		version["history"]
+			.as_array()
+			.unwrap()
+			.iter()
+			.find(|record| record["revision"] == 2)
+			.unwrap()["restriction"]["subjects"],
+		json!(["alice"])
+	);
+
+	// A group that is not Assignable cannot restrict an approval.
+	let (status, refused) = request(
+		&app,
+		&token,
+		"POST",
+		"/api/authorization/acme/catalog",
+		json!({"node":node,"entry":agent,"enabled":true,"expected_revision":3,
+			"restriction":{"subjects":[],"groups":["not-a-group"]}}),
+	)
+	.await;
+	assert_eq!(status, 400, "{refused}");
+	cleanup(f, &url, &schema).await;
+}
+
+#[rstest::rstest]
+#[tokio::test]
+async fn an_agent_version_restriction_admits_only_the_named_run_starter(
+	#[future(awt)]
+	#[from(common::native_application)]
+	fixture: common::ApplicationFixture,
+) {
+	let (f, url, schema) = fixture.runtime.parts();
+	let app = fixture.application;
+	let (mut policy, alice, task_id) = bootstrap(&f, &app, "http://127.0.0.1:9").await;
+	let deployment_administrator = f.config.api_token.clone();
+	policy["subjects"]["bob"] = json!({"kind":"user"});
+	assert_eq!(
+		request(
+			&app,
+			&deployment_administrator,
+			"POST",
+			"/api/authorization/acme",
+			json!({"expected_revision":1,"bundle":policy})
+		)
+		.await
+		.0,
+		200
+	);
+	let node = aidash_domain::nodes::NodeName::derived("acme");
+	let agent = json!({"id":"research","version":"1.0.0"});
+	let (status, binding) = request(
+		&app,
+		&alice,
+		"POST",
+		"/api/authorization/acme/catalog",
+		json!({"node":node,"entry":agent,"enabled":true,"expected_revision":1,
+			"restriction":{"subjects":["alice"],"groups":[]}}),
+	)
+	.await;
+	assert_eq!(status, 200, "{binding}");
+	let claim = json!({"revision":0,"agent":{"id":"research","version":"1.0.0"}});
+	assert_eq!(
+		request(
+			&app,
+			&alice,
+			"POST",
+			&format!("/api/tasks/{task_id}/claim"),
+			claim.clone()
+		)
+		.await
+		.0,
+		200,
+		"the named starter may run the restricted agent version"
+	);
+
+	// Bob holds the same policy actions but is not named by the restriction.
+	// A Deployment Administrator issues no Tenant credentials over HTTP (#484).
+	let credential = common::issued_credential(&f.store, "acme", "bob").await;
+	let bob = credential["token"].as_str().unwrap();
+	let (status, workspace) = request(
+		&app,
+		bob,
+		"POST",
+		"/api/workspaces",
+		json!({"title":"Bob","goal":"Denied"}),
+	)
+	.await;
+	assert_eq!(status, 200, "{workspace}");
+	let (status, task) = request(
+		&app,
+		bob,
+		"POST",
+		&format!(
+			"/api/workspaces/{}/tasks",
+			workspace["id"].as_str().unwrap()
+		),
+		json!({"title":"Denied","description":"Not named"}),
+	)
+	.await;
+	assert_eq!(status, 200, "{task}");
+	let runs = f.store.runs(&TEST_FIXTURE).await.unwrap().len();
+	let (status, refused) = request(
+		&app,
+		bob,
+		"POST",
+		&format!("/api/tasks/{}/claim", task["id"].as_str().unwrap()),
+		claim,
+	)
+	.await;
+	assert_eq!(status, 403, "{refused}");
+	assert_eq!(
+		f.store.runs(&TEST_FIXTURE).await.unwrap().len(),
+		runs,
+		"a refused claim creates no Run"
+	);
+	cleanup(f, &url, &schema).await;
+}
+
+#[rstest::rstest]
+#[tokio::test]
+async fn a_dependency_restriction_follows_the_using_agent_not_the_person(
+	#[future(awt)]
+	#[from(common::native_application)]
+	fixture: common::ApplicationFixture,
+) {
+	let (f, url, schema) = fixture.runtime.parts();
+	let app = fixture.application;
+	let (_, alice, task_id) = bootstrap(&f, &app, "http://127.0.0.1:9").await;
+	let node = aidash_domain::nodes::NodeName::derived("acme");
+	let agent_subject = aidash_domain::qualified_agent(
+		&aidash_domain::nodes::NodeAddress::derived(f.config.deployment.as_str(), "acme"),
+		"research",
+		"1.0.0",
+	);
+	let model = json!({"id":"model","version":"1.0.0"});
+	let claim = json!({"revision":0,"agent":{"id":"research","version":"1.0.0"}});
+	let new_task = async |title: &str| -> Uuid {
+		let (status, workspace) = request(
+			&app,
+			&alice,
+			"POST",
+			"/api/workspaces",
+			json!({"title":title,"goal":"Dependency restriction"}),
+		)
+		.await;
+		assert_eq!(status, 200, "{workspace}");
+		let (status, task) = request(
+			&app,
+			&alice,
+			"POST",
+			&format!(
+				"/api/workspaces/{}/tasks",
+				workspace["id"].as_str().unwrap()
+			),
+			json!({"title":title,"description":title}),
+		)
+		.await;
+		assert_eq!(status, 200, "{task}");
+		Uuid::parse_str(task["id"].as_str().unwrap()).unwrap()
+	};
+
+	// The model is restricted to the agent, so Alice's Run may still use it.
+	let (status, binding) = request(
+		&app,
+		&alice,
+		"POST",
+		"/api/authorization/acme/catalog",
+		json!({"node":node,"entry":model,"enabled":true,"expected_revision":1,
+			"restriction":{"subjects":[agent_subject],"groups":[]}}),
+	)
+	.await;
+	assert_eq!(status, 200, "{binding}");
+	assert_eq!(
+		request(
+			&app,
+			&alice,
+			"POST",
+			&format!("/api/tasks/{task_id}/claim"),
+			claim.clone()
+		)
+		.await
+		.0,
+		200,
+		"the agent that uses the model directly is named"
+	);
+
+	// Restricting the model to Alice alone does not admit the agent that uses it.
+	let (status, binding) = request(
+		&app,
+		&alice,
+		"POST",
+		"/api/authorization/acme/catalog",
+		json!({"node":node,"entry":model,"enabled":true,"expected_revision":2,
+			"restriction":{"subjects":["alice"],"groups":[]}}),
+	)
+	.await;
+	assert_eq!(status, 200, "{binding}");
+	let denied = new_task("Denied").await;
+	let (status, refused) = request(
+		&app,
+		&alice,
+		"POST",
+		&format!("/api/tasks/{denied}/claim"),
+		claim.clone(),
+	)
+	.await;
+	assert_eq!(status, 403, "{refused}");
+
+	// Clearing the restriction restores the pre-existing unrestricted meaning.
+	let (status, binding) = request(
+		&app,
+		&alice,
+		"POST",
+		"/api/authorization/acme/catalog",
+		json!({"node":node,"entry":model,"enabled":true,"expected_revision":3,
+			"restriction":{"subjects":[],"groups":[]}}),
+	)
+	.await;
+	assert_eq!(status, 200, "{binding}");
+	assert!(binding.get("restriction").is_none() || binding["restriction"].is_null());
+	let allowed = new_task("Allowed").await;
+	assert_eq!(
+		request(
+			&app,
+			&alice,
+			"POST",
+			&format!("/api/tasks/{allowed}/claim"),
+			claim
+		)
+		.await
+		.0,
+		200,
+		"an unrestricted legacy approval still admits"
+	);
+	cleanup(f, &url, &schema).await;
+}
+
+#[rstest::rstest]
+#[tokio::test]
+async fn approval_review_reports_readiness_and_hides_unreadable_dependencies(
+	#[future(awt)]
+	#[from(common::native_application)]
+	fixture: common::ApplicationFixture,
+) {
+	let (f, url, schema) = fixture.runtime.parts();
+	let app = fixture.application;
+	let (mut policy, token, _) = bootstrap(&f, &app, "http://127.0.0.1:9").await;
+	let deployment_administrator = f.config.api_token.clone();
+	let node = aidash_domain::nodes::NodeName::derived("acme");
+	let path =
+		format!("/api/authorization/acme/catalog/review?node={node}&entry=agent/research@1.0.0");
+	let (status, review) = request(&app, &token, "GET", &path, Value::Null).await;
+	assert_eq!(status, 200, "{review}");
+	assert_eq!(review["ready"], true);
+	assert_eq!(review["hidden"], 0);
+	assert!(
+		review["closure_digest"]
+			.as_str()
+			.unwrap()
+			.starts_with("sha256:")
+	);
+	let ids: Vec<_> = review["items"]
+		.as_array()
+		.unwrap()
+		.iter()
+		.map(|item| item["reference"]["id"].as_str().unwrap().to_owned())
+		.collect();
+	assert!(ids.contains(&"research".to_owned()));
+	assert!(ids.contains(&"model".to_owned()));
+
+	// A dependency the reviewer may not read is counted, never named.
+	policy["subjects"]["bob"] = json!({"kind":"user"});
+	policy["policies"].as_array_mut().unwrap().push(json!({
+		"id":"deny-model","effect":"deny","subjects":{"ids":["alice"]},
+		"actions":["registry.read"],"resources":{"kinds":["model"],"ids":["model"]}
+	}));
+	policy["policies"].as_array_mut().unwrap().push(json!({
+		"id":"deny-bob-root","effect":"deny","subjects":{"ids":["bob"]},
+		"actions":["registry.read"],"resources":{"kinds":["agent"],"ids":["research"]}
+	}));
+	assert_eq!(
+		request(
+			&app,
+			&deployment_administrator,
+			"POST",
+			"/api/authorization/acme",
+			json!({"expected_revision":1,"bundle":policy})
+		)
+		.await
+		.0,
+		200
+	);
+	let (status, hidden) = request(&app, &token, "GET", &path, Value::Null).await;
+	assert_eq!(status, 200, "{hidden}");
+	assert_eq!(hidden["hidden"], 1);
+	assert!(
+		!hidden["items"]
+			.as_array()
+			.unwrap()
+			.iter()
+			.any(|item| item["reference"]["id"] == "model")
+	);
+	assert_eq!(hidden["ready"], false);
+	// A Deployment Administrator issues no Tenant credentials over HTTP (#484).
+	let credential = common::issued_credential(&f.store, "acme", "bob").await;
+	let bob = credential["token"].as_str().unwrap();
+	let (status, body) = request(&app, bob, "GET", &path, Value::Null).await;
+	assert_eq!(status, 403, "{body}");
+	cleanup(f, &url, &schema).await;
+}
+
+#[rstest::rstest]
+#[tokio::test]
+async fn approval_review_creates_root_agent_with_selected_groups(
+	#[future(awt)]
+	#[from(common::native_application)]
+	fixture: common::ApplicationFixture,
+) {
+	let (f, url, schema) = fixture.runtime.parts();
+	let app = fixture.application;
+	let (mut policy, alice, _) = bootstrap(&f, &app, "http://127.0.0.1:9").await;
+	let admin = f.config.api_token.clone();
+	policy["groups"] = json!({"members":{"assignable":true}, "operators":{"assignable":true}});
+	let (status, body) = request(
+		&app,
+		&admin,
+		"POST",
+		"/api/authorization/acme",
+		json!({"expected_revision":1,"bundle":policy}),
+	)
+	.await;
+	assert_eq!(status, 200, "{body}");
+	let node = aidash_domain::nodes::NodeName::derived("acme");
+	let entry = json!({"id":"review-groups","version":"1.0.0","kind":"agent","name":{"en":"Review groups"},"description":{"en":"fixture"},"config":{"schema_version":1,"model":{"id":"model","version":"1.0.0"},"instructions":"Write","bindings":[],"remove_default":[]}});
+	let (status, body) = request(&app, &alice, "POST", "/api/registry", entry).await;
+	assert_eq!(status, 200, "{body}");
+	let path = format!(
+		"/api/authorization/acme/catalog/review?node={node}&entry=agent/review-groups@1.0.0"
+	);
+	let (status, review) = request(&app, &alice, "GET", &path, Value::Null).await;
+	assert_eq!(status, 200, "{review}");
+	let root = review["items"]
+		.as_array()
+		.unwrap()
+		.iter()
+		.find(|item| item["reference"]["id"] == "review-groups")
+		.unwrap();
+	let input = json!({"node":node,"root":root["reference"],"closure_digest":review["closure_digest"],"root_groups":["operators"],"items":[{"reference":root["reference"],"digest":root["digest"],"expected_revision":root["expected_revision"]}]});
+	let (status, body) = request(
+		&app,
+		&alice,
+		"POST",
+		"/api/authorization/acme/catalog/review",
+		input,
+	)
+	.await;
+	assert_eq!(status, 200, "{body}");
+	let (status, snapshot) =
+		request(&app, &admin, "GET", "/api/authorization/acme", Value::Null).await;
+	assert_eq!(status, 200, "{snapshot}");
+	let subject = qualified_agent(&f.config.deployment.node(node), "review-groups", "1.0.0");
+	assert_eq!(
+		snapshot["bundle"]["subjects"][subject]["groups"],
+		json!(["operators"])
+	);
+	cleanup(f, &url, &schema).await;
+}
+
+#[rstest::rstest]
+#[tokio::test]
+async fn approval_review_submission_fences_stale_authority_and_approves_a_subset(
+	#[future(awt)]
+	#[from(common::native_application)]
+	fixture: common::ApplicationFixture,
+) {
+	let (f, url, schema) = fixture.runtime.parts();
+	let app = fixture.application;
+	let (mut policy, alice, _) = bootstrap(&f, &app, "http://127.0.0.1:9").await;
+	let deployment_administrator = f.config.api_token.clone();
+	let node = aidash_domain::nodes::NodeName::derived("acme");
+	let model = json!({"id":"model","version":"1.0.0"});
+
+	// Withdraw the model so the review has one approvable item.
+	assert_eq!(
+		request(
+			&app,
+			&alice,
+			"POST",
+			"/api/authorization/acme/catalog",
+			json!({"node":node,"entry":model,"enabled":false,"expected_revision":1})
+		)
+		.await
+		.0,
+		200
+	);
+	let path =
+		format!("/api/authorization/acme/catalog/review?node={node}&entry=agent/research@1.0.0");
+	let (status, review) = request(&app, &alice, "GET", &path, Value::Null).await;
+	assert_eq!(status, 200, "{review}");
+	let model_item = review["items"]
+		.as_array()
+		.unwrap()
+		.iter()
+		.find(|item| item["reference"]["id"] == "model")
+		.unwrap();
+	assert_eq!(model_item["status"], "approvable");
+	assert_eq!(model_item["expected_revision"], 2);
+	let item = json!({
+		"reference": model_item["reference"],
+		"digest": model_item["digest"],
+		"expected_revision": model_item["expected_revision"],
+		"restriction": model_item["proposed_restriction"],
+	});
+	let submit = json!({
+		"node":node,
+		"root":{"id":"research","version":"1.0.0"},
+		"closure_digest":review["closure_digest"],
+		"items":[item],
+	});
+
+	// A changed closure digest is stale before any write.
+	let mut stale = submit.clone();
+	stale["closure_digest"] = json!("sha256:changed");
+	let (status, body) = request(
+		&app,
+		&alice,
+		"POST",
+		"/api/authorization/acme/catalog/review",
+		stale,
+	)
+	.await;
+	assert_eq!(status, 409, "{body}");
+	assert!(body.to_string().contains("APPROVAL_REVIEW_STALE"));
+
+	// A principal without catalog.approve is refused as a whole.
+	policy["subjects"]["bob"] = json!({"kind":"user"});
+	policy["policies"].as_array_mut().unwrap().push(json!({
+		"id":"deny-bob","effect":"deny","subjects":{"ids":["bob"]},
+		"actions":["catalog.approve"],"resources":{"kinds":["*"]}
+	}));
+	assert_eq!(
+		request(
+			&app,
+			&deployment_administrator,
+			"POST",
+			"/api/authorization/acme",
+			json!({"expected_revision":1,"bundle":policy})
+		)
+		.await
+		.0,
+		200
+	);
+	// A Deployment Administrator issues no Tenant credentials over HTTP (#484).
+	let credential = common::issued_credential(&f.store, "acme", "bob").await;
+	let bob = credential["token"].as_str().unwrap();
+	let (status, bob_review) = request(&app, bob, "GET", &path, Value::Null).await;
+	assert_eq!(status, 200, "{bob_review}");
+	assert_eq!(
+		bob_review["items"]
+			.as_array()
+			.unwrap()
+			.iter()
+			.find(|item| item["reference"]["id"] == "model")
+			.unwrap()["status"],
+		"needs_other_approver"
+	);
+	let (status, body) = request(
+		&app,
+		bob,
+		"POST",
+		"/api/authorization/acme/catalog/review",
+		submit.clone(),
+	)
+	.await;
+	assert_eq!(status, 403, "{body}");
+
+	// Alice approves only the reviewed model; the already approved root stays.
+	let (status, result) = request(
+		&app,
+		&alice,
+		"POST",
+		"/api/authorization/acme/catalog/review",
+		submit,
+	)
+	.await;
+	assert_eq!(status, 200, "{result}");
+	assert_eq!(result["bindings"].as_array().unwrap().len(), 1);
+	assert_eq!(result["bindings"][0]["entry_id"], "model");
+	assert_eq!(result["bindings"][0]["revision"], 3);
+	let (status, after) = request(&app, &alice, "GET", &path, Value::Null).await;
+	assert_eq!(status, 200, "{after}");
+	assert_eq!(after["ready"], true);
+	cleanup(f, &url, &schema).await;
+}
+
+#[rstest::rstest]
+#[tokio::test]
+async fn approval_review_approves_local_items_and_activates_marketplace_on_a_non_default_node(
+	#[future(awt)]
+	#[from(common::native_application)]
+	fixture: common::ApplicationFixture,
+) {
+	let (f, url, schema) = fixture.runtime.parts();
+	let app = fixture.application;
+	let (_, alice, _) = bootstrap(&f, &app, "http://127.0.0.1:9").await;
+	let deployment = f.config.deployment.clone();
+	let node = aidash_domain::nodes::NodeName::derived("acme");
+	let second = common::second_node_in(f.store.pool.fixture_driver(), "acme").await;
+	let tenant = aidash_domain::tenancy::TenantName::new("acme").unwrap();
+
+	// A Tenant tool becomes a Marketplace package and an installed copy.
+	let source = json!({"id":"review-source","version":"1.0.0","kind":"tool","name":{"en":"Source"},
+		"description":{"en":"Marketplace source"},"config":{"registry_deployment":deployment,
+		"provider":"integration.http@1","operation":"invoke","default_alias":"review",
+		"tier":"integration","narrow":{},"transport":{"transport":"http",
+		"endpoint":"https://tools.example/review","replay":"read_only"}}});
+	f.registry
+		.register(&tenant, serde_json::from_value(source.clone()).unwrap())
+		.await
+		.unwrap();
+	aidash_server::authorization::Authorization {
+		pool: f.store.pool.clone(),
+	}
+	.set_catalog(
+		"acme",
+		&node,
+		&aidash_domain::registry::EntityRef {
+			id: "review-source".into(),
+			version: "1.0.0".into(),
+		},
+		0,
+		true,
+		"deployment_administrator",
+	)
+	.await
+	.unwrap();
+	let (status, package) = request(
+		&app,
+		&alice,
+		"POST",
+		"/api/marketplace/packages",
+		json!({"source":{"id":"review-source","version":"1.0.0"},
+			"package_id":"review-package","author":"test","idempotency_key":Uuid::new_v4()}),
+	)
+	.await;
+	assert_eq!(status, 200, "{package}");
+	let (status, installed) = request(
+		&app,
+		&alice,
+		"POST",
+		&format!(
+			"/api/marketplace/packages/{}/install",
+			package["key"].as_str().unwrap()
+		),
+		json!({"digest":package["digest"],"config":{},"idempotency_key":Uuid::new_v4()}),
+	)
+	.await;
+	assert_eq!(status, 200, "{installed}");
+	let installed_id = installed["entry"]["id"].as_str().unwrap();
+	assert!(installed_id.starts_with("mkt-"), "{installed}");
+	// Registration validates that an installed binding is active and approved;
+	// activate it on the default Node, then review it again on another Node.
+	let (status, activated) = request(
+		&app,
+		&alice,
+		"POST",
+		&format!(
+			"/api/marketplace/installations/{}/activation",
+			installed["installation"]["id"].as_str().unwrap()
+		),
+		json!({"tenant":"acme","revision":installed["revision"],
+			"expected_activation_revision":installed["installation"]["activation_revision"],
+			"expected_catalog_revision":0,"enabled":true}),
+	)
+	.await;
+	assert_eq!(status, 200, "{activated}");
+
+	// A new agent version depends on the local model and the installed copy.
+	let agent = json!({"id":"research","version":"2.0.0","kind":"agent",
+		"name":{"en":"Research"},"description":{"en":"Review root"},
+		"config":{"schema_version":1,"model":{"id":"model","version":"1.0.0"},
+			"instructions":"Use the installed tool",
+			"bindings":[{"kind":"tool","target":{"registry_deployment":deployment,
+				"id":installed_id,"version":"1.0.0"},"narrow":{}}],"remove_default":[]}});
+	let (status, body) = request(&app, &alice, "POST", "/api/registry", agent).await;
+	assert_eq!(status, 200, "{body}");
+
+	let path =
+		format!("/api/authorization/acme/catalog/review?node={second}&entry=agent/research@2.0.0");
+	let (status, review) = request(&app, &alice, "GET", &path, Value::Null).await;
+	assert_eq!(status, 200, "{review}");
+	let items = review["items"].as_array().unwrap();
+	let installed_item = items
+		.iter()
+		.find(|item| item["reference"]["id"] == installed_id)
+		.unwrap();
+	assert_eq!(installed_item["status"], "needs_marketplace_activation");
+	let installation = &installed_item["installation"];
+	assert!(!installation.is_null(), "{installed_item}");
+	let activation = json!({
+		"installation": installation["installation"],
+		"revision": installation["revision"],
+		"digest": installation["digest"],
+		"expected_activation_revision": installation["expected_activation_revision"],
+		"restriction": installed_item["proposed_restriction"],
+	});
+	let local: Vec<_> = items
+		.iter()
+		.filter(|item| item["installation"].is_null())
+		.map(|item| {
+			json!({
+				"reference": item["reference"],
+				"digest": item["digest"],
+				"expected_revision": item["expected_revision"],
+				"restriction": item["proposed_restriction"],
+			})
+		})
+		.collect();
+	let submission = json!({
+		"node":second,
+		"root":{"id":"research","version":"2.0.0"},
+		"closure_digest":review["closure_digest"],
+		"items":local,
+		"installations":[activation],
+	});
+	let (status, result) = request(
+		&app,
+		&alice,
+		"POST",
+		"/api/authorization/acme/catalog/review",
+		submission,
+	)
+	.await;
+	assert_eq!(status, 200, "{result}");
+	// The Agent's default compaction Decider is a local review item too (#540).
+	assert_eq!(result["bindings"].as_array().unwrap().len(), 3);
+	assert_eq!(result["installations"].as_array().unwrap().len(), 1);
+	assert_eq!(
+		result["installations"][0]["active_revision"],
+		installed["revision"]
+	);
+
+	let (status, after) = request(&app, &alice, "GET", &path, Value::Null).await;
+	assert_eq!(status, 200, "{after}");
+	assert_eq!(after["ready"], true, "{after}");
+	assert_eq!(
+		after["items"]
+			.as_array()
+			.unwrap()
+			.iter()
+			.find(|item| item["reference"]["id"] == installed_id)
+			.unwrap()["approved"],
+		true
+	);
+	cleanup(f, &url, &schema).await;
+}
+
+#[rstest::rstest]
+#[tokio::test]
+async fn approval_review_submission_rejects_a_dependency_changed_after_the_review(
+	#[future(awt)]
+	#[from(common::native_application)]
+	fixture: common::ApplicationFixture,
+) {
+	let (f, url, schema) = fixture.runtime.parts();
+	let app = fixture.application;
+	let (_, alice, _) = bootstrap(&f, &app, "http://127.0.0.1:9").await;
+	let node = aidash_domain::nodes::NodeName::derived("acme");
+	let model = json!({"id":"model","version":"1.0.0"});
+	assert_eq!(
+		request(
+			&app,
+			&alice,
+			"POST",
+			"/api/authorization/acme/catalog",
+			json!({"node":node,"entry":model,"enabled":false,"expected_revision":1})
+		)
+		.await
+		.0,
+		200
+	);
+	let path =
+		format!("/api/authorization/acme/catalog/review?node={node}&entry=agent/research@1.0.0");
+	let (_, review) = request(&app, &alice, "GET", &path, Value::Null).await;
+	let model_item = review["items"]
+		.as_array()
+		.unwrap()
+		.iter()
+		.find(|item| item["reference"]["id"] == "model")
+		.unwrap()
+		.clone();
+	assert_eq!(model_item["expected_revision"], 2);
+	// The dependency changes between the review and the submission.
+	assert_eq!(
+		request(
+			&app,
+			&alice,
+			"POST",
+			"/api/authorization/acme/catalog",
+			json!({"node":node,"entry":model,"enabled":true,"expected_revision":2})
+		)
+		.await
+		.0,
+		200
+	);
+	let submission = json!({
+		"node":node,
+		"root":{"id":"research","version":"1.0.0"},
+		"closure_digest":review["closure_digest"],
+		"items":[{
+			"reference":model_item["reference"],
+			"digest":model_item["digest"],
+			"expected_revision":model_item["expected_revision"],
+		}],
+	});
+	let (status, body) = request(
+		&app,
+		&alice,
+		"POST",
+		"/api/authorization/acme/catalog/review",
+		submission,
+	)
+	.await;
+	assert_eq!(status, 409, "{body}");
+	assert!(body.to_string().contains("APPROVAL_REVIEW_STALE"));
+	// The refusal left the later revision in place; no partial write happened.
+	let (_, catalog) = request(
+		&app,
+		&alice,
+		"GET",
+		&format!("/api/authorization/acme/catalog?node={node}"),
+		Value::Null,
+	)
+	.await;
+	let model = catalog
+		.as_array()
+		.unwrap()
+		.iter()
+		.find(|binding| binding["entry_id"] == "model")
+		.unwrap();
+	assert_eq!(model["enabled"], true);
+	assert_eq!(model["revision"], 3);
+	cleanup(f, &url, &schema).await;
+}
+
+#[rstest::rstest]
+#[tokio::test]
+async fn withdrawal_impact_names_dependent_agents_and_needs_the_right_to_withdraw(
+	#[future(awt)]
+	#[from(common::native_application)]
+	fixture: common::ApplicationFixture,
+) {
+	let (f, url, schema) = fixture.runtime.parts();
+	let app = fixture.application;
+	let (_, alice, _) = bootstrap(&f, &app, "http://127.0.0.1:9").await;
+	let node = aidash_domain::nodes::NodeName::derived("acme");
+	let path = format!("/api/authorization/acme/catalog/impact?node={node}&id=model&version=1.0.0");
+	let (status, impact) = request(&app, &alice, "GET", &path, Value::Null).await;
+	assert_eq!(status, 200, "{impact}");
+	assert_eq!(
+		impact["agents"],
+		json!([{"id":"research","version":"1.0.0"}])
+	);
+	assert_eq!(impact["running_runs"], 0);
+	// An unknown version is not found, never an empty impact.
+	let missing =
+		format!("/api/authorization/acme/catalog/impact?node={node}&id=absent&version=1.0.0");
+	assert_eq!(
+		request(&app, &alice, "GET", &missing, Value::Null).await.0,
+		404
+	);
+	cleanup(f, &url, &schema).await;
+}
+
+#[rstest::rstest]
+#[tokio::test]
+async fn catalog_request_creation_needs_read_is_idempotent_and_refuses_a_ready_review(
+	#[future(awt)]
+	#[from(common::native_application)]
+	fixture: common::ApplicationFixture,
+) {
+	let (f, url, schema) = fixture.runtime.parts();
+	let app = fixture.application;
+	let (mut policy, alice, _) = bootstrap(&f, &app, "http://127.0.0.1:9").await;
+	let deployment_administrator = f.config.api_token.clone();
+	let node = aidash_domain::nodes::NodeName::derived("acme");
+	let request_body = json!({"node":node,"root":{"id":"research","version":"1.0.0"},
+		"reason":"Please review the writer"});
+	// Every version is approved, so there is nothing to request.
+	let (status, body) = request_create(&app, &alice, &request_body).await;
+	assert_eq!(status, 409, "{body}");
+	assert!(body.to_string().contains("CATALOG_APPROVAL_REQUEST_READY"));
+
+	// Withdrawing a dependency gives the requester something to ask for.
+	assert_eq!(
+		request(
+			&app,
+			&alice,
+			"POST",
+			"/api/authorization/acme/catalog",
+			json!({"node":node,"entry":{"id":"model","version":"1.0.0"},
+				"enabled":false,"expected_revision":1})
+		)
+		.await
+		.0,
+		200
+	);
+	let (status, first) = request_create(&app, &alice, &request_body).await;
+	assert_eq!(status, 200, "{first}");
+	assert_eq!(first["state"], "open");
+	assert_eq!(first["next_action"], "waiting_for_approver");
+	assert!(first["closure_digest"].as_str().is_some());
+	let (status, again) = request_create(&app, &alice, &request_body).await;
+	assert_eq!(status, 200, "{again}");
+	assert_eq!(again["id"], first["id"]);
+	assert_eq!(again["revision"], first["revision"]);
+
+	// A subject without registry.read on the root cannot create one.
+	policy["subjects"]["bob"] = json!({"kind":"user"});
+	policy["policies"].as_array_mut().unwrap().push(json!({
+		"id":"deny-bob-root","effect":"deny","subjects":{"ids":["bob"]},
+		"actions":["registry.read"],"resources":{"kinds":["agent"],"ids":["research"]}
+	}));
+	assert_eq!(
+		request(
+			&app,
+			&deployment_administrator,
+			"POST",
+			"/api/authorization/acme",
+			json!({"expected_revision":1,"bundle":policy})
+		)
+		.await
+		.0,
+		200
+	);
+	// A Deployment Administrator issues no Tenant credentials over HTTP (#484).
+	let credential = common::issued_credential(&f.store, "acme", "bob").await;
+	let bob = credential["token"].as_str().unwrap();
+	let (status, body) = request_create(&app, bob, &request_body).await;
+	assert_eq!(status, 403, "{body}");
+	cleanup(f, &url, &schema).await;
+}
+
+async fn request_create(app: &common::TestApplication, token: &str, body: &Value) -> (u16, Value) {
+	request(
+		app,
+		token,
+		"POST",
+		"/api/authorization/acme/catalog/requests",
+		body.clone(),
+	)
+	.await
+}
+
+#[rstest::rstest]
+#[tokio::test]
+async fn catalog_request_decline_and_withdraw_respect_authority_and_pending_visibility(
+	#[future(awt)]
+	#[from(common::native_application)]
+	fixture: common::ApplicationFixture,
+) {
+	let (f, url, schema) = fixture.runtime.parts();
+	let app = fixture.application;
+	let (mut policy, alice, _) = bootstrap(&f, &app, "http://127.0.0.1:9").await;
+	let deployment_administrator = f.config.api_token.clone();
+	let node = aidash_domain::nodes::NodeName::derived("acme");
+	for id in ["model", "http"] {
+		assert_eq!(
+			request(
+				&app,
+				&alice,
+				"POST",
+				"/api/authorization/acme/catalog",
+				json!({"node":node,"entry":{"id":id,"version":"1.0.0"},
+					"enabled":false,"expected_revision":1})
+			)
+			.await
+			.0,
+			200
+		);
+	}
+	policy["subjects"]["bob"] = json!({"kind":"user"});
+	policy["policies"].as_array_mut().unwrap().push(json!({
+		"id":"deny-bob-approve","effect":"deny","subjects":{"ids":["bob"]},
+		"actions":["catalog.approve"],"resources":{"kinds":["*"]}
+	}));
+	policy["policies"].as_array_mut().unwrap().push(json!({
+		"id":"deny-alice-model","effect":"deny","subjects":{"ids":["alice"]},
+		"actions":["registry.read"],"resources":{"kinds":["model"],"ids":["model"]}
+	}));
+	assert_eq!(
+		request(
+			&app,
+			&deployment_administrator,
+			"POST",
+			"/api/authorization/acme",
+			json!({"expected_revision":1,"bundle":policy})
+		)
+		.await
+		.0,
+		200
+	);
+	// A Deployment Administrator issues no Tenant credentials over HTTP (#484).
+	let credential = common::issued_credential(&f.store, "acme", "bob").await;
+	let bob = credential["token"].as_str().unwrap();
+	let (status, created) = request_create(
+		&app,
+		bob,
+		&json!({"node":node,"root":{"id":"research","version":"1.0.0"},"reason":"Need writer"}),
+	)
+	.await;
+	assert_eq!(status, 200, "{created}");
+	let id = created["id"].as_str().unwrap();
+	// The pending list is for approvers only and never carries item names.
+	let (status, pending) = request(
+		&app,
+		&alice,
+		"GET",
+		&format!("/api/authorization/acme/catalog/requests/pending?node={node}"),
+		Value::Null,
+	)
+	.await;
+	assert_eq!(status, 200, "{pending}");
+	let card = pending["requests"]
+		.as_array()
+		.unwrap()
+		.iter()
+		.find(|card| card["id"] == id)
+		.expect("the approver sees the open request");
+	assert!(card["review"]["approvable"].as_u64().unwrap() >= 1);
+	assert_eq!(
+		card["review"]["hidden"], 1,
+		"the unreadable model is counted but never named"
+	);
+	assert!(card.get("items").is_none(), "items are never named here");
+	let (status, bob_pending) = request(
+		&app,
+		bob,
+		"GET",
+		&format!("/api/authorization/acme/catalog/requests/pending?node={node}"),
+		Value::Null,
+	)
+	.await;
+	assert_eq!(status, 200, "{bob_pending}");
+	assert!(bob_pending["requests"].as_array().unwrap().is_empty());
+
+	// The requester cannot decline or withdraw someone else's request, and
+	// an approver declines with a reason.
+	let (status, body) = request(
+		&app,
+		bob,
+		"POST",
+		&format!("/api/authorization/acme/catalog/requests/{id}/decline"),
+		json!({"reason":"No"}),
+	)
+	.await;
+	assert_eq!(status, 403, "{body}");
+	let (status, declined) = request(
+		&app,
+		&alice,
+		"POST",
+		&format!("/api/authorization/acme/catalog/requests/{id}/decline"),
+		json!({"reason":"Not this version"}),
+	)
+	.await;
+	assert_eq!(status, 200, "{declined}");
+	assert_eq!(declined["state"], "declined");
+	assert_eq!(declined["decline_reason"], "Not this version");
+	assert_eq!(declined["next_action"], "declined");
+
+	// A final request frees the tuple; only the requester may withdraw the next.
+	let (status, second) = request_create(
+		&app,
+		bob,
+		&json!({"node":node,"root":{"id":"research","version":"1.0.0"},"reason":"Again"}),
+	)
+	.await;
+	assert_eq!(status, 200, "{second}");
+	let second_id = second["id"].as_str().unwrap();
+	let (status, body) = request(
+		&app,
+		&alice,
+		"POST",
+		&format!("/api/authorization/acme/catalog/requests/{second_id}/withdraw"),
+		Value::Null,
+	)
+	.await;
+	assert_eq!(status, 403, "{body}");
+	let (status, withdrawn) = request(
+		&app,
+		bob,
+		"POST",
+		&format!("/api/authorization/acme/catalog/requests/{second_id}/withdraw"),
+		Value::Null,
+	)
+	.await;
+	assert_eq!(status, 200, "{withdrawn}");
+	assert_eq!(withdrawn["state"], "withdrawn");
+	cleanup(f, &url, &schema).await;
+}
+
+#[rstest::rstest]
+#[tokio::test]
+async fn catalog_request_is_fulfilled_by_the_review_and_grants_nothing_before_it(
+	#[future(awt)]
+	#[from(common::native_application)]
+	fixture: common::ApplicationFixture,
+) {
+	let (f, url, schema) = fixture.runtime.parts();
+	let app = fixture.application;
+	let (mut policy, alice, _) = bootstrap(&f, &app, "http://127.0.0.1:9").await;
+	let deployment_administrator = f.config.api_token.clone();
+	let node = aidash_domain::nodes::NodeName::derived("acme");
+	assert_eq!(
+		request(
+			&app,
+			&alice,
+			"POST",
+			"/api/authorization/acme/catalog",
+			json!({"node":node,"entry":{"id":"model","version":"1.0.0"},
+				"enabled":false,"expected_revision":1})
+		)
+		.await
+		.0,
+		200
+	);
+	policy["subjects"]["bob"] = json!({"kind":"user"});
+	policy["policies"].as_array_mut().unwrap().push(json!({
+		"id":"deny-bob-approve","effect":"deny","subjects":{"ids":["bob"]},
+		"actions":["catalog.approve"],"resources":{"kinds":["*"]}
+	}));
+	assert_eq!(
+		request(
+			&app,
+			&deployment_administrator,
+			"POST",
+			"/api/authorization/acme",
+			json!({"expected_revision":1,"bundle":policy})
+		)
+		.await
+		.0,
+		200
+	);
+	// A Deployment Administrator issues no Tenant credentials over HTTP (#484).
+	let credential = common::issued_credential(&f.store, "acme", "bob").await;
+	let bob = credential["token"].as_str().unwrap();
+	let (status, created) = request_create(
+		&app,
+		bob,
+		&json!({"node":node,"root":{"id":"research","version":"1.0.0"},"reason":"Please"}),
+	)
+	.await;
+	assert_eq!(status, 200, "{created}");
+	let id = created["id"].as_str().unwrap();
+	// Creating a request changes no Catalog Approval.
+	let (_, before) = request(
+		&app,
+		&alice,
+		"GET",
+		&format!("/api/authorization/acme/catalog?node={node}"),
+		Value::Null,
+	)
+	.await;
+	assert_eq!(
+		before
+			.as_array()
+			.unwrap()
+			.iter()
+			.find(|binding| binding["entry_id"] == "model")
+			.unwrap()["revision"],
+		2
+	);
+
+	let path =
+		format!("/api/authorization/acme/catalog/review?node={node}&entry=agent/research@1.0.0");
+	let (_, review) = request(&app, &alice, "GET", &path, Value::Null).await;
+	let model = review["items"]
+		.as_array()
+		.unwrap()
+		.iter()
+		.find(|item| item["reference"]["id"] == "model")
+		.unwrap();
+	let submission = json!({
+		"node":node,
+		"root":{"id":"research","version":"1.0.0"},
+		"closure_digest":review["closure_digest"],
+		"request":id,
+		"items":[{
+			"reference":model["reference"],
+			"digest":model["digest"],
+			"expected_revision":model["expected_revision"],
+			"restriction":model["proposed_restriction"],
+		}],
+	});
+	// Holding the request grants the requester no approval authority.
+	let (status, denied) = request(
+		&app,
+		bob,
+		"POST",
+		"/api/authorization/acme/catalog/review",
+		submission.clone(),
+	)
+	.await;
+	assert_eq!(status, 403, "{denied}");
+	let (status, body) = request(
+		&app,
+		&alice,
+		"POST",
+		"/api/authorization/acme/catalog/review",
+		submission,
+	)
+	.await;
+	assert_eq!(status, 200, "{body}");
+	let (status, mine) = request(
+		&app,
+		bob,
+		"GET",
+		&format!("/api/authorization/acme/catalog/requests/mine?node={node}"),
+		Value::Null,
+	)
+	.await;
+	assert_eq!(status, 200, "{mine}");
+	let request_view = mine["requests"]
+		.as_array()
+		.unwrap()
+		.iter()
+		.find(|request| request["id"] == id)
+		.unwrap();
+	assert_eq!(request_view["state"], "fulfilled");
+	assert_eq!(request_view["next_action"], "fulfilled");
+	cleanup(f, &url, &schema).await;
+}
+
+#[rstest::rstest]
+#[tokio::test]
+async fn catalog_request_turns_stale_after_a_missing_dependency_is_registered(
+	#[future(awt)]
+	#[from(common::native_application)]
+	fixture: common::ApplicationFixture,
+) {
+	let (f, url, schema) = fixture.runtime.parts();
+	let app = fixture.application;
+	let (_, alice, _) = bootstrap(&f, &app, "http://127.0.0.1:9").await;
+	let node = aidash_domain::nodes::NodeName::derived("acme");
+	let deployment = f.config.deployment.clone();
+	// A root that names a dependency the Tenant has not registered yet.
+	let broken = json!({"id":"broken","version":"1.0.0","kind":"agent",
+		"name":{"en":"Broken"},"description":{"en":"Missing dependency"},
+		"config":{"schema_version":1,"model":{"id":"model","version":"1.0.0"},
+			"instructions":"Wait","bindings":[{"kind":"tool","target":{
+				"registry_deployment":deployment,"id":"later","version":"1.0.0"},
+				"narrow":{}}],"remove_default":[]}});
+	let metadata = serde_json::to_string(&broken).unwrap();
+	sqlx::query("INSERT INTO registry (tenant, id, version, kind, metadata) VALUES ('acme','broken','1.0.0','agent',$1::jsonb)")
+		.bind(metadata)
+		.execute(f.store.pool.fixture_driver())
+		.await
+		.unwrap();
+	let (status, created) = request_create(
+		&app,
+		&alice,
+		&json!({"node":node,"root":{"id":"broken","version":"1.0.0"},"reason":"Missing tool"}),
+	)
+	.await;
+	assert_eq!(status, 200, "{created}");
+	let id = created["id"].as_str().unwrap();
+	let digest = created["closure_digest"].as_str().unwrap().to_owned();
+	assert_eq!(
+		created["review"]["hidden"].as_u64().unwrap(),
+		0,
+		"the missing item is named, not hidden"
+	);
+
+	// Registering the dependency changes the closure digest.
+	let later = json!({"id":"later","version":"1.0.0","kind":"tool",
+		"name":{"en":"Later"},"description":{"en":"Arrived"},
+		"config":{"registry_deployment":deployment,"provider":"integration.http@1",
+			"operation":"invoke","default_alias":"later","tier":"integration","narrow":{},
+			"transport":{"transport":"http","endpoint":"https://tools.example/later",
+				"replay":"read_only"}}});
+	f.registry
+		.register(
+			&aidash_domain::tenancy::TenantName::new("acme").unwrap(),
+			serde_json::from_value(later).unwrap(),
+		)
+		.await
+		.unwrap();
+
+	// Approving through the stale request is refused before any write.
+	let stale_submission = json!({
+		"node":node,
+		"root":{"id":"broken","version":"1.0.0"},
+		"closure_digest":digest,
+		"request":id,
+	});
+	let (status, body) = request(
+		&app,
+		&alice,
+		"POST",
+		"/api/authorization/acme/catalog/review",
+		stale_submission,
+	)
+	.await;
+	assert_eq!(status, 409, "{body}");
+	assert!(body.to_string().contains("APPROVAL_REQUEST_STALE"));
+
+	// A lazy read records the stale state.
+	let (status, mine) = request(
+		&app,
+		&alice,
+		"GET",
+		&format!("/api/authorization/acme/catalog/requests/mine?node={node}"),
+		Value::Null,
+	)
+	.await;
+	assert_eq!(status, 200, "{mine}");
+	let request_view = mine["requests"]
+		.as_array()
+		.unwrap()
+		.iter()
+		.find(|request| request["id"] == id)
+		.unwrap();
+	assert_eq!(request_view["state"], "stale");
+	// A declined-but-stale write is refused without persisting stale; the row
+	// is still open, so the requester can withdraw it. That write is what
+	// persists the final state.
+	let (status, body) = request(
+		&app,
+		&alice,
+		"POST",
+		&format!("/api/authorization/acme/catalog/requests/{id}/decline"),
+		json!({"reason":"Too late"}),
+	)
+	.await;
+	assert_eq!(status, 409, "{body}");
+	assert!(body.to_string().contains("CATALOG_APPROVAL_REQUEST_STALE"));
+	let (status, withdrawn) = request(
+		&app,
+		&alice,
+		"POST",
+		&format!("/api/authorization/acme/catalog/requests/{id}/withdraw"),
+		Value::Null,
+	)
+	.await;
+	assert_eq!(status, 200, "{withdrawn}");
+	assert_eq!(withdrawn["state"], "withdrawn");
+	let (_, after) = request(
+		&app,
+		&alice,
+		"GET",
+		&format!("/api/authorization/acme/catalog/requests/mine?node={node}"),
+		Value::Null,
+	)
+	.await;
+	assert_eq!(
+		after["requests"]
+			.as_array()
+			.unwrap()
+			.iter()
+			.find(|request| request["id"] == id)
+			.unwrap()["state"],
+		"withdrawn"
+	);
+	cleanup(f, &url, &schema).await;
+}
+
+#[rstest::rstest]
+#[tokio::test]
+async fn catalog_request_pending_paginates_past_a_scan_batch(
+	#[future(awt)]
+	#[from(common::native_application)]
+	fixture: common::ApplicationFixture,
+) {
+	let (f, url, schema) = fixture.runtime.parts();
+	let app = fixture.application;
+	let (_, alice, _) = bootstrap(&f, &app, "http://127.0.0.1:9").await;
+	let node = aidash_domain::nodes::NodeName::derived("acme");
+	assert_eq!(
+		request(
+			&app,
+			&alice,
+			"POST",
+			"/api/authorization/acme/catalog",
+			json!({"node":node,"entry":{"id":"model","version":"1.0.0"},
+				"enabled":false,"expected_revision":1})
+		)
+		.await
+		.0,
+		200
+	);
+	let (status, review) = request(
+		&app,
+		&alice,
+		"GET",
+		&format!("/api/authorization/acme/catalog/review?node={node}&entry=agent/research@1.0.0"),
+		Value::Null,
+	)
+	.await;
+	assert_eq!(status, 200, "{review}");
+	let digest = review["closure_digest"].as_str().unwrap();
+	// More open requests than the pending scan batch, all for one reviewed
+	// root so the review is shared. The old fixed 512-row fetch lost the tail.
+	for index in 0..513 {
+		sqlx::query(
+			"INSERT INTO catalog_approval_requests \
+			 (id, tenant, node, root_id, root_version, requester, reason, \
+			  closure_digest, state, decline_reason, decided_by, created_at, \
+			  updated_at, revision) \
+			 VALUES ($1, 'acme', $2, 'research', '1.0.0', $3, 'Please', $4, \
+			  'open', NULL, NULL, now(), now(), 1)",
+		)
+		.bind(Uuid::new_v4())
+		.bind(node.as_str())
+		.bind(format!("requester-{index}"))
+		.bind(digest)
+		.execute(f.store.pool.fixture_driver())
+		.await
+		.unwrap();
+	}
+	let (status, page) = request(
+		&app,
+		&alice,
+		"GET",
+		&format!(
+			"/api/authorization/acme/catalog/requests/pending?node={node}&offset=512&limit=10"
+		),
+		Value::Null,
+	)
+	.await;
+	assert_eq!(status, 200, "{page}");
+	assert_eq!(
+		page["requests"].as_array().unwrap().len(),
+		1,
+		"the final request survives the scan"
+	);
+	assert!(page["next_offset"].is_null());
+	cleanup(f, &url, &schema).await;
 }

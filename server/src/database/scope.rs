@@ -76,16 +76,6 @@ pub(crate) fn workspace_node(workspace: Uuid) -> SimpleExpr {
 	)
 }
 
-/// The default Node of `tenant`, for work that has no Workspace of its own, such
-/// as a Run a peer's Home admitted until Node Registrations name the receiving
-/// Node (#241).
-pub(crate) fn default_node(tenant: &str) -> SimpleExpr {
-	SimpleExpr::CustomWithExpr(
-		"(SELECT name FROM nodes WHERE tenant = ? AND is_default)".to_owned(),
-		vec![Expr::value(tenant.to_owned()).into()],
-	)
-}
-
 /// The address of `node` in `deployment`, as the value of a `home_node` column
 /// for work that runs where its Task is.
 pub(crate) fn node_address(deployment: &str, node: SimpleExpr) -> SimpleExpr {

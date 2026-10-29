@@ -195,8 +195,8 @@ Run, for example `GET /api/runs/<run>/evidence/ev_<uuid>`. It returns:
   excerpt.
 
 The reader needs exactly the authority of `GET /api/runs/{run}`, evaluated at
-each read. A Subject needs `workspace.read` and the Run's visibility; an
-Deployment Administrator needs the Workspace's Deployment Administrator visibility. Each of these returns the
+each read. A Subject needs `workspace.read` and the Run's visibility; a
+Deployment Administrator is refused with 403 before any lookup (ADR 0102). A Subject without them gets the
 same `404 {"error":"evidence unavailable"}`, so a response never reveals
 whether a Run or its evidence exists:
 
@@ -382,11 +382,10 @@ caller may change them (`can_update`), read their history
 warning when it shortens a period, because it applies to content already kept
 at the next hourly sweep; saving makes both periods the Tenant's own, and
 clearing returns to the Deployment's. History and records load 50 at a time.
-Deployment Administrators choose the Tenant and revoke by Run ID, without
-opening the Run; the request names that Tenant (`tenant` in the body), so a
-Run of another Tenant answers 404 and is not revoked. A Deployment
-Administrator's identity in history and records is shown only to Deployment
-Administrators.
+A subject holding `research.revoke` revokes by Run ID, without opening the
+Run. A Deployment Administrator holds no Tenant authority and is refused with
+403 for the retention periods, their history, the records and the revocation
+(ADR 0102); the dashboard shows it the Tenant-content notice on this page.
 
 ## Providers
 

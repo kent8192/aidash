@@ -15,7 +15,6 @@ use uuid::Uuid;
 
 #[async_trait]
 pub trait ManagementRepository: Send + Sync {
-	async fn submit_deployment_administrator(&self, manifest: &Manifest) -> Result<Status>;
 	async fn submit_subject(
 		&self,
 		identity: &ExecutionPrincipal,
@@ -24,7 +23,7 @@ pub trait ManagementRepository: Send + Sync {
 	/// Return ordered keyset pages of at most 200 durable ownership candidates.
 	async fn candidates(
 		&self,
-		identity: Option<&ExecutionPrincipal>,
+		identity: &ExecutionPrincipal,
 		cursor: Option<(DateTime<Utc>, Uuid)>,
 	) -> Result<Vec<Status>>;
 	async fn require_owner(&self, identity: &ExecutionPrincipal, id: Uuid) -> Result<()>;
@@ -39,6 +38,5 @@ pub trait ManagementRepository: Send + Sync {
 	async fn status(&self, id: Uuid) -> Result<Status>;
 	/// Read votes then audit while retaining the same connection registration.
 	async fn history(&self, id: Uuid) -> Result<(Vec<Vote>, Vec<History>)>;
-	async fn abort_deployment_administrator(&self, id: Uuid) -> Result<Status>;
 	async fn participants(&self) -> Result<Vec<LocalStatus>>;
 }

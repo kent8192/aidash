@@ -380,17 +380,24 @@ async fn dashboard_projections_omit_inference_markers(
 		.unwrap();
 	assert_eq!(c.closures(attempt).await, (1, 1));
 	let workspace = format!("/api/workspaces/{}", c.run.workspace_id);
-	let deployment_administrator = c.f.config.api_token.clone();
 
-	// Act
+	// Act: a Deployment Administrator reads no Tenant projection (#484), so
+	// only the Tenant Subject's projections carry events.
 	let mut projections = Vec::new();
-	for token in [&c.token, &deployment_administrator] {
-		for path in ["/api/state", workspace.as_str()] {
-			let (status, body) = request(&c.app, token, "GET", path, serde_json::Value::Null).await;
-			assert_eq!(status, 200, "{path}: {body}");
-			projections.push((path.to_owned(), body));
-		}
+	for path in ["/api/state", workspace.as_str()] {
+		let (status, body) = request(&c.app, &c.token, "GET", path, serde_json::Value::Null).await;
+		assert_eq!(status, 200, "{path}: {body}");
+		projections.push((path.to_owned(), body));
 	}
+	let (status, body) = request(
+		&c.app,
+		&c.f.config.api_token,
+		"GET",
+		workspace.as_str(),
+		serde_json::Value::Null,
+	)
+	.await;
+	assert_eq!(status, 403, "{body}");
 
 	// Assert
 	for (path, body) in projections {

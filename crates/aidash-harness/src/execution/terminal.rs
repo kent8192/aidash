@@ -1,5 +1,7 @@
 //! Live admission and terminal outcomes are shared by background and explicit delivery.
-use aidash_application::{Error, Result, ports::execution::terminal::*};
+use aidash_application::{
+	Error, Result, ports::execution::terminal::*, recovery::AuthorityFailure,
+};
 use aidash_domain::{RunControl, TaskStatus};
 
 /// Receiver cancellation after revocation must not require reaching its Home node.
@@ -26,13 +28,16 @@ pub async fn deliver(scope: &mut dyn FailureScope) -> Result<TaskStatus> {
 }
 
 pub async fn settle(scope: &mut dyn FailureScope, result: Result<TaskStatus>) -> Result<()> {
-	if let Err(
-		error @ (Error::Forbidden | Error::Unauthorized | Error::IdentityStatusUnavailable),
-	) = &result
-	{
-		scope
-			.pause_authority(matches!(error, Error::IdentityStatusUnavailable))
-			.await?;
+	let failure = match &result {
+		Err(Error::Forbidden | Error::Unauthorized) => Some(AuthorityFailure::Denied(None)),
+		Err(Error::AuthorityRefused(refusal)) => {
+			Some(AuthorityFailure::Denied(Some((**refusal).clone())))
+		}
+		Err(Error::IdentityStatusUnavailable) => Some(AuthorityFailure::IdentityUnavailable),
+		_ => None,
+	};
+	if let Some(failure) = failure {
+		scope.pause_authority(&failure).await?;
 		return Ok(());
 	}
 	scope.finish(result).await

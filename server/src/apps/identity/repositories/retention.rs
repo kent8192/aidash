@@ -1,7 +1,7 @@
 //! A Tenant's own Retention Rules and their history (ADR 0045). A subject
 //! acts through its Tenant policy in the authorization transaction; a
-//! Deployment Administrator needs none.
-use crate::apps::identity::models::{Tenant, TenantRetentionRule, TenantRetentionRuleHistory};
+//! Deployment Administrator has none (#484).
+use crate::apps::identity::models::{TenantRetentionRule, TenantRetentionRuleHistory};
 use crate::authorization::{access::NativeAccess, identity::Actor};
 use crate::store::Store;
 use aidash_application::{
@@ -52,22 +52,14 @@ pub(crate) async fn share_rules_lock(
 pub(crate) struct TenantRetention<'a> {
 	pub store: &'a Store,
 	pub actor: &'a Actor,
-	/// The dashboard identity of a Deployment Administrator acting in a
-	/// browser; none for the deployment's API token.
-	pub administrator: Option<Uuid>,
 	/// The Deployment's periods, also the longest a Tenant may keep.
 	pub deployment: RetentionRules,
-}
-
-enum Transaction {
-	Subject(Box<NativeAccess>),
-	Administrator(Box<dyn TransactionExecutor>),
 }
 
 struct Scope {
 	decider: Decider,
 	deployment: RetentionRules,
-	tx: Transaction,
+	tx: Box<NativeAccess>,
 }
 
 fn native<T>(result: crate::Result<T>) -> Result<T> {
@@ -84,10 +76,7 @@ fn period(value: i32) -> u32 {
 
 impl Scope {
 	fn executor(&mut self) -> &mut dyn TransactionExecutor {
-		match &mut self.tx {
-			Transaction::Subject(access) => access.tenant_transaction().0,
-			Transaction::Administrator(tx) => tx.as_mut(),
-		}
+		self.tx.tenant_transaction().0
 	}
 }
 
@@ -100,11 +89,8 @@ impl RetentionScope for Scope {
 		self.deployment
 	}
 	async fn permits(&mut self, tenant: &str, action: &str) -> Result<bool> {
-		let Transaction::Subject(access) = &mut self.tx else {
-			return Ok(true);
-		};
-		let resource = access.resource(retention::RESOURCE, tenant, json!({}));
-		native(access.decide(&resource, action).await)
+		let resource = self.tx.resource(retention::RESOURCE, tenant, json!({}));
+		native(self.tx.decide(&resource, action).await)
 	}
 	async fn stored(&mut self, tenant: &str) -> Result<Option<RetentionRules>> {
 		let (sql, values) = Query::select()
@@ -146,14 +132,8 @@ impl RetentionScope for Scope {
 		decider: &Decider,
 	) -> Result<()> {
 		let now = Utc::now();
-		// A subject acts through its Tenant's policy, so its Tenant exists. A
-		// Deployment Administrator may name any Tenant: rules stored for a
-		// name with no root record would bind a Tenant created under it later.
-		let administrator = matches!(self.tx, Transaction::Administrator(_));
+		// A subject acts through its Tenant's policy, so its Tenant exists.
 		let tx = self.executor();
-		if administrator && !native(Tenant::exists(tx, tenant).await)? {
-			return Err(crate::Error::NotFound("tenant".into()).into());
-		}
 		let (sql, values) = Query::delete()
 			.from_table(Alias::new(TenantRetentionRule::table_name()))
 			.and_where(Expr::col("tenant").eq(Expr::value(tenant)))
@@ -229,29 +209,14 @@ impl RetentionScope for Scope {
 			.collect())
 	}
 	async fn finish(self: Box<Self>, committed: bool) -> Result<()> {
-		match self.tx {
-			Transaction::Subject(access) => {
-				let result = if committed {
-					Ok(())
-				} else {
-					Err(crate::Error::Conflict("retention change abandoned".into()))
-				};
-				match access.finish(result).await {
-					Err(crate::Error::Conflict(_)) if !committed => Ok(()),
-					other => native(other),
-				}
-			}
-			Transaction::Administrator(tx) => native(
-				async {
-					if committed {
-						tx.commit().await?;
-					} else {
-						tx.rollback().await?;
-					}
-					Ok(())
-				}
-				.await,
-			),
+		let result = if committed {
+			Ok(())
+		} else {
+			Err(crate::Error::Conflict("retention change abandoned".into()))
+		};
+		match self.tx.finish(result).await {
+			Err(crate::Error::Conflict(_)) if !committed => Ok(()),
+			other => native(other),
 		}
 	}
 }
@@ -259,35 +224,15 @@ impl RetentionScope for Scope {
 #[async_trait]
 impl RetentionRepository for TenantRetention<'_> {
 	async fn begin(&self) -> Result<Box<dyn RetentionScope + '_>> {
-		let (decider, tx) = match self.actor {
-			Actor::Subject(identity) => (
-				Decider::Subject {
-					tenant: identity.tenant.clone(),
-					subject: identity.subject.clone(),
-				},
-				Transaction::Subject(Box::new(native(
-					NativeAccess::begin(self.store, identity).await,
-				)?)),
-			),
-			Actor::DeploymentAdministrator => (
-				Decider::DeploymentAdministrator {
-					identity: self.administrator,
-				},
-				// A Deployment Administrator changes any Tenant's rules, as its
-				// other work without a Workspace does.
-				Transaction::Administrator(native(
-					async {
-						self.store
-							.pool
-							.begin(&self.actor.tenancy()?)
-							.await?
-							.into_executor()
-							.await
-					}
-					.await,
-				)?),
-			),
+		// Retention Rules are Tenant settings: only a Subject reaches them (#484).
+		let Actor::Subject(identity) = self.actor else {
+			return Err(crate::Error::Forbidden.into());
 		};
+		let decider = Decider::Subject {
+			tenant: identity.tenant.clone(),
+			subject: identity.subject.clone(),
+		};
+		let tx = Box::new(native(NativeAccess::begin(self.store, identity).await)?);
 		Ok(Box::new(Scope {
 			decider,
 			deployment: self.deployment,

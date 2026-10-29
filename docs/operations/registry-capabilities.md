@@ -560,7 +560,7 @@ excluded on a remote executor. Calling a Home command directly does not restore
 an excluded operation or broaden that contract.
 
 Scoped Home Human requests are stored on the existing remote execution binding.
-Deployment Administrator delegations keep their bounded journal on the existing task delegation,
+Delegations keep their bounded journal on the existing task delegation,
 and mirror each request under the receiver's real Run for Mesh inspection and
 answer controls. Receiver answers are first committed at Home. Neither route
 creates a shadow Run at Home. Lost replies replay the same request only for identical input.
@@ -592,8 +592,7 @@ unscoped offer path that carried `delegations.binding_snapshot` is removed
 External HTTP test connections require a Test Profile of the Tenant whose
 `read_only_verified` field is true. A subject of the Tenant writes it with
 `PUT /api/workbench/test-profiles/{tenant}/{id}` under
-`workbench.test_profile.update`; a Deployment Administrator may write any
-Tenant's. `read_only_verified` is the writer's own claim: set it only after
+`workbench.test_profile.update`; a Deployment Administrator may not (ADR 0102). `read_only_verified` is the writer's own claim: set it only after
 independently checking the exact connection's supported operations and
 read-only contract. A publisher's `transport.replay` claim does not establish
 this guarantee. Unattested external calls require fixtures. Binding digests,

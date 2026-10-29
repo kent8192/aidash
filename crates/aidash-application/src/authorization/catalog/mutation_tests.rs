@@ -28,6 +28,7 @@ fn binding() -> Binding {
 		entry_version: "1.0.0".into(),
 		enabled: false,
 		revision: 2,
+		restriction: None,
 	}
 }
 impl Fixture {
@@ -49,6 +50,7 @@ impl CatalogMutation for Fixture {
 		reference: &EntityRef,
 		revision: i64,
 		enabled: bool,
+		_: aidash_domain::identity::catalog::RestrictionChange,
 	) -> Result<Option<Binding>> {
 		self.calls.push(format!(
 			"cas:{tenant}:{}:{}:{revision}:{enabled}",

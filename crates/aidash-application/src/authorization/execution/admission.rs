@@ -51,6 +51,10 @@ pub async fn admit(
 	scope.check_pinned_installation(&entry).await?;
 	scope.require(&task_resource, "task.execute").await?;
 	let snapshot = scope.bindings(&entry).await?;
+	for binding in super::compaction::bound(&snapshot) {
+		let current = scope.decider_entry(&binding.identity.local()).await;
+		super::compaction::require(binding, current)?;
+	}
 	let config = AgentConfig::from_snapshot(&snapshot)?;
 	// The existing thread/tombstone lock precedes claim's event lock.
 	let thread = scope.prepare_thread(&task, &config, &agent.id).await?;

@@ -20,6 +20,10 @@ pub struct AuthorizationCatalog {
 	pub enabled: bool,
 	#[field]
 	pub revision: i64,
+	/// Subjects and Assignable Groups that may use the definition on this
+	/// Node; NULL means everyone the Tenant's policy allows (ADR 0095).
+	#[field(null = true)]
+	pub restriction: Option<reinhardt::db::orm::Json<serde_json::Value>>,
 }
 
 impl AuthorizationCatalog {

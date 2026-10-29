@@ -41,9 +41,44 @@ async fn renamed_builtin_keeps_its_grant_resource_and_agent_flag(
 	let before = repository.calls();
 	assert!(matches!(
 		super::authorize(&repository, &run, &agent, &input, &contract).await,
-		Err(Error::Forbidden)
+		Err(Error::AuthorityRefused(ref refusal)) if refusal.check == RefusalCheck::AgentFlag
 	));
 	assert_eq!(repository.calls(), before);
+}
+
+#[rstest]
+#[case::policy(Some(Error::Unauthorized), RefusalCheck::Policy)]
+#[case::catalog(Some(Error::Forbidden), RefusalCheck::Catalog)]
+#[tokio::test]
+async fn catalog_refusals_keep_policy_apart_from_catalog_approval(
+	mut repository: Repository,
+	run: RunMetadata,
+	agent: AgentConfig,
+	#[case] denial: Option<Error>,
+	#[case] expected: RefusalCheck,
+) {
+	repository.catalog_denial = denial;
+	let contract = ToolContract::registry(
+		reference(),
+		&ToolConfig::Native {
+			operation: "echo".into(),
+			allowed_hosts: vec![],
+		},
+	);
+	let result = super::authorize(
+		&repository,
+		&run,
+		&agent,
+		&call("no_index_here", json!({})),
+		&contract,
+	)
+	.await;
+	let Err(Error::AuthorityRefused(refusal)) = result else {
+		panic!("expected an authority refusal, got {result:?}");
+	};
+	assert_eq!(refusal.check, expected);
+	assert_eq!(refusal.tool, "no_index_here");
+	assert_eq!(refusal.action.as_deref(), Some("tool.invoke"));
 }
 
 #[rstest]
@@ -297,11 +332,13 @@ struct Journal {
 #[derive(Clone, Copy)]
 enum Outcome {
 	Forbidden,
+	Unauthorized,
 	Missing,
 	Fault,
 }
 struct Repository {
 	missing_request: bool,
+	unreadable_task: bool,
 	remote: bool,
 	active: bool,
 	replace: bool,
@@ -310,6 +347,7 @@ struct Repository {
 	subjects: Vec<String>,
 	context: Value,
 	catalog: Entry,
+	catalog_denial: Option<Error>,
 	outcomes: BTreeMap<(String, String), Outcome>,
 	journal: Arc<Mutex<Journal>>,
 	snapshot: Option<BindingSnapshot>,
@@ -319,6 +357,7 @@ struct Repository {
 fn repository() -> Repository {
 	Repository {
 		missing_request: false,
+		unreadable_task: false,
 		remote: false,
 		active: true,
 		replace: true,
@@ -327,6 +366,7 @@ fn repository() -> Repository {
 		subjects: vec!["root".into(), "delegated".into()],
 		context: json!({"current":"authority"}),
 		catalog: entry(),
+		catalog_denial: None,
 		outcomes: BTreeMap::new(),
 		journal: Arc::new(Mutex::new(Journal::default())),
 		snapshot: None,
@@ -400,9 +440,15 @@ impl AgentToolScope for Scope<'_> {
 	fn resource(&self, kind: &str, key: &str, attributes: Value) -> Resource {
 		resource(kind, key, attributes)
 	}
-	async fn catalog(&mut self, reference: &EntityRef, action: &str) -> Result<Entry> {
+	async fn catalog(&mut self, reference: &EntityRef, action: &str, tool: &str) -> Result<Entry> {
 		self.0.record(format!("catalog:{}:{action}", reference.id));
 		self.0.check("catalog")?;
+		match &self.0.catalog_denial {
+			Some(Error::Forbidden) => return Err(Error::Forbidden),
+			// Any other denial stands for a Tenant policy denial met inside the Catalog check.
+			Some(_) => return Err(crate::authorization::catalog::policy_refusal(tool, action)),
+			None => {}
+		}
 		Ok(self.0.catalog.clone())
 	}
 	async fn require(&mut self, resource: &Resource, action: &str) -> Result<()> {
@@ -418,6 +464,7 @@ impl AgentToolScope for Scope<'_> {
 		}
 		match self.0.outcomes.get(&(resource.id.clone(), action.into())) {
 			Some(Outcome::Forbidden) => Err(Error::Forbidden),
+			Some(Outcome::Unauthorized) => Err(Error::Unauthorized),
 			Some(Outcome::Missing) => Err(Error::NotFound("saved tool".into())),
 			Some(Outcome::Fault) => Err(Error::Port(Box::new(std::io::Error::other(
 				"require fault",
@@ -429,6 +476,7 @@ impl AgentToolScope for Scope<'_> {
 		self.0.record(format!("denied:{}:{action}", resource.id));
 		match self.0.outcomes.get(&(resource.id.clone(), action.into())) {
 			Some(Outcome::Forbidden) => Ok(true),
+			Some(Outcome::Unauthorized) => Err(Error::Unauthorized),
 			Some(Outcome::Missing) => Err(Error::NotFound("saved tool".into())),
 			Some(Outcome::Fault) => Err(Error::Port(Box::new(std::io::Error::other("deny fault")))),
 			None => Ok(false),
@@ -437,6 +485,10 @@ impl AgentToolScope for Scope<'_> {
 	async fn task_read(&mut self, key: Uuid) -> Result<Task> {
 		self.0.record(format!("task_read:{key}"));
 		self.0.check("task_read")?;
+		if self.0.unreadable_task {
+			// A task that is missing or not visible answers alike.
+			return Err(Error::Forbidden);
+		}
 		Ok(Task {
 			id: key,
 			workspace_id: id(3),
@@ -533,7 +585,7 @@ async fn disabled_local_tool_flags_precede_acquiring_authority(
 	agent.allow_workspace_retrieval = Some(false);
 	assert!(matches!(
 		authorize(&repository, &run, &agent, &call(name, json!({}))).await,
-		Err(Error::Forbidden)
+		Err(Error::AuthorityRefused(ref refusal)) if refusal.check == RefusalCheck::AgentFlag
 	));
 	assert!(repository.calls().is_empty());
 }
@@ -552,7 +604,7 @@ async fn remote_refresh_precedes_even_a_disabled_tool_flag(
 	agent.allow_task_creation = Some(false);
 	assert!(matches!(
 		authorize(&repository, &run, &agent, &call("task_create", json!({}))).await,
-		Err(Error::Forbidden)
+		Err(Error::AuthorityRefused(ref refusal)) if refusal.check == RefusalCheck::AgentFlag
 	));
 	let mut expected = vec!["lease", "active"];
 	if active {
@@ -585,7 +637,7 @@ async fn missing_remote_lease_denies_before_tool_authorization(
 			&call("workspace_read", json!({}))
 		)
 		.await,
-		Err(Error::Forbidden)
+		Err(Error::AuthorityRefused(ref refusal)) if refusal.check == RefusalCheck::RemoteAuthority
 	));
 	assert_eq!(
 		repository.calls(),
@@ -712,7 +764,7 @@ async fn agent_plugins_check_delegation_flag_and_home_before_target_catalog(
 	}
 	assert!(matches!(
 		authorize(&repository, &run, &agent, &call("plugin_0", json!({}))).await,
-		Err(Error::Forbidden)
+		Err(Error::AuthorityRefused(ref refusal)) if refusal.check == RefusalCheck::AgentExecution
 	));
 	assert_eq!(
 		repository.calls(),
@@ -745,7 +797,7 @@ async fn a_read_only_registry_tool_refuses_an_explicit_policy_deny(
 		.insert((reference().id, CALL_UNAPPROVED.into()), Outcome::Forbidden);
 	assert!(matches!(
 		super::authorize(&repository, &run, &agent, &input, &contract).await,
-		Err(Error::Forbidden)
+		Err(Error::AuthorityRefused(ref refusal)) if refusal.check == RefusalCheck::CallUnapprovedDeny
 	));
 }
 
@@ -833,7 +885,7 @@ async fn missing_core_capability_is_denied_after_the_invoke_check(
 	agent.core_capabilities.files = false;
 	assert!(matches!(
 		authorize(&repository, &run, &agent, &call("file_read", json!({}))).await,
-		Err(Error::Forbidden)
+		Err(Error::AuthorityRefused(ref refusal)) if refusal.check == RefusalCheck::CoreCapability
 	));
 	assert_eq!(
 		repository.calls(),
@@ -979,7 +1031,8 @@ async fn a_foreign_delegate_target_is_denied_before_catalog_io(
 			)
 		)
 		.await,
-		Err(Error::Forbidden)
+		Err(Error::Invalid(ref message))
+			if message.contains("\"aidash://other\"") && message.contains(&run.home_node)
 	));
 	assert_eq!(
 		repository.calls(),
@@ -988,6 +1041,114 @@ async fn a_foreign_delegate_target_is_denied_before_catalog_io(
 			"require:builtin:task_delegate:tool.invoke",
 			"release"
 		]
+	);
+}
+#[rstest]
+#[case::short_name(json!({"task_id":id(9),"node_id":"fancy-egret"}))]
+#[case::missing(json!({"task_id":id(9)}))]
+#[tokio::test]
+async fn a_node_that_agent_discover_did_not_return_is_a_rejected_call(
+	repository: Repository,
+	run: RunMetadata,
+	agent: AgentConfig,
+	#[case] mut arguments: Value,
+) {
+	arguments["agent"] = json!(reference());
+	let result = authorize(&repository, &run, &agent, &call("task_delegate", arguments)).await;
+	assert!(
+		matches!(result, Err(Error::Invalid(ref message))
+			if message.contains("does not name this Node")
+				&& message.contains("agent_discover")
+				&& message.contains(&run.home_node)),
+		"{result:?}"
+	);
+	assert!(
+		!repository
+			.calls()
+			.iter()
+			.any(|call| call.starts_with("catalog:"))
+	);
+}
+#[rstest]
+#[tokio::test]
+async fn a_task_that_does_not_exist_is_a_rejected_call(
+	mut repository: Repository,
+	run: RunMetadata,
+	agent: AgentConfig,
+) {
+	repository.unreadable_task = true;
+	let result = authorize(
+		&repository,
+		&run,
+		&agent,
+		&call(
+			"task_delegate",
+			json!({"task_id":id(9),"node_id":run.home_node,"agent":reference()}),
+		),
+	)
+	.await;
+	assert!(
+		matches!(result, Err(Error::Invalid(ref message))
+			if message.contains(&id(9).to_string()) && message.contains("task_create")),
+		"{result:?}"
+	);
+}
+#[rstest]
+#[tokio::test]
+async fn an_existing_task_refused_by_policy_stays_an_authority_pause(
+	mut repository: Repository,
+	run: RunMetadata,
+	agent: AgentConfig,
+) {
+	repository.outcomes.insert(
+		(id(9).to_string(), "task.delegate".into()),
+		Outcome::Forbidden,
+	);
+	let result = authorize(
+		&repository,
+		&run,
+		&agent,
+		&call(
+			"task_delegate",
+			json!({"task_id":id(9),"node_id":run.home_node,"agent":reference()}),
+		),
+	)
+	.await;
+	assert!(
+		matches!(result, Err(Error::AuthorityRefused(ref refusal))
+			if refusal.check == RefusalCheck::Policy
+				&& refusal.tool == "task_delegate"
+				&& refusal.action.as_deref() == Some("task.delegate")),
+		"{result:?}"
+	);
+}
+#[rstest]
+#[tokio::test]
+async fn an_unauthorized_policy_require_is_an_authority_pause_naming_the_tool(
+	mut repository: Repository,
+	run: RunMetadata,
+	agent: AgentConfig,
+) {
+	repository.outcomes.insert(
+		(id(9).to_string(), "task.delegate".into()),
+		Outcome::Unauthorized,
+	);
+	let result = authorize(
+		&repository,
+		&run,
+		&agent,
+		&call(
+			"task_delegate",
+			json!({"task_id":id(9),"node_id":run.home_node,"agent":reference()}),
+		),
+	)
+	.await;
+	assert!(
+		matches!(result, Err(Error::AuthorityRefused(ref refusal))
+			if refusal.check == RefusalCheck::Policy
+				&& refusal.tool == "task_delegate"
+				&& refusal.action.as_deref() == Some("task.delegate")),
+		"{result:?}"
 	);
 }
 #[rstest]
@@ -1049,7 +1210,7 @@ async fn local_artifact_creation_requires_a_nonempty_subject_chain(
 			&call("artifact_publish", json!({}))
 		)
 		.await,
-		Err(Error::Forbidden)
+		Err(Error::AuthorityRefused(ref refusal)) if refusal.check == RefusalCheck::Policy
 	));
 	assert_eq!(repository.decisions().len(), 1);
 }
@@ -1091,19 +1252,22 @@ async fn a_remote_delegate_cannot_address_a_task_other_than_its_admitted_task(
 	agent: AgentConfig,
 ) {
 	repository.remote = true;
-	assert!(matches!(
-		authorize(
-			&repository,
-			&run,
-			&agent,
-			&call(
-				"task_delegate",
-				json!({"task_id":id(9),"node_id":run.home_node,"agent":reference()})
-			)
-		)
-		.await,
-		Err(Error::Forbidden)
-	));
+	let result = authorize(
+		&repository,
+		&run,
+		&agent,
+		&call(
+			"task_delegate",
+			json!({"task_id":id(9),"node_id":run.home_node,"agent":reference()}),
+		),
+	)
+	.await;
+	// The model named another task: a Rejected Call, not an Authority Pause.
+	assert!(
+		matches!(result, Err(Error::Invalid(ref message))
+			if message.contains("was not found in this Workspace")),
+		"{result:?}"
+	);
 	assert!(
 		repository
 			.calls()
@@ -1136,7 +1300,7 @@ async fn remote_execution_rejects_local_only_resources_after_invoke(
 			&call(name, json!({"policy_id":"saved"}))
 		)
 		.await,
-		Err(Error::Forbidden)
+		Err(Error::AuthorityRefused(ref refusal)) if refusal.check == RefusalCheck::RemoteAuthority
 	));
 	assert_eq!(repository.decisions().len(), 1);
 }
@@ -1189,7 +1353,7 @@ async fn registry_skill_requires_both_configuration_and_a_skill_entry(
 			&call("skill_read", json!({"skill":reference()}))
 		)
 		.await,
-		Err(Error::Forbidden)
+		Err(Error::Invalid(_))
 	));
 	assert_eq!(
 		repository
@@ -1301,7 +1465,7 @@ async fn a_registry_skill_asset_read_uses_catalog_authority_without_a_core_flag(
 	agent.skills.clear();
 	assert!(matches!(
 		authorize(&repository, &run, &agent, &read).await,
-		Err(Error::Forbidden)
+		Err(Error::Invalid(_))
 	));
 }
 #[rstest]
@@ -1336,7 +1500,9 @@ async fn a_direct_skill_asset_read_requires_the_core_skills_permission(
 				.any(|call| call.starts_with("catalog:"))
 	);
 	if !skills {
-		assert!(matches!(result, Err(Error::Forbidden)));
+		assert!(
+			matches!(result, Err(Error::AuthorityRefused(ref refusal)) if refusal.check == RefusalCheck::CoreCapability)
+		);
 	}
 }
 #[rstest]
@@ -1853,7 +2019,10 @@ mod agent_plugin_tools {
 
 		let result = super::super::authorize(&repository, &run, &agent, &input, &contract).await;
 
-		assert!(matches!(result, Err(Error::Forbidden)), "{result:?}");
+		assert!(
+			matches!(result, Err(Error::AuthorityRefused(ref refusal)) if refusal.check == RefusalCheck::PluginTool),
+			"{result:?}"
+		);
 	}
 
 	#[rstest]
@@ -1869,7 +2038,10 @@ mod agent_plugin_tools {
 
 		let result = super::super::authorize(&repository, &run, &agent, &input, &contract).await;
 
-		assert!(matches!(result, Err(Error::Forbidden)), "{result:?}");
+		assert!(
+			matches!(result, Err(Error::AuthorityRefused(ref refusal)) if refusal.check == RefusalCheck::PluginTool),
+			"{result:?}"
+		);
 	}
 
 	#[rstest]
@@ -1889,8 +2061,14 @@ mod agent_plugin_tools {
 		agent.agent_plugins.clear();
 		let removed = super::super::authorize(&repository, &run, &agent, &input, &own).await;
 
-		assert!(matches!(digest, Err(Error::Forbidden)), "{digest:?}");
-		assert!(matches!(removed, Err(Error::Forbidden)), "{removed:?}");
+		assert!(
+			matches!(digest, Err(Error::AuthorityRefused(ref refusal)) if refusal.check == RefusalCheck::PluginTool),
+			"{digest:?}"
+		);
+		assert!(
+			matches!(removed, Err(Error::AuthorityRefused(ref refusal)) if refusal.check == RefusalCheck::PluginTool),
+			"{removed:?}"
+		);
 		assert!(matches!(own.identity, ToolIdentity::AgentPlugin(_)));
 	}
 }
