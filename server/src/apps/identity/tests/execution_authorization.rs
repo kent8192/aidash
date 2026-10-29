@@ -4844,15 +4844,8 @@ async fn an_agent_version_restriction_admits_only_the_named_run_starter(
 	);
 
 	// Bob holds the same policy actions but is not named by the restriction.
-	let (status, credential) = request(
-		&app,
-		&deployment_administrator,
-		"POST",
-		"/api/authorization/acme/credentials",
-		json!({"subject":"bob"}),
-	)
-	.await;
-	assert_eq!(status, 200, "{credential}");
+	// A Deployment Administrator issues no Tenant credentials over HTTP (#484).
+	let credential = common::issued_credential(&f.store, "acme", "bob").await;
 	let bob = credential["token"].as_str().unwrap();
 	let (status, workspace) = request(
 		&app,
@@ -5078,6 +5071,7 @@ async fn approval_review_reports_readiness_and_hides_unreadable_dependencies(
 			.any(|item| item["reference"]["id"] == "model")
 	);
 	assert_eq!(hidden["ready"], false);
+	// A Deployment Administrator issues no Tenant credentials over HTTP (#484).
 	let bob_credential = subject_credential(&f.store, "acme", "bob").await;
 	let bob = bob_credential.as_str();
 	let (status, body) = request(&app, bob, "GET", &path, Value::Null).await;
@@ -5226,6 +5220,7 @@ async fn approval_review_submission_fences_stale_authority_and_approves_a_subset
 		.0,
 		200
 	);
+	// A Deployment Administrator issues no Tenant credentials over HTTP (#484).
 	let bob_credential = subject_credential(&f.store, "acme", "bob").await;
 	let bob = bob_credential.as_str();
 	let (status, bob_review) = request(&app, bob, "GET", &path, Value::Null).await;
@@ -5608,14 +5603,8 @@ async fn catalog_request_creation_needs_read_is_idempotent_and_refuses_a_ready_r
 		.0,
 		200
 	);
-	let (_, credential) = request(
-		&app,
-		&deployment_administrator,
-		"POST",
-		"/api/authorization/acme/credentials",
-		json!({"subject":"bob"}),
-	)
-	.await;
+	// A Deployment Administrator issues no Tenant credentials over HTTP (#484).
+	let credential = common::issued_credential(&f.store, "acme", "bob").await;
 	let bob = credential["token"].as_str().unwrap();
 	let (status, body) = request_create(&app, bob, &request_body).await;
 	assert_eq!(status, 403, "{body}");
@@ -5681,14 +5670,8 @@ async fn catalog_request_decline_and_withdraw_respect_authority_and_pending_visi
 		.0,
 		200
 	);
-	let (_, credential) = request(
-		&app,
-		&deployment_administrator,
-		"POST",
-		"/api/authorization/acme/credentials",
-		json!({"subject":"bob"}),
-	)
-	.await;
+	// A Deployment Administrator issues no Tenant credentials over HTTP (#484).
+	let credential = common::issued_credential(&f.store, "acme", "bob").await;
 	let bob = credential["token"].as_str().unwrap();
 	let (status, created) = request_create(
 		&app,
@@ -5828,6 +5811,7 @@ async fn catalog_request_is_fulfilled_by_the_review_and_grants_nothing_before_it
 		.0,
 		200
 	);
+	// A Deployment Administrator issues no Tenant credentials over HTTP (#484).
 	let bob_credential = subject_credential(&f.store, "acme", "bob").await;
 	let bob = bob_credential.as_str();
 	let (status, created) = request_create(
