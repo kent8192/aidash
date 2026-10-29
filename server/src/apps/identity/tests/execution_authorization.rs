@@ -5078,15 +5078,8 @@ async fn approval_review_reports_readiness_and_hides_unreadable_dependencies(
 			.any(|item| item["reference"]["id"] == "model")
 	);
 	assert_eq!(hidden["ready"], false);
-	let (_, credential) = request(
-		&app,
-		&deployment_administrator,
-		"POST",
-		"/api/authorization/acme/credentials",
-		json!({"subject":"bob"}),
-	)
-	.await;
-	let bob = credential["token"].as_str().unwrap();
+	let bob_credential = subject_credential(&f.store, "acme", "bob").await;
+	let bob = bob_credential.as_str();
 	let (status, body) = request(&app, bob, "GET", &path, Value::Null).await;
 	assert_eq!(status, 403, "{body}");
 	cleanup(f, &url, &schema).await;
@@ -5233,15 +5226,8 @@ async fn approval_review_submission_fences_stale_authority_and_approves_a_subset
 		.0,
 		200
 	);
-	let (_, credential) = request(
-		&app,
-		&deployment_administrator,
-		"POST",
-		"/api/authorization/acme/credentials",
-		json!({"subject":"bob"}),
-	)
-	.await;
-	let bob = credential["token"].as_str().unwrap();
+	let bob_credential = subject_credential(&f.store, "acme", "bob").await;
+	let bob = bob_credential.as_str();
 	let (status, bob_review) = request(&app, bob, "GET", &path, Value::Null).await;
 	assert_eq!(status, 200, "{bob_review}");
 	assert_eq!(
@@ -5842,15 +5828,8 @@ async fn catalog_request_is_fulfilled_by_the_review_and_grants_nothing_before_it
 		.0,
 		200
 	);
-	let (_, credential) = request(
-		&app,
-		&deployment_administrator,
-		"POST",
-		"/api/authorization/acme/credentials",
-		json!({"subject":"bob"}),
-	)
-	.await;
-	let bob = credential["token"].as_str().unwrap();
+	let bob_credential = subject_credential(&f.store, "acme", "bob").await;
+	let bob = bob_credential.as_str();
 	let (status, created) = request_create(
 		&app,
 		bob,
@@ -5896,7 +5875,7 @@ async fn catalog_request_is_fulfilled_by_the_review_and_grants_nothing_before_it
 			"reference":model["reference"],
 			"digest":model["digest"],
 			"expected_revision":model["expected_revision"],
-			"restriction":model["proposed_restriction"],
+			"restriction":{"subjects":["alice"],"groups":[]},
 		}],
 	});
 	// Holding the request grants the requester no approval authority.
@@ -5918,6 +5897,45 @@ async fn catalog_request_is_fulfilled_by_the_review_and_grants_nothing_before_it
 	)
 	.await;
 	assert_eq!(status, 200, "{body}");
+	// All versions are approved, but the model still excludes the consumer.
+	let (_, pending) = request(&app, &alice, "GET", &path, Value::Null).await;
+	assert_eq!(pending["ready"], false);
+	let model = pending["items"]
+		.as_array()
+		.unwrap()
+		.iter()
+		.find(|item| item["reference"]["id"] == "model")
+		.unwrap();
+	assert_eq!(model["widen"], true);
+	let (_, mine) = request(
+		&app,
+		bob,
+		"GET",
+		&format!("/api/authorization/acme/catalog/requests/mine?node={node}"),
+		Value::Null,
+	)
+	.await;
+	let open = mine["requests"]
+		.as_array()
+		.unwrap()
+		.iter()
+		.find(|request| request["id"] == id)
+		.unwrap();
+	assert_eq!(open["state"], "open");
+	let (status, widened) = request(
+		&app,
+		&alice,
+		"POST",
+		"/api/authorization/acme/catalog/review",
+		json!({
+			"node":node, "root":{"id":"research","version":"1.0.0"},
+			"closure_digest":pending["closure_digest"], "request":id,
+			"items":[{"reference":model["reference"], "digest":model["digest"],
+				"expected_revision":model["expected_revision"], "restriction":model["proposed_restriction"]}]
+		}),
+	)
+	.await;
+	assert_eq!(status, 200, "{widened}");
 	let (status, mine) = request(
 		&app,
 		bob,

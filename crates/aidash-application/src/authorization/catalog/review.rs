@@ -20,7 +20,7 @@ const MAX_CLOSURE: usize = 512;
 
 /// Whether one exact version can be used now, and if not, what stands in the
 /// way. `Approved` means the Node's approval is enabled; a separate `widen`
-/// reports an approved restriction that no longer admits the root agent.
+/// reports an approved restriction that no longer admits every consumer.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum ReviewStatus {
@@ -53,6 +53,8 @@ pub struct ReviewInstallation {
 /// One exact definition in the reviewed closure.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct ReviewItem {
+	/// Readable agent subjects that directly use this item.
+	pub consumers: Vec<String>,
 	pub reference: EntityRef,
 	pub kind: String,
 	pub name: Localized,
@@ -61,23 +63,22 @@ pub struct ReviewItem {
 	pub digest: Option<String>,
 	pub status: ReviewStatus,
 	pub approved: bool,
-	/// Whether this principal holds `catalog.approve` on it.
+	/// Whether this principal can decide it with the visible review information.
 	pub can_approve: bool,
 	/// The current Catalog Approval revision, `0` when none exists.
 	pub expected_revision: i64,
 	/// The restriction already stored on this Node.
 	pub restriction: Option<CatalogRestriction>,
-	/// The restriction this Review proposes, defaulting a dependency of an
-	/// agent root to that agent's subject.
+	/// The restriction this Review proposes for the direct consumers.
 	pub proposed_restriction: Option<CatalogRestriction>,
-	/// An approved restriction would gain members the root agent needs.
+	/// An existing restriction would gain consumers.
 	pub widen: bool,
 	pub installation: Option<ReviewInstallation>,
 }
 
 impl ReviewItem {
 	/// This principal can still move the item forward: decide or activate it,
-	/// or widen an approved restriction that no longer admits the root agent.
+	/// or widen an approved restriction that no longer admits every consumer.
 	pub fn awaits_approver(&self) -> bool {
 		self.can_approve && (self.status != ReviewStatus::Approved || self.widen)
 	}
@@ -93,7 +94,7 @@ pub struct ApprovalReview {
 	pub hidden: usize,
 	/// Stable hash over every reviewed exact version and its digest.
 	pub closure_digest: String,
-	/// Every named item is approved, admits the root agent and needs no widening.
+	/// Every named item is approved, admits its consumers and needs no widening.
 	pub ready: bool,
 }
 
@@ -169,6 +170,7 @@ pub async fn review(
 	let mut entries: BTreeMap<(String, String), Entry> = BTreeMap::new();
 	let mut missing: BTreeMap<(String, String), bool> = BTreeMap::new();
 	let mut readability: BTreeMap<(String, String), bool> = BTreeMap::new();
+	let mut edges = BTreeMap::new();
 	let mut hidden = 0usize;
 	while let Some(entry) = queue.pop() {
 		let key = (entry.id.clone(), entry.version.clone());
@@ -181,6 +183,13 @@ pub async fn review(
 			));
 		}
 		let dependencies = approvals::dependencies(&entry, node_address.deployment.as_str())?;
+		edges.insert(
+			key.clone(),
+			dependencies
+				.iter()
+				.map(|d| (d.id.clone(), d.version.clone()))
+				.collect::<Vec<_>>(),
+		);
 		let needs_approval = !system::is_builtin(&entry);
 		let readable = scope.can_read(&entry).await?;
 		if !readable && needs_approval && key != (root.id.clone(), root.version.clone()) {
@@ -225,13 +234,43 @@ pub async fn review(
 	digest_parts.sort();
 	let closure_digest = digest(&serde_json::json!(digest_parts));
 
-	let root_is_agent = root_entry.kind == "agent";
-	let agent_subject = root_is_agent
-		.then(|| aidash_domain::qualified_agent(&node_address, &root.id, &root.version));
-	let agent_groups = match &agent_subject {
-		Some(subject) => scope.subject_groups(subject).await?,
-		None => BTreeSet::new(),
-	};
+	// Propagate nearest agents along every path, including paths discovered after
+	// a definition was expanded and cycles back to the root.
+	let mut consumers: BTreeMap<(String, String), BTreeSet<(String, String)>> = BTreeMap::new();
+	loop {
+		let mut changed = false;
+		for (key, targets) in &edges {
+			let incoming = if entries[key].kind == "agent" {
+				BTreeSet::from([key.clone()])
+			} else {
+				consumers.get(key).cloned().unwrap_or_default()
+			};
+			for target in targets {
+				let set = consumers.entry(target.clone()).or_default();
+				let before = set.len();
+				set.extend(incoming.iter().cloned());
+				changed |= set.len() != before;
+			}
+		}
+		if !changed {
+			break;
+		}
+	}
+	let mut groups = BTreeMap::new();
+	for (key, entry) in &entries {
+		if entry.kind == "agent" {
+			let subject = aidash_domain::qualified_agent(&node_address, &key.0, &key.1);
+			groups.insert(
+				key.clone(),
+				(subject.clone(), scope.subject_groups(&subject).await?),
+			);
+		}
+	}
+	let hidden_subjects: BTreeSet<_> = groups
+		.iter()
+		.filter(|(key, _)| !readability.get(*key).copied().unwrap_or(false))
+		.map(|(_, (subject, _))| subject.clone())
+		.collect();
 	let mut items = vec![];
 	for (key, entry) in &entries {
 		if system::is_builtin(entry) {
@@ -242,14 +281,23 @@ pub async fn review(
 		{
 			continue;
 		}
+		let agents = consumers.get(key).cloned().unwrap_or_default();
+		let hidden_consumer = agents
+			.iter()
+			.any(|agent| !readability.get(agent).copied().unwrap_or(false));
+		let visible = agents
+			.iter()
+			.filter(|agent| readability.get(*agent).copied().unwrap_or(false))
+			.filter_map(|agent| groups.get(agent).cloned())
+			.collect::<Vec<_>>();
 		items.push(
 			review_item(
 				scope,
 				entry,
-				agent_subject
-					.as_deref()
-					.filter(|_| *key != (root.id.clone(), root.version.clone())),
-				&agent_groups,
+				&visible,
+				&hidden_subjects,
+				hidden_consumer,
+				*key == (root.id.clone(), root.version.clone()),
 			)
 			.await?,
 		);
@@ -259,7 +307,19 @@ pub async fn review(
 			hidden += 1;
 			continue;
 		}
+		let hidden_consumer = consumers
+			.get(key)
+			.into_iter()
+			.flatten()
+			.any(|agent| !readability.get(agent).copied().unwrap_or(false));
 		items.push(ReviewItem {
+			consumers: consumers
+				.get(key)
+				.into_iter()
+				.flatten()
+				.filter(|agent| readability.get(*agent).copied().unwrap_or(false))
+				.filter_map(|agent| groups.get(agent).map(|(subject, _)| subject.clone()))
+				.collect(),
 			reference: EntityRef {
 				id: key.0.clone(),
 				version: key.1.clone(),
@@ -268,7 +328,11 @@ pub async fn review(
 			name: Localized::new(),
 			description: Localized::new(),
 			digest: None,
-			status: ReviewStatus::Missing,
+			status: if hidden_consumer {
+				ReviewStatus::NeedsOtherApprover
+			} else {
+				ReviewStatus::Missing
+			},
 			approved: false,
 			can_approve: false,
 			expected_revision: 0,
@@ -286,6 +350,9 @@ pub async fn review(
 			.then_with(|| left.reference.id.cmp(&right.reference.id))
 			.then_with(|| left.reference.version.cmp(&right.reference.version))
 	});
+	for item in &mut items {
+		item.consumers.sort();
+	}
 	let ready = hidden == 0
 		&& items
 			.iter()
@@ -303,8 +370,10 @@ pub async fn review(
 async fn review_item(
 	scope: &mut dyn ApprovalReviewScope,
 	entry: &Entry,
-	agent_subject: Option<&str>,
-	agent_groups: &BTreeSet<String>,
+	consumers: &[(String, BTreeSet<String>)],
+	hidden_subjects: &BTreeSet<String>,
+	hidden_consumer: bool,
+	is_root: bool,
 ) -> Result<ReviewItem> {
 	let approval = scope
 		.approval(&EntityRef {
@@ -321,11 +390,17 @@ async fn review_item(
 	let current = approval
 		.as_ref()
 		.and_then(|approval| approval.restriction.clone());
+	let hidden_consumer = hidden_consumer
+		|| current
+			.as_ref()
+			.is_some_and(|restriction| !restriction.subjects.is_disjoint(hidden_subjects));
 	let expected_revision = approval.as_ref().map_or(0, |approval| approval.revision);
 	let provider_available = scope.provider_available(entry).await?;
 	let source_available = scope.source_slot_available(entry).await?;
-	let can_approve = scope.can_approve(entry).await?;
-	let status = if installed_missing {
+	let can_approve = scope.can_approve(entry).await? && !hidden_consumer;
+	let status = if hidden_consumer {
+		ReviewStatus::NeedsOtherApprover
+	} else if installed_missing {
 		ReviewStatus::Missing
 	} else if provider_available {
 		if source_available {
@@ -343,27 +418,45 @@ async fn review_item(
 	} else {
 		ReviewStatus::ProviderUnavailable
 	};
-	let (proposed_restriction, widen) = match (agent_subject, &current) {
-		(Some(subject), Some(current)) if current.allows(subject, agent_groups) => {
+	let missing: BTreeSet<String> = consumers
+		.iter()
+		.filter(|(subject, groups)| {
+			current
+				.as_ref()
+				.is_none_or(|restriction| !restriction.allows(subject, groups))
+		})
+		.map(|(subject, _)| subject.clone())
+		.collect();
+	let (proposed_restriction, widen) = if hidden_consumer {
+		(None, false)
+	} else if consumers.is_empty() || (is_root && current.is_none()) {
+		(current.clone(), false)
+	} else if let Some(current) = &current {
+		if missing.is_empty() {
 			(Some(current.clone()), false)
+		} else {
+			(
+				Some(current.union(&CatalogRestriction {
+					subjects: missing,
+					groups: BTreeSet::new(),
+				})),
+				true,
+			)
 		}
-		(Some(subject), Some(current)) => {
-			let proposed = current.union(&CatalogRestriction {
-				subjects: [subject.to_owned()].into(),
-				groups: BTreeSet::new(),
-			});
-			(Some(proposed), true)
-		}
-		(Some(subject), None) => (
+	} else {
+		(
 			Some(CatalogRestriction {
-				subjects: [subject.to_owned()].into(),
+				subjects: missing,
 				groups: BTreeSet::new(),
 			}),
 			false,
-		),
-		(None, current) => (current.clone(), false),
+		)
 	};
 	Ok(ReviewItem {
+		consumers: consumers
+			.iter()
+			.map(|(subject, _)| subject.clone())
+			.collect(),
 		reference: EntityRef {
 			id: entry.id.clone(),
 			version: entry.version.clone(),
@@ -376,7 +469,7 @@ async fn review_item(
 		approved,
 		can_approve,
 		expected_revision,
-		restriction: current,
+		restriction: if hidden_consumer { None } else { current },
 		proposed_restriction,
 		widen,
 		installation: installed.map(|installed| ReviewInstallation {
