@@ -1,10 +1,13 @@
 //! Ordinary Run admission pins the default without granting disclosure authority.
+//! The shared bootstrap approves the built-in compaction Decider on the Node, as
+//! an Agent's Approval Review requires (#540); a Run starts only while it holds.
 use super::*;
 use aidash_application::registry::system::{COMPACTION_DECIDER_ID, COMPACTION_DECIDER_VERSION};
 use aidash_domain::{context::recovery::Failure, decision::Hook};
 
 #[rstest::rstest]
-#[case::unapproved("unapproved", Some(Failure::DeciderUnapproved))]
+#[case::unapproved("unapproved", None)]
+#[case::withdrawn_after_start("withdrawn", Some(Failure::DeciderUnapproved))]
 #[case::missing_credential("missing_credential", Some(Failure::DeciderUnavailable))]
 #[case::approved("approved", None)]
 #[case::removed("removed", Some(Failure::ContextUnreducible))]
@@ -45,11 +48,11 @@ async fn ordinary_runs_pin_the_compaction_default_but_only_dispatch_with_live_ap
 	let openrouter = tenant_openrouter::install(&mut f);
 	app.context.set_singleton(f.clone());
 	let (_, token, task) = bootstrap(&f, &app, &upstream.url).await;
-	if matches!(state, "approved" | "override") {
+	if matches!(state, "approved" | "override" | "withdrawn") {
 		openrouter.connect("acme").await;
 		*openrouter.endpoint.lock().unwrap() = upstream.url.clone();
 	}
-	if matches!(state, "approved" | "missing_credential") {
+	let withdraw_builtin = async || {
 		let (status, body) = request(
 			&app,
 			&token,
@@ -58,11 +61,14 @@ async fn ordinary_runs_pin_the_compaction_default_but_only_dispatch_with_live_ap
 			json!({
 				"node":aidash_domain::nodes::NodeName::derived("acme"),
 				"entry":{"id":COMPACTION_DECIDER_ID,"version":COMPACTION_DECIDER_VERSION},
-				"expected_revision":0,"enabled":true
+				"expected_revision":1,"enabled":false
 			}),
 		)
 		.await;
 		assert_eq!(status, 200, "{body}");
+	};
+	if state == "unapproved" {
+		withdraw_builtin().await;
 	}
 	let version = if state == "removed" || private {
 		if private {
@@ -138,6 +144,21 @@ async fn ordinary_runs_pin_the_compaction_default_but_only_dispatch_with_live_ap
 		}),
 	)
 	.await;
+	if state == "unapproved" {
+		// The start is refused without creating a Run, naming the Decider.
+		assert_eq!(status, 409, "{body}");
+		assert_eq!(
+			body["error"],
+			format!(
+				"COMPACTION_DECIDER_UNAPPROVED: {COMPACTION_DECIDER_ID}@{COMPACTION_DECIDER_VERSION}"
+			),
+			"{body}"
+		);
+		let runs = f.store.runs(&TEST_FIXTURE).await.unwrap();
+		assert!(runs.iter().all(|run| run.task_id != task), "no Run exists");
+		cleanup(f, &url, &schema).await;
+		return;
+	}
 	assert_eq!(status, 200, "{body}");
 	let worker = Harness {
 		federation: f.clone(),
@@ -219,6 +240,10 @@ async fn ordinary_runs_pin_the_compaction_default_but_only_dispatch_with_live_ap
 		)
 		.await;
 		assert_eq!(status, 200, "{body}");
+	}
+	if state == "withdrawn" {
+		// A Run that already runs keeps the typed pause when the approval goes.
+		withdraw_builtin().await;
 	}
 	if !small {
 		seed_history(&f, &run).await;

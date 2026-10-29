@@ -57,6 +57,8 @@ import {
 import { GenerationAssignForm } from "../generation";
 import { RunResearchEvidence } from "../research-governance";
 import { EntityDetails } from "../entity-details";
+import { DeciderStartRefusal } from "../catalog-approval";
+import { unapprovedCompactionDecider } from "../catalog-approval-model";
 import { ArtifactList } from "./channel";
 import {
   answeredAtDeadline,
@@ -132,6 +134,7 @@ export function OperationsDialog({
   const execution = ["workspace", "goal", "task", "assign", "human"].includes(
     d.kind,
   );
+  const refusedDecider = unapprovedCompactionDecider(error);
   const taskRuns = task
     ? data.runs.filter(
         (run) => run.task_id === task.id && isLocalRun(run, data),
@@ -161,7 +164,16 @@ export function OperationsDialog({
       }
       close={close}
     >
-      {error && <Alert>{error}</Alert>}
+      {error &&
+        (refusedDecider ? (
+          <DeciderStartRefusal
+            decider={refusedDecider}
+            data={data}
+            openEntry={(entity) => open({ kind: "entityDetail", entity })}
+          />
+        ) : (
+          <Alert>{error}</Alert>
+        ))}
       <fieldset disabled={busy} className="m-0 grid min-w-0 gap-4 border-0 p-0">
         {unavailable ? (
           <Hint>{copy.unavailable}</Hint>

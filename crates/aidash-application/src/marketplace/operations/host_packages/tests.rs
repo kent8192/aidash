@@ -95,6 +95,7 @@ async fn host_group_staging_pins_complete_rewritten_lifecycle_without_any_approv
 	}
 	let approval = ApprovalSet {
 		tenant: "owner".into(),
+		node: None,
 		installations: result
 			.installations
 			.iter()
@@ -103,6 +104,7 @@ async fn host_group_staging_pins_complete_rewritten_lifecycle_without_any_approv
 				revision: r.revision,
 				digest: r.digest.clone(),
 				expected_activation_revision: 0,
+				restriction: None,
 			})
 			.collect(),
 		approvals: result
@@ -111,6 +113,7 @@ async fn host_group_staging_pins_complete_rewritten_lifecycle_without_any_approv
 			.map(|r| ApprovalSelection {
 				reference: reference(&r.entry),
 				expected_catalog_revision: 0,
+				restriction: None,
 			})
 			.collect(),
 	};

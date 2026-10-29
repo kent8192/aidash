@@ -273,7 +273,9 @@ pub fn anonymous_client(endpoint: EndpointFuture) -> ClientFuture {
 		.shared()
 }
 
-/// Positive native Run fixtures use an admitted graph, including Node defaults.
+/// Positive native Run fixtures use an admitted graph, including Node defaults
+/// except compaction: a Run starts only once its Decider is approved (#540), and
+/// these fixtures approve agents one entry at a time.
 #[allow(dead_code)]
 pub async fn register_fixture_agent(fixture: &EndpointFixture, id: &str) {
 	let model = format!("{id}-fixture-model");
@@ -289,7 +291,7 @@ pub async fn register_fixture_agent(fixture: &EndpointFixture, id: &str) {
 		(
 			"agent",
 			id,
-			json!({"schema_version":1,"model":{"id":model,"version":"1.0.0"},"instructions":"Native Run fixture","bindings":[],"remove_default":[]}),
+			json!({"schema_version":1,"model":{"id":model,"version":"1.0.0"},"instructions":"Native Run fixture","bindings":[],"remove_default":["compaction"]}),
 		),
 	] {
 		fixture.runtime.registry.register(&tenant, serde_json::from_value(json!({"id":key,"version":"1.0.0","kind":kind,"name":{"en":key},"description":{"en":"Native Run fixture"},"schema":{},"config":config})).unwrap()).await.unwrap();
