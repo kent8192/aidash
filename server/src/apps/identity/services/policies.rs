@@ -206,6 +206,48 @@ async fn refresh_requests_for_review(
 	Ok(())
 }
 
+/// Persist the outcome of every open request on `node` after an approval write
+/// that is not a review submission, so a request completed through the single,
+/// batch or Marketplace approval endpoint stays fulfilled instead of tracking
+/// current readiness. A root this approver cannot review keeps its derived
+/// read state until a later write path can see it.
+pub(crate) async fn refresh_requests_on_node(
+	access: &mut Access,
+	store: &crate::store::Store,
+	deployment: &aidash_domain::nodes::DeploymentId,
+	identity: &SubjectIdentity,
+	node: &aidash_domain::nodes::NodeName,
+) -> Result<()> {
+	const BATCH: u64 = 256;
+	let mut roots = std::collections::BTreeSet::new();
+	let mut offset = 0u64;
+	loop {
+		let rows = requests::open_page(&mut access.tx, &identity.tenant, Some(node), offset, BATCH)
+			.await?;
+		let count = rows.len() as u64;
+		roots.extend(
+			rows.into_iter()
+				.map(|request| (request.root.id, request.root.version)),
+		);
+		offset += count;
+		if count < BATCH {
+			break;
+		}
+	}
+	let actor = request_audit_actor(identity);
+	for (id, version) in roots {
+		let root = crate::registry::EntityRef { id, version };
+		let current = match request_review_for(access, store, deployment, node, &root).await {
+			Ok(current) => current,
+			Err(Error::Forbidden | Error::NotFound(_)) => continue,
+			Err(error) => return Err(error),
+		};
+		refresh_requests_for_review(access, &identity.tenant, node, &root, &current, &actor)
+			.await?;
+	}
+	Ok(())
+}
+
 fn actor_principal(actor: &Actor) -> aidash_domain::identity::Principal {
 	match actor {
 		Actor::DeploymentAdministrator => {
@@ -898,15 +940,26 @@ impl PolicyAdministration {
 		{
 			return access.finish(Err(error)).await;
 		}
-		let result = aidash_application::authorization::catalog::approvals::approve(
-			&mut TenantCatalog {
-				access: &mut access,
-				node: f.config.deployment.node(node),
-			},
-			&approvals,
-		)
-		.await
-		.map_err(Into::into);
+		let result = async {
+			let bindings = aidash_application::authorization::catalog::approvals::approve(
+				&mut TenantCatalog {
+					access: &mut access,
+					node: f.config.deployment.node(node.clone()),
+				},
+				&approvals,
+			)
+			.await?;
+			refresh_requests_on_node(
+				&mut access,
+				&f.store,
+				&f.config.deployment,
+				&identity,
+				&node,
+			)
+			.await?;
+			Ok(bindings)
+		}
+		.await;
 		access.finish(result).await
 	}
 	pub(crate) async fn issue_credential(

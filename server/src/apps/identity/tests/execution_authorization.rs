@@ -5940,6 +5940,84 @@ async fn catalog_request_is_fulfilled_by_the_review_and_grants_nothing_before_it
 
 #[rstest::rstest]
 #[tokio::test]
+async fn catalog_request_fulfilled_by_an_ordinary_approval_stays_final(
+	#[future(awt)]
+	#[from(common::native_application)]
+	fixture: common::ApplicationFixture,
+) {
+	let (f, url, schema) = fixture.runtime.parts();
+	let app = fixture.application;
+	let (_, alice, _) = bootstrap(&f, &app, "http://127.0.0.1:9").await;
+	let node = aidash_domain::nodes::NodeName::derived("acme");
+	let catalog = "/api/authorization/acme/catalog";
+	let set_model = |enabled: bool, expected_revision: u64| {
+		json!({"node":node,"entry":{"id":"model","version":"1.0.0"},
+			"enabled":enabled,"expected_revision":expected_revision})
+	};
+	let (status, body) = request(&app, &alice, "POST", catalog, set_model(false, 1)).await;
+	assert_eq!(status, 200, "{body}");
+	let (status, review) = request(
+		&app,
+		&alice,
+		"GET",
+		&format!("/api/authorization/acme/catalog/review?node={node}&entry=agent/research@1.0.0"),
+		Value::Null,
+	)
+	.await;
+	assert_eq!(status, 200, "{review}");
+	assert_eq!(review["ready"], false, "{review}");
+	let id = Uuid::new_v4();
+	sqlx::query(
+		"INSERT INTO catalog_approval_requests \
+		 (id, tenant, node, root_id, root_version, requester, reason, \
+		  closure_digest, state, decline_reason, decided_by, created_at, \
+		  updated_at, revision) \
+		 VALUES ($1, 'acme', $2, 'research', '1.0.0', 'bob', 'Please', $3, \
+		  'open', NULL, NULL, now(), now(), 1)",
+	)
+	.bind(id)
+	.bind(node.as_str())
+	.bind(review["closure_digest"].as_str().unwrap())
+	.execute(f.store.pool.fixture_driver())
+	.await
+	.unwrap();
+
+	// The ordinary approval endpoint completes the closure, then the approval
+	// is withdrawn again. The request was fulfilled at that write and stays so.
+	let (status, body) = request(&app, &alice, "POST", catalog, set_model(true, 2)).await;
+	assert_eq!(status, 200, "{body}");
+	let (status, body) = request(&app, &alice, "POST", catalog, set_model(false, 3)).await;
+	assert_eq!(status, 200, "{body}");
+
+	let state: String =
+		sqlx::query_scalar("SELECT state FROM catalog_approval_requests WHERE id = $1")
+			.bind(id)
+			.fetch_one(f.store.pool.fixture_driver())
+			.await
+			.unwrap();
+	assert_eq!(state, "fulfilled");
+	let (status, pending) = request(
+		&app,
+		&alice,
+		"GET",
+		&format!("/api/authorization/acme/catalog/requests/pending?node={node}"),
+		Value::Null,
+	)
+	.await;
+	assert_eq!(status, 200, "{pending}");
+	assert!(
+		pending["requests"]
+			.as_array()
+			.unwrap()
+			.iter()
+			.all(|request| request["id"] != id.to_string()),
+		"{pending}"
+	);
+	cleanup(f, &url, &schema).await;
+}
+
+#[rstest::rstest]
+#[tokio::test]
 async fn catalog_request_turns_stale_after_a_missing_dependency_is_registered(
 	#[future(awt)]
 	#[from(common::native_application)]
