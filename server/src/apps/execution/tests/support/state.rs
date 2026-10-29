@@ -24,7 +24,7 @@ pub fn tool_call(fields: Value) -> aidash_server::domain::ToolCallState {
 }
 #[allow(dead_code)] // Each integration target uses a subset of these complete state fixtures.
 pub fn pending(state: aidash_server::domain::RunState) -> Value {
-	json!({"state_version":1,"data":json!(state)["data"],"recovery":{"retry":null,"lease_recovered":false}})
+	json!({"state_version":1,"data":json!(state)["data"],"recovery":{"retry":null}})
 }
 #[allow(dead_code)] // Each integration target uses a subset of these complete state fixtures.
 pub fn context(fields: Value) -> Value {

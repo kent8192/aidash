@@ -65,8 +65,26 @@ async fn concurrent_workers_skip_locked_rows_and_recover_expired_leases(
 		assert_ne!(leased.id, records[0].id);
 		assert_eq!(leased.revision, 1);
 		assert!(leased.lease_until.unwrap() > now);
-		assert_eq!(leased.recovery.lease_recovered, leased.id == records[1].id);
+		assert_eq!(
+			leased.recovery.lease_recoveries,
+			u32::from(leased.id == records[1].id)
+		);
 	}
+	let events = aidash_server::apps::execution::models::Event::objects()
+		.filter(
+			aidash_server::apps::execution::models::Event::field_kind()
+				.eq("run.lease_recovery_claimed"),
+		)
+		.all_with_db(&mut db)
+		.await
+		.unwrap();
+	assert!(
+		events
+			.iter()
+			.any(|event| event.data.0["run_id"] == records[1].id.to_string()
+				&& event.data.0["lease_recoveries"] == 1
+				&& event.data.0["isolated"].as_bool() == Some(true))
+	);
 	assert!(store.lease_run(Uuid::new_v4(), 30).await.unwrap().is_none());
 	lock.rollback().await.unwrap();
 	let previously_locked = store.lease_run(a, 30).await.unwrap().unwrap();
@@ -246,4 +264,102 @@ async fn workers_filter_terminal_paused_retry_and_waiting_records(
 		);
 	}
 	assert!(store.lease_run(Uuid::new_v4(), 30).await.unwrap().is_none());
+}
+
+#[rstest]
+#[tokio::test]
+async fn fourth_lease_recovery_enters_failure_delivery_and_records_crash_loop(
+	#[future] database: DatabaseFixture,
+	mut run: Run,
+) {
+	use aidash_server::apps::execution::models::Event;
+	let database = database.await;
+	database.tenant("acme").await;
+	let store = Store::from_pool(
+		database.connection.into_postgres().unwrap(),
+		aidash_domain::nodes::DeploymentId::parse("aidash://lease-test").unwrap(),
+	)
+	.await
+	.unwrap();
+	run.lease_owner = Some(Uuid::new_v4());
+	run.lease_until = Some(Utc::now() - Duration::seconds(1));
+	run.pending.0["recovery"]["lease_recoveries"] = json!(3);
+	let mut db = database.lease.handle();
+	Run::objects()
+		.create_with_conn(&mut db, &run)
+		.await
+		.unwrap();
+	assert!(store.lease_run(Uuid::new_v4(), 30).await.unwrap().is_none());
+	let saved = Run::objects()
+		.filter(Run::field_id().eq(run.id))
+		.get_with_db(&mut db)
+		.await
+		.unwrap();
+	assert_eq!(saved.phase, RunPhase::Waiting);
+	assert_eq!(saved.pending.0["data"]["reason"], "failure_delivery");
+	assert_eq!(
+		saved.error.as_deref(),
+		Some(
+			"The worker process stopped 3 times in a row while running this step, so Aidash stopped retrying it."
+		)
+	);
+	assert!(saved.lease_owner.is_none());
+	let events = Event::objects()
+		.filter(Event::field_kind().eq("run.crash_loop"))
+		.all_with_db(&mut db)
+		.await
+		.unwrap();
+	assert!(
+		events
+			.iter()
+			.any(|event| event.data.0["run_id"] == run.id.to_string()
+				&& event.data.0["lease_recoveries"] == 3)
+	);
+}
+
+#[rstest]
+#[tokio::test]
+async fn legacy_lease_flags_are_converted_by_migration(
+	#[future] database: DatabaseFixture,
+	run: Run,
+) {
+	let database = database.await;
+	database.tenant("acme").await;
+	let mut db = database.lease.handle();
+	let mut recovered = run.clone();
+	recovered.pending.0["recovery"]["lease_recovered"] = json!(true);
+	let mut ordinary = run;
+	ordinary.id = Uuid::new_v4();
+	ordinary.task_id = Uuid::new_v4();
+	ordinary.pending.0["recovery"]["lease_recovered"] = json!(false);
+	for item in [&recovered, &ordinary] {
+		Run::objects()
+			.create_with_conn(&mut db, item)
+			.await
+			.unwrap();
+	}
+	let pool = sqlx::PgPool::connect(&database.owner_url).await.unwrap();
+	let mut tx = pool.begin().await.unwrap();
+	sqlx::raw_sql(include_str!(
+		"../../../../migrations/execution/sql/forward/0080_lease_recoveries.sql"
+	))
+	.execute(&mut *tx)
+	.await
+	.unwrap();
+	for (id, expected) in [(recovered.id, Some(1)), (ordinary.id, None)] {
+		let value: serde_json::Value = sqlx::query_scalar("SELECT pending FROM runs WHERE id = $1")
+			.bind(id)
+			.fetch_one(&mut *tx)
+			.await
+			.unwrap();
+		assert!(value["recovery"].get("lease_recovered").is_none());
+		assert_eq!(
+			value["recovery"]
+				.get("lease_recoveries")
+				.and_then(|v| v.as_u64()),
+			expected
+		);
+	}
+	tx.rollback().await.unwrap();
+	pool.close().await;
 }

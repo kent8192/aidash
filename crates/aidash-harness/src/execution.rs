@@ -10,9 +10,25 @@ use aidash_application::{
 	},
 };
 use std::{future::Future, sync::Arc, time::Duration};
-use tokio::{sync::watch, task::JoinSet};
+use tokio::{
+	sync::{RwLock, watch},
+	task::JoinSet,
+};
 use tracing::Instrument as _;
 use uuid::Uuid;
+
+// Shared by every worker in the process: an Isolated Step excludes all others.
+static STEP_GATE: RwLock<()> = RwLock::const_new(());
+
+async fn step_with_gate<T>(gate: &RwLock<()>, isolated: bool, work: impl Future<Output = T>) -> T {
+	if isolated {
+		let _guard = gate.write().await;
+		work.await
+	} else {
+		let _guard = gate.read().await;
+		work.await
+	}
+}
 
 enum Completion<T> {
 	Completed(Result<T>),
@@ -90,15 +106,9 @@ async fn advance_step(
 	// Renew the claimed run directly so that normal lease release is handled by
 	// the existing false-renewal cancellation path, rather than a failed lookup.
 	let run = scope.metadata().id;
-	let Completion::Completed(result) = keepalive(
-		worker::advance(scope.as_mut(), token),
-		leases,
-		run,
-		token,
-		seconds,
-	)
-	.await?
-	else {
+	let isolated = scope.lease_recoveries() > 0;
+	let work = step_with_gate(&STEP_GATE, isolated, worker::advance(scope.as_mut(), token));
+	let Completion::Completed(result) = keepalive(work, leases, run, token, seconds).await? else {
 		return Ok(());
 	};
 	scope.resume_visibility().await?;

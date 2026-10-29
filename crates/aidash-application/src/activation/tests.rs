@@ -323,7 +323,13 @@ impl SchedulingScope for Scope {
 		self.state.record("dependencies");
 		Ok(self.state.dependencies.load(Ordering::Acquire))
 	}
-	async fn lease(&mut self, run: &Run, token: Uuid, seconds: i32) -> Result<Option<Run>> {
+	async fn lease(
+		&mut self,
+		run: &Run,
+		token: Uuid,
+		seconds: i32,
+		_: &str,
+	) -> Result<Option<Run>> {
 		self.state.record("lease");
 		if !self.state.claimable.load(Ordering::Acquire) {
 			return Ok(None);
@@ -361,6 +367,22 @@ impl SchedulingScope for Scope {
 			matches!(state, RunState::Waiting(wait) if matches!(wait.as_ref(), WaitingState::FailureDelivery { target: FailureTarget::Failed, .. }))
 		);
 		self.state.record("invalid_state");
+		Ok(())
+	}
+	async fn crash_loop(
+		&mut self,
+		_: &RunMetadata,
+		_: Uuid,
+		state: &RunState,
+		reason: &str,
+		_: &str,
+		lease_recoveries: u32,
+	) -> Result<()> {
+		assert!(
+			matches!(state, RunState::Waiting(wait) if matches!(wait.as_ref(), WaitingState::FailureDelivery { target: FailureTarget::Failed, .. }))
+		);
+		self.state
+			.record(format!("crash_loop:{lease_recoveries}:{reason}"));
 		Ok(())
 	}
 	async fn cancel_unloadable(
@@ -913,4 +935,72 @@ async fn backpressure_retains_unaccepted_rows_and_sends_at_most_eight(repository
 	);
 	assert!(!events.iter().any(|e| e == "published:1"));
 	assert_eq!(repository.0.visibility.load(Ordering::Acquire), 0);
+}
+
+#[rstest]
+#[case::first(0, false)]
+#[case::third(2, false)]
+#[case::fourth(3, true)]
+#[tokio::test]
+async fn consecutive_lease_recoveries_are_bounded(
+	repository: Repository,
+	now: DateTime<Utc>,
+	#[case] count: u32,
+	#[case] fails: bool,
+) {
+	let mut row = raw(now);
+	row.metadata.lease_owner = Some(Uuid::new_v4());
+	row.metadata.lease_until = Some(now);
+	row.pending["recovery"]["lease_recoveries"] = serde_json::json!(count);
+	*repository.0.run.lock().unwrap() = Some(row);
+	let mut scope = Scope {
+		state: repository.0.clone(),
+		committed: false,
+	};
+	let claimed = lease(
+		&mut scope,
+		Uuid::new_v4(),
+		30,
+		None,
+		repository.node_id(),
+		&mut None,
+	)
+	.await
+	.unwrap();
+	let events = repository.0.events.lock().unwrap();
+	if fails {
+		assert!(claimed.is_none());
+		assert!(events.iter().any(|event| event == "repair_lease"));
+		assert!(events.iter().any(|event| event == "crash_loop:3:The worker process stopped 3 times in a row while running this step, so Aidash stopped retrying it."));
+		assert!(!events.iter().any(|event| event == "lease"));
+	} else {
+		assert_eq!(claimed.unwrap().recovery.lease_recoveries, count + 1);
+		assert!(events.iter().any(|event| event == "lease"));
+	}
+}
+
+#[rstest]
+#[tokio::test]
+async fn cancelled_run_bypasses_crash_loop_bound(repository: Repository, now: DateTime<Utc>) {
+	let mut row = raw(now);
+	row.metadata.lease_owner = Some(Uuid::new_v4());
+	row.metadata.control = RunControl::Cancelled;
+	row.pending["recovery"]["lease_recoveries"] = serde_json::json!(LEASE_RECOVERY_LIMIT);
+	*repository.0.run.lock().unwrap() = Some(row);
+	let mut scope = Scope {
+		state: repository.0.clone(),
+		committed: false,
+	};
+	let claimed = lease(
+		&mut scope,
+		Uuid::new_v4(),
+		30,
+		None,
+		repository.node_id(),
+		&mut None,
+	)
+	.await
+	.unwrap()
+	.unwrap();
+	assert_eq!(claimed.control, RunControl::Cancelled);
 }

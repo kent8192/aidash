@@ -386,7 +386,7 @@ async fn lease_fencing_and_uncertain_effect_reconciliation(
 	.unwrap();
 	let new_token = Uuid::new_v4();
 	let recovered = store.lease_run(new_token, 30).await.unwrap().unwrap();
-	assert!(recovered.recovery.lease_recovered);
+	assert!(recovered.recovery.lease_recoveries > 0);
 	assert_eq!(
 		recovered
 			.context

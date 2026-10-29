@@ -438,3 +438,92 @@ async fn terminal_delivery_drains_a_burst_without_per_run_sleep(leases: Leases) 
 	);
 	delivery.await.unwrap().unwrap();
 }
+
+#[tokio::test]
+async fn isolated_step_waits_for_active_steps_and_blocks_new_steps() {
+	let gate = Arc::new(RwLock::new(()));
+	let normal = gate.read().await;
+	let (started_tx, mut started_rx) = tokio::sync::mpsc::unbounded_channel();
+	let (release_tx, release_rx) = tokio::sync::oneshot::channel::<()>();
+	let isolated_gate = gate.clone();
+	let isolated_tx = started_tx.clone();
+	let mut isolated = Box::pin(async move {
+		step_with_gate(&isolated_gate, true, async move {
+			isolated_tx.send("isolated").unwrap();
+			release_rx.await.unwrap();
+		})
+		.await;
+	});
+	// Poll the writer once so it is queued before the next reader arrives.
+	tokio::select! {
+		biased;
+		_ = &mut isolated => panic!("isolated step ran while a normal step held the gate"),
+		_ = tokio::task::yield_now() => {},
+	}
+	let isolated = tokio::spawn(isolated);
+	let next_gate = gate.clone();
+	let next = tokio::spawn(async move {
+		step_with_gate(&next_gate, false, async move {
+			started_tx.send("normal").unwrap();
+		})
+		.await;
+	});
+	tokio::task::yield_now().await;
+	assert!(started_rx.try_recv().is_err());
+	drop(normal);
+	assert_eq!(
+		tokio::time::timeout(Duration::from_secs(1), started_rx.recv())
+			.await
+			.unwrap(),
+		Some("isolated")
+	);
+	assert!(started_rx.try_recv().is_err());
+	release_tx.send(()).unwrap();
+	assert_eq!(
+		tokio::time::timeout(Duration::from_secs(1), started_rx.recv())
+			.await
+			.unwrap(),
+		Some("normal")
+	);
+	isolated.await.unwrap();
+	next.await.unwrap();
+}
+
+#[rstest]
+#[tokio::test(start_paused = true)]
+async fn lease_is_renewed_while_waiting_for_isolation(leases: Leases) {
+	let gate = RwLock::new(());
+	let normal = gate.read().await;
+	let work = step_with_gate(&gate, true, async { Ok(()) });
+	let supervised = keepalive(work, &leases, leases.run, Uuid::nil(), 3);
+	tokio::pin!(supervised);
+	tokio::select! { _ = &mut supervised => panic!("isolated step ran early"), _ = tokio::time::sleep(Duration::from_secs(2)) => {} }
+	assert!(leases.trace.lock().unwrap().contains(&"renew"));
+	drop(normal);
+	assert!(matches!(
+		supervised.await.unwrap(),
+		Completion::Completed(Ok(()))
+	));
+}
+
+#[rstest]
+#[tokio::test(start_paused = true)]
+async fn lost_lease_cancels_a_step_waiting_for_isolation(leases: Leases) {
+	let gate = RwLock::new(());
+	let normal = gate.read().await;
+	*leases.renewals.lock().unwrap() = [Ok(false)].into_iter().collect();
+	let started = AtomicBool::new(false);
+	let work = step_with_gate(&gate, true, async {
+		started.store(true, Ordering::Release);
+		Ok(())
+	});
+	assert!(matches!(
+		keepalive(work, &leases, leases.run, Uuid::nil(), 3)
+			.await
+			.unwrap(),
+		Completion::Lost
+	));
+	assert!(!started.load(Ordering::Acquire));
+	drop(normal);
+	assert!(gate.try_write().is_ok());
+}

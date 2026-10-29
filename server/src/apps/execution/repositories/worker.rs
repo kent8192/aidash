@@ -79,6 +79,9 @@ impl WorkerStep for Step {
 	fn metadata(&self) -> RunMetadata {
 		self.run.metadata()
 	}
+	fn lease_recoveries(&self) -> u32 {
+		self.run.recovery.lease_recoveries
+	}
 	async fn tenant(&mut self) -> Option<String> {
 		self.federation
 			.store

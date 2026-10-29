@@ -1,5 +1,10 @@
 # Aidash native migration history
 
+`execution/0080_lease_recoveries` converts the former Lease Recovery flag to
+the consecutive recovery counter, updates the physical `runs.pending` default,
+and replaces the activation trigger function. PostgreSQL function replacement
+and JSON data conversion are SQL exceptions that Reinhardt cannot express.
+
 Issue #296 adds write-only Tenant Secrets in `identity/0036` through `0038`
 and durable operation egress budgets and audits in `execution/0046` through
 `0048`. Their forced Tenant row policies use the existing policy renderer.

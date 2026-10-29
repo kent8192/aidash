@@ -16,6 +16,10 @@ pub trait WorkerLeases: Send + Sync {
 #[async_trait]
 pub trait WorkerStep: Send {
 	fn metadata(&self) -> RunMetadata;
+	/// Consecutive Lease Recoveries determine whether the step must be isolated.
+	fn lease_recoveries(&self) -> u32 {
+		0
+	}
 	/// The Tenant that owns the Run, for log context only. A Deployment
 	/// Administrator who finds a runaway `run_id` in the logs needs it to name
 	/// the Run in a Safety Stop (ADR 0101).
