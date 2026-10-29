@@ -417,7 +417,12 @@ impl Authority for BrokerAuthority {
 			credential: None,
 			route: Some(aidash_application::tenant_secrets::SecretRoute {
 				base: Url::parse(&self.broker).unwrap(),
-				token: "secret-call-token".into(),
+				token: if path == "invalid-token" {
+					"invalid\ntoken"
+				} else {
+					"secret-call-token"
+				}
+				.into(),
 			}),
 			meter: self.audit.clone(),
 		})
@@ -540,6 +545,35 @@ async fn a_secret_bearing_service_streams_through_the_broker_and_rewrites_redire
 	gateway.await.unwrap().unwrap();
 	broker_task.abort();
 	let _ = broker_task.await;
+}
+
+#[tokio::test]
+async fn invalid_broker_capability_is_rejected_before_contacting_the_broker() {
+	let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+	let origin = format!("http://{}", listener.local_addr().unwrap());
+	let audit = Arc::new(Audit::default());
+	let authority = Arc::new(BrokerAuthority {
+		broker: "http://127.0.0.1:9/v1/forward".into(),
+		origin: origin.clone(),
+		audit: audit.clone(),
+		definition: secret_service(),
+	});
+	let (stop, receiver) = watch::channel(false);
+	let gateway = tokio::spawn(serve(listener, authority, receiver));
+	let response = reqwest::get(format!("{origin}/v1/operation-token/images/invalid-token"))
+		.await
+		.unwrap();
+	assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+	assert_eq!(
+		response.text().await.unwrap(),
+		r#"{"error":"broker_unavailable"}"#
+	);
+	assert_eq!(
+		*audit.finished_records.lock().unwrap(),
+		vec![(503, Some("broker_unavailable".into()))]
+	);
+	stop.send(true).unwrap();
+	gateway.await.unwrap().unwrap();
 }
 
 #[tokio::test]
@@ -696,11 +730,12 @@ async fn a_service_without_a_secret_still_goes_direct() {
 	tokio::time::timeout(Duration::from_secs(5), audit.finished.notified())
 		.await
 		.unwrap();
-	let records = audit.finished_records.lock().unwrap();
-	assert_eq!(records.len(), 1);
-	assert_eq!(records[0].0, 418);
-	assert_ne!(records[0].1.as_deref(), Some("broker_rejected"));
-	drop(records);
+	{
+		let records = audit.finished_records.lock().unwrap();
+		assert_eq!(records.len(), 1);
+		assert_eq!(records[0].0, 418);
+		assert_ne!(records[0].1.as_deref(), Some("broker_rejected"));
+	}
 	assert_eq!(audit.sent.load(Ordering::Relaxed), 0);
 	stop.send(true).unwrap();
 	gateway.await.unwrap().unwrap();

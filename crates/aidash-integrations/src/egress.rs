@@ -481,6 +481,7 @@ async fn forward(
 	if let Some(route) = &admission.route {
 		let Ok(mut value) = hyper::header::HeaderValue::from_str(route.token.expose_secret())
 		else {
+			completion.status = StatusCode::SERVICE_UNAVAILABLE.as_u16();
 			completion.finish(Some("broker_unavailable")).await;
 			return failure(StatusCode::SERVICE_UNAVAILABLE, "broker_unavailable");
 		};
