@@ -419,6 +419,53 @@ async fn live_preview_credentials(
 		// Only the request that carried the Tenant Secret names where it went.
 		assert_eq!(secret_host.as_deref(), host);
 	}
+	// A brokered preview mints once per session and records only the pinned identity.
+	let existing = f.store.tenant_secrets.as_ref().unwrap();
+	let calls = std::sync::Arc::new(RecordedCalls::default());
+	let mut store = f.store.clone();
+	store.tenant_secrets = Some(std::sync::Arc::new(
+		aidash_application::tenant_secrets::Service {
+			repository: existing.repository.clone(),
+			store: existing.store.clone(),
+			reader: None,
+			calls: Some(calls.clone()),
+			fingerprint_key: existing.fingerprint_key.clone(),
+			max_per_tenant: existing.max_per_tenant,
+		},
+	));
+	let gateway = Gateway::new(store);
+	let token = session_token(preview, expires, &f.store).unwrap();
+	for _ in 0..2 {
+		let admitted = gateway
+			.admit(&token, "secured-images", "GET", "/", &digest)
+			.await
+			.unwrap();
+		assert!(admitted.credential.is_none());
+		assert_eq!(
+			admitted.route.as_ref().unwrap().token.expose_secret(),
+			"fixture-route-token"
+		);
+		admitted.meter.finish(200, 1, None).await.unwrap();
+		let row: (Option<Uuid>, Option<String>, Option<String>) = sqlx::query_as(
+			"SELECT secret_id, secret_version, secret_host FROM egress_requests WHERE id = $1",
+		)
+		.bind(admitted.request)
+		.fetch_one(f.store.pool.fixture_driver())
+		.await
+		.unwrap();
+		assert!(row.0.is_some());
+		assert_eq!(row.1.as_deref(), Some("1"));
+		assert_eq!(row.2.as_deref(), Some("api.example.test"));
+	}
+	let grants = calls.0.lock().unwrap();
+	assert_eq!(grants.len(), 1);
+	assert_eq!(grants[0].tenant, "acme");
+	assert_eq!(grants[0].destination.origin, "https://api.example.test");
+	assert_eq!(grants[0].destination.path_prefix, "/");
+	assert_eq!(grants[0].methods, vec!["GET"]);
+	assert!(
+		matches!(&grants[0].subject, aidash_capability::tenant_secret::SecretSubject::Operation { operation, tenant } if *operation == preview && tenant == "acme")
+	);
 }
 
 struct RunnerReply {
@@ -434,5 +481,21 @@ impl reinhardt::Handler for RunnerReply {
 		Ok(Response::ok()
 			.with_json(&json!({"status":"running","started_at":self.started}))
 			.unwrap())
+	}
+}
+
+#[derive(Default)]
+struct RecordedCalls(std::sync::Mutex<Vec<aidash_application::tenant_secrets::SecretCallGrant>>);
+#[async_trait::async_trait]
+impl aidash_application::tenant_secrets::SecretCalls for RecordedCalls {
+	async fn route(
+		&self,
+		grant: aidash_application::tenant_secrets::SecretCallGrant,
+	) -> aidash_application::Result<aidash_application::tenant_secrets::SecretRoute> {
+		self.0.lock().unwrap().push(grant);
+		Ok(aidash_application::tenant_secrets::SecretRoute {
+			base: "https://broker.example/v1/forward".parse().unwrap(),
+			token: "fixture-route-token".into(),
+		})
 	}
 }
