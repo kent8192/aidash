@@ -38,7 +38,14 @@ impl aidash_application::ports::ExecutionRecoveryStore for Backend {
 	async fn save(&self, run: &Run, token: Uuid, event: &str) -> Result<()> {
 		ExecutionStore::save_run(self, run, token, event).await
 	}
-	async fn pause(&self, _: &Run, _: Uuid, _: &str, _: &str) -> Result<()> {
+	async fn pause(
+		&self,
+		_: &Run,
+		_: Uuid,
+		_: &str,
+		_: &str,
+		_: Option<&aidash_domain::tool::AuthorityRefusal>,
+	) -> Result<()> {
 		unexpected("ExecutionRecoveryStore.pause")
 	}
 	async fn pause_semantic(&self, _: &Run, _: Uuid, _: SemanticFailure) -> Result<()> {

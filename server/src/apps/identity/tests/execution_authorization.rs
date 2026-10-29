@@ -1801,6 +1801,280 @@ async fn malformed_scoped_delegation_arguments_remain_model_correctable(
 	cleanup(f, &url, &schema).await;
 }
 
+/// Claim `task` for the `research` agent, run its first step, and put `call` pending in the
+/// Run's `TOOL_CALL` phase as the model's response would; `paused` also stores the pause the
+/// Run showed before Rejected Calls existed.
+async fn run_with_pending_call(
+	f: &aidash_server::federation::Federation,
+	app: &common::TestApplication,
+	token: &str,
+	task: Uuid,
+	harness: &Harness,
+	call: aidash_server::provider::ToolCall,
+	paused: bool,
+) -> aidash_server::domain::Run {
+	assert_eq!(
+		request(
+			app,
+			token,
+			"POST",
+			&format!("/api/tasks/{task}/claim"),
+			json!({"revision":0,"agent":{"id":"research","version":"1.0.0"}})
+		)
+		.await
+		.0,
+		200
+	);
+	harness.worker_once().await.unwrap();
+	let run = f.store.runs(&TEST_FIXTURE).await.unwrap().remove(0);
+	let response = aidash_server::provider::ModelResponse {
+		tool_calls: vec![call],
+		..Default::default()
+	};
+	let mut update = reinhardt::query::Query::update();
+	update
+		.table(reinhardt::query::Alias::new("runs"))
+		.value_expr(
+			reinhardt::query::Alias::new("phase"),
+			reinhardt::query::Expr::cust("'TOOL_CALL'"),
+		)
+		.value_expr(
+			reinhardt::query::Alias::new("pending"),
+			SimpleExpr::CustomWithExpr(
+				"(?)".to_owned(),
+				vec![
+					Expr::value(common::tool_pending(
+						json!({"response":response,"cursor":0}),
+					))
+					.into(),
+				],
+			),
+		)
+		.and_where(SimpleExpr::CustomWithExpr(
+			"(id = ?)".to_owned(),
+			vec![Expr::value(run.id).into()],
+		));
+	if paused {
+		update
+			.value_expr(
+				reinhardt::query::Alias::new("control"),
+				reinhardt::query::Expr::cust("'PAUSED'"),
+			)
+			.value_expr(
+				reinhardt::query::Alias::new("error"),
+				reinhardt::query::Expr::cust("'execution authority denied'"),
+			);
+	}
+	sqlx::query(&update.to_string(reinhardt::query::PostgresQueryBuilder))
+		.execute(f.store.pool.fixture_driver())
+		.await
+		.unwrap();
+	run
+}
+
+#[rstest::rstest]
+#[tokio::test]
+async fn a_delegation_naming_a_task_the_run_cannot_read_is_rejected_and_its_denial_is_audited(
+	#[future(awt)]
+	#[from(common::native_application)]
+	fixture: common::ApplicationFixture,
+) {
+	let (f, url, schema) = fixture.runtime.parts();
+	let app = fixture.application;
+	let (mut policy, token, task) = bootstrap(&f, &app, "http://127.0.0.1:9").await;
+	let workspace = f
+		.store
+		.task(&TEST_FIXTURE, task)
+		.await
+		.unwrap()
+		.workspace_id;
+	let (status, hidden) = request(
+		&app,
+		&token,
+		"POST",
+		&format!("/api/workspaces/{workspace}/tasks"),
+		json!({"title":"Hidden","description":"Policy hides this task from Runs"}),
+	)
+	.await;
+	assert_eq!(status, 200, "{hidden}");
+	let hidden = hidden["id"].as_str().unwrap().to_owned();
+	policy["policies"].as_array_mut().unwrap().push(json!({"id":"hide-task","effect":"deny","subjects":{"any":true},"actions":["task.read"],"resources":{"kinds":["task"],"ids":[hidden]}}));
+	assert_eq!(
+		request(
+			&app,
+			&f.config.api_token,
+			"POST",
+			"/api/authorization/acme",
+			json!({"expected_revision":1,"bundle":policy})
+		)
+		.await
+		.0,
+		200
+	);
+	let harness = Harness {
+		federation: f.clone(),
+	};
+	let run = run_with_pending_call(
+		&f,
+		&app,
+		&token,
+		task,
+		&harness,
+		aidash_server::provider::ToolCall {
+			id: "hidden-task".into(),
+			name: "task_delegate".into(),
+			arguments: json!({"task_id":hidden,"node_id":f.config.deployment,"agent":{"id":"research","version":"1.0.0"}}),
+		},
+		false,
+	)
+	.await;
+	harness.worker_once().await.unwrap();
+	let run = f.store.run(&TEST_FIXTURE, run.id).await.unwrap();
+	assert_eq!(run.control.as_str(), "ACTIVE", "error={:?}", run.error);
+	assert_eq!(run.phase().as_str(), "TOOL_CALL");
+	assert_eq!(json!(run.state)["data"]["cursor"], 1);
+	let error = json!(run.context)["history"][0]["event"]["result"]["error"]
+		.as_str()
+		.unwrap_or_else(|| panic!("{}", json!(run.context)["history"][0]))
+		.to_owned();
+	assert!(error.contains("was not found in this Workspace"), "{error}");
+	let denials: i64 = sqlx::query_scalar(
+		&reinhardt::query::Query::select()
+			.expr(reinhardt::query::Expr::cust("COUNT(*)"))
+			.from(reinhardt::query::Alias::new("authorization_decisions"))
+			.and_where(reinhardt::query::Expr::cust(format!(
+				"action = 'task.read' AND resource_id LIKE '%{hidden}' AND decision ->> 'allowed' = 'false'"
+			)))
+			.to_string(reinhardt::query::PostgresQueryBuilder),
+	)
+	.fetch_one(f.store.pool.fixture_driver())
+	.await
+	.unwrap();
+	assert!(
+		denials >= 1,
+		"the task.read denial must survive the Rejected Call"
+	);
+	cleanup(f, &url, &schema).await;
+}
+
+#[rstest::rstest]
+#[tokio::test]
+async fn a_run_paused_by_a_short_node_name_resumes_into_a_rejected_call(
+	#[future(awt)]
+	#[from(common::native_application)]
+	fixture: common::ApplicationFixture,
+) {
+	let (f, url, schema) = fixture.runtime.parts();
+	let app = fixture.application;
+	let (_, token, task) = bootstrap(&f, &app, "http://127.0.0.1:9").await;
+	let harness = Harness {
+		federation: f.clone(),
+	};
+	let run = run_with_pending_call(
+		&f,
+		&app,
+		&token,
+		task,
+		&harness,
+		aidash_server::provider::ToolCall {
+			id: "short-node".into(),
+			name: "task_delegate".into(),
+			arguments: json!({"task_id":task,"node_id":"short-name","agent":{"id":"research","version":"1.0.0"}}),
+		},
+		true,
+	)
+	.await;
+	assert_eq!(
+		request(
+			&app,
+			&token,
+			"POST",
+			&format!("/api/runs/{}/control", run.id),
+			json!({"action":"resume"})
+		)
+		.await
+		.0,
+		200
+	);
+	harness.worker_once().await.unwrap();
+	let run = f.store.run(&TEST_FIXTURE, run.id).await.unwrap();
+	assert_eq!(run.control.as_str(), "ACTIVE", "error={:?}", run.error);
+	assert_eq!(run.phase().as_str(), "TOOL_CALL");
+	assert_eq!(json!(run.state)["data"]["cursor"], 1);
+	let error = json!(run.context)["history"][0]["event"]["result"]["error"]
+		.as_str()
+		.unwrap_or_default()
+		.to_owned();
+	assert!(error.contains("does not name this Node"), "{error}");
+	cleanup(f, &url, &schema).await;
+}
+
+#[rstest::rstest]
+#[tokio::test]
+async fn a_policy_denied_delegation_pauses_the_run_naming_the_tool_and_the_check(
+	#[future(awt)]
+	#[from(common::native_application)]
+	fixture: common::ApplicationFixture,
+) {
+	let (f, url, schema) = fixture.runtime.parts();
+	let app = fixture.application;
+	let (mut policy, token, task) = bootstrap(&f, &app, "http://127.0.0.1:9").await;
+	policy["policies"].as_array_mut().unwrap().push(json!({"id":"deny-delegation","effect":"deny","subjects":{"any":true},"actions":["task.delegate"],"resources":{"kinds":["task"]}}));
+	assert_eq!(
+		request(
+			&app,
+			&f.config.api_token,
+			"POST",
+			"/api/authorization/acme",
+			json!({"expected_revision":1,"bundle":policy})
+		)
+		.await
+		.0,
+		200
+	);
+	let harness = Harness {
+		federation: f.clone(),
+	};
+	let run = run_with_pending_call(
+		&f,
+		&app,
+		&token,
+		task,
+		&harness,
+		aidash_server::provider::ToolCall {
+			id: "denied".into(),
+			name: "task_delegate".into(),
+			arguments: json!({"task_id":task,"node_id":f.config.deployment,"agent":{"id":"research","version":"1.0.0"}}),
+		},
+		false,
+	)
+	.await;
+	harness.worker_once().await.unwrap();
+	let paused = f.store.run(&TEST_FIXTURE, run.id).await.unwrap();
+	assert_eq!(paused.control.as_str(), "PAUSED");
+	assert_eq!(
+		paused.error.as_deref(),
+		Some("task_delegate: task.delegate was denied")
+	);
+	let events = f.store.events(&TEST_FIXTURE, 0, None, 1000).await.unwrap();
+	let blocked: Vec<_> = events
+		.iter()
+		.filter(|event| event.kind == "run.authorization_blocked")
+		.collect();
+	assert_eq!(blocked.len(), 1, "{events:?}");
+	assert_eq!(
+		blocked[0].data,
+		json!({
+			"run_id": run.id,
+			"task_id": task,
+			"tool": "task_delegate",
+			"check": "policy",
+			"action": "task.delegate",
+		})
+	);
+	cleanup(f, &url, &schema).await;
+}
+
 #[rstest::rstest]
 #[tokio::test]
 async fn decision_cursor_follows_transaction_commit_order(
