@@ -76,11 +76,10 @@ pub async fn run_evidence(
 pub async fn run_control(
 	#[inject] service: Depends<HarnessManagement>,
 	#[inject] actor: Actor,
-	#[inject] browser: Option<crate::dashboard_auth::BrowserOrigin>,
 	Path(id): Path<Uuid>,
 	Json(input): Json<ControlInput>,
 ) -> ViewResult<Response> {
-	crate::http::json(service.run_control(actor, browser, id, input).await)
+	crate::http::json(service.run_control(actor, id, input).await)
 }
 
 #[post("/api/runs/{id}/message", name = "run-message", auth = "protected")]

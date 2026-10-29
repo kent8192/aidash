@@ -145,15 +145,6 @@ async fn remote_page(
 	Ok(page)
 }
 
-pub(crate) async fn project(
-	f: Federation,
-	admitted: Admitted,
-	input: GraphRequest,
-) -> Result<GraphPage> {
-	input.options.validate()?;
-	project_page(&f, admitted, input).await
-}
-
 async fn project_in(
 	f: &Federation,
 	source_node: &str,
@@ -179,17 +170,18 @@ async fn project_in(
 	.map_err(Into::into)
 }
 
-async fn project_page(
-	f: &Federation,
+pub(crate) async fn project(
+	f: Federation,
 	admitted: Admitted,
 	input: GraphRequest,
 ) -> Result<GraphPage> {
+	input.options.validate()?;
 	// The token names the subject; the body only repeats it.
 	if admitted.subject() != Some(input.subject.as_str()) {
 		return Err(Error::Forbidden);
 	}
 	let node = admitted.sender.to_string();
-	let mut access = super::access(f, &admitted).await?;
+	let mut access = super::access(&f, &admitted).await?;
 	let result = async {
 		let receiving = crate::apps::identity::repositories::nodes::get(
 			&mut *access.tx,
@@ -215,7 +207,7 @@ async fn project_page(
 			access.snapshot.revision, access.identity.credential_id, mapping_revision
 		);
 		project_in(
-			f,
+			&f,
 			&node,
 			&admitted.receiver.to_string(),
 			&input.subject,

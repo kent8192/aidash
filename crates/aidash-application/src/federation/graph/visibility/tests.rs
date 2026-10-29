@@ -70,7 +70,7 @@ async fn subject_requires_workspace_before_conversation_permission(
 
 #[rstest]
 #[tokio::test]
-async fn catalog_visibility_retains_viewer_specific_permission(mut scope: Scope) {
+async fn catalog_visibility_retains_subject_specific_permission(mut scope: Scope) {
 	let entry: Entry = serde_json::from_value(
 		json!({"id":"agent","version":"1","kind":"agent","name":{},"description":{}}),
 	)
