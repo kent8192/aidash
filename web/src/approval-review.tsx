@@ -272,8 +272,14 @@ export function ApprovalReviewPanel({
       });
       // The refreshed review may keep the same closure digest; start from its
       // actionable items again instead of resubmitting decided ones.
+      // Edits on items left out of this submission stay pending for the next.
+      const submitted = new Set(selected);
       setSelection(undefined);
-      setEdits({});
+      setEdits((edits) =>
+        Object.fromEntries(
+          Object.entries(edits).filter(([key]) => !submitted.has(key)),
+        ),
+      );
       await reload();
       setMessage(t("approvalReviewSubmitted"));
     } catch (error) {

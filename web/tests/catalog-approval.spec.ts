@@ -727,6 +727,55 @@ test("a dependency review retains the chosen restriction for a new root agent", 
   ).toEqual({ subjects: ["alice", "bob"], groups: [] });
 });
 
+test("a partial submission keeps the pending root restriction for the next one", async ({
+  page,
+}) => {
+  let current = reviewBody([
+    reviewItem("writer", "agent", "approvable", { proposed_restriction: null }),
+    reviewItem("model", "model", "approvable"),
+  ]);
+  const { decisions } = await reviewDashboard(page, {
+    actions: ["catalog.approve"],
+    review: () => current,
+    answer: ({ path }) => {
+      if (path.endsWith("/catalog"))
+        return { status: 400, json: { error: "dependency unapproved" } };
+      current = reviewBody(
+        [
+          reviewItem("writer", "agent", "approvable", {
+            proposed_restriction: null,
+          }),
+          reviewItem("model", "model", "approved"),
+        ],
+        { closure_digest: "sha256:closure-2" },
+      );
+      return { json: { bindings: [], installations: [] } };
+    },
+  });
+  await page.goto("/settings?view=agents");
+  await row(page, "writer").click();
+  await approval(page)
+    .getByRole("checkbox", { name: "Who may use it" })
+    .check();
+  await approval(page).getByLabel("Subjects (comma separated)").fill("alice");
+  await approval(page)
+    .getByRole("button", { name: "Approve", exact: true })
+    .click();
+  const review = page.getByRole("region", { name: "Approval Review" });
+  await review.getByRole("checkbox", { name: "writer" }).uncheck();
+  await review.getByRole("button", { name: /Approve selected \(1\)/ }).click();
+  await expect.poll(() => decisions.length).toBe(2);
+  await review.getByRole("button", { name: /Approve selected \(1\)/ }).click();
+  await expect.poll(() => decisions.length).toBe(3);
+  const items = (
+    decisions[2].body as {
+      items: { reference: { id: string }; restriction: unknown }[];
+    }
+  ).items;
+  expect(items.map((item) => item.reference.id)).toEqual(["writer"]);
+  expect(items[0].restriction).toEqual({ subjects: ["alice"], groups: [] });
+});
+
 test("canceling a restriction edit leaves the approved item out of the submission", async ({
   page,
 }) => {
