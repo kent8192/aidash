@@ -574,7 +574,13 @@ pub(crate) async fn mark_stopped_for_run(
 	run: Uuid,
 	reason: StopReason,
 ) -> NativeResult<()> {
-	mark_stopped(tx, reason, Some(run), None).await
+	use reinhardt::query::{Alias, Expr};
+	mark_stopped(
+		tx,
+		reason,
+		Expr::col(Alias::new("run_id")).eq(Expr::value(run)),
+	)
+	.await
 }
 
 /// Mark every unsettled Live preview of `tenant` as stopping.
@@ -583,37 +589,32 @@ pub(crate) async fn mark_stopped_for_tenant(
 	tenant: &str,
 	reason: StopReason,
 ) -> NativeResult<()> {
-	mark_stopped(tx, reason, None, Some(tenant)).await
+	use reinhardt::query::{Alias, Expr};
+	mark_stopped(
+		tx,
+		reason,
+		Expr::col(Alias::new("tenant")).eq(Expr::value(tenant.to_owned())),
+	)
+	.await
 }
 
-async fn mark_stopped(
+/// Mark every unsettled Live preview matching `filter` as stopping. The
+/// sweep then asks the Runner and settles each row only on its proof.
+pub(crate) async fn mark_stopped(
 	tx: &mut dyn reinhardt::db::backends::TransactionExecutor,
 	reason: StopReason,
-	run: Option<Uuid>,
-	tenant: Option<&str>,
+	filter: reinhardt::query::SimpleExpr,
 ) -> NativeResult<()> {
-	use reinhardt::query::{
-		Alias, Expr, ExprTrait as _, PostgresQueryBuilder, Query, QueryStatementBuilder as _,
-	};
-	let mut statement = Query::update()
+	use reinhardt::query::{Alias, Expr, PostgresQueryBuilder, Query};
+	let (sql, values) = Query::update()
 		.table(Alias::new("core_live_previews"))
 		.value_expr(Alias::new("state"), Expr::value("stopped"))
 		.value_expr(Alias::new("stop_reason"), Expr::value(reason.as_str()))
 		.value_expr(Alias::new("termination_confirmed"), Expr::value(false))
 		.value_expr(Alias::new("updated_at"), Expr::cust("CURRENT_TIMESTAMP"))
 		.and_where(Expr::col(Alias::new("state")).ne("stopped"))
-		.to_owned();
-	if let Some(run) = run {
-		statement = statement
-			.and_where(Expr::col(Alias::new("run_id")).eq(Expr::value(run)))
-			.to_owned();
-	}
-	if let Some(tenant) = tenant {
-		statement = statement
-			.and_where(Expr::col(Alias::new("tenant")).eq(Expr::value(tenant.to_owned())))
-			.to_owned();
-	}
-	let (sql, values) = statement.build(PostgresQueryBuilder);
+		.and_where(filter)
+		.build(PostgresQueryBuilder);
 	tx.execute(&sql, reinhardt::db::orm::execution::convert_values(values))
 		.await
 		.map_err(|error| NativeError::External(error.to_string()))?;

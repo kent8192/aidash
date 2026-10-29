@@ -643,7 +643,13 @@ async fn node_lifecycle_releases_capacity_and_keeps_each_deletion_history(
 		deleted_again["deletion"]["purge_after"]
 	);
 	let (status, body) = d
-		.as_deployment_administrator("POST", &format!("{path}/{first}/restore"), Value::Null)
+		.as_person(
+			&alice,
+			"POST",
+			&format!("{path}/{first}/restore"),
+			Some(&context),
+			Value::Null,
+		)
 		.await;
 	assert_eq!(status, 409, "requested purge cannot be restored: {body}");
 	assert_eq!(
@@ -784,17 +790,19 @@ async fn node_lifecycle_management_and_restore_use_current_collection_authority(
 		status, 403,
 		"management rechecks collection authority: {body}"
 	);
+	// Restore is Tenant administration: the Deployment Administrator cannot
+	// bypass the Tenant's current policy (ADR 0083, ADR 0102).
 	let (status, body) = d
 		.as_deployment_administrator("POST", &format!("{path}/{node}/restore"), Value::Null)
 		.await;
-	assert_eq!(status, 200, "{body}");
-	assert_eq!(d.count(&format!("SELECT count(*) FROM dashboard_administration_history WHERE tenant = '{tenant}' AND node = '{node}' AND action IN ('node.create','node.delete','node.restore')")).await, 3);
+	assert_eq!(status, 403, "{body}");
+	assert_eq!(d.count(&format!("SELECT count(*) FROM dashboard_administration_history WHERE tenant = '{tenant}' AND node = '{node}' AND action IN ('node.create','node.delete','node.restore')")).await, 2);
 	d.finish().await;
 }
 
 #[rstest::rstest]
 #[tokio::test]
-async fn node_lifecycle_browser_administrator_keeps_identity_and_requires_current_grant(
+async fn node_lifecycle_browser_administrator_only_purges_and_requires_current_grant(
 	#[from(common::runtime)] runtime: common::RuntimeFuture,
 ) {
 	let d = Deployment::new(runtime, open_rules()).await;
@@ -816,19 +824,23 @@ async fn node_lifecycle_browser_administrator_keeps_identity_and_requires_curren
 	assert_eq!(status, 201, "{second}");
 	let second = second["name"].as_str().unwrap();
 	let path = format!("/api/tenants/{tenant}/nodes");
-	let (status, body) = d
-		.as_person(
-			&carol,
-			"POST",
-			&format!("{path}/{second}/default"),
-			Some("deployment_administrator"),
-			Value::Null,
-		)
-		.await;
-	assert_eq!(
-		status, 200,
-		"browser administrator manages the Node default: {body}"
-	);
+	// Default, deletion and restore are Tenant administration (ADR 0102).
+	for (suffix, body) in [
+		("default", Value::Null),
+		("deletion", json!({"confirmation":first})),
+		("restore", Value::Null),
+	] {
+		let (status, response) = d
+			.as_person(
+				&carol,
+				"POST",
+				&format!("{path}/{first}/{suffix}"),
+				Some("deployment_administrator"),
+				body,
+			)
+			.await;
+		assert_eq!(status, 403, "{suffix}: {response}");
+	}
 	for suffix in ["purge/extra", "%70urge", "%2Fpurge"] {
 		let (status, body) = d
 			.as_person(
@@ -844,53 +856,21 @@ async fn node_lifecycle_browser_administrator_keeps_identity_and_requires_curren
 			"noncanonical lifecycle path must be refused: {status} {body}"
 		);
 	}
-	let (status, body) = d
-		.as_person(
-			&carol,
-			"POST",
-			&format!("{path}/{first}/deletion"),
-			Some("deployment_administrator"),
-			json!({"confirmation":first}),
-		)
-		.await;
-	assert_eq!(status, 200, "{body}");
-	assert_eq!(
-		body["deletion"]["deleted_by_kind"],
-		"deployment_administrator"
-	);
-	let (status, body) = d
-		.as_person(
-			&alice,
-			"POST",
-			&format!("{path}/{first}/restore"),
-			Some(&context),
-			Value::Null,
-		)
-		.await;
-	assert_eq!(
-		status, 409,
-		"only a Deployment Administrator restores its deletion: {body}"
-	);
-	let (status, body) = d
-		.as_person(
-			&carol,
-			"POST",
-			&format!("{path}/{first}/restore"),
-			Some("deployment_administrator"),
-			Value::Null,
-		)
-		.await;
-	assert_eq!(status, 200, "{body}");
-	let (status, body) = d
-		.as_person(
-			&carol,
-			"POST",
-			&format!("{path}/{first}/deletion"),
-			Some("deployment_administrator"),
-			json!({"confirmation":first}),
-		)
-		.await;
-	assert_eq!(status, 200, "{body}");
+	for (suffix, body) in [
+		(format!("{second}/default"), Value::Null),
+		(format!("{first}/deletion"), json!({"confirmation":first})),
+	] {
+		let (status, response) = d
+			.as_person(
+				&alice,
+				"POST",
+				&format!("{path}/{suffix}"),
+				Some(&context),
+				body,
+			)
+			.await;
+		assert_eq!(status, 200, "{suffix}: {response}");
+	}
 	let (status, body) = d
 		.as_person(
 			&carol,
@@ -908,22 +888,22 @@ async fn node_lifecycle_browser_administrator_keeps_identity_and_requires_curren
 		"SELECT count(*) FROM dashboard_administration_history WHERE tenant = '{tenant}' AND actor_identity_id = '{}' AND node IS NOT NULL AND action IN ('node.default','node.delete','node.restore','node.purge')",
 		carol.identity
 	);
-	assert_eq!(d.count(&history).await, 5);
+	assert_eq!(d.count(&history).await, 1);
 	sqlx::query("UPDATE dashboard_deployment_administrator_grants SET enabled=false,revision=revision+1 WHERE identity_id=$1")
 		.bind(carol.identity).execute(d.federation.store.pool.driver()).await.unwrap();
 	let (status, body) = d
 		.as_person(
 			&carol,
 			"POST",
-			&format!("{path}/{second}/default"),
+			&format!("{path}/{first}/purge"),
 			Some("deployment_administrator"),
 			Value::Null,
 		)
 		.await;
 	assert_eq!(
 		status, 403,
-		"a disabled grant cannot retain browser management authority: {body}"
+		"a disabled grant cannot retain browser purge authority: {body}"
 	);
-	assert_eq!(d.count(&history).await, 5);
+	assert_eq!(d.count(&history).await, 1);
 	d.finish().await;
 }

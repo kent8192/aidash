@@ -79,6 +79,8 @@ pub fn ownership(name: &str) -> Result<Ownership> {
 		"authorization_catalog_history" | "dashboard_administration_history" | "node_deletions" => {
 			Audit
 		}
+		// Safety Stop audit outlives its Run and even its Tenant (ADR 0101).
+		"run_safety_stops" => Audit,
 		"authorization_credentials"
 		| "identity_approval_preferences"
 		| "identity_approval_rules" => Subject("subject"),

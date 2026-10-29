@@ -843,6 +843,9 @@ class Runner(AllocationJournal):
                     serve={"status": "stopped" if confirmed else "stopping",
                            "startup_log": log, "reason": reason,
                            "pod_host": (record.get("serve") or {}).get("pod_host")})
+        # A preview exports nothing: its terminal status and startup log are the
+        # durable output, so they hand the allocation to finalizer cleanup.
+        self.allocation_harvested(self.get(operation))
 
     def reconcile_serve(self, operation):
         """Hold a Live preview's Pod open and stop it on cancel or its absolute

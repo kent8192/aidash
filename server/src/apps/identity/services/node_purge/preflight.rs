@@ -138,6 +138,19 @@ pub(super) async fn check(
 		"awaits semantic attempt settlement",
 	)
 	.await?;
+	// A Live preview Pod serves without a core operation. Erasing its row would
+	// drop the handle the stop sweep retries termination with.
+	refuse(
+		tx,
+		"core_live_previews",
+		owners.predicate("core_live_previews")?.and(
+			Expr::col("state")
+				.ne("stopped")
+				.or(Expr::col("termination_confirmed").eq(false)),
+		),
+		"awaits Live preview termination proof",
+	)
+	.await?;
 	let terminal = Expr::col("state").is_in(["completed", "cancelled", "failed", "withdrawn"]);
 	let proof = |field: &str, value: bool| {
 		col("core_operations", "result")

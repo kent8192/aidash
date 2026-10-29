@@ -80,6 +80,16 @@ pub(in crate::apps::execution) async fn record(
 			.build(PostgresQueryBuilder);
 		tx.execute(&sql, convert_values(values)).await?;
 	}
+	// Preview Pods serve outside core operations; Node purge waits for their
+	// termination proof. Restoring the Node does not restart them.
+	crate::apps::execution::repositories::live_previews::mark_stopped(
+		tx,
+		aidash_domain::preview::live::StopReason::RunAuthorityRevoked,
+		Expr::col("tenant")
+			.eq(Expr::value(tenant.to_owned()))
+			.and(snapshot::live_previews(node, &address)),
+	)
+	.await?;
 	// A decided participant owns the original Run revision. Keep its recovery
 	// intact; snapshot-based admission fences remain effective after restore.
 	if crate::transactions::gate::try_read_in(tx).await?.is_none() {

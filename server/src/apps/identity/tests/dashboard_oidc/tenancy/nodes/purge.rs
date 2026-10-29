@@ -69,14 +69,9 @@ async fn subjects(
 	assert_eq!(status, 200, "{response}");
 	let mut ids = Vec::new();
 	for subject in ["purge-target", "purge-sibling"] {
-		let (status, response) = d
-			.as_deployment_administrator(
-				"POST",
-				&format!("{path}/credentials"),
-				json!({"subject":subject}),
-			)
-			.await;
-		assert_eq!(status, 200, "{response}");
+		// The host issues them: a Deployment Administrator has no Tenant
+		// credential authority (#484).
+		let response = common::issued_credential(&d.federation.store, tenant, subject).await;
 		ids.push(Uuid::parse_str(response["credential"]["id"].as_str().unwrap()).unwrap());
 	}
 	(ids[0], ids[1], user)
@@ -429,6 +424,7 @@ async fn node_purge_erases_owned_files_and_rows_and_preserves_sibling_and_tenant
 	);
 	let (sibling_journal, source_entry, source_unit) = sibling_reads(
 		&d,
+		(&alice, &context),
 		&tenant,
 		work[0].0,
 		work[1].0,
@@ -1072,6 +1068,7 @@ async fn node_purge_refuses_an_unclassified_migrated_table_before_claiming_or_er
 /// source UUIDs must never become standalone ownership selectors for reads.
 async fn sibling_reads(
 	d: &Deployment,
+	(administrator, context): (&Person, &str),
 	tenant: &str,
 	target_workspace: Uuid,
 	sibling_workspace: Uuid,
@@ -1093,15 +1090,18 @@ async fn sibling_reads(
 	sqlx::query("INSERT INTO memory_units (id,tenant,bank_id,revision,text,kind,learning,verification,entities,evidence,links,learned_at,updated_at,deleted,stale) VALUES ($1,$2,$3,1,'target knowledge','world','fact','supported','[]','[]','[]',clock_timestamp(),clock_timestamp(),false,false)").bind(unit).bind(tenant).bind(bank).execute(d.federation.store.pool.fixture_driver()).await.unwrap();
 	let path = format!("/api/workspaces/{target_workspace}/semantic");
 	let spec = json!({"embedding":{"provider":"openai","endpoint":"http://localhost:9","model":"fixture","model_version":"1","dimensions":8},"vector":{"provider":"postgres","endpoint":"local","credential_env":null},"enabled":true,"auto_context":false,"max_sources":10,"max_results":5,"max_result_tokens":128,"max_input_bytes":256});
+	// Semantic indexes are Tenant content (#484): a Tenant member writes them.
 	let (status, index) = d
-		.as_deployment_administrator(
+		.as_person(
+			administrator,
 			"POST",
 			&format!("{path}/index"),
+			Some(context),
 			json!({"expected_revision":0,"spec":spec}),
 		)
 		.await;
 	assert_eq!(status, 200, "{index}");
-	let (status,entry)=d.as_deployment_administrator("POST",&format!("{path}/entries"),json!({"key":"source","expected_revision":0,"source":{"kind":"memory","text":"target source"},"metadata":{}})).await;
+	let (status,entry)=d.as_person(administrator,"POST",&format!("{path}/entries"),Some(context),json!({"key":"source","expected_revision":0,"source":{"kind":"memory","text":"target source"},"metadata":{}})).await;
 	assert_eq!(status, 200, "{entry}");
 	let entry = Uuid::parse_str(entry["id"].as_str().unwrap()).unwrap();
 	let subject: String =
@@ -1203,6 +1203,7 @@ async fn node_purge_starts_only_from_a_committed_request_or_due_deadline(
 #[case::global_coordinator_recovery("coordinator")]
 #[case::global_participant_recovery("participant")]
 #[case::visibility_gate_before_unlink("gate")]
+#[case::live_preview_without_termination_proof("live_preview")]
 #[case::corrupt_terminal_digest("atomic_digest")]
 #[case::missing_terminal_owner("atomic_owner")]
 #[case::missing_terminal_current_trust("atomic_trust")]
@@ -1238,8 +1239,16 @@ async fn node_purge_stalls_before_unlink_and_preserves_surviving_reference_and_r
 	let metadata = Uuid::new_v4();
 	let expected = match blocker {
 		"role" => {
-			let (journal, _, _) =
-				sibling_reads(&d, &tenant, work[0], work[1], &sibling, sibling_credential).await;
+			let (journal, _, _) = sibling_reads(
+				&d,
+				(&alice, &context),
+				&tenant,
+				work[0],
+				work[1],
+				&sibling,
+				sibling_credential,
+			)
+			.await;
 			let home = d
 				.federation
 				.config
@@ -1341,6 +1350,29 @@ async fn node_purge_stalls_before_unlink_and_preserves_surviving_reference_and_r
 				.bind(metadata).bind(&manifest.coordinator).bind(digest).bind(json!(manifest))
 				.execute(d.federation.store.pool.fixture_driver()).await.unwrap();
 			"recovery registration dependency"
+		}
+		"live_preview" => {
+			// A preview Pod serves without a core operation; a stop requested at
+			// deletion still awaits the Runner's termination proof.
+			// Its Run already completed, so no Run cancellation stops the Pod.
+			let (task, run) = (Uuid::new_v4(), Uuid::new_v4());
+			let pending = aidash_domain::run_state::encode(
+				&aidash_domain::run_state::RunState::Completed(
+					aidash_domain::run_state::TerminalState {},
+				),
+				&aidash_domain::run_state::RecoveryState::default(),
+			)
+			.unwrap();
+			let home = d
+				.federation
+				.config
+				.deployment
+				.node(aidash_domain::nodes::NodeName::parse(&target).unwrap())
+				.to_string();
+			sqlx::query("INSERT INTO tasks (id,tenant,workspace_id,title,description,status,revision,created_by) VALUES ($1,$2,$3,'preview','preview','COMPLETED',1,'purge-target')").bind(task).bind(&tenant).bind(work[0]).execute(d.federation.store.pool.fixture_driver()).await.unwrap();
+			sqlx::query("INSERT INTO runs (id,tenant,task_id,workspace_id,node,home_node,agent_id,agent_version,phase,pending,revision) VALUES ($1,$2,$3,$4,$5,$6,'fixture','1.0.0','COMPLETED',$7,1)").bind(run).bind(&tenant).bind(task).bind(work[0]).bind(&target).bind(&home).bind(&pending).execute(d.federation.store.pool.fixture_driver()).await.unwrap();
+			sqlx::query("INSERT INTO core_live_previews (id,tenant,run_id,area_id,revision,port,state,stop_reason,idle_seconds,absolute_seconds,started_at,last_request_at,expires_at,termination_confirmed,created_at,updated_at) SELECT $1,tenant,$2,id,1,3000,'stopped','run_authority_revoked',600,3600,clock_timestamp(),clock_timestamp(),clock_timestamp()+interval '1 hour',false,clock_timestamp(),clock_timestamp() FROM core_areas WHERE workspace_id=$3").bind(metadata).bind(run).bind(work[0]).execute(d.federation.store.pool.fixture_driver()).await.unwrap();
+			"Live preview termination proof"
 		}
 		"coordinator" => {
 			sqlx::query("INSERT INTO atomic_coordinators (id,digest,manifest,complete) VALUES ($1,'fixture','{}',false)").bind(metadata).execute(d.federation.store.pool.fixture_driver()).await.unwrap();
@@ -1467,6 +1499,7 @@ async fn node_purge_drains_mutual_reads_and_invalidates_body_caches_while_preser
 	}
 	let (sibling_journal, _, target_unit) = sibling_reads(
 		&d,
+		(&alice, &context),
 		&tenant,
 		work[0].0,
 		work[1].0,
@@ -1476,6 +1509,7 @@ async fn node_purge_drains_mutual_reads_and_invalidates_body_caches_while_preser
 	.await;
 	let (_, _, sibling_unit) = sibling_reads(
 		&d,
+		(&alice, &context),
 		&tenant,
 		work[1].0,
 		work[0].0,

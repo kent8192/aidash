@@ -88,6 +88,20 @@ fn capability(table: &str, node: &str, address: &str) -> SimpleExpr {
 			.to_owned(),
 	))
 }
+/// Live previews of the Node's Areas or Runs. A terminal Run cancels nothing,
+/// so its preview Pod must be stopped by the deletion itself.
+pub(super) fn live_previews(node: &str, address: &str) -> SimpleExpr {
+	let table = "core_live_previews";
+	area(table, node, address).or(Expr::exists(
+		Query::select()
+			.expr(Expr::value(1_i32))
+			.from_as(Alias::new("runs"), Alias::new("r"))
+			.and_where(column("r", "id").eq(column(table, "run_id")))
+			.and_where(column("r", "tenant").eq(column(table, "tenant")))
+			.and_where(column("r", "node").eq(Expr::value(node)))
+			.to_owned(),
+	))
+}
 pub(super) fn selectors(
 	node: &str,
 	address: &str,

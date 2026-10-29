@@ -164,6 +164,7 @@ class ServeReconcileTest(unittest.TestCase):
         runner.pod = Mock(side_effect=[None, pod(), pod(), pod(), pod()])
         runner.kube = Mock(return_value=Mock(stdout=b"listening on 3000", stderr=b""))
         runner.kube_json = Mock()
+        runner.allocation_harvested = Mock()
         def exec_collector(_operation, action, data=None, timeout=45):
             if action == ["prepared"]:
                 return Mock(stdout=json.dumps({"digest": None}).encode())
@@ -182,6 +183,8 @@ class ServeReconcileTest(unittest.TestCase):
         self.assertEqual(runner.state["status"], "cancelled")
         self.assertTrue(runner.state["termination_confirmed"])
         self.assertEqual(runner.state["serve"]["reason"], "cancelled")
+        runner.allocation_harvested.assert_called_once()
+        self.assertEqual(runner.allocation_harvested.call_args.args[0]["status"], "cancelled")
 
     def test_a_ready_serve_reports_its_pod_host_and_keeps_running(self):
         runner = self.runner()
