@@ -344,6 +344,8 @@ pub(crate) fn tool_service_failure(error: Error, replay_safe: bool) -> Result<Va
 		} => {
 			if (200..300).contains(&status) {
 				Ok(json!({"message":"The call succeeded but its result could not be read."}))
+			} else if (300..400).contains(&status) {
+				Err(Error::External(format!("MCP tool returned HTTP {status}")))
 			} else if matches!(status, 408 | 429) || (status >= 500 && replay_safe) {
 				Err(Error::ToolNotDelivered {
 					message: format!("MCP tool returned HTTP {status}"),
