@@ -334,8 +334,8 @@ impl ConnectionBroker {
 					.map(Some)
 			}
 			ConnectionOperation::Revoke { version } => {
-				// Validate the latest client binding even on best-effort revoke.
-				// AS failure must not prevent destroying local grant versions.
+				// Validate the latest client binding before revoking upstream.
+				// AS failure is reported, and the caller still destroys local grant versions.
 				let Payload::Connection {
 					issuer,
 					client_id,
