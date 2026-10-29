@@ -533,10 +533,11 @@ async fn forward(
 	completion.status = response.status().as_u16();
 	// A broker-owned error is returned as a gateway error that names the code
 	// only; an upstream status the broker passes through stays as it is.
-	if let Some(code) = response
-		.headers()
-		.get(BROKER_ERROR)
-		.and_then(|value| value.to_str().ok())
+	if brokered
+		&& let Some(code) = response
+			.headers()
+			.get(BROKER_ERROR)
+			.and_then(|value| value.to_str().ok())
 	{
 		let (status, code) = broker_failure(code);
 		completion.status = status.as_u16();

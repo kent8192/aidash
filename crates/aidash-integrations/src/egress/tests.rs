@@ -667,7 +667,9 @@ async fn a_service_without_a_secret_still_goes_direct() {
 				any(|request: Request<AxumBody>| async move {
 					assert!(request.headers().get("x-aidash-secret-call").is_none());
 					Response::builder()
+						.status(StatusCode::IM_A_TEAPOT)
 						.header("content-type", "text/plain")
+						.header(BROKER_ERROR, "broker_rejected")
 						.body(AxumBody::from("direct"))
 						.unwrap()
 				}),
@@ -689,8 +691,16 @@ async fn a_service_without_a_secret_still_goes_direct() {
 	let response = reqwest::get(format!("{origin}/v1/operation-token/images/plain"))
 		.await
 		.unwrap();
-	assert_eq!(response.status(), StatusCode::OK);
+	assert_eq!(response.status(), StatusCode::IM_A_TEAPOT);
 	assert_eq!(response.text().await.unwrap(), "direct");
+	tokio::time::timeout(Duration::from_secs(5), audit.finished.notified())
+		.await
+		.unwrap();
+	let records = audit.finished_records.lock().unwrap();
+	assert_eq!(records.len(), 1);
+	assert_eq!(records[0].0, 418);
+	assert_ne!(records[0].1.as_deref(), Some("broker_rejected"));
+	drop(records);
 	assert_eq!(audit.sent.load(Ordering::Relaxed), 0);
 	stop.send(true).unwrap();
 	gateway.await.unwrap().unwrap();
