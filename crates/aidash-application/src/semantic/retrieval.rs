@@ -96,13 +96,25 @@ pub async fn prepare(
 	} else {
 		scope.candidates(workspace).await?
 	};
-	if rows.len() > spec.max_sources {
+	if rows
+		.iter()
+		.filter(|entry| {
+			entry.source.get("kind").and_then(|kind| kind.as_str()) != Some("working_image")
+		})
+		.count()
+		> spec.max_sources
+	{
 		return Err(Error::Conflict("semantic source quota exceeded".into()));
 	}
 	let mut allowed = BTreeMap::new();
 	let mut incomplete = false;
 	for entry in rows {
 		let source: Source = serde_json::from_value(entry.source.clone())?;
+		if matches!(source, Source::WorkingImage { .. })
+			&& (entry.state != "READY" || entry.index_revision != index.revision)
+		{
+			continue;
+		}
 		if agent_controls.is_some_and(|agent| match &source {
 			Source::Unit { .. } => true,
 			Source::Memory { .. } => agent.memory.is_some() || !agent.semantic_memory,

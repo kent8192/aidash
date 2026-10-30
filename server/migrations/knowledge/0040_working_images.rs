@@ -52,8 +52,9 @@ WHEN 'unit'::text THEN (
 						END AND (jsonb_typeof((source -> 'id'::text)) = 'string'::text) AND ((source ->> 'id'::text) ~ '^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}|[0-9a-fA-F]{32}|urn:uuid:[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}|\{[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}\})$'::text))
 						ELSE false
 						END), false)) OR (COALESCE((revision > 0 AND index_revision > 0 AND attempts >= 0
-AND jsonb_typeof(source) = 'object' AND source - ARRAY['kind','area_id','file_id','path'] = '{}'::jsonb
+AND jsonb_typeof(source) = 'object' AND source - ARRAY['kind','area_id','generation','file_id','path'] = '{}'::jsonb
 AND source->>'kind' = 'working_image'
+AND CASE WHEN jsonb_typeof(source->'generation') = 'number' AND source->>'generation' ~ '^[1-9][0-9]{0,18}$' THEN (source->>'generation')::numeric <= 9223372036854775807 ELSE false END
 AND jsonb_typeof(source->'area_id') = 'string' AND source->>'area_id' ~ '^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$'
 AND jsonb_typeof(source->'file_id') = 'string' AND source->>'file_id' ~ '^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$'
 AND jsonb_typeof(source->'path') = 'string' AND octet_length(source->>'path') BETWEEN 1 AND 4096), false))"###.into() } })

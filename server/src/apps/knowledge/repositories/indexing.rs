@@ -73,6 +73,7 @@ impl SemanticIndexingRepository for NativeIndexing {
 		super::purge::sweep(&self.store).await?;
 		super::engine_jobs::sweep(&self.store).await?;
 		super::memory_decay::sweep(&self.store).await?;
+		super::image_publications::sweep(&self.store).await?;
 		Ok(())
 	}
 	async fn begin_visibility(&self) -> Result<Box<dyn SemanticVisibility>> {
@@ -87,7 +88,7 @@ impl SemanticIndexingRepository for NativeIndexing {
 				.expr(SimpleExpr::from(Expr::col(Alias::new("id"))))
 				.from(Alias::new("semantic_entries"))
 				.and_where(Expr::cust(
-					"NOT deleted AND state <> 'UNSUPPORTED' AND next_attempt <= CLOCK_TIMESTAMP()",
+					"NOT deleted AND state <> 'UNSUPPORTED' AND COALESCE(last_error, '') <> 'awaiting_owner_run' AND next_attempt <= CLOCK_TIMESTAMP()",
 				))
 				.order_by_expr(
 					SimpleExpr::from(Expr::col(Alias::new("next_attempt"))),
@@ -301,34 +302,9 @@ impl SemanticIndexingSession for Session {
 		source: &Source,
 		max_bytes: usize,
 	) -> Result<Option<IndexImageRead>> {
-		use crate::apps::execution::capabilities::{
-			serializers::contracts::{FileEntry, FileScope},
-			services::sessions,
-		};
-		let Source::WorkingImage {
-			area_id,
-			file_id,
-			path,
-		} = source
-		else {
-			return Err(Error::Forbidden.into());
-		};
 		let store = self.store.clone();
 		let access = self.lease.access().ok_or(Error::Forbidden)?;
-		let area = match sessions::load(access, *area_id).await {
-			Ok(area) => area,
-			Err(Error::Forbidden | Error::NotFound(_)) => return Ok(None),
-			Err(error) => return Err(error.into()),
-		};
-		if area.workspace_id != workspace {
-			return Ok(None);
-		}
-		let entries: Vec<FileEntry> = serde_json::from_value(area.manifest)?;
-		let Some(file) = entries.into_iter().find(|entry| {
-			entry.file_id == *file_id
-				&& entry.path == *path
-				&& matches!(entry.scope, FileScope::Working)
-		}) else {
+		let Some(file) = super::image_files::current(access, workspace, source).await? else {
 			return Ok(None);
 		};
 		if file.size > max_bytes as u64 {

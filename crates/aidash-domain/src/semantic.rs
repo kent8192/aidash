@@ -234,6 +234,7 @@ pub enum Source {
 	/// An immutable File version; source content remains in its Working Area.
 	WorkingImage {
 		area_id: Uuid,
+		generation: i64,
 		file_id: Uuid,
 		path: String,
 	},

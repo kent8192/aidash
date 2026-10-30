@@ -846,7 +846,7 @@ async fn working_image_is_embedded_as_image_without_storing_bytes_in_vector_payl
 	let fixture = Fixture::default();
 	{
 		let mut state = fixture.0.lock().unwrap();
-		state.entry.source = json!({"kind":"working_image", "area_id": Uuid::from_u128(8), "file_id": Uuid::from_u128(9), "path":"image.png"});
+		state.entry.source = json!({"kind":"working_image", "area_id": Uuid::from_u128(8), "generation": 1, "file_id": Uuid::from_u128(9), "path":"image.png"});
 		state.plan.spec["embedding"]["inputs"] = json!(["text", "image"]);
 	}
 	process(&fixture, &fixture, fixture.id()).await.unwrap();
@@ -879,7 +879,7 @@ async fn unsupported_working_images_do_not_call_embedding(
 	let fixture = Fixture::default();
 	{
 		let mut state = fixture.0.lock().unwrap();
-		state.entry.source = json!({"kind":"working_image", "area_id": Uuid::from_u128(8), "file_id": Uuid::from_u128(9), "path":"image.png"});
+		state.entry.source = json!({"kind":"working_image", "area_id": Uuid::from_u128(8), "generation": 1, "file_id": Uuid::from_u128(9), "path":"image.png"});
 		state.plan.spec["embedding"]["inputs"] = if image_modality {
 			json!(["text", "image"])
 		} else {
@@ -898,7 +898,7 @@ async fn image_read_failure_is_recorded_and_does_not_abort_the_index_sweep() {
 	let fixture = Fixture::default();
 	{
 		let mut state = fixture.0.lock().unwrap();
-		state.entry.source = json!({"kind":"working_image", "area_id": Uuid::from_u128(8), "file_id": Uuid::from_u128(9), "path":"image.png"});
+		state.entry.source = json!({"kind":"working_image", "area_id": Uuid::from_u128(8), "generation": 1, "file_id": Uuid::from_u128(9), "path":"image.png"});
 		state.plan.spec["embedding"]["inputs"] = json!(["text", "image"]);
 	}
 	fixture.fault("image");

@@ -271,6 +271,9 @@ mod exposure {
 		async fn previous_manifest(&mut self, _: &Area) -> Result<Value> {
 			panic!("unexpected previous_manifest effect")
 		}
+		async fn previous_generation(&mut self, _: &Area) -> Result<i64> {
+			panic!("unexpected previous_generation effect")
+		}
 		async fn supersede(&mut self, _: &Area, _: Uuid) -> Result<()> {
 			panic!("unexpected supersede effect")
 		}

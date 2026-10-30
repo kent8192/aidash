@@ -245,6 +245,15 @@ impl SemanticConfigurationSession for Configuration {
 			.await
 			.map_err(Into::into)
 	}
+	async fn rebuild_images(&mut self, workspace: Uuid, max_images: usize) -> Result<()> {
+		let lease = self
+			.lease
+			.as_mut()
+			.ok_or_else(|| Error::Conflict("semantic index configuration ended".into()))?;
+		super::image_publications::rebuild(lease, workspace, max_images)
+			.await
+			.map_err(Into::into)
+	}
 	async fn history(&mut self, workspace: Uuid, revision: i64) -> Result<()> {
 		SemanticHistory::append(
 			self.tx()?,
@@ -293,6 +302,14 @@ impl SemanticEntriesSession for Entries<'_, '_> {
 			.source(workspace, source)
 			.await
 			.map_err(Into::into)
+	}
+	async fn image_visible(&mut self, workspace: Uuid, source: &Source) -> Result<bool> {
+		let Some(access) = self.lease.access() else {
+			return Ok(false);
+		};
+		Ok(super::image_files::current(access, workspace, source)
+			.await?
+			.is_some())
 	}
 	async fn schedule(&mut self, entry: &Entry, collection: &str) -> Result<()> {
 		service::schedule_point(
@@ -366,7 +383,7 @@ impl SemanticEntriesSession for Entries<'_, '_> {
 						.expr(Expr::cust("COUNT(*)"))
 						.from(Alias::new("semantic_entries"))
 						.and_where(SimpleExpr::CustomWithExpr(
-							"(workspace_id = ? AND NOT deleted)".to_owned(),
+							"(workspace_id = ? AND NOT deleted AND source->>'kind' <> 'working_image')".to_owned(),
 							vec![Expr::value(query_bind_1.to_owned()).into()],
 						))
 						.to_string(PostgresQueryBuilder),

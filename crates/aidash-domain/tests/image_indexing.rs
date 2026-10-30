@@ -16,7 +16,7 @@ fn index_configuration_accepts_image_byte_and_count_limits() {
 
 #[test]
 fn working_area_image_source_keeps_only_a_version_pointer() {
-	let pointer = json!({"kind":"working_image", "area_id":"00000000-0000-0000-0000-000000000001", "file_id":"00000000-0000-0000-0000-000000000002", "path":"pictures/photo.png"});
+	let pointer = json!({"kind":"working_image", "area_id":"00000000-0000-0000-0000-000000000001", "generation":7, "file_id":"00000000-0000-0000-0000-000000000002", "path":"pictures/photo.png"});
 	let source: aidash_domain::semantic::Source = serde_json::from_value(pointer.clone()).unwrap();
 	assert_eq!(serde_json::to_value(source).unwrap(), pointer);
 }

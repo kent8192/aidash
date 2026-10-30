@@ -85,6 +85,7 @@ impl SemanticEntry {
 			.from(Alias::new(Self::table_name()))
 			.and_where(Expr::col("workspace_id").eq(Expr::value(workspace)))
 			.and_where(Expr::col("deleted").eq(reinhardt::query::Expr::value(false)))
+			.and_where(Expr::cust("source->>'kind' <> 'working_image'"))
 			.build(PostgresQueryBuilder);
 		let count = tx
 			.fetch_one(&sql, convert_values(values))

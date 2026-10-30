@@ -10,6 +10,8 @@ use aidash_domain::semantic::{
 use serde_json::{Value, json};
 use uuid::Uuid;
 
+pub mod image_publications;
+
 pub async fn sweep(
 	repository: &dyn SemanticIndexingRepository,
 	vector: &dyn VectorIndex,

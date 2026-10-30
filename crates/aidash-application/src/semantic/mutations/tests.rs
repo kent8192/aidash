@@ -83,6 +83,7 @@ struct Scope {
 	rows: Vec<Entry>,
 	count: i64,
 	text: Option<String>,
+	image_visible: bool,
 	replay: bool,
 	pages: VecDeque<Vec<History>>,
 }
@@ -98,6 +99,7 @@ impl Default for Scope {
 			rows: vec![],
 			count: 0,
 			text: Some("content".into()),
+			image_visible: false,
 			replay: false,
 			pages: VecDeque::new(),
 		}
@@ -148,6 +150,10 @@ impl SemanticEntriesSession for Scope {
 	async fn source(&mut self, _: Uuid, _: &Source) -> Result<Option<String>> {
 		self.touch("source")?;
 		Ok(self.text.clone())
+	}
+	async fn image_visible(&mut self, _: Uuid, _: &Source) -> Result<bool> {
+		self.touch("image_visible")?;
+		Ok(self.image_visible)
 	}
 	async fn count(&mut self, _: Uuid) -> Result<i64> {
 		self.touch("count")?;
@@ -398,6 +404,30 @@ async fn deletion_and_reindex_keep_separate_source_authority_paths(#[case] delet
 	assert_eq!(scope.calls.contains(&"source"), !delete);
 	assert_eq!(scope.calls.last(), Some(&"history"));
 }
+
+#[rstest]
+#[case::delete(true)]
+#[case::reindex(false)]
+#[tokio::test]
+async fn working_image_lifecycle_is_managed_by_file_publication(#[case] delete: bool) {
+	let mut old = entry();
+	old.source = serde_json::to_value(Source::WorkingImage {
+		area_id: Uuid::from_u128(7),
+		generation: 1,
+		file_id: Uuid::from_u128(8),
+		path: "image.png".into(),
+	})
+	.unwrap();
+	let mut scope = Scope {
+		old: Some(old.clone()),
+		..Default::default()
+	};
+	assert!(matches!(
+		change(&mut scope, old.workspace_id, old.id, 1, delete).await,
+		Err(Error::Invalid(_))
+	));
+	assert!(!scope.calls.contains(&"change"));
+}
 #[rstest]
 #[case::delete(true)]
 #[case::reindex(false)]
@@ -437,6 +467,34 @@ async fn listing_omits_sources_that_have_disappeared() {
 		scope.calls,
 		["workspace", "index_share", "list", "read", "source"]
 	);
+}
+
+#[rstest]
+#[case::allowed(true)]
+#[case::denied(false)]
+#[tokio::test]
+async fn image_index_state_is_listed_only_under_current_area_authority(#[case] visible: bool) {
+	let mut image = entry();
+	image.source = serde_json::to_value(Source::WorkingImage {
+		area_id: Uuid::from_u128(7),
+		generation: 1,
+		file_id: Uuid::from_u128(8),
+		path: "image.png".into(),
+	})
+	.unwrap();
+	image.state = "PENDING".into();
+	let mut scope = Scope {
+		rows: vec![image],
+		text: None,
+		image_visible: visible,
+		..Default::default()
+	};
+	let result = entries(&mut scope, Uuid::from_u128(1)).await.unwrap();
+	assert_eq!(result.len(), usize::from(visible));
+	if visible {
+		assert_eq!(result[0].state, "PENDING");
+	}
+	assert!(!scope.calls.contains(&"source"));
 }
 #[rstest]
 #[tokio::test]
@@ -484,6 +542,7 @@ fn public_entry_cannot_claim_a_working_area_image() {
 	let mut value = input();
 	value.source = Source::WorkingImage {
 		area_id: Uuid::from_u128(1),
+		generation: 1,
 		file_id: Uuid::from_u128(2),
 		path: "image.png".into(),
 	};

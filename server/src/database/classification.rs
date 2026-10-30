@@ -352,6 +352,8 @@ pub const TABLES: &[Table] = &[
 	table("knowledge", "memory_units", TenantOwned),
 	table("knowledge", "semantic_collections", TenantOwned),
 	table("knowledge", "semantic_entries", TenantOwned),
+	table("knowledge", "semantic_image_ledgers", TenantOwned),
+	table("knowledge", "semantic_image_publications", TenantOwned),
 	table("knowledge", "semantic_history", TenantOwned),
 	table("knowledge", "semantic_indexes", TenantOwned),
 	table("knowledge", "semantic_points", TenantOwned),

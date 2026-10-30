@@ -465,6 +465,36 @@ async fn inaccessible_candidates_do_not_consume_provider_allowance(#[case] rejec
 		0
 	);
 }
+
+#[rstest]
+#[case("PENDING")]
+#[case("ERROR")]
+#[case("UNSUPPORTED")]
+#[tokio::test]
+async fn incomplete_images_do_not_block_text_retrieval_or_use_text_source_quota(
+	#[case] state: &str,
+) {
+	let (_, mut scope, vector) = fixture();
+	scope.index.spec["max_sources"] = json!(1);
+	let mut image = entry();
+	image.id = Uuid::from_u128(8);
+	image.point_id = Uuid::from_u128(9);
+	image.source = json!({"kind":"working_image", "area_id": Uuid::from_u128(10), "generation":1, "file_id":Uuid::from_u128(11), "path":"one.png"});
+	image.state = state.into();
+	scope.rows.push(image);
+	let controls = controls(true, true);
+	let result = search(
+		&mut scope,
+		&vector,
+		index().workspace_id,
+		&input(),
+		Some(Uuid::new_v4()),
+		Some(&controls),
+	)
+	.await
+	.unwrap();
+	assert_eq!(result.matches.len(), 1);
+}
 #[rstest]
 #[case::pending(0)]
 #[case::stale_index(1)]
