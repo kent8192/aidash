@@ -256,7 +256,27 @@ impl ExecutionStore for RunStore {
 		Ok(InvocationOutcome {
 			status: result.status,
 			result: result.result,
+			uncertain_reason: result.uncertain_reason,
+			retrying: result.delivery_pending,
 		})
+	}
+	async fn invocation_not_delivered(
+		&self,
+		run: &Run,
+		token: Uuid,
+		key: &str,
+		failure: &Value,
+	) -> Result<u32> {
+		self.store
+			.invocation_not_delivered(&self.scope, run, token, key, failure)
+			.await
+			.map_err(Into::into)
+	}
+	async fn invocation_answer_lost(&self, run: &Run, token: Uuid, key: &str) -> Result<()> {
+		self.store
+			.invocation_answer_lost(&self.scope, run, token, key)
+			.await
+			.map_err(Into::into)
 	}
 	async fn completed_invocation(
 		&self,
@@ -299,6 +319,8 @@ impl ExecutionStore for RunStore {
 				.map(|invocation| InvocationOutcome {
 					status: invocation.status,
 					result: invocation.result,
+					uncertain_reason: invocation.uncertain_reason,
+					retrying: invocation.delivery_pending,
 				})
 				.collect(),
 		)

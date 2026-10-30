@@ -738,14 +738,18 @@ Projection Version is not Native. PostgreSQL function bodies have no typed
 Reinhardt operation, so the replacement and its 0045 restore live in reversible
 SQL assets. Rollback refuses while definitions, packages, or Run Binding snapshots declare the key; restore the pre-upgrade backup to recover. It is database-only and changes no model state.
 
-`execution/0080_harness_contract` (after `execution/0079_run_safety_stops_state`)
+`execution/0081_harness_contract` (after `execution/0080_invocation_delivery`)
 adds `inference_usage.harness_contract` with typed column operations. Historical
 Usage Records receive `1` (`legacy@1`); the migration then removes the default so
 every new dispatch supplies the pinned version, and a check keeps it positive.
-The generated state-only checkpoint `execution/0081_harness_contract_state`
+The generated state-only checkpoint `execution/0082_harness_contract_state`
 drops that check from the ORM snapshot again, because it is enforced apart from
 model state like the earlier `inference_usage` checks. Rollback drops the
 evidence column and loses the recorded versions.
+
+`registry/0051_harness_contract_structured3` lets the Agent Bindings validator accept
+`structured@3` (#532). Its rollback restores the 0049 body and refuses while
+definitions, packages or Run Binding snapshots declare `structured@3`.
 
 `registry/0050_harness_plugin_merge` joins the Harness Contract and Agent
 Plugin/Context Source heads. The Harness Contract validator extends the Agent

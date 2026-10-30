@@ -32,8 +32,12 @@ from fixed_task_fixture import FIXTURE_PATCHES, PRICING_COMPLETE, PRICING_VISIBL
 
 ROOT = Path(__file__).resolve().parent.parent
 EVALUATION = ROOT / "tests/evaluation"
+# Earlier corpus versions, kept so their result manifests still validate. Each archive
+# hashes under its original name, corpus.toml.
+ARCHIVED_CORPORA = {"fixed-task-corpus-v1": EVALUATION / "corpus-v1.toml",
+                    "fixed-task-corpus-v2": EVALUATION / "corpus-v2.toml"}
 EVALUATOR_NAME = "aidash-fixed-task-evaluator"
-EVALUATOR_VERSION = "2.1.4"
+EVALUATOR_VERSION = "2.1.5"
 # Files whose bytes define the evaluator, relative to the repository root; their digest is in
 # every manifest. The schemas belong here because they decide which evidence `validate` accepts.
 EVALUATOR_FILES = ("scripts/fixed_task_evaluation.py", "scripts/fixed_task_fixture.py", "scripts/fixed_task_runner.py",
@@ -305,8 +309,7 @@ def validate_result(result, corpus=None, memory_corpus=None):
     errors += non_finite_numbers(result)
     if not errors and isinstance(result, dict):
         if corpus is None:
-            legacy = result["experiment"]["corpus"]["version"] == "fixed-task-corpus-v1"
-            corpus = load_corpus(EVALUATION / "corpus-v1.toml" if legacy else None)
+            corpus = load_corpus(ARCHIVED_CORPORA.get(result["experiment"]["corpus"]["version"]))
         errors += consistency_errors(result, corpus, memory_corpus or load_memory_corpus())
     if errors:
         raise CorpusError("result manifest is invalid:\n" + "\n".join(errors[:50]))
@@ -754,7 +757,7 @@ def load_corpus(path=None):
                 errors.append(f"comparison {item['id']} names unknown model {item['model']}")
     tools = {tool["alias"]: tool for tool in corpus["tools"]}
     skills = {skill["id"] for skill in corpus.get("skills", [])}
-    corpus_name = "corpus.toml" if path.name == "corpus-v1.toml" else path.name
+    corpus_name = "corpus.toml" if path.name in {item.name for item in ARCHIVED_CORPORA.values()} else path.name
     files = [corpus_name]
     ids = set()
     for task in corpus["tasks"]:
