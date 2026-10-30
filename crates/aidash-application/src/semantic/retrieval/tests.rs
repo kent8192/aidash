@@ -429,8 +429,11 @@ async fn image_queries_require_current_run_file_authority_before_embedding(#[cas
 	}
 }
 
+#[rstest]
+#[case::other_run(Some(Uuid::from_u128(13)))]
+#[case::no_run(None)]
 #[tokio::test]
-async fn a_run_cannot_query_another_runs_image() {
+async fn a_run_cannot_query_another_runs_image(#[case] invoking_run: Option<Uuid>) {
 	let (calls, mut scope, vector) = fixture();
 	let mut request = input();
 	request.query.clear();
@@ -448,7 +451,7 @@ async fn a_run_cannot_query_another_runs_image() {
 		&vector,
 		index().workspace_id,
 		&request,
-		Some(Uuid::from_u128(13)),
+		invoking_run,
 		None,
 	)
 	.await;

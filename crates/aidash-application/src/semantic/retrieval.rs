@@ -371,7 +371,7 @@ async fn search_or_outage(
 ) -> Result<std::result::Result<SearchResult, OutageCause>> {
 	let outage = |error: &Error| matches!(error, Error::RemoteSemantic(Failure::Unavailable));
 	if let Some(image) = &input.image
-		&& run.is_some_and(|run_id| run_id != image.run_id)
+		&& run != Some(image.run_id)
 	{
 		return Err(Error::Forbidden);
 	}
