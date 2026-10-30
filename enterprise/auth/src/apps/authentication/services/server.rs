@@ -568,7 +568,9 @@ fn protocol_config(config: &Config) -> Result<(OAuthServerConfig, OidcConfig)> {
 	};
 	oauth.refresh_tokens = Some(RefreshTokenPolicy::new(
 		std::time::Duration::from_secs(BROWSER_SESSION_IDLE_SECONDS as u64),
-		// Reinhardt currently rejects refresh-token families longer than 365 days.
+		// Reinhardt rejects refresh-token families longer than 365 days. Cloud
+		// keeps its own Product Session and never refreshes through this family,
+		// so its 400-day limit holds; the Marketplace, which refreshes, ends at 365.
 		std::time::Duration::from_secs(365 * 24 * 60 * 60),
 	)?);
 	oauth.token_ttl = std::time::Duration::from_secs(300);

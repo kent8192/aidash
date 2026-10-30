@@ -290,6 +290,33 @@ mod tests {
 	}
 
 	#[rstest]
+	fn browser_sessions_default_to_thirty_days_idle_and_four_hundred_days(oidc_config: OidcConfig) {
+		// Assert: #627 keeps people signed in like their Google account.
+		assert_eq!(oidc_config.session_idle_seconds, 2_592_000);
+		assert_eq!(oidc_config.session_absolute_seconds, 34_560_000);
+	}
+
+	#[rstest]
+	#[case::at_bound(34_560_000, 34_560_000, true)]
+	#[case::absolute_over(2_592_000, 34_560_001, false)]
+	#[case::idle_over(34_560_001, 34_560_000, false)]
+	#[case::idle_beyond_absolute(2_592_001, 2_592_000, false)]
+	fn session_lifetimes_stay_within_four_hundred_days(
+		mut oidc_config: OidcConfig,
+		#[case] idle: i64,
+		#[case] absolute: i64,
+		#[case] accepted: bool,
+	) {
+		// Arrange
+		oidc_config.session_idle_seconds = idle;
+		oidc_config.session_absolute_seconds = absolute;
+		// Act
+		let result = oidc_config.normalized();
+		// Assert
+		assert_eq!(result.is_ok(), accepted);
+	}
+
+	#[rstest]
 	fn https_public_origin_and_loopback_http_issuer_remain_supported(mut oidc_config: OidcConfig) {
 		// Arrange
 		oidc_config.issuer = "http://127.0.0.1:18099/issuer".into();
