@@ -1421,7 +1421,11 @@ pub(crate) fn scoped_media<'a>(
 	access: &'a mut crate::authorization::access::Access,
 	store: &'a Store,
 ) -> crate::apps::workspaces::repositories::media::ScopedMedia<'a> {
-	crate::apps::workspaces::repositories::media::ScopedMedia { access, store }
+	crate::apps::workspaces::repositories::media::ScopedMedia {
+		access,
+		store,
+		pending: None,
+	}
 }
 
 /// File selections resolve under one owned current-run authority guard and immutable snapshot.

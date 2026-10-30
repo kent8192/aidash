@@ -21,6 +21,7 @@ pub struct Measurements {
 pub enum Refusal {
 	Undecodable,
 	TooLarge,
+	RenditionTooLong,
 }
 
 pub fn validate(media_type: &str, bytes: &[u8]) -> Result<Measurements, Refusal> {
@@ -54,7 +55,11 @@ fn image(media_type: &str, bytes: &[u8]) -> Result<Measurements, Refusal> {
 	if u64::from(width) * u64::from(height) > 40_000_000 {
 		return Err(Refusal::TooLarge);
 	}
-	image::load_from_memory_with_format(bytes, format).map_err(|_| Refusal::Undecodable)?;
+	let mut reader = image::ImageReader::with_format(Cursor::new(bytes), format);
+	let mut limits = image::Limits::default();
+	limits.max_alloc = Some(256 * 1024 * 1024);
+	reader.limits(limits);
+	reader.decode().map_err(|_| Refusal::Undecodable)?;
 	Ok(Measurements {
 		width: Some(i32::try_from(width).map_err(|_| Refusal::TooLarge)?),
 		height: Some(i32::try_from(height).map_err(|_| Refusal::TooLarge)?),
@@ -273,6 +278,9 @@ fn audio(
 				while phase >= u64::from(sample_rate) {
 					phase -= u64::from(sample_rate);
 					let sample = (mono.clamp(-1.0, 1.0) * i16::MAX as f32).round() as i16;
+					if pcm.len() + 2 + 44 > 8 * 1024 * 1024 {
+						return Err(Refusal::RenditionTooLong);
+					}
 					pcm.extend_from_slice(&sample.to_le_bytes());
 				}
 			}
@@ -381,6 +389,16 @@ mod tests {
 				"{mime}: {measured:?}"
 			);
 		}
+	}
+
+	#[test]
+	fn rendition_refuses_audio_that_cannot_fit_in_an_inference() {
+		let fits = render_wav("audio/wav", &pcm_wav(262)).unwrap();
+		assert!(fits.len() <= 8 * 1024 * 1024);
+		assert_eq!(
+			render_wav("audio/wav", &pcm_wav(263)),
+			Err(Refusal::RenditionTooLong)
+		);
 	}
 
 	#[test]

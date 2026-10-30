@@ -19,6 +19,7 @@ struct Attachment {
 	size_bytes: i64,
 	content: Option<Vec<u8>>,
 	object_id: Option<Uuid>,
+	message_id: Option<Uuid>,
 }
 crate::native_record!(Attachment {
 	id,
@@ -27,7 +28,8 @@ crate::native_record!(Attachment {
 	sha256,
 	size_bytes,
 	content,
-	object_id
+	object_id,
+	message_id
 });
 struct Rendition {
 	sha256: String,
@@ -46,6 +48,7 @@ crate::native_record!(Rendition {
 pub(crate) struct ScopedMedia<'a> {
 	pub(crate) access: &'a mut Access,
 	pub(crate) store: &'a Store,
+	pub(crate) pending: Option<(Uuid, Vec<Uuid>, String)>,
 }
 #[async_trait]
 impl MediaAttachments for ScopedMedia<'_> {
@@ -55,7 +58,8 @@ impl MediaAttachments for ScopedMedia<'_> {
 		message: Uuid,
 	) -> Result<Vec<MediaAttachment>> {
 		let result: NativeResult<Vec<MediaAttachment>> = async {
-			let query = Query::select()
+			let mut select = Query::select();
+			select
 				.columns(
 					[
 						"id",
@@ -65,22 +69,35 @@ impl MediaAttachments for ScopedMedia<'_> {
 						"size_bytes",
 						"content",
 						"object_id",
+						"message_id",
 					]
 					.map(Alias::new),
 				)
 				.from(Alias::new("channel_attachments"))
-				.and_where(
-					reinhardt::query::SimpleExpr::from(Expr::col(Alias::new("workspace_id")))
-						.eq(Expr::cust("$1")),
-				)
-				.and_where(
-					reinhardt::query::SimpleExpr::from(Expr::col(Alias::new("message_id")))
-						.eq(Expr::cust("$2")),
-				)
-				.order_by(Alias::new("position"), Order::Asc)
-				.order_by(Alias::new("id"), Order::Asc)
-				.to_string(PostgresQueryBuilder);
-			let rows: Vec<Attachment> = crate::database::native::query_as(&query)
+				.and_where(Expr::col(Alias::new("workspace_id")).eq(Expr::value(workspace)));
+			let pending = self.pending.as_ref().filter(|(id, _, _)| *id == message);
+			if let Some((_, ids, principal)) = pending {
+				if ids.is_empty()
+					|| ids.len() > 8
+					|| ids.iter().collect::<std::collections::HashSet<_>>().len() != ids.len()
+				{
+					return Err(crate::Error::Invalid("invalid attachment ids".into()));
+				}
+				select
+					.and_where(
+						Expr::col(Alias::new("id")).is_in(ids.iter().copied().map(Expr::value)),
+					)
+					.and_where(
+						Expr::col(Alias::new("uploaded_by")).eq(Expr::value(principal.clone())),
+					);
+			} else {
+				select
+					.and_where(Expr::col(Alias::new("message_id")).eq(Expr::value(message)))
+					.order_by(Alias::new("position"), Order::Asc)
+					.order_by(Alias::new("id"), Order::Asc);
+			}
+			let query = select.to_string(PostgresQueryBuilder);
+			let mut rows: Vec<Attachment> = crate::database::native::query_as(&query)
 				.columns(&[
 					"id",
 					"filename",
@@ -89,11 +106,28 @@ impl MediaAttachments for ScopedMedia<'_> {
 					"size_bytes",
 					"content",
 					"object_id",
+					"message_id",
 				])
-				.bind(workspace)
-				.bind(message)
 				.fetch_all(&mut **self.access.tx)
 				.await?;
+			if let Some((_, ids, _)) = pending {
+				if rows
+					.iter()
+					.any(|row| row.message_id.is_some_and(|id| id != message))
+				{
+					return Err(crate::Error::Conflict(
+						"attachment is already linked to another message".into(),
+					));
+				}
+				if rows.len() != ids.len() {
+					return Err(crate::Error::NotFound("attachment unavailable".into()));
+				}
+				rows.sort_by_key(|row| {
+					ids.iter()
+						.position(|id| *id == row.id)
+						.unwrap_or(usize::MAX)
+				});
+			}
 			let mut attachments = Vec::with_capacity(rows.len());
 			for row in rows {
 				let content = if let Some(id) = row.object_id {
@@ -137,7 +171,6 @@ impl MediaAttachments for ScopedMedia<'_> {
 				.from(Alias::new("channel_attachments"))
 				.and_where(Expr::col(Alias::new("workspace_id")).eq(Expr::value(workspace)))
 				.and_where(Expr::col(Alias::new("id")).eq(Expr::value(attachment.id)))
-				.lock(LockType::Update)
 				.to_string(PostgresQueryBuilder);
 			let row: Option<Rendition> = crate::database::native::query_as(&query)
 				.columns(&[
@@ -156,37 +189,86 @@ impl MediaAttachments for ScopedMedia<'_> {
 			if let (Some(id), Some(digest), Some(size)) =
 				(row.wav_object_id, row.wav_sha256, row.wav_size_bytes)
 			{
+				check_wav_size(size)?;
 				return read_attachment_object(self.store, self.access, id, &digest, size).await;
 			}
-			let bytes =
-				aidash_integrations::media::render_wav(&attachment.media_type, &attachment.content)
-					.map_err(|error| match error {
-						aidash_integrations::media::Refusal::Undecodable => {
-							crate::Error::Invalid("MEDIA_UNDECODABLE".into())
-						}
-						aidash_integrations::media::Refusal::TooLarge => {
-							crate::Error::Invalid("MEDIA_TOO_LARGE".into())
-						}
-					})?;
-			let (id, digest) = self
-				.store
-				.capabilities
-				.put(self.access, None, "thread_attachment_wav", &bytes)
-				.await?;
-			let size = i64::try_from(bytes.len())
-				.map_err(|_| crate::Error::Invalid("MEDIA_TOO_LARGE".into()))?;
-			let update = Query::update()
-				.table(Alias::new("channel_attachments"))
-				.value(Alias::new("wav_object_id"), id)
-				.value(Alias::new("wav_sha256"), digest)
-				.value(Alias::new("wav_size_bytes"), size)
-				.and_where(Expr::col(Alias::new("workspace_id")).eq(Expr::value(workspace)))
-				.and_where(Expr::col(Alias::new("id")).eq(Expr::value(attachment.id)))
-				.to_string(PostgresQueryBuilder);
-			crate::database::native::query(&update)
-				.execute(&mut **self.access.tx)
-				.await?;
-			Ok(bytes)
+			// Decode before taking the attachment row lock. Concurrent requests can
+			// render independently; only the winner stores an object.
+			let bytes = crate::apps::workspaces::services::attachments::render_wav(
+				&attachment.media_type,
+				&attachment.content,
+			)
+			.await?;
+			// Commit each cache write independently, so later decodes never retain
+			// an earlier attachment's row lock.
+			let mut cache_access = Access::begin(self.store, &self.access.identity).await?;
+			let cached: NativeResult<Vec<u8>> = async {
+				let locked = Query::select()
+					.columns(
+						[
+							"sha256",
+							"size_bytes",
+							"wav_object_id",
+							"wav_sha256",
+							"wav_size_bytes",
+						]
+						.map(Alias::new),
+					)
+					.from(Alias::new("channel_attachments"))
+					.and_where(Expr::col(Alias::new("workspace_id")).eq(Expr::value(workspace)))
+					.and_where(Expr::col(Alias::new("id")).eq(Expr::value(attachment.id)))
+					.lock(LockType::Update)
+					.to_string(PostgresQueryBuilder);
+				let row: Option<Rendition> = crate::database::native::query_as(&locked)
+					.columns(&[
+						"sha256",
+						"size_bytes",
+						"wav_object_id",
+						"wav_sha256",
+						"wav_size_bytes",
+					])
+					.fetch_optional(&mut **cache_access.tx)
+					.await?;
+				let row =
+					row.ok_or_else(|| crate::Error::NotFound("attachment unavailable".into()))?;
+				if row.sha256 != attachment.sha256 || row.size_bytes != attachment.size_bytes {
+					return Err(crate::Error::Conflict("OBJECT_INTEGRITY".into()));
+				}
+				if let (Some(id), Some(digest), Some(size)) =
+					(row.wav_object_id, row.wav_sha256, row.wav_size_bytes)
+				{
+					check_wav_size(size)?;
+					return read_attachment_object(
+						self.store,
+						&mut cache_access,
+						id,
+						&digest,
+						size,
+					)
+					.await;
+				}
+				let (id, digest) = self
+					.store
+					.capabilities
+					.put(&mut cache_access, None, "thread_attachment_wav", &bytes)
+					.await?;
+				let size = i64::try_from(bytes.len())
+					.map_err(|_| crate::Error::Invalid("MEDIA_TOO_LARGE".into()))?;
+				let update = Query::update()
+					.table(Alias::new("channel_attachments"))
+					.value(Alias::new("wav_object_id"), id)
+					.value(Alias::new("wav_sha256"), digest)
+					.value(Alias::new("wav_size_bytes"), size)
+					.and_where(Expr::col(Alias::new("workspace_id")).eq(Expr::value(workspace)))
+					.and_where(Expr::col(Alias::new("id")).eq(Expr::value(attachment.id)))
+					.to_string(PostgresQueryBuilder);
+				crate::database::native::query(&update)
+					.execute(&mut **cache_access.tx)
+					.await?;
+				Ok(bytes)
+			}
+			.await;
+			cache_access.finish(cached).await
 		}
 		.await;
 		result.map_err(Into::into)
@@ -202,6 +284,15 @@ impl AuthorizedMediaScope for ScopedMedia<'_> {
 			.map_err(Into::into)
 	}
 }
+fn check_wav_size(size: i64) -> NativeResult<()> {
+	if size > 8 * 1024 * 1024 {
+		return Err(crate::Error::MediaRouteUnavailable(
+			"audio is too long to convert to WAV within the inference byte limit".into(),
+		));
+	}
+	Ok(())
+}
+
 pub(crate) async fn read_attachment_object(
 	store: &Store,
 	access: &mut Access,

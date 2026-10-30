@@ -714,6 +714,40 @@ async fn human_media_only_run_input_reaches_the_first_model_request_in_order(
 			.unwrap()
 			.is_empty()
 	);
+	// The route accepts WAV, but this MP3 would expand beyond the inference budget.
+	let long_audio = upload(
+		&app,
+		&token,
+		&workspace,
+		"long.mp3",
+		"audio/mpeg",
+		include_bytes!("support/media/too-long-for-wav.mp3"),
+	)
+	.await;
+	let long_id: Uuid = long_audio["id"].as_str().unwrap().parse().unwrap();
+	let (status, refused) = request(
+		&app,
+		&token,
+		"POST",
+		&path,
+		json!({"content":"", "idempotency_key":Uuid::new_v4(), "attachment_ids":[long_id]}),
+	)
+	.await;
+	assert_eq!(status, 400, "{refused}");
+	assert!(
+		refused["error"]
+			.as_str()
+			.unwrap()
+			.contains("too long to convert"),
+		"{refused}"
+	);
+	let (cached,): (Option<Uuid>,) =
+		sqlx::query_as("SELECT wav_object_id FROM channel_attachments WHERE id = $1")
+			.bind(long_id)
+			.fetch_one(f.store.pool.fixture_driver())
+			.await
+			.unwrap();
+	assert!(cached.is_none());
 	let large_audio = wav_bytes(512 * 1024);
 	let first_large = upload(
 		&app,
