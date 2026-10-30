@@ -162,6 +162,7 @@ impl ExecutionTool for McpPluginTool {
 				&self.config,
 				&self.tool.name,
 				&self.tool.schema_digest,
+				self.contract.replay_safe(),
 				admitted,
 				key,
 				checkpoint,
@@ -202,6 +203,7 @@ impl ExecutionTool for McpPluginTool {
 				&self.config,
 				&self.tool.name,
 				&self.tool.schema_digest,
+				self.contract.replay_safe(),
 				admitted,
 				key,
 			)
