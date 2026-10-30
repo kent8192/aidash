@@ -1139,8 +1139,9 @@ def render():
             add(endpoint, "Forged bearer cannot read or change Data Protection policy", 401,
                 headers={"Authorization": "Bearer forged"}, body=body)
             if route["json"]:
+                # A Deployment Administrator is refused before the body is read.
                 add(endpoint, "Malformed JSON cannot reach the use case", 400,
-                    headers=DEPLOYMENT_ADMINISTRATOR, body="{", immutable=True)
+                    headers=actor, body="{", immutable=True)
             continue
         if route["source"] == "server/src/apps/identity/views/tenant_administration.rs":
             # Only a browser Mapping context can be a Tenant Administrator.
