@@ -153,12 +153,31 @@ fn refused(error: &DynamicTransportError) -> bool {
 	)
 }
 
-/// A refused destination is an authority failure, never a retried outage.
+fn classify_transport(error: &DynamicTransportError) -> Option<Error> {
+	match error.error.downcast_ref::<Failure>() {
+		Some(Failure::UnexpectedServerResponse(message)) => {
+			crate::tools::decode_mcp_http_status(message)
+		}
+		Some(Failure::Client(WireError::Http(source)))
+			if source.is_connect()
+				|| matches!(source.status().map(|s| s.as_u16()), Some(408 | 429)) =>
+		{
+			Some(Error::ToolNotDelivered {
+				message: "MCP endpoint could not accept the request".into(),
+				retry_after: None,
+			})
+		}
+		_ => None,
+	}
+}
+
+/// A refused destination stays distinguishable until the call adapter returns it as data.
 pub(crate) fn initialization_error(error: &ClientInitializeError) -> Error {
 	match error {
 		ClientInitializeError::TransportError { error: source, .. } if refused(source) => refusal(),
 		ClientInitializeError::TransportError { error: source, .. } => broker_failure(source)
 			.or_else(|| auth_error(source))
+			.or_else(|| classify_transport(source))
 			.unwrap_or_else(|| Error::External(format!("MCP initialization failed: {error}"))),
 		ClientInitializeError::LegacyFallbackFailed { fallback, .. } => {
 			initialization_error(fallback)
@@ -172,6 +191,7 @@ pub(crate) fn call_error(error: &ServiceError) -> Error {
 		ServiceError::TransportSend(source) if refused(source) => refusal(),
 		ServiceError::TransportSend(source) => broker_failure(source)
 			.or_else(|| auth_error(source))
+			.or_else(|| classify_transport(source))
 			.unwrap_or_else(|| Error::External(format!("MCP call failed: {error}"))),
 		_ => Error::External(format!("MCP call failed: {error}")),
 	}
@@ -209,12 +229,19 @@ fn request(
 	}
 	request
 }
-fn events(mut response: reqwest::Response) -> BoxStream<'static, Result<Sse, SseError>> {
+fn events(
+	mut response: reqwest::Response,
+	request_id: Option<Value>,
+) -> BoxStream<'static, Result<Sse, SseError>> {
 	// The GET stream can outlive many calls. Bound each event before the parser
 	// buffers its fields, and feed completed events separately so an HTTP chunk
 	// containing many events cannot build an unbounded parser queue.
+	let signal = Arc::new(std::sync::Mutex::new(None));
+	let signal_writer = signal.clone();
+	let expected = request_id.clone();
 	let stream = async_stream::try_stream! {
 		let mut received = 0_usize;
+		let mut prefix = Vec::new();
 		let mut line_empty = true;
 		let mut comment_bytes = None;
 		let mut skip_lf = false;
@@ -223,6 +250,7 @@ fn events(mut response: reqwest::Response) -> BoxStream<'static, Result<Sse, Sse
 		while let Some(chunk) = response.chunk().await.map_err(std::io::Error::other)? {
 			let mut start = 0;
 			for (offset, byte) in chunk.iter().enumerate() {
+				if prefix.len() < LIMIT { prefix.push(*byte); }
 				// sse-stream ignores one initial UTF-8 BOM, including before a comment.
 				if let Some(matched) = bom_prefix {
 					if *byte == b"\xef\xbb\xbf"[matched] {
@@ -239,7 +267,12 @@ fn events(mut response: reqwest::Response) -> BoxStream<'static, Result<Sse, Sse
 				if std::mem::take(&mut skip_lf) && *byte == b'\n' {
 					if count_lf {
 						received += 1;
-						if received > LIMIT { Err(std::io::Error::other("MCP SSE event exceeds 256 KB"))?; }
+						if received > LIMIT {
+							let mut outcome = crate::tools::mcp_sse_signal(&prefix, expected.as_ref());
+							if let Some((_, final_result)) = &mut outcome { *final_result = false; }
+							*signal_writer.lock().expect("SSE signal") = outcome;
+							Err(std::io::Error::other("MCP SSE event exceeds 256 KB"))?;
+						}
 					}
 					continue;
 				}
@@ -248,11 +281,19 @@ fn events(mut response: reqwest::Response) -> BoxStream<'static, Result<Sse, Sse
 				// unfinished line separately without resetting an event's existing fields.
 				let bytes = comment_bytes.as_mut().unwrap_or(&mut received);
 				*bytes += 1;
-				if *bytes > LIMIT { Err(std::io::Error::other("MCP SSE event exceeds 256 KB"))?; }
+				if *bytes > LIMIT {
+					let mut outcome = crate::tools::mcp_sse_signal(&prefix, expected.as_ref());
+					if let Some((_, final_result)) = &mut outcome && *final_result {
+						*final_result = if matches!(*byte, b'\r' | b'\n') { false } else { crate::tools::mcp_sse_complete(&mut response, &chunk[offset + 1..]).await };
+					}
+					*signal_writer.lock().expect("SSE signal") = outcome;
+					Err(std::io::Error::other("MCP SSE event exceeds 256 KB"))?;
+				}
 				if matches!(*byte, b'\r' | b'\n') {
 					let comment = comment_bytes.take().is_some();
 					if line_empty {
 						received = 0;
+						prefix.clear();
 						yield chunk.slice(start..offset + 1);
 						start = offset + 1;
 					}
@@ -266,7 +307,9 @@ fn events(mut response: reqwest::Response) -> BoxStream<'static, Result<Sse, Sse
 			if start < chunk.len() { yield chunk.slice(start..); }
 		}
 	};
-	SseStream::from_bytes_stream(stream.map(|item: Result<_, std::io::Error>| item)).boxed()
+	let parsed =
+		SseStream::from_bytes_stream(stream.map(|item: Result<_, std::io::Error>| item)).boxed();
+	crate::tools::mcp_sse_wrap(parsed, signal)
 }
 impl StreamableHttpClient for BoundedClient {
 	type Error = WireError;
@@ -291,6 +334,12 @@ impl StreamableHttpClient for BoundedClient {
 			}
 			_ => None,
 		};
+		let request_value = serde_json::to_value(&message).ok();
+		let request_id = request_value
+			.as_ref()
+			.filter(|value| value.get("method").and_then(Value::as_str) == Some("tools/call"))
+			.and_then(|value| value.get("id"))
+			.cloned();
 		let request = self
 			.request(
 				reqwest::Method::POST,
@@ -335,14 +384,14 @@ impl StreamableHttpClient for BoundedClient {
 			));
 		}
 
-		if response.status() == reqwest::StatusCode::NOT_FOUND && session.is_some() {
-			return Err(Failure::SessionExpired);
-		}
 		if matches!(
 			response.status(),
 			reqwest::StatusCode::ACCEPTED | reqwest::StatusCode::NO_CONTENT
 		) {
 			return Ok(StreamableHttpPostResponse::Accepted);
+		}
+		if response.status().is_client_error() || response.status().is_server_error() {
+			return Err(invalid(&crate::tools::mcp_http_status(response).await));
 		}
 		let response = response.error_for_status().map_err(send_error)?;
 		let session = response
@@ -356,14 +405,32 @@ impl StreamableHttpClient for BoundedClient {
 			.and_then(|v| v.to_str().ok())
 			.unwrap_or("");
 		if content_type.starts_with("text/event-stream") {
-			return Ok(StreamableHttpPostResponse::Sse(events(response), session));
+			return Ok(StreamableHttpPostResponse::Sse(
+				events(response, request_id),
+				session,
+			));
 		}
 		if !content_type.starts_with("application/json") {
 			return Err(invalid("unsupported MCP content type"));
 		}
-		let message = crate::response::json(response, LIMIT)
-			.await
-			.map_err(|e| invalid(&e.to_string()))?;
+		let value: Value = if request_id.is_some() {
+			crate::tools::mcp_json_body(response, request_id.as_ref(), LIMIT)
+				.await
+				.map_err(|error| invalid(&error))?
+		} else {
+			crate::response::json(response, LIMIT)
+				.await
+				.map_err(|error| invalid(&error.to_string()))?
+		};
+		let final_result = crate::tools::mcp_result_identified(&value, request_id.as_ref());
+		let message = serde_json::from_value::<rmcp_modern::model::ServerJsonRpcMessage>(value)
+			.map_err(|error| {
+				if final_result {
+					invalid(&crate::tools::mcp_unreadable())
+				} else {
+					invalid(&error.to_string())
+				}
+			})?;
 		Ok(StreamableHttpPostResponse::Json(message, session))
 	}
 	async fn delete_session(
@@ -428,7 +495,10 @@ impl StreamableHttpClient for BoundedClient {
 		if response.status() == reqwest::StatusCode::METHOD_NOT_ALLOWED {
 			return Err(Failure::ServerDoesNotSupportSse);
 		}
-		Ok(events(response.error_for_status().map_err(send_error)?))
+		Ok(events(
+			response.error_for_status().map_err(send_error)?,
+			None,
+		))
 	}
 }
 

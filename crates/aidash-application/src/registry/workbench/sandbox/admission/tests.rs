@@ -1278,6 +1278,7 @@ impl PluginSessions for Watched {
 		_: &aidash_domain::agent_plugin::RemoteServer,
 		_: &str,
 		_: &str,
+		_: bool,
 		_: Value,
 		_: &str,
 		_auth: Option<&crate::tenant_secrets::CallSecret>,

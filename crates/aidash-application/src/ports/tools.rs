@@ -67,7 +67,8 @@ impl From<ListFailure> for crate::Error {
 /// ordinary failure as a [`ListFailure`] (through `From`). Authentication challenges use
 /// structured [`Error::Invalid`](crate::Error::Invalid) values with a canonical resource,
 /// so the Run can retain a connection finding and re-list after consent.
-/// Only [`Error::Invalid`](crate::Error::Invalid) becomes a recoverable tool result in the harness.
+/// Tool calls return definitive failures as results and report delivery failures through the
+/// application error type. `replay_safe` comes from the Run's pinned tool contract.
 #[async_trait]
 pub trait PluginSessions: Send + Sync {
 	/// `tools/list` over the Run's session, opening it when needed.
@@ -91,6 +92,7 @@ pub trait PluginSessions: Send + Sync {
 		config: &RemoteServer,
 		tool: &str,
 		schema_digest: &str,
+		replay_safe: bool,
 		arguments: Value,
 		key: &str,
 		auth: Option<&CallSecret>,
@@ -105,6 +107,7 @@ pub trait PluginSessions: Send + Sync {
 		config: &RemoteServer,
 		tool: &str,
 		schema_digest: &str,
+		replay_safe: bool,
 		arguments: Value,
 		key: &str,
 		checkpoint: Option<&aidash_domain::agent_plugin::interaction::CallCheckpoint>,
@@ -118,6 +121,7 @@ pub trait PluginSessions: Send + Sync {
 			config,
 			tool,
 			schema_digest,
+			replay_safe,
 			arguments,
 			key,
 			auth,

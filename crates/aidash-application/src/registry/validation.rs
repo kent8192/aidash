@@ -177,6 +177,34 @@ impl DefinitionValidation {
 		}
 		Ok(())
 	}
+	/// Why the Deployment cannot offer the provider an exact Tool needs, or
+	/// `Ok(())` when it can.
+	pub fn provider_available(&self, entry: &Entry) -> Result<()> {
+		if entry.kind == "tool" && aidash_domain::tool::legacy_config(&entry.config)?.is_none() {
+			let descriptor: aidash_domain::tool::providers::ToolDescriptor =
+				serde_json::from_value(entry.config.clone())?;
+			self.core_tools.provider_available(&descriptor)?;
+		}
+		Ok(())
+	}
+
+	/// Whether the Deployment has the Secret Store or Plan Connection feature a
+	/// definition's model source names. A Tenant Secret slot itself is checked
+	/// against the Tenant's active secrets by the caller.
+	pub fn source_slot_available(&self, entry: &Entry) -> Result<bool> {
+		if entry.kind == "model" {
+			let model: aidash_domain::model::ModelConfig =
+				serde_json::from_value(entry.config.clone())?;
+			if model.provider_credential.is_some() && !self.provider_credentials_enabled {
+				return Ok(false);
+			}
+			if model.plan_connection.is_some() && !self.plan_connections_enabled {
+				return Ok(false);
+			}
+		}
+		Ok(true)
+	}
+
 	pub fn node_specifications(
 		&self,
 	) -> std::collections::BTreeMap<String, aidash_domain::provider::ToolSpec> {

@@ -23,10 +23,10 @@ fn provider_versions_lifecycle_and_facts_cannot_be_relabelled() {
 }
 #[test]
 fn only_a_descriptors_read_only_declaration_lifts_the_tool_call_approval() {
-	for (replay, effect, approval) in [
-		("read_only", ToolEffect::ReadOnly, false),
-		("idempotent", ToolEffect::Unsafe, true),
-		("unsafe", ToolEffect::Unsafe, true),
+	for (replay, effect, approval, safe) in [
+		("read_only", ToolEffect::ReadOnly, false, true),
+		("idempotent", ToolEffect::Idempotent, true, true),
+		("unsafe", ToolEffect::Unsafe, true, false),
 	] {
 		let descriptor = ToolDescriptor {
 			registry_deployment: "aidash://node-a".into(),
@@ -52,7 +52,7 @@ fn only_a_descriptors_read_only_declaration_lifts_the_tool_call_approval() {
 			.unwrap();
 		assert_eq!(contract.behavior.effect, effect, "{replay}");
 		assert_eq!(contract.behavior.tool_call_approval, approval, "{replay}");
-		assert_eq!(contract.replay_safe(), !approval, "{replay}");
+		assert_eq!(contract.replay_safe(), safe, "{replay}");
 	}
 }
 #[test]

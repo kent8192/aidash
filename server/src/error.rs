@@ -81,6 +81,17 @@ pub enum Error {
 	/// The configured Secret Store does not support MCP OAuth Connections.
 	#[error("connection_unavailable")]
 	ConnectionStoreUnavailable,
+	#[error("{message}")]
+	ToolNotDelivered {
+		message: String,
+		retry_after: Option<std::time::Duration>,
+	},
+	#[error("{message}")]
+	ToolRetry {
+		message: String,
+		count: u32,
+		retry_after: Option<std::time::Duration>,
+	},
 	#[error("OpenRouter returned {status}: {reason}")]
 	ProviderRejected { status: u16, reason: String },
 	/// A Plan Connection could not serve a call (ADR 0007); never retried.
@@ -348,6 +359,25 @@ impl From<aidash_application::Error> for Error {
 			ApplicationError::AuthorityRefused(refusal) => Self::AuthorityRefused(refusal),
 			ApplicationError::External(message) => Self::External(message),
 			ApplicationError::ConnectionStoreUnavailable => Self::ConnectionStoreUnavailable,
+			ApplicationError::ToolNotDelivered {
+				message,
+				retry_after,
+			} => Self::ToolNotDelivered {
+				message,
+				retry_after,
+			},
+			ApplicationError::ToolServiceStatus { status, .. } => {
+				Self::External(format!("tool service returned HTTP {status}"))
+			}
+			ApplicationError::ToolRetry {
+				message,
+				count,
+				retry_after,
+			} => Self::ToolRetry {
+				message,
+				count,
+				retry_after,
+			},
 			ApplicationError::MediaRouteUnavailable(model) => Self::MediaRouteUnavailable(model),
 			ApplicationError::OrchestrationUnavailable => Self::OrchestrationUnavailable,
 			ApplicationError::RemoteSemantic(reason) => Self::RemoteSemantic(reason),
@@ -394,6 +424,7 @@ impl From<Error> for aidash_application::Error {
 			Error::AuthorityRefused(refusal) => Self::AuthorityRefused(refusal),
 			Error::Refused(code) => Self::Refused(code),
 			Error::Unauthorized => Self::Unauthorized,
+			Error::External(message) => Self::External(message),
 			Error::Json(error) => Self::Json(error),
 			Error::RemoteSemantic(reason) => Self::RemoteSemantic(reason),
 			Error::Context(reason) => Self::Context(reason),
@@ -404,6 +435,22 @@ impl From<Error> for aidash_application::Error {
 			Error::ConnectionStoreUnavailable => Self::ConnectionStoreUnavailable,
 			Error::TransactionPending => Self::TransactionPending,
 			Error::InferenceStalled => Self::InferenceStalled,
+			Error::ToolNotDelivered {
+				message,
+				retry_after,
+			} => Self::ToolNotDelivered {
+				message,
+				retry_after,
+			},
+			Error::ToolRetry {
+				message,
+				count,
+				retry_after,
+			} => Self::ToolRetry {
+				message,
+				count,
+				retry_after,
+			},
 			Error::Plan(failure) => Self::Plan(failure),
 			error => Self::Port(Box::new(error)),
 		}

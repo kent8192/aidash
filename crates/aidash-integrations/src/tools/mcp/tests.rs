@@ -76,7 +76,7 @@ async fn a_refused_destination_is_an_authority_failure_in_every_rmcp_wrapper() {
 }
 
 #[tokio::test]
-async fn other_transport_failures_stay_outages() {
+async fn connection_failure_is_not_delivered_and_closed_transport_is_uncertain() {
 	let unreachable = || async {
 		reqwest::Client::new()
 			.get("http://127.0.0.1:9/")
@@ -91,11 +91,11 @@ async fn other_transport_failures_stay_outages() {
 	};
 	assert!(matches!(
 		initialization_error(&initialization),
-		Error::External(_)
+		Error::ToolNotDelivered { .. }
 	));
 	assert!(matches!(
 		call_error(&ServiceError::TransportSend(wrapped(unreachable().await))),
-		Error::External(_)
+		Error::ToolNotDelivered { .. }
 	));
 	assert!(matches!(
 		call_error(&ServiceError::TransportClosed),

@@ -245,6 +245,64 @@ async fn exhausted_semantic_retries_require_manual_authority(
 	);
 }
 #[rstest]
+#[case(1, None, 2)]
+#[case(2, Some(12), 12)]
+#[case(5, Some(90), 32)]
+#[tokio::test]
+async fn tool_retry_uses_invocation_count_and_bounded_retry_after(
+	repository: Repository,
+	now: DateTime<Utc>,
+	#[case] count: u32,
+	#[case] retry_after: Option<u64>,
+	#[case] seconds: i64,
+) {
+	assert!(
+		recover(
+			&repository,
+			repository.token,
+			ExecutionFailure::ToolRetry {
+				count,
+				retry_after: retry_after.map(std::time::Duration::from_secs),
+				message: "not delivered".into()
+			},
+			now
+		)
+		.await
+		.unwrap()
+	);
+	let run = repository.run.lock().unwrap();
+	let retry = run.as_ref().unwrap().recovery.retry.as_ref().unwrap();
+	assert_eq!(retry.count, count);
+	assert_eq!(retry.at, now + chrono::Duration::seconds(seconds));
+}
+
+#[rstest]
+#[tokio::test]
+async fn a_cancelled_run_does_not_schedule_a_tool_retry(
+	repository: Repository,
+	now: DateTime<Utc>,
+) {
+	repository.run.lock().unwrap().as_mut().unwrap().control = RunControl::Cancelled;
+	assert!(
+		!recover(
+			&repository,
+			repository.token,
+			ExecutionFailure::ToolRetry {
+				count: 1,
+				retry_after: None,
+				message: "not delivered".into()
+			},
+			now
+		)
+		.await
+		.unwrap()
+	);
+	let run = repository.run.lock().unwrap();
+	assert!(
+		matches!(&run.as_ref().unwrap().state, RunState::Waiting(wait) if matches!(wait.as_ref(), WaitingState::FailureDelivery { target: FailureTarget::Cancelled, .. }))
+	);
+}
+#[rstest]
 #[case(408, true)]
 #[case(429, true)]
 #[case(500, true)]

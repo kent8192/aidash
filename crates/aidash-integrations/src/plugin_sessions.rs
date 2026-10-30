@@ -441,6 +441,7 @@ impl McpPluginSessions {
 		config: &RemoteServer,
 		tool: &str,
 		expected_digest: &str,
+		replay_safe: bool,
 		arguments: Value,
 		_key: &str,
 		checkpoint: Option<&CallCheckpoint>,
@@ -455,14 +456,18 @@ impl McpPluginSessions {
 			checkpoint.input.is_some() || checkpoint.continuation_sends > 0
 		});
 		let key = Key::new(run, server).with_auth(auth);
-		let service = self
-			.session(&key, config, auth, previously_accepted)
-			.await
-			.map_err(Fault::for_call)?;
+		let service = match self.session(&key, config, auth, previously_accepted).await {
+			Ok(service) => service,
+			Err(fault) => {
+				return crate::tools::tool_setup_failure(fault.for_call(), replay_safe)
+					.map(ToolRound::Complete);
+			}
+		};
 		let scope = service.service().enter(None, previously_accepted)?;
 		if let Err(fault) = verify(&service, tool, expected_digest).await {
 			self.state().forget(&key, &service);
-			return Err(fault.for_call());
+			return crate::tools::tool_setup_failure(fault.for_call(), replay_safe)
+				.map(ToolRound::Complete);
 		}
 		// Schema verification cannot elicit or sample; only the tool call may use these ports.
 		scope.inputs(inputs);
@@ -510,9 +515,13 @@ impl McpPluginSessions {
 				Ok(ToolRound::InputRequired(input))
 			}
 			Ok(_) => Err(Error::Invalid("MCP_TASKS_UNSUPPORTED".into())),
+			Err(ServiceError::McpError(error)) => {
+				crate::tools::mcp_protocol_result(&error.message).map(ToolRound::Complete)
+			}
 			Err(error) => {
 				self.state().forget(&key, &service);
-				Err(call_error(&error))
+				crate::tools::tool_service_failure(call_error(&error), replay_safe)
+					.map(ToolRound::Complete)
 			}
 		}
 	}
@@ -730,6 +739,7 @@ impl PluginSessions for McpPluginSessions {
 		config: &RemoteServer,
 		tool: &str,
 		expected_digest: &str,
+		replay_safe: bool,
 		arguments: Value,
 		key: &str,
 		auth: Option<&CallSecret>,
@@ -742,6 +752,7 @@ impl PluginSessions for McpPluginSessions {
 				config,
 				tool,
 				expected_digest,
+				replay_safe,
 				arguments,
 				key,
 				None,
@@ -766,6 +777,7 @@ impl PluginSessions for McpPluginSessions {
 		config: &RemoteServer,
 		tool: &str,
 		expected_digest: &str,
+		replay_safe: bool,
 		arguments: Value,
 		key: &str,
 		checkpoint: Option<&CallCheckpoint>,
@@ -779,6 +791,7 @@ impl PluginSessions for McpPluginSessions {
 				config,
 				tool,
 				expected_digest,
+				replay_safe,
 				arguments.clone(),
 				key,
 				checkpoint,
@@ -796,6 +809,7 @@ impl PluginSessions for McpPluginSessions {
 					config,
 					tool,
 					expected_digest,
+					replay_safe,
 					arguments,
 					key,
 					checkpoint,

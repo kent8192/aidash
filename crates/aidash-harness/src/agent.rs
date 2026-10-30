@@ -45,6 +45,43 @@ pub struct Executor<'a> {
 	environment: &'a dyn ExecutionEnvironment,
 }
 impl<'a> Executor<'a> {
+	async fn tool_delivery_result(
+		store: &dyn ExecutionStore,
+		run: &Run,
+		token: Uuid,
+		key: &str,
+		result: Result<Value>,
+	) -> Result<Value> {
+		match result {
+			Ok(value) => Ok(value),
+			Err(
+				Error::Invalid(message) | Error::Domain(aidash_domain::Error::Invalid(message)),
+			) => Ok(json!({"error":message})),
+			Err(Error::ToolNotDelivered {
+				message,
+				retry_after,
+			}) => {
+				let failure = json!({"error":{"kind":"not_delivered","message":message}});
+				let count = store
+					.invocation_not_delivered(run, token, key, &failure)
+					.await?;
+				if count > aidash_domain::semantic::OUTAGE_RETRIES {
+					Ok(failure)
+				} else {
+					Err(Error::ToolRetry {
+						message,
+						count,
+						retry_after,
+					})
+				}
+			}
+			Err(error @ Error::External(_)) => {
+				store.invocation_answer_lost(run, token, key).await?;
+				Err(error)
+			}
+			Err(error) => Err(error),
+		}
+	}
 	pub fn new(environment: &'a dyn ExecutionEnvironment) -> Self {
 		Self { environment }
 	}
@@ -216,14 +253,16 @@ impl<'a> Executor<'a> {
 				};
 				let output = match input {
 					Err(message) => json!({"error":message}),
-					Ok(input) => match tool.dispatch(admitted, input, key).await {
-						Ok(output) => output,
-						Err(
-							Error::Invalid(message)
-							| Error::Domain(aidash_domain::Error::Invalid(message)),
-						) => json!({"error":message}),
-						Err(error) => return Err(error),
-					},
+					Ok(input) => {
+						Self::tool_delivery_result(
+							store,
+							admitted,
+							token,
+							key,
+							tool.dispatch(admitted, input, key).await,
+						)
+						.await?
+					}
 				};
 				// The stored result replaces a research result whose account
 				// terms ended meanwhile (ADR 0058).
@@ -244,10 +283,47 @@ impl<'a> Executor<'a> {
 			}
 			finished = futures_util::future::join_all(calls_in_flight) => finished,
 		};
-		// Every call has finished or failed; report the first failure in call order.
+		// Every call has finished or failed. Honor the longest delay requested by
+		// any sibling; all their delivery outcomes have already been journaled.
+		let mut retry: Option<(String, u32, Option<std::time::Duration>)> = None;
+		let mut failure: Option<Error> = None;
 		for result in finished {
-			let (offset, output) = result?;
-			outputs[offset] = Some(output);
+			match result {
+				Ok((offset, output)) => outputs[offset] = Some(output),
+				Err(Error::ToolRetry {
+					message,
+					count,
+					retry_after,
+				}) => {
+					if let Some((_, previous_count, previous_after)) = &mut retry {
+						*previous_count = (*previous_count).max(count);
+						*previous_after = (*previous_after).max(retry_after);
+					} else {
+						retry = Some((message, count, retry_after));
+					}
+				}
+				Err(error) => {
+					if failure.is_none() || !matches!(&error, Error::External(_)) {
+						failure = Some(error);
+					}
+				}
+			}
+		}
+		if failure
+			.as_ref()
+			.is_some_and(|error| !matches!(error, Error::External(_)))
+		{
+			return Err(failure.expect("present"));
+		}
+		if let Some((message, count, retry_after)) = retry {
+			return Err(Error::ToolRetry {
+				message,
+				count,
+				retry_after,
+			});
+		}
+		if let Some(error) = failure {
+			return Err(error);
 		}
 		let mut context = run.context.clone();
 		capture_declared_coverage(&mut context, tools, false);
@@ -2761,7 +2837,7 @@ connection: None,
 					}
 				}
 				let invocation = if let Some(refused) = run.state.tool()?.connection.as_ref().and_then(|state|state.refused.clone()) {
-                    InvocationOutcome { status:"COMPLETED".into(), result:Some(refused) }
+                    InvocationOutcome { status:"COMPLETED".into(), result:Some(refused), uncertain_reason: None, retrying: false }
                 } else if tool.mcp_rounds() {
                     let Some(guard) = guard else { return self.tool_error(run, token, call, cursor, "MCP inputs require local authority".into()).await; };
                     let output = match self.mcp_call(run, token, mcp::Call { tool: tool.as_ref(), call, key: &key, agent: &agent, guard, visibility }).await {
@@ -2769,7 +2845,7 @@ connection: None,
                         Err(Error::Connection(_))=>run.state.tool()?.connection.as_ref().and_then(|state|state.refused.clone()).ok_or_else(||Error::Conflict("typed MCP refusal was not checkpointed".into()))?,
                         Err(error)=>return Err(error),
                     };
-                    InvocationOutcome { status: "COMPLETED".into(), result: Some(output) }
+                    InvocationOutcome { status: "COMPLETED".into(), result: Some(output), uncertain_reason: None, retrying: false }
                 } else {
                     store
 					.invocation_start(
@@ -2786,7 +2862,8 @@ connection: None,
 					if let Some(guard) = guard {
 						guard.action("human.request", "run", run.id).await?;
 					}
-                    let prompt = format!("Tool {} may have completed before the worker stopped. Reconcile the external effect, then answer with a JSON object containing result. It will not be executed again. Invocation: {key}", call.name);
+                    let reason = if invocation.uncertain_reason.as_deref() == Some("answer_lost") { "its answer was lost after the request was sent" } else { "the worker stopped" };
+                    let prompt = format!("Tool {} may have completed before {reason}. Reconcile the external effect, then answer with a JSON object containing result. It will not be executed again. Invocation: {key}", call.name);
                     if home.local() {
                         store.reconciliation_request(run, token, &key, &prompt).await?;
                     } else {
@@ -2812,8 +2889,7 @@ connection: None,
                             output
                         },
                         Err(Error::Connection(cause)) => self.checkpoint_connection_refusal(run,token,connections::RefusedCall {call,tool:tool.as_ref(),guard,key:&key},cause).await?,
-                        Err(Error::Invalid(message) | Error::Domain(aidash_domain::Error::Invalid(message))) => json!({"error":message}),
-						Err(e) => return Err(e),
+                        other => Self::tool_delivery_result(store, run, token, &key, other).await?,
 					}
 				};
                 // Revalidate Research before deriving any media selection. A completed

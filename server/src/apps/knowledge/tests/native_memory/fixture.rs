@@ -57,7 +57,7 @@ pub(super) fn entry(kind: &str, id: &str, mut config: serde_json::Value) -> Entr
 		{
 			bindings.push(json!({"kind":"source","target":{"registry_deployment":"aidash://native-memory","id":source["id"],"version":source["version"]},"narrow":{}}));
 		}
-		config = json!({"schema_version":1,"model":config["model"],"instructions":config["instructions"],"bindings":bindings,"remove_default":["file_search","file_read"]});
+		config = json!({"schema_version":1,"model":config["model"],"instructions":config["instructions"],"bindings":bindings,"remove_default":["file_search","file_read","compaction"]});
 	}
 	serde_json::from_value(json!({"id":id,"version":"1.0.0","kind":kind,"name":{"en":id,"ja":id},"description":{"en":"fixture"},
 		"capabilities":[],"languages":["en","ja"],"config":config})).unwrap()

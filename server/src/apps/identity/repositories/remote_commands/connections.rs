@@ -336,6 +336,9 @@ pub(super) async fn execute(
 							&config,
 							&call.tool_name,
 							schema_digest.as_deref().unwrap_or_default(),
+							// The Home journal executes at most once. Any peer response is
+							// definitive, including an unsafe 5xx; do not retry it here.
+							false,
 							call.arguments.clone(),
 							&call.idempotency_key,
 							None,

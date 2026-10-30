@@ -227,6 +227,7 @@
         "interrupted": { "type": "boolean" },
         "infrastructure_error": { "type": ["string", "null"] },
         "outcome": { "$ref": "#/$defs/outcome" },
+        "context_reason": { "type": ["string", "null"] },
         "claimed_success": { "type": ["boolean", "null"] },
         "oracle": {
           "type": "object",

@@ -50,6 +50,12 @@ pub struct Invocation {
 	/// OAuth Connection used for this invocation, never its bearer.
 	#[field(null = true)]
 	pub connection_id: Option<Uuid>,
+	#[field(default = 0)]
+	pub delivery_failures: i32,
+	#[field(default = false)]
+	pub delivery_pending: bool,
+	#[field(field_type = "text", null = true)]
+	pub uncertain_reason: Option<String>,
 	#[field(auto_now_add = true)]
 	pub created_at: DateTime<Utc>,
 }
