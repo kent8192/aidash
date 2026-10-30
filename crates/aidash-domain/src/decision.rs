@@ -24,7 +24,7 @@ pub const PROVIDER: &str = "typesafe.jev/1";
 /// OpenRouter's Decisions API, which asks every decision model the same typed
 /// questions on the hosts a Route names (ADR 0066).
 pub const DECISIONS: &str = "openrouter.decisions/1";
-pub const BUILDER: &str = "aidash.compaction/2";
+pub const BUILDER: &str = "aidash.compaction/3";
 pub const OPTION_SOURCE: &str = "history_event/1";
 pub const RULE: &str = "compaction.keep/1";
 pub const APPROVAL_BUILDER: &str = "aidash.approval/1";
