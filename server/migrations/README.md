@@ -10,6 +10,21 @@ remain SQL DDL assets because Reinhardt has no function-body operation. The
 reverse restores the previous Tool and Agent contracts; remove External
 service definitions and bindings before reversing the kind constraints.
 
+`identity/0041_catalog_restriction` adds a nullable `restriction` jsonb column
+to `authorization_catalog` and to its append-only history (ADR 0029, ADR 0095).
+The column names subjects and Assignable Groups that may use one exact version
+on one Node; NULL keeps the pre-existing meaning, everyone the Tenant's policy
+allows, so every existing approval and history row migrates as unrestricted.
+The columns are typed `AddColumn` operations, so the model state follows the
+physical migration and no state-only checkpoint is needed.
+
+`identity/0042_catalog_approval_requests` creates the Tenant-owned request
+table for ADR 0096, its `0043` row policy and its `0044` state-only snapshot.
+The physical table has a partial unique index keeping at most one open request
+per requester, root and Node, and a check that only a declined request carries
+a decline reason. The policy asset follows the standard Tenant template; the
+state snapshot carries the columns without the physical checks and index.
+
 Reinhardt is the sole migration owner. The source files are grouped under the
 labels `identity`, `registry`, `workspaces`, `execution`, `federation`, `knowledge`,
 `marketplace`, and `operations`; these are modules in `aidash-server`, not separate
@@ -74,7 +89,7 @@ the pinned revision incorporates
 [#6638](https://github.com/kent8192/reinhardt-web/issues/6638). The final snapshot
 records the registered model metadata. These migrations extend the original table definitions and preserve their SQL
 assets. The environment migration additionally records conditional extension
-ownership before this new native history is published. The complete native graph contains 57
+ownership before this new native history is published. The complete native graph contains 58
 records and describes 119 models.
 
 The original baseline has 36 migrations for physical schema creation and eight
@@ -669,14 +684,14 @@ Source histories, respectively. Both are empty state-only migrations. They
 preserve the existing migration identities and give each app one leaf without
 changing schema, retained inputs, or data.
 
-`execution/0080_invocation_tenant_secrets` (after `execution/0079_run_safety_stops_state`)
+`execution/0081_invocation_tenant_secrets` (after `execution/0080_invocation_delivery`)
 adds the nullable `tenant_secret_id`, `tenant_secret_version` and
 `tenant_secret_host` of `invocations` with typed column operations (#310, ADR
 0095). A tool call without a Tenant Secret leaves them null; a call that carried
 one records which Tenant Secret, at which pinned version, went to which host,
 never its value.
 
-`execution/0081_egress_secret_records` (after `execution/0080_invocation_tenant_secrets`)
+`execution/0082_egress_secret_records` (after `execution/0081_invocation_tenant_secrets`)
 adds the nullable `secret_id`, `secret_version` and `secret_host` of
 `egress_requests` with typed column operations (#310, ADR 0095). A request for
 an External service without a Tenant Secret leaves them null; a brokered request

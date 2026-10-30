@@ -47,6 +47,12 @@ pub struct Invocation {
 	pub tenant_secret_version: Option<String>,
 	#[field(null = true, field_type = "text")]
 	pub tenant_secret_host: Option<String>,
+	#[field(default = 0)]
+	pub delivery_failures: i32,
+	#[field(default = false)]
+	pub delivery_pending: bool,
+	#[field(field_type = "text", null = true)]
+	pub uncertain_reason: Option<String>,
 	#[field(auto_now_add = true)]
 	pub created_at: DateTime<Utc>,
 }

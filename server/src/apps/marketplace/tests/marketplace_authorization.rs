@@ -1337,6 +1337,8 @@ async fn new_runs_select_active_revision_and_restarted_runs_keep_exact_old_refer
 		.unwrap();
 	approve(&f, "a", &reference("agent")).await;
 	approve(&f, "a", &reference("model")).await;
+	// Runs of the installed Agent start once its default compaction Decider is approved.
+	approve(&f, "a", &reference("aidash.compaction-decider")).await;
 	let package = publish(&app, &a, "agent").await;
 	let original = install(&app, &a, &package, &install_input(&package)).await;
 	assert_eq!(original.0, 200, "{original:?}");

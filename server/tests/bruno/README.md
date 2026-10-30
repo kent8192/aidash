@@ -10,7 +10,7 @@ content types, credential revocation, browser registration, Deployment Administr
 opaque cookies, origin and CSRF enforcement, and server-side logout.
 
 A Deployment Administrator holds no Tenant content or settings authority (#484, ADR 0102),
-so the harness plays the host operator: it creates the Tenant and writes a bootstrap
+so the harness performs Host Access bootstrap: it creates the Tenant and writes a bootstrap
 policy as the administrator, then mints the journeys' Subject Credentials (alice, bob and a
 spare for the expanded suite) with `manage issue-subject-credential`, using the server's own
 settings. Journeys 06, 07 and the seed request assert that the administrator cannot issue

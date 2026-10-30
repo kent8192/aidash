@@ -407,6 +407,7 @@ impl PluginSessions for McpPluginSessions {
 		config: &RemoteServer,
 		tool: &str,
 		expected_digest: &str,
+		replay_safe: bool,
 		arguments: Value,
 		_key: &str,
 	) -> Result<Value> {
@@ -418,6 +419,7 @@ impl PluginSessions for McpPluginSessions {
 				config,
 				tool,
 				expected_digest,
+				replay_safe,
 				arguments,
 				_key,
 				None,
@@ -442,6 +444,7 @@ impl PluginSessions for McpPluginSessions {
 		config: &RemoteServer,
 		tool: &str,
 		expected_digest: &str,
+		replay_safe: bool,
 		arguments: Value,
 		_key: &str,
 		checkpoint: Option<&CallCheckpoint>,
@@ -452,10 +455,17 @@ impl PluginSessions for McpPluginSessions {
 			.cloned()
 			.ok_or_else(|| Error::Invalid("tool arguments must be an object".into()))?;
 		let key = Key::new(run, server);
-		let service = self.session(&key, config).await.map_err(Fault::for_call)?;
+		let service = match self.session(&key, config).await {
+			Ok(service) => service,
+			Err(fault) => {
+				return crate::tools::tool_setup_failure(fault.for_call(), replay_safe)
+					.map(ToolRound::Complete);
+			}
+		};
 		if let Err(fault) = verify(&service, tool, expected_digest).await {
 			self.state().forget(&key, &service);
-			return Err(fault.for_call());
+			return crate::tools::tool_setup_failure(fault.for_call(), replay_safe)
+				.map(ToolRound::Complete);
 		}
 		let _scope = service.service().enter(inputs)?;
 		let mut request = CallToolRequestParams::new(tool.to_owned()).with_arguments(arguments);
@@ -469,8 +479,7 @@ impl PluginSessions for McpPluginSessions {
 			request.input_responses =
 				(!input.requests.is_empty()).then(|| checkpoint.responses.clone());
 		}
-		// Session recovery never replays a sent tool request. A lost result is
-		// reconciled through the invocation journal, including Read-only tools.
+		// The invocation journal decides whether a lost result may be replayed.
 		let result = service.call_tool_once(request).await;
 		self.state().touch(&key, &service);
 		match result {
@@ -501,9 +510,13 @@ impl PluginSessions for McpPluginSessions {
 				Ok(ToolRound::InputRequired(input))
 			}
 			Ok(_) => Err(Error::Invalid("MCP_TASKS_UNSUPPORTED".into())),
+			Err(ServiceError::McpError(error)) => {
+				crate::tools::mcp_protocol_result(&error.message).map(ToolRound::Complete)
+			}
 			Err(error) => {
 				self.state().forget(&key, &service);
-				Err(call_error(&error))
+				crate::tools::tool_service_failure(call_error(&error), replay_safe)
+					.map(ToolRound::Complete)
 			}
 		}
 	}

@@ -23,6 +23,7 @@ pub(super) struct DeploymentAdministratorFixture {
 	requests: BTreeMap<String, Value>,
 	pub(super) events: Vec<(String, Value)>,
 	pub(super) approvals: Vec<(String, EntityRef, i64, bool)>,
+	pub(super) restrictions: Vec<aidash_domain::identity::catalog::RestrictionChange>,
 }
 impl DeploymentAdministratorFixture {
 	pub(super) fn new() -> Self {
@@ -34,6 +35,7 @@ impl DeploymentAdministratorFixture {
 			requests: BTreeMap::new(),
 			events: vec![],
 			approvals: vec![],
+			restrictions: vec![],
 		}
 	}
 	pub(super) async fn installed() -> (Self, String) {
@@ -140,10 +142,12 @@ impl DeploymentAdministratorScope for DeploymentAdministratorFixture {
 		reference: &EntityRef,
 		expected: i64,
 		enabled: bool,
+		restriction: aidash_domain::identity::catalog::RestrictionChange,
 	) -> Result<()> {
 		self.inner.record("set_approval")?;
 		self.approvals
 			.push((tenant.into(), reference.clone(), expected, enabled));
+		self.restrictions.push(restriction);
 		if enabled {
 			self.approved
 				.insert((reference.id.clone(), reference.version.clone()));

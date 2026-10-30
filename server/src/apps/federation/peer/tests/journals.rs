@@ -78,6 +78,9 @@ async fn run_invocations_page_in_hundreds_and_keep_durable_payloads(
 				.tenant_secret_id(None)
 				.tenant_secret_version(None)
 				.tenant_secret_host(None)
+				.delivery_failures(0)
+				.delivery_pending(false)
+				.uncertain_reason(None)
 				.created_at(now + Duration::milliseconds(index))
 				.finish();
 			Invocation::objects()

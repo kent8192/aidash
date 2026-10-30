@@ -43,6 +43,11 @@ pub enum ExecutionFailure {
 	Authority(AuthorityFailure),
 	MediaRoute(String),
 	Deferred,
+	ToolRetry {
+		count: u32,
+		retry_after: Option<std::time::Duration>,
+		message: String,
+	},
 	Inference {
 		transport: bool,
 		status: Option<u16>,
@@ -75,6 +80,7 @@ impl ExecutionFailure {
 				message.clone()
 			}
 			Self::Deferred => "execution state is temporarily unavailable".into(),
+			Self::ToolRetry { message, .. } => message.clone(),
 			Self::DeciderOutage => "every Decider Route is unavailable".into(),
 		}
 	}
