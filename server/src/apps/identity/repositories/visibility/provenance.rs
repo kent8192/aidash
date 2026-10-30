@@ -26,7 +26,13 @@ impl Reads<'_> {
 	/// Such a definition is a recorded read of the Run as immutable metadata,
 	/// but its Catalog Approval restriction names the agents that use it
 	/// directly, not the executing agent that ends the subject chain.
+	///
+	/// Only the Run's own worker authority may substitute those agents: any
+	/// other reader of the Run's outputs is still checked as the direct user.
 	async fn closure_read(&mut self, run: Uuid, reference: &EntityRef) -> NativeResult<bool> {
+		if self.access.read_run != Some(run) {
+			return Ok(false);
+		}
 		let snapshot: Option<serde_json::Value> = crate::database::native::query_scalar(
 			&Query::select()
 				.expr(Expr::cust("context -> 'binding_snapshot'"))
