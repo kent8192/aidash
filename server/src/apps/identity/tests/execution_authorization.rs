@@ -5944,6 +5944,41 @@ async fn catalog_request_fulfilled_by_an_ordinary_approval_stays_final(
 	.execute(f.store.pool.fixture_driver())
 	.await
 	.unwrap();
+	// An unrelated open request whose root cannot be reviewed at all (its
+	// Agent binds one target twice, which review refuses as invalid) must not
+	// roll back the approval below. Fault injection only: the row predates the
+	// config constraint, and only the table owner can drop it to plant the row.
+	let owner = common::owner_pool(f.store.pool.fixture_driver()).await;
+	sqlx::query("ALTER TABLE registry DROP CONSTRAINT registry_agent_config")
+		.execute(&owner)
+		.await
+		.unwrap();
+	let deployment = f.config.deployment.clone();
+	let twice = json!({"kind":"tool","target":{"registry_deployment":deployment,
+		"id":"later","version":"1.0.0"},"narrow":{}});
+	let unreviewable = json!({"id":"unreviewable","version":"1.0.0","kind":"agent",
+		"name":{"en":"Unreviewable"},"description":{"en":"Invalid bindings"},
+		"config":{"schema_version":1,"model":{"id":"model","version":"1.0.0"},
+			"instructions":"Wait","bindings":[twice.clone(),twice],"remove_default":[]}});
+	sqlx::query("INSERT INTO registry (tenant, id, version, kind, metadata) VALUES ('acme','unreviewable','1.0.0','agent',$1::jsonb)")
+		.bind(serde_json::to_string(&unreviewable).unwrap())
+		.execute(f.store.pool.fixture_driver())
+		.await
+		.unwrap();
+	let unrelated = Uuid::new_v4();
+	sqlx::query(
+		"INSERT INTO catalog_approval_requests \
+		 (id, tenant, node, root_id, root_version, requester, reason, \
+		  closure_digest, state, decline_reason, decided_by, created_at, \
+		  updated_at, revision) \
+		 VALUES ($1, 'acme', $2, 'unreviewable', '1.0.0', 'bob', 'Please', \
+		  'sha256:unreviewable', 'open', NULL, NULL, now(), now(), 1)",
+	)
+	.bind(unrelated)
+	.bind(node.as_str())
+	.execute(f.store.pool.fixture_driver())
+	.await
+	.unwrap();
 
 	// The ordinary approval endpoint completes the closure, then the approval
 	// is withdrawn again. The request was fulfilled at that write and stays so.
@@ -5959,6 +5994,14 @@ async fn catalog_request_fulfilled_by_an_ordinary_approval_stays_final(
 			.await
 			.unwrap();
 	assert_eq!(state, "fulfilled");
+	let unrelated_state: String =
+		sqlx::query_scalar("SELECT state FROM catalog_approval_requests WHERE id = $1")
+			.bind(unrelated)
+			.fetch_one(f.store.pool.fixture_driver())
+			.await
+			.unwrap();
+	assert_eq!(unrelated_state, "open");
+	// Nor does it fail the approver's queue read.
 	let (status, pending) = request(
 		&app,
 		&alice,

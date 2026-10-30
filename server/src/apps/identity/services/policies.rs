@@ -210,7 +210,10 @@ async fn refresh_requests_for_review(
 /// that is not a review submission, so a request completed through the single,
 /// batch or Marketplace approval endpoint stays fulfilled instead of tracking
 /// current readiness. A root this approver cannot review keeps its derived
-/// read state until a later write path can see it.
+/// read state until a later write path can see it. A root whose review is
+/// itself invalid (for example a closure past the review limit) is skipped the
+/// same way, so one unreviewable request never rolls back an unrelated
+/// approval; storage and transaction failures still propagate.
 pub(crate) async fn refresh_requests_on_node(
 	access: &mut Access,
 	store: &crate::store::Store,
@@ -239,7 +242,7 @@ pub(crate) async fn refresh_requests_on_node(
 		let root = crate::registry::EntityRef { id, version };
 		let current = match request_review_for(access, store, deployment, node, &root).await {
 			Ok(current) => current,
-			Err(Error::Forbidden | Error::NotFound(_)) => continue,
+			Err(Error::Forbidden | Error::NotFound(_) | Error::Invalid(_)) => continue,
 			Err(error) => return Err(error),
 		};
 		refresh_requests_for_review(access, &identity.tenant, node, &root, &current, &actor)
@@ -802,7 +805,8 @@ impl PolicyAdministration {
 					.await
 					{
 						Ok(current) => Some(current),
-						Err(Error::Forbidden | Error::NotFound(_)) => None,
+						// An unreviewable root still lists, without a review.
+						Err(Error::Forbidden | Error::NotFound(_) | Error::Invalid(_)) => None,
 						Err(error) => return Err(error),
 					}
 				} else {
@@ -865,7 +869,11 @@ impl PolicyAdministration {
 						.await
 						{
 							Ok(current) => current,
-							Err(Error::Forbidden | Error::NotFound(_)) => continue,
+							// Nobody can act on an unreviewable root, so it
+							// does not fail the whole queue.
+							Err(Error::Forbidden | Error::NotFound(_) | Error::Invalid(_)) => {
+								continue;
+							}
 							Err(error) => return Err(error),
 						};
 						reviews.insert(key, current.clone());
