@@ -4,7 +4,10 @@
 use super::approvals::{self, Approval};
 use crate::{
 	Error, Result,
-	marketplace::operations::approval_set::{ApprovalSelection, PendingSelection},
+	marketplace::operations::{
+		approval_set::{ApprovalSelection, PendingSelection},
+		restriction::{RestrictionSelection, RestrictionSet},
+	},
 	ports::catalog_review::ApprovalReviewScope,
 	registry::system,
 };
@@ -146,6 +149,9 @@ pub struct ApprovalReviewSubmission {
 pub struct ReviewPlan {
 	pub approvals: Vec<Approval>,
 	pub installations: Vec<ReviewActivation>,
+	/// Restriction-only edits of active installed revisions. They never
+	/// activate, so a newer staged revision does not block them.
+	pub restrictions: Vec<ReviewActivation>,
 	/// Definitions the same submission approves by activation.
 	pub satisfied_by_activation: BTreeSet<(String, String)>,
 	pub activated: BTreeSet<(String, String)>,
@@ -418,6 +424,7 @@ pub fn plan(review: &ApprovalReview, submission: &ApprovalReviewSubmission) -> R
 		.collect();
 	let mut approvals = vec![];
 	let mut installations = vec![];
+	let mut restrictions = vec![];
 	let mut satisfied = BTreeSet::new();
 	let mut activated = BTreeSet::new();
 	for item in &submission.items {
@@ -500,14 +507,17 @@ pub fn plan(review: &ApprovalReview, submission: &ApprovalReviewSubmission) -> R
 				"APPROVAL_REVIEW_STALE: installation revision or digest changed".into(),
 			));
 		}
-		match reviewed.status {
-			ReviewStatus::NeedsMarketplaceActivation => {}
+		// An approved installed item is active, so the only change left is its
+		// restriction.
+		let restriction_only = match reviewed.status {
+			ReviewStatus::NeedsMarketplaceActivation => false,
 			ReviewStatus::Approved => {
 				if activation.restriction.is_none()
 					|| activation.restriction == reviewed.restriction
 				{
 					return Err(Error::Invalid("APPROVAL_REVIEW_NO_CHANGE".into()));
 				}
+				true
 			}
 			ReviewStatus::NeedsOtherApprover => return Err(Error::Forbidden),
 			_ => {
@@ -515,7 +525,7 @@ pub fn plan(review: &ApprovalReview, submission: &ApprovalReviewSubmission) -> R
 					"APPROVAL_REVIEW_STALE: installation is not activatable".into(),
 				));
 			}
-		}
+		};
 		if let Some(restriction) = &activation.restriction {
 			restriction.validate()?;
 		}
@@ -525,10 +535,10 @@ pub fn plan(review: &ApprovalReview, submission: &ApprovalReviewSubmission) -> R
 		)) {
 			return Err(Error::Invalid("APPROVAL_REVIEW_DUPLICATE".into()));
 		}
-		activated.insert((
-			reviewed.reference.id.clone(),
-			reviewed.reference.version.clone(),
-		));
+		if restriction_only {
+			restrictions.push(activation.clone());
+			continue;
+		}
 		activated.insert((
 			reviewed.reference.id.clone(),
 			reviewed.reference.version.clone(),
@@ -538,6 +548,7 @@ pub fn plan(review: &ApprovalReview, submission: &ApprovalReviewSubmission) -> R
 	Ok(ReviewPlan {
 		approvals,
 		installations,
+		restrictions,
 		satisfied_by_activation: activated.clone(),
 		activated,
 	})
@@ -582,6 +593,45 @@ pub fn approval_set(
 		node: Some(node.clone()),
 		installations: selections,
 		approvals,
+	})
+}
+
+/// Turn the plan's restriction-only edits into the Marketplace restriction
+/// input, fenced on the reviewed Catalog Approval revisions.
+pub fn restriction_set(
+	tenant: &str,
+	node: &NodeName,
+	review: &ApprovalReview,
+	plan: &ReviewPlan,
+) -> Result<RestrictionSet> {
+	let mut installations = vec![];
+	for edit in &plan.restrictions {
+		let reviewed = review
+			.items
+			.iter()
+			.find(|item| {
+				item.installation.as_ref().is_some_and(|installed| {
+					installed.installation == edit.installation
+						&& installed.revision == edit.revision
+				})
+			})
+			.ok_or_else(|| Error::Conflict("APPROVAL_REVIEW_STALE: installation changed".into()))?;
+		installations.push(RestrictionSelection {
+			installation: edit.installation.clone(),
+			revision: edit.revision,
+			digest: edit.digest.clone(),
+			expected_activation_revision: edit.expected_activation_revision,
+			expected_catalog_revision: reviewed.expected_revision,
+			restriction: edit
+				.restriction
+				.clone()
+				.ok_or_else(|| Error::Invalid("APPROVAL_REVIEW_NO_CHANGE".into()))?,
+		});
+	}
+	Ok(RestrictionSet {
+		tenant: tenant.into(),
+		node: Some(node.clone()),
+		installations,
 	})
 }
 

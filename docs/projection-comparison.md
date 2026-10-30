@@ -19,8 +19,9 @@ provider calls. Only `run` can dispatch live work, after its admission checks.
 ## Frozen population and routes
 
 The v2 corpus retains the original projection tasks and adds Tool/Skill,
-multiple-call and recovery diagnostics. It preserves the v1 corpus in
-`tests/evaluation/corpus-v1.toml` for historical validation. The pilot
+multiple-call and recovery diagnostics; v3 keeps those tasks and corrects
+three answer oracles (#595). The v1 and v2 corpora are preserved in
+`tests/evaluation/corpus-v1.toml` and `corpus-v2.toml` for historical validation. The pilot
 plans ten repetitions per task and arm with a seeded, balanced execution order.
 Every task remains in the manifest, including skipped or unavailable work.
 

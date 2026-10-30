@@ -566,12 +566,20 @@ async fn browser_invalidation_closes_idle_and_unpolled_buffered_streams(
 		.unwrap();
 		assert!(!String::from_utf8_lossy(&body).contains("event: mesh"));
 	}
+	// The fixture credential backs the mapping, so it inherits a disabled
+	// mapping or identity. A credential outside the mapping proves the closed
+	// streams released their admissions.
+	let replacement_token =
+		common::issued_credential(&fixture.f.store, "acme", "alice").await["token"]
+			.as_str()
+			.unwrap()
+			.to_owned();
 	let replacement = fixture
 		.app
 		.clone()
 		.native_oneshot(
 			Request::get("/api/events/stream?after=-1")
-				.header("authorization", format!("Bearer {}", fixture.token))
+				.header("authorization", format!("Bearer {replacement_token}"))
 				.body(bytes::Bytes::new())
 				.unwrap(),
 		)
