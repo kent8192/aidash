@@ -174,8 +174,8 @@ export function OAuthClients({
         <Field
           label={
             ja
-              ? "Client secret（空欄で現在の値を保持）"
-              : "Client secret (leave empty to keep the current value)"
+              ? "Client secret（空欄で現在の値を保持。Client ID を変更する場合は必須）"
+              : "Client secret (leave empty to keep the current value; required when changing the Client ID)"
           }
         >
           <Input

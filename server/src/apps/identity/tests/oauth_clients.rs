@@ -122,6 +122,24 @@ async fn registered_clients_are_private_issuer_bound_and_destroyed_on_retirement
 		.unwrap();
 	assert_eq!(rotated.revision, alice.revision + 1);
 	assert_eq!(store.versions("alpha", &resource).await.unwrap().len(), 1);
+	// The pinned version is sealed with its client_id; a new ID needs a new secret.
+	let mut renamed = input(Ownership::Me, None);
+	renamed.client_id = "other-client-id".into();
+	renamed.expected_revision = rotated.revision;
+	assert!(matches!(
+		service.put("alpha", "alice", Some(alice.id), renamed).await,
+		Err(aidash_application::Error::Conflict(message)) if message.starts_with("oauth_client_secret_required")
+	));
+	let mut kept = input(Ownership::Me, None);
+	kept.expected_revision = rotated.revision;
+	assert_eq!(
+		service
+			.put("alpha", "alice", Some(alice.id), kept)
+			.await
+			.unwrap()
+			.revision,
+		rotated.revision + 1
+	);
 	service.retire_subject("alpha", "alice").await.unwrap();
 	assert!(store.versions("alpha", &resource).await.unwrap().is_empty());
 	let (personal, tenant) = policy

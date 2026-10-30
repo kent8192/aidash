@@ -179,6 +179,17 @@ impl Service {
 				"OAuth Client secret write is pending; supply its secret again".into(),
 			));
 		}
+		// The stored secret version is sealed with its client_id; keeping it under a new
+		// ID would save a registration whose token exchanges the broker always refuses.
+		if current
+			.as_ref()
+			.is_some_and(|row| row.secret_resource.is_some() && row.client_id != input.client_id)
+			&& input.client_secret.is_none()
+		{
+			return Err(Error::Conflict(
+				"oauth_client_secret_required: changing the client ID requires its secret".into(),
+			));
+		}
 		let new = current.is_none();
 		let now = Utc::now();
 		let mut row = current.unwrap_or_else(|| OAuthClient {
