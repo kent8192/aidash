@@ -185,6 +185,57 @@ pub(crate) struct WorkerAuthority {
 	access: Arc<RwLock<Access>>,
 }
 
+fn unavailable_workspace_search(workspace: Uuid, disabled: bool) -> Value {
+	let mut result = json!({"workspace_id":workspace, "matches":[], "estimated_tokens":0,
+		"truncated":false, "workspace":{"status":"unavailable", "cause":if disabled {"disabled"} else {"missing"}}});
+	result["estimated_tokens"] =
+		json!(aidash_domain::context::estimated_tokens(&result.to_string()) + 16);
+	result
+}
+
+fn append_reference_matches(result: &mut Value, reference: Value, max_tokens: usize) -> Result<()> {
+	let reference = reference
+		.as_array()
+		.cloned()
+		.ok_or_else(|| Error::Invalid("invalid reference matches".into()))?;
+	let workspace_tokens = result["estimated_tokens"].as_u64().unwrap_or(0) as usize;
+	let (reference, truncated) = aidash_domain::registry::knowledge::fit_reference_matches(
+		reference,
+		workspace_tokens,
+		max_tokens,
+	);
+	result["reference_matches"] = json!(reference);
+	result["reference_truncated"] = json!(truncated);
+	Ok(())
+}
+
+#[cfg(test)]
+mod image_search_tests {
+	use super::*;
+	#[test]
+	fn missing_or_disabled_workspace_keeps_the_separate_reference_results() {
+		for disabled in [false, true] {
+			let mut result = unavailable_workspace_search(Uuid::nil(), disabled);
+			append_reference_matches(
+				&mut result,
+				json!([{"document":{"name":"diagram.png"}}]),
+				1000,
+			)
+			.unwrap();
+			assert_eq!(result["matches"], json!([]));
+			assert_eq!(result["workspace"]["status"], "unavailable");
+			assert_eq!(
+				result["workspace"]["cause"],
+				if disabled { "disabled" } else { "missing" }
+			);
+			assert_eq!(
+				result["reference_matches"][0]["document"]["name"],
+				"diagram.png"
+			);
+		}
+	}
+}
+
 impl WorkerAuthority {
 	pub(crate) async fn workspace_search(
 		&self,
@@ -241,40 +292,64 @@ impl WorkerAuthority {
 			run.workspace_id,
 			false,
 		)
-		.await?
-		.ok_or_else(|| Error::NotFound("semantic index".into()))?;
-		let spec: aidash_domain::semantic::indexing::IndexingSpec =
-			serde_json::from_value(index.spec)?;
+		.await?;
+		let spec: Option<aidash_domain::semantic::indexing::IndexingSpec> = index
+			.map(|index| serde_json::from_value(index.spec))
+			.transpose()?;
+		let limit = input["limit"].as_u64().map_or(5, |value| value as usize);
+		let max_tokens = input["max_tokens"]
+			.as_u64()
+			.map_or(4096, |value| value as usize);
+		if limit == 0 || limit > 20 || max_tokens == 0 || max_tokens > 32768 {
+			return Err(Error::Invalid("invalid semantic search limits".into()));
+		}
 		let search = crate::apps::knowledge::serializers::contracts::Search {
 			query: input["query"].as_str().unwrap_or_default().to_owned(),
 			image: image.clone(),
 			agent: None,
 			metadata: json!({}),
-			limit: input["limit"]
-				.as_u64()
-				.map_or(spec.max_results.min(5), |value| value as usize),
-			max_tokens: input["max_tokens"]
-				.as_u64()
-				.map_or(spec.max_result_tokens, |value| value as usize),
+			limit: input["limit"].as_u64().map_or_else(
+				|| spec.as_ref().map_or(5, |spec| spec.max_results.min(5)),
+				|value| {
+					spec.as_ref().map_or(value as usize, |spec| {
+						(value as usize).min(spec.max_results)
+					})
+				},
+			),
+			max_tokens: input["max_tokens"].as_u64().map_or_else(
+				|| spec.as_ref().map_or(4096, |spec| spec.max_result_tokens),
+				|value| {
+					spec.as_ref().map_or(value as usize, |spec| {
+						(value as usize).min(spec.max_result_tokens)
+					})
+				},
+			),
 		};
-		let result = crate::semantic::service::search_in(
-			store,
-			&mut lease,
-			run.workspace_id,
-			search,
-			Some(run.id),
-			None,
-		)
-		.await?;
-		let mut result = serde_json::to_value(result)?;
+		let mut result = if spec.as_ref().is_some_and(|spec| spec.enabled) {
+			serde_json::to_value(
+				crate::semantic::service::search_in(
+					store,
+					&mut lease,
+					run.workspace_id,
+					search,
+					Some(run.id),
+					None,
+				)
+				.await?,
+			)?
+		} else {
+			unavailable_workspace_search(run.workspace_id, spec.is_some())
+		};
 		if reference.is_some() {
 			use aidash_application::ports::semantic::retrieval::SemanticRetrievalSession;
-			let limit = input["limit"]
-				.as_u64()
-				.map_or(spec.max_results.min(5), |value| value as usize);
+			let limit = limit.min(8);
 			let reference = if let Some(image) = &image {
 				let content = crate::bootstrap::semantic_retrieval_scope(store, &mut lease)
-					.query_image(run.workspace_id, image, spec.max_image_bytes)
+					.query_image(
+						run.workspace_id,
+						image,
+						aidash_domain::semantic::indexing::default_max_image_bytes(),
+					)
 					.await?;
 				let found = crate::apps::registry::services::knowledge::reference_image_context(
 					lease.access().ok_or(Error::Forbidden)?,
@@ -288,7 +363,11 @@ impl WorkerAuthority {
 				)
 				.await?;
 				let current = crate::bootstrap::semantic_retrieval_scope(store, &mut lease)
-					.query_image(run.workspace_id, image, spec.max_image_bytes)
+					.query_image(
+						run.workspace_id,
+						image,
+						aidash_domain::semantic::indexing::default_max_image_bytes(),
+					)
 					.await?;
 				if current.media_type != content.media_type || current.bytes != content.bytes {
 					return Err(Error::Conflict(
@@ -308,16 +387,11 @@ impl WorkerAuthority {
 				)
 				.await?
 			};
-			let reference = reference.unwrap_or_else(|| json!([]));
-			let max_tokens = input["max_tokens"]
-				.as_u64()
-				.map_or(spec.max_result_tokens, |value| value as usize);
-			if serde_json::to_vec(&reference)?.len() > max_tokens {
-				return Err(Error::RemoteSemantic(
-					aidash_domain::semantic::Failure::ContextBudget,
-				));
-			}
-			result["reference_matches"] = reference;
+			append_reference_matches(
+				&mut result,
+				reference.unwrap_or_else(|| json!([])),
+				max_tokens,
+			)?;
 		}
 		Ok(result)
 	}

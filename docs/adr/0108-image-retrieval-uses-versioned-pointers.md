@@ -30,7 +30,10 @@ pinned embedding and collection together. Runs query that collection with the
 pinned definition. Its results have a separate context section from Workspace
 results; scores from the two stores are not merged. Image names appear in the
 reference listing; original bytes are retained separately and are not loaded in
-every Run. A missing definition, withdrawn Catalog Approval or provider model
+every Run. Original image bytes are stored in private binary columns. Registration
+checks for an idempotent replay before calling the provider, closes the preflight
+scope during the external call, and rechecks authority before the atomic write.
+A missing definition, withdrawn Catalog Approval or provider model
 not found requires a new Agent version; transient provider errors retry and never
 silently degrade the reference context. Copy, installation and federation do
 not transfer private image references and fail explicitly.

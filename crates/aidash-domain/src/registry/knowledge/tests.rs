@@ -1,4 +1,55 @@
 use super::*;
+#[test]
+fn reference_matches_are_ranked_and_limited_across_sources() {
+	use crate::registry::bindings::QualifiedRef;
+	let source = |id: &str| QualifiedRef {
+		registry_deployment: "node".into(),
+		id: id.into(),
+		version: "1.0.0".into(),
+	};
+	let item = |document_index, score| ImageMatch {
+		document_index,
+		score,
+		name: "image".into(),
+		media_type: "image/png".into(),
+		size: 1,
+		digest: "digest".into(),
+	};
+	let ranked = rank_matches(
+		vec![
+			(source("b"), item(0, 0.9)),
+			(source("a"), item(2, 0.9)),
+			(source("a"), item(1, 0.9)),
+			(source("a"), item(0, 0.5)),
+		],
+		2,
+	);
+	assert_eq!(
+		ranked
+			.iter()
+			.map(|(source, item)| (source.id.as_str(), item.document_index))
+			.collect::<Vec<_>>(),
+		vec![("a", 1), ("a", 2)]
+	);
+}
+
+#[test]
+fn reference_matches_use_only_tokens_remaining_after_workspace_results() {
+	let first = serde_json::json!({"name":"first.png"});
+	let second = serde_json::json!({"name":"second.png"});
+	let one_cost = crate::context::estimated_tokens(
+		&serde_json::json!({"reference_matches":[first.clone()],"reference_truncated":false})
+			.to_string(),
+	);
+	let (kept, truncated) = fit_reference_matches(vec![first.clone(), second], 100, 100 + one_cost);
+	assert_eq!(kept, vec![first]);
+	assert!(truncated);
+	assert!(
+		fit_reference_matches(vec![serde_json::json!({"name":"x"})], 100, 100)
+			.0
+			.is_empty()
+	);
+}
 #[rstest::rstest]
 fn documents_are_bounded_and_nonempty() {
 	let mut docs = vec![ReferenceDocument {

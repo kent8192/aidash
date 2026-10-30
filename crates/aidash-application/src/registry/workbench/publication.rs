@@ -135,6 +135,64 @@ where
 	R::Scope: PublicationScope,
 {
 	let actor = repository.principal();
+	// A short read scope checks for an exact replay and validates the inputs.
+	// It is closed before any provider call and the locked revision is checked again.
+	let mut preflight = repository.begin().await?;
+	let preview = preflight.read(id, false).await?;
+	authorize(&mut preflight, &preview, "agent_draft.register", true).await?;
+	if preview.archived || input.expected_revision != preview.revision {
+		return Err(Error::Conflict(
+			"draft revision changed or is archived".into(),
+		));
+	}
+	let preview_entry =
+		validate_content(&mut preflight, validation, &preview, repository.node_id()).await?;
+	super::authorize_creation(&mut preflight, &preview.tenant, &preview_entry).await?;
+	if let Some(previous) = preflight.registered_evidence(&preview_entry).await? {
+		if previous.draft_id != preview.id || previous.revision != preview.revision {
+			return Err(Error::Conflict("version is already registered from another draft revision; choose a new semantic version".into()));
+		}
+		let saved = preflight
+			.definition(&preview_entry.id, &preview_entry.version)
+			.await?;
+		if saved != preview_entry {
+			return Err(Error::Conflict(
+				"published versions are immutable; choose a new version".into(),
+			));
+		}
+		preflight.commit().await?;
+		return Ok(Registration {
+			draft_id: id,
+			revision: preview.revision,
+			entry: saved,
+			behavioral_tested: previous.behavioral_tested,
+		});
+	}
+	let documents: Vec<ReferenceDocument> = serde_json::from_value(preview.documents.clone())?;
+	let images = if documents.is_empty() {
+		Vec::new()
+	} else {
+		aidash_domain::registry::knowledge::validated_images(&documents)?
+	};
+	let reference = if images.is_empty() {
+		None
+	} else {
+		let bindings: aidash_domain::registry::bindings::AgentBindings =
+			serde_json::from_value(preview_entry.config.clone())?;
+		Some(bindings.reference_embedding.ok_or_else(|| {
+			Error::Invalid("reference images require a pinned embedding definition".into())
+		})?)
+	};
+	preflight.commit().await?;
+	let prepared = if let Some(reference) = &reference {
+		Some(
+			repository
+				.embed_reference_images(reference, &images)
+				.await?,
+		)
+	} else {
+		None
+	};
 	let mut scope = repository.begin().await?;
 	let draft = scope.read(id, true).await?;
 	authorize(&mut scope, &draft, "agent_draft.register", true).await?;
@@ -144,6 +202,11 @@ where
 		));
 	}
 	let entry = validate_content(&mut scope, validation, &draft, repository.node_id()).await?;
+	if entry != preview_entry {
+		return Err(Error::Conflict(
+			"draft content changed during reference embedding".into(),
+		));
+	}
 	super::authorize_creation(&mut scope, &draft.tenant, &entry).await?;
 
 	let behavioral_tested = behavioral_evidence(&mut scope, &draft, &entry).await?;
@@ -161,12 +224,15 @@ where
 			let reference = bindings.reference_embedding.ok_or_else(|| {
 				Error::Invalid("reference images require a pinned embedding definition".into())
 			})?;
-			let (embedding, vectors) = scope.embed_reference_images(&reference, &images).await?;
+			let (embedding, vectors) = prepared.ok_or_else(|| {
+				Error::Invalid("reference images were not embedded before registration".into())
+			})?;
 			if embedding.id != reference.id || embedding.version != reference.version {
 				return Err(Error::Conflict(
 					"reference embedding definition changed".into(),
 				));
 			}
+			scope.validate_prepared_embedding(&embedding).await?;
 			Some(aidash_domain::registry::knowledge::ImageCollection::new(
 				&entry.id,
 				&entry.version,

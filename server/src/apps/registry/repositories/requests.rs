@@ -27,6 +27,34 @@ pub(crate) struct TenantRegistration<'a> {
 	pub(crate) store: &'a crate::store::Store,
 }
 
+impl TenantRegistration<'_> {
+	/// Replays are read before any provider call and never allocate a new key.
+	pub(crate) async fn replay(&mut self, entry: &Entry, key: Uuid) -> Result<Option<Entry>> {
+		let stored = RegistryRequest::objects()
+			.filter(RegistryRequest::field_tenant().eq(self.access.identity.tenant.clone()))
+			.filter(RegistryRequest::field_principal().eq(self.access.identity.subject.clone()))
+			.filter(RegistryRequest::field_key().eq(key))
+			.all_with_executor(&mut **self.access.tx)
+			.await
+			.map_err(FrameworkError::from)
+			.map_err(crate::Error::from)?
+			.pop();
+		let Some(stored) = stored else {
+			return Ok(None);
+		};
+		if stored.request.0 != serde_json::to_value(entry)? {
+			return Err(aidash_application::Error::Conflict(
+				"registration idempotency key reused with different input".into(),
+			));
+		}
+		let saved = SqlScope(&mut self.access.tx)
+			.definition(&stored.entity_id, &entry.version)
+			.await?;
+		self.authorize(&saved).await?;
+		Ok(Some(saved))
+	}
+}
+
 #[async_trait]
 impl DefinitionLookup for TenantRegistration<'_> {
 	async fn definition(&mut self, id: &str, version: &str) -> Result<Entry> {
@@ -158,20 +186,6 @@ impl PrivateKnowledgeRead for TenantRegistration<'_> {
 
 #[async_trait]
 impl PrivateKnowledgeScope for TenantRegistration<'_> {
-	async fn embed_reference_images(
-		&mut self,
-		reference: &aidash_domain::registry::EntityRef,
-		images: &[aidash_domain::registry::knowledge::ValidatedImage],
-	) -> Result<(Entry, Vec<Vec<f32>>)> {
-		crate::apps::registry::services::knowledge::embed_reference_images(
-			self.access,
-			self.store,
-			reference,
-			images,
-		)
-		.await
-		.map_err(Into::into)
-	}
 	async fn insert_documents(&mut self, entry: &Entry, documents: Value) -> Result<()> {
 		transaction_records::insert_documents(&mut **self.access.tx, entry, documents)
 			.await

@@ -5,7 +5,7 @@ BEGIN
  IF to_regclass('public.runs') IS NOT NULL THEN
   EXECUTE 'SELECT EXISTS (SELECT 1 FROM runs WHERE context::text LIKE ''%aidash.workspace_search%'' OR context::text LIKE ''%aidash.workspace_read%1.1.0%'')' INTO runs_in_use;
  END IF;
- IF EXISTS (SELECT 1 FROM agent_knowledge WHERE image_index IS NOT NULL OR image_data IS NOT NULL)
+ IF EXISTS (SELECT 1 FROM agent_knowledge WHERE image_index IS NOT NULL OR image_0 IS NOT NULL OR image_1 IS NOT NULL OR image_2 IS NOT NULL OR image_3 IS NOT NULL OR image_4 IS NOT NULL OR image_5 IS NOT NULL OR image_6 IS NOT NULL OR image_7 IS NOT NULL)
  OR EXISTS (SELECT 1 FROM registry WHERE kind = 'agent' AND
    (metadata::text LIKE '%"reference_embedding"%' OR metadata::text LIKE '%aidash.workspace_search%' OR metadata::text LIKE '%aidash.workspace_read%1.1.0%'))
  OR EXISTS (SELECT 1 FROM agent_drafts WHERE entry::text LIKE '%"reference_embedding"%' OR entry::text LIKE '%aidash.workspace_search%')

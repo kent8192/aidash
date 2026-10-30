@@ -74,6 +74,23 @@ impl DraftRepository for Repository {
 		.await;
 		result.map_err(Into::into)
 	}
+	async fn embed_reference_images(
+		&self,
+		reference: &aidash_domain::registry::EntityRef,
+		images: &[aidash_domain::registry::knowledge::ValidatedImage],
+	) -> Result<(Entry, Vec<Vec<f32>>)> {
+		let Actor::Subject(identity) = &self.actor else {
+			return Err(aidash_application::Error::Forbidden);
+		};
+		crate::apps::registry::services::knowledge::embed_before_registration(
+			&self.runtime.store,
+			identity,
+			reference,
+			images,
+		)
+		.await
+		.map_err(Into::into)
+	}
 }
 #[async_trait]
 impl DefinitionLookup for Scope {
@@ -211,6 +228,47 @@ impl DefinitionWriter for Scope {
 }
 #[async_trait]
 impl PublicationScope for Scope {
+	async fn validate_prepared_embedding(&mut self, entry: &Entry) -> Result<()> {
+		let Actor::Subject(identity) = &self.actor else {
+			return Err(aidash_application::Error::Forbidden);
+		};
+		let snapshot = identity.lock_with_mode(&mut self.tx, false).await?;
+		let store = &self.runtime.store;
+		let mut access = crate::authorization::access::Access::from_transaction(
+			self.tx.lend(),
+			&store.pool,
+			store.deployment.as_str(),
+			Some(crate::apps::federation::remote::services::wire::Wire::of_store(store)),
+			identity,
+			snapshot,
+		);
+		let result: crate::Result<()> = async {
+			let reference = aidash_domain::registry::EntityRef {
+				id: entry.id.clone(),
+				version: entry.version.clone(),
+			};
+			let current =
+				crate::authorization::catalog::entry(&mut access, &reference, "registry.read")
+					.await?;
+			if current != *entry {
+				return Err(crate::Error::Conflict(
+					"reference embedding definition changed".into(),
+				));
+			}
+			aidash_application::generation::embedding::require_reference_policy(
+				&mut crate::bootstrap::generation_embedding_authority_scope(&mut access),
+				store.deployment.as_str(),
+				&reference,
+			)
+			.await?;
+			Ok(())
+		}
+		.await;
+		let audit = access.flush_audit().await;
+		self.tx.restore(access.return_transaction());
+		audit?;
+		result.map_err(Into::into)
+	}
 	async fn registrations(&mut self, draft: Uuid, agent: &str) -> Result<Vec<RegistrationRecord>> {
 		Ok(AgentDraftRegistration::page(&mut self.tx, draft, agent)
 			.await?
@@ -274,36 +332,6 @@ impl PublicationScope for Scope {
 		)
 		.await
 		.map_err(Into::into)
-	}
-	async fn embed_reference_images(
-		&mut self,
-		reference: &aidash_domain::registry::EntityRef,
-		images: &[aidash_domain::registry::knowledge::ValidatedImage],
-	) -> Result<(Entry, Vec<Vec<f32>>)> {
-		let Actor::Subject(identity) = &self.actor else {
-			return Err(aidash_application::Error::Forbidden);
-		};
-		let snapshot = identity.lock_with_mode(&mut self.tx, false).await?;
-		let store = &self.runtime.store;
-		let mut access = crate::authorization::access::Access::from_transaction(
-			self.tx.lend(),
-			&store.pool,
-			store.deployment.as_str(),
-			Some(crate::apps::federation::remote::services::wire::Wire::of_store(store)),
-			identity,
-			snapshot,
-		);
-		let result = crate::apps::registry::services::knowledge::embed_reference_images(
-			&mut access,
-			store,
-			reference,
-			images,
-		)
-		.await;
-		let audit = access.flush_audit().await;
-		self.tx.restore(access.return_transaction());
-		audit?;
-		result.map_err(Into::into)
 	}
 	async fn record_registration(
 		&mut self,

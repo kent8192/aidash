@@ -718,13 +718,6 @@ pub async fn publish(scope: &mut dyn FileScopePort, area: &mut Area) -> Result<(
 	}
 	area.revision += 1;
 	scope.persist_manifest(area).await?;
-	scope
-		.event(
-			area.workspace_id,
-			"capability.files_changed",
-			json!({"area_id":area.id,"revision":area.revision,"generation":area.generation}),
-		)
-		.await?;
 	let changes = if previous_generation != area.generation {
 		let mut changes = aidash_domain::semantic::indexing::image_changes(&previous, &[]);
 		changes.extend(aidash_domain::semantic::indexing::image_changes(
@@ -738,6 +731,13 @@ pub async fn publish(scope: &mut dyn FileScopePort, area: &mut Area) -> Result<(
 	if !changes.is_empty() {
 		scope.image_publication(area, &changes).await?;
 	}
+	scope
+		.event(
+			area.workspace_id,
+			"capability.files_changed",
+			json!({"area_id":area.id,"revision":area.revision,"generation":area.generation}),
+		)
+		.await?;
 	Ok(())
 }
 #[cfg(test)]

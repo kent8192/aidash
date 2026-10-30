@@ -22,5 +22,11 @@ pub(super) fn migration() -> Migration {
 						.into(),
 			},
 		})
+		// PostgreSQL procedural guards are not representable by schema expressions.
+		// Put this last so reversal checks the data before restoring the old constraint.
+		.add_operation(Operation::RunSQL {
+			sql: "SELECT 1".into(),
+			reverse_sql: Some("DO $migration$ BEGIN IF EXISTS (SELECT 1 FROM generation_embedding_usage WHERE purpose = 'reference') THEN RAISE EXCEPTION 'reference embedding usage exists; rollback requires a compatible version'; END IF; END $migration$;".into()),
+		})
 		.atomic(true)
 }

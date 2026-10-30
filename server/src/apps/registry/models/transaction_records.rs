@@ -19,6 +19,57 @@ const SCOPE_TENANT: &str = "current_setting('aidash.tenant', true)";
 /// The same Tenant for an insert, absent (and refused) outside a Tenant scope.
 const INSERT_TENANT: &str = "NULLIF(current_setting('aidash.tenant', true), '')";
 
+#[cfg(test)]
+mod image_storage_tests {
+	use super::*;
+	use crate::apps::execution::test_database::{DatabaseFixture, database};
+	use base64::{Engine as _, engine::general_purpose::STANDARD};
+	use rstest::rstest;
+
+	#[rstest]
+	#[tokio::test]
+	async fn image_data_is_binary_and_idempotent(#[future] database: DatabaseFixture) {
+		let database = database.await;
+		let mut tx = database.begin_fixture().await;
+		// A temporary row exercises the actual adapter without manufacturing a Registry identity.
+		tx.execute("CREATE TEMP TABLE agent_knowledge (tenant text, agent_id text, agent_version text, image_0 bytea, image_1 bytea, image_2 bytea, image_3 bytea, image_4 bytea, image_5 bytea, image_6 bytea, image_7 bytea)", vec![]).await.unwrap();
+		let tenant = scope_tenant(&mut *tx).await.unwrap();
+		let entry: Entry = serde_json::from_value(serde_json::json!({"id":"source", "version":"1.0.0", "kind":"source", "name":{"en":"Source"}, "description":{"en":"Source"}, "config":{}})).unwrap();
+		let (sql, values) = Query::insert()
+			.into_table(Alias::new("agent_knowledge"))
+			.columns(["tenant", "agent_id", "agent_version"].map(Alias::new))
+			.values_panic([
+				reinhardt::query::IntoValue::into_value(tenant),
+				reinhardt::query::IntoValue::into_value(entry.id.clone()),
+				reinhardt::query::IntoValue::into_value(entry.version.clone()),
+			])
+			.build(PostgresQueryBuilder);
+		tx.execute(&sql, convert_values(values)).await.unwrap();
+		let bytes = b"\x89PNG\r\n\x1a\n\x00binary";
+		let data = serde_json::json!([{"document_index":2,"data_base64":STANDARD.encode(bytes)}]);
+		insert_image_data(&mut *tx, &entry, data.clone())
+			.await
+			.unwrap();
+		insert_image_data(&mut *tx, &entry, data).await.unwrap();
+		let row = tx.fetch_one("SELECT encode(image_2, 'hex') AS bytes, pg_typeof(image_2)::text AS storage FROM agent_knowledge", vec![]).await.unwrap();
+		let row = QueryRow::from_backend_row(row).data;
+		assert_eq!(row["storage"], "bytea");
+		assert_eq!(
+			row["bytes"],
+			bytes
+				.iter()
+				.map(|byte| format!("{byte:02x}"))
+				.collect::<String>()
+		);
+		let changed =
+			serde_json::json!([{"document_index":2,"data_base64":STANDARD.encode(b"different")}]);
+		assert!(matches!(
+			insert_image_data(&mut *tx, &entry, changed).await,
+			Err(Error::Conflict(_))
+		));
+	}
+}
+
 pub(crate) async fn scope_tenant(tx: &mut dyn TransactionExecutor) -> Result<String> {
 	let row = tx
 		.fetch_one(&format!("SELECT {SCOPE_TENANT} AS tenant"), vec![])
@@ -177,20 +228,61 @@ pub(crate) async fn insert_image_data(
 	entry: &Entry,
 	data: Value,
 ) -> Result<()> {
+	use base64::{Engine as _, engine::general_purpose::STANDARD};
 	let tenant = scope_tenant(tx).await?;
-	let (sql, values) = Query::update()
-		.table(Alias::new(AgentKnowledge::table_name()))
-		.value(Alias::new("image_data"), Expr::value(data.clone()))
-		.and_where(Expr::col("tenant").eq(Expr::value(&tenant)))
-		.and_where(Expr::col("agent_id").eq(Expr::value(&entry.id)))
-		.and_where(Expr::col("agent_version").eq(Expr::value(&entry.version)))
-		.and_where(Expr::col("image_data").is_null())
-		.build(PostgresQueryBuilder);
-	tx.execute(&sql, convert_values(values)).await?;
-	if private_column(tx, entry, "image_data").await? != Some(data) {
-		return Err(Error::Conflict(
-			"private image data is immutable; choose a new version".into(),
-		));
+	let images = data
+		.as_array()
+		.ok_or_else(|| Error::Invalid("invalid private images".into()))?;
+	let mut seen = std::collections::HashSet::new();
+	for image in images {
+		let index = image["document_index"]
+			.as_u64()
+			.filter(|index| *index < 8)
+			.ok_or_else(|| Error::Invalid("invalid private image index".into()))?;
+		if !seen.insert(index) {
+			return Err(Error::Invalid("duplicate private image index".into()));
+		}
+		let encoded = image["data_base64"]
+			.as_str()
+			.ok_or_else(|| Error::Invalid("invalid private image data".into()))?;
+		let bytes = STANDARD
+			.decode(encoded)
+			.map_err(|_| Error::Invalid("invalid private image data".into()))?;
+		let column = format!("image_{index}");
+		let (sql, values) = Query::update()
+			.table(Alias::new(AgentKnowledge::table_name()))
+			.value(Alias::new(&column), Expr::value(bytes.clone()))
+			.and_where(Expr::col("tenant").eq(Expr::value(&tenant)))
+			.and_where(Expr::col("agent_id").eq(Expr::value(&entry.id)))
+			.and_where(Expr::col("agent_version").eq(Expr::value(&entry.version)))
+			.and_where(Expr::col(Alias::new(&column)).is_null())
+			.build(PostgresQueryBuilder);
+		tx.execute(&sql, convert_values(values)).await?;
+		let (sql, values) = Query::select()
+			.expr_as(
+				Expr::cust(format!("encode({column}, 'hex')")),
+				Alias::new("image_hex"),
+			)
+			.from(Alias::new(AgentKnowledge::table_name()))
+			.and_where(Expr::col("tenant").eq(Expr::value(&tenant)))
+			.and_where(Expr::col("agent_id").eq(Expr::value(&entry.id)))
+			.and_where(Expr::col("agent_version").eq(Expr::value(&entry.version)))
+			.build(PostgresQueryBuilder);
+		let stored = tx
+			.fetch_optional(&sql, convert_values(values))
+			.await?
+			.and_then(|row| {
+				QueryRow::from_backend_row(row)
+					.data
+					.get("image_hex")
+					.cloned()
+			});
+		let expected: String = bytes.iter().map(|byte| format!("{byte:02x}")).collect();
+		if stored.as_ref().and_then(Value::as_str) != Some(expected.as_str()) {
+			return Err(Error::Conflict(
+				"private image data is immutable; choose a new version".into(),
+			));
+		}
 	}
 	Ok(())
 }

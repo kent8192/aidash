@@ -59,6 +59,14 @@ pub trait DraftRepository: Send + Sync {
 	fn principal(&self) -> Principal;
 	fn node_id(&self) -> &str;
 	async fn begin(&self) -> Result<Self::Scope>;
+	/// Embed after the preflight scope is committed, before the write scope opens.
+	async fn embed_reference_images(
+		&self,
+		_reference: &aidash_domain::registry::EntityRef,
+		_images: &[aidash_domain::registry::knowledge::ValidatedImage],
+	) -> Result<(Entry, Vec<Vec<f32>>)> {
+		Err(crate::Error::Forbidden)
+	}
 }
 
 use aidash_domain::registry::workbench::{RegistrationEvidence, RegistrationRecord};
@@ -78,12 +86,13 @@ pub trait PublicationScope: DraftScope + DefinitionWriter {
 	async fn insert_image_data(&mut self, _entry: &Entry, _data: Value) -> Result<()> {
 		Err(crate::Error::Forbidden)
 	}
-	async fn embed_reference_images(
-		&mut self,
-		_reference: &aidash_domain::registry::EntityRef,
-		_images: &[aidash_domain::registry::knowledge::ValidatedImage],
-	) -> Result<(Entry, Vec<Vec<f32>>)> {
-		Err(crate::Error::Forbidden)
+	async fn validate_prepared_embedding(&mut self, entry: &Entry) -> Result<()> {
+		if self.definition(&entry.id, &entry.version).await? != *entry {
+			return Err(crate::Error::Conflict(
+				"reference embedding definition changed".into(),
+			));
+		}
+		Ok(())
 	}
 	async fn record_registration(
 		&mut self,

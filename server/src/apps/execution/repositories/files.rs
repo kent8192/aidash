@@ -569,6 +569,11 @@ impl FileScopePort for Scope<'_> {
 		if area.tenant != access.identity.tenant {
 			return Err(Error::Forbidden);
 		}
+		crate::apps::knowledge::repositories::image_publications::lock_workspace(
+			&mut **access.tx,
+			area.workspace_id,
+		)
+		.await?;
 		let authority = if access.identity.subject == area.owner {
 			serde_json::json!({"credential":access.identity.credential_id,"tenant":access.identity.tenant,"subject":access.identity.subject,"subjects":access.subjects})
 		} else {
@@ -576,8 +581,7 @@ impl FileScopePort for Scope<'_> {
 			serde_json::json!({"credential":null,"tenant":area.tenant,"subject":area.owner,"subjects":[]})
 		};
 		let changes = serde_json::to_value(changes)?;
-		// The preceding event holds the global event transaction lock, so this
-		// sequence is allocated in commit order even across concurrent Areas.
+		// The Workspace lock assigns publication sequence in commit order.
 		let statement = Query::insert()
 			.into_table(Alias::new("semantic_image_publications"))
 			.columns(

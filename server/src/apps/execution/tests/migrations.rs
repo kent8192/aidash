@@ -65,6 +65,7 @@ const TENANT_REGISTRY_MIGRATIONS: &[(&str, &str)] = &[
 	("registry", "0049_plugin_context_merge"),
 	("registry", "0050_embedding_inputs"),
 	("registry", "0051_reference_images"),
+	("registry", "0052_reference_image_byte_state"),
 	("marketplace", "0008_remove_compatibility_gate"),
 	("marketplace", "0009_remove_compatibility_gate_state"),
 	("marketplace", "0010_row_level_security"),
@@ -117,7 +118,7 @@ async fn native_history_uses_typed_schema_operations_and_lf_sql_assets() {
 			.iter()
 			.filter(|migration| migration.state_only)
 			.count(),
-		70
+		71
 	);
 	let tables = migrations
 		.iter()
@@ -710,7 +711,7 @@ async fn preserved_baseline_does_not_generate_table_recreation(
 			.iter()
 			.filter(|migration| migration.state_only)
 			.count(),
-		70
+		71
 	);
 }
 
@@ -772,6 +773,63 @@ async fn native_migrations_build_a_fresh_schema_and_preserve_records_on_replay(
 		.unwrap();
 	assert_eq!(loaded.title, "After native migration");
 	assert_eq!(loaded.state.0, json!({"keep":true}));
+}
+
+#[rstest]
+#[tokio::test]
+async fn reference_embedding_usage_blocks_rollback_until_usage_is_removed(
+	#[future] fresh_database: MigrationFixture,
+) {
+	let fixture = fresh_database.await;
+	let pool = fixture.connection.clone().into_postgres().unwrap();
+	sqlx::query("CREATE TABLE generation_embedding_usage (purpose text NOT NULL CONSTRAINT generation_embedding_usage_purpose_check CHECK (purpose IN ('query', 'index')))")
+		.execute(&pool).await.unwrap();
+	let migration =
+		FilesystemSource::new(PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("migrations"))
+			.all_migrations()
+			.await
+			.unwrap()
+			.into_iter()
+			.find(|migration| {
+				migration.app_label == "execution"
+					&& migration.name == "0080_reference_embedding_usage"
+			})
+			.unwrap();
+	let mut executor =
+		reinhardt::db::migrations::DatabaseMigrationExecutor::new(fixture.connection.clone());
+	executor
+		.apply_migrations(std::slice::from_ref(&migration))
+		.await
+		.unwrap();
+	sqlx::query("INSERT INTO generation_embedding_usage (purpose) VALUES ('reference')")
+		.execute(&pool)
+		.await
+		.unwrap();
+	let error = executor
+		.rollback_migrations(std::slice::from_ref(&migration))
+		.await
+		.unwrap_err();
+	assert!(
+		error
+			.to_string()
+			.contains("reference embedding usage exists"),
+		"{error}"
+	);
+	let retained: i64 = sqlx::query_scalar(
+		"SELECT count(*) FROM generation_embedding_usage WHERE purpose = 'reference'",
+	)
+	.fetch_one(&pool)
+	.await
+	.unwrap();
+	assert_eq!(retained, 1);
+	sqlx::query("DELETE FROM generation_embedding_usage")
+		.execute(&pool)
+		.await
+		.unwrap();
+	executor
+		.rollback_migrations(std::slice::from_ref(&migration))
+		.await
+		.unwrap();
 }
 
 fn migration_context(url: &str) -> reinhardt::commands::CommandContext {

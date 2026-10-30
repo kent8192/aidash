@@ -10,11 +10,14 @@ pub(super) fn migration() -> Migration {
 			column: ColumnDefinition::new("image_index", FieldType::Jsonb).with_not_null(false),
 			mysql_options: None,
 		})
-		.add_operation(Operation::AddColumn {
-			table: "agent_knowledge".into(),
-			column: ColumnDefinition::new("image_data", FieldType::Jsonb).with_not_null(false),
-			mysql_options: None,
-		})
+		.add_operation(Operation::AddColumn { table: "agent_knowledge".into(), column: ColumnDefinition::new("image_0", FieldType::Bytea).with_not_null(false), mysql_options: None })
+		.add_operation(Operation::AddColumn { table: "agent_knowledge".into(), column: ColumnDefinition::new("image_1", FieldType::Bytea).with_not_null(false), mysql_options: None })
+		.add_operation(Operation::AddColumn { table: "agent_knowledge".into(), column: ColumnDefinition::new("image_2", FieldType::Bytea).with_not_null(false), mysql_options: None })
+		.add_operation(Operation::AddColumn { table: "agent_knowledge".into(), column: ColumnDefinition::new("image_3", FieldType::Bytea).with_not_null(false), mysql_options: None })
+		.add_operation(Operation::AddColumn { table: "agent_knowledge".into(), column: ColumnDefinition::new("image_4", FieldType::Bytea).with_not_null(false), mysql_options: None })
+		.add_operation(Operation::AddColumn { table: "agent_knowledge".into(), column: ColumnDefinition::new("image_5", FieldType::Bytea).with_not_null(false), mysql_options: None })
+		.add_operation(Operation::AddColumn { table: "agent_knowledge".into(), column: ColumnDefinition::new("image_6", FieldType::Bytea).with_not_null(false), mysql_options: None })
+		.add_operation(Operation::AddColumn { table: "agent_knowledge".into(), column: ColumnDefinition::new("image_7", FieldType::Bytea).with_not_null(false), mysql_options: None })
 		// PostgreSQL function bodies cannot be represented by SchemaExpr.
 		.add_operation(Operation::RunSQL {
 			sql: include_str!("sql/forward/0051_reference_images.sql").into(),

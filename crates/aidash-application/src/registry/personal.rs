@@ -18,6 +18,28 @@ pub struct PersonalRegistration {
 	pub source: Entry,
 }
 
+/// Validate private image inputs before provider work or Registry writes.
+pub fn reference_images(
+	registration: &PersonalRegistration,
+) -> Result<
+	Option<(
+		aidash_domain::registry::EntityRef,
+		Vec<knowledge::ValidatedImage>,
+	)>,
+> {
+	let documents: Vec<ReferenceDocument> = serde_json::from_value(registration.documents.clone())?;
+	let images = knowledge::validated_images(&documents)?;
+	if images.is_empty() {
+		return Ok(None);
+	}
+	let config: aidash_domain::registry::bindings::AgentBindings =
+		serde_json::from_value(registration.entry.config.clone())?;
+	let reference = config.reference_embedding.ok_or_else(|| {
+		Error::Invalid("reference images require a pinned embedding definition".into())
+	})?;
+	Ok(Some((reference, images)))
+}
+
 /// Shape validation precedes transport-level idempotency-key parsing.
 pub fn validate_input(entry: Entry, documents: Vec<ReferenceDocument>) -> Result<PersonalDraft> {
 	if entry.binding_normalization.is_some() {
@@ -92,6 +114,7 @@ pub async fn register(
 	scope: &mut dyn PrivateKnowledgeScope,
 	validation: &DefinitionValidation,
 	mut registration: PersonalRegistration,
+	prepared: Option<(Entry, Vec<Vec<f32>>)>,
 	key: Uuid,
 	node: &str,
 ) -> Result<Entry> {
@@ -106,7 +129,9 @@ pub async fn register(
 		let reference = config.reference_embedding.ok_or_else(|| {
 			Error::Invalid("reference images require a pinned embedding definition".into())
 		})?;
-		let (embedding, vectors) = scope.embed_reference_images(&reference, &images).await?;
+		let (embedding, vectors) = prepared.ok_or_else(|| {
+			Error::Invalid("reference images were not embedded before registration".into())
+		})?;
 		if embedding.id != reference.id || embedding.version != reference.version {
 			return Err(Error::Conflict(
 				"reference embedding definition changed".into(),

@@ -68,9 +68,8 @@ impl PrivateKnowledgeRead for Scope {
 		Ok(self.image_index.clone())
 	}
 }
-#[async_trait]
-impl PrivateKnowledgeScope for Scope {
-	async fn embed_reference_images(
+impl Scope {
+	async fn embed_fixture(
 		&mut self,
 		reference: &aidash_domain::registry::EntityRef,
 		images: &[aidash_domain::registry::knowledge::ValidatedImage],
@@ -86,6 +85,9 @@ impl PrivateKnowledgeScope for Scope {
 			.ok_or(Error::Forbidden)?;
 		Ok((entry, images.iter().map(|_| vec![1.0, 0.0]).collect()))
 	}
+}
+#[async_trait]
+impl PrivateKnowledgeScope for Scope {
 	async fn insert_documents(&mut self, _: &Entry, documents: Value) -> Result<()> {
 		self.trace.push("private_documents".into());
 		if self.fail_documents {
@@ -108,9 +110,7 @@ impl PrivateKnowledgeScope for Scope {
 
 #[rstest]
 #[tokio::test]
-async fn reference_embedding_failure_precedes_all_registration_writes(
-	validation: DefinitionValidation,
-) {
+async fn reference_embedding_failure_precedes_all_registration_writes() {
 	let mut scope = Scope {
 		fail_image_embedding: true,
 		..Default::default()
@@ -125,15 +125,8 @@ async fn reference_embedding_failure_precedes_all_registration_writes(
 		documents: json!([{"name":"chart.png","media_type":"image/png","data_base64":"iVBORw0KGgo="}]),
 		source: definition("private", "source", json!({})),
 	};
-	let error = personal::register(
-		&mut scope,
-		&validation,
-		registration,
-		Uuid::new_v4(),
-		"aidash://home",
-	)
-	.await
-	.unwrap_err();
+	let (reference, images) = personal::reference_images(&registration).unwrap().unwrap();
+	let error = scope.embed_fixture(&reference, &images).await.unwrap_err();
 	assert!(error.to_string().contains("embedding unavailable"));
 	assert_eq!(scope.trace, ["image_embedding"]);
 	assert!(scope.entries.is_empty());
@@ -143,8 +136,8 @@ async fn reference_embedding_failure_precedes_all_registration_writes(
 
 #[rstest]
 #[tokio::test]
-async fn malformed_reference_set_is_refused_before_any_embedding(validation: DefinitionValidation) {
-	let mut scope = Scope::default();
+async fn malformed_reference_set_is_refused_before_any_embedding() {
+	let scope = Scope::default();
 	let entry = definition(
 		"",
 		"agent",
@@ -158,17 +151,7 @@ async fn malformed_reference_set_is_refused_before_any_embedding(validation: Def
 		]),
 		source: definition("private", "source", json!({})),
 	};
-	assert!(
-		personal::register(
-			&mut scope,
-			&validation,
-			registration,
-			Uuid::new_v4(),
-			"aidash://home"
-		)
-		.await
-		.is_err()
-	);
+	assert!(personal::reference_images(&registration).is_err());
 	assert!(scope.trace.is_empty());
 	assert!(scope.entries.is_empty());
 }
@@ -198,10 +181,18 @@ async fn reference_images_are_embedded_before_the_private_index_is_written(
 		documents: documents.clone(),
 		source,
 	};
-	let registered =
-		personal::register(&mut scope, &validation, registration, key, "aidash://home")
-			.await
-			.unwrap();
+	let (reference, images) = personal::reference_images(&registration).unwrap().unwrap();
+	let prepared = scope.embed_fixture(&reference, &images).await.unwrap();
+	let registered = personal::register(
+		&mut scope,
+		&validation,
+		registration,
+		Some(prepared),
+		key,
+		"aidash://home",
+	)
+	.await
+	.unwrap();
 	assert_eq!(registered.id, "assigned");
 	let index = scope.image_index.as_ref().unwrap();
 	assert_eq!(index["agent_id"], "assigned");
@@ -226,6 +217,7 @@ async fn reference_images_are_embedded_before_the_private_index_is_written(
 	// The previously committed collection remains authoritative for this version.
 	scope.image_index.as_mut().unwrap()["points"][0]["vector"] = json!([0.0, 1.0]);
 	let saved = scope.image_index.clone();
+	let retry_embedding = scope.entries.get("embed@1.0.0").unwrap().clone();
 	personal::register(
 		&mut scope,
 		&validation,
@@ -234,6 +226,7 @@ async fn reference_images_are_embedded_before_the_private_index_is_written(
 			documents,
 			source: retry_source,
 		},
+		Some((retry_embedding, vec![vec![1.0, 0.0]])),
 		key,
 		"aidash://home",
 	)
@@ -645,6 +638,7 @@ async fn private_registration_emits_only_after_private_content_is_saved(
 		&mut scope,
 		&validation,
 		prepared,
+		None,
 		Uuid::new_v4(),
 		"aidash://home",
 	)

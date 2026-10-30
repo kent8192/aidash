@@ -130,6 +130,43 @@ pub struct ImageMatch {
 	pub score: f64,
 }
 
+/// Rank matches from all private sources in the same pinned vector space.
+pub fn rank_matches(
+	mut matches: Vec<(super::bindings::QualifiedRef, ImageMatch)>,
+	limit: usize,
+) -> Vec<(super::bindings::QualifiedRef, ImageMatch)> {
+	matches.sort_by(|(source_a, a), (source_b, b)| {
+		b.score
+			.total_cmp(&a.score)
+			.then_with(|| source_a.cmp(source_b))
+			.then_with(|| a.document_index.cmp(&b.document_index))
+	});
+	matches.truncate(limit);
+	matches
+}
+
+/// Fit a separate reference list into the budget left by Workspace results.
+pub fn fit_reference_matches(
+	matches: Vec<Value>,
+	workspace_tokens: usize,
+	max_tokens: usize,
+) -> (Vec<Value>, bool) {
+	let available = max_tokens.saturating_sub(workspace_tokens);
+	let mut accepted = Vec::new();
+	let mut truncated = false;
+	for item in matches {
+		accepted.push(item);
+		let envelope =
+			serde_json::json!({"reference_matches": &accepted, "reference_truncated":false});
+		if crate::context::estimated_tokens(&envelope.to_string()) > available {
+			accepted.pop();
+			truncated = true;
+			break;
+		}
+	}
+	(accepted, truncated)
+}
+
 fn magnitude(vector: &[f32], dimensions: usize) -> Result<f64> {
 	if vector.len() != dimensions || vector.iter().any(|value| !value.is_finite()) {
 		return Err(Error::Invalid("invalid reference embedding vector".into()));

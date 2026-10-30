@@ -13,11 +13,10 @@ pub async fn load(
 	registry.private_documents(tenant, entry).await
 }
 
-/// Validate and embed a whole reference set while the caller retains its
-/// authority lease. No Registry or private-document write occurs here.
-pub(crate) async fn embed_reference_images(
-	access: &mut crate::authorization::access::Access,
+/// Complete provider calls without retaining the Registry write transaction.
+pub(crate) async fn embed_before_registration(
 	store: &crate::store::Store,
+	identity: &crate::authorization::identity::SubjectIdentity,
 	reference: &aidash_domain::registry::EntityRef,
 	images: &[aidash_domain::registry::knowledge::ValidatedImage],
 ) -> Result<(Entry, Vec<Vec<f32>>)> {
@@ -26,68 +25,88 @@ pub(crate) async fn embed_reference_images(
 	};
 	use aidash_application::provider_access::MaintenancePurpose;
 	use aidash_domain::semantic::{EmbeddingConfig, EmbeddingInput};
-	let entry = crate::authorization::catalog::entry(access, reference, "registry.read").await?;
-	aidash_application::generation::embedding::require_reference_policy(
-		&mut crate::bootstrap::generation_embedding_authority_scope(access),
-		store.deployment.as_str(),
-		reference,
-	)
-	.await?;
-	if entry.kind != "embedding" {
-		return Err(crate::Error::Invalid(
-			"reference images require an embedding definition".into(),
-		));
-	}
-	let config: EmbeddingConfig = serde_json::from_value(entry.config.clone())?;
-	for image in images {
-		EmbeddingInput::Image {
-			media_type: &image.media_type,
-			bytes: &image.bytes,
-		}
-		.validate(&config)?;
-	}
-	let jobs = crate::bootstrap::generation_embedding_authority_scope(access)
-		.requests(store.deployment.as_str())
-		.await?;
-	let workspace = jobs
-		.first()
-		.map(|job| job.workspace_id)
-		.unwrap_or(Uuid::nil());
-	if jobs.iter().any(|job| job.workspace_id != workspace) {
-		return Err(crate::Error::Forbidden);
-	}
-	let transport = if config.provider_credential.is_some() {
-		crate::bootstrap::admitted_semantic_transport(
-			store,
-			None,
-			access.identity.tenant.clone(),
-			Some(MaintenancePurpose::ReferenceIndexing),
-		)
-	} else {
-		crate::bootstrap::semantic_transport(store)
-	};
+	let mut pinned: Option<Entry> = None;
 	let mut vectors = Vec::with_capacity(images.len());
 	for image in images {
-		let input = EmbeddingInput::Image {
-			media_type: &image.media_type,
-			bytes: &image.bytes,
+		let mut access = crate::authorization::access::Access::begin(store, identity).await?;
+		let prepared: Result<_> = async {
+			let entry =
+				crate::authorization::catalog::entry(&mut access, reference, "registry.read")
+					.await?;
+			aidash_application::generation::embedding::require_reference_policy(
+				&mut crate::bootstrap::generation_embedding_authority_scope(&mut access),
+				store.deployment.as_str(),
+				reference,
+			)
+			.await?;
+			if entry.kind != "embedding" {
+				return Err(Error::Invalid(
+					"reference images require an embedding definition".into(),
+				));
+			}
+			let config: EmbeddingConfig = serde_json::from_value(entry.config.clone())?;
+			let input = EmbeddingInput::Image {
+				media_type: &image.media_type,
+				bytes: &image.bytes,
+			};
+			input.validate(&config)?;
+			let jobs = crate::bootstrap::generation_embedding_authority_scope(&mut access)
+				.requests(store.deployment.as_str())
+				.await?;
+			let workspace = jobs
+				.first()
+				.map(|job| job.workspace_id)
+				.unwrap_or(Uuid::nil());
+			if jobs.iter().any(|job| job.workspace_id != workspace) {
+				return Err(Error::Forbidden);
+			}
+			let reservation = crate::generation::embedding::reserve_input(
+				&mut access,
+				store,
+				workspace,
+				&config,
+				input,
+				crate::generation::embedding::Origin::Reference,
+			)
+			.await?;
+			Ok((entry, config, reservation))
+		}
+		.await;
+		let (entry, config, reservation) = access.finish(prepared).await?;
+		if pinned.as_ref().is_some_and(|previous| previous != &entry) {
+			return Err(Error::Conflict(
+				"reference embedding definition changed".into(),
+			));
+		}
+		let transport = if config.provider_credential.is_some() {
+			crate::bootstrap::admitted_semantic_transport(
+				store,
+				None,
+				identity.tenant.clone(),
+				Some(MaintenancePurpose::ReferenceIndexing),
+			)
+		} else {
+			crate::bootstrap::semantic_transport(store)
 		};
-		let reservation = crate::generation::embedding::reserve_input(
-			access,
-			store,
-			workspace,
-			&config,
-			input,
-			crate::generation::embedding::Origin::Reference,
-		)
-		.await?;
-		let output = transport.embed(&config, input).await?;
+		let output = transport
+			.embed(
+				&config,
+				EmbeddingInput::Image {
+					media_type: &image.media_type,
+					bytes: &image.bytes,
+				},
+			)
+			.await?;
 		if let Some(reservation) = reservation {
 			reservation.settle(output.tokens).await?;
 		}
+		pinned = Some(entry);
 		vectors.push(output.vector);
 	}
-	Ok((entry, vectors))
+	Ok((
+		pinned.ok_or_else(|| Error::Invalid("no reference images".into()))?,
+		vectors,
+	))
 }
 
 /// Distinguish a missing or withdrawn embedding from an independent policy denial.
@@ -260,10 +279,15 @@ pub(crate) async fn reference_image_context(
 			&vector,
 			limit.min(8),
 		)? {
-			matches.push(serde_json::json!({"source":source, "document":found}));
+			matches.push((source.clone(), found));
 		}
 	}
-	Ok(Some(Value::Array(matches)))
+	Ok(Some(Value::Array(
+		knowledge::rank_matches(matches, limit.min(8))
+			.into_iter()
+			.map(|(source, document)| serde_json::json!({"source":source, "document":document}))
+			.collect(),
+	)))
 }
 #[derive(Clone)]
 pub struct PersonalAgents {
@@ -293,7 +317,35 @@ impl PersonalAgents {
 			.ok_or_else(|| Error::Invalid("Idempotency-Key must be a UUID".into()))?;
 		let f = &self.runtime;
 		let mut access = crate::authorization::access::Access::begin(&f.store, &identity).await?;
-		let result = register(f, &mut access, draft, key).await;
+		let preflight: Result<_> = async {
+			let mut scope = crate::apps::registry::repositories::requests::TenantRegistration {
+				access: &mut access,
+				store: &f.store,
+			};
+			let registration = aidash_application::registry::personal::prepare(
+				&mut scope,
+				&f.registry.validation(),
+				draft,
+				f.config.deployment.as_str(),
+			)
+			.await?;
+			let replay = scope.replay(&registration.entry, key).await?;
+			Ok((registration, replay))
+		}
+		.await;
+		let (registration, replay) = access.finish(preflight).await?;
+		if let Some(entry) = replay {
+			return Ok(entry);
+		}
+		let prepared = if let Some((reference, images)) =
+			aidash_application::registry::personal::reference_images(&registration)?
+		{
+			Some(embed_before_registration(&f.store, &identity, &reference, &images).await?)
+		} else {
+			None
+		};
+		let mut access = crate::authorization::access::Access::begin(&f.store, &identity).await?;
+		let result = register(f, &mut access, registration, prepared, key).await;
 		access.finish(result).await
 	}
 }
@@ -301,25 +353,39 @@ impl PersonalAgents {
 async fn register(
 	f: &Federation,
 	access: &mut crate::authorization::access::Access,
-	draft: aidash_application::registry::personal::PersonalDraft,
+	registration: aidash_application::registry::personal::PersonalRegistration,
+	prepared: Option<(Entry, Vec<Vec<f32>>)>,
 	key: Uuid,
 ) -> Result<Entry> {
+	if let Some((embedding, _)) = &prepared {
+		let reference = aidash_domain::registry::EntityRef {
+			id: embedding.id.clone(),
+			version: embedding.version.clone(),
+		};
+		let current =
+			crate::authorization::catalog::entry(access, &reference, "registry.read").await?;
+		if current != *embedding {
+			return Err(Error::Conflict(
+				"reference embedding definition changed".into(),
+			));
+		}
+		aidash_application::generation::embedding::require_reference_policy(
+			&mut crate::bootstrap::generation_embedding_authority_scope(access),
+			f.store.deployment.as_str(),
+			&reference,
+		)
+		.await?;
+	}
 	let validation = f.registry.validation();
 	let mut scope = crate::apps::registry::repositories::requests::TenantRegistration {
 		access,
 		store: &f.store,
 	};
-	let registration = aidash_application::registry::personal::prepare(
-		&mut scope,
-		&validation,
-		draft,
-		f.config.deployment.as_str(),
-	)
-	.await?;
 	Ok(aidash_application::registry::personal::register(
 		&mut scope,
 		&validation,
 		registration,
+		prepared,
 		key,
 		f.config.deployment.as_str(),
 	)

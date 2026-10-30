@@ -77,7 +77,6 @@ struct Scope {
 	completed: bool,
 	inserted: bool,
 	fail_documents: bool,
-	fail_image_embedding: bool,
 }
 impl Scope {
 	fn record(&self, value: impl Into<String>) {
@@ -117,8 +116,24 @@ impl DraftRepository for Repository {
 			completed: self.completed,
 			inserted: self.inserted,
 			fail_documents: self.fail_documents,
-			fail_image_embedding: self.fail_image_embedding,
 		})
+	}
+	async fn embed_reference_images(
+		&self,
+		reference: &aidash_domain::registry::EntityRef,
+		images: &[aidash_domain::registry::knowledge::ValidatedImage],
+	) -> Result<(Entry, Vec<Vec<f32>>)> {
+		self.log.lock().unwrap().push("image-embedding".into());
+		if self.fail_image_embedding {
+			return Err(Error::External("embedding unavailable".into()));
+		}
+		let entry = self
+			.definitions
+			.iter()
+			.find(|entry| entry.id == reference.id && entry.version == reference.version)
+			.cloned()
+			.ok_or(Error::Forbidden)?;
+		Ok((entry, images.iter().map(|_| vec![1.0, 0.0]).collect()))
 	}
 }
 #[async_trait]
@@ -914,22 +929,6 @@ impl DefinitionWriter for Scope {
 }
 #[async_trait]
 impl PublicationScope for Scope {
-	async fn embed_reference_images(
-		&mut self,
-		reference: &aidash_domain::registry::EntityRef,
-		images: &[aidash_domain::registry::knowledge::ValidatedImage],
-	) -> Result<(Entry, Vec<Vec<f32>>)> {
-		self.record("image-embedding");
-		if self.fail_image_embedding {
-			return Err(Error::External("embedding unavailable".into()));
-		}
-		let entry = self
-			.definitions
-			.get(&(reference.id.clone(), reference.version.clone()))
-			.cloned()
-			.ok_or(Error::Forbidden)?;
-		Ok((entry, images.iter().map(|_| vec![1.0, 0.0]).collect()))
-	}
 	async fn insert_image_data(&mut self, _: &Entry, _: Value) -> Result<()> {
 		self.record("image-data");
 		Ok(())
@@ -1012,15 +1011,25 @@ async fn publication_embeds_all_reference_images_before_writes(
 		.iter()
 		.position(|step| step == "image-embedding")
 		.unwrap();
+	let preflight_commit = logs.iter().position(|step| step == "commit").unwrap();
+	assert!(preflight_commit < embedded);
+	if let Some(write_scope) = logs
+		.iter()
+		.enumerate()
+		.skip(embedded + 1)
+		.find(|(_, step)| *step == "begin")
+		.map(|(index, _)| index)
+	{
+		assert!(embedded < write_scope);
+	}
 	if fail {
 		assert!(result.is_err());
 		assert!(
 			!logs
 				.iter()
-				.any(|step| step.starts_with("definition-insert:")
-					|| step == "documents-insert"
-					|| step == "commit")
+				.any(|step| step.starts_with("definition-insert:") || step == "documents-insert")
 		);
+		assert_eq!(logs.iter().filter(|step| *step == "commit").count(), 1);
 	} else {
 		result.unwrap();
 		let inserted = logs
@@ -1110,9 +1119,19 @@ async fn existing_version_cannot_be_rebound(
 }
 #[rstest]
 #[tokio::test]
-async fn repeat_registration_preserves_original_test_evidence(mut draft: Draft, entry: Entry) {
+async fn repeat_registration_preserves_original_test_evidence(mut draft: Draft, mut entry: Entry) {
+	entry.config["reference_embedding"] = json!({"id":"embed","version":"1.0.0"});
 	draft.entry = serde_json::to_value(entry).unwrap();
+	draft.documents =
+		json!([{"name":"chart.png","media_type":"image/png","data_base64":"iVBORw0KGgo="}]);
 	let mut repository = Repository::new(draft.clone());
+	repository.definitions.push(serde_json::from_value(json!({"id":"embed","version":"1.0.0","kind":"embedding","name":{"en":"Embedding"},"description":{"en":"Fixture"},"config":{"provider":"openai","endpoint":"https://example.com","model":"fixture","model_version":"1","dimensions":2,"inputs":["text","image"]}})).unwrap());
+	let mut preview = repository.begin().await.unwrap();
+	let saved =
+		super::super::validate_content(&mut preview, &validation(), &draft, repository.node_id())
+			.await
+			.unwrap();
+	repository.definitions.push(saved);
 	repository.previous = Some(RegistrationEvidence {
 		draft_id: draft.id,
 		revision: 3,
@@ -1120,6 +1139,7 @@ async fn repeat_registration_preserves_original_test_evidence(mut draft: Draft, 
 	});
 	repository.completed = true;
 	repository.inserted = false;
+	repository.fail_image_embedding = true;
 	let registered = publication::register(
 		&repository,
 		&validation(),
@@ -1135,7 +1155,9 @@ async fn repeat_registration_preserves_original_test_evidence(mut draft: Draft, 
 		!repository
 			.logs()
 			.iter()
-			.any(|step| step == "completed-test" || step.starts_with("event:registry.registered:"))
+			.any(|step| step == "image-embedding"
+				|| step == "completed-test"
+				|| step.starts_with("event:registry.registered:"))
 	);
 }
 #[rstest]
@@ -1163,9 +1185,15 @@ async fn private_document_failure_prevents_registration_and_commit(mut draft: Dr
 		!repository
 			.logs()
 			.iter()
-			.any(|step| step.starts_with("registration:")
-				|| step.starts_with("event:")
-				|| step == "commit")
+			.any(|step| step.starts_with("registration:") || step.starts_with("event:"))
+	);
+	assert_eq!(
+		repository
+			.logs()
+			.iter()
+			.filter(|step| *step == "commit")
+			.count(),
+		1
 	);
 }
 #[rstest]

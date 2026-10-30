@@ -23,8 +23,71 @@ use serde_json::{Value, json};
 use std::collections::{BTreeSet, HashMap, HashSet};
 use uuid::Uuid;
 
+#[cfg(test)]
+mod tests {
+	use super::lock_workspace;
+	use crate::apps::execution::test_database::{DatabaseFixture, database};
+	use rstest::rstest;
+	use std::time::Duration;
+	use uuid::Uuid;
+
+	#[rstest]
+	#[tokio::test]
+	async fn image_publication_lock_serializes_only_the_same_workspace(
+		#[future] database: DatabaseFixture,
+	) {
+		let database = database.await;
+		let workspace = Uuid::new_v4();
+		let mut first = database.begin_fixture().await;
+		let mut same = database.begin_fixture().await;
+		let mut other = database.begin_fixture().await;
+		lock_workspace(&mut *first, workspace).await.unwrap();
+		assert!(
+			tokio::time::timeout(
+				Duration::from_secs(2),
+				lock_workspace(&mut *other, Uuid::new_v4())
+			)
+			.await
+			.unwrap()
+			.is_ok()
+		);
+		assert!(
+			tokio::time::timeout(
+				Duration::from_millis(100),
+				lock_workspace(&mut *same, workspace)
+			)
+			.await
+			.is_err()
+		);
+		first.commit().await.unwrap();
+		assert!(
+			tokio::time::timeout(
+				Duration::from_secs(2),
+				lock_workspace(&mut *same, workspace)
+			)
+			.await
+			.unwrap()
+			.is_ok()
+		);
+	}
+}
+
 const MAINTENANCE: TenancyScope =
 	TenancyScope::Deployment(DeploymentScopeReason::SemanticMaintenance);
+
+/// Serialize image publication and rebuild within one Workspace only.
+pub(crate) async fn lock_workspace(
+	tx: &mut dyn reinhardt::db::backends::TransactionExecutor,
+	workspace: Uuid,
+) -> Result<()> {
+	let statement = Query::select()
+		.expr(Expr::cust(format!(
+			"pg_advisory_xact_lock(71003201, hashtext('{workspace}'::text))"
+		)))
+		.to_string(PostgresQueryBuilder);
+	native::query(&statement).execute(tx).await?;
+	Ok(())
+}
 
 struct Session {
 	lease: Option<Lease<'static>>,
@@ -215,13 +278,7 @@ pub(crate) async fn rebuild(
 	max_images: usize,
 ) -> Result<()> {
 	// Serialize the rebuild boundary with File publication commits.
-	native::query(
-		&Query::select()
-			.expr(Expr::cust("PG_ADVISORY_XACT_LOCK(71003201)"))
-			.to_string(PostgresQueryBuilder),
-	)
-	.execute(&mut **lease.tx())
-	.await?;
+	lock_workspace(&mut **lease.tx(), workspace).await?;
 	let ledger = native::query(
 		&Query::select()
 			.columns(["slots", "authorities"].map(Alias::new))
@@ -316,13 +373,7 @@ pub(crate) async fn rebuild(
 /// Seed current pre-feature images ahead of queued publications. The event
 /// lock makes the snapshot and new publication order agree at commit.
 async fn bootstrap(lease: &mut Lease<'_>, workspace: Uuid, slots: &ImageSlots) -> Result<bool> {
-	native::query(
-		&Query::select()
-			.expr(Expr::cust("PG_ADVISORY_XACT_LOCK(71003201)"))
-			.to_string(PostgresQueryBuilder),
-	)
-	.execute(&mut **lease.tx())
-	.await?;
+	lock_workspace(&mut **lease.tx(), workspace).await?;
 	let queued = native::query(
 		&Query::select()
 			.columns(["area_id", "changes"].map(Alias::new))
@@ -567,6 +618,7 @@ async fn probe_one_legacy(
 				}
 			}
 		}
+		lock_workspace(&mut **access.tx, workspace).await?;
 		if changed {
 			area.revision += 1;
 			area.manifest = serde_json::to_value(files)?;
@@ -575,9 +627,6 @@ async fn probe_one_legacy(
 				.and_where(Expr::col("id").eq(Expr::value(area.id))).to_string(PostgresQueryBuilder))
 				.execute(&mut **access.tx).await?;
 			store.event(&mut access.tx, Some(workspace), "capability.files_changed", json!({"area_id":area.id,"revision":area.revision,"generation":area.generation})).await?;
-		} else {
-			native::query(&Query::select().expr(Expr::cust("PG_ADVISORY_XACT_LOCK(71003201)"))
-				.to_string(PostgresQueryBuilder)).execute(&mut **access.tx).await?;
 		}
 		let change = ImageChange::LegacyResolved { file_id: candidate.file_id, path: candidate.path.clone(), position: candidate.position, media_type, size };
 		native::query(&Query::insert().into_table(Alias::new("semantic_image_publications"))

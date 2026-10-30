@@ -20,7 +20,21 @@ pub struct AgentKnowledge {
 	/// Pinned embedding and image vectors, private to this immutable source row.
 	#[field(null = true)]
 	pub image_index: Option<Json<Value>>,
-	/// Original image data is read only when an image is explicitly opened.
+	/// Original image bytes are stored separately from the index and metadata.
 	#[field(null = true)]
-	pub image_data: Option<Json<Value>>,
+	pub image_0: Option<Vec<u8>>,
+	#[field(null = true)]
+	pub image_1: Option<Vec<u8>>,
+	#[field(null = true)]
+	pub image_2: Option<Vec<u8>>,
+	#[field(null = true)]
+	pub image_3: Option<Vec<u8>>,
+	#[field(null = true)]
+	pub image_4: Option<Vec<u8>>,
+	#[field(null = true)]
+	pub image_5: Option<Vec<u8>>,
+	#[field(null = true)]
+	pub image_6: Option<Vec<u8>>,
+	#[field(null = true)]
+	pub image_7: Option<Vec<u8>>,
 }

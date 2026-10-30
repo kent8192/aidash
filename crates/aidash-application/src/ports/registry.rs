@@ -107,14 +107,6 @@ pub trait PrivateKnowledgeRead: Send {
 #[async_trait]
 pub trait PrivateKnowledgeScope: RegistrationScope + PrivateKnowledgeRead {
 	async fn insert_documents(&mut self, entry: &Entry, documents: Value) -> Result<()>;
-	/// Validate the approved definition and embed the complete prevalidated set.
-	async fn embed_reference_images(
-		&mut self,
-		_reference: &aidash_domain::registry::EntityRef,
-		_images: &[aidash_domain::registry::knowledge::ValidatedImage],
-	) -> Result<(Entry, Vec<Vec<f32>>)> {
-		Err(crate::Error::Forbidden)
-	}
 	async fn insert_image_index(&mut self, _entry: &Entry, _index: Value) -> Result<()> {
 		Err(crate::Error::Forbidden)
 	}
