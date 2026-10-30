@@ -43,3 +43,11 @@ dropped beyond what the threshold chose.
 - The 0.7 ceiling is part of the rule. Changing it makes a new rule value.
 - Jev never sees result bodies: the compaction state withholds them. Its ranking comes from the goal, the
   tool, the input and the result size, so the rank order is only as good as those signals.
+- (2026-10-30, #626) A live A/B of the two rules showed the cost of truncating more. Under `compaction.fit/1`,
+  no Run paused as unreducible, but models fetched truncated pages again: 165 re-reads against 62. Each
+  re-read overflowed the window again and triggered another Decider call, until the Run hit its step or
+  call limit. The likely cause was the truncation marker, which said that the full result remained in the execution
+  journal. The marker now says the cut was deliberate, gives the head and the total length, and asks for the
+  tool to be called again only if the rest is still needed verbatim. An elided result carries a note to the
+  same effect. Both markers apply to every rule, because they are part of the projection and not of the
+  decision.

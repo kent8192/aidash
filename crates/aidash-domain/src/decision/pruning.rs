@@ -10,9 +10,12 @@ use std::collections::BTreeMap;
 /// A tool result longer than this many characters is truncated to its head.
 const TRUNCATE_ABOVE: usize = 420;
 const TRUNCATED_HEAD: usize = 300;
-/// How a decision marks a tool result it cut to its head.
-const TRUNCATION_MARK: &str = "[decision compaction truncated ";
-const TRUNCATION_END: &str = "full result remains in the execution journal]";
+/// How a decision marks a tool result it cut to its head. The marker tells the
+/// model the cut was deliberate and that the head is meant to be enough: a
+/// marker that pointed at the full result made live models fetch it again,
+/// which overflowed the window and compacted in a loop (#626).
+const TRUNCATION_MARK: &str = "[compaction kept only these first ";
+const TRUNCATION_END: &str = "call the tool again only if the rest is still needed verbatim]";
 
 /// Whether a decision cut `result` to its head. Such a result is a string
 /// whatever its original shape; the Context Journal keeps the original.
@@ -143,8 +146,8 @@ pub fn apply(
 					event: ContextEvent::Tool {
 						call: call.clone(),
 						result: json!(format!(
-							"{head}\n{TRUNCATION_MARK}{} chars of this tool result; {TRUNCATION_END}",
-							length - TRUNCATED_HEAD
+							"{head}\n{TRUNCATION_MARK}{TRUNCATED_HEAD} of {length} characters to fit the context \
+							 window; rely on them and on what you already concluded, and {TRUNCATION_END}"
 						)),
 					},
 				});

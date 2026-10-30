@@ -1141,7 +1141,7 @@ async fn call_only_branch_keeps_call_and_historical_result_prefix() {
 		result
 			.as_str()
 			.unwrap()
-			.contains("full result remains in the execution journal")
+			.contains("call the tool again only if the rest is still needed verbatim")
 	);
 	let saved = fixture.saved.lock().unwrap();
 	assert_eq!(saved.evidence[0].fit.truncated, 3);
