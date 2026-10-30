@@ -357,6 +357,15 @@ impl CatalogScope for NativeCatalog<'_> {
 			last.clone()
 		}
 	}
+	fn agent_subject(&self, agent: &EntityRef) -> Option<String> {
+		// Closure agents run on the executing agent's Node.
+		let (node, _) = self.0.subjects.last()?.rsplit_once("/agents/")?;
+		Some(aidash_domain::agent_subject(
+			node,
+			&agent.id,
+			&agent.version,
+		))
+	}
 	async fn permits_restriction(
 		&mut self,
 		reference: &EntityRef,

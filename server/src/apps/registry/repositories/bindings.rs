@@ -187,6 +187,8 @@ pub(crate) async fn authorized(
 ) -> Result<aidash_domain::registry::bindings::BindingSnapshot> {
 	let node = access.node_id.clone();
 	let snapshot = snapshot_mode(&mut access.tx, &node, entry, remote, false, configured).await?;
+	// A delegated agent's own dependencies are checked against that agent.
+	let delegated = snapshot.delegated_users()?;
 	for definition in &snapshot.definitions {
 		if definition.identity.registry_deployment != node {
 			return Err(Error::Forbidden);
@@ -202,10 +204,15 @@ pub(crate) async fn authorized(
 			access.require(&resource, "registry.read").await?;
 			continue;
 		}
-		let current = crate::authorization::catalog::entry(
+		let users = delegated
+			.get(&definition.identity)
+			.map(|users| users.iter().map(|user| user.local()).collect::<Vec<_>>())
+			.unwrap_or_default();
+		let current = crate::authorization::catalog::closure_entry(
 			access,
 			&definition.identity.local(),
 			"registry.read",
+			&users,
 		)
 		.await?;
 		if aidash_domain::registry::rules::digest(&serde_json::to_value(current)?)

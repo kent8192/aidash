@@ -9,7 +9,24 @@ pub async fn entry(
 	reference: &EntityRef,
 	action: &str,
 ) -> Result<Entry> {
-	admit(scope, reference, action, None).await
+	admit(scope, reference, action, None, &[]).await
+}
+
+/// [`entry`] for a definition pinned in an executing agent's Binding closure.
+/// `users` are the closure agents that use it directly
+/// ([`BindingSnapshot::delegated_users`]); empty when the executing agent uses
+/// it itself. A definition only delegated agents use is pinned as metadata by
+/// the executing agent: its restriction must admit those agents, who are
+/// checked again as the direct user when their own delegated Runs start.
+///
+/// [`BindingSnapshot::delegated_users`]: aidash_domain::registry::bindings::BindingSnapshot::delegated_users
+pub async fn closure_entry(
+	scope: &mut dyn CatalogScope,
+	reference: &EntityRef,
+	action: &str,
+	users: &[EntityRef],
+) -> Result<Entry> {
+	admit(scope, reference, action, None, users).await
 }
 
 /// The refusal of a Tenant policy denial met while admitting a Catalog entry for `tool`'s call.
@@ -29,7 +46,7 @@ pub async fn tool_entry(
 	action: &str,
 	tool: &str,
 ) -> Result<Entry> {
-	admit(scope, reference, action, Some(tool)).await
+	admit(scope, reference, action, Some(tool), &[]).await
 }
 
 async fn admit(
@@ -37,6 +54,7 @@ async fn admit(
 	reference: &EntityRef,
 	action: &str,
 	tool: Option<&str>,
+	users: &[EntityRef],
 ) -> Result<Entry> {
 	if scope.inherited_lease()
 		&& !scope.approved(reference)
@@ -53,11 +71,18 @@ async fn admit(
 	// The restriction is checked on every use, including a cached or inherited
 	// admission: an agent's approved closure does not make a dependency usable
 	// by another agent that a delegated Run adds to the subject chain.
-	let direct_user = scope.direct_user(reference);
-	if !scope.permits_restriction(reference, &direct_user).await? {
-		// A restriction narrows the Tenant policy; refuse exactly as an
-		// unapproved version does, without disclosing the restriction.
-		return Err(Error::Forbidden);
+	let delegated = users
+		.iter()
+		.map(|agent| scope.agent_subject(agent))
+		.collect::<Option<Vec<_>>>()
+		.filter(|subjects| !subjects.is_empty());
+	let direct_users = delegated.unwrap_or_else(|| vec![scope.direct_user(reference)]);
+	for direct_user in &direct_users {
+		if !scope.permits_restriction(reference, direct_user).await? {
+			// A restriction narrows the Tenant policy; refuse exactly as an
+			// unapproved version does, without disclosing the restriction.
+			return Err(Error::Forbidden);
+		}
 	}
 	// The distribution, catalog and policy locks taken by the first admission keep it
 	// current for the rest of the scope's transaction; repeating it re-proves nothing.

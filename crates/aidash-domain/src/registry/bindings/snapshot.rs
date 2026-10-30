@@ -5,6 +5,54 @@ use crate::tool::providers::{
 };
 
 impl BindingSnapshot {
+	/// Closure definitions that the root Agent does not use directly, each with
+	/// the nearest Agents above it on every closure path (ADR 0095).
+	///
+	/// The root Agent pins these definitions as immutable metadata only; the
+	/// Agents named here use them directly in their own delegated Runs, so a
+	/// Catalog Approval restriction applies to them rather than to the root.
+	/// Definitions the root uses directly, the root itself and definitions no
+	/// closure Agent references are omitted.
+	pub fn delegated_users(&self) -> Result<BTreeMap<QualifiedRef, BTreeSet<QualifiedRef>>> {
+		let kinds: BTreeMap<&QualifiedRef, &str> = self
+			.definitions
+			.iter()
+			.map(|definition| (&definition.identity, definition.definition.kind.as_str()))
+			.collect();
+		let mut edges = vec![];
+		for definition in &self.definitions {
+			for (target, _) in definition_references(&definition.identity, &definition.definition)?
+			{
+				if kinds.contains_key(&target) {
+					edges.push((definition.identity.clone(), target));
+				}
+			}
+		}
+		// Propagate to a fixpoint so merged paths and cycles are covered.
+		let mut users: BTreeMap<QualifiedRef, BTreeSet<QualifiedRef>> = BTreeMap::new();
+		loop {
+			let mut changed = false;
+			for (from, to) in &edges {
+				let incoming = if kinds[from] == "agent" {
+					BTreeSet::from([from.clone()])
+				} else {
+					users.get(from).cloned().unwrap_or_default()
+				};
+				let set = users.entry(to.clone()).or_default();
+				let before = set.len();
+				set.extend(incoming);
+				changed |= set.len() != before;
+			}
+			if !changed {
+				break;
+			}
+		}
+		users.retain(|identity, agents| {
+			*identity != self.agent && !agents.is_empty() && !agents.contains(&self.agent)
+		});
+		Ok(users)
+	}
+
 	/// The pinned Agent Plugin Skills are exactly those of the copies the Agent definition names.
 	fn validate_agent_plugins(&self, config: &AgentBindings) -> Result<()> {
 		if self.remote && !config.agent_plugins.is_empty() {
