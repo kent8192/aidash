@@ -357,14 +357,14 @@ pub fn builtins() -> BTreeMap<String, Builtin> {
 			name: "workspace_observe",
 			contract: aidash_domain::tool::builtin_contract("workspace_observe")
 				.expect("declared builtin"),
-			description: "Read a bounded summary of goal, tasks, artifact references, messages and recent event metadata. Use workspace_read for full records. Collections have separate totals and next_offset; events/messages are newest first. Refresh pagination if the workspace changes.",
+			description: "Read a bounded summary of goal, tasks, artifact references, messages and recent event metadata. Messages list Thread Attachment metadata without bytes. Use workspace_read for full records. Collections have separate totals and next_offset; events/messages are newest first. Refresh pagination if the workspace changes.",
 			schema: json!({"type":"object","properties":{"offset":{"type":"integer","minimum":0},"limit":{"type":"integer","minimum":1,"maximum":50}},"additionalProperties":false}),
 		},
 		Builtin {
 			name: "workspace_read",
 			contract: aidash_domain::tool::builtin_contract("workspace_read")
 				.expect("declared builtin"),
-			description: "Read one accessible workspace record by kind and exact ID. Returns a JSON text chunk, total_chars and next_offset; concatenate chunks in offset order to recover the full record. The returned chunk is capped to fit the active request budget. If budget_limited is true, continue from next_offset on a later turn; if deferred is true, stop reading until that later turn.",
+			description: "Read one accessible workspace record by kind and exact ID. Messages list Thread Attachment metadata without bytes. Returns a JSON text chunk, total_chars and next_offset; concatenate chunks in offset order to recover the full record. The returned chunk is capped to fit the active request budget. If budget_limited is true, continue from next_offset on a later turn; if deferred is true, stop reading until that later turn.",
 			schema: json!({"type":"object","required":["kind","id"],"properties":{"kind":{"enum":["workspace","task","artifact","message","event"]},"id":string,"offset":{"type":"integer","minimum":0},"max_chars":{"type":"integer","minimum":0,"maximum":16000}},"additionalProperties":false}),
 		},
 		Builtin {

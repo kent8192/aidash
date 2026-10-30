@@ -1,6 +1,27 @@
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
+/// Metadata disclosed with a visible Thread message; attachment bytes are never included.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+pub struct ThreadAttachment {
+	pub id: Uuid,
+	pub filename: String,
+	pub media_type: String,
+	pub size_bytes: i64,
+	#[serde(skip_serializing_if = "Option::is_none")]
+	pub width: Option<i32>,
+	#[serde(skip_serializing_if = "Option::is_none")]
+	pub height: Option<i32>,
+	#[serde(skip_serializing_if = "Option::is_none")]
+	pub duration_ms: Option<i64>,
+}
+
+#[derive(Debug, Clone)]
+pub struct MessageAttachment {
+	pub message_id: Uuid,
+	pub attachment: ThreadAttachment,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct Selection {

@@ -73,6 +73,7 @@ struct Scope {
 	tasks: Vec<Task>,
 	events: Vec<Event>,
 	messages: Vec<Message>,
+	attachments: Vec<aidash_domain::media::MessageAttachment>,
 	artifacts: Vec<Artifact>,
 	calls: Vec<&'static str>,
 	task_offsets: Vec<u64>,
@@ -92,6 +93,7 @@ fn scope() -> Scope {
 		tasks: vec![],
 		events: vec![],
 		messages: vec![],
+		attachments: vec![],
 		artifacts: vec![],
 		calls: vec![],
 		task_offsets: vec![],
@@ -142,6 +144,18 @@ impl WorkspaceProjection for Scope {
 		assert_eq!(action, "workspace.events");
 		self.touch("decide")?;
 		Ok(self.events_allowed)
+	}
+	async fn message_attachments(
+		&mut self,
+		_: Uuid,
+		ids: &[Uuid],
+	) -> Result<Vec<aidash_domain::media::MessageAttachment>> {
+		Ok(self
+			.attachments
+			.iter()
+			.filter(|row| ids.contains(&row.message_id))
+			.cloned()
+			.collect())
 	}
 	async fn task_visible(&mut self, row: &Task) -> Result<bool> {
 		self.touch("task_visible")?;
@@ -559,4 +573,37 @@ async fn snapshot_adapter_failures_cannot_publish_partial_disclosure(
 	assert!(error.is::<std::io::Error>());
 	assert!(scope.tracked.is_empty());
 	assert_eq!(scope.calls.last(), Some(&fail));
+}
+
+#[rstest]
+#[tokio::test]
+async fn observation_discloses_only_visible_attachment_metadata_within_the_fit(mut scope: Scope) {
+	scope.messages = vec![message(2, false), message(1, true)];
+	for id in [1, 2] {
+		scope
+			.attachments
+			.push(aidash_domain::media::MessageAttachment {
+				message_id: Uuid::from_u128(id),
+				attachment: aidash_domain::media::ThreadAttachment {
+					id: Uuid::from_u128(10 + id),
+					filename: format!("{id}.png"),
+					media_type: "image/png".into(),
+					size_bytes: 42,
+					width: Some(2),
+					height: Some(3),
+					duration_ms: None,
+				},
+			});
+	}
+	let (_, output) = observation_fitted(&mut scope, Uuid::from_u128(1), 0, 10, |_, value| {
+		assert!(value.to_string().contains("1.png"));
+		Ok(true)
+	})
+	.await
+	.unwrap()
+	.unwrap();
+	assert_eq!(output["messages"].as_array().unwrap().len(), 1);
+	assert_eq!(output["messages"][0]["attachments"][0]["width"], 2);
+	assert!(!output.to_string().contains("2.png"));
+	assert!(!output.to_string().contains("content_bytes"));
 }

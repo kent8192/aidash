@@ -18,6 +18,12 @@ pub trait WorkspaceRecordScope: Send {
 	async fn task_visible(&mut self, row: &Task) -> Result<bool>;
 	async fn artifact_visible(&mut self, row: &Artifact) -> Result<bool>;
 	async fn message_visible(&mut self, row: &Message) -> Result<bool>;
+	/// Attachment metadata for already authorized messages, never bytes.
+	async fn message_attachments(
+		&mut self,
+		workspace: Uuid,
+		messages: &[Uuid],
+	) -> Result<Vec<aidash_domain::media::MessageAttachment>>;
 	async fn event_visible(&mut self, row: &Event) -> Result<bool>;
 	async fn track(&mut self, snapshot: &WorkspaceSnapshot) -> Result<()>;
 }

@@ -88,6 +88,13 @@ impl WorkspaceProjection for Reads<'_> {
 			.await
 			.map_err(Into::into)
 	}
+	async fn message_attachments(
+		&mut self,
+		workspace: Uuid,
+		messages: &[Uuid],
+	) -> Result<Vec<aidash_domain::media::MessageAttachment>> {
+		super::attachment_metadata(self.access, workspace, messages).await
+	}
 	async fn message_visible(&mut self, row: &Message) -> Result<bool> {
 		Box::pin(self.access.message_visible(row))
 			.await
