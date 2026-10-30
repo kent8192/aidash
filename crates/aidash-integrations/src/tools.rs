@@ -106,16 +106,29 @@ impl ToolClients {
 			public: crate::keyless::public_client(TOOL_TIMEOUT, TOOL_CONNECT_TIMEOUT)?,
 		})
 	}
+	/// The client of an Agent Plugin MCP session with `endpoint`. The endpoint must pass the
+	/// destination rule either way, but a brokered connection sends every byte to the broker,
+	/// which is Deployment configuration and may be an in-cluster private address, exactly as
+	/// registry-tool dispatch does.
 	pub(crate) fn select_mcp(
 		&self,
 		origins: &KeylessAccess,
 		endpoint: &str,
+		auth: Option<&CallSecret>,
 	) -> Result<&reqwest::Client> {
-		match tool_destination(origins, endpoint)? {
-			Destination::Permitted => Ok(&self.mcp_permitted),
-			Destination::PublicOnly => Ok(&self.mcp_public),
-			Destination::Forbidden => Err(Error::Forbidden),
-		}
+		let client = match tool_destination(origins, endpoint)? {
+			Destination::Permitted => &self.mcp_permitted,
+			Destination::PublicOnly => &self.mcp_public,
+			Destination::Forbidden => return Err(Error::Forbidden),
+		};
+		// Only a brokered connection is routed to the broker by the plugin transport.
+		Ok(
+			if matches!(auth, Some(CallSecret::BrokeredConnection { .. })) {
+				&self.mcp_permitted
+			} else {
+				client
+			},
+		)
 	}
 
 	/// The client a call to `endpoint` may use; a refused destination never reaches I/O.

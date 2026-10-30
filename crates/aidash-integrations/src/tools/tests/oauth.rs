@@ -581,6 +581,73 @@ async fn brokered_connections_use_only_the_broker_and_preserve_replay_guards(
 	);
 }
 
+/// On Cloud the broker is an in-cluster address while the MCP endpoint is public: the endpoint
+/// still passes the public-only rule, but the bytes go to the broker over a client that may
+/// reach it.
+#[rstest::rstest]
+#[case::registry(false)]
+#[case::plugin(true)]
+#[tokio::test]
+async fn a_public_endpoint_brokered_connection_reaches_a_private_broker(#[case] plugin: bool) {
+	let broker = upstream_auth("none", 401, false, false, true).await;
+	let endpoint = "https://mcp.example/mcp";
+	let source = Arc::new(BrokerTokens {
+		// A hostname, not an IP literal: only resolved names meet the public-only resolver.
+		base: format!("http://localhost:{}/v1/forward", broker.address().port())
+			.parse()
+			.unwrap(),
+		generation: AtomicUsize::new(1),
+		invalidations: AtomicUsize::new(0),
+	});
+	let auth = brokered_connection(endpoint, source.clone());
+	let result = if plugin {
+		let sessions = crate::plugin_sessions::McpPluginSessions::new(
+			KeylessAccess::default(),
+			ToolClients::new().unwrap(),
+		);
+		let run = uuid::Uuid::new_v4();
+		let identity = PluginServer {
+			plugin: "demo".to_owned().try_into().unwrap(),
+			digest: "copy".into(),
+			server: "search".to_owned().try_into().unwrap(),
+		};
+		let remote = RemoteServer {
+			url: endpoint.parse().unwrap(),
+			headers: vec![],
+		};
+		let tools = sessions
+			.list(run, &identity, &remote, Some(&auth))
+			.await
+			.unwrap();
+		let digest = schema_digest(&tools[0].input_schema);
+		let result = sessions
+			.call(
+				run,
+				&identity,
+				&remote,
+				"lookup",
+				&digest,
+				true,
+				json!({}),
+				"call",
+				Some(&auth),
+			)
+			.await;
+		sessions.close(run).await;
+		result
+	} else {
+		HttpTools::new(KeylessAccess::default(), ToolClients::new().unwrap())
+			.invoke(&config(endpoint.into()), json!({}), "call", Some(&auth))
+			.await
+	};
+	assert_eq!(result.unwrap()["content"][0]["text"], "authenticated");
+	let requests = broker.received_requests().await.unwrap();
+	assert!(!requests.is_empty());
+	assert!(requests.iter().all(
+		|r| r.url.path() == "/v1/forward/mcp" && r.headers.contains_key("x-aidash-secret-call")
+	));
+}
+
 fn assert_connection(error: Error, code: &str, resource: &str, scope: Option<&str>) {
 	let Error::Connection(cause) = error else {
 		panic!("expected typed connection refusal: {error:?}");

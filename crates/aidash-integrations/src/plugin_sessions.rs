@@ -359,7 +359,7 @@ impl McpPluginSessions {
 		}
 		let client = self
 			.clients
-			.select_mcp(&self.origins, config.url.as_str())
+			.select_mcp(&self.origins, config.url.as_str(), auth)
 			.map_err(Fault::Early)?;
 		let service = open(client, config, auth, previously_accepted).await?;
 		let service = self
