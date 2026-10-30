@@ -330,6 +330,11 @@ impl ToolContract {
 			ToolConfig::Http { .. } | ToolConfig::Mcp { .. } if config.declares_read_only() => {
 				(ToolEffect::ReadOnly, false, DisclosureBoundary::External)
 			}
+			ToolConfig::Http { replay, .. } | ToolConfig::Mcp { replay, .. }
+				if replay == "idempotent" =>
+			{
+				(ToolEffect::Idempotent, true, DisclosureBoundary::External)
+			}
 			ToolConfig::Http { .. } | ToolConfig::Mcp { .. } => {
 				(ToolEffect::Unsafe, true, DisclosureBoundary::External)
 			}
@@ -1014,11 +1019,10 @@ mod tests {
 			id: "tool".into(),
 			version: "1".into(),
 		};
-		// Anything but the exact declaration, including an unknown label, stays
-		// an unproven operation that asks for approval.
+		// Only read-only skips approval; idempotence separately permits replay.
 		for (replay, effect, approval, safe) in [
 			("read_only", ToolEffect::ReadOnly, false, true),
-			("idempotent", ToolEffect::Unsafe, true, false),
+			("idempotent", ToolEffect::Idempotent, true, true),
 			("unsafe", ToolEffect::Unsafe, true, false),
 			("READ_ONLY", ToolEffect::Unsafe, true, false),
 			("", ToolEffect::Unsafe, true, false),

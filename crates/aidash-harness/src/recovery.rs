@@ -110,6 +110,27 @@ pub async fn recover(
 		store
 			.pause(&current, token, message, "run.media_route_blocked", None)
 			.await?;
+	} else if let ExecutionFailure::ToolRetry {
+		count,
+		retry_after,
+		ref message,
+	} = failure
+		&& current.control != RunControl::Cancelled
+		&& !current.state.failure_delivery()
+	{
+		let backoff = std::time::Duration::from_secs(2_u64.pow(count.min(5)));
+		let delay = backoff.max(
+			retry_after
+				.unwrap_or_default()
+				.min(std::time::Duration::from_secs(32)),
+		);
+		current.recovery.retry = Some(RetryState {
+			count,
+			at: now + chrono::Duration::seconds(delay.as_secs() as i64),
+		});
+		current.error = Some(message.clone());
+		store.save(&current, token, "run.retrying").await?;
+		return Ok(true);
 	} else if matches!(failure, ExecutionFailure::Deferred) {
 		current.recovery.retry = Some(RetryState {
 			count: attempts,
