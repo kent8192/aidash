@@ -51,3 +51,6 @@ dropped beyond what the threshold chose.
   tool to be called again only if the rest is still needed verbatim. An elided result carries a note to the
   same effect. Both markers apply to every rule, because they are part of the projection and not of the
   decision.
+  In the next A/B, `compaction.fit/1` with the new marker made 108 re-reads instead of 165, and it hit the
+  step limit 4 times instead of 7. It kept the corrected constraints in 7 of 12 Runs, against 3 under
+  `compaction.keep/1`. Re-reads are reduced, not gone (#626 stays open).
