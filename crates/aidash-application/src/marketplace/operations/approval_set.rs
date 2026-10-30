@@ -10,17 +10,26 @@ pub struct PendingSelection {
 	pub revision: i64,
 	pub digest: String,
 	pub expected_activation_revision: i64,
+	/// An omitted restriction keeps the stored one; empty clears it.
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub restriction: Option<aidash_domain::identity::catalog::CatalogRestriction>,
 }
 #[derive(Clone, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct ApprovalSelection {
 	pub reference: EntityRef,
 	pub expected_catalog_revision: i64,
+	/// An omitted restriction keeps the stored one; empty clears it.
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub restriction: Option<aidash_domain::identity::catalog::CatalogRestriction>,
 }
 #[derive(Clone, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct ApprovalSet {
 	pub tenant: String,
+	/// The Node the approvals apply to; absent keeps the default Node.
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub node: Option<aidash_domain::nodes::NodeName>,
 	pub installations: Vec<PendingSelection>,
 	pub approvals: Vec<ApprovalSelection>,
 }
@@ -247,6 +256,7 @@ pub async fn approve_and_activate(
 				&approval.reference,
 				approval.expected_catalog_revision,
 				true,
+				crate::authorization::catalog::restriction_change(approval.restriction.clone()),
 			)
 			.await?;
 	}

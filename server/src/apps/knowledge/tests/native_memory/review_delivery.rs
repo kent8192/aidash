@@ -88,7 +88,7 @@ async fn replacement_preserves_each_durable_operation_table_capacity(
 	let (store, registry, workspace) = setup(&database, bounds).await;
 	let bank = memory::create_participant(
 		&store,
-		&Actor::DeploymentAdministrator,
+		&administrator(&store).await,
 		workspace,
 		memory::CreateParticipant {
 			agent: reference("a"),
@@ -212,7 +212,7 @@ async fn replacement_preserves_each_durable_operation_table_capacity(
 		.unwrap();
 	let result = memory::upgrade_participant(
 		&store,
-		&Actor::DeploymentAdministrator,
+		&administrator(&store).await,
 		bank.clone(),
 		memory::UpgradeParticipant {
 			agent: EntityRef {
@@ -229,7 +229,7 @@ async fn replacement_preserves_each_durable_operation_table_capacity(
 	);
 	let memory::Outcome::Settings(Some(settings)) = memory::operate(
 		&store,
-		&Actor::DeploymentAdministrator,
+		&administrator(&store).await,
 		memory::Operation {
 			operation_id: Uuid::now_v7(),
 			provider: reference("p"),
@@ -263,7 +263,7 @@ async fn recall_validates_each_admitted_provenance_without_root_or_duplicate_cha
 	let (store, _, workspace) = setup_endpoint(&database, bounds, &endpoint).await;
 	let bank = memory::create_participant(
 		&store,
-		&Actor::DeploymentAdministrator,
+		&administrator(&store).await,
 		workspace,
 		memory::CreateParticipant {
 			agent: reference("a"),
@@ -279,7 +279,7 @@ async fn recall_validates_each_admitted_provenance_without_root_or_duplicate_cha
 		admitted.extend(
 			memory::mutate(
 				&store,
-				&Actor::DeploymentAdministrator,
+				&administrator(&store).await,
 				mutation(
 					&bank,
 					Change::Add {
@@ -309,7 +309,7 @@ async fn recall_validates_each_admitted_provenance_without_root_or_duplicate_cha
 		},
 	};
 	let memory::Outcome::Recall(Recall::Ready { units }) =
-		memory::operate(&store, &Actor::DeploymentAdministrator, recall())
+		memory::operate(&store, &administrator(&store).await, recall())
 			.await
 			.unwrap()
 	else {
@@ -325,7 +325,7 @@ async fn recall_validates_each_admitted_provenance_without_root_or_duplicate_cha
 	);
 	memory::mutate(
 		&store,
-		&Actor::DeploymentAdministrator,
+		&administrator(&store).await,
 		mutation(
 			&bank,
 			Change::Correct {
@@ -341,7 +341,7 @@ async fn recall_validates_each_admitted_provenance_without_root_or_duplicate_cha
 		.await
 		.unwrap();
 	let memory::Outcome::Recall(Recall::Ready { units }) =
-		memory::operate(&store, &Actor::DeploymentAdministrator, recall())
+		memory::operate(&store, &administrator(&store).await, recall())
 			.await
 			.unwrap()
 	else {

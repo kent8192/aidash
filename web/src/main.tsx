@@ -20,6 +20,7 @@ import {
 import { state as getState, session as getSession } from "./generated/aidash";
 import { nodeLabel, nodeView } from "./node-selection";
 import { discoveryQuery, useNodeSelection } from "./nodes";
+import { AdministratorTenantNotice } from "./administrator-notice";
 import { subscribe } from "./event-stream";
 import { coalescedRefresh } from "./query-refresh";
 import {
@@ -301,6 +302,10 @@ function Dashboard({
     enabled: connected,
     refetchInterval: 5000,
   });
+  // A Deployment Administrator's role grants no Tenant content authority
+  // (ADR 0102): the server refuses Tenant content routes and event streams in
+  // this context, so the dashboard does not ask for them.
+  const administratorContext = context === "deployment_administrator";
   const deploymentAdministrator =
     session.data?.access.kind === "deployment_administrator";
   const subjectTenant =
@@ -548,6 +553,7 @@ function Dashboard({
   }, [browserSessionId, client]);
   useEffect(() => {
     if (!connected) return;
+    if (administratorContext) return;
     const controller = new AbortController();
     const refresher = coalescedRefresh(client);
     let timer: ReturnType<typeof setTimeout> | undefined;
@@ -578,7 +584,7 @@ function Dashboard({
       refresher.close();
       clearTimeout(timer);
     };
-  }, [connected, client, context]);
+  }, [connected, client, context, administratorContext]);
   useEffect(() => {
     if (route.legacy) {
       void navigate({
@@ -853,7 +859,7 @@ function Dashboard({
           data={data}
           channel={currentChannel}
           deploymentAdministrator={deploymentAdministrator}
-          streamStatus={streamStatus}
+          streamStatus={administratorContext ? "live" : streamStatus}
           decisions={requests.filter((item) => item.request.response === null)}
           inbox={inbox}
           queueOpen={queueOpen}
@@ -867,8 +873,16 @@ function Dashboard({
             })
           }
           go={go}
-          newRequest={() => open({ kind: "goal" })}
-          prepareChannel={() => open({ kind: "workspace" })}
+          newRequest={() =>
+            administratorContext
+              ? go("collaboration", { channel: "" })
+              : open({ kind: "goal" })
+          }
+          prepareChannel={() =>
+            administratorContext
+              ? go("collaboration", { channel: "" })
+              : open({ kind: "workspace" })
+          }
           theme={theme}
           account={{
             name:
@@ -964,7 +978,12 @@ function Dashboard({
           )}
           {data && (
             <div className="relative flex min-h-0 flex-1 flex-col">
-              {route.section === "collaboration" &&
+              {administratorContext &&
+                (route.section === "collaboration" ||
+                  route.section === "graph" ||
+                  route.section === "creator") && <AdministratorTenantNotice />}
+              {!administratorContext &&
+                route.section === "collaboration" &&
                 (workspace ? (
                   <Channel
                     key={workspace.id}
@@ -995,7 +1014,7 @@ function Dashboard({
                     create={() => open({ kind: "goal" })}
                   />
                 ))}
-              {route.section === "graph" && (
+              {!administratorContext && route.section === "graph" && (
                 <Graph
                   key={`${context}:${currentChannel}`}
                   data={data}
@@ -1008,33 +1027,34 @@ function Dashboard({
                   open={open}
                 />
               )}
-              {(route.section === "creator" || route.section === "trust") && (
-                <Workbench
-                  key={context ?? ""}
-                  mode={route.section}
-                  data={data}
-                  focus={route.focus}
-                  select={(focus) => go(route.section, { focus })}
-                  switchMode={(section, focus) => go(section, { focus })}
-                  integratedTools={
-                    route.section === "creator" ? (
-                      <CreatorTools
-                        data={data}
-                        initiallyOpen={route.integration === "generation"}
-                      />
-                    ) : (
-                      <TrustTools
-                        deploymentAdministrator={deploymentAdministrator}
-                        invitations={browserSession?.invitations ?? false}
-                        tenant={subjectTenant}
-                        subject={subjectName}
-                        initiallyOpen={route.integration === "authorization"}
-                        evidenceOpen={route.integration === "evidence"}
-                      />
-                    )
-                  }
-                />
-              )}
+              {!administratorContext &&
+                (route.section === "creator" || route.section === "trust") && (
+                  <Workbench
+                    key={context ?? ""}
+                    mode={route.section}
+                    data={data}
+                    focus={route.focus}
+                    select={(focus) => go(route.section, { focus })}
+                    switchMode={(section, focus) => go(section, { focus })}
+                    integratedTools={
+                      route.section === "creator" ? (
+                        <CreatorTools
+                          data={data}
+                          initiallyOpen={route.integration === "generation"}
+                        />
+                      ) : (
+                        <TrustTools
+                          deploymentAdministrator={deploymentAdministrator}
+                          invitations={browserSession?.invitations ?? false}
+                          tenant={subjectTenant}
+                          subject={subjectName}
+                          initiallyOpen={route.integration === "authorization"}
+                          evidenceOpen={route.integration === "evidence"}
+                        />
+                      )
+                    }
+                  />
+                )}
               {route.section === "settings" && (
                 <Suspense
                   fallback={
@@ -1055,20 +1075,22 @@ function Dashboard({
               )}
             </div>
           )}
-          {!data && session.data && route.section === "trust" && (
-            <div className="min-h-0 flex-1 overflow-y-auto px-4 py-4 md:px-6">
-              <TrustTools
-                deploymentAdministrator={deploymentAdministrator}
-                invitations={browserSession?.invitations ?? false}
-                tenant={subjectTenant}
-                subject={subjectName}
-                initiallyOpen={route.integration === "authorization"}
-                evidenceOpen={route.integration === "evidence"}
-              />
-            </div>
-          )}
+          {(administratorContext || !data) &&
+            session.data &&
+            route.section === "trust" && (
+              <div className="min-h-0 flex-1 overflow-y-auto px-4 py-4 md:px-6">
+                <TrustTools
+                  deploymentAdministrator={deploymentAdministrator}
+                  invitations={browserSession?.invitations ?? false}
+                  tenant={subjectTenant}
+                  subject={subjectName}
+                  initiallyOpen={route.integration === "authorization"}
+                  evidenceOpen={route.integration === "evidence"}
+                />
+              </div>
+            )}
         </AppShell>
-        {session.data && (
+        {session.data && !administratorContext && (
           <ConversationTools
             key={`${context}:${route.integration}`}
             view={
@@ -1084,7 +1106,7 @@ function Dashboard({
             close={() => go("collaboration", { focus: "" })}
           />
         )}
-        {selection && data && (
+        {selection && data && !administratorContext && (
           <Suspense fallback={<Loading>{copy.processing}</Loading>}>
             <OperationsDialog
               selection={selection}

@@ -61,7 +61,7 @@ impl Transactions {
 			.map_err(|_| Error::TransactionPending)?;
 		application::submit(
 			&crate::bootstrap::transaction_management_repository(&self.runtime),
-			principal(&actor).as_ref(),
+			&principal(&actor)?,
 			&manifest,
 		)
 		.await
@@ -72,7 +72,7 @@ impl Transactions {
 	pub async fn list(&self, actor: Actor) -> Result<Vec<Status>> {
 		application::list(
 			&crate::bootstrap::transaction_management_repository(&self.runtime),
-			principal(&actor).as_ref(),
+			&principal(&actor)?,
 		)
 		.await
 		.map(|rows| rows.into_iter().map(Into::into).collect())
@@ -81,7 +81,7 @@ impl Transactions {
 	pub async fn details(&self, actor: Actor, id: Uuid) -> Result<TransactionDetails> {
 		application::details(
 			&crate::bootstrap::transaction_management_repository(&self.runtime),
-			principal(&actor).as_ref(),
+			&principal(&actor)?,
 			id,
 		)
 		.await
@@ -91,7 +91,7 @@ impl Transactions {
 	pub async fn abort(&self, actor: Actor, id: Uuid) -> Result<Status> {
 		application::abort(
 			&crate::bootstrap::transaction_management_repository(&self.runtime),
-			principal(&actor).as_ref(),
+			&principal(&actor)?,
 			id,
 		)
 		.await
@@ -156,10 +156,12 @@ impl Transactions {
 	}
 }
 
-fn principal(actor: &Actor) -> Option<ExecutionPrincipal> {
+/// Transactions are Tenant content: a Deployment Administrator has no
+/// principal here (#484).
+fn principal(actor: &Actor) -> Result<ExecutionPrincipal> {
 	match actor {
-		Actor::DeploymentAdministrator => None,
-		Actor::Subject(identity) => Some(ExecutionPrincipal {
+		Actor::DeploymentAdministrator => Err(Error::Forbidden),
+		Actor::Subject(identity) => Ok(ExecutionPrincipal {
 			credential_id: identity.credential_id,
 			tenant: identity.tenant.clone(),
 			subject: identity.subject.clone(),

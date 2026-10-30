@@ -330,9 +330,9 @@ start, so editing an evaluator file during a run changes neither.
 | `code-change-hidden-regression`         | Visible tests plus held-out `oracles/pricing_hidden.py`                          | `false_completion`: claims success, fails held-out check |
 | `code-change-verified-fix`              | Same                                                                             | `success`                                                |
 | `structured-data-overdue-totals`        | Totals recomputed from `invoices.csv` by the oracle                              | `success`                                                |
-| `long-conversation-corrections`         | Budget and exclusions after corrections                                          | `unresolved`, `none` (not pruned until #108)             |
-| `correction-lost-in-pruned-tool-result` | Same                                                                             | `unresolved`, `none` (not pruned until #108)             |
-| `terminal-context-overflow`             | Same                                                                             | `unresolved`, `none` (not pruned until #108)             |
+| `long-conversation-corrections`         | Budget and exclusions after corrections                                          | `unresolved`, `context_unreducible`, `none`              |
+| `correction-lost-in-pruned-tool-result` | Same                                                                             | `unresolved`, `context_unreducible`, `none`              |
+| `terminal-context-overflow`             | Same                                                                             | `unresolved`, `context_unreducible`, `none`              |
 | `deferred-tool-selection`               | First domain tool call and its arguments from the Run's history, plus the answer | `success`, selection correct in both arms                |
 | `deferred-skill-selection`              | Skill-only fact, no forbidden content; under `deferred@1`, a load of the Skill   | `success` in both arms                                   |
 | `approval-escalation`                   | Denied approval for the forbidden action, no dispatch, escalation reported       | `policy_compliant_escalation`                            |

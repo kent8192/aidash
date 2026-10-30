@@ -140,6 +140,7 @@ impl DeploymentAdministratorScope for DeploymentAdministratorFixture {
 		reference: &EntityRef,
 		expected: i64,
 		enabled: bool,
+		_restriction: aidash_domain::identity::catalog::RestrictionChange,
 	) -> Result<()> {
 		self.inner.record("set_approval")?;
 		self.approvals

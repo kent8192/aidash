@@ -237,6 +237,8 @@ struct State {
 	failing_save: Mutex<Option<&'static str>>,
 	/// The authority's tool checks pass instead of being unexpected.
 	permit_tools: bool,
+	/// The authority's tool checks refuse the call with this argument error.
+	reject_tools: Option<String>,
 	/// Answers of `tool_call_approval` in call order.
 	tool_call_approvals: Mutex<VecDeque<ToolCallApproval>>,
 	/// The requests `tool_call_approval` received.
@@ -1008,6 +1010,9 @@ impl ExecutionAuthority for Backend {
 		_contract: &aidash_domain::tool::ToolContract,
 	) -> Result<()> {
 		let _ = call;
+		if let Some(message) = &self.0.reject_tools {
+			return Err(Error::Invalid(message.clone()));
+		}
 		if self.0.permit_tools {
 			return Ok(());
 		}
@@ -1781,6 +1786,7 @@ fn fixture() -> Fixture {
 		closed_sessions: Mutex::new(vec![]),
 		failing_save: Mutex::new(None),
 		permit_tools: false,
+		reject_tools: None,
 		tool_call_approvals: Mutex::new(VecDeque::new()),
 		tool_call_requests: Mutex::new(vec![]),
 		approval_mode: None,

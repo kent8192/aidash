@@ -84,6 +84,16 @@ async fn inspect_in(
 	} else {
 		access.bindings(&entry).await?
 	};
+	if pinned.is_none() {
+		// A new inspection starts a Run here: the executing Node requires the
+		// Agent's compaction Decider to hold its Catalog Approval (#540).
+		for binding in crate::authorization::execution::compaction::bound(&snapshot) {
+			let current = access
+				.entry(&binding.identity.local(), aidash_domain::decision::INVOKE)
+				.await;
+			crate::authorization::execution::compaction::require(binding, current)?;
+		}
+	}
 	if !snapshot.remote
 		|| snapshot.agent.registry_deployment != access.node_id()
 		|| snapshot.agent.local() != input.agent

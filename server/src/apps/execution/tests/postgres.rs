@@ -863,6 +863,7 @@ async fn parent_can_finish_after_explicit_child_abandonment(
 ) {
 	let (store, url, schema) = _store_fixture.clone().await.parts();
 	let f = _federation.await.federation;
+	let token = common::tenant_token(&store, "acme").await;
 	let agent = seed(&f.registry).await;
 	let workspace = store
 		.create_workspace(
@@ -956,10 +957,10 @@ async fn parent_can_finish_after_explicit_child_abandonment(
 				Method::POST,
 				app.url(format!("/api/tasks/{}/abandon", child.id)),
 			)
-			.header("authorization", "Bearer test-access-token")
+			.header("authorization", format!("Bearer {token}"))
 			.header("content-type", "application/json")
 			.body(
-				json!({"revision":child.revision,"reason":"Deployment Administrator accepts partial results"})
+				json!({"revision":child.revision,"reason":"Tenant subject accepts partial results"})
 					.to_string(),
 			)
 			.send()
@@ -1007,7 +1008,7 @@ async fn parent_can_finish_after_explicit_child_abandonment(
 		events
 			.iter()
 			.filter(|e| e.kind == "task.abandoned"
-				&& e.data["reason"] == "Deployment Administrator accepts partial results")
+				&& e.data["reason"] == "Tenant subject accepts partial results")
 			.count(),
 		3
 	);

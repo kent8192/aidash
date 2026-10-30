@@ -23,39 +23,23 @@ pub(crate) struct NativePolicies {
 	pub actor: Actor,
 	pub principal: Principal,
 }
-enum Mode {
-	DeploymentAdministrator(crate::database::native::Transaction),
-	Subject(Box<Access>),
-}
 struct Session {
 	configured: bool,
 	node: String,
-	mode: Mode,
+	access: Box<Access>,
 }
 impl Session {
 	fn tx(&mut self) -> &mut crate::database::native::Transaction {
-		match &mut self.mode {
-			Mode::DeploymentAdministrator(tx) => tx,
-			Mode::Subject(access) => &mut access.tx,
-		}
+		&mut self.access.tx
 	}
 	async fn finish<T: Send>(
 		self,
 		result: aidash_application::Result<T>,
 	) -> aidash_application::Result<T> {
-		match self.mode {
-			Mode::DeploymentAdministrator(tx) => match result {
-				Ok(value) => {
-					tx.commit().await?;
-					Ok(value)
-				}
-				Err(error) => Err(error),
-			},
-			Mode::Subject(access) => access
-				.finish(result.map_err(Error::from))
-				.await
-				.map_err(Into::into),
-		}
+		self.access
+			.finish(result.map_err(Error::from))
+			.await
+			.map_err(Into::into)
 	}
 }
 #[async_trait]
@@ -88,38 +72,21 @@ impl GenerationPolicies for NativePolicies {
 		scope: &TenancyScope,
 		exclusive: bool,
 	) -> aidash_application::Result<Box<dyn PolicySession>> {
-		let mode = match &self.actor {
-			// A Deployment Administrator manages policies in the named Tenant's scope.
-			Actor::DeploymentAdministrator => {
-				let tenant = scope
-					.tenant_name()
-					.ok_or(aidash_application::Error::Forbidden)?;
-				let mut tx = self.store.pool.begin(scope).await?;
-				crate::apps::identity::models::AuthorizationBundle::lock_snapshot(
-					&mut *tx,
-					tenant.as_str(),
-					exclusive,
-				)
-				.await
-				.map_err(
-					crate::authorization::remote::deployment_administrator::application_error,
-				)?;
-				Mode::DeploymentAdministrator(tx)
-			}
-			Actor::Subject(identity) => {
-				if identity.tenancy()? != *scope {
-					return Err(aidash_application::Error::Forbidden);
-				}
-				Mode::Subject(Box::new(if exclusive {
-					Access::begin_exclusive(&self.store, identity).await
-				} else {
-					Access::begin(&self.store, identity).await
-				}?))
-			}
+		// Generation Policies are Tenant settings: only a Subject manages them (#484).
+		let Actor::Subject(identity) = &self.actor else {
+			return Err(aidash_application::Error::Forbidden);
 		};
+		if identity.tenancy()? != *scope {
+			return Err(aidash_application::Error::Forbidden);
+		}
+		let access = Box::new(if exclusive {
+			Access::begin_exclusive(&self.store, identity).await
+		} else {
+			Access::begin(&self.store, identity).await
+		}?);
 		Ok(Box::new(Session {
 			configured: self.store.provider_credentials.is_some(),
-			mode,
+			access,
 			node: self.store.deployment.to_string(),
 		}))
 	}
@@ -141,13 +108,11 @@ impl PolicySession for Session {
 		.await
 	}
 	async fn decide(&mut self, id: &str, action: &str) -> aidash_application::Result<bool> {
-		match &mut self.mode {
-			Mode::DeploymentAdministrator(_) => Ok(true),
-			Mode::Subject(access) => access
-				.decide(&crate::generation::resource(access, id), action)
-				.await
-				.map_err(Into::into),
-		}
+		let access = &mut self.access;
+		access
+			.decide(&crate::generation::resource(access, id), action)
+			.await
+			.map_err(Into::into)
 	}
 	async fn bundle(&mut self, tenant: &str) -> aidash_application::Result<Value> {
 		let tx = self.tx();

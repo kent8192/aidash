@@ -3,7 +3,7 @@ set -euo pipefail
 cd "$(dirname "$0")/../.."
 terraform fmt -check -recursive infra/gcp
 terraform fmt -check -recursive infra/delivery
-for root in infra/gcp/bootstrap infra/gcp/environments infra/gcp/modules/*/ infra/delivery/github infra/delivery/cloudflare infra/delivery/projects; do
+for root in infra/gcp/bootstrap infra/gcp/environments infra/gcp/modules/*/ infra/delivery/github infra/delivery/cloudflare infra/delivery/preview-domain infra/delivery/projects; do
   root="${root%/}"
   terraform -chdir="$root" init -backend=false -input=false -no-color
   terraform -chdir="$root" validate -no-color

@@ -1,6 +1,7 @@
 //! Current catalog authority, inherited approval fences and exact retained definitions.
 use crate::Result;
 use aidash_domain::{
+	identity::catalog::RestrictionChange,
 	policy::Resource,
 	registry::{EntityRef, Entry},
 };
@@ -12,6 +13,22 @@ pub trait CatalogScope: Send {
 	fn inherited_lease(&self) -> bool;
 	fn approved(&self, reference: &EntityRef) -> bool;
 	fn remember(&mut self, reference: &EntityRef);
+	/// The subject that uses `reference` directly. An agent's exact version is
+	/// used by whoever starts or delegates its Run; a definition an agent
+	/// depends on is used by that agent.
+	fn direct_user(&self, _reference: &EntityRef) -> String {
+		String::new()
+	}
+	/// Whether the stored Catalog Approval restriction admits `direct_user`.
+	/// Scopes without stored restrictions admit everyone, like an unrestricted
+	/// approval.
+	async fn permits_restriction(
+		&mut self,
+		_reference: &EntityRef,
+		_direct_user: &str,
+	) -> Result<bool> {
+		Ok(true)
+	}
 	/// An exact admission this scope already proved under the same authority while
 	/// its locks still hold. Scopes without such a record re-prove every admission.
 	fn admitted(&self, _reference: &EntityRef, _action: &str) -> Option<Entry> {
@@ -41,6 +58,7 @@ pub trait CatalogMutation: Send {
 		reference: &EntityRef,
 		expected_revision: i64,
 		enabled: bool,
+		restriction: RestrictionChange,
 	) -> Result<Option<aidash_domain::identity::catalog::Binding>>;
 	async fn history(
 		&mut self,

@@ -5,7 +5,11 @@ import {
   type BrowserContext,
   type Page,
 } from "@playwright/test";
-import { createTenant, defaultNode } from "./tenant-fixture";
+import {
+  createTenant,
+  defaultNode,
+  issueSubjectCredential,
+} from "./tenant-fixture";
 import {
   installBearerDashboard,
   selectDashboardLanguage,
@@ -123,9 +127,8 @@ async function createGenerationScenario(
         ],
       },
     });
-    const credential = await api(`/api/authorization/${tenant}/credentials`, {
-      subject: "alice",
-    });
+    // A Deployment Administrator holds no Tenant authority (#484): the host issues the credential.
+    const credential = issueSubjectCredential(tenant, "alice");
     cleanupHeaders.authorization = `Bearer ${credential.token}`;
     const node = await defaultNode(request, credential.token, tenant);
     await api(
@@ -424,23 +427,27 @@ async function createGenerationScenario(
       (item: { title: string }) => item.title === id,
     );
     semanticRoot = `/api/workspaces/${workspace.id}/semantic`;
-    semanticIndex = await api(`${semanticRoot}/index`, {
-      expected_revision: 0,
-      spec: {
-        embedding: embeddingConfig,
-        vector: {
-          provider: "postgres",
-          endpoint: "local",
-          credential_env: null,
+    semanticIndex = await api(
+      `${semanticRoot}/index`,
+      {
+        expected_revision: 0,
+        spec: {
+          embedding: embeddingConfig,
+          vector: {
+            provider: "postgres",
+            endpoint: "local",
+            credential_env: null,
+          },
+          enabled: true,
+          auto_context: true,
+          max_sources: 64,
+          max_results: 10,
+          max_result_tokens: 4096,
+          max_input_bytes: 8192,
         },
-        enabled: true,
-        auto_context: true,
-        max_sources: 64,
-        max_results: 10,
-        max_result_tokens: 4096,
-        max_input_bytes: 8192,
       },
-    });
+      credential.token,
+    );
     const memory = await api(
       `${semanticRoot}/entries`,
       {

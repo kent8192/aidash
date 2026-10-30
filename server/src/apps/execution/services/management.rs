@@ -11,16 +11,15 @@ use crate::{
 	domain::*,
 	federation::Federation,
 };
-use aidash_application::tenancy::{DeploymentScopeReason, TenancyScope};
-use aidash_domain::provider::progress::MARKER_PREFIX;
+use aidash_application::tenancy::TenancyScope;
 use futures_util::StreamExt;
 use http::HeaderMap;
 use reinhardt::http::StreamBody;
 use reinhardt::injectable;
+use reinhardt::query::Expr;
 use reinhardt::query::PostgresQueryBuilder;
 use reinhardt::query::Query;
 use reinhardt::query::QueryStatementBuilder as _;
-use reinhardt::query::{Expr, ExprTrait as _};
 use serde_json::{Value, json};
 use uuid::Uuid;
 
@@ -37,27 +36,12 @@ use crate::apps::execution::serializers::research::{
 use crate::apps::identity::repositories::retention::TenantRetention;
 use crate::apps::identity::services::http_auth::scoped;
 
-/// The dashboard identity of a Deployment Administrator acting in a browser.
-fn administrator(
-	actor: &Actor,
-	browser: Option<crate::dashboard_auth::BrowserOrigin>,
-) -> Option<Uuid> {
-	matches!(actor, Actor::DeploymentAdministrator)
-		.then(|| browser.map(|origin| origin.identity_id))
-		.flatten()
-}
-
 #[derive(Clone)]
 pub struct HarnessManagement {
 	runtime: Federation,
 	event_streams: crate::sse::Service,
 	catalog: std::sync::Arc<dyn aidash_application::ports::ModelCatalog>,
 }
-/// A Deployment Administrator's reads across Tenants.
-fn listing() -> TenancyScope {
-	TenancyScope::Deployment(DeploymentScopeReason::DeploymentAdministratorList)
-}
-
 #[injectable(scope = "request")]
 pub async fn provide(
 	#[inject] runtime: Federation,
@@ -77,188 +61,20 @@ impl HarnessManagement {
 			let state = scope.state(f.config.deployment_identity()).await?;
 			return crate::marketplace::state_response(&scope.store, &scope.identity, state).await;
 		}
-		let records: Vec<crate::registry::Entry> = Vec::new();
-		// Scan newest first until 100 visible events are collected. Hidden
-		// required-Home events may occupy any number of candidate pages.
-		let mut events = Vec::new();
-		let mut before = i64::MAX;
-		loop {
-			let batch: Vec<crate::domain::Event> = crate::database::query_as(
-				&reinhardt::query::Query::select()
-					.column(reinhardt::query::ColumnRef::Asterisk)
-					.from(reinhardt::query::Alias::new("events"))
-					.and_where(reinhardt::query::Expr::cust("sequence < $1"))
-					.and_where(
-						Expr::col(reinhardt::query::Alias::new("kind"))
-							.not_like(Expr::value(format!("{MARKER_PREFIX}%"))),
-					)
-					.order_by(
-						reinhardt::query::Alias::new("sequence"),
-						reinhardt::query::Order::Desc,
-					)
-					.limit(500)
-					.to_string(reinhardt::query::PostgresQueryBuilder),
-			)
-			.bind(before)
-			.fetch_all(f.store.pool.in_scope(&listing()))
-			.await?;
-			if batch.is_empty() {
-				break;
-			}
-			before = batch.last().expect("nonempty event batch").sequence;
-			let exhausted = batch.len() < 500;
-			events.extend(
-				crate::authorization::remote::deployment_administrator::filter_events(
-					&mut f.store.pool.begin(&listing()).await?,
-					batch,
-				)
-				.await?,
-			);
-			if events.len() >= 100 || exhausted {
-				break;
-			}
-		}
-		events.truncate(100);
-		events.reverse();
-		let human: Vec<HumanRequest> = crate::database::query_as(
-			&reinhardt::query::Query::select()
-				.expr(reinhardt::query::SimpleExpr::from(
-					reinhardt::query::Expr::col(reinhardt::query::ColumnRef::Asterisk),
-				))
-				.from_as(
-					reinhardt::query::Alias::new("human_requests"),
-					reinhardt::query::Alias::new("h"),
-				)
-				.and_where(
-					crate::authorization::remote::deployment_administrator::state_visible(
-						"h.workspace_id",
-					),
-				)
-				.order_by_expr(
-					reinhardt::query::SimpleExpr::from(reinhardt::query::Expr::col(
-						reinhardt::query::Alias::new("created_at"),
-					)),
-					reinhardt::query::Order::Desc,
-				)
-				.limit(500)
-				.to_string(reinhardt::query::PostgresQueryBuilder),
-		)
-		.fetch_all(f.store.pool.in_scope(&listing()))
-		.await?;
-		let conversations: Vec<Conversation> = crate::database::query_as(
-			&reinhardt::query::Query::select()
-				.expr(reinhardt::query::SimpleExpr::from(
-					reinhardt::query::Expr::col(reinhardt::query::ColumnRef::Asterisk),
-				))
-				.from_as(
-					reinhardt::query::Alias::new("conversations"),
-					reinhardt::query::Alias::new("c"),
-				)
-				.and_where(
-					crate::authorization::remote::deployment_administrator::state_visible(
-						"c.workspace_id",
-					),
-				)
-				.order_by_expr(
-					reinhardt::query::SimpleExpr::from(reinhardt::query::Expr::col(
-						reinhardt::query::Alias::new("created_at"),
-					)),
-					reinhardt::query::Order::Desc,
-				)
-				.limit(500)
-				.to_string(reinhardt::query::PostgresQueryBuilder),
-		)
-		.fetch_all(f.store.pool.in_scope(&listing()))
-		.await?;
-		let artifacts: Vec<Artifact> = crate::database::query_as(
-			&reinhardt::query::Query::select()
-				.expr(reinhardt::query::SimpleExpr::from(
-					reinhardt::query::Expr::col(reinhardt::query::ColumnRef::Asterisk),
-				))
-				.from_as(
-					reinhardt::query::Alias::new("artifacts"),
-					reinhardt::query::Alias::new("a"),
-				)
-				.and_where(
-					crate::authorization::remote::deployment_administrator::state_visible(
-						"a.workspace_id",
-					),
-				)
-				.order_by_expr(
-					reinhardt::query::SimpleExpr::from(reinhardt::query::Expr::col(
-						reinhardt::query::Alias::new("created_at"),
-					)),
-					reinhardt::query::Order::Desc,
-				)
-				.limit(500)
-				.to_string(reinhardt::query::PostgresQueryBuilder),
-		)
-		.fetch_all(f.store.pool.in_scope(&listing()))
-		.await?;
-		let mut state = StateResponse {
+		// A Deployment Administrator holds no Tenant authority (#484, #301): the
+		// state carries the access profile and the Deployment identity only.
+		let state = StateResponse {
 			access: AccessProfile::DeploymentAdministrator,
 			deployment: f.config.deployment_identity(),
-			registry: records,
-			workspaces: f.store.workspaces(&listing()).await?,
-			tasks: crate::database::query_as(
-				&reinhardt::query::Query::select()
-					.column(reinhardt::query::ColumnRef::Asterisk)
-					.from_as(
-						reinhardt::query::Alias::new("tasks"),
-						reinhardt::query::Alias::new("t"),
-					)
-					.and_where(
-						crate::authorization::remote::deployment_administrator::state_visible(
-							"t.workspace_id",
-						),
-					)
-					.order_by(
-						reinhardt::query::Alias::new("created_at"),
-						reinhardt::query::Order::Desc,
-					)
-					.order_by(
-						reinhardt::query::Alias::new("id"),
-						reinhardt::query::Order::Desc,
-					)
-					.limit(500)
-					.to_string(reinhardt::query::PostgresQueryBuilder),
-			)
-			.fetch_all(f.store.pool.in_scope(&listing()))
-			.await?,
-			runs: crate::database::query_as::<crate::domain::run_state::RawRun>(
-				&reinhardt::query::Query::select()
-					.column(reinhardt::query::ColumnRef::Asterisk)
-					.from_as(
-						reinhardt::query::Alias::new("runs"),
-						reinhardt::query::Alias::new("r"),
-					)
-					.and_where(
-						crate::authorization::remote::deployment_administrator::state_visible(
-							"r.workspace_id",
-						),
-					)
-					.order_by(
-						reinhardt::query::Alias::new("updated_at"),
-						reinhardt::query::Order::Desc,
-					)
-					.limit(500)
-					.to_string(reinhardt::query::PostgresQueryBuilder),
-			)
-			.fetch_all(f.store.pool.in_scope(&listing()))
-			.await?
-			.into_iter()
-			.map(crate::domain::run_state::RawRun::inspect)
-			.collect(),
-			human_requests: human,
-			conversations,
-			events,
-			artifacts,
+			registry: Vec::new(),
+			workspaces: Vec::new(),
+			tasks: Vec::new(),
+			runs: Vec::new(),
+			human_requests: Vec::new(),
+			conversations: Vec::new(),
+			events: Vec::new(),
+			artifacts: Vec::new(),
 		};
-		crate::authorization::remote::deployment_administrator::filter_state(
-			&mut f.store.pool.begin(&listing()).await?,
-			&mut state,
-		)
-		.await?;
 		Ok(Response::ok().with_json(&state)?)
 	}
 	/// The OpenRouter catalog for model definitions, which any member may
@@ -289,19 +105,11 @@ impl HarnessManagement {
 		page: PageQuery,
 	) -> Result<RunDetails> {
 		let f = self.runtime.clone();
-		if let Actor::Subject(identity) = actor {
-			let mut details = execution::details_page(&f, &identity, id, page.offset).await?;
-			details.media_input_routes = f.run_media_input_routes(&details.run).await?;
-			return Ok(details);
-		}
-		let scope = f.store.run_tenancy(id).await?;
-		let run = f.store.inspect_run(&scope, id).await?;
-		crate::authorization::remote::deployment_administrator::require(
-			&mut f.store.pool.begin(&scope).await?,
-			run.workspace_id,
-		)
-		.await?;
-		let mut details = f.store.run_details(&scope, id, page.offset).await?;
+		// Run details are Tenant content: an administrator reads none (#484).
+		let Actor::Subject(identity) = actor else {
+			return Err(Error::Forbidden);
+		};
+		let mut details = execution::details_page(&f, &identity, id, page.offset).await?;
 		details.media_input_routes = f.run_media_input_routes(&details.run).await?;
 		Ok(details)
 	}
@@ -318,10 +126,10 @@ impl HarnessManagement {
 			federation: &f,
 			actor: &actor,
 		};
-		let scope = match &actor {
-			Actor::Subject(identity) => identity.tenancy()?,
-			Actor::DeploymentAdministrator => f.store.run_tenancy(run).await?,
+		let Actor::Subject(identity) = &actor else {
+			return Err(Error::Forbidden);
 		};
+		let scope = identity.tenancy()?;
 		let store = crate::research::evidence_store(f.store.clone(), scope);
 		Ok(
 			aidash_application::research::reading::read(&readers, &store, run, reference)
@@ -333,7 +141,6 @@ impl HarnessManagement {
 	pub(crate) async fn research_revocation(
 		&self,
 		actor: Actor,
-		browser: Option<crate::dashboard_auth::BrowserOrigin>,
 		run: Uuid,
 		input: RevocationInput,
 	) -> Result<RevocationRecord> {
@@ -341,7 +148,6 @@ impl HarnessManagement {
 		let revocations = Revocations {
 			federation: &f,
 			actor: &actor,
-			administrator: administrator(&actor, browser),
 		};
 		if let Some(tenant) = &input.tenant {
 			aidash_domain::policy::identifier(tenant)?;
@@ -361,14 +167,12 @@ impl HarnessManagement {
 	pub(crate) async fn research_revocation_record(
 		&self,
 		actor: Actor,
-		browser: Option<crate::dashboard_auth::BrowserOrigin>,
 		run: Uuid,
 	) -> Result<RevocationRecord> {
 		let f = self.runtime.clone();
 		let revocations = Revocations {
 			federation: &f,
 			actor: &actor,
-			administrator: administrator(&actor, browser),
 		};
 		Ok(
 			aidash_application::research::revocation::record(&revocations, run)
@@ -380,7 +184,6 @@ impl HarnessManagement {
 	pub(crate) async fn research_revocations(
 		&self,
 		actor: Actor,
-		browser: Option<crate::dashboard_auth::BrowserOrigin>,
 		tenant: String,
 		page: HistoryPage,
 	) -> Result<Vec<RevocationRecord>> {
@@ -389,7 +192,6 @@ impl HarnessManagement {
 		let revocations = Revocations {
 			federation: &f,
 			actor: &actor,
-			administrator: administrator(&actor, browser),
 		};
 		Ok(aidash_application::research::revocation::records(
 			&revocations,
@@ -406,29 +208,24 @@ impl HarnessManagement {
 	pub(crate) async fn retention(
 		&self,
 		actor: Actor,
-		browser: Option<crate::dashboard_auth::BrowserOrigin>,
 		tenant: String,
 	) -> Result<TenantRetentionView> {
 		aidash_domain::policy::identifier(&tenant)?;
-		let administrator = administrator(&actor, browser);
-		let repository = self.retention_repository(&actor, administrator)?;
+		let repository = self.retention_repository(&actor);
 		let retention = aidash_application::retention::rules(&repository, &tenant).await?;
-		self.retention_view(&actor, administrator, retention).await
+		self.retention_view(&actor, retention).await
 	}
 	/// What the caller may do about one Tenant's periods and its revocation
 	/// records, beside the periods themselves.
 	async fn retention_view(
 		&self,
 		actor: &Actor,
-		administrator: Option<Uuid>,
 		retention: aidash_application::retention::TenantRetention,
 	) -> Result<TenantRetentionView> {
-		let repository = self.retention_repository(actor, administrator)?;
+		let repository = self.retention_repository(actor);
 		let can_update =
 			aidash_application::retention::may_update(&repository, &retention.tenant).await?;
-		let can_read_revocations = self
-			.may_read_revocations(actor, administrator, &retention.tenant)
-			.await?;
+		let can_read_revocations = self.may_read_revocations(actor, &retention.tenant).await?;
 		Ok(TenantRetentionView {
 			retention,
 			can_update,
@@ -437,17 +234,11 @@ impl HarnessManagement {
 			can_read_revocations,
 		})
 	}
-	async fn may_read_revocations(
-		&self,
-		actor: &Actor,
-		administrator: Option<Uuid>,
-		tenant: &str,
-	) -> Result<bool> {
+	async fn may_read_revocations(&self, actor: &Actor, tenant: &str) -> Result<bool> {
 		let f = self.runtime.clone();
 		let revocations = Revocations {
 			federation: &f,
 			actor,
-			administrator,
 		};
 		Ok(
 			aidash_application::research::revocation::may_read_records(&revocations, tenant)
@@ -458,20 +249,16 @@ impl HarnessManagement {
 	pub(crate) async fn retention_update(
 		&self,
 		actor: Actor,
-		browser: Option<crate::dashboard_auth::BrowserOrigin>,
 		tenant: String,
 		input: RetentionInput,
 	) -> Result<TenantRetentionView> {
 		aidash_domain::policy::identifier(&tenant)?;
-		let administrator = administrator(&actor, browser);
-		let repository = self.retention_repository(&actor, administrator)?;
+		let repository = self.retention_repository(&actor);
 		// Nothing fallible may follow the commit, or a committed change would
 		// answer as an error and a retry would record it twice. The flags
 		// are therefore read first; the update itself proves the caller may
 		// update the periods and read their history.
-		let can_read_revocations = self
-			.may_read_revocations(&actor, administrator, &tenant)
-			.await?;
+		let can_read_revocations = self.may_read_revocations(&actor, &tenant).await?;
 		let retention =
 			aidash_application::retention::update(&repository, &tenant, input.rules).await?;
 		Ok(TenantRetentionView {
@@ -485,28 +272,22 @@ impl HarnessManagement {
 	pub(crate) async fn retention_history(
 		&self,
 		actor: Actor,
-		browser: Option<crate::dashboard_auth::BrowserOrigin>,
 		tenant: String,
 		page: HistoryPage,
 	) -> Result<Vec<aidash_domain::retention::RetentionChange>> {
 		aidash_domain::policy::identifier(&tenant)?;
-		let repository = self.retention_repository(&actor, administrator(&actor, browser))?;
+		let repository = self.retention_repository(&actor);
 		Ok(
 			aidash_application::retention::history(&repository, &tenant, page.offset, page.limit)
 				.await?,
 		)
 	}
-	fn retention_repository<'a>(
-		&'a self,
-		actor: &'a Actor,
-		administrator: Option<Uuid>,
-	) -> Result<TenantRetention<'a>> {
-		Ok(TenantRetention {
+	fn retention_repository<'a>(&'a self, actor: &'a Actor) -> TenantRetention<'a> {
+		TenantRetention {
 			store: &self.runtime.store,
 			actor,
-			administrator,
 			deployment: self.runtime.store.research_retention,
-		})
+		}
 	}
 	pub(crate) async fn run_control(
 		&self,
@@ -555,59 +336,15 @@ impl HarnessManagement {
 	}
 	pub(crate) async fn events(&self, actor: Actor, q: EventQuery) -> Result<Response> {
 		let f = self.runtime.clone();
-
-		if let Some(scope) = scoped(&f, actor) {
-			let (events, cursor) = scope
-				.events_with_cursor(q.after, q.workspace_id, 500)
-				.await?;
-			let mut response =
-				crate::marketplace::events::response(&scope.store, &scope.identity, events).await?;
-			response
-				.headers
-				.insert("x-aidash-event-cursor", cursor.into());
-			return Ok(response);
-		}
-		let mut cursor = q.after.max(0);
-		let mut visible = Vec::new();
-		let mut connection = f.store.pool.begin(&listing()).await?;
-		if let Some(workspace) = q.workspace_id
-			&& !crate::authorization::remote::deployment_administrator::visible(
-				&mut connection,
-				workspace,
-			)
-			.await?
-		{
-			let mut response = Response::ok().with_json(&visible)?;
-			response
-				.headers
-				.insert("x-aidash-event-cursor", cursor.into());
-			return Ok(response);
-		}
-		loop {
-			let page = f
-				.store
-				.events(&listing(), cursor, q.workspace_id, 500)
-				.await?;
-			let exhausted = page.len() < 500;
-			if let Some(last) = page.last() {
-				cursor = last.sequence;
-			}
-			visible.extend(
-				crate::authorization::remote::deployment_administrator::filter_events(
-					&mut connection,
-					page,
-				)
-				.await?,
-			);
-			if visible.len() >= 500 || exhausted {
-				if visible.len() >= 500 {
-					visible.truncate(500);
-					cursor = visible.last().expect("full event page").sequence;
-				}
-				break;
-			}
-		}
-		let mut response = Response::ok().with_json(&visible)?;
+		// Events are Tenant content: an administrator reads none (#484).
+		let Some(scope) = scoped(&f, actor) else {
+			return Err(Error::Forbidden);
+		};
+		let (events, cursor) = scope
+			.events_with_cursor(q.after, q.workspace_id, 500)
+			.await?;
+		let mut response =
+			crate::marketplace::events::response(&scope.store, &scope.identity, events).await?;
 		response
 			.headers
 			.insert("x-aidash-event-cursor", cursor.into());
@@ -711,15 +448,14 @@ impl HarnessManagement {
 		)
 		.await?;
 		let preflight = async {
-			if let Some(access) = lease.access_mut() {
-				let visible = access.run_for_interaction(id).await?;
-				if visible.workspace_id != run.workspace_id {
-					return Err(Error::Forbidden);
-				}
-				access
-					.require(&access.resource("run", id, json!({})), "run.message")
-					.await?;
+			let access = lease.access_mut();
+			let visible = access.run_for_interaction(id).await?;
+			if visible.workspace_id != run.workspace_id {
+				return Err(Error::Forbidden);
 			}
+			access
+				.require(&access.resource("run", id, json!({})), "run.message")
+				.await?;
 			if !run.is_local(f.config.deployment.as_str()) {
 				return Err(Error::Invalid(
 					"media run messages require a local run".into(),
@@ -819,21 +555,12 @@ impl HarnessManagement {
 		id: Uuid,
 	) -> Result<crate::apps::execution::serializers::runs::RunResearch> {
 		let f = self.runtime.clone();
-		let scope = match &actor {
-			Actor::Subject(identity) => identity.tenancy()?,
-			Actor::DeploymentAdministrator => f.store.run_tenancy(id).await?,
+		let Actor::Subject(identity) = &actor else {
+			return Err(Error::Forbidden);
 		};
+		let scope = identity.tenancy()?;
 		let readable = || async {
-			if let Actor::Subject(identity) = &actor {
-				execution::details_page(&f, identity, id, 0).await?;
-			} else {
-				let run = f.store.inspect_run(&scope, id).await?;
-				crate::authorization::remote::deployment_administrator::require(
-					&mut f.store.pool.begin(&scope).await?,
-					run.workspace_id,
-				)
-				.await?;
-			}
+			execution::details_page(&f, identity, id, 0).await?;
 			Ok::<_, crate::Error>(())
 		};
 		readable().await?;
@@ -847,7 +574,6 @@ impl HarnessManagement {
 		let revocations = Revocations {
 			federation: &f,
 			actor: &actor,
-			administrator: None,
 		};
 		let standing = aidash_application::research::revocation::standing(&revocations, id).await?;
 		// The research reads are separate transactions: authority revoked

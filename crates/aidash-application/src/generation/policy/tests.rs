@@ -75,7 +75,10 @@ struct Repository {
 impl Repository {
 	fn new() -> Self {
 		Self {
-			principal: Principal::DeploymentAdministrator,
+			principal: Principal::Subject {
+				tenant: "tenant".into(),
+				subject: "alice".into(),
+			},
 			state: Arc::new(Mutex::new(State {
 				document: bundle(),
 				approved: crate::test_support::builtin_entries("aidash://local")
@@ -87,11 +90,8 @@ impl Repository {
 			})),
 		}
 	}
-	fn subject(&mut self) {
-		self.principal = Principal::Subject {
-			tenant: "tenant".into(),
-			subject: "alice".into(),
-		};
+	fn administrator(&mut self) {
+		self.principal = Principal::DeploymentAdministrator;
 	}
 	fn calls(&self) -> Vec<String> {
 		self.state
@@ -297,8 +297,7 @@ async fn authorized_subject_update_commits_policy_and_history_with_trusted_actor
 	spec: Spec,
 	validation: DefinitionValidation,
 ) {
-	let mut repo = Repository::new();
-	repo.subject();
+	let repo = Repository::new();
 	let result = set(&repo, "tenant", "policy", 0, &spec, &validation)
 		.await
 		.unwrap();
@@ -333,8 +332,7 @@ async fn cross_tenant_subject_cannot_open_a_mutation_transaction(
 	spec: Spec,
 	validation: DefinitionValidation,
 ) {
-	let mut repo = Repository::new();
-	repo.subject();
+	let repo = Repository::new();
 	assert!(matches!(
 		set(&repo, "other", "policy", 0, &spec, &validation).await,
 		Err(Error::Forbidden)
@@ -347,8 +345,7 @@ async fn denied_worker_call_preserves_denial_audit_without_bundle_read_or_write(
 	spec: Spec,
 	validation: DefinitionValidation,
 ) {
-	let mut repo = Repository::new();
-	repo.subject();
+	let repo = Repository::new();
 	repo.state.lock().unwrap().denied.insert("policy".into());
 	assert!(matches!(
 		set(&repo, "tenant", "policy", 0, &spec, &validation).await,
@@ -383,7 +380,14 @@ async fn invalid_revision_never_reads_or_writes_policy_rows(
 	assert!(
 		matches!(set(&repo,"tenant","policy",revision,&spec,&validation).await,Err(Error::Invalid(message)) if message=="invalid generation policy revision")
 	);
-	assert_eq!(repo.calls(), vec!["begin:tenant:true", "finish"]);
+	assert_eq!(
+		repo.calls(),
+		vec![
+			"begin:tenant:true",
+			"decide:policy:generation.manage",
+			"finish"
+		]
+	);
 }
 #[rstest]
 #[tokio::test]
@@ -409,10 +413,11 @@ async fn unchanged_disable_survives_revoked_catalog_and_invalid_authorization_do
 		repo.calls(),
 		vec![
 			"begin:tenant:true",
+			"decide:policy:generation.manage",
 			"bundle:tenant",
 			"previous:tenant:policy:7",
 			"cas:tenant:policy:7",
-			"history:tenant:policy:8:deployment_administrator",
+			"history:tenant:policy:8:alice",
 			"load:tenant:policy:false",
 			"finish"
 		]
@@ -532,17 +537,9 @@ async fn stale_revision_does_not_append_history(spec: Spec, validation: Definiti
 	assert!(!state.calls.iter().any(|call| call.starts_with("history:")));
 }
 #[rstest]
-#[case::subject(true)]
-#[case::deployment_administrator(false)]
 #[tokio::test]
-async fn listing_keeps_order_and_shared_authority_while_filtering_subjects(
-	spec: Spec,
-	#[case] subject: bool,
-) {
-	let mut repo = Repository::new();
-	if subject {
-		repo.subject();
-	}
+async fn listing_keeps_order_and_shared_authority_while_filtering_subjects(spec: Spec) {
+	let repo = Repository::new();
 	{
 		let mut state = repo.state.lock().unwrap();
 		for id in ["a", "b", "c"] {
@@ -553,25 +550,16 @@ async fn listing_keeps_order_and_shared_authority_while_filtering_subjects(
 		state.denied.insert("b".into());
 	}
 	let policies = list(&repo, "tenant").await.unwrap();
-	let expected = if subject {
-		vec!["a", "c"]
-	} else {
-		vec!["a", "b", "c"]
-	};
 	assert_eq!(
 		policies
 			.iter()
 			.map(|policy| policy.id.as_str())
 			.collect::<Vec<_>>(),
-		expected
+		vec!["a", "c"]
 	);
 	assert_eq!(&repo.calls()[..2], ["ids:tenant", "begin:tenant:false"]);
 	assert_eq!(repo.calls().last().unwrap(), "finish");
-	if subject {
-		assert!(!repo.calls().contains(&"load:tenant:b:false".into()));
-	} else {
-		assert!(!repo.calls().iter().any(|call| call.starts_with("decide:")));
-	}
+	assert!(!repo.calls().contains(&"load:tenant:b:false".into()));
 	for policy in policies {
 		assert_eq!(
 			(
@@ -587,8 +575,7 @@ async fn listing_keeps_order_and_shared_authority_while_filtering_subjects(
 #[rstest]
 #[tokio::test]
 async fn cross_tenant_listing_preserves_discovery_order_but_never_acquires_authority() {
-	let mut repo = Repository::new();
-	repo.subject();
+	let repo = Repository::new();
 	assert!(matches!(list(&repo, "other").await, Err(Error::Forbidden)));
 	assert_eq!(repo.calls(), vec!["ids:other"]);
 }
@@ -731,4 +718,20 @@ async fn approved_private_source_cannot_escape_through_a_generation_template(
 	assert!(state.persisted.is_empty());
 	assert!(state.history.is_empty());
 	assert!(!state.calls.iter().any(|call| call.starts_with("cas:")));
+}
+
+#[rstest]
+#[tokio::test]
+async fn a_deployment_administrator_lists_and_sets_no_generation_policy(
+	spec: Spec,
+	validation: DefinitionValidation,
+) {
+	let mut repo = Repository::new();
+	repo.administrator();
+	assert!(matches!(list(&repo, "tenant").await, Err(Error::Forbidden)));
+	assert!(matches!(
+		set(&repo, "tenant", "policy", 0, &spec, &validation).await,
+		Err(Error::Forbidden)
+	));
+	assert!(!repo.calls().iter().any(|call| call.starts_with("begin:")));
 }

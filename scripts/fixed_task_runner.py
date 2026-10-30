@@ -11,7 +11,7 @@ import time
 import uuid
 
 import tool_call_approvals
-from fixed_task_evaluation import (DEFAULT_TOOLS, SKILL_ASSET_READ, SKILL_TOOLS, canonical_sha256, task_description,
+from fixed_task_evaluation import (COMPACTION_DEFAULT, DEFAULT_TOOLS, SKILL_ASSET_READ, SKILL_TOOLS, canonical_sha256, task_description,
                                    task_tools, execution_schedule)
 
 NO_HUMAN = "No human is available during this evaluation; continue without further input."
@@ -122,24 +122,44 @@ class Experiment:
     def ref(self, identifier):
         return {"registry_deployment": self.node, "id": identifier, "version": "1.0.0"}
 
-    def authorize(self, agent_ids):
+    def authorize(self, agent_ids, issue=None):
         """Create the Tenant policy on a fresh disposable Node (deterministic tier only).
 
         The allow-all policy is acceptable only because the Node, its database
         and its Tenant exist solely for this invocation. The live tier never
         calls this and uses the evaluator's existing Tenant policy.
+
+        A Deployment Administrator holds no Tenant authority (#484), so a real
+        Node needs `issue(tenant, subject)`, which mints the first Subject
+        Credential from the host (`manage issue-subject-credential`). The Node's
+        address is then read with that credential and the Agent subjects join
+        the policy in a second replacement. Without `issue` the administrator
+        route is used, which only a double that does not enforce (#484) accepts.
         """
         # Aidash assigns both Tenant and Node names.
         self.tenant = self.api.post("/api/tenants", {"label": self.tenant}, accept=(201,))["name"]
-        self.default_node()
+
+        def replace(subjects, revision):
+            bundle = {"tenant": self.tenant, "subjects": subjects,
+                      "policies": [{"id": "evaluation-work", "effect": "allow", "subjects": {"any": True},
+                                    "actions": ["*"], "resources": {"kinds": ["*"]}}]}
+            self.api.post(f"/api/authorization/{self.tenant}", {"expected_revision": revision, "bundle": bundle})
+
+        if issue is None:
+            self.default_node()
+            subjects = {self.subject: {"kind": "user"}}
+            for agent in agent_ids:
+                subjects[f"{self.node_address}/agents/{agent}@1.0.0"] = {"kind": "agent"}
+            replace(subjects, 1)
+            self.token = self.api.post(f"/api/authorization/{self.tenant}/credentials", {"subject": self.subject})["token"]
+            return
         subjects = {self.subject: {"kind": "user"}}
+        replace(subjects, 1)
+        self.token = issue(self.tenant, self.subject)["token"]
+        self.default_node()
         for agent in agent_ids:
             subjects[f"{self.node_address}/agents/{agent}@1.0.0"] = {"kind": "agent"}
-        bundle = {"tenant": self.tenant, "subjects": subjects,
-                  "policies": [{"id": "evaluation-work", "effect": "allow", "subjects": {"any": True},
-                                "actions": ["*"], "resources": {"kinds": ["*"]}}]}
-        self.api.post(f"/api/authorization/{self.tenant}", {"expected_revision": 1, "bundle": bundle})
-        self.token = self.api.post(f"/api/authorization/{self.tenant}/credentials", {"subject": self.subject})["token"]
+        replace(subjects, self.api.get(f"/api/authorization/{self.tenant}")["revision"])
 
     def default_node(self):
         """Resolve the Tenant's actual Node once, including for a live experiment."""
@@ -213,7 +233,19 @@ def minimal_defaults(config):
     defaults += [SKILL_ASSET_READ] if deferred else []
     support = (SKILL_ASSET_READ,) if deferred else SKILL_TOOLS
     skills = any(binding["kind"] == "skill" for binding in config["bindings"])
-    return [name for name in defaults if not (skills and name in support)]
+    removed = [name for name in defaults if not (skills and name in support)]
+    return with_compaction_removed(config, removed)
+
+
+def with_compaction_removed(config, removed):
+    """`removed` plus the default compaction binding, unless the Agent binds an explicit Decider.
+
+    Every ordinary Agent is bound to the built-in compaction Decider by default. The evaluator
+    never approves it, so keeping it would pause the Run with `decider_unapproved`; without a
+    Decider an overflow pauses with `context_unreducible` instead.
+    """
+    explicit = any(binding["kind"] == "decider" for binding in config["bindings"])
+    return list(removed) if explicit or COMPACTION_DEFAULT in removed else [*removed, COMPACTION_DEFAULT]
 
 
 def agent_id(prefix, planned):
@@ -284,7 +316,7 @@ def approves(task, card, approve_fixture_tools, prefix):
 
 def blank_observation():
     return {"run_id": None, "workspace": None, "phase": None, "error": None, "human_answers": [], "tool_calls": [],
-            "final_answer": None, "steps": None, "compactions": None, "requests": None,
+            "final_answer": None, "steps": None, "compactions": None, "requests": None, "context_reason": None,
             "usage_records": None, "interrupted": False, "infrastructure_error": None, "cancellation_failed": False,
             "wall_ms": 0.0}
 
@@ -424,15 +456,20 @@ def run_task(api, experiment, planned, repeat, agent_ref, fixture=None, usage_re
                 if clock() > deadline:
                     raise DeadlineExceeded(f"Run {run_id} passed its {timeout}s time limit")
                 reason = run.get("state_error") or run.get("error") or ""
-                if reason.startswith("Mandatory context cannot fit the model window;"):
-                    # The server requires changed pinned input, rather than
-                    # another provider retry. The fixed evaluator cannot
-                    # rewrite it. Stop the Run and preserve this observed
-                    # local cause instead of reporting a later timeout.
+                context_reason = (run.get("recovery") or {}).get("context_reason")
+                if context_reason:
+                    # The Run is paused because its context cannot be reduced (any typed reason, such as
+                    # `context_unreducible` or `decider_unapproved`). Resuming needs changed input or an approval
+                    # the fixed evaluator cannot give, so stop the Run and keep the typed cause instead of
+                    # reporting a later timeout.
                     stopped = stop_run(api, token, task_uuid, run_id, clock, sleep)
                     if stopped is None:
                         raise RuntimeError("the context-blocked Run could not be confirmed cancelled")
-                    run = dict(stopped, error=reason) if stopped["phase"] == "CANCELLED" else stopped
+                    if stopped["phase"] == "CANCELLED":
+                        observation["context_reason"] = context_reason
+                        run = dict(stopped, error=reason or f"Run paused by context reason {context_reason}")
+                    else:
+                        run = stopped
                     break
                 if run["phase"] == "WAITING":
                     for request in bounded.get("/api/state", token)["human_requests"]:
@@ -556,8 +593,6 @@ def register_variants(experiment, corpus, planned_runs, model_refs, fixture_url,
         config = agent_config(corpus, task, model_ref, bindings, planned["agent_fields"])
         config["bindings"] += [{"kind": "skill", "target": experiment.ref(ref["id"]), "narrow": {}}
                                for ref in skills[task["id"]]]
-        if remove_all_defaults:
-            config["remove_default"] = minimal_defaults(config)
         auxiliary = planned.get("auxiliary")
         if auxiliary and auxiliary.get("decider"):
             reference = auxiliary["decider"]["reference"]
@@ -565,6 +600,8 @@ def register_variants(experiment, corpus, planned_runs, model_refs, fixture_url,
             config["bindings"].append({"kind": "decider", "target": {
                 "registry_deployment": experiment.node, "id": identifier, "version": version},
                 "narrow": {"decision": {"max_calls_per_run": auxiliary["decider"]["max_calls_per_run"]}}})
+        config["remove_default"] = minimal_defaults(config) if remove_all_defaults else \
+            with_compaction_removed(config, config["remove_default"])
         if task.get("requires_summary") and auxiliary and auxiliary.get("summary"):
             identifier, _, version = auxiliary["summary"]["reference"].partition("@")
             config.setdefault("context_policy", {"version": "context-recovery/1"})["summary"] = {
@@ -809,12 +846,12 @@ def live_runs(api, experiment, corpus, planned_runs, repeats, ledger, models, pr
     return skipped
 
 
-def binding_guard(tenant, provider, expected):
+def binding_guard(tenant, provider, expected, token=None):
     """A `binding_check` for live_runs: the binding must still name `expected` credential id and revision."""
     from fixed_task_evaluation import GuardRefusal
 
     def check(api):
-        current = api.get(f"/api/tenants/{tenant}/provider-credential-bindings/{provider}")
+        current = api.get(f"/api/tenants/{tenant}/provider-credential-bindings/{provider}", token)
         observed = (current.get("provider_credential_id"), current.get("revision")) if isinstance(current, dict) \
             else None
         if observed != expected:

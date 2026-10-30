@@ -51,6 +51,9 @@ pub fn management_commands() -> reinhardt::commands::CommandRegistry {
 	registry.register_capability(Box::new(
 		crate::apps::identity::services::demo_data::Command,
 	));
+	registry.register_capability(Box::new(
+		crate::apps::identity::services::subject_credential_command::Command,
+	));
 	registry
 }
 
@@ -844,6 +847,7 @@ pub(crate) fn marketplace_deployment_administrator_scope<'a>(
 		staging: marketplace_staging_scope(store, tx, "deployment-administrator-adoption"),
 		principal,
 		approving: None,
+		node: None,
 	}
 }
 
@@ -859,6 +863,24 @@ pub(crate) fn marketplace_tenant_activation_scope<'a>(
 		staging: marketplace_staging_scope(store, tx, "tenant-activation"),
 		principal,
 		approving: Some(tenant),
+		node: None,
+	}
+}
+
+/// The same with the Node whose Catalog Approvals and activation the caller
+/// already selected.
+pub(crate) fn marketplace_tenant_activation_scope_at<'a>(
+	store: &'a Store,
+	tx: &'a mut crate::database::native::Transaction,
+	principal: aidash_domain::identity::Principal,
+	tenant: String,
+	node: aidash_domain::nodes::NodeName,
+) -> crate::apps::marketplace::repositories::operations::NativeDeploymentAdministrator<'a> {
+	crate::apps::marketplace::repositories::operations::NativeDeploymentAdministrator {
+		staging: marketplace_staging_scope(store, tx, "tenant-activation"),
+		principal,
+		approving: Some(tenant),
+		node: Some(node),
 	}
 }
 

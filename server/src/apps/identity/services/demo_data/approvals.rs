@@ -69,6 +69,7 @@ pub(super) async fn approve(
 				enabled: true,
 				expected_revision: 0,
 				groups,
+				restriction: None,
 			});
 		}
 		if pending.is_empty() {
@@ -112,9 +113,17 @@ impl CatalogMutation for DemoCatalog<'_> {
 		reference: &EntityRef,
 		expected_revision: i64,
 		enabled: bool,
+		restriction: aidash_domain::identity::catalog::RestrictionChange,
 	) -> aidash_application::Result<Option<Binding>> {
 		NativeMutation(self.tx)
-			.compare_and_set(tenant, node, reference, expected_revision, enabled)
+			.compare_and_set(
+				tenant,
+				node,
+				reference,
+				expected_revision,
+				enabled,
+				restriction,
+			)
 			.await
 	}
 	async fn history(&mut self, binding: &Binding, actor: &str) -> aidash_application::Result<()> {
