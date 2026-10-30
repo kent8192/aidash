@@ -1388,12 +1388,19 @@ async fn visible_thread_attachment_is_selected_for_the_next_model_request(
 	assert_eq!(pdf["no_assigned_agent_can_read"], false, "{pdf}");
 	*selected_thread_requests.attachment.lock().unwrap() =
 		Some(attachment["id"].as_str().unwrap().to_owned());
-	let (status, body) = request(&app, &token, "POST", &format!("/api/workspaces/{workspace}/thread-messages"), json!({"content":"Please inspect", "idempotency_key":Uuid::new_v4(), "attachment_ids":[attachment["id"]]})).await;
+	let (status, body) = request(&app, &token, "POST", &format!("/api/workspaces/{workspace}/thread-messages"), json!({"content":"Please inspect", "idempotency_key":Uuid::new_v4(), "attachment_ids":[attachment["id"], pdf["id"]]})).await;
 	assert_eq!(status, 200, "{body}");
 	assert_eq!(
 		body["attachments"][0]["no_assigned_agent_can_read"], false,
 		"{body}"
 	);
+	// An unrelated corrupt attachment must not prevent copying the selected one.
+	sqlx::query("UPDATE channel_attachments SET sha256 = $1 WHERE id = $2")
+		.bind("0".repeat(64))
+		.bind(Uuid::parse_str(pdf["id"].as_str().unwrap()).unwrap())
+		.execute(f.store.pool.fixture_driver())
+		.await
+		.unwrap();
 	let worker = Harness {
 		federation: f.clone(),
 	};

@@ -203,14 +203,56 @@ impl WorkerAuthority {
 			let digest = hash.finalize();
 			Uuid::from_bytes(digest[..16].try_into().expect("digest has 16 bytes"))
 		}
+		let receipt_key = operation_id(run.id, key, 9);
+		let receipt_digest =
+			crate::registry::digest(&json!(["workspace_message_files", run.id, content, paths]));
 		let outer = self.access.read().await;
 		let mut access = Access::under_lease(&outer).await?;
 		let prepare: Result<_> = async {
 			let workspace = access.workspace(run.workspace_id).await?;
 			access.require(&workspace, "message.create").await?;
-			aidash_application::capabilities::files::snapshot_message_files(
+			// Older successful posts predate the receipt below. The invocation
+			// journal has already checked this key's complete original input.
+			let principal = crate::registry::digest(
+				&json!({"tenant":access.identity.tenant,"subject":access.identity.subject}),
+			);
+			let principal =
+				crate::registry::digest(&json!({"principal":principal,"run_id":run.id}));
+			let message_key = format!(
+				"channel:{}:{}:{}",
+				run.workspace_id,
+				principal,
+				operation_id(run.id, key, 8)
+			);
+			use reinhardt::query::{
+				Alias, Expr, ExprTrait as _, PostgresQueryBuilder, Query,
+				QueryStatementBuilder as _,
+			};
+			let previous: Option<(Uuid, String, String, Option<Uuid>)> =
+				crate::database::native::query_as(
+					&Query::select()
+						.columns(["workspace_id", "sender", "content", "run_id"].map(Alias::new))
+						.from(Alias::new("messages"))
+						.and_where(Expr::col("idempotency_key").eq(Expr::value(message_key)))
+						.to_string(PostgresQueryBuilder),
+				)
+				.columns(&["workspace_id", "sender", "content", "run_id"])
+				.fetch_optional(&mut **access.tx)
+				.await?;
+			if let Some((workspace, sender, original, publisher)) = &previous
+				&& (*workspace != run.workspace_id
+					|| sender != &access.identity.subject
+					|| original != content
+					|| *publisher != Some(run.id))
+			{
+				return Err(Error::Conflict("message idempotency key reused".into()));
+			}
+			aidash_application::capabilities::files::snapshot_message_files_once(
 				&mut crate::bootstrap::file_scope(Some(store), &mut access, Some(run)),
 				&run.metadata(),
+				receipt_key,
+				&receipt_digest,
+				previous.is_some(),
 				paths,
 			)
 			.await
@@ -218,7 +260,8 @@ impl WorkerAuthority {
 		}
 		.await;
 		let snapshots = match prepare {
-			Ok(snapshots) => snapshots,
+			Ok(Some(snapshots)) => snapshots,
+			Ok(None) => return access.finish(Ok(())).await,
 			Err(error) => return access.finish(Err(error)).await,
 		};
 		let mut lease = crate::collaboration::access::Lease::from_access(access);
@@ -256,6 +299,13 @@ impl WorkerAuthority {
 				},
 			)
 			.await?;
+			crate::apps::execution::capabilities::sessions::cache(
+				lease.access_mut(),
+				receipt_key,
+				&receipt_digest,
+				&json!({"sent":true}),
+			)
+			.await?;
 			Ok(())
 		}
 		.await;
@@ -267,7 +317,6 @@ impl WorkerAuthority {
 		run: &Run,
 		input: Value,
 	) -> Result<Value> {
-		use aidash_application::ports::execution::media::MediaAttachments as _;
 		let attachment_id: Uuid = serde_json::from_value(input["id"].clone())
 			.map_err(|_| Error::Invalid("invalid attachment id".into()))?;
 		let key: Uuid = serde_json::from_value(input["idempotency_key"].clone())
@@ -280,20 +329,23 @@ impl WorkerAuthority {
 			.ok_or_else(|| Error::Invalid("missing path".into()))?
 			.to_owned();
 		let outer = self.access.read().await;
-		let mut access = Access::under_lease(&outer).await?;
+		let access = Access::under_lease(&outer).await?;
+		let mut lease = crate::collaboration::access::Lease::from_access(access);
 		let result: Result<Value> = async {
-			let record = access
+			let record = lease
+				.access_mut()
 				.workspace_record(run.workspace_id, "attachment", attachment_id)
 				.await?;
 			let message_id: Uuid = serde_json::from_value(record["message_id"].clone())?;
-			let attachment = crate::bootstrap::scoped_media(&mut access, store)
-				.attachments(run.workspace_id, message_id)
-				.await?
-				.into_iter()
-				.find(|row| row.id == attachment_id)
-				.ok_or_else(|| Error::NotFound("attachment unavailable".into()))?;
+			let (attachment, content) = aidash_application::workspaces::channels::download(
+				&mut crate::bootstrap::channel_scope(store, &mut lease),
+				run.workspace_id,
+				attachment_id,
+			)
+			.await?;
+			let digest = crate::apps::execution::repositories::capability_objects::digest(&content);
 			aidash_application::capabilities::files::copy_thread_attachment(
-				&mut crate::bootstrap::file_scope(Some(store), &mut access, Some(run)),
+				&mut crate::bootstrap::file_scope(Some(store), lease.access_mut(), Some(run)),
 				&run.metadata(),
 				key,
 				revision,
@@ -301,14 +353,14 @@ impl WorkerAuthority {
 				message_id,
 				attachment_id,
 				attachment.media_type,
-				attachment.sha256,
-				&attachment.content,
+				digest,
+				&content,
 			)
 			.await
 			.map_err(Into::into)
 		}
 		.await;
-		access.finish(result).await
+		lease.finish(result).await
 	}
 	/// Resolve existing page and file selections before admitting another
 	/// Research page image, under the same worker authority lease.

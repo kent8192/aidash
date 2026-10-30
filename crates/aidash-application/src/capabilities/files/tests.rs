@@ -480,6 +480,39 @@ async fn message_files_are_snapshots_of_authorized_current_working_area_paths() 
 }
 
 #[tokio::test]
+async fn committed_message_replay_never_reopens_a_changed_or_deleted_file() {
+	let (mut scope, run, file) = invoke_fixture("file_read", json!({}));
+	let key = Uuid::new_v4();
+	let digest = "original request";
+	let paths = vec![file.path];
+	let first = snapshot_message_files_once(&mut scope, &run, key, digest, false, &paths)
+		.await
+		.unwrap()
+		.unwrap();
+	assert_eq!(first[0].1, b"abcdefgh");
+	scope
+		.cache(key, digest, &json!({"sent":true}))
+		.await
+		.unwrap();
+	scope.bytes = b"changed".to_vec();
+	scope.area.as_mut().unwrap().manifest = json!([]);
+	assert!(
+		snapshot_message_files_once(&mut scope, &run, key, digest, false, &paths)
+			.await
+			.unwrap()
+			.is_none()
+	);
+	scope.cache_entry = None;
+	assert!(
+		snapshot_message_files_once(&mut scope, &run, key, digest, true, &paths)
+			.await
+			.unwrap()
+			.is_none()
+	);
+	assert_eq!(scope.opens, 1);
+}
+
+#[tokio::test]
 async fn attachment_copy_publishes_provenance_and_enforces_working_quota() {
 	let (mut scope, run, _) = invoke_fixture("file_read", json!({}));
 	scope.active_run = Some(run.id);

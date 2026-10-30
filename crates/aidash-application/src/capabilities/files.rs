@@ -760,6 +760,22 @@ pub async fn copy_thread_attachment(
 }
 
 /// Resolve a Run's current Working Area paths into verified immutable snapshots.
+/// A committed message receipt is checked before reading mutable files; the
+/// owner must cache the receipt in the same transaction as the message.
+pub async fn snapshot_message_files_once(
+	scope: &mut dyn FileScopePort,
+	run: &RunMetadata,
+	key: Uuid,
+	digest: &str,
+	committed: bool,
+	paths: &[String],
+) -> Result<Option<Vec<(FileEntry, Vec<u8>)>>> {
+	if scope.cached(key, digest).await?.is_some() || committed {
+		return Ok(None);
+	}
+	snapshot_message_files(scope, run, paths).await.map(Some)
+}
+
 pub async fn snapshot_message_files(
 	scope: &mut dyn FileScopePort,
 	run: &RunMetadata,

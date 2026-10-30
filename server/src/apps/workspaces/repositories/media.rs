@@ -322,7 +322,10 @@ pub(crate) async fn read_attachment_object(
 fn attachment_unavailable(error: &crate::Error) -> bool {
 	matches!(
 		error,
-		crate::Error::NotFound(_) | crate::Error::Forbidden | crate::Error::AuthorityRefused(_)
+		crate::Error::NotFound(_)
+			| crate::Error::Forbidden
+			| crate::Error::Unauthorized
+			| crate::Error::AuthorityRefused(_)
 	)
 }
 
@@ -496,6 +499,7 @@ impl aidash_application::ports::execution::media::SelectedMediaScope for Selecte
 				Err(
 					aidash_application::Error::NotFound(_)
 					| aidash_application::Error::Forbidden
+					| aidash_application::Error::Unauthorized
 					| aidash_application::Error::AuthorityRefused(_),
 				) => return Ok(None),
 				Err(aidash_application::Error::MediaRouteUnavailable(reason)) => {
@@ -527,5 +531,22 @@ impl aidash_application::ports::execution::media::SelectedMediaScope for Selecte
 		}
 		.page_image(self.run.id, &reference)
 		.await
+	}
+}
+
+#[cfg(test)]
+mod tests {
+	use super::*;
+
+	#[test]
+	fn missing_or_revoked_attachment_is_unavailable_but_corruption_is_an_error() {
+		assert!(attachment_unavailable(&crate::Error::Unauthorized));
+		assert!(attachment_unavailable(&crate::Error::Forbidden));
+		assert!(attachment_unavailable(&crate::Error::NotFound(
+			"missing".into()
+		)));
+		assert!(!attachment_unavailable(&crate::Error::Conflict(
+			"OBJECT_INTEGRITY".into()
+		)));
 	}
 }
