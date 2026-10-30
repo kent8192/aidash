@@ -186,6 +186,62 @@ pub(crate) struct WorkerAuthority {
 }
 
 impl WorkerAuthority {
+	pub(crate) async fn workspace_search(
+		&self,
+		store: &Store,
+		run: &Run,
+		input: Value,
+	) -> Result<Value> {
+		let image = if input.get("image").is_some_and(|value| !value.is_null()) {
+			let selected: aidash_domain::media::WorkingImageSelection =
+				serde_json::from_value(input["image"].clone())?;
+			Some(aidash_domain::semantic::retrieval::ImageQuery {
+				run_id: run.id,
+				area_id: selected.area_id,
+				generation: selected.generation,
+				file_id: selected.file_id,
+				path: selected.path,
+				expected_digest: selected.expected_digest,
+			})
+		} else {
+			None
+		};
+		let mut access = self.access.write().await;
+		let mut lease = crate::semantic::service::Lease::Inherited(&mut access);
+		lease.durable();
+		lease.workspace(run.workspace_id, "semantic.search").await?;
+		let index = crate::apps::knowledge::models::SemanticIndexe::locked(
+			&mut **lease.tx(),
+			run.workspace_id,
+			false,
+		)
+		.await?
+		.ok_or_else(|| Error::NotFound("semantic index".into()))?;
+		let spec: aidash_domain::semantic::indexing::IndexingSpec =
+			serde_json::from_value(index.spec)?;
+		let search = crate::apps::knowledge::serializers::contracts::Search {
+			query: input["query"].as_str().unwrap_or_default().to_owned(),
+			image,
+			agent: None,
+			metadata: json!({}),
+			limit: input["limit"]
+				.as_u64()
+				.map_or(spec.max_results.min(5), |value| value as usize),
+			max_tokens: input["max_tokens"]
+				.as_u64()
+				.map_or(spec.max_result_tokens, |value| value as usize),
+		};
+		let result = crate::semantic::service::search_in(
+			store,
+			&mut lease,
+			run.workspace_id,
+			search,
+			Some(run.id),
+			None,
+		)
+		.await?;
+		Ok(serde_json::to_value(result)?)
+	}
 	pub(crate) async fn workspace_image(
 		&self,
 		store: &Store,
@@ -233,8 +289,10 @@ impl WorkerAuthority {
 			},
 		)
 		.await?;
+		let mut metadata = result["metadata"].clone();
+		metadata["name"] = json!(file.path.rsplit('/').next().unwrap_or(&file.path));
 		Ok(
-			json!({"status":"completed","metadata":result["metadata"],"digest":result["digest"],"truncated":false}),
+			json!({"status":"completed","metadata":metadata,"digest":result["digest"],"truncated":false}),
 		)
 	}
 	/// Resolve existing page and file selections before admitting another

@@ -290,7 +290,7 @@ impl Environment<'_> {
 					aidash_domain::registry::bindings::sources::NativeContext,
 				>(binding.definition.config.clone())
 				{
-					Ok(native) => native.declaration(&binding.identity),
+					Ok(native) => native.declaration_for_snapshot(&binding.identity, snapshot),
 					Err(_) => serde_json::from_value::<aidash_domain::memory::SourceConfig>(
 						binding.definition.config.clone(),
 					)

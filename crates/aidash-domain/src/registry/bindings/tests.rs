@@ -63,6 +63,36 @@ fn normalization_records_trusted_origins_and_keeps_required_tools() {
 	agent.remove_default.push("workspace_read".into());
 	assert!(agent.normalize("aidash://node-a").is_err());
 }
+
+#[test]
+fn existing_agent_normalization_keeps_its_original_system_bindings() {
+	let config = agent();
+	let old = config
+		.normalize_version("aidash://node-a", None, true)
+		.unwrap();
+	let mut entry: Entry = serde_json::from_value(json!({"id":"agent","version":"1.0.0","kind":"agent","name":{"en":"Agent"},"description":{"en":"Agent"},"config":config})).unwrap();
+	entry.binding_normalization = Some(AgentNormalization {
+		schema_version: BINDING_SCHEMA,
+		registry_deployment: "aidash://node-a".into(),
+		compaction_override: None,
+		bindings: old.clone(),
+	});
+	assert_eq!(entry.normalized_bindings("aidash://node-a").unwrap(), old);
+	entry.version = "1.1.0".into();
+	entry.normalize_agent("aidash://node-a").unwrap();
+	let current = entry.normalized_bindings("aidash://node-a").unwrap();
+	assert!(
+		current
+			.iter()
+			.any(|b| b.binding.target.id == "aidash.workspace_search")
+	);
+	assert!(
+		current
+			.iter()
+			.any(|b| b.binding.target.id == "aidash.workspace_read"
+				&& b.binding.target.version == "1.1.0")
+	);
+}
 #[test]
 fn narrowing_intersects_and_enforces_bounds_without_changing_facts() {
 	let a: Narrowing = serde_json::from_value(json!({"allowed_hosts":["a.example","b.example"],"scope":{"recipient":["a","b"]},"limits":{"maximum_bytes":100}})).unwrap();

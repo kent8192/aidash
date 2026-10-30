@@ -289,6 +289,21 @@ impl Builtin {
 					)
 					.await
 			}
+			"workspace_search" => {
+				let has_text = input.get("query").and_then(Value::as_str).is_some();
+				let has_image = input.get("image").is_some_and(|value| !value.is_null());
+				if has_text == has_image {
+					return Err(Error::Invalid(
+						"provide exactly one text or image query".into(),
+					));
+				}
+				if has_image {
+					let _: aidash_domain::media::WorkingImageSelection =
+						serde_json::from_value(input["image"].clone())
+							.map_err(|error| Error::Invalid(error.to_string()))?;
+				}
+				ctx.operations.workspace_search(input).await
+			}
 			"workspace_wait" => {
 				Ok(json!({"wait_seconds":input["seconds"].as_u64().unwrap_or(2).clamp(1,60)}))
 			}
@@ -396,6 +411,13 @@ pub fn builtins() -> BTreeMap<String, Builtin> {
 				.expect("declared builtin"),
 			description: "Read an accessible workspace record, or open a matched File using its exact Area, generation, path and digest. Choose model_input to include an image in the next inference when the model supports images. Text records return bounded chunks with next_offset.",
 			schema: json!({"type":"object","required":["kind","id"],"properties":{"kind":{"enum":["workspace","task","artifact","message","event","file"]},"id":string,"offset":{"type":"integer","minimum":0},"max_chars":{"type":"integer","minimum":0,"maximum":16000},"area_id":{"type":"string"},"generation":{"type":"integer","minimum":1},"path":{"type":"string"},"expected_digest":{"type":"string"},"representation":{"enum":["metadata","model_input"]}},"additionalProperties":false}),
+		},
+		Builtin {
+			name: "workspace_search",
+			contract: aidash_domain::tool::builtin_contract("workspace_search")
+				.expect("declared builtin"),
+			description: "Search the Workspace index by text or by an image in your own Working Area. Image matches are File pointers; open a match with workspace_read.",
+			schema: json!({"type":"object","properties":{"query":{"type":"string"},"image":{"type":"object","required":["area_id","generation","file_id","path","expected_digest"],"properties":{"area_id":{"type":"string"},"generation":{"type":"integer","minimum":1},"file_id":{"type":"string"},"path":{"type":"string"},"expected_digest":{"type":"string"}},"additionalProperties":false},"limit":{"type":"integer","minimum":1,"maximum":20},"max_tokens":{"type":"integer","minimum":1,"maximum":32768}},"additionalProperties":false}),
 		},
 		Builtin {
 			name: "workspace_wait",

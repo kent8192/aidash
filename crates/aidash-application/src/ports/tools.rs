@@ -157,6 +157,10 @@ pub trait ToolOperations: Send + Sync {
 	) -> Result<Value> {
 		Err(crate::Error::Forbidden)
 	}
+	/// Search the Run's Workspace under its current authority.
+	async fn workspace_search(&self, _input: Value) -> Result<Value> {
+		Err(crate::Error::Forbidden)
+	}
 	async fn memory_mutate(
 		&self,
 		key: &str,

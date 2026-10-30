@@ -60,6 +60,43 @@ impl OnUnavailable {
 }
 
 impl NativeContext {
+	/// Bind implicit native tool references to the exact workspace reader in
+	/// this Run's immutable snapshot. Explicit source policies remain exact.
+	pub fn declaration_for_snapshot(
+		&self,
+		identity: &super::QualifiedRef,
+		snapshot: &super::BindingSnapshot,
+	) -> crate::context::source::SourceDeclaration {
+		let mut declaration = self.declaration(identity);
+		if self.context_source.is_some() {
+			return declaration;
+		}
+		let old = super::QualifiedRef::builtin(&identity.registry_deployment, "workspace_read");
+		let current = super::QualifiedRef {
+			version: "1.1.0".into(),
+			..old.clone()
+		};
+		let has = |target: &super::QualifiedRef| {
+			snapshot
+				.bindings
+				.iter()
+				.any(|binding| &binding.identity == target && binding.excluded_reason.is_none())
+		};
+		if !has(&old) && has(&current) {
+			for reference in declaration
+				.tools
+				.read
+				.iter_mut()
+				.chain(declaration.tools.write.iter_mut())
+				.chain(declaration.tools.detail.iter_mut())
+			{
+				if *reference == old {
+					*reference = current.clone();
+				}
+			}
+		}
+		declaration
+	}
 	pub fn validate(&self, kind: &str) -> Result<()> {
 		if let Some(declaration) = &self.context_source {
 			declaration.validate()?;

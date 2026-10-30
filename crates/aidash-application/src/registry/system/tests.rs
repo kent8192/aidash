@@ -57,7 +57,7 @@ fn seeding_declares_exposure_builtins_beside_the_unchanged_legacy_set() {
 	let entries = entries(&validation, NODE).unwrap();
 	assert_eq!(
 		entries.len(),
-		REQUIRED_TOOLS.len() + DEFAULT_TOOLS.len() + EXPOSURE_TOOLS.len() + 2
+		REQUIRED_TOOLS.len() + DEFAULT_TOOLS.len() + EXPOSURE_TOOLS.len() + 3
 	);
 	let specifications = validation.node_specifications();
 	for entry in &entries {
@@ -70,8 +70,10 @@ fn seeding_declares_exposure_builtins_beside_the_unchanged_legacy_set() {
 			version: entry.version.clone(),
 		}));
 		let specification = &specifications[operation];
-		assert_eq!(entry.description["en"], specification.description);
-		assert_eq!(entry.schema, specification.parameters);
+		if !(operation == "workspace_read" && entry.version == "1.0.0") {
+			assert_eq!(entry.description["en"], specification.description);
+			assert_eq!(entry.schema, specification.parameters);
+		}
 		if EXPOSURE_TOOLS.contains(&operation) || operation == SKILL_ASSET_READ {
 			assert_eq!(
 				entry.description["en"],
@@ -227,6 +229,37 @@ async fn seeding_adds_the_approval_decider_to_every_registry_and_repeats_safely(
 		seed(&mut writer, &validation, NODE).await,
 		Err(crate::Error::Conflict(_))
 	));
+}
+
+#[tokio::test]
+async fn seeding_keeps_the_original_workspace_read_and_adds_a_new_version() {
+	let validation = DefinitionValidation::new(Arc::new(Contracts));
+	let mut writer = Writer::default();
+	let entries = entries(&validation, NODE).unwrap();
+	let old = entries
+		.iter()
+		.find(|entry| entry.id == "aidash.workspace_read" && entry.version == "1.0.0")
+		.unwrap();
+	assert_eq!(
+		old.schema["properties"]["kind"]["enum"],
+		json!(["workspace", "task", "artifact", "message", "event"])
+	);
+	assert!(!old.description["en"].contains("matched File"));
+	writer
+		.entries
+		.insert((old.id.clone(), old.version.clone()), old.clone());
+	seed(&mut writer, &validation, NODE).await.unwrap();
+	assert_eq!(
+		writer.definition(&old.id, &old.version).await.unwrap(),
+		*old
+	);
+	let current = writer.definition(&old.id, "1.1.0").await.unwrap();
+	assert!(
+		current.schema["properties"]["kind"]["enum"]
+			.as_array()
+			.unwrap()
+			.contains(&json!("file"))
+	);
 }
 
 struct ResearchContracts;

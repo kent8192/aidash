@@ -111,6 +111,21 @@ impl ToolOperations for Operations {
 			.await
 			.map_err(Into::into)
 	}
+	async fn workspace_search(&self, input: Value) -> Result<Value> {
+		let ctx = &self.0;
+		if !ctx.run.is_local(ctx.store.deployment.as_str()) {
+			return Err(aidash_application::Error::Forbidden);
+		}
+		let authority = ctx
+			.home
+			.authority
+			.as_ref()
+			.ok_or(aidash_application::Error::Forbidden)?;
+		authority
+			.workspace_search(&ctx.store, &ctx.run, input)
+			.await
+			.map_err(Into::into)
+	}
 
 	async fn memory_mutate(
 		&self,

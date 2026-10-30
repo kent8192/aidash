@@ -287,7 +287,8 @@ impl ToolContract {
 		if self.digest()? == digest {
 			return Ok(Some(self));
 		}
-		if matches!(&self.identity, ToolIdentity::Builtin(name) if name == "builtin:workspace_read")
+		if self.behavior.fitting == Some(ResultFitting::WorkspaceRecord)
+			&& self.behavior.yields_model_media
 		{
 			let mut previous = self.clone();
 			previous.behavior.yields_model_media = false;
@@ -486,9 +487,9 @@ pub fn builtin_contract(name: &str) -> Option<ToolContract> {
 		"agent_discover" => {
 			behavior.effect = ToolEffect::ReadOnly;
 		}
-		"workspace_read" | "workspace_observe" | "workspace_wait" => {
+		"workspace_read" | "workspace_observe" | "workspace_wait" | "workspace_search" => {
 			auth.flag = Some(AgentFlag::WorkspaceRetrieval);
-			contract.remote_exposure = true;
+			contract.remote_exposure = name != "workspace_search";
 			behavior.effect = ToolEffect::ReadOnly;
 			match name {
 				"workspace_read" => {
@@ -501,7 +502,8 @@ pub fn builtin_contract(name: &str) -> Option<ToolContract> {
 					behavior.fitting = Some(ResultFitting::Observation);
 					behavior.media_pending = true;
 				}
-				_ => behavior.continuation = Continuation::Wait,
+				"workspace_wait" => behavior.continuation = Continuation::Wait,
+				_ => {}
 			}
 		}
 		"skill_read" => {
@@ -842,6 +844,25 @@ mod tests {
 			crate::registry::rules::digest(&serde_json::to_value(&contract).unwrap()),
 			PINNED_WORKSPACE_READ_DIGEST
 		);
+	}
+	#[test]
+	fn admitted_workspace_reader_descriptor_keeps_its_original_contract() {
+		let identity =
+			crate::registry::bindings::QualifiedRef::builtin("aidash://node", "workspace_read");
+		let descriptor =
+			crate::tool::providers::core_descriptor("aidash://node", "workspace_read").unwrap();
+		let old_contract = descriptor.declared_contract(identity.clone()).unwrap();
+		assert!(!old_contract.behavior.yields_model_media);
+		let current = descriptor
+			.declared_contract(crate::registry::bindings::QualifiedRef {
+				version: "1.1.0".into(),
+				..identity
+			})
+			.unwrap();
+		assert!(current.behavior.yields_model_media);
+		let mut old = current.clone();
+		old.behavior.yields_model_media = false;
+		assert_eq!(current.pinned(&old.digest().unwrap()).unwrap(), Some(old));
 	}
 	#[test]
 	fn workspace_image_selection_requires_the_exact_returned_file_version() {
