@@ -31,7 +31,9 @@ const ACTIVE_HOLD: &str = "NOT EXISTS (SELECT 1 FROM core_retention_files f \
 	AND (h.expires_at IS NULL OR h.expires_at > CURRENT_TIMESTAMP))";
 /// A Thread Attachment object becomes reclaimable after its row is deleted.
 const RECLAIMABLE_WORKING: &str = "(kind = 'superseded_working' OR (kind = 'thread_attachment' AND NOT EXISTS \
-	(SELECT 1 FROM channel_attachments a WHERE a.tenant = core_objects.tenant AND a.object_id = core_objects.id)))";
+	(SELECT 1 FROM channel_attachments a WHERE a.tenant = core_objects.tenant AND a.object_id = core_objects.id)) OR \
+	(kind = 'thread_attachment_wav' AND NOT EXISTS (SELECT 1 FROM channel_attachments a \
+	WHERE a.tenant = core_objects.tenant AND a.wav_object_id = core_objects.id)))";
 pub(crate) struct Repository<'a> {
 	store: &'a Store,
 	orphan_cursor: tokio::sync::Mutex<Option<tokio::fs::ReadDir>>,

@@ -12,6 +12,7 @@ fn id(value: u128) -> Uuid {
 }
 fn attachment(filename: &str, media_type: &str, content: Vec<u8>) -> MediaAttachment {
 	MediaAttachment {
+		id: id(99),
 		filename: filename.into(),
 		media_type: media_type.into(),
 		sha256: format!("{:x}", Sha256::digest(&content)),
@@ -68,6 +69,7 @@ struct Scope {
 	calls: Vec<(&'static str, Uuid)>,
 	denied: Option<Uuid>,
 	fail: Option<Uuid>,
+	wav_size: Option<usize>,
 }
 #[fixture]
 fn scope() -> Scope {
@@ -91,6 +93,18 @@ impl MediaAttachments for Scope {
 			))));
 		}
 		Ok(self.rows.get(&message).cloned().unwrap_or_default())
+	}
+	async fn wav_rendition(
+		&mut self,
+		_workspace: Uuid,
+		attachment: &MediaAttachment,
+	) -> Result<Vec<u8>> {
+		self.calls.push(("wav", attachment.id));
+		let mut bytes = b"RIFF\x04\0\0\0WAVE".to_vec();
+		if let Some(size) = self.wav_size {
+			bytes.resize(size, 0);
+		}
+		Ok(bytes)
 	}
 }
 #[async_trait]
@@ -892,4 +906,84 @@ async fn escaped_attachment_labels_keep_the_selected_batch_within_dispatch_headr
 		required <= headroom,
 		"selected batch requires {required}, only {headroom} available"
 	);
+}
+
+#[rstest]
+#[tokio::test]
+async fn chooses_a_common_route_and_only_renders_when_needed(
+	mut scope: Scope,
+	mut model: ModelConfig,
+) {
+	model.media_routes = vec![routes(vec!["image/png".into(), "wav".into()])];
+	let batch = load(
+		&mut scope,
+		id(10),
+		&[(7, id(1), 128000)],
+		&model,
+		Default::default(),
+	)
+	.await
+	.unwrap();
+	assert_eq!(parts(&batch.parts)[3]["audio"], "wav");
+	assert_eq!(
+		scope
+			.calls
+			.iter()
+			.filter(|(action, _)| *action == "wav")
+			.count(),
+		1
+	);
+	model.media_routes = vec![routes(vec!["image/png".into(), "wav".into(), "mp3".into()])];
+	scope.calls.clear();
+	let batch = load(
+		&mut scope,
+		id(10),
+		&[(7, id(1), 128000)],
+		&model,
+		Default::default(),
+	)
+	.await
+	.unwrap();
+	assert_eq!(parts(&batch.parts)[3]["audio"], "mp3");
+	assert!(!scope.calls.iter().any(|(action, _)| *action == "wav"));
+}
+
+#[rstest]
+#[tokio::test]
+async fn does_not_combine_individually_supported_formats_from_different_routes(
+	mut scope: Scope,
+	mut model: ModelConfig,
+) {
+	model.media_routes = vec![routes(vec!["image/png".into()]), routes(vec!["wav".into()])];
+	assert!(matches!(
+		load(
+			&mut scope,
+			id(10),
+			&[(7, id(1), 128000)],
+			&model,
+			Default::default()
+		)
+		.await,
+		Err(Error::MediaRouteUnavailable(_))
+	));
+	assert!(!scope.calls.iter().any(|(action, _)| *action == "wav"));
+}
+
+#[rstest]
+#[tokio::test]
+async fn rendition_bytes_count_toward_the_inference_limit(
+	mut scope: Scope,
+	mut model: ModelConfig,
+) {
+	model.media_routes = vec![routes(vec!["image/png".into(), "wav".into()])];
+	scope.wav_size = Some(8 * 1024 * 1024 + 1);
+	let result = load(
+		&mut scope,
+		id(10),
+		&[(7, id(1), 128000)],
+		&model,
+		Default::default(),
+	)
+	.await;
+	assert!(matches!(result, Err(Error::Invalid(message)) if message.contains("byte limit")));
 }

@@ -485,49 +485,16 @@ impl HarnessManagement {
 			let message = record
 				.message_id
 				.ok_or_else(|| Error::Conflict("media input has no local message".into()))?;
-			let attachments =
-				crate::apps::workspaces::models::ChannelAttachment::attach_run_media_in(
-					lease.tx(),
-					run.workspace_id,
-					message,
-					&principal,
-					&input.attachment_ids,
-				)
-				.await?;
+			crate::apps::workspaces::models::ChannelAttachment::attach_run_media_in(
+				lease.tx(),
+				run.workspace_id,
+				message,
+				&principal,
+				&input.attachment_ids,
+			)
+			.await?;
 			if existing {
 				return Ok(());
-			}
-			let mut parts = Vec::with_capacity(attachments.len() * 2);
-			for attachment in &attachments {
-				parts.push(crate::provider::ContentPart::Text(format!(
-					"Run message {} attachment: {}",
-					record.seq, attachment.filename
-				)));
-				let bytes = if let Some(object_id) = attachment.object_id {
-					crate::apps::workspaces::repositories::media::read_attachment_object(
-						&f.store,
-						lease.access_mut(),
-						object_id,
-						&attachment.sha256,
-						attachment.size_bytes,
-					)
-					.await?
-				} else {
-					attachment
-						.content
-						.clone()
-						.ok_or_else(|| Error::NotFound("attachment unavailable".into()))?
-				};
-				if i64::try_from(bytes.len()).ok() != Some(attachment.size_bytes)
-					|| crate::apps::execution::repositories::capability_objects::digest(&bytes)
-						!= attachment.sha256
-				{
-					return Err(Error::Conflict("OBJECT_INTEGRITY".into()));
-				}
-				parts.push(crate::provider::ContentPart::from_media(
-					&attachment.media_type,
-					bytes,
-				)?);
 			}
 			let tenant = f.store.run_tenant(run.id).await?;
 			let agent = f
@@ -540,12 +507,23 @@ impl HarnessManagement {
 				.get_for_run(&tenant, &run, &agent.model.id, &agent.model.version)
 				.await?;
 			let model: crate::registry::ModelConfig = serde_json::from_value(model.config)?;
-			model.require_media_types(
-				attachments
-					.iter()
-					.map(|attachment| attachment.media_type.as_str()),
-			)?;
 			let headroom = f.run_request_headroom(&run).await?;
+			let batch = aidash_application::execution::media::load(
+				&mut crate::bootstrap::scoped_media(lease.access_mut(), &f.store),
+				run.workspace_id,
+				&[(record.seq, message, headroom)],
+				&model,
+				agent.projection_version.unwrap_or_default(),
+			)
+			.await
+			.map_err(|error| match error {
+				aidash_application::Error::MediaRouteUnavailable(_) => Error::Invalid(format!(
+					"recipient model {} has no current media route for every selected format",
+					model.model_id
+				)),
+				other => other.into(),
+			})?;
+			let parts = batch.parts;
 			let request = aidash_application::execution::media::admission_request(
 				&model,
 				agent.projection_version.unwrap_or_default(),

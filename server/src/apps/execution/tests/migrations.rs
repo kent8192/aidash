@@ -115,7 +115,7 @@ async fn native_history_uses_typed_schema_operations_and_lf_sql_assets() {
 			.iter()
 			.filter(|migration| migration.state_only)
 			.count(),
-		70
+		71
 	);
 	let tables = migrations
 		.iter()
@@ -455,14 +455,14 @@ async fn nonempty_generation_reads_sql_assets_and_replays_only_logical_state(
 	let generated = after
 		.iter()
 		.find(|migration| {
-			migration.app_label == "workspaces" && migration.name == "0017_content_probe"
+			migration.app_label == "workspaces" && migration.name == "0019_content_probe"
 		})
 		.unwrap();
 	assert_eq!(
 		generated.dependencies,
 		vec![(
 			"workspaces".to_owned(),
-			"0016_attachment_content_state".to_owned()
+			"0018_attachment_wav_rendition_state".to_owned()
 		)]
 	);
 	assert_eq!(generated.operations.len(), 1);
@@ -708,7 +708,7 @@ async fn preserved_baseline_does_not_generate_table_recreation(
 			.iter()
 			.filter(|migration| migration.state_only)
 			.count(),
-		70
+		71
 	);
 }
 

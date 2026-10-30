@@ -4,6 +4,7 @@ use async_trait::async_trait;
 use uuid::Uuid;
 #[derive(Clone)]
 pub struct MediaAttachment {
+	pub id: Uuid,
 	pub filename: String,
 	pub media_type: String,
 	pub sha256: String,
@@ -14,6 +15,12 @@ pub struct MediaAttachment {
 pub trait MediaAttachments: Send {
 	async fn attachments(&mut self, workspace: Uuid, message: Uuid)
 	-> Result<Vec<MediaAttachment>>;
+	/// Return a cached or newly generated immutable WAV representation.
+	async fn wav_rendition(
+		&mut self,
+		workspace: Uuid,
+		attachment: &MediaAttachment,
+	) -> Result<Vec<u8>>;
 }
 #[async_trait]
 pub trait AuthorizedMediaScope: MediaAttachments {

@@ -689,6 +689,12 @@ async fn human_media_only_run_input_reaches_the_first_model_request_in_order(
 			.unwrap()
 			.contains(&json!("audio/wav"))
 	);
+	assert!(
+		details["media_input_routes"][0]
+			.as_array()
+			.unwrap()
+			.contains(&json!("audio/mpeg"))
+	);
 	let (status, rejected) = upload_response(
 		&app,
 		&token,
@@ -1057,6 +1063,95 @@ async fn human_media_only_run_input_reaches_the_first_model_request_in_order(
 		&app, &f, &member,
 	))
 	.await;
+	// A route which only accepts WAV gets one immutable cached rendition of an MP3.
+	let (status, created) = request(&app, &member, "POST", "/api/conversations", json!({"title":"Audio rendition", "goal":"Inspect audio", "target":{"id":"research","version":"1.0.1"},"target_kind":"agent"})).await;
+	assert_eq!(status, 200, "{created}");
+	let workspace = created["workspace"]["id"].as_str().unwrap();
+	let run = f
+		.store
+		.runs(&TEST_FIXTURE)
+		.await
+		.unwrap()
+		.into_iter()
+		.find(|run| run.workspace_id.to_string() == workspace)
+		.unwrap();
+	let source = include_bytes!("support/media/short.mp3");
+	let attachment = upload(&app, &member, workspace, "sample.mp3", "audio/mpeg", source).await;
+	let attachment_id: Uuid = attachment["id"].as_str().unwrap().parse().unwrap();
+	let key = Uuid::new_v4();
+	let path = format!("/api/runs/{}/message", run.id);
+	let input = json!({"content":"", "idempotency_key":key, "attachment_ids":[attachment_id]});
+	let (status, body) = request(&app, &member, "POST", &path, input.clone()).await;
+	assert_eq!(status, 200, "{body}");
+	let cached: (Uuid, Uuid, String, i64) = sqlx::query_as("SELECT object_id, wav_object_id, wav_sha256, wav_size_bytes FROM channel_attachments WHERE id = $1")
+		.bind(attachment_id).fetch_one(f.store.pool.fixture_driver()).await.unwrap();
+	assert_ne!(cached.0, cached.1);
+	assert!(cached.3 > 44);
+	let storage = &f.store.capabilities.0.storage;
+	assert_eq!(
+		tokio::fs::read(storage.join(cached.0.simple().to_string()))
+			.await
+			.unwrap(),
+		source
+	);
+	let wav = tokio::fs::read(storage.join(cached.1.simple().to_string()))
+		.await
+		.unwrap();
+	assert_eq!(&wav[..4], b"RIFF");
+	assert_eq!(&wav[8..12], b"WAVE");
+	assert_eq!(wav.len() as i64, cached.3);
+	assert_eq!(request(&app, &member, "POST", &path, input).await.0, 200);
+	while received.try_recv().is_ok() {}
+	let mut saw_rendition = false;
+	for _ in 0..8 {
+		assert!(worker.worker_once().await.unwrap());
+		if let Ok(body) = received.try_recv() {
+			let parts = body["messages"][1]["content"].as_array().unwrap();
+			assert!(
+				parts
+					.iter()
+					.any(|part| part["input_audio"]["format"] == "wav"),
+				"{parts:?}"
+			);
+			saw_rendition = true;
+			break;
+		}
+	}
+	assert!(saw_rendition, "model did not receive the WAV rendition");
+	let again: (Uuid, Uuid, String, i64) = sqlx::query_as("SELECT object_id, wav_object_id, wav_sha256, wav_size_bytes FROM channel_attachments WHERE id = $1")
+		.bind(attachment_id).fetch_one(f.store.pool.fixture_driver()).await.unwrap();
+	assert_eq!(again, cached);
+	// Removing the attachment releases both immutable objects through reclamation.
+	sqlx::query("DELETE FROM channel_attachments WHERE id = $1")
+		.bind(attachment_id)
+		.execute(f.store.pool.fixture_driver())
+		.await
+		.unwrap();
+	let (stop, rx) = tokio::sync::watch::channel(false);
+	let reclaim = tokio::spawn(aidash_server::capabilities::reclamation::run(
+		f.store.clone(),
+		rx,
+	));
+	let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(30);
+	loop {
+		let (count,): (i64,) =
+			sqlx::query_as("SELECT count(*) FROM core_objects WHERE id = $1 OR id = $2")
+				.bind(cached.0)
+				.bind(cached.1)
+				.fetch_one(f.store.pool.fixture_driver())
+				.await
+				.unwrap();
+		if count == 0 {
+			break;
+		}
+		assert!(
+			tokio::time::Instant::now() < deadline,
+			"attachment objects were not reclaimed"
+		);
+		tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+	}
+	stop.send(true).unwrap();
+	reclaim.await.unwrap().unwrap();
 	drop(server);
 	cleanup(f, &url, &schema).await;
 }

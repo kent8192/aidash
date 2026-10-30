@@ -1,6 +1,7 @@
 //! Bounded decoded validation of media supplied as Thread Attachments.
 use std::io::Cursor;
 use symphonia::core::{
+	audio::SampleBuffer,
 	codecs::{CODEC_TYPE_OPUS, CodecParameters, Decoder, DecoderOptions},
 	errors::Error as AudioError,
 	formats::FormatOptions,
@@ -32,7 +33,7 @@ pub fn validate(media_type: &str, bytes: &[u8]) -> Result<Measurements, Refusal>
 		return image(media_type, bytes);
 	}
 	if media_type.starts_with("audio/") {
-		return audio(media_type, bytes);
+		return audio(media_type, bytes, false).map(|(measurements, _)| measurements);
 	}
 	Ok(Measurements::default())
 }
@@ -122,37 +123,75 @@ impl AudioDecoder {
 			_ => Err(Refusal::Undecodable),
 		}
 	}
-	fn frames(&mut self, packet: &symphonia::core::formats::Packet) -> Result<(u64, u32), Refusal> {
+	fn samples(
+		&mut self,
+		packet: &symphonia::core::formats::Packet,
+	) -> Result<(Vec<f32>, u32, usize), Refusal> {
 		match self {
 			Self::Symphonia(decoder) => {
 				let decoded = decoder.decode(packet).map_err(|_| Refusal::Undecodable)?;
-				Ok((decoded.frames() as u64, decoded.spec().rate))
+				let rate = decoded.spec().rate;
+				let channels = decoded.spec().channels.count();
+				let mut samples =
+					SampleBuffer::<f32>::new(decoded.capacity() as u64, *decoded.spec());
+				samples.copy_interleaved_ref(decoded);
+				Ok((samples.samples().to_vec(), rate, channels))
 			}
 			Self::Opus(decoder, channels) => {
 				let mut samples = vec![0.0; 5760 * *channels];
 				let frames = decoder
 					.decode(packet.buf(), 5760, &mut samples)
 					.map_err(|_| Refusal::Undecodable)?;
-				let trimmed = frames
-					.checked_sub(packet.trim_start() as usize + packet.trim_end() as usize)
-					.ok_or(Refusal::Undecodable)?;
-				Ok((trimmed as u64, 48_000))
+				trim_opus(samples, frames, *channels, packet)
 			}
 			Self::OpusMulti(decoder, channels) => {
 				let mut samples = vec![0.0; 5760 * *channels];
 				let frames = decoder
 					.decode(packet.buf(), 5760, &mut samples)
 					.map_err(|_| Refusal::Undecodable)?;
-				let trimmed = frames
-					.checked_sub(packet.trim_start() as usize + packet.trim_end() as usize)
-					.ok_or(Refusal::Undecodable)?;
-				Ok((trimmed as u64, 48_000))
+				trim_opus(samples, frames, *channels, packet)
 			}
 		}
 	}
 }
 
-fn audio(media_type: &str, bytes: &[u8]) -> Result<Measurements, Refusal> {
+fn trim_opus(
+	samples: Vec<f32>,
+	frames: usize,
+	channels: usize,
+	packet: &symphonia::core::formats::Packet,
+) -> Result<(Vec<f32>, u32, usize), Refusal> {
+	let start = packet.trim_start() as usize;
+	let end = frames
+		.checked_sub(packet.trim_end() as usize)
+		.ok_or(Refusal::Undecodable)?;
+	if start > end {
+		return Err(Refusal::Undecodable);
+	}
+	Ok((
+		samples[start * channels..end * channels].to_vec(),
+		48_000,
+		channels,
+	))
+}
+
+/// Render a bounded input as little-endian 16-bit mono PCM at 16 kHz.
+pub fn render_wav(media_type: &str, bytes: &[u8]) -> Result<Vec<u8>, Refusal> {
+	if !media_type.starts_with("audio/") {
+		return Err(Refusal::Undecodable);
+	}
+	if aidash_domain::provider::ContentPart::from_media(media_type, bytes.to_vec()).is_err() {
+		return Err(Refusal::Undecodable);
+	}
+	let (_, wav) = audio(media_type, bytes, true)?;
+	wav.ok_or(Refusal::Undecodable)
+}
+
+fn audio(
+	media_type: &str,
+	bytes: &[u8],
+	render: bool,
+) -> Result<(Measurements, Option<Vec<u8>>), Refusal> {
 	if matches!(media_type, "audio/wav" | "audio/x-wav") {
 		let declared = bytes
 			.get(4..8)
@@ -196,6 +235,9 @@ fn audio(media_type: &str, bytes: &[u8]) -> Result<Measurements, Refusal> {
 	let mut decoder = AudioDecoder::new(&track.codec_params)?;
 	let mut nanos = 0_u128;
 	let mut frames = 0_u64;
+	let mut pcm = Vec::new();
+	let mut phase = 0_u64;
+	let mut previous_rate = None;
 	loop {
 		let packet = match format.next_packet() {
 			Ok(packet) => packet,
@@ -205,10 +247,11 @@ fn audio(media_type: &str, bytes: &[u8]) -> Result<Measurements, Refusal> {
 		if packet.track_id() != id {
 			continue;
 		}
-		let (count, sample_rate) = decoder.frames(&packet)?;
-		if sample_rate == 0 {
+		let (samples, sample_rate, channels) = decoder.samples(&packet)?;
+		if sample_rate == 0 || channels == 0 || !samples.len().is_multiple_of(channels) {
 			return Err(Refusal::Undecodable);
 		}
+		let count = (samples.len() / channels) as u64;
 		frames = frames.checked_add(count).ok_or(Refusal::TooLarge)?;
 		nanos = nanos
 			.checked_add(u128::from(count) * 1_000_000_000 / u128::from(sample_rate))
@@ -216,15 +259,56 @@ fn audio(media_type: &str, bytes: &[u8]) -> Result<Measurements, Refusal> {
 		if nanos > 600_000_000_000 {
 			return Err(Refusal::TooLarge);
 		}
+		if render {
+			if previous_rate.is_some_and(|rate| rate != sample_rate) {
+				return Err(Refusal::Undecodable);
+			}
+			previous_rate = Some(sample_rate);
+			for frame in samples.chunks_exact(channels) {
+				let mono = frame.iter().copied().sum::<f32>() / channels as f32;
+				if !mono.is_finite() {
+					return Err(Refusal::Undecodable);
+				}
+				phase += 16_000;
+				while phase >= u64::from(sample_rate) {
+					phase -= u64::from(sample_rate);
+					let sample = (mono.clamp(-1.0, 1.0) * i16::MAX as f32).round() as i16;
+					pcm.extend_from_slice(&sample.to_le_bytes());
+				}
+			}
+		}
 	}
 	if frames == 0 {
 		return Err(Refusal::Undecodable);
 	}
-	Ok(Measurements {
-		width: None,
-		height: None,
-		duration_ms: Some(((nanos + 999_999) / 1_000_000) as i64),
-	})
+	let wav = if render {
+		let size = u32::try_from(pcm.len()).map_err(|_| Refusal::TooLarge)?;
+		let mut output = Vec::with_capacity(44 + pcm.len());
+		output.extend_from_slice(b"RIFF");
+		output.extend_from_slice(&(36 + size).to_le_bytes());
+		output.extend_from_slice(b"WAVEfmt ");
+		output.extend_from_slice(&16_u32.to_le_bytes());
+		output.extend_from_slice(&1_u16.to_le_bytes());
+		output.extend_from_slice(&1_u16.to_le_bytes());
+		output.extend_from_slice(&16_000_u32.to_le_bytes());
+		output.extend_from_slice(&32_000_u32.to_le_bytes());
+		output.extend_from_slice(&2_u16.to_le_bytes());
+		output.extend_from_slice(&16_u16.to_le_bytes());
+		output.extend_from_slice(b"data");
+		output.extend_from_slice(&size.to_le_bytes());
+		output.extend_from_slice(&pcm);
+		Some(output)
+	} else {
+		None
+	};
+	Ok((
+		Measurements {
+			width: None,
+			height: None,
+			duration_ms: Some(nanos.div_ceil(1_000_000) as i64),
+		},
+		wav,
+	))
 }
 
 #[cfg(test)]
@@ -295,6 +379,33 @@ mod tests {
 			assert!(
 				(90..=120).contains(&measured.duration_ms.unwrap()),
 				"{mime}: {measured:?}"
+			);
+		}
+	}
+
+	#[test]
+	fn wav_rendition_is_mono_16khz_pcm_and_keeps_decoded_duration() {
+		for (mime, bytes) in [
+			("audio/wav", pcm_wav(1)),
+			(
+				"audio/ogg",
+				include_bytes!("media/fixtures/short-opus.ogg").to_vec(),
+			),
+			(
+				"audio/mpeg",
+				include_bytes!("media/fixtures/short.mp3").to_vec(),
+			),
+		] {
+			let wav = render_wav(mime, &bytes).unwrap();
+			assert_eq!(&wav[..4], b"RIFF");
+			assert_eq!(&wav[20..24], &[1, 0, 1, 0]);
+			assert_eq!(&wav[24..28], &16_000_u32.to_le_bytes());
+			assert_eq!(&wav[34..36], &16_u16.to_le_bytes());
+			let original = validate(mime, &bytes).unwrap().duration_ms.unwrap();
+			let rendered = validate("audio/wav", &wav).unwrap().duration_ms.unwrap();
+			assert!(
+				(original - rendered).abs() <= 1,
+				"{mime}: {original} {rendered}"
 			);
 		}
 	}

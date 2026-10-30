@@ -735,3 +735,5 @@ attachment has no inline content. `0016_attachment_content_state` records the ne
 ORM state. The object reference is Tenant-scoped and cascades
 on object deletion, allowing a deleted Tenant's object purge to run before row
 purge. The object store's intents recover uncommitted files after a crash.
+
+`workspaces/0017_attachment_wav_rendition` adds a nullable, tenant-scoped immutable WAV rendition reference and its integrity metadata. The three fields are set together when a route first needs the rendition; deleting the attachment makes both objects reclaimable. `0018_attachment_wav_rendition_state` records the fields in model state.
