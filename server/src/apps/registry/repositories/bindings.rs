@@ -185,10 +185,33 @@ pub(crate) async fn authorized(
 	remote: bool,
 	configured: bool,
 ) -> Result<aidash_domain::registry::bindings::BindingSnapshot> {
+	authorized_mode(access, entry, remote, configured, false).await
+}
+
+/// [`authorized`] for a child agent's closure prepared under its delegating
+/// Run's lease, before child admission appends the child to the subject
+/// chain: the child's own direct dependencies are checked against the child,
+/// not against the delegating agent that still ends the chain.
+pub(crate) async fn authorized_child(
+	access: &mut crate::authorization::access::Access,
+	entry: &aidash_domain::registry::Entry,
+	configured: bool,
+) -> Result<aidash_domain::registry::bindings::BindingSnapshot> {
+	authorized_mode(access, entry, false, configured, true).await
+}
+
+async fn authorized_mode(
+	access: &mut crate::authorization::access::Access,
+	entry: &aidash_domain::registry::Entry,
+	remote: bool,
+	configured: bool,
+	child: bool,
+) -> Result<aidash_domain::registry::bindings::BindingSnapshot> {
 	let node = access.node_id.clone();
 	let snapshot = snapshot_mode(&mut access.tx, &node, entry, remote, false, configured).await?;
 	// A delegated agent's own dependencies are checked against that agent.
 	let delegated = snapshot.delegated_users()?;
+	let root = [snapshot.agent.local()];
 	for definition in &snapshot.definitions {
 		if definition.identity.registry_deployment != node {
 			return Err(Error::Forbidden);
@@ -204,10 +227,12 @@ pub(crate) async fn authorized(
 			access.require(&resource, "registry.read").await?;
 			continue;
 		}
-		let users = delegated
-			.get(&definition.identity)
-			.map(|users| users.iter().map(|user| user.local()).collect::<Vec<_>>())
-			.unwrap_or_default();
+		let users = match delegated.get(&definition.identity) {
+			Some(users) => users.iter().map(|user| user.local()).collect::<Vec<_>>(),
+			// The root agent itself is used by the delegating subject.
+			None if child && definition.identity != snapshot.agent => root.to_vec(),
+			None => vec![],
+		};
 		let current = crate::authorization::catalog::closure_entry(
 			access,
 			&definition.identity.local(),

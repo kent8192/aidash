@@ -5224,6 +5224,88 @@ async fn approval_review_approves_a_delegated_model_first_and_the_delegator_then
 	)
 	.await;
 	assert_eq!(status, 200, "{body}");
+
+	// The worker delegates to the delegate. Its closure is prepared while the
+	// subject chain still ends in the delegator, yet the delegate's own model
+	// is checked against the delegate it is restricted to.
+	let harness = Harness {
+		federation: f.clone(),
+	};
+	harness.worker_once().await.unwrap();
+	let parent_run = f.store.runs(&TEST_FIXTURE).await.unwrap().remove(0);
+	// The delegator's own step rechecks its recorded Registry reads, including
+	// the delegate's model it pins as metadata only.
+	assert_ne!(
+		parent_run.control.as_str(),
+		"PAUSED",
+		"the delegator's step must admit its pinned delegated model: {:?}",
+		parent_run.error
+	);
+	let (status, task) = request(
+		&app,
+		&alice,
+		"POST",
+		&format!("/api/workspaces/{}/tasks", parent_run.workspace_id),
+		json!({"title":"Child","description":"Delegated work","parent_id":task_id}),
+	)
+	.await;
+	assert_eq!(status, 200, "{task}");
+	let child_task = Uuid::parse_str(task["id"].as_str().unwrap()).unwrap();
+	let response = json!({"text":"","tool_calls":[{"id":"delegate","name":"task_delegate","arguments":{"task_id":child_task,"node_id":aidash_domain::nodes::NodeAddress::derived(f.config.deployment.as_str(), "acme").to_string(),"agent":{"id":"delegate","version":"1.0.0"}}}],"input_tokens":0,"output_tokens":0});
+	{
+		let query_bind_1 = parent_run.id;
+		let query_bind_2 = common::tool_pending(json!({"response":response,"cursor":0}));
+		sqlx::query(
+			&reinhardt::query::Query::update()
+				.table(reinhardt::query::Alias::new("runs"))
+				.value_expr(
+					reinhardt::query::Alias::new("phase"),
+					reinhardt::query::Expr::cust("'TOOL_CALL'"),
+				)
+				.value_expr(
+					reinhardt::query::Alias::new("pending"),
+					SimpleExpr::CustomWithExpr(
+						"(?)".to_owned(),
+						vec![Expr::value(query_bind_2.to_owned()).into()],
+					),
+				)
+				.and_where(SimpleExpr::CustomWithExpr(
+					"(id = ?)".to_owned(),
+					vec![Expr::value(query_bind_1.to_owned()).into()],
+				))
+				.to_string(reinhardt::query::PostgresQueryBuilder),
+		)
+		.execute(f.store.pool.fixture_driver())
+		.await
+	}
+	.unwrap();
+	assert!(harness.worker_once().await.unwrap());
+	let parent_after = f.store.run(&TEST_FIXTURE, parent_run.id).await.unwrap();
+	assert_ne!(
+		parent_after.control.as_str(),
+		"PAUSED",
+		"delegation must admit the delegate's own model: {:?}",
+		parent_after.error
+	);
+	let child_run = f
+		.store
+		.runs(&TEST_FIXTURE)
+		.await
+		.unwrap()
+		.into_iter()
+		.find(|run| run.task_id == child_task)
+		.expect("the delegator must start the delegate's Run");
+	assert!(
+		child_run
+			.context
+			.binding_snapshot
+			.as_ref()
+			.unwrap()
+			.definitions
+			.iter()
+			.any(|definition| definition.identity.id == "delegated-model"),
+		"the delegate's Run uses its restricted model"
+	);
 	cleanup(f, &url, &schema).await;
 }
 

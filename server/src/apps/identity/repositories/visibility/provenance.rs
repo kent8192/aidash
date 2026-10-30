@@ -19,6 +19,53 @@ use reinhardt::query::{
 	QueryStatementBuilder as _, SimpleExpr,
 };
 use uuid::Uuid;
+impl Reads<'_> {
+	/// Whether `run` pins `reference` only for the delegated agents of its
+	/// Binding closure and the restriction admits those agents (ADR 0095).
+	///
+	/// Such a definition is a recorded read of the Run as immutable metadata,
+	/// but its Catalog Approval restriction names the agents that use it
+	/// directly, not the executing agent that ends the subject chain.
+	async fn closure_read(&mut self, run: Uuid, reference: &EntityRef) -> NativeResult<bool> {
+		let snapshot: Option<serde_json::Value> = crate::database::native::query_scalar(
+			&Query::select()
+				.expr(Expr::cust("context -> 'binding_snapshot'"))
+				.from(Alias::new("runs"))
+				.and_where(Expr::col("id").eq(Expr::value(run)))
+				.to_string(PostgresQueryBuilder),
+		)
+		.scalar_optional(&mut **self.access.tx)
+		.await?;
+		let Some(snapshot) = snapshot.filter(|snapshot| !snapshot.is_null()) else {
+			return Ok(false);
+		};
+		let snapshot: aidash_domain::registry::bindings::BindingSnapshot =
+			serde_json::from_value(snapshot)?;
+		let delegated = snapshot.delegated_users()?;
+		let Some(users) = delegated.iter().find_map(|(identity, users)| {
+			(identity.registry_deployment == self.access.node_id
+				&& identity.id == reference.id
+				&& identity.version == reference.version)
+				.then_some(users)
+		}) else {
+			return Ok(false);
+		};
+		let users = users.iter().map(|user| user.local()).collect::<Vec<_>>();
+		match crate::apps::identity::services::catalog::closure_entry(
+			self.access,
+			reference,
+			"registry.read",
+			&users,
+		)
+		.await
+		{
+			Ok(_) => Ok(true),
+			Err(crate::Error::Forbidden) => Ok(false),
+			Err(error) => Err(error),
+		}
+	}
+}
+
 #[async_trait]
 impl ReadProvenanceScope for Reads<'_> {
 	async fn catalog_read(&mut self, run: Uuid, reference: &EntityRef) -> Result<()> {
@@ -30,6 +77,14 @@ impl ReadProvenanceScope for Reads<'_> {
 		.await
 		{
 			Ok(_) => Ok(()),
+			Err(crate::Error::Forbidden)
+				if self
+					.closure_read(run, reference)
+					.await
+					.map_err(aidash_application::Error::from)? =>
+			{
+				Ok(())
+			}
 			Err(error @ (crate::Error::Forbidden | crate::Error::NotFound(_))) => {
 				if crate::apps::identity::repositories::foreign_reads::retired_run_catalog_read(
 					self.access,
