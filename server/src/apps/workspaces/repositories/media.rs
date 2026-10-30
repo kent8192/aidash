@@ -380,6 +380,105 @@ impl aidash_application::ports::execution::media::SelectedMediaScope for Selecte
 			.await
 			.map_err(Into::into)
 	}
+	async fn thread_attachment(
+		&mut self,
+		selection: &aidash_domain::media::ThreadAttachmentSelection,
+	) -> Result<Option<(String, String, Vec<u8>)>> {
+		if self.lease.is_none() {
+			self.lease = Some(self.access.clone().write_owned().await);
+		}
+		let access = self
+			.lease
+			.as_mut()
+			.ok_or(aidash_application::Error::Forbidden)?;
+		let workspace = self.run.workspace_id;
+		let query = Query::select()
+			.columns(
+				[
+					"id",
+					"filename",
+					"media_type",
+					"sha256",
+					"size_bytes",
+					"content",
+					"object_id",
+					"message_id",
+				]
+				.map(Alias::new),
+			)
+			.from(Alias::new("channel_attachments"))
+			.and_where(Expr::col(Alias::new("workspace_id")).eq(Expr::value(workspace)))
+			.and_where(Expr::col(Alias::new("message_id")).eq(Expr::value(selection.message_id)))
+			.and_where(Expr::col(Alias::new("id")).eq(Expr::value(selection.attachment_id)))
+			.to_string(PostgresQueryBuilder);
+		let row: Option<Attachment> = crate::database::native::query_as(&query)
+			.columns(&[
+				"id",
+				"filename",
+				"media_type",
+				"sha256",
+				"size_bytes",
+				"content",
+				"object_id",
+				"message_id",
+			])
+			.fetch_optional(&mut **access.tx)
+			.await?;
+		let Some(row) = row else {
+			return Ok(None);
+		};
+		let resource = access.workspace(workspace).await?;
+		access.require(&resource, "workspace.read").await?;
+		access
+			.workspace_record(workspace, "message", selection.message_id)
+			.await?;
+		let content = if let Some(id) = row.object_id {
+			read_attachment_object(self.store, access, id, &row.sha256, row.size_bytes).await?
+		} else {
+			row.content
+				.ok_or_else(|| crate::Error::NotFound("attachment unavailable".into()))?
+		};
+		let row = MediaAttachment {
+			id: row.id,
+			filename: row.filename,
+			media_type: row.media_type,
+			sha256: row.sha256,
+			size_bytes: row.size_bytes,
+			content,
+		};
+		let mut scope = ScopedMedia {
+			access,
+			store: self.store,
+			pending: None,
+		};
+		if row.sha256 != selection.expected_digest
+			|| i64::try_from(row.content.len()).ok() != Some(row.size_bytes)
+			|| crate::apps::execution::repositories::capability_objects::digest(&row.content)
+				!= row.sha256
+		{
+			return Err(aidash_application::Error::Conflict(
+				"OBJECT_INTEGRITY".into(),
+			));
+		}
+		if selection.wav {
+			let bytes =
+				scope
+					.wav_rendition(workspace, &row)
+					.await
+					.map_err(|error| match error {
+						aidash_application::Error::MediaRouteUnavailable(reason) => {
+							aidash_application::Error::Invalid(format!(
+								"this model cannot read {} through any current route: {reason}",
+								row.media_type
+							))
+						}
+						other => other,
+					})?;
+			Ok(Some((row.filename, "audio/wav".into(), bytes)))
+		} else {
+			Ok(Some((row.filename, row.media_type, row.content)))
+		}
+	}
 	async fn page_image(&mut self, reference: &str) -> Result<Option<(String, Vec<u8>)>> {
 		use aidash_application::ports::research::EvidenceStore;
 		// A page image is the Run's own evidence; it needs no file access.

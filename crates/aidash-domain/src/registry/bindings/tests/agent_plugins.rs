@@ -89,11 +89,12 @@ fn snapshot_of(agent: &AgentBindings, agent_plugins: Vec<PinnedAgentPlugin>) -> 
 		}
 		let operation = target.id.strip_prefix("aidash.").unwrap();
 		let descriptor = core_descriptor(NODE, operation).unwrap();
-		let tool = entry(
+		let mut tool = entry(
 			&target.id,
 			"tool",
 			serde_json::to_value(&descriptor).unwrap(),
 		);
+		tool.version.clone_from(&target.version);
 		let promoted = agent.has_plugin_skills()
 			&& normalized.origin == BindingOrigin::Default
 			&& support.contains(&operation);

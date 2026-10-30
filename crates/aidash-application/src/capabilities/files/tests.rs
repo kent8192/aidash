@@ -17,6 +17,9 @@ struct Scope {
 	verified: Vec<Value>,
 	/// `(kind, cancel, input)` of every operation control request.
 	polled: Vec<(String, bool, Value)>,
+	active_run: Option<Uuid>,
+	pending: Vec<u8>,
+	cache_entry: Option<(Uuid, String, Value)>,
 }
 #[async_trait::async_trait]
 impl FileScopePort for Scope {
@@ -86,11 +89,12 @@ impl FileScopePort for Scope {
 	async fn for_run(&mut self, _run: &RunMetadata) -> Result<Area> {
 		Ok(self.area.as_ref().expect("admitted area").clone())
 	}
-	async fn authorize(&mut self, _area: &Area, _action: &str) -> Result<()> {
-		panic!("unexpected authorize effect")
+	async fn authorize(&mut self, _area: &Area, action: &str) -> Result<()> {
+		assert!(matches!(action, "file.read" | "file.write"));
+		Ok(())
 	}
 	async fn current_run(&mut self, _area: &Area) -> Result<Option<Uuid>> {
-		panic!("unexpected current_run effect")
+		Ok(self.active_run)
 	}
 	async fn require_current(&mut self, _area: &Area, _run: &RunMetadata) -> Result<()> {
 		assert!(self.snapshot.is_some());
@@ -125,23 +129,30 @@ impl FileScopePort for Scope {
 			offset: 0,
 		}))
 	}
-	async fn cached(&mut self, _key: Uuid, _digest: &str) -> Result<Option<Value>> {
-		panic!("unexpected cached effect")
+	async fn cached(&mut self, key: Uuid, digest: &str) -> Result<Option<Value>> {
+		Ok(self
+			.cache_entry
+			.as_ref()
+			.filter(|(k, d, _)| *k == key && d == digest)
+			.map(|(_, _, v)| v.clone()))
 	}
-	async fn cache(&mut self, _key: Uuid, _digest: &str, _result: &Value) -> Result<()> {
-		panic!("unexpected cache effect")
+	async fn cache(&mut self, key: Uuid, digest: &str, result: &Value) -> Result<()> {
+		self.cache_entry = Some((key, digest.to_owned(), result.clone()));
+		Ok(())
 	}
 	async fn begin_pending(&mut self, _area: Uuid, _size: u64) -> Result<()> {
-		panic!("unexpected begin_pending effect")
+		self.pending.clear();
+		Ok(())
 	}
 	async fn read_chunk(&mut self, _file: &FileEntry, _offset: u64) -> Result<Vec<u8>> {
 		panic!("unexpected read_chunk effect")
 	}
-	async fn write_pending(&mut self, _bytes: &[u8]) -> Result<()> {
-		panic!("unexpected write_pending effect")
+	async fn write_pending(&mut self, bytes: &[u8]) -> Result<()> {
+		self.pending.extend_from_slice(bytes);
+		Ok(())
 	}
-	async fn finish_pending(&mut self, _expected: &str) -> Result<(Uuid, String)> {
-		panic!("unexpected finish_pending effect")
+	async fn finish_pending(&mut self, expected: &str) -> Result<(Uuid, String)> {
+		Ok((Uuid::new_v4(), expected.to_owned()))
 	}
 	async fn message(&mut self, _workspace: Uuid, _id: Uuid) -> Result<Value> {
 		panic!("unexpected message effect")
@@ -216,6 +227,9 @@ fn fixture(bytes: &[u8]) -> (Scope, Area, FileEntry) {
 			changed: None,
 			verified: vec![],
 			polled: vec![],
+			active_run: None,
+			pending: vec![],
+			cache_entry: None,
 		},
 		area,
 		file,
@@ -433,6 +447,92 @@ fn invoke_fixture(operation: &str, narrow: Value) -> (Scope, RunMetadata, FileEn
 	};
 	scope.area = Some(area);
 	(scope, run, file)
+}
+
+#[tokio::test]
+async fn message_files_are_snapshots_of_authorized_current_working_area_paths() {
+	let (mut scope, run, file) = invoke_fixture("file_read", json!({}));
+	let result = snapshot_message_files(&mut scope, &run, std::slice::from_ref(&file.path))
+		.await
+		.unwrap();
+	assert_eq!(result[0].0.file_id, file.file_id);
+	assert_eq!(result[0].1, b"abcdefgh");
+	assert_eq!(scope.opens, 1);
+	let error = snapshot_message_files(&mut scope, &run, &["missing.png".into()])
+		.await
+		.unwrap_err();
+	assert!(matches!(error, Error::NotFound(_)));
+	assert_eq!(scope.opens, 1);
+	let too_many = vec![file.path; 9];
+	let error = snapshot_message_files(&mut scope, &run, &too_many)
+		.await
+		.unwrap_err();
+	assert!(matches!(error, Error::Invalid(_)));
+	let mut oversized: Vec<FileEntry> =
+		serde_json::from_value(scope.area.as_ref().unwrap().manifest.clone()).unwrap();
+	oversized[0].size = 8 * 1024 * 1024 + 1;
+	let path = oversized[0].path.clone();
+	scope.area.as_mut().unwrap().manifest = json!(oversized);
+	assert!(
+		matches!(snapshot_message_files(&mut scope, &run, &[path]).await, Err(Error::Invalid(message)) if message.contains("8 MiB"))
+	);
+	assert_eq!(scope.opens, 1);
+}
+
+#[tokio::test]
+async fn attachment_copy_publishes_provenance_and_enforces_working_quota() {
+	let (mut scope, run, _) = invoke_fixture("file_read", json!({}));
+	scope.active_run = Some(run.id);
+	let area = scope.area.as_ref().unwrap().clone();
+	let message = Uuid::new_v4();
+	let attachment = Uuid::new_v4();
+	let key = Uuid::new_v4();
+	let output = copy_thread_attachment(
+		&mut scope,
+		&run,
+		key,
+		area.revision,
+		"copied.png".into(),
+		message,
+		attachment,
+		"image/png".into(),
+		"digest".into(),
+		b"image",
+	)
+	.await
+	.unwrap();
+	assert_eq!(scope.pending, b"image");
+	assert_eq!(
+		output["file"]["provenance"],
+		json!({"kind":"thread_attachment", "workspace_id":area.workspace_id, "message_id":message, "attachment_id":attachment})
+	);
+	assert!(
+		scope
+			.persisted
+			.as_ref()
+			.unwrap()
+			.constraints
+			.as_array()
+			.unwrap()
+			.contains(&json!({"kind":"message", "id":message}))
+	);
+	assert_eq!(scope.events[0].0, "capability.files_changed");
+	let too_large = vec![0; 1_000_001];
+	let error = copy_thread_attachment(
+		&mut scope,
+		&run,
+		Uuid::new_v4(),
+		area.revision,
+		"too-large".into(),
+		message,
+		attachment,
+		"image/png".into(),
+		"digest".into(),
+		&too_large,
+	)
+	.await
+	.unwrap_err();
+	assert!(matches!(error, Error::Conflict(reason) if reason == "WORKING_QUOTA"));
 }
 #[rstest::rstest]
 #[case("outbound_get", json!({"allowed_hosts":["example.com"]}), json!({"url":"https://outside.example/data"}))]

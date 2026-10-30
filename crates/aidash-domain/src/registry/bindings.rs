@@ -39,6 +39,7 @@ pub const DEFAULT_TOOLS: &[&str] = &[
 	"agent_discover",
 	"artifact_publish",
 	"workspace_message",
+	"attachment_copy",
 	"memory_mutate",
 	"memory_recall",
 	"memory_reflect",
@@ -359,7 +360,23 @@ impl AgentBindings {
 		node: &str,
 		compaction_override: Option<&QualifiedRef>,
 	) -> Result<Vec<NormalizedBinding>> {
+		self.normalize_versioned(node, compaction_override, false)
+	}
+	fn normalize_versioned(
+		&self,
+		node: &str,
+		compaction_override: Option<&QualifiedRef>,
+		legacy: bool,
+	) -> Result<Vec<NormalizedBinding>> {
 		self.validate()?;
+		if legacy
+			&& self
+				.remove_default
+				.iter()
+				.any(|name| name == "attachment_copy")
+		{
+			return Err(Error::Invalid("unknown historical default".into()));
+		}
 		crate::nodes::DeploymentId::parse(node)?;
 		let mut result = Vec::new();
 		let has_skills = self.bindings.iter().any(|b| b.kind == BindingKind::Skill);
@@ -367,11 +384,17 @@ impl AgentBindings {
 		let required_tools = policy.required_tools();
 		let support = policy.skill_support_tools();
 		for operation in required_tools.iter().chain(&policy.default_tools()) {
+			if legacy && *operation == "attachment_copy" {
+				continue;
+			}
 			let required = required_tools.contains(operation);
 			if !required && self.remove_default.iter().any(|name| name == operation) {
 				continue;
 			}
-			let target = QualifiedRef::builtin(node, operation);
+			let mut target = QualifiedRef::builtin(node, operation);
+			if legacy {
+				target.version = "1.0.0".into();
+			}
 			let explicit = self
 				.bindings
 				.iter()
@@ -462,11 +485,16 @@ impl Entry {
 			.binding_normalization
 			.as_ref()
 			.and_then(|saved| saved.compaction_override.as_ref());
-		let expected = config.normalize_with_compaction(node, replacement)?;
 		if let Some(saved) = &self.binding_normalization {
-			if saved.schema_version != BINDING_SCHEMA
-				|| saved.registry_deployment != node
-				|| saved.bindings != expected
+			if saved.schema_version != BINDING_SCHEMA || saved.registry_deployment != node {
+				return Err(Error::Invalid(
+					"Agent normalization differs from its immutable definition".into(),
+				));
+			}
+			let current = config.normalize_with_compaction(node, replacement);
+			let legacy = config.normalize_versioned(node, replacement, true);
+			if !current.is_ok_and(|expected| saved.bindings == expected)
+				&& !legacy.is_ok_and(|expected| saved.bindings == expected)
 			{
 				return Err(Error::Invalid(
 					"Agent normalization differs from its immutable definition".into(),
@@ -474,7 +502,7 @@ impl Entry {
 			}
 			return Ok(saved.bindings.clone());
 		}
-		Ok(expected)
+		config.normalize_with_compaction(node, replacement)
 	}
 }
 
@@ -517,7 +545,15 @@ impl QualifiedRef {
 		Self {
 			registry_deployment: node.into(),
 			id: format!("aidash.{operation}"),
-			version: "1.0.0".into(),
+			version: if matches!(
+				operation,
+				"workspace_read" | "workspace_observe" | "workspace_message"
+			) {
+				"1.0.1"
+			} else {
+				"1.0.0"
+			}
+			.into(),
 		}
 	}
 	pub fn resource_id(&self) -> String {
@@ -1200,7 +1236,11 @@ impl BindingSnapshot {
 		for operation in policy.required_tools() {
 			let identity = QualifiedRef::builtin(&self.agent.registry_deployment, operation);
 			if !self.bindings.iter().any(|binding| {
-				binding.identity == identity
+				(binding.identity == identity
+					|| operation == "workspace_read"
+						&& binding.identity.registry_deployment == identity.registry_deployment
+						&& binding.identity.id == identity.id
+						&& binding.identity.version == "1.0.0")
 					&& binding.origin == BindingOrigin::Required
 					&& binding.alias.as_deref() == Some(operation)
 					&& binding.excluded_reason.is_none()

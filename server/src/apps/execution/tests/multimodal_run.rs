@@ -1234,3 +1234,312 @@ fn media_router(
 			}
 		})).into_server_router())
 }
+
+#[derive(Clone)]
+struct SelectedThreadRequests {
+	sender: mpsc::UnboundedSender<Value>,
+	receiver: Arc<std::sync::Mutex<Option<mpsc::UnboundedReceiver<Value>>>>,
+	attachment: Arc<std::sync::Mutex<Option<String>>>,
+	revision: Arc<std::sync::Mutex<i64>>,
+}
+#[rstest::fixture]
+fn selected_thread_requests() -> SelectedThreadRequests {
+	let (sender, receiver) = mpsc::unbounded_channel();
+	SelectedThreadRequests {
+		sender,
+		receiver: Arc::new(std::sync::Mutex::new(Some(receiver))),
+		attachment: Arc::new(std::sync::Mutex::new(None)),
+		revision: Arc::new(std::sync::Mutex::new(0)),
+	}
+}
+#[rstest::fixture]
+fn selected_thread_router(
+	#[from(selected_thread_requests)] requests: SelectedThreadRequests,
+) -> Arc<Router> {
+	let count = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+	Arc::new(reinhardt::test::stub::StubRouter::new()
+	.route("/v1/models/fixture/endpoints", http::Method::GET, reply(|_request: reinhardt::Request| async { reinhardt::Response::ok().with_json(&json!({"data":{"architecture":{"input_modalities":["text","image"]},"endpoints":[{"tag":"fixture/verified","context_length":128000}]}})).unwrap() }))
+	.route("/v1/endpoints/zdr", http::Method::GET, reply(|_request: reinhardt::Request| async { reinhardt::Response::ok().with_json(&json!({"data":[{"model_id":"fixture","tag":"fixture/verified"}]})).unwrap() }))
+	.route("/v1/chat/completions", http::Method::POST, reply(move |request: reinhardt::Request| {
+		let body = request.json::<Value>().unwrap();
+		let requests = requests.clone();
+		let count = count.clone();
+		async move {
+			requests.sender.send(body).unwrap();
+			let step = count.fetch_add(1, Ordering::SeqCst);
+			let call = match step {
+				0 => Some(("workspace_observe", json!({}))),
+				1 | 6 | 7 | 9 => Some(("workspace_read", json!({"kind":"attachment", "id":requests.attachment.lock().unwrap().as_ref().unwrap(), "representation":"model_input"}))),
+				2 => Some(("attachment_copy", json!({"id":requests.attachment.lock().unwrap().as_ref().unwrap(), "path":"copied.png", "expected_revision":*requests.revision.lock().unwrap(), "idempotency_key":Uuid::new_v4()}))),
+				3 => Some(("workspace_message", json!({"content":"Agent snapshot", "files":["copied.png"]}))),
+				5 => Some(("workspace_observe", json!({}))),
+				_ => None,
+			};
+			let message = match call {
+				Some((name, arguments)) => json!({"content":null,"tool_calls":[{"id":format!("call-{step}"),"type":"function","function":{"name":name,"arguments":arguments.to_string()}}]}),
+				None => json!({"content":"Done"}),
+			};
+			reinhardt::Response::ok().with_json(&json!({"choices":[{"finish_reason":if matches!(step, 0..=3 | 5..=7 | 9) {"tool_calls"} else {"stop"},"message":message}],"usage":{"prompt_tokens":10,"completion_tokens":2}})).unwrap()
+		}
+	})).into_server_router())
+}
+
+#[rstest::rstest]
+#[tokio::test]
+async fn visible_thread_attachment_is_selected_for_the_next_model_request(
+	#[future(awt)]
+	#[from(common::native_application)]
+	fixture: common::ApplicationFixture,
+	selected_thread_requests: SelectedThreadRequests,
+	#[from(selected_thread_router)]
+	#[with(selected_thread_requests.clone())]
+	_router: Arc<Router>,
+	#[future(awt)]
+	#[from(upstream)]
+	#[with(_router.clone())]
+	server: TestServerGuard,
+) {
+	let mut received = selected_thread_requests
+		.receiver
+		.lock()
+		.unwrap()
+		.take()
+		.unwrap();
+	let (f, url, schema) = fixture.runtime.parts();
+	let app = fixture.application;
+	let (mut policy, token, _) = common::bootstrap_with_area(&f, &app, &server.url).await;
+	policy["subjects"][aidash_server::domain::qualified_agent(
+		&aidash_domain::nodes::NodeAddress::derived(f.config.deployment.as_str(), "acme"),
+		"research",
+		"1.0.1",
+	)] = json!({"kind":"agent"});
+	policy["subjects"][aidash_server::domain::qualified_agent(
+		&aidash_domain::nodes::NodeAddress::derived(f.config.deployment.as_str(), "acme"),
+		"research-peer",
+		"1.0.1",
+	)] = json!({"kind":"agent"});
+	let (status, body) = request(
+		&app,
+		&f.config.api_token,
+		"POST",
+		"/api/authorization/acme",
+		json!({"expected_revision":1,"bundle":policy}),
+	)
+	.await;
+	assert_eq!(status, 200, "{body}");
+	let tenant = aidash_domain::tenancy::TenantName::new("acme").unwrap();
+	let mut model = f.registry.get(&tenant, "model", "1.0.0").await.unwrap();
+	model.version = "1.0.1".into();
+	model.config["modalities"] = json!(["text", "image"]);
+	model.config["media_routes"] = json!([{"tag":"fixture/verified", "formats":["image/png"], "source":"fixture", "verified_at":chrono::Utc::now() - chrono::Duration::hours(1), "expires_at":chrono::Utc::now() + chrono::Duration::hours(1)}]);
+	let (status, body) = request(&app, &token, "POST", "/api/registry", json!(model)).await;
+	assert_eq!(status, 200, "{body}");
+	let (status, body) = request(&app, &token, "POST", "/api/authorization/acme/catalog", json!({"node":aidash_domain::nodes::NodeName::derived("acme"),"entry":{"id":"model","version":"1.0.1"},"expected_revision":0,"enabled":true})).await;
+	assert_eq!(status, 200, "{body}");
+	let mut agent = f.registry.get(&tenant, "research", "1.0.0").await.unwrap();
+	agent.version = "1.0.1".into();
+	agent.binding_normalization = None;
+	agent.config["model"]["version"] = json!("1.0.1");
+	let mut peer = agent.clone();
+	peer.id = "research-peer".into();
+	let (status, body) = request(&app, &token, "POST", "/api/registry", json!(agent)).await;
+	assert_eq!(status, 200, "{body}");
+	let (status, body) = request(&app, &token, "POST", "/api/registry", json!(peer)).await;
+	assert_eq!(status, 200, "{body}");
+	let (status, body) = request(&app, &token, "POST", "/api/authorization/acme/catalog", json!({"node":aidash_domain::nodes::NodeName::derived("acme"),"entry":{"id":"research-peer","version":"1.0.1"},"expected_revision":0,"enabled":true})).await;
+	assert_eq!(status, 200, "{body}");
+	let (status, body) = request(&app, &token, "POST", "/api/authorization/acme/catalog", json!({"node":aidash_domain::nodes::NodeName::derived("acme"),"entry":{"id":"research","version":"1.0.1"},"expected_revision":0,"enabled":true})).await;
+	assert_eq!(status, 200, "{body}");
+	let (status, created) = request(&app, &token, "POST", "/api/conversations", json!({"title":"Thread image", "goal":"Inspect the image", "target":{"id":"research","version":"1.0.1"}, "target_kind":"agent"})).await;
+	assert_eq!(status, 200, "{created}");
+	let run = f
+		.store
+		.runs(&TEST_FIXTURE)
+		.await
+		.unwrap()
+		.into_iter()
+		.find(|run| run.workspace_id.to_string() == created["workspace"]["id"].as_str().unwrap())
+		.unwrap();
+	let workspace = run.workspace_id.to_string();
+	let (status, area) = request(
+		&app,
+		&token,
+		"GET",
+		&format!("/api/runs/{}/working-area", run.id),
+		Value::Null,
+	)
+	.await;
+	assert_eq!(status, 200, "{area}");
+	*selected_thread_requests.revision.lock().unwrap() = area["revision"].as_i64().unwrap();
+	let attachment = upload(&app, &token, &workspace, "selected.png", "image/png", PNG).await;
+	*selected_thread_requests.attachment.lock().unwrap() =
+		Some(attachment["id"].as_str().unwrap().to_owned());
+	let (status, body) = request(&app, &token, "POST", &format!("/api/workspaces/{workspace}/thread-messages"), json!({"content":"Please inspect", "idempotency_key":Uuid::new_v4(), "attachment_ids":[attachment["id"]]})).await;
+	assert_eq!(status, 200, "{body}");
+	let worker = Harness {
+		federation: f.clone(),
+	};
+	let mut requests = Vec::new();
+	for _ in 0..30 {
+		worker.worker_once().await.unwrap();
+		while let Ok(body) = received.try_recv() {
+			requests.push(body);
+		}
+		if requests.len() >= 5 {
+			break;
+		}
+	}
+	assert!(requests.len() >= 5, "provider requests: {requests:?}");
+	let observation = requests[1].to_string();
+	assert!(observation.contains("selected.png"), "{observation}");
+	assert!(!observation.contains(&base64::engine::general_purpose::STANDARD.encode(PNG)));
+	assert!(
+		requests[2].to_string().contains("image_url"),
+		"{}",
+		requests[2]
+	);
+	let (status, history) = request(
+		&app,
+		&token,
+		"GET",
+		&format!("/api/workspaces/{workspace}/message-history"),
+		Value::Null,
+	)
+	.await;
+	assert_eq!(status, 200, "{history}");
+	let posted = history["messages"]
+		.as_array()
+		.unwrap()
+		.iter()
+		.find(|item| item["message"]["content"] == "Agent snapshot")
+		.expect("Agent A posted its file snapshot");
+	let posted_id = posted["attachments"][0]["id"].as_str().unwrap().to_owned();
+	assert_ne!(posted_id, attachment["id"].as_str().unwrap());
+	*selected_thread_requests.attachment.lock().unwrap() = Some(posted_id);
+	let (status, task) = request(
+		&app,
+		&token,
+		"POST",
+		&format!("/api/workspaces/{workspace}/tasks"),
+		json!({"title":"Peer", "description":"Inspect Agent A's image"}),
+	)
+	.await;
+	assert_eq!(status, 200, "{task}");
+	let (status, body) = request(
+		&app,
+		&token,
+		"POST",
+		&format!("/api/tasks/{}/delegate", task["id"].as_str().unwrap()),
+		json!({"node_id":f.config.deployment, "agent":{"id":"research-peer", "version":"1.0.1"}}),
+	)
+	.await;
+	assert_eq!(status, 200, "{body}");
+	for _ in 0..30 {
+		worker.worker_once().await.unwrap();
+		while let Ok(body) = received.try_recv() {
+			requests.push(body);
+		}
+		if requests.len() >= 8 {
+			break;
+		}
+	}
+	assert!(requests.len() >= 8, "provider requests: {requests:?}");
+	assert!(requests[6].to_string().contains("Agent snapshot"));
+	assert!(
+		requests[7].to_string().contains("image_url"),
+		"{}",
+		requests[7]
+	);
+	assert!(
+		requests[7]
+			.to_string()
+			.contains(&base64::engine::general_purpose::STANDARD.encode(PNG))
+	);
+	let peer_run = f
+		.store
+		.runs(&TEST_FIXTURE)
+		.await
+		.unwrap()
+		.into_iter()
+		.find(|run| run.task_id.to_string() == task["id"].as_str().unwrap())
+		.unwrap();
+	let selected_id = selected_thread_requests
+		.attachment
+		.lock()
+		.unwrap()
+		.clone()
+		.unwrap();
+	let mut ready = false;
+	for _ in 0..10 {
+		worker.worker_once().await.unwrap();
+		let current = f.store.run(&TEST_FIXTURE, peer_run.id).await.unwrap();
+		if let aidash_server::domain::RunState::Thinking(state) = &current.state
+			&& !state.selected_media.is_empty()
+		{
+			ready = true;
+			break;
+		}
+	}
+	assert!(ready, "Agent B did not retain its second selection");
+	sqlx::query("DELETE FROM channel_attachments WHERE id = $1")
+		.bind(Uuid::parse_str(&selected_id).unwrap())
+		.execute(f.store.pool.fixture_driver())
+		.await
+		.unwrap();
+	for _ in 0..10 {
+		worker.worker_once().await.unwrap();
+		while let Ok(body) = received.try_recv() {
+			requests.push(body);
+		}
+		if requests.len() >= 9 {
+			break;
+		}
+	}
+	assert!(requests.len() >= 9, "provider requests: {requests:?}");
+	assert!(
+		requests[8]
+			.to_string()
+			.contains("Thread Attachment unavailable"),
+		"{}",
+		requests[8]
+	);
+	*selected_thread_requests.attachment.lock().unwrap() =
+		Some(attachment["id"].as_str().unwrap().to_owned());
+	let (status, task) = request(
+		&app,
+		&token,
+		"POST",
+		&format!("/api/workspaces/{workspace}/tasks"),
+		json!({"title":"Text-only", "description":"Try the image"}),
+	)
+	.await;
+	assert_eq!(status, 200, "{task}");
+	let (status, body) = request(
+		&app,
+		&token,
+		"POST",
+		&format!("/api/tasks/{}/delegate", task["id"].as_str().unwrap()),
+		json!({"node_id":f.config.deployment, "agent":{"id":"research", "version":"1.0.0"}}),
+	)
+	.await;
+	assert_eq!(status, 200, "{body}");
+	for _ in 0..30 {
+		worker.worker_once().await.unwrap();
+		while let Ok(body) = received.try_recv() {
+			requests.push(body);
+		}
+		if requests.len() >= 11 {
+			break;
+		}
+	}
+	assert!(requests.len() >= 11, "provider requests: {requests:?}");
+	assert!(
+		requests[10]
+			.to_string()
+			.contains("this model cannot read image/png through any current route"),
+		"{}",
+		requests[10]
+	);
+	drop(server);
+	cleanup(f, &url, &schema).await;
+}

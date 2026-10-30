@@ -141,6 +141,23 @@ pub trait ToolOperations: Send + Sync {
 	) -> Result<Value>;
 	async fn artifact(&self, key: &str, input: &ArtifactInput) -> Result<Artifact>;
 	async fn message(&self, key: &str, content: &str) -> Result<()>;
+	async fn message_with_files(&self, key: &str, content: &str, files: &[String]) -> Result<()> {
+		if files.is_empty() {
+			self.message(key, content).await
+		} else {
+			Err(crate::Error::Invalid(
+				"message attachments unavailable".into(),
+			))
+		}
+	}
+	async fn attachment(&self, _id: &str, _model_input: bool) -> Result<Value> {
+		Err(crate::Error::Invalid("attachment reads unavailable".into()))
+	}
+	async fn attachment_copy(&self, _input: Value) -> Result<Value> {
+		Err(crate::Error::Invalid(
+			"attachment copying unavailable".into(),
+		))
+	}
 	async fn observation(&self, offset: usize, limit: usize) -> Result<Value>;
 	async fn read_record_chunk(
 		&self,

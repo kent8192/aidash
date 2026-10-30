@@ -70,6 +70,16 @@ pub(crate) async fn upload(
 	input: ChannelAttachmentUploadQuery,
 	content: &[u8],
 ) -> Result<ChannelAttachment> {
+	upload_for_run(store, lease, workspace, input, content, None).await
+}
+pub(crate) async fn upload_for_run(
+	store: &Store,
+	lease: &mut Lease,
+	workspace: Uuid,
+	input: ChannelAttachmentUploadQuery,
+	content: &[u8],
+	run_id: Option<Uuid>,
+) -> Result<ChannelAttachment> {
 	aidash_domain::workspaces::channels::validate_attachment(
 		&input.filename,
 		&input.media_type,
@@ -79,8 +89,10 @@ pub(crate) async fn upload(
 	let bytes = content.to_vec();
 	let measured =
 		decode(move || aidash_integrations::media::validate(&media_type, &bytes)).await?;
+	let mut scope = crate::bootstrap::channel_scope(store, lease);
+	scope.run_id = run_id;
 	aidash_application::workspaces::channels::upload(
-		&mut crate::bootstrap::channel_scope(store, lease),
+		&mut scope,
 		workspace,
 		aidash_application::workspaces::channels::AttachmentUpload {
 			filename: &input.filename,

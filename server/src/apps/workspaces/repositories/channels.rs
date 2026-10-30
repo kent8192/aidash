@@ -25,6 +25,7 @@ pub(crate) struct NativeChannels<'a> {
 	pub(crate) store: &'a Store,
 	pub(crate) lease: &'a mut Lease,
 	pub(crate) federation: Option<&'a crate::federation::Federation>,
+	pub(crate) run_id: Option<Uuid>,
 }
 #[derive(Debug)]
 struct LinkRecord {
@@ -92,7 +93,12 @@ impl ChannelScope for NativeChannels<'_> {
 		self.lease.sender()
 	}
 	fn principal(&self) -> String {
-		self.lease.principal()
+		match self.run_id {
+			Some(run) => {
+				crate::registry::digest(&json!({"principal":self.lease.principal(), "run_id":run}))
+			}
+			None => self.lease.principal(),
+		}
 	}
 	async fn message(&mut self, workspace: Uuid, id: Uuid) -> Result<Message> {
 		self.lease.message(workspace, id).await.map_err(Into::into)
@@ -266,6 +272,21 @@ impl ChannelScope for NativeChannels<'_> {
 		content: &str,
 		key: &str,
 	) -> Result<Message> {
+		if let Some(run) = self.run_id {
+			let message = MessageRecord::append_in(
+				self.lease.tx().as_mut(),
+				workspace,
+				sender,
+				content,
+				key,
+				Some(run),
+			)
+			.await?;
+			self.store
+				.record_output_in(self.lease.tx(), Some(run), workspace, "message", message.id)
+				.await?;
+			return Ok(message);
+		}
 		self.store
 			.message_in_with_attachments(self.lease.tx(), workspace, sender, content, Some(key))
 			.await

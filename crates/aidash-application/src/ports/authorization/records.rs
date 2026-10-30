@@ -14,6 +14,12 @@ pub trait WorkspaceRecordScope: Send {
 	async fn task_record(&mut self, workspace_id: Uuid, id: Uuid) -> Result<Option<Task>>;
 	async fn artifact_record(&mut self, workspace_id: Uuid, id: Uuid) -> Result<Option<Artifact>>;
 	async fn message_record(&mut self, workspace_id: Uuid, id: Uuid) -> Result<Option<Message>>;
+	async fn attachment_record(
+		&mut self,
+		workspace_id: Uuid,
+		id: Uuid,
+	) -> Result<Option<aidash_domain::media::AttachmentRecord>>;
+
 	async fn event_record(&mut self, workspace_id: Uuid, id: Uuid) -> Result<Option<Event>>;
 	async fn task_visible(&mut self, row: &Task) -> Result<bool>;
 	async fn artifact_visible(&mut self, row: &Artifact) -> Result<bool>;

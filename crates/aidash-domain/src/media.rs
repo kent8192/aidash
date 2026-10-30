@@ -17,6 +17,13 @@ pub struct ThreadAttachment {
 }
 
 #[derive(Debug, Clone)]
+pub struct AttachmentRecord {
+	pub message_id: Uuid,
+	pub attachment: ThreadAttachment,
+	pub sha256: String,
+}
+
+#[derive(Debug, Clone)]
 pub struct MessageAttachment {
 	pub message_id: Uuid,
 	pub attachment: ThreadAttachment,
@@ -29,14 +36,25 @@ pub struct Selection {
 	pub expected_digest: String,
 }
 
-/// One input selected for a model request: a Working Area file, or the page
-/// image of one of the Run's Evidence fragments (ADR 0053). A file selection
-/// keeps its stored shape.
+/// One input selected for a model request: a Working Area file, an Evidence
+/// page image, or a Thread Attachment. A file selection keeps its stored shape.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(untagged)]
 pub enum ModelMedia {
 	File(Selection),
 	PageImage(PageImageSelection),
+	ThreadAttachment(ThreadAttachmentSelection),
+}
+
+/// An immutable attachment selected under the Run's current message authority.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct ThreadAttachmentSelection {
+	pub attachment_id: Uuid,
+	pub message_id: Uuid,
+	pub expected_digest: String,
+	#[serde(default)]
+	pub wav: bool,
 }
 
 /// The page image of an Evidence fragment, by the digest the model was given.

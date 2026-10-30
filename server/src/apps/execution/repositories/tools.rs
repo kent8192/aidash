@@ -11,6 +11,14 @@ use serde_json::{Value, json};
 use std::collections::BTreeMap;
 use uuid::Uuid;
 pub(crate) struct Operations(pub(crate) crate::tool::ToolContext);
+fn operation_error(error: crate::Error) -> aidash_application::Error {
+	match error {
+		crate::Error::NotFound(_) | crate::Error::Conflict(_) | crate::Error::Forbidden => {
+			aidash_application::Error::Invalid(error.to_string())
+		}
+		other => other.into(),
+	}
+}
 #[async_trait]
 impl ToolOperations for Operations {
 	async fn registered_skills(&self) -> Result<Vec<EntityRef>> {
@@ -71,6 +79,76 @@ impl ToolOperations for Operations {
 	}
 	async fn message(&self, key: &str, content: &str) -> Result<()> {
 		self.0.home.message(key, content).await.map_err(Into::into)
+	}
+	async fn message_with_files(&self, key: &str, content: &str, files: &[String]) -> Result<()> {
+		if files.is_empty() {
+			return self.message(key, content).await;
+		}
+		if !self.0.run.is_local(self.0.store.deployment.as_str()) {
+			return Err(aidash_application::Error::Forbidden);
+		}
+		let authority = self
+			.0
+			.home
+			.authority
+			.as_ref()
+			.ok_or(aidash_application::Error::Forbidden)?;
+		authority
+			.message_with_files(&self.0.store, &self.0.run, key, content, files)
+			.await
+			.map_err(operation_error)
+	}
+	async fn attachment(&self, id: &str, model_input: bool) -> Result<Value> {
+		if !self.0.run.is_local(self.0.store.deployment.as_str()) {
+			return Err(aidash_application::Error::Forbidden);
+		}
+		let record = self.0.home.read_record("attachment", id).await?;
+		let metadata = record["attachment"].clone();
+		if !model_input {
+			return Ok(json!({"status":"completed", "metadata":metadata}));
+		}
+		let media_type = metadata["media_type"]
+			.as_str()
+			.ok_or(aidash_application::Error::Forbidden)?;
+		let snapshot = self
+			.0
+			.run
+			.context
+			.binding_snapshot
+			.as_ref()
+			.ok_or(aidash_application::Error::Forbidden)?;
+		let agent = aidash_domain::registry::AgentConfig::from_snapshot(snapshot)?;
+		let model = snapshot
+			.definitions
+			.iter()
+			.find(|entry| {
+				entry.identity.local() == agent.model
+					&& entry.identity.registry_deployment == snapshot.agent.registry_deployment
+			})
+			.ok_or(aidash_application::Error::Forbidden)?;
+		let model: aidash_domain::model::ModelConfig =
+			serde_json::from_value(model.definition.config.clone())?;
+		let wav = aidash_application::execution::media::thread_attachment_wav(&model, media_type)?;
+		Ok(
+			json!({"status":"completed", "metadata":metadata, "selection":{
+				"attachment_id":id, "message_id":record["message_id"], "expected_digest":record["sha256"], "wav":wav
+			}}),
+		)
+	}
+	async fn attachment_copy(&self, input: Value) -> Result<Value> {
+		if !self.0.run.is_local(self.0.store.deployment.as_str()) {
+			return Err(aidash_application::Error::Forbidden);
+		}
+		let authority = self
+			.0
+			.home
+			.authority
+			.as_ref()
+			.ok_or(aidash_application::Error::Forbidden)?;
+		authority
+			.copy_thread_attachment(&self.0.store, &self.0.run, input)
+			.await
+			.map_err(operation_error)
 	}
 	async fn observation(&self, offset: usize, limit: usize) -> Result<Value> {
 		self.0

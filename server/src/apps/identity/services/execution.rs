@@ -186,6 +186,130 @@ pub(crate) struct WorkerAuthority {
 }
 
 impl WorkerAuthority {
+	pub(crate) async fn message_with_files(
+		&self,
+		store: &Store,
+		run: &Run,
+		key: &str,
+		content: &str,
+		paths: &[String],
+	) -> Result<()> {
+		use sha2::{Digest, Sha256};
+		fn operation_id(run: Uuid, key: &str, position: usize) -> Uuid {
+			let mut hash = Sha256::new();
+			hash.update(run.as_bytes());
+			hash.update(key.as_bytes());
+			hash.update((position as u64).to_be_bytes());
+			let digest = hash.finalize();
+			Uuid::from_bytes(digest[..16].try_into().expect("digest has 16 bytes"))
+		}
+		let outer = self.access.read().await;
+		let mut access = Access::under_lease(&outer).await?;
+		let prepare: Result<_> = async {
+			let workspace = access.workspace(run.workspace_id).await?;
+			access.require(&workspace, "message.create").await?;
+			aidash_application::capabilities::files::snapshot_message_files(
+				&mut crate::bootstrap::file_scope(Some(store), &mut access, Some(run)),
+				&run.metadata(),
+				paths,
+			)
+			.await
+			.map_err(Into::into)
+		}
+		.await;
+		let snapshots = match prepare {
+			Ok(snapshots) => snapshots,
+			Err(error) => return access.finish(Err(error)).await,
+		};
+		let mut lease = crate::collaboration::access::Lease::from_access(access);
+		let result: Result<()> = async {
+			let mut ids = Vec::with_capacity(snapshots.len());
+			for (index, (file, bytes)) in snapshots.iter().enumerate() {
+				let filename = file.path.rsplit('/').next().unwrap_or("").to_owned();
+				let input = crate::collaboration::ChannelAttachmentUploadQuery {
+					filename,
+					media_type: file.media_type.clone(),
+					idempotency_key: operation_id(run.id, key, index),
+				};
+				let attachment = crate::collaboration::attachments::upload_for_run(
+					store,
+					&mut lease,
+					run.workspace_id,
+					input,
+					bytes,
+					Some(run.id),
+				)
+				.await?;
+				ids.push(attachment.id);
+			}
+			let mut scope = crate::bootstrap::channel_scope(store, &mut lease);
+			scope.run_id = Some(run.id);
+			aidash_application::workspaces::channels::post(
+				&mut scope,
+				run.workspace_id,
+				aidash_application::workspaces::channels::MessageSubmission {
+					content,
+					thread_id: None,
+					idempotency_key: operation_id(run.id, key, 8),
+					attachment_ids: &ids,
+					citations: &[],
+				},
+			)
+			.await?;
+			Ok(())
+		}
+		.await;
+		lease.finish(result).await
+	}
+	pub(crate) async fn copy_thread_attachment(
+		&self,
+		store: &Store,
+		run: &Run,
+		input: Value,
+	) -> Result<Value> {
+		use aidash_application::ports::execution::media::MediaAttachments as _;
+		let attachment_id: Uuid = serde_json::from_value(input["id"].clone())
+			.map_err(|_| Error::Invalid("invalid attachment id".into()))?;
+		let key: Uuid = serde_json::from_value(input["idempotency_key"].clone())
+			.map_err(|_| Error::Invalid("invalid idempotency key".into()))?;
+		let revision = input["expected_revision"]
+			.as_i64()
+			.ok_or_else(|| Error::Invalid("missing expected_revision".into()))?;
+		let path = input["path"]
+			.as_str()
+			.ok_or_else(|| Error::Invalid("missing path".into()))?
+			.to_owned();
+		let outer = self.access.read().await;
+		let mut access = Access::under_lease(&outer).await?;
+		let result: Result<Value> = async {
+			let record = access
+				.workspace_record(run.workspace_id, "attachment", attachment_id)
+				.await?;
+			let message_id: Uuid = serde_json::from_value(record["message_id"].clone())?;
+			let attachment = crate::bootstrap::scoped_media(&mut access, store)
+				.attachments(run.workspace_id, message_id)
+				.await?
+				.into_iter()
+				.find(|row| row.id == attachment_id)
+				.ok_or_else(|| Error::NotFound("attachment unavailable".into()))?;
+			aidash_application::capabilities::files::copy_thread_attachment(
+				&mut crate::bootstrap::file_scope(Some(store), &mut access, Some(run)),
+				&run.metadata(),
+				key,
+				revision,
+				path,
+				message_id,
+				attachment_id,
+				attachment.media_type,
+				attachment.sha256,
+				&attachment.content,
+			)
+			.await
+			.map_err(Into::into)
+		}
+		.await;
+		access.finish(result).await
+	}
 	/// Resolve existing page and file selections before admitting another
 	/// Research page image, under the same worker authority lease.
 	pub(crate) async fn model_media(

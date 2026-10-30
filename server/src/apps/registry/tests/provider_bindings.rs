@@ -182,7 +182,13 @@ async fn system_seed_is_discoverable_idempotent_and_rejects_owner_mutation(
 	.iter()
 	.map(|group| group.operations.len())
 	.sum();
-	assert_eq!(listed.len(), operations.len() + offered);
+	let legacy = aidash_application::registry::system::legacy_workspace_entries(
+		&validation,
+		"aidash://node",
+	)
+	.unwrap()
+	.len();
+	assert_eq!(listed.len(), operations.len() + offered + legacy);
 	for operation in operations {
 		let identity = QualifiedRef::builtin("aidash://node", operation);
 		let entry = registry
@@ -236,6 +242,50 @@ async fn system_seed_is_discoverable_idempotent_and_rejects_owner_mutation(
 		definitions
 	);
 }
+#[rstest]
+#[tokio::test]
+async fn existing_workspace_tool_versions_are_preserved_when_seeding_attachment_tools(
+	#[future] database: DatabaseFixture,
+) {
+	let database = database.await;
+	let registry = registry(&database).await;
+	let old = aidash_application::registry::system::legacy_workspace_entries(
+		&aidash_server::bootstrap::registry_validation(),
+		"aidash://node",
+	)
+	.unwrap();
+	let mut connection = database.lease.handle();
+	for entry in &old {
+		let definition = Definition::build()
+			.tenant("acme")
+			.id(&entry.id)
+			.version(&entry.version)
+			.kind(DefinitionKind::Tool)
+			.metadata(serde_json::to_value(entry).unwrap().into())
+			.finish();
+		Definition::objects()
+			.create_with_conn(&mut connection, &definition)
+			.await
+			.unwrap();
+	}
+	registry.seed_system().await.unwrap();
+	let tenant = aidash_domain::tenancy::TenantName::new("acme").unwrap();
+	for entry in old {
+		assert_eq!(
+			registry.get(&tenant, &entry.id, "1.0.0").await.unwrap(),
+			entry
+		);
+		assert_eq!(
+			registry
+				.get(&tenant, &entry.id, "1.0.1")
+				.await
+				.unwrap()
+				.version,
+			"1.0.1"
+		);
+	}
+}
+
 #[rstest]
 #[tokio::test]
 async fn forged_reserved_bytes_abort_the_entire_seed(#[future] database: DatabaseFixture) {

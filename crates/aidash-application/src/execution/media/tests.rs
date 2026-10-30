@@ -63,6 +63,71 @@ fn model() -> ModelConfig {
 		estimate_diagnostics: None,
 	}
 }
+
+#[rstest]
+fn attachment_selection_checks_modality_routes_and_wav_fallback(mut model: ModelConfig) {
+	assert!(!thread_attachment_wav(&model, "image/png").unwrap());
+	model.media_routes = vec![routes(vec!["wav".into()])];
+	assert!(thread_attachment_wav(&model, "audio/mpeg").unwrap());
+	model.media_routes[0].expires_at = Utc::now() - Duration::seconds(1);
+	assert!(
+		matches!(thread_attachment_wav(&model, "audio/mpeg"), Err(Error::Invalid(message)) if message.contains("audio/mpeg") && message.contains("current route"))
+	);
+	model.modalities = vec!["text".into()];
+	let error = thread_attachment_wav(&model, "audio/ogg").unwrap_err();
+	assert!(
+		matches!(error, Error::Invalid(message) if message == "this model cannot read audio/ogg through any current route")
+	);
+}
+
+#[rstest]
+fn selected_audio_uses_wav_when_only_a_shared_route_accepts_it(mut model: ModelConfig) {
+	model.media_routes = vec![
+		routes(vec!["mp3".into()]),
+		routes(vec!["image/png".into(), "wav".into()]),
+	];
+	let audio = ModelMedia::ThreadAttachment(aidash_domain::media::ThreadAttachmentSelection {
+		attachment_id: id(4),
+		message_id: id(5),
+		expected_digest: "digest".into(),
+		wav: false,
+	});
+	let image = ModelMedia::ThreadAttachment(aidash_domain::media::ThreadAttachmentSelection {
+		attachment_id: id(6),
+		message_id: id(5),
+		expected_digest: "digest".into(),
+		wav: false,
+	});
+	let audio_parts = vec![
+		ContentPart::Text("audio".into()),
+		ContentPart::Audio {
+			format: "mp3".into(),
+			bytes: vec![],
+		},
+	];
+	let image_parts = vec![
+		ContentPart::Text("image".into()),
+		ContentPart::Image {
+			media_type: "image/png".into(),
+			bytes: vec![],
+		},
+	];
+	for reversed in [false, true] {
+		let selections = if reversed {
+			vec![image.clone(), audio.clone()]
+		} else {
+			vec![audio.clone(), image.clone()]
+		};
+		let parts = if reversed {
+			[image_parts.clone(), audio_parts.clone()].concat()
+		} else {
+			[audio_parts.clone(), image_parts.clone()].concat()
+		};
+		let selected = route_selected_renditions(&model, &selections, &parts).unwrap();
+		assert!(selected.iter().any(|item| matches!(item, ModelMedia::ThreadAttachment(value) if value.attachment_id == id(4) && value.wav)));
+		assert!(selected.iter().any(|item| matches!(item, ModelMedia::ThreadAttachment(value) if value.attachment_id == id(6) && !value.wav)));
+	}
+}
 #[derive(Default)]
 struct Scope {
 	rows: BTreeMap<Uuid, Vec<MediaAttachment>>,
@@ -529,6 +594,7 @@ struct FileScope {
 	denied: bool,
 	read_fault: Option<Uuid>,
 	page_images: BTreeMap<String, (String, Vec<u8>)>,
+	thread_attachments: BTreeMap<Uuid, (String, String, Vec<u8>)>,
 }
 #[fixture]
 fn file_scope() -> FileScope {
@@ -552,6 +618,7 @@ fn file_scope() -> FileScope {
 		denied: false,
 		read_fault: None,
 		page_images: BTreeMap::new(),
+		thread_attachments: BTreeMap::new(),
 	}
 }
 fn selection(scope: &FileScope, file_id: Uuid) -> ModelMedia {
@@ -584,6 +651,17 @@ impl SelectedMediaScope for FileScope {
 			))));
 		}
 		Ok(self.content[&file].clone())
+	}
+	async fn thread_attachment(
+		&mut self,
+		selection: &aidash_domain::media::ThreadAttachmentSelection,
+	) -> Result<Option<(String, String, Vec<u8>)>> {
+		self.calls
+			.push(("thread_attachment", selection.attachment_id));
+		Ok(self
+			.thread_attachments
+			.get(&selection.attachment_id)
+			.cloned())
 	}
 	async fn page_image(&mut self, reference: &str) -> Result<Option<(String, Vec<u8>)>> {
 		self.calls.push(("page_image", Uuid::nil()));
@@ -986,4 +1064,43 @@ async fn rendition_bytes_count_toward_the_inference_limit(
 	)
 	.await;
 	assert!(matches!(result, Err(Error::Invalid(message)) if message.contains("byte limit")));
+}
+
+#[rstest]
+#[tokio::test]
+async fn selected_thread_attachment_reaches_model_input(mut file_scope: FileScope) {
+	file_scope.thread_attachments.insert(
+		id(99),
+		("picture.png".into(), "image/png".into(), image().content),
+	);
+	let selection = ModelMedia::ThreadAttachment(aidash_domain::media::ThreadAttachmentSelection {
+		attachment_id: id(99),
+		message_id: id(33),
+		expected_digest: "digest".into(),
+		wav: false,
+	});
+	let output = selected(&mut file_scope, &[selection]).await.unwrap();
+	assert_eq!(
+		parts(&output),
+		vec![
+			json!({"text":"Selected Thread Attachment: picture.png"}),
+			json!({"image":"image/png", "bytes":image().content})
+		]
+	);
+}
+
+#[rstest]
+#[tokio::test]
+async fn deleted_thread_attachment_yields_unavailable_notice(mut file_scope: FileScope) {
+	let selection = ModelMedia::ThreadAttachment(aidash_domain::media::ThreadAttachmentSelection {
+		attachment_id: id(99),
+		message_id: id(33),
+		expected_digest: "digest".into(),
+		wav: false,
+	});
+	let result = selected(&mut file_scope, &[selection]).await.unwrap();
+	assert!(
+		matches!(&result[..], [ContentPart::Text(notice)] if notice.contains("Thread Attachment unavailable") && notice.contains(&id(99).to_string()))
+	);
+	assert_eq!(file_scope.calls, vec![("thread_attachment", id(99))]);
 }

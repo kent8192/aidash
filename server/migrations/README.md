@@ -1,5 +1,11 @@
 # Aidash native migration history
 
+`registry/0050_attachment_tools` extends the existing PostgreSQL descriptor
+and Agent default validators for the built-in `attachment_copy` operation.
+The function bodies use SQL assets because Reinhardt has no typed operation
+for replacing PostgreSQL functions. Reversal refuses while definitions or Run
+snapshots still use the new operation.
+
 Issue #296 adds write-only Tenant Secrets in `identity/0036` through `0038`
 and durable operation egress budgets and audits in `execution/0046` through
 `0048`. Their forced Tenant row policies use the existing policy renderer.

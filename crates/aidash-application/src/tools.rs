@@ -231,8 +231,11 @@ impl Builtin {
 					.await?
 			)),
 			"workspace_message" => {
+				let files: Vec<String> = serde_json::from_value(
+					input.get("files").cloned().unwrap_or_else(|| json!([])),
+				)?;
 				ctx.operations
-					.message(key, required(&input, "content")?)
+					.message_with_files(key, required(&input, "content")?, &files)
 					.await?;
 				Ok(json!({"sent":true}))
 			}
@@ -250,6 +253,12 @@ impl Builtin {
 			"workspace_read" => {
 				let kind = required(&input, "kind")?;
 				let id = required(&input, "id")?;
+				if kind == "attachment" {
+					return ctx
+						.operations
+						.attachment(id, input["representation"] == "model_input")
+						.await;
+				}
 				ctx.operations
 					.read_record_chunk(
 						kind,
@@ -259,6 +268,7 @@ impl Builtin {
 					)
 					.await
 			}
+			"attachment_copy" => ctx.operations.attachment_copy(input).await,
 			"workspace_wait" => {
 				Ok(json!({"wait_seconds":input["seconds"].as_u64().unwrap_or(2).clamp(1,60)}))
 			}
@@ -350,8 +360,8 @@ pub fn builtins() -> BTreeMap<String, Builtin> {
 			name: "workspace_message",
 			contract: aidash_domain::tool::builtin_contract("workspace_message")
 				.expect("declared builtin"),
-			description: "Send a message to the human and other agents sharing this workspace.",
-			schema: json!({"type":"object","required":["content"],"properties":{"content":string},"additionalProperties":false}),
+			description: "Send a message to the human and other agents sharing this workspace. Optionally attach snapshots of up to eight current Working Area files by path (8 MiB total).",
+			schema: json!({"type":"object","required":["content"],"properties":{"content":string,"files":{"type":"array","maxItems":8,"items":string}},"additionalProperties":false}),
 		},
 		Builtin {
 			name: "workspace_observe",
@@ -364,8 +374,15 @@ pub fn builtins() -> BTreeMap<String, Builtin> {
 			name: "workspace_read",
 			contract: aidash_domain::tool::builtin_contract("workspace_read")
 				.expect("declared builtin"),
-			description: "Read one accessible workspace record by kind and exact ID. Messages list Thread Attachment metadata without bytes. Returns a JSON text chunk, total_chars and next_offset; concatenate chunks in offset order to recover the full record. The returned chunk is capped to fit the active request budget. If budget_limited is true, continue from next_offset on a later turn; if deferred is true, stop reading until that later turn.",
-			schema: json!({"type":"object","required":["kind","id"],"properties":{"kind":{"enum":["workspace","task","artifact","message","event"]},"id":string,"offset":{"type":"integer","minimum":0},"max_chars":{"type":"integer","minimum":0,"maximum":16000}},"additionalProperties":false}),
+			description: "Read one accessible workspace record by kind and exact ID. Messages list Thread Attachment metadata without bytes. Use kind=attachment to read metadata or representation=model_input to select media for the next inference; use attachment_copy to save one in the Working Area. Other records return a JSON text chunk, total_chars and next_offset; concatenate chunks in offset order to recover the full record. The returned chunk is capped to fit the active request budget. If budget_limited is true, continue from next_offset on a later turn; if deferred is true, stop reading until that later turn.",
+			schema: json!({"type":"object","required":["kind","id"],"properties":{"kind":{"enum":["workspace","task","artifact","message","event","attachment"]},"id":string,"representation":{"enum":["metadata","model_input"]},"offset":{"type":"integer","minimum":0},"max_chars":{"type":"integer","minimum":0,"maximum":16000}},"additionalProperties":false}),
+		},
+		Builtin {
+			name: "attachment_copy",
+			contract: aidash_domain::tool::builtin_contract("attachment_copy")
+				.expect("declared builtin"),
+			description: "Copy a visible Thread Attachment into the Working Area. Supply the current area revision and a unique idempotency key. The File records its source message and attachment.",
+			schema: json!({"type":"object","required":["id","path","expected_revision","idempotency_key"],"properties":{"id":string,"path":string,"expected_revision":{"type":"integer"},"idempotency_key":string},"additionalProperties":false}),
 		},
 		Builtin {
 			name: "workspace_wait",

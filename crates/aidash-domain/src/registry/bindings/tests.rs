@@ -63,6 +63,34 @@ fn normalization_records_trusted_origins_and_keeps_required_tools() {
 	agent.remove_default.push("workspace_read".into());
 	assert!(agent.normalize("aidash://node-a").is_err());
 }
+
+#[test]
+fn historical_agent_normalization_remains_valid_and_tampering_is_rejected() {
+	let node = "aidash://node-a";
+	let config = agent();
+	let old = config.normalize_versioned(node, None, true).unwrap();
+	let mut entry: Entry = serde_json::from_value(json!({"id":"agent","version":"1.0.0","kind":"agent","name":{"en":"Agent"},"description":{"en":"Agent"},"schema":{},"config":config})).unwrap();
+	entry.binding_normalization = Some(AgentNormalization {
+		schema_version: BINDING_SCHEMA,
+		registry_deployment: node.into(),
+		compaction_override: None,
+		bindings: old.clone(),
+	});
+	assert_eq!(entry.normalized_bindings(node).unwrap(), old);
+	assert!(
+		!old.iter()
+			.any(|binding| binding.binding.target.id == "aidash.attachment_copy")
+	);
+	assert!(
+		config
+			.normalize(node)
+			.unwrap()
+			.iter()
+			.any(|binding| binding.binding.target.id == "aidash.attachment_copy")
+	);
+	entry.binding_normalization.as_mut().unwrap().bindings.pop();
+	assert!(entry.normalized_bindings(node).is_err());
+}
 #[test]
 fn narrowing_intersects_and_enforces_bounds_without_changing_facts() {
 	let a: Narrowing = serde_json::from_value(json!({"allowed_hosts":["a.example","b.example"],"scope":{"recipient":["a","b"]},"limits":{"maximum_bytes":100}})).unwrap();

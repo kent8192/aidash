@@ -300,6 +300,12 @@ pub(crate) async fn system_definition(
 		node,
 	)?
 	.into_iter()
+	.chain(
+		aidash_application::registry::system::legacy_workspace_entries(
+			&crate::bootstrap::registry_validation(),
+			node,
+		)?,
+	)
 	.chain([aidash_domain::registry::bindings::source_defaults::workspace_observation()?])
 	.find(|entry| entry.id == reference.id && entry.version == reference.version)
 	.ok_or(crate::Error::Forbidden)?;

@@ -206,6 +206,7 @@ impl ToolBehavior {
 	}
 	pub fn fitting_for(&self, input: &Value) -> Option<ResultFitting> {
 		match self.fitting {
+			Some(ResultFitting::WorkspaceRecord) if input["kind"] == "attachment" => None,
 			Some(ResultFitting::SkillText) if input.get("skill").is_none() => None,
 			other => other,
 		}
@@ -216,18 +217,21 @@ impl ToolBehavior {
 	pub fn model_media_result(&self, input: &Value, output: &Value) -> bool {
 		self.model_media_selection(input, output).is_some()
 	}
-	/// The model input a completed call selects: a Working Area file read as
-	/// model input, or the page image of an Evidence fragment (ADR 0053).
+	/// The model input selected by a completed file, Evidence, or Thread Attachment read.
 	pub fn model_media_selection(
 		&self,
 		input: &Value,
 		output: &Value,
 	) -> Option<crate::media::ModelMedia> {
 		use crate::media::{ModelMedia, PageImageSelection, Selection};
-		if !self.yields_model_media {
+		if !(self.yields_model_media
+			|| self.fitting == Some(ResultFitting::WorkspaceRecord)
+				&& input["kind"] == "attachment")
+		{
 			return None;
 		}
-		if input["representation"] == "model_input"
+		if self.yields_model_media
+			&& input["representation"] == "model_input"
 			&& output["status"] == "completed"
 			&& output["metadata"]["file_id"] == input["file_id"]
 		{
@@ -237,6 +241,18 @@ impl ToolBehavior {
 			}))
 			.ok()
 			.map(ModelMedia::File);
+		}
+		if input["kind"] == "attachment"
+			&& input["representation"] == "model_input"
+			&& output["status"] == "completed"
+		{
+			let id = serde_json::from_value::<uuid::Uuid>(input["id"].clone()).ok()?;
+			let metadata_id =
+				serde_json::from_value::<uuid::Uuid>(output["metadata"]["id"].clone()).ok()?;
+			let selection: crate::media::ThreadAttachmentSelection =
+				serde_json::from_value(output["selection"].clone()).ok()?;
+			return (id == metadata_id && id == selection.attachment_id)
+				.then_some(ModelMedia::ThreadAttachment(selection));
 		}
 		let data = &output["data"];
 		(output["status"] == "ok")
@@ -436,6 +452,11 @@ pub fn builtin_contract(name: &str) -> Option<ToolContract> {
 			auth.requirements
 				.push(resource("message.create", "workspace", Workspace));
 			contract.remote_exposure = true;
+		}
+		"attachment_copy" => {
+			auth.flag = Some(AgentFlag::WorkspaceRetrieval);
+			auth.core = Some(CorePermission::Files);
+			contract.disclosure = DisclosureBoundary::Local;
 		}
 		"memory_mutate" => {
 			auth.flag = Some(AgentFlag::MemoryWrite);
@@ -813,6 +834,35 @@ mod tests {
 		assert_eq!(
 			crate::registry::rules::digest(&serde_json::to_value(&contract).unwrap()),
 			PINNED_WORKSPACE_READ_DIGEST
+		);
+	}
+	#[test]
+	fn thread_attachment_selection_requires_matching_completed_model_input() {
+		let behavior = builtin_contract("workspace_read").unwrap().behavior;
+		let id = uuid::Uuid::from_u128(1);
+		let message_id = uuid::Uuid::from_u128(2);
+		let input =
+			serde_json::json!({"kind":"attachment", "id":id, "representation":"model_input"});
+		let output = serde_json::json!({"status":"completed", "metadata":{"id":id}, "selection":{
+			"attachment_id":id, "message_id":message_id, "expected_digest":"sha256:abc", "wav":false
+		}});
+		assert!(behavior.fitting_for(&input).is_none());
+		assert!(matches!(behavior.model_media_selection(&input, &output),
+			Some(crate::media::ModelMedia::ThreadAttachment(selection)) if selection.attachment_id == id && selection.message_id == message_id));
+		let mut mismatch = output.clone();
+		mismatch["selection"]["attachment_id"] = serde_json::json!(uuid::Uuid::from_u128(3));
+		assert!(behavior.model_media_selection(&input, &mismatch).is_none());
+		let mut metadata_only = input.clone();
+		metadata_only["representation"] = serde_json::json!("metadata");
+		assert!(
+			behavior
+				.model_media_selection(&metadata_only, &output)
+				.is_none()
+		);
+		assert!(
+			behavior
+				.fitting_for(&serde_json::json!({"kind":"message"}))
+				.is_some()
 		);
 	}
 	fn plugin_tool() -> AgentPluginTool {
