@@ -550,6 +550,9 @@ impl ChannelScope for NativeChannels<'_> {
 				Alias::new("sha256"),
 				Alias::new("size_bytes"),
 				Alias::new("object_id"),
+				Alias::new("width"),
+				Alias::new("height"),
+				Alias::new("duration_ms"),
 				Alias::new("tenant"),
 			])
 			.from_subquery(
@@ -563,6 +566,9 @@ impl ChannelScope for NativeChannels<'_> {
 					.expr(Expr::cust("$7"))
 					.expr(Expr::cust("$8"))
 					.expr(Expr::cust("$9"))
+					.expr(Expr::cust("$10"))
+					.expr(Expr::cust("$11"))
+					.expr(Expr::cust("$12"))
 					.expr(Expr::cust("(SELECT tenant FROM workspaces WHERE id = $2)"))
 					.to_owned(),
 			)
@@ -590,6 +596,9 @@ impl ChannelScope for NativeChannels<'_> {
 					.map_err(|_| crate::Error::Invalid("attachment is too large".into()))?,
 			)
 			.bind(object_id)
+			.bind(input.measurements.width)
+			.bind(input.measurements.height)
+			.bind(input.measurements.duration_ms)
 			.fetch_optional(&mut **self.lease.tx())
 			.await?;
 		if inserted.is_none() {

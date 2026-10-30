@@ -20,14 +20,36 @@ use tokio::sync::mpsc;
 
 use uuid::Uuid;
 
-async fn upload(
+const PNG: &[u8] = include_bytes!("support/media/pixel.png");
+const JPEG: &[u8] = include_bytes!("support/media/pixel.jpg");
+
+fn wav_bytes(size: usize) -> Vec<u8> {
+	let size = size.max(45);
+	let mut bytes = vec![0_u8; size];
+	bytes[..4].copy_from_slice(b"RIFF");
+	bytes[4..8].copy_from_slice(&((size - 8) as u32).to_le_bytes());
+	bytes[8..12].copy_from_slice(b"WAVE");
+	bytes[12..16].copy_from_slice(b"fmt ");
+	bytes[16..20].copy_from_slice(&16_u32.to_le_bytes());
+	bytes[20..22].copy_from_slice(&1_u16.to_le_bytes());
+	bytes[22..24].copy_from_slice(&1_u16.to_le_bytes());
+	bytes[24..28].copy_from_slice(&48_000_u32.to_le_bytes());
+	bytes[28..32].copy_from_slice(&48_000_u32.to_le_bytes());
+	bytes[32..34].copy_from_slice(&1_u16.to_le_bytes());
+	bytes[34..36].copy_from_slice(&8_u16.to_le_bytes());
+	bytes[36..40].copy_from_slice(b"data");
+	bytes[40..44].copy_from_slice(&((size - 44) as u32).to_le_bytes());
+	bytes
+}
+
+async fn upload_response(
 	app: &common::TestApplication,
 	token: &str,
 	workspace: &str,
 	name: &str,
 	mime: &str,
 	bytes: &[u8],
-) -> Value {
+) -> (u16, Value) {
 	let path = format!(
 		"/api/workspaces/{workspace}/attachments?filename={name}&media_type={}&idempotency_key={}",
 		mime.replace('/', "%2F"),
@@ -48,8 +70,19 @@ async fn upload(
 	.unwrap();
 	let status = response.status_code();
 	let body = response.json_value().unwrap();
-	assert_eq!(status, 200, "{body}");
+	(status, body)
+}
 
+async fn upload(
+	app: &common::TestApplication,
+	token: &str,
+	workspace: &str,
+	name: &str,
+	mime: &str,
+	bytes: &[u8],
+) -> Value {
+	let (status, body) = upload_response(app, token, workspace, name, mime, bytes).await;
+	assert_eq!(status, 200, "{body}");
 	body
 }
 
@@ -104,7 +137,7 @@ async fn verify_audio_batches(
 		.saturating_mul(4)
 		.saturating_sub(3_072)
 		.saturating_mul(16);
-	let first_audio = &case.first_audio[..case.first_audio.len().min(audio_limit)];
+	let first_audio = wav_bytes(case.first_audio.len().min(audio_limit));
 	if let Some(content) = &leading_text {
 		let (status, sent) = request(
 			app,
@@ -116,7 +149,7 @@ async fn verify_audio_batches(
 		.await;
 		assert_eq!(status, 200, "{sent}");
 	}
-	let mut second_audio = first_audio.to_vec();
+	let mut second_audio = first_audio.clone();
 	*second_audio.last_mut().unwrap() = 1;
 	let first = upload(
 		app,
@@ -124,7 +157,7 @@ async fn verify_audio_batches(
 		audio_workspace,
 		"first.wav",
 		"audio/wav",
-		first_audio,
+		&first_audio,
 	)
 	.await;
 	let second = upload(
@@ -186,7 +219,7 @@ async fn verify_audio_batches(
 	assert_eq!(
 		audio_batches,
 		vec![
-			base64::engine::general_purpose::STANDARD.encode(first_audio),
+			base64::engine::general_purpose::STANDARD.encode(&first_audio),
 			base64::engine::general_purpose::STANDARD.encode(&second_audio),
 		]
 	);
@@ -253,8 +286,7 @@ async fn verify_attachment_labels_count_toward_admission(
 	let audio_tokens = (f.run_message_limit(&run).await.unwrap() * 4)
 		.checked_sub(text_body.to_string().len() + 2 * 1024 + 160)
 		.unwrap();
-	let mut audio = vec![0_u8; audio_tokens * 16];
-	audio[..12].copy_from_slice(b"RIFF\0\0\0\0WAVE");
+	let audio = wav_bytes(audio_tokens * 16);
 	let long = upload(app, member, workspace, &long_name, "audio/wav", &audio).await;
 	let short = upload(app, member, workspace, short_name, "audio/wav", &audio).await;
 	let path = format!("/api/runs/{}/message", run.id);
@@ -363,15 +395,7 @@ async fn verify_expired_route_retry(
 		.into_iter()
 		.find(|run| run.workspace_id.to_string() == workspace)
 		.unwrap();
-	let image = upload(
-		app,
-		member,
-		workspace,
-		"retry.png",
-		"image/png",
-		b"\x89PNG\r\n\x1a\nretry",
-	)
-	.await;
+	let image = upload(app, member, workspace, "retry.png", "image/png", PNG).await;
 	let key = Uuid::new_v4();
 	let input = json!({"content":"retry", "idempotency_key":key, "attachment_ids":[image["id"]]});
 	let path = format!("/api/runs/{}/message", run.id);
@@ -482,18 +506,8 @@ async fn verify_separate_format_routes(
 		.find(|run| run.workspace_id.to_string() == workspace)
 		.unwrap();
 	let images = [
-		(
-			"first.png",
-			"image/png",
-			b"\x89PNG\r\n\x1a\nfirst".as_slice(),
-			"fixture/png",
-		),
-		(
-			"second.jpg",
-			"image/jpeg",
-			b"\xff\xd8\xffsecond".as_slice(),
-			"fixture/jpeg",
-		),
+		("first.png", "image/png", PNG, "fixture/png"),
+		("second.jpg", "image/jpeg", JPEG, "fixture/jpeg"),
 	];
 	for (name, mime, bytes, _) in images {
 		let attachment = upload(app, member, workspace, name, mime, bytes).await;
@@ -675,7 +689,7 @@ async fn human_media_only_run_input_reaches_the_first_model_request_in_order(
 			.unwrap()
 			.contains(&json!("audio/wav"))
 	);
-	let bad = upload(
+	let (status, rejected) = upload_response(
 		&app,
 		&token,
 		&workspace,
@@ -684,16 +698,9 @@ async fn human_media_only_run_input_reaches_the_first_model_request_in_order(
 		b"not a png",
 	)
 	.await;
-	let path = format!("/api/runs/{}/message", run.id);
-	let (status, rejected) = request(
-		&app,
-		&token,
-		"POST",
-		&path,
-		json!({"content":"", "idempotency_key":Uuid::new_v4(), "attachment_ids":[bad["id"]]}),
-	)
-	.await;
 	assert_eq!(status, 400, "{rejected}");
+	assert_eq!(rejected["error"], "MEDIA_UNDECODABLE");
+	let path = format!("/api/runs/{}/message", run.id);
 	assert!(
 		f.store
 			.run_inputs(&TEST_FIXTURE, run.id)
@@ -701,8 +708,7 @@ async fn human_media_only_run_input_reaches_the_first_model_request_in_order(
 			.unwrap()
 			.is_empty()
 	);
-	let mut large_audio = vec![0_u8; 512 * 1024];
-	large_audio[..12].copy_from_slice(b"RIFF\0\0\0\0WAVE");
+	let large_audio = wav_bytes(512 * 1024);
 	let first_large = upload(
 		&app,
 		&token,
@@ -743,18 +749,10 @@ async fn human_media_only_run_input_reaches_the_first_model_request_in_order(
 		&workspace,
 		"sample.wav",
 		"audio/wav",
-		b"RIFF\0\0\0\0WAVEaudio",
+		&wav_bytes(100),
 	)
 	.await;
-	let image = upload(
-		&app,
-		&token,
-		&workspace,
-		"sample.png",
-		"image/png",
-		b"\x89PNG\r\n\x1a\nimage",
-	)
-	.await;
+	let image = upload(&app, &token, &workspace, "sample.png", "image/png", PNG).await;
 	assert_eq!(
 		request(
 			&app,
@@ -899,7 +897,7 @@ async fn human_media_only_run_input_reaches_the_first_model_request_in_order(
 	let mut image_ids = Vec::new();
 	let mut expected_urls = Vec::new();
 	for index in 0..10_u8 {
-		let mut bytes = b"\x89PNG\r\n\x1a\nmember".to_vec();
+		let mut bytes = PNG.to_vec();
 		bytes.push(b'0' + index);
 		let uploaded = upload(
 			&app,
@@ -1031,8 +1029,7 @@ async fn human_media_only_run_input_reaches_the_first_model_request_in_order(
 		},
 	))
 	.await;
-	let mut near_window_audio = vec![0_u8; 700 * 1024];
-	near_window_audio[..12].copy_from_slice(b"RIFF\0\0\0\0WAVE");
+	let near_window_audio = wav_bytes(700 * 1024);
 	let leading_text = "retain this instruction ".repeat(450);
 	Box::pin(verify_audio_batches(
 		&app,

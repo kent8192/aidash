@@ -576,3 +576,94 @@ async fn deleting_a_thread_reclaims_its_attachment_object(#[future] scoped_chann
 		.unwrap();
 	assert_eq!(remaining, 0);
 }
+
+#[rstest::rstest]
+#[tokio::test]
+async fn media_upload_validates_decoded_content_and_records_measurements(
+	#[future] scoped_channel: ScopedChannel,
+) {
+	let ScopedChannel {
+		app,
+		token,
+		workspace,
+		..
+	} = Box::pin(scoped_channel).await;
+	let client = client_for(&app.server.url, &token).await;
+	async fn send(
+		client: &reinhardt::test::APIClient,
+		workspace: &str,
+		mime: &str,
+		bytes: &[u8],
+	) -> (u16, Value) {
+		let path = format!(
+			"/api/workspaces/{workspace}/attachments?filename=sample&media_type={}&idempotency_key={}",
+			mime.replace('/', "%2F"),
+			Uuid::new_v4()
+		);
+		decoded(
+			client
+				.post_raw(&path, bytes, "application/octet-stream")
+				.await
+				.unwrap(),
+		)
+	}
+	let png = include_bytes!("../../execution/tests/support/media/pixel.png");
+	let (status, body) = send(&client, &workspace, "image/png", png).await;
+	assert_eq!(status, 200, "{body}");
+	let id: Uuid = body["id"].as_str().unwrap().parse().unwrap();
+	let dimensions: (Option<i32>, Option<i32>, Option<i64>) =
+		sqlx::query_as("SELECT width, height, duration_ms FROM channel_attachments WHERE id = $1")
+			.bind(id)
+			.fetch_one(app.runtime.store.pool.fixture_driver())
+			.await
+			.unwrap();
+	assert_eq!(dimensions, (Some(1), Some(1), None));
+	let wav = include_bytes!("../../execution/tests/support/media/one-second.wav");
+	let (status, body) = send(&client, &workspace, "audio/wav", wav).await;
+	assert_eq!(status, 200, "{body}");
+	let id: Uuid = body["id"].as_str().unwrap().parse().unwrap();
+	let (duration,): (Option<i64>,) =
+		sqlx::query_as("SELECT duration_ms FROM channel_attachments WHERE id = $1")
+			.bind(id)
+			.fetch_one(app.runtime.store.pool.fixture_driver())
+			.await
+			.unwrap();
+	assert_eq!(duration, Some(1000));
+	let mut too_long = wav.to_vec();
+	too_long.resize(44 + 8_000 * 601, 128);
+	let total = too_long.len() as u32;
+	too_long[4..8].copy_from_slice(&(total - 8).to_le_bytes());
+	too_long[40..44].copy_from_slice(&(total - 44).to_le_bytes());
+	let (status, refusal) = send(&client, &workspace, "audio/wav", &too_long).await;
+	assert_eq!(status, 400);
+	assert_eq!(refusal["error"], "MEDIA_TOO_LARGE");
+
+	let (status, refusal) =
+		send(&client, &workspace, "image/png", b"\x89PNG\r\n\x1a\nbroken").await;
+	assert_eq!(status, 400);
+	assert_eq!(refusal["error"], "MEDIA_UNDECODABLE");
+	let oversized = include_bytes!("../../execution/tests/support/media/oversized.png");
+	let (status, refusal) = send(&client, &workspace, "image/png", oversized).await;
+	assert_eq!(status, 400);
+	assert_eq!(refusal["error"], "MEDIA_TOO_LARGE");
+	let (status, refusal) = send(&client, &workspace, "audio/wav", b"RIFF\0\0\0\0WAVEbroken").await;
+	assert_eq!(status, 400);
+	assert_eq!(refusal["error"], "MEDIA_UNDECODABLE");
+}
+
+#[rstest::rstest]
+#[tokio::test]
+async fn attachment_upload_accepts_eight_mib_through_the_http_stack(
+	#[future] scoped_channel: ScopedChannel,
+) {
+	let ScopedChannel {
+		app,
+		token,
+		workspace,
+		..
+	} = Box::pin(scoped_channel).await;
+	let bytes = vec![b'x'; 8 * 1024 * 1024];
+	let (status, body) = upload(&app, &token, &workspace, Uuid::new_v4(), &bytes).await;
+	assert_eq!(status, 200, "{body}");
+	assert_eq!(body["size_bytes"], 8 * 1024 * 1024);
+}

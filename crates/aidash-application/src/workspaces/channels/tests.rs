@@ -377,6 +377,7 @@ async fn upload_replay_compares_metadata_and_content_before_returning() {
 			filename: "10.txt",
 			media_type: "text/plain",
 			idempotency_key: key,
+			measurements: MediaMeasurements::default(),
 		},
 		b"changed",
 	)

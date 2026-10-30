@@ -9,6 +9,21 @@ pub(crate) async fn upload(
 	input: ChannelAttachmentUploadQuery,
 	content: &[u8],
 ) -> Result<ChannelAttachment> {
+	aidash_domain::workspaces::channels::validate_attachment(
+		&input.filename,
+		&input.media_type,
+		content,
+	)?;
+	let measured =
+		aidash_integrations::media::validate(&input.media_type, content).map_err(|refusal| {
+			crate::Error::Invalid(
+				match refusal {
+					aidash_integrations::media::Refusal::Undecodable => "MEDIA_UNDECODABLE",
+					aidash_integrations::media::Refusal::TooLarge => "MEDIA_TOO_LARGE",
+				}
+				.into(),
+			)
+		})?;
 	aidash_application::workspaces::channels::upload(
 		&mut crate::bootstrap::channel_scope(store, lease),
 		workspace,
@@ -16,6 +31,11 @@ pub(crate) async fn upload(
 			filename: &input.filename,
 			media_type: &input.media_type,
 			idempotency_key: input.idempotency_key,
+			measurements: aidash_application::workspaces::channels::MediaMeasurements {
+				width: measured.width,
+				height: measured.height,
+				duration_ms: measured.duration_ms,
+			},
 		},
 		content,
 	)

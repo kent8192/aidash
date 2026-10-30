@@ -17,10 +17,18 @@ pub struct HistoryRequest {
 	pub before: Option<Uuid>,
 	pub limit: u16,
 }
+#[derive(Debug, Clone, Copy, Default)]
+pub struct MediaMeasurements {
+	pub width: Option<i32>,
+	pub height: Option<i32>,
+	pub duration_ms: Option<i64>,
+}
+
 pub struct AttachmentUpload<'a> {
 	pub filename: &'a str,
 	pub media_type: &'a str,
 	pub idempotency_key: Uuid,
+	pub measurements: MediaMeasurements,
 }
 
 pub async fn thread(

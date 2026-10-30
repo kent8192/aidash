@@ -37,6 +37,25 @@ reqwest = { version = "0.13", default-features = false, features = [
   "stream",
 ] }
 encoding_rs = "0.8"
+opus-rs = "=0.1.39"
+image = { version = "0.25", default-features = false, features = [
+  "png",
+  "jpeg",
+  "gif",
+  "webp",
+] }
+symphonia = { version = "0.5.5", default-features = false, features = [
+  "aac",
+  "alac",
+  "flac",
+  "isomp4",
+  "mkv",
+  "mp3",
+  "ogg",
+  "pcm",
+  "vorbis",
+  "wav",
+] }
 # Pure-Rust PDF reading and rendering for Page reading (#312). It runs only in
 # a bounded child process, because it caps neither decompression nor time.
 hayro = { version = "0.8", optional = true }
