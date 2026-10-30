@@ -892,6 +892,7 @@ async fn chat_rejects_remote_invalid_and_oversized_media_before_key_lookup() {
 async fn maintenance_purposes_authorize_only_the_explicit_operation() {
 	let f = Fixture::new().await;
 	for purpose in [
+		aidash_capability::Maintenance::ReferenceIndexing,
 		aidash_capability::Maintenance::MemoryIndexing,
 		aidash_capability::Maintenance::MemoryRetention,
 		aidash_capability::Maintenance::MemoryReflection,
@@ -913,6 +914,11 @@ async fn maintenance_purposes_authorize_only_the_explicit_operation() {
 				chat(),
 			),
 		] {
+			if purpose == aidash_capability::Maintenance::ReferenceIndexing
+				&& operation == Operation::Chat
+			{
+				continue;
+			}
 			let mut c = f.claims();
 			c.sub = TokenSubject::Maintenance {
 				maintenance: purpose,
