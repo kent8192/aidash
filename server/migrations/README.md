@@ -745,10 +745,11 @@ Each is an empty state-only migration that depends on every existing leaf of
 its app. Existing migration identities, dependencies, schema changes and
 rollback guards remain intact, with one head per app for future generation.
 
-`execution/0080_node_preview_merge` joins `execution/0061_node_plugin_merge`
+`execution/0081_node_preview_merge` joins `execution/0061_node_plugin_merge`
 with the Live preview and Safety Stop history ending in
-`execution/0079_run_safety_stops_state`.
+`execution/0080_invocation_delivery`.
 `federation/0020_node_preview_origin_merge` joins Node registration recovery
-ownership with `federation/0013_registered_preview_origin`. Both are empty
+ownership with `federation/0013_registered_preview_origin` and the independent
+`federation/0007_model_state` snapshot. Both are empty
 state-only migrations; existing identities, schema changes and rollback guards
 remain intact.
