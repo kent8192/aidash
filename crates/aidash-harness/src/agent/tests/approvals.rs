@@ -31,6 +31,72 @@ fn waiting(run: &Run) -> &WaitingState {
 }
 
 #[rstest]
+#[case(None, "the worker stopped")]
+#[case(Some("answer_lost"), "its answer was lost after the request was sent")]
+#[tokio::test]
+async fn reconciliation_prompt_names_the_uncertainty(
+	mut fixture: Fixture,
+	#[case] reason: Option<&str>,
+	#[case] expected: &str,
+) {
+	let tool = tenant_tool(&mut fixture);
+	Arc::get_mut(&mut fixture.backend.0)
+		.unwrap()
+		.capture_reconciliation = true;
+	approvals(&fixture, [ToolCallApproval::Approved { approval_id: None }]);
+	respond(&mut fixture.run, vec![call("call-0", "crm", json!({}))]);
+	let key = base_key(&fixture.run);
+	fixture
+		.backend
+		.0
+		.invocations
+		.lock()
+		.unwrap()
+		.insert(key.clone(), ("UNCERTAIN".into(), None));
+	if let Some(reason) = reason {
+		fixture
+			.backend
+			.0
+			.invocation_reasons
+			.lock()
+			.unwrap()
+			.insert(key, reason.into());
+	}
+	advance_sources(&mut fixture).await.unwrap();
+	assert_eq!(tool.invocations(), 0);
+	let prompts = fixture.backend.0.reconciliation_prompts.lock().unwrap();
+	assert_eq!(prompts.len(), 1);
+	assert!(prompts[0].contains(expected), "{}", prompts[0]);
+}
+
+#[rstest]
+#[tokio::test]
+async fn a_failed_http_call_reaches_the_next_model_request(mut fixture: Fixture) {
+	let tool = tenant_tool(&mut fixture);
+	let output = json!({"error":{"kind":"http_status","status":422,"body":"invalid input"}});
+	*tool.outputs.lock().unwrap() = [output.clone()].into();
+	approvals(&fixture, [ToolCallApproval::Approved { approval_id: None }]);
+	respond(&mut fixture.run, vec![call("call-0", "crm", json!({}))]);
+	advance_sources(&mut fixture).await.unwrap();
+	advance_sources(&mut fixture).await.unwrap();
+	advance_sources(&mut fixture).await.unwrap();
+	fn contains(value: &Value, target: &Value) -> bool {
+		value == target
+			|| match value {
+				Value::Array(items) => items.iter().any(|item| contains(item, target)),
+				Value::Object(fields) => fields.values().any(|item| contains(item, target)),
+				_ => false,
+			}
+	}
+	let requests = fixture.backend.0.requests.lock().unwrap();
+	assert_eq!(requests.len(), 1);
+	assert!(contains(
+		&serde_json::to_value(&requests[0].context).unwrap(),
+		&output
+	));
+}
+
+#[rstest]
 #[tokio::test]
 async fn an_approved_call_runs_once_under_its_ordinary_key(mut fixture: Fixture) {
 	// Arrange
