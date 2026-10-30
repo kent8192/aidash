@@ -5929,25 +5929,67 @@ async fn catalog_request_fulfilled_by_an_ordinary_approval_stays_final(
 	.await;
 	assert_eq!(status, 200, "{review}");
 	assert_eq!(review["ready"], false, "{review}");
+	// Requests are planted with Reinhardt Query: the HTTP submission refuses an
+	// unreviewable root, so the API cannot create the unrelated request below.
+	let open_request = |id: Uuid, root: &str, digest: &str| {
+		use reinhardt::query::{Alias, IntoValue, PostgresQueryBuilder, Query};
+		Query::insert()
+			.into_table(Alias::new("catalog_approval_requests"))
+			.columns(
+				[
+					"id",
+					"tenant",
+					"node",
+					"root_id",
+					"root_version",
+					"requester",
+					"reason",
+					"closure_digest",
+					"state",
+					"created_at",
+					"updated_at",
+					"revision",
+				]
+				.map(Alias::new),
+			)
+			.values_panic([
+				IntoValue::into_value(id),
+				IntoValue::into_value("acme"),
+				IntoValue::into_value(node.as_str().to_owned()),
+				IntoValue::into_value(root.to_owned()),
+				IntoValue::into_value("1.0.0"),
+				IntoValue::into_value("bob"),
+				IntoValue::into_value("Please"),
+				IntoValue::into_value(digest.to_owned()),
+				IntoValue::into_value("open"),
+				IntoValue::into_value(chrono::Utc::now()),
+				IntoValue::into_value(chrono::Utc::now()),
+				IntoValue::into_value(1_i64),
+			])
+			.to_string(PostgresQueryBuilder)
+	};
+	let request_state = |id: Uuid| {
+		use reinhardt::query::{Alias, IntoValue, PostgresQueryBuilder, Query};
+		Query::select()
+			.column(Alias::new("state"))
+			.from(Alias::new("catalog_approval_requests"))
+			.and_where(Expr::col("id").eq(IntoValue::into_value(id)))
+			.to_string(PostgresQueryBuilder)
+	};
 	let id = Uuid::new_v4();
-	sqlx::query(
-		"INSERT INTO catalog_approval_requests \
-		 (id, tenant, node, root_id, root_version, requester, reason, \
-		  closure_digest, state, decline_reason, decided_by, created_at, \
-		  updated_at, revision) \
-		 VALUES ($1, 'acme', $2, 'research', '1.0.0', 'bob', 'Please', $3, \
-		  'open', NULL, NULL, now(), now(), 1)",
-	)
-	.bind(id)
-	.bind(node.as_str())
-	.bind(review["closure_digest"].as_str().unwrap())
+	sqlx::query(&open_request(
+		id,
+		"research",
+		review["closure_digest"].as_str().unwrap(),
+	))
 	.execute(f.store.pool.fixture_driver())
 	.await
 	.unwrap();
 	// An unrelated open request whose root cannot be reviewed at all (its
 	// Agent binds one target twice, which review refuses as invalid) must not
-	// roll back the approval below. Fault injection only: the row predates the
-	// config constraint, and only the table owner can drop it to plant the row.
+	// roll back the approval below. Fault injection only: such a row predates
+	// the config constraint, so the table owner drops it to plant the row.
+	// Raw DDL because Reinhardt Query has no constraint-drop statement.
 	let owner = common::owner_pool(f.store.pool.fixture_driver()).await;
 	sqlx::query("ALTER TABLE registry DROP CONSTRAINT registry_agent_config")
 		.execute(&owner)
@@ -5960,22 +6002,31 @@ async fn catalog_request_fulfilled_by_an_ordinary_approval_stays_final(
 		"name":{"en":"Unreviewable"},"description":{"en":"Invalid bindings"},
 		"config":{"schema_version":1,"model":{"id":"model","version":"1.0.0"},
 			"instructions":"Wait","bindings":[twice.clone(),twice],"remove_default":[]}});
-	sqlx::query("INSERT INTO registry (tenant, id, version, kind, metadata) VALUES ('acme','unreviewable','1.0.0','agent',$1::jsonb)")
-		.bind(serde_json::to_string(&unreviewable).unwrap())
+	{
+		use reinhardt::query::{Alias, IntoValue, PostgresQueryBuilder, Query};
+		sqlx::query(
+			&Query::insert()
+				.into_table(Alias::new("registry"))
+				.columns(["tenant", "id", "version", "kind", "metadata"].map(Alias::new))
+				.values_panic([
+					IntoValue::into_value("acme"),
+					IntoValue::into_value("unreviewable"),
+					IntoValue::into_value("1.0.0"),
+					IntoValue::into_value("agent"),
+					IntoValue::into_value(unreviewable),
+				])
+				.to_string(PostgresQueryBuilder),
+		)
 		.execute(f.store.pool.fixture_driver())
 		.await
 		.unwrap();
+	}
 	let unrelated = Uuid::new_v4();
-	sqlx::query(
-		"INSERT INTO catalog_approval_requests \
-		 (id, tenant, node, root_id, root_version, requester, reason, \
-		  closure_digest, state, decline_reason, decided_by, created_at, \
-		  updated_at, revision) \
-		 VALUES ($1, 'acme', $2, 'unreviewable', '1.0.0', 'bob', 'Please', \
-		  'sha256:unreviewable', 'open', NULL, NULL, now(), now(), 1)",
-	)
-	.bind(unrelated)
-	.bind(node.as_str())
+	sqlx::query(&open_request(
+		unrelated,
+		"unreviewable",
+		"sha256:unreviewable",
+	))
 	.execute(f.store.pool.fixture_driver())
 	.await
 	.unwrap();
@@ -5987,19 +6038,15 @@ async fn catalog_request_fulfilled_by_an_ordinary_approval_stays_final(
 	let (status, body) = request(&app, &alice, "POST", catalog, set_model(false, 3)).await;
 	assert_eq!(status, 200, "{body}");
 
-	let state: String =
-		sqlx::query_scalar("SELECT state FROM catalog_approval_requests WHERE id = $1")
-			.bind(id)
-			.fetch_one(f.store.pool.fixture_driver())
-			.await
-			.unwrap();
+	let state: String = sqlx::query_scalar(&request_state(id))
+		.fetch_one(f.store.pool.fixture_driver())
+		.await
+		.unwrap();
 	assert_eq!(state, "fulfilled");
-	let unrelated_state: String =
-		sqlx::query_scalar("SELECT state FROM catalog_approval_requests WHERE id = $1")
-			.bind(unrelated)
-			.fetch_one(f.store.pool.fixture_driver())
-			.await
-			.unwrap();
+	let unrelated_state: String = sqlx::query_scalar(&request_state(unrelated))
+		.fetch_one(f.store.pool.fixture_driver())
+		.await
+		.unwrap();
 	assert_eq!(unrelated_state, "open");
 	// Nor does it fail the approver's queue read.
 	let (status, pending) = request(
