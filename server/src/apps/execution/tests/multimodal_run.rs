@@ -1663,3 +1663,224 @@ async fn visible_thread_attachment_is_selected_for_the_next_model_request(
 	drop(server);
 	cleanup(f, &url, &schema).await;
 }
+
+// This proxy forwards the actual harness request unchanged, adding only the
+// test credential. It records the ID of the inference that carried the media;
+// OpenRouter's generation API is the independent assertion at the boundary.
+#[derive(Clone, Default)]
+struct LiveMediaGenerations(Arc<std::sync::Mutex<Vec<String>>>);
+
+#[rstest::fixture]
+fn live_media_generations() -> LiveMediaGenerations {
+	LiveMediaGenerations::default()
+}
+
+fn live_media_model() -> String {
+	std::env::var("AIDASH_LIVE_MEDIA_MODEL")
+		.unwrap_or_else(|_| "google/gemini-3.1-flash-lite".into())
+}
+
+async fn live_discovery(path: &str) -> reinhardt::Response {
+	let key = std::env::var("OPENROUTER_API_KEY").expect("OPENROUTER_API_KEY is required");
+	let response = reqwest::Client::new()
+		.get(format!("https://openrouter.ai/api/v1/{path}"))
+		.bearer_auth(key)
+		.send()
+		.await
+		.expect("OpenRouter route discovery");
+	let status = response.status();
+	let answer: Value = response.json().await.expect("OpenRouter discovery JSON");
+	assert!(
+		status.is_success(),
+		"OpenRouter discovery HTTP {status}: {answer}"
+	);
+	reinhardt::Response::ok().with_json(&answer).unwrap()
+}
+
+#[rstest::fixture]
+fn live_media_router(
+	#[from(live_media_generations)] generations: LiveMediaGenerations,
+) -> Arc<Router> {
+	let discovery_path = format!("models/{}/endpoints", live_media_model());
+	let discovery_route = format!("/v1/{discovery_path}");
+	Arc::new(
+		reinhardt::test::stub::StubRouter::new()
+			.route(
+				&discovery_route,
+				http::Method::GET,
+				reply(move |_| {
+					let path = discovery_path.clone();
+					async move { live_discovery(&path).await }
+				}),
+			)
+			.route(
+				"/v1/endpoints/zdr",
+				http::Method::GET,
+				reply(|_| async { live_discovery("endpoints/zdr").await }),
+			)
+			.route(
+				"/v1/chat/completions",
+				http::Method::POST,
+				reply(move |request: reinhardt::Request| {
+					let body = request.json::<Value>().unwrap();
+					let generations = generations.clone();
+					async move {
+						let key = std::env::var("OPENROUTER_API_KEY")
+							.expect("OPENROUTER_API_KEY is required for live tests");
+						let response = reqwest::Client::new()
+							.post("https://openrouter.ai/api/v1/chat/completions")
+							.bearer_auth(key)
+							.json(&body)
+							.send()
+							.await
+							.expect("OpenRouter request");
+						let status = response.status();
+						let answer: Value =
+							response.json().await.expect("OpenRouter JSON response");
+						assert!(status.is_success(), "OpenRouter HTTP {status}: {answer}");
+						let media = body["messages"].as_array().is_some_and(|messages| {
+							messages.iter().any(|message| {
+								message["content"].as_array().is_some_and(|parts| {
+									parts.iter().any(|part| {
+										part["type"] == "image_url" || part["type"] == "input_audio"
+									})
+								})
+							})
+						});
+						if media {
+							generations
+								.0
+								.lock()
+								.unwrap()
+								.push(answer["id"].as_str().expect("generation ID").to_owned());
+						}
+						reinhardt::Response::ok().with_json(&answer).unwrap()
+					}
+				}),
+			)
+			.into_server_router(),
+	)
+}
+
+/// Run explicitly with `OPENROUTER_API_KEY=... cargo test -p aidash-server
+/// --test multimodal_run live_openrouter_thread_attachment -- --ignored --nocapture`.
+#[rstest::rstest]
+#[case::image("image/png", "selected.png", "num_media_prompt")]
+#[case::audio("audio/wav", "selected.wav", "num_input_audio_prompt")]
+#[tokio::test]
+#[ignore = "live: incurs OpenRouter charges and needs OPENROUTER_API_KEY"]
+async fn live_openrouter_thread_attachment(
+	#[case] mime: &str,
+	#[case] filename: &str,
+	#[case] stats_field: &str,
+	#[from(common::native_application)] fixture: common::ApplicationFuture,
+	live_media_generations: LiveMediaGenerations,
+	#[from(live_media_router)]
+	#[with(live_media_generations.clone())]
+	_router: Arc<Router>,
+	#[future(awt)]
+	#[from(upstream)]
+	#[with(_router.clone())]
+	server: TestServerGuard,
+) {
+	let Ok(key) = std::env::var("OPENROUTER_API_KEY") else {
+		eprintln!("SKIP live OpenRouter attachment test: OPENROUTER_API_KEY is not set");
+		return;
+	};
+	if key.trim().is_empty() {
+		eprintln!("SKIP live OpenRouter attachment test: OPENROUTER_API_KEY is empty");
+		return;
+	}
+	let fixture = fixture.await;
+	let (f, url, schema) = fixture.runtime.parts();
+	let app = fixture.application;
+	let (mut policy, token, _) = common::bootstrap_with_area(&f, &app, &server.url).await;
+	policy["subjects"][aidash_server::domain::qualified_agent(
+		&aidash_domain::nodes::NodeAddress::derived(f.config.deployment.as_str(), "acme"),
+		"research",
+		"1.0.1",
+	)] = json!({"kind":"agent"});
+	let (status, body) = request(
+		&app,
+		&f.config.api_token,
+		"POST",
+		"/api/authorization/acme",
+		json!({"expected_revision":1,"bundle":policy}),
+	)
+	.await;
+	assert_eq!(status, 200, "{body}");
+	let tenant = aidash_domain::tenancy::TenantName::new("acme").unwrap();
+	let mut model = f.registry.get(&tenant, "model", "1.0.0").await.unwrap();
+	model.version = "1.0.1".into();
+	model.config["model_id"] = json!(live_media_model());
+	model.config["modalities"] = json!(["text", "image", "audio"]);
+	model.config["streaming"] = json!(false);
+	model.config["max_output_tokens"] = json!(256);
+	model.config["media_routes"] = json!([{"tag":std::env::var("AIDASH_LIVE_MEDIA_ROUTE").unwrap_or_else(|_| "google-vertex/us".into()), "formats":["image/png", "wav"], "source":"live-test", "verified_at":chrono::Utc::now() - chrono::Duration::minutes(1), "expires_at":chrono::Utc::now() + chrono::Duration::hours(1)}]);
+	let (status, body) = request(&app, &token, "POST", "/api/registry", json!(model)).await;
+	assert_eq!(status, 200, "{body}");
+	let (status, body) = request(&app, &token, "POST", "/api/authorization/acme/catalog", json!({"node":aidash_domain::nodes::NodeName::derived("acme"),"entry":{"id":"model","version":"1.0.1"},"expected_revision":0,"enabled":true})).await;
+	assert_eq!(status, 200, "{body}");
+	let mut agent = f.registry.get(&tenant, "research", "1.0.0").await.unwrap();
+	agent.version = "1.0.1".into();
+	agent.binding_normalization = None;
+	agent.config["model"]["version"] = json!("1.0.1");
+	agent.config["instructions"] = json!(
+		"Use workspace_observe to find the attachment. Call workspace_read with kind attachment, its id, and representation model_input. Then describe the media briefly. Do not finish before viewing it."
+	);
+	let (status, body) = request(&app, &token, "POST", "/api/registry", json!(agent)).await;
+	assert_eq!(status, 200, "{body}");
+	let (status, body) = request(&app, &token, "POST", "/api/authorization/acme/catalog", json!({"node":aidash_domain::nodes::NodeName::derived("acme"),"entry":{"id":"research","version":"1.0.1"},"expected_revision":0,"enabled":true})).await;
+	assert_eq!(status, 200, "{body}");
+	let (status, created) = request(&app, &token, "POST", "/api/conversations", json!({"title":"Live attachment", "goal":"Inspect the attached media using workspace_read representation model_input", "target":{"id":"research","version":"1.0.1"}, "target_kind":"agent"})).await;
+	assert_eq!(status, 200, "{created}");
+	let workspace = created["workspace"]["id"].as_str().unwrap();
+	let bytes = if mime.starts_with("image/") {
+		PNG.to_vec()
+	} else {
+		wav_bytes(48_044)
+	};
+	let attachment = upload(&app, &token, workspace, filename, mime, &bytes).await;
+	let (status, message) = request(&app, &token, "POST", &format!("/api/workspaces/{workspace}/thread-messages"), json!({"content":format!("Read attachment {} with workspace_read kind attachment representation model_input, then describe it.", attachment["id"].as_str().unwrap()), "idempotency_key":Uuid::new_v4(), "attachment_ids":[attachment["id"]]})).await;
+	assert_eq!(status, 200, "{message}");
+	let worker = Harness {
+		federation: f.clone(),
+	};
+	for _ in 0..40 {
+		worker.worker_once().await.unwrap();
+		if !live_media_generations.0.lock().unwrap().is_empty() {
+			break;
+		}
+	}
+	let generation = live_media_generations
+		.0
+		.lock()
+		.unwrap()
+		.first()
+		.cloned()
+		.expect("Agent must select the attachment and send it to OpenRouter");
+	let client = reqwest::Client::new();
+	let mut stats = Value::Null;
+	for _ in 0..10 {
+		let response = client
+			.get("https://openrouter.ai/api/v1/generation")
+			.query(&[("id", &generation)])
+			.bearer_auth(&key)
+			.send()
+			.await
+			.unwrap();
+		if response.status().is_success() {
+			stats = response.json().await.unwrap();
+			if stats["data"][stats_field].as_u64().unwrap_or(0) >= 1 {
+				break;
+			}
+		}
+		tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+	}
+	assert!(
+		stats["data"][stats_field].as_u64().unwrap_or(0) >= 1,
+		"OpenRouter generation {generation}: {stats}"
+	);
+	drop(server);
+	cleanup(f, &url, &schema).await;
+}
