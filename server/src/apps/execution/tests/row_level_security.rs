@@ -292,6 +292,11 @@ async fn orm_work_on_a_tenant_owned_table_stays_in_its_tenant(#[future] database
 	"id, tenant, node, kind, data",
 	"gen_random_uuid(), $1, 'n', 'k', '{}'"
 )]
+#[case::reference_image_bytes(
+	"agent_knowledge_images",
+	"tenant, agent_id, agent_version, document_index, media_type, size, sha256, bytes",
+	"$1, 'source', '1.0.0', 0, 'image/png', 3, repeat('a',64), decode('010203','hex')"
+)]
 #[case::memory_receipts(
 	"memory_receipts",
 	"operation_id, tenant, bank_id, digest, outcome, created_at",

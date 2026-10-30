@@ -32,3 +32,11 @@ BEGIN
  IF extended = original THEN RAISE EXCEPTION 'Workspace descriptor anchor missing'; END IF;
  EXECUTE extended;
 END $migration$;
+
+-- Match the owning knowledge row's Tenant isolation and transaction guard.
+ALTER TABLE public.agent_knowledge_images ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.agent_knowledge_images FORCE ROW LEVEL SECURITY;
+CREATE POLICY tenant_isolation ON public.agent_knowledge_images AS PERMISSIVE FOR ALL TO PUBLIC
+ USING ((SELECT public.aidash_deployment_scope()) OR tenant = (SELECT public.aidash_scope_tenant()))
+ WITH CHECK ((SELECT public.aidash_deployment_scope()) OR tenant = (SELECT public.aidash_scope_tenant()));
+CREATE TRIGGER atomic_write_guard BEFORE INSERT OR DELETE OR UPDATE OR TRUNCATE ON public.agent_knowledge_images FOR EACH STATEMENT EXECUTE FUNCTION public.atomic_write_guard();

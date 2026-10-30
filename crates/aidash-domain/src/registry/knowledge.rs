@@ -92,7 +92,7 @@ pub fn canonical_documents(
 			&image.bytes,
 		));
 		stored.push(
-			serde_json::json!({"document_index": image.document_index, "data_base64": bytes}),
+			serde_json::json!({"document_index": image.document_index, "media_type": image.media_type, "size": image.bytes.len(), "sha256": crate::semantic::indexing::content_digest_bytes(&image.bytes), "data_base64": bytes}),
 		);
 	}
 	Ok((canonical, Value::Array(stored)))

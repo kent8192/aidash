@@ -30,7 +30,7 @@ pinned embedding and collection together. Runs query that collection with the
 pinned definition. Its results have a separate context section from Workspace
 results; scores from the two stores are not merged. Image names appear in the
 reference listing; original bytes are retained separately and are not loaded in
-every Run. Original image bytes are stored in private binary columns. Registration
+every Run. Original image bytes are stored as binary in a Tenant-isolated child table that cascades with the owning knowledge row. Registration
 checks for an idempotent replay before calling the provider, closes the preflight
 scope during the external call, and rechecks authority before the atomic write.
 A missing definition, withdrawn Catalog Approval or provider model

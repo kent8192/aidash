@@ -160,6 +160,12 @@ fn private_image_collection_ranks_only_its_own_vectors_and_never_contains_bytes(
 	let (metadata, bytes) = canonical_documents(&documents).unwrap();
 	assert!(metadata.iter().all(|doc| doc.data_base64.is_none()));
 	assert_eq!(bytes[0]["data_base64"], STANDARD.encode(png));
+	assert_eq!(bytes[0]["media_type"], "image/png");
+	assert_eq!(bytes[0]["size"], png.len());
+	assert_eq!(
+		bytes[0]["sha256"],
+		crate::semantic::indexing::content_digest_bytes(png)
+	);
 	assert!(
 		index
 			.verify("agent", "1.0.0", &index.embedding, &metadata)

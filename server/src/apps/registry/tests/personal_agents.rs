@@ -11,7 +11,7 @@ mod native_database;
 #[path = "../../execution/tests/provider_fixtures.rs"]
 mod provider_fixtures;
 
-use aidash_server::apps::registry::models::AgentKnowledge;
+use aidash_server::apps::registry::models::{AgentKnowledge, AgentKnowledgeImage};
 use aidash_server::{context, harness::Harness, knowledge, registry::Entry, tool};
 use endpoint::assert_json;
 use execution_fixtures::{ExecutionFixture, execution};
@@ -104,15 +104,19 @@ async fn reference_image_replay_uses_saved_binary_without_another_provider_call(
 		.find(|binding| binding["kind"] == "source")
 		.unwrap()["target"]
 		.clone();
-	let record = AgentKnowledge::objects()
-		.filter(AgentKnowledge::field_agent_key().eq(source["id"].as_str().unwrap()))
-		.filter(AgentKnowledge::field_agent_version().eq(source["version"].as_str().unwrap()))
+	let record = AgentKnowledgeImage::objects()
+		.filter(AgentKnowledgeImage::field_agent_key().eq(source["id"].as_str().unwrap()))
+		.filter(AgentKnowledgeImage::field_agent_version().eq(source["version"].as_str().unwrap()))
 		.get_with_db(&mut app.database.lease.handle())
 		.await
 		.unwrap();
+	assert_eq!(record.bytes.as_slice(), b"\x89PNG\r\n\x1a\n".as_slice());
+	assert_eq!(record.document_index, 0);
+	assert_eq!(record.media_type, "image/png");
+	assert_eq!(record.size, 8);
 	assert_eq!(
-		record.image_0.as_deref(),
-		Some(b"\x89PNG\r\n\x1a\n".as_slice())
+		record.sha256,
+		aidash_domain::semantic::indexing::content_digest_bytes(&record.bytes)
 	);
 	server.abort();
 	assert_eq!(personal(&execution.subject, key, input).await, first);

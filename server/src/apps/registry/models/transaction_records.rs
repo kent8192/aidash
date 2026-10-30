@@ -2,7 +2,7 @@
 //! writes reach only the Registry of the Tenant whose scope the transaction was
 //! opened in (`aidash.tenant`), the condition row-level security enforces for
 //! Tenant-owned tables (#265); outside a Tenant scope they see nothing.
-use super::{AgentKnowledge, Definition};
+use super::{AgentKnowledge, AgentKnowledgeImage, Definition};
 use crate::apps::registry::serializers::contracts::Entry;
 use crate::{Error, Result};
 use reinhardt::db::backends::TransactionExecutor;
@@ -32,7 +32,8 @@ mod image_storage_tests {
 		let database = database.await;
 		let mut tx = database.begin_fixture().await;
 		// A temporary row exercises the actual adapter without manufacturing a Registry identity.
-		tx.execute("CREATE TEMP TABLE agent_knowledge (tenant text, agent_id text, agent_version text, image_0 bytea, image_1 bytea, image_2 bytea, image_3 bytea, image_4 bytea, image_5 bytea, image_6 bytea, image_7 bytea)", vec![]).await.unwrap();
+		tx.execute("CREATE TEMP TABLE agent_knowledge (tenant text, agent_id text, agent_version text, PRIMARY KEY (tenant, agent_id, agent_version))", vec![]).await.unwrap();
+		tx.execute("CREATE TEMP TABLE agent_knowledge_images (tenant text, agent_id text, agent_version text, document_index integer, media_type text, size bigint, sha256 text, bytes bytea, PRIMARY KEY (tenant, agent_id, agent_version, document_index), FOREIGN KEY (tenant, agent_id, agent_version) REFERENCES agent_knowledge (tenant, agent_id, agent_version) ON DELETE CASCADE)", vec![]).await.unwrap();
 		let tenant = scope_tenant(&mut *tx).await.unwrap();
 		let entry: Entry = serde_json::from_value(serde_json::json!({"id":"source", "version":"1.0.0", "kind":"source", "name":{"en":"Source"}, "description":{"en":"Source"}, "config":{}})).unwrap();
 		let (sql, values) = Query::insert()
@@ -46,12 +47,12 @@ mod image_storage_tests {
 			.build(PostgresQueryBuilder);
 		tx.execute(&sql, convert_values(values)).await.unwrap();
 		let bytes = b"\x89PNG\r\n\x1a\n\x00binary";
-		let data = serde_json::json!([{"document_index":2,"data_base64":STANDARD.encode(bytes)}]);
+		let data = serde_json::json!([{"document_index":2,"media_type":"image/png","size":bytes.len(),"sha256":aidash_domain::semantic::indexing::content_digest_bytes(bytes),"data_base64":STANDARD.encode(bytes)}]);
 		insert_image_data(&mut *tx, &entry, data.clone())
 			.await
 			.unwrap();
 		insert_image_data(&mut *tx, &entry, data).await.unwrap();
-		let row = tx.fetch_one("SELECT encode(image_2, 'hex') AS bytes, pg_typeof(image_2)::text AS storage FROM agent_knowledge", vec![]).await.unwrap();
+		let row = tx.fetch_one("SELECT encode(bytes, 'hex') AS bytes, pg_typeof(bytes)::text AS storage FROM agent_knowledge_images WHERE document_index = 2", vec![]).await.unwrap();
 		let row = QueryRow::from_backend_row(row).data;
 		assert_eq!(row["storage"], "bytea");
 		assert_eq!(
@@ -61,12 +62,22 @@ mod image_storage_tests {
 				.map(|byte| format!("{byte:02x}"))
 				.collect::<String>()
 		);
-		let changed =
-			serde_json::json!([{"document_index":2,"data_base64":STANDARD.encode(b"different")}]);
+		let changed = serde_json::json!([{"document_index":2,"media_type":"image/png","size":9,"sha256":aidash_domain::semantic::indexing::content_digest_bytes(b"different"),"data_base64":STANDARD.encode(b"different")}]);
 		assert!(matches!(
 			insert_image_data(&mut *tx, &entry, changed).await,
 			Err(Error::Conflict(_))
 		));
+		tx.execute("DELETE FROM agent_knowledge", vec![])
+			.await
+			.unwrap();
+		let row = tx
+			.fetch_one(
+				"SELECT count(*) AS count FROM agent_knowledge_images",
+				vec![],
+			)
+			.await
+			.unwrap();
+		assert_eq!(QueryRow::from_backend_row(row).data["count"], 0);
 	}
 }
 
@@ -237,7 +248,7 @@ pub(crate) async fn insert_image_data(
 	for image in images {
 		let index = image["document_index"]
 			.as_u64()
-			.filter(|index| *index < 8)
+			.and_then(|index| i32::try_from(index).ok())
 			.ok_or_else(|| Error::Invalid("invalid private image index".into()))?;
 		if !seen.insert(index) {
 			return Err(Error::Invalid("duplicate private image index".into()));
@@ -248,42 +259,79 @@ pub(crate) async fn insert_image_data(
 		let bytes = STANDARD
 			.decode(encoded)
 			.map_err(|_| Error::Invalid("invalid private image data".into()))?;
-		let column = format!("image_{index}");
-		let (sql, values) = Query::update()
-			.table(Alias::new(AgentKnowledge::table_name()))
-			.value(Alias::new(&column), Expr::value(bytes.clone()))
-			.and_where(Expr::col("tenant").eq(Expr::value(&tenant)))
-			.and_where(Expr::col("agent_id").eq(Expr::value(&entry.id)))
-			.and_where(Expr::col("agent_version").eq(Expr::value(&entry.version)))
-			.and_where(Expr::col(Alias::new(&column)).is_null())
+		let media_type = image["media_type"]
+			.as_str()
+			.filter(|value| value.starts_with("image/"))
+			.ok_or_else(|| Error::Invalid("invalid private image media type".into()))?;
+		let size = i64::try_from(bytes.len())
+			.map_err(|_| Error::Invalid("invalid private image size".into()))?;
+		let digest = aidash_domain::semantic::indexing::content_digest_bytes(&bytes);
+		if image["size"].as_i64() != Some(size) || image["sha256"].as_str() != Some(digest.as_str())
+		{
+			return Err(Error::Invalid(
+				"private image metadata does not match bytes".into(),
+			));
+		}
+		let (sql, values) = Query::insert()
+			.into_table(Alias::new(AgentKnowledgeImage::table_name()))
+			.columns(
+				[
+					"tenant",
+					"agent_id",
+					"agent_version",
+					"document_index",
+					"media_type",
+					"size",
+					"sha256",
+					"bytes",
+				]
+				.map(Alias::new),
+			)
+			.values_panic([
+				reinhardt::query::IntoValue::into_value(tenant.clone()),
+				reinhardt::query::IntoValue::into_value(entry.id.clone()),
+				reinhardt::query::IntoValue::into_value(entry.version.clone()),
+				reinhardt::query::IntoValue::into_value(index),
+				reinhardt::query::IntoValue::into_value(media_type.to_owned()),
+				reinhardt::query::IntoValue::into_value(size),
+				reinhardt::query::IntoValue::into_value(digest.clone()),
+				reinhardt::query::IntoValue::into_value(bytes.clone()),
+			])
+			.on_conflict(
+				OnConflict::columns(
+					["tenant", "agent_id", "agent_version", "document_index"].map(Alias::new),
+				)
+				.do_nothing()
+				.to_owned(),
+			)
 			.build(PostgresQueryBuilder);
 		tx.execute(&sql, convert_values(values)).await?;
 		let (sql, values) = Query::select()
-			.expr_as(
-				Expr::cust(format!("encode({column}, 'hex')")),
-				Alias::new("image_hex"),
-			)
-			.from(Alias::new(AgentKnowledge::table_name()))
+			.columns(["media_type", "size", "sha256"].map(Alias::new))
+			.expr_as(Expr::cust("encode(bytes, 'hex')"), Alias::new("image_hex"))
+			.from(Alias::new(AgentKnowledgeImage::table_name()))
 			.and_where(Expr::col("tenant").eq(Expr::value(&tenant)))
 			.and_where(Expr::col("agent_id").eq(Expr::value(&entry.id)))
 			.and_where(Expr::col("agent_version").eq(Expr::value(&entry.version)))
+			.and_where(Expr::col("document_index").eq(index))
 			.build(PostgresQueryBuilder);
 		let stored = tx
 			.fetch_optional(&sql, convert_values(values))
 			.await?
-			.and_then(|row| {
-				QueryRow::from_backend_row(row)
-					.data
-					.get("image_hex")
-					.cloned()
-			});
+			.map(|row| QueryRow::from_backend_row(row).data);
 		let expected: String = bytes.iter().map(|byte| format!("{byte:02x}")).collect();
-		if stored.as_ref().and_then(Value::as_str) != Some(expected.as_str()) {
+		if !stored.as_ref().is_some_and(|row| {
+			row["image_hex"].as_str() == Some(&expected)
+				&& row["media_type"].as_str() == Some(media_type)
+				&& row["size"].as_i64() == Some(size)
+				&& row["sha256"].as_str() == Some(&digest)
+		}) {
 			return Err(Error::Conflict(
 				"private image data is immutable; choose a new version".into(),
 			));
 		}
 	}
+
 	Ok(())
 }
 
