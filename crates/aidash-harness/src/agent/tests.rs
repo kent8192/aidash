@@ -6033,7 +6033,7 @@ fn cited_file_versions_are_named_by_path_and_digest_prefix() {
 
 #[rstest]
 #[tokio::test]
-async fn recovered_step_emits_count_and_saves_a_reset_counter(mut fixture: Fixture) {
+async fn recovered_step_emits_count_and_resets_it_only_when_the_step_ends(mut fixture: Fixture) {
 	fixture.run.recovery.lease_recoveries = 2;
 	Executor::new(&fixture.backend)
 		.advance(
@@ -6050,11 +6050,22 @@ async fn recovered_step_emits_count_and_saves_a_reset_counter(mut fixture: Fixtu
 		.unwrap();
 	assert_eq!(recovered.1["lease_recoveries"], 2);
 	assert_eq!(recovered.1["run_id"], fixture.run.id.to_string());
+	// The step does not clear the count in memory: a same-step checkpoint
+	// keeps it, so a crash after that checkpoint still reaches the bound.
+	assert_eq!(fixture.run.recovery.lease_recoveries, 2);
 	let writes = fixture.backend.0.writes.lock().unwrap();
-	assert!(!writes.is_empty());
 	assert!(
 		writes
 			.iter()
-			.all(|(_, run)| run.recovery.lease_recoveries == 0)
+			.any(|(kind, _)| !aidash_domain::run_state::persistence::retains_lease(kind))
 	);
+	for (kind, run) in writes.iter() {
+		let stored =
+			run.worker_snapshot(kind).unwrap().pending["recovery"]["lease_recoveries"].clone();
+		if aidash_domain::run_state::persistence::retains_lease(kind) {
+			assert_eq!(stored, 2, "{kind}");
+		} else {
+			assert_eq!(stored, Value::Null, "{kind}");
+		}
+	}
 }

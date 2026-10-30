@@ -86,6 +86,7 @@ struct Scope {
 	run: Run,
 	blocked: bool,
 	resume_failed: bool,
+	lease_recoveries: u32,
 }
 impl Scope {
 	fn new(leases: &Leases) -> Self {
@@ -93,6 +94,7 @@ impl Scope {
 			trace: leases.trace.clone(),
 			blocked: false,
 			resume_failed: false,
+			lease_recoveries: 0,
 			run: Run {
 				node: "brave-otter-k3m9q2xa".parse().unwrap(),
 				id: leases.run,
@@ -175,6 +177,14 @@ impl WorkerStep for Scope {
 	}
 	fn recovery_store(&self) -> &dyn ExecutionRecoveryStore {
 		self
+	}
+	fn lease_recoveries(&self) -> u32 {
+		self.lease_recoveries
+	}
+	async fn charge_isolated_step(&mut self, _: Uuid) -> Result<()> {
+		self.trace.lock().unwrap().push("charge");
+		self.lease_recoveries += 1;
+		Ok(())
 	}
 	fn classify_failure(&self, error: Error) -> ExecutionFailure {
 		assert!(matches!(error, Error::Forbidden));
@@ -526,4 +536,43 @@ async fn lost_lease_cancels_a_step_waiting_for_isolation(leases: Leases) {
 	assert!(!started.load(Ordering::Acquire));
 	drop(normal);
 	assert!(gate.try_write().is_ok());
+}
+
+#[rstest]
+#[tokio::test(start_paused = true)]
+async fn isolated_step_is_charged_only_after_it_holds_the_gate(leases: Leases) {
+	let gate = RwLock::new(());
+	let normal = gate.read().await;
+	let mut scope = Scope::new(&leases);
+	scope.lease_recoveries = 1;
+	let step = advance_step(&gate, Box::new(scope), &leases, Uuid::nil(), 3);
+	tokio::pin!(step);
+	// A claim waiting behind another step must not be charged: if the process
+	// dies now, its next claim leaves the count unchanged.
+	tokio::select! { _ = &mut step => panic!("isolated step ran early"), _ = tokio::time::sleep(Duration::from_secs(2)) => {} }
+	assert!(!leases.trace.lock().unwrap().contains(&"charge"));
+	drop(normal);
+	step.await.unwrap();
+	let trace = leases.trace.lock().unwrap();
+	let steps: Vec<_> = trace
+		.iter()
+		.filter(|event| **event != "renew")
+		.copied()
+		.collect();
+	assert_eq!(steps[..3], ["charge", "cancel", "admit"]);
+}
+
+#[rstest]
+#[tokio::test]
+async fn ordinary_step_is_never_charged(leases: Leases) {
+	advance_step(
+		&RwLock::new(()),
+		Box::new(Scope::new(&leases)),
+		&leases,
+		Uuid::nil(),
+		60,
+	)
+	.await
+	.unwrap();
+	assert!(!leases.trace.lock().unwrap().contains(&"charge"));
 }

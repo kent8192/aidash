@@ -35,9 +35,28 @@ fn worker_save_keeps_only_the_event_specific_retry_and_error_disposition(
 	if !keep_retry {
 		pending["recovery"]["retry"] = Value::Null;
 	}
+	// None of these saves retains the lease, so each one ends the step.
+	pending["recovery"]
+		.as_object_mut()
+		.unwrap()
+		.remove("lease_recoveries");
 	assert_eq!(snapshot.pending, pending);
 	assert_eq!(snapshot.error, keep_error.then_some("saved diagnostic"));
 	assert_eq!(serde_json::to_value(&run).unwrap(), before);
+	assert_eq!(
+		snapshot.pending["recovery"]["lease_recoveries"],
+		Value::Null
+	);
+}
+#[rstest]
+#[case::sources("run.sources_observed")]
+#[case::degraded("run.semantic_degraded")]
+#[case::estimate("run.estimate_pinned")]
+#[case::mcp("run.mcp_checkpoint")]
+#[case::summary_revoked("context.summary_revoked")]
+fn lease_retaining_checkpoints_keep_the_lease_recovery_count(run: Run, #[case] event: &str) {
+	assert!(retains_lease(event));
+	let snapshot = run.worker_snapshot(event).unwrap();
 	assert_eq!(snapshot.pending["recovery"]["lease_recoveries"], 1);
 }
 #[rstest]
@@ -59,6 +78,7 @@ fn only_a_scheduled_decider_retry_carries_its_count_to_the_next_lease(mut run: R
 fn absent_diagnostics_and_retries_remain_absent_for_retry_events(mut run: Run) {
 	run.error = None;
 	run.recovery.retry = None;
+	run.recovery.lease_recoveries = 0;
 	let snapshot = run.worker_snapshot("run.retrying").unwrap();
 	assert_eq!(snapshot.error, None);
 	assert_eq!(snapshot.pending["recovery"]["retry"], Value::Null);

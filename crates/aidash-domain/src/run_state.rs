@@ -381,6 +381,9 @@ pub struct RecoveryState {
 	#[serde(default, skip_serializing_if = "Option::is_none")]
 	pub context_reason: Option<crate::context::recovery::Failure>,
 	pub retry: Option<RetryState>,
+	// A claim after a lost lease sets it to at least 1, which isolates the
+	// step; each Isolated Step adds one when it acquires the gate, so a claim
+	// that only waited for isolation is not charged (#604).
 	/// Consecutive Lease Recoveries of the current step.
 	#[serde(default, skip_serializing_if = "is_zero")]
 	pub lease_recoveries: u32,

@@ -82,6 +82,21 @@ impl WorkerStep for Step {
 	fn lease_recoveries(&self) -> u32 {
 		self.run.recovery.lease_recoveries
 	}
+	async fn charge_isolated_step(&mut self, token: Uuid) -> Result<()> {
+		let id = self.run.id;
+		let charged = self.run.recovery.lease_recoveries.saturating_add(1);
+		let held = self
+			.federation
+			.store
+			.charge_lease_recovery(&claimed(), id, token, charged)
+			.await?;
+		if !held {
+			return Err(Error::Conflict("worker lease lost".into()));
+		}
+		// Later same-step checkpoints save the whole recovery state.
+		self.run.recovery.lease_recoveries = charged;
+		Ok(())
+	}
 	async fn tenant(&mut self) -> Option<String> {
 		self.federation
 			.store

@@ -91,12 +91,13 @@ pub async fn advance(
 	// administrator can name both in a Safety Stop (ADR 0101).
 	let tenant = scope.tenant().await.unwrap_or_default();
 	let span = tracing::info_span!("worker_step", run_id = %scope.metadata().id, %tenant);
-	advance_step(scope, leases, token, seconds)
+	advance_step(&STEP_GATE, scope, leases, token, seconds)
 		.instrument(span)
 		.await
 }
 
 async fn advance_step(
+	gate: &RwLock<()>,
 	mut scope: Box<dyn WorkerStep>,
 	leases: &dyn WorkerLeases,
 	token: Uuid,
@@ -107,7 +108,14 @@ async fn advance_step(
 	// the existing false-renewal cancellation path, rather than a failed lookup.
 	let run = scope.metadata().id;
 	let isolated = scope.lease_recoveries() > 0;
-	let work = step_with_gate(&STEP_GATE, isolated, worker::advance(scope.as_mut(), token));
+	let work = step_with_gate(gate, isolated, async {
+		if isolated {
+			// Charged only after the gate is held: a claim that merely waited
+			// behind another Isolated Step does not count toward the bound.
+			scope.charge_isolated_step(token).await?;
+		}
+		worker::advance(scope.as_mut(), token).await
+	});
 	let Completion::Completed(result) = keepalive(work, leases, run, token, seconds).await? else {
 		return Ok(());
 	};

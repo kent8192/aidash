@@ -212,7 +212,10 @@ pub async fn lease(
 			}
 		};
 		if m.lease_owner.is_some() {
-			if !cancelled && run.recovery.lease_recoveries >= LEASE_RECOVERY_LIMIT {
+			// The count includes the recovery a lost Isolated Step charged when it
+			// started, so a count above the bound means this claim would be one
+			// recovery too many (#604).
+			if !cancelled && run.recovery.lease_recoveries > LEASE_RECOVERY_LIMIT {
 				let state = RunState::Waiting(Box::new(WaitingState::FailureDelivery {
 					target: FailureTarget::Failed,
 					wake_at: now,
@@ -229,14 +232,17 @@ pub async fn lease(
 							&state,
 							&reason,
 							node,
-							run.recovery.lease_recoveries,
+							run.recovery.lease_recoveries - 1,
 						)
 						.await?;
 					metrics::counter!("aidash_worker_crash_loop_failures_total").increment(1);
 				}
 				continue;
 			}
-			run.recovery.lease_recoveries = run.recovery.lease_recoveries.saturating_add(1);
+			// The first recovery marks the step for isolation. Later ones were
+			// charged when their Isolated Step acquired the gate, so a Run that
+			// only waited behind another Isolated Step is not charged again.
+			run.recovery.lease_recoveries = run.recovery.lease_recoveries.max(1);
 		}
 		if let Some(claimed) = scope.lease(&run, token, seconds, node).await? {
 			if claimed.recovery.lease_recoveries > 0 {

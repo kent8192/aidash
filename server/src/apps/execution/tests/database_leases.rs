@@ -283,7 +283,8 @@ async fn fourth_lease_recovery_enters_failure_delivery_and_records_crash_loop(
 	.unwrap();
 	run.lease_owner = Some(Uuid::new_v4());
 	run.lease_until = Some(Utc::now() - Duration::seconds(1));
-	run.pending.0["recovery"]["lease_recoveries"] = json!(3);
+	// One claim-time recovery plus three Isolated Steps that each charged one.
+	run.pending.0["recovery"]["lease_recoveries"] = json!(4);
 	let mut db = database.lease.handle();
 	Run::objects()
 		.create_with_conn(&mut db, &run)
@@ -315,4 +316,54 @@ async fn fourth_lease_recovery_enters_failure_delivery_and_records_crash_loop(
 			.any(|event| event.data.0["run_id"] == run.id.to_string()
 				&& event.data.0["lease_recoveries"] == 3)
 	);
+}
+
+#[rstest]
+#[tokio::test]
+async fn isolated_step_charge_is_lease_fenced_and_keeps_the_revision(
+	#[future] database: DatabaseFixture,
+	mut run: Run,
+) {
+	use aidash_application::tenancy::{DeploymentScopeReason, TenancyScope};
+	let database = database.await;
+	database.tenant("acme").await;
+	let store = Store::from_pool(
+		database.connection.into_postgres().unwrap(),
+		aidash_domain::nodes::DeploymentId::parse("aidash://lease-test").unwrap(),
+	)
+	.await
+	.unwrap();
+	run.lease_owner = Some(Uuid::new_v4());
+	run.lease_until = Some(Utc::now() - Duration::seconds(1));
+	run.pending.0["recovery"]["lease_recoveries"] = json!(2);
+	let mut db = database.lease.handle();
+	Run::objects()
+		.create_with_conn(&mut db, &run)
+		.await
+		.unwrap();
+	let token = Uuid::new_v4();
+	let leased = store.lease_run(token, 30).await.unwrap().unwrap();
+	// A later claim leaves the count: the lost Isolated Step charged it.
+	assert_eq!(leased.recovery.lease_recoveries, 2);
+	let scope = TenancyScope::Deployment(DeploymentScopeReason::ActivationClaim);
+	assert!(
+		!store
+			.charge_lease_recovery(&scope, run.id, Uuid::new_v4(), 3)
+			.await
+			.unwrap()
+	);
+	assert!(
+		store
+			.charge_lease_recovery(&scope, run.id, token, 3)
+			.await
+			.unwrap()
+	);
+	let saved = Run::objects()
+		.filter(Run::field_id().eq(run.id))
+		.get_with_db(&mut db)
+		.await
+		.unwrap();
+	assert_eq!(saved.pending.0["recovery"]["lease_recoveries"], 3);
+	assert_eq!(saved.revision, leased.revision);
+	assert_eq!(saved.lease_owner, Some(token));
 }

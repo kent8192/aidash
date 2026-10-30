@@ -939,8 +939,9 @@ async fn backpressure_retains_unaccepted_rows_and_sends_at_most_eight(repository
 
 #[rstest]
 #[case::first(0, false)]
-#[case::third(2, false)]
-#[case::fourth(3, true)]
+#[case::waited_behind_isolation(1, false)]
+#[case::third(3, false)]
+#[case::fourth(4, true)]
 #[tokio::test]
 async fn consecutive_lease_recoveries_are_bounded(
 	repository: Repository,
@@ -974,7 +975,9 @@ async fn consecutive_lease_recoveries_are_bounded(
 		assert!(events.iter().any(|event| event == "crash_loop:3:The worker process stopped 3 times in a row while running this step, so Aidash stopped retrying it."));
 		assert!(!events.iter().any(|event| event == "lease"));
 	} else {
-		assert_eq!(claimed.unwrap().recovery.lease_recoveries, count + 1);
+		// Only the first recovery is charged at claim; an Isolated Step charges
+		// the later ones itself once it holds the gate.
+		assert_eq!(claimed.unwrap().recovery.lease_recoveries, count.max(1));
 		assert!(events.iter().any(|event| event == "lease"));
 	}
 }
@@ -985,7 +988,7 @@ async fn cancelled_run_bypasses_crash_loop_bound(repository: Repository, now: Da
 	let mut row = raw(now);
 	row.metadata.lease_owner = Some(Uuid::new_v4());
 	row.metadata.control = RunControl::Cancelled;
-	row.pending["recovery"]["lease_recoveries"] = serde_json::json!(LEASE_RECOVERY_LIMIT);
+	row.pending["recovery"]["lease_recoveries"] = serde_json::json!(LEASE_RECOVERY_LIMIT + 1);
 	*repository.0.run.lock().unwrap() = Some(row);
 	let mut scope = Scope {
 		state: repository.0.clone(),
