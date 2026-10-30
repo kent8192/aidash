@@ -13,6 +13,107 @@ pub struct IndexingPlan {
 	pub spec: Value,
 }
 
+/// Default limits for image ingestion in new and existing index configurations.
+pub fn default_max_image_bytes() -> usize {
+	8 * 1024 * 1024
+}
+pub fn default_max_images() -> usize {
+	256
+}
+
+/// The reason an image cannot currently enter its Workspace index.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum UnsupportedReason {
+	Modality,
+	TooLarge,
+	Limit,
+}
+impl UnsupportedReason {
+	pub fn as_str(self) -> &'static str {
+		match self {
+			Self::Modality => "modality",
+			Self::TooLarge => "too_large",
+			Self::Limit => "limit",
+		}
+	}
+}
+
+/// File publication changes carry only immutable pointers and metadata.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum ImageChange {
+	Removed {
+		file_id: Uuid,
+		path: String,
+	},
+	Published {
+		file_id: Uuid,
+		path: String,
+		media_type: String,
+		size: u64,
+	},
+}
+
+impl ImageChange {
+	pub fn file_id(&self) -> Uuid {
+		match self {
+			Self::Removed { file_id, .. } | Self::Published { file_id, .. } => *file_id,
+		}
+	}
+}
+
+/// Retire old versions before assigning slots to new versions, in manifest order.
+/// Unchanged images are intentionally absent, so deletion does not refill a slot.
+pub fn image_changes(
+	previous: &[crate::capabilities::operations::MountedFile],
+	current: &[crate::capabilities::operations::MountedFile],
+) -> Vec<ImageChange> {
+	use crate::capabilities::operations::{FileScope, MountedFile};
+	use std::collections::HashSet;
+	fn image(file: &MountedFile) -> bool {
+		file.scope == FileScope::Working && file.media_type.starts_with("image/")
+	}
+	fn identity(file: &MountedFile) -> (Uuid, &str, &str, u64, &str) {
+		(
+			file.file_id,
+			&file.path,
+			&file.media_type,
+			file.size,
+			&file.digest,
+		)
+	}
+	let old: HashSet<_> = previous
+		.iter()
+		.filter(|file| image(file))
+		.map(identity)
+		.collect();
+	let new: HashSet<_> = current
+		.iter()
+		.filter(|file| image(file))
+		.map(identity)
+		.collect();
+	previous
+		.iter()
+		.filter(|file| image(file) && !new.contains(&identity(file)))
+		.map(|file| ImageChange::Removed {
+			file_id: file.file_id,
+			path: file.path.clone(),
+		})
+		.chain(
+			current
+				.iter()
+				.filter(|file| image(file) && !old.contains(&identity(file)))
+				.map(|file| ImageChange::Published {
+					file_id: file.file_id,
+					path: file.path.clone(),
+					media_type: file.media_type.clone(),
+					size: file.size,
+				}),
+		)
+		.collect()
+}
+
 /// Decode the same persisted specification after the locked authority fence.
 #[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
@@ -25,6 +126,10 @@ pub struct IndexingSpec {
 	pub max_results: usize,
 	pub max_result_tokens: usize,
 	pub max_input_bytes: usize,
+	#[serde(default = "default_max_image_bytes")]
+	pub max_image_bytes: usize,
+	#[serde(default = "default_max_images")]
+	pub max_images: usize,
 }
 
 #[derive(Debug, Clone)]
@@ -59,8 +164,12 @@ pub fn retry(attempts: i32) -> (i32, f64) {
 }
 
 pub fn content_digest(text: &str) -> String {
+	content_digest_bytes(text.as_bytes())
+}
+
+pub fn content_digest_bytes(bytes: &[u8]) -> String {
 	use sha2::{Digest, Sha256};
-	format!("{:x}", Sha256::digest(text.as_bytes()))
+	format!("{:x}", Sha256::digest(bytes))
 }
 
 pub fn needs_new_point(old: &Option<(Option<String>, bool)>, digest: &str) -> bool {

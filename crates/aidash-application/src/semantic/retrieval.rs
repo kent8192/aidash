@@ -106,7 +106,9 @@ pub async fn prepare(
 		if agent_controls.is_some_and(|agent| match &source {
 			Source::Unit { .. } => true,
 			Source::Memory { .. } => agent.memory.is_some() || !agent.semantic_memory,
-			Source::Artifact { .. } | Source::Message { .. } => !agent.workspace_context,
+			Source::Artifact { .. } | Source::Message { .. } | Source::WorkingImage { .. } => {
+				!agent.workspace_context
+			}
 		}) {
 			continue;
 		}

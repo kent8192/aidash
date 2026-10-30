@@ -133,6 +133,8 @@ fn spec() -> IndexSpec {
 		max_results: 5,
 		max_result_tokens: 128,
 		max_input_bytes: 256,
+		max_image_bytes: 8 * 1024 * 1024,
+		max_images: 256,
 	}
 }
 

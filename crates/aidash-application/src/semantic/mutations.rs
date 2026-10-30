@@ -60,6 +60,14 @@ pub async fn get_index(scope: &mut dyn SemanticEntriesSession, workspace: Uuid) 
 /// Public writes reserve the managed memory namespace before acquiring source authority.
 pub fn validate_public_put(input: &Put) -> Result<()> {
 	input.validate()?;
+	if matches!(
+		input.source,
+		aidash_domain::semantic::Source::WorkingImage { .. }
+	) {
+		return Err(Error::Invalid(
+			"Working Area images are indexed through File publication".into(),
+		));
+	}
 	if input.key.starts_with("agent-memory:")
 		|| input.key.starts_with("memory-unit:")
 		|| matches!(input.source, aidash_domain::semantic::Source::Unit { .. })

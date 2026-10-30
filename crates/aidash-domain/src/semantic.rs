@@ -231,6 +231,12 @@ pub enum Source {
 	Message {
 		id: Uuid,
 	},
+	/// An immutable File version; source content remains in its Working Area.
+	WorkingImage {
+		area_id: Uuid,
+		file_id: Uuid,
+		path: String,
+	},
 }
 
 impl Source {

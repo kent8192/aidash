@@ -29,6 +29,8 @@ fn spec() -> IndexingSpec {
 		max_results: 2,
 		max_result_tokens: 128,
 		max_input_bytes: 128,
+		max_image_bytes: 8 * 1024 * 1024,
+		max_images: 256,
 	}
 }
 fn index() -> Index {
@@ -476,3 +478,17 @@ async fn history_advances_past_two_hundred_denied_candidates() {
 }
 
 mod configuration;
+
+#[test]
+fn public_entry_cannot_claim_a_working_area_image() {
+	let mut value = input();
+	value.source = Source::WorkingImage {
+		area_id: Uuid::from_u128(1),
+		file_id: Uuid::from_u128(2),
+		path: "image.png".into(),
+	};
+	assert!(matches!(
+		validate_public_put(&value),
+		Err(Error::Invalid(_))
+	));
+}

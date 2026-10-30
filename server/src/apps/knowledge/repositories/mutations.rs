@@ -779,6 +779,8 @@ impl From<native::IndexSpec> for IndexingSpec {
 			max_results: value.max_results,
 			max_result_tokens: value.max_result_tokens,
 			max_input_bytes: value.max_input_bytes,
+			max_image_bytes: value.max_image_bytes,
+			max_images: value.max_images,
 		}
 	}
 }
@@ -793,6 +795,8 @@ impl From<IndexingSpec> for native::IndexSpec {
 			max_results: value.max_results,
 			max_result_tokens: value.max_result_tokens,
 			max_input_bytes: value.max_input_bytes,
+			max_image_bytes: value.max_image_bytes,
+			max_images: value.max_images,
 		}
 	}
 }

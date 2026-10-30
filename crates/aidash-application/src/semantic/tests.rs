@@ -245,6 +245,36 @@ impl SemanticIndexingSession for Session {
 		self.fixture.record("source")?;
 		Ok(self.fixture.0.lock().unwrap().text.clone())
 	}
+	async fn image(&mut self, _: Uuid, _: &Source, max: usize) -> Result<Option<IndexImageRead>> {
+		self.fixture.record("image")?;
+		let bytes = b"\x89PNG\r\n\x1a\n".to_vec();
+		Ok(Some(if bytes.len() > max {
+			IndexImageRead::TooLarge
+		} else {
+			IndexImageRead::Image(IndexImage {
+				media_type: "image/png".into(),
+				bytes,
+			})
+		}))
+	}
+	async fn unsupported(
+		&mut self,
+		_: Uuid,
+		reason: aidash_domain::semantic::indexing::UnsupportedReason,
+	) -> Result<()> {
+		self.fixture
+			.record(&format!("unsupported:{}", reason.as_str()))
+	}
+	async fn embed_image(
+		&mut self,
+		_: Uuid,
+		_: &EmbeddingConfig,
+		_: &IndexImage,
+		_: Uuid,
+	) -> Result<Vec<f32>> {
+		self.fixture.record("embed_image")?;
+		Ok(vec![0.1, 0.2, 0.3])
+	}
 	async fn set_revoked(&mut self, _: Uuid, reason: &str) -> Result<()> {
 		self.fixture.record(&format!("revoked:{reason}"))
 	}
@@ -289,7 +319,13 @@ impl SemanticIndexingSession for Session {
 		Ok(vec![0.1, 0.2, 0.3])
 	}
 	async fn record_digest(&mut self, _: Uuid, digest: &str) -> Result<()> {
-		assert_eq!(digest, indexing::content_digest("source text"));
+		let source = self.fixture.0.lock().unwrap().entry.source.clone();
+		let expected = if source["kind"] == "working_image" {
+			indexing::content_digest_bytes(b"\x89PNG\r\n\x1a\n")
+		} else {
+			indexing::content_digest("source text")
+		};
+		assert_eq!(digest, expected);
 		self.fixture.record("digest")
 	}
 	async fn ready(&mut self, _: Uuid) -> Result<()> {
@@ -803,4 +839,70 @@ async fn sweep_releases_selection_visibility_and_reacquires_it_for_each_effect()
 			"visibility_drop"
 		]
 	);
+}
+
+#[tokio::test]
+async fn working_image_is_embedded_as_image_without_storing_bytes_in_vector_payload() {
+	let fixture = Fixture::default();
+	{
+		let mut state = fixture.0.lock().unwrap();
+		state.entry.source = json!({"kind":"working_image", "area_id": Uuid::from_u128(8), "file_id": Uuid::from_u128(9), "path":"image.png"});
+		state.plan.spec["embedding"]["inputs"] = json!(["text", "image"]);
+	}
+	process(&fixture, &fixture, fixture.id()).await.unwrap();
+	assert!(
+		fixture.has("embed_image"),
+		"working image must use the image embedding input"
+	);
+	let payload = fixture.0.lock().unwrap().payload.clone().unwrap();
+	assert_eq!(
+		payload,
+		json!({
+			"entry_id": Uuid::from_u128(1),
+			"revision": 3,
+			"index_revision": 7,
+			"workspace_id": Uuid::from_u128(2),
+			"tenant": "tenant"
+		})
+	);
+}
+
+#[rstest]
+#[case::modality(false, 100, "modality")]
+#[case::too_large(true, 1, "too_large")]
+#[tokio::test]
+async fn unsupported_working_images_do_not_call_embedding(
+	#[case] image_modality: bool,
+	#[case] max_image_bytes: usize,
+	#[case] reason: &str,
+) {
+	let fixture = Fixture::default();
+	{
+		let mut state = fixture.0.lock().unwrap();
+		state.entry.source = json!({"kind":"working_image", "area_id": Uuid::from_u128(8), "file_id": Uuid::from_u128(9), "path":"image.png"});
+		state.plan.spec["embedding"]["inputs"] = if image_modality {
+			json!(["text", "image"])
+		} else {
+			json!(["text"])
+		};
+		state.plan.spec["max_image_bytes"] = json!(max_image_bytes);
+	}
+	process(&fixture, &fixture, fixture.id()).await.unwrap();
+	assert!(fixture.has(&format!("unsupported:{reason}")));
+	assert!(fixture.has("retire"));
+	assert!(!fixture.has("embed_image"));
+}
+
+#[tokio::test]
+async fn image_read_failure_is_recorded_and_does_not_abort_the_index_sweep() {
+	let fixture = Fixture::default();
+	{
+		let mut state = fixture.0.lock().unwrap();
+		state.entry.source = json!({"kind":"working_image", "area_id": Uuid::from_u128(8), "file_id": Uuid::from_u128(9), "path":"image.png"});
+		state.plan.spec["embedding"]["inputs"] = json!(["text", "image"]);
+	}
+	fixture.fault("image");
+	assert!(process(&fixture, &fixture, fixture.id()).await.unwrap());
+	assert!(fixture.has("failed"));
+	assert!(!fixture.has("embed_image"));
 }

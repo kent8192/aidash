@@ -1126,6 +1126,8 @@ fn spec(endpoint: &str) -> IndexSpec {
 		max_results: 10,
 		max_result_tokens: 4096,
 		max_input_bytes: 8192,
+		max_image_bytes: 8 * 1024 * 1024,
+		max_images: 256,
 	}
 }
 async fn configure(

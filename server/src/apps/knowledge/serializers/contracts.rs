@@ -25,6 +25,12 @@ pub struct IndexSpec {
 	pub max_result_tokens: usize,
 	#[validate(range(min = 128, max = 32768))]
 	pub max_input_bytes: usize,
+	#[serde(default = "aidash_domain::semantic::indexing::default_max_image_bytes")]
+	#[validate(range(min = 1, max = 67108864))]
+	pub max_image_bytes: usize,
+	#[serde(default = "aidash_domain::semantic::indexing::default_max_images")]
+	#[validate(range(max = 1024))]
+	pub max_images: usize,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]

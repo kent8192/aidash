@@ -2,11 +2,22 @@
 use crate::Result;
 use aidash_domain::semantic::{
 	EmbeddingConfig, Source, VectorConfig,
-	indexing::{IndexingEntry, IndexingPlan},
+	indexing::{IndexingEntry, IndexingPlan, UnsupportedReason},
 };
 use async_trait::async_trait;
 use serde_json::Value;
 use uuid::Uuid;
+
+/// Verified original image bytes, held only for the duration of one indexing attempt.
+pub struct IndexImage {
+	pub media_type: String,
+	pub bytes: Vec<u8>,
+}
+
+pub enum IndexImageRead {
+	Image(IndexImage),
+	TooLarge,
+}
 
 pub struct CleanupBatch {
 	pub points: Vec<Uuid>,
@@ -27,6 +38,27 @@ pub trait SemanticIndexingSession: Send {
 	/// Decide the requested action for the entry held by this scope.
 	async fn permits(&mut self, action: &str) -> Result<bool>;
 	async fn source(&mut self, workspace: Uuid, source: &Source) -> Result<Option<String>>;
+	/// Fetch only a current, authorized image and refuse reads beyond `max_bytes`.
+	async fn image(
+		&mut self,
+		_workspace: Uuid,
+		_source: &Source,
+		_max_bytes: usize,
+	) -> Result<Option<IndexImageRead>> {
+		Err(crate::Error::Forbidden)
+	}
+	async fn embed_image(
+		&mut self,
+		_workspace: Uuid,
+		_config: &EmbeddingConfig,
+		_image: &IndexImage,
+		_entry: Uuid,
+	) -> Result<Vec<f32>> {
+		Err(crate::Error::Forbidden)
+	}
+	async fn unsupported(&mut self, _id: Uuid, _reason: UnsupportedReason) -> Result<()> {
+		Err(crate::Error::Forbidden)
+	}
 	async fn set_revoked(&mut self, id: Uuid, reason: &str) -> Result<()>;
 	async fn retire_points(&mut self, id: Uuid) -> Result<()>;
 	async fn history(

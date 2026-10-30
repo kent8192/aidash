@@ -47,6 +47,8 @@ pub async fn source(
 	}
 	match source {
 		Source::Unit { id } => scope.unit(*id, workspace).await,
+		// Image disclosure is admitted only after the Working Area authority path is wired.
+		Source::WorkingImage { .. } => Ok(None),
 		Source::Memory { text } => Ok(Some(text.clone())),
 		Source::Artifact { id } => {
 			let Some(row) = scope.artifact(*id, workspace).await? else {
