@@ -965,7 +965,14 @@ async fn killed_embedding_worker_retains_uncertain_usage_and_restart_reserves_a_
 	)
 	.await;
 	let states = fixture.f.store.runs(&TEST_FIXTURE).await.unwrap();
-	let activity: Vec<(String, Option<String>, Option<String>, String)> = sqlx::query_as(
+	// Background workers attached to this database report NULL columns.
+	type ActivityRow = (
+		Option<String>,
+		Option<String>,
+		Option<String>,
+		Option<String>,
+	);
+	let activity: Vec<ActivityRow> = sqlx::query_as(
 		&reinhardt::query::Query::select()
 			.columns(
 				["state", "wait_event_type", "wait_event", "application_name"]
