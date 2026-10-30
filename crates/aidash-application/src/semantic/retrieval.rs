@@ -15,22 +15,54 @@ use aidash_domain::{
 		retrieval::{Search, provenance},
 	},
 };
-use serde_json::json;
+use serde_json::{Value, json};
 use std::collections::BTreeMap;
 use uuid::Uuid;
 
 pub struct PreparedSearch {
 	pub index: Index,
 	pub spec: IndexingSpec,
-	pub allowed: BTreeMap<Uuid, (Entry, String)>,
+	pub allowed: BTreeMap<Uuid, (Entry, Candidate)>,
 	pub result: SearchResult,
 	limit: usize,
 	max_tokens: usize,
 }
+#[derive(Debug, Clone, PartialEq)]
+pub enum Candidate {
+	Text(String),
+	Image(Value),
+}
+impl Candidate {
+	fn digest(&self) -> String {
+		match self {
+			Self::Text(text) => content_digest(text),
+			Self::Image(pointer) => pointer["digest"].as_str().unwrap_or_default().to_owned(),
+		}
+	}
+}
+/// Discard any adapter-supplied fields outside the File pointer contract.
+fn image_pointer(source: &Source, pointer: Value) -> Option<Value> {
+	let Source::WorkingImage { file_id, path, .. } = source else {
+		return None;
+	};
+	if pointer["file_id"] != file_id.to_string() || pointer["path"] != *path {
+		return None;
+	}
+	let name = pointer["name"].as_str()?;
+	let media_type = pointer["media_type"].as_str()?;
+	let size = pointer["size"].as_u64()?;
+	let digest = pointer["digest"].as_str()?;
+	if !media_type.starts_with("image/") || digest.is_empty() {
+		return None;
+	}
+	Some(
+		json!({"file_id":file_id,"path":path,"name":name,"media_type":media_type,"size":size,"digest":digest}),
+	)
+}
 impl PreparedSearch {
 	pub fn candidate_digest(&self) -> String {
-		aidash_domain::registry::rules::digest(&json!(self.allowed.iter().map(|(point,(entry,text))|
-            json!({"point":point,"entry":entry.id,"revision":entry.revision,"digest":content_digest(text),"agent":entry.agent}))
+		aidash_domain::registry::rules::digest(&json!(self.allowed.iter().map(|(point,(entry,content))|
+            json!({"point":point,"entry":entry.id,"revision":entry.revision,"digest":content.digest(),"agent":entry.agent}))
             .collect::<Vec<_>>()))
 	}
 	pub async fn check_points(&self, vector: &dyn VectorIndex) -> Result<()> {
@@ -139,20 +171,34 @@ pub async fn prepare(
 		if !scope.permits(&entry, "semantic.read").await? {
 			continue;
 		}
-		let Some(text) = scope.source(workspace, &source).await? else {
-			continue;
+		let content = if matches!(source, Source::WorkingImage { .. }) {
+			let Some(pointer) = scope
+				.image_pointer(workspace, &source)
+				.await?
+				.and_then(|value| image_pointer(&source, value))
+			else {
+				continue;
+			};
+			Candidate::Image(pointer)
+		} else {
+			let Some(text) = scope.source(workspace, &source).await? else {
+				continue;
+			};
+			Candidate::Text(text)
 		};
 		// Source content must still match the bytes used for this point; linked
 		// artifacts/messages can change outside this module's revision counter.
 		let digest = scope.digest(entry.point_id).await?;
 		if entry.state != "READY"
 			|| entry.index_revision != index.revision
-			|| digest != content_digest(&text)
+			|| digest != content.digest()
 		{
-			incomplete = true;
+			if !matches!(content, Candidate::Image(_)) {
+				incomplete = true;
+			}
 			continue;
 		}
-		allowed.insert(entry.point_id, (entry, text));
+		allowed.insert(entry.point_id, (entry, content));
 	}
 	if incomplete {
 		// A Run waits for the complete index under its bounded outage policy.
@@ -230,7 +276,7 @@ pub async fn finish(
 	}
 	let mut seen = std::collections::BTreeSet::new();
 	for point in points {
-		let Some((entry, text)) = allowed.get(&point.id) else {
+		let Some((entry, content)) = allowed.get(&point.id) else {
 			if strict {
 				return Err(Error::RemoteSemantic(Failure::ProviderContract));
 			}
@@ -250,12 +296,24 @@ pub async fn finish(
 		}
 		// Check again at delivery while the authority and source row leases are
 		// still held. Backend payload never supplies content or permission.
-		if !scope.permits(entry, "semantic.read").await?
-			|| scope
-				.source(workspace, &serde_json::from_value(entry.source.clone())?)
-				.await?
-				.as_ref() != Some(text)
-		{
+		let source: Source = serde_json::from_value(entry.source.clone())?;
+		let current = if scope.permits(entry, "semantic.read").await? {
+			match content {
+				Candidate::Text(text) => {
+					scope.source(workspace, &source).await?.as_ref() == Some(text)
+				}
+				Candidate::Image(pointer) => {
+					scope
+						.image_pointer(workspace, &source)
+						.await?
+						.and_then(|value| image_pointer(&source, value))
+						.as_ref() == Some(pointer)
+				}
+			}
+		} else {
+			false
+		};
+		if !current {
 			if strict {
 				return Err(Error::RemoteSemantic(Failure::Invalidated));
 			}
@@ -266,8 +324,14 @@ pub async fn finish(
 			revision: entry.revision,
 			source: provenance(&entry.source),
 			agent: entry.agent.clone(),
-			metadata: entry.metadata.clone(),
-			text: text.clone(),
+			metadata: match content {
+				Candidate::Text(_) => entry.metadata.clone(),
+				Candidate::Image(pointer) => pointer.clone(),
+			},
+			text: match content {
+				Candidate::Text(text) => text.clone(),
+				Candidate::Image(_) => String::new(),
+			},
 			score: point.score,
 		};
 		result.matches.push(matched);
@@ -306,7 +370,25 @@ async fn search_or_outage(
 	controls: Option<&AgentConfig>,
 ) -> Result<std::result::Result<SearchResult, OutageCause>> {
 	let outage = |error: &Error| matches!(error, Error::RemoteSemantic(Failure::Unavailable));
+	if let Some(image) = &input.image
+		&& run.is_some_and(|run_id| run_id != image.run_id)
+	{
+		return Err(Error::Forbidden);
+	}
 	let prepared = prepare(scope, workspace, input, controls).await?;
+	let query_image = if let Some(image) = &input.image {
+		let content = scope
+			.query_image(workspace, image, prepared.spec.max_image_bytes)
+			.await?;
+		aidash_domain::semantic::EmbeddingInput::Image {
+			media_type: &content.media_type,
+			bytes: &content.bytes,
+		}
+		.validate(&prepared.spec.embedding)?;
+		Some(content)
+	} else {
+		None
+	};
 	if prepared.allowed.is_empty() {
 		return Ok(Ok(prepared.result));
 	}
@@ -316,16 +398,40 @@ async fn search_or_outage(
 		Err(error) if outage(&error) => return Ok(Err(OutageCause::VectorBackend)),
 		Err(error) => return Err(error),
 	}
-	let embedding = match scope
-		.embed(workspace, &prepared.spec.embedding, &input.query, run)
-		.await
-	{
+	let embedding = match if let Some(image) = &query_image {
+		scope
+			.embed_image(
+				workspace,
+				&prepared.spec.embedding,
+				image,
+				Some(input.image.as_ref().expect("image query").run_id),
+			)
+			.await
+	} else {
+		scope
+			.embed(workspace, &prepared.spec.embedding, &input.query, run)
+			.await
+	} {
 		Err(error) if outage(&error) => return Ok(Err(OutageCause::EmbeddingProvider)),
 		embedding => embedding?,
 	};
+	let max_image_bytes = prepared.spec.max_image_bytes;
 	match finish(vector, scope, prepared, &embedding, false).await {
 		Err(error) if outage(&error) => Ok(Err(OutageCause::VectorBackend)),
-		result => result.map(Ok),
+		Err(error) => Err(error),
+		Ok(result) => {
+			if let (Some(selection), Some(original)) = (&input.image, &query_image) {
+				let current = scope
+					.query_image(workspace, selection, max_image_bytes)
+					.await?;
+				if current.media_type != original.media_type || current.bytes != original.bytes {
+					return Err(Error::Conflict(
+						"image query changed during retrieval".into(),
+					));
+				}
+			}
+			Ok(Ok(result))
+		}
 	}
 }
 
@@ -407,6 +513,7 @@ pub async fn workspace_context(
 		run.workspace_id,
 		&Search {
 			query,
+			image: None,
 			agent: Some(aidash_domain::agent_subject(
 				&run.home_node,
 				&run.agent_id,
@@ -454,15 +561,19 @@ pub async fn recheck(
 		if !scope.permits(entry, "semantic.read").await? {
 			return Err(Error::Forbidden);
 		}
-		if scope
-			.source(
-				result.workspace_id,
-				&serde_json::from_value(entry.source.clone())?,
-			)
-			.await?
-			.as_deref()
-			!= Some(matched.text.as_str())
-		{
+		let source: Source = serde_json::from_value(entry.source.clone())?;
+		let current = if matches!(source, Source::WorkingImage { .. }) {
+			matched.text.is_empty()
+				&& scope
+					.image_pointer(result.workspace_id, &source)
+					.await?
+					.and_then(|value| image_pointer(&source, value))
+					.as_ref() == Some(&matched.metadata)
+		} else {
+			scope.source(result.workspace_id, &source).await?.as_deref()
+				== Some(matched.text.as_str())
+		};
+		if !current {
 			return Err(Error::Forbidden);
 		}
 	}

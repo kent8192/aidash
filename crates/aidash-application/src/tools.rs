@@ -250,6 +250,36 @@ impl Builtin {
 			"workspace_read" => {
 				let kind = required(&input, "kind")?;
 				let id = required(&input, "id")?;
+				if kind == "file" {
+					if input.get("offset").is_some() || input.get("max_chars").is_some() {
+						return Err(Error::Invalid(
+							"file reads do not accept text ranges".into(),
+						));
+					}
+					let selection: aidash_domain::media::WorkingImageSelection =
+						serde_json::from_value(
+							json!({"file_id":id,"area_id":input["area_id"],"generation":input["generation"],"path":input["path"],"expected_digest":input["expected_digest"]}),
+						)?;
+					let representation = input["representation"].as_str().unwrap_or("metadata");
+					return ctx
+						.operations
+						.workspace_image(&selection, representation)
+						.await;
+				}
+				if [
+					"area_id",
+					"generation",
+					"path",
+					"expected_digest",
+					"representation",
+				]
+				.iter()
+				.any(|field| input.get(*field).is_some())
+				{
+					return Err(Error::Invalid(
+						"File selection fields require kind=file".into(),
+					));
+				}
 				ctx.operations
 					.read_record_chunk(
 						kind,
@@ -364,8 +394,8 @@ pub fn builtins() -> BTreeMap<String, Builtin> {
 			name: "workspace_read",
 			contract: aidash_domain::tool::builtin_contract("workspace_read")
 				.expect("declared builtin"),
-			description: "Read one accessible workspace record by kind and exact ID. Returns a JSON text chunk, total_chars and next_offset; concatenate chunks in offset order to recover the full record. The returned chunk is capped to fit the active request budget. If budget_limited is true, continue from next_offset on a later turn; if deferred is true, stop reading until that later turn.",
-			schema: json!({"type":"object","required":["kind","id"],"properties":{"kind":{"enum":["workspace","task","artifact","message","event"]},"id":string,"offset":{"type":"integer","minimum":0},"max_chars":{"type":"integer","minimum":0,"maximum":16000}},"additionalProperties":false}),
+			description: "Read an accessible workspace record, or open a matched File using its exact Area, generation, path and digest. Choose model_input to include an image in the next inference when the model supports images. Text records return bounded chunks with next_offset.",
+			schema: json!({"type":"object","required":["kind","id"],"properties":{"kind":{"enum":["workspace","task","artifact","message","event","file"]},"id":string,"offset":{"type":"integer","minimum":0},"max_chars":{"type":"integer","minimum":0,"maximum":16000},"area_id":{"type":"string"},"generation":{"type":"integer","minimum":1},"path":{"type":"string"},"expected_digest":{"type":"string"},"representation":{"enum":["metadata","model_input"]}},"additionalProperties":false}),
 		},
 		Builtin {
 			name: "workspace_wait",

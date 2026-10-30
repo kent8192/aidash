@@ -123,7 +123,10 @@ pub struct Revision {
 #[schemars(rename = "SemanticSearch")]
 #[serde(deny_unknown_fields)]
 pub struct Search {
+	#[serde(default)]
 	pub query: String,
+	#[serde(default)]
+	pub image: Option<aidash_domain::semantic::retrieval::ImageQuery>,
 	pub agent: Option<String>,
 	#[serde(default = "empty_object")]
 	pub metadata: Value,

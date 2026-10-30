@@ -15,7 +15,27 @@ pub struct Selection {
 #[serde(untagged)]
 pub enum ModelMedia {
 	File(Selection),
+	WorkingImage(WorkingImageSelection),
 	PageImage(PageImageSelection),
+}
+
+impl ModelMedia {
+	/// Working Image opening degrades to metadata when the selected model
+	/// cannot accept images. Other selections retain their existing behavior.
+	pub fn supported_by(&self, modalities: &[String]) -> bool {
+		!matches!(self, Self::WorkingImage(_)) || modalities.iter().any(|item| item == "image")
+	}
+}
+
+/// A current Workspace image selected by its Area and immutable File version.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct WorkingImageSelection {
+	pub area_id: Uuid,
+	pub generation: i64,
+	pub file_id: Uuid,
+	pub path: String,
+	pub expected_digest: String,
 }
 
 /// The page image of an Evidence fragment, by the digest the model was given.
@@ -34,4 +54,21 @@ pub struct SelectedFile {
 	pub digest: String,
 	pub size: u64,
 	pub media_type: String,
+}
+
+#[cfg(test)]
+mod tests {
+	use super::*;
+	#[test]
+	fn working_image_needs_image_modality() {
+		let image = ModelMedia::WorkingImage(WorkingImageSelection {
+			area_id: Uuid::nil(),
+			generation: 1,
+			file_id: Uuid::nil(),
+			path: "chart.png".into(),
+			expected_digest: "digest".into(),
+		});
+		assert!(!image.supported_by(&["text".into()]));
+		assert!(image.supported_by(&["text".into(), "image".into()]));
+	}
 }

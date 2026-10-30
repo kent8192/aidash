@@ -186,6 +186,57 @@ pub(crate) struct WorkerAuthority {
 }
 
 impl WorkerAuthority {
+	pub(crate) async fn workspace_image(
+		&self,
+		store: &Store,
+		run: &Run,
+		selection: &aidash_domain::media::WorkingImageSelection,
+		representation: &str,
+	) -> Result<Value> {
+		use crate::apps::execution::capabilities::{contracts::FileScope, service, sessions};
+		let mut access = self.access.write().await;
+		let own = sessions::for_run(&mut access, run).await?;
+		sessions::require_current_run(&mut access, &own, run).await?;
+		let area = sessions::load(&mut access, selection.area_id).await?;
+		if area.workspace_id != run.workspace_id || area.generation != selection.generation {
+			return Err(Error::Forbidden);
+		}
+		let file = service::files(&area)?
+			.into_iter()
+			.find(|file| {
+				file.file_id == selection.file_id
+					&& file.path == selection.path
+					&& matches!(file.scope, FileScope::Working | FileScope::Received)
+			})
+			.ok_or(Error::Forbidden)?;
+		if !file.media_type.starts_with("image/") {
+			return Err(Error::Invalid("selected File is not an image".into()));
+		}
+		let representation = match representation {
+			"metadata" => aidash_domain::capabilities::files::Representation::Metadata,
+			// The model's modalities are checked after the tool returns. Read only
+			// metadata here; the existing selected-media path applies model-input
+			// limits before opening bytes for an image-capable model.
+			"model_input" => aidash_domain::capabilities::files::Representation::Metadata,
+			_ => return Err(Error::Invalid("invalid File representation".into())),
+		};
+		let mut scope = crate::bootstrap::file_scope(Some(store), &mut access, Some(run));
+		let result = aidash_application::capabilities::files::read(
+			&mut scope,
+			&(&area).into(),
+			aidash_domain::capabilities::files::FileRead {
+				file_id: selection.file_id,
+				representation,
+				offset: None,
+				max_bytes: None,
+				expected_digest: Some(selection.expected_digest.clone()),
+			},
+		)
+		.await?;
+		Ok(
+			json!({"status":"completed","metadata":result["metadata"],"digest":result["digest"],"truncated":false}),
+		)
+	}
 	/// Resolve existing page and file selections before admitting another
 	/// Research page image, under the same worker authority lease.
 	pub(crate) async fn model_media(

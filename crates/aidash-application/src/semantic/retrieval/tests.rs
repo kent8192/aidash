@@ -51,6 +51,7 @@ fn index() -> Index {
 fn input() -> Search {
 	Search {
 		query: "query".into(),
+		image: None,
 		agent: None,
 		metadata: json!({}),
 		limit: 4,
@@ -90,6 +91,10 @@ struct Scope {
 	rows: Vec<Entry>,
 	permitted: VecDeque<bool>,
 	texts: VecDeque<Option<String>>,
+	images: VecDeque<Option<Value>>,
+	query_image_allowed: bool,
+	query_image_permissions: VecDeque<bool>,
+	image_embedded: bool,
 	digest: String,
 	denied: bool,
 	configured_exists: bool,
@@ -104,6 +109,10 @@ impl Scope {
 			rows: vec![entry()],
 			permitted: VecDeque::new(),
 			texts: VecDeque::new(),
+			images: VecDeque::new(),
+			query_image_allowed: true,
+			query_image_permissions: VecDeque::new(),
+			image_embedded: false,
 			digest: content_digest("trusted content"),
 			denied: false,
 			configured_exists: true,
@@ -154,6 +163,41 @@ impl SemanticRetrievalSession for Scope {
 			.texts
 			.pop_front()
 			.unwrap_or_else(|| Some("trusted content".into())))
+	}
+	async fn image_pointer(&mut self, workspace: Uuid, _: &Source) -> Result<Option<Value>> {
+		self.touch("image_pointer");
+		assert_eq!(workspace, index().workspace_id);
+		Ok(self.images.pop_front().unwrap_or(None))
+	}
+	async fn query_image(
+		&mut self,
+		_: Uuid,
+		_: &aidash_domain::semantic::retrieval::ImageQuery,
+		_: usize,
+	) -> Result<crate::ports::semantic::IndexImage> {
+		self.touch("query_image");
+		if !self
+			.query_image_permissions
+			.pop_front()
+			.unwrap_or(self.query_image_allowed)
+		{
+			return Err(Error::Forbidden);
+		}
+		Ok(crate::ports::semantic::IndexImage {
+			media_type: "image/png".into(),
+			bytes: b"\x89PNG\r\n\x1a\nquery".to_vec(),
+		})
+	}
+	async fn embed_image(
+		&mut self,
+		_: Uuid,
+		_: &EmbeddingConfig,
+		_: &crate::ports::semantic::IndexImage,
+		_: Option<Uuid>,
+	) -> Result<Vec<f32>> {
+		self.touch("embed_image");
+		self.image_embedded = true;
+		Ok(vec![0.25, 0.75])
 	}
 	async fn digest(&mut self, point: Uuid) -> Result<String> {
 		self.touch("digest");
@@ -255,6 +299,193 @@ fn controls(memory: bool, workspace: bool) -> AgentConfig {
 	controls.semantic_memory = memory;
 	controls.workspace_context = workspace;
 	controls
+}
+
+#[tokio::test]
+async fn image_match_returns_only_an_authorized_file_pointer_and_metadata() {
+	let (calls, mut scope, vector) = fixture();
+	let area = Uuid::from_u128(9);
+	let file = Uuid::from_u128(10);
+	scope.rows[0].source = json!({"kind":"working_image","area_id":area,"generation":3,"file_id":file,"path":"pictures/chart.png"});
+	let pointer = json!({"file_id":file,"path":"pictures/chart.png","name":"chart.png","media_type":"image/png","size":12,"digest":"file-digest","bytes":"must-not-leak"});
+	scope.images = VecDeque::from([Some(pointer.clone()), Some(pointer)]);
+	scope.digest = "file-digest".into();
+	let result = search(
+		&mut scope,
+		&vector,
+		index().workspace_id,
+		&input(),
+		None,
+		None,
+	)
+	.await
+	.unwrap();
+	assert_eq!(result.matches.len(), 1);
+	let result = serde_json::to_value(&result.matches[0]).unwrap();
+	assert_eq!(result["source"]["file_id"], file.to_string());
+	assert_eq!(result["metadata"]["media_type"], "image/png");
+	assert_eq!(result["metadata"]["digest"], "file-digest");
+	assert!(result.get("text").is_none());
+	assert!(!result.to_string().contains("untrusted provider content"));
+	assert!(!result.to_string().contains("must-not-leak"));
+	assert_eq!(
+		calls
+			.lock()
+			.unwrap()
+			.iter()
+			.filter(|call| **call == "image_pointer")
+			.count(),
+		2
+	);
+}
+
+#[tokio::test]
+async fn an_image_that_loses_file_authority_is_not_delivered() {
+	let (_, mut scope, vector) = fixture();
+	scope.rows[0].source = json!({"kind":"working_image","area_id":Uuid::from_u128(9),"generation":3,"file_id":Uuid::from_u128(10),"path":"chart.png"});
+	scope.images = VecDeque::from([
+		Some(
+			json!({"file_id":Uuid::from_u128(10),"path":"chart.png","name":"chart.png","media_type":"image/png","size":12,"digest":"file-digest"}),
+		),
+		None,
+	]);
+	scope.digest = "file-digest".into();
+	let result = search(
+		&mut scope,
+		&vector,
+		index().workspace_id,
+		&input(),
+		None,
+		None,
+	)
+	.await
+	.unwrap();
+	assert!(result.matches.is_empty());
+}
+
+#[tokio::test]
+async fn observed_image_context_rechecks_the_file_version_and_authority() {
+	let (_, mut scope, vector) = fixture();
+	scope.rows[0].source = json!({"kind":"working_image","area_id":Uuid::from_u128(9),"generation":3,"file_id":Uuid::from_u128(10),"path":"chart.png"});
+	let pointer = json!({"file_id":Uuid::from_u128(10),"path":"chart.png","name":"chart.png","media_type":"image/png","size":12,"digest":"file-digest"});
+	scope.images = VecDeque::from([
+		Some(pointer.clone()),
+		Some(pointer.clone()),
+		Some(pointer),
+		None,
+	]);
+	scope.digest = "file-digest".into();
+	let result = search(
+		&mut scope,
+		&vector,
+		index().workspace_id,
+		&input(),
+		None,
+		None,
+	)
+	.await
+	.unwrap();
+	recheck(&mut scope, &result).await.unwrap();
+	assert!(matches!(
+		recheck(&mut scope, &result).await,
+		Err(Error::Forbidden)
+	));
+}
+
+#[rstest]
+#[case::own_current_file(true)]
+#[case::other_area_or_stale_version(false)]
+#[tokio::test]
+async fn image_queries_require_current_run_file_authority_before_embedding(#[case] allowed: bool) {
+	let (_, mut scope, vector) = fixture();
+	let run_id = Uuid::from_u128(12);
+	let mut request = input();
+	request.query.clear();
+	request.image = Some(aidash_domain::semantic::retrieval::ImageQuery {
+		run_id,
+		area_id: Uuid::from_u128(9),
+		generation: 3,
+		file_id: Uuid::from_u128(10),
+		path: "chart.png".into(),
+		expected_digest: "file-digest".into(),
+	});
+	scope.index.spec["embedding"]["inputs"] = json!(["text", "image"]);
+	scope.query_image_allowed = allowed;
+	let result = search(
+		&mut scope,
+		&vector,
+		index().workspace_id,
+		&request,
+		Some(run_id),
+		None,
+	)
+	.await;
+	if allowed {
+		assert!(result.is_ok());
+		assert!(scope.image_embedded);
+	} else {
+		assert!(matches!(result, Err(Error::Forbidden)));
+		assert!(!scope.image_embedded);
+	}
+}
+
+#[tokio::test]
+async fn a_run_cannot_query_another_runs_image() {
+	let (calls, mut scope, vector) = fixture();
+	let mut request = input();
+	request.query.clear();
+	request.image = Some(aidash_domain::semantic::retrieval::ImageQuery {
+		run_id: Uuid::from_u128(12),
+		area_id: Uuid::from_u128(9),
+		generation: 3,
+		file_id: Uuid::from_u128(10),
+		path: "chart.png".into(),
+		expected_digest: "file-digest".into(),
+	});
+	scope.index.spec["embedding"]["inputs"] = json!(["text", "image"]);
+	let result = search(
+		&mut scope,
+		&vector,
+		index().workspace_id,
+		&request,
+		Some(Uuid::from_u128(13)),
+		None,
+	)
+	.await;
+	assert!(matches!(result, Err(Error::Forbidden)));
+	assert!(!calls.lock().unwrap().contains(&"query_image"));
+	assert!(!scope.image_embedded);
+}
+
+#[tokio::test]
+async fn an_image_query_is_reauthorized_after_vector_search() {
+	let (_, mut scope, vector) = fixture();
+	let run_id = Uuid::from_u128(12);
+	let mut request = input();
+	request.query.clear();
+	request.image = Some(aidash_domain::semantic::retrieval::ImageQuery {
+		run_id,
+		area_id: Uuid::from_u128(9),
+		generation: 3,
+		file_id: Uuid::from_u128(10),
+		path: "chart.png".into(),
+		expected_digest: "file-digest".into(),
+	});
+	scope.index.spec["embedding"]["inputs"] = json!(["text", "image"]);
+	scope.query_image_permissions = VecDeque::from([true, false]);
+	assert!(matches!(
+		search(
+			&mut scope,
+			&vector,
+			index().workspace_id,
+			&request,
+			Some(run_id),
+			None
+		)
+		.await,
+		Err(Error::Forbidden)
+	));
+	assert!(scope.image_embedded);
 }
 
 #[rstest]

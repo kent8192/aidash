@@ -36,6 +36,97 @@ impl SemanticRetrievalSession for Retrieval<'_, '_> {
 	async fn source(&mut self, workspace: Uuid, source: &Source) -> Result<Option<String>> {
 		self.entries.source(workspace, source).await
 	}
+	async fn image_pointer(
+		&mut self,
+		workspace: Uuid,
+		source: &Source,
+	) -> Result<Option<serde_json::Value>> {
+		let Some(access) = self.entries.lease.access() else {
+			return Ok(None);
+		};
+		let Some(file) = super::image_files::current(access, workspace, source).await? else {
+			return Ok(None);
+		};
+		Ok(Some(
+			serde_json::json!({"file_id":file.file_id,"path":file.path,"name":file.path.rsplit('/').next().unwrap_or(&file.path),"media_type":file.media_type,"size":file.size,"digest":file.digest}),
+		))
+	}
+	async fn query_image(
+		&mut self,
+		workspace: Uuid,
+		input: &aidash_domain::semantic::retrieval::ImageQuery,
+		max_bytes: usize,
+	) -> Result<aidash_application::ports::semantic::IndexImage> {
+		use crate::apps::execution::capabilities::services::sessions;
+		let scope = self
+			.entries
+			.lease
+			.access()
+			.ok_or(aidash_application::Error::Forbidden)?
+			.tenancy()?;
+		let run = self.store.run(&scope, input.run_id).await?;
+		if run.workspace_id != workspace {
+			return Err(aidash_application::Error::Forbidden);
+		}
+		let access = self
+			.entries
+			.lease
+			.access()
+			.ok_or(aidash_application::Error::Forbidden)?;
+		let area = sessions::for_run(access, &run).await?;
+		sessions::require_current_run(access, &area, &run).await?;
+		if area.id != input.area_id || area.generation != input.generation {
+			return Err(aidash_application::Error::Forbidden);
+		}
+		let source = Source::WorkingImage {
+			area_id: input.area_id,
+			generation: input.generation,
+			file_id: input.file_id,
+			path: input.path.clone(),
+		};
+		let file = super::image_files::current(access, workspace, &source)
+			.await?
+			.ok_or(aidash_application::Error::Forbidden)?;
+		if file.digest != input.expected_digest {
+			return Err(aidash_application::Error::Conflict("FILE_CHANGED".into()));
+		}
+		if file.size > max_bytes as u64 {
+			return Err(aidash_application::Error::Invalid(
+				"image query exceeds the configured byte limit".into(),
+			));
+		}
+		if !file.media_type.starts_with("image/") {
+			return Err(aidash_application::Error::Invalid(
+				"query File is not an image".into(),
+			));
+		}
+		let bytes = self.store.capabilities.read(access, &file).await?;
+		Ok(aidash_application::ports::semantic::IndexImage {
+			media_type: file.media_type,
+			bytes,
+		})
+	}
+	async fn embed_image(
+		&mut self,
+		workspace: Uuid,
+		config: &EmbeddingConfig,
+		image: &aidash_application::ports::semantic::IndexImage,
+		run: Option<Uuid>,
+	) -> Result<Vec<f32>> {
+		service::embed_input(
+			&self.store,
+			self.entries.lease,
+			workspace,
+			config,
+			aidash_domain::semantic::EmbeddingInput::Image {
+				media_type: &image.media_type,
+				bytes: &image.bytes,
+			},
+			crate::generation::embedding::Origin::Query(run),
+		)
+		.await
+		.map_err(Into::into)
+	}
 	async fn configured(&mut self, workspace: Uuid) -> Result<Option<Index>> {
 		let lease = &mut *self.entries.lease;
 		let result: NativeResult<Option<native::Index>> = async {
@@ -146,6 +237,7 @@ impl From<&native::Search> for Search {
 	fn from(input: &native::Search) -> Self {
 		Self {
 			query: input.query.clone(),
+			image: input.image.clone(),
 			agent: input.agent.clone(),
 			metadata: input.metadata.clone(),
 			limit: input.limit,

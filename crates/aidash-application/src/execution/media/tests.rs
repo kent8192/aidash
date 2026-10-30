@@ -571,10 +571,79 @@ impl SelectedMediaScope for FileScope {
 		}
 		Ok(self.content[&file].clone())
 	}
+	async fn workspace_image(
+		&mut self,
+		area: Uuid,
+		generation: i64,
+		file: Uuid,
+		path: &str,
+	) -> Result<Option<SelectedFile>> {
+		self.calls.push(("workspace_image", area));
+		if self.denied {
+			return Err(Error::Forbidden);
+		}
+		if generation != 3 {
+			return Ok(None);
+		}
+		Ok(self
+			.files
+			.iter()
+			.find(|entry| entry.file_id == file && entry.path == path)
+			.cloned())
+	}
 	async fn page_image(&mut self, reference: &str) -> Result<Option<(String, Vec<u8>)>> {
 		self.calls.push(("page_image", Uuid::nil()));
 		Ok(self.page_images.get(reference).cloned())
 	}
+}
+
+#[rstest]
+#[tokio::test]
+async fn a_workspace_match_opens_through_the_existing_model_media_reader(
+	mut file_scope: FileScope,
+) {
+	let file = file_scope.files[0].clone();
+	let selection = ModelMedia::WorkingImage(aidash_domain::media::WorkingImageSelection {
+		area_id: id(20),
+		generation: 3,
+		file_id: file.file_id,
+		path: file.path.clone(),
+		expected_digest: file.digest.clone(),
+	});
+	let output = selected(&mut file_scope, &[selection]).await.unwrap();
+	assert_eq!(
+		parts(&output),
+		vec![
+			json!({"text":"Selected file: inputs/saved.png"}),
+			json!({"image":"image/png","bytes":image().content})
+		]
+	);
+	assert_eq!(
+		file_scope.calls,
+		vec![
+			("snapshot", Uuid::nil()),
+			("workspace_image", id(20)),
+			("read", id(1))
+		]
+	);
+}
+
+#[rstest]
+#[tokio::test]
+async fn a_stale_workspace_image_never_reads_bytes(mut file_scope: FileScope) {
+	let file = file_scope.files[0].clone();
+	let selection = ModelMedia::WorkingImage(aidash_domain::media::WorkingImageSelection {
+		area_id: id(20),
+		generation: 2,
+		file_id: file.file_id,
+		path: file.path.clone(),
+		expected_digest: file.digest.clone(),
+	});
+	assert!(matches!(
+		selected(&mut file_scope, &[selection]).await,
+		Err(Error::NotFound(_))
+	));
+	assert!(!file_scope.calls.iter().any(|(call, _)| *call == "read"));
 }
 #[rstest]
 #[tokio::test]

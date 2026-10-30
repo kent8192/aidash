@@ -85,6 +85,7 @@ pub async fn search<R: SemanticSearchRepository + ?Sized>(
 		let max_tokens = operation.max_tokens.min(spec.max_result_tokens);
 		let input = Search {
 			query,
+			image: None,
 			agent: Some(aidash_domain::agent_subject(
 				node,
 				&description.inspection.agent.id,
