@@ -788,7 +788,7 @@ async fn workspace_embedding_credential_is_pinned_with_environment_model_admissi
 		(
 			"agent",
 			"environment-agent",
-			json!({"schema_version":1,"model":{"id":"environment-agent-fixture-model","version":"1.0.0"},"instructions":"Embedding admission fixture","bindings":[],"remove_default":["file_search","file_read"]}),
+			json!({"schema_version":1,"model":{"id":"environment-agent-fixture-model","version":"1.0.0"},"instructions":"Embedding admission fixture","bindings":[],"remove_default":["file_search","file_read","compaction"]}),
 		),
 	] {
 		f.runtime.registry.register(&aidash_domain::tenancy::TenantName::new("beta").unwrap(), serde_json::from_value(json!({"id":id,"version":"1.0.0","kind":kind,"name":{"en":id},"description":{"en":"Embedding admission fixture"},"config":config})).unwrap()).await.unwrap();

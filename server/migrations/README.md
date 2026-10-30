@@ -10,6 +10,21 @@ remain SQL DDL assets because Reinhardt has no function-body operation. The
 reverse restores the previous Tool and Agent contracts; remove External
 service definitions and bindings before reversing the kind constraints.
 
+`identity/0041_catalog_restriction` adds a nullable `restriction` jsonb column
+to `authorization_catalog` and to its append-only history (ADR 0029, ADR 0095).
+The column names subjects and Assignable Groups that may use one exact version
+on one Node; NULL keeps the pre-existing meaning, everyone the Tenant's policy
+allows, so every existing approval and history row migrates as unrestricted.
+The columns are typed `AddColumn` operations, so the model state follows the
+physical migration and no state-only checkpoint is needed.
+
+`identity/0042_catalog_approval_requests` creates the Tenant-owned request
+table for ADR 0096, its `0043` row policy and its `0044` state-only snapshot.
+The physical table has a partial unique index keeping at most one open request
+per requester, root and Node, and a check that only a declined request carries
+a decline reason. The policy asset follows the standard Tenant template; the
+state snapshot carries the columns without the physical checks and index.
+
 Reinhardt is the sole migration owner. The source files are grouped under the
 labels `identity`, `registry`, `workspaces`, `execution`, `federation`, `knowledge`,
 `marketplace`, and `operations`; these are modules in `aidash-server`, not separate
@@ -74,7 +89,7 @@ the pinned revision incorporates
 [#6638](https://github.com/kent8192/reinhardt-web/issues/6638). The final snapshot
 records the registered model metadata. These migrations extend the original table definitions and preserve their SQL
 assets. The environment migration additionally records conditional extension
-ownership before this new native history is published. The complete native graph contains 57
+ownership before this new native history is published. The complete native graph contains 58
 records and describes 119 models.
 
 The original baseline has 36 migrations for physical schema creation and eight
@@ -683,11 +698,11 @@ matching model state.
 is an empty state-only migration: both independent column changes apply before
 the single Knowledge head, and no schema or model state is overwritten.
 
-`identity/0041_tenant_data_protection` adds each Tenant's current Data Protection Level and append-only setting history (#542). A missing row means Standard with model-call ZDR and the Plan Connection exemption enabled. Checks reject unknown levels and a Zero Data Retention policy with model-call ZDR disabled. `identity/0042_data_protection_row_level_security` applies the same forced Tenant-isolation policy as the other Tenant-owned tables; literal SQL is required because Reinhardt does not expose RLS policy operations.
+`identity/0045_tenant_data_protection` adds each Tenant's current Data Protection Level and append-only setting history (#542). A missing row means Standard with model-call ZDR and the Plan Connection exemption enabled. Checks reject unknown levels and a Zero Data Retention policy with model-call ZDR disabled. `identity/0046_data_protection_row_level_security` applies the same forced Tenant-isolation policy as the other Tenant-owned tables; literal SQL is required because Reinhardt does not expose RLS policy operations.
 
-`identity/0043_tenant_data_protection_state` records those two tables in ORM migration state. It executes no DDL; references, validity checks and row-level policies remain in the preceding database-only migrations.
+`identity/0047_tenant_data_protection_state` records those two tables in ORM migration state. It executes no DDL; references, validity checks and row-level policies remain in the preceding database-only migrations.
 
-`registry/0051_provider_warning_tools` extends the closed Provider tool validation functions with the warning-tier tools (advisor, subagent, model search, tool search, shell) without replacing the previous contracts; its reverse refuses to run while any such definition or pinned Run exists. `identity/0044_provider_warning_acknowledgment` adds the nullable exact disclosure text to `authorization_catalog_history`, filled only when a warning tool is approved. `execution/0081_provider_container` adds the nullable `runs.provider_container` pin (OpenRouter container id and network policy). OpenRouter has no container delete API, so the pin is kept after the Run ends.
+`registry/0051_provider_warning_tools` extends the closed Provider tool validation functions with the warning-tier tools (advisor, subagent, model search, tool search, shell) without replacing the previous contracts; its reverse refuses to run while any such definition or pinned Run exists. `identity/0048_provider_warning_acknowledgment` adds the nullable exact disclosure text to `authorization_catalog_history`, filled only when a warning tool is approved. `execution/0082_provider_container` adds the nullable `runs.provider_container` pin (OpenRouter container id and network policy). OpenRouter has no container delete API, so the pin is kept after the Run ends.
 
 ## Run control provenance and Safety Stops (#485, ADR 0101)
 

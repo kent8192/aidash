@@ -4,7 +4,7 @@
 //! A Deployment Administrator holds no Tenant authority, so the first
 //! credential of a Tenant in a headless setup comes from whoever operates the
 //! host: the command opens the database with the Deployment's own settings and
-//! never goes through HTTP or the shared `api_token`. The host operator is
+//! never goes through HTTP or the shared `api_token`. The Host Access administrator is
 //! trusted, so it may issue for any subject the Tenant's policy defines and
 //! enables, including a user subject that a person's Mapping also covers. The
 //! issuance is recorded exactly as the HTTP path records it: a credential row

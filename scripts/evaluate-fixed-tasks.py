@@ -57,8 +57,8 @@ DETERMINISTIC_LIMITATIONS = [
     "not model quality.",
     "Token counts, cost and prompt-cache hits are synthetic fixture values (one token per byte, fixture prices, "
     "a simulated prefix cache); they test accounting and request shape, not provider prices.",
-    "Ordinary Runs are not pruned until #108 binds the built-in compaction Decider (ADR 0041), so long-context "
-    "tasks stop at the window instead of measuring pruning.",
+    "The scripted Agents carry no compaction Decider (the evaluator never approves the built-in one), so "
+    "long-context tasks pause with `context_unreducible` at the window instead of measuring pruning.",
     "Summary recovery (#113) and the other feature-not-available comparisons are reported, not measured.",
 ]
 LIVE_LIMITATIONS = [
@@ -664,7 +664,7 @@ def run_deterministic(args, binary_directory):
         error = (error + "; " if error else "") + drift
     model = {"kind": "scripted-fixture", "registrations": dict(model_refs),
              "reported_identities": sorted(model_ids.values()), "route": "local scripted fixture", "mutable_alias": False}
-    harness = {"compaction": "none: ordinary Runs are not pruned until #108 (ADR 0041)", "cache_salt": True,
+    harness = {"compaction": "none: the scripted Agents remove the default compaction binding", "cache_salt": True,
                "provider_credential": None, "disclosure_approval": None, "jev_classifier": "none",
                "builtin_policy": "historical-defaults/1" if corpus["version"] == "fixed-task-corpus-v1"
                                  else "minimal-task-support/1"}

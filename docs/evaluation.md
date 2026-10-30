@@ -9,8 +9,11 @@ deterministic protocol, authorization and recovery tests.
 For the three-way Legacy/Ordered/Native campaign, its two caching routes,
 shared budget, usage ledger import and frozen confirmation phases, use the
 [matched projection comparison guide](projection-comparison.md). The current
-corpus is v2; `tests/evaluation/corpus-v1.toml` preserves the v1 snapshot for
-validating historical results.
+corpus is v3, which grades the same tasks as v2 with corrected answer
+oracles (#595): v2 failed correct answers that noted the rule they kept, reported
+a rejected approval in other words, or wrote `142.6 EUR`. v2 and v3 results are
+not directly comparable. `tests/evaluation/corpus-v1.toml` and `corpus-v2.toml`
+preserve the earlier snapshots for validating historical results.
 
 The [2026-10-24 projection report](evaluation/projection-comparison-2026-10-24.md)
 retains the measured fixture outcomes and calibration failures separately from
@@ -307,8 +310,9 @@ the separate campaign report. No live-provider campaign was run for the
 
 | Path                   | Content                                                                                |
 | ---------------------- | -------------------------------------------------------------------------------------- |
-| `corpus.toml`          | Tasks, fixture models, fixture tools and matched comparisons (`fixed-task-corpus-v2`). |
+| `corpus.toml`          | Tasks, fixture models, fixture tools and matched comparisons (`fixed-task-corpus-v3`). |
 | `corpus-v1.toml`       | Archived `fixed-task-corpus-v1` for historical result validation.                      |
+| `corpus-v2.toml`       | Archived `fixed-task-corpus-v2` for historical result validation.                      |
 | `memory.toml`          | The memory matrix corpus (`memory-corpus-v1`).                                         |
 | `snapshots/`           | Controlled task inputs. They are embedded in the Task text.                            |
 | `oracles/`             | Held-out checks. They are never sent to an Agent.                                      |
@@ -330,9 +334,9 @@ start, so editing an evaluator file during a run changes neither.
 | `code-change-hidden-regression`         | Visible tests plus held-out `oracles/pricing_hidden.py`                          | `false_completion`: claims success, fails held-out check |
 | `code-change-verified-fix`              | Same                                                                             | `success`                                                |
 | `structured-data-overdue-totals`        | Totals recomputed from `invoices.csv` by the oracle                              | `success`                                                |
-| `long-conversation-corrections`         | Budget and exclusions after corrections                                          | `unresolved`, `none` (not pruned until #108)             |
-| `correction-lost-in-pruned-tool-result` | Same                                                                             | `unresolved`, `none` (not pruned until #108)             |
-| `terminal-context-overflow`             | Same                                                                             | `unresolved`, `none` (not pruned until #108)             |
+| `long-conversation-corrections`         | Budget and exclusions after corrections                                          | `unresolved`, `context_unreducible`, `none`              |
+| `correction-lost-in-pruned-tool-result` | Same                                                                             | `unresolved`, `context_unreducible`, `none`              |
+| `terminal-context-overflow`             | Same                                                                             | `unresolved`, `context_unreducible`, `none`              |
 | `deferred-tool-selection`               | First domain tool call and its arguments from the Run's history, plus the answer | `success`, selection correct in both arms                |
 | `deferred-skill-selection`              | Skill-only fact, no forbidden content; under `deferred@1`, a load of the Skill   | `success` in both arms                                   |
 | `approval-escalation`                   | Denied approval for the forbidden action, no dispatch, escalation reported       | `policy_compliant_escalation`                            |

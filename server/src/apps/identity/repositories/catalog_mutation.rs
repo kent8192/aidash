@@ -7,7 +7,10 @@ use crate::{
 };
 use aidash_application::ports::catalog::{CatalogAdministrator, CatalogMutation};
 use aidash_application::tenancy::TenancyScope;
-use aidash_domain::identity::{Principal, catalog::Binding};
+use aidash_domain::identity::{
+	Principal,
+	catalog::{Binding, CatalogRestriction, RestrictionChange},
+};
 use async_trait::async_trait;
 use reinhardt::query::{
 	Alias, ColumnRef, Condition, Expr, ExprTrait, OnConflict, Order, PostgresQueryBuilder, Query,
@@ -21,6 +24,7 @@ struct BindingRow {
 	entry_version: String,
 	enabled: bool,
 	revision: i64,
+	restriction: Option<serde_json::Value>,
 }
 crate::native_record!(BindingRow {
 	tenant,
@@ -28,7 +32,8 @@ crate::native_record!(BindingRow {
 	entry_id,
 	entry_version,
 	enabled,
-	revision
+	revision,
+	restriction
 });
 
 impl From<BindingRow> for Binding {
@@ -40,7 +45,19 @@ impl From<BindingRow> for Binding {
 			entry_version: row.entry_version,
 			enabled: row.enabled,
 			revision: row.revision,
+			restriction: row.restriction.map(|value| {
+				serde_json::from_value(value).expect("stored Catalog Approval restriction")
+			}),
 		}
+	}
+}
+
+/// Render a restriction as `jsonb`, with absence as SQL NULL so an approval
+/// without one keeps its old meaning: everyone the Tenant's policy allows.
+fn restriction_value(restriction: Option<&CatalogRestriction>) -> Result<SimpleExpr> {
+	match restriction {
+		Some(restriction) => Ok(Expr::value(serde_json::to_value(restriction)?).cast_as("jsonb")),
+		None => Ok(Expr::cust("NULL::jsonb").into()),
 	}
 }
 pub(crate) struct NativeMutation<'a>(pub(crate) &'a mut crate::database::native::Transaction);
@@ -99,13 +116,22 @@ async fn compare_and_set(
 	entry: &EntityRef,
 	expected_revision: i64,
 	enabled: bool,
+	restriction: RestrictionChange,
 ) -> Result<Option<Binding>> {
+	// `None` keeps the stored restriction; `Some` replaces it, with `None` or an
+	// empty restriction clearing it.
+	let replacement = match restriction {
+		RestrictionChange::Preserve => None,
+		RestrictionChange::Replace(restriction) => Some(restriction),
+	};
 	let binding: Option<BindingRow> = if expected_revision == 0 {
 		{
 			let query_bind_1 = tenant;
 			let query_bind_2 = &entry.id;
 			let query_bind_3 = &entry.version;
 			let query_bind_4 = enabled;
+			let restriction_expr =
+				restriction_value(replacement.as_ref().and_then(Option::as_ref))?;
 			crate::database::native::query_as(
 				&Query::insert()
 					.into_table(Alias::new("authorization_catalog"))
@@ -116,6 +142,7 @@ async fn compare_and_set(
 						Alias::new("entry_version"),
 						Alias::new("enabled"),
 						Alias::new("revision"),
+						Alias::new("restriction"),
 					])
 					.from_subquery(
 						Query::select()
@@ -137,6 +164,7 @@ async fn compare_and_set(
 								vec![Expr::value(query_bind_4.to_owned()).into()],
 							))
 							.expr(Expr::cust("1"))
+							.expr(restriction_expr)
 							.to_owned(),
 					)
 					.on_conflict(
@@ -154,6 +182,7 @@ async fn compare_and_set(
 				"entry_version",
 				"enabled",
 				"revision",
+				"restriction",
 			])
 			.fetch_optional(&mut **tx)
 			.await?
@@ -165,17 +194,25 @@ async fn compare_and_set(
 			let query_bind_3 = &entry.version;
 			let query_bind_4 = enabled;
 			let query_bind_5 = expected_revision;
+			let mut query = Query::update();
+			query
+				.table(Alias::new("authorization_catalog"))
+				.value_expr(
+					Alias::new("enabled"),
+					SimpleExpr::CustomWithExpr(
+						"(?)".to_owned(),
+						vec![Expr::value(query_bind_4.to_owned()).into()],
+					),
+				)
+				.value_expr(Alias::new("revision"), Expr::cust("revision+1"));
+			if let Some(restriction) = &replacement {
+				query.value_expr(
+					Alias::new("restriction"),
+					restriction_value(restriction.as_ref())?,
+				);
+			}
 			crate::database::native::query_as(
-				&Query::update()
-					.table(Alias::new("authorization_catalog"))
-					.value_expr(
-						Alias::new("enabled"),
-						SimpleExpr::CustomWithExpr(
-							"(?)".to_owned(),
-							vec![Expr::value(query_bind_4.to_owned()).into()],
-						),
-					)
-					.value_expr(Alias::new("revision"), Expr::cust("revision+1"))
+				&query
 					.and_where(
 						Condition::all()
 							.add(
@@ -247,6 +284,7 @@ async fn history(
 		let query_bind_4 = binding.revision;
 		let query_bind_5 = enabled;
 		let query_bind_6 = actor;
+		let restriction = restriction_value(binding.restriction.as_ref())?;
 		crate::database::native::query(
 			&Query::insert()
 				.into_table(Alias::new("authorization_catalog_history"))
@@ -257,6 +295,7 @@ async fn history(
 					Alias::new("entry_version"),
 					Alias::new("revision"),
 					Alias::new("enabled"),
+					Alias::new("restriction"),
 					Alias::new("actor"),
 					Alias::new("provider_warning_acknowledgment"),
 				])
@@ -283,6 +322,7 @@ async fn history(
 							"(?)".to_owned(),
 							vec![Expr::value(query_bind_5.to_owned()).into()],
 						))
+						.expr(restriction)
 						.expr(SimpleExpr::CustomWithExpr(
 							"(?)".to_owned(),
 							vec![Expr::value(query_bind_6.to_owned()).into()],
@@ -341,10 +381,19 @@ impl CatalogMutation for NativeMutation<'_> {
 		reference: &EntityRef,
 		expected_revision: i64,
 		enabled: bool,
+		restriction: RestrictionChange,
 	) -> aidash_application::Result<Option<Binding>> {
-		compare_and_set(self.0, tenant, node, reference, expected_revision, enabled)
-			.await
-			.map_err(Into::into)
+		compare_and_set(
+			self.0,
+			tenant,
+			node,
+			reference,
+			expected_revision,
+			enabled,
+			restriction,
+		)
+		.await
+		.map_err(Into::into)
 	}
 	async fn history(
 		&mut self,
@@ -373,9 +422,17 @@ impl CatalogMutation for NativeAdministrator<'_> {
 		reference: &EntityRef,
 		expected_revision: i64,
 		enabled: bool,
+		restriction: RestrictionChange,
 	) -> aidash_application::Result<Option<Binding>> {
 		self.mutation
-			.compare_and_set(tenant, node, reference, expected_revision, enabled)
+			.compare_and_set(
+				tenant,
+				node,
+				reference,
+				expected_revision,
+				enabled,
+				restriction,
+			)
 			.await
 	}
 	async fn history(

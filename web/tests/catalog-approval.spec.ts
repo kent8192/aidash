@@ -84,6 +84,9 @@ async function dashboard(
           installations: [],
         },
       });
+    // Withdrawal first shows what it stops (#540).
+    if (path.endsWith("/catalog/impact"))
+      return route.fulfill({ json: { agents: [], running_runs: 0 } });
     if (
       path.startsWith("/api/authorization/") &&
       route.request().method() === "POST"
@@ -256,12 +259,22 @@ test("every version shows its approval state and newest-first history", async ({
     /Withdrawn.*Revision 2 · bob/,
     /Approved.*Revision 1 · alice/,
   ]);
-  await expect(approval(page).getByRole("button")).toHaveCount(0);
+  await expect(
+    approval(page).getByRole("button", {
+      name: "Approval Review",
+      exact: true,
+    }),
+  ).toHaveCount(1);
   await page.keyboard.press("Escape");
   await page.locator('[data-registry-kind="model"]').click();
   await row(page, "model").click();
   await expect(approval(page)).toContainText("No approval decisions yet.");
-  await expect(approval(page).getByRole("button")).toHaveCount(0);
+  await expect(
+    approval(page).getByRole("button", {
+      name: "Approval Review",
+      exact: true,
+    }),
+  ).toHaveCount(1);
 });
 
 test("a new agent version starts from the groups of the latest approved earlier version", async ({
@@ -348,131 +361,6 @@ test("without subject.group.update an agent approval keeps the default group", a
   });
 });
 
-test("an approval refused for a dependency approves the whole closure in one request", async ({
-  page,
-}) => {
-  const versions = [
-    registryVersion(
-      entry("planner", "agent", {
-        model: ref("model"),
-        bindings: [
-          { kind: "bundle", target: ref("aidash.bundle.research") },
-          { kind: "skill", target: ref("notes") },
-        ],
-      }),
-      unapproved,
-    ),
-    registryVersion(
-      entry("model", "model", {
-        provider: "openai",
-        endpoint: "http://ollama.lan:11434/v1",
-      }),
-      unapproved,
-    ),
-    registryVersion(
-      entry("aidash.bundle.research", "bundle", {
-        members: [ref("aidash.web_search"), ref("aidash.page_read")],
-      }),
-      unapproved,
-    ),
-    registryVersion(entry("aidash.web_search", "tool"), {
-      approval: { enabled: false, revision: 2 },
-    }),
-    registryVersion(entry("aidash.page_read", "tool")),
-    registryVersion(entry("notes", "skill")),
-  ];
-  const { decisions } = await dashboard(
-    page,
-    tenantSubject,
-    () => versions,
-    ({ path }) =>
-      path.endsWith("/catalog")
-        ? {
-            status: 400,
-            json: { error: "CATALOG_DEPENDENCY_UNAPPROVED: model@1.0.0" },
-          }
-        : { json: [] },
-  );
-  await routeTenantActions(page, ["catalog.approve"]);
-  await page.goto("/settings?view=agents");
-  await row(page, "planner").click();
-  await approval(page)
-    .getByRole("button", { name: "Approve", exact: true })
-    .click();
-  const closure = approval(page).getByRole("group", {
-    name: "Approve with its dependencies",
-  });
-  await expect(closure.locator("li")).toHaveText([
-    /^model · 1\.0\.0.*No retention guarantee · http:\/\/ollama\.lan:11434/,
-    /^aidash\.bundle\.research · 1\.0\.0/,
-    /^aidash\.web_search · 1\.0\.0/,
-    /^planner · 1\.0\.0/,
-  ]);
-  await closure.getByRole("button", { name: "Approve all (4)" }).click();
-  await expect.poll(() => decisions.length).toBe(2);
-  expect(decisions[1]).toEqual({
-    path: "/api/authorization/acme/catalog/approvals",
-    body: {
-      approvals: [
-        { entry: ref("model"), enabled: true, expected_revision: 0 },
-        {
-          entry: ref("aidash.bundle.research"),
-          enabled: true,
-          expected_revision: 0,
-        },
-        {
-          entry: ref("aidash.web_search"),
-          enabled: true,
-          expected_revision: 2,
-        },
-        { entry: ref("planner"), enabled: true, expected_revision: 0 },
-      ],
-      node: defaultNode.name,
-    },
-  });
-  await expect(closure).toHaveCount(0);
-});
-
-test("a closure waiting on a Marketplace installation cannot be approved here", async ({
-  page,
-}) => {
-  const installed = entry("copied-model", "model");
-  const { decisions } = await dashboard(
-    page,
-    tenantSubject,
-    () => [
-      registryVersion(
-        entry("planner", "agent", { model: ref("copied-model") }),
-        unapproved,
-      ),
-      registryVersion(
-        { ...installed, installation: { installation: "copy", revision: 1 } },
-        unapproved,
-      ),
-    ],
-    () => ({
-      status: 400,
-      json: { error: "CATALOG_DEPENDENCY_UNAPPROVED: copied-model@1.0.0" },
-    }),
-  );
-  await routeTenantActions(page, ["catalog.approve"]);
-  await page.goto("/settings?view=agents");
-  await row(page, "planner").click();
-  await approval(page)
-    .getByRole("button", { name: "Approve", exact: true })
-    .click();
-  const closure = approval(page).getByRole("group", {
-    name: "Approve with its dependencies",
-  });
-  await expect(closure).toContainText(
-    "copied-model · 1.0.0 · Activate its Marketplace installation first",
-  );
-  await expect(
-    closure.getByRole("button", { name: "Approve all (1)" }),
-  ).toBeDisabled();
-  expect(decisions).toHaveLength(1);
-});
-
 test("withdrawing fences on the approval revision and reports a conflict", async ({
   page,
 }) => {
@@ -491,6 +379,13 @@ test("withdrawing fences on the approval revision and reports a conflict", async
   await row(page, "search").click();
   await approval(page)
     .getByRole("button", { name: "Withdraw approval", exact: true })
+    .click();
+  await expect(approval(page)).toContainText(
+    "No approved agent on this Node uses it.",
+  );
+  expect(decisions).toHaveLength(0);
+  await approval(page)
+    .getByRole("button", { name: "Withdraw anyway", exact: true })
     .click();
   await expect(approval(page).getByRole("alert")).toHaveText(
     "The approval changed. Review the current state and try again.",
@@ -608,7 +503,7 @@ test("warning tool approval requires acknowledgment once and hides the warning a
   );
   const approve = section.getByRole("button", { name: "Approve", exact: true });
   await expect(approve).toBeDisabled();
-  await section.getByRole("checkbox").check();
+  await section.locator(".provider-tool-warning").getByRole("checkbox").check();
   await approve.click();
   await expect.poll(() => decisions.length).toBe(1);
   expect(decisions[0].body).toEqual({
@@ -624,64 +519,652 @@ test("warning tool approval requires acknowledgment once and hides the warning a
   await expect(section.locator(".provider-tool-warning")).toHaveCount(0);
 });
 
-test("dependency approval requires an acknowledgment for each warning tool", async ({
+test("dependency review requires acknowledgment for each warning tool", async ({
   page,
 }) => {
-  const versions = [
-    registryVersion(
-      entry("planner", "agent", {
-        bindings: [
-          { kind: "tool", target: ref("provider.openrouter.shell") },
-          { kind: "tool", target: ref("provider.openrouter.advisor") },
-        ],
-      }),
-      unapproved,
-    ),
-    ...["shell", "advisor"].map((tool) => ({
-      ...registryVersion(
-        entry(`provider.openrouter.${tool}`, "tool", { tier: "provider" }),
-        unapproved,
-      ),
-      provider_warning: `${tool} runs outside Aidash sandbox protections.`,
-    })),
-  ];
-  const { decisions } = await dashboard(
+  const current = reviewBody([
+    reviewItem("writer", "agent", "approved"),
+    reviewItem("provider.openrouter.shell", "tool", "approvable", {
+      provider_warning: "shell disclosure",
+    }),
+    reviewItem("provider.openrouter.advisor", "tool", "approvable", {
+      provider_warning: "advisor disclosure",
+    }),
+  ]);
+  const { decisions } = await reviewDashboard(page, {
+    actions: ["catalog.approve"],
+    review: () => current,
+    answer: () => ({ json: { bindings: [], installations: [] } }),
+  });
+  const review = await openReview(page);
+  const submit = review.getByRole("button", { name: /Approve selected/ });
+  await expect(submit).toBeDisabled();
+  const disclosures = review.locator(".provider-review-warning");
+  await expect(disclosures).toHaveCount(2);
+  await disclosures.nth(0).getByRole("checkbox").check();
+  await expect(submit).toBeDisabled();
+  await disclosures.nth(1).getByRole("checkbox").check();
+  await submit.click();
+  await expect.poll(() => decisions.length).toBe(1);
+  expect(
+    (
+      decisions[0].body.items as { provider_warning_acknowledged?: boolean }[]
+    ).map((item) => item.provider_warning_acknowledged),
+  ).toEqual([true, true]);
+});
+
+const reviewItem = (
+  id: string,
+  kind: string,
+  status: string,
+  extra: Record<string, unknown> = {},
+) => ({
+  reference: ref(id),
+  kind,
+  name: { en: id, ja: id },
+  description: { en: `${id} definition`, ja: `${id} 定義` },
+  digest: `sha256:${id}`,
+  status,
+  approved: status === "approved",
+  can_approve: true,
+  expected_revision: 2,
+  restriction: null,
+  proposed_restriction: {
+    subjects: ["acme/agents/writer@1.0.0"],
+    groups: [],
+  },
+  widen: false,
+  installation: null,
+  ...extra,
+});
+
+const reviewBody = (
+  items: ReturnType<typeof reviewItem>[],
+  overrides: Record<string, unknown> = {},
+) => ({
+  node: defaultNode.name,
+  root: ref("writer"),
+  items,
+  hidden: 0,
+  closure_digest: "sha256:closure",
+  ready: false,
+  ...overrides,
+});
+
+const requestBody = (id: string, overrides: Record<string, unknown> = {}) => ({
+  id,
+  node: defaultNode.name,
+  root: ref("writer"),
+  requester: "bob",
+  reason: "Please review the writer",
+  state: "open",
+  decline_reason: null,
+  closure_digest: "sha256:closure",
+  created_at: new Date().toISOString(),
+  updated_at: new Date().toISOString(),
+  revision: 1,
+  next_action: "waiting_for_approver",
+  review: { ready: false, hidden: 0, total: 2, approvable: 1 },
+  ...overrides,
+});
+
+async function reviewDashboard(
+  page: Page,
+  options: {
+    access?: object;
+    actions?: string[];
+    review: () => Record<string, unknown>;
+    requests?: () => Record<string, unknown>[];
+    pending?: () => Record<string, unknown>[];
+    answer: (decision: Decision) => { status?: number; json: unknown };
+  },
+) {
+  const harness = await dashboard(
     page,
-    tenantSubject,
-    () => versions,
-    ({ path }) =>
-      path.endsWith("/catalog")
-        ? {
-            status: 400,
-            json: {
-              error:
-                "CATALOG_DEPENDENCY_UNAPPROVED: provider.openrouter.shell@1.0.0",
-            },
-          }
-        : { json: [] },
+    options.access ?? tenantSubject,
+    () => [
+      registryVersion(entry("writer", "agent", { model: ref("model") }), {
+        approval: { enabled: false, revision: 1 },
+        history: [],
+      }),
+      registryVersion(entry("model", "model")),
+    ],
+    options.answer,
   );
-  await routeTenantActions(page, ["catalog.approve"]);
+  await routeTenantActions(page, options.actions ?? []);
+  await page.route(
+    (url) =>
+      url.pathname === "/api/authorization/acme/catalog/review" &&
+      url.searchParams.get("entry") === "writer@1.0.0",
+    (route) =>
+      route.request().method() === "GET"
+        ? route.fulfill({ json: options.review() })
+        : route.fallback(),
+  );
+  await page.route(
+    (url) => url.pathname === "/api/authorization/acme/catalog/requests/mine",
+    (route) =>
+      route.fulfill({
+        json: {
+          requests: options.requests?.() ?? [],
+          next_offset: null,
+        },
+      }),
+  );
+  await page.route(
+    (url) =>
+      url.pathname === "/api/authorization/acme/catalog/requests/pending",
+    (route) =>
+      route.fulfill({
+        json: {
+          requests: options.pending?.() ?? [],
+          next_offset: null,
+        },
+      }),
+  );
+  return harness;
+}
+
+async function openReview(page: Page) {
   await page.goto("/settings?view=agents");
-  await row(page, "planner").click();
+  await row(page, "writer").click();
+  await approval(page)
+    .getByRole("button", { name: "Approval Review", exact: true })
+    .click();
+  return page.getByRole("region", { name: "Approval Review" });
+}
+
+test("the Review shows the whole closure and approves local items and activations in one submission", async ({
+  page,
+}) => {
+  let current = reviewBody(
+    [
+      reviewItem("writer", "agent", "approved"),
+      reviewItem("model", "model", "approvable"),
+      reviewItem("copy", "agent", "needs_marketplace_activation", {
+        installation: {
+          installation: "acme/copy",
+          revision: 3,
+          digest: "sha256:revision",
+          expected_activation_revision: 1,
+          active_revision: null,
+        },
+      }),
+      reviewItem("widened", "tool", "approved", { widen: true }),
+    ],
+    { hidden: 2 },
+  );
+  const { decisions } = await reviewDashboard(page, {
+    actions: ["catalog.approve"],
+    review: () => current,
+    answer: ({ path }) => {
+      if (path === "/api/authorization/acme/catalog/review") {
+        current = reviewBody(
+          current.items.map((item) =>
+            "installation" in item && item.installation
+              ? { ...item, status: "approved", approved: true, widen: false }
+              : { ...item, status: "approved", approved: true, widen: false },
+          ),
+          { ready: true, hidden: 2 },
+        );
+        return { json: { bindings: [], installations: [] } };
+      }
+      return { json: [] };
+    },
+  });
+  const review = await openReview(page);
+  await expect(review).toContainText("2 items you cannot see");
+  await expect(review).toContainText("Widens an existing approval");
+  await expect(review).toContainText("You can approve it");
+  await expect(review).toContainText("Needs Marketplace activation");
+  await review.getByRole("button", { name: /Approve selected \(3\)/ }).click();
+  await expect.poll(() => decisions.length).toBe(1);
+  const body = decisions[0].body as {
+    items: { reference: { id: string } }[];
+    installations: { installation: string }[];
+    request?: string;
+  };
+  expect(body.items.map((item) => item.reference.id).sort()).toEqual([
+    "model",
+    "widened",
+  ]);
+  expect(body.installations).toEqual([
+    expect.objectContaining({ installation: "acme/copy", revision: 3 }),
+  ]);
+  expect(body.request).toBeUndefined();
+  await expect(review).toContainText("Ready to use on this Node.");
+});
+
+test("a dependency review retains the chosen groups for a new root agent", async ({
+  page,
+}) => {
+  const current = reviewBody([
+    reviewItem("writer", "agent", "approvable"),
+    reviewItem("model", "model", "approvable"),
+  ]);
+  const { decisions } = await reviewDashboard(page, {
+    actions: ["catalog.approve", "subject.group.update"],
+    review: () => current,
+    answer: ({ path }) =>
+      path.endsWith("/catalog")
+        ? { status: 400, json: { error: "dependency unapproved" } }
+        : { json: { bindings: [], installations: [] } },
+  });
+  await routeTenantActions(page, ["catalog.approve", "subject.group.update"], {
+    assignable: ["members", "reviewers"],
+  });
+  await page.goto("/settings?view=agents");
+  await row(page, "writer").click();
+  const groups = approval(page).getByRole("group", {
+    name: "Groups for the agent subject",
+  });
+  await groups.getByLabel("members", { exact: true }).uncheck();
+  await groups.getByLabel("reviewers", { exact: true }).check();
   await approval(page)
     .getByRole("button", { name: "Approve", exact: true })
     .click();
-  const all = approval(page).getByRole("button", {
-    name: "Approve all (3)",
-    exact: true,
-  });
-  await expect(all).toBeDisabled();
-  const boxes = approval(page).getByRole("checkbox");
-  await boxes.nth(0).check();
-  await expect(all).toBeDisabled();
-  await boxes.nth(1).check();
-  await all.click();
+  const review = page.getByRole("region", { name: "Approval Review" });
+  await review.getByRole("button", { name: /Approve selected/ }).click();
   await expect.poll(() => decisions.length).toBe(2);
+  expect(decisions[1].body.root_groups).toEqual(["reviewers"]);
+});
+
+test("a dependency review retains the chosen restriction for a new root agent", async ({
+  page,
+}) => {
+  const current = reviewBody([
+    reviewItem("writer", "agent", "approvable", { proposed_restriction: null }),
+    reviewItem("model", "model", "approvable"),
+  ]);
+  const { decisions } = await reviewDashboard(page, {
+    actions: ["catalog.approve"],
+    review: () => current,
+    answer: ({ path }) =>
+      path.endsWith("/catalog")
+        ? { status: 400, json: { error: "dependency unapproved" } }
+        : { json: { bindings: [], installations: [] } },
+  });
+  await page.goto("/settings?view=agents");
+  await row(page, "writer").click();
+  await approval(page)
+    .getByRole("checkbox", { name: "Who may use it" })
+    .check();
+  await approval(page)
+    .getByLabel("Subjects (comma separated)")
+    .fill("alice, bob");
+  await approval(page)
+    .getByRole("button", { name: "Approve", exact: true })
+    .click();
+  const review = page.getByRole("region", { name: "Approval Review" });
+  await review.getByRole("button", { name: /Approve selected/ }).click();
+  await expect.poll(() => decisions.length).toBe(2);
+  const items = (
+    decisions[1].body as {
+      items: { reference: { id: string }; restriction: unknown }[];
+    }
+  ).items;
   expect(
-    (
-      decisions[1].body.approvals as {
-        provider_warning_acknowledged?: boolean;
-      }[]
-    ).map((item) => item.provider_warning_acknowledged),
-  ).toEqual([true, true, undefined]);
+    items.find((item) => item.reference.id === "writer")?.restriction,
+  ).toEqual({ subjects: ["alice", "bob"], groups: [] });
+});
+
+test("a partial submission keeps the pending root restriction for the next one", async ({
+  page,
+}) => {
+  let current = reviewBody([
+    reviewItem("writer", "agent", "approvable", { proposed_restriction: null }),
+    reviewItem("model", "model", "approvable"),
+  ]);
+  const { decisions } = await reviewDashboard(page, {
+    actions: ["catalog.approve"],
+    review: () => current,
+    answer: ({ path }) => {
+      if (path.endsWith("/catalog"))
+        return { status: 400, json: { error: "dependency unapproved" } };
+      current = reviewBody(
+        [
+          reviewItem("writer", "agent", "approvable", {
+            proposed_restriction: null,
+          }),
+          reviewItem("model", "model", "approved"),
+        ],
+        { closure_digest: "sha256:closure-2" },
+      );
+      return { json: { bindings: [], installations: [] } };
+    },
+  });
+  await page.goto("/settings?view=agents");
+  await row(page, "writer").click();
+  await approval(page)
+    .getByRole("checkbox", { name: "Who may use it" })
+    .check();
+  await approval(page).getByLabel("Subjects (comma separated)").fill("alice");
+  await approval(page)
+    .getByRole("button", { name: "Approve", exact: true })
+    .click();
+  const review = page.getByRole("region", { name: "Approval Review" });
+  await review.getByRole("checkbox", { name: "writer" }).uncheck();
+  await review.getByRole("button", { name: /Approve selected \(1\)/ }).click();
+  await expect.poll(() => decisions.length).toBe(2);
+  await review.getByRole("button", { name: /Approve selected \(1\)/ }).click();
+  await expect.poll(() => decisions.length).toBe(3);
+  const items = (
+    decisions[2].body as {
+      items: { reference: { id: string }; restriction: unknown }[];
+    }
+  ).items;
+  expect(items.map((item) => item.reference.id)).toEqual(["writer"]);
+  expect(items[0].restriction).toEqual({ subjects: ["alice"], groups: [] });
+});
+
+test("canceling a restriction edit leaves the approved item out of the submission", async ({
+  page,
+}) => {
+  const current = reviewBody([
+    reviewItem("writer", "agent", "approved", {
+      restriction: { subjects: ["alice"], groups: [] },
+      proposed_restriction: { subjects: ["alice"], groups: [] },
+    }),
+    reviewItem("model", "model", "approvable"),
+  ]);
+  const { decisions } = await reviewDashboard(page, {
+    actions: ["catalog.approve"],
+    review: () => current,
+    answer: () => ({ json: { bindings: [], installations: [] } }),
+  });
+  const review = await openReview(page);
+  const item = review
+    .locator("li")
+    .filter({ has: page.getByText("writer definition", { exact: true }) });
+  await item.getByRole("button", { name: "Edit restriction" }).click();
+  await item.getByRole("button", { name: "Cancel" }).click();
+  await review.getByRole("button", { name: /Approve selected \(1\)/ }).click();
+  await expect.poll(() => decisions.length).toBe(1);
+  expect(
+    (decisions[0].body as { items: { reference: { id: string } }[] }).items.map(
+      (value) => value.reference.id,
+    ),
+  ).toEqual(["model"]);
+});
+
+test("partial authority submits only the items the principal may approve and stays not ready", async ({
+  page,
+}) => {
+  const current = reviewBody([
+    reviewItem("writer", "agent", "approved"),
+    reviewItem("model", "model", "approvable"),
+    reviewItem("tool", "tool", "needs_other_approver", {
+      can_approve: false,
+    }),
+  ]);
+  const { decisions } = await reviewDashboard(page, {
+    actions: ["catalog.approve"],
+    review: () => current,
+    answer: () => ({ json: { bindings: [], installations: [] } }),
+  });
+  const review = await openReview(page);
+  await expect(review).toContainText("Needs another approver");
+  await review.getByRole("button", { name: /Approve selected \(1\)/ }).click();
+  await expect.poll(() => decisions.length).toBe(1);
+  expect((decisions[0].body as { items: unknown[] }).items).toHaveLength(1);
+  await expect(review).not.toContainText("Ready to use on this Node.");
+});
+
+test("a stale review reports the change, reloads, and never resubmits", async ({
+  page,
+}) => {
+  let current = reviewBody([
+    reviewItem("writer", "agent", "approved"),
+    reviewItem("model", "model", "approvable"),
+  ]);
+  const { decisions } = await reviewDashboard(page, {
+    actions: ["catalog.approve"],
+    review: () => current,
+    answer: ({ path }) => {
+      if (path === "/api/authorization/acme/catalog/review") {
+        current = reviewBody(
+          [
+            reviewItem("writer", "agent", "approved"),
+            reviewItem("model", "model", "approvable"),
+          ],
+          { closure_digest: "sha256:changed" },
+        );
+        return {
+          status: 409,
+          json: { error: "APPROVAL_REVIEW_STALE" },
+        };
+      }
+      return { json: [] };
+    },
+  });
+  const review = await openReview(page);
+  await review.getByRole("button", { name: /Approve selected/ }).click();
+  await expect(review.getByRole("alert")).toContainText(
+    "This changed since you reviewed it",
+  );
+  await expect.poll(() => decisions.length).toBe(1);
+  // The reload served the changed closure; no second POST was sent.
+  await expect(review).toContainText("You can approve it");
+  expect(decisions).toHaveLength(1);
+});
+
+test("a consumer requests approval, sees the waiting state, and can withdraw", async ({
+  page,
+}) => {
+  let requests: Record<string, unknown>[] = [];
+  const { decisions } = await reviewDashboard(page, {
+    access: tenantSubject,
+    actions: [],
+    review: () =>
+      reviewBody([
+        reviewItem("writer", "agent", "approved"),
+        reviewItem("model", "model", "needs_other_approver", {
+          can_approve: false,
+        }),
+      ]),
+    requests: () => requests,
+    answer: ({ path }) => {
+      if (path === "/api/authorization/acme/catalog/requests") {
+        requests = [requestBody("request-1", { requester: "alice" })];
+        return { json: requests[0] };
+      }
+      if (path.endsWith("/catalog/requests/request-1/withdraw")) {
+        requests = [
+          requestBody("request-1", {
+            requester: "alice",
+            state: "withdrawn",
+            next_action: "withdrawn",
+          }),
+        ];
+        return { json: requests[0] };
+      }
+      return { json: [] };
+    },
+  });
+  const review = await openReview(page);
+  await expect(
+    review.getByRole("button", { name: /Approve selected/ }),
+  ).toHaveCount(0);
+  await review
+    .getByPlaceholder("Why this definition is needed")
+    .fill("Please let the writer use the model");
+  await review.getByRole("button", { name: "Send request" }).click();
+  await expect.poll(() => decisions.length).toBe(1);
+  expect(decisions[0].body).toMatchObject({
+    node: defaultNode.name,
+    root: ref("writer"),
+    reason: "Please let the writer use the model",
+  });
+  await expect(review).toContainText("Waiting for an approver.");
+  await review.getByRole("button", { name: "Withdraw request" }).click();
+  await expect.poll(() => decisions.length).toBe(2);
+  await expect(review).toContainText("Request withdrawn.");
+});
+
+test("a consumer sees a declined reason and a changed closure asks them to request again", async ({
+  page,
+}) => {
+  let requests = [
+    requestBody("request-declined", {
+      state: "declined",
+      next_action: "declined",
+      decline_reason: "The model is not approved yet",
+    }),
+  ];
+  await reviewDashboard(page, {
+    access: tenantSubject,
+    actions: [],
+    review: () =>
+      reviewBody([
+        reviewItem("writer", "agent", "approved"),
+        reviewItem("model", "model", "needs_other_approver", {
+          can_approve: false,
+        }),
+      ]),
+    requests: () => requests,
+    answer: () => ({ json: [] }),
+  });
+  const review = await openReview(page);
+  await expect(review).toContainText("Declined by an approver.");
+  await expect(review).toContainText("The model is not approved yet");
+
+  requests = [
+    requestBody("request-changed", {
+      closure_digest: "sha256:old",
+      state: "open",
+    }),
+  ];
+  await page.reload();
+  await openReview(page);
+  await expect(review).toContainText(
+    "The reviewed closure changed. Request again.",
+  );
+  await expect(
+    review.getByRole("button", { name: "Send request" }),
+  ).toBeVisible();
+});
+
+test("an approver opens a pending request with its id and declines it with a reason", async ({
+  page,
+}) => {
+  const pending = requestBody("request-pending");
+  const review = reviewBody([
+    reviewItem("writer", "agent", "approved"),
+    reviewItem("model", "model", "approvable"),
+  ]);
+  const { decisions } = await reviewDashboard(page, {
+    actions: ["catalog.approve"],
+    review: () => review,
+    pending: () => [pending],
+    answer: ({ path }) => {
+      if (path.endsWith("/catalog/requests/request-pending/decline"))
+        return {
+          json: { ...pending, state: "declined", next_action: "declined" },
+        };
+      return { json: { bindings: [], installations: [] } };
+    },
+  });
+  await page.goto("/settings?view=registry");
+  await page.getByRole("button", { name: "Approval requests" }).click();
+  const queue = page.getByRole("region", { name: "Approval requests" });
+  await expect(queue.getByText("bob", { exact: true })).toBeVisible();
+  await queue.getByRole("button", { name: "Open review" }).click();
+  const panel = page.getByRole("region", { name: "Approval Review" });
+  await expect(panel).toContainText("Answering a Catalog Approval Request.");
+  await panel.getByRole("button", { name: /Approve selected/ }).click();
+  await expect.poll(() => decisions.length).toBe(1);
+  expect(decisions[0].body).toMatchObject({ request: "request-pending" });
+  await panel.getByRole("button", { name: "Close" }).click();
+  await queue.getByRole("button", { name: "Decline" }).click();
+  await page
+    .getByPlaceholder("Why this request is declined")
+    .fill("The dependency is not ready");
+  await page.getByRole("button", { name: "Decline request" }).click();
+  await expect.poll(() => decisions.length).toBe(2);
+  expect(decisions[1].body).toMatchObject({
+    reason: "The dependency is not ready",
+  });
+});
+
+test("a consumer's request is fulfilled through the approver queue and then reads ready", async ({
+  browser,
+}) => {
+  let consumerRequests: Record<string, unknown>[] = [];
+  let consumerReview = reviewBody([
+    reviewItem("writer", "agent", "approved"),
+    reviewItem("model", "model", "needs_other_approver", {
+      can_approve: false,
+    }),
+  ]);
+  const consumer = await browser.newPage();
+  await reviewDashboard(consumer, {
+    access: tenantSubject,
+    actions: [],
+    review: () => consumerReview,
+    requests: () => consumerRequests,
+    answer: ({ path }) => {
+      if (path === "/api/authorization/acme/catalog/requests") {
+        consumerRequests = [
+          requestBody("request-flow", { requester: "alice" }),
+        ];
+        return { json: consumerRequests[0] };
+      }
+      return { json: [] };
+    },
+  });
+  const initial = await openReview(consumer);
+  await initial
+    .getByPlaceholder("Why this definition is needed")
+    .fill("The model is ready for the writer");
+  await initial.getByRole("button", { name: "Send request" }).click();
+  await expect(initial).toContainText("Waiting for an approver.");
+
+  let pending = [requestBody("request-flow", { requester: "alice" })];
+  const approver = await browser.newPage();
+  const { decisions } = await reviewDashboard(approver, {
+    actions: ["catalog.approve"],
+    review: () =>
+      reviewBody([
+        reviewItem("writer", "agent", "approved"),
+        reviewItem("model", "model", "approvable"),
+      ]),
+    pending: () => pending,
+    answer: ({ path }) => {
+      if (path === "/api/authorization/acme/catalog/review") {
+        pending = [];
+        consumerRequests = [
+          requestBody("request-flow", {
+            requester: "alice",
+            state: "fulfilled",
+            next_action: "fulfilled",
+          }),
+        ];
+        consumerReview = reviewBody(
+          [
+            reviewItem("writer", "agent", "approved"),
+            reviewItem("model", "model", "approved"),
+          ],
+          { ready: true },
+        );
+        return { json: { bindings: [], installations: [] } };
+      }
+      return { json: [] };
+    },
+  });
+  await approver.goto("/settings?view=registry");
+  await approver.getByRole("button", { name: "Approval requests" }).click();
+  await approver.getByRole("button", { name: "Open review" }).click();
+  await approver
+    .getByRole("region", { name: "Approval Review" })
+    .getByRole("button", { name: /Approve selected/ })
+    .click();
+  await expect.poll(() => decisions.length).toBe(1);
+  expect(decisions[0].body).toMatchObject({ request: "request-flow" });
+
+  await consumer.reload();
+  const fulfilled = await openReview(consumer);
+  await expect(fulfilled).toContainText("Ready to use on this Node.");
+  await expect(fulfilled).toContainText(
+    "Fulfilled: every reviewed item is approved.",
+  );
 });

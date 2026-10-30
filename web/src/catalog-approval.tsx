@@ -3,19 +3,19 @@ import { SecretDisclosure } from "./tenant-secrets";
 import { useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import {
-  authorizationApproveCatalog,
+  authorizationCatalogImpact,
   authorizationSetCatalog,
   registryVersions,
 } from "./generated/aidash";
-import type { RegistryVersion } from "./generated/models";
-import type { State } from "./types";
+import type { RegistryVersion, WithdrawalImpact } from "./generated/models";
+import type { EntityRef, Entry, State } from "./types";
 import { ApiError } from "./transport";
 import { keylessOrigin } from "./keyless";
 import { toolReplay } from "./tool-declaration";
 import { deciderRecipients, type DeciderRecipient } from "./decider";
 import { agentPlugins, type AgentPluginRef } from "./agent-plugins";
 import { AgentPluginSummary } from "./agent-plugin-summary";
-import { Badge, useEntryLabel, useI18n, type StatusTone } from "./ui";
+import { Badge, useI18n, type StatusTone } from "./ui";
 import { Button } from "./components/ui/button";
 import {
   Alert,
@@ -31,11 +31,13 @@ import {
   defaultAgentGroups,
   earlierAgentGroups,
   requestedGroups,
-  unapprovedClosure,
-  unapprovedDependency,
+  restrictionLabel,
+  withdrawalAgentLabels,
+  withdrawalHasNoImpact,
   type ApprovalState,
-  type Closure,
+  type Restriction,
 } from "./catalog-approval-model";
+import { ApprovalReviewPanel } from "./approval-review";
 import { useNodes } from "./nodes";
 import { useTenantActions } from "./tenant-administration";
 
@@ -69,6 +71,44 @@ const approvalBadges: Record<ApprovalState, [string, StatusTone]> = {
   withdrawn: ["catalogWithdrawn", "neutral"],
   unapproved: ["catalogUnapproved", "warning"],
 };
+
+/** A Run start refused because the agent's compaction Decider is not
+ *  approved on this Node (ADR 0102). It names the Decider and opens it, where
+ *  it can be approved or its approval requested (ADR 0096). */
+export function DeciderStartRefusal({
+  decider,
+  data,
+  openEntry,
+}: {
+  decider: EntityRef;
+  data: State;
+  openEntry: (entry: Entry) => void;
+}) {
+  const { t, entityLabel } = useI18n();
+  const versions = useRegistryVersions(data.access);
+  const entry = versions.data?.find(
+    (value) =>
+      value.entry.id === decider.id && value.entry.version === decider.version,
+  )?.entry;
+  return (
+    <Alert>
+      <p>{t("catalogDeciderUnapproved")}</p>
+      <p>{entry ? entityLabel(entry) : `${decider.id}@${decider.version}`}</p>
+      <p>{t("catalogDeciderUnapprovedHelp")}</p>
+      {entry && (
+        <Button
+          type="button"
+          size="sm"
+          variant="outline"
+          className="justify-self-start"
+          onClick={() => openEntry(entry)}
+        >
+          {t("catalogOpenDecider")}
+        </Button>
+      )}
+    </Alert>
+  );
+}
 
 export function ApprovalBadge({ version }: { version: RegistryVersion }) {
   const [label, tone] = approvalBadges[approvalState(version)];
@@ -152,9 +192,9 @@ export function AgentPluginsDisclosure({
   );
 }
 
-/** One version's Catalog Approval: its state and history, and for a subject
- *  holding `catalog.approve`, the decision itself. An approval refused for an
- *  unapproved dependency turns into one request for the whole closure. */
+/** One version's Catalog Approval: its state and history, a single-item
+ *  decision for a subject holding `catalog.approve`, and the server-driven
+ *  review for the whole closure. */
 export function CatalogApprovalSection({
   version,
   versions,
@@ -166,14 +206,18 @@ export function CatalogApprovalSection({
 }) {
   const { t, locale } = useI18n();
   const client = useQueryClient();
-  const label = useEntryLabel(versions.map((item) => item.entry));
   const { tenant, can, assignable } = useTenantActions(access);
   // The versions list reports the selected Node's approvals, so that is the
   // Node a decision here applies to.
   const { selected } = useNodes();
   const [acknowledged, setAcknowledged] = useState<Record<string, boolean>>({});
   const [chosen, setChosen] = useState<string[]>();
-  const [closure, setClosure] = useState<Closure>();
+  const [restricting, setRestricting] = useState<boolean>();
+  const [subjectNames, setSubjectNames] = useState<string>();
+  const [restrictedGroups, setRestrictedGroups] = useState<string[]>();
+  const [reviewOpen, setReviewOpen] = useState(false);
+  // `null`: the impact could not be read; withdrawal is still offered.
+  const [impact, setImpact] = useState<WithdrawalImpact | null>();
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const entry = version.entry;
@@ -203,6 +247,31 @@ export function CatalogApprovalSection({
   const sentGroups = choosesGroups
     ? requestedGroups(groups, assignable)
     : undefined;
+  const currentRestriction = version.approval?.restriction;
+  const restricts = restricting ?? currentRestriction != null;
+  const restrictionText =
+    subjectNames ?? currentRestriction?.subjects.join(", ") ?? "";
+  const restrictionSubjects = restrictionText
+    .split(",")
+    .map((name) => name.trim())
+    .filter((name) => name.length > 0);
+  const restrictionGroups =
+    restrictedGroups ??
+    currentRestriction?.groups.filter((group) => assignable.includes(group)) ??
+    [];
+  const requestedRestriction = (): Restriction | null | undefined => {
+    if (!restricts) return currentRestriction != null ? null : undefined;
+    if (restrictionSubjects.length === 0 && restrictionGroups.length === 0) {
+      return currentRestriction != null ? null : undefined;
+    }
+    return { subjects: restrictionSubjects, groups: restrictionGroups };
+  };
+  // Only an approver's edit reaches the Approval Review; an untouched form
+  // leaves the root's stored restriction to the server's proposal.
+  const restrictionEdited =
+    restricting !== undefined ||
+    subjectNames !== undefined ||
+    restrictedGroups !== undefined;
   const path = encodeURIComponent(tenant ?? "");
   const decide = async (action: () => Promise<unknown>) => {
     if (busy) return;
@@ -210,15 +279,12 @@ export function CatalogApprovalSection({
     setError("");
     try {
       await action();
-      setClosure(undefined);
       await client.invalidateQueries();
     } catch (reason) {
-      const named =
-        reason instanceof ApiError && reason.status === 400
-          ? unapprovedDependency(reason.message)
-          : null;
-      if (named) setClosure(unapprovedClosure(version, versions, named));
-      else if (reason instanceof ApiError && reason.status === 409) {
+      if (reason instanceof ApiError && reason.status === 400) {
+        // A missing dependency needs the whole-closure review, not a retry.
+        setReviewOpen(true);
+      } else if (reason instanceof ApiError && reason.status === 409) {
         setError(t("catalogConflict"));
         await client.invalidateQueries({ queryKey: ["registry-versions"] });
       } else
@@ -256,29 +322,44 @@ export function CatalogApprovalSection({
   const approve = () =>
     decide(() =>
       authorizationSetCatalog(path, {
-        ...approvalRequest(version, true, sentGroups, accepted(version)),
+        ...approvalRequest(
+          version,
+          true,
+          sentGroups,
+          requestedRestriction(),
+          accepted(version),
+        ),
         node: selected!.name,
       }),
     );
+  // Withdrawal is never blocked: it shows what it stops, then waits for the
+  // approver to confirm or cancel (#540).
+  const showImpact = async () => {
+    if (busy) return;
+    setBusy(true);
+    setError("");
+    try {
+      setImpact(
+        await authorizationCatalogImpact(path, {
+          node: selected!.name,
+          id: version.entry.id,
+          version: version.entry.version,
+        }),
+      );
+    } catch {
+      setImpact(null);
+    } finally {
+      setBusy(false);
+    }
+  };
   const withdraw = () =>
-    decide(() =>
-      authorizationSetCatalog(path, {
+    decide(async () => {
+      await authorizationSetCatalog(path, {
         ...approvalRequest(version, false),
         node: selected!.name,
-      }),
-    );
-  const approveClosure = (needed: Closure) =>
-    decide(() =>
-      authorizationApproveCatalog(path, {
-        approvals: [
-          ...needed.dependencies.map((item) =>
-            approvalRequest(item, true, undefined, accepted(item)),
-          ),
-          approvalRequest(version, true, sentGroups, accepted(version)),
-        ],
-        node: selected!.name,
-      }),
-    );
+      });
+      setImpact(undefined);
+    });
   const subheading = "text-xs font-semibold text-foreground";
   return (
     <section
@@ -290,6 +371,11 @@ export function CatalogApprovalSection({
           {t("catalogApproval")}
         </h4>
         <ApprovalBadge version={version} />
+        {currentRestriction != null && (
+          <span className="min-w-0 text-xs text-muted-foreground [overflow-wrap:anywhere]">
+            {t("catalogRestrictedTo")}: {restrictionLabel(currentRestriction)}
+          </span>
+        )}
       </div>
       <Hint>
         {t(
@@ -307,7 +393,7 @@ export function CatalogApprovalSection({
             : "OpenRouter executes this Provider tool. This Catalog Approval is its only consent. The Agent Binding pins spending caps. Results are not Research evidence."}
         </Hint>
       )}
-      {decides && state !== "approved" && !closure && warning(version)}
+      {decides && state !== "approved" && warning(version)}
       {origin &&
         (decides && state !== "approved" ? (
           <Notice tone="warning" role="status" className="keyless-notice">
@@ -351,6 +437,62 @@ export function CatalogApprovalSection({
           ]}
         />
       )}
+      {decides && state !== "approved" && (
+        <div
+          className="grid gap-1.5"
+          role="group"
+          aria-label={t("catalogRestriction")}
+        >
+          <label className="flex items-center gap-2 text-xs font-semibold text-foreground">
+            <input
+              type="checkbox"
+              className="size-3.5 shrink-0 accent-primary"
+              disabled={busy}
+              checked={restricts}
+              onChange={(event) => {
+                setRestricting(event.target.checked);
+                if (!event.target.checked) {
+                  setSubjectNames("");
+                  setRestrictedGroups([]);
+                }
+              }}
+            />
+            {t("catalogRestriction")}
+          </label>
+          {restricts && (
+            <>
+              <label className="grid gap-1 text-xs">
+                <span>{t("catalogRestrictionSubjects")}</span>
+                <input
+                  className="min-w-0 rounded-md border border-border bg-surface px-2 py-1 font-mono text-xs text-foreground"
+                  disabled={busy}
+                  value={restrictionText}
+                  placeholder="alice, acme/agents/writer@1.0.0"
+                  onChange={(event) => setSubjectNames(event.target.value)}
+                />
+              </label>
+              {assignable.length > 0 && (
+                <div
+                  className="grid gap-1"
+                  role="group"
+                  aria-label={t("catalogRestrictionGroups")}
+                >
+                  <span className={subheading}>
+                    {t("catalogRestrictionGroups")}
+                  </span>
+                  <GroupChoice
+                    groups={assignable}
+                    selected={restrictionGroups}
+                    disabled={busy}
+                    change={setRestrictedGroups}
+                  />
+                </div>
+              )}
+              <Hint>{t("catalogRestrictionHelp")}</Hint>
+            </>
+          )}
+        </div>
+      )}
       {decides && state !== "approved" && entry.kind === "agent" && (
         <>
           {!newSubject ? (
@@ -375,105 +517,96 @@ export function CatalogApprovalSection({
           )}
         </>
       )}
-      {closure && (
-        <div
-          className="catalog-dependencies grid gap-2 rounded-md border border-border bg-surface px-3 py-2.5"
-          role="group"
-          aria-label={t("catalogDependencies")}
-        >
-          <h5 className={subheading}>{t("catalogDependencies")}</h5>
-          <Hint>{t("catalogDependenciesHelp")}</Hint>
-          <ul className="grid gap-1.5 text-xs">
-            {[...closure.dependencies, version].map((item) => {
-              const keyless = keylessOrigin(item.entry);
-              const routes = deciderRecipients(item.entry);
-              const itemPlugins = agentPlugins(item.entry);
-              return (
-                <li
-                  key={`${item.entry.id}@${item.entry.version}`}
-                  className="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1"
-                >
-                  <span className="min-w-0 font-medium text-foreground [overflow-wrap:anywhere]">
-                    {label(item.entry)}
-                  </span>
-                  <Badge value={item.entry.kind} />
-                  {warning(item)}
-                  {keyless && <KeylessOrigin origin={keyless} />}
-                  {routes && <DeciderRecipients recipients={routes} />}
-                  {itemPlugins && (
-                    <div className="w-full">
-                      <AgentPluginsDisclosure plugins={itemPlugins} admits />
-                    </div>
-                  )}
-                </li>
-              );
-            })}
-          </ul>
-          {closure.blocked.length > 0 && (
-            <div className="grid gap-1">
-              <p className="text-xs font-medium text-warning">
-                {t("catalogBlocked")}
-              </p>
-              <ul className="grid gap-1 text-xs text-muted-foreground">
-                {closure.blocked.map((blocked) => (
-                  <li
-                    key={`${blocked.reference.id}@${blocked.reference.version}`}
-                  >
-                    {label(blocked.reference)} ·{" "}
-                    {t(
-                      blocked.installed
-                        ? "catalogBlockedInstalled"
-                        : "catalogBlockedMissing",
-                    )}
-                  </li>
-                ))}
-              </ul>
-            </div>
-          )}
+      {tenant !== null &&
+        selected !== undefined &&
+        version.needs_approval &&
+        !installed && (
           <div className="flex flex-wrap gap-2">
+            {decides && state === "approved" ? (
+              <Button
+                size="sm"
+                variant="outline"
+                disabled={busy}
+                onClick={() => void showImpact()}
+              >
+                {t("catalogWithdraw")}
+              </Button>
+            ) : decides ? (
+              <Button
+                size="sm"
+                disabled={busy || !accepted(version)}
+                onClick={() => void approve()}
+              >
+                {t("catalogApprove")}
+              </Button>
+            ) : null}
             <Button
               size="sm"
-              disabled={
-                busy ||
-                closure.blocked.length > 0 ||
-                ![...closure.dependencies, version].every(accepted)
-              }
-              onClick={() => void approveClosure(closure)}
-            >
-              {t("catalogApproveAll")} ({closure.dependencies.length + 1})
-            </Button>
-            <Button
-              size="sm"
-              variant="ghost"
+              variant={decides ? "outline" : "default"}
               disabled={busy}
-              onClick={() => setClosure(undefined)}
+              onClick={() => setReviewOpen((open) => !open)}
             >
-              {t("cancel")}
+              {t("approvalReview")}
             </Button>
           </div>
-        </div>
+        )}
+      {reviewOpen && tenant !== null && selected !== undefined && (
+        <ApprovalReviewPanel
+          tenant={tenant}
+          node={selected.name}
+          root={{ id: entry.id, version: entry.version }}
+          rootGroups={sentGroups}
+          rootRestriction={
+            restrictionEdited ? requestedRestriction() : undefined
+          }
+          subject={access.kind === "subject" ? access.subject : undefined}
+          onClose={() => setReviewOpen(false)}
+          onChanged={() =>
+            client.invalidateQueries({ queryKey: ["registry-versions"] })
+          }
+        />
       )}
-      {decides && !closure && (
-        <div className="flex flex-wrap gap-2">
-          {state === "approved" ? (
-            <Button
-              size="sm"
-              variant="outline"
-              disabled={busy}
-              onClick={() => void withdraw()}
-            >
-              {t("catalogWithdraw")}
-            </Button>
-          ) : (
-            <Button
-              size="sm"
-              disabled={busy || !accepted(version)}
-              onClick={() => void approve()}
-            >
-              {t("catalogApprove")}
-            </Button>
-          )}
-        </div>
+      {impact !== undefined && state === "approved" && (
+        <Notice tone="warning" role="status" className="withdraw-impact">
+          <div className="grid gap-1">
+            <span className={subheading}>{t("catalogWithdrawImpact")}</span>
+            {impact === null ? (
+              <span>{t("catalogWithdrawImpactUnavailable")}</span>
+            ) : withdrawalHasNoImpact(impact) ? (
+              <span>{t("catalogWithdrawNoImpact")}</span>
+            ) : (
+              <>
+                <span>
+                  {t("catalogWithdrawAgents")}:{" "}
+                  <span className="font-mono [overflow-wrap:anywhere]">
+                    {withdrawalAgentLabels(impact).join(", ") || "0"}
+                  </span>
+                </span>
+                <span>
+                  {t("catalogWithdrawRuns")}: {impact.running_runs}
+                </span>
+              </>
+            )}
+            <div className="flex flex-wrap gap-2">
+              <Button
+                size="sm"
+                variant="outline"
+                disabled={busy}
+                onClick={() => void withdraw()}
+              >
+                {t("catalogWithdrawConfirm")}
+              </Button>
+              <Button
+                size="sm"
+                variant="outline"
+                disabled={busy}
+                onClick={() => setImpact(undefined)}
+              >
+                {t("cancel")}
+              </Button>
+            </div>
+          </div>
+        </Notice>
       )}
       {error && <Alert>{error}</Alert>}
       {version.needs_approval && (
@@ -504,6 +637,12 @@ export function CatalogApprovalSection({
                       {record.actor}
                     </span>
                   </span>
+                  {record.restriction != null && (
+                    <span className="col-span-2 min-w-0 text-[11px] text-muted-foreground [overflow-wrap:anywhere] sm:col-span-1">
+                      {t("catalogRestrictedTo")}:{" "}
+                      {restrictionLabel(record.restriction)}
+                    </span>
+                  )}
                   <time className="col-start-2 font-mono text-[11px] text-faint sm:col-start-auto">
                     {new Date(record.created_at).toLocaleString(locale)}
                   </time>

@@ -471,6 +471,7 @@ impl crate::ports::tools::PluginSessions for FakeSessions {
 		config: &aidash_domain::agent_plugin::RemoteServer,
 		tool: &str,
 		schema_digest: &str,
+		_replay_safe: bool,
 		arguments: serde_json::Value,
 		key: &str,
 	) -> Result<serde_json::Value> {

@@ -176,6 +176,11 @@ struct State {
 	custom: BTreeMap<String, Arc<Scripted>>,
 	/// Journaled invocations by key: status and result.
 	invocations: Mutex<BTreeMap<String, (String, Option<Value>)>>,
+	invocation_reasons: Mutex<BTreeMap<String, String>>,
+	invocation_delivery_counts: Mutex<BTreeMap<String, u32>>,
+	invocation_delivery_pending: Mutex<std::collections::BTreeSet<String>>,
+	reconciliation_prompts: Mutex<Vec<String>>,
+	capture_reconciliation: bool,
 	direct_skills: Vec<DirectSkill>,
 	direct_bodies: BTreeMap<Uuid, String>,
 	projection: ProjectionVersion,
@@ -598,7 +603,51 @@ impl ExecutionStore for Backend {
 			.entry(key.to_owned())
 			.or_insert_with(|| ("STARTED".into(), None))
 			.clone();
-		Ok(InvocationOutcome { status, result })
+		Ok(InvocationOutcome {
+			status,
+			result,
+			uncertain_reason: self.0.invocation_reasons.lock().unwrap().get(key).cloned(),
+			retrying: self
+				.0
+				.invocation_delivery_pending
+				.lock()
+				.unwrap()
+				.remove(key),
+		})
+	}
+	async fn invocation_not_delivered(
+		&self,
+		_run: &Run,
+		token: Uuid,
+		key: &str,
+		failure: &Value,
+	) -> Result<u32> {
+		assert_eq!(token, self.0.token);
+		self.0
+			.invocation_delivery_pending
+			.lock()
+			.unwrap()
+			.insert(key.into());
+		let mut counts = self.0.invocation_delivery_counts.lock().unwrap();
+		let count = counts.entry(key.into()).or_default();
+		*count += 1;
+		if *count > aidash_domain::semantic::OUTAGE_RETRIES {
+			self.0
+				.invocations
+				.lock()
+				.unwrap()
+				.insert(key.into(), ("COMPLETED".into(), Some(failure.clone())));
+		}
+		Ok(*count)
+	}
+	async fn invocation_answer_lost(&self, _run: &Run, token: Uuid, key: &str) -> Result<()> {
+		assert_eq!(token, self.0.token);
+		self.0
+			.invocation_reasons
+			.lock()
+			.unwrap()
+			.insert(key.into(), "answer_lost".into());
+		Ok(())
 	}
 	async fn completed_invocation(
 		&self,
@@ -652,8 +701,16 @@ impl ExecutionStore for Backend {
 		key: &str,
 		prompt: &str,
 	) -> Result<()> {
-		let _ = (run, token, key, prompt);
-		unexpected("ExecutionStore.reconciliation_request")
+		let _ = (run, token, key);
+		if !self.0.capture_reconciliation {
+			unexpected("ExecutionStore.reconciliation_request");
+		}
+		self.0
+			.reconciliation_prompts
+			.lock()
+			.unwrap()
+			.push(prompt.into());
+		Ok(())
 	}
 	async fn record_usage_dispatch(
 		&self,
@@ -1737,6 +1794,11 @@ fn fixture() -> Fixture {
 		messages: vec![],
 		custom: BTreeMap::new(),
 		invocations: Mutex::new(BTreeMap::new()),
+		invocation_reasons: Mutex::new(BTreeMap::new()),
+		invocation_delivery_counts: Mutex::new(BTreeMap::new()),
+		invocation_delivery_pending: Mutex::new(Default::default()),
+		reconciliation_prompts: Mutex::new(vec![]),
+		capture_reconciliation: false,
 		direct_skills: vec![],
 		direct_bodies: BTreeMap::new(),
 		projection: ProjectionVersion::Legacy,

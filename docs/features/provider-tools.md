@@ -76,7 +76,7 @@ Agent Binding validation functions while preserving the earlier contracts and
 their function identities. PostgreSQL function bodies require DDL through
 Reinhardt's `RunSQL`; no application data is rewritten. Downgrade is refused while
 immutable definitions or retained Run snapshots require Provider tools. Execution
-migration `0080_provider_tool_usage` stores reported tool counts as nullable JSONB.
+migration `0081_provider_tool_usage` stores reported tool counts as nullable JSONB.
 
 ## OpenRouter references
 
@@ -178,7 +178,7 @@ to the Run's signed shell container.
 Registry migration `0051_provider_warning_tools` extends the previous closed union
 without replacing old validation contracts. Identity migration
 `0045_provider_warning_acknowledgment` adds the nullable exact disclosure to
-approval history; execution migration `0081_provider_container` adds the nullable
+approval history; execution migration `0082_provider_container` adds the nullable
 Run pin. Existing approvals and Runs acquire neither acknowledgment nor container
 implicitly.
 

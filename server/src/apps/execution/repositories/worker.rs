@@ -294,6 +294,15 @@ pub(crate) fn classify_failure(error: &NativeError) -> ExecutionFailure {
 		}
 		NativeError::MediaRouteUnavailable(_) => ExecutionFailure::MediaRoute(error.to_string()),
 		NativeError::TransactionPending | NativeError::StaleInference => ExecutionFailure::Deferred,
+		NativeError::ToolRetry {
+			message,
+			count,
+			retry_after,
+		} => ExecutionFailure::ToolRetry {
+			message: message.clone(),
+			count: *count,
+			retry_after: *retry_after,
+		},
 		NativeError::External(_) | NativeError::InferenceStalled => ExecutionFailure::Inference {
 			transport: true,
 			status: None,

@@ -1,8 +1,43 @@
-import type { RegistryVersion, RequestApproval } from "./generated/models";
+import type {
+  RegistryVersion,
+  RequestApproval,
+  WithdrawalImpact,
+} from "./generated/models";
 import type { EntityRef } from "./types";
 
 /** Where one version of the Tenant's Registry stands for Catalog Approval. */
 export type ApprovalState = "builtin" | "approved" | "withdrawn" | "unapproved";
+
+/** Who may use an approved version on its Node (ADR 0029, ADR 0095). */
+export type Restriction = { subjects: string[]; groups: string[] };
+
+const names = (values: readonly string[]) => [...values].sort();
+
+/** A new restriction, or clearing one, is a visible new approval revision. */
+export function restrictionRequest(
+  restriction: Restriction | null | undefined,
+): Restriction | undefined {
+  if (restriction === undefined) return undefined;
+  if (restriction === null) return { subjects: [], groups: [] };
+  return {
+    subjects: names(restriction.subjects),
+    groups: names(restriction.groups),
+  };
+}
+
+export function restrictionLabel(
+  restriction: Restriction | null | undefined,
+): string {
+  if (
+    !restriction ||
+    (restriction.subjects.length === 0 && restriction.groups.length === 0)
+  ) {
+    return "";
+  }
+  return [...names(restriction.subjects), ...names(restriction.groups)].join(
+    ", ",
+  );
+}
 
 export function approvalState(version: RegistryVersion): ApprovalState {
   if (!version.needs_approval) return "builtin";
@@ -91,11 +126,22 @@ export function unapprovedClosure(
 }
 
 const UNAPPROVED = "CATALOG_DEPENDENCY_UNAPPROVED:";
+const COMPACTION_UNAPPROVED = "COMPACTION_DECIDER_UNAPPROVED:";
 
 /** The dependency a refused approval names, or `null` for any other error. */
 export function unapprovedDependency(message: string): EntityRef | null {
-  if (!message.startsWith(UNAPPROVED)) return null;
-  const named = message.slice(UNAPPROVED.length).trim();
+  return namedRef(message, UNAPPROVED);
+}
+
+/** The compaction Decider a refused Run start names (ADR 0102), or `null`
+ *  for any other error. */
+export function unapprovedCompactionDecider(message: string): EntityRef | null {
+  return namedRef(message, COMPACTION_UNAPPROVED);
+}
+
+function namedRef(message: string, prefix: string): EntityRef | null {
+  if (!message.startsWith(prefix)) return null;
+  const named = message.slice(prefix.length).trim();
   const at = named.lastIndexOf("@");
   return at > 0
     ? { id: named.slice(0, at), version: named.slice(at + 1) }
@@ -153,8 +199,10 @@ export function approvalRequest(
   version: RegistryVersion,
   enabled: boolean,
   groups?: string[],
+  restriction?: Restriction | null,
   providerWarningAcknowledged = false,
 ): RequestApproval {
+  const named = restrictionRequest(restriction);
   return {
     entry: { id: version.entry.id, version: version.entry.version },
     enabled,
@@ -163,5 +211,20 @@ export function approvalRequest(
     ...(enabled && version.provider_warning && providerWarningAcknowledged
       ? { provider_warning_acknowledged: true }
       : {}),
+    ...(named ? { restriction: named } : {}),
   };
+}
+
+/** Whether withdrawing an approval stops nothing: no approved Agent depends on
+ *  it and no Run of one is in flight (#540). */
+export function withdrawalHasNoImpact(impact: WithdrawalImpact): boolean {
+  return impact.agents.length === 0 && impact.running_runs === 0;
+}
+
+/** The Agents a withdrawal stops from starting, as `id@version` labels in a
+ *  stable order. */
+export function withdrawalAgentLabels(impact: WithdrawalImpact): string[] {
+  return impact.agents
+    .map((agent) => `${agent.id}@${agent.version}`)
+    .sort((left, right) => left.localeCompare(right));
 }

@@ -72,6 +72,7 @@ pub async fn activate(
 			&reference(&revision.entry),
 			input.expected_catalog_revision,
 			input.enabled,
+			aidash_domain::identity::catalog::RestrictionChange::Preserve,
 		)
 		.await?;
 	let install = activation(install, input.revision, input.enabled);
@@ -133,3 +134,4 @@ pub fn actor(principal: &aidash_domain::identity::Principal) -> String {
 }
 
 pub mod approval_set;
+pub mod restriction;

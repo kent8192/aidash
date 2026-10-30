@@ -10,7 +10,7 @@ use aidash_application::{
 	ports::catalog::{CatalogApprovalScope, CatalogMutation},
 };
 use aidash_domain::{
-	identity::catalog::Binding,
+	identity::catalog::{Binding, RestrictionChange},
 	registry::{EntityRef, Entry},
 };
 use async_trait::async_trait;
@@ -39,9 +39,17 @@ impl CatalogMutation for TenantCatalog<'_> {
 		reference: &EntityRef,
 		expected_revision: i64,
 		enabled: bool,
+		restriction: RestrictionChange,
 	) -> Result<Option<Binding>> {
 		NativeMutation(&mut self.access.tx)
-			.compare_and_set(tenant, node, reference, expected_revision, enabled)
+			.compare_and_set(
+				tenant,
+				node,
+				reference,
+				expected_revision,
+				enabled,
+				restriction,
+			)
 			.await
 	}
 	async fn history(

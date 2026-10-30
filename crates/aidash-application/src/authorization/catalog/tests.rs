@@ -11,6 +11,7 @@ struct Fixture {
 	documents: Vec<Value>,
 	inactive: BTreeSet<String>,
 	denied: Option<String>,
+	restricted_ids: BTreeSet<String>,
 	calls: Vec<String>,
 }
 fn definition(id: &str) -> Value {
@@ -31,6 +32,7 @@ impl Fixture {
 			documents: vec![definition("first"), definition("second")],
 			inactive: BTreeSet::new(),
 			denied: None,
+			restricted_ids: BTreeSet::new(),
 			calls: vec![],
 		}
 	}
@@ -46,6 +48,16 @@ impl CatalogScope for Fixture {
 	fn approved(&self, reference: &EntityRef) -> bool {
 		self.approved
 			.contains(&(reference.id.clone(), reference.version.clone()))
+	}
+	fn direct_user(&self, reference: &EntityRef) -> String {
+		format!("user-of:{}", reference.id)
+	}
+	async fn permits_restriction(
+		&mut self,
+		reference: &EntityRef,
+		_direct_user: &str,
+	) -> Result<bool> {
+		Ok(!self.restricted_ids.contains(&reference.id))
 	}
 	fn remember(&mut self, reference: &EntityRef) {
 		self.calls.push(format!("remember:{}", reference.id));
@@ -329,5 +341,35 @@ async fn dependency_connection_failure_retains_the_external_retry_error() {
 	let result = get(&mut scope, &reference("first")).await;
 	assert!(
 		matches!(result,Err(Error::External(message)) if message=="fixture dependency read failed")
+	);
+}
+
+#[rstest]
+#[tokio::test]
+async fn a_restricted_out_direct_user_is_refused_like_an_unapproved_version() {
+	let mut scope = Fixture::new();
+	scope.restricted_ids.insert("first".into());
+	let result = entry(&mut scope, &reference("first"), "registry.read").await;
+	assert!(matches!(result, Err(Error::Forbidden)));
+	assert_eq!(
+		scope.calls,
+		vec!["lock"],
+		"a refused restriction records no catalog read, policy decision or admission"
+	);
+}
+
+#[rstest]
+#[tokio::test]
+async fn discovery_never_offers_a_definition_its_restriction_excludes() {
+	let mut scope = Fixture::new();
+	scope.restricted_ids.insert("first".into());
+	let listed = list(&mut scope, &Search::default()).await.unwrap();
+	assert_eq!(
+		listed
+			.iter()
+			.map(|entry| entry.id.as_str())
+			.collect::<Vec<_>>(),
+		["second"],
+		"a restricted-out definition is not offered by discovery"
 	);
 }
