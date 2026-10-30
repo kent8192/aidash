@@ -90,7 +90,8 @@ test("message retry identity includes attachment order", () => {
 });
 
 test("attachment validation rejects empty, oversized, unsafe and over-count selections", () => {
-  const file = { name: "evidence.txt", size: 1024 * 1024 };
+  const file = { name: "evidence.txt", size: 8 * 1024 * 1024 };
+  assert.equal(validAttachments([{ ...file, size: 1024 * 1024 + 1 }]), true);
   assert.equal(validAttachments([file]), true);
   for (const bad of [
     { ...file, size: 0 },
