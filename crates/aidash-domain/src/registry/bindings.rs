@@ -504,6 +504,32 @@ impl Entry {
 		}
 		config.normalize_with_compaction(node, replacement)
 	}
+
+	/// Whether this Agent version pins the builtin Tool that can select Thread Attachments.
+	/// This describes its Tools, not its model modalities, routes, or Run authority.
+	pub fn supports_thread_attachment_selection(&self, node: &str) -> Result<bool> {
+		if self.kind != "agent" {
+			return Err(Error::Invalid("expected Agent definition".into()));
+		}
+		Ok(self.normalized_bindings(node)?.iter().any(|item| {
+			item.binding.kind == BindingKind::Tool
+				&& attachment_selection_tool(&item.binding.target, &item.binding.narrow, node)
+		}))
+	}
+}
+
+fn attachment_selection_tool(identity: &QualifiedRef, narrow: &Narrowing, node: &str) -> bool {
+	identity.registry_deployment == node
+		&& identity.id == "aidash.workspace_read"
+		&& identity.version == "1.0.1"
+		&& [("kind", "attachment"), ("representation", "model_input")]
+			.iter()
+			.all(|(key, value)| {
+				narrow
+					.scope
+					.get(*key)
+					.is_none_or(|values| values.contains(*value))
+			})
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize, JsonSchema)]
@@ -877,6 +903,18 @@ pub struct BindingSnapshot {
 }
 
 impl BindingSnapshot {
+	/// Whether the admitted, pinned Tools can select a Thread Attachment for model input.
+	pub fn supports_thread_attachment_selection(&self) -> bool {
+		self.bindings.iter().any(|binding| {
+			binding.excluded_reason.is_none()
+				&& binding.definition.kind == "tool"
+				&& attachment_selection_tool(
+					&binding.identity,
+					&binding.narrow,
+					&self.agent.registry_deployment,
+				)
+		})
+	}
 	/// Whether the Agent's pinned model can be given a page image now (ADR
 	/// 0053): it declares image input and holds a current media route for the
 	/// PNG a viewed page is delivered as.

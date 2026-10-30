@@ -311,7 +311,19 @@ pub(crate) async fn read_attachment_object(
 		scope: crate::apps::execution::capabilities::contracts::FileScope::Working,
 		provenance: serde_json::Value::Null,
 	};
-	store.capabilities.read(access, &entry).await
+	match store.capabilities.read(access, &entry).await {
+		Err(crate::Error::Io(error)) if error.kind() == std::io::ErrorKind::NotFound => {
+			Err(crate::Error::NotFound("attachment unavailable".into()))
+		}
+		result => result,
+	}
+}
+
+fn attachment_unavailable(error: &crate::Error) -> bool {
+	matches!(
+		error,
+		crate::Error::NotFound(_) | crate::Error::Forbidden | crate::Error::AuthorityRefused(_)
+	)
 }
 
 use crate::apps::execution::capabilities::{contracts::FileEntry, service, sessions};
@@ -427,16 +439,34 @@ impl aidash_application::ports::execution::media::SelectedMediaScope for Selecte
 		let Some(row) = row else {
 			return Ok(None);
 		};
-		let resource = access.workspace(workspace).await?;
-		access.require(&resource, "workspace.read").await?;
-		access
-			.workspace_record(workspace, "message", selection.message_id)
-			.await?;
+		let authorized: NativeResult<()> = async {
+			let resource = access.workspace(workspace).await?;
+			access.require(&resource, "workspace.read").await?;
+			access
+				.workspace_record(workspace, "message", selection.message_id)
+				.await?;
+			Ok(())
+		}
+		.await;
+		if let Err(error) = authorized {
+			return if attachment_unavailable(&error) {
+				Ok(None)
+			} else {
+				Err(error.into())
+			};
+		}
 		let content = if let Some(id) = row.object_id {
-			read_attachment_object(self.store, access, id, &row.sha256, row.size_bytes).await?
+			match read_attachment_object(self.store, access, id, &row.sha256, row.size_bytes).await
+			{
+				Ok(content) => content,
+				Err(error) if attachment_unavailable(&error) => return Ok(None),
+				Err(error) => return Err(error.into()),
+			}
 		} else {
-			row.content
-				.ok_or_else(|| crate::Error::NotFound("attachment unavailable".into()))?
+			let Some(content) = row.content else {
+				return Ok(None);
+			};
+			content
 		};
 		let row = MediaAttachment {
 			id: row.id,
@@ -461,19 +491,21 @@ impl aidash_application::ports::execution::media::SelectedMediaScope for Selecte
 			));
 		}
 		if selection.wav {
-			let bytes =
-				scope
-					.wav_rendition(workspace, &row)
-					.await
-					.map_err(|error| match error {
-						aidash_application::Error::MediaRouteUnavailable(reason) => {
-							aidash_application::Error::Invalid(format!(
-								"this model cannot read {} through any current route: {reason}",
-								row.media_type
-							))
-						}
-						other => other,
-					})?;
+			let bytes = match scope.wav_rendition(workspace, &row).await {
+				Ok(bytes) => bytes,
+				Err(
+					aidash_application::Error::NotFound(_)
+					| aidash_application::Error::Forbidden
+					| aidash_application::Error::AuthorityRefused(_),
+				) => return Ok(None),
+				Err(aidash_application::Error::MediaRouteUnavailable(reason)) => {
+					return Err(aidash_application::Error::Invalid(format!(
+						"this model cannot read {} through any current route: {reason}",
+						row.media_type
+					)));
+				}
+				Err(error) => return Err(error),
+			};
 			Ok(Some((row.filename, "audio/wav".into(), bytes)))
 		} else {
 			Ok(Some((row.filename, row.media_type, row.content)))

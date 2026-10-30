@@ -902,6 +902,13 @@ mod tests {
 		read_only.behavior.read_only_operation = false;
 		assert_eq!(normal, read_only);
 	}
+
+	#[test]
+	fn attachment_copy_is_a_write_operation() {
+		let contract = builtin_contract("attachment_copy").unwrap();
+		assert_eq!(contract.behavior.effect, ToolEffect::Idempotent);
+		assert!(!contract.behavior.read_only_operation);
+	}
 	#[test]
 	fn a_plugin_tool_behaves_like_a_registry_mcp_tool_apart_from_identity_and_exposure() {
 		let registry = ToolContract::registry(

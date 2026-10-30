@@ -2328,6 +2328,17 @@ impl<'a> Executor<'a> {
 						.await?;
 				}
 				if cursor >= result.tool_calls.len() {
+					// Preserve what the model learned from a selected Thread Attachment
+					// without advancing the cursor reserved for human Run inputs.
+					if !withheld
+						&& !result.text.trim().is_empty()
+						&& run.state.tool()?.inferred_selected_media.iter().any(|media| matches!(media, aidash_domain::media::ModelMedia::ThreadAttachment(_)))
+						&& (!result.tool_calls.is_empty() || !self.cites_invalid_evidence(run, &tools, &result.text).await?)
+					{
+						let mut context = run.context.clone();
+						record_media_observation(&mut context, &result.text, None, media_observation_budget(run.state.tool()?));
+						run.context = context;
+					}
 					if result.tool_calls.is_empty() {
 						if !run.state.tool()?.deferred_selected_media.is_empty() {
 							if !result.text.trim().is_empty() {

@@ -139,6 +139,38 @@ fn refusal(snapshot: &BindingSnapshot) -> String {
 }
 
 #[test]
+fn attachment_selection_requires_the_current_admitted_tool_and_arguments() {
+	let mut snapshot = snapshot_of(&agent(), vec![]);
+	assert!(snapshot.supports_thread_attachment_selection());
+	let binding = snapshot
+		.bindings
+		.iter_mut()
+		.find(|item| item.identity.id == "aidash.workspace_read")
+		.unwrap();
+	binding.identity.version = "1.0.0".into();
+	assert!(!snapshot.supports_thread_attachment_selection());
+	let binding = snapshot
+		.bindings
+		.iter_mut()
+		.find(|item| item.identity.id == "aidash.workspace_read")
+		.unwrap();
+	binding.identity.version = "1.0.1".into();
+	binding
+		.narrow
+		.scope
+		.insert("representation".into(), ["metadata".into()].into());
+	assert!(!snapshot.supports_thread_attachment_selection());
+	let binding = snapshot
+		.bindings
+		.iter_mut()
+		.find(|item| item.identity.id == "aidash.workspace_read")
+		.unwrap();
+	binding.narrow.scope.clear();
+	binding.excluded_reason = Some("not admitted".into());
+	assert!(!snapshot.supports_thread_attachment_selection());
+}
+
+#[test]
 fn a_definition_without_plugins_keeps_its_bytes_and_its_digest() {
 	let definition = agent();
 

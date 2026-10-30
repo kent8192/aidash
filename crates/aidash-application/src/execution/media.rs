@@ -321,7 +321,7 @@ pub async fn selected(
 					scope.thread_attachment(selection).await?
 				else {
 					parts.push(ContentPart::Text(format!(
-						"Thread Attachment unavailable: {} was deleted.",
+						"Thread Attachment unavailable: {} was deleted or is no longer accessible.",
 						selection.attachment_id
 					)));
 					continue;

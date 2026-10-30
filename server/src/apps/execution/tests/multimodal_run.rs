@@ -1276,7 +1276,7 @@ fn selected_thread_router(
 				_ => None,
 			};
 			let message = match call {
-				Some((name, arguments)) => json!({"content":null,"tool_calls":[{"id":format!("call-{step}"),"type":"function","function":{"name":name,"arguments":arguments.to_string()}}]}),
+				Some((name, arguments)) => json!({"content":if step == 2 { Some("The image is a pixel.") } else { None },"tool_calls":[{"id":format!("call-{step}"),"type":"function","function":{"name":name,"arguments":arguments.to_string()}}]}),
 				None => json!({"content":"Done"}),
 			};
 			reinhardt::Response::ok().with_json(&json!({"choices":[{"finish_reason":if matches!(step, 0..=3 | 5..=7 | 9) {"tool_calls"} else {"stop"},"message":message}],"usage":{"prompt_tokens":10,"completion_tokens":2}})).unwrap()
@@ -1397,6 +1397,26 @@ async fn visible_thread_attachment_is_selected_for_the_next_model_request(
 		requests[2].to_string().contains("image_url"),
 		"{}",
 		requests[2]
+	);
+	let observed_run = f
+		.store
+		.runs(&TEST_FIXTURE)
+		.await
+		.unwrap()
+		.into_iter()
+		.find(|item| item.id == run.id)
+		.unwrap();
+	assert_eq!(observed_run.context.media_inferred_seq, 0);
+	assert!(
+		observed_run.context.history.iter().any(|entry| matches!(
+			&entry.event,
+			aidash_domain::context::ContextEvent::ModelMediaObservation {
+				through_seq: None,
+				text,
+				..
+			} if text == "The image is a pixel."
+		)),
+		"selected media observation was not recorded"
 	);
 	let (status, history) = request(
 		&app,

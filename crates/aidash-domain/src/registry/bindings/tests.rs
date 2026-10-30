@@ -76,6 +76,11 @@ fn historical_agent_normalization_remains_valid_and_tampering_is_rejected() {
 		compaction_override: None,
 		bindings: old.clone(),
 	});
+	assert!(!entry.supports_thread_attachment_selection(node).unwrap());
+	let mut current = entry.clone();
+	current.binding_normalization = None;
+	current.normalize_agent(node).unwrap();
+	assert!(current.supports_thread_attachment_selection(node).unwrap());
 	assert_eq!(entry.normalized_bindings(node).unwrap(), old);
 	assert!(
 		!old.iter()
