@@ -20,7 +20,7 @@ use reinhardt::query::{
 	PostgresQueryBuilder, Query, QueryStatementBuilder as _,
 };
 use serde_json::{Value, json};
-use std::collections::{BTreeSet, HashSet};
+use std::collections::{BTreeSet, HashMap, HashSet};
 use uuid::Uuid;
 
 const MAINTENANCE: TenancyScope =
@@ -161,7 +161,7 @@ async fn refresh_owner_authority(
 		}
 		map.insert(entry_key, authority);
 	}
-	let waiting = map.values().any(waiting_for_owner);
+	let waiting = !slots.legacy_candidates.is_empty() || map.values().any(waiting_for_owner);
 	native::query(
 		&Query::update()
 			.table(Alias::new("semantic_image_ledgers"))
@@ -365,10 +365,32 @@ async fn bootstrap(lease: &mut Lease<'_>, workspace: Uuid, slots: &ImageSlots) -
 		let generation: i64 = row.try_get("generation")?;
 		let files: Vec<aidash_domain::capabilities::operations::MountedFile> =
 			serde_json::from_value(row.try_get("manifest")?)?;
-		let changes: Vec<_> = aidash_domain::semantic::indexing::image_changes(&[], &files)
-			.into_iter()
-			.filter(|change| !touched.contains(&(area, change.file_id(), change.path().to_owned())))
-			.collect();
+		let mut changes = Vec::new();
+		for (position, file) in files.iter().enumerate() {
+			use aidash_domain::capabilities::operations::FileScope;
+			use aidash_domain::semantic::indexing::ImageChange;
+			if !matches!(file.scope, FileScope::Working | FileScope::Received)
+				|| (!file.media_type.starts_with("image/")
+					&& file.media_type != "application/octet-stream")
+				|| touched.contains(&(area, file.file_id, file.path.clone()))
+			{
+				continue;
+			}
+			changes.push(ImageChange::LegacyCandidate {
+				file_id: file.file_id,
+				path: file.path.clone(),
+				position,
+			});
+			if file.media_type.starts_with("image/") {
+				changes.push(ImageChange::LegacyResolved {
+					file_id: file.file_id,
+					path: file.path.clone(),
+					position,
+					media_type: Some(file.media_type.clone()),
+					size: file.size,
+				});
+			}
+		}
 		if changes.is_empty() {
 			continue;
 		}
@@ -421,6 +443,154 @@ async fn bootstrap(lease: &mut Lease<'_>, workspace: Uuid, slots: &ImageSlots) -
 	Ok(true)
 }
 
+/// Inspect one pre-feature generic File only after restoring its owner's Run.
+/// The Area lock precedes the publication lock, as in ordinary File writes.
+async fn probe_legacy(store: &Store, workspace: Uuid) -> Result<()> {
+	use aidash_domain::semantic::indexing::LegacyCandidate;
+
+	let mut lookup = Lease::deployment(store, DeploymentScopeReason::SemanticMaintenance).await?;
+	let row = native::query(
+		&Query::select()
+			.column("slots")
+			.from(Alias::new("semantic_image_ledgers"))
+			.and_where(Expr::col("workspace_id").eq(Expr::value(workspace)))
+			.to_string(PostgresQueryBuilder),
+	)
+	.fetch_optional(&mut **lookup.tx())
+	.await?;
+	let Some(row) = row else {
+		return lookup.finish(Ok(())).await;
+	};
+	let slots: ImageSlots = serde_json::from_value(row.try_get("slots")?)?;
+	let mut selected: Vec<(LegacyCandidate, Value)> = Vec::new();
+	let mut authorities: HashMap<Uuid, Option<Value>> = HashMap::new();
+	for candidate in &slots.legacy_candidates {
+		if let Some(cached) = authorities.get(&candidate.area_id) {
+			if let Some(authority) = cached {
+				selected.push((candidate.clone(), authority.clone()));
+			}
+			continue;
+		}
+		let area = native::query(
+			&Query::select()
+				.columns(["tenant", "owner"].map(Alias::new))
+				.from(Alias::new("core_areas"))
+				.and_where(Expr::col("id").eq(Expr::value(candidate.area_id)))
+				.and_where(Expr::col("workspace_id").eq(Expr::value(workspace)))
+				.to_string(PostgresQueryBuilder),
+		)
+		.fetch_optional(&mut **lookup.tx())
+		.await?;
+		let Some(area) = area else {
+			authorities.insert(candidate.area_id, None);
+			continue;
+		};
+		let tenant: String = area.try_get("tenant")?;
+		let owner: String = area.try_get("owner")?;
+		let authority =
+			owner_authority(&mut lookup, workspace, candidate.area_id, &tenant, &owner).await?;
+		if let Some(authority) = &authority {
+			selected.push((candidate.clone(), authority.clone()));
+		}
+		authorities.insert(candidate.area_id, authority);
+	}
+	lookup.finish(Ok(())).await?;
+	let mut failed_areas = BTreeSet::new();
+	let mut processed = 0;
+	for (candidate, authority) in selected {
+		if failed_areas.contains(&candidate.area_id) {
+			continue;
+		}
+		let area_id = candidate.area_id;
+		match probe_one_legacy(store, workspace, candidate, authority).await {
+			Ok(()) => {
+				processed += 1;
+				if processed == 8 {
+					break;
+				}
+			}
+			Err(Error::Forbidden | Error::Unauthorized) => {
+				failed_areas.insert(area_id);
+				tracing::warn!("legacy image authority or File unavailable");
+			}
+			Err(_) => tracing::warn!("legacy File signature probe failed"),
+		}
+	}
+	Ok(())
+}
+
+async fn probe_one_legacy(
+	store: &Store,
+	workspace: Uuid,
+	candidate: aidash_domain::semantic::indexing::LegacyCandidate,
+	authority: Value,
+) -> Result<()> {
+	use crate::apps::execution::capabilities::{
+		serializers::contracts::{FileEntry, FileScope},
+		services::sessions,
+	};
+	use aidash_domain::semantic::indexing::ImageChange;
+	use tokio::io::AsyncReadExt as _;
+	let mut lease = Lease::restore(store, authority.clone(), workspace).await?;
+	let result: Result<()> = async {
+		let access = lease.access().ok_or(Error::Forbidden)?;
+		let mut area = match sessions::load(access, candidate.area_id).await {
+			Err(Error::NotFound(_)) => return Err(Error::Forbidden),
+			other => other?,
+		};
+		if area.workspace_id != workspace { return Err(Error::Forbidden); }
+		// The candidate may have been removed while its authority was restored.
+		let ledger = native::query(&Query::select().column("slots").from(Alias::new("semantic_image_ledgers"))
+			.and_where(Expr::col("workspace_id").eq(Expr::value(workspace))).to_string(PostgresQueryBuilder))
+			.fetch_optional(&mut **access.tx).await?;
+		let Some(ledger) = ledger else { return Ok(()); };
+		let current: ImageSlots = serde_json::from_value(ledger.try_get("slots")?)?;
+		if !current.legacy_candidates.contains(&candidate) { return Ok(()); }
+		let mut files: Vec<FileEntry> = serde_json::from_value(area.manifest.clone())?;
+		let mut media_type = None;
+		let mut size = 0;
+		let mut changed = false;
+		if area.generation == candidate.generation {
+			if let Some(file) = files.iter_mut().find(|file| file.file_id == candidate.file_id && file.path == candidate.path && matches!(file.scope, FileScope::Working | FileScope::Received)) {
+				size = file.size;
+				if file.media_type == "application/octet-stream" {
+					let verified = store.capabilities.verified(access, file).await?;
+					let mut prefix = Vec::new();
+					verified.take(12).read_to_end(&mut prefix).await?;
+					if let Some(detected) = aidash_domain::provider::detect_image(&prefix) {
+						file.media_type = detected.into();
+						media_type = Some(detected.to_owned());
+						changed = true;
+					}
+				} else if file.media_type.starts_with("image/") {
+					media_type = Some(file.media_type.clone());
+				}
+			}
+		}
+		if changed {
+			area.revision += 1;
+			area.manifest = serde_json::to_value(files)?;
+			native::query(&Query::update().table(Alias::new("core_areas"))
+				.value("manifest", area.manifest.clone()).value("revision", area.revision)
+				.and_where(Expr::col("id").eq(Expr::value(area.id))).to_string(PostgresQueryBuilder))
+				.execute(&mut **access.tx).await?;
+			store.event(&mut access.tx, Some(workspace), "capability.files_changed", json!({"area_id":area.id,"revision":area.revision,"generation":area.generation})).await?;
+		} else {
+			native::query(&Query::select().expr(Expr::cust("PG_ADVISORY_XACT_LOCK(71003201)"))
+				.to_string(PostgresQueryBuilder)).execute(&mut **access.tx).await?;
+		}
+		let change = ImageChange::LegacyResolved { file_id: candidate.file_id, path: candidate.path.clone(), position: candidate.position, media_type, size };
+		native::query(&Query::insert().into_table(Alias::new("semantic_image_publications"))
+			.columns(["sequence", "tenant", "workspace_id", "area_id", "generation", "changes", "authority"].map(Alias::new))
+			.from_subquery(Query::select().expr(Expr::cust("-nextval(pg_get_serial_sequence('public.semantic_image_publications', 'sequence')::regclass)"))
+				.expr(Expr::value(area.tenant)).expr(Expr::value(workspace)).expr(Expr::value(area.id)).expr(Expr::value(candidate.generation))
+				.expr(Expr::value(serde_json::to_value(vec![change])?)).expr(Expr::value(authority)).to_owned())
+			.to_string(PostgresQueryBuilder)).execute(&mut **access.tx).await?;
+		Ok(())
+	}.await;
+	lease.finish(result).await
+}
+
 /// Bounded discovery skips Workspaces that have not configured an index yet.
 pub(crate) async fn sweep(store: &Store) -> Result<()> {
 	let pending_baselines = native::query(
@@ -437,6 +607,10 @@ pub(crate) async fn sweep(store: &Store) -> Result<()> {
 			.and_where(Expr::cust(
 				"semantic_image_ledgers.workspace_id IS NULL OR NOT semantic_image_ledgers.initialized OR (semantic_image_ledgers.waiting_authority AND semantic_image_ledgers.next_authority_check <= CLOCK_TIMESTAMP())",
 			))
+			.order_by_expr(
+				Expr::cust("COALESCE(semantic_image_ledgers.next_authority_check, '-infinity'::timestamptz)"),
+				Order::Asc,
+			)
 			.order_by(("semantic_indexes", "workspace_id"), Order::Asc)
 			.limit(64)
 			.to_string(PostgresQueryBuilder),
@@ -469,6 +643,9 @@ pub(crate) async fn sweep(store: &Store) -> Result<()> {
 		let workspace: Uuid = row.try_get("workspace_id")?;
 		if !seen.insert(workspace) {
 			continue;
+		}
+		if probe_legacy(store, workspace).await.is_err() {
+			tracing::warn!("legacy image probe deferred");
 		}
 		for _ in 0..8 {
 			let lease =
@@ -753,7 +930,7 @@ impl ImagePublicationSession for Session {
 			}
 			map.insert(entry_key, publication.authority.clone());
 		}
-		let waiting = map.values().any(waiting_for_owner);
+		let waiting = !after.legacy_candidates.is_empty() || map.values().any(waiting_for_owner);
 		let lease = self.lease()?;
 		let mut update = Query::update();
 		update

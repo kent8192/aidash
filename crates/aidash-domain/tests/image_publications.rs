@@ -72,3 +72,16 @@ fn received_images_are_current_files_of_the_receiving_working_area() {
 		matches!(&changes[..], [ImageChange::Published { file_id, .. }] if *file_id == Uuid::from_u128(7))
 	);
 }
+
+#[test]
+fn removing_a_generic_file_retires_any_pending_legacy_candidate() {
+	let previous = vec![file(
+		8,
+		"unknown",
+		"application/octet-stream",
+		FileScope::Working,
+	)];
+	assert!(
+		matches!(&image_changes(&previous, &[])[..], [ImageChange::Removed { file_id, .. }] if *file_id == Uuid::from_u128(8))
+	);
+}
