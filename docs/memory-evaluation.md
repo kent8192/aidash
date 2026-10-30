@@ -100,7 +100,14 @@ A Run passes when its answer matches the case's `expect` and none of its
 required Unit at its current revision. A read of a superseded revision or of a
 deleted Unit fails the Run, and so does any read by the control. A correct
 answer without a read is a guess and fails. The Agents remove the default
-compaction binding, so no Decider is involved.
+compaction binding, so no Decider is involved, and `memory_reflect`, so only the
+arm's own delivery path supplies memory. The control seeds its bank through an
+evaluated arm's provider, or through a seed-only provider when `--arm none` is
+the only arm. A Run that does not finish within `--run-timeout` (every poll is
+bounded by it) is cancelled, found by its Task when its id is unknown; if the
+cancellation cannot be confirmed, the campaign stops. `input_tokens` sums every
+accepted inference attempt of the Run; `final_request_input_tokens` is the last
+request only.
 
 ```sh
 AIDASH_EVALUATION_TOKEN=... AIDASH_EVALUATION_SUBJECT_TOKEN=... \

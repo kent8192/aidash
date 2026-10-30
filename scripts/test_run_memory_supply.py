@@ -62,5 +62,116 @@ class GradeTest(unittest.TestCase):
                          {"n": 2, "passed": 1, "answer_correct": 1, "supplied": 1, "stale": 0, "errors": 1})
 
 
+class FakeExperiment:
+    prefix = "mse"
+    token = "subject"
+
+    def __init__(self):
+        self.entries = {}
+
+    def register(self, kind, identifier, config):
+        self.entries[identifier] = (kind, config)
+        return {"id": identifier, "version": "1.0.0"}
+
+    def ref(self, identifier):
+        return {"registry_deployment": "node", "id": identifier, "version": "1.0.0"}
+
+
+class FakeClock:
+    def __init__(self):
+        self.now = 0.0
+
+    def __call__(self):
+        return self.now
+
+    def sleep(self, seconds):
+        self.now += max(seconds, 0.01)
+
+
+def campaign(arms, call=None, clock=None):
+    corpus = dict(supply.load_corpus(), arms=arms)
+    clock = clock or FakeClock()
+    api = supply.runner.Api(call or (lambda *args: (500, None)), "administrator", sleep=clock.sleep, clock=clock)
+    return supply.Campaign(api, FakeExperiment(), corpus, {"id": "model", "version": "1"}, "http://embedding",
+                           run_timeout=10.0), clock
+
+
+class RegisterTest(unittest.TestCase):
+    def test_a_control_only_campaign_registers_a_seed_provider_and_participant_agent(self):
+        selected, _ = campaign(["none"])
+        selected.register()
+        self.assertEqual(selected.providers, {})
+        self.assertEqual(selected.seed["provider"]["id"], "mse-memory-seed")
+        kind, config = selected.experiment.entries[selected.seed["agent"]["id"]]
+        self.assertEqual((kind, [binding["kind"] for binding in config["bindings"]]), ("agent", ["memory"]))
+        self.assertNotIn("mse-agent-seed", [agent["id"] for agent in selected.agents.values()])
+
+    def test_the_control_seeds_through_an_evaluated_arm_when_one_is_selected(self):
+        selected, _ = campaign(["on-demand", "none"])
+        selected.register()
+        self.assertEqual(selected.seed, {"provider": selected.providers["on-demand"],
+                                         "agent": selected.agents["on-demand"]})
+        self.assertNotIn("mse-memory-seed", selected.experiment.entries)
+
+    def test_no_arm_offers_reflection_and_only_the_control_loses_recall(self):
+        selected, _ = campaign(["auto", "on-demand", "none"])
+        selected.register()
+        removed = {arm: selected.experiment.entries[agent["id"]][1]["remove_default"]
+                   for arm, agent in selected.agents.items()}
+        for arm, names in removed.items():
+            self.assertIn("memory_reflect", names, arm)
+            self.assertEqual("memory_recall" in names, arm == "none", arm)
+
+
+class ClaimTest(unittest.TestCase):
+    def test_a_lost_claim_response_recovers_and_cancels_the_admitted_run(self):
+        state = {"phase": "RUNNING", "cancelled": False, "runs": []}
+
+        def call(method, path, body, token, timeout):
+            if path == "/api/tasks/task/claim":
+                state["runs"] = [{"id": "run", "task_id": "task"}]
+                return 504, "gateway timeout"  # The claim committed, but its answer was lost.
+            if path == "/api/state":
+                return 200, {"runs": state["runs"], "human_requests": []}
+            if path == "/api/runs/run":
+                return 200, {"run": {"id": "run", "phase": state["phase"]}}
+            if path == "/api/runs/run/control":
+                state["phase"] = "CANCELLED"
+                return 200, {}
+            raise AssertionError(path)
+
+        selected, clock = campaign(["auto"], call)
+        record = {}
+        with self.assertRaises(supply.runner.ApiError):
+            selected.claim_and_wait("task", {"revision": 0}, record, clock, clock.sleep)
+        self.assertEqual((state["phase"], record["run_id"], record["stopped_phase"]), ("CANCELLED", "run", "CANCELLED"))
+        self.assertNotIn("cancellation_failed", record)
+
+    def test_slow_polls_never_outlive_the_run_deadline(self):
+        clock = FakeClock()
+        requests = []
+        state = {"phase": "RUNNING"}
+
+        def call(method, path, body, token, timeout):
+            requests.append((path, clock.now + timeout))
+            clock.now += min(timeout, 4.0)  # A slow Node: every request takes up to 4 s.
+            if path == "/api/state":
+                return 200, {"runs": [{"id": "run", "task_id": "task"}], "human_requests": []}
+            if path == "/api/runs/run":
+                return 200, {"run": {"id": "run", "phase": state["phase"]}}
+            if path == "/api/runs/run/control":
+                state["phase"] = "CANCELLED"
+            return 200, {}
+
+        selected, _ = campaign(["auto"], call, clock)
+        record = {}
+        with self.assertRaises(supply.runner.DeadlineExceeded):
+            selected.claim_and_wait("task", {"revision": 0}, record, clock, clock.sleep)
+        cancel = next(index for index, (path, _) in enumerate(requests) if path == "/api/runs/run/control")
+        # Every request of the wait ends by the 10 s run timeout; stopping (its read of the Run, then the
+        # cancel) gets its own grace period.
+        self.assertTrue(all(ends <= 10.0 for _, ends in requests[:cancel - 1]), requests)
+        self.assertEqual((record["run_id"], record["stopped_phase"]), ("run", "CANCELLED"))
+
 if __name__ == "__main__":
     unittest.main()

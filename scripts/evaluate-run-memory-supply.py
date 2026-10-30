@@ -142,6 +142,7 @@ class Campaign:
         self.run_timeout = run_timeout
         self.agents = {}
         self.providers = {}
+        self.seed = None
 
     @property
     def token(self):
@@ -157,22 +158,42 @@ class Campaign:
             roles[kind] = {"id": entry["id"], "version": "1.0.0"}
         policy = runner.memory_policy(roles, {})
         for arm in self.corpus["arms"]:
-            bindings = []
+            provider = None
             if arm != "none":
                 config = dict(policy, context_source=ON_DEMAND_SOURCE) if arm == "on-demand" else policy
-                provider = self.experiment.register("memory", f"{prefix}-memory-{arm}", config)
-                self.providers[arm] = {"id": provider["id"], "version": "1.0.0"}
-                bindings.append({"kind": "memory", "target": self.experiment.ref(provider["id"]), "narrow": {}})
-            agent = self.experiment.register("agent", f"{prefix}-agent-{arm}", {
-                "schema_version": 1, "model": self.model, "instructions": self.corpus["instructions"],
-                "bindings": bindings,
-                # Supply is measured without context pruning, so no compaction Decider is involved. Every
-                # Agent is offered the memory builtins by default; the control must not see them (a call
-                # without a memory binding is an authority pause), and no arm writes memory.
-                "remove_default": ["file_search", "file_read", runner.COMPACTION_DEFAULT, "memory_mutate"] +
-                                  (["memory_recall", "memory_reflect"] if arm == "none" else []),
-                "max_steps": self.corpus["max_steps"], "projection_version": self.projection_version})
-            self.agents[arm] = {"id": agent["id"], "version": "1.0.0"}
+                provider = self.register_provider(f"{prefix}-memory-{arm}", config)
+                self.providers[arm] = provider
+            self.agents[arm] = self.register_agent(f"{prefix}-agent-{arm}", provider, memory=arm != "none")
+        # The control seeds the same Units through a memory provider, so a leak would be visible. Prefer an
+        # evaluated arm's provider; when only the control is selected, register one used for seeding only.
+        if "none" in self.corpus["arms"]:
+            arm = next((name for name in ("auto", "on-demand") if name in self.providers), None)
+            if arm is not None:
+                self.seed = {"provider": self.providers[arm], "agent": self.agents[arm]}
+            else:
+                provider = self.register_provider(f"{prefix}-memory-seed", policy)
+                self.seed = {"provider": provider,
+                             "agent": self.register_agent(f"{prefix}-agent-seed", provider, memory=True)}
+
+    def register_provider(self, identifier, config):
+        provider = self.experiment.register("memory", identifier, config)
+        return {"id": provider["id"], "version": "1.0.0"}
+
+    def register_agent(self, identifier, provider, memory):
+        bindings = [] if provider is None else \
+            [{"kind": "memory", "target": self.experiment.ref(provider["id"]), "narrow": {}}]
+        agent = self.experiment.register("agent", identifier, {
+            "schema_version": 1, "model": self.model, "instructions": self.corpus["instructions"],
+            "bindings": bindings,
+            # Supply is measured without context pruning, so no compaction Decider is involved. Every
+            # Agent is offered the memory builtins by default; the control must not see them (a call
+            # without a memory binding is an authority pause), and no arm writes memory. `memory_reflect`
+            # is removed from every arm: it retrieves through `memory_recall` plus extra inference, which
+            # would supplement or replace the automatic and on-demand supply this benchmark isolates.
+            "remove_default": ["file_search", "file_read", runner.COMPACTION_DEFAULT, "memory_mutate",
+                               "memory_reflect"] + ([] if memory else ["memory_recall"]),
+            "max_steps": self.corpus["max_steps"], "projection_version": self.projection_version})
+        return {"id": agent["id"], "version": "1.0.0"}
 
     def wait_ready(self, workspace, ids, timeout=120):
         deadline = time.monotonic() + timeout
@@ -185,7 +206,7 @@ class Campaign:
                 raise RuntimeError(f"semantic index did not become ready: {states}")
             time.sleep(0.5)
 
-    def seed(self, workspace, provider, bank, case):
+    def seed_units(self, workspace, provider, bank, case):
         """Admit, correct and delete the case's Units; return ids, current revisions and deleted symbols."""
         ids = {unit["id"]: str(uuid.uuid4()) for unit in case["units"]}
         path = f"/api/workspaces/{workspace}/memory/units/mutate"
@@ -223,13 +244,12 @@ class Campaign:
                                                         "credential_env": None},
                 "enabled": True, "auto_context": False, "max_sources": 100, "max_results": 10,
                 "max_result_tokens": 32768, "max_input_bytes": 32768}}, token)
-            # The control seeds the same Units through the `auto` provider, so a leak would be visible.
-            provider = self.providers.get(arm) or self.providers.get("auto") or next(iter(self.providers.values()))
+            seeding = self.seed if arm == "none" else {"provider": self.providers[arm], "agent": self.agents[arm]}
+            provider = seeding["provider"]
             participant = self.api.post(f"/api/workspaces/{workspace}/memory/participants",
-                                        {"agent": self.agents[arm] if arm != "none" else self.agents.get(
-                                            "auto", next(iter(self.agents.values())))}, token)
+                                        {"agent": seeding["agent"]}, token)
             bank = participant["bank"]
-            ids, revisions, deleted = self.seed(workspace, provider, bank, case)
+            ids, revisions, deleted = self.seed_units(workspace, provider, bank, case)
             created = self.api.post(f"/api/workspaces/{workspace}/tasks", {
                 "title": f"Memory supply: {case['id']}", "description": case["prompt"], "requirements": {},
                 "dependencies": [], "parent_id": None}, token)
@@ -241,12 +261,16 @@ class Campaign:
                     "target": {"participant_id": participant["id"], "participant_revision": participant["revision"]}},
                     token)
                 revision = assigned.get("task_revision", revision) if isinstance(assigned, dict) else revision
-            self.api.post(f"/api/tasks/{task}/claim", {"revision": revision, "agent": self.agents[arm]}, token)
-            run = self.wait_run(task)
+            run = self.claim_and_wait(task, {"revision": revision, "agent": self.agents[arm]}, record)
             record.update({"run_id": run["id"], "phase": run["phase"], "steps": run.get("step"),
                            "error_text": run.get("error")})
             context = run.get("context") or {}
-            record["input_tokens"] = (context.get("usage") or {}).get("input_tokens")
+            # The Run's context keeps only the last inference's usage; the Run's input is the sum over
+            # every accepted inference attempt, which the multi-step on-demand arm needs to be compared fairly.
+            record["final_request_input_tokens"] = (context.get("usage") or {}).get("input_tokens")
+            attempts = runner.observed_provider_work(self.api, token, workspace, run["id"])
+            record["inference_attempts"] = len(attempts)
+            record["input_tokens"] = sum(attempt.get("input_tokens") or 0 for attempt in attempts)
             calls = runner.tool_calls_from(context)
             record["memory_recall_calls"] = sum(call["name"] == "memory_recall" for call in calls)
             record["tool_calls"] = [call["name"] for call in calls]
@@ -269,37 +293,57 @@ class Campaign:
         record["wall_ms"] = round((time.monotonic() - started) * 1000)
         return record
 
-    def wait_run(self, task):
-        """Wait for the Task's Run; a paused, timed-out or interrupted Run is cancelled, never left behind."""
-        deadline = time.monotonic() + self.run_timeout
+    def claim_and_wait(self, task, claim, record, clock=time.monotonic, sleep=time.sleep):
+        """Claim the Task and wait for its Run within the run timeout.
+
+        Every poll and human answer ends by the deadline. A paused, timed-out or failed wait stops the Run
+        with `runner.stop_run`, which recovers the Run by Task when its id is unknown (including after a
+        claim whose response was lost) and confirms cancellation within its own grace period. A Run that
+        could not be confirmed stopped is recorded as `cancellation_failed`, and the campaign then stops.
+        """
+        deadline = clock() + self.run_timeout
+        bounded = self.api.until(deadline, clock, sleep)
         run_id = None
-        finished = False
+        claim_uncertain = True  # From sending the claim until a Run is seen or the claim is definitely rejected.
         try:
-            while time.monotonic() < deadline:
+            try:
+                bounded.post(f"/api/tasks/{task}/claim", claim, self.token)
+            except runner.ApiError as error:
+                if error.status not in runner.Api.TRANSIENT and error.status < 500:
+                    claim_uncertain = False  # Rejected: no Run was admitted.
+                raise
+            while True:
                 if run_id is None:
-                    run_id = next((run["id"] for run in self.api.get("/api/state", self.token)["runs"]
+                    run_id = next((run["id"] for run in bounded.get("/api/state", self.token)["runs"]
                                    if run["task_id"] == task), None)
+                    if run_id is not None:
+                        claim_uncertain = False
+                        record["run_id"] = run_id
                 if run_id is not None:
-                    run = self.api.get(f"/api/runs/{run_id}", self.token)["run"]
+                    run = bounded.get(f"/api/runs/{run_id}", self.token)["run"]
                     if run["phase"] in runner.TERMINAL:
-                        finished = True
                         return run
                     if run.get("control") == "PAUSED":
                         raise RuntimeError(f"Run {run_id} paused: {run.get('error') or run.get('state_error')}")
                     if run["phase"] == "WAITING":
-                        for request in self.api.get("/api/state", self.token)["human_requests"]:
+                        for request in bounded.get("/api/state", self.token)["human_requests"]:
                             if request["run_id"] == run_id and request.get("response") is None:
                                 answer = {"approved": False} if request["kind"] == "APPROVAL_REQUIRED" else \
                                     {"answer": runner.NO_HUMAN}
-                                self.api.post(f"/api/human-requests/{request['id']}/answer", answer, self.token)
-                time.sleep(1.0)
-            raise RuntimeError(f"Run for Task {task} did not finish within {self.run_timeout}s")
-        finally:
-            if run_id is not None and not finished:
-                try:
-                    self.api.post(f"/api/runs/{run_id}/control", {"action": "cancel"}, self.token)
-                except Exception as error:  # Reported; the caller records the Run as an error anyway.
-                    print(f"warning: could not cancel Run {run_id}: {error}", file=sys.stderr, flush=True)
+                                bounded.post(f"/api/human-requests/{request['id']}/answer", answer, self.token)
+                if clock() >= deadline:
+                    raise runner.DeadlineExceeded(f"Run for Task {task} did not finish within {self.run_timeout}s")
+                sleep(min(1.0, max(0.0, deadline - clock())))
+        except BaseException:
+            try:
+                stopped = runner.stop_run(self.api, self.token, task, run_id, clock, sleep, claim_uncertain)
+                record["stopped_phase"] = stopped["phase"] if stopped is not None else None
+                if stopped is not None:
+                    record["run_id"] = stopped["id"]
+            except Exception as error:  # The Run may still be running: the campaign must not continue.
+                record["cancellation_failed"] = True
+                record["cancellation_error"] = f"{type(error).__name__}: {error}"[:600]
+            raise
 
 
 def main(argv=None):
@@ -351,6 +395,9 @@ def main(argv=None):
                     verdict = record.get("error") or ("pass" if record["grade"]["passed"] else
                                                       f"fail {json.dumps(record['grade'], ensure_ascii=False)}")
                     print(f"{case['id']:32} {arm:10} r{repeat} {verdict}", flush=True)
+                    if record.get("cancellation_failed"):
+                        raise RuntimeError(f"Run {record.get('run_id')} for {case['id']}/{arm} r{repeat} could not "
+                                           f"be confirmed stopped: {record['cancellation_error']}")
     except BaseException as error:  # The partial record is still written.
         result["error"] = f"{type(error).__name__}: {error}"[:600]
         if not isinstance(error, Exception):
