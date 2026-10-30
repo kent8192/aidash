@@ -44,65 +44,64 @@ pub(crate) async fn thread_attachment(
 	if admitted.subject().is_none() {
 		return Err(crate::Error::Forbidden);
 	}
-	let mut mapped = crate::authorization::peer::access(&f, &admitted).await?;
+	let mut revision_race = false;
+	let (mut access, description) = super::super::description_lease_mode(
+		&f,
+		&admitted.sender.to_string(),
+		input.grant_id,
+		false,
+		&mut revision_race,
+	)
+	.await?;
+	access.worker();
+	let workspace = description.task.workspace_id;
+	let mut lease = crate::collaboration::access::Lease::from_access(access);
 	let result: Result<AttachmentResponse> = async {
-		let mut revision_race = false;
-		let (mut access, description) = super::super::description_lease_mode(
-			&f,
-			&admitted.sender.to_string(),
-			input.grant_id,
-			true,
-			&mut revision_race,
+		let binding = super::binding(lease.access_mut(), input.grant_id)
+			.await?
+			.ok_or(crate::Error::Forbidden)?;
+		if binding.admission_id != input.admission_id || binding.task_id != description.task.id {
+			return Err(crate::Error::Forbidden);
+		}
+		let mut mapped = crate::authorization::peer::access(&f, &admitted).await?;
+		let readable = mapped
+			.workspace_record(workspace, "attachment", input.attachment_id)
+			.await
+			.map(|_| ());
+		mapped.finish(readable).await?;
+		let record = lease
+			.access_mut()
+			.workspace_record(workspace, "attachment", input.attachment_id)
+			.await?;
+		let (attachment, bytes) = crate::collaboration::attachments::download(
+			&f.store,
+			&mut lease,
+			workspace,
+			input.attachment_id,
 		)
 		.await?;
-		access.worker();
-		let workspace = description.task.workspace_id;
-		let mut lease = crate::collaboration::access::Lease::from_access(access);
-		let result: Result<AttachmentResponse> = async {
-			let binding = super::binding(lease.access_mut(), input.grant_id)
-				.await?
-				.ok_or(crate::Error::Forbidden)?;
-			if binding.admission_id != input.admission_id || binding.task_id != description.task.id
-			{
-				return Err(crate::Error::Forbidden);
-			}
-			mapped
-				.workspace_record(workspace, "attachment", input.attachment_id)
-				.await?;
-			let record = lease
-				.access_mut()
-				.workspace_record(workspace, "attachment", input.attachment_id)
-				.await?;
-			let (attachment, bytes) = crate::collaboration::attachments::download(
-				&f.store,
-				&mut lease,
-				workspace,
-				input.attachment_id,
-			)
-			.await?;
-			let digest = crate::apps::execution::repositories::capability_objects::digest(&bytes);
-			if record["sha256"] != digest {
-				return Err(crate::Error::Conflict(
-					"attachment integrity check failed".into(),
-				));
-			}
-			if !super::super::live(lease.access_mut(), input.grant_id).await? {
-				return Err(crate::Error::Forbidden);
-			}
-			Ok(AttachmentResponse {
-				filename: attachment.filename,
-				media_type: attachment.media_type,
-				size_bytes: attachment.size_bytes,
-				message_id: serde_json::from_value(record["message_id"].clone())?,
-				sha256: digest,
-				content_base64: base64::engine::general_purpose::STANDARD.encode(bytes),
-			})
+		let digest = crate::apps::execution::repositories::capability_objects::digest(&bytes);
+		if record["sha256"] != digest {
+			return Err(crate::Error::Conflict(
+				"attachment integrity check failed".into(),
+			));
 		}
-		.await;
-		lease.finish(result).await
+		if !super::super::live(lease.access_mut(), input.grant_id).await? {
+			return Err(crate::Error::Forbidden);
+		}
+		let content_base64 = base64::engine::general_purpose::STANDARD.encode(&bytes);
+		drop(bytes);
+		Ok(AttachmentResponse {
+			filename: attachment.filename,
+			media_type: attachment.media_type,
+			size_bytes: attachment.size_bytes,
+			message_id: serde_json::from_value(record["message_id"].clone())?,
+			sha256: digest,
+			content_base64,
+		})
 	}
 	.await;
-	mapped.finish(result).await
+	lease.finish(result).await
 }
 #[derive(Clone)]
 pub struct RemoteCommands {

@@ -329,6 +329,17 @@ fn attachment_unavailable(error: &crate::Error) -> bool {
 	)
 }
 
+/// Validate untrusted remote bytes before forwarding or decoding them.
+fn remote_media_bytes(media_type: &str, bytes: Vec<u8>) -> Option<Vec<u8>> {
+	match aidash_domain::provider::ContentPart::from_media(media_type, bytes) {
+		Ok(
+			aidash_domain::provider::ContentPart::Image { bytes, .. }
+			| aidash_domain::provider::ContentPart::Audio { bytes, .. },
+		) => Some(bytes),
+		_ => None,
+	}
+}
+
 use crate::apps::execution::capabilities::{contracts::FileEntry, service, sessions};
 use aidash_domain::{Run, media::SelectedFile};
 use std::sync::Arc;
@@ -450,6 +461,10 @@ impl aidash_application::ports::execution::media::SelectedMediaScope for Selecte
 					"OBJECT_INTEGRITY".into(),
 				));
 			}
+			let Some(bytes) = remote_media_bytes(&media_type, bytes) else {
+				tracing::warn!(attachment_id = %selection.attachment_id, %media_type, "remote thread attachment has an invalid media signature");
+				return Ok(None);
+			};
 			if convert {
 				let wav = crate::collaboration::attachments::render_wav(&media_type, &bytes)
 					.await
@@ -603,6 +618,14 @@ impl aidash_application::ports::execution::media::SelectedMediaScope for Selecte
 #[cfg(test)]
 mod tests {
 	use super::*;
+
+	#[test]
+	fn remote_media_rejects_mismatched_signatures() {
+		let png = b"\x89PNG\r\n\x1a\nfixture".to_vec();
+		assert_eq!(remote_media_bytes("image/png", png.clone()), Some(png));
+		assert_eq!(remote_media_bytes("image/png", b"GIF89a".to_vec()), None);
+		assert_eq!(remote_media_bytes("audio/wav", b"not wav".to_vec()), None);
+	}
 
 	#[test]
 	fn missing_or_revoked_attachment_is_unavailable_but_corruption_is_an_error() {
