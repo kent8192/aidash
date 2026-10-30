@@ -45,6 +45,7 @@ import { TransferHistory } from "./transfers";
 import { ResearchPanel, UrlIntentPicker, useResearch } from "./research";
 import { snapshotReadsPages, urlIntents } from "../research";
 import type { RunDetails } from "../generated/models";
+import { semanticEntries } from "../generated/aidash";
 type Session = {
   active_run_id: string | null;
   last_run_id: string | null;
@@ -193,6 +194,16 @@ function FileOperations({
   const filePreview = useFilePreview();
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
+  const imageIndex = useQuery({
+    queryKey: ["semantic", area.workspace_id, "entries"],
+    queryFn: () => semanticEntries(area.workspace_id),
+    enabled: area.manifest.some(
+      (file) =>
+        file.scope === "working" && file.media_type.startsWith("image/"),
+    ),
+    refetchInterval: 2000,
+    retry: false,
+  });
   const [read, setRead] = useState<{
     content?: string;
     next_offset?: number;
@@ -450,6 +461,30 @@ function FileOperations({
                     <Hint>
                       {f.scope} · {f.size} bytes
                     </Hint>
+                    {imageIndex.data
+                      ?.filter((entry) => {
+                        const source = entry.source as {
+                          kind?: string;
+                          area_id?: string;
+                          generation?: number;
+                          file_id?: string;
+                        } | null;
+                        return (
+                          !entry.deleted &&
+                          source?.kind === "working_image" &&
+                          source.area_id === area.id &&
+                          source.generation === area.generation &&
+                          source.file_id === f.file_id
+                        );
+                      })
+                      .map((entry) => (
+                        <Hint key={entry.id}>
+                          {entry.state}
+                          {entry.state === "UNSUPPORTED" && entry.last_error
+                            ? ` · ${t(({ modality: "semanticImageModality", too_large: "semanticImageTooLarge", limit: "semanticImageLimit" } as Record<string, string>)[entry.last_error] ?? entry.last_error)}`
+                            : ""}
+                        </Hint>
+                      ))}
                   </TableCell>
                   <TableCell>
                     <Button

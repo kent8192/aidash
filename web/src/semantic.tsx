@@ -70,6 +70,9 @@ const semanticMessages: Record<string, string> = {
   "semantic source revision changed": "semanticRevisionChanged",
   "semantic source revision changed or deleted": "semanticRevisionChanged",
   "semantic index revision changed": "semanticRevisionChanged",
+  modality: "semanticImageModality",
+  too_large: "semanticImageTooLarge",
+  limit: "semanticImageLimit",
 };
 
 export function SemanticPage({
@@ -426,7 +429,11 @@ function SemanticWorkspace({
                         <Button
                           variant="ghost"
                           size="sm"
-                          disabled={busy}
+                          disabled={
+                            busy ||
+                            (entry.source as SemanticSource).kind ===
+                              "working_image"
+                          }
                           onClick={() => openEditing(entry)}
                         >
                           {t("edit")}
@@ -661,6 +668,10 @@ function IndexForm({
           max_results: previous?.max_results ?? 10,
           max_result_tokens: previous?.max_result_tokens ?? 4096,
           max_input_bytes: previous?.max_input_bytes ?? 8192,
+          ...{
+            max_images: Number(values.get("max_images")),
+            max_image_bytes: Number(values.get("max_image_bytes")),
+          },
         });
       }}
     >
@@ -713,6 +724,44 @@ function IndexForm({
           defaultValue={previous?.embedding.dimensions ?? 3072}
         />
       </Field>
+      <Field label={locale === "ja-JP" ? "画像の最大件数" : "Maximum images"}>
+        <Input
+          name="max_images"
+          type="number"
+          min={0}
+          max={1024}
+          required
+          defaultValue={
+            (
+              previous as
+                | (SemanticIndexSpec & { max_images?: number })
+                | undefined
+            )?.max_images ?? 256
+          }
+        />
+      </Field>
+      <Field
+        label={
+          locale === "ja-JP"
+            ? "画像の最大サイズ（バイト）"
+            : "Maximum image size (bytes)"
+        }
+      >
+        <Input
+          name="max_image_bytes"
+          type="number"
+          min={1}
+          max={67108864}
+          required
+          defaultValue={
+            (
+              previous as
+                | (SemanticIndexSpec & { max_image_bytes?: number })
+                | undefined
+            )?.max_image_bytes ?? 8388608
+          }
+        />
+      </Field>
       <div className="grid gap-2 sm:col-span-2">
         <Check
           name="embedding_image"
@@ -756,7 +805,9 @@ function EntryForm({
 }) {
   const { t } = useI18n();
   const source = entry?.source as SemanticSource | undefined;
-  const [kind, setKind] = useState(source?.kind ?? "memory");
+  const [kind, setKind] = useState<
+    Exclude<SemanticSource["kind"], "working_image">
+  >(source?.kind === "working_image" ? "memory" : (source?.kind ?? "memory"));
   const [metadataError, setMetadataError] = useState("");
   const olderMessages = useInfiniteQuery({
     queryKey: ["workspace", workspace, "semantic-message-sources"],
@@ -824,7 +875,14 @@ function EntryForm({
         <NativeSelect
           value={kind}
           disabled={!!entry}
-          onChange={(e) => setKind(e.target.value as SemanticSource["kind"])}
+          onChange={(e) =>
+            setKind(
+              e.target.value as Exclude<
+                SemanticSource["kind"],
+                "working_image"
+              >,
+            )
+          }
         >
           <option value="memory">{t("semanticMemoryText")}</option>
           <option value="artifact">{t("artifact")}</option>
@@ -845,7 +903,13 @@ function EntryForm({
           <NativeSelect
             name="sourceId"
             required
-            defaultValue={source && source.kind !== "memory" ? source.id : ""}
+            defaultValue={
+              source &&
+              source.kind !== "memory" &&
+              source.kind !== "working_image"
+                ? source.id
+                : ""
+            }
           >
             <option value="">{t("choose")}</option>
             {(kind === "artifact"
@@ -863,6 +927,7 @@ function EntryForm({
                   !entry ||
                   (source &&
                     source.kind !== "memory" &&
+                    source.kind !== "working_image" &&
                     option.id === source.id),
               )
               .map((option) => (
@@ -872,6 +937,7 @@ function EntryForm({
               ))}
             {source &&
               source.kind !== "memory" &&
+              source.kind !== "working_image" &&
               !(kind === "artifact" ? sources.artifacts : messages).some(
                 (option) => option.id === source.id,
               ) && <option value={source.id}>{t("unavailableEntity")}</option>}

@@ -448,6 +448,9 @@ export function EntityForm({
                   schema_version: 1,
                   cluster: s("cluster") ? ref(s("cluster")) : null,
                   max_steps: 64,
+                  ...(s("reference_embedding")
+                    ? { reference_embedding: ref(s("reference_embedding")) }
+                    : {}),
                   ...core,
                   ...pluginConfig,
                 }
@@ -687,6 +690,38 @@ export function EntityForm({
               change={setDocuments}
               busyChange={setReadingDocuments}
             />
+            {documents.some((document) =>
+              document.media_type.startsWith("image/"),
+            ) && (
+              <Field
+                label={
+                  ja ? "参照画像の埋め込みモデル" : "Reference image embedding"
+                }
+              >
+                <NativeSelect
+                  name="reference_embedding"
+                  required
+                  defaultValue=""
+                >
+                  <option value="">{t("choose")}</option>
+                  {data.registry
+                    .filter(
+                      (entry) =>
+                        entry.kind === "embedding" &&
+                        Array.isArray(entry.config.inputs) &&
+                        entry.config.inputs.includes("image"),
+                    )
+                    .map((entry) => (
+                      <option
+                        key={`${entry.id}@${entry.version}`}
+                        value={`${entry.id}@${entry.version}`}
+                      >
+                        {entry.id}@{entry.version}
+                      </option>
+                    ))}
+                </NativeSelect>
+              </Field>
+            )}
             <Field label={t("cluster")}>
               <NativeSelect
                 name="cluster"
