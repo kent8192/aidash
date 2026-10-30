@@ -230,15 +230,6 @@ export function buildMeshGraph(
         (e.kind === "agent" && !reference(e.config?.cluster)),
     ))
       edge(local, entityKey(nodeId, e.kind, e), "hosts");
-  } else if (data.access.kind === "deployment_administrator") {
-    const local = resource("remote", nodeId, nodeId);
-    nodes.get(local)!.status = "LOCAL";
-    for (const e of registry.filter(
-      (e) =>
-        e.kind === "cluster" ||
-        (e.kind === "agent" && !reference(e.config?.cluster)),
-    ))
-      edge(local, entityKey(nodeId, e.kind, e), "hosts");
   }
   // Unknown agent principals are not misrepresented as people.
   const principal = (value: string): string | undefined => {
