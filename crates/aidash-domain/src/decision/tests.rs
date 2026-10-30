@@ -592,7 +592,7 @@ mod pruning_rules {
 	fn legacy_removes_dropped_events_and_truncates_long_results_only() {
 		let history = vec![
 			tool(1, "a", "short"),
-			tool(2, "b", &"x".repeat(500)),
+			tool(2, "b", &"x".repeat(1000)),
 			tool(3, "c", "short"),
 		];
 		let units = Units::of(&history, false);
@@ -608,5 +608,38 @@ mod pruning_rules {
 		assert_eq!((pruned.removed, pruned.truncated), (1, 1));
 		assert_eq!(pruned.history.len(), 2);
 		assert_eq!(pruned.history[0], history[0]);
+	}
+
+	#[test]
+	fn truncation_never_grows_a_result() {
+		let history = vec![
+			tool(1, "a", &"x".repeat(421)),
+			tool(2, "b", &"x".repeat(1000)),
+		];
+		let units = Units::of(&history, false);
+		let pruned = apply(
+			&history,
+			&BTreeMap::from([(0, Branch::TruncateResult), (1, Branch::TruncateResult)]),
+			&units,
+		);
+		assert_eq!(pruned.truncated, 1);
+		assert_eq!(pruned.history[0], history[0]);
+		let ContextEvent::Tool { result, .. } = &pruned.history[1].event else {
+			panic!("tool expected");
+		};
+		assert!(result.as_str().unwrap().chars().count() < 1000);
+		assert!(crate::decision::pruning::truncated_result(result));
+	}
+
+	#[test]
+	fn the_pre_626_truncation_marker_is_still_recognized() {
+		let legacy = json!(format!(
+			"{}\n[decision compaction truncated 200 chars of this tool result; full result remains in the execution journal]",
+			"x".repeat(300)
+		));
+		assert!(crate::decision::pruning::truncated_result(&legacy));
+		assert!(!crate::decision::pruning::truncated_result(&json!(
+			"plain result"
+		)));
 	}
 }
