@@ -22,3 +22,7 @@ An Agent definition now names its Harness Contract (`harness_contract`), the ver
 - Existing Agent definitions, digests and Binding snapshots keep their bytes, and their requests stay byte-identical.
 - Golden byte tests fix each version's text. Usage Records carry the Harness Contract version beside the Projection Version so an evaluation can confirm which arm actually ran.
 - The default for new Agent definitions stays `legacy@1`. Selecting a version and changing the default follow a live fixed-task comparison (#532, #122).
+
+## Amendment (2026-10-30)
+
+The default for new Agent definitions is now `structured@3` on `native` (#532). A GEPA search on replayed fixed-task requests produced the text. A live A/B on gpt-oss-20b confirmed it: injected directions were resisted in 36/45 Runs against 14/45 for `legacy@1`, with no loss elsewhere; DeepSeek V4.1 Flash was at ceiling with every version. Registration writes `projection_version: "native"` and `harness_contract: "structured@3"` into a new Agent definition that omits them, when its model declares Native. A Native definition without a contract gets `structured@3`. The decision's invariant still holds: an omitted field in a stored definition or Binding snapshot means `legacy@1`, and nothing stored is rewritten.

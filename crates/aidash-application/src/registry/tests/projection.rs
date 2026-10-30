@@ -202,7 +202,9 @@ async fn registration_accepts_prompt_cache_on_an_ordered_agent_and_explicit_mode
 #[case::undeclared_model("anthropic/claude-fixture", None, Some("ordered"))]
 #[case::automatic_model("anthropic/claude-fixture", Some("automatic"), Some("ordered"))]
 #[case::slug_outside_the_allowlist("openai/gpt-fixture", Some("explicit"), Some("ordered"))]
-#[case::legacy_agent("anthropic/claude-fixture", Some("explicit"), None)]
+// Without a Projection Version a Native-capable model now defaults to Native (#532),
+// so the Legacy agent names it.
+#[case::legacy_agent("anthropic/claude-fixture", Some("explicit"), Some("legacy"))]
 #[tokio::test]
 async fn registration_rejects_explicit_prompt_cache_without_ordered_and_an_explicit_route(
 	validation: DefinitionValidation,
@@ -282,7 +284,6 @@ fn definitions_without_cache_fields_keep_their_bytes() {
 }
 
 #[rstest]
-#[case::absent(None, "structured@1")]
 #[case::legacy(Some("legacy"), "structured@1")]
 #[case::ordered(Some("ordered"), "structured@2")]
 #[case::ordered_structured3(Some("ordered"), "structured@3")]
@@ -332,4 +333,65 @@ async fn registration_accepts_structured_harness_contracts_on_native(
 		stored.harness_contract.unwrap_or_default(),
 		serde_json::from_value(json!(contract)).unwrap()
 	);
+}
+
+/// New Agent definitions that name neither version render Native with
+/// `structured@3` when their model declares Native (#532).
+#[rstest]
+// model versions, agent projection, agent contract => stored projection, stored contract
+#[case::native_model_defaults(Some(json!(["legacy","ordered","native"])), None, None, Some("native"), Some("structured@3"))]
+#[case::native_only_model(Some(json!(["native"])), None, None, Some("native"), Some("structured@3"))]
+#[case::legacy_model_keeps_omitted(Some(json!(["legacy","ordered"])), None, None, None, None)]
+#[case::undeclared_model_keeps_omitted(None, None, None, None, None)]
+#[case::explicit_legacy_kept(Some(json!(["legacy","native"])), Some("legacy"), None, Some("legacy"), None)]
+#[case::explicit_native_gets_contract(Some(json!(["native"])), Some("native"), None, Some("native"), Some("structured@3"))]
+#[case::explicit_contract_kept(Some(json!(["native"])), None, Some("structured@1"), Some("native"), Some("structured@1"))]
+#[case::explicit_legacy_contract_kept(Some(json!(["native"])), Some("native"), Some("legacy@1"), Some("native"), Some("legacy@1"))]
+#[tokio::test]
+async fn new_agents_default_to_native_with_structured3(
+	validation: DefinitionValidation,
+	#[case] versions: Option<Value>,
+	#[case] projection: Option<&str>,
+	#[case] contract: Option<&str>,
+	#[case] stored_projection: Option<&str>,
+	#[case] stored_contract: Option<&str>,
+) {
+	// Arrange
+	let mut scope = scope_with(model_config(versions));
+	let mut config = agent_config(projection);
+	if let Some(contract) = contract {
+		config["harness_contract"] = json!(contract);
+	}
+	let agent = definition("agent", "agent", config);
+	// Act
+	register_definition(&mut scope, &validation, &agent, NODE)
+		.await
+		.unwrap();
+	// Assert: the defaults are written into the stored definition.
+	let stored = &scope.entries["agent@1.0.0"].config;
+	assert_eq!(
+		stored.get("projection_version"),
+		stored_projection.map(|v| json!(v)).as_ref()
+	);
+	assert_eq!(
+		stored.get("harness_contract"),
+		stored_contract.map(|v| json!(v)).as_ref()
+	);
+}
+
+#[tokio::test]
+async fn registration_rejects_structured_contracts_when_the_model_lacks_native() {
+	// Arrange: no Projection Version and a model without Native keep Legacy.
+	let validation = validation();
+	let mut scope = scope_with(model_config(Some(json!(["legacy", "ordered"]))));
+	let mut config = agent_config(None);
+	config["harness_contract"] = json!("structured@1");
+	let agent = definition("agent", "agent", config);
+	// Act
+	let error = register_definition(&mut scope, &validation, &agent, NODE)
+		.await
+		.unwrap_err();
+	// Assert
+	assert!(is_invalid(&error), "{error:?}");
+	assert!(!scope.entries.contains_key("agent@1.0.0"));
 }

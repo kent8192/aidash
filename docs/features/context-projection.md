@@ -7,7 +7,7 @@ feature, and Agent definitions that name no version, use `legacy`.
 
 | Version   | Request shape                                                                                                                           |
 | --------- | --------------------------------------------------------------------------------------------------------------------------------------- |
-| `legacy`  | One JSON user message with alphabetically ordered keys. This is the default.                                                            |
+| `legacy`  | One JSON user message with alphabetically ordered keys. Omitted means `legacy`; new Agents on a Native model register as `native`.      |
 | `ordered` | A Tenant Cache Salt line at the start of `system`, then one user message with two text parts: a Stable Prefix part and a volatile part. |
 | `native`  | A Tenant Cache Salt line at the start of `system`, enveloped attachments, then model-native assistant and tool messages, then the step. |
 

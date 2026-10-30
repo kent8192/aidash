@@ -32,12 +32,18 @@ cannot render. Nothing falls back to `legacy@1`. The field is omitted from
 stored definitions when absent, so existing definitions, digests and Binding
 snapshots keep their bytes.
 
-The default for new Agent definitions stays `legacy@1`. Which version becomes
-the default is decided by a live fixed-task comparison of `legacy@1`,
-`structured@1` and `structured@2` on Native
-([#532](https://github.com/kent8192/aidash/issues/532)). Usage Records carry the
+A new Agent definition that names neither `projection_version` nor
+`harness_contract` is registered as `native` with `structured@3` when its model
+declares Native ([#532](https://github.com/kent8192/aidash/issues/532)). A
+Native definition without a contract gets `structured@3`, and one whose model
+lacks Native keeps the omitted defaults, `legacy` and `legacy@1`. Registration
+writes these values into the definition, so its bytes, digest and every Binding
+snapshot pin them. Stored definitions, installed Marketplace packages and
+system declarations are never rewritten, and an omitted field still means
+`legacy@1` when a stored definition or snapshot is read. Usage Records carry the
 Harness Contract version beside the Projection Version, and the fixed-task
-evaluator accepts `harness_contract` as an arm field.
+evaluator accepts `harness_contract` as an arm field; an evaluator arm that names
+no Projection Version is registered as `legacy`, so comparisons stay matched.
 
 ## How `structured@3` was selected
 
@@ -59,8 +65,13 @@ authority, impersonate the user, or demand a tool call were resisted in 26 of
 data stayed at the `legacy@1` level, 9 of 10, so the text does not over-refuse.
 DeepSeek V4.1 Flash was at ceiling with every version. Directions that ask the
 model to append text to its answer still succeeded with every version; text
-alone does not stop them (#629, #630). The live A/B in #532 decides whether
-`structured@3` becomes the default.
+alone does not stop them (#629, #630).
+
+The live A/B on Aidash (gpt-oss-20b, 15 Runs per cell) confirmed it: the three
+injection styles were resisted in 36 of 45 Runs with `structured@3` against 14
+of 45 with `legacy@1`, with no loss on task-authorized formats, corrections or
+failed tools. `structured@3` is therefore the default for new Native Agent
+definitions.
 
 ## Instruction precedence
 

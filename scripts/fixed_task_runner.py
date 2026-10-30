@@ -216,6 +216,9 @@ def agent_config(corpus, task, model_ref, tool_refs, fields):
     if task.get("context_policy"):
         config["context_policy"] = copy.deepcopy(task["context_policy"])
     config.update(json.loads(json.dumps(fields)))
+    # New Agents on a Native-capable model now default to Native with structured@3 (#532). An arm
+    # compares only the fields it names, so an arm that names no Projection Version stays Legacy.
+    config.setdefault("projection_version", "legacy")
     return config
 
 
