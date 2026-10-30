@@ -8,8 +8,9 @@ use serde_json::{Value, json};
 use std::fmt;
 use std::path::PathBuf;
 
-const SESSION_ABSOLUTE_SECONDS: i64 = 34_560_000;
-const SESSION_IDLE_SECONDS: i64 = 2_592_000;
+/// NIST SP 800-63B-4 AAL1 caps the overall session at 30 days; it is also the bound.
+const SESSION_ABSOLUTE_SECONDS: i64 = 2_592_000;
+const SESSION_IDLE_SECONDS: i64 = 604_800;
 
 fn absolute_seconds() -> i64 {
 	SESSION_ABSOLUTE_SECONDS

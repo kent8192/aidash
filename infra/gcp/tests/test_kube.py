@@ -134,9 +134,9 @@ class RuntimeConfigurationTests(unittest.TestCase):
         self.assertEqual({key: files[key] for key in runtime["common_auth_tls"]}, runtime["common_auth_tls"])
         dashboard = tomllib.loads(files["settings.toml"])["dashboard"]
         self.assertEqual(dashboard["oidc"]["client_secret"], "${AIDASH_OIDC_CLIENT_SECRET}")
-        self.assertEqual(dashboard["oidc"]["session_idle_seconds"], 2592000)
-        self.assertEqual(dashboard["oidc"]["session_absolute_seconds"], 34560000)
-        for value, accepted in (("34560000", True), ("34560001", False)):
+        self.assertEqual(dashboard["oidc"]["session_idle_seconds"], 604800)
+        self.assertEqual(dashboard["oidc"]["session_absolute_seconds"], 2592000)
+        for value, accepted in (("2592000", True), ("2592001", False)):
             with self.subTest(value=value):
                 override = dict(runtime, AIDASH_OIDC_SESSION_ABSOLUTE_SECONDS=value)
                 if accepted:

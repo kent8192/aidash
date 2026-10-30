@@ -27,8 +27,9 @@ use sha2::{Digest, Sha256};
 use std::{collections::BTreeMap, path::Path, sync::Arc};
 use uuid::Uuid;
 
-pub(crate) const BROWSER_SESSION_ABSOLUTE_SECONDS: i64 = 34_560_000;
-const BROWSER_SESSION_IDLE_SECONDS: i64 = 2_592_000;
+/// Browser sign-in stays within NIST SP 800-63B-4 AAL1: 30 days overall (#627).
+pub(crate) const BROWSER_SESSION_ABSOLUTE_SECONDS: i64 = 2_592_000;
+const BROWSER_SESSION_IDLE_SECONDS: i64 = 604_800;
 
 pub(crate) fn digest(value: &str) -> String {
 	use base64::engine::general_purpose::URL_SAFE_NO_PAD;
@@ -568,10 +569,7 @@ fn protocol_config(config: &Config) -> Result<(OAuthServerConfig, OidcConfig)> {
 	};
 	oauth.refresh_tokens = Some(RefreshTokenPolicy::new(
 		std::time::Duration::from_secs(BROWSER_SESSION_IDLE_SECONDS as u64),
-		// Reinhardt rejects refresh-token families longer than 365 days. Cloud
-		// keeps its own Product Session and never refreshes through this family,
-		// so its 400-day limit holds; the Marketplace, which refreshes, ends at 365.
-		std::time::Duration::from_secs(365 * 24 * 60 * 60),
+		std::time::Duration::from_secs(BROWSER_SESSION_ABSOLUTE_SECONDS as u64),
 	)?);
 	oauth.token_ttl = std::time::Duration::from_secs(300);
 	let oidc = if config.loopback_development {

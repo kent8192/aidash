@@ -108,11 +108,11 @@ pub struct OidcConfig {
 	pub client_secret: String,
 	#[setting(required)]
 	pub public_origin: String,
-	#[setting(default = "34560000")]
-	#[validate(range(min = 60, max = 34560000))]
-	pub session_absolute_seconds: i64,
 	#[setting(default = "2592000")]
-	#[validate(range(min = 60, max = 34560000))]
+	#[validate(range(min = 60, max = 2592000))]
+	pub session_absolute_seconds: i64,
+	#[setting(default = "604800")]
+	#[validate(range(min = 60, max = 2592000))]
 	pub session_idle_seconds: i64,
 }
 
@@ -290,18 +290,18 @@ mod tests {
 	}
 
 	#[rstest]
-	fn browser_sessions_default_to_thirty_days_idle_and_four_hundred_days(oidc_config: OidcConfig) {
-		// Assert: #627 keeps people signed in like their Google account.
-		assert_eq!(oidc_config.session_idle_seconds, 2_592_000);
-		assert_eq!(oidc_config.session_absolute_seconds, 34_560_000);
+	fn browser_sessions_default_to_seven_days_idle_and_thirty_days(oidc_config: OidcConfig) {
+		// Assert: #627 keeps people signed in within NIST SP 800-63B-4 AAL1 limits.
+		assert_eq!(oidc_config.session_idle_seconds, 604_800);
+		assert_eq!(oidc_config.session_absolute_seconds, 2_592_000);
 	}
 
 	#[rstest]
-	#[case::at_bound(34_560_000, 34_560_000, true)]
-	#[case::absolute_over(2_592_000, 34_560_001, false)]
-	#[case::idle_over(34_560_001, 34_560_000, false)]
-	#[case::idle_beyond_absolute(2_592_001, 2_592_000, false)]
-	fn session_lifetimes_stay_within_four_hundred_days(
+	#[case::at_bound(2_592_000, 2_592_000, true)]
+	#[case::absolute_over(604_800, 2_592_001, false)]
+	#[case::idle_over(2_592_001, 2_592_000, false)]
+	#[case::idle_beyond_absolute(604_801, 604_800, false)]
+	fn session_lifetimes_stay_within_thirty_days(
 		mut oidc_config: OidcConfig,
 		#[case] idle: i64,
 		#[case] absolute: i64,
