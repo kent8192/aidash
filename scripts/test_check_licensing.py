@@ -228,12 +228,19 @@ class ParamsTests(unittest.TestCase):
         self.assertTrue(any("VERSIONS.toml" in error for error in errors), errors)
 
 
+def license_text(version: str) -> str:
+    return (
+        "Business Source License 1.1\n\nParameters\n\n"
+        f"Licensed Work:        Aidash Enterprise {version}\n"
+    )
+
+
 class HistoryTests(unittest.TestCase):
     def make_license_repository(self) -> tuple[Path, str, tempfile.TemporaryDirectory]:
         directory = tempfile.TemporaryDirectory()
         root = Path(directory.name)
         (root / "enterprise").mkdir()
-        (root / "enterprise" / "LICENSE").write_text("Business Source License 1.1\n")
+        (root / "enterprise" / "LICENSE").write_text(license_text("0.1.0"))
         init_repository(root)
         commit_hash = commit(root, "add the Enterprise license", "2026-10-26",
                              ["enterprise/LICENSE"])
@@ -333,6 +340,35 @@ class HistoryTests(unittest.TestCase):
         finally:
             directory.cleanup()
         self.assertTrue(any("committer date" in error for error in errors), errors)
+
+    def test_derives_the_publication_commit_of_each_version(self):
+        root, first_hash, directory = self.make_license_repository()
+        try:
+            (root / "enterprise" / "LICENSE").write_text(license_text("0.2.0"))
+            second_hash = commit(root, "publish 0.2.0", "2027-01-01", ["enterprise/LICENSE"])
+            (root / "enterprise" / "VERSIONS.toml").write_text(
+                '[[version]]\nversion = "0.1.0"\nchange_date = "2030-10-26"\n'
+                f'first_public_commit = "{first_hash}"\nfirst_public_date = "2026-10-26"\n'
+                '[[version]]\nversion = "0.2.0"\nchange_date = "2031-01-01"\n'
+                f'first_public_commit = "{second_hash}"\nfirst_public_date = "2027-01-01"\n'
+            )
+            self.assertEqual(LICENSING.check_history(root, second_hash), [])
+        finally:
+            directory.cleanup()
+
+    def test_rejects_a_later_version_recorded_with_the_first_publication(self):
+        root, first_hash, directory = self.make_license_repository()
+        try:
+            (root / "enterprise" / "LICENSE").write_text(license_text("0.2.0"))
+            second_hash = commit(root, "publish 0.2.0", "2027-01-01", ["enterprise/LICENSE"])
+            (root / "enterprise" / "VERSIONS.toml").write_text(
+                '[[version]]\nversion = "0.2.0"\nchange_date = "2030-10-26"\n'
+                f'first_public_commit = "{first_hash}"\nfirst_public_date = "2026-10-26"\n'
+            )
+            errors = LICENSING.check_history(root, second_hash)
+        finally:
+            directory.cleanup()
+        self.assertTrue(any(second_hash in error for error in errors), errors)
 
 
 class BoundaryTests(unittest.TestCase):

@@ -74,9 +74,10 @@ from then it is available under Apache-2.0.
 [enterprise/VERSIONS.toml](../enterprise/VERSIONS.toml) records each version's
 Change Date and Change License. It also records the first public commit and its
 date. For 0.1.0 the cutover PR fixes the Change Date at 2030-10-26, and a
-follow-up PR records the commit and its date after the cutover merges. CI derives the
-first public commit from git as the first commit that added
-`enterprise/LICENSE`, and rejects a record that moves a date later.
+follow-up PR records the commit and its date after the cutover merges. CI derives
+each version's first public commit from git as the first commit whose
+`enterprise/LICENSE` names that version as the Licensed Work (for 0.1.0, the
+commit that added the file), and rejects a record that moves a date later.
 
 Newer versions have later Change Dates, so an older version's conversion does
 not put newer code under Apache-2.0.

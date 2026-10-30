@@ -784,15 +784,33 @@ def git_show(root: Path, ref: str, path: str) -> str | None:
     return result.stdout if result.returncode == 0 else None
 
 
-def git_first_add(root: Path, path: str) -> str | None:
+def licensed_work_version(text: str) -> str | None:
+    """Return the x.y.z version named by the Licensed Work parameter, if any."""
+    match = re.search(r"\b(\d+\.\d+\.\d+)\b", parse_parameters(text).get("Licensed Work", ""))
+    return match.group(1) if match else None
+
+
+def git_version_publication(root: Path, version: str) -> str | None:
+    """Return the first commit whose enterprise/LICENSE names `version` as the Licensed Work.
+
+    Each Enterprise version is first published by the commit that puts its
+    version into the Licensed Work parameter: for the first version that is the
+    commit that added enterprise/LICENSE, and for a later version it is the
+    commit that bumped the Licensed Work to that version.
+    """
     result = subprocess.run(
-        ["git", "log", "--diff-filter=A", "--format=%H", "--reverse", "--", path],
+        ["git", "log", "--format=%H", "--reverse", "--", "enterprise/LICENSE"],
         cwd=root, capture_output=True, text=True,
     )
     if result.returncode != 0:
         return None
-    lines = [line.strip() for line in result.stdout.splitlines() if line.strip()]
-    return lines[0] if lines else None
+    for commit in (line.strip() for line in result.stdout.splitlines()):
+        if not commit:
+            continue
+        text = git_show(root, commit, "enterprise/LICENSE")
+        if text is not None and licensed_work_version(text) == version:
+            return commit
+    return None
 
 
 def git_committer_date(root: Path, commit: str) -> datetime.date | None:
@@ -865,11 +883,11 @@ def check_history(root: Path, base: str) -> list[str]:
                 )
         commit = entry.get("first_public_commit")
         if commit:
-            derived = git_first_add(root, "enterprise/LICENSE")
+            derived = git_version_publication(root, version)
             if derived is None:
                 errors.append(
                     f"version {version!r}: first_public_commit is recorded but git has "
-                    "no commit that added enterprise/LICENSE"
+                    f"no commit whose enterprise/LICENSE names Licensed Work {version}"
                 )
                 continue
             if commit != derived:

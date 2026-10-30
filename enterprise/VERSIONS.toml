@@ -16,15 +16,14 @@
 #                      moves later.
 # change_license:      The SPDX identifier this version converts to on
 #                      change_date.
-# first_public_commit: The commit that first added enterprise/LICENSE. CI
-#                      derives it from git; a follow-up PR records it after the
-#                      cutover merge.
-# first_public_date:   The UTC date of first_public_commit. The same follow-up
-#                      PR records it.
+# first_public_commit: The first commit whose enterprise/LICENSE names this
+#                      version as the Licensed Work. For 0.1.0 that is the
+#                      commit that added enterprise/LICENSE. CI derives it
+#                      from git for each version.
+# first_public_date:   The UTC committer date of first_public_commit.
 #
 # first_public_commit and first_public_date are absent for 0.1.0 until the
-# cutover merges. A follow-up PR records them, and CI derives the commit from
-# git as the first commit that added enterprise/LICENSE.
+# cutover merges. A follow-up PR records them.
 
 [[version]]
 version = "0.1.0"
