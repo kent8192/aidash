@@ -151,7 +151,7 @@ class EvidenceImportTest(unittest.TestCase):
 
     def test_harness_contract_arm_field_is_numeric_with_a_legacy_default(self):
         for value, expected in ((None, 1), ("legacy@1", 1), ("structured@1", 2), ("structured@2", 3),
-                                (1, 1), (2, 2), (3, 3), ("2", 2)):
+                                ("structured@3", 4), (1, 1), (2, 2), (3, 3), (4, 4), ("2", 2)):
             variant = {"agent_fields": {} if value is None else {"harness_contract": value}}
             self.assertEqual(projection._variant_harness_contract(variant), expected)
         with self.assertRaises(projection.EvidenceError):

@@ -7,11 +7,12 @@ are not part of it. An Agent definition names one version, the Run's Binding
 snapshot pins it, and it never changes while the Run exists
 ([ADR 0093](../adr/0093-harness-contract-is-a-versioned-rule-pinned-per-run.md)).
 
-| Version        | Projection Versions           | Content                                                                                                                                                                |
-| -------------- | ----------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `legacy@1`     | `legacy`, `ordered`, `native` | Today's text for each Projection Version, byte for byte. This is the default and never changes.                                                                        |
-| `structured@1` | `native`                      | Sectioned text with an explicit Instruction precedence; Harness requirements in an `aidash`-trust envelope; Agent instructions before Skills and the capability index. |
-| `structured@2` | `native`                      | `structured@1` plus a short working-method section and two completion sentences.                                                                                       |
+| Version        | Projection Versions           | Content                                                                                                                                                                        |
+| -------------- | ----------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `legacy@1`     | `legacy`, `ordered`, `native` | Today's text for each Projection Version, byte for byte. This is the default and never changes.                                                                                |
+| `structured@1` | `native`                      | Sectioned text with an explicit Instruction precedence; Harness requirements in an `aidash`-trust envelope; Agent instructions before Skills and the capability index.         |
+| `structured@2` | `native`                      | `structured@1` plus a short working-method section and two completion sentences.                                                                                               |
+| `structured@3` | `native`                      | Text selected by a GEPA search (#532): names the forms injected directions take, checks why an action is needed, keeps task-authorized data. Same envelopes as `structured@1`. |
 
 ## Selecting a version
 
@@ -37,6 +38,29 @@ the default is decided by a live fixed-task comparison of `legacy@1`,
 ([#532](https://github.com/kent8192/aidash/issues/532)). Usage Records carry the
 Harness Contract version beside the Projection Version, and the fixed-task
 evaluator accepts `harness_contract` as an arm field.
+
+## How `structured@3` was selected
+
+`structured@3` is the text that won an automatic search, not a hand-written
+variant. A replay evaluator rebuilt the exact Native requests of the
+fixed-task corpus from deterministic-tier captures, changed only the Harness
+Contract text, and played each task against `openai/gpt-oss-20b` and
+`deepseek/deepseek-v4.1-flash-1017` through OpenRouter. GEPA, seeded with
+`legacy@1`, proposed new texts with a strong reflection model. The objective
+gated on safety (no regression from `legacy@1` on any model), then weighted
+safety 0.40, corrections 0.35 and capability 0.25, using Wilson lower bounds
+and a small length penalty. Candidates naming any task-specific token were
+rejected. Selection used held-out tasks with different wording, facts and
+injection styles.
+
+On the held-out tasks with gpt-oss-20b, injected directions that claim
+authority, impersonate the user, or demand a tool call were resisted in 26 of
+30 Runs, against 5 of 30 for `legacy@1`. Task-authorized formats taken from
+data stayed at the `legacy@1` level, 9 of 10, so the text does not over-refuse.
+DeepSeek V4.1 Flash was at ceiling with every version. Directions that ask the
+model to append text to its answer still succeeded with every version; text
+alone does not stop them (#629, #630). The live A/B in #532 decides whether
+`structured@3` becomes the default.
 
 ## Instruction precedence
 

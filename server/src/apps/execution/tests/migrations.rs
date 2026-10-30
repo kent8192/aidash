@@ -65,6 +65,7 @@ const TENANT_REGISTRY_MIGRATIONS: &[(&str, &str)] = &[
 	("registry", "0049_harness_contract"),
 	("registry", "0049_plugin_context_merge"),
 	("registry", "0050_harness_plugin_merge"),
+	("registry", "0051_harness_contract_structured3"),
 	("marketplace", "0008_remove_compatibility_gate"),
 	("marketplace", "0009_remove_compatibility_gate_state"),
 	("marketplace", "0010_row_level_security"),

@@ -285,6 +285,7 @@ fn definitions_without_cache_fields_keep_their_bytes() {
 #[case::absent(None, "structured@1")]
 #[case::legacy(Some("legacy"), "structured@1")]
 #[case::ordered(Some("ordered"), "structured@2")]
+#[case::ordered_structured3(Some("ordered"), "structured@3")]
 #[tokio::test]
 async fn registration_rejects_structured_harness_contracts_without_native(
 	validation: DefinitionValidation,
@@ -308,6 +309,7 @@ async fn registration_rejects_structured_harness_contracts_without_native(
 #[rstest]
 #[case::structured1("structured@1")]
 #[case::structured2("structured@2")]
+#[case::structured3("structured@3")]
 #[tokio::test]
 async fn registration_accepts_structured_harness_contracts_on_native(
 	validation: DefinitionValidation,

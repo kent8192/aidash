@@ -291,8 +291,8 @@ def _variant_harness_contract(variant):
     value = variant.get("agent_fields", {}).get("harness_contract")
     if isinstance(value, bool):
         raise EvidenceError("arm harness_contract must be a version string or number")
-    return {"legacy@1": 1, "structured@1": 2, "structured@2": 3,
-            1: 1, 2: 2, 3: 3, "1": 1, "2": 2, "3": 3}.get(value, 1 if value is None else value)
+    return {"legacy@1": 1, "structured@1": 2, "structured@2": 3, "structured@3": 4,
+            1: 1, 2: 2, 3: 3, 4: 4, "1": 1, "2": 2, "3": 3, "4": 4}.get(value, 1 if value is None else value)
 
 
 def load_evidence(manifest, export=None, *, corpus=None, memory_corpus=None):

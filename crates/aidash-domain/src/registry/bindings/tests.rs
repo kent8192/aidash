@@ -389,7 +389,7 @@ fn structured_harness_contracts_require_the_native_projection_version() {
 		if let Some(projection) = projection {
 			input["projection_version"] = json!(projection);
 		}
-		for contract in ["structured@1", "structured@2"] {
+		for contract in ["structured@1", "structured@2", "structured@3"] {
 			input["harness_contract"] = json!(contract);
 			// Act / Assert
 			let error =
@@ -402,8 +402,8 @@ fn structured_harness_contracts_require_the_native_projection_version() {
 			);
 		}
 	}
-	// Act: Native accepts both structured versions.
-	for contract in ["structured@1", "structured@2"] {
+	// Act: Native accepts every structured version.
+	for contract in ["structured@1", "structured@2", "structured@3"] {
 		let mut input = serde_json::to_value(agent()).unwrap();
 		input["projection_version"] = json!("native");
 		input["harness_contract"] = json!(contract);
@@ -419,7 +419,7 @@ fn structured_harness_contracts_require_the_native_projection_version() {
 #[test]
 fn unknown_harness_contract_versions_are_rejected() {
 	let mut input = serde_json::to_value(agent()).unwrap();
-	input["harness_contract"] = json!("structured@3");
+	input["harness_contract"] = json!("structured@4");
 	assert!(serde_json::from_value::<AgentBindings>(input).is_err());
 }
 
