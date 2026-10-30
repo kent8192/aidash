@@ -147,6 +147,62 @@ fn explicit_source_does_not_implicitly_grant_memory_read_or_write() {
 	);
 }
 #[test]
+fn memory_builtins_stay_default_bindings_and_explicit_ones_need_a_memory() {
+	let memory_tools = |agent: &AgentBindings| -> Vec<BindingOrigin> {
+		agent
+			.normalize("aidash://node-a")
+			.unwrap()
+			.into_iter()
+			.filter(|b| {
+				MEMORY_TOOLS
+					.iter()
+					.any(|tool| b.binding.target.id == format!("aidash.{tool}"))
+			})
+			.map(|b| b.origin)
+			.collect()
+	};
+	// The snapshot records them so it can say why they are excluded.
+	let mut agent = agent();
+	assert_eq!(memory_tools(&agent), vec![BindingOrigin::Default; 3]);
+	let explicit = Binding::tool(QualifiedRef::builtin("aidash://node-a", "memory_recall"));
+	agent.bindings.push(explicit.clone());
+	assert!(agent.validate().is_err());
+	agent.bindings.push(Binding {
+		kind: BindingKind::Memory,
+		target: QualifiedRef {
+			registry_deployment: "aidash://node-a".into(),
+			id: "native.memory".into(),
+			version: "1.0.0".into(),
+		},
+		alias: None,
+		narrow: Narrowing::default(),
+		members: vec![],
+		exposure: None,
+	});
+	agent.validate().unwrap();
+	agent.bindings.retain(|b| b != &explicit);
+	agent.remove_default.push("memory_recall".into());
+	assert_eq!(memory_tools(&agent).len(), 2);
+}
+#[test]
+fn memory_exclusion_applies_only_to_memory_tools_without_a_memory() {
+	use crate::tool::providers::memory_exclusion;
+	assert!(
+		memory_exclusion(BindingOrigin::Default, "memory_recall", false)
+			.unwrap()
+			.is_some()
+	);
+	assert!(memory_exclusion(BindingOrigin::Explicit, "memory_mutate", false).is_err());
+	assert_eq!(
+		memory_exclusion(BindingOrigin::Default, "memory_reflect", true).unwrap(),
+		None
+	);
+	assert_eq!(
+		memory_exclusion(BindingOrigin::Default, "file_read", false).unwrap(),
+		None
+	);
+}
+#[test]
 fn bound_skills_require_support_tools() {
 	let mut agent = agent();
 	let mut binding = Binding::tool(QualifiedRef {

@@ -443,6 +443,47 @@ async fn alias_collisions_are_checked_after_expansion() {
 	config.bindings[0].alias = Some("workspace_read".into());
 	assert!(snapshot(&mut catalog, &config, false).await.is_err());
 }
+#[test]
+fn memory_builtins_are_excluded_without_a_memory_binding() {
+	use crate::test_support::{agent, binding, native_memory_entries, resolve};
+	let node = "aidash://node-a";
+	let memory_tools = |saved: &BindingSnapshot| -> Vec<Option<String>> {
+		saved
+			.bindings
+			.iter()
+			.filter(|b| {
+				MEMORY_TOOLS
+					.iter()
+					.any(|tool| b.identity.id == format!("aidash.{tool}"))
+			})
+			.inspect(|b| {
+				assert_eq!(b.origin, BindingOrigin::Default);
+				assert_eq!(
+					b.excluded_reason.is_some(),
+					b.provider_implementation.is_none()
+				);
+			})
+			.map(|b| b.excluded_reason.clone())
+			.collect()
+	};
+	let mut entries = crate::test_support::builtin_entries(node);
+	let saved = resolve(node, &agent("agent"), false, entries.clone());
+	let reasons = memory_tools(&saved);
+	assert_eq!(reasons.len(), 3);
+	assert!(
+		reasons
+			.iter()
+			.all(|reason| reason.as_deref() == Some("memory tools need a bound memory"))
+	);
+	assert!(saved.operation("memory_recall").is_err());
+
+	entries.extend(native_memory_entries());
+	let mut root = agent("agent");
+	root.config["bindings"] = serde_json::json!([binding("memory", node, "native")]);
+	let saved = resolve(node, &root, false, entries);
+	assert_eq!(memory_tools(&saved), vec![None; 3]);
+	saved.operation("memory_recall").unwrap();
+}
 #[tokio::test]
 async fn remote_defaults_have_durable_exclusion_reasons_and_explicit_inputs_fail() {
 	let mut catalog = Catalog::new();
@@ -450,7 +491,7 @@ async fn remote_defaults_have_durable_exclusion_reasons_and_explicit_inputs_fail
 	let saved = resolve(
 		&mut catalog,
 		&Providers {
-			unavailable: Some("memory_mutate".into()),
+			unavailable: Some("file_search".into()),
 		},
 		reference("agent"),
 		&agent_entry(&config),
@@ -458,13 +499,13 @@ async fn remote_defaults_have_durable_exclusion_reasons_and_explicit_inputs_fail
 	)
 	.await
 	.unwrap();
-	let memory = saved
+	let files = saved
 		.bindings
 		.iter()
-		.find(|binding| binding.identity.id == "aidash.memory_mutate")
+		.find(|binding| binding.identity.id == "aidash.file_search")
 		.unwrap();
-	assert!(memory.excluded_reason.is_some());
-	assert!(memory.provider_implementation.is_none());
+	assert!(files.excluded_reason.is_some());
+	assert!(files.provider_implementation.is_none());
 	assert!(
 		saved
 			.bindings
@@ -474,7 +515,7 @@ async fn remote_defaults_have_durable_exclusion_reasons_and_explicit_inputs_fail
 	);
 	config
 		.bindings
-		.push(Binding::tool(QualifiedRef::builtin(NODE, "memory_mutate")));
+		.push(Binding::tool(QualifiedRef::builtin(NODE, "file_search")));
 	assert!(snapshot(&mut catalog, &config, true).await.is_err());
 }
 
