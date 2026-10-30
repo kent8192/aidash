@@ -206,7 +206,7 @@ impl SemanticEntriesSession for Scope {
 	}
 	async fn history_entry(&mut self, _: Uuid) -> Result<Entry> {
 		self.touch("history_entry")?;
-		Ok(entry())
+		Ok(self.old.clone().unwrap_or_else(entry))
 	}
 }
 
@@ -470,10 +470,14 @@ async fn listing_omits_sources_that_have_disappeared() {
 }
 
 #[rstest]
-#[case::allowed(true)]
-#[case::denied(false)]
+#[case::allowed(true, false)]
+#[case::denied(false, false)]
+#[case::deleted_without_area_access(false, true)]
 #[tokio::test]
-async fn image_index_state_is_listed_only_under_current_area_authority(#[case] visible: bool) {
+async fn image_index_state_is_listed_only_under_current_area_authority(
+	#[case] visible: bool,
+	#[case] deleted: bool,
+) {
 	let mut image = entry();
 	image.source = serde_json::to_value(Source::WorkingImage {
 		area_id: Uuid::from_u128(7),
@@ -483,6 +487,7 @@ async fn image_index_state_is_listed_only_under_current_area_authority(#[case] v
 	})
 	.unwrap();
 	image.state = "PENDING".into();
+	image.deleted = deleted;
 	let mut scope = Scope {
 		rows: vec![image],
 		text: None,
@@ -532,6 +537,40 @@ async fn history_advances_past_two_hundred_denied_candidates() {
 			.filter(|name| **name == "history_entry")
 			.count(),
 		200
+	);
+}
+
+#[rstest]
+#[case::allowed(true)]
+#[case::denied(false)]
+#[tokio::test]
+async fn image_history_requires_current_area_authority(#[case] visible: bool) {
+	let mut image = entry();
+	image.source = serde_json::to_value(Source::WorkingImage {
+		area_id: Uuid::from_u128(7),
+		generation: 1,
+		file_id: Uuid::from_u128(8),
+		path: "image.png".into(),
+	})
+	.unwrap();
+	let row = History {
+		sequence: 1,
+		workspace_id: Uuid::from_u128(1),
+		entry_id: Some(image.id),
+		revision: 1,
+		state: "PENDING".into(),
+		detail: "fixture".into(),
+		created_at: Utc::now(),
+	};
+	let mut scope = Scope {
+		old: Some(image),
+		image_visible: visible,
+		pages: VecDeque::from([vec![row]]),
+		..Default::default()
+	};
+	assert_eq!(
+		history(&mut scope, Uuid::from_u128(1)).await.unwrap().len(),
+		usize::from(visible)
 	);
 }
 

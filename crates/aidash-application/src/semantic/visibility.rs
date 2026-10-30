@@ -29,7 +29,9 @@ pub async fn permits(
 	}
 	if scoped && action == "semantic.read" && !entry.deleted {
 		let decoded = serde_json::from_value(entry.source.clone())?;
-		if !matches!(decoded, Source::Memory { .. })
+		// Working Images use the Area's File gate at the indexing, listing and
+		// retrieval boundaries. They have no textual semantic source to load.
+		if !matches!(decoded, Source::Memory { .. } | Source::WorkingImage { .. })
 			&& source(scope, entry.workspace_id, &decoded).await?.is_none()
 		{
 			return Ok(false);

@@ -178,16 +178,15 @@ pub async fn entries(
 		if !scope.permits(&entry, "semantic.read").await? {
 			continue;
 		}
-		let source_visible = if entry.deleted {
-			true
-		} else {
-			let source = serde_json::from_value(entry.source.clone())?;
+		let source = serde_json::from_value(entry.source.clone())?;
+		let source_visible =
 			if matches!(source, aidash_domain::semantic::Source::WorkingImage { .. }) {
 				scope.image_visible(workspace, &source).await?
+			} else if entry.deleted {
+				true
 			} else {
 				scope.source(workspace, &source).await?.is_some()
-			}
-		};
+			};
 		if source_visible {
 			visible.push(entry);
 		}
@@ -293,6 +292,12 @@ pub async fn history(
 			if let Some(id) = row.entry_id {
 				let entry = scope.history_entry(id).await?;
 				if !scope.permits(&entry, "semantic.read").await? {
+					continue;
+				}
+				let source = serde_json::from_value(entry.source.clone())?;
+				if matches!(source, aidash_domain::semantic::Source::WorkingImage { .. })
+					&& !scope.image_visible(workspace, &source).await?
+				{
 					continue;
 				}
 			}
