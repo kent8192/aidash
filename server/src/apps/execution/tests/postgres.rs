@@ -1143,7 +1143,7 @@ async fn parent_can_finish_after_explicit_child_abandonment(
 		events
 			.iter()
 			.filter(|e| e.kind == "task.abandoned"
-				&& e.data["reason"] == "Deployment Administrator accepts partial results")
+				&& e.data["reason"] == "Tenant subject accepts partial results")
 			.count(),
 		3
 	);
