@@ -170,6 +170,13 @@ impl Sessions {
 		if self.home.local() {
 			return Ok(None);
 		}
+		// Plugin servers carry no named secret, so an endpoint that cannot be an OAuth
+		// resource has nothing personal to resolve on Home; it uses the local transport.
+		let Ok(resource) =
+			aidash_domain::oauth_connections::canonical_resource(config.url.as_str())
+		else {
+			return Ok(None);
+		};
 		let call = ConnectionCall {
 			tool_key: ToolKey::Plugin {
 				plugin: server.plugin.clone(),
@@ -177,7 +184,7 @@ impl Sessions {
 				server: server.server.clone(),
 				schema_digest: digest.map(Into::into),
 			},
-			resource: aidash_domain::oauth_connections::canonical_resource(config.url.as_str())?,
+			resource,
 			tool_name: tool.into(),
 			arguments,
 			idempotency_key: key.into(),
@@ -207,7 +214,13 @@ impl Sessions {
 		if run != self.run.id {
 			return Err(Error::Forbidden);
 		}
-		let resource = aidash_domain::oauth_connections::canonical_resource(config.url.as_str())?;
+		// Endpoints such as `http://ollama.lan:11434/mcp` or one with a query stay usable
+		// without authentication; only an OAuth resource can hold a Connection.
+		let Ok(resource) =
+			aidash_domain::oauth_connections::canonical_resource(config.url.as_str())
+		else {
+			return Ok(None);
+		};
 		let call = SecretCall {
 			destination: aidash_application::tenant_secrets::endpoint_destination(
 				config.url.as_str(),

@@ -182,12 +182,19 @@ impl Plugin {
 					),
 					_ => return transport.invoke(&self.config, input, key, None).await,
 				};
-				let resource = if kind
-					== aidash_domain::identity::commands::connections::Kind::PersonalSecret
-				{
-					Some(endpoint.clone())
-				} else {
-					aidash_domain::oauth_connections::canonical_resource(endpoint).ok()
+				use aidash_domain::identity::commands::connections::Kind;
+				let (kind, resource) = match (
+					kind,
+					aidash_domain::oauth_connections::canonical_resource(endpoint).ok(),
+				) {
+					(Kind::Connection, Some(resource)) => (kind, Some(resource)),
+					// An endpoint that cannot be an OAuth resource (a query, plain
+					// http to a LAN host) still resolves a named personal secret on Home.
+					(Kind::Connection, None) if secret.is_some() => {
+						(Kind::PersonalSecret, Some(endpoint.clone()))
+					}
+					(Kind::Connection, None) => (kind, None),
+					(Kind::PersonalSecret, _) => (kind, Some(endpoint.clone())),
 				};
 				if let Some(resource) = resource {
 					let call = aidash_domain::identity::commands::connections::ConnectionCall {

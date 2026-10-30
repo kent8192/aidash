@@ -64,10 +64,23 @@ fn target(snapshot: &BindingSnapshot, call: &ConnectionCall, list: bool) -> Resu
 					tool_name,
 					secret,
 					..
-				} if canonical_resource(endpoint)? == call.resource
+				} if canonical_resource(endpoint).ok().as_deref()
+					== Some(call.resource.as_str())
 					&& *tool_name == call.tool_name
 					&& *secret == call.secret_name
 					&& call.kind == Kind::Connection => {}
+				// A non-OAuth MCP endpoint is pinned verbatim, like an HTTP tool's.
+				ToolConfig::Mcp {
+					endpoint,
+					tool_name,
+					secret,
+					..
+				} if *endpoint == call.resource
+					&& canonical_resource(endpoint).is_err()
+					&& *tool_name == call.tool_name
+					&& *secret == call.secret_name
+					&& secret.is_some()
+					&& call.kind == Kind::PersonalSecret => {}
 				ToolConfig::Http {
 					endpoint, secret, ..
 				} if *endpoint == call.resource

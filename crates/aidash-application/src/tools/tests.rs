@@ -935,3 +935,42 @@ async fn non_oauth_mcp_endpoint_uses_existing_transport(
 		"transport.invoke"
 	}));
 }
+
+#[rstest]
+#[tokio::test]
+async fn a_non_oauth_mcp_endpoint_sends_its_personal_secret_call_home(mut fixture: Fixture) {
+	let result = json!({"content":[{"type":"text","text":"home result"}]});
+	fixture.operations.proxy = Some(result.clone());
+	let endpoint = "https://api.example.com/mcp?tenant=one";
+	let tool = plugin(
+		ToolConfig::Mcp {
+			endpoint: endpoint.into(),
+			tool_name: "lookup".into(),
+			replay: "idempotent".into(),
+			idempotency_argument: None,
+			secret: Some("personal".into()),
+			scopes: None,
+			secret_owner: aidash_domain::tool::SecretOwner::Personal,
+		},
+		json!({"type":"object"}),
+	);
+	assert_eq!(
+		tool.invoke(
+			&ToolContext {
+				operations: &fixture.operations,
+				run: &fixture.run
+			},
+			&fixture.operations,
+			json!({}),
+			"logical-key"
+		)
+		.await
+		.unwrap(),
+		result
+	);
+	let saved = fixture.operations.inputs.lock().unwrap();
+	assert_eq!(saved[0].1["kind"], "personal_secret");
+	assert_eq!(saved[0].1["resource"], endpoint);
+	assert_eq!(saved[0].1["secret_name"], "personal");
+	assert_eq!(saved[0].1["tool_name"], "lookup");
+}
