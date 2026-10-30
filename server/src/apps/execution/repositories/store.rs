@@ -3992,7 +3992,21 @@ impl Store {
 				"tool idempotency key reused with different input".into(),
 			));
 		}
-		if !created && invocation.status != "COMPLETED" && !invocation.replay_safe {
+		if !created
+			&& invocation.status == "STARTED"
+			&& (invocation.delivery_pending || invocation.replay_safe)
+		{
+			crate::database::native::query(
+				&Query::update()
+					.table(Alias::new("invocations"))
+					.value(Alias::new("delivery_pending"), false)
+					.value(Alias::new("uncertain_reason"), Option::<String>::None)
+					.and_where(Expr::col(Alias::new("idempotency_key")).eq(Expr::value(key)))
+					.to_string(PostgresQueryBuilder),
+			)
+			.execute(&mut *tx)
+			.await?;
+		} else if !created && invocation.status != "COMPLETED" && !invocation.replay_safe {
 			{
 				let query_bind_1 = key;
 				crate::database::native::query(
@@ -4024,6 +4038,85 @@ impl Store {
 			.await?;
 		}
 		Ok(invocation)
+	}
+	pub async fn invocation_not_delivered(
+		&self,
+		scope: &TenancyScope,
+		run: &Run,
+		worker: Uuid,
+		key: &str,
+		failure: &Value,
+	) -> Result<u32> {
+		let mut tx = self.pool.begin(scope).await?.into_executor().await?;
+		if !RunRecord::hold_worker(tx.as_mut(), run.id, worker).await? {
+			return Err(Error::Conflict(
+				"worker lease lost while recording tool delivery".into(),
+			));
+		}
+		let count: i32 = crate::database::native::query_scalar(
+			&Query::update()
+				.table(Alias::new("invocations"))
+				.value_expr(
+					Alias::new("delivery_failures"),
+					Expr::col(Alias::new("delivery_failures")).add(Expr::value(1_i32)),
+				)
+				.value(Alias::new("delivery_pending"), true)
+				.and_where(Expr::col(Alias::new("run_id")).eq(Expr::value(run.id)))
+				.and_where(Expr::col(Alias::new("idempotency_key")).eq(Expr::value(key)))
+				.and_where(Expr::col(Alias::new("status")).eq(Expr::value("STARTED")))
+				.returning([Alias::new("delivery_failures")])
+				.to_string(PostgresQueryBuilder),
+		)
+		.scalar_one(tx.as_mut())
+		.await?;
+		let count = u32::try_from(count)
+			.map_err(|_| Error::Conflict("invalid tool delivery count".into()))?;
+		if count > aidash_domain::semantic::OUTAGE_RETRIES
+			&& InvocationRecord::complete(tx.as_mut(), run.id, key, failure).await?
+		{
+			event_records::append_run(
+				tx.as_mut(),
+				run.id,
+				(run.is_local(self.deployment.as_str())).then_some(run.workspace_id),
+				"tool.completed",
+				json!({"run_id":run.id,"idempotency_key":key,"result":failure}),
+			)
+			.await?;
+		}
+		tx.commit().await?;
+		Ok(count)
+	}
+	pub async fn invocation_answer_lost(
+		&self,
+		scope: &TenancyScope,
+		run: &Run,
+		worker: Uuid,
+		key: &str,
+	) -> Result<()> {
+		let mut tx = self.pool.begin(scope).await?.into_executor().await?;
+		if !RunRecord::hold_worker(tx.as_mut(), run.id, worker).await? {
+			return Err(Error::Conflict(
+				"worker lease lost while recording lost tool answer".into(),
+			));
+		}
+		let changed = crate::database::native::query(
+			&Query::update()
+				.table(Alias::new("invocations"))
+				.value(Alias::new("uncertain_reason"), "answer_lost")
+				.value(Alias::new("delivery_pending"), false)
+				.and_where(Expr::col(Alias::new("run_id")).eq(Expr::value(run.id)))
+				.and_where(Expr::col(Alias::new("idempotency_key")).eq(Expr::value(key)))
+				.and_where(Expr::col(Alias::new("status")).eq(Expr::value("STARTED")))
+				.to_string(PostgresQueryBuilder),
+		)
+		.execute(tx.as_mut())
+		.await?
+		.rows_affected();
+		if changed != 1 {
+			return Err(Error::Conflict("tool invocation is not started".into()));
+		}
+		tx.commit().await?;
+		Ok(())
 	}
 	pub async fn invocation_finish(
 		&self,
@@ -5038,6 +5131,9 @@ pub(crate) fn invocation_summary(alias: Option<&str>) -> reinhardt::query::Selec
 		"tool",
 		"status",
 		"replay_safe",
+		"delivery_failures",
+		"delivery_pending",
+		"uncertain_reason",
 		"created_at",
 	] {
 		if let Some(table) = alias {
