@@ -381,6 +381,7 @@ pub const TABLES: &[Table] = &[
 	table("registry", "agent_incident_events", TenantOwned),
 	table("registry", "agent_incidents", TenantOwned),
 	table("registry", "agent_knowledge", TenantOwned),
+	table("registry", "agent_knowledge_images", TenantOwned),
 	table("registry", "agent_plugin_copies", TenantOwned),
 	table("registry", "marketplace_plugin_recalls", DeploymentWide),
 	table("registry", "agent_test_limits", TenantOwned),
