@@ -3,8 +3,8 @@
 use reinhardt::db::migrations::{FieldType, prelude::*};
 
 pub(super) fn migration() -> Migration {
-	Migration::new("0042_image_publications", "knowledge")
-		.add_dependency("knowledge", "0041_working_images_state")
+	Migration::new("0043_image_publications", "knowledge")
+		.add_dependency("knowledge", "0042_working_images_state")
 		.add_operation(Operation::CreateTable {
 			name: "semantic_image_publications".into(),
 			columns: vec![

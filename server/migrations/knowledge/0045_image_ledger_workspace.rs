@@ -3,8 +3,8 @@
 use reinhardt::db::migrations::prelude::*;
 
 pub(super) fn migration() -> Migration {
-	Migration::new("0044_image_ledger_workspace", "knowledge")
-		.add_dependency("knowledge", "0043_image_ledgers")
+	Migration::new("0045_image_ledger_workspace", "knowledge")
+		.add_dependency("knowledge", "0044_image_ledgers")
 		.add_operation(Operation::AddConstraintDefinition {
 			table: "semantic_image_ledgers".into(),
 			constraint: Constraint::ForeignKey {

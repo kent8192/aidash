@@ -63,9 +63,9 @@ const TENANT_REGISTRY_MIGRATIONS: &[(&str, &str)] = &[
 	("registry", "0048_context_marketplace_merge"),
 	("registry", "0048_plugin_marketplace_merge"),
 	("registry", "0049_plugin_context_merge"),
-	("registry", "0050_embedding_inputs"),
-	("registry", "0051_reference_images"),
-	("registry", "0052_reference_image_byte_state"),
+	("registry", "0052_embedding_inputs"),
+	("registry", "0053_reference_images"),
+	("registry", "0054_reference_image_byte_state"),
 	("marketplace", "0008_remove_compatibility_gate"),
 	("marketplace", "0009_remove_compatibility_gate_state"),
 	("marketplace", "0010_row_level_security"),
@@ -106,7 +106,7 @@ async fn native_history_uses_typed_schema_operations_and_lf_sql_assets() {
 	);
 	let knowledge = graph.get_leaf_nodes_for_app("knowledge");
 	assert_eq!(knowledge.len(), 1);
-	assert_eq!(knowledge[0].name, "0046_image_publications_state");
+	assert_eq!(knowledge[0].name, "0047_image_publications_state");
 	// Assert: retain the physical graph, model snapshots, and all supported tables.
 	assert!(
 		migrations
@@ -118,7 +118,7 @@ async fn native_history_uses_typed_schema_operations_and_lf_sql_assets() {
 			.iter()
 			.filter(|migration| migration.state_only)
 			.count(),
-		71
+		73
 	);
 	let tables = migrations
 		.iter()
@@ -356,14 +356,14 @@ async fn generation_with_existing_sql_assets_preserves_history_and_dependency(
 	);
 	assert_eq!(std::fs::read(history).unwrap(), original);
 	let generated = FilesystemSource::new(fixture.directory.path().join("migrations"))
-		.get_migration("execution", "0082_policy_probe")
+		.get_migration("execution", "0087_policy_probe")
 		.await
 		.unwrap();
 	assert_eq!(
 		generated.dependencies,
 		vec![(
 			"execution".to_owned(),
-			"0081_reference_embedding_usage_state".to_owned()
+			"0086_reference_embedding_usage_state".to_owned()
 		)]
 	);
 	assert!(generated.operations.is_empty());
@@ -792,7 +792,7 @@ async fn reference_embedding_usage_blocks_rollback_until_usage_is_removed(
 			.into_iter()
 			.find(|migration| {
 				migration.app_label == "execution"
-					&& migration.name == "0080_reference_embedding_usage"
+					&& migration.name == "0085_reference_embedding_usage"
 			})
 			.unwrap();
 	let mut executor =

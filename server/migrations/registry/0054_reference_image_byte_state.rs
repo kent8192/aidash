@@ -3,8 +3,8 @@
 use reinhardt::db::migrations::prelude::*;
 
 pub(super) fn migration() -> Migration {
-	Migration::new("0052_reference_image_byte_state", "registry")
-		.add_dependency("registry", "0051_reference_images")
+	Migration::new("0054_reference_image_byte_state", "registry")
+		.add_dependency("registry", "0053_reference_images")
 		.add_operation(Operation::AlterColumn {
 			table: "agent_knowledge".into(),
 			column: "image_0".into(),

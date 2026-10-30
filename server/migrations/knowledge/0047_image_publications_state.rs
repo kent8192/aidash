@@ -3,8 +3,8 @@
 use reinhardt::db::migrations::{FieldType, prelude::*};
 
 pub(super) fn migration() -> Migration {
-	Migration::new("0046_image_publications_state", "knowledge")
-		.add_dependency("knowledge", "0045_image_publication_lookup")
+	Migration::new("0047_image_publications_state", "knowledge")
+		.add_dependency("knowledge", "0046_image_publication_lookup")
 		.add_operation(Operation::AlterColumn {
 			table: "semantic_image_ledgers".into(),
 			column: "next_authority_check".into(),

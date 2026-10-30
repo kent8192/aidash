@@ -3,8 +3,8 @@
 use reinhardt::db::migrations::prelude::*;
 
 pub(super) fn migration() -> Migration {
-	Migration::new("0045_image_publication_lookup", "knowledge")
-		.add_dependency("knowledge", "0044_image_ledger_workspace")
+	Migration::new("0046_image_publication_lookup", "knowledge")
+		.add_dependency("knowledge", "0045_image_ledger_workspace")
 		.add_operation(Operation::CreateIndex {
 			table: "semantic_image_publications".into(),
 			columns: vec!["workspace_id".into(), "sequence".into()],

@@ -2,8 +2,8 @@
 // Extend the physical image source and indexing state checks.
 use reinhardt::db::migrations::prelude::*;
 pub(super) fn migration() -> Migration {
-	Migration::new("0040_working_images", "knowledge")
- .add_dependency("knowledge", "0039_image_index_limits")
+	Migration::new("0041_working_images", "knowledge")
+ .add_dependency("knowledge", "0040_image_index_limits")
  .add_operation(Operation::DropConstraintDefinition { table: "semantic_entries".into(), constraint: Constraint::Check { name: "semantic_entries_counters".into(), expression: r###"COALESCE(((revision > 0) AND (index_revision > 0) AND (attempts >= 0) AND
 						CASE (source ->> 'kind'::text)
 						WHEN 'memory'::text THEN (

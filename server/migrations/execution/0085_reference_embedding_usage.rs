@@ -3,9 +3,9 @@
 use reinhardt::db::migrations::prelude::*;
 
 pub(super) fn migration() -> Migration {
-	Migration::new("0080_reference_embedding_usage", "execution")
+	Migration::new("0085_reference_embedding_usage", "execution")
 		.database_only(true)
-		.add_dependency("execution", "0079_run_safety_stops_state")
+		.add_dependency("execution", "0080_invocation_delivery")
 		.add_operation(Operation::DropConstraintDefinition {
 			table: "generation_embedding_usage".into(),
 			constraint: Constraint::Check {

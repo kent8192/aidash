@@ -15,6 +15,15 @@ pub struct Invocation {
 	pub status: String,
 	pub result: Option<Value>,
 	pub replay_safe: bool,
+	#[serde(skip)]
+	#[schemars(skip)]
+	pub delivery_failures: i32,
+	#[serde(skip)]
+	#[schemars(skip)]
+	pub delivery_pending: bool,
+	#[serde(skip)]
+	#[schemars(skip)]
+	pub uncertain_reason: Option<String>,
 	pub created_at: DateTime<Utc>,
 }
 crate::native_record!(Invocation {
@@ -25,6 +34,9 @@ crate::native_record!(Invocation {
 	status,
 	result,
 	replay_safe,
+	delivery_failures,
+	delivery_pending,
+	uncertain_reason,
 	created_at
 });
 
@@ -43,6 +55,9 @@ impl From<InvocationRecord> for Invocation {
 			.into(),
 			result: record.result.map(|value| value.into_inner()),
 			replay_safe: record.replay_safe,
+			delivery_failures: record.delivery_failures,
+			delivery_pending: record.delivery_pending,
+			uncertain_reason: record.uncertain_reason,
 			created_at: record.created_at,
 		}
 	}
@@ -72,6 +87,9 @@ impl From<aidash_domain::invocation::InvocationSummary> for Invocation {
 			status: value.status,
 			result: value.result,
 			replay_safe: value.replay_safe,
+			delivery_failures: 0,
+			delivery_pending: false,
+			uncertain_reason: None,
 			created_at: value.created_at,
 		}
 	}
