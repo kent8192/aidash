@@ -122,7 +122,8 @@ pub(super) async fn authentication(
 		.table(Alias::new("remote_connection_calls"))
 		.and_where(Expr::col("id").eq(Expr::value(id)));
 	match auth {
-		CallSecret::Connection { record, .. } => {
+		// Cloud and Dedicated resolve the same OAuth Connection through the broker.
+		CallSecret::Connection { record, .. } | CallSecret::BrokeredConnection { record, .. } => {
 			query.value(Alias::new("connection_id"), record.id);
 		}
 		_ => {
