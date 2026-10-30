@@ -1434,8 +1434,9 @@ pub(crate) fn selected_media<'a>(
 	store: &'a Store,
 	run: &'a aidash_domain::Run,
 	access: Arc<tokio::sync::RwLock<crate::authorization::access::Access>>,
+	home: Option<crate::federation::Home>,
 ) -> crate::apps::workspaces::repositories::media::SelectedMedia<'a> {
-	crate::apps::workspaces::repositories::media::SelectedMedia::new(store, run, access)
+	crate::apps::workspaces::repositories::media::SelectedMedia::new(store, run, access, home)
 }
 
 /// Current builtin and plugin authority borrows the same worker Access object.

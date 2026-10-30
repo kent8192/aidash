@@ -45,6 +45,7 @@ struct ModelScript {
 	compaction_status: Arc<AtomicUsize>,
 	compaction_reservations: Arc<Mutex<Option<ReservationCheck>>>,
 	force_memory_mutate: Arc<AtomicBool>,
+	selected_attachment: Arc<Mutex<Option<String>>>,
 	/// Tool-call responses after the first, for Runs that need several inferences.
 	extra_tool_rounds: Arc<AtomicUsize>,
 }
@@ -249,6 +250,7 @@ impl Pair {
 struct PeerActivity {
 	origin: std::time::Instant,
 	served: AtomicUsize,
+	attachment_fetches: AtomicUsize,
 	/// Milliseconds after `origin` of the last served response.
 	last: AtomicU64,
 }
@@ -257,6 +259,7 @@ impl PeerActivity {
 		Self {
 			origin: std::time::Instant::now(),
 			served: AtomicUsize::new(0),
+			attachment_fetches: AtomicUsize::new(0),
 			last: AtomicU64::new(0),
 		}
 	}
@@ -280,6 +283,9 @@ impl reinhardt::Middleware for PeerActivityMiddleware {
 		next: Arc<dyn reinhardt::Handler>,
 	) -> reinhardt::Result<reinhardt::Response> {
 		let federation = request.uri.path().starts_with("/federation/");
+		if request.uri.path() == "/federation/v0.1/thread-attachment/1/fetch" {
+			self.0.attachment_fetches.fetch_add(1, Ordering::AcqRel);
+		}
 		let response = next.handle(request).await;
 		if federation {
 			let at = self.0.origin.elapsed().as_millis() as u64;
@@ -329,6 +335,7 @@ mod scoped_pair_composition {
 		#[default((false, false, 32))] large_native: (bool, bool, usize),
 		#[default(false)] ordered: bool,
 		#[default(false)] tenant_embedding: bool,
+		#[default(false)] media: bool,
 		#[future(awt)]
 		#[from(scoped_infrastructure)]
 		#[with(native, ordered)]
@@ -518,8 +525,11 @@ mod scoped_pair_composition {
 			)
 			.await;
 		}
+		if media {
+			media_receiver_agent(&a, &b, &aa, &ba, &mut source_policy).await;
+		}
 		let agent = generation.as_ref().map_or_else(
-			|| json!({"id":if ordered { "research-ordered" } else if native.is_some() { "research-native" } else { "research" },"version":"1.0.0"}),
+			|| json!({"id":if media { "research-media" } else if ordered { "research-ordered" } else if native.is_some() { "research-native" } else { "research" },"version":"1.0.0"}),
 			|(_, prepared)| prepared["agent"].clone(),
 		);
 		let grant = Uuid::new_v4();
@@ -590,6 +600,383 @@ mod scoped_pair_composition {
 	}
 }
 use scoped_pair_composition::scoped_pair;
+
+#[rstest::rstest]
+#[tokio::test]
+async fn direct_thread_attachment_fetch_checks_mapping_and_grant(#[future(awt)] scoped_pair: Pair) {
+	use base64::Engine as _;
+	let p = scoped_pair;
+	let workspace =
+		p.a.store
+			.task(&TEST_FIXTURE, p.task)
+			.await
+			.unwrap()
+			.workspace_id;
+	let bytes = include_bytes!("../../execution/tests/support/media/pixel.png");
+	let path = format!(
+		"/api/workspaces/{workspace}/attachments?filename=sample.png&media_type=image%2Fpng&idempotency_key={}",
+		Uuid::new_v4()
+	);
+	let authorization = format!("Bearer {}", p.token);
+	let response =
+		p.aa.api_http
+			.request(http::Method::POST, &path)
+			.body(bytes::Bytes::copy_from_slice(bytes))
+			.header(http::header::CONTENT_TYPE, "application/octet-stream")
+			.header("authorization", authorization.as_str())
+			.send()
+			.await
+			.unwrap();
+	assert_eq!(response.status_code(), 200);
+	let attachment = response.json_value().unwrap();
+	let (status, message) = request(&p.aa, &p.token, "POST", &format!("/api/workspaces/{workspace}/thread-messages"), json!({"content":"remote image", "idempotency_key":Uuid::new_v4(), "attachment_ids":[attachment["id"]]})).await;
+	assert_eq!(status, 200, "{message}");
+	let home = Home::new(p.b.clone(), p.run().await);
+	let observation = home.observation(0, 20).await.unwrap();
+	assert!(
+		observation["messages"]
+			.as_array()
+			.unwrap()
+			.iter()
+			.any(|item| item["attachments"]
+				.as_array()
+				.is_some_and(|attachments| attachments
+					.iter()
+					.any(|row| row["id"] == attachment["id"])))
+	);
+	let mut text_run = p.run().await;
+	text_run
+		.context
+		.push(aidash_domain::context::ContextEvent::Tool {
+			call: aidash_domain::provider::ToolCall {
+				id: "observe".into(),
+				name: "workspace_observe".into(),
+				arguments: json!({}),
+			},
+			result: observation,
+		});
+	let ctx = aidash_server::tool::ToolContext {
+		home: Home::new(p.b.clone(), text_run.clone()),
+		store: p.b.store.clone(),
+		scope: aidash_application::tenancy::TenancyScope::tenant("acme").unwrap(),
+		run: text_run,
+	};
+	let before = p.peers.attachment_fetches.load(Ordering::Acquire);
+	let error = aidash_server::tool::builtins()["workspace_read"]
+		.invoke(
+			&ctx,
+			json!({"kind":"attachment","id":attachment["id"],"representation":"model_input"}),
+			"text-only",
+		)
+		.await
+		.unwrap_err();
+	assert!(
+		error
+			.to_string()
+			.contains("cannot read image/png through any current route"),
+		"{error}"
+	);
+	assert_eq!(
+		p.peers.attachment_fetches.load(Ordering::Acquire),
+		before,
+		"unsupported media must not fetch attachment bytes from Home"
+	);
+	let mut without_observation = ctx.clone();
+	without_observation.run.context.history.clear();
+	let error = aidash_server::tool::builtins()["workspace_read"]
+		.invoke(
+			&without_observation,
+			json!({"kind":"attachment","id":attachment["id"],"representation":"model_input"}),
+			"text-only-no-observation",
+		)
+		.await
+		.unwrap_err();
+	assert!(
+		error
+			.to_string()
+			.contains("cannot read image/png through any current route"),
+		"{error}"
+	);
+	assert_eq!(p.peers.attachment_fetches.load(Ordering::Acquire), before);
+	let credential = common::issued_credential(&p.a.store, "acme", "alice").await;
+	let mapping = json!({"node":aidash_domain::nodes::NodeName::derived("acme"),"source_node":node_of(&p.b),"source_subject":"alice","credential_id":credential["credential"]["id"],"enabled":true,"expected_revision":0});
+	assert_eq!(
+		common::set_peer_mapping(&p.a, "acme", "alice", mapping.clone())
+			.await
+			.0,
+		200
+	);
+	let receiver = common::default_node(&p.a.store, "acme").await;
+	let endpoint = "/federation/v0.1/thread-attachment/1/fetch";
+	let input =
+		json!({"grant_id":p.grant,"admission_id":p.admission,"attachment_id":attachment["id"]});
+	let (status, fetched) = common::peer_request(
+		&p.aa,
+		(&p.b, "acme"),
+		&receiver,
+		"alice",
+		endpoint,
+		input.clone(),
+	)
+	.await;
+	assert_eq!(status, 200, "{fetched}");
+	assert_eq!(
+		base64::engine::general_purpose::STANDARD
+			.decode(fetched["content_base64"].as_str().unwrap())
+			.unwrap(),
+		bytes
+	);
+	let third = common::register_source(&p.a, &p.aa, "aidash://attachment-third", "acme").await;
+	assert_eq!(common::set_peer_mapping(&p.a, "acme", "alice", json!({"node":receiver.node,"source_node":third.address(),"source_subject":"alice","credential_id":credential["credential"]["id"],"enabled":true,"expected_revision":0})).await.0, 200);
+	let body = input.to_string();
+	let headers = third
+		.remote
+		.headers(
+			&third.node,
+			&receiver.to_string(),
+			"alice",
+			("POST", "/thread-attachment/1/fetch", body.as_bytes()),
+		)
+		.await;
+	let client = p.aa.client();
+	let mut third_request = client
+		.request(http::Method::POST, endpoint)
+		.body(bytes::Bytes::copy_from_slice(body.as_bytes()))
+		.header(http::header::CONTENT_TYPE, "application/json");
+	for (name, value) in &headers {
+		third_request = third_request.header(*name, value.as_str());
+	}
+	let response = third_request.send().await.unwrap();
+	assert_eq!(
+		response.status_code(),
+		403,
+		"a different registered and mapped Node cannot use this grant"
+	);
+	let mut revoked = mapping;
+	revoked["enabled"] = json!(false);
+	revoked["expected_revision"] = json!(1);
+	assert_eq!(
+		common::set_peer_mapping(&p.a, "acme", "alice", revoked.clone())
+			.await
+			.0,
+		200
+	);
+	let (status, _) = common::peer_request(
+		&p.aa,
+		(&p.b, "acme"),
+		&receiver,
+		"alice",
+		endpoint,
+		input.clone(),
+	)
+	.await;
+	assert!([401, 403].contains(&status));
+	let mut restored = revoked;
+	restored["enabled"] = json!(true);
+	restored["expected_revision"] = json!(2);
+	assert_eq!(
+		common::set_peer_mapping(&p.a, "acme", "alice", restored)
+			.await
+			.0,
+		200
+	);
+	assert_eq!(
+		request(
+			&p.aa,
+			&p.token,
+			"POST",
+			&format!("/api/tasks/{}/remote-grants/{}/revoke", p.task, p.grant),
+			json!({})
+		)
+		.await
+		.0,
+		200
+	);
+	let (status, _) =
+		common::peer_request(&p.aa, (&p.b, "acme"), &receiver, "alice", endpoint, input).await;
+	assert!([401, 403].contains(&status));
+	p.close().await;
+}
+
+#[rstest::rstest]
+#[case::accessible(false)]
+#[case::mapping_revoked(true)]
+#[tokio::test]
+async fn remote_selected_thread_attachment_reaches_next_inference(
+	#[case] revoke: bool,
+	#[future(awt)]
+	#[with(false, false, false, false, false, (false, false, 32), false, false, true)]
+	scoped_pair: Pair,
+) {
+	use base64::Engine as _;
+	let p = scoped_pair;
+	let workspace =
+		p.a.store
+			.task(&TEST_FIXTURE, p.task)
+			.await
+			.unwrap()
+			.workspace_id;
+	let bytes = include_bytes!("../../execution/tests/support/media/pixel.png");
+	let path = format!(
+		"/api/workspaces/{workspace}/attachments?filename=sample.png&media_type=image%2Fpng&idempotency_key={}",
+		Uuid::new_v4()
+	);
+	let authorization = format!("Bearer {}", p.token);
+	let response =
+		p.aa.api_http
+			.request(http::Method::POST, &path)
+			.body(bytes::Bytes::copy_from_slice(bytes))
+			.header(http::header::CONTENT_TYPE, "application/octet-stream")
+			.header("authorization", authorization.as_str())
+			.send()
+			.await
+			.unwrap();
+	assert_eq!(response.status_code(), 200);
+	let attachment = response.json_value().unwrap();
+	let (status, body) = request(&p.aa, &p.token, "POST", &format!("/api/workspaces/{workspace}/thread-messages"), json!({"content":"inspect this", "idempotency_key":Uuid::new_v4(), "attachment_ids":[attachment["id"]]})).await;
+	assert_eq!(status, 200, "{body}");
+	let credential = common::issued_credential(&p.a.store, "acme", "alice").await;
+	assert_eq!(common::set_peer_mapping(&p.a, "acme", "alice", json!({"node":aidash_domain::nodes::NodeName::derived("acme"),"source_node":node_of(&p.b),"source_subject":"alice","credential_id":credential["credential"]["id"],"enabled":true,"expected_revision":0})).await.0, 200);
+	*p.model.selected_attachment.lock().await = Some(attachment["id"].as_str().unwrap().to_owned());
+	if revoke {
+		for _ in 0..8 {
+			if p.peers.attachment_fetches.load(Ordering::Acquire) > 0
+				&& p.requests.lock().await.len() == 2
+			{
+				break;
+			}
+			p.step().await;
+		}
+		assert_eq!(
+			p.requests.lock().await.len(),
+			2,
+			"selection must be admitted before revocation"
+		);
+		assert!(p.peers.attachment_fetches.load(Ordering::Acquire) > 0);
+		assert_eq!(common::set_peer_mapping(&p.a, "acme", "alice", json!({"node":aidash_domain::nodes::NodeName::derived("acme"),"source_node":node_of(&p.b),"source_subject":"alice","credential_id":credential["credential"]["id"],"enabled":false,"expected_revision":1})).await.0, 200);
+	}
+	for _ in 0..8 {
+		if p.requests.lock().await.len() >= 3 {
+			break;
+		}
+		p.step().await;
+	}
+	let requests = p.requests.lock().await.clone();
+	assert!(requests.len() >= 3, "{requests:?}");
+	assert!(requests[1].to_string().contains("sample.png"));
+	assert!(p.peers.attachment_fetches.load(Ordering::Acquire) > 0);
+	if revoke {
+		assert!(
+			requests[2]
+				.to_string()
+				.contains("Thread Attachment unavailable"),
+			"{}",
+			requests[2]
+		);
+	} else {
+		assert!(
+			requests[2]
+				.to_string()
+				.contains(&base64::engine::general_purpose::STANDARD.encode(bytes)),
+			"{}",
+			requests[2]
+		);
+	}
+	for _ in 0..5 {
+		let run = p.run().await;
+		if run.context.history.iter().any(|entry| {
+			matches!(
+				&entry.event,
+				aidash_domain::context::ContextEvent::ModelMediaObservation {
+					through_seq: None,
+					..
+				}
+			)
+		}) || run.phase().is_terminal()
+		{
+			break;
+		}
+		p.step().await;
+	}
+	let run = p.run().await;
+	assert_eq!(run.context.media_inferred_seq, 0);
+	assert!(
+		revoke
+			|| run.context.history.iter().any(|entry| matches!(
+				&entry.event,
+				aidash_domain::context::ContextEvent::ModelMediaObservation {
+					through_seq: None,
+					..
+				}
+			))
+	);
+	p.close().await;
+}
+
+/// An image-capable Agent approved on both nodes.
+async fn media_receiver_agent(
+	a: &Federation,
+	b: &Federation,
+	aa: &common::TestApplication,
+	ba: &common::TestApplication,
+	source_policy: &mut Value,
+) {
+	let receiver_token = common::tenant_token(&b.store, "acme").await;
+	let mut entries = Vec::new();
+	for id in ["model", "research"] {
+		let (status, mut entry) = request(
+			ba,
+			&receiver_token,
+			"GET",
+			&format!("/api/registry/{id}/1.0.0"),
+			Value::Null,
+		)
+		.await;
+		assert_eq!(status, 200, "{entry}");
+		entry
+			.as_object_mut()
+			.unwrap()
+			.remove("binding_normalization");
+		if id == "model" {
+			entry["id"] = json!("model-media");
+			entry["config"]["modalities"] = json!(["text", "image"]);
+			entry["config"]["media_routes"] = json!([{"tag":"fixture/verified","formats":["image/png"],"source":"fixture","verified_at":chrono::Utc::now()-chrono::Duration::hours(1),"expires_at":chrono::Utc::now()+chrono::Duration::hours(1)}]);
+		} else {
+			entry["id"] = json!("research-media");
+			entry["config"]["model"] = json!({"id":"model-media","version":"1.0.0"});
+		}
+		entries.push(entry);
+	}
+	for entry in entries {
+		let id = entry["id"].as_str().unwrap().to_owned();
+		let (status, body) = request(ba, &receiver_token, "POST", "/api/registry", entry).await;
+		assert_eq!(status, 200, "{body}");
+		let (status, body) = request(ba, &receiver_token, "POST", "/api/authorization/acme/catalog", json!({"node":aidash_domain::nodes::NodeName::derived("acme"),"entry":{"id":id,"version":"1.0.0"},"expected_revision":0,"enabled":true})).await;
+		assert_eq!(status, 200, "{body}");
+	}
+	let subject = aidash_domain::agent_subject(&node_of(b), "research-media", "1.0.0");
+	for (runtime, app) in [(b, ba), (a, aa)] {
+		let (_, mut policy) = request(
+			app,
+			&runtime.config.api_token,
+			"GET",
+			"/api/authorization/acme",
+			Value::Null,
+		)
+		.await;
+		policy["bundle"]["subjects"][&subject] = json!({"kind":"agent"});
+		let (status, body) = request(
+			app,
+			&runtime.config.api_token,
+			"POST",
+			"/api/authorization/acme",
+			json!({"expected_revision":policy["revision"],"bundle":policy["bundle"]}),
+		)
+		.await;
+		assert_eq!(status, 200, "{body}");
+	}
+	source_policy["subjects"][&subject] = json!({"kind":"agent"});
+}
 
 /// A receiver Agent on the Ordered Projection Version, approved on both nodes.
 /// It copies the receiver's base Agent, so it keeps the Home semantic
@@ -6287,18 +6674,26 @@ fn model_script(
 		compaction_status,
 		compaction_reservations,
 		force_memory_mutate,
+		selected_attachment: Arc::new(Mutex::new(None)),
 		extra_tool_rounds: Arc::new(AtomicUsize::new(0)),
 	}
 }
 #[rstest::fixture]
 fn model_router(model_script: ModelScript) -> Arc<Router> {
 	let model_app=reinhardt::test::stub::StubRouter::new()
+.route("/v1/models/fixture/endpoints", http::Method::GET, reply(|_request:reinhardt::Request| async {reinhardt::Response::ok().with_json(&json!({"data":{"architecture":{"input_modalities":["text","image"]},"endpoints":[{"tag":"fixture/verified","context_length":128000}]}})).unwrap()}))
+.route("/v1/endpoints/zdr", http::Method::GET, reply(|_request:reinhardt::Request| async {reinhardt::Response::ok().with_json(&json!({"data":[{"model_id":"fixture","tag":"fixture/verified"}]})).unwrap()}))
 .route("/v1/chat/completions", http::Method::POST, reply({let script=model_script.clone();move |request:reinhardt::Request| {let script=script.clone();let input=request.json::<Value>().unwrap();async move {
         let check=script.reservations.lock().await.clone();
         if let Some(check)=check {check.before_http().await;}
         let mut calls=script.requests.lock().await;
         calls.push(input);
-        let count=calls.len(); drop(calls); script.entered.notify_one(); if script.hold.load(Ordering::Acquire) {script.release.notified().await;} let message=if count==1 && script.force_memory_mutate.load(Ordering::Acquire) {json!({"role":"assistant","content":null,"tool_calls":[{"id":"forbidden-write","type":"function","function":{"name":"memory_mutate","arguments":"{\"data\":{\"forbidden\":true}}"}}]})} else if count<=1+script.extra_tool_rounds.load(Ordering::Acquire) {json!({"role":"assistant","content":null,"tool_calls":[{"id":if count==1 {"note".to_owned()} else {format!("note-{count}")},"type":"function","function":{"name":"workspace_message","arguments":"{\"content\":\"Scoped remote progress\"}"}}]})} else {json!({"role":"assistant","content":"Scoped remote result"})};
+        let count=calls.len(); drop(calls); script.entered.notify_one(); if script.hold.load(Ordering::Acquire) {script.release.notified().await;}
+        let selected = script.selected_attachment.lock().await.clone();
+        let message=if let Some(id)=selected.filter(|_| count <= 2) {
+            let (name, arguments) = if count == 1 { ("workspace_observe", json!({})) } else { ("workspace_read", json!({"kind":"attachment", "id":id, "representation":"model_input"})) };
+            json!({"role":"assistant","content":if count == 2 { Some("Image selected") } else { None },"tool_calls":[{"id":format!("media-{count}"),"type":"function","function":{"name":name,"arguments":arguments.to_string()}}]})
+        } else if count==1 && script.force_memory_mutate.load(Ordering::Acquire) {json!({"role":"assistant","content":null,"tool_calls":[{"id":"forbidden-write","type":"function","function":{"name":"memory_mutate","arguments":"{\"data\":{\"forbidden\":true}}"}}]})} else if count<=1+script.extra_tool_rounds.load(Ordering::Acquire) {json!({"role":"assistant","content":null,"tool_calls":[{"id":if count==1 {"note".to_owned()} else {format!("note-{count}")},"type":"function","function":{"name":"workspace_message","arguments":"{\"content\":\"Scoped remote progress\"}"}}]})} else {json!({"role":"assistant","content":"Scoped remote result"})};
         reinhardt::Response::ok().with_json(&json!({"choices":[{"index":0,"finish_reason":if message.get("tool_calls").is_some(){"tool_calls"}else{"stop"},"message":message}],"usage":{"prompt_tokens":1,"completion_tokens":1}})).unwrap()
     }}}))
 .route("/systemone", http::Method::POST, reply({let script=model_script.clone();move |request:reinhardt::Request| {let script=script.clone();let input=request.json::<Value>().unwrap();async move {

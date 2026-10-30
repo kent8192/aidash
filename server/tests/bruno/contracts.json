@@ -48323,5 +48323,54 @@
     "json": true,
     "uuid_parameters": [],
     "query_parameters": []
+  },
+  {
+    "method": "POST",
+    "path": "/federation/v0.1/thread-attachment/1/fetch",
+    "name": "remotecommands-thread-attachment",
+    "source": "server/src/apps/identity/views/remote_commands.rs",
+    "json": true,
+    "uuid_parameters": [],
+    "query_parameters": [],
+    "response": {
+      "schema": {
+        "$ref": "#/components/schemas/AttachmentResponse"
+      },
+      "definitions": {
+        "AttachmentResponse": {
+          "type": "object",
+          "required": [
+            "filename",
+            "media_type",
+            "size_bytes",
+            "message_id",
+            "sha256",
+            "content_base64"
+          ],
+          "properties": {
+            "content_base64": {
+              "type": "string"
+            },
+            "filename": {
+              "type": "string"
+            },
+            "media_type": {
+              "type": "string"
+            },
+            "message_id": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "sha256": {
+              "type": "string"
+            },
+            "size_bytes": {
+              "type": "integer",
+              "format": "int64"
+            }
+          }
+        }
+      }
+    }
   }
 ]

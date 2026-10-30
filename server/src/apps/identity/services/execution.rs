@@ -31,6 +31,7 @@ pub(crate) async fn access_for_run(
 ) -> Result<Option<Access>> {
 	access_for_run_with_mode(store, run, durable_audit, false).await
 }
+
 /// A recovery proof must be read-only before binding the worker, whose initial
 /// workspace check would otherwise persist an authorization decision.
 pub(crate) async fn proof_for_run(
@@ -371,7 +372,7 @@ impl WorkerAuthority {
 		selections: &[aidash_domain::media::ModelMedia],
 	) -> Result<Vec<crate::provider::ContentPart>> {
 		aidash_application::execution::media::selected(
-			&mut crate::bootstrap::selected_media(store, run, self.access.clone()),
+			&mut crate::bootstrap::selected_media(store, run, self.access.clone(), None),
 			selections,
 		)
 		.await
@@ -1767,7 +1768,14 @@ impl Guard {
 		selections: &[aidash_domain::media::ModelMedia],
 	) -> Result<Vec<crate::provider::ContentPart>> {
 		aidash_application::execution::media::selected(
-			&mut crate::bootstrap::selected_media(store, &self.run, self.access.clone()),
+			&mut crate::bootstrap::selected_media(
+				store,
+				&self.run,
+				self.access.clone(),
+				self.remote
+					.as_ref()
+					.map(|f| crate::federation::Home::new(f.clone(), self.run.clone())),
+			),
 			selections,
 		)
 		.await

@@ -29,7 +29,12 @@ impl Transport for HttpTransport {
 			.get("x-aidash-transaction-pending")
 			.is_some_and(|value| value == "1");
 		let body = if status.is_success() {
-			crate::response::bytes(response, 4_194_304).await
+			let limit = if path == "/thread-attachment/1/fetch" {
+				12 * 1024 * 1024
+			} else {
+				4_194_304
+			};
+			crate::response::bytes(response, limit).await
 		} else {
 			Ok(Vec::new())
 		};

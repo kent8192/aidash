@@ -340,15 +340,22 @@ pub(crate) struct SelectedMedia<'a> {
 	pub(crate) access: Arc<RwLock<Access>>,
 	lease: Option<OwnedRwLockWriteGuard<Access>>,
 	files: Vec<FileEntry>,
+	home: Option<crate::federation::Home>,
 }
 impl<'a> SelectedMedia<'a> {
-	pub(crate) fn new(store: &'a Store, run: &'a Run, access: Arc<RwLock<Access>>) -> Self {
+	pub(crate) fn new(
+		store: &'a Store,
+		run: &'a Run,
+		access: Arc<RwLock<Access>>,
+		home: Option<crate::federation::Home>,
+	) -> Self {
 		Self {
 			store,
 			run,
 			access,
 			lease: None,
 			files: vec![],
+			home,
 		}
 	}
 }
@@ -399,6 +406,65 @@ impl aidash_application::ports::execution::media::SelectedMediaScope for Selecte
 		&mut self,
 		selection: &aidash_domain::media::ThreadAttachmentSelection,
 	) -> Result<Option<(String, String, Vec<u8>)>> {
+		if let Some(home) = &self.home {
+			let metadata = match home
+				.read_record("attachment", &selection.attachment_id.to_string())
+				.await
+			{
+				Ok(record) => record,
+				Err(error) if attachment_unavailable(&error) => return Ok(None),
+				Err(error) => return Err(error.into()),
+			};
+			if metadata["message_id"] != serde_json::json!(selection.message_id) {
+				return Ok(None);
+			}
+			if metadata["sha256"] != selection.expected_digest {
+				return Err(aidash_application::Error::Conflict(
+					"OBJECT_INTEGRITY".into(),
+				));
+			}
+			let media_type = metadata["attachment"]["media_type"]
+				.as_str()
+				.ok_or(aidash_application::Error::Forbidden)?;
+			let model = crate::apps::execution::repositories::tools::run_model(self.run)?;
+			let fallback =
+				aidash_application::execution::media::thread_attachment_wav(&model, media_type)?;
+			let convert = selection.wav || fallback;
+			if convert && model.require_media_types(["audio/wav"]).is_err() {
+				return Err(aidash_application::Error::Invalid(format!(
+					"this model cannot read {media_type} through any current route"
+				)));
+			}
+			let Some((filename, media_type, bytes)) = home
+				.thread_attachment(
+					selection.attachment_id,
+					selection.message_id,
+					&selection.expected_digest,
+				)
+				.await?
+			else {
+				return Ok(None);
+			};
+			if metadata["attachment"]["media_type"] != media_type {
+				return Err(aidash_application::Error::Conflict(
+					"OBJECT_INTEGRITY".into(),
+				));
+			}
+			if convert {
+				let wav = crate::collaboration::attachments::render_wav(&media_type, &bytes)
+					.await
+					.map_err(|error| match error {
+						crate::Error::MediaRouteUnavailable(reason) => {
+							aidash_application::Error::Invalid(format!(
+								"this model cannot read {media_type} through any current route: {reason}"
+							))
+						}
+						other => other.into(),
+					})?;
+				return Ok(Some((filename, "audio/wav".into(), wav)));
+			}
+			return Ok(Some((filename, media_type, bytes)));
+		}
 		if self.lease.is_none() {
 			self.lease = Some(self.access.clone().write_owned().await);
 		}

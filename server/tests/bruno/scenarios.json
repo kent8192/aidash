@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "endpoint_count": 357,
+  "endpoint_count": 358,
   "requests": [
     {
       "name": "Health reports the configured node",
@@ -15729,6 +15729,55 @@
       "name": "1431 peer-preview-ticket - Refuse a token that does not verify",
       "file": "contracts/1431-peer-preview-ticket.bru",
       "endpoint": "POST /federation/v0.1/scoped/previews/tickets",
+      "scenario": "Refuse a token that does not verify",
+      "status": 401,
+      "required_checks": [
+        "Rejected input preserves committed workspace state",
+        "Exact HTTP 401",
+        "Stable authorization error envelope"
+      ]
+    },
+    {
+      "name": "1432 remotecommands-thread-attachment - Reject unsupported federation protocol",
+      "file": "contracts/1432-remotecommands-thread-attachment.bru",
+      "endpoint": "POST /federation/v0.1/thread-attachment/1/fetch",
+      "scenario": "Reject unsupported federation protocol",
+      "status": 400,
+      "required_checks": [
+        "Rejected input preserves committed workspace state",
+        "Exact HTTP 400",
+        "Rejection is diagnostic and does not disclose SQL or credentials",
+        "Reject unsupported federation protocol contract"
+      ]
+    },
+    {
+      "name": "1433 remotecommands-thread-attachment - Reject the retired federation protocol 0.3",
+      "file": "contracts/1433-remotecommands-thread-attachment.bru",
+      "endpoint": "POST /federation/v0.1/thread-attachment/1/fetch",
+      "scenario": "Reject the retired federation protocol 0.3",
+      "status": 400,
+      "required_checks": [
+        "Rejected input preserves committed workspace state",
+        "Exact HTTP 400",
+        "Rejection is diagnostic and does not disclose SQL or credentials"
+      ]
+    },
+    {
+      "name": "1434 remotecommands-thread-attachment - Require the Federation token",
+      "file": "contracts/1434-remotecommands-thread-attachment.bru",
+      "endpoint": "POST /federation/v0.1/thread-attachment/1/fetch",
+      "scenario": "Require the Federation token",
+      "status": 401,
+      "required_checks": [
+        "Rejected input preserves committed workspace state",
+        "Exact HTTP 401",
+        "Stable authorization error envelope"
+      ]
+    },
+    {
+      "name": "1435 remotecommands-thread-attachment - Refuse a token that does not verify",
+      "file": "contracts/1435-remotecommands-thread-attachment.bru",
+      "endpoint": "POST /federation/v0.1/thread-attachment/1/fetch",
       "scenario": "Refuse a token that does not verify",
       "status": 401,
       "required_checks": [
