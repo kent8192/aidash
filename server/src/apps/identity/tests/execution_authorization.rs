@@ -5138,6 +5138,97 @@ async fn approval_review_creates_root_agent_with_selected_groups(
 
 #[rstest::rstest]
 #[tokio::test]
+async fn approval_review_approves_a_delegated_model_first_and_the_delegator_then_starts(
+	#[future(awt)]
+	#[from(common::native_application)]
+	fixture: common::ApplicationFixture,
+) {
+	let (f, url, schema) = fixture.runtime.parts();
+	let app = fixture.application;
+	let (_, alice, task_id) = bootstrap(&f, &app, "http://127.0.0.1:9").await;
+	let node = aidash_domain::nodes::NodeName::derived("acme");
+	let deployment = f.config.deployment.to_string();
+	// delegator → agent tool `delegation` → delegate → delegated-model.
+	let definitions = [
+		json!({"id":"delegated-model","version":"1.0.0","kind":"model","name":{"en":"Delegated model"},"description":{"en":"fixture"},"config":{"provider":"openrouter","model_id":"fixture","endpoint":"http://127.0.0.1:9/v1","context_window":128000,"max_output_tokens":4096,"modalities":["text"],"cost":{}}}),
+		json!({"id":"delegate","version":"1.0.0","kind":"agent","name":{"en":"Delegate"},"description":{"en":"fixture"},"config":{"schema_version":1,"model":{"id":"delegated-model","version":"1.0.0"},"instructions":"Answer","bindings":[],"remove_default":["file_search","file_read"]}}),
+		json!({"id":"delegation","version":"1.0.0","kind":"tool","name":{"en":"Delegation"},"description":{"en":"fixture"},"config":{"registry_deployment":deployment,"provider":"integration.agent@1","operation":"invoke","default_alias":"delegate_peer","tier":"integration","narrow":{},"transport":{"transport":"agent","node_id":deployment,"agent":{"id":"delegate","version":"1.0.0"}}}}),
+		json!({"id":"delegator","version":"1.0.0","kind":"agent","name":{"en":"Delegator"},"description":{"en":"fixture"},"config":{"schema_version":1,"model":{"id":"model","version":"1.0.0"},"instructions":"Delegate","bindings":[{"kind":"tool","target":{"registry_deployment":deployment,"id":"delegation","version":"1.0.0"},"alias":"delegate_peer","narrow":{}}],"remove_default":["file_search","file_read"]}}),
+	];
+	for definition in definitions {
+		let (status, body) = request(&app, &alice, "POST", "/api/registry", definition).await;
+		assert_eq!(status, 200, "{body}");
+	}
+	let path =
+		format!("/api/authorization/acme/catalog/review?node={node}&entry=agent/delegator@1.0.0");
+	let item = |review: &Value, id: &str| {
+		review["items"]
+			.as_array()
+			.unwrap()
+			.iter()
+			.find(|item| item["reference"]["id"] == id)
+			.unwrap_or_else(|| panic!("{id} is not reviewed: {review}"))
+			.clone()
+	};
+	let submission = |review: &Value, ids: &[&str]| {
+		json!({
+			"node":node,
+			"root":{"id":"delegator","version":"1.0.0"},
+			"closure_digest":review["closure_digest"],
+			"items":ids.iter().map(|id| {
+				let item = item(review, id);
+				json!({"reference":item["reference"],"digest":item["digest"],
+					"expected_revision":item["expected_revision"],
+					"restriction":item["proposed_restriction"]})
+			}).collect::<Vec<_>>(),
+		})
+	};
+	let (status, review) = request(&app, &alice, "GET", &path, Value::Null).await;
+	assert_eq!(status, 200, "{review}");
+	let delegate = qualified_agent(&f.config.deployment.node(node.clone()), "delegate", "1.0.0");
+	let model = item(&review, "delegated-model");
+	assert_eq!(model["consumers"], json!([delegate]));
+	assert_eq!(model["proposed_restriction"]["subjects"], json!([delegate]));
+
+	// The delegated model is approved first, naming the not yet approved delegate.
+	let (status, body) = request(
+		&app,
+		&alice,
+		"POST",
+		"/api/authorization/acme/catalog/review",
+		submission(&review, &["delegated-model"]),
+	)
+	.await;
+	assert_eq!(status, 200, "{body}");
+	let (_, review) = request(&app, &alice, "GET", &path, Value::Null).await;
+	let (status, body) = request(
+		&app,
+		&alice,
+		"POST",
+		"/api/authorization/acme/catalog/review",
+		submission(&review, &["delegator", "delegation", "delegate"]),
+	)
+	.await;
+	assert_eq!(status, 200, "{body}");
+	let (_, review) = request(&app, &alice, "GET", &path, Value::Null).await;
+	assert_eq!(review["ready"], true, "{review}");
+
+	// The delegator pins the delegate's model without using it directly, so
+	// the model's restriction to the delegate does not refuse its admission.
+	let (status, body) = request(
+		&app,
+		&alice,
+		"POST",
+		&format!("/api/tasks/{task_id}/claim"),
+		json!({"revision":0,"agent":{"id":"delegator","version":"1.0.0"}}),
+	)
+	.await;
+	assert_eq!(status, 200, "{body}");
+	cleanup(f, &url, &schema).await;
+}
+
+#[rstest::rstest]
+#[tokio::test]
 async fn approval_review_submission_fences_stale_authority_and_approves_a_subset(
 	#[future(awt)]
 	#[from(common::native_application)]

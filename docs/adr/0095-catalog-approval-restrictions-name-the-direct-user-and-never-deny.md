@@ -34,5 +34,10 @@ as a standing refusal.
 - One definition version has one Catalog Approval per Node. When its restriction does not admit
   every consumer, the review widens it to include the missing consumers.
   The widening is a new revision, shown to the approver and requiring `catalog.approve`.
+- An agent's Binding closure also pins the definitions its delegated agents use. Admitting or
+  rechecking that agent's Run checks such a definition's restriction against those nearest agents,
+  not against the agent itself; each delegated agent is checked again when its own Run starts.
+- An Approval Review may approve a dependency before the closure agent its proposed restriction
+  names, so the dependency-first order works when different approvers own the two.
 - Agent subjects carry their version (ADR 0062), so a new agent version needs its dependencies'
   restrictions widened again. The Approval Review of the new version shows this.
