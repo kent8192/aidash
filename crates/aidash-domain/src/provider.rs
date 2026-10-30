@@ -323,6 +323,13 @@ pub fn validate_image(media_type: &str, bytes: &[u8]) -> Result<()> {
 	}
 }
 
+/// Recognize only the same image signatures accepted for model inputs.
+pub fn detect_image(bytes: &[u8]) -> Option<&'static str> {
+	["image/png", "image/jpeg", "image/gif", "image/webp"]
+		.into_iter()
+		.find(|media_type| validate_image(media_type, bytes).is_ok())
+}
+
 /// Conservative provider-side image token estimate shared by inference and embeddings.
 pub fn image_token_allowance(byte_len: usize) -> Option<usize> {
 	4096usize.checked_add(byte_len.div_ceil(256))
