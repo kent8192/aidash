@@ -134,3 +134,4 @@ pub fn actor(principal: &aidash_domain::identity::Principal) -> String {
 }
 
 pub mod approval_set;
+pub mod restriction;
