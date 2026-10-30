@@ -43,13 +43,14 @@ impl Reader {
 	}
 	fn from_snapshot(snapshot: &BindingSnapshot) -> Self {
 		let select = snapshot.supports_thread_attachment_selection();
-		let copy = snapshot.bindings.iter().any(|b| {
-			b.excluded_reason.is_none()
-				&& b.identity.registry_deployment == snapshot.agent.registry_deployment
-				&& b.identity.id == "aidash.attachment_copy"
-				&& b.identity.version == "1.0.0"
-				&& b.definition.kind == "tool"
-		});
+		let copy = !snapshot.remote
+			&& snapshot.bindings.iter().any(|b| {
+				b.excluded_reason.is_none()
+					&& b.identity.registry_deployment == snapshot.agent.registry_deployment
+					&& b.identity.id == "aidash.attachment_copy"
+					&& b.identity.version == "1.0.0"
+					&& b.definition.kind == "tool"
+			});
 		let model_ref = snapshot
 			.definitions
 			.iter()
@@ -295,5 +296,41 @@ mod tests {
 		let legacy = Reader::from_entry(&agent, "aidash://local", &definitions);
 		assert!(!legacy.reads("image/png", None));
 		assert!(!legacy.reads("application/pdf", None));
+	}
+	#[test]
+	fn remote_agent_does_not_make_non_media_files_readable() {
+		use aidash_domain::registry::bindings::{
+			BindingOrigin, Narrowing, QualifiedRef, ResolvedBinding,
+		};
+		let (mut definition, _) = fixture();
+		definition.kind = "tool".into();
+		let node = "aidash://remote";
+		let mut snapshot = BindingSnapshot {
+			schema_version: 1,
+			agent: QualifiedRef {
+				registry_deployment: node.into(),
+				id: "agent".into(),
+				version: "1.0.0".into(),
+			},
+			remote: false,
+			bindings: vec![ResolvedBinding {
+				identity: QualifiedRef::builtin(node, "attachment_copy"),
+				definition,
+				digest: String::new(),
+				origin: BindingOrigin::Default,
+				alias: None,
+				narrow: Narrowing::default(),
+				installation: None,
+				provider_contract_digest: None,
+				provider_implementation: None,
+				excluded_reason: None,
+			}],
+			definitions: vec![],
+			foreign_agents: vec![],
+			agent_plugins: vec![],
+		};
+		assert!(Reader::from_snapshot(&snapshot).reads("application/pdf", None));
+		snapshot.remote = true;
+		assert!(!Reader::from_snapshot(&snapshot).reads("application/pdf", None));
 	}
 }
