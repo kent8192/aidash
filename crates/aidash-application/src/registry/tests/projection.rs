@@ -395,3 +395,51 @@ async fn registration_rejects_structured_contracts_when_the_model_lacks_native()
 	assert!(is_invalid(&error), "{error:?}");
 	assert!(!scope.entries.contains_key("agent@1.0.0"));
 }
+
+/// A definition stored before the #532 defaults omits the fields they fill;
+/// replaying that registration stays idempotent instead of conflicting.
+#[rstest]
+#[case::omitted_projection(None, &["projection_version", "harness_contract"])]
+#[case::native_without_contract(Some("native"), &["harness_contract"])]
+#[tokio::test]
+async fn replaying_a_definition_stored_without_defaults_is_idempotent(
+	validation: DefinitionValidation,
+	#[case] projection: Option<&str>,
+	#[case] omitted: &[&str],
+) {
+	// Arrange: register, then strip the defaults as an older registration stored it.
+	let mut scope = scope_with(model_config(Some(json!(["legacy", "ordered", "native"]))));
+	let agent = definition("agent", "agent", agent_config(projection));
+	register_definition(&mut scope, &validation, &agent, NODE)
+		.await
+		.unwrap();
+	let stored = scope.entries.get_mut("agent@1.0.0").unwrap();
+	for field in omitted {
+		stored.config.as_object_mut().unwrap().remove(*field);
+	}
+	let before = stored.clone();
+	// Act
+	let inserted = register_definition(&mut scope, &validation, &agent, NODE)
+		.await
+		.unwrap();
+	// Assert
+	assert!(!inserted);
+	assert_eq!(scope.entries["agent@1.0.0"], before);
+}
+
+/// The registration response describes the Agent as stored, defaults included.
+#[rstest]
+#[tokio::test]
+async fn registration_returns_the_defaulted_definition(validation: DefinitionValidation) {
+	// Arrange
+	let mut scope = scope_with(model_config(Some(json!(["legacy", "ordered", "native"]))));
+	let agent = definition("agent", "agent", agent_config(None));
+	// Act
+	let returned = register(&mut scope, &validation, agent, None, true, NODE)
+		.await
+		.unwrap();
+	// Assert
+	assert_eq!(returned.config["projection_version"], json!("native"));
+	assert_eq!(returned.config["harness_contract"], json!("structured@3"));
+	assert_eq!(returned, scope.entries["agent@1.0.0"]);
+}

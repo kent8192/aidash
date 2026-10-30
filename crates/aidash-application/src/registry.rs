@@ -257,6 +257,8 @@ pub async fn register(
 		scope.assign_id(&mut entry, key).await?;
 		scope.authorize(&entry).await?;
 	}
+	// The caller receives the definition as stored, defaults included.
+	apply_agent_defaults(scope, &mut entry).await;
 	let inserted = register_definition(scope, validation, &entry, node).await?;
 	if tracked && inserted {
 		scope
@@ -297,12 +299,32 @@ pub async fn register_definition(
 /// every Binding snapshot pin them. A definition that names a Projection
 /// Version keeps it, a Native one without a contract gets `structured@3`, and
 /// an Agent whose model lacks Native keeps the omitted defaults (`legacy`,
-/// `legacy@1`). Stored definitions are never rewritten (ADR 0093).
-async fn apply_agent_defaults(scope: &mut dyn DefinitionWriter, entry: &mut Entry) {
+/// `legacy@1`). Stored definitions are never rewritten (ADR 0093): when this
+/// id and version are already registered, a field the stored definition omits
+/// stays omitted, so replaying a registration made before these defaults
+/// remains idempotent. Applying the defaults twice changes nothing, so
+/// callers apply them to the entry they return or test, and
+/// [`register_definition`] applies them again before the insert.
+pub async fn apply_agent_defaults(scope: &mut dyn DefinitionLookup, entry: &mut Entry) {
 	if entry.kind != "agent" || !entry.config.is_object() {
 		return;
 	}
-	if entry.config.get("projection_version").is_none() {
+	let stored = if entry.id.is_empty() {
+		None
+	} else {
+		// Absent or unreadable: registration reports the real error later.
+		scope
+			.definition(&entry.id, &entry.version)
+			.await
+			.ok()
+			.filter(|stored| stored.kind == "agent")
+	};
+	let stored_omits = |field: &str| {
+		stored
+			.as_ref()
+			.is_some_and(|stored| stored.config.get(field).is_none())
+	};
+	if entry.config.get("projection_version").is_none() && !stored_omits("projection_version") {
 		let model = entry.config.get("model").and_then(|model| {
 			Some((
 				model.get("id")?.as_str()?.to_owned(),
@@ -328,6 +350,7 @@ async fn apply_agent_defaults(scope: &mut dyn DefinitionWriter, entry: &mut Entr
 	}
 	if entry.config.get("projection_version") == Some(&json!("native"))
 		&& entry.config.get("harness_contract").is_none()
+		&& !stored_omits("harness_contract")
 	{
 		entry.config["harness_contract"] = json!("structured@3");
 	}
