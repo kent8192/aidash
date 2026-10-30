@@ -223,6 +223,10 @@ async fn provider_outage_keeps_conservative_charge_and_hides_provider_details(
 	|| Error::RemoteSemantic(aidash_domain::semantic::Failure::ProviderContract),
 	aidash_domain::semantic::Failure::ProviderContract
 )]
+#[case::model_not_found(
+	|| Error::RemoteSemantic(aidash_domain::semantic::Failure::EmbeddingModelNotFound),
+	aidash_domain::semantic::Failure::EmbeddingModelNotFound
+)]
 #[tokio::test]
 async fn provider_rejection_and_contract_violation_keep_their_typed_reason(
 	#[case] failure: fn() -> Error,

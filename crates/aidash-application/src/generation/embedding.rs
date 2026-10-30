@@ -209,5 +209,26 @@ pub async fn authorize(
 	}))
 }
 
+/// A generated Agent may use its Reference Document embedding only when
+/// every ancestor approved that exact Registry version in Generation Policy.
+pub async fn require_reference_policy(
+	scope: &mut dyn GenerationEmbeddingAuthority,
+	node: &str,
+	reference: &EntityRef,
+) -> Result<()> {
+	for job in scope.requests(node).await? {
+		let approved = scope.pinned_policy(&job).await?.embedding;
+		if approved
+			.as_ref()
+			.is_none_or(|policy| &policy.provider != reference)
+		{
+			return Err(Error::Invalid(
+				"reference embedding must match every ancestor Generation Policy embedding".into(),
+			));
+		}
+	}
+	Ok(())
+}
+
 #[cfg(test)]
 mod tests;

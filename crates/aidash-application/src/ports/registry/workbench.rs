@@ -69,6 +69,22 @@ pub trait PublicationScope: DraftScope + DefinitionWriter {
 	async fn registered_evidence(&mut self, entry: &Entry) -> Result<Option<RegistrationEvidence>>;
 	async fn completed_test(&mut self, draft: &Draft) -> Result<bool>;
 	async fn insert_documents(&mut self, entry: &Entry, documents: Value) -> Result<()>;
+	async fn image_index(&mut self, _entry: &Entry) -> Result<Option<Value>> {
+		Ok(None)
+	}
+	async fn insert_image_index(&mut self, _entry: &Entry, _index: Value) -> Result<()> {
+		Err(crate::Error::Forbidden)
+	}
+	async fn insert_image_data(&mut self, _entry: &Entry, _data: Value) -> Result<()> {
+		Err(crate::Error::Forbidden)
+	}
+	async fn embed_reference_images(
+		&mut self,
+		_reference: &aidash_domain::registry::EntityRef,
+		_images: &[aidash_domain::registry::knowledge::ValidatedImage],
+	) -> Result<(Entry, Vec<Vec<f32>>)> {
+		Err(crate::Error::Forbidden)
+	}
 	async fn record_registration(
 		&mut self,
 		draft: &Draft,

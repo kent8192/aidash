@@ -43,6 +43,7 @@ struct Repository {
 	completed: bool,
 	inserted: bool,
 	fail_documents: bool,
+	fail_image_embedding: bool,
 }
 impl Repository {
 	fn new(draft: Draft) -> Self {
@@ -57,6 +58,7 @@ impl Repository {
 			completed: false,
 			inserted: true,
 			fail_documents: false,
+			fail_image_embedding: false,
 		}
 	}
 	fn logs(&self) -> Vec<String> {
@@ -75,6 +77,7 @@ struct Scope {
 	completed: bool,
 	inserted: bool,
 	fail_documents: bool,
+	fail_image_embedding: bool,
 }
 impl Scope {
 	fn record(&self, value: impl Into<String>) {
@@ -114,6 +117,7 @@ impl DraftRepository for Repository {
 			completed: self.completed,
 			inserted: self.inserted,
 			fail_documents: self.fail_documents,
+			fail_image_embedding: self.fail_image_embedding,
 		})
 	}
 }
@@ -617,6 +621,30 @@ async fn duplicate_checks_revision_before_allocating_or_writing(draft: Draft) {
 			.any(|step| step == "insert" || step == "commit")
 	);
 }
+
+#[rstest]
+#[tokio::test]
+async fn duplicate_refuses_to_copy_private_reference_images(mut draft: Draft) {
+	draft.documents =
+		json!([{"name":"image.png","media_type":"image/png","data_base64":"iVBORw0KGgo="}]);
+	let repository = Repository::new(draft.clone());
+	let error = duplicate(
+		&repository,
+		draft.id,
+		RevisionInput {
+			expected_revision: 3,
+		},
+	)
+	.await
+	.unwrap_err();
+	assert!(error.to_string().contains("private reference images"));
+	assert!(
+		!repository
+			.logs()
+			.iter()
+			.any(|step| step == "insert" || step == "commit")
+	);
+}
 #[rstest]
 #[tokio::test]
 async fn sharing_private_documents_requires_explicit_consent(mut draft: Draft) {
@@ -886,6 +914,30 @@ impl DefinitionWriter for Scope {
 }
 #[async_trait]
 impl PublicationScope for Scope {
+	async fn embed_reference_images(
+		&mut self,
+		reference: &aidash_domain::registry::EntityRef,
+		images: &[aidash_domain::registry::knowledge::ValidatedImage],
+	) -> Result<(Entry, Vec<Vec<f32>>)> {
+		self.record("image-embedding");
+		if self.fail_image_embedding {
+			return Err(Error::External("embedding unavailable".into()));
+		}
+		let entry = self
+			.definitions
+			.get(&(reference.id.clone(), reference.version.clone()))
+			.cloned()
+			.ok_or(Error::Forbidden)?;
+		Ok((entry, images.iter().map(|_| vec![1.0, 0.0]).collect()))
+	}
+	async fn insert_image_data(&mut self, _: &Entry, _: Value) -> Result<()> {
+		self.record("image-data");
+		Ok(())
+	}
+	async fn insert_image_index(&mut self, _: &Entry, _: Value) -> Result<()> {
+		self.record("image-index");
+		Ok(())
+	}
 	async fn registrations(&mut self, _: Uuid, _: &str) -> Result<Vec<RegistrationRecord>> {
 		self.record("registrations");
 		Ok(Vec::new())
@@ -930,6 +982,57 @@ fn validation() -> crate::registry::DefinitionValidation {
 	crate::registry::DefinitionValidation::new(Arc::new(CoreCatalog))
 }
 use crate::registry::workbench::publication;
+#[rstest]
+#[case(false)]
+#[case(true)]
+#[tokio::test]
+async fn publication_embeds_all_reference_images_before_writes(
+	mut draft: Draft,
+	mut entry: Entry,
+	#[case] fail: bool,
+) {
+	entry.config["reference_embedding"] = json!({"id":"embed","version":"1.0.0"});
+	draft.entry = serde_json::to_value(entry).unwrap();
+	draft.documents =
+		json!([{"name":"chart.png","media_type":"image/png","data_base64":"iVBORw0KGgo="}]);
+	let mut repository = Repository::new(draft.clone());
+	repository.fail_image_embedding = fail;
+	repository.definitions.push(serde_json::from_value(json!({"id":"embed","version":"1.0.0","kind":"embedding","name":{"en":"Embedding"},"description":{"en":"Fixture"},"config":{"provider":"openai","endpoint":"https://example.com","model":"fixture","model_version":"1","dimensions":2,"inputs":["text","image"]}})).unwrap());
+	let result = publication::register(
+		&repository,
+		&validation(),
+		draft.id,
+		RevisionInput {
+			expected_revision: 3,
+		},
+	)
+	.await;
+	let logs = repository.logs();
+	let embedded = logs
+		.iter()
+		.position(|step| step == "image-embedding")
+		.unwrap();
+	if fail {
+		assert!(result.is_err());
+		assert!(
+			!logs
+				.iter()
+				.any(|step| step.starts_with("definition-insert:")
+					|| step == "documents-insert"
+					|| step == "commit")
+		);
+	} else {
+		result.unwrap();
+		let inserted = logs
+			.iter()
+			.position(|step| step.starts_with("definition-insert:"))
+			.unwrap();
+		assert!(embedded < inserted);
+		assert!(logs.iter().any(|step| step == "image-data"));
+		assert!(logs.iter().any(|step| step == "image-index"));
+		assert_eq!(logs.last().map(String::as_str), Some("commit"));
+	}
+}
 #[rstest]
 #[tokio::test]
 async fn publication_checks_evidence_before_definition_and_event(mut draft: Draft, entry: Entry) {
@@ -1096,6 +1199,38 @@ async fn version_history_includes_unregistered_adopted_source(mut draft: Draft, 
 	assert_eq!(versions[0].draft_revision, None);
 	assert_eq!(versions[0].behavioral_tested, None);
 	assert_eq!(repository.logs().last().map(String::as_str), Some("commit"));
+}
+
+#[rstest]
+#[tokio::test]
+async fn reference_image_version_history_uses_the_canonical_private_digest(
+	mut draft: Draft,
+	mut entry: Entry,
+) {
+	draft.documents =
+		json!([{"name":"chart.png","media_type":"image/png","data_base64":"iVBORw0KGgo="}]);
+	let documents: Vec<aidash_domain::registry::ReferenceDocument> =
+		serde_json::from_value(draft.documents.clone()).unwrap();
+	let (canonical, _) =
+		aidash_domain::registry::knowledge::canonical_documents(&documents).unwrap();
+	let source = crate::registry::bindings::private::attach(
+		&mut entry,
+		"aidash://node",
+		&serde_json::to_value(canonical).unwrap(),
+	)
+	.unwrap();
+	draft.entry = serde_json::to_value(entry).unwrap();
+	draft.source_id = Some("managed".into());
+	draft.source_version = Some("1.0.0".into());
+	let mut repository = Repository::new(draft.clone());
+	repository.definitions.push(source);
+	let versions = publication::versions(&repository, draft.id).await.unwrap();
+	assert_eq!(versions.len(), 1);
+	assert_eq!(
+		versions[0].draft_knowledge_digest,
+		versions[0].registered_knowledge_digest
+	);
+	assert!(versions[0].draft_knowledge_digest.is_some());
 }
 
 #[rstest]

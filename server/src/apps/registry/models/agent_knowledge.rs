@@ -17,4 +17,10 @@ pub struct AgentKnowledge {
 	pub agent_version: String,
 	#[field]
 	pub documents: Json<Value>,
+	/// Pinned embedding and image vectors, private to this immutable source row.
+	#[field(null = true)]
+	pub image_index: Option<Json<Value>>,
+	/// Original image data is read only when an image is explicitly opened.
+	#[field(null = true)]
+	pub image_data: Option<Json<Value>>,
 }

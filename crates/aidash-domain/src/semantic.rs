@@ -26,6 +26,8 @@ pub enum Failure {
 	Invalidated,
 	#[error("The semantic provider violated its approved response contract")]
 	ProviderContract,
+	#[error("The embedding provider cannot find the configured model")]
+	EmbeddingModelNotFound,
 	#[error("Semantic context does not fit the available context budget")]
 	ContextBudget,
 	#[error(
@@ -60,6 +62,7 @@ impl Failure {
 	pub fn compatible(self) -> Self {
 		match self {
 			Self::DurableMemoryBudget => Self::ContextBudget,
+			Self::EmbeddingModelNotFound => Self::ProviderContract,
 			other => other,
 		}
 	}

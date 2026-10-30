@@ -164,10 +164,11 @@ pub async fn validate_content(
 	let source = if documents.is_empty() {
 		None
 	} else {
+		let (canonical, _) = aidash_domain::registry::knowledge::canonical_documents(&documents)?;
 		Some(registry::bindings::private::attach(
 			&mut entry,
 			node,
-			&draft.documents,
+			&serde_json::to_value(canonical)?,
 		)?)
 	};
 	let snapshot = if let Some(source) = &source {
@@ -206,7 +207,8 @@ pub async fn validate_content(
 		)
 		.await?
 	};
-	validation.bound_prompt_headroom(&snapshot, &json!({"reference_documents":draft.documents}))?;
+	let visible = aidash_domain::registry::knowledge::visible_documents(&documents)?;
+	validation.bound_prompt_headroom(&snapshot, &json!({"reference_documents":visible}))?;
 	let Principal::Subject { subject, .. } = scope.principal() else {
 		return Err(Error::Forbidden);
 	};

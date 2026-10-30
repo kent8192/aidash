@@ -155,12 +155,16 @@ async fn maintenance_subject_records_purpose_separately_from_operation() {
 	let mut keys = PublicKeys::default();
 	keys.insert(signer.kid().into(), signer.public_key());
 	for (purpose, wire) in [
+		(Maintenance::ReferenceIndexing, "reference_indexing"),
 		(Maintenance::MemoryIndexing, "memory_indexing"),
 		(Maintenance::MemoryRetention, "memory_retention"),
 		(Maintenance::MemoryReflection, "memory_reflection"),
 		(Maintenance::MemoryRetrieval, "memory_retrieval"),
 	] {
 		for operation in [Operation::Chat, Operation::Embeddings] {
+			if purpose == Maintenance::ReferenceIndexing && operation == Operation::Chat {
+				continue;
+			}
 			let mut value = claims();
 			value.sub = TokenSubject::Maintenance {
 				maintenance: purpose,
@@ -179,6 +183,17 @@ async fn maintenance_subject_records_purpose_separately_from_operation() {
 			);
 		}
 	}
+	let mut rejected = claims();
+	rejected.sub = TokenSubject::Maintenance {
+		maintenance: Maintenance::ReferenceIndexing,
+		tenant: rejected.tenant.clone(),
+	};
+	rejected.ops = vec![Operation::Chat];
+	let token = mint(&rejected, &signer).await.unwrap();
+	assert!(matches!(
+		keys.verify(token.expose_secret(), "worker", "environment", 100),
+		Err(Failure::Operation)
+	));
 	// Even a correctly signed token cannot use the obsolete call-kind subjects.
 	for obsolete in ["memory_embedding", "memory_model"] {
 		let mut value = serde_json::to_value(claims()).unwrap();

@@ -471,8 +471,8 @@ async fn private_document_copy_precedes_provenance_and_requires_the_frozen_diges
 		assert_eq!(
 			scope.calls,
 			vec![
-				"persist_revision",
 				"documents",
+				"persist_revision",
 				"insert_documents",
 				"save_provenance",
 				"copy_provenance",
@@ -490,9 +490,47 @@ async fn private_document_copy_precedes_provenance_and_requires_the_frozen_diges
 		);
 	} else {
 		assert!(matches!(result, Err(Error::Forbidden)));
-		assert_eq!(scope.calls, vec!["persist_revision", "documents"]);
+		assert_eq!(scope.calls, vec!["documents"]);
 		assert!(scope.provenance.is_empty());
 	}
+}
+
+#[tokio::test]
+async fn installation_refuses_to_transfer_private_reference_images() {
+	let mut scope = published();
+	let mut source = scope.versions["package"].clone();
+	let documents =
+		json!([{"name":"private.png","media_type":"image/png","data_base64":"iVBORw0KGgo="}]);
+	scope.documents.insert("source".into(), documents.clone());
+	let mut private_source = entry("source");
+	private_source.kind = "source".into();
+	private_source.config = json!({"schema_version":1,"source":{"adapter":"private_references","digest":aidash_domain::registry::knowledge::digest(&documents)}});
+	let mut package = manifest(&source).unwrap();
+	package.entity = private_source.clone();
+	source.kind = "source".into();
+	source.manifest_source = serde_json::to_string(&package).unwrap();
+	use sha2::{Digest, Sha256};
+	source.digest = format!(
+		"sha256:{:x}",
+		Sha256::digest(source.manifest_source.as_bytes())
+	);
+	let error = stage(
+		&mut scope,
+		&validation(),
+		prospective("owner", "package"),
+		&source,
+		json!({}),
+		(private_source, vec![], vec![]),
+	)
+	.await
+	.unwrap_err();
+	assert!(error.to_string().contains("private reference images"));
+	assert!(
+		!scope
+			.calls
+			.iter()
+			.any(|call| call == "persist_revision" || call == "insert_documents")
+	);
 }
 #[rstest]
 #[tokio::test]

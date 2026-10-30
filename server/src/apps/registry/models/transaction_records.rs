@@ -5,7 +5,6 @@
 use super::{AgentKnowledge, Definition};
 use crate::apps::registry::serializers::contracts::Entry;
 use crate::{Error, Result};
-use reinhardt::core::exception::Error as FrameworkError;
 use reinhardt::db::backends::TransactionExecutor;
 use reinhardt::db::orm::execution::convert_values;
 use reinhardt::db::orm::{Model, QueryRow};
@@ -144,17 +143,80 @@ pub(crate) async fn documents(
 	tx: &mut dyn TransactionExecutor,
 	entry: &Entry,
 ) -> Result<Option<Value>> {
+	private_column(tx, entry, "documents").await
+}
+
+pub(crate) async fn image_index(
+	tx: &mut dyn TransactionExecutor,
+	entry: &Entry,
+) -> Result<Option<Value>> {
+	private_column(tx, entry, "image_index").await
+}
+
+async fn private_column(
+	tx: &mut dyn TransactionExecutor,
+	entry: &Entry,
+	column: &str,
+) -> Result<Option<Value>> {
+	let (sql, values) = Query::select()
+		.column(Alias::new(column))
+		.from(Alias::new(AgentKnowledge::table_name()))
+		.and_where(Expr::col("tenant").eq(Expr::cust(SCOPE_TENANT)))
+		.and_where(Expr::col("agent_id").eq(Expr::value(&entry.id)))
+		.and_where(Expr::col("agent_version").eq(Expr::value(&entry.version)))
+		.build(PostgresQueryBuilder);
+	Ok(tx
+		.fetch_optional(&sql, convert_values(values))
+		.await?
+		.and_then(|row| QueryRow::from_backend_row(row).data.get(column).cloned())
+		.filter(|value| !value.is_null()))
+}
+
+pub(crate) async fn insert_image_data(
+	tx: &mut dyn TransactionExecutor,
+	entry: &Entry,
+	data: Value,
+) -> Result<()> {
 	let tenant = scope_tenant(tx).await?;
-	Ok(AgentKnowledge::objects()
-		.filter(AgentKnowledge::field_tenant().eq(&tenant))
-		.filter(AgentKnowledge::field_agent_key().eq(&entry.id))
-		.filter(AgentKnowledge::field_agent_version().eq(&entry.version))
-		.all_with_executor(tx)
-		.await
-		.map_err(FrameworkError::from)?
-		.into_iter()
-		.next()
-		.map(|record| record.documents.into_inner()))
+	let (sql, values) = Query::update()
+		.table(Alias::new(AgentKnowledge::table_name()))
+		.value(Alias::new("image_data"), Expr::value(data.clone()))
+		.and_where(Expr::col("tenant").eq(Expr::value(&tenant)))
+		.and_where(Expr::col("agent_id").eq(Expr::value(&entry.id)))
+		.and_where(Expr::col("agent_version").eq(Expr::value(&entry.version)))
+		.and_where(Expr::col("image_data").is_null())
+		.build(PostgresQueryBuilder);
+	tx.execute(&sql, convert_values(values)).await?;
+	if private_column(tx, entry, "image_data").await? != Some(data) {
+		return Err(Error::Conflict(
+			"private image data is immutable; choose a new version".into(),
+		));
+	}
+	Ok(())
+}
+
+/// Attach vectors exactly once to the private row inside its caller's transaction.
+pub(crate) async fn insert_image_index(
+	tx: &mut dyn TransactionExecutor,
+	entry: &Entry,
+	index: Value,
+) -> Result<()> {
+	let tenant = scope_tenant(tx).await?;
+	let (sql, values) = Query::update()
+		.table(Alias::new(AgentKnowledge::table_name()))
+		.value(Alias::new("image_index"), Expr::value(index.clone()))
+		.and_where(Expr::col("tenant").eq(Expr::value(&tenant)))
+		.and_where(Expr::col("agent_id").eq(Expr::value(&entry.id)))
+		.and_where(Expr::col("agent_version").eq(Expr::value(&entry.version)))
+		.and_where(Expr::col("image_index").is_null())
+		.build(PostgresQueryBuilder);
+	tx.execute(&sql, convert_values(values)).await?;
+	if image_index(tx, entry).await? != Some(index) {
+		return Err(Error::Conflict(
+			"private image index is immutable; choose a new version".into(),
+		));
+	}
+	Ok(())
 }
 
 pub(crate) async fn insert_documents(
@@ -185,18 +247,10 @@ pub(crate) async fn insert_documents(
 		)
 		.build(PostgresQueryBuilder);
 	tx.execute(&sql, convert_values(values)).await?;
-	let tenant = scope_tenant(tx).await?;
-	let stored = AgentKnowledge::objects()
-		.filter(AgentKnowledge::field_tenant().eq(&tenant))
-		.filter(AgentKnowledge::field_agent_key().eq(&entry.id))
-		.filter(AgentKnowledge::field_agent_version().eq(&entry.version))
-		.all_with_executor(tx)
-		.await
-		.map_err(FrameworkError::from)?
-		.into_iter()
-		.next()
+	let stored = self::documents(tx, entry)
+		.await?
 		.ok_or_else(|| Error::NotFound("agent knowledge".into()))?;
-	if stored.documents.into_inner() != documents {
+	if stored != documents {
 		return Err(Error::Conflict(
 			"private documents are immutable; choose a new version".into(),
 		));

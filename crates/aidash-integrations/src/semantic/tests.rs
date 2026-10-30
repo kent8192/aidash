@@ -2,6 +2,26 @@ use super::*;
 use axum::{Json, Router, http::HeaderMap, routing::post};
 use rstest::rstest;
 
+#[rstest]
+#[case(404, json!({"error":{"code":"model_not_found"}}), true)]
+#[case(400, json!({"error":{"code":"model_not_found"}}), true)]
+#[case(404, json!({"error":{"message":"Model does not exist"}}), true)]
+#[case(404, json!({"error":{"message":"Endpoint not found"}}), false)]
+#[case(500, json!({"error":{"code":"model_not_found"}}), false)]
+fn missing_model_classification_is_distinct_from_outages_and_missing_endpoints(
+	#[case] status: u16,
+	#[case] body: Value,
+	#[case] expected: bool,
+) {
+	assert_eq!(embedding_model_missing(status, Some(&body), None), expected);
+	assert!(embedding_model_missing(404, None, Some(b"model not found")));
+	assert!(!embedding_model_missing(
+		404,
+		None,
+		Some(b"endpoint not found")
+	));
+}
+
 /// A Tenant Provider Credential stand-in: the bearer comes from provider access.
 struct FixtureAccess;
 #[async_trait::async_trait]

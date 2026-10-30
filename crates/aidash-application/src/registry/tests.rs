@@ -46,7 +46,10 @@ struct Scope {
 	trace: Vec<String>,
 	events: Vec<(String, Value)>,
 	documents: Option<Value>,
+	image_index: Option<Value>,
+	image_data: Option<Value>,
 	fail_documents: bool,
+	fail_image_embedding: bool,
 	denied_documents: BTreeSet<String>,
 	secret_hosts: BTreeMap<String, Vec<String>>,
 	plugins: BTreeMap<String, crate::ports::bindings::StoredAgentPlugin>,
@@ -61,9 +64,28 @@ impl PrivateKnowledgeRead for Scope {
 		}
 		Ok(self.documents.clone())
 	}
+	async fn image_index(&mut self, _: &Entry) -> Result<Option<Value>> {
+		Ok(self.image_index.clone())
+	}
 }
 #[async_trait]
 impl PrivateKnowledgeScope for Scope {
+	async fn embed_reference_images(
+		&mut self,
+		reference: &aidash_domain::registry::EntityRef,
+		images: &[aidash_domain::registry::knowledge::ValidatedImage],
+	) -> Result<(Entry, Vec<Vec<f32>>)> {
+		self.trace.push("image_embedding".into());
+		if self.fail_image_embedding {
+			return Err(Error::External("embedding unavailable".into()));
+		}
+		let entry = self
+			.entries
+			.get(&identity(&reference.id, &reference.version))
+			.cloned()
+			.ok_or(Error::Forbidden)?;
+		Ok((entry, images.iter().map(|_| vec![1.0, 0.0]).collect()))
+	}
 	async fn insert_documents(&mut self, _: &Entry, documents: Value) -> Result<()> {
 		self.trace.push("private_documents".into());
 		if self.fail_documents {
@@ -72,6 +94,152 @@ impl PrivateKnowledgeScope for Scope {
 		self.documents = Some(documents);
 		Ok(())
 	}
+	async fn insert_image_index(&mut self, _: &Entry, index: Value) -> Result<()> {
+		self.trace.push("image_index".into());
+		self.image_index = Some(index);
+		Ok(())
+	}
+	async fn insert_image_data(&mut self, _: &Entry, data: Value) -> Result<()> {
+		self.trace.push("image_data".into());
+		self.image_data = Some(data);
+		Ok(())
+	}
+}
+
+#[rstest]
+#[tokio::test]
+async fn reference_embedding_failure_precedes_all_registration_writes(
+	validation: DefinitionValidation,
+) {
+	let mut scope = Scope {
+		fail_image_embedding: true,
+		..Default::default()
+	};
+	let entry = definition(
+		"",
+		"agent",
+		json!({"schema_version":1,"model":{"id":"model","version":"1.0.0"},"instructions":"Work","reference_embedding":{"id":"embed","version":"1.0.0"}}),
+	);
+	let registration = personal::PersonalRegistration {
+		entry,
+		documents: json!([{"name":"chart.png","media_type":"image/png","data_base64":"iVBORw0KGgo="}]),
+		source: definition("private", "source", json!({})),
+	};
+	let error = personal::register(
+		&mut scope,
+		&validation,
+		registration,
+		Uuid::new_v4(),
+		"aidash://home",
+	)
+	.await
+	.unwrap_err();
+	assert!(error.to_string().contains("embedding unavailable"));
+	assert_eq!(scope.trace, ["image_embedding"]);
+	assert!(scope.entries.is_empty());
+	assert!(scope.documents.is_none());
+	assert!(scope.events.is_empty());
+}
+
+#[rstest]
+#[tokio::test]
+async fn malformed_reference_set_is_refused_before_any_embedding(validation: DefinitionValidation) {
+	let mut scope = Scope::default();
+	let entry = definition(
+		"",
+		"agent",
+		json!({"schema_version":1,"model":{"id":"model","version":"1.0.0"},"instructions":"Work","reference_embedding":{"id":"embed","version":"1.0.0"}}),
+	);
+	let registration = personal::PersonalRegistration {
+		entry,
+		documents: json!([
+			{"name":"good.png","media_type":"image/png","data_base64":"iVBORw0KGgo="},
+			{"name":"bad.png","media_type":"image/png","data_base64":"%%%"}
+		]),
+		source: definition("private", "source", json!({})),
+	};
+	assert!(
+		personal::register(
+			&mut scope,
+			&validation,
+			registration,
+			Uuid::new_v4(),
+			"aidash://home"
+		)
+		.await
+		.is_err()
+	);
+	assert!(scope.trace.is_empty());
+	assert!(scope.entries.is_empty());
+}
+
+#[rstest]
+#[tokio::test]
+async fn reference_images_are_embedded_before_the_private_index_is_written(
+	validation: DefinitionValidation,
+) {
+	let mut scope = Scope::default();
+	scope.put_builtins("aidash://home");
+	scope.put(definition("model", "model", json!({"provider":"openrouter","model_id":"fixture","endpoint":"https://example.test","context_window":131072,"max_output_tokens":1024,"modalities":["text"],"cost":{}})));
+	scope.put(definition("embed", "embedding", json!({"provider":"openai","endpoint":"https://example.com","model":"embed","model_version":"1.0.0","dimensions":2,"inputs":["text","image"]})));
+	let mut entry = definition(
+		"",
+		"agent",
+		json!({"schema_version":1,"model":{"id":"model","version":"1.0.0"},"instructions":"Work","reference_embedding":{"id":"embed","version":"1.0.0"}}),
+	);
+	let documents =
+		json!([{"name":"chart.png","media_type":"image/png","data_base64":"iVBORw0KGgo="}]);
+	let source = bindings::private::attach(&mut entry, "aidash://home", &documents).unwrap();
+	let retry_entry = entry.clone();
+	let retry_source = source.clone();
+	let key = Uuid::new_v4();
+	let registration = personal::PersonalRegistration {
+		entry,
+		documents: documents.clone(),
+		source,
+	};
+	let registered =
+		personal::register(&mut scope, &validation, registration, key, "aidash://home")
+			.await
+			.unwrap();
+	assert_eq!(registered.id, "assigned");
+	let index = scope.image_index.as_ref().unwrap();
+	assert_eq!(index["agent_id"], "assigned");
+	assert_eq!(index["agent_version"], registered.version);
+	assert!(
+		!scope
+			.documents
+			.as_ref()
+			.unwrap()
+			.to_string()
+			.contains("iVBORw0KGgo=")
+	);
+	assert_eq!(
+		scope.image_data.as_ref().unwrap()[0]["data_base64"],
+		"iVBORw0KGgo="
+	);
+	assert!(!index.to_string().contains("iVBORw0KGgo="));
+	let position = |name: &str| scope.trace.iter().position(|step| step == name).unwrap();
+	assert!(position("image_embedding") < position("assign"));
+	assert!(position("private_documents") < position("image_index"));
+	// Providers may produce slightly different vectors on an idempotent retry.
+	// The previously committed collection remains authoritative for this version.
+	scope.image_index.as_mut().unwrap()["points"][0]["vector"] = json!([0.0, 1.0]);
+	let saved = scope.image_index.clone();
+	personal::register(
+		&mut scope,
+		&validation,
+		personal::PersonalRegistration {
+			entry: retry_entry,
+			documents,
+			source: retry_source,
+		},
+		key,
+		"aidash://home",
+	)
+	.await
+	.unwrap();
+	assert_eq!(scope.image_index, saved);
 }
 fn identity(id: &str, version: &str) -> String {
 	format!("{id}@{version}")
@@ -462,6 +630,9 @@ async fn private_registration_emits_only_after_private_content_is_saved(
 			name: "private.pdf".into(),
 			media_type: "application/pdf".into(),
 			text: "PRIVATE-TEXT".into(),
+			data_base64: None,
+			image_digest: None,
+			image_size: None,
 		}],
 	)
 	.unwrap();

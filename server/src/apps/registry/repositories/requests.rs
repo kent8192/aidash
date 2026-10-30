@@ -149,12 +149,41 @@ impl PrivateKnowledgeRead for TenantRegistration<'_> {
 			.await
 			.map_err(Into::into)
 	}
+	async fn image_index(&mut self, entry: &Entry) -> Result<Option<Value>> {
+		transaction_records::image_index(&mut **self.access.tx, entry)
+			.await
+			.map_err(Into::into)
+	}
 }
 
 #[async_trait]
 impl PrivateKnowledgeScope for TenantRegistration<'_> {
+	async fn embed_reference_images(
+		&mut self,
+		reference: &aidash_domain::registry::EntityRef,
+		images: &[aidash_domain::registry::knowledge::ValidatedImage],
+	) -> Result<(Entry, Vec<Vec<f32>>)> {
+		crate::apps::registry::services::knowledge::embed_reference_images(
+			self.access,
+			self.store,
+			reference,
+			images,
+		)
+		.await
+		.map_err(Into::into)
+	}
 	async fn insert_documents(&mut self, entry: &Entry, documents: Value) -> Result<()> {
 		transaction_records::insert_documents(&mut **self.access.tx, entry, documents)
+			.await
+			.map_err(Into::into)
+	}
+	async fn insert_image_index(&mut self, entry: &Entry, index: Value) -> Result<()> {
+		transaction_records::insert_image_index(&mut **self.access.tx, entry, index)
+			.await
+			.map_err(Into::into)
+	}
+	async fn insert_image_data(&mut self, entry: &Entry, data: Value) -> Result<()> {
+		transaction_records::insert_image_data(&mut **self.access.tx, entry, data)
 			.await
 			.map_err(Into::into)
 	}

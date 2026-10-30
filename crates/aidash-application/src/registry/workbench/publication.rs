@@ -70,11 +70,17 @@ where
 		.ok_or_else(|| Error::Invalid("draft has no managed identity".into()))?;
 
 	let rows = scope.registrations(id, managed_id).await?;
-	let draft_knowledge_digest = draft
+	let draft_knowledge_digest = if draft
 		.documents
 		.as_array()
-		.filter(|docs| !docs.is_empty())
-		.map(|_| digest(&draft.documents));
+		.is_some_and(|docs| !docs.is_empty())
+	{
+		let documents: Vec<ReferenceDocument> = serde_json::from_value(draft.documents.clone())?;
+		let (canonical, _) = aidash_domain::registry::knowledge::canonical_documents(&documents)?;
+		Some(digest(&serde_json::to_value(canonical)?))
+	} else {
+		None
+	};
 	let mut versions = Vec::new();
 	for row in rows {
 		let entry = scope.definition(managed_id, &row.version).await?;
@@ -143,6 +149,32 @@ where
 	let behavioral_tested = behavioral_evidence(&mut scope, &draft, &entry).await?;
 	let documents: Vec<ReferenceDocument> = serde_json::from_value(draft.documents.clone())?;
 	if !documents.is_empty() {
+		let images = aidash_domain::registry::knowledge::validated_images(&documents)?;
+		let (canonical, image_data) =
+			aidash_domain::registry::knowledge::canonical_documents(&documents)?;
+		let canonical = serde_json::to_value(canonical)?;
+		let image_index = if images.is_empty() {
+			None
+		} else {
+			let bindings: aidash_domain::registry::bindings::AgentBindings =
+				serde_json::from_value(entry.config.clone())?;
+			let reference = bindings.reference_embedding.ok_or_else(|| {
+				Error::Invalid("reference images require a pinned embedding definition".into())
+			})?;
+			let (embedding, vectors) = scope.embed_reference_images(&reference, &images).await?;
+			if embedding.id != reference.id || embedding.version != reference.version {
+				return Err(Error::Conflict(
+					"reference embedding definition changed".into(),
+				));
+			}
+			Some(aidash_domain::registry::knowledge::ImageCollection::new(
+				&entry.id,
+				&entry.version,
+				embedding,
+				&documents,
+				vectors,
+			)?)
+		};
 		let mut raw: Entry = serde_json::from_value(draft.entry.clone())?;
 		registry::bindings::private::detach(
 			&mut scope,
@@ -155,13 +187,24 @@ where
 		)
 		.await?;
 		let source =
-			registry::bindings::private::attach(&mut raw, repository.node_id(), &draft.documents)?;
+			registry::bindings::private::attach(&mut raw, repository.node_id(), &canonical)?;
 		super::authorize_creation(&mut scope, &draft.tenant, &source).await?;
 		registry::register_definition(&mut scope, validation, &source, repository.node_id())
 			.await?;
-		scope
-			.insert_documents(&source, draft.documents.clone())
-			.await?;
+		scope.insert_documents(&source, canonical.clone()).await?;
+		if let Some(index) = image_index {
+			scope.insert_image_data(&source, image_data).await?;
+			if let Some(existing) = scope.image_index(&source).await? {
+				let existing: aidash_domain::registry::knowledge::ImageCollection =
+					serde_json::from_value(existing)?;
+				let metadata: Vec<ReferenceDocument> = serde_json::from_value(canonical.clone())?;
+				existing.verify(&entry.id, &entry.version, &index.embedding, &metadata)?;
+			} else {
+				scope
+					.insert_image_index(&source, serde_json::to_value(index)?)
+					.await?;
+			}
+		}
 	}
 	let inserted =
 		registry::register_definition(&mut scope, validation, &entry, repository.node_id()).await?;

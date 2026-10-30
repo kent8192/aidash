@@ -73,6 +73,9 @@ pub fn definition_references(
 			let config: AgentBindings = serde_json::from_value(entry.config.clone())?;
 			config.validate()?;
 			result.push((local(&config.model), "model".into()));
+			if let Some(embedding) = &config.reference_embedding {
+				result.push((local(embedding), "embedding".into()));
+			}
 			if let Some(summary) = config.context_summary() {
 				result.push((local(&summary.model), "model".into()));
 			}
@@ -188,6 +191,9 @@ pub fn reference_kind_matches(expected: &str, actual: &str) -> bool {
 pub struct AgentBindings {
 	pub schema_version: u8,
 	pub model: EntityRef,
+	/// Exact immutable embedding definition for private reference images.
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub reference_embedding: Option<EntityRef>,
 	#[serde(default)]
 	pub instructions: String,
 	#[serde(default)]

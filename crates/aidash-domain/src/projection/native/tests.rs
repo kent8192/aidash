@@ -37,6 +37,28 @@ fn context(events: Vec<ContextEvent>) -> Context {
 	context
 }
 
+#[test]
+fn reference_image_matches_remain_separate_from_workspace_matches() {
+	let pinned = json!({
+		"reference_documents": [{"name":"chart.png"}],
+		"reference_images": [{"document":{"name":"chart.png","score":0.2}}],
+		"semantic_memory": {"matches":[{"source":{"kind":"working_image"},"score":0.9}]}
+	});
+	let projected = native_context(&Context::default(), &pinned);
+	let volatile: Value = serde_json::from_str(&projected.volatile).unwrap();
+	assert_eq!(volatile["reference_images"], pinned["reference_images"]);
+	assert_eq!(volatile["semantic_memory"], pinned["semantic_memory"]);
+	assert_eq!(
+		projected
+			.attachments
+			.iter()
+			.find(|entry| entry.source == Source::ReferenceDocuments)
+			.unwrap()
+			.content,
+		pinned["reference_documents"]
+	);
+}
+
 fn shape(history: &[NativeMessage]) -> Vec<String> {
 	history
 		.iter()

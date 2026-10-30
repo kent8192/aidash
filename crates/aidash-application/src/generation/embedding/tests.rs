@@ -416,6 +416,8 @@ fn assert_settled(world: &World, balance: i64, report: Option<i64>, commits: usi
 #[case(Origin::Query(None))]
 #[case(Origin::Query(Some(Uuid::from_u128(77))))]
 #[case(Origin::Index(Uuid::from_u128(88)))]
+#[case(Origin::Reference)]
+#[case(Origin::ReferenceQuery(Uuid::from_u128(77)))]
 #[tokio::test]
 async fn authority_and_all_ancestors_commit_before_returning_a_receipt(
 	world: World,
@@ -457,6 +459,52 @@ async fn authority_and_all_ancestors_commit_before_returning_a_receipt(
 				.unwrap() < begin,
 			"{required} must precede accounting"
 		);
+	}
+}
+
+#[rstest]
+#[case("matching")]
+#[case("different_id")]
+#[case("different_version")]
+#[case("missing")]
+#[tokio::test]
+async fn reference_embedding_must_match_each_generated_ancestor(
+	world: World,
+	#[case] policy: &str,
+) {
+	if policy != "matching" {
+		let mut state = world.0.lock().unwrap();
+		let embedding = &mut state
+			.policies
+			.get_mut(&Uuid::from_u128(22))
+			.unwrap()
+			.embedding;
+		match policy {
+			"different_id" => embedding.as_mut().unwrap().provider.id = "different".into(),
+			"different_version" => embedding.as_mut().unwrap().provider.version = "2.0.0".into(),
+			"missing" => *embedding = None,
+			_ => unreachable!(),
+		}
+	}
+	let result = require_reference_policy(
+		&mut Authority(world.clone()),
+		"aidash://origin",
+		&EntityRef {
+			id: "embedding".into(),
+			version: "1.0.0".into(),
+		},
+	)
+	.await;
+	if policy != "matching" {
+		assert!(
+			result
+				.unwrap_err()
+				.to_string()
+				.contains("must match every ancestor Generation Policy")
+		);
+		assert_empty(&world);
+	} else {
+		result.unwrap();
 	}
 }
 

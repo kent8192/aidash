@@ -37,6 +37,32 @@ fn request(
 	crate::validate_endpoint(endpoint)?;
 	Ok(client.request(method, format!("{}{path}", endpoint.trim_end_matches('/'))))
 }
+
+fn embedding_model_missing(status: u16, body: Option<&Value>, raw: Option<&[u8]>) -> bool {
+	if !matches!(status, 400 | 404) {
+		return false;
+	}
+	let structured = body.is_some_and(|body| {
+		let error = &body["error"];
+		let code = error["code"].as_str().unwrap_or_default();
+		let message = error["message"]
+			.as_str()
+			.unwrap_or_default()
+			.to_ascii_lowercase();
+		code.eq_ignore_ascii_case("model_not_found")
+			|| (status == 404
+				&& message.contains("model")
+				&& (message.contains("not found") || message.contains("does not exist")))
+	});
+	structured
+		|| (status == 404
+			&& body.is_none()
+			&& raw.is_some_and(|raw| {
+				let message = String::from_utf8_lossy(raw).to_ascii_lowercase();
+				message.contains("model")
+					&& (message.contains("not found") || message.contains("does not exist"))
+			}))
+}
 pub async fn embed(
 	access: &dyn ProviderAccess,
 	context: &Context,
@@ -114,13 +140,22 @@ pub async fn embed_input(
 	let response = call.send().await.map_err(crate::keyless::send_error)?;
 	if !response.status().is_success() {
 		let status = response.status().as_u16();
+		let raw = crate::response::within(response, 16_384)
+			.await
+			.ok()
+			.and_then(|value| value.ok());
+		let body = raw
+			.as_deref()
+			.and_then(|raw| serde_json::from_slice::<Value>(raw).ok());
 		if config.provider_credential.is_some() {
-			let body = crate::response::json::<Value>(response, 16_384).await.ok();
 			if let Some(error) = crate::response::capability_failure(status, body.as_ref()) {
 				return Err(error);
 			}
 		}
 		use aidash_domain::semantic::Failure;
+		if embedding_model_missing(status, body.as_ref(), raw.as_deref()) {
+			return Err(Error::RemoteSemantic(Failure::EmbeddingModelNotFound));
+		}
 		return Err(Error::RemoteSemantic(match status {
 			408 | 429 | 500..=599 => Failure::Unavailable,
 			401..=403 => Failure::Configuration,

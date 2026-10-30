@@ -210,6 +210,32 @@ impl WorkerAuthority {
 		let mut lease = crate::semantic::service::Lease::Inherited(&mut access);
 		lease.durable();
 		lease.workspace(run.workspace_id, "semantic.search").await?;
+		let reference = run
+			.context
+			.binding_snapshot
+			.as_deref()
+			.and_then(|snapshot| {
+				snapshot
+					.definitions
+					.iter()
+					.find(|entry| entry.identity == snapshot.agent)
+			})
+			.and_then(|entry| entry.definition.config.get("reference_embedding"))
+			.filter(|value| !value.is_null())
+			.map(|value| {
+				serde_json::from_value::<aidash_domain::registry::EntityRef>(value.clone())
+			})
+			.transpose()?;
+		if let Some(reference) = &reference {
+			aidash_application::generation::embedding::require_reference_policy(
+				&mut crate::bootstrap::generation_embedding_authority_scope(
+					lease.access().ok_or(Error::Forbidden)?,
+				),
+				store.deployment.as_str(),
+				reference,
+			)
+			.await?;
+		}
 		let index = crate::apps::knowledge::models::SemanticIndexe::locked(
 			&mut **lease.tx(),
 			run.workspace_id,
@@ -221,7 +247,7 @@ impl WorkerAuthority {
 			serde_json::from_value(index.spec)?;
 		let search = crate::apps::knowledge::serializers::contracts::Search {
 			query: input["query"].as_str().unwrap_or_default().to_owned(),
-			image,
+			image: image.clone(),
 			agent: None,
 			metadata: json!({}),
 			limit: input["limit"]
@@ -240,7 +266,60 @@ impl WorkerAuthority {
 			None,
 		)
 		.await?;
-		Ok(serde_json::to_value(result)?)
+		let mut result = serde_json::to_value(result)?;
+		if reference.is_some() {
+			use aidash_application::ports::semantic::retrieval::SemanticRetrievalSession;
+			let limit = input["limit"]
+				.as_u64()
+				.map_or(spec.max_results.min(5), |value| value as usize);
+			let reference = if let Some(image) = &image {
+				let content = crate::bootstrap::semantic_retrieval_scope(store, &mut lease)
+					.query_image(run.workspace_id, image, spec.max_image_bytes)
+					.await?;
+				let found = crate::apps::registry::services::knowledge::reference_image_context(
+					lease.access().ok_or(Error::Forbidden)?,
+					store,
+					run,
+					aidash_domain::semantic::EmbeddingInput::Image {
+						media_type: &content.media_type,
+						bytes: &content.bytes,
+					},
+					limit,
+				)
+				.await?;
+				let current = crate::bootstrap::semantic_retrieval_scope(store, &mut lease)
+					.query_image(run.workspace_id, image, spec.max_image_bytes)
+					.await?;
+				if current.media_type != content.media_type || current.bytes != content.bytes {
+					return Err(Error::Conflict(
+						"image query changed during retrieval".into(),
+					));
+				}
+				found
+			} else {
+				crate::apps::registry::services::knowledge::reference_image_context(
+					lease.access().ok_or(Error::Forbidden)?,
+					store,
+					run,
+					aidash_domain::semantic::EmbeddingInput::Text(
+						input["query"].as_str().unwrap_or_default(),
+					),
+					limit,
+				)
+				.await?
+			};
+			let reference = reference.unwrap_or_else(|| json!([]));
+			let max_tokens = input["max_tokens"]
+				.as_u64()
+				.map_or(spec.max_result_tokens, |value| value as usize);
+			if serde_json::to_vec(&reference)?.len() > max_tokens {
+				return Err(Error::RemoteSemantic(
+					aidash_domain::semantic::Failure::ContextBudget,
+				));
+			}
+			result["reference_matches"] = reference;
+		}
+		Ok(result)
 	}
 	pub(crate) async fn workspace_image(
 		&self,
@@ -1369,6 +1448,26 @@ impl Guard {
 			workspace_retrieved,
 			result: result.map_err(Into::into),
 		}
+	}
+	pub(crate) async fn reference_image_context(
+		&self,
+		store: &Store,
+		query: &str,
+	) -> Result<Option<Value>> {
+		if self.remote.is_some() {
+			return Err(Error::Invalid(
+				"reference images are private to their owning node".into(),
+			));
+		}
+		let mut access = self.access.write().await;
+		crate::apps::registry::services::knowledge::reference_image_context(
+			&mut access,
+			store,
+			&self.run,
+			aidash_domain::semantic::EmbeddingInput::Text(query),
+			8,
+		)
+		.await
 	}
 	/// Reading a source for the main model does not permit disclosing it to a
 	/// separate selector. Policy sees the exact selector and destination set.

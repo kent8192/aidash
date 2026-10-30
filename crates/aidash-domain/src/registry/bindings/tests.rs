@@ -1,6 +1,29 @@
 use super::*;
 use serde_json::{Value, json};
 
+#[test]
+fn reference_embedding_is_an_immutable_agent_definition_dependency() {
+	let entry: Entry = serde_json::from_value(json!({"id":"agent","version":"1.0.0","kind":"agent","name":{"en":"Agent"},"description":{"en":"Agent"},"config":{"schema_version":1,"model":{"id":"model","version":"1.0.0"},"instructions":"Work","reference_embedding":{"id":"image-embedding","version":"2.0.0"}}})).unwrap();
+	let root = QualifiedRef {
+		registry_deployment: "aidash://node-a".into(),
+		id: "agent".into(),
+		version: "1.0.0".into(),
+	};
+	let references = definition_references(&root, &entry).unwrap();
+	assert!(
+		references
+			.iter()
+			.any(|(reference, kind)| reference.id == "image-embedding"
+				&& reference.version == "2.0.0"
+				&& kind == "embedding")
+	);
+	let mut config = entry.config;
+	assert!(
+		crate::registry::rules::overlay_config(&mut config, &json!({"reference_embedding":null}))
+			.is_err()
+	);
+}
+
 mod agent_plugins;
 
 fn agent() -> AgentBindings {

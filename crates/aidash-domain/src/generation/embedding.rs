@@ -6,6 +6,8 @@ use uuid::Uuid;
 pub enum Origin {
 	Query(Option<Uuid>),
 	Index(Uuid),
+	Reference,
+	ReferenceQuery(Uuid),
 }
 
 /// Durable attempt metadata is independent of its ORM representation.

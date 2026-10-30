@@ -280,6 +280,22 @@ use std::{
 use tokio::sync::Semaphore;
 
 pub const BODY_LIMIT: usize = 1024 * 1024;
+
+fn request_body_limit(method: &http::Method, path: &str) -> usize {
+	let draft = path
+		.strip_prefix("/api/workbench/drafts/")
+		.is_some_and(|id| !id.is_empty() && !id.contains('/'));
+	if (method == http::Method::POST
+		&& (path == "/api/agents/personal" || path == "/api/workbench/drafts"))
+		|| (method == http::Method::PUT && draft)
+	{
+		12 * 1024 * 1024
+	} else if path.contains("/chunks") || path.contains("/scoped/files/") {
+		6 * 1024 * 1024
+	} else {
+		BODY_LIMIT
+	}
+}
 const MAX_RATE_BUCKETS: usize = 16_384;
 const PRUNE_INTERVAL: usize = 1024;
 const FULL_PRUNE_INTERVAL: Duration = Duration::from_secs(1);
@@ -396,11 +412,7 @@ impl Protection {
 impl RequestAdmission for Protection {
 	async fn admit(&self, head: RequestHead<'_>) -> std::result::Result<AdmittedRequest, Response> {
 		let path = head.uri.path();
-		let limit = if path.contains("/chunks") || path.contains("/scoped/files/") {
-			6 * 1024 * 1024
-		} else {
-			BODY_LIMIT
-		};
+		let limit = request_body_limit(head.method, path);
 		let Ok(permit) = self.permits.clone().try_acquire_owned() else {
 			// Overload is answered before `Gateway` runs, so finalize it here
 			// with the same request ID, private headers and HTTP metrics.
@@ -483,11 +495,7 @@ impl Middleware for Gateway {
 		let private = private_route(&path);
 		let sse = path == "/api/events/stream"
 			|| (path.starts_with("/api/runs/") && path.ends_with("/inference/stream"));
-		let limit = if path.contains("/chunks") || path.contains("/scoped/files/") {
-			6 * 1024 * 1024
-		} else {
-			BODY_LIMIT
-		};
+		let limit = request_body_limit(&request.method, &path);
 		let response = if request.body().len() > limit {
 			Response::new(StatusCode::PAYLOAD_TOO_LARGE)
 				.with_body(b"request body too large".to_vec())

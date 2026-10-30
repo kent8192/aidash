@@ -360,10 +360,8 @@ pub async fn stage(
 		scope.allocate_entry_id(),
 	);
 	validation.validate_in(&staged.revision.entry, false)?;
-	scope
-		.persist_revision(&staged.installation, &staged.revision)
-		.await?;
 	let entry = &staged.revision.entry;
+	let mut private_documents = None;
 	if matches!(entry.kind.as_str(), "source" | "memory")
 		&& entry.config.get("schema_version").is_some()
 	{
@@ -378,8 +376,17 @@ pub async fn stage(
 			if digest != aidash_domain::registry::knowledge::digest(&documents) {
 				return Err(Error::Forbidden);
 			}
-			scope.insert_documents(entry, documents).await?;
+			if aidash_domain::registry::knowledge::contains_images(&documents) {
+				return Err(Error::Invalid("private reference images cannot be copied; register a new version from the originals".into()));
+			}
+			private_documents = Some(documents);
 		}
+	}
+	scope
+		.persist_revision(&staged.installation, &staged.revision)
+		.await?;
+	if let Some(documents) = private_documents {
+		scope.insert_documents(entry, documents).await?;
 	}
 	scope.save_provenance(entry, &staged.provenance).await?;
 	let mut copies = scope

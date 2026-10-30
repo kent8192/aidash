@@ -138,6 +138,7 @@ pub struct AgentConfig {
 	pub bindings: Vec<bindings::Binding>,
 	pub remove_default: Vec<String>,
 	pub model: EntityRef,
+	pub reference_embedding: Option<EntityRef>,
 	pub instructions: String,
 	pub cluster: Option<EntityRef>,
 	pub max_steps: i32,

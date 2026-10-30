@@ -218,6 +218,8 @@ pub(crate) async fn embed_input(
 			Origin::Query(Some(run)) => (Some(run), None),
 			Origin::Query(None) => (None, Some(MaintenancePurpose::MemoryRetrieval)),
 			Origin::Index(_) => (None, Some(MaintenancePurpose::MemoryIndexing)),
+			Origin::Reference => (None, Some(MaintenancePurpose::ReferenceIndexing)),
+			Origin::ReferenceQuery(run) => (Some(run), None),
 		};
 		crate::bootstrap::admitted_semantic_transport(store, run, tenant, maintenance)
 	} else {
