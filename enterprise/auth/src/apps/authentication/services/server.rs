@@ -27,6 +27,9 @@ use sha2::{Digest, Sha256};
 use std::{collections::BTreeMap, path::Path, sync::Arc};
 use uuid::Uuid;
 
+pub(crate) const BROWSER_SESSION_ABSOLUTE_SECONDS: i64 = 34_560_000;
+const BROWSER_SESSION_IDLE_SECONDS: i64 = 2_592_000;
+
 pub(crate) fn digest(value: &str) -> String {
 	use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 	URL_SAFE_NO_PAD.encode(Sha256::digest(value.as_bytes()))
@@ -537,8 +540,8 @@ fn browser_session(
 		device_id: secret(),
 		issued_at: auth_time,
 		last_seen_at: now,
-		absolute_expires_at: now + Duration::hours(12),
-		idle_seconds: 1800,
+		absolute_expires_at: now + Duration::seconds(BROWSER_SESSION_ABSOLUTE_SECONDS),
+		idle_seconds: BROWSER_SESSION_IDLE_SECONDS,
 		account_epoch: account.session_epoch,
 		revoked_at: None,
 	}
@@ -564,8 +567,9 @@ fn protocol_config(config: &Config) -> Result<(OAuthServerConfig, OidcConfig)> {
 		)?
 	};
 	oauth.refresh_tokens = Some(RefreshTokenPolicy::new(
-		std::time::Duration::from_secs(1800),
-		std::time::Duration::from_secs(43200),
+		std::time::Duration::from_secs(BROWSER_SESSION_IDLE_SECONDS as u64),
+		// Reinhardt currently rejects refresh-token families longer than 365 days.
+		std::time::Duration::from_secs(365 * 24 * 60 * 60),
 	)?);
 	oauth.token_ttl = std::time::Duration::from_secs(300);
 	let oidc = if config.loopback_development {

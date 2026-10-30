@@ -8,12 +8,15 @@ use serde_json::{Value, json};
 use std::fmt;
 use std::path::PathBuf;
 
+const SESSION_ABSOLUTE_SECONDS: i64 = 34_560_000;
+const SESSION_IDLE_SECONDS: i64 = 2_592_000;
+
 fn absolute_seconds() -> i64 {
-	43200
+	SESSION_ABSOLUTE_SECONDS
 }
 
 fn idle_seconds() -> i64 {
-	1800
+	SESSION_IDLE_SECONDS
 }
 
 /// Origin that serves the Firebase sign-in helper (`/__/auth/*`) to the browser.
@@ -203,8 +206,8 @@ impl GcipConfig {
 				));
 			}
 		}
-		if !(60..=604800).contains(&self.session_idle_seconds)
-			|| !(60..=604800).contains(&self.session_absolute_seconds)
+		if !(60..=SESSION_ABSOLUTE_SECONDS).contains(&self.session_idle_seconds)
+			|| !(60..=SESSION_ABSOLUTE_SECONDS).contains(&self.session_absolute_seconds)
 			|| self.session_idle_seconds > self.session_absolute_seconds
 		{
 			return Err(Error::Invalid("invalid GCIP session lifetime".into()));

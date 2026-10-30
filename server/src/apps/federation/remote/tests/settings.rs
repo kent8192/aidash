@@ -90,7 +90,8 @@ fn optional_oidc_is_normalized_and_secrets_are_redacted(oidc_settings: Value) {
 	let oidc = Config::from_settings(&settings).unwrap().oidc.unwrap();
 	// Assert
 	assert_eq!(oidc.public_origin, "https://example.com");
-	assert_eq!(oidc.session_idle_seconds, 1800);
+	assert_eq!(oidc.session_idle_seconds, 2_592_000);
+	assert_eq!(oidc.session_absolute_seconds, 34_560_000);
 	let debug = format!("{oidc:?}");
 	assert!(!debug.contains("test-only-client-secret"));
 }
@@ -98,7 +99,8 @@ fn optional_oidc_is_normalized_and_secrets_are_redacted(oidc_settings: Value) {
 #[rstest]
 #[case("issuer", json!("http://identity.example/issuer"))]
 #[case("public_origin", json!("https://example.com/path"))]
-#[case("session_idle_seconds", json!(604800))]
+#[case("session_idle_seconds", json!(34560001))]
+#[case("session_absolute_seconds", json!(34560001))]
 fn invalid_oidc_settings_fail_before_startup(
 	mut oidc_settings: Value,
 	#[case] field: &str,
@@ -110,4 +112,11 @@ fn invalid_oidc_settings_fail_before_startup(
 	let result = build(oidc_settings);
 	// Assert
 	assert!(result.is_err());
+}
+
+#[rstest]
+fn oidc_accepts_session_lifetime_at_upper_bound(mut oidc_settings: Value) {
+	oidc_settings["dashboard"]["oidc"]["session_idle_seconds"] = json!(34560000);
+	oidc_settings["dashboard"]["oidc"]["session_absolute_seconds"] = json!(34560000);
+	assert!(build(oidc_settings).is_ok());
 }

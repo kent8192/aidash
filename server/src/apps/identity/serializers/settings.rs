@@ -108,11 +108,11 @@ pub struct OidcConfig {
 	pub client_secret: String,
 	#[setting(required)]
 	pub public_origin: String,
-	#[setting(default = "43200")]
-	#[validate(range(min = 60, max = 604800))]
+	#[setting(default = "34560000")]
+	#[validate(range(min = 60, max = 34560000))]
 	pub session_absolute_seconds: i64,
-	#[setting(default = "1800")]
-	#[validate(range(min = 60, max = 604800))]
+	#[setting(default = "2592000")]
+	#[validate(range(min = 60, max = 34560000))]
 	pub session_idle_seconds: i64,
 }
 
