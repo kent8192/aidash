@@ -63,6 +63,7 @@ const TENANT_REGISTRY_MIGRATIONS: &[(&str, &str)] = &[
 	("registry", "0048_context_marketplace_merge"),
 	("registry", "0048_plugin_marketplace_merge"),
 	("registry", "0049_plugin_context_merge"),
+	("registry", "0050_embedding_inputs"),
 	("marketplace", "0008_remove_compatibility_gate"),
 	("marketplace", "0009_remove_compatibility_gate_state"),
 	("marketplace", "0010_row_level_security"),
@@ -103,7 +104,7 @@ async fn native_history_uses_typed_schema_operations_and_lf_sql_assets() {
 	);
 	let knowledge = graph.get_leaf_nodes_for_app("knowledge");
 	assert_eq!(knowledge.len(), 1);
-	assert_eq!(knowledge[0].name, "0037_recovery_evidence_merge");
+	assert_eq!(knowledge[0].name, "0038_embedding_inputs");
 	// Assert: retain the physical graph, model snapshots, and all supported tables.
 	assert!(
 		migrations

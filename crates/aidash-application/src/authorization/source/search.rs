@@ -157,7 +157,10 @@ pub async fn search<R: SemanticSearchRepository + ?Sized>(
 				journal::dispatched(repository.journal(), &attempt, &json!(reservations)).await?;
 				let embedding = repository
 					.embedding(&description.source_tenant)
-					.embed(&spec.embedding, &input.query)
+					.embed(
+						&spec.embedding,
+						aidash_domain::semantic::EmbeddingInput::Text(&input.query),
+					)
 					.await?;
 				dispatch::finish(
 					repository.dispatch(),

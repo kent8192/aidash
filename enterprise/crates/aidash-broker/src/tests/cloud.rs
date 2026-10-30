@@ -442,6 +442,9 @@ async fn cloud_mint_routes_chat_media_discovery_embeddings_and_early_streaming()
 			model: "author/model".into(),
 			model_version: "1".into(),
 			dimensions: 2,
+			inputs: [aidash_domain::semantic::EmbeddingInputKind::Text]
+				.into_iter()
+				.collect(),
 		},
 		"test",
 	)
@@ -801,6 +804,9 @@ async fn runless_memory_inference_mints_exact_purposes_and_rebinds_per_call() {
 		model: "author/model".into(),
 		model_version: "1".into(),
 		dimensions: 2,
+		inputs: [aidash_domain::semantic::EmbeddingInputKind::Text]
+			.into_iter()
+			.collect(),
 	};
 	aidash_integrations::semantic::embed(
 		c.access.as_ref(),

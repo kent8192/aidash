@@ -1111,6 +1111,9 @@ fn spec(endpoint: &str) -> IndexSpec {
 			model: "fixture".into(),
 			model_version: "1".into(),
 			dimensions: 3,
+			inputs: [aidash_domain::semantic::EmbeddingInputKind::Text]
+				.into_iter()
+				.collect(),
 		},
 		vector: VectorConfig {
 			provider: "postgres".into(),

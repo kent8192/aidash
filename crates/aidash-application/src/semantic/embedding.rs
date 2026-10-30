@@ -28,9 +28,29 @@ pub async fn invoke(
 	text: &str,
 	origin: Origin,
 ) -> Result<Vec<f32>> {
-	let reservation = scope.reserve(workspace, config, text, origin).await?;
+	invoke_input(
+		scope,
+		provider,
+		workspace,
+		config,
+		aidash_domain::semantic::EmbeddingInput::Text(text),
+		origin,
+	)
+	.await
+}
+
+pub async fn invoke_input(
+	scope: &mut dyn SemanticEmbeddingScope,
+	provider: &dyn EmbeddingProvider,
+	workspace: Uuid,
+	config: &EmbeddingConfig,
+	input: aidash_domain::semantic::EmbeddingInput<'_>,
+	origin: Origin,
+) -> Result<Vec<f32>> {
+	input.validate(config)?;
+	let reservation = scope.reserve(workspace, config, input, origin).await?;
 	let output = provider
-		.embed(config, text)
+		.embed(config, input)
 		.await
 		.map_err(|error| match error {
 			// A rejected key (401–403) or a broken response contract is not an

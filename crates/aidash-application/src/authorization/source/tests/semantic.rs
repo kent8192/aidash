@@ -388,11 +388,14 @@ async fn home_index_must_exist_and_enable_the_same_tenant_context(#[case] change
 #[rstest]
 #[case("kind")]
 #[case("configuration")]
+#[case("inputs")]
 #[tokio::test]
 async fn embedding_definition_must_match_the_locked_index_configuration(#[case] change: &str) {
 	let mut scope = BindingScope::new();
 	if change == "kind" {
 		scope.entry.kind = "model".into();
+	} else if change == "inputs" {
+		scope.entry.config["inputs"] = json!(["text", "image"]);
 	} else {
 		scope.entry.config["model"] = json!("changed");
 	}

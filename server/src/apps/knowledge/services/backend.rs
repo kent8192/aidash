@@ -18,7 +18,7 @@ pub async fn embed(
 	text: &str,
 ) -> Result<Embedding> {
 	crate::bootstrap::semantic_transport(store)
-		.embed(config, text)
+		.embed(config, aidash_domain::semantic::EmbeddingInput::Text(text))
 		.await
 		.map_err(Into::into)
 }

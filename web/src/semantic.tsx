@@ -622,7 +622,14 @@ function IndexForm({
   busy: boolean;
   submit: (spec: SemanticIndexSpec) => Promise<void>;
 }) {
-  const { t } = useI18n();
+  const { t, locale } = useI18n();
+  const [acceptImage, setAcceptImage] = useState(
+    previous
+      ? ((previous.embedding as { inputs?: string[] }).inputs?.includes(
+          "image",
+        ) ?? false)
+      : true,
+  );
   return (
     <form
       className="grid gap-3 sm:grid-cols-2"
@@ -639,6 +646,9 @@ function IndexForm({
             model: String(values.get("model")),
             model_version: String(values.get("version")),
             dimensions: Number(values.get("dimensions")),
+            inputs: values.has("embedding_image")
+              ? ["text", "image"]
+              : ["text"],
           },
           vector: {
             provider: "postgres",
@@ -659,6 +669,9 @@ function IndexForm({
         <NativeSelect
           name="embeddingProvider"
           defaultValue={previous?.embedding.provider ?? "openrouter"}
+          onChange={(event) => {
+            if (event.target.value === "openai") setAcceptImage(false);
+          }}
         >
           <option value="openrouter">OpenRouter</option>
           <option value="openai">{t("openaiCompatible")}</option>
@@ -701,6 +714,13 @@ function IndexForm({
         />
       </Field>
       <div className="grid gap-2 sm:col-span-2">
+        <Check
+          name="embedding_image"
+          checked={acceptImage}
+          onChange={(event) => setAcceptImage(event.target.checked)}
+        >
+          {locale === "ja-JP" ? "画像入力に対応" : "Accept image input"}
+        </Check>
         <Check name="enabled" defaultChecked={previous?.enabled ?? true}>
           {t("semanticEnabled")}
         </Check>

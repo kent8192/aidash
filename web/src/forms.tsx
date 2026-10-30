@@ -393,6 +393,7 @@ export function EntityForm({
   const [kind, setKind] = useState(initial);
   const registration = useRef<{ body: string; key: string } | null>(null);
   const [modelSource, setModelSource] = useState("openrouter");
+  const [embeddingImage, setEmbeddingImage] = useState(true);
   const [modelName, setModelName] = useState("");
   const [customModelName, setCustomModelName] = useState<string | null>(null);
   const [defaultName] = useState(() => {
@@ -490,6 +491,9 @@ export function EntityForm({
                       model: s("model_id"),
                       model_version: s("model_version"),
                       dimensions: Number(s("dimensions")),
+                      inputs: d.has("embedding_image")
+                        ? ["text", "image"]
+                        : ["text"],
                     }
                   : kind === "decider"
                     ? {
@@ -799,7 +803,13 @@ export function EntityForm({
           <>
             <Hint>{t("embeddingRegistryHelp")}</Hint>
             <Field label={t("provider")}>
-              <NativeSelect name="embedding_provider" defaultValue="openrouter">
+              <NativeSelect
+                name="embedding_provider"
+                defaultValue="openrouter"
+                onChange={(event) => {
+                  if (event.target.value === "openai") setEmbeddingImage(false);
+                }}
+              >
                 <option value="openrouter">OpenRouter</option>
                 <option value="openai">{t("openaiCompatible")}</option>
               </NativeSelect>
@@ -834,6 +844,13 @@ export function EntityForm({
                 />
               </Field>
             </div>
+            <Check
+              name="embedding_image"
+              checked={embeddingImage}
+              onChange={(event) => setEmbeddingImage(event.target.checked)}
+            >
+              {ja ? "画像入力に対応" : "Accept image input"}
+            </Check>
           </>
         ) : kind === "decider" ? (
           <>

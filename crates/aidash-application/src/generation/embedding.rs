@@ -7,7 +7,7 @@ use crate::{
 use aidash_domain::{
 	generation::embedding::{self, Attempt},
 	registry::EntityRef,
-	semantic::EmbeddingConfig,
+	semantic::{EmbeddingConfig, EmbeddingInput},
 };
 use std::sync::Arc;
 use uuid::Uuid;
@@ -61,6 +61,23 @@ pub async fn reserve(
 	reserve_many(&mut [scope], repository, workspace, config, text, origin).await
 }
 
+/// Reserve a validated text or image input under the current authority.
+pub async fn reserve_input(
+	scope: &mut dyn GenerationEmbeddingAuthority,
+	repository: Arc<dyn GenerationEmbeddingRepository>,
+	workspace: Uuid,
+	config: &EmbeddingConfig,
+	input: EmbeddingInput<'_>,
+	origin: Origin,
+) -> Result<Option<Reservation>> {
+	input.validate(config)?;
+	let approved = authorize(scope, repository.node_id(), config)
+		.await?
+		.into_iter()
+		.collect();
+	reserve_approved(approved, repository, workspace, input, origin).await
+}
+
 /// Validate each contributing lease before atomically charging their ancestor union.
 pub async fn reserve_many(
 	scopes: &mut [&mut dyn GenerationEmbeddingAuthority],
@@ -76,7 +93,14 @@ pub async fn reserve_many(
 			approved.push(origin);
 		}
 	}
-	reserve_approved(approved, repository, workspace, text, origin).await
+	reserve_approved(
+		approved,
+		repository,
+		workspace,
+		EmbeddingInput::Text(text),
+		origin,
+	)
+	.await
 }
 
 /// All checks precede this transaction, including when native callers suspend leases.
@@ -84,7 +108,7 @@ pub async fn reserve_approved(
 	approved: Vec<Approved>,
 	repository: Arc<dyn GenerationEmbeddingRepository>,
 	workspace: Uuid,
-	text: &str,
+	input: EmbeddingInput<'_>,
 	origin: Origin,
 ) -> Result<Option<Reservation>> {
 	let mut requests = std::collections::BTreeSet::new();
@@ -111,13 +135,15 @@ pub async fn reserve_approved(
 		return Ok(None);
 	};
 	let requests: Vec<_> = requests.into_iter().collect();
-	let amount = embedding::reservation_amount(text.len())?;
+	let amount = input.reservation_amount()?;
+	let request_bytes = i64::try_from(input.byte_len())
+		.map_err(|_| Error::Invalid("embedding input reservation overflow".into()))?;
 	let attempt = Attempt {
 		id: Uuid::new_v4(),
 		workspace,
 		origin,
 		provider: reference,
-		request_bytes: text.len() as i64,
+		request_bytes,
 		amount,
 	};
 	let mut transaction = repository.begin().await?;

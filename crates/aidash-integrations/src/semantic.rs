@@ -4,6 +4,7 @@ use aidash_application::ports::EmbeddingProvider;
 use aidash_application::provider_access::{Context, Inference, Operation, ProviderAccess, Source};
 use aidash_domain::semantic::{Embedding, EmbeddingConfig};
 use async_trait::async_trait;
+use base64::{Engine as _, engine::general_purpose::STANDARD};
 use secrecy::ExposeSecret;
 use serde::Deserialize;
 use serde_json::{Value, json};
@@ -43,6 +44,23 @@ pub async fn embed(
 	config: &EmbeddingConfig,
 	text: &str,
 ) -> Result<Embedding> {
+	embed_input(
+		access,
+		context,
+		clients,
+		config,
+		aidash_domain::semantic::EmbeddingInput::Text(text),
+	)
+	.await
+}
+
+pub async fn embed_input(
+	access: &dyn ProviderAccess,
+	context: &Context,
+	clients: &Clients,
+	config: &EmbeddingConfig,
+	input: aidash_domain::semantic::EmbeddingInput<'_>,
+) -> Result<Embedding> {
 	#[derive(Deserialize)]
 	struct EmbeddingDatum {
 		index: usize,
@@ -53,8 +71,14 @@ pub async fn embed(
 		model: String,
 		data: Vec<EmbeddingDatum>,
 	}
-	config.validate_parameters()?;
-	let mut body = json!({"model":config.model,"input":text,"encoding_format":"float"});
+	input.validate(config)?;
+	let request_input = match input {
+		aidash_domain::semantic::EmbeddingInput::Text(text) => json!(text),
+		aidash_domain::semantic::EmbeddingInput::Image { media_type, bytes } => {
+			json!([{"content":[{"type":"image_url","image_url":{"url":format!("data:{media_type};base64,{}", STANDARD.encode(bytes))}}]}])
+		}
+	};
+	let mut body = json!({"model":config.model,"input":request_input,"encoding_format":"float"});
 	if config.provider == "openrouter" {
 		// Gemini defaults to 3072 dimensions unless the approved size is sent.
 		body["dimensions"] = json!(config.dimensions);
@@ -146,13 +170,17 @@ pub struct SemanticClient {
 }
 #[async_trait]
 impl EmbeddingProvider for SemanticClient {
-	async fn embed(&self, config: &EmbeddingConfig, text: &str) -> Result<Embedding> {
-		embed(
+	async fn embed(
+		&self,
+		config: &EmbeddingConfig,
+		input: aidash_domain::semantic::EmbeddingInput<'_>,
+	) -> Result<Embedding> {
+		embed_input(
 			self.access.as_ref(),
 			&self.context,
 			&self.clients,
 			config,
-			text,
+			input,
 		)
 		.await
 	}

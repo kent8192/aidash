@@ -18,16 +18,16 @@ impl SemanticEmbeddingScope for Embedding<'_, '_> {
 		&mut self,
 		workspace: Uuid,
 		config: &EmbeddingConfig,
-		text: &str,
+		input: aidash_domain::semantic::EmbeddingInput<'_>,
 		origin: Origin,
 	) -> Result<Option<Box<dyn EmbeddingAllowance>>> {
 		if let Some(access) = self.lease.access() {
-			crate::generation::embedding::reserve(
+			crate::generation::embedding::reserve_input(
 				access,
 				&self.store,
 				workspace,
 				config,
-				text,
+				input,
 				origin,
 			)
 			.await

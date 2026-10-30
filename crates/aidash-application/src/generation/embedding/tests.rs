@@ -50,6 +50,9 @@ fn config() -> EmbeddingConfig {
 		model: "fixture".into(),
 		model_version: "1".into(),
 		dimensions: 4,
+		inputs: [aidash_domain::semantic::EmbeddingInputKind::Text]
+			.into_iter()
+			.collect(),
 	}
 }
 #[fixture]
