@@ -62,6 +62,20 @@ impl Channels {
 			input,
 		)
 		.await;
+		let result = match result {
+			Ok(mut message) => {
+				let mut attachments: Vec<_> = message.attachments.iter_mut().collect();
+				super::readability::annotate(
+					&mut lease,
+					workspace,
+					self.runtime.config.deployment.as_str(),
+					&mut attachments,
+				)
+				.await
+				.map(|()| message)
+			}
+			Err(error) => Err(error),
+		};
 		lease.finish(result).await
 	}
 	pub async fn history(
@@ -78,6 +92,24 @@ impl Channels {
 		)
 		.await?;
 		let result = history::page(&self.runtime.store, &mut lease, workspace, input).await;
+		let result = match result {
+			Ok(mut page) => {
+				let mut attachments: Vec<_> = page
+					.messages
+					.iter_mut()
+					.flat_map(|message| message.attachments.iter_mut())
+					.collect();
+				super::readability::annotate(
+					&mut lease,
+					workspace,
+					self.runtime.config.deployment.as_str(),
+					&mut attachments,
+				)
+				.await
+				.map(|()| page)
+			}
+			Err(error) => Err(error),
+		};
 		lease.finish(result).await
 	}
 	pub async fn upload(
@@ -96,6 +128,17 @@ impl Channels {
 		.await?;
 		let result =
 			attachments::upload(&self.runtime.store, &mut lease, workspace, input, body).await;
+		let result = match result {
+			Ok(mut attachment) => super::readability::annotate(
+				&mut lease,
+				workspace,
+				self.runtime.config.deployment.as_str(),
+				&mut [&mut attachment],
+			)
+			.await
+			.map(|()| attachment),
+			Err(error) => Err(error),
+		};
 		lease.finish(result).await
 	}
 	pub async fn download(

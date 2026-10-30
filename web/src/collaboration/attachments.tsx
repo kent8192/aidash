@@ -11,8 +11,9 @@ import type { ChannelAttachment } from "../generated/models";
 import { authenticatedFetch } from "../transport";
 import { Modal, useI18n } from "../ui";
 import { collaborationCopy } from "./copy";
-import { mergeMessagePages } from "./conversation-model";
+import { attachmentWarningText, mergeMessagePages } from "./conversation-model";
 import { threadCopy } from "./thread-copy";
+import { workspaceCopy } from "./workspace-copy";
 
 function AttachmentPreview({
   workspace,
@@ -149,6 +150,11 @@ export function AttachmentCard({
           </button>
         )}
       </div>
+      {attachment.no_assigned_agent_can_read && (
+        <p className="mt-1 text-xs text-warning">
+          {attachmentWarningText(attachment.media_type, workspaceCopy[locale])}
+        </p>
+      )}
       {error && <Alert className="mt-1">{error}</Alert>}
       {preview && (
         <AttachmentPreview

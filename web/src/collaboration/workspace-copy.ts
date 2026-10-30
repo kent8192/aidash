@@ -45,6 +45,13 @@ export const workspaceCopy = {
     removeAttachment: "添付を削除",
     uploading: "アップロード中…",
     attachmentError: "添付できませんでした。ファイルは保持しています。",
+    attachmentUnreadable:
+      "この Workspace のエージェントはこのファイルを読めません。",
+    attachmentUnreadableAudio:
+      "この Workspace のエージェントはこの音声を読めません。",
+    attachmentUnreadableImage:
+      "この Workspace のエージェントはこの画像を読めません。",
+    attachmentSendAnyway: "確認して、もう一度送信すると投稿できます。",
     bold: "太字",
     italic: "斜体",
     code: "コード",
@@ -110,6 +117,12 @@ export const workspaceCopy = {
     removeAttachment: "Remove attachment",
     uploading: "Uploading…",
     attachmentError: "Upload failed. Your files have been kept.",
+    attachmentUnreadable: "The agents in this Workspace cannot read this file.",
+    attachmentUnreadableAudio:
+      "The agents in this Workspace cannot read this audio.",
+    attachmentUnreadableImage:
+      "The agents in this Workspace cannot read this image.",
+    attachmentSendAnyway: "Review the warning and send again to post anyway.",
     bold: "Bold",
     italic: "Italic",
     code: "Code",

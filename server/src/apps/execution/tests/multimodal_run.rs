@@ -1372,10 +1372,28 @@ async fn visible_thread_attachment_is_selected_for_the_next_model_request(
 	assert_eq!(status, 200, "{area}");
 	*selected_thread_requests.revision.lock().unwrap() = area["revision"].as_i64().unwrap();
 	let attachment = upload(&app, &token, &workspace, "selected.png", "image/png", PNG).await;
+	assert_eq!(
+		attachment["no_assigned_agent_can_read"], false,
+		"{attachment}"
+	);
+	let pdf = upload(
+		&app,
+		&token,
+		&workspace,
+		"notes.pdf",
+		"application/pdf",
+		b"test file",
+	)
+	.await;
+	assert_eq!(pdf["no_assigned_agent_can_read"], false, "{pdf}");
 	*selected_thread_requests.attachment.lock().unwrap() =
 		Some(attachment["id"].as_str().unwrap().to_owned());
 	let (status, body) = request(&app, &token, "POST", &format!("/api/workspaces/{workspace}/thread-messages"), json!({"content":"Please inspect", "idempotency_key":Uuid::new_v4(), "attachment_ids":[attachment["id"]]})).await;
 	assert_eq!(status, 200, "{body}");
+	assert_eq!(
+		body["attachments"][0]["no_assigned_agent_can_read"], false,
+		"{body}"
+	);
 	let worker = Harness {
 		federation: f.clone(),
 	};
@@ -1427,6 +1445,15 @@ async fn visible_thread_attachment_is_selected_for_the_next_model_request(
 	)
 	.await;
 	assert_eq!(status, 200, "{history}");
+	assert_eq!(
+		history["messages"]
+			.as_array()
+			.unwrap()
+			.iter()
+			.find(|item| item["message"]["content"] == "Please inspect")
+			.unwrap()["attachments"][0]["no_assigned_agent_can_read"],
+		false
+	);
 	let posted = history["messages"]
 		.as_array()
 		.unwrap()
@@ -1559,6 +1586,72 @@ async fn visible_thread_attachment_is_selected_for_the_next_model_request(
 			.contains("this model cannot read image/png through any current route"),
 		"{}",
 		requests[10]
+	);
+	let (status, text_conversation) = request(&app, &token, "POST", "/api/conversations", json!({"title":"Text only", "goal":"Inspect", "target":{"id":"research","version":"1.0.0"}, "target_kind":"agent"})).await;
+	assert_eq!(status, 200, "{text_conversation}");
+	let text_workspace = text_conversation["workspace"]["id"].as_str().unwrap();
+	let text_image = upload(
+		&app,
+		&token,
+		text_workspace,
+		"unreadable.png",
+		"image/png",
+		PNG,
+	)
+	.await;
+	assert_eq!(
+		text_image["no_assigned_agent_can_read"], true,
+		"{text_image}"
+	);
+	let (status, message) = request(
+		&app,
+		&token,
+		"POST",
+		&format!("/api/workspaces/{text_workspace}/thread-messages"),
+		json!({"content":"Image", "idempotency_key":Uuid::new_v4(), "attachment_ids":[text_image["id"]]}),
+	)
+	.await;
+	assert_eq!(status, 200, "{message}");
+	assert_eq!(
+		message["attachments"][0]["no_assigned_agent_can_read"],
+		true
+	);
+	let (status, next_task) = request(
+		&app,
+		&token,
+		"POST",
+		&format!("/api/workspaces/{text_workspace}/tasks"),
+		json!({"title":"Image reader", "description":"Inspect"}),
+	)
+	.await;
+	assert_eq!(status, 200, "{next_task}");
+	let (status, body) = request(
+		&app,
+		&token,
+		"POST",
+		&format!("/api/tasks/{}/delegate", next_task["id"].as_str().unwrap()),
+		json!({"node_id":f.config.deployment, "agent":{"id":"research-peer", "version":"1.0.1"}}),
+	)
+	.await;
+	assert_eq!(status, 200, "{body}");
+	let (status, listing) = request(
+		&app,
+		&token,
+		"GET",
+		&format!("/api/workspaces/{text_workspace}/message-history"),
+		Value::Null,
+	)
+	.await;
+	assert_eq!(status, 200, "{listing}");
+	let listed = listing["messages"]
+		.as_array()
+		.unwrap()
+		.iter()
+		.find(|entry| entry["message"]["content"] == "Image")
+		.unwrap();
+	assert_eq!(
+		listed["attachments"][0]["no_assigned_agent_can_read"], false,
+		"{listing}"
 	);
 	drop(server);
 	cleanup(f, &url, &schema).await;

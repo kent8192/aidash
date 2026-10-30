@@ -50,6 +50,7 @@ impl LinkRecord {
 			filename: self.filename.clone(),
 			media_type: self.media_type.clone(),
 			size_bytes: self.size_bytes,
+			no_assigned_agent_can_read: false,
 		}
 	}
 }

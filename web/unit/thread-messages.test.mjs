@@ -2,6 +2,8 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import {
   mergeMessagePages,
+  attachmentWarningKey,
+  attachmentWarningText,
   submissionFor,
   validAttachments,
   validRunMediaAttachments,
@@ -19,6 +21,23 @@ import {
 const message = (id, content = id) => ({
   message: { id, content, created_at: `2026-09-23T00:00:0${id}Z` },
   thread_id: null,
+});
+
+test("unreadable attachments warn before posting and a changed set warns again", () => {
+  const readable = { id: "a", no_assigned_agent_can_read: false };
+  const unreadable = { id: "b", no_assigned_agent_can_read: true };
+  assert.equal(attachmentWarningKey([readable]), null);
+  const warned = attachmentWarningKey([readable, unreadable]);
+  assert.equal(warned, JSON.stringify(["a", "b"]));
+  assert.notEqual(attachmentWarningKey([unreadable]), warned);
+  const words = {
+    attachmentUnreadable: "file",
+    attachmentUnreadableAudio: "audio",
+    attachmentUnreadableImage: "image",
+  };
+  assert.equal(attachmentWarningText("audio/ogg", words), "audio");
+  assert.equal(attachmentWarningText("image/png", words), "image");
+  assert.equal(attachmentWarningText("application/pdf", words), "file");
 });
 
 test("history is chronological and refreshed messages win over older pages", () => {

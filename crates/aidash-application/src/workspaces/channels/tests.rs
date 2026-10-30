@@ -36,6 +36,7 @@ fn metadata(id: u128) -> ChannelAttachment {
 		filename: format!("{id}.txt"),
 		media_type: "text/plain".into(),
 		size_bytes: 1,
+		no_assigned_agent_can_read: false,
 	}
 }
 fn attachment(key: Uuid) -> AttachmentState {
