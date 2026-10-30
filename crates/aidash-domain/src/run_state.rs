@@ -460,13 +460,13 @@ pub fn encode(state: &RunState, recovery: &RecoveryState) -> Result<Value> {
 }
 pub fn decode(phase: RunPhase, mut pending: Value) -> Result<(RunState, RecoveryState)> {
 	// Older persisted Runs carry a boolean instead of the recovery counter.
-	if let Some(recovery) = pending.get_mut("recovery").and_then(Value::as_object_mut) {
-		if let Some(Value::Bool(recovered)) = recovery.get("lease_recovered") {
-			let recovered = *recovered;
-			recovery.remove("lease_recovered");
-			if recovered {
-				recovery.entry("lease_recoveries").or_insert(Value::from(1));
-			}
+	if let Some(recovery) = pending.get_mut("recovery").and_then(Value::as_object_mut)
+		&& let Some(Value::Bool(recovered)) = recovery.get("lease_recovered")
+	{
+		let recovered = *recovered;
+		recovery.remove("lease_recovered");
+		if recovered {
+			recovery.entry("lease_recoveries").or_insert(Value::from(1));
 		}
 	}
 	// A newer writer may bump the version without declaring a capability; its state
