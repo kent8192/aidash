@@ -215,10 +215,11 @@ impl Connections {
 			return access.finish(Err(Error::Forbidden)).await;
 		}
 		let result: Result<Probe> = async {
-			let resource = aidash_domain::oauth_connections::canonical_resource(&resource)?;
+			// Probe the configured URL as given; the ceiling is keyed by the canonical resource.
+			let canonical = aidash_domain::oauth_connections::canonical_resource(&resource)?;
 			let service = self.service()?;
 			let probe = service.probe(&resource).await?;
-			let scope_ceiling = service.policy.scope_ceiling(&tenant, &resource).await?;
+			let scope_ceiling = service.policy.scope_ceiling(&tenant, &canonical).await?;
 			Ok(Probe {
 				oauth: probe.oauth,
 				scopes_supported: probe.scopes_supported,

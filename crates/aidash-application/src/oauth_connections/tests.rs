@@ -228,6 +228,7 @@ struct OAuth {
 	refreshed: AtomicUsize,
 	revoked: AtomicUsize,
 	mode: AtomicUsize,
+	probed: StdMutex<Vec<String>>,
 }
 fn server() -> AuthorizationServer {
 	AuthorizationServer {
@@ -243,6 +244,7 @@ fn server() -> AuthorizationServer {
 #[async_trait]
 impl OAuthDiscovery for OAuth {
 	async fn protected_resource(&self, r: &str) -> Result<Option<ProtectedResource>> {
+		self.probed.lock().unwrap().push(r.into());
 		Ok(Some(ProtectedResource {
 			resource: r.into(),
 			authorization_servers: vec!["https://auth.example".into()],
@@ -426,6 +428,29 @@ async fn oauth_connections_begin_refuses_a_store_without_connection_support() {
 	assert!(f.repo.rows.lock().await.rows.is_empty());
 	assert!(f.secrets.0.lock().unwrap().is_empty());
 	assert_eq!(f.oauth.exchanged.load(Ordering::SeqCst), 0);
+}
+#[tokio::test]
+async fn oauth_connections_discover_the_configured_url_and_store_the_canonical_resource() {
+	let f = Fixture::new();
+	assert!(
+		f.service
+			.probe("https://mcp.example/mcp/")
+			.await
+			.unwrap()
+			.oauth
+	);
+	let begin = f.begin().await;
+	// A server mounted only at `/mcp/` must be probed there, not at `/mcp`.
+	assert_eq!(
+		*f.oauth.probed.lock().unwrap(),
+		["https://mcp.example/mcp/", "https://mcp.example/mcp/"]
+	);
+	assert_eq!(begin.pending.resource, "https://mcp.example/mcp");
+	let rows = f.repo.rows.lock().await;
+	assert_eq!(
+		rows.rows[&begin.pending.connection].resource,
+		"https://mcp.example/mcp"
+	);
 }
 #[tokio::test]
 async fn oauth_connections_owner_refresh_and_disconnect_lifecycle() {

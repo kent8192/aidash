@@ -298,11 +298,13 @@ export function SecretDisclosure({
         : undefined;
   const endpoint =
     entry.kind === "external_service" ? config.base_url : transport.endpoint;
+  // Probe the configured URL as written; the server checks it is an OAuth resource.
   const resource =
     entry.kind === "tool" &&
     transport.transport === "mcp" &&
-    typeof endpoint === "string"
-      ? canonicalResource(endpoint)
+    typeof endpoint === "string" &&
+    canonicalResource(endpoint)
+      ? endpoint
       : null;
   const probe = useConnectionProbe(
     !secret ? tenant : null,

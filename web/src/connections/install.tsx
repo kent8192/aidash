@@ -89,11 +89,13 @@ export function ConnectionStep({
 }) {
   const canonical = canonicalResource(resource);
   if (!canonical) return null;
+  // Probe and authorize the configured URL as written: a server mounted only at
+  // `/mcp/` may not answer its canonical form. The server derives the identity.
   return (
     <ConnectServer
       key={JSON.stringify([tenant, canonical, declared])}
       tenant={tenant}
-      resource={canonical}
+      resource={resource}
       declared={declared}
       tool={tool}
     />

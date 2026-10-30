@@ -209,9 +209,11 @@ impl Service {
 		s.commit().await?;
 		Ok(rows.into_iter().map(Into::into).collect())
 	}
-	pub async fn probe(&self, resource: &str) -> Result<Probe> {
-		let resource = domain::canonical_resource(resource)?;
-		let prm = self.discovery.protected_resource(&resource).await?;
+	/// `endpoint` is the configured transport URL. Discovery initializes that exact URL: a
+	/// server mounted only at `/mcp/` may not answer its canonical form `/mcp`.
+	pub async fn probe(&self, endpoint: &str) -> Result<Probe> {
+		domain::canonical_resource(endpoint)?;
+		let prm = self.discovery.protected_resource(endpoint).await?;
 		Ok(match prm {
 			None => Probe {
 				oauth: false,
@@ -237,7 +239,10 @@ impl Service {
 		redirect_uri: &Url,
 		return_to: &str,
 	) -> Result<Begin> {
-		let resource = domain::canonical_resource(resource)?;
+		// The canonical form is the Connection's identity and resource indicator; discovery
+		// probes the configured transport URL itself (see `probe`).
+		let endpoint = resource;
+		let resource = domain::canonical_resource(endpoint)?;
 		let declared = if let Some(tool) = tool {
 			let entry = lookup.definition(&tool.id, &tool.version).await?;
 			if entry.kind != "tool" {
@@ -269,10 +274,10 @@ impl Service {
 		};
 		let prm = self
 			.discovery
-			.protected_resource(&resource)
+			.protected_resource(endpoint)
 			.await?
 			.ok_or_else(|| Error::Invalid("this MCP server does not require OAuth".into()))?;
-		if prm.resource != resource {
+		if domain::canonical_resource(&prm.resource)? != resource {
 			return Err(Error::Invalid("OAuth resource metadata mismatch".into()));
 		}
 		let issuer = prm.authorization_servers.first().ok_or_else(|| {
