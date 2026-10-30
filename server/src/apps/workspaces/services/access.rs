@@ -133,6 +133,9 @@ impl Lease {
 	}
 }
 impl NativeLease {
+	pub(crate) fn access_mut(&mut self) -> &mut Access {
+		&mut self.0
+	}
 	pub(crate) fn tx(&mut self) -> &mut dyn TransactionExecutor {
 		self.0.tx.as_mut()
 	}

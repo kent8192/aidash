@@ -29,6 +29,9 @@ const ACTIVE_HOLD: &str = "NOT EXISTS (SELECT 1 FROM core_retention_files f \
 	JOIN core_retention_holds h ON h.id = f.hold_id \
 	WHERE f.file_id = core_objects.id AND f.tenant = core_objects.tenant \
 	AND (h.expires_at IS NULL OR h.expires_at > CURRENT_TIMESTAMP))";
+/// A Thread Attachment object becomes reclaimable after its row is deleted.
+const RECLAIMABLE_WORKING: &str = "(kind = 'superseded_working' OR (kind = 'thread_attachment' AND NOT EXISTS \
+	(SELECT 1 FROM channel_attachments a WHERE a.tenant = core_objects.tenant AND a.object_id = core_objects.id)))";
 pub(crate) struct Repository<'a> {
 	store: &'a Store,
 	orphan_cursor: tokio::sync::Mutex<Option<tokio::fs::ReadDir>>,
@@ -80,10 +83,7 @@ let ids: Vec<Uuid> = {
 					&Query::select()
 						.column(Alias::new("id"))
 						.from(Alias::new("core_objects"))
-						.and_where(
-							Expr::col(Alias::new("kind"))
-								.eq(reinhardt::query::Expr::value("superseded_working")),
-						)
+						.and_where(Expr::cust(RECLAIMABLE_WORKING))
 						.and_where(
 							Expr::col(Alias::new("id")).gt(Expr::value(query_bind_1.to_owned())),
 						)
@@ -262,8 +262,7 @@ impl ReclamationScope for Scope<'_> {
 							Expr::col(Alias::new("id")).eq(Expr::value(query_bind_1.to_owned())),
 						)
 						.and_where(
-							Expr::col(Alias::new("kind"))
-								.eq(reinhardt::query::Expr::value("superseded_working")),
+							Expr::cust(RECLAIMABLE_WORKING),
 						)
 						// A hold written between the selection and this lock refuses the
 						// erase instead of dropping the bytes a reference still names.

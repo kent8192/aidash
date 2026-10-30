@@ -150,7 +150,8 @@ pub struct AttachmentState {
 	pub media_type: String,
 	pub sha256: String,
 	pub size_bytes: i64,
-	pub content: Vec<u8>,
+	pub content: Option<Vec<u8>>,
+	pub object_id: Option<Uuid>,
 	pub message_id: Option<Uuid>,
 }
 impl AttachmentState {

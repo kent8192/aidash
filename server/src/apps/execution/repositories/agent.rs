@@ -746,7 +746,7 @@ impl ExecutionAuthority for Authority<'_> {
 		projection: aidash_domain::projection::ProjectionVersion,
 	) -> Result<HumanMediaBatch> {
 		self.guard
-			.human_message_media(messages, model, projection)
+			.human_message_media(&self.federation.store, messages, model, projection)
 			.await
 			.map_err(Into::into)
 	}

@@ -15,24 +15,23 @@ struct Attachment {
 	media_type: String,
 	sha256: String,
 	size_bytes: i64,
-	content: Vec<u8>,
+	content: Option<Vec<u8>>,
+	object_id: Option<Uuid>,
 }
 crate::native_record!(Attachment {
 	filename,
 	media_type,
 	sha256,
 	size_bytes,
-	content
+	content,
+	object_id
 });
-
-pub(crate) struct Attachments<'a> {
-	pub(crate) tx: &'a mut crate::database::native::Transaction,
-}
 pub(crate) struct ScopedMedia<'a> {
 	pub(crate) access: &'a mut Access,
+	pub(crate) store: &'a Store,
 }
 #[async_trait]
-impl MediaAttachments for Attachments<'_> {
+impl MediaAttachments for ScopedMedia<'_> {
 	async fn attachments(
 		&mut self,
 		workspace: Uuid,
@@ -41,7 +40,15 @@ impl MediaAttachments for Attachments<'_> {
 		let result: NativeResult<Vec<MediaAttachment>> = async {
 			let query = Query::select()
 				.columns(
-					["filename", "media_type", "sha256", "size_bytes", "content"].map(Alias::new),
+					[
+						"filename",
+						"media_type",
+						"sha256",
+						"size_bytes",
+						"content",
+						"object_id",
+					]
+					.map(Alias::new),
 				)
 				.from(Alias::new("channel_attachments"))
 				.and_where(
@@ -55,39 +62,40 @@ impl MediaAttachments for Attachments<'_> {
 				.order_by(Alias::new("position"), Order::Asc)
 				.order_by(Alias::new("id"), Order::Asc)
 				.to_string(PostgresQueryBuilder);
-			let attachments: Vec<Attachment> = crate::database::native::query_as(&query)
-				.columns(&["filename", "media_type", "sha256", "size_bytes", "content"])
+			let rows: Vec<Attachment> = crate::database::native::query_as(&query)
+				.columns(&[
+					"filename",
+					"media_type",
+					"sha256",
+					"size_bytes",
+					"content",
+					"object_id",
+				])
 				.bind(workspace)
 				.bind(message)
-				.fetch_all(&mut **self.tx)
+				.fetch_all(&mut **self.access.tx)
 				.await?;
-			Ok(attachments
-				.into_iter()
-				.map(|row| MediaAttachment {
+			let mut attachments = Vec::with_capacity(rows.len());
+			for row in rows {
+				let content = if let Some(id) = row.object_id {
+					read_attachment_object(self.store, self.access, id, &row.sha256, row.size_bytes)
+						.await?
+				} else {
+					row.content
+						.ok_or_else(|| crate::Error::NotFound("attachment unavailable".into()))?
+				};
+				attachments.push(MediaAttachment {
 					filename: row.filename,
 					media_type: row.media_type,
 					sha256: row.sha256,
 					size_bytes: row.size_bytes,
-					content: row.content,
-				})
-				.collect())
+					content,
+				});
+			}
+			Ok(attachments)
 		}
 		.await;
 		result.map_err(Into::into)
-	}
-}
-#[async_trait]
-impl MediaAttachments for ScopedMedia<'_> {
-	async fn attachments(
-		&mut self,
-		workspace: Uuid,
-		message: Uuid,
-	) -> Result<Vec<MediaAttachment>> {
-		Attachments {
-			tx: &mut self.access.tx,
-		}
-		.attachments(workspace, message)
-		.await
 	}
 }
 #[async_trait]
@@ -99,6 +107,26 @@ impl AuthorizedMediaScope for ScopedMedia<'_> {
 			.map(|_| ())
 			.map_err(Into::into)
 	}
+}
+pub(crate) async fn read_attachment_object(
+	store: &Store,
+	access: &mut Access,
+	id: Uuid,
+	digest: &str,
+	size: i64,
+) -> NativeResult<Vec<u8>> {
+	let size =
+		u64::try_from(size).map_err(|_| crate::Error::Conflict("OBJECT_INTEGRITY".into()))?;
+	let entry = crate::apps::execution::capabilities::contracts::FileEntry {
+		file_id: id,
+		path: String::new(),
+		digest: digest.to_owned(),
+		size,
+		media_type: String::new(),
+		scope: crate::apps::execution::capabilities::contracts::FileScope::Working,
+		provenance: serde_json::Value::Null,
+	};
+	store.capabilities.read(access, &entry).await
 }
 
 use crate::apps::execution::capabilities::{contracts::FileEntry, service, sessions};

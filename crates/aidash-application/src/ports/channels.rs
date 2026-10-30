@@ -30,7 +30,15 @@ pub struct HistoryRow {
 /// The outer owner admits the actor, retains policy/credential locks, and finishes
 /// exactly once. Failures roll back writes while retaining the existing denial audit.
 #[async_trait]
-pub trait ChannelScope: Send {
+pub trait AttachmentObjects: Send {
+	/// Store bytes as a Tenant-owned immutable object within the current transaction.
+	async fn put_object(&mut self, bytes: &[u8], sha256: &str) -> Result<Uuid>;
+	/// Read immutable bytes under the caller's existing authorization transaction.
+	async fn read_object(&mut self, id: Uuid, sha256: &str, size: i64) -> Result<Vec<u8>>;
+}
+
+#[async_trait]
+pub trait ChannelScope: AttachmentObjects + Send {
 	fn sender(&self) -> String;
 	fn principal(&self) -> String;
 	async fn message(&mut self, workspace: Uuid, id: Uuid) -> Result<Message>;

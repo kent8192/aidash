@@ -503,9 +503,30 @@ impl HarnessManagement {
 					"Run message {} attachment: {}",
 					record.seq, attachment.filename
 				)));
+				let bytes = if let Some(object_id) = attachment.object_id {
+					crate::apps::workspaces::repositories::media::read_attachment_object(
+						&f.store,
+						lease.access_mut(),
+						object_id,
+						&attachment.sha256,
+						attachment.size_bytes,
+					)
+					.await?
+				} else {
+					attachment
+						.content
+						.clone()
+						.ok_or_else(|| Error::NotFound("attachment unavailable".into()))?
+				};
+				if i64::try_from(bytes.len()).ok() != Some(attachment.size_bytes)
+					|| crate::apps::execution::repositories::capability_objects::digest(&bytes)
+						!= attachment.sha256
+				{
+					return Err(Error::Conflict("OBJECT_INTEGRITY".into()));
+				}
 				parts.push(crate::provider::ContentPart::from_media(
 					&attachment.media_type,
-					attachment.content.clone(),
+					bytes,
 				)?);
 			}
 			let tenant = f.store.run_tenant(run.id).await?;

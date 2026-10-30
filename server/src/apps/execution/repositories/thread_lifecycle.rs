@@ -18,7 +18,7 @@ use aidash_domain::{
 };
 use async_trait::async_trait;
 use reinhardt::query::{
-	Alias, Expr, ExprTrait as _, LockType, Order, PostgresQueryBuilder, Query,
+	Alias, Condition, Expr, ExprTrait as _, LockType, Order, PostgresQueryBuilder, Query,
 	QueryStatementBuilder as _, SimpleExpr,
 };
 use serde_json::Value;
@@ -130,6 +130,32 @@ impl ThreadScope for Scope<'_> {
 		result
 			.map(|areas| areas.into_iter().map(Into::into).collect())
 			.map_err(Into::into)
+	}
+	async fn delete_attachments(
+		&mut self,
+		workspace: Uuid,
+		thread: Uuid,
+		root: Uuid,
+	) -> Result<()> {
+		let replies = Query::select()
+			.column(Alias::new("message_id"))
+			.from(Alias::new("channel_message_context"))
+			.and_where(Expr::col(Alias::new("workspace_id")).eq(Expr::value(workspace)))
+			.and_where(Expr::col(Alias::new("thread_id")).eq(Expr::value(thread)))
+			.to_owned();
+		let query = Query::delete()
+			.from_table(Alias::new("channel_attachments"))
+			.and_where(Expr::col(Alias::new("workspace_id")).eq(Expr::value(workspace)))
+			.cond_where(
+				Condition::any()
+					.add(Expr::col(Alias::new("message_id")).eq(Expr::value(root)))
+					.add(Expr::col(Alias::new("message_id")).in_subquery(replies)),
+			)
+			.to_string(PostgresQueryBuilder);
+		crate::database::native::query(&query)
+			.execute(&mut **self.access.tx)
+			.await?;
+		Ok(())
 	}
 	async fn cancel_generation(&mut self, area: &Area) -> Result<()> {
 		let result: NativeResult<()> = async {

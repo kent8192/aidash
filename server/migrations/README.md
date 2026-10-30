@@ -725,3 +725,13 @@ CHECKs bound the reason to 1 to 1000 characters and tie `identity_id` to a brows
 `execution/0078_run_safety_stops_row_level_security` adds the tenant policy template
 through `RunSQL`, and `execution/0079_run_safety_stops_state` is the generated state-only
 snapshot that leaves the physical constraints and indexes to `0077`.
+
+`workspaces/0015_attachment_objects` adds an immutable object reference and
+optional decoded-media measurements to Thread Attachments. Existing inline bytes
+remain readable until startup backfill verifies and moves them; new attachments
+use `core_objects`. PostgreSQL nullability is changed with `RunSQL` because the
+pinned typed `AlterColumn` cannot express it (#6803). Reversal refuses while any
+attachment has no inline content. `0016_attachment_content_state` records the new fields and nullable bytea in
+ORM state. The object reference is Tenant-scoped and cascades
+on object deletion, allowing a deleted Tenant's object purge to run before row
+purge. The object store's intents recover uncommitted files after a crash.

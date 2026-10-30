@@ -189,7 +189,7 @@ pub async fn upload(
 			if existing.sha256 != digest
 				|| existing.filename != input.filename
 				|| existing.media_type != input.media_type
-				|| existing.content != content
+				|| attachment_bytes(scope, &existing).await? != content
 			{
 				return Err(Error::Conflict(
 					"attachment idempotency key was reused with different content or metadata"
@@ -209,6 +209,27 @@ pub async fn upload(
 	}
 	Ok(attachment.metadata())
 }
+async fn attachment_bytes(
+	scope: &mut dyn ChannelScope,
+	attachment: &AttachmentState,
+) -> Result<Vec<u8>> {
+	let bytes = if let Some(id) = attachment.object_id {
+		scope
+			.read_object(id, &attachment.sha256, attachment.size_bytes)
+			.await?
+	} else {
+		attachment
+			.content
+			.clone()
+			.ok_or_else(|| Error::NotFound("attachment unavailable".into()))?
+	};
+	if i64::try_from(bytes.len()).ok() != Some(attachment.size_bytes)
+		|| format!("{:x}", Sha256::digest(&bytes)) != attachment.sha256
+	{
+		return Err(Error::Conflict("OBJECT_INTEGRITY".into()));
+	}
+	Ok(bytes)
+}
 pub async fn download(
 	scope: &mut dyn ChannelScope,
 	workspace: Uuid,
@@ -222,7 +243,8 @@ pub async fn download(
 		.message_id
 		.ok_or_else(|| Error::NotFound("attachment unavailable".into()))?;
 	scope.message(workspace, message).await?;
-	Ok((attachment.metadata(), attachment.content))
+	let content = attachment_bytes(scope, &attachment).await?;
+	Ok((attachment.metadata(), content))
 }
 
 pub async fn history(

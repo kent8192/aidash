@@ -1600,13 +1600,14 @@ impl Guard {
 
 	pub async fn human_message_media(
 		&self,
+		store: &Store,
 		messages: &[(i64, Uuid, usize)],
 		model: &crate::registry::ModelConfig,
 		projection: aidash_domain::projection::ProjectionVersion,
 	) -> Result<HumanMediaBatch> {
 		let mut access = self.access.write().await;
 		aidash_application::execution::media::authorized(
-			&mut crate::bootstrap::scoped_media(&mut access),
+			&mut crate::bootstrap::scoped_media(&mut access, store),
 			self.run.workspace_id,
 			messages,
 			model,
