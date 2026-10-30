@@ -749,7 +749,6 @@ rollback guards remain intact, with one head per app for future generation.
 with the Live preview and Safety Stop history ending in
 `execution/0080_invocation_delivery`.
 `federation/0020_node_preview_origin_merge` joins Node registration recovery
-ownership with `federation/0013_registered_preview_origin` and the independent
-`federation/0007_model_state` snapshot. Both are empty
+ownership with `federation/0013_registered_preview_origin`. Both are empty
 state-only migrations; existing identities, schema changes and rollback guards
 remain intact.

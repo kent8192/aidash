@@ -6,6 +6,5 @@ pub(super) fn migration() -> Migration {
 	Migration::new("0020_node_preview_origin_merge", "federation")
 		.add_dependency("federation", "0019_node_registration_recovery_ownership")
 		.add_dependency("federation", "0013_registered_preview_origin")
-		.add_dependency("federation", "0007_model_state")
 		.state_only(true)
 }
