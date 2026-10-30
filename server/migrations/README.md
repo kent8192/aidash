@@ -2,7 +2,9 @@
 
 `execution/0080_lease_recoveries` updates the physical `runs.pending` default,
 and replaces the activation trigger function. PostgreSQL function replacement
-is a SQL exception that Reinhardt cannot express. Existing Runs are decoded with their former Lease Recovery flag by the server; rollback does not rewrite stored counters for older binaries.
+is a SQL exception that Reinhardt cannot express. The server decodes the
+former Lease Recovery flag of existing Runs, so the migration writes no Run
+rows; rollback does not rewrite stored counters for older binaries.
 
 Issue #296 adds write-only Tenant Secrets in `identity/0036` through `0038`
 and durable operation egress budgets and audits in `execution/0046` through
