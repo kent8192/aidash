@@ -8,6 +8,7 @@ BEGIN
  IF EXISTS (SELECT 1 FROM agent_knowledge WHERE image_index IS NOT NULL OR image_0 IS NOT NULL OR image_1 IS NOT NULL OR image_2 IS NOT NULL OR image_3 IS NOT NULL OR image_4 IS NOT NULL OR image_5 IS NOT NULL OR image_6 IS NOT NULL OR image_7 IS NOT NULL)
  OR EXISTS (SELECT 1 FROM registry WHERE kind = 'agent' AND
    (metadata::text LIKE '%"reference_embedding"%' OR metadata::text LIKE '%aidash.workspace_search%' OR metadata::text LIKE '%aidash.workspace_read%1.1.0%'))
+ OR EXISTS (SELECT 1 FROM registry WHERE kind = 'tool' AND metadata #>> '{config,operation}' = 'workspace_search')
  OR EXISTS (SELECT 1 FROM agent_drafts WHERE entry::text LIKE '%"reference_embedding"%' OR entry::text LIKE '%aidash.workspace_search%')
  OR runs_in_use THEN
   RAISE EXCEPTION 'reference image data or pinned image retrieval is in use; rollback requires a compatible version';
@@ -242,3 +243,15 @@ BEGIN
 EXCEPTION WHEN OTHERS THEN RETURN false;
 END
 $$;
+
+-- Restore the descriptor contract only after the guard has rejected live uses.
+DO $migration$
+DECLARE original text; restored text;
+BEGIN
+ original := pg_get_functiondef('public.aidash_descriptor_is_valid(jsonb)'::regprocedure);
+ restored := replace(original,
+  'WHEN ''workspace_search'' THEN ''core.workspace@1'' WHEN ''workspace_wait'' THEN ''core.workspace@1''',
+  'WHEN ''workspace_wait'' THEN ''core.workspace@1''');
+ IF restored = original THEN RAISE EXCEPTION 'Workspace descriptor rollback anchor missing'; END IF;
+ EXECUTE restored;
+END $migration$;

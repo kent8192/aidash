@@ -20,3 +20,15 @@ BEGIN
  IF extended = original THEN RAISE EXCEPTION 'Agent default tools anchor missing'; END IF;
  EXECUTE extended;
 END $migration$;
+
+-- The built-in descriptor is part of the same retrieval capability.
+DO $migration$
+DECLARE original text; extended text;
+BEGIN
+ original := pg_get_functiondef('public.aidash_descriptor_is_valid(jsonb)'::regprocedure);
+ extended := replace(original,
+  'WHEN ''workspace_wait'' THEN ''core.workspace@1''',
+  'WHEN ''workspace_search'' THEN ''core.workspace@1'' WHEN ''workspace_wait'' THEN ''core.workspace@1''');
+ IF extended = original THEN RAISE EXCEPTION 'Workspace descriptor anchor missing'; END IF;
+ EXECUTE extended;
+END $migration$;
