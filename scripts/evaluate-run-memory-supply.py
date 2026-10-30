@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Measure whether native memory reaches a live Run's context (#122).
+r"""Measure whether native memory reaches a live Run's context (#122).
 
 For each case in tests/evaluation/memory-supply.toml and each arm, the
 evaluator creates a Workspace with a semantic index, a fresh memory
@@ -18,10 +18,10 @@ the Run against every required Unit at its current revision, and never against
 a superseded revision or a deleted Unit. The embedding is the fixture's 8-dim
 hash, so retrieval is keyword-driven; this measures supply, not semantic recall.
 
-  AIDASH_EVALUATION_TOKEN=... AIDASH_EVALUATION_SUBJECT_TOKEN=... \\
-  python3 scripts/evaluate-run-memory-supply.py --base-url http://127.0.0.1:18083 \\
-    --tenant TENANT --model MODEL_ID@VERSION \\
-    --embedding-endpoint http://host.docker.internal:18777/v1 --repeats 3 \\
+  AIDASH_EVALUATION_TOKEN=... AIDASH_EVALUATION_SUBJECT_TOKEN=... \
+  python3 scripts/evaluate-run-memory-supply.py --base-url http://127.0.0.1:18083 \
+    --tenant TENANT --model MODEL_ID@VERSION \
+    --embedding-endpoint http://host.docker.internal:18777/v1 --repeats 3 \
     --output private/evaluation/memory-supply.json
 """
 import argparse
