@@ -484,3 +484,15 @@ fn lease_recovery_counter_defaults_to_zero_and_only_persists_nonzero() {
 		3
 	);
 }
+
+#[test]
+fn legacy_lease_flags_are_read_and_saved_as_counters() {
+	for (flag, count) in [(false, 0), (true, 1)] {
+		let mut pending = envelope(json!({}));
+		pending["recovery"]["lease_recovered"] = json!(flag);
+		let (state, recovery) = decode(RunPhase::Ready, pending).unwrap();
+		assert_eq!(recovery.lease_recoveries, count);
+		let saved = encode(&state, &recovery).unwrap();
+		assert!(saved["recovery"].get("lease_recovered").is_none());
+	}
+}

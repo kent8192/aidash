@@ -1,13 +1,4 @@
 SET LOCAL search_path = public, pg_catalog;
--- The data migration reaches Runs across Tenants under the existing RLS policy.
-SET LOCAL aidash.scope = 'deployment';
-
--- Rewrite legacy recovery state before installing the new trigger comparison.
-UPDATE runs SET pending = CASE
-    WHEN pending #> '{recovery,lease_recovered}' = 'true'::jsonb
-    THEN jsonb_set(pending #- '{recovery,lease_recovered}', '{recovery,lease_recoveries}', '1'::jsonb, true)
-    ELSE pending #- '{recovery,lease_recovered}' END
-WHERE pending #> '{recovery,lease_recovered}' IS NOT NULL;
 ALTER TABLE runs ALTER COLUMN pending SET DEFAULT '{"data": {}, "recovery": {"retry": null}, "state_version": 1}'::jsonb;
 
 CREATE OR REPLACE FUNCTION public.aidash_activation_trigger() RETURNS trigger
