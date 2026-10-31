@@ -1,5 +1,7 @@
 // reinhardt-migration-source: 1
 use reinhardt::db::migrations::prelude::*;
+// Reinhardt has no typed operations for PostgreSQL RLS policies or FORCE RLS;
+// the reversible SQL assets follow the existing Tenant isolation migrations.
 pub(super) fn migration() -> Migration {
 	Migration::new("0083_subnodes_row_level_security", "execution")
 		.add_dependency("execution", "0082_subnodes")

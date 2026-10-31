@@ -46,6 +46,7 @@ Constraint::Check { name: "subnodes_lifecycle".into(), expression: "(state = 'ac
                 ColumnDefinition::new("added_at", FieldType::TimestampTz).with_not_null(true)
             ],
             constraints: vec![Constraint::PrimaryKey { name: "subnode_members_pkey".into(), columns: vec!["subnode_id".into(), "agent_id".into()] },
+Constraint::ForeignKey { name: "subnode_members_tenant_fkey".into(), columns: vec!["tenant".into()], referenced_table: "tenants".into(), referenced_columns: vec!["name".into()], on_delete: ForeignKeyAction::NoAction, on_update: ForeignKeyAction::NoAction, deferrable: None },
 Constraint::ForeignKey { name: "subnode_members_subnode_fkey".into(), columns: vec!["tenant".into(),"subnode_id".into()], referenced_table: "subnodes".into(), referenced_columns: vec!["tenant".into(),"id".into()], on_delete: ForeignKeyAction::Cascade, on_update: ForeignKeyAction::NoAction, deferrable: None },
 Constraint::ForeignKey { name: "subnode_members_added_by_fkey".into(), columns: vec!["tenant".into(),"added_by_run_id".into()], referenced_table: "runs".into(), referenced_columns: vec!["tenant".into(),"id".into()], on_delete: ForeignKeyAction::NoAction, on_update: ForeignKeyAction::NoAction, deferrable: None }],
             without_rowid: None, interleave_in_parent: None, partition: None,
@@ -61,6 +62,7 @@ Constraint::ForeignKey { name: "subnode_members_added_by_fkey".into(), columns: 
                 ColumnDefinition::new("created_at", FieldType::TimestampTz).with_not_null(true)
             ],
             constraints: vec![Constraint::PrimaryKey { name: "subnode_operation_receipts_pkey".into(), columns: vec!["run_id".into(), "call_key".into()] },
+Constraint::ForeignKey { name: "subnode_operation_receipts_tenant_fkey".into(), columns: vec!["tenant".into()], referenced_table: "tenants".into(), referenced_columns: vec!["name".into()], on_delete: ForeignKeyAction::NoAction, on_update: ForeignKeyAction::NoAction, deferrable: None },
 Constraint::ForeignKey { name: "subnode_operation_receipts_run_fkey".into(), columns: vec!["tenant".into(),"run_id".into()], referenced_table: "runs".into(), referenced_columns: vec!["tenant".into(),"id".into()], on_delete: ForeignKeyAction::Cascade, on_update: ForeignKeyAction::NoAction, deferrable: None }],
             without_rowid: None, interleave_in_parent: None, partition: None,
         })
