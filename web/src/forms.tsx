@@ -467,6 +467,12 @@ export function EntityForm({
                             ...(s("wire_api") === "responses"
                               ? { wire_api: "responses" }
                               : {}),
+                            // Native lets new Agents default to structured@3 (#532).
+                            projection_versions: [
+                              "legacy",
+                              "ordered",
+                              "native",
+                            ],
                           }
                         : {}),
                     model_id: s("model_id"),

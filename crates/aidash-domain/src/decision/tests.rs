@@ -211,6 +211,48 @@ fn threshold_is_inclusive_and_result_precedes_call() {
 	assert_eq!(branch(half, half, half), Branch::Keep);
 }
 #[test]
+fn the_fit_rule_is_an_opt_in_alternative_for_compaction_only() {
+	let mut fit = config();
+	fit.rule = FIT_RULE.into();
+	fit.validate().unwrap();
+	assert_ne!(
+		fit.contract_digest().unwrap(),
+		config().contract_digest().unwrap()
+	);
+	assert!(Hook::Compaction.allows_rule(RULE));
+	for hook in [
+		Hook::Approval,
+		Hook::ContextSelection,
+		Hook::ApprovalObservation,
+	] {
+		assert!(!hook.allows_rule(FIT_RULE), "{hook:?}");
+	}
+}
+#[test]
+fn fit_order_ranks_kept_unprotected_results_below_the_ceiling_lowest_first() {
+	let p = |value| Probability::new(value).unwrap();
+	let candidate = |history_index, keep_result, branch, protected| FitCandidate {
+		history_index,
+		keep_result: p(keep_result),
+		branch,
+		protected,
+	};
+	let order = fit_order(&[
+		candidate(1, 0.55, Branch::Keep, false),
+		candidate(3, 0.51, Branch::Keep, false),
+		// Already below the threshold: `branch` dropped or truncated it.
+		candidate(5, 0.30, Branch::Drop, false),
+		candidate(7, 0.51, Branch::Keep, false),
+		// At the ceiling: never truncated, however tight the window.
+		candidate(9, FIT_CEILING, Branch::Keep, false),
+		// Protected tail.
+		candidate(11, 0.40, Branch::Keep, true),
+		candidate(13, 0.69, Branch::Keep, false),
+	]);
+	// Lowest keep probability first, older history first on ties.
+	assert_eq!(order, vec![3, 7, 1, 13]);
+}
+#[test]
 fn narrowing_cannot_increase_deletion_and_intersections_preserve_both_constraints() {
 	let c = config();
 	let a = Restrictions {
@@ -551,7 +593,7 @@ mod pruning_rules {
 	fn legacy_removes_dropped_events_and_truncates_long_results_only() {
 		let history = vec![
 			tool(1, "a", "short"),
-			tool(2, "b", &"x".repeat(500)),
+			tool(2, "b", &"x".repeat(1000)),
 			tool(3, "c", "short"),
 		];
 		let units = Units::of(&history, false);
@@ -567,5 +609,38 @@ mod pruning_rules {
 		assert_eq!((pruned.removed, pruned.truncated), (1, 1));
 		assert_eq!(pruned.history.len(), 2);
 		assert_eq!(pruned.history[0], history[0]);
+	}
+
+	#[test]
+	fn truncation_never_grows_a_result() {
+		let history = vec![
+			tool(1, "a", &"x".repeat(421)),
+			tool(2, "b", &"x".repeat(1000)),
+		];
+		let units = Units::of(&history, false);
+		let pruned = apply(
+			&history,
+			&BTreeMap::from([(0, Branch::TruncateResult), (1, Branch::TruncateResult)]),
+			&units,
+		);
+		assert_eq!(pruned.truncated, 1);
+		assert_eq!(pruned.history[0], history[0]);
+		let ContextEvent::Tool { result, .. } = &pruned.history[1].event else {
+			panic!("tool expected");
+		};
+		assert!(result.as_str().unwrap().chars().count() < 1000);
+		assert!(crate::decision::pruning::truncated_result(result));
+	}
+
+	#[test]
+	fn the_pre_626_truncation_marker_is_still_recognized() {
+		let legacy = json!(format!(
+			"{}\n[decision compaction truncated 200 chars of this tool result; full result remains in the execution journal]",
+			"x".repeat(300)
+		));
+		assert!(crate::decision::pruning::truncated_result(&legacy));
+		assert!(!crate::decision::pruning::truncated_result(&json!(
+			"plain result"
+		)));
 	}
 }

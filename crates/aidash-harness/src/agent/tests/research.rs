@@ -615,7 +615,7 @@ async fn a_summary_that_absorbed_an_expired_provider_result_is_discarded_without
 
 fn cut(head: &str) -> Value {
 	json!(format!(
-		"{head}\n[decision compaction truncated 2000 chars of this tool result; full result remains in the execution journal]"
+		"{head}\n[compaction kept only these first 300 of 2300 characters to fit the context window; rely on them and on what you already concluded, and call the tool again only if the rest is still needed verbatim]"
 	))
 }
 

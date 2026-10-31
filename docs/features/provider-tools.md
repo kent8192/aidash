@@ -71,12 +71,12 @@ the Run-linked Usage Records remain the cost ledger. No separate tool Request
 Estimate or duplicate cost charge is manufactured. URLs, snippets and Fusion
 results never create Research Sources, Evidence fragments or Source citations.
 
-Registry migration `0050_provider_tools` extends the installed Tool descriptor and
+Registry migration `0053_provider_tools` extends the installed Tool descriptor and
 Agent Binding validation functions while preserving the earlier contracts and
 their function identities. PostgreSQL function bodies require DDL through
 Reinhardt's `RunSQL`; no application data is rewritten. Downgrade is refused while
 immutable definitions or retained Run snapshots require Provider tools. Execution
-migration `0082_provider_tool_usage` stores reported tool counts as nullable JSONB.
+migration `0084_provider_tool_usage` stores reported tool counts as nullable JSONB.
 
 ## OpenRouter references
 
@@ -175,10 +175,10 @@ to the Run's signed shell container.
 | `files`                                | API-key-wide workspace access, indefinite storage and no configurable per-call file count, size or path limits; mandatory Binding bounds cannot be guaranteed.                                        |
 | `image_generation`                     | The documented tool has no enforceable image-count parameter; size/options depend on the chosen image model. A bounded image contract is needed before adding it. The outer broker remains text-only. |
 
-Registry migration `0051_provider_warning_tools` extends the previous closed union
+Registry migration `0054_provider_warning_tools` extends the previous closed union
 without replacing old validation contracts. Identity migration
-`0045_provider_warning_acknowledgment` adds the nullable exact disclosure to
-approval history; execution migration `0083_provider_container` adds the nullable
+`0048_provider_warning_acknowledgment` adds the nullable exact disclosure to
+approval history; execution migration `0085_provider_container` adds the nullable
 Run pin. Existing approvals and Runs acquire neither acknowledgment nor container
 implicitly.
 

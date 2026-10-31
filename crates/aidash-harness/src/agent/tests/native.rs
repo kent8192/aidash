@@ -341,6 +341,10 @@ async fn native_usage_records_carry_projection_version_three(mut canonical: Fixt
 		panic!("one Usage Record per attempt")
 	};
 	assert_eq!(dispatch.projection_version, 3);
+	assert_eq!(
+		dispatch.harness_contract,
+		aidash_domain::harness_contract::HarnessContract::Legacy.number()
+	);
 }
 
 #[rstest]
@@ -645,5 +649,102 @@ async fn the_native_summary_stage_absorbs_whole_turns_before_inference(mut fixtu
 	assert_eq!(
 		request.request_estimate_with_snapshot(&calibrated.snapshot),
 		Some(calibrated.estimate.clone())
+	);
+}
+
+fn structured(fixture: &mut Fixture, contract: aidash_domain::harness_contract::HarnessContract) {
+	native(fixture);
+	Arc::get_mut(&mut fixture.backend.0)
+		.unwrap()
+		.harness_contract = contract;
+}
+
+#[rstest]
+#[tokio::test]
+async fn structured_native_moves_harness_requirements_to_the_last_aidash_envelope(
+	mut canonical: Fixture,
+) {
+	// Arrange
+	structured(
+		&mut canonical,
+		aidash_domain::harness_contract::HarnessContract::Structured1,
+	);
+	{
+		let state = Arc::get_mut(&mut canonical.backend.0).unwrap();
+		state.scoped = true;
+		state.auto_judging = true;
+	}
+	canonical
+		.run
+		.context
+		.push(ContextEvent::RunMessageReadRequired {
+			message_ids: vec![Uuid::from_u128(7)],
+		});
+	// Act
+	let _ = advance_sources(&mut canonical).await;
+	// Assert
+	let requests = canonical.backend.0.requests.lock().unwrap();
+	let request = &requests[0];
+	let expected = aidash_domain::harness_contract::system_text(
+		aidash_domain::harness_contract::HarnessContract::Structured1,
+		ProjectionVersion::Native,
+		"Do the task",
+		&[],
+		"",
+	);
+	assert_eq!(request.instructions, expected);
+	assert!(
+		!request
+			.instructions
+			.contains(aidash_application::capabilities::approvals::AUTO_MODE_INSTRUCTION.trim())
+	);
+	assert!(!request.instructions.contains("Run-message catch-up"));
+	assert!(!request.instructions.contains("Media intake is continuing"));
+	let body = request.input_body();
+	let messages = body["messages"].as_array().unwrap();
+	let content = messages.last().unwrap()["content"]
+		.as_array()
+		.expect("the step data and the harness envelope are separate text parts");
+	let harness: Value = serde_json::from_str(
+		content.last().unwrap()["text"]
+			.as_str()
+			.expect("the last part is the harness envelope"),
+	)
+	.unwrap();
+	assert_eq!(harness["source"], "harness");
+	assert_eq!(harness["provenance"], "aidash");
+	assert_eq!(harness["trust"], "aidash");
+	assert!(harness["revision"].is_null());
+	assert_eq!(
+		harness["content"]["turn_instructions"],
+		json!([aidash_application::capabilities::approvals::AUTO_MODE_INSTRUCTION.trim()])
+	);
+	assert_eq!(harness["content"]["markers"].as_array().unwrap().len(), 1);
+	assert_eq!(harness["content"].as_object().unwrap().len(), 2);
+	let step = content[0]["text"].as_str().unwrap();
+	assert!(!step.contains("\"markers\""));
+	assert!(!step.contains("turn_instructions"));
+	assert!(!step.contains("run_message_read_instruction"));
+}
+
+#[rstest]
+#[tokio::test]
+async fn structured_usage_records_carry_the_pinned_contract_version(mut canonical: Fixture) {
+	// Arrange
+	structured(
+		&mut canonical,
+		aidash_domain::harness_contract::HarnessContract::Structured2,
+	);
+	// Act
+	assert!(advance_sources(&mut canonical).await.is_err());
+	// Assert
+	let usage = canonical.backend.0.usage.lock().unwrap();
+	let [(dispatch, _)] = usage.as_slice() else {
+		panic!("one Usage Record per attempt")
+	};
+	assert_eq!(dispatch.projection_version, 3);
+	assert_eq!(
+		dispatch.harness_contract,
+		aidash_domain::harness_contract::HarnessContract::Structured2.number()
 	);
 }

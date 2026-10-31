@@ -197,6 +197,7 @@ mod tests {
 					}],
 				}],
 				volatile: String::new(),
+				harness: None,
 			}),
 			..Default::default()
 		}
