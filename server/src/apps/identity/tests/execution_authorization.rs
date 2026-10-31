@@ -6486,3 +6486,266 @@ async fn catalog_request_pending_paginates_past_a_scan_batch(
 	assert!(page["next_offset"].is_null());
 	cleanup(f, &url, &schema).await;
 }
+
+/// Exercise the real worker, storage, admission and human cancellation boundaries.
+#[rstest::rstest]
+#[tokio::test]
+async fn subnode_creation_task_and_creator_cancellation_share_the_real_authority_chain(
+	#[future(awt)]
+	#[from(common::native_application)]
+	fixture: common::ApplicationFixture,
+) {
+	let (f, url, schema) = fixture.runtime.parts();
+	let app = fixture.application;
+	let (mut policy, token, task_id) = bootstrap(&f, &app, "http://127.0.0.1:9").await;
+	let node = aidash_domain::nodes::NodeAddress::derived(f.config.deployment.as_str(), "acme");
+	let creator = qualified_agent(&node, "subnode-creator", "1.0.0");
+	let leader = qualified_agent(&node, "subnode-leader", "1.0.0");
+	policy["subjects"][&creator] = json!({"kind":"agent"});
+	policy["subjects"][&leader] = json!({"kind":"agent"});
+	policy["policies"].as_array_mut().unwrap().push(json!({"id":"create-subnodes","effect":"allow","subjects":{"ids":[creator]},"actions":["subnode.create"],"resources":{"kinds":["node"]}}));
+	let (status, body) = request(
+		&app,
+		&f.config.api_token,
+		"POST",
+		"/api/authorization/acme",
+		json!({"expected_revision":1,"bundle":policy}),
+	)
+	.await;
+	assert_eq!(status, 200, "policy: {body}");
+	let tenant = aidash_domain::tenancy::TenantName::new("acme").unwrap();
+	let base =
+		serde_json::to_value(f.registry.get(&tenant, "research", "1.0.0").await.unwrap()).unwrap();
+	for name in ["subnode-creator", "subnode-leader"] {
+		let mut entry = base.clone();
+		entry["id"] = json!(name);
+		entry
+			.as_object_mut()
+			.unwrap()
+			.remove("binding_normalization");
+		if name == "subnode-creator" {
+			entry["config"]["bindings"].as_array_mut().unwrap().extend([
+                json!({"kind":"tool","target":{"registry_deployment":f.config.deployment,"id":"aidash.subnode_create","version":"1.0.0"},"alias":"subnode_create","narrow":{}}),
+                json!({"kind":"tool","target":{"registry_deployment":f.config.deployment,"id":"aidash.subnode_task","version":"1.0.0"},"alias":"subnode_task","narrow":{}}),
+            ]);
+		} else {
+			entry["config"]["bindings"] = json!([]);
+		}
+		let (status, body) = request(&app, &token, "POST", "/api/registry", entry).await;
+		assert_eq!(status, 200, "register {name}: {body}");
+		let (status, body) = request(&app, &token, "POST", "/api/authorization/acme/catalog", json!({"node":node.node.as_str(),"entry":{"id":name,"version":"1.0.0"},"expected_revision":0,"enabled":true})).await;
+		assert_eq!(status, 200, "approve {name}: {body}");
+	}
+	let (status, body) = request(
+		&app,
+		&token,
+		"POST",
+		&format!("/api/tasks/{task_id}/claim"),
+		json!({"revision":0,"agent":{"id":"subnode-creator","version":"1.0.0"}}),
+	)
+	.await;
+	assert_eq!(status, 200, "claim: {body}");
+	let creator_run = f.store.runs(&TEST_FIXTURE).await.unwrap().remove(0);
+	let inject = async |name: &str, arguments: Value, call_id: &str| {
+		let response = json!({"text":"","tool_calls":[{"id":call_id,"name":name,"arguments":arguments}],"input_tokens":0,"output_tokens":0});
+		let pending = common::tool_pending(
+			json!({"response":response,"cursor":0,"request_window":120000,"request_tokens":0}),
+		);
+		let sql = reinhardt::query::Query::update()
+			.table(reinhardt::query::Alias::new("runs"))
+			.value_expr(
+				reinhardt::query::Alias::new("phase"),
+				Expr::value("TOOL_CALL"),
+			)
+			.value_expr(
+				reinhardt::query::Alias::new("pending"),
+				Expr::value(pending),
+			)
+			.and_where(Expr::col("id").eq(Expr::value(creator_run.id)))
+			.to_string(reinhardt::query::PostgresQueryBuilder);
+		sqlx::query(&sql)
+			.execute(f.store.pool.fixture_driver())
+			.await
+			.unwrap();
+		assert!(
+			Harness {
+				federation: f.clone()
+			}
+			.worker_once()
+			.await
+			.unwrap()
+		);
+		let saved = f.store.run(&TEST_FIXTURE, creator_run.id).await.unwrap();
+		let context = json!(saved.context);
+		context["history"]
+			.as_array()
+			.unwrap()
+			.iter()
+			.rev()
+			.find(|entry| entry["event"]["call"]["id"] == call_id)
+			.unwrap_or_else(|| {
+				panic!(
+					"missing tool result {call_id}: phase={:?}, control={:?}, context={context}",
+					saved.phase(),
+					saved.control
+				)
+			})["event"]["result"]
+			.clone()
+	};
+	let created = inject("subnode_create", json!({"leader":"subnode-leader@1.0.0","members":["subnode-leader@1.0.0"],"allowance":{"tools":["workspace_read","workspace_observe","workspace_wait","artifact_publish","human_request"],"secrets":[]},"title":"Investigation"}), "create-subnode").await;
+	let subnode = Uuid::parse_str(
+		created["subnode_id"]
+			.as_str()
+			.unwrap_or_else(|| panic!("creation: {created}")),
+	)
+	.unwrap();
+	let workspace = Uuid::parse_str(created["workspace_id"].as_str().unwrap()).unwrap();
+	let (status, unrelated) = request(
+		&app,
+		&token,
+		"POST",
+		&format!("/api/workspaces/{workspace}/tasks"),
+		json!({"title":"Unrelated","description":"No creating Run origin"}),
+	)
+	.await;
+	assert_eq!(status, 200, "create unrelated task: {unrelated}");
+	let (status, remote) = request(
+		&app,
+		&token,
+		"POST",
+		&format!("/api/tasks/{}/remote-grants", unrelated["id"].as_str().unwrap()),
+		json!({"id":Uuid::new_v4(),"node_id":node.to_string(),"agent":{"id":"research","version":"1.0.0"},"ttl_seconds":300}),
+	).await;
+	assert_eq!(status, 403, "Subnode work must stay local: {remote}");
+	let (status, denied) = request(
+		&app,
+		&token,
+		"POST",
+		&format!("/api/tasks/{}/claim", unrelated["id"].as_str().unwrap()),
+		json!({"revision":0,"agent":{"id":"research","version":"1.0.0"}}),
+	)
+	.await;
+	assert_eq!(status, 403, "nonmember admission: {denied}");
+	let task = inject(
+		"subnode_task",
+		json!({"subnode_id":subnode,"title":"Investigate","request":"Find evidence"}),
+		"subnode-task",
+	)
+	.await;
+	let child_task = Uuid::parse_str(
+		task["task_id"]
+			.as_str()
+			.unwrap_or_else(|| panic!("task: {task}")),
+	)
+	.unwrap();
+	let child = f
+		.store
+		.runs(&TEST_FIXTURE)
+		.await
+		.unwrap()
+		.into_iter()
+		.find(|run| run.task_id == child_task)
+		.expect("leader Run admitted");
+	assert_eq!(child.workspace_id, workspace);
+	// Select the creator for its workspace read before exercising the member.
+	sqlx::query("UPDATE runs SET control = 'PAUSED' WHERE id = $1")
+		.bind(child.id)
+		.execute(f.store.pool.fixture_driver())
+		.await
+		.unwrap();
+	let read = inject(
+		"workspace_read",
+		json!({"workspace_id":workspace,"kind":"task","id":child_task}),
+		"read-subnode-task",
+	)
+	.await;
+	assert!(
+		read.to_string().contains("Investigate"),
+		"creator read: {read}"
+	);
+	sqlx::query("UPDATE runs SET control = 'ACTIVE' WHERE id = $1")
+		.bind(child.id)
+		.execute(f.store.pool.fixture_driver())
+		.await
+		.unwrap();
+	// Fence the creator in this fixture so worker_once selects the member Run.
+	sqlx::query("UPDATE runs SET control = 'PAUSED' WHERE id = $1")
+		.bind(creator_run.id)
+		.execute(f.store.pool.fixture_driver())
+		.await
+		.unwrap();
+	let pending = common::tool_pending(
+		json!({"response":{"text":"","tool_calls":[{"id":"message-creator","name":"subnode_message","arguments":{"content":"Investigation complete"}}],"input_tokens":0,"output_tokens":0},"cursor":0,"request_window":120000,"request_tokens":0}),
+	);
+	sqlx::query("UPDATE runs SET phase = 'TOOL_CALL', pending = $1 WHERE id = $2")
+		.bind(pending)
+		.bind(child.id)
+		.execute(f.store.pool.fixture_driver())
+		.await
+		.unwrap();
+	assert!(
+		Harness {
+			federation: f.clone()
+		}
+		.worker_once()
+		.await
+		.unwrap()
+	);
+	let inputs = f
+		.store
+		.run_inputs(&TEST_FIXTURE, creator_run.id)
+		.await
+		.unwrap();
+	assert!(
+		inputs
+			.iter()
+			.any(|input| input.content == "Investigation complete"),
+		"member message: {inputs:?}"
+	);
+	sqlx::query("UPDATE runs SET control = 'ACTIVE' WHERE id = $1")
+		.bind(creator_run.id)
+		.execute(f.store.pool.fixture_driver())
+		.await
+		.unwrap();
+	let (status, body) = request(
+		&app,
+		&token,
+		"GET",
+		&format!("/api/runs/{}/subnodes", creator_run.id),
+		Value::Null,
+	)
+	.await;
+	assert_eq!(status, 200, "subnodes: {body}");
+	assert_eq!(body[0]["id"], json!(subnode));
+	assert_eq!(body[0]["member_runs"][0]["id"], json!(child.id));
+	let (status, body) = request(
+		&app,
+		&token,
+		"POST",
+		&format!("/api/runs/{}/control", creator_run.id),
+		json!({"action":"cancel"}),
+	)
+	.await;
+	assert_eq!(status, 200, "cancel: {body}");
+	let child = f.store.run(&TEST_FIXTURE, child.id).await.unwrap();
+	assert_eq!(child.control, aidash_domain::RunControl::Cancelled);
+	let (_, body) = request(
+		&app,
+		&token,
+		"GET",
+		&format!("/api/runs/{}/subnodes", creator_run.id),
+		Value::Null,
+	)
+	.await;
+	assert_eq!(body[0]["state"], "dissolved");
+	let (status, body) = request(
+		&app,
+		&token,
+		"POST",
+		&format!("/api/workspaces/{workspace}/tasks"),
+		json!({"title":"Too late","description":"Must not be written"}),
+	)
+	.await;
+	assert_eq!(status, 403, "dissolved Workspace must be read-only: {body}");
+	cleanup(f, &url, &schema).await;
+}
