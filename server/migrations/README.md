@@ -1,5 +1,11 @@
 # Aidash native migration history
 
+`execution/0081_lease_recoveries` updates the physical `runs.pending` default,
+and replaces the activation trigger function. PostgreSQL function replacement
+is a SQL exception that Reinhardt cannot express. The server decodes the
+former Lease Recovery flag of existing Runs, so the migration writes no Run
+rows; rollback does not rewrite stored counters for older binaries.
+
 Issue #296 adds write-only Tenant Secrets in `identity/0036` through `0038`
 and durable operation egress budgets and audits in `execution/0046` through
 `0048`. Their forced Tenant row policies use the existing policy renderer.
@@ -702,7 +708,7 @@ the single Knowledge head, and no schema or model state is overwritten.
 
 `identity/0047_tenant_data_protection_state` records those two tables in ORM migration state. It executes no DDL; references, validity checks and row-level policies remain in the preceding database-only migrations.
 
-`registry/0051_provider_warning_tools` extends the closed Provider tool validation functions with the warning-tier tools (advisor, subagent, model search, tool search, shell) without replacing the previous contracts; its reverse refuses to run while any such definition or pinned Run exists. `identity/0048_provider_warning_acknowledgment` adds the nullable exact disclosure text to `authorization_catalog_history`, filled only when a warning tool is approved. `execution/0082_provider_container` adds the nullable `runs.provider_container` pin (OpenRouter container id and network policy). OpenRouter has no container delete API, so the pin is kept after the Run ends.
+`registry/0051_provider_warning_tools` extends the closed Provider tool validation functions with the warning-tier tools (advisor, subagent, model search, tool search, shell) without replacing the previous contracts; its reverse refuses to run while any such definition or pinned Run exists. `identity/0048_provider_warning_acknowledgment` adds the nullable exact disclosure text to `authorization_catalog_history`, filled only when a warning tool is approved. `execution/0083_provider_container` adds the nullable `runs.provider_container` pin (OpenRouter container id and network policy). OpenRouter has no container delete API, so the pin is kept after the Run ends.
 
 ## Run control provenance and Safety Stops (#485, ADR 0101)
 

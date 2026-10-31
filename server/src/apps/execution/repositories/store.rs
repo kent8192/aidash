@@ -3070,6 +3070,21 @@ impl Store {
 		Ok(renewed)
 	}
 
+	/// Commits the Lease Recovery an Isolated Step charges before it runs (#604).
+	pub async fn charge_lease_recovery(
+		&self,
+		scope: &TenancyScope,
+		id: Uuid,
+		worker: Uuid,
+		lease_recoveries: u32,
+	) -> Result<bool> {
+		let mut tx = self.pool.begin(scope).await?.into_executor().await?;
+		let charged =
+			RunRecord::charge_lease_recovery(tx.as_mut(), id, worker, lease_recoveries).await?;
+		tx.commit().await?;
+		Ok(charged)
+	}
+
 	pub async fn save_run(
 		&self,
 		scope: &TenancyScope,
@@ -3151,16 +3166,7 @@ impl Store {
 		// lease so the step's authority pause applies to the saved Run. An
 		// adopted compaction ends its step and releases the lease so the next
 		// poll can continue the Run immediately.
-		let retain_lease = matches!(
-			kind,
-			"run.sources_observed"
-				| "run.semantic_degraded"
-				| "run.semantic_recovered"
-				| "run.estimate_pinned"
-				| "run.plugin_tools_pinned"
-				| "run.mcp_checkpoint"
-				| "context.summary_revoked"
-		);
+		let retain_lease = aidash_domain::run_state::persistence::retains_lease(kind);
 		let mut safe_context = run.context.clone();
 		super::research::protect_projection(tx.as_mut(), run.id, &mut safe_context).await?;
 		if kind == "context.compacted"

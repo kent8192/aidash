@@ -31080,7 +31080,7 @@
         },
         "RecoveryState": {
           "type": "object",
-          "required": ["retry", "lease_recovered"],
+          "required": ["retry"],
           "properties": {
             "context_reason": {
               "anyOf": [
@@ -31109,8 +31109,11 @@
               "$ref": "#/components/schemas/DegradedContext",
               "description": "Steps that ran with Degraded context (ADR 0059). Kept across resumes."
             },
-            "lease_recovered": {
-              "type": "boolean"
+            "lease_recoveries": {
+              "type": "integer",
+              "format": "uint32",
+              "description": "Consecutive Lease Recoveries of the current step.",
+              "minimum": 0
             },
             "retry": {
               "anyOf": [
@@ -34845,7 +34848,7 @@
         },
         "RecoveryState": {
           "type": "object",
-          "required": ["retry", "lease_recovered"],
+          "required": ["retry"],
           "properties": {
             "context_reason": {
               "anyOf": [
@@ -34874,8 +34877,11 @@
               "$ref": "#/components/schemas/DegradedContext",
               "description": "Steps that ran with Degraded context (ADR 0059). Kept across resumes."
             },
-            "lease_recovered": {
-              "type": "boolean"
+            "lease_recoveries": {
+              "type": "integer",
+              "format": "uint32",
+              "description": "Consecutive Lease Recoveries of the current step.",
+              "minimum": 0
             },
             "retry": {
               "anyOf": [
@@ -38209,7 +38215,7 @@
         },
         "RecoveryState": {
           "type": "object",
-          "required": ["retry", "lease_recovered"],
+          "required": ["retry"],
           "properties": {
             "context_reason": {
               "anyOf": [
@@ -38238,8 +38244,11 @@
               "$ref": "#/components/schemas/DegradedContext",
               "description": "Steps that ran with Degraded context (ADR 0059). Kept across resumes."
             },
-            "lease_recovered": {
-              "type": "boolean"
+            "lease_recoveries": {
+              "type": "integer",
+              "format": "uint32",
+              "description": "Consecutive Lease Recoveries of the current step.",
+              "minimum": 0
             },
             "retry": {
               "anyOf": [
@@ -47502,7 +47511,7 @@
             },
             "ready": {
               "type": "boolean",
-              "description": "Every named item is approved, admits the root agent and needs no widening."
+              "description": "Every named item is approved, admits its consumers and needs no widening."
             },
             "root": {
               "$ref": "#/components/schemas/EntityRef"
@@ -47585,6 +47594,7 @@
           "type": "object",
           "description": "One exact definition in the reviewed closure.",
           "required": [
+            "consumers",
             "reference",
             "kind",
             "name",
@@ -47606,7 +47616,14 @@
             },
             "can_approve": {
               "type": "boolean",
-              "description": "Whether this principal holds `catalog.approve` on it."
+              "description": "Whether this principal can decide it with the visible review information."
+            },
+            "consumers": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "description": "Readable agent subjects that directly use this item."
             },
             "description": {
               "type": "object",
@@ -47651,7 +47668,7 @@
                   "type": "null"
                 }
               ],
-              "description": "The restriction this Review proposes, defaulting a dependency of an\nagent root to that agent's subject."
+              "description": "The restriction this Review proposes for the direct consumers."
             },
             "provider_warning": {
               "type": ["string", "null"],
@@ -47676,7 +47693,7 @@
             },
             "widen": {
               "type": "boolean",
-              "description": "An approved restriction would gain members the root agent needs."
+              "description": "An existing restriction would gain consumers."
             }
           }
         },

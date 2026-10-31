@@ -23,6 +23,7 @@ import { restrictionLabel } from "./catalog-approval-model";
 import {
   answeredRequest,
   canRequestAgain,
+  consumerLabel,
   defaultSelection,
   itemKey,
   needsAction,
@@ -480,6 +481,11 @@ export function ApprovalReviewPanel({
                 <Hint>{local(item.description)}</Hint>
               )}
               <Hint>{t(statusKeys[item.status][1])}</Hint>
+              {item.consumers.length > 0 && (
+                <Hint>
+                  {t("approvalUsedBy")}: {consumerLabel(item)}
+                </Hint>
+              )}
               {item.installation && (
                 <Hint>
                   {t("approvalMarketplaceActivation")}:{" "}
@@ -490,10 +496,16 @@ export function ApprovalReviewPanel({
                 </Hint>
               )}
               <div className="flex min-w-0 flex-wrap items-center gap-2 text-[11px] text-muted-foreground">
-                <span>
-                  {t("approvalRestriction")}:{" "}
-                  {restrictionLabel(restriction) || t("catalogUnrestricted")}
-                </span>
+                {!(
+                  item.status === "needs_other_approver" &&
+                  item.proposed_restriction === null &&
+                  item.restriction === null
+                ) && (
+                  <span>
+                    {t("approvalRestriction")}:{" "}
+                    {restrictionLabel(restriction) || t("catalogUnrestricted")}
+                  </span>
+                )}
                 {editable && (
                   <Button
                     size="sm"

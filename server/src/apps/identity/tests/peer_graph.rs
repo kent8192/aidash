@@ -589,7 +589,7 @@ async fn scoped_graph_sends_only_authorized_projection_and_full_goal(
 		"acme",
 		"alice",
 		1,
-		"host_operator",
+		"host_access",
 	)
 	.await
 	.unwrap();

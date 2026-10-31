@@ -164,6 +164,16 @@ where
 			.await
 			.map_err(Into::into)
 	}
+	async fn closure_entry(
+		&mut self,
+		r: &EntityRef,
+		action: &str,
+		users: &[EntityRef],
+	) -> Result<Entry> {
+		crate::authorization::catalog::closure_entry(&mut self.access, r, action, users)
+			.await
+			.map_err(Into::into)
+	}
 	fn entry_resource(&self, entry: &Entry) -> Resource {
 		crate::authorization::catalog::resource(&self.access, entry)
 	}

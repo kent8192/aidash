@@ -6,9 +6,12 @@ on:
 permissions:
   contents: read
 
+# Let a running suite finish so every busy day still yields a develop result
+# (#606). GitHub keeps one pending run, and a newer push replaces it; release
+# automation still publishes only a success at the current development head.
 concurrency:
   group: release-ci-develop
-  cancel-in-progress: true
+  cancel-in-progress: false
 
 jobs:
   validate:
@@ -22,3 +25,25 @@ jobs:
       pull-requests: read
       id-token: write
     uses: ./.github/workflows/ci.yml
+  report:
+    name: Report development branch status
+    # Open, update or close the develop-red Issue. A manually cancelled run
+    # proves nothing about the source, so it reports nothing. Release PR reads
+    # this run's conclusion, so a failed report must not fail the release.
+    needs: validate
+    if: ${{ !cancelled() }}
+    continue-on-error: true
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      actions: read
+      issues: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - run: python3 -I scripts/develop_red.py
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RESULT: ${{ needs.validate.result }}

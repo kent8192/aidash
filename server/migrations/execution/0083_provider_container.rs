@@ -2,8 +2,8 @@
 // Retain the provider container pin across cancellation, failure and worker recovery.
 use reinhardt::db::migrations::prelude::*;
 pub(super) fn migration() -> Migration {
-	Migration::new("0082_provider_container", "execution")
-		.add_dependency("execution", "0081_provider_tool_usage")
+	Migration::new("0083_provider_container", "execution")
+		.add_dependency("execution", "0082_provider_tool_usage")
 		.add_operation(Operation::AddColumn {
 			table: "runs".into(),
 			column: ColumnDefinition::new("provider_container", FieldType::Jsonb)

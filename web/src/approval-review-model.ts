@@ -9,11 +9,15 @@ import { restrictionRequest } from "./catalog-approval-model.ts";
 
 export type RestrictionEdits = Record<string, CatalogRestriction | null>;
 
+/** Visible consumers are qualified subjects returned by the review. */
+export const consumerLabel = (item: Pick<ReviewItem, "consumers">): string =>
+  item.consumers.join(", ");
+
 export const itemKey = (item: Pick<ReviewItem, "reference">) =>
   `${item.reference.id}@${item.reference.version}`;
 
 /** An item the approver can act on now. An already approved item is actionable
- *  only when its restriction must widen to admit the root agent. */
+ *  only when its restriction must widen to admit its consumers. */
 export function needsAction(item: ReviewItem): boolean {
   if (!item.can_approve) return false;
   if (

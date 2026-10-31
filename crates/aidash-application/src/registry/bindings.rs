@@ -7,7 +7,7 @@ use aidash_domain::{
 	agent_plugin::{AgentPluginRef, PinnedAgentPlugin},
 	registry::{Entry, bindings::*},
 	tool::providers::{
-		ToolDescriptor, remote_exclusion, reserved_aliases, validate_concurrency,
+		ToolDescriptor, memory_exclusion, remote_exclusion, reserved_aliases, validate_concurrency,
 		validate_restrictions,
 	},
 };
@@ -177,6 +177,10 @@ pub async fn resolve(
 			));
 		}
 	}
+	let memory_bound = config
+		.bindings
+		.iter()
+		.any(|binding| binding.kind == BindingKind::Memory);
 	while let Some(Pending {
 		normalized,
 		mut ancestry,
@@ -326,7 +330,8 @@ pub async fn resolve(
 					"mandatory tools retain their canonical aliases".into(),
 				));
 			}
-			if remote {
+			excluded_reason = memory_exclusion(origin, &descriptor.operation, memory_bound)?;
+			if remote && excluded_reason.is_none() {
 				excluded_reason = remote_exclusion(origin, &contract)?;
 			}
 			provider_contract_digest = Some(contract.digest()?);

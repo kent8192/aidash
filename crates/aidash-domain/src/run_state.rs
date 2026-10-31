@@ -369,6 +369,9 @@ impl RunState {
 		}
 	}
 }
+/// Maximum consecutive Lease Recoveries before a Crash Loop Failure (#604).
+pub const LEASE_RECOVERY_LIMIT: u32 = 3;
+
 #[derive(Debug, Clone, Default, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct RecoveryState {
@@ -378,7 +381,12 @@ pub struct RecoveryState {
 	#[serde(default, skip_serializing_if = "Option::is_none")]
 	pub context_reason: Option<crate::context::recovery::Failure>,
 	pub retry: Option<RetryState>,
-	pub lease_recovered: bool,
+	// A claim after a lost lease sets it to at least 1, which isolates the
+	// step; each Isolated Step adds one when it acquires the gate, so a claim
+	// that only waited for isolation is not charged (#604).
+	/// Consecutive Lease Recoveries of the current step.
+	#[serde(default, skip_serializing_if = "is_zero")]
+	pub lease_recoveries: u32,
 	/// How many times a person resumed this Run from a pause. A compaction
 	/// decision commits to it, so a resume starts a new decision while a
 	/// recovered lease continues the same one (#108).
@@ -453,7 +461,17 @@ pub fn encode(state: &RunState, recovery: &RecoveryState) -> Result<Value> {
 		requires: StateRequirements::of(state, recovery),
 	})?)
 }
-pub fn decode(phase: RunPhase, pending: Value) -> Result<(RunState, RecoveryState)> {
+pub fn decode(phase: RunPhase, mut pending: Value) -> Result<(RunState, RecoveryState)> {
+	// Older persisted Runs carry a boolean instead of the recovery counter.
+	if let Some(recovery) = pending.get_mut("recovery").and_then(Value::as_object_mut)
+		&& let Some(Value::Bool(recovered)) = recovery.get("lease_recovered")
+	{
+		let recovered = *recovered;
+		recovery.remove("lease_recovered");
+		if recovered {
+			recovery.entry("lease_recoveries").or_insert(Value::from(1));
+		}
+	}
 	// A newer writer may bump the version without declaring a capability; its state
 	// is intact, so this is a capability gap rather than damage to the Run.
 	if let Some(version) = pending
