@@ -6530,6 +6530,18 @@ async fn subnode_creation_task_and_creator_cancellation_share_the_real_authority
             ]);
 		} else {
 			entry["config"]["bindings"] = json!([]);
+			let defaults = entry["config"]
+				.as_object_mut()
+				.unwrap()
+				.entry("remove_default")
+				.or_insert_with(|| json!([]))
+				.as_array_mut()
+				.unwrap();
+			for name in ["skill_list", "skill_load", "skill_read"] {
+				if !defaults.contains(&json!(name)) {
+					defaults.push(json!(name));
+				}
+			}
 		}
 		let (status, body) = request(&app, &token, "POST", "/api/registry", entry).await;
 		assert_eq!(status, 200, "register {name}: {body}");
@@ -6592,6 +6604,13 @@ async fn subnode_creation_task_and_creator_cancellation_share_the_real_authority
 			})["event"]["result"]
 			.clone()
 	};
+	let refused = inject("subnode_create", json!({"leader":"subnode-leader@1.0.0","members":["subnode-leader@1.0.0"],"allowance":{"tools":[],"secrets":[]}}), "refuse-subnode").await;
+	assert!(
+		refused["error"]
+			.as_str()
+			.is_some_and(|error| error.contains("member needs a tool")),
+		"refusal: {refused}"
+	);
 	let created = inject("subnode_create", json!({"leader":"subnode-leader@1.0.0","members":["subnode-leader@1.0.0"],"allowance":{"tools":["workspace_read","workspace_observe","workspace_wait","artifact_publish","human_request"],"secrets":[]},"title":"Investigation"}), "create-subnode").await;
 	let subnode = Uuid::parse_str(
 		created["subnode_id"]

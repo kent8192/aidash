@@ -54,7 +54,9 @@ impl<'a> Executor<'a> {
 		match result {
 			Ok(value) => Ok(value),
 			Err(
-				Error::Invalid(message) | Error::Domain(aidash_domain::Error::Invalid(message)),
+				Error::Invalid(message)
+				| Error::Refused(message)
+				| Error::Domain(aidash_domain::Error::Invalid(message)),
 			) => Ok(json!({"error":message})),
 			Err(Error::ToolNotDelivered {
 				message,
