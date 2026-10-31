@@ -182,7 +182,13 @@ async fn system_seed_is_discoverable_idempotent_and_rejects_owner_mutation(
 	.iter()
 	.map(|group| group.operations.len())
 	.sum();
-	assert_eq!(listed.len(), operations.len() + offered);
+	// workspace_read has two immutable versions, while operations counts its alias once.
+	assert_eq!(listed.len(), operations.len() + offered + 1);
+	assert!(
+		listed
+			.iter()
+			.any(|entry| entry.id == "aidash.workspace_read" && entry.version == "1.1.0")
+	);
 	for operation in operations {
 		let identity = QualifiedRef::builtin("aidash://node", operation);
 		let entry = registry

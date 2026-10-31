@@ -3944,9 +3944,9 @@ fn run_message_catch_up(fixture: &mut Fixture) {
 	fixture.run.context.run_message_summary_seq = 1;
 }
 
-/// Legacy Agents (no exposure policy) must keep sending exactly these
-/// requests. Baselines are compact `serde_json` output of the captured
-/// `ModelRequest` (instructions, context, tools in order, output limit).
+/// Agents without an exposure policy advertise the current builtins. Existing
+/// Runs retain their pinned workspace_read 1.0.0 definition independently.
+/// Baselines are compact `serde_json` output of the captured `ModelRequest`.
 #[rstest]
 #[case::default_tools(
 	plain_agent,
