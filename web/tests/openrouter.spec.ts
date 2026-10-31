@@ -184,6 +184,7 @@ test("searches and selects a model without credential input", async ({
     model_id: "vendor/fixture-model",
     endpoint: "https://openrouter.ai/api/v1",
     provider_credential: "openrouter",
+    projection_versions: ["legacy", "ordered", "native"],
     reasoning_effort: "high",
     context_window: 65536,
     max_output_tokens: 65536,
