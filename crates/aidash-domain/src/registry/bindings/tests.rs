@@ -6,6 +6,12 @@ mod agent_plugins;
 fn agent() -> AgentBindings {
 	serde_json::from_value(json!({"schema_version":1,"model":{"id":"model","version":"1.0.0"},"instructions":"Work on the Task."})).unwrap()
 }
+#[rstest::rstest]
+fn agent_config_rejects_removed_cluster_field() {
+	let input = json!({"schema_version":1,"model":{"id":"model","version":"1.0.0"},"instructions":"Work on the Task.","cluster":null});
+	let error = serde_json::from_value::<AgentBindings>(input).unwrap_err();
+	assert!(error.to_string().contains("unknown field `cluster`"));
+}
 #[test]
 fn legacy_and_mixed_schemas_are_rejected() {
 	for field in [
@@ -376,7 +382,6 @@ fn legacy_agent_json_round_trips_byte_identically() {
 			"narrow": {}
 		}],
 		"remove_default": ["memory_mutate"],
-		"cluster": null,
 		"max_steps": 9
 	});
 	let parsed: AgentBindings = serde_json::from_value(input.clone()).unwrap();

@@ -24,7 +24,6 @@ const agent = entry("agent", "agent", {
   model: ref("model"),
   tools: [ref("search")],
   skills: [ref("research")],
-  cluster: ref("team"),
   instructions: "Mentioning other does not create an edge",
   knowledge_digest: "PRIVATE_DIGEST",
   documents: [{ name: "PRIVATE_FILE.pdf", text: "PRIVATE_TEXT" }],
@@ -56,9 +55,8 @@ test("uses exact versioned references and typed configuration links", () => {
     entries: [...base.entries, entry("model", "model", {}, "2.0.0")],
   });
   assert.equal(g.rootId, key(agent));
-  assert.equal(g.nodes.length, 5);
+  assert.equal(g.nodes.length, 4);
   assert.deepEqual(g.edges.map((e) => e.relation).sort(), [
-    "cluster",
     "model",
     "skill",
     "tool",
@@ -140,15 +138,24 @@ test("expands explicit incoming and outgoing neighbors without text inference", 
   );
 });
 
-test("handles cyclic cluster/coordinator configuration", () => {
-  const coordinator = entry("agent", "other", { cluster: ref("team") });
+test("shows a Cluster's coordinator without an agent membership edge", () => {
+  const team = entry("cluster", "team", { coordinator: ref("agent") });
+  const legacyAgent = entry("agent", "agent", { cluster: ref("team") });
   const g = graph(
-    { entries: [agent, cluster, coordinator] },
-    { expandedIds: [key(cluster), key(other)] },
+    { entries: [legacyAgent, team] },
+    { expandedIds: [key(agent)] },
   );
-  assert.equal(new Set(g.nodes.map((n) => n.id)).size, g.nodes.length);
-  assert.ok(g.edges.some((e) => e.relation === "coordinator"));
-  assert.ok(g.nodes.length < 10);
+  assert.ok(
+    g.edges.some(
+      (e) =>
+        e.source === key(team) &&
+        e.target === key(agent) &&
+        e.relation === "coordinator",
+    ),
+  );
+  assert.ok(
+    !g.edges.some((e) => e.source === key(agent) && e.target === key(team)),
+  );
 });
 
 test("ignores expansions that are not reachable from the root", () => {

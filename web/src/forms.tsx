@@ -389,7 +389,6 @@ export function EntityForm({
 }) {
   const { t, locale } = useI18n();
   const ja = locale === "ja-JP";
-  const entityLabel = useEntityLabel(data.registry);
   const [kind, setKind] = useState(initial);
   const registration = useRef<{ body: string; key: string } | null>(null);
   const [modelSource, setModelSource] = useState("openrouter");
@@ -424,7 +423,7 @@ export function EntityForm({
   const [documents, setDocuments] = useState<ReferenceDocument[]>([]);
   const [core, setCore] = useState(emptyCore);
   const [pluginConfig, setPluginConfig] = useState<Record<string, unknown>>({});
-  const [cluster, setCluster] = useState("");
+  const [coordinator, setCoordinator] = useState(false);
   const [deciderHook, setDeciderHook] = useState("compaction");
   const [readingDocuments, setReadingDocuments] = useState(false);
   return (
@@ -445,7 +444,6 @@ export function EntityForm({
                   model: ref(s("model")),
                   instructions: s("instructions"),
                   schema_version: 1,
-                  cluster: s("cluster") ? ref(s("cluster")) : null,
                   max_steps: 64,
                   ...core,
                   ...pluginConfig,
@@ -673,7 +671,7 @@ export function EntityForm({
             <CapabilityConfiguration
               value={core}
               change={setCore}
-              cluster={Boolean(cluster)}
+              coordinator={coordinator}
               node={registryDeployment(data)}
               entries={data.registry}
             />
@@ -683,35 +681,22 @@ export function EntityForm({
               change={setDocuments}
               busyChange={setReadingDocuments}
             />
-            <Field label={t("cluster")}>
-              <NativeSelect
-                name="cluster"
-                value={cluster}
-                onChange={(e) => {
-                  const selected = e.target.value;
-                  setCluster(selected);
-                  if (selected)
-                    setCore((previous) => ({
-                      ...previous,
-                      remove_default: previous.remove_default.filter(
-                        (name) => !coordinatorDefaults.includes(name),
-                      ),
-                    }));
-                }}
-              >
-                <option value="">{t("noAssignment")}</option>
-                {data.registry
-                  .filter((e) => e.kind === "cluster")
-                  .map((e) => (
-                    <option
-                      key={`${e.id}@${e.version}`}
-                      value={`${e.id}@${e.version}`}
-                    >
-                      {entityLabel(e)}
-                    </option>
-                  ))}
-              </NativeSelect>
-            </Field>
+            <Check
+              checked={coordinator}
+              onChange={(e) => {
+                const selected = e.target.checked;
+                setCoordinator(selected);
+                if (selected)
+                  setCore((previous) => ({
+                    ...previous,
+                    remove_default: previous.remove_default.filter(
+                      (name) => !coordinatorDefaults.includes(name),
+                    ),
+                  }));
+              }}
+            >
+              {t("useAsCoordinator")}
+            </Check>
           </>
         ) : kind === "model" ? (
           <>

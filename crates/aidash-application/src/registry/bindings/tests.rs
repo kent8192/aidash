@@ -574,25 +574,7 @@ async fn node_identity_cannot_be_replaced_by_a_same_named_local_definition() {
 	assert!(snapshot(&mut catalog, &config, false).await.is_err());
 }
 #[tokio::test]
-async fn coordinator_requirements_follow_operation_semantics() {
-	let mut catalog = Catalog::new();
-	let mut config = agent_config();
-	catalog.insert(entry(
-		"cluster",
-		"cluster",
-		json!({"coordinator":reference("agent").local()}),
-	));
-	config.cluster = Some(reference("cluster").local());
-	config.remove_default = vec!["task_create".into()];
-	assert!(snapshot(&mut catalog, &config, false).await.is_err());
-	let mut replacement = Binding::tool(QualifiedRef::builtin(NODE, "task_create"));
-	replacement.alias = Some("create_child".into());
-	config.bindings.push(replacement);
-	snapshot(&mut catalog, &config, false).await.unwrap();
-}
-
-#[tokio::test]
-async fn coordinator_bundle_selections_reject_undeclared_ids_even_with_complete_defaults() {
+async fn bundle_selections_reject_undeclared_ids_with_complete_defaults() {
 	for nested in [false, true] {
 		let mut catalog = Catalog::new();
 		let get = catalog.core("outbound_get");
@@ -611,44 +593,40 @@ async fn coordinator_bundle_selections_reject_undeclared_ids_even_with_complete_
 			members: vec![selected.id.clone()],
 			exposure: None,
 		});
-		catalog.insert(entry(
-			"cluster",
-			"cluster",
-			json!({"coordinator":reference("coordinator").local()}),
-		));
-		let mut config = agent_config();
-		config.cluster = Some(reference("cluster").local());
-		catalog.insert(entry(
+		let valid = entry(
 			"coordinator",
 			"agent",
 			serde_json::to_value(&coordinator).unwrap(),
-		));
-		snapshot(&mut catalog, &config, false).await.unwrap();
+		);
+		resolve(
+			&mut catalog,
+			&providers(),
+			reference("coordinator"),
+			&valid,
+			false,
+		)
+		.await
+		.unwrap();
 		for members in [
 			vec!["absent".into()],
 			vec![selected.id.clone(), "absent".into()],
 		] {
 			coordinator.bindings[0].members = members;
-			let coordinator_entry = entry(
+			let invalid = entry(
 				"coordinator",
 				"agent",
 				serde_json::to_value(&coordinator).unwrap(),
 			);
-			catalog.insert(coordinator_entry.clone());
-			let cluster_error = snapshot(&mut catalog, &config, false).await.unwrap_err();
-			assert!(
-				matches!(&cluster_error, Error::Invalid(message) if message.contains("undeclared"))
-			);
-			let root_error = resolve(
+			let error = resolve(
 				&mut catalog,
 				&providers(),
 				reference("coordinator"),
-				&coordinator_entry,
+				&invalid,
 				false,
 			)
 			.await
 			.unwrap_err();
-			assert_eq!(cluster_error.to_string(), root_error.to_string());
+			assert!(matches!(&error, Error::Invalid(message) if message.contains("undeclared")));
 		}
 	}
 }
@@ -659,7 +637,7 @@ use crate::ports::{
 };
 
 #[tokio::test]
-async fn complete_snapshot_retains_delegation_and_cluster_dependencies_and_rejects_wrong_kinds() {
+async fn complete_snapshot_retains_delegation_dependencies_and_rejects_wrong_kinds() {
 	let mut catalog = Catalog::new();
 	let mut config = agent_config();
 	catalog.insert(agent_entry(&config));
@@ -690,12 +668,6 @@ async fn complete_snapshot_retains_delegation_and_cluster_dependencies_and_rejec
 		serde_json::to_value(descriptor).unwrap(),
 	));
 	config.bindings.push(Binding::tool(reference("delegation")));
-	catalog.insert(entry(
-		"cluster",
-		"cluster",
-		json!({"coordinator":reference("delegate").local()}),
-	));
-	config.cluster = Some(reference("cluster").local());
 	let graph = snapshot(&mut catalog, &config, false).await.unwrap();
 	assert!(
 		graph
@@ -710,7 +682,7 @@ async fn complete_snapshot_retains_delegation_and_cluster_dependencies_and_rejec
 			.any(|r| r.identity == reference("delegated-model"))
 	);
 	// Only the delegated agent uses its model; the root uses the tool, the
-	// delegated agent and the cluster itself (ADR 0095).
+	// delegated agent (ADR 0095).
 	assert_eq!(
 		graph.delegated_users().unwrap(),
 		BTreeMap::from([(

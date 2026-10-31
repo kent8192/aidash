@@ -158,9 +158,6 @@ export function MeshView({
                 {nodeAgents.length} {t("agents")}
               </text>
               {nodeAgents.map((a, j) => {
-                const cluster = (
-                  a.entity.config.cluster as { id?: string } | null
-                )?.id;
                 const run = runs.find(
                   ({ run: r, node }) =>
                     node === a.node_id &&
@@ -202,11 +199,7 @@ export function MeshView({
                       y={138 + j * 64}
                       className="fill-faint font-mono text-[10px]"
                     >
-                      {cluster ? (
-                        <ReferenceName id={cluster} />
-                      ) : (
-                        a.entity.languages.join(" / ")
-                      )}
+                      {a.entity.languages.join(" / ")}
                     </text>
                   </g>
                 );

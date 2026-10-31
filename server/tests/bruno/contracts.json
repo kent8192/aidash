@@ -21196,7 +21196,13 @@
         },
         "ApprovalRecord": {
           "type": "object",
-          "required": ["revision", "enabled", "actor", "created_at"],
+          "required": [
+            "revision",
+            "enabled",
+            "actor",
+            "created_at",
+            "restriction"
+          ],
           "properties": {
             "actor": {
               "type": "string"
@@ -21207,6 +21213,17 @@
             },
             "enabled": {
               "type": "boolean"
+            },
+            "restriction": {
+              "anyOf": [
+                {
+                  "$ref": "#/components/schemas/CatalogRestriction"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "The restriction this revision recorded."
             },
             "revision": {
               "type": "integer",
@@ -21597,16 +21614,51 @@
         },
         "VersionApproval": {
           "type": "object",
-          "required": ["enabled", "revision"],
+          "required": ["enabled", "revision", "restriction"],
           "properties": {
             "enabled": {
               "type": "boolean"
+            },
+            "restriction": {
+              "anyOf": [
+                {
+                  "$ref": "#/components/schemas/CatalogRestriction"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Who may use the version on this Node; absent means everyone the\nTenant's policy allows (ADR 0095)."
             },
             "revision": {
               "type": "integer",
               "format": "int64"
             }
           }
+        },
+        "CatalogRestriction": {
+          "type": "object",
+          "description": "Who may use an approved definition on its Node (ADR 0029, ADR 0095). A\nrestriction names subjects directly and/or Assignable Groups; their\nmembers may use it. It only narrows what the Tenant's policy already\nallows, so it can never grant authority.",
+          "required": ["subjects", "groups"],
+          "properties": {
+            "groups": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "default": [],
+              "uniqueItems": true
+            },
+            "subjects": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "default": [],
+              "uniqueItems": true
+            }
+          },
+          "additionalProperties": false
         }
       }
     }

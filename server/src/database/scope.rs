@@ -12,8 +12,10 @@
 //!   `transaction_read_only`. Switching a transaction to read-only is allowed
 //!   after its first statement, so this costs no extra round trip.
 //!
-//! Only this module writes `aidash.scope` and `aidash.tenant`; a test enforces
-//! it. `server/migrations/README.md` documents the contract.
+//! Application transactions set `aidash.scope` and `aidash.tenant` here. The
+//! owner-only atomic data migrations registry/0050 and execution/0082 set a
+//! Deployment Scope as their first statement; a test limits that exception.
+//! `server/migrations/README.md` documents the contract.
 use crate::Result;
 use aidash_application::tenancy::TenancyScope;
 use reinhardt::db::backends::TransactionExecutor;

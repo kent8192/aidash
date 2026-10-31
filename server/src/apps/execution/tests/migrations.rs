@@ -6,8 +6,8 @@ use aidash_server::apps::workspaces::models::Workspace;
 use deployment::{deployment_command, deployment_command_excluding};
 use reinhardt::db::backends::DatabaseConnection as BackendConnection;
 use reinhardt::db::migrations::{
-	DatabaseMigrationRecorder, FilesystemSource, MigrationSource, SqlDialect,
-	build_state_from_files,
+	DatabaseMigrationExecutor, DatabaseMigrationRecorder, FilesystemSource, MigrationPlan,
+	MigrationSource, SqlDialect, build_state_from_files,
 };
 use reinhardt::db::orm::Model;
 use reinhardt::db::orm::connection::DatabaseConnectionLease;
@@ -63,6 +63,9 @@ const TENANT_REGISTRY_MIGRATIONS: &[(&str, &str)] = &[
 	("registry", "0048_context_marketplace_merge"),
 	("registry", "0048_plugin_marketplace_merge"),
 	("registry", "0049_plugin_context_merge"),
+	("registry", "0050_remove_agent_cluster"),
+	// Its cross-app dependency names registry/0050, which this history omits.
+	("execution", "0082_remove_agent_cluster"),
 	("marketplace", "0008_remove_compatibility_gate"),
 	("marketplace", "0009_remove_compatibility_gate_state"),
 	("marketplace", "0010_row_level_security"),
@@ -152,7 +155,12 @@ async fn native_history_uses_typed_schema_operations_and_lf_sql_assets() {
 		for operation in &migration.operations {
 			if let reinhardt::db::migrations::Operation::RunSQL { sql, reverse_sql } = operation {
 				assert!(
-					reverse_sql.is_some(),
+					reverse_sql.is_some()
+						|| matches!(
+							(migration.app_label.as_str(), migration.name.as_str()),
+							("registry", "0050_remove_agent_cluster")
+								| ("execution", "0082_remove_agent_cluster")
+						),
 					"{}.{}",
 					migration.app_label,
 					migration.name
@@ -353,12 +361,15 @@ async fn generation_with_existing_sql_assets_preserves_history_and_dependency(
 	);
 	assert_eq!(std::fs::read(history).unwrap(), original);
 	let generated = FilesystemSource::new(fixture.directory.path().join("migrations"))
-		.get_migration("execution", "0082_policy_probe")
+		.get_migration("execution", "0083_policy_probe")
 		.await
 		.unwrap();
 	assert_eq!(
 		generated.dependencies,
-		vec![("execution".to_owned(), "0081_lease_recoveries".to_owned())]
+		vec![(
+			"execution".to_owned(),
+			"0082_remove_agent_cluster".to_owned()
+		)]
 	);
 	assert!(generated.operations.is_empty());
 }
@@ -651,6 +662,160 @@ impl MigrationFixture {
 			"manage migrate must report newly applied records, including zero on replay: {output}"
 		);
 	}
+}
+
+#[rstest]
+#[tokio::test]
+async fn remove_agent_cluster_migrates_registry_drafts_requests_and_generation_templates(
+	#[future] fresh_database: MigrationFixture,
+) {
+	let fixture = fresh_database.await;
+	let mut plan = MigrationPlan::new();
+	plan.migrations =
+		FilesystemSource::new(PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("migrations"))
+			.all_migrations()
+			.await
+			.unwrap();
+	plan.sort().unwrap();
+	let baseline = plan
+		.migrations
+		.iter()
+		.filter(|migration| {
+			!matches!(
+				(migration.app_label.as_str(), migration.name.as_str()),
+				("registry", "0050_remove_agent_cluster")
+					| ("execution", "0082_remove_agent_cluster")
+			)
+		})
+		.cloned()
+		.collect::<Vec<_>>();
+	let mut executor = DatabaseMigrationExecutor::new(fixture.connection.clone());
+	executor.apply_migrations(&baseline).await.unwrap();
+	fixture.tenant_root("acme").await;
+	fixture.tenant_root("beta").await;
+	let pool = fixture.connection.clone().into_postgres().unwrap();
+	let mut tx = aidash_server::database::scope::begin_fixture_deployment(&pool)
+		.await
+		.unwrap();
+	sqlx::query("SELECT set_config('aidash.marketplace_writer', '1', true)")
+		.execute(&mut *tx)
+		.await
+		.unwrap();
+	let model = json!({"id":"fixture-model","version":"1.0.0","kind":"model","name":{"en":"Model"},"description":{"en":"Fixture"},"config":{"provider":"openrouter","model_id":"fixture","endpoint":"http://127.0.0.1:1/v1","context_window":32768,"max_output_tokens":4096,"modalities":["text"],"cost":{}}});
+	let mut agent = json!({"id":"fixture-agent","version":"1.0.0","kind":"agent","name":{"en":"Agent"},"description":{"en":"Fixture"},"config":{"schema_version":1,"model":{"id":"fixture-model","version":"1.0.0"},"instructions":"Work","bindings":[],"remove_default":[],"cluster":null}});
+	for tenant in ["acme", "beta"] {
+		for entry in [&model, &agent] {
+			sqlx::query(
+				"INSERT INTO registry (tenant,id,version,kind,metadata) VALUES ($1,$2,'1.0.0',$3,$4)",
+			)
+			.bind(tenant)
+			.bind(entry["id"].as_str().unwrap())
+			.bind(entry["kind"].as_str().unwrap())
+			.bind(entry)
+			.execute(&mut *tx)
+			.await
+			.unwrap();
+		}
+	}
+	let cluster = json!({"id":"fixture-team","version":"1.0.0","kind":"cluster","name":{"en":"Team"},"description":{"en":"Fixture"},"config":{"coordinator":{"id":"fixture-agent","version":"1.0.0"}}});
+	sqlx::query("INSERT INTO registry (tenant,id,version,kind,metadata) VALUES ('acme','fixture-team','1.0.0','cluster',$1)").bind(&cluster).execute(&mut *tx).await.unwrap();
+	agent["config"]["cluster"] = json!({"id":"fixture-team","version":"1.0.0"});
+	sqlx::query(
+		"UPDATE registry SET metadata=$1 WHERE tenant='acme' AND id='fixture-agent' AND version='1.0.0'",
+	)
+	.bind(&agent)
+	.execute(&mut *tx)
+	.await
+	.unwrap();
+	agent["id"] = json!("mkt-fixture");
+	agent["installation"] =
+		json!({"contract":1,"tenant":"acme","installation":"fixture","revision":1});
+	sqlx::query("INSERT INTO registry (tenant,id,version,kind,metadata) VALUES ('acme','mkt-fixture','1.0.0','agent',$1)").bind(&agent).execute(&mut *tx).await.unwrap();
+	sqlx::query("INSERT INTO agent_drafts (id,tenant,owner,managed_id,entry,documents) VALUES ($1,'acme','alice','draft',$2,'[]'::jsonb)").bind(Uuid::new_v4()).bind(&agent).execute(&mut *tx).await.unwrap();
+	sqlx::query("INSERT INTO registry_requests (tenant,principal,key,request,entity_id) VALUES ('acme','alice',$1,$2,'fixture-agent')").bind(Uuid::new_v4()).bind(&agent).execute(&mut *tx).await.unwrap();
+	let spec = json!({"template":agent});
+	sqlx::query(
+		"INSERT INTO authorization_bundles (tenant,revision,document) VALUES ('acme',1,'{}'::jsonb)",
+	)
+	.execute(&mut *tx)
+	.await
+	.unwrap();
+	sqlx::query(
+		"INSERT INTO generation_policies (tenant,id,revision,spec) VALUES ('acme','fixture',1,$1)",
+	)
+	.bind(&spec)
+	.execute(&mut *tx)
+	.await
+	.unwrap();
+	sqlx::query("INSERT INTO generation_policy_history (tenant,policy_id,revision,spec,actor) VALUES ('acme','fixture',1,$1,'alice')").bind(&spec).execute(&mut *tx).await.unwrap();
+	let credential = Uuid::new_v4();
+	sqlx::query("INSERT INTO authorization_credentials (id,tenant,subject,token_hash,expires_at,issued_by) VALUES ($1,'acme','alice',$2,now()+interval '1 hour','fixture')")
+		.bind(credential).bind(vec![0_u8; 32]).execute(&mut *tx).await.unwrap();
+	let node = aidash_domain::nodes::NodeName::derived("acme");
+	sqlx::query("INSERT INTO generation_requests (id,tenant,policy_id,policy_revision,task_id,workspace_id,credential_id,root_subject,subject_chain,agent_id,agent_version,definition,status,reason,depth,token_limit,expires_at,home_node,node,foreign_intent) VALUES ($1,'acme','fixture',1,$2,$3,$4,'alice',ARRAY['alice'],'fixture-agent','1.0.0',$5,'QUEUED','fixture',1,100,now()+interval '1 hour','aidash://remote',$6,'{}'::jsonb)")
+		.bind(Uuid::new_v4()).bind(Uuid::new_v4()).bind(Uuid::new_v4()).bind(credential).bind(&spec["template"]).bind(node.as_str()).execute(&mut *tx).await.unwrap();
+	tx.commit().await.unwrap();
+
+	executor.apply_migrations(&plan.migrations).await.unwrap();
+
+	let mut tx = aidash_server::database::scope::begin_fixture_deployment(&pool)
+		.await
+		.unwrap();
+	for query in [
+		"SELECT count(*) FROM registry WHERE kind='agent' AND metadata->'config' ? 'cluster'",
+		"SELECT count(*) FROM agent_drafts WHERE entry->'config' ? 'cluster'",
+		"SELECT count(*) FROM registry_requests WHERE request->'config' ? 'cluster'",
+		"SELECT count(*) FROM generation_policies WHERE spec#>'{template,config}' ? 'cluster'",
+		"SELECT count(*) FROM generation_policy_history WHERE spec#>'{template,config}' ? 'cluster'",
+		"SELECT count(*) FROM generation_requests WHERE definition->'config' ? 'cluster'",
+	] {
+		let remaining: i64 = sqlx::query_scalar(query).fetch_one(&mut *tx).await.unwrap();
+		assert_eq!(remaining, 0, "{query}");
+	}
+	let agent_count: i64 = sqlx::query_scalar("SELECT count(*) FROM registry WHERE kind='agent'")
+		.fetch_one(&mut *tx)
+		.await
+		.unwrap();
+	assert_eq!(agent_count, 3);
+	let coordinator: String = sqlx::query_scalar("SELECT metadata#>>'{config,coordinator,id}' FROM registry WHERE tenant='acme' AND id='fixture-team'")
+		.fetch_one(&mut *tx).await.unwrap();
+	assert_eq!(coordinator, "fixture-agent");
+	let stored: serde_json::Value =
+		sqlx::query_scalar("SELECT metadata FROM registry WHERE id='mkt-fixture'")
+			.fetch_one(&mut *tx)
+			.await
+			.unwrap();
+	assert_eq!(stored["installation"]["revision"], 1);
+	assert_eq!(stored["config"]["instructions"], "Work");
+	let installed: aidash_domain::registry::Entry = serde_json::from_value(stored.clone()).unwrap();
+	let _: aidash_domain::registry::bindings::AgentBindings =
+		serde_json::from_value(installed.config).unwrap();
+	let accepts: bool = sqlx::query_scalar("SELECT public.aidash_agent_bindings_is_valid($1)")
+		.bind(&stored["config"])
+		.fetch_one(&mut *tx)
+		.await
+		.unwrap();
+	assert!(accepts);
+	let mut old = stored["config"].clone();
+	old["cluster"] = serde_json::Value::Null;
+	let accepts_old: bool = sqlx::query_scalar("SELECT public.aidash_agent_bindings_is_valid($1)")
+		.bind(&old)
+		.fetch_one(&mut *tx)
+		.await
+		.unwrap();
+	assert!(!accepts_old);
+	let guarded = sqlx::query(
+		"UPDATE registry SET metadata=metadata WHERE tenant='acme' AND id='mkt-fixture'",
+	)
+	.execute(&mut *tx)
+	.await
+	.unwrap_err();
+	assert!(
+		guarded
+			.to_string()
+			.contains("unsupported Marketplace writer")
+	);
+	tx.rollback().await.unwrap();
 }
 
 #[rstest]

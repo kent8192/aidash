@@ -24,7 +24,6 @@ export function meshScene(now = Date.now()) {
       name,
       {
         model: ref("reasoning-model"),
-        cluster: ref("local-cluster"),
         tools: tools.map(ref),
         skills: [ref("planning")],
       },

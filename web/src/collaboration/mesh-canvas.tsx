@@ -97,7 +97,7 @@ function elements(
 const handoff = ["delegates", "coordinates", "assigned", "executes", "creates"]
   .map((relation) => `edge[relation = "${relation}"]`)
   .join(", ");
-const structural = ["contains", "member", "hosts", "participates"]
+const structural = ["contains", "hosts", "participates"]
   .map((relation) => `edge[relation = "${relation}"]`)
   .join(", ");
 

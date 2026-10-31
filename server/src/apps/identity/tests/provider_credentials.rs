@@ -1071,7 +1071,7 @@ async fn admission_pins_local_tenant_id_and_reloads_state_without_environment_fa
 		json!([]),
 		"rejection must precede sandbox session admission"
 	);
-	let agent: aidash_server::registry::Entry = serde_json::from_value(json!({"id":"tenant-agent","version":"1.0.0","kind":"agent","name":{"en":"Tenant agent"},"description":{"en":"Tenant agent"},"config":{"schema_version":1,"bindings":[],"model":{"id":"tenant-model","version":"1.0.0"},"instructions":"Test admission","cluster":null}})).unwrap();
+	let agent: aidash_server::registry::Entry = serde_json::from_value(json!({"id":"tenant-agent","version":"1.0.0","kind":"agent","name":{"en":"Tenant agent"},"description":{"en":"Tenant agent"},"config":{"schema_version":1,"bindings":[],"model":{"id":"tenant-model","version":"1.0.0"},"instructions":"Test admission"}})).unwrap();
 	struct Lookup<'a>(&'a aidash_server::registry::Registry);
 	#[async_trait]
 	impl aidash_application::ports::registry::DefinitionLookup for Lookup<'_> {
