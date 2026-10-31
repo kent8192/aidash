@@ -30,7 +30,10 @@ pub async fn execute(
 		agent: input.agent,
 		version: input.version,
 	};
-	if input.operation == "human_request" {
+	if matches!(
+		input.operation,
+		"human_request" | "mcp.connection_call" | "mcp.connection_list"
+	) {
 		let bound = scope
 			.binding(input.grant_id)
 			.await?
@@ -45,8 +48,52 @@ pub async fn execute(
 			&format!("{}/runs/{}", scope.local_node(), input.admission_id),
 			attributes,
 		);
-		scope.require(&resource, "human.request").await?;
+		scope
+			.require(
+				&resource,
+				if input.operation == "human_request" {
+					"human.request"
+				} else {
+					"tool.invoke"
+				},
+			)
+			.await?;
 	}
+	let connection_call = if matches!(
+		input.operation,
+		"mcp.connection_call" | "mcp.connection_list"
+	) {
+		let call: aidash_domain::identity::commands::connections::ConnectionCall =
+			serde_json::from_value(input.data.clone())?;
+		call.validate(input.operation == aidash_domain::identity::commands::connections::LIST)?;
+		scope
+			.connection_target(
+				&call,
+				input.operation == aidash_domain::identity::commands::connections::LIST,
+			)
+			.await?;
+		Some(call)
+	} else {
+		None
+	};
+	let connection_owner = connection_call
+		.as_ref()
+		.and_then(|_| scope.connection_owner());
+	if let Some(call) = &connection_call
+		&& connection_owner.is_none()
+	{
+		let result = scope
+			.connection_unowned(
+				call,
+				input.operation == aidash_domain::identity::commands::connections::LIST,
+			)
+			.await?;
+		if !scope.live(input.grant_id).await? {
+			return Err(Error::Forbidden);
+		}
+		return Ok(result);
+	}
+
 	let Prepared {
 		task,
 		owner,
@@ -70,6 +117,21 @@ pub async fn execute(
 		admission: input.admission_id,
 	};
 	let result = match input.operation {
+		"mcp.connection_call" | "mcp.connection_list" => {
+			let call = connection_call.as_ref().ok_or(Error::Forbidden)?;
+			let list = input.operation == aidash_domain::identity::commands::connections::LIST;
+			scope
+				.apply(
+					context(),
+					Effect::Connection {
+						owner: connection_owner.as_ref().ok_or(Error::Forbidden)?,
+						call,
+						list,
+					},
+				)
+				.await?
+				.value
+		}
 		"human_request" => {
 			let run = scope.resource(
 				"run",
@@ -339,7 +401,10 @@ pub async fn execute(
 		}
 		_ => return Err(Error::Invalid("unsupported scoped home operation".into())),
 	};
-	if mutation {
+	if mutation
+		&& !(input.operation == aidash_domain::identity::commands::connections::CALL
+			&& aidash_domain::identity::commands::connections::retryable(&result))
+	{
 		scope
 			.persist_replay(input.grant_id, task.id, &request_key, &digest, &result)
 			.await?;

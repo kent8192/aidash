@@ -2,6 +2,8 @@
 use aidash_gcp::capability::{
 	KmsTokenSigner, MetadataTokenSource,
 	issuer::{CapabilityIssuer, WorkerConfiguration},
+	secret_calls::SecretCallsAdapter,
+	secret_issuer::SecretIssuerConfiguration,
 };
 use aidash_gcp::secret_manager::SecretManager;
 use aidash_server::bootstrap::build::ProvidedStore;
@@ -99,6 +101,83 @@ pub fn store(
 		store: Arc::new(SecretManager::new(byok_project_id, environment_id)?),
 		issuer,
 	})
+}
+
+/// `tenant_secret_broker` from the managed settings: the server's Tenant
+/// Secret broker endpoint, issuer, audience and server signing key.
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct TenantSecretBrokerConfiguration {
+	pub endpoint: String,
+	pub issuer: String,
+	pub audience: String,
+	pub kid: String,
+}
+
+/// The Tenant Secret call adapter, or `None` when no broker is configured.
+/// The server role signs with the broker's own key; the worker role reuses its
+/// existing worker broker key and takes only the endpoint and audience here
+/// (ADR 0095).
+pub fn secret_calls(
+	broker: Option<&serde_json::Value>,
+	tenant_secret_broker: Option<&serde_json::Value>,
+	worker: bool,
+) -> Result<Option<Arc<dyn aidash_application::tenant_secrets::SecretCalls>>> {
+	let Some((endpoint, configuration)) = call_configuration(broker, tenant_secret_broker, worker)?
+	else {
+		return Ok(None);
+	};
+	Ok(Some(Arc::new(SecretCallsAdapter::new(
+		&endpoint,
+		configuration,
+	)?)))
+}
+
+pub fn connection_calls(
+	broker: Option<&serde_json::Value>,
+	tenant_secret_broker: Option<&serde_json::Value>,
+	worker: bool,
+) -> Result<Option<Arc<dyn aidash_application::connection_calls::ConnectionCalls>>> {
+	let Some((endpoint, configuration)) = call_configuration(broker, tenant_secret_broker, worker)?
+	else {
+		return Ok(None);
+	};
+	Ok(Some(Arc::new(
+		aidash_gcp::capability::connections::ConnectionCallsAdapter::new(&endpoint, configuration)?,
+	)))
+}
+
+fn call_configuration(
+	broker: Option<&serde_json::Value>,
+	tenant_secret_broker: Option<&serde_json::Value>,
+	worker: bool,
+) -> Result<Option<(String, SecretIssuerConfiguration)>> {
+	let Some(tenant_secret_broker) = tenant_secret_broker else {
+		return Ok(None);
+	};
+	let tenant: TenantSecretBrokerConfiguration =
+		serde_json::from_value(tenant_secret_broker.clone())
+			.map_err(|error| Error::Invalid(format!("invalid Tenant Secret Broker: {error}")))?;
+	let (issuer, kid) = if worker {
+		let broker = broker.ok_or_else(|| {
+			Error::Invalid(
+				"the worker needs its Credential Broker key to sign Tenant Secret calls".into(),
+			)
+		})?;
+		let broker: WorkerConfiguration = serde_json::from_value(broker.clone())
+			.map_err(|error| Error::Invalid(format!("invalid Credential Broker: {error}")))?;
+		broker.validate()?;
+		(broker.issuer, broker.kid)
+	} else {
+		(tenant.issuer, tenant.kid)
+	};
+	let configuration = SecretIssuerConfiguration {
+		issuer,
+		audience: tenant.audience,
+		kid,
+	};
+	configuration.validate()?;
+	Ok(Some((tenant.endpoint, configuration)))
 }
 
 #[cfg(test)]

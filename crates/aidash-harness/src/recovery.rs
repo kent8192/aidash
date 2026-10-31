@@ -158,6 +158,40 @@ pub async fn recover(
 		current.error = Some(failure.message());
 		store.save(&current, token, "run.retrying").await?;
 		return Ok(true);
+	} else if current.control != RunControl::Cancelled
+		&& let Some(need) = aidash_application::connection_wait::failure_need(&current)
+		&& let Some(policy) = store.connection_wait_policy(&current).await?
+	{
+		let key = format!(
+			"{}:failure:connection:{}",
+			current.id,
+			aidash_domain::registry::rules::digest(&serde_json::json!(need.resource))
+		);
+		let request = store
+			.connection_request(&current, &need.prompt(), &key)
+			.await?;
+		let deadline = policy.deadline(request.created_at, 0);
+		current
+			.recovery
+			.connection_waited
+			.insert(need.resource.clone());
+		current.recovery.connection_wait = Some(aidash_domain::run_state::ConnectionWait {
+			request_id: request.id,
+			resource: need.resource,
+			started_at: request.created_at,
+			answer_by: deadline,
+			call: None,
+			key,
+		});
+		current.state = RunState::Waiting(Box::new(WaitingState::Human {
+			request_id: request.id,
+			answer_by: Some(deadline),
+			resume: aidash_domain::ResumeState::Thinking(Default::default()),
+		}));
+		current.error = Some(failure.message());
+		store
+			.save(&current, token, "run.failure_deferred_for_connection")
+			.await?;
 	} else {
 		let target = if current.control == RunControl::Cancelled {
 			FailureTarget::Cancelled

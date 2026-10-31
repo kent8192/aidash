@@ -1,0 +1,21 @@
+meta {
+  name: 1469 oauth-clients-ceiling - Forged bearer cannot manage OAuth settings
+  type: http
+  seq: 1469
+}
+
+get {
+  url: {{base_url}}/api/tenants/{{tenant}}/connection-scope-ceilings/aHR0cHM6Ly9tY3AuZXhhbXBsZS50ZXN0
+  body: none
+  auth: none
+}
+
+headers {
+  Accept: application/json
+  Authorization: Bearer forged
+}
+
+tests {
+  test("Exact HTTP 401", function () { expect(res.getStatus()).to.equal(401); });
+  test("Stable authorization error envelope", function () { expect(res.getHeader("content-type")).to.include("application/json"); expect(res.getBody()).to.eql({error:"unauthorized"}); });
+}

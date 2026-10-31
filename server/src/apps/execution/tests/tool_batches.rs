@@ -1138,3 +1138,52 @@ async fn tool_batch_latency_benchmark(
 	);
 	b.close().await;
 }
+
+#[rstest::rstest]
+#[tokio::test]
+async fn an_invocation_records_the_tenant_secret_it_carried_and_others_stay_null(
+	#[future(awt)]
+	#[from(common::runtime)]
+	runtime: RuntimeFixture,
+	#[future(awt)] scripted_model: ScriptedModel,
+) {
+	use sqlx::Row as _;
+	// Arrange
+	let b = Batching::new(runtime, scripted_model, 1, 1).await;
+	let (run, worker) = leased_tool_run(&b).await;
+	let (keys, inputs) = batch_calls(&run);
+	admit(&b.f.store, &run, worker, &keys, &inputs)
+		.await
+		.unwrap();
+	let record = aidash_application::tenant_secrets::SecretRecord {
+		id: Uuid::now_v7(),
+		version: "12".into(),
+		host: "api.example.test".into(),
+	};
+	// Act: the first call carried this Tenant Secret, the second carried none.
+	b.f.store
+		.invocation_secret(&TEST_FIXTURE, &keys[0], &record)
+		.await
+		.unwrap();
+	// Assert: only the first row names the secret, its pinned version and host.
+	let rows = sqlx::query(
+		"SELECT idempotency_key, tenant_secret_id, tenant_secret_version, tenant_secret_host \
+		 FROM invocations WHERE run_id = $1 ORDER BY idempotency_key",
+	)
+	.bind(run.id)
+	.fetch_all(b.f.store.pool.fixture_driver())
+	.await
+	.unwrap();
+	assert_eq!(rows.len(), 2);
+	assert_eq!(rows[0].get::<String, _>(0), keys[0]);
+	assert_eq!(rows[0].get::<Option<Uuid>, _>(1), Some(record.id));
+	assert_eq!(rows[0].get::<Option<String>, _>(2).as_deref(), Some("12"));
+	assert_eq!(
+		rows[0].get::<Option<String>, _>(3).as_deref(),
+		Some("api.example.test")
+	);
+	assert_eq!(rows[1].get::<Option<Uuid>, _>(1), None);
+	assert_eq!(rows[1].get::<Option<String>, _>(2), None);
+	assert_eq!(rows[1].get::<Option<String>, _>(3), None);
+	b.close().await;
+}

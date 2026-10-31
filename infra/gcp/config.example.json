@@ -14,7 +14,9 @@
       "byok_project_id": "your-aidash-byok-project",
       "secret_prefix": "aidash-test-cred-",
       "broker_service_account_email": "aidash-test-broker@your-aidash-project.iam.gserviceaccount.com",
-      "signing_key_id": "projects/your-aidash-project/locations/us-central1/keyRings/aidash-test-capability/cryptoKeys/capability"
+      "signing_key_id": "projects/your-aidash-project/locations/us-central1/keyRings/aidash-test-capability/cryptoKeys/capability",
+      "tenant_secret_broker_service_account_email": "aidash-test-tsec@your-aidash-project.iam.gserviceaccount.com",
+      "tenant_secret_signing_key_id": "projects/your-aidash-project/locations/us-central1/keyRings/aidash-test-capability/cryptoKeys/tenant-secret"
     }
   },
   "node_count": {

@@ -22,6 +22,15 @@ variable "environment_id" {
   }
 }
 variable "environment_kind" { type = string }
+variable "role" {
+  description = "Which Secret Store namespace this service reads: Key Material (-cred-) or Tenant Secrets (-tsec-)."
+  type        = string
+  default     = "key-material"
+  validation {
+    condition     = contains(["key-material", "tenant-secrets"], var.role)
+    error_message = "A broker role is key-material or tenant-secrets."
+  }
+}
 variable "enabled" {
   type    = bool
   default = false
@@ -35,20 +44,20 @@ variable "enabled" {
   }
 }
 variable "secret_prefix" {
-  description = "The Provider Credential prefix output by #136, without incarnation."
+  description = "The Provider Credential (-cred-) or Tenant Secret (-tsec-) prefix for this environment."
   type        = string
   validation {
-    condition     = var.secret_prefix == "aidash-${var.environment_id}-cred-"
-    error_message = "The BYOK secret prefix must match this environment."
+    condition     = var.secret_prefix == (var.role == "tenant-secrets" ? "aidash-${var.environment_id}-tsec-" : "aidash-${var.environment_id}-cred-")
+    error_message = "The secret prefix must match this environment and the broker role."
   }
 }
 variable "runtime_service_account" {
-  description = "Optional worker signer for standalone composition. Roots that feed broker settings back to the worker bind it after both modules exist."
+  description = "Optional runtime signer for standalone composition. Roots that feed broker settings back to the worker or server bind it after both modules exist."
   type        = string
   default     = null
   validation {
     condition     = !var.enabled || !var.bind_runtime_signer || var.runtime_service_account != null
-    error_message = "Standalone enabled brokers require a worker runtime signer account."
+    error_message = "Standalone enabled brokers require a runtime signer account."
   }
 }
 variable "bind_runtime_signer" {
@@ -57,11 +66,11 @@ variable "bind_runtime_signer" {
   default     = true
 }
 variable "broker_service_account_email" {
-  description = "broker_service_accounts[environment_id] from human-run bootstrap; #137 owns the SA and BYOK read grant."
+  description = "broker_service_accounts or tenant_secret_broker_service_accounts[environment_id] from human-run bootstrap; #137 owns the SAs and BYOK read grants."
   type        = string
   validation {
-    condition     = var.broker_service_account_email == "aidash-${var.environment_id}-broker@${var.project_id}.iam.gserviceaccount.com"
-    error_message = "Use this environment's bootstrap-created broker SA in the application project."
+    condition     = var.broker_service_account_email == "${var.role == "tenant-secrets" ? "aidash-${var.environment_id}-tsec" : "aidash-${var.environment_id}-broker"}@${var.project_id}.iam.gserviceaccount.com"
+    error_message = "Use this environment's bootstrap-created broker SA for the selected role in the application project."
   }
 }
 variable "image" {
@@ -76,12 +85,47 @@ variable "region" {
   default = "us-central1"
 }
 variable "signing_key_id" {
-  description = "Stable broker_signing_keys[environment_id] from human-run bootstrap. This module never owns or destroys signing keys."
+  description = "Stable broker_signing_keys or tenant_secret_signing_keys entry from human-run bootstrap. This module never owns or destroys signing keys."
   type        = string
   default     = ""
   validation {
-    condition     = !var.enabled || var.signing_key_id == "projects/${var.project_id}/locations/${var.region}/keyRings/aidash-${var.environment_id}-capability/cryptoKeys/capability"
-    error_message = "Use this environment's bootstrap signing key in the application project and broker region."
+    condition     = !var.enabled || var.signing_key_id == "projects/${var.project_id}/locations/${var.region}/keyRings/aidash-${var.environment_id}-capability/cryptoKeys/${var.role == "tenant-secrets" ? "tenant-secret" : "capability"}"
+    error_message = "Use this environment's bootstrap signing key for the broker role in the application project and broker region."
+  }
+}
+variable "secondary_signing_key_id" {
+  description = "The worker's verification key, injected into the Tenant Secret broker so it accepts both issuers (ADR 0005 amendment)."
+  type        = string
+  default     = ""
+  validation {
+    condition     = !var.enabled || var.role != "tenant-secrets" || var.secondary_signing_key_id != ""
+    error_message = "An enabled Tenant Secret broker must accept the worker issuer's public key."
+  }
+  validation {
+    condition     = var.secondary_signing_key_id == "" || (var.role == "tenant-secrets" && var.secondary_signing_key_id == "projects/${var.project_id}/locations/${var.region}/keyRings/aidash-${var.environment_id}-capability/cryptoKeys/capability")
+    error_message = "Only the Tenant Secret broker may verify with the worker key."
+  }
+}
+variable "secondary_verification_versions" {
+  description = "Worker key versions to publish to the Tenant Secret broker during rotation."
+  type        = set(string)
+  default     = ["1"]
+  validation {
+    condition     = alltrue([for v in var.secondary_verification_versions : can(regex("^[1-9][0-9]*$", v))])
+    error_message = "Secondary verification versions must be positive integers."
+  }
+}
+variable "secondary_issuer" {
+  description = "Issuer carried by tokens signed with the secondary (worker) key; required for the Tenant Secret broker."
+  type        = string
+  default     = ""
+  validation {
+    condition     = !var.enabled || var.role != "tenant-secrets" || var.secondary_issuer != ""
+    error_message = "An enabled Tenant Secret broker must name the worker issuer."
+  }
+  validation {
+    condition     = var.secondary_issuer == "" || var.role == "tenant-secrets"
+    error_message = "Only the Tenant Secret broker may configure a secondary issuer."
   }
 }
 variable "issuer" {

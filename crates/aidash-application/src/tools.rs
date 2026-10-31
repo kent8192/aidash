@@ -2,7 +2,9 @@
 use crate::{
 	Error, Result,
 	ports::tools::{ToolOperations, ToolTransport},
+	tenant_secrets::{SecretCall, endpoint_destination},
 };
+use aidash_capability::tenant_secret::{Attach, SecretSubject};
 use aidash_domain::{
 	ArtifactInput, NewTask, Run,
 	provider::ToolSpec,
@@ -11,6 +13,18 @@ use aidash_domain::{
 };
 use serde_json::{Value, json};
 use std::collections::BTreeMap;
+
+/// Decode only the Federation control envelope; arbitrary inner tool JSON stays untouched.
+pub fn connection_outcome(value: Value, list: bool) -> Result<Option<Value>> {
+	use aidash_domain::identity::commands::connections::Outcome;
+	match serde_json::from_value::<Outcome>(value)? {
+		Outcome::NotPersonal => Ok(None),
+		Outcome::Connection { cause } => Err(Error::Connection(cause)),
+		Outcome::Result { result } => Ok(Some(result)),
+		Outcome::Tools { tools } if list => Ok(Some(serde_json::to_value(tools)?)),
+		_ => Err(Error::Invalid("unexpected personal call outcome".into())),
+	}
+}
 
 #[derive(serde::Deserialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
@@ -41,6 +55,55 @@ pub struct Plugin {
 	pub alias: String,
 	pub config: ToolConfig,
 }
+
+/// The broker authorization one tool call needs. A tool endpoint is signed as
+/// its origin plus the path's directory, so the broker forwards only that path
+/// and the remaining segment the transport appends. An MCP session uses POST,
+/// GET and DELETE; an HTTP tool uses POST alone.
+fn tenant_secret_call(config: &ToolConfig, run: &Run, endpoint: &str) -> Result<SecretCall> {
+	let methods = match config {
+		ToolConfig::Http { .. } => vec!["POST".to_owned()],
+		ToolConfig::Mcp { .. } => {
+			vec!["POST".to_owned(), "GET".to_owned(), "DELETE".to_owned()]
+		}
+		_ => {
+			return Err(Error::Invalid(
+				"tool configuration has no external transport".into(),
+			));
+		}
+	};
+	Ok(SecretCall {
+		destination: endpoint_destination(endpoint)?,
+		methods,
+		attach: Attach::Bearer,
+		subject: SecretSubject::Run {
+			run: run.id.to_string(),
+			call: uuid::Uuid::now_v7(),
+		},
+		max_response_bytes: Some(256_000),
+	})
+}
+/// Missing connections allow the named secret or unauthenticated MCP path. Outages do not.
+async fn connection_for(
+	operations: &dyn ToolOperations,
+	endpoint: &str,
+	call: SecretCall,
+	key: &str,
+) -> Result<Option<crate::tenant_secrets::CallSecret>> {
+	let Ok(resource) = aidash_domain::oauth_connections::canonical_resource(endpoint) else {
+		return Ok(None);
+	};
+	match operations.connection(&resource, call, key).await {
+		Ok(secret) => Ok(Some(secret)),
+		Err(Error::Invalid(code))
+			if code == aidash_domain::oauth_connections::CONNECTION_REQUIRED =>
+		{
+			Ok(None)
+		}
+		Err(error) => Err(error),
+	}
+}
+
 pub fn validate_native_http_url(raw: &str, allowed_hosts: &[String]) -> Result<url::Url> {
 	let url = url::Url::parse(raw).map_err(|_| Error::Invalid("invalid URL".into()))?;
 	let host = url
@@ -94,14 +157,102 @@ impl Plugin {
 				transport.invoke(&self.config, input, key, None).await
 			}
 			ToolConfig::Native { .. } => Err(Error::Invalid("unknown native tool".into())),
-			ToolConfig::Http { .. } | ToolConfig::Mcp { .. } => {
+			ToolConfig::Http { secret_owner, .. } | ToolConfig::Mcp { secret_owner, .. } => {
+				let (endpoint, tool_name, kind, secret) = match &self.config {
+					ToolConfig::Mcp {
+						endpoint,
+						tool_name,
+						secret,
+						..
+					} => (
+						endpoint,
+						tool_name.as_str(),
+						aidash_domain::identity::commands::connections::Kind::Connection,
+						secret.clone(),
+					),
+					ToolConfig::Http {
+						endpoint,
+						secret: Some(secret),
+						..
+					} => (
+						endpoint,
+						"",
+						aidash_domain::identity::commands::connections::Kind::PersonalSecret,
+						Some(secret.clone()),
+					),
+					_ => return transport.invoke(&self.config, input, key, None).await,
+				};
+				use aidash_domain::identity::commands::connections::Kind;
+				let (kind, resource) = match (
+					kind,
+					aidash_domain::oauth_connections::canonical_resource(endpoint).ok(),
+				) {
+					(Kind::Connection, Some(resource)) => (kind, Some(resource)),
+					// An endpoint that cannot be an OAuth resource (a query, plain
+					// http to a LAN host) still resolves a named personal secret on Home.
+					(Kind::Connection, None) if secret.is_some() => {
+						(Kind::PersonalSecret, Some(endpoint.clone()))
+					}
+					(Kind::Connection, None) => (kind, None),
+					(Kind::PersonalSecret, _) => (kind, Some(endpoint.clone())),
+				};
+				if let Some(resource) = resource {
+					let call = aidash_domain::identity::commands::connections::ConnectionCall {
+						tool_key:
+							aidash_domain::identity::commands::connections::ToolKey::Registry {
+								registry_deployment: self.entry.config["registry_deployment"]
+									.as_str()
+									.map(str::to_owned)
+									.or_else(|| {
+										ctx.run
+											.context
+											.binding_snapshot
+											.as_ref()
+											.map(|s| s.agent.registry_deployment.clone())
+									})
+									.unwrap_or_default(),
+								id: self.entry.id.clone(),
+								version: self.entry.version.clone(),
+							},
+						resource,
+						tool_name: tool_name.into(),
+						arguments: input.clone(),
+						idempotency_key: key.into(),
+						kind,
+						secret_name: secret,
+					};
+					if let Some(result) = ctx.operations.connection_call(&call).await? {
+						return Ok(result);
+					}
+				}
 				// Resolved at dispatch, after the arguments are valid and before
 				// any effect, so a deleted Tenant Secret fails the call outright.
-				let secret = match aidash_domain::tenant_secrets::named(&self.config) {
-					Some((name, endpoint)) => {
-						Some(ctx.operations.tenant_secret(name, endpoint).await?)
+				let connection = if let ToolConfig::Mcp { endpoint, .. } = &self.config {
+					let call = tenant_secret_call(&self.config, ctx.run, endpoint)?;
+					connection_for(ctx.operations, endpoint, call, key).await?
+				} else {
+					None
+				};
+				let secret = match (
+					connection,
+					aidash_domain::tenant_secrets::named(&self.config),
+				) {
+					(Some(connection), _) => Some(connection),
+					(None, Some((name, endpoint))) => {
+						let call = tenant_secret_call(&self.config, ctx.run, endpoint)?;
+						match ctx
+							.operations
+							.tenant_secret_for(name, endpoint, *secret_owner, call, key)
+							.await
+						{
+							Ok(secret) => Some(secret),
+							Err(error) => {
+								return crate::tenant_secrets::personal_error_value(&error)
+									.ok_or(error);
+							}
+						}
 					}
-					None => None,
+					(None, None) => None,
 				};
 				transport
 					.invoke(&self.config, input, key, secret.as_ref())
@@ -279,6 +430,31 @@ impl Builtin {
 					.memory_recall(key, &query, self.name == "memory_reflect")
 					.await
 			}
+			"connection_request" => {
+				if !ctx.operations.connection_person().await? {
+					return Err(Error::Invalid(
+						"connection_request requires a person at the Run's chain root".into(),
+					));
+				}
+				let resource = aidash_domain::oauth_connections::canonical_resource(required(
+					&input, "resource",
+				)?)?;
+				let scopes: Vec<String> = serde_json::from_value(
+					input.get("scopes").cloned().unwrap_or_else(|| json!([])),
+				)?;
+				let scopes =
+					aidash_domain::oauth_connections::admissible_scopes(&scopes, None, None, None)?;
+				let prompt = json!({"resource":resource,"scopes":scopes,"reason":required(&input,"reason")?,"tool":"connection_request","message":format!("Connect to {resource} to continue this task.")}).to_string();
+				let request = ctx
+					.operations
+					.human_request(
+						aidash_domain::oauth_connections::CONNECTION_REQUEST_KIND,
+						&prompt,
+						key,
+					)
+					.await?;
+				Ok(json!({"human_request_id":request.id}))
+			}
 			"human_request" => {
 				let request = ctx
 					.operations
@@ -394,6 +570,13 @@ pub fn builtins() -> BTreeMap<String, Builtin> {
 				.expect("declared builtin"),
 			description: "Explicitly reflect over currently admitted memory with bounded exact-citation reads. This operation does not admit new learning.",
 			schema: json!(schemars::schema_for!(aidash_domain::memory::RecallQuery)),
+		},
+		Builtin {
+			name: "connection_request",
+			contract: aidash_domain::tool::builtin_contract("connection_request")
+				.expect("declared builtin"),
+			description: "Ask the person who started this Run to connect an MCP server. Available in every Approval Mode. Waits and returns {connected: bool}; connect missing plugin servers to make their tools available.",
+			schema: json!({"type":"object","required":["resource","reason"],"properties":{"resource":string,"scopes":{"type":"array","items":string},"reason":string},"additionalProperties":false}),
 		},
 		Builtin {
 			name: "human_request",

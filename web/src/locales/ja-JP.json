@@ -820,6 +820,8 @@
   "tokenizer": "トークナイザー",
   "planConnections": "Plan 接続",
   "keylessEndpointHelp": "Keyless エンドポイントには認証情報を送信しません。利用前にエンドポイントとデータ保持方針を確認してください。上限の既定値はコンテキスト 128000、出力 16384 トークンです。モデルに合わせて確認してください。",
+  "toolOAuthScopes": "宣言する OAuth スコープ（空白区切り）",
+  "toolPersonalSecret": "個人のシークレットを必須にする",
   "marketplaceReviewOnNode": "このノードでレビュー",
   "filePreviewTitle": "File preview",
   "filePreviewTooLargeBody": "この File version は 16 MiB の File preview 上限を超えています。ダウンロードして内容を確認してください。",

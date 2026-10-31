@@ -42,9 +42,20 @@ run "bootstrap_keys" {
       name  = "projects/aidash-fixture/serviceAccounts/aidash-test-broker@aidash-fixture.iam.gserviceaccount.com"
     }
   }
+  override_resource {
+    target = google_service_account.tenant_secret_broker["test"]
+    values = {
+      email = "aidash-test-tsec@aidash-fixture.iam.gserviceaccount.com"
+      name  = "projects/aidash-fixture/serviceAccounts/aidash-test-tsec@aidash-fixture.iam.gserviceaccount.com"
+    }
+  }
+  override_resource {
+    target = google_kms_crypto_key.tenant_secret["test"]
+    values = { id = "projects/aidash-fixture/locations/us-central1/keyRings/aidash-test-capability/cryptoKeys/tenant-secret" }
+  }
   assert {
-    condition     = output.broker_signing_keys["test"] == "projects/aidash-fixture/locations/us-central1/keyRings/aidash-test-capability/cryptoKeys/capability"
-    error_message = "Bootstrap exports the stable signing-key resource, independently of Cloud Run enablement."
+    condition     = output.broker_signing_keys["test"] == "projects/aidash-fixture/locations/us-central1/keyRings/aidash-test-capability/cryptoKeys/capability" && output.tenant_secret_signing_keys["test"] == "projects/aidash-fixture/locations/us-central1/keyRings/aidash-test-capability/cryptoKeys/tenant-secret"
+    error_message = "Bootstrap exports the stable worker and server signing-key resources, independently of Cloud Run enablement."
   }
 }
 
@@ -64,16 +75,18 @@ run "environment_enabled" {
       release_sha = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
     } }
     credential_brokers = { test = {
-      enabled                      = true
-      byok_project_id              = "aidash-byok-fixture"
-      secret_prefix                = "aidash-test-cred-"
-      broker_service_account_email = run.bootstrap_keys.broker_service_accounts["test"]
-      signing_key_id               = run.bootstrap_keys.broker_signing_keys["test"]
+      enabled                                    = true
+      byok_project_id                            = "aidash-byok-fixture"
+      secret_prefix                              = "aidash-test-cred-"
+      broker_service_account_email               = run.bootstrap_keys.broker_service_accounts["test"]
+      signing_key_id                             = run.bootstrap_keys.broker_signing_keys["test"]
+      tenant_secret_broker_service_account_email = run.bootstrap_keys.tenant_secret_broker_service_accounts["test"]
+      tenant_secret_signing_key_id               = run.bootstrap_keys.tenant_secret_signing_keys["test"]
     } }
   }
   assert {
-    condition     = output.credential_brokers["test"].kid == "${run.bootstrap_keys.broker_signing_keys["test"]}/cryptoKeyVersions/1"
-    error_message = "Worker capability authority uses the bootstrap key."
+    condition     = output.credential_brokers["test"].kid == "${run.bootstrap_keys.broker_signing_keys["test"]}/cryptoKeyVersions/1" && output.tenant_secret_brokers["test"].kid == "${run.bootstrap_keys.tenant_secret_signing_keys["test"]}/cryptoKeyVersions/1" && output.tenant_secret_brokers["test"].endpoint == "https://broker.run.app" && output.tenant_secret_brokers["test"].audience == "test-tsec"
+    error_message = "Worker and server capability authority use their own bootstrap keys, the server keeps a bare endpoint and a Tenant Secret audience."
   }
 }
 
@@ -93,9 +106,13 @@ run "broker_rotation_plan" {
     target = module.credential_broker["test"].data.google_kms_crypto_key_version.verification["2"]
     values = { public_key = [{ pem = "fixture-public-key-2", algorithm = "EC_SIGN_ED25519" }] }
   }
+  override_data {
+    target = module.tenant_secret_broker["test"].data.google_kms_crypto_key_version.secondary_verification["2"]
+    values = { public_key = [{ pem = "fixture-public-key-2", algorithm = "EC_SIGN_ED25519" }] }
+  }
   assert {
-    condition     = output.credential_brokers["test"].kid == "${run.bootstrap_keys.broker_signing_keys["test"]}/cryptoKeyVersions/2"
-    error_message = "Managed workers must sign with the explicitly selected numeric version."
+    condition     = output.credential_brokers["test"].kid == "${run.bootstrap_keys.broker_signing_keys["test"]}/cryptoKeyVersions/2" && output.tenant_secret_brokers["test"].kid == "${run.bootstrap_keys.tenant_secret_signing_keys["test"]}/cryptoKeyVersions/1" && google_kms_crypto_key_iam_member.tenant_secret_signer["test"].crypto_key_id == run.bootstrap_keys.tenant_secret_signing_keys["test"]
+    error_message = "Managed workers sign with the explicit version; the server key and its signer stay separate."
   }
 
 }
@@ -110,8 +127,8 @@ run "broker_disabled_plan" {
     credential_brokers     = { test = merge(run.environment_enabled.managed_credential_brokers["test"], { enabled = false }) }
   }
   assert {
-    condition     = length(module.credential_broker) == 0 && length(google_kms_crypto_key_iam_member.broker_signer) == 0
-    error_message = "Disable removes only the service and worker signer binding."
+    condition     = length(module.credential_broker) == 0 && length(module.tenant_secret_broker) == 0 && length(google_kms_crypto_key_iam_member.broker_signer) == 0 && length(google_kms_crypto_key_iam_member.tenant_secret_signer) == 0
+    error_message = "Disable removes both services and both signer bindings."
   }
 }
 run "broker_disabled_apply" {
@@ -134,8 +151,8 @@ run "broker_reenabled_plan" {
     credential_brokers     = run.environment_enabled.managed_credential_brokers
   }
   assert {
-    condition     = module.credential_broker["test"].signing_key == run.bootstrap_keys.broker_signing_keys["test"]
-    error_message = "Re-enable consumes the original key instead of recreating its immutable name."
+    condition     = module.credential_broker["test"].signing_key == run.bootstrap_keys.broker_signing_keys["test"] && module.tenant_secret_broker["test"].signing_key == run.bootstrap_keys.tenant_secret_signing_keys["test"]
+    error_message = "Re-enable consumes the original keys instead of recreating their immutable names."
   }
 }
 run "broker_reenabled_apply" {
@@ -158,7 +175,7 @@ run "environment_removed_plan" {
     credential_brokers     = {}
   }
   assert {
-    condition     = length(module.credential_broker) == 0 && length(google_kms_crypto_key_iam_member.broker_signer) == 0
+    condition     = length(module.credential_broker) == 0 && length(module.tenant_secret_broker) == 0 && length(google_kms_crypto_key_iam_member.broker_signer) == 0 && length(google_kms_crypto_key_iam_member.tenant_secret_signer) == 0
     error_message = "Environment removal cannot own signing-key destruction."
   }
 }
@@ -174,7 +191,7 @@ run "bootstrap_after_retirement_plan" {
     security_alert_emails    = ["security@example.test"]
   }
   assert {
-    condition     = output.broker_signing_keys == run.bootstrap_keys.broker_signing_keys
+    condition     = output.broker_signing_keys == run.bootstrap_keys.broker_signing_keys && output.tenant_secret_signing_keys == run.bootstrap_keys.tenant_secret_signing_keys
     error_message = "Automation retirement leaves permanent bootstrap key state unchanged."
   }
 }

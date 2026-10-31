@@ -157,8 +157,8 @@ class DeployBoundaryTests(unittest.TestCase):
             self.assertFalse(set(permissions) & set(SENSITIVE), role)
 
     def test_only_actas_is_granted_to_deploy_on_broker_accounts(self):
-        brokers = {a["name"] for a in self.values("google_service_account") if a["account_id"].endswith("-broker")}
-        self.assertEqual(len(brokers), 2)
+        brokers = {a["name"] for a in self.values("google_service_account") if a["account_id"].endswith(("-broker", "-tsec"))}
+        self.assertEqual(len(brokers), 4)
         grants = [g for g in self.values("google_service_account_iam_member") if g["service_account_id"] in brokers]
         self.assertEqual(sorted(g["service_account_id"] for g in grants), sorted(brokers))
         self.assertTrue(all(g["role"] == "roles/iam.serviceAccountUser" and g["member"] == DEPLOY for g in grants))
@@ -174,7 +174,7 @@ class DeployBoundaryTests(unittest.TestCase):
         self.assertRegex(rule["denial_condition"][0]["expression"], r"^resource\.matchTag\('[^']+', '[^']+'\)$")
         self.assertEqual(rule["denial_condition"][0]["expression"], "resource.matchTag('aidash-fixture/aidash-credential-broker', 'broker')")
         bindings = self.values("google_tags_tag_binding")
-        self.assertEqual(len(bindings), 2)
+        self.assertEqual(len(bindings), 4)
 
     def test_deploy_holds_no_tag_or_deny_administration(self):
         for role in self.deploy_roles():
@@ -197,20 +197,23 @@ class DeployBoundaryTests(unittest.TestCase):
         self.assertIn("CreateNodePool", revision[3])
         for runs_as_broker in revision[1:]:
             self.assertIn('"aidash-test-broker@aidash-fixture.iam.gserviceaccount.com"', runs_as_broker)
+            self.assertIn('"aidash-test-tsec@aidash-fixture.iam.gserviceaccount.com"', runs_as_broker)
         byok = filters["BYOK project: audit configuration or IAM changed"]
         self.assertIn("auditConfigDeltas", byok[0])
         self.assertIn("NOT protoPayload.authenticationInfo.principalEmail=\"aidash-deploy@aidash-fixture.iam.gserviceaccount.com\"", byok[1])
         self.assertTrue(all("projects/aidash-byok-fixture/logs/cloudaudit.googleapis.com%2Factivity" in f for f in byok))
-        self.assertIn('("aidash-develop-credential-broker" OR "aidash-test-credential-broker")', revision[0])
+        self.assertIn('("aidash-develop-credential-broker" OR "aidash-develop-tenant-secret-broker" OR "aidash-test-credential-broker" OR "aidash-test-tenant-secret-broker")', revision[0])
         iam = filters["Credential Broker: IAM policy changed"]
         self.assertIn("Services.SetIamPolicy", iam[0])
         self.assertIn("google.iam.admin.v1.SetIAMPolicy", iam[1])
-        read = filters["Provider Credential Key Material read by a non-broker principal"]
+        read = filters["BYOK secret payload read outside the owning broker"]
         self.assertEqual(len(read), 1)
         self.assertIn("AccessSecretVersion", read[0])
-        for email in ("aidash-develop-broker", "aidash-test-broker"):
+        for email in ("aidash-develop-broker", "aidash-develop-tsec", "aidash-test-broker", "aidash-test-tsec"):
             self.assertIn(f'"{email}@aidash-fixture.iam.gserviceaccount.com"', read[0])
-        self.assertEqual(read[0].count("principalEmail"), 1)
+        for prefix in ("secrets/aidash-develop-cred-", "secrets/aidash-develop-tsec-", "secrets/aidash-test-cred-", "secrets/aidash-test-tsec-"):
+            self.assertIn(f'"{prefix}"', read[0])
+        self.assertEqual(read[0].count("principalEmail"), 2)
 
     def test_alert_policies_notify_and_rate_limit(self):
         for policy in self.values("google_monitoring_alert_policy"):
@@ -267,7 +270,7 @@ class BrokerImageTests(unittest.TestCase):
                     if resource["type"] == "google_cloud_run_v2_service"
                     for container in resource["values"]["template"][0]["containers"]
                 ]
-        self.assertEqual(images, [f"us-central1-docker.pkg.dev/aidash-fixture/aidash/broker@{fixture}"])
+        self.assertEqual(images, [f"us-central1-docker.pkg.dev/aidash-fixture/aidash/broker@{fixture}"] * 2)
 
 
 class DeployEntryPointTests(unittest.TestCase):

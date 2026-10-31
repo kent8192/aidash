@@ -207,7 +207,22 @@ async fn workers_filter_terminal_paused_retry_and_waiting_records(
 		}
 	}
 	// A waiting request becomes runnable only after its persisted response exists.
-	for answered in [false, true] {
+	for (kind, control, answered, expected) in [
+		(HumanRequestKind::Question, RunControl::Active, false, false),
+		(HumanRequestKind::Question, RunControl::Active, true, true),
+		(
+			HumanRequestKind::McpConnection,
+			RunControl::Paused,
+			true,
+			false,
+		),
+		(
+			HumanRequestKind::McpConnection,
+			RunControl::Cancelled,
+			false,
+			true,
+		),
+	] {
 		let request_id = Uuid::new_v4();
 		let record = Run {
 			id: Uuid::new_v4(),
@@ -225,7 +240,7 @@ async fn workers_filter_terminal_paused_retry_and_waiting_records(
 			.id(request_id)
 			.workspace_id(saved.workspace_id)
 			.run(saved.id)
-			.kind(HumanRequestKind::Question)
+			.kind(kind)
 			.prompt("Continue?")
 			.response(answered.then(|| json!({"answer":"yes"}).into()))
 			.request_key(format!("worker-lease-fixture-{request_id}"))
@@ -236,12 +251,13 @@ async fn workers_filter_terminal_paused_retry_and_waiting_records(
 			.await
 			.unwrap();
 		saved.phase = RunPhase::Waiting;
+		saved.control = control;
 		saved.pending = human_pending(request_id).into();
 		let saved = Run::objects()
 			.update_with_conn(&mut db, &saved)
 			.await
 			.unwrap();
-		if answered {
+		if expected {
 			eligible.push((saved.updated_at, saved.id));
 		}
 	}

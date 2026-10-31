@@ -1,3 +1,10 @@
+import type {
+  TenantSecretMetadata as Metadata,
+  SecretOwnership,
+} from "./generated/models";
+import { useConnectionProbe } from "./connections/install";
+import { canonicalResource } from "./connections/scopes";
+import { Badge } from "./components/ui/badge";
 import { useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { apiFetch } from "./transport";
@@ -6,14 +13,6 @@ import { Alert, Hint } from "./components/patterns";
 import { Button } from "./components/ui/button";
 import { Input } from "./components/ui/input";
 import { NativeSelect } from "./components/ui/native-select";
-
-type Metadata = {
-  name: string;
-  hosts: string[];
-  fingerprint: string;
-  last4: string;
-  revision: number;
-};
 
 /** A package receives names from this Tenant, never the stored values. */
 export function TenantSecretAssignments({
@@ -37,6 +36,12 @@ export function TenantSecretAssignments({
     enabled: slots.length > 0,
     retry: false,
   });
+  const choices = [...(query.data ?? [])]
+    .sort((a, b) => Number(b.owner === "me") - Number(a.owner === "me"))
+    .filter(
+      (item, index, all) =>
+        all.findIndex((other) => other.name === item.name) === index,
+    );
   return (
     <>
       {query.isError && <Alert>{String(query.error)}</Alert>}
@@ -55,12 +60,13 @@ export function TenantSecretAssignments({
                 : "Choose a Tenant Secret"}
             </option>
             {value[slot] &&
-              !query.data?.some((item) => item.name === value[slot]) && (
+              !choices.some((item) => item.name === value[slot]) && (
                 <option value={value[slot]}>{value[slot]}</option>
               )}
-            {query.data?.map((item) => (
+            {choices.map((item) => (
               <option key={item.name} value={item.name}>
-                {item.name} · {item.hosts.join(", ")}
+                {item.name} · {item.owner === "me" ? "Personal" : "Shared"} ·{" "}
+                {item.hosts.join(", ")}
               </option>
             ))}
           </NativeSelect>
@@ -74,9 +80,11 @@ export function TenantSecretAssignments({
 export function TenantSecrets({
   tenant,
   canManage,
+  canUse = false,
 }: {
   tenant: string;
   canManage: boolean;
+  canUse?: boolean;
 }) {
   const { locale } = useI18n();
   const ja = locale === "ja-JP";
@@ -88,6 +96,7 @@ export function TenantSecrets({
     queryFn: () => apiFetch<Metadata[]>(url),
     retry: false,
   });
+  const [owner, setOwner] = useState<SecretOwnership>(canUse ? "me" : "tenant");
   const [name, setName] = useState("");
   const [value, setValue] = useState("");
   const [hosts, setHosts] = useState("");
@@ -100,8 +109,9 @@ export function TenantSecrets({
     setError("");
     const body =
       method === "DELETE"
-        ? { expected_revision: item!.revision }
+        ? { expected_revision: item!.revision, owner: item!.owner }
         : {
+            owner,
             expected_revision: revision,
             hosts: hosts.split(/[\s,]+/).filter(Boolean),
             ...(value ? { value } : {}),
@@ -134,20 +144,30 @@ export function TenantSecrets({
       <ul className="divide-y divide-border">
         {query.data?.map((item) => (
           <li
-            key={item.name}
+            key={`${item.owner}:${item.name}`}
             className="flex flex-wrap items-center gap-3 py-3"
           >
             <span className="font-mono text-sm">{item.name}</span>
+            <Badge variant="outline">
+              {item.owner === "me"
+                ? ja
+                  ? "個人"
+                  : "Personal"
+                : ja
+                  ? "共有"
+                  : "Shared"}
+            </Badge>
             <span className="text-xs">
               {item.hosts.join(", ")} · {item.fingerprint} · …{item.last4}
             </span>
-            {canManage && (
+            {(item.owner === "me" ? canUse : canManage) && (
               <>
                 <Button
                   size="sm"
                   variant="outline"
                   disabled={busy}
                   onClick={() => {
+                    setOwner(item.owner);
                     setName(item.name);
                     setHosts(item.hosts.join(", "));
                     setRevision(item.revision);
@@ -169,7 +189,7 @@ export function TenantSecrets({
           </li>
         ))}
       </ul>
-      {canManage && (
+      {(canManage || canUse) && (
         <form
           className="grid gap-3"
           onSubmit={(event) => {
@@ -177,6 +197,25 @@ export function TenantSecrets({
             void write("PUT");
           }}
         >
+          <Field label={ja ? "所有者" : "Owner"}>
+            <NativeSelect
+              value={owner}
+              disabled={busy || revision > 0}
+              onChange={(event) =>
+                setOwner(event.target.value as SecretOwnership)
+              }
+            >
+              {canUse && <option value="me">{ja ? "個人" : "Personal"}</option>}
+              {canManage && (
+                <option value="tenant">{ja ? "共有" : "Shared"}</option>
+              )}
+            </NativeSelect>
+          </Field>
+          <Hint>
+            {ja
+              ? "個人のシークレットは自分から開始した Run だけが使えます。同名の共有シークレットより優先されます。"
+              : "Personal secrets are used only by Runs started by you and take precedence over shared secrets of the same name."}
+          </Hint>
           <Field label={ja ? "名前" : "Name"}>
             <Input
               value={name}
@@ -240,8 +279,10 @@ export function TenantSecrets({
 
 export function SecretDisclosure({
   entry,
+  tenant = null,
 }: {
   entry: { kind: string; config: unknown };
+  tenant?: string | null;
 }) {
   const { locale } = useI18n();
   const config = entry.config as Record<string, unknown>;
@@ -257,7 +298,22 @@ export function SecretDisclosure({
         : undefined;
   const endpoint =
     entry.kind === "external_service" ? config.base_url : transport.endpoint;
-  if (!secret && entry.kind !== "external_service") return null;
+  // Probe the configured URL as written; the server checks it is an OAuth resource.
+  const resource =
+    entry.kind === "tool" &&
+    transport.transport === "mcp" &&
+    typeof endpoint === "string" &&
+    canonicalResource(endpoint)
+      ? endpoint
+      : null;
+  const probe = useConnectionProbe(
+    !secret ? tenant : null,
+    !secret ? resource : null,
+  );
+  const oauth = !secret && probe.data?.oauth;
+  const personal = transport.secret_owner === "personal";
+  if (!secret && entry.kind !== "external_service" && !oauth && !personal)
+    return null;
   let host: string;
   try {
     host = new URL(String(endpoint)).host;
@@ -267,7 +323,13 @@ export function SecretDisclosure({
   return (
     <Hint>
       <strong>
-        {String(secret ?? "External service")} → {host}
+        {oauth
+          ? "per person (OAuth)"
+          : personal
+            ? "per person (secret)"
+            : "shared secret"}{" "}
+        → {host}
+        {secret ? ` · ${String(secret)}` : ""}
       </strong>
       <br />
       {locale === "ja-JP"

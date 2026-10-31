@@ -20,7 +20,7 @@ async fn oversized_json_and_unterminated_sse_are_rejected_before_decoding() {
 		let server = tokio::spawn(async move {
 			axum::serve(listener, app).await.unwrap();
 		});
-		let client = BoundedClient(reqwest::Client::new());
+		let client = BoundedClient::direct(reqwest::Client::new());
 		let message = serde_json::from_value(
 			json!({"jsonrpc":"2.0","id":1,"method":"tools/list","params":{}}),
 		)
@@ -57,7 +57,7 @@ fn wrapped(error: reqwest::Error) -> DynamicTransportError {
 	DynamicTransportError {
 		transport_name: "test".into(),
 		transport_type_id: std::any::TypeId::of::<Failure>(),
-		error: Box::new(Failure::Client(error)),
+		error: Box::new(Failure::Client(McpError::Http(error))),
 	}
 }
 
@@ -101,4 +101,129 @@ async fn connection_failure_is_not_delivered_and_closed_transport_is_uncertain()
 		call_error(&ServiceError::TransportClosed),
 		Error::External(_)
 	));
+}
+
+#[tokio::test]
+async fn auth_refusal_mid_stream_after_a_tool_request_was_accepted_stays_a_normal_failure() {
+	use axum::{body::Body, http::StatusCode, response::Response};
+	let app = Router::new().route(
+		"/mcp",
+		post(|| async {
+			let stream = futures_util::stream::once(async {
+				Ok::<_, std::io::Error>(bytes::Bytes::from_static(b": accepted\n\n"))
+			})
+			.chain(futures_util::stream::pending());
+			Response::builder()
+				.header("content-type", "text/event-stream")
+				.body(Body::from_stream(stream))
+				.unwrap()
+		})
+		.get(|| async {
+			(
+				StatusCode::UNAUTHORIZED,
+				[("www-authenticate", "Bearer")],
+				"refused",
+			)
+		}),
+	);
+	let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+	let uri: Arc<str> = format!("http://{}/mcp", listener.local_addr().unwrap()).into();
+	let server = tokio::spawn(async move {
+		axum::serve(listener, app).await.unwrap();
+	});
+	let client = BoundedClient::direct(reqwest::Client::new());
+	let message = serde_json::from_value(
+		json!({"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"effect","arguments":{}}}),
+	)
+	.unwrap();
+	let accepted = client
+		.post_message(uri.clone(), message, None, None, HashMap::new())
+		.await
+		.unwrap();
+	assert!(matches!(accepted, StreamableHttpPostResponse::Sse(..)));
+	let failure = match client
+		.get_stream(uri, "session".into(), None, None, HashMap::new())
+		.await
+	{
+		Err(error) => error,
+		Ok(_) => panic!("the follow-up stream must refuse authentication"),
+	};
+	let error = call_error(&ServiceError::TransportSend(DynamicTransportError {
+		transport_name: "stream-auth".into(),
+		transport_type_id: std::any::TypeId::of::<Failure>(),
+		error: Box::new(failure),
+	}));
+	assert!(
+		matches!(error, Error::External(_)),
+		"cannot reconnect and replay an accepted operation: {error:?}"
+	);
+	server.abort();
+	let _ = server.await;
+}
+
+struct UnusedRouteSource;
+#[async_trait::async_trait]
+impl SecretRouteSource for UnusedRouteSource {
+	async fn route(&self) -> aidash_application::Result<SecretRoute> {
+		Err(Error::External("unexpected refresh".into()))
+	}
+}
+
+#[tokio::test]
+async fn brokered_mcp_refusal_preserves_the_reason_and_correlation() {
+	let app = Router::new().route(
+		"/forward/tool",
+		post(|headers: axum::http::HeaderMap| async move {
+			assert_eq!(
+				headers
+					.get("x-aidash-secret-call")
+					.map(|v| v.to_str().unwrap()),
+				Some("capability")
+			);
+			assert!(headers.get("authorization").is_none());
+			(
+				axum::http::StatusCode::FORBIDDEN,
+				[
+					("x-aidash-broker-error", "secret_destination_refused"),
+					("x-aidash-correlation", "trace-1"),
+				],
+				"private broker body",
+			)
+		}),
+	);
+	let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+	let base = format!("http://{}/forward", listener.local_addr().unwrap());
+	let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+	let client = BoundedClient::brokered(
+		reqwest::Client::new(),
+		Arc::new(UnusedRouteSource),
+		"tool".into(),
+		SecretRoute {
+			base: base.parse().unwrap(),
+			token: "capability".into(),
+		},
+	);
+	let message =
+		serde_json::from_value(json!({"jsonrpc":"2.0","id":1,"method":"tools/list","params":{}}))
+			.unwrap();
+	let result = client
+		.post_message(
+			"http://unused.invalid".into(),
+			message,
+			None,
+			Some("should-not-forward".into()),
+			HashMap::new(),
+		)
+		.await;
+	match result {
+		Err(Failure::Client(McpError::Broker(failure))) => {
+			assert_eq!(failure.code_str(), "secret_destination_refused");
+			assert_eq!(failure.correlation.as_deref(), Some("trace-1"));
+			assert!(
+				matches!(failure.into_error(), Error::Invalid(code) if code == "secret_destination_refused")
+			);
+		}
+		other => panic!("unexpected response: {other:?}"),
+	}
+	server.abort();
 }

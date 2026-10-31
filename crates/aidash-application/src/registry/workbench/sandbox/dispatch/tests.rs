@@ -27,6 +27,7 @@ struct Repository {
 	response: &'static str,
 	/// The profile's rule names the Tenant Secret `key`.
 	secret_rule: bool,
+	personal_only: bool,
 }
 impl Repository {
 	fn new() -> Self {
@@ -45,7 +46,15 @@ impl Repository {
 			failure: None,
 			response: "real",
 			secret_rule: false,
+			personal_only: false,
 		}
+	}
+	fn tool(&self) -> Entry {
+		let mut tool = bound_tool();
+		if self.personal_only {
+			tool.config["transport"]["secret_owner"] = json!("personal");
+		}
+		tool
 	}
 	fn failing(&self, name: &str) -> bool {
 		self.failure.is_some_and(|(phase, failure)| {
@@ -114,13 +123,16 @@ fn bound_tool() -> Entry {
 	tool
 }
 fn admitted_snapshot() -> aidash_domain::registry::bindings::BindingSnapshot {
+	admitted_snapshot_for(bound_tool())
+}
+fn admitted_snapshot_for(tool: Entry) -> aidash_domain::registry::bindings::BindingSnapshot {
 	let mut agent = crate::test_support::agent("agent");
 	agent.config["bindings"] = json!([crate::test_support::binding(
 		"tool",
 		"aidash://local",
 		"tool"
 	)]);
-	crate::test_support::resolve("aidash://local", &agent, false, vec![bound_tool()])
+	crate::test_support::resolve("aidash://local", &agent, false, vec![tool])
 }
 fn session() -> TestSession {
 	TestSession {
@@ -201,6 +213,7 @@ impl SandboxScope for Scope<'_> {
 	async fn session(&mut self, id: Uuid, lock: bool) -> Result<TestSession> {
 		assert_eq!(id, Uuid::from_u128(9));
 		let mut row = session();
+		row.scenario["binding_snapshot"] = json!(admitted_snapshot_for(self.repository.tool()));
 		row.tool_calls = self.repository.state.lock().unwrap().calls.clone();
 		if self.repository.failing("stopped") {
 			row.status = "stopped".into();
@@ -290,7 +303,7 @@ impl RealDispatchScope for Scope<'_> {
 			.unwrap()
 			.order
 			.push("effective_tool".into());
-		let mut tool = bound_tool();
+		let mut tool = self.repository.tool();
 		if self.repository.failing("schema") {
 			tool.schema = json!({"required":["extra"]});
 		}
@@ -316,20 +329,31 @@ impl RealDispatchScope for Scope<'_> {
 		tenant: &str,
 		name: &str,
 		endpoint: &str,
-	) -> Result<secrecy::SecretString> {
+		call: crate::tenant_secrets::SecretCall,
+	) -> Result<crate::tenant_secrets::CallSecret> {
 		assert_eq!(
 			(tenant, name, endpoint),
 			("tenant", "key", "https://test.example/rpc")
 		);
+		assert_eq!(call.methods, ["POST"]);
+		assert!(matches!(
+			call.subject,
+			aidash_capability::tenant_secret::SecretSubject::Workbench { .. }
+		));
 		self.repository
 			.state
 			.lock()
 			.unwrap()
 			.order
 			.push("tenant_secret".into());
-		Ok(secrecy::SecretString::from(
-			"tenant-secret-value".to_owned(),
-		))
+		Ok(crate::tenant_secrets::CallSecret::Value {
+			record: crate::tenant_secrets::SecretRecord {
+				id: Uuid::now_v7(),
+				version: "1".into(),
+				host: "test.example".into(),
+			},
+			value: secrecy::SecretString::from("tenant-secret-value".to_owned()),
+		})
 	}
 	async fn rollback(mut self: Box<Self>) -> Result<()> {
 		self.repository.state.lock().unwrap().rollbacks += 1;
@@ -351,20 +375,30 @@ struct Request {
 	state: Arc<Mutex<State>>,
 	response: &'static str,
 }
+#[async_trait]
 impl RealToolTransport for Repository {
-	fn prepare(
+	async fn prepare(
 		&self,
 		id: Uuid,
 		selected: &RealToolRule,
 		input: &ToolCall,
-		secret: Option<&secrecy::SecretString>,
+		secret: Option<&crate::tenant_secrets::CallSecret>,
 	) -> Result<Box<dyn PreparedRealRequest>> {
 		use secrecy::ExposeSecret;
 		self.state
 			.lock()
 			.unwrap()
 			.secrets
-			.push(secret.map(|s| s.expose_secret().to_owned()));
+			.push(secret.map(|secret| match secret {
+				crate::tenant_secrets::CallSecret::Value { value, .. } => {
+					value.expose_secret().to_owned()
+				}
+				crate::tenant_secrets::CallSecret::Brokered { .. }
+				| crate::tenant_secrets::CallSecret::Connection { .. }
+				| crate::tenant_secrets::CallSecret::BrokeredConnection { .. } => {
+					panic!("fixture resolves a self-hosted value")
+				}
+			}));
 		assert_eq!(id, Uuid::from_u128(9));
 		assert_eq!(selected.endpoint, rule().endpoint);
 		assert_eq!(*input, call());
@@ -653,4 +687,31 @@ async fn a_rule_without_a_tenant_secret_sends_none() {
 	.await
 	.unwrap();
 	assert_eq!(repository.state.lock().unwrap().secrets, [None, None]);
+}
+
+#[rstest]
+#[tokio::test]
+async fn an_ownerless_workbench_does_not_borrow_shared_for_a_personal_only_tool() {
+	let mut repository = Repository::new();
+	repository.secret_rule = true;
+	repository.personal_only = true;
+	let mut pin = pin();
+	pin.rules = vec![secret_rule()];
+	let result = invoke(
+		&repository.dispatch(),
+		session().id,
+		&pin,
+		&secret_rule(),
+		&call(),
+	)
+	.await;
+	let Err(Error::Invalid(message)) = result else {
+		panic!("Workbench must not send a shared secret for Personal")
+	};
+	let error: Value = serde_json::from_str(&message).unwrap();
+	assert_eq!(error["error"], "secret_unavailable");
+	assert!(error["hint"].as_str().unwrap().contains("personal secret"));
+	let state = repository.state.lock().unwrap();
+	assert_eq!((state.prepared, state.sent), (0, 0));
+	assert!(!state.order.iter().any(|event| event == "tenant_secret"));
 }

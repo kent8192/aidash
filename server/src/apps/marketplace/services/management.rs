@@ -1,12 +1,14 @@
 //! DI use cases and bounded disclosure under authorization leases.
 use super::super::serializers::management::*;
 use super::{distribution, installations, storage::*, *};
+use crate::apps::identity::services::tenant_secret_readiness;
 use crate::{
 	Error, Result,
 	authorization::{access::Access, identity::Actor},
 	dashboard_auth::BrowserOrigin,
 	federation::Federation,
 };
+use aidash_application::tenant_secrets::readiness::{Fact, Kind, Target};
 use bytes::Bytes;
 use http::header;
 use reinhardt::{Response, injectable};
@@ -492,6 +494,53 @@ impl MarketplaceManagement {
 		)
 		.await
 		.map_err(Into::into);
+		handoff(&f.store, access, result).await
+	}
+
+	/// Readiness facts for each Secret slot a package's install plan declares
+	/// (decision 5 of #310). Before the installer chooses a Tenant Secret, a
+	/// slot is ready when any active Tenant Secret records the package host.
+	/// The facts never carry a value, a Fingerprint or the last four characters.
+	pub(crate) async fn secret_readiness(&self, actor: Actor, key: String) -> Result<Response> {
+		let f = self.runtime.clone();
+		let identity = subject(&actor)?.clone();
+		let mut access = begin(&f.store, &identity, false).await?;
+		let result = async {
+			let detail =
+				distribution::detail(&mut access, &key, f.store.deployment.as_str()).await?;
+			let can_manage = tenant_secret_readiness::can_manage(&mut access).await?;
+			let target =
+				aidash_domain::tenant_secrets::definition_shared_target(&detail.manifest.entity);
+			// A personal-only package is satisfied by each person's own secret, so
+			// it has no shared Tenant Secret to report on.
+			let slots =
+				if aidash_domain::tenant_secrets::definition_personal_only(&detail.manifest.entity)
+				{
+					Vec::new()
+				} else {
+					detail.manifest.secrets
+				};
+			let targets: Vec<Target> = slots
+				.into_iter()
+				.map(|slot| {
+					let endpoint = target
+						.as_ref()
+						.filter(|(name, _)| name == &slot)
+						.map(|(_, endpoint)| endpoint.clone());
+					Target {
+						item: slot,
+						kind: Kind::Slot,
+						tenant_secret_name: None,
+						endpoint,
+					}
+				})
+				.collect::<Vec<_>>();
+			let facts: Vec<Fact> =
+				tenant_secret_readiness::facts(&f.store, &identity.tenant, can_manage, targets)
+					.await?;
+			Ok(facts)
+		}
+		.await;
 		handoff(&f.store, access, result).await
 	}
 }

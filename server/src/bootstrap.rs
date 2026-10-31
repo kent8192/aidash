@@ -57,11 +57,33 @@ pub fn management_commands() -> reinhardt::commands::CommandRegistry {
 	registry
 }
 
+/// Which part of a Deployment this process runs. It selects the Capability
+/// Token key a Tenant Secret call signs with (ADR 0095).
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ProcessRole {
+	/// HTTP and background workers in one process.
+	Serve,
+	/// HTTP only; no agent work runs here.
+	Server,
+	/// Background workers only.
+	Worker,
+}
+
 /// Populate the same request container used by native runserver and HTTP fixtures.
 pub async fn initialize(
 	context: &InjectionContext,
 	settings: &ProjectSettings,
 	connection: BackendConnection,
+) -> Result<Federation> {
+	initialize_as(context, settings, connection, ProcessRole::Serve).await
+}
+
+/// [`initialize`] for a process that knows which role it serves.
+pub async fn initialize_as(
+	context: &InjectionContext,
+	settings: &ProjectSettings,
+	connection: BackendConnection,
+	role: ProcessRole,
 ) -> Result<Federation> {
 	// Native runserver/worker also need the application response logs. An
 	// embedding host's existing subscriber keeps ownership of logging.
@@ -126,7 +148,14 @@ pub async fn initialize(
 	)?;
 	build::current().extension.install(&mut store)?;
 	config.tier_limits = build::current().extension.tier_limits(&store)?;
-	configure_tenant_secrets(&mut store);
+	let oauth = Arc::new(aidash_integrations::oauth::McpOAuth::new()?);
+	configure_oauth_connections(
+		&mut store,
+		Some((oauth.clone(), oauth)),
+		&settings.provider_credentials,
+		role,
+	)?;
+	configure_tenant_secrets(&mut store, &settings.provider_credentials, role)?;
 	let registry = Registry::new(store.pool.clone(), &store.deployment)?
 		.with_keyless_origins(store.keyless.clone())
 		.with_provider_credentials(store.provider_credentials.is_some())
@@ -170,6 +199,35 @@ pub async fn initialize(
 	Ok(federation)
 }
 
+/// The Egress gateway keeps admission, limits, recording and package-index
+/// rewriting. A Secret Manager Store seals a Tenant Secret's hosts with its
+/// value, so the gateway cannot read the value and must forward a
+/// secret-bearing request to the Tenant Secret broker (ADR 0095). Without one
+/// it refuses to start rather than silently reading nothing.
+pub fn require_egress_broker(store: &Store) -> Result<()> {
+	let secret_manager = store
+		.provider_credentials
+		.as_ref()
+		.is_some_and(|credentials| credentials.store.seals_secret_hosts());
+	let brokered = store
+		.tenant_secrets
+		.as_ref()
+		.is_some_and(|tenant_secrets| tenant_secrets.calls.is_some());
+	require_egress_broker_settings(secret_manager, brokered)
+}
+
+/// The refusal decision itself, so startup coverage names both inputs.
+pub fn require_egress_broker_settings(secret_manager: bool, brokered: bool) -> Result<()> {
+	if secret_manager && !brokered {
+		return Err(Error::Invalid(
+			"the Egress gateway needs provider_credentials.settings.tenant_secret_broker \
+			 {endpoint, issuer, audience, kid} on this Secret Manager Store (#310)"
+				.into(),
+		));
+	}
+	Ok(())
+}
+
 /// Process-owned supervisor; dropping it cancels the supervisor and its JoinSets.
 pub struct RuntimeTasks {
 	stopping: watch::Sender<bool>,
@@ -189,16 +247,11 @@ impl RuntimeTasks {
 		if event_streams.is_some()
 			&& let Some(egress) = &federation.store.capabilities.0.egress
 		{
-			if build::offering() != aidash_domain::offering::Offering::SelfHosted {
-				return Err(Error::Invalid(
-					"Cloud and Dedicated Egress gateways require the Credential Broker (#310)"
-						.into(),
-				));
-			}
+			require_egress_broker(&federation.store)?;
 			let listener = tokio::net::TcpListener::bind(egress.listen).await?;
-			let authority = Arc::new(crate::apps::execution::repositories::egress::Gateway {
-				store: federation.store.clone(),
-			});
+			let authority = Arc::new(crate::apps::execution::repositories::egress::Gateway::new(
+				federation.store.clone(),
+			));
 			let stopping = receiver.clone();
 			tasks.spawn_service(runtime_task(async move {
 				aidash_integrations::egress::serve(listener, authority, stopping)
@@ -691,10 +744,13 @@ pub fn registry_validation() -> aidash_application::registry::DefinitionValidati
 			&& build::offering() == aidash_domain::offering::Offering::SelfHosted
 			&& matches!(s.provider_credentials.store, Some(StoreConfig::Postgres { .. }))
 	}))
-	// Tenant Secrets live in a PostgreSQL Secret Store only (ADR 0051).
-	.with_tenant_secrets(settings.as_ref().is_some_and(|s| {
-		matches!(s.provider_credentials.store, Some(StoreConfig::Postgres { .. }))
-	}))
+	// A PostgreSQL Store reads Tenant Secrets locally; an Enterprise Store
+	// needs its Tenant Secret broker (ADR 0051, ADR 0095).
+	.with_tenant_secrets(
+		settings
+			.as_ref()
+			.is_some_and(|s| s.provider_credentials.offers_tenant_secrets()),
+	)
 	.with_preview_available(
 		settings
 			.as_ref()
@@ -2625,17 +2681,41 @@ pub fn configure_plan_connections(
 /// The most Tenant Secrets one Tenant may hold.
 const TENANT_SECRETS_PER_TENANT: usize = 64;
 
-/// Tenant Secrets exist only where the Store holds their values and the server
-/// may read them: a PostgreSQL Secret Store on a self-hosted node. A Secret
-/// Manager Store (Cloud, Dedicated) is write-only to the application host, so
-/// no Tenant Secret is offered until the Credential Broker carries tool calls
-/// (#310); definitions that name one are then refused at registration.
-pub fn configure_tenant_secrets(store: &mut Store) {
-	let (Some(credentials), Some(reader)) = (
-		store.provider_credentials.as_ref(),
-		store.provider_key_material_reader.clone(),
-	) else {
-		return;
+/// Tenant Secrets exist wherever the Store holds their values: a self-hosted
+/// PostgreSQL Store reads them locally, and a Secret Manager Store (Cloud,
+/// Dedicated) routes calls through its Tenant Secret broker. Without the
+/// broker, a Secret Manager Store keeps them unavailable (#310).
+pub fn configure_tenant_secrets(
+	store: &mut Store,
+	settings: &crate::apps::identity::serializers::provider_credentials::Settings,
+	role: ProcessRole,
+) -> Result<()> {
+	use crate::apps::identity::serializers::provider_credentials::StoreConfig;
+	let Some(credentials) = store.provider_credentials.as_ref() else {
+		return Ok(());
+	};
+	let (reader, calls) = match &settings.store {
+		Some(StoreConfig::Postgres { .. }) => {
+			let Some(reader) = store.provider_key_material_reader.clone() else {
+				return Ok(());
+			};
+			(Some(reader), None)
+		}
+		Some(StoreConfig::Enterprise(_)) => {
+			if !settings.offers_tenant_secrets() {
+				return Ok(());
+			}
+			let Some(calls) = build::current().extension.tenant_secret_calls(
+				settings.broker.as_ref(),
+				settings.tenant_secret_broker.as_ref(),
+				role == ProcessRole::Worker,
+			)?
+			else {
+				return Ok(());
+			};
+			(None, Some(calls))
+		}
+		None => return Ok(()),
 	};
 	store.tenant_secrets = Some(Arc::new(aidash_application::tenant_secrets::Service {
 		repository: Arc::new(
@@ -2645,9 +2725,11 @@ pub fn configure_tenant_secrets(store: &mut Store) {
 		),
 		store: credentials.store.clone(),
 		reader,
+		calls,
 		fingerprint_key: credentials.fingerprint_key.clone(),
 		max_per_tenant: TENANT_SECRETS_PER_TENANT,
 	}));
+	Ok(())
 }
 
 /// Worker inference is bound to local admission evidence, never a mutable binding.
@@ -2701,4 +2783,51 @@ pub(crate) fn admitted_semantic_transport(
 		inference: None,
 	};
 	transport
+}
+
+/// Installs per-person Connections with a local reader on self-hosted or the
+/// existing Tenant Secret broker on Cloud and Dedicated.
+pub fn configure_oauth_connections(
+	store: &mut Store,
+	adapter: Option<(
+		Arc<dyn aidash_application::ports::oauth::OAuthDiscovery>,
+		Arc<dyn aidash_application::ports::oauth::OAuthTokens>,
+	)>,
+	settings: &crate::apps::identity::serializers::provider_credentials::Settings,
+	role: ProcessRole,
+) -> Result<()> {
+	let (Some((discovery, tokens)), Some(credentials)) =
+		(adapter, store.provider_credentials.as_ref())
+	else {
+		return Ok(());
+	};
+	let reader = store.provider_key_material_reader.clone();
+	let calls = build::current().extension.connection_calls(
+		settings.broker.as_ref(),
+		settings.tenant_secret_broker.as_ref(),
+		role == ProcessRole::Worker,
+	)?;
+	if reader.is_none() && calls.is_none() {
+		return Ok(());
+	}
+
+	store.oauth_connections = Some(Arc::new(aidash_application::oauth_connections::Service {
+		repository: Arc::new(
+			crate::apps::identity::repositories::oauth_connections::NativeRepository {
+				pool: store.control_pool.clone(),
+				execution: store.pool.clone(),
+			},
+		),
+		store: credentials.store.clone(),
+		reader,
+		calls,
+		discovery,
+		tokens,
+		policy: Arc::new(
+			crate::apps::identity::repositories::connection_policy::NativeConnectionPolicy {
+				pool: store.control_pool.clone(),
+			},
+		),
+	}));
+	Ok(())
 }

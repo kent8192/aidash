@@ -101,6 +101,94 @@ async fn database_accepts_every_host_operation_and_its_exact_lifecycle(
 		}
 	}
 }
+/// The physical Registry guard must admit the personal OAuth transport contract,
+/// even when data reaches the ORM without domain deserialization.
+#[rstest]
+#[tokio::test]
+async fn database_admits_personal_transports_and_rejects_invalid_connection_fields(
+	#[future] database: DatabaseFixture,
+) {
+	let database = database.await;
+	let registry = registry(&database).await;
+	let tenant = aidash_domain::tenancy::TenantName::new("acme").unwrap();
+	for transport in ["http", "mcp"] {
+		let mut config = json!({"transport":transport,"endpoint":"https://example.com/mcp","replay":"read_only","secret_owner":"personal"});
+		if transport == "mcp" {
+			config["tool_name"] = json!("search");
+			config["scopes"] = json!(["files:read"]);
+		}
+		let entry: Entry = serde_json::from_value(json!({
+            "id":format!("personal-{transport}"),"version":"1.0.0","kind":"tool",
+            "name":{"en":"Search"},"description":{"en":"Personal search"},
+            "config":{"registry_deployment":"aidash://node","provider":format!("integration.{transport}@1"),"operation":"invoke","default_alias":"search","tier":"integration","transport":config}
+        })).unwrap();
+		// Register and read the actual persisted descriptor, including declared scopes.
+		for (index, owner) in [Some("personal"), Some("any"), None]
+			.into_iter()
+			.enumerate()
+		{
+			let mut valid = entry.clone();
+			valid.id = format!("valid-{transport}-{index}");
+			if let Some(owner) = owner {
+				valid.config["transport"]["secret_owner"] = json!(owner);
+			} else {
+				valid.config["transport"]
+					.as_object_mut()
+					.unwrap()
+					.remove("secret_owner");
+			}
+			registry.register(&tenant, valid.clone()).await.unwrap();
+			assert_eq!(
+				registry
+					.get(&tenant, &valid.id, &valid.version)
+					.await
+					.unwrap()
+					.config,
+				valid.config
+			);
+		}
+		// Deliberately bypass domain validation so rejection must come from the DB.
+		let mut invalid_fields = vec![
+			("unknown-owner", "secret_owner", json!("shared")),
+			("null-owner", "secret_owner", json!(null)),
+			("numeric-owner", "secret_owner", json!(1)),
+			("unknown-field", "credentials", json!("forbidden")),
+		];
+		if transport == "mcp" {
+			invalid_fields.extend([
+				("empty-scope", "scopes", json!([""])),
+				("blank-scope", "scopes", json!([" "])),
+				("non-string-scope", "scopes", json!([1])),
+				("scalar-scopes", "scopes", json!("files:read")),
+				("null-scopes", "scopes", json!(null)),
+			]);
+		} else {
+			invalid_fields.push(("http-scopes", "scopes", json!(["files:read"])));
+		}
+		let mut connection = database.lease.handle();
+		for (name, field, value) in invalid_fields {
+			let mut invalid = entry.clone();
+			invalid.id = format!("invalid-{transport}-{name}");
+			invalid.config["transport"][field] = value;
+			let definition = Definition::build()
+				.tenant("acme")
+				.id(&invalid.id)
+				.version(&invalid.version)
+				.kind(DefinitionKind::Tool)
+				.metadata(serde_json::to_value(&invalid).unwrap().into())
+				.finish();
+			let error = Definition::objects()
+				.create_with_conn(&mut connection, &definition)
+				.await
+				.unwrap_err();
+			assert!(
+				error.to_string().contains("registry_tool_config"),
+				"{transport}/{name}: {error}"
+			);
+		}
+	}
+}
+
 #[rstest]
 #[tokio::test]
 async fn context_descriptors_remain_valid_alongside_native_memory_roles(

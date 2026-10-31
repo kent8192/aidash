@@ -2282,7 +2282,7 @@ fn administered_policy(tenant: &str, administrators: &[&str]) -> Value {
 			"resources": {"kinds": [
 				"registration", "mapping", "subject", "invitation", "policy", "decision",
 				"credential", "peer_mapping", "test_limits", "test_profile", "node",
-				"node_registration", "tenant", "secret"
+				"node_registration", "tenant", "secret", "connection_scopes", "connection"
 			]},
 			"condition": null
 		}, {

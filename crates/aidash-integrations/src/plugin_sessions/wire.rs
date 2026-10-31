@@ -1,5 +1,8 @@
 //! Bound transport bytes before either SSE framing or JSON-RPC decoding.
-use aidash_application::Error;
+use aidash_application::{
+	Error,
+	tenant_secrets::{BearerSource, CallSecret, SecretRouteSource},
+};
 use futures_util::{StreamExt, stream::BoxStream};
 use reqwest::header::{HeaderName, HeaderValue};
 use rmcp_modern::{
@@ -12,14 +15,131 @@ use rmcp_modern::{
 		},
 	},
 };
+use secrecy::ExposeSecret;
 use serde_json::{Value, json};
 use sse_stream::{Sse, SseStream};
 use std::{collections::HashMap, sync::Arc};
 
 const LIMIT: usize = 256_000;
 #[derive(Clone)]
-pub(crate) struct BoundedClient(pub reqwest::Client);
-type Failure = StreamableHttpError<reqwest::Error>;
+pub(crate) struct BoundedClient(
+	pub reqwest::Client,
+	pub Option<Arc<dyn BearerSource>>,
+	pub Arc<crate::tools::auth::CallProgress>,
+	pub Option<(Arc<dyn SecretRouteSource>, String)>,
+);
+#[derive(Debug, thiserror::Error)]
+pub(crate) enum WireError {
+	#[error(transparent)]
+	Http(#[from] reqwest::Error),
+	#[error(transparent)]
+	App(#[from] Error),
+	#[error("Tenant Secret broker call failed")]
+	Broker(crate::broker::BrokerFailure),
+}
+pub(crate) type Failure = StreamableHttpError<WireError>;
+impl BoundedClient {
+	pub(crate) fn new(
+		client: reqwest::Client,
+		auth: Option<&CallSecret>,
+		progress: Arc<crate::tools::auth::CallProgress>,
+	) -> Self {
+		Self(
+			client,
+			match auth {
+				Some(CallSecret::Connection { source, .. }) => Some(source.clone()),
+				_ => None,
+			},
+			progress,
+			match auth {
+				Some(CallSecret::BrokeredConnection { source, rest, .. }) => {
+					Some((source.clone(), rest.clone()))
+				}
+				_ => None,
+			},
+		)
+	}
+	async fn request(
+		&self,
+		method: reqwest::Method,
+		uri: &str,
+		session: Option<&str>,
+		token: Option<String>,
+		headers: HashMap<HeaderName, HeaderValue>,
+	) -> Result<reqwest::RequestBuilder, Failure> {
+		if let Some((source, rest)) = &self.3 {
+			let route = source
+				.route()
+				.await
+				.map_err(|e| Failure::Client(WireError::App(self.2.source_error(e, uri))))?;
+			let url = crate::broker::forward_url(&route.base, rest)
+				.map_err(|e| Failure::Client(WireError::App(e)))?;
+			let mut token = HeaderValue::from_str(route.token.expose_secret())
+				.map_err(|_| invalid("invalid OAuth broker token"))?;
+			token.set_sensitive(true);
+			return Ok(
+				request(&self.0, method, url.as_str(), session, None, headers)
+					.header(crate::broker::SECRET_CALL, token),
+			);
+		}
+		Ok(request(
+			&self.0,
+			method,
+			uri,
+			session,
+			self.bearer(token, uri).await?,
+			headers,
+		))
+	}
+	fn send_error(&self, error: reqwest::Error) -> Failure {
+		if self.3.is_some() && !crate::keyless::refused(&error) {
+			return Failure::Client(WireError::Broker(
+				crate::broker::BrokerFailure::connect_failure(),
+			));
+		}
+		send_error(error)
+	}
+
+	fn broker_error(&self, response: &reqwest::Response) -> Option<Failure> {
+		self.3.as_ref()?;
+		crate::broker::BrokerFailure::from_headers(response.headers())
+			.map(|e| Failure::Client(WireError::Broker(e)))
+	}
+
+	async fn bearer(
+		&self,
+		token: Option<String>,
+		endpoint: &str,
+	) -> Result<Option<String>, Failure> {
+		match &self.1 {
+			Some(source) => Ok(Some(
+				source
+					.bearer()
+					.await
+					.map_err(|e| Failure::Client(WireError::App(self.2.source_error(e, endpoint))))?
+					.expose_secret()
+					.to_owned(),
+			)),
+			None => Ok(token),
+		}
+	}
+}
+fn send_error(error: reqwest::Error) -> Failure {
+	Failure::Client(WireError::Http(error))
+}
+fn broker_failure(error: &DynamicTransportError) -> Option<Error> {
+	match error.error.downcast_ref::<Failure>() {
+		Some(Failure::Client(WireError::Broker(f))) => Some(f.clone().into_error()),
+		_ => None,
+	}
+}
+
+fn auth_error(error: &DynamicTransportError) -> Option<Error> {
+	match error.error.downcast_ref::<Failure>() {
+		Some(Failure::Client(WireError::App(error))) => crate::tools::auth::repeat(error),
+		_ => None,
+	}
+}
 fn invalid(message: &str) -> Failure {
 	Failure::UnexpectedServerResponse(message.to_owned().into())
 }
@@ -29,7 +149,7 @@ fn invalid(message: &str) -> Failure {
 fn refused(error: &DynamicTransportError) -> bool {
 	matches!(
 		error.error.downcast_ref::<Failure>(),
-		Some(Failure::Client(source)) if crate::keyless::refused(source)
+		Some(Failure::Client(WireError::Http(source))) if crate::keyless::refused(source)
 	)
 }
 
@@ -38,7 +158,7 @@ fn classify_transport(error: &DynamicTransportError) -> Option<Error> {
 		Some(Failure::UnexpectedServerResponse(message)) => {
 			crate::tools::decode_mcp_http_status(message)
 		}
-		Some(Failure::Client(source))
+		Some(Failure::Client(WireError::Http(source)))
 			if source.is_connect()
 				|| matches!(source.status().map(|s| s.as_u16()), Some(408 | 429)) =>
 		{
@@ -54,15 +174,11 @@ fn classify_transport(error: &DynamicTransportError) -> Option<Error> {
 /// A refused destination stays distinguishable until the call adapter returns it as data.
 pub(crate) fn initialization_error(error: &ClientInitializeError) -> Error {
 	match error {
-		ClientInitializeError::TransportError { error: source, .. } => {
-			if refused(source) {
-				refusal()
-			} else {
-				classify_transport(source).unwrap_or_else(|| {
-					Error::External(format!("MCP initialization failed: {error}"))
-				})
-			}
-		}
+		ClientInitializeError::TransportError { error: source, .. } if refused(source) => refusal(),
+		ClientInitializeError::TransportError { error: source, .. } => broker_failure(source)
+			.or_else(|| auth_error(source))
+			.or_else(|| classify_transport(source))
+			.unwrap_or_else(|| Error::External(format!("MCP initialization failed: {error}"))),
 		ClientInitializeError::LegacyFallbackFailed { fallback, .. } => {
 			initialization_error(fallback)
 		}
@@ -72,14 +188,11 @@ pub(crate) fn initialization_error(error: &ClientInitializeError) -> Error {
 
 pub(crate) fn call_error(error: &ServiceError) -> Error {
 	match error {
-		ServiceError::TransportSend(source) => {
-			if refused(source) {
-				refusal()
-			} else {
-				classify_transport(source)
-					.unwrap_or_else(|| Error::External(format!("MCP call failed: {error}")))
-			}
-		}
+		ServiceError::TransportSend(source) if refused(source) => refusal(),
+		ServiceError::TransportSend(source) => broker_failure(source)
+			.or_else(|| auth_error(source))
+			.or_else(|| classify_transport(source))
+			.unwrap_or_else(|| Error::External(format!("MCP call failed: {error}"))),
 		_ => Error::External(format!("MCP call failed: {error}")),
 	}
 }
@@ -199,7 +312,7 @@ fn events(
 	crate::tools::mcp_sse_wrap(parsed, signal)
 }
 impl StreamableHttpClient for BoundedClient {
-	type Error = reqwest::Error;
+	type Error = WireError;
 	async fn post_message(
 		&self,
 		uri: Arc<str>,
@@ -208,6 +321,8 @@ impl StreamableHttpClient for BoundedClient {
 		token: Option<String>,
 		headers: HashMap<HeaderName, HeaderValue>,
 	) -> Result<StreamableHttpPostResponse, Failure> {
+		let tool_request = matches!(&message, ClientJsonRpcMessage::Request(request)
+			if matches!(request.request, rmcp_modern::model::ClientRequest::CallToolRequest(_)));
 		let discover_id = match &message {
 			ClientJsonRpcMessage::Request(request)
 				if matches!(
@@ -225,17 +340,26 @@ impl StreamableHttpClient for BoundedClient {
 			.filter(|value| value.get("method").and_then(Value::as_str) == Some("tools/call"))
 			.and_then(|value| value.get("id"))
 			.cloned();
-		let response = request(
-			&self.0,
-			reqwest::Method::POST,
-			&uri,
-			session.as_deref(),
-			token,
-			headers,
-		)
-		.json(&message)
-		.send()
-		.await?;
+		let request = self
+			.request(
+				reqwest::Method::POST,
+				&uri,
+				session.as_deref(),
+				token,
+				headers,
+			)
+			.await?
+			.json(&message);
+		if tool_request {
+			self.2.sent();
+		}
+		let response = request.send().await.map_err(|e| self.send_error(e))?;
+		if let Some(error) = self.broker_error(&response) {
+			return Err(error);
+		}
+		if let Some(error) = self.2.challenge(&response, &uri, tool_request) {
+			return Err(Failure::Client(WireError::App(error)));
+		}
 		let status = response.status();
 		if let Some(id) = discover_id
 			&& session.is_none()
@@ -269,7 +393,7 @@ impl StreamableHttpClient for BoundedClient {
 		if response.status().is_client_error() || response.status().is_server_error() {
 			return Err(invalid(&crate::tools::mcp_http_status(response).await));
 		}
-		let response = response.error_for_status()?;
+		let response = response.error_for_status().map_err(send_error)?;
 		let session = response
 			.headers()
 			.get("mcp-session-id")
@@ -317,7 +441,29 @@ impl StreamableHttpClient for BoundedClient {
 		headers: HashMap<HeaderName, HeaderValue>,
 	) -> Result<(), Failure> {
 		// DELETE never decodes a response body.
-		self.0.delete_session(uri, session, token, headers).await
+		let response = self
+			.request(
+				reqwest::Method::DELETE,
+				&uri,
+				Some(&session),
+				token,
+				headers,
+			)
+			.await?
+			.send()
+			.await
+			.map_err(|e| self.send_error(e))?;
+		if let Some(error) = self.broker_error(&response) {
+			return Err(error);
+		}
+		if let Some(error) = self.2.challenge(&response, &uri, false) {
+			return Err(Failure::Client(WireError::App(error)));
+		}
+		if response.status() == reqwest::StatusCode::METHOD_NOT_ALLOWED {
+			return Err(Failure::ServerDoesNotSupportDeleteSession);
+		}
+		response.error_for_status().map_err(send_error)?;
+		Ok(())
 	}
 	async fn get_stream(
 		&self,
@@ -327,22 +473,32 @@ impl StreamableHttpClient for BoundedClient {
 		token: Option<String>,
 		headers: HashMap<HeaderName, HeaderValue>,
 	) -> Result<BoxStream<'static, Result<Sse, SseError>>, Failure> {
-		let mut request = request(
-			&self.0,
-			reqwest::Method::GET,
-			&uri,
-			session.as_deref(),
-			token,
-			headers,
-		);
+		let mut request = self
+			.request(
+				reqwest::Method::GET,
+				&uri,
+				session.as_deref(),
+				token,
+				headers,
+			)
+			.await?;
 		if let Some(last) = last {
 			request = request.header("last-event-id", last);
 		}
-		let response = request.send().await?;
+		let response = request.send().await.map_err(|e| self.send_error(e))?;
+		if let Some(error) = self.broker_error(&response) {
+			return Err(error);
+		}
+		if let Some(error) = self.2.challenge(&response, &uri, false) {
+			return Err(Failure::Client(WireError::App(error)));
+		}
 		if response.status() == reqwest::StatusCode::METHOD_NOT_ALLOWED {
 			return Err(Failure::ServerDoesNotSupportSse);
 		}
-		Ok(events(response.error_for_status()?, None))
+		Ok(events(
+			response.error_for_status().map_err(send_error)?,
+			None,
+		))
 	}
 }
 

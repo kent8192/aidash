@@ -283,6 +283,13 @@ pub trait ExecutionStore: Send + Sync {
 	/// Records `output` and returns the result as stored, which the caller
 	/// carries on: an expired research result's tombstone when its account
 	/// terms ended meanwhile (ADR 0058).
+	/// Atomically persists typed refusal state and removes only this attempt's STARTED row.
+	async fn connection_refused(&self, run: &Run, token: Uuid, key: &str) -> Result<()> {
+		let _ = (run, token, key);
+		Err(crate::Error::External(
+			"connection refusal checkpoint is unavailable".into(),
+		))
+	}
 	async fn invocation_finish(
 		&self,
 		run: &Run,
@@ -434,6 +441,10 @@ pub trait ExecutionTool: Send + Sync {
 	fn external_target(&self) -> Option<String> {
 		None
 	}
+	/// Declared OAuth scopes of this MCP definition; plugin servers have none.
+	fn connection_scopes(&self) -> Vec<String> {
+		Vec::new()
+	}
 	fn replay_safe(&self) -> bool;
 	async fn invoke(&self, run: &Run, input: Value, key: &str) -> Result<Value>;
 	fn mcp_rounds(&self) -> bool {
@@ -521,6 +532,13 @@ pub trait ExecutionAuthority: Send + Sync {
 		&self,
 		run: &Run,
 	) -> Result<Option<aidash_domain::approval_rules::ApprovalMode>>;
+	/// Effective mode for a refused connection, including current policy ceilings.
+	async fn connection_mode(
+		&self,
+		run: &Run,
+	) -> Result<Option<aidash_domain::approval_rules::ApprovalMode>> {
+		self.approval_mode(run).await
+	}
 	/// Whether Auto is the Run's effective Approval Mode now: selected,
 	/// permitted by policy, backed by an available Decider, and not suspended
 	/// by its block limits. Defaults to false for an authority that does not
@@ -674,6 +692,14 @@ pub trait ExecutionEnvironment: Send + Sync {
 	async fn pin_plugin_tools(
 		&self,
 		_run: &Run,
+	) -> Result<Option<aidash_domain::agent_plugin::PluginTools>> {
+		Ok(None)
+	}
+	/// Re-list only a formerly unconnected server after consent, preserving existing pins.
+	async fn reconnect_plugin_tools(
+		&self,
+		_run: &Run,
+		_resource: &str,
 	) -> Result<Option<aidash_domain::agent_plugin::PluginTools>> {
 		Ok(None)
 	}

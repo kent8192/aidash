@@ -37,6 +37,7 @@ struct BatchStep<'a> {
 	end: usize,
 }
 
+mod connections;
 mod context_sources;
 use context_sources::{cached_data_phase, collect_data_phase, read_planned_source};
 
@@ -1328,6 +1329,21 @@ impl<'a> Executor<'a> {
 							.insert((*slot).to_owned(), [start, start + text.len()]);
 					}
 				}
+				// Appended after the composed text so the slot ranges above stay valid.
+				if let Some(pinned) = &run.context.plugin_tools {
+					let resources: std::collections::BTreeSet<_> = pinned
+						.findings
+						.iter()
+						.filter_map(|finding| {
+							finding.connection.as_ref().map(|cause| cause.resource())
+						})
+						.collect();
+					if !resources.is_empty() {
+						instructions.push_str("\nMCP servers awaiting your starter's connection: ");
+						instructions.push_str(&serde_json::to_string(&resources)?);
+						instructions.push_str(". Call connection_request with a resource to ask them to connect; after consent its plugin tools become available.\n");
+					}
+				}
 				let fixed_sources = collect_data_phase(
 					self.environment,
 					run,
@@ -2192,6 +2208,7 @@ impl<'a> Executor<'a> {
 					};
 				}
 				run.state = RunState::ToolCall(Box::new(ToolCallState {
+connection: None,
 					response: result,
 					response_epoch: response_epoch(run.revision, run.step),
 					cursor: 0,
@@ -2723,6 +2740,7 @@ impl<'a> Executor<'a> {
 				}
 				// A person who asked not to be asked is not asked by the model either.
 				if contract.behavior.continuation == Continuation::Human
+                    && !contract.behavior.connection_request
 					&& home.local()
 					&& let Some(guard) = guard
 					&& guard.approval_mode(run).await? == Some(ApprovalMode::DontAsk)
@@ -2777,12 +2795,17 @@ impl<'a> Executor<'a> {
 					Some(approval) => format!("{call_key}:approval:{approval}"),
 					None => call_key.clone(),
 				};
+                let key = match run.state.tool()?.connection.as_ref().map_or(0, |state|state.attempt) {
+                    0 => key,
+                    attempt => format!("{key}:connection:{attempt}"),
+                };
 				// Approval follows the admitted provider contract for every Agent. A
 				// Read-only operation needs none, yet only the Tenant's own authority
 				// can tell whether its policy forbids the call outright.
-				if contract.behavior.tool_call_approval
-					|| (contract.behavior.read_only_operation && home.local() && guard.is_some())
-				{
+                let returning_refusal = run.state.tool()?.connection.as_ref().is_some_and(|state|state.refused.is_some());
+                if !returning_refusal && (contract.behavior.tool_call_approval
+                    || (contract.behavior.read_only_operation && home.local() && guard.is_some()))
+                {
 					let target = match &contract.identity {
 						ToolIdentity::Descriptor(reference) => ToolCallTarget::Registry(aidash_domain::registry::EntityRef {
 							id: reference.id.clone(),
@@ -2883,9 +2906,15 @@ impl<'a> Executor<'a> {
 						return Ok(());
 					}
 				}
-				let invocation = if tool.mcp_rounds() {
+				let invocation = if let Some(refused) = run.state.tool()?.connection.as_ref().and_then(|state|state.refused.clone()) {
+                    InvocationOutcome { status:"COMPLETED".into(), result:Some(refused), uncertain_reason: None, retrying: false }
+                } else if tool.mcp_rounds() {
                     let Some(guard) = guard else { return self.tool_error(run, token, call, cursor, "MCP inputs require local authority".into()).await; };
-                    let Some(output) = self.mcp_call(run, token, mcp::Call { tool: tool.as_ref(), call, key: &key, agent: &agent, guard, visibility }).await? else { return Ok(()); };
+                    let output = match self.mcp_call(run, token, mcp::Call { tool: tool.as_ref(), call, key: &key, agent: &agent, guard, visibility }).await {
+                        Ok(Some(output))=>output, Ok(None)=>return Ok(()),
+                        Err(Error::Connection(_))=>run.state.tool()?.connection.as_ref().and_then(|state|state.refused.clone()).ok_or_else(||Error::Conflict("typed MCP refusal was not checkpointed".into()))?,
+                        Err(error)=>return Err(error),
+                    };
                     InvocationOutcome { status: "COMPLETED".into(), result: Some(output), uncertain_reason: None, retrying: false }
                 } else {
                     store
@@ -2922,7 +2951,16 @@ impl<'a> Executor<'a> {
 				} else if let Some(output) = prepared_result {
 					output
 				} else {
-					Self::tool_delivery_result(store, run, token, &key, tool.invoke(run, call.arguments.clone(), &key).await).await?
+					match tool.invoke(run, call.arguments.clone(), &key).await {
+                        Ok(output) => {
+                            if contract.behavior.tenant_tool_call() {
+                                self.checkpoint_connection_success(run, token, &call.name).await?;
+                            }
+                            output
+                        },
+                        Err(Error::Connection(cause)) => self.checkpoint_connection_refusal(run,token,connections::RefusedCall {call,tool:tool.as_ref(),guard,key:&key},cause).await?,
+                        other => Self::tool_delivery_result(store, run, token, &key, other).await?,
+					}
 				};
                 // Revalidate Research before deriving any media selection. A completed
                 // replay may now be a tombstone under expired account terms.
@@ -3003,9 +3041,10 @@ impl<'a> Executor<'a> {
 					}
 					run.state.tool_mut()?.selected_media = selected;
 				}
-                let output = if invocation.status != "COMPLETED" && !research_result {
+                let output = if invocation.status != "COMPLETED" && !research_result && run.state.tool()?.connection.as_ref().is_none_or(|state|state.cause.is_none()) {
                     store.invocation_finish(run, token, &key, &output).await?
                 } else { output };
+                let Some(output) = self.connection_result(run, token, connections::RefusedCall {call, tool:tool.as_ref(), guard, key:&key}, output).await? else { return Ok(()) };
 				// What a Tenant's HTTP or MCP tool returns is external data and never
 				// raises an approval, which would repeat the external call.
 				let framework = if contract.behavior.tenant_tool_call() {
@@ -3013,6 +3052,9 @@ impl<'a> Executor<'a> {
 				} else {
 					FrameworkResult::decode(&contract, &output)?
 				};
+                if contract.behavior.connection_request && let FrameworkResult::Human(request) = framework {
+                    return self.builtin_connection_wait(run, token, call, request, &key, guard).await;
+                }
 				// An approval raised inside the call is not its result. The Run waits,
 				// then makes the same call again under the approval's own key.
 				if let FrameworkResult::Approval(approval_id) = framework {
@@ -3126,7 +3168,12 @@ impl<'a> Executor<'a> {
 							store.save_run(run, token, "run.waiting").await?;
 							return Ok(());
 						}
-						h = answer_at_deadline(home.as_ref(), id).await?;
+						h = if h.kind == aidash_domain::oauth_connections::CONNECTION_REQUEST_KIND {
+                            match home.close_human_request(id, json!({"connected":false})).await {
+                                Err(Error::Conflict(_)) => home.human_request_by_id(id).await?,
+                                result => result?,
+                            }
+                        } else { answer_at_deadline(home.as_ref(), id).await? };
 					}
 					let response = h.response.ok_or_else(||Error::Conflict("human request has not been answered".into()))?;
 					match &mut waiting {
@@ -3174,9 +3221,10 @@ impl<'a> Executor<'a> {
 						}
 						_ => {}
 					}
+                    let connection_answered = self.connection_answer(run, &mut waiting, id, &response, guard, visibility).await?;
 					completion::answer_review(run, id, Some(&response));
 					// MCP form data is disclosed to its server, not to the model.
-					if h.kind != "MCP_ELICITATION"
+					if !connection_answered && h.kind != "MCP_ELICITATION"
 						&& !matches!(waiting, WaitingState::Reconciliation { .. })
 					{
 						run.context.push(ContextEvent::Human {

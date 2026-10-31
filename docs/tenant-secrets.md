@@ -4,8 +4,10 @@ Tenant Secrets are named, write-only values for a Tenant's HTTP/MCP tools,
 Workbench test endpoints and External services. They share the Secret Store
 with Provider Credentials and Plan Connections, under a separate
 `aidash-store/tenant-secrets/<id>` resource namespace. They are available on
-Self-hosted nodes with an encrypted PostgreSQL Secret Store. Cloud and
-Dedicated forwarding belongs to [#310](https://github.com/kent8192/aidash/issues/310).
+Self-hosted nodes with an encrypted PostgreSQL Secret Store, and on Cloud and
+Dedicated where a Secret Manager Store and a Tenant Secret broker are both
+configured ([#310](https://github.com/kent8192/aidash/issues/310)). Without the
+broker, Cloud and Dedicated keep them unavailable.
 
 ## Manage and use a Tenant Secret
 
@@ -24,7 +26,23 @@ value; `DELETE` removes it. Both require `secret.manage` and an
 `expected_revision` (`0` creates a new name). A PUT accepts `value`, `hosts`
 or both; a new name requires both. The value is never returned. Changing
 hosts or replacing a value increments the Secret's revision without changing
-any definition version. Tenant purge removes its values before its rows.
+any definition version. On Cloud and Dedicated, changing a Secret's hosts
+requires entering its value again in the same request (ADR 0096); on
+Self-hosted, hosts change without the value. Tenant purge removes its values
+before its rows.
+
+Readiness is read-only and never returns a value, a Fingerprint or the last
+four characters. `GET /api/registry/{id}/{version}/secret-readiness` returns
+one fact for each bound tool and External service of an Agent version, and
+`GET /api/marketplace/packages/{key}/secret-readiness` returns one fact for
+each Secret slot the package's install plan declares. A fact names its item,
+`kind` (`tool`, `external_service` or `slot`), the `tenant_secret_name` when
+one is named, a `status` (`ready`, `secret_missing`,
+`secret_hosts_mismatch`, `secrets_unavailable_on_deployment` or
+`broker_not_configured`) and who can `repair` it (`manage_secret`,
+`ask_administrator`, `deployment_administrator` or `none`). A slot is ready on the plan screen
+when any active Tenant Secret records the package's destination host; after
+installation the installed copy names its chosen Secret.
 
 Naming a Secret in a definition requires `secret.use`, independently of
 `secret.manage`. HTTP/MCP tool transports use `secret: "search-key"` instead
@@ -40,6 +58,49 @@ checks the resulting destination against those hosts. Catalog Approval shows
 the Secret-to-host disclosure and states that Aidash's provider guarantees,
 including zero data retention and Usage Records, do not apply. Federation
 executes the tool at its owning Node; Secret values stay there.
+
+## Cloud and Dedicated
+
+The application host stays write-only (ADR 0002). A Tenant Secret lives in the
+BYOK project under `aidash-<environment>-tsec-<id>`, separate from Key
+Material's `-cred-` namespace. Each Secret Manager version is the sealed
+payload `{"v":1,"hosts":[...],"value":"..."}` (ADR 0096): the hosts travel with
+the value, so the Tenant Secret broker refuses any destination outside them
+and the application host cannot attach new hosts to a value it cannot read.
+Creating a Secret is a `pending` row followed by the Secret Manager write, so a
+reconciler finds orphans by scanning PostgreSQL (ADR 0002).
+
+A tool call, MCP request or Egress request that carries a Tenant Secret is
+forwarded to the broker instead of being sent directly. The server mints a
+short-lived Tenant Secret Capability Token that names the Tenant, the Secret,
+its pinned version, the destination origin and path prefix, the methods and
+the attachment; the broker reads only that version, opens the sealed hosts and
+attaches the value. The token is sent as `x-aidash-secret-call`, never as
+`Authorization`. The server signs with its own KMS key; workers reuse their
+existing Credential Broker key with the Tenant Secret broker's audience. Both
+public keys and their issuers are configured on the Tenant Secret broker.
+
+The application host never reads a version, and a failed broker call never
+falls back to a direct read. A person can repair `secret_unavailable` and
+`secret_destination_refused`; `broker_unavailable` and `broker_rejected` are
+Deployment Administrator faults. Tenant users see the Deployment Administrator-side message and a correlation
+id; only Deployment Administrators see reason codes.
+
+Configure the broker with `providerCredentials.settings.tenant_secret_broker`:
+
+```json
+{
+  "endpoint": "https://aidash-tenant-secret-broker-...run.app",
+  "issuer": "aidash-server",
+  "audience": "production-tsec",
+  "kid": "projects/.../cryptoKeys/tenant-secret/cryptoKeyVersions/1"
+}
+```
+
+`endpoint` is the bare service URI; the server appends `/v1/forward`. The
+`audience` must be `<environment>-tsec`, distinct from the provider token
+audience. Without this setting, Tenant Secrets stay unavailable on Cloud and
+Dedicated, and definitions that name one are refused at registration.
 
 ## External services
 

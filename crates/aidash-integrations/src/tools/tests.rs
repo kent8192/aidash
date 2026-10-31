@@ -1,5 +1,9 @@
 use super::*;
-use aidash_application::provider_access::KeylessAccess;
+use aidash_application::{
+	provider_access::KeylessAccess,
+	tenant_secrets::{CallSecret, SecretRecord},
+};
+use secrecy::SecretString;
 use std::sync::Arc;
 #[rstest::rstest]
 #[tokio::test]
@@ -142,6 +146,8 @@ mod destinations {
 				replay: replay.into(),
 				idempotency_argument: (replay == "idempotent").then(|| "request_id".into()),
 				secret: None,
+				secret_owner: Default::default(),
+				scopes: None,
 			};
 			let result = transport.invoke(&config, json!({}), "key", None).await;
 			if retry {
@@ -268,6 +274,7 @@ mod destinations {
 			endpoint: format!("{base}/rate"),
 			replay: "unsafe".into(),
 			secret: None,
+			secret_owner: Default::default(),
 		};
 		let error = transport
 			.invoke(&rate, json!({}), "key", None)
@@ -280,6 +287,7 @@ mod destinations {
 			endpoint: format!("{base}/timeout"),
 			replay: "unsafe".into(),
 			secret: None,
+			secret_owner: Default::default(),
 		};
 		assert!(matches!(
 			transport.invoke(&timeout, json!({}), "key", None).await,
@@ -289,6 +297,7 @@ mod destinations {
 			endpoint: format!("{base}/unavailable"),
 			replay: "idempotent".into(),
 			secret: None,
+			secret_owner: Default::default(),
 		};
 		let error = transport
 			.invoke(&idempotent, json!({}), "key", None)
@@ -339,6 +348,7 @@ mod destinations {
 			endpoint: endpoint.clone(),
 			replay: "unsafe".into(),
 			secret: None,
+			secret_owner: Default::default(),
 		};
 		let result = tools(&[&endpoint])
 			.invoke(&config, json!({}), "key", None)
@@ -449,6 +459,7 @@ mod destinations {
 			endpoint,
 			replay: "read_only".into(),
 			secret: None,
+			secret_owner: Default::default(),
 		}
 	}
 
@@ -459,6 +470,8 @@ mod destinations {
 			replay: "read_only".into(),
 			secret: None,
 			idempotency_argument: None,
+			scopes: None,
+			secret_owner: Default::default(),
 		}
 	}
 
@@ -579,6 +592,7 @@ mod destinations {
 					url: format!("http://public.example:{port}/mcp").parse().unwrap(),
 					headers: vec![],
 				},
+				None,
 			)
 			.await;
 		server.abort();
@@ -708,8 +722,16 @@ async fn an_http_tool_sends_its_tenant_secret_as_the_bearer_credential_and_nothi
 		endpoint,
 		replay: "idempotent".into(),
 		secret: Some("search".into()),
+		secret_owner: Default::default(),
 	};
-	let secret = SecretString::from("tenant-secret-value".to_owned());
+	let secret = CallSecret::Value {
+		record: SecretRecord {
+			id: uuid::Uuid::now_v7(),
+			version: "1".into(),
+			host: "127.0.0.1".into(),
+		},
+		value: SecretString::from("tenant-secret-value".to_owned()),
+	};
 	let with = tools
 		.invoke(&config, json!({}), "key", Some(&secret))
 		.await
@@ -729,6 +751,7 @@ async fn an_http_tool_names_aidash_as_its_user_agent() {
 		endpoint,
 		replay: "idempotent".into(),
 		secret: None,
+		secret_owner: Default::default(),
 	};
 	let result = tools.invoke(&config, json!({}), "key", None).await.unwrap();
 	assert_eq!(result["user_agent"], crate::USER_AGENT);
@@ -772,13 +795,15 @@ async fn an_mcp_tool_authenticates_its_handshake_and_call_with_the_tenant_secret
 		secret: Some("mcp-key".into()),
 		replay: "idempotent".into(),
 		idempotency_argument: Some("request_id".into()),
+		scopes: None,
+		secret_owner: Default::default(),
 	};
 	let result = tools
 		.invoke(
 			&config,
 			json!({"query":"fixture"}),
 			"call-key",
-			Some(&"tenant-mcp-canary-296".into()),
+			Some(&value_secret("tenant-mcp-canary-296")),
 		)
 		.await
 		.unwrap();
@@ -835,6 +860,18 @@ fn permitting<'a>(
 	aidash_application::provider_access::KeylessAccess::permitting(
 		aidash_domain::keyless::PermittedOrigins::parse(origins).unwrap(),
 	)
+}
+
+/// A self-hosted Tenant Secret read for one call.
+fn value_secret(value: &str) -> CallSecret {
+	CallSecret::Value {
+		record: SecretRecord {
+			id: uuid::Uuid::now_v7(),
+			version: "1".into(),
+			host: "127.0.0.1".into(),
+		},
+		value: SecretString::from(value.to_owned()),
+	}
 }
 
 fn clients() -> Clients {
@@ -1018,3 +1055,411 @@ async fn an_unpermitted_plaintext_mcp_hint_is_refused_before_discovery() {
 	server.abort();
 	assert!(matches!(result, Err(Error::Forbidden)), "{result:?}");
 }
+
+/// Brokered Tenant Secret transports never read a value: they send the call to
+/// the broker with `x-aidash-secret-call`, and map broker-owned failures.
+mod brokered {
+	use super::*;
+	use aidash_application::tenant_secrets::{
+		CallSecret, SecretRecord, SecretRoute, SecretRouteSource,
+	};
+	use axum::{
+		Json, Router,
+		body::Bytes,
+		http::{HeaderMap, StatusCode, Uri, header},
+		response::IntoResponse,
+		routing::post,
+	};
+	use secrecy::ExposeSecret;
+	use std::sync::{
+		Mutex,
+		atomic::{AtomicUsize, Ordering},
+	};
+	use std::time::Duration;
+
+	struct FixedRoute {
+		base: String,
+		token: &'static str,
+		calls: Arc<AtomicUsize>,
+	}
+	#[async_trait]
+	impl SecretRouteSource for FixedRoute {
+		async fn route(&self) -> aidash_application::Result<SecretRoute> {
+			self.calls.fetch_add(1, Ordering::Relaxed);
+			Ok(SecretRoute {
+				base: reqwest::Url::parse(&self.base).unwrap(),
+				token: SecretString::from(self.token.to_owned()),
+			})
+		}
+	}
+
+	fn brokered(base: &str, rest: &str) -> (CallSecret, Arc<AtomicUsize>) {
+		let calls = Arc::new(AtomicUsize::new(0));
+		let source = FixedRoute {
+			base: base.to_owned(),
+			token: "broker-token",
+			calls: calls.clone(),
+		};
+		(
+			CallSecret::Brokered {
+				record: SecretRecord {
+					id: uuid::Uuid::now_v7(),
+					version: "7".into(),
+					host: "api.example.test".into(),
+				},
+				source: Arc::new(source),
+				rest: rest.into(),
+			},
+			calls,
+		)
+	}
+
+	async fn serve(router: Router) -> (String, tokio::task::JoinHandle<()>) {
+		let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+		let endpoint = format!("http://{}", listener.local_addr().unwrap());
+		let server = tokio::spawn(async move {
+			axum::serve(listener, router).await.unwrap();
+		});
+		(endpoint, server)
+	}
+
+	/// A broker that reports the forwarded path and request facts. `broker_error`
+	/// adds the header a broker-owned refusal carries.
+	async fn echo_broker(
+		status: StatusCode,
+		broker_error: Option<&'static str>,
+	) -> (String, tokio::task::JoinHandle<()>) {
+		let router = Router::new().fallback(
+			move |uri: Uri, headers: HeaderMap, body: Bytes| async move {
+				let mut response = Json(json!({
+					"path": uri.path(),
+					"query": uri.query(),
+					"token": headers.get("x-aidash-secret-call").and_then(|v| v.to_str().ok()),
+					"authorization": headers.get("authorization").and_then(|v| v.to_str().ok()),
+					"idempotency": headers.get("idempotency-key").and_then(|v| v.to_str().ok()),
+					"body": String::from_utf8_lossy(&body),
+				}))
+				.into_response();
+				*response.status_mut() = status;
+				if let Some(code) = broker_error {
+					response
+						.headers_mut()
+						.insert("x-aidash-broker-error", code.parse().unwrap());
+					response
+						.headers_mut()
+						.insert("x-aidash-correlation", "corr-1".parse().unwrap());
+				}
+				response
+			},
+		);
+		serve(router).await
+	}
+
+	#[tokio::test]
+	async fn an_http_tool_forwards_the_same_call_to_the_broker_without_a_bearer_value() {
+		let (base, server) = echo_broker(StatusCode::OK, None).await;
+		let endpoint = "http://127.0.0.1:9/api/v1/echo".to_owned();
+		let tools = HttpTools::new(permitting([endpoint.as_str()]), ToolClients::new().unwrap());
+		let config = ToolConfig::Http {
+			endpoint: endpoint.clone(),
+			replay: "idempotent".into(),
+			secret: Some("search".into()),
+			secret_owner: Default::default(),
+		};
+		let (secret, calls) = brokered(&format!("{base}/v1/forward"), "echo");
+		let result = tools
+			.invoke(
+				&config,
+				json!({"query":"fixture"}),
+				"call-key",
+				Some(&secret),
+			)
+			.await
+			.unwrap();
+		assert_eq!(result["path"], "/v1/forward/echo");
+		assert_eq!(result["token"], "broker-token");
+		assert_eq!(result["authorization"], Value::Null);
+		assert_eq!(result["idempotency"], "call-key");
+		assert!(result["body"].as_str().unwrap().contains("fixture"));
+		// The transport asked the source for its first route.
+		assert_eq!(calls.load(Ordering::Relaxed), 1);
+		server.abort();
+		let _ = server.await;
+	}
+
+	#[tokio::test]
+	async fn tool_http_failure_is_returned_as_data_for_direct_and_brokered_calls() {
+		for brokered_call in [false, true] {
+			let (base, server) = echo_broker(
+				StatusCode::IM_A_TEAPOT,
+				(!brokered_call).then_some("broker_rejected"),
+			)
+			.await;
+			let endpoint = if brokered_call {
+				"http://127.0.0.1:9/api/echo".to_owned()
+			} else {
+				format!("{base}/echo")
+			};
+			let tools =
+				HttpTools::new(permitting([endpoint.as_str()]), ToolClients::new().unwrap());
+			let config = ToolConfig::Http {
+				endpoint,
+				replay: "idempotent".into(),
+				secret: None,
+				secret_owner: Default::default(),
+			};
+			let secret = brokered(&format!("{base}/v1/forward"), "echo").0;
+			let result = tools
+				.invoke(
+					&config,
+					json!({}),
+					"call-key",
+					brokered_call.then_some(&secret),
+				)
+				.await
+				.unwrap();
+			assert_eq!(result["error"]["kind"], "http_status");
+			assert_eq!(result["error"]["status"], 418);
+			assert!(result["error"]["body"].as_str().unwrap().contains("echo"));
+			server.abort();
+			let _ = server.await;
+		}
+	}
+
+	#[tokio::test]
+	async fn every_broker_owned_error_code_maps_to_its_contract_failure() {
+		for (code, status) in [
+			("secret_unavailable", StatusCode::NOT_FOUND),
+			("secret_destination_refused", StatusCode::FORBIDDEN),
+			("broker_rejected", StatusCode::UNAUTHORIZED),
+			("broker_unavailable", StatusCode::SERVICE_UNAVAILABLE),
+			("upstream_unreachable", StatusCode::BAD_GATEWAY),
+			("rate_limited", StatusCode::TOO_MANY_REQUESTS),
+		] {
+			let (base, server) = echo_broker(status, Some(code)).await;
+			let endpoint = "http://127.0.0.1:9/api/echo".to_owned();
+			let tools =
+				HttpTools::new(permitting([endpoint.as_str()]), ToolClients::new().unwrap());
+			let config = ToolConfig::Http {
+				endpoint,
+				replay: "idempotent".into(),
+				secret: Some("search".into()),
+				secret_owner: Default::default(),
+			};
+			let (secret, _) = brokered(&format!("{base}/v1/forward"), "echo");
+			let result = tools
+				.invoke(&config, json!({}), "call-key", Some(&secret))
+				.await;
+			match code {
+				"secret_unavailable" | "secret_destination_refused" => {
+					assert!(
+						matches!(&result, Err(Error::Invalid(message)) if message == code),
+						"{code}: {result:?}"
+					);
+				}
+				"broker_rejected" => assert!(
+					matches!(
+						&result,
+						Err(Error::BrokerRejected { correlation: Some(correlation) })
+							if correlation == "corr-1"
+					),
+					"{code}: {result:?}"
+				),
+				"broker_unavailable" => assert!(
+					matches!(
+						&result,
+						Err(Error::BrokerUnavailable { correlation: Some(correlation) })
+							if correlation == "corr-1"
+					),
+					"{code}: {result:?}"
+				),
+				"upstream_unreachable" | "rate_limited" => {
+					assert!(
+						matches!(&result, Err(Error::External(_))),
+						"{code}: {result:?}"
+					);
+				}
+				_ => unreachable!(),
+			}
+			server.abort();
+			let _ = server.await;
+		}
+	}
+
+	#[tokio::test]
+	async fn a_broker_connect_failure_is_an_deployment_administrator_fault() {
+		let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+		let base = format!("http://{}/v1/forward", listener.local_addr().unwrap());
+		drop(listener);
+		let endpoint = "http://127.0.0.1:9/api/echo".to_owned();
+		let tools = HttpTools::new(permitting([endpoint.as_str()]), ToolClients::new().unwrap());
+		let config = ToolConfig::Http {
+			endpoint,
+			replay: "idempotent".into(),
+			secret: Some("search".into()),
+			secret_owner: Default::default(),
+		};
+		let (secret, _) = brokered(&base, "echo");
+		let result = tools
+			.invoke(&config, json!({}), "call-key", Some(&secret))
+			.await;
+		assert!(
+			matches!(result, Err(Error::BrokerUnavailable { correlation: None })),
+			"{result:?}"
+		);
+	}
+
+	#[tokio::test]
+	async fn a_brokered_mcp_session_carries_its_token_session_and_sse() {
+		let seen = Arc::new(Mutex::new(Vec::<String>::new()));
+		let observed = seen.clone();
+		let post_route = post(move |headers: HeaderMap, Json(message): Json<Value>| {
+			let observed = observed.clone();
+			async move {
+				let token = headers
+					.get("x-aidash-secret-call")
+					.and_then(|value| value.to_str().ok())
+					.map(str::to_owned);
+				assert_eq!(token.as_deref(), Some("broker-token"));
+				assert!(headers.get("authorization").is_none());
+				observed
+					.lock()
+					.unwrap()
+					.push(message["method"].as_str().unwrap_or("unknown").to_owned());
+				match message["method"].as_str().unwrap_or_default() {
+					"initialize" => {
+						let mut response = Json(json!({
+							"jsonrpc": "2.0",
+							"id": message["id"],
+							"result": {
+								"protocolVersion": message["params"]["protocolVersion"],
+								"capabilities": {"tools": {}},
+								"serverInfo": {"name": "broker-fixture", "version": "1.0.0"}
+							}
+						}))
+						.into_response();
+						response
+							.headers_mut()
+							.insert("mcp-session-id", "session-1".parse().unwrap());
+						response
+					}
+					"tools/call" => {
+						assert_eq!(
+							headers
+								.get("mcp-session-id")
+								.and_then(|value| value.to_str().ok()),
+							Some("session-1")
+						);
+						let event = json!({
+							"jsonrpc": "2.0",
+							"id": message["id"],
+							"result": {"content": [{"type": "text", "text": "through the broker"}]}
+						});
+						(
+							[(header::CONTENT_TYPE, "text/event-stream")],
+							format!("event: message\ndata: {event}\n\n"),
+						)
+							.into_response()
+					}
+					_ => StatusCode::ACCEPTED.into_response(),
+				}
+			}
+		});
+		let router = Router::new().route(
+			"/v1/forward/mcp",
+			post_route
+				.get(|| async { StatusCode::METHOD_NOT_ALLOWED })
+				.delete(|headers: HeaderMap| async move {
+					assert_eq!(
+						headers
+							.get("mcp-session-id")
+							.and_then(|value| value.to_str().ok()),
+						Some("session-1")
+					);
+					StatusCode::OK
+				}),
+		);
+		let (base, server) = serve(router).await;
+		let endpoint = "http://127.0.0.1:9/api/mcp".to_owned();
+		let tools = HttpTools::new(permitting([endpoint.as_str()]), ToolClients::new().unwrap());
+		let config = ToolConfig::Mcp {
+			endpoint,
+			tool_name: "lookup".into(),
+			secret: Some("mcp-key".into()),
+			replay: "idempotent".into(),
+			idempotency_argument: None,
+			scopes: None,
+			secret_owner: Default::default(),
+		};
+		let (secret, _) = brokered(&format!("{base}/v1/forward"), "mcp");
+		let result = tools
+			.invoke(
+				&config,
+				json!({"query":"fixture"}),
+				"call-key",
+				Some(&secret),
+			)
+			.await
+			.unwrap();
+		assert_eq!(result["content"][0]["text"], "through the broker");
+		assert!(seen.lock().unwrap().contains(&"initialize".to_owned()));
+		assert!(seen.lock().unwrap().contains(&"tools/call".to_owned()));
+		server.abort();
+		let _ = server.await;
+	}
+
+	#[tokio::test]
+	async fn a_brokered_mcp_initialization_maps_a_broker_refusal() {
+		let (base, server) =
+			echo_broker(StatusCode::SERVICE_UNAVAILABLE, Some("broker_unavailable")).await;
+		let endpoint = "http://127.0.0.1:9/api/mcp".to_owned();
+		let tools = HttpTools::new(permitting([endpoint.as_str()]), ToolClients::new().unwrap());
+		let config = ToolConfig::Mcp {
+			endpoint,
+			tool_name: "lookup".into(),
+			secret: Some("mcp-key".into()),
+			replay: "idempotent".into(),
+			idempotency_argument: None,
+			scopes: None,
+			secret_owner: Default::default(),
+		};
+		let (secret, _) = brokered(&format!("{base}/v1/forward"), "mcp");
+		let result = tools
+			.invoke(&config, json!({}), "call-key", Some(&secret))
+			.await;
+		assert!(
+			matches!(
+				result,
+				Err(Error::BrokerUnavailable { correlation: Some(ref correlation) })
+					if correlation == "corr-1"
+			),
+			"{result:?}"
+		);
+		server.abort();
+		let _ = server.await;
+	}
+
+	#[tokio::test(start_paused = true)]
+	async fn a_brokered_session_reuses_its_token_for_fifty_seconds_then_refreshes() {
+		let calls = Arc::new(AtomicUsize::new(0));
+		let source = Arc::new(FixedRoute {
+			base: "http://127.0.0.1:9/v1/forward".into(),
+			token: "refreshed-token",
+			calls: calls.clone(),
+		});
+		let first = SecretRoute {
+			base: reqwest::Url::parse("http://127.0.0.1:9/v1/forward").unwrap(),
+			token: SecretString::from("first-token".to_owned()),
+		};
+		let session = super::super::mcp::Brokered::new(source, "mcp".into(), first);
+		assert!(session.route().await.is_ok());
+		assert!(session.route().await.is_ok());
+		assert_eq!(calls.load(Ordering::Relaxed), 0);
+		tokio::time::advance(Duration::from_secs(51)).await;
+		let refreshed = session.route().await.unwrap();
+		assert_eq!(calls.load(Ordering::Relaxed), 1);
+		assert_eq!(refreshed.token.expose_secret(), "refreshed-token");
+	}
+}
+
+mod oauth;

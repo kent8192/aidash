@@ -119,6 +119,7 @@ class ChartsTest(unittest.TestCase):
                 'fingerprint_key': {'env': 'AIDASH_PROVIDER_FINGERPRINT_KEY'},
                 'store': {'kind': 'postgres', 'master_key': {'env': 'AIDASH_PROVIDER_STORE_MASTER_KEY'}},
                 'broker': None,
+                'tenant_secret_broker': None,
             }
         }
         for role in ('server', 'worker'):
@@ -386,15 +387,42 @@ class ChartsTest(unittest.TestCase):
         invalid = [dict(self.base, execution=dict(execution, egress={'enabled': True, 'clusterIP': ''})),
                    dict(self.base, execution=dict(execution, runner={'enabled': False})),
                    dict(self.base, execution=execution, providerCredentials={'settings': {
-                       'store': {'kind': 'secret_manager', 'byok_project_id': 'aidash-byok-1', 'environment_id': 'pr-1'}}})]
+                       'fingerprint_key': {'env': 'AIDASH_PROVIDER_FINGERPRINT_KEY'},
+                       'store': {'kind': 'secret_manager', 'byok_project_id': 'aidash-byok-1', 'environment_id': 'pr-1'},
+                       'broker': None, 'tenant_secret_broker': None}})]
         for values in invalid:
             with self.subTest(values=values), self.assertRaises(subprocess.CalledProcessError):
                 render(self.aidash, values)
 
+    def test_egress_requires_a_tenant_secret_broker_only_for_a_managed_cloud_store(self):
+        execution = {'sandboxImage': 'sandbox' + DIGEST,
+                     'runner': {'enabled': True, 'existingSecret': 'app-runner', 'image': 'control' + DIGEST},
+                     'guard': {'enabled': True, 'image': 'control' + DIGEST},
+                     'egress': {'enabled': True, 'clusterIP': '10.96.0.90'}}
+        postgres = {'fingerprint_key': {'env': 'AIDASH_PROVIDER_FINGERPRINT_KEY'},
+                    'store': {'kind': 'postgres', 'master_key': {'env': 'AIDASH_PROVIDER_STORE_MASTER_KEY'}},
+                    'broker': None, 'tenant_secret_broker': None}
+        # Self-hosted reads Tenant Secrets directly, so egress needs no broker.
+        render(self.aidash, dict(self.base, execution=execution, providerCredentials={'settings': postgres}))
+        store = {'kind': 'secret_manager', 'byok_project_id': 'aidash-byok-1', 'environment_id': 'pr-1'}
+        tenant = {'endpoint': 'https://tenant-broker.run.app', 'issuer': 'aidash-server',
+                  'audience': 'pr-1-tsec', 'kid': 'server-key-1'}
+        cloud = {'fingerprint_key': {'env': 'AIDASH_PROVIDER_FINGERPRINT_KEY'}, 'store': store,
+                 'broker': None, 'tenant_secret_broker': tenant}
+        render(self.aidash, dict(self.base, execution=execution, providerCredentials={'settings': cloud}))
+        for missing in (dict(cloud, tenant_secret_broker=None),
+                        dict(cloud, tenant_secret_broker=dict(tenant, audience='pr-1')),
+                        dict(cloud, tenant_secret_broker=dict(tenant, audience='develop-tsec'))):
+            with self.subTest(descriptor=missing), self.assertRaises(subprocess.CalledProcessError):
+                render(self.aidash, dict(self.base, execution=execution,
+                                         providerCredentials={'settings': missing}))
+
     def test_managed_provider_and_gcip_settings_are_validated_and_mounted(self):
         store = {'kind': 'secret_manager', 'byok_project_id': 'aidash-byok-1', 'environment_id': 'pr-1'}
         broker = {'endpoint': 'https://broker.run.app/api/v1', 'issuer': 'aidash-worker', 'audience': 'pr-1', 'kid': 'k1'}
-        descriptor = {'fingerprint_key': {'env': 'AIDASH_PROVIDER_FINGERPRINT_KEY'}, 'store': store, 'broker': broker}
+        tenant = {'endpoint': 'https://tenant-broker.run.app', 'issuer': 'aidash-server', 'audience': 'pr-1-tsec', 'kid': 's1'}
+        descriptor = {'fingerprint_key': {'env': 'AIDASH_PROVIDER_FINGERPRINT_KEY'}, 'store': store,
+                      'broker': broker, 'tenant_secret_broker': tenant}
         gcip = {'project_id': 'fixture', 'web_api_key': 'public', 'public_origin': 'https://pr-1.aidash.run',
                 'tenant_bindings': {'Pool-X': 'acme'}, 'session_idle_seconds': 3600}
         values = dict(self.base, deployment={'id': 'aidash://fixture', 'endpoint': 'https://pr-1.aidash.run'},
@@ -405,17 +433,20 @@ class ChartsTest(unittest.TestCase):
                              {'provider_credentials': descriptor})
             self.assertEqual(json.loads(self.mounted(objects, role, 'AIDASH_GCIP_SETTINGS')), {'dashboard': {'gcip': gcip}})
         # A descriptor change restarts the Pods that read it at startup.
-        rotated = render(self.aidash, dict(values, providerCredentials={'settings': dict(descriptor, broker=dict(broker, kid='k2'))}))
+        rotated = render(self.aidash, dict(values, providerCredentials={'settings': dict(descriptor, tenant_secret_broker=dict(tenant, kid='s2'))}))
 
         def checksum(rendered):
             return select(rendered, 'Deployment', '-aidash-server')['spec']['template']['metadata']['annotations']['checksum/settings']
 
         self.assertNotEqual(checksum(objects), checksum(rotated))
         # The all-null descriptor is rendered as an explicit "no managed Store".
-        disabled = {'fingerprint_key': None, 'store': None, 'broker': None}
+        disabled = {'fingerprint_key': None, 'store': None, 'broker': None, 'tenant_secret_broker': None}
         rendered = render(self.aidash, dict(self.base, providerCredentials={'settings': disabled}))
         self.assertEqual(json.loads(self.mounted(rendered, 'server', 'AIDASH_PROVIDER_CREDENTIAL_SETTINGS')),
                          {'provider_credentials': disabled})
+        # A Secret Manager Store may stay store-only when no broker and no egress.
+        store_only = dict(descriptor, broker=None, tenant_secret_broker=None)
+        render(self.aidash, dict(self.base, providerCredentials={'settings': store_only}))
         # Unset settings add nothing.
         names = [item['name'] for item in select(render(self.aidash, self.base), 'Deployment', '-aidash-server')
                  ['spec']['template']['spec']['containers'][0]['env']]
@@ -433,7 +464,13 @@ class ChartsTest(unittest.TestCase):
             dict(descriptor, fingerprint_key={'file': '/key'}),
             dict(descriptor, broker=dict(broker, audience='develop')),
             dict(descriptor, broker=dict(broker, kid='')),
+            dict(descriptor, tenant_secret_broker=None),
+            dict(descriptor, tenant_secret_broker=dict(tenant, audience='pr-1')),
+            dict(descriptor, tenant_secret_broker=dict(tenant, audience='develop-tsec')),
+            dict(descriptor, tenant_secret_broker=dict(tenant, kid='')),
+            dict(descriptor, tenant_secret_broker=dict(tenant, extra=None)),
             dict(disabled, broker=broker),
+            dict(disabled, tenant_secret_broker=tenant),
             dict(disabled, fingerprint_key={'env': 'AIDASH_PROVIDER_FINGERPRINT_KEY'}),
         ]
         for invalid in invalid_descriptors:

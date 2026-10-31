@@ -1,3 +1,4 @@
+import { EntryConnections } from "./connections/install";
 import { useRef, useState } from "react";
 import { AgentPluginSummary } from "./agent-plugin-summary";
 import {
@@ -26,8 +27,10 @@ type Config = Record<string, unknown>;
 export function AgentPluginImport({
   config,
   change,
+  tenant,
 }: {
   config: Config;
+  tenant?: string;
   change: (config: Config) => void;
 }) {
   const { t } = useI18n();
@@ -148,6 +151,15 @@ export function AgentPluginImport({
             plugin={imported.reference}
             denied={imported.denied}
           />
+          {tenant && (
+            <EntryConnections
+              tenant={tenant}
+              entry={{
+                kind: "agent",
+                config: { agent_plugins: [imported.reference] },
+              }}
+            />
+          )}
           <Button
             variant="outline"
             type="button"

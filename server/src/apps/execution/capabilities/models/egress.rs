@@ -72,6 +72,14 @@ pub struct RequestRecord {
 	pub via: String,
 	#[field(field_type = "text", null = true)]
 	pub error: Option<String>,
+	/// The Tenant Secret and pinned version a call carried, and the host it
+	/// went to. All null for a service without a Tenant Secret (ADR 0095).
+	#[field(null = true)]
+	pub secret_id: Option<Uuid>,
+	#[field(field_type = "text", null = true)]
+	pub secret_version: Option<String>,
+	#[field(field_type = "text", null = true)]
+	pub secret_host: Option<String>,
 	#[field]
 	pub created_at: DateTime<Utc>,
 }

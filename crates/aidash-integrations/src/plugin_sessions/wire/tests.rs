@@ -29,7 +29,7 @@ async fn stream(
 		}),
 	);
 	let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
-	let stream = BoundedClient(reqwest::Client::new())
+	let stream = BoundedClient::new(reqwest::Client::new(), None, Arc::default())
 		.get_stream(
 			format!("http://{address}/").into(),
 			None,

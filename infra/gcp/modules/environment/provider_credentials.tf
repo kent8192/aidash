@@ -1,5 +1,5 @@
-// Provider Credential Key Material lives in a separate, dedicated BYOK project;
-// only the server identity creates and manages it.
+// Provider Credential and Tenant Secret payloads live in a separate, dedicated
+// BYOK project; only the server identity creates and manages them.
 // Create is checked on the project and cannot be limited by a Secret name.
 // Manage is checked on Secret resources, whose IAM names use project NUMBER.
 data "google_project" "byok" {
@@ -8,6 +8,8 @@ data "google_project" "byok" {
 }
 locals {
   provider_credential_secret_prefix = "aidash-${var.environment_id}-cred-"
+  tenant_secret_secret_prefix       = "aidash-${var.environment_id}-tsec-"
+  oauth_secret_prefix               = "aidash-${var.environment_id}-oauth-"
 }
 // Bootstrap defines these fixed roles once per deployment. Automation may
 // bind them but has no iam.roles.* permission in the BYOK project.
@@ -23,8 +25,8 @@ resource "google_project_iam_member" "provider_credential_manage" {
   role    = "projects/${var.byok_project_id}/roles/aidashByokManage"
   member  = "serviceAccount:${google_service_account.workload["server"].email}"
   condition {
-    title      = "own-environment-provider-credentials"
-    expression = "resource.name.startsWith('projects/${data.google_project.byok[0].number}/secrets/${local.provider_credential_secret_prefix}')"
+    title      = "own-environment-secret-store"
+    expression = "resource.name.startsWith('projects/${data.google_project.byok[0].number}/secrets/${local.provider_credential_secret_prefix}') || resource.name.startsWith('projects/${data.google_project.byok[0].number}/secrets/${local.tenant_secret_secret_prefix}') || resource.name.startsWith('projects/${data.google_project.byok[0].number}/secrets/${local.oauth_secret_prefix}')"
   }
 }
 output "byok_project_id" { value = var.byok_project_id }

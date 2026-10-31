@@ -64,11 +64,16 @@ renders a NetworkPolicy so that only the listed same-namespace Pods (for example
 any other Pod in that range then cannot claim a client address.
 
 `providerCredentials.settings` takes the managed Provider Credential descriptor
-`{fingerprint_key, store, broker}`, never key material. The chart validates it
-(a Secret Manager Store with its BYOK project and Environment, the fingerprint key
-referenced as `AIDASH_PROVIDER_FINGERPRINT_KEY`, and a broker whose audience is
-that Environment), renders `{"provider_credentials": ...}` into a ConfigMap and
-points `AIDASH_PROVIDER_CREDENTIAL_SETTINGS` at it. Pass the all-null descriptor
+`{fingerprint_key, store, broker, tenant_secret_broker}`, never key material. The
+chart validates it (a Secret Manager Store with its BYOK project and Environment,
+the fingerprint key referenced as `AIDASH_PROVIDER_FINGERPRINT_KEY`, and any
+broker whose audience is that Environment), renders
+`{"provider_credentials": ...}` into a ConfigMap and points
+`AIDASH_PROVIDER_CREDENTIAL_SETTINGS` at it. `tenant_secret_broker` names the
+server-side broker (endpoint, issuer, audience and the server signing key's
+version); its `audience` must be `<Environment>-tsec`, distinct from the
+provider token audience. It is required for a Secret Manager Store when a broker
+is configured or `execution.egress.enabled` is set. Pass the all-null descriptor
 to override file settings with "no managed Store"; `null` renders nothing.
 `gcip.settings` takes `{dashboard: {gcip: {...}}}` with only the managed public
 GCIP keys; its `public_origin` must equal `deployment.endpoint`. It is rendered the same
