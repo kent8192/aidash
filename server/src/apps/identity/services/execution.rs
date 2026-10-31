@@ -1168,10 +1168,9 @@ impl WorkerAuthority {
 		// Admission below still checks the complete subject chain including the child.
 		let entry = catalog::entry(&mut lease, agent, "agent.execute").await?;
 		crate::marketplace::check_pinned(&mut lease, &entry).await?;
-		crate::apps::registry::repositories::bindings::authorized(
+		crate::apps::registry::repositories::bindings::authorized_child(
 			&mut lease,
 			&entry,
-			false,
 			f.store.provider_credentials.is_some(),
 		)
 		.await?;

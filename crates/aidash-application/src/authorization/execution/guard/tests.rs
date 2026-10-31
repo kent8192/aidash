@@ -136,6 +136,20 @@ impl RunGuardScope for Scope {
 		self.record("reference-availability")?;
 		Ok(self.reference_available)
 	}
+	async fn closure_catalog(
+		&mut self,
+		reference: &EntityRef,
+		action: &str,
+		users: &[EntityRef],
+	) -> Result<Entry> {
+		let users = users
+			.iter()
+			.map(|user| user.id.as_str())
+			.collect::<Vec<_>>()
+			.join(",");
+		self.record(format!("closure:{}:{action}:{users}", reference.id))?;
+		Ok(self.current(reference))
+	}
 	async fn metadata(&mut self, reference: &EntityRef) -> Result<Entry> {
 		self.record(format!("metadata:{}:registry.read", reference.id))?;
 		Ok(self.current(reference))
@@ -492,4 +506,62 @@ async fn foreign_closures_do_not_require_local_namesakes_or_match_their_digests(
 			.calls
 			.contains(&"catalog:foreign-child:registry.read".into())
 	);
+}
+
+#[rstest]
+#[tokio::test]
+async fn a_delegated_agents_model_is_checked_against_that_agent(
+	mut scope: Scope,
+	run: RunMetadata,
+) {
+	// producer → agent tool → delegate → delegated-model (ADR 0095).
+	let node = "aidash://local";
+	let model = |id: &str| {
+		crate::test_support::entry(
+			id,
+			"model",
+			json!({"provider":"openrouter","model_id":"fixture","endpoint":"https://fixture.invalid","context_window":200000,"max_output_tokens":1024,"modalities":["text"],"cost":{}}),
+		)
+	};
+	let mut producer = crate::test_support::agent("producer");
+	producer.config["remove_default"] = json!(aidash_domain::registry::bindings::DEFAULT_TOOLS);
+	producer.config["bindings"] = json!([
+		{"kind":"tool","target":{"registry_deployment":node,"id":"delegation","version":"1.0.0"}}
+	]);
+	let mut delegate = crate::test_support::agent("delegate");
+	delegate.config["model"] = json!({"id":"delegated-model","version":"1.0.0"});
+	delegate.config["remove_default"] = json!(aidash_domain::registry::bindings::DEFAULT_TOOLS);
+	let tool = crate::test_support::entry(
+		"delegation",
+		"tool",
+		json!({"registry_deployment":node,"provider":"integration.agent@1","operation":"invoke","default_alias":"delegate","tier":"integration","transport":{"transport":"agent","node_id":node,"agent":{"id":"delegate","version":"1.0.0"}}}),
+	);
+	scope.snapshot = crate::test_support::resolve(
+		node,
+		&producer,
+		false,
+		vec![
+			tool,
+			delegate,
+			model("fixture-model"),
+			model("delegated-model"),
+		],
+	);
+	authorize(&mut scope, &run, true).await.unwrap();
+	assert!(
+		scope
+			.calls
+			.contains(&"closure:delegated-model:registry.read:delegate".into()),
+		"{:?}",
+		scope.calls
+	);
+	for used in ["fixture-model", "delegation", "delegate"] {
+		assert!(
+			scope
+				.calls
+				.contains(&format!("catalog:{used}:registry.read")),
+			"{used}: {:?}",
+			scope.calls
+		);
+	}
 }

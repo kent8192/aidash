@@ -72,6 +72,16 @@ impl RunGuardScope for RunGuard<'_> {
 			.map(|entry| entry.is_some())
 			.map_err(Into::into)
 	}
+	async fn closure_catalog(
+		&mut self,
+		reference: &EntityRef,
+		action: &str,
+		users: &[EntityRef],
+	) -> Result<Entry> {
+		catalog::closure_entry(self.access, reference, action, users)
+			.await
+			.map_err(Into::into)
+	}
 	async fn metadata(&mut self, reference: &EntityRef) -> Result<Entry> {
 		catalog::metadata(self.access, reference)
 			.await

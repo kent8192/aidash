@@ -53,6 +53,9 @@ pub async fn authorize(
 	// Current local approval applies independently of a newer active pointer.
 	// Foreign Agent closures are refreshed at their owning Node by the Binding
 	// authority; never resolve their unqualified IDs through this local catalog.
+	// A delegated agent's own dependencies are pinned here as metadata and are
+	// restricted to that agent, who uses them directly in its own Run.
+	let delegated = snapshot.delegated_users()?;
 	for saved in &snapshot.definitions {
 		if saved.identity.registry_deployment != scope.node_id() {
 			continue;
@@ -78,9 +81,19 @@ pub async fn authorize(
 				// Dispatch approval may be deferred; readable immutable metadata may not.
 				scope.metadata(&saved.identity.local()).await?
 			} else {
-				scope
-					.catalog(&saved.identity.local(), "registry.read")
-					.await?
+				match delegated.get(&saved.identity) {
+					Some(users) => {
+						let users = users.iter().map(|user| user.local()).collect::<Vec<_>>();
+						scope
+							.closure_catalog(&saved.identity.local(), "registry.read", &users)
+							.await?
+					}
+					None => {
+						scope
+							.catalog(&saved.identity.local(), "registry.read")
+							.await?
+					}
+				}
 			};
 		if aidash_domain::registry::rules::digest(&serde_json::to_value(current)?) != saved.digest {
 			return Err(if is_reference_embedding {

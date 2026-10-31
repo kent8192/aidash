@@ -18,6 +18,14 @@ pub trait RunGuardScope: Send {
 	async fn reference_embedding_available(&mut self, _reference: &EntityRef) -> Result<bool> {
 		Err(crate::Error::Forbidden)
 	}
+	/// [`Self::catalog`] for a closure definition that only the closure agents
+	/// `users` use directly, so its Catalog Approval restriction applies to them.
+	async fn closure_catalog(
+		&mut self,
+		reference: &EntityRef,
+		action: &str,
+		users: &[EntityRef],
+	) -> Result<Entry>;
 	/// Read exact metadata under current `registry.read`, independently of invocation approval.
 	async fn metadata(&mut self, reference: &EntityRef) -> Result<Entry>;
 	async fn task_read(&mut self, task: Uuid) -> Result<Task>;
