@@ -236,7 +236,7 @@ test("subjects compose transactions in their selected local Node", async ({
     phase: "THINKING",
     control: "ACTIVE",
     state: {},
-    recovery: { retry: null, lease_recovered: false },
+    recovery: { retry: null },
     step: 1,
     revision: index + 3,
     error: null,

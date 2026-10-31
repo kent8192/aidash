@@ -94,10 +94,6 @@ pub fn worker_command(
 			.env("REINHARDT_SETTINGS_DIR", temp_dir.path())
 			.env("REINHARDT_ENV", "test")
 			.env("RUST_BACKTRACE", "0")
-			.env(
-				"RUST_MIN_STACK",
-				std::env::var("RUST_MIN_STACK").unwrap_or_else(|_| "8388608".into()),
-			)
 			.current_dir(env!("CARGO_MANIFEST_DIR"))
 			.stdin(Stdio::null())
 			.stdout(log.try_clone().unwrap())
@@ -206,10 +202,6 @@ impl WorkerProcess {
 			.env("REINHARDT_SETTINGS_DIR", directory.path())
 			.env("REINHARDT_ENV", "test")
 			.env("RUST_BACKTRACE", "0")
-			.env(
-				"RUST_MIN_STACK",
-				std::env::var("RUST_MIN_STACK").unwrap_or_else(|_| "8388608".into()),
-			)
 			.current_dir(env!("CARGO_MANIFEST_DIR"))
 			.stdin(Stdio::null())
 			.stdout(log.try_clone().unwrap())
