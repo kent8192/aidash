@@ -61,6 +61,24 @@ pub(crate) async fn entry(
 	.map_err(Into::into)
 }
 
+/// [`entry`] for a definition of an executing agent's Binding closure that
+/// only the closure agents `users` use directly.
+pub(crate) async fn closure_entry(
+	access: &mut Access,
+	reference: &EntityRef,
+	action: &str,
+	users: &[EntityRef],
+) -> Result<Entry> {
+	aidash_application::authorization::catalog::closure_entry(
+		&mut crate::bootstrap::catalog_scope(access),
+		reference,
+		action,
+		users,
+	)
+	.await
+	.map_err(Into::into)
+}
+
 /// [`entry`] for the call of `tool`: a policy denial is not reported as a Catalog Approval refusal.
 pub(crate) async fn tool_entry(
 	access: &mut Access,

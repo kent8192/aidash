@@ -488,6 +488,7 @@ const reviewItem = (
   can_approve: true,
   expected_revision: 2,
   restriction: null,
+  consumers: id === "writer" ? [] : ["acme/agents/writer@1.0.0"],
   proposed_restriction: {
     subjects: ["acme/agents/writer@1.0.0"],
     groups: [],
@@ -636,6 +637,7 @@ test("the Review shows the whole closure and approves local items and activation
   await expect(review).toContainText("Widens an existing approval");
   await expect(review).toContainText("You can approve it");
   await expect(review).toContainText("Needs Marketplace activation");
+  await expect(review).toContainText("Used by: acme/agents/writer@1.0.0");
   await review.getByRole("button", { name: /Approve selected \(3\)/ }).click();
   await expect.poll(() => decisions.length).toBe(1);
   const body = decisions[0].body as {

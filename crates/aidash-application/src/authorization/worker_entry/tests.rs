@@ -19,7 +19,7 @@ fn run() -> Run {
 		"observed_input_seq":9,"ledger_worker_ready":true,"error":null,
 		"lease_owner":null,"lease_until":null,"updated_at":"2030-01-01T00:00:00Z",
 		"context":Context::default(),
-		"pending":{"state_version":1,"data":{},"recovery":{"retry":null,"lease_recovered":true}}
+		"pending":{"state_version":1,"data":{},"recovery":{"retry":null,"lease_recoveries":1}}
 	}))
 	.unwrap()
 	.decode()

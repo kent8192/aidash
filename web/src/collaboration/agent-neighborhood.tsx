@@ -173,19 +173,16 @@ export function Graph({
         >
           {copy.relationships}
         </button>
-        {data.access.kind === "deployment_administrator" && (
-          <button
-            type="button"
-            className={tab(mode === "topology")}
-            aria-pressed={mode === "topology"}
-            onClick={() => setMode("topology")}
-          >
-            {copy.topology}
-          </button>
-        )}
+        <button
+          type="button"
+          className={tab(mode === "topology")}
+          aria-pressed={mode === "topology"}
+          onClick={() => setMode("topology")}
+        >
+          {copy.topology}
+        </button>
       </div>
-      {mode === "topology" &&
-      data.access.kind === "deployment_administrator" ? (
+      {mode === "topology" ? (
         <div className="flex min-h-0 flex-1 flex-col gap-4 overflow-auto p-4">
           <MeshView data={data} discovery={discovery} runs={runs} />
           <div className="collab-run-grid grid grid-cols-[repeat(auto-fill,minmax(220px,1fr))] gap-2">

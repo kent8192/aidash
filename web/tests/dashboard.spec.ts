@@ -100,14 +100,13 @@ test(
     await page
       .getByLabel("グラフの視点", { exact: true })
       .selectOption("neighborhood");
-    // Node topology is a Deployment Administrator view; a Tenant subject sees
-    // only its relationships (#484).
-    await expect(
-      page.getByRole("button", { name: "エージェントの関係", exact: true }),
-    ).toHaveAttribute("aria-pressed", "true");
-    await expect(
-      page.getByRole("button", { name: "ノード構成と通信", exact: true }),
-    ).toHaveCount(0);
+    // Node topology draws the Tenant's own agents and tasks, so it belongs to
+    // the Tenant subject, not the Deployment Administrator (#599).
+    await page
+      .getByRole("button", { name: "ノード構成と通信", exact: true })
+      .click();
+    await expect(page.locator(".mesh-canvas svg > g")).toHaveCount(1);
+    await expect(page.locator(".collab-run-grid button")).not.toHaveCount(0);
     for (const view of [
       "agents",
       "clusters",

@@ -94,6 +94,9 @@ fn snapshot_of(agent: &AgentBindings, agent_plugins: Vec<PinnedAgentPlugin>) -> 
 			"tool",
 			serde_json::to_value(&descriptor).unwrap(),
 		);
+		// The fixture Agent binds no memory, so its memory defaults are excluded.
+		let excluded_reason =
+			crate::tool::providers::memory_exclusion(normalized.origin, operation, false).unwrap();
 		let promoted = agent.has_plugin_skills()
 			&& normalized.origin == BindingOrigin::Default
 			&& support.contains(&operation);
@@ -116,8 +119,10 @@ fn snapshot_of(agent: &AgentBindings, agent_plugins: Vec<PinnedAgentPlugin>) -> 
 					.digest()
 					.unwrap(),
 			),
-			provider_implementation: Some("test-implementation".into()),
-			excluded_reason: None,
+			provider_implementation: excluded_reason
+				.is_none()
+				.then(|| "test-implementation".into()),
+			excluded_reason,
 		});
 		definitions.push(ResolvedDefinition::new(target, tool).unwrap());
 	}

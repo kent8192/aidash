@@ -453,6 +453,12 @@ impl PolicyAdministration {
 					&input.root.version,
 				));
 			}
+			// The same holds for the closure agents the review names as an item's
+			// consumers: a delegated agent's dependency may be approved first,
+			// with the proposed restriction naming that agent (ADR 0095).
+			for item in &current.items {
+				extra_subjects.extend(item.consumers.iter().cloned());
+			}
 			for approval in &plan.approvals {
 				if let Some(item) = current
 					.items
@@ -482,7 +488,7 @@ impl PolicyAdministration {
 					));
 				}
 			}
-			for activation in &plan.installations {
+			for activation in plan.installations.iter().chain(&plan.restrictions) {
 				let Some(restriction) = &activation.restriction else {
 					continue;
 				};
@@ -525,6 +531,24 @@ impl PolicyAdministration {
 				)
 				.await?
 			};
+			// Restriction-only edits never activate, so a newer staged revision
+			// does not block editing the active one (#590).
+			if !plan.restrictions.is_empty() {
+				let set = aidash_application::authorization::catalog::review::restriction_set(
+					&tenant, &node, &current, &plan,
+				)?;
+				aidash_application::marketplace::operations::restriction::restrict_active(
+					&mut crate::bootstrap::marketplace_tenant_activation_scope_at(
+						&f.store,
+						&mut access.tx,
+						principal.clone(),
+						tenant.clone(),
+						node.clone(),
+					),
+					&set,
+				)
+				.await?;
+			}
 			let mut installations = vec![];
 			if !plan.installations.is_empty() {
 				let set = aidash_application::authorization::catalog::review::approval_set(
