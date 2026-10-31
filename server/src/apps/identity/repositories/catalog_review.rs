@@ -146,7 +146,11 @@ impl ApprovalReviewScope for ReviewScope<'_> {
 			.subjects
 			.get(subject)
 			.map(|subject| subject.groups.clone())
-			.unwrap_or_default())
+			.unwrap_or_else(|| {
+				aidash_domain::identity::tenant_administration::default_agent_groups(
+					&self.access.snapshot.bundle,
+				)
+			}))
 	}
 	async fn source_slot_available(&mut self, entry: &Entry) -> Result<bool> {
 		if let Some((secret, endpoint)) = aidash_domain::tenant_secrets::definition_target(entry) {

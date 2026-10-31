@@ -6237,7 +6237,7 @@ async fn run_progress(p: &Pair) -> String {
 	.unwrap();
 	let now = chrono::Utc::now();
 	format!(
-		"run phase={} control={} step={} revision={} updated {:.1}s ago, lease_owner={:?} lease_remaining={:?}s, lease_recovered={}, error={:?}, retry={:?}; activation claims={} last_pid={:?} last_claim {:?}s ago; peer responses={} last {:.1?} ago; provider requests={}",
+		"run phase={} control={} step={} revision={} updated {:.1}s ago, lease_owner={:?} lease_remaining={:?}s, lease_recoveries={}, error={:?}, retry={:?}; activation claims={} last_pid={:?} last_claim {:?}s ago; peer responses={} last {:.1?} ago; provider requests={}",
 		run.phase().as_str(),
 		run.control.as_str(),
 		run.step,
@@ -6245,7 +6245,7 @@ async fn run_progress(p: &Pair) -> String {
 		(now - run.updated_at).as_seconds_f64(),
 		run.lease_owner,
 		run.lease_until.map(|until| (until - now).as_seconds_f64()),
-		run.recovery.lease_recovered,
+		run.recovery.lease_recoveries,
 		run.error,
 		run.recovery.retry,
 		claims.0,

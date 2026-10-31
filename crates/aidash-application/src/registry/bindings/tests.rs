@@ -771,6 +771,15 @@ async fn complete_snapshot_retains_delegation_and_cluster_dependencies_and_rejec
 			.iter()
 			.any(|r| r.identity == reference("delegated-model"))
 	);
+	// Only the delegated agent uses its model; the root uses the tool, the
+	// delegated agent and the cluster itself (ADR 0095).
+	assert_eq!(
+		graph.delegated_users().unwrap(),
+		BTreeMap::from([(
+			reference("delegated-model"),
+			BTreeSet::from([reference("delegate")])
+		)])
+	);
 	let mut incomplete = graph.clone();
 	incomplete
 		.definitions

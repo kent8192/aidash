@@ -791,7 +791,7 @@ async fn credential_issuance_validates_subjects_lifetime_and_tenant_revocation(
 				"acme",
 				subject,
 				lifetime,
-				"host_operator",
+				"host_access",
 			)
 			.await
 			.is_err(),
@@ -857,7 +857,7 @@ async fn credential_issuance_validates_subjects_lifetime_and_tenant_revocation(
 			"acme",
 			"alice",
 			3600,
-			"host_operator",
+			"host_access",
 		)
 		.await
 		.is_err(),

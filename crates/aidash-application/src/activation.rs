@@ -3,7 +3,9 @@ use crate::{Result, ports::activation::*};
 use aidash_domain::{
 	FailureTarget, ResumeState, Run, RunControl, RunState, WaitingState,
 	activation::{Envelope, QuarantineReason},
-	run_state::{ApprovalRef, PersistedCapability, RawRun, StateRequirements},
+	run_state::{
+		ApprovalRef, LEASE_RECOVERY_LIMIT, PersistedCapability, RawRun, StateRequirements,
+	},
 };
 use chrono::{DateTime, Utc};
 use futures_util::StreamExt;
@@ -209,8 +211,43 @@ pub async fn lease(
 				continue;
 			}
 		};
-		run.recovery.lease_recovered |= m.lease_owner.is_some();
-		if let Some(claimed) = scope.lease(&run, token, seconds).await? {
+		if m.lease_owner.is_some() {
+			// The count includes the recovery a lost Isolated Step charged when it
+			// started, so a count above the bound means this claim would be one
+			// recovery too many (#604).
+			if !cancelled && run.recovery.lease_recoveries > LEASE_RECOVERY_LIMIT {
+				let state = RunState::Waiting(Box::new(WaitingState::FailureDelivery {
+					target: FailureTarget::Failed,
+					wake_at: now,
+					last_delivery_error: None,
+				}));
+				if let Some(owned) = scope.repair_lease(m, token, seconds).await? {
+					let reason = format!(
+						"The worker process stopped {LEASE_RECOVERY_LIMIT} times in a row while running this step, so Aidash stopped retrying it."
+					);
+					scope
+						.crash_loop(
+							&owned,
+							token,
+							&state,
+							&reason,
+							node,
+							run.recovery.lease_recoveries - 1,
+						)
+						.await?;
+					metrics::counter!("aidash_worker_crash_loop_failures_total").increment(1);
+				}
+				continue;
+			}
+			// The first recovery marks the step for isolation. Later ones were
+			// charged when their Isolated Step acquired the gate, so a Run that
+			// only waited behind another Isolated Step is not charged again.
+			run.recovery.lease_recoveries = run.recovery.lease_recoveries.max(1);
+		}
+		if let Some(claimed) = scope.lease(&run, token, seconds, node).await? {
+			if claimed.recovery.lease_recoveries > 0 {
+				tracing::warn!(run_id = %claimed.id, lease_recoveries = claimed.recovery.lease_recoveries, isolated = true, worker_pid = std::process::id(), "lease recovered; next step will run isolated");
+			}
 			return Ok(Some(claimed));
 		}
 	}
