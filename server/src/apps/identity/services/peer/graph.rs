@@ -123,7 +123,11 @@ async fn remote_page(
 			Some(&body),
 		)
 		.await
-		.map_err(|_| Error::External("remote graph unavailable".into()))?;
+		.map_err(|error| match error {
+			// The switch refuses before any network call; protocol.md answers 503.
+			Error::FederationDisabled => error,
+			_ => Error::External("remote graph unavailable".into()),
+		})?;
 	let status = response.status().as_u16();
 	let page: GraphPage = match status {
 		200 => crate::response::json(response, 4_194_304)

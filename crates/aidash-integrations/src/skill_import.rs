@@ -151,7 +151,7 @@ pub(crate) fn client() -> Result<Client> {
 	Client::builder()
 		.timeout(Duration::from_secs(20))
 		.redirect(reqwest::redirect::Policy::none())
-		.user_agent("aidash-skill-import")
+		.user_agent(crate::USER_AGENT)
 		.build()
 		.map_err(|error| Error::External(error.to_string()))
 }

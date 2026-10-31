@@ -36,7 +36,7 @@ impl OutboundTransport for OutboundHttp {
 			}
 			let client = reqwest::Client::builder()
 				.no_proxy()
-				.user_agent(concat!("Aidash/", env!("CARGO_PKG_VERSION")))
+				.user_agent(crate::USER_AGENT)
 				.redirect(reqwest::redirect::Policy::none())
 				.timeout(StdDuration::from_secs(10))
 				.resolve_to_addrs(host, &addresses)

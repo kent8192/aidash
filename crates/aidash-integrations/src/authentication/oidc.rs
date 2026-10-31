@@ -61,6 +61,7 @@ pub async fn exchange_source(
 	.set_auth_type(AuthType::BasicAuth);
 	let http = openidconnect::reqwest::Client::builder()
 		.redirect(openidconnect::reqwest::redirect::Policy::none())
+		.user_agent(crate::USER_AGENT)
 		.timeout(std::time::Duration::from_secs(10))
 		.build()
 		.map_err(|_| Error::IdentityStatusUnavailable)?;
