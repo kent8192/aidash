@@ -98,8 +98,11 @@ async fn inspect_in(
 			}
 			other => other,
 		})?;
+	// Only this Node's Catalog Approval creates the executor subject.
 	if !valid_executor {
-		return Err(Error::Forbidden);
+		return Err(Error::RemoteExecutionRefused(
+			aidash_domain::federation::execution::Refusal::CatalogApproval,
+		));
 	}
 	let mut definitions = BTreeMap::new();
 	let entry = definition(

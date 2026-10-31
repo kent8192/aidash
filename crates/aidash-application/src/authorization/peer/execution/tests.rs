@@ -194,7 +194,9 @@ async fn missing_executor_authority_stops_before_catalog_access() {
 	scope.bundle.subjects.clear();
 	assert!(matches!(
 		inspect(&mut scope, "aidash://home", &input()).await,
-		Err(Error::Forbidden)
+		Err(Error::RemoteExecutionRefused(
+			aidash_domain::federation::execution::Refusal::CatalogApproval
+		))
 	));
 	assert_eq!(scope.calls.len(), 3);
 	assert_eq!(scope.calls[0].0, "federation.execute");
