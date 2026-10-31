@@ -93,11 +93,11 @@ async fn a_run_without_a_live_preview_reads_null(#[future] capability_fixture: C
 
 #[rstest::rstest]
 #[tokio::test]
-async fn missing_runs_have_the_same_status_for_subjects_and_deployment_administrators(
+async fn missing_runs_and_administrator_refusals_are_distinct(
 	#[future] capability_fixture: CoreFixture,
 ) {
 	let c = capability_fixture.await;
-	for token in [&c.token, &c.f.config.api_token] {
+	for (token, expected) in [(&c.token, 404), (&c.f.config.api_token, 403)] {
 		for (method, suffix) in [("GET", ""), ("POST", "/stop")] {
 			let (status, body) = request(
 				&c.app,
@@ -107,7 +107,7 @@ async fn missing_runs_have_the_same_status_for_subjects_and_deployment_administr
 				Value::Null,
 			)
 			.await;
-			assert_eq!(status, 404, "{method} {suffix}: {body}");
+			assert_eq!(status, expected, "{method} {suffix}: {body}");
 		}
 	}
 }
@@ -122,15 +122,7 @@ async fn live_preview_stop_authority_belongs_to_the_viewer(
 	let (area, _) = working_area(&c, run.id).await;
 	let preview = Uuid::new_v4();
 	insert_running(&c, preview, run.id, area, 1, "running").await;
-	let (status, credential) = request(
-		&c.app,
-		&c.f.config.api_token,
-		"POST",
-		"/api/authorization/acme/credentials",
-		json!({"subject":"bob"}),
-	)
-	.await;
-	assert_eq!(status, 200, "{credential}");
+	let credential = common::issued_credential(&c.f.store, "acme", "bob").await;
 	let bob = credential["token"].as_str().unwrap();
 	c.policy["policies"].as_array_mut().unwrap().push(json!({
 		"id":"no-run-control","effect":"deny","subjects":{"ids":["alice","bob"]},
@@ -216,54 +208,46 @@ async fn a_tenant_lowers_its_limits_within_the_deployment_ceilings(
 	#[future] capability_fixture: CoreFixture,
 ) {
 	let c = capability_fixture.await;
-	let admin = &c.f.config.api_token;
-	let (status, body) = request(
-		&c.app,
-		admin,
-		"GET",
-		"/api/preview-limits/acme",
-		Value::Null,
-	)
-	.await;
+	let admin = common::BrowserMapping::new(&c.f, "acme", "alice").await;
+	let (status, body) = admin
+		.send("GET", "/api/preview-limits/acme", Value::Null)
+		.await;
 	assert_eq!(status, 200, "{body}");
 	assert_eq!(body["idle_seconds"], 900);
 	assert_eq!(body["absolute_seconds"], 7200);
 	assert_eq!(body["ceiling_idle_seconds"], 900);
 	assert_eq!(body["ceiling_absolute_seconds"], 7200);
-	let (status, body) = request(
-		&c.app,
-		admin,
-		"PUT",
-		"/api/preview-limits/acme",
-		json!({"tenant":"acme","idle_seconds":600,"absolute_seconds":3600,"expected_revision":0}),
-	)
-	.await;
+	let (status, body) = admin
+		.send(
+			"PUT",
+			"/api/preview-limits/acme",
+			json!({"tenant":"acme","idle_seconds":600,"absolute_seconds":3600,"expected_revision":0}),
+		)
+		.await;
 	assert_eq!(status, 200, "{body}");
 	assert_eq!(body["idle_seconds"], 600);
 	assert_eq!(body["absolute_seconds"], 3600);
 	assert_eq!(body["revision"], 1);
-	let (status, body) = request(
-		&c.app,
-		admin,
-		"PUT",
-		"/api/preview-limits/acme",
-		json!({"tenant":"acme","idle_seconds":3600,"absolute_seconds":7200,"expected_revision":1}),
-	)
-	.await;
+	let (status, body) = admin
+		.send(
+			"PUT",
+			"/api/preview-limits/acme",
+			json!({"tenant":"acme","idle_seconds":3600,"absolute_seconds":7200,"expected_revision":1}),
+		)
+		.await;
 	assert_eq!(status, 200, "{body}");
 	assert_eq!(
 		body["idle_seconds"], 900,
 		"a Tenant cannot raise the Deployment's idle ceiling"
 	);
 	assert_eq!(body["absolute_seconds"], 7200);
-	let (status, body) = request(
-		&c.app,
-		admin,
-		"PUT",
-		"/api/preview-limits/acme",
-		json!({"tenant":"acme","idle_seconds":600,"absolute_seconds":3600,"expected_revision":0}),
-	)
-	.await;
+	let (status, body) = admin
+		.send(
+			"PUT",
+			"/api/preview-limits/acme",
+			json!({"tenant":"acme","idle_seconds":600,"absolute_seconds":3600,"expected_revision":0}),
+		)
+		.await;
 	assert_eq!(status, 409, "{body}");
 }
 

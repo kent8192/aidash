@@ -76,7 +76,7 @@ async fn simulated_test_never_invokes_the_registered_external_tool(
 			.await
 			.unwrap();
 	}
-	let bundle = json!({"tenant":"acme","subjects":{"alice":{"kind":"user"}},"policies":[{"id":"creator","effect":"allow","subjects":{"ids":["alice"]},"actions":["agent_draft.create","agent_draft.read","agent_draft.write","agent_draft.test","agent_dependency.read"],"resources":{"kinds":["agent_draft","registry_entry"]}}]});
+	let bundle = json!({"tenant":"acme","subjects":{"alice":{"kind":"user"}},"policies":[{"id":"profiles","effect":"allow","subjects":{"ids":["alice"]},"actions":["workbench.test_profile.update"],"resources":{"kinds":["*"]}},{"id":"creator","effect":"allow","subjects":{"ids":["alice"]},"actions":["agent_draft.create","agent_draft.read","agent_draft.write","agent_draft.test","agent_dependency.read"],"resources":{"kinds":["agent_draft","registry_entry"]}}]});
 	common::tenant_root(&f, "acme").await;
 	assert_eq!(
 		request(
@@ -90,15 +90,7 @@ async fn simulated_test_never_invokes_the_registered_external_tool(
 		.0,
 		200
 	);
-	let (_, credential) = request(
-		&app,
-		&deployment_administrator,
-		"POST",
-		"/api/authorization/acme/credentials",
-		json!({"subject":"alice"}),
-	)
-	.await;
-	let token = credential["token"].as_str().unwrap();
+	let token = &common::subject_credential(&f.store, "acme", "alice").await;
 	let mut entry = agent();
 	entry["config"]["bindings"] = json!([{"kind":"tool","target":{"registry_deployment":f.config.deployment,"id":"fixture-tool","version":"1.0.0"},"alias":"plugin_0","narrow":{}}]);
 	let (status, draft) = request(
@@ -154,7 +146,7 @@ async fn simulated_test_never_invokes_the_registered_external_tool(
 		0,
 		"simulation reached a real tool endpoint"
 	);
-	let (status, profile) = request(&app, &deployment_administrator, "PUT", "/api/workbench/test-profiles/acme/sandbox", json!({"expected_revision":0,"enabled":true,"rules":[{"tool":{"id":"fixture-tool","version":"1.0.0"},"endpoint":format!("{endpoint}/test-effect"),"read_only_verified":true,"allowed_actions":["read"],"allowed_resources":["sandbox"]}]})).await;
+	let (status, profile) = request(&app, token, "PUT", "/api/workbench/test-profiles/acme/sandbox", json!({"expected_revision":0,"enabled":true,"rules":[{"tool":{"id":"fixture-tool","version":"1.0.0"},"endpoint":format!("{endpoint}/test-effect"),"read_only_verified":true,"allowed_actions":["read"],"allowed_resources":["sandbox"]}]})).await;
 	assert_eq!(status, 200, "profile: {profile}");
 	let (status, visible) = request(
 		&app,
@@ -216,7 +208,7 @@ async fn simulated_test_never_invokes_the_registered_external_tool(
 	let reset = finished_test(&app, token, &path, reset["id"].as_str().unwrap()).await;
 	assert_eq!(reset["status"], "completed", "reset session: {reset}");
 	assert_eq!(real_hits.load(Ordering::SeqCst), 2);
-	let (status, revised) = request(&app, &deployment_administrator, "PUT", "/api/workbench/test-profiles/acme/sandbox", json!({"expected_revision":1,"enabled":true,"rules":[{"tool":{"id":"fixture-tool","version":"1.0.0"},"endpoint":format!("{endpoint}/test-effect"),"read_only_verified":true,"allowed_actions":["read"],"allowed_resources":["other"]}]})).await;
+	let (status, revised) = request(&app, token, "PUT", "/api/workbench/test-profiles/acme/sandbox", json!({"expected_revision":1,"enabled":true,"rules":[{"tool":{"id":"fixture-tool","version":"1.0.0"},"endpoint":format!("{endpoint}/test-effect"),"read_only_verified":true,"allowed_actions":["read"],"allowed_resources":["other"]}]})).await;
 	assert_eq!(status, 200, "revised profile: {revised}");
 	let (status, denied) = request(&app, token, "POST", &path, json!({"expected_revision":1,"message":"Try outside the test resource","mode":"real","profile_id":"sandbox"})).await;
 	assert_eq!(status, 200, "denied test: {denied}");
@@ -256,6 +248,7 @@ async fn draft_conflict_register_and_factual_inspection(
 		.await
 		.unwrap();
 	let bundle = json!({"tenant":"acme","subjects":{"alice":{"kind":"user"},"bob":{"kind":"user"}},"policies":[
+		{"id":"profiles","effect":"allow","subjects":{"ids":["alice"]},"actions":["workbench.test_profile.update"],"resources":{"kinds":["*"]}},
 		{"id":"creator","effect":"allow","subjects":{"ids":["alice"]},"actions":["agent_draft.create","agent_draft.read","agent_draft.write","agent_draft.register","agent_draft.test","agent_draft.share","agent_draft.transfer","agent_draft.archive","agent_dependency.read","agent_version.inspect","agent_incident.manage","agent_incident.read"],"resources":{"kinds":["agent_draft","registry_entry","agent_version","agent_incident"]}},
 		{"id":"registrar","effect":"allow","subjects":{"ids":["alice"]},"actions":["registry.create"],"resources":{"kinds":["*"]}},
 		{"id":"editor","effect":"allow","subjects":{"ids":["bob"]},"actions":["agent_draft.read","agent_draft.write"],"resources":{"kinds":["agent_draft"]}}
@@ -270,24 +263,8 @@ async fn draft_conflict_register_and_factual_inspection(
 	)
 	.await;
 	assert_eq!(status, 200, "policy: {body}");
-	let (_, alice) = request(
-		&app,
-		&deployment_administrator,
-		"POST",
-		"/api/authorization/acme/credentials",
-		json!({"subject":"alice"}),
-	)
-	.await;
-	let (_, bob) = request(
-		&app,
-		&deployment_administrator,
-		"POST",
-		"/api/authorization/acme/credentials",
-		json!({"subject":"bob"}),
-	)
-	.await;
-	let alice_token = alice["token"].as_str().unwrap();
-	let bob_token = bob["token"].as_str().unwrap();
+	let alice_token = &common::subject_credential(&f.store, "acme", "alice").await;
+	let bob_token = &common::subject_credential(&f.store, "acme", "bob").await;
 	let (status, draft) = request(
 		&app,
 		alice_token,
@@ -677,6 +654,7 @@ async fn draft_conflict_register_and_factual_inspection(
 		200
 	);
 	let restricted = json!({"tenant":"acme","subjects":{"alice":{"kind":"user"},"bob":{"kind":"user"}},"policies":[
+		{"id":"profiles","effect":"allow","subjects":{"ids":["alice"]},"actions":["workbench.test_profile.update"],"resources":{"kinds":["*"]}},
 		{"id":"creator","effect":"allow","subjects":{"ids":["alice"]},"actions":["agent_draft.create","agent_draft.read","agent_draft.write","agent_draft.register","agent_draft.test","agent_dependency.read"],"resources":{"kinds":["agent_draft","registry_entry"]}}
 	]});
 	assert_eq!(

@@ -15,7 +15,10 @@ test("transaction dashboard aborts a stale change safely and displays committed 
   request,
 }) => {
   test.setTimeout(90000);
-  const token = "acceptance-access-token";
+  // A Deployment Administrator holds no Tenant content authority (#484): the
+  // Tenant's subject creates the Workspace and submits the transaction.
+  const subject = acceptanceSubject();
+  const token = subject.token;
   const headers = { authorization: `Bearer ${token}` };
   const api = async (path: string, body?: unknown) => {
     const response =
@@ -26,17 +29,17 @@ test("transaction dashboard aborts a stale change safely and displays committed 
     return response.json();
   };
   const session = await api("/api/session");
-  // Only a Tenant subject creates a Workspace (#371); the Deployment
-  // Administrator submits the transaction.
-  const subject = acceptanceSubject();
   const created = await request.post("/api/workspaces", {
-    headers: { authorization: `Bearer ${subject.token}` },
+    headers,
     data: { title: "Atomic dashboard", goal: "Commit or abort together" },
   });
   expect(created.status(), await created.text()).toBe(200);
   const workspace = await created.json();
   const nodeId = `${session.node_id}/${workspace.node}`;
-  await installBearerDashboard(page, token);
+  await installBearerDashboard(page, token, {
+    tenant: subject.tenant,
+    name: subject.name,
+  });
   await page.addInitScript(() => {
     localStorage.setItem("aidash-locale", "en-US");
   });
@@ -66,7 +69,10 @@ test("transaction dashboard aborts a stale change safely and displays committed 
       .click();
     const dialog = page.getByRole("dialog");
     const mutation = value.participants[0].mutations[0];
-    await dialog.getByLabel("Node", { exact: true }).selectOption(nodeId);
+    await expect(dialog.getByLabel("Node", { exact: true })).toHaveValue(
+      nodeId,
+    );
+    await expect(dialog.getByLabel("Node", { exact: true })).toBeDisabled();
     await dialog
       .getByLabel("Workspace", { exact: true })
       .selectOption(workspace.id);
@@ -89,7 +95,10 @@ test("transaction dashboard aborts a stale change safely and displays committed 
       .getByRole("button", { name: "Submit transaction", exact: true })
       .click();
     const response = await posted;
-    expect(response.status(), await response.text()).toBe(202);
+    // The dialog navigates after an accepted submit, which discards the
+    // body, so read it only to explain a rejection.
+    if (response.status() !== 202)
+      expect(response.status(), await response.text()).toBe(202);
     Object.assign(value, response.request().postDataJSON());
     expect(value.coordinator).toBe(nodeId);
     expect(

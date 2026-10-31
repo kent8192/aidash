@@ -10,9 +10,25 @@ use aidash_application::{
 	},
 };
 use std::{future::Future, sync::Arc, time::Duration};
-use tokio::{sync::watch, task::JoinSet};
+use tokio::{
+	sync::{RwLock, watch},
+	task::JoinSet,
+};
 use tracing::Instrument as _;
 use uuid::Uuid;
+
+// Shared by every worker in the process: an Isolated Step excludes all others.
+static STEP_GATE: RwLock<()> = RwLock::const_new(());
+
+async fn step_with_gate<T>(gate: &RwLock<()>, isolated: bool, work: impl Future<Output = T>) -> T {
+	if isolated {
+		let _guard = gate.write().await;
+		work.await
+	} else {
+		let _guard = gate.read().await;
+		work.await
+	}
+}
 
 enum Completion<T> {
 	Completed(Result<T>),
@@ -75,12 +91,13 @@ pub async fn advance(
 	// administrator can name both in a Safety Stop (ADR 0101).
 	let tenant = scope.tenant().await.unwrap_or_default();
 	let span = tracing::info_span!("worker_step", run_id = %scope.metadata().id, %tenant);
-	advance_step(scope, leases, token, seconds)
+	advance_step(&STEP_GATE, scope, leases, token, seconds)
 		.instrument(span)
 		.await
 }
 
 async fn advance_step(
+	gate: &RwLock<()>,
 	mut scope: Box<dyn WorkerStep>,
 	leases: &dyn WorkerLeases,
 	token: Uuid,
@@ -90,15 +107,16 @@ async fn advance_step(
 	// Renew the claimed run directly so that normal lease release is handled by
 	// the existing false-renewal cancellation path, rather than a failed lookup.
 	let run = scope.metadata().id;
-	let Completion::Completed(result) = keepalive(
-		worker::advance(scope.as_mut(), token),
-		leases,
-		run,
-		token,
-		seconds,
-	)
-	.await?
-	else {
+	let isolated = scope.lease_recoveries() > 0;
+	let work = step_with_gate(gate, isolated, async {
+		if isolated {
+			// Charged only after the gate is held: a claim that merely waited
+			// behind another Isolated Step does not count toward the bound.
+			scope.charge_isolated_step(token).await?;
+		}
+		worker::advance(scope.as_mut(), token).await
+	});
+	let Completion::Completed(result) = keepalive(work, leases, run, token, seconds).await? else {
 		return Ok(());
 	};
 	scope.resume_visibility().await?;

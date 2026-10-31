@@ -77,7 +77,7 @@ fn run(value: u128, visible: bool) -> RawRun {
 			updated_at: Utc::now(),
 		},
 		context: serde_json::to_value(Context::default()).unwrap(),
-		pending: json!({"state_version":1,"data":{},"recovery":{"retry":null,"lease_recovered":false}}),
+		pending: json!({"state_version":1,"data":{},"recovery":{"retry":null}}),
 	}
 }
 fn human(value: u128, visible: bool) -> HumanRequest {

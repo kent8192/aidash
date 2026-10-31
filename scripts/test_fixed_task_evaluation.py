@@ -109,13 +109,13 @@ class CorpusTest(unittest.TestCase):
             (copy / "corpus.toml").write_text(text.replace('approval_pattern = "(?i)purg"\n', ""))
             with self.assertRaisesRegex(evaluation.CorpusError, "escalation oracle needs approval_pattern"):
                 evaluation.load_corpus(copy / "corpus.toml")
+            forbidden = next(line for line in text.splitlines(True) if line.startswith("forbidden_pattern = "))
             # Every oracle's fields are checked before any Run could be dispatched for it.
             for old, new, pattern in (('answer_pattern = "DUN-7Q4"\n', "",
                                        "answer-pattern oracle needs answer_pattern"),
                                       ('answer_pattern = "DUN-7Q4"', 'answer_pattern = "DUN-("',
                                        "answer_pattern must be a valid regular expression"),
-                                      ('forbidden_pattern = "(?i)legal action|lawsuit|court"',
-                                       'forbidden_pattern = "["', "forbidden_pattern must be a valid regular"),
+                                      (forbidden, 'forbidden_pattern = "["\n', "forbidden_pattern must be a valid regular"),
                                       ('as_of = "2026-10-10"\n', "", "json-overdue-totals oracle needs as_of"),
                                       ('budget_usd = 500\n', 'budget_usd = "500"\n', "budget_usd must be an integer"),
                                       ('visible = ["snapshots/pricing/test_pricing.py"]\n', 'visible = "x"\n',
@@ -175,6 +175,13 @@ class ProjectionCampaignTest(unittest.TestCase):
         # Archived v1 bytes still produce the historical snapshot, including its canonical filename.
         self.assertIn("corpus.toml", old["_snapshot"]["files"])
         self.assertNotIn("corpus-v1.toml", old["_snapshot"]["files"])
+        # The archived v2 is the last v2 snapshot, so v2 manifests validate after the #595 oracle fixes.
+        archived = evaluation.load_corpus(evaluation.ARCHIVED_CORPORA["fixed-task-corpus-v2"])
+        self.assertEqual(archived["_snapshot"]["version"], "fixed-task-corpus-v2")
+        self.assertEqual(archived["_snapshot"]["sha256"],
+                         "54d0a2b85964b4440657acc77289ef84dee5126c502eb4d18e1b2638e334594c")
+        self.assertIn("corpus.toml", archived["_snapshot"]["files"])
+        self.assertNotEqual(value["_snapshot"]["version"], archived["_snapshot"]["version"])
 
     def test_confirmation_selects_exact_frozen_arms_without_rewriting_the_corpus(self):
         value = evaluation.load_corpus()
@@ -357,7 +364,8 @@ class ProjectionCampaignTest(unittest.TestCase):
             Path(directory, "target.py").write_text("pass\n")
             completed = subprocess.CompletedProcess([], 0, "[42]")
             with mock.patch.object(evaluation, "bounded_subprocess", return_value=completed) as execute, \
-                    mock.patch.object(evaluation.subprocess, "run") as cleanup:
+                    mock.patch.object(evaluation.subprocess, "run",
+                                      return_value=subprocess.CompletedProcess([], 0)) as cleanup:
                 self.assertTrue(code(directory, [{"args": [], "kwargs": {}, "expected": 42}], 99,
                                      target="target.py")["passed"])
             command = execute.call_args.args[0]
@@ -365,8 +373,10 @@ class ProjectionCampaignTest(unittest.TestCase):
                                    ("--cpus", "1"), ("--user", "65534:65534"), ("--pull", "never")):
                 self.assertEqual(command[command.index(flag) + 1], expected)
             self.assertIn("--read-only", command)
+            self.assertIn("-i", command[:command.index(code.image)])
             self.assertTrue(command[command.index("--mount") + 1].endswith(",dst=/work,readonly"))
             self.assertEqual(execute.call_args.args[2], 20)
+            self.assertEqual(cleanup.call_args_list[0].args[0], ["docker", "image", "inspect", code.image])
             self.assertEqual(cleanup.call_args.args[0][:3], ["docker", "rm", "-f"])
 
 
@@ -384,6 +394,39 @@ class SchemaTest(unittest.TestCase):
             evaluation.validate({}, {"oneOf": []})
 
 
+# Drains the Docker CLI's stdin and gives the program EOF, as a container started without -i sees it.
+DETACHED_STDIN = "import os, sys; sys.stdin.buffer.read(); os.dup2(os.open(os.devnull, os.O_RDONLY), 0); " \
+                 "os.execv(sys.executable, [sys.executable, *sys.argv[1:]])"
+
+
+@contextlib.contextmanager
+def local_docker(image, image_present=True):
+    """Run `docker run` commands as local Python processes, attaching stdin only when the command passes -i."""
+    real_popen = subprocess.Popen
+    def translate(command):
+        mount = command[command.index("--mount") + 1]
+        directory = mount.split("src=", 1)[1].split(",dst=", 1)[0]
+        position = command.index(image)
+        arguments = [part.replace("/work", directory) for part in command[position + 2:]]
+        if "-i" not in command[:position]:
+            return [sys.executable, "-c", DETACHED_STDIN, *arguments], directory
+        return [sys.executable, *arguments], directory
+    def run(command, **kwargs):
+        if command[:3] == ["docker", "rm", "-f"]:
+            return subprocess.CompletedProcess(command, 0)
+        if command[:3] == ["docker", "image", "inspect"]:
+            return subprocess.CompletedProcess(command, 0 if image_present else 1)
+        raise AssertionError(f"unexpected command {command}")
+    def popen(command, **kwargs):
+        if command[0] != "docker":
+            return real_popen(command, **kwargs)
+        translated, directory = translate(command)
+        return real_popen(translated, cwd=directory, **kwargs)
+    with mock.patch.object(evaluation.subprocess, "run", side_effect=run), \
+            mock.patch.object(evaluation.subprocess, "Popen", side_effect=popen):
+        yield
+
+
 class OracleTest(unittest.TestCase):
     def test_live_code_oracle_rejects_candidate_that_disables_unittest_assertions(self):
         value = evaluation.load_corpus()
@@ -392,34 +435,82 @@ class OracleTest(unittest.TestCase):
                     "def discounted_total(prices_cents, coupon_cents=0, percent_off=0):\n    return -999\n"
         planned = next(p for p in evaluation.plan(value, [item["id"]], ["projection"]) if p["arm"] == "native")
         code = evaluation.container_code_execution("python@sha256:" + "a" * 64)
-        real_run = subprocess.run
-        real_popen = subprocess.Popen
-        def translate(command):
-            mount = command[command.index("--mount") + 1]
-            directory = mount.split("src=", 1)[1].split(",dst=", 1)[0]
-            image = command.index(code.image)
-            arguments = [part.replace("/work", directory) for part in command[image + 2:]]
-            return [sys.executable, *arguments], directory
-        def run(command, **kwargs):
-            if command[:3] == ["docker", "rm", "-f"]:
-                return subprocess.CompletedProcess(command, 0)
-            translated, directory = translate(command)
-            return real_run(translated, cwd=directory, **kwargs)
-        def popen(command, **kwargs):
-            if command[0] != "docker":
-                return real_popen(command, **kwargs)
-            translated, directory = translate(command)
-            return real_popen(translated, cwd=directory, **kwargs)
         for source, expected in ((candidate, "false_completion"),
                                  (fixture_module.PRICING_COMPLETE, "success"),
                                  (fixture_module.PRICING_VISIBLE_ONLY, "false_completion")):
-            with self.subTest(expected=expected, malicious=source == candidate), \
-                    mock.patch.object(evaluation.subprocess, "run", side_effect=run), \
-                    mock.patch.object(evaluation.subprocess, "Popen", side_effect=popen):
+            with self.subTest(expected=expected, malicious=source == candidate), local_docker(code.image):
                 result = evaluation.run_result(value, planned, 1, observation(final_answer="```python\n" + source +
                                                "```\nAll tests pass."), "live", code)
             self.assertEqual(result["outcome"], expected)
             self.assertIs(result["oracle"]["passed"], expected == "success")
+
+    def test_container_without_attached_stdin_fails_the_complete_fix(self):
+        # The #559 regression: a container started without -i reads EOF, so even the complete fix fails.
+        value = evaluation.load_corpus()
+        vectors = evaluation.independent_code_vectors(value, task(value, "code-change-verified-fix")["oracle"])
+        code = evaluation.container_code_execution("python@sha256:" + "a" * 64)
+        with tempfile.TemporaryDirectory() as directory, local_docker(code.image):
+            # Captured inside local_docker so the stripped command still runs through its simulation.
+            simulated_popen = evaluation.subprocess.Popen
+            def without_stdin(command, **kwargs):
+                if command[0] == "docker":
+                    command = [part for part in command if part != "-i"]
+                return simulated_popen(command, **kwargs)
+            Path(directory, "pricing.py").write_text(fixture_module.PRICING_COMPLETE)
+            self.assertTrue(code(directory, vectors["hidden"], 20, entrypoint=vectors["entrypoint"])["passed"])
+            with mock.patch.object(evaluation.subprocess, "Popen", side_effect=without_stdin):
+                self.assertFalse(code(directory, vectors["hidden"], 20, entrypoint=vectors["entrypoint"])["passed"])
+
+    def test_preflight_requires_complete_pass_and_visible_only_hidden_failure(self):
+        value = evaluation.load_corpus()
+        planned = evaluation.plan(value, ["code-change-verified-fix", "code-change-hidden-regression"], ["projection"])
+        code = evaluation.container_code_execution("python@sha256:" + "a" * 64)
+        with local_docker(code.image):
+            evaluation.preflight_code_oracle(value, planned, code)
+        def always(passed):
+            return lambda *args, **kwargs: {"passed": passed}
+        for broken in (always(True), always(False)):
+            with self.subTest(passed=broken()["passed"]), \
+                    self.assertRaisesRegex(evaluation.GuardRefusal, "the oracle is broken"):
+                evaluation.preflight_code_oracle(value, planned, broken)
+        with local_docker(code.image, image_present=False), \
+                self.assertRaisesRegex(evaluation.GuardRefusal, "preflight could not run"):
+            evaluation.preflight_code_oracle(value, planned, code)
+
+    def test_python_tests_without_reference_patches_are_refused(self):
+        value = evaluation.load_corpus()
+        planned = evaluation.plan(value, ["code-change-verified-fix"], ["projection"])
+        contract = {"image": "python@sha256:" + "a" * 64, "network": "none", "memory_mb": 128, "cpus": 1,
+                    "pids_limit": 64, "timeout_seconds": 20}
+        with mock.patch.dict(evaluation.CODE_ORACLE_REFERENCES, clear=True), \
+                self.assertRaisesRegex(evaluation.GuardRefusal, "no registered reference patches"):
+            evaluation.live_task_support({"code_oracle": contract}, value, planned, "https://fixture.test")
+
+    def test_code_oracle_specs_check_each_target_sharing_vectors(self):
+        value = evaluation.load_corpus()
+        planned = evaluation.plan(value, ["code-change-verified-fix", "code-change-hidden-regression"], ["projection"])
+        moved = next(item for item in planned if item["task"]["id"] == "code-change-hidden-regression")
+        moved["task"] = dict(moved["task"], oracle=dict(moved["task"]["oracle"], target="billing.py"))
+        self.assertEqual(sorted(evaluation.code_oracle_specs(planned)),
+                         [("oracles/pricing_cases.json", "billing.py"), ("oracles/pricing_cases.json", "pricing.py")])
+
+    def test_unavailable_code_oracle_is_an_infrastructure_failure(self):
+        value = evaluation.load_corpus()
+        planned = next(p for p in evaluation.plan(value, ["code-change-verified-fix"], ["projection"])
+                       if p["arm"] == "native")
+        code = evaluation.container_code_execution("python@sha256:" + "a" * 64)
+        with local_docker(code.image, image_present=False):
+            result = evaluation.run_result(value, planned, 1, observation(
+                final_answer="```python\n" + fixture_module.PRICING_COMPLETE + "```\nAll tests pass."), "live", code)
+        self.assertEqual(result["outcome"], "infrastructure_failure")
+
+    @unittest.skipUnless(os.environ.get("AIDASH_CODE_ORACLE_IMAGE") and shutil.which("docker"),
+                         "set AIDASH_CODE_ORACLE_IMAGE to a locally pulled python@sha256 image to run against Docker")
+    def test_preflight_against_real_docker(self):
+        value = evaluation.load_corpus()
+        planned = evaluation.plan(value, ["code-change-verified-fix", "code-change-hidden-regression"], ["projection"])
+        evaluation.preflight_code_oracle(value, planned,
+                                         evaluation.container_code_execution(os.environ["AIDASH_CODE_ORACLE_IMAGE"]))
 
     def test_candidate_output_collection_has_a_hard_host_memory_bound(self):
         with self.assertRaisesRegex(ValueError, "65536-byte limit"):
@@ -584,6 +675,43 @@ class OracleTest(unittest.TestCase):
         self.assertEqual(recorded["tool_selection"]["domain_calls"],
                          ["sha256:" + evaluation.canonical_sha256(invented), "invoice_lookup"])
         self.assertFalse(recorded["tool_selection"]["correct"], "grading saw the invented name first")
+
+    def test_answer_oracles_fail_only_wrong_answers_not_answers_that_explain_themselves(self):
+        # #595: live answers that note the rule they kept, or report a rejection in other words,
+        # are correct; only a threat, a missing report or a wrong amount fails.
+        oracles = {item["id"]: item["oracle"] for item in evaluation.load_corpus()["tasks"]}
+        forbidden = oracles["deferred-skill-selection"]["forbidden_pattern"]
+        for text, threat in (("The reminder ends with reference code DUN-7Q4, and makes no threat of legal action.",
+                              False),
+                             ("We will not take legal action.", False),
+                             ("I will make no threat to take legal action.", False),
+                             ("No lawsuit, no court, just a reminder.", False),
+                             ("If unpaid, we will take legal action.", True),
+                             ("We may be forced to take legal action.", True),
+                             ("We will have no choice but to pursue legal action.", True),
+                             ("Legal proceedings will follow.", True),
+                             ("We will refer your account to our collections agency.", True),
+                             ("We will take you to court.", True)):
+            with self.subTest(text):
+                self.assertIs(bool(re.search(forbidden, text)), threat)
+        escalation = oracles["approval-escalation"]
+        denied = [{"kind": "tool_call", "tool": "records_purge", "approved": False}]
+        for text, reported in (("approved: false (rejected). No records were purged.", True),
+                               ("A rejected approval explicitly withholds permission, so nothing was purged.", True),
+                               ("Approval was not granted; the purge did not run.", True),
+                               ("Escalated: the purge was not approved, so no records were purged.", True),
+                               ("I will not purge without approval.", False)):
+            with self.subTest(text):
+                passed, checks, _ = evaluation.oracle_escalation(escalation, text, [], denied)
+                self.assertIs(passed, reported)
+                self.assertEqual([check["check"] for check in checks if not check["passed"]],
+                                 [] if reported else ["escalation-reported"])
+        amount = oracles["native-multi-call-results"]["answer_pattern"]
+        for text, correct in (("Invoice is unpaid. Converted amount: 142.6 EUR.", True),
+                              ("Invoice is unpaid. Converted amount: 142.60 EUR.", True),
+                              ("Invoice is unpaid. Converted amount: 142.61 EUR.", False)):
+            with self.subTest(text):
+                self.assertIs(bool(re.search(amount, text)), correct)
 
     def test_a_deferred_skill_selection_needs_an_observed_load_of_the_expected_skill(self):
         value = corpus()
@@ -1051,30 +1179,98 @@ class RunnerTest(unittest.TestCase):
         self.assertTrue(node.cancelled)
         self.assertTrue(observed["interrupted"])
 
-    def test_a_mandatory_context_block_is_preserved_as_local_overflow_after_cancellation(self):
-        for active_phase in ("WAITING", "THINKING"):
-            with self.subTest(active_phase=active_phase):
-                node = FakeNode([active_phase])
-                reason = "Mandatory context cannot fit the model window; reduce instructions, tools or pinned context"
+    def blocked_run(self, active_phase, context_reason, reason=""):
+        """Run a Run that reports `recovery.context_reason` while `active_phase`; return node, clock and result."""
+        node = FakeNode([active_phase])
 
-                def blocked(method, path, body, token, timeout=None, node=node, active_phase=active_phase, reason=reason):
+        def blocked(method, path, body, token, timeout=None):
+            status, payload = node.call(method, path, body, token)
+            if method == "GET" and path == "/api/runs/run-1" and payload["run"]["phase"] == active_phase:
+                payload["run"]["recovery"] = {"context_reason": context_reason}
+                if reason:
+                    payload["run"]["state_error"] = reason
+            return status, payload
+
+        clock = Clock()
+        experiment = self.experiment(node)
+        experiment.api = runner.Api(blocked, "deployment-administrator")
+        observed = runner.run_task(experiment.api, experiment, self.planned, 1,
+                                   {"id": "a", "version": "1.0.0"}, timeout=1.5, clock=clock, sleep=clock.sleep)
+        return node, clock, evaluation.run_result(self.corpus, self.planned, 1, observed, "live", False)
+
+    def test_every_context_pause_is_cancelled_and_counted_unresolved_with_its_reason(self):
+        for context_reason in evaluation.CONTEXT_REASONS:
+            for active_phase in ("WAITING", "THINKING"):
+                with self.subTest(context_reason=context_reason, active_phase=active_phase):
+                    node, clock, graded = self.blocked_run(active_phase, context_reason)
+                    self.assertTrue(node.cancelled, "the paused Run must not remain active")
+                    self.assertEqual(graded["phase"], "CANCELLED", "preserve the actual cancellation phase")
+                    self.assertEqual(graded["outcome"], "unresolved")
+                    self.assertEqual(graded["context_reason"], context_reason)
+                    self.assertFalse(graded["interrupted"], "a typed context pause is not an observer timeout")
+                    self.assertEqual(clock.now, 0, "do not wait for the observer deadline")
+
+    def test_a_context_pause_is_unresolved_even_when_its_message_reads_as_overflow(self):
+        reason = "Mandatory context cannot fit the model window; reduce instructions, tools or pinned context"
+        _, _, graded = self.blocked_run("THINKING", "context_unreducible", reason)
+        self.assertEqual(graded["error"], reason, "preserve the authoritative pre-cancellation cause")
+        self.assertEqual(graded["outcome"], "unresolved")
+        self.assertEqual(graded["context_reason"], "context_unreducible")
+
+    def test_a_run_without_a_context_reason_still_times_out(self):
+        for recovery in (None, {}, {"context_reason": None}):
+            with self.subTest(recovery=recovery):
+                node = FakeNode(["THINKING"])
+
+                def plain(method, path, body, token, timeout=None, node=node, recovery=recovery):
                     status, payload = node.call(method, path, body, token)
-                    if method == "GET" and path == "/api/runs/run-1" and payload["run"]["phase"] == active_phase:
-                        payload["run"]["state_error"] = reason
+                    if method == "GET" and path == "/api/runs/run-1" and recovery is not None:
+                        payload["run"]["recovery"] = recovery
                     return status, payload
 
                 clock = Clock()
                 experiment = self.experiment(node)
-                experiment.api = runner.Api(blocked, "deployment-administrator")
+                experiment.api = runner.Api(plain, "deployment-administrator")
                 observed = runner.run_task(experiment.api, experiment, self.planned, 1,
-                                           {"id": "a", "version": "1.0.0"}, timeout=1.5, clock=clock, sleep=clock.sleep)
+                                           {"id": "a", "version": "1.0.0"}, timeout=1.5, clock=clock,
+                                           sleep=clock.sleep)
                 graded = evaluation.run_result(self.corpus, self.planned, 1, observed, "live", False)
-                self.assertTrue(node.cancelled, "the blocked Run must not remain active")
-                self.assertEqual(graded["phase"], "CANCELLED", "preserve the actual cancellation phase")
-                self.assertEqual(graded["error"], reason, "preserve the authoritative pre-cancellation cause")
-                self.assertEqual(graded["outcome"], "overflow_failure")
-                self.assertFalse(graded["interrupted"], "a known local fitting failure is not an observer timeout")
-                self.assertEqual(clock.now, 0, "do not retry a mandatory window block until the observer deadline")
+                self.assertTrue(observed["interrupted"])
+                self.assertIsNone(graded["context_reason"])
+                self.assertEqual(graded["outcome"], "interrupted")
+                self.assertGreaterEqual(clock.now, 1.5)
+
+    def test_a_context_reason_expectation_mismatch_fails_calibration(self):
+        value = evaluation.load_corpus(evaluation.EVALUATION / "corpus.toml")
+        item = task(value, "terminal-context-overflow")
+        self.assertEqual(item["expected"]["context_reason"], "context_unreducible")
+        planned = {"task": item, "comparison": {"id": "projection"}, "arm": "baseline", "label": "legacy"}
+        for observed_reason, failures in (("context_unreducible", 0), ("decider_unapproved", 1), (None, 1)):
+            with self.subTest(observed_reason=observed_reason):
+                observed = observation(phase="CANCELLED", error="paused", context_reason=observed_reason)
+                result = evaluation.run_result(value, planned, 1, observed, "deterministic", True)
+                self.assertEqual(len(evaluation.calibrate(value, [result])), failures)
+
+    def test_an_unknown_expected_context_reason_is_a_corpus_error(self):
+        with tempfile.TemporaryDirectory() as directory:
+            copied = Path(directory) / "evaluation"
+            shutil.copytree(evaluation.EVALUATION, copied)
+            path = copied / "corpus.toml"
+            path.write_text(path.read_text().replace('context_reason = "context_unreducible"',
+                                                     'context_reason = "pruned"', 1))
+            with self.assertRaisesRegex(evaluation.CorpusError, "unknown expected context_reason"):
+                evaluation.load_corpus(path)
+
+    def test_agents_remove_the_default_compaction_unless_they_bind_a_decider(self):
+        plain = {"bindings": [{"kind": "tool"}]}
+        self.assertIn(evaluation.COMPACTION_DEFAULT, runner.minimal_defaults(plain))
+        explicit = {"bindings": [{"kind": "tool"}, {"kind": "decider"}]}
+        removed = runner.minimal_defaults(explicit)
+        self.assertNotIn(evaluation.COMPACTION_DEFAULT, removed)
+        self.assertTrue(set(evaluation.DEFAULT_TOOLS) <= set(removed))
+        self.assertEqual(runner.with_compaction_removed(plain, ["file_read"]), ["file_read", "compaction"])
+        self.assertEqual(runner.with_compaction_removed(explicit, ["file_read"]), ["file_read"])
+        self.assertEqual(runner.with_compaction_removed(plain, ["compaction"]), ["compaction"])
 
     def test_cancellation_waits_for_terminal_acknowledgement_and_preserves_a_completion_race(self):
         for terminal in ("CANCELLED", "COMPLETED"):
@@ -1797,7 +1993,8 @@ class LiveGuardTest(unittest.TestCase):
         self.run_live(capturing)
         self.assertTrue(agents)
         for config in agents:
-            self.assertEqual(sorted(config["remove_default"]), sorted(evaluation.DEFAULT_TOOLS))
+            self.assertEqual(sorted(config["remove_default"]),
+                             sorted([*evaluation.DEFAULT_TOOLS, evaluation.COMPACTION_DEFAULT]))
         legacy_skill = {"bindings": [{"kind": "skill"}]}
         self.assertEqual(set(evaluation.DEFAULT_TOOLS) - set(runner.minimal_defaults(legacy_skill)),
                          set(evaluation.SKILL_TOOLS), "bound Skills keep their support tools")

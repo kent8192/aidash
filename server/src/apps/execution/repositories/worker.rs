@@ -17,7 +17,7 @@ use aidash_application::{
 			worker::{WorkerLeases, WorkerStep},
 		},
 	},
-	recovery::ExecutionFailure,
+	recovery::{AuthorityFailure, ExecutionFailure},
 };
 use aidash_domain::{Run, RunControl, RunMetadata, Task, TaskStatus};
 use async_trait::async_trait;
@@ -78,6 +78,24 @@ pub(crate) struct Step {
 impl WorkerStep for Step {
 	fn metadata(&self) -> RunMetadata {
 		self.run.metadata()
+	}
+	fn lease_recoveries(&self) -> u32 {
+		self.run.recovery.lease_recoveries
+	}
+	async fn charge_isolated_step(&mut self, token: Uuid) -> Result<()> {
+		let id = self.run.id;
+		let charged = self.run.recovery.lease_recoveries.saturating_add(1);
+		let held = self
+			.federation
+			.store
+			.charge_lease_recovery(&claimed(), id, token, charged)
+			.await?;
+		if !held {
+			return Err(Error::Conflict("worker lease lost".into()));
+		}
+		// Later same-step checkpoints save the whole recovery state.
+		self.run.recovery.lease_recoveries = charged;
+		Ok(())
 	}
 	async fn tenant(&mut self) -> Option<String> {
 		self.federation
@@ -242,18 +260,15 @@ impl FailureScope for Failure {
 			result
 		}
 	}
-	async fn pause_authority(&mut self, identity_unavailable: bool) -> Result<()> {
+	async fn pause_authority(&mut self, failure: &AuthorityFailure) -> Result<()> {
 		self.federation
 			.store
 			.pause_for_execution(
 				&self.record.metadata,
 				self.token,
-				if identity_unavailable {
-					"identity status unavailable"
-				} else {
-					"execution authority denied"
-				},
+				&failure.reason(),
 				"run.authorization_blocked",
+				failure.refusal(),
 			)
 			.await
 			.map_err(Into::into)
@@ -286,14 +301,26 @@ pub(crate) fn classify_failure(error: &NativeError) -> ExecutionFailure {
 		NativeError::ContextOverflow => ExecutionFailure::Context(
 			aidash_domain::context::recovery::Failure::OverflowRetriesExhausted,
 		),
-		NativeError::Forbidden | NativeError::Unauthorized => ExecutionFailure::Authority {
-			identity_unavailable: false,
-		},
-		NativeError::IdentityStatusUnavailable => ExecutionFailure::Authority {
-			identity_unavailable: true,
-		},
+		NativeError::Forbidden | NativeError::Unauthorized => {
+			ExecutionFailure::Authority(AuthorityFailure::Denied(None))
+		}
+		NativeError::AuthorityRefused(refusal) => {
+			ExecutionFailure::Authority(AuthorityFailure::Denied(Some((**refusal).clone())))
+		}
+		NativeError::IdentityStatusUnavailable => {
+			ExecutionFailure::Authority(AuthorityFailure::IdentityUnavailable)
+		}
 		NativeError::MediaRouteUnavailable(_) => ExecutionFailure::MediaRoute(error.to_string()),
 		NativeError::TransactionPending | NativeError::StaleInference => ExecutionFailure::Deferred,
+		NativeError::ToolRetry {
+			message,
+			count,
+			retry_after,
+		} => ExecutionFailure::ToolRetry {
+			message: message.clone(),
+			count: *count,
+			retry_after: *retry_after,
+		},
 		NativeError::External(_) | NativeError::InferenceStalled => ExecutionFailure::Inference {
 			transport: true,
 			status: None,

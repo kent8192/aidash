@@ -1,5 +1,11 @@
 # Aidash native migration history
 
+`execution/0081_lease_recoveries` updates the physical `runs.pending` default,
+and replaces the activation trigger function. PostgreSQL function replacement
+is a SQL exception that Reinhardt cannot express. The server decodes the
+former Lease Recovery flag of existing Runs, so the migration writes no Run
+rows; rollback does not rewrite stored counters for older binaries.
+
 Issue #296 adds write-only Tenant Secrets in `identity/0036` through `0038`
 and durable operation egress budgets and audits in `execution/0046` through
 `0048`. Their forced Tenant row policies use the existing policy renderer.
@@ -9,6 +15,21 @@ constraints use typed Reinhardt operations. PostgreSQL function replacements
 remain SQL DDL assets because Reinhardt has no function-body operation. The
 reverse restores the previous Tool and Agent contracts; remove External
 service definitions and bindings before reversing the kind constraints.
+
+`identity/0041_catalog_restriction` adds a nullable `restriction` jsonb column
+to `authorization_catalog` and to its append-only history (ADR 0029, ADR 0095).
+The column names subjects and Assignable Groups that may use one exact version
+on one Node; NULL keeps the pre-existing meaning, everyone the Tenant's policy
+allows, so every existing approval and history row migrates as unrestricted.
+The columns are typed `AddColumn` operations, so the model state follows the
+physical migration and no state-only checkpoint is needed.
+
+`identity/0042_catalog_approval_requests` creates the Tenant-owned request
+table for ADR 0096, its `0043` row policy and its `0044` state-only snapshot.
+The physical table has a partial unique index keeping at most one open request
+per requester, root and Node, and a check that only a declined request carries
+a decline reason. The policy asset follows the standard Tenant template; the
+state snapshot carries the columns without the physical checks and index.
 
 Reinhardt is the sole migration owner. The source files are grouped under the
 labels `identity`, `registry`, `workspaces`, `execution`, `federation`, `knowledge`,
@@ -74,7 +95,7 @@ the pinned revision incorporates
 [#6638](https://github.com/kent8192/reinhardt-web/issues/6638). The final snapshot
 records the registered model metadata. These migrations extend the original table definitions and preserve their SQL
 assets. The environment migration additionally records conditional extension
-ownership before this new native history is published. The complete native graph contains 57
+ownership before this new native history is published. The complete native graph contains 58
 records and describes 119 models.
 
 The original baseline has 36 migrations for physical schema creation and eight
@@ -708,5 +729,5 @@ of its Tenant (it is classified `audit`, erased by `audit_retention_days`). Its 
 reference is the usual root record. `(tenant, caller_key, operation_id)` is unique, and
 CHECKs bound the reason to 1 to 1000 characters and tie `identity_id` to a browser actor.
 `execution/0078_run_safety_stops_row_level_security` adds the tenant policy template
-through `RunSQL`, and `execution/0079_run_safety_stops_state` is the generated state-only
+through `RunSQL`, and `execution/0080_invocation_delivery` is the generated state-only
 snapshot that leaves the physical constraints and indexes to `0077`.

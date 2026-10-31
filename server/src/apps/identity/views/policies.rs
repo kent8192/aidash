@@ -2,8 +2,9 @@
 use crate::apps::identity::oidc::BrowserOrigin;
 use crate::apps::identity::policy::Evaluation;
 use crate::apps::identity::serializers::policies::{
-	AuthorizationPage, AuthorizationUpdate, CatalogApprovals, CatalogInput, CatalogQuery,
-	CredentialInput, CredentialPage,
+	AuthorizationPage, AuthorizationUpdate, CatalogApprovals, CatalogImpactQuery, CatalogInput,
+	CatalogQuery, CatalogRequestDecline, CatalogRequestInput, CatalogRequestPage,
+	CatalogReviewQuery, CredentialInput, CredentialPage,
 };
 use crate::apps::identity::services::policies::PolicyAdministration;
 use crate::authorization::identity::Actor;
@@ -60,6 +61,118 @@ pub async fn approve_catalog(
 			.approve(actor, tenant, input.node, input.approvals)
 			.await,
 	)
+}
+
+#[get(
+	"/api/authorization/{tenant}/catalog/review",
+	name = "authorization-catalog-review",
+	auth = "protected"
+)]
+pub async fn catalog_review(
+	#[inject] service: Depends<PolicyAdministration>,
+	#[inject] actor: crate::authorization::identity::Actor,
+	Path(tenant): Path<String>,
+	Query(query): Query<CatalogReviewQuery>,
+) -> ViewResult<Response> {
+	crate::http::json(service.review(actor, tenant, query).await)
+}
+
+/// What withdrawing one approved version would stop, read before the decision.
+#[get(
+	"/api/authorization/{tenant}/catalog/impact",
+	name = "authorization-catalog-impact",
+	auth = "protected"
+)]
+pub async fn catalog_impact(
+	#[inject] service: Depends<PolicyAdministration>,
+	#[inject] actor: crate::authorization::identity::Actor,
+	Path(tenant): Path<String>,
+	Query(query): Query<CatalogImpactQuery>,
+) -> ViewResult<Response> {
+	crate::http::json(service.withdrawal_impact(actor, tenant, query).await)
+}
+
+#[post(
+	"/api/authorization/{tenant}/catalog/review",
+	name = "authorization-submit-catalog-review",
+	auth = "protected"
+)]
+pub async fn submit_catalog_review(
+	#[inject] service: Depends<PolicyAdministration>,
+	#[inject] actor: crate::authorization::identity::Actor,
+	Path(tenant): Path<String>,
+	Json(input): Json<aidash_application::authorization::catalog::review::ApprovalReviewSubmission>,
+) -> ViewResult<Response> {
+	crate::http::json(service.submit_review(actor, tenant, input).await)
+}
+
+#[post(
+	"/api/authorization/{tenant}/catalog/requests",
+	name = "authorization-create-catalog-request",
+	auth = "protected"
+)]
+pub async fn create_catalog_request(
+	#[inject] service: Depends<PolicyAdministration>,
+	#[inject] actor: crate::authorization::identity::Actor,
+	Path(tenant): Path<String>,
+	Json(input): Json<CatalogRequestInput>,
+) -> ViewResult<Response> {
+	crate::http::json(service.create_request(actor, tenant, input).await)
+}
+
+#[post(
+	"/api/authorization/{tenant}/catalog/requests/{id}/withdraw",
+	name = "authorization-withdraw-catalog-request",
+	auth = "protected"
+)]
+pub async fn withdraw_catalog_request(
+	#[inject] service: Depends<PolicyAdministration>,
+	#[inject] actor: crate::authorization::identity::Actor,
+	Path((tenant, id)): Path<(String, Uuid)>,
+) -> ViewResult<Response> {
+	crate::http::json(service.withdraw_request(actor, tenant, id).await)
+}
+
+#[post(
+	"/api/authorization/{tenant}/catalog/requests/{id}/decline",
+	name = "authorization-decline-catalog-request",
+	auth = "protected"
+)]
+pub async fn decline_catalog_request(
+	#[inject] service: Depends<PolicyAdministration>,
+	#[inject] actor: crate::authorization::identity::Actor,
+	Path((tenant, id)): Path<(String, Uuid)>,
+	Json(input): Json<CatalogRequestDecline>,
+) -> ViewResult<Response> {
+	crate::http::json(service.decline_request(actor, tenant, id, input).await)
+}
+
+#[get(
+	"/api/authorization/{tenant}/catalog/requests/mine",
+	name = "authorization-catalog-requests-mine",
+	auth = "protected"
+)]
+pub async fn catalog_requests_mine(
+	#[inject] service: Depends<PolicyAdministration>,
+	#[inject] actor: crate::authorization::identity::Actor,
+	Path(tenant): Path<String>,
+	Query(page): Query<CatalogRequestPage>,
+) -> ViewResult<Response> {
+	crate::http::json(service.mine_requests(actor, tenant, page).await)
+}
+
+#[get(
+	"/api/authorization/{tenant}/catalog/requests/pending",
+	name = "authorization-catalog-requests-pending",
+	auth = "protected"
+)]
+pub async fn catalog_requests_pending(
+	#[inject] service: Depends<PolicyAdministration>,
+	#[inject] actor: crate::authorization::identity::Actor,
+	Path(tenant): Path<String>,
+	Query(page): Query<CatalogRequestPage>,
+) -> ViewResult<Response> {
+	crate::http::json(service.pending_requests(actor, tenant, page).await)
 }
 
 #[post(

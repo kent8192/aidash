@@ -166,9 +166,7 @@ impl SandboxScope for Scope<'_> {
 			.unwrap()
 			.calls
 			.push("tenant_authority");
-		if self.repository.principal == Principal::DeploymentAdministrator
-			|| self.repository.allowed
-		{
+		if self.repository.allowed {
 			Ok(())
 		} else {
 			Err(Error::Forbidden)
@@ -294,7 +292,6 @@ async fn limit_changes_are_authorized_then_validated_within_the_ceilings(
 }
 #[rstest]
 #[case::member(Principal::Subject { tenant: "tenant".into(), subject: "admin".into() })]
-#[case::deployment_administrator(Principal::DeploymentAdministrator)]
 #[tokio::test]
 async fn authorized_limit_changes_commit_the_next_revision(#[case] principal: Principal) {
 	let mut r = Repository::new();

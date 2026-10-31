@@ -100,11 +100,39 @@ fn the_shorter_of_the_deployment_and_tenant_periods_applies() {
 
 #[rstest]
 #[case(Decider::Subject { tenant: "acme".into(), subject: "alice".into() }, "subject:acme/alice")]
-#[case(
-	Decider::DeploymentAdministrator { identity: Some(uuid::Uuid::nil()) },
-	"deployment-administrator:00000000-0000-0000-0000-000000000000"
-)]
-#[case(Decider::DeploymentAdministrator { identity: None }, "deployment-administrator")]
 fn deciders_are_recorded_with_who_acted(#[case] decider: Decider, #[case] recorded: &str) {
 	assert_eq!(decider.recorded(), recorded);
+}
+
+#[rstest]
+#[case(
+	serde_json::json!({"kind": "subject", "tenant": "acme", "subject": "alice"}),
+	"subject:acme/alice"
+)]
+#[case(
+	serde_json::json!({"kind": "deployment_administrator", "identity": "6f0c3c1e-5a43-4b7e-9d2f-0e8b1a2c3d4e"}),
+	"deployment-administrator:6f0c3c1e-5a43-4b7e-9d2f-0e8b1a2c3d4e"
+)]
+#[case(
+	serde_json::json!({"kind": "deployment_administrator"}),
+	"deployment-administrator"
+)]
+fn records_kept_before_adr_0102_stay_readable(
+	#[case] stored: serde_json::Value,
+	#[case] recorded: &str,
+) {
+	let decider: RecordedDecider = serde_json::from_value(stored).unwrap();
+	assert_eq!(decider.recorded(), recorded);
+}
+
+#[test]
+fn a_new_decision_is_recorded_as_it_was_stored_before() {
+	let decider = Decider::Subject {
+		tenant: "acme".into(),
+		subject: "alice".into(),
+	};
+	assert_eq!(
+		serde_json::to_value(RecordedDecider::from(decider.clone())).unwrap(),
+		serde_json::to_value(decider).unwrap()
+	);
 }

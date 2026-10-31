@@ -201,7 +201,29 @@ async fn production_router_enforces_auth_validation_rate_and_sse_resume(
 		assert_eq!(response.status(), 413, "{path}");
 		assert!(response.headers().contains_key("x-request-id"));
 	}
-	let invalid_conversation = deployment_administrator.post("/api/conversations", &json!({"title":" ", "goal":" ", "target":{"id":"missing", "version":"1.0.0"}, "target_kind":"agent"}), "json").await.unwrap();
+	// Request validation runs for a Tenant Subject; a Deployment Administrator
+	// holds no Tenant content authority and is refused before it (#484).
+	let member = reinhardt::test::fixtures::api_client_from_url(&app.server.url);
+	member
+		.set_header(
+			"Authorization",
+			&format!(
+				"Bearer {}",
+				common::tenant_token(&federation.store, "acme").await
+			),
+		)
+		.await
+		.unwrap();
+	let refused = deployment_administrator
+		.post(
+			"/api/workspaces",
+			&json!({"title":"Administrator workspace","goal":"valid"}),
+			"json",
+		)
+		.await
+		.unwrap();
+	assert_eq!(refused.status_code(), 403);
+	let invalid_conversation = member.post("/api/conversations", &json!({"title":" ", "goal":" ", "target":{"id":"missing", "version":"1.0.0"}, "target_kind":"agent"}), "json").await.unwrap();
 	assert_eq!(invalid_conversation.status_code(), 400);
 	assert_eq!(
 		invalid_conversation.json_value().unwrap()["error"],
@@ -212,7 +234,7 @@ async fn production_router_enforces_auth_validation_rate_and_sse_resume(
 		("{}", "application/json", 422),
 		("{}", "text/plain", 415),
 	] {
-		let response = deployment_administrator
+		let response = member
 			.post_raw("/api/workspaces", body.as_bytes(), content_type)
 			.await
 			.unwrap();
@@ -222,7 +244,7 @@ async fn production_router_enforces_auth_validation_rate_and_sse_resume(
 			"invalid JSON request"
 		);
 	}
-	let invalid = deployment_administrator
+	let invalid = member
 		.post(
 			"/api/workspaces",
 			&json!({"title":"   ","goal":"valid"}),
@@ -260,13 +282,15 @@ async fn production_router_enforces_auth_validation_rate_and_sse_resume(
 		.await
 		.unwrap()[0]
 		.sequence;
+	// Streams are Tenant content: a Tenant Subject opens them (#484).
+	let stream_authorization = format!(
+		"Bearer {}",
+		common::tenant_token(&federation.store, "acme").await
+	);
 	let stream_request = || {
 		Request::builder()
 			.uri("/api/events/stream?after=0")
-			.header(
-				"authorization",
-				"Bearer deployment-administrator-execution-fixture",
-			)
+			.header("authorization", stream_authorization.as_str())
 			.header("last-event-id", before.to_string())
 			.body(Bytes::new())
 			.unwrap()

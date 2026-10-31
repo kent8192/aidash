@@ -23,6 +23,10 @@ import { Input } from "../components/ui/input";
 import { NativeSelect } from "../components/ui/native-select";
 import { focusedVersion } from "../approval-decider-model";
 import { ApprovalSettingsPage } from "../approval-settings";
+import {
+  CatalogRequestQueue,
+  useHasPendingRequests,
+} from "../catalog-requests";
 import { approvalCopy } from "../approval-settings-copy";
 import { DeploymentPage } from "../deployment";
 import { UsagePanel } from "@slots/usage";
@@ -34,6 +38,7 @@ import {
   Notice,
   ScreenHeader,
 } from "../components/patterns";
+import { AdministratorTenantNotice } from "../administrator-notice";
 import { ToolSection } from "../integrated-tools";
 import { keylessOrigin } from "../keyless";
 import { groupByKind } from "../registry-kinds";
@@ -60,8 +65,8 @@ import { Badge, Empty, Panel, useEntityName, useI18n } from "../ui";
 import { collaborationCopy } from "./copy";
 import type { Selection } from "./details";
 import {
-  personalSettingsSections,
-  visibleSettingsSections,
+  settingsSectionsFor,
+  tenantContentSettingsSections,
   type IntegratedView,
   type SettingsSection,
 } from "./model";
@@ -119,13 +124,10 @@ function SettingsFrame({
   const { locale } = useI18n();
   const copy = collaborationCopy[locale];
   const label = useSectionLabel();
-  const sections = visibleSettingsSections
-    .filter((value) => value !== "planConnections" || selfHostedPlanConnections)
-    .filter((value) =>
-      deploymentAdministrator
-        ? !personalSettingsSections[value]
-        : !deploymentAdministratorSections[value],
-    );
+  const sections = settingsSectionsFor(
+    deploymentAdministrator,
+    deploymentAdministratorSections,
+  ).filter((value) => value !== "planConnections" || selfHostedPlanConnections);
   return (
     <section className="collab-settings flex h-full min-h-0 flex-col">
       <ScreenHeader
@@ -548,11 +550,19 @@ export function Configuration({
 }) {
   const { t, locale } = useI18n();
   const { can } = useTenantActions(data.access);
+  const selectedNode = useNodes().selected;
   const deploymentAdministrator =
     data.access.kind === "deployment_administrator";
   const restricted =
     !deploymentAdministrator &&
     deploymentAdministratorSections[section] === true;
+  // `can` reflects collection-wide authority only; an approver scoped to named
+  // definitions finds their queue through the server's per-item filter.
+  const itemPendingRequests = useHasPendingRequests(
+    data.access.kind === "subject" ? data.access.tenant : undefined,
+    selectedNode?.name,
+    section === "registry" && !can("catalog.approve"),
+  );
   return (
     <SettingsFrame
       section={section}
@@ -561,6 +571,8 @@ export function Configuration({
     >
       {restricted ? (
         <Notice role="status">{t("administratorsOnly")}</Notice>
+      ) : deploymentAdministrator && tenantContentSettingsSections[section] ? (
+        <AdministratorTenantNotice className="" />
       ) : (
         <>
           {section === "deployment" && deploymentAdministrator && (
@@ -607,6 +619,18 @@ export function Configuration({
                 focus={section === "registry" ? focus : undefined}
               />
             ))}
+          {section === "registry" &&
+            data.access.kind === "subject" &&
+            selectedNode !== undefined &&
+            (can("catalog.approve") || itemPendingRequests) && (
+              <ToolSection title={t("approvalPendingTitle")}>
+                <CatalogRequestQueue
+                  tenant={data.access.tenant}
+                  node={selectedNode.name}
+                  subject={data.access.subject}
+                />
+              </ToolSection>
+            )}
           {section === "registry" && (
             <ToolSection
               title={

@@ -96,22 +96,41 @@ pub async fn recover(
 		// emits `run.context_blocked`, like every other execution pause.
 		current.recovery.context_reason = Some(reason);
 		store.pause_context(&current, token, reason).await?;
-	} else if let ExecutionFailure::Authority {
-		identity_unavailable,
-	} = failure
-	{
-		let reason = if identity_unavailable {
-			"identity status unavailable"
-		} else {
-			"execution authority denied"
-		};
+	} else if let ExecutionFailure::Authority(authority) = failure {
 		store
-			.pause(&current, token, reason, "run.authorization_blocked")
+			.pause(
+				&current,
+				token,
+				&authority.reason(),
+				"run.authorization_blocked",
+				authority.refusal(),
+			)
 			.await?;
 	} else if let ExecutionFailure::MediaRoute(ref message) = failure {
 		store
-			.pause(&current, token, message, "run.media_route_blocked")
+			.pause(&current, token, message, "run.media_route_blocked", None)
 			.await?;
+	} else if let ExecutionFailure::ToolRetry {
+		count,
+		retry_after,
+		ref message,
+	} = failure
+		&& current.control != RunControl::Cancelled
+		&& !current.state.failure_delivery()
+	{
+		let backoff = std::time::Duration::from_secs(2_u64.pow(count.min(5)));
+		let delay = backoff.max(
+			retry_after
+				.unwrap_or_default()
+				.min(std::time::Duration::from_secs(32)),
+		);
+		current.recovery.retry = Some(RetryState {
+			count,
+			at: now + chrono::Duration::seconds(delay.as_secs() as i64),
+		});
+		current.error = Some(message.clone());
+		store.save(&current, token, "run.retrying").await?;
+		return Ok(true);
 	} else if matches!(failure, ExecutionFailure::Deferred) {
 		current.recovery.retry = Some(RetryState {
 			count: attempts,

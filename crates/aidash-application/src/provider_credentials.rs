@@ -666,7 +666,7 @@ impl Service {
 /// Test-only write port (ADR 0006). Tests and CI register Provider Credentials
 /// with fixture Key Material through it. It is compiled only into this crate's
 /// tests or with the `test-support` feature, which no production dependency
-/// enables (`scripts/check-workspace-boundaries.py` enforces this).
+/// enables.
 #[cfg(any(test, feature = "test-support"))]
 pub mod testing {
 	use super::*;

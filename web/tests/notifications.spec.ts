@@ -154,7 +154,10 @@ test("toasts are rate limited, deduplicated and cleared with queued updates on a
       json: {
         id: "fixture-browser-session",
         deployment_administrator: true,
-        mappings: [{ id: "alice", tenant: "acme", subject: "alice" }],
+        mappings: [
+          { id: "fixture-mapping", tenant: "acme", subject: "alice" },
+          { id: "alice", tenant: "acme", subject: "alice" },
+        ],
       },
     }),
   );

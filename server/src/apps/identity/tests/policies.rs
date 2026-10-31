@@ -50,6 +50,17 @@ async fn request(
 	decoded(client.post(path, &body, "json").await.unwrap())
 }
 
+/// Revokes a credential through the same service the Tenant route calls: a
+/// Deployment Administrator may not revoke a Tenant's credentials over HTTP (#484).
+async fn revoke_credential(app: &EndpointFixture, tenant: &str, id: &str) {
+	Authorization {
+		pool: app.runtime.store.pool.clone(),
+	}
+	.revoke_credential(tenant, Uuid::parse_str(id).unwrap())
+	.await
+	.unwrap();
+}
+
 async fn get(app: &EndpointFixture, path: &str) -> (u16, Value) {
 	decoded(app.deployment_administrator.get(path).await.unwrap())
 }
@@ -146,15 +157,7 @@ async fn subject_credentials_enforce_workspace_isolation_and_live_revocation(
 			.0,
 			200
 		);
-		let (status, credential) = request(
-			&app,
-			&format!("/api/authorization/{tenant}/credentials"),
-			json!({"subject":"alice","expires_in_seconds":3600}),
-			true,
-		)
-		.await;
-		assert_eq!(status, 200, "credential issuance: {credential}");
-		tokens.push(credential);
+		tokens.push(crate::endpoint::issued_credential(&app.runtime.store, tenant, "alice").await);
 	}
 	let token = tokens[0]["token"].as_str().unwrap();
 	let other = tokens[1]["token"].as_str().unwrap();
@@ -311,7 +314,21 @@ async fn subject_credentials_enforce_workspace_isolation_and_live_revocation(
 			"unscoped path {path}"
 		);
 	}
-	let (_, credentials) = get(&app, "/api/authorization/acme/credentials").await;
+	// A Deployment Administrator holds no Tenant authority: the credential list
+	// is refused without a body that names a credential or token (#484).
+	let (status, refused) = get(&app, "/api/authorization/acme/credentials").await;
+	assert_eq!(status, 403, "{refused}");
+	assert!(!refused.to_string().contains(token));
+	assert!(!refused.to_string().contains("token_hash"));
+	let credentials = serde_json::to_value(
+		Authorization {
+			pool: store.pool.clone(),
+		}
+		.credentials("acme")
+		.await
+		.unwrap(),
+	)
+	.unwrap();
 	assert!(!credentials.to_string().contains(token));
 	assert!(!credentials.to_string().contains("token_hash"));
 	assert_eq!(credentials[0]["id"], tokens[0]["credential"]["id"]);
@@ -358,8 +375,10 @@ async fn subject_credentials_enforce_workspace_isolation_and_live_revocation(
 	assert_eq!(hidden["workspaces"], json!([]));
 	let credential_id = tokens[0]["credential"]["id"].as_str().unwrap();
 	let revoke = format!("/api/authorization/acme/credentials/{credential_id}/revoke");
-	assert_eq!(request(&app, &revoke, json!({}), true).await.0, 200);
-	assert_eq!(request(&app, &revoke, json!({}), true).await.0, 200);
+	// Revoking a Tenant's credential is Tenant authority, not Deployment administration.
+	assert_eq!(request(&app, &revoke, json!({}), true).await.0, 403);
+	revoke_credential(&app, "acme", credential_id).await;
+	revoke_credential(&app, "acme", credential_id).await;
 	assert_eq!(
 		scoped_request(&app, token, "GET", "/api/state", Value::Null)
 			.await
@@ -395,14 +414,7 @@ async fn subject_fixture(endpoint: EndpointFixture) -> (Arc<EndpointFixture>, St
 		.0,
 		200
 	);
-	let (status, credential) = request(
-		&app,
-		"/api/authorization/acme/credentials",
-		json!({"subject":"alice"}),
-		true,
-	)
-	.await;
-	assert_eq!(status, 200);
+	let credential = crate::endpoint::issued_credential(&app.runtime.store, "acme", "alice").await;
 	let (status, workspace) = scoped_request(
 		&app,
 		credential["token"].as_str().unwrap(),
@@ -603,17 +615,7 @@ async fn subject_streams_recheck_buffered_frames_after_policy_and_credential_rev
 			);
 		} else {
 			let id = credential["credential"]["id"].as_str().unwrap();
-			assert_eq!(
-				request(
-					&app,
-					&format!("/api/authorization/acme/credentials/{id}/revoke"),
-					json!({}),
-					true
-				)
-				.await
-				.0,
-				200
-			);
+			revoke_credential(&app, "acme", id).await;
 		}
 		let next = tokio::time::timeout(Duration::from_secs(2), stream.next())
 			.await
@@ -737,8 +739,7 @@ async fn credential_revocation_serializes_with_workspace_mutation(
 	}
 	barrier.rollback().await.unwrap();
 	assert_eq!(patch.await.unwrap().0, 200);
-	let revoke = format!("/api/authorization/acme/credentials/{credential_id}/revoke");
-	assert_eq!(request(&app, &revoke, json!({}), true).await.0, 200);
+	revoke_credential(&app, "acme", &credential_id.to_string()).await;
 	assert_eq!(
 		scoped_request(
 			&app,
@@ -769,11 +770,32 @@ async fn credential_issuance_validates_subjects_lifetime_and_tenant_revocation(
 		json!({"subject":"alice","expires_in_seconds":0}),
 		json!({"subject":"alice","expires_in_seconds":2592001}),
 	] {
+		// The Tenant-only route refuses the Administrator before it validates the body.
 		assert_eq!(
-			request(&app, "/api/authorization/acme/credentials", body, true)
-				.await
-				.0,
-			400
+			request(
+				&app,
+				"/api/authorization/acme/credentials",
+				body.clone(),
+				true
+			)
+			.await
+			.0,
+			403
+		);
+		// The host-side issuance validates the same inputs.
+		let lifetime = body["expires_in_seconds"].as_i64().unwrap_or(3600);
+		let subject = body["subject"].as_str().unwrap();
+		assert!(
+			aidash_server::apps::identity::services::subject_credential_command::issue(
+				&app.runtime.store.pool,
+				"acme",
+				subject,
+				lifetime,
+				"host_access",
+			)
+			.await
+			.is_err(),
+			"{body}"
 		);
 	}
 	let token = credential["token"].as_str().unwrap();
@@ -799,7 +821,16 @@ async fn credential_issuance_validates_subjects_lifetime_and_tenant_revocation(
 		)
 		.await
 		.0,
-		404
+		403
+	);
+	assert!(
+		Authorization {
+			pool: app.runtime.store.pool.clone(),
+		}
+		.revoke_credential("other", Uuid::parse_str(id).unwrap())
+		.await
+		.is_err(),
+		"another Tenant's credential is not found"
 	);
 	assert_eq!(
 		scoped_request(&app, token, "GET", "/api/state", Value::Null)
@@ -820,16 +851,17 @@ async fn credential_issuance_validates_subjects_lifetime_and_tenant_revocation(
 		.0,
 		200
 	);
-	assert_eq!(
-		request(
-			&app,
-			"/api/authorization/acme/credentials",
-			json!({"subject":"alice"}),
-			true
+	assert!(
+		aidash_server::apps::identity::services::subject_credential_command::issue(
+			&app.runtime.store.pool,
+			"acme",
+			"alice",
+			3600,
+			"host_access",
 		)
 		.await
-		.0,
-		400
+		.is_err(),
+		"a disabled subject receives no credential"
 	);
 	assert_eq!(
 		scoped_request(&app, token, "GET", "/api/state", Value::Null)
@@ -979,12 +1011,17 @@ async fn authorization_api_enforces_policy_revision_revocation_and_audit(
 			.await
 	};
 	let count = decisions().await;
-	assert_eq!(
-		request(&app, "/api/authorization/acme/simulate", evaluation(), true)
-			.await
-			.1["allowed"],
-		true
-	);
+	// Simulation reads Tenant policy effects: a Deployment Administrator is refused
+	// and the dry run neither answers nor audits (#484).
+	let (status, refused) =
+		request(&app, "/api/authorization/acme/simulate", evaluation(), true).await;
+	assert_eq!(status, 403, "{refused}");
+	assert!(refused.get("allowed").is_none(), "{refused}");
+	let service = Authorization {
+		pool: app.runtime.store.pool.clone(),
+	};
+	let input: Evaluation = serde_json::from_value(evaluation()).unwrap();
+	assert!(service.simulate("acme", &input).await.unwrap().allowed);
 	let after = decisions().await;
 	assert_eq!(count, after, "dry-run must not add an audit record");
 
@@ -1043,20 +1080,26 @@ async fn authorization_api_enforces_policy_revision_revocation_and_audit(
 	assert_eq!(status, 200);
 	assert_eq!(snapshot["revision"], 3);
 	assert_eq!(snapshot["bundle"]["subjects"]["alice"]["enabled"], false);
-	let (status, history) = get(&app, "/api/authorization/acme/revisions?after=1&limit=1").await;
-	assert_eq!(status, 200);
-	assert_eq!(history.as_array().unwrap().len(), 1);
+	// The revision history and the decision audit are Tenant content: refused to
+	// a Deployment Administrator without carrying any of it.
+	for path in [
+		"/api/authorization/acme/revisions?after=1&limit=1",
+		"/api/authorization/acme/decisions?limit=1",
+		"/api/authorization/unknown/decisions",
+	] {
+		let (status, refused) = get(&app, path).await;
+		assert_eq!(status, 403, "{path}: {refused}");
+		assert!(!refused.to_string().contains("deployment_administrator"));
+		assert!(refused.get("decision").is_none(), "{refused}");
+	}
+	let history = service.revisions("acme", 1, 1).await.unwrap();
+	assert_eq!(history.len(), 1);
 	assert_eq!(history[0]["revision"], 2);
 	assert_eq!(history[0]["actor"], "deployment_administrator");
-	let (status, decisions) = get(&app, "/api/authorization/acme/decisions?limit=1").await;
-	assert_eq!(status, 200);
-	assert_eq!(decisions.as_array().unwrap().len(), 1);
+	let decisions = service.decisions("acme", 0, 1).await.unwrap();
+	assert_eq!(decisions.len(), 1);
 	assert_eq!(decisions[0]["decision"]["allowed"], true);
 	assert!(decisions[0].get("attributes").is_none());
-	assert_eq!(
-		get(&app, "/api/authorization/unknown/decisions").await,
-		(404, json!({"error": "authorization policy"}))
-	);
 }
 
 #[rstest::rstest]

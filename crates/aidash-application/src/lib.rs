@@ -54,8 +54,33 @@ pub enum Error {
 	Unauthorized,
 	#[error("forbidden")]
 	Forbidden,
+	/// The Run's authority refused a tool call; it pauses naming the tool and
+	/// the check. Everywhere else it is a [`Error::Forbidden`].
+	#[error("forbidden")]
+	AuthorityRefused(Box<aidash_domain::tool::AuthorityRefusal>),
 	#[error("{0}")]
 	External(String),
+	/// The tool request is known not to have been delivered, or the service
+	/// explicitly asked for a retry. The harness journals this before retrying.
+	#[error("{message}")]
+	ToolNotDelivered {
+		message: String,
+		retry_after: Option<std::time::Duration>,
+	},
+	/// An MCP HTTP endpoint answered with a failure before protocol decoding.
+	#[error("tool service returned HTTP {status}")]
+	ToolServiceStatus {
+		status: u16,
+		body: String,
+		retry_after: Option<std::time::Duration>,
+	},
+	/// A journaled tool retry, carrying its invocation-local retry count.
+	#[error("{message}")]
+	ToolRetry {
+		message: String,
+		count: u32,
+		retry_after: Option<std::time::Duration>,
+	},
 	#[error("verified model media route unavailable for {0}")]
 	MediaRouteUnavailable(String),
 	#[error("Kubernetes observations unavailable; check service account and API connectivity")]

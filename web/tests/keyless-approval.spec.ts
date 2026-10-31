@@ -48,7 +48,10 @@ async function registry(page: Page, actions: string[]) {
       registryVersion(value, approved.has(value.id) ? {} : pending),
     );
   const decisions: Record<string, unknown>[] = [];
-  await installBearerDashboard(page, "fixture");
+  await installBearerDashboard(page, "fixture", {
+    tenant: tenantSubject.tenant,
+    name: tenantSubject.subject,
+  });
   await page.addInitScript(() =>
     localStorage.setItem("aidash-locale", "en-US"),
   );
@@ -170,5 +173,17 @@ test("a member who cannot approve still sees the Keyless destination", async ({
     "No retention guarantee · https://embeddings.example",
   );
   await expect(approval(page).locator(".keyless-notice")).toHaveCount(0);
-  await expect(approval(page).getByRole("button")).toHaveCount(0);
+  // A consumer reaches the read-only review to request approval, but has no
+  // approve or withdraw control.
+  await expect(
+    approval(page).getByRole("button", {
+      name: "Approval Review",
+      exact: true,
+    }),
+  ).toHaveCount(1);
+  await expect(
+    approval(page).getByRole("button", {
+      name: /^(Approve|Withdraw approval)$/,
+    }),
+  ).toHaveCount(0);
 });

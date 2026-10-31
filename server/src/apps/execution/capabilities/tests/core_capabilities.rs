@@ -672,13 +672,12 @@ async fn files_preserve_unicode_revision_and_source_authority(
 			.0,
 		409
 	);
-	let (_, bob) = request(
-		&c.app,
-		&c.f.config.api_token,
-		"POST",
-		"/api/authorization/acme/credentials",
-		json!({"subject":"bob"}),
-	)
+	let (_, bob) = async {
+		(
+			200_u16,
+			common::issued_credential(&c.f.store, "acme", "bob").await,
+		)
+	}
 	.await;
 	let (status, result) = request(
 		&c.app,
@@ -747,13 +746,12 @@ async fn queued_runs_keep_order_and_cancellation_bypasses_queue(
 	let (status, result) = request(&c.app, &c.token, "POST", &steer_path, json!({"idempotency_key":Uuid::new_v4(),"expected_run_id":queue["queue"][1]["run_id"],"content":"Must not reach a queued run"})).await;
 	assert_eq!(status, 409, "{result}");
 	let steer = json!({"idempotency_key":Uuid::new_v4(),"expected_run_id":run.id,"content":"Prioritize the current question"});
-	let (_, bob) = request(
-		&c.app,
-		&c.f.config.api_token,
-		"POST",
-		"/api/authorization/acme/credentials",
-		json!({"subject":"bob"}),
-	)
+	let (_, bob) = async {
+		(
+			200_u16,
+			common::issued_credential(&c.f.store, "acme", "bob").await,
+		)
+	}
 	.await;
 	assert_eq!(
 		request(
@@ -1013,7 +1011,7 @@ async fn configure_approvals(mut c: CoreFixture) -> (CoreFixture, aidash_server:
 		"human_request"
 	]);
 	// A dormant default still requires current Registry metadata visibility.
-	c.policy["policies"].as_array_mut().unwrap().push(json!({"id":"default-decider-metadata","effect":"allow","subjects":{"any":true},"actions":["registry.read"],"resources":{"kinds":["decider"]}}));
+	c.policy["policies"].as_array_mut().unwrap().push(json!({"id":"default-decider-access","effect":"allow","subjects":{"any":true},"actions":["registry.read","decision.invoke"],"resources":{"kinds":["decider"]}}));
 	c.policy["policies"].as_array_mut().unwrap().push(json!({"id":"approvable-outbound","effect":"allow","subjects":{"any":true},"actions":["capability.request","capability.approve"],"resources":{"kinds":["outbound"]}}));
 	common::replace_policy(&c.f.store, "acme", c.policy.clone()).await;
 	(c, run)
@@ -1034,13 +1032,12 @@ async fn approvals_bind_invocations_and_never_override_upper_denials(
 		"/api/capabilities/approvals/{}/decide",
 		pending["approval_id"].as_str().unwrap()
 	);
-	let (_, bob) = request(
-		&c.app,
-		&c.f.config.api_token,
-		"POST",
-		"/api/authorization/acme/credentials",
-		json!({"subject":"bob"}),
-	)
+	let (_, bob) = async {
+		(
+			200_u16,
+			common::issued_credential(&c.f.store, "acme", "bob").await,
+		)
+	}
 	.await;
 	let decision = json!({"idempotency_key":Uuid::new_v4(),"expected_revision":1});
 	assert_eq!(

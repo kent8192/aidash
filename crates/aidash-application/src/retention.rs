@@ -38,8 +38,7 @@ fn own_tenant(decider: &Decider, tenant: &str) -> Result<()> {
 	}
 }
 
-/// A subject must be permitted `retention.update`; a Deployment
-/// Administrator needs no Tenant policy.
+/// A subject must be permitted `retention.update`.
 async fn require(scope: &mut dyn RetentionScope, tenant: &str) -> Result<()> {
 	if scope.permits(tenant, retention::UPDATE).await? {
 		Ok(())
@@ -75,7 +74,7 @@ pub async fn rules(repository: &dyn RetentionRepository, tenant: &str) -> Result
 }
 
 /// The history of `tenant`'s periods, newest first, for those who may change
-/// them: a subject permitted `retention.update`, or a Deployment Administrator.
+/// them: a subject permitted `retention.update`.
 pub async fn history(
 	repository: &dyn RetentionRepository,
 	tenant: &str,

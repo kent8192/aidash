@@ -1,18 +1,18 @@
 meta {
-  name: 1009 memory-participants - Paging rejects nonnumeric or malformed cursors
+  name: 1009 memory-participants - Typed resource IDs reject invalid UUIDs
   type: http
   seq: 1009
 }
 
 get {
-  url: {{base_url}}/api/workspaces/{{workspace_id}}/memory/participants?after=invalid
+  url: {{base_url}}/api/workspaces/not-a-uuid/memory/participants
   body: none
   auth: none
 }
 
 headers {
   Accept: application/json
-  Authorization: Bearer {{deployment_administrator_token}}
+  Authorization: Bearer {{contract_token}}
 }
 
 tests {

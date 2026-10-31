@@ -62,6 +62,9 @@ pub(crate) async fn page(
 			.map(|row| VersionApproval {
 				enabled: row.enabled,
 				revision: row.revision,
+				restriction: row
+					.restriction
+					.and_then(|value| serde_json::from_value(value.0).ok()),
 			});
 		let history = AuthorizationCatalogHistory::objects()
 			.filter(AuthorizationCatalogHistory::field_tenant().eq(tenant.clone()))
@@ -78,6 +81,9 @@ pub(crate) async fn page(
 				enabled: row.enabled,
 				actor: row.actor,
 				created_at: row.created_at,
+				restriction: row
+					.restriction
+					.and_then(|value| serde_json::from_value(value.0).ok()),
 			})
 			.collect();
 		let approver = entry.kind == "agent" && {

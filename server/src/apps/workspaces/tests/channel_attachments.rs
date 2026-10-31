@@ -65,7 +65,9 @@ async fn attachment_upload_is_idempotent_and_download_requires_current_message_a
 	)
 	.await;
 	assert_eq!(status, 200, "{changed}");
-	let (status, credential) = request(
+	// A Deployment Administrator holds no Tenant authority: the shared bearer is
+	// refused on Tenant credentials, and Bob's first credential comes from the host (#484).
+	let (refused, body) = request(
 		&app,
 		&deployment_administrator,
 		"POST",
@@ -73,8 +75,8 @@ async fn attachment_upload_is_idempotent_and_download_requires_current_message_a
 		json!({"subject":"bob"}),
 	)
 	.await;
-	assert_eq!(status, 200, "{credential}");
-	let bob = credential["token"].as_str().unwrap();
+	assert_eq!(refused, 403, "{body}");
+	let bob = &crate::endpoint::subject_credential(&app.runtime.store, "acme", "bob").await;
 	let (status, foreign) = request(
 		&app,
 		bob,

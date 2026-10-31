@@ -16,6 +16,23 @@ fn policy_management_routes_publish_authenticated_typed_contracts() {
 		("/api/authorization/{tenant}/catalog", "get"),
 		("/api/authorization/{tenant}/catalog", "post"),
 		("/api/authorization/{tenant}/catalog/approvals", "post"),
+		("/api/authorization/{tenant}/catalog/review", "get"),
+		("/api/authorization/{tenant}/catalog/review", "post"),
+		("/api/authorization/{tenant}/catalog/impact", "get"),
+		("/api/authorization/{tenant}/catalog/requests", "post"),
+		(
+			"/api/authorization/{tenant}/catalog/requests/{id}/withdraw",
+			"post",
+		),
+		(
+			"/api/authorization/{tenant}/catalog/requests/{id}/decline",
+			"post",
+		),
+		("/api/authorization/{tenant}/catalog/requests/mine", "get"),
+		(
+			"/api/authorization/{tenant}/catalog/requests/pending",
+			"get",
+		),
 		(
 			"/api/authorization/{tenant}/credentials/{id}/revoke",
 			"post",

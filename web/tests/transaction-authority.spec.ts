@@ -93,7 +93,7 @@ test("subject transaction controls survive a barrier and discard revoked detail"
 test("authority controls distinguish pending revocation while ordinary data is unavailable", async ({
   page,
 }) => {
-  await setup(page);
+  await setup(page, { administrator: true });
   let pending = true;
   await page.route("**/api/state", (route) =>
     route.fulfill({
@@ -198,7 +198,7 @@ test("subject transaction creation waits for its selected Node", async ({
   await expect(node).toHaveValue(`aidash://home/${defaultNode.name}`);
 });
 
-test("administrators compose transactions in one local Node", async ({
+test("subjects compose transactions in their selected local Node", async ({
   page,
 }) => {
   await setup(page);
@@ -236,7 +236,7 @@ test("administrators compose transactions in one local Node", async ({
     phase: "THINKING",
     control: "ACTIVE",
     state: {},
-    recovery: { retry: null, lease_recovered: false },
+    recovery: { retry: null },
     step: 1,
     revision: index + 3,
     error: null,
@@ -245,7 +245,7 @@ test("administrators compose transactions in one local Node", async ({
   await page.route("**/api/state", (route) =>
     route.fulfill({
       json: {
-        access: { kind: "deployment_administrator" },
+        access: { kind: "subject", tenant: "acme", subject: "alice" },
         deployment: {
           id: "aidash://home",
           endpoint: "http://localhost",
@@ -266,6 +266,24 @@ test("administrators compose transactions in one local Node", async ({
       },
     }),
   );
+  await page.route("**/api/tenants/acme/nodes", (route) =>
+    route.fulfill({
+      json: [
+        {
+          ...defaultNode,
+          name: "first",
+          address: "aidash://home/first",
+          default: true,
+        },
+        {
+          ...defaultNode,
+          name: "second",
+          address: "aidash://home/second",
+          default: false,
+        },
+      ],
+    }),
+  );
   let submitted: TransactionManifest | undefined;
   await page.route("**/api/transactions**", (route) => {
     if (route.request().method() === "POST") {
@@ -274,21 +292,24 @@ test("administrators compose transactions in one local Node", async ({
     }
     return route.fulfill({ json: [] });
   });
+  await page.addInitScript(() =>
+    localStorage.setItem("aidash-node:acme", "second"),
+  );
   await page.goto("/transactions");
   await page
     .getByRole("button", { name: "Create transaction", exact: true })
     .click();
   const dialog = page.getByRole("dialog");
   const node = dialog.getByLabel("Node", { exact: true });
-  await expect(node).toBeEnabled();
-  await node.selectOption("aidash://home/second");
+  await expect(node).toBeDisabled();
+  await expect(node).toHaveValue("aidash://home/second");
   const workspace = dialog.getByLabel("Workspace", { exact: true });
   await expect(workspace.locator('option[value="workspace-1"]')).toHaveCount(0);
   await workspace.selectOption("workspace-2");
   await expect(dialog.getByLabel("Revision", { exact: true })).toHaveValue("2");
   await expect(
     dialog.getByRole("button", { name: "Add participant", exact: true }),
-  ).toBeDisabled();
+  ).toBeEnabled();
   const operation = dialog.getByLabel("Operation", { exact: true });
   await operation.selectOption("complete_task");
   const task = dialog.getByLabel("Task", { exact: true });
@@ -300,10 +321,7 @@ test("administrators compose transactions in one local Node", async ({
   await expect(run.locator('option[value="remote-run"]')).toHaveCount(0);
   await run.selectOption("run-2");
   await expect(dialog.getByLabel("Revision", { exact: true })).toHaveValue("4");
-  await node.selectOption("aidash://home/first");
-  await expect(run).toHaveValue("");
-  await expect(dialog.getByLabel("Revision", { exact: true })).toHaveValue("0");
-  await run.selectOption("run-1");
+
   await dialog
     .getByRole("button", { name: "Review changes", exact: true })
     .click();
@@ -311,16 +329,16 @@ test("administrators compose transactions in one local Node", async ({
     .getByRole("button", { name: "Submit transaction", exact: true })
     .click();
   await expect(dialog.getByRole("alert")).toBeVisible();
-  expect(submitted?.coordinator).toBe("aidash://home/first");
+  expect(submitted?.coordinator).toBe("aidash://home/second");
   expect(submitted?.participants).toEqual([
     {
-      node_id: "aidash://home/first",
+      node_id: "aidash://home/second",
       mutations: [
         {
           kind: "finish_run",
-          run_id: "run-1",
-          task_id: "task-1",
-          expected_revision: 3,
+          run_id: "run-2",
+          task_id: "task-2",
+          expected_revision: 4,
         },
       ],
     },

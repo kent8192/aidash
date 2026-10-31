@@ -241,14 +241,7 @@ mod controlled_context_composition {
 			.permit_origin_of(&embedding_endpoint)
 			.unwrap();
 		let embedding_server = embeddings;
-		configure(
-			&app,
-			&f.config.api_token,
-			workspace,
-			&spec(&embedding_endpoint),
-			0,
-		)
-		.await;
+		configure(&app, &token, workspace, &spec(&embedding_endpoint), 0).await;
 		assert_eq!(
 			request(
 				&app,
@@ -1002,7 +995,7 @@ async fn a_skipped_workspace_read_keeps_the_durable_outage(
 	limited.embedding.model_version = "v".repeat(128);
 	configure(
 		&fixture._fixture.application,
-		&fixture.f.config.api_token,
+		&fixture.token,
 		run.workspace_id,
 		&limited,
 		1,
@@ -1134,14 +1127,14 @@ fn spec(endpoint: &str) -> IndexSpec {
 }
 async fn configure(
 	app: &common::TestApplication,
-	deployment_administrator: &str,
+	token: &str,
 	workspace: Uuid,
 	spec: &IndexSpec,
 	revision: i64,
 ) -> Value {
 	let (status, index) = request(
 		app,
-		deployment_administrator,
+		token,
 		"POST",
 		&format!("/api/workspaces/{workspace}/semantic/index"),
 		serde_json::to_value(ConfigureIndex {
@@ -1228,9 +1221,9 @@ async fn semantic_lifecycle_is_durable_revisioned_and_not_keyword_search(
 		.workspace_id;
 	let mut config = spec(&endpoint);
 	config.embedding.provider = provider.into();
-	let first = configure(&app, &f.config.api_token, workspace, &config, 0).await;
+	let first = configure(&app, &token, workspace, &config, 0).await;
 	assert_eq!(
-		configure(&app, &f.config.api_token, workspace, &config, 0).await["revision"],
+		configure(&app, &token, workspace, &config, 0).await["revision"],
 		1
 	);
 	let cars = put(
@@ -1299,7 +1292,7 @@ async fn semantic_lifecycle_is_durable_revisioned_and_not_keyword_search(
 		2
 	);
 	config.embedding.model_version = "2".into();
-	let second = configure(&app, &f.config.api_token, workspace, &config, 1).await;
+	let second = configure(&app, &token, workspace, &config, 1).await;
 	assert_ne!(first["collection"], second["collection"]);
 	assert_eq!(search(&app, &token, workspace).await.0, 409);
 	// Fresh pools reconstruct authority and jobs entirely from durable state.
@@ -1395,7 +1388,7 @@ async fn semantic_access_is_checked_before_search_and_jobs_retain_revocation(
 		.await
 		.unwrap()
 		.workspace_id;
-	configure(&app, &f.config.api_token, workspace, &spec(&endpoint), 0).await;
+	configure(&app, &token, workspace, &spec(&endpoint), 0).await;
 	let cars = put(
 		&app,
 		&token,
@@ -1439,30 +1432,19 @@ async fn semantic_access_is_checked_before_search_and_jobs_retain_revocation(
 	let response = search(&app, &token, workspace).await;
 	assert_eq!(response.0, 200, "{}", response.1);
 	assert_eq!(response.1["matches"], json!([]));
-	let (status, credentials) = request(
-		&app,
-		&f.config.api_token,
-		"GET",
-		"/api/authorization/acme/credentials",
-		json!(null),
-	)
-	.await;
-	assert_eq!(status, 200, "{credentials}");
-	let credential = credentials
-		.as_array()
-		.unwrap()
-		.iter()
-		.find(|c| c["subject"] == "alice")
-		.unwrap();
+	// Credentials are listed and revoked by the host here: the HTTP routes need
+	// a Tenant Administrator Mapping in a browser (#484).
 	let auth = aidash_server::authorization::Authorization {
 		pool: f.store.pool.clone(),
 	};
-	auth.revoke_credential(
-		"acme",
-		Uuid::parse_str(credential["id"].as_str().unwrap()).unwrap(),
-	)
-	.await
-	.unwrap();
+	let credential = auth
+		.credentials("acme")
+		.await
+		.unwrap()
+		.into_iter()
+		.find(|c| c.subject == "alice")
+		.unwrap();
+	auth.revoke_credential("acme", credential.id).await.unwrap();
 	{
 		let query_bind_1 = Uuid::parse_str(cars["id"].as_str().unwrap()).unwrap();
 		sqlx::query(
@@ -1528,7 +1510,7 @@ async fn semantic_outage_and_input_bounds_are_visible_and_retriable(
 		.workspace_id;
 	let mut config = spec(&endpoint);
 	config.embedding.dimensions = 4; // Provider's actual width is three.
-	configure(&app, &f.config.api_token, workspace, &config, 0).await;
+	configure(&app, &token, workspace, &config, 0).await;
 	let cars = put(
 		&app,
 		&token,
@@ -1552,7 +1534,7 @@ async fn semantic_outage_and_input_bounds_are_visible_and_retriable(
 	assert_eq!(entries.1[0]["attempts"], 1);
 	assert_eq!(search(&app, &token, workspace).await.0, 409);
 	config.embedding.dimensions = 3;
-	configure(&app, &f.config.api_token, workspace, &config, 1).await;
+	configure(&app, &token, workspace, &config, 1).await;
 	semantic::worker::sweep(&f.store).await.unwrap();
 	assert_eq!(search(&app, &token, workspace).await.0, 200);
 	let reindex_path = format!(
@@ -1633,14 +1615,7 @@ async fn semantic_context_is_provenanced_and_revocation_hides_run_journals(
 		.await
 		.unwrap()
 		.workspace_id;
-	configure(
-		&app,
-		&f.config.api_token,
-		workspace,
-		&spec(&embedding_endpoint),
-		0,
-	)
-	.await;
+	configure(&app, &token, workspace, &spec(&embedding_endpoint), 0).await;
 	let cars = put(
 		&app,
 		&token,
@@ -1803,7 +1778,7 @@ async fn linked_sources_and_agent_metadata_filters_respect_original_authority(
 		.await
 		.unwrap()
 		.workspace_id;
-	configure(&app, &f.config.api_token, workspace, &spec(&endpoint), 0).await;
+	configure(&app, &token, workspace, &spec(&endpoint), 0).await;
 	assert_eq!(
 		request(
 			&app,
@@ -1958,15 +1933,30 @@ async fn linked_sources_and_agent_metadata_filters_respect_original_authority(
 	)
 	.await;
 	assert!(!entries.to_string().contains(&artifact.id.to_string()));
-	// Even a Deployment Administrator cannot attach a resource from a different workspace.
+	// A Subject cannot configure or attach a resource across Tenants either.
 	let other_tenant = common::tenant_scope(&f.store, "other").await;
 	let other = f
 		.store
 		.create_workspace(&other_tenant, "bob", "Other", "Isolation")
 		.await
 		.unwrap();
-	configure(&app, &f.config.api_token, other.id, &spec(&endpoint), 0).await;
-	assert_eq!(request(&app,&f.config.api_token,"POST",&format!("/api/workspaces/{}/semantic/entries",other.id),json!({"key":"forged","expected_revision":0,"source":{"kind":"artifact","id":artifact.id},"metadata":{}})).await.0,403);
+	assert_eq!(
+		request(
+			&app,
+			&token,
+			"POST",
+			&format!("/api/workspaces/{}/semantic/index", other.id),
+			serde_json::to_value(ConfigureIndex {
+				expected_revision: 0,
+				spec: spec(&endpoint),
+			})
+			.unwrap()
+		)
+		.await
+		.0,
+		403
+	);
+	assert_eq!(request(&app,&token,"POST",&format!("/api/workspaces/{}/semantic/entries",other.id),json!({"key":"forged","expected_revision":0,"source":{"kind":"artifact","id":artifact.id},"metadata":{}})).await.0,403);
 	assert_eq!(search(&app, &token, other.id).await.0, 403);
 	drop(server);
 	dispose(f, &url, &schema).await;
@@ -1997,7 +1987,7 @@ async fn semantic_postgres_restart_and_lost_points_recover(
 		.unwrap()
 		.workspace_id;
 	let config = spec(&embedding);
-	let index = configure(&app, &f.config.api_token, workspace, &config, 0).await;
+	let index = configure(&app, &token, workspace, &config, 0).await;
 	let entry = put(
 		&app,
 		&token,
@@ -2226,4 +2216,119 @@ async fn semantic_context_is_provenanced_and_revocation_hides_run_journals_provi
 	server: reinhardt::test::fixtures::server::TestServerGuard,
 ) -> SemanticContextIsProvenancedAndRevocationHidesRunJournalsProvider {
 	SemanticContextIsProvenancedAndRevocationHidesRunJournalsProvider { state, server }
+}
+
+/// Neither Deployment Administrator form (the shared bearer or a browser
+/// context) nor another Tenant's Subject configures, reads or mutates a
+/// Tenant's Semantic Index or its knowledge (#484).
+#[rstest::rstest]
+#[tokio::test]
+async fn deployment_and_other_tenant_authority_never_reaches_semantic_index_or_knowledge(
+	#[future(awt)]
+	#[from(common::native_application)]
+	application_fixture: common::ApplicationFixture,
+
+	#[future(awt)] embeddings: std::sync::Arc<reinhardt::test::fixtures::server::TestServerGuard>,
+) {
+	// Arrange: a configured index with one stored entry, a browser administrator
+	// and a Subject of a second Tenant.
+	let (f, url, schema) = application_fixture.runtime.parts();
+	let app = application_fixture.application.clone();
+	let endpoint = embeddings.url.clone();
+	let server = embeddings;
+	let (_, token, task) = common::bootstrap(&f, &app, &endpoint).await;
+	let workspace = f
+		.store
+		.task(&TEST_FIXTURE, task)
+		.await
+		.unwrap()
+		.workspace_id;
+	let config = spec(&endpoint);
+	configure(&app, &token, workspace, &config, 0).await;
+	let entry = put(
+		&app,
+		&token,
+		workspace,
+		"cars",
+		"A car carries passengers.",
+		0,
+	)
+	.await;
+	let browser = common::BrowserAdministrator::new(&f).await;
+	common::tenant_root(&f, "other").await;
+	assert_eq!(
+		request(&app, &f.config.api_token, "POST", "/api/authorization/other", json!({"expected_revision":0,"bundle":{"tenant":"other","subjects":{"bob":{"kind":"user"}},"policies":[{"id":"fixture","effect":"allow","subjects":{"any":true},"actions":["*"],"resources":{"kinds":["*"]}}]}})).await.0,
+		200
+	);
+	let bob = common::subject_credential(&f.store, "other", "bob").await;
+	let index = format!("/api/workspaces/{workspace}/semantic/index");
+	let entries = format!("/api/workspaces/{workspace}/semantic/entries");
+	let mut reconfigured = config.clone();
+	reconfigured.max_results = 1;
+	let reconfigure = serde_json::to_value(ConfigureIndex {
+		expected_revision: 1,
+		spec: reconfigured,
+	})
+	.unwrap();
+	let overwrite = json!({"key":"cars","expected_revision":1,"source":{"kind":"memory","text":"overwritten"},"metadata":{}});
+	let routes = [
+		("GET", index.clone(), Value::Null),
+		("POST", index.clone(), reconfigure),
+		("GET", entries.clone(), Value::Null),
+		("POST", entries.clone(), overwrite),
+		(
+			"GET",
+			format!("/api/workspaces/{workspace}/semantic/cleanup"),
+			Value::Null,
+		),
+		(
+			"POST",
+			format!("/api/workspaces/{workspace}/memory/operate"),
+			json!({}),
+		),
+		(
+			"POST",
+			format!("/api/workspaces/{workspace}/memory/units/mutate"),
+			json!({}),
+		),
+	];
+
+	// Act and Assert
+	for (method, path, body) in &routes {
+		let (status, response) =
+			request(&app, &f.config.api_token, method, path, body.clone()).await;
+		assert_eq!(
+			status, 403,
+			"bearer administrator {method} {path}: {response}"
+		);
+		let (status, response) = browser.send(method, path, body.clone()).await;
+		assert_eq!(
+			status, 403,
+			"browser administrator {method} {path}: {response}"
+		);
+		// A rejection of the empty probe body is plain text, so read the status only.
+		let mut probe = app
+			.api_http
+			.request(method.parse().unwrap(), path)
+			.header("Authorization", format!("Bearer {bob}"));
+		if *method == "POST" {
+			probe = probe.json(body);
+		}
+		let status = probe.send().await.unwrap().status_code();
+		assert!(
+			matches!(status, 400 | 403 | 404 | 422),
+			"other Tenant {method} {path}: {status}"
+		);
+	}
+	// The Tenant's own Subject still reads, and nothing changed.
+	let (status, current) = request(&app, &token, "GET", &index, Value::Null).await;
+	assert_eq!(status, 200, "{current}");
+	assert_eq!(current["revision"], 1);
+	assert_eq!(current["spec"]["max_results"], 10);
+	let (status, stored) = request(&app, &token, "GET", &entries, Value::Null).await;
+	assert_eq!(status, 200, "{stored}");
+	assert_eq!(stored.as_array().unwrap().len(), 1);
+	assert_eq!(stored[0]["id"], entry["id"]);
+	drop(server);
+	dispose(f, &url, &schema).await;
 }

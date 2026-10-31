@@ -1,21 +1,20 @@
 meta {
-  name: 1153 tenant-invitations - Unknown Tenant has no Invitations
+  name: 1153 tenant-invitations - Anonymous request is rejected
   type: http
   seq: 1153
 }
 
 get {
-  url: {{base_url}}/api/tenants/bruno-missing-tenant/invitations
+  url: {{base_url}}/api/tenants/{{tenant}}/invitations
   body: none
   auth: none
 }
 
 headers {
   Accept: application/json
-  Authorization: Bearer {{deployment_administrator_token}}
 }
 
 tests {
-  test("Exact HTTP 404", function () { expect(res.getStatus()).to.equal(404); });
-  test("Rejection is diagnostic and does not disclose SQL or credentials", function () { const value=res.getBody(); const text=typeof value === "string" ? value : JSON.stringify(value); expect(text.length).to.be.greaterThan(0); expect(text).not.to.match(/postgres:\/\/|SELECT .* FROM |deployment_administrator_token|peer_token/); });
+  test("Exact HTTP 401", function () { expect(res.getStatus()).to.equal(401); });
+  test("Stable authorization error envelope", function () { expect(res.getHeader("content-type")).to.include("application/json"); expect(res.getBody()).to.eql({error:"unauthorized"}); });
 }

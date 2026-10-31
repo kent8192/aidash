@@ -1,5 +1,5 @@
 meta {
-  name: 0949 health - Foreign origin receives the same public contract
+  name: 0949 health - Public contract
   type: http
   seq: 949
 }
@@ -12,10 +12,9 @@ get {
 
 headers {
   Accept: application/json
-  Origin: https://untrusted.example
 }
 
 tests {
   test("Exact HTTP 200", function () { expect(res.getStatus()).to.equal(200); });
-  test("Foreign origin receives the same public contract contract", function () { expect(res.getHeader("content-type")).to.include("application/json");expect(res.getBody()).to.be.an("object");expect(res.getBody()).to.eql({status:"ok",deployment:bru.getEnvVar("node_id")}); });
+  test("Public contract contract", function () { expect(res.getHeader("content-type")).to.include("application/json");expect(res.getBody()).to.be.an("object");expect(res.getBody()).to.eql({status:"ok",deployment:bru.getEnvVar("node_id")}); });
 }

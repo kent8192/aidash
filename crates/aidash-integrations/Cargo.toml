@@ -98,7 +98,7 @@ cloud-adapters = [
 ]
 authentication = ["dep:reinhardt", "dep:prost", "dep:tonic-prost"]
 # Fake-provider constructors for tests (ADR 0006). Production dependencies never
-# enable it; see scripts/check-workspace-boundaries.py.
+# enable it.
 test-support = []
 
 [dev-dependencies]

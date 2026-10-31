@@ -60,6 +60,12 @@ impl AccessTransaction {
 		self.transaction.is_some()
 	}
 
+	/// The native transaction, for a trait object that cannot use the wrapper's
+	/// `Deref` coercion directly.
+	pub(crate) fn native_mut(&mut self) -> &mut crate::database::native::Transaction {
+		self
+	}
+
 	fn install(&mut self, transaction: crate::database::native::Transaction) {
 		debug_assert!(self.transaction.is_none());
 		self.admissions.clear();
@@ -762,7 +768,7 @@ impl Access {
 			if let Some(tx) = tx {
 				tx.rollback().await?;
 			}
-			if matches!(result, Err(Error::Forbidden)) {
+			if matches!(result, Err(Error::Forbidden | Error::AuthorityRefused(_))) {
 				// Denials survive rollback with the evaluated policy revision.
 				let mut audit: Box<dyn TransactionExecutor> = self
 					.pool

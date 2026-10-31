@@ -37,7 +37,7 @@ pub async fn require(
 	action: &str,
 ) -> Result<()> {
 	let Principal::Subject { tenant, subject } = scope.principal() else {
-		return Ok(());
+		return Err(Error::Forbidden);
 	};
 	if tenant != incident.tenant {
 		return Err(Error::Forbidden);
@@ -102,7 +102,7 @@ pub async fn list(
 	let mut scope = repository.begin().await?;
 	scope.require_inspection(&reference).await?;
 	let tenant = match repository.principal() {
-		Principal::DeploymentAdministrator => None,
+		Principal::DeploymentAdministrator => return Err(Error::Forbidden),
 		Principal::Subject { tenant, .. } => Some(tenant),
 	};
 	let mut visible = Vec::new();

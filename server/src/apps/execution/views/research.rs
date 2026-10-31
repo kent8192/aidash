@@ -1,5 +1,5 @@
 //! Research evidence retention and revocation endpoints (ADR 0045, ADR 0046).
-//! Subjects act through their Tenant policy; Deployment Administrators need none.
+//! Subjects act through their Tenant policy; Deployment Administrators have no authority here (#484).
 use crate::apps::execution::serializers::research::{HistoryPage, RetentionInput, RevocationInput};
 use crate::apps::execution::services::management::HarnessManagement;
 use crate::authorization::identity::Actor;
@@ -18,11 +18,10 @@ use uuid::Uuid;
 pub async fn revoke(
 	#[inject] service: Depends<HarnessManagement>,
 	#[inject] actor: Actor,
-	#[inject] browser: Option<crate::dashboard_auth::BrowserOrigin>,
 	Path(id): Path<Uuid>,
 	Json(input): Json<RevocationInput>,
 ) -> ViewResult<Response> {
-	crate::http::json(service.research_revocation(actor, browser, id, input).await)
+	crate::http::json(service.research_revocation(actor, id, input).await)
 }
 
 /// The Run's Evidence Revocation record, readable by the audience of its
@@ -35,10 +34,9 @@ pub async fn revoke(
 pub async fn revocation(
 	#[inject] service: Depends<HarnessManagement>,
 	#[inject] actor: Actor,
-	#[inject] browser: Option<crate::dashboard_auth::BrowserOrigin>,
 	Path(id): Path<Uuid>,
 ) -> ViewResult<Response> {
-	crate::http::json(service.research_revocation_record(actor, browser, id).await)
+	crate::http::json(service.research_revocation_record(actor, id).await)
 }
 
 /// The Tenant's Evidence Revocation records, newest first.
@@ -50,15 +48,10 @@ pub async fn revocation(
 pub async fn revocations(
 	#[inject] service: Depends<HarnessManagement>,
 	#[inject] actor: Actor,
-	#[inject] browser: Option<crate::dashboard_auth::BrowserOrigin>,
 	Path(tenant): Path<String>,
 	Query(page): Query<HistoryPage>,
 ) -> ViewResult<Response> {
-	crate::http::json(
-		service
-			.research_revocations(actor, browser, tenant, page)
-			.await,
-	)
+	crate::http::json(service.research_revocations(actor, tenant, page).await)
 }
 
 /// The Deployment's periods, the Tenant's own and those that apply.
@@ -70,10 +63,9 @@ pub async fn revocations(
 pub async fn retention(
 	#[inject] service: Depends<HarnessManagement>,
 	#[inject] actor: Actor,
-	#[inject] browser: Option<crate::dashboard_auth::BrowserOrigin>,
 	Path(tenant): Path<String>,
 ) -> ViewResult<Response> {
-	crate::http::json(service.retention(actor, browser, tenant).await)
+	crate::http::json(service.retention(actor, tenant).await)
 }
 
 /// Store or clear the Tenant's own periods, never longer than the Deployment's.
@@ -85,15 +77,10 @@ pub async fn retention(
 pub async fn retention_update(
 	#[inject] service: Depends<HarnessManagement>,
 	#[inject] actor: Actor,
-	#[inject] browser: Option<crate::dashboard_auth::BrowserOrigin>,
 	Path(tenant): Path<String>,
 	Json(input): Json<RetentionInput>,
 ) -> ViewResult<Response> {
-	crate::http::json(
-		service
-			.retention_update(actor, browser, tenant, input)
-			.await,
-	)
+	crate::http::json(service.retention_update(actor, tenant, input).await)
 }
 
 /// The history of the Tenant's periods, newest first.
@@ -105,13 +92,8 @@ pub async fn retention_update(
 pub async fn retention_history(
 	#[inject] service: Depends<HarnessManagement>,
 	#[inject] actor: Actor,
-	#[inject] browser: Option<crate::dashboard_auth::BrowserOrigin>,
 	Path(tenant): Path<String>,
 	Query(page): Query<HistoryPage>,
 ) -> ViewResult<Response> {
-	crate::http::json(
-		service
-			.retention_history(actor, browser, tenant, page)
-			.await,
-	)
+	crate::http::json(service.retention_history(actor, tenant, page).await)
 }

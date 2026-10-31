@@ -2,7 +2,6 @@ import { useEffect, useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { Button } from "./components/ui/button";
 import { Badge as StatusBadge } from "./components/ui/badge";
-import { Input } from "./components/ui/input";
 import { NativeSelect } from "./components/ui/native-select";
 import {
   Table,
@@ -14,6 +13,7 @@ import {
 } from "./components/ui/table";
 import { Alert, Notice } from "./components/patterns";
 import { Empty, Field, Panel, useI18n, type StatusTone } from "./ui";
+import { AdministratorTenantNotice } from "./administrator-notice";
 import { ApiError } from "./transport";
 import type { State } from "./types";
 import {
@@ -40,16 +40,6 @@ const keySettingsPattern = /^https:\/\/openrouter\.ai\/keys\/[0-9a-f]{64}$/;
 
 /** The Tenant whose Provider Authorization the browser left for. */
 const tenantKey = "aidash-provider-authorization-tenant";
-
-/**
- * The Tenant a Deployment Administrator returns to from Provider Authorization: the callback
- * reloads the dashboard, and the Deployment Administrator's Tenant is otherwise page state.
- */
-function returningTenant(): string {
-  return sessionStorage.getItem("aidash-provider-authorization")
-    ? (sessionStorage.getItem(tenantKey) ?? "")
-    : "";
-}
 
 /**
  * Reads the callback's `provider_authorization` outcome; the
@@ -113,38 +103,15 @@ export function ProviderCredentialsPage({
   access: State["access"];
 }) {
   const { t } = useI18n();
-  const [selected, select] = useState(() =>
-    access.kind === "deployment_administrator" ? returningTenant() : "",
-  );
-  const tenant = access.kind === "subject" ? access.tenant : selected;
+  // Provider Credentials belong to a Tenant; a Deployment Administrator holds
+  // no Tenant content authority and chooses no Tenant here (ADR 0102).
+  if (access.kind !== "subject")
+    return <AdministratorTenantNotice className="" />;
+  const tenant = access.tenant;
   return (
     <div className="grid max-w-5xl min-w-0 gap-6">
       <Notice>{t("providerCredentialsHelp")}</Notice>
-      {access.kind === "deployment_administrator" && (
-        <form
-          className="flex min-w-0 flex-wrap items-end gap-2"
-          onSubmit={(event) => {
-            event.preventDefault();
-            select(
-              String(new FormData(event.currentTarget).get("tenant")).trim(),
-            );
-          }}
-        >
-          <div className="w-full max-w-xs">
-            <Field label={t("tenant")}>
-              <Input
-                name="tenant"
-                required
-                maxLength={256}
-                defaultValue={selected}
-                className="font-mono text-xs"
-              />
-            </Field>
-          </div>
-          <Button variant="outline">{t("open")}</Button>
-        </form>
-      )}
-      {tenant && <TenantProviderCredentials key={tenant} tenant={tenant} />}
+      <TenantProviderCredentials key={tenant} tenant={tenant} />
     </div>
   );
 }

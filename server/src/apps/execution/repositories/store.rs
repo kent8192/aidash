@@ -3,7 +3,6 @@ use crate::apps::execution::models::{
 	Event as EventRecord, HumanRequest as HumanRequestRecord, InferenceUsage,
 	Invocation as InvocationRecord, Run as RunRecord, RunInput as InputRecord, event_records,
 };
-use crate::apps::execution::serializers::runs::RunDetails;
 use crate::apps::execution::services::human_interaction;
 use crate::apps::federation::remote::models::RemoteRunMessageFence;
 use crate::apps::identity::models::AuthorizationRunOutput;
@@ -21,9 +20,7 @@ use crate::{
 };
 use aidash_application::tenancy::{DeploymentScopeReason, TenancyScope};
 use aidash_domain::ControlSource;
-use reinhardt::core::exception::Error as FrameworkError;
 use reinhardt::db::backends::TransactionExecutor;
-use reinhardt::db::orm::Model;
 use reinhardt::query::ColumnRef;
 use reinhardt::query::OnConflict;
 use reinhardt::query::SimpleExpr;
@@ -3052,6 +3049,21 @@ impl Store {
 		Ok(renewed)
 	}
 
+	/// Commits the Lease Recovery an Isolated Step charges before it runs (#604).
+	pub async fn charge_lease_recovery(
+		&self,
+		scope: &TenancyScope,
+		id: Uuid,
+		worker: Uuid,
+		lease_recoveries: u32,
+	) -> Result<bool> {
+		let mut tx = self.pool.begin(scope).await?.into_executor().await?;
+		let charged =
+			RunRecord::charge_lease_recovery(tx.as_mut(), id, worker, lease_recoveries).await?;
+		tx.commit().await?;
+		Ok(charged)
+	}
+
 	pub async fn save_run(
 		&self,
 		scope: &TenancyScope,
@@ -3133,16 +3145,7 @@ impl Store {
 		// lease so the step's authority pause applies to the saved Run. An
 		// adopted compaction ends its step and releases the lease so the next
 		// poll can continue the Run immediately.
-		let retain_lease = matches!(
-			kind,
-			"run.sources_observed"
-				| "run.semantic_degraded"
-				| "run.semantic_recovered"
-				| "run.estimate_pinned"
-				| "run.plugin_tools_pinned"
-				| "run.mcp_checkpoint"
-				| "context.summary_revoked"
-		);
+		let retain_lease = aidash_domain::run_state::persistence::retains_lease(kind);
 		let mut safe_context = run.context.clone();
 		super::research::protect_projection(tx.as_mut(), run.id, &mut safe_context).await?;
 		if kind == "context.compacted"
@@ -3228,8 +3231,9 @@ impl Store {
 		worker: Uuid,
 		reason: &str,
 		event_kind: &str,
+		refusal: Option<&aidash_domain::tool::AuthorityRefusal>,
 	) -> Result<()> {
-		self.pause_for_execution_reason(run, worker, reason, event_kind, None)
+		self.pause_for_execution_reason(run, worker, reason, event_kind, None, refusal)
 			.await
 	}
 	pub(crate) async fn cancel_execution(
@@ -3969,7 +3973,21 @@ impl Store {
 				"tool idempotency key reused with different input".into(),
 			));
 		}
-		if !created && invocation.status != "COMPLETED" && !invocation.replay_safe {
+		if !created
+			&& invocation.status == "STARTED"
+			&& (invocation.delivery_pending || invocation.replay_safe)
+		{
+			crate::database::native::query(
+				&Query::update()
+					.table(Alias::new("invocations"))
+					.value(Alias::new("delivery_pending"), false)
+					.value(Alias::new("uncertain_reason"), Option::<String>::None)
+					.and_where(Expr::col(Alias::new("idempotency_key")).eq(Expr::value(key)))
+					.to_string(PostgresQueryBuilder),
+			)
+			.execute(&mut *tx)
+			.await?;
+		} else if !created && invocation.status != "COMPLETED" && !invocation.replay_safe {
 			{
 				let query_bind_1 = key;
 				crate::database::native::query(
@@ -4001,6 +4019,85 @@ impl Store {
 			.await?;
 		}
 		Ok(invocation)
+	}
+	pub async fn invocation_not_delivered(
+		&self,
+		scope: &TenancyScope,
+		run: &Run,
+		worker: Uuid,
+		key: &str,
+		failure: &Value,
+	) -> Result<u32> {
+		let mut tx = self.pool.begin(scope).await?.into_executor().await?;
+		if !RunRecord::hold_worker(tx.as_mut(), run.id, worker).await? {
+			return Err(Error::Conflict(
+				"worker lease lost while recording tool delivery".into(),
+			));
+		}
+		let count: i32 = crate::database::native::query_scalar(
+			&Query::update()
+				.table(Alias::new("invocations"))
+				.value_expr(
+					Alias::new("delivery_failures"),
+					Expr::col(Alias::new("delivery_failures")).add(Expr::value(1_i32)),
+				)
+				.value(Alias::new("delivery_pending"), true)
+				.and_where(Expr::col(Alias::new("run_id")).eq(Expr::value(run.id)))
+				.and_where(Expr::col(Alias::new("idempotency_key")).eq(Expr::value(key)))
+				.and_where(Expr::col(Alias::new("status")).eq(Expr::value("STARTED")))
+				.returning([Alias::new("delivery_failures")])
+				.to_string(PostgresQueryBuilder),
+		)
+		.scalar_one(tx.as_mut())
+		.await?;
+		let count = u32::try_from(count)
+			.map_err(|_| Error::Conflict("invalid tool delivery count".into()))?;
+		if count > aidash_domain::semantic::OUTAGE_RETRIES
+			&& InvocationRecord::complete(tx.as_mut(), run.id, key, failure).await?
+		{
+			event_records::append_run(
+				tx.as_mut(),
+				run.id,
+				(run.is_local(self.deployment.as_str())).then_some(run.workspace_id),
+				"tool.completed",
+				json!({"run_id":run.id,"idempotency_key":key,"result":failure}),
+			)
+			.await?;
+		}
+		tx.commit().await?;
+		Ok(count)
+	}
+	pub async fn invocation_answer_lost(
+		&self,
+		scope: &TenancyScope,
+		run: &Run,
+		worker: Uuid,
+		key: &str,
+	) -> Result<()> {
+		let mut tx = self.pool.begin(scope).await?.into_executor().await?;
+		if !RunRecord::hold_worker(tx.as_mut(), run.id, worker).await? {
+			return Err(Error::Conflict(
+				"worker lease lost while recording lost tool answer".into(),
+			));
+		}
+		let changed = crate::database::native::query(
+			&Query::update()
+				.table(Alias::new("invocations"))
+				.value(Alias::new("uncertain_reason"), "answer_lost")
+				.value(Alias::new("delivery_pending"), false)
+				.and_where(Expr::col(Alias::new("run_id")).eq(Expr::value(run.id)))
+				.and_where(Expr::col(Alias::new("idempotency_key")).eq(Expr::value(key)))
+				.and_where(Expr::col(Alias::new("status")).eq(Expr::value("STARTED")))
+				.to_string(PostgresQueryBuilder),
+		)
+		.execute(tx.as_mut())
+		.await?
+		.rows_affected();
+		if changed != 1 {
+			return Err(Error::Conflict("tool invocation is not started".into()));
+		}
+		tx.commit().await?;
+		Ok(())
 	}
 	pub async fn invocation_finish(
 		&self,
@@ -4111,64 +4208,6 @@ impl Store {
 					i32::from(projection_version),
 				)
 				.await
-			})
-			.await
-	}
-	pub(crate) async fn run_details_in(
-		&self,
-		tx: &mut dyn TransactionExecutor,
-		run: Run,
-		offset: u64,
-	) -> Result<RunDetails> {
-		let invocations = InvocationRecord::page(tx, run.id, offset).await?;
-		let memory = crate::semantic::repositories::bindings::load(tx, &run.metadata()).await?;
-		let egress_requests =
-			crate::apps::execution::capabilities::models::EgressRequest::objects()
-				.filter(
-					crate::apps::execution::capabilities::models::EgressRequest::field_run_id()
-						.eq(run.id),
-				)
-				.order_by(&["id"])
-				.offset(offset as usize)
-				.limit(100)
-				.all_with_executor(tx)
-				.await
-				.map_err(FrameworkError::from)?;
-		let egress_requests = egress_requests
-			.into_iter()
-			.map(|row| serde_json::from_value(serde_json::to_value(row)?))
-			.collect::<std::result::Result<Vec<aidash_domain::egress::RequestRecord>, _>>()?;
-		Ok(RunDetails {
-			egress_requests,
-			media_input_routes: Vec::new(),
-			run: run.into(),
-			invocations,
-			memory,
-		})
-	}
-	pub(crate) async fn run_details(
-		&self,
-		scope: &TenancyScope,
-		id: Uuid,
-		offset: u64,
-	) -> Result<RunDetails> {
-		self.pool
-			.atomic(scope, async |tx| {
-				if let Some(tenant) = scope.tenant_name() {
-					crate::authorization::remote::deployment_administrator::tenant(
-						tx,
-						tenant.as_str(),
-					)
-					.await?;
-				}
-				let run = RunRecord::objects()
-					.filter(RunRecord::field_id().eq(id))
-					.all_with_executor(tx)
-					.await
-					.map_err(FrameworkError::from)?
-					.pop()
-					.ok_or_else(|| Error::NotFound("run".into()))?;
-				self.run_details_in(tx, run.try_into()?, offset).await
 			})
 			.await
 	}
@@ -4908,6 +4947,7 @@ impl Store {
 			&reason.to_string(),
 			"run.semantic_blocked",
 			Some(("semantic_reason", serde_json::to_value(reason)?)),
+			None,
 		)
 		.await
 	}
@@ -4925,6 +4965,7 @@ impl Store {
 			&reason.to_string(),
 			"run.context_blocked",
 			Some(("context_reason", serde_json::to_value(reason)?)),
+			None,
 		)
 		.await
 	}
@@ -4940,6 +4981,7 @@ impl Store {
 		reason: &str,
 		event_kind: &str,
 		recovery_reason: Option<(&'static str, Value)>,
+		refusal: Option<&aidash_domain::tool::AuthorityRefusal>,
 	) -> Result<()> {
 		let run = run.into();
 		// Pausing a claimed Run is the worker's lease bookkeeping.
@@ -4970,7 +5012,16 @@ impl Store {
 			run.id,
 			(run.is_local(self.deployment.as_str())).then_some(run.workspace_id),
 			event_kind,
-			json!({"run_id":run.id,"task_id":run.task_id}),
+			// The tool and the check only; never what the call addressed.
+			match refusal {
+				Some(refusal) => {
+					let mut payload = serde_json::to_value(refusal)?;
+					payload["run_id"] = json!(run.id);
+					payload["task_id"] = json!(run.task_id);
+					payload
+				}
+				None => json!({"run_id":run.id,"task_id":run.task_id}),
+			},
 		)
 		.await?;
 		// Pausing releases the lease; the worker can no longer finish its attempt.
@@ -5061,6 +5112,9 @@ pub(crate) fn invocation_summary(alias: Option<&str>) -> reinhardt::query::Selec
 		"tool",
 		"status",
 		"replay_safe",
+		"delivery_failures",
+		"delivery_pending",
+		"uncertain_reason",
 		"created_at",
 	] {
 		if let Some(table) = alias {

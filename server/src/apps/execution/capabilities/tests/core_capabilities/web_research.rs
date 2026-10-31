@@ -201,7 +201,7 @@ impl Research {
 			"source"
 		]);
 		// Removing research disclosure authority keeps default metadata readable.
-		policy["policies"].as_array_mut().unwrap().push(json!({"id":"default-decider-metadata","effect":"allow","subjects":{"any":true},"actions":["registry.read"],"resources":{"kinds":["decider"]}}));
+		policy["policies"].as_array_mut().unwrap().push(json!({"id":"default-decider-access","effect":"allow","subjects":{"any":true},"actions":["registry.read","decision.invoke"],"resources":{"kinds":["decider"]}}));
 		policy["policies"].as_array_mut().unwrap().push(json!({"id":"approvable-research","effect":"allow","subjects":{"any":true},"actions":["capability.request","capability.approve"],"resources":{"kinds":["research"]}}));
 		crate::common::replace_policy(&self.c.f.store, "acme", self.c.policy.clone()).await;
 	}
@@ -682,13 +682,12 @@ async fn the_run_research_api_reports_usage_with_run_get_authority_and_the_inbox
 		Value::Null,
 	)
 	.await;
-	let (_, bob) = request(
-		&r.c.app,
-		&r.c.f.config.api_token,
-		"POST",
-		"/api/authorization/acme/credentials",
-		json!({"subject":"bob"}),
-	)
+	let (_, bob) = async {
+		(
+			200_u16,
+			common::issued_credential(&r.c.f.store, "acme", "bob").await,
+		)
+	}
 	.await;
 	let bob = bob["token"].as_str().unwrap();
 	let (bob_run, _) = request(
@@ -1022,22 +1021,24 @@ async fn a_reader_of_the_run_opens_its_cited_fragment_and_everyone_else_sees_the
 	let (status, deployment_administrator) =
 		request(&r.c.app, &r.c.f.config.api_token, "GET", &path, json!(null)).await;
 	assert_eq!(
-		status, 200,
-		"a Deployment Administrator reads what run_get discloses"
+		status, 403,
+		"a Deployment Administrator reads no Tenant's evidence (#484)"
 	);
-	assert_eq!(deployment_administrator["text"], "Alpha");
+	assert!(
+		!deployment_administrator.to_string().contains("Alpha"),
+		"{deployment_administrator}"
+	);
 
 	// Everyone else gets one identical absence, whatever the reason. Bob is
 	// a member of the Tenant whose policy no longer lets him read Runs.
 	r.c.policy["policies"].as_array_mut().unwrap().push(json!({"id":"bob-reads-no-runs","effect":"deny","subjects":{"ids":["bob"]},"actions":["run.read"],"resources":{"kinds":["run"]}}));
 	crate::common::replace_policy(&r.c.f.store, "acme", r.c.policy.clone()).await;
-	let (_, bob) = request(
-		&r.c.app,
-		&r.c.f.config.api_token,
-		"POST",
-		"/api/authorization/acme/credentials",
-		json!({"subject":"bob"}),
-	)
+	let (_, bob) = async {
+		(
+			200_u16,
+			common::issued_credential(&r.c.f.store, "acme", "bob").await,
+		)
+	}
 	.await;
 	let unknown = format!("ev_{}", Uuid::new_v4());
 	for (case, token, path) in [
@@ -1139,14 +1140,14 @@ async fn the_providers_api_says_what_is_set_up_and_approved_only_to_a_tenant_sub
 		"Deployment Administrators read no Tenant's research setup"
 	);
 	// A second Node starts without approvals, regardless of the default Catalog.
-	let (status, second) = request(
-		&r.c.app,
-		&r.c.f.config.api_token,
-		"POST",
-		"/api/tenants/acme/nodes",
-		json!({"label":"Research Node"}),
-	)
-	.await;
+	let (status, second) = common::BrowserMapping::new(&r.c.f, "acme", "alice")
+		.await
+		.send(
+			"POST",
+			"/api/tenants/acme/nodes",
+			json!({"label":"Research Node"}),
+		)
+		.await;
 	assert_eq!(status, 201, "{second}");
 	let name = second["name"].as_str().unwrap();
 	let path = format!("/api/research/providers?node={name}");

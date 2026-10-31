@@ -34,6 +34,9 @@ pub enum Error {
 	Unauthorized,
 	#[error("forbidden")]
 	Forbidden,
+	/// A tool call the Run's authority refused; the API answers it like [`Error::Forbidden`].
+	#[error("forbidden")]
+	AuthorityRefused(Box<aidash_domain::tool::AuthorityRefusal>),
 	/// The build's admission gate refused new work (402); the code is stable.
 	#[error("{0}")]
 	Refused(String),
@@ -71,6 +74,17 @@ pub enum Error {
 	OrchestrationUnavailable,
 	#[error("{0}")]
 	External(String),
+	#[error("{message}")]
+	ToolNotDelivered {
+		message: String,
+		retry_after: Option<std::time::Duration>,
+	},
+	#[error("{message}")]
+	ToolRetry {
+		message: String,
+		count: u32,
+		retry_after: Option<std::time::Duration>,
+	},
 	#[error("OpenRouter returned {status}: {reason}")]
 	ProviderRejected { status: u16, reason: String },
 	/// A Plan Connection could not serve a call (ADR 0007); never retried.
@@ -102,7 +116,9 @@ impl Error {
 			Self::NotFound(s) => (StatusCode::NOT_FOUND, s.clone()),
 			Self::Unprocessable(s) => (StatusCode::UNPROCESSABLE_ENTITY, s.clone()),
 			Self::Unauthorized => (StatusCode::UNAUTHORIZED, "unauthorized".into()),
-			Self::Forbidden => (StatusCode::FORBIDDEN, "forbidden".into()),
+			Self::Forbidden | Self::AuthorityRefused(_) => {
+				(StatusCode::FORBIDDEN, "forbidden".into())
+			}
 			Self::Refused(code) => (StatusCode::PAYMENT_REQUIRED, code.clone()),
 			Self::RateLimited => (StatusCode::TOO_MANY_REQUESTS, self.to_string()),
 			Self::TenantDeleted => (StatusCode::GONE, self.to_string()),
@@ -330,7 +346,27 @@ impl From<aidash_application::Error> for Error {
 			ApplicationError::Refused(code) => Self::Refused(code),
 			ApplicationError::Unauthorized => Self::Unauthorized,
 			ApplicationError::Forbidden => Self::Forbidden,
+			ApplicationError::AuthorityRefused(refusal) => Self::AuthorityRefused(refusal),
 			ApplicationError::External(message) => Self::External(message),
+			ApplicationError::ToolNotDelivered {
+				message,
+				retry_after,
+			} => Self::ToolNotDelivered {
+				message,
+				retry_after,
+			},
+			ApplicationError::ToolServiceStatus { status, .. } => {
+				Self::External(format!("tool service returned HTTP {status}"))
+			}
+			ApplicationError::ToolRetry {
+				message,
+				count,
+				retry_after,
+			} => Self::ToolRetry {
+				message,
+				count,
+				retry_after,
+			},
 			ApplicationError::MediaRouteUnavailable(model) => Self::MediaRouteUnavailable(model),
 			ApplicationError::OrchestrationUnavailable => Self::OrchestrationUnavailable,
 			ApplicationError::RemoteSemantic(reason) => Self::RemoteSemantic(reason),
@@ -369,6 +405,7 @@ impl From<Error> for aidash_application::Error {
 			Error::FederationDisabled => Self::FederationDisabled,
 			// Work stopped by a Tenant Deletion pauses like any refused authority.
 			Error::Forbidden | Error::TenantDeleted => Self::Forbidden,
+			Error::AuthorityRefused(refusal) => Self::AuthorityRefused(refusal),
 			Error::Refused(code) => Self::Refused(code),
 			Error::Unauthorized => Self::Unauthorized,
 			Error::Json(error) => Self::Json(error),
@@ -380,6 +417,22 @@ impl From<Error> for aidash_application::Error {
 			Error::IdentityStatusUnavailable => Self::IdentityStatusUnavailable,
 			Error::TransactionPending => Self::TransactionPending,
 			Error::InferenceStalled => Self::InferenceStalled,
+			Error::ToolNotDelivered {
+				message,
+				retry_after,
+			} => Self::ToolNotDelivered {
+				message,
+				retry_after,
+			},
+			Error::ToolRetry {
+				message,
+				count,
+				retry_after,
+			} => Self::ToolRetry {
+				message,
+				count,
+				retry_after,
+			},
 			Error::Plan(failure) => Self::Plan(failure),
 			error => Self::Port(Box::new(error)),
 		}

@@ -7,6 +7,8 @@ pub use concurrency::Concurrency;
 pub mod contract;
 pub use contract::*;
 pub mod providers;
+pub mod refusal;
+pub use refusal::{AuthorityRefusal, RefusalCheck};
 
 /// The native Agent cutover still consumes the original tagged transport shape.
 /// Select it only by its string tag; malformed descriptors never fall back to it.

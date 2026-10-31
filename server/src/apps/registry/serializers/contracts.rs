@@ -35,6 +35,9 @@ pub struct AgentSubject {
 pub struct VersionApproval {
 	pub enabled: bool,
 	pub revision: i64,
+	/// Who may use the version on this Node; absent means everyone the
+	/// Tenant's policy allows (ADR 0095).
+	pub restriction: Option<aidash_domain::identity::catalog::CatalogRestriction>,
 }
 #[derive(Debug, Clone, serde::Serialize, schemars::JsonSchema)]
 pub struct ApprovalRecord {
@@ -42,6 +45,8 @@ pub struct ApprovalRecord {
 	pub enabled: bool,
 	pub actor: String,
 	pub created_at: chrono::DateTime<chrono::Utc>,
+	/// The restriction this revision recorded.
+	pub restriction: Option<aidash_domain::identity::catalog::CatalogRestriction>,
 }
 /// One page of the versions the caller may read, in id and version order.
 #[derive(Debug, Clone, serde::Serialize, schemars::JsonSchema)]

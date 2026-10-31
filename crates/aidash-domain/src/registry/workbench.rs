@@ -79,12 +79,6 @@ pub struct ArchiveInput {
 	pub expected_revision: i64,
 	pub archived: bool,
 }
-#[derive(Debug, Deserialize, JsonSchema)]
-#[serde(deny_unknown_fields)]
-pub struct AdoptInput {
-	pub tenant: String,
-	pub owner: String,
-}
 #[derive(Debug, Serialize, JsonSchema)]
 pub struct Validation {
 	pub draft_id: Uuid,
