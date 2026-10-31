@@ -609,7 +609,6 @@ impl FileScopePort for Scope<'_> {
 		crate::database::native::query(&statement)
 			.execute(&mut **access.tx)
 			.await
-			.map_err(NativeError::from)
 			.map_err(Error::from)?;
 		Ok(())
 	}

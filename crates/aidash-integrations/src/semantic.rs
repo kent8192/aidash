@@ -147,10 +147,10 @@ pub async fn embed_input(
 		let body = raw
 			.as_deref()
 			.and_then(|raw| serde_json::from_slice::<Value>(raw).ok());
-		if config.provider_credential.is_some() {
-			if let Some(error) = crate::response::capability_failure(status, body.as_ref()) {
-				return Err(error);
-			}
+		if config.provider_credential.is_some()
+			&& let Some(error) = crate::response::capability_failure(status, body.as_ref())
+		{
+			return Err(error);
 		}
 		use aidash_domain::semantic::Failure;
 		if embedding_model_missing(status, body.as_ref(), raw.as_deref()) {

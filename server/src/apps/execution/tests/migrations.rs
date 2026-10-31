@@ -66,6 +66,7 @@ const TENANT_REGISTRY_MIGRATIONS: &[(&str, &str)] = &[
 	("registry", "0052_embedding_inputs"),
 	("registry", "0053_reference_images"),
 	("registry", "0054_reference_image_byte_state"),
+	("registry", "0055_reference_images_row_level_security"),
 	("marketplace", "0008_remove_compatibility_gate"),
 	("marketplace", "0009_remove_compatibility_gate_state"),
 	("marketplace", "0010_row_level_security"),
@@ -106,7 +107,7 @@ async fn native_history_uses_typed_schema_operations_and_lf_sql_assets() {
 	);
 	let knowledge = graph.get_leaf_nodes_for_app("knowledge");
 	assert_eq!(knowledge.len(), 1);
-	assert_eq!(knowledge[0].name, "0047_image_publications_state");
+	assert_eq!(knowledge[0].name, "0048_semantic_images_row_level_security");
 	// Assert: retain the physical graph, model snapshots, and all supported tables.
 	assert!(
 		migrations
@@ -711,7 +712,7 @@ async fn preserved_baseline_does_not_generate_table_recreation(
 			.iter()
 			.filter(|migration| migration.state_only)
 			.count(),
-		71
+		73
 	);
 }
 
@@ -773,6 +774,60 @@ async fn native_migrations_build_a_fresh_schema_and_preserve_records_on_replay(
 		.unwrap();
 	assert_eq!(loaded.title, "After native migration");
 	assert_eq!(loaded.state.0, json!({"keep":true}));
+}
+
+async fn assert_image_policies(pool: &PgPool) {
+	for table_name in [
+		"agent_knowledge_images",
+		"semantic_image_ledgers",
+		"semantic_image_publications",
+	] {
+		let table = Query::select()
+			.columns([
+				Alias::new("relrowsecurity"),
+				Alias::new("relforcerowsecurity"),
+			])
+			.from(Alias::new("pg_class"))
+			.and_where(Expr::col(Alias::new("relname")).eq(table_name))
+			.to_string(PostgresQueryBuilder);
+		let flags: (bool, bool) = sqlx::query_as(&table).fetch_one(pool).await.unwrap();
+		assert_eq!(flags, (true, true), "{table_name}");
+		let policy = Query::select()
+			.column(Alias::new("policyname"))
+			.from(Alias::new("pg_policies"))
+			.and_where(Expr::col(Alias::new("schemaname")).eq("public"))
+			.and_where(Expr::col(Alias::new("tablename")).eq(table_name))
+			.and_where(Expr::col(Alias::new("policyname")).eq("tenant_isolation"))
+			.to_string(PostgresQueryBuilder);
+		let name: String = sqlx::query_scalar(&policy).fetch_one(pool).await.unwrap();
+		assert_eq!(name, "tenant_isolation");
+	}
+}
+
+#[rstest]
+#[tokio::test]
+async fn image_policy_migrations_restore_policies_on_rollback(
+	#[future] fresh_database: MigrationFixture,
+) {
+	// Arrange: the actual migration graph installs all three policies.
+	let fixture = fresh_database.await;
+	fixture.migrate().await;
+	let pool = fixture.connection.clone().into_postgres().unwrap();
+	assert_image_policies(&pool).await;
+	let source =
+		FilesystemSource::new(PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("migrations"));
+	let mut executor =
+		reinhardt::db::migrations::DatabaseMigrationExecutor::new(fixture.connection.clone());
+	// Act: undo the template migrations through the real migration executor.
+	for (app, name) in [
+		("registry", "0055_reference_images_row_level_security"),
+		("knowledge", "0048_semantic_images_row_level_security"),
+	] {
+		let migration = source.get_migration(app, name).await.unwrap();
+		executor.rollback_migrations(&[migration]).await.unwrap();
+	}
+	// Assert: rollback restores the original policies instead of exposing rows.
+	assert_image_policies(&pool).await;
 }
 
 #[rstest]

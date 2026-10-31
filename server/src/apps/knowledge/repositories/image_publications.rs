@@ -23,55 +23,6 @@ use serde_json::{Value, json};
 use std::collections::{BTreeSet, HashMap, HashSet};
 use uuid::Uuid;
 
-#[cfg(test)]
-mod tests {
-	use super::lock_workspace;
-	use crate::apps::execution::test_database::{DatabaseFixture, database};
-	use rstest::rstest;
-	use std::time::Duration;
-	use uuid::Uuid;
-
-	#[rstest]
-	#[tokio::test]
-	async fn image_publication_lock_serializes_only_the_same_workspace(
-		#[future] database: DatabaseFixture,
-	) {
-		let database = database.await;
-		let workspace = Uuid::new_v4();
-		let mut first = database.begin_fixture().await;
-		let mut same = database.begin_fixture().await;
-		let mut other = database.begin_fixture().await;
-		lock_workspace(&mut *first, workspace).await.unwrap();
-		assert!(
-			tokio::time::timeout(
-				Duration::from_secs(2),
-				lock_workspace(&mut *other, Uuid::new_v4())
-			)
-			.await
-			.unwrap()
-			.is_ok()
-		);
-		assert!(
-			tokio::time::timeout(
-				Duration::from_millis(100),
-				lock_workspace(&mut *same, workspace)
-			)
-			.await
-			.is_err()
-		);
-		first.commit().await.unwrap();
-		assert!(
-			tokio::time::timeout(
-				Duration::from_secs(2),
-				lock_workspace(&mut *same, workspace)
-			)
-			.await
-			.unwrap()
-			.is_ok()
-		);
-	}
-}
-
 const MAINTENANCE: TenancyScope =
 	TenancyScope::Deployment(DeploymentScopeReason::SemanticMaintenance);
 
@@ -202,25 +153,24 @@ async fn refresh_owner_authority(
 		else {
 			continue;
 		};
-		if let Some(entry) = entries.by_key(workspace, &entry_key).await? {
-			if !entry.deleted {
-				let mut update = Query::update();
+		if let Some(entry) = entries.by_key(workspace, &entry_key).await?
+			&& !entry.deleted
+		{
+			let mut update = Query::update();
+			update
+				.table(Alias::new("semantic_entries"))
+				.value("authority", authority.clone())
+				.value_expr("updated_at", Expr::cust("CLOCK_TIMESTAMP()"))
+				.and_where(Expr::col("id").eq(Expr::value(entry.id)));
+			if entry.state == "PENDING" && entry.last_error.as_deref() == Some("awaiting_owner_run")
+			{
 				update
-					.table(Alias::new("semantic_entries"))
-					.value("authority", authority.clone())
-					.value_expr("updated_at", Expr::cust("CLOCK_TIMESTAMP()"))
-					.and_where(Expr::col("id").eq(Expr::value(entry.id)));
-				if entry.state == "PENDING"
-					&& entry.last_error.as_deref() == Some("awaiting_owner_run")
-				{
-					update
-						.value("last_error", None::<String>)
-						.value_expr("next_attempt", Expr::cust("CLOCK_TIMESTAMP()"));
-				}
-				native::query(&update.to_string(PostgresQueryBuilder))
-					.execute(&mut **entries.lease.tx())
-					.await?;
+					.value("last_error", None::<String>)
+					.value_expr("next_attempt", Expr::cust("CLOCK_TIMESTAMP()"));
 			}
+			native::query(&update.to_string(PostgresQueryBuilder))
+				.execute(&mut **entries.lease.tx())
+				.await?;
 		}
 		map.insert(entry_key, authority);
 	}
@@ -601,8 +551,8 @@ async fn probe_one_legacy(
 		let mut media_type = None;
 		let mut size = 0;
 		let mut changed = false;
-		if area.generation == candidate.generation {
-			if let Some(file) = files.iter_mut().find(|file| file.file_id == candidate.file_id && file.path == candidate.path && matches!(file.scope, FileScope::Working | FileScope::Received)) {
+		if area.generation == candidate.generation
+			&& let Some(file) = files.iter_mut().find(|file| file.file_id == candidate.file_id && file.path == candidate.path && matches!(file.scope, FileScope::Working | FileScope::Received)) {
 				size = file.size;
 				if file.media_type == "application/octet-stream" {
 					let verified = store.capabilities.verified(access, file).await?;
@@ -616,7 +566,6 @@ async fn probe_one_legacy(
 				} else if file.media_type.starts_with("image/") {
 					media_type = Some(file.media_type.clone());
 				}
-			}
 		}
 		lock_workspace(&mut **access.tx, workspace).await?;
 		if changed {
@@ -860,29 +809,29 @@ impl ImagePublicationSession for Session {
 				continue;
 			}
 			let entry_key = key(old);
-			if let Some(entry) = entries.by_key(publication.workspace, &entry_key).await? {
-				if !entry.deleted {
-					let deleted = entries
-						.change(
-							publication.workspace,
-							entry.id,
-							Uuid::new_v4(),
-							index.revision,
-							true,
-							publication.authority.clone(),
-						)
-						.await?;
-					entries.schedule(&deleted, &index.collection).await?;
-					entries
-						.history(
-							publication.workspace,
-							deleted.id,
-							deleted.revision,
-							"DELETED",
-							"File version replaced or removed",
-						)
-						.await?;
-				}
+			if let Some(entry) = entries.by_key(publication.workspace, &entry_key).await?
+				&& !entry.deleted
+			{
+				let deleted = entries
+					.change(
+						publication.workspace,
+						entry.id,
+						Uuid::new_v4(),
+						index.revision,
+						true,
+						publication.authority.clone(),
+					)
+					.await?;
+				entries.schedule(&deleted, &index.collection).await?;
+				entries
+					.history(
+						publication.workspace,
+						deleted.id,
+						deleted.revision,
+						"DELETED",
+						"File version replaced or removed",
+					)
+					.await?;
 			}
 			map.remove(&entry_key);
 		}
@@ -894,39 +843,39 @@ impl ImagePublicationSession for Session {
 			{
 				if old.assigned != slot.assigned {
 					let entry_key = key(slot);
-					if let Some(entry) = entries.by_key(publication.workspace, &entry_key).await? {
-						if !entry.deleted {
-							if slot.assigned {
-								let authority = map.get(&entry_key).cloned().ok_or_else(|| {
-									Error::Conflict("image authority unavailable".into())
-								})?;
-								let waiting = waiting_for_owner(&authority);
-								let pending = entries
-									.change(
-										publication.workspace,
-										entry.id,
-										Uuid::new_v4(),
-										index.revision,
-										false,
-										authority,
-									)
-									.await?;
-								entries.schedule(&pending, &index.collection).await?;
-								if waiting {
-									mark_waiting(&mut entries, &pending).await?;
-								}
-								entries
-									.history(
-										publication.workspace,
-										pending.id,
-										pending.revision,
-										"PENDING",
-										"image selected by rebuild",
-									)
-									.await?;
-							} else {
-								mark_limit(&mut entries, publication.workspace, &entry).await?;
+					if let Some(entry) = entries.by_key(publication.workspace, &entry_key).await?
+						&& !entry.deleted
+					{
+						if slot.assigned {
+							let authority = map.get(&entry_key).cloned().ok_or_else(|| {
+								Error::Conflict("image authority unavailable".into())
+							})?;
+							let waiting = waiting_for_owner(&authority);
+							let pending = entries
+								.change(
+									publication.workspace,
+									entry.id,
+									Uuid::new_v4(),
+									index.revision,
+									false,
+									authority,
+								)
+								.await?;
+							entries.schedule(&pending, &index.collection).await?;
+							if waiting {
+								mark_waiting(&mut entries, &pending).await?;
 							}
+							entries
+								.history(
+									publication.workspace,
+									pending.id,
+									pending.revision,
+									"PENDING",
+									"image selected by rebuild",
+								)
+								.await?;
+						} else {
+							mark_limit(&mut entries, publication.workspace, &entry).await?;
 						}
 					}
 				}
@@ -1012,5 +961,54 @@ impl ImagePublicationSession for Session {
 			.take()
 			.ok_or_else(|| Error::Conflict("image publication transaction ended".into()))?;
 		lease.finish(Ok(())).await.map_err(Into::into)
+	}
+}
+
+#[cfg(test)]
+mod tests {
+	use super::lock_workspace;
+	use crate::apps::execution::test_database::{DatabaseFixture, database};
+	use rstest::rstest;
+	use std::time::Duration;
+	use uuid::Uuid;
+
+	#[rstest]
+	#[tokio::test]
+	async fn image_publication_lock_serializes_only_the_same_workspace(
+		#[future] database: DatabaseFixture,
+	) {
+		let database = database.await;
+		let workspace = Uuid::new_v4();
+		let mut first = database.begin_fixture().await;
+		let mut same = database.begin_fixture().await;
+		let mut other = database.begin_fixture().await;
+		lock_workspace(&mut *first, workspace).await.unwrap();
+		assert!(
+			tokio::time::timeout(
+				Duration::from_secs(2),
+				lock_workspace(&mut *other, Uuid::new_v4())
+			)
+			.await
+			.unwrap()
+			.is_ok()
+		);
+		assert!(
+			tokio::time::timeout(
+				Duration::from_millis(100),
+				lock_workspace(&mut *same, workspace)
+			)
+			.await
+			.is_err()
+		);
+		first.commit().await.unwrap();
+		assert!(
+			tokio::time::timeout(
+				Duration::from_secs(2),
+				lock_workspace(&mut *same, workspace)
+			)
+			.await
+			.unwrap()
+			.is_ok()
+		);
 	}
 }

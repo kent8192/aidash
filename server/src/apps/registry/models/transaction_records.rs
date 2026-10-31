@@ -19,68 +19,6 @@ const SCOPE_TENANT: &str = "current_setting('aidash.tenant', true)";
 /// The same Tenant for an insert, absent (and refused) outside a Tenant scope.
 const INSERT_TENANT: &str = "NULLIF(current_setting('aidash.tenant', true), '')";
 
-#[cfg(test)]
-mod image_storage_tests {
-	use super::*;
-	use crate::apps::execution::test_database::{DatabaseFixture, database};
-	use base64::{Engine as _, engine::general_purpose::STANDARD};
-	use rstest::rstest;
-
-	#[rstest]
-	#[tokio::test]
-	async fn image_data_is_binary_and_idempotent(#[future] database: DatabaseFixture) {
-		let database = database.await;
-		let mut tx = database.begin_fixture().await;
-		// A temporary row exercises the actual adapter without manufacturing a Registry identity.
-		tx.execute("CREATE TEMP TABLE agent_knowledge (tenant text, agent_id text, agent_version text, PRIMARY KEY (tenant, agent_id, agent_version))", vec![]).await.unwrap();
-		tx.execute("CREATE TEMP TABLE agent_knowledge_images (tenant text, agent_id text, agent_version text, document_index integer, media_type text, size bigint, sha256 text, bytes bytea, PRIMARY KEY (tenant, agent_id, agent_version, document_index), FOREIGN KEY (tenant, agent_id, agent_version) REFERENCES agent_knowledge (tenant, agent_id, agent_version) ON DELETE CASCADE)", vec![]).await.unwrap();
-		let tenant = scope_tenant(&mut *tx).await.unwrap();
-		let entry: Entry = serde_json::from_value(serde_json::json!({"id":"source", "version":"1.0.0", "kind":"source", "name":{"en":"Source"}, "description":{"en":"Source"}, "config":{}})).unwrap();
-		let (sql, values) = Query::insert()
-			.into_table(Alias::new("agent_knowledge"))
-			.columns(["tenant", "agent_id", "agent_version"].map(Alias::new))
-			.values_panic([
-				reinhardt::query::IntoValue::into_value(tenant),
-				reinhardt::query::IntoValue::into_value(entry.id.clone()),
-				reinhardt::query::IntoValue::into_value(entry.version.clone()),
-			])
-			.build(PostgresQueryBuilder);
-		tx.execute(&sql, convert_values(values)).await.unwrap();
-		let bytes = b"\x89PNG\r\n\x1a\n\x00binary";
-		let data = serde_json::json!([{"document_index":2,"media_type":"image/png","size":bytes.len(),"sha256":aidash_domain::semantic::indexing::content_digest_bytes(bytes),"data_base64":STANDARD.encode(bytes)}]);
-		insert_image_data(&mut *tx, &entry, data.clone())
-			.await
-			.unwrap();
-		insert_image_data(&mut *tx, &entry, data).await.unwrap();
-		let row = tx.fetch_one("SELECT encode(bytes, 'hex') AS bytes, pg_typeof(bytes)::text AS storage FROM agent_knowledge_images WHERE document_index = 2", vec![]).await.unwrap();
-		let row = QueryRow::from_backend_row(row).data;
-		assert_eq!(row["storage"], "bytea");
-		assert_eq!(
-			row["bytes"],
-			bytes
-				.iter()
-				.map(|byte| format!("{byte:02x}"))
-				.collect::<String>()
-		);
-		let changed = serde_json::json!([{"document_index":2,"media_type":"image/png","size":9,"sha256":aidash_domain::semantic::indexing::content_digest_bytes(b"different"),"data_base64":STANDARD.encode(b"different")}]);
-		assert!(matches!(
-			insert_image_data(&mut *tx, &entry, changed).await,
-			Err(Error::Conflict(_))
-		));
-		tx.execute("DELETE FROM agent_knowledge", vec![])
-			.await
-			.unwrap();
-		let row = tx
-			.fetch_one(
-				"SELECT count(*) AS count FROM agent_knowledge_images",
-				vec![],
-			)
-			.await
-			.unwrap();
-		assert_eq!(QueryRow::from_backend_row(row).data["count"], 0);
-	}
-}
-
 pub(crate) async fn scope_tenant(tx: &mut dyn TransactionExecutor) -> Result<String> {
 	let row = tx
 		.fetch_one(&format!("SELECT {SCOPE_TENANT} AS tenant"), vec![])
@@ -396,4 +334,66 @@ pub(crate) async fn insert_documents(
 		));
 	}
 	Ok(())
+}
+
+#[cfg(test)]
+mod image_storage_tests {
+	use super::*;
+	use crate::apps::execution::test_database::{DatabaseFixture, database};
+	use base64::{Engine as _, engine::general_purpose::STANDARD};
+	use rstest::rstest;
+
+	#[rstest]
+	#[tokio::test]
+	async fn image_data_is_binary_and_idempotent(#[future] database: DatabaseFixture) {
+		let database = database.await;
+		let mut tx = database.begin_fixture().await;
+		// A temporary row exercises the actual adapter without manufacturing a Registry identity.
+		tx.execute("CREATE TEMP TABLE agent_knowledge (tenant text, agent_id text, agent_version text, PRIMARY KEY (tenant, agent_id, agent_version))", vec![]).await.unwrap();
+		tx.execute("CREATE TEMP TABLE agent_knowledge_images (tenant text, agent_id text, agent_version text, document_index integer, media_type text, size bigint, sha256 text, bytes bytea, PRIMARY KEY (tenant, agent_id, agent_version, document_index), FOREIGN KEY (tenant, agent_id, agent_version) REFERENCES agent_knowledge (tenant, agent_id, agent_version) ON DELETE CASCADE)", vec![]).await.unwrap();
+		let tenant = scope_tenant(&mut *tx).await.unwrap();
+		let entry: Entry = serde_json::from_value(serde_json::json!({"id":"source", "version":"1.0.0", "kind":"source", "name":{"en":"Source"}, "description":{"en":"Source"}, "config":{}})).unwrap();
+		let (sql, values) = Query::insert()
+			.into_table(Alias::new("agent_knowledge"))
+			.columns(["tenant", "agent_id", "agent_version"].map(Alias::new))
+			.values_panic([
+				reinhardt::query::IntoValue::into_value(tenant),
+				reinhardt::query::IntoValue::into_value(entry.id.clone()),
+				reinhardt::query::IntoValue::into_value(entry.version.clone()),
+			])
+			.build(PostgresQueryBuilder);
+		tx.execute(&sql, convert_values(values)).await.unwrap();
+		let bytes = b"\x89PNG\r\n\x1a\n\x00binary";
+		let data = serde_json::json!([{"document_index":2,"media_type":"image/png","size":bytes.len(),"sha256":aidash_domain::semantic::indexing::content_digest_bytes(bytes),"data_base64":STANDARD.encode(bytes)}]);
+		insert_image_data(&mut *tx, &entry, data.clone())
+			.await
+			.unwrap();
+		insert_image_data(&mut *tx, &entry, data).await.unwrap();
+		let row = tx.fetch_one("SELECT encode(bytes, 'hex') AS bytes, pg_typeof(bytes)::text AS storage FROM agent_knowledge_images WHERE document_index = 2", vec![]).await.unwrap();
+		let row = QueryRow::from_backend_row(row).data;
+		assert_eq!(row["storage"], "bytea");
+		assert_eq!(
+			row["bytes"],
+			bytes
+				.iter()
+				.map(|byte| format!("{byte:02x}"))
+				.collect::<String>()
+		);
+		let changed = serde_json::json!([{"document_index":2,"media_type":"image/png","size":9,"sha256":aidash_domain::semantic::indexing::content_digest_bytes(b"different"),"data_base64":STANDARD.encode(b"different")}]);
+		assert!(matches!(
+			insert_image_data(&mut *tx, &entry, changed).await,
+			Err(Error::Conflict(_))
+		));
+		tx.execute("DELETE FROM agent_knowledge", vec![])
+			.await
+			.unwrap();
+		let row = tx
+			.fetch_one(
+				"SELECT count(*) AS count FROM agent_knowledge_images",
+				vec![],
+			)
+			.await
+			.unwrap();
+		assert_eq!(QueryRow::from_backend_row(row).data["count"], 0);
+	}
 }
