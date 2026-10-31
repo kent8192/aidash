@@ -48340,5 +48340,278 @@
     "json": true,
     "uuid_parameters": [],
     "query_parameters": []
+  },
+  {
+    "method": "GET",
+    "path": "/api/runs/{id}/subnodes",
+    "name": "run-subnodes",
+    "source": "server/src/apps/execution/views/management.rs",
+    "json": false,
+    "uuid_parameters": ["id"],
+    "query_parameters": [],
+    "response": {
+      "schema": {
+        "type": "array",
+        "items": {
+          "$ref": "#/components/schemas/SubnodeView"
+        }
+      },
+      "definitions": {
+        "SubnodeView": {
+          "type": "object",
+          "required": [
+            "id",
+            "title",
+            "workspace_id",
+            "leader",
+            "members",
+            "allowance",
+            "state",
+            "created_at",
+            "ended_at",
+            "ended_reason",
+            "member_runs"
+          ],
+          "properties": {
+            "allowance": {
+              "$ref": "#/components/schemas/Allowance"
+            },
+            "created_at": {
+              "type": "string",
+              "format": "date-time"
+            },
+            "ended_at": {
+              "type": ["string", "null"],
+              "format": "date-time"
+            },
+            "ended_reason": {
+              "type": ["string", "null"]
+            },
+            "id": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "leader": {
+              "$ref": "#/components/schemas/EntityRef"
+            },
+            "member_runs": {
+              "type": "array",
+              "items": {
+                "$ref": "#/components/schemas/MemberRun"
+              }
+            },
+            "members": {
+              "type": "array",
+              "items": {
+                "$ref": "#/components/schemas/SubnodeMember"
+              }
+            },
+            "state": {
+              "type": "string"
+            },
+            "title": {
+              "type": ["string", "null"]
+            },
+            "workspace_id": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        },
+        "Allowance": {
+          "type": "object",
+          "description": "The tools and Tenant Secrets the creator permits members to use.",
+          "required": ["tools", "secrets"],
+          "properties": {
+            "secrets": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "uniqueItems": true
+            },
+            "tools": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "uniqueItems": true
+            }
+          },
+          "additionalProperties": false
+        },
+        "EntityRef": {
+          "type": "object",
+          "required": ["id", "version"],
+          "properties": {
+            "id": {
+              "type": "string"
+            },
+            "version": {
+              "type": "string"
+            }
+          }
+        },
+        "MemberRun": {
+          "type": "object",
+          "required": ["id", "agent", "state", "control", "task_id"],
+          "properties": {
+            "agent": {
+              "$ref": "#/components/schemas/EntityRef"
+            },
+            "control": {
+              "type": "string"
+            },
+            "id": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "state": {
+              "type": "string"
+            },
+            "task_id": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        },
+        "SubnodeMember": {
+          "type": "object",
+          "required": [
+            "agent_id",
+            "agent_version",
+            "added_by_run_id",
+            "added_at"
+          ],
+          "properties": {
+            "added_at": {
+              "type": "string",
+              "format": "date-time"
+            },
+            "added_by_run_id": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "agent_id": {
+              "type": "string"
+            },
+            "agent_version": {
+              "type": "string"
+            }
+          }
+        }
+      }
+    }
+  },
+  {
+    "method": "POST",
+    "path": "/api/subnodes/{id}/dissolve",
+    "name": "subnode-dissolve",
+    "source": "server/src/apps/execution/views/management.rs",
+    "json": false,
+    "uuid_parameters": ["id"],
+    "query_parameters": [],
+    "response": {
+      "schema": {
+        "$ref": "#/components/schemas/Dissolved"
+      },
+      "definitions": {
+        "Dissolved": {
+          "type": "object",
+          "required": ["dissolved"],
+          "properties": {
+            "dissolved": {
+              "type": "boolean"
+            }
+          }
+        }
+      }
+    }
+  },
+  {
+    "method": "GET",
+    "path": "/api/tenants/{tenant}/subnode-limits",
+    "name": "tenant-subnode-limits",
+    "source": "server/src/apps/identity/views/tenant_administration.rs",
+    "json": false,
+    "uuid_parameters": [],
+    "query_parameters": [],
+    "response": {
+      "schema": {
+        "$ref": "#/components/schemas/SubnodeLimits"
+      },
+      "definitions": {
+        "SubnodeLimits": {
+          "type": "object",
+          "description": "Tenant settings; callers must validate settings before storing or using them.",
+          "required": [
+            "members_per_subnode",
+            "subnodes_per_run",
+            "remote_runs_may_create"
+          ],
+          "properties": {
+            "members_per_subnode": {
+              "type": "integer",
+              "format": "uint32",
+              "maximum": 20,
+              "minimum": 1
+            },
+            "remote_runs_may_create": {
+              "type": "boolean"
+            },
+            "subnodes_per_run": {
+              "type": "integer",
+              "format": "uint32",
+              "maximum": 10,
+              "minimum": 1
+            }
+          },
+          "additionalProperties": false
+        }
+      }
+    }
+  },
+  {
+    "method": "PUT",
+    "path": "/api/tenants/{tenant}/subnode-limits",
+    "name": "tenant-subnode-limits-update",
+    "source": "server/src/apps/identity/views/tenant_administration.rs",
+    "json": true,
+    "uuid_parameters": [],
+    "query_parameters": [],
+    "response": {
+      "schema": {
+        "$ref": "#/components/schemas/SubnodeLimits"
+      },
+      "definitions": {
+        "SubnodeLimits": {
+          "type": "object",
+          "description": "Tenant settings; callers must validate settings before storing or using them.",
+          "required": [
+            "members_per_subnode",
+            "subnodes_per_run",
+            "remote_runs_may_create"
+          ],
+          "properties": {
+            "members_per_subnode": {
+              "type": "integer",
+              "format": "uint32",
+              "maximum": 20,
+              "minimum": 1
+            },
+            "remote_runs_may_create": {
+              "type": "boolean"
+            },
+            "subnodes_per_run": {
+              "type": "integer",
+              "format": "uint32",
+              "maximum": 10,
+              "minimum": 1
+            }
+          },
+          "additionalProperties": false
+        }
+      }
+    }
   }
 ]

@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "endpoint_count": 357,
+  "endpoint_count": 361,
   "requests": [
     {
       "name": "Health reports the configured node",
@@ -15735,6 +15735,156 @@
         "Rejected input preserves committed workspace state",
         "Exact HTTP 401",
         "Stable authorization error envelope"
+      ]
+    },
+    {
+      "name": "1432 run-subnodes - Anonymous request is rejected",
+      "file": "contracts/1432-run-subnodes.bru",
+      "endpoint": "GET /api/runs/{id}/subnodes",
+      "scenario": "Anonymous request is rejected",
+      "status": 401,
+      "required_checks": [
+        "Exact HTTP 401",
+        "Stable authorization error envelope"
+      ]
+    },
+    {
+      "name": "1433 run-subnodes - Typed resource IDs reject invalid UUIDs",
+      "file": "contracts/1433-run-subnodes.bru",
+      "endpoint": "GET /api/runs/{id}/subnodes",
+      "scenario": "Typed resource IDs reject invalid UUIDs",
+      "status": 400,
+      "required_checks": [
+        "Exact HTTP 400",
+        "Rejection is diagnostic and does not disclose SQL or credentials"
+      ]
+    },
+    {
+      "name": "1434 run-subnodes - Deployment Administrator has no Tenant authority",
+      "file": "contracts/1434-run-subnodes.bru",
+      "endpoint": "GET /api/runs/{id}/subnodes",
+      "scenario": "Deployment Administrator has no Tenant authority",
+      "status": 403,
+      "required_checks": [
+        "Exact HTTP 403",
+        "Stable authorization error envelope"
+      ]
+    },
+    {
+      "name": "1435 subnode-dissolve - Anonymous request is rejected",
+      "file": "contracts/1435-subnode-dissolve.bru",
+      "endpoint": "POST /api/subnodes/{id}/dissolve",
+      "scenario": "Anonymous request is rejected",
+      "status": 401,
+      "required_checks": [
+        "Rejected input preserves committed workspace state",
+        "Exact HTTP 401",
+        "Stable authorization error envelope"
+      ]
+    },
+    {
+      "name": "1436 subnode-dissolve - Typed resource IDs reject invalid UUIDs",
+      "file": "contracts/1436-subnode-dissolve.bru",
+      "endpoint": "POST /api/subnodes/{id}/dissolve",
+      "scenario": "Typed resource IDs reject invalid UUIDs",
+      "status": 400,
+      "required_checks": [
+        "Rejected input preserves committed workspace state",
+        "Exact HTTP 400",
+        "Rejection is diagnostic and does not disclose SQL or credentials"
+      ]
+    },
+    {
+      "name": "1437 subnode-dissolve - Unrecognized bearer cannot mutate state",
+      "file": "contracts/1437-subnode-dissolve.bru",
+      "endpoint": "POST /api/subnodes/{id}/dissolve",
+      "scenario": "Unrecognized bearer cannot mutate state",
+      "status": 401,
+      "required_checks": [
+        "Rejected input preserves committed workspace state",
+        "Exact HTTP 401",
+        "Stable authorization error envelope"
+      ]
+    },
+    {
+      "name": "1438 tenant-subnode-limits - Anonymous request is rejected",
+      "file": "contracts/1438-tenant-subnode-limits.bru",
+      "endpoint": "GET /api/tenants/{tenant}/subnode-limits",
+      "scenario": "Anonymous request is rejected",
+      "status": 401,
+      "required_checks": [
+        "Exact HTTP 401",
+        "Stable authorization error envelope"
+      ]
+    },
+    {
+      "name": "1439 tenant-subnode-limits - Deployment Administrator bearer is never a Tenant Administrator",
+      "file": "contracts/1439-tenant-subnode-limits.bru",
+      "endpoint": "GET /api/tenants/{tenant}/subnode-limits",
+      "scenario": "Deployment Administrator bearer is never a Tenant Administrator",
+      "status": 403,
+      "required_checks": [
+        "Exact HTTP 403",
+        "Stable authorization error envelope"
+      ]
+    },
+    {
+      "name": "1440 tenant-subnode-limits - Subject Credential bearer is never a Tenant Administrator",
+      "file": "contracts/1440-tenant-subnode-limits.bru",
+      "endpoint": "GET /api/tenants/{tenant}/subnode-limits",
+      "scenario": "Subject Credential bearer is never a Tenant Administrator",
+      "status": 403,
+      "required_checks": [
+        "Exact HTTP 403",
+        "Stable authorization error envelope"
+      ]
+    },
+    {
+      "name": "1441 tenant-subnode-limits-update - Anonymous request is rejected",
+      "file": "contracts/1441-tenant-subnode-limits-update.bru",
+      "endpoint": "PUT /api/tenants/{tenant}/subnode-limits",
+      "scenario": "Anonymous request is rejected",
+      "status": 401,
+      "required_checks": [
+        "Rejected input preserves committed workspace state",
+        "Exact HTTP 401",
+        "Stable authorization error envelope"
+      ]
+    },
+    {
+      "name": "1442 tenant-subnode-limits-update - Deployment Administrator bearer is never a Tenant Administrator",
+      "file": "contracts/1442-tenant-subnode-limits-update.bru",
+      "endpoint": "PUT /api/tenants/{tenant}/subnode-limits",
+      "scenario": "Deployment Administrator bearer is never a Tenant Administrator",
+      "status": 403,
+      "required_checks": [
+        "Rejected input preserves committed workspace state",
+        "Exact HTTP 403",
+        "Stable authorization error envelope"
+      ]
+    },
+    {
+      "name": "1443 tenant-subnode-limits-update - Subject Credential bearer is never a Tenant Administrator",
+      "file": "contracts/1443-tenant-subnode-limits-update.bru",
+      "endpoint": "PUT /api/tenants/{tenant}/subnode-limits",
+      "scenario": "Subject Credential bearer is never a Tenant Administrator",
+      "status": 403,
+      "required_checks": [
+        "Rejected input preserves committed workspace state",
+        "Exact HTTP 403",
+        "Stable authorization error envelope"
+      ]
+    },
+    {
+      "name": "1444 tenant-subnode-limits-update - Malformed JSON cannot reach the use case",
+      "file": "contracts/1444-tenant-subnode-limits-update.bru",
+      "endpoint": "PUT /api/tenants/{tenant}/subnode-limits",
+      "scenario": "Malformed JSON cannot reach the use case",
+      "status": 400,
+      "required_checks": [
+        "Rejected input preserves committed workspace state",
+        "Exact HTTP 400",
+        "Rejection is diagnostic and does not disclose SQL or credentials"
       ]
     }
   ]
