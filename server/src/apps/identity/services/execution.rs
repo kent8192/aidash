@@ -1204,8 +1204,12 @@ impl WorkerAuthority {
 			return Err(Error::Forbidden);
 		}
 		let mut access = Access::under_lease(&lease).await?;
-		access.context = json!({"workspace_id":workspace});
+		// The creator keeps its own Workspace and gains read access to this one;
+		// the producers of the Subnode's records may have read in the creator's.
+		access.context =
+			json!({"workspace_id":run.workspace_id,"subnode_read_workspaces":[workspace]});
 		let result = access.workspace_record(workspace, kind, id).await;
+
 		access.finish(result).await
 	}
 	pub async fn workspace_record(&self, workspace: Uuid, kind: &str, id: Uuid) -> Result<Value> {

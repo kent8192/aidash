@@ -730,6 +730,23 @@ impl Access {
 	}
 
 	pub async fn decide(&mut self, resource: &Resource, action: &str) -> Result<bool> {
+		// A Subnode creator reads, but never writes, the Subnode's Workspace.
+		if self.inherited_lease && subnode_workspace_write(action) {
+			let workspace = resource
+				.attributes
+				.get("workspace_id")
+				.and_then(Value::as_str)
+				.or_else(|| (resource.kind == "workspace").then_some(resource.id.as_str()))
+				.and_then(|id| Uuid::parse_str(id).ok());
+			if workspace.is_some_and(|workspace| {
+				aidash_application::authorization::workspaces::subnode_read_workspace(
+					&self.context,
+					workspace,
+				)
+			}) {
+				return Ok(false);
+			}
+		}
 		if self.read_run.is_none() && subnode_workspace_write(action) {
 			let workspace = resource
 				.attributes

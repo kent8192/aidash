@@ -6558,10 +6558,14 @@ async fn subnode_creation_task_and_creator_cancellation_share_the_real_authority
 	.await;
 	assert_eq!(status, 200, "claim: {body}");
 	let creator_run = f.store.runs(&TEST_FIXTURE).await.unwrap().remove(0);
+	// Each injected response needs its own epoch: the invocation key is
+	// `run:epoch:cursor`, and reusing it with different input is a Conflict.
+	let epoch = std::cell::Cell::new(0_u64);
 	let inject = async |name: &str, arguments: Value, call_id: &str| {
 		let response = json!({"text":"","tool_calls":[{"id":call_id,"name":name,"arguments":arguments}],"input_tokens":0,"output_tokens":0});
+		epoch.set(epoch.get() + 1);
 		let pending = common::tool_pending(
-			json!({"response":response,"cursor":0,"request_window":120000,"request_tokens":0}),
+			json!({"response":response,"response_epoch":epoch.get(),"cursor":0,"request_window":120000,"request_tokens":0}),
 		);
 		let sql = reinhardt::query::Query::update()
 			.table(reinhardt::query::Alias::new("runs"))
@@ -6702,13 +6706,13 @@ async fn subnode_creation_task_and_creator_cancellation_share_the_real_authority
 		.execute(f.store.pool.fixture_driver())
 		.await
 		.unwrap();
+	// The recovery cursor already passed this older Run; the second pass wraps.
+	let harness = Harness {
+		federation: f.clone(),
+	};
 	assert!(
-		Harness {
-			federation: f.clone()
-		}
-		.worker_once()
-		.await
-		.unwrap()
+		harness.worker_once().await.unwrap() || harness.worker_once().await.unwrap(),
+		"member Run was never leased"
 	);
 	let inputs = f
 		.store
