@@ -16,9 +16,10 @@ use std::process;
 
 /// Worker stack of a debug build. Unoptimized poll frames on a Run's memory
 /// recall path outgrow Tokio's 2 MiB default (#597); 16 MiB is the size at
-/// which that path was measured to complete.
+/// which that path was measured to complete. Tests that guard a deep path
+/// run it on this size (#645).
 #[cfg(not(target_arch = "wasm32"))]
-const DEBUG_WORKER_STACK_BYTES: usize = 16 * 1024 * 1024;
+pub const DEBUG_WORKER_STACK_BYTES: usize = 16 * 1024 * 1024;
 
 /// Every settings load passes through the build's Offering check, so a command
 /// refuses another build's Offering before it prepares any service.

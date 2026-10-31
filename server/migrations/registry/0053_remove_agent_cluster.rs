@@ -10,12 +10,12 @@
 // rewrite is irreversible; it cannot reconstruct the removed references.
 use reinhardt::db::migrations::prelude::*;
 pub(super) fn migration() -> Migration {
-	Migration::new("0050_remove_agent_cluster", "registry")
-		.add_dependency("registry", "0049_plugin_context_merge")
+	Migration::new("0053_remove_agent_cluster", "registry")
+		.add_dependency("registry", "0052_harness_contract_structured3")
 		.database_only(true)
 		.atomic(true)
 		.add_operation(Operation::RunSQL {
-			sql: include_str!("sql/forward/0050_remove_agent_cluster.sql").into(),
+			sql: include_str!("sql/forward/0053_remove_agent_cluster.sql").into(),
 			reverse_sql: None,
 		})
 }

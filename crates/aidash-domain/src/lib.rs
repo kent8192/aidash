@@ -68,6 +68,8 @@ pub mod marketplace;
 
 pub mod generation;
 
+pub mod harness_contract;
+
 pub mod invocation;
 
 pub mod transactions;

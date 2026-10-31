@@ -1,25 +1,23 @@
--- JSON data rewrite and PostgreSQL function replacement are not expressible by native migration operations.
-SET LOCAL aidash.scope = 'deployment';
--- Installed definitions have an immutable-writer fence; only the obsolete key changes here.
-ALTER TABLE public.registry DISABLE TRIGGER marketplace_registry_fence;
-UPDATE public.registry SET metadata = jsonb_set(metadata, '{config}', (metadata->'config') - 'cluster')
- WHERE kind = 'agent' AND metadata->'config' ? 'cluster';
-ALTER TABLE public.registry ENABLE TRIGGER marketplace_registry_fence;
-UPDATE public.agent_drafts SET entry = jsonb_set(entry, '{config}', (entry->'config') - 'cluster')
- WHERE entry->>'kind' = 'agent' AND entry->'config' ? 'cluster';
-UPDATE public.registry_requests SET request = jsonb_set(request, '{config}', (request->'config') - 'cluster')
- WHERE request->>'kind' = 'agent' AND request->'config' ? 'cluster';
+-- DDL only: the Agent Bindings contract accepts the optional Harness Contract
+-- version (#531). The body keeps every rule of 0045_agent_plugin_settings and adds
+-- the `harness_contract` key: omitted or null, or one of `legacy@1`,
+-- `structured@1` and `structured@2`. AgentBindings::validate rejects a version
+-- that the Agent's Projection Version cannot render. PostgreSQL function bodies
+-- have no typed migration operation (DDL only).
 CREATE OR REPLACE FUNCTION public.aidash_agent_bindings_is_valid(value jsonb) RETURNS boolean
 LANGUAGE plpgsql IMMUTABLE STRICT AS $$
 DECLARE plugins jsonb; plugin jsonb; plugin_settings jsonb; plugin_choices jsonb; server_choice jsonb; declared jsonb; completion jsonb; check_item jsonb; item jsonb; removals jsonb; edges jsonb; step_count numeric; parallelism numeric; context_policy jsonb; summary jsonb; restriction jsonb; candidate jsonb; policy jsonb; deferred boolean; budget text; bound numeric; removable text[]; support text[];
 BEGIN
  IF jsonb_typeof(value) IS DISTINCT FROM 'object'
- OR value - ARRAY['schema_version','model','instructions','bindings','remove_default','max_steps','projection_version','prompt_cache','exposure','tool_parallelism','context_policy','completion','agent_plugins','agent_plugin_settings']::text[] <> '{}'::jsonb
+ OR value - ARRAY['schema_version','model','instructions','bindings','remove_default','cluster','max_steps','projection_version','harness_contract','prompt_cache','exposure','tool_parallelism','context_policy','completion','agent_plugins','agent_plugin_settings']::text[] <> '{}'::jsonb
  OR NOT COALESCE(value->'projection_version','null'::jsonb) IN ('null'::jsonb,'"legacy"'::jsonb,'"ordered"'::jsonb,'"native"'::jsonb)
+ OR NOT COALESCE(value->'harness_contract','null'::jsonb) IN ('null'::jsonb,'"legacy@1"'::jsonb,'"structured@1"'::jsonb,'"structured@2"'::jsonb)
  OR NOT COALESCE(value->'prompt_cache','null'::jsonb) IN ('null'::jsonb,'"off"'::jsonb,'"explicit"'::jsonb)
  OR value->'schema_version' IS DISTINCT FROM '1'::jsonb
  OR NOT COALESCE(public.aidash_qualified_ref_is_valid(value->'model' || '{"registry_deployment":"aidash://contract"}'::jsonb),false)
  OR jsonb_typeof(COALESCE(value->'instructions','""'::jsonb)) <> 'string' THEN RETURN false; END IF;
+ IF COALESCE(value->'cluster','null'::jsonb) <> 'null'::jsonb
+ AND NOT COALESCE(public.aidash_qualified_ref_is_valid(value->'cluster' || '{"registry_deployment":"aidash://contract"}'::jsonb),false) THEN RETURN false; END IF;
  IF jsonb_typeof(COALESCE(value->'max_steps','64'::jsonb)) <> 'number' OR NOT COALESCE(COALESCE(value->>'max_steps','64') ~ '^[0-9]+$',false) THEN RETURN false; END IF;
  step_count := COALESCE(value->>'max_steps','64')::numeric;
  IF step_count NOT BETWEEN 1 AND 1000 THEN RETURN false; END IF;

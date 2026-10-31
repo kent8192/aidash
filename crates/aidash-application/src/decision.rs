@@ -408,6 +408,7 @@ impl DecisionGate<'_> {
 		evidence.restrictions = restrictions.clone();
 		let mut candidate = context.clone();
 		let mut selected = BTreeMap::new();
+		let mut ranked = Vec::new();
 		for option in &evidence.candidates {
 			let protected = aidash_domain::decision::pruning::protected(
 				option.history_index,
@@ -427,10 +428,41 @@ impl DecisionGate<'_> {
 			};
 			selected.insert(option.history_index, choice);
 			evidence.branches.insert(option.id.clone(), choice);
+			ranked.push(aidash_domain::decision::FitCandidate {
+				history_index: option.history_index,
+				keep_result: evidence.answers[&option.keep_result],
+				branch: choice,
+				protected,
+			});
 		}
-		let pruned =
+		let mut pruned =
 			aidash_domain::decision::pruning::apply(&context.history, &selected, &built.units);
-		candidate.history = pruned.history;
+		candidate.history = pruned.history.clone();
+		if config.rule == aidash_domain::decision::FIT_RULE {
+			// #611: truncate kept results, least likely to be needed first, until the
+			// projection fits. Replay checks the order; sizes are this Node's own.
+			for index in aidash_domain::decision::fit_order(&ranked) {
+				if size(&candidate) <= budget.window {
+					break;
+				}
+				selected.insert(index, Branch::TruncateResult);
+				if let Some(option) = evidence
+					.candidates
+					.iter()
+					.find(|c| c.history_index == index)
+				{
+					evidence
+						.branches
+						.insert(option.id.clone(), Branch::TruncateResult);
+				}
+				pruned = aidash_domain::decision::pruning::apply(
+					&context.history,
+					&selected,
+					&built.units,
+				);
+				candidate.history = pruned.history.clone();
+			}
+		}
 		evidence.fit.removed = pruned.removed;
 		evidence.fit.truncated = pruned.truncated;
 		evidence.fit.dropped = selected
