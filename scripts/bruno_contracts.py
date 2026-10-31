@@ -158,6 +158,10 @@ TENANT_ROUTES = {
 # action at all.
 DENIED_SUBJECT = {"Authorization": "Bearer {{denied_token}}"}
 SUBJECT_READS = {
+    "GET /api/tasks/{id}/runs": [
+        ("Subject lists the readable Task's Runs", 200, SUBJECT,
+         "/api/tasks/{{task_id}}/runs", 'expect(res.getBody().items).to.be.an("array");'),
+    ],
     "GET /api/registry/versions": [
         ("Tenant subject lists only the versions it may read", 200, SUBJECT,
          "/api/registry/versions?node={{tenant_node}}",
@@ -839,6 +843,9 @@ def render():
         admitted = route["name"] in ADMIN_ADMITTED
         # The caller for scenarios that must reach an extractor or a handler.
         actor = DEPLOYMENT_ADMINISTRATOR if admitted else SUBJECT
+        if route["name"] in {"task-runs", "human-requests"}:
+            add(endpoint, "Deployment Administrator cannot read Tenant data", 403,
+                headers=DEPLOYMENT_ADMINISTRATOR)
         if route["name"] == "tenants-personal":
             # Only a signed-in browser session recreates its Personal Tenant.
             add(endpoint, "Deployment Administrator bearer cannot recreate a Personal Tenant", 401,
@@ -1341,6 +1348,7 @@ def render():
         # inspection of a Tenant's version. Deployment Administrator credentials cannot
         # replace a subject or browser-bound graph grant.
         denied_reads = {
+            "task-runs",
             "memory-participant-current",
             "remote-semantic-home-provenance",
             "remote-semantic-run-provenance",
@@ -1372,6 +1380,8 @@ def render():
             status = 403
             checks = ""
             label = "Missing scoped authority cannot disclose application data"
+        if route["name"] == "human-requests":
+            checks += 'expect(res.getBody().items).to.be.an("array");'
         if route["name"] == "file_recipient_list":
             uri = path + "?node_id={{node_id}}/{{tenant_node}}"
             status = 403
@@ -1459,7 +1469,7 @@ def render():
         # response the journeys fix; every other Tenant route is shown to refuse
         # the administrator (#484).
         subject_read = (
-            path in ("/api/workspaces/{id}", "/api/tasks", "/api/events")
+            path in ("/api/workspaces/{id}", "/api/tasks", "/api/events", "/api/tasks/{id}/runs", "/api/human-requests")
             or path.endswith("/message-history")
         )
         if not admitted and not core:

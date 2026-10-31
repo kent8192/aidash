@@ -125,7 +125,7 @@ pub async fn state(scope: &mut dyn WorkspaceStateScope) -> Result<WorkspaceState
 	Ok(state)
 }
 /// When each question that Runs wait on continues without an answer, by request.
-fn answer_deadlines(runs: &[RunInspection]) -> HashMap<Uuid, DateTime<Utc>> {
+pub fn answer_deadlines(runs: &[RunInspection]) -> HashMap<Uuid, DateTime<Utc>> {
 	runs.iter()
 		.filter_map(|run| match &run.state {
 			Some(RunState::Waiting(wait)) => match wait.as_ref() {

@@ -336,7 +336,7 @@ async fn migration_seed_command_detects_drift_and_regenerates_only_owned_assets(
 	// Arrange: command selection must not deserialize unrelated invalid settings.
 	std::fs::write(temp_dir.path().join("base.toml"), "invalid TOML!").unwrap();
 	let root = temp_dir.path().join("migrations");
-	let paths = ["federation", "marketplace"]
+	let mut paths = ["federation", "marketplace"]
 		.into_iter()
 		.flat_map(|app| {
 			["forward", "backward"]
@@ -344,6 +344,10 @@ async fn migration_seed_command_detects_drift_and_regenerates_only_owned_assets(
 				.map(move |direction| format!("{app}/sql/{direction}/0005_seed.sql"))
 		})
 		.collect::<Vec<_>>();
+	paths.extend([
+		"execution/sql/forward/0084_run_created_at.sql".to_owned(),
+		"execution/sql/backward/0084_run_created_at.sql".to_owned(),
+	]);
 	for path in &paths {
 		let path = root.join(path);
 		std::fs::create_dir_all(path.parent().unwrap()).unwrap();

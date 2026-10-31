@@ -508,4 +508,5 @@ pub mod stream;
 
 pub mod records;
 
+pub(crate) mod bounded_reads;
 pub mod state;

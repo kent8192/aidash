@@ -37,6 +37,408 @@ async fn claim(execution: &ExecutionFixture) -> Run {
 
 #[rstest]
 #[tokio::test]
+async fn human_request_list_defaults_to_pending_for_the_requested_run(
+	#[future] execution: ExecutionFixture,
+) {
+	let execution = Box::pin(execution).await;
+	let run = claim(&execution).await;
+	let request = execution
+		.app
+		.runtime
+		.store
+		.human_request(
+			&TEST_FIXTURE,
+			&run,
+			"QUESTION",
+			"Which destination?",
+			"list-question",
+		)
+		.await
+		.unwrap();
+	let page = assert_json(
+		execution
+			.subject
+			.get(&format!("/api/human-requests?run={}", run.id))
+			.await
+			.unwrap(),
+		200,
+	);
+	assert_eq!(page["items"].as_array().unwrap().len(), 1);
+	assert_eq!(page["items"][0]["id"], request.id.to_string());
+	assert!(page["next_cursor"].is_null());
+	assert_json(
+		execution
+			.subject
+			.get(&format!(
+				"/api/human-requests?run={}&cursor=invalid",
+				run.id
+			))
+			.await
+			.unwrap(),
+		400,
+	);
+	assert_json(
+		execution
+			.subject
+			.get(&format!(
+				"/api/human-requests?run={}&cursor={}",
+				run.id,
+				Uuid::new_v4()
+			))
+			.await
+			.unwrap(),
+		400,
+	);
+	assert_json(
+		execution
+			.subject
+			.get(&format!("/api/human-requests?run={}", Uuid::new_v4()))
+			.await
+			.unwrap(),
+		403,
+	);
+	assert_json(
+		execution
+			.app
+			.deployment_administrator
+			.get("/api/human-requests")
+			.await
+			.unwrap(),
+		403,
+	);
+}
+
+#[rstest]
+#[tokio::test]
+async fn task_run_list_returns_the_claimed_run_and_forbids_missing_tasks(
+	#[future] execution: ExecutionFixture,
+) {
+	let execution = Box::pin(execution).await;
+	let run = claim(&execution).await;
+	let page = assert_json(
+		execution
+			.subject
+			.get(&format!("/api/tasks/{}/runs", execution.task))
+			.await
+			.unwrap(),
+		200,
+	);
+	assert_eq!(page["items"].as_array().unwrap().len(), 1);
+	assert_eq!(page["items"][0]["id"], run.id.to_string());
+	assert!(page["next_cursor"].is_null());
+	assert_json(
+		execution
+			.subject
+			.get(&format!("/api/tasks/{}/runs", Uuid::new_v4()))
+			.await
+			.unwrap(),
+		403,
+	);
+	assert_json(
+		execution
+			.app
+			.deployment_administrator
+			.get(&format!("/api/tasks/{}/runs", execution.task))
+			.await
+			.unwrap(),
+		403,
+	);
+}
+
+#[rstest]
+#[tokio::test]
+async fn bounded_lists_enforce_current_workspace_task_and_run_visibility(
+	#[future] execution: ExecutionFixture,
+) {
+	let execution = Box::pin(execution).await;
+	let run = claim(&execution).await;
+	let private_request = execution
+		.app
+		.runtime
+		.store
+		.human_request(
+			&TEST_FIXTURE,
+			&run,
+			"QUESTION",
+			"Private?",
+			"private-request",
+		)
+		.await
+		.unwrap();
+	for index in 0..50 {
+		execution
+			.app
+			.runtime
+			.store
+			.human_request(
+				&TEST_FIXTURE,
+				&run,
+				"QUESTION",
+				"Private?",
+				&format!("private-{index}"),
+			)
+			.await
+			.unwrap();
+	}
+	let mut policy = execution.policy.clone();
+	policy["policies"].as_array_mut().unwrap().push(json!({"id":"deny-run-read","effect":"deny","subjects":{"any":true},"actions":["run.read"],"resources":{"kinds":["*"]}}));
+	assert_json(
+		execution
+			.app
+			.deployment_administrator
+			.post(
+				"/api/authorization/acme",
+				&json!({"expected_revision":1,"bundle":policy.clone()}),
+				"json",
+			)
+			.await
+			.unwrap(),
+		200,
+	);
+	let task_path = format!("/api/tasks/{}/runs", execution.task);
+	let runs = assert_json(execution.subject.get(&task_path).await.unwrap(), 200);
+	assert!(runs["items"].as_array().unwrap().is_empty());
+	let requests = assert_json(
+		execution.subject.get("/api/human-requests").await.unwrap(),
+		200,
+	);
+	assert!(requests["items"].as_array().unwrap().is_empty());
+	assert!(requests["next_cursor"].is_string());
+	assert_json(
+		execution
+			.subject
+			.get(&format!("/api/human-requests?run={}", run.id))
+			.await
+			.unwrap(),
+		403,
+	);
+	policy["policies"].as_array_mut().unwrap().push(json!({"id":"deny-task-read","effect":"deny","subjects":{"any":true},"actions":["task.read"],"resources":{"kinds":["*"]}}));
+	assert_json(
+		execution
+			.app
+			.deployment_administrator
+			.post(
+				"/api/authorization/acme",
+				&json!({"expected_revision":2,"bundle":policy.clone()}),
+				"json",
+			)
+			.await
+			.unwrap(),
+		200,
+	);
+	assert_json(execution.subject.get(&task_path).await.unwrap(), 403);
+	policy["policies"].as_array_mut().unwrap().push(json!({"id":"deny-workspace-read","effect":"deny","subjects":{"any":true},"actions":["workspace.read"],"resources":{"kinds":["*"]}}));
+	assert_json(
+		execution
+			.app
+			.deployment_administrator
+			.post(
+				"/api/authorization/acme",
+				&json!({"expected_revision":3,"bundle":policy}),
+				"json",
+			)
+			.await
+			.unwrap(),
+		200,
+	);
+	let requests = assert_json(
+		execution.subject.get("/api/human-requests").await.unwrap(),
+		200,
+	);
+	assert!(requests["items"].as_array().unwrap().is_empty());
+	assert!(requests["next_cursor"].is_null());
+	assert_json(
+		execution
+			.subject
+			.get(&format!(
+				"/api/human-requests?cursor={}",
+				private_request.id
+			))
+			.await
+			.unwrap(),
+		400,
+	);
+}
+
+#[rstest]
+#[tokio::test]
+async fn human_request_list_pages_past_fifty_requests(#[future] execution: ExecutionFixture) {
+	let execution = Box::pin(execution).await;
+	let run = claim(&execution).await;
+	for index in 0..51 {
+		execution
+			.app
+			.runtime
+			.store
+			.human_request(
+				&TEST_FIXTURE,
+				&run,
+				"QUESTION",
+				"Question",
+				&format!("page-{index}"),
+			)
+			.await
+			.unwrap();
+	}
+	let path = format!("/api/human-requests?run={}", run.id);
+	let first = assert_json(execution.subject.get(&path).await.unwrap(), 200);
+	let items = first["items"].as_array().unwrap();
+	assert_eq!(items.len(), 50);
+	let cursor = first["next_cursor"].as_str().unwrap();
+	let second = assert_json(
+		execution
+			.subject
+			.get(&format!("{path}&cursor={cursor}"))
+			.await
+			.unwrap(),
+		200,
+	);
+	assert_eq!(second["items"].as_array().unwrap().len(), 1);
+	assert!(second["next_cursor"].is_null());
+	assert!(
+		items
+			.iter()
+			.all(|item| item["id"] != second["items"][0]["id"])
+	);
+	let keys: Vec<_> = items
+		.iter()
+		.chain(second["items"].as_array().unwrap())
+		.map(|item| {
+			(
+				chrono::DateTime::parse_from_rfc3339(item["created_at"].as_str().unwrap()).unwrap(),
+				Uuid::parse_str(item["id"].as_str().unwrap()).unwrap(),
+			)
+		})
+		.collect();
+	assert!(keys.windows(2).all(|pair| pair[0] > pair[1]));
+}
+
+#[rstest]
+#[tokio::test]
+async fn human_requests_hidden_by_current_human_read_policy_are_not_listed(
+	#[future] execution: ExecutionFixture,
+) {
+	let execution = Box::pin(execution).await;
+	let run = claim(&execution).await;
+	execution
+		.app
+		.runtime
+		.store
+		.human_request(&TEST_FIXTURE, &run, "QUESTION", "Private", "human-policy")
+		.await
+		.unwrap();
+	let mut policy = execution.policy.clone();
+	policy["policies"].as_array_mut().unwrap().push(json!({"id":"deny-human-read","effect":"deny","subjects":{"any":true},"actions":["human.read"],"resources":{"kinds":["*"]}}));
+	assert_json(
+		execution
+			.app
+			.deployment_administrator
+			.post(
+				"/api/authorization/acme",
+				&json!({"expected_revision":1,"bundle":policy}),
+				"json",
+			)
+			.await
+			.unwrap(),
+		200,
+	);
+	let page = assert_json(
+		execution.subject.get("/api/human-requests").await.unwrap(),
+		200,
+	);
+	assert!(page["items"].as_array().unwrap().is_empty());
+	assert_json(
+		execution
+			.subject
+			.get(&format!("/api/human-requests?run={}", run.id))
+			.await
+			.unwrap(),
+		403,
+	);
+}
+
+#[rstest]
+#[tokio::test]
+async fn human_request_list_filters_answered_and_reports_waiting_deadline(
+	#[future] execution: ExecutionFixture,
+) {
+	use aidash_server::domain::{ReadyState, ResumeState, RunState, WaitingState};
+	use reinhardt::db::orm::Json as DbJson;
+	let execution = Box::pin(execution).await;
+	let run = claim(&execution).await;
+	let request = execution
+		.app
+		.runtime
+		.store
+		.human_request(
+			&TEST_FIXTURE,
+			&run,
+			"QUESTION",
+			"Question",
+			"deadline-question",
+		)
+		.await
+		.unwrap();
+	let deadline = chrono::Utc::now() + chrono::Duration::hours(1);
+	let state = RunState::Waiting(Box::new(WaitingState::Human {
+		request_id: request.id,
+		answer_by: Some(deadline),
+		resume: ResumeState::Ready(ReadyState {}),
+	}));
+	execution.app.database.fixture(async |tx| {
+		let mut row = aidash_server::apps::execution::models::Run::objects()
+			.filter(aidash_server::apps::execution::models::Run::field_id().eq(run.id))
+			.get_with_db(tx).await?;
+			row.phase = aidash_server::apps::execution::models::states::RunPhase::Waiting;
+		row.pending = DbJson(json!({"state_version": 1, "data": json!(state)["data"], "recovery": {"retry": null, "lease_recovered": false}}));
+		aidash_server::apps::execution::models::Run::objects().update_with_conn(tx, &row).await?;
+		Ok(())
+	}).await;
+	let path = format!("/api/human-requests?run={}", run.id);
+	let pending = assert_json(execution.subject.get(&path).await.unwrap(), 200);
+	let actual =
+		chrono::DateTime::parse_from_rfc3339(pending["items"][0]["answer_by"].as_str().unwrap())
+			.unwrap();
+	assert_eq!(actual, deadline);
+	execution
+		.app
+		.database
+		.fixture(async |tx| {
+			let mut row = HumanRequest::objects()
+				.filter(HumanRequest::field_id().eq(request.id))
+				.get_with_db(tx)
+				.await?;
+			row.response = Some(DbJson(json!({"answer": "there"})));
+			row.answered_by = Some("alice".to_owned());
+			HumanRequest::objects().update_with_conn(tx, &row).await?;
+			Ok(())
+		})
+		.await;
+	let pending = assert_json(execution.subject.get(&path).await.unwrap(), 200);
+	assert!(pending["items"].as_array().unwrap().is_empty());
+	let answered = assert_json(
+		execution
+			.subject
+			.get(&format!("{path}&state=answered"))
+			.await
+			.unwrap(),
+		200,
+	);
+	assert_eq!(answered["items"][0]["id"], request.id.to_string());
+	assert!(answered["items"][0].get("answer_by").is_none());
+	let all = assert_json(
+		execution
+			.subject
+			.get(&format!("{path}&state=all"))
+			.await
+			.unwrap(),
+		200,
+	);
+	assert_eq!(all["items"].as_array().unwrap().len(), 1);
+}
+
+#[rstest]
+#[tokio::test]
 async fn control_rotates_credentials_atomically_and_cancellation_remains_terminal(
 	#[future] execution: ExecutionFixture,
 ) {

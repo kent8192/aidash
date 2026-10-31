@@ -204,5 +204,13 @@ pub(crate) async fn enter(tx: &mut dyn TransactionExecutor, scope: &TenancyScope
 	Ok(())
 }
 
+/// Materialized by the migration asset generator for cross-Tenant backfills.
+pub(crate) fn migration_deployment() -> String {
+	Query::select()
+		.expr(set_config(SCOPE_SETTING, "deployment".into()))
+		.expr(set_config(TENANT_SETTING, String::new()))
+		.to_string(PostgresQueryBuilder)
+}
+
 #[cfg(test)]
 mod tests;

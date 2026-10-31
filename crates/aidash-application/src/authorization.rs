@@ -123,6 +123,7 @@ pub mod stream;
 
 pub mod records;
 
+pub mod bounded_reads;
 pub mod state;
 
 pub mod worker_tasks;

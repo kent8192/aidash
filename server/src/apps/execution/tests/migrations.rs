@@ -356,17 +356,105 @@ async fn generation_with_existing_sql_assets_preserves_history_and_dependency(
 	);
 	assert_eq!(std::fs::read(history).unwrap(), original);
 	let generated = FilesystemSource::new(fixture.directory.path().join("migrations"))
-		.get_migration("execution", "0084_policy_probe")
+		.get_migration("execution", "0086_policy_probe")
 		.await
 		.unwrap();
 	assert_eq!(
 		generated.dependencies,
 		vec![(
 			"execution".to_owned(),
-			"0083_harness_contract_state".to_owned()
+			"0085_bounded_read_indexes".to_owned()
 		)]
 	);
 	assert!(generated.operations.is_empty());
+}
+
+#[rstest]
+#[tokio::test]
+async fn run_created_at_backfills_last_update_and_remains_fixed_on_later_updates(
+	#[future] fresh_database: MigrationFixture,
+) {
+	let fixture = fresh_database.await;
+	fixture
+		.migrate_excluding(&[
+			("execution", "0084_run_created_at"),
+			("execution", "0085_bounded_read_indexes"),
+		])
+		.await;
+	fixture.tenant_root("acme").await;
+	let lease = DatabaseConnectionLease::register(fixture.connection.clone()).unwrap();
+	let mut connection = lease.handle();
+	let node = aidash_domain::nodes::NodeName::derived("acme").to_string();
+	let workspace_id = Uuid::new_v4();
+	let workspace = Workspace::build()
+		.id(workspace_id)
+		.tenant("acme")
+		.node(node.clone())
+		.title("Migration")
+		.goal("Preserve creation time")
+		.state(json!({}).into())
+		.revision(0)
+		.finish();
+	Workspace::objects()
+		.create_with_conn(&mut connection, &workspace)
+		.await
+		.unwrap();
+	let run_id = Uuid::new_v4();
+	let old_time = chrono::DateTime::parse_from_rfc3339("2020-02-03T04:05:06Z")
+		.unwrap()
+		.with_timezone(&chrono::Utc);
+	let insert = Query::insert()
+		.into_table(Alias::new("runs"))
+		.columns(
+			[
+				"id",
+				"tenant",
+				"task_id",
+				"workspace_id",
+				"node",
+				"home_node",
+				"agent_id",
+				"agent_version",
+				"updated_at",
+			]
+			.map(Alias::new),
+		)
+		.values_panic::<_, reinhardt::query::Value>([
+			run_id.into(),
+			"acme".into(),
+			Uuid::new_v4().into(),
+			workspace_id.into(),
+			node.clone().into(),
+			format!("aidash://migration/{node}").into(),
+			"agent".into(),
+			"1".into(),
+			old_time.into(),
+		])
+		.to_string(PostgresQueryBuilder);
+	fixture.connection.execute(&insert, vec![]).await.unwrap();
+	fixture.migrate().await;
+	let pool = fixture.connection.clone().into_postgres().unwrap();
+	let select = Query::select()
+		.columns([Alias::new("created_at"), Alias::new("updated_at")])
+		.from(Alias::new("runs"))
+		.and_where(Expr::col(Alias::new("id")).eq(Expr::value(run_id)))
+		.to_string(PostgresQueryBuilder);
+	let (created, updated): (chrono::DateTime<chrono::Utc>, chrono::DateTime<chrono::Utc>) =
+		sqlx::query_as(&select).fetch_one(&pool).await.unwrap();
+	assert_eq!((created, updated), (old_time, old_time));
+	let update = Query::update()
+		.table(Alias::new("runs"))
+		.value(
+			Alias::new("updated_at"),
+			old_time + chrono::Duration::days(1),
+		)
+		.and_where(Expr::col(Alias::new("id")).eq(Expr::value(run_id)))
+		.to_string(PostgresQueryBuilder);
+	fixture.connection.execute(&update, vec![]).await.unwrap();
+	let (created, updated): (chrono::DateTime<chrono::Utc>, chrono::DateTime<chrono::Utc>) =
+		sqlx::query_as(&select).fetch_one(&pool).await.unwrap();
+	assert_eq!(created, old_time);
+	assert_eq!(updated, old_time + chrono::Duration::days(1));
 }
 
 #[rstest]

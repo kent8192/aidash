@@ -23,6 +23,7 @@ import tempfile
 import threading
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
 import uuid
 
@@ -33,8 +34,7 @@ ROOT = pathlib.Path(__file__).resolve().parents[1]
 TOKEN = "acceptance-access-token"
 
 
-# A Tenant subject's /api/state waits about 15 s before it is served on a
-# CI runner while the research cluster runs, then takes about 5 s (#404).
+# Leave room for heavily loaded CI runners to serve authorized reads (#404).
 API_TIMEOUT = 60
 # Every Agent depends on the compaction Decider its Node binds by default (ADR 0102).
 COMPACTION_DECIDER = {"id": "aidash.compaction-decider", "version": "1.0.0"}
@@ -193,6 +193,26 @@ def fixture_approval(request):
     )
 
 
+def page_items(base, path, token):
+    first_path = path
+    while True:
+        page = api_request(base, path, token=token)
+        yield from page["items"]
+        cursor = page["next_cursor"]
+        if cursor is None:
+            return
+        path = first_path + ("&" if "?" in first_path else "?") + f"cursor={urllib.parse.quote(cursor, safe='')}"
+
+
+def latest_task_run(base, task, token):
+    return next(iter(api_request(base, f"/api/tasks/{task}/runs", token=token)["items"]), None)
+
+
+def completed_run(base, run_id, token):
+    run = api_request(base, f"/api/runs/{run_id}", token=token)["run"]
+    return run if run["phase"] == "COMPLETED" else None
+
+
 def approve_fixture_external_requests(base, token):
     """Approve only the owned fixture's exact external-call continuations of Runs executing for another Node.
 
@@ -202,7 +222,7 @@ def approve_fixture_external_requests(base, token):
     An answer that does not arrive is answered again on the next poll; a second
     answer to an approval that was already answered is refused with 409.
     """
-    for request in api_request(base, "/api/state", token=token)["human_requests"]:
+    for request in page_items(base, "/api/human-requests", token):
         if fixture_approval(request):
             api_request(base, f"/api/human-requests/{request['id']}/answer", {"approved": True}, token=token)
             print(f"--- approved {request['id']}", flush=True)
@@ -242,10 +262,10 @@ def diagnose(base, token, tenant, workspace, database):
         snapshot = api_request(base, f"/api/workspaces/{workspace}", token=token)
         show("tasks", [{key: task.get(key) for key in ("id", "title", "status", "parent_id")} for task in snapshot["tasks"]])
         tasks = {task["id"] for task in snapshot["tasks"]}
-        state = api_request(base, "/api/state", token=token)
-        show("api human requests", [[request["run_id"], request["kind"], request.get("response") is not None] for request in state["human_requests"]])
-        for run in state["runs"]:
-            if run["task_id"] in tasks:
+        requests = page_items(base, "/api/human-requests?state=all", token)
+        show("api human requests", [[request["run_id"], request["kind"], request.get("response") is not None] for request in requests])
+        for task in tasks:
+            for run in page_items(base, f"/api/tasks/{task}/runs", token):
                 detail = api_request(base, f"/api/runs/{run['id']}", token=token)["run"]
                 response = ((detail.get("state") or {}).get("data") or {}).get("response") or {}
                 show(f"run {run['id']}", {**{key: detail.get(key) for key in ("agent_id", "phase", "control", "step", "error")}, "tool_calls": response.get("tool_calls")})
@@ -661,8 +681,7 @@ def main():
     approval_errors = []
 
     def approve_fixture_calls():
-        # Each subject read of /api/state journals a policy decision per item,
-        # so frequent polling slows the Node it waits on.
+        # Poll the bounded approval inbox while the workflow runs.
         while not approval_stop.wait(2):
             if not local_approvals.is_set():
                 continue
@@ -833,7 +852,7 @@ def main():
 
         def actix_run():
             actix = next((t for t in api_request(base_a, f"/api/workspaces/{workspace}", token=tokens[base_a])["tasks"] if t["title"] == "Actix"), None)
-            return actix and next((r for r in api_request(base_a, "/api/state", token=tokens[base_a])["runs"] if r["task_id"] == actix["id"]), None)
+            return actix and latest_task_run(base_a, actix["id"], tokens[base_a])
 
         worker_a.kill()
         worker_a.wait(timeout=10)
@@ -854,7 +873,7 @@ def main():
         # coordinator's synthesis, is twenty-odd authorized steps; on a CI runner
         # each takes 10-20 s (#404).
         snapshot = wait_for(complete, timeout=600, label="all four tasks and artifacts")
-        recovered = wait_for(lambda: next((r for r in api_request(base_a, "/api/state", token=tokens[base_a])["runs"] if r["id"] == before["id"] and r["phase"] == "COMPLETED"), None), label="same durable research run")
+        recovered = wait_for(lambda: completed_run(base_a, before["id"], tokens[base_a]), label="same durable research run")
         assert recovered["id"] == before["id"]
         assert any(e["kind"] == "run.recovered" and e["data"].get("run_id") == recovered["id"] for e in api_request(base_a, "/api/events", token=tokens[base_a]))
         assert len(snapshot["artifacts"]) == 4

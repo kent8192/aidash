@@ -15,7 +15,7 @@ import time
 import uuid
 
 from golden_path import (
-    ROOT, TOKEN, api_request, approve, approve_fixture_external_requests, default_node,
+    ROOT, TOKEN, api_request, approve, approve_fixture_external_requests, completed_run, default_node, latest_task_run,
     approve_fixture_tool_calls, entity, reconcile_uncertain_http, tenant_subject,
     tool_binding, tool_descriptor, wait_for,
 )
@@ -183,7 +183,8 @@ def main():
         print("Killed Node A worker after effect; scaled workers to three and servers to two", flush=True)
         tasks = api_request(base_a, f"/api/workspaces/{workspace}", token=token)["tasks"]
         actix = next(task for task in tasks if task["title"] == "Actix")
-        before = next(run for run in api_request(base_a, "/api/state", token=token)["runs"] if run["task_id"] == actix["id"])
+        before = latest_task_run(base_a, actix["id"], token)
+        assert before is not None, "The Actix task must have a Run"
         reconciled_key = reconcile_uncertain_http(base_a, before["id"], lambda: api_request(fixture_url, "/status")["effects"], token)
 
         def complete():
@@ -191,7 +192,7 @@ def main():
             return value if len(value["tasks"]) == 4 and all(t["status"] == "COMPLETED" for t in value["tasks"]) else False
 
         snapshot = wait_for(complete, timeout=600, label="cluster golden path")
-        recovered = wait_for(lambda: next((r for r in api_request(base_a, "/api/state", token=token)["runs"] if r["id"] == before["id"] and r["phase"] == "COMPLETED"), None), label="same research run")
+        recovered = wait_for(lambda: completed_run(base_a, before["id"], token), label="same research run")
         assert len(snapshot["artifacts"]) == 4
         effects = api_request(fixture_url, "/status")
         assert len(effects["effects"]) == 3

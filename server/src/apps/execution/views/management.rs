@@ -15,8 +15,37 @@ use crate::apps::execution::serializers::management::ClaimInput;
 use crate::apps::execution::serializers::management::ControlInput;
 use crate::apps::execution::serializers::management::EventQuery;
 use crate::apps::execution::serializers::management::InferenceStreamQuery;
+use crate::apps::execution::serializers::management::{HumanListQuery, RunListQuery};
 use crate::apps::execution::services::management::HarnessManagement;
 use crate::apps::workspaces::serializers::management::MessageInput;
+
+/// Reads one page of candidates. Filtered rows can leave a short page with a cursor.
+/// The opaque cursor currently contains the last scanned Run ID, restricted to
+/// a Task and Workspace the subject may read; individual Runs may be hidden.
+/// Run visibility retains its dependent checks, including all Human Requests.
+#[get("/api/tasks/{id}/runs", name = "task-runs", auth = "protected")]
+pub async fn task_runs(
+	#[inject] service: Depends<HarnessManagement>,
+	#[inject] actor: Actor,
+	Path(id): Path<Uuid>,
+	Query(q): Query<RunListQuery>,
+) -> ViewResult<Response> {
+	crate::http::json(service.task_runs(actor, id, q).await)
+}
+
+/// Reads one page of Human Request candidates; filtered rows can leave a cursor on a short page.
+/// The opaque cursor currently contains the last scanned request ID, restricted
+/// to a Workspace the subject may read; individual requests may be hidden.
+/// Each Run's visibility is checked once per request; its dependent checks can
+/// still read and decide all Human Requests of that Run.
+#[get("/api/human-requests", name = "human-requests", auth = "protected")]
+pub async fn human_requests(
+	#[inject] service: Depends<HarnessManagement>,
+	#[inject] actor: Actor,
+	Query(q): Query<HumanListQuery>,
+) -> ViewResult<Response> {
+	crate::http::json(service.human_requests(actor, q).await)
+}
 
 #[get("/api/state", name = "state", auth = "protected")]
 pub async fn state(

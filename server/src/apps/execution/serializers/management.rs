@@ -4,6 +4,23 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
+#[derive(Default, Deserialize, JsonSchema, reinhardt::Validate)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct RunListQuery {
+	/// Opaque continuation cursor from the preceding page.
+	pub(crate) cursor: Option<String>,
+}
+
+#[derive(Default, Deserialize, JsonSchema, reinhardt::Validate)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct HumanListQuery {
+	pub(crate) run: Option<Uuid>,
+	#[serde(default)]
+	pub(crate) state: aidash_application::authorization::bounded_reads::HumanState,
+	/// Opaque continuation cursor from the preceding page.
+	pub(crate) cursor: Option<String>,
+}
+
 #[derive(Deserialize, Serialize, JsonSchema)]
 pub(crate) struct ClaimInput {
 	pub(crate) revision: i64,

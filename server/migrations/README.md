@@ -150,6 +150,12 @@ search-path setting. Regression checks load the exact generated SQL through
 `FilesystemSource` and verify both initial gate values after migration and after
 complete reversal/reapplication.
 
+`execution/0084_run_created_at` also materializes its Run backfill through
+`migrationseeds`: it enters Deployment Scope and copies each existing Run's
+`updated_at` into its new `created_at` as an approximation. Later Runs receive
+their creation time when inserted; `execution/0085_bounded_read_indexes` sets
+the physical insert default and creates the ordered, state-filtered indexes.
+
 Reinhardt Query already provides builders for several of these statements; the
 remaining gap is their integration into migration operations and filesystem
 source loading. Retain the procedural constraints, lease fences, and visibility

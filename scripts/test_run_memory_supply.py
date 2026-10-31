@@ -131,8 +131,8 @@ class ClaimTest(unittest.TestCase):
             if path == "/api/tasks/task/claim":
                 state["runs"] = [{"id": "run", "task_id": "task"}]
                 return 504, "gateway timeout"  # The claim committed, but its answer was lost.
-            if path == "/api/state":
-                return 200, {"runs": state["runs"], "human_requests": []}
+            if path == "/api/tasks/task/runs":
+                return 200, {"items": state["runs"], "next_cursor": None}
             if path == "/api/runs/run":
                 return 200, {"run": {"id": "run", "phase": state["phase"]}}
             if path == "/api/runs/run/control":
@@ -155,8 +155,8 @@ class ClaimTest(unittest.TestCase):
         def call(method, path, body, token, timeout):
             requests.append((path, clock.now + timeout))
             clock.now += min(timeout, 4.0)  # A slow Node: every request takes up to 4 s.
-            if path == "/api/state":
-                return 200, {"runs": [{"id": "run", "task_id": "task"}], "human_requests": []}
+            if path == "/api/tasks/task/runs":
+                return 200, {"items": [{"id": "run", "task_id": "task"}], "next_cursor": None}
             if path == "/api/runs/run":
                 return 200, {"run": {"id": "run", "phase": state["phase"]}}
             if path == "/api/runs/run/control":
