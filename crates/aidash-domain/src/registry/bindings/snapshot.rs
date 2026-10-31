@@ -1,7 +1,7 @@
 //! Rebuild the Agent's capability closure from pinned definitions at durable boundaries.
 use super::*;
 use crate::tool::providers::{
-	ToolDescriptor, remote_exclusion, reserved_aliases, validate_restrictions,
+	ToolDescriptor, memory_exclusion, remote_exclusion, reserved_aliases, validate_restrictions,
 };
 
 impl BindingSnapshot {
@@ -335,6 +335,10 @@ impl BindingSnapshot {
 				}
 			}
 		}
+		let memory_bound = self
+			.bindings
+			.iter()
+			.any(|binding| binding.definition.kind == "memory");
 		let mut seen = BTreeSet::new();
 		if self.bindings.len() != expected.len() {
 			return Err(Error::Invalid(
@@ -358,11 +362,12 @@ impl BindingSnapshot {
 				let descriptor: ToolDescriptor =
 					serde_json::from_value(definitions[&saved.identity].definition.config.clone())?;
 				let contract = descriptor.declared_contract(saved.identity.clone())?;
-				let excluded_reason = if self.remote {
-					remote_exclusion(expected.origin, &contract)?
-				} else {
-					None
-				};
+				let excluded_reason =
+					match memory_exclusion(expected.origin, &descriptor.operation, memory_bound)? {
+						Some(reason) => Some(reason),
+						None if self.remote => remote_exclusion(expected.origin, &contract)?,
+						None => None,
+					};
 				let pinned = match saved.provider_contract_digest.as_deref() {
 					Some(digest) => contract.pinned(digest)?.is_some(),
 					None => false,
