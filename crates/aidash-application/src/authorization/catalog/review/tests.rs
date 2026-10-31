@@ -556,6 +556,77 @@ async fn an_installation_plan_uses_the_review_node_and_restriction() {
 
 #[rstest]
 #[tokio::test]
+async fn widening_the_active_revision_skips_activation_while_a_newer_one_is_staged() {
+	// Arrange: revision 1 is approved and active for another agent only;
+	// revision 2 is staged.
+	let mut copy = entry("model", "copy", json!({}));
+	copy.installation = Some(Projection {
+		contract: 1,
+		tenant: "acme".into(),
+		installation: "package".into(),
+		revision: 1,
+	});
+	let mut fixture = Fixture::new(vec![agent("copy", &[]), copy]);
+	fixture.approve(
+		"copy",
+		Some(CatalogRestriction {
+			subjects: ["other-agent".into()].into(),
+			groups: BTreeSet::new(),
+		}),
+	);
+	fixture.installed.insert(
+		key("package", "1.0.0"),
+		InstalledRevision {
+			installation: Installation {
+				id: "package".into(),
+				tenant: "acme".into(),
+				package_key: "package".into(),
+				latest_revision: 2,
+				active_revision: Some(1),
+				activation_revision: 4,
+			},
+			revision: 1,
+			digest: "revision-digest".into(),
+			activation_revision: 4,
+			active: true,
+		},
+	);
+	let review = review(&mut fixture, &reference("writer")).await.unwrap();
+	let item = review
+		.items
+		.iter()
+		.find(|item| item.reference.id == "copy")
+		.unwrap();
+	assert_eq!(item.status, ReviewStatus::Approved);
+	assert!(item.widen);
+	// Act: widen it together with an unrelated local approval of the root.
+	let mut submission = submission(&review, &["writer"]);
+	submission.installations.push(ReviewActivation {
+		installation: "package".into(),
+		revision: 1,
+		digest: "revision-digest".into(),
+		expected_activation_revision: 4,
+		restriction: item.proposed_restriction.clone(),
+	});
+	let plan = plan(&review, &submission).unwrap();
+	let set = restriction_set("acme", &review.node, &review, &plan).unwrap();
+	// Assert
+	assert_eq!(plan.approvals.len(), 1);
+	assert!(plan.installations.is_empty());
+	assert!(plan.satisfied_by_activation.is_empty());
+	assert_eq!(set.installations.len(), 1);
+	let selection = &set.installations[0];
+	assert_eq!(selection.revision, 1);
+	assert_eq!(selection.expected_activation_revision, 4);
+	assert_eq!(selection.expected_catalog_revision, 1);
+	assert_eq!(
+		Some(selection.restriction.clone()),
+		item.proposed_restriction
+	);
+}
+
+#[rstest]
+#[tokio::test]
 async fn the_review_includes_the_compaction_decider_the_node_binds_by_default() {
 	// Arrange
 	let mut fixture = Fixture::new(vec![

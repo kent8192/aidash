@@ -39,6 +39,12 @@ pub struct Invocation {
 	pub result: Option<Json<Value>>,
 	#[field]
 	pub replay_safe: bool,
+	#[field(default = 0)]
+	pub delivery_failures: i32,
+	#[field(default = false)]
+	pub delivery_pending: bool,
+	#[field(field_type = "text", null = true)]
+	pub uncertain_reason: Option<String>,
 	#[field(auto_now_add = true)]
 	pub created_at: DateTime<Utc>,
 }
