@@ -382,8 +382,8 @@ async fn alias_collisions_are_checked_after_expansion() {
 	assert!(snapshot(&mut catalog, &config, false).await.is_err());
 }
 #[test]
-fn memory_builtins_are_excluded_without_a_memory_binding() {
-	use crate::test_support::{agent, binding, native_memory_entries, resolve};
+fn memory_builtins_are_excluded_without_a_memory_provider() {
+	use crate::test_support::{agent, binding, entry, native_memory_entries, resolve, try_resolve};
 	let node = "aidash://node-a";
 	let memory_tools = |saved: &BindingSnapshot| -> Vec<Option<String>> {
 		saved
@@ -411,9 +411,58 @@ fn memory_builtins_are_excluded_without_a_memory_binding() {
 	assert!(
 		reasons
 			.iter()
-			.all(|reason| reason.as_deref() == Some("memory tools need a bound memory"))
+			.all(|reason| reason.as_deref() == Some("memory tools need a memory provider"))
 	);
 	assert!(saved.operation("memory_recall").is_err());
+
+	// A native memory source is a `memory` Binding without a provider: it only
+	// feeds automatic context, so the tools stay excluded (#617).
+	for adapter in ["semantic_memory", "conversation_memory"] {
+		let mut entries = entries.clone();
+		entries.push(entry(
+			adapter,
+			"memory",
+			serde_json::json!({"schema_version":1,"source":{"adapter":adapter}}),
+		));
+		let mut root = agent("agent");
+		root.config["bindings"] = serde_json::json!([binding("memory", node, adapter)]);
+		let saved = resolve(node, &root, false, entries.clone());
+		assert_eq!(
+			memory_tools(&saved),
+			vec![Some("memory tools need a memory provider".into()); 3],
+			"{adapter}"
+		);
+		assert!(saved.operation("memory_recall").is_err(), "{adapter}");
+		let settings = aidash_domain::registry::AgentConfig::from_snapshot(&saved).unwrap();
+		assert!(settings.memory.is_none(), "{adapter}");
+
+		// An explicit memory tool cannot be bound without a provider either.
+		root.config["bindings"] = serde_json::json!([
+			binding("memory", node, adapter),
+			binding("tool", node, "aidash.memory_recall"),
+		]);
+		assert!(
+			try_resolve(node, &root, false, entries.clone()).is_err(),
+			"{adapter}"
+		);
+
+		// Nor can a context source declaration that names one.
+		let mut declared = entries;
+		let source = declared.last_mut().unwrap();
+		let mut native: aidash_domain::registry::bindings::sources::NativeContext =
+			serde_json::from_value(source.config.clone()).unwrap();
+		native.context_source = Some(native.declaration(&QualifiedRef {
+			registry_deployment: node.into(),
+			id: adapter.into(),
+			version: "1.0.0".into(),
+		}));
+		source.config = serde_json::to_value(native).unwrap();
+		root.config["bindings"] = serde_json::json!([binding("memory", node, adapter)]);
+		assert!(
+			try_resolve(node, &root, false, declared).is_err(),
+			"{adapter}"
+		);
+	}
 
 	entries.extend(native_memory_entries());
 	let mut root = agent("agent");
@@ -2540,6 +2589,11 @@ async fn semantic_query_policy_agrees_including_implicit_defaults(
 		if let Some(query) = query {
 			let mut declaration = native.declaration(&reference(id));
 			declaration.query = query;
+			if kind == "memory" {
+				// Without a memory provider the memory tools are excluded, so an
+				// explicit declaration may not name them (#617).
+				declaration.tools = Default::default();
+			}
 			native.context_source = Some(declaration);
 		}
 		catalog.insert(entry(id, kind, serde_json::to_value(native).unwrap()));

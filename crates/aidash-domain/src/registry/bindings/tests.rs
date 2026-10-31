@@ -152,6 +152,24 @@ fn memory_builtins_stay_default_bindings_and_explicit_ones_need_a_memory() {
 	assert_eq!(memory_tools(&agent).len(), 2);
 }
 #[test]
+fn only_a_memory_definition_without_schema_version_is_a_memory_provider() {
+	use super::memory_provider;
+	assert!(memory_provider(
+		"memory",
+		&json!({"engine":"hindsight_rust"})
+	));
+	for adapter in ["semantic_memory", "conversation_memory"] {
+		assert!(!memory_provider(
+			"memory",
+			&json!({"schema_version":1,"source":{"adapter":adapter}})
+		));
+	}
+	assert!(!memory_provider(
+		"source",
+		&json!({"memory":{"id":"m","version":"1.0.0"}})
+	));
+}
+#[test]
 fn memory_exclusion_applies_only_to_memory_tools_without_a_memory() {
 	use crate::tool::providers::memory_exclusion;
 	assert!(

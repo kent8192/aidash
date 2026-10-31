@@ -188,6 +188,24 @@ pub(crate) fn resolve_with_plugins(
 	extras: Vec<Entry>,
 	plugins: Vec<StoredAgentPlugin>,
 ) -> BindingSnapshot {
+	try_resolve_with_plugins(node, root, remote, extras, plugins).unwrap()
+}
+/// [`resolve`] that returns the admission error instead of panicking.
+pub(crate) fn try_resolve(
+	node: &str,
+	root: &Entry,
+	remote: bool,
+	extras: Vec<Entry>,
+) -> crate::Result<BindingSnapshot> {
+	try_resolve_with_plugins(node, root, remote, extras, vec![])
+}
+fn try_resolve_with_plugins(
+	node: &str,
+	root: &Entry,
+	remote: bool,
+	extras: Vec<Entry>,
+	plugins: Vec<StoredAgentPlugin>,
+) -> crate::Result<BindingSnapshot> {
 	let mut entries = extras;
 	if !entries.iter().any(|entry| entry.kind == "model") {
 		let model = &root.config["model"];
@@ -216,7 +234,6 @@ pub(crate) fn resolve_with_plugins(
 	)
 	.now_or_never()
 	.expect("fixture catalog never performs I/O")
-	.unwrap()
 }
 pub(crate) fn snapshot(node: &str, id: &str) -> BindingSnapshot {
 	resolve(node, &agent(id), true, vec![])
