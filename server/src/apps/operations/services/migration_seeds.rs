@@ -36,11 +36,11 @@ fn assets() -> [(&'static str, String); 6] {
 			format!("{};\n", marketplace::backward()),
 		),
 		(
-			"execution/sql/forward/0082_run_created_at.sql",
+			"execution/sql/forward/0084_run_created_at.sql",
 			crate::apps::execution::services::migration_backfill::forward(),
 		),
 		(
-			"execution/sql/backward/0082_run_created_at.sql",
+			"execution/sql/backward/0084_run_created_at.sql",
 			crate::apps::execution::services::migration_backfill::backward(),
 		),
 	]
@@ -135,7 +135,7 @@ mod tests {
 			);
 		}
 		let migration = FilesystemSource::new(&root)
-			.get_migration("execution", "0082_run_created_at")
+			.get_migration("execution", "0084_run_created_at")
 			.await
 			.unwrap();
 		assert!(

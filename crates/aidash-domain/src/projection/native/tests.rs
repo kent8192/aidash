@@ -501,6 +501,7 @@ fn a_partial_turn_is_rejected_before_any_request_is_sent() {
 			tool_calls: vec![call("a")],
 		}],
 		volatile: "{}".into(),
+		harness: None,
 	};
 	assert!(request(native, false).validate().is_err());
 }

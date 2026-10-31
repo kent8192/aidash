@@ -4,8 +4,8 @@
 use reinhardt::db::migrations::prelude::*;
 
 pub(super) fn migration() -> Migration {
-	Migration::new("0083_bounded_read_indexes", "execution")
-		.add_dependency("execution", "0082_run_created_at")
+	Migration::new("0085_bounded_read_indexes", "execution")
+		.add_dependency("execution", "0084_run_created_at")
 		.add_operation(Operation::AlterColumn {
 			table: "runs".into(),
 			column: "created_at".into(),

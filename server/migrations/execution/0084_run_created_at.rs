@@ -5,8 +5,8 @@
 use reinhardt::db::migrations::FieldType;
 use reinhardt::db::migrations::prelude::*;
 pub(super) fn migration() -> Migration {
-	Migration::new("0082_run_created_at", "execution")
-		.add_dependency("execution", "0081_lease_recoveries")
+	Migration::new("0084_run_created_at", "execution")
+		.add_dependency("execution", "0083_harness_contract_state")
 		.add_operation(Operation::AddColumn {
 			table: "runs".to_string(),
 			column: ColumnDefinition::new("created_at", FieldType::TimestampTz)
@@ -20,8 +20,8 @@ pub(super) fn migration() -> Migration {
 			mysql_options: None,
 		})
 		.add_operation(Operation::RunSQL {
-			sql: include_str!("sql/forward/0082_run_created_at.sql").to_owned(),
-			reverse_sql: Some(include_str!("sql/backward/0082_run_created_at.sql").to_owned()),
+			sql: include_str!("sql/forward/0084_run_created_at.sql").to_owned(),
+			reverse_sql: Some(include_str!("sql/backward/0084_run_created_at.sql").to_owned()),
 		})
 		.add_operation(Operation::AlterColumn {
 			table: "runs".to_owned(),

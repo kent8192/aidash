@@ -345,8 +345,8 @@ async fn migration_seed_command_detects_drift_and_regenerates_only_owned_assets(
 		})
 		.collect::<Vec<_>>();
 	paths.extend([
-		"execution/sql/forward/0082_run_created_at.sql".to_owned(),
-		"execution/sql/backward/0082_run_created_at.sql".to_owned(),
+		"execution/sql/forward/0084_run_created_at.sql".to_owned(),
+		"execution/sql/backward/0084_run_created_at.sql".to_owned(),
 	]);
 	for path in &paths {
 		let path = root.join(path);
