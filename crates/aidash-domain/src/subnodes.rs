@@ -124,7 +124,8 @@ pub fn check_can_create(is_member: bool) -> Result<(), Refusal> {
 }
 
 /// The tools and Tenant Secrets the creator permits members to use.
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub struct Allowance {
 	pub tools: BTreeSet<String>,
 	pub secrets: BTreeSet<String>,
@@ -149,6 +150,8 @@ pub enum Refusal {
 	SubnodeLimit,
 	#[error("agent already belongs to the Subnode: {0}")]
 	DuplicateMember(String),
+	#[error("the creating agent cannot be a Subnode member")]
+	CreatorMember,
 	#[error("leader must be a member")]
 	LeaderNotMember,
 	#[error("leader cannot be removed")]
@@ -199,7 +202,8 @@ pub fn member_fits(required: &Allowance, allowance: &Allowance) -> Result<(), Re
 }
 
 /// Tenant settings; callers must validate settings before storing or using them.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub struct SubnodeLimits {
 	pub members_per_subnode: u32,
 	pub subnodes_per_run: u32,

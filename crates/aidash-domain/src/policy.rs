@@ -205,13 +205,14 @@ fn matches_name(values: &BTreeSet<String>, name: &str) -> bool {
 }
 
 /// Actions an allow grants only by naming them. Each lets a Run act without a
-/// person's approval, so a wildcard grant, such as a Tenant Administrator's,
-/// never removes approvals by itself (ADR 0075, ADR 0076). A wildcard deny
+/// person's approval or creates a Subnode, so a wildcard grant, such as a Tenant
+/// Administrator's, does not confer them implicitly (ADR 0075, ADR 0076, ADR 0110). A wildcard deny
 /// still covers them.
 pub const EXPLICIT_ACTIONS: &[&str] = &[
 	"tool.call_unapproved",
 	"sampling.request_unapproved",
 	crate::approval_rules::MODE_BYPASS,
+	crate::identity::tenant_administration::SUBNODE_CREATE,
 ];
 
 fn matches_action(values: &BTreeSet<String>, action: &str, effect: &Effect) -> bool {
