@@ -44,11 +44,9 @@ pub trait ApprovalReviewScope: Send {
 	async fn provider_available(&mut self, entry: &Entry) -> Result<bool>;
 	/// The Tenant Secret or connection this definition needs is present.
 	async fn source_slot_available(&mut self, entry: &Entry) -> Result<bool>;
-	/// The Assignable Groups a subject belongs to, empty when it does not exist.
+	/// Existing subject groups, or the default groups a new agent subject would receive.
 	async fn subject_groups(
 		&mut self,
 		_subject: &str,
-	) -> Result<std::collections::BTreeSet<String>> {
-		Ok(std::collections::BTreeSet::new())
-	}
+	) -> Result<std::collections::BTreeSet<String>>;
 }
