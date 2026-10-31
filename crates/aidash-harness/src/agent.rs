@@ -3449,7 +3449,10 @@ async fn resolve_model_input_media(
 		projection,
 	);
 	if !model.has_current_media_route_for_parts(&parts) {
-		return Err(Error::MediaRouteUnavailable(model.model_id.clone()));
+		return Err(Error::MediaRouteUnavailable {
+			model: model.model_id.clone(),
+			candidates: Vec::new(),
+		});
 	}
 	Ok(ResolvedMedia {
 		parts,

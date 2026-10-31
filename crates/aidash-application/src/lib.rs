@@ -19,6 +19,7 @@ pub mod provider_credentials;
 pub mod recovery;
 pub mod research;
 pub mod retention;
+pub mod route_refusal;
 pub mod safety_stop;
 pub mod tenancy;
 pub mod tenant_secrets;
@@ -81,8 +82,16 @@ pub enum Error {
 		count: u32,
 		retry_after: Option<std::time::Duration>,
 	},
-	#[error("verified model media route unavailable for {0}")]
-	MediaRouteUnavailable(String),
+	#[error("model {model} pinned provider route is unavailable: {refusal}")]
+	ProviderRouteUnavailable {
+		model: String,
+		refusal: route_refusal::RouteRefusal,
+	},
+	#[error("verified model media route unavailable for {model}{}", route_refusal::CandidateRefusals(.candidates))]
+	MediaRouteUnavailable {
+		model: String,
+		candidates: Vec<route_refusal::RouteRefusal>,
+	},
 	#[error("Kubernetes observations unavailable; check service account and API connectivity")]
 	OrchestrationUnavailable,
 	#[error("OpenRouter returned {status}: {reason}")]

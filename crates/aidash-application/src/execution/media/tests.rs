@@ -425,7 +425,7 @@ async fn first_message_requires_a_current_approved_route(
 	.await
 	.err()
 	.unwrap();
-	assert!(matches!(error,Error::MediaRouteUnavailable(ref name) if name=="saved-model"));
+	assert!(matches!(error,Error::MediaRouteUnavailable { ref model, .. } if model=="saved-model"));
 }
 #[rstest]
 #[tokio::test]

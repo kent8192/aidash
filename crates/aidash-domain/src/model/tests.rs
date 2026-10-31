@@ -90,6 +90,9 @@ fn route_approval_rejects_stale_or_unsupported_pins(
 		expires_at: now + chrono::Duration::seconds(expires),
 	});
 	assert_eq!(model.validate_provider_route().is_ok(), accepted);
+	if verified > 0 || expires < 0 {
+		assert!(model.validate_provider_route_structure().is_ok());
+	}
 }
 
 /// OpenRouter model IDs name one exact model (#651): `:online` would add

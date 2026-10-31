@@ -310,7 +310,9 @@ pub(crate) fn classify_failure(error: &NativeError) -> ExecutionFailure {
 		NativeError::IdentityStatusUnavailable => {
 			ExecutionFailure::Authority(AuthorityFailure::IdentityUnavailable)
 		}
-		NativeError::MediaRouteUnavailable(_) => ExecutionFailure::MediaRoute(error.to_string()),
+		NativeError::MediaRouteUnavailable { .. } => {
+			ExecutionFailure::MediaRoute(error.to_string())
+		}
 		NativeError::TransactionPending | NativeError::StaleInference => ExecutionFailure::Deferred,
 		NativeError::ToolRetry {
 			message,
@@ -341,3 +343,6 @@ pub(crate) fn classify_failure(error: &NativeError) -> ExecutionFailure {
 		_ => ExecutionFailure::Other(error.to_string()),
 	}
 }
+
+#[cfg(test)]
+mod tests;
