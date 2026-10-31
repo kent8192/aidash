@@ -1,4 +1,5 @@
 //! Process supervision and bounded drain, independent of HTTP and persistence.
+pub mod cli_child;
 use aidash_application::{Error, Result, lifecycle::StopToken};
 use std::{future::Future, time::Duration};
 use tokio::{sync::watch, task::JoinSet};

@@ -1,0 +1,23 @@
+{
+  "id": "__AGENT_ENTRY__",
+  "version": "1.0.0",
+  "kind": "agent",
+  "name": {
+    "en": "Personal inference agent"
+  },
+  "description": {
+    "en": "Minimal personal inference agent; no compaction provider dependency"
+  },
+  "config": {
+    "schema_version": 1,
+    "model": {
+      "id": "__MODEL_ENTRY__",
+      "version": "1.0.0"
+    },
+    "instructions": "Complete the user's task using the Aidash tools when needed. Report the result briefly.",
+    "bindings": [],
+    "remove_default": ["compaction"],
+    "max_steps": 8,
+    "projection_version": "legacy"
+  }
+}
