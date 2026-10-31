@@ -3,8 +3,8 @@
 //! are null for calls without one and never hold the value.
 use reinhardt::db::migrations::prelude::*;
 pub(super) fn migration() -> Migration {
-	Migration::new("0081_invocation_tenant_secrets", "execution")
-		.add_dependency("execution", "0080_invocation_delivery")
+	Migration::new("0084_invocation_tenant_secrets", "execution")
+		.add_dependency("execution", "0083_harness_contract_state")
 		.atomic(true)
 		.add_operation(Operation::AddColumn {
 			table: "invocations".into(),

@@ -88,7 +88,7 @@ async fn malformed_rows_fail_without_effect_replay_and_healthy_work_continues(
 		(RunPhase::Ready, json!({}), common::context(json!({}))),
 		(
 			RunPhase::Waiting,
-			json!({"state_version":1,"data":{"reason":"timer","wake_at":"not-a-timestamp","resume":{"phase":"READY","data":{}}},"recovery":{"retry":null,"lease_recovered":false}}),
+			json!({"state_version":1,"data":{"reason":"timer","wake_at":"not-a-timestamp","resume":{"phase":"READY","data":{}}},"recovery":{"retry":null}}),
 			common::context(json!({})),
 		),
 		(
@@ -114,11 +114,11 @@ async fn malformed_rows_fail_without_effect_replay_and_healthy_work_continues(
 	for (phase, pending) in [
 		(
 			RunPhase::Ready,
-			json!({"state_version":2,"data":{},"recovery":{"retry":null,"lease_recovered":false}}),
+			json!({"state_version":2,"data":{},"recovery":{"retry":null}}),
 		),
 		(
 			RunPhase::Waiting,
-			json!({"state_version":1,"data":{"reason":"unknown"},"recovery":{"retry":null,"lease_recovered":false}}),
+			json!({"state_version":1,"data":{"reason":"unknown"},"recovery":{"retry":null}}),
 		),
 	] {
 		let run = create(&f, &agent, workspace.id).await;

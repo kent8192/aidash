@@ -15,7 +15,7 @@ fn thinking_data() -> Value {
 	json!({"force_workspace_read_compaction":false,"deferred_workspace_read":null,"deferred_skill_read":null,"deferred_workspace_observation":null,"selected_media":[],"media_intake_through_seq":null,"deferred_run_message_reads":[]})
 }
 fn envelope(data: Value) -> Value {
-	json!({"state_version":1,"data":data,"recovery":{"retry":null,"lease_recovered":false}})
+	json!({"state_version":1,"data":data,"recovery":{"retry":null}})
 }
 #[rstest::rstest]
 fn current_storage_covers_every_phase_and_wait_continuation() {
@@ -65,8 +65,8 @@ fn unsupported_or_incomplete_machine_payloads_cannot_become_executable() {
 		json!({}),
 		json!([]),
 		json!({"data":{}}),
-		json!({"state_version":2,"data":{},"recovery":{"retry":null,"lease_recovered":false}}),
-		json!({"state_version":1,"data":{},"recovery":{"retry":null,"lease_recovered":false},"future":true}),
+		json!({"state_version":2,"data":{},"recovery":{"retry":null}}),
+		json!({"state_version":1,"data":{},"recovery":{"retry":null},"future":true}),
 	] {
 		assert!(decode(RunPhase::Ready, input).is_err());
 	}
@@ -141,7 +141,7 @@ fn required_content_distinguishes_missing_fields_from_explicit_null() {
 fn semantic_recovery_retains_its_reason_and_retry_deadline(#[case] reason: &str) {
 	let input = json!({"state_version":1,"data":thinking_data(),"recovery":{
 		"retry":{"count":2,"at":"2030-01-01T00:00:00Z"},
-		"lease_recovered":false,"semantic_reason":reason
+		"semantic_reason":reason
 	}});
 	let (state, recovery) = decode(RunPhase::Thinking, input.clone()).unwrap();
 	assert_eq!(recovery.retry.as_ref().unwrap().count, 2);
@@ -179,12 +179,12 @@ fn fields_a_worker_does_not_know_are_a_capability_mismatch_not_a_corrupt_run() {
 		decode(RunPhase::Waiting, envelope(json!({"reason":"future_wait"}))).unwrap_err();
 	let future_envelope = decode(
 		RunPhase::Ready,
-		json!({"state_version":1,"data":{},"recovery":{"retry":null,"lease_recovered":false},"future":true}),
+		json!({"state_version":1,"data":{},"recovery":{"retry":null},"future":true}),
 	)
 	.unwrap_err();
 	let future_version = decode(
 		RunPhase::Ready,
-		json!({"state_version":2,"data":{},"recovery":{"retry":null,"lease_recovered":false}}),
+		json!({"state_version":2,"data":{},"recovery":{"retry":null}}),
 	)
 	.unwrap_err();
 
@@ -207,7 +207,7 @@ fn fields_a_worker_does_not_know_are_a_capability_mismatch_not_a_corrupt_run() {
 	assert!(matches!(
 		decode(
 			RunPhase::Ready,
-			json!({"state_version":0,"data":{},"recovery":{"retry":null,"lease_recovered":false}}),
+			json!({"state_version":0,"data":{},"recovery":{"retry":null}}),
 		),
 		Err(Error::Invalid(_))
 	));
@@ -487,4 +487,40 @@ fn a_connection_wait_round_trips_only_with_a_capable_worker() {
 	let mut incapable = saved;
 	incapable["requires"] = json!([]);
 	assert!(decode(RunPhase::ToolCall, incapable).is_err());
+}
+
+#[test]
+fn lease_recovery_counter_defaults_to_zero_and_only_persists_nonzero() {
+	let recovery: RecoveryState = serde_json::from_value(json!({"retry": null})).unwrap();
+	assert_eq!(recovery.lease_recoveries, 0);
+	assert!(
+		serde_json::to_value(&recovery)
+			.unwrap()
+			.get("lease_recoveries")
+			.is_none()
+	);
+	let recovery = RecoveryState {
+		lease_recoveries: 3,
+		..recovery
+	};
+	let saved = serde_json::to_value(&recovery).unwrap();
+	assert_eq!(saved["lease_recoveries"], 3);
+	assert_eq!(
+		serde_json::from_value::<RecoveryState>(saved)
+			.unwrap()
+			.lease_recoveries,
+		3
+	);
+}
+
+#[test]
+fn legacy_lease_flags_are_read_and_saved_as_counters() {
+	for (flag, count) in [(false, 0), (true, 1)] {
+		let mut pending = envelope(json!({}));
+		pending["recovery"]["lease_recovered"] = json!(flag);
+		let (state, recovery) = decode(RunPhase::Ready, pending).unwrap();
+		assert_eq!(recovery.lease_recoveries, count);
+		let saved = encode(&state, &recovery).unwrap();
+		assert!(saved["recovery"].get("lease_recovered").is_none());
+	}
 }

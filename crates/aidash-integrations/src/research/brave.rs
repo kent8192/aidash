@@ -49,11 +49,7 @@ impl BraveSearch {
 			.connect_timeout(Duration::from_secs(5))
 			.redirect(reqwest::redirect::Policy::none())
 			.no_proxy()
-			.user_agent(concat!(
-				"aidash/",
-				env!("CARGO_PKG_VERSION"),
-				" research-search"
-			))
+			.user_agent(crate::USER_AGENT)
 			.build()
 			.map_err(crate::http_error)?;
 		Ok(Self {

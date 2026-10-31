@@ -1,10 +1,58 @@
 //! Rebuild the Agent's capability closure from pinned definitions at durable boundaries.
 use super::*;
 use crate::tool::providers::{
-	ToolDescriptor, remote_exclusion, reserved_aliases, validate_restrictions,
+	ToolDescriptor, memory_exclusion, remote_exclusion, reserved_aliases, validate_restrictions,
 };
 
 impl BindingSnapshot {
+	/// Closure definitions that the root Agent does not use directly, each with
+	/// the nearest Agents above it on every closure path (ADR 0095).
+	///
+	/// The root Agent pins these definitions as immutable metadata only; the
+	/// Agents named here use them directly in their own delegated Runs, so a
+	/// Catalog Approval restriction applies to them rather than to the root.
+	/// Definitions the root uses directly, the root itself and definitions no
+	/// closure Agent references are omitted.
+	pub fn delegated_users(&self) -> Result<BTreeMap<QualifiedRef, BTreeSet<QualifiedRef>>> {
+		let kinds: BTreeMap<&QualifiedRef, &str> = self
+			.definitions
+			.iter()
+			.map(|definition| (&definition.identity, definition.definition.kind.as_str()))
+			.collect();
+		let mut edges = vec![];
+		for definition in &self.definitions {
+			for (target, _) in definition_references(&definition.identity, &definition.definition)?
+			{
+				if kinds.contains_key(&target) {
+					edges.push((definition.identity.clone(), target));
+				}
+			}
+		}
+		// Propagate to a fixpoint so merged paths and cycles are covered.
+		let mut users: BTreeMap<QualifiedRef, BTreeSet<QualifiedRef>> = BTreeMap::new();
+		loop {
+			let mut changed = false;
+			for (from, to) in &edges {
+				let incoming = if kinds[from] == "agent" {
+					BTreeSet::from([from.clone()])
+				} else {
+					users.get(from).cloned().unwrap_or_default()
+				};
+				let set = users.entry(to.clone()).or_default();
+				let before = set.len();
+				set.extend(incoming);
+				changed |= set.len() != before;
+			}
+			if !changed {
+				break;
+			}
+		}
+		users.retain(|identity, agents| {
+			*identity != self.agent && !agents.is_empty() && !agents.contains(&self.agent)
+		});
+		Ok(users)
+	}
+
 	/// The pinned Agent Plugin Skills are exactly those of the copies the Agent definition names.
 	fn validate_agent_plugins(&self, config: &AgentBindings) -> Result<()> {
 		// #554 has personal-auth proxies ready; admitting plugin content, hooks and stdio remains separate.
@@ -288,6 +336,10 @@ impl BindingSnapshot {
 				}
 			}
 		}
+		let memory_bound = self
+			.bindings
+			.iter()
+			.any(|binding| binding.definition.kind == "memory");
 		let mut seen = BTreeSet::new();
 		if self.bindings.len() != expected.len() {
 			return Err(Error::Invalid(
@@ -311,11 +363,12 @@ impl BindingSnapshot {
 				let descriptor: ToolDescriptor =
 					serde_json::from_value(definitions[&saved.identity].definition.config.clone())?;
 				let contract = descriptor.declared_contract(saved.identity.clone())?;
-				let excluded_reason = if self.remote {
-					remote_exclusion(expected.origin, &contract)?
-				} else {
-					None
-				};
+				let excluded_reason =
+					match memory_exclusion(expected.origin, &descriptor.operation, memory_bound)? {
+						Some(reason) => Some(reason),
+						None if self.remote => remote_exclusion(expected.origin, &contract)?,
+						None => None,
+					};
 				let pinned = match saved.provider_contract_digest.as_deref() {
 					Some(digest) => contract.pinned(digest)?.is_some(),
 					None => false,

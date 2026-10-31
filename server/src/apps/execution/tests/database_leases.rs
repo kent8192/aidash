@@ -65,8 +65,26 @@ async fn concurrent_workers_skip_locked_rows_and_recover_expired_leases(
 		assert_ne!(leased.id, records[0].id);
 		assert_eq!(leased.revision, 1);
 		assert!(leased.lease_until.unwrap() > now);
-		assert_eq!(leased.recovery.lease_recovered, leased.id == records[1].id);
+		assert_eq!(
+			leased.recovery.lease_recoveries,
+			u32::from(leased.id == records[1].id)
+		);
 	}
+	let events = aidash_server::apps::execution::models::Event::objects()
+		.filter(
+			aidash_server::apps::execution::models::Event::field_kind()
+				.eq("run.lease_recovery_claimed"),
+		)
+		.all_with_db(&mut db)
+		.await
+		.unwrap();
+	assert!(
+		events
+			.iter()
+			.any(|event| event.data.0["run_id"] == records[1].id.to_string()
+				&& event.data.0["lease_recoveries"] == 1
+				&& event.data.0["isolated"].as_bool() == Some(true))
+	);
 	assert!(store.lease_run(Uuid::new_v4(), 30).await.unwrap().is_none());
 	lock.rollback().await.unwrap();
 	let previously_locked = store.lease_run(a, 30).await.unwrap().unwrap();
@@ -262,4 +280,106 @@ async fn workers_filter_terminal_paused_retry_and_waiting_records(
 		);
 	}
 	assert!(store.lease_run(Uuid::new_v4(), 30).await.unwrap().is_none());
+}
+
+#[rstest]
+#[tokio::test]
+async fn fourth_lease_recovery_enters_failure_delivery_and_records_crash_loop(
+	#[future] database: DatabaseFixture,
+	mut run: Run,
+) {
+	use aidash_server::apps::execution::models::Event;
+	let database = database.await;
+	database.tenant("acme").await;
+	let store = Store::from_pool(
+		database.connection.into_postgres().unwrap(),
+		aidash_domain::nodes::DeploymentId::parse("aidash://lease-test").unwrap(),
+	)
+	.await
+	.unwrap();
+	run.lease_owner = Some(Uuid::new_v4());
+	run.lease_until = Some(Utc::now() - Duration::seconds(1));
+	// One claim-time recovery plus three Isolated Steps that each charged one.
+	run.pending.0["recovery"]["lease_recoveries"] = json!(4);
+	let mut db = database.lease.handle();
+	Run::objects()
+		.create_with_conn(&mut db, &run)
+		.await
+		.unwrap();
+	assert!(store.lease_run(Uuid::new_v4(), 30).await.unwrap().is_none());
+	let saved = Run::objects()
+		.filter(Run::field_id().eq(run.id))
+		.get_with_db(&mut db)
+		.await
+		.unwrap();
+	assert_eq!(saved.phase, RunPhase::Waiting);
+	assert_eq!(saved.pending.0["data"]["reason"], "failure_delivery");
+	assert_eq!(
+		saved.error.as_deref(),
+		Some(
+			"The worker process stopped 3 times in a row while running this step, so Aidash stopped retrying it."
+		)
+	);
+	assert!(saved.lease_owner.is_none());
+	let events = Event::objects()
+		.filter(Event::field_kind().eq("run.crash_loop"))
+		.all_with_db(&mut db)
+		.await
+		.unwrap();
+	assert!(
+		events
+			.iter()
+			.any(|event| event.data.0["run_id"] == run.id.to_string()
+				&& event.data.0["lease_recoveries"] == 3)
+	);
+}
+
+#[rstest]
+#[tokio::test]
+async fn isolated_step_charge_is_lease_fenced_and_keeps_the_revision(
+	#[future] database: DatabaseFixture,
+	mut run: Run,
+) {
+	use aidash_application::tenancy::{DeploymentScopeReason, TenancyScope};
+	let database = database.await;
+	database.tenant("acme").await;
+	let store = Store::from_pool(
+		database.connection.into_postgres().unwrap(),
+		aidash_domain::nodes::DeploymentId::parse("aidash://lease-test").unwrap(),
+	)
+	.await
+	.unwrap();
+	run.lease_owner = Some(Uuid::new_v4());
+	run.lease_until = Some(Utc::now() - Duration::seconds(1));
+	run.pending.0["recovery"]["lease_recoveries"] = json!(2);
+	let mut db = database.lease.handle();
+	Run::objects()
+		.create_with_conn(&mut db, &run)
+		.await
+		.unwrap();
+	let token = Uuid::new_v4();
+	let leased = store.lease_run(token, 30).await.unwrap().unwrap();
+	// A later claim leaves the count: the lost Isolated Step charged it.
+	assert_eq!(leased.recovery.lease_recoveries, 2);
+	let scope = TenancyScope::Deployment(DeploymentScopeReason::ActivationClaim);
+	assert!(
+		!store
+			.charge_lease_recovery(&scope, run.id, Uuid::new_v4(), 3)
+			.await
+			.unwrap()
+	);
+	assert!(
+		store
+			.charge_lease_recovery(&scope, run.id, token, 3)
+			.await
+			.unwrap()
+	);
+	let saved = Run::objects()
+		.filter(Run::field_id().eq(run.id))
+		.get_with_db(&mut db)
+		.await
+		.unwrap();
+	assert_eq!(saved.pending.0["recovery"]["lease_recoveries"], 3);
+	assert_eq!(saved.revision, leased.revision);
+	assert_eq!(saved.lease_owner, Some(token));
 }

@@ -405,6 +405,22 @@ pub fn remote_exclusion(
 	}
 }
 
+/// Why a Run excludes a memory builtin: the Agent binds no memory, so every
+/// call would be refused and no change of authority could lift it.
+pub fn memory_exclusion(
+	origin: crate::registry::bindings::BindingOrigin,
+	operation: &str,
+	memory_bound: bool,
+) -> Result<Option<String>> {
+	if memory_bound || !crate::registry::bindings::MEMORY_TOOLS.contains(&operation) {
+		Ok(None)
+	} else if origin == crate::registry::bindings::BindingOrigin::Default {
+		Ok(Some("memory tools need a bound memory".into()))
+	} else {
+		Err(Error::Invalid("memory tools require a bound memory".into()))
+	}
+}
+
 pub fn reserved_aliases() -> BTreeSet<&'static str> {
 	crate::registry::bindings::REQUIRED_TOOLS
 		.iter()

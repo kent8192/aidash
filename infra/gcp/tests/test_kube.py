@@ -134,6 +134,16 @@ class RuntimeConfigurationTests(unittest.TestCase):
         self.assertEqual({key: files[key] for key in runtime["common_auth_tls"]}, runtime["common_auth_tls"])
         dashboard = tomllib.loads(files["settings.toml"])["dashboard"]
         self.assertEqual(dashboard["oidc"]["client_secret"], "${AIDASH_OIDC_CLIENT_SECRET}")
+        self.assertEqual(dashboard["oidc"]["session_idle_seconds"], 604800)
+        self.assertEqual(dashboard["oidc"]["session_absolute_seconds"], 2592000)
+        for value, accepted in (("2592000", True), ("2592001", False)):
+            with self.subTest(value=value):
+                override = dict(runtime, AIDASH_OIDC_SESSION_ABSOLUTE_SECONDS=value)
+                if accepted:
+                    self.materialize(override)
+                else:
+                    with self.assertRaises(Refused):
+                        self.materialize(override)
         self.assertEqual(dashboard["common_auth"]["source_issuers"], runtime["dashboard"]["common_auth"]["source_issuers"])
         self.assertEqual(dashboard["common_auth"]["client_private_key_file"], "/run/auth-tls/cloud-key.pem")
         release = {"images": {kind: f"registry.example/{kind}@sha256:" + "a" * 64 for kind in IMAGE_KINDS}}

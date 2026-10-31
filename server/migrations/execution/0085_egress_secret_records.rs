@@ -3,8 +3,8 @@
 use reinhardt::db::migrations::prelude::*;
 
 pub(super) fn migration() -> Migration {
-	Migration::new("0082_egress_secret_records", "execution")
-		.add_dependency("execution", "0081_invocation_tenant_secrets")
+	Migration::new("0085_egress_secret_records", "execution")
+		.add_dependency("execution", "0084_invocation_tenant_secrets")
 		.add_operation(Operation::AddColumn {
 			table: "egress_requests".into(),
 			column: ColumnDefinition::new("secret_id", FieldType::Uuid),

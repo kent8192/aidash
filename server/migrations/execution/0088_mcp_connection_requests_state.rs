@@ -2,8 +2,8 @@
 // Keep the ORM domain in sync with the additional human-request kind.
 use reinhardt::db::migrations::prelude::*;
 pub(super) fn migration() -> Migration {
-	Migration::new("0085_mcp_connection_requests_state", "execution")
-		.add_dependency("execution", "0084_mcp_connection_requests")
+	Migration::new("0088_mcp_connection_requests_state", "execution")
+		.add_dependency("execution", "0087_mcp_connection_requests")
 		.atomic(true)
 		.state_only(true)
 		.add_operation(Operation::DropConstraintDefinition {

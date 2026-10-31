@@ -116,6 +116,7 @@ struct State {
 	task: Mutex<Task>,
 	calls: Mutex<Vec<&'static str>>,
 	writes: Mutex<Vec<(String, Run)>>,
+	emitted: Mutex<Vec<(String, Value)>>,
 	scoped: bool,
 	deny_inference: bool,
 	/// Inference authority changes while a provider response is in flight.
@@ -184,6 +185,7 @@ struct State {
 	direct_skills: Vec<DirectSkill>,
 	direct_bodies: BTreeMap<Uuid, String>,
 	projection: ProjectionVersion,
+	harness_contract: aidash_domain::harness_contract::HarnessContract,
 	skill_tool: bool,
 	skill_revision: Mutex<Option<i64>>,
 	skill_text: Mutex<String>,
@@ -505,8 +507,15 @@ impl ExecutionStore for Backend {
 		Ok(())
 	}
 	async fn emit(&self, workspace: Option<Uuid>, kind: &str, data: Value) -> Result<Event> {
-		assert_eq!(kind, "mcp.input_failed");
-		self.record("mcp.input_failed");
+		assert!(matches!(kind, "mcp.input_failed" | "run.recovered"));
+		self.0
+			.emitted
+			.lock()
+			.unwrap()
+			.push((kind.into(), data.clone()));
+		if kind == "mcp.input_failed" {
+			self.record("mcp.input_failed");
+		}
 		Ok(Event {
 			sequence: 1,
 			id: Uuid::new_v4(),
@@ -1534,6 +1543,7 @@ impl ExecutionEnvironment for Backend {
 			context_policy: self.0.context_policy.clone(),
 			tool_parallelism: 1,
 			projection_version: self.0.projection,
+			harness_contract: self.0.harness_contract,
 			prompt_cache: self.0.prompt_cache,
 			completion: self.0.completion.clone(),
 		})
@@ -1773,6 +1783,7 @@ fn fixture() -> Fixture {
 		}),
 		calls: Mutex::new(vec![]),
 		writes: Mutex::new(vec![]),
+		emitted: Mutex::new(vec![]),
 		scoped: false,
 		deny_inference: false,
 		revoke_inference_after_response: false,
@@ -1824,6 +1835,7 @@ fn fixture() -> Fixture {
 		direct_skills: vec![],
 		direct_bodies: BTreeMap::new(),
 		projection: ProjectionVersion::Legacy,
+		harness_contract: Default::default(),
 		skill_tool: false,
 		skill_revision: Mutex::new(Some(1)),
 		skill_text: Mutex::new("\nPinned Skills: review\n".into()),
@@ -6075,4 +6087,43 @@ fn cited_file_versions_are_named_by_path_and_digest_prefix() {
 		]
 	);
 	assert!(cited_versions(&serde_json::json!({"content": "plain"})).is_empty());
+}
+
+#[rstest]
+#[tokio::test]
+async fn recovered_step_emits_count_and_resets_it_only_when_the_step_ends(mut fixture: Fixture) {
+	fixture.run.recovery.lease_recoveries = 2;
+	Executor::new(&fixture.backend)
+		.advance(
+			&mut fixture.run,
+			fixture.backend.0.token,
+			&mut fixture.backend.clone(),
+		)
+		.await
+		.unwrap();
+	let events = fixture.backend.0.emitted.lock().unwrap();
+	let recovered = events
+		.iter()
+		.find(|(kind, _)| kind == "run.recovered")
+		.unwrap();
+	assert_eq!(recovered.1["lease_recoveries"], 2);
+	assert_eq!(recovered.1["run_id"], fixture.run.id.to_string());
+	// The step does not clear the count in memory: a same-step checkpoint
+	// keeps it, so a crash after that checkpoint still reaches the bound.
+	assert_eq!(fixture.run.recovery.lease_recoveries, 2);
+	let writes = fixture.backend.0.writes.lock().unwrap();
+	assert!(
+		writes
+			.iter()
+			.any(|(kind, _)| !aidash_domain::run_state::persistence::retains_lease(kind))
+	);
+	for (kind, run) in writes.iter() {
+		let stored =
+			run.worker_snapshot(kind).unwrap().pending["recovery"]["lease_recoveries"].clone();
+		if aidash_domain::run_state::persistence::retains_lease(kind) {
+			assert_eq!(stored, 2, "{kind}");
+		} else {
+			assert_eq!(stored, Value::Null, "{kind}");
+		}
+	}
 }

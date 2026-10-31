@@ -22,6 +22,10 @@ pub mod semantic;
 
 pub use aidash_application::{Error, Result};
 
+/// What every request to a service outside the Deployment names itself:
+/// some services, GitHub's API among them, refuse requests without one.
+pub const USER_AGENT: &str = concat!("Aidash/", env!("CARGO_PKG_VERSION"));
+
 pub fn http_error(error: reqwest::Error) -> Error {
 	// External URLs can contain credentials; never retain them in errors.
 	Error::External(error.without_url().to_string())

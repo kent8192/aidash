@@ -430,8 +430,16 @@ impl MarketplaceManagement {
 				.await?;
 			crate::apps::identity::repositories::catalog_approvals::admit_agents(
 				&mut access,
-				&f.config.deployment.node(node),
+				&f.config.deployment.node(node.clone()),
 				&entries,
+			)
+			.await?;
+			crate::apps::identity::services::policies::refresh_requests_on_node(
+				&mut access,
+				&f.store,
+				&f.config.deployment,
+				&identity,
+				&node,
 			)
 			.await?;
 			Ok(installations)

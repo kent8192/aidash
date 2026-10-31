@@ -686,6 +686,7 @@ impl Executor<'_> {
 					model_version: call.agent.model.version.clone(),
 					projection_version: aidash_domain::projection::ProjectionVersion::Legacy
 						.number(),
+					harness_contract: call.agent.harness_contract.number(),
 					upstream_model: model.model_id.clone(),
 					purpose: UsagePurpose::Main,
 					requested_route: model.provider_route.as_ref().map(|route| route.tag.clone()),

@@ -147,6 +147,9 @@ struct Fixture {
 	stricter_after_dispatch: bool,
 	keep: Probability,
 	keep_call: Option<Probability>,
+	/// Per-question keep probabilities that override `keep`, by question id.
+	answers: BTreeMap<String, Probability>,
+	rule: &'static str,
 	calls: AtomicUsize,
 	checks: AtomicUsize,
 	in_flight: AtomicUsize,
@@ -173,7 +176,21 @@ impl Fixture {
 	fn config(&self, mode: Mode) -> DeciderConfig {
 		DeciderConfig {
 			routes: self.routes.clone(),
+			rule: self.rule.into(),
 			..config(mode)
+		}
+	}
+	/// A fixture whose Decider version names the opt-in `FIT_RULE` (#611).
+	fn fit(mode: Mode, answers: BTreeMap<String, Probability>) -> Self {
+		let config = DeciderConfig {
+			rule: aidash_domain::decision::FIT_RULE.into(),
+			..config(mode)
+		};
+		Self {
+			configuration_digest: config.digest().unwrap(),
+			rule: aidash_domain::decision::FIT_RULE,
+			answers,
+			..Self::new(mode)
 		}
 	}
 	fn new(mode: Mode) -> Self {
@@ -222,6 +239,8 @@ impl Fixture {
 			stricter_after_dispatch: false,
 			keep: Probability::new(0.0).unwrap(),
 			keep_call: None,
+			answers: BTreeMap::new(),
+			rule: RULE,
 			calls: AtomicUsize::new(0),
 			checks: AtomicUsize::new(0),
 			in_flight: AtomicUsize::new(0),
@@ -574,7 +593,9 @@ impl PreparedDispatch for FixtureDispatch<'_> {
 			.map(|id| {
 				(
 					id.clone(),
-					if id.ends_with("_call") {
+					if let Some(answer) = fixture.answers.get(id) {
+						*answer
+					} else if id.ends_with("_call") {
 						fixture.keep_call.unwrap_or(fixture.keep)
 					} else {
 						fixture.keep
@@ -1120,7 +1141,7 @@ async fn call_only_branch_keeps_call_and_historical_result_prefix() {
 		result
 			.as_str()
 			.unwrap()
-			.contains("full result remains in the execution journal")
+			.contains("call the tool again only if the rest is still needed verbatim")
 	);
 	let saved = fixture.saved.lock().unwrap();
 	assert_eq!(saved.evidence[0].fit.truncated, 3);
@@ -1544,6 +1565,78 @@ async fn replay_rejects_unknown_or_overlapping_questions_for_every_attempt_statu
 			assert!(corrupt.replay().is_err(), "fabricated {status:?} attempt");
 		}
 	}
+}
+/// #611: under `RULE` every kept candidate stays, so the request does not fit; the
+/// opt-in `FIT_RULE` truncates kept results in ascending keep probability until it
+/// fits, never one at the ceiling, and the evidence replays.
+#[tokio::test]
+async fn the_fit_rule_truncates_the_lowest_ranked_kept_results_until_the_request_fits() {
+	let p = |value| Probability::new(value).unwrap();
+	// Everything is kept by the 0.5 threshold; the calls stay as well.
+	let mut answers = BTreeMap::new();
+	for index in 0..10 {
+		answers.insert(format!("q{index}_call"), p(0.6));
+		answers.insert(format!("q{index}_result"), p(0.6));
+	}
+	answers.insert("q1_result".into(), p(0.55));
+	answers.insert("q2_result".into(), p(0.52));
+	answers.insert("q3_result".into(), p(aidash_domain::decision::FIT_CEILING));
+	let keep = Fixture {
+		answers: answers.clone(),
+		..Fixture::new(Mode::Enforce)
+	};
+	let (result, _, _) = evaluate(&keep, Mode::Enforce, 85_000, disclosure()).await;
+	let Ok(CompactionResult::Insufficient(staged)) = result else {
+		panic!("the threshold rule keeps everything and cannot fit");
+	};
+	assert!(
+		staged
+			.evidence
+			.branches
+			.values()
+			.all(|b| *b == Branch::Keep)
+	);
+
+	let fit = Fixture::fit(Mode::Enforce, answers);
+	let (result, context, original) = evaluate(&fit, Mode::Enforce, 85_000, disclosure()).await;
+	assert!(matches!(result.unwrap(), CompactionResult::Applied(_)));
+	assert_eq!(context.history.len(), original.history.len());
+	let saved = fit.saved.lock().unwrap();
+	let evidence = &saved.evidence[0];
+	assert_eq!(evidence.rule, aidash_domain::decision::FIT_RULE);
+	assert_eq!(evidence.replay().unwrap(), evidence.branches);
+	let branch_of = |index: usize| {
+		let candidate = evidence
+			.candidates
+			.iter()
+			.find(|c| c.history_index == index)
+			.unwrap();
+		evidence.branches[&candidate.id]
+	};
+	// The lowest-ranked result goes first, and a result at the ceiling is never touched.
+	assert_eq!(branch_of(2), Branch::TruncateResult);
+	assert_eq!(branch_of(3), Branch::Keep);
+	assert!(evidence.fit.truncated >= 1);
+	assert!(evidence.fit.proposed <= evidence.fit.window);
+	// A recorded truncation out of rank order does not replay.
+	let mut reordered = evidence.clone();
+	let first = reordered
+		.candidates
+		.iter()
+		.find(|c| c.history_index == 2)
+		.unwrap()
+		.id
+		.clone();
+	let third = reordered
+		.candidates
+		.iter()
+		.find(|c| c.history_index == 3)
+		.unwrap()
+		.id
+		.clone();
+	reordered.branches.insert(first, Branch::Keep);
+	reordered.branches.insert(third, Branch::TruncateResult);
+	assert!(reordered.replay().is_err());
 }
 #[tokio::test]
 async fn live_stricter_protection_replays_the_actual_preserved_branch() {

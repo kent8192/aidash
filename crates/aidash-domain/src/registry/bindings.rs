@@ -44,6 +44,10 @@ pub const DEFAULT_TOOLS: &[&str] = &[
 	"memory_recall",
 	"memory_reflect",
 ];
+/// Default builtins that act on the Agent's own memory. Without a `memory`
+/// Binding every call would be refused, so a Run excludes them instead of
+/// offering them (#600).
+pub const MEMORY_TOOLS: &[&str] = &["memory_mutate", "memory_recall", "memory_reflect"];
 pub const SKILL_TOOLS: &[&str] = &["skill_list", "skill_load", "skill_read"];
 pub const COORDINATOR_TOOLS: &[&str] = &["task_create", "task_delegate", "agent_discover"];
 /// Required under `deferred@1` only, with canonical aliases.
@@ -215,6 +219,10 @@ pub struct AgentBindings {
 	/// their digests and Binding snapshots stay byte-identical.
 	#[serde(default, skip_serializing_if = "Option::is_none")]
 	pub projection_version: Option<crate::projection::ProjectionVersion>,
+	/// Harness Contract this Agent version's Runs render with (#531). Omitted
+	/// means `legacy@1` and is not serialized, like `projection_version`.
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub harness_contract: Option<crate::harness_contract::HarnessContract>,
 	/// Prompt-caching opt-in pinned by every Run of this Agent (ADR 0019).
 	/// Omitted means `off` and is not serialized, like `projection_version`.
 	#[serde(default, skip_serializing_if = "Option::is_none")]
@@ -276,6 +284,19 @@ impl AgentBindings {
 				"Projection Version {version} is not implemented"
 			)));
 		}
+		if let Some(contract) = self.harness_contract {
+			let projection = self.projection_version.unwrap_or_default();
+			if !contract.is_implemented() {
+				return Err(Error::Invalid(format!(
+					"Harness Contract {contract} is not implemented"
+				)));
+			}
+			if !contract.supports(projection) {
+				return Err(Error::Invalid(format!(
+					"Harness Contract {contract} does not support Projection Version {projection}"
+				)));
+			}
+		}
 		let mut targets = BTreeSet::new();
 		for binding in &self.bindings {
 			binding.validate()?;
@@ -293,6 +314,16 @@ impl AgentBindings {
 			if !targets.insert(&binding.target) {
 				return Err(Error::Invalid("duplicate Binding target".into()));
 			}
+		}
+		if !self.has_memory_binding()
+			&& self.bindings.iter().any(|b| {
+				b.kind == BindingKind::Tool
+					&& b.target
+						.id
+						.strip_prefix("aidash.")
+						.is_some_and(|operation| MEMORY_TOOLS.contains(&operation))
+			}) {
+			return Err(Error::Invalid("memory tools require a bound memory".into()));
 		}
 		if self.bindings.iter().any(|b| b.kind == BindingKind::Skill)
 			&& self
@@ -346,6 +377,9 @@ impl AgentBindings {
 			&self.agent_plugins,
 			self.exposure_policy().is_deferred(),
 		)
+	}
+	fn has_memory_binding(&self) -> bool {
+		self.bindings.iter().any(|b| b.kind == BindingKind::Memory)
 	}
 	pub fn context_summary(&self) -> Option<&crate::context::policy::SummaryPolicy> {
 		match self.context_policy.as_ref()? {

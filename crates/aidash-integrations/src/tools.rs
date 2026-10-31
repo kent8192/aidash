@@ -93,6 +93,7 @@ impl ToolClients {
 			mcp_permitted: reqwest::Client::builder()
 				.connect_timeout(TOOL_CONNECT_TIMEOUT)
 				.redirect(reqwest::redirect::Policy::none())
+				.user_agent(crate::USER_AGENT)
 				.no_proxy()
 				.build()
 				.map_err(crate::http_error)?,
@@ -100,6 +101,7 @@ impl ToolClients {
 				.timeout(TOOL_TIMEOUT)
 				.connect_timeout(TOOL_CONNECT_TIMEOUT)
 				.redirect(reqwest::redirect::Policy::none())
+				.user_agent(crate::USER_AGENT)
 				.no_proxy()
 				.build()
 				.map_err(crate::http_error)?,
@@ -209,6 +211,7 @@ impl ToolTransport for HttpTools {
 				let client = reqwest::Client::builder()
 					.no_proxy()
 					.redirect(reqwest::redirect::Policy::none())
+					.user_agent(crate::USER_AGENT)
 					.timeout(deadline.saturating_duration_since(tokio::time::Instant::now()))
 					.resolve_to_addrs(host, &addresses)
 					.build()

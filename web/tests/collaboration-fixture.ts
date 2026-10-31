@@ -86,7 +86,6 @@ export function fixture(reference = false) {
     } as unknown,
     recovery: {
       retry: null,
-      lease_recovered: false,
       semantic_reason: null as string | null,
     },
     state_error: null as string | null,

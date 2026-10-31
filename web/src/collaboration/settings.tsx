@@ -23,7 +23,10 @@ import { Input } from "../components/ui/input";
 import { NativeSelect } from "../components/ui/native-select";
 import { focusedVersion } from "../approval-decider-model";
 import { ApprovalSettingsPage } from "../approval-settings";
-import { CatalogRequestQueue } from "../catalog-requests";
+import {
+  CatalogRequestQueue,
+  useHasPendingRequests,
+} from "../catalog-requests";
 import { approvalCopy } from "../approval-settings-copy";
 import { DeploymentPage } from "../deployment";
 import { UsagePanel } from "@slots/usage";
@@ -553,6 +556,13 @@ export function Configuration({
   const restricted =
     !deploymentAdministrator &&
     deploymentAdministratorSections[section] === true;
+  // `can` reflects collection-wide authority only; an approver scoped to named
+  // definitions finds their queue through the server's per-item filter.
+  const itemPendingRequests = useHasPendingRequests(
+    data.access.kind === "subject" ? data.access.tenant : undefined,
+    selectedNode?.name,
+    section === "registry" && !can("catalog.approve"),
+  );
   return (
     <SettingsFrame
       section={section}
@@ -612,7 +622,7 @@ export function Configuration({
           {section === "registry" &&
             data.access.kind === "subject" &&
             selectedNode !== undefined &&
-            can("catalog.approve") && (
+            (can("catalog.approve") || itemPendingRequests) && (
               <ToolSection title={t("approvalPendingTitle")}>
                 <CatalogRequestQueue
                   tenant={data.access.tenant}

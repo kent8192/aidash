@@ -3,8 +3,8 @@
 use reinhardt::db::migrations::prelude::*;
 
 pub(super) fn migration() -> Migration {
-	Migration::new("0083_invocation_connections", "execution")
-		.add_dependency("execution", "0082_egress_secret_records")
+	Migration::new("0086_invocation_connections", "execution")
+		.add_dependency("execution", "0085_egress_secret_records")
 		.atomic(true)
 		.add_operation(Operation::AddColumn {
 			table: "invocations".into(),
