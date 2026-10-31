@@ -62,10 +62,10 @@ const TENANT_REGISTRY_MIGRATIONS: &[(&str, &str)] = &[
 	("registry", "0047_marketplace_recall_constraints"),
 	("registry", "0048_context_marketplace_merge"),
 	("registry", "0048_plugin_marketplace_merge"),
-	("registry", "0049_harness_contract"),
 	("registry", "0049_plugin_context_merge"),
-	("registry", "0050_harness_plugin_merge"),
-	("registry", "0051_harness_contract_structured3"),
+	("registry", "0050_harness_contract"),
+	("registry", "0051_harness_plugin_merge"),
+	("registry", "0052_harness_contract_structured3"),
 	("marketplace", "0008_remove_compatibility_gate"),
 	("marketplace", "0009_remove_compatibility_gate_state"),
 	("marketplace", "0010_row_level_security"),
@@ -356,14 +356,14 @@ async fn generation_with_existing_sql_assets_preserves_history_and_dependency(
 	);
 	assert_eq!(std::fs::read(history).unwrap(), original);
 	let generated = FilesystemSource::new(fixture.directory.path().join("migrations"))
-		.get_migration("execution", "0083_policy_probe")
+		.get_migration("execution", "0084_policy_probe")
 		.await
 		.unwrap();
 	assert_eq!(
 		generated.dependencies,
 		vec![(
 			"execution".to_owned(),
-			"0082_harness_contract_state".to_owned()
+			"0083_harness_contract_state".to_owned()
 		)]
 	);
 	assert!(generated.operations.is_empty());
@@ -2480,7 +2480,7 @@ async fn harness_contract_rollback_refuses_stored_packages_and_snapshots(
 			.await
 			.unwrap()
 			.into_iter()
-			.find(|m| m.app_label == "registry" && m.name == "0049_harness_contract")
+			.find(|m| m.app_label == "registry" && m.name == "0050_harness_contract")
 			.unwrap();
 	let mut executor =
 		reinhardt::db::migrations::DatabaseMigrationExecutor::new(fixture.connection.clone());

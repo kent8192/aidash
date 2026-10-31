@@ -1016,6 +1016,7 @@ impl<'a> Executor<'a> {
 			} else {
 				"run.reconciled"
 			};
+			run.recovery.lease_recoveries = 0;
 			store.save_run(run, token, kind).await?;
 			return Ok(());
 		}
@@ -1027,6 +1028,7 @@ impl<'a> Executor<'a> {
 				.transition_terminal_run_messages(run, target.task_status())
 				.await?;
 			run.state = target.into_state();
+			run.recovery.lease_recoveries = 0;
 			store
 				.save_run(
 					run,
@@ -1044,8 +1046,11 @@ impl<'a> Executor<'a> {
 		// unavailable workspace slot when it is the last one (ADR 0059).
 		let degrade_on_outage = run.recovery.degrades_on_outage();
 		run.recovery.retry = None;
-		if std::mem::take(&mut run.recovery.lease_recovered) {
-			let data = json!({"run_id":run.id,"task_id":run.task_id,"phase":run.phase(),"cause":"expired worker lease"});
+		// The count survives lease-retaining checkpoints of this step; the save
+		// that ends the step resets it (see `Run::worker_snapshot`).
+		let lease_recoveries = run.recovery.lease_recoveries;
+		if lease_recoveries > 0 {
+			let data = json!({"run_id":run.id,"task_id":run.task_id,"phase":run.phase(),"cause":"expired worker lease","lease_recoveries":lease_recoveries});
 			store
 				.emit(
 					home.local().then_some(run.workspace_id),

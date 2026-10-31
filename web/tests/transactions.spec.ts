@@ -95,7 +95,10 @@ test("transaction dashboard aborts a stale change safely and displays committed 
       .getByRole("button", { name: "Submit transaction", exact: true })
       .click();
     const response = await posted;
-    expect(response.status(), await response.text()).toBe(202);
+    // The dialog navigates after an accepted submit, which discards the
+    // body, so read it only to explain a rejection.
+    if (response.status() !== 202)
+      expect(response.status(), await response.text()).toBe(202);
     Object.assign(value, response.request().postDataJSON());
     expect(value.coordinator).toBe(nodeId);
     expect(

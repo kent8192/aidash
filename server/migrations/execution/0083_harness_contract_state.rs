@@ -5,8 +5,8 @@
 use reinhardt::db::migrations::prelude::*;
 
 pub(super) fn migration() -> Migration {
-	Migration::new("0082_harness_contract_state", "execution")
-		.add_dependency("execution", "0081_harness_contract")
+	Migration::new("0083_harness_contract_state", "execution")
+		.add_dependency("execution", "0082_harness_contract")
 		.add_operation(Operation::DropConstraintDefinition {
 			table: "inference_usage".into(),
 			constraint: Constraint::Check {

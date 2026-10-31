@@ -188,8 +188,8 @@ def issue_subject_credential(manage, environment, tenant, subject):
     """Mint a Subject Credential from the host, never over HTTP (#484).
 
     A Deployment Administrator cannot issue a Tenant's credentials, so the
-    harness plays the host operator: the command opens the database with the
-    server's own settings and prints the credential once as JSON.
+    harness uses Host Access: the command opens the database with the server's
+    own settings and prints the credential once as JSON.
     """
     output = checked(
         [

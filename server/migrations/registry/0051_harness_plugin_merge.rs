@@ -3,8 +3,8 @@
 use reinhardt::db::migrations::prelude::*;
 
 pub(super) fn migration() -> Migration {
-	Migration::new("0050_harness_plugin_merge", "registry")
-		.add_dependency("registry", "0049_harness_contract")
+	Migration::new("0051_harness_plugin_merge", "registry")
+		.add_dependency("registry", "0050_harness_contract")
 		.add_dependency("registry", "0049_plugin_context_merge")
 		.state_only(true)
 }

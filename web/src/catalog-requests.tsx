@@ -23,6 +23,33 @@ function age(created: string, format: Intl.RelativeTimeFormat): string {
   return format.format(-Math.round(hours / 24), "day");
 }
 
+/**
+ * Whether any open request on `node` awaits this subject. The server decides
+ * eligibility per review item, so a subject holding `catalog.approve` only on
+ * named definitions still has a queue even without collection-wide authority.
+ */
+export function useHasPendingRequests(
+  tenant: string | undefined,
+  node: string | undefined,
+  enabled: boolean,
+): boolean {
+  const probe = useQuery({
+    queryKey: ["catalog-requests-pending-probe", tenant, node],
+    queryFn: async () =>
+      (
+        await authorizationCatalogRequestsPending(tenant!, {
+          node: node!,
+          limit: 1,
+          offset: 0,
+        })
+      ).requests.length > 0,
+    enabled: enabled && tenant !== undefined && node !== undefined,
+    staleTime: 30_000,
+    retry: false,
+  });
+  return probe.data === true;
+}
+
 /** The approver's queue of open Catalog Approval Requests on one Node. */
 export function CatalogRequestQueue({
   tenant,

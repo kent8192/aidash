@@ -2,13 +2,13 @@
 //! issues a Subject Credential from the host (#484, #301).
 //!
 //! A Deployment Administrator holds no Tenant authority, so the first
-//! credential of a Tenant in a headless setup comes from whoever operates the
-//! host: the command opens the database with the Deployment's own settings and
-//! never goes through HTTP or the shared `api_token`. The host operator is
-//! trusted, so it may issue for any subject the Tenant's policy defines and
-//! enables, including a user subject that a person's Mapping also covers. The
-//! issuance is recorded exactly as the HTTP path records it: a credential row
-//! naming its issuer (`--label`, default `host_operator`).
+//! credential of a Tenant in a headless setup comes through Host Access: the
+//! command opens the database with the Deployment's own settings and never
+//! goes through HTTP or the shared `api_token`. Host Access is trusted, so it
+//! may issue for any subject the Tenant's policy defines and enables,
+//! including a user subject that a person's Mapping also covers. The issuance
+//! is recorded exactly as the HTTP path records it: a credential row naming
+//! its issuer (`--label`, default `host_access`).
 use super::Authorization;
 use crate::apps::identity::serializers::identity::IssuedCredential;
 use crate::config::Config;
@@ -16,7 +16,7 @@ use crate::database::native::Pool;
 use crate::{Error, Result};
 
 /// The issuer recorded when `--label` is not given.
-pub const DEFAULT_LABEL: &str = "host_operator";
+pub const DEFAULT_LABEL: &str = "host_access";
 /// The lifetime of a credential issued without `--expires-in-seconds`.
 pub const DEFAULT_LIFETIME_SECONDS: i64 = 3600;
 

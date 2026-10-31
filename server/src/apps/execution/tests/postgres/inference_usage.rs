@@ -368,7 +368,7 @@ async fn recovering_an_expired_lease_finalizes_its_dispatched_attempts(
 	let recovered = store.lease_run(Uuid::new_v4(), 30).await.unwrap().unwrap();
 
 	// Assert
-	assert!(recovered.recovery.lease_recovered);
+	assert!(recovered.recovery.lease_recoveries > 0);
 	assert_eq!(
 		usage_row(&store, auxiliary.attempt).await,
 		unreported("unknown", None, true)

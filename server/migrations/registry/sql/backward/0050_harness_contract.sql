@@ -5,19 +5,19 @@
 DO $$
 BEGIN
  IF EXISTS(SELECT 1 FROM registry WHERE kind = 'agent' AND metadata->'config' ? 'harness_contract') THEN
-  RAISE EXCEPTION 'registry 0049_harness_contract cannot be reversed: Agent definitions declare harness_contract'
+  RAISE EXCEPTION 'registry 0050_harness_contract cannot be reversed: Agent definitions declare harness_contract'
    USING ERRCODE = '55000', HINT = 'Earlier binaries cannot read these definitions; restore the pre-upgrade database backup instead of reversing this migration.';
  END IF;
  -- The legacy packages table is removed by 0026 and may be absent.
  IF to_regclass('public.packages') IS NOT NULL THEN
   IF EXISTS(SELECT 1 FROM public.packages WHERE manifest #> '{entity,config}' ? 'harness_contract') THEN
-   RAISE EXCEPTION 'registry 0049_harness_contract cannot be reversed: packages declare harness_contract'
+   RAISE EXCEPTION 'registry 0050_harness_contract cannot be reversed: packages declare harness_contract'
     USING ERRCODE = '55000', HINT = 'Earlier binaries cannot read these packages; restore the pre-upgrade database backup instead of reversing this migration.';
   END IF;
  END IF;
  IF to_regclass('public.marketplace_versions') IS NOT NULL THEN
   IF EXISTS(SELECT 1 FROM public.marketplace_versions WHERE kind = 'agent' AND (document->>'manifest_source')::jsonb #> '{entity,config}' ? 'harness_contract') THEN
-   RAISE EXCEPTION 'registry 0049_harness_contract cannot be reversed: packages declare harness_contract'
+   RAISE EXCEPTION 'registry 0050_harness_contract cannot be reversed: packages declare harness_contract'
     USING ERRCODE = '55000', HINT = 'Earlier binaries cannot read these packages; restore the pre-upgrade database backup instead of reversing this migration.';
   END IF;
  END IF;
@@ -26,7 +26,7 @@ BEGIN
   IF EXISTS(SELECT 1 FROM public.runs WHERE
    jsonb_path_exists(context, 'lax $.binding_snapshot.definitions[*].definition ? (@.kind == "agent" && exists(@.config.harness_contract))')
    OR jsonb_path_exists(context, 'lax $.binding_snapshot.foreign_agents[*].definitions[*].definition ? (@.kind == "agent" && exists(@.config.harness_contract))')) THEN
-   RAISE EXCEPTION 'registry 0049_harness_contract cannot be reversed: Runs pin Agent definitions declaring harness_contract'
+   RAISE EXCEPTION 'registry 0050_harness_contract cannot be reversed: Runs pin Agent definitions declaring harness_contract'
     USING ERRCODE = '55000', HINT = 'Earlier binaries cannot read these Runs; restore the pre-upgrade database backup instead of reversing this migration.';
   END IF;
  END IF;

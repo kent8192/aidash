@@ -43,6 +43,10 @@ pub const DEFAULT_TOOLS: &[&str] = &[
 	"memory_recall",
 	"memory_reflect",
 ];
+/// Default builtins that act on the Agent's own memory. Without a `memory`
+/// Binding every call would be refused, so a Run excludes them instead of
+/// offering them (#600).
+pub const MEMORY_TOOLS: &[&str] = &["memory_mutate", "memory_recall", "memory_reflect"];
 pub const SKILL_TOOLS: &[&str] = &["skill_list", "skill_load", "skill_read"];
 pub const COORDINATOR_TOOLS: &[&str] = &["task_create", "task_delegate", "agent_discover"];
 /// Required under `deferred@1` only, with canonical aliases.
@@ -310,6 +314,16 @@ impl AgentBindings {
 				return Err(Error::Invalid("duplicate Binding target".into()));
 			}
 		}
+		if !self.has_memory_binding()
+			&& self.bindings.iter().any(|b| {
+				b.kind == BindingKind::Tool
+					&& b.target
+						.id
+						.strip_prefix("aidash.")
+						.is_some_and(|operation| MEMORY_TOOLS.contains(&operation))
+			}) {
+			return Err(Error::Invalid("memory tools require a bound memory".into()));
+		}
 		if self.bindings.iter().any(|b| b.kind == BindingKind::Skill)
 			&& self
 				.remove_default
@@ -362,6 +376,9 @@ impl AgentBindings {
 			&self.agent_plugins,
 			self.exposure_policy().is_deferred(),
 		)
+	}
+	fn has_memory_binding(&self) -> bool {
+		self.bindings.iter().any(|b| b.kind == BindingKind::Memory)
 	}
 	pub fn context_summary(&self) -> Option<&crate::context::policy::SummaryPolicy> {
 		match self.context_policy.as_ref()? {

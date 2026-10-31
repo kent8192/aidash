@@ -14,6 +14,12 @@ use reinhardt::conf::settings::scoped::ScopedSettings;
 use std::path::PathBuf;
 use std::process;
 
+/// Worker stack of a debug build. Unoptimized poll frames on a Run's memory
+/// recall path outgrow Tokio's 2 MiB default (#597); 16 MiB is the size at
+/// which that path was measured to complete.
+#[cfg(not(target_arch = "wasm32"))]
+const DEBUG_WORKER_STACK_BYTES: usize = 16 * 1024 * 1024;
+
 /// Every settings load passes through the build's Offering check, so a command
 /// refuses another build's Offering before it prepares any service.
 struct ProjectProvider;
@@ -45,8 +51,14 @@ pub fn main(build: &'static Build, compatibility: bool) {
 		process::exit(status);
 	}
 	build::install(build);
-	tokio::runtime::Builder::new_multi_thread()
-		.enable_all()
+	let mut runtime = tokio::runtime::Builder::new_multi_thread();
+	runtime.enable_all();
+	// An explicit RUST_MIN_STACK still decides, as it does for every other
+	// thread; release builds keep Tokio's default.
+	if cfg!(debug_assertions) && std::env::var_os("RUST_MIN_STACK").is_none() {
+		runtime.thread_stack_size(DEBUG_WORKER_STACK_BYTES);
+	}
+	runtime
 		.build()
 		.expect("the Tokio runtime starts")
 		.block_on(async {

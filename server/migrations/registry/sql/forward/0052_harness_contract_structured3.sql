@@ -1,28 +1,7 @@
--- DDL only: restore 0049_harness_contract's Agent Bindings contract, which
--- accepts `legacy@1`, `structured@1` and `structured@2` only. Roll back only
--- after removing `structured@3` from stored Agent definitions.
-DO $$
-BEGIN
- IF EXISTS(SELECT 1 FROM registry WHERE kind = 'agent' AND metadata->'config'->>'harness_contract' = 'structured@3') THEN
-  RAISE EXCEPTION 'registry 0051_harness_contract_structured3 cannot be reversed: Agent definitions declare structured@3'
-   USING ERRCODE = '55000', HINT = 'Earlier binaries cannot render structured@3; restore the pre-upgrade database backup instead of reversing this migration.';
- END IF;
- IF to_regclass('public.marketplace_versions') IS NOT NULL THEN
-  IF EXISTS(SELECT 1 FROM public.marketplace_versions WHERE kind = 'agent' AND (document->>'manifest_source')::jsonb #>> '{entity,config,harness_contract}' = 'structured@3') THEN
-   RAISE EXCEPTION 'registry 0051_harness_contract_structured3 cannot be reversed: packages declare structured@3'
-    USING ERRCODE = '55000', HINT = 'Earlier binaries cannot render these packages; restore the pre-upgrade database backup instead of reversing this migration.';
-  END IF;
- END IF;
- -- Nest the query so PostgreSQL does not plan it when the table is absent.
- IF to_regclass('public.runs') IS NOT NULL THEN
-  IF EXISTS(SELECT 1 FROM public.runs WHERE
-   jsonb_path_exists(context, 'lax $.binding_snapshot.definitions[*].definition ? (@.kind == "agent" && @.config.harness_contract == "structured@3")')
-   OR jsonb_path_exists(context, 'lax $.binding_snapshot.foreign_agents[*].definitions[*].definition ? (@.kind == "agent" && @.config.harness_contract == "structured@3")')) THEN
-   RAISE EXCEPTION 'registry 0051_harness_contract_structured3 cannot be reversed: Runs pin Agent definitions declaring structured@3'
-    USING ERRCODE = '55000', HINT = 'Earlier binaries cannot render these Runs; restore the pre-upgrade database backup instead of reversing this migration.';
-  END IF;
- END IF;
-END $$;
+-- DDL only: the Agent Bindings contract also accepts the `structured@3` Harness
+-- Contract version (#532), selected by the GEPA search on replayed fixed-task
+-- requests. The body is 0050_harness_contract's with that one value added.
+-- PostgreSQL function bodies have no typed migration operation (DDL only).
 CREATE OR REPLACE FUNCTION public.aidash_agent_bindings_is_valid(value jsonb) RETURNS boolean
 LANGUAGE plpgsql IMMUTABLE STRICT AS $$
 DECLARE plugins jsonb; plugin jsonb; plugin_settings jsonb; plugin_choices jsonb; server_choice jsonb; declared jsonb; completion jsonb; check_item jsonb; item jsonb; removals jsonb; edges jsonb; step_count numeric; parallelism numeric; context_policy jsonb; summary jsonb; restriction jsonb; candidate jsonb; policy jsonb; deferred boolean; budget text; bound numeric; removable text[]; support text[];
@@ -30,7 +9,7 @@ BEGIN
  IF jsonb_typeof(value) IS DISTINCT FROM 'object'
  OR value - ARRAY['schema_version','model','instructions','bindings','remove_default','cluster','max_steps','projection_version','harness_contract','prompt_cache','exposure','tool_parallelism','context_policy','completion','agent_plugins','agent_plugin_settings']::text[] <> '{}'::jsonb
  OR NOT COALESCE(value->'projection_version','null'::jsonb) IN ('null'::jsonb,'"legacy"'::jsonb,'"ordered"'::jsonb,'"native"'::jsonb)
- OR NOT COALESCE(value->'harness_contract','null'::jsonb) IN ('null'::jsonb,'"legacy@1"'::jsonb,'"structured@1"'::jsonb,'"structured@2"'::jsonb)
+ OR NOT COALESCE(value->'harness_contract','null'::jsonb) IN ('null'::jsonb,'"legacy@1"'::jsonb,'"structured@1"'::jsonb,'"structured@2"'::jsonb,'"structured@3"'::jsonb)
  OR NOT COALESCE(value->'prompt_cache','null'::jsonb) IN ('null'::jsonb,'"off"'::jsonb,'"explicit"'::jsonb)
  OR value->'schema_version' IS DISTINCT FROM '1'::jsonb
  OR NOT COALESCE(public.aidash_qualified_ref_is_valid(value->'model' || '{"registry_deployment":"aidash://contract"}'::jsonb),false)

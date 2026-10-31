@@ -488,6 +488,7 @@ const reviewItem = (
   can_approve: true,
   expected_revision: 2,
   restriction: null,
+  consumers: id === "writer" ? [] : ["acme/agents/writer@1.0.0"],
   proposed_restriction: {
     subjects: ["acme/agents/writer@1.0.0"],
     groups: [],
@@ -636,6 +637,7 @@ test("the Review shows the whole closure and approves local items and activation
   await expect(review).toContainText("Widens an existing approval");
   await expect(review).toContainText("You can approve it");
   await expect(review).toContainText("Needs Marketplace activation");
+  await expect(review).toContainText("Used by: acme/agents/writer@1.0.0");
   await review.getByRole("button", { name: /Approve selected \(3\)/ }).click();
   await expect.poll(() => decisions.length).toBe(1);
   const body = decisions[0].body as {
@@ -1003,6 +1005,36 @@ test("an approver opens a pending request with its id and declines it with a rea
   expect(decisions[1].body).toMatchObject({
     reason: "The dependency is not ready",
   });
+});
+
+test("an approver scoped to named definitions still finds the pending queue", async ({
+  page,
+}) => {
+  const review = reviewBody([
+    reviewItem("writer", "agent", "approved"),
+    reviewItem("model", "model", "approvable"),
+  ]);
+  let pending = [requestBody("request-scoped")];
+  await reviewDashboard(page, {
+    // No collection-wide `catalog.approve`: the server filters per item.
+    actions: [],
+    review: () => review,
+    pending: () => pending,
+    answer: () => ({ json: { bindings: [], installations: [] } }),
+  });
+  await page.goto("/settings?view=registry");
+  await page.getByRole("button", { name: "Approval requests" }).click();
+  const queue = page.getByRole("region", { name: "Approval requests" });
+  await expect(queue.getByText("bob", { exact: true })).toBeVisible();
+
+  pending = [];
+  await page.reload();
+  await expect(
+    page.getByRole("button", { name: "Sources and indexes" }),
+  ).toBeVisible();
+  await expect(
+    page.getByRole("button", { name: "Approval requests" }),
+  ).toHaveCount(0);
 });
 
 test("a consumer's request is fulfilled through the approver queue and then reads ready", async ({
