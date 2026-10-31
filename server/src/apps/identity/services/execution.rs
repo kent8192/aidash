@@ -14,6 +14,14 @@ use std::sync::Arc;
 use tokio::sync::RwLock;
 use uuid::Uuid;
 
+async fn memory_run_check(access: &mut Access, run: &crate::domain::RunMetadata) -> Result<()> {
+	match access.run_invalidity(run).await? {
+		None => Ok(()),
+		Some(crate::semantic::remote::Failure::Authority) => Err(Error::Forbidden),
+		Some(reason) => Err(Error::RemoteSemantic(reason)),
+	}
+}
+
 async fn grant(store: &Store, run: &crate::domain::RunMetadata) -> Result<Option<Grant>> {
 	aidash_application::authorization::execution::grant(
 		&crate::bootstrap::execution_grants(store),
@@ -687,21 +695,13 @@ impl WorkerAuthority {
 		let mut access = access_for_run(store, &run.metadata(), true)
 			.await?
 			.ok_or(Error::Forbidden)?;
-		if !access.run_visible(run.metadata()).await? {
-			return Err(Error::RemoteSemantic(
-				crate::semantic::remote::Failure::Invalidated,
-			));
-		}
+		memory_run_check(&mut access, &run.metadata()).await?;
 		let mut lease = crate::semantic::service::Lease::Scoped(Box::new(access));
 		let result =
 			crate::semantic::native_memory::run_mutate(store, &mut lease, run, key, changes).await;
 		let result = lease.finish(result).await;
 		refresh_access_for_run(&mut outer, store, run).await?;
-		if !outer.run_visible(run.metadata()).await? {
-			return Err(Error::RemoteSemantic(
-				crate::semantic::remote::Failure::Invalidated,
-			));
-		}
+		memory_run_check(&mut outer, &run.metadata()).await?;
 		result
 	}
 	pub async fn memory_recall(
@@ -719,22 +719,14 @@ impl WorkerAuthority {
 		let mut access = access_for_run(store, &run.metadata(), true)
 			.await?
 			.ok_or(Error::Forbidden)?;
-		if !access.run_visible(run.metadata()).await? {
-			return Err(Error::RemoteSemantic(
-				crate::semantic::remote::Failure::Invalidated,
-			));
-		}
+		memory_run_check(&mut access, &run.metadata()).await?;
 		let mut lease = crate::semantic::service::Lease::Scoped(Box::new(access));
 		let result =
 			crate::semantic::native_memory::run_recall(store, &mut lease, run, key, query, reflect)
 				.await;
 		let result = lease.finish(result).await;
 		refresh_access_for_run(&mut outer, store, run).await?;
-		if !outer.run_visible(run.metadata()).await? {
-			return Err(Error::RemoteSemantic(
-				crate::semantic::remote::Failure::Invalidated,
-			));
-		}
+		memory_run_check(&mut outer, &run.metadata()).await?;
 		result
 	}
 

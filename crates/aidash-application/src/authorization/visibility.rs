@@ -54,6 +54,26 @@ pub async fn local_run_visible(
 	Ok(local_base_visible(scope, run).await? && scope.run_reads(run.id).await?)
 }
 
+/// A source Run with no native memory reads has no private memory dependency.
+/// Keep the ordinary Run disclosure gate and its cached verdict unchanged.
+pub async fn local_dependency_without_memory_visible(
+	scope: &mut dyn LocalRunVisibilityScope,
+	run: &RunMetadata,
+) -> Result<bool> {
+	if !scope.core_area_visible(run.id).await? {
+		return Ok(false);
+	}
+	let workspace = scope.workspace(run.workspace_id).await?;
+	let resource = scope.resource("run", &run.id.to_string(), workspace.attributes);
+	let task_visible = match scope.task(run).await? {
+		Some(task) => scope.task_visible(&task).await?,
+		None => false,
+	};
+	Ok(task_visible
+		&& scope.decide(&resource, "run.read").await?
+		&& scope.human_reads(run.workspace_id, run.id).await?)
+}
+
 pub async fn base_visible(scope: &mut dyn RunVisibilityScope, run: &RunMetadata) -> Result<bool> {
 	if !run.is_local(scope.node_id()) {
 		if scope.scoped_admission(run.id).await? {

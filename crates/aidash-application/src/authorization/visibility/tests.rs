@@ -208,6 +208,28 @@ async fn local_disclosure_keeps_task_policy_memory_provenance_and_content_gates(
 }
 
 #[rstest]
+#[tokio::test]
+async fn memory_free_dependency_does_not_change_direct_run_disclosure(
+	run: RunMetadata,
+	mut scope: Scope,
+) {
+	scope.denied = Some("memory.read");
+	assert!(!local_base_visible(&mut scope, &run).await.unwrap());
+	assert_eq!(scope.cache, Some(false));
+	assert!(
+		local_dependency_without_memory_visible(&mut scope, &run)
+			.await
+			.unwrap()
+	);
+	assert_eq!(
+		scope.cache,
+		Some(false),
+		"dependency must not overwrite direct disclosure"
+	);
+	assert!(!local_base_visible(&mut scope, &run).await.unwrap());
+}
+
+#[rstest]
 #[case("missing_task")]
 #[case("task_visible")]
 #[case("run.read")]

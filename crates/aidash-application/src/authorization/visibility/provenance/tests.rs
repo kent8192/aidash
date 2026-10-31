@@ -184,6 +184,46 @@ impl ReadProvenanceScope for Scope {
 		Ok(self.denied != Some("generation.read"))
 	}
 }
+
+#[rstest]
+#[case::deleted(true, None, Failure::Invalidated)]
+#[case::revoked(false, Some("message.read"), Failure::Authority)]
+#[tokio::test]
+async fn memory_recheck_distinguishes_deleted_sources_from_lost_authority(
+	mut scope: Scope,
+	#[case] missing: bool,
+	#[case] denied: Option<&'static str>,
+	#[case] expected: Failure,
+) {
+	let run = Uuid::from_u128(1);
+	scope.graph.insert(
+		run,
+		vec![(Uuid::from_u128(3), "message".into(), Uuid::from_u128(4))],
+	);
+	scope.missing = missing;
+	scope.denied = denied;
+	assert_eq!(
+		run_reads_invalidity(&mut scope, run).await.unwrap(),
+		Some(expected)
+	);
+}
+
+#[rstest]
+#[case("remote")]
+#[case("received")]
+#[tokio::test]
+async fn opaque_remote_denials_keep_the_existing_invalidated_verdict(
+	mut scope: Scope,
+	#[case] gate: &'static str,
+) {
+	scope.denied = Some(gate);
+	assert_eq!(
+		run_reads_invalidity(&mut scope, Uuid::from_u128(1))
+			.await
+			.unwrap(),
+		Some(Failure::Invalidated),
+	);
+}
 #[rstest]
 #[tokio::test]
 async fn cycles_and_duplicate_run_references_terminate_after_checking_each_journal(

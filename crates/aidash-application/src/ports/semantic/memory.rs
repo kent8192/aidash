@@ -1,5 +1,6 @@
 //! Agent memory and persisted read dependencies retain the caller's authority scope.
 use crate::Result;
+use aidash_domain::semantic::Failure;
 use aidash_domain::semantic::mutations::Entry;
 use async_trait::async_trait;
 use uuid::Uuid;
@@ -9,12 +10,26 @@ pub trait SemanticMemoryReadSession: Send {
 	async fn native_reads_visible(&mut self, _run: Uuid) -> Result<bool> {
 		Ok(true)
 	}
+	async fn native_invalidity(&mut self, run: Uuid) -> Result<Option<Failure>> {
+		Ok((!self.native_reads_visible(run).await?).then_some(Failure::Authority))
+	}
 	async fn permits(&mut self, entry: &Entry, action: &str) -> Result<bool>;
+	async fn entry_authorized(&mut self, entry: &Entry) -> Result<bool> {
+		self.permits(entry, "semantic.read").await
+	}
 	async fn source(
 		&mut self,
 		workspace: Uuid,
 		source: &aidash_domain::semantic::Source,
 	) -> Result<Option<String>>;
+	/// True only when the stored source is provably missing or withdrawn.
+	async fn source_invalidated(
+		&mut self,
+		_: Uuid,
+		_: &aidash_domain::semantic::Source,
+	) -> Result<bool> {
+		Ok(false)
+	}
 	/// Preserve ascending entry/revision order before checking authority and source bytes.
 	async fn dependencies(&mut self, run: Uuid) -> Result<Vec<(Uuid, i64)>>;
 	/// Missing rows preserve the adapter contract: absence denies native disclosure; SQL errors remain errors.

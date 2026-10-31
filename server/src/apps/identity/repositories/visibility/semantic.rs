@@ -74,6 +74,17 @@ impl SemanticDisclosureScope for NativeReads<'_> {
 }
 #[async_trait]
 impl SemanticMemoryReadSession for NativeReads<'_> {
+	async fn native_invalidity(
+		&mut self,
+		run: Uuid,
+	) -> Result<Option<aidash_domain::semantic::Failure>> {
+		crate::apps::knowledge::repositories::memory_reads::invalidity(
+			&mut crate::semantic::service::Lease::Inherited(self.access),
+			run,
+		)
+		.await
+		.map_err(Into::into)
+	}
 	async fn native_reads_visible(&mut self, run: Uuid) -> Result<bool> {
 		crate::apps::knowledge::repositories::memory_reads::visible(
 			&mut crate::semantic::service::Lease::Inherited(self.access),
@@ -85,8 +96,21 @@ impl SemanticMemoryReadSession for NativeReads<'_> {
 	async fn permits(&mut self, entry: &Entry, action: &str) -> Result<bool> {
 		aidash_application::semantic::visibility::permits(self, entry, action).await
 	}
+	async fn entry_authorized(&mut self, entry: &Entry) -> Result<bool> {
+		aidash_application::semantic::visibility::permits_resource(self, entry, "semantic.read")
+			.await
+	}
 	async fn source(&mut self, workspace: Uuid, source: &Source) -> Result<Option<String>> {
 		aidash_application::semantic::visibility::source(self, workspace, source).await
+	}
+	async fn source_invalidated(&mut self, workspace: Uuid, source: &Source) -> Result<bool> {
+		crate::apps::knowledge::repositories::memory::source_invalidated(
+			&mut crate::semantic::service::Lease::Inherited(self.access),
+			workspace,
+			source,
+		)
+		.await
+		.map_err(Into::into)
 	}
 	async fn dependencies(&mut self, run: Uuid) -> Result<Vec<(Uuid, i64)>> {
 		crate::apps::knowledge::models::SemanticRunRead::for_run(self.access.tx.as_mut(), run)

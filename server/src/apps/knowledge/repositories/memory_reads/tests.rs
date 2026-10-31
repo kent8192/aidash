@@ -174,6 +174,7 @@ async fn cause(store: &Store, actor: &Actor, workspace: Uuid, run: Uuid) -> Opti
 #[case::deletion("deletion", Some(Failure::Invalidated))]
 #[case::participant_change("participant_change", Some(Failure::Configuration))]
 #[case::lost_read_authority("lost_read_authority", Some(Failure::Authority))]
+#[case::empty_journal_without_authority("empty_journal_without_authority", None)]
 #[tokio::test]
 async fn a_failed_read_journal_reports_its_exact_cause(
 	#[future] database: DatabaseFixture,
@@ -266,7 +267,18 @@ async fn a_failed_read_journal_reports_its_exact_cause(
 			.await
 			.unwrap();
 		}
-		"lost_read_authority" => {
+		"lost_read_authority" | "empty_journal_without_authority" => {
+			if change == "empty_journal_without_authority" {
+				native::query(
+					&Query::delete()
+						.from_table(Alias::new("memory_run_reads"))
+						.and_where(Expr::col("run_id").eq(Expr::value(run)))
+						.to_string(PostgresQueryBuilder),
+				)
+				.execute(store.pool.in_scope(&TEST_FIXTURE))
+				.await
+				.unwrap();
+			}
 			Authorization {
 				pool: store.pool.clone(),
 			}

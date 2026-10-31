@@ -74,6 +74,7 @@ struct Scope {
 	entries: Vec<Entry>,
 	text: Option<String>,
 	digest: Option<String>,
+	source_invalidated: bool,
 }
 impl Default for Scope {
 	fn default() -> Self {
@@ -87,6 +88,7 @@ impl Default for Scope {
 			entries: vec![],
 			text: Some("content".into()),
 			digest: Some(content_digest("content")),
+			source_invalidated: false,
 		}
 	}
 }
@@ -195,6 +197,9 @@ impl SemanticMemoryReadSession for Scope {
 	async fn source(&mut self, workspace: Uuid, source: &Source) -> Result<Option<String>> {
 		SemanticEntriesSession::source(self, workspace, source).await
 	}
+	async fn source_invalidated(&mut self, _: Uuid, _: &Source) -> Result<bool> {
+		Ok(self.source_invalidated)
+	}
 
 	async fn dependencies(&mut self, _: Uuid) -> Result<Vec<(Uuid, i64)>> {
 		self.touch("dependencies")?;
@@ -208,6 +213,41 @@ impl SemanticMemoryReadSession for Scope {
 		self.touch("digest")?;
 		Ok(self.digest.clone())
 	}
+}
+
+#[rstest]
+#[case::revision("revision", Failure::Invalidated)]
+#[case::missing_entry("missing", Failure::Invalidated)]
+#[case::missing_source("source", Failure::Invalidated)]
+#[case::changed_content("digest", Failure::Invalidated)]
+#[case::lost_authority("authority", Failure::Authority)]
+#[tokio::test]
+async fn dependency_recheck_reports_the_actual_local_cause(
+	#[case] change: &str,
+	#[case] expected: Failure,
+) {
+	let entry = entry();
+	let mut scope = Scope {
+		dependencies: vec![(entry.id, entry.revision)],
+		entries: vec![entry],
+		..Default::default()
+	};
+	match change {
+		"revision" => scope.entries[0].revision += 1,
+		"missing" => scope.entries.clear(),
+		"source" => scope.source_invalidated = true,
+		"digest" => scope.text = Some("changed".into()),
+		"authority" => {
+			scope.denied.insert("semantic.read".into());
+		}
+		_ => unreachable!(),
+	}
+	assert_eq!(
+		reads_invalidity(&mut scope, Uuid::from_u128(7))
+			.await
+			.unwrap(),
+		Some(expected)
+	);
 }
 #[rstest]
 #[case::empty(false)]

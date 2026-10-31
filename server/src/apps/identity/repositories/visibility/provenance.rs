@@ -119,6 +119,15 @@ impl ReadProvenanceScope for Reads<'_> {
 			.await
 			.map_err(Into::into)
 	}
+	async fn semantic_invalidity(
+		&mut self,
+		run: Uuid,
+	) -> Result<Option<aidash_domain::semantic::Failure>> {
+		self.access
+			.semantic_reads_invalidity(run)
+			.await
+			.map_err(Into::into)
+	}
 	async fn received_semantic(&mut self, run: Uuid) -> Result<bool> {
 		self.access
 			.received_semantic_visible(run)
@@ -130,6 +139,22 @@ impl ReadProvenanceScope for Reads<'_> {
 	}
 	async fn run_base_visible(&mut self, run: &RunMetadata) -> Result<bool> {
 		self.access.run_base_visible(run).await.map_err(Into::into)
+	}
+	async fn run_dependency_visible(&mut self, run: &RunMetadata) -> Result<bool> {
+		if !run.is_local(&self.access.node_id)
+			|| crate::apps::knowledge::repositories::memory_reads::has_reads(
+				&mut **self.access.tx,
+				run.id,
+			)
+			.await?
+		{
+			return self.run_base_visible(run).await;
+		}
+		aidash_application::authorization::visibility::local_dependency_without_memory_visible(
+			&mut crate::bootstrap::run_visibility_scope(self.access),
+			run,
+		)
+		.await
 	}
 	async fn generation_visible(&mut self, job: &Request) -> Result<bool> {
 		job.visible(self.access).await.map_err(Into::into)
@@ -472,6 +497,15 @@ impl ReadProvenanceScope for NativeReads<'_> {
 			.await
 			.map_err(Into::into)
 	}
+	async fn semantic_invalidity(
+		&mut self,
+		run: Uuid,
+	) -> Result<Option<aidash_domain::semantic::Failure>> {
+		self.access
+			.semantic_reads_invalidity(run)
+			.await
+			.map_err(Into::into)
+	}
 	async fn sources(&mut self, run: Uuid) -> Result<Vec<RecordedRead>> {
 		crate::apps::identity::models::AuthorizationRunRead::for_run(self.access.tx.as_mut(), run)
 			.await
@@ -532,6 +566,22 @@ impl ReadProvenanceScope for NativeReads<'_> {
 	}
 	async fn run_base_visible(&mut self, run: &RunMetadata) -> Result<bool> {
 		self.access.run_base_visible(run).await.map_err(Into::into)
+	}
+	async fn run_dependency_visible(&mut self, run: &RunMetadata) -> Result<bool> {
+		if !run.is_local(&self.access.node_id)
+			|| crate::apps::knowledge::repositories::memory_reads::has_reads(
+				&mut **self.access.tx,
+				run.id,
+			)
+			.await?
+		{
+			return self.run_base_visible(run).await;
+		}
+		aidash_application::authorization::visibility::local_dependency_without_memory_visible(
+			&mut crate::bootstrap::native_run_visibility_scope(self.access),
+			run,
+		)
+		.await
 	}
 	async fn generation_visible(&mut self, job: &Request) -> Result<bool> {
 		aidash_application::generation::visibility::local_visible(

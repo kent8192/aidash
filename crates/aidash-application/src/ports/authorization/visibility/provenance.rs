@@ -2,7 +2,7 @@
 use crate::{Result, ports::authorization::visibility::resources::ResourceVisibilityScope};
 use aidash_domain::{
 	Artifact, Conversation, Message, RunMetadata, Task, generation::requests::Request,
-	registry::EntityRef,
+	registry::EntityRef, semantic::Failure,
 };
 use async_trait::async_trait;
 use uuid::Uuid;
@@ -13,6 +13,9 @@ pub trait ReadProvenanceScope: ResourceVisibilityScope {
 	async fn catalog_read(&mut self, run: Uuid, reference: &EntityRef) -> Result<()>;
 	async fn remote_reads(&mut self, run: Uuid) -> Result<bool>;
 	async fn semantic_reads(&mut self, run: Uuid) -> Result<bool>;
+	async fn semantic_invalidity(&mut self, run: Uuid) -> Result<Option<Failure>> {
+		Ok((!self.semantic_reads(run).await?).then_some(Failure::Authority))
+	}
 	/// The native local reader has no received-semantic journal; its foreign reader owns that check.
 	async fn received_semantic(&mut self, _: Uuid) -> Result<bool> {
 		Ok(true)
@@ -29,6 +32,10 @@ pub trait ReadProvenanceScope: ResourceVisibilityScope {
 	) -> Result<Option<Conversation>>;
 	async fn source_generation(&mut self, id: Uuid, workspace: Uuid) -> Result<Option<Request>>;
 	async fn run_base_visible(&mut self, run: &RunMetadata) -> Result<bool>;
+	/// A recorded Run dependency may have no private memory reads to protect.
+	async fn run_dependency_visible(&mut self, run: &RunMetadata) -> Result<bool> {
+		self.run_base_visible(run).await
+	}
 	async fn generation_visible(&mut self, job: &Request) -> Result<bool>;
 }
 
