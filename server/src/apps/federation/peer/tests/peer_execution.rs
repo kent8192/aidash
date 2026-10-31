@@ -284,7 +284,7 @@ async fn receiver_preflight_intersects_executor_and_mapping_without_admitting_a_
 			.get(
 				&aidash_domain::tenancy::TenantName::new("acme").unwrap(),
 				definition["entry"]["id"].as_str().unwrap(),
-				"1.0.0",
+				definition["entry"]["version"].as_str().unwrap(),
 			)
 			.await
 			.unwrap();
