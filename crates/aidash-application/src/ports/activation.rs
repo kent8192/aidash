@@ -38,7 +38,13 @@ pub trait SchedulingScope: Send {
 	async fn approval(&mut self, id: Uuid) -> Result<Option<Approval>>;
 	async fn dependencies_ready(&mut self, task: Uuid) -> Result<bool>;
 	/// Compare revision, install the lease, advance revision and persist recovery state.
-	async fn lease(&mut self, run: &Run, token: Uuid, seconds: i32) -> Result<Option<Run>>;
+	async fn lease(
+		&mut self,
+		run: &Run,
+		token: Uuid,
+		seconds: i32,
+		node: &str,
+	) -> Result<Option<Run>>;
 	/// Repair first acquires a fenced lease; a row lock alone does not authorize a write.
 	async fn repair_lease(
 		&mut self,
@@ -53,6 +59,16 @@ pub trait SchedulingScope: Send {
 		state: &RunState,
 		reason: &str,
 		node: &str,
+	) -> Result<()>;
+	/// Hand a Crash Loop Failure to the normal failure delivery path.
+	async fn crash_loop(
+		&mut self,
+		owned: &RunMetadata,
+		token: Uuid,
+		state: &RunState,
+		reason: &str,
+		node: &str,
+		lease_recoveries: u32,
 	) -> Result<()>;
 	/// Under a repair lease, replaces the state of a cancelled Run this worker cannot load
 	/// with its cancellation delivery (`state`) and releases the lease. The state is intact,

@@ -290,6 +290,22 @@ def live_pods(cluster, namespace, selector=None):
     ]
 
 
+def running_producers(cluster, namespace):
+    """Writer and Runner Pods with a running container, including init containers."""
+    return [
+        pod
+        for selector in (WRITER_PODS, RUNNER_PODS)
+        for pod in live_pods(cluster, namespace, selector)
+        if any(
+            "running" in (container.get("state") or {})
+            for container in (
+                *pod.get("status", {}).get("initContainerStatuses", []),
+                *pod.get("status", {}).get("containerStatuses", []),
+            )
+        )
+    ]
+
+
 def exists(cluster, namespace, workload):
     kind, name = workload.split("/", 1)
     return cluster.get(kind, name, namespace) is not None
@@ -619,9 +635,9 @@ def common_auth_settings(output, dashboard, tls, external):
         or any(not isinstance(value, str) or not value.startswith("-----BEGIN ") for value in tls.values())):
         raise Refused(invalid)
     oidc_settings = dict(oidc, client_id="cloud", client_secret="${AIDASH_OIDC_CLIENT_SECRET}")
-    for field, default in (("session_absolute_seconds", 43200), ("session_idle_seconds", 1800)):
+    for field, default in (("session_absolute_seconds", 2592000), ("session_idle_seconds", 604800)):
         value = external.get("AIDASH_OIDC_" + field.upper(), str(default))
-        if not isinstance(value, str) or not value.isdecimal() or not 60 <= int(value) <= 604800:
+        if not isinstance(value, str) or not value.isdecimal() or not 60 <= int(value) <= 2592000:
             raise Refused(invalid)
         oidc_settings[field] = int(value)
     if oidc_settings["session_idle_seconds"] > oidc_settings["session_absolute_seconds"]:
@@ -935,13 +951,28 @@ def seal(cluster, identity, force=False, idle_only=False, keepalive_at=0):
     The Runner, edge, dependencies and collector keep running; they are stopped
     only after this returns True. Any doubt restores service and defers. A
     namespace without live Pods (stopped, or a stop whose node pool apply
-    failed) has no producer to drain and is already sealed.
+    failed) has no producer to drain and is already sealed; one whose writers
+    and Runner have no running process may be sealed when the Runner is scaled
+    to zero and no Runner or sandbox Pods remain.
     """
     namespace = namespace_of(identity)
     if cluster.get("namespace", namespace) is None:
         return True
     if not live_pods(cluster, namespace):
         desired_admission(cluster, namespace, "closed")
+        return True
+    runner = cluster.get("deployment", "app-execution-runner", namespace)
+    sandbox = namespaces(identity)[1]
+    if (not force and runner is not None and runner.get("spec", {}).get("replicas") == 0
+            and not cluster.items("pods", namespace, RUNNER_PODS)
+            and not running_producers(cluster, namespace)
+            and cluster.get("namespace", sandbox) is not None
+            and not cluster.items("pods", sandbox)):
+        # No Runner or sandbox Pod can execute work. Drain, stop and deploy
+        # retain the journal PVC; unsettled operations survive for Runner
+        # startup recovery. Missing namespace evidence cannot authorize this.
+        admission(cluster, identity, "close")
+        drain(cluster, identity)
         return True
     try:
         admission(cluster, identity, "close")

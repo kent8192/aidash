@@ -14,6 +14,7 @@ struct Fixture {
 	cannot_approve: BTreeSet<(String, String)>,
 	provider_missing: BTreeSet<(String, String)>,
 	slot_missing: BTreeSet<(String, String)>,
+	groups: BTreeMap<String, BTreeSet<String>>,
 }
 fn key(id: &str, version: &str) -> (String, String) {
 	(id.into(), version.into())
@@ -82,6 +83,7 @@ impl Fixture {
 			cannot_approve: BTreeSet::new(),
 			provider_missing: BTreeSet::new(),
 			slot_missing: BTreeSet::new(),
+			groups: BTreeMap::new(),
 		}
 	}
 	fn approve(&mut self, id: &str, restriction: Option<CatalogRestriction>) {
@@ -143,6 +145,13 @@ impl ApprovalReviewScope for Fixture {
 		Ok(!self
 			.provider_missing
 			.contains(&key(&entry.id, &entry.version)))
+	}
+	async fn subject_groups(&mut self, subject: &str) -> Result<BTreeSet<String>> {
+		Ok(self
+			.groups
+			.get(subject)
+			.cloned()
+			.unwrap_or_else(|| BTreeSet::from(["members".into()])))
 	}
 	async fn source_slot_available(&mut self, entry: &Entry) -> Result<bool> {
 		Ok(!self.slot_missing.contains(&key(&entry.id, &entry.version)))
@@ -556,6 +565,77 @@ async fn an_installation_plan_uses_the_review_node_and_restriction() {
 
 #[rstest]
 #[tokio::test]
+async fn widening_the_active_revision_skips_activation_while_a_newer_one_is_staged() {
+	// Arrange: revision 1 is approved and active for another agent only;
+	// revision 2 is staged.
+	let mut copy = entry("model", "copy", json!({}));
+	copy.installation = Some(Projection {
+		contract: 1,
+		tenant: "acme".into(),
+		installation: "package".into(),
+		revision: 1,
+	});
+	let mut fixture = Fixture::new(vec![agent("copy", &[]), copy]);
+	fixture.approve(
+		"copy",
+		Some(CatalogRestriction {
+			subjects: ["other-agent".into()].into(),
+			groups: BTreeSet::new(),
+		}),
+	);
+	fixture.installed.insert(
+		key("package", "1.0.0"),
+		InstalledRevision {
+			installation: Installation {
+				id: "package".into(),
+				tenant: "acme".into(),
+				package_key: "package".into(),
+				latest_revision: 2,
+				active_revision: Some(1),
+				activation_revision: 4,
+			},
+			revision: 1,
+			digest: "revision-digest".into(),
+			activation_revision: 4,
+			active: true,
+		},
+	);
+	let review = review(&mut fixture, &reference("writer")).await.unwrap();
+	let item = review
+		.items
+		.iter()
+		.find(|item| item.reference.id == "copy")
+		.unwrap();
+	assert_eq!(item.status, ReviewStatus::Approved);
+	assert!(item.widen);
+	// Act: widen it together with an unrelated local approval of the root.
+	let mut submission = submission(&review, &["writer"]);
+	submission.installations.push(ReviewActivation {
+		installation: "package".into(),
+		revision: 1,
+		digest: "revision-digest".into(),
+		expected_activation_revision: 4,
+		restriction: item.proposed_restriction.clone(),
+	});
+	let plan = plan(&review, &submission).unwrap();
+	let set = restriction_set("acme", &review.node, &review, &plan).unwrap();
+	// Assert
+	assert_eq!(plan.approvals.len(), 1);
+	assert!(plan.installations.is_empty());
+	assert!(plan.satisfied_by_activation.is_empty());
+	assert_eq!(set.installations.len(), 1);
+	let selection = &set.installations[0];
+	assert_eq!(selection.revision, 1);
+	assert_eq!(selection.expected_activation_revision, 4);
+	assert_eq!(selection.expected_catalog_revision, 1);
+	assert_eq!(
+		Some(selection.restriction.clone()),
+		item.proposed_restriction
+	);
+}
+
+#[rstest]
+#[tokio::test]
 async fn the_review_includes_the_compaction_decider_the_node_binds_by_default() {
 	// Arrange
 	let mut fixture = Fixture::new(vec![
@@ -595,5 +675,227 @@ async fn the_review_omits_the_compaction_decider_when_the_default_is_removed() {
 			.items
 			.iter()
 			.all(|item| item.reference.id != "aidash.compaction-decider")
+	);
+}
+
+fn named_agent(id: &str, model: &str, dependencies: &[(&str, &str)]) -> Entry {
+	let mut value = agent(model, dependencies);
+	value.id = id.into();
+	value
+}
+fn delegate(id: &str, target: &str) -> Entry {
+	entry(
+		"tool",
+		id,
+		json!({"registry_deployment":"aidash://test-deployment", "provider":"integration.agent@1", "operation":"invoke", "default_alias":id, "tier":"integration", "transport":{"transport":"agent", "node_id":"aidash://test-deployment", "agent":{"id":target,"version":"1.0.0"}}}),
+	)
+}
+fn subject(id: &str) -> String {
+	aidash_domain::qualified_agent(&node(), id, "1.0.0")
+}
+fn item<'a>(review: &'a ApprovalReview, id: &str) -> &'a ReviewItem {
+	review
+		.items
+		.iter()
+		.find(|item| item.reference.id == id)
+		.unwrap()
+}
+fn delegated(shared: bool) -> Fixture {
+	Fixture::new(vec![
+		named_agent("a", if shared { "m" } else { "a-model" }, &[("tool", "t")]),
+		delegate("t", "b"),
+		named_agent("b", "m", &[]),
+		entry("model", "m", json!({})),
+		entry("model", "a-model", json!({})),
+	])
+}
+
+#[tokio::test]
+async fn delegated_dependencies_use_the_nearest_agent_and_plan_accepts_proposals() {
+	let mut fixture = delegated(false);
+	let review = review(&mut fixture, &reference("a")).await.unwrap();
+	for (id, consumer) in [("t", "a"), ("b", "a"), ("m", "b")] {
+		let reviewed = item(&review, id);
+		assert_eq!(reviewed.consumers, vec![subject(consumer)]);
+		assert_eq!(
+			reviewed.proposed_restriction.as_ref().unwrap().subjects,
+			BTreeSet::from([subject(consumer)])
+		);
+	}
+	let plan = plan(
+		&review,
+		&submission(&review, &["a", "t", "b", "m", "a-model"]),
+	)
+	.unwrap();
+	assert_eq!(plan.approvals.len(), 5);
+}
+
+#[tokio::test]
+async fn shared_model_unions_consumers_and_widens_existing_restriction() {
+	let mut fixture = delegated(true);
+	let first = review(&mut fixture, &reference("a")).await.unwrap();
+	assert_eq!(
+		item(&first, "m")
+			.proposed_restriction
+			.as_ref()
+			.unwrap()
+			.subjects,
+		BTreeSet::from([subject("a"), subject("b")])
+	);
+	for id in ["a", "t", "b"] {
+		fixture.approve(id, None);
+	}
+	fixture.approve(
+		"m",
+		Some(CatalogRestriction {
+			subjects: BTreeSet::from([subject("a")]),
+			groups: BTreeSet::new(),
+		}),
+	);
+	let second = review(&mut fixture, &reference("a")).await.unwrap();
+	assert!(item(&second, "m").widen);
+	assert!(!second.ready);
+	assert_eq!(
+		item(&second, "m")
+			.proposed_restriction
+			.as_ref()
+			.unwrap()
+			.subjects,
+		BTreeSet::from([subject("a"), subject("b")])
+	);
+}
+
+#[tokio::test]
+async fn non_agent_root_still_discovers_delegated_agent_consumers() {
+	let mut fixture = delegated(false);
+	let result = review(&mut fixture, &reference("t")).await.unwrap();
+	assert_eq!(item(&result, "t").proposed_restriction, None);
+	assert_eq!(item(&result, "b").proposed_restriction, None);
+	assert_eq!(item(&result, "m").consumers, vec![subject("b")]);
+}
+
+#[tokio::test]
+async fn cycle_to_root_widens_restricted_root_but_leaves_unrestricted_root_open() {
+	let mut fixture = delegated(false);
+	fixture
+		.definitions
+		.get_mut(&key("b", "1.0.0"))
+		.unwrap()
+		.config["bindings"] = json!([{ "kind":"tool", "target":{"registry_deployment":"aidash://test-deployment", "id":"back", "version":"1.0.0"}, "narrow":{} }]);
+	fixture
+		.definitions
+		.insert(key("back", "1.0.0"), delegate("back", "a"));
+	let unrestricted = review(&mut fixture, &reference("a")).await.unwrap();
+	assert_eq!(item(&unrestricted, "a").proposed_restriction, None);
+	fixture.approve(
+		"a",
+		Some(CatalogRestriction {
+			subjects: BTreeSet::from(["alice".into()]),
+			groups: BTreeSet::new(),
+		}),
+	);
+	let restricted = review(&mut fixture, &reference("a")).await.unwrap();
+	assert!(item(&restricted, "a").widen);
+	assert!(
+		item(&restricted, "a")
+			.proposed_restriction
+			.as_ref()
+			.unwrap()
+			.subjects
+			.contains(&subject("b"))
+	);
+	assert!(!restricted.ready);
+}
+
+#[tokio::test]
+async fn hidden_consumer_is_not_disclosed_and_blocks_its_dependency() {
+	let mut fixture = delegated(true);
+	fixture.unreadable.insert(key("b", "1.0.0"));
+	fixture.approve(
+		"m",
+		Some(CatalogRestriction {
+			subjects: BTreeSet::from([subject("b")]),
+			groups: BTreeSet::new(),
+		}),
+	);
+	let result = review(&mut fixture, &reference("a")).await.unwrap();
+	let model = item(&result, "m");
+	assert_eq!(model.status, ReviewStatus::NeedsOtherApprover);
+	assert_eq!(model.proposed_restriction, None);
+	assert_eq!(model.restriction, None);
+	assert_eq!(model.consumers, vec![subject("a")]);
+	assert!(!result.ready);
+	assert!(
+		!serde_json::to_string(&result)
+			.unwrap()
+			.contains(&subject("b"))
+	);
+	assert!(matches!(
+		plan(&result, &submission(&result, &["m"])),
+		Err(Error::Forbidden)
+	));
+}
+
+#[tokio::test]
+async fn group_restrictions_are_checked_for_each_consumer() {
+	let mut fixture = delegated(true);
+	fixture
+		.groups
+		.insert(subject("a"), BTreeSet::from(["writers".into()]));
+	// B has no subject yet and receives the default members group.
+
+	fixture.approve(
+		"m",
+		Some(CatalogRestriction {
+			subjects: BTreeSet::new(),
+			groups: BTreeSet::from(["writers".into(), "members".into()]),
+		}),
+	);
+	let result = review(&mut fixture, &reference("a")).await.unwrap();
+	assert!(!item(&result, "m").widen);
+	fixture.groups.insert(subject("b"), BTreeSet::new());
+	let result = review(&mut fixture, &reference("a")).await.unwrap();
+	assert!(item(&result, "m").widen);
+	assert_eq!(
+		item(&result, "m")
+			.proposed_restriction
+			.as_ref()
+			.unwrap()
+			.subjects,
+		BTreeSet::from([subject("b")])
+	);
+}
+
+#[tokio::test]
+async fn consumers_reach_children_of_an_already_expanded_shared_bundle() {
+	let mut root = named_agent("a", "a-model", &[("bundle", "aa"), ("tool", "t")]);
+	root.config["instructions"] = json!("root");
+	let nested = named_agent("b", "m", &[("bundle", "aa")]);
+	let bundle = entry(
+		"bundle",
+		"aa",
+		json!({"members": [{"registry_deployment":"aidash://test-deployment", "id":"shared-tool", "version":"1.0.0"}]}),
+	);
+	let mut fixture = Fixture::new(vec![
+		root,
+		delegate("t", "b"),
+		nested,
+		bundle,
+		tool("shared-tool", "sandboxed"),
+		entry("model", "m", json!({})),
+		entry("model", "a-model", json!({})),
+	]);
+	let result = review(&mut fixture, &reference("a")).await.unwrap();
+	assert_eq!(
+		item(&result, "shared-tool").consumers,
+		vec![subject("a"), subject("b")]
+	);
+	assert_eq!(
+		item(&result, "shared-tool")
+			.proposed_restriction
+			.as_ref()
+			.unwrap()
+			.subjects,
+		BTreeSet::from([subject("a"), subject("b")])
 	);
 }

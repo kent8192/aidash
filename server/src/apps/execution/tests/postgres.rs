@@ -365,6 +365,84 @@ async fn lease_fencing_and_uncertain_effect_reconciliation(
 		.await
 		.unwrap();
 	assert_eq!(first.status, "STARTED");
+	store
+		.invocation_start(
+			&ACME,
+			&leased,
+			token,
+			"not-delivered",
+			"unsafe",
+			&json!({}),
+			false,
+		)
+		.await
+		.unwrap();
+	assert_eq!(
+		store
+			.invocation_not_delivered(
+				&ACME,
+				&leased,
+				token,
+				"not-delivered",
+				&json!({"error":{"kind":"not_delivered","message":"refused"}})
+			)
+			.await
+			.unwrap(),
+		1
+	);
+	store
+		.invocation_start(
+			&ACME,
+			&leased,
+			token,
+			"answer-lost",
+			"unsafe",
+			&json!({}),
+			false,
+		)
+		.await
+		.unwrap();
+	store
+		.invocation_answer_lost(&ACME, &leased, token, "answer-lost")
+		.await
+		.unwrap();
+	let failed = json!({"error":{"kind":"not_delivered","message":"refused"}});
+	store
+		.invocation_start(
+			&ACME,
+			&leased,
+			token,
+			"exhausted",
+			"unsafe",
+			&json!({}),
+			false,
+		)
+		.await
+		.unwrap();
+	for attempt in 1..=6 {
+		assert_eq!(
+			store
+				.invocation_not_delivered(&ACME, &leased, token, "exhausted", &failed)
+				.await
+				.unwrap(),
+			attempt
+		);
+		if attempt < 6 {
+			let resumed = store
+				.invocation_start(
+					&ACME,
+					&leased,
+					token,
+					"exhausted",
+					"unsafe",
+					&json!({}),
+					false,
+				)
+				.await
+				.unwrap();
+			assert_eq!(resumed.status, "STARTED");
+		}
+	}
 	{
 		let query_bind_1 = run.id;
 		sqlx::query(
@@ -386,7 +464,64 @@ async fn lease_fencing_and_uncertain_effect_reconciliation(
 	.unwrap();
 	let new_token = Uuid::new_v4();
 	let recovered = store.lease_run(new_token, 30).await.unwrap().unwrap();
-	assert!(recovered.recovery.lease_recovered);
+	assert!(recovered.recovery.lease_recoveries > 0);
+	let exhausted = store
+		.invocation_start(
+			&ACME,
+			&recovered,
+			new_token,
+			"exhausted",
+			"unsafe",
+			&json!({}),
+			false,
+		)
+		.await
+		.unwrap();
+	assert_eq!(exhausted.status, "COMPLETED");
+	assert_eq!(exhausted.result, Some(failed));
+	let retry = store
+		.invocation_start(
+			&ACME,
+			&recovered,
+			new_token,
+			"not-delivered",
+			"unsafe",
+			&json!({}),
+			false,
+		)
+		.await
+		.unwrap();
+	assert_eq!(retry.status, "STARTED");
+	assert!(retry.delivery_pending);
+	assert_eq!(retry.delivery_failures, 1);
+	let stopped_again = store
+		.invocation_start(
+			&ACME,
+			&recovered,
+			new_token,
+			"not-delivered",
+			"unsafe",
+			&json!({}),
+			false,
+		)
+		.await
+		.unwrap();
+	assert_eq!(stopped_again.status, "UNCERTAIN");
+	assert_eq!(stopped_again.uncertain_reason, None);
+	let lost = store
+		.invocation_start(
+			&ACME,
+			&recovered,
+			new_token,
+			"answer-lost",
+			"unsafe",
+			&json!({}),
+			false,
+		)
+		.await
+		.unwrap();
+	assert_eq!(lost.status, "UNCERTAIN");
+	assert_eq!(lost.uncertain_reason.as_deref(), Some("answer_lost"));
 	assert_eq!(
 		recovered
 			.context
