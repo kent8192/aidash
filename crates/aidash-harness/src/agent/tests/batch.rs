@@ -958,6 +958,7 @@ impl ExecutionEnvironment for Bench {
 			context_policy: None,
 			tool_parallelism: self.0.parallelism,
 			projection_version: Default::default(),
+			harness_contract: Default::default(),
 			prompt_cache: Default::default(),
 			completion: None,
 		})

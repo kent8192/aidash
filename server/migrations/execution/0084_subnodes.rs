@@ -1,8 +1,8 @@
 // reinhardt-migration-source: 1
 use reinhardt::db::migrations::prelude::*;
 pub(super) fn migration() -> Migration {
-	Migration::new("0082_subnodes", "execution")
-        .add_dependency("execution", "0081_lease_recoveries")
+	Migration::new("0084_subnodes", "execution")
+        .add_dependency("execution", "0083_harness_contract_state")
         .database_only(true).atomic(true)
         .add_operation(Operation::CreateTable {
             name: "subnodes".into(),

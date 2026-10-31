@@ -1,8 +1,8 @@
 // reinhardt-migration-source: 1
 use reinhardt::db::migrations::prelude::*;
 pub(super) fn migration() -> Migration {
-	Migration::new("0084_subnodes_state", "execution")
-		.add_dependency("execution", "0083_subnodes_row_level_security")
+	Migration::new("0086_subnodes_state", "execution")
+		.add_dependency("execution", "0085_subnodes_row_level_security")
 		.state_only(true)
 		.atomic(true)
 		.add_operation(Operation::CreateTable {

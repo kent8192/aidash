@@ -729,10 +729,41 @@ of its Tenant (it is classified `audit`, erased by `audit_retention_days`). Its 
 reference is the usual root record. `(tenant, caller_key, operation_id)` is unique, and
 CHECKs bound the reason to 1 to 1000 characters and tie `identity_id` to a browser actor.
 `execution/0078_run_safety_stops_row_level_security` adds the tenant policy template
-through `RunSQL`, and `execution/0080_invocation_delivery` is the generated state-only
+through `RunSQL`, and `execution/0079_run_safety_stops_state` is the generated state-only
 snapshot that leaves the physical constraints and indexes to `0077`.
 
-`registry/0050_subnode_provider` extends the PostgreSQL built-in Tool descriptor
+## Harness Contract versions (#531)
+
+`registry/0050_harness_contract` (after `registry/0048_context_marketplace_merge`
+and `registry/0045_agent_plugin_settings`)
+replaces `public.aidash_agent_bindings_is_valid` so the optional
+`harness_contract` key accepts `legacy@1`, `structured@1` or `structured@2`;
+omitted and explicit null are accepted so definitions written before #531 keep
+their bytes. `AgentBindings::validate` rejects a structured version whose
+Projection Version is not Native. PostgreSQL function bodies have no typed
+Reinhardt operation, so the replacement and its 0045 restore live in reversible
+SQL assets. Rollback refuses while definitions, packages, or Run Binding snapshots declare the key; restore the pre-upgrade backup to recover. It is database-only and changes no model state.
+
+`execution/0082_harness_contract` (after `execution/0081_lease_recoveries`)
+adds `inference_usage.harness_contract` with typed column operations. Historical
+Usage Records receive `1` (`legacy@1`); the migration then removes the default so
+every new dispatch supplies the pinned version, and a check keeps it positive.
+The generated state-only checkpoint `execution/0083_harness_contract_state`
+drops that check from the ORM snapshot again, because it is enforced apart from
+model state like the earlier `inference_usage` checks. Rollback drops the
+evidence column and loses the recorded versions.
+
+`registry/0052_harness_contract_structured3` lets the Agent Bindings validator accept
+`structured@3` (#532). Its rollback restores the 0050 body and refuses while
+definitions, packages or Run Binding snapshots declare `structured@3`.
+
+`registry/0051_harness_plugin_merge` joins the Harness Contract and Agent
+Plugin/Context Source heads. The Harness Contract validator extends the Agent
+Plugin settings validator, including its compaction rules, and restores that
+validator on rollback. The join is an empty state-only migration that preserves
+existing identities and one leaf per app.
+
+`registry/0053_subnode_provider` (after `registry/0052_harness_contract_structured3`) extends the PostgreSQL built-in Tool descriptor
 validator with the six `core.subnodes@1` operations (#660). Its reversible
 `RunSQL` replaces the PostgreSQL function body because Reinhardt migrations
 cannot express PL/pgSQL function definitions. Rolling back restores the

@@ -18,6 +18,7 @@ const USAGE_COLUMNS: &[&str] = &[
 	"model_id",
 	"model_version",
 	"projection_version",
+	"harness_contract",
 	"purpose",
 	"requested_route",
 	"provider_identity",
