@@ -311,7 +311,7 @@ test("all perspectives and layout engines render and execution events select tas
       collaboration: "Product Lab",
       knowledge: "PRD",
       execution: "Research & Plan",
-      topology: "Local Agent Cluster",
+      topology: "Planner Agent",
     };
     await expect(page.locator(".mesh-inspector h2")).toHaveText(defaults[mode]);
     if (mode === "execution") {

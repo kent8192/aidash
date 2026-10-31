@@ -116,12 +116,12 @@ fn model_definitions_accept_implemented_declarations(
 	validation.validate_in(&model, false).unwrap();
 }
 
-/// Serializations produced before Projection Versions existed.
-const LEGACY_AGENT: &str = r#"{"schema_version":1,"model":{"id":"model","version":"1.0.0"},"instructions":"execute","bindings":[],"remove_default":[],"cluster":null,"max_steps":64}"#;
+/// Current serializations with no Projection Version selected.
+const LEGACY_AGENT: &str = r#"{"schema_version":1,"model":{"id":"model","version":"1.0.0"},"instructions":"execute","bindings":[],"remove_default":[],"max_steps":64}"#;
 const LEGACY_MODEL: &str = r#"{"provider":"openrouter","model_id":"vendor/model","endpoint":"https://model.example.test","reasoning_effort":null,"context_window":32768,"max_output_tokens":4096,"modalities":["text"],"media_routes":[],"cost":{}}"#;
 
 #[rstest]
-fn definitions_without_projection_fields_keep_their_bytes_and_resolve_as_legacy() {
+fn definitions_without_projection_fields_serialize_and_resolve_as_legacy() {
 	// Arrange
 	let agent = agent_config(None);
 	let model = model_config(None);

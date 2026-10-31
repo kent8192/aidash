@@ -72,7 +72,6 @@ export function dependencies(entry: {
     entry.kind === "agent"
       ? [
           config.model,
-          config.cluster,
           field(field(config.context_policy, "summary"), "model"),
           ...list(config.bindings).map((binding) => field(binding, "target")),
         ]

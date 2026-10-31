@@ -2,7 +2,6 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import {
   buildMeshGraph,
-  canvasEdges,
   eventReferences,
   filterMeshGraph,
   inWindow,
@@ -47,7 +46,6 @@ test("projects explicit workspace, task hierarchy, dependencies, tools, artifact
     "coordinates",
     "tool",
     "model",
-    "member",
     "assigned",
     "executes",
   ])
@@ -63,7 +61,6 @@ test("projects explicit workspace, task hierarchy, dependencies, tools, artifact
         e.relation === "contains",
     ),
   );
-  assert.equal(node(graph, "planner").parent, node(graph, "local-cluster").id);
   assert.equal(node(graph, "researcher").status, "COMPLETED");
   assert.ok(
     graph.edges.every(
@@ -145,12 +142,11 @@ test("an inspector target outside the node budget remains visible with its relat
     ),
   );
 });
-test("the canvas keeps coordinator edges while suppressing compound membership", () => {
+test("the canvas keeps coordinator edges without agent membership", () => {
   const graph = visible(project(scene()));
   const cluster = node(graph, "local-cluster");
   const planner = node(graph, "planner");
-  assert.equal(planner.parent, cluster.id);
-  const edges = canvasEdges(graph, true);
+  const edges = graph.edges;
   assert.ok(
     edges.some(
       (edge) =>
@@ -164,7 +160,7 @@ test("the canvas keeps coordinator edges while suppressing compound membership",
       (edge) =>
         edge.source === planner.id &&
         edge.target === cluster.id &&
-        edge.relation === "member",
+        edge.target === cluster.id,
     ),
   );
 });
@@ -181,14 +177,14 @@ test("edge budget retains a connection for every displayed connected node", () =
       id: `dense-${i}`,
       source: "agent-0",
       target: `agent-${i + 1}`,
-      relation: "member",
+      relation: "coordinates",
       layer: "configuration",
     })),
     ...Array.from({ length: 9 }, (_, i) => ({
       id: `late-${i}`,
       source: `agent-${i + 10}`,
       target: `agent-${i + 11}`,
-      relation: "member",
+      relation: "coordinates",
       layer: "configuration",
     })),
   ];

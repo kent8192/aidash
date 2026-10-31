@@ -487,7 +487,6 @@ async fn activation_checks_read_and_use_authority_for_every_pinned_component(
 			crate::test_support::binding("tool", "aidash://local", "tool"),
 			crate::test_support::binding("skill", "aidash://local", "skill")
 		]);
-		state.spec.template.config["cluster"] = json!({"id":"cluster","version":"1.0.0"});
 		state.spec.compaction = Some(aidash_domain::generation::policy::Compaction {
 			provider: EntityRef {
 				id: "compact".into(),
@@ -519,8 +518,6 @@ async fn activation_checks_read_and_use_authority_for_every_pinned_component(
 	assert_eq!(
 		calls,
 		[
-			"catalog:cluster:registry.read",
-			"catalog:cluster:cluster.execute",
 			"catalog:model:registry.read",
 			"catalog:model:model.infer",
 			"catalog:skill:registry.read",

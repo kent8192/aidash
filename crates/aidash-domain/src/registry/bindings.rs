@@ -79,7 +79,6 @@ pub fn definition_references(
 			if let Some(summary) = config.context_summary() {
 				result.push((local(&summary.model), "model".into()));
 			}
-			result.extend(config.cluster.iter().map(|r| (local(r), "cluster".into())));
 			for normalized in entry.normalized_bindings(&identity.registry_deployment)? {
 				let kind = match normalized.binding.kind {
 					BindingKind::Tool => "tool",
@@ -197,8 +196,6 @@ pub struct AgentBindings {
 	pub bindings: Vec<Binding>,
 	#[serde(default)]
 	pub remove_default: Vec<String>,
-	#[serde(default)]
-	pub cluster: Option<EntityRef>,
 	#[serde(default = "super::max_steps")]
 	pub max_steps: i32,
 	/// Opt-in Context Policy; absent keeps the legacy prune-only behavior.

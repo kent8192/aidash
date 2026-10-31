@@ -2,7 +2,7 @@ use super::*;
 use rstest::{fixture, rstest};
 #[fixture]
 fn entry() -> Entry {
-	serde_json::from_value(json!({"id":"managed","version":"1.0.0","kind":"agent","name":{},"description":{},"config":{"model":{"id":"model","version":"1.0.0"},"schema_version":1,"instructions":"","bindings":[],"remove_default":[],"cluster":null}})).unwrap()
+	serde_json::from_value(json!({"id":"managed","version":"1.0.0","kind":"agent","name":{},"description":{},"config":{"model":{"id":"model","version":"1.0.0"},"schema_version":1,"instructions":"","bindings":[],"remove_default":[]}})).unwrap()
 }
 #[rstest]
 fn new_drafts_record_the_binding_schema_without_legacy_flags(mut entry: Entry) {

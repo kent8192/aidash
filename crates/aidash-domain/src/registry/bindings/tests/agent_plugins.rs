@@ -151,7 +151,7 @@ fn a_definition_without_plugins_keeps_its_bytes_and_its_digest() {
 	assert!(stored.get("agent_plugins").is_none());
 	assert_eq!(
 		crate::registry::rules::digest(&stored),
-		"sha256:0cb1487963647254895395bbf835ade5def87cb56647b1c186ed27bd1ebf50e7"
+		"sha256:380ce0a4cfe57fb73733edda426d1a929f9f991e697b81aadd0510bb91ad9538"
 	);
 	let config = AgentConfig::from_definition(serde_json::from_value(stored.clone()).unwrap());
 	assert_eq!(serde_json::to_value(&config).unwrap(), stored);

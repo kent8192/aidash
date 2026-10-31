@@ -45,7 +45,7 @@ def configure_research(base, node, fixture_url, issue):
         # The coordinator's inherited lease must include its child's tool (#401).
         entity("agent", "coordinator", {"model": {"id": "fixture-model", "version": "1.0.0"}, "instructions": "Discover, delegate and synthesize.", "schema_version": 1, "bindings": [tool_binding(node, "research-http")], "remove_default": [], "max_steps": 128}, capability="task.coordinate"),
         entity("cluster", "research-cluster", {"coordinator": {"id": "coordinator", "version": "1.0.0"}}),
-        entity("agent", "researcher", {"model": {"id": "fixture-model", "version": "1.0.0"}, "instructions": "Research and publish findings.", "schema_version": 1, "bindings": [tool_binding(node, "research-http")], "remove_default": [], "cluster": {"id": "research-cluster", "version": "1.0.0"}, "max_steps": 128}),
+        entity("agent", "researcher", {"model": {"id": "fixture-model", "version": "1.0.0"}, "instructions": "Research and publish findings.", "schema_version": 1, "bindings": [tool_binding(node, "research-http")], "remove_default": [], "max_steps": 128}),
     ]
     for entry in entries:
         api_request(base, "/api/registry", entry, token=token)

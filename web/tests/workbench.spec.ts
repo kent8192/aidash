@@ -19,7 +19,6 @@ const entry = {
     schema_version: 1,
     bindings: [],
     remove_default: [],
-    cluster: null,
     max_steps: 8,
   },
 };
@@ -661,8 +660,8 @@ test("Creator renders object-valued Tool conversation content", async ({
   await expect(page.getByPlaceholder("Test message…")).toBeVisible();
 });
 
-for (const change of ["add", "replace", "remove", "unchanged", "cluster"]) {
-  test(`Creator version differences include ${change} private reference or cluster state`, async ({
+for (const change of ["add", "replace", "remove", "unchanged"]) {
+  test(`Creator version differences include ${change} private reference state`, async ({
     page,
   }) => {
     const { drafts } = await editableDrafts(page);
@@ -693,13 +692,7 @@ for (const change of ["add", "replace", "remove", "unchanged", "cluster"]) {
         : change === "replace"
           ? [{ ...previous[0], text: "Updated references" }]
           : previous;
-    Object.assign(drafts[0].entry.config, {
-      knowledge_digest: digest,
-      cluster:
-        change === "cluster"
-          ? { id: "execution-cluster", version: "1.0.0" }
-          : null,
-    });
+    Object.assign(drafts[0].entry.config, { knowledge_digest: digest });
     await page.route(
       `**/api/workbench/drafts/${drafts[0].id}/versions`,
       (route) =>
@@ -746,14 +739,8 @@ for (const change of ["add", "replace", "remove", "unchanged", "cluster"]) {
         has: page.getByText("Differences from saved draft", { exact: true }),
       });
     await expect(differences).toContainText(
-      change === "cluster"
-        ? "Cluster"
-        : change === "unchanged"
-          ? "None"
-          : "Private references",
+      change === "unchanged" ? "None" : "Private references",
     );
-    if (change === "cluster")
-      await expect(differences).not.toContainText("Private references");
   });
 }
 

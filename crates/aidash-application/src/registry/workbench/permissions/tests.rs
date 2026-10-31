@@ -138,7 +138,7 @@ impl PermissionScope for Scope<'_> {
 			}
 		};
 		let config = if entry.id == "agent" {
-			json!({"schema_version":1,"instructions":"Fixture","model":reference("model"),"bindings":[crate::test_support::binding("skill","aidash://local","skill"),crate::test_support::binding("tool","aidash://local","tool")],"remove_default":[],"cluster":reference("cluster")})
+			json!({"schema_version":1,"instructions":"Fixture","model":reference("model"),"bindings":[crate::test_support::binding("skill","aidash://local","skill"),crate::test_support::binding("tool","aidash://local","tool")],"remove_default":[]})
 		} else {
 			json!({"fixture": entry.id})
 		};
@@ -275,7 +275,6 @@ async fn component_actions_use_exact_pinned_metadata_and_worker_context() {
 		("model", "model.infer"),
 		("skill", "skill.use"),
 		("tool", "tool.invoke"),
-		("cluster", "cluster.execute"),
 	] {
 		assert_eq!(component(id).action, action);
 	}

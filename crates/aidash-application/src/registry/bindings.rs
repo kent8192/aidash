@@ -64,7 +64,8 @@ pub async fn normalize_agent(
 	if entry.kind != "agent" {
 		return Ok(entry.normalize_agent(node)?);
 	}
-	let config: AgentBindings = serde_json::from_value(entry.config.clone())?;
+	let config: AgentBindings = serde_json::from_value(entry.config.clone())
+		.map_err(|error| Error::Invalid(format!("invalid Agent config: {error}")))?;
 	let mut replacement = None;
 	for binding in config
 		.bindings
@@ -150,21 +151,19 @@ pub async fn resolve(
 	definitions.insert(agent.clone(), agent_definition.clone());
 	let mut resolved: BTreeMap<QualifiedRef, ResolvedBinding> = BTreeMap::new();
 	let mut aliases = BTreeSet::new();
-	let mut operations = BTreeSet::new();
 	let mut source_skill_support = agent_plugins.iter().any(|plugin| !plugin.skills.is_empty());
 	let mut decision_hooks = BTreeSet::new();
-	for (reference, kind) in std::iter::once((&config.model, "model"))
-		.chain(config.cluster.iter().map(|r| (r, "cluster")))
 	{
+		let reference = &config.model;
 		let qualified = QualifiedRef {
 			registry_deployment: agent.registry_deployment.clone(),
 			id: reference.id.clone(),
 			version: reference.version.clone(),
 		};
 		let entry = catalog.definition(&qualified).await?;
-		if entry.kind != kind {
+		if entry.kind != "model" {
 			return Err(Error::Invalid(format!(
-				"{} must reference a {kind}",
+				"{} must reference a model",
 				reference.id
 			)));
 		}
@@ -173,7 +172,7 @@ pub async fn resolve(
 		}
 		if definitions.insert(qualified, entry).is_some() {
 			return Err(Error::Invalid(
-				"Agent model or cluster collides with its own identity".into(),
+				"Agent model collides with its own identity".into(),
 			));
 		}
 	}
@@ -315,9 +314,6 @@ pub async fn resolve(
 			provider_contract_digest = Some(contract.digest()?);
 			if excluded_reason.is_none() {
 				provider_implementation = Some(providers.implementation(&descriptor)?);
-			}
-			if excluded_reason.is_none() {
-				operations.insert(descriptor.operation.clone());
 			}
 			if let Some(companions) = descriptor.lifecycle {
 				for (companion, suffix) in
@@ -491,15 +487,6 @@ pub async fn resolve(
 	{
 		return Err(Error::Invalid(
 			"Agent requires instructions or a bound Skill context".into(),
-		));
-	}
-	if config.cluster.is_some()
-		&& COORDINATOR_TOOLS
-			.iter()
-			.any(|name| !operations.contains(*name))
-	{
-		return Err(Error::Invalid(
-			"cluster coordinator requires coordination operations".into(),
 		));
 	}
 	let mut queue = definitions

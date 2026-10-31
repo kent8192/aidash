@@ -17,12 +17,6 @@ pub fn refs(entry: &Entry, node: &str) -> Result<Vec<(EntityRef, String)>> {
 					.map_err(|error| Error::Invalid(format!("invalid Agent bindings: {error}")))?;
 			config.validate()?;
 			refs.push((config.model, "model".into()));
-			refs.extend(
-				config
-					.cluster
-					.into_iter()
-					.map(|reference| (reference, "cluster".into())),
-			);
 			// Only authored edges travel. The receiving Node materializes its
 			// own required/default declarations during registration.
 			for binding in config.bindings {
