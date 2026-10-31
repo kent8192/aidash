@@ -1,6 +1,6 @@
 // reinhardt-migration-source: 1
 // Align logical ORM metadata with the Harness Contract check. The physical
-// constraint from 0080 is enforced apart from model state, like the counts and
+// constraint from 0082 is enforced apart from model state, like the counts and
 // estimate-confidence checks of 0013_inference_usage_model_state.
 use reinhardt::db::migrations::prelude::*;
 

@@ -729,7 +729,7 @@ of its Tenant (it is classified `audit`, erased by `audit_retention_days`). Its 
 reference is the usual root record. `(tenant, caller_key, operation_id)` is unique, and
 CHECKs bound the reason to 1 to 1000 characters and tie `identity_id` to a browser actor.
 `execution/0078_run_safety_stops_row_level_security` adds the tenant policy template
-through `RunSQL`, and `execution/0080_invocation_delivery` is the generated state-only
+through `RunSQL`, and `execution/0079_run_safety_stops_state` is the generated state-only
 snapshot that leaves the physical constraints and indexes to `0077`.
 
 ## Harness Contract versions (#531)
@@ -754,7 +754,7 @@ model state like the earlier `inference_usage` checks. Rollback drops the
 evidence column and loses the recorded versions.
 
 `registry/0052_harness_contract_structured3` lets the Agent Bindings validator accept
-`structured@3` (#532). Its rollback restores the 0049 body and refuses while
+`structured@3` (#532). Its rollback restores the 0050 body and refuses while
 definitions, packages or Run Binding snapshots declare `structured@3`.
 
 `registry/0051_harness_plugin_merge` joins the Harness Contract and Agent
