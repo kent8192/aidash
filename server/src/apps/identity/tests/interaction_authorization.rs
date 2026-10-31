@@ -719,6 +719,25 @@ async fn a_conversation_with_a_memory_target_creates_the_workspace_index(
 		.await;
 		assert_eq!(status, 200, "{id}: {body}");
 	}
+	// The memory provider and its embedding are approved for the agent that
+	// uses them, not for the person starting the conversation.
+	let agent_subject = aidash_domain::qualified_agent(
+		&aidash_domain::nodes::NodeAddress::derived(deployment, "acme"),
+		"remembering",
+		"1.0.0",
+	);
+	for id in ["e", "p"] {
+		let (status, body) = request(
+			&app,
+			&token,
+			"POST",
+			"/api/authorization/acme/catalog",
+			json!({"node":aidash_domain::nodes::NodeName::derived("acme"),"entry":reference(id),"expected_revision":1,"enabled":true,
+				"restriction":{"subjects":[agent_subject],"groups":[]}}),
+		)
+		.await;
+		assert_eq!(status, 200, "{id}: {body}");
+	}
 	let mut input = conversation();
 	input["target"]["id"] = json!("remembering");
 	// Act

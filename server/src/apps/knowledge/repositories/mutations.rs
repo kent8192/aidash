@@ -48,6 +48,48 @@ pub(crate) fn validate_index(store: &Store, spec: &IndexingSpec) -> Result<()> {
 	Ok(())
 }
 
+/// Create the first index generation of a Workspace that has none, in the
+/// caller's transaction, and return its revision. A conversation creates its
+/// new Workspace and this index in one admission (#647); the caller has
+/// already authorized `semantic.index.manage`.
+pub(crate) async fn create_first_index(
+	store: &Store,
+	tx: &mut dyn TransactionExecutor,
+	workspace: Uuid,
+	spec: &IndexingSpec,
+	reason: &str,
+) -> Result<i64> {
+	validate_index(store, spec)?;
+	WorkspaceRecord::lock_existing(tx, workspace).await?;
+	let tenant = AuthorizationWorkspace::tenant_in(tx, workspace)
+		.await?
+		.ok_or(aidash_application::Error::Forbidden)?;
+	if SemanticIndexe::locked(tx, workspace, true).await?.is_some() {
+		return Err(aidash_application::Error::Conflict(
+			"semantic index revision changed".into(),
+		));
+	}
+	let collection = format!("aidash_{}", Uuid::new_v4().simple());
+	let index = SemanticIndexe::replace_generation(
+		tx,
+		workspace,
+		&tenant,
+		1,
+		serde_json::to_value(spec)?,
+		&collection,
+	)
+	.await?;
+	SemanticCollection::record_generation(
+		tx,
+		&collection,
+		workspace,
+		serde_json::to_value(&spec.vector)?,
+	)
+	.await?;
+	SemanticHistory::append(tx, workspace, None, index.revision, "CONFIGURED", reason).await?;
+	Ok(index.revision)
+}
+
 pub(crate) struct NativeConfiguration {
 	pub store: Store,
 	pub actor: Actor,
