@@ -11,6 +11,7 @@ fn call(id: &str) -> ToolCall {
 
 fn assistant(epoch: i64, text: &str, calls: &[&str]) -> ContextEvent {
 	ContextEvent::Assistant {
+		provider_activity: vec![],
 		epoch,
 		text: text.into(),
 		calls: calls.iter().map(|id| (*id).to_owned()).collect(),
@@ -41,6 +42,7 @@ fn shape(history: &[NativeMessage]) -> Vec<String> {
 	history
 		.iter()
 		.map(|message| match message {
+			NativeMessage::ProviderActivity { .. } => "provider_activity".into(),
 			NativeMessage::Human { .. } => "human".into(),
 			NativeMessage::Data { envelope } => format!("data:{:?}", envelope.source),
 			NativeMessage::Assistant { tool_calls, text } => format!(

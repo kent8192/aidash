@@ -389,6 +389,7 @@ fn mixed_request() -> ModelRequest {
 		})
 		.collect::<serde_json::Map<_, _>>();
 	ModelRequest {
+		provider_tools: vec![],
 		instructions: "Follow the task.".into(),
 		context: json!({
 			"cjk": "東京都の天気は晴れです。한국어 텍스트. 中文文本。",

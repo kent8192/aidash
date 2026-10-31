@@ -60,7 +60,14 @@ impl BindingResolver for PinnedResolver {
 				continue;
 			};
 			let provider = super::recheck_provider(self.providers.as_ref(), binding)?;
-			let inner = self.providers.bind(run, binding).await?;
+			let inner: Arc<dyn ExecutionTool> = if binding.definition.config["tier"] == "provider" {
+				Arc::new(ProviderOwnedTool {
+					contract: provider.clone(),
+					spec: provider_specification(binding),
+				})
+			} else {
+				self.providers.bind(run, binding).await?
+			};
 			let pinned = binding
 				.provider_contract_digest
 				.as_deref()
@@ -167,6 +174,9 @@ impl ExecutionTool for BoundTool {
 /// provider's own specification. Dispatch advertises exactly this, and the
 /// deferred exposure catalog measures it, so both always agree.
 pub fn bound_specification(binding: &ResolvedBinding, mut inner: ToolSpec) -> ToolSpec {
+	if binding.definition.config["tier"] == "provider" {
+		return provider_specification(binding);
+	}
 	if let Some(alias) = &binding.alias {
 		inner.name = alias.clone();
 	}
@@ -192,8 +202,50 @@ pub fn bound_specifications(
 			continue;
 		};
 		let descriptor = serde_json::from_value(binding.definition.config.clone())?;
-		let specification = bound_specification(binding, inner(binding, descriptor)?);
+		let specification = if binding.definition.config["tier"] == "provider" {
+			provider_specification(binding)
+		} else {
+			bound_specification(binding, inner(binding, descriptor)?)
+		};
 		specifications.insert(alias.clone(), specification);
 	}
 	Ok(specifications)
+}
+
+fn provider_specification(binding: &ResolvedBinding) -> ToolSpec {
+	let kind = binding.definition.config["provider"]
+		.as_str()
+		.and_then(aidash_domain::tool::provider_tools::declaration)
+		.map(|tool| tool.tool_type)
+		.unwrap_or_default();
+	ToolSpec {
+		name: binding.alias.clone().unwrap_or_default(),
+		description: format!(
+			"OpenRouter executes {kind} inside inference, with fixed Binding configuration {}. Loading exposes the provider-owned tool; this alias is not a client function. Results are not Research evidence.",
+			serde_json::json!(binding.narrow.provider_tool)
+		),
+		parameters: serde_json::json!({"type":"object","properties":{},"additionalProperties":false}),
+	}
+}
+
+struct ProviderOwnedTool {
+	contract: ToolContract,
+	spec: ToolSpec,
+}
+#[async_trait]
+impl ExecutionTool for ProviderOwnedTool {
+	fn replay_safe(&self) -> bool {
+		false
+	}
+	fn contract(&self) -> ToolContract {
+		self.contract.clone()
+	}
+	fn specification(&self) -> ToolSpec {
+		self.spec.clone()
+	}
+	async fn invoke(&self, _: &Run, _: Value, _: &str) -> Result<Value> {
+		Err(Error::Invalid(
+			"Provider tools execute only inside the model request".into(),
+		))
+	}
 }

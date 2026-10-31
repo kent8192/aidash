@@ -237,6 +237,37 @@ test("an approval fences on the version's current approval revision", () => {
   );
 });
 
+test("warning acknowledgment belongs to the enabled exact version only", () => {
+  const shell = {
+    ...version("provider.openrouter.shell", "tool"),
+    provider_warning: "Containers are not deleted by Aidash",
+  };
+  assert.equal(
+    approvalRequest(shell, true).provider_warning_acknowledged,
+    undefined,
+  );
+  assert.equal(
+    approvalRequest(shell, true, undefined, undefined, true)
+      .provider_warning_acknowledged,
+    true,
+  );
+  assert.equal(
+    approvalRequest(shell, false, undefined, undefined, true)
+      .provider_warning_acknowledged,
+    undefined,
+  );
+  assert.equal(
+    approvalRequest(
+      version("ordinary", "tool"),
+      true,
+      undefined,
+      undefined,
+      true,
+    ).provider_warning_acknowledged,
+    undefined,
+  );
+});
+
 test("a restriction names subjects and groups, or clears them", () => {
   assert.equal(restrictionRequest(undefined), undefined);
   assert.deepEqual(restrictionRequest(null), { subjects: [], groups: [] });

@@ -196,9 +196,12 @@ pub async fn admit(
 	tenant: &str,
 	snapshot: &aidash_domain::registry::bindings::BindingSnapshot,
 	configured: bool,
+	floor: aidash_domain::data_protection::Level,
+	keyless: &aidash_application::provider_access::KeylessAccess,
 ) -> crate::Result<()> {
 	let selected = selected_providers(snapshot)?;
 	refuse_plans(&selected)?;
+	permit_selected(tx, tenant, floor, keyless, &selected).await?;
 	admit_providers(tx, run, tenant, selected.credentials, configured).await
 }
 
@@ -219,6 +222,7 @@ pub(crate) struct Selected {
 	pub credentials: std::collections::BTreeSet<String>,
 	/// Served by the Plan Connection of the Run's delegation-chain root.
 	pub plans: std::collections::BTreeSet<String>,
+	pub keyless: Vec<String>,
 }
 
 fn refuse_plans(selected: &Selected) -> crate::Result<()> {
@@ -286,8 +290,24 @@ pub(crate) fn selected_providers(
 	}
 	let mut providers = std::collections::BTreeSet::new();
 	let mut plans = std::collections::BTreeSet::new();
+	let mut keyless = vec![];
 	for (index, reference) in definitions.into_iter().enumerate() {
 		let entry = definition(&reference)?;
+		if entry
+			.config
+			.get("provider_credential")
+			.is_none_or(serde_json::Value::is_null)
+			&& entry
+				.config
+				.get("plan_connection")
+				.is_none_or(serde_json::Value::is_null)
+			&& let Some(endpoint) = entry
+				.config
+				.get("endpoint")
+				.and_then(serde_json::Value::as_str)
+		{
+			keyless.push(endpoint.to_owned());
+		}
 		if let Some(provider) = entry
 			.config
 			.get("provider_credential")
@@ -320,6 +340,7 @@ pub(crate) fn selected_providers(
 	Ok(Selected {
 		credentials: providers,
 		plans,
+		keyless,
 	})
 }
 
@@ -425,6 +446,33 @@ pub struct AdmittedAccess {
 }
 #[async_trait]
 impl aidash_application::provider_access::ProviderAccess for AdmittedAccess {
+	async fn provider_container(
+		&self,
+		context: &aidash_application::provider_access::Context,
+		network_policy: &serde_json::Value,
+	) -> Result<String> {
+		crate::apps::execution::observation::provider_scope(&self.store, context, true).await?;
+		super::data_protection::current(&self.store, context)
+			.await?
+			.permits(aidash_domain::data_protection::Destination::ProviderTool)?;
+		let run = context
+			.run
+			.filter(|_| context.observation.is_none() && context.maintenance.is_none())
+			.ok_or_else(|| Error::Invalid("Provider shell requires a Run".into()))?;
+		self.store
+			.provider_container(&context.tenant, run, network_policy)
+			.await
+			.map_err(Into::into)
+	}
+
+	async fn data_protection(
+		&self,
+		context: &aidash_application::provider_access::Context,
+	) -> Result<aidash_domain::data_protection::DataProtection> {
+		super::data_protection::current(&self.store, context)
+			.await
+			.map_err(Into::into)
+	}
 	async fn resolve(
 		&self,
 		context: &aidash_application::provider_access::Context,
@@ -433,8 +481,21 @@ impl aidash_application::provider_access::ProviderAccess for AdmittedAccess {
 	) -> Result<aidash_application::provider_access::Access> {
 		crate::apps::execution::observation::provider_scope(&self.store, context, true).await?;
 		use aidash_application::provider_access::Source;
+		let policy = super::data_protection::current(&self.store, context).await?;
+		let destination = match source {
+			Source::Plan { .. } => aidash_domain::data_protection::Destination::PlanConnection,
+			Source::Tenant { .. } => aidash_domain::data_protection::Destination::OpenRouter,
+			Source::Keyless => self.store.keyless.data_protection_destination(endpoint)?,
+		};
+		policy.permits(destination)?;
 		if let Source::Plan { provider } = source {
 			let (service, pin) = self.plan(context, endpoint, provider).await?;
+			if policy
+				.permits(aidash_domain::data_protection::Destination::PlanConnection)?
+				.plan_connection_exemption
+			{
+				super::data_protection::record_plan_exemption(&self.store, context, policy).await?;
+			}
 			return Ok(aidash_application::provider_access::Access {
 				endpoint: aidash_domain::provider_credentials::Provider::Chatgpt
 					.base_url()
@@ -444,11 +505,28 @@ impl aidash_application::provider_access::ProviderAccess for AdmittedAccess {
 			});
 		}
 		let Source::Tenant { provider } = source else {
+			let mut context = context.clone();
+			context.data_protection = policy;
 			return crate::bootstrap::keyless_provider_access(&self.store)
-				.resolve(context, endpoint, source)
+				.resolve(&context, endpoint, source)
 				.await;
 		};
-		let context = self.scoped(context, provider).await?;
+		let mut context = context.clone();
+		if context.inference.as_ref().is_some_and(|inference| {
+			matches!(
+				inference.operations.as_slice(),
+				[aidash_application::provider_access::Operation::Discovery]
+					| [aidash_application::provider_access::Operation::DecisionDiscovery]
+			)
+		}) {
+			// Catalog reads carry no Tenant content and no body policy to race.
+			context.data_protection = policy;
+		} else if context.data_protection != policy {
+			return Err(Error::Invalid(
+				"Data Protection policy changed; retry the call".into(),
+			));
+		}
+		let context = self.scoped(&context, provider).await?;
 		self.tenant()?.resolve(&context, endpoint, source).await
 	}
 	async fn check(
@@ -459,13 +537,22 @@ impl aidash_application::provider_access::ProviderAccess for AdmittedAccess {
 	) -> Result<()> {
 		crate::apps::execution::observation::provider_scope(&self.store, context, false).await?;
 		use aidash_application::provider_access::Source;
+		let policy = super::data_protection::current(&self.store, context).await?;
+		let destination = match source {
+			Source::Plan { .. } => aidash_domain::data_protection::Destination::PlanConnection,
+			Source::Tenant { .. } => aidash_domain::data_protection::Destination::OpenRouter,
+			Source::Keyless => self.store.keyless.data_protection_destination(endpoint)?,
+		};
+		policy.permits(destination)?;
 		if let Source::Plan { provider } = source {
 			let (service, pin) = self.plan(context, endpoint, provider).await?;
 			return service.usable(pin).await;
 		}
 		let Source::Tenant { provider } = source else {
+			let mut context = context.clone();
+			context.data_protection = policy;
 			return crate::bootstrap::keyless_provider_access(&self.store)
-				.check(context, endpoint, source)
+				.check(&context, endpoint, source)
 				.await;
 		};
 		let context = self.scoped(context, provider).await?;
@@ -594,6 +681,7 @@ impl AdmittedAccess {
 		tx.commit().await.map_err(crate::Error::from)?;
 		Ok(aidash_application::provider_access::Context {
 			tenant: pin.tenant,
+			data_protection: context.data_protection,
 			run: Some(run),
 			maintenance: context.maintenance,
 			observation: context.observation,
@@ -603,12 +691,15 @@ impl AdmittedAccess {
 	}
 }
 
+#[allow(clippy::too_many_arguments)] // Keep the workspace and current policy inputs explicit at admission.
 pub(crate) async fn admit_workspace(
 	tx: &mut dyn TransactionExecutor,
 	run: Uuid,
 	workspace: Uuid,
 	snapshot: &aidash_domain::registry::bindings::BindingSnapshot,
 	configured: bool,
+	floor: aidash_domain::data_protection::Level,
+	keyless: &aidash_application::provider_access::KeylessAccess,
 	plan: PlanAdmission,
 ) -> crate::Result<()> {
 	use reinhardt::query::{Alias, ExprTrait};
@@ -625,6 +716,7 @@ pub(crate) async fn admit_workspace(
 		None => String::new(),
 	};
 	let selected = selected_providers(snapshot)?;
+	permit_selected(tx, &tenant, floor, keyless, &selected).await?;
 	if plan == PlanAdmission::Refused {
 		refuse_plans(&selected)?;
 	}
@@ -651,4 +743,24 @@ pub(crate) async fn admit_workspace(
 		}
 	}
 	admit_providers(tx, run, &tenant, providers, configured).await
+}
+
+async fn permit_selected(
+	tx: &mut dyn TransactionExecutor,
+	tenant: &str,
+	floor: aidash_domain::data_protection::Level,
+	origins: &aidash_application::provider_access::KeylessAccess,
+	selected: &Selected,
+) -> crate::Result<()> {
+	use aidash_domain::data_protection::Destination;
+	let policy = super::data_protection::stored(tx, tenant)
+		.await?
+		.with_floor(floor);
+	for endpoint in &selected.keyless {
+		policy.permits(origins.data_protection_destination(endpoint)?)?;
+	}
+	if !selected.plans.is_empty() {
+		policy.permits(Destination::PlanConnection)?;
+	}
+	Ok(())
 }

@@ -187,6 +187,120 @@ fn chat_messages(
 	Ok(())
 }
 
+/// A Responses `input_image` carries one data URL. Remote URLs, file IDs and
+/// every other input part are outside the signed inference authority.
+fn response_media(part: &Value) -> Result<ContentPart, Failure> {
+	let (mime, encoded) = part
+		.get("image_url")
+		.and_then(Value::as_str)
+		.and_then(|url| url.strip_prefix("data:"))
+		.and_then(|url| url.split_once(";base64,"))
+		.ok_or(Failure::ClaimViolation)?;
+	if ContentPart::modality_for_media_type(mime).ok() != Some("image") {
+		return Err(Failure::ClaimViolation);
+	}
+	let bytes = STANDARD
+		.decode(encoded)
+		.map_err(|_| Failure::ClaimViolation)?;
+	ContentPart::from_media(mime, bytes).map_err(|_| Failure::ClaimViolation)
+}
+
+/// A Responses body may carry only model-visible messages and the client's own
+/// function calls. It has no `messages` field, and a breakpoint is allowed only
+/// on an `input_text` or `output_text` part, at most four times, exactly as in
+/// chat. Any other `cache_control` key is rejected below.
+pub(crate) fn responses_input(
+	value: &Value,
+	cache_breakpoints: bool,
+	container: Option<&str>,
+) -> Result<(), Failure> {
+	if value.get("messages").is_some() {
+		return Err(Failure::ClaimViolation);
+	}
+	let mut breakpoints = 0;
+	let mut parts = Vec::new();
+	match value.get("input") {
+		None | Some(Value::Null) => {}
+		Some(Value::String(_)) => {}
+		Some(Value::Array(items)) => {
+			for item in items {
+				match item.get("type").and_then(Value::as_str) {
+					Some("function_call") => {
+						for key in ["call_id", "name", "arguments"] {
+							if item.get(key).and_then(Value::as_str).is_none() {
+								return Err(Failure::ClaimViolation);
+							}
+						}
+					}
+					Some("function_call_output") => {
+						if item.get("call_id").and_then(Value::as_str).is_none()
+							|| item.get("output").and_then(Value::as_str).is_none()
+						{
+							return Err(Failure::ClaimViolation);
+						}
+					}
+					// Replayed provider items are model-authored history. They must
+					// stay inside the closed shape the inference adapter produces.
+					Some(kind)
+						if aidash_domain::tool::provider_tools::replayable(kind)
+							&& aidash_domain::tool::provider_tools::replay_item_is_closed(
+								item, container,
+							) => {}
+					Some("message") | None if item.get("role").is_some() => {
+						response_message(item, cache_breakpoints, &mut breakpoints, &mut parts)?
+					}
+					_ => return Err(Failure::ClaimViolation),
+				}
+			}
+		}
+		_ => return Err(Failure::ClaimViolation),
+	}
+	if count_cache_control(value) != breakpoints {
+		return Err(Failure::ClaimViolation);
+	}
+	Ok(())
+}
+
+fn response_message(
+	item: &Value,
+	cache_breakpoints: bool,
+	breakpoints: &mut usize,
+	parts: &mut Vec<ContentPart>,
+) -> Result<(), Failure> {
+	match item.get("content") {
+		None | Some(Value::Null | Value::String(_)) => Ok(()),
+		Some(Value::Array(content)) => {
+			for part in content {
+				match part.get("type").and_then(Value::as_str) {
+					Some("input_text" | "output_text") => {
+						if part.get("text").and_then(Value::as_str).is_none() {
+							return Err(Failure::ClaimViolation);
+						}
+						if let Some(control) = part.get("cache_control") {
+							*breakpoints += 1;
+							if !cache_breakpoints
+								|| *breakpoints > MAX_CACHE_BREAKPOINTS
+								|| control != &json!({"type": "ephemeral"})
+							{
+								return Err(Failure::ClaimViolation);
+							}
+						}
+					}
+					Some("input_image") => {
+						parts.push(response_media(part)?);
+						if !ModelRequest::media_within_limits(parts) {
+							return Err(Failure::ClaimViolation);
+						}
+					}
+					_ => return Err(Failure::ClaimViolation),
+				}
+			}
+			Ok(())
+		}
+		_ => Err(Failure::ClaimViolation),
+	}
+}
+
 /// A decision body may carry only the decision itself and its routing. `trace`,
 /// `user` and `session_id` reach OpenRouter's observability destinations, and
 /// any other `provider` preference could widen routing. A System One body routes
@@ -197,15 +311,20 @@ pub(crate) fn decision_input(
 	value: &Value,
 	decisions: bool,
 	hosts: &[String],
+	requirement: aidash_domain::data_protection::Requirement,
 ) -> Result<(), Failure> {
 	let fields = value.as_object().ok_or(Failure::ClaimViolation)?;
 	let provider = fields.get("provider");
-	let routed = if decisions {
+	let mut expected = requirement.provider();
+	if decisions {
+		expected["only"] = json!(hosts);
+		expected["allow_fallbacks"] = json!(true);
+	}
+	let routed = (if decisions {
 		!hosts.is_empty()
-			&& provider == Some(&json!({"zdr": true, "only": hosts, "allow_fallbacks": true}))
 	} else {
-		hosts.is_empty() && provider == Some(&json!({"zdr": true}))
-	};
+		hosts.is_empty()
+	}) && provider == Some(&expected);
 	if fields
 		.keys()
 		.any(|key| !matches!(key.as_str(), "model" | "state" | "questions" | "provider"))

@@ -3,7 +3,10 @@ use aidash_application::{
 	Error, Result,
 	provider_access::{Access, Context, MaintenancePurpose, Operation, TokenIssuer},
 };
-use aidash_capability::{Claims, Maintenance, TOKEN_TTL_SECS, TokenSigner, TokenSubject};
+use aidash_capability::{
+	Claims, DataProtectionRequirement, Maintenance, TOKEN_TTL_SECS, TokenSigner, TokenSubject,
+};
+use aidash_domain::data_protection::Requirement;
 use aidash_domain::provider_credentials::ProviderCredential;
 use std::{
 	sync::Arc,
@@ -87,6 +90,7 @@ impl TokenIssuer for CapabilityIssuer {
 		let request = context.inference.as_ref().ok_or_else(|| {
 			Error::Invalid("Capability Token has no approved inference scope".into())
 		})?;
+		let decision_discovery = request.operations == [Operation::DecisionDiscovery];
 		aidash_domain::provider_credentials::validate_model_id(&request.model)?;
 		if request.operations.is_empty()
 			|| request.operations.len() > 3
@@ -100,6 +104,12 @@ impl TokenIssuer for CapabilityIssuer {
 				&& (request.operations.len() != 1
 					|| request.max_output_tokens != 0
 					|| request.cache_breakpoints))
+			|| (request.operations.contains(&Operation::DecisionDiscovery)
+				&& (!decision_discovery
+					|| request.max_output_tokens != 0
+					|| request.cache_breakpoints
+					|| !request.provider_tools.is_empty()
+					|| request.call.is_none_or(|call| call.is_nil())))
 			|| (!context.is_decision()
 				&& (request.max_output_tokens == 0 || !request.hosts.is_empty()))
 			|| context.tenant != credential.tenant
@@ -165,6 +175,16 @@ impl TokenIssuer for CapabilityIssuer {
 			.map_err(|_| Error::Invalid("Capability Token clock unavailable".into()))?
 			.as_secs();
 		let claims = Claims {
+			provider_tools: request
+				.provider_tools
+				.iter()
+				.map(|tool| aidash_capability::ProviderTool {
+					tool_type: tool.tool_type.clone(),
+					parameters_digest: tool.digest(),
+					max_tool_calls: tool.binding.max_tool_calls,
+				})
+				.collect(),
+			data_protection: signed_requirement(context.data_protection.requirement()),
 			iss: self.configuration.issuer.clone(),
 			aud: self.configuration.audience.clone(),
 			iat: now,
@@ -182,14 +202,23 @@ impl TokenIssuer for CapabilityIssuer {
 				.map(|op| match op {
 					Operation::Chat => aidash_capability::Operation::Chat,
 					Operation::Discovery => aidash_capability::Operation::Discovery,
+					Operation::DecisionDiscovery => aidash_capability::Operation::Discovery,
 					Operation::Embeddings => aidash_capability::Operation::Embeddings,
 					Operation::Decision => aidash_capability::Operation::Decision,
 				})
 				.collect(),
 			model: request.model.clone(),
-			max_output_tokens: u64::from(request.max_output_tokens),
+			max_output_tokens: if decision_discovery {
+				1
+			} else {
+				u64::from(request.max_output_tokens)
+			},
 			cache_breakpoints: request.cache_breakpoints,
-			hosts: request.hosts.clone(),
+			hosts: if decision_discovery {
+				vec![]
+			} else {
+				request.hosts.clone()
+			},
 		};
 		let bearer = aidash_capability::mint(&claims, self.signer.as_ref())
 			.await
@@ -200,5 +229,14 @@ impl TokenIssuer for CapabilityIssuer {
 			bearer,
 			keyless: None,
 		})
+	}
+}
+
+/// Capability claims carry a wire copy of the domain requirement.
+fn signed_requirement(requirement: Requirement) -> DataProtectionRequirement {
+	match requirement {
+		Requirement::Zdr => DataProtectionRequirement::Zdr,
+		Requirement::NoTraining => DataProtectionRequirement::NoTraining,
+		Requirement::None => DataProtectionRequirement::None,
 	}
 }

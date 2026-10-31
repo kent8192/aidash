@@ -35,3 +35,5 @@ pub mod tenant_deletions;
 pub mod tenant_purge;
 pub mod tenant_secrets;
 pub mod tenants;
+
+pub(crate) mod data_protection;

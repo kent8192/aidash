@@ -165,6 +165,8 @@ impl Fixture {
 			.unwrap()
 			.as_secs();
 		Claims {
+			provider_tools: vec![],
+			data_protection: Default::default(),
 			iss: "worker".into(),
 			aud: "environment".into(),
 			iat: now,
@@ -1234,6 +1236,8 @@ async fn cache_expiry_and_token_bucket_refill_are_bounded() {
 	cfg.requests_per_second = 1.0;
 	let broker = Broker::new(cfg, keys, source.clone(), Arc::new(Logs::default())).unwrap();
 	let c = Claims {
+		provider_tools: vec![],
+		data_protection: Default::default(),
 		iss: "worker".into(),
 		aud: "environment".into(),
 		iat: 1,
@@ -1531,4 +1535,517 @@ async fn system_one_requires_a_decision_token_and_an_exact_body() {
 	}
 	assert_eq!(f.provider.calls.load(Ordering::SeqCst), 0);
 	assert_eq!(f.source.reads.load(Ordering::SeqCst), 0);
+}
+
+#[tokio::test]
+async fn signed_data_protection_requirement_controls_all_model_bodies() {
+	use aidash_capability::DataProtectionRequirement as Requirement;
+	let f = Fixture::new().await;
+	let mut legacy = serde_json::to_value(f.claims()).unwrap();
+	legacy.as_object_mut().unwrap().remove("data_protection");
+	let legacy: Claims = serde_json::from_value(legacy).unwrap();
+	assert_eq!(legacy.data_protection, Requirement::Zdr);
+	for (path, is_responses) in [
+		("/api/v1/chat/completions", false),
+		("/api/v1/responses", true),
+	] {
+		for (requirement, provider, status) in [
+			// Standard default and Zero both sign ZDR. Explicit Standard opt-out
+			// signs None; No Training opt-out signs NoTraining.
+			(
+				Requirement::Zdr,
+				json!({"require_parameters":true,"zdr":true}),
+				200,
+			),
+			(
+				Requirement::Zdr,
+				json!({"require_parameters":true,"zdr":false}),
+				403,
+			),
+			(
+				Requirement::NoTraining,
+				json!({"require_parameters":true,"zdr":true}),
+				200,
+			),
+			(Requirement::Zdr, json!({"require_parameters":true}), 403),
+			(
+				Requirement::Zdr,
+				json!({"require_parameters":true,"data_collection":"deny"}),
+				403,
+			),
+			(
+				Requirement::NoTraining,
+				json!({"require_parameters":true,"data_collection":"deny"}),
+				200,
+			),
+			(
+				Requirement::NoTraining,
+				json!({"require_parameters":true,"data_collection":"allow"}),
+				403,
+			),
+			(Requirement::None, json!({"require_parameters":true}), 200),
+		] {
+			let mut claims = f.claims();
+			claims.data_protection = requirement;
+			let mut body = if is_responses { responses() } else { chat() };
+			body["provider"] = provider;
+			let response = f.request(&claims, "POST", path, body).await;
+			assert_eq!(response.status(), status);
+			json_body(response).await;
+		}
+	}
+	assert_eq!(f.source.reads.load(Ordering::SeqCst), 1);
+	assert_eq!(f.provider.calls.load(Ordering::SeqCst), 8);
+}
+
+fn responses() -> Value {
+	json!({
+		"model":"author/model",
+		"max_output_tokens":10,
+		"provider":{"zdr":true,"require_parameters":true},
+		"input":[{"role":"user","content":[{"type":"input_text","text":"hello"}]}],
+		"tools":[{"type":"function","name":"search","description":"Search","parameters":{"type":"object"}}]
+	})
+}
+
+#[tokio::test]
+async fn responses_uses_chat_authority_and_reaches_the_provider_path() {
+	let f = Fixture::new().await;
+	let response = f
+		.request(&f.claims(), "POST", "/api/v1/responses", responses())
+		.await;
+	assert_eq!(response.status(), 200);
+	json_body(response).await;
+	assert_eq!(
+		f.provider.paths.lock().unwrap().last(),
+		Some(&"/api/v1/responses".to_owned())
+	);
+	assert_eq!(
+		f.provider.bearer.lock().unwrap().last(),
+		Some(&format!("Bearer {CANARY}"))
+	);
+	assert_eq!(f.source.reads.load(Ordering::SeqCst), 1);
+}
+
+#[tokio::test]
+async fn responses_rejects_unbounded_or_provider_side_authority_before_key_lookup() {
+	let f = Fixture::new().await;
+	let png = "data:image/png;base64,iVBORw0KGgo=";
+	let mut missing_bound = responses();
+	missing_bound
+		.as_object_mut()
+		.unwrap()
+		.remove("max_output_tokens");
+	let mut over_bound = responses();
+	over_bound["max_output_tokens"] = json!(11);
+	let mut media = responses();
+	media["input"] = json!([{"role":"user","content":[
+		{"type":"input_text","text":"look"},
+		{"type":"input_image","image_url":png}
+	]}]);
+	let cases = vec![
+		("web search option", {
+			let mut body = responses();
+			body["web_search_options"] = json!({});
+			body
+		}),
+		("search filter", {
+			let mut body = responses();
+			body["x_search_filter"] = json!({});
+			body
+		}),
+		("server tool stop condition", {
+			let mut body = responses();
+			body["stop_server_tools_when"] = json!([]);
+			body
+		}),
+		("missing output bound", missing_bound),
+		("over the signed bound", over_bound),
+		("alternate completion name", {
+			let mut body = responses();
+			body["max_tokens"] = json!(10);
+			body
+		}),
+		("provider tool", {
+			let mut body = responses();
+			body["tools"] = json!([{"type":"web_search"}]);
+			body
+		}),
+		("plugin", {
+			let mut body = responses();
+			body["plugins"] = json!([{"id":"web"}]);
+			body
+		}),
+		("deferred tools", {
+			let mut body = responses();
+			body["deferred_tools"] = json!({"protocol":"v1"});
+			body
+		}),
+		("stateful store", {
+			let mut body = responses();
+			body["store"] = json!(true);
+			body
+		}),
+		("previous response", {
+			let mut body = responses();
+			body["previous_response_id"] = json!("resp-1");
+			body
+		}),
+		("background", {
+			let mut body = responses();
+			body["background"] = json!(true);
+			body
+		}),
+		("stored prompt", {
+			let mut body = responses();
+			body["prompt"] = json!({"id":"prompt-1"});
+			body
+		}),
+		("image output", {
+			let mut body = responses();
+			body["modalities"] = json!(["text", "image"]);
+			body
+		}),
+		("image config", {
+			let mut body = responses();
+			body["image_config"] = json!({"aspect_ratio":"1:1"});
+			body
+		}),
+		("chat messages", {
+			let mut body = responses();
+			body["messages"] = json!([{"role":"user","content":"x"}]);
+			body
+		}),
+		("remote image", {
+			let mut body = responses();
+			body["input"] = json!([{"role":"user","content":[
+				{"type":"input_image","image_url":"https://example.invalid/x.png"}
+			]}]);
+			body
+		}),
+		("wrong image signature", {
+			let mut body = responses();
+			body["input"] = json!([{"role":"user","content":[
+				{"type":"input_image","image_url":"data:image/png;base64,d3Jvbmc="}
+			]}]);
+			body
+		}),
+		("array tool output", {
+			let mut body = responses();
+			body["input"] = json!([
+				{"type":"function_call","call_id":"call-1","name":"search","arguments":"{}"},
+				{"type":"function_call_output","call_id":"call-1","output":[{"type":"input_text","text":"x"}]}
+			]);
+			body
+		}),
+		("top level cache control", {
+			let mut body = responses();
+			body["cache_control"] = json!({"type":"ephemeral"});
+			body
+		}),
+		("cache control on an image", {
+			let mut body = responses();
+			body["input"] = json!([{"role":"user","content":[
+				{"type":"input_text","text":"look"},
+				{"type":"input_image","image_url":png,"cache_control":{"type":"ephemeral"}}
+			]}]);
+			body
+		}),
+	];
+	for (name, body) in cases {
+		let reads = f.source.reads.load(Ordering::SeqCst);
+		let calls = f.provider.calls.load(Ordering::SeqCst);
+		let response = f
+			.request(&f.claims(), "POST", "/api/v1/responses", body)
+			.await;
+		assert_eq!(response.status(), 403, "{name}");
+		assert_eq!(
+			json_body(response).await["error"]["code"],
+			"capability_claim_violation",
+			"{name}"
+		);
+		assert_eq!(f.source.reads.load(Ordering::SeqCst), reads, "{name}");
+		assert_eq!(f.provider.calls.load(Ordering::SeqCst), calls, "{name}");
+	}
+	let response = f
+		.request(&f.claims(), "POST", "/api/v1/responses", media)
+		.await;
+	assert_eq!(response.status(), 200);
+	json_body(response).await;
+	assert_eq!(f.source.reads.load(Ordering::SeqCst), 1);
+	assert_eq!(f.provider.calls.load(Ordering::SeqCst), 1);
+}
+
+#[tokio::test]
+async fn responses_admits_only_signed_text_part_breakpoints() {
+	let f = Fixture::new().await;
+	let mut granted = f.claims();
+	granted.cache_breakpoints = true;
+	let marked = |count: usize| {
+		let mut parts = vec![
+			json!({"type":"input_text","text":"cached","cache_control":{"type":"ephemeral"}});
+			count
+		];
+		parts.push(json!({"type":"input_text","text":"volatile"}));
+		let mut body = responses();
+		body["input"] = json!([{"role":"user","content":parts}]);
+		body
+	};
+	for count in 1..=4 {
+		let response = f
+			.request(&granted, "POST", "/api/v1/responses", marked(count))
+			.await;
+		assert_eq!(response.status(), 200, "{count} breakpoints");
+		json_body(response).await;
+	}
+	for count in [5] {
+		let response = f
+			.request(&granted, "POST", "/api/v1/responses", marked(count))
+			.await;
+		assert_eq!(response.status(), 403, "{count} breakpoints");
+		json_body(response).await;
+	}
+	let response = f
+		.request(&f.claims(), "POST", "/api/v1/responses", marked(1))
+		.await;
+	assert_eq!(response.status(), 403);
+	json_body(response).await;
+}
+
+#[test]
+fn responses_stream_usage_is_audited_from_the_terminal_event() {
+	let usage = usage(&json!({
+		"type":"response.completed",
+		"response":{"usage":{"input_tokens":3,"output_tokens":4,"total_tokens":7,"cost":0.000002}}
+	}))
+	.unwrap();
+	assert_eq!(usage["input_tokens"], 3);
+	assert_eq!(usage["output_tokens"], 4);
+	assert_eq!(usage["total_tokens"], 7);
+	assert_eq!(usage["cost"], 0.000002);
+}
+
+#[tokio::test]
+async fn provider_tools_require_the_signed_parameters_and_spending_caps_on_both_apis() {
+	let f = Fixture::new().await;
+	let declaration =
+		aidash_domain::tool::provider_tools::declaration("openrouter:web_search").unwrap();
+	let pinned = aidash_domain::tool::provider_tools::PinnedTool {
+		tool_type: declaration.tool_type.into(),
+		binding: declaration.defaults(),
+	};
+	let mut claims = f.claims();
+	claims.ops = vec![Operation::Chat];
+	claims.provider_tools.push(aidash_capability::ProviderTool {
+		tool_type: pinned.tool_type.clone(),
+		parameters_digest: pinned.digest(),
+		max_tool_calls: pinned.binding.max_tool_calls,
+	});
+	for path in ["/api/v1/chat/completions", "/api/v1/responses"] {
+		let mut valid = chat();
+		if path.ends_with("responses") {
+			let limit = valid.as_object_mut().unwrap().remove("max_tokens").unwrap();
+			valid["max_output_tokens"] = limit;
+			valid["input"] = json!([]);
+		}
+		aidash_domain::tool::provider_tools::append(&mut valid, std::slice::from_ref(&pinned));
+		for (key, replacement) in [
+			(
+				"parameters",
+				json!({"engine":"exa","max_results":1,"max_total_results":15}),
+			),
+			(
+				"parameters",
+				json!({"engine":"exa","max_results":11,"max_total_results":15}),
+			),
+			("type", json!("openrouter:shell")),
+		] {
+			let before = f.provider.calls.load(Ordering::SeqCst);
+			let mut invalid = valid.clone();
+			invalid["tools"][0][key] = replacement;
+			let response = f.request(&claims, "POST", path, invalid).await;
+			assert_eq!(response.status(), 403);
+			assert_eq!(f.provider.calls.load(Ordering::SeqCst), before);
+		}
+		// Tool authority cannot weaken the independently signed data policy.
+		let before = f.provider.calls.load(Ordering::SeqCst);
+		let mut unprotected = valid.clone();
+		unprotected["provider"] = json!({});
+		assert_eq!(
+			f.request(&claims, "POST", path, unprotected).await.status(),
+			403
+		);
+		assert_eq!(f.provider.calls.load(Ordering::SeqCst), before);
+		let mut invalid = valid.clone();
+		invalid["max_tool_calls"] = json!(4);
+		assert_eq!(
+			f.request(&claims, "POST", path, invalid).await.status(),
+			403
+		);
+		let mut invalid = valid.clone();
+		invalid["stop_server_tools_when"] = json!([]);
+		assert_eq!(
+			f.request(&claims, "POST", path, invalid).await.status(),
+			403
+		);
+		assert_eq!(
+			f.request(&f.claims(), "POST", path, valid.clone())
+				.await
+				.status(),
+			403
+		);
+		let mut online_claims = claims.clone();
+		online_claims.model = "openai/gpt-4.1:online".into();
+		let mut online = valid.clone();
+		online["model"] = json!(online_claims.model);
+		assert_eq!(
+			f.request(&online_claims, "POST", path, online)
+				.await
+				.status(),
+			403
+		);
+		let response = f.request(&claims, "POST", path, valid).await;
+		let status = response.status();
+		let body = json_body(response).await;
+		assert_eq!(status, 200, "{path}: {body}");
+	}
+}
+
+#[tokio::test]
+async fn warning_shell_is_responses_only_and_binds_its_run_container() {
+	let f = Fixture::new().await;
+	let declaration = aidash_domain::tool::provider_tools::declaration("openrouter:shell").unwrap();
+	let mut pinned = aidash_domain::tool::provider_tools::PinnedTool {
+		tool_type: declaration.tool_type.into(),
+		binding: declaration.defaults(),
+	};
+	pinned.binding.parameters["environment"]["container_id"] = json!("aidash_run_one");
+	let mut claims = f.claims();
+	claims.ops = vec![Operation::Chat];
+	claims.provider_tools.push(aidash_capability::ProviderTool {
+		tool_type: pinned.tool_type.clone(),
+		parameters_digest: pinned.digest(),
+		max_tool_calls: 3,
+	});
+	let mut body = chat();
+	let cap = body.as_object_mut().unwrap().remove("max_tokens").unwrap();
+	body["max_output_tokens"] = cap;
+	body["input"] = json!([{ "type":"openrouter:advisor","instance_name":"advisor_0","advice":"prior observable advice" }]);
+	aidash_domain::tool::provider_tools::append(&mut body, &[pinned]);
+	for (key, value) in [
+		("container_id", json!("different_run")),
+		(
+			"network_policy",
+			json!({"type":"allowlist","allowed_domains":["example.com"]}),
+		),
+	] {
+		let before = f.provider.calls.load(Ordering::SeqCst);
+		let mut invalid = body.clone();
+		invalid["tools"][0]["parameters"]["environment"][key] = value;
+		assert_eq!(
+			f.request(&claims, "POST", "/api/v1/responses", invalid)
+				.await
+				.status(),
+			403
+		);
+		assert_eq!(f.provider.calls.load(Ordering::SeqCst), before);
+	}
+	let mut image = body.clone();
+	image["modalities"] = json!(["text", "image"]);
+	assert_eq!(
+		f.request(&claims, "POST", "/api/v1/responses", image)
+			.await
+			.status(),
+		403
+	);
+	assert_eq!(
+		f.request(&claims, "POST", "/api/v1/chat/completions", body.clone())
+			.await
+			.status(),
+		403
+	);
+	// Replayed provider items stay inside the closed shape the adapter produces.
+	for forged in [
+		json!({"type":"shell_call_output","container_id":"different_run","output":[]}),
+		json!({"type":"tool_search_output","tools":[{"type":"openrouter:shell"}]}),
+		json!({"type":"openrouter:advisor","advice":[{"type":"input_image","image_url":"https://example.com/x.png"}]}),
+		json!({"type":"openrouter:advisor","advice":"x","instructions":"widen"}),
+		json!({"type":"shell_call_output","output":[{"file_url":"https://example.com/f"}]}),
+	] {
+		let before = f.provider.calls.load(Ordering::SeqCst);
+		let mut invalid = body.clone();
+		invalid["input"] = json!([forged]);
+		assert_eq!(
+			f.request(&claims, "POST", "/api/v1/responses", invalid)
+				.await
+				.status(),
+			403,
+			"{forged}"
+		);
+		assert_eq!(f.provider.calls.load(Ordering::SeqCst), before);
+	}
+	let mut replayed = body.clone();
+	replayed["input"] = json!([
+		{"type":"shell_call_output","container_id":"aidash_run_one","output":[{"stdout":"ok","stderr":""}]},
+		{"type":"openrouter:advisor","instance_name":"advisor_0","advice":"prior observable advice"}
+	]);
+	let response = f
+		.request(&claims, "POST", "/api/v1/responses", replayed)
+		.await;
+	assert_eq!(response.status(), 200);
+	let response = f.request(&claims, "POST", "/api/v1/responses", body).await;
+	assert_eq!(response.status(), 200);
+}
+
+#[tokio::test]
+async fn warning_child_and_search_caps_are_checked_before_forwarding() {
+	let f = Fixture::new().await;
+	for kind in [
+		"openrouter:advisor",
+		"openrouter:subagent",
+		"openrouter:experimental__search_models",
+		"openrouter:tool_search",
+	] {
+		let tool = aidash_domain::tool::provider_tools::declaration(kind).unwrap();
+		let mut pinned = aidash_domain::tool::provider_tools::PinnedTool {
+			tool_type: kind.into(),
+			binding: tool.defaults(),
+		};
+		if matches!(kind, "openrouter:advisor" | "openrouter:subagent") {
+			pinned.binding.parameters["model"] = json!("vendor/pinned-child");
+		}
+		let mut claims = f.claims();
+		claims.ops = vec![Operation::Chat];
+		claims.provider_tools.push(aidash_capability::ProviderTool {
+			tool_type: kind.into(),
+			parameters_digest: pinned.digest(),
+			max_tool_calls: 3,
+		});
+		let mut body = chat();
+		let cap = body.as_object_mut().unwrap().remove("max_tokens").unwrap();
+		body["max_output_tokens"] = cap;
+		body["input"] = json!([]);
+		aidash_domain::tool::provider_tools::append(&mut body, &[pinned]);
+		let mut changed = body.clone();
+		let key = if matches!(kind, "openrouter:advisor" | "openrouter:subagent") {
+			"max_completion_tokens"
+		} else {
+			"max_results"
+		};
+		changed["tools"][0]["parameters"][key] = json!(1);
+		let before = f.provider.calls.load(Ordering::SeqCst);
+		assert_eq!(
+			f.request(&claims, "POST", "/api/v1/responses", changed)
+				.await
+				.status(),
+			403
+		);
+		assert_eq!(f.provider.calls.load(Ordering::SeqCst), before);
+		assert_eq!(
+			f.request(&claims, "POST", "/api/v1/responses", body)
+				.await
+				.status(),
+			200
+		);
+	}
 }

@@ -320,6 +320,10 @@ pub async fn admit(
 			"Plan Connections are not enabled on this Deployment".into(),
 		));
 	}
+	let policy = super::data_protection::stored(tx, &grant.tenant)
+		.await?
+		.with_floor(store.data_protection_floor);
+	policy.permits(aidash_domain::data_protection::Destination::PlanConnection)?;
 	let (tenant, subject) = (&grant.tenant, &grant.root_subject);
 	for provider in plans {
 		let provider = Provider::plan(&provider)?;

@@ -103,6 +103,8 @@ impl Envelope {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum NativeMessage {
+	/// Observable provider-owned exchanges, never local tool invocations or Research evidence.
+	ProviderActivity { items: Vec<Value> },
 	/// A Human answer, sent as an unwrapped user message. It is the only
 	/// instruction channel outside `system` and the Harness envelope; the
 	/// request it replies to is enveloped.
@@ -189,13 +191,37 @@ pub fn native_context(context: &Context, pinned: &Value) -> NativeContext {
 				})
 				.collect::<Vec<_>>();
 			history.push(NativeMessage::Assistant {
-				text: turn.text.map(str::to_owned),
+				text: if let ContextEvent::Assistant {
+					provider_activity, ..
+				} = &entries[turn.start].event
+				{
+					if provider_activity.is_empty() {
+						turn.text.map(str::to_owned)
+					} else {
+						Some(format!(
+							"{}\nProvider tool activity (not Research evidence): {}",
+							turn.text.unwrap_or_default(),
+							json!(provider_activity)
+						))
+					}
+				} else {
+					turn.text.map(str::to_owned)
+				},
 				tool_calls: results.iter().map(|(_, call, _)| (*call).clone()).collect(),
 			});
 			for (seq, call, result) in results {
 				history.push(NativeMessage::Tool {
 					tool_call_id: call.id.clone(),
 					envelope: tool_envelope(seq, call, result.clone()),
+				});
+			}
+			if let ContextEvent::Assistant {
+				provider_activity, ..
+			} = &entries[turn.start].event
+				&& !provider_activity.is_empty()
+			{
+				history.push(NativeMessage::ProviderActivity {
+					items: provider_activity.clone(),
 				});
 			}
 			markers.retain(|marker| {
@@ -293,6 +319,7 @@ struct Turn<'a> {
 	end: usize,
 	/// The response text, absent when blank.
 	text: Option<&'a str>,
+	activity: bool,
 	/// Every call the response made, run or not.
 	calls: &'a [String],
 	/// The first `Tool` entry of each call that ran, in call order.
@@ -303,7 +330,13 @@ struct Turn<'a> {
 
 impl<'a> Turn<'a> {
 	fn at(entries: &'a [HistoryEntry], start: usize) -> Option<Self> {
-		let ContextEvent::Assistant { text, calls, .. } = &entries[start].event else {
+		let ContextEvent::Assistant {
+			text,
+			calls,
+			provider_activity,
+			..
+		} = &entries[start].event
+		else {
 			return None;
 		};
 		let end = entries[start + 1..]
@@ -326,6 +359,7 @@ impl<'a> Turn<'a> {
 			start,
 			end,
 			text: Some(text.as_str()).filter(|text| !text.trim().is_empty()),
+			activity: !provider_activity.is_empty(),
 			calls,
 			executed: calls
 				.iter()
@@ -335,9 +369,9 @@ impl<'a> Turn<'a> {
 		})
 	}
 
-	/// Whether the turn renders at all: it has text or an executed call.
+	/// Whether the turn renders: text, provider-owned activity or an executed call.
 	fn rendered(&self) -> bool {
-		self.text.is_some() || !self.executed.is_empty()
+		self.text.is_some() || self.activity || !self.executed.is_empty()
 	}
 }
 
@@ -462,7 +496,12 @@ impl NativeContext {
 			messages.push(json!({"role": "user", "content": Value::Array(parts)}));
 		}
 		messages.extend(self.history.iter().map(NativeMessage::chat));
-		if breakpoint && let Some(last) = messages.last_mut() {
+		if breakpoint
+			&& let Some(last) = messages
+				.iter_mut()
+				.rev()
+				.find(|message| !message["content"].is_null())
+		{
 			let part = match &mut last["content"] {
 				Value::Array(parts) => parts.last_mut(),
 				content @ Value::String(_) => {
@@ -518,6 +557,9 @@ impl NativeMessage {
 				r#"{{"in_reply_to":{},"response":{response}}}"#,
 				request.text()
 			)}),
+			Self::ProviderActivity { items } => {
+				json!({"role":"assistant","content":null,"_provider_activity":items})
+			}
 			Self::Data { envelope } => json!({"role": "user", "content": envelope.text()}),
 			Self::Assistant { text, tool_calls } => {
 				let mut message = json!({"role": "assistant", "content": text});
@@ -569,7 +611,9 @@ pub fn check_model_turns(history: &[NativeMessage]) -> Result<()> {
 					"Native request has an orphan tool result {tool_call_id}"
 				)));
 			}
-			NativeMessage::Human { .. } | NativeMessage::Data { .. } => index += 1,
+			NativeMessage::Human { .. }
+			| NativeMessage::Data { .. }
+			| NativeMessage::ProviderActivity { .. } => index += 1,
 		}
 	}
 	Ok(())

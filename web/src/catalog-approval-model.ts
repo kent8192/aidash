@@ -200,6 +200,7 @@ export function approvalRequest(
   enabled: boolean,
   groups?: string[],
   restriction?: Restriction | null,
+  providerWarningAcknowledged = false,
 ): RequestApproval {
   const named = restrictionRequest(restriction);
   return {
@@ -207,6 +208,9 @@ export function approvalRequest(
     enabled,
     expected_revision: version.approval?.revision ?? 0,
     ...(groups ? { groups } : {}),
+    ...(enabled && version.provider_warning && providerWarningAcknowledged
+      ? { provider_warning_acknowledged: true }
+      : {}),
     ...(named ? { restriction: named } : {}),
   };
 }

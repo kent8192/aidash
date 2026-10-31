@@ -138,6 +138,109 @@ fn omitted_observability_options_do_not_add_model_fields() {
 	let value = serde_json::to_value(model).unwrap();
 	assert!(value.get("provider_route").is_none());
 	assert!(value.get("estimate_diagnostics").is_none());
+	assert!(value.get("wire_api").is_none());
+}
+
+fn openrouter_model(wire_api: Option<&str>) -> ModelConfig {
+	let mut value = json!({
+		"provider":"openrouter","model_id":"vendor/model",
+		"endpoint":"https://openrouter.ai/api/v1",
+		"provider_credential":"openrouter","context_window":8192,
+		"modalities":["text"],"cost":{}
+	});
+	if let Some(wire_api) = wire_api {
+		value["wire_api"] = json!(wire_api);
+	}
+	serde_json::from_value(value).unwrap()
+}
+
+#[rstest::rstest]
+#[case::omitted(None, true)]
+#[case::chat(Some("chat"), true)]
+#[case::responses(Some("responses"), true)]
+fn provider_credential_models_may_declare_the_wire_api(
+	#[case] wire_api: Option<&str>,
+	#[case] accepted: bool,
+) {
+	let model = openrouter_model(wire_api);
+	assert_eq!(model.validate_wire_api().is_ok(), accepted);
+	assert_eq!(
+		serde_json::to_value(&model)
+			.unwrap()
+			.get("wire_api")
+			.and_then(serde_json::Value::as_str),
+		wire_api
+	);
+}
+
+#[rstest::rstest]
+#[case::plan_connection("chatgpt", Some("chatgpt"), Some("responses"))]
+#[case::keyless("openrouter", None, Some("chat"))]
+fn wire_api_requires_an_openrouter_provider_credential(
+	#[case] provider: &str,
+	#[case] provider_credential: Option<&str>,
+	#[case] wire_api: Option<&str>,
+) {
+	let mut model = openrouter_model(wire_api);
+	model.provider = provider.into();
+	model.provider_credential = provider_credential.map(str::to_owned);
+	if provider == "chatgpt" {
+		model.plan_connection = Some("chatgpt".into());
+	}
+	assert!(model.validate_wire_api().is_err());
+}
+
+#[test]
+fn omitted_wire_api_keeps_chat_transport_for_every_projection() {
+	use crate::projection::ProjectionVersion;
+	use crate::provider::InputFormat;
+	let model = openrouter_model(None);
+	for version in [
+		ProjectionVersion::Legacy,
+		ProjectionVersion::Ordered,
+		ProjectionVersion::Native,
+	] {
+		assert_eq!(InputFormat::for_model(&model, version), InputFormat::Chat);
+	}
+}
+
+#[test]
+fn openrouter_responses_follow_the_plan_projection_mapping() {
+	use crate::projection::ProjectionVersion;
+	use crate::provider::InputFormat;
+	let openrouter = openrouter_model(Some("responses"));
+	let plan = plan_model(&["text"]);
+	for (version, expected) in [
+		(ProjectionVersion::Legacy, InputFormat::Chat),
+		(ProjectionVersion::Ordered, InputFormat::Chat),
+		(ProjectionVersion::Native, InputFormat::Responses),
+	] {
+		assert_eq!(InputFormat::for_model(&openrouter, version), expected);
+		assert_eq!(InputFormat::for_model(&plan, version), expected);
+	}
+}
+
+#[test]
+fn responses_definitions_cannot_advertise_unsupported_input_or_explicit_caching() {
+	let mut model = openrouter_model(Some("responses"));
+	model.modalities.push("audio".into());
+	assert!(
+		model
+			.validate_wire_api()
+			.unwrap_err()
+			.to_string()
+			.contains("audio")
+	);
+	model.modalities = vec!["text".into()];
+	model.model_id = "anthropic/claude-fixture".into();
+	model.cache_mode = Some(CacheMode::Explicit);
+	assert!(
+		model
+			.validate_wire_api()
+			.unwrap_err()
+			.to_string()
+			.contains("explicit")
+	);
 }
 
 #[rstest::rstest]

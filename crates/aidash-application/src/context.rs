@@ -262,6 +262,7 @@ pub fn summary_request(plan: &SummaryPlan, pinned: &Value, max_tokens: u32) -> M
 		.as_ref()
 		.map_or(Value::Null, |summary| json!(summary.content));
 	ModelRequest {
+		provider_tools: vec![],
 		instructions: SUMMARY_INSTRUCTIONS.into(),
 		context: json!({
 			"task": pinned.get("task").cloned().unwrap_or(Value::Null),

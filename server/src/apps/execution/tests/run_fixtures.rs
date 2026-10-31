@@ -29,6 +29,7 @@ pub fn run() -> Run {
 			Default::default(),
 		)
 		.into(),
+		provider_container: None,
 		step: 0,
 		revision: 0,
 		error: None,

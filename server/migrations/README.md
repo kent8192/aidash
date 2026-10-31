@@ -704,6 +704,12 @@ matching model state.
 is an empty state-only migration: both independent column changes apply before
 the single Knowledge head, and no schema or model state is overwritten.
 
+`identity/0045_tenant_data_protection` adds each Tenant's current Data Protection Level and append-only setting history (#542). A missing row means Standard with model-call ZDR and the Plan Connection exemption enabled. Checks reject unknown levels and a Zero Data Retention policy with model-call ZDR disabled. `identity/0046_data_protection_row_level_security` applies the same forced Tenant-isolation policy as the other Tenant-owned tables; literal SQL is required because Reinhardt does not expose RLS policy operations.
+
+`identity/0047_tenant_data_protection_state` records those two tables in ORM migration state. It executes no DDL; references, validity checks and row-level policies remain in the preceding database-only migrations.
+
+`registry/0054_provider_warning_tools` extends the closed Provider tool validation functions with the warning-tier tools (advisor, subagent, model search, tool search, shell) without replacing the previous contracts; its reverse refuses to run while any such definition or pinned Run exists. `identity/0048_provider_warning_acknowledgment` adds the nullable exact disclosure text to `authorization_catalog_history`, filled only when a warning tool is approved. `execution/0085_provider_container` adds the nullable `runs.provider_container` pin (OpenRouter container id and network policy). OpenRouter has no container delete API, so the pin is kept after the Run ends.
+
 ## Run control provenance and Safety Stops (#485, ADR 0101)
 
 `execution/0075_run_control_provenance` (after `execution/0074_federated_preview_authority`)

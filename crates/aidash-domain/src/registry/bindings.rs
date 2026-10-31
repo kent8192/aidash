@@ -567,6 +567,9 @@ impl QualifiedRef {
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(default, deny_unknown_fields)]
 pub struct Narrowing {
+	/// Provider-owned tools take immutable Binding parameters, never model arguments.
+	#[serde(skip_serializing_if = "Option::is_none")]
+	pub provider_tool: Option<crate::tool::provider_tools::Parameters>,
 	#[serde(skip_serializing_if = "Option::is_none")]
 	pub decision: Option<crate::decision::Restrictions>,
 	#[serde(skip_serializing_if = "Option::is_none")]
@@ -600,6 +603,14 @@ impl Narrowing {
 				.or_insert(*ceiling);
 		}
 		let result = Self {
+			provider_tool: match (&self.provider_tool, &other.provider_tool) {
+				(Some(a), Some(b)) if a != b => {
+					return Err(Error::Invalid(
+						"conflicting pinned Provider tool parameters".into(),
+					));
+				}
+				(a, b) => a.clone().or_else(|| b.clone()),
+			},
 			decision: match (&self.decision, &other.decision) {
 				(Some(a), Some(b)) => Some(crate::decision::Restrictions {
 					threshold: if a.threshold.value() <= b.threshold.value() {
@@ -728,6 +739,13 @@ impl Binding {
 	}
 	pub fn validate(&self) -> Result<()> {
 		self.target.validate()?;
+		if self.narrow.provider_tool.is_some()
+			&& !matches!(self.kind, BindingKind::Tool | BindingKind::Bundle)
+		{
+			return Err(Error::Invalid(
+				"Provider tool parameters require a Tool or Bundle Binding".into(),
+			));
+		}
 		if self.kind == BindingKind::Decider {
 			if self.narrow.allowed_hosts.is_some()
 				|| !self.narrow.scope.is_empty()
@@ -1183,6 +1201,21 @@ impl BindingSnapshot {
 				));
 			}
 			if binding.definition.kind == "tool" {
+				if let Some(tool) = binding.definition.config["provider"]
+					.as_str()
+					.and_then(crate::tool::provider_tools::declaration)
+				{
+					tool.validate(binding.narrow.provider_tool.as_ref().ok_or_else(|| {
+						Error::Invalid("Provider tool snapshot lacks pinned parameters".into())
+					})?)?;
+					let model_config: crate::model::ModelConfig =
+						serde_json::from_value(definitions[&model].definition.config.clone())?;
+					tool.eligible(&model_config)?;
+				} else if binding.narrow.provider_tool.is_some() {
+					return Err(Error::Invalid(
+						"Provider tool parameters require a Provider tool".into(),
+					));
+				}
 				if binding.alias.is_none()
 					|| binding
 						.provider_contract_digest

@@ -20,6 +20,7 @@ struct Fixture {
 	policy: PolicyBundle,
 	writes: Vec<String>,
 	saved: usize,
+	disclosures: Vec<Option<String>>,
 	node: aidash_domain::nodes::NodeAddress,
 	stored_restriction: Option<CatalogRestriction>,
 }
@@ -60,6 +61,7 @@ fn reference(id: &str) -> EntityRef {
 }
 fn approval(id: &str, enabled: bool) -> Approval {
 	Approval {
+		provider_warning_acknowledged: false,
 		entry: reference(id),
 		enabled,
 		expected_revision: 0,
@@ -83,6 +85,7 @@ impl Fixture {
 			policy: initial_policy("acme", true).unwrap(),
 			writes: vec![],
 			saved: 0,
+			disclosures: vec![],
 			node: node(),
 			stored_restriction: None,
 		}
@@ -120,7 +123,14 @@ impl CatalogMutation for Fixture {
 			restriction: self.stored_restriction.clone(),
 		}))
 	}
-	async fn history(&mut self, binding: &Binding, actor: &str) -> Result<()> {
+	async fn history(
+		&mut self,
+		binding: &Binding,
+		actor: &str,
+		provider_warning_acknowledgment: Option<&str>,
+	) -> Result<()> {
+		self.disclosures
+			.push(provider_warning_acknowledgment.map(str::to_owned));
 		self.writes
 			.push(format!("history:{}:{actor}", binding.entry_id));
 		Ok(())
@@ -358,6 +368,40 @@ async fn an_agent_whose_subject_has_another_kind_is_refused() {
 
 fn node() -> aidash_domain::nodes::NodeAddress {
 	NODE.parse().unwrap()
+}
+
+#[tokio::test]
+async fn warning_approval_requires_its_own_acknowledgment_and_records_exact_disclosure() {
+	let mut tool = model();
+	tool.id = "provider.openrouter.shell".into();
+	tool.kind = "tool".into();
+	tool.config = json!({"registry_deployment":"aidash://node-a","provider":"provider.openrouter.shell@1","operation":"provider_shell","default_alias":"provider_shell","tier":"provider"});
+	let mut fixture = Fixture::new(vec![tool]);
+	let mut request = approval("provider.openrouter.shell", true);
+	let error = approve(&mut fixture, &[request.clone()]).await.unwrap_err();
+	assert!(
+		matches!(error, Error::Invalid(ref message) if message == "PROVIDER_TOOL_ACKNOWLEDGMENT_REQUIRED")
+	);
+	assert!(fixture.writes.is_empty());
+	request.provider_warning_acknowledged = true;
+	approve(&mut fixture, &[request]).await.unwrap();
+	assert_eq!(
+		fixture.disclosures,
+		vec![aidash_domain::tool::provider_tools::warning_acknowledgment(
+			"provider.openrouter.shell",
+			"1.0.0"
+		)]
+	);
+	assert!(
+		fixture.disclosures[0]
+			.as_ref()
+			.unwrap()
+			.contains("not deleted by Aidash")
+	);
+	let mut withdrawal = approval("provider.openrouter.shell", false);
+	withdrawal.expected_revision = 1;
+	approve(&mut fixture, &[withdrawal]).await.unwrap();
+	assert_eq!(fixture.disclosures[1], None);
 }
 
 fn restricted(subjects: &[&str], groups: &[&str]) -> Option<CatalogRestriction> {

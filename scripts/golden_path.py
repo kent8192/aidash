@@ -138,15 +138,17 @@ def register_node(base, tenant, source_address, endpoint, administrator, reachab
                                     "atomic_transactions": True, "enabled": True, "expected_revision": existing[0]["revision"] if existing else 0})
 
 
-def generate_deployment_key(binary, directory, env):
+def generate_deployment_key(binary, directory, env, hosted_model_origins=()):
     """Create a Deployment Key in `directory` and return the settings directory that names it.
 
     Federation is on unless the settings turn it off; a Deployment federates
-    once its `[deployment.key]` file exists.
+    once its `[deployment.key]` file exists. `hosted_model_origins` declares
+    model servers the Deployment runs itself (ADR 0104).
     """
     directory = pathlib.Path(directory)
     directory.mkdir(parents=True, exist_ok=True)
-    (directory / "base.toml").write_text(f'[deployment.key]\nfile = "{directory / "deployment-key.pem"}"\n')
+    (directory / "base.toml").write_text(f'[deployment]\nhosted_model_origins = {json.dumps(list(hosted_model_origins))}\n\n'
+                                         f'[deployment.key]\nfile = "{directory / "deployment-key.pem"}"\n')
     subprocess.run([str(pathlib.Path(binary).resolve().parent / "manage"), "deployment-key", "generate"], cwd=ROOT,
                    env={**env, "REINHARDT_SETTINGS_DIR": str(directory)}, stdout=subprocess.DEVNULL, check=True, timeout=120)
     return directory
@@ -767,8 +769,12 @@ def main():
         provision(db_a)
         provision(db_b)
         for node, database, port in [(node_a, db_a, port_a), (node_b, db_b, port_b)]:
+            # Work from a Node of another Deployment runs under the strictest
+            # Data Protection Level, which no Tenant Keyless endpoint meets
+            # (ADR 0104), so each Node declares the scoped model server its own.
             key_directories[node] = generate_deployment_key(
-                args.binary, pathlib.Path(profile_directory.name) / f"deployment-key-{port}", node_env(node, database, port, OWNER_LOGIN, keyed=False))
+                args.binary, pathlib.Path(profile_directory.name) / f"deployment-key-{port}", node_env(node, database, port, OWNER_LOGIN, keyed=False),
+                hosted_model_origins=[f"http://127.0.0.1:{scoped_provider_port}"])
         migrate(node_a, db_a, port_a)
         migrate(node_b, db_b, port_b)
         launch(node_a, db_a, port_a, "server")

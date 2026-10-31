@@ -104,3 +104,6 @@ pub mod plan_connections;
 pub mod secret_store;
 
 pub mod tenant_secrets;
+
+mod tenant_data_protection;
+pub use tenant_data_protection::{TenantDataProtection, TenantDataProtectionHistory};

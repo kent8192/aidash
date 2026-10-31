@@ -195,7 +195,7 @@ export function ApprovalReviewPanel({
   onClose?: () => void;
   onChanged?: () => void | Promise<void>;
 }) {
-  const { t, local } = useI18n();
+  const { t, local, locale } = useI18n();
   const client = useQueryClient();
   const administration = useTenantAdministration(tenant);
   const assignable = administration.data?.assignable_groups ?? [];
@@ -225,6 +225,7 @@ export function ApprovalReviewPanel({
       ? {}
       : { [itemKey({ reference: root })]: rootRestriction },
   );
+  const [acknowledged, setAcknowledged] = useState<Record<string, boolean>>({});
   const [editing, setEditing] = useState<string | null>(null);
   const [reason, setReason] = useState("");
   const [busy, setBusy] = useState(false);
@@ -266,6 +267,12 @@ export function ApprovalReviewPanel({
         selected,
         edits,
         answeredRequest(request, requestId),
+        Object.fromEntries(
+          current.items.map((item) => [
+            itemKey(item),
+            !!acknowledged[`${current.closure_digest}:${itemKey(item)}`],
+          ]),
+        ),
       );
       await authorizationSubmitCatalogReview(tenant, {
         ...body,
@@ -442,6 +449,34 @@ export function ApprovalReviewPanel({
                   <Badge value={t("approvalWidens")} tone="warning" />
                 )}
               </div>
+              {item.provider_warning &&
+                item.can_approve &&
+                !item.installation && (
+                  <Notice tone="warning" className="provider-review-warning">
+                    <p className="whitespace-pre-wrap">
+                      {item.provider_warning}
+                    </p>
+                    <label>
+                      <input
+                        type="checkbox"
+                        disabled={busy}
+                        checked={
+                          !!acknowledged[`${current.closure_digest}:${key}`]
+                        }
+                        onChange={(event) =>
+                          setAcknowledged({
+                            ...acknowledged,
+                            [`${current.closure_digest}:${key}`]:
+                              event.target.checked,
+                          })
+                        }
+                      />{" "}
+                      {locale === "ja-JP"
+                        ? "このバージョンについて、上記の実行境界・保存期間・費用の条件を理解し、承認します。"
+                        : "I acknowledge these execution, retention and spending conditions for this exact version."}
+                    </label>
+                  </Notice>
+                )}
               {local(item.description) && (
                 <Hint>{local(item.description)}</Hint>
               )}
@@ -506,7 +541,17 @@ export function ApprovalReviewPanel({
         <div className="flex flex-wrap gap-2">
           <Button
             size="sm"
-            disabled={busy || selected.length === 0}
+            disabled={
+              busy ||
+              selected.length === 0 ||
+              current.items.some(
+                (item) =>
+                  selected.includes(itemKey(item)) &&
+                  !!item.provider_warning &&
+                  !item.installation &&
+                  !acknowledged[`${current.closure_digest}:${itemKey(item)}`],
+              )
+            }
             onClick={() => void submit()}
           >
             {t("approvalApproveSelected")} ({selected.length})

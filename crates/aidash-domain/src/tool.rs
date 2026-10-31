@@ -6,6 +6,7 @@ pub mod concurrency;
 pub use concurrency::Concurrency;
 pub mod contract;
 pub use contract::*;
+pub mod provider_tools;
 pub mod providers;
 pub mod refusal;
 pub use refusal::{AuthorityRefusal, RefusalCheck};

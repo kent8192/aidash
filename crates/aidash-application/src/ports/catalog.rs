@@ -70,6 +70,7 @@ pub trait CatalogMutation: Send {
 		&mut self,
 		binding: &aidash_domain::identity::catalog::Binding,
 		actor: &str,
+		provider_warning_acknowledgment: Option<&str>,
 	) -> Result<()>;
 }
 

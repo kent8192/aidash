@@ -49,6 +49,7 @@ async fn infer_after(
 		.respond_after(
 			model.infer(
 				ModelRequest {
+					provider_tools: vec![],
 					instructions: "test".into(),
 					context: json!({}).into(),
 					tools: vec![],

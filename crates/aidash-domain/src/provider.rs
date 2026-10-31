@@ -41,11 +41,15 @@ impl InputFormat {
 
 	/// Native plan requests use Responses accounting (ADR 0083). Existing
 	/// Legacy and Ordered Runs keep their original accounting and digests.
+	/// An OpenRouter model that declares the Responses wire API follows the
+	/// same per-version mapping as a Plan Connection (ADR 0103).
 	pub fn for_model(
 		model: &crate::model::ModelConfig,
 		version: crate::projection::ProjectionVersion,
 	) -> Self {
-		if model.uses_plan_connection() && version == crate::projection::ProjectionVersion::Native {
+		let responses = model.uses_plan_connection()
+			|| model.wire_api == Some(crate::model::WireApi::Responses);
+		if responses && version == crate::projection::ProjectionVersion::Native {
 			Self::Responses
 		} else {
 			Self::Chat
@@ -62,6 +66,8 @@ pub struct ModelRequest {
 	pub instructions: String,
 	pub context: ModelContext,
 	pub tools: Vec<ToolSpec>,
+	#[serde(default, skip_serializing_if = "Vec::is_empty")]
+	pub provider_tools: Vec<crate::tool::provider_tools::PinnedTool>,
 	pub max_output_tokens: u32,
 	/// Structured-output schema for non-tool requests such as the Summary
 	/// Stage. Absent for ordinary inference, whose body stays unchanged.
@@ -177,6 +183,9 @@ pub struct OrderedContext {
 #[derive(Debug, Clone, Default, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct ModelResponse {
+	/// Observable provider-owned activity, never Research evidence or citations.
+	#[serde(default, skip_serializing_if = "Vec::is_empty")]
+	pub provider_activity: Vec<Value>,
 	pub text: String,
 	pub tool_calls: Vec<ToolCall>,
 	pub input_tokens: u64,
@@ -396,23 +405,52 @@ impl ModelRequest {
 	}
 
 	/// Canonical Chat payload, shared by Chat transport and accounting.
-	/// Responses transport and accounting share [`responses::input_body`].
+	/// Responses accounting measures [`responses::estimate_input_body`], which
+	/// covers both Responses transports.
 	/// Context is encoded as message text, including its JSON escaping. A salted
 	/// request's Tenant Cache Salt is prepended by the transport adapter only.
 	pub fn input_body(&self) -> Value {
-		self.body(
+		let mut body = self.body(
 			self.content_parts.iter().map(ContentPart::openrouter),
 			self.cache_breakpoints,
-		)
+		);
+		for message in body["messages"].as_array_mut().into_iter().flatten() {
+			if let Some(object) = message.as_object_mut() {
+				object.remove("_provider_activity");
+			}
+		}
+		body["messages"]
+			.as_array_mut()
+			.expect("messages")
+			.retain(|message| {
+				message["content"] != Value::Null || message.get("tool_calls").is_some()
+			});
+		body
 	}
 
 	fn estimate_body(&self, parts: &[ContentPart]) -> Result<Value> {
-		match self.input_format {
-			InputFormat::Chat => Ok(self.body(parts.iter().map(ContentPart::estimate_frame), true)),
+		let mut body = match self.input_format {
+			InputFormat::Chat => self.body(parts.iter().map(ContentPart::estimate_frame), true),
 			InputFormat::Responses => {
-				responses::input_body(self, parts.iter().map(ContentPart::estimate_frame))
+				responses::estimate_input_body(self, parts.iter().map(ContentPart::estimate_frame))?
+			}
+		};
+		// The durable id is resolved only at send time; reserve its maximum wire size now.
+		for tool in body
+			.get_mut("tools")
+			.and_then(Value::as_array_mut)
+			.into_iter()
+			.flatten()
+		{
+			if tool["type"] == "openrouter:shell"
+				&& tool["parameters"]["environment"]
+					.get("container_id")
+					.is_none()
+			{
+				tool["parameters"]["environment"]["container_id"] = json!("x".repeat(40));
 			}
 		}
+		Ok(body)
 	}
 
 	/// `breakpoints` marks `system` and the end of the Stable Prefix: the
@@ -443,6 +481,17 @@ impl ModelRequest {
 					.push(json!({"role":"user","content":self.user_content(parts, breakpoints)}));
 			}
 		}
+		// Older Projection Versions keep their JSON snapshot, but provider-owned
+		// results also retain their model-authored role, one message per Model Turn.
+		let legacy = match &self.context {
+			ModelContext::Legacy(value) => Some(value.clone()),
+			ModelContext::Ordered(ordered) => serde_json::from_str::<Value>(&ordered.stable).ok(),
+			_ => None,
+		};
+		if let Some(legacy) = legacy {
+			let history = legacy["history"].as_array().into_iter().flatten().filter(|event| event["kind"] == "assistant" && event["provider_activity"].as_array().is_some_and(|items| !items.is_empty())).map(|event| json!({"role":"assistant","content":json!({"text":event["text"],"provider_tool_activity":event["provider_activity"],"research_evidence":false}).to_string(),"_provider_activity":event["provider_activity"]}));
+			messages.splice(1..1, history);
+		}
 		let mut body = json!({ "messages": messages });
 		if !self.tools.is_empty() {
 			body["tools"] = Value::Array(self.tools.iter().map(|t| json!({"type":"function","function":{"name":t.name,"description":t.description,"parameters":t.parameters}})).collect());
@@ -450,6 +499,7 @@ impl ModelRequest {
 		if let Some(format) = &self.response_format {
 			body["response_format"] = format.clone();
 		}
+		crate::tool::provider_tools::append(&mut body, &self.provider_tools);
 		body
 	}
 
@@ -560,6 +610,13 @@ impl ModelRequest {
 	}
 
 	pub fn validate(&self) -> Result<()> {
+		let mut seen = std::collections::BTreeSet::new();
+		for tool in &self.provider_tools {
+			tool.validate()?;
+			if !seen.insert(&tool.tool_type) {
+				return Err(Error::Invalid("duplicate Provider tool".into()));
+			}
+		}
 		if self.input_format == InputFormat::Responses {
 			self.estimate_body(&self.content_parts)?;
 		}
@@ -621,6 +678,9 @@ impl ModelRequest {
 			"instructions": self.instructions,
 			"tools": self.tools,
 		});
+		if !self.provider_tools.is_empty() {
+			identity["provider_tools"] = json!(self.provider_tools);
+		}
 		if !self.input_format.is_chat() {
 			identity["input_format"] = json!(self.input_format);
 		}

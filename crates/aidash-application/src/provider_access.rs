@@ -8,6 +8,8 @@ use uuid::Uuid;
 
 #[derive(Debug, Clone, Default)]
 pub struct Context {
+	/// Current policy evaluated immediately before this call; never an admitted snapshot.
+	pub data_protection: aidash_domain::data_protection::DataProtection,
 	pub tenant: String,
 	pub run: Option<Uuid>,
 	/// Independent approval observation; never an executing Run identity.
@@ -21,6 +23,7 @@ pub struct Context {
 }
 #[derive(Debug, Clone)]
 pub struct Inference {
+	pub provider_tools: Vec<aidash_domain::tool::provider_tools::PinnedTool>,
 	pub model: String,
 	pub operations: Vec<Operation>,
 	pub max_output_tokens: u32,
@@ -40,15 +43,20 @@ pub enum Operation {
 	Embeddings,
 	/// One System One request: a Decision Attempt of a Run (ADR 0041).
 	Decision,
+	/// A ZDR catalog read made on behalf of a charged Decision Attempt.
+	DecisionDiscovery,
 }
 impl Context {
 	/// A Decision Attempt uses the Tenant's current binding rather than the Run's
 	/// admitted pin: Runs on a Plan Connection or a Keyless endpoint have no
 	/// OpenRouter pin, and compaction is not inference (ADR 0041).
 	pub fn is_decision(&self) -> bool {
-		self.inference
-			.as_ref()
-			.is_some_and(|inference| inference.operations == [Operation::Decision])
+		self.inference.as_ref().is_some_and(|inference| {
+			matches!(
+				inference.operations.as_slice(),
+				[Operation::Decision] | [Operation::DecisionDiscovery]
+			)
+		})
 	}
 }
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -98,6 +106,24 @@ pub struct Access {
 }
 #[async_trait]
 pub trait ProviderAccess: Send + Sync {
+	/// Reload current Tenant and delegation-chain policy before constructing a request.
+	async fn data_protection(
+		&self,
+		context: &Context,
+	) -> Result<aidash_domain::data_protection::DataProtection> {
+		Ok(context.data_protection)
+	}
+
+	/// Persist/reload the Run's sole provider container before signing any shell request.
+	/// Adapters without a durable Run repository cannot enable shell.
+	async fn provider_container(
+		&self,
+		_context: &Context,
+		_network_policy: &serde_json::Value,
+	) -> Result<String> {
+		Err(Error::Invalid("PROVIDER_CONTAINER_UNAVAILABLE".into()))
+	}
+
 	async fn resolve(&self, context: &Context, endpoint: &str, source: &Source) -> Result<Access>;
 	/// Whether `resolve` would find an active credential, without minting a
 	/// Capability Token or reading Key Material. Callers use it to fail before
@@ -121,12 +147,40 @@ pub struct KeylessAccess {
 	/// Shared by every clone. Production code sets it once at startup; only
 	/// test builds can add to it later (`permit_origin_of`).
 	origins: Arc<std::sync::RwLock<PermittedOrigins>>,
+	/// Explicit Deployment ownership declaration, separate from network access.
+	/// Shared like `origins`; only test builds add to it later
+	/// (`declare_hosted_origin_of`).
+	hosted_origins: Arc<std::sync::RwLock<PermittedOrigins>>,
 }
 impl KeylessAccess {
 	pub fn permitting(origins: PermittedOrigins) -> Self {
 		Self {
 			origins: Arc::new(std::sync::RwLock::new(origins)),
+			hosted_origins: Arc::default(),
 		}
+	}
+	pub fn with_deployment_hosted(mut self, origins: PermittedOrigins) -> Self {
+		self.hosted_origins = Arc::new(std::sync::RwLock::new(origins));
+		self
+	}
+	pub fn data_protection_destination(
+		&self,
+		endpoint: &str,
+	) -> Result<aidash_domain::data_protection::Destination<'static>> {
+		let origin = url::Url::parse(endpoint)
+			.map_err(|_| Error::Invalid("invalid model endpoint URL".into()))?
+			.origin()
+			.ascii_serialization();
+		let hosted = self
+			.hosted_origins
+			.read()
+			.expect("Deployment-hosted origins lock")
+			.permits(&origin);
+		Ok(if hosted {
+			aidash_domain::data_protection::Destination::DeploymentHosted
+		} else {
+			aidash_domain::data_protection::Destination::TenantKeyless
+		})
 	}
 	/// Permit the origin of `url` for this access and every clone of it, as an
 	/// Deployment Administrator would permit a private model server. Test fixtures start after
@@ -142,6 +196,23 @@ impl KeylessAccess {
 		*origins = std::mem::take(&mut *origins).with(added);
 		Ok(())
 	}
+	/// Declare the origin of `url` a model server the Deployment runs itself,
+	/// for this access and every clone of it, as a Deployment Administrator
+	/// would list it in `hosted_model_origins`.
+	#[cfg(any(test, feature = "test-support"))]
+	pub fn declare_hosted_origin_of(&self, url: &str) -> Result<()> {
+		let origin = url::Url::parse(url)
+			.map_err(|_| Error::Invalid("invalid fixture URL".into()))?
+			.origin()
+			.ascii_serialization();
+		let added = PermittedOrigins::parse([origin])?;
+		let mut hosted = self
+			.hosted_origins
+			.write()
+			.expect("Deployment-hosted origins lock");
+		*hosted = std::mem::take(&mut *hosted).with(added);
+		Ok(())
+	}
 	/// How `endpoint` may connect under the Deployment's permitted origins.
 	pub fn destination(&self, endpoint: &str) -> Result<Destination> {
 		let origins = self.origins.read().expect("Keyless origins lock");
@@ -154,10 +225,20 @@ impl KeylessAccess {
 		let origins = self.origins.read().expect("Keyless origins lock");
 		origins.iter().map(str::to_owned).collect()
 	}
+
+	/// The Deployment-hosted origins, so that a test can configure a child process alike.
+	#[cfg(any(test, feature = "test-support"))]
+	pub fn hosted_origins(&self) -> Vec<String> {
+		let hosted = self
+			.hosted_origins
+			.read()
+			.expect("Deployment-hosted origins lock");
+		hosted.iter().map(str::to_owned).collect()
+	}
 }
 #[async_trait]
 impl ProviderAccess for KeylessAccess {
-	async fn resolve(&self, _: &Context, endpoint: &str, source: &Source) -> Result<Access> {
+	async fn resolve(&self, context: &Context, endpoint: &str, source: &Source) -> Result<Access> {
 		match source {
 			Source::Keyless => {}
 			Source::Tenant { .. } => {
@@ -176,6 +257,9 @@ impl ProviderAccess for KeylessAccess {
 			);
 			return Err(Error::Forbidden);
 		}
+		context
+			.data_protection
+			.permits(self.data_protection_destination(endpoint)?)?;
 		Ok(Access {
 			endpoint: endpoint.into(),
 			bearer: String::new().into(),

@@ -69,6 +69,7 @@ pub(crate) struct StreamAssembler<'a> {
 	received: usize,
 	assembled: usize,
 	content: String,
+	annotations: Vec<Value>,
 	refusal: Option<String>,
 	calls: BTreeMap<u64, PartialCall>,
 	/// A tool call fragment omitted its index, claiming the stream's sole call.
@@ -96,6 +97,7 @@ impl<'a> StreamAssembler<'a> {
 			received: 0,
 			assembled: 0,
 			content: String::new(),
+			annotations: Vec::new(),
 			refusal: None,
 			calls: BTreeMap::new(),
 			unindexed: false,
@@ -164,6 +166,9 @@ impl<'a> StreamAssembler<'a> {
 		};
 		let mut message = Map::new();
 		message.insert("content".into(), Value::String(self.content));
+		if !self.annotations.is_empty() {
+			message.insert("annotations".into(), json!(self.annotations));
+		}
 		message.insert(
 			"refusal".into(),
 			self.refusal.map_or(Value::Null, Value::String),
@@ -323,6 +328,15 @@ impl<'a> StreamAssembler<'a> {
 	}
 
 	fn choice(&mut self, choice: &Value) -> Result<()> {
+		let delta = &choice["delta"];
+		if let Some(annotations) = delta.get("annotations").and_then(Value::as_array) {
+			let size = serde_json::to_vec(annotations)?.len();
+			if size > self.limit.saturating_sub(self.assembled) {
+				return Err(self.overflow());
+			}
+			self.assembled += size;
+			self.annotations.extend(annotations.iter().cloned());
+		}
 		let reason = choice.get("finish_reason").and_then(Value::as_str);
 		if let Some(finish_reason) = &self.finish_reason {
 			// A completed choice takes no further output, like a whole completion.

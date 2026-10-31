@@ -104,6 +104,21 @@ pub(crate) async fn revoked_under_lock(
 
 #[async_trait]
 impl EvidenceStore for Evidence {
+	async fn data_protection(
+		&self,
+		run: Uuid,
+	) -> Result<aidash_domain::data_protection::DataProtection> {
+		crate::apps::identity::repositories::data_protection::current(
+			&self.store,
+			&aidash_application::provider_access::Context {
+				run: Some(run),
+				..Default::default()
+			},
+		)
+		.await
+		.map_err(Into::into)
+	}
+
 	async fn expired_results(
 		&self,
 		run: Uuid,

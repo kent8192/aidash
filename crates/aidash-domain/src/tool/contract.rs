@@ -251,6 +251,10 @@ impl ToolBehavior {
 }
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 pub struct ToolContract {
+	/// The model provider executes this capability inside inference. It yields
+	/// no Research evidence, so citation verification must still reject invented IDs.
+	#[serde(skip_serializing_if = "std::ops::Not::not")]
+	pub provider_owned: bool,
 	pub identity: ToolIdentity,
 	pub authorization: ToolAuthorization,
 	pub behavior: ToolBehavior,
@@ -258,6 +262,10 @@ pub struct ToolContract {
 	pub remote_exposure: bool,
 }
 impl ToolContract {
+	/// Provider-reported sources never authorize Aidash Source citations.
+	pub fn requires_citation_check(&self) -> bool {
+		self.provider_owned || self.behavior.yields(Yield::Citations)
+	}
 	pub fn replay_safe(&self) -> bool {
 		self.behavior.effect != ToolEffect::Unsafe
 	}
@@ -295,6 +303,7 @@ impl ToolContract {
 	/// Read-only removes the approval only; the effect stays Unsafe like a Tenant tool's.
 	pub fn agent_plugin(identity: AgentPluginTool, read_only: bool) -> Self {
 		Self {
+			provider_owned: false,
 			identity: ToolIdentity::AgentPlugin(identity),
 			authorization: ToolAuthorization::none(),
 			behavior: ToolBehavior {
@@ -335,6 +344,7 @@ impl ToolContract {
 		};
 		let read_only_operation = config.declares_read_only();
 		Self {
+			provider_owned: false,
 			identity: ToolIdentity::Registry(reference),
 			authorization: ToolAuthorization {
 				requirements: if let ToolConfig::Agent { node_id, agent } = config {
@@ -380,6 +390,7 @@ pub fn builtin_contract(name: &str) -> Option<ToolContract> {
 	use AuthorizationRequirement::*;
 	use ResourceTarget::*;
 	let mut contract = ToolContract {
+		provider_owned: false,
 		identity: ToolIdentity::Builtin(format!("builtin:{name}")),
 		authorization: ToolAuthorization {
 			flag: None,

@@ -123,8 +123,9 @@ impl RouteDecisionProvider {
 			.iter()
 			.map(|(key, q)| (key, json!({"type":"noul", "instructions":q.description})))
 			.collect();
-		// Zero data retention is required on every OpenRouter call. A Decisions
-		// Route also names the only hosts it approved, so OpenRouter routes
+		// The planned body keeps the legacy ZDR default; dispatch replaces only
+		// its data policy with the current Tenant requirement. A Decisions
+		// Route names the only hosts it approved, so OpenRouter routes
 		// among them and never to a host added later (ADR 0066).
 		let provider = if route.provider_contract == DECISIONS {
 			json!({"zdr":true,"only":route.hosts,"allow_fallbacks":true})
@@ -221,6 +222,7 @@ impl DecisionProvider for RouteDecisionProvider {
 		let mut scope = self.context.clone();
 		scope.provider_credential_id = None;
 		scope.inference = Some(Inference {
+			provider_tools: vec![],
 			model: route.model.clone(),
 			operations: vec![Operation::Decision],
 			max_output_tokens: 0,
@@ -243,6 +245,7 @@ impl DecisionProvider for RouteDecisionProvider {
 			scope,
 			source,
 			body: request.body.clone(),
+			capacity: self.capacity.clone(),
 			attempt,
 			route: route.clone(),
 			questions: request.questions.clone(),
@@ -257,6 +260,7 @@ struct RouteDispatch {
 	scope: Context,
 	source: Source,
 	body: Vec<u8>,
+	capacity: Arc<dyn RouteCapacity>,
 	/// The Decision Attempt this request is; a direct (self-hosted) call has no
 	/// broker audit, so the response is traced under it.
 	attempt: Uuid,
@@ -282,16 +286,65 @@ impl RouteDispatch {
 			// Capability Token lives 60 s, and reserving the attempt may wait on
 			// remote owners. A failure here, after the check, leaves the reserved
 			// attempt charged, as for compaction.
+			let scope = crate::data_protection::context(self.access.as_ref(), &self.scope).await?;
+			let clients = crate::keyless::Clients::new(
+				self.client.clone(),
+				std::time::Duration::from_secs(30),
+				std::time::Duration::from_secs(3),
+			)?;
+			let routes = crate::data_protection::zdr_routes(
+				self.access.as_ref(),
+				&scope,
+				&clients,
+				Provider::Openrouter.base_url(),
+				&self.source,
+				&self.route.model,
+			)
+			.await?;
+			if !routes.is_empty()
+				&& !self.route.hosts.is_empty()
+				&& self.route.hosts.iter().all(|host| {
+					!routes
+						.iter()
+						.any(|tag| tag == host || tag.starts_with(&format!("{host}/")))
+				}) {
+				return Err(DispatchError::ProviderFailure(Error::Invalid(
+					"Zero Data Retention: no Decider Route host is available".into(),
+				)));
+			}
+			let mut body: Value = serde_json::from_slice(&self.body).map_err(Error::from)?;
+			let provider = body["provider"]
+				.as_object_mut()
+				.expect("prepared provider object");
+			provider.remove("zdr");
+			provider.extend(
+				scope
+					.data_protection
+					.requirement()
+					.provider()
+					.as_object()
+					.expect("policy object")
+					.clone(),
+			);
+			let encoded = serde_json::to_vec(&body).map_err(Error::from)?;
+			if !self
+				.capacity
+				.fits(&self.route, &body["state"], &self.questions, &encoded)?
+			{
+				return Err(DispatchError::ProviderFailure(Error::Invalid(
+					"current Data Protection requirement exceeds the Decider Route capacity".into(),
+				)));
+			}
 			let access = self
 				.access
-				.resolve(&self.scope, Provider::Openrouter.base_url(), &self.source)
+				.resolve(&scope, Provider::Openrouter.base_url(), &self.source)
 				.await
 				.map_err(|_| Error::External("decision provider credential unavailable".into()))?;
 			let mut request = self
 				.client
 				.post(route_url(&access.endpoint, &self.route.provider_contract)?)
 				.header(reqwest::header::CONTENT_TYPE, "application/json")
-				.body(self.body);
+				.body(encoded);
 			if !access.bearer.expose_secret().is_empty() {
 				request = request.bearer_auth(access.bearer.expose_secret());
 			}

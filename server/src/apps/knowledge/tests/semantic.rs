@@ -1364,6 +1364,38 @@ async fn semantic_lifecycle_is_durable_revisioned_and_not_keyword_search(
 			.await
 			.unwrap()
 	);
+	// The private-network permission is not a hosted-model declaration. A
+	// policy raise must stop Keyless query embeddings from their next send.
+	{
+		use aidash_server::apps::identity::models::TenantDataProtection;
+		use reinhardt::db::orm::Model;
+		let policy = TenantDataProtection::build()
+			.tenant("acme")
+			.level("no_training")
+			.model_call_zdr(true)
+			.plan_connection_exempt(true)
+			.updated_at(chrono::Utc::now())
+			.updated_by("fixture")
+			.finish();
+		f.store
+			.pool
+			.atomic(&TEST_FIXTURE, async |tx| {
+				TenantDataProtection::objects()
+					.insert_with_executor(tx, &policy)
+					.await
+					.map_err(reinhardt::core::exception::Error::from)?;
+				Ok(())
+			})
+			.await
+			.unwrap();
+	}
+	let refused = search(&app, &token, workspace).await;
+	assert_eq!(refused.0, 400, "{}", refused.1);
+	assert!(
+		refused.1.to_string().contains("Tenant Keyless endpoints"),
+		"{}",
+		refused.1
+	);
 	drop(server);
 	dispose(f, &url, &schema).await;
 }

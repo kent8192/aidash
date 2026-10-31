@@ -77,6 +77,7 @@ pub(crate) async fn page(
 			.map_err(FrameworkError::from)?
 			.into_iter()
 			.map(|row| ApprovalRecord {
+				provider_warning_acknowledgment: row.provider_warning_acknowledgment,
 				revision: row.revision,
 				enabled: row.enabled,
 				actor: row.actor,
@@ -109,6 +110,10 @@ pub(crate) async fn page(
 					})
 			});
 		versions.push(RegistryVersion {
+			provider_warning: aidash_domain::tool::provider_tools::warning_acknowledgment(
+				&entry.id,
+				&entry.version,
+			),
 			needs_approval: !aidash_application::registry::system::is_builtin(&entry),
 			entry,
 			approval,

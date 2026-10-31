@@ -210,6 +210,7 @@ export function CatalogApprovalSection({
   // The versions list reports the selected Node's approvals, so that is the
   // Node a decision here applies to.
   const { selected } = useNodes();
+  const [acknowledged, setAcknowledged] = useState<Record<string, boolean>>({});
   const [chosen, setChosen] = useState<string[]>();
   const [restricting, setRestricting] = useState<boolean>();
   const [subjectNames, setSubjectNames] = useState<string>();
@@ -223,6 +224,9 @@ export function CatalogApprovalSection({
   const state = approvalState(version);
   const origin = keylessOrigin(entry);
   const recipients = deciderRecipients(entry);
+  const providerOwned =
+    entry.kind === "tool" &&
+    (entry.config as { tier?: string }).tier === "provider";
   const readOnly = toolReplay(entry) === "read_only";
   const plugins = agentPlugins(entry);
   const installed = !!entry.installation;
@@ -289,10 +293,42 @@ export function CatalogApprovalSection({
       setBusy(false);
     }
   };
+  const accepted = (item: RegistryVersion) =>
+    !item.provider_warning ||
+    acknowledged[`${item.entry.id}@${item.entry.version}`] === true;
+  const warning = (item: RegistryVersion) =>
+    item.provider_warning && (
+      <Notice tone="warning" role="status" className="provider-tool-warning">
+        <p className="whitespace-pre-wrap">{item.provider_warning}</p>
+        <label className="mt-2 flex items-start gap-2">
+          <input
+            type="checkbox"
+            disabled={busy}
+            checked={accepted(item)}
+            onChange={(event) =>
+              setAcknowledged({
+                ...acknowledged,
+                [`${item.entry.id}@${item.entry.version}`]:
+                  event.target.checked,
+              })
+            }
+          />
+          {locale === "ja-JP"
+            ? "このバージョンについて、上記の実行境界・保存期間・費用の条件を理解し、承認します。"
+            : "I acknowledge these execution, retention and spending conditions for this exact version."}
+        </label>
+      </Notice>
+    );
   const approve = () =>
     decide(() =>
       authorizationSetCatalog(path, {
-        ...approvalRequest(version, true, sentGroups, requestedRestriction()),
+        ...approvalRequest(
+          version,
+          true,
+          sentGroups,
+          requestedRestriction(),
+          accepted(version),
+        ),
         node: selected!.name,
       }),
     );
@@ -350,6 +386,14 @@ export function CatalogApprovalSection({
               : "catalogHelp",
         )}
       </Hint>
+      {providerOwned && (
+        <Hint>
+          {locale === "ja-JP"
+            ? "この Provider tool は OpenRouter が実行します。この Catalog Approval が唯一の同意です。Agent の Binding で上限を固定します。結果は Research の証拠にはなりません。"
+            : "OpenRouter executes this Provider tool. This Catalog Approval is its only consent. The Agent Binding pins spending caps. Results are not Research evidence."}
+        </Hint>
+      )}
+      {decides && state !== "approved" && warning(version)}
       {origin &&
         (decides && state !== "approved" ? (
           <Notice tone="warning" role="status" className="keyless-notice">
@@ -488,7 +532,11 @@ export function CatalogApprovalSection({
                 {t("catalogWithdraw")}
               </Button>
             ) : decides ? (
-              <Button size="sm" disabled={busy} onClick={() => void approve()}>
+              <Button
+                size="sm"
+                disabled={busy || !accepted(version)}
+                onClick={() => void approve()}
+              >
                 {t("catalogApprove")}
               </Button>
             ) : null}

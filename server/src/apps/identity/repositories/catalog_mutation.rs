@@ -268,6 +268,7 @@ async fn history(
 	tx: &mut crate::database::native::Transaction,
 	binding: &Binding,
 	actor: &str,
+	provider_warning_acknowledgment: Option<&str>,
 ) -> Result<()> {
 	let tenant = binding.tenant.as_str();
 	let entry = EntityRef {
@@ -296,6 +297,7 @@ async fn history(
 					Alias::new("enabled"),
 					Alias::new("restriction"),
 					Alias::new("actor"),
+					Alias::new("provider_warning_acknowledgment"),
 				])
 				.from_subquery(
 					Query::select()
@@ -324,6 +326,9 @@ async fn history(
 						.expr(SimpleExpr::CustomWithExpr(
 							"(?)".to_owned(),
 							vec![Expr::value(query_bind_6.to_owned()).into()],
+						))
+						.expr(Expr::value(
+							provider_warning_acknowledgment.map(str::to_owned),
 						))
 						.to_owned(),
 				)
@@ -390,8 +395,15 @@ impl CatalogMutation for NativeMutation<'_> {
 		.await
 		.map_err(Into::into)
 	}
-	async fn history(&mut self, binding: &Binding, actor: &str) -> aidash_application::Result<()> {
-		history(self.0, binding, actor).await.map_err(Into::into)
+	async fn history(
+		&mut self,
+		binding: &Binding,
+		actor: &str,
+		provider_warning_acknowledgment: Option<&str>,
+	) -> aidash_application::Result<()> {
+		history(self.0, binding, actor, provider_warning_acknowledgment)
+			.await
+			.map_err(Into::into)
 	}
 }
 pub(crate) struct NativeAdministrator<'a> {
@@ -423,8 +435,15 @@ impl CatalogMutation for NativeAdministrator<'_> {
 			)
 			.await
 	}
-	async fn history(&mut self, binding: &Binding, actor: &str) -> aidash_application::Result<()> {
-		self.mutation.history(binding, actor).await
+	async fn history(
+		&mut self,
+		binding: &Binding,
+		actor: &str,
+		provider_warning_acknowledgment: Option<&str>,
+	) -> aidash_application::Result<()> {
+		self.mutation
+			.history(binding, actor, provider_warning_acknowledgment)
+			.await
 	}
 }
 #[async_trait]

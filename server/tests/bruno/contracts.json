@@ -3139,6 +3139,17 @@
               "$ref": "#/components/schemas/NodeName",
               "description": "The Node the approval applies to."
             },
+            "restriction": {
+              "anyOf": [
+                {
+                  "$ref": "#/components/schemas/CatalogRestriction"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Who may use the definition on this Node; absent means everyone the\nTenant's policy allows."
+            },
             "revision": {
               "type": "integer",
               "format": "int64"
@@ -3147,6 +3158,30 @@
               "type": "string"
             }
           }
+        },
+        "CatalogRestriction": {
+          "type": "object",
+          "description": "Who may use an approved definition on its Node (ADR 0029, ADR 0095). A\nrestriction names subjects directly and/or Assignable Groups; their\nmembers may use it. It only narrows what the Tenant's policy already\nallows, so it can never grant authority.",
+          "required": ["subjects", "groups"],
+          "properties": {
+            "groups": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "default": [],
+              "uniqueItems": true
+            },
+            "subjects": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "default": [],
+              "uniqueItems": true
+            }
+          },
+          "additionalProperties": false
         },
         "NodeName": {
           "type": "string",
@@ -3192,6 +3227,17 @@
               "$ref": "#/components/schemas/NodeName",
               "description": "The Node the approval applies to."
             },
+            "restriction": {
+              "anyOf": [
+                {
+                  "$ref": "#/components/schemas/CatalogRestriction"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Who may use the definition on this Node; absent means everyone the\nTenant's policy allows."
+            },
             "revision": {
               "type": "integer",
               "format": "int64"
@@ -3200,6 +3246,30 @@
               "type": "string"
             }
           }
+        },
+        "CatalogRestriction": {
+          "type": "object",
+          "description": "Who may use an approved definition on its Node (ADR 0029, ADR 0095). A\nrestriction names subjects directly and/or Assignable Groups; their\nmembers may use it. It only narrows what the Tenant's policy already\nallows, so it can never grant authority.",
+          "required": ["subjects", "groups"],
+          "properties": {
+            "groups": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "default": [],
+              "uniqueItems": true
+            },
+            "subjects": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "default": [],
+              "uniqueItems": true
+            }
+          },
+          "additionalProperties": false
         },
         "NodeName": {
           "type": "string",
@@ -3248,6 +3318,17 @@
               "$ref": "#/components/schemas/NodeName",
               "description": "The Node the approval applies to."
             },
+            "restriction": {
+              "anyOf": [
+                {
+                  "$ref": "#/components/schemas/CatalogRestriction"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Who may use the definition on this Node; absent means everyone the\nTenant's policy allows."
+            },
             "revision": {
               "type": "integer",
               "format": "int64"
@@ -3256,6 +3337,30 @@
               "type": "string"
             }
           }
+        },
+        "CatalogRestriction": {
+          "type": "object",
+          "description": "Who may use an approved definition on its Node (ADR 0029, ADR 0095). A\nrestriction names subjects directly and/or Assignable Groups; their\nmembers may use it. It only narrows what the Tenant's policy already\nallows, so it can never grant authority.",
+          "required": ["subjects", "groups"],
+          "properties": {
+            "groups": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "default": [],
+              "uniqueItems": true
+            },
+            "subjects": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "default": [],
+              "uniqueItems": true
+            }
+          },
+          "additionalProperties": false
         },
         "NodeName": {
           "type": "string",
@@ -6235,6 +6340,17 @@
                 "minimum": 0
               }
             },
+            "provider_tool": {
+              "anyOf": [
+                {
+                  "$ref": "#/components/schemas/Parameters"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Provider-owned tools take immutable Binding parameters, never model arguments."
+            },
             "scope": {
               "type": "object",
               "additionalProperties": {
@@ -6258,6 +6374,20 @@
             "origin": {
               "$ref": "#/components/schemas/BindingOrigin"
             }
+          },
+          "additionalProperties": false
+        },
+        "Parameters": {
+          "type": "object",
+          "description": "Binding-owned configuration, copied into the immutable Binding snapshot.\nNo default is deserialized: an author must explicitly pin every spending cap.",
+          "required": ["max_tool_calls", "parameters"],
+          "properties": {
+            "max_tool_calls": {
+              "type": "integer",
+              "format": "uint32",
+              "minimum": 0
+            },
+            "parameters": {}
           },
           "additionalProperties": false
         },
@@ -12642,6 +12772,17 @@
                 "minimum": 0
               }
             },
+            "provider_tool": {
+              "anyOf": [
+                {
+                  "$ref": "#/components/schemas/Parameters"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Provider-owned tools take immutable Binding parameters, never model arguments."
+            },
             "scope": {
               "type": "object",
               "additionalProperties": {
@@ -12665,6 +12806,20 @@
             "origin": {
               "$ref": "#/components/schemas/BindingOrigin"
             }
+          },
+          "additionalProperties": false
+        },
+        "Parameters": {
+          "type": "object",
+          "description": "Binding-owned configuration, copied into the immutable Binding snapshot.\nNo default is deserialized: an author must explicitly pin every spending cap.",
+          "required": ["max_tool_calls", "parameters"],
+          "properties": {
+            "max_tool_calls": {
+              "type": "integer",
+              "format": "uint32",
+              "minimum": 0
+            },
+            "parameters": {}
           },
           "additionalProperties": false
         },
@@ -13351,6 +13506,17 @@
                 "minimum": 0
               }
             },
+            "provider_tool": {
+              "anyOf": [
+                {
+                  "$ref": "#/components/schemas/Parameters"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Provider-owned tools take immutable Binding parameters, never model arguments."
+            },
             "scope": {
               "type": "object",
               "additionalProperties": {
@@ -13374,6 +13540,20 @@
             "origin": {
               "$ref": "#/components/schemas/BindingOrigin"
             }
+          },
+          "additionalProperties": false
+        },
+        "Parameters": {
+          "type": "object",
+          "description": "Binding-owned configuration, copied into the immutable Binding snapshot.\nNo default is deserialized: an author must explicitly pin every spending cap.",
+          "required": ["max_tool_calls", "parameters"],
+          "properties": {
+            "max_tool_calls": {
+              "type": "integer",
+              "format": "uint32",
+              "minimum": 0
+            },
+            "parameters": {}
           },
           "additionalProperties": false
         },
@@ -13913,6 +14093,17 @@
                 "minimum": 0
               }
             },
+            "provider_tool": {
+              "anyOf": [
+                {
+                  "$ref": "#/components/schemas/Parameters"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Provider-owned tools take immutable Binding parameters, never model arguments."
+            },
             "scope": {
               "type": "object",
               "additionalProperties": {
@@ -13940,6 +14131,20 @@
             "origin": {
               "$ref": "#/components/schemas/BindingOrigin"
             }
+          },
+          "additionalProperties": false
+        },
+        "Parameters": {
+          "type": "object",
+          "description": "Binding-owned configuration, copied into the immutable Binding snapshot.\nNo default is deserialized: an author must explicitly pin every spending cap.",
+          "required": ["max_tool_calls", "parameters"],
+          "properties": {
+            "max_tool_calls": {
+              "type": "integer",
+              "format": "uint32",
+              "minimum": 0
+            },
+            "parameters": {}
           },
           "additionalProperties": false
         },
@@ -14404,6 +14609,17 @@
                 "minimum": 0
               }
             },
+            "provider_tool": {
+              "anyOf": [
+                {
+                  "$ref": "#/components/schemas/Parameters"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Provider-owned tools take immutable Binding parameters, never model arguments."
+            },
             "scope": {
               "type": "object",
               "additionalProperties": {
@@ -14431,6 +14647,20 @@
             "origin": {
               "$ref": "#/components/schemas/BindingOrigin"
             }
+          },
+          "additionalProperties": false
+        },
+        "Parameters": {
+          "type": "object",
+          "description": "Binding-owned configuration, copied into the immutable Binding snapshot.\nNo default is deserialized: an author must explicitly pin every spending cap.",
+          "required": ["max_tool_calls", "parameters"],
+          "properties": {
+            "max_tool_calls": {
+              "type": "integer",
+              "format": "uint32",
+              "minimum": 0
+            },
+            "parameters": {}
           },
           "additionalProperties": false
         },
@@ -14892,6 +15122,17 @@
                 "minimum": 0
               }
             },
+            "provider_tool": {
+              "anyOf": [
+                {
+                  "$ref": "#/components/schemas/Parameters"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Provider-owned tools take immutable Binding parameters, never model arguments."
+            },
             "scope": {
               "type": "object",
               "additionalProperties": {
@@ -14919,6 +15160,20 @@
             "origin": {
               "$ref": "#/components/schemas/BindingOrigin"
             }
+          },
+          "additionalProperties": false
+        },
+        "Parameters": {
+          "type": "object",
+          "description": "Binding-owned configuration, copied into the immutable Binding snapshot.\nNo default is deserialized: an author must explicitly pin every spending cap.",
+          "required": ["max_tool_calls", "parameters"],
+          "properties": {
+            "max_tool_calls": {
+              "type": "integer",
+              "format": "uint32",
+              "minimum": 0
+            },
+            "parameters": {}
           },
           "additionalProperties": false
         },
@@ -15654,6 +15909,17 @@
                 "minimum": 0
               }
             },
+            "provider_tool": {
+              "anyOf": [
+                {
+                  "$ref": "#/components/schemas/Parameters"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Provider-owned tools take immutable Binding parameters, never model arguments."
+            },
             "scope": {
               "type": "object",
               "additionalProperties": {
@@ -15677,6 +15943,20 @@
             "origin": {
               "$ref": "#/components/schemas/BindingOrigin"
             }
+          },
+          "additionalProperties": false
+        },
+        "Parameters": {
+          "type": "object",
+          "description": "Binding-owned configuration, copied into the immutable Binding snapshot.\nNo default is deserialized: an author must explicitly pin every spending cap.",
+          "required": ["max_tool_calls", "parameters"],
+          "properties": {
+            "max_tool_calls": {
+              "type": "integer",
+              "format": "uint32",
+              "minimum": 0
+            },
+            "parameters": {}
           },
           "additionalProperties": false
         },
@@ -16264,6 +16544,17 @@
                 "minimum": 0
               }
             },
+            "provider_tool": {
+              "anyOf": [
+                {
+                  "$ref": "#/components/schemas/Parameters"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Provider-owned tools take immutable Binding parameters, never model arguments."
+            },
             "scope": {
               "type": "object",
               "additionalProperties": {
@@ -16287,6 +16578,20 @@
             "origin": {
               "$ref": "#/components/schemas/BindingOrigin"
             }
+          },
+          "additionalProperties": false
+        },
+        "Parameters": {
+          "type": "object",
+          "description": "Binding-owned configuration, copied into the immutable Binding snapshot.\nNo default is deserialized: an author must explicitly pin every spending cap.",
+          "required": ["max_tool_calls", "parameters"],
+          "properties": {
+            "max_tool_calls": {
+              "type": "integer",
+              "format": "uint32",
+              "minimum": 0
+            },
+            "parameters": {}
           },
           "additionalProperties": false
         },
@@ -16880,6 +17185,17 @@
                 "minimum": 0
               }
             },
+            "provider_tool": {
+              "anyOf": [
+                {
+                  "$ref": "#/components/schemas/Parameters"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Provider-owned tools take immutable Binding parameters, never model arguments."
+            },
             "scope": {
               "type": "object",
               "additionalProperties": {
@@ -16936,6 +17252,20 @@
               },
               "description": "The Tenant Secrets the package's tool names, which whoever installs it\nfills from their own Tenant (ADR 0051). Empty for most packages."
             }
+          },
+          "additionalProperties": false
+        },
+        "Parameters": {
+          "type": "object",
+          "description": "Binding-owned configuration, copied into the immutable Binding snapshot.\nNo default is deserialized: an author must explicitly pin every spending cap.",
+          "required": ["max_tool_calls", "parameters"],
+          "properties": {
+            "max_tool_calls": {
+              "type": "integer",
+              "format": "uint32",
+              "minimum": 0
+            },
+            "parameters": {}
           },
           "additionalProperties": false
         },
@@ -17299,6 +17629,17 @@
                 "minimum": 0
               }
             },
+            "provider_tool": {
+              "anyOf": [
+                {
+                  "$ref": "#/components/schemas/Parameters"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Provider-owned tools take immutable Binding parameters, never model arguments."
+            },
             "scope": {
               "type": "object",
               "additionalProperties": {
@@ -17322,6 +17663,20 @@
             "origin": {
               "$ref": "#/components/schemas/BindingOrigin"
             }
+          },
+          "additionalProperties": false
+        },
+        "Parameters": {
+          "type": "object",
+          "description": "Binding-owned configuration, copied into the immutable Binding snapshot.\nNo default is deserialized: an author must explicitly pin every spending cap.",
+          "required": ["max_tool_calls", "parameters"],
+          "properties": {
+            "max_tool_calls": {
+              "type": "integer",
+              "format": "uint32",
+              "minimum": 0
+            },
+            "parameters": {}
           },
           "additionalProperties": false
         },
@@ -17787,6 +18142,17 @@
                 "minimum": 0
               }
             },
+            "provider_tool": {
+              "anyOf": [
+                {
+                  "$ref": "#/components/schemas/Parameters"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Provider-owned tools take immutable Binding parameters, never model arguments."
+            },
             "scope": {
               "type": "object",
               "additionalProperties": {
@@ -17810,6 +18176,20 @@
             "origin": {
               "$ref": "#/components/schemas/BindingOrigin"
             }
+          },
+          "additionalProperties": false
+        },
+        "Parameters": {
+          "type": "object",
+          "description": "Binding-owned configuration, copied into the immutable Binding snapshot.\nNo default is deserialized: an author must explicitly pin every spending cap.",
+          "required": ["max_tool_calls", "parameters"],
+          "properties": {
+            "max_tool_calls": {
+              "type": "integer",
+              "format": "uint32",
+              "minimum": 0
+            },
+            "parameters": {}
           },
           "additionalProperties": false
         },
@@ -18377,6 +18757,17 @@
                 "minimum": 0
               }
             },
+            "provider_tool": {
+              "anyOf": [
+                {
+                  "$ref": "#/components/schemas/Parameters"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Provider-owned tools take immutable Binding parameters, never model arguments."
+            },
             "scope": {
               "type": "object",
               "additionalProperties": {
@@ -18400,6 +18791,20 @@
             "origin": {
               "$ref": "#/components/schemas/BindingOrigin"
             }
+          },
+          "additionalProperties": false
+        },
+        "Parameters": {
+          "type": "object",
+          "description": "Binding-owned configuration, copied into the immutable Binding snapshot.\nNo default is deserialized: an author must explicitly pin every spending cap.",
+          "required": ["max_tool_calls", "parameters"],
+          "properties": {
+            "max_tool_calls": {
+              "type": "integer",
+              "format": "uint32",
+              "minimum": 0
+            },
+            "parameters": {}
           },
           "additionalProperties": false
         },
@@ -18865,6 +19270,17 @@
                 "minimum": 0
               }
             },
+            "provider_tool": {
+              "anyOf": [
+                {
+                  "$ref": "#/components/schemas/Parameters"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Provider-owned tools take immutable Binding parameters, never model arguments."
+            },
             "scope": {
               "type": "object",
               "additionalProperties": {
@@ -18888,6 +19304,20 @@
             "origin": {
               "$ref": "#/components/schemas/BindingOrigin"
             }
+          },
+          "additionalProperties": false
+        },
+        "Parameters": {
+          "type": "object",
+          "description": "Binding-owned configuration, copied into the immutable Binding snapshot.\nNo default is deserialized: an author must explicitly pin every spending cap.",
+          "required": ["max_tool_calls", "parameters"],
+          "properties": {
+            "max_tool_calls": {
+              "type": "integer",
+              "format": "uint32",
+              "minimum": 0
+            },
+            "parameters": {}
           },
           "additionalProperties": false
         },
@@ -19353,6 +19783,17 @@
                 "minimum": 0
               }
             },
+            "provider_tool": {
+              "anyOf": [
+                {
+                  "$ref": "#/components/schemas/Parameters"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Provider-owned tools take immutable Binding parameters, never model arguments."
+            },
             "scope": {
               "type": "object",
               "additionalProperties": {
@@ -19376,6 +19817,20 @@
             "origin": {
               "$ref": "#/components/schemas/BindingOrigin"
             }
+          },
+          "additionalProperties": false
+        },
+        "Parameters": {
+          "type": "object",
+          "description": "Binding-owned configuration, copied into the immutable Binding snapshot.\nNo default is deserialized: an author must explicitly pin every spending cap.",
+          "required": ["max_tool_calls", "parameters"],
+          "properties": {
+            "max_tool_calls": {
+              "type": "integer",
+              "format": "uint32",
+              "minimum": 0
+            },
+            "parameters": {}
           },
           "additionalProperties": false
         },
@@ -19894,6 +20349,17 @@
                 "minimum": 0
               }
             },
+            "provider_tool": {
+              "anyOf": [
+                {
+                  "$ref": "#/components/schemas/Parameters"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Provider-owned tools take immutable Binding parameters, never model arguments."
+            },
             "scope": {
               "type": "object",
               "additionalProperties": {
@@ -19917,6 +20383,20 @@
             "origin": {
               "$ref": "#/components/schemas/BindingOrigin"
             }
+          },
+          "additionalProperties": false
+        },
+        "Parameters": {
+          "type": "object",
+          "description": "Binding-owned configuration, copied into the immutable Binding snapshot.\nNo default is deserialized: an author must explicitly pin every spending cap.",
+          "required": ["max_tool_calls", "parameters"],
+          "properties": {
+            "max_tool_calls": {
+              "type": "integer",
+              "format": "uint32",
+              "minimum": 0
+            },
+            "parameters": {}
           },
           "additionalProperties": false
         },
@@ -20292,6 +20772,17 @@
                 "minimum": 0
               }
             },
+            "provider_tool": {
+              "anyOf": [
+                {
+                  "$ref": "#/components/schemas/Parameters"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Provider-owned tools take immutable Binding parameters, never model arguments."
+            },
             "scope": {
               "type": "object",
               "additionalProperties": {
@@ -20315,6 +20806,20 @@
             "origin": {
               "$ref": "#/components/schemas/BindingOrigin"
             }
+          },
+          "additionalProperties": false
+        },
+        "Parameters": {
+          "type": "object",
+          "description": "Binding-owned configuration, copied into the immutable Binding snapshot.\nNo default is deserialized: an author must explicitly pin every spending cap.",
+          "required": ["max_tool_calls", "parameters"],
+          "properties": {
+            "max_tool_calls": {
+              "type": "integer",
+              "format": "uint32",
+              "minimum": 0
+            },
+            "parameters": {}
           },
           "additionalProperties": false
         },
@@ -20673,6 +21178,17 @@
                 "minimum": 0
               }
             },
+            "provider_tool": {
+              "anyOf": [
+                {
+                  "$ref": "#/components/schemas/Parameters"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Provider-owned tools take immutable Binding parameters, never model arguments."
+            },
             "scope": {
               "type": "object",
               "additionalProperties": {
@@ -20696,6 +21212,20 @@
             "origin": {
               "$ref": "#/components/schemas/BindingOrigin"
             }
+          },
+          "additionalProperties": false
+        },
+        "Parameters": {
+          "type": "object",
+          "description": "Binding-owned configuration, copied into the immutable Binding snapshot.\nNo default is deserialized: an author must explicitly pin every spending cap.",
+          "required": ["max_tool_calls", "parameters"],
+          "properties": {
+            "max_tool_calls": {
+              "type": "integer",
+              "format": "uint32",
+              "minimum": 0
+            },
+            "parameters": {}
           },
           "additionalProperties": false
         },
@@ -21043,6 +21573,17 @@
                 "minimum": 0
               }
             },
+            "provider_tool": {
+              "anyOf": [
+                {
+                  "$ref": "#/components/schemas/Parameters"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Provider-owned tools take immutable Binding parameters, never model arguments."
+            },
             "scope": {
               "type": "object",
               "additionalProperties": {
@@ -21066,6 +21607,20 @@
             "origin": {
               "$ref": "#/components/schemas/BindingOrigin"
             }
+          },
+          "additionalProperties": false
+        },
+        "Parameters": {
+          "type": "object",
+          "description": "Binding-owned configuration, copied into the immutable Binding snapshot.\nNo default is deserialized: an author must explicitly pin every spending cap.",
+          "required": ["max_tool_calls", "parameters"],
+          "properties": {
+            "max_tool_calls": {
+              "type": "integer",
+              "format": "uint32",
+              "minimum": 0
+            },
+            "parameters": {}
           },
           "additionalProperties": false
         },
@@ -21196,7 +21751,13 @@
         },
         "ApprovalRecord": {
           "type": "object",
-          "required": ["revision", "enabled", "actor", "created_at"],
+          "required": [
+            "revision",
+            "enabled",
+            "actor",
+            "created_at",
+            "restriction"
+          ],
           "properties": {
             "actor": {
               "type": "string"
@@ -21207,6 +21768,20 @@
             },
             "enabled": {
               "type": "boolean"
+            },
+            "provider_warning_acknowledgment": {
+              "type": ["string", "null"]
+            },
+            "restriction": {
+              "anyOf": [
+                {
+                  "$ref": "#/components/schemas/CatalogRestriction"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "The restriction this revision recorded."
             },
             "revision": {
               "type": "integer",
@@ -21278,6 +21853,30 @@
             "skill_support",
             "companion"
           ]
+        },
+        "CatalogRestriction": {
+          "type": "object",
+          "description": "Who may use an approved definition on its Node (ADR 0029, ADR 0095). A\nrestriction names subjects directly and/or Assignable Groups; their\nmembers may use it. It only narrows what the Tenant's policy already\nallows, so it can never grant authority.",
+          "required": ["subjects", "groups"],
+          "properties": {
+            "groups": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "default": [],
+              "uniqueItems": true
+            },
+            "subjects": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "default": [],
+              "uniqueItems": true
+            }
+          },
+          "additionalProperties": false
         },
         "Concurrency": {
           "oneOf": [
@@ -21452,6 +22051,17 @@
                 "minimum": 0
               }
             },
+            "provider_tool": {
+              "anyOf": [
+                {
+                  "$ref": "#/components/schemas/Parameters"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Provider-owned tools take immutable Binding parameters, never model arguments."
+            },
             "scope": {
               "type": "object",
               "additionalProperties": {
@@ -21475,6 +22085,20 @@
             "origin": {
               "$ref": "#/components/schemas/BindingOrigin"
             }
+          },
+          "additionalProperties": false
+        },
+        "Parameters": {
+          "type": "object",
+          "description": "Binding-owned configuration, copied into the immutable Binding snapshot.\nNo default is deserialized: an author must explicitly pin every spending cap.",
+          "required": ["max_tool_calls", "parameters"],
+          "properties": {
+            "max_tool_calls": {
+              "type": "integer",
+              "format": "uint32",
+              "minimum": 0
+            },
+            "parameters": {}
           },
           "additionalProperties": false
         },
@@ -21527,6 +22151,10 @@
             "needs_approval": {
               "type": "boolean",
               "description": "Whether the Tenant must approve it before use: every Tenant definition,\nand the Sandboxed, research and Decider built-ins."
+            },
+            "provider_warning": {
+              "type": ["string", "null"],
+              "description": "Disclosure shown only when approving this exact Provider tool version."
             },
             "subject": {
               "anyOf": [
@@ -21597,10 +22225,21 @@
         },
         "VersionApproval": {
           "type": "object",
-          "required": ["enabled", "revision"],
+          "required": ["enabled", "revision", "restriction"],
           "properties": {
             "enabled": {
               "type": "boolean"
+            },
+            "restriction": {
+              "anyOf": [
+                {
+                  "$ref": "#/components/schemas/CatalogRestriction"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Who may use the version on this Node; absent means everyone the\nTenant's policy allows (ADR 0095)."
             },
             "revision": {
               "type": "integer",
@@ -21901,6 +22540,17 @@
                 "minimum": 0
               }
             },
+            "provider_tool": {
+              "anyOf": [
+                {
+                  "$ref": "#/components/schemas/Parameters"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Provider-owned tools take immutable Binding parameters, never model arguments."
+            },
             "scope": {
               "type": "object",
               "additionalProperties": {
@@ -21924,6 +22574,20 @@
             "origin": {
               "$ref": "#/components/schemas/BindingOrigin"
             }
+          },
+          "additionalProperties": false
+        },
+        "Parameters": {
+          "type": "object",
+          "description": "Binding-owned configuration, copied into the immutable Binding snapshot.\nNo default is deserialized: an author must explicitly pin every spending cap.",
+          "required": ["max_tool_calls", "parameters"],
+          "properties": {
+            "max_tool_calls": {
+              "type": "integer",
+              "format": "uint32",
+              "minimum": 0
+            },
+            "parameters": {}
           },
           "additionalProperties": false
         },
@@ -25797,6 +26461,17 @@
                 "minimum": 0
               }
             },
+            "provider_tool": {
+              "anyOf": [
+                {
+                  "$ref": "#/components/schemas/Parameters"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Provider-owned tools take immutable Binding parameters, never model arguments."
+            },
             "scope": {
               "type": "object",
               "additionalProperties": {
@@ -25820,6 +26495,20 @@
             "origin": {
               "$ref": "#/components/schemas/BindingOrigin"
             }
+          },
+          "additionalProperties": false
+        },
+        "Parameters": {
+          "type": "object",
+          "description": "Binding-owned configuration, copied into the immutable Binding snapshot.\nNo default is deserialized: an author must explicitly pin every spending cap.",
+          "required": ["max_tool_calls", "parameters"],
+          "properties": {
+            "max_tool_calls": {
+              "type": "integer",
+              "format": "uint32",
+              "minimum": 0
+            },
+            "parameters": {}
           },
           "additionalProperties": false
         },
@@ -26217,6 +26906,17 @@
                 "minimum": 0
               }
             },
+            "provider_tool": {
+              "anyOf": [
+                {
+                  "$ref": "#/components/schemas/Parameters"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Provider-owned tools take immutable Binding parameters, never model arguments."
+            },
             "scope": {
               "type": "object",
               "additionalProperties": {
@@ -26240,6 +26940,20 @@
             "origin": {
               "$ref": "#/components/schemas/BindingOrigin"
             }
+          },
+          "additionalProperties": false
+        },
+        "Parameters": {
+          "type": "object",
+          "description": "Binding-owned configuration, copied into the immutable Binding snapshot.\nNo default is deserialized: an author must explicitly pin every spending cap.",
+          "required": ["max_tool_calls", "parameters"],
+          "properties": {
+            "max_tool_calls": {
+              "type": "integer",
+              "format": "uint32",
+              "minimum": 0
+            },
+            "parameters": {}
           },
           "additionalProperties": false
         },
@@ -27818,6 +28532,17 @@
                 "minimum": 0
               }
             },
+            "provider_tool": {
+              "anyOf": [
+                {
+                  "$ref": "#/components/schemas/Parameters"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Provider-owned tools take immutable Binding parameters, never model arguments."
+            },
             "scope": {
               "type": "object",
               "additionalProperties": {
@@ -27841,6 +28566,20 @@
             "origin": {
               "$ref": "#/components/schemas/BindingOrigin"
             }
+          },
+          "additionalProperties": false
+        },
+        "Parameters": {
+          "type": "object",
+          "description": "Binding-owned configuration, copied into the immutable Binding snapshot.\nNo default is deserialized: an author must explicitly pin every spending cap.",
+          "required": ["max_tool_calls", "parameters"],
+          "properties": {
+            "max_tool_calls": {
+              "type": "integer",
+              "format": "uint32",
+              "minimum": 0
+            },
+            "parameters": {}
           },
           "additionalProperties": false
         },
@@ -28928,6 +29667,10 @@
                   "type": "string",
                   "enum": ["assistant"]
                 },
+                "provider_activity": {
+                  "type": "array",
+                  "items": {}
+                },
                 "text": {
                   "type": "string"
                 }
@@ -29946,6 +30689,11 @@
               "format": "uint64",
               "minimum": 0
             },
+            "provider_activity": {
+              "type": "array",
+              "items": {},
+              "description": "Observable provider-owned activity, never Research evidence or citations."
+            },
             "text": {
               "type": "string"
             },
@@ -29999,6 +30747,17 @@
                 "format": "uint64",
                 "minimum": 0
               }
+            },
+            "provider_tool": {
+              "anyOf": [
+                {
+                  "$ref": "#/components/schemas/Parameters"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Provider-owned tools take immutable Binding parameters, never model arguments."
             },
             "scope": {
               "type": "object",
@@ -30055,6 +30814,20 @@
             "expected_digest": {
               "type": "string"
             }
+          },
+          "additionalProperties": false
+        },
+        "Parameters": {
+          "type": "object",
+          "description": "Binding-owned configuration, copied into the immutable Binding snapshot.\nNo default is deserialized: an author must explicitly pin every spending cap.",
+          "required": ["max_tool_calls", "parameters"],
+          "properties": {
+            "max_tool_calls": {
+              "type": "integer",
+              "format": "uint32",
+              "minimum": 0
+            },
+            "parameters": {}
           },
           "additionalProperties": false
         },
@@ -32767,6 +33540,10 @@
                   "type": "string",
                   "enum": ["assistant"]
                 },
+                "provider_activity": {
+                  "type": "array",
+                  "items": {}
+                },
                 "text": {
                   "type": "string"
                 }
@@ -33656,6 +34433,11 @@
               "format": "uint64",
               "minimum": 0
             },
+            "provider_activity": {
+              "type": "array",
+              "items": {},
+              "description": "Observable provider-owned activity, never Research evidence or citations."
+            },
             "text": {
               "type": "string"
             },
@@ -33709,6 +34491,17 @@
                 "format": "uint64",
                 "minimum": 0
               }
+            },
+            "provider_tool": {
+              "anyOf": [
+                {
+                  "$ref": "#/components/schemas/Parameters"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Provider-owned tools take immutable Binding parameters, never model arguments."
             },
             "scope": {
               "type": "object",
@@ -33765,6 +34558,20 @@
             "expected_digest": {
               "type": "string"
             }
+          },
+          "additionalProperties": false
+        },
+        "Parameters": {
+          "type": "object",
+          "description": "Binding-owned configuration, copied into the immutable Binding snapshot.\nNo default is deserialized: an author must explicitly pin every spending cap.",
+          "required": ["max_tool_calls", "parameters"],
+          "properties": {
+            "max_tool_calls": {
+              "type": "integer",
+              "format": "uint32",
+              "minimum": 0
+            },
+            "parameters": {}
           },
           "additionalProperties": false
         },
@@ -33923,6 +34730,30 @@
               "items": {
                 "$ref": "#/components/schemas/PinnedServer"
               }
+            }
+          },
+          "additionalProperties": false
+        },
+        "ProviderToolActivity": {
+          "type": "object",
+          "description": "Read-only Context Journal inspection, independent of the lossy projection.",
+          "required": ["seq", "epoch", "items"],
+          "properties": {
+            "epoch": {
+              "type": "integer",
+              "format": "int64"
+            },
+            "items": {
+              "type": "array",
+              "items": {}
+            },
+            "preview": {
+              "type": ["string", "null"]
+            },
+            "seq": {
+              "type": "integer",
+              "format": "uint64",
+              "minimum": 0
             }
           },
           "additionalProperties": false
@@ -34444,6 +35275,13 @@
                   "type": "null"
                 }
               ]
+            },
+            "provider_tool_activity": {
+              "type": "array",
+              "items": {
+                "$ref": "#/components/schemas/ProviderToolActivity"
+              },
+              "description": "Original provider-owned activity, newest first, paged by inspection offset."
             },
             "run": {
               "$ref": "#/components/schemas/RunInspection"
@@ -36130,6 +36968,10 @@
                   "type": "string",
                   "enum": ["assistant"]
                 },
+                "provider_activity": {
+                  "type": "array",
+                  "items": {}
+                },
                 "text": {
                   "type": "string"
                 }
@@ -36982,6 +37824,11 @@
               "format": "uint64",
               "minimum": 0
             },
+            "provider_activity": {
+              "type": "array",
+              "items": {},
+              "description": "Observable provider-owned activity, never Research evidence or citations."
+            },
             "text": {
               "type": "string"
             },
@@ -37035,6 +37882,17 @@
                 "format": "uint64",
                 "minimum": 0
               }
+            },
+            "provider_tool": {
+              "anyOf": [
+                {
+                  "$ref": "#/components/schemas/Parameters"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Provider-owned tools take immutable Binding parameters, never model arguments."
             },
             "scope": {
               "type": "object",
@@ -37091,6 +37949,20 @@
             "expected_digest": {
               "type": "string"
             }
+          },
+          "additionalProperties": false
+        },
+        "Parameters": {
+          "type": "object",
+          "description": "Binding-owned configuration, copied into the immutable Binding snapshot.\nNo default is deserialized: an author must explicitly pin every spending cap.",
+          "required": ["max_tool_calls", "parameters"],
+          "properties": {
+            "max_tool_calls": {
+              "type": "integer",
+              "format": "uint32",
+              "minimum": 0
+            },
+            "parameters": {}
           },
           "additionalProperties": false
         },
@@ -46646,6 +47518,78 @@
             }
           }
         },
+        "CatalogRestriction": {
+          "type": "object",
+          "description": "Who may use an approved definition on its Node (ADR 0029, ADR 0095). A\nrestriction names subjects directly and/or Assignable Groups; their\nmembers may use it. It only narrows what the Tenant's policy already\nallows, so it can never grant authority.",
+          "required": ["subjects", "groups"],
+          "properties": {
+            "groups": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "default": [],
+              "uniqueItems": true
+            },
+            "subjects": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "default": [],
+              "uniqueItems": true
+            }
+          },
+          "additionalProperties": false
+        },
+        "EntityRef": {
+          "type": "object",
+          "required": ["id", "version"],
+          "properties": {
+            "id": {
+              "type": "string"
+            },
+            "version": {
+              "type": "string"
+            }
+          }
+        },
+        "NodeName": {
+          "type": "string",
+          "description": "The identifier Aidash assigns to a Node, in the same form as a Tenant name:\n`<adjective>-<noun>-<8 random characters>`. Unique within its Deployment,\nnever changed and never reused."
+        },
+        "ReviewInstallation": {
+          "type": "object",
+          "description": "The installed copy a review item can activate.",
+          "required": [
+            "installation",
+            "revision",
+            "digest",
+            "expected_activation_revision",
+            "active_revision"
+          ],
+          "properties": {
+            "active_revision": {
+              "type": ["integer", "null"],
+              "format": "int64"
+            },
+            "digest": {
+              "type": "string",
+              "description": "The immutable revision digest the activation fences on."
+            },
+            "expected_activation_revision": {
+              "type": "integer",
+              "format": "int64"
+            },
+            "installation": {
+              "type": "string"
+            },
+            "revision": {
+              "type": "integer",
+              "format": "int64"
+            }
+          }
+        },
         "ReviewItem": {
           "type": "object",
           "description": "One exact definition in the reviewed closure.",
@@ -46655,6 +47599,7 @@
             "kind",
             "name",
             "description",
+            "provider_warning",
             "digest",
             "status",
             "approved",
@@ -46725,6 +47670,10 @@
               ],
               "description": "The restriction this Review proposes for the direct consumers."
             },
+            "provider_warning": {
+              "type": ["string", "null"],
+              "description": "Disclosure required before approving this exact Provider tool."
+            },
             "reference": {
               "$ref": "#/components/schemas/EntityRef"
             },
@@ -46745,74 +47694,6 @@
             "widen": {
               "type": "boolean",
               "description": "An existing restriction would gain consumers."
-            }
-          }
-        },
-        "ReviewInstallation": {
-          "type": "object",
-          "description": "The installed copy a review item can activate.",
-          "required": [
-            "installation",
-            "revision",
-            "digest",
-            "expected_activation_revision",
-            "active_revision"
-          ],
-          "properties": {
-            "active_revision": {
-              "type": ["integer", "null"],
-              "format": "int64"
-            },
-            "digest": {
-              "type": "string",
-              "description": "The immutable revision digest the activation fences on."
-            },
-            "expected_activation_revision": {
-              "type": "integer",
-              "format": "int64"
-            },
-            "installation": {
-              "type": "string"
-            },
-            "revision": {
-              "type": "integer",
-              "format": "int64"
-            }
-          }
-        },
-        "CatalogRestriction": {
-          "type": "object",
-          "description": "Who may use an approved definition on its Node (ADR 0029, ADR 0095). A\nrestriction names subjects directly and/or Assignable Groups; their\nmembers may use it. It only narrows what the Tenant's policy already\nallows, so it can never grant authority.",
-          "required": ["subjects", "groups"],
-          "properties": {
-            "groups": {
-              "type": "array",
-              "items": {
-                "type": "string"
-              },
-              "default": [],
-              "uniqueItems": true
-            },
-            "subjects": {
-              "type": "array",
-              "items": {
-                "type": "string"
-              },
-              "default": [],
-              "uniqueItems": true
-            }
-          },
-          "additionalProperties": false
-        },
-        "EntityRef": {
-          "type": "object",
-          "required": ["id", "version"],
-          "properties": {
-            "id": {
-              "type": "string"
-            },
-            "version": {
-              "type": "string"
             }
           }
         },
@@ -46853,11 +47734,7 @@
               "enum": ["secret_or_connection_missing"]
             }
           ],
-          "description": "Whether one exact version can be used now, and if not, what stands in the\nway. `Approved` means the Node's approval is enabled; a separate `widen`\nreports an approved restriction that no longer admits the root agent."
-        },
-        "NodeName": {
-          "type": "string",
-          "description": "The identifier Aidash assigns to a Node, in the same form as a Tenant name:\n`<adjective>-<noun>-<8 random characters>`. Unique within its Deployment,\nnever changed and never reused."
+          "description": "Whether one exact version can be used now, and if not, what stands in the\nway. `Approved` means the Node's approval is enabled; a separate `widen`\nreports an approved restriction that no longer admits every consumer."
         }
       }
     }
@@ -46923,25 +47800,6 @@
         "$ref": "#/components/schemas/CatalogReviewResult"
       },
       "definitions": {
-        "CatalogReviewResult": {
-          "type": "object",
-          "description": "What one review submission wrote, in the caller's transaction.",
-          "required": ["bindings", "installations"],
-          "properties": {
-            "bindings": {
-              "type": "array",
-              "items": {
-                "$ref": "#/components/schemas/Binding"
-              }
-            },
-            "installations": {
-              "type": "array",
-              "items": {
-                "$ref": "#/components/schemas/MarketplaceInstallation"
-              }
-            }
-          }
-        },
         "Binding": {
           "type": "object",
           "required": [
@@ -46986,10 +47844,6 @@
             }
           }
         },
-        "NodeName": {
-          "type": "string",
-          "description": "The identifier Aidash assigns to a Node, in the same form as a Tenant name:\n`<adjective>-<noun>-<8 random characters>`. Unique within its Deployment,\nnever changed and never reused."
-        },
         "CatalogRestriction": {
           "type": "object",
           "description": "Who may use an approved definition on its Node (ADR 0029, ADR 0095). A\nrestriction names subjects directly and/or Assignable Groups; their\nmembers may use it. It only narrows what the Tenant's policy already\nallows, so it can never grant authority.",
@@ -47013,6 +47867,25 @@
             }
           },
           "additionalProperties": false
+        },
+        "CatalogReviewResult": {
+          "type": "object",
+          "description": "What one review submission wrote, in the caller's transaction.",
+          "required": ["bindings", "installations"],
+          "properties": {
+            "bindings": {
+              "type": "array",
+              "items": {
+                "$ref": "#/components/schemas/Binding"
+              }
+            },
+            "installations": {
+              "type": "array",
+              "items": {
+                "$ref": "#/components/schemas/MarketplaceInstallation"
+              }
+            }
+          }
         },
         "MarketplaceInstallation": {
           "type": "object",
@@ -47047,6 +47920,10 @@
               "type": "string"
             }
           }
+        },
+        "NodeName": {
+          "type": "string",
+          "description": "The identifier Aidash assigns to a Node, in the same form as a Tenant name:\n`<adjective>-<noun>-<8 random characters>`. Unique within its Deployment,\nnever changed and never reused."
         }
       }
     }
@@ -47064,6 +47941,11 @@
         "$ref": "#/components/schemas/CatalogApprovalRequestView"
       },
       "definitions": {
+        "CatalogApprovalRequestState": {
+          "type": "string",
+          "description": "The lifecycle of one Catalog Approval Request. Only `Open` may move, and\nevery other state is final.",
+          "enum": ["open", "fulfilled", "declined", "stale", "withdrawn"]
+        },
         "CatalogApprovalRequestView": {
           "type": "object",
           "required": [
@@ -47145,10 +48027,6 @@
             "fulfilled"
           ]
         },
-        "NodeName": {
-          "type": "string",
-          "description": "The identifier Aidash assigns to a Node, in the same form as a Tenant name:\n`<adjective>-<noun>-<8 random characters>`. Unique within its Deployment,\nnever changed and never reused."
-        },
         "CatalogRequestReview": {
           "type": "object",
           "description": "What a requester or an approver needs to know, without naming hidden items\nor the subjects that hold approval authority.",
@@ -47186,10 +48064,9 @@
             }
           }
         },
-        "CatalogApprovalRequestState": {
+        "NodeName": {
           "type": "string",
-          "description": "The lifecycle of one Catalog Approval Request. Only `Open` may move, and\nevery other state is final.",
-          "enum": ["open", "fulfilled", "declined", "stale", "withdrawn"]
+          "description": "The identifier Aidash assigns to a Node, in the same form as a Tenant name:\n`<adjective>-<noun>-<8 random characters>`. Unique within its Deployment,\nnever changed and never reused."
         }
       }
     }
@@ -47207,6 +48084,11 @@
         "$ref": "#/components/schemas/CatalogApprovalRequestView"
       },
       "definitions": {
+        "CatalogApprovalRequestState": {
+          "type": "string",
+          "description": "The lifecycle of one Catalog Approval Request. Only `Open` may move, and\nevery other state is final.",
+          "enum": ["open", "fulfilled", "declined", "stale", "withdrawn"]
+        },
         "CatalogApprovalRequestView": {
           "type": "object",
           "required": [
@@ -47288,10 +48170,6 @@
             "fulfilled"
           ]
         },
-        "NodeName": {
-          "type": "string",
-          "description": "The identifier Aidash assigns to a Node, in the same form as a Tenant name:\n`<adjective>-<noun>-<8 random characters>`. Unique within its Deployment,\nnever changed and never reused."
-        },
         "CatalogRequestReview": {
           "type": "object",
           "description": "What a requester or an approver needs to know, without naming hidden items\nor the subjects that hold approval authority.",
@@ -47329,10 +48207,9 @@
             }
           }
         },
-        "CatalogApprovalRequestState": {
+        "NodeName": {
           "type": "string",
-          "description": "The lifecycle of one Catalog Approval Request. Only `Open` may move, and\nevery other state is final.",
-          "enum": ["open", "fulfilled", "declined", "stale", "withdrawn"]
+          "description": "The identifier Aidash assigns to a Node, in the same form as a Tenant name:\n`<adjective>-<noun>-<8 random characters>`. Unique within its Deployment,\nnever changed and never reused."
         }
       }
     }
@@ -47350,6 +48227,11 @@
         "$ref": "#/components/schemas/CatalogApprovalRequestView"
       },
       "definitions": {
+        "CatalogApprovalRequestState": {
+          "type": "string",
+          "description": "The lifecycle of one Catalog Approval Request. Only `Open` may move, and\nevery other state is final.",
+          "enum": ["open", "fulfilled", "declined", "stale", "withdrawn"]
+        },
         "CatalogApprovalRequestView": {
           "type": "object",
           "required": [
@@ -47431,10 +48313,6 @@
             "fulfilled"
           ]
         },
-        "NodeName": {
-          "type": "string",
-          "description": "The identifier Aidash assigns to a Node, in the same form as a Tenant name:\n`<adjective>-<noun>-<8 random characters>`. Unique within its Deployment,\nnever changed and never reused."
-        },
         "CatalogRequestReview": {
           "type": "object",
           "description": "What a requester or an approver needs to know, without naming hidden items\nor the subjects that hold approval authority.",
@@ -47472,10 +48350,9 @@
             }
           }
         },
-        "CatalogApprovalRequestState": {
+        "NodeName": {
           "type": "string",
-          "description": "The lifecycle of one Catalog Approval Request. Only `Open` may move, and\nevery other state is final.",
-          "enum": ["open", "fulfilled", "declined", "stale", "withdrawn"]
+          "description": "The identifier Aidash assigns to a Node, in the same form as a Tenant name:\n`<adjective>-<noun>-<8 random characters>`. Unique within its Deployment,\nnever changed and never reused."
         }
       }
     }
@@ -47510,6 +48387,11 @@
             }
           }
         },
+        "CatalogApprovalRequestState": {
+          "type": "string",
+          "description": "The lifecycle of one Catalog Approval Request. Only `Open` may move, and\nevery other state is final.",
+          "enum": ["open", "fulfilled", "declined", "stale", "withdrawn"]
+        },
         "CatalogApprovalRequestView": {
           "type": "object",
           "required": [
@@ -47591,10 +48473,6 @@
             "fulfilled"
           ]
         },
-        "NodeName": {
-          "type": "string",
-          "description": "The identifier Aidash assigns to a Node, in the same form as a Tenant name:\n`<adjective>-<noun>-<8 random characters>`. Unique within its Deployment,\nnever changed and never reused."
-        },
         "CatalogRequestReview": {
           "type": "object",
           "description": "What a requester or an approver needs to know, without naming hidden items\nor the subjects that hold approval authority.",
@@ -47632,10 +48510,9 @@
             }
           }
         },
-        "CatalogApprovalRequestState": {
+        "NodeName": {
           "type": "string",
-          "description": "The lifecycle of one Catalog Approval Request. Only `Open` may move, and\nevery other state is final.",
-          "enum": ["open", "fulfilled", "declined", "stale", "withdrawn"]
+          "description": "The identifier Aidash assigns to a Node, in the same form as a Tenant name:\n`<adjective>-<noun>-<8 random characters>`. Unique within its Deployment,\nnever changed and never reused."
         }
       }
     }
@@ -47670,6 +48547,11 @@
             }
           }
         },
+        "CatalogApprovalRequestState": {
+          "type": "string",
+          "description": "The lifecycle of one Catalog Approval Request. Only `Open` may move, and\nevery other state is final.",
+          "enum": ["open", "fulfilled", "declined", "stale", "withdrawn"]
+        },
         "CatalogApprovalRequestView": {
           "type": "object",
           "required": [
@@ -47751,10 +48633,6 @@
             "fulfilled"
           ]
         },
-        "NodeName": {
-          "type": "string",
-          "description": "The identifier Aidash assigns to a Node, in the same form as a Tenant name:\n`<adjective>-<noun>-<8 random characters>`. Unique within its Deployment,\nnever changed and never reused."
-        },
         "CatalogRequestReview": {
           "type": "object",
           "description": "What a requester or an approver needs to know, without naming hidden items\nor the subjects that hold approval authority.",
@@ -47792,10 +48670,9 @@
             }
           }
         },
-        "CatalogApprovalRequestState": {
+        "NodeName": {
           "type": "string",
-          "description": "The lifecycle of one Catalog Approval Request. Only `Open` may move, and\nevery other state is final.",
-          "enum": ["open", "fulfilled", "declined", "stale", "withdrawn"]
+          "description": "The identifier Aidash assigns to a Node, in the same form as a Tenant name:\n`<adjective>-<noun>-<8 random characters>`. Unique within its Deployment,\nnever changed and never reused."
         }
       }
     }
@@ -48340,5 +49217,199 @@
     "json": true,
     "uuid_parameters": [],
     "query_parameters": []
+  },
+  {
+    "method": "GET",
+    "path": "/api/tenants/{tenant}/data-protection",
+    "name": "tenant-data-protection",
+    "source": "server/src/apps/identity/views/data_protection.rs",
+    "json": false,
+    "uuid_parameters": [],
+    "query_parameters": [],
+    "response": {
+      "schema": {
+        "$ref": "#/components/schemas/TenantDataProtectionSettings"
+      },
+      "definitions": {
+        "DataProtection": {
+          "type": "object",
+          "description": "The Tenant policy. Missing settings preserve the existing OpenRouter ZDR default.",
+          "required": ["level", "model_call_zdr", "plan_connection_exempt"],
+          "properties": {
+            "level": {
+              "$ref": "#/components/schemas/Level"
+            },
+            "model_call_zdr": {
+              "type": "boolean",
+              "default": true
+            },
+            "plan_connection_exempt": {
+              "type": "boolean",
+              "default": true
+            }
+          },
+          "additionalProperties": false
+        },
+        "Level": {
+          "type": "string",
+          "enum": ["standard", "no_training", "zero_data_retention"]
+        },
+        "TenantDataProtectionSettings": {
+          "type": "object",
+          "required": ["policy", "effective", "deployment_floor"],
+          "properties": {
+            "deployment_floor": {
+              "$ref": "#/components/schemas/Level"
+            },
+            "effective": {
+              "$ref": "#/components/schemas/DataProtection"
+            },
+            "policy": {
+              "$ref": "#/components/schemas/DataProtection"
+            }
+          }
+        }
+      }
+    }
+  },
+  {
+    "method": "PUT",
+    "path": "/api/tenants/{tenant}/data-protection",
+    "name": "tenant-data-protection-update",
+    "source": "server/src/apps/identity/views/data_protection.rs",
+    "json": true,
+    "uuid_parameters": [],
+    "query_parameters": [],
+    "response": {
+      "schema": {
+        "$ref": "#/components/schemas/TenantDataProtectionSettings"
+      },
+      "definitions": {
+        "DataProtection": {
+          "type": "object",
+          "description": "The Tenant policy. Missing settings preserve the existing OpenRouter ZDR default.",
+          "required": ["level", "model_call_zdr", "plan_connection_exempt"],
+          "properties": {
+            "level": {
+              "$ref": "#/components/schemas/Level"
+            },
+            "model_call_zdr": {
+              "type": "boolean",
+              "default": true
+            },
+            "plan_connection_exempt": {
+              "type": "boolean",
+              "default": true
+            }
+          },
+          "additionalProperties": false
+        },
+        "Level": {
+          "type": "string",
+          "enum": ["standard", "no_training", "zero_data_retention"]
+        },
+        "TenantDataProtectionSettings": {
+          "type": "object",
+          "required": ["policy", "effective", "deployment_floor"],
+          "properties": {
+            "deployment_floor": {
+              "$ref": "#/components/schemas/Level"
+            },
+            "effective": {
+              "$ref": "#/components/schemas/DataProtection"
+            },
+            "policy": {
+              "$ref": "#/components/schemas/DataProtection"
+            }
+          }
+        }
+      }
+    }
+  },
+  {
+    "method": "POST",
+    "path": "/api/tenants/{tenant}/data-protection/impact",
+    "name": "tenant-data-protection-impact",
+    "source": "server/src/apps/identity/views/data_protection.rs",
+    "json": true,
+    "uuid_parameters": [],
+    "query_parameters": [],
+    "response": {
+      "schema": {
+        "$ref": "#/components/schemas/DataProtectionImpact"
+      },
+      "definitions": {
+        "DataProtection": {
+          "type": "object",
+          "description": "The Tenant policy. Missing settings preserve the existing OpenRouter ZDR default.",
+          "required": ["level", "model_call_zdr", "plan_connection_exempt"],
+          "properties": {
+            "level": {
+              "$ref": "#/components/schemas/Level"
+            },
+            "model_call_zdr": {
+              "type": "boolean",
+              "default": true
+            },
+            "plan_connection_exempt": {
+              "type": "boolean",
+              "default": true
+            }
+          },
+          "additionalProperties": false
+        },
+        "DataProtectionAffected": {
+          "type": "object",
+          "required": ["id", "version", "reason"],
+          "properties": {
+            "id": {
+              "type": "string"
+            },
+            "reason": {
+              "type": "string"
+            },
+            "version": {
+              "type": ["string", "null"]
+            }
+          }
+        },
+        "DataProtectionImpact": {
+          "type": "object",
+          "required": [
+            "effective",
+            "agents",
+            "catalog_approvals",
+            "destinations"
+          ],
+          "properties": {
+            "agents": {
+              "type": "array",
+              "items": {
+                "$ref": "#/components/schemas/DataProtectionAffected"
+              }
+            },
+            "catalog_approvals": {
+              "type": "array",
+              "items": {
+                "$ref": "#/components/schemas/DataProtectionAffected"
+              }
+            },
+            "destinations": {
+              "type": "array",
+              "items": {
+                "$ref": "#/components/schemas/DataProtectionAffected"
+              }
+            },
+            "effective": {
+              "$ref": "#/components/schemas/DataProtection"
+            }
+          }
+        },
+        "Level": {
+          "type": "string",
+          "enum": ["standard", "no_training", "zero_data_retention"]
+        }
+      }
+    }
   }
 ]

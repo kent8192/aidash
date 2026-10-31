@@ -472,6 +472,87 @@ test("a tool version shows what a call does, and approving it covers a read-only
   await expect(dialog.getByText("What a call does")).toHaveCount(0);
 });
 
+test("warning tool approval requires acknowledgment once and hides the warning after approval", async ({
+  page,
+}) => {
+  let approved = false;
+  const warning =
+    "Containers are not deleted by Aidash; files persist at OpenRouter up to 30 days after last use; no Aidash sandbox protections.";
+  const tool = () => ({
+    ...registryVersion(
+      entry("provider.openrouter.shell", "tool", { tier: "provider" }),
+      approved ? { approval: { enabled: true, revision: 1 } } : unapproved,
+    ),
+    provider_warning: warning,
+  });
+  const { decisions } = await dashboard(
+    page,
+    tenantSubject,
+    () => [tool()],
+    () => {
+      approved = true;
+      return { json: { enabled: true, revision: 1 } };
+    },
+  );
+  await routeTenantActions(page, ["catalog.approve"]);
+  await page.goto("/settings?view=registry");
+  await row(page, "provider.openrouter.shell").click();
+  const section = approval(page);
+  await expect(section.locator(".provider-tool-warning")).toContainText(
+    warning,
+  );
+  const approve = section.getByRole("button", { name: "Approve", exact: true });
+  await expect(approve).toBeDisabled();
+  await section.locator(".provider-tool-warning").getByRole("checkbox").check();
+  await approve.click();
+  await expect.poll(() => decisions.length).toBe(1);
+  expect(decisions[0].body).toEqual({
+    entry: ref("provider.openrouter.shell"),
+    enabled: true,
+    expected_revision: 0,
+    provider_warning_acknowledged: true,
+    node: defaultNode.name,
+  });
+  await expect(
+    section.getByRole("button", { name: "Withdraw approval", exact: true }),
+  ).toBeVisible();
+  await expect(section.locator(".provider-tool-warning")).toHaveCount(0);
+});
+
+test("dependency review requires acknowledgment for each warning tool", async ({
+  page,
+}) => {
+  const current = reviewBody([
+    reviewItem("writer", "agent", "approved"),
+    reviewItem("provider.openrouter.shell", "tool", "approvable", {
+      provider_warning: "shell disclosure",
+    }),
+    reviewItem("provider.openrouter.advisor", "tool", "approvable", {
+      provider_warning: "advisor disclosure",
+    }),
+  ]);
+  const { decisions } = await reviewDashboard(page, {
+    actions: ["catalog.approve"],
+    review: () => current,
+    answer: () => ({ json: { bindings: [], installations: [] } }),
+  });
+  const review = await openReview(page);
+  const submit = review.getByRole("button", { name: /Approve selected/ });
+  await expect(submit).toBeDisabled();
+  const disclosures = review.locator(".provider-review-warning");
+  await expect(disclosures).toHaveCount(2);
+  await disclosures.nth(0).getByRole("checkbox").check();
+  await expect(submit).toBeDisabled();
+  await disclosures.nth(1).getByRole("checkbox").check();
+  await submit.click();
+  await expect.poll(() => decisions.length).toBe(1);
+  expect(
+    (
+      decisions[0].body.items as { provider_warning_acknowledged?: boolean }[]
+    ).map((item) => item.provider_warning_acknowledged),
+  ).toEqual([true, true]);
+});
+
 const reviewItem = (
   id: string,
   kind: string,

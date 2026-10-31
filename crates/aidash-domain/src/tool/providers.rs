@@ -20,6 +20,8 @@ pub enum ToolTier {
 	Sandboxed,
 	/// A Research provider the Deployment offers; each Tenant approves it.
 	Research,
+	/// Executed inside a model request by its provider; Catalog Approval only.
+	Provider,
 	Integration,
 	Fixture,
 }
@@ -27,7 +29,7 @@ pub enum ToolTier {
 impl ToolTier {
 	/// Whether a built-in of this tier needs a Catalog Approval before use.
 	pub fn needs_approval(self) -> bool {
-		matches!(self, Self::Sandboxed | Self::Research)
+		matches!(self, Self::Sandboxed | Self::Research | Self::Provider)
 	}
 }
 
@@ -138,6 +140,7 @@ pub fn research_contract(operation: ResearchOperation) -> ToolContract {
 		}
 	};
 	ToolContract {
+		provider_owned: false,
 		identity: ToolIdentity::Builtin(format!("research:{}", operation.as_str())),
 		authorization: ToolAuthorization {
 			flag: None,
@@ -284,6 +287,23 @@ impl ToolDescriptor {
 				contract.remote_exposure = true;
 			}
 			contract
+		} else if let Some(tool) = super::provider_tools::declaration(&self.provider) {
+			if self.tier != ToolTier::Provider
+				|| self.operation != tool.alias
+				|| self.transport.is_some()
+				|| self.lifecycle.is_some()
+				|| self.narrow != Narrowing::default()
+			{
+				return Err(Error::Invalid(
+					"incompatible Provider tool descriptor".into(),
+				));
+			}
+			let mut contract = research_contract(ResearchOperation::Search);
+			contract.identity = ToolIdentity::Builtin(tool.id.into());
+			contract.provider_owned = true;
+			contract.behavior.yields = vec![];
+			contract.behavior.disclosure_approval = false;
+			contract
 		} else if self.provider.starts_with("research.") {
 			let (operation, tier) = research_operation(&self.provider, &self.operation)
 				.ok_or_else(|| Error::Invalid("unknown research provider operation".into()))?;
@@ -362,7 +382,11 @@ pub fn validate_restrictions(operation: &str, narrow: &Narrowing) -> Result<()> 
 		"skill_read" => (false, &["skill_id", "path"], &["max_chars"]),
 		_ => (false, &[], &[]),
 	};
-	if narrow.decision.is_some()
+	if narrow.provider_tool.is_some()
+		&& !super::provider_tools::TOOLS
+			.iter()
+			.any(|t| t.alias == operation)
+		|| narrow.decision.is_some()
 		|| !hosts && narrow.allowed_hosts.is_some()
 		|| narrow
 			.scope

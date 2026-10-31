@@ -463,6 +463,10 @@ export function EntityForm({
                       : modelSource === "openrouter"
                         ? {
                             provider_credential: "openrouter",
+                            // Omitted keeps the Chat Completions bytes.
+                            ...(s("wire_api") === "responses"
+                              ? { wire_api: "responses" }
+                              : {}),
                             // Native lets new Agents default to structured@3 (#532).
                             projection_versions: [
                               "legacy",

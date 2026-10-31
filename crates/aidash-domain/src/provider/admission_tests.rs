@@ -3,6 +3,7 @@ use rstest::{fixture, rstest};
 #[fixture]
 fn request() -> ModelRequest {
 	ModelRequest {
+		provider_tools: vec![],
 		instructions: "system".into(),
 		context: json!({"text":"東京"}).into(),
 		tools: vec![],

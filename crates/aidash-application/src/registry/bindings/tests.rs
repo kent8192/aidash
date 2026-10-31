@@ -2610,3 +2610,100 @@ async fn native_primary_memory_and_bank_source_pin_the_same_explicit_query_polic
 	let error = snapshot(&mut catalog, &config, false).await.unwrap_err();
 	assert!(error.to_string().contains("query policy"), "{error}");
 }
+
+#[tokio::test]
+async fn provider_tools_bind_pinned_caps_and_only_loaded_tools_reach_requests() {
+	use aidash_domain::tool::provider_tools;
+	let mut catalog = Catalog::new();
+	let model = json!({"provider":"openrouter","provider_credential":"openrouter","model_id":"openai/gpt-4.1","endpoint":"https://openrouter.ai/api/v1","context_window":100000,"modalities":["text"],"cost":{}});
+	catalog.insert(entry("model", "model", model.clone()));
+	let declaration = provider_tools::declaration("openrouter:web_search").unwrap();
+	let descriptor = ToolDescriptor {
+		registry_deployment: NODE.into(),
+		provider: declaration.id.into(),
+		operation: declaration.alias.into(),
+		default_alias: declaration.alias.into(),
+		tier: ToolTier::Provider,
+		narrow: Default::default(),
+		transport: None,
+		lifecycle: None,
+	};
+	let tool = entry(
+		"provider.openrouter.web_search",
+		"tool",
+		serde_json::to_value(descriptor).unwrap(),
+	);
+	catalog.insert(tool);
+	let mut config = agent_config();
+	let mut binding = Binding::tool(reference("provider.openrouter.web_search"));
+	config.bindings.push(binding.clone());
+	assert!(
+		snapshot(&mut catalog, &config, false)
+			.await
+			.unwrap_err()
+			.to_string()
+			.contains("requires parameters")
+	);
+	binding.narrow.provider_tool = Some(declaration.defaults());
+	*config.bindings.last_mut().unwrap() = binding;
+	let saved = snapshot(&mut catalog, &config, false).await.unwrap();
+	saved.validate().unwrap();
+	let mut context = aidash_domain::context::Context {
+		binding_snapshot: Some(Box::new(saved)),
+		..Default::default()
+	};
+	let specs = vec![aidash_domain::provider::ToolSpec {
+		name: declaration.alias.into(),
+		description: "Search".into(),
+		parameters: json!({"type":"object"}),
+	}];
+	let projection = aidash_domain::context::RequestProjection::Legacy;
+	let budget = aidash_domain::context::RequestBudget {
+		instructions: "Test",
+		tools: &specs,
+		max_output_tokens: 100,
+		window: 100000,
+		projection: &projection,
+		input_format: Default::default(),
+		estimate: Default::default(),
+	};
+	let request = budget.request(&context, &json!({}));
+	assert!(request.tools.is_empty());
+	assert_eq!(request.provider_tools[0].binding, declaration.defaults());
+	assert_eq!(request.input_body()["max_tool_calls"], 3);
+	let unloaded = aidash_domain::context::RequestBudget {
+		tools: &[],
+		..budget
+	};
+	assert!(
+		unloaded
+			.request(&context, &json!({}))
+			.provider_tools
+			.is_empty()
+	);
+	// A retained snapshot must reject tampering with the Binding parameters.
+	context
+		.binding_snapshot
+		.as_mut()
+		.unwrap()
+		.bindings
+		.iter_mut()
+		.find(|b| b.identity.id == "provider.openrouter.web_search")
+		.unwrap()
+		.narrow
+		.provider_tool
+		.as_mut()
+		.unwrap()
+		.max_tool_calls = 8;
+	assert!(context.binding_snapshot.unwrap().validate().is_err());
+	for field in ["provider_credential", "provider"] {
+		let mut denied = model.clone();
+		denied[field] = if field == "provider" {
+			json!("fixture")
+		} else {
+			Value::Null
+		};
+		catalog.insert(entry("model", "model", denied));
+		assert!(snapshot(&mut catalog, &config, false).await.is_err());
+	}
+}

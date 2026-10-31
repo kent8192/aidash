@@ -442,8 +442,8 @@ pub fn estimated_tokens(value: &str) -> usize {
 /// measures the same encoded context growth without storing that payload.
 /// Legacy and Ordered encode `history` as the same JSON array inside one
 /// escaped text value, so the Legacy probe measures Ordered growth exactly.
-/// Only Native Runs record `Assistant` events (ADR 0015), so a history that
-/// holds one, or an Assistant event itself, is measured as Native messages.
+/// Provider activity also records Assistant events in Legacy/Ordered Runs.
+/// Such histories reserve the larger growth across both encodings.
 /// This is a preliminary quota for tool results. Responses may use different
 /// framing; complete-request fitting and the final pre-dispatch gate measure
 /// that request's actual input format before any provider I/O.
@@ -452,8 +452,11 @@ pub fn tool_event_growth(context: &Context, event: &ContextEvent) -> usize {
 		|| context
 			.events()
 			.any(|event| matches!(event, ContextEvent::Assistant { .. }));
-	let estimate = |context: &Context| {
+	let provider_activity = |event: &ContextEvent| matches!(event, ContextEvent::Assistant { provider_activity, .. } if !provider_activity.is_empty());
+	let both = provider_activity(event) || context.events().any(provider_activity);
+	let estimate = |context: &Context, native: bool, input_format| {
 		crate::provider::ModelRequest {
+			provider_tools: vec![],
 			instructions: String::new(),
 			context: if native {
 				crate::provider::ModelContext::Native(crate::projection::native::native_context(
@@ -470,17 +473,39 @@ pub fn tool_event_growth(context: &Context, event: &ContextEvent) -> usize {
 			cache_scope: None,
 			cache_breakpoints: false,
 			disable_provider_transforms: false,
-			input_format: Default::default(),
+			input_format,
 			// Growth is in the unit of the Run's current byte quotas, so a
 			// tokenized Run does not count its whole context per event.
 			estimate: context.estimate.current().quota(),
 		}
 		.estimated_total_tokens()
 	};
-	let before = estimate(context);
 	let mut after = context.clone();
 	after.push(event.clone());
-	estimate(&after).saturating_sub(before)
+	let growth = |native, input_format| {
+		estimate(&after, native, input_format).saturating_sub(estimate(
+			context,
+			native,
+			input_format,
+		))
+	};
+	if both {
+		// Only an OpenRouter Responses body replays Provider activity next to
+		// its text disclosure, so its growth can exceed the Chat form's.
+		use crate::provider::InputFormat::{Chat, Responses};
+		[
+			(false, Chat),
+			(true, Chat),
+			(false, Responses),
+			(true, Responses),
+		]
+		.into_iter()
+		.map(|(native, input_format)| growth(native, input_format))
+		.max()
+		.unwrap_or_default()
+	} else {
+		growth(native, Default::default())
+	}
 }
 
 /// The Run's pinned Projection Version, with the Cache Scope a salted version
@@ -518,6 +543,30 @@ pub struct RequestBudget<'a> {
 impl RequestBudget<'_> {
 	pub fn request(&self, context: &Context, pinned: &Value) -> crate::provider::ModelRequest {
 		let context_sources = &context.source_contributions;
+		let mut tools = self.tools.to_vec();
+		let mut provider_tools = Vec::new();
+		if let Some(snapshot) = &context.binding_snapshot {
+			for binding in &snapshot.bindings {
+				if binding.excluded_reason.is_some()
+					|| !tools
+						.iter()
+						.any(|spec| Some(spec.name.as_str()) == binding.alias.as_deref())
+				{
+					continue;
+				}
+				if let Some(tool) = binding.definition.config["provider"]
+					.as_str()
+					.and_then(crate::tool::provider_tools::declaration)
+					&& let Some(parameters) = &binding.narrow.provider_tool
+				{
+					provider_tools.push(crate::tool::provider_tools::PinnedTool {
+						tool_type: tool.tool_type.into(),
+						binding: parameters.clone(),
+					});
+					tools.retain(|spec| Some(spec.name.as_str()) != binding.alias.as_deref());
+				}
+			}
+		}
 		let (context, cache_scope) = match self.projection {
 			RequestProjection::Legacy => (context.model_view(pinned).into(), None),
 			RequestProjection::Ordered(scope) => (
@@ -532,9 +581,10 @@ impl RequestBudget<'_> {
 			),
 		};
 		let mut request = crate::provider::ModelRequest {
+			provider_tools,
 			instructions: self.instructions.into(),
 			context,
-			tools: self.tools.to_vec(),
+			tools,
 			max_output_tokens: self.max_output_tokens,
 			response_format: None,
 			content_parts: vec![],
@@ -874,6 +924,8 @@ pub enum ContextEvent {
 	/// calls in the model's order. Each executed call's `Tool` event follows
 	/// and carries the call itself. Reasoning output is never recorded.
 	Assistant {
+		#[serde(default, skip_serializing_if = "Vec::is_empty")]
+		provider_activity: Vec<Value>,
 		epoch: i64,
 		text: String,
 		calls: Vec<String>,

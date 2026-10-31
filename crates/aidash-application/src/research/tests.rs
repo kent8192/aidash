@@ -29,6 +29,7 @@ use std::{
 
 #[derive(Default)]
 struct Memory {
+	policy: Mutex<aidash_domain::data_protection::DataProtection>,
 	attempts: Mutex<BTreeMap<(Uuid, String), (Reservation, AttemptState)>>,
 	sources: Mutex<Vec<SourceRecord>>,
 	snapshots: Mutex<Vec<DocumentSnapshot>>,
@@ -124,6 +125,12 @@ fn purge(snapshot: &mut DocumentSnapshot, reason: PurgeReason) {
 
 #[async_trait]
 impl EvidenceStore for Memory {
+	async fn data_protection(
+		&self,
+		_: Uuid,
+	) -> Result<aidash_domain::data_protection::DataProtection> {
+		Ok(*self.policy.lock().unwrap())
+	}
 	async fn expired_results(
 		&self,
 		run: Uuid,
@@ -807,6 +814,7 @@ fn terms(
 		review_after: now + Duration::days(1),
 		storage_permitted: true,
 		query_training_prohibited: true,
+		request_retention_prohibited: false,
 		evaluation_permitted: true,
 		retention_days: 30,
 		deletion_after_termination_days: 30,
@@ -3026,4 +3034,52 @@ async fn a_page_that_exceeds_model_headroom_takes_no_view_or_fragment() {
 		delivered["data"]["evidence_ref"]
 	);
 	assert_eq!(store.usage(run).await.unwrap().page_views, 1);
+}
+
+#[tokio::test]
+async fn research_data_protection_rechecks_training_and_retention_terms_before_dispatch() {
+	use aidash_domain::data_protection::Level;
+	let (store, gate) = (Memory::default(), Gate::permitting());
+	let research = Research {
+		store: &store,
+		gate: &gate,
+		limits: Limits::default(),
+	};
+	let mut provider = Search::new("research", "research.example");
+	provider.account = Some(terms("account", Some(0), None, 100));
+	let run = Uuid::new_v4();
+	for (i, level, training, retention, allowed) in [
+		(0, Level::Standard, false, false, true),
+		(1, Level::NoTraining, false, false, false),
+		(2, Level::NoTraining, true, false, true),
+		(3, Level::ZeroDataRetention, true, false, false),
+		(4, Level::ZeroDataRetention, true, true, true),
+		(5, Level::Standard, false, false, true),
+	] {
+		store.policy.lock().unwrap().level = level;
+		let terms = provider.account.as_mut().unwrap();
+		terms.query_training_prohibited = training;
+		terms.request_retention_prohibited = retention;
+		let calls = provider.calls.load(Ordering::SeqCst);
+		let result = research
+			.search(
+				&call(run, &format!("policy-{i}"), "research@1"),
+				&provider,
+				&json!({"query":"rust"}),
+			)
+			.await
+			.unwrap();
+		if allowed {
+			assert_eq!(result["status"], "ok", "{result}");
+		} else {
+			assert_eq!(
+				result["error"]["code"], "data_protection_refused",
+				"{result}"
+			);
+		}
+		assert_eq!(
+			provider.calls.load(Ordering::SeqCst),
+			calls + usize::from(allowed)
+		);
+	}
 }

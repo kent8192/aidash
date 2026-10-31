@@ -61,7 +61,12 @@ impl CatalogMutation for Fixture {
 		}
 		Ok(self.next.clone())
 	}
-	async fn history(&mut self, binding: &Binding, actor: &str) -> Result<()> {
+	async fn history(
+		&mut self,
+		binding: &Binding,
+		actor: &str,
+		_provider_warning_acknowledgment: Option<&str>,
+	) -> Result<()> {
 		self.calls.push(format!(
 			"history:{}:{}:{}:{}:{}:{actor}",
 			binding.tenant,

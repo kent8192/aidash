@@ -94,6 +94,21 @@ impl Providers {
 	pub fn account_terms(&self) -> &[AccountTerms] {
 		&self.accounts
 	}
+	/// Provider identities whose published account terms cannot meet this policy.
+	pub(crate) fn data_protection_denials(
+		&self,
+		policy: aidash_domain::data_protection::DataProtection,
+	) -> std::collections::BTreeMap<String, String> {
+		self.accounts
+			.iter()
+			.filter_map(|terms| {
+				policy
+					.permits(aidash_domain::data_protection::Destination::Research(terms))
+					.err()
+					.map(|error| ("research.brave@1".to_owned(), error.to_string()))
+			})
+			.collect()
+	}
 
 	/// Whether `descriptor` names a research provider this Node can dispatch.
 	pub fn available(&self, descriptor: &ToolDescriptor) -> aidash_application::Result<()> {

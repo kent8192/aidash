@@ -618,6 +618,8 @@ impl PeerAdmissionScope for Owned {
 				&access.identity.tenant,
 				&d.inspection.binding_snapshot,
 				self.runtime.store.provider_credentials.is_some(),
+				self.runtime.store.data_protection_floor,
+				&self.runtime.store.keyless,
 			)
 			.await?;
 			Ok(())

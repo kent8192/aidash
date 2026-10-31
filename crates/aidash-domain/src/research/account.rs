@@ -27,6 +27,9 @@ pub struct AccountTerms {
 	pub review_after: DateTime<Utc>,
 	pub storage_permitted: bool,
 	pub query_training_prohibited: bool,
+	/// Published account terms prohibit the service retaining requests.
+	#[serde(default, skip_serializing_if = "std::ops::Not::not")]
+	pub request_retention_prohibited: bool,
 	pub evaluation_permitted: bool,
 	/// How long the service's results may be stored after retrieval.
 	pub retention_days: u16,
@@ -66,7 +69,6 @@ impl AccountTerms {
 			|| self.review_after <= self.verified_at
 			|| self.price_review_after <= self.price_effective_at
 			|| !self.storage_permitted
-			|| !self.query_training_prohibited
 			|| !self.evaluation_permitted
 			|| self.retention_days == 0
 			|| self.deletion_after_termination_days == 0

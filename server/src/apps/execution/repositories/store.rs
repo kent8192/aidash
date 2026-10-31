@@ -82,6 +82,7 @@ pub struct Store {
 	pub egress: aidash_integrations::federation::Egress,
 	/// The Deployment's Retention Rules from `[research_retention]` (ADR 0045).
 	pub research_retention: aidash_domain::retention::RetentionRules,
+	pub data_protection_floor: aidash_domain::data_protection::Level,
 	/// The Deployment's ceilings on Tenants' Test Limits from
 	/// `[workbench_test_limits]` (#361).
 	pub test_limit_ceilings: aidash_domain::registry::workbench::sandbox::TestLimitCeilings,
@@ -493,6 +494,7 @@ impl Store {
 			keyless,
 			egress: Default::default(),
 			research_retention: aidash_domain::retention::RetentionRules::DEFAULT,
+			data_protection_floor: Default::default(),
 			test_limit_ceilings: Default::default(),
 			preview_limits: aidash_domain::preview::live::Limits::default(),
 			preview_domain: None,
@@ -531,7 +533,14 @@ impl Store {
 		self.cache_salt = keys;
 		self
 	}
-	/// Permit these private origins for Keyless endpoints (ADR 0036).
+	/// Minimum Data Protection Level applied to every current Tenant policy.
+	pub fn with_data_protection_floor(
+		mut self,
+		floor: aidash_domain::data_protection::Level,
+	) -> Self {
+		self.data_protection_floor = floor;
+		self
+	}
 	pub fn with_research_retention(
 		mut self,
 		rules: aidash_domain::retention::RetentionRules,
@@ -566,6 +575,14 @@ impl Store {
 		origins: aidash_domain::keyless::PermittedOrigins,
 	) -> Self {
 		self.keyless = aidash_application::provider_access::KeylessAccess::permitting(origins);
+		self.plugin_sessions = plugin_sessions(&self.keyless, &self.tool_clients);
+		self
+	}
+	pub fn with_hosted_model_origins(
+		mut self,
+		origins: aidash_domain::keyless::PermittedOrigins,
+	) -> Self {
+		self.keyless = self.keyless.with_deployment_hosted(origins);
 		self.plugin_sessions = plugin_sessions(&self.keyless, &self.tool_clients);
 		self
 	}
@@ -622,6 +639,7 @@ impl Store {
 			plugin_sessions: self.plugin_sessions.clone(),
 			egress: self.egress.clone(),
 			research_retention: self.research_retention,
+			data_protection_floor: self.data_protection_floor,
 			test_limit_ceilings: self.test_limit_ceilings,
 			preview_limits: self.preview_limits.clone(),
 			preview_domain: self.preview_domain.clone(),
@@ -679,6 +697,7 @@ impl Store {
 			plugin_sessions: self.plugin_sessions.clone(),
 			egress: self.egress.clone(),
 			research_retention: self.research_retention,
+			data_protection_floor: self.data_protection_floor,
 			test_limit_ceilings: self.test_limit_ceilings,
 			preview_limits: self.preview_limits.clone(),
 			preview_domain: self.preview_domain.clone(),
@@ -1440,6 +1459,8 @@ impl Store {
 					.as_deref()
 					.expect("admitted Binding snapshot"),
 				self.provider_credentials.is_some(),
+				self.data_protection_floor,
+				&self.keyless,
 				// Only a subject's own admission passes its Binding snapshot;
 				// its grant pins the Plan Connection next (ADR 0007).
 				if admitted.is_some() {
