@@ -375,6 +375,15 @@ async fn three_databases_enforce_two_subjects_and_no_transitive_graph(
 	.unwrap();
 	assert_eq!(expand(&a, &target, &alice_a, None, &["agent"]).await.0, 403);
 
+	// With Federation off, A refuses before any network call: B would answer
+	// 403 for the revoked credential, but A answers 503 itself (#638).
+	let mut disabled = a.f.clone();
+	disabled.store.egress.enabled = false;
+	a.app.context.set_singleton(disabled);
+	let (status, body) = expand(&a, &target, &alice_a, None, &["agent"]).await;
+	assert_eq!(status, 503, "{body}");
+	assert_eq!(body["error"], "federation_disabled");
+
 	a.close().await;
 	b.close().await;
 	c.close().await;
