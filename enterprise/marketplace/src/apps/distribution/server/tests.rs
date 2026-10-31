@@ -43,6 +43,31 @@ impl Handler for Status {
 		))
 	}
 }
+#[test]
+fn session_lifetime_matches_the_issuer_policy() {
+	let now = Utc::now();
+	let mut session = Session {
+		account_id: Uuid::new_v4(),
+		source_identity_id: Uuid::new_v4(),
+		provider_subject: "subject".into(),
+		csrf_token: String::new(),
+		refresh_request_id: Uuid::new_v4(),
+		access_token: String::new(),
+		refresh_token: None,
+		created_at: now - chrono::Duration::days(29),
+		last_used: now - chrono::Duration::days(6),
+	};
+	assert!(
+		!session.expired(now),
+		"29 days old, 6 days idle stays signed in"
+	);
+	session.last_used = now - chrono::Duration::days(7);
+	assert!(session.expired(now), "7 days idle signs out");
+	session.last_used = now;
+	session.created_at = now - chrono::Duration::days(30);
+	assert!(session.expired(now), "30 days overall signs out");
+}
+
 async fn server(handler: impl Handler + 'static) -> (String, tokio::task::JoinHandle<()>) {
 	let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
 	server_on(listener, handler).await
