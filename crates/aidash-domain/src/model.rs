@@ -107,6 +107,7 @@ pub enum ReasoningEffort {
 #[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct MediaRouteEvidence {
+	/// A leaf endpoint tag: no other endpoint tag may be nested under it.
 	pub tag: String,
 	/// Image MIME types or OpenRouter input_audio format names.
 	pub formats: Vec<String>,
@@ -120,6 +121,7 @@ pub struct MediaRouteEvidence {
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct ProviderRouteEvidence {
+	/// A leaf endpoint tag: no other endpoint tag may be nested under it.
 	pub tag: String,
 	pub source: String,
 	pub verified_at: chrono::DateTime<chrono::Utc>,
@@ -202,10 +204,25 @@ impl ModelConfig {
 	/// Explicit restrictions are supported only on OpenRouter and never
 	/// silently disappear on another adapter or after their approval expires.
 	pub fn validate_provider_route(&self) -> Result<()> {
+		self.validate_provider_route_structure()?;
+		let now = chrono::Utc::now();
+		if self
+			.provider_route
+			.as_ref()
+			.is_some_and(|route| route.verified_at > now || route.expires_at <= now)
+		{
+			return Err(Error::Invalid(
+				"provider_route requires current exact leaf-tag approval evidence".into(),
+			));
+		}
+		Ok(())
+	}
+
+	/// Validate the permanent shape of route approval independently of its age.
+	pub fn validate_provider_route_structure(&self) -> Result<()> {
 		let Some(route) = &self.provider_route else {
 			return Ok(());
 		};
-		let now = chrono::Utc::now();
 		if self.provider != "openrouter" || self.uses_plan_connection() {
 			return Err(Error::Invalid(
 				"provider_route requires OpenRouter API usage".into(),
@@ -221,12 +238,10 @@ impl ModelConfig {
 			}) || route.source.trim().is_empty()
 			|| route.source.len() > 1024
 			|| route.source.chars().any(char::is_control)
-			|| route.verified_at > now
-			|| route.expires_at <= now
 			|| route.expires_at <= route.verified_at
 		{
 			return Err(Error::Invalid(
-				"provider_route requires current exact-tag approval evidence".into(),
+				"provider_route requires current exact leaf-tag approval evidence".into(),
 			));
 		}
 		Ok(())

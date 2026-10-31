@@ -335,7 +335,237 @@ mod exact_routes {
 			let identity = result.unwrap().reported.provider_identity.unwrap();
 			assert_eq!(identity.reported_model.as_deref(), Some("actual/model"));
 			assert_eq!(identity.reported_route, None);
+		} else {
+			let message = result.unwrap_err().to_string();
+			let expected = if !approve_media {
+				"media formats"
+			} else if tags.iter().any(|tag| tag.ends_with("/priority")) {
+				"fixture/variant/us/priority"
+			} else if !tags.contains(&"fixture/variant/us") {
+				"endpoint missing"
+			} else if limit == 1 {
+				"estimated"
+			} else {
+				"zero data retention"
+			};
+			assert!(message.contains(expected), "{message}");
 		}
+	}
+
+	async fn refusal_fixture(
+		pinned: Option<(&str, i64, i64)>,
+		media: Vec<(&str, Vec<&str>, i64, i64)>,
+		catalog_tags: Vec<(&str, u64)>,
+		zdr_tags: Vec<&str>,
+		with_media: bool,
+	) -> (Error, usize) {
+		let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+		let endpoint = format!("http://{}/v1", listener.local_addr().unwrap());
+		let catalog = json!({"data":{"architecture":{"input_modalities":["text","image"]},"endpoints":catalog_tags.iter().map(|(tag, limit)| json!({"tag":tag,"context_length":limit})).collect::<Vec<_>>()}});
+		let zdr = json!({"data":zdr_tags.iter().map(|tag| json!({"model_id":"vendor/model","tag":tag})).collect::<Vec<_>>()});
+		let calls = Arc::new(AtomicUsize::new(0));
+		let catalog_calls = calls.clone();
+		let zdr_calls = calls.clone();
+		let app = Router::new()
+			.route(
+				"/v1/models/vendor/model/endpoints",
+				get(move || {
+					let value = catalog.clone();
+					let calls = catalog_calls.clone();
+					async move {
+						calls.fetch_add(1, Ordering::SeqCst);
+						Json(value)
+					}
+				}),
+			)
+			.route(
+				"/v1/endpoints/zdr",
+				get(move || {
+					let value = zdr.clone();
+					let calls = zdr_calls.clone();
+					async move {
+						calls.fetch_add(1, Ordering::SeqCst);
+						Json(value)
+					}
+				}),
+			);
+		let _server = TestServer(tokio::spawn(async move {
+			axum::serve(listener, app).await.unwrap()
+		}));
+		let now = chrono::Utc::now();
+		let mut config: ModelConfig = serde_json::from_value(json!({"provider":"openrouter","model_id":"vendor/model","endpoint":endpoint,"context_window":8192,"modalities":["text","image"],"cost":{},"streaming":false})).unwrap();
+		config.provider_route = pinned.map(|(tag, verified, expires)| ProviderRouteEvidence {
+			tag: tag.into(),
+			source: "approval".into(),
+			verified_at: now + chrono::Duration::seconds(verified),
+			expires_at: now + chrono::Duration::seconds(expires),
+		});
+		config.media_routes = media
+			.into_iter()
+			.map(|(tag, formats, verified, expires)| MediaRouteEvidence {
+				tag: tag.into(),
+				formats: formats.into_iter().map(str::to_owned).collect(),
+				source: "probe".into(),
+				verified_at: now + chrono::Duration::seconds(verified),
+				expires_at: now + chrono::Duration::seconds(expires),
+			})
+			.collect();
+		if config
+			.provider_route
+			.as_ref()
+			.is_some_and(|route| route.verified_at > now || route.expires_at <= now)
+		{
+			assert!(config.validate_provider_route().is_err());
+			assert!(
+				provider(
+					test_clients(),
+					config.clone(),
+					Arc::new(permitting(&endpoint)),
+					Default::default()
+				)
+				.is_ok()
+			);
+		}
+		let provider = OpenRouterProvider {
+			clients: test_clients(),
+			config,
+			access: Arc::new(permitting(&endpoint)),
+			context: Default::default(),
+			cache_salt: None,
+		};
+		let request = ModelRequest {
+			instructions: "inspect".into(),
+			max_output_tokens: 64,
+			content_parts: if with_media {
+				vec![ContentPart::Image {
+					media_type: "image/png".into(),
+					bytes: vec![0],
+				}]
+			} else {
+				vec![]
+			},
+			..Default::default()
+		};
+		let error = provider.verified_routes(&request).await.unwrap_err();
+		(error, calls.load(Ordering::SeqCst))
+	}
+
+	#[rstest::rstest]
+	#[case::expired(-7200, -3600, "expired")]
+	#[case::future(3600, 7200, "not yet valid")]
+	#[tokio::test]
+	async fn invalid_evidence_never_contacts_openrouter(
+		#[case] verified: i64,
+		#[case] expires: i64,
+		#[case] expected: &str,
+	) {
+		let (error, calls) = refusal_fixture(
+			Some(("fixture/us", verified, expires)),
+			vec![],
+			vec![],
+			vec![],
+			false,
+		)
+		.await;
+		assert!(matches!(error, Error::ProviderRouteUnavailable { .. }));
+		assert!(error.to_string().contains(expected));
+		assert_eq!(calls, 0);
+	}
+
+	#[tokio::test]
+	async fn expired_pin_and_unapproved_media_report_both_before_discovery() {
+		let (error, calls) = refusal_fixture(
+			Some(("fixture/us", -7200, -3600)),
+			vec![],
+			vec![],
+			vec![],
+			true,
+		)
+		.await;
+		let message = error.to_string();
+		let expired = message.find("approval evidence has expired").unwrap();
+		let media = message
+			.find("media formats not approved: image/png")
+			.unwrap();
+		assert!(expired < media, "{message}");
+		assert_eq!(calls, 0);
+	}
+
+	#[tokio::test]
+	async fn pinned_route_reports_all_catalog_reasons_in_order() {
+		let (error, calls) = refusal_fixture(
+			Some(("google-vertex/global", -60, 3600)),
+			vec![],
+			vec![
+				("google-vertex/global/priority", 1),
+				("google-vertex/global", 1),
+			],
+			vec![],
+			false,
+		)
+		.await;
+		let message = error.to_string();
+		let tags = message
+			.find("sub-tags exist: google-vertex/global/priority")
+			.unwrap();
+		let context = message.find("context too long: estimated").unwrap();
+		let zdr = message.find("zero data retention").unwrap();
+		assert!(tags < context && context < zdr, "{message}");
+		assert!(message.contains("limit 1"));
+		assert!(message.contains("leaf tag"));
+		assert_eq!(calls, 2);
+	}
+
+	#[tokio::test]
+	async fn media_route_refusals_name_each_candidate_and_skip_unneeded_discovery() {
+		let (error, calls) = refusal_fixture(
+			None,
+			vec![
+				("fixture/expired", vec!["image/png"], -7200, -3600),
+				("fixture/wrong-format", vec!["image/jpeg"], -60, 3600),
+			],
+			vec![],
+			vec![],
+			true,
+		)
+		.await;
+		let message = error.to_string();
+		assert!(matches!(error, Error::MediaRouteUnavailable { .. }));
+		assert!(
+			message.contains("fixture/expired: approval evidence has expired"),
+			"{message}"
+		);
+		assert!(
+			message.contains("fixture/wrong-format: media formats not approved: image/png"),
+			"{message}"
+		);
+		assert_eq!(calls, 0);
+	}
+
+	#[tokio::test]
+	async fn media_refusals_combine_evidence_and_catalog_failures() {
+		let (error, calls) = refusal_fixture(
+			None,
+			vec![
+				("fixture/expired", vec!["image/png"], -7200, -3600),
+				("fixture/missing", vec!["image/png"], -60, 3600),
+			],
+			vec![],
+			vec![],
+			true,
+		)
+		.await;
+		let message = error.to_string();
+		assert!(
+			message.contains("fixture/expired: approval evidence has expired"),
+			"{message}"
+		);
+		assert!(
+			message.contains("fixture/missing: endpoint missing"),
+			"{message}"
+		);
+		assert!(message.contains("zero data retention"));
+		assert_eq!(calls, 2);
 	}
 }
 

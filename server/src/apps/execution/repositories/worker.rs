@@ -310,7 +310,9 @@ pub(crate) fn classify_failure(error: &NativeError) -> ExecutionFailure {
 		NativeError::IdentityStatusUnavailable => {
 			ExecutionFailure::Authority(AuthorityFailure::IdentityUnavailable)
 		}
-		NativeError::MediaRouteUnavailable(_) => ExecutionFailure::MediaRoute(error.to_string()),
+		NativeError::MediaRouteUnavailable { .. } => {
+			ExecutionFailure::MediaRoute(error.to_string())
+		}
 		NativeError::TransactionPending | NativeError::StaleInference => ExecutionFailure::Deferred,
 		NativeError::ToolRetry {
 			message,
@@ -339,5 +341,33 @@ pub(crate) fn classify_failure(error: &NativeError) -> ExecutionFailure {
 			message: error.to_string(),
 		},
 		_ => ExecutionFailure::Other(error.to_string()),
+	}
+}
+
+#[cfg(test)]
+mod route_refusal_tests {
+	use super::*;
+	use aidash_application::route_refusal::{RouteReason, RouteRefusal};
+
+	#[test]
+	fn pinned_failures_fail_and_media_failures_pause_with_their_reasons() {
+		let refusal = RouteRefusal {
+			tag: "fixture/us".into(),
+			reasons: vec![RouteReason::EndpointMissing],
+		};
+		let pinned = NativeError::from(Error::ProviderRouteUnavailable {
+			model: "vendor/model".into(),
+			refusal: refusal.clone(),
+		});
+		assert!(
+			matches!(classify_failure(&pinned), ExecutionFailure::Other(message) if message.contains("fixture/us") && message.contains("endpoint missing"))
+		);
+		let media = NativeError::from(Error::MediaRouteUnavailable {
+			model: "vendor/model".into(),
+			candidates: vec![refusal],
+		});
+		assert!(
+			matches!(classify_failure(&media), ExecutionFailure::MediaRoute(message) if message.contains("fixture/us") && message.contains("endpoint missing"))
+		);
 	}
 }
