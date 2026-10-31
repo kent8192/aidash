@@ -15,7 +15,9 @@ use upstream_fixtures::reply;
 const DEFERRED: &str = "2.0.0";
 const LEGACY: &str = "2.0.1";
 const METADATA_BYTES: usize = 16384;
-const SCHEMA_BYTES: usize = 8192;
+// Keep the memory-free fixture large enough for eager tools, but small enough
+// that its discoverable tool schemas exceed the exposure budget.
+const SCHEMA_BYTES: usize = 6144;
 const SKILL_BYTES: usize = 2048;
 const MANDATORY: [&str; 7] = [
 	"capability_describe",

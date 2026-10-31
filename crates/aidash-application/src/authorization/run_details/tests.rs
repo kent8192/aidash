@@ -71,7 +71,7 @@ fn repository() -> Repository {
 				updated_at: Utc::now(),
 			},
 			context: serde_json::to_value(Context::default()).unwrap(),
-			pending: json!({"state_version":1,"data":{},"recovery":{"retry":null,"lease_recovered":false}}),
+			pending: json!({"state_version":1,"data":{},"recovery":{"retry":null}}),
 		}),
 		visible: true,
 		memory: None,

@@ -108,11 +108,11 @@ pub struct OidcConfig {
 	pub client_secret: String,
 	#[setting(required)]
 	pub public_origin: String,
-	#[setting(default = "43200")]
-	#[validate(range(min = 60, max = 604800))]
+	#[setting(default = "2592000")]
+	#[validate(range(min = 60, max = 2592000))]
 	pub session_absolute_seconds: i64,
-	#[setting(default = "1800")]
-	#[validate(range(min = 60, max = 604800))]
+	#[setting(default = "604800")]
+	#[validate(range(min = 60, max = 2592000))]
 	pub session_idle_seconds: i64,
 }
 
@@ -287,6 +287,33 @@ mod tests {
 				.to_string()
 				.contains("invalid dashboard.oidc.public_origin")
 		);
+	}
+
+	#[rstest]
+	fn browser_sessions_default_to_seven_days_idle_and_thirty_days(oidc_config: OidcConfig) {
+		// Assert: #627 keeps people signed in within NIST SP 800-63B-4 AAL1 limits.
+		assert_eq!(oidc_config.session_idle_seconds, 604_800);
+		assert_eq!(oidc_config.session_absolute_seconds, 2_592_000);
+	}
+
+	#[rstest]
+	#[case::at_bound(2_592_000, 2_592_000, true)]
+	#[case::absolute_over(604_800, 2_592_001, false)]
+	#[case::idle_over(2_592_001, 2_592_000, false)]
+	#[case::idle_beyond_absolute(604_801, 604_800, false)]
+	fn session_lifetimes_stay_within_thirty_days(
+		mut oidc_config: OidcConfig,
+		#[case] idle: i64,
+		#[case] absolute: i64,
+		#[case] accepted: bool,
+	) {
+		// Arrange
+		oidc_config.session_idle_seconds = idle;
+		oidc_config.session_absolute_seconds = absolute;
+		// Act
+		let result = oidc_config.normalized();
+		// Assert
+		assert_eq!(result.is_ok(), accepted);
 	}
 
 	#[rstest]

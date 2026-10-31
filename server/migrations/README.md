@@ -1,5 +1,11 @@
 # Aidash native migration history
 
+`execution/0081_lease_recoveries` updates the physical `runs.pending` default,
+and replaces the activation trigger function. PostgreSQL function replacement
+is a SQL exception that Reinhardt cannot express. The server decodes the
+former Lease Recovery flag of existing Runs, so the migration writes no Run
+rows; rollback does not rewrite stored counters for older binaries.
+
 Issue #296 adds write-only Tenant Secrets in `identity/0036` through `0038`
 and durable operation egress budgets and audits in `execution/0046` through
 `0048`. Their forced Tenant row policies use the existing policy renderer.
@@ -734,6 +740,37 @@ CHECKs bound the reason to 1 to 1000 characters and tie `identity_id` to a brows
 through `RunSQL`, and `execution/0079_run_safety_stops_state` is the generated state-only
 snapshot that leaves the physical constraints and indexes to `0077`.
 
+## Harness Contract versions (#531)
+
+`registry/0050_harness_contract` (after `registry/0048_context_marketplace_merge`
+and `registry/0045_agent_plugin_settings`)
+replaces `public.aidash_agent_bindings_is_valid` so the optional
+`harness_contract` key accepts `legacy@1`, `structured@1` or `structured@2`;
+omitted and explicit null are accepted so definitions written before #531 keep
+their bytes. `AgentBindings::validate` rejects a structured version whose
+Projection Version is not Native. PostgreSQL function bodies have no typed
+Reinhardt operation, so the replacement and its 0045 restore live in reversible
+SQL assets. Rollback refuses while definitions, packages, or Run Binding snapshots declare the key; restore the pre-upgrade backup to recover. It is database-only and changes no model state.
+
+`execution/0082_harness_contract` (after `execution/0081_lease_recoveries`)
+adds `inference_usage.harness_contract` with typed column operations. Historical
+Usage Records receive `1` (`legacy@1`); the migration then removes the default so
+every new dispatch supplies the pinned version, and a check keeps it positive.
+The generated state-only checkpoint `execution/0083_harness_contract_state`
+drops that check from the ORM snapshot again, because it is enforced apart from
+model state like the earlier `inference_usage` checks. Rollback drops the
+evidence column and loses the recorded versions.
+
+`registry/0052_harness_contract_structured3` lets the Agent Bindings validator accept
+`structured@3` (#532). Its rollback restores the 0050 body and refuses while
+definitions, packages or Run Binding snapshots declare `structured@3`.
+
+`registry/0051_harness_plugin_merge` joins the Harness Contract and Agent
+Plugin/Context Source heads. The Harness Contract validator extends the Agent
+Plugin settings validator, including its compaction rules, and restores that
+validator on rollback. The join is an empty state-only migration that preserves
+existing identities and one leaf per app.
+
 ## Merged Node lifetime and Auth histories
 
 `identity/0051_node_auth_history_merge` joins the Common Auth origin binding,
@@ -745,9 +782,9 @@ Each is an empty state-only migration that depends on every existing leaf of
 its app. Existing migration identities, dependencies, schema changes and
 rollback guards remain intact, with one head per app for future generation.
 
-`execution/0081_node_preview_merge` joins `execution/0061_node_plugin_merge`
-with the Live preview and Safety Stop history ending in
-`execution/0080_invocation_delivery`.
+`execution/0084_node_preview_merge` joins `execution/0061_node_plugin_merge`
+with the Live preview, Safety Stop, Lease Recovery and Harness Contract history
+ending in `execution/0083_harness_contract_state`.
 `federation/0020_node_preview_origin_merge` joins Node registration recovery
 ownership with `federation/0013_registered_preview_origin`. Both are empty
 state-only migrations; existing identities, schema changes and rollback guards

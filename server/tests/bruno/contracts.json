@@ -31404,8 +31404,11 @@
                 "$ref": "#/components/schemas/DegradedContext",
                 "description": "Steps that ran with Degraded context (ADR 0059). Kept across resumes."
               },
-              "lease_recovered": {
-                "type": "boolean"
+              "lease_recoveries": {
+                "description": "Consecutive Lease Recoveries of the current step.",
+                "format": "uint32",
+                "minimum": 0,
+                "type": "integer"
               },
               "retry": {
                 "anyOf": [
@@ -31428,7 +31431,7 @@
                 ]
               }
             },
-            "required": ["retry", "lease_recovered"],
+            "required": ["retry"],
             "type": "object"
           },
           "RemoteSemanticFailure": {
@@ -35139,8 +35142,11 @@
                 "$ref": "#/components/schemas/DegradedContext",
                 "description": "Steps that ran with Degraded context (ADR 0059). Kept across resumes."
               },
-              "lease_recovered": {
-                "type": "boolean"
+              "lease_recoveries": {
+                "description": "Consecutive Lease Recoveries of the current step.",
+                "format": "uint32",
+                "minimum": 0,
+                "type": "integer"
               },
               "retry": {
                 "anyOf": [
@@ -35163,7 +35169,7 @@
                 ]
               }
             },
-            "required": ["retry", "lease_recovered"],
+            "required": ["retry"],
             "type": "object"
           },
           "RemoteSemanticFailure": {
@@ -38481,8 +38487,11 @@
                 "$ref": "#/components/schemas/DegradedContext",
                 "description": "Steps that ran with Degraded context (ADR 0059). Kept across resumes."
               },
-              "lease_recovered": {
-                "type": "boolean"
+              "lease_recoveries": {
+                "description": "Consecutive Lease Recoveries of the current step.",
+                "format": "uint32",
+                "minimum": 0,
+                "type": "integer"
               },
               "retry": {
                 "anyOf": [
@@ -38505,7 +38514,7 @@
                 ]
               }
             },
-            "required": ["retry", "lease_recovered"],
+            "required": ["retry"],
             "type": "object"
           },
           "RemoteSemanticFailure": {
@@ -49418,7 +49427,7 @@
                 "$ref": "#/components/schemas/NodeName"
               },
               "ready": {
-                "description": "Every named item is approved, admits the root agent and needs no widening.",
+                "description": "Every named item is approved, admits its consumers and needs no widening.",
                 "type": "boolean"
               },
               "root": {
@@ -49514,8 +49523,15 @@
                 "type": "boolean"
               },
               "can_approve": {
-                "description": "Whether this principal holds `catalog.approve` on it.",
+                "description": "Whether this principal can decide it with the visible review information.",
                 "type": "boolean"
+              },
+              "consumers": {
+                "description": "Readable agent subjects that directly use this item.",
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
               },
               "description": {
                 "additionalProperties": {
@@ -49560,7 +49576,7 @@
                     "type": "null"
                   }
                 ],
-                "description": "The restriction this Review proposes, defaulting a dependency of an\nagent root to that agent's subject."
+                "description": "The restriction this Review proposes for the direct consumers."
               },
               "reference": {
                 "$ref": "#/components/schemas/EntityRef"
@@ -49580,11 +49596,12 @@
                 "$ref": "#/components/schemas/ReviewStatus"
               },
               "widen": {
-                "description": "An approved restriction would gain members the root agent needs.",
+                "description": "An existing restriction would gain consumers.",
                 "type": "boolean"
               }
             },
             "required": [
+              "consumers",
               "reference",
               "kind",
               "name",
@@ -49602,7 +49619,7 @@
             "type": "object"
           },
           "ReviewStatus": {
-            "description": "Whether one exact version can be used now, and if not, what stands in the\nway. `Approved` means the Node's approval is enabled; a separate `widen`\nreports an approved restriction that no longer admits the root agent.",
+            "description": "Whether one exact version can be used now, and if not, what stands in the\nway. `Approved` means the Node's approval is enabled; a separate `widen`\nreports an approved restriction that no longer admits every consumer.",
             "oneOf": [
               {
                 "enum": ["approved"],

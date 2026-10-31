@@ -516,6 +516,7 @@ impl<'a> Executor<'a> {
 		visibility: &mut dyn ExecutionVisibility,
 		home: &dyn ExecutionHome,
 		fitting: &aidash_application::context::Fitting<'_>,
+		harness_contract: aidash_domain::harness_contract::HarnessContract,
 		mut plan: aidash_application::context::SummaryPlan,
 		tools: &Tools,
 		staged: Option<&aidash_application::decision::StagedDecision>,
@@ -702,6 +703,7 @@ impl<'a> Executor<'a> {
 					model_id: summary.model.id.clone(),
 					model_version: summary.model.version.clone(),
 					projection_version: request.context.projection_version().number(),
+					harness_contract: harness_contract.number(),
 					upstream_model: model_cfg.model_id.clone(),
 					purpose: UsagePurpose::Summary,
 					requested_route: model_cfg
@@ -1014,6 +1016,7 @@ impl<'a> Executor<'a> {
 			} else {
 				"run.reconciled"
 			};
+			run.recovery.lease_recoveries = 0;
 			store.save_run(run, token, kind).await?;
 			return Ok(());
 		}
@@ -1025,6 +1028,7 @@ impl<'a> Executor<'a> {
 				.transition_terminal_run_messages(run, target.task_status())
 				.await?;
 			run.state = target.into_state();
+			run.recovery.lease_recoveries = 0;
 			store
 				.save_run(
 					run,
@@ -1042,8 +1046,11 @@ impl<'a> Executor<'a> {
 		// unavailable workspace slot when it is the last one (ADR 0059).
 		let degrade_on_outage = run.recovery.degrades_on_outage();
 		run.recovery.retry = None;
-		if std::mem::take(&mut run.recovery.lease_recovered) {
-			let data = json!({"run_id":run.id,"task_id":run.task_id,"phase":run.phase(),"cause":"expired worker lease"});
+		// The count survives lease-retaining checkpoints of this step; the save
+		// that ends the step resets it (see `Run::worker_snapshot`).
+		let lease_recoveries = run.recovery.lease_recoveries;
+		if lease_recoveries > 0 {
+			let data = json!({"run_id":run.id,"task_id":run.task_id,"phase":run.phase(),"cause":"expired worker lease","lease_recoveries":lease_recoveries});
 			store
 				.emit(
 					home.local().then_some(run.workspace_id),
@@ -1197,10 +1204,12 @@ impl<'a> Executor<'a> {
 				};
 				// Ordered and Native share the Stable Prefix rules: a Run-stable
 				// snapshot quota and Retrieval Key reuse (ADR 0020). Only Ordered
-				// keeps per-turn paragraphs out of `system`; Native keeps every
-				// harness instruction in `system` and data in envelopes.
+				// keeps per-turn paragraphs out of `system`; a structured Harness
+				// Contract moves them to the `aidash` envelope instead.
 				let ordered = !projection.version().is_legacy();
-				let turn_paragraphs = matches!(projection, context::RequestProjection::Ordered(_));
+				let ordered_turn_paragraphs =
+					matches!(projection, context::RequestProjection::Ordered(_));
+				let contract = agent.harness_contract;
 				let source_input_seq = inputs
 					.last()
 					.map_or(run.observed_input_seq, |input| input.seq);
@@ -1257,7 +1266,7 @@ impl<'a> Executor<'a> {
 					prepared: &prepared_sources,
 				};
 				let mut source_instruction_slots = std::collections::BTreeMap::<String, [usize; 2]>::new();
-				let mut instructions = context::versioned_agent_instructions(agent.projection_version, "");
+				let mut instruction_fragments: Vec<(&str, String)> = Vec::new();
 				for source in source_plan
 					.iter()
 					.filter(|source| source.phase == ContextSourcePhase::Instructions)
@@ -1291,17 +1300,34 @@ impl<'a> Executor<'a> {
 					if caches_text {
 						source_skill_context.push_str(&text);
 					}
-					source_instruction_slots.insert(
-						source.contribution_slot.clone(),
-						[instructions.len(), instructions.len() + text.len()],
-					);
-					instructions.push_str(&text);
+					instruction_fragments.push((source.contribution_slot.as_str(), text));
 				}
-				if let Some(selection) = &exposure {
-					instructions.push_str(&selection.index);
+				let index = exposure
+					.as_ref()
+					.map(|selection| selection.index.clone())
+					.unwrap_or_default();
+				let fragments = instruction_fragments
+					.iter()
+					.map(|(slot, text)| (*slot, text.as_str()))
+					.collect::<Vec<_>>();
+				let mut instructions = aidash_domain::harness_contract::system_text(
+					contract,
+					agent.projection_version,
+					&agent.instructions,
+					&fragments,
+					&index,
+				);
+				for (slot, text) in &instruction_fragments {
+					if text.is_empty() {
+						continue;
+					}
+					// Every fragment is appended verbatim, so its byte range in the
+					// composed text is its first occurrence.
+					if let Some(start) = instructions.find(text.as_str()) {
+						source_instruction_slots
+							.insert((*slot).to_owned(), [start, start + text.len()]);
+					}
 				}
-				instructions.push_str("\nAdditional user instructions:\n");
-				instructions.push_str(&agent.instructions);
 				let fixed_sources = collect_data_phase(
 					self.environment,
 					run,
@@ -1432,9 +1458,21 @@ impl<'a> Executor<'a> {
 					output_limit
 				};
 				// Ordered keeps per-turn paragraphs out of the cached system prompt.
+				// A structured Harness Contract moves them into the `aidash` envelope.
+				let harness_paragraphs = contract.leaves_data_envelopes();
 				let mut turn_instructions = String::new();
+				let mut harness_turn_instructions: Vec<String> = Vec::new();
+				let mut push_turn_paragraph = |paragraph: &str| {
+					if harness_paragraphs {
+						harness_turn_instructions.push(paragraph.trim().to_owned());
+					} else if ordered_turn_paragraphs {
+						turn_instructions.push_str(paragraph);
+					} else {
+						instructions.push_str(paragraph);
+					}
+				};
 				if run_message_catchup {
-					(if turn_paragraphs { &mut turn_instructions } else { &mut instructions }).push_str(&format!(
+					push_turn_paragraph(&format!(
 						"\n\nRun-message catch-up: Treat the entries under run_messages as user task context. Read every required message record in this page before responding. Update the cumulative run_message_summary faithfully, preserving the user's goal, constraints, corrections, and unresolved requests in sequence order (newer corrections take precedence). Return only the concise updated summary, encoded in at most {run_message_limit} UTF-8 bytes. Do not answer the user, complete the task, publish text, or perform actions during catch-up.",
 					));
 				}
@@ -1443,7 +1481,7 @@ impl<'a> Executor<'a> {
 					&& let Some(guard) = guard
 					&& guard.auto_judging(run).await?
 				{
-					(if turn_paragraphs { &mut turn_instructions } else { &mut instructions }).push_str(AUTO_MODE_INSTRUCTION);
+					push_turn_paragraph(AUTO_MODE_INSTRUCTION);
 				}
 				let mut pinned = json!({"identity":{"node_id":self.environment.node_id(),"agent_id":run.agent_id,"agent_version":run.agent_version},"task":task,"agent_state":{"phase":run.phase(),"step":run.step}});
                 pinned.as_object_mut().expect("request snapshot").extend(snapshot_sources);
@@ -1521,7 +1559,7 @@ impl<'a> Executor<'a> {
 				let media_intake = media.defer_human || media.defer_selected;
 				if media_intake {
 					specifications.clear();
-					(if turn_paragraphs { &mut turn_instructions } else { &mut instructions }).push_str("\nMedia intake is continuing. For this interim turn, postpone required workspace reads and the cumulative run-message summary. Preserve the user goals, constraints, and corrections in these run messages and describe the media in this request as plain text. Do not call tools or complete the task; deferred media will be provided in the next request.");
+					push_turn_paragraph("\nMedia intake is continuing. For this interim turn, postpone required workspace reads and the cumulative run-message summary. Preserve the user goals, constraints, and corrections in these run messages and describe the media in this request as plain text. Do not call tools or complete the task; deferred media will be provided in the next request.");
 				}
 				// Catch-up and media intake send fewer tools; usage measures those sent.
 				if (run_message_catchup || media_intake) && let Some(selection) = exposure.as_mut() {
@@ -1535,12 +1573,42 @@ impl<'a> Executor<'a> {
 					)?,
 				);
 				let private_context = if fixed_sources.is_empty() { Value::Null } else {Value::Object(fixed_sources.clone())};
+				let read_instruction = has_run_message_references.then(|| {
+					if media.defer_human || media.defer_selected {
+						json!(
+							"These run-message records still require workspace_read after media intake completes. Do not call tools in this interim request."
+						)
+					} else if run_message_catchup {
+						json!(
+							"Read every run_messages entry with requires_workspace_read and every deferred_run_message_reads ID through workspace_read(kind=message, id=record.id or the deferred ID) before returning the updated run_message_summary. Full content remains in each workspace record."
+						)
+					} else {
+						json!(
+							"Read every run_messages entry with requires_workspace_read and every deferred_run_message_reads ID through workspace_read(kind=message, id=record.id or the deferred ID) before completing the task. Full content remains in each workspace record."
+						)
+					}
+				});
+				// One object renders both the measurement and the sent envelope,
+				// so the budgeting and the request cannot drift.
+				let mut harness_requirements = serde_json::Map::new();
+				if !harness_turn_instructions.is_empty() {
+					harness_requirements
+						.insert("turn_instructions".into(), json!(harness_turn_instructions));
+				}
+				if let Some(instruction) = &read_instruction {
+					harness_requirements
+						.insert("run_message_read_instruction".into(), instruction.clone());
+				}
 				// Ordered per-turn paragraphs are request content the fixed
 				// reservations must count, exactly as Legacy counts them in system.
 				let turn_instructions = turn_instructions.trim_start().to_owned();
 				let mut fixed_context = private_context.clone();
 				if !turn_instructions.is_empty() {
 					fixed_context["turn_instructions"] = json!(turn_instructions);
+				}
+				if contract.leaves_data_envelopes() && !harness_requirements.is_empty() {
+					fixed_context[aidash_domain::projection::native::HARNESS_REQUIREMENTS] =
+						Value::Object(harness_requirements.clone());
 				}
 				context::request_context_budget(
 					window,
@@ -1631,25 +1699,19 @@ impl<'a> Executor<'a> {
 				if !carried_reads.is_empty() {
 					pinned["deferred_run_message_reads"] = json!(carried_reads);
 				}
-				if has_run_message_references {
-					pinned["run_message_read_instruction"] = if media.defer_human
-						|| media.defer_selected
-					{
-						json!(
-							"These run-message records still require workspace_read after media intake completes. Do not call tools in this interim request."
-						)
-					} else if run_message_catchup {
-						json!(
-							"Read every run_messages entry with requires_workspace_read and every deferred_run_message_reads ID through workspace_read(kind=message, id=record.id or the deferred ID) before returning the updated run_message_summary. Full content remains in each workspace record."
-						)
-					} else {
-						json!(
-							"Read every run_messages entry with requires_workspace_read and every deferred_run_message_reads ID through workspace_read(kind=message, id=record.id or the deferred ID) before completing the task. Full content remains in each workspace record."
-						)
-					};
-				}
-				if !turn_instructions.is_empty() {
-					pinned["turn_instructions"] = json!(turn_instructions);
+				if contract.leaves_data_envelopes() {
+					// The `aidash` envelope is built by `native_context`, which also
+					// adds this step's open continuation markers. The reserved key
+					// is set even when empty so those markers have a destination.
+					pinned[aidash_domain::projection::native::HARNESS_REQUIREMENTS] =
+						Value::Object(harness_requirements);
+				} else {
+					if let Some(instruction) = read_instruction {
+						pinned["run_message_read_instruction"] = instruction;
+					}
+					if !turn_instructions.is_empty() {
+						pinned["turn_instructions"] = json!(turn_instructions);
+					}
 				}
 				if snapshot_fit.is_err()
 					&& budget
@@ -1793,7 +1855,7 @@ impl<'a> Executor<'a> {
                         let staged = plan.staged.take();
                         let summarized = async {
                             self.pause_if_summary_revoked(run, token, guard, home.as_ref(), &mut context).await?;
-                            Box::pin(self.summarize(run, token, guard, visibility, home.as_ref(), &fitting, *plan, &tools, staged.as_deref())).await
+                            Box::pin(self.summarize(run, token, guard, visibility, home.as_ref(), &fitting, agent.harness_contract, *plan, &tools, staged.as_deref())).await
                         }.await;
                         // A pruning no summary completed changes nothing (ADR 0056).
                         if summarized.is_err() && let (Some(staged), Some(ports)) = (&staged, &decider) {
@@ -1866,6 +1928,7 @@ impl<'a> Executor<'a> {
 							model_id: agent.model.id.clone(),
 							model_version: agent.model.version.clone(),
 							projection_version: agent.projection_version.number(),
+							harness_contract: agent.harness_contract.number(),
 							upstream_model: model_cfg.model_id.clone(),
 							purpose: UsagePurpose::Main,
 							requested_route: model_cfg.provider_route.as_ref().map(|route| route.tag.clone()),

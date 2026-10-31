@@ -150,12 +150,17 @@ Aidash additionally emits:
 - `aidash_worker_active_steps`: leased steps currently handled by this process.
 - `aidash_worker_steps_total{outcome="success|error"}`: completed step attempts, not terminal tasks.
 - `aidash_worker_retries_total`: persisted worker retry transitions.
+- `aidash_worker_crash_loop_failures_total`: Runs handed to failure delivery after three consecutive Lease Recoveries of one step.
 - `aidash_model_response_headers_seconds`: successful HTTP transport time until model response headers, not first-token latency.
 - `aidash_model_tokens_total{direction="input|output|input_cached_read|input_cached_write"}`: provider-reported usage from successfully parsed model responses, streamed or not. Cached reads and writes are breakdowns of `input`, not additional tokens.
 - `aidash_inference_first_delta_seconds`: time from the provider call to the first progress item offered by a streamed response. This is the first-token proxy.
 - `aidash_inference_accepted_seconds`: time from the provider call to the durable Accepted Response.
 - `aidash_inference_interruptions_total{reason}`: Inference Attempts closed without an Accepted Response. `reason` is `correction` for a discarded attempt, or `cancelled`, `lease_lost`, `stall`, `stream_error` or `revoked`. The harness counts the outcomes it writes; the server counts the orphaned and stale attempts it closes itself.
 - `aidash_inference_progress_coalesced_total`: progress items merged or dropped because the worker's bounded progress buffer was full. Inference never waits for progress delivery.
+
+A `run.lease_recovery_claimed` event records the Run, its Lease Recovery count,
+and whether its next step is isolated before that step starts. A `run.crash_loop`
+event records the count when a Crash Loop Failure enters failure delivery.
 
 These counters are operational observations, not billing records. A direction
 receives a sample only when the provider reported that value; missing usage is

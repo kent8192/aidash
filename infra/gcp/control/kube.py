@@ -658,9 +658,9 @@ def common_auth_settings(output, dashboard, tls, external):
         or any(not isinstance(value, str) or not value.startswith("-----BEGIN ") for value in tls.values())):
         raise Refused(invalid)
     oidc_settings = dict(oidc, client_id="cloud", client_secret="${AIDASH_OIDC_CLIENT_SECRET}")
-    for field, default in (("session_absolute_seconds", 43200), ("session_idle_seconds", 1800)):
+    for field, default in (("session_absolute_seconds", 2592000), ("session_idle_seconds", 604800)):
         value = external.get("AIDASH_OIDC_" + field.upper(), str(default))
-        if not isinstance(value, str) or not value.isdecimal() or not 60 <= int(value) <= 604800:
+        if not isinstance(value, str) or not value.isdecimal() or not 60 <= int(value) <= 2592000:
             raise Refused(invalid)
         oidc_settings[field] = int(value)
     if oidc_settings["session_idle_seconds"] > oidc_settings["session_absolute_seconds"]:

@@ -588,7 +588,7 @@ async fn upgraded_worker_reclaims_an_expired_legacy_lease_after_input_backfill(
 		.expect("the run remains available");
 	assert_eq!(reclaimed.id, run.id);
 	assert!(reclaimed.ledger_worker_ready);
-	assert!(reclaimed.recovery.lease_recovered);
+	assert!(reclaimed.recovery.lease_recoveries > 0);
 	f.store
 		.release_lease(&TEST_FIXTURE, run.id, upgraded_worker)
 		.await

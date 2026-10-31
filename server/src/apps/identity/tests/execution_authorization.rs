@@ -5322,10 +5322,9 @@ async fn approval_review_reports_readiness_and_hides_unreadable_dependencies(
 			.any(|item| item["reference"]["id"] == "model")
 	);
 	assert_eq!(hidden["ready"], false);
-	// The host issues it: a Deployment Administrator has no Tenant credential
-	// authority (#484).
-	let credential = common::issued_credential(&f.store, "acme", "bob").await;
-	let bob = credential["token"].as_str().unwrap();
+	// A Deployment Administrator issues no Tenant credentials over HTTP (#484).
+	let bob_credential = subject_credential(&f.store, "acme", "bob").await;
+	let bob = bob_credential.as_str();
 	let (status, body) = request(&app, bob, "GET", &path, Value::Null).await;
 	assert_eq!(status, 403, "{body}");
 	cleanup(f, &url, &schema).await;
@@ -5384,6 +5383,179 @@ async fn approval_review_creates_root_agent_with_selected_groups(
 	assert_eq!(
 		snapshot["bundle"]["subjects"][subject]["groups"],
 		json!(["operators"])
+	);
+	cleanup(f, &url, &schema).await;
+}
+
+#[rstest::rstest]
+#[tokio::test]
+async fn approval_review_approves_a_delegated_model_first_and_the_delegator_then_starts(
+	#[future(awt)]
+	#[from(common::native_application)]
+	fixture: common::ApplicationFixture,
+) {
+	let (f, url, schema) = fixture.runtime.parts();
+	let app = fixture.application;
+	let (_, alice, task_id) = bootstrap(&f, &app, "http://127.0.0.1:9").await;
+	let node = aidash_domain::nodes::NodeName::derived("acme");
+	let deployment = f.config.deployment.to_string();
+	// delegator → agent tool `delegation` → delegate → delegated-model.
+	let definitions = [
+		json!({"id":"delegated-model","version":"1.0.0","kind":"model","name":{"en":"Delegated model"},"description":{"en":"fixture"},"config":{"provider":"openrouter","model_id":"fixture","endpoint":"http://127.0.0.1:9/v1","context_window":128000,"max_output_tokens":4096,"modalities":["text"],"cost":{}}}),
+		json!({"id":"delegate","version":"1.0.0","kind":"agent","name":{"en":"Delegate"},"description":{"en":"fixture"},"config":{"schema_version":1,"model":{"id":"delegated-model","version":"1.0.0"},"instructions":"Answer","bindings":[],"remove_default":["file_search","file_read"]}}),
+		json!({"id":"delegation","version":"1.0.0","kind":"tool","name":{"en":"Delegation"},"description":{"en":"fixture"},"config":{"registry_deployment":deployment,"provider":"integration.agent@1","operation":"invoke","default_alias":"delegate_peer","tier":"integration","narrow":{},"transport":{"transport":"agent","node_id":deployment,"agent":{"id":"delegate","version":"1.0.0"}}}}),
+		json!({"id":"delegator","version":"1.0.0","kind":"agent","name":{"en":"Delegator"},"description":{"en":"fixture"},"config":{"schema_version":1,"model":{"id":"model","version":"1.0.0"},"instructions":"Delegate","bindings":[{"kind":"tool","target":{"registry_deployment":deployment,"id":"delegation","version":"1.0.0"},"alias":"delegate_peer","narrow":{}}],"remove_default":["file_search","file_read"]}}),
+	];
+	for definition in definitions {
+		let (status, body) = request(&app, &alice, "POST", "/api/registry", definition).await;
+		assert_eq!(status, 200, "{body}");
+	}
+	let path =
+		format!("/api/authorization/acme/catalog/review?node={node}&entry=agent/delegator@1.0.0");
+	let item = |review: &Value, id: &str| {
+		review["items"]
+			.as_array()
+			.unwrap()
+			.iter()
+			.find(|item| item["reference"]["id"] == id)
+			.unwrap_or_else(|| panic!("{id} is not reviewed: {review}"))
+			.clone()
+	};
+	let submission = |review: &Value, ids: &[&str]| {
+		json!({
+			"node":node,
+			"root":{"id":"delegator","version":"1.0.0"},
+			"closure_digest":review["closure_digest"],
+			"items":ids.iter().map(|id| {
+				let item = item(review, id);
+				json!({"reference":item["reference"],"digest":item["digest"],
+					"expected_revision":item["expected_revision"],
+					"restriction":item["proposed_restriction"]})
+			}).collect::<Vec<_>>(),
+		})
+	};
+	let (status, review) = request(&app, &alice, "GET", &path, Value::Null).await;
+	assert_eq!(status, 200, "{review}");
+	let delegate = qualified_agent(&f.config.deployment.node(node.clone()), "delegate", "1.0.0");
+	let model = item(&review, "delegated-model");
+	assert_eq!(model["consumers"], json!([delegate]));
+	assert_eq!(model["proposed_restriction"]["subjects"], json!([delegate]));
+
+	// The delegated model is approved first, naming the not yet approved delegate.
+	let (status, body) = request(
+		&app,
+		&alice,
+		"POST",
+		"/api/authorization/acme/catalog/review",
+		submission(&review, &["delegated-model"]),
+	)
+	.await;
+	assert_eq!(status, 200, "{body}");
+	let (_, review) = request(&app, &alice, "GET", &path, Value::Null).await;
+	let (status, body) = request(
+		&app,
+		&alice,
+		"POST",
+		"/api/authorization/acme/catalog/review",
+		submission(&review, &["delegator", "delegation", "delegate"]),
+	)
+	.await;
+	assert_eq!(status, 200, "{body}");
+	let (_, review) = request(&app, &alice, "GET", &path, Value::Null).await;
+	assert_eq!(review["ready"], true, "{review}");
+
+	// The delegator pins the delegate's model without using it directly, so
+	// the model's restriction to the delegate does not refuse its admission.
+	let (status, body) = request(
+		&app,
+		&alice,
+		"POST",
+		&format!("/api/tasks/{task_id}/claim"),
+		json!({"revision":0,"agent":{"id":"delegator","version":"1.0.0"}}),
+	)
+	.await;
+	assert_eq!(status, 200, "{body}");
+
+	// The worker delegates to the delegate. Its closure is prepared while the
+	// subject chain still ends in the delegator, yet the delegate's own model
+	// is checked against the delegate it is restricted to.
+	let harness = Harness {
+		federation: f.clone(),
+	};
+	harness.worker_once().await.unwrap();
+	let parent_run = f.store.runs(&TEST_FIXTURE).await.unwrap().remove(0);
+	// The delegator's own step rechecks its recorded Registry reads, including
+	// the delegate's model it pins as metadata only.
+	assert_ne!(
+		parent_run.control.as_str(),
+		"PAUSED",
+		"the delegator's step must admit its pinned delegated model: {:?}",
+		parent_run.error
+	);
+	let (status, task) = request(
+		&app,
+		&alice,
+		"POST",
+		&format!("/api/workspaces/{}/tasks", parent_run.workspace_id),
+		json!({"title":"Child","description":"Delegated work","parent_id":task_id}),
+	)
+	.await;
+	assert_eq!(status, 200, "{task}");
+	let child_task = Uuid::parse_str(task["id"].as_str().unwrap()).unwrap();
+	let response = json!({"text":"","tool_calls":[{"id":"delegate","name":"task_delegate","arguments":{"task_id":child_task,"node_id":aidash_domain::nodes::NodeAddress::derived(f.config.deployment.as_str(), "acme").to_string(),"agent":{"id":"delegate","version":"1.0.0"}}}],"input_tokens":0,"output_tokens":0});
+	{
+		let query_bind_1 = parent_run.id;
+		let query_bind_2 = common::tool_pending(json!({"response":response,"cursor":0}));
+		sqlx::query(
+			&reinhardt::query::Query::update()
+				.table(reinhardt::query::Alias::new("runs"))
+				.value_expr(
+					reinhardt::query::Alias::new("phase"),
+					reinhardt::query::Expr::cust("'TOOL_CALL'"),
+				)
+				.value_expr(
+					reinhardt::query::Alias::new("pending"),
+					SimpleExpr::CustomWithExpr(
+						"(?)".to_owned(),
+						vec![Expr::value(query_bind_2.to_owned()).into()],
+					),
+				)
+				.and_where(SimpleExpr::CustomWithExpr(
+					"(id = ?)".to_owned(),
+					vec![Expr::value(query_bind_1.to_owned()).into()],
+				))
+				.to_string(reinhardt::query::PostgresQueryBuilder),
+		)
+		.execute(f.store.pool.fixture_driver())
+		.await
+	}
+	.unwrap();
+	assert!(harness.worker_once().await.unwrap());
+	let parent_after = f.store.run(&TEST_FIXTURE, parent_run.id).await.unwrap();
+	assert_ne!(
+		parent_after.control.as_str(),
+		"PAUSED",
+		"delegation must admit the delegate's own model: {:?}",
+		parent_after.error
+	);
+	let child_run = f
+		.store
+		.runs(&TEST_FIXTURE)
+		.await
+		.unwrap()
+		.into_iter()
+		.find(|run| run.task_id == child_task)
+		.expect("the delegator must start the delegate's Run");
+	assert!(
+		child_run
+			.context
+			.binding_snapshot
+			.as_ref()
+			.unwrap()
+			.definitions
+			.iter()
+			.any(|definition| definition.identity.id == "delegated-model"),
+		"the delegate's Run uses its restricted model"
 	);
 	cleanup(f, &url, &schema).await;
 }
@@ -5472,10 +5644,9 @@ async fn approval_review_submission_fences_stale_authority_and_approves_a_subset
 		.0,
 		200
 	);
-	// The host issues it: a Deployment Administrator has no Tenant credential
-	// authority (#484).
-	let credential = common::issued_credential(&f.store, "acme", "bob").await;
-	let bob = credential["token"].as_str().unwrap();
+	// A Deployment Administrator issues no Tenant credentials over HTTP (#484).
+	let bob_credential = subject_credential(&f.store, "acme", "bob").await;
+	let bob = bob_credential.as_str();
 	let (status, bob_review) = request(&app, bob, "GET", &path, Value::Null).await;
 	assert_eq!(status, 200, "{bob_review}");
 	assert_eq!(
@@ -6066,10 +6237,9 @@ async fn catalog_request_is_fulfilled_by_the_review_and_grants_nothing_before_it
 		.0,
 		200
 	);
-	// The host issues it: a Deployment Administrator has no Tenant credential
-	// authority (#484).
-	let credential = common::issued_credential(&f.store, "acme", "bob").await;
-	let bob = credential["token"].as_str().unwrap();
+	// A Deployment Administrator issues no Tenant credentials over HTTP (#484).
+	let bob_credential = subject_credential(&f.store, "acme", "bob").await;
+	let bob = bob_credential.as_str();
 	let (status, created) = request_create(
 		&app,
 		bob,
@@ -6115,7 +6285,7 @@ async fn catalog_request_is_fulfilled_by_the_review_and_grants_nothing_before_it
 			"reference":model["reference"],
 			"digest":model["digest"],
 			"expected_revision":model["expected_revision"],
-			"restriction":model["proposed_restriction"],
+			"restriction":{"subjects":["alice"],"groups":[]},
 		}],
 	});
 	// Holding the request grants the requester no approval authority.
@@ -6137,6 +6307,45 @@ async fn catalog_request_is_fulfilled_by_the_review_and_grants_nothing_before_it
 	)
 	.await;
 	assert_eq!(status, 200, "{body}");
+	// All versions are approved, but the model still excludes the consumer.
+	let (_, pending) = request(&app, &alice, "GET", &path, Value::Null).await;
+	assert_eq!(pending["ready"], false);
+	let model = pending["items"]
+		.as_array()
+		.unwrap()
+		.iter()
+		.find(|item| item["reference"]["id"] == "model")
+		.unwrap();
+	assert_eq!(model["widen"], true);
+	let (_, mine) = request(
+		&app,
+		bob,
+		"GET",
+		&format!("/api/authorization/acme/catalog/requests/mine?node={node}"),
+		Value::Null,
+	)
+	.await;
+	let open = mine["requests"]
+		.as_array()
+		.unwrap()
+		.iter()
+		.find(|request| request["id"] == id)
+		.unwrap();
+	assert_eq!(open["state"], "open");
+	let (status, widened) = request(
+		&app,
+		&alice,
+		"POST",
+		"/api/authorization/acme/catalog/review",
+		json!({
+			"node":node, "root":{"id":"research","version":"1.0.0"},
+			"closure_digest":pending["closure_digest"], "request":id,
+			"items":[{"reference":model["reference"], "digest":model["digest"],
+				"expected_revision":model["expected_revision"], "restriction":model["proposed_restriction"]}]
+		}),
+	)
+	.await;
+	assert_eq!(status, 200, "{widened}");
 	let (status, mine) = request(
 		&app,
 		bob,
@@ -6154,6 +6363,174 @@ async fn catalog_request_is_fulfilled_by_the_review_and_grants_nothing_before_it
 		.unwrap();
 	assert_eq!(request_view["state"], "fulfilled");
 	assert_eq!(request_view["next_action"], "fulfilled");
+	cleanup(f, &url, &schema).await;
+}
+
+#[rstest::rstest]
+#[tokio::test]
+async fn catalog_request_fulfilled_by_an_ordinary_approval_stays_final(
+	#[future(awt)]
+	#[from(common::native_application)]
+	fixture: common::ApplicationFixture,
+) {
+	let (f, url, schema) = fixture.runtime.parts();
+	let app = fixture.application;
+	let (_, alice, _) = bootstrap(&f, &app, "http://127.0.0.1:9").await;
+	let node = aidash_domain::nodes::NodeName::derived("acme");
+	let catalog = "/api/authorization/acme/catalog";
+	let set_model = |enabled: bool, expected_revision: u64| {
+		json!({"node":node,"entry":{"id":"model","version":"1.0.0"},
+			"enabled":enabled,"expected_revision":expected_revision})
+	};
+	let (status, body) = request(&app, &alice, "POST", catalog, set_model(false, 1)).await;
+	assert_eq!(status, 200, "{body}");
+	let (status, review) = request(
+		&app,
+		&alice,
+		"GET",
+		&format!("/api/authorization/acme/catalog/review?node={node}&entry=agent/research@1.0.0"),
+		Value::Null,
+	)
+	.await;
+	assert_eq!(status, 200, "{review}");
+	assert_eq!(review["ready"], false, "{review}");
+	// Requests are planted with Reinhardt Query: the HTTP submission refuses an
+	// unreviewable root, so the API cannot create the unrelated request below.
+	let open_request = |id: Uuid, root: &str, digest: &str| {
+		use reinhardt::query::{Alias, IntoValue, PostgresQueryBuilder, Query};
+		Query::insert()
+			.into_table(Alias::new("catalog_approval_requests"))
+			.columns(
+				[
+					"id",
+					"tenant",
+					"node",
+					"root_id",
+					"root_version",
+					"requester",
+					"reason",
+					"closure_digest",
+					"state",
+					"created_at",
+					"updated_at",
+					"revision",
+				]
+				.map(Alias::new),
+			)
+			.values_panic([
+				IntoValue::into_value(id),
+				IntoValue::into_value("acme"),
+				IntoValue::into_value(node.as_str().to_owned()),
+				IntoValue::into_value(root.to_owned()),
+				IntoValue::into_value("1.0.0"),
+				IntoValue::into_value("bob"),
+				IntoValue::into_value("Please"),
+				IntoValue::into_value(digest.to_owned()),
+				IntoValue::into_value("open"),
+				IntoValue::into_value(chrono::Utc::now()),
+				IntoValue::into_value(chrono::Utc::now()),
+				IntoValue::into_value(1_i64),
+			])
+			.to_string(PostgresQueryBuilder)
+	};
+	let request_state = |id: Uuid| {
+		use reinhardt::query::{Alias, IntoValue, PostgresQueryBuilder, Query};
+		Query::select()
+			.column(Alias::new("state"))
+			.from(Alias::new("catalog_approval_requests"))
+			.and_where(Expr::col("id").eq(IntoValue::into_value(id)))
+			.to_string(PostgresQueryBuilder)
+	};
+	let id = Uuid::new_v4();
+	sqlx::query(&open_request(
+		id,
+		"research",
+		review["closure_digest"].as_str().unwrap(),
+	))
+	.execute(f.store.pool.fixture_driver())
+	.await
+	.unwrap();
+	// An unrelated open request whose root cannot be reviewed at all (its
+	// Agent binds one target twice, which review refuses as invalid) must not
+	// roll back the approval below. Fault injection only: such a row predates
+	// the config constraint, so the table owner drops it to plant the row.
+	// Raw DDL because Reinhardt Query has no constraint-drop statement.
+	let owner = common::owner_pool(f.store.pool.fixture_driver()).await;
+	sqlx::query("ALTER TABLE registry DROP CONSTRAINT registry_agent_config")
+		.execute(&owner)
+		.await
+		.unwrap();
+	let deployment = f.config.deployment.clone();
+	let twice = json!({"kind":"tool","target":{"registry_deployment":deployment,
+		"id":"later","version":"1.0.0"},"narrow":{}});
+	let unreviewable = json!({"id":"unreviewable","version":"1.0.0","kind":"agent",
+		"name":{"en":"Unreviewable"},"description":{"en":"Invalid bindings"},
+		"config":{"schema_version":1,"model":{"id":"model","version":"1.0.0"},
+			"instructions":"Wait","bindings":[twice.clone(),twice],"remove_default":[]}});
+	{
+		use reinhardt::query::{Alias, IntoValue, PostgresQueryBuilder, Query};
+		sqlx::query(
+			&Query::insert()
+				.into_table(Alias::new("registry"))
+				.columns(["tenant", "id", "version", "kind", "metadata"].map(Alias::new))
+				.values_panic([
+					IntoValue::into_value("acme"),
+					IntoValue::into_value("unreviewable"),
+					IntoValue::into_value("1.0.0"),
+					IntoValue::into_value("agent"),
+					IntoValue::into_value(unreviewable),
+				])
+				.to_string(PostgresQueryBuilder),
+		)
+		.execute(f.store.pool.fixture_driver())
+		.await
+		.unwrap();
+	}
+	let unrelated = Uuid::new_v4();
+	sqlx::query(&open_request(
+		unrelated,
+		"unreviewable",
+		"sha256:unreviewable",
+	))
+	.execute(f.store.pool.fixture_driver())
+	.await
+	.unwrap();
+
+	// The ordinary approval endpoint completes the closure, then the approval
+	// is withdrawn again. The request was fulfilled at that write and stays so.
+	let (status, body) = request(&app, &alice, "POST", catalog, set_model(true, 2)).await;
+	assert_eq!(status, 200, "{body}");
+	let (status, body) = request(&app, &alice, "POST", catalog, set_model(false, 3)).await;
+	assert_eq!(status, 200, "{body}");
+
+	let state: String = sqlx::query_scalar(&request_state(id))
+		.fetch_one(f.store.pool.fixture_driver())
+		.await
+		.unwrap();
+	assert_eq!(state, "fulfilled");
+	let unrelated_state: String = sqlx::query_scalar(&request_state(unrelated))
+		.fetch_one(f.store.pool.fixture_driver())
+		.await
+		.unwrap();
+	assert_eq!(unrelated_state, "open");
+	// Nor does it fail the approver's queue read.
+	let (status, pending) = request(
+		&app,
+		&alice,
+		"GET",
+		&format!("/api/authorization/acme/catalog/requests/pending?node={node}"),
+		Value::Null,
+	)
+	.await;
+	assert_eq!(status, 200, "{pending}");
+	assert!(
+		pending["requests"]
+			.as_array()
+			.unwrap()
+			.iter()
+			.all(|request| request["id"] != id.to_string()),
+		"{pending}"
+	);
 	cleanup(f, &url, &schema).await;
 }
 

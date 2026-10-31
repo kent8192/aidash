@@ -91,6 +91,14 @@ impl PeerInspectionScope for Scope {
 		self.call("generation");
 		Ok(None)
 	}
+	async fn closure_entry(
+		&mut self,
+		reference: &EntityRef,
+		action: &str,
+		_users: &[EntityRef],
+	) -> Result<Entry> {
+		self.entry(reference, action).await
+	}
 	async fn entry(&mut self, reference: &EntityRef, action: &str) -> Result<Entry> {
 		self.call(action);
 		if self.denied_action.as_deref() == Some(action) {

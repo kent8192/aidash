@@ -34,6 +34,14 @@ pub trait PeerInspectionScope: Send {
 	async fn require(&mut self, resource: &Resource, action: &str) -> Result<()>;
 	async fn generation(&mut self, source: &str, input: &InspectInput) -> Result<Option<Value>>;
 	async fn entry(&mut self, reference: &EntityRef, action: &str) -> Result<Entry>;
+	/// [`Self::entry`] for a closure definition that only the closure agents
+	/// `users` use directly, so its Catalog Approval restriction applies to them.
+	async fn closure_entry(
+		&mut self,
+		reference: &EntityRef,
+		action: &str,
+		users: &[EntityRef],
+	) -> Result<Entry>;
 	fn entry_resource(&self, entry: &Entry) -> Resource;
 	async fn active_installation(&mut self, entry: &Entry) -> Result<bool>;
 	async fn pinned_installation(&mut self, entry: &Entry) -> Result<()>;

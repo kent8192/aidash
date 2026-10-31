@@ -14,7 +14,7 @@ fn raw() -> RawRun {
         "pending":{"state_version":1,"data":{"force_workspace_read_compaction":true,
             "deferred_workspace_read":null,"deferred_skill_read":null,"deferred_workspace_observation":null,
             "selected_media":[],"media_intake_through_seq":6,"deferred_run_message_reads":[Uuid::from_u128(4)]},
-            "recovery":{"semantic_reason":"retries_exhausted","retry":{"count":3,"at":"2030-01-01T00:00:00Z"},"lease_recovered":true}}
+            "recovery":{"semantic_reason":"retries_exhausted","retry":{"count":3,"at":"2030-01-01T00:00:00Z"},"lease_recoveries":1}}
     })).unwrap()
 }
 #[rstest]
@@ -26,7 +26,7 @@ fn manual_semantic_retry_clears_only_its_reason_and_schedule_and_preserves_the_c
 	assert_eq!(result["state_version"], json!(1));
 	assert_eq!(
 		result["recovery"],
-		json!({"retry":null,"lease_recovered":true,"decision_cycle":1})
+		json!({"retry":null,"lease_recoveries":1,"decision_cycle":1})
 	);
 	assert_eq!(
 		raw.pending["recovery"]["semantic_reason"],
@@ -68,7 +68,7 @@ fn manual_context_retry_clears_its_typed_reason_and_schedule(mut raw: RawRun) {
 	assert_eq!(result["data"], raw.pending["data"]);
 	assert_eq!(
 		result["recovery"],
-		json!({"retry":null,"lease_recovered":true,"decision_cycle":1})
+		json!({"retry":null,"lease_recoveries":1,"decision_cycle":1})
 	);
 }
 #[rstest]
@@ -118,7 +118,7 @@ fn a_failure_delivery_can_resume_without_decoding_a_corrupt_diagnostic_context(m
 	assert_eq!(result["data"], raw.pending["data"]);
 	assert_eq!(
 		result["recovery"],
-		json!({"retry":null,"lease_recovered":true,"decision_cycle":1})
+		json!({"retry":null,"lease_recoveries":1,"decision_cycle":1})
 	);
 	assert!(raw.decode().is_err());
 }

@@ -10,16 +10,29 @@ use std::collections::BTreeMap;
 /// A tool result longer than this many characters is truncated to its head.
 const TRUNCATE_ABOVE: usize = 420;
 const TRUNCATED_HEAD: usize = 300;
-/// How a decision marks a tool result it cut to its head.
-const TRUNCATION_MARK: &str = "[decision compaction truncated ";
-const TRUNCATION_END: &str = "full result remains in the execution journal]";
+/// How a decision marks a tool result it cut to its head. The marker tells the
+/// model the cut was deliberate and that the head is meant to be enough: a
+/// marker that pointed at the full result made live models fetch it again,
+/// which overflowed the window and compacted in a loop (#626).
+const TRUNCATION_MARK: &str = "[compaction kept only these first ";
+const TRUNCATION_END: &str = "call the tool again only if the rest is still needed verbatim]";
+/// The marker decisions wrote before #626. Projections persisted with it still
+/// hold truncated results whose research identity revocation and expiry recover
+/// from the journal, so `truncated_result` keeps recognizing it.
+const LEGACY_TRUNCATION_MARK: &str = "[decision compaction truncated ";
+const LEGACY_TRUNCATION_END: &str = "full result remains in the execution journal]";
 
 /// Whether a decision cut `result` to its head. Such a result is a string
 /// whatever its original shape; the Context Journal keeps the original.
 pub fn truncated_result(result: &serde_json::Value) -> bool {
-	result
-		.as_str()
-		.is_some_and(|text| text.contains(TRUNCATION_MARK) && text.ends_with(TRUNCATION_END))
+	result.as_str().is_some_and(|text| {
+		[
+			(TRUNCATION_MARK, TRUNCATION_END),
+			(LEGACY_TRUNCATION_MARK, LEGACY_TRUNCATION_END),
+		]
+		.iter()
+		.any(|(mark, end)| text.contains(mark) && text.ends_with(end))
+	})
 }
 
 /// The protection units of a history: each event's Model Turn and their number
@@ -136,16 +149,23 @@ pub fn apply(
 				// The head is the historical action rule, not a limit of the
 				// classification state or its evidence.
 				let head: String = text.chars().take(TRUNCATED_HEAD).collect();
+				let cut = format!(
+					"{head}\n{TRUNCATION_MARK}{TRUNCATED_HEAD} of {length} characters to fit the context \
+					 window; rely on them and on what you already concluded, and {TRUNCATION_END}"
+				);
+				// A result only a little above the threshold would grow under the
+				// marker, so it stays whole.
+				if cut.chars().count() >= length {
+					pruned.history.push(entry.clone());
+					continue;
+				}
 				pruned.truncated += 1;
 				pruned.history.push(HistoryEntry {
 					research: entry.research_reference(),
 					seq: entry.seq,
 					event: ContextEvent::Tool {
 						call: call.clone(),
-						result: json!(format!(
-							"{head}\n{TRUNCATION_MARK}{} chars of this tool result; {TRUNCATION_END}",
-							length - TRUNCATED_HEAD
-						)),
+						result: json!(cut),
 					},
 				});
 			}
