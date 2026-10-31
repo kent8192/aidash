@@ -670,8 +670,8 @@ mod destinations {
 	}
 }
 
-/// Serves one JSON route that echoes the request's Authorization header, and
-/// reports every header value it saw.
+/// Serves one JSON route that echoes the request's Authorization and
+/// User-Agent headers.
 async fn authorization_echo() -> (String, tokio::task::JoinHandle<()>) {
 	use axum::{Router, http::HeaderMap, routing::post};
 	let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -686,7 +686,11 @@ async fn authorization_echo() -> (String, tokio::task::JoinHandle<()>) {
 						.get("authorization")
 						.and_then(|v| v.to_str().ok())
 						.map(str::to_owned);
-					axum::Json(json!({"authorization": seen}))
+					let agent = headers
+						.get("user-agent")
+						.and_then(|v| v.to_str().ok())
+						.map(str::to_owned);
+					axum::Json(json!({"authorization": seen, "user_agent": agent}))
 				}),
 			),
 		)
@@ -718,6 +722,21 @@ async fn an_http_tool_sends_its_tenant_secret_as_the_bearer_credential_and_nothi
 }
 
 #[tokio::test]
+async fn an_http_tool_names_aidash_as_its_user_agent() {
+	let (endpoint, server) = authorization_echo().await;
+	let tools = HttpTools::new(permitting([endpoint.as_str()]), ToolClients::new().unwrap());
+	let config = ToolConfig::Http {
+		endpoint,
+		replay: "idempotent".into(),
+		secret: None,
+	};
+	let result = tools.invoke(&config, json!({}), "key", None).await.unwrap();
+	assert_eq!(result["user_agent"], crate::USER_AGENT);
+	server.abort();
+	let _ = server.await;
+}
+
+#[tokio::test]
 async fn an_mcp_tool_authenticates_its_handshake_and_call_with_the_tenant_secret() {
 	use axum::{
 		Json, Router,
@@ -731,6 +750,7 @@ async fn an_mcp_tool_authenticates_its_handshake_and_call_with_the_tenant_secret
 		let calls = observed.clone();
 		async move {
 			assert_eq!(headers["authorization"], "Bearer tenant-mcp-canary-296");
+			assert_eq!(headers["user-agent"], crate::USER_AGENT);
 			let result = match message["method"].as_str().unwrap() {
 				"initialize" => json!({"protocolVersion":message["params"]["protocolVersion"],"capabilities":{"tools":{}},"serverInfo":{"name":"fixture","version":"1"}}),
 				"tools/call" => {

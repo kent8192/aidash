@@ -22,6 +22,7 @@ use http::HeaderMap;
 use reinhardt::Response;
 use serde::{Serialize, de::DeserializeOwned};
 use serde_json::{Value, json};
+use std::pin::Pin;
 use uuid::Uuid;
 
 /// What a handler answered, in the terms the transport ports use for both paths.
@@ -169,6 +170,15 @@ pub(crate) async fn call(
 	Ok(dispatch(f, admitted, method, dispatch_path, body, &request).await)
 }
 
+/// Build a route's future on this function's frame and move it to the heap.
+/// Built inline, an unoptimized `dispatch` keeps every route's future on its
+/// own poll frame, about 1 MiB of a debug stack under each in-process peer
+/// request (#645).
+#[inline(never)]
+fn boxed<F: Future>(future: impl FnOnce() -> F) -> Pin<Box<F>> {
+	Box::pin(future())
+}
+
 /// One arm per peer route, calling what the route's view calls.
 async fn dispatch(
 	f: &Federation,
@@ -188,90 +198,91 @@ async fn dispatch(
 	match (method, segments.as_slice()) {
 		("POST", ["scoped", "execution", "admissions"]) => {
 			let input = checked!(body, peer_admission::Input);
-			respond(
-				crate::apps::identity::peer::admission::PeerAdmissions { runtime: f }
-					.admit(admitted, input)
-					.await,
-			)
+			let service = crate::apps::identity::peer::admission::PeerAdmissions { runtime: f };
+			respond(boxed(|| service.admit(admitted, input)).await)
 		}
 		("POST", ["scoped", "execution", "admissions", id, "verify"]) => {
 			let id = id!(id);
-			respond(
-				crate::apps::identity::peer::admission::PeerAdmissions { runtime: f }
-					.verify(admitted, id)
-					.await,
-			)
+			let service = crate::apps::identity::peer::admission::PeerAdmissions { runtime: f };
+			respond(boxed(|| service.verify(admitted, id)).await)
 		}
 		("POST", ["scoped", "execution", "admissions", id, "activate"]) => {
 			let id = id!(id);
 			let input = checked!(body, peer_admission::Input);
-			respond(identity_peer::admission::activate(f, admitted, id, input).await)
+			respond(boxed(|| identity_peer::admission::activate(f, admitted, id, input)).await)
 		}
 		("POST", ["scoped", "execution", "admissions", id, "control"]) => {
 			let id = id!(id);
 			let input = checked!(body, peer_admission::RemoteExecutionControlInput);
-			respond(identity_peer::admission::control(f, admitted, id, input, request).await)
+			respond(
+				boxed(|| identity_peer::admission::control(f, admitted, id, input, request)).await,
+			)
 		}
 		("POST", ["scoped", "execution", "admissions", id, "messages"]) => {
 			let id = id!(id);
 			let input = checked!(body, peer_admission::MessageInput);
-			respond(identity_peer::admission::message(f, admitted, id, input).await)
+			respond(boxed(|| identity_peer::admission::message(f, admitted, id, input)).await)
 		}
 		("POST", ["scoped", "execution", "status"]) => {
 			let input = checked!(body, peer_admission::Input);
-			respond(identity_peer::admission::status(f, admitted, input).await)
+			respond(boxed(|| identity_peer::admission::status(f, admitted, input)).await)
 		}
 		("POST", ["scoped", "execution", "inspect"]) => {
 			let input = input!(body, InspectInput);
-			respond(
-				crate::apps::identity::peer::execution::PeerExecution { runtime: f }
-					.inspect(admitted, input)
-					.await,
-			)
+			let service = crate::apps::identity::peer::execution::PeerExecution { runtime: f };
+			respond(boxed(|| service.inspect(admitted, input)).await)
 		}
 		("POST", ["scoped", "previews", "tickets"]) => {
 			let input = input!(body, aidash_domain::federation::preview::TicketRequest);
 			respond(
-				crate::apps::execution::capabilities::services::federation_previews::issue(
-					f, admitted, input,
-				)
+				boxed(|| {
+					crate::apps::execution::capabilities::services::federation_previews::issue(
+						f, admitted, input,
+					)
+				})
 				.await,
 			)
 		}
 		("POST", ["scoped", "previews", "inspect"]) => {
 			let input = input!(body, aidash_domain::federation::preview::InspectRequest);
 			respond(
-				crate::apps::execution::capabilities::services::federation_previews::inspect(
-					f, admitted, input,
-				)
+				boxed(|| {
+					crate::apps::execution::capabilities::services::federation_previews::inspect(
+						f, admitted, input,
+					)
+				})
 				.await,
 			)
 		}
 		("POST", ["scoped", "previews", "retain"]) => {
 			let input = input!(body, aidash_domain::federation::preview::RetainRequest);
 			respond(
-				crate::apps::execution::capabilities::services::federation_previews::retain(
-					f, admitted, input,
-				)
+				boxed(|| {
+					crate::apps::execution::capabilities::services::federation_previews::retain(
+						f, admitted, input,
+					)
+				})
 				.await,
 			)
 		}
 		("POST", ["scoped", "previews", "release"]) => {
 			let input = input!(body, aidash_domain::federation::preview::ReleaseRequest);
 			respond(
-				crate::apps::execution::capabilities::services::federation_previews::release(
-					f, admitted, input,
-				)
+				boxed(|| {
+					crate::apps::execution::capabilities::services::federation_previews::release(
+						f, admitted, input,
+					)
+				})
 				.await,
 			)
 		}
 		("POST", ["scoped", "execution", "commands"]) => {
 			let input = checked!(body, remote_execution::commands::Input);
-			respond(remote_execution::commands::handle(f, admitted, input).await)
+			respond(boxed(|| remote_execution::commands::handle(f, admitted, input)).await)
 		}
 		("POST", ["scoped", "execution", "grants", "activation"]) => {
 			let input = input!(body, VerifyInput);
-			respond(remote_execution::activation_binding(f, admitted, input).await)
+			respond(boxed(|| remote_execution::activation_binding(f, admitted, input)).await)
 		}
 		(
 			"POST",
@@ -285,40 +296,44 @@ async fn dispatch(
 			let input = input!(body, VerifyInput);
 			let service = crate::apps::identity::remote::RemoteGrants { runtime: f };
 			match *operation {
-				"describe" => respond(service.describe(admitted, input).await),
-				"verify" => respond(service.verify(admitted, input).await),
-				_ => respond(service.snapshot(admitted, input).await),
+				"describe" => respond(boxed(|| service.describe(admitted, input)).await),
+				"verify" => respond(boxed(|| service.verify(admitted, input)).await),
+				_ => respond(boxed(|| service.snapshot(admitted, input)).await),
 			}
 		}
 		("POST", ["scoped", "registry", "verify"]) => {
 			let input = input!(body, peer_reads::VerifyInput);
-			respond(
-				crate::apps::identity::peer::reads::PeerReads { runtime: f }
-					.verify(admitted, input)
-					.await,
-			)
+			let service = crate::apps::identity::peer::reads::PeerReads { runtime: f };
+			respond(boxed(|| service.verify(admitted, input)).await)
 		}
 		("POST", ["scoped", "dependencies", "verify"]) => {
 			let input = input!(body, crate::apps::identity::peer::dependencies::Input);
-			respond(crate::apps::identity::peer::dependencies::verify(f, admitted, input).await)
+			respond(
+				boxed(|| crate::apps::identity::peer::dependencies::verify(f, admitted, input))
+					.await,
+			)
 		}
 		("POST", ["scoped", "discover"]) => {
 			let input = input!(body, DiscoveryInput);
-			respond(identity_peer::discover_for(f, admitted, input).await)
+			respond(boxed(|| identity_peer::discover_for(f, admitted, input)).await)
 		}
 		("POST", ["scoped", "graph"]) => {
 			let input = checked!(body, identity_peer::graph::GraphRequest);
-			respond(identity_peer::graph::project(f, admitted, input).await)
+			respond(boxed(|| identity_peer::graph::project(f, admitted, input)).await)
 		}
 		("POST", ["scoped", "semantic", "query"]) => {
 			let input = input!(body, crate::semantic::remote::Operation);
-			respond(crate::authorization::remote::semantic::search(f, admitted, input).await)
+			respond(
+				boxed(|| crate::authorization::remote::semantic::search(f, admitted, input)).await,
+			)
 		}
 		("POST", ["scoped", "semantic", "verify-operation"]) => {
 			let input = input!(body, crate::semantic::remote::Operation);
-			respond(identity_peer::semantic::verify_operation(f, admitted, input).await)
+			respond(boxed(|| identity_peer::semantic::verify_operation(f, admitted, input)).await)
 		}
-		("POST", ["scoped", "files", operation]) => files(f, admitted, operation, body).await,
+		("POST", ["scoped", "files", operation]) => {
+			boxed(|| files(f, admitted, operation, body)).await
+		}
 		(
 			"POST",
 			[
@@ -330,22 +345,22 @@ async fn dispatch(
 			use crate::generation::foreign;
 			let input = input!(body, foreign::Reference);
 			match *operation {
-				"cancel" => respond(foreign::cancel_at(f, admitted, input).await),
-				"describe" => respond(foreign::describe(f, admitted, input).await),
-				_ => respond(foreign::prepare(f, admitted, input).await),
+				"cancel" => respond(boxed(|| foreign::cancel_at(f, admitted, input)).await),
+				"describe" => respond(boxed(|| foreign::describe(f, admitted, input)).await),
+				_ => respond(boxed(|| foreign::prepare(f, admitted, input)).await),
 			}
 		}
 		("POST", ["scoped", "usage", "finalize"]) => {
 			use crate::generation::remote::{dispatch, protocol};
 			let input = input!(body, dispatch::FinalizeInput);
-			respond(protocol::finalize(f, admitted, input).await)
+			respond(boxed(|| protocol::finalize(f, admitted, input)).await)
 		}
 		("POST", ["scoped", "usage", operation @ ("reserve" | "verify")]) => {
 			use crate::generation::remote::{dispatch, protocol};
 			let input = input!(body, dispatch::Input);
 			match *operation {
-				"reserve" => respond(protocol::reserve(f, admitted, input).await),
-				_ => respond(protocol::verify(f, admitted, input).await),
+				"reserve" => respond(boxed(|| protocol::reserve(f, admitted, input)).await),
+				_ => respond(boxed(|| protocol::verify(f, admitted, input)).await),
 			}
 		}
 		(
@@ -358,30 +373,28 @@ async fn dispatch(
 			let manifest = input!(body, Manifest);
 			let service = Transactions::for_peers(f);
 			match *operation {
-				"reserve" => respond(service.reserve(admitted, manifest).await),
-				"prepare" => respond(service.prepare(admitted, manifest).await),
-				_ => respond(service.finish(admitted, manifest).await),
+				"reserve" => respond(boxed(|| service.reserve(admitted, manifest)).await),
+				"prepare" => respond(boxed(|| service.prepare(admitted, manifest)).await),
+				_ => respond(boxed(|| service.finish(admitted, manifest)).await),
 			}
 		}
 		("POST", ["transactions", operation @ ("preflight" | "access")]) => {
 			let input = input!(body, Preflight);
 			let service = Transactions::for_peers(f);
 			match *operation {
-				"preflight" => respond(service.preflight(admitted, input).await),
-				_ => respond(service.read_access(admitted, input).await),
+				"preflight" => respond(boxed(|| service.preflight(admitted, input)).await),
+				_ => respond(boxed(|| service.read_access(admitted, input)).await),
 			}
 		}
 		("GET", ["transactions", id, "decision"]) => {
 			let id = id!(id);
-			respond(Transactions::for_peers(f).decision(admitted, id).await)
+			let service = Transactions::for_peers(f);
+			respond(boxed(|| service.decision(admitted, id)).await)
 		}
 		("GET", ["transactions", id, "authority"]) => {
 			let id = id!(id);
-			respond(
-				Transactions::for_peers(f)
-					.authority_ticket(admitted, id)
-					.await,
-			)
+			let service = Transactions::for_peers(f);
+			respond(boxed(|| service.authority_ticket(admitted, id)).await)
 		}
 		_ => Error::NotFound("not found".into()).into(),
 	}
@@ -397,31 +410,31 @@ async fn files(
 	match operation {
 		"describe" => {
 			let input = input!(body, Identity);
-			respond(transfer::describe(f, admitted, input).await)
+			respond(boxed(|| transfer::describe(f, admitted, input)).await)
 		}
 		"negotiate" => {
 			let input = input!(body, Requester);
-			respond(receiver::negotiate(f, admitted, input).await)
+			respond(boxed(|| receiver::negotiate(f, admitted, input)).await)
 		}
 		"recipients" => {
 			let input = input!(body, Requester);
-			respond(receiver::recipients(f, admitted, input).await)
+			respond(boxed(|| receiver::recipients(f, admitted, input)).await)
 		}
 		"chunk" => {
 			let input = input!(body, Chunk);
-			respond(receiver::chunk(f, admitted, input).await)
+			respond(boxed(|| receiver::chunk(f, admitted, input)).await)
 		}
 		"prepare" => {
 			let input = input!(body, Identity);
-			respond(receiver::prepare(f, admitted, input).await)
+			respond(boxed(|| receiver::prepare(f, admitted, input)).await)
 		}
 		"commit" => {
 			let input = input!(body, Identity);
-			respond(receiver::commit(f, admitted, input).await)
+			respond(boxed(|| receiver::commit(f, admitted, input)).await)
 		}
 		"status" => {
 			let input = input!(body, Identity);
-			respond(receiver::status(f, admitted, input).await)
+			respond(boxed(|| receiver::status(f, admitted, input)).await)
 		}
 		_ => Error::NotFound("not found".into()).into(),
 	}
