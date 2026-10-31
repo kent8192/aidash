@@ -148,6 +148,8 @@ pub struct AgentConfig {
 	pub exposure: Option<crate::exposure::ExposurePolicy>,
 	/// As written in the definition; `None` renders as Legacy.
 	pub projection_version: Option<crate::projection::ProjectionVersion>,
+	/// As written in the definition; `None` means `legacy@1`.
+	pub harness_contract: Option<crate::harness_contract::HarnessContract>,
 	/// As written in the definition; `None` means `off` (ADR 0019).
 	pub prompt_cache: Option<crate::projection::PromptCache>,
 	/// As written in the definition; `None` requires no verification.

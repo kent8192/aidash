@@ -246,6 +246,9 @@ async fn sampling_resume_failures_close_the_attempt_and_invocation(
 async fn capped_sampling_returns_partial_text_and_max_tokens_without_a_provider_retry(
 	mut fixture: Fixture,
 ) {
+	let state = Arc::get_mut(&mut fixture.backend.0).unwrap();
+	state.projection = aidash_domain::projection::ProjectionVersion::Native;
+	state.harness_contract = aidash_domain::harness_contract::HarnessContract::Structured2;
 	sampling(&mut fixture);
 	fixture
 		.backend
@@ -279,6 +282,12 @@ async fn capped_sampling_returns_partial_text_and_max_tokens_without_a_provider_
 		[vec![ProgressOutcome::Accepted]]
 	);
 	assert_eq!(fixture.backend.0.requests.lock().unwrap().len(), 1);
+	assert_eq!(
+		fixture.backend.0.usage.lock().unwrap()[0]
+			.0
+			.harness_contract,
+		3
+	);
 	assert_eq!(
 		fixture.backend.0.usage.lock().unwrap()[0].1,
 		Some(UsageOutcome::Completed(ReportedUsage {

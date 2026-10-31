@@ -465,7 +465,15 @@ export function EntityForm({
                           projection_versions: ["legacy", "ordered", "native"],
                         }
                       : modelSource === "openrouter"
-                        ? { provider_credential: "openrouter" }
+                        ? {
+                            provider_credential: "openrouter",
+                            // Native lets new Agents default to structured@3 (#532).
+                            projection_versions: [
+                              "legacy",
+                              "ordered",
+                              "native",
+                            ],
+                          }
                         : {}),
                     model_id: s("model_id"),
                     endpoint: s("endpoint"),

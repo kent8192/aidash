@@ -151,6 +151,9 @@ pub async fn validate_content(
 	let mut entry: Entry = serde_json::from_value(draft.entry.clone())?;
 	let documents: Vec<ReferenceDocument> = serde_json::from_value(draft.documents.clone())?;
 	check_content(&entry, &documents, &draft.release_notes)?;
+	// Sandbox tests and registration both start here, so behavioral evidence
+	// describes the configuration that is published, defaults included.
+	registry::apply_agent_defaults(scope, &mut entry).await;
 	registry::bindings::private::detach(
 		scope,
 		&mut entry,

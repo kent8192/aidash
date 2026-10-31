@@ -27,6 +27,13 @@ pub const DECISIONS: &str = "openrouter.decisions/1";
 pub const BUILDER: &str = "aidash.compaction/2";
 pub const OPTION_SOURCE: &str = "history_event/1";
 pub const RULE: &str = "compaction.keep/1";
+/// Opt-in compaction rule (#611). It starts from `RULE`'s per-candidate branches
+/// and, while the projection does not fit, truncates the results of the kept
+/// candidates in ascending keep probability (`fit_order`). Only a Decider version
+/// that names it uses it, so `RULE` versions and their evidence are unchanged.
+pub const FIT_RULE: &str = "compaction.fit/1";
+/// `FIT_RULE` never truncates a result whose keep probability reaches this.
+pub const FIT_CEILING: f64 = 0.7;
 pub const APPROVAL_BUILDER: &str = "aidash.approval/1";
 pub const APPROVAL_OPTION_SOURCE: &str = "approval_call/1";
 pub const APPROVAL_RULE: &str = "approval.block/1";
@@ -83,6 +90,13 @@ impl Hook {
 				rule: APPROVAL_RULE,
 			},
 		}
+	}
+}
+impl Hook {
+	/// Whether a Decider of this hook may name `rule`: the contract's rule, or
+	/// for compaction also the opt-in `FIT_RULE`.
+	pub fn allows_rule(self, rule: &str) -> bool {
+		rule == self.contract().rule || self == Self::Compaction && rule == FIT_RULE
 	}
 }
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -303,7 +317,7 @@ impl DeciderConfig {
 		if self.description.trim().is_empty()
 			|| self.builder != contract.builder
 			|| self.option_source != contract.option_source
-			|| self.rule != contract.rule
+			|| !self.hook.allows_rule(&self.rule)
 			|| !(1..=1_000).contains(&self.max_calls_per_run)
 			|| !(1..=30).contains(&self.state_retention.days)
 			|| self.routes.is_empty()
@@ -644,6 +658,33 @@ pub enum Branch {
 	Keep,
 	TruncateResult,
 	Drop,
+}
+/// One candidate as `fit_order` ranks it.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct FitCandidate {
+	pub history_index: usize,
+	pub keep_result: Probability,
+	/// The branch `branch` chose, or Keep for a protected candidate.
+	pub branch: Branch,
+	pub protected: bool,
+}
+/// The history indexes `FIT_RULE` may truncate, in the order it truncates them:
+/// unprotected candidates the threshold kept whose keep-result probability is
+/// below `FIT_CEILING`, lowest first and older history first on ties. Jev's
+/// probabilities cluster near the threshold, but their order still separates the
+/// history a Run needs from the rest (#611).
+pub fn fit_order(candidates: &[FitCandidate]) -> Vec<usize> {
+	let mut eligible: Vec<_> = candidates
+		.iter()
+		.filter(|c| !c.protected && c.branch == Branch::Keep && c.keep_result.value() < FIT_CEILING)
+		.collect();
+	eligible.sort_by(|a, b| {
+		a.keep_result
+			.value()
+			.total_cmp(&b.keep_result.value())
+			.then(a.history_index.cmp(&b.history_index))
+	});
+	eligible.into_iter().map(|c| c.history_index).collect()
 }
 pub fn branch(keep_call: Probability, keep_result: Probability, threshold: Probability) -> Branch {
 	if keep_result.value() >= threshold.value() {

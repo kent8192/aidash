@@ -285,7 +285,7 @@ async fn salted_run_creation_requires_a_cache_salt_key(
 		.create_task(&ACME, workspace.id, &new_task(), "human", None)
 		.await
 		.unwrap();
-	let legacy = registry.register(&aidash_domain::tenancy::TenantName::new("acme").unwrap(), entry("agent","legacy-research",json!({"model":{"id":"model","version":"1.0.0"},"instructions":"Research","schema_version":1,"bindings":[],"remove_default":[]}))).await.unwrap();
+	let legacy = registry.register(&aidash_domain::tenancy::TenantName::new("acme").unwrap(), entry("agent","legacy-research",json!({"model":{"id":"model","version":"1.0.0"},"instructions":"Research","schema_version":1,"bindings":[],"remove_default":[],"projection_version":"legacy"}))).await.unwrap();
 	let legacy_owner = qualified_agent(
 		&aidash_domain::nodes::NodeAddress::derived(store.deployment.as_str(), "acme"),
 		&legacy.id,
