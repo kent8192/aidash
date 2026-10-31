@@ -56,9 +56,8 @@ pub struct ToolDescriptor {
 
 pub fn core_provider(operation: &str) -> Option<&'static str> {
 	Some(match operation {
-		"workspace_read" | "workspace_observe" | "workspace_wait" | "workspace_message" => {
-			"core.workspace@1"
-		}
+		"workspace_read" | "workspace_observe" | "workspace_wait" | "workspace_message"
+		| "workspace_search" => "core.workspace@1",
 		"human_request" => "core.human@1",
 		"task_create" | "task_delegate" | "agent_discover" | "task_assign" => "core.tasks@1",
 		"skill_list" | "skill_load" | "skill_read" | "skill_asset_read" => "core.skills@1",
@@ -277,6 +276,12 @@ impl ToolDescriptor {
 			}
 			let mut contract =
 				builtin_contract(&self.operation).expect("declared provider operation");
+			if self.operation == "workspace_read"
+				&& identity.id == "aidash.workspace_read"
+				&& identity.version == "1.0.0"
+			{
+				contract.behavior.yields_model_media = false;
+			}
 			// Availability is resolved by Bindings, independently of target-resource authority.
 			contract.authorization.flag = None;
 			contract.authorization.core = None;

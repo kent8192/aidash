@@ -255,6 +255,8 @@ pub(crate) fn selected_providers(
 			})
 	};
 	let mut definitions = vec![config.model];
+	// Reference-image retrieval embeds each Run's query with Run-scoped credentials.
+	definitions.extend(config.reference_embedding);
 	let mut memories: Vec<_> = config.memory.into_iter().collect();
 	for source in config.sources {
 		let source = definition(&source)?;

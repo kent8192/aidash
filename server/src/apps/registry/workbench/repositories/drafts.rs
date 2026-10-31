@@ -38,6 +38,7 @@ pub(crate) struct Repository {
 pub(crate) struct Scope {
 	pub tx: crate::database::native::Transaction,
 	pub actor: Actor,
+	pub runtime: Federation,
 }
 impl Scope {
 	fn authority(&mut self) -> authority::Scope<'_> {
@@ -67,10 +68,28 @@ impl DraftRepository for Repository {
 					.begin(&self.actor.tenancy()?)
 					.await?,
 				actor: self.actor.clone(),
+				runtime: self.runtime.clone(),
 			})
 		}
 		.await;
 		result.map_err(Into::into)
+	}
+	async fn embed_reference_images(
+		&self,
+		reference: &aidash_domain::registry::EntityRef,
+		images: &[aidash_domain::registry::knowledge::ValidatedImage],
+	) -> Result<(Entry, Vec<Vec<f32>>)> {
+		let Actor::Subject(identity) = &self.actor else {
+			return Err(aidash_application::Error::Forbidden);
+		};
+		crate::apps::registry::services::knowledge::embed_before_registration(
+			&self.runtime.store,
+			identity,
+			reference,
+			images,
+		)
+		.await
+		.map_err(Into::into)
 	}
 }
 #[async_trait]
@@ -209,6 +228,47 @@ impl DefinitionWriter for Scope {
 }
 #[async_trait]
 impl PublicationScope for Scope {
+	async fn validate_prepared_embedding(&mut self, entry: &Entry) -> Result<()> {
+		let Actor::Subject(identity) = &self.actor else {
+			return Err(aidash_application::Error::Forbidden);
+		};
+		let snapshot = identity.lock_with_mode(&mut self.tx, false).await?;
+		let store = &self.runtime.store;
+		let mut access = crate::authorization::access::Access::from_transaction(
+			self.tx.lend(),
+			&store.pool,
+			store.deployment.as_str(),
+			Some(crate::apps::federation::remote::services::wire::Wire::of_store(store)),
+			identity,
+			snapshot,
+		);
+		let result: crate::Result<()> = async {
+			let reference = aidash_domain::registry::EntityRef {
+				id: entry.id.clone(),
+				version: entry.version.clone(),
+			};
+			let current =
+				crate::authorization::catalog::entry(&mut access, &reference, "registry.read")
+					.await?;
+			if current != *entry {
+				return Err(crate::Error::Conflict(
+					"reference embedding definition changed".into(),
+				));
+			}
+			aidash_application::generation::embedding::require_reference_policy(
+				&mut crate::bootstrap::generation_embedding_authority_scope(&mut access),
+				store.deployment.as_str(),
+				&reference,
+			)
+			.await?;
+			Ok(())
+		}
+		.await;
+		let audit = access.flush_audit().await;
+		self.tx.restore(access.return_transaction());
+		audit?;
+		result.map_err(Into::into)
+	}
 	async fn registrations(&mut self, draft: Uuid, agent: &str) -> Result<Vec<RegistrationRecord>> {
 		Ok(AgentDraftRegistration::page(&mut self.tx, draft, agent)
 			.await?
@@ -246,6 +306,29 @@ impl PublicationScope for Scope {
 			&mut self.tx,
 			entry,
 			documents,
+		)
+		.await
+		.map_err(Into::into)
+	}
+	async fn insert_image_index(&mut self, entry: &Entry, index: Value) -> Result<()> {
+		crate::apps::registry::models::transaction_records::insert_image_index(
+			&mut self.tx,
+			entry,
+			index,
+		)
+		.await
+		.map_err(Into::into)
+	}
+	async fn image_index(&mut self, entry: &Entry) -> Result<Option<Value>> {
+		crate::apps::registry::models::transaction_records::image_index(&mut self.tx, entry)
+			.await
+			.map_err(Into::into)
+	}
+	async fn insert_image_data(&mut self, entry: &Entry, data: Value) -> Result<()> {
+		crate::apps::registry::models::transaction_records::insert_image_data(
+			&mut self.tx,
+			entry,
+			data,
 		)
 		.await
 		.map_err(Into::into)

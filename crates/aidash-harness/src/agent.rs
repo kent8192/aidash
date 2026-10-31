@@ -2930,9 +2930,16 @@ impl<'a> Executor<'a> {
                 let (output, unfinished_key) = if research_result {
                     (store.invocation_finish(run, token, &key, &output).await?, None)
                 } else { (output, unfinished_key) };
-				if let Some(selection) =
-					contract.behavior.model_media_selection(&call.arguments, &output)
-				{
+				let mut selection = contract.behavior.model_media_selection(&call.arguments, &output);
+				if matches!(selection, Some(aidash_domain::media::ModelMedia::WorkingImage(_))) {
+					let entry = self.environment.catalog()
+						.get_for_run(&*run, &agent.model.id, &agent.model.version).await?;
+					let model: ModelConfig = serde_json::from_value(entry.config)?;
+					if !selection.as_ref().expect("image selection").supported_by(&model.modalities) {
+						selection = None;
+					}
+				}
+				if let Some(selection) = selection {
 					let mut selected = run.state.tool()?.selected_media.clone();
 					let deferred_count = run.state.tool()?.deferred_selected_media.len();
 					if selected.len() + deferred_count >= 8 {

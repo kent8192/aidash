@@ -70,11 +70,17 @@ where
 		.ok_or_else(|| Error::Invalid("draft has no managed identity".into()))?;
 
 	let rows = scope.registrations(id, managed_id).await?;
-	let draft_knowledge_digest = draft
+	let draft_knowledge_digest = if draft
 		.documents
 		.as_array()
-		.filter(|docs| !docs.is_empty())
-		.map(|_| digest(&draft.documents));
+		.is_some_and(|docs| !docs.is_empty())
+	{
+		let documents: Vec<ReferenceDocument> = serde_json::from_value(draft.documents.clone())?;
+		let (canonical, _) = aidash_domain::registry::knowledge::canonical_documents(&documents)?;
+		Some(digest(&serde_json::to_value(canonical)?))
+	} else {
+		None
+	};
 	let mut versions = Vec::new();
 	for row in rows {
 		let entry = scope.definition(managed_id, &row.version).await?;
@@ -129,6 +135,64 @@ where
 	R::Scope: PublicationScope,
 {
 	let actor = repository.principal();
+	// A short read scope checks for an exact replay and validates the inputs.
+	// It is closed before any provider call and the locked revision is checked again.
+	let mut preflight = repository.begin().await?;
+	let preview = preflight.read(id, false).await?;
+	authorize(&mut preflight, &preview, "agent_draft.register", true).await?;
+	if preview.archived || input.expected_revision != preview.revision {
+		return Err(Error::Conflict(
+			"draft revision changed or is archived".into(),
+		));
+	}
+	let preview_entry =
+		validate_content(&mut preflight, validation, &preview, repository.node_id()).await?;
+	super::authorize_creation(&mut preflight, &preview.tenant, &preview_entry).await?;
+	if let Some(previous) = preflight.registered_evidence(&preview_entry).await? {
+		if previous.draft_id != preview.id || previous.revision != preview.revision {
+			return Err(Error::Conflict("version is already registered from another draft revision; choose a new semantic version".into()));
+		}
+		let saved = preflight
+			.definition(&preview_entry.id, &preview_entry.version)
+			.await?;
+		if saved != preview_entry {
+			return Err(Error::Conflict(
+				"published versions are immutable; choose a new version".into(),
+			));
+		}
+		preflight.commit().await?;
+		return Ok(Registration {
+			draft_id: id,
+			revision: preview.revision,
+			entry: saved,
+			behavioral_tested: previous.behavioral_tested,
+		});
+	}
+	let documents: Vec<ReferenceDocument> = serde_json::from_value(preview.documents.clone())?;
+	let images = if documents.is_empty() {
+		Vec::new()
+	} else {
+		aidash_domain::registry::knowledge::validated_images(&documents)?
+	};
+	let reference = if images.is_empty() {
+		None
+	} else {
+		let bindings: aidash_domain::registry::bindings::AgentBindings =
+			serde_json::from_value(preview_entry.config.clone())?;
+		Some(bindings.reference_embedding.ok_or_else(|| {
+			Error::Invalid("reference images require a pinned embedding definition".into())
+		})?)
+	};
+	preflight.commit().await?;
+	let prepared = if let Some(reference) = &reference {
+		Some(
+			repository
+				.embed_reference_images(reference, &images)
+				.await?,
+		)
+	} else {
+		None
+	};
 	let mut scope = repository.begin().await?;
 	let draft = scope.read(id, true).await?;
 	authorize(&mut scope, &draft, "agent_draft.register", true).await?;
@@ -138,11 +202,45 @@ where
 		));
 	}
 	let entry = validate_content(&mut scope, validation, &draft, repository.node_id()).await?;
+	if entry != preview_entry {
+		return Err(Error::Conflict(
+			"draft content changed during reference embedding".into(),
+		));
+	}
 	super::authorize_creation(&mut scope, &draft.tenant, &entry).await?;
 
 	let behavioral_tested = behavioral_evidence(&mut scope, &draft, &entry).await?;
 	let documents: Vec<ReferenceDocument> = serde_json::from_value(draft.documents.clone())?;
 	if !documents.is_empty() {
+		let images = aidash_domain::registry::knowledge::validated_images(&documents)?;
+		let (canonical, image_data) =
+			aidash_domain::registry::knowledge::canonical_documents(&documents)?;
+		let canonical = serde_json::to_value(canonical)?;
+		let image_index = if images.is_empty() {
+			None
+		} else {
+			let bindings: aidash_domain::registry::bindings::AgentBindings =
+				serde_json::from_value(entry.config.clone())?;
+			let reference = bindings.reference_embedding.ok_or_else(|| {
+				Error::Invalid("reference images require a pinned embedding definition".into())
+			})?;
+			let (embedding, vectors) = prepared.ok_or_else(|| {
+				Error::Invalid("reference images were not embedded before registration".into())
+			})?;
+			if embedding.id != reference.id || embedding.version != reference.version {
+				return Err(Error::Conflict(
+					"reference embedding definition changed".into(),
+				));
+			}
+			scope.validate_prepared_embedding(&embedding).await?;
+			Some(aidash_domain::registry::knowledge::ImageCollection::new(
+				&entry.id,
+				&entry.version,
+				embedding,
+				&documents,
+				vectors,
+			)?)
+		};
 		let mut raw: Entry = serde_json::from_value(draft.entry.clone())?;
 		registry::bindings::private::detach(
 			&mut scope,
@@ -155,13 +253,24 @@ where
 		)
 		.await?;
 		let source =
-			registry::bindings::private::attach(&mut raw, repository.node_id(), &draft.documents)?;
+			registry::bindings::private::attach(&mut raw, repository.node_id(), &canonical)?;
 		super::authorize_creation(&mut scope, &draft.tenant, &source).await?;
 		registry::register_definition(&mut scope, validation, &source, repository.node_id())
 			.await?;
-		scope
-			.insert_documents(&source, draft.documents.clone())
-			.await?;
+		scope.insert_documents(&source, canonical.clone()).await?;
+		if let Some(index) = image_index {
+			scope.insert_image_data(&source, image_data).await?;
+			if let Some(existing) = scope.image_index(&source).await? {
+				let existing: aidash_domain::registry::knowledge::ImageCollection =
+					serde_json::from_value(existing)?;
+				let metadata: Vec<ReferenceDocument> = serde_json::from_value(canonical.clone())?;
+				existing.verify(&entry.id, &entry.version, &index.embedding, &metadata)?;
+			} else {
+				scope
+					.insert_image_index(&source, serde_json::to_value(index)?)
+					.await?;
+			}
+		}
 	}
 	let inserted =
 		registry::register_definition(&mut scope, validation, &entry, repository.node_id()).await?;

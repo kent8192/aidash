@@ -3,9 +3,14 @@ use crate::{
 	Error, Result,
 	ports::{VectorIndex, semantic::*},
 };
-use aidash_domain::semantic::indexing::{self, IndexingSpec};
+use aidash_domain::semantic::{
+	EmbeddingInput, EmbeddingInputKind, Source,
+	indexing::{self, IndexingSpec, UnsupportedReason},
+};
 use serde_json::{Value, json};
 use uuid::Uuid;
+
+pub mod image_publications;
 
 pub async fn sweep(
 	repository: &dyn SemanticIndexingRepository,
@@ -47,6 +52,11 @@ pub async fn process(
 	scope.finish(result).await
 }
 
+enum IndexContent {
+	Text(String),
+	Image(IndexImage),
+}
+
 async fn index(
 	scope: &mut dyn SemanticIndexingSession,
 	vector: &dyn VectorIndex,
@@ -71,12 +81,83 @@ async fn index(
 	let permitted = workspace_allowed
 		&& scope.permits("semantic.write").await?
 		&& scope.permits("semantic.read").await?;
-	let text = if permitted && spec.enabled {
-		scope.source(workspace, &source).await?
+	let content = if permitted && spec.enabled {
+		match &source {
+			Source::WorkingImage { .. } => {
+				let supported = spec.embedding.inputs.contains(&EmbeddingInputKind::Image);
+				let limit = if supported { spec.max_image_bytes } else { 0 };
+				let image = match scope.image(workspace, &source, limit).await {
+					Ok(image) => image,
+					Err(Error::Forbidden | Error::Unauthorized | Error::NotFound(_)) => None,
+					Err(_) => {
+						let (attempts, delay) = indexing::retry(entry.attempts);
+						scope.failed(id, attempts, delay).await?;
+						scope
+							.history(
+								workspace,
+								id,
+								entry.revision,
+								"ERROR",
+								"image source unavailable; durable retry scheduled",
+							)
+							.await?;
+						return Ok(true);
+					}
+				};
+				match image {
+					None => None,
+					Some(IndexImageRead::TooLarge) => {
+						let reason = if supported {
+							UnsupportedReason::TooLarge
+						} else {
+							UnsupportedReason::Modality
+						};
+						scope.unsupported(id, reason).await?;
+						scope.retire_points(id).await?;
+						scope
+							.history(
+								workspace,
+								id,
+								entry.revision,
+								"UNSUPPORTED",
+								reason.as_str(),
+							)
+							.await?;
+						return Ok(true);
+					}
+					Some(IndexImageRead::Image(image))
+						if !supported || image.bytes.len() > spec.max_image_bytes =>
+					{
+						let reason = if supported {
+							UnsupportedReason::TooLarge
+						} else {
+							UnsupportedReason::Modality
+						};
+						scope.unsupported(id, reason).await?;
+						scope.retire_points(id).await?;
+						scope
+							.history(
+								workspace,
+								id,
+								entry.revision,
+								"UNSUPPORTED",
+								reason.as_str(),
+							)
+							.await?;
+						return Ok(true);
+					}
+					Some(IndexImageRead::Image(image)) => Some(IndexContent::Image(image)),
+				}
+			}
+			_ => scope
+				.source(workspace, &source)
+				.await?
+				.map(IndexContent::Text),
+		}
 	} else {
 		None
 	};
-	let Some(text) = text else {
+	let Some(content) = content else {
 		scope
 			.set_revoked(
 				id,
@@ -101,7 +182,10 @@ async fn index(
 		}
 		return Ok(true);
 	};
-	let digest = indexing::content_digest(&text);
+	let digest = match &content {
+		IndexContent::Text(text) => indexing::content_digest(text),
+		IndexContent::Image(image) => indexing::content_digest_bytes(&image.bytes),
+	};
 	let old = scope.point(entry.point_id).await?;
 	if indexing::has_current_point(&entry, &old, &digest)
 		&& vector
@@ -133,9 +217,15 @@ async fn index(
 		return Ok(true);
 	}
 	let result = async {
-        indexing::validate_text(&text, spec.max_input_bytes)?;
+        match &content {
+            IndexContent::Text(text) => indexing::validate_text(text, spec.max_input_bytes)?,
+            IndexContent::Image(image) => EmbeddingInput::Image { media_type: &image.media_type, bytes: &image.bytes }.validate(&spec.embedding)?,
+        }
         vector.ensure_collection(&spec.vector, &plan.collection, spec.embedding.dimensions).await?;
-        let embedding = scope.embed(workspace, &spec.embedding, &text, id).await?;
+        let embedding = match &content {
+            IndexContent::Text(text) => scope.embed(workspace, &spec.embedding, text, id).await?,
+            IndexContent::Image(image) => scope.embed_image(workspace, &spec.embedding, image, id).await?,
+        };
         vector.upsert(&spec.vector, &plan.collection, entry.point_id, &embedding,
             json!({"entry_id":id,"revision":entry.revision,"index_revision":plan.revision,"workspace_id":workspace,"tenant":plan.tenant})).await
     }.await;

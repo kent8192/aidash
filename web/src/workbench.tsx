@@ -1,4 +1,5 @@
 import { AgentBindings, type Binding } from "./agent-bindings";
+import { extractDocument } from "./agent-documents";
 import { registryDeployment } from "./node-selection";
 import { Button } from "./components/ui/button";
 import { Badge as ToneBadge } from "./components/ui/badge";
@@ -84,9 +85,15 @@ export type AgentEntry = {
     remove_default: string[];
     cluster: Ref | null;
     max_steps: number;
+    reference_embedding?: Ref;
   };
 };
-type Document = { name: string; media_type: string; text: string };
+type Document = {
+  name: string;
+  media_type: string;
+  text: string;
+  data_base64?: string;
+};
 type Draft = {
   id: string;
   tenant: string;
@@ -506,7 +513,9 @@ export function Workbench({
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
   const [message, setMessage] = useState("");
-  const [busy, setBusy] = useState(false);
+  const [working, setBusy] = useState(false);
+  const [readingImages, setReadingImages] = useState(false);
+  const busy = working || readingImages;
   const [validation, setValidation] = useState<Validation | null>(null);
   const [creatorTab, setCreatorTab] = useState<CreatorTab>("overview");
   const [trustTab, setTrustTab] = useState<TrustTab>("overview");
@@ -1979,6 +1988,110 @@ export function Workbench({
           </Button>
         }
       >
+        <Field label={ja ? "参照画像を追加" : "Add reference images"}>
+          <Input
+            type="file"
+            accept="image/png,image/jpeg,image/gif,image/webp"
+            multiple
+            disabled={busy}
+            onChange={async (event) => {
+              const files = Array.from(event.target.files ?? []);
+              event.target.value = "";
+              setReadingImages(true);
+              try {
+                if (documents.length + files.length > 8)
+                  throw new Error(
+                    ja
+                      ? "参考資料は最大 8 件です。"
+                      : "At most 8 reference files are allowed.",
+                  );
+                const added = (await Promise.all(
+                  files.map(extractDocument),
+                )) as Document[];
+                const next = [...documents, ...added];
+                const total = next.reduce((sum, document) => {
+                  const encoded = document.data_base64;
+                  return (
+                    sum +
+                    (encoded
+                      ? Math.floor((encoded.length * 3) / 4) -
+                        (encoded.endsWith("==")
+                          ? 2
+                          : encoded.endsWith("=")
+                            ? 1
+                            : 0)
+                      : 0)
+                  );
+                }, 0);
+                if (total > 8 * 1024 * 1024)
+                  throw new Error(
+                    ja
+                      ? "参照画像の合計は 8 MiB 以下にしてください。"
+                      : "Reference images exceed 8 MiB.",
+                  );
+                setDocuments(next);
+                setDirty(true);
+              } catch (error) {
+                setError(
+                  error instanceof Error &&
+                    error.message === "documentImageLimit"
+                    ? ja
+                      ? "参照画像の合計は 8 MiB 以下にしてください。"
+                      : "Reference images exceed 8 MiB."
+                    : String(error),
+                );
+              } finally {
+                setReadingImages(false);
+              }
+            }}
+          />
+        </Field>
+        {documents.some((document) =>
+          document.media_type.startsWith("image/"),
+        ) && (
+          <Field
+            label={
+              ja ? "参照画像の埋め込みモデル" : "Reference image embedding"
+            }
+          >
+            <NativeSelect
+              value={
+                editing.config.reference_embedding
+                  ? `${editing.config.reference_embedding.id}@${editing.config.reference_embedding.version}`
+                  : ""
+              }
+              onChange={(event) =>
+                change((value) => {
+                  const chosen = event.target.value;
+                  const split = chosen.lastIndexOf("@");
+                  value.config.reference_embedding = chosen
+                    ? {
+                        id: chosen.slice(0, split),
+                        version: chosen.slice(split + 1),
+                      }
+                    : undefined;
+                })
+              }
+            >
+              <option value="">{ja ? "選択" : "Choose"}</option>
+              {data.registry
+                .filter(
+                  (entry) =>
+                    entry.kind === "embedding" &&
+                    Array.isArray(entry.config.inputs) &&
+                    entry.config.inputs.includes("image"),
+                )
+                .map((entry) => (
+                  <option
+                    key={`${entry.id}@${entry.version}`}
+                    value={`${entry.id}@${entry.version}`}
+                  >
+                    {entry.id}@{entry.version}
+                  </option>
+                ))}
+            </NativeSelect>
+          </Field>
+        )}
         {documents.length ? (
           documents.map((doc, index) => (
             <div
@@ -2022,22 +2135,24 @@ export function Workbench({
                   <X aria-hidden />
                 </Button>
               </div>
-              <Field label={t.docText}>
-                <Textarea
-                  rows={4}
-                  value={doc.text}
-                  onChange={(event) => {
-                    setDocuments((previous) =>
-                      previous.map((value, i) =>
-                        i === index
-                          ? { ...value, text: event.target.value }
-                          : value,
-                      ),
-                    );
-                    setDirty(true);
-                  }}
-                />
-              </Field>
+              {!doc.media_type.startsWith("image/") && (
+                <Field label={t.docText}>
+                  <Textarea
+                    rows={4}
+                    value={doc.text}
+                    onChange={(event) => {
+                      setDocuments((previous) =>
+                        previous.map((value, i) =>
+                          i === index
+                            ? { ...value, text: event.target.value }
+                            : value,
+                        ),
+                      );
+                      setDirty(true);
+                    }}
+                  />
+                </Field>
+              )}
             </div>
           ))
         ) : (
@@ -3186,7 +3301,13 @@ export function Workbench({
                   disabled={busy}
                   onClick={() => void save()}
                 >
-                  {busy ? t.saving : t.save}
+                  {readingImages
+                    ? ja
+                      ? "画像を読み込み中"
+                      : "Reading images"
+                    : busy
+                      ? t.saving
+                      : t.save}
                 </Button>
                 <Button
                   variant="outline"

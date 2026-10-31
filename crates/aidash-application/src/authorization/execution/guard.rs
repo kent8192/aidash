@@ -60,6 +60,19 @@ pub async fn authorize(
 		if saved.identity.registry_deployment != scope.node_id() {
 			continue;
 		}
+		let is_reference_embedding = agent
+			.reference_embedding
+			.as_ref()
+			.is_some_and(|reference| saved.identity.local() == *reference);
+		if is_reference_embedding
+			&& !scope
+				.reference_embedding_available(&saved.identity.local())
+				.await?
+		{
+			return Err(Error::Invalid(
+				"reference embedding is unavailable; register a new agent version".into(),
+			));
+		}
 		let current =
 			if aidash_domain::registry::bindings::sources::is_selection_decider(&saved.definition)
 				|| aidash_domain::registry::bindings::defaults::is_compaction_decider(
@@ -83,7 +96,13 @@ pub async fn authorize(
 				}
 			};
 		if aidash_domain::registry::rules::digest(&serde_json::to_value(current)?) != saved.digest {
-			return Err(Error::Conflict("admitted definition changed".into()));
+			return Err(if is_reference_embedding {
+				Error::Invalid(
+					"reference embedding is unavailable; register a new agent version".into(),
+				)
+			} else {
+				Error::Conflict("admitted definition changed".into())
+			});
 		}
 	}
 

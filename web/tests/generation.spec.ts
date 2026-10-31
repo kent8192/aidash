@@ -234,6 +234,7 @@ async function createGenerationScenario(
       model: "fixture-embedding",
       model_version: "v1",
       dimensions: 3,
+      inputs: ["text"],
     };
     const errors: string[] = [];
     page.on("pageerror", (error) => errors.push(error.message));

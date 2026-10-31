@@ -161,6 +161,18 @@ pub trait ToolOperations: Send + Sync {
 		offset: usize,
 		maximum: usize,
 	) -> Result<Value>;
+	/// Resolve a Workspace File pointer under the Run's current authority.
+	async fn workspace_image(
+		&self,
+		_selection: &aidash_domain::media::WorkingImageSelection,
+		_representation: &str,
+	) -> Result<Value> {
+		Err(crate::Error::Forbidden)
+	}
+	/// Search the Run's Workspace under its current authority.
+	async fn workspace_search(&self, _input: Value) -> Result<Value> {
+		Err(crate::Error::Forbidden)
+	}
 	async fn memory_mutate(
 		&self,
 		key: &str,

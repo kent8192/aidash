@@ -137,6 +137,7 @@ impl TokenIssuer for CapabilityIssuer {
 			},
 			(None, Some(purpose), None) => TokenSubject::Maintenance {
 				maintenance: match purpose {
+					MaintenancePurpose::ReferenceIndexing => Maintenance::ReferenceIndexing,
 					MaintenancePurpose::MemoryIndexing => Maintenance::MemoryIndexing,
 					MaintenancePurpose::MemoryRetention => Maintenance::MemoryRetention,
 					MaintenancePurpose::MemoryReflection => Maintenance::MemoryReflection,

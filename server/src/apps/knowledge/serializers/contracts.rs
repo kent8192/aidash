@@ -25,6 +25,12 @@ pub struct IndexSpec {
 	pub max_result_tokens: usize,
 	#[validate(range(min = 128, max = 32768))]
 	pub max_input_bytes: usize,
+	#[serde(default = "aidash_domain::semantic::indexing::default_max_image_bytes")]
+	#[validate(range(min = 1, max = 67108864))]
+	pub max_image_bytes: usize,
+	#[serde(default = "aidash_domain::semantic::indexing::default_max_images")]
+	#[validate(range(max = 1024))]
+	pub max_images: usize,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
@@ -117,7 +123,10 @@ pub struct Revision {
 #[schemars(rename = "SemanticSearch")]
 #[serde(deny_unknown_fields)]
 pub struct Search {
+	#[serde(default)]
 	pub query: String,
+	#[serde(default)]
+	pub image: Option<aidash_domain::semantic::retrieval::ImageQuery>,
 	pub agent: Option<String>,
 	#[serde(default = "empty_object")]
 	pub metadata: Value,

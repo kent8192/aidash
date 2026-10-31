@@ -52,6 +52,22 @@ impl Drop for Scope<'_> {
 	}
 }
 
+// New snapshots pin `workspace_read` at 1.1.0 (#622); every other fixture
+// component stays at 1.0.0. Takes an Entry id or a policy resource id.
+fn pinned_version(id: &str) -> &'static str {
+	let id = id
+		.rsplit("/tools/")
+		.next()
+		.unwrap()
+		.split('@')
+		.next()
+		.unwrap();
+	if id == "aidash.workspace_read" {
+		"1.1.0"
+	} else {
+		"1.0.0"
+	}
+}
 fn reference(id: &str) -> EntityRef {
 	EntityRef {
 		id: id.into(),
@@ -150,7 +166,7 @@ impl PermissionScope for Scope<'_> {
 
 	async fn catalog_enabled(&mut self, tenant: &str, entry: &EntityRef) -> Result<Option<bool>> {
 		assert_eq!(tenant, "tenant");
-		assert_eq!(entry.version, "1.0.0");
+		assert_eq!(entry.version, pinned_version(&entry.id));
 		self.0
 			.state
 			.lock()
@@ -307,7 +323,10 @@ async fn component_actions_use_exact_pinned_metadata_and_worker_context() {
 	for e in &s.evaluations {
 		assert_eq!(e.subject, "reader");
 		assert_eq!(e.resource.tenant, "tenant");
-		assert_eq!(e.resource.attributes["version"], "1.0.0");
+		assert_eq!(
+			e.resource.attributes["version"],
+			pinned_version(&e.resource.id)
+		);
 		assert_eq!(e.resource.attributes["capabilities"], json!(["capability"]));
 		assert_eq!(e.resource.attributes["tags"], json!(["tag"]));
 		assert_eq!(e.resource.attributes["languages"], json!(["en"]));

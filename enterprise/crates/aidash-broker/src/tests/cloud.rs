@@ -442,6 +442,9 @@ async fn cloud_mint_routes_chat_media_discovery_embeddings_and_early_streaming()
 			model: "author/model".into(),
 			model_version: "1".into(),
 			dimensions: 2,
+			inputs: [aidash_domain::semantic::EmbeddingInputKind::Text]
+				.into_iter()
+				.collect(),
 		},
 		"test",
 	)
@@ -744,6 +747,37 @@ async fn an_independent_observer_mints_and_relays_its_exact_decision_attempt() {
 }
 
 #[tokio::test]
+async fn reference_maintenance_mints_only_the_embedding_operation() {
+	let c = Cloud::new(false).await;
+	let id = c.context.provider_credential_id.unwrap();
+	*c.repo.bindings.lock().unwrap() = vec![Binding {
+		tenant: "tenant-a".into(),
+		provider: Provider::Openrouter,
+		provider_credential_id: Some(id),
+		revision: 1,
+	}];
+	let mut context = c.scoped(CallOperation::Embeddings);
+	context.run = None;
+	context.maintenance = Some(MaintenancePurpose::ReferenceIndexing);
+	c.access
+		.resolve(
+			&context,
+			Provider::Openrouter.base_url(),
+			&AccessSource::Tenant {
+				provider: "openrouter".into(),
+			},
+		)
+		.await
+		.unwrap();
+	let claim = c.signer.claims.lock().unwrap().last().unwrap().clone();
+	assert_eq!(
+		serde_json::to_value(claim.sub).unwrap(),
+		json!({"maintenance":"reference_indexing","tenant":"tenant-a"})
+	);
+	assert_eq!(claim.ops, vec![aidash_capability::Operation::Embeddings]);
+}
+
+#[tokio::test]
 async fn runless_memory_inference_mints_exact_purposes_and_rebinds_per_call() {
 	let c = Cloud::new(false).await;
 	let id = c.context.provider_credential_id.unwrap();
@@ -801,6 +835,9 @@ async fn runless_memory_inference_mints_exact_purposes_and_rebinds_per_call() {
 		model: "author/model".into(),
 		model_version: "1".into(),
 		dimensions: 2,
+		inputs: [aidash_domain::semantic::EmbeddingInputKind::Text]
+			.into_iter()
+			.collect(),
 	};
 	aidash_integrations::semantic::embed(
 		c.access.as_ref(),

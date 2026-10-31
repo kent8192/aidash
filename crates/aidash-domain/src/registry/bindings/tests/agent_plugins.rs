@@ -89,11 +89,12 @@ fn snapshot_of(agent: &AgentBindings, agent_plugins: Vec<PinnedAgentPlugin>) -> 
 		}
 		let operation = target.id.strip_prefix("aidash.").unwrap();
 		let descriptor = core_descriptor(NODE, operation).unwrap();
-		let tool = entry(
+		let mut tool = entry(
 			&target.id,
 			"tool",
 			serde_json::to_value(&descriptor).unwrap(),
 		);
+		tool.version = target.version.clone();
 		// The fixture Agent binds no memory, so its memory defaults are excluded.
 		let excluded_reason =
 			crate::tool::providers::memory_exclusion(normalized.origin, operation, false).unwrap();
@@ -168,6 +169,41 @@ fn a_snapshot_without_plugins_keeps_its_bytes() {
 			.unwrap()
 			.get("agent_plugins")
 			.is_none()
+	);
+}
+
+#[test]
+fn implicit_workspace_source_uses_the_reader_version_in_the_snapshot() {
+	let snapshot = snapshot_of(&agent(), vec![]);
+	let mut native = sources::NativeContext {
+		schema_version: BINDING_SCHEMA,
+		source: sources::NativeSource::WorkspaceObservation {},
+		context_source: None,
+	};
+	let source = qualified("aidash.workspace-observation");
+	let declaration = native.declaration_for_snapshot(&source, &snapshot);
+	assert!(
+		declaration
+			.tools
+			.read
+			.iter()
+			.any(|tool| tool.id == "aidash.workspace_read" && tool.version == "1.1.0")
+	);
+	assert!(
+		!declaration
+			.tools
+			.read
+			.iter()
+			.any(|tool| tool.id == "aidash.workspace_read" && tool.version == "1.0.0")
+	);
+	native.context_source = Some(native.declaration(&source));
+	let explicit = native.declaration_for_snapshot(&source, &snapshot);
+	assert!(
+		explicit
+			.tools
+			.read
+			.iter()
+			.any(|tool| tool.id == "aidash.workspace_read" && tool.version == "1.0.0")
 	);
 }
 

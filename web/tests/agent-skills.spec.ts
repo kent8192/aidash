@@ -260,6 +260,70 @@ test("uploads real PDF and Excel reference text separately from registry metadat
   expect(errors).toEqual([]);
 });
 
+test("uploads a reference image with its pinned image embedding", async ({
+  page,
+}) => {
+  const base = {
+    version: "1.0.0",
+    capabilities: [],
+    languages: [],
+    tags: [],
+    skills: [],
+    schema: {},
+    description: { en: "Fixture" },
+  };
+  const errors = await setup(page, [
+    { ...base, id: "model", kind: "model", name: { en: "Model" }, config: {} },
+    {
+      ...base,
+      id: "images",
+      kind: "embedding",
+      name: { en: "Image embedding" },
+      config: { inputs: ["text", "image"] },
+    },
+  ]);
+  await page.goto("/registry");
+  await page
+    .getByRole("button", { name: "エンティティを登録", exact: true })
+    .click();
+  const dialog = page.getByRole("dialog");
+  await dialog.getByLabel("エンティティの種類").selectOption("agent");
+  await dialog.getByLabel("名前").fill("Image reference agent");
+  await dialog.getByLabel("説明").fill("Find reference images");
+  await dialog.locator('[name="model"]').selectOption("model@1.0.0");
+  await dialog.locator('[name="instructions"]').fill("Find reference images.");
+  await dialog.getByLabel("参考資料を追加").setInputFiles({
+    name: "chart.png",
+    mimeType: "image/png",
+    buffer: Buffer.from("89504e470d0a1a0a", "hex"),
+  });
+  await expect(dialog.getByText("chart.png", { exact: true })).toBeVisible();
+  await dialog
+    .getByLabel("参照画像の埋め込みモデル")
+    .selectOption("images@1.0.0");
+  const sent = page.waitForRequest(
+    (request) => new URL(request.url()).pathname === "/api/agents/personal",
+  );
+  await dialog
+    .getByRole("button", { name: "エンティティを登録", exact: true })
+    .click();
+  const input = (await sent).postDataJSON();
+  expect(input.entry.config.reference_embedding).toEqual({
+    id: "images",
+    version: "1.0.0",
+  });
+  expect(input.documents).toEqual([
+    {
+      name: "chart.png",
+      media_type: "image/png",
+      text: "",
+      data_base64: "iVBORw0KGgo=",
+    },
+  ]);
+  expect(JSON.stringify(input.entry)).not.toContain("iVBORw0KGgo=");
+  expect(errors).toEqual([]);
+});
+
 test("imports a published SKILL.md and rejects malformed frontmatter", async ({
   page,
 }) => {

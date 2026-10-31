@@ -13,8 +13,8 @@ use aidash_domain::semantic::indexing::{IndexingEntry, IndexingPlan};
 use async_trait::async_trait;
 use reinhardt::db::backends::TransactionExecutor;
 use reinhardt::query::{
-	Alias, ColumnRef, Expr, LockBehavior, LockType, Order, PostgresQueryBuilder, Query,
-	QueryStatementBuilder as _, SimpleExpr,
+	Alias, ColumnRef, Expr, ExprTrait as _, LockBehavior, LockType, Order, PostgresQueryBuilder,
+	Query, QueryStatementBuilder as _, SimpleExpr,
 };
 use serde_json::Value;
 use uuid::Uuid;
@@ -73,6 +73,7 @@ impl SemanticIndexingRepository for NativeIndexing {
 		super::purge::sweep(&self.store).await?;
 		super::engine_jobs::sweep(&self.store).await?;
 		super::memory_decay::sweep(&self.store).await?;
+		super::image_publications::sweep(&self.store).await?;
 		Ok(())
 	}
 	async fn begin_visibility(&self) -> Result<Box<dyn SemanticVisibility>> {
@@ -87,7 +88,7 @@ impl SemanticIndexingRepository for NativeIndexing {
 				.expr(SimpleExpr::from(Expr::col(Alias::new("id"))))
 				.from(Alias::new("semantic_entries"))
 				.and_where(Expr::cust(
-					"NOT deleted AND next_attempt <= CLOCK_TIMESTAMP()",
+					"NOT deleted AND state <> 'UNSUPPORTED' AND COALESCE(last_error, '') <> 'awaiting_owner_run' AND next_attempt <= CLOCK_TIMESTAMP()",
 				))
 				.order_by_expr(
 					SimpleExpr::from(Expr::col(Alias::new("next_attempt"))),
@@ -249,8 +250,10 @@ impl SemanticIndexingSession for Session {
 				&Query::select()
 					.expr(SimpleExpr::from(Expr::col(ColumnRef::Asterisk)))
 					.from(Alias::new("semantic_entries"))
+					// Repeat `due`'s eligibility under the row lock: a rebuild
+					// may exclude a queued image after it was selected.
 					.and_where(SimpleExpr::CustomWithExpr(
-						"(id = ? AND NOT deleted AND next_attempt <= CLOCK_TIMESTAMP())".to_owned(),
+						"(id = ? AND NOT deleted AND state <> 'UNSUPPORTED' AND COALESCE(last_error, '') <> 'awaiting_owner_run' AND next_attempt <= CLOCK_TIMESTAMP())".to_owned(),
 						vec![Expr::value(query_bind_1.to_owned()).into()],
 					))
 					.lock(LockType::Update)
@@ -294,6 +297,64 @@ impl SemanticIndexingSession for Session {
 			.source(workspace, source)
 			.await
 			.map_err(Into::into)
+	}
+	async fn image(
+		&mut self,
+		workspace: Uuid,
+		source: &Source,
+		max_bytes: usize,
+	) -> Result<Option<IndexImageRead>> {
+		let store = self.store.clone();
+		let access = self.lease.access().ok_or(Error::Forbidden)?;
+		let Some(file) = super::image_files::current(access, workspace, source).await? else {
+			return Ok(None);
+		};
+		if file.size > max_bytes as u64 {
+			return Ok(Some(IndexImageRead::TooLarge));
+		}
+		let bytes = store.capabilities.read(access, &file).await?;
+		Ok(Some(IndexImageRead::Image(IndexImage {
+			media_type: file.media_type,
+			bytes,
+		})))
+	}
+	async fn embed_image(
+		&mut self,
+		workspace: Uuid,
+		config: &EmbeddingConfig,
+		image: &IndexImage,
+		entry: Uuid,
+	) -> Result<Vec<f32>> {
+		service::embed_input(
+			&self.store,
+			&mut self.lease,
+			workspace,
+			config,
+			aidash_domain::semantic::EmbeddingInput::Image {
+				media_type: &image.media_type,
+				bytes: &image.bytes,
+			},
+			crate::generation::embedding::Origin::Index(entry),
+		)
+		.await
+		.map_err(Into::into)
+	}
+	async fn unsupported(
+		&mut self,
+		id: Uuid,
+		reason: aidash_domain::semantic::indexing::UnsupportedReason,
+	) -> Result<()> {
+		let statement = Query::update()
+			.table(Alias::new("semantic_entries"))
+			.value(Alias::new("state"), "UNSUPPORTED")
+			.value(Alias::new("last_error"), reason.as_str())
+			.value_expr(Alias::new("updated_at"), Expr::cust("CLOCK_TIMESTAMP()"))
+			.and_where(Expr::col(Alias::new("id")).eq(Expr::value(id)))
+			.to_string(PostgresQueryBuilder);
+		crate::database::native::query(&statement)
+			.execute(&mut **self.lease.tx())
+			.await?;
+		Ok(())
 	}
 	async fn set_revoked(&mut self, id: Uuid, reason: &str) -> Result<()> {
 		let lease = &mut self.lease;

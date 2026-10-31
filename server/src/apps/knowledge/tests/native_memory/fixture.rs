@@ -293,7 +293,7 @@ pub(super) async fn setup_endpoint_policy(
 				embedding: serde_json::from_value(json!({"provider":"openai","endpoint":endpoint,"model":"fixture","model_version":"1.0.0","dimensions":3})).unwrap(),
 				vector: aidash_domain::semantic::VectorConfig { provider: "postgres".into(), endpoint: "local".into(), credential_env: None },
 				enabled: true, auto_context: false, max_sources: 64, max_results: 4,
-				max_result_tokens: 8192, max_input_bytes: 16384,
+				max_result_tokens: 8192, max_input_bytes: 16384, max_image_bytes: 8 * 1024 * 1024, max_images: 256,
 			},
 		},
 	).await.unwrap();

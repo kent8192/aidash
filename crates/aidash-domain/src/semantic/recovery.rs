@@ -47,7 +47,10 @@ impl Recovery {
 			}
 			// Retrying the same request cannot change the outcome: the Run's
 			// context already holds obsolete text, or the same budget overflows.
-			Failure::Invalidated | Failure::ContextBudget | Failure::DurableMemoryBudget => {
+			Failure::Invalidated
+			| Failure::ContextBudget
+			| Failure::DurableMemoryBudget
+			| Failure::EmbeddingModelNotFound => {
 				vec![CreateFollowUpTask]
 			}
 			Failure::Pending

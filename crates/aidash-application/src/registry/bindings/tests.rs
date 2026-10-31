@@ -67,6 +67,15 @@ impl Catalog {
 			"tool",
 			serde_json::to_value(descriptor).unwrap(),
 		));
+		if operation == "workspace_read" {
+			let mut current = self.entries[&reference].clone();
+			current.version = "1.1.0".into();
+			let identity = QualifiedRef {
+				version: current.version.clone(),
+				..reference.clone()
+			};
+			self.entries.insert(identity, current);
+		}
 		reference
 	}
 	fn bundle(&mut self, id: &str, members: Vec<QualifiedRef>) -> QualifiedRef {
@@ -1659,7 +1668,11 @@ async fn receiver_export_rejects_a_custom_policy_hidden_under_the_system_source_
 	source.config = serde_json::to_value(native).unwrap();
 	// This is a valid, freshly admitted graph with correct digests, so rejection
 	// comes from the receiver export boundary rather than corrupt snapshot bytes.
-	let saved = snapshot(&mut catalog, &agent_config(), true).await.unwrap();
+	let mut config = agent_config();
+	config
+		.bindings
+		.push(Binding::tool(QualifiedRef::builtin(NODE, "workspace_read")));
+	let saved = snapshot(&mut catalog, &config, true).await.unwrap();
 	saved.validate().unwrap();
 	let error = ForeignAgentSnapshot::from_snapshot(saved).unwrap_err();
 	assert!(
@@ -2212,11 +2225,12 @@ async fn shared_read_claim_above_a_sequential_provider_is_rejected(#[case] descr
 	let mut config = agent_config();
 	let target = QualifiedRef::builtin(NODE, "workspace_read");
 	if descriptor {
-		catalog
-			.entries
-			.get_mut(&reference(&target.id))
-			.unwrap()
-			.config["narrow"]["concurrency"] = json!("shared_read");
+		let current = QualifiedRef {
+			version: "1.1.0".into(),
+			..target.clone()
+		};
+		catalog.entries.get_mut(&current).unwrap().config["narrow"]["concurrency"] =
+			json!("shared_read");
 	} else {
 		let mut read = Binding::tool(target);
 		read.narrow = serde_json::from_value(json!({"concurrency":"shared_read"})).unwrap();
@@ -2348,6 +2362,9 @@ async fn remote_home_receipt_obligation_rejects_on_demand_despite_false_declarat
 		serde_json::to_value(native).unwrap(),
 	));
 	let mut config = agent_config();
+	config
+		.bindings
+		.push(Binding::tool(QualifiedRef::builtin(NODE, "workspace_read")));
 	config.bindings.push(
 		serde_json::from_value(json!({"kind":"source","target":identity,"narrow":{}})).unwrap(),
 	);
@@ -2516,6 +2533,9 @@ async fn semantic_query_policy_agrees_including_implicit_defaults(
 	use aidash_domain::registry::bindings::sources::{NativeContext, NativeSource, OnUnavailable};
 	let mut catalog = Catalog::new();
 	let mut config = agent_config();
+	config
+		.bindings
+		.push(Binding::tool(QualifiedRef::builtin(NODE, "workspace_read")));
 	for (id, kind, source, query) in [
 		(
 			"query-memory",

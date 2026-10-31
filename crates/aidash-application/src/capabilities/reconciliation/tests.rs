@@ -17,6 +17,7 @@ struct Trace {
 	capabilities: CoreCapabilities,
 	health: Value,
 	observed: Value,
+	download: Value,
 	files: Vec<MountedFile>,
 	chunks: Vec<Vec<u8>>,
 	calls: Vec<String>,
@@ -96,6 +97,7 @@ fn repository() -> Repository {
 		},
 		health: json!({"instance":"runner"}),
 		observed: json!({"status":"running","stdout":""}),
+		download: Value::Null,
 		files: vec![],
 		chunks: vec![],
 		calls: vec![],
@@ -195,6 +197,9 @@ impl OperationReconciliationScope for Scope {
 		}
 		let mut trace = self.0.0.lock().unwrap();
 		trace.bodies.extend(body);
+		if path.contains("/files/") {
+			return Ok(trace.download.clone());
+		}
 		Ok(trace.observed.clone())
 	}
 	async fn dispatch_files(&mut self, _: &Snapshot) -> Result<Vec<MountedFile>> {
@@ -266,6 +271,30 @@ impl OperationReconciliationScope for Scope {
 		self.0.0.lock().unwrap().commit = result.is_ok();
 		result
 	}
+}
+
+#[rstest]
+#[case::image("output", b"\x89PNG\r\n\x1a\nbody".as_slice(), "image/png")]
+#[case::spoofed_extension("spoof.png", b"not an image".as_slice(), "application/octet-stream")]
+#[tokio::test]
+async fn exported_file_media_type_follows_verified_image_signature(
+	repository: Repository,
+	#[case] path: &str,
+	#[case] bytes: &[u8],
+	#[case] expected: &str,
+) {
+	let object = "a".repeat(64);
+	{
+		let mut trace = repository.0.lock().unwrap();
+		trace.observed = json!({"status":"completed","termination_confirmed":true,"executed":true,"files":[{"path":path,"object_id":object,"digest":"digest","size":bytes.len()}],"stdout":STANDARD.encode("stdout"),"displays":[],"exit_code":0});
+		trace.download =
+			json!({"data":STANDARD.encode(bytes),"offset":0,"size":bytes.len(),"digest":"digest"});
+	}
+	run(&repository).await.unwrap();
+	assert_eq!(
+		repository.0.lock().unwrap().published[0].media_type,
+		expected
+	);
 }
 async fn run(repository: &Repository) -> Result<()> {
 	drive(repository, Uuid::from_u128(1)).await

@@ -77,7 +77,7 @@ impl EmbeddingProvider for NoEffects {
 	async fn embed(
 		&self,
 		_: &aidash_domain::semantic::EmbeddingConfig,
-		_: &str,
+		_: aidash_domain::semantic::EmbeddingInput<'_>,
 	) -> Result<aidash_domain::semantic::Embedding> {
 		panic!("unexpected embed effect in disclosure scenario")
 	}
@@ -235,6 +235,9 @@ fn spec() -> IndexingSpec {
 			model: "embedding".into(),
 			model_version: "1".into(),
 			dimensions: 2,
+			inputs: [aidash_domain::semantic::EmbeddingInputKind::Text]
+				.into_iter()
+				.collect(),
 		},
 		vector: VectorConfig {
 			provider: "postgres".into(),
@@ -247,6 +250,8 @@ fn spec() -> IndexingSpec {
 		max_results: 4,
 		max_result_tokens: 8192,
 		max_input_bytes: 32768,
+		max_image_bytes: 8 * 1024 * 1024,
+		max_images: 256,
 	}
 }
 fn index() -> Index {

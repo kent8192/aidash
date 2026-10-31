@@ -207,6 +207,7 @@ impl ToolBehavior {
 	pub fn fitting_for(&self, input: &Value) -> Option<ResultFitting> {
 		match self.fitting {
 			Some(ResultFitting::SkillText) if input.get("skill").is_none() => None,
+			Some(ResultFitting::WorkspaceRecord) if input["kind"] == "file" => None,
 			other => other,
 		}
 	}
@@ -223,9 +224,23 @@ impl ToolBehavior {
 		input: &Value,
 		output: &Value,
 	) -> Option<crate::media::ModelMedia> {
-		use crate::media::{ModelMedia, PageImageSelection, Selection};
+		use crate::media::{ModelMedia, PageImageSelection, Selection, WorkingImageSelection};
 		if !self.yields_model_media {
 			return None;
+		}
+		if input["kind"] == "file"
+			&& input["representation"] == "model_input"
+			&& output["status"] == "completed"
+			&& output["metadata"]["file_id"] == input["id"]
+			&& output["metadata"]["digest"] == input["expected_digest"]
+			&& output["metadata"]["path"] == input["path"]
+		{
+			return serde_json::from_value::<WorkingImageSelection>(serde_json::json!({
+				"file_id": input["id"], "area_id": input["area_id"], "generation": input["generation"],
+				"path": input["path"], "expected_digest": input["expected_digest"],
+			}))
+			.ok()
+			.map(ModelMedia::WorkingImage);
 		}
 		if input["representation"] == "model_input"
 			&& output["status"] == "completed"
@@ -271,6 +286,15 @@ impl ToolContract {
 	pub fn pinned(mut self, digest: &str) -> crate::Result<Option<Self>> {
 		if self.digest()? == digest {
 			return Ok(Some(self));
+		}
+		if self.behavior.fitting == Some(ResultFitting::WorkspaceRecord)
+			&& self.behavior.yields_model_media
+		{
+			let mut previous = self.clone();
+			previous.behavior.yields_model_media = false;
+			if previous.digest()? == digest {
+				return Ok(Some(previous));
+			}
 		}
 		if !self.behavior.concurrency.is_sequential() {
 			self.behavior.concurrency = Concurrency::Sequential;
@@ -468,21 +492,23 @@ pub fn builtin_contract(name: &str) -> Option<ToolContract> {
 		"agent_discover" => {
 			behavior.effect = ToolEffect::ReadOnly;
 		}
-		"workspace_read" | "workspace_observe" | "workspace_wait" => {
+		"workspace_read" | "workspace_observe" | "workspace_wait" | "workspace_search" => {
 			auth.flag = Some(AgentFlag::WorkspaceRetrieval);
-			contract.remote_exposure = true;
+			contract.remote_exposure = name != "workspace_search";
 			behavior.effect = ToolEffect::ReadOnly;
 			match name {
 				"workspace_read" => {
 					behavior.fitting = Some(ResultFitting::WorkspaceRecord);
 					behavior.catch_up = true;
 					behavior.media_pending = true;
+					behavior.yields_model_media = true;
 				}
 				"workspace_observe" => {
 					behavior.fitting = Some(ResultFitting::Observation);
 					behavior.media_pending = true;
 				}
-				_ => behavior.continuation = Continuation::Wait,
+				"workspace_wait" => behavior.continuation = Continuation::Wait,
+				_ => {}
 			}
 		}
 		"skill_read" => {
@@ -810,7 +836,11 @@ mod tests {
 		// Admitted Runs pin `provider_contract_digest` over these bytes; the
 		// research `yields` and `disclosure_approval` attributes are omitted
 		// when empty, so existing contracts keep their digests.
-		let contract = builtin_contract("workspace_read").unwrap();
+		let contract = builtin_contract("workspace_read")
+			.unwrap()
+			.pinned(PINNED_WORKSPACE_READ_DIGEST)
+			.unwrap()
+			.unwrap();
 		assert_eq!(
 			serde_json::to_string(&contract.behavior).unwrap(),
 			r#"{"effect":"ReadOnly","fitting":"WorkspaceRecord","continuation":"Ordinary","catch_up":true,"media_pending":true,"yields_model_media":false,"tool_call_approval":false}"#
@@ -819,6 +849,40 @@ mod tests {
 			crate::registry::rules::digest(&serde_json::to_value(&contract).unwrap()),
 			PINNED_WORKSPACE_READ_DIGEST
 		);
+	}
+	#[test]
+	fn admitted_workspace_reader_descriptor_keeps_its_original_contract() {
+		let identity =
+			crate::registry::bindings::QualifiedRef::builtin("aidash://node", "workspace_read");
+		let descriptor =
+			crate::tool::providers::core_descriptor("aidash://node", "workspace_read").unwrap();
+		let old_contract = descriptor.declared_contract(identity.clone()).unwrap();
+		assert!(!old_contract.behavior.yields_model_media);
+		let current = descriptor
+			.declared_contract(crate::registry::bindings::QualifiedRef {
+				version: "1.1.0".into(),
+				..identity
+			})
+			.unwrap();
+		assert!(current.behavior.yields_model_media);
+		let mut old = current.clone();
+		old.behavior.yields_model_media = false;
+		assert_eq!(current.pinned(&old.digest().unwrap()).unwrap(), Some(old));
+	}
+	#[test]
+	fn workspace_image_selection_requires_the_exact_returned_file_version() {
+		let behavior = builtin_contract("workspace_read").unwrap().behavior;
+		let id = uuid::Uuid::from_u128(1);
+		let area = uuid::Uuid::from_u128(2);
+		let input = serde_json::json!({"kind":"file", "representation":"model_input", "id":id, "area_id":area, "generation":3, "path":"chart.png", "expected_digest":"abc"});
+		let mut output = serde_json::json!({"status":"completed", "metadata":{"file_id":id, "path":"chart.png", "digest":"abc"}});
+		assert!(matches!(
+			behavior.model_media_selection(&input, &output),
+			Some(crate::media::ModelMedia::WorkingImage(_))
+		));
+		assert!(behavior.fitting_for(&input).is_none());
+		output["metadata"]["path"] = serde_json::json!("other.png");
+		assert!(behavior.model_media_selection(&input, &output).is_none());
 	}
 	fn plugin_tool() -> AgentPluginTool {
 		AgentPluginTool {

@@ -26,6 +26,8 @@ pub enum Failure {
 	Invalidated,
 	#[error("The semantic provider violated its approved response contract")]
 	ProviderContract,
+	#[error("The embedding provider cannot find the configured model")]
+	EmbeddingModelNotFound,
 	#[error("Semantic context does not fit the available context budget")]
 	ContextBudget,
 	#[error(
@@ -60,6 +62,7 @@ impl Failure {
 	pub fn compatible(self) -> Self {
 		match self {
 			Self::DurableMemoryBudget => Self::ContextBudget,
+			Self::EmbeddingModelNotFound => Self::ProviderContract,
 			other => other,
 		}
 	}
@@ -67,6 +70,19 @@ impl Failure {
 	pub fn transient(self) -> bool {
 		matches!(self, Self::Unavailable)
 	}
+}
+
+#[derive(
+	Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize, JsonSchema,
+)]
+#[serde(rename_all = "snake_case")]
+pub enum EmbeddingInputKind {
+	Text,
+	Image,
+}
+
+fn default_embedding_inputs() -> std::collections::BTreeSet<EmbeddingInputKind> {
+	[EmbeddingInputKind::Text].into_iter().collect()
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
@@ -81,6 +97,8 @@ pub struct EmbeddingConfig {
 	pub model: String,
 	pub model_version: String,
 	pub dimensions: usize,
+	#[serde(default = "default_embedding_inputs")]
+	pub inputs: std::collections::BTreeSet<EmbeddingInputKind>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
@@ -90,6 +108,56 @@ pub struct VectorConfig {
 	pub provider: String,
 	pub endpoint: String,
 	pub credential_env: Option<String>,
+}
+
+/// A single input, borrowed so image bytes never enter durable point payloads.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum EmbeddingInput<'a> {
+	Text(&'a str),
+	Image {
+		media_type: &'a str,
+		bytes: &'a [u8],
+	},
+}
+
+impl EmbeddingInput<'_> {
+	pub fn validate(&self, config: &EmbeddingConfig) -> crate::Result<()> {
+		config.validate_parameters()?;
+		let kind = match self {
+			Self::Text(_) => EmbeddingInputKind::Text,
+			Self::Image { .. } => EmbeddingInputKind::Image,
+		};
+		if !config.inputs.contains(&kind) {
+			return Err(crate::Error::Invalid(
+				"embedding input modality is not supported".into(),
+			));
+		}
+		if let Self::Image { media_type, bytes } = self {
+			crate::provider::validate_image(media_type, bytes)?;
+		}
+		Ok(())
+	}
+	pub fn byte_len(&self) -> usize {
+		match self {
+			Self::Text(text) => text.len(),
+			Self::Image { bytes, .. } => bytes.len(),
+		}
+	}
+	pub fn reservation_amount(&self) -> crate::Result<i64> {
+		match self {
+			Self::Text(text) => crate::generation::embedding::reservation_amount(text.len()),
+			Self::Image { media_type, bytes } => {
+				let size = crate::provider::image_token_allowance(bytes.len())
+					.and_then(|v| v.checked_add(media_type.len()))
+					.and_then(|v| v.checked_add(1024))
+					.and_then(|v| i64::try_from(v).ok())
+					.ok_or_else(|| {
+						crate::Error::Invalid("embedding input reservation overflow".into())
+					})?;
+				Ok(size)
+			}
+		}
+	}
 }
 
 /// Result of one approved embedding request.
@@ -128,9 +196,10 @@ impl EmbeddingConfig {
 			|| self.model_version.trim().is_empty()
 			|| self.model_version.len() > 128
 			|| !(1..=8192).contains(&self.dimensions)
+			|| !self.inputs.contains(&EmbeddingInputKind::Text)
 		{
 			return Err(crate::Error::Invalid(
-				"invalid embedding provider, model, version or dimensions".into(),
+				"invalid embedding provider, model, version, dimensions or inputs".into(),
 			));
 		}
 		Ok(())
@@ -164,6 +233,13 @@ pub enum Source {
 	},
 	Message {
 		id: Uuid,
+	},
+	/// An immutable File version; source content remains in its Working Area.
+	WorkingImage {
+		area_id: Uuid,
+		generation: i64,
+		file_id: Uuid,
+		path: String,
 	},
 }
 

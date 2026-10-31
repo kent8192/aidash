@@ -240,6 +240,7 @@ test("embedding registration defaults to full-dimensional Gemini through OpenRou
       model: "google/gemini-embedding-2",
       model_version: "1.0.0",
       dimensions: 3072,
+      inputs: ["text", "image"],
     });
   await expect(dialog).toHaveCount(0);
   expect(errors).toEqual([]);

@@ -138,11 +138,13 @@ impl BindingCatalog for Catalog {
 			return crate::registry::system::compaction_decider();
 		}
 		if let Some(operation) = reference.id.strip_prefix("aidash.") {
-			return Ok(entry(
+			let mut definition = entry(
 				&reference.id,
 				"tool",
 				serde_json::to_value(core_descriptor(&self.node, operation)?)?,
-			));
+			);
+			definition.version = reference.version.clone();
+			return Ok(definition);
 		}
 		Err(Error::NotFound(reference.id.clone()))
 	}
@@ -240,6 +242,13 @@ pub(crate) fn builtin_entries(node: &str) -> Vec<Entry> {
 			)
 		})
 		.collect();
+	let mut current = entries
+		.iter()
+		.find(|entry| entry.id == "aidash.workspace_read")
+		.unwrap()
+		.clone();
+	current.version = "1.1.0".into();
+	entries.push(current);
 	entries
 		.push(aidash_domain::registry::bindings::source_defaults::workspace_observation().unwrap());
 	entries.push(crate::registry::system::compaction_decider().unwrap());

@@ -28,6 +28,7 @@ fn is_sequential_tools(value: &u8) -> bool {
 pub const REQUIRED_TOOLS: &[&str] = &["workspace_read", "human_request"];
 pub const DEFAULT_TOOLS: &[&str] = &[
 	"workspace_observe",
+	"workspace_search",
 	"workspace_wait",
 	"skill_list",
 	"skill_load",
@@ -76,6 +77,9 @@ pub fn definition_references(
 			let config: AgentBindings = serde_json::from_value(entry.config.clone())?;
 			config.validate()?;
 			result.push((local(&config.model), "model".into()));
+			if let Some(embedding) = &config.reference_embedding {
+				result.push((local(embedding), "embedding".into()));
+			}
 			if let Some(summary) = config.context_summary() {
 				result.push((local(&summary.model), "model".into()));
 			}
@@ -191,6 +195,9 @@ pub fn reference_kind_matches(expected: &str, actual: &str) -> bool {
 pub struct AgentBindings {
 	pub schema_version: u8,
 	pub model: EntityRef,
+	/// Exact immutable embedding definition for private reference images.
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub reference_embedding: Option<EntityRef>,
 	#[serde(default)]
 	pub instructions: String,
 	#[serde(default)]
@@ -393,6 +400,14 @@ impl AgentBindings {
 		node: &str,
 		compaction_override: Option<&QualifiedRef>,
 	) -> Result<Vec<NormalizedBinding>> {
+		self.normalize_version(node, compaction_override, false)
+	}
+	fn normalize_version(
+		&self,
+		node: &str,
+		compaction_override: Option<&QualifiedRef>,
+		legacy: bool,
+	) -> Result<Vec<NormalizedBinding>> {
 		self.validate()?;
 		crate::nodes::DeploymentId::parse(node)?;
 		let mut result = Vec::new();
@@ -401,11 +416,28 @@ impl AgentBindings {
 		let required_tools = policy.required_tools();
 		let support = policy.skill_support_tools();
 		for operation in required_tools.iter().chain(&policy.default_tools()) {
+			if legacy && *operation == "workspace_search" {
+				continue;
+			}
 			let required = required_tools.contains(operation);
 			if !required && self.remove_default.iter().any(|name| name == operation) {
 				continue;
 			}
-			let target = QualifiedRef::builtin(node, operation);
+			let previous = QualifiedRef::builtin(node, operation);
+			let target = if !legacy
+				&& *operation == "workspace_read"
+				&& !self
+					.bindings
+					.iter()
+					.any(|binding| binding.target == previous)
+			{
+				QualifiedRef {
+					version: "1.1.0".into(),
+					..previous
+				}
+			} else {
+				previous
+			};
 			let explicit = self
 				.bindings
 				.iter()
@@ -500,7 +532,8 @@ impl Entry {
 		if let Some(saved) = &self.binding_normalization {
 			if saved.schema_version != BINDING_SCHEMA
 				|| saved.registry_deployment != node
-				|| saved.bindings != expected
+				|| (saved.bindings != expected
+					&& saved.bindings != config.normalize_version(node, replacement, true)?)
 			{
 				return Err(Error::Invalid(
 					"Agent normalization differs from its immutable definition".into(),
@@ -1234,7 +1267,11 @@ impl BindingSnapshot {
 		for operation in policy.required_tools() {
 			let identity = QualifiedRef::builtin(&self.agent.registry_deployment, operation);
 			if !self.bindings.iter().any(|binding| {
-				binding.identity == identity
+				(binding.identity == identity
+					|| (operation == "workspace_read"
+						&& binding.identity.id == identity.id
+						&& binding.identity.registry_deployment == identity.registry_deployment
+						&& binding.identity.version == "1.1.0"))
 					&& binding.origin == BindingOrigin::Required
 					&& binding.alias.as_deref() == Some(operation)
 					&& binding.excluded_reason.is_none()

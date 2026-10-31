@@ -680,16 +680,36 @@ pub async fn materialize(
 		constraints.push(provenance);
 	}
 	publish(scope, &mut area).await?;
-	let result = json!({"area_id":area.id,"revision":area.revision,"file":file});
+	let published = files(&area)?
+		.into_iter()
+		.find(|entry| entry.file_id == file.file_id)
+		.ok_or_else(|| Error::Conflict("published file unavailable".into()))?;
+	let result = json!({"area_id":area.id,"revision":area.revision,"file":published});
 	scope.cache(input.idempotency_key, &digest, &result).await?;
 	Ok(result)
 }
 pub async fn publish(scope: &mut dyn FileScopePort, area: &mut Area) -> Result<()> {
 	// Commit the old working-object tombstones with the new manifest. Only
 	// superseded working bytes are reclaimed, never outputs or recovery copies.
-	let previous: Value = scope.previous_manifest(area).await?;
-	let current = files(area)?;
-	for old in serde_json::from_value::<Vec<FileEntry>>(previous)? {
+	let previous: Vec<FileEntry> = serde_json::from_value(scope.previous_manifest(area).await?)?;
+	let previous_generation = scope.previous_generation(area).await?;
+	let mut current = files(area)?;
+	for file in &mut current {
+		if matches!(file.scope, FileScope::Working | FileScope::Received)
+			&& file.media_type == "application/octet-stream"
+			&& file.size > 0
+			&& (previous_generation != area.generation
+				|| !previous.iter().any(|old| old.file_id == file.file_id))
+		{
+			let mut reader = scope.open(file).await?;
+			let prefix = reader.read_range(0, file.size.min(12)).await?;
+			if let Some(media_type) = aidash_domain::provider::detect_image(&prefix) {
+				file.media_type = media_type.into();
+			}
+		}
+	}
+	area.manifest = json!(current);
+	for old in &previous {
 		if matches!(old.scope, FileScope::Working)
 			&& !current.iter().any(|file| file.file_id == old.file_id)
 		{
@@ -698,6 +718,19 @@ pub async fn publish(scope: &mut dyn FileScopePort, area: &mut Area) -> Result<(
 	}
 	area.revision += 1;
 	scope.persist_manifest(area).await?;
+	let changes = if previous_generation != area.generation {
+		let mut changes = aidash_domain::semantic::indexing::image_changes(&previous, &[]);
+		changes.extend(aidash_domain::semantic::indexing::image_changes(
+			&[],
+			&current,
+		));
+		changes
+	} else {
+		aidash_domain::semantic::indexing::image_changes(&previous, &current)
+	};
+	if !changes.is_empty() {
+		scope.image_publication(area, &changes).await?;
+	}
 	scope
 		.event(
 			area.workspace_id,

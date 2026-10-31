@@ -9,6 +9,7 @@ impl AgentConfig {
 		AgentBindings {
 			schema_version: self.schema_version,
 			model: self.model.clone(),
+			reference_embedding: self.reference_embedding.clone(),
 			instructions: self.instructions.clone(),
 			bindings: self.bindings.clone(),
 			remove_default: self.remove_default.clone(),
@@ -42,6 +43,7 @@ impl AgentConfig {
 			bindings: input.bindings,
 			remove_default: input.remove_default,
 			model: input.model,
+			reference_embedding: input.reference_embedding,
 			instructions: input.instructions,
 			cluster: input.cluster,
 			max_steps: input.max_steps,

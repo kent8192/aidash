@@ -24,6 +24,15 @@ pub trait AuthorizedMediaScope: MediaAttachments {
 #[async_trait]
 pub trait SelectedMediaScope: Send {
 	async fn current_files(&mut self) -> Result<Vec<aidash_domain::media::SelectedFile>>;
+	async fn workspace_image(
+		&mut self,
+		_area: Uuid,
+		_generation: i64,
+		_file: Uuid,
+		_path: &str,
+	) -> Result<Option<aidash_domain::media::SelectedFile>> {
+		Ok(None)
+	}
 	async fn read(&mut self, file: Uuid) -> Result<Vec<u8>>;
 	/// The media type and bytes of the Run's page-image Evidence fragment
 	/// `reference`; absent once its evidence is revoked (ADR 0053).

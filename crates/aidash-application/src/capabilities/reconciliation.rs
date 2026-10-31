@@ -229,13 +229,14 @@ async fn reconcile(
 					entries.push(unchanged.clone());
 					continue;
 				}
-				let (file_id, digest) = Box::pin(download_output(scope, id, file)).await?;
+				let (file_id, digest, media_type) =
+					Box::pin(download_output(scope, id, file)).await?;
 				entries.push(MountedFile {
 					file_id,
 					path: path.into(),
 					digest,
 					size: file_size,
-					media_type: "application/octet-stream".into(),
+					media_type,
 					scope: FileScope::Working,
 					provenance: json!({"kind":"operation","operation_id":id}),
 				});
@@ -395,7 +396,7 @@ async fn download_output(
 	scope: &mut dyn OperationReconciliationScope,
 	operation: Uuid,
 	file: &Value,
-) -> Result<(Uuid, String)> {
+) -> Result<(Uuid, String, String)> {
 	let size = file["size"]
 		.as_u64()
 		.ok_or_else(|| Error::Invalid("invalid output size".into()))?;
@@ -410,6 +411,7 @@ async fn download_output(
 		.ok_or_else(|| Error::Invalid("invalid output digest".into()))?;
 	scope.begin_output(size).await?;
 	let mut offset = 0;
+	let mut prefix = Vec::with_capacity(12);
 	while offset < size {
 		let chunk = scope
 			.request(
@@ -429,10 +431,16 @@ async fn download_output(
 		{
 			return Err(Error::Conflict("output chunk integrity".into()));
 		}
+		let needed = 12_usize.saturating_sub(prefix.len());
+		prefix.extend_from_slice(&bytes[..bytes.len().min(needed)]);
 		offset += bytes.len() as u64;
 		scope.write_output(&bytes).await?;
 	}
-	scope.finish_output(expected).await
+	let (id, digest) = scope.finish_output(expected).await?;
+	let media_type = aidash_domain::provider::detect_image(&prefix)
+		.unwrap_or("application/octet-stream")
+		.to_owned();
+	Ok((id, digest, media_type))
 }
 #[cfg(test)]
 mod tests;

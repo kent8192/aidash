@@ -62,7 +62,7 @@ COMPARISON_AGENT_FIELDS = ("projection_version", "prompt_cache", "exposure", "ha
 # need, and the deferred@1 exposure builtins (crates/aidash-domain/src/registry/bindings.rs,
 # exposure.rs `default_tools` and `skill_support_tools`). test_fixed_task_evaluation.py checks
 # them against the Rust lists.
-DEFAULT_TOOLS = ("workspace_observe", "workspace_wait", "skill_list", "skill_load", "skill_read", "file_search",
+DEFAULT_TOOLS = ("workspace_observe", "workspace_search", "workspace_wait", "skill_list", "skill_load", "skill_read", "file_search",
                  "file_read", "task_create", "task_delegate", "agent_discover", "artifact_publish",
                  "workspace_message", "memory_mutate", "memory_recall", "memory_reflect")
 SKILL_TOOLS = ("skill_list", "skill_load", "skill_read")

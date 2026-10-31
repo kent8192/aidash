@@ -1,6 +1,29 @@
 use super::*;
 use serde_json::{Value, json};
 
+#[test]
+fn reference_embedding_is_an_immutable_agent_definition_dependency() {
+	let entry: Entry = serde_json::from_value(json!({"id":"agent","version":"1.0.0","kind":"agent","name":{"en":"Agent"},"description":{"en":"Agent"},"config":{"schema_version":1,"model":{"id":"model","version":"1.0.0"},"instructions":"Work","reference_embedding":{"id":"image-embedding","version":"2.0.0"}}})).unwrap();
+	let root = QualifiedRef {
+		registry_deployment: "aidash://node-a".into(),
+		id: "agent".into(),
+		version: "1.0.0".into(),
+	};
+	let references = definition_references(&root, &entry).unwrap();
+	assert!(
+		references
+			.iter()
+			.any(|(reference, kind)| reference.id == "image-embedding"
+				&& reference.version == "2.0.0"
+				&& kind == "embedding")
+	);
+	let mut config = entry.config;
+	assert!(
+		crate::registry::rules::overlay_config(&mut config, &json!({"reference_embedding":null}))
+			.is_err()
+	);
+}
+
 mod agent_plugins;
 
 fn agent() -> AgentBindings {
@@ -62,6 +85,36 @@ fn normalization_records_trusted_origins_and_keeps_required_tools() {
 	);
 	agent.remove_default.push("workspace_read".into());
 	assert!(agent.normalize("aidash://node-a").is_err());
+}
+
+#[test]
+fn existing_agent_normalization_keeps_its_original_system_bindings() {
+	let config = agent();
+	let old = config
+		.normalize_version("aidash://node-a", None, true)
+		.unwrap();
+	let mut entry: Entry = serde_json::from_value(json!({"id":"agent","version":"1.0.0","kind":"agent","name":{"en":"Agent"},"description":{"en":"Agent"},"config":config})).unwrap();
+	entry.binding_normalization = Some(AgentNormalization {
+		schema_version: BINDING_SCHEMA,
+		registry_deployment: "aidash://node-a".into(),
+		compaction_override: None,
+		bindings: old.clone(),
+	});
+	assert_eq!(entry.normalized_bindings("aidash://node-a").unwrap(), old);
+	entry.version = "1.1.0".into();
+	entry.normalize_agent("aidash://node-a").unwrap();
+	let current = entry.normalized_bindings("aidash://node-a").unwrap();
+	assert!(
+		current
+			.iter()
+			.any(|b| b.binding.target.id == "aidash.workspace_search")
+	);
+	assert!(
+		current
+			.iter()
+			.any(|b| b.binding.target.id == "aidash.workspace_read"
+				&& b.binding.target.version == "1.1.0")
+	);
 }
 #[test]
 fn narrowing_intersects_and_enforces_bounds_without_changing_facts() {

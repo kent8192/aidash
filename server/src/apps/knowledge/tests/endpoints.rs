@@ -17,6 +17,273 @@ fn index_spec() -> Value {
 
 #[rstest]
 #[tokio::test]
+async fn legacy_images_without_an_owner_run_wait_without_blocking_other_candidates(
+	#[future] endpoint: EndpointFixture,
+	mut index_spec: Value,
+) {
+	use reinhardt::query::{
+		Alias, Expr, ExprTrait as _, PostgresQueryBuilder, Query, QueryStatementBuilder as _,
+	};
+	let app = endpoint.await;
+	let member = crate::endpoint::tenant_subject(&app, "member").await;
+	let workspace = workspace(&member, "Legacy image ordering").await;
+	let workspace_id: Uuid = serde_json::from_value(workspace["id"].clone()).unwrap();
+	index_spec["max_images"] = json!(1);
+	let area = Uuid::new_v4();
+	let unknown = Uuid::new_v4();
+	let known = Uuid::new_v4();
+	let image_bytes = b"\x89PNG\r\n\x1a\nlegacy";
+	let image_digest = aidash_server::capabilities::objects::digest(image_bytes);
+	let manifest = json!([
+		{"file_id":unknown,"path":"unknown","digest":image_digest,"size":image_bytes.len(),"media_type":"application/octet-stream","scope":"working","provenance":{}},
+		{"file_id":known,"path":"image.png","digest":"11".repeat(32),"size":4,"media_type":"image/png","scope":"working","provenance":{}}
+	]);
+	let sql = Query::insert()
+		.into_table(Alias::new("core_areas"))
+		.columns(
+			[
+				"id",
+				"tenant",
+				"home_node",
+				"agent_id",
+				"owner",
+				"workspace_id",
+				"thread_id",
+				"manifest",
+			]
+			.map(Alias::new),
+		)
+		.values_panic::<_, reinhardt::query::Value>([
+			area.into(),
+			"endpoint".into(),
+			app.runtime.store.deployment.to_string().into(),
+			"fixture".into(),
+			"member".into(),
+			workspace_id.into(),
+			Uuid::new_v4().into(),
+			manifest.into(),
+		])
+		.to_string(PostgresQueryBuilder);
+	sqlx::query(&sql)
+		.execute(app.runtime.store.pool.fixture_driver())
+		.await
+		.unwrap();
+	let storage = &app.runtime.store.capabilities.0.storage;
+	tokio::fs::create_dir_all(storage).await.unwrap();
+	tokio::fs::write(storage.join(unknown.simple().to_string()), image_bytes)
+		.await
+		.unwrap();
+	let sql = Query::insert()
+		.into_table(Alias::new("core_objects"))
+		.columns(["id", "tenant", "area_id", "kind", "digest", "size"].map(Alias::new))
+		.values_panic::<_, reinhardt::query::Value>([
+			unknown.into(),
+			"endpoint".into(),
+			area.into(),
+			"working".into(),
+			image_digest.into(),
+			(image_bytes.len() as i64).into(),
+		])
+		.to_string(PostgresQueryBuilder);
+	sqlx::query(&sql)
+		.execute(app.runtime.store.pool.fixture_driver())
+		.await
+		.unwrap();
+	assert_json(
+		member
+			.post(
+				&format!("/api/workspaces/{workspace_id}/semantic/index"),
+				&json!({"expected_revision":0,"spec":index_spec}),
+				"json",
+			)
+			.await
+			.unwrap(),
+		200,
+	);
+	worker::sweep(&app.runtime.store).await.unwrap();
+	let sql = Query::select()
+		.columns(["slots", "waiting_authority"].map(Alias::new))
+		.from(Alias::new("semantic_image_ledgers"))
+		.and_where(Expr::col("workspace_id").eq(Expr::value(workspace_id)))
+		.to_string(PostgresQueryBuilder);
+	let row = sqlx::query_as::<_, (Value, bool)>(&sql)
+		.fetch_one(app.runtime.store.pool.fixture_driver())
+		.await
+		.unwrap();
+	assert!(row.1);
+	assert_eq!(
+		row.0["legacy_candidates"][0]["file_id"],
+		unknown.to_string()
+	);
+	assert_eq!(row.0["entries"][0]["file_id"], known.to_string());
+	assert_eq!(row.0["entries"][0]["assigned"], true);
+	let sql = Query::select()
+		.columns(["state", "last_error"].map(Alias::new))
+		.from(Alias::new("semantic_entries"))
+		.and_where(Expr::col("workspace_id").eq(Expr::value(workspace_id)))
+		.to_string(PostgresQueryBuilder);
+	let row = sqlx::query_as::<_, (String, Option<String>)>(&sql)
+		.fetch_one(app.runtime.store.pool.fixture_driver())
+		.await
+		.unwrap();
+	assert_eq!(row, ("PENDING".into(), Some("awaiting_owner_run".into())));
+
+	// A later owner Run carries an actual retained authorization grant. Force
+	// the bounded retry due so the worker can restore it deterministically.
+	let task = assert_json(
+		member
+			.post(
+				&format!("/api/workspaces/{workspace_id}/tasks"),
+				&json!({"title":"Owner run","description":"Resume legacy indexing"}),
+				"json",
+			)
+			.await
+			.unwrap(),
+		200,
+	);
+	let task_id: Uuid = serde_json::from_value(task["id"].clone()).unwrap();
+	let credential: Uuid = sqlx::query_scalar(
+		&Query::select()
+			.column("id")
+			.from(Alias::new("authorization_credentials"))
+			.and_where(Expr::col("tenant").eq("endpoint"))
+			.and_where(Expr::col("subject").eq("member"))
+			.order_by("created_at", reinhardt::query::Order::Desc)
+			.limit(1)
+			.to_string(PostgresQueryBuilder),
+	)
+	.fetch_one(app.runtime.store.pool.fixture_driver())
+	.await
+	.unwrap();
+	let run = Uuid::new_v4();
+	let node = aidash_domain::nodes::NodeName::derived("endpoint");
+	let home = app.runtime.store.deployment.node(node.clone());
+	let sql = Query::insert()
+		.into_table(Alias::new("runs"))
+		.columns(
+			[
+				"id",
+				"task_id",
+				"workspace_id",
+				"home_node",
+				"node",
+				"agent_id",
+				"agent_version",
+				"tenant",
+			]
+			.map(Alias::new),
+		)
+		.values_panic::<_, reinhardt::query::Value>([
+			run.into(),
+			task_id.into(),
+			workspace_id.into(),
+			home.to_string().into(),
+			node.to_string().into(),
+			"fixture".into(),
+			"1.0.0".into(),
+			"endpoint".into(),
+		])
+		.to_string(PostgresQueryBuilder);
+	sqlx::query(&sql)
+		.execute(app.runtime.store.pool.fixture_driver())
+		.await
+		.unwrap();
+	let sql = Query::insert()
+		.into_table(Alias::new("core_runs"))
+		.columns(["run_id", "tenant", "area_id", "sequence"].map(Alias::new))
+		.values_panic::<_, reinhardt::query::Value>([
+			run.into(),
+			"endpoint".into(),
+			area.into(),
+			1_i64.into(),
+		])
+		.to_string(PostgresQueryBuilder);
+	sqlx::query(&sql)
+		.execute(app.runtime.store.pool.fixture_driver())
+		.await
+		.unwrap();
+	let sql = Query::insert()
+		.into_table(Alias::new("authorization_execution"))
+		.columns(
+			[
+				"run_id",
+				"task_id",
+				"workspace_id",
+				"tenant",
+				"credential_id",
+				"root_subject",
+				"subject_chain",
+			]
+			.map(Alias::new),
+		)
+		.from_subquery(
+			Query::select()
+				.expr(Expr::value(run))
+				.expr(Expr::value(task_id))
+				.expr(Expr::value(workspace_id))
+				.expr(Expr::value("endpoint"))
+				.expr(Expr::value(credential))
+				.expr(Expr::value("member"))
+				.expr(Expr::cust("ARRAY['member','member']::text[]"))
+				.to_owned(),
+		)
+		.to_string(PostgresQueryBuilder);
+	sqlx::query(&sql)
+		.execute(app.runtime.store.pool.fixture_driver())
+		.await
+		.unwrap();
+	let sql = Query::update()
+		.table(Alias::new("semantic_image_ledgers"))
+		.value_expr("next_authority_check", Expr::cust("CLOCK_TIMESTAMP()"))
+		.and_where(Expr::col("workspace_id").eq(Expr::value(workspace_id)))
+		.to_string(PostgresQueryBuilder);
+	sqlx::query(&sql)
+		.execute(app.runtime.store.pool.fixture_driver())
+		.await
+		.unwrap();
+	worker::sweep(&app.runtime.store).await.unwrap();
+	// Publication maintenance runs after the current indexing batch.
+	worker::sweep(&app.runtime.store).await.unwrap();
+	let sql = Query::select()
+		.columns(["source", "state", "last_error"].map(Alias::new))
+		.from(Alias::new("semantic_entries"))
+		.and_where(Expr::col("workspace_id").eq(Expr::value(workspace_id)))
+		.to_string(PostgresQueryBuilder);
+	let rows = sqlx::query_as::<_, (Value, String, Option<String>)>(&sql)
+		.fetch_all(app.runtime.store.pool.fixture_driver())
+		.await
+		.unwrap();
+	assert_eq!(rows.len(), 2);
+	assert!(
+		rows.iter().any(
+			|(source, state, reason)| source["file_id"] == unknown.to_string()
+				&& state == "UNSUPPORTED"
+				&& reason.as_deref() == Some("modality")
+		),
+		"{rows:?}"
+	);
+	assert!(
+		rows.iter().any(
+			|(source, state, reason)| source["file_id"] == known.to_string()
+				&& state == "UNSUPPORTED"
+				&& reason.as_deref() == Some("limit")
+		),
+		"{rows:?}"
+	);
+	let sql = Query::select()
+		.column("manifest")
+		.from(Alias::new("core_areas"))
+		.and_where(Expr::col("id").eq(Expr::value(area)))
+		.to_string(PostgresQueryBuilder);
+	let manifest: Value = sqlx::query_scalar(&sql)
+		.fetch_one(app.runtime.store.pool.fixture_driver())
+		.await
+		.unwrap();
+	assert_eq!(manifest[0]["media_type"], "image/png");
+}
+
+#[rstest]
+#[tokio::test]
 async fn memory_byte_limit_and_index_revisions_are_enforced_over_http(
 	#[future] endpoint: EndpointFixture,
 	mut index_spec: Value,

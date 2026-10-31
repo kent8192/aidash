@@ -134,8 +134,12 @@ impl aidash_application::ports::execution::media::SelectedMediaScope for Selecte
 			.lease
 			.as_mut()
 			.ok_or(aidash_application::Error::Forbidden)?;
-		let area = sessions::for_run(access, self.run).await?;
-		sessions::require_current_run(access, &area, self.run).await?;
+		// A Run without its own Working Area can still open authorized
+		// Workspace image matches; it simply has no own Files to select.
+		let Some(area) = sessions::current_own_area(access, self.run).await? else {
+			self.files = Vec::new();
+			return Ok(Vec::new());
+		};
 		sessions::authorize(access, &area, "file.read").await?;
 		let files = service::files(&area)?;
 		let selected = files
@@ -150,6 +154,56 @@ impl aidash_application::ports::execution::media::SelectedMediaScope for Selecte
 			.collect();
 		self.files = files;
 		Ok(selected)
+	}
+	async fn workspace_image(
+		&mut self,
+		area_id: Uuid,
+		generation: i64,
+		file_id: Uuid,
+		path: &str,
+	) -> Result<Option<SelectedFile>> {
+		let access = self
+			.lease
+			.as_mut()
+			.ok_or(aidash_application::Error::Forbidden)?;
+		let area = match sessions::load(access, area_id).await {
+			Ok(area) => area,
+			Err(crate::Error::Forbidden | crate::Error::NotFound(_)) => return Ok(None),
+			Err(error) => return Err(error.into()),
+		};
+		if area.workspace_id != self.run.workspace_id || area.generation != generation {
+			return Ok(None);
+		}
+		let files = service::files(&area)?;
+		let Some(file) = files.into_iter().find(|file| {
+			file.file_id == file_id
+				&& file.path == path
+				&& matches!(
+					file.scope,
+					crate::apps::execution::capabilities::contracts::FileScope::Working
+						| crate::apps::execution::capabilities::contracts::FileScope::Received
+				)
+		}) else {
+			return Ok(None);
+		};
+		// `read` resolves by File ID, so never let another Area shadow a
+		// different version already in this batch.
+		if self
+			.files
+			.iter()
+			.any(|known| known.file_id == file.file_id && known.digest != file.digest)
+		{
+			return Err(aidash_application::Error::Conflict("FILE_CHANGED".into()));
+		}
+		let selected = SelectedFile {
+			file_id: file.file_id,
+			path: file.path.clone(),
+			digest: file.digest.clone(),
+			size: file.size,
+			media_type: file.media_type.clone(),
+		};
+		self.files.push(file);
+		Ok(Some(selected))
 	}
 	async fn read(&mut self, file: Uuid) -> Result<Vec<u8>> {
 		let access = self

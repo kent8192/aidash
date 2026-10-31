@@ -66,6 +66,10 @@ const TENANT_REGISTRY_MIGRATIONS: &[(&str, &str)] = &[
 	("registry", "0050_harness_contract"),
 	("registry", "0051_harness_plugin_merge"),
 	("registry", "0052_harness_contract_structured3"),
+	("registry", "0053_embedding_inputs"),
+	("registry", "0054_reference_images"),
+	("registry", "0055_reference_image_byte_state"),
+	("registry", "0056_reference_images_row_level_security"),
 	("marketplace", "0008_remove_compatibility_gate"),
 	("marketplace", "0009_remove_compatibility_gate_state"),
 	("marketplace", "0010_row_level_security"),
@@ -106,7 +110,7 @@ async fn native_history_uses_typed_schema_operations_and_lf_sql_assets() {
 	);
 	let knowledge = graph.get_leaf_nodes_for_app("knowledge");
 	assert_eq!(knowledge.len(), 1);
-	assert_eq!(knowledge[0].name, "0037_recovery_evidence_merge");
+	assert_eq!(knowledge[0].name, "0048_semantic_images_row_level_security");
 	// Assert: retain the physical graph, model snapshots, and all supported tables.
 	assert!(
 		migrations
@@ -118,7 +122,7 @@ async fn native_history_uses_typed_schema_operations_and_lf_sql_assets() {
 			.iter()
 			.filter(|migration| migration.state_only)
 			.count(),
-		71
+		75
 	);
 	let tables = migrations
 		.iter()
@@ -356,14 +360,14 @@ async fn generation_with_existing_sql_assets_preserves_history_and_dependency(
 	);
 	assert_eq!(std::fs::read(history).unwrap(), original);
 	let generated = FilesystemSource::new(fixture.directory.path().join("migrations"))
-		.get_migration("execution", "0084_policy_probe")
+		.get_migration("execution", "0087_policy_probe")
 		.await
 		.unwrap();
 	assert_eq!(
 		generated.dependencies,
 		vec![(
 			"execution".to_owned(),
-			"0083_harness_contract_state".to_owned()
+			"0086_reference_embedding_usage_state".to_owned()
 		)]
 	);
 	assert!(generated.operations.is_empty());
@@ -711,7 +715,7 @@ async fn preserved_baseline_does_not_generate_table_recreation(
 			.iter()
 			.filter(|migration| migration.state_only)
 			.count(),
-		71
+		75
 	);
 }
 
@@ -773,6 +777,117 @@ async fn native_migrations_build_a_fresh_schema_and_preserve_records_on_replay(
 		.unwrap();
 	assert_eq!(loaded.title, "After native migration");
 	assert_eq!(loaded.state.0, json!({"keep":true}));
+}
+
+async fn assert_image_policies(pool: &PgPool) {
+	for table_name in [
+		"agent_knowledge_images",
+		"semantic_image_ledgers",
+		"semantic_image_publications",
+	] {
+		let table = Query::select()
+			.columns([
+				Alias::new("relrowsecurity"),
+				Alias::new("relforcerowsecurity"),
+			])
+			.from(Alias::new("pg_class"))
+			.and_where(Expr::col(Alias::new("relname")).eq(table_name))
+			.to_string(PostgresQueryBuilder);
+		let flags: (bool, bool) = sqlx::query_as(&table).fetch_one(pool).await.unwrap();
+		assert_eq!(flags, (true, true), "{table_name}");
+		let policy = Query::select()
+			.column(Alias::new("policyname"))
+			.from(Alias::new("pg_policies"))
+			.and_where(Expr::col(Alias::new("schemaname")).eq("public"))
+			.and_where(Expr::col(Alias::new("tablename")).eq(table_name))
+			.and_where(Expr::col(Alias::new("policyname")).eq("tenant_isolation"))
+			.to_string(PostgresQueryBuilder);
+		let name: String = sqlx::query_scalar(&policy).fetch_one(pool).await.unwrap();
+		assert_eq!(name, "tenant_isolation");
+	}
+}
+
+#[rstest]
+#[tokio::test]
+async fn image_policy_migrations_restore_policies_on_rollback(
+	#[future] fresh_database: MigrationFixture,
+) {
+	// Arrange: the actual migration graph installs all three policies.
+	let fixture = fresh_database.await;
+	fixture.migrate().await;
+	let pool = fixture.connection.clone().into_postgres().unwrap();
+	assert_image_policies(&pool).await;
+	let source =
+		FilesystemSource::new(PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("migrations"));
+	let mut executor =
+		reinhardt::db::migrations::DatabaseMigrationExecutor::new(fixture.connection.clone());
+	// Act: undo the template migrations through the real migration executor.
+	for (app, name) in [
+		("registry", "0056_reference_images_row_level_security"),
+		("knowledge", "0048_semantic_images_row_level_security"),
+	] {
+		let migration = source.get_migration(app, name).await.unwrap();
+		executor.rollback_migrations(&[migration]).await.unwrap();
+	}
+	// Assert: rollback restores the original policies instead of exposing rows.
+	assert_image_policies(&pool).await;
+}
+
+#[rstest]
+#[tokio::test]
+async fn reference_embedding_usage_blocks_rollback_until_usage_is_removed(
+	#[future] fresh_database: MigrationFixture,
+) {
+	let fixture = fresh_database.await;
+	let pool = fixture.connection.clone().into_postgres().unwrap();
+	sqlx::query("CREATE TABLE generation_embedding_usage (purpose text NOT NULL CONSTRAINT generation_embedding_usage_purpose_check CHECK (purpose IN ('query', 'index')))")
+		.execute(&pool).await.unwrap();
+	let migration =
+		FilesystemSource::new(PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("migrations"))
+			.all_migrations()
+			.await
+			.unwrap()
+			.into_iter()
+			.find(|migration| {
+				migration.app_label == "execution"
+					&& migration.name == "0085_reference_embedding_usage"
+			})
+			.unwrap();
+	let mut executor =
+		reinhardt::db::migrations::DatabaseMigrationExecutor::new(fixture.connection.clone());
+	executor
+		.apply_migrations(std::slice::from_ref(&migration))
+		.await
+		.unwrap();
+	sqlx::query("INSERT INTO generation_embedding_usage (purpose) VALUES ('reference')")
+		.execute(&pool)
+		.await
+		.unwrap();
+	let error = executor
+		.rollback_migrations(std::slice::from_ref(&migration))
+		.await
+		.unwrap_err();
+	assert!(
+		error
+			.to_string()
+			.contains("reference embedding usage exists"),
+		"{error}"
+	);
+	let retained: i64 = sqlx::query_scalar(
+		"SELECT count(*) FROM generation_embedding_usage WHERE purpose = 'reference'",
+	)
+	.fetch_one(&pool)
+	.await
+	.unwrap();
+	assert_eq!(retained, 1);
+	sqlx::query("DELETE FROM generation_embedding_usage")
+		.execute(&pool)
+		.await
+		.unwrap();
+	executor
+		.rollback_migrations(std::slice::from_ref(&migration))
+		.await
+		.unwrap();
 }
 
 fn migration_context(url: &str) -> reinhardt::commands::CommandContext {

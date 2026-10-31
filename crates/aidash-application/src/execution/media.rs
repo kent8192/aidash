@@ -143,7 +143,7 @@ pub async fn selected(
 	let files = if selections.is_empty()
 		|| selections
 			.iter()
-			.any(|selection| matches!(selection, ModelMedia::File(_)))
+			.any(|selection| matches!(selection, ModelMedia::File(_) | ModelMedia::WorkingImage(_)))
 	{
 		scope.current_files().await?
 	} else {
@@ -170,6 +170,34 @@ pub async fn selected(
 				(
 					format!("Selected file: {}", file.path),
 					file.media_type.clone(),
+					scope.read(file.file_id).await?,
+				)
+			}
+			ModelMedia::WorkingImage(selection) => {
+				let file = scope
+					.workspace_image(
+						selection.area_id,
+						selection.generation,
+						selection.file_id,
+						&selection.path,
+					)
+					.await?
+					.ok_or_else(|| Error::NotFound("file unavailable".into()))?;
+				if file.digest != selection.expected_digest {
+					return Err(Error::Conflict("FILE_CHANGED".into()));
+				}
+				if !file.media_type.starts_with("image/") {
+					return Err(Error::Invalid("selected File is not an image".into()));
+				}
+				total = total.saturating_add(file.size);
+				if total > 8 * 1024 * 1024 {
+					return Err(Error::Invalid(
+						"model media input exceeds byte limit".into(),
+					));
+				}
+				(
+					format!("Selected file: {}", file.path),
+					file.media_type,
 					scope.read(file.file_id).await?,
 				)
 			}

@@ -35,33 +35,47 @@ const TASK_ASSIGN: &str = "task_assign";
 
 pub fn entries(validation: &DefinitionValidation, node: &str) -> Result<Vec<Entry>> {
 	let specifications = validation.node_specifications();
-	operations()
-		.map(|operation| {
-			let spec = specifications.get(operation).ok_or_else(|| {
-				crate::Error::Invalid(format!(
-					"system provider has no declaration for {operation}"
-				))
-			})?;
-			Ok(Entry {
-				binding_normalization: None,
-				installation: None,
-				id: format!("aidash.{operation}"),
-				version: "1.0.0".into(),
-				kind: "tool".into(),
-				name: std::collections::BTreeMap::from([("en".into(), operation.to_string())]),
-				description: std::collections::BTreeMap::from([(
-					"en".into(),
-					spec.description.clone(),
-				)]),
-				capabilities: vec![operation.to_string()],
-				tags: vec!["system".into()],
-				languages: vec![],
-				skills: vec![],
-				schema: spec.parameters.clone(),
-				config: serde_json::to_value(core_descriptor(node, operation)?)?,
-			})
-		})
-		.collect()
+	let mut entries = Vec::new();
+	let mut current_workspace_read = None;
+	for operation in operations() {
+		let spec = specifications.get(operation).ok_or_else(|| {
+			crate::Error::Invalid(format!(
+				"system provider has no declaration for {operation}"
+			))
+		})?;
+		let mut entry = Entry {
+			binding_normalization: None,
+			installation: None,
+			id: format!("aidash.{operation}"),
+			version: "1.0.0".into(),
+			kind: "tool".into(),
+			name: std::collections::BTreeMap::from([("en".into(), operation.to_string())]),
+			description: std::collections::BTreeMap::from([(
+				"en".into(),
+				spec.description.clone(),
+			)]),
+			capabilities: vec![operation.to_string()],
+			tags: vec!["system".into()],
+			languages: vec![],
+			skills: vec![],
+			schema: spec.parameters.clone(),
+			config: serde_json::to_value(core_descriptor(node, operation)?)?,
+		};
+		if operation == "workspace_read" {
+			// Keep the original immutable definition for existing Agents and
+			// Runs. The image-capable contract is a distinct system version.
+			let mut old = entry.clone();
+			old.description = [("en".into(), "Read one accessible workspace record by kind and exact ID. Returns a JSON text chunk, total_chars and next_offset; concatenate chunks in offset order to recover the full record. The returned chunk is capped to fit the active request budget. If budget_limited is true, continue from next_offset on a later turn; if deferred is true, stop reading until that later turn.".into())].into();
+			old.schema = json!({"type":"object","required":["kind","id"],"properties":{"kind":{"enum":["workspace","task","artifact","message","event"]},"id":{"type":"string"},"offset":{"type":"integer","minimum":0},"max_chars":{"type":"integer","minimum":0,"maximum":16000}},"additionalProperties":false});
+			entries.push(old);
+			entry.version = "1.1.0".into();
+			current_workspace_read = Some(entry);
+			continue;
+		}
+		entries.push(entry);
+	}
+	entries.extend(current_workspace_read);
+	Ok(entries)
 }
 
 /// Every definition the Node declares to every Tenant's Registry: the built-in
@@ -243,7 +257,8 @@ pub fn is_builtin(entry: &Entry) -> bool {
 }
 
 pub fn builtin_reference(reference: &aidash_domain::registry::EntityRef) -> bool {
-	reference.version == "1.0.0"
+	(reference.version == "1.0.0"
+		|| (reference.id == "aidash.workspace_read" && reference.version == "1.1.0"))
 		&& (reference.id
 			== aidash_domain::registry::bindings::source_defaults::WORKSPACE_OBSERVATION_ID
 			|| reference

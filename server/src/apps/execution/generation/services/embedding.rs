@@ -5,23 +5,23 @@ use uuid::Uuid;
 
 pub(crate) use aidash_application::generation::embedding::{Origin, Reservation};
 
-pub(crate) async fn reserve(
+pub(crate) async fn reserve_input(
 	access: &mut Access,
 	store: &Store,
 	workspace: Uuid,
 	config: &EmbeddingConfig,
-	text: &str,
+	input: aidash_domain::semantic::EmbeddingInput<'_>,
 	origin: Origin,
 ) -> Result<Option<Reservation>> {
 	let tenancy = access.tenancy()?;
-	aidash_application::generation::embedding::reserve(
+	aidash_application::generation::embedding::reserve_input(
 		&mut crate::bootstrap::generation_embedding_authority_scope(access),
 		Arc::new(crate::bootstrap::generation_embedding_repository(
 			store, tenancy,
 		)),
 		workspace,
 		config,
-		text,
+		input,
 		origin,
 	)
 	.await
@@ -59,7 +59,7 @@ pub(crate) async fn reserve_many(
 			store, tenancy,
 		)),
 		workspace,
-		text,
+		aidash_domain::semantic::EmbeddingInput::Text(text),
 		origin,
 	)
 	.await

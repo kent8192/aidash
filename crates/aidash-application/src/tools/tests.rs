@@ -82,6 +82,21 @@ impl ToolOperations for Operations {
 	) -> Result<Value> {
 		panic!("unexpected tool effect: read_record_chunk")
 	}
+	async fn workspace_image(
+		&self,
+		selection: &aidash_domain::media::WorkingImageSelection,
+		representation: &str,
+	) -> Result<Value> {
+		self.record("workspace.image");
+		Ok(
+			json!({"status":"completed","metadata":{"file_id":selection.file_id,"path":selection.path,"digest":selection.expected_digest,"media_type":"image/png","size":12},"representation":representation}),
+		)
+	}
+	async fn workspace_search(&self, input: Value) -> Result<Value> {
+		self.record("workspace.search");
+		self.inputs.lock().unwrap().push(("search".into(), input));
+		Ok(json!({"matches":[]}))
+	}
 	async fn memory_mutate(
 		&self,
 		_key: &str,
@@ -216,6 +231,75 @@ fn plugin(config: ToolConfig, schema: Value) -> Plugin {
 		alias: "plugin_0".into(),
 		config,
 	}
+}
+
+#[rstest]
+#[tokio::test]
+async fn workspace_read_selects_an_image_by_its_exact_file_version(fixture: Fixture) {
+	let tool = builtins().remove("workspace_read").unwrap();
+	let input = json!({"kind":"file","id":Uuid::from_u128(10),"area_id":Uuid::from_u128(9),"generation":3,"path":"chart.png","expected_digest":"file-digest","representation":"model_input"});
+	let result = tool
+		.invoke(
+			&ToolContext {
+				operations: &fixture.operations,
+				run: &fixture.run,
+			},
+			input.clone(),
+			"key",
+		)
+		.await
+		.unwrap();
+	assert_eq!(result["metadata"]["file_id"], input["id"]);
+	assert!(matches!(
+		tool.contract()
+			.behavior
+			.model_media_selection(&input, &result),
+		Some(aidash_domain::media::ModelMedia::WorkingImage(_))
+	));
+	assert_eq!(
+		*fixture.operations.calls.lock().unwrap(),
+		["workspace.image"]
+	);
+}
+
+#[rstest]
+#[tokio::test]
+async fn workspace_search_accepts_only_one_current_image_or_text_query(fixture: Fixture) {
+	let tool = builtins().remove("workspace_search").unwrap();
+	let image = json!({"area_id":Uuid::from_u128(9),"generation":3,"file_id":Uuid::from_u128(10),"path":"chart.png","expected_digest":"file-digest"});
+	let ctx = ToolContext {
+		operations: &fixture.operations,
+		run: &fixture.run,
+	};
+	tool.invoke(&ctx, json!({"image":image}), "key")
+		.await
+		.unwrap();
+	assert_eq!(
+		*fixture.operations.calls.lock().unwrap(),
+		["workspace.search"]
+	);
+	let denied = tool
+		.invoke(&ctx, json!({"query":"text", "image":image}), "key")
+		.await;
+	assert!(matches!(denied, Err(Error::Invalid(_))));
+	assert_eq!(
+		*fixture.operations.calls.lock().unwrap(),
+		["workspace.search"]
+	);
+	let mut foreign = image;
+	foreign["run_id"] = json!(Uuid::from_u128(999));
+	assert!(
+		tool.invoke(&ctx, json!({"image":foreign}), "key")
+			.await
+			.is_err()
+	);
+	tool.invoke(&ctx, json!({"query":"diagram"}), "key")
+		.await
+		.unwrap();
+	assert_eq!(
+		*fixture.operations.calls.lock().unwrap(),
+		["workspace.search", "workspace.search"]
+	);
 }
 #[rstest]
 #[case("http://other.invalid/path")]

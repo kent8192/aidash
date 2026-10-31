@@ -85,6 +85,7 @@ pub async fn search<R: SemanticSearchRepository + ?Sized>(
 		let max_tokens = operation.max_tokens.min(spec.max_result_tokens);
 		let input = Search {
 			query,
+			image: None,
 			agent: Some(aidash_domain::agent_subject(
 				node,
 				&description.inspection.agent.id,
@@ -157,7 +158,10 @@ pub async fn search<R: SemanticSearchRepository + ?Sized>(
 				journal::dispatched(repository.journal(), &attempt, &json!(reservations)).await?;
 				let embedding = repository
 					.embedding(&description.source_tenant)
-					.embed(&spec.embedding, &input.query)
+					.embed(
+						&spec.embedding,
+						aidash_domain::semantic::EmbeddingInput::Text(&input.query),
+					)
 					.await?;
 				dispatch::finish(
 					repository.dispatch(),

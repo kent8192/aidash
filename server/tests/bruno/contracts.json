@@ -110,6 +110,7 @@
                 "authority",
                 "invalidated",
                 "provider_contract",
+                "embedding_model_not_found",
                 "context_budget",
                 "durable_memory_budget",
                 "allowance",
@@ -367,6 +368,7 @@
                 "authority",
                 "invalidated",
                 "provider_contract",
+                "embedding_model_not_found",
                 "context_budget",
                 "durable_memory_budget",
                 "allowance",
@@ -1433,6 +1435,7 @@
                 "authority",
                 "invalidated",
                 "provider_contract",
+                "embedding_model_not_found",
                 "context_budget",
                 "durable_memory_budget",
                 "allowance",
@@ -1567,6 +1570,7 @@
                 "authority",
                 "invalidated",
                 "provider_contract",
+                "embedding_model_not_found",
                 "context_budget",
                 "durable_memory_budget",
                 "allowance",
@@ -1741,6 +1745,7 @@
                 "authority",
                 "invalidated",
                 "provider_contract",
+                "embedding_model_not_found",
                 "context_budget",
                 "durable_memory_budget",
                 "allowance",
@@ -1908,6 +1913,7 @@
                 "authority",
                 "invalidated",
                 "provider_contract",
+                "embedding_model_not_found",
                 "context_budget",
                 "durable_memory_budget",
                 "allowance",
@@ -2485,6 +2491,7 @@
                 "authority",
                 "invalidated",
                 "provider_contract",
+                "embedding_model_not_found",
                 "context_budget",
                 "durable_memory_budget",
                 "allowance",
@@ -2742,6 +2749,7 @@
                 "authority",
                 "invalidated",
                 "provider_contract",
+                "embedding_model_not_found",
                 "context_budget",
                 "durable_memory_budget",
                 "allowance",
@@ -3139,6 +3147,17 @@
               "$ref": "#/components/schemas/NodeName",
               "description": "The Node the approval applies to."
             },
+            "restriction": {
+              "anyOf": [
+                {
+                  "$ref": "#/components/schemas/CatalogRestriction"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Who may use the definition on this Node; absent means everyone the\nTenant's policy allows."
+            },
             "revision": {
               "type": "integer",
               "format": "int64"
@@ -3147,6 +3166,30 @@
               "type": "string"
             }
           }
+        },
+        "CatalogRestriction": {
+          "type": "object",
+          "description": "Who may use an approved definition on its Node (ADR 0029, ADR 0095). A\nrestriction names subjects directly and/or Assignable Groups; their\nmembers may use it. It only narrows what the Tenant's policy already\nallows, so it can never grant authority.",
+          "required": ["subjects", "groups"],
+          "properties": {
+            "groups": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "default": [],
+              "uniqueItems": true
+            },
+            "subjects": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "default": [],
+              "uniqueItems": true
+            }
+          },
+          "additionalProperties": false
         },
         "NodeName": {
           "type": "string",
@@ -3192,6 +3235,17 @@
               "$ref": "#/components/schemas/NodeName",
               "description": "The Node the approval applies to."
             },
+            "restriction": {
+              "anyOf": [
+                {
+                  "$ref": "#/components/schemas/CatalogRestriction"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Who may use the definition on this Node; absent means everyone the\nTenant's policy allows."
+            },
             "revision": {
               "type": "integer",
               "format": "int64"
@@ -3200,6 +3254,30 @@
               "type": "string"
             }
           }
+        },
+        "CatalogRestriction": {
+          "type": "object",
+          "description": "Who may use an approved definition on its Node (ADR 0029, ADR 0095). A\nrestriction names subjects directly and/or Assignable Groups; their\nmembers may use it. It only narrows what the Tenant's policy already\nallows, so it can never grant authority.",
+          "required": ["subjects", "groups"],
+          "properties": {
+            "groups": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "default": [],
+              "uniqueItems": true
+            },
+            "subjects": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "default": [],
+              "uniqueItems": true
+            }
+          },
+          "additionalProperties": false
         },
         "NodeName": {
           "type": "string",
@@ -3248,6 +3326,17 @@
               "$ref": "#/components/schemas/NodeName",
               "description": "The Node the approval applies to."
             },
+            "restriction": {
+              "anyOf": [
+                {
+                  "$ref": "#/components/schemas/CatalogRestriction"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Who may use the definition on this Node; absent means everyone the\nTenant's policy allows."
+            },
             "revision": {
               "type": "integer",
               "format": "int64"
@@ -3256,6 +3345,30 @@
               "type": "string"
             }
           }
+        },
+        "CatalogRestriction": {
+          "type": "object",
+          "description": "Who may use an approved definition on its Node (ADR 0029, ADR 0095). A\nrestriction names subjects directly and/or Assignable Groups; their\nmembers may use it. It only narrows what the Tenant's policy already\nallows, so it can never grant authority.",
+          "required": ["subjects", "groups"],
+          "properties": {
+            "groups": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "default": [],
+              "uniqueItems": true
+            },
+            "subjects": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "default": [],
+              "uniqueItems": true
+            }
+          },
+          "additionalProperties": false
         },
         "NodeName": {
           "type": "string",
@@ -21196,7 +21309,13 @@
         },
         "ApprovalRecord": {
           "type": "object",
-          "required": ["revision", "enabled", "actor", "created_at"],
+          "required": [
+            "revision",
+            "enabled",
+            "actor",
+            "created_at",
+            "restriction"
+          ],
           "properties": {
             "actor": {
               "type": "string"
@@ -21207,6 +21326,17 @@
             },
             "enabled": {
               "type": "boolean"
+            },
+            "restriction": {
+              "anyOf": [
+                {
+                  "$ref": "#/components/schemas/CatalogRestriction"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "The restriction this revision recorded."
             },
             "revision": {
               "type": "integer",
@@ -21278,6 +21408,30 @@
             "skill_support",
             "companion"
           ]
+        },
+        "CatalogRestriction": {
+          "type": "object",
+          "description": "Who may use an approved definition on its Node (ADR 0029, ADR 0095). A\nrestriction names subjects directly and/or Assignable Groups; their\nmembers may use it. It only narrows what the Tenant's policy already\nallows, so it can never grant authority.",
+          "required": ["subjects", "groups"],
+          "properties": {
+            "groups": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "default": [],
+              "uniqueItems": true
+            },
+            "subjects": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "default": [],
+              "uniqueItems": true
+            }
+          },
+          "additionalProperties": false
         },
         "Concurrency": {
           "oneOf": [
@@ -21597,10 +21751,21 @@
         },
         "VersionApproval": {
           "type": "object",
-          "required": ["enabled", "revision"],
+          "required": ["enabled", "revision", "restriction"],
           "properties": {
             "enabled": {
               "type": "boolean"
+            },
+            "restriction": {
+              "anyOf": [
+                {
+                  "$ref": "#/components/schemas/CatalogRestriction"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Who may use the version on this Node; absent means everyone the\nTenant's policy allows (ADR 0095)."
             },
             "revision": {
               "type": "integer",
@@ -23614,7 +23779,6 @@
             "source",
             "agent",
             "metadata",
-            "text",
             "score"
           ],
           "properties": {
@@ -29921,6 +30085,9 @@
               "$ref": "#/components/schemas/Selection"
             },
             {
+              "$ref": "#/components/schemas/WorkingImageSelection"
+            },
+            {
               "$ref": "#/components/schemas/PageImageSelection"
             }
           ],
@@ -30374,6 +30541,7 @@
                 "authority",
                 "invalidated",
                 "provider_contract",
+                "embedding_model_not_found",
                 "context_budget",
                 "durable_memory_budget",
                 "allowance",
@@ -31754,6 +31922,38 @@
               "additionalProperties": false
             }
           ]
+        },
+        "WorkingImageSelection": {
+          "type": "object",
+          "description": "A current Workspace image selected by its Area and immutable File version.",
+          "required": [
+            "area_id",
+            "generation",
+            "file_id",
+            "path",
+            "expected_digest"
+          ],
+          "properties": {
+            "area_id": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "expected_digest": {
+              "type": "string"
+            },
+            "file_id": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "generation": {
+              "type": "integer",
+              "format": "int64"
+            },
+            "path": {
+              "type": "string"
+            }
+          },
+          "additionalProperties": false
         },
         "Workspace": {
           "type": "object",
@@ -33631,6 +33831,9 @@
               "$ref": "#/components/schemas/Selection"
             },
             {
+              "$ref": "#/components/schemas/WorkingImageSelection"
+            },
+            {
               "$ref": "#/components/schemas/PageImageSelection"
             }
           ],
@@ -34084,6 +34287,7 @@
                 "authority",
                 "invalidated",
                 "provider_contract",
+                "embedding_model_not_found",
                 "context_budget",
                 "durable_memory_budget",
                 "allowance",
@@ -35444,6 +35648,38 @@
               "additionalProperties": false
             }
           ]
+        },
+        "WorkingImageSelection": {
+          "type": "object",
+          "description": "A current Workspace image selected by its Area and immutable File version.",
+          "required": [
+            "area_id",
+            "generation",
+            "file_id",
+            "path",
+            "expected_digest"
+          ],
+          "properties": {
+            "area_id": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "expected_digest": {
+              "type": "string"
+            },
+            "file_id": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "generation": {
+              "type": "integer",
+              "format": "int64"
+            },
+            "path": {
+              "type": "string"
+            }
+          },
+          "additionalProperties": false
         }
       }
     }
@@ -36957,6 +37193,9 @@
               "$ref": "#/components/schemas/Selection"
             },
             {
+              "$ref": "#/components/schemas/WorkingImageSelection"
+            },
+            {
               "$ref": "#/components/schemas/PageImageSelection"
             }
           ],
@@ -37410,6 +37649,7 @@
                 "authority",
                 "invalidated",
                 "provider_contract",
+                "embedding_model_not_found",
                 "context_budget",
                 "durable_memory_budget",
                 "allowance",
@@ -38643,6 +38883,38 @@
               "additionalProperties": false
             }
           ]
+        },
+        "WorkingImageSelection": {
+          "type": "object",
+          "description": "A current Workspace image selected by its Area and immutable File version.",
+          "required": [
+            "area_id",
+            "generation",
+            "file_id",
+            "path",
+            "expected_digest"
+          ],
+          "properties": {
+            "area_id": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "expected_digest": {
+              "type": "string"
+            },
+            "file_id": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "generation": {
+              "type": "integer",
+              "format": "int64"
+            },
+            "path": {
+              "type": "string"
+            }
+          },
+          "additionalProperties": false
         }
       }
     }
@@ -46646,6 +46918,78 @@
             }
           }
         },
+        "CatalogRestriction": {
+          "type": "object",
+          "description": "Who may use an approved definition on its Node (ADR 0029, ADR 0095). A\nrestriction names subjects directly and/or Assignable Groups; their\nmembers may use it. It only narrows what the Tenant's policy already\nallows, so it can never grant authority.",
+          "required": ["subjects", "groups"],
+          "properties": {
+            "groups": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "default": [],
+              "uniqueItems": true
+            },
+            "subjects": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "default": [],
+              "uniqueItems": true
+            }
+          },
+          "additionalProperties": false
+        },
+        "EntityRef": {
+          "type": "object",
+          "required": ["id", "version"],
+          "properties": {
+            "id": {
+              "type": "string"
+            },
+            "version": {
+              "type": "string"
+            }
+          }
+        },
+        "NodeName": {
+          "type": "string",
+          "description": "The identifier Aidash assigns to a Node, in the same form as a Tenant name:\n`<adjective>-<noun>-<8 random characters>`. Unique within its Deployment,\nnever changed and never reused."
+        },
+        "ReviewInstallation": {
+          "type": "object",
+          "description": "The installed copy a review item can activate.",
+          "required": [
+            "installation",
+            "revision",
+            "digest",
+            "expected_activation_revision",
+            "active_revision"
+          ],
+          "properties": {
+            "active_revision": {
+              "type": ["integer", "null"],
+              "format": "int64"
+            },
+            "digest": {
+              "type": "string",
+              "description": "The immutable revision digest the activation fences on."
+            },
+            "expected_activation_revision": {
+              "type": "integer",
+              "format": "int64"
+            },
+            "installation": {
+              "type": "string"
+            },
+            "revision": {
+              "type": "integer",
+              "format": "int64"
+            }
+          }
+        },
         "ReviewItem": {
           "type": "object",
           "description": "One exact definition in the reviewed closure.",
@@ -46748,74 +47092,6 @@
             }
           }
         },
-        "ReviewInstallation": {
-          "type": "object",
-          "description": "The installed copy a review item can activate.",
-          "required": [
-            "installation",
-            "revision",
-            "digest",
-            "expected_activation_revision",
-            "active_revision"
-          ],
-          "properties": {
-            "active_revision": {
-              "type": ["integer", "null"],
-              "format": "int64"
-            },
-            "digest": {
-              "type": "string",
-              "description": "The immutable revision digest the activation fences on."
-            },
-            "expected_activation_revision": {
-              "type": "integer",
-              "format": "int64"
-            },
-            "installation": {
-              "type": "string"
-            },
-            "revision": {
-              "type": "integer",
-              "format": "int64"
-            }
-          }
-        },
-        "CatalogRestriction": {
-          "type": "object",
-          "description": "Who may use an approved definition on its Node (ADR 0029, ADR 0095). A\nrestriction names subjects directly and/or Assignable Groups; their\nmembers may use it. It only narrows what the Tenant's policy already\nallows, so it can never grant authority.",
-          "required": ["subjects", "groups"],
-          "properties": {
-            "groups": {
-              "type": "array",
-              "items": {
-                "type": "string"
-              },
-              "default": [],
-              "uniqueItems": true
-            },
-            "subjects": {
-              "type": "array",
-              "items": {
-                "type": "string"
-              },
-              "default": [],
-              "uniqueItems": true
-            }
-          },
-          "additionalProperties": false
-        },
-        "EntityRef": {
-          "type": "object",
-          "required": ["id", "version"],
-          "properties": {
-            "id": {
-              "type": "string"
-            },
-            "version": {
-              "type": "string"
-            }
-          }
-        },
         "ReviewStatus": {
           "oneOf": [
             {
@@ -46853,11 +47129,7 @@
               "enum": ["secret_or_connection_missing"]
             }
           ],
-          "description": "Whether one exact version can be used now, and if not, what stands in the\nway. `Approved` means the Node's approval is enabled; a separate `widen`\nreports an approved restriction that no longer admits the root agent."
-        },
-        "NodeName": {
-          "type": "string",
-          "description": "The identifier Aidash assigns to a Node, in the same form as a Tenant name:\n`<adjective>-<noun>-<8 random characters>`. Unique within its Deployment,\nnever changed and never reused."
+          "description": "Whether one exact version can be used now, and if not, what stands in the\nway. `Approved` means the Node's approval is enabled; a separate `widen`\nreports an approved restriction that no longer admits every consumer."
         }
       }
     }

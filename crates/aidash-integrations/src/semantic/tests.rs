@@ -2,6 +2,26 @@ use super::*;
 use axum::{Json, Router, http::HeaderMap, routing::post};
 use rstest::rstest;
 
+#[rstest]
+#[case(404, json!({"error":{"code":"model_not_found"}}), true)]
+#[case(400, json!({"error":{"code":"model_not_found"}}), true)]
+#[case(404, json!({"error":{"message":"Model does not exist"}}), true)]
+#[case(404, json!({"error":{"message":"Endpoint not found"}}), false)]
+#[case(500, json!({"error":{"code":"model_not_found"}}), false)]
+fn missing_model_classification_is_distinct_from_outages_and_missing_endpoints(
+	#[case] status: u16,
+	#[case] body: Value,
+	#[case] expected: bool,
+) {
+	assert_eq!(embedding_model_missing(status, Some(&body), None), expected);
+	assert!(embedding_model_missing(404, None, Some(b"model not found")));
+	assert!(!embedding_model_missing(
+		404,
+		None,
+		Some(b"endpoint not found")
+	));
+}
+
 /// A Tenant Provider Credential stand-in: the bearer comes from provider access.
 struct FixtureAccess;
 #[async_trait::async_trait]
@@ -54,6 +74,9 @@ fn configuration(endpoint: String) -> EmbeddingConfig {
 		model: "google/gemini-embedding-2".into(),
 		model_version: "1.0.0".into(),
 		dimensions: 3072,
+		inputs: [aidash_domain::semantic::EmbeddingInputKind::Text]
+			.into_iter()
+			.collect(),
 	}
 }
 
@@ -218,4 +241,65 @@ async fn interrupted_response_body_is_an_outage_and_malformed_json_a_contract_vi
 			"{result:?}"
 		);
 	}
+}
+
+#[tokio::test]
+async fn image_embedding_sends_validated_image_as_openrouter_content() {
+	let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+	let endpoint = format!("http://{}/api/v1", listener.local_addr().unwrap());
+	let app = Router::new().route("/api/v1/embeddings", post(|Json(body): Json<Value>| async move {
+        assert_eq!(body["input"], json!([{"content":[{"type":"image_url","image_url":{"url":"data:image/png;base64,iVBORw0KGgo="}}]}]));
+        Json(json!({"model":"google/gemini-embedding-2","data":[{"index":0,"embedding":[1.0]}]}))
+    }));
+	let _server = Server(tokio::spawn(async move {
+		axum::serve(listener, app).await.unwrap();
+	}));
+	let mut config = configuration(endpoint);
+	config.dimensions = 1;
+	config
+		.inputs
+		.insert(aidash_domain::semantic::EmbeddingInputKind::Image);
+	let input = aidash_domain::semantic::EmbeddingInput::Image {
+		media_type: "image/png",
+		bytes: b"\x89PNG\r\n\x1a\n",
+	};
+	let result = embed_input(
+		&FixtureAccess,
+		&Context::default(),
+		&clients().unwrap(),
+		&config,
+		input,
+	)
+	.await
+	.unwrap();
+	assert_eq!(result.vector, vec![1.0]);
+	let invalid = aidash_domain::semantic::EmbeddingInput::Image {
+		media_type: "image/jpeg",
+		bytes: b"\x89PNG\r\n\x1a\n",
+	};
+	assert!(
+		embed_input(
+			&FixtureAccess,
+			&Context::default(),
+			&clients().unwrap(),
+			&config,
+			invalid
+		)
+		.await
+		.is_err()
+	);
+	config
+		.inputs
+		.remove(&aidash_domain::semantic::EmbeddingInputKind::Image);
+	assert!(
+		embed_input(
+			&FixtureAccess,
+			&Context::default(),
+			&clients().unwrap(),
+			&config,
+			input
+		)
+		.await
+		.is_err()
+	);
 }

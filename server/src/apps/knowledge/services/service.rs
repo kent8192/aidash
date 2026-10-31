@@ -171,6 +171,25 @@ pub(crate) async fn embed(
 	text: &str,
 	origin: crate::generation::embedding::Origin,
 ) -> Result<Vec<f32>> {
+	embed_input(
+		store,
+		lease,
+		workspace,
+		config,
+		aidash_domain::semantic::EmbeddingInput::Text(text),
+		origin,
+	)
+	.await
+}
+
+pub(crate) async fn embed_input(
+	store: &Store,
+	lease: &mut Lease<'_>,
+	workspace: Uuid,
+	config: &EmbeddingConfig,
+	input: aidash_domain::semantic::EmbeddingInput<'_>,
+	origin: crate::generation::embedding::Origin,
+) -> Result<Vec<f32>> {
 	let transport = if config.provider_credential.is_some() {
 		use crate::generation::embedding::Origin;
 		use aidash_application::provider_access::MaintenancePurpose;
@@ -199,17 +218,19 @@ pub(crate) async fn embed(
 			Origin::Query(Some(run)) => (Some(run), None),
 			Origin::Query(None) => (None, Some(MaintenancePurpose::MemoryRetrieval)),
 			Origin::Index(_) => (None, Some(MaintenancePurpose::MemoryIndexing)),
+			Origin::Reference => (None, Some(MaintenancePurpose::ReferenceIndexing)),
+			Origin::ReferenceQuery(run) => (Some(run), None),
 		};
 		crate::bootstrap::admitted_semantic_transport(store, run, tenant, maintenance)
 	} else {
 		crate::bootstrap::semantic_transport(store)
 	};
-	aidash_application::semantic::embedding::invoke(
+	aidash_application::semantic::embedding::invoke_input(
 		&mut crate::bootstrap::semantic_embedding_scope(store, lease),
 		&transport,
 		workspace,
 		config,
-		text,
+		input,
 		origin,
 	)
 	.await
