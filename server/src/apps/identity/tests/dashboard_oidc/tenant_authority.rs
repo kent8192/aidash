@@ -617,6 +617,83 @@ async fn a_peer_mapping_binds_only_a_credential_its_author_could_issue(
 	t.finish().await;
 }
 
+/// A mapped subject's discovery of a Node in another Tenant of this Deployment
+/// runs the receiver's scoped discovery in this process, under the sender's
+/// own stack (#645). It completes on a debug build's worker stack whatever
+/// `RUST_MIN_STACK` the test run sets.
+#[rstest::rstest]
+fn a_mapped_subject_discovers_another_tenants_node_on_the_worker_stack(
+	#[from(common::runtime)] runtime: common::RuntimeFuture,
+) {
+	let discovery = async move {
+		let t = Team::new(runtime).await;
+		let (remote_person, remote_tenant, remote_context, remote) =
+			t.d.nodes_tenant("Remote").await;
+		let receiving =
+			t.d.default_node(&t.alice, &t.alice_context, &t.tenant)
+				.await;
+		let address = t.d.address_of(&t.alice, &t.alice_context, &t.tenant).await;
+		t.d.accepts(&t.alice, &t.alice_context, &t.tenant, &remote)
+			.await;
+		t.d.accepts(&remote_person, &remote_context, &remote_tenant, &address)
+			.await;
+		let (status, body) = t
+			.replace(|bundle| {
+				bundle["subjects"]["ci"] = json!({"kind":"service","groups":["members"]});
+				bundle["policies"].as_array_mut().unwrap().push(json!({
+					"id":"ci-discovers","effect":"allow","subjects":{"ids":["ci"]},
+					"actions":["federation.discover","agent.execute"],"resources":{"kinds":["*"]}
+				}));
+			})
+			.await;
+		assert_eq!(status, 200, "{body}");
+		let (_, service) = t
+			.alice("POST", "/credentials", json!({"subject":"ci"}))
+			.await;
+		let (status, body) = t
+			.alice(
+				"POST",
+				"/peer-mappings",
+				json!({"node":receiving,"source_node":remote,"source_subject":"agent",
+					"credential_id":service["credential"]["id"],"enabled":true,
+					"expected_revision":0}),
+			)
+			.await;
+		assert_eq!(status, 200, "{body}");
+		let sender = aidash_domain::federation::route::Sender {
+			tenant: aidash_domain::tenancy::TenantName::new(&remote_tenant).unwrap(),
+			node: None,
+			subject: Some("agent".into()),
+		};
+
+		let discovered =
+			t.d.federation
+				.request::<Value>(
+					&sender,
+					&address,
+					reqwest::Method::POST,
+					"/scoped/discover",
+					Some(&json!({"search":{}})),
+				)
+				.await;
+
+		assert!(discovered.is_ok(), "{discovered:?}");
+		t.finish().await;
+	};
+	std::thread::Builder::new()
+		.stack_size(aidash_server::bootstrap::management::DEBUG_WORKER_STACK_BYTES)
+		.spawn(move || {
+			tokio::runtime::Builder::new_current_thread()
+				.enable_all()
+				.build()
+				.unwrap()
+				.block_on(discovery)
+		})
+		.unwrap()
+		.join()
+		.unwrap();
+}
+
 #[rstest::rstest]
 #[tokio::test]
 async fn overview_lists_item_scoped_credential_targets_without_policy_read(
