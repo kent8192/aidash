@@ -1,0 +1,13 @@
+version = 1
+
+[[annotations]]
+path = "**"
+precedence = "closest"
+SPDX-FileCopyrightText = "2026 kent8192"
+SPDX-License-Identifier = "Apache-2.0"
+
+[[annotations]]
+path = "enterprise/**"
+precedence = "closest"
+SPDX-FileCopyrightText = "2026 kent8192"
+SPDX-License-Identifier = "Apache-2.0"

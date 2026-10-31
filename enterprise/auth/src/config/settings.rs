@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 kent8192
+// SPDX-License-Identifier: BUSL-1.1
+// See enterprise/LICENSE.
+
 //! Explicit first-party service configuration; secrets are loaded from mounted files.
 use serde::Deserialize;
 use std::{

@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 kent8192
+// SPDX-License-Identifier: BUSL-1.1
+// See enterprise/LICENSE.
+
 //! The use cases of Billing Accounts. Callers have authenticated the External
 //! Identity, or the Tenant Administrator's Mapping, that each acts as.
 use super::models::BillingAccount;

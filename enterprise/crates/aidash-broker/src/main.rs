@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 kent8192
+// SPDX-License-Identifier: BUSL-1.1
+// See enterprise/LICENSE.
+
 //! Cloud-only composition. No private signing key or provider key is configured here.
 use aidash_broker::{Broker, CloudLogging, Config};
 use aidash_capability::PublicKeys;

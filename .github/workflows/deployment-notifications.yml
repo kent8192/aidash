@@ -67,7 +67,7 @@ jobs:
       - name: Verify the trusted deployment trigger
         env:
           GH_TOKEN: ${{ github.token }}
-        run: python3 infra/gcp/control/notifications.py preflight
+        run: python3 enterprise/infra/gcp/control/notifications.py preflight
 
   nonproduction:
     needs: intake
@@ -98,7 +98,7 @@ jobs:
         run: |
           arguments=()
           if [ "$RETRY_BLOCKED" = true ]; then arguments+=(--retry-blocked); fi
-          python3 infra/gcp/control/notifications.py deliver "${arguments[@]}"
+          python3 enterprise/infra/gcp/control/notifications.py deliver "${arguments[@]}"
 
   production:
     needs: intake
@@ -129,4 +129,4 @@ jobs:
         run: |
           arguments=()
           if [ "$RETRY_BLOCKED" = true ]; then arguments+=(--retry-blocked); fi
-          python3 infra/gcp/control/notifications.py deliver "${arguments[@]}"
+          python3 enterprise/infra/gcp/control/notifications.py deliver "${arguments[@]}"

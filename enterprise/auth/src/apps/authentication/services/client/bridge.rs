@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 kent8192
+// SPDX-License-Identifier: BUSL-1.1
+// See enterprise/LICENSE.
+
 //! Typed JS interop only for the upstream Firebase SDK. No UI is delegated.
 use crate::{
 	api::Error,

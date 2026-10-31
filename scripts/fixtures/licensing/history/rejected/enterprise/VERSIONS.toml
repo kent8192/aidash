@@ -1,0 +1,6 @@
+# One day after first_public_date + four years: the boundary must reject it.
+[[version]]
+version = "0.1.0"
+change_date = "2030-10-27"
+change_license = "Apache-2.0"
+first_public_date = "2026-10-26"

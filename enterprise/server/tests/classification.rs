@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 kent8192
+// SPDX-License-Identifier: BUSL-1.1
+// See enterprise/LICENSE.
+
 //! The Enterprise build's tables are classified and enforced like Community's
 //! (#223, #266). Both workspaces run the same checks, compiled from the
 //! Community sources.

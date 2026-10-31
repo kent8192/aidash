@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 kent8192
+// SPDX-License-Identifier: BUSL-1.1
+// See enterprise/LICENSE.
+
 //! Typed Pages wire data; OAuth credentials stay native.
 use serde::{Deserialize, Serialize};
 #[derive(Clone, Serialize, Deserialize)]

@@ -34,7 +34,7 @@ def select(objects, kind, suffix):
 
 class ChartsTest(unittest.TestCase):
     aidash = 'deploy/helm/aidash'
-    environment = 'infra/gcp/helm/environment'
+    environment = 'enterprise/infra/gcp/helm/environment'
     # The Runner requires the application's capability object claim.
     base = {'deployment': {'id': 'aidash://fixture'}, 'existingSecret': 'fixture',
             'capabilities': {'storage': {'existingClaim': 'objects'}}}
@@ -1182,7 +1182,7 @@ class MetadataServerEgressTest(unittest.TestCase):
 class ActivityTest(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
-        spec = importlib.util.spec_from_file_location('activity', ROOT / 'infra/gcp/helm/environment/files/activity.py')
+        spec = importlib.util.spec_from_file_location('activity', ROOT / 'enterprise/infra/gcp/helm/environment/files/activity.py')
         cls.activity = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(cls.activity)
 

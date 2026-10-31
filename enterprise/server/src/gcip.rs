@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 kent8192
+// SPDX-License-Identifier: BUSL-1.1
+// See enterprise/LICENSE.
+
 //! GCIP sign-in of Cloud and Dedicated: GCIP Tenants, the Shared Pool, Tenant
 //! Bindings, Sign-in Domains and MFA Requirements (ADR 0032). Community sees
 //! only the issuers it admits and the Tenant each one is restricted to.

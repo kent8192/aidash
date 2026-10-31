@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 kent8192
+// SPDX-License-Identifier: BUSL-1.1
+// See enterprise/LICENSE.
+
 //! The billing app's tables. All of them are Deployment-wide: a Billing
 //! Account, an attachment and a metering record belong to no Tenant, name any
 //! Tenant by its Tenant name, and outlive its purge.

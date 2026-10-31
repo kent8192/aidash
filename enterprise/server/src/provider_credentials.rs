@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 kent8192
+// SPDX-License-Identifier: BUSL-1.1
+// See enterprise/LICENSE.
+
 //! The Secret Manager Secret Store and its Credential Broker.
 use aidash_gcp::capability::{
 	KmsTokenSigner, MetadataTokenSource,

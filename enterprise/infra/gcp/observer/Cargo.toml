@@ -1,0 +1,29 @@
+# SPDX-FileCopyrightText: 2026 kent8192
+# SPDX-License-Identifier: BUSL-1.1
+# See enterprise/LICENSE.
+
+[workspace]
+
+[package]
+name = "aidash-infra-observer"
+version = "0.1.0"
+edition = "2024"
+publish = false
+license = "BUSL-1.1"
+
+# Keep both revisions equal to the root workspace's reinhardt pin; a test
+# compares them.
+[dependencies]
+reinhardt-db = { git = "https://github.com/kent8192/reinhardt-web", rev = "b6a006a769ca340c22a51e67fef1bb4be1dc3039", default-features = false, features = [
+  "backends",
+  "postgres",
+] }
+reinhardt-query = { git = "https://github.com/kent8192/reinhardt-web", rev = "b6a006a769ca340c22a51e67fef1bb4be1dc3039" }
+serde_json = "1"
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "time"] }
+
+[dev-dependencies]
+sqlx = { version = "0.8", default-features = false, features = [
+  "postgres",
+  "runtime-tokio",
+] }

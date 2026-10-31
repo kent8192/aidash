@@ -26,7 +26,9 @@ When the table is absent, the Offering is `self-hosted`. Every command that load
 
 `enterprise/` is a separate Cargo workspace with its own `Cargo.lock`. Its `server` package composes the Community `aidash-server` library and passes its own build to it. No Community manifest, lockfile or root `Dockerfile` names `enterprise/`, so deleting the directory leaves a working Community tree.
 
-`enterprise/` keeps copies of `rust-toolchain.toml`, `rustfmt.toml`, `clippy.toml`, the `[workspace.package]` and `[workspace.lints]` tables and the profiles. Keep them equal to the Community files, and keep `enterprise/Cargo.lock` on the versions `Cargo.lock` holds for packages both lock (`cargo update --manifest-path enterprise/Cargo.toml -p <package> --precise <version>`).
+`enterprise/infra/` holds the GCP Environments and delivery Terraform, the environment chart and the Cloud-only scripts. It is not part of the Community build.
+
+`enterprise/` keeps copies of `rust-toolchain.toml`, `rustfmt.toml`, `clippy.toml`, the `[workspace.package]` and `[workspace.lints]` tables and the profiles. Keep them equal to the Community files, except the `[workspace.package]` license, which is `Apache-2.0` for Community and `BUSL-1.1` for Enterprise (ADR 0035), and keep `enterprise/Cargo.lock` on the versions `Cargo.lock` holds for packages both lock (`cargo update --manifest-path enterprise/Cargo.toml -p <package> --precise <version>`).
 
 Nothing under `enterprise/` declares a license until the licensing cutover (#255).
 
@@ -76,7 +78,7 @@ cargo run --locked --manifest-path enterprise/Cargo.toml --bin aidash -- serve
 
 The root `Dockerfile` builds the Community image. This change publishes it nowhere.
 
-`enterprise/Dockerfile` builds the Enterprise image from the repository root. Its settings select the `cloud` Offering. `infra/gcp/control/images.py` builds the `app` image of the GCP Environments from it, and the image goes only to Aidash's private Artifact Registry.
+`enterprise/Dockerfile` builds the Enterprise image from the repository root. Its settings select the `cloud` Offering. `enterprise/infra/gcp/control/images.py` builds the `app` image of the GCP Environments from it, and the image goes only to Aidash's private Artifact Registry.
 
 ```sh
 docker build -f enterprise/Dockerfile --target runtime .

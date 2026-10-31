@@ -1,0 +1,12 @@
+# SPDX-FileCopyrightText: 2026 kent8192
+# SPDX-License-Identifier: BUSL-1.1
+# See enterprise/LICENSE.
+
+{{- if .Values.metadataServerEgress.enabled }}
+---
+# No Pod of this chart (PostgreSQL, NATS, edge, activity) has a Google identity or
+# any IAM grant, so none may reach the metadata server. The same fail-closed
+# selector as the application chart: only Pods labelled aidash.run/metadata-server
+# are spared, and nothing here carries that label.
+{{ include "environment.metadataEgressPolicy" (dict "name" (printf "%s-metadata-egress" (include "environment.name" .))) }}
+{{- end }}

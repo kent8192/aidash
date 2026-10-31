@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 kent8192
+// SPDX-License-Identifier: BUSL-1.1
+// See enterprise/LICENSE.
+
 //! Cloud billing core: meters, Billing Accounts, Tiers and the rules for who
 //! may exist on Cloud. Community supplies two ports, usage events and an
 //! admission gate, and this app fills them. A payment processor plugs into

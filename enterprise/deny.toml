@@ -1,0 +1,42 @@
+# SPDX-FileCopyrightText: 2026 kent8192
+# SPDX-License-Identifier: BUSL-1.1
+# See enterprise/LICENSE.
+
+# cargo-deny policy for the Enterprise workspace (root/deny.toml plus BUSL-1.1).
+#
+# The allow list is derived from the licenses that Cargo actually resolves in
+# this repository (see scripts/licensing-inventory.sh). It intentionally omits
+# LGPL-2.1-or-later, which appears only as one alternative in `r-efi`'s
+# `MIT OR Apache-2.0 OR LGPL-2.1-or-later` expression. Run the check with:
+#
+#   cargo deny --manifest-path enterprise/Cargo.toml --config enterprise/deny.toml check licenses
+#
+# Unlike root/deny.toml, this policy allows BUSL-1.1 for the workspace's own packages
+# (ADR 0035).
+[licenses]
+version = 2
+confidence-threshold = 0.9
+# A workspace uses only part of the union allow list.
+unused-allowed-license = "allow"
+allow = [
+  "0BSD",
+  "Apache-2.0",
+  # `winx` and `target-lexicon` ship this exact expression.
+  "Apache-2.0 WITH LLVM-exception",
+  "BSD-2-Clause",
+  "BSD-3-Clause",
+  "BUSL-1.1",
+  # Boost Software License, not the Business Source License.
+  "BSL-1.0",
+  "CC0-1.0",
+  "CDLA-Permissive-2.0",
+  "ISC",
+  "MIT",
+  "MIT-0",
+  # Weak file-level copyleft in `colored`, `cssparser` and the desktop
+  # `webdriver` stack. They are unmodified dependencies.
+  "MPL-2.0",
+  "Unicode-3.0",
+  "Unlicense",
+  "Zlib",
+]

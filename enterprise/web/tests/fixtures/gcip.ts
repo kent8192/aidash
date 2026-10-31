@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 kent8192
+// SPDX-License-Identifier: BUSL-1.1
+// See enterprise/LICENSE.
+
 import { readFileSync } from "node:fs";
 import { createSign, createVerify } from "node:crypto";
 import { expect, type Page } from "@playwright/test";

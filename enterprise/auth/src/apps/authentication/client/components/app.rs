@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 kent8192
+// SPDX-License-Identifier: BUSL-1.1
+// See enterprise/LICENSE.
+
 //! The Authentication Pages entry point.
 use super::super::hooks::use_authentication;
 pub(crate) use super::super::hooks::{Action, App, Factor, State};

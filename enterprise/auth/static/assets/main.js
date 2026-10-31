@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 kent8192
+// SPDX-License-Identifier: BUSL-1.1
+// See enterprise/LICENSE.
+
 // Only the upstream GCIP SDK uses browser JavaScript. UI and RPC are Pages.
 globalThis.aidashCreateGcipClient = async (config, options) => {
   const { createClient } = await import("./gcip-sdk.js");

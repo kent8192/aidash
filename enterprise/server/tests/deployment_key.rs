@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 kent8192
+// SPDX-License-Identifier: BUSL-1.1
+// See enterprise/LICENSE.
+
 //! The Enterprise build installs the Cloud KMS Deployment Key (ADR 0064).
 use aidash_enterprise_server::Adapters;
 use aidash_server::bootstrap::build::Extension;

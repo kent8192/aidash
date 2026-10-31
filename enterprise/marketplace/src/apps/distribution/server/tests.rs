@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 kent8192
+// SPDX-License-Identifier: BUSL-1.1
+// See enterprise/LICENSE.
+
 //! Actual HTTP and PostgreSQL tests own distribution authorization and durability.
 //! Auth status is an external HTTP fixture; Marketplace data and decisions use
 //! the real ORM, migrations, service handler, HTTP server and runtime role.

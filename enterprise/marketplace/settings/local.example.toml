@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 kent8192
+# SPDX-License-Identifier: BUSL-1.1
+# See enterprise/LICENSE.
+
 # Local Development Settings for marketplace
 #
 # Copy this file to local.toml and fill in the values for your local environment.

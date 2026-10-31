@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 kent8192
+// SPDX-License-Identifier: BUSL-1.1
+// See enterprise/LICENSE.
+
 //! The meters: Execution Pod time from the runner's Pod start and stop, and a
 //! daily sample of the bytes of files each Tenant stores. Both run on Cloud
 //! and Dedicated. Metering of a Tenant stops while a Tenant Deletion is

@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 kent8192
+// SPDX-License-Identifier: BUSL-1.1
+// See enterprise/LICENSE.
+
 //! Exercise the actual Auth RPC policies and PostgreSQL state through mTLS.
 use aidash_application::{Error as ApplicationError, ports::accounts::Authority};
 use aidash_integrations::authentication::{

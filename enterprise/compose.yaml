@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 kent8192
+# SPDX-License-Identifier: BUSL-1.1
+# See enterprise/LICENSE.
+
 # Independent local services. Never merge this with the Cloud compose file.
 # Generate private/standalone-compose first; see deploy/local/README.md.
 name: ${AIDASH_STANDALONE_PROJECT:-aidash-standalone}

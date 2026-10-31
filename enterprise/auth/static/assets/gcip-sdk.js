@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 kent8192
+// SPDX-License-Identifier: BUSL-1.1
+// See enterprise/LICENSE.
+
 // GCIP is loaded only after the Authentication Server supplies a login context.
 import { initializeApp, deleteApp } from "./vendor/firebase-app.js";
 import {

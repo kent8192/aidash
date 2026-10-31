@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 kent8192
+// SPDX-License-Identifier: BUSL-1.1
+// See enterprise/LICENSE.
+
 //! Google Cloud REST adapters. Signing and Key Material reads use separate identities.
 pub mod deployment_key;
 pub mod issuer;

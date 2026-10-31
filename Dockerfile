@@ -58,6 +58,7 @@ ENTRYPOINT ["aidash"]
 CMD ["serve"]
 
 FROM debian:bookworm-slim AS runtime
+LABEL org.opencontainers.image.licenses="Apache-2.0"
 RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates && \
     rm -rf /var/lib/apt/lists/*
 COPY --from=rust /out/aidash /usr/local/bin/aidash
@@ -67,6 +68,14 @@ COPY deploy/demo-data/structure.json /app/deploy/demo-data/structure.json
 COPY server/settings/base.example.toml /app/server/settings/base.toml
 RUN sed -i '/^\[core\]$/a base_dir = "/app/server"' /app/server/settings/base.toml
 COPY --from=web /build/web/dist /app/web
+# The published Community image carries its component notice, the standard
+# texts of its third-party material and the attribution notices.
+COPY LICENSE /usr/share/doc/aidash/LICENSE
+COPY LICENSES/Apache-2.0.txt /usr/share/doc/aidash/LICENSES/Apache-2.0.txt
+COPY LICENSES/MIT.txt /usr/share/doc/aidash/LICENSES/MIT.txt
+COPY LICENSES/OFL-1.1.txt /usr/share/doc/aidash/LICENSES/OFL-1.1.txt
+COPY THIRD_PARTY_NOTICES.md /usr/share/doc/aidash/THIRD_PARTY_NOTICES.md
+COPY third_party /usr/share/doc/aidash/third_party
 RUN mkdir -p /var/lib/aidash/memory-recovery && chown -R 10001:10001 /var/lib/aidash
 WORKDIR /app/server
 USER 10001:10001

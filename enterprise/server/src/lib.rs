@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 kent8192
+// SPDX-License-Identifier: BUSL-1.1
+// See enterprise/LICENSE.
+
 //! The Enterprise build's server. It composes the Community server library
 //! and runs only the Cloud and Dedicated Offerings.
 use aidash_application::federation::key::DeploymentKey;

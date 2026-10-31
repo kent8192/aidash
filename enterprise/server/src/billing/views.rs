@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 kent8192
+// SPDX-License-Identifier: BUSL-1.1
+// See enterprise/LICENSE.
+
 //! The billing endpoints. Billing Account endpoints are Cloud only; the usage
 //! report serves Cloud and Dedicated, to Deployment Administrators.
 use super::service::{Consented, Party, csv};

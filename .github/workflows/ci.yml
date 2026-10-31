@@ -46,7 +46,7 @@ jobs:
           CI_MODE: ${{ steps.scope.outputs.mode }}
           DEVELOP_BRANCH: ${{ fromJSON(vars.AIDASH_GCP_CONFIG || '{}').develop_branch }}
           RELEASE_APP_BOT_LOGIN: ${{ fromJSON(vars.AIDASH_GCP_CONFIG || '{}').release_app_bot_login }}
-        run: python3 infra/gcp/control/releases.py verify-ci
+        run: python3 enterprise/infra/gcp/control/releases.py verify-ci
   gcp-infrastructure:
     name: GCP infrastructure
     needs: scope
@@ -96,7 +96,7 @@ jobs:
             directory: desktop/src-tauri
             features: ""
           - workspace: observer
-            directory: infra/gcp/observer
+            directory: enterprise/infra/gcp/observer
             features: ""
           - workspace: enterprise
             directory: enterprise
@@ -516,6 +516,67 @@ jobs:
       - run: python3 -m unittest discover -s scripts -p test_local_activation.py
       - run: python3 -m unittest discover -s scripts -p test_helm_execution.py
       - run: python3 -m unittest discover -s scripts -p test_standalone_deployment.py
+  licensing:
+    name: Licensing
+    needs: scope
+    if: needs.scope.outputs.mode == 'full'
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.12"
+      - run: rustup show active-toolchain
+      - uses: Swatinem/rust-cache@49a0bdc70d2e1b713ca9e2869b211fcce03d3c1c # v2
+        with:
+          shared-key: licensing
+      - name: Install REUSE
+        run: python3 -m pip install 'reuse[charset-normalizer]==6.2.0'
+      - name: Install cargo-deny
+        uses: taiki-e/install-action@1e29709c0ec63babbe8f266397a465f29a825f91 # v2.87.31
+        with:
+          tool: cargo-deny@0.19.9
+      - name: Install cargo-about
+        run: cargo install --locked cargo-about --version 0.9.3 --features cli
+      - name: Test the licensing checks
+        run: python3 -m unittest scripts/test_check_licensing.py -v
+      - name: Check REUSE annotations
+        run: reuse lint
+      - name: Check license scope
+        run: python3 scripts/check-licensing.py scope
+      - name: Check license expressions
+        run: python3 scripts/check-licensing.py expression
+      - name: Check standard license texts
+        run: python3 scripts/check-licensing.py text
+      - name: Check BUSL parameters
+        run: python3 scripts/check-licensing.py params
+      - name: Check the Community boundary
+        run: python3 scripts/check-licensing.py boundary
+      - name: Check Enterprise transition history
+        env:
+          BASE: ${{ github.event_name == 'pull_request' && github.event.pull_request.base.sha || 'HEAD^1' }}
+        run: python3 scripts/check-licensing.py history --base "$BASE"
+      - name: Check the Rust dependency licenses
+        run: |
+          cargo deny --manifest-path Cargo.toml check --config deny.toml licenses --hide-inclusion-graph
+          cargo deny --manifest-path enterprise/Cargo.toml check --config enterprise/deny.toml licenses --hide-inclusion-graph
+          cargo deny --manifest-path desktop/src-tauri/Cargo.toml check --config deny.toml licenses --hide-inclusion-graph
+      - name: Generate the third-party inventory
+        run: scripts/licensing-inventory.sh "$RUNNER_TEMP/licensing-inventory"
+      - name: Check the notices and inventories
+        run: python3 scripts/check-licensing.py attribution --inventory "$RUNNER_TEMP/licensing-inventory"
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        if: always()
+        with:
+          name: licensing-inventory
+          path: ${{ runner.temp }}/licensing-inventory
+          if-no-files-found: error
   acceptance:
     name: Federation tests
     needs: scope
@@ -635,6 +696,7 @@ jobs:
         rust-tests,
         rust-coverage,
         infrastructure-tests,
+        licensing,
         enterprise,
         enterprise-web,
         marketplace-web,

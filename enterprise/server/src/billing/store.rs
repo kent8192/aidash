@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 kent8192
+// SPDX-License-Identifier: BUSL-1.1
+// See enterprise/LICENSE.
+
 //! The billing app's queries. Every table it owns is Deployment-wide, and so
 //! are the Community tables it reads (`tenants`, `tenant_deletions`), so these
 //! run in the no-Tenant scope. Mappings are Tenant-owned: they are read in

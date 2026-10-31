@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 kent8192
+// SPDX-License-Identifier: BUSL-1.1
+// See enterprise/LICENSE.
+
 // Once the sign-in helper is served from this origin, Firebase writes `firebase:`
 // keys (and may open its IndexedDB store) here. Aidash keeps no GCIP state
 // between attempts, so remove all of it after every attempt.

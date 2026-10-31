@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 kent8192
+# SPDX-License-Identifier: BUSL-1.1
+# See enterprise/LICENSE.
+
 # Build enterprise/auth/Dockerfile from the repository root.
 port: 8081
 args: ["--config", "/run/aidash/config/auth.toml", "serve"]
@@ -14,7 +18,7 @@ grpc:
 # The gRPC/mTLS port is private. Its callers are Cloud's server and worker Pods
 # (app.kubernetes.io/instance=app, component server|worker, in the Cloud environment's
 # namespace) and the separate Account-administration workload; the standalone services
-# are not yet deployed from infra/gcp (Issue #516), so the namespaces and the
+# are not yet deployed from enterprise/infra/gcp (Issue #516), so the namespaces and the
 # administration labels below are PLACEHOLDERS that match nothing until replaced.
 # mTLS and per-peer permissions still apply on top of this reachability limit.
 networkPolicy:

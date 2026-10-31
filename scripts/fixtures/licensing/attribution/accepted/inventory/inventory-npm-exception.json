@@ -1,0 +1,27 @@
+{
+  "workspace": "web",
+  "ecosystem": "npm",
+  "lockfile": "web/package-lock.json",
+  "license_exceptions": [
+    {
+      "package": "buffers",
+      "version": "0.1.1",
+      "license": "MIT",
+      "source": "https://github.com/substack/node-buffers",
+      "reason": "The upstream README states MIT/X11; the npm package.json omits the license field."
+    }
+  ],
+  "packages": [
+    {
+      "name": "buffers",
+      "version": "0.1.1",
+      "license": "MIT",
+      "license_source": "exception",
+      "license_exception": {
+        "license": "MIT",
+        "source": "https://github.com/substack/node-buffers",
+        "reason": "The upstream README states MIT/X11; the npm package.json omits the license field."
+      }
+    }
+  ]
+}

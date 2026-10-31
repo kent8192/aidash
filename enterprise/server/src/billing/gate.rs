@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 kent8192
+// SPDX-License-Identifier: BUSL-1.1
+// See enterprise/LICENSE.
+
 //! Whether new work may begin in a Tenant on Cloud. The gate decides from
 //! state Aidash already holds: the Billing Account's Subscription as it was
 //! last reported, the dunning grace period, and metering records. It never

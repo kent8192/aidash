@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 kent8192
+// SPDX-License-Identifier: BUSL-1.1
+// See enterprise/LICENSE.
+
 // The npm SDK stays behind the lazy sign-in route. Tests replace this module.
 import { initializeApp, deleteApp } from "firebase/app";
 import {

@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 kent8192
+// SPDX-License-Identifier: BUSL-1.1
+// See enterprise/LICENSE.
+
 //! Keep both tracing captures in this single-test process. Parallel tests with
 //! scoped subscribers can race tracing's process-wide callsite interest cache.
 use aidash_application::{
