@@ -168,6 +168,13 @@ Re-run `cargo make dev` to rebuild after source changes. The example credentials
 and localhost bindings are for local development. Configure unique credentials
 and an HTTPS endpoint for a deployed Deployment.
 
+The Compose backend is a debug build. Debug builds of the server binaries give
+their Tokio worker threads a 16 MiB stack, because unoptimized frames on a
+Run's memory recall path overflow Tokio's 2 MiB default ([#597](https://github.com/kent8192/aidash/issues/597)).
+Release builds keep Tokio's default. Setting `RUST_MIN_STACK` turns this
+default off and sizes every thread, the workers included; the test scripts and
+CI export `RUST_MIN_STACK=8388608`, so their workers run with 8 MiB.
+
 Compose waits for JetStream readiness and provisions the activation stream and
 durable consumer before starting the backend. The stream is recreated after
 `docker compose --profile dev down -v`, so a fresh stack exercises broker
