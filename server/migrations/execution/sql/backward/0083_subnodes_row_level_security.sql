@@ -1,0 +1,12 @@
+DROP POLICY tenant_isolation ON public.subnode_limits;
+ALTER TABLE public.subnode_limits NO FORCE ROW LEVEL SECURITY;
+ALTER TABLE public.subnode_limits DISABLE ROW LEVEL SECURITY;
+DROP POLICY tenant_isolation ON public.subnode_operation_receipts;
+ALTER TABLE public.subnode_operation_receipts NO FORCE ROW LEVEL SECURITY;
+ALTER TABLE public.subnode_operation_receipts DISABLE ROW LEVEL SECURITY;
+DROP POLICY tenant_isolation ON public.subnode_members;
+ALTER TABLE public.subnode_members NO FORCE ROW LEVEL SECURITY;
+ALTER TABLE public.subnode_members DISABLE ROW LEVEL SECURITY;
+DROP POLICY tenant_isolation ON public.subnodes;
+ALTER TABLE public.subnodes NO FORCE ROW LEVEL SECURITY;
+ALTER TABLE public.subnodes DISABLE ROW LEVEL SECURITY;

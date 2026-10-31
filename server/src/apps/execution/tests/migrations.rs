@@ -115,7 +115,7 @@ async fn native_history_uses_typed_schema_operations_and_lf_sql_assets() {
 			.iter()
 			.filter(|migration| migration.state_only)
 			.count(),
-		69
+		70
 	);
 	let tables = migrations
 		.iter()
@@ -358,7 +358,7 @@ async fn generation_with_existing_sql_assets_preserves_history_and_dependency(
 		.unwrap();
 	assert_eq!(
 		generated.dependencies,
-		vec![("execution".to_owned(), "0081_lease_recoveries".to_owned())]
+		vec![("execution".to_owned(), "0084_subnodes_state".to_owned())]
 	);
 	assert!(generated.operations.is_empty());
 }
@@ -705,7 +705,7 @@ async fn preserved_baseline_does_not_generate_table_recreation(
 			.iter()
 			.filter(|migration| migration.state_only)
 			.count(),
-		69
+		70
 	);
 }
 
