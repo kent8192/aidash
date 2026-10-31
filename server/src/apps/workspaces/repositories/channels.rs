@@ -14,7 +14,7 @@ use aidash_domain::{Message, workspaces::channels::*};
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use reinhardt::query::{
-	Alias, ColumnRef, Condition, Expr, ExprTrait, JoinType, LockType, OnConflict, Order,
+	Alias, ColumnRef, Condition, Expr, ExprTrait, IntoIden, JoinType, LockType, OnConflict, Order,
 	PostgresQueryBuilder, Query, QueryStatementBuilder, SimpleExpr, TableRef,
 };
 use serde_json::json;
@@ -536,9 +536,12 @@ impl ChannelScope for NativeChannels<'_> {
 			input.idempotency_key
 		);
 		let lock = Query::select()
-			.expr(SimpleExpr::CustomWithExpr(
-				"pg_advisory_xact_lock(hashtextextended(?, 0))".into(),
-				vec![Expr::value(lock_key).into()],
+			.expr(SimpleExpr::FunctionCall(
+				"pg_advisory_xact_lock".into_iden(),
+				vec![SimpleExpr::FunctionCall(
+					"hashtextextended".into_iden(),
+					vec![Expr::value(lock_key).into(), Expr::value(0_i64).into()],
+				)],
 			))
 			.to_string(PostgresQueryBuilder);
 		crate::database::native::query(&lock)

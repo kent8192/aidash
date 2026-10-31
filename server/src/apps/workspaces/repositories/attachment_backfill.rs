@@ -68,7 +68,7 @@ pub(crate) async fn run(store: &Store) -> Result<()> {
 		let update = Query::update()
 			.table(Alias::new("channel_attachments"))
 			.value(Alias::new("object_id"), object_id)
-			.value_expr(Alias::new("content"), Expr::cust("NULL"))
+			.value(Alias::new("content"), None::<Vec<u8>>)
 			.and_where(Expr::col(Alias::new("id")).eq(Expr::value(row.id)))
 			.to_string(PostgresQueryBuilder);
 		crate::database::native::query(&update)

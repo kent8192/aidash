@@ -200,8 +200,10 @@ impl MediaAttachments for ScopedMedia<'_> {
 			)
 			.await?;
 			// Commit each cache write independently, so later decodes never retain
-			// an earlier attachment's row lock.
-			let mut cache_access = Access::begin(self.store, &self.access.identity).await?;
+			// an earlier attachment's row lock. The outer Access keeps its policy and
+			// credential locks meanwhile, so inherit them instead of queuing a second
+			// shared lock behind a waiting policy update or revocation.
+			let mut cache_access = Access::under_lease(self.access).await?;
 			let cached: NativeResult<Vec<u8>> = async {
 				let locked = Query::select()
 					.columns(
