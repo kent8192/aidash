@@ -152,11 +152,43 @@ where
 	F: FnMut(usize, &Value) -> Result<bool>,
 {
 	let snapshot = snapshot_untracked(scope, id).await?;
-	let Some((fitted_limit, output)) =
-		aidash_domain::context::observation::fit_projection(&snapshot, offset, limit, fits)?
+	let ids = snapshot
+		.messages
+		.iter()
+		.map(|message| message.id)
+		.collect::<Vec<_>>();
+	let attachments = scope.message_attachments(id, &ids).await?;
+	let enrich = |output: &mut Value| {
+		if let Some(messages) = output["messages"].as_array_mut() {
+			for message in messages {
+				let id = message["id"]
+					.as_str()
+					.and_then(|value| value.parse::<Uuid>().ok());
+				message["attachments"] = serde_json::json!(
+					attachments
+						.iter()
+						.filter(|row| Some(row.message_id) == id)
+						.map(|row| &row.attachment)
+						.collect::<Vec<_>>()
+				);
+			}
+		}
+	};
+	let mut fits = fits;
+	let Some((fitted_limit, mut output)) = aidash_domain::context::observation::fit_projection(
+		&snapshot,
+		offset,
+		limit,
+		|n, candidate| {
+			let mut candidate = candidate.clone();
+			enrich(&mut candidate);
+			fits(n, &candidate)
+		},
+	)?
 	else {
 		return Ok(None);
 	};
+	enrich(&mut output);
 	let dependencies = WorkspaceSnapshot {
 		workspace: snapshot.workspace.clone(),
 		tasks: snapshot

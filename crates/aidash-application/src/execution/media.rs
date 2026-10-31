@@ -15,6 +15,90 @@ use aidash_domain::{
 use serde_json::json;
 use sha2::{Digest, Sha256};
 use uuid::Uuid;
+
+/// Select the original format or a WAV rendition using the current route evidence.
+pub fn thread_attachment_wav(model: &ModelConfig, media_type: &str) -> Result<bool> {
+	if model.require_media_types([media_type]).is_ok()
+		&& ContentPart::modality_for_media_type(media_type).is_ok()
+	{
+		return Ok(false);
+	}
+	if media_type.starts_with("audio/") && model.require_media_types(["audio/wav"]).is_ok() {
+		return Ok(true);
+	}
+	Err(Error::Invalid(format!(
+		"this model cannot read {media_type} through any current route"
+	)))
+}
+
+/// Find a shared current route for explicitly selected media, converting only
+/// Thread audio when needed. A deleted selection contributes a text notice.
+pub fn route_selected_renditions(
+	model: &ModelConfig,
+	selections: &[aidash_domain::media::ModelMedia],
+	parts: &[ContentPart],
+) -> Option<Vec<aidash_domain::media::ModelMedia>> {
+	use aidash_domain::media::ModelMedia;
+	if selections.len() > 8 {
+		return None;
+	}
+	let mut candidates = Vec::new();
+	let mut part = 0;
+	for (index, selection) in selections.iter().enumerate() {
+		if !matches!(parts.get(part), Some(ContentPart::Text(_))) {
+			return None;
+		}
+		part += 1;
+		if matches!(
+			parts.get(part),
+			Some(ContentPart::Image { .. } | ContentPart::Audio { .. })
+		) {
+			if matches!(selection, ModelMedia::ThreadAttachment(value) if !value.wav)
+				&& matches!(parts.get(part), Some(ContentPart::Audio { format, .. }) if format != "wav")
+			{
+				candidates.push((index, part));
+			}
+			part += 1;
+		}
+	}
+	if part != parts.len() {
+		return None;
+	}
+	let formats: Vec<_> = parts
+		.iter()
+		.map(|part| match part {
+			ContentPart::Text(_) => ContentPart::Text(String::new()),
+			ContentPart::Image { media_type, .. } => ContentPart::Image {
+				media_type: media_type.clone(),
+				bytes: Vec::new(),
+			},
+			ContentPart::Audio { format, .. } => ContentPart::Audio {
+				format: format.clone(),
+				bytes: Vec::new(),
+			},
+		})
+		.collect();
+	let mut choices: Vec<_> = (0..(1_usize << candidates.len())).collect();
+	choices.sort_by_key(|choice| choice.count_ones());
+	for choice in choices {
+		let mut proposed = formats.clone();
+		let mut selected = selections.to_vec();
+		for (bit, (selection, part)) in candidates.iter().enumerate() {
+			if choice & (1 << bit) != 0 {
+				if let ContentPart::Audio { format, .. } = &mut proposed[*part] {
+					*format = "wav".into();
+				}
+				if let ModelMedia::ThreadAttachment(value) = &mut selected[*selection] {
+					value.wav = true;
+				}
+			}
+		}
+		if model.has_current_media_route_for_parts(&proposed) {
+			return Some(selected);
+		}
+	}
+	None
+}
 /// Conservative media pre-admission in the selected provider input shape.
 /// Native plan labels use the same provenance envelopes as the final request.
 /// Other routes retain their established Chat probe for compatibility.
@@ -61,27 +145,30 @@ pub async fn load<S: MediaAttachments + ?Sized>(
 	projection: ProjectionVersion,
 ) -> Result<HumanMediaBatch> {
 	let mut parts = Vec::new();
-	let mut count = 0_usize;
-	let mut total = 0_usize;
+	let mut accepted: Vec<(i64, crate::ports::execution::media::MediaAttachment)> = Vec::new();
 	let mut through_seq = None;
 	let mut has_more = false;
 	let request = admission_request(model, projection, json!({}), Vec::new());
 	for (seq, id, headroom) in messages {
 		let attachments = scope.attachments(workspace, *id).await?;
-		let message_bytes = attachments.iter().fold(0_usize, |sum, attachment| {
-			sum.saturating_add(attachment.content.len())
-		});
+		let message_bytes = attachments
+			.iter()
+			.fold(0_usize, |sum, a| sum.saturating_add(a.content.len()));
 		if attachments.len() > 8 || message_bytes > 8 * 1024 * 1024 {
 			return Err(Error::Invalid(
 				"run media input exceeds count or byte limit".into(),
 			));
 		}
-		if count + attachments.len() > 8 || total.saturating_add(message_bytes) > 8 * 1024 * 1024 {
+		let old_len = accepted.len();
+		let accepted_bytes = accepted.iter().fold(0_usize, |sum, (_, attachment)| {
+			sum.saturating_add(attachment.content.len())
+		});
+		if old_len + attachments.len() > 8
+			|| accepted_bytes.saturating_add(message_bytes) > 8 * 1024 * 1024
+		{
 			has_more = true;
 			break;
 		}
-		let previous_len = parts.len();
-		let attachment_count = attachments.len();
 		for attachment in attachments {
 			if attachment.size_bytes != attachment.content.len() as i64 {
 				return Err(Error::Invalid("run media input size changed".into()));
@@ -89,39 +176,95 @@ pub async fn load<S: MediaAttachments + ?Sized>(
 			if format!("{:x}", Sha256::digest(&attachment.content)) != attachment.sha256 {
 				return Err(Error::Conflict("OBJECT_INTEGRITY".into()));
 			}
-			parts.push(ContentPart::Text(format!(
-				"Run message {seq} attachment: {}",
+			// Preserve the domain's MIME and signature error even if no route
+			// accepts this attachment.
+			ContentPart::from_media(&attachment.media_type, attachment.content.clone())?;
+			accepted.push((*seq, attachment));
+		}
+		let choice = select_renditions(model, &accepted);
+		let Some(choice) = choice else {
+			accepted.truncate(old_len);
+			if through_seq.is_none() {
+				return Err(Error::MediaRouteUnavailable(model.model_id.clone()));
+			}
+			has_more = true;
+			break;
+		};
+		let mut proposed = Vec::new();
+		let mut total = 0_usize;
+		for (index, (sequence, attachment)) in accepted.iter().enumerate() {
+			let wav = choice & (1 << index) != 0;
+			let bytes = if wav {
+				scope.wav_rendition(workspace, attachment).await?
+			} else {
+				attachment.content.clone()
+			};
+			total = total.saturating_add(bytes.len());
+			proposed.push(ContentPart::Text(format!(
+				"Run message {sequence} attachment: {}",
 				attachment.filename
 			)));
-			parts.push(ContentPart::from_media(
-				&attachment.media_type,
-				attachment.content,
+			proposed.push(ContentPart::from_media(
+				if wav {
+					"audio/wav"
+				} else {
+					&attachment.media_type
+				},
+				bytes,
 			)?);
 		}
-		if let Err(error) = Reservation::check_request_with_parts(*headroom, &request, &parts) {
-			parts.truncate(previous_len);
+		if total > 8 * 1024 * 1024 {
+			accepted.truncate(old_len);
+			if through_seq.is_none() {
+				return Err(Error::Invalid(
+					"run media input exceeds count or byte limit".into(),
+				));
+			}
+			has_more = true;
+			break;
+		}
+		if let Err(error) = Reservation::check_request_with_parts(*headroom, &request, &proposed) {
+			accepted.truncate(old_len);
 			if through_seq.is_none() {
 				return Err(error);
 			}
 			has_more = true;
 			break;
 		}
-		if !model.has_current_media_route_for_parts(&parts) {
-			parts.truncate(previous_len);
-			if through_seq.is_none() {
-				return Err(Error::MediaRouteUnavailable(model.model_id.clone()));
-			}
-			has_more = true;
-			break;
-		}
-		count += attachment_count;
-		total = total.saturating_add(message_bytes);
+		parts = proposed;
 		through_seq = Some(*seq);
 	}
 	Ok(HumanMediaBatch {
 		parts,
 		through_seq,
 		has_more,
+	})
+}
+
+/// Find one current route for the whole batch, preferring fewer conversions.
+fn select_renditions(
+	model: &ModelConfig,
+	attachments: &[(i64, crate::ports::execution::media::MediaAttachment)],
+) -> Option<usize> {
+	let mut choices: Vec<_> = (0..(1_usize << attachments.len())).collect();
+	choices.sort_by_key(|choice| choice.count_ones());
+	choices.into_iter().find(|choice| {
+		let mut formats = Vec::with_capacity(attachments.len());
+		for (index, (_, attachment)) in attachments.iter().enumerate() {
+			let wav = choice & (1 << index) != 0;
+			if wav
+				&& (!attachment.media_type.starts_with("audio/")
+					|| matches!(attachment.media_type.as_str(), "audio/wav" | "audio/x-wav"))
+			{
+				return false;
+			}
+			formats.push(if wav {
+				"audio/wav"
+			} else {
+				&attachment.media_type
+			});
+		}
+		model.require_media_types(formats).is_ok()
 	})
 }
 
@@ -171,6 +314,28 @@ pub async fn selected(
 					format!("Selected file: {}", file.path),
 					file.media_type.clone(),
 					scope.read(file.file_id).await?,
+				)
+			}
+			ModelMedia::ThreadAttachment(selection) => {
+				let Some((filename, media_type, bytes)) =
+					scope.thread_attachment(selection).await?
+				else {
+					parts.push(ContentPart::Text(format!(
+						"Thread Attachment unavailable: {} was deleted or is no longer accessible.",
+						selection.attachment_id
+					)));
+					continue;
+				};
+				total = total.saturating_add(bytes.len() as u64);
+				if total > 8 * 1024 * 1024 {
+					return Err(Error::Invalid(
+						"model media input exceeds byte limit".into(),
+					));
+				}
+				(
+					format!("Selected Thread Attachment: {filename}"),
+					media_type,
+					bytes,
 				)
 			}
 			ModelMedia::PageImage(selection) => {

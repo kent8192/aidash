@@ -138,11 +138,13 @@ impl BindingCatalog for Catalog {
 			return crate::registry::system::compaction_decider();
 		}
 		if let Some(operation) = reference.id.strip_prefix("aidash.") {
-			return Ok(entry(
+			let mut entry = entry(
 				&reference.id,
 				"tool",
 				serde_json::to_value(core_descriptor(&self.node, operation)?)?,
-			));
+			);
+			entry.version = reference.version.clone();
+			return Ok(entry);
 		}
 		Err(Error::NotFound(reference.id.clone()))
 	}
@@ -233,11 +235,13 @@ pub(crate) fn http_tool(node: &str, id: &str, alias: &str) -> Entry {
 pub(crate) fn builtin_entries(node: &str) -> Vec<Entry> {
 	let mut entries: Vec<Entry> = crate::registry::system::operations()
 		.map(|name| {
-			entry(
+			let mut entry = entry(
 				&format!("aidash.{name}"),
 				"tool",
 				json!(core_descriptor(node, name).unwrap()),
-			)
+			);
+			entry.version = QualifiedRef::builtin(node, name).version;
+			entry
 		})
 		.collect();
 	entries

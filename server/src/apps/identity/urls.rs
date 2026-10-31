@@ -128,6 +128,8 @@ pub fn url_patterns() -> UnifiedRouter {
 			.with_route_middleware(AccessBoundary::authenticated().with_visibility())
 			.endpoint(super::views::remote_commands::handle)
 			.with_route_middleware(AccessBoundary::peer().with_visibility())
+			.endpoint(super::views::remote_commands::thread_attachment)
+			.with_route_middleware(AccessBoundary::peer().with_visibility())
 			.endpoint(super::views::peer_execution::activate)
 			.with_route_middleware(AccessBoundary::peer().with_visibility())
 			.endpoint(super::views::peer_execution::control)

@@ -150,7 +150,15 @@ impl PermissionScope for Scope<'_> {
 
 	async fn catalog_enabled(&mut self, tenant: &str, entry: &EntityRef) -> Result<Option<bool>> {
 		assert_eq!(tenant, "tenant");
-		assert_eq!(entry.version, "1.0.0");
+		let expected = entry
+			.id
+			.strip_prefix("aidash.")
+			.map(|name| {
+				aidash_domain::registry::bindings::QualifiedRef::builtin("aidash://local", name)
+					.version
+			})
+			.unwrap_or_else(|| "1.0.0".into());
+		assert_eq!(entry.version, expected);
 		self.0
 			.state
 			.lock()
@@ -307,7 +315,26 @@ async fn component_actions_use_exact_pinned_metadata_and_worker_context() {
 	for e in &s.evaluations {
 		assert_eq!(e.subject, "reader");
 		assert_eq!(e.resource.tenant, "tenant");
-		assert_eq!(e.resource.attributes["version"], "1.0.0");
+		let id = e
+			.resource
+			.id
+			.rsplit("/tools/")
+			.next()
+			.unwrap()
+			.split('@')
+			.next()
+			.unwrap();
+		let version = id
+			.strip_prefix("aidash.")
+			.map(|operation| {
+				aidash_domain::registry::bindings::QualifiedRef::builtin(
+					"aidash://local",
+					operation,
+				)
+				.version
+			})
+			.unwrap_or_else(|| "1.0.0".into());
+		assert_eq!(e.resource.attributes["version"], version);
 		assert_eq!(e.resource.attributes["capabilities"], json!(["capability"]));
 		assert_eq!(e.resource.attributes["tags"], json!(["tag"]));
 		assert_eq!(e.resource.attributes["languages"], json!(["en"]));

@@ -96,7 +96,16 @@ pub async fn normalize_agent(
 			));
 		}
 	}
-	entry.normalize_agent_with_compaction(node, replacement.as_ref())?;
+	if let Some(saved) = &entry.binding_normalization {
+		if saved.compaction_override != replacement {
+			return Err(Error::Invalid(
+				"Agent normalization differs from its exact Decider definitions".into(),
+			));
+		}
+		entry.normalized_bindings(node)?;
+	} else {
+		entry.normalize_agent_with_compaction(node, replacement.as_ref())?;
+	}
 	Ok(())
 }
 

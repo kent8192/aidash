@@ -1,5 +1,11 @@
 # Aidash native migration history
 
+`registry/0053_attachment_tools` (after `registry/0052_harness_contract_structured3`) extends the existing PostgreSQL descriptor
+and Agent default validators for the built-in `attachment_copy` operation.
+The function bodies use SQL assets because Reinhardt has no typed operation
+for replacing PostgreSQL functions. Reversal refuses while definitions or Run
+snapshots still use the new operation.
+
 `execution/0081_lease_recoveries` updates the physical `runs.pending` default,
 and replaces the activation trigger function. PostgreSQL function replacement
 is a SQL exception that Reinhardt cannot express. The server decodes the
@@ -731,6 +737,18 @@ CHECKs bound the reason to 1 to 1000 characters and tie `identity_id` to a brows
 `execution/0078_run_safety_stops_row_level_security` adds the tenant policy template
 through `RunSQL`, and `execution/0079_run_safety_stops_state` is the generated state-only
 snapshot that leaves the physical constraints and indexes to `0077`.
+
+`workspaces/0015_attachment_objects` adds an immutable object reference and
+optional decoded-media measurements to Thread Attachments. Existing inline bytes
+remain readable until startup backfill verifies and moves them; new attachments
+use `core_objects`. PostgreSQL nullability is changed with `RunSQL` because the
+pinned typed `AlterColumn` cannot express it (#6803). Reversal refuses while any
+attachment has no inline content. `0016_attachment_content_state` records the new fields and nullable bytea in
+ORM state. The object reference is Tenant-scoped and cascades
+on object deletion, allowing a deleted Tenant's object purge to run before row
+purge. The object store's intents recover uncommitted files after a crash.
+
+`workspaces/0017_attachment_wav_rendition` adds a nullable, tenant-scoped immutable WAV rendition reference and its integrity metadata. The three fields are set together when a route first needs the rendition; deleting the attachment makes both objects reclaimable. `0018_attachment_wav_rendition_state` records the fields in model state.
 
 ## Harness Contract versions (#531)
 

@@ -144,6 +144,10 @@ impl RemoteCommandEffects for Scope {
 		self.call("snapshot")?;
 		Ok(json!({"snapshot":"visible"}))
 	}
+	async fn observation(&mut self, _: Uuid, _: usize, _: usize) -> Result<Value> {
+		self.call("observation")?;
+		Ok(self.record.clone())
+	}
 	async fn record(&mut self, _: Uuid, kind: &str, id: Uuid) -> Result<Value> {
 		self.call(&format!("record:{kind}:{id}"))?;
 		Ok(self.record.clone())
@@ -262,6 +266,25 @@ fn agent() -> Entry {
 }
 async fn run(scope: &mut Scope, operation: &str, data: &Value) -> Result<Value> {
 	execute(scope, input(operation, data), &agent()).await
+}
+#[rstest]
+#[tokio::test]
+async fn remote_observation_keeps_attachment_metadata_and_rechecks_grant(mut scope: Scope) {
+	scope.record = json!({"messages":[{"id":Uuid::from_u128(6),"attachments":[{"id":Uuid::from_u128(7),"filename":"image.png","media_type":"image/png","size_bytes":32}]}]});
+	let data = json!({"offset":0,"limit":20});
+	let result = run(&mut scope, "workspace_observation", &data)
+		.await
+		.unwrap();
+	assert_eq!(
+		result["messages"][0]["attachments"][0]["filename"],
+		"image.png"
+	);
+	assert_eq!(scope.calls.last().unwrap(), "live");
+	scope.live = false;
+	assert!(matches!(
+		run(&mut scope, "workspace_observation", &data).await,
+		Err(Error::Forbidden)
+	));
 }
 #[rstest]
 #[tokio::test]

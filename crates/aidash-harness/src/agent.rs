@@ -2467,6 +2467,17 @@ impl<'a> Executor<'a> {
 						.await?;
 				}
 				if cursor >= result.tool_calls.len() {
+					// Preserve what the model learned from a selected Thread Attachment
+					// without advancing the cursor reserved for human Run inputs.
+					if !withheld
+						&& !result.text.trim().is_empty()
+						&& run.state.tool()?.inferred_selected_media.iter().any(|media| matches!(media, aidash_domain::media::ModelMedia::ThreadAttachment(_)))
+						&& (!result.tool_calls.is_empty() || !self.cites_invalid_evidence(run, &tools, &result.text).await?)
+					{
+						let mut context = run.context.clone();
+						record_media_observation(&mut context, &result.text, None, media_observation_budget(run.state.tool()?));
+						run.context = context;
+					}
 					if result.tool_calls.is_empty() {
 						if !run.state.tool()?.deferred_selected_media.is_empty() {
 							if !result.text.trim().is_empty() {
@@ -2963,13 +2974,21 @@ impl<'a> Executor<'a> {
 							.await;
 					};
 					match Box::pin(guard.model_media(&selections)).await {
-						Ok(parts) => {
+						Ok(mut parts) => {
 							let headroom = self.environment.run_request_headroom(run).await?;
-							let model_entry = self
-								.environment
-								.catalog().get_for_run(&*run, &agent.model.id, &agent.model.version)
-								.await?;
+							let model_entry = self.environment.catalog().get_for_run(&*run, &agent.model.id, &agent.model.version).await?;
 							let model: ModelConfig = serde_json::from_value(model_entry.config)?;
+							if let Some(adjusted) = aidash_application::execution::media::route_selected_renditions(&model, &selections, &parts)
+								&& adjusted != selections {
+								parts = match Box::pin(guard.model_media(&adjusted)).await {
+									Ok(parts) => parts,
+									Err(Error::Invalid(message) | Error::Domain(aidash_domain::Error::Invalid(message))) => {
+										return self.tool_invocation_error(run, token, call, cursor, unfinished_key, message).await;
+									}
+									Err(error) => return Err(error),
+								};
+								selections = adjusted;
+							}
 							match check_model_media_headroom(headroom, parts, &model, agent.projection_version) {
 								Ok(()) => {}
 								Err(Error::Invalid(message) | Error::Domain(aidash_domain::Error::Invalid(message))) => {
@@ -3001,7 +3020,9 @@ impl<'a> Executor<'a> {
 						}
 						Err(error) => return Err(error),
 					}
-					run.state.tool_mut()?.selected_media = selected;
+					let progress = run.state.tool_mut()?;
+					progress.deferred_selected_media = selections[..deferred_count].to_vec();
+					progress.selected_media = selections[deferred_count..].to_vec();
 				}
                 let output = if invocation.status != "COMPLETED" && !research_result {
                     store.invocation_finish(run, token, &key, &output).await?

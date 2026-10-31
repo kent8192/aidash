@@ -92,6 +92,9 @@ pub struct ChannelAttachment {
 	pub filename: String,
 	pub media_type: String,
 	pub size_bytes: i64,
+	/// Computed for the Workspace's currently assigned Agents, not persisted.
+	#[serde(default)]
+	pub no_assigned_agent_can_read: bool,
 }
 
 #[derive(Debug, Serialize, JsonSchema)]
@@ -105,8 +108,8 @@ pub fn validate_attachment(filename: &str, media_type: &str, content: &[u8]) -> 
 	if content.is_empty() {
 		return Err(Error::Invalid("attachment must not be empty".into()));
 	}
-	if content.len() > 1024 * 1024 {
-		return Err(Error::Invalid("attachment exceeds 1 MiB".into()));
+	if content.len() > 8 * 1024 * 1024 {
+		return Err(Error::Invalid("attachment exceeds 8 MiB".into()));
 	}
 	if filename.is_empty()
 		|| filename.len() > 255
@@ -150,7 +153,8 @@ pub struct AttachmentState {
 	pub media_type: String,
 	pub sha256: String,
 	pub size_bytes: i64,
-	pub content: Vec<u8>,
+	pub content: Option<Vec<u8>>,
+	pub object_id: Option<Uuid>,
 	pub message_id: Option<Uuid>,
 }
 impl AttachmentState {
@@ -160,6 +164,7 @@ impl AttachmentState {
 			filename: self.filename.clone(),
 			media_type: self.media_type.clone(),
 			size_bytes: self.size_bytes,
+			no_assigned_agent_can_read: false,
 		}
 	}
 }

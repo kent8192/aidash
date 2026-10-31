@@ -413,6 +413,7 @@ impl From<Error> for aidash_application::Error {
 			Error::Context(reason) => Self::Context(reason),
 			Error::DeciderOutage => Self::DeciderOutage,
 			Error::ContextOverflow => Self::ContextOverflow,
+			Error::MediaRouteUnavailable(reason) => Self::MediaRouteUnavailable(reason),
 			Error::SemanticUnavailable => Self::SemanticUnavailable,
 			Error::IdentityStatusUnavailable => Self::IdentityStatusUnavailable,
 			Error::TransactionPending => Self::TransactionPending,

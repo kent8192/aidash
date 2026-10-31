@@ -684,6 +684,135 @@ pub async fn materialize(
 	scope.cache(input.idempotency_key, &digest, &result).await?;
 	Ok(result)
 }
+
+/// Copy verified Thread Attachment bytes through the Working Area publication path.
+#[allow(clippy::too_many_arguments)]
+pub async fn copy_thread_attachment(
+	scope: &mut dyn FileScopePort,
+	run: &RunMetadata,
+	key: Uuid,
+	expected_revision: i64,
+	path: String,
+	message_id: Uuid,
+	attachment_id: Uuid,
+	media_type: String,
+	expected_digest: String,
+	bytes: &[u8],
+) -> Result<Value> {
+	if !settings(scope, run).await?.core_capabilities.files {
+		return Err(Error::Forbidden);
+	}
+	let mut area = scope.for_run(run).await?;
+	available(&area.state)?;
+	scope.authorize(&area, "file.write").await?;
+	let operation_digest = aidash_domain::registry::rules::digest(&json!([
+		"copy_thread_attachment",
+		run.id,
+		expected_revision,
+		path,
+		message_id,
+		attachment_id,
+		expected_digest
+	]));
+	if let Some(cached) = scope.cached(key, &operation_digest).await? {
+		return Ok(cached);
+	}
+	if scope.current_run(&area).await? != Some(run.id) {
+		return Err(Error::Conflict("RUN_NOT_ACTIVE".into()));
+	}
+	if area.revision != expected_revision {
+		return Err(Error::Conflict("AREA_REVISION_CHANGED".into()));
+	}
+	aidash_domain::registry::rules::validate_path(&path)?;
+	let mut entries = files(&area)?;
+	if entries.len() >= 4096 || entries.iter().any(|entry| entry.path == path) {
+		return Err(Error::Conflict("FILE_EXISTS_OR_LIMIT".into()));
+	}
+	let size = bytes.len() as u64;
+	if entries.iter().map(|f| f.size).sum::<u64>() + size + scope.retained_bytes(&area).await?
+		> scope.limits()?.working_bytes
+	{
+		return Err(Error::Conflict("WORKING_QUOTA".into()));
+	}
+	scope.begin_pending(area.id, size).await?;
+	scope.write_pending(bytes).await?;
+	let (file_id, digest) = scope.finish_pending(&expected_digest).await?;
+	let file = FileEntry {
+		file_id,
+		path,
+		digest,
+		size,
+		media_type,
+		scope: FileScope::Working,
+		provenance: json!({"kind":"thread_attachment", "workspace_id":area.workspace_id, "message_id":message_id, "attachment_id":attachment_id}),
+	};
+	entries.push(file.clone());
+	area.manifest = json!(entries);
+	let source = json!({"kind":"message", "id":message_id});
+	let constraints = area.constraints.as_array_mut().ok_or(Error::Forbidden)?;
+	if !constraints.contains(&source) {
+		constraints.push(source);
+	}
+	publish(scope, &mut area).await?;
+	let result = json!({"area_id":area.id, "revision":area.revision, "file":file});
+	scope.cache(key, &operation_digest, &result).await?;
+	Ok(result)
+}
+
+/// Resolve a Run's current Working Area paths into verified immutable snapshots.
+/// A committed message receipt is checked before reading mutable files; the
+/// owner must cache the receipt in the same transaction as the message.
+pub async fn snapshot_message_files_once(
+	scope: &mut dyn FileScopePort,
+	run: &RunMetadata,
+	key: Uuid,
+	digest: &str,
+	committed: bool,
+	paths: &[String],
+) -> Result<Option<Vec<(FileEntry, Vec<u8>)>>> {
+	if scope.cached(key, digest).await?.is_some() || committed {
+		return Ok(None);
+	}
+	snapshot_message_files(scope, run, paths).await.map(Some)
+}
+
+pub async fn snapshot_message_files(
+	scope: &mut dyn FileScopePort,
+	run: &RunMetadata,
+	paths: &[String],
+) -> Result<Vec<(FileEntry, Vec<u8>)>> {
+	if paths.len() > 8 {
+		return Err(Error::Invalid("at most 8 attachments".into()));
+	}
+	if !settings(scope, run).await?.core_capabilities.files {
+		return Err(Error::Forbidden);
+	}
+	let area = scope.for_run(run).await?;
+	available(&area.state)?;
+	scope.require_current(&area, run).await?;
+	scope.authorize(&area, "file.read").await?;
+	let entries = files(&area)?;
+	let mut result = Vec::with_capacity(paths.len());
+	let mut total = 0_u64;
+	for path in paths {
+		let file = entries
+			.iter()
+			.find(|file| file.path == *path)
+			.ok_or_else(|| Error::NotFound("file unavailable".into()))?
+			.clone();
+		total = total.saturating_add(file.size);
+		if file.size > 8 * 1024 * 1024 || total > 8 * 1024 * 1024 {
+			return Err(Error::Invalid("attachments exceed 8 MiB".into()));
+		}
+		let mut object = scope.open(&file).await?;
+		let bytes = object.read_range(0, file.size).await?;
+		if bytes.len() as u64 != file.size {
+			return Err(Error::Conflict("OBJECT_INTEGRITY".into()));
+		}
+		result.push((file, bytes));
+	}
+	Ok(result)
+}
 pub async fn publish(scope: &mut dyn FileScopePort, area: &mut Area) -> Result<()> {
 	// Commit the old working-object tombstones with the new manifest. Only
 	// superseded working bytes are reclaimed, never outputs or recovery copies.

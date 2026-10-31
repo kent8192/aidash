@@ -174,6 +174,37 @@ async fn attachment_upload_is_idempotent_and_download_requires_current_message_a
 			.starts_with("attachment;")
 	);
 	assert_eq!(response.body().as_ref(), b"Source evidence");
+	// New uploads persist an immutable object and never retain inline bytes.
+	let attachment_id: Uuid = attachment.parse().unwrap();
+	let (object_id, inline): (Uuid, Option<Vec<u8>>) =
+		sqlx::query_as("SELECT object_id, content FROM channel_attachments WHERE id = $1")
+			.bind(attachment_id)
+			.fetch_one(app.runtime.store.pool.fixture_driver())
+			.await
+			.unwrap();
+	assert!(inline.is_none());
+	let object_path = app
+		.runtime
+		.store
+		.capabilities
+		.0
+		.storage
+		.join(object_id.simple().to_string());
+	assert_eq!(
+		tokio::fs::read(&object_path).await.unwrap(),
+		b"Source evidence"
+	);
+	tokio::fs::write(&object_path, b"Tampered data!!")
+		.await
+		.unwrap();
+	assert_ne!(
+		alice_client.get(&download).await.unwrap().status_code(),
+		200
+	);
+	tokio::fs::write(&object_path, b"Source evidence")
+		.await
+		.unwrap();
+
 	policy["policies"].as_array_mut().unwrap().push(json!({
 		"id":"hide-file-message", "effect":"deny", "subjects":{"any":true},
 		"actions":["message.read"],
@@ -382,3 +413,257 @@ use reinhardt::query::{
 use sha2::{Digest, Sha256};
 
 use reinhardt::query::SimpleExpr;
+
+#[rstest::rstest]
+#[tokio::test]
+async fn startup_backfills_legacy_bytes_and_replay_keeps_the_same_object(
+	#[future] scoped_channel: ScopedChannel,
+) {
+	let ScopedChannel {
+		app,
+		token,
+		workspace,
+		..
+	} = Box::pin(scoped_channel).await;
+	let (status, uploaded) =
+		upload(&app, &token, &workspace, Uuid::new_v4(), b"legacy bytes").await;
+	assert_eq!(status, 200, "{uploaded}");
+	let id: Uuid = uploaded["id"].as_str().unwrap().parse().unwrap();
+	// Restore the row to its pre-upgrade representation before restarting.
+	sqlx::query("UPDATE channel_attachments SET content = $1, object_id = NULL WHERE id = $2")
+		.bind(b"legacy bytes".as_slice())
+		.bind(id)
+		.execute(app.runtime.store.pool.fixture_driver())
+		.await
+		.unwrap();
+	let mut settings = crate::endpoint::settings_for(&app.database.url);
+	settings.deployment.id = app.runtime.config.deployment.to_string();
+	let start = || async {
+		let context =
+			reinhardt::InjectionContext::builder(reinhardt::SingletonScope::new()).build();
+		aidash_server::bootstrap::initialize(&context, &settings, app.database.connection.clone())
+			.await
+			.unwrap();
+	};
+	start().await;
+	let (first, inline): (Uuid, Option<Vec<u8>>) =
+		sqlx::query_as("SELECT object_id, content FROM channel_attachments WHERE id = $1")
+			.bind(id)
+			.fetch_one(app.runtime.store.pool.fixture_driver())
+			.await
+			.unwrap();
+	assert!(inline.is_none());
+	let path = app
+		.runtime
+		.store
+		.capabilities
+		.0
+		.storage
+		.join(first.simple().to_string());
+	assert_eq!(tokio::fs::read(path).await.unwrap(), b"legacy bytes");
+	start().await;
+	let (second,): (Uuid,) =
+		sqlx::query_as("SELECT object_id FROM channel_attachments WHERE id = $1")
+			.bind(id)
+			.fetch_one(app.runtime.store.pool.fixture_driver())
+			.await
+			.unwrap();
+	assert_eq!(first, second);
+
+	// A corrupt legacy digest fails startup without deleting its original bytes.
+	let (status, corrupt) = upload(&app, &token, &workspace, Uuid::new_v4(), b"legacy bad").await;
+	assert_eq!(status, 200, "{corrupt}");
+	let corrupt_id: Uuid = corrupt["id"].as_str().unwrap().parse().unwrap();
+	sqlx::query(
+		"UPDATE channel_attachments SET content = $1, object_id = NULL, sha256 = $2 WHERE id = $3",
+	)
+	.bind(b"legacy bad".as_slice())
+	.bind("0".repeat(64))
+	.bind(corrupt_id)
+	.execute(app.runtime.store.pool.fixture_driver())
+	.await
+	.unwrap();
+	let context = reinhardt::InjectionContext::builder(reinhardt::SingletonScope::new()).build();
+	assert!(
+		aidash_server::bootstrap::initialize(&context, &settings, app.database.connection.clone())
+			.await
+			.is_err()
+	);
+	let (object, original): (Option<Uuid>, Vec<u8>) =
+		sqlx::query_as("SELECT object_id, content FROM channel_attachments WHERE id = $1")
+			.bind(corrupt_id)
+			.fetch_one(app.runtime.store.pool.fixture_driver())
+			.await
+			.unwrap();
+	assert!(object.is_none());
+	assert_eq!(original, b"legacy bad");
+}
+
+#[rstest::rstest]
+#[tokio::test]
+async fn deleting_a_thread_reclaims_its_attachment_object(#[future] scoped_channel: ScopedChannel) {
+	let ScopedChannel {
+		app,
+		token,
+		workspace,
+		..
+	} = Box::pin(scoped_channel).await;
+	let (status, file) = upload(&app, &token, &workspace, Uuid::new_v4(), b"delete me").await;
+	assert_eq!(status, 200, "{file}");
+	let id: Uuid = file["id"].as_str().unwrap().parse().unwrap();
+	let (object_id,): (Uuid,) =
+		sqlx::query_as("SELECT object_id FROM channel_attachments WHERE id = $1")
+			.bind(id)
+			.fetch_one(app.runtime.store.pool.fixture_driver())
+			.await
+			.unwrap();
+	let path = app
+		.runtime
+		.store
+		.capabilities
+		.0
+		.storage
+		.join(object_id.simple().to_string());
+	let (status, message) = request(
+		&app,
+		&token,
+		"POST",
+		&format!("/api/workspaces/{workspace}/thread-messages"),
+		json!({"content":"root", "idempotency_key":Uuid::new_v4(), "attachment_ids":[id]}),
+	)
+	.await;
+	assert_eq!(status, 200, "{message}");
+	let (status, thread) = request(
+		&app,
+		&token,
+		"POST",
+		&format!("/api/workspaces/{workspace}/threads"),
+		json!({"root_message_id":message["message"]["id"]}),
+	)
+	.await;
+	assert_eq!(status, 200, "{thread}");
+	let (status, deleted) = request(
+		&app,
+		&token,
+		"POST",
+		&format!(
+			"/api/workspaces/{workspace}/threads/{}/delete",
+			thread["id"].as_str().unwrap()
+		),
+		json!({"idempotency_key":Uuid::new_v4(), "files":[]}),
+	)
+	.await;
+	assert_eq!(status, 200, "{deleted}");
+	let (stop, rx) = tokio::sync::watch::channel(false);
+	let worker = tokio::spawn(aidash_server::capabilities::reclamation::run(
+		app.runtime.store.clone(),
+		rx,
+	));
+	let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(15);
+	while path.exists() {
+		assert!(
+			tokio::time::Instant::now() < deadline,
+			"attachment object was not reclaimed"
+		);
+		tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+	}
+	stop.send(true).unwrap();
+	worker.await.unwrap().unwrap();
+	let (remaining,): (i64,) = sqlx::query_as("SELECT count(*) FROM core_objects WHERE id = $1")
+		.bind(object_id)
+		.fetch_one(app.runtime.store.pool.fixture_driver())
+		.await
+		.unwrap();
+	assert_eq!(remaining, 0);
+}
+
+#[rstest::rstest]
+#[tokio::test]
+async fn media_upload_validates_decoded_content_and_records_measurements(
+	#[future] scoped_channel: ScopedChannel,
+) {
+	let ScopedChannel {
+		app,
+		token,
+		workspace,
+		..
+	} = Box::pin(scoped_channel).await;
+	let client = client_for(&app.server.url, &token).await;
+	async fn send(
+		client: &reinhardt::test::APIClient,
+		workspace: &str,
+		mime: &str,
+		bytes: &[u8],
+	) -> (u16, Value) {
+		let path = format!(
+			"/api/workspaces/{workspace}/attachments?filename=sample&media_type={}&idempotency_key={}",
+			mime.replace('/', "%2F"),
+			Uuid::new_v4()
+		);
+		decoded(
+			client
+				.post_raw(&path, bytes, "application/octet-stream")
+				.await
+				.unwrap(),
+		)
+	}
+	let png = include_bytes!("../../execution/tests/support/media/pixel.png");
+	let (status, body) = send(&client, &workspace, "image/png", png).await;
+	assert_eq!(status, 200, "{body}");
+	let id: Uuid = body["id"].as_str().unwrap().parse().unwrap();
+	let dimensions: (Option<i32>, Option<i32>, Option<i64>) =
+		sqlx::query_as("SELECT width, height, duration_ms FROM channel_attachments WHERE id = $1")
+			.bind(id)
+			.fetch_one(app.runtime.store.pool.fixture_driver())
+			.await
+			.unwrap();
+	assert_eq!(dimensions, (Some(1), Some(1), None));
+	let wav = include_bytes!("../../execution/tests/support/media/one-second.wav");
+	let (status, body) = send(&client, &workspace, "audio/wav", wav).await;
+	assert_eq!(status, 200, "{body}");
+	let id: Uuid = body["id"].as_str().unwrap().parse().unwrap();
+	let (duration,): (Option<i64>,) =
+		sqlx::query_as("SELECT duration_ms FROM channel_attachments WHERE id = $1")
+			.bind(id)
+			.fetch_one(app.runtime.store.pool.fixture_driver())
+			.await
+			.unwrap();
+	assert_eq!(duration, Some(1000));
+	let mut too_long = wav.to_vec();
+	too_long.resize(44 + 8_000 * 601, 128);
+	let total = too_long.len() as u32;
+	too_long[4..8].copy_from_slice(&(total - 8).to_le_bytes());
+	too_long[40..44].copy_from_slice(&(total - 44).to_le_bytes());
+	let (status, refusal) = send(&client, &workspace, "audio/wav", &too_long).await;
+	assert_eq!(status, 400);
+	assert_eq!(refusal["error"], "MEDIA_TOO_LARGE");
+
+	let (status, refusal) =
+		send(&client, &workspace, "image/png", b"\x89PNG\r\n\x1a\nbroken").await;
+	assert_eq!(status, 400);
+	assert_eq!(refusal["error"], "MEDIA_UNDECODABLE");
+	let oversized = include_bytes!("../../execution/tests/support/media/oversized.png");
+	let (status, refusal) = send(&client, &workspace, "image/png", oversized).await;
+	assert_eq!(status, 400);
+	assert_eq!(refusal["error"], "MEDIA_TOO_LARGE");
+	let (status, refusal) = send(&client, &workspace, "audio/wav", b"RIFF\0\0\0\0WAVEbroken").await;
+	assert_eq!(status, 400);
+	assert_eq!(refusal["error"], "MEDIA_UNDECODABLE");
+}
+
+#[rstest::rstest]
+#[tokio::test]
+async fn attachment_upload_accepts_eight_mib_through_the_http_stack(
+	#[future] scoped_channel: ScopedChannel,
+) {
+	let ScopedChannel {
+		app,
+		token,
+		workspace,
+		..
+	} = Box::pin(scoped_channel).await;
+	let bytes = vec![b'x'; 8 * 1024 * 1024];
+	let (status, body) = upload(&app, &token, &workspace, Uuid::new_v4(), &bytes).await;
+	assert_eq!(status, 200, "{body}");
+	assert_eq!(body["size_bytes"], 8 * 1024 * 1024);
+}

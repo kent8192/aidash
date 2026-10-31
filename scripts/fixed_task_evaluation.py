@@ -64,7 +64,7 @@ COMPARISON_AGENT_FIELDS = ("projection_version", "prompt_cache", "exposure", "ha
 # them against the Rust lists.
 DEFAULT_TOOLS = ("workspace_observe", "workspace_wait", "skill_list", "skill_load", "skill_read", "file_search",
                  "file_read", "task_create", "task_delegate", "agent_discover", "artifact_publish",
-                 "workspace_message", "memory_mutate", "memory_recall", "memory_reflect")
+                 "workspace_message", "attachment_copy", "memory_mutate", "memory_recall", "memory_reflect")
 SKILL_TOOLS = ("skill_list", "skill_load", "skill_read")
 # The built-in compaction Decider every ordinary Agent is bound to; `remove_default` names it like a tool.
 COMPACTION_DEFAULT = "compaction"

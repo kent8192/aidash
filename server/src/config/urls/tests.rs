@@ -116,6 +116,7 @@ fn federation_registration_retains_the_previous_undocumented_peer_protocol() {
 			"/federation/v0.1/scoped/execution/admissions/{id}/verify",
 		),
 		("POST", "/federation/v0.1/scoped/execution/commands"),
+		("POST", "/federation/v0.1/thread-attachment/1/fetch"),
 		(
 			"POST",
 			"/federation/v0.1/scoped/execution/grants/activation",

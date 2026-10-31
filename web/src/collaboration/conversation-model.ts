@@ -54,8 +54,28 @@ export function submissionFor(
   };
 }
 
-export const MAX_ATTACHMENT_BYTES = 1024 * 1024;
+export const MAX_ATTACHMENT_BYTES = 8 * 1024 * 1024;
 export const MAX_ATTACHMENTS = 8;
+export function attachmentWarningText(
+  mediaType: string,
+  words: {
+    attachmentUnreadable: string;
+    attachmentUnreadableAudio: string;
+    attachmentUnreadableImage: string;
+  },
+): string {
+  if (mediaType.startsWith("audio/")) return words.attachmentUnreadableAudio;
+  if (mediaType.startsWith("image/")) return words.attachmentUnreadableImage;
+  return words.attachmentUnreadable;
+}
+/** Require one acknowledgement for each uploaded set containing an unreadable file. */
+export function attachmentWarningKey(
+  attachments: readonly { id: string; no_assigned_agent_can_read?: boolean }[],
+): string | null {
+  return attachments.some((item) => item.no_assigned_agent_can_read)
+    ? JSON.stringify(attachments.map((item) => item.id))
+    : null;
+}
 export const RUN_MEDIA_ACCEPT =
   "image/png,image/jpeg,image/gif,image/webp,audio/wav,audio/x-wav,audio/mpeg,audio/mp4,audio/x-m4a,audio/aac,audio/ogg,audio/webm,audio/flac,audio/x-flac";
 const runMediaTypes = new Set(RUN_MEDIA_ACCEPT.split(","));

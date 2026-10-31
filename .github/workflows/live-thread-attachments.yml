@@ -1,0 +1,32 @@
+name: Live Thread Attachment provider test
+on:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  openrouter:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    env:
+      OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
+      RUST_MIN_STACK: "8388608"
+      RUST_TEST_THREADS: "1"
+      CARGO_INCREMENTAL: "0"
+      CARGO_PROFILE_TEST_DEBUG: "0"
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Require the live test secret
+        run: test -n "$OPENROUTER_API_KEY" || { echo 'OPENROUTER_API_KEY repository secret is required'; exit 1; }
+      - name: Install the native gRPC build prerequisite
+        run: scripts/install-ci-protoc.sh
+      - name: Build the test PostgreSQL image
+        run: scripts/build-test-postgres.sh
+      - name: Configure disposable capability storage
+        run: |
+          mkdir -p "$RUNNER_TEMP/aidash-live-storage"
+          printf '{"admission":true,"storage":"%s","outbound_origins":["https://example.com"]}\n' "$RUNNER_TEMP/aidash-live-storage" > "$RUNNER_TEMP/aidash-live-profile.json"
+          echo "AIDASH_CAPABILITY_PROFILE=$RUNNER_TEMP/aidash-live-profile.json" >> "$GITHUB_ENV"
+      - name: Verify image and audio Thread Attachments with OpenRouter
+        run: cargo test --locked -p aidash-server --test multimodal_run live_openrouter_thread_attachment -- --ignored --nocapture

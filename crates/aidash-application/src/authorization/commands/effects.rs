@@ -99,6 +99,14 @@ pub async fn execute(
 		),
 		"task" => json!(task),
 		"snapshot" => scope.snapshot(task.workspace_id).await?,
+		"workspace_observation" => {
+			let offset = serde_json::from_value(data["offset"].clone())?;
+			let limit: usize = serde_json::from_value(data["limit"].clone())?;
+			if !(1..=aidash_domain::context::observation::MAX_LIMIT).contains(&limit) {
+				return Err(Error::Invalid("invalid workspace observation limit".into()));
+			}
+			scope.observation(task.workspace_id, offset, limit).await?
+		}
 		"workspace_record" | "workspace_record_chunk" => {
 			let id: Uuid = serde_json::from_value(data["id"].clone())?;
 			let kind = field(data, "kind")?;

@@ -146,6 +146,7 @@ pub async fn initialize(
 		client,
 		notify: Arc::new(Notify::new()),
 	};
+	crate::apps::workspaces::repositories::attachment_backfill::run(&federation.store).await?;
 	// Persist removed restrictions even for inactive Identities before this
 	// policy can serve requests or start workers. Provider IO is unnecessary.
 	crate::apps::identity::services::sign_in::check_restrictions(&federation).await?;
@@ -800,6 +801,7 @@ pub(crate) fn channel_scope<'a>(
 		store,
 		lease,
 		federation: None,
+		run_id: None,
 	}
 }
 
@@ -1416,10 +1418,15 @@ pub(crate) fn worker_task_scope<'a>(
 }
 
 /// Ordered attachment bytes and current subject disclosure borrow the same Access lease.
-pub(crate) fn scoped_media(
-	access: &mut crate::authorization::access::Access,
-) -> crate::apps::workspaces::repositories::media::ScopedMedia<'_> {
-	crate::apps::workspaces::repositories::media::ScopedMedia { access }
+pub(crate) fn scoped_media<'a>(
+	access: &'a mut crate::authorization::access::Access,
+	store: &'a Store,
+) -> crate::apps::workspaces::repositories::media::ScopedMedia<'a> {
+	crate::apps::workspaces::repositories::media::ScopedMedia {
+		access,
+		store,
+		pending: None,
+	}
 }
 
 /// File selections resolve under one owned current-run authority guard and immutable snapshot.
@@ -1427,8 +1434,9 @@ pub(crate) fn selected_media<'a>(
 	store: &'a Store,
 	run: &'a aidash_domain::Run,
 	access: Arc<tokio::sync::RwLock<crate::authorization::access::Access>>,
+	home: Option<crate::federation::Home>,
 ) -> crate::apps::workspaces::repositories::media::SelectedMedia<'a> {
-	crate::apps::workspaces::repositories::media::SelectedMedia::new(store, run, access)
+	crate::apps::workspaces::repositories::media::SelectedMedia::new(store, run, access, home)
 }
 
 /// Current builtin and plugin authority borrows the same worker Access object.

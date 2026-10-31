@@ -31,6 +31,7 @@ pub(crate) async fn access_for_run(
 ) -> Result<Option<Access>> {
 	access_for_run_with_mode(store, run, durable_audit, false).await
 }
+
 /// A recovery proof must be read-only before binding the worker, whose initial
 /// workspace check would otherwise persist an authorization decision.
 pub(crate) async fn proof_for_run(
@@ -186,6 +187,182 @@ pub(crate) struct WorkerAuthority {
 }
 
 impl WorkerAuthority {
+	pub(crate) async fn message_with_files(
+		&self,
+		store: &Store,
+		run: &Run,
+		key: &str,
+		content: &str,
+		paths: &[String],
+	) -> Result<()> {
+		use sha2::{Digest, Sha256};
+		fn operation_id(run: Uuid, key: &str, position: usize) -> Uuid {
+			let mut hash = Sha256::new();
+			hash.update(run.as_bytes());
+			hash.update(key.as_bytes());
+			hash.update((position as u64).to_be_bytes());
+			let digest = hash.finalize();
+			Uuid::from_bytes(digest[..16].try_into().expect("digest has 16 bytes"))
+		}
+		let receipt_key = operation_id(run.id, key, 9);
+		let receipt_digest =
+			crate::registry::digest(&json!(["workspace_message_files", run.id, content, paths]));
+		let outer = self.access.read().await;
+		let mut access = Access::under_lease(&outer).await?;
+		let prepare: Result<_> = async {
+			let workspace = access.workspace(run.workspace_id).await?;
+			access.require(&workspace, "message.create").await?;
+			// Older successful posts predate the receipt below. The invocation
+			// journal has already checked this key's complete original input.
+			let principal = crate::registry::digest(
+				&json!({"tenant":access.identity.tenant,"subject":access.identity.subject}),
+			);
+			let principal =
+				crate::registry::digest(&json!({"principal":principal,"run_id":run.id}));
+			let message_key = format!(
+				"channel:{}:{}:{}",
+				run.workspace_id,
+				principal,
+				operation_id(run.id, key, 8)
+			);
+			use reinhardt::query::{
+				Alias, Expr, ExprTrait as _, PostgresQueryBuilder, Query,
+				QueryStatementBuilder as _,
+			};
+			let previous: Option<(Uuid, String, String, Option<Uuid>)> =
+				crate::database::native::query_as(
+					&Query::select()
+						.columns(["workspace_id", "sender", "content", "run_id"].map(Alias::new))
+						.from(Alias::new("messages"))
+						.and_where(Expr::col("idempotency_key").eq(Expr::value(message_key)))
+						.to_string(PostgresQueryBuilder),
+				)
+				.columns(&["workspace_id", "sender", "content", "run_id"])
+				.fetch_optional(&mut **access.tx)
+				.await?;
+			if let Some((workspace, sender, original, publisher)) = &previous
+				&& (*workspace != run.workspace_id
+					|| sender != &access.identity.subject
+					|| original != content
+					|| *publisher != Some(run.id))
+			{
+				return Err(Error::Conflict("message idempotency key reused".into()));
+			}
+			aidash_application::capabilities::files::snapshot_message_files_once(
+				&mut crate::bootstrap::file_scope(Some(store), &mut access, Some(run)),
+				&run.metadata(),
+				receipt_key,
+				&receipt_digest,
+				previous.is_some(),
+				paths,
+			)
+			.await
+			.map_err(Into::into)
+		}
+		.await;
+		let snapshots = match prepare {
+			Ok(Some(snapshots)) => snapshots,
+			Ok(None) => return access.finish(Ok(())).await,
+			Err(error) => return access.finish(Err(error)).await,
+		};
+		let mut lease = crate::collaboration::access::Lease::from_access(access);
+		let result: Result<()> = async {
+			let mut ids = Vec::with_capacity(snapshots.len());
+			for (index, (file, bytes)) in snapshots.iter().enumerate() {
+				let filename = file.path.rsplit('/').next().unwrap_or("").to_owned();
+				let input = crate::collaboration::ChannelAttachmentUploadQuery {
+					filename,
+					media_type: file.media_type.clone(),
+					idempotency_key: operation_id(run.id, key, index),
+				};
+				let attachment = crate::collaboration::attachments::upload_for_run(
+					store,
+					&mut lease,
+					run.workspace_id,
+					input,
+					bytes,
+					Some(run.id),
+				)
+				.await?;
+				ids.push(attachment.id);
+			}
+			let mut scope = crate::bootstrap::channel_scope(store, &mut lease);
+			scope.run_id = Some(run.id);
+			aidash_application::workspaces::channels::post(
+				&mut scope,
+				run.workspace_id,
+				aidash_application::workspaces::channels::MessageSubmission {
+					content,
+					thread_id: None,
+					idempotency_key: operation_id(run.id, key, 8),
+					attachment_ids: &ids,
+					citations: &[],
+				},
+			)
+			.await?;
+			crate::apps::execution::capabilities::sessions::cache(
+				lease.access_mut(),
+				receipt_key,
+				&receipt_digest,
+				&json!({"sent":true}),
+			)
+			.await?;
+			Ok(())
+		}
+		.await;
+		lease.finish(result).await
+	}
+	pub(crate) async fn copy_thread_attachment(
+		&self,
+		store: &Store,
+		run: &Run,
+		input: Value,
+	) -> Result<Value> {
+		let attachment_id: Uuid = serde_json::from_value(input["id"].clone())
+			.map_err(|_| Error::Invalid("invalid attachment id".into()))?;
+		let key: Uuid = serde_json::from_value(input["idempotency_key"].clone())
+			.map_err(|_| Error::Invalid("invalid idempotency key".into()))?;
+		let revision = input["expected_revision"]
+			.as_i64()
+			.ok_or_else(|| Error::Invalid("missing expected_revision".into()))?;
+		let path = input["path"]
+			.as_str()
+			.ok_or_else(|| Error::Invalid("missing path".into()))?
+			.to_owned();
+		let outer = self.access.read().await;
+		let access = Access::under_lease(&outer).await?;
+		let mut lease = crate::collaboration::access::Lease::from_access(access);
+		let result: Result<Value> = async {
+			let record = lease
+				.access_mut()
+				.workspace_record(run.workspace_id, "attachment", attachment_id)
+				.await?;
+			let message_id: Uuid = serde_json::from_value(record["message_id"].clone())?;
+			let (attachment, content) = aidash_application::workspaces::channels::download(
+				&mut crate::bootstrap::channel_scope(store, &mut lease),
+				run.workspace_id,
+				attachment_id,
+			)
+			.await?;
+			let digest = crate::apps::execution::repositories::capability_objects::digest(&content);
+			aidash_application::capabilities::files::copy_thread_attachment(
+				&mut crate::bootstrap::file_scope(Some(store), lease.access_mut(), Some(run)),
+				&run.metadata(),
+				key,
+				revision,
+				path,
+				message_id,
+				attachment_id,
+				attachment.media_type,
+				digest,
+				&content,
+			)
+			.await
+			.map_err(Into::into)
+		}
+		.await;
+		lease.finish(result).await
+	}
 	/// Resolve existing page and file selections before admitting another
 	/// Research page image, under the same worker authority lease.
 	pub(crate) async fn model_media(
@@ -195,7 +372,7 @@ impl WorkerAuthority {
 		selections: &[aidash_domain::media::ModelMedia],
 	) -> Result<Vec<crate::provider::ContentPart>> {
 		aidash_application::execution::media::selected(
-			&mut crate::bootstrap::selected_media(store, run, self.access.clone()),
+			&mut crate::bootstrap::selected_media(store, run, self.access.clone(), None),
 			selections,
 		)
 		.await
@@ -1590,7 +1767,14 @@ impl Guard {
 		selections: &[aidash_domain::media::ModelMedia],
 	) -> Result<Vec<crate::provider::ContentPart>> {
 		aidash_application::execution::media::selected(
-			&mut crate::bootstrap::selected_media(store, &self.run, self.access.clone()),
+			&mut crate::bootstrap::selected_media(
+				store,
+				&self.run,
+				self.access.clone(),
+				self.remote
+					.as_ref()
+					.map(|f| crate::federation::Home::new(f.clone(), self.run.clone())),
+			),
 			selections,
 		)
 		.await
@@ -1599,13 +1783,14 @@ impl Guard {
 
 	pub async fn human_message_media(
 		&self,
+		store: &Store,
 		messages: &[(i64, Uuid, usize)],
 		model: &crate::registry::ModelConfig,
 		projection: aidash_domain::projection::ProjectionVersion,
 	) -> Result<HumanMediaBatch> {
 		let mut access = self.access.write().await;
 		aidash_application::execution::media::authorized(
-			&mut crate::bootstrap::scoped_media(&mut access),
+			&mut crate::bootstrap::scoped_media(&mut access, store),
 			self.run.workspace_id,
 			messages,
 			model,

@@ -89,11 +89,12 @@ fn snapshot_of(agent: &AgentBindings, agent_plugins: Vec<PinnedAgentPlugin>) -> 
 		}
 		let operation = target.id.strip_prefix("aidash.").unwrap();
 		let descriptor = core_descriptor(NODE, operation).unwrap();
-		let tool = entry(
+		let mut tool = entry(
 			&target.id,
 			"tool",
 			serde_json::to_value(&descriptor).unwrap(),
 		);
+		tool.version.clone_from(&target.version);
 		// The fixture Agent binds no memory, so its memory defaults are excluded.
 		let excluded_reason =
 			crate::tool::providers::memory_exclusion(normalized.origin, operation, false).unwrap();
@@ -140,6 +141,38 @@ fn snapshot_of(agent: &AgentBindings, agent_plugins: Vec<PinnedAgentPlugin>) -> 
 
 fn refusal(snapshot: &BindingSnapshot) -> String {
 	snapshot.validate().unwrap_err().to_string()
+}
+
+#[test]
+fn attachment_selection_requires_the_current_admitted_tool_and_arguments() {
+	let mut snapshot = snapshot_of(&agent(), vec![]);
+	assert!(snapshot.supports_thread_attachment_selection());
+	let binding = snapshot
+		.bindings
+		.iter_mut()
+		.find(|item| item.identity.id == "aidash.workspace_read")
+		.unwrap();
+	binding.identity.version = "1.0.0".into();
+	assert!(!snapshot.supports_thread_attachment_selection());
+	let binding = snapshot
+		.bindings
+		.iter_mut()
+		.find(|item| item.identity.id == "aidash.workspace_read")
+		.unwrap();
+	binding.identity.version = "1.0.1".into();
+	binding
+		.narrow
+		.scope
+		.insert("representation".into(), ["metadata".into()].into());
+	assert!(!snapshot.supports_thread_attachment_selection());
+	let binding = snapshot
+		.bindings
+		.iter_mut()
+		.find(|item| item.identity.id == "aidash.workspace_read")
+		.unwrap();
+	binding.narrow.scope.clear();
+	binding.excluded_reason = Some("not admitted".into());
+	assert!(!snapshot.supports_thread_attachment_selection());
 }
 
 #[test]

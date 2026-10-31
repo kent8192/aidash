@@ -40,6 +40,15 @@ impl PendingObject {
 		access: &mut Access,
 		expected: Option<&str>,
 	) -> Result<(Uuid, String)> {
+		let tenant = access.identity.tenant.clone();
+		self.finish_for(&mut access.tx, &tenant, expected).await
+	}
+	pub(crate) async fn finish_for(
+		self,
+		tx: &mut crate::database::native::Transaction,
+		tenant: &str,
+		expected: Option<&str>,
+	) -> Result<(Uuid, String)> {
 		let hash = format!("{:x}", self.hash.finalize());
 		if self.written != self.size || expected.is_some_and(|expected| hash != expected) {
 			return Err(Error::Conflict("OBJECT_INTEGRITY".into()));
@@ -52,7 +61,7 @@ impl PendingObject {
 				.columns(["id", "tenant", "area_id", "kind", "digest", "size"].map(Alias::new))
 				.values(vec![
 					self.id.into(),
-					access.identity.tenant.clone().into(),
+					tenant.to_owned().into(),
 					self.area.into_value(),
 					self.kind.into(),
 					hash.clone().into(),
@@ -61,7 +70,7 @@ impl PendingObject {
 				.map_err(Error::Invalid)?
 				.to_string(PostgresQueryBuilder),
 		)
-		.execute(&mut **access.tx)
+		.execute(&mut **tx)
 		.await?;
 		Ok((self.id, hash))
 	}
@@ -211,11 +220,29 @@ impl Runtime {
 			self.reconcile_orphans(access).await?;
 			access.core_gc_complete = true;
 		}
+		let tenant = access.identity.tenant.clone();
+		self.begin_object_for(&mut access.tx, &tenant, area, kind, size, false)
+			.await
+	}
+
+	pub(crate) async fn begin_object_for(
+		&self,
+		tx: &mut crate::database::native::Transaction,
+		tenant: &str,
+		area: Option<Uuid>,
+		kind: &str,
+		size: u64,
+		grandfather_existing: bool,
+	) -> Result<PendingObject> {
 		let size = i64::try_from(size).map_err(|_| Error::Invalid("OBJECT_LIMIT".into()))?;
-		let limit = i64::try_from(self.0.retained_bytes)
-			.map_err(|_| Error::Invalid("invalid quota".into()))?;
+		let limit = if grandfather_existing {
+			i64::MAX
+		} else {
+			i64::try_from(self.0.retained_bytes)
+				.map_err(|_| Error::Invalid("invalid quota".into()))?
+		};
 		{
-			let query_bind_1 = &access.identity.tenant;
+			let query_bind_1 = tenant.to_owned();
 			crate::database::native::query(
 				&Query::insert()
 					.into_table(Alias::new("core_quotas"))
@@ -235,11 +262,11 @@ impl Runtime {
 					)
 					.to_string(PostgresQueryBuilder),
 			)
-			.execute(&mut **access.tx)
+			.execute(&mut **tx)
 			.await?
 		};
 		let reserved: Option<i64> = {
-			let query_bind_1 = &access.identity.tenant;
+			let query_bind_1 = tenant.to_owned();
 			let query_bind_2 = size;
 			let query_bind_3 = limit;
 			crate::database::native::query_scalar(
@@ -274,7 +301,7 @@ impl Runtime {
 					.returning([Alias::new("used_bytes")])
 					.to_string(PostgresQueryBuilder),
 			)
-			.scalar_optional(&mut **access.tx)
+			.scalar_optional(&mut **tx)
 			.await?
 		};
 		if reserved.is_none() {
@@ -311,7 +338,7 @@ impl Runtime {
 					))
 					.to_string(PostgresQueryBuilder),
 			)
-			.execute(&mut **access.tx)
+			.execute(&mut **tx)
 			.await?
 		};
 		let intents = self.0.storage.join(".intents");
@@ -321,7 +348,11 @@ impl Runtime {
 		#[cfg(unix)]
 		intent_options.mode(0o600);
 		let mut intent = intent_options.open(intents.join(id.to_string())).await?;
-		intent.write_all(&serde_json::to_vec(&serde_json::json!({"id":id,"tenant":access.identity.tenant,"area_id":area,"kind":kind,"size":size}))?).await?;
+		intent
+			.write_all(&serde_json::to_vec(
+				&serde_json::json!({"id":id,"tenant":tenant,"area_id":area,"kind":kind,"size":size}),
+			)?)
+			.await?;
 		intent.sync_all().await?;
 		tokio::fs::File::open(&intents).await?.sync_all().await?;
 		let mut options = tokio::fs::OpenOptions::new();

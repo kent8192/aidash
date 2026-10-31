@@ -18,8 +18,8 @@ fn invalid_attachment_is_rejected(
 	);
 }
 #[rstest]
-fn attachment_size_limit_accepts_exactly_one_mib() {
-	let exact = vec![1; 1024 * 1024];
+fn attachment_size_limit_accepts_exactly_eight_mib() {
+	let exact = vec![1; 8 * 1024 * 1024];
 	assert_eq!(
 		validate_attachment("evidence.bin", "application/octet-stream", &exact),
 		Ok(())
@@ -27,7 +27,7 @@ fn attachment_size_limit_accepts_exactly_one_mib() {
 	let too_large = vec![1; exact.len() + 1];
 	assert_eq!(
 		validate_attachment("evidence.bin", "application/octet-stream", &too_large),
-		Err(Error::Invalid("attachment exceeds 1 MiB".into()))
+		Err(Error::Invalid("attachment exceeds 8 MiB".into()))
 	);
 }
 #[rstest]

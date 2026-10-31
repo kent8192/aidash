@@ -14,6 +14,9 @@ pub trait ThreadScope: CleanupScope {
 		thread: Uuid,
 		offset: u64,
 	) -> Result<Vec<Area>>;
+	/// Remove the deleted thread's attachments in the tombstone transaction.
+	async fn delete_attachments(&mut self, workspace: Uuid, thread: Uuid, root: Uuid)
+	-> Result<()>;
 	async fn cancel_generation(&mut self, area: &Area) -> Result<()>;
 	async fn event(&mut self, workspace: Uuid, kind: &str, data: Value) -> Result<()>;
 }
