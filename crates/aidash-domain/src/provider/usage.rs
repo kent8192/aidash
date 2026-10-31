@@ -218,6 +218,8 @@ pub struct UsageDispatch {
 	pub model_version: String,
 	/// The Run's pinned Projection Version, as [`crate::projection::ProjectionVersion::number`].
 	pub projection_version: u8,
+	/// The Run's pinned Harness Contract, as [`crate::harness_contract::HarnessContract::number`].
+	pub harness_contract: u8,
 	/// The upstream model slug (`ModelConfig::model_id`), the calibration key.
 	pub upstream_model: String,
 	pub estimate: RequestEstimate,
