@@ -655,6 +655,57 @@ async fn expired_capability_is_non_retryable_without_remint_or_key_read() {
 }
 
 #[tokio::test]
+async fn an_observer_discovery_token_cannot_send_a_decision() {
+	let c = Cloud::new(false).await;
+	let id = c.context.provider_credential_id.unwrap();
+	*c.repo.bindings.lock().unwrap() = vec![Binding {
+		tenant: "tenant-a".into(),
+		provider: Provider::Openrouter,
+		provider_credential_id: Some(id),
+		revision: 1,
+	}];
+	let mut context = c.scoped(CallOperation::DecisionDiscovery);
+	context.run = None;
+	context.observation = Some(Uuid::from_u128(42));
+	let inference = context.inference.as_mut().unwrap();
+	inference.call = Some(Uuid::from_u128(43));
+	inference.max_output_tokens = 0;
+	inference.hosts = vec!["vendor".into()];
+	let access = c
+		.access
+		.resolve(
+			&context,
+			Provider::Openrouter.base_url(),
+			&AccessSource::Tenant {
+				provider: "openrouter".into(),
+			},
+		)
+		.await
+		.unwrap();
+	let client = reqwest::Client::new();
+	let response = client
+		.get(format!("{}/endpoints/zdr", access.endpoint))
+		.bearer_auth(access.bearer.expose_secret())
+		.send()
+		.await
+		.unwrap();
+	assert_eq!(response.status(), 200);
+	let claim = c.signer.claims.lock().unwrap().last().unwrap().clone();
+	assert_eq!(claim.ops, vec![Operation::Discovery]);
+	assert!(claim.hosts.is_empty());
+	assert_eq!(claim.max_output_tokens, 1);
+	let response = client
+		.post(format!("{}/systemone", access.endpoint))
+		.bearer_auth(access.bearer.expose_secret())
+		.json(&decision())
+		.send()
+		.await
+		.unwrap();
+	assert_eq!(response.status(), 403);
+	assert_eq!(c.fixture.provider.calls.load(Ordering::SeqCst), 1);
+}
+
+#[tokio::test]
 async fn an_independent_observer_mints_and_relays_its_exact_decision_attempt() {
 	let c = Cloud::new(false).await;
 	let id = c.context.provider_credential_id.unwrap();

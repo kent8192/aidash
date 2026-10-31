@@ -90,6 +90,7 @@ impl TokenIssuer for CapabilityIssuer {
 		let request = context.inference.as_ref().ok_or_else(|| {
 			Error::Invalid("Capability Token has no approved inference scope".into())
 		})?;
+		let decision_discovery = request.operations == [Operation::DecisionDiscovery];
 		aidash_domain::provider_credentials::validate_model_id(&request.model)?;
 		if request.operations.is_empty()
 			|| request.operations.len() > 3
@@ -103,6 +104,12 @@ impl TokenIssuer for CapabilityIssuer {
 				&& (request.operations.len() != 1
 					|| request.max_output_tokens != 0
 					|| request.cache_breakpoints))
+			|| (request.operations.contains(&Operation::DecisionDiscovery)
+				&& (!decision_discovery
+					|| request.max_output_tokens != 0
+					|| request.cache_breakpoints
+					|| !request.provider_tools.is_empty()
+					|| request.call.is_none_or(|call| call.is_nil())))
 			|| (!context.is_decision()
 				&& (request.max_output_tokens == 0 || !request.hosts.is_empty()))
 			|| context.tenant != credential.tenant
@@ -195,14 +202,23 @@ impl TokenIssuer for CapabilityIssuer {
 				.map(|op| match op {
 					Operation::Chat => aidash_capability::Operation::Chat,
 					Operation::Discovery => aidash_capability::Operation::Discovery,
+					Operation::DecisionDiscovery => aidash_capability::Operation::Discovery,
 					Operation::Embeddings => aidash_capability::Operation::Embeddings,
 					Operation::Decision => aidash_capability::Operation::Decision,
 				})
 				.collect(),
 			model: request.model.clone(),
-			max_output_tokens: u64::from(request.max_output_tokens),
+			max_output_tokens: if decision_discovery {
+				1
+			} else {
+				u64::from(request.max_output_tokens)
+			},
 			cache_breakpoints: request.cache_breakpoints,
-			hosts: request.hosts.clone(),
+			hosts: if decision_discovery {
+				vec![]
+			} else {
+				request.hosts.clone()
+			},
 		};
 		let bearer = aidash_capability::mint(&claims, self.signer.as_ref())
 			.await

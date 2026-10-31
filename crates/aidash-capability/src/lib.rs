@@ -284,7 +284,10 @@ impl PublicKeys {
 			}
 		} else if claims.max_output_tokens == 0
 			|| !claims.hosts.is_empty()
-			|| matches!(claims.sub, TokenSubject::ApprovalObservation { .. })
+			|| (matches!(claims.sub, TokenSubject::ApprovalObservation { .. })
+				&& (claims.ops != [Operation::Discovery]
+					|| claims.max_output_tokens != 1
+					|| claims.cache_breakpoints))
 		{
 			return Err(Failure::ClaimViolation);
 		}

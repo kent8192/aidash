@@ -45,14 +45,23 @@ pub async fn zdr_routes(
 		catalog
 	} else {
 		let mut discovery = context.clone();
-		discovery.inference = Some(Inference {
-			provider_tools: vec![],
-			model: model.into(),
-			operations: vec![Operation::Discovery],
-			max_output_tokens: 1,
-			cache_breakpoints: false,
-			call: None,
-			hosts: vec![],
+		discovery.inference = Some(if context.is_decision() {
+			let mut attempt = context
+				.inference
+				.clone()
+				.expect("decision scope has inference");
+			attempt.operations = vec![Operation::DecisionDiscovery];
+			attempt
+		} else {
+			Inference {
+				provider_tools: vec![],
+				model: model.into(),
+				operations: vec![Operation::Discovery],
+				max_output_tokens: 1,
+				cache_breakpoints: false,
+				call: None,
+				hosts: vec![],
+			}
 		});
 		let access = access.resolve(&discovery, endpoint, source).await?;
 		let mut request = clients.select(&access)?.get(format!(

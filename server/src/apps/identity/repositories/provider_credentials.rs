@@ -513,7 +513,11 @@ impl aidash_application::provider_access::ProviderAccess for AdmittedAccess {
 		};
 		let mut context = context.clone();
 		if context.inference.as_ref().is_some_and(|inference| {
-			inference.operations == [aidash_application::provider_access::Operation::Discovery]
+			matches!(
+				inference.operations.as_slice(),
+				[aidash_application::provider_access::Operation::Discovery]
+					| [aidash_application::provider_access::Operation::DecisionDiscovery]
+			)
 		}) {
 			// Catalog reads carry no Tenant content and no body policy to race.
 			context.data_protection = policy;

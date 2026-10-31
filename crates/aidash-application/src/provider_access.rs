@@ -43,15 +43,20 @@ pub enum Operation {
 	Embeddings,
 	/// One System One request: a Decision Attempt of a Run (ADR 0041).
 	Decision,
+	/// A ZDR catalog read made on behalf of a charged Decision Attempt.
+	DecisionDiscovery,
 }
 impl Context {
 	/// A Decision Attempt uses the Tenant's current binding rather than the Run's
 	/// admitted pin: Runs on a Plan Connection or a Keyless endpoint have no
 	/// OpenRouter pin, and compaction is not inference (ADR 0041).
 	pub fn is_decision(&self) -> bool {
-		self.inference
-			.as_ref()
-			.is_some_and(|inference| inference.operations == [Operation::Decision])
+		self.inference.as_ref().is_some_and(|inference| {
+			matches!(
+				inference.operations.as_slice(),
+				[Operation::Decision] | [Operation::DecisionDiscovery]
+			)
+		})
 	}
 }
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

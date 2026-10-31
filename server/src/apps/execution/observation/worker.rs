@@ -500,8 +500,11 @@ pub(crate) async fn provider_scope(
 	frame.validate()?;
 	let inference = context.inference.as_ref().ok_or(Error::Forbidden)?;
 	let config = frame.settings.config.as_ref().ok_or(Error::Forbidden)?;
-	if inference.operations != [aidash_application::provider_access::Operation::Decision]
-		|| inference.max_output_tokens != 0
+	if !matches!(
+		inference.operations.as_slice(),
+		[aidash_application::provider_access::Operation::Decision]
+			| [aidash_application::provider_access::Operation::DecisionDiscovery]
+	) || inference.max_output_tokens != 0
 		|| inference.cache_breakpoints
 		|| !config
 			.routes

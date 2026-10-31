@@ -352,6 +352,32 @@ async fn observation_tokens_are_tenant_bound_decision_attempts_without_a_run() {
 }
 
 #[tokio::test]
+async fn observation_discovery_token_cannot_authorize_a_decision() {
+	let signer = InMemorySigner::new("kms/versions/1".into(), [7; 32]);
+	let mut keys = PublicKeys::default();
+	keys.insert(signer.kid().into(), signer.public_key());
+	let mut value = claims();
+	value.sub = TokenSubject::ApprovalObservation {
+		observation: Uuid::from_u128(42),
+		tenant: value.tenant.clone(),
+		call: Uuid::from_u128(43),
+	};
+	value.ops = vec![Operation::Discovery];
+	value.max_output_tokens = 1;
+	let token = mint(&value, &signer).await.unwrap();
+	let verified = keys
+		.verify(token.expose_secret(), "worker", "environment", 100)
+		.unwrap();
+	assert_eq!(verified.ops, vec![Operation::Discovery]);
+	value.ops.push(Operation::Decision);
+	let token = mint(&value, &signer).await.unwrap();
+	assert!(
+		keys.verify(token.expose_secret(), "worker", "environment", 100)
+			.is_err()
+	);
+}
+
+#[tokio::test]
 async fn provider_tools_authority_is_bound_to_one_run_inference_operation() {
 	let signer = InMemorySigner::new("kms/versions/1".into(), [7; 32]);
 	let mut keys = PublicKeys::default();

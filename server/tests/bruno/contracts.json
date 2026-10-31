@@ -47734,7 +47734,7 @@
               "enum": ["secret_or_connection_missing"]
             }
           ],
-          "description": "Whether one exact version can be used now, and if not, what stands in the\nway. `Approved` means the Node's approval is enabled; a separate `widen`\nreports an approved restriction that no longer admits the root agent."
+          "description": "Whether one exact version can be used now, and if not, what stands in the\nway. `Approved` means the Node's approval is enabled; a separate `widen`\nreports an approved restriction that no longer admits every consumer."
         }
       }
     }

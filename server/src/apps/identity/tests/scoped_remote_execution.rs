@@ -6309,6 +6309,9 @@ fn model_router(model_script: ModelScript) -> Arc<Router> {
         let count=calls.len(); drop(calls); script.entered.notify_one(); if script.hold.load(Ordering::Acquire) {script.release.notified().await;} let message=if count==1 && script.force_memory_mutate.load(Ordering::Acquire) {json!({"role":"assistant","content":null,"tool_calls":[{"id":"forbidden-write","type":"function","function":{"name":"memory_mutate","arguments":"{\"data\":{\"forbidden\":true}}"}}]})} else if count<=1+script.extra_tool_rounds.load(Ordering::Acquire) {json!({"role":"assistant","content":null,"tool_calls":[{"id":if count==1 {"note".to_owned()} else {format!("note-{count}")},"type":"function","function":{"name":"workspace_message","arguments":"{\"content\":\"Scoped remote progress\"}"}}]})} else {json!({"role":"assistant","content":"Scoped remote result"})};
         reinhardt::Response::ok().with_json(&json!({"choices":[{"index":0,"finish_reason":if message.get("tool_calls").is_some(){"tool_calls"}else{"stop"},"message":message}],"usage":{"prompt_tokens":1,"completion_tokens":1}})).unwrap()
     }}}))
+.route("/endpoints/zdr", http::Method::GET, reply(|_request: reinhardt::Request| async {
+        reinhardt::Response::ok().with_json(&json!({"data":[{"model_id":"typesafe/jev-1.13","tag":"typesafe/jev"}]})).unwrap()
+    }))
 .route("/systemone", http::Method::POST, reply({let script=model_script.clone();move |request:reinhardt::Request| {let script=script.clone();let input=request.json::<Value>().unwrap();async move {
 		if let Some(check)=script.compaction_reservations.lock().await.clone() {check.before_http().await;}
 		script.compactions.lock().await.push(input.clone());
