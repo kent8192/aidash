@@ -18,8 +18,15 @@ pub trait KeyValidator: Send + Sync {
 	async fn validate(&self, provider: Provider, key: &SecretString) -> Result<Validation>;
 }
 /// The write port of the Secret Store: Key Material, Plan Tokens and Tenant
-/// Secret values. Deliberately no access/read-payload operation, even for the
-/// fake adapter.
+/// Public metadata sealed alongside a stored OAuth Client secret on Cloud.
+#[derive(Clone, Debug)]
+pub struct ClientBinding {
+	pub issuer: String,
+	pub client_id: String,
+	pub redirect_uri: Option<String>,
+}
+/// Secret values, MCP OAuth tokens and registered client secrets. Deliberately
+/// no access/read-payload operation, even for the fake adapter.
 #[async_trait]
 pub trait Store: Send + Sync {
 	fn resource(&self, id: Uuid) -> String;
@@ -32,8 +39,41 @@ pub trait Store: Send + Sync {
 	async fn disable(&self, tenant: &str, version: &str) -> Result<()>;
 	async fn destroy(&self, tenant: &str, version: &str) -> Result<()>;
 	async fn delete(&self, tenant: &str, resource: &str) -> Result<()>;
-	/// The resource holding one Plan Connection's Plan Tokens. Plan Tokens
-	/// share the Store with Key Material under their own namespace (ADR 0008).
+	/// Whether this Store implements OAuth Client secret storage.
+	fn supports_oauth_client_secrets(&self) -> bool {
+		false
+	}
+	/// The resource holding one registered OAuth Client secret.
+	fn oauth_client_resource(&self, id: Uuid) -> String {
+		format!("aidash-store/oauth-clients/{id}")
+	}
+	/// Self-hosted OAuth Client versions contain plain client_secret bytes.
+	/// Cloud writes use add_client_version to seal the issuer/client binding.
+	/// Stores that have not implemented this namespace refuse it.
+	/// Implementations must preserve an existing resource and version counter
+	/// when a replacement or interrupted write retries this operation.
+	async fn create_oauth_client(&self, _tenant: &str, _id: Uuid) -> Result<()> {
+		Err(Error::OAuthClientSecretsUnavailable)
+	}
+	/// One person's MCP OAuth token journal, in its own Store namespace.
+	fn connection_resource(&self, id: Uuid) -> String {
+		format!("aidash-store/oauth-connections/{id}")
+	}
+	async fn create_connection(&self, _tenant: &str, _id: Uuid) -> Result<()> {
+		Err(Error::ConnectionStoreUnavailable)
+	}
+	/// Self-hosted stores preserve their existing bytes; Cloud seals the binding.
+	async fn add_client_version(
+		&self,
+		tenant: &str,
+		resource: &str,
+		_binding: ClientBinding,
+		secret: &SecretString,
+	) -> Result<String> {
+		self.add_version(tenant, resource, secret).await
+	}
+
+	/// Plan Tokens share the Store under their own namespace (ADR 0008).
 	fn plan_resource(&self, id: Uuid) -> String {
 		format!("aidash-store/plan-connections/{id}")
 	}

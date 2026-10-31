@@ -22,8 +22,16 @@ pub mod readiness;
 /// Every mutating scope serializes one Tenant, including quota and name races.
 #[async_trait]
 pub trait Scope: Send {
-	/// The Tenant's Tenant Secret of that name that is not deleted.
+	/// The Tenant's shared Tenant Secret of that name that is not deleted.
 	async fn named(&mut self, name: &str) -> Result<Option<TenantSecret>>;
+	/// A live name in exactly one ownership namespace. `None` is shared.
+	async fn owned(&mut self, owner: Option<&str>, name: &str) -> Result<Option<TenantSecret>> {
+		Ok(self
+			.list()
+			.await?
+			.into_iter()
+			.find(|row| row.owner.as_deref() == owner && row.name == name))
+	}
 	/// A Tenant Secret in any state, for lifecycle work.
 	async fn by_id(&mut self, id: Uuid) -> Result<Option<TenantSecret>>;
 	async fn list(&mut self) -> Result<Vec<TenantSecret>>;
@@ -201,6 +209,23 @@ pub fn forward_rest(endpoint: &str) -> Result<String> {
 	Ok(endpoint_path_parts(endpoint)?.1)
 }
 
+/// OAuth identity drops trailing slashes, but forwarding must preserve the
+/// original endpoint. Its signed directory retains an endpoint's trailing `/`.
+pub fn connection_forward_rest(resource: &str, destination: &Destination) -> Result<String> {
+	let url = Url::parse(resource).map_err(|_| Error::Invalid("invalid MCP resource".into()))?;
+	if url.origin().ascii_serialization() != destination.origin {
+		return Err(Error::Forbidden);
+	}
+	let prefix = &destination.path_prefix;
+	if url.path().trim_end_matches('/') == prefix.trim_end_matches('/') {
+		return Ok(String::new());
+	}
+	url.path()
+		.strip_prefix(prefix)
+		.map(str::to_owned)
+		.ok_or(Error::Forbidden)
+}
+
 /// What an invocation records about the Tenant Secret it carried. The value
 /// itself is never recorded.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -211,10 +236,21 @@ pub struct SecretRecord {
 	pub host: String,
 }
 
-/// One call's Tenant Secret. A brokered credential can mint a new token for
+/// One call's credential: a person's Connection or a named Tenant Secret.
+/// A brokered credential can mint a new token for
 /// the next request of a long-lived MCP session; a self-hosted one carries the
 /// value read for this call alone.
+#[derive(Clone)]
 pub enum CallSecret {
+	BrokeredConnection {
+		record: ConnectionRecord,
+		source: Arc<dyn SecretRouteSource>,
+		rest: String,
+	},
+	Connection {
+		record: ConnectionRecord,
+		source: Arc<dyn BearerSource>,
+	},
 	Value {
 		record: SecretRecord,
 		value: SecretString,
@@ -227,11 +263,28 @@ pub enum CallSecret {
 	},
 }
 impl CallSecret {
-	pub fn record(&self) -> &SecretRecord {
+	pub fn record(&self) -> Option<&SecretRecord> {
 		match self {
-			Self::Value { record, .. } | Self::Brokered { record, .. } => record,
+			Self::Value { record, .. } | Self::Brokered { record, .. } => Some(record),
+			Self::Connection { .. } | Self::BrokeredConnection { .. } => None,
 		}
 	}
+}
+
+/// Metadata of the person's OAuth Connection used by an invocation. Never a token.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ConnectionRecord {
+	pub id: Uuid,
+	pub resource: String,
+	pub host: String,
+}
+
+/// A long-lived MCP session obtains the current bearer before each request.
+#[async_trait]
+pub trait BearerSource: Send + Sync {
+	async fn bearer(&self) -> Result<SecretString>;
+	/// A server refused the bearer; the next request must force a refresh.
+	async fn invalidate(&self);
 }
 
 /// Mints another route for the same call. A transport that keeps one MCP
@@ -240,6 +293,24 @@ impl CallSecret {
 #[async_trait]
 pub trait SecretRouteSource: Send + Sync {
 	async fn route(&self) -> Result<SecretRoute>;
+	/// A connection bearer was refused; make the next route refresh.
+	async fn invalidate(&self) {}
+}
+
+/// A missing personal secret is actionable before any tool operation executes.
+pub fn personal_required(name: &str) -> Error {
+	Error::Invalid(
+		serde_json::json!({"error":UNAVAILABLE,
+        "hint":format!("Add a personal secret named '{name}'.")})
+		.to_string(),
+	)
+}
+pub(crate) fn personal_error_value(error: &Error) -> Option<serde_json::Value> {
+	let Error::Invalid(message) = error else {
+		return None;
+	};
+	let value: serde_json::Value = serde_json::from_str(message).ok()?;
+	(value["error"] == UNAVAILABLE && value["hint"].is_string()).then_some(value)
 }
 
 pub struct Service {
@@ -256,10 +327,40 @@ pub struct Service {
 	pub max_per_tenant: usize,
 }
 
+/// The namespace selected by the caller; personal ownership always resolves to
+/// the authenticated subject, never a subject supplied in a request.
+#[derive(
+	Debug,
+	Clone,
+	Copy,
+	Default,
+	PartialEq,
+	Eq,
+	serde::Serialize,
+	serde::Deserialize,
+	schemars::JsonSchema,
+)]
+#[serde(rename_all = "snake_case")]
+#[schemars(rename = "SecretOwnership")]
+pub enum Ownership {
+	Me,
+	#[default]
+	Tenant,
+}
+impl Ownership {
+	pub fn subject(self, caller: &str) -> Option<&str> {
+		match self {
+			Self::Me => Some(caller),
+			Self::Tenant => None,
+		}
+	}
+}
+
 /// What a caller may learn about a Tenant Secret.
 #[derive(Debug, Clone, serde::Serialize, schemars::JsonSchema)]
 #[schemars(rename = "TenantSecretMetadata")]
 pub struct Metadata {
+	pub owner: Ownership,
 	pub id: Uuid,
 	pub tenant: String,
 	pub name: String,
@@ -273,6 +374,11 @@ pub struct Metadata {
 impl From<TenantSecret> for Metadata {
 	fn from(v: TenantSecret) -> Self {
 		Self {
+			owner: if v.owner.is_some() {
+				Ownership::Me
+			} else {
+				Ownership::Tenant
+			},
 			id: v.id,
 			tenant: v.tenant,
 			name: v.name,
@@ -291,6 +397,15 @@ pub struct Put {
 	pub expected_revision: i64,
 	pub value: Option<SecretString>,
 	pub hosts: Option<Vec<String>>,
+}
+
+/// A validated new name and value in one ownership namespace.
+struct NewSecret<'a> {
+	tenant: &'a str,
+	owner: Option<&'a str>,
+	name: &'a str,
+	value: SecretString,
+	hosts: Vec<String>,
 }
 
 pub const RECONCILIATION_BATCH_SIZE: usize = 25;
@@ -381,7 +496,11 @@ impl Service {
 		let mut scope = self.repository.begin(tenant).await?;
 		let rows = scope.list().await?;
 		scope.commit().await?;
-		Ok(rows.into_iter().map(Metadata::from).collect())
+		Ok(rows
+			.into_iter()
+			.filter(|row| row.owner.is_none())
+			.map(Metadata::from)
+			.collect())
 	}
 
 	/// The Tenant's active Tenant Secrets, for readiness facts. A pending or
@@ -392,16 +511,54 @@ impl Service {
 		scope.commit().await?;
 		Ok(rows
 			.into_iter()
-			.filter(|row| row.state == State::Active)
+			.filter(|row| row.state == State::Active && row.owner.is_none())
 			.map(Metadata::from)
 			.collect())
 	}
-	pub async fn get(&self, tenant: &str, name: &str) -> Result<Metadata> {
+	/// Shared lookup retained for all existing callers.
+	pub async fn shared(&self, tenant: &str, name: &str) -> Result<Option<TenantSecret>> {
 		tenant_secrets::validate_name(name)?;
 		let mut scope = self.repository.begin(tenant).await?;
 		let row = scope.named(name).await?;
 		scope.commit().await?;
-		row.map(Metadata::from)
+		Ok(row)
+	}
+	pub async fn personal(
+		&self,
+		tenant: &str,
+		subject: &str,
+		name: &str,
+	) -> Result<Option<TenantSecret>> {
+		tenant_secrets::validate_name(name)?;
+		let mut scope = self.repository.begin(tenant).await?;
+		let row = scope.owned(Some(subject), name).await?;
+		scope.commit().await?;
+		Ok(row)
+	}
+	pub async fn list_for(&self, tenant: &str, subject: &str) -> Result<Vec<Metadata>> {
+		let mut scope = self.repository.begin(tenant).await?;
+		let rows = scope.list().await?;
+		scope.commit().await?;
+		Ok(rows
+			.into_iter()
+			.filter(|row| row.owner.is_none() || row.owner.as_deref() == Some(subject))
+			.map(Into::into)
+			.collect())
+	}
+	pub async fn get(&self, tenant: &str, name: &str) -> Result<Metadata> {
+		self.get_owned(tenant, None, name).await
+	}
+	pub async fn get_owned(
+		&self,
+		tenant: &str,
+		owner: Option<&str>,
+		name: &str,
+	) -> Result<Metadata> {
+		tenant_secrets::validate_name(name)?;
+		let mut scope = self.repository.begin(tenant).await?;
+		let row = scope.owned(owner, name).await?;
+		scope.commit().await?;
+		row.map(Into::into)
 			.ok_or_else(|| Error::NotFound("Tenant Secret".into()))
 	}
 
@@ -417,6 +574,16 @@ impl Service {
 	/// Stores a new Tenant Secret, or replaces the value and the hosts of an
 	/// existing one. A replacement changes no definition version.
 	pub async fn put(&self, tenant: &str, name: &str, input: Put, actor: &str) -> Result<Metadata> {
+		self.put_owned(tenant, None, name, input, actor).await
+	}
+	pub async fn put_owned(
+		&self,
+		tenant: &str,
+		owner: Option<&str>,
+		name: &str,
+		input: Put,
+		actor: &str,
+	) -> Result<Metadata> {
 		tenant_secrets::validate_name(name)?;
 		if let Some(value) = &input.value {
 			validate_value(value)?;
@@ -427,7 +594,7 @@ impl Service {
 			.map(tenant_secrets::normalize_hosts)
 			.transpose()?;
 		let mut scope = self.repository.begin(tenant).await?;
-		match scope.named(name).await? {
+		match scope.owned(owner, name).await? {
 			None => {
 				if input.expected_revision != 0 {
 					return Err(Error::Conflict("stale Tenant Secret revision".into()));
@@ -440,7 +607,18 @@ impl Service {
 				if scope.count().await? >= self.max_per_tenant {
 					return Err(Error::Conflict("Tenant Secret quota reached".into()));
 				}
-				self.create(tenant, name, value, hosts, scope, actor).await
+				self.create(
+					NewSecret {
+						tenant,
+						owner,
+						name,
+						value,
+						hosts,
+					},
+					scope,
+					actor,
+				)
+				.await
 			}
 			Some(mut row) => {
 				row.check_revision(input.expected_revision)?;
@@ -501,13 +679,17 @@ impl Service {
 
 	async fn create(
 		&self,
-		tenant: &str,
-		name: &str,
-		value: SecretString,
-		hosts: Vec<String>,
+		input: NewSecret<'_>,
 		mut scope: Box<dyn Scope>,
 		actor: &str,
 	) -> Result<Metadata> {
+		let NewSecret {
+			tenant,
+			owner,
+			name,
+			value,
+			hosts,
+		} = input;
 		let id = Uuid::now_v7();
 		let (fingerprint, last4) = self.fingerprint(tenant, &value);
 		let now = Utc::now();
@@ -516,6 +698,7 @@ impl Service {
 			tenant: tenant.into(),
 			name: name.into(),
 			hosts,
+			owner: owner.map(str::to_owned),
 			secret_resource: self.store.secret_resource(id),
 			pinned_version: None,
 			fingerprint,
@@ -533,7 +716,7 @@ impl Service {
 			.add_secret_version(tenant, &row.secret_resource, &row.hosts, &value)
 			.await?;
 		let mut scope = self.repository.begin(tenant).await?;
-		let pending = scope.named(name).await?;
+		let pending = scope.owned(owner, name).await?;
 		if pending.is_none_or(|p| p.id != id || p.state != State::Pending) {
 			// Reconciliation may win while the Secret Store write is in flight.
 			self.store.delete(tenant, &row.secret_resource).await?;
@@ -557,10 +740,21 @@ impl Service {
 		expected_revision: i64,
 		actor: &str,
 	) -> Result<Metadata> {
+		self.delete_owned(tenant, None, name, expected_revision, actor)
+			.await
+	}
+	pub async fn delete_owned(
+		&self,
+		tenant: &str,
+		owner: Option<&str>,
+		name: &str,
+		expected_revision: i64,
+		actor: &str,
+	) -> Result<Metadata> {
 		tenant_secrets::validate_name(name)?;
 		let mut scope = self.repository.begin(tenant).await?;
 		let mut row = scope
-			.named(name)
+			.owned(owner, name)
 			.await?
 			.ok_or_else(|| Error::NotFound("Tenant Secret".into()))?;
 		row.check_revision(expected_revision)?;
@@ -720,7 +914,54 @@ impl Service {
 		call: SecretCall,
 	) -> Result<CallSecret> {
 		let row = self.active_row(tenant, name, endpoint).await?;
-		let pinned = row.require_active()?.to_owned();
+		self.call_secret_row(&row, endpoint, call).await
+	}
+
+	/// Selects the chain-root person's named secret before the shared namespace.
+	/// An existing personal row that refuses the endpoint never falls back to shared.
+	pub async fn call_secret_for(
+		self: &Arc<Self>,
+		tenant: &str,
+		subject: Option<&str>,
+		name: &str,
+		owner: aidash_domain::tool::SecretOwner,
+		endpoint: &str,
+		call: SecretCall,
+	) -> Result<CallSecret> {
+		let personal = match subject {
+			Some(subject) => self.personal(tenant, subject, name).await?,
+			None => None,
+		};
+		let shared = if owner == aidash_domain::tool::SecretOwner::Any {
+			self.shared(tenant, name).await?
+		} else {
+			None
+		};
+		let row = tenant_secrets::pick_secret(personal.as_ref(), shared.as_ref(), owner)
+			.ok_or_else(|| {
+				if owner == aidash_domain::tool::SecretOwner::Personal {
+					personal_required(name)
+				} else {
+					unavailable()
+				}
+			})?;
+		self.call_secret_row(row, endpoint, call).await
+	}
+
+	/// Resolves a repository row already selected by the caller's ownership policy.
+	/// The row's own state and hosts apply to both self-hosted and brokered calls.
+	pub async fn call_secret_row(
+		self: &Arc<Self>,
+		row: &TenantSecret,
+		endpoint: &str,
+		call: SecretCall,
+	) -> Result<CallSecret> {
+		if row.state != State::Active
+			|| !tenant_secrets::permits(&row.hosts, endpoint).unwrap_or(false)
+		{
+			return Err(unavailable());
+		}
+		let pinned = row.require_active().map_err(|_| unavailable())?.to_owned();
 		let record = SecretRecord {
 			id: row.id,
 			version: numeric_version(&pinned)?,
@@ -730,13 +971,16 @@ impl Service {
 			id: record.id,
 			version: record.version.clone(),
 		};
-		match self.resolve_row(tenant, &row, Some(call.clone())).await? {
+		match self
+			.resolve_row(&row.tenant, row, Some(call.clone()))
+			.await?
+		{
 			Resolved::Brokered(first) => Ok(CallSecret::Brokered {
 				record,
 				source: Arc::new(RefreshSource {
 					service: Arc::downgrade(self),
-					tenant: tenant.into(),
-					name: name.into(),
+					tenant: row.tenant.clone(),
+					secret: row.id,
 					endpoint: endpoint.into(),
 					call,
 					recorded,
@@ -760,6 +1004,34 @@ impl Service {
 			purged += 1;
 		}
 		Ok(purged)
+	}
+
+	/// Removes only the departing person's values, retaining shared and other
+	/// people's values. Store destruction completes before metadata is removed.
+	pub async fn retire_subject(&self, tenant: &str, subject: &str) -> Result<usize> {
+		let mut count = 0;
+		for candidate in self
+			.repository
+			.all(tenant)
+			.await?
+			.into_iter()
+			.filter(|row| row.owner.as_deref() == Some(subject))
+		{
+			let mut scope = self.repository.begin(tenant).await?;
+			// Serialize destruction with replacements. A pending create that
+			// finishes later observes the removed row and destroys its resource.
+			if let Some(row) = scope
+				.by_id(candidate.id)
+				.await?
+				.filter(|row| row.owner.as_deref() == Some(subject))
+			{
+				self.destroy_contents(&row).await?;
+				scope.remove(row.id).await?;
+				count += 1;
+			}
+			scope.commit().await?;
+		}
+		Ok(count)
 	}
 
 	async fn destroy_contents(&self, row: &TenantSecret) -> Result<()> {
@@ -859,7 +1131,7 @@ impl Service {
 struct RefreshSource {
 	service: std::sync::Weak<Service>,
 	tenant: String,
-	name: String,
+	secret: Uuid,
 	endpoint: String,
 	call: SecretCall,
 	/// The Tenant Secret and version the invocation recorded. A refresh mints
@@ -878,13 +1150,16 @@ impl SecretRouteSource for RefreshSource {
 		let service = self.service.upgrade().ok_or_else(|| {
 			Error::External("Tenant Secret broker routing is no longer available".into())
 		})?;
-		let row = service
-			.active_row(&self.tenant, &self.name, &self.endpoint)
-			.await?;
-		// A session that outlives a rotation, or a name deleted and created
-		// again, stops rather than carry a value its invocation does not
-		// record; the next call records the current one (ADR 0095).
-		if row.id != self.recorded.id
+		// Keep the selected id across refreshes: a personal call must never re-resolve
+		// a shared name, or silently use a replacement created after deletion.
+		let mut scope = service.repository.begin(&self.tenant).await?;
+		let row = scope.by_id(self.secret).await?;
+		scope.commit().await?;
+		let row = row
+			.filter(|row| row.tenant == self.tenant && row.state == State::Active)
+			.ok_or_else(unavailable)?;
+		if !tenant_secrets::permits(&row.hosts, &self.endpoint).unwrap_or(false)
+			|| row.id != self.recorded.id
 			|| numeric_version(row.require_active()?)? != self.recorded.version
 		{
 			return Err(unavailable());

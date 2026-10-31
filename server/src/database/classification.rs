@@ -306,6 +306,10 @@ pub const TABLES: &[Table] = &[
 	// this Deployment's Plan Connection host ID
 	table("identity", "plan_connection_hosts", DeploymentWide),
 	table("identity", "plan_connections", TenantOwned),
+	table("identity", "oauth_connections", TenantOwned),
+	table("identity", "remote_connection_calls", TenantOwned),
+	table("identity", "oauth_authorizations", TenantOwned),
+	table("identity", "oauth_dynamic_clients", TenantOwned),
 	// pending OAuth flows bound to a browser, like sign-in state
 	named("identity", "provider_authorizations"),
 	table("identity", "provider_credential_bindings", TenantOwned),
@@ -317,6 +321,8 @@ pub const TABLES: &[Table] = &[
 	table("identity", "tenant_retention_rules", TenantOwned),
 	// Tenant Secret metadata (ADR 0051); the values are in the Secret Store
 	table("identity", "tenant_secrets", TenantOwned),
+	table("identity", "oauth_clients", TenantOwned),
+	table("identity", "connection_scope_ceilings", TenantOwned),
 	// Tenant Deletions outlive purge and are read while the Tenant refuses everyone (ADR 0060)
 	table("identity", "tenant_deletions", DeploymentWide),
 	// Tenant root records: the Deployment's list of Tenants (ADR 0050)

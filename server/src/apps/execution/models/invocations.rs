@@ -47,6 +47,9 @@ pub struct Invocation {
 	pub tenant_secret_version: Option<String>,
 	#[field(null = true, field_type = "text")]
 	pub tenant_secret_host: Option<String>,
+	/// OAuth Connection used for this invocation, never its bearer.
+	#[field(null = true)]
+	pub connection_id: Option<Uuid>,
 	#[field(default = 0)]
 	pub delivery_failures: i32,
 	#[field(default = false)]

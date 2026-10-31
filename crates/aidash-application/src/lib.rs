@@ -2,6 +2,8 @@
 pub mod accounts;
 pub mod authorization;
 pub mod catalog;
+pub mod connection_calls;
+pub mod connection_wait;
 pub mod context;
 pub mod decision;
 pub mod deployment;
@@ -9,6 +11,7 @@ pub mod execution;
 pub mod federation;
 pub mod lifecycle;
 pub mod memory;
+pub mod oauth_connections;
 pub mod plan_connections;
 pub mod plugin_tools;
 pub mod ports;
@@ -29,6 +32,9 @@ pub type Result<T> = std::result::Result<T, Error>;
 /// Errors at the use-case boundary contain no transport or database types.
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
+	/// The transport proved the operation did not execute; never inferred from tool JSON.
+	#[error("{}", .0.code())]
+	Connection(aidash_domain::agent_plugin::ConnectionCause),
 	#[error(transparent)]
 	Domain(#[from] aidash_domain::Error),
 	#[error(transparent)]
@@ -60,6 +66,11 @@ pub enum Error {
 	AuthorityRefused(Box<aidash_domain::tool::AuthorityRefusal>),
 	#[error("{0}")]
 	External(String),
+	#[error("OAuth Client secret storage is unavailable")]
+	OAuthClientSecretsUnavailable,
+	/// This Deployment's Secret Store cannot hold MCP OAuth Connections.
+	#[error("connection_unavailable")]
+	ConnectionStoreUnavailable,
 	/// The tool request is known not to have been delivered, or the service
 	/// explicitly asked for a retry. The harness journals this before retrying.
 	#[error("{message}")]
@@ -202,3 +213,5 @@ pub mod activation;
 pub(crate) mod test_support;
 
 pub mod egress;
+
+pub mod oauth_clients;

@@ -20,6 +20,7 @@ use std::{
 
 use tokio::time::Instant;
 
+pub mod connection;
 mod policy;
 pub mod tenant_secret;
 

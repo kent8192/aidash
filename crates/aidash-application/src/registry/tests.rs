@@ -331,6 +331,53 @@ async fn registration_sends_a_tenant_secret_only_to_a_recorded_host(
 }
 
 #[rstest]
+#[tokio::test]
+async fn a_personal_only_tool_registers_without_a_shared_row_or_host(
+	validation: DefinitionValidation,
+) {
+	let validation = validation.with_tenant_secrets(true);
+	let mut personal = tool_with_secret("search");
+	personal.config["transport"]["secret_owner"] = json!("personal");
+	// No Tenant Secret named `search`, shared or recorded: hosts are checked against the
+	// person's own row at dispatch.
+	let mut scope = Scope::default();
+	assert!(
+		register_definition(&mut scope, &validation, &personal, "aidash://home")
+			.await
+			.unwrap()
+	);
+	// The same definition without `personal` still needs the shared row.
+	assert!(
+		register_definition(
+			&mut Scope::default(),
+			&validation,
+			&tool_with_secret("search"),
+			"aidash://home"
+		)
+		.await
+		.is_err()
+	);
+	// Even a personal-only definition names a well-formed secret.
+	let mut bad = tool_with_secret("Not A Name");
+	bad.config["transport"]["secret_owner"] = json!("personal");
+	assert!(
+		register_definition(&mut Scope::default(), &validation, &bad, "aidash://home")
+			.await
+			.is_err()
+	);
+	// A shared row that records another host does not matter to a personal-only one.
+	let mut scope = Scope::default();
+	scope
+		.secret_hosts
+		.insert("search".into(), vec!["other.example".into()]);
+	assert!(
+		register_definition(&mut scope, &validation, &personal, "aidash://home")
+			.await
+			.unwrap()
+	);
+}
+
+#[rstest]
 #[case::remote(false)]
 #[case::local(true)]
 fn embedding_validation_needs_no_environment_credentials(#[case] local: bool) {

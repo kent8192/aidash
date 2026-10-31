@@ -2,7 +2,7 @@
 use super::broker;
 use aidash_application::{
 	Error,
-	tenant_secrets::{SecretRoute, SecretRouteSource},
+	tenant_secrets::{BearerSource, SecretRoute, SecretRouteSource},
 };
 use futures_util::{StreamExt, stream::BoxStream};
 use reqwest::header::{HeaderName, HeaderValue};
@@ -69,6 +69,8 @@ impl From<McpError> for Failure {
 pub(super) struct BoundedClient {
 	client: reqwest::Client,
 	broker: Option<Brokered>,
+	oauth: Option<Arc<dyn BearerSource>>,
+	progress: Arc<super::auth::CallProgress>,
 }
 
 impl BoundedClient {
@@ -76,8 +78,19 @@ impl BoundedClient {
 		Self {
 			client,
 			broker: None,
+			oauth: None,
+			progress: Arc::default(),
 		}
 	}
+	pub(super) fn connection(client: reqwest::Client, source: Arc<dyn BearerSource>) -> Self {
+		Self {
+			client,
+			broker: None,
+			oauth: Some(source),
+			progress: Arc::default(),
+		}
+	}
+
 	pub(super) fn brokered(
 		client: reqwest::Client,
 		source: Arc<dyn SecretRouteSource>,
@@ -87,6 +100,8 @@ impl BoundedClient {
 		Self {
 			client,
 			broker: Some(Brokered::new(source, rest, first)),
+			oauth: None,
+			progress: Arc::default(),
 		}
 	}
 	/// The broker's forward URL and token for this request, or the configured
@@ -97,9 +112,23 @@ impl BoundedClient {
 		bearer: Option<String>,
 	) -> Result<(String, Option<String>, Option<SecretString>), Failure> {
 		let Some(broker) = &self.broker else {
+			let bearer = match &self.oauth {
+				Some(source) => Some(
+					source
+						.bearer()
+						.await
+						.map_err(|e| McpError::App(self.progress.source_error(e, uri)))?
+						.expose_secret()
+						.to_owned(),
+				),
+				None => bearer,
+			};
 			return Ok((uri.to_owned(), bearer, None));
 		};
-		let route = broker.route().await.map_err(Failure::Client)?;
+		let route = broker.route().await.map_err(|e| match e {
+			McpError::App(e) => Failure::Client(McpError::App(self.progress.source_error(e, uri))),
+			other => Failure::Client(other),
+		})?;
 		let url = broker::forward_url(&route.base, &broker.rest)
 			.map_err(McpError::App)
 			.map_err(Failure::Client)?;
@@ -194,7 +223,11 @@ fn broker_error(error: &DynamicTransportError) -> Option<Error> {
 }
 
 fn repeat(error: &Error) -> Error {
+	if let Some(error) = super::auth::repeat(error) {
+		return error;
+	}
 	match error {
+		Error::Connection(cause) => Error::Connection(cause.clone()),
 		Error::Invalid(message) => Error::Invalid(message.clone()),
 		Error::BrokerUnavailable { correlation } => Error::BrokerUnavailable {
 			correlation: correlation.clone(),
@@ -334,6 +367,8 @@ impl StreamableHttpClient for BoundedClient {
 		token: Option<String>,
 		headers: HashMap<HeaderName, HeaderValue>,
 	) -> Result<StreamableHttpPostResponse, Failure> {
+		let tool_request = matches!(&message, ClientJsonRpcMessage::Request(request)
+			if matches!(request.request, rmcp::model::ClientRequest::CallToolRequest(_)));
 		let (target, bearer, secret_call) = self.target(&uri, token).await?;
 		let request_value = serde_json::to_value(&message).ok();
 		let request_id = request_value
@@ -341,7 +376,7 @@ impl StreamableHttpClient for BoundedClient {
 			.filter(|value| value.get("method").and_then(Value::as_str) == Some("tools/call"))
 			.and_then(|value| value.get("id"))
 			.cloned();
-		let response = request(
+		let request = request(
 			&self.client,
 			reqwest::Method::POST,
 			&target,
@@ -350,12 +385,22 @@ impl StreamableHttpClient for BoundedClient {
 			secret_call.as_ref().map(ExposeSecret::expose_secret),
 			headers,
 		)
-		.json(&message)
-		.send()
-		.await
-		.map_err(|error| self.send_error(error))?;
+		.json(&message);
+		if tool_request {
+			self.progress.sent();
+		}
+		let response = request
+			.send()
+			.await
+			.map_err(|error| self.send_error(error))?;
 		if let Some(failure) = self.refusal(&response) {
 			return Err(failure);
+		}
+		if let Some(error) = self.progress.challenge(&response, &uri, tool_request) {
+			return Err(McpError::App(error).into());
+		}
+		if response.status() == reqwest::StatusCode::NOT_FOUND && session.is_some() {
+			return Err(Failure::SessionExpired);
 		}
 		if matches!(
 			response.status(),
@@ -432,6 +477,9 @@ impl StreamableHttpClient for BoundedClient {
 		if let Some(failure) = self.refusal(&response) {
 			return Err(failure);
 		}
+		if let Some(error) = self.progress.challenge(&response, &uri, false) {
+			return Err(McpError::App(error).into());
+		}
 		if response.status() == reqwest::StatusCode::METHOD_NOT_ALLOWED {
 			return Err(Failure::ServerDoesNotSupportDeleteSession);
 		}
@@ -467,6 +515,9 @@ impl StreamableHttpClient for BoundedClient {
 			.map_err(|error| self.send_error(error))?;
 		if let Some(failure) = self.refusal(&response) {
 			return Err(failure);
+		}
+		if let Some(error) = self.progress.challenge(&response, &uri, false) {
+			return Err(McpError::App(error).into());
 		}
 		if response.status() == reqwest::StatusCode::METHOD_NOT_ALLOWED {
 			return Err(Failure::ServerDoesNotSupportSse);

@@ -442,6 +442,7 @@ impl DefinitionValidation {
 				endpoint,
 				replay,
 				secret,
+				..
 			}
 			| ToolConfig::Mcp {
 				endpoint,

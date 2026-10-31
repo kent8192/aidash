@@ -146,6 +146,8 @@ mod destinations {
 				replay: replay.into(),
 				idempotency_argument: (replay == "idempotent").then(|| "request_id".into()),
 				secret: None,
+				secret_owner: Default::default(),
+				scopes: None,
 			};
 			let result = transport.invoke(&config, json!({}), "key", None).await;
 			if retry {
@@ -272,6 +274,7 @@ mod destinations {
 			endpoint: format!("{base}/rate"),
 			replay: "unsafe".into(),
 			secret: None,
+			secret_owner: Default::default(),
 		};
 		let error = transport
 			.invoke(&rate, json!({}), "key", None)
@@ -284,6 +287,7 @@ mod destinations {
 			endpoint: format!("{base}/timeout"),
 			replay: "unsafe".into(),
 			secret: None,
+			secret_owner: Default::default(),
 		};
 		assert!(matches!(
 			transport.invoke(&timeout, json!({}), "key", None).await,
@@ -293,6 +297,7 @@ mod destinations {
 			endpoint: format!("{base}/unavailable"),
 			replay: "idempotent".into(),
 			secret: None,
+			secret_owner: Default::default(),
 		};
 		let error = transport
 			.invoke(&idempotent, json!({}), "key", None)
@@ -343,6 +348,7 @@ mod destinations {
 			endpoint: endpoint.clone(),
 			replay: "unsafe".into(),
 			secret: None,
+			secret_owner: Default::default(),
 		};
 		let result = tools(&[&endpoint])
 			.invoke(&config, json!({}), "key", None)
@@ -453,6 +459,7 @@ mod destinations {
 			endpoint,
 			replay: "read_only".into(),
 			secret: None,
+			secret_owner: Default::default(),
 		}
 	}
 
@@ -463,6 +470,8 @@ mod destinations {
 			replay: "read_only".into(),
 			secret: None,
 			idempotency_argument: None,
+			scopes: None,
+			secret_owner: Default::default(),
 		}
 	}
 
@@ -583,6 +592,7 @@ mod destinations {
 					url: format!("http://public.example:{port}/mcp").parse().unwrap(),
 					headers: vec![],
 				},
+				None,
 			)
 			.await;
 		server.abort();
@@ -708,6 +718,7 @@ async fn an_http_tool_sends_its_tenant_secret_as_the_bearer_credential_and_nothi
 		endpoint,
 		replay: "idempotent".into(),
 		secret: Some("search".into()),
+		secret_owner: Default::default(),
 	};
 	let secret = CallSecret::Value {
 		record: SecretRecord {
@@ -763,6 +774,8 @@ async fn an_mcp_tool_authenticates_its_handshake_and_call_with_the_tenant_secret
 		secret: Some("mcp-key".into()),
 		replay: "idempotent".into(),
 		idempotency_argument: Some("request_id".into()),
+		scopes: None,
+		secret_owner: Default::default(),
 	};
 	let result = tools
 		.invoke(
@@ -1130,6 +1143,7 @@ mod brokered {
 			endpoint: endpoint.clone(),
 			replay: "idempotent".into(),
 			secret: Some("search".into()),
+			secret_owner: Default::default(),
 		};
 		let (secret, calls) = brokered(&format!("{base}/v1/forward"), "echo");
 		let result = tools
@@ -1171,6 +1185,7 @@ mod brokered {
 				endpoint,
 				replay: "idempotent".into(),
 				secret: None,
+				secret_owner: Default::default(),
 			};
 			let secret = brokered(&format!("{base}/v1/forward"), "echo").0;
 			let result = tools
@@ -1208,6 +1223,7 @@ mod brokered {
 				endpoint,
 				replay: "idempotent".into(),
 				secret: Some("search".into()),
+				secret_owner: Default::default(),
 			};
 			let (secret, _) = brokered(&format!("{base}/v1/forward"), "echo");
 			let result = tools
@@ -1260,6 +1276,7 @@ mod brokered {
 			endpoint,
 			replay: "idempotent".into(),
 			secret: Some("search".into()),
+			secret_owner: Default::default(),
 		};
 		let (secret, _) = brokered(&base, "echo");
 		let result = tools
@@ -1350,6 +1367,8 @@ mod brokered {
 			secret: Some("mcp-key".into()),
 			replay: "idempotent".into(),
 			idempotency_argument: None,
+			scopes: None,
+			secret_owner: Default::default(),
 		};
 		let (secret, _) = brokered(&format!("{base}/v1/forward"), "mcp");
 		let result = tools
@@ -1380,6 +1399,8 @@ mod brokered {
 			secret: Some("mcp-key".into()),
 			replay: "idempotent".into(),
 			idempotency_argument: None,
+			scopes: None,
+			secret_owner: Default::default(),
 		};
 		let (secret, _) = brokered(&format!("{base}/v1/forward"), "mcp");
 		let result = tools
@@ -1419,3 +1440,5 @@ mod brokered {
 		assert_eq!(refreshed.token.expose_secret(), "refreshed-token");
 	}
 }
+
+mod oauth;

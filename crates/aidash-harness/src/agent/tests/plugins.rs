@@ -219,6 +219,9 @@ fn plugin_call(fixture: &mut Fixture, read_only: bool) -> ToolCall {
 		parameters: schema(),
 	};
 	let tool = Arc::new(Scripted {
+		mcp: false,
+		connection_errors: Mutex::new(Default::default()),
+		invalid_errors: Mutex::new(Default::default()),
 		specification,
 		contract: ToolContract::agent_plugin(identity(), read_only),
 		external_target: None,

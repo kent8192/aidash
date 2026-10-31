@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "endpoint_count": 359,
+  "endpoint_count": 374,
   "requests": [
     {
       "name": "Health reports the configured node",
@@ -14294,8 +14294,20 @@
       ]
     },
     {
-      "name": "1307 tenant-secret-delete - Anonymous request is rejected",
-      "file": "contracts/1307-tenant-secret-delete.bru",
+      "name": "1307 tenant-secret-put - Personal secrets cannot select another owner",
+      "file": "contracts/1307-tenant-secret-put.bru",
+      "endpoint": "PUT /api/tenants/{tenant}/secrets/{name}",
+      "scenario": "Personal secrets cannot select another owner",
+      "status": 422,
+      "required_checks": [
+        "Rejected input preserves committed workspace state",
+        "Exact HTTP 422",
+        "Rejection is diagnostic and does not disclose SQL or credentials"
+      ]
+    },
+    {
+      "name": "1308 tenant-secret-delete - Anonymous request is rejected",
+      "file": "contracts/1308-tenant-secret-delete.bru",
       "endpoint": "DELETE /api/tenants/{tenant}/secrets/{name}",
       "scenario": "Anonymous request is rejected",
       "status": 401,
@@ -14306,8 +14318,8 @@
       ]
     },
     {
-      "name": "1308 tenant-secret-delete - Forged bearer cannot manage Tenant Secrets",
-      "file": "contracts/1308-tenant-secret-delete.bru",
+      "name": "1309 tenant-secret-delete - Forged bearer cannot manage Tenant Secrets",
+      "file": "contracts/1309-tenant-secret-delete.bru",
       "endpoint": "DELETE /api/tenants/{tenant}/secrets/{name}",
       "scenario": "Forged bearer cannot manage Tenant Secrets",
       "status": 401,
@@ -14317,8 +14329,8 @@
       ]
     },
     {
-      "name": "1309 tenant-secret-delete - Deployment Administrator has no Tenant Secret authority",
-      "file": "contracts/1309-tenant-secret-delete.bru",
+      "name": "1310 tenant-secret-delete - Deployment Administrator has no Tenant Secret authority",
+      "file": "contracts/1310-tenant-secret-delete.bru",
       "endpoint": "DELETE /api/tenants/{tenant}/secrets/{name}",
       "scenario": "Deployment Administrator has no Tenant Secret authority",
       "status": 403,
@@ -14329,8 +14341,8 @@
       ]
     },
     {
-      "name": "1310 tenant-secret-delete - Missing Store fails closed for the subject",
-      "file": "contracts/1310-tenant-secret-delete.bru",
+      "name": "1311 tenant-secret-delete - Missing Store fails closed for the subject",
+      "file": "contracts/1311-tenant-secret-delete.bru",
       "endpoint": "DELETE /api/tenants/{tenant}/secrets/{name}",
       "scenario": "Missing Store fails closed for the subject",
       "status": 404,
@@ -14342,8 +14354,8 @@
       ]
     },
     {
-      "name": "1311 tenant-secret-delete - Wrong JSON media type is rejected",
-      "file": "contracts/1311-tenant-secret-delete.bru",
+      "name": "1312 tenant-secret-delete - Wrong JSON media type is rejected",
+      "file": "contracts/1312-tenant-secret-delete.bru",
       "endpoint": "DELETE /api/tenants/{tenant}/secrets/{name}",
       "scenario": "Wrong JSON media type is rejected",
       "status": 415,
@@ -14354,8 +14366,8 @@
       ]
     },
     {
-      "name": "1312 tenant-secret-delete - Malformed JSON cannot reach the use case",
-      "file": "contracts/1312-tenant-secret-delete.bru",
+      "name": "1313 tenant-secret-delete - Malformed JSON cannot reach the use case",
+      "file": "contracts/1313-tenant-secret-delete.bru",
       "endpoint": "DELETE /api/tenants/{tenant}/secrets/{name}",
       "scenario": "Malformed JSON cannot reach the use case",
       "status": 400,
@@ -14366,8 +14378,8 @@
       ]
     },
     {
-      "name": "1313 tenant-secret-delete - Required revision cannot be omitted",
-      "file": "contracts/1313-tenant-secret-delete.bru",
+      "name": "1314 tenant-secret-delete - Required revision cannot be omitted",
+      "file": "contracts/1314-tenant-secret-delete.bru",
       "endpoint": "DELETE /api/tenants/{tenant}/secrets/{name}",
       "scenario": "Required revision cannot be omitted",
       "status": 422,
@@ -14378,8 +14390,8 @@
       ]
     },
     {
-      "name": "1314 tenant-secret-delete - Unknown lifecycle fields are rejected",
-      "file": "contracts/1314-tenant-secret-delete.bru",
+      "name": "1315 tenant-secret-delete - Unknown lifecycle fields are rejected",
+      "file": "contracts/1315-tenant-secret-delete.bru",
       "endpoint": "DELETE /api/tenants/{tenant}/secrets/{name}",
       "scenario": "Unknown lifecycle fields are rejected",
       "status": 422,
@@ -14390,31 +14402,43 @@
       ]
     },
     {
-      "name": "1315 approval-observer - Anonymous request is rejected",
-      "file": "contracts/1315-approval-observer.bru",
-      "endpoint": "GET /api/tenants/{tenant}/approval-observer",
-      "scenario": "Anonymous request is rejected",
-      "status": 401,
+      "name": "1316 tenant-secret-delete - Personal secrets cannot select another owner",
+      "file": "contracts/1316-tenant-secret-delete.bru",
+      "endpoint": "DELETE /api/tenants/{tenant}/secrets/{name}",
+      "scenario": "Personal secrets cannot select another owner",
+      "status": 422,
       "required_checks": [
-        "Exact HTTP 401",
-        "Stable authorization error envelope"
+        "Rejected input preserves committed workspace state",
+        "Exact HTTP 422",
+        "Rejection is diagnostic and does not disclose SQL or credentials"
       ]
     },
     {
-      "name": "1316 approval-observer - Forged bearer cannot inspect approval observations",
-      "file": "contracts/1316-approval-observer.bru",
-      "endpoint": "GET /api/tenants/{tenant}/approval-observer",
-      "scenario": "Forged bearer cannot inspect approval observations",
-      "status": 401,
-      "required_checks": [
-        "Exact HTTP 401",
-        "Stable authorization error envelope"
-      ]
-    },
-    {
-      "name": "1317 approval-observer - Deployment Administrator bearer cannot inspect Tenant observations",
+      "name": "1317 approval-observer - Anonymous request is rejected",
       "file": "contracts/1317-approval-observer.bru",
       "endpoint": "GET /api/tenants/{tenant}/approval-observer",
+      "scenario": "Anonymous request is rejected",
+      "status": 401,
+      "required_checks": [
+        "Exact HTTP 401",
+        "Stable authorization error envelope"
+      ]
+    },
+    {
+      "name": "1318 approval-observer - Forged bearer cannot inspect approval observations",
+      "file": "contracts/1318-approval-observer.bru",
+      "endpoint": "GET /api/tenants/{tenant}/approval-observer",
+      "scenario": "Forged bearer cannot inspect approval observations",
+      "status": 401,
+      "required_checks": [
+        "Exact HTTP 401",
+        "Stable authorization error envelope"
+      ]
+    },
+    {
+      "name": "1319 approval-observer - Deployment Administrator bearer cannot inspect Tenant observations",
+      "file": "contracts/1319-approval-observer.bru",
+      "endpoint": "GET /api/tenants/{tenant}/approval-observer",
       "scenario": "Deployment Administrator bearer cannot inspect Tenant observations",
       "status": 403,
       "required_checks": [
@@ -14423,8 +14447,8 @@
       ]
     },
     {
-      "name": "1318 approval-observer - Subject Credential bearer cannot administer the observer",
-      "file": "contracts/1318-approval-observer.bru",
+      "name": "1320 approval-observer - Subject Credential bearer cannot administer the observer",
+      "file": "contracts/1320-approval-observer.bru",
       "endpoint": "GET /api/tenants/{tenant}/approval-observer",
       "scenario": "Subject Credential bearer cannot administer the observer",
       "status": 403,
@@ -14434,8 +14458,8 @@
       ]
     },
     {
-      "name": "1319 approval-observer-update - Anonymous request is rejected",
-      "file": "contracts/1319-approval-observer-update.bru",
+      "name": "1321 approval-observer-update - Anonymous request is rejected",
+      "file": "contracts/1321-approval-observer-update.bru",
       "endpoint": "PUT /api/tenants/{tenant}/approval-observer",
       "scenario": "Anonymous request is rejected",
       "status": 401,
@@ -14446,8 +14470,8 @@
       ]
     },
     {
-      "name": "1320 approval-observer-update - Forged bearer cannot inspect approval observations",
-      "file": "contracts/1320-approval-observer-update.bru",
+      "name": "1322 approval-observer-update - Forged bearer cannot inspect approval observations",
+      "file": "contracts/1322-approval-observer-update.bru",
       "endpoint": "PUT /api/tenants/{tenant}/approval-observer",
       "scenario": "Forged bearer cannot inspect approval observations",
       "status": 401,
@@ -14458,8 +14482,8 @@
       ]
     },
     {
-      "name": "1321 approval-observer-update - Deployment Administrator bearer cannot inspect Tenant observations",
-      "file": "contracts/1321-approval-observer-update.bru",
+      "name": "1323 approval-observer-update - Deployment Administrator bearer cannot inspect Tenant observations",
+      "file": "contracts/1323-approval-observer-update.bru",
       "endpoint": "PUT /api/tenants/{tenant}/approval-observer",
       "scenario": "Deployment Administrator bearer cannot inspect Tenant observations",
       "status": 403,
@@ -14470,8 +14494,8 @@
       ]
     },
     {
-      "name": "1322 approval-observer-update - Subject Credential bearer cannot administer the observer",
-      "file": "contracts/1322-approval-observer-update.bru",
+      "name": "1324 approval-observer-update - Subject Credential bearer cannot administer the observer",
+      "file": "contracts/1324-approval-observer-update.bru",
       "endpoint": "PUT /api/tenants/{tenant}/approval-observer",
       "scenario": "Subject Credential bearer cannot administer the observer",
       "status": 403,
@@ -14482,8 +14506,8 @@
       ]
     },
     {
-      "name": "1323 approval-observer-update - Wrong JSON media type is rejected",
-      "file": "contracts/1323-approval-observer-update.bru",
+      "name": "1325 approval-observer-update - Wrong JSON media type is rejected",
+      "file": "contracts/1325-approval-observer-update.bru",
       "endpoint": "PUT /api/tenants/{tenant}/approval-observer",
       "scenario": "Wrong JSON media type is rejected",
       "status": 415,
@@ -14494,8 +14518,8 @@
       ]
     },
     {
-      "name": "1324 approval-observer-update - Malformed JSON cannot reach the use case",
-      "file": "contracts/1324-approval-observer-update.bru",
+      "name": "1326 approval-observer-update - Malformed JSON cannot reach the use case",
+      "file": "contracts/1326-approval-observer-update.bru",
       "endpoint": "PUT /api/tenants/{tenant}/approval-observer",
       "scenario": "Malformed JSON cannot reach the use case",
       "status": 400,
@@ -14506,8 +14530,8 @@
       ]
     },
     {
-      "name": "1325 approval-observer-update - Observer revision is required",
-      "file": "contracts/1325-approval-observer-update.bru",
+      "name": "1327 approval-observer-update - Observer revision is required",
+      "file": "contracts/1327-approval-observer-update.bru",
       "endpoint": "PUT /api/tenants/{tenant}/approval-observer",
       "scenario": "Observer revision is required",
       "status": 422,
@@ -14518,8 +14542,8 @@
       ]
     },
     {
-      "name": "1326 approval-observation - Anonymous request is rejected",
-      "file": "contracts/1326-approval-observation.bru",
+      "name": "1328 approval-observation - Anonymous request is rejected",
+      "file": "contracts/1328-approval-observation.bru",
       "endpoint": "GET /api/tenants/{tenant}/approval-observations/{kind}/{id}",
       "scenario": "Anonymous request is rejected",
       "status": 401,
@@ -14529,8 +14553,8 @@
       ]
     },
     {
-      "name": "1327 approval-observation - Forged bearer cannot inspect approval observations",
-      "file": "contracts/1327-approval-observation.bru",
+      "name": "1329 approval-observation - Forged bearer cannot inspect approval observations",
+      "file": "contracts/1329-approval-observation.bru",
       "endpoint": "GET /api/tenants/{tenant}/approval-observations/{kind}/{id}",
       "scenario": "Forged bearer cannot inspect approval observations",
       "status": 401,
@@ -14540,8 +14564,8 @@
       ]
     },
     {
-      "name": "1328 approval-observation - Deployment Administrator bearer cannot inspect Tenant observations",
-      "file": "contracts/1328-approval-observation.bru",
+      "name": "1330 approval-observation - Deployment Administrator bearer cannot inspect Tenant observations",
+      "file": "contracts/1330-approval-observation.bru",
       "endpoint": "GET /api/tenants/{tenant}/approval-observations/{kind}/{id}",
       "scenario": "Deployment Administrator bearer cannot inspect Tenant observations",
       "status": 403,
@@ -14551,8 +14575,8 @@
       ]
     },
     {
-      "name": "1329 approval-observation - Observation resource IDs reject malformed UUIDs",
-      "file": "contracts/1329-approval-observation.bru",
+      "name": "1331 approval-observation - Observation resource IDs reject malformed UUIDs",
+      "file": "contracts/1331-approval-observation.bru",
       "endpoint": "GET /api/tenants/{tenant}/approval-observations/{kind}/{id}",
       "scenario": "Observation resource IDs reject malformed UUIDs",
       "status": 400,
@@ -14562,8 +14586,8 @@
       ]
     },
     {
-      "name": "1330 approval-observation-report - Anonymous request is rejected",
-      "file": "contracts/1330-approval-observation-report.bru",
+      "name": "1332 approval-observation-report - Anonymous request is rejected",
+      "file": "contracts/1332-approval-observation-report.bru",
       "endpoint": "GET /api/tenants/{tenant}/approval-observations/report",
       "scenario": "Anonymous request is rejected",
       "status": 401,
@@ -14573,8 +14597,8 @@
       ]
     },
     {
-      "name": "1331 approval-observation-report - Forged bearer cannot inspect approval observations",
-      "file": "contracts/1331-approval-observation-report.bru",
+      "name": "1333 approval-observation-report - Forged bearer cannot inspect approval observations",
+      "file": "contracts/1333-approval-observation-report.bru",
       "endpoint": "GET /api/tenants/{tenant}/approval-observations/report",
       "scenario": "Forged bearer cannot inspect approval observations",
       "status": 401,
@@ -14584,8 +14608,8 @@
       ]
     },
     {
-      "name": "1332 approval-observation-report - Deployment Administrator bearer cannot inspect Tenant observations",
-      "file": "contracts/1332-approval-observation-report.bru",
+      "name": "1334 approval-observation-report - Deployment Administrator bearer cannot inspect Tenant observations",
+      "file": "contracts/1334-approval-observation-report.bru",
       "endpoint": "GET /api/tenants/{tenant}/approval-observations/report",
       "scenario": "Deployment Administrator bearer cannot inspect Tenant observations",
       "status": 403,
@@ -14595,8 +14619,8 @@
       ]
     },
     {
-      "name": "1333 approval-observation-report - Subject Credential bearer cannot administer the observer",
-      "file": "contracts/1333-approval-observation-report.bru",
+      "name": "1335 approval-observation-report - Subject Credential bearer cannot administer the observer",
+      "file": "contracts/1335-approval-observation-report.bru",
       "endpoint": "GET /api/tenants/{tenant}/approval-observations/report",
       "scenario": "Subject Credential bearer cannot administer the observer",
       "status": 403,
@@ -14606,8 +14630,8 @@
       ]
     },
     {
-      "name": "1334 authorization-catalog-review - Anonymous request is rejected",
-      "file": "contracts/1334-authorization-catalog-review.bru",
+      "name": "1336 authorization-catalog-review - Anonymous request is rejected",
+      "file": "contracts/1336-authorization-catalog-review.bru",
       "endpoint": "GET /api/authorization/{tenant}/catalog/review",
       "scenario": "Anonymous request is rejected",
       "status": 401,
@@ -14617,8 +14641,8 @@
       ]
     },
     {
-      "name": "1335 authorization-catalog-review - Malformed bearer syntax is rejected",
-      "file": "contracts/1335-authorization-catalog-review.bru",
+      "name": "1337 authorization-catalog-review - Malformed bearer syntax is rejected",
+      "file": "contracts/1337-authorization-catalog-review.bru",
       "endpoint": "GET /api/authorization/{tenant}/catalog/review",
       "scenario": "Malformed bearer syntax is rejected",
       "status": 401,
@@ -14628,8 +14652,8 @@
       ]
     },
     {
-      "name": "1336 authorization-catalog-review - Deployment Administrator bearer has no Tenant authority",
-      "file": "contracts/1336-authorization-catalog-review.bru",
+      "name": "1338 authorization-catalog-review - Deployment Administrator bearer has no Tenant authority",
+      "file": "contracts/1338-authorization-catalog-review.bru",
       "endpoint": "GET /api/authorization/{tenant}/catalog/review",
       "scenario": "Deployment Administrator bearer has no Tenant authority",
       "status": 403,
@@ -14639,8 +14663,8 @@
       ]
     },
     {
-      "name": "1337 authorization-catalog-review - Subject without definition read sees the review as not found",
-      "file": "contracts/1337-authorization-catalog-review.bru",
+      "name": "1339 authorization-catalog-review - Subject without definition read sees the review as not found",
+      "file": "contracts/1339-authorization-catalog-review.bru",
       "endpoint": "GET /api/authorization/{tenant}/catalog/review",
       "scenario": "Subject without definition read sees the review as not found",
       "status": 404,
@@ -14650,8 +14674,8 @@
       ]
     },
     {
-      "name": "1338 authorization-catalog-review - Denied subject sees the review as not found",
-      "file": "contracts/1338-authorization-catalog-review.bru",
+      "name": "1340 authorization-catalog-review - Denied subject sees the review as not found",
+      "file": "contracts/1340-authorization-catalog-review.bru",
       "endpoint": "GET /api/authorization/{tenant}/catalog/review",
       "scenario": "Denied subject sees the review as not found",
       "status": 404,
@@ -14661,8 +14685,8 @@
       ]
     },
     {
-      "name": "1339 authorization-catalog-impact - Anonymous request is rejected",
-      "file": "contracts/1339-authorization-catalog-impact.bru",
+      "name": "1341 authorization-catalog-impact - Anonymous request is rejected",
+      "file": "contracts/1341-authorization-catalog-impact.bru",
       "endpoint": "GET /api/authorization/{tenant}/catalog/impact",
       "scenario": "Anonymous request is rejected",
       "status": 401,
@@ -14672,8 +14696,8 @@
       ]
     },
     {
-      "name": "1340 authorization-catalog-impact - Malformed bearer syntax is rejected",
-      "file": "contracts/1340-authorization-catalog-impact.bru",
+      "name": "1342 authorization-catalog-impact - Malformed bearer syntax is rejected",
+      "file": "contracts/1342-authorization-catalog-impact.bru",
       "endpoint": "GET /api/authorization/{tenant}/catalog/impact",
       "scenario": "Malformed bearer syntax is rejected",
       "status": 401,
@@ -14683,8 +14707,8 @@
       ]
     },
     {
-      "name": "1341 authorization-catalog-impact - Deployment Administrator bearer has no Tenant authority",
-      "file": "contracts/1341-authorization-catalog-impact.bru",
+      "name": "1343 authorization-catalog-impact - Deployment Administrator bearer has no Tenant authority",
+      "file": "contracts/1343-authorization-catalog-impact.bru",
       "endpoint": "GET /api/authorization/{tenant}/catalog/impact",
       "scenario": "Deployment Administrator bearer has no Tenant authority",
       "status": 403,
@@ -14694,8 +14718,8 @@
       ]
     },
     {
-      "name": "1342 authorization-catalog-impact - Subject sees the impact of an unknown Node as not found",
-      "file": "contracts/1342-authorization-catalog-impact.bru",
+      "name": "1344 authorization-catalog-impact - Subject sees the impact of an unknown Node as not found",
+      "file": "contracts/1344-authorization-catalog-impact.bru",
       "endpoint": "GET /api/authorization/{tenant}/catalog/impact",
       "scenario": "Subject sees the impact of an unknown Node as not found",
       "status": 404,
@@ -14705,8 +14729,8 @@
       ]
     },
     {
-      "name": "1343 authorization-submit-catalog-review - Anonymous request is rejected",
-      "file": "contracts/1343-authorization-submit-catalog-review.bru",
+      "name": "1345 authorization-submit-catalog-review - Anonymous request is rejected",
+      "file": "contracts/1345-authorization-submit-catalog-review.bru",
       "endpoint": "POST /api/authorization/{tenant}/catalog/review",
       "scenario": "Anonymous request is rejected",
       "status": 401,
@@ -14717,8 +14741,8 @@
       ]
     },
     {
-      "name": "1344 authorization-submit-catalog-review - Deployment Administrator bearer has no Tenant authority",
-      "file": "contracts/1344-authorization-submit-catalog-review.bru",
+      "name": "1346 authorization-submit-catalog-review - Deployment Administrator bearer has no Tenant authority",
+      "file": "contracts/1346-authorization-submit-catalog-review.bru",
       "endpoint": "POST /api/authorization/{tenant}/catalog/review",
       "scenario": "Deployment Administrator bearer has no Tenant authority",
       "status": 403,
@@ -14729,8 +14753,8 @@
       ]
     },
     {
-      "name": "1345 authorization-submit-catalog-review - Subject without registry.read sees the review as not found",
-      "file": "contracts/1345-authorization-submit-catalog-review.bru",
+      "name": "1347 authorization-submit-catalog-review - Subject without registry.read sees the review as not found",
+      "file": "contracts/1347-authorization-submit-catalog-review.bru",
       "endpoint": "POST /api/authorization/{tenant}/catalog/review",
       "scenario": "Subject without registry.read sees the review as not found",
       "status": 404,
@@ -14741,8 +14765,8 @@
       ]
     },
     {
-      "name": "1346 authorization-submit-catalog-review - Wrong JSON media type is rejected",
-      "file": "contracts/1346-authorization-submit-catalog-review.bru",
+      "name": "1348 authorization-submit-catalog-review - Wrong JSON media type is rejected",
+      "file": "contracts/1348-authorization-submit-catalog-review.bru",
       "endpoint": "POST /api/authorization/{tenant}/catalog/review",
       "scenario": "Wrong JSON media type is rejected",
       "status": 415,
@@ -14753,8 +14777,8 @@
       ]
     },
     {
-      "name": "1347 authorization-submit-catalog-review - Malformed JSON cannot reach the use case",
-      "file": "contracts/1347-authorization-submit-catalog-review.bru",
+      "name": "1349 authorization-submit-catalog-review - Malformed JSON cannot reach the use case",
+      "file": "contracts/1349-authorization-submit-catalog-review.bru",
       "endpoint": "POST /api/authorization/{tenant}/catalog/review",
       "scenario": "Malformed JSON cannot reach the use case",
       "status": 400,
@@ -14765,8 +14789,8 @@
       ]
     },
     {
-      "name": "1348 authorization-create-catalog-request - Anonymous request is rejected",
-      "file": "contracts/1348-authorization-create-catalog-request.bru",
+      "name": "1350 authorization-create-catalog-request - Anonymous request is rejected",
+      "file": "contracts/1350-authorization-create-catalog-request.bru",
       "endpoint": "POST /api/authorization/{tenant}/catalog/requests",
       "scenario": "Anonymous request is rejected",
       "status": 401,
@@ -14777,8 +14801,8 @@
       ]
     },
     {
-      "name": "1349 authorization-create-catalog-request - Deployment Administrator bearer has no Tenant authority",
-      "file": "contracts/1349-authorization-create-catalog-request.bru",
+      "name": "1351 authorization-create-catalog-request - Deployment Administrator bearer has no Tenant authority",
+      "file": "contracts/1351-authorization-create-catalog-request.bru",
       "endpoint": "POST /api/authorization/{tenant}/catalog/requests",
       "scenario": "Deployment Administrator bearer has no Tenant authority",
       "status": 403,
@@ -14789,8 +14813,8 @@
       ]
     },
     {
-      "name": "1350 authorization-create-catalog-request - Subject without registry.read sees the root as not found",
-      "file": "contracts/1350-authorization-create-catalog-request.bru",
+      "name": "1352 authorization-create-catalog-request - Subject without registry.read sees the root as not found",
+      "file": "contracts/1352-authorization-create-catalog-request.bru",
       "endpoint": "POST /api/authorization/{tenant}/catalog/requests",
       "scenario": "Subject without registry.read sees the root as not found",
       "status": 404,
@@ -14801,8 +14825,8 @@
       ]
     },
     {
-      "name": "1351 authorization-create-catalog-request - Wrong JSON media type is rejected",
-      "file": "contracts/1351-authorization-create-catalog-request.bru",
+      "name": "1353 authorization-create-catalog-request - Wrong JSON media type is rejected",
+      "file": "contracts/1353-authorization-create-catalog-request.bru",
       "endpoint": "POST /api/authorization/{tenant}/catalog/requests",
       "scenario": "Wrong JSON media type is rejected",
       "status": 415,
@@ -14813,8 +14837,8 @@
       ]
     },
     {
-      "name": "1352 authorization-create-catalog-request - Malformed JSON cannot reach the use case",
-      "file": "contracts/1352-authorization-create-catalog-request.bru",
+      "name": "1354 authorization-create-catalog-request - Malformed JSON cannot reach the use case",
+      "file": "contracts/1354-authorization-create-catalog-request.bru",
       "endpoint": "POST /api/authorization/{tenant}/catalog/requests",
       "scenario": "Malformed JSON cannot reach the use case",
       "status": 400,
@@ -14825,8 +14849,8 @@
       ]
     },
     {
-      "name": "1353 authorization-withdraw-catalog-request - Anonymous request is rejected",
-      "file": "contracts/1353-authorization-withdraw-catalog-request.bru",
+      "name": "1355 authorization-withdraw-catalog-request - Anonymous request is rejected",
+      "file": "contracts/1355-authorization-withdraw-catalog-request.bru",
       "endpoint": "POST /api/authorization/{tenant}/catalog/requests/{id}/withdraw",
       "scenario": "Anonymous request is rejected",
       "status": 401,
@@ -14837,8 +14861,8 @@
       ]
     },
     {
-      "name": "1354 authorization-withdraw-catalog-request - Deployment Administrator bearer has no Tenant authority",
-      "file": "contracts/1354-authorization-withdraw-catalog-request.bru",
+      "name": "1356 authorization-withdraw-catalog-request - Deployment Administrator bearer has no Tenant authority",
+      "file": "contracts/1356-authorization-withdraw-catalog-request.bru",
       "endpoint": "POST /api/authorization/{tenant}/catalog/requests/{id}/withdraw",
       "scenario": "Deployment Administrator bearer has no Tenant authority",
       "status": 403,
@@ -14849,8 +14873,8 @@
       ]
     },
     {
-      "name": "1355 authorization-withdraw-catalog-request - Typed resource IDs reject invalid UUIDs",
-      "file": "contracts/1355-authorization-withdraw-catalog-request.bru",
+      "name": "1357 authorization-withdraw-catalog-request - Typed resource IDs reject invalid UUIDs",
+      "file": "contracts/1357-authorization-withdraw-catalog-request.bru",
       "endpoint": "POST /api/authorization/{tenant}/catalog/requests/{id}/withdraw",
       "scenario": "Typed resource IDs reject invalid UUIDs",
       "status": 400,
@@ -14861,8 +14885,8 @@
       ]
     },
     {
-      "name": "1356 authorization-withdraw-catalog-request - Unrecognized bearer cannot mutate state",
-      "file": "contracts/1356-authorization-withdraw-catalog-request.bru",
+      "name": "1358 authorization-withdraw-catalog-request - Unrecognized bearer cannot mutate state",
+      "file": "contracts/1358-authorization-withdraw-catalog-request.bru",
       "endpoint": "POST /api/authorization/{tenant}/catalog/requests/{id}/withdraw",
       "scenario": "Unrecognized bearer cannot mutate state",
       "status": 401,
@@ -14873,8 +14897,8 @@
       ]
     },
     {
-      "name": "1357 authorization-decline-catalog-request - Anonymous request is rejected",
-      "file": "contracts/1357-authorization-decline-catalog-request.bru",
+      "name": "1359 authorization-decline-catalog-request - Anonymous request is rejected",
+      "file": "contracts/1359-authorization-decline-catalog-request.bru",
       "endpoint": "POST /api/authorization/{tenant}/catalog/requests/{id}/decline",
       "scenario": "Anonymous request is rejected",
       "status": 401,
@@ -14885,8 +14909,8 @@
       ]
     },
     {
-      "name": "1358 authorization-decline-catalog-request - Deployment Administrator bearer has no Tenant authority",
-      "file": "contracts/1358-authorization-decline-catalog-request.bru",
+      "name": "1360 authorization-decline-catalog-request - Deployment Administrator bearer has no Tenant authority",
+      "file": "contracts/1360-authorization-decline-catalog-request.bru",
       "endpoint": "POST /api/authorization/{tenant}/catalog/requests/{id}/decline",
       "scenario": "Deployment Administrator bearer has no Tenant authority",
       "status": 403,
@@ -14897,8 +14921,8 @@
       ]
     },
     {
-      "name": "1359 authorization-decline-catalog-request - Subject without approval authority sees the request as not found",
-      "file": "contracts/1359-authorization-decline-catalog-request.bru",
+      "name": "1361 authorization-decline-catalog-request - Subject without approval authority sees the request as not found",
+      "file": "contracts/1361-authorization-decline-catalog-request.bru",
       "endpoint": "POST /api/authorization/{tenant}/catalog/requests/{id}/decline",
       "scenario": "Subject without approval authority sees the request as not found",
       "status": 404,
@@ -14909,8 +14933,8 @@
       ]
     },
     {
-      "name": "1360 authorization-decline-catalog-request - Wrong JSON media type is rejected",
-      "file": "contracts/1360-authorization-decline-catalog-request.bru",
+      "name": "1362 authorization-decline-catalog-request - Wrong JSON media type is rejected",
+      "file": "contracts/1362-authorization-decline-catalog-request.bru",
       "endpoint": "POST /api/authorization/{tenant}/catalog/requests/{id}/decline",
       "scenario": "Wrong JSON media type is rejected",
       "status": 415,
@@ -14921,8 +14945,8 @@
       ]
     },
     {
-      "name": "1361 authorization-decline-catalog-request - Malformed JSON cannot reach the use case",
-      "file": "contracts/1361-authorization-decline-catalog-request.bru",
+      "name": "1363 authorization-decline-catalog-request - Malformed JSON cannot reach the use case",
+      "file": "contracts/1363-authorization-decline-catalog-request.bru",
       "endpoint": "POST /api/authorization/{tenant}/catalog/requests/{id}/decline",
       "scenario": "Malformed JSON cannot reach the use case",
       "status": 400,
@@ -14933,8 +14957,8 @@
       ]
     },
     {
-      "name": "1362 authorization-catalog-requests-mine - Anonymous request is rejected",
-      "file": "contracts/1362-authorization-catalog-requests-mine.bru",
+      "name": "1364 authorization-catalog-requests-mine - Anonymous request is rejected",
+      "file": "contracts/1364-authorization-catalog-requests-mine.bru",
       "endpoint": "GET /api/authorization/{tenant}/catalog/requests/mine",
       "scenario": "Anonymous request is rejected",
       "status": 401,
@@ -14944,8 +14968,8 @@
       ]
     },
     {
-      "name": "1363 authorization-catalog-requests-mine - Malformed bearer syntax is rejected",
-      "file": "contracts/1363-authorization-catalog-requests-mine.bru",
+      "name": "1365 authorization-catalog-requests-mine - Malformed bearer syntax is rejected",
+      "file": "contracts/1365-authorization-catalog-requests-mine.bru",
       "endpoint": "GET /api/authorization/{tenant}/catalog/requests/mine",
       "scenario": "Malformed bearer syntax is rejected",
       "status": 401,
@@ -14955,8 +14979,8 @@
       ]
     },
     {
-      "name": "1364 authorization-catalog-requests-mine - Deployment Administrator has no Tenant authority",
-      "file": "contracts/1364-authorization-catalog-requests-mine.bru",
+      "name": "1366 authorization-catalog-requests-mine - Deployment Administrator has no Tenant authority",
+      "file": "contracts/1366-authorization-catalog-requests-mine.bru",
       "endpoint": "GET /api/authorization/{tenant}/catalog/requests/mine",
       "scenario": "Deployment Administrator has no Tenant authority",
       "status": 403,
@@ -14966,8 +14990,8 @@
       ]
     },
     {
-      "name": "1365 authorization-catalog-requests-mine - Paging rejects nonnumeric or malformed cursors",
-      "file": "contracts/1365-authorization-catalog-requests-mine.bru",
+      "name": "1367 authorization-catalog-requests-mine - Paging rejects nonnumeric or malformed cursors",
+      "file": "contracts/1367-authorization-catalog-requests-mine.bru",
       "endpoint": "GET /api/authorization/{tenant}/catalog/requests/mine",
       "scenario": "Paging rejects nonnumeric or malformed cursors",
       "status": 400,
@@ -14977,8 +15001,8 @@
       ]
     },
     {
-      "name": "1366 authorization-catalog-requests-mine - Tenant subject reads an empty page of its requests",
-      "file": "contracts/1366-authorization-catalog-requests-mine.bru",
+      "name": "1368 authorization-catalog-requests-mine - Tenant subject reads an empty page of its requests",
+      "file": "contracts/1368-authorization-catalog-requests-mine.bru",
       "endpoint": "GET /api/authorization/{tenant}/catalog/requests/mine",
       "scenario": "Tenant subject reads an empty page of its requests",
       "status": 200,
@@ -14989,8 +15013,8 @@
       ]
     },
     {
-      "name": "1367 authorization-catalog-requests-mine - Denied subject sees an empty page of its requests",
-      "file": "contracts/1367-authorization-catalog-requests-mine.bru",
+      "name": "1369 authorization-catalog-requests-mine - Denied subject sees an empty page of its requests",
+      "file": "contracts/1369-authorization-catalog-requests-mine.bru",
       "endpoint": "GET /api/authorization/{tenant}/catalog/requests/mine",
       "scenario": "Denied subject sees an empty page of its requests",
       "status": 200,
@@ -15001,8 +15025,8 @@
       ]
     },
     {
-      "name": "1368 authorization-catalog-requests-pending - Anonymous request is rejected",
-      "file": "contracts/1368-authorization-catalog-requests-pending.bru",
+      "name": "1370 authorization-catalog-requests-pending - Anonymous request is rejected",
+      "file": "contracts/1370-authorization-catalog-requests-pending.bru",
       "endpoint": "GET /api/authorization/{tenant}/catalog/requests/pending",
       "scenario": "Anonymous request is rejected",
       "status": 401,
@@ -15012,8 +15036,8 @@
       ]
     },
     {
-      "name": "1369 authorization-catalog-requests-pending - Malformed bearer syntax is rejected",
-      "file": "contracts/1369-authorization-catalog-requests-pending.bru",
+      "name": "1371 authorization-catalog-requests-pending - Malformed bearer syntax is rejected",
+      "file": "contracts/1371-authorization-catalog-requests-pending.bru",
       "endpoint": "GET /api/authorization/{tenant}/catalog/requests/pending",
       "scenario": "Malformed bearer syntax is rejected",
       "status": 401,
@@ -15023,8 +15047,8 @@
       ]
     },
     {
-      "name": "1370 authorization-catalog-requests-pending - Deployment Administrator has no Tenant authority",
-      "file": "contracts/1370-authorization-catalog-requests-pending.bru",
+      "name": "1372 authorization-catalog-requests-pending - Deployment Administrator has no Tenant authority",
+      "file": "contracts/1372-authorization-catalog-requests-pending.bru",
       "endpoint": "GET /api/authorization/{tenant}/catalog/requests/pending",
       "scenario": "Deployment Administrator has no Tenant authority",
       "status": 403,
@@ -15034,8 +15058,8 @@
       ]
     },
     {
-      "name": "1371 authorization-catalog-requests-pending - Paging rejects nonnumeric or malformed cursors",
-      "file": "contracts/1371-authorization-catalog-requests-pending.bru",
+      "name": "1373 authorization-catalog-requests-pending - Paging rejects nonnumeric or malformed cursors",
+      "file": "contracts/1373-authorization-catalog-requests-pending.bru",
       "endpoint": "GET /api/authorization/{tenant}/catalog/requests/pending",
       "scenario": "Paging rejects nonnumeric or malformed cursors",
       "status": 400,
@@ -15045,8 +15069,8 @@
       ]
     },
     {
-      "name": "1372 authorization-catalog-requests-pending - Tenant subject reads an empty page of pending requests",
-      "file": "contracts/1372-authorization-catalog-requests-pending.bru",
+      "name": "1374 authorization-catalog-requests-pending - Tenant subject reads an empty page of pending requests",
+      "file": "contracts/1374-authorization-catalog-requests-pending.bru",
       "endpoint": "GET /api/authorization/{tenant}/catalog/requests/pending",
       "scenario": "Tenant subject reads an empty page of pending requests",
       "status": 200,
@@ -15057,8 +15081,8 @@
       ]
     },
     {
-      "name": "1373 authorization-catalog-requests-pending - Denied subject sees an empty page of pending requests",
-      "file": "contracts/1373-authorization-catalog-requests-pending.bru",
+      "name": "1375 authorization-catalog-requests-pending - Denied subject sees an empty page of pending requests",
+      "file": "contracts/1375-authorization-catalog-requests-pending.bru",
       "endpoint": "GET /api/authorization/{tenant}/catalog/requests/pending",
       "scenario": "Denied subject sees an empty page of pending requests",
       "status": 200,
@@ -15069,30 +15093,30 @@
       ]
     },
     {
-      "name": "1374 core_preview_availability - Anonymous request is rejected",
-      "file": "contracts/1374-core_preview_availability.bru",
-      "endpoint": "GET /api/previews/availability",
-      "scenario": "Anonymous request is rejected",
-      "status": 401,
-      "required_checks": [
-        "Exact HTTP 401",
-        "Stable authorization error envelope"
-      ]
-    },
-    {
-      "name": "1375 core_preview_availability - Anonymous request is rejected",
-      "file": "contracts/1375-core_preview_availability.bru",
-      "endpoint": "GET /api/previews/availability",
-      "scenario": "Anonymous request is rejected",
-      "status": 401,
-      "required_checks": [
-        "Exact HTTP 401",
-        "Stable authorization error envelope"
-      ]
-    },
-    {
-      "name": "1376 core_preview_availability - Deployment Administrator cannot read preview availability",
+      "name": "1376 core_preview_availability - Anonymous request is rejected",
       "file": "contracts/1376-core_preview_availability.bru",
+      "endpoint": "GET /api/previews/availability",
+      "scenario": "Anonymous request is rejected",
+      "status": 401,
+      "required_checks": [
+        "Exact HTTP 401",
+        "Stable authorization error envelope"
+      ]
+    },
+    {
+      "name": "1377 core_preview_availability - Anonymous request is rejected",
+      "file": "contracts/1377-core_preview_availability.bru",
+      "endpoint": "GET /api/previews/availability",
+      "scenario": "Anonymous request is rejected",
+      "status": 401,
+      "required_checks": [
+        "Exact HTTP 401",
+        "Stable authorization error envelope"
+      ]
+    },
+    {
+      "name": "1378 core_preview_availability - Deployment Administrator cannot read preview availability",
+      "file": "contracts/1378-core_preview_availability.bru",
       "endpoint": "GET /api/previews/availability",
       "scenario": "Deployment Administrator cannot read preview availability",
       "status": 403,
@@ -15102,8 +15126,8 @@
       ]
     },
     {
-      "name": "1377 core_preview_availability - Subject bearer reads the availability flag",
-      "file": "contracts/1377-core_preview_availability.bru",
+      "name": "1379 core_preview_availability - Subject bearer reads the availability flag",
+      "file": "contracts/1379-core_preview_availability.bru",
       "endpoint": "GET /api/previews/availability",
       "scenario": "Subject bearer reads the availability flag",
       "status": 200,
@@ -15114,8 +15138,8 @@
       ]
     },
     {
-      "name": "1378 core_preview_ticket - Anonymous request is rejected",
-      "file": "contracts/1378-core_preview_ticket.bru",
+      "name": "1380 core_preview_ticket - Anonymous request is rejected",
+      "file": "contracts/1380-core_preview_ticket.bru",
       "endpoint": "POST /api/previews/tickets",
       "scenario": "Anonymous request is rejected",
       "status": 401,
@@ -15126,8 +15150,8 @@
       ]
     },
     {
-      "name": "1379 core_preview_ticket - Deployment Administrator cannot issue a ticket",
-      "file": "contracts/1379-core_preview_ticket.bru",
+      "name": "1381 core_preview_ticket - Deployment Administrator cannot issue a ticket",
+      "file": "contracts/1381-core_preview_ticket.bru",
       "endpoint": "POST /api/previews/tickets",
       "scenario": "Deployment Administrator cannot issue a ticket",
       "status": 403,
@@ -15137,8 +15161,8 @@
       ]
     },
     {
-      "name": "1380 core_preview_ticket - Malformed JSON cannot reach the use case",
-      "file": "contracts/1380-core_preview_ticket.bru",
+      "name": "1382 core_preview_ticket - Malformed JSON cannot reach the use case",
+      "file": "contracts/1382-core_preview_ticket.bru",
       "endpoint": "POST /api/previews/tickets",
       "scenario": "Malformed JSON cannot reach the use case",
       "status": 400,
@@ -15148,8 +15172,8 @@
       ]
     },
     {
-      "name": "1381 core_preview_ticket - Unknown Ticket fields are rejected",
-      "file": "contracts/1381-core_preview_ticket.bru",
+      "name": "1383 core_preview_ticket - Unknown Ticket fields are rejected",
+      "file": "contracts/1383-core_preview_ticket.bru",
       "endpoint": "POST /api/previews/tickets",
       "scenario": "Unknown Ticket fields are rejected",
       "status": 422,
@@ -15159,8 +15183,8 @@
       ]
     },
     {
-      "name": "1382 core_preview_ticket - Ticket input is required",
-      "file": "contracts/1382-core_preview_ticket.bru",
+      "name": "1384 core_preview_ticket - Ticket input is required",
+      "file": "contracts/1384-core_preview_ticket.bru",
       "endpoint": "POST /api/previews/tickets",
       "scenario": "Ticket input is required",
       "status": 422,
@@ -15170,30 +15194,30 @@
       ]
     },
     {
-      "name": "1383 core_live_preview - Anonymous request is rejected",
-      "file": "contracts/1383-core_live_preview.bru",
-      "endpoint": "GET /api/runs/{id}/live-preview",
-      "scenario": "Anonymous request is rejected",
-      "status": 401,
-      "required_checks": [
-        "Exact HTTP 401",
-        "Stable authorization error envelope"
-      ]
-    },
-    {
-      "name": "1384 core_live_preview - Anonymous request is rejected",
-      "file": "contracts/1384-core_live_preview.bru",
-      "endpoint": "GET /api/runs/{id}/live-preview",
-      "scenario": "Anonymous request is rejected",
-      "status": 401,
-      "required_checks": [
-        "Exact HTTP 401",
-        "Stable authorization error envelope"
-      ]
-    },
-    {
-      "name": "1385 core_live_preview - Deployment Administrator cannot read a missing Run",
+      "name": "1385 core_live_preview - Anonymous request is rejected",
       "file": "contracts/1385-core_live_preview.bru",
+      "endpoint": "GET /api/runs/{id}/live-preview",
+      "scenario": "Anonymous request is rejected",
+      "status": 401,
+      "required_checks": [
+        "Exact HTTP 401",
+        "Stable authorization error envelope"
+      ]
+    },
+    {
+      "name": "1386 core_live_preview - Anonymous request is rejected",
+      "file": "contracts/1386-core_live_preview.bru",
+      "endpoint": "GET /api/runs/{id}/live-preview",
+      "scenario": "Anonymous request is rejected",
+      "status": 401,
+      "required_checks": [
+        "Exact HTTP 401",
+        "Stable authorization error envelope"
+      ]
+    },
+    {
+      "name": "1387 core_live_preview - Deployment Administrator cannot read a missing Run",
+      "file": "contracts/1387-core_live_preview.bru",
       "endpoint": "GET /api/runs/{id}/live-preview",
       "scenario": "Deployment Administrator cannot read a missing Run",
       "status": 403,
@@ -15203,8 +15227,8 @@
       ]
     },
     {
-      "name": "1386 core_live_preview - Subject bearer cannot read a missing Run",
-      "file": "contracts/1386-core_live_preview.bru",
+      "name": "1388 core_live_preview - Subject bearer cannot read a missing Run",
+      "file": "contracts/1388-core_live_preview.bru",
       "endpoint": "GET /api/runs/{id}/live-preview",
       "scenario": "Subject bearer cannot read a missing Run",
       "status": 404,
@@ -15214,8 +15238,8 @@
       ]
     },
     {
-      "name": "1387 core_live_preview_stop - Anonymous request is rejected",
-      "file": "contracts/1387-core_live_preview_stop.bru",
+      "name": "1389 core_live_preview_stop - Anonymous request is rejected",
+      "file": "contracts/1389-core_live_preview_stop.bru",
       "endpoint": "POST /api/runs/{id}/live-preview/stop",
       "scenario": "Anonymous request is rejected",
       "status": 401,
@@ -15226,8 +15250,8 @@
       ]
     },
     {
-      "name": "1388 core_live_preview_stop - Anonymous stop is rejected",
-      "file": "contracts/1388-core_live_preview_stop.bru",
+      "name": "1390 core_live_preview_stop - Anonymous stop is rejected",
+      "file": "contracts/1390-core_live_preview_stop.bru",
       "endpoint": "POST /api/runs/{id}/live-preview/stop",
       "scenario": "Anonymous stop is rejected",
       "status": 401,
@@ -15237,8 +15261,8 @@
       ]
     },
     {
-      "name": "1389 core_live_preview_stop - Deployment Administrator cannot stop a missing Run",
-      "file": "contracts/1389-core_live_preview_stop.bru",
+      "name": "1391 core_live_preview_stop - Deployment Administrator cannot stop a missing Run",
+      "file": "contracts/1391-core_live_preview_stop.bru",
       "endpoint": "POST /api/runs/{id}/live-preview/stop",
       "scenario": "Deployment Administrator cannot stop a missing Run",
       "status": 403,
@@ -15248,8 +15272,8 @@
       ]
     },
     {
-      "name": "1390 core_live_preview_stop - Subject bearer cannot stop a missing Run",
-      "file": "contracts/1390-core_live_preview_stop.bru",
+      "name": "1392 core_live_preview_stop - Subject bearer cannot stop a missing Run",
+      "file": "contracts/1392-core_live_preview_stop.bru",
       "endpoint": "POST /api/runs/{id}/live-preview/stop",
       "scenario": "Subject bearer cannot stop a missing Run",
       "status": 404,
@@ -15259,8 +15283,8 @@
       ]
     },
     {
-      "name": "1391 core_preview_live_ticket - Anonymous request is rejected",
-      "file": "contracts/1391-core_preview_live_ticket.bru",
+      "name": "1393 core_preview_live_ticket - Anonymous request is rejected",
+      "file": "contracts/1393-core_preview_live_ticket.bru",
       "endpoint": "POST /api/previews/live-tickets",
       "scenario": "Anonymous request is rejected",
       "status": 401,
@@ -15271,8 +15295,8 @@
       ]
     },
     {
-      "name": "1392 core_preview_live_ticket - Anonymous request is rejected",
-      "file": "contracts/1392-core_preview_live_ticket.bru",
+      "name": "1394 core_preview_live_ticket - Anonymous request is rejected",
+      "file": "contracts/1394-core_preview_live_ticket.bru",
       "endpoint": "POST /api/previews/live-tickets",
       "scenario": "Anonymous request is rejected",
       "status": 401,
@@ -15282,8 +15306,8 @@
       ]
     },
     {
-      "name": "1393 core_preview_live_ticket - Malformed JSON cannot reach the use case",
-      "file": "contracts/1393-core_preview_live_ticket.bru",
+      "name": "1395 core_preview_live_ticket - Malformed JSON cannot reach the use case",
+      "file": "contracts/1395-core_preview_live_ticket.bru",
       "endpoint": "POST /api/previews/live-tickets",
       "scenario": "Malformed JSON cannot reach the use case",
       "status": 400,
@@ -15293,8 +15317,8 @@
       ]
     },
     {
-      "name": "1394 core_preview_live_ticket - Unknown Ticket fields are rejected",
-      "file": "contracts/1394-core_preview_live_ticket.bru",
+      "name": "1396 core_preview_live_ticket - Unknown Ticket fields are rejected",
+      "file": "contracts/1396-core_preview_live_ticket.bru",
       "endpoint": "POST /api/previews/live-tickets",
       "scenario": "Unknown Ticket fields are rejected",
       "status": 422,
@@ -15304,8 +15328,8 @@
       ]
     },
     {
-      "name": "1395 core_preview_live_ticket - Ticket input is required",
-      "file": "contracts/1395-core_preview_live_ticket.bru",
+      "name": "1397 core_preview_live_ticket - Ticket input is required",
+      "file": "contracts/1397-core_preview_live_ticket.bru",
       "endpoint": "POST /api/previews/live-tickets",
       "scenario": "Ticket input is required",
       "status": 422,
@@ -15315,8 +15339,8 @@
       ]
     },
     {
-      "name": "1396 core_preview_live_ticket - A missing Live preview has no ticket",
-      "file": "contracts/1396-core_preview_live_ticket.bru",
+      "name": "1398 core_preview_live_ticket - A missing Live preview has no ticket",
+      "file": "contracts/1398-core_preview_live_ticket.bru",
       "endpoint": "POST /api/previews/live-tickets",
       "scenario": "A missing Live preview has no ticket",
       "status": 404,
@@ -15326,30 +15350,30 @@
       ]
     },
     {
-      "name": "1397 core_preview_limits - Anonymous request is rejected",
-      "file": "contracts/1397-core_preview_limits.bru",
-      "endpoint": "GET /api/preview-limits/{tenant}",
-      "scenario": "Anonymous request is rejected",
-      "status": 401,
-      "required_checks": [
-        "Exact HTTP 401",
-        "Stable authorization error envelope"
-      ]
-    },
-    {
-      "name": "1398 core_preview_limits - Anonymous request is rejected",
-      "file": "contracts/1398-core_preview_limits.bru",
-      "endpoint": "GET /api/preview-limits/{tenant}",
-      "scenario": "Anonymous request is rejected",
-      "status": 401,
-      "required_checks": [
-        "Exact HTTP 401",
-        "Stable authorization error envelope"
-      ]
-    },
-    {
-      "name": "1399 core_preview_limits - Deployment Administrator cannot read Tenant limits",
+      "name": "1399 core_preview_limits - Anonymous request is rejected",
       "file": "contracts/1399-core_preview_limits.bru",
+      "endpoint": "GET /api/preview-limits/{tenant}",
+      "scenario": "Anonymous request is rejected",
+      "status": 401,
+      "required_checks": [
+        "Exact HTTP 401",
+        "Stable authorization error envelope"
+      ]
+    },
+    {
+      "name": "1400 core_preview_limits - Anonymous request is rejected",
+      "file": "contracts/1400-core_preview_limits.bru",
+      "endpoint": "GET /api/preview-limits/{tenant}",
+      "scenario": "Anonymous request is rejected",
+      "status": 401,
+      "required_checks": [
+        "Exact HTTP 401",
+        "Stable authorization error envelope"
+      ]
+    },
+    {
+      "name": "1401 core_preview_limits - Deployment Administrator cannot read Tenant limits",
+      "file": "contracts/1401-core_preview_limits.bru",
       "endpoint": "GET /api/preview-limits/{tenant}",
       "scenario": "Deployment Administrator cannot read Tenant limits",
       "status": 403,
@@ -15359,8 +15383,8 @@
       ]
     },
     {
-      "name": "1400 core_preview_limits - Subject bearer is not a Tenant Administrator",
-      "file": "contracts/1400-core_preview_limits.bru",
+      "name": "1402 core_preview_limits - Subject bearer is not a Tenant Administrator",
+      "file": "contracts/1402-core_preview_limits.bru",
       "endpoint": "GET /api/preview-limits/{tenant}",
       "scenario": "Subject bearer is not a Tenant Administrator",
       "status": 403,
@@ -15370,32 +15394,32 @@
       ]
     },
     {
-      "name": "1401 core_preview_limits_update - Anonymous request is rejected",
-      "file": "contracts/1401-core_preview_limits_update.bru",
-      "endpoint": "PUT /api/preview-limits/{tenant}",
-      "scenario": "Anonymous request is rejected",
-      "status": 401,
-      "required_checks": [
-        "Rejected input preserves committed workspace state",
-        "Exact HTTP 401",
-        "Stable authorization error envelope"
-      ]
-    },
-    {
-      "name": "1402 core_preview_limits_update - Anonymous request is rejected",
-      "file": "contracts/1402-core_preview_limits_update.bru",
-      "endpoint": "PUT /api/preview-limits/{tenant}",
-      "scenario": "Anonymous request is rejected",
-      "status": 401,
-      "required_checks": [
-        "Rejected input preserves committed workspace state",
-        "Exact HTTP 401",
-        "Stable authorization error envelope"
-      ]
-    },
-    {
-      "name": "1403 core_preview_limits_update - Malformed JSON cannot reach the use case",
+      "name": "1403 core_preview_limits_update - Anonymous request is rejected",
       "file": "contracts/1403-core_preview_limits_update.bru",
+      "endpoint": "PUT /api/preview-limits/{tenant}",
+      "scenario": "Anonymous request is rejected",
+      "status": 401,
+      "required_checks": [
+        "Rejected input preserves committed workspace state",
+        "Exact HTTP 401",
+        "Stable authorization error envelope"
+      ]
+    },
+    {
+      "name": "1404 core_preview_limits_update - Anonymous request is rejected",
+      "file": "contracts/1404-core_preview_limits_update.bru",
+      "endpoint": "PUT /api/preview-limits/{tenant}",
+      "scenario": "Anonymous request is rejected",
+      "status": 401,
+      "required_checks": [
+        "Rejected input preserves committed workspace state",
+        "Exact HTTP 401",
+        "Stable authorization error envelope"
+      ]
+    },
+    {
+      "name": "1405 core_preview_limits_update - Malformed JSON cannot reach the use case",
+      "file": "contracts/1405-core_preview_limits_update.bru",
       "endpoint": "PUT /api/preview-limits/{tenant}",
       "scenario": "Malformed JSON cannot reach the use case",
       "status": 400,
@@ -15406,8 +15430,8 @@
       ]
     },
     {
-      "name": "1404 core_preview_limits_update - Unknown limit fields are rejected",
-      "file": "contracts/1404-core_preview_limits_update.bru",
+      "name": "1406 core_preview_limits_update - Unknown limit fields are rejected",
+      "file": "contracts/1406-core_preview_limits_update.bru",
       "endpoint": "PUT /api/preview-limits/{tenant}",
       "scenario": "Unknown limit fields are rejected",
       "status": 422,
@@ -15418,8 +15442,8 @@
       ]
     },
     {
-      "name": "1405 core_preview_limits_update - Limit input is required",
-      "file": "contracts/1405-core_preview_limits_update.bru",
+      "name": "1407 core_preview_limits_update - Limit input is required",
+      "file": "contracts/1407-core_preview_limits_update.bru",
       "endpoint": "PUT /api/preview-limits/{tenant}",
       "scenario": "Limit input is required",
       "status": 422,
@@ -15430,8 +15454,8 @@
       ]
     },
     {
-      "name": "1406 core_preview_limits_update - Subject bearer is not a Tenant Administrator",
-      "file": "contracts/1406-core_preview_limits_update.bru",
+      "name": "1408 core_preview_limits_update - Subject bearer is not a Tenant Administrator",
+      "file": "contracts/1408-core_preview_limits_update.bru",
       "endpoint": "PUT /api/preview-limits/{tenant}",
       "scenario": "Subject bearer is not a Tenant Administrator",
       "status": 403,
@@ -15442,8 +15466,8 @@
       ]
     },
     {
-      "name": "1407 core_remote_preview_inspect - Anonymous request is rejected",
-      "file": "contracts/1407-core_remote_preview_inspect.bru",
+      "name": "1409 core_remote_preview_inspect - Anonymous request is rejected",
+      "file": "contracts/1409-core_remote_preview_inspect.bru",
       "endpoint": "GET /api/runs/{id}/remote-preview",
       "scenario": "Anonymous request is rejected",
       "status": 401,
@@ -15453,8 +15477,8 @@
       ]
     },
     {
-      "name": "1408 core_remote_preview_inspect - Anonymous remote inspection is rejected",
-      "file": "contracts/1408-core_remote_preview_inspect.bru",
+      "name": "1410 core_remote_preview_inspect - Anonymous remote inspection is rejected",
+      "file": "contracts/1410-core_remote_preview_inspect.bru",
       "endpoint": "GET /api/runs/{id}/remote-preview",
       "scenario": "Anonymous remote inspection is rejected",
       "status": 401,
@@ -15464,8 +15488,8 @@
       ]
     },
     {
-      "name": "1409 core_remote_preview_inspect - Deployment Administrator cannot inspect a remote Run",
-      "file": "contracts/1409-core_remote_preview_inspect.bru",
+      "name": "1411 core_remote_preview_inspect - Deployment Administrator cannot inspect a remote Run",
+      "file": "contracts/1411-core_remote_preview_inspect.bru",
       "endpoint": "GET /api/runs/{id}/remote-preview",
       "scenario": "Deployment Administrator cannot inspect a remote Run",
       "status": 403,
@@ -15475,8 +15499,8 @@
       ]
     },
     {
-      "name": "1410 core_remote_preview_inspect - Malformed Run identifier is rejected",
-      "file": "contracts/1410-core_remote_preview_inspect.bru",
+      "name": "1412 core_remote_preview_inspect - Malformed Run identifier is rejected",
+      "file": "contracts/1412-core_remote_preview_inspect.bru",
       "endpoint": "GET /api/runs/{id}/remote-preview",
       "scenario": "Malformed Run identifier is rejected",
       "status": 400,
@@ -15486,8 +15510,8 @@
       ]
     },
     {
-      "name": "1411 core_remote_preview_ticket - Anonymous request is rejected",
-      "file": "contracts/1411-core_remote_preview_ticket.bru",
+      "name": "1413 core_remote_preview_ticket - Anonymous request is rejected",
+      "file": "contracts/1413-core_remote_preview_ticket.bru",
       "endpoint": "POST /api/runs/{id}/preview-tickets",
       "scenario": "Anonymous request is rejected",
       "status": 401,
@@ -15498,8 +15522,8 @@
       ]
     },
     {
-      "name": "1412 core_remote_preview_ticket - Anonymous remote ticket is rejected",
-      "file": "contracts/1412-core_remote_preview_ticket.bru",
+      "name": "1414 core_remote_preview_ticket - Anonymous remote ticket is rejected",
+      "file": "contracts/1414-core_remote_preview_ticket.bru",
       "endpoint": "POST /api/runs/{id}/preview-tickets",
       "scenario": "Anonymous remote ticket is rejected",
       "status": 401,
@@ -15509,8 +15533,8 @@
       ]
     },
     {
-      "name": "1413 core_remote_preview_ticket - Deployment Administrator cannot issue a remote ticket",
-      "file": "contracts/1413-core_remote_preview_ticket.bru",
+      "name": "1415 core_remote_preview_ticket - Deployment Administrator cannot issue a remote ticket",
+      "file": "contracts/1415-core_remote_preview_ticket.bru",
       "endpoint": "POST /api/runs/{id}/preview-tickets",
       "scenario": "Deployment Administrator cannot issue a remote ticket",
       "status": 403,
@@ -15520,8 +15544,8 @@
       ]
     },
     {
-      "name": "1414 core_remote_preview_ticket - Malformed JSON cannot reach the remote ticket service",
-      "file": "contracts/1414-core_remote_preview_ticket.bru",
+      "name": "1416 core_remote_preview_ticket - Malformed JSON cannot reach the remote ticket service",
+      "file": "contracts/1416-core_remote_preview_ticket.bru",
       "endpoint": "POST /api/runs/{id}/preview-tickets",
       "scenario": "Malformed JSON cannot reach the remote ticket service",
       "status": 400,
@@ -15531,8 +15555,8 @@
       ]
     },
     {
-      "name": "1415 core_remote_preview_ticket - Unknown remote ticket fields are rejected",
-      "file": "contracts/1415-core_remote_preview_ticket.bru",
+      "name": "1417 core_remote_preview_ticket - Unknown remote ticket fields are rejected",
+      "file": "contracts/1417-core_remote_preview_ticket.bru",
       "endpoint": "POST /api/runs/{id}/preview-tickets",
       "scenario": "Unknown remote ticket fields are rejected",
       "status": 422,
@@ -15542,34 +15566,34 @@
       ]
     },
     {
-      "name": "1416 peer-preview-inspect - Reject unsupported federation protocol",
-      "file": "contracts/1416-peer-preview-inspect.bru",
-      "endpoint": "POST /federation/v0.1/scoped/previews/inspect",
-      "scenario": "Reject unsupported federation protocol",
-      "status": 400,
-      "required_checks": [
-        "Rejected input preserves committed workspace state",
-        "Exact HTTP 400",
-        "Rejection is diagnostic and does not disclose SQL or credentials",
-        "Reject unsupported federation protocol contract"
-      ]
-    },
-    {
-      "name": "1417 peer-preview-inspect - Reject the retired federation protocol 0.3",
-      "file": "contracts/1417-peer-preview-inspect.bru",
-      "endpoint": "POST /federation/v0.1/scoped/previews/inspect",
-      "scenario": "Reject the retired federation protocol 0.3",
-      "status": 400,
-      "required_checks": [
-        "Rejected input preserves committed workspace state",
-        "Exact HTTP 400",
-        "Rejection is diagnostic and does not disclose SQL or credentials"
-      ]
-    },
-    {
-      "name": "1418 peer-preview-inspect - Require the Federation token",
+      "name": "1418 peer-preview-inspect - Reject unsupported federation protocol",
       "file": "contracts/1418-peer-preview-inspect.bru",
       "endpoint": "POST /federation/v0.1/scoped/previews/inspect",
+      "scenario": "Reject unsupported federation protocol",
+      "status": 400,
+      "required_checks": [
+        "Rejected input preserves committed workspace state",
+        "Exact HTTP 400",
+        "Rejection is diagnostic and does not disclose SQL or credentials",
+        "Reject unsupported federation protocol contract"
+      ]
+    },
+    {
+      "name": "1419 peer-preview-inspect - Reject the retired federation protocol 0.3",
+      "file": "contracts/1419-peer-preview-inspect.bru",
+      "endpoint": "POST /federation/v0.1/scoped/previews/inspect",
+      "scenario": "Reject the retired federation protocol 0.3",
+      "status": 400,
+      "required_checks": [
+        "Rejected input preserves committed workspace state",
+        "Exact HTTP 400",
+        "Rejection is diagnostic and does not disclose SQL or credentials"
+      ]
+    },
+    {
+      "name": "1420 peer-preview-inspect - Require the Federation token",
+      "file": "contracts/1420-peer-preview-inspect.bru",
+      "endpoint": "POST /federation/v0.1/scoped/previews/inspect",
       "scenario": "Require the Federation token",
       "status": 401,
       "required_checks": [
@@ -15579,8 +15603,8 @@
       ]
     },
     {
-      "name": "1419 peer-preview-inspect - Refuse a token that does not verify",
-      "file": "contracts/1419-peer-preview-inspect.bru",
+      "name": "1421 peer-preview-inspect - Refuse a token that does not verify",
+      "file": "contracts/1421-peer-preview-inspect.bru",
       "endpoint": "POST /federation/v0.1/scoped/previews/inspect",
       "scenario": "Refuse a token that does not verify",
       "status": 401,
@@ -15591,34 +15615,34 @@
       ]
     },
     {
-      "name": "1420 peer-preview-release - Reject unsupported federation protocol",
-      "file": "contracts/1420-peer-preview-release.bru",
-      "endpoint": "POST /federation/v0.1/scoped/previews/release",
-      "scenario": "Reject unsupported federation protocol",
-      "status": 400,
-      "required_checks": [
-        "Rejected input preserves committed workspace state",
-        "Exact HTTP 400",
-        "Rejection is diagnostic and does not disclose SQL or credentials",
-        "Reject unsupported federation protocol contract"
-      ]
-    },
-    {
-      "name": "1421 peer-preview-release - Reject the retired federation protocol 0.3",
-      "file": "contracts/1421-peer-preview-release.bru",
-      "endpoint": "POST /federation/v0.1/scoped/previews/release",
-      "scenario": "Reject the retired federation protocol 0.3",
-      "status": 400,
-      "required_checks": [
-        "Rejected input preserves committed workspace state",
-        "Exact HTTP 400",
-        "Rejection is diagnostic and does not disclose SQL or credentials"
-      ]
-    },
-    {
-      "name": "1422 peer-preview-release - Require the Federation token",
+      "name": "1422 peer-preview-release - Reject unsupported federation protocol",
       "file": "contracts/1422-peer-preview-release.bru",
       "endpoint": "POST /federation/v0.1/scoped/previews/release",
+      "scenario": "Reject unsupported federation protocol",
+      "status": 400,
+      "required_checks": [
+        "Rejected input preserves committed workspace state",
+        "Exact HTTP 400",
+        "Rejection is diagnostic and does not disclose SQL or credentials",
+        "Reject unsupported federation protocol contract"
+      ]
+    },
+    {
+      "name": "1423 peer-preview-release - Reject the retired federation protocol 0.3",
+      "file": "contracts/1423-peer-preview-release.bru",
+      "endpoint": "POST /federation/v0.1/scoped/previews/release",
+      "scenario": "Reject the retired federation protocol 0.3",
+      "status": 400,
+      "required_checks": [
+        "Rejected input preserves committed workspace state",
+        "Exact HTTP 400",
+        "Rejection is diagnostic and does not disclose SQL or credentials"
+      ]
+    },
+    {
+      "name": "1424 peer-preview-release - Require the Federation token",
+      "file": "contracts/1424-peer-preview-release.bru",
+      "endpoint": "POST /federation/v0.1/scoped/previews/release",
       "scenario": "Require the Federation token",
       "status": 401,
       "required_checks": [
@@ -15628,8 +15652,8 @@
       ]
     },
     {
-      "name": "1423 peer-preview-release - Refuse a token that does not verify",
-      "file": "contracts/1423-peer-preview-release.bru",
+      "name": "1425 peer-preview-release - Refuse a token that does not verify",
+      "file": "contracts/1425-peer-preview-release.bru",
       "endpoint": "POST /federation/v0.1/scoped/previews/release",
       "scenario": "Refuse a token that does not verify",
       "status": 401,
@@ -15640,34 +15664,34 @@
       ]
     },
     {
-      "name": "1424 peer-preview-retain - Reject unsupported federation protocol",
-      "file": "contracts/1424-peer-preview-retain.bru",
-      "endpoint": "POST /federation/v0.1/scoped/previews/retain",
-      "scenario": "Reject unsupported federation protocol",
-      "status": 400,
-      "required_checks": [
-        "Rejected input preserves committed workspace state",
-        "Exact HTTP 400",
-        "Rejection is diagnostic and does not disclose SQL or credentials",
-        "Reject unsupported federation protocol contract"
-      ]
-    },
-    {
-      "name": "1425 peer-preview-retain - Reject the retired federation protocol 0.3",
-      "file": "contracts/1425-peer-preview-retain.bru",
-      "endpoint": "POST /federation/v0.1/scoped/previews/retain",
-      "scenario": "Reject the retired federation protocol 0.3",
-      "status": 400,
-      "required_checks": [
-        "Rejected input preserves committed workspace state",
-        "Exact HTTP 400",
-        "Rejection is diagnostic and does not disclose SQL or credentials"
-      ]
-    },
-    {
-      "name": "1426 peer-preview-retain - Require the Federation token",
+      "name": "1426 peer-preview-retain - Reject unsupported federation protocol",
       "file": "contracts/1426-peer-preview-retain.bru",
       "endpoint": "POST /federation/v0.1/scoped/previews/retain",
+      "scenario": "Reject unsupported federation protocol",
+      "status": 400,
+      "required_checks": [
+        "Rejected input preserves committed workspace state",
+        "Exact HTTP 400",
+        "Rejection is diagnostic and does not disclose SQL or credentials",
+        "Reject unsupported federation protocol contract"
+      ]
+    },
+    {
+      "name": "1427 peer-preview-retain - Reject the retired federation protocol 0.3",
+      "file": "contracts/1427-peer-preview-retain.bru",
+      "endpoint": "POST /federation/v0.1/scoped/previews/retain",
+      "scenario": "Reject the retired federation protocol 0.3",
+      "status": 400,
+      "required_checks": [
+        "Rejected input preserves committed workspace state",
+        "Exact HTTP 400",
+        "Rejection is diagnostic and does not disclose SQL or credentials"
+      ]
+    },
+    {
+      "name": "1428 peer-preview-retain - Require the Federation token",
+      "file": "contracts/1428-peer-preview-retain.bru",
+      "endpoint": "POST /federation/v0.1/scoped/previews/retain",
       "scenario": "Require the Federation token",
       "status": 401,
       "required_checks": [
@@ -15677,8 +15701,8 @@
       ]
     },
     {
-      "name": "1427 peer-preview-retain - Refuse a token that does not verify",
-      "file": "contracts/1427-peer-preview-retain.bru",
+      "name": "1429 peer-preview-retain - Refuse a token that does not verify",
+      "file": "contracts/1429-peer-preview-retain.bru",
       "endpoint": "POST /federation/v0.1/scoped/previews/retain",
       "scenario": "Refuse a token that does not verify",
       "status": 401,
@@ -15689,8 +15713,8 @@
       ]
     },
     {
-      "name": "1428 peer-preview-ticket - Reject unsupported federation protocol",
-      "file": "contracts/1428-peer-preview-ticket.bru",
+      "name": "1430 peer-preview-ticket - Reject unsupported federation protocol",
+      "file": "contracts/1430-peer-preview-ticket.bru",
       "endpoint": "POST /federation/v0.1/scoped/previews/tickets",
       "scenario": "Reject unsupported federation protocol",
       "status": 400,
@@ -15702,8 +15726,8 @@
       ]
     },
     {
-      "name": "1429 peer-preview-ticket - Reject the retired federation protocol 0.3",
-      "file": "contracts/1429-peer-preview-ticket.bru",
+      "name": "1431 peer-preview-ticket - Reject the retired federation protocol 0.3",
+      "file": "contracts/1431-peer-preview-ticket.bru",
       "endpoint": "POST /federation/v0.1/scoped/previews/tickets",
       "scenario": "Reject the retired federation protocol 0.3",
       "status": 400,
@@ -15714,8 +15738,8 @@
       ]
     },
     {
-      "name": "1430 peer-preview-ticket - Require the Federation token",
-      "file": "contracts/1430-peer-preview-ticket.bru",
+      "name": "1432 peer-preview-ticket - Require the Federation token",
+      "file": "contracts/1432-peer-preview-ticket.bru",
       "endpoint": "POST /federation/v0.1/scoped/previews/tickets",
       "scenario": "Require the Federation token",
       "status": 401,
@@ -15726,8 +15750,8 @@
       ]
     },
     {
-      "name": "1431 peer-preview-ticket - Refuse a token that does not verify",
-      "file": "contracts/1431-peer-preview-ticket.bru",
+      "name": "1433 peer-preview-ticket - Refuse a token that does not verify",
+      "file": "contracts/1433-peer-preview-ticket.bru",
       "endpoint": "POST /federation/v0.1/scoped/previews/tickets",
       "scenario": "Refuse a token that does not verify",
       "status": 401,
@@ -15738,31 +15762,31 @@
       ]
     },
     {
-      "name": "1432 marketplace-secret-readiness - Anonymous request is rejected",
-      "file": "contracts/1432-marketplace-secret-readiness.bru",
-      "endpoint": "GET /api/marketplace/packages/{key}/secret-readiness",
-      "scenario": "Anonymous request is rejected",
-      "status": 401,
-      "required_checks": [
-        "Exact HTTP 401",
-        "Stable authorization error envelope"
-      ]
-    },
-    {
-      "name": "1433 marketplace-secret-readiness - Malformed bearer syntax is rejected",
-      "file": "contracts/1433-marketplace-secret-readiness.bru",
-      "endpoint": "GET /api/marketplace/packages/{key}/secret-readiness",
-      "scenario": "Malformed bearer syntax is rejected",
-      "status": 401,
-      "required_checks": [
-        "Exact HTTP 401",
-        "Stable authorization error envelope"
-      ]
-    },
-    {
-      "name": "1434 marketplace-secret-readiness - Deployment Administrator bearer has no Tenant authority",
+      "name": "1434 marketplace-secret-readiness - Anonymous request is rejected",
       "file": "contracts/1434-marketplace-secret-readiness.bru",
       "endpoint": "GET /api/marketplace/packages/{key}/secret-readiness",
+      "scenario": "Anonymous request is rejected",
+      "status": 401,
+      "required_checks": [
+        "Exact HTTP 401",
+        "Stable authorization error envelope"
+      ]
+    },
+    {
+      "name": "1435 marketplace-secret-readiness - Malformed bearer syntax is rejected",
+      "file": "contracts/1435-marketplace-secret-readiness.bru",
+      "endpoint": "GET /api/marketplace/packages/{key}/secret-readiness",
+      "scenario": "Malformed bearer syntax is rejected",
+      "status": 401,
+      "required_checks": [
+        "Exact HTTP 401",
+        "Stable authorization error envelope"
+      ]
+    },
+    {
+      "name": "1436 marketplace-secret-readiness - Deployment Administrator bearer has no Tenant authority",
+      "file": "contracts/1436-marketplace-secret-readiness.bru",
+      "endpoint": "GET /api/marketplace/packages/{key}/secret-readiness",
       "scenario": "Deployment Administrator bearer has no Tenant authority",
       "status": 403,
       "required_checks": [
@@ -15771,8 +15795,8 @@
       ]
     },
     {
-      "name": "1435 marketplace-secret-readiness - Forged bearer cannot read Tenant Secret readiness",
-      "file": "contracts/1435-marketplace-secret-readiness.bru",
+      "name": "1437 marketplace-secret-readiness - Forged bearer cannot read Tenant Secret readiness",
+      "file": "contracts/1437-marketplace-secret-readiness.bru",
       "endpoint": "GET /api/marketplace/packages/{key}/secret-readiness",
       "scenario": "Forged bearer cannot read Tenant Secret readiness",
       "status": 401,
@@ -15782,8 +15806,8 @@
       ]
     },
     {
-      "name": "1436 marketplace-secret-readiness - Subject without registry.read cannot read Tenant Secret readiness",
-      "file": "contracts/1436-marketplace-secret-readiness.bru",
+      "name": "1438 marketplace-secret-readiness - Subject without registry.read cannot read Tenant Secret readiness",
+      "file": "contracts/1438-marketplace-secret-readiness.bru",
       "endpoint": "GET /api/marketplace/packages/{key}/secret-readiness",
       "scenario": "Subject without registry.read cannot read Tenant Secret readiness",
       "status": 403,
@@ -15793,8 +15817,8 @@
       ]
     },
     {
-      "name": "1437 registry-secret-readiness - Anonymous request is rejected",
-      "file": "contracts/1437-registry-secret-readiness.bru",
+      "name": "1439 registry-secret-readiness - Anonymous request is rejected",
+      "file": "contracts/1439-registry-secret-readiness.bru",
       "endpoint": "GET /api/registry/{id}/{version}/secret-readiness",
       "scenario": "Anonymous request is rejected",
       "status": 401,
@@ -15804,8 +15828,8 @@
       ]
     },
     {
-      "name": "1438 registry-secret-readiness - Malformed bearer syntax is rejected",
-      "file": "contracts/1438-registry-secret-readiness.bru",
+      "name": "1440 registry-secret-readiness - Malformed bearer syntax is rejected",
+      "file": "contracts/1440-registry-secret-readiness.bru",
       "endpoint": "GET /api/registry/{id}/{version}/secret-readiness",
       "scenario": "Malformed bearer syntax is rejected",
       "status": 401,
@@ -15815,8 +15839,8 @@
       ]
     },
     {
-      "name": "1439 registry-secret-readiness - Deployment Administrator bearer has no Tenant authority",
-      "file": "contracts/1439-registry-secret-readiness.bru",
+      "name": "1441 registry-secret-readiness - Deployment Administrator bearer has no Tenant authority",
+      "file": "contracts/1441-registry-secret-readiness.bru",
       "endpoint": "GET /api/registry/{id}/{version}/secret-readiness",
       "scenario": "Deployment Administrator bearer has no Tenant authority",
       "status": 403,
@@ -15826,8 +15850,8 @@
       ]
     },
     {
-      "name": "1440 registry-secret-readiness - Forged bearer cannot read Tenant Secret readiness",
-      "file": "contracts/1440-registry-secret-readiness.bru",
+      "name": "1442 registry-secret-readiness - Forged bearer cannot read Tenant Secret readiness",
+      "file": "contracts/1442-registry-secret-readiness.bru",
       "endpoint": "GET /api/registry/{id}/{version}/secret-readiness",
       "scenario": "Forged bearer cannot read Tenant Secret readiness",
       "status": 401,
@@ -15837,13 +15861,694 @@
       ]
     },
     {
-      "name": "1441 registry-secret-readiness - Subject without registry.read cannot read Tenant Secret readiness",
-      "file": "contracts/1441-registry-secret-readiness.bru",
+      "name": "1443 registry-secret-readiness - Subject without registry.read cannot read Tenant Secret readiness",
+      "file": "contracts/1443-registry-secret-readiness.bru",
       "endpoint": "GET /api/registry/{id}/{version}/secret-readiness",
       "scenario": "Subject without registry.read cannot read Tenant Secret readiness",
       "status": 403,
       "required_checks": [
         "Exact HTTP 403",
+        "Stable authorization error envelope"
+      ]
+    },
+    {
+      "name": "1444 oauth-clients-list - Anonymous request is rejected",
+      "file": "contracts/1444-oauth-clients-list.bru",
+      "endpoint": "GET /api/tenants/{tenant}/oauth-clients",
+      "scenario": "Anonymous request is rejected",
+      "status": 401,
+      "required_checks": [
+        "Exact HTTP 401",
+        "Stable authorization error envelope"
+      ]
+    },
+    {
+      "name": "1445 oauth-clients-list - Forged bearer cannot manage OAuth settings",
+      "file": "contracts/1445-oauth-clients-list.bru",
+      "endpoint": "GET /api/tenants/{tenant}/oauth-clients",
+      "scenario": "Forged bearer cannot manage OAuth settings",
+      "status": 401,
+      "required_checks": [
+        "Exact HTTP 401",
+        "Stable authorization error envelope"
+      ]
+    },
+    {
+      "name": "1446 oauth-clients-list - Deployment Administrator cannot manage Tenant OAuth settings",
+      "file": "contracts/1446-oauth-clients-list.bru",
+      "endpoint": "GET /api/tenants/{tenant}/oauth-clients",
+      "scenario": "Deployment Administrator cannot manage Tenant OAuth settings",
+      "status": 403,
+      "required_checks": [
+        "Exact HTTP 403",
+        "Stable authorization error envelope"
+      ]
+    },
+    {
+      "name": "1447 oauth-clients-get-record - Anonymous request is rejected",
+      "file": "contracts/1447-oauth-clients-get-record.bru",
+      "endpoint": "GET /api/tenants/{tenant}/oauth-clients/{id}",
+      "scenario": "Anonymous request is rejected",
+      "status": 401,
+      "required_checks": [
+        "Exact HTTP 401",
+        "Stable authorization error envelope"
+      ]
+    },
+    {
+      "name": "1448 oauth-clients-get-record - Forged bearer cannot manage OAuth settings",
+      "file": "contracts/1448-oauth-clients-get-record.bru",
+      "endpoint": "GET /api/tenants/{tenant}/oauth-clients/{id}",
+      "scenario": "Forged bearer cannot manage OAuth settings",
+      "status": 401,
+      "required_checks": [
+        "Exact HTTP 401",
+        "Stable authorization error envelope"
+      ]
+    },
+    {
+      "name": "1449 oauth-clients-get-record - Deployment Administrator cannot manage Tenant OAuth settings",
+      "file": "contracts/1449-oauth-clients-get-record.bru",
+      "endpoint": "GET /api/tenants/{tenant}/oauth-clients/{id}",
+      "scenario": "Deployment Administrator cannot manage Tenant OAuth settings",
+      "status": 403,
+      "required_checks": [
+        "Exact HTTP 403",
+        "Stable authorization error envelope"
+      ]
+    },
+    {
+      "name": "1450 oauth-clients-get-record - OAuth Client IDs reject invalid UUIDs",
+      "file": "contracts/1450-oauth-clients-get-record.bru",
+      "endpoint": "GET /api/tenants/{tenant}/oauth-clients/{id}",
+      "scenario": "OAuth Client IDs reject invalid UUIDs",
+      "status": 400,
+      "required_checks": [
+        "Rejected input preserves committed workspace state",
+        "Exact HTTP 400",
+        "Rejection is diagnostic and does not disclose SQL or credentials"
+      ]
+    },
+    {
+      "name": "1451 oauth-clients-put-collection - Anonymous request is rejected",
+      "file": "contracts/1451-oauth-clients-put-collection.bru",
+      "endpoint": "PUT /api/tenants/{tenant}/oauth-clients",
+      "scenario": "Anonymous request is rejected",
+      "status": 401,
+      "required_checks": [
+        "Rejected input preserves committed workspace state",
+        "Exact HTTP 401",
+        "Stable authorization error envelope"
+      ]
+    },
+    {
+      "name": "1452 oauth-clients-put-collection - Forged bearer cannot manage OAuth settings",
+      "file": "contracts/1452-oauth-clients-put-collection.bru",
+      "endpoint": "PUT /api/tenants/{tenant}/oauth-clients",
+      "scenario": "Forged bearer cannot manage OAuth settings",
+      "status": 401,
+      "required_checks": [
+        "Exact HTTP 401",
+        "Stable authorization error envelope"
+      ]
+    },
+    {
+      "name": "1453 oauth-clients-put-collection - Deployment Administrator cannot manage Tenant OAuth settings",
+      "file": "contracts/1453-oauth-clients-put-collection.bru",
+      "endpoint": "PUT /api/tenants/{tenant}/oauth-clients",
+      "scenario": "Deployment Administrator cannot manage Tenant OAuth settings",
+      "status": 403,
+      "required_checks": [
+        "Rejected input preserves committed workspace state",
+        "Exact HTTP 403",
+        "Stable authorization error envelope"
+      ]
+    },
+    {
+      "name": "1454 oauth-clients-put-collection - Malformed JSON cannot reach OAuth settings",
+      "file": "contracts/1454-oauth-clients-put-collection.bru",
+      "endpoint": "PUT /api/tenants/{tenant}/oauth-clients",
+      "scenario": "Malformed JSON cannot reach OAuth settings",
+      "status": 400,
+      "required_checks": [
+        "Rejected input preserves committed workspace state",
+        "Exact HTTP 400",
+        "Rejection is diagnostic and does not disclose SQL or credentials"
+      ]
+    },
+    {
+      "name": "1455 oauth-clients-put-collection - Unknown OAuth settings are refused",
+      "file": "contracts/1455-oauth-clients-put-collection.bru",
+      "endpoint": "PUT /api/tenants/{tenant}/oauth-clients",
+      "scenario": "Unknown OAuth settings are refused",
+      "status": 422,
+      "required_checks": [
+        "Rejected input preserves committed workspace state",
+        "Exact HTTP 422",
+        "Rejection is diagnostic and does not disclose SQL or credentials"
+      ]
+    },
+    {
+      "name": "1456 oauth-clients-put-collection - Personal clients cannot select another owner",
+      "file": "contracts/1456-oauth-clients-put-collection.bru",
+      "endpoint": "PUT /api/tenants/{tenant}/oauth-clients",
+      "scenario": "Personal clients cannot select another owner",
+      "status": 422,
+      "required_checks": [
+        "Rejected input preserves committed workspace state",
+        "Exact HTTP 422",
+        "Rejection is diagnostic and does not disclose SQL or credentials"
+      ]
+    },
+    {
+      "name": "1457 oauth-clients-put-record - Anonymous request is rejected",
+      "file": "contracts/1457-oauth-clients-put-record.bru",
+      "endpoint": "PUT /api/tenants/{tenant}/oauth-clients/{id}",
+      "scenario": "Anonymous request is rejected",
+      "status": 401,
+      "required_checks": [
+        "Rejected input preserves committed workspace state",
+        "Exact HTTP 401",
+        "Stable authorization error envelope"
+      ]
+    },
+    {
+      "name": "1458 oauth-clients-put-record - Forged bearer cannot manage OAuth settings",
+      "file": "contracts/1458-oauth-clients-put-record.bru",
+      "endpoint": "PUT /api/tenants/{tenant}/oauth-clients/{id}",
+      "scenario": "Forged bearer cannot manage OAuth settings",
+      "status": 401,
+      "required_checks": [
+        "Exact HTTP 401",
+        "Stable authorization error envelope"
+      ]
+    },
+    {
+      "name": "1459 oauth-clients-put-record - Deployment Administrator cannot manage Tenant OAuth settings",
+      "file": "contracts/1459-oauth-clients-put-record.bru",
+      "endpoint": "PUT /api/tenants/{tenant}/oauth-clients/{id}",
+      "scenario": "Deployment Administrator cannot manage Tenant OAuth settings",
+      "status": 403,
+      "required_checks": [
+        "Rejected input preserves committed workspace state",
+        "Exact HTTP 403",
+        "Stable authorization error envelope"
+      ]
+    },
+    {
+      "name": "1460 oauth-clients-put-record - OAuth Client IDs reject invalid UUIDs",
+      "file": "contracts/1460-oauth-clients-put-record.bru",
+      "endpoint": "PUT /api/tenants/{tenant}/oauth-clients/{id}",
+      "scenario": "OAuth Client IDs reject invalid UUIDs",
+      "status": 400,
+      "required_checks": [
+        "Rejected input preserves committed workspace state",
+        "Exact HTTP 400",
+        "Rejection is diagnostic and does not disclose SQL or credentials"
+      ]
+    },
+    {
+      "name": "1461 oauth-clients-put-record - Malformed JSON cannot reach OAuth settings",
+      "file": "contracts/1461-oauth-clients-put-record.bru",
+      "endpoint": "PUT /api/tenants/{tenant}/oauth-clients/{id}",
+      "scenario": "Malformed JSON cannot reach OAuth settings",
+      "status": 400,
+      "required_checks": [
+        "Rejected input preserves committed workspace state",
+        "Exact HTTP 400",
+        "Rejection is diagnostic and does not disclose SQL or credentials"
+      ]
+    },
+    {
+      "name": "1462 oauth-clients-put-record - Unknown OAuth settings are refused",
+      "file": "contracts/1462-oauth-clients-put-record.bru",
+      "endpoint": "PUT /api/tenants/{tenant}/oauth-clients/{id}",
+      "scenario": "Unknown OAuth settings are refused",
+      "status": 422,
+      "required_checks": [
+        "Rejected input preserves committed workspace state",
+        "Exact HTTP 422",
+        "Rejection is diagnostic and does not disclose SQL or credentials"
+      ]
+    },
+    {
+      "name": "1463 oauth-clients-put-record - Personal clients cannot select another owner",
+      "file": "contracts/1463-oauth-clients-put-record.bru",
+      "endpoint": "PUT /api/tenants/{tenant}/oauth-clients/{id}",
+      "scenario": "Personal clients cannot select another owner",
+      "status": 422,
+      "required_checks": [
+        "Rejected input preserves committed workspace state",
+        "Exact HTTP 422",
+        "Rejection is diagnostic and does not disclose SQL or credentials"
+      ]
+    },
+    {
+      "name": "1464 oauth-clients-delete-record - Anonymous request is rejected",
+      "file": "contracts/1464-oauth-clients-delete-record.bru",
+      "endpoint": "DELETE /api/tenants/{tenant}/oauth-clients/{id}",
+      "scenario": "Anonymous request is rejected",
+      "status": 401,
+      "required_checks": [
+        "Rejected input preserves committed workspace state",
+        "Exact HTTP 401",
+        "Stable authorization error envelope"
+      ]
+    },
+    {
+      "name": "1465 oauth-clients-delete-record - Forged bearer cannot manage OAuth settings",
+      "file": "contracts/1465-oauth-clients-delete-record.bru",
+      "endpoint": "DELETE /api/tenants/{tenant}/oauth-clients/{id}",
+      "scenario": "Forged bearer cannot manage OAuth settings",
+      "status": 401,
+      "required_checks": [
+        "Exact HTTP 401",
+        "Stable authorization error envelope"
+      ]
+    },
+    {
+      "name": "1466 oauth-clients-delete-record - Deployment Administrator cannot manage Tenant OAuth settings",
+      "file": "contracts/1466-oauth-clients-delete-record.bru",
+      "endpoint": "DELETE /api/tenants/{tenant}/oauth-clients/{id}",
+      "scenario": "Deployment Administrator cannot manage Tenant OAuth settings",
+      "status": 403,
+      "required_checks": [
+        "Rejected input preserves committed workspace state",
+        "Exact HTTP 403",
+        "Stable authorization error envelope"
+      ]
+    },
+    {
+      "name": "1467 oauth-clients-delete-record - OAuth Client IDs reject invalid UUIDs",
+      "file": "contracts/1467-oauth-clients-delete-record.bru",
+      "endpoint": "DELETE /api/tenants/{tenant}/oauth-clients/{id}",
+      "scenario": "OAuth Client IDs reject invalid UUIDs",
+      "status": 400,
+      "required_checks": [
+        "Rejected input preserves committed workspace state",
+        "Exact HTTP 400",
+        "Rejection is diagnostic and does not disclose SQL or credentials"
+      ]
+    },
+    {
+      "name": "1468 oauth-clients-ceiling - Anonymous request is rejected",
+      "file": "contracts/1468-oauth-clients-ceiling.bru",
+      "endpoint": "GET /api/tenants/{tenant}/connection-scope-ceilings/{resource}",
+      "scenario": "Anonymous request is rejected",
+      "status": 401,
+      "required_checks": [
+        "Exact HTTP 401",
+        "Stable authorization error envelope"
+      ]
+    },
+    {
+      "name": "1469 oauth-clients-ceiling - Forged bearer cannot manage OAuth settings",
+      "file": "contracts/1469-oauth-clients-ceiling.bru",
+      "endpoint": "GET /api/tenants/{tenant}/connection-scope-ceilings/{resource}",
+      "scenario": "Forged bearer cannot manage OAuth settings",
+      "status": 401,
+      "required_checks": [
+        "Exact HTTP 401",
+        "Stable authorization error envelope"
+      ]
+    },
+    {
+      "name": "1470 oauth-clients-ceiling - Deployment Administrator cannot manage Tenant OAuth settings",
+      "file": "contracts/1470-oauth-clients-ceiling.bru",
+      "endpoint": "GET /api/tenants/{tenant}/connection-scope-ceilings/{resource}",
+      "scenario": "Deployment Administrator cannot manage Tenant OAuth settings",
+      "status": 403,
+      "required_checks": [
+        "Exact HTTP 403",
+        "Stable authorization error envelope"
+      ]
+    },
+    {
+      "name": "1471 oauth-clients-put-ceiling - Anonymous request is rejected",
+      "file": "contracts/1471-oauth-clients-put-ceiling.bru",
+      "endpoint": "PUT /api/tenants/{tenant}/connection-scope-ceilings/{resource}",
+      "scenario": "Anonymous request is rejected",
+      "status": 401,
+      "required_checks": [
+        "Rejected input preserves committed workspace state",
+        "Exact HTTP 401",
+        "Stable authorization error envelope"
+      ]
+    },
+    {
+      "name": "1472 oauth-clients-put-ceiling - Forged bearer cannot manage OAuth settings",
+      "file": "contracts/1472-oauth-clients-put-ceiling.bru",
+      "endpoint": "PUT /api/tenants/{tenant}/connection-scope-ceilings/{resource}",
+      "scenario": "Forged bearer cannot manage OAuth settings",
+      "status": 401,
+      "required_checks": [
+        "Exact HTTP 401",
+        "Stable authorization error envelope"
+      ]
+    },
+    {
+      "name": "1473 oauth-clients-put-ceiling - Deployment Administrator cannot manage Tenant OAuth settings",
+      "file": "contracts/1473-oauth-clients-put-ceiling.bru",
+      "endpoint": "PUT /api/tenants/{tenant}/connection-scope-ceilings/{resource}",
+      "scenario": "Deployment Administrator cannot manage Tenant OAuth settings",
+      "status": 403,
+      "required_checks": [
+        "Rejected input preserves committed workspace state",
+        "Exact HTTP 403",
+        "Stable authorization error envelope"
+      ]
+    },
+    {
+      "name": "1474 oauth-clients-put-ceiling - Malformed JSON cannot reach OAuth settings",
+      "file": "contracts/1474-oauth-clients-put-ceiling.bru",
+      "endpoint": "PUT /api/tenants/{tenant}/connection-scope-ceilings/{resource}",
+      "scenario": "Malformed JSON cannot reach OAuth settings",
+      "status": 400,
+      "required_checks": [
+        "Rejected input preserves committed workspace state",
+        "Exact HTTP 400",
+        "Rejection is diagnostic and does not disclose SQL or credentials"
+      ]
+    },
+    {
+      "name": "1475 oauth-clients-put-ceiling - Unknown OAuth settings are refused",
+      "file": "contracts/1475-oauth-clients-put-ceiling.bru",
+      "endpoint": "PUT /api/tenants/{tenant}/connection-scope-ceilings/{resource}",
+      "scenario": "Unknown OAuth settings are refused",
+      "status": 422,
+      "required_checks": [
+        "Rejected input preserves committed workspace state",
+        "Exact HTTP 422",
+        "Rejection is diagnostic and does not disclose SQL or credentials"
+      ]
+    },
+    {
+      "name": "1476 oauth-clients-delete-ceiling - Anonymous request is rejected",
+      "file": "contracts/1476-oauth-clients-delete-ceiling.bru",
+      "endpoint": "DELETE /api/tenants/{tenant}/connection-scope-ceilings/{resource}",
+      "scenario": "Anonymous request is rejected",
+      "status": 401,
+      "required_checks": [
+        "Rejected input preserves committed workspace state",
+        "Exact HTTP 401",
+        "Stable authorization error envelope"
+      ]
+    },
+    {
+      "name": "1477 oauth-clients-delete-ceiling - Forged bearer cannot manage OAuth settings",
+      "file": "contracts/1477-oauth-clients-delete-ceiling.bru",
+      "endpoint": "DELETE /api/tenants/{tenant}/connection-scope-ceilings/{resource}",
+      "scenario": "Forged bearer cannot manage OAuth settings",
+      "status": 401,
+      "required_checks": [
+        "Exact HTTP 401",
+        "Stable authorization error envelope"
+      ]
+    },
+    {
+      "name": "1478 oauth-clients-delete-ceiling - Deployment Administrator cannot manage Tenant OAuth settings",
+      "file": "contracts/1478-oauth-clients-delete-ceiling.bru",
+      "endpoint": "DELETE /api/tenants/{tenant}/connection-scope-ceilings/{resource}",
+      "scenario": "Deployment Administrator cannot manage Tenant OAuth settings",
+      "status": 403,
+      "required_checks": [
+        "Rejected input preserves committed workspace state",
+        "Exact HTTP 403",
+        "Stable authorization error envelope"
+      ]
+    },
+    {
+      "name": "1479 connection-list - Anonymous request is rejected",
+      "file": "contracts/1479-connection-list.bru",
+      "endpoint": "GET /api/tenants/{tenant}/connections",
+      "scenario": "Anonymous request is rejected",
+      "status": 401,
+      "required_checks": [
+        "Exact HTTP 401",
+        "Stable authorization error envelope"
+      ]
+    },
+    {
+      "name": "1480 connection-list - Forged bearer cannot access OAuth Connections",
+      "file": "contracts/1480-connection-list.bru",
+      "endpoint": "GET /api/tenants/{tenant}/connections",
+      "scenario": "Forged bearer cannot access OAuth Connections",
+      "status": 401,
+      "required_checks": [
+        "Exact HTTP 401",
+        "Stable authorization error envelope"
+      ]
+    },
+    {
+      "name": "1481 connection-list - Deployment Administrator has no person connection authority",
+      "file": "contracts/1481-connection-list.bru",
+      "endpoint": "GET /api/tenants/{tenant}/connections",
+      "scenario": "Deployment Administrator has no person connection authority",
+      "status": 403,
+      "required_checks": [
+        "Exact HTTP 403",
+        "Stable authorization error envelope"
+      ]
+    },
+    {
+      "name": "1482 connection-disconnect - Anonymous request is rejected",
+      "file": "contracts/1482-connection-disconnect.bru",
+      "endpoint": "DELETE /api/tenants/{tenant}/connections/{id}",
+      "scenario": "Anonymous request is rejected",
+      "status": 401,
+      "required_checks": [
+        "Rejected input preserves committed workspace state",
+        "Exact HTTP 401",
+        "Stable authorization error envelope"
+      ]
+    },
+    {
+      "name": "1483 connection-disconnect - Forged bearer cannot access OAuth Connections",
+      "file": "contracts/1483-connection-disconnect.bru",
+      "endpoint": "DELETE /api/tenants/{tenant}/connections/{id}",
+      "scenario": "Forged bearer cannot access OAuth Connections",
+      "status": 401,
+      "required_checks": [
+        "Exact HTTP 401",
+        "Stable authorization error envelope"
+      ]
+    },
+    {
+      "name": "1484 connection-disconnect - Deployment Administrator has no person connection authority",
+      "file": "contracts/1484-connection-disconnect.bru",
+      "endpoint": "DELETE /api/tenants/{tenant}/connections/{id}",
+      "scenario": "Deployment Administrator has no person connection authority",
+      "status": 403,
+      "required_checks": [
+        "Rejected input preserves committed workspace state",
+        "Exact HTTP 403",
+        "Stable authorization error envelope"
+      ]
+    },
+    {
+      "name": "1485 connection-members - Anonymous request is rejected",
+      "file": "contracts/1485-connection-members.bru",
+      "endpoint": "GET /api/tenants/{tenant}/members/{subject}/connections",
+      "scenario": "Anonymous request is rejected",
+      "status": 401,
+      "required_checks": [
+        "Exact HTTP 401",
+        "Stable authorization error envelope"
+      ]
+    },
+    {
+      "name": "1486 connection-members - Forged bearer cannot access OAuth Connections",
+      "file": "contracts/1486-connection-members.bru",
+      "endpoint": "GET /api/tenants/{tenant}/members/{subject}/connections",
+      "scenario": "Forged bearer cannot access OAuth Connections",
+      "status": 401,
+      "required_checks": [
+        "Exact HTTP 401",
+        "Stable authorization error envelope"
+      ]
+    },
+    {
+      "name": "1487 connection-members - Deployment Administrator has no person connection authority",
+      "file": "contracts/1487-connection-members.bru",
+      "endpoint": "GET /api/tenants/{tenant}/members/{subject}/connections",
+      "scenario": "Deployment Administrator has no person connection authority",
+      "status": 403,
+      "required_checks": [
+        "Exact HTTP 403",
+        "Stable authorization error envelope"
+      ]
+    },
+    {
+      "name": "1488 connection-force-disconnect - Anonymous request is rejected",
+      "file": "contracts/1488-connection-force-disconnect.bru",
+      "endpoint": "DELETE /api/tenants/{tenant}/members/{subject}/connections/{id}",
+      "scenario": "Anonymous request is rejected",
+      "status": 401,
+      "required_checks": [
+        "Rejected input preserves committed workspace state",
+        "Exact HTTP 401",
+        "Stable authorization error envelope"
+      ]
+    },
+    {
+      "name": "1489 connection-force-disconnect - Forged bearer cannot access OAuth Connections",
+      "file": "contracts/1489-connection-force-disconnect.bru",
+      "endpoint": "DELETE /api/tenants/{tenant}/members/{subject}/connections/{id}",
+      "scenario": "Forged bearer cannot access OAuth Connections",
+      "status": 401,
+      "required_checks": [
+        "Exact HTTP 401",
+        "Stable authorization error envelope"
+      ]
+    },
+    {
+      "name": "1490 connection-force-disconnect - Deployment Administrator has no person connection authority",
+      "file": "contracts/1490-connection-force-disconnect.bru",
+      "endpoint": "DELETE /api/tenants/{tenant}/members/{subject}/connections/{id}",
+      "scenario": "Deployment Administrator has no person connection authority",
+      "status": 403,
+      "required_checks": [
+        "Rejected input preserves committed workspace state",
+        "Exact HTTP 403",
+        "Stable authorization error envelope"
+      ]
+    },
+    {
+      "name": "1491 connection-probe - Anonymous request is rejected",
+      "file": "contracts/1491-connection-probe.bru",
+      "endpoint": "GET /api/tenants/{tenant}/connections/probe",
+      "scenario": "Anonymous request is rejected",
+      "status": 401,
+      "required_checks": [
+        "Exact HTTP 401",
+        "Stable authorization error envelope"
+      ]
+    },
+    {
+      "name": "1492 connection-probe - Forged bearer cannot access OAuth Connections",
+      "file": "contracts/1492-connection-probe.bru",
+      "endpoint": "GET /api/tenants/{tenant}/connections/probe",
+      "scenario": "Forged bearer cannot access OAuth Connections",
+      "status": 401,
+      "required_checks": [
+        "Exact HTTP 401",
+        "Stable authorization error envelope"
+      ]
+    },
+    {
+      "name": "1493 connection-probe - Deployment Administrator has no person connection authority",
+      "file": "contracts/1493-connection-probe.bru",
+      "endpoint": "GET /api/tenants/{tenant}/connections/probe",
+      "scenario": "Deployment Administrator has no person connection authority",
+      "status": 403,
+      "required_checks": [
+        "Exact HTTP 403",
+        "Stable authorization error envelope"
+      ]
+    },
+    {
+      "name": "1494 connection-start - Anonymous request is rejected",
+      "file": "contracts/1494-connection-start.bru",
+      "endpoint": "POST /api/tenants/{tenant}/connections/authorizations",
+      "scenario": "Anonymous request is rejected",
+      "status": 401,
+      "required_checks": [
+        "Rejected input preserves committed workspace state",
+        "Exact HTTP 401",
+        "Stable authorization error envelope"
+      ]
+    },
+    {
+      "name": "1495 connection-start - Forged bearer cannot access OAuth Connections",
+      "file": "contracts/1495-connection-start.bru",
+      "endpoint": "POST /api/tenants/{tenant}/connections/authorizations",
+      "scenario": "Forged bearer cannot access OAuth Connections",
+      "status": 401,
+      "required_checks": [
+        "Exact HTTP 401",
+        "Stable authorization error envelope"
+      ]
+    },
+    {
+      "name": "1496 connection-start - Connection consent requires a browser session",
+      "file": "contracts/1496-connection-start.bru",
+      "endpoint": "POST /api/tenants/{tenant}/connections/authorizations",
+      "scenario": "Connection consent requires a browser session",
+      "status": 403,
+      "required_checks": [
+        "Rejected input preserves committed workspace state",
+        "Exact HTTP 403",
+        "Stable authorization error envelope",
+        "Connection consent requires a browser session contract"
+      ]
+    },
+    {
+      "name": "1497 connection-start - Connection consent requires a browser session",
+      "file": "contracts/1497-connection-start.bru",
+      "endpoint": "POST /api/tenants/{tenant}/connections/authorizations",
+      "scenario": "Connection consent requires a browser session",
+      "status": 403,
+      "required_checks": [
+        "Rejected input preserves committed workspace state",
+        "Exact HTTP 403",
+        "Stable authorization error envelope",
+        "Connection consent requires a browser session contract"
+      ]
+    },
+    {
+      "name": "1498 connection-start - Connection start requires an MCP resource",
+      "file": "contracts/1498-connection-start.bru",
+      "endpoint": "POST /api/tenants/{tenant}/connections/authorizations",
+      "scenario": "Connection start requires an MCP resource",
+      "status": 422,
+      "required_checks": [
+        "Rejected input preserves committed workspace state",
+        "Exact HTTP 422",
+        "Rejection is diagnostic and does not disclose SQL or credentials"
+      ]
+    },
+    {
+      "name": "1499 connection-start - Pasted connection tokens are refused",
+      "file": "contracts/1499-connection-start.bru",
+      "endpoint": "POST /api/tenants/{tenant}/connections/authorizations",
+      "scenario": "Pasted connection tokens are refused",
+      "status": 422,
+      "required_checks": [
+        "Rejected input preserves committed workspace state",
+        "Exact HTTP 422",
+        "Rejection is diagnostic and does not disclose SQL or credentials"
+      ]
+    },
+    {
+      "name": "1500 connection-callback - Connection callback requires browser binding",
+      "file": "contracts/1500-connection-callback.bru",
+      "endpoint": "GET /auth/connections/callback",
+      "scenario": "Connection callback requires browser binding",
+      "status": 401,
+      "required_checks": [
+        "Exact HTTP 401",
+        "Stable authorization error envelope"
+      ]
+    },
+    {
+      "name": "1501 connection-callback - Connection callback rejects missing state",
+      "file": "contracts/1501-connection-callback.bru",
+      "endpoint": "GET /auth/connections/callback",
+      "scenario": "Connection callback rejects missing state",
+      "status": 401,
+      "required_checks": [
+        "Exact HTTP 401",
+        "Stable authorization error envelope"
+      ]
+    },
+    {
+      "name": "1502 connection-callback - Connection callback rejects unknown state",
+      "file": "contracts/1502-connection-callback.bru",
+      "endpoint": "GET /auth/connections/callback",
+      "scenario": "Connection callback rejects unknown state",
+      "status": 401,
+      "required_checks": [
+        "Exact HTTP 401",
         "Stable authorization error envelope"
       ]
     }

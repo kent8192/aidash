@@ -123,6 +123,7 @@ tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
 cfg_aliases = "0.2"
 
 [dev-dependencies]
+wiremock = "0.6"
 # Keep the framework browser-fixture feature and locked test dependency versions
 # aligned with the standalone Pages projects in the Enterprise workspace.
 reinhardt-test = { git = "https://github.com/kent8192/reinhardt-web", rev = "b6a006a769ca340c22a51e67fef1bb4be1dc3039", default-features = false, features = [
@@ -192,6 +193,10 @@ path = "src/apps/identity/tests/demo_data.rs"
 [[test]]
 name = "provider_authorizations"
 path = "src/apps/identity/tests/provider_authorizations.rs"
+
+[[test]]
+name = "oauth_connections"
+path = "src/apps/identity/tests/oauth_connections.rs"
 
 [[test]]
 name = "plan_connections"
@@ -425,3 +430,7 @@ path = "src/apps/identity/tests/provider_credentials.rs"
 [[test]]
 name = "secret_readiness"
 path = "src/apps/identity/tests/secret_readiness.rs"
+
+[[test]]
+name = "oauth_clients"
+path = "src/apps/identity/tests/oauth_clients.rs"

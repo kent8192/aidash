@@ -17,7 +17,7 @@ use uuid::Uuid;
 
 #[async_trait]
 pub trait ToolTransport: Send + Sync {
-	/// `secret` is the Tenant Secret the configuration names, already checked
+	/// `secret` is the person's OAuth Connection, or the named Tenant Secret already checked
 	/// against the endpoint's host. A self-hosted transport sends the value as
 	/// the bearer credential; a brokered one sends the call to the broker and
 	/// never reads a value.
@@ -58,11 +58,15 @@ impl From<ListFailure> for crate::Error {
 	}
 }
 
-/// A Run's MCP sessions with the remote servers of its Agent Plugins. Implementations keep one
+/// A Run's MCP sessions with the remote servers of its Agent Plugins. `auth` carries the
+/// chain-root person's Connection; a cached session reads a fresh bearer per request.
+/// Implementations keep one
 /// session per Run and server, reopen it when it is missing, and never fail a Run for its absence.
 ///
 /// A refused destination is [`Error::Forbidden`](crate::Error::Forbidden). `list` reports every
-/// other failure as a [`ListFailure`] (through `From`) so the Run's findings can name its cause.
+/// ordinary failure as a [`ListFailure`] (through `From`). Authentication challenges use
+/// structured [`Error::Invalid`](crate::Error::Invalid) values with a canonical resource,
+/// so the Run can retain a connection finding and re-list after consent.
 /// Tool calls return definitive failures as results and report delivery failures through the
 /// application error type. `replay_safe` comes from the Run's pinned tool contract.
 #[async_trait]
@@ -73,6 +77,7 @@ pub trait PluginSessions: Send + Sync {
 		run: Uuid,
 		server: &PluginServer,
 		config: &RemoteServer,
+		auth: Option<&CallSecret>,
 	) -> Result<Vec<ListedTool>>;
 	/// `tools/call` over the Run's session. When the session had to be (re)opened, the
 	/// implementation lists tools first and refuses with `Error::Invalid("CAPABILITY_CHANGED: …")`
@@ -90,6 +95,7 @@ pub trait PluginSessions: Send + Sync {
 		replay_safe: bool,
 		arguments: Value,
 		key: &str,
+		auth: Option<&CallSecret>,
 	) -> Result<Value>;
 	/// One wire round only. Modern input requests are returned to the harness;
 	/// legacy requests are delivered to `inputs` while the call remains open.
@@ -106,6 +112,7 @@ pub trait PluginSessions: Send + Sync {
 		key: &str,
 		checkpoint: Option<&aidash_domain::agent_plugin::interaction::CallCheckpoint>,
 		inputs: Option<Arc<dyn PluginInputs>>,
+		auth: Option<&CallSecret>,
 	) -> Result<aidash_domain::agent_plugin::interaction::ToolRound> {
 		let _ = (checkpoint, inputs);
 		self.call(
@@ -117,6 +124,7 @@ pub trait PluginSessions: Send + Sync {
 			replay_safe,
 			arguments,
 			key,
+			auth,
 		)
 		.await
 		.map(aidash_domain::agent_plugin::interaction::ToolRound::Complete)
@@ -140,6 +148,19 @@ pub trait PluginInputs: Send + Sync {
 /// Memory and task operations must retain their policy locks and durable writes.
 #[async_trait]
 pub trait ToolOperations: Send + Sync {
+	/// A remote Run asks its Home to use personal authentication. `None` means
+	/// Home has no personal authentication and the local shared/anonymous path applies.
+	async fn connection_call(
+		&self,
+		_call: &aidash_domain::identity::commands::connections::ConnectionCall,
+	) -> Result<Option<Value>> {
+		Ok(None)
+	}
+
+	/// Only locally owned Runs whose chain root is a person can request a connection.
+	async fn connection_person(&self) -> Result<bool> {
+		Ok(false)
+	}
 	async fn registered_skills(&self) -> Result<Vec<EntityRef>>;
 	async fn skill_files(&self, reference: &EntityRef) -> Result<Vec<SkillFile>>;
 	async fn discover(&self, search: &Search) -> Result<Value>;
@@ -191,6 +212,18 @@ pub trait ToolOperations: Send + Sync {
 	) -> Result<Option<Vec<u8>>>;
 	/// Encoded-byte cap of one Skill asset chunk: the resource profile's `read_bytes`.
 	fn skill_read_bytes(&self) -> Result<usize>;
+	/// The chain-root person's OAuth Connection, or `connection_required` when none applies.
+	async fn connection(
+		&self,
+		_resource: &str,
+		_call: SecretCall,
+		_key: &str,
+	) -> Result<CallSecret> {
+		Err(crate::Error::Invalid(
+			aidash_domain::oauth_connections::CONNECTION_REQUIRED.into(),
+		))
+	}
+
 	/// The Run's Tenant's Tenant Secret `name` for one call to `endpoint`.
 	/// `call` names the destination, methods and subject the broker must
 	/// authorize. A missing or deleted Tenant Secret, or one that does not
@@ -207,5 +240,20 @@ pub trait ToolOperations: Send + Sync {
 		Err(crate::Error::Invalid(
 			aidash_domain::tenant_secrets::UNAVAILABLE.into(),
 		))
+	}
+	/// Resolve a named secret using the Run's chain-root person when one exists.
+	/// An ownerless adapter may use shared secrets only for `Any`.
+	async fn tenant_secret_for(
+		&self,
+		name: &str,
+		endpoint: &str,
+		owner: aidash_domain::tool::SecretOwner,
+		call: SecretCall,
+		key: &str,
+	) -> Result<CallSecret> {
+		if owner == aidash_domain::tool::SecretOwner::Personal {
+			return Err(crate::tenant_secrets::personal_required(name));
+		}
+		self.tenant_secret(name, endpoint, call, key).await
 	}
 }

@@ -278,3 +278,102 @@ async fn a_tenant_secret_version_cannot_be_written_unsealed() {
 		"Key Material resources are not Tenant Secrets"
 	);
 }
+
+#[tokio::test]
+async fn oauth_client_writes_seal_binding_and_raw_writes_cannot_forge_connection_payloads() {
+	use axum::{
+		Json, Router,
+		body::Bytes,
+		http::{Method, Uri},
+	};
+	use std::sync::{Arc, Mutex};
+	let writes = Arc::new(Mutex::new(Vec::<Value>::new()));
+	let observed = writes.clone();
+	let id = Uuid::now_v7();
+	let mut store = SecretManager::new("byok-project".into(), "dev".into()).unwrap();
+	assert!(store.supports_oauth_client_secrets());
+	let resource = store.connection_resource(id);
+	assert_eq!(
+		resource,
+		format!("projects/byok-project/secrets/aidash-dev-oauth-{id}")
+	);
+	assert_eq!(store.oauth_client_resource(id), resource);
+	let remote = resource.clone();
+	let app = Router::new().fallback(move |method: Method, uri: Uri, body: Bytes| {
+		let writes = observed.clone();
+		let resource = remote.clone();
+		async move {
+			if uri.path() == "/token" {
+				return (
+					[("Metadata-Flavor", "Google")],
+					Json(json!({"access_token":"metadata","expires_in":3600})),
+				);
+			}
+			assert!(!uri.path().ends_with(":access"));
+			if method == Method::POST && uri.path().ends_with(":addVersion") {
+				let v: Value = serde_json::from_slice(&body).unwrap();
+				writes.lock().unwrap().push(v);
+			}
+			(
+				[("Metadata-Flavor", "Google")],
+				Json(json!({"name":format!("{resource}/versions/1")})),
+			)
+		}
+	});
+	let (url, _server) = serve(app).await;
+	store.api = format!("{url}/v1");
+	store.metadata = format!("{url}/token");
+	for redirect in [None, Some("https://aidash.example/callback".to_owned())] {
+		let secret = if redirect.is_some() {
+			SecretString::from(r#"{"client_secret":"client-canary"}"#)
+		} else {
+			SecretString::from("client-canary")
+		};
+		store
+			.add_client_version(
+				"tenant",
+				&resource,
+				ClientBinding {
+					issuer: "https://auth.example".into(),
+					client_id: "client".into(),
+					redirect_uri: redirect,
+				},
+				&secret,
+			)
+			.await
+			.unwrap();
+	}
+	assert!(
+		store
+			.add_version(
+				"tenant",
+				&resource,
+				&SecretString::from("forged-connection")
+			)
+			.await
+			.is_err()
+	);
+	let writes = writes.lock().unwrap();
+	assert_eq!(writes.len(), 2);
+	for (i, write) in writes.iter().enumerate() {
+		let bytes = base64::engine::general_purpose::STANDARD
+			.decode(write["payload"]["data"].as_str().unwrap())
+			.unwrap();
+		let v: Value = serde_json::from_slice(&bytes).unwrap();
+		assert_eq!(v["v"], 1);
+		assert_eq!(v["issuer"], "https://auth.example");
+		assert_eq!(v["client_id"], "client");
+		assert_eq!(v["client_secret"], "client-canary");
+		assert_eq!(
+			v["kind"],
+			if i == 0 {
+				"registered_client"
+			} else {
+				"dynamic_client"
+			}
+		);
+		if i == 1 {
+			assert_eq!(v["redirect_uri"], "https://aidash.example/callback")
+		}
+	}
+}

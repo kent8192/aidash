@@ -131,6 +131,29 @@ The implementation follows the pinned framework's
 [unified router](https://github.com/kent8192/reinhardt-web/blob/6e12816090b3dd4db592bfc74d0d622de4cef3d7/crates/reinhardt-urls/src/routers/unified_router.rs)
 and [routing guide](https://github.com/kent8192/reinhardt-web/blob/6e12816090b3dd4db592bfc74d0d622de4cef3d7/crates/reinhardt-urls/README.md).
 
+## Per-person MCP OAuth Connections
+
+Connections belong to a person within a Tenant. A browser session, desktop
+session, or Subject Credential for that person can list and disconnect their
+own Connections through `/api/tenants/{tenant}/connections`. Both operations
+check the live policy and require a user Subject. Member administration routes
+require `connection.administer`.
+
+Starting an authorization at `POST /api/tenants/{tenant}/connections/authorizations`
+requires a dashboard browser session. The callback consumes a single-use state
+bound to that browser and session, then checks the original Tenant and person
+again before exchanging the code. Tokens remain in the Secret Store; API
+responses contain Connection metadata only.
+When the Secret Store cannot hold Connections, authorization returns HTTP 503
+with `connection_unavailable`.
+
+The callback's nonce-protected page posts an `aidash.connection` outcome to its
+opener using the configured dashboard origin and closes. Without an opener,
+it navigates to the dashboard path validated when authorization began, adding
+the `connection` outcome parameter. A noscript link reaches the same destination.
+See [ADR 0100](../docs/adr/0100-mcp-servers-authenticate-with-each-persons-own-oauth-connection.md) for the shared
+contract.
+
 ## Generated with
 
 This project was created using `reinhardt-admin startproject`.

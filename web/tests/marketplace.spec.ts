@@ -255,6 +255,12 @@ for (const locale of ["en-US", "ja-JP"] as const) {
       (locale) => localStorage.setItem("aidash-locale", locale),
       locale,
     );
+    const mcpTransport = {
+      transport: "mcp",
+      endpoint: "https://mcp.example/mcp",
+      tool_name: "search",
+      scopes: ["read", "admin"],
+    };
     const entry = {
       id: "source",
       version: "1.0.0",
@@ -266,7 +272,7 @@ for (const locale of ["en-US", "ja-JP"] as const) {
       languages: ["en", "ja"],
       skills: [],
       schema: {},
-      config: { transport: "native", operation: "echo" },
+      config: locale === "ja-JP" ? mcpTransport : { transport: mcpTransport },
     };
     const summary = {
       key: "package-a",
@@ -363,6 +369,25 @@ for (const locale of ["en-US", "ja-JP"] as const) {
           json: { key: summary.key, digest: summary.digest },
         });
       }
+      if (path === "/api/tenants/a/connections/probe")
+        return route.fulfill({
+          json: {
+            oauth: true,
+            scopes_supported: ["read", "admin"],
+            scope_ceiling: ["read"],
+          },
+        });
+      if (path === "/api/tenants/a/secrets")
+        return route.fulfill({
+          json: ["tenant", "me"].map((owner) => ({
+            name: "mcp-key",
+            owner,
+            hosts: ["mcp.example"],
+            fingerprint: "fingerprint",
+            last4: "1234",
+            revision: 1,
+          })),
+        });
       if (path === "/api/marketplace/packages")
         return route.fulfill({ json: [summary] });
       if (path === "/api/marketplace/packages/package-a/audience") {
@@ -378,12 +403,14 @@ for (const locale of ["en-US", "ja-JP"] as const) {
               author: "Author",
               permissions: [],
               dependencies: [],
+              secrets: ["mcp"],
             },
             audience: { revision: 1, tenants: ["a"] },
           },
         });
       if (path === "/api/marketplace/packages/package-a/install") {
         expect(body.digest).toBe(summary.digest);
+        expect(body.secrets).toEqual({ mcp: "mcp-key" });
         installed = true;
         return route.fulfill({ json: installation });
       }
@@ -451,6 +478,20 @@ for (const locale of ["en-US", "ja-JP"] as const) {
       name: ja ? "このテナントに導入" : "Install for this tenant",
     });
     await expect(review).toContainText("sha256:source");
+    const secret = review.getByLabel("Tenant Secret · mcp", { exact: true });
+    await expect(secret.locator('option[value="mcp-key"]')).toHaveText(
+      "mcp-key · Personal · mcp.example",
+    );
+    await secret.selectOption("mcp-key");
+    await expect(
+      review.getByRole("checkbox", { name: "read", exact: true }),
+    ).toBeChecked();
+    await expect(
+      review.getByRole("checkbox", { name: "admin", exact: true }),
+    ).toHaveCount(0);
+    await review
+      .getByRole("button", { name: ja ? "スキップ" : "Skip", exact: true })
+      .click();
     await review
       .getByRole("button", {
         name: ja ? "このテナントに導入" : "Install for this tenant",

@@ -75,7 +75,9 @@ metadataServerEgress:
 # A Secret Manager Store on Cloud/Dedicated also names the Tenant Secret broker
 # (endpoint, issuer, audience `<environment_id>-tsec`, kid of the server signing
 # key); it is required when a broker is configured or execution.egress.enabled
-# is set.
+# is set. The same tenant_secret_broker handles OAuth Connection exchange,
+# refresh and revoke at /v1/connections/* and pinned bearer forwarding at
+# /v1/forward; there is no additional service or setting.
 providerCredentials:
   settings: null
 # Managed public GCIP fragment {dashboard: {gcip: {...}}} for AIDASH_GCIP_SETTINGS;

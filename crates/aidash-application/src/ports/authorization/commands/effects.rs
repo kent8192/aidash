@@ -16,6 +16,11 @@ pub struct WriteContext<'a> {
 	pub admission: Uuid,
 }
 pub enum Effect<'a> {
+	Connection {
+		owner: &'a crate::oauth_connections::Owner,
+		call: &'a aidash_domain::identity::commands::connections::ConnectionCall,
+		list: bool,
+	},
 	HumanRequest {
 		kind: &'a str,
 		prompt: &'a str,
@@ -76,6 +81,25 @@ pub struct Applied {
 #[async_trait]
 pub trait RemoteCommandEffects: RemoteCommandScope {
 	fn local_node(&self) -> &str;
+	/// Check the admitted tool/resource and current tool authority, including before replay.
+	async fn connection_target(
+		&mut self,
+		call: &aidash_domain::identity::commands::connections::ConnectionCall,
+		list: bool,
+	) -> Result<()>;
+	/// Authoritative source-chain root, only when it is an enabled person.
+	fn connection_owner(&self) -> Option<crate::oauth_connections::Owner> {
+		None
+	}
+	/// Validate the admitted target without any personal lookup or replay access.
+	async fn connection_unowned(
+		&mut self,
+		_call: &aidash_domain::identity::commands::connections::ConnectionCall,
+		_list: bool,
+	) -> Result<Value> {
+		Err(crate::Error::Forbidden)
+	}
+
 	fn resource(&self, kind: &str, id: &str, attributes: Value) -> Resource;
 	async fn require(&mut self, resource: &Resource, action: &str) -> Result<()>;
 	async fn workspace(&mut self, id: Uuid) -> Result<Resource>;

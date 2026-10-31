@@ -17,6 +17,38 @@ pub use capability::{LeaseWait, PersistedCapability, StateRequirements};
 pub use row::RawRun;
 pub use row::{RunInspection, RunMetadata};
 
+#[derive(Debug, Clone, Default, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct ConnectionCallState {
+	#[serde(default)]
+	pub cause: Option<crate::agent_plugin::ConnectionCause>,
+	#[serde(default)]
+	pub resolved: bool,
+	pub attempt: u32,
+	pub waited_millis: u64,
+	pub refused: Option<Value>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct ConnectionRefusal {
+	pub cause: crate::agent_plugin::ConnectionCause,
+	pub tool: String,
+	pub scopes: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct ConnectionWait {
+	pub request_id: Uuid,
+	pub resource: String,
+	pub started_at: DateTime<Utc>,
+	pub answer_by: DateTime<Utc>,
+	/// The builtin's result is recorded only once the person answers.
+	pub call: Option<ToolCall>,
+	pub key: String,
+}
+
 #[derive(Debug, Clone, Copy, Serialize, PartialEq, Eq, schemars::JsonSchema)]
 
 pub struct StateVersion(u32);
@@ -77,6 +109,9 @@ pub struct HomeApproval {
 #[derive(Debug, Clone, Default, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct ToolCallState {
+	/// Authentication refusals are known not to have executed. A new attempt gets a new journal key.
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub connection: Option<ConnectionCallState>,
 	pub response: ModelResponse,
 	pub response_epoch: i64,
 	pub cursor: usize,
@@ -121,6 +156,7 @@ impl ToolCallState {
 		self.home_approval = None;
 		self.approval = None;
 		self.mcp = None;
+		self.connection = None;
 	}
 	pub fn selected_media(&self) -> Vec<ModelMedia> {
 		self.deferred_selected_media
@@ -372,6 +408,14 @@ impl RunState {
 #[derive(Debug, Clone, Default, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct RecoveryState {
+	/// Transport-proven, still-unsatisfied refusals. Tool result JSON never populates these.
+	#[serde(default, skip_serializing_if = "Vec::is_empty")]
+	pub connection_refusals: Vec<ConnectionRefusal>,
+	/// Survives context compaction and prevents repeated failure deferrals.
+	#[serde(default, skip_serializing_if = "std::collections::BTreeSet::is_empty")]
+	pub connection_waited: std::collections::BTreeSet<String>,
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub connection_wait: Option<ConnectionWait>,
 	#[serde(default, skip_serializing_if = "Option::is_none")]
 	pub semantic_reason: Option<crate::semantic::Failure>,
 	/// Typed context-recovery reason for a paused Run; cleared on resume.

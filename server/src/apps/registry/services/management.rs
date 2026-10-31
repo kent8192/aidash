@@ -249,10 +249,10 @@ impl RegistryManagement {
 				if !access.decide(&resource, "registry.read").await? {
 					return Err(Error::Forbidden);
 				}
-				// A bound tool or External service that names no Tenant Secret
-				// needs none, so it has no readiness fact.
+				// A bound tool or External service that names no shared Tenant Secret
+				// (none, or a personal-only one) has no readiness fact.
 				let Some((tenant_secret_name, endpoint)) =
-					aidash_domain::tenant_secrets::definition_target(&resolved.definition)
+					aidash_domain::tenant_secrets::definition_shared_target(&resolved.definition)
 				else {
 					continue;
 				};

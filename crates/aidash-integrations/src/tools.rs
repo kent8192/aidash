@@ -17,6 +17,7 @@ use rmcp::{
 };
 use secrecy::ExposeSecret;
 use serde_json::{Value, json};
+pub(crate) mod auth;
 pub(crate) mod mcp;
 
 /// A broker-owned failure is only expected when this call is brokered. An
@@ -26,13 +27,18 @@ fn broker_failure(
 	headers: &reqwest::header::HeaderMap,
 ) -> Option<broker::BrokerFailure> {
 	match secret {
-		Some(CallSecret::Brokered { .. }) => broker::BrokerFailure::from_headers(headers),
+		Some(CallSecret::Brokered { .. } | CallSecret::BrokeredConnection { .. }) => {
+			broker::BrokerFailure::from_headers(headers)
+		}
 		_ => None,
 	}
 }
 
 fn is_brokered(secret: Option<&CallSecret>) -> bool {
-	matches!(secret, Some(CallSecret::Brokered { .. }))
+	matches!(
+		secret,
+		Some(CallSecret::Brokered { .. } | CallSecret::BrokeredConnection { .. })
+	)
 }
 
 /// A brokered call sends the value it does not have: connect failures, and a
@@ -100,16 +106,29 @@ impl ToolClients {
 			public: crate::keyless::public_client(TOOL_TIMEOUT, TOOL_CONNECT_TIMEOUT)?,
 		})
 	}
+	/// The client of an Agent Plugin MCP session with `endpoint`. The endpoint must pass the
+	/// destination rule either way, but a brokered connection sends every byte to the broker,
+	/// which is Deployment configuration and may be an in-cluster private address, exactly as
+	/// registry-tool dispatch does.
 	pub(crate) fn select_mcp(
 		&self,
 		origins: &KeylessAccess,
 		endpoint: &str,
+		auth: Option<&CallSecret>,
 	) -> Result<&reqwest::Client> {
-		match tool_destination(origins, endpoint)? {
-			Destination::Permitted => Ok(&self.mcp_permitted),
-			Destination::PublicOnly => Ok(&self.mcp_public),
-			Destination::Forbidden => Err(Error::Forbidden),
-		}
+		let client = match tool_destination(origins, endpoint)? {
+			Destination::Permitted => &self.mcp_permitted,
+			Destination::PublicOnly => &self.mcp_public,
+			Destination::Forbidden => return Err(Error::Forbidden),
+		};
+		// Only a brokered connection is routed to the broker by the plugin transport.
+		Ok(
+			if matches!(auth, Some(CallSecret::BrokeredConnection { .. })) {
+				&self.mcp_permitted
+			} else {
+				client
+			},
+		)
 	}
 
 	/// The client a call to `endpoint` may use; a refused destination never reaches I/O.
@@ -211,10 +230,19 @@ impl ToolTransport for HttpTools {
 					Err(Error::Forbidden) => return Ok(tool_policy_refusal()),
 					Err(error) => return Err(error),
 				};
-				let request = if let Some(CallSecret::Brokered { source, rest, .. }) = secret {
+				let request = if let Some(
+					CallSecret::Brokered { source, rest, .. }
+					| CallSecret::BrokeredConnection { source, rest, .. },
+				) = secret
+				{
 					// The broker is Deployment configuration, not the Tenant's
 					// choice, so it may be an in-cluster private address.
-					let route = source.route().await?;
+					// A broker-owned `connection_required` (the grant ended at refresh) is
+					// typed here, never inferred from a body.
+					let route = source
+						.route()
+						.await
+						.map_err(|error| auth::source_error(error, endpoint))?;
 					let url = broker::forward_url(&route.base, rest)?;
 					self.clients
 						.permitted
@@ -251,6 +279,9 @@ impl ToolTransport for HttpTools {
 				};
 				if let Some(failure) = broker_failure(secret, response.headers()) {
 					return Err(failure.into_error());
+				}
+				if let Some(error) = auth::challenge(&response, endpoint) {
+					return Err(auth::finish(error));
 				}
 				let status = response.status();
 				let unsafe_failure = status.is_server_error()
@@ -314,15 +345,6 @@ impl ToolTransport for HttpTools {
 				} else {
 					client
 				};
-				let service = match mcp_session(client, endpoint, secret).await {
-					Ok(service) => service,
-					Err(error) => {
-						return tool_setup_failure(
-							error,
-							matches!(replay.as_str(), "read_only" | "idempotent"),
-						);
-					}
-				};
 				let mut args = input
 					.as_object()
 					.cloned()
@@ -330,19 +352,40 @@ impl ToolTransport for HttpTools {
 				if let Some(argument) = idempotency_argument {
 					args.insert(argument.clone(), json!(key));
 				}
-				let result = service
-					.call_tool(CallToolRequestParams::new(tool_name.clone()).with_arguments(args))
-					.await;
-				let _ = service.cancel().await;
-				match result {
-					Ok(result) => mcp::result_value(result),
-					Err(rmcp::service::ServiceError::McpError(error)) => {
-						mcp_protocol_result(&error.message)
-					}
-					Err(error) => tool_service_failure(
-						mcp::call_error(&error),
+				let mut result = mcp_call(
+					client,
+					endpoint,
+					tool_name,
+					args.clone(),
+					secret,
+					matches!(replay.as_str(), "read_only" | "idempotent"),
+				)
+				.await;
+				if let Err(error) = &result
+					&& auth::retry(error, secret).await
+				{
+					result = mcp_call(
+						client,
+						endpoint,
+						tool_name,
+						args,
+						secret,
 						matches!(replay.as_str(), "read_only" | "idempotent"),
-					),
+					)
+					.await;
+				}
+				match result {
+					Err(error) => {
+						let error = auth::finish(error);
+						match auth::error_value(&error) {
+							Some(value) => Ok(value),
+							None => tool_service_failure(
+								error,
+								matches!(replay.as_str(), "read_only" | "idempotent"),
+							),
+						}
+					}
+					value => value,
 				}
 			}
 			_ => Err(Error::Invalid(
@@ -351,6 +394,30 @@ impl ToolTransport for HttpTools {
 		}
 	}
 }
+async fn mcp_call(
+	client: &reqwest::Client,
+	endpoint: &str,
+	tool: &str,
+	arguments: serde_json::Map<String, Value>,
+	secret: Option<&CallSecret>,
+	replay_safe: bool,
+) -> Result<Value> {
+	auth::validate(secret, endpoint)?;
+	let service = match mcp_session(client, endpoint, secret).await {
+		Ok(service) => service,
+		Err(error) => return tool_setup_failure(error, replay_safe),
+	};
+	let result = service
+		.call_tool(CallToolRequestParams::new(tool.to_owned()).with_arguments(arguments))
+		.await;
+	let _ = service.cancel().await;
+	match result {
+		Ok(value) => mcp::result_value(value),
+		Err(rmcp::service::ServiceError::McpError(error)) => mcp_protocol_result(&error.message),
+		Err(error) => Err(mcp::call_error(&error)),
+	}
+}
+
 pub(crate) fn tool_policy_refusal() -> Value {
 	json!({"error":{"kind":"outbound_policy","message":"The deployment's outbound policy refused this destination."}})
 }
@@ -736,15 +803,22 @@ async fn mcp_session(
 	let client = match secret {
 		// A brokered session sends every request to the broker and carries a
 		// fresh Tenant Secret Capability Token instead of a bearer value.
-		Some(CallSecret::Brokered { source, rest, .. }) => {
-			let route = source.route().await?;
-			let url = broker::forward_url(&route.base, rest)?;
-			config = StreamableHttpClientTransportConfig::with_uri(url.to_string());
+		Some(
+			CallSecret::Brokered { source, rest, .. }
+			| CallSecret::BrokeredConnection { source, rest, .. },
+		) => {
+			let route = source
+				.route()
+				.await
+				.map_err(|error| auth::source_error(error, endpoint))?;
 			mcp::BoundedClient::brokered(client.clone(), source.clone(), rest.clone(), route)
 		}
 		Some(CallSecret::Value { value, .. }) => {
 			config = config.auth_header(value.expose_secret());
 			mcp::BoundedClient::direct(client.clone())
+		}
+		Some(CallSecret::Connection { source, .. }) => {
+			mcp::BoundedClient::connection(client.clone(), source.clone())
 		}
 		None => mcp::BoundedClient::direct(client.clone()),
 	};

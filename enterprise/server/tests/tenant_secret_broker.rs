@@ -675,6 +675,7 @@ fn http_tool(endpoint: &str) -> ToolConfig {
 		endpoint: endpoint.into(),
 		replay: "read_only".into(),
 		secret: Some("search".into()),
+		secret_owner: Default::default(),
 	}
 }
 
@@ -685,6 +686,8 @@ fn mcp_tool(endpoint: &str) -> ToolConfig {
 		replay: "read_only".into(),
 		idempotency_argument: None,
 		secret: Some("search".into()),
+		scopes: None,
+		secret_owner: Default::default(),
 	}
 }
 

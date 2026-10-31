@@ -16,6 +16,8 @@ pub struct TenantSecret {
 	pub tenant: String,
 	#[field(field_type = "text")]
 	pub name: String,
+	#[field(field_type = "text", null = true)]
+	pub owner: Option<String>,
 	/// The hosts the value may be sent to.
 	#[field]
 	pub hosts: Vec<String>,

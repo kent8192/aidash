@@ -6,6 +6,8 @@ use reinhardt::ServerRouter as Router;
 use upstream_fixtures::reply;
 #[path = "../../execution/tests/support/legacy.rs"]
 mod common;
+#[path = "scoped_remote_execution/connections.rs"]
+mod connections;
 #[path = "scoped_remote_execution/native_memory.rs"]
 mod native_memory;
 #[path = "../../execution/tests/support/tenant_openrouter.rs"]

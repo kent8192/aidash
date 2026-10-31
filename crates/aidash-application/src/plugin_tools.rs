@@ -5,7 +5,9 @@ use crate::{
 	ports::tools::{PluginServer, PluginSessions},
 };
 use aidash_domain::{
-	agent_plugin::{self, Listing, McpServer, PluginName, PluginTools, ServerName},
+	agent_plugin::{
+		self, ConnectionCause, Listing, McpServer, PluginName, PluginTools, ServerName,
+	},
 	registry::bindings::{AgentBindings, BindingSnapshot},
 	tool::providers::reserved_aliases,
 };
@@ -81,12 +83,14 @@ pub async fn list_servers(
 	// compiler cannot prove this future `Send` inside a route handler that awaits it.
 	let mut answers = stream::iter(servers)
 		.map(|(server, config)| async move {
-			let listing = match timeout(SERVER_TIMEOUT, sessions.list(run, &server, &config)).await
-			{
-				Ok(Ok(tools)) => Listing::Listed(tools),
-				Ok(Err(error)) => Listing::Unavailable(cause(&error)),
-				Err(_) => Listing::Unavailable(TIMEOUT.into()),
-			};
+			let listing =
+				match timeout(SERVER_TIMEOUT, sessions.list(run, &server, &config, None)).await {
+					Ok(Ok(tools)) => Listing::Listed(tools),
+					Ok(Err(error)) => connection_cause(&error, config.url.as_str())
+						.map(Listing::Connection)
+						.unwrap_or_else(|| Listing::Unavailable(cause(&error))),
+					Err(_) => Listing::Unavailable(TIMEOUT.into()),
+				};
 			(key(&server), listing)
 		})
 		.buffer_unordered(CONCURRENCY);
@@ -126,8 +130,86 @@ pub fn pin_listed(snapshot: &BindingSnapshot, listed: &Listings) -> Result<Plugi
 	))
 }
 
+/// Consent admits tools only from formerly unconnected servers of this resource.
+/// Existing pins, their digests and settings remain untouched.
+pub async fn reconnect_for_run(
+	sessions: &dyn PluginSessions,
+	run: Uuid,
+	snapshot: &BindingSnapshot,
+	pinned: &PluginTools,
+	resource: &str,
+) -> Result<PluginTools> {
+	use aidash_domain::agent_plugin::Component;
+	let mut agent = agent_bindings(snapshot)?;
+	let targets: BTreeSet<_> = pinned
+		.findings
+		.iter()
+		.filter(|finding| {
+			finding
+				.connection
+				.as_ref()
+				.is_some_and(|cause| cause.resource() == resource)
+		})
+		.filter_map(|finding| {
+			let Component::Server(server) = &finding.finding.component else {
+				return None;
+			};
+			Some((finding.plugin.clone(), server.clone()))
+		})
+		.collect();
+	for plugin in &mut agent.agent_plugins {
+		plugin.servers.retain(|name, config| {
+            targets.contains(&(plugin.name.clone(), name.to_string())) && matches!(config, McpServer::Remote(config) if aidash_domain::oauth_connections::canonical_resource(config.url.as_str()).ok().as_deref() == Some(resource))
+        });
+	}
+	agent
+		.agent_plugins
+		.retain(|plugin| !plugin.servers.is_empty());
+	let listed = list_servers(sessions, run, &agent).await;
+	let taken: BTreeSet<String> = reserved_aliases()
+		.into_iter()
+		.map(str::to_owned)
+		.chain(
+			snapshot
+				.bindings
+				.iter()
+				.filter(|binding| binding.excluded_reason.is_none())
+				.filter_map(|binding| binding.alias.clone()),
+		)
+		.chain(
+			pinned
+				.servers
+				.iter()
+				.flat_map(|server| server.tools.iter().map(|tool| tool.alias.clone())),
+		)
+		.collect();
+	let added = agent_plugin::pin_additional(
+		&agent.agent_plugins,
+		&agent.agent_plugin_settings,
+		&listed,
+		&taken,
+		pinned.servers.iter().map(|server| server.tools.len()).sum(),
+	);
+	let mut result = pinned.clone();
+	result.findings.retain(|finding| {
+        !matches!(&finding.finding.component, Component::Server(server) if targets.contains(&(finding.plugin.clone(), server.clone())))
+    });
+	result.servers.extend(added.servers);
+	result.findings.extend(added.findings);
+	Ok(result)
+}
+
 fn key(server: &PluginServer) -> (PluginName, ServerName) {
 	(server.plugin.clone(), server.server.clone())
+}
+
+/// Only transport-created, resource-matching challenges become retained connection causes.
+fn connection_cause(error: &Error, endpoint: &str) -> Option<ConnectionCause> {
+	let Error::Connection(cause) = error else {
+		return None;
+	};
+	let resource = aidash_domain::oauth_connections::canonical_resource(endpoint).ok()?;
+	(cause.resource() == resource).then_some(cause.clone())
 }
 
 fn cause(error: &Error) -> String {

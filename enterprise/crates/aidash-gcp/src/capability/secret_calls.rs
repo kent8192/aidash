@@ -68,7 +68,7 @@ impl SecretCalls for SecretCallsAdapter {
 
 /// `{endpoint}/v1/forward`. The endpoint is the bare service URI: HTTPS, or
 /// HTTP only on a literal loopback address for local runs.
-fn forward_base(endpoint: &str) -> Result<reqwest::Url> {
+pub(super) fn forward_base(endpoint: &str) -> Result<reqwest::Url> {
 	let endpoint = endpoint.trim_end_matches('/');
 	let url = reqwest::Url::parse(endpoint)
 		.map_err(|_| Error::Invalid("invalid Tenant Secret broker endpoint URL".into()))?;

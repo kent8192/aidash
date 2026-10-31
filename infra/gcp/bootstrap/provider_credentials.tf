@@ -54,6 +54,16 @@ resource "google_project_iam_custom_role" "byok_tenant_secret_broker_read" {
   ]
 }
 
+// Only OAuth Connections need broker writes. Never add versions.add to the
+// pasted Tenant Secret read role: -tsec- remains read-only for the broker.
+resource "google_project_iam_custom_role" "byok_oauth_broker" {
+  count       = var.byok_project_id != "" ? 1 : 0
+  project     = var.byok_project_id
+  role_id     = "aidashByokOAuthBroker"
+  title       = "Aidash OAuth Connection broker"
+  permissions = ["secretmanager.versions.access", "secretmanager.versions.add"]
+}
+
 // Resource Manager honours modifiedGrantsByRole for projects.setIamPolicy:
 // https://docs.cloud.google.com/iam/docs/setting-limits-on-granting-roles
 // Only runtime roles can be granted/revoked, including their conditions. Neither

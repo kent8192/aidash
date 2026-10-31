@@ -1,5 +1,8 @@
 //! Write-only Secret Manager REST adapter of the Secret Store.
-use aidash_application::{Error, Result, provider_credentials::Store};
+use aidash_application::{
+	Error, Result,
+	provider_credentials::{ClientBinding, Store},
+};
 use aidash_capability::tenant_secret::sealed;
 use async_trait::async_trait;
 use base64::Engine;
@@ -19,6 +22,7 @@ pub struct SecretManager {
 	prefix: String,
 	/// Tenant Secret payloads (ADR 0096), sealed with their hosts.
 	tenant_prefix: String,
+	oauth_prefix: String,
 	api: String,
 	metadata: String,
 }
@@ -51,6 +55,7 @@ impl SecretManager {
 			project,
 			prefix: format!("aidash-{environment}-cred-"),
 			tenant_prefix: format!("aidash-{environment}-tsec-"),
+            oauth_prefix: format!("aidash-{environment}-oauth-"),
 			environment,
 			api: "https://secretmanager.googleapis.com/v1".into(),
 			metadata:
@@ -63,9 +68,11 @@ impl SecretManager {
 	fn validate_resource(&self, resource: &str) -> Result<()> {
 		let credential = format!("projects/{}/secrets/{}", self.project, self.prefix);
 		let tenant = format!("projects/{}/secrets/{}", self.project, self.tenant_prefix);
+		let oauth = format!("projects/{}/secrets/{}", self.project, self.oauth_prefix);
 		let id = resource
 			.strip_prefix(&credential)
 			.or_else(|| resource.strip_prefix(&tenant))
+			.or_else(|| resource.strip_prefix(&oauth))
 			.ok_or_else(|| {
 				Error::Invalid("Secret Store resource is outside its environment".into())
 			})?;
@@ -173,6 +180,24 @@ impl SecretManager {
 		.await?;
 		Ok(())
 	}
+	async fn create_oauth_resource(&self, id: Uuid) -> Result<()> {
+		let resource = self.connection_resource(id);
+		// Retried OAuth writes must preserve the existing version inventory.
+		self.validate_resource(&resource)?;
+		if self
+			.call(reqwest::Method::GET, &resource, None, true)
+			.await?
+			.is_some()
+		{
+			return Ok(());
+		}
+		self.create_resource(
+			&resource,
+			json!({"environment":self.environment,"oauth-id":id.to_string()}),
+		)
+		.await
+	}
+
 	async fn add_version_bytes(&self, resource: &str, bytes: &[u8]) -> Result<String> {
 		self.validate_resource(resource)?;
 		let data = base64::engine::general_purpose::STANDARD.encode(bytes);
@@ -205,6 +230,66 @@ impl Store for SecretManager {
 			self.project, self.tenant_prefix
 		)
 	}
+	fn supports_oauth_client_secrets(&self) -> bool {
+		true
+	}
+	fn connection_resource(&self, id: Uuid) -> String {
+		format!(
+			"projects/{}/secrets/{}{id}",
+			self.project, self.oauth_prefix
+		)
+	}
+	fn oauth_client_resource(&self, id: Uuid) -> String {
+		self.connection_resource(id)
+	}
+	async fn create_connection(&self, _tenant: &str, id: Uuid) -> Result<()> {
+		self.create_oauth_resource(id).await
+	}
+	async fn create_oauth_client(&self, _tenant: &str, id: Uuid) -> Result<()> {
+		self.create_oauth_resource(id).await
+	}
+	async fn add_client_version(
+		&self,
+		_tenant: &str,
+		resource: &str,
+		binding: ClientBinding,
+		secret: &SecretString,
+	) -> Result<String> {
+		use aidash_capability::connection::sealed::{self, Payload};
+		if !resource.starts_with(&format!(
+			"projects/{}/secrets/{}",
+			self.project, self.oauth_prefix
+		)) {
+			return Err(Error::Invalid("invalid OAuth Client resource".into()));
+		}
+		let payload = match binding.redirect_uri {
+			Some(redirect_uri) => {
+				// Dynamic caches use their historical JSON bytes on self-hosted.
+				let v: Value = serde_json::from_str(secret.expose_secret())
+					.map_err(|_| Error::Invalid("invalid dynamic client secret".into()))?;
+				let client_secret = v["client_secret"]
+					.as_str()
+					.ok_or_else(|| Error::Invalid("missing dynamic client secret".into()))?
+					.to_owned()
+					.into();
+				Payload::DynamicClient {
+					issuer: binding.issuer,
+					client_id: binding.client_id,
+					redirect_uri,
+					client_secret,
+				}
+			}
+			None => Payload::RegisteredClient {
+				issuer: binding.issuer,
+				client_id: binding.client_id,
+				client_secret: secret.clone(),
+			},
+		};
+		let bytes = sealed::seal(payload)
+			.map_err(|_| Error::Invalid("invalid OAuth Client binding".into()))?;
+		self.add_version_bytes(resource, &bytes).await
+	}
+
 	async fn create(&self, _tenant: &str, id: Uuid) -> Result<()> {
 		let labels = json!({
 			"environment": self.environment,
@@ -231,7 +316,11 @@ impl Store for SecretManager {
 	) -> Result<String> {
 		// A Tenant Secret version must be sealed with its hosts; only
 		// `add_secret_version` may write one.
-		if self.is_tenant_resource(resource) {
+		if self.is_tenant_resource(resource)
+			|| resource.starts_with(&format!(
+				"projects/{}/secrets/{}",
+				self.project, self.oauth_prefix
+			)) {
 			return Err(Error::Invalid(
 				"a Tenant Secret version must carry its hosts".into(),
 			));

@@ -54,10 +54,9 @@ pub fn assert_policy_migrations_run_the_rendered_template(
 ) -> usize {
 	let mut covered = BTreeSet::new();
 	let mut policies = 0;
-	for migration in migrations
-		.iter()
-		.filter(|migration| migration.name.ends_with("_row_level_security"))
-	{
+	// A schema migration can carry its table's policy asset as well. Inspect
+	// operations rather than requiring a separate policy migration filename.
+	for migration in migrations {
 		for (sql, reverse_sql) in statements(migration) {
 			let tables = enabled(sql);
 			if tables.is_empty() {

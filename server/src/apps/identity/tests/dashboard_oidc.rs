@@ -2895,3 +2895,6 @@ mod tenancy;
 
 #[path = "dashboard_oidc/common_auth_settings.rs"]
 mod common_auth_settings;
+
+#[path = "support/personal_credentials.rs"]
+mod personal_credentials;

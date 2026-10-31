@@ -28,9 +28,9 @@ locals {
   credential_secret_prefixes = sort([
     for id in local.credential_broker_environment_ids : "secrets/aidash-${id}-cred-"
   ])
-  tenant_secret_secret_prefixes = sort([
-    for id in local.tenant_secret_broker_environment_ids : "secrets/aidash-${id}-tsec-"
-  ])
+  tenant_secret_secret_prefixes = sort(flatten([
+    for id in local.tenant_secret_broker_environment_ids : ["secrets/aidash-${id}-tsec-", "secrets/aidash-${id}-oauth-"]
+  ]))
   // Logging query fragments: ("a" OR "b").
   quoted_services               = join(" OR ", [for name in local.broker_service_names : "\"${name}\""])
   quoted_emails                 = join(" OR ", [for email in local.broker_account_emails : "\"${email}\""])
@@ -168,7 +168,7 @@ resource "google_monitoring_alert_policy" "byok_key_material_read" {
   }
   documentation {
     mime_type = "text/markdown"
-    content   = "A Secret Store payload (Provider Credential Key Material or a Tenant Secret) was read, or a read was attempted, by a principal other than the broker account that owns its namespace."
+    content   = "A Secret Store payload (Provider Credential Key Material, a Tenant Secret or an OAuth Connection) was read, or a read was attempted, by a principal other than the broker account that owns its namespace."
   }
   depends_on = [google_project_service.alerting]
 }
