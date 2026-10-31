@@ -19,6 +19,7 @@ struct SourceRepository {
 	races: Arc<AtomicUsize>,
 	saved_unauthorized: bool,
 	hidden_reads: bool,
+	subnode_workspace: bool,
 }
 struct SourceSession {
 	repository: Repository,
@@ -29,6 +30,7 @@ struct SourceSession {
 	live: bool,
 	races: Arc<AtomicUsize>,
 	hidden_reads: bool,
+	subnode_workspace: bool,
 }
 impl Drop for SourceSession {
 	fn drop(&mut self) {
@@ -53,6 +55,7 @@ impl SourceRepository {
 			races: Arc::new(AtomicUsize::new(0)),
 			saved_unauthorized: false,
 			hidden_reads: false,
+			subnode_workspace: false,
 		}
 	}
 	fn scope(&self) -> SourceSession {
@@ -66,6 +69,7 @@ impl SourceRepository {
 			live: self.live,
 			races: self.races.clone(),
 			hidden_reads: self.hidden_reads,
+			subnode_workspace: self.subnode_workspace,
 		}
 	}
 }
@@ -318,6 +322,13 @@ impl GrantScope for SourceSession {
 		self.repository.call("inherit_origin");
 		Ok(())
 	}
+	async fn require_non_subnode_workspace(&mut self, _: Uuid) -> Result<()> {
+		if self.subnode_workspace {
+			Err(Error::Forbidden)
+		} else {
+			Ok(())
+		}
+	}
 	async fn command_lock(&mut self, _: Uuid) -> Result<()> {
 		self.repository.call("command_lock");
 		Ok(())
@@ -426,6 +437,18 @@ async fn preparation_inherits_original_authority_before_checking_assignment() {
 			"rollback_with_denial_audit"
 		]
 	);
+}
+
+#[tokio::test]
+async fn subnode_tasks_cannot_prepare_a_remote_grant() {
+	let mut repository = SourceRepository::new();
+	repository.task.status = TaskStatus::Open;
+	repository.subnode_workspace = true;
+	assert!(matches!(
+		use_case::prepare(&repository, task().id, input()).await,
+		Err(Error::Forbidden)
+	));
+	assert!(!repository.repository.calls().contains(&"source_rpc".into()));
 }
 #[rstest]
 #[tokio::test]

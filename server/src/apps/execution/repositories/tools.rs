@@ -13,6 +13,28 @@ use uuid::Uuid;
 pub(crate) struct Operations(pub(crate) crate::tool::ToolContext);
 #[async_trait]
 impl ToolOperations for Operations {
+	async fn subnode_command(
+		&self,
+		key: &str,
+		command: &aidash_application::subnodes::Command,
+	) -> Result<Value> {
+		self.0
+			.home
+			.subnode_command(key, command)
+			.await
+			.map_err(Into::into)
+	}
+	async fn subnode_create(
+		&self,
+		key: &str,
+		input: &aidash_application::subnodes::Create,
+	) -> Result<aidash_domain::subnodes::Subnode> {
+		self.0
+			.home
+			.subnode_create(key, input)
+			.await
+			.map_err(Into::into)
+	}
 	async fn registered_skills(&self) -> Result<Vec<EntityRef>> {
 		let snapshot = self
 			.0
@@ -93,6 +115,20 @@ impl ToolOperations for Operations {
 			.map_err(Into::into)
 	}
 
+	async fn read_subnode_record_chunk(
+		&self,
+		workspace: Uuid,
+		kind: &str,
+		id: &str,
+		offset: usize,
+		maximum: usize,
+	) -> Result<Value> {
+		self.0
+			.home
+			.read_subnode_record_chunk(workspace, kind, id, offset, maximum)
+			.await
+			.map_err(Into::into)
+	}
 	async fn memory_mutate(
 		&self,
 		key: &str,

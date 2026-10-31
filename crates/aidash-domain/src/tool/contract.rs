@@ -223,7 +223,7 @@ impl ToolBehavior {
 		input: &Value,
 		output: &Value,
 	) -> Option<crate::media::ModelMedia> {
-		use crate::media::{ModelMedia, PageImageSelection, Selection};
+		use crate::media::{ModelFileSelection, ModelMedia, PageImageSelection};
 		if !self.yields_model_media {
 			return None;
 		}
@@ -231,9 +231,11 @@ impl ToolBehavior {
 			&& output["status"] == "completed"
 			&& output["metadata"]["file_id"] == input["file_id"]
 		{
-			return serde_json::from_value::<Selection>(serde_json::json!({
+			return serde_json::from_value::<ModelFileSelection>(serde_json::json!({
 				"file_id": input["file_id"],
 				"expected_digest": input["expected_digest"],
+				"workspace_id": input["workspace_id"],
+				"area_id": input["area_id"],
 			}))
 			.ok()
 			.map(ModelMedia::File);
@@ -411,6 +413,16 @@ pub fn builtin_contract(name: &str) -> Option<ToolContract> {
 		target,
 	};
 	match name {
+		// A Remote-Grant-started creator needs to manage its receiving-Node
+		// Subnode; each effect rechecks its creator or member identity.
+		"subnode_create"
+		| "subnode_task"
+		| "subnode_add_member"
+		| "subnode_remove_member"
+		| "subnode_dissolve" => {
+			contract.remote_exposure = true;
+		}
+		"subnode_message" => {}
 		"task_create" => {
 			auth.flag = Some(AgentFlag::TaskCreation);
 			auth.requirements
@@ -804,6 +816,33 @@ mod tests {
 		}
 		let encoded = serde_json::to_value(builtin_contract("capability_load").unwrap()).unwrap();
 		assert_eq!(encoded["behavior"]["exposure_update"], true);
+	}
+	#[test]
+	fn subnode_model_media_keeps_the_area_needed_for_authorization() {
+		let file = uuid::Uuid::new_v4();
+		let workspace = uuid::Uuid::new_v4();
+		let area = uuid::Uuid::new_v4();
+		let input = serde_json::json!({"file_id":file,"expected_digest":"sha256:fixture","representation":"model_input","workspace_id":workspace,"area_id":area});
+		let output = serde_json::json!({"status":"completed","metadata":{"file_id":file}});
+		let selected = builtin_contract("file_read")
+			.unwrap()
+			.behavior
+			.model_media_selection(&input, &output)
+			.unwrap();
+		assert_eq!(
+			serde_json::to_value(selected).unwrap(),
+			serde_json::json!({"file_id":file,"expected_digest":"sha256:fixture","workspace_id":workspace,"area_id":area})
+		);
+		let old_input = serde_json::json!({"file_id":file,"expected_digest":"sha256:fixture","representation":"model_input"});
+		let old = builtin_contract("file_read")
+			.unwrap()
+			.behavior
+			.model_media_selection(&old_input, &output)
+			.unwrap();
+		assert_eq!(
+			serde_json::to_value(old).unwrap(),
+			serde_json::json!({"file_id":file,"expected_digest":"sha256:fixture"})
+		);
 	}
 	#[test]
 	fn research_attributes_leave_admitted_builtin_digests_unchanged() {

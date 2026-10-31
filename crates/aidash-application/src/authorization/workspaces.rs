@@ -11,8 +11,24 @@ use aidash_domain::{
 };
 use serde_json::json;
 use uuid::Uuid;
+/// An inherited lease reaches its own Workspace and, for reading only, the
+/// Subnode Workspaces its Run created (named by the lease context).
+pub fn workspace_reachable(context: &serde_json::Value, id: Uuid) -> bool {
+	let id = json!(id.to_string());
+	context["workspace_id"] == id || subnode_read_only(context, &id)
+}
+/// Whether `id` is reachable only through the creator's read exception.
+pub fn subnode_read_workspace(context: &serde_json::Value, id: Uuid) -> bool {
+	let id = json!(id.to_string());
+	context["workspace_id"] != id && subnode_read_only(context, &id)
+}
+fn subnode_read_only(context: &serde_json::Value, id: &serde_json::Value) -> bool {
+	context["subnode_read_workspaces"]
+		.as_array()
+		.is_some_and(|workspaces| workspaces.contains(id))
+}
 pub async fn resource(scope: &mut dyn WorkspaceResourceScope, id: Uuid) -> Result<Resource> {
-	if scope.inherited() && scope.context()["workspace_id"] != id.to_string() {
+	if scope.inherited() && !workspace_reachable(scope.context(), id) {
 		return Err(Error::Forbidden);
 	}
 	let lock = !scope.inherited();

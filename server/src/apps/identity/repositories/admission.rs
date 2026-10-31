@@ -108,6 +108,11 @@ impl ExecutionGrantSession for Admission<'_> {
 }
 #[async_trait]
 impl ExecutionAdmissionSession for Admission<'_> {
+	async fn subnode_admission(&mut self, task: &Task, agent: &EntityRef) -> Result<()> {
+		super::subnodes::require_admission(self.access, task, agent)
+			.await
+			.map_err(Into::into)
+	}
 	fn node_id(&self) -> &str {
 		self.f.config.deployment.as_str()
 	}

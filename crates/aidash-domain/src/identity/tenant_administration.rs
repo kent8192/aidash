@@ -44,6 +44,10 @@ pub const NODE_REGISTRATION_READ: &str = "node_registration.read";
 /// Registering a Node of another Tenant at one of the Tenant's Nodes, or
 /// changing that registration.
 pub const NODE_REGISTRATION_UPDATE: &str = "node_registration.update";
+/// Creating a Run-scoped Subnode; an agent must be explicitly granted this.
+pub const SUBNODE_CREATE: &str = "subnode.create";
+/// Changing the Tenant's Subnode limits.
+pub const SUBNODE_LIMITS_UPDATE: &str = "subnode.limits.update";
 /// Setting the Tenant's Workbench Test Limits within the Deployment's ceilings.
 pub const TEST_LIMITS_UPDATE: &str = "workbench.test_limits.update";
 /// Writing the Tenant's Workbench Test Profiles.
@@ -60,7 +64,7 @@ pub const SECRET_MANAGE: &str = "secret.manage";
 pub const SECRET_USE: &str = "secret.use";
 
 /// Every action a Tenant's policy can permit to make a Tenant Administrator.
-pub const ACTIONS: [&str; 25] = [
+pub const ACTIONS: [&str; 26] = [
 	REGISTRATION_READ,
 	REGISTRATION_APPROVE,
 	REGISTRATION_REJECT,
@@ -83,6 +87,7 @@ pub const ACTIONS: [&str; 25] = [
 	NODE_REGISTRATION_READ,
 	NODE_REGISTRATION_UPDATE,
 	TEST_LIMITS_UPDATE,
+	SUBNODE_LIMITS_UPDATE,
 	TEST_PROFILE_UPDATE,
 	SECRET_MANAGE,
 	APPROVAL_READ,
@@ -135,9 +140,10 @@ pub fn resource_kind(action: &str) -> &'static str {
 		DECISION_READ => "decision",
 		CREDENTIAL_READ | CREDENTIAL_REVOKE => "credential",
 		PEER_MAPPING_READ | PEER_MAPPING_UPDATE => "peer_mapping",
-		NODE_READ | NODE_USE | NODE_UPDATE => "node",
+		NODE_READ | NODE_USE | NODE_UPDATE | SUBNODE_CREATE => "node",
 		NODE_REGISTRATION_READ | NODE_REGISTRATION_UPDATE => "node_registration",
 		TEST_LIMITS_UPDATE => "test_limits",
+		SUBNODE_LIMITS_UPDATE => "tenant",
 		TEST_PROFILE_UPDATE => "test_profile",
 		APPROVAL_READ => "subject",
 		crate::approval_rules::MODE_AUTO | crate::approval_rules::MODE_BYPASS => {

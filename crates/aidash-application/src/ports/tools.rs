@@ -139,6 +139,13 @@ pub trait PluginInputs: Send + Sync {
 /// Memory and task operations must retain their policy locks and durable writes.
 #[async_trait]
 pub trait ToolOperations: Send + Sync {
+	async fn subnode_command(&self, key: &str, command: &crate::subnodes::Command)
+	-> Result<Value>;
+	async fn subnode_create(
+		&self,
+		key: &str,
+		input: &crate::subnodes::Create,
+	) -> Result<aidash_domain::subnodes::Subnode>;
 	async fn registered_skills(&self) -> Result<Vec<EntityRef>>;
 	async fn skill_files(&self, reference: &EntityRef) -> Result<Vec<SkillFile>>;
 	async fn discover(&self, search: &Search) -> Result<Value>;
@@ -161,6 +168,16 @@ pub trait ToolOperations: Send + Sync {
 		offset: usize,
 		maximum: usize,
 	) -> Result<Value>;
+	async fn read_subnode_record_chunk(
+		&self,
+		_workspace: Uuid,
+		_kind: &str,
+		_id: &str,
+		_offset: usize,
+		_maximum: usize,
+	) -> Result<Value> {
+		Err(crate::Error::Forbidden)
+	}
 	async fn memory_mutate(
 		&self,
 		key: &str,

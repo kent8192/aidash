@@ -371,3 +371,20 @@ async fn interaction_errors_keep_their_opaque_identity(
 	assert!(error.is::<std::io::Error>());
 	assert_eq!(scope.calls.last().unwrap(), fail);
 }
+
+#[test]
+fn a_subnode_creator_reaches_its_own_and_the_subnode_workspaces_but_reads_only_the_latter() {
+	let own = Uuid::new_v4();
+	let subnode = Uuid::new_v4();
+	let other = Uuid::new_v4();
+	let context = json!({"workspace_id":own,"subnode_read_workspaces":[subnode]});
+	assert!(super::workspace_reachable(&context, own));
+	assert!(super::workspace_reachable(&context, subnode));
+	assert!(!super::workspace_reachable(&context, other));
+	assert!(!super::subnode_read_workspace(&context, own));
+	assert!(super::subnode_read_workspace(&context, subnode));
+	assert!(!super::subnode_read_workspace(
+		&json!({"workspace_id":own}),
+		subnode
+	));
+}

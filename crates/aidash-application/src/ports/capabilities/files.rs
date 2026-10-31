@@ -61,6 +61,15 @@ pub trait FileScopePort: Send {
 	async fn require(&mut self, resource: &Resource, action: &str) -> Result<()>;
 	async fn serialize_sharing(&mut self) -> Result<()>;
 	async fn for_run(&mut self, run: &RunMetadata) -> Result<Area>;
+	/// Read a creator-owned Subnode Area with the usual file and source checks.
+	async fn subnode_area(
+		&mut self,
+		_run: &RunMetadata,
+		_workspace: Uuid,
+		_area: Uuid,
+	) -> Result<Area> {
+		Err(crate::Error::Forbidden)
+	}
 	async fn authorize(&mut self, area: &Area, action: &str) -> Result<()>;
 	async fn current_run(&mut self, area: &Area) -> Result<Option<Uuid>>;
 	async fn require_current(&mut self, area: &Area, run: &RunMetadata) -> Result<()>;

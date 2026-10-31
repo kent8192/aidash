@@ -23,6 +23,21 @@ use reinhardt::rest::openapi::OpenApiSchema;
 use serde_json::Value;
 
 pub(crate) fn register(contracts: &mut Contracts, document: &mut OpenApiSchema) -> Result<()> {
+	contracts.response::<_, Vec<crate::apps::execution::serializers::subnodes::SubnodeView>>(
+		document,
+		views::management::run_subnodes,
+		200,
+		"application/json",
+	)?;
+	contracts.path(document, views::management::run_subnodes, &["Uuid"])?;
+	contracts.response::<_, crate::apps::execution::serializers::subnodes::Dissolved>(
+		document,
+		views::management::subnode_dissolve,
+		200,
+		"application/json",
+	)?;
+	contracts.path(document, views::management::subnode_dissolve, &["Uuid"])?;
+
 	super::super::observation::register(contracts, document)?;
 	contracts.response::<_, StateResponse>(
 		document,

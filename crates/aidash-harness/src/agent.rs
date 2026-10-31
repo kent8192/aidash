@@ -54,7 +54,9 @@ impl<'a> Executor<'a> {
 		match result {
 			Ok(value) => Ok(value),
 			Err(
-				Error::Invalid(message) | Error::Domain(aidash_domain::Error::Invalid(message)),
+				Error::Invalid(message)
+				| Error::Refused(message)
+				| Error::Domain(aidash_domain::Error::Invalid(message)),
 			) => Ok(json!({"error":message})),
 			Err(Error::ToolNotDelivered {
 				message,
@@ -3306,9 +3308,16 @@ async fn prepare_tool_result(
 			) else {
 				return Ok(PreparedResult::Skip);
 			};
-			let output = home
-				.read_record_chunk(kind, id, budget.offset, budget.requested)
-				.await?;
+			let output = if let Some(workspace) = call.arguments["workspace_id"].as_str() {
+				let workspace = workspace
+					.parse()
+					.map_err(|_| Error::Invalid("invalid workspace id".into()))?;
+				home.read_subnode_record_chunk(workspace, kind, id, budget.offset, budget.requested)
+					.await?
+			} else {
+				home.read_record_chunk(kind, id, budget.offset, budget.requested)
+					.await?
+			};
 			let size = fit_tool_result(context, call, "max_chars", budget, 0, |chars| {
 				workspace_read_result(&output, budget.requested, budget.offset, chars)
 			});

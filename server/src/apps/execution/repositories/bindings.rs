@@ -76,6 +76,23 @@ fn implementations() -> BTreeMap<String, Arc<dyn Tool>> {
 	implementations
 }
 impl Providers {
+	/// Coordination tools are intrinsic to a Subnode, independent of a member's Bindings.
+	pub(crate) fn coordination_tool(&self, name: &str) -> Result<Arc<dyn ExecutionTool>> {
+		let tool = implementations()
+			.remove(name)
+			.ok_or_else(|| Error::Invalid(format!("missing coordination tool: {name}")))?;
+		let mut contract = tool.contract();
+		contract.authorization.flag = None;
+		contract.authorization.core = None;
+		Ok(Arc::new(ProviderTool {
+			tool,
+			contract,
+			operation: Some(name.into()),
+			store: self.federation.store.clone(),
+			home: self.home.clone(),
+			scope: self.scope.clone(),
+		}))
+	}
 	fn tool(
 		&self,
 		binding: &ResolvedBinding,

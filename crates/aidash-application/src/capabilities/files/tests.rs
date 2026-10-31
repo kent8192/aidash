@@ -229,6 +229,8 @@ fn selection(
 ) -> FileRead {
 	FileRead {
 		file_id: file.file_id,
+		workspace_id: None,
+		area_id: None,
 		representation,
 		offset,
 		max_bytes,
@@ -468,6 +470,23 @@ async fn direct_file_read_applies_the_admitted_limit_when_input_omits_it() {
 	assert_eq!(result.result["content"], "abc");
 	assert_eq!(result.result["next_offset"], 3);
 	assert_eq!(scope.opens, 1);
+}
+
+#[tokio::test]
+async fn subnode_file_selection_requires_both_ids_and_an_authorizing_adapter() {
+	let (mut scope, run, file) = invoke_fixture("file_read", json!({}));
+	let mut input =
+		json!({"file_id": file.file_id, "representation": "text", "workspace_id": Uuid::new_v4()});
+	assert!(matches!(
+		invoke(&mut scope, &run, "file_read", input.clone(), "request").await,
+		Err(Error::Invalid(_))
+	));
+	input["area_id"] = json!(Uuid::new_v4());
+	assert!(matches!(
+		invoke(&mut scope, &run, "file_read", input, "request").await,
+		Err(Error::Forbidden)
+	));
+	assert_eq!(scope.opens, 0);
 }
 
 #[rstest::rstest]

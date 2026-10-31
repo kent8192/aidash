@@ -1877,6 +1877,26 @@ fn fixture() -> Fixture {
 
 #[rstest]
 #[tokio::test]
+async fn refused_tool_call_is_a_model_correctable_result(fixture: Fixture) {
+	let result = Executor::tool_delivery_result(
+		&fixture.backend,
+		&fixture.run,
+		Uuid::nil(),
+		"refused-call",
+		Err(Error::Refused(
+			"member needs a tool outside the allowance".into(),
+		)),
+	)
+	.await
+	.unwrap();
+	assert_eq!(
+		result,
+		json!({"error":"member needs a tool outside the allowance"})
+	);
+}
+
+#[rstest]
+#[tokio::test]
 async fn remote_human_poll_preserves_waiting_until_home_answers(mut fixture: Fixture) {
 	let id = Uuid::new_v4();
 	let state = Arc::get_mut(&mut fixture.backend.0).unwrap();

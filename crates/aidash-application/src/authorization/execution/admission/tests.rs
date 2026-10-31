@@ -100,6 +100,9 @@ impl ExecutionGrantSession for Scope {
 }
 #[async_trait]
 impl ExecutionAdmissionSession for Scope {
+	async fn subnode_admission(&mut self, _: &Task, _: &EntityRef) -> Result<()> {
+		Ok(())
+	}
 	async fn bindings(
 		&mut self,
 		entry: &Entry,

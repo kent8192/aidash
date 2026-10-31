@@ -1131,6 +1131,10 @@ def render():
             # Only a browser Mapping context can be a Tenant Administrator.
             uri = path.replace("{subject}", "alice")
             body = (
+                json.dumps({"members_per_subnode": 5, "subnodes_per_run": 3,
+                            "remote_runs_may_create": False})
+                if method == "PUT" and path.endswith("/subnode-limits")
+                else
                 json.dumps({"groups": [], "expected_policy_revision": 1})
                 if method == "PUT"
                 else json.dumps({"subject": "carol", "groups": []})

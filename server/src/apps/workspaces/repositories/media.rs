@@ -151,6 +151,34 @@ impl aidash_application::ports::execution::media::SelectedMediaScope for Selecte
 		self.files = files;
 		Ok(selected)
 	}
+	async fn subnode_file(
+		&mut self,
+		workspace: Uuid,
+		area: Uuid,
+		id: Uuid,
+	) -> Result<SelectedFile> {
+		use aidash_application::ports::capabilities::files::FileScopePort;
+		let access = self
+			.lease
+			.as_mut()
+			.ok_or(aidash_application::Error::Forbidden)?;
+		let area = crate::bootstrap::file_scope(Some(self.store), access, Some(self.run))
+			.subnode_area(&self.run.metadata(), workspace, area)
+			.await?;
+		let file = serde_json::from_value::<Vec<FileEntry>>(area.manifest)?
+			.into_iter()
+			.find(|file| file.file_id == id)
+			.ok_or_else(|| aidash_application::Error::NotFound("file unavailable".into()))?;
+		let selected = SelectedFile {
+			file_id: file.file_id,
+			path: file.path.clone(),
+			digest: file.digest.clone(),
+			size: file.size,
+			media_type: file.media_type.clone(),
+		};
+		self.files.push(file);
+		Ok(selected)
+	}
 	async fn read(&mut self, file: Uuid) -> Result<Vec<u8>> {
 		let access = self
 			.lease

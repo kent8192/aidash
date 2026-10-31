@@ -13,6 +13,8 @@ use aidash_domain::{
 	registry::EntityRef,
 };
 use async_trait::async_trait;
+use reinhardt::db::orm::{Model, QueryRow, execution::convert_values};
+use reinhardt::query::LockType;
 use reinhardt::query::{
 	Alias, ColumnRef, Expr, ExprTrait as _, OnConflict, PostgresQueryBuilder, Query,
 	QueryStatementBuilder as _, SimpleExpr,
@@ -24,6 +26,52 @@ pub(crate) struct WorkerTasks<'a> {
 }
 #[async_trait]
 impl WorkerTaskScope for WorkerTasks<'_> {
+	async fn subnode_members(&mut self, workspace: Uuid) -> Result<Option<Vec<EntityRef>>> {
+		use crate::apps::execution::models::subnodes::{SubnodeMemberRecord, SubnodeRecord};
+		let tenant = self.access.identity.tenant.clone();
+		let result: NativeResult<Option<Vec<EntityRef>>> = async {
+			// The same exclusive row lock must guard membership changes and ending.
+			// It keeps a target a member until delegated admission commits.
+			let (sql, values) = Query::select()
+				.column(ColumnRef::Asterisk)
+				.from(Alias::new("subnodes"))
+				.and_where(Expr::col("tenant").eq(tenant.clone()))
+				.and_where(Expr::col("workspace_id").eq(Expr::value(workspace)))
+				.lock(LockType::Update)
+				.build(PostgresQueryBuilder);
+			let row = self
+				.access
+				.tx
+				.native_mut()
+				.fetch_optional(&sql, convert_values(values))
+				.await?;
+			let Some(row) = row else {
+				return Ok(None);
+			};
+			let record: SubnodeRecord =
+				serde_json::from_value(QueryRow::from_backend_row(row).data)?;
+			if record.state != "active" {
+				return Ok(Some(vec![]));
+			}
+			let members = SubnodeMemberRecord::objects()
+				.filter(SubnodeMemberRecord::field_tenant().eq(tenant))
+				.filter(SubnodeMemberRecord::field_subnode_id().eq(record.id))
+				.all_with_executor(self.access.tx.native_mut())
+				.await
+				.map_err(reinhardt::core::exception::Error::from)?;
+			Ok(Some(
+				members
+					.into_iter()
+					.map(|member| EntityRef {
+						id: member.agent_id,
+						version: member.agent_version,
+					})
+					.collect(),
+			))
+		}
+		.await;
+		result.map_err(Into::into)
+	}
 	fn node_id(&self) -> &str {
 		self.federation.config.deployment.as_str()
 	}
@@ -37,10 +85,23 @@ impl WorkerTaskScope for WorkerTasks<'_> {
 	fn subjects(&self) -> &[String] {
 		&self.access.subjects
 	}
-	async fn assign(&mut self, task: Uuid, policy: &str, reason: &str) -> Result<Assignment> {
-		crate::generation::assign_in(self.federation, self.access, task, policy, reason)
-			.await
-			.map_err(Into::into)
+	async fn assign(
+		&mut self,
+		task: Uuid,
+		policy: &str,
+		reason: &str,
+		members: Option<&[EntityRef]>,
+	) -> Result<Assignment> {
+		crate::generation::assign_in_restricted(
+			self.federation,
+			self.access,
+			task,
+			policy,
+			reason,
+			members,
+		)
+		.await
+		.map_err(Into::into)
 	}
 	async fn record_output(&mut self, source: &RunMetadata, kind: &str, id: Uuid) -> Result<()> {
 		self.federation

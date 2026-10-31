@@ -66,6 +66,7 @@ const TENANT_REGISTRY_MIGRATIONS: &[(&str, &str)] = &[
 	("registry", "0050_harness_contract"),
 	("registry", "0051_harness_plugin_merge"),
 	("registry", "0052_harness_contract_structured3"),
+	("registry", "0053_subnode_provider"),
 	("marketplace", "0008_remove_compatibility_gate"),
 	("marketplace", "0009_remove_compatibility_gate_state"),
 	("marketplace", "0010_row_level_security"),
@@ -118,7 +119,7 @@ async fn native_history_uses_typed_schema_operations_and_lf_sql_assets() {
 			.iter()
 			.filter(|migration| migration.state_only)
 			.count(),
-		71
+		72
 	);
 	let tables = migrations
 		.iter()
@@ -356,15 +357,12 @@ async fn generation_with_existing_sql_assets_preserves_history_and_dependency(
 	);
 	assert_eq!(std::fs::read(history).unwrap(), original);
 	let generated = FilesystemSource::new(fixture.directory.path().join("migrations"))
-		.get_migration("execution", "0084_policy_probe")
+		.get_migration("execution", "0087_policy_probe")
 		.await
 		.unwrap();
 	assert_eq!(
 		generated.dependencies,
-		vec![(
-			"execution".to_owned(),
-			"0083_harness_contract_state".to_owned()
-		)]
+		vec![("execution".to_owned(), "0086_subnodes_state".to_owned())]
 	);
 	assert!(generated.operations.is_empty());
 }
@@ -711,7 +709,7 @@ async fn preserved_baseline_does_not_generate_table_recreation(
 			.iter()
 			.filter(|migration| migration.state_only)
 			.count(),
-		71
+		72
 	);
 }
 
@@ -3225,4 +3223,69 @@ async fn context_sources_migration_accepts_exact_native_policies_and_rejects_mis
 	let mut unknown = configured;
 	unknown["context_source"]["unknown"] = json!(true);
 	assert!(!accepts(unknown).await);
+}
+
+#[rstest]
+#[tokio::test]
+async fn subnode_provider_migration_accepts_exact_builtin_descriptors_and_reverses(
+	#[future] fresh_database: MigrationFixture,
+) {
+	let fixture = fresh_database.await;
+	fixture.migrate().await;
+	let pool = fixture.connection.clone().into_postgres().unwrap();
+	let operations = [
+		"subnode_create",
+		"subnode_task",
+		"subnode_add_member",
+		"subnode_remove_member",
+		"subnode_dissolve",
+		"subnode_message",
+	];
+	for operation in operations {
+		let descriptor = serde_json::to_value(
+			aidash_domain::tool::providers::core_descriptor("aidash://fixture", operation).unwrap(),
+		)
+		.unwrap();
+		assert!(
+			contract_accepts(
+				&pool,
+				"aidash_descriptor_is_valid",
+				vec![descriptor.clone()]
+			)
+			.await,
+			"{operation}"
+		);
+		let mut wrong = descriptor;
+		wrong["provider"] = json!("core.tasks@1");
+		assert!(
+			!contract_accepts(&pool, "aidash_descriptor_is_valid", vec![wrong]).await,
+			"{operation}"
+		);
+	}
+	let migration =
+		FilesystemSource::new(PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("migrations"))
+			.get_migration("registry", "0053_subnode_provider")
+			.await
+			.unwrap();
+	let mut executor =
+		reinhardt::db::migrations::DatabaseMigrationExecutor::new(fixture.connection.clone());
+	executor
+		.rollback_migrations(std::slice::from_ref(&migration))
+		.await
+		.unwrap();
+	let descriptor = serde_json::to_value(
+		aidash_domain::tool::providers::core_descriptor("aidash://fixture", "subnode_create")
+			.unwrap(),
+	)
+	.unwrap();
+	assert!(
+		!contract_accepts(
+			&pool,
+			"aidash_descriptor_is_valid",
+			vec![descriptor.clone()]
+		)
+		.await
+	);
+	executor.apply_migrations(&[migration]).await.unwrap();
+	assert!(contract_accepts(&pool, "aidash_descriptor_is_valid", vec![descriptor]).await);
 }

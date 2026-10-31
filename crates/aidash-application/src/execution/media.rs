@@ -154,10 +154,24 @@ pub async fn selected(
 	for selection in selections {
 		let (label, media_type, bytes) = match selection {
 			ModelMedia::File(selection) => {
-				let file = files
-					.iter()
-					.find(|file| file.file_id == selection.file_id)
-					.ok_or_else(|| Error::NotFound("file unavailable".into()))?;
+				let selected;
+				let file = match (selection.workspace_id, selection.area_id) {
+					(Some(workspace), Some(area)) => {
+						selected = scope
+							.subnode_file(workspace, area, selection.file_id)
+							.await?;
+						&selected
+					}
+					(None, None) => files
+						.iter()
+						.find(|file| file.file_id == selection.file_id)
+						.ok_or_else(|| Error::NotFound("file unavailable".into()))?,
+					_ => {
+						return Err(Error::Invalid(
+							"workspace_id and area_id must be supplied together".into(),
+						));
+					}
+				};
 				if file.digest != selection.expected_digest {
 					return Err(Error::Conflict("FILE_CHANGED".into()));
 				}

@@ -99,6 +99,22 @@ impl GrantScope for Scope {
 			.map(|_| ())
 			.map_err(Into::into)
 	}
+	async fn require_non_subnode_workspace(&mut self, workspace: Uuid) -> Result<()> {
+		use crate::apps::execution::models::subnodes::SubnodeRecord;
+		use reinhardt::db::orm::Model;
+		let records = SubnodeRecord::objects()
+			.filter(SubnodeRecord::field_tenant().eq(self.access.identity.tenant.clone()))
+			.filter(SubnodeRecord::field_workspace_id().eq(workspace))
+			.all_with_executor(self.access.tx.native_mut())
+			.await
+			.map_err(reinhardt::core::exception::Error::from)
+			.map_err(crate::Error::from)?;
+		if records.is_empty() {
+			Ok(())
+		} else {
+			Err(aidash_application::Error::Forbidden)
+		}
+	}
 	async fn live(&mut self, id: Uuid) -> Result<bool> {
 		live(&mut self.access, id).await.map_err(Into::into)
 	}

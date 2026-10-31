@@ -573,6 +573,23 @@ impl Home {
 		)
 		.await
 	}
+	pub(crate) async fn read_subnode_record_chunk(
+		&self,
+		workspace: Uuid,
+		kind: &str,
+		id: &str,
+		offset: usize,
+		max_chars: usize,
+	) -> Result<Value> {
+		let id = id
+			.parse::<Uuid>()
+			.map_err(|_| Error::Invalid("invalid workspace record id".into()))?;
+		let authority = self.authority.as_ref().ok_or(Error::Forbidden)?;
+		let record = authority
+			.subnode_workspace_record(self.execution_run()?, workspace, kind, id)
+			.await?;
+		crate::context::observation::chunk_record(record, kind, &id.to_string(), offset, max_chars)
+	}
 	pub(crate) async fn child_summary(&self, parent: Uuid) -> Result<ChildTaskSummary> {
 		let scope = self.tenancy().await?;
 		if let Some(authority) = &self.authority {
@@ -748,6 +765,26 @@ impl Home {
 				policy,
 				reason,
 			)
+			.await
+	}
+	pub(crate) async fn subnode_command(
+		&self,
+		key: &str,
+		command: &aidash_application::subnodes::Command,
+	) -> Result<Value> {
+		let authority = self.authority.as_ref().ok_or(Error::Forbidden)?;
+		authority
+			.subnode_command(&self.federation, self.execution_run()?, key, command)
+			.await
+	}
+	pub(crate) async fn subnode_create(
+		&self,
+		key: &str,
+		input: &aidash_application::subnodes::Create,
+	) -> Result<aidash_domain::subnodes::Subnode> {
+		let authority = self.authority.as_ref().ok_or(Error::Forbidden)?;
+		authority
+			.create_subnode(&self.federation, self.execution_run()?, key, input)
 			.await
 	}
 	pub async fn create_task(&self, key: &str, input: &NewTask) -> Result<Task> {

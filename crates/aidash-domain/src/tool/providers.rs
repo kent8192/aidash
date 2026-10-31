@@ -60,6 +60,12 @@ pub fn core_provider(operation: &str) -> Option<&'static str> {
 			"core.workspace@1"
 		}
 		"human_request" => "core.human@1",
+		"subnode_create"
+		| "subnode_task"
+		| "subnode_add_member"
+		| "subnode_remove_member"
+		| "subnode_dissolve"
+		| "subnode_message" => "core.subnodes@1",
 		"task_create" | "task_delegate" | "agent_discover" | "task_assign" => "core.tasks@1",
 		"skill_list" | "skill_load" | "skill_read" | "skill_asset_read" => "core.skills@1",
 		"capability_search" | "capability_describe" | "capability_load" | "capability_unload" => {

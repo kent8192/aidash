@@ -28,6 +28,39 @@ pub async fn overview(
 }
 
 #[get(
+	"/api/tenants/{tenant}/subnode-limits",
+	name = "tenant-subnode-limits",
+	auth = "protected"
+)]
+pub async fn subnode_limits(
+	#[inject] service: Depends<TenantAdministrations>,
+	#[inject] actor: Actor,
+	#[inject] origin: Option<BrowserOrigin>,
+	Path(tenant): Path<String>,
+) -> ViewResult<Response> {
+	response(service.subnode_limits(actor, origin, tenant).await)
+}
+
+#[put(
+	"/api/tenants/{tenant}/subnode-limits",
+	name = "tenant-subnode-limits-update",
+	auth = "protected"
+)]
+pub async fn set_subnode_limits(
+	#[inject] service: Depends<TenantAdministrations>,
+	#[inject] actor: Actor,
+	#[inject] origin: Option<BrowserOrigin>,
+	Path(tenant): Path<String>,
+	Json(input): Json<aidash_domain::subnodes::SubnodeLimits>,
+) -> ViewResult<Response> {
+	response(
+		service
+			.set_subnode_limits(actor, origin, tenant, input)
+			.await,
+	)
+}
+
+#[get(
 	"/api/tenants/{tenant}/registrations",
 	name = "tenant-registrations",
 	auth = "protected"

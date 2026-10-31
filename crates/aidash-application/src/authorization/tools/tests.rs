@@ -352,6 +352,7 @@ struct Repository {
 	journal: Arc<Mutex<Journal>>,
 	snapshot: Option<BindingSnapshot>,
 	plugin_tools: Option<aidash_domain::agent_plugin::PluginTools>,
+	subnode_allowance: Option<aidash_domain::subnodes::Allowance>,
 }
 #[fixture]
 fn repository() -> Repository {
@@ -371,6 +372,7 @@ fn repository() -> Repository {
 		journal: Arc::new(Mutex::new(Journal::default())),
 		snapshot: None,
 		plugin_tools: None,
+		subnode_allowance: None,
 	}
 }
 impl Repository {
@@ -418,6 +420,9 @@ impl AgentToolRepository for Repository {
 }
 #[async_trait]
 impl AgentToolScope for Scope<'_> {
+	async fn subnode_allowance(&mut self) -> Result<Option<aidash_domain::subnodes::Allowance>> {
+		Ok(self.0.subnode_allowance.clone())
+	}
 	fn transaction_active(&self) -> bool {
 		self.0.record("active");
 		self.0.active
@@ -2071,4 +2076,114 @@ mod agent_plugin_tools {
 		);
 		assert!(matches!(own.identity, ToolIdentity::AgentPlugin(_)));
 	}
+}
+
+#[rstest]
+#[tokio::test]
+async fn subnode_tool_allowance_is_enforced_for_advertising_and_calls(
+	mut repository: Repository,
+	run: RunMetadata,
+	agent: AgentConfig,
+) {
+	repository.subnode_allowance = Some(aidash_domain::subnodes::Allowance::default());
+	let coordinate = aidash_domain::tool::builtin_contract("task_create").unwrap();
+	let restricted = aidash_domain::tool::builtin_contract("human_request").unwrap();
+	super::authorize(
+		&repository,
+		&run,
+		&agent,
+		&call("task_create", json!({})),
+		&coordinate,
+	)
+	.await
+	.unwrap();
+	assert!(matches!(
+		super::authorize(
+			&repository,
+			&run,
+			&agent,
+			&call("human_request", json!({})),
+			&restricted
+		)
+		.await,
+		Err(Error::AuthorityRefused(_))
+	));
+	let mut tools = BTreeMap::from([
+		("coordinate".into(), coordinate),
+		("restricted".into(), restricted),
+	]);
+	super::filter(&repository, &agent, &mut tools, Clone::clone)
+		.await
+		.unwrap();
+	assert!(tools.contains_key("coordinate"));
+	assert!(!tools.contains_key("restricted"));
+}
+
+#[rstest]
+#[tokio::test]
+async fn subnode_enforces_pinned_tool_and_secret_even_with_a_renamed_alias(
+	mut repository: Repository,
+	run: RunMetadata,
+	agent: AgentConfig,
+) {
+	let mut definition = entry();
+	definition.config = json!({"transport":"http","endpoint":"https://example.com","replay":"idempotent","secret":"named-secret"});
+	repository.catalog = definition.clone();
+	let identity = QualifiedRef {
+		registry_deployment: run.home_node.clone(),
+		id: definition.id.clone(),
+		version: definition.version.clone(),
+	};
+	let mut snapshot = crate::test_support::snapshot("aidash://home", "producer");
+	snapshot.bindings.push(ResolvedBinding {
+		identity: identity.clone(),
+		definition,
+		digest: "fixture".into(),
+		origin: BindingOrigin::Explicit,
+		alias: Some("renamed".into()),
+		narrow: Narrowing::default(),
+		installation: None,
+		provider_contract_digest: None,
+		provider_implementation: None,
+		excluded_reason: None,
+	});
+	repository.snapshot = Some(snapshot);
+	repository.subnode_allowance = Some(aidash_domain::subnodes::Allowance {
+		tools: [identity.resource_id()].into(),
+		secrets: Default::default(),
+	});
+	let config = ToolConfig::Http {
+		endpoint: "https://example.com".into(),
+		replay: "idempotent".into(),
+		secret: Some("named-secret".into()),
+	};
+	let contract = ToolContract::registry(reference(), &config);
+	let call = call("renamed", json!({}));
+	assert!(matches!(
+		super::authorize(&repository, &run, &agent, &call, &contract).await,
+		Err(Error::AuthorityRefused(_))
+	));
+	repository
+		.subnode_allowance
+		.as_mut()
+		.unwrap()
+		.secrets
+		.insert("named-secret".into());
+	super::authorize(&repository, &run, &agent, &call, &contract)
+		.await
+		.unwrap();
+	let other = QualifiedRef {
+		registry_deployment: "aidash://other".into(),
+		..identity.clone()
+	};
+	repository.subnode_allowance.as_mut().unwrap().tools = [other.resource_id()].into();
+	assert!(matches!(
+		super::authorize(&repository, &run, &agent, &call, &contract).await,
+		Err(Error::AuthorityRefused(_))
+	));
+	repository.subnode_allowance.as_mut().unwrap().tools.clear();
+	assert!(matches!(
+		super::authorize(&repository, &run, &agent, &call, &contract).await,
+		Err(Error::AuthorityRefused(_))
+	));
 }
