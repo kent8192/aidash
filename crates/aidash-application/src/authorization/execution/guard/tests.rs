@@ -72,7 +72,7 @@ fn scope() -> Scope {
 		visible: true,
 		clusters: vec!["conversation-cluster@1.0.0".into()],
 		bundle: serde_json::from_value(
-			json!({"tenant":"tenant","subjects":{subject:{"kind":"agent","delegated_by":null}}}),
+			json!({"tenant":"tenant","subjects":{subject:{"kind":"agent", "node": aidash_domain::nodes::NodeName::derived("acme"),"delegated_by":null}}}),
 		)
 		.unwrap(),
 		snapshot: crate::test_support::resolve(node, &agent, false, vec![memory, tool, compaction]),

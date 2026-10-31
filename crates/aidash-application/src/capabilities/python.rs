@@ -28,6 +28,7 @@ pub async fn release(scope: &mut dyn PythonScope, area: &Area, reason: &str) -> 
 		if reply["termination_confirmed"] != true {
 			return Err(Error::Conflict("PYTHON_TERMINATION_UNCONFIRMED".into()));
 		}
+		scope.confirm_stopped(&record).await?;
 	}
 	record.state = "reset".into();
 	record.data["reset_reason"] = json!(reason);
@@ -212,31 +213,60 @@ pub async fn reap(repository: &dyn PythonRepository, cursor: &mut Uuid) -> Resul
 			) => "authority_or_source_withdrawn",
 			Err(error) => return Err(error),
 		};
-		let mut scope = repository.begin().await?;
-		let result = async {
-			let mut current = scope.locked(&snapshot, &operation).await?;
-			if current.revision != snapshot.revision || current.state != "frozen" {
-				return Ok(false);
-			}
-			let sid = current.data["session_id"]
-				.as_str()
-				.ok_or(Error::Forbidden)?;
-			let stopped = scope
-				.request("POST", &format!("/v1/sessions/{sid}/stop"), None)
-				.await?;
-			if stopped["termination_confirmed"] != true {
-				return Err(Error::Conflict("PYTHON_TERMINATION_UNCONFIRMED".into()));
-			}
-			current.state = "reset".into();
-			current.data["reset_reason"] = json!(reason);
-			scope.update(&mut current).await?;
-			Ok(true)
-		}
-		.await;
-		scope.finish(result).await?;
+		stop_captured(repository, &snapshot, reason).await?;
 	}
 	Ok(())
 }
 
 #[cfg(test)]
 mod tests;
+
+/// Stop a captured heap through the same positive-confirmation owner as
+/// idle/revoked maintenance. A running heap also requires its operation's durable
+/// stop and receipt settlement; the caller fences Area reuse while pending.
+pub async fn stop_captured(
+	repository: &dyn PythonRepository,
+	snapshot: &aidash_domain::capabilities::records::Record,
+	reason: &str,
+) -> Result<bool> {
+	let operation = repository
+		.operation(serde_json::from_value(
+			snapshot.data["operation_id"].clone(),
+		)?)
+		.await?;
+	let mut scope = repository.begin().await?;
+	let result = async {
+		let mut current = scope.locked(snapshot, &operation).await?;
+		if current.revision != snapshot.revision
+			|| current.state != snapshot.state
+			|| !matches!(current.state.as_str(), "frozen" | "running")
+			|| (current.state == "running" && !operation.writer_settled)
+		{
+			return Ok(false);
+		}
+		let sid = current.data["session_id"]
+			.as_str()
+			.ok_or(Error::Forbidden)?;
+		let health = scope.request("GET", "/v1/health", None).await?;
+		if current.data["instance"].as_str().is_none()
+			|| health["instance"] != current.data["instance"]
+		{
+			return Err(Error::Conflict("PYTHON_RUNNER_CHANGED".into()));
+		}
+		let stopped = scope
+			.request("POST", &format!("/v1/sessions/{sid}/stop"), None)
+			.await?;
+		if stopped["termination_confirmed"] != true {
+			return Err(Error::Conflict("PYTHON_TERMINATION_UNCONFIRMED".into()));
+		}
+		scope.confirm_stopped(&current).await?;
+		current.state = "reset".into();
+		current.data["reset_reason"] = json!(reason);
+		scope.update(&mut current).await?;
+		Ok(true)
+	}
+	.await;
+	let stopped = result.as_ref().copied().unwrap_or(false);
+	scope.finish(result).await?;
+	Ok(stopped)
+}

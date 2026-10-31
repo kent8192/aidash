@@ -28,5 +28,5 @@ ENV PYTHONDONTWRITEBYTECODE=1 PYTHONUNBUFFERED=1
 # bucket (#394). Only these two files invalidate the downloaded layer.
 COPY gvisor.json gvisor_installer.py /opt/aidash/
 RUN python3 -I /opt/aidash/gvisor_installer.py bundle "${TARGETARCH}"
-COPY control.py node_guard.py /opt/aidash/
+COPY control.py node_guard.py allocation_usage.py runner_journal.py /opt/aidash/
 ENTRYPOINT ["python3", "-I", "/opt/aidash/control.py"]

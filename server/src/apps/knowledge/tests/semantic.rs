@@ -203,7 +203,8 @@ mod controlled_context_composition {
 			"research",
 			"1.0.1",
 		);
-		policy["subjects"][&owner] = json!({"kind":"agent"});
+		policy["subjects"][&owner] =
+			json!({"kind":"agent", "node": aidash_domain::nodes::NodeName::derived("acme")});
 		assert_eq!(
 			request(
 				&app,

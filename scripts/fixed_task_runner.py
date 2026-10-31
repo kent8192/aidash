@@ -149,7 +149,7 @@ class Experiment:
             self.default_node()
             subjects = {self.subject: {"kind": "user"}}
             for agent in agent_ids:
-                subjects[f"{self.node_address}/agents/{agent}@1.0.0"] = {"kind": "agent"}
+                subjects[f"{self.node_address}/agents/{agent}@1.0.0"] = {"kind": "agent", "node": self.node_name}
             replace(subjects, 1)
             self.token = self.api.post(f"/api/authorization/{self.tenant}/credentials", {"subject": self.subject})["token"]
             return
@@ -158,7 +158,7 @@ class Experiment:
         self.token = issue(self.tenant, self.subject)["token"]
         self.default_node()
         for agent in agent_ids:
-            subjects[f"{self.node_address}/agents/{agent}@1.0.0"] = {"kind": "agent"}
+            subjects[f"{self.node_address}/agents/{agent}@1.0.0"] = {"kind": "agent", "node": self.node_name}
         replace(subjects, self.api.get(f"/api/authorization/{self.tenant}")["revision"])
 
     def default_node(self):

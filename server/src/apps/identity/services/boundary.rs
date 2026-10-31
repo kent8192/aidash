@@ -10,7 +10,7 @@ use crate::{
 	transactions::gate::ReadLease,
 };
 use aidash_application::{
-	federation::inbound::{Inbound, Proof, RequestDigest, accept},
+	federation::inbound::{Inbound, Proof, accept},
 	tenancy::TenancyScope,
 };
 use aidash_capability::federation::FederationClaims;
@@ -267,21 +267,7 @@ impl Middleware for AccessBoundary {
 async fn admit_peer(runtime: &Federation, request: &Request) -> Result<()> {
 	let token = bearer(&request.headers).ok_or(Error::Unauthorized)?;
 	let claims = FederationClaims::unverified(token).map_err(|_| Error::Unauthorized)?;
-	let body = request.body();
-	let path = request
-		.uri
-		.path()
-		.strip_prefix("/federation/v0.1")
-		.ok_or(Error::Unauthorized)?;
-	let signed_path = match request.uri.query() {
-		Some(query) => format!("{path}?{query}"),
-		None => path.to_owned(),
-	};
-	let digest = RequestDigest {
-		method: request.method.as_str(),
-		path: &signed_path,
-		body,
-	};
+	let digest = super::http_auth::peer_request(request).ok_or(Error::Unauthorized)?;
 	let (Ok(sender), Ok(receiver)) = (
 		NodeAddress::parse(&claims.sub),
 		NodeAddress::parse(&claims.aud),

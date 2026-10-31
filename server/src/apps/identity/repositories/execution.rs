@@ -151,7 +151,13 @@ impl ExecutionGrantSession for GrantScope<'_> {
 		self.access.worker();
 	}
 	async fn refresh(&mut self, run: Uuid) -> Result<()> {
-		self.access.refresh_execution(run).await.map_err(Into::into)
+		self.access.refresh_execution(run).await?;
+		crate::apps::execution::repositories::node_cancellations::require_run_open(
+			&mut **self.access.tx,
+			run,
+		)
+		.await
+		.map_err(Into::into)
 	}
 	async fn required_grant(&mut self, run: Uuid) -> Result<ExecutionGrant> {
 		let result: NativeResult<Grant> = async {
@@ -298,7 +304,10 @@ impl ExecutionGrantSession for GrantScope<'_> {
 			.union_all(
 				Query::select()
 					.column((Alias::new("e"), Alias::new("task_id")))
-					.expr_as(Expr::cust("c.depth + 1"), Alias::new("depth"))
+					.expr_as(
+						Expr::col((Alias::new("c"), Alias::new("depth"))).add(Expr::value(1_i32)),
+						Alias::new("depth"),
+					)
 					.from_as(Alias::new("chain"), Alias::new("c"))
 					.join(
 						JoinType::InnerJoin,
@@ -306,7 +315,8 @@ impl ExecutionGrantSession for GrantScope<'_> {
 							Alias::new("authorization_task_origins"),
 							Alias::new("o"),
 						),
-						Expr::cust("o.task_id = c.task_id"),
+						Expr::col((Alias::new("o"), Alias::new("task_id")))
+							.eq(Expr::col((Alias::new("c"), Alias::new("task_id")))),
 					)
 					.join(
 						JoinType::InnerJoin,
@@ -314,9 +324,13 @@ impl ExecutionGrantSession for GrantScope<'_> {
 							Alias::new("authorization_execution"),
 							Alias::new("e"),
 						),
-						Expr::cust("e.run_id = o.source_run_id"),
+						Expr::col((Alias::new("e"), Alias::new("run_id")))
+							.eq(Expr::col((Alias::new("o"), Alias::new("source_run_id")))),
 					)
-					.and_where(Expr::cust(format!("c.depth <= {MAX_ORIGIN_DEPTH}")))
+					.and_where(
+						Expr::col((Alias::new("c"), Alias::new("depth")))
+							.lte(Expr::value(MAX_ORIGIN_DEPTH)),
+					)
 					.to_owned(),
 			);
 		let reached = Query::select()
@@ -325,17 +339,79 @@ impl ExecutionGrantSession for GrantScope<'_> {
 			.join(
 				JoinType::InnerJoin,
 				TableRef::table_alias(Alias::new("authorization_remote_outputs"), Alias::new("r")),
-				Expr::cust("r.resource_kind = 'task' AND r.resource_id = c.task_id"),
+				Expr::col((Alias::new("r"), Alias::new("resource_kind")))
+					.eq(Expr::value("task"))
+					.and(
+						Expr::col((Alias::new("r"), Alias::new("resource_id")))
+							.eq(Expr::col((Alias::new("c"), Alias::new("task_id")))),
+					),
 			)
 			.to_owned();
 		let exhausted = Query::select()
 			.expr(Expr::value(1_i32))
 			.from(Alias::new("chain"))
-			.and_where(Expr::cust(format!("depth > {MAX_ORIGIN_DEPTH}")))
+			.and_where(Expr::col("depth").gt(Expr::value(MAX_ORIGIN_DEPTH)))
+			.to_owned();
+		// Pruned source execution cannot prove a Local origin. Keep Remote
+		// restrictions just as for exhausted traversal, preserving Plan limits.
+		let missing = Query::select()
+			.expr(Expr::value(1_i32))
+			.from_as(Alias::new("chain"), Alias::new("c"))
+			.join(
+				JoinType::InnerJoin,
+				TableRef::table_alias(Alias::new("authorization_task_origins"), Alias::new("o")),
+				Expr::col((Alias::new("o"), Alias::new("task_id")))
+					.eq(Expr::col((Alias::new("c"), Alias::new("task_id")))),
+			)
+			.and_where(
+				Expr::exists(
+					Query::select()
+						.expr(Expr::value(1_i32))
+						.from_as(Alias::new("authorization_execution"), Alias::new("e"))
+						.and_where(
+							Expr::col((Alias::new("e"), Alias::new("run_id")))
+								.eq(Expr::col((Alias::new("o"), Alias::new("source_run_id")))),
+						)
+						.and_where(
+							Expr::col((Alias::new("e"), Alias::new("tenant")))
+								.eq(Expr::col((Alias::new("o"), Alias::new("tenant")))),
+						)
+						.to_owned(),
+				)
+				.not(),
+			)
+			.to_owned();
+		// A retained execution grant may name a Home Task already purged. Its
+		// absent origin rows cannot prove that descendants are Local either.
+		let missing_task = Query::select()
+			.expr(Expr::value(1_i32))
+			.from_as(Alias::new("chain"), Alias::new("c"))
+			.and_where(
+				Expr::exists(
+					Query::select()
+						.expr(Expr::value(1_i32))
+						.from_as(Alias::new("tasks"), Alias::new("t"))
+						.and_where(
+							Expr::col((Alias::new("t"), Alias::new("id")))
+								.eq(Expr::col((Alias::new("c"), Alias::new("task_id")))),
+						)
+						.and_where(
+							Expr::col((Alias::new("t"), Alias::new("tenant")))
+								.eq(Expr::value(&self.access.identity.tenant)),
+						)
+						.to_owned(),
+				)
+				.not(),
+			)
 			.to_owned();
 		let sql = Query::select()
 			.with_recursive_cte(Alias::new("chain"), chain)
-			.expr(Expr::exists(reached).or(Expr::exists(exhausted)))
+			.expr(
+				Expr::exists(reached)
+					.or(Expr::exists(exhausted))
+					.or(Expr::exists(missing))
+					.or(Expr::exists(missing_task)),
+			)
 			.to_string(PostgresQueryBuilder);
 		let federated: NativeResult<bool> = crate::database::native::query_scalar(&sql)
 			.scalar_one(&mut **self.access.tx)
@@ -371,3 +447,6 @@ pub(crate) mod resume;
 pub(crate) mod admission;
 
 pub(crate) mod entry;
+
+#[cfg(test)]
+mod provenance_tests;

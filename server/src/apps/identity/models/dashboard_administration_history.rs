@@ -15,7 +15,7 @@ pub struct DashboardAdministrationHistory {
 	#[field]
 	pub occurred_at: DateTime<Utc>,
 	/// `registration.approve`, `registration.reject`, `mapping.disable`,
-	/// `subject.group.update`, `tenant.create`, `tenant.update`, `node.create`,
+	/// `subject.group.update`, `tenant.create`, `tenant.update`, `node.*`,
 	/// `demo_reservation.fulfil`, `invitation.*` or `catalog_request.*`.
 	#[field(field_type = "text")]
 	pub action: String,
@@ -30,6 +30,9 @@ pub struct DashboardAdministrationHistory {
 	pub tenant: Option<String>,
 	#[field(field_type = "text", null = true)]
 	pub subject: Option<String>,
+	/// The permanent Node name for Node management events, including after purge.
+	#[field(field_type = "text", null = true)]
+	pub node: Option<String>,
 	/// `deployment_administrator`, `tenant_administrator`, `identity` or
 	/// `demo_data`.
 	#[field(field_type = "text")]

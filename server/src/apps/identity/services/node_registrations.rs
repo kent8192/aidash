@@ -165,7 +165,8 @@ impl NodeRegistrations {
 						require_node(tx, &tenant, &node).await
 					})
 					.await?;
-				let counterpart = self.counterpart(&tenant, &node, &input, &requested).await?;
+				let (counterpart, preserve_keys) =
+					self.counterpart(&tenant, &node, &input, &requested).await?;
 				// The decision below is audited as an authority write, which exempts
 				// this transaction from the table's atomic write guard. Hold the
 				// visibility lease instead, so a registration changes only while no
@@ -178,12 +179,19 @@ impl NodeRegistrations {
 						decide(tx).await?;
 						write(
 							tx,
-							&tenant,
-							&node,
-							&input,
-							&counterpart,
+							&records::Write {
+								tenant: &tenant,
+								node: node.as_str(),
+								source_node: &input.source_node,
+								counterpart: &counterpart,
+								dashboard_origin: input.dashboard_origin.as_deref(),
+								atomic_transactions: input.atomic_transactions,
+								enabled: input.enabled,
+								actor: &format!("oidc:{}", administrator.identity_id),
+								preserve_keys,
+							},
+							input.expected_revision,
 							&AdministrationActor::TenantAdministrator(administrator.clone()),
-							&format!("oidc:{}", administrator.identity_id),
 						)
 						.await
 					})
@@ -202,7 +210,7 @@ impl NodeRegistrations {
 		node: &NodeName,
 		input: &RegistrationInput,
 		requested: &Requested,
-	) -> Result<Counterpart> {
+	) -> Result<(Counterpart, bool)> {
 		let f = &self.runtime;
 		match requested {
 			Requested::Keep => f
@@ -213,7 +221,7 @@ impl NodeRegistrations {
 					records::get(tx, tenant, node.as_str(), &input.source_node).await
 				})
 				.await?
-				.map(|current| current.counterpart)
+				.map(|current| (current.counterpart, true))
 				.ok_or_else(|| Error::NotFound("node registration not found".into())),
 			Requested::SameDeployment => {
 				let holder = f
@@ -232,7 +240,7 @@ impl NodeRegistrations {
 						"that Node belongs to this Tenant; its policy decides within the Tenant"
 							.into(),
 					)),
-					Some(_) => Ok(Counterpart::SameDeployment),
+					Some(_) => Ok((Counterpart::SameDeployment, false)),
 				}
 			}
 			Requested::OtherDeployment { endpoint, key_id } => {
@@ -250,13 +258,24 @@ impl NodeRegistrations {
 					endpoint: pinned,
 					key,
 				}) = current.map(|current| current.counterpart)
-					&& pinned == *endpoint
-					&& key.key_id == *key_id
 				{
-					return Ok(Counterpart::OtherDeployment {
-						endpoint: pinned,
-						key,
-					});
+					if key.key_id != *key_id {
+						return Err(Error::Conflict(
+							"use independent key confirmation to replace an existing pin".into(),
+						));
+					}
+					if pinned == *endpoint {
+						// This is an authorization-only edit. The repeated pin is
+						// not a crypto precondition; preserve any manual or normal
+						// key change that wins before the authorization UPDATE.
+						return Ok((
+							Counterpart::OtherDeployment {
+								endpoint: pinned,
+								key,
+							},
+							true,
+						));
+					}
 				}
 				let key = aidash_application::federation::registrations::pin(
 					&HttpDirectory::new(f.store.keyless.clone())?,
@@ -265,10 +284,13 @@ impl NodeRegistrations {
 					key_id,
 				)
 				.await?;
-				Ok(Counterpart::OtherDeployment {
-					endpoint: endpoint.clone(),
-					key,
-				})
+				Ok((
+					Counterpart::OtherDeployment {
+						endpoint: endpoint.clone(),
+						key,
+					},
+					false,
+				))
 			}
 		}
 	}
@@ -288,35 +310,28 @@ async fn require_node(
 /// Writes the registration and its revision, and records the change.
 async fn write(
 	tx: &mut reinhardt::db::orm::AtomicTransaction,
-	tenant: &str,
-	node: &NodeName,
-	input: &RegistrationInput,
-	counterpart: &Counterpart,
+	row: &records::Write<'_>,
+	expected_revision: i64,
 	by: &AdministrationActor,
-	stamp: &str,
 ) -> Result<NodeRegistration> {
-	let current = if input.enabled {
+	// A disabling write keeps the dashboard origin the receiving Node already
+	// pinned; otherwise the request names it.
+	let current = if row.enabled {
 		None
 	} else {
-		records::get(tx, tenant, node.as_str(), &input.source_node).await?
+		records::get(tx, row.tenant, row.node, row.source_node).await?
 	};
-	let row = records::Write {
-		tenant,
-		node: node.as_str(),
-		source_node: &input.source_node,
+	let row = &records::Write {
 		dashboard_origin: current
 			.as_ref()
-			.and_then(|row| row.dashboard_origin.as_deref())
-			.or(input.dashboard_origin.as_deref()),
-		counterpart,
-		atomic_transactions: input.atomic_transactions,
-		enabled: input.enabled,
-		actor: stamp,
+			.and_then(|current| current.dashboard_origin.as_deref())
+			.or(row.dashboard_origin),
+		..*row
 	};
-	let stored = if input.expected_revision == 0 {
-		records::insert(tx, &row).await?
+	let stored = if expected_revision == 0 {
+		records::insert(tx, row).await?
 	} else {
-		records::update(tx, &row, input.expected_revision).await?
+		records::update(tx, row, expected_revision).await?
 	}
 	.ok_or_else(|| Error::Conflict("node registration revision changed".into()))?;
 	records::append_history(tx, &stored).await?;
@@ -327,7 +342,7 @@ async fn write(
 			identity: None,
 			registration: None,
 			mapping: None,
-			tenant: Some(tenant),
+			tenant: Some(row.tenant),
 			subject: None,
 			invitation: None,
 		},

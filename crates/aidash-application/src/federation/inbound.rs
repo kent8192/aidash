@@ -1,16 +1,15 @@
 //! One function decides every inbound Federation exchange, whatever carried it
 //! (ADR 0064). Every step fails closed.
-use crate::{Error, Result, ports::federation::inbound::InboundRepository};
-use aidash_capability::{
-	PublicKeys,
-	federation::{FederationClaims, RequestBinding},
+use crate::{
+	Error, Result,
+	ports::federation::inbound::{InboundRepository, ReceivingKeyOwner},
 };
+use aidash_capability::federation::RequestBinding;
 use aidash_domain::{
 	federation::protocol::CURRENT,
 	nodes::{NodeAddress, registration::Counterpart},
 	tenancy::TenantName,
 };
-use std::collections::BTreeMap;
 use uuid::Uuid;
 
 /// What the transport knows before anything is checked. The receiver, sender
@@ -132,6 +131,17 @@ pub async fn accept(
 	};
 	// 5. Within a Tenant, no registration or mapping: the policy decides.
 	if sender_tenant.as_ref() == Some(&tenant) {
+		require_node_authority(
+			repository,
+			&tenant,
+			&receiver,
+			&sender,
+			&subject,
+			sender_tenant.as_ref(),
+			true,
+			request,
+		)
+		.await?;
 		if subject.is_empty() {
 			return Ok(Admitted {
 				tenant,
@@ -159,19 +169,24 @@ pub async fn accept(
 	let registration = repository
 		.registration(&tenant, &receiver.node, &sender)
 		.await?
-		.filter(|registration| registration.enabled)
 		.ok_or(Error::Unauthorized)?;
+	let owner = ReceivingKeyOwner::Registration {
+		tenant: tenant.clone(),
+		node: receiver.node.clone(),
+		source_node: sender.clone(),
+	};
+	let mut advancement = None;
 	match (&proof, &registration.counterpart) {
 		(Proof::InProcess, Counterpart::SameDeployment) => {}
-		(Proof::Token(raw), Counterpart::OtherDeployment { key, .. }) => {
-			let keys = PublicKeys::from_pems(BTreeMap::from([(
-				key.key_id.as_str().to_owned(),
-				key.public_key_pem.clone(),
-			)]))
-			.map_err(|_| Error::Unauthorized)?;
-			let claims = FederationClaims::verify(
+		(Proof::Token(raw), Counterpart::OtherDeployment { .. }) => {
+			let stored = repository
+				.receiving_keys(&owner)
+				.await?
+				.ok_or(Error::Unauthorized)?;
+			let (claims, candidate) = super::registrations::verify_request(
 				raw,
-				&keys,
+				&sender.deployment,
+				&stored.keys,
 				repository.now(),
 				&RequestBinding {
 					protocol: CURRENT,
@@ -179,8 +194,8 @@ pub async fn accept(
 					path: request.path,
 					body: request.body,
 				},
-			)
-			.map_err(|_| Error::Unauthorized)?;
+			)?;
+			advancement = candidate.map(|keys| (stored.keys_revision, keys));
 			if claims.iss != sender.deployment.as_str()
 				|| claims.sub != sender.to_string()
 				|| claims.aud != receiver.to_string()
@@ -191,30 +206,91 @@ pub async fn accept(
 		}
 		_ => return Err(Error::Unauthorized),
 	}
-	if subject.is_empty() {
-		return Ok(Admitted {
-			tenant,
-			receiver,
-			sender,
-			acting: Acting::Node,
-		});
+	let live_authority = require_node_authority(
+		repository,
+		&tenant,
+		&receiver,
+		&sender,
+		&subject,
+		sender_tenant.as_ref(),
+		registration.enabled,
+		request,
+	)
+	.await?;
+	let acting = if subject.is_empty() {
+		Acting::Node
+	} else {
+		// A missing mapping after authentication is a denial. No trust write is
+		// performed until this last admission check has passed.
+		let mapping = repository
+			.mapping(&tenant, &receiver.node, &sender, &subject)
+			.await?
+			.filter(|mapping| mapping.enabled)
+			.ok_or(Error::Forbidden)?;
+		Acting::Mapped {
+			credential_id: mapping.credential_id,
+			subject: subject.clone(),
+		}
+	};
+	if let Some((keys_revision, keys)) = advancement {
+		let advanced = if live_authority {
+			repository
+				.advance_keys(&owner, keys_revision, registration.revision, &keys)
+				.await?
+		} else {
+			repository
+				.advance_recovery_keys(
+					&owner,
+					keys_revision,
+					registration.revision,
+					&keys,
+					&subject,
+					request,
+				)
+				.await?
+		};
+		if !advanced {
+			return Err(Error::Unauthorized);
+		}
 	}
-	// A missing Peer Mapping after a valid signature is a denial, not an
-	// authentication failure.
-	let mapping = repository
-		.mapping(&tenant, &receiver.node, &sender, &subject)
-		.await?
-		.filter(|mapping| mapping.enabled)
-		.ok_or(Error::Forbidden)?;
+
 	Ok(Admitted {
 		tenant,
 		receiver,
 		sender,
-		acting: Acting::Mapped {
-			credential_id: mapping.credential_id,
-			subject,
-		},
+		acting,
 	})
+}
+
+/// Run only after the complete cryptographic request binding has been verified.
+/// `false` means exact durable recovery, and must never authorize ordinary effects
+/// or a normal trust CAS. A recovery CAS must revalidate the same proof in its transaction.
+#[allow(clippy::too_many_arguments)] // Explicit verified identity and request bindings.
+pub async fn require_node_authority(
+	repository: &dyn InboundRepository,
+	tenant: &TenantName,
+	receiver: &NodeAddress,
+	sender: &NodeAddress,
+	subject: &str,
+	sender_tenant: Option<&TenantName>,
+	registration_enabled: bool,
+	request: &RequestDigest<'_>,
+) -> Result<bool> {
+	let receiver_live = repository.node_live(tenant, &receiver.node).await?;
+	let sender_live = match sender_tenant {
+		Some(holder) => repository.node_live(holder, &sender.node).await?,
+		None => true,
+	};
+	if registration_enabled && receiver_live && sender_live {
+		return Ok(true);
+	}
+	if repository
+		.closed_node_request(tenant, receiver, sender, subject, request)
+		.await?
+	{
+		return Ok(false);
+	}
+	Err(Error::Unauthorized)
 }
 
 #[cfg(test)]

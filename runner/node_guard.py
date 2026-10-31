@@ -16,6 +16,7 @@ import signal
 import stat
 import subprocess
 import sys
+import threading
 import time
 import uuid
 
@@ -35,8 +36,11 @@ SENTRY_BINARIES = tuple(json.loads(os.environ.get('AIDASH_SENTRY_BINARIES',
 NAMESPACE = os.environ.get('AIDASH_SANDBOX_NAMESPACE', 'aidash-sandbox')
 
 
-def command(*args):
-    return subprocess.check_output(args, stderr=subprocess.PIPE, timeout=15)
+def command(*args, deadline=None):
+    timeout = 15 if deadline is None else min(15, deadline - time.monotonic())
+    if timeout <= 0:
+        raise subprocess.TimeoutExpired(args, 15)
+    return subprocess.check_output(args, stderr=subprocess.PIPE, timeout=timeout)
 
 
 def save(path, data, owner=None):
@@ -54,16 +58,17 @@ def save(path, data, owner=None):
     os.close(fd)
 
 
-def validate(request):
+def validate(request, *, deadline=None):
     cid = request['container_id']
     pod = str(uuid.UUID(request['pod_uid']))
     area = str(uuid.UUID(request['area_id']))
     if not re.fullmatch('[0-9a-f]{64}', cid) or type(request['epoch']) is not int or request['epoch'] < 1:
         raise ValueError('invalid execution identity')
-    info = json.loads(command(CTR_BINARY, '-n', 'k8s.io', 'containers', 'info', cid))
+    info = json.loads(command(CTR_BINARY, '-n', 'k8s.io', 'containers', 'info', cid, deadline=deadline))
     labels = info['Labels']
-    state = json.loads(command(RUNSC_BINARY, '--root=' + RUNTIME, 'state', cid))
-    if (info['Runtime']['Name'] != 'io.containerd.runsc.v1'
+    state = json.loads(command(RUNSC_BINARY, '--root=' + RUNTIME, 'state', cid, deadline=deadline))
+    if (info['ID'] != cid or state['id'] != cid
+            or info['Runtime']['Name'] != 'io.containerd.runsc.v1'
             or labels.get('io.kubernetes.pod.namespace') != NAMESPACE
             or labels.get('io.kubernetes.pod.uid') != pod
             or labels.get('io.kubernetes.container.name') != 'execution'
@@ -139,10 +144,145 @@ def gone(record):
 
 def binding(request, state, **fields):
     value = {k:v for k,v in request.items() if k != 'code'}
+    value.update(native_cleanup_root=RUNTIME, native_cleanup_namespace=NAMESPACE)
     if state.get('pid', 0) > 1:
         value.update(sentry_pid=state['pid'], sentry_start=process_identity(state['pid'])[0])
     value.update(fields)
     return value
+
+
+def handoff_cleanup(path, record):
+    # Physical stop remains useful even if this durable handoff must be retried.
+    # A separate exact-container record survives replacement of the area's heap.
+    if record.get('native_cleanup_queued') and record.get('native_cleanup_owner') == str(ROOT):
+        return
+    try:
+        cid = record['container_id']
+        if not re.fullmatch('[0-9a-f]{64}', cid) or not record.get('terminated'):
+            raise ValueError('unproven native cleanup identity')
+        pending = {key:record[key] for key in
+                   ('container_id', 'pod_uid', 'area_id', 'epoch', 'image', 'terminated')}
+        pending.update(native_cleanup_root=record.get('native_cleanup_root', RUNTIME),
+                       native_cleanup_namespace=record.get('native_cleanup_namespace', NAMESPACE))
+        for key in ('sentry_pid', 'sentry_start'):
+            if key in record:
+                pending[key] = record[key]
+        directory = ROOT / 'runtime-cleanup'
+        directory.mkdir(mode=0o700, exist_ok=True)
+        target = directory / (cid + '.json')
+        if target.exists():
+            saved = json.loads(target.read_bytes())
+            if any(saved.get(key) != value for key, value in pending.items()):
+                raise ValueError('native cleanup binding changed')
+        else:
+            save(target, pending)
+        fd = os.open(ROOT, os.O_DIRECTORY)
+        try:
+            os.fsync(fd)
+        finally:
+            os.close(fd)
+        record['native_cleanup_queued'] = True
+        record['native_cleanup_owner'] = str(ROOT)
+        save(path, record)
+    except (OSError, ValueError, KeyError, TypeError) as error:
+        # Do not withdraw positive physical proof or disclose command contents.
+        print(type(error).__name__ + ': native cleanup handoff pending', file=sys.stderr, flush=True)
+
+
+def retry_cleanup(cursor):
+    directory = ROOT / 'runtime-cleanup'
+    paths = sorted(directory.glob('*.json'))
+    if not paths:
+        return ''
+    path = next((path for path in paths if path.name > cursor), paths[0])
+    # Failure rotates to the next container instead of starving later obligations.
+    try:
+        record = json.loads(path.read_bytes())
+        if not isinstance(record, dict):
+            raise ValueError('invalid native cleanup record')
+        cid = record['container_id']
+        area = str(uuid.UUID(record['area_id']))
+        if (not re.fullmatch('[0-9a-f]{64}', cid) or path.name != cid + '.json'
+                or not record.get('terminated')
+                or record['native_cleanup_root'] != RUNTIME
+                or record['native_cleanup_namespace'] != NAMESPACE):
+            raise ValueError('native cleanup owner changed')
+        with (ROOT / (cid + '.container.lock')).open('a') as execution_lock:
+            try:
+                fcntl.flock(execution_lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except BlockingIOError:
+                return path.name
+            # Match handle's lock order, but release the area lock before any
+            # native call. A different live heap keeps its deadline independent.
+            with (ROOT / (area + '.lock')).open('a') as area_lock:
+                try:
+                    fcntl.flock(area_lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                except BlockingIOError:
+                    return path.name
+                current_path = ROOT / (area + '.json')
+                current = json.loads(current_path.read_bytes()) if current_path.exists() else None
+                if current and current.get('container_id') == cid and (
+                        not current.get('terminated') or any(current.get(key) != record[key] for key in
+                        ('pod_uid', 'area_id', 'epoch', 'image'))):
+                    raise ValueError('native cleanup execution changed')
+            deadline = time.monotonic() + 15
+            # JSON list silently skips failed state loads in the pinned runsc.
+            # Quiet list enumerates IDs without loading; a failed command or
+            # unreadable runtime directory must never become absence evidence.
+            with os.scandir(RUNTIME) as entries:
+                for _ in entries:
+                    pass
+            ids = command(RUNSC_BINARY, '--root=' + RUNTIME, 'list', '--quiet',
+                          deadline=deadline).decode().splitlines()
+            if len(ids) != len(set(ids)) or any(not re.fullmatch('[0-9a-f]{64}', value) for value in ids):
+                raise ValueError('ambiguous native container inventory')
+            if cid in ids:
+                _, _, _, state = validate(record, deadline=deadline)
+                if state['status'] != 'stopped':
+                    if state.get('pid') != record.get('sentry_pid') or not record.get('sentry_start'):
+                        raise ValueError('native cleanup sentry changed')
+                    try:
+                        started, status = process_identity(state['pid'])
+                    except FileNotFoundError:
+                        pass
+                    else:
+                        if started != record['sentry_start'] or status != 'Z':
+                            raise ValueError('native cleanup requires the original stopped sentry')
+                # Supported idempotent native teardown after positive physical
+                # stop. This is not a provider timestamp or a CRI completion claim.
+                command(RUNSC_BINARY, '--root=' + RUNTIME, 'delete', '--force', cid,
+                        deadline=deadline)
+            path.unlink()
+            fd = os.open(directory, os.O_DIRECTORY)
+            try:
+                os.fsync(fd)
+            finally:
+                os.close(fd)
+    except (OSError, ValueError, KeyError, TypeError, subprocess.SubprocessError) as error:
+        # Keep the obligation for a later status/watch/restart, separately from
+        # the area tombstone that still permits output recovery.
+        if path.exists():
+            try:
+                pending = json.loads(path.read_bytes())
+                if not isinstance(pending, dict):
+                    raise ValueError('invalid native cleanup record')
+                if pending.get('last_error') != type(error).__name__:
+                    pending['last_error'] = type(error).__name__
+                    save(path, pending)
+                    print(type(error).__name__ + ': native runtime cleanup pending', file=sys.stderr, flush=True)
+            except (OSError, ValueError):
+                print('native runtime cleanup record unavailable', file=sys.stderr, flush=True)
+    return path.name
+
+
+def cleanup_loop():
+    cursor = ''
+    while True:
+        try:
+            cursor = retry_cleanup(cursor)
+        except Exception as error:
+            print(type(error).__name__ + ': native cleanup scan pending', file=sys.stderr, flush=True)
+        time.sleep(.2)
 
 
 def filesystem_capacity(size, page_size):
@@ -165,19 +305,31 @@ def handle(request):
     # proves termination even when runsc has already removed its state. Only
     # observation/export can use that proof; it can never resurrect a sandbox.
     area = str(uuid.UUID(request['area_id']))
+    cid = request['container_id']
+    if not re.fullmatch('[0-9a-f]{64}', cid):
+        raise ValueError('invalid execution identity')
     ROOT.mkdir(mode=0o700, parents=True, exist_ok=True)
-    with (ROOT / (area + '.lock')).open('a') as lock:
+    with (ROOT / (cid + '.container.lock')).open('a') as execution_lock, \
+            (ROOT / (area + '.lock')).open('a') as lock:
+        fcntl.flock(execution_lock, fcntl.LOCK_EX)
         fcntl.flock(lock, fcntl.LOCK_EX)
         path = ROOT / (area + '.json')
         previous = json.loads(path.read_bytes()) if path.exists() else None
         bound = previous and all(
             previous.get(k) == request.get(k) for k in
             ('container_id', 'pod_uid', 'area_id', 'epoch', 'image'))
-        terminated = bound and (previous.get('terminated') or gone(previous))
-        if terminated:
+        previous_stopped = previous and (previous.get('terminated') or gone(previous))
+        if previous_stopped:
+            if previous.get('container_id') == cid and not bound:
+                raise ValueError('terminated execution cannot be reused')
             if not previous.get('terminated'):
                 previous.update(terminated=True, deadline=None, frozen=False)
                 save(path, previous)
+            handoff_cleanup(path, previous)
+            if not bound and (not previous.get('native_cleanup_queued')
+                              or previous.get('native_cleanup_owner') != str(ROOT)):
+                raise ValueError('previous native cleanup handoff is not durable')
+        if bound and previous_stopped:
             if request['action'] in ('terminate', 'status', 'cell_status'):
                 return {'termination_confirmed': True, 'status': 'stopped'}
             if request['action'] not in ('export', 'read', 'logs'):
@@ -247,8 +399,15 @@ def handle(request):
             return {'writer_frozen': state['status']=='paused', 'termination_confirmed': state['status']=='stopped', 'container_id': cid, 'pod_uid': pod}
         if op == 'terminate':
             if state['status'] in ('running', 'paused'):
+                stopped = binding(request, state)
                 kill_sandbox(state)
-            save(path, dict(request, frozen=False, terminated=True, deadline=None))
+            elif state['status'] == 'stopped':
+                stopped = dict(request, native_cleanup_root=RUNTIME, native_cleanup_namespace=NAMESPACE)
+            else:
+                raise ValueError('physical writer stop unconfirmed')
+            stopped.update(frozen=False, terminated=True, deadline=None)
+            save(path, stopped)
+            handoff_cleanup(path, stopped)
             return {'termination_confirmed': True}
         if op == 'cell':
             # Refuse admission without an independent deadline enforcer.
@@ -396,12 +555,18 @@ def watch():
     ROOT.mkdir(mode=0o700, parents=True, exist_ok=True)
     with (ROOT / 'watch.lock').open('a') as lock:
         fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        # Slow native teardown cannot postpone physical writer deadline scans.
+        # The existing watchdog owns this worker and its durable retry queue.
+        threading.Thread(target=cleanup_loop, daemon=True).start()
         while True:
             migrate_legacy()
             for path in ROOT.glob('*.json'):
                 try:
                     record = json.loads(path.read_bytes())
-                    if not record.get('terminated') and (gone(record) or
+                    if record.get('terminated') and (not record.get('native_cleanup_queued')
+                            or record.get('native_cleanup_owner') != str(ROOT)):
+                        handle(dict(record, action='status'))
+                    elif not record.get('terminated') and (gone(record) or
                             record.get('deadline') is not None and record['deadline'] <= time.time()):
                         handle(dict(record, action='terminate'))
                 except Exception as error:

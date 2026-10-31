@@ -462,6 +462,6 @@ async fn refresh_preserves_scoped_adapter_errors(#[case] fail: &'static str) {
 #[case::user("user", false)]
 #[case::missing("missing", false)]
 fn execution_admission_requires_an_agent_subject(#[case] subject: &str, #[case] permitted: bool) {
-	let bundle:PolicyBundle=serde_json::from_value(json!({"tenant":"tenant","subjects":{"agent":{"kind":"agent","delegated_by":null},"user":{"kind":"user","delegated_by":null}}})).unwrap();
+	let bundle:PolicyBundle=serde_json::from_value(json!({"tenant":"tenant","subjects":{"agent":{"kind":"agent", "node": aidash_domain::nodes::NodeName::derived("acme"),"delegated_by":null},"user":{"kind":"user","delegated_by":null}}})).unwrap();
 	assert_eq!(require_agent(&bundle, subject).is_ok(), permitted);
 }

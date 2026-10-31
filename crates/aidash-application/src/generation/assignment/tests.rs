@@ -147,6 +147,7 @@ impl Scope {
 		self.bundle.subjects.insert(
 			qualified_agent(&node(), id, "1.0.0"),
 			Subject {
+				node: (kind != SubjectKind::User).then(|| node().node),
 				kind,
 				enabled,
 				groups: BTreeSet::new(),

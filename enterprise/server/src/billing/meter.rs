@@ -4,14 +4,12 @@
 //! recorded for it, and the records outlive the Tenant's purge until the
 //! Deployment's retention period ends. Egress gateway bytes are not metered.
 use super::settings::Settings;
-use super::store::{self, Deletion};
-use aidash_application::tenancy::TenancyScope;
+use super::store;
 use aidash_application::usage::{PodTime, StorageSample, UsageEvents};
 use aidash_server::database::native::Pool;
 use aidash_server::store::Store;
 use async_trait::async_trait;
 use chrono::{DateTime, Datelike, Months, NaiveDate, Utc};
-use std::collections::BTreeSet;
 use std::time::Duration;
 use tokio::sync::watch;
 
@@ -19,73 +17,15 @@ pub struct Meter {
 	pub pool: Pool,
 }
 
-/// How much of `[start, end]` lies outside every recorded Deletion.
-pub fn metered_millis(start: DateTime<Utc>, end: DateTime<Utc>, deletions: &[Deletion]) -> i64 {
-	let total = (end - start).num_milliseconds().max(0);
-	let stopped: i64 = deletions
-		.iter()
-		.map(|(from, until)| {
-			let from = (*from).max(start);
-			let until = until.unwrap_or(end).min(end);
-			(until - from).num_milliseconds().max(0)
-		})
-		.sum();
-	(total - stopped).max(0)
-}
-
-/// Whether a Deletion was recorded and not restored at `at`.
-pub fn deleted_at(at: DateTime<Utc>, deletions: &[Deletion]) -> bool {
-	deletions
-		.iter()
-		.any(|(from, until)| *from <= at && until.is_none_or(|until| at < until))
-}
-
 #[async_trait]
 impl UsageEvents for Meter {
 	async fn pod_time(&self, event: PodTime) -> aidash_application::Result<()> {
-		self.pool
-			.atomic(&TenancyScope::NoTenant, async |tx| {
-				let deletions = store::deletions(tx, std::slice::from_ref(&event.tenant)).await?;
-				let spans = deletions.get(&event.tenant).map_or(&[][..], Vec::as_slice);
-				let millis = metered_millis(event.started_at, event.ended_at, spans);
-				if millis == 0 {
-					return Ok(());
-				}
-				store::record_pod_usage(
-					tx,
-					event.operation,
-					&event.tenant,
-					event.started_at,
-					event.ended_at,
-					millis,
-				)
-				.await
-			})
+		store::facts::pod_time(&self.pool, event)
 			.await
 			.map_err(Into::into)
 	}
-
 	async fn storage_sampled(&self, samples: Vec<StorageSample>) -> aidash_application::Result<()> {
-		let tenants: Vec<String> = samples
-			.iter()
-			.map(|sample| sample.tenant.clone())
-			.collect::<BTreeSet<_>>()
-			.into_iter()
-			.collect();
-		self.pool
-			.atomic(&TenancyScope::NoTenant, async |tx| {
-				let deletions = store::deletions(tx, &tenants).await?;
-				for sample in &samples {
-					let spans = deletions.get(&sample.tenant).map_or(&[][..], Vec::as_slice);
-					if deleted_at(sample.sampled_at, spans) {
-						continue;
-					}
-					let bytes = i64::try_from(sample.bytes).unwrap_or(i64::MAX);
-					store::record_storage_sample(tx, &sample.tenant, sample.sampled_at, bytes)
-						.await?;
-				}
-				Ok(())
-			})
+		store::facts::storage_sampled(&self.pool, samples)
 			.await
 			.map_err(Into::into)
 	}
@@ -152,28 +92,6 @@ pub async fn maintain(
 mod tests {
 	use super::*;
 	use chrono::{Duration, TimeZone};
-
-	fn at(hour: u32) -> DateTime<Utc> {
-		Utc.with_ymd_and_hms(2026, 10, 19, hour, 0, 0).unwrap()
-	}
-
-	#[test]
-	fn a_pod_that_ran_before_a_deletion_is_metered_only_until_it() {
-		let deletions = [(at(10), None)];
-		assert_eq!(metered_millis(at(8), at(12), &deletions), 2 * 3_600_000);
-		assert_eq!(metered_millis(at(11), at(12), &deletions), 0);
-		assert_eq!(metered_millis(at(8), at(9), &deletions), 3_600_000);
-	}
-
-	#[test]
-	fn a_restore_resumes_metering_and_the_grace_period_is_not_metered() {
-		let deletions = [(at(10), Some(at(14)))];
-		assert_eq!(metered_millis(at(9), at(16), &deletions), 3 * 3_600_000);
-		assert!(deleted_at(at(10), &deletions));
-		assert!(deleted_at(at(13), &deletions));
-		assert!(!deleted_at(at(14), &deletions));
-		assert!(!deleted_at(at(9), &deletions));
-	}
 
 	#[test]
 	fn retention_counts_whole_years_back_and_months_start_on_the_first() {

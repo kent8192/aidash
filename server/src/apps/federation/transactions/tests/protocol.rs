@@ -22,7 +22,8 @@ use aidash_server::{
 use chrono::{Duration, Utc};
 use reinhardt::db::orm::{Model, execution::convert_values};
 use reinhardt::query::{
-	Alias, Expr, IntoIden, PostgresQueryBuilder, Query, QueryStatementBuilder, SimpleExpr,
+	Alias, Expr, ExprTrait, IntoIden, PostgresQueryBuilder, Query, QueryStatementBuilder,
+	SimpleExpr,
 };
 use rstest::rstest;
 use serde_json::{Value, json};
@@ -376,8 +377,13 @@ async fn overlapping_coordinators_use_the_same_node_order_without_lost_updates(
 }
 
 #[rstest]
+#[case::ordinary(false)]
+#[case::node_deletion_after_decision(true)]
 #[tokio::test]
-async fn workspace_task_execution_and_artifact_commit_together_once(#[future] pair: Option<Pair>) {
+async fn workspace_task_execution_and_artifact_commit_together_once(
+	#[future] pair: Option<Pair>,
+	#[case] delete_after_decision: bool,
+) {
 	use aidash_server::{
 		domain::{NewTask, qualified_agent},
 		registry::Entry,
@@ -501,11 +507,87 @@ async fn workspace_task_execution_and_artifact_commit_together_once(#[future] pa
 			.is_empty()
 	);
 	pending_run(&b, run.id, json!([])).await;
+	if delete_after_decision {
+		let sibling =
+			crate::fixtures::tenant_roots::second_node_in(b.f.store.pool.fixture_driver(), "acme")
+				.await;
+		let (status, body) = b
+			.post(
+				&format!("/api/tenants/acme/nodes/{sibling}/default"),
+				&json!(null),
+			)
+			.await;
+		assert_eq!(status, 200, "{body}");
+	}
 	a.submit(&manifest).await;
+	if delete_after_decision {
+		steps(&a, manifest.id, 5).await;
+		assert_eq!(
+			a.status(manifest.id).await.decision.as_deref(),
+			Some("COMMIT")
+		);
+		let before = run_record(&b, run.id).await;
+		let target: aidash_domain::nodes::NodeAddress = b.address.parse().unwrap();
+		let (status, body) = b
+			.post(
+				&format!("/api/tenants/acme/nodes/{}/deletion", target.node),
+				&json!({"confirmation":target.node}),
+			)
+			.await;
+		assert_eq!(status, 200, "{body}");
+		let (status, body) = b
+			.post(
+				&format!("/api/tenants/acme/nodes/{}/restore", target.node),
+				&json!(null),
+			)
+			.await;
+		assert_eq!(status, 200, "{body}");
+		let after = run_record(&b, run.id).await;
+		assert_eq!(
+			after.revision, before.revision,
+			"deletion cannot invalidate a decided participant"
+		);
+		let mut fresh = manifest.clone();
+		fresh.id = Uuid::new_v4();
+		let rejected = participant::reserve(&b.f, None, a.address.as_str(), &fresh)
+			.await
+			.unwrap_err();
+		assert!(
+			matches!(rejected, aidash_server::Error::Conflict(ref reason) if reason == "Node cancellation is pending"),
+			"restoration must not reopen a captured Run while its decision is recovering: {rejected}"
+		);
+	}
 	assert_eq!(
 		complete(&a, manifest.id).await.decision.as_deref(),
 		Some("COMMIT")
 	);
+	if delete_after_decision {
+		provision::reconcile(&b.f).await.unwrap();
+		let remaining: i64 = sqlx::query_scalar(
+			&Query::select()
+				.expr(Expr::cust("COUNT(*)"))
+				.from(Alias::new("node_cancellation_jobs"))
+				.and_where(Expr::col("kind").eq("run"))
+				.and_where(Expr::col("work_id").eq(Expr::value(run.id)))
+				.to_string(PostgresQueryBuilder),
+		)
+		.fetch_one(b.f.store.pool.fixture_driver())
+		.await
+		.unwrap();
+		assert_eq!(
+			remaining, 0,
+			"terminal owner retires the captured job after recovery"
+		);
+		let mut fresh = manifest.clone();
+		fresh.id = Uuid::new_v4();
+		assert!(
+			matches!(
+				participant::reserve(&b.f, None, a.address.as_str(), &fresh).await,
+				Err(aidash_server::Error::Forbidden)
+			),
+			"retiring the queue must not restore old Run authority"
+		);
+	}
 	for _ in 0..2 {
 		participant::finish(&a.f, None, a.address.as_str(), &manifest)
 			.await
@@ -852,3 +934,6 @@ async fn next_frame(response: &mut reqwest::Response) -> String {
 	.await
 	.expect("SSE frame deadline")
 }
+
+#[path = "node_purge.rs"]
+mod node_purge_recovery;

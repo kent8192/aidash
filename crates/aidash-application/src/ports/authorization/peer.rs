@@ -134,6 +134,14 @@ pub trait PeerAdmissionRepository: PeerAdmissionRecords {
 	async fn leaf_record(&self, source: &str, grant: Uuid, id: Uuid) -> Result<Option<Record>>;
 	async fn run(&self, id: Uuid) -> Result<Run>;
 	async fn inspect_run(&self, id: Uuid) -> Result<RunInspection>;
+	/// Cancel and project the exact response atomically from its receiver binding.
+	async fn cancel_admission(
+		&self,
+		admitted: &crate::federation::inbound::Admitted,
+		request: &crate::federation::inbound::RequestDigest<'_>,
+		id: Uuid,
+		grant: Uuid,
+	) -> Result<aidash_domain::federation::execution::admission::Activation>;
 	async fn control(&self, id: Uuid, action: &RemoteExecutionControl) -> Result<RunInspection>;
 	fn messages(&self, run: &Run) -> Box<dyn AdmissionMessages + '_>;
 	async fn message_limit(&self, run: &Run) -> Result<usize>;

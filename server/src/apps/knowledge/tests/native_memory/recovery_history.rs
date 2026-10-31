@@ -1192,7 +1192,7 @@ async fn scheduled_backup_revalidates_subject_authority_with_the_actual_read_onl
 	};
 	let home = aidash_domain::nodes::NodeAddress::derived(store.deployment.as_str(), "acme");
 	let owner = aidash_domain::qualified_agent(&home, "a", "1.0.0");
-	authorization.replace("acme", 1, serde_json::from_value(json!({"tenant":"acme","subjects":{"alice":{"kind":"user"},owner:{"kind":"agent"}},"policies":[{"id":"backup-proof","effect":"allow","subjects":{"any":true},"actions":["*"],"resources":{"kinds":["*"]}}]})).unwrap(), "deployment_administrator").await.unwrap();
+	authorization.replace("acme", 1, serde_json::from_value(json!({"tenant":"acme","subjects":{"alice":{"kind":"user"},owner:{"kind":"agent","node":&home.node}},"policies":[{"id":"backup-proof","effect":"allow","subjects":{"any":true},"actions":["*"],"resources":{"kinds":["*"]}}]})).unwrap(), "deployment_administrator").await.unwrap();
 	for id in ["m", "e", "r", "t", "p", "a"] {
 		authorization
 			.set_catalog(

@@ -431,6 +431,7 @@ impl DashboardRegistrationRequest {
 					input.subject.clone(),
 					aidash_domain::policy::Subject {
 						kind: aidash_domain::policy::SubjectKind::User,
+						node: None,
 						groups: groups.clone(),
 						roles: Default::default(),
 						attributes: json!({}),

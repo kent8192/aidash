@@ -880,11 +880,14 @@ async fn included_reference_can_reach_tool_calls_without_becoming_finalizable(
 /// completed before the Run's own save still records its Completion Basis
 /// (#112).
 #[rstest::rstest]
+#[case::ordinary(false)]
+#[case::node_deletion(true)]
 #[tokio::test]
 async fn the_commit_fence_persists_the_completion_basis(
 	#[future(awt)]
 	#[from(common::native_application)]
 	fixture: common::ApplicationFixture,
+	#[case] delete_node: bool,
 ) {
 	let (f, url, schema) = fixture.runtime.parts();
 	let app = fixture.application;
@@ -931,10 +934,112 @@ async fn the_commit_fence_persists_the_completion_basis(
 	let stored = f.store.run(&TEST_FIXTURE, run.id).await.unwrap();
 	assert_eq!(stored.context.completion, leased.context.completion);
 	assert_eq!(stored.context.history.len(), leased.context.history.len());
-	f.store
-		.release_lease(&TEST_FIXTURE, run.id, worker)
+	if delete_node {
+		use reinhardt::query::{
+			Alias, Expr, ExprTrait as _, PostgresQueryBuilder, Query, QueryStatementBuilder as _,
+		};
+		let node = common::default_node(&f.store, "acme").await;
+		let sibling = common::second_node_in(f.store.pool.fixture_driver(), "acme").await;
+		for (path, body) in [
+			(
+				format!("/api/tenants/acme/nodes/{sibling}/default"),
+				Value::Null,
+			),
+			(
+				format!("/api/tenants/acme/nodes/{}/deletion", node.node),
+				json!({"confirmation":node.node}),
+			),
+			(
+				format!("/api/tenants/acme/nodes/{}/restore", node.node),
+				Value::Null,
+			),
+		] {
+			let (status, body) = common::administer_node(&f, "acme", &path, body).await;
+			assert_eq!(status, 200, "{body}");
+		}
+		// Exercise the Task job first, while its exact saved Run settlement
+		// remains durably retryable. It must not replace finalization with Cancel.
+		sqlx::query(
+			&Query::update()
+				.table(Alias::new("node_cancellation_jobs"))
+				.value(
+					Alias::new("retry_at"),
+					chrono::Utc::now() + chrono::Duration::hours(1),
+				)
+				.and_where(Expr::col("kind").eq("run"))
+				.and_where(Expr::col("work_id").eq(Expr::value(run.id)))
+				.to_string(PostgresQueryBuilder),
+		)
+		.execute(f.store.pool.fixture_driver())
 		.await
 		.unwrap();
+		aidash_server::generation::provision::reconcile(&f)
+			.await
+			.unwrap();
+		assert_eq!(
+			f.store
+				.task(&TEST_FIXTURE, run.task_id)
+				.await
+				.unwrap()
+				.status
+				.as_str(),
+			"RUNNING"
+		);
+		assert_eq!(
+			f.store
+				.run(&TEST_FIXTURE, run.id)
+				.await
+				.unwrap()
+				.phase()
+				.as_str(),
+			"TOOL_CALL"
+		);
+		sqlx::query(
+			&Query::update()
+				.table(Alias::new("node_cancellation_jobs"))
+				.value_expr(Alias::new("retry_at"), Expr::current_timestamp())
+				.and_where(Expr::col("node").eq(node.node.as_str()))
+				.to_string(PostgresQueryBuilder),
+		)
+		.execute(f.store.pool.fixture_driver())
+		.await
+		.unwrap();
+		for _ in 0..2 {
+			aidash_server::generation::provision::reconcile(&f)
+				.await
+				.unwrap();
+		}
+		let completed = f.store.run(&TEST_FIXTURE, run.id).await.unwrap();
+		assert_eq!(completed.phase().as_str(), "COMPLETED");
+		assert_eq!(completed.context.completion, leased.context.completion);
+		assert_eq!(
+			f.store
+				.task(&TEST_FIXTURE, run.task_id)
+				.await
+				.unwrap()
+				.status
+				.as_str(),
+			"COMPLETED"
+		);
+		let snapshot = f
+			.store
+			.snapshot(&TEST_FIXTURE, run.workspace_id)
+			.await
+			.unwrap();
+		assert_eq!(
+			snapshot
+				.artifacts
+				.iter()
+				.filter(|artifact| artifact.content == json!("Done."))
+				.count(),
+			1
+		);
+	} else {
+		f.store
+			.release_lease(&TEST_FIXTURE, run.id, worker)
+			.await
+			.unwrap();
+	}
 	cleanup(f, &url, &schema).await;
 }
 

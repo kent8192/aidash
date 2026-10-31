@@ -36,6 +36,7 @@ fn binding() -> (Record, ExecutionPrincipal, Description) {
 		credential_id: Uuid::from_u128(4),
 	};
 	let record = Record {
+		cancelled: false,
 		id: Uuid::from_u128(5),
 		node: crate::nodes::NodeName::parse("calm-heron-ab12cd34").unwrap(),
 		source_node: description.source_node.clone(),
@@ -193,4 +194,18 @@ fn activation_preserves_a_specific_budget_cause_without_stranding_older_peers() 
 			.semantic_reason,
 		Some(Failure::ContextBudget)
 	);
+}
+
+#[rstest]
+fn cancelled_admission_keeps_original_binding_but_rejects_fresh_authority(
+	binding: (Record, ExecutionPrincipal, Description),
+) {
+	let (mut record, identity, description) = binding;
+	record.cancelled = true;
+	assert!(
+		!record
+			.matches(&identity, &record.subject_chain, &description)
+			.unwrap()
+	);
+	assert_eq!(record.view(&description).id, record.id);
 }

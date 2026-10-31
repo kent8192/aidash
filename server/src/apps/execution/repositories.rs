@@ -132,4 +132,5 @@ pub(crate) mod egress;
 pub(crate) mod live_previews;
 pub(crate) mod previews;
 
+pub(crate) mod node_cancellations;
 pub(crate) mod source_delivery;

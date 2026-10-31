@@ -444,7 +444,7 @@ fn sharing_generation_fixture(
 			&aidash_domain::nodes::NodeAddress::derived(f.c.f.config.deployment.as_str(), "acme"),
 			"research",
 			"1.2.0",
-		)] = json!({"kind":"agent"});
+		)] = json!({"kind":"agent", "node": aidash_domain::nodes::NodeName::derived("acme")});
 		crate::common::replace_policy(&f.c.f.store, "acme", f.c.policy.clone()).await;
 		let (status, area) = request(&f.c.app, &f.c.token, "POST", &format!("/api/workspaces/{}/threads/{}/agents/research/runs", f.workspace, f.new_thread["id"].as_str().unwrap()), json!({"idempotency_key":Uuid::new_v4(),"agent_version":"1.2.0","title":"New generation","description":"Current receiver version"})).await;
 		assert_eq!(status, 200, "{area}");

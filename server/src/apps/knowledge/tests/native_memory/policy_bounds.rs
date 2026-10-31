@@ -1141,7 +1141,7 @@ pub(super) async fn recorded_run(
 		"a",
 		"1.0.0",
 	);
-	authorization.replace("acme", 1, serde_json::from_value(json!({"tenant":"acme","subjects":{"alice":{"kind":"user"},owner:{"kind":"agent"}},"policies":[{"id":"read","effect":"allow","subjects":{"any":true},"actions":["*"],"resources":{"kinds":["*"]}}]})).unwrap(), "deployment_administrator").await.unwrap();
+	authorization.replace("acme", 1, serde_json::from_value(json!({"tenant":"acme","subjects":{"alice":{"kind":"user"},owner:{"kind":"agent", "node": aidash_domain::nodes::NodeName::derived("acme")}},"policies":[{"id":"read","effect":"allow","subjects":{"any":true},"actions":["*"],"resources":{"kinds":["*"]}}]})).unwrap(), "deployment_administrator").await.unwrap();
 	for id in ["m", "e", "r", "t", "p", "a"] {
 		authorization
 			.set_catalog(
@@ -1293,6 +1293,7 @@ pub(super) async fn run_visible(
 			id: store.deployment.to_string(),
 			endpoint: "http://127.0.0.1:9".into(),
 			protocol_version: "0.1".into(),
+			key_rollover: None,
 			key: None,
 		})
 		.await

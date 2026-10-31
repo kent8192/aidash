@@ -1082,7 +1082,9 @@ class ExperimentNodeContractTest(unittest.TestCase):
             "http://127.0.0.1:8080", "standard"))
 
         policy = next(body["bundle"] for method, path, body in requests if body and "bundle" in body)
-        self.assertIn("aidash://evaluation/build-abcdef12/agents/agent@1.0.0", policy["subjects"])
+        self.assertEqual(policy["subjects"]["aidash://evaluation/build-abcdef12/agents/agent@1.0.0"],
+                         {"kind": "agent", "node": "build-abcdef12"})
+        self.assertIsNone(policy["subjects"]["evaluator"].get("node"))
         approval = next(body for method, path, body in requests if path.endswith("/catalog"))
         self.assertEqual(approval["node"], "build-abcdef12")
 

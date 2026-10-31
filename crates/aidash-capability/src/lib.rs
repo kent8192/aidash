@@ -136,6 +136,15 @@ pub fn public_key_bytes(pem: &str) -> Result<[u8; 32], SignError> {
 		.to_bytes())
 }
 
+/// SubjectPublicKeyInfo PEM for a receiver's persisted Ed25519 public key.
+pub fn public_key_pem(bytes: &[u8; 32]) -> Result<String, SignError> {
+	use ed25519_dalek::pkcs8::{EncodePublicKey, spki::der::pem::LineEnding};
+	VerifyingKey::from_bytes(bytes)
+		.map_err(|_| SignError)?
+		.to_public_key_pem(LineEnding::LF)
+		.map_err(|_| SignError)
+}
+
 /// The broker uses only injected public keys. Verification makes no network call.
 #[derive(Clone, Default)]
 pub struct PublicKeys(BTreeMap<String, VerifyingKey>);

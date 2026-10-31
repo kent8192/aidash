@@ -6,3 +6,5 @@ pub(crate) mod management;
 pub(crate) mod mutation;
 pub(crate) mod participation;
 pub(crate) mod transport;
+
+pub(crate) mod recovery_admission;

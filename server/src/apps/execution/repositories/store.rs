@@ -705,13 +705,23 @@ impl Store {
 		kind: &str,
 		data: Value,
 	) -> Result<Event> {
+		self.event_in_executor(&mut **tx, workspace, kind, data)
+			.await
+	}
+	pub(crate) async fn event_in_executor(
+		&self,
+		tx: &mut dyn TransactionExecutor,
+		workspace: Option<Uuid>,
+		kind: &str,
+		data: Value,
+	) -> Result<Event> {
 		// Sequence allocation and commit order must agree for Last-Event-ID replay.
 		crate::database::native::query(
 			&Query::select()
 				.expr(Expr::cust("PG_ADVISORY_XACT_LOCK(71003201)"))
 				.to_string(PostgresQueryBuilder),
 		)
-		.execute(&mut **tx)
+		.execute(&mut *tx)
 		.await?;
 		Ok({
 			let query_bind_1 = Uuid::new_v4();
@@ -754,7 +764,7 @@ impl Store {
 					.returning_all()
 					.to_string(PostgresQueryBuilder),
 			)
-			.fetch_one(&mut **tx)
+			.fetch_one(&mut *tx)
 			.await?
 		})
 	}
@@ -1280,6 +1290,7 @@ impl Store {
 		agent: &Entry,
 		admitted: Option<&aidash_domain::registry::bindings::BindingSnapshot>,
 	) -> Result<Task> {
+		super::node_cancellations::require_task_open(&mut **tx, task.id).await?;
 		let id = task.id;
 		let mut requirements: Search = serde_json::from_value(task.requirements.clone())?;
 		requirements.kind = Some("agent".into());
@@ -2755,118 +2766,61 @@ impl Store {
 		let Some(run) = run else {
 			return Ok(());
 		};
-		let valid: bool = {
-			let query_bind_1 = run;
-			let query_bind_2 = workspace;
-			crate::database::native::query_scalar(&Query::select()
-				.expr(SimpleExpr::CustomWithExpr("(EXISTS(SELECT 1 FROM authorization_execution WHERE run_id = ? AND workspace_id = ?))".to_owned(), vec![Expr::value(query_bind_1.to_owned()).into(), Expr::value(query_bind_2.to_owned()).into()]))
-				.to_string(PostgresQueryBuilder))
+		let valid: bool = crate::database::native::query_scalar(
+			&Query::select()
+				.expr(Expr::exists(
+					Query::select()
+						.expr(Expr::value(1_i32))
+						.from(Alias::new("authorization_execution"))
+						.and_where(Expr::col("run_id").eq(Expr::value(run)))
+						.and_where(Expr::col("workspace_id").eq(Expr::value(workspace)))
+						.to_owned(),
+				))
+				.to_string(PostgresQueryBuilder),
+		)
 		.scalar_one(&mut **tx)
-		.await?
-		};
+		.await?;
 		if !valid {
 			return Err(Error::Forbidden);
 		}
-		{
-			let query_bind_1 = run;
-			let query_bind_2 = workspace;
-			let query_bind_3 = kind;
-			let query_bind_4 = id;
-			crate::database::native::query(
-				&Query::insert()
-					.into_table(Alias::new("authorization_run_reads"))
-					.columns([
-						Alias::new("run_id"),
-						Alias::new("workspace_id"),
-						Alias::new("resource_kind"),
-						Alias::new("resource_id"),
-						Alias::new("tenant"),
-					])
-					.from_subquery(
-						Query::select()
-							.expr(SimpleExpr::CustomWithExpr(
-								"(?)".to_owned(),
-								vec![Expr::value(query_bind_1.to_owned()).into()],
-							))
-							.expr(SimpleExpr::CustomWithExpr(
-								"(?)".to_owned(),
-								vec![Expr::value(query_bind_2.to_owned()).into()],
-							))
-							.expr(SimpleExpr::CustomWithExpr(
-								"(?)".to_owned(),
-								vec![Expr::value(query_bind_3.to_owned()).into()],
-							))
-							.expr(SimpleExpr::CustomWithExpr(
-								"(?)".to_owned(),
-								vec![Expr::value(query_bind_4.to_owned()).into()],
-							))
-							.expr(crate::database::scope::tenant_of(
-								"runs",
-								"id",
-								query_bind_1,
-							))
-							.to_owned(),
-					)
-					.on_conflict(
-						OnConflict::columns(["run_id", "resource_kind", "resource_id"])
-							.do_nothing()
-							.to_owned(),
-					)
-					.to_string(PostgresQueryBuilder),
-			)
-			.execute(&mut **tx)
-			.await?
-		};
-		{
-			let query_bind_1 = run;
-			let query_bind_2 = workspace;
-			let query_bind_3 = kind;
-			let query_bind_4 = id;
-			crate::database::native::query(
-				&Query::insert()
-					.into_table(Alias::new("authorization_run_outputs"))
-					.columns([
-						Alias::new("run_id"),
-						Alias::new("workspace_id"),
-						Alias::new("resource_kind"),
-						Alias::new("resource_id"),
-						Alias::new("tenant"),
-					])
-					.from_subquery(
-						Query::select()
-							.expr(SimpleExpr::CustomWithExpr(
-								"(?)".to_owned(),
-								vec![Expr::value(query_bind_1.to_owned()).into()],
-							))
-							.expr(SimpleExpr::CustomWithExpr(
-								"(?)".to_owned(),
-								vec![Expr::value(query_bind_2.to_owned()).into()],
-							))
-							.expr(SimpleExpr::CustomWithExpr(
-								"(?)".to_owned(),
-								vec![Expr::value(query_bind_3.to_owned()).into()],
-							))
-							.expr(SimpleExpr::CustomWithExpr(
-								"(?)".to_owned(),
-								vec![Expr::value(query_bind_4.to_owned()).into()],
-							))
-							.expr(crate::database::scope::tenant_of(
-								"runs",
-								"id",
-								query_bind_1,
-							))
-							.to_owned(),
-					)
-					.on_conflict(
-						OnConflict::columns(["run_id", "resource_kind", "resource_id"])
-							.do_nothing()
-							.to_owned(),
-					)
-					.to_string(PostgresQueryBuilder),
-			)
-			.execute(&mut **tx)
-			.await?
-		};
+		crate::apps::identity::models::AuthorizationRunRead::record_sources(
+			&mut **tx,
+			run,
+			workspace,
+			&[(kind.to_owned(), id)],
+		)
+		.await?;
+		crate::database::native::query(
+			&Query::insert()
+				.into_table(Alias::new("authorization_run_outputs"))
+				.columns(
+					[
+						"run_id",
+						"workspace_id",
+						"resource_kind",
+						"resource_id",
+						"tenant",
+					]
+					.map(Alias::new),
+				)
+				.from_subquery(
+					Query::select()
+						.expr(Expr::value(run))
+						.expr(Expr::value(workspace))
+						.expr(Expr::value(kind))
+						.expr(Expr::value(id))
+						.expr(crate::database::scope::tenant_of("runs", "id", run))
+						.to_owned(),
+				)
+				.on_conflict(
+					OnConflict::columns(["run_id", "resource_kind", "resource_id"])
+						.do_nothing()
+						.to_owned(),
+				)
+				.to_string(PostgresQueryBuilder),
+		)
+		.execute(&mut **tx)
+		.await?;
 
 		Ok(())
 	}
@@ -3242,7 +3196,20 @@ impl Store {
 		run: &Run,
 		worker: Uuid,
 	) -> Result<()> {
+		self.cancel_owned_execution(scope, &run.metadata(), worker)
+			.await
+	}
+	/// Terminal cleanup needs the durable owner and lease, never live Node admission
+	/// or decoding the canceled agent's potentially newer execution state.
+	pub(crate) async fn cancel_owned_execution(
+		&self,
+		scope: &TenancyScope,
+		run: &RunMetadata,
+		worker: Uuid,
+	) -> Result<()> {
 		let mut tx = self.pool.begin(scope).await?;
+		crate::transactions::gate::read_in(&mut tx).await?;
+		RunRecord::worker_context(tx.as_mut()).await?;
 		let valid: Option<Uuid> = {
 			let query_bind_1 = run.id;
 			let query_bind_2 = worker;
@@ -3260,61 +3227,107 @@ impl Store {
 		if valid.is_none() {
 			return Err(Error::Conflict("worker lease lost".into()));
 		}
-		let task: Task = {
-			let query_bind_1 = run.task_id;
-			aidash_server::database::query_as(
-				&reinhardt::query::Query::select()
-					.expr(reinhardt::query::SimpleExpr::from(
-						reinhardt::query::Expr::col(reinhardt::query::ColumnRef::Asterisk),
+		let saved: crate::domain::run_state::RawRun = crate::database::query_as(
+			&Query::select()
+				.column(reinhardt::query::ColumnRef::Asterisk)
+				.from(Alias::new("runs"))
+				.and_where(Expr::col("id").eq(Expr::value(run.id)))
+				.to_string(PostgresQueryBuilder),
+		)
+		.fetch_one(&mut *tx)
+		.await?;
+		if aidash_domain::federation::execution::settlement::has_saved_continuation(&saved) {
+			let captured: bool = crate::database::native::query_scalar(
+				&Query::select()
+					.expr(Expr::exists(
+						Query::select()
+							.expr(Expr::value(1_i32))
+							.from(Alias::new("node_cancellation_jobs"))
+							.and_where(Expr::col("kind").eq("run"))
+							.and_where(Expr::col("work_id").eq(Expr::value(run.id)))
+							.and_where(
+								Expr::col("tenant").in_subquery(
+									Query::select()
+										.column(Alias::new("tenant"))
+										.from(Alias::new("runs"))
+										.and_where(Expr::col("id").eq(Expr::value(run.id)))
+										.to_owned(),
+								),
+							)
+							.to_owned(),
 					))
-					.from(reinhardt::query::Alias::new("tasks"))
-					.and_where(SimpleExpr::CustomWithExpr(
-						"(id = ?)".to_owned(),
-						vec![Expr::value(query_bind_1.to_owned()).into()],
-					))
-					.lock(reinhardt::query::LockType::Update)
-					.to_string(reinhardt::query::PostgresQueryBuilder),
+					.to_string(PostgresQueryBuilder),
 			)
-			.fetch_one(&mut *tx)
-			.await?
-		};
-		let phase = if task.status == crate::domain::TaskStatus::Completed {
-			"COMPLETED"
-		} else {
-			"CANCELLED"
-		};
-		if !matches!(
-			task.status,
-			crate::domain::TaskStatus::Completed
-				| crate::domain::TaskStatus::Cancelled
-				| crate::domain::TaskStatus::Abandoned
-		) {
+			.scalar_one(&mut *tx)
+			.await?;
+			if captured {
+				return Err(Error::Conflict(
+					"saved Node execution settlement is pending".into(),
+				));
+			}
+		}
+		let phase = if run.is_local(self.deployment.as_str()) {
 			let task: Task = {
 				let query_bind_1 = run.task_id;
 				aidash_server::database::query_as(
-					&reinhardt::query::Query::update()
-						.table(reinhardt::query::Alias::new("tasks"))
-						.value_expr(
-							reinhardt::query::Alias::new("status"),
-							reinhardt::query::Expr::cust("'CANCELLED'"),
-						)
-						.value_expr(
-							reinhardt::query::Alias::new("revision"),
-							reinhardt::query::Expr::cust("revision + 1"),
-						)
+					&reinhardt::query::Query::select()
+						.expr(reinhardt::query::SimpleExpr::from(
+							reinhardt::query::Expr::col(reinhardt::query::ColumnRef::Asterisk),
+						))
+						.from(reinhardt::query::Alias::new("tasks"))
 						.and_where(SimpleExpr::CustomWithExpr(
 							"(id = ?)".to_owned(),
 							vec![Expr::value(query_bind_1.to_owned()).into()],
 						))
-						.returning_all()
+						.lock(reinhardt::query::LockType::Update)
 						.to_string(reinhardt::query::PostgresQueryBuilder),
 				)
 				.fetch_one(&mut *tx)
 				.await?
 			};
-			self.event(&mut tx, Some(run.workspace_id), "task.updated", json!(task))
-				.await?;
-		}
+			let phase = match task.status {
+				crate::domain::TaskStatus::Completed => "COMPLETED",
+				crate::domain::TaskStatus::Failed => "FAILED",
+				_ => "CANCELLED",
+			};
+			if !matches!(
+				task.status,
+				crate::domain::TaskStatus::Completed
+					| crate::domain::TaskStatus::Failed
+					| crate::domain::TaskStatus::Cancelled
+					| crate::domain::TaskStatus::Abandoned
+			) {
+				let task: Task = {
+					let query_bind_1 = run.task_id;
+					aidash_server::database::query_as(
+						&reinhardt::query::Query::update()
+							.table(reinhardt::query::Alias::new("tasks"))
+							.value_expr(
+								reinhardt::query::Alias::new("status"),
+								reinhardt::query::Expr::cust("'CANCELLED'"),
+							)
+							.value_expr(
+								reinhardt::query::Alias::new("revision"),
+								reinhardt::query::Expr::cust("revision + 1"),
+							)
+							.and_where(SimpleExpr::CustomWithExpr(
+								"(id = ?)".to_owned(),
+								vec![Expr::value(query_bind_1.to_owned()).into()],
+							))
+							.returning_all()
+							.to_string(reinhardt::query::PostgresQueryBuilder),
+					)
+					.fetch_one(&mut *tx)
+					.await?
+				};
+				self.event(&mut tx, Some(run.workspace_id), "task.updated", json!(task))
+					.await?;
+			}
+			phase
+		} else {
+			"CANCELLED"
+		};
+
 		{
 			let query_bind_1 = run.id;
 			let query_bind_2 = worker;
@@ -3376,9 +3389,11 @@ impl Store {
 			.execute(&mut *tx)
 			.await?
 		};
-		self.event(
+		self.run_event(
 			&mut tx,
-			Some(run.workspace_id),
+			run.id,
+			run.is_local(self.deployment.as_str())
+				.then_some(run.workspace_id),
 			if phase == "CANCELLED" {
 				"run.cancelled"
 			} else {
@@ -3436,6 +3451,16 @@ impl Store {
 		id: Uuid,
 		action: RunControlAction,
 	) -> Result<RunInspection> {
+		self.control_in_executor(&mut **tx, id, action).await
+	}
+
+	/// The same ledger/CAS/event owner for lifecycle transactions.
+	pub(crate) async fn control_in_executor(
+		&self,
+		tx: &mut dyn TransactionExecutor,
+		id: Uuid,
+		action: RunControlAction,
+	) -> Result<RunInspection> {
 		self.control_in_as(tx, id, action, ControlSource::Tenant)
 			.await
 	}
@@ -3445,7 +3470,7 @@ impl Store {
 	/// keeps its value (a Safety Stop of an already paused Run).
 	pub(crate) async fn control_in_as(
 		&self,
-		tx: &mut crate::database::native::Transaction,
+		tx: &mut dyn TransactionExecutor,
 		id: Uuid,
 		action: RunControlAction,
 		source: ControlSource,
@@ -3467,7 +3492,7 @@ impl Store {
 						.lock(reinhardt::query::LockType::Update)
 						.to_string(reinhardt::query::PostgresQueryBuilder),
 				)
-				.fetch_one(&mut **tx)
+				.fetch_one(&mut *tx)
 				.await?
 			};
 			resumed_pending = raw.resumed_pending()?;
@@ -3482,14 +3507,14 @@ impl Store {
 				))
 				.to_string(reinhardt::query::PostgresQueryBuilder),
 		)
-		.scalar_one(&mut **tx)
+		.scalar_one(&mut *tx)
 		.await?;
 		let r: RawRun = { let query_bind_1 = id; let query_bind_2 = control; let query_bind_3 = resumed_pending; let query_bind_4 = source.as_str(); aidash_server::database::query_as(&reinhardt::query::Query::update()
 				.table(reinhardt::query::Alias::new("runs")).value_expr(reinhardt::query::Alias::new("pending"), SimpleExpr::CustomWithExpr("(COALESCE(?::jsonb, pending))".to_owned(), vec![Expr::value(query_bind_3.to_owned()).into()])).value_expr(reinhardt::query::Alias::new("control"), SimpleExpr::CustomWithExpr("(?)".to_owned(), vec![Expr::value(query_bind_2.as_str()).into()])).value_expr(reinhardt::query::Alias::new("error"), SimpleExpr::CustomWithExpr("(CASE WHEN ?::jsonb IS NOT NULL OR (? = 'PAUSED' AND error = 'identity status unavailable') THEN NULL ELSE error END)".to_owned(), vec![Expr::value(query_bind_3.to_owned()).into(), Expr::value(query_bind_2.as_str()).into()])).value_expr(reinhardt::query::Alias::new("revision"), reinhardt::query::Expr::cust("revision + 1")).value_expr(reinhardt::query::Alias::new("control_revision"), reinhardt::query::Expr::cust("control_revision + 1")).value_expr(reinhardt::query::Alias::new("control_source"), SimpleExpr::CustomWithExpr("(?)".to_owned(), vec![Expr::value(query_bind_4).into()])).value_expr(reinhardt::query::Alias::new("updated_at"), reinhardt::query::Expr::cust("CURRENT_TIMESTAMP"))
 				.and_where(SimpleExpr::CustomWithExpr("(id = ? AND NOT phase IN ('COMPLETED', 'FAILED', 'CANCELLED') AND control <> 'CANCELLED')".to_owned(), vec![Expr::value(query_bind_1.to_owned()).into()]))
 				.returning_all()
 				.to_string(reinhardt::query::PostgresQueryBuilder))
-		.fetch_optional(&mut **tx)
+		.fetch_optional(&mut *tx)
 		.await? }
 		.ok_or_else(|| {
 			Error::Conflict("run is terminal or cancellation is already requested".into())
@@ -3519,9 +3544,9 @@ impl Store {
 					.returning([Alias::new("semantic_retry_cycle")])
 					.to_string(PostgresQueryBuilder),
 			)
-			.scalar_one(&mut **tx)
+			.scalar_one(&mut *tx)
 			.await?;
-			self.run_event(
+			event_records::append_run(
 				tx,
 				id,
 				workspace,
@@ -3530,7 +3555,7 @@ impl Store {
 			)
 			.await?;
 		}
-		self.run_event(
+		event_records::append_run(
 			tx,
 			id,
 			workspace,

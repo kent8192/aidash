@@ -7,7 +7,7 @@ use aidash_server::dashboard_auth::{authorize_mapping, session_identity};
 use aidash_server::federation::Federation;
 use aidash_server::http::json::Json;
 use aidash_server::{Error, Result};
-use chrono::{Datelike, NaiveDate, Utc};
+use chrono::{DateTime, Datelike, NaiveDate, Utc};
 use reinhardt::http::ViewResult;
 use reinhardt::{Path, Query, Request, Response, StatusCode, UnifiedRouter, get, post};
 use schemars::JsonSchema;
@@ -57,6 +57,13 @@ pub struct PeriodQuery {
 	pub from: Option<NaiveDate>,
 	/// Last day, default today.
 	pub to: Option<NaiveDate>,
+}
+
+#[derive(Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct AccountPeriodQuery {
+	pub starts_at: DateTime<Utc>,
+	pub ends_at: DateTime<Utc>,
 }
 
 #[derive(Serialize, JsonSchema)]
@@ -119,6 +126,28 @@ pub async fn accounts(#[inject] runtime: Federation, request: Request) -> ViewRe
 		async {
 			let owner = session_identity(&runtime, &request.headers, &request.method).await?;
 			super::billing(&runtime)?.accounts(owner).await
+		}
+		.await,
+	)
+}
+
+#[get(
+	"/api/billing/accounts/{account}/usage",
+	name = "billing-accounts-usage",
+	auth = "protected"
+)]
+pub async fn account_usage(
+	#[inject] runtime: Federation,
+	request: Request,
+	Path(account): Path<Uuid>,
+	Query(period): Query<AccountPeriodQuery>,
+) -> ViewResult<Response> {
+	aidash_server::http::json(
+		async {
+			let owner = session_identity(&runtime, &request.headers, &request.method).await?;
+			super::billing(&runtime)?
+				.account_usage(owner, account, period.starts_at, period.ends_at)
+				.await
 		}
 		.await,
 	)
@@ -266,6 +295,8 @@ pub fn account_routes() -> UnifiedRouter {
 			.endpoint(create_account)
 			.with_route_middleware(AccessBoundary::public())
 			.endpoint(accounts)
+			.with_route_middleware(AccessBoundary::public())
+			.endpoint(account_usage)
 			.with_route_middleware(AccessBoundary::public())
 			.endpoint(change_tier)
 			.with_route_middleware(AccessBoundary::public())

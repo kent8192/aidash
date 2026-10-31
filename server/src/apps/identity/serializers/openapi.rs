@@ -31,6 +31,26 @@ use reinhardt::rest::openapi::OpenApiSchema;
 use serde_json::Value;
 
 pub(crate) fn register(contracts: &mut Contracts, document: &mut OpenApiSchema) -> Result<()> {
+	{
+		use super::manual_keys as k;
+		use views::manual_keys as v;
+		contracts.query::<_, k::RegistrationKeySelector>(document, v::registration_status)?;
+		contracts.request::<_, k::RegistrationKeyChange>(document, v::registration_change)?;
+		contracts.response::<_, k::ReceivingKeyStatus>(
+			document,
+			v::registration_status,
+			200,
+			"application/json",
+		)?;
+		contracts.response::<_, k::ReceivingKeyStatus>(
+			document,
+			v::registration_change,
+			200,
+			"application/json",
+		)?;
+		contracts.path(document, v::registration_status, &["String", "String"])?;
+		contracts.path(document, v::registration_change, &["String", "String"])?;
+	}
 	use super::desktop;
 	use super::provider_credentials as pc;
 	use aidash_application::provider_credentials::Metadata;
@@ -69,6 +89,7 @@ pub(crate) fn register(contracts: &mut Contracts, document: &mut OpenApiSchema) 
 				"application/json",
 			)?;
 			contracts.path(document, views::nodes::list, &["String"])?;
+			contracts.query::<_, n::NodeList>(document, views::nodes::list)?;
 			contracts.request::<_, n::NodeCreation>(document, views::nodes::create)?;
 			contracts.response::<_, n::NodeRecord>(
 				document,
@@ -85,6 +106,35 @@ pub(crate) fn register(contracts: &mut Contracts, document: &mut OpenApiSchema) 
 				"application/json",
 			)?;
 			contracts.path(document, views::nodes::relabel, &["String", "String"])?;
+			contracts.request::<_, n::NodeDeletionRequest>(document, views::nodes::delete)?;
+			contracts.response::<_, n::NodeRecord>(
+				document,
+				views::nodes::make_default,
+				200,
+				"application/json",
+			)?;
+			contracts.path(document, views::nodes::make_default, &["String", "String"])?;
+			contracts.response::<_, n::NodeRecord>(
+				document,
+				views::nodes::delete,
+				200,
+				"application/json",
+			)?;
+			contracts.path(document, views::nodes::delete, &["String", "String"])?;
+			contracts.response::<_, n::NodeRecord>(
+				document,
+				views::nodes::restore,
+				200,
+				"application/json",
+			)?;
+			contracts.path(document, views::nodes::restore, &["String", "String"])?;
+			contracts.response::<_, n::NodeRecord>(
+				document,
+				views::nodes::purge,
+				200,
+				"application/json",
+			)?;
+			contracts.path(document, views::nodes::purge, &["String", "String"])?;
 			{
 				use super::node_registrations as r;
 				contracts.response::<_, Vec<r::RegistrationRecord>>(

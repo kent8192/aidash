@@ -20,12 +20,21 @@ impl Client {
 		path: &str,
 		body: &Value,
 	) -> Result<T> {
+		let bytes = serde_json::to_vec(body)?;
+		let request = super::inbound::RequestDigest {
+			method: "POST",
+			path,
+			body: &bytes,
+		};
 		let reply = async {
-			let route = self.peers.route(node).await?;
+			let route = self.peers.route(node, &request).await?;
 			self.transport.request(&route, path, body).await
 		}
 		.await
 		.map_err(|error| {
+			if matches!(error, Error::Forbidden | Error::Unauthorized) {
+				return Error::Forbidden;
+			}
 			tracing::warn!(%node,%path,error=%error,"authority request failed");
 			Error::External("remote execution authority unavailable".into())
 		})?;

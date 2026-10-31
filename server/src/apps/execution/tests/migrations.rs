@@ -23,7 +23,12 @@ use rstest::{fixture, rstest};
 use serde_json::json;
 use sqlx::PgPool;
 use std::{
-	collections::BTreeSet, fs::File, path::PathBuf, process::Stdio, sync::Arc, time::Duration,
+	collections::{BTreeMap, BTreeSet},
+	fs::File,
+	path::PathBuf,
+	process::Stdio,
+	sync::Arc,
+	time::Duration,
 };
 use tempfile::TempDir;
 use uuid::Uuid;
@@ -106,7 +111,7 @@ async fn native_history_uses_typed_schema_operations_and_lf_sql_assets() {
 	);
 	let knowledge = graph.get_leaf_nodes_for_app("knowledge");
 	assert_eq!(knowledge.len(), 1);
-	assert_eq!(knowledge[0].name, "0037_recovery_evidence_merge");
+	assert_eq!(knowledge[0].name, "0038_recovery_lifetime_merge");
 	// Assert: retain the physical graph, model snapshots, and all supported tables.
 	assert!(
 		migrations
@@ -118,7 +123,7 @@ async fn native_history_uses_typed_schema_operations_and_lf_sql_assets() {
 			.iter()
 			.filter(|migration| migration.state_only)
 			.count(),
-		71
+		88
 	);
 	let tables = migrations
 		.iter()
@@ -177,7 +182,11 @@ async fn native_history_uses_typed_schema_operations_and_lf_sql_assets() {
 						"ALTER TABLE public.dashboard_administration_history ALTER COLUMN identity_id DROP NOT NULL;"
 					);
 				} else if sql.starts_with("ALTER TABLE")
-					&& migration.name.ends_with("_row_level_security")
+					&& (migration.name.ends_with("_row_level_security")
+						// This typed table creation includes its unsupported RLS DDL
+						// in the same atomic migration, rather than a separate slot.
+						|| (migration.app_label.as_str(), migration.name.as_str())
+							== ("identity", "0049_remote_terminal_receipts"))
 				{
 					// Reinhardt has no row-level security operations (#6770). The
 					// database::policy unit tests compare these assets with the
@@ -356,15 +365,12 @@ async fn generation_with_existing_sql_assets_preserves_history_and_dependency(
 	);
 	assert_eq!(std::fs::read(history).unwrap(), original);
 	let generated = FilesystemSource::new(fixture.directory.path().join("migrations"))
-		.get_migration("execution", "0084_policy_probe")
+		.get_migration("execution", "0085_policy_probe")
 		.await
 		.unwrap();
 	assert_eq!(
 		generated.dependencies,
-		vec![(
-			"execution".to_owned(),
-			"0083_harness_contract_state".to_owned()
-		)]
+		vec![("execution".to_owned(), "0084_node_preview_merge".to_owned())]
 	);
 	assert!(generated.operations.is_empty());
 }
@@ -681,19 +687,30 @@ async fn preserved_baseline_does_not_generate_table_recreation(
 	.unwrap();
 	let mut command = deployment_command(&fixture.url, fixture.directory.path());
 	command.args(["makemigrations", "--check", "--dry-run"]);
+	let log_path = fixture.directory.path().join("schema-check.log");
+	let log = File::create(&log_path).unwrap();
+	command.stdout(log.try_clone().unwrap()).stderr(log);
 	// Act: use the shipped command, including installed-app model scope.
-	let output = tokio::time::timeout(Duration::from_secs(35), command.output())
-		.await
-		.unwrap()
-		.unwrap();
+	let started = std::time::Instant::now();
+	let mut child = command.spawn().unwrap();
+	eprintln!(
+		"schema-check child={} log={}",
+		child.id().unwrap(),
+		log_path.display()
+	);
+	let result = tokio::time::timeout(Duration::from_secs(35), child.wait()).await;
+	eprintln!("schema-check elapsed={:?}", started.elapsed());
+	let output = std::fs::read_to_string(log_path).unwrap();
+	assert!(
+		result.is_ok(),
+		"manage makemigrations exceeded its deadline: {output}"
+	);
 	// Assert: neither built-in auth tables nor existing Aidash tables are proposed.
 	assert!(
-		output.status.success(),
-		"{}\n{}",
-		String::from_utf8_lossy(&output.stdout),
-		String::from_utf8_lossy(&output.stderr)
+		result.unwrap().unwrap().success(),
+		"manage makemigrations failed: {output}"
 	);
-	assert!(String::from_utf8_lossy(&output.stdout).contains("No changes detected"));
+	assert!(output.contains("No changes detected"));
 	let applied = DatabaseMigrationRecorder::new(fixture.connection)
 		.get_applied_migrations_if_present()
 		.await
@@ -711,7 +728,7 @@ async fn preserved_baseline_does_not_generate_table_recreation(
 			.iter()
 			.filter(|migration| migration.state_only)
 			.count(),
-		71
+		88
 	);
 }
 
@@ -3169,6 +3186,731 @@ async fn deferred_exposure_rollback_is_refused_while_an_agent_uses_exposure(
 		"{error}"
 	);
 	assert!(contract_accepts(&pool, "aidash_agent_bindings_is_valid", vec![deferred]).await);
+}
+
+/// PostgreSQL owns immutable grace deadlines and one open deletion per Node;
+/// a restored deletion remains historical and does not block a later deletion.
+#[rstest]
+#[tokio::test]
+async fn node_deletion_history_preserves_deadlines_and_permanent_ownership(
+	#[future] fresh_database: MigrationFixture,
+) {
+	let fixture = fresh_database.await;
+	// This owner contract concerns the applied schema; command-process launch
+	// remains covered separately by the existing migration lifecycle tests.
+	aidash_server::bootstrap::migrations::run(&migration_context(&fixture.url))
+		.await
+		.unwrap();
+	fixture.tenant_root("acme").await;
+	fixture.tenant_root("sibling").await;
+	let pool = PgPool::connect(&fixture.url).await.unwrap();
+	// Grace is elapsed UTC time even when the connection crosses a local DST
+	// change. A one-day deadline remains exactly 24 hours, rather than 25.
+	let mut session = pool.acquire().await.unwrap();
+	sqlx::query("SET TIME ZONE 'America/New_York'")
+		.execute(&mut *session)
+		.await
+		.unwrap();
+	let exact_day = sqlx::query("INSERT INTO node_deletions (id,tenant,node,deleted_at,deleted_by_kind,purge_after,purge_failures) VALUES ($1,'sibling',$2,'2026-11-01 00:00:00+00','deployment_administrator','2026-11-02 00:00:00+00',0)")
+        .bind(Uuid::new_v4()).bind(aidash_domain::nodes::NodeName::derived("sibling").to_string()).execute(&mut *session).await;
+	assert!(
+		exact_day.is_ok(),
+		"one elapsed UTC day must fit in any session timezone: {exact_day:?}"
+	);
+	drop(session);
+	let node = aidash_domain::nodes::NodeName::derived("acme").to_string();
+	let insert = "INSERT INTO node_deletions (id,tenant,node,deleted_at,deleted_by_kind,purge_after,purge_failures) VALUES ($1,$2,$3,CURRENT_TIMESTAMP,'deployment_administrator',CURRENT_TIMESTAMP + INTERVAL '30 days',0)";
+	let first = Uuid::new_v4();
+	sqlx::query(insert)
+		.bind(first)
+		.bind("acme")
+		.bind(&node)
+		.execute(&pool)
+		.await
+		.unwrap();
+	assert!(
+		sqlx::query(insert)
+			.bind(Uuid::new_v4())
+			.bind("acme")
+			.bind(&node)
+			.execute(&pool)
+			.await
+			.is_err(),
+		"one unresolved deletion per Node"
+	);
+	assert!(
+		sqlx::query(insert)
+			.bind(Uuid::new_v4())
+			.bind("sibling")
+			.bind(&node)
+			.execute(&pool)
+			.await
+			.is_err(),
+		"a Tenant must own the permanent Node name"
+	);
+	assert!(
+		sqlx::query(
+			"UPDATE node_deletions SET purge_after=purge_after + INTERVAL '1 day' WHERE id=$1"
+		)
+		.bind(first)
+		.execute(&pool)
+		.await
+		.is_err(),
+		"progress cannot extend the fixed grace period"
+	);
+	sqlx::query("UPDATE node_deletions SET restored_at=CURRENT_TIMESTAMP, restored_by_kind='deployment_administrator' WHERE id=$1").bind(first).execute(&pool).await.unwrap();
+	sqlx::query(insert)
+		.bind(Uuid::new_v4())
+		.bind("acme")
+		.bind(&node)
+		.execute(&pool)
+		.await
+		.unwrap();
+	sqlx::query("DELETE FROM nodes WHERE tenant='acme' AND name=$1")
+		.bind(&node)
+		.execute(&pool)
+		.await
+		.unwrap();
+	let retained: i64 =
+		sqlx::query_scalar("SELECT count(*) FROM node_deletions WHERE tenant='acme' AND node=$1")
+			.bind(&node)
+			.fetch_one(&pool)
+			.await
+			.unwrap();
+	assert_eq!(retained, 2, "purging a Node preserves its deletion history");
+	let names: i64 =
+		sqlx::query_scalar("SELECT count(*) FROM node_names WHERE tenant='acme' AND name=$1")
+			.bind(&node)
+			.fetch_one(&pool)
+			.await
+			.unwrap();
+	assert_eq!(names, 1, "the name claim is permanent");
+	pool.close().await;
+}
+
+/// The new schema must roundtrip independently of process-launch behavior,
+/// and the recorded logical fields must match the registered production model.
+#[rstest]
+#[tokio::test]
+async fn node_deletion_schema_roundtrips_with_registered_model_state(
+	#[future] fresh_database: MigrationFixture,
+) {
+	use aidash_server::apps::identity::models::NodeDeletion;
+	use reinhardt::db::migrations::{ProjectState, executor::DatabaseMigrationExecutor};
+
+	let fixture = fresh_database.await;
+	let source =
+		FilesystemSource::new(PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("migrations"));
+	let migrations = source.all_migrations().await.unwrap();
+	let mut executor = DatabaseMigrationExecutor::new(fixture.connection.clone())
+		.with_migration_history(migrations.clone());
+	executor.apply_migrations(&migrations).await.unwrap();
+	let before = recorded_keys(&fixture.connection).await;
+	let roots: Vec<_> = migrations
+		.iter()
+		.filter(|migration| {
+			migration.app_label == "identity"
+				&& matches!(
+					migration.name.as_str(),
+					"0040_node_deletions"
+						| "0041_node_deletions_state"
+						| "0042_node_deletions_row_level_security"
+						| "0043_node_administration_target"
+						| "0044_node_administration_target_state"
+				)
+		})
+		.cloned()
+		.collect();
+	assert_eq!(roots.len(), 5);
+	// Roll back every dependent migration first, including cancellation jobs
+	// whose composite foreign key retains the original deletion fact. This
+	// closure also covers later migrations extending these owners.
+	let mut selected: BTreeSet<_> = roots
+		.iter()
+		.map(|migration| (migration.app_label.clone(), migration.name.clone()))
+		.collect();
+	loop {
+		let descendants: Vec<_> = migrations
+			.iter()
+			.filter(|migration| {
+				!selected.contains(&(migration.app_label.clone(), migration.name.clone()))
+					&& migration
+						.dependencies
+						.iter()
+						.any(|key| selected.contains(key))
+			})
+			.map(|migration| (migration.app_label.clone(), migration.name.clone()))
+			.collect();
+		if descendants.is_empty() {
+			break;
+		}
+		selected.extend(descendants);
+	}
+	let mut ordered = reinhardt::db::migrations::MigrationPlan::new();
+	ordered.migrations = migrations.clone();
+	ordered.sort().unwrap();
+	let node_migrations: Vec<_> = ordered
+		.migrations
+		.into_iter()
+		.filter(|migration| {
+			selected.contains(&(migration.app_label.clone(), migration.name.clone()))
+		})
+		.collect();
+
+	let logical = build_state_from_files(&source).await.unwrap();
+	let registered = ProjectState::from_global_registry();
+	let table = NodeDeletion::table_name();
+	// Model metadata also carries Rust identifier hints. Compare the same
+	// canonical column definitions that Reinhardt uses for schema detection.
+	let columns = |model: &reinhardt::db::migrations::ModelState| {
+		model
+			.fields
+			.iter()
+			.map(|(name, field)| {
+				(
+					name.clone(),
+					reinhardt::db::migrations::ColumnDefinition::from_field_state(name, field),
+				)
+			})
+			.collect::<BTreeMap<_, _>>()
+	};
+	for table in [
+		table,
+		"dashboard_administration_history",
+		"node_cancellation_jobs",
+		"authorization_remote_admissions",
+		"authorization_remote_terminal_receipts",
+	] {
+		assert_eq!(
+			columns(logical.find_model_by_table(table).unwrap()),
+			columns(registered.find_model_by_table(table).unwrap()),
+			"generated logical migration state must match the production ORM schema for {table}"
+		);
+	}
+	let pool = fixture.connection.clone().into_postgres().unwrap();
+	for pass in 0..2 {
+		let job_tenant: (String, String, String, String) = sqlx::query_as(
+			"SELECT confrelid::regclass::text,pg_get_constraintdef(oid),confdeltype::text,confupdtype::text FROM pg_constraint WHERE conrelid='public.node_cancellation_jobs'::regclass AND conname='node_cancellation_jobs_tenant_fkey'",
+		)
+		.fetch_one(&pool).await.unwrap();
+		assert_eq!(
+			job_tenant,
+			(
+				"tenants".into(),
+				"FOREIGN KEY (tenant) REFERENCES tenants(name)".into(),
+				"a".into(),
+				"a".into(),
+			),
+			"direct Tenant ownership and NoAction survive reapplication"
+		);
+		for protected in ["node_deletions", "authorization_remote_terminal_receipts"] {
+			let policy: (bool, bool) = sqlx::query_as(
+				"SELECT relrowsecurity,relforcerowsecurity FROM pg_class WHERE oid=to_regclass($1)",
+			)
+			.bind(format!("public.{protected}"))
+			.fetch_one(&pool)
+			.await
+			.unwrap();
+			assert_eq!(
+				policy,
+				(true, true),
+				"Tenant RLS survives reapplication for {protected}"
+			);
+		}
+		let owner:String=sqlx::query_scalar("SELECT confrelid::regclass::text FROM pg_constraint WHERE conrelid='public.authorization_remote_terminal_receipts'::regclass AND conname='remote_terminal_receipts_owner_fkey'")
+            .fetch_one(&pool).await.unwrap();
+		assert_eq!(owner, "node_names");
+		let atomic:bool=sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM pg_trigger WHERE tgrelid='public.authorization_remote_terminal_receipts'::regclass AND tgname='atomic_write_guard' AND NOT tgisinternal)")
+            .fetch_one(&pool).await.unwrap();
+		assert!(atomic);
+		let node_nullable: String = sqlx::query_scalar("SELECT is_nullable FROM information_schema.columns WHERE table_schema='public' AND table_name='node_deletions' AND column_name='node'")
+            .fetch_one(&pool).await.unwrap();
+		assert_eq!(node_nullable, "NO");
+		let identity: (String, String) = sqlx::query_as("SELECT data_type,is_nullable FROM information_schema.columns WHERE table_schema='public' AND table_name='node_deletions' AND column_name='id'")
+            .fetch_one(&pool).await.unwrap();
+		assert_eq!(identity, ("uuid".to_owned(), "NO".to_owned()));
+		let primary_key: Vec<String> = sqlx::query_scalar("SELECT a.attname::text FROM pg_constraint c JOIN pg_attribute a ON a.attrelid=c.conrelid AND a.attnum=ANY(c.conkey) WHERE c.conrelid='public.node_deletions'::regclass AND c.contype='p' ORDER BY a.attnum")
+            .fetch_all(&pool).await.unwrap();
+		assert_eq!(primary_key, ["id"]);
+		let deadline_type: String = sqlx::query_scalar("SELECT data_type FROM information_schema.columns WHERE table_schema='public' AND table_name='node_deletions' AND column_name='purge_after'")
+            .fetch_one(&pool).await.unwrap();
+		assert_eq!(deadline_type, "timestamp with time zone");
+		let trigger: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM pg_trigger WHERE tgrelid='public.node_deletions'::regclass AND tgname='node_deletions_immutable' AND NOT tgisinternal)")
+            .fetch_one(&pool).await.unwrap();
+		assert!(
+			trigger,
+			"immutable deletion facts must survive reapplication"
+		);
+		if pass == 0 {
+			executor
+				.rollback_migrations(&node_migrations)
+				.await
+				.unwrap();
+			let table: Option<String> =
+				sqlx::query_scalar("SELECT to_regclass('public.node_deletions')::text")
+					.fetch_one(&pool)
+					.await
+					.unwrap();
+			assert!(table.is_none());
+			let function: Option<String> = sqlx::query_scalar(
+				"SELECT to_regprocedure('public.aidash_node_deletion_immutable()')::text",
+			)
+			.fetch_one(&pool)
+			.await
+			.unwrap();
+			assert!(function.is_none());
+			let after = recorded_keys(&fixture.connection).await;
+			assert_eq!(after.len(), before.len() - node_migrations.len());
+			assert!(node_migrations.iter().all(|migration| {
+				!after.contains(&(migration.app_label.clone(), migration.name.clone()))
+			}));
+			executor.apply_migrations(&node_migrations).await.unwrap();
+			assert_eq!(recorded_keys(&fixture.connection).await, before);
+		}
+	}
+}
+
+/// The audit target survives physical purge and cannot name another Tenant's
+/// Node. HTTP history assertions cannot establish these database constraints.
+#[rstest]
+#[tokio::test]
+async fn node_administration_audit_preserves_permanent_tenant_ownership(
+	#[future] fresh_database: MigrationFixture,
+) {
+	let fixture = fresh_database.await;
+	aidash_server::bootstrap::migrations::run(&migration_context(&fixture.url))
+		.await
+		.unwrap();
+	fixture.tenant_root("acme").await;
+	fixture.tenant_root("sibling").await;
+	let pool = PgPool::connect(&fixture.url).await.unwrap();
+	let name = aidash_domain::nodes::NodeName::derived("acme").to_string();
+	let insert = "INSERT INTO dashboard_administration_history (id,occurred_at,action,actor_kind,tenant,node) VALUES ($1,clock_timestamp(),'node.purge','deployment_administrator',$2,$3)";
+	let wrong_owner = sqlx::query(insert)
+		.bind(Uuid::new_v4())
+		.bind("sibling")
+		.bind(&name)
+		.execute(&pool)
+		.await
+		.unwrap_err();
+	assert_eq!(
+		wrong_owner.as_database_error().unwrap().code().as_deref(),
+		Some("23503")
+	);
+	let no_owner = sqlx::query(insert)
+		.bind(Uuid::new_v4())
+		.bind(Option::<String>::None)
+		.bind(&name)
+		.execute(&pool)
+		.await
+		.unwrap_err();
+	assert_eq!(
+		no_owner.as_database_error().unwrap().code().as_deref(),
+		Some("23514")
+	);
+	let id = Uuid::new_v4();
+	sqlx::query(insert)
+		.bind(id)
+		.bind("acme")
+		.bind(&name)
+		.execute(&pool)
+		.await
+		.unwrap();
+	sqlx::query("DELETE FROM nodes WHERE tenant='acme' AND name=$1")
+		.bind(&name)
+		.execute(&pool)
+		.await
+		.unwrap();
+	let retained: (String, String) =
+		sqlx::query_as("SELECT tenant,node FROM dashboard_administration_history WHERE id=$1")
+			.bind(id)
+			.fetch_one(&pool)
+			.await
+			.unwrap();
+	assert_eq!(retained, ("acme".to_owned(), name.clone()));
+	let permanent_claim = sqlx::query("DELETE FROM node_names WHERE name=$1")
+		.bind(name)
+		.execute(&pool)
+		.await
+		.unwrap_err();
+	assert_eq!(
+		permanent_claim
+			.as_database_error()
+			.unwrap()
+			.code()
+			.as_deref(),
+		Some("23503")
+	);
+	pool.close().await;
+}
+
+struct SourceLifetimeMigration {
+	app: &'static str,
+	physical: &'static str,
+	state: Option<&'static str>,
+}
+
+/// Provenance/session bindings retain their actual owner while a used source
+/// can expire. Rollback restores only the named former source-lifetime FK.
+#[rstest]
+#[case::memory(SourceLifetimeMigration { app: "knowledge", physical: "0037_remote_read_source_lifetime", state: None }, "memory_remote_reads", "memory_remote_read_unit", "memory_remote_reads_atomic", &["memory_remote_read_grant", "memory_remote_read_revision", "memory_remote_reads_pkey", "memory_remote_reads_tenant_root_fkey"])]
+#[case::origin(SourceLifetimeMigration { app: "identity", physical: "0047_task_origin_source_lifetime", state: Some("0048_task_origin_source_lifetime_state") }, "authorization_task_origins", "authorization_task_origins_source_run_id_fkey", "atomic_write_guard", &["authorization_task_origins_task_id_fkey", "authorization_task_origins_tenant_fkey", "authorization_task_origins_pkey"])]
+#[case::execution_task(SourceLifetimeMigration { app: "identity", physical: "0047_task_origin_source_lifetime", state: Some("0048_task_origin_source_lifetime_state") }, "authorization_execution", "authorization_execution_task_id_fkey", "atomic_write_guard", &["authorization_execution_run_id_fkey", "authorization_execution_credential_id_fkey", "authorization_execution_tenant_fkey", "authorization_execution_pkey", "authorization_execution_subject_chain_check"])]
+#[case::execution_workspace(SourceLifetimeMigration { app: "identity", physical: "0047_task_origin_source_lifetime", state: Some("0048_task_origin_source_lifetime_state") }, "authorization_execution", "authorization_execution_workspace_id_fkey", "atomic_write_guard", &["authorization_execution_run_id_fkey", "authorization_execution_credential_id_fkey", "authorization_execution_tenant_fkey", "authorization_execution_pkey", "authorization_execution_subject_chain_check"])]
+#[case::read_workspace(SourceLifetimeMigration { app: "identity", physical: "0047_task_origin_source_lifetime", state: Some("0048_task_origin_source_lifetime_state") }, "authorization_run_reads", "authorization_run_reads_workspace_id_fkey", "atomic_write_guard", &["authorization_run_reads_run_id_fkey", "authorization_run_reads_tenant_root_fkey", "authorization_run_reads_pkey"])]
+#[case::session(SourceLifetimeMigration { app: "execution", physical: "0056_session_area_lifetime", state: Some("0057_session_area_lifetime_state") }, "core_runs", "core_runs_area_id_fkey", "atomic_write_guard", &["core_runs_run_id_fkey", "core_runs_pkey", "core_runs_tenant_root_fkey"])]
+#[tokio::test]
+async fn node_purge_source_lifetime_migrations_round_trip_without_weakening_provenance_owners(
+	#[future] fresh_database: MigrationFixture,
+	#[case] migration: SourceLifetimeMigration,
+	#[case] table: &str,
+	#[case] source_fk: &str,
+	#[case] trigger: &str,
+	#[case] required: &[&str],
+) {
+	use reinhardt::db::migrations::executor::DatabaseMigrationExecutor;
+	let SourceLifetimeMigration {
+		app,
+		physical,
+		state,
+	} = migration;
+	let fixture = fresh_database.await;
+	let source =
+		FilesystemSource::new(PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("migrations"));
+	let migrations = source.all_migrations().await.unwrap();
+	let mut group = migrations
+		.iter()
+		.filter(|m| m.app_label == app && (m.name == physical || state == Some(m.name.as_str())))
+		.cloned()
+		.collect::<Vec<_>>();
+	group.sort_by(|a, b| a.name.cmp(&b.name));
+	assert_eq!(group.len(), 1 + usize::from(state.is_some()));
+	assert!(
+		group
+			.iter()
+			.find(|m| m.name == physical)
+			.unwrap()
+			.database_only
+	);
+	let logical = build_state_from_files(&source).await.unwrap();
+	assert!(
+		!logical
+			.find_model_by_table(table)
+			.unwrap()
+			.constraints
+			.iter()
+			.any(|c| c.name == source_fk),
+		"logical source lifetime must match scalar ORM metadata"
+	);
+	let registered = reinhardt::db::migrations::ProjectState::from_global_registry();
+	assert!(
+		!registered
+			.find_model_by_table(table)
+			.unwrap()
+			.constraints
+			.iter()
+			.any(|c| c.name == source_fk)
+	);
+	let mut executor = DatabaseMigrationExecutor::new(fixture.connection.clone());
+	executor.apply_migrations(&migrations).await.unwrap();
+	let pool = fixture.connection.clone().into_postgres().unwrap();
+	for (pass, restored) in [false, true, false].into_iter().enumerate() {
+		let actual: Vec<String> = sqlx::query_scalar(
+			"SELECT conname::text FROM pg_constraint WHERE conrelid=to_regclass($1) ORDER BY conname",
+		)
+		.bind(format!("public.{table}"))
+		.fetch_all(&pool)
+		.await
+		.unwrap();
+		for constraint in required {
+			assert!(
+				actual.iter().any(|name| name == constraint),
+				"{constraint}: {actual:?}"
+			);
+		}
+		assert_eq!(actual.iter().any(|name| name == source_fk), restored);
+		let guarded: bool = sqlx::query_scalar(
+			"SELECT EXISTS(SELECT 1 FROM pg_trigger WHERE tgrelid=to_regclass($1) AND tgname=$2)",
+		)
+		.bind(format!("public.{table}"))
+		.bind(trigger)
+		.fetch_one(&pool)
+		.await
+		.unwrap();
+		assert!(guarded);
+		match pass {
+			0 => {
+				executor.rollback_migrations(&group).await.unwrap();
+			}
+			1 => {
+				executor.apply_migrations(&group).await.unwrap();
+			}
+			_ => {}
+		}
+	}
+}
+
+/// HTTP proves physical persistence; this owns ORM-state drift and reversible
+/// receiver schema changes while preserving the existing Tenant RLS boundary.
+#[rstest]
+#[tokio::test]
+async fn node_purge_receiving_keysets_roundtrip_with_registered_model_state(
+	#[future] fresh_database: MigrationFixture,
+) {
+	use reinhardt::db::migrations::{ProjectState, executor::DatabaseMigrationExecutor};
+	let fixture = fresh_database.await;
+	let source =
+		FilesystemSource::new(PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("migrations"));
+	let migrations = source.all_migrations().await.unwrap();
+	let mut executor = DatabaseMigrationExecutor::new(fixture.connection.clone())
+		.with_migration_history(migrations.clone());
+	executor.apply_migrations(&migrations).await.unwrap();
+	let before = recorded_keys(&fixture.connection).await;
+	let logical = build_state_from_files(&source).await.unwrap();
+	let registered = ProjectState::from_global_registry();
+	let tables = ["node_registrations", "node_registration_history"];
+	for table in tables {
+		for field in ["source_keys", "keys_revision"] {
+			let actual = &logical.find_model_by_table(table).unwrap().fields[field];
+			let expected = &registered.find_model_by_table(table).unwrap().fields[field];
+			assert_eq!(
+				reinhardt::db::migrations::ColumnDefinition::from_field_state(field, actual),
+				reinhardt::db::migrations::ColumnDefinition::from_field_state(field, expected),
+				"{table}.{field}"
+			);
+		}
+	}
+	// Rollback reverses its supplied list, so preserve a dependency-sorted
+	// transitive closure. Later recovery ownership/cancellation descendants must
+	// be reversed before their receiving-keyset prerequisites, too.
+	let mut plan = reinhardt::db::migrations::MigrationPlan::new();
+	for migration in &migrations {
+		plan = plan.with_migration(migration.clone());
+	}
+	plan.sort().unwrap();
+	let mut selected = BTreeSet::from([
+		("federation".to_owned(), "0015_receiving_keysets".to_owned()),
+		(
+			"federation".to_owned(),
+			"0016_receiving_keysets_state".to_owned(),
+		),
+		("identity".to_owned(), "0045_receiving_keysets".to_owned()),
+		(
+			"identity".to_owned(),
+			"0046_receiving_keysets_state".to_owned(),
+		),
+	]);
+	for migration in &plan.migrations {
+		if migration
+			.dependencies
+			.iter()
+			.any(|key| selected.contains(key))
+		{
+			selected.insert((migration.app_label.clone(), migration.name.clone()));
+		}
+	}
+	let receiving = plan
+		.migrations
+		.into_iter()
+		.filter(|migration| {
+			selected.contains(&(migration.app_label.clone(), migration.name.clone()))
+		})
+		.collect::<Vec<_>>();
+	let pool = fixture.connection.clone().into_postgres().unwrap();
+	for pass in 0..2 {
+		for table in tables {
+			let columns: Vec<(String,String,String)> = sqlx::query_as("SELECT column_name,data_type,is_nullable FROM information_schema.columns WHERE table_schema='public' AND table_name=$1 AND column_name IN ('source_keys','keys_revision') ORDER BY column_name").bind(table).fetch_all(&pool).await.unwrap();
+			assert_eq!(
+				columns,
+				vec![
+					("keys_revision".into(), "bigint".into(), "NO".into()),
+					("source_keys".into(), "text".into(), "YES".into())
+				],
+				"{table}"
+			);
+			let rls: (bool, bool) = sqlx::query_as(
+				"SELECT relrowsecurity,relforcerowsecurity FROM pg_class WHERE oid=to_regclass($1)",
+			)
+			.bind(format!("public.{table}"))
+			.fetch_one(&pool)
+			.await
+			.unwrap();
+			assert_eq!(rls, (true, true), "{table}");
+		}
+		if pass == 0 {
+			executor.rollback_migrations(&receiving).await.unwrap();
+			for table in tables {
+				let count: i64 = sqlx::query_scalar("SELECT count(*) FROM information_schema.columns WHERE table_schema='public' AND table_name=$1 AND column_name IN ('source_keys','keys_revision')").bind(table).fetch_one(&pool).await.unwrap();
+				assert_eq!(count, 0, "{table}");
+			}
+			executor.apply_migrations(&receiving).await.unwrap();
+			assert_eq!(recorded_keys(&fixture.connection).await, before);
+		}
+	}
+}
+
+/// Scalar Node evidence belongs to permanent identity without making the
+/// catalog permanent or changing the ORM's physical-only FK contract.
+#[rstest]
+#[case::registration(
+	"federation",
+	"0019_node_registration_recovery_ownership",
+	None,
+	"node_registrations",
+	"node_registrations_node_fkey",
+	"node_registrations_tenant_root_fkey"
+)]
+#[case::event(
+	"execution",
+	"0056_session_area_lifetime",
+	Some("0057_session_area_lifetime_state"),
+	"events",
+	"events_node_fkey",
+	"events_tenant_root_fkey"
+)]
+#[tokio::test]
+async fn node_purge_registration_recovery_ownership_roundtrips_without_a_catalog_shell(
+	#[future] fresh_database: MigrationFixture,
+	#[case] app: &str,
+	#[case] physical: &str,
+	#[case] state: Option<&str>,
+	#[case] table: &str,
+	#[case] node_fk: &str,
+	#[case] tenant_fk: &str,
+) {
+	use reinhardt::db::migrations::{ProjectState, executor::DatabaseMigrationExecutor};
+	let fixture = fresh_database.await;
+	let source =
+		FilesystemSource::new(PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("migrations"));
+	let migrations = source.all_migrations().await.unwrap();
+	let mut group = migrations
+		.iter()
+		.filter(|migration| {
+			migration.app_label == app
+				&& (migration.name == physical || state == Some(migration.name.as_str()))
+		})
+		.cloned()
+		.collect::<Vec<_>>();
+	group.sort_by(|a, b| a.name.cmp(&b.name));
+	assert_eq!(group.len(), 1 + usize::from(state.is_some()));
+	assert!(
+		group
+			.iter()
+			.find(|m| m.name == physical)
+			.unwrap()
+			.database_only
+	);
+	for state in [
+		build_state_from_files(&source).await.unwrap(),
+		ProjectState::from_global_registry(),
+	] {
+		assert!(
+			!state
+				.find_model_by_table(table)
+				.unwrap()
+				.constraints
+				.iter()
+				.any(|constraint| constraint.name == node_fk)
+		);
+	}
+	let mut executor = DatabaseMigrationExecutor::new(fixture.connection.clone())
+		.with_migration_history(migrations.clone());
+	executor.apply_migrations(&migrations).await.unwrap();
+	let pool = fixture.connection.clone().into_postgres().unwrap();
+	for (pass, parent) in ["node_names", "nodes", "node_names"]
+		.into_iter()
+		.enumerate()
+	{
+		let actual: (String, String) = sqlx::query_as("SELECT confrelid::regclass::text, pg_get_constraintdef(oid) FROM pg_constraint WHERE conrelid=to_regclass($1) AND conname=$2").bind(table).bind(node_fk).fetch_one(&pool).await.unwrap();
+		assert_eq!(actual.0, parent);
+		assert!(
+			actual.1.contains(if parent == "node_names" {
+				"FOREIGN KEY (node, tenant) REFERENCES node_names(name, tenant)"
+			} else {
+				"FOREIGN KEY (tenant, node) REFERENCES nodes(tenant, name)"
+			}),
+			"{actual:?}"
+		);
+		let root: bool = sqlx::query_scalar(
+			"SELECT EXISTS(SELECT 1 FROM pg_constraint WHERE conrelid=to_regclass($1) AND conname=$2)",
+		)
+		.bind(table)
+		.bind(tenant_fk)
+		.fetch_one(&pool)
+		.await
+		.unwrap();
+		assert!(root);
+		let rls: (bool, bool) = sqlx::query_as(
+			"SELECT relrowsecurity,relforcerowsecurity FROM pg_class WHERE oid=to_regclass($1)",
+		)
+		.bind(table)
+		.fetch_one(&pool)
+		.await
+		.unwrap();
+		assert_eq!(rls, (true, true));
+		match pass {
+			0 => {
+				executor.rollback_migrations(&group).await.unwrap();
+			}
+			1 => {
+				executor.apply_migrations(&group).await.unwrap();
+			}
+			_ => {}
+		}
+	}
+	if table == "events" {
+		fixture.tenant_root("event-owner").await;
+		fixture.tenant_root("event-other").await;
+		let node = aidash_domain::nodes::NodeName::derived("event-owner").to_string();
+		let id = Uuid::new_v4();
+		let insert = "INSERT INTO events(id,tenant,node,kind,data) VALUES ($1,$2,$3,'fixture.retained','{}')";
+		let foreign = sqlx::query(insert)
+			.bind(Uuid::new_v4())
+			.bind("event-other")
+			.bind(&node)
+			.execute(&pool)
+			.await
+			.unwrap_err();
+		assert_eq!(
+			foreign.as_database_error().unwrap().code().as_deref(),
+			Some("23503")
+		);
+		sqlx::query(insert)
+			.bind(id)
+			.bind("event-owner")
+			.bind(&node)
+			.execute(&pool)
+			.await
+			.unwrap();
+		sqlx::query(insert)
+			.bind(Uuid::new_v4())
+			.bind("event-owner")
+			.bind(Option::<String>::None)
+			.execute(&pool)
+			.await
+			.unwrap();
+		sqlx::query("DELETE FROM nodes WHERE tenant='event-owner' AND name=$1")
+			.bind(&node)
+			.execute(&pool)
+			.await
+			.unwrap();
+		let retained: (String, String) =
+			sqlx::query_as("SELECT tenant,node FROM events WHERE id=$1")
+				.bind(id)
+				.fetch_one(&pool)
+				.await
+				.unwrap();
+		assert_eq!(retained, ("event-owner".to_owned(), node.clone()));
+		let permanent = sqlx::query("DELETE FROM node_names WHERE name=$1")
+			.bind(node)
+			.execute(&pool)
+			.await
+			.unwrap_err();
+		assert_eq!(
+			permanent.as_database_error().unwrap().code().as_deref(),
+			Some("23503")
+		);
+	}
 }
 
 #[rstest]

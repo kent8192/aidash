@@ -5,6 +5,7 @@ use serde_json::Value;
 use uuid::Uuid;
 #[derive(Clone)]
 pub(crate) struct Grant {
+	pub(crate) node: String,
 	pub(crate) id: Uuid,
 	pub(crate) task_id: Uuid,
 	pub(crate) task_revision: i64,
@@ -20,6 +21,7 @@ pub(crate) struct Grant {
 	pub(crate) semantic: Value,
 }
 crate::native_record!(Grant {
+	node,
 	id,
 	task_id,
 	task_revision,

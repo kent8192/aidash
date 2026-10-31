@@ -2,6 +2,7 @@
 //! of its Nodes accepts one named Node of another Tenant, and addresses
 //! outbound exchange to it. The record pins what the receiving Node needs to
 //! check that Node's tokens.
+use super::keys::{PublicDeploymentKey, RolloverSchedule, TrustedDeploymentKeys};
 use super::{DeploymentId, DeploymentKeyId, NodeAddress, NodeName};
 use crate::configuration::validate_endpoint;
 use crate::tenancy::TenantName;
@@ -172,6 +173,31 @@ pub struct NodeRegistration {
 	pub actor: String,
 	pub created_at: DateTime<Utc>,
 	pub updated_at: DateTime<Utc>,
+}
+
+impl NodeRegistration {
+	/// Refresh this registration's separately stored authentication trust only
+	/// after capability verification of the whole successor-signed request.
+	/// Taking `&self` preserves enabled state, permissions and policy revision.
+	#[allow(clippy::too_many_arguments)]
+	pub fn accept_key_transition(
+		&self,
+		trusted: &mut TrustedDeploymentKeys,
+		deployment: &DeploymentId,
+		predecessor: &DeploymentKeyId,
+		successor: PublicDeploymentKey,
+		schedule: RolloverSchedule,
+		now: DateTime<Utc>,
+	) -> Result<()> {
+		if &self.source_node.deployment != deployment
+			|| !matches!(self.counterpart, Counterpart::OtherDeployment { .. })
+		{
+			return Err(Error::Invalid(
+				"a key transition must belong to the registered Deployment".into(),
+			));
+		}
+		trusted.accept_successor(predecessor, successor, schedule, now)
+	}
 }
 
 #[cfg(test)]

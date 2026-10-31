@@ -296,6 +296,7 @@ impl Workspaces {
 		)
 		.await
 		.map(|state| StateResponse {
+			offering: crate::bootstrap::build::offering().as_str().to_owned(),
 			access: crate::api_schema::AccessProfile::Subject {
 				tenant: self.identity.tenant.clone(),
 				subject: self.identity.subject.clone(),

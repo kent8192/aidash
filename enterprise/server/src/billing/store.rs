@@ -3,8 +3,9 @@
 //! run in the no-Tenant scope. Mappings are Tenant-owned: they are read in
 //! their Tenant's own scope.
 use super::models::{
-	BillingAccount, BillingAttachment, BillingAttachmentConsent, BillingPodUsage,
-	BillingStorageSample, BillingSubscription,
+	BillingAccount, BillingAttachment, BillingAttachmentConsent, BillingCoveragePeriod,
+	BillingPodUsage, BillingRetentionState, BillingStorageSample, BillingSubscription,
+	BillingUsageSegment,
 };
 use super::payments::{Status, Subscription};
 use aidash_application::tenancy::TenancyScope;
@@ -15,7 +16,7 @@ use reinhardt::db::backends::TransactionExecutor;
 use reinhardt::db::orm::execution::convert_values;
 use reinhardt::db::orm::{Model, QueryRow};
 use reinhardt::query::{
-	Alias, Expr, ExprTrait, IntoValue, OnConflict, PostgresQueryBuilder, Query,
+	Alias, Expr, ExprTrait, IntoIden, IntoValue, OnConflict, PostgresQueryBuilder, Query,
 	QueryStatementBuilder, SelectStatement, SimpleExpr,
 };
 use serde::de::DeserializeOwned;
@@ -61,6 +62,9 @@ pub async fn execute(
 	tx.execute(&sql, convert_values(values)).await?;
 	Ok(())
 }
+
+pub(crate) mod facts;
+pub use facts::account_usage;
 
 // Subscriptions
 
@@ -358,8 +362,33 @@ pub async fn consent(
 	Ok(())
 }
 
-/// Attaches `tenant` to `account`, moving it from another account, and
-/// consumes every consent that named the Tenant.
+#[derive(serde::Deserialize)]
+struct ClockRow {
+	now: DateTime<Utc>,
+}
+
+/// The database's current wall clock, not the transaction's start time.
+/// Attachment callers read it only after acquiring the Tenant capacity lock.
+pub async fn database_now(tx: &mut dyn TransactionExecutor) -> Result<DateTime<Utc>> {
+	let query = Query::select()
+		.expr_as(
+			SimpleExpr::FunctionCall("clock_timestamp".into_iden(), vec![]),
+			Alias::new("now"),
+		)
+		.to_owned();
+	fetch::<ClockRow>(tx, &query)
+		.await?
+		.into_iter()
+		.next()
+		.map(|row| row.now)
+		.ok_or_else(|| Error::Invalid("the database clock returned no instant".into()))
+}
+
+/// Moves coverage, the current attachment, and consent consumption atomically.
+/// The caller holds the receiving account lock followed by the Tenant capacity
+/// lock, has ruled out an unchanged attachment, and obtained `now` after locking.
+/// Serialized service writes keep intervals disjoint; storage additionally
+/// requires positive closed spans and at most one open interval per Tenant.
 pub async fn attach(
 	tx: &mut dyn TransactionExecutor,
 	tenant: &str,
@@ -368,6 +397,42 @@ pub async fn attach(
 	owner: Uuid,
 	now: DateTime<Utc>,
 ) -> Result<()> {
+	execute(
+		tx,
+		Query::update()
+			.table(Alias::new(BillingCoveragePeriod::table_name()))
+			.value(Alias::new("ends_at"), now)
+			.and_where(Expr::col("tenant").eq(Expr::value(tenant)))
+			.and_where(Expr::col("ends_at").is_null()),
+	)
+	.await?;
+	execute(
+		tx,
+		Query::insert()
+			.into_table(Alias::new(BillingCoveragePeriod::table_name()))
+			.columns(
+				[
+					"id",
+					"tenant",
+					"account_id",
+					"starts_at",
+					"ends_at",
+					"consented_by_administrator",
+					"consented_by_owner",
+				]
+				.map(Alias::new),
+			)
+			.values_panic([
+				IntoValue::into_value(Uuid::new_v4()),
+				IntoValue::into_value(tenant.to_owned()),
+				IntoValue::into_value(account),
+				IntoValue::into_value(now),
+				IntoValue::into_value(None::<DateTime<Utc>>),
+				IntoValue::into_value(administrator),
+				IntoValue::into_value(owner),
+			]),
+	)
+	.await?;
 	execute(
 		tx,
 		Query::insert()
@@ -509,90 +574,25 @@ pub async fn deletions(
 	Ok(found)
 }
 
-pub async fn record_pod_usage(
-	tx: &mut dyn TransactionExecutor,
-	operation: Uuid,
-	tenant: &str,
-	started_at: DateTime<Utc>,
-	ended_at: DateTime<Utc>,
-	millis: i64,
-) -> Result<()> {
-	execute(
-		tx,
-		Query::insert()
-			.into_table(Alias::new(BillingPodUsage::table_name()))
-			.columns(["operation", "tenant", "started_at", "ended_at", "millis"].map(Alias::new))
-			.values_panic([
-				IntoValue::into_value(operation),
-				IntoValue::into_value(tenant.to_owned()),
-				IntoValue::into_value(started_at),
-				IntoValue::into_value(ended_at),
-				IntoValue::into_value(millis),
-			])
-			.on_conflict(
-				OnConflict::column(Alias::new("operation"))
-					.do_nothing()
-					.to_owned(),
-			),
-	)
-	.await?;
-	Ok(())
-}
-
-/// The first sample of a Tenant for a UTC day stands: a pass repeated by
-/// another replica records nothing new.
-pub async fn record_storage_sample(
-	tx: &mut dyn TransactionExecutor,
-	tenant: &str,
-	sampled_at: DateTime<Utc>,
-	bytes: i64,
-) -> Result<()> {
-	execute(
-		tx,
-		Query::insert()
-			.into_table(Alias::new(BillingStorageSample::table_name()))
-			.columns(["id", "tenant", "sampled_on", "sampled_at", "bytes"].map(Alias::new))
-			.from_subquery(
-				Query::select()
-					.expr(Expr::value(Uuid::new_v4()))
-					.expr(Expr::value(tenant.to_owned()))
-					.expr(date(sampled_at.date_naive()))
-					.expr(Expr::value(sampled_at))
-					.expr(Expr::value(bytes))
-					.to_owned(),
-			)
-			.on_conflict(
-				OnConflict::columns(["tenant", "sampled_on"].map(Alias::new))
-					.do_nothing()
-					.to_owned(),
-			),
-	)
-	.await?;
-	Ok(())
-}
-
-#[derive(serde::Deserialize)]
-struct SumRow {
-	total: i64,
-}
-
 /// The Execution Pod milliseconds metered for `tenant` since `since`.
 pub async fn pod_millis_since(pool: &Pool, tenant: &str, since: DateTime<Utc>) -> Result<u64> {
-	let query = Query::select()
-		.expr_as(
-			Expr::cust("COALESCE(SUM(millis), 0)::bigint"),
-			Alias::new("total"),
-		)
-		.from(Alias::new(BillingPodUsage::table_name()))
+	let query = select(BillingPodUsage::table_name(), &["billable_ns"])
 		.and_where(Expr::col("tenant").eq(Expr::value(tenant)))
-		.and_where(Expr::col("ended_at").gte(Expr::value(since)))
+		.and_where(Expr::col("ended_ns").gte(Expr::value(super::facts::nanos(since)?)))
 		.to_owned();
 	let rows = pool
 		.atomic(&TenancyScope::NoTenant, async |tx| {
-			fetch::<SumRow>(tx, &query).await
+			fetch::<PreciseTotal>(tx, &query).await
 		})
 		.await?;
-	Ok(rows.first().map_or(0, |row| row.total.max(0) as u64))
+	let nanos: u128 = rows.iter().map(|r| r.billable_ns as u128).sum();
+	u64::try_from(nanos / 1_000_000)
+		.map_err(|_| Error::Invalid("usage total exceeds supported report range".into()))
+}
+
+#[derive(serde::Deserialize)]
+struct PreciseTotal {
+	billable_ns: i64,
 }
 
 #[derive(serde::Deserialize)]
@@ -603,6 +603,7 @@ struct BytesRow {
 /// The bytes of the latest sample of `tenant`, or none yet.
 pub async fn latest_storage_bytes(pool: &Pool, tenant: &str) -> Result<u64> {
 	let query = select(BillingStorageSample::table_name(), &["bytes"])
+		.and_where(Expr::col("status").ne(Expr::value("exempt")))
 		.and_where(Expr::col("tenant").eq(Expr::value(tenant)))
 		.order_by(Alias::new("sampled_at"), reinhardt::query::Order::Desc)
 		.limit(1)
@@ -629,8 +630,8 @@ pub struct UsageRow {
 #[derive(serde::Deserialize)]
 struct DayPods {
 	tenant: String,
-	day: NaiveDate,
-	millis: i64,
+	ended_at: DateTime<Utc>,
+	billable_ns: i64,
 }
 
 #[derive(serde::Deserialize)]
@@ -650,22 +651,18 @@ pub async fn usage(pool: &Pool, from: NaiveDate, to: NaiveDate) -> Result<Vec<Us
 			.expect("midnight")
 			.and_utc(),
 	);
-	let pods = Query::select()
-		.column(Alias::new("tenant"))
-		.expr_as(
-			Expr::cust("(ended_at AT TIME ZONE 'UTC')::date"),
-			Alias::new("day"),
-		)
-		.expr_as(Expr::cust("SUM(millis)::bigint"), Alias::new("millis"))
-		.from(Alias::new(BillingPodUsage::table_name()))
-		.and_where(Expr::col("ended_at").gte(Expr::value(start)))
-		.and_where(Expr::col("ended_at").lt(Expr::value(end)))
-		.group_by_columns([Alias::new("tenant"), Alias::new("day")])
-		.to_owned();
+	let pods = select(
+		BillingPodUsage::table_name(),
+		&["tenant", "ended_at", "billable_ns"],
+	)
+	.and_where(Expr::col("ended_ns").gte(Expr::value(super::facts::nanos(start)?)))
+	.and_where(Expr::col("ended_ns").lt(Expr::value(super::facts::nanos(end)?)))
+	.to_owned();
 	let samples = select(
 		BillingStorageSample::table_name(),
 		&["tenant", "sampled_on", "bytes"],
 	)
+	.and_where(Expr::col("status").ne(Expr::value("exempt")))
 	.and_where(Expr::col("sampled_on").gte(date(from)))
 	.and_where(Expr::col("sampled_on").lte(date(to)))
 	.to_owned();
@@ -678,9 +675,17 @@ pub async fn usage(pool: &Pool, from: NaiveDate, to: NaiveDate) -> Result<Vec<Us
 		})
 		.await?;
 	let mut days = BTreeMap::<(String, NaiveDate), (u64, Option<u64>)>::new();
+	let mut precise = BTreeMap::<(String, NaiveDate), u128>::new();
 	for pod in pods {
-		days.entry((pod.tenant, pod.day)).or_default().0 =
-			(pod.millis.max(0) as u64).div_ceil(1000);
+		if pod.billable_ns > 0 {
+			*precise
+				.entry((pod.tenant, pod.ended_at.date_naive()))
+				.or_default() += pod.billable_ns as u128;
+		}
+	}
+	for (key, nanos) in precise {
+		days.entry(key).or_default().0 = u64::try_from((nanos / 1_000_000).div_ceil(1000))
+			.map_err(|_| Error::Invalid("usage total exceeds supported report range".into()))?;
 	}
 	for sample in samples {
 		days.entry((sample.tenant, sample.sampled_on))
@@ -701,21 +706,76 @@ pub async fn usage(pool: &Pool, from: NaiveDate, to: NaiveDate) -> Result<Vec<Us
 /// Deletes what has outlived `cutoff`: metering records, and the attachments
 /// of Tenants purged before it. Expired consents go too, then the canceled
 /// Subscriptions that ended before `cutoff`, then the Accounts left with no
-/// Subscription, attachment or consent that were created before it.
+/// Subscription, attachment, coverage or consent that were created before it.
+/// Closed coverage is retained while any frozen segment or sample refers to it. Open coverage survives purge: no authoritative end is known.
 pub async fn sweep(pool: &Pool, cutoff: DateTime<Utc>, now: DateTime<Utc>) -> Result<()> {
 	pool.atomic(&TenancyScope::NoTenant, async |tx| {
+		let prior = facts::retention(tx, true).await?;
+		let cutoff_ns = if cutoff.timestamp() < 0 {
+			0
+		} else {
+			super::facts::nanos(cutoff)?
+		};
+		if cutoff > database_now(tx).await? {
+			return Err(Error::Invalid("retention cutoff is in the future".into()));
+		}
+		execute(
+			tx,
+			Query::delete()
+				.from_table(Alias::new(BillingUsageSegment::table_name()))
+				.and_where(Expr::exists(
+					Query::select()
+						.expr(Expr::value(1))
+						.from(Alias::new(BillingPodUsage::table_name()))
+						.and_where(
+							Expr::col(("billing_pod_usage", "allocation"))
+								.eq(Expr::col(("billing_usage_segments", "allocation"))),
+						)
+						.and_where(Expr::col("ended_ns").lt(Expr::value(cutoff_ns)))
+						.to_owned(),
+				)),
+		)
+		.await?;
+
 		execute(
 			tx,
 			Query::delete()
 				.from_table(Alias::new(BillingPodUsage::table_name()))
-				.and_where(Expr::col("ended_at").lt(Expr::value(cutoff))),
+				.and_where(Expr::col("ended_ns").lt(Expr::value(cutoff_ns))),
 		)
 		.await?;
 		execute(
 			tx,
 			Query::delete()
 				.from_table(Alias::new(BillingStorageSample::table_name()))
-				.and_where(Expr::col("sampled_at").lt(Expr::value(cutoff))),
+				.and_where(Expr::col("sampled_ns").lt(Expr::value(cutoff_ns))),
+		)
+		.await?;
+		execute(
+			tx,
+			Query::delete()
+				.from_table(Alias::new(BillingCoveragePeriod::table_name()))
+				.and_where(Expr::col("ends_at").lt(Expr::value(cutoff)))
+				.and_where(Expr::not_exists(
+					Query::select()
+						.expr(Expr::value(1))
+						.from(Alias::new(BillingUsageSegment::table_name()))
+						.and_where(
+							Expr::col(("billing_usage_segments", "coverage_id"))
+								.eq(Expr::col(("billing_coverage_periods", "id"))),
+						)
+						.to_owned(),
+				))
+				.and_where(Expr::not_exists(
+					Query::select()
+						.expr(Expr::value(1))
+						.from(Alias::new(BillingStorageSample::table_name()))
+						.and_where(
+							Expr::col(("billing_storage_samples", "coverage_id"))
+								.eq(Expr::col(("billing_coverage_periods", "id"))),
+						)
+						.to_owned(),
+				)),
 		)
 		.await?;
 		execute(
@@ -768,7 +828,25 @@ pub async fn sweep(pool: &Pool, cutoff: DateTime<Utc>, now: DateTime<Utc>) -> Re
 				.and_where(Expr::cust(
 					"NOT EXISTS (SELECT 1 FROM billing_attachment_consents c \
 					 WHERE c.account_id = billing_accounts.id)",
+				))
+				.and_where(Expr::not_exists(
+					Query::select()
+						.expr(Expr::value(1))
+						.from(Alias::new(BillingCoveragePeriod::table_name()))
+						.and_where(
+							Expr::col(("billing_coverage_periods", "account_id"))
+								.eq(Expr::col(("billing_accounts", "id"))),
+						)
+						.to_owned(),
 				)),
+		)
+		.await?;
+		execute(
+			tx,
+			Query::update()
+				.table(Alias::new(BillingRetentionState::table_name()))
+				.value(Alias::new("floor_ns"), prior.max(cutoff_ns))
+				.and_where(Expr::col("id").eq(Expr::value("history"))),
 		)
 		.await?;
 		Ok(())

@@ -278,7 +278,7 @@ async fn delegated_thread_child(#[future] shared_thread: SharedThread) -> (Share
 		&aidash_domain::nodes::NodeAddress::derived(f.c.f.config.deployment.as_str(), "acme"),
 		"reviewer",
 		"1.1.0",
-	)] = json!({"kind":"agent"});
+	)] = json!({"kind":"agent", "node": aidash_domain::nodes::NodeName::derived("acme")});
 	assert_eq!(
 		request(
 			&f.c.app,

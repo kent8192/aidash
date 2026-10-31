@@ -684,11 +684,19 @@ single Registry leaf without rewriting either history or changing stored data.
 state-only migration preserves the durable Research result history and leaves
 a single Execution head without changing either existing branch.
 
+`execution/0060_node_research_merge` joins Node cancellation and Research/approval
+histories with an empty state-only migration. Both existing histories and their
+rollback guards retain their identities; no schema or stored data changes.
+
 `execution/0060_plugin_research_merge` and `registry/0049_plugin_context_merge`
 join the MCP and Research/approval histories, and the Agent Plugin and Context
 Source histories, respectively. Both are empty state-only migrations. They
 preserve the existing migration identities and give each app one leaf without
 changing schema, retained inputs, or data.
+
+`execution/0061_node_plugin_merge` joins the Node cancellation and MCP
+continuation heads after their Research history merges. The empty state-only
+migration preserves both histories and leaves one Execution head.
 
 ## Home ledger recovery eligibility (#434)
 
@@ -762,3 +770,22 @@ Plugin/Context Source heads. The Harness Contract validator extends the Agent
 Plugin settings validator, including its compaction rules, and restores that
 validator on rollback. The join is an empty state-only migration that preserves
 existing identities and one leaf per app.
+
+## Merged Node lifetime and Auth histories
+
+`identity/0051_node_auth_history_merge` joins the Common Auth origin binding,
+remote terminal receipts and task source lifetime histories.
+`execution/0058_node_lifetime_merge` joins Node cancellation jobs with Session
+Area lifetime state. `knowledge/0038_recovery_lifetime_merge` joins Home ledger
+recovery eligibility and attempt evidence with remote-read source lifetimes.
+Each is an empty state-only migration that depends on every existing leaf of
+its app. Existing migration identities, dependencies, schema changes and
+rollback guards remain intact, with one head per app for future generation.
+
+`execution/0084_node_preview_merge` joins `execution/0061_node_plugin_merge`
+with the Live preview, Safety Stop, Lease Recovery and Harness Contract history
+ending in `execution/0083_harness_contract_state`.
+`federation/0020_node_preview_origin_merge` joins Node registration recovery
+ownership with `federation/0013_registered_preview_origin`. Both are empty
+state-only migrations; existing identities, schema changes and rollback guards
+remain intact.

@@ -172,7 +172,7 @@ async fn deferred_fixture(
 			&aidash_domain::nodes::NodeAddress::derived(c.f.config.deployment.as_str(), "acme"),
 			"research",
 			version,
-		)] = json!({"kind":"agent"});
+		)] = json!({"kind":"agent", "node": aidash_domain::nodes::NodeName::derived("acme")});
 	}
 	crate::common::replace_policy(&c.f.store, "acme", c.policy.clone()).await;
 	Deferred {

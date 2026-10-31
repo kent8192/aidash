@@ -155,7 +155,12 @@ impl Ledger for Stop<'_> {
 			Action::Cancel => RunControlAction::Cancel,
 		};
 		self.store
-			.control_in_as(self.tx, run, action, ControlSource::DeploymentAdministrator)
+			.control_in_as(
+				&mut **self.tx,
+				run,
+				action,
+				ControlSource::DeploymentAdministrator,
+			)
 			.await?;
 		Ok(())
 	}

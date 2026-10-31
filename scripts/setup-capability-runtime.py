@@ -13,8 +13,10 @@ import os
 from pathlib import Path
 import re
 import secrets
+import shlex
 import shutil
 import subprocess
+import sys
 import urllib.request
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -45,11 +47,17 @@ def main():
     parser.add_argument("--name", required=True, help="New, disposable kind cluster name")
     parser.add_argument("--directory", type=Path, required=True, help="New private state directory")
     parser.add_argument("--port", type=int, default=18949, help="Loopback runner port")
+    parser.add_argument("--idle-seconds", type=int, default=1800,
+                        help="Real interpreter idle timeout (1..1800; default unchanged)")
+    parser.add_argument("--observe-allocations", action="store_true",
+                        help="Capture allowlisted provider evidence before the controller observes it")
     args = parser.parse_args()
     if not re.fullmatch(r"aidash-[a-z0-9][a-z0-9-]{0,35}", args.name):
         parser.error("name must begin with aidash- and contain lowercase letters/digits/hyphens")
     if not 1024 <= args.port <= 65535:
         parser.error("port must be between 1024 and 65535")
+    if not 1 <= args.idle_seconds <= 1800:
+        parser.error("idle-seconds must be between 1 and 1800")
     executables = {name: shutil.which(name) for name in ("docker", "kind", "kubectl", "helm")}
     if not all(executables.values()):
         parser.error("docker, kind, kubectl and helm must be installed")
@@ -57,6 +65,19 @@ def main():
         parser.error("cluster already exists; refusing to alter it")
     directory = args.directory.expanduser().resolve()
     directory.mkdir(parents=True, mode=0o700, exist_ok=False)
+    kubectl = executables["kubectl"]
+    if args.observe_allocations:
+        evidence = directory / "allocation-evidence"
+        evidence.mkdir(mode=0o700)
+        observer = directory / "observe-kubectl"
+        # The controller intentionally passes a minimal environment. Bind both
+        # executable and capture path in this private wrapper, never via env.
+        command = [sys.executable, str(ROOT / "scripts/observe-capability-kubectl.py"),
+                   kubectl, str(evidence)]
+        write_private(observer, "#!/bin/sh\nexec " +
+                      " ".join(shlex.quote(value) for value in command) + ' "$@"\n')
+        observer.chmod(0o700)
+        kubectl = str(observer)
     write_private(directory / "owner.json", json.dumps({"cluster": args.name, "purpose": "Aidash capability acceptance", "source": str(ROOT)}))
     kubeconfig = directory / "kubeconfig"
     kind_config = directory / "kind.yaml"
@@ -80,6 +101,14 @@ nodes:
     kubeconfig.chmod(0o600)
     node = args.name + "-control-plane"
     docker = [executables["docker"], "exec", "-i", node]
+    ctr = run(docker + ["sh", "-c", "command -v ctr"], capture=True).decode().strip()
+    if not re.fullmatch(r"/[A-Za-z0-9_./+-]+", ctr):
+        raise SystemExit("invalid node ctr executable path")
+    run(docker + ["test", "-x", ctr])
+    ctr_version = run(docker + [ctr, "--version"], capture=True).decode().strip()
+    if not ctr_version:
+        raise SystemExit("node ctr executable returned no version")
+    print(json.dumps({"node_ctr": ctr, "node_ctr_version": ctr_version}), flush=True)
     kube = [executables["kubectl"], "--kubeconfig", kubeconfig]
     chart = run([executables["helm"], "template", "cilium", "cilium", "--repo", "https://helm.cilium.io/",
                  "--version", CILIUM, "--namespace", "kube-system", "--set", "operator.replicas=1",
@@ -113,10 +142,11 @@ Path('/opt/aidash').mkdir(exist_ok=True)
     run(docker + ["python3", "-"], data=configuration)
     run(docker + ["systemctl", "restart", "containerd"])
     run(docker + ["python3", "-c", "from pathlib import Path; import sys; Path('/opt/aidash/node_guard.py').write_bytes(sys.stdin.buffer.read())"], data=(ROOT / "runner/node_guard.py").read_bytes())
-    service = """[Unit]
+    service = f"""[Unit]
 Description=Aidash isolated runtime writer guardian
 After=containerd.service
 [Service]
+Environment=AIDASH_CTR_BINARY={ctr}
 ExecStart=/usr/bin/python3 /opt/aidash/node_guard.py watch
 Restart=always
 RestartSec=1
@@ -141,7 +171,7 @@ WantedBy=multi-user.target
         raise SystemExit("invalid built image digest")
     run([executables["kind"], "load", "docker-image", "--name", args.name, tag])
     image = "docker.io/library/aidash-sandbox@" + digest
-    run(docker + ["ctr", "-n", "k8s.io", "images", "tag", tag, image])
+    run(docker + [ctr, "-n", "k8s.io", "images", "tag", tag, image])
     # Shared with the Rust capability runtime, whose Profile denies unknown fields:
     # Runner-only settings such as host_tasks stay out (the Runner defaults to 512).
     profile = {
@@ -149,13 +179,13 @@ WantedBy=multi-user.target
         "working_bytes": 1073741824, "retained_bytes": 10737418240, "temporary_bytes": 268435456,
         "cpu": 2, "memory_bytes": 2147483648, "processes": 128,
         "operation_seconds": 120, "maximum_seconds": 600, "install_seconds": 300,
-        "idle_seconds": 1800, "recovery_seconds": 604800, "grant_seconds": 3600,
+        "idle_seconds": args.idle_seconds, "recovery_seconds": 604800, "grant_seconds": 3600,
         "approval_seconds": 86400, "output_bytes": 8388608, "staging_seconds": 86400,
         "runner": {
             "endpoint": f"http://127.0.0.1:{args.port}", "token_env": "AIDASH_CORE_RUNNER_TOKEN", "image": image,
             "runtime_class": "aidash-gvisor", "namespace": "aidash-sandbox", "journal": str(directory / "journal"),
-            "kubectl": executables["kubectl"], "kubeconfig": str(kubeconfig), "listen_host": "127.0.0.1", "listen_port": args.port,
-            "node_guard": docker + ["python3", "/opt/aidash/node_guard.py"],
+            "kubectl": kubectl, "kubeconfig": str(kubeconfig), "listen_host": "127.0.0.1", "listen_port": args.port,
+            "node_guard": docker + ["env", "AIDASH_CTR_BINARY=" + ctr, "python3", "/opt/aidash/node_guard.py"],
         },
     }
     write_private(directory / "profile.json", json.dumps(profile, indent=2) + "\n")

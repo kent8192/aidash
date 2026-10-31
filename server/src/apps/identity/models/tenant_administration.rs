@@ -117,6 +117,25 @@ impl AdministrationActor {
 		tx: &mut dyn TransactionExecutor,
 		event: AdministrationEvent<'_>,
 	) -> Result<()> {
+		self.record_target(tx, event, None).await
+	}
+
+	/// Node audit keeps the permanent name claim after the Node is purged.
+	pub(crate) async fn record_node(
+		&self,
+		tx: &mut dyn TransactionExecutor,
+		event: AdministrationEvent<'_>,
+		node: &str,
+	) -> Result<()> {
+		self.record_target(tx, event, Some(node)).await
+	}
+
+	async fn record_target(
+		&self,
+		tx: &mut dyn TransactionExecutor,
+		event: AdministrationEvent<'_>,
+		node: Option<&str>,
+	) -> Result<()> {
 		let (kind, identity, mapping) = self.parts();
 		let occurred_at = super::dashboard_administration::database_time(tx).await?;
 		let (sql, values) = Query::insert()
@@ -135,6 +154,7 @@ impl AdministrationActor {
 					"actor_identity_id",
 					"actor_mapping_id",
 					"invitation_id",
+					"node",
 				]
 				.map(Alias::new),
 			)
@@ -151,6 +171,7 @@ impl AdministrationActor {
 				IntoValue::into_value(identity),
 				IntoValue::into_value(mapping),
 				IntoValue::into_value(event.invitation),
+				IntoValue::into_value(node.map(str::to_owned)),
 			])
 			.build(PostgresQueryBuilder);
 		tx.execute(&sql, convert_values(values)).await?;

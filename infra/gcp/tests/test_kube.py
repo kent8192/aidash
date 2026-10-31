@@ -97,6 +97,30 @@ class RuntimeConfigurationTests(unittest.TestCase):
     def materialize(self, runtime, output=OUTPUT):
         return kube.materialize(self.cluster, "pr-2", PROJECT, output, runtime)
 
+    def test_deployment_bootstrap_settings_are_public_cloud_only_and_immutable(self):
+        descriptor = {"offering": "cloud", "key": {"kms":
+            "projects/fixture/locations/us-central1/keyRings/federation/cryptoKeys/deployment/cryptoKeyVersions/1"}}
+        settings = self.materialize(dict(RUNTIME, deployment=descriptor))
+        self.assertEqual(settings["deployment"], descriptor)
+        self.assertNotIn("deployment", self.cluster.secret("aidash-pr-2", "app-runtime"))
+        self.assertEqual(self.materialize(RUNTIME)["deployment"], {"offering": "cloud"})
+        for invalid in ({"offering": "dedicated"}, {"offering": "self-hosted"},
+                        {"offering": "cloud", "extra": True}, {"key": descriptor["key"]},
+                        {"offering": "cloud", "key": {"kms": "projects/p/cryptoKeyVersions/latest"}},
+                        {"offering": "cloud", "key": dict(descriptor["key"], file="/key")},
+                        None, [], "cloud"):
+            before = list(self.cluster.calls)
+            with self.subTest(invalid=invalid), self.assertRaises(Refused):
+                self.materialize(dict(RUNTIME, deployment=invalid))
+            self.assertEqual(self.cluster.calls, before)
+        self.cluster.put({"kind": "ConfigMap", "metadata": {
+            "name": "app-aidash-deployment-settings", "namespace": "aidash-pr-2"},
+            "data": {"settings.json": json.dumps({"deployment": descriptor})}})
+        self.assertEqual(self.materialize(dict(RUNTIME, deployment=descriptor))["deployment"], descriptor)
+        for changed in ({"offering": "cloud"}, dict(descriptor, key={"kms": descriptor["key"]["kms"][:-1] + "2"})):
+            with self.subTest(changed=changed), self.assertRaisesRegex(Refused, "rollover"):
+                self.materialize(dict(RUNTIME, deployment=changed))
+
     def test_oidc_defaults_and_legacy_fingerprint_rename(self):
         legacy = "l" * 32
         self.assertEqual(self.materialize(dict(RUNTIME, AIDASH_SECRET_PROVIDER_FINGERPRINT=legacy))["gcip"], None)
@@ -584,6 +608,43 @@ class SealAndMigrationTests(unittest.TestCase):
         sleep.assert_called_once()
         (created,) = [key for key in jobs() if key != previous]
         self.assertEqual(self.cluster.objects[created]["metadata"]["labels"]["app.kubernetes.io/component"], "migration")
+
+    def test_managed_deployment_handoff_survives_render_migration_and_reload(self):
+        descriptor = {"offering": "cloud", "key": {"kms":
+            "projects/fixture/locations/us-central1/keyRings/federation/cryptoKeys/deployment/cryptoKeyVersions/1"}}
+        output = dict(OUTPUT, runtime_secret="test", server_service_account="server@fixture", worker_service_account="worker@fixture")
+        release = {"images": {kind: f"registry.example/{kind}@sha256:" + "a" * 64 for kind in ("app", "control", "sandbox")}}
+        settings = kube.materialize(self.cluster, "test", PROJECT, output, dict(RUNTIME, deployment=descriptor))
+        values = kube.app_values(self.cluster, "test", output, release, "a" * 40, settings)
+        self.assertEqual(values["deployment"]["settings"], descriptor)
+        rendered = subprocess.check_output([
+            "helm", "template", "app", str(kube.APP_CHART), "--namespace", "aidash-test", "-f", "-",
+        ], input=json.dumps(values).encode())
+        objects = [obj for obj in yaml.safe_load_all(rendered) if obj]
+        self.workloads(edge=0, writers=0)
+        for obj in objects:
+            if obj["kind"] in {"Deployment", "ConfigMap"}:
+                obj["metadata"]["namespace"] = "aidash-test"
+                self.cluster.put(obj)
+        server = self.cluster.get("deployment", "app-aidash-server", "aidash-test")["spec"]["template"]["spec"]
+        worker = self.cluster.get("deployment", "app-aidash-worker", "aidash-test")["spec"]["template"]["spec"]
+        kube.migrate(self.cluster, "test", "a" * 40)
+        job = next(obj for key, obj in self.cluster.objects.items() if key[0] == "job")
+        migration = job["spec"]["template"]["spec"]
+        for pod in (server, worker, migration):
+            container = pod["containers"][0]
+            self.assertIn({"name": "AIDASH_DEPLOYMENT_SETTINGS", "value": "/etc/aidash/deployment-settings/settings.json"}, container["env"])
+            self.assertIn({"name": "deployment-settings", "mountPath": "/etc/aidash/deployment-settings", "readOnly": True}, container["volumeMounts"])
+            self.assertIn({"name": "deployment-settings", "configMap": {"name": "app-aidash-deployment-settings"}}, pod["volumes"])
+        # Reload uses the same installed descriptor and pinned image. Management
+        # commands executed inside either role inherit this startup environment.
+        self.cluster.releases[("aidash-test", "app")] = values
+        kube.reload(self.cluster, "test", output, settings)
+        reloaded = self.cluster.values("aidash-test", "app")
+        self.assertEqual(reloaded["deployment"]["settings"], descriptor)
+        self.assertEqual(reloaded["image"], values["image"])
+        with self.assertRaisesRegex(Refused, "rollover"):
+            kube.reload(self.cluster, "test", output, dict(settings, deployment={"offering": "cloud"}))
 
     def test_protected_home_composes_independent_jobs_and_migration_network_access(self):
         output = dict(OUTPUT, server_service_account="server@fixture", worker_service_account="worker@fixture",

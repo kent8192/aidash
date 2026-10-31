@@ -279,6 +279,7 @@ def render():
         after="",
         seq=None,
         immutable=False,
+        node_unchanged=False,
     ):
         nonlocal sequence
         route = by_key[endpoint]
@@ -345,18 +346,26 @@ def render():
             js.append(
                 r'test("Rejection is diagnostic and does not disclose SQL or credentials", function () { const value=res.getBody(); const text=typeof value === "string" ? value : JSON.stringify(value); expect(text.length).to.be.greaterThan(0); expect(text).not.to.match(/postgres:\/\/|SELECT .* FROM |deployment_administrator_token|peer_token/); });'
             )
-        if status == 200 and route.get("response"):
-            contract = route["response"]
+        contract = route.get("responses", {}).get(str(status))
+        if contract is None and status == 200:
+            contract = route.get("response")
+        if 200 <= status < 300 and contract is not None:
             js.append(
                 'test("Documented response fields and types", function () { const contract='
                 + json.dumps(contract, separators=(",", ":"))
-                + '; function valid(value,schema){if(schema.$ref)return valid(value,contract.definitions[schema.$ref.split("/").pop()]);if(schema.anyOf)return schema.anyOf.some(item=>valid(value,item));if(schema.oneOf)return schema.oneOf.filter(item=>valid(value,item)).length===1;if(schema.allOf&&!schema.allOf.every(item=>valid(value,item)))return false;if(schema.enum&&!schema.enum.some(item=>JSON.stringify(item)===JSON.stringify(value)))return false;const types=Array.isArray(schema.type)?schema.type:schema.type?[schema.type]:[];if(types.length&&!types.some(type=>type==="null"?value===null:type==="array"?Array.isArray(value):type==="object"?value!==null&&typeof value==="object"&&!Array.isArray(value):type==="integer"?Number.isInteger(value):typeof value===type))return false;if(value!==null&&typeof value==="object"&&!Array.isArray(value)){if((schema.required||[]).some(field=>!(field in value)))return false;for(const [field,property] of Object.entries(schema.properties||{}))if(field in value&&!valid(value[field],property))return false;}if(Array.isArray(value)&&schema.items&&!value.every(item=>valid(item,schema.items)))return false;return true;}expect(valid(res.getBody(),contract.schema)).to.equal(true); });'
+                + '; function valid(value,schema){if(schema===true)return true;if(schema===false)return false;if(schema.$ref)return valid(value,contract.definitions[schema.$ref.split("/").pop().replace(/~1/g,"/").replace(/~0/g,"~")]);if(schema.anyOf)return schema.anyOf.some(item=>valid(value,item));if(schema.oneOf)return schema.oneOf.filter(item=>valid(value,item)).length===1;if(schema.allOf&&!schema.allOf.every(item=>valid(value,item)))return false;if(schema.enum&&!schema.enum.some(item=>JSON.stringify(item)===JSON.stringify(value)))return false;const types=Array.isArray(schema.type)?schema.type:schema.type?[schema.type]:[];if(types.length&&!types.some(type=>type==="null"?value===null:type==="array"?Array.isArray(value):type==="object"?value!==null&&typeof value==="object"&&!Array.isArray(value):type==="integer"?Number.isInteger(value):typeof value===type))return false;if(value!==null&&typeof value==="object"&&!Array.isArray(value)){if((schema.required||[]).some(field=>!(field in value)))return false;for(const [field,property] of Object.entries(schema.properties||{}))if(field in value&&!valid(value[field],property))return false;}if(Array.isArray(value)&&schema.items&&!value.every(item=>valid(item,schema.items)))return false;return true;}expect(valid(res.getBody(),contract.schema)).to.equal(true); });'
             )
         if checks:
             js.append('test("' + label + ' contract", function () { ' + checks + " });")
         if immutable:
             pre += '\nconst snapshot = await bru.sendRequest({method:"GET",url:bru.getEnvVar("base_url")+"/api/workspaces/"+bru.getVar("workspace_id"),headers:{Authorization:"Bearer "+bru.getVar("contract_token")}}); if(snapshot.status!==200 || !Number.isInteger(snapshot.data.workspace.revision)) throw new Error("fixture snapshot unavailable"); bru.setVar("beforeWorkspace",JSON.stringify({revision:snapshot.data.workspace.revision,state:snapshot.data.workspace.state}));\n'
             after += '\nconst snapshot = await bru.sendRequest({method:"GET",url:bru.getEnvVar("base_url")+"/api/workspaces/"+bru.getVar("workspace_id"),headers:{Authorization:"Bearer "+bru.getVar("contract_token")}}); test("Rejected input preserves committed workspace state", function(){expect(snapshot.status).to.equal(200);expect(JSON.stringify({revision:snapshot.data.workspace.revision,state:snapshot.data.workspace.state})).to.equal(bru.getVar("beforeWorkspace"));});\n'
+        if node_unchanged:
+            # Read the actual target Node, not an unrelated Workspace. The
+            # current ordinary Subject still has no administration authority.
+            read_node = 'const snapshot = await bru.sendRequest({method:"GET",url:bru.getEnvVar("base_url")+"/api/tenants/"+bru.getEnvVar("tenant")+"/nodes?include_deleted=true",headers:{Authorization:"Bearer "+bru.getEnvVar("deployment_administrator_token")}}); if(snapshot.status!==200 || !Array.isArray(snapshot.data)) throw new Error("Node snapshot unavailable");const target=snapshot.data.find(node=>node.name===bru.getEnvVar("tenant_node"));if(!target)throw new Error("target Node unavailable");'
+            pre += '\n' + read_node + 'bru.setVar("beforeNode",JSON.stringify(target));\n'
+            after += '\n' + read_node + 'test("Rejected write preserves the target Node", function(){expect(target).to.eql(JSON.parse(bru.getVar("beforeNode")));});\n'
         text = (
             f"meta {{\n  name: {name}\n  type: http\n  seq: {seq if seq is not None else sequence}\n}}\n\n{method} {{\n  url: {url}\n  body: {kind}\n  auth: none\n}}\n\nheaders {{\n"
             + "\n".join("  " + k + ": " + v for k, v in fields.items())
@@ -543,6 +552,7 @@ def render():
     add("POST /auth/desktop/revoke", "Revoke the rotating desktop credential family", 204, body=json.dumps({"refresh_token":"aidash_refresh_nnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnn"}), seq=58,
         checks='expect(res.getBody()).to.equal("");')
     add("GET /auth/session", "Revoked desktop bearer cannot resolve a session", 401, headers={"Authorization":"Bearer {{desktop_access}}"}, seq=59)
+
 
     for route in routes:
         endpoint = key(route)
@@ -834,6 +844,51 @@ def render():
                 headers=DEPLOYMENT_ADMINISTRATOR, body=json.dumps({"label": "   "}), immutable=True)
             add(endpoint, "Malformed JSON cannot reach the use case", 400,
                 headers=DEPLOYMENT_ADMINISTRATOR, body="{", immutable=True)
+            continue
+        if endpoint in {
+            "GET /api/tenants/{tenant}/nodes/{node}/registration-keys",
+            "POST /api/tenants/{tenant}/nodes/{node}/registration-keys",
+        }:
+            selector = {"source_node": "aidash://bruno-unknown/" + NODE}
+            uri = "/api/tenants/{{tenant}}/nodes/{{tenant_node}}/registration-keys"
+            body = None
+            if method == "GET":
+                uri += "?" + "&".join(name + "=" + value for name, value in selector.items())
+            else:
+                body = json.dumps({**selector, "action": "quarantine",
+                                   "expected_keys_revision": 1, "expected_authorization_revision": 1})
+            add(endpoint, "Anonymous receiving-key request is rejected", 401, path=uri, body=body)
+            add(endpoint, "Subject bearer has no receiving-record administration authority", 403,
+                path=uri, body=body, headers=SUBJECT)
+            # Registration records are Tenant administration (#484, ADR 0102).
+            add(endpoint, "Deployment Administrator has no Tenant authority over receiving records", 403,
+                path=uri, body=body, headers=DEPLOYMENT_ADMINISTRATOR)
+            if method == "POST":
+                add(endpoint, "Malformed key change cannot reach record control", 400,
+                    path=uri, body="{", headers=SUBJECT)
+                add(endpoint, "A key change requires both typed CAS revisions", 422,
+                    path=uri, body=json.dumps({**selector, "action": "quarantine", "expected_keys_revision": 1}),
+                    headers=SUBJECT)
+            continue
+        if endpoint in {"POST /api/tenants/{tenant}/nodes/{node}/" + action
+                        for action in ("default", "deletion", "restore", "purge")}:
+            action = path.rsplit("/", 1)[1]
+            uri = "/api/tenants/{{tenant}}/nodes/{{tenant_node}}/" + action
+            body = json.dumps({"confirmation": "{{tenant_node}}"}) if action == "deletion" else None
+            add(endpoint, "Anonymous Node lifecycle request is rejected", 401, path=uri, body=body)
+            add(endpoint, "Subject bearer cannot administer the Node lifecycle", 403,
+                path=uri, body=body, headers=SUBJECT, node_unchanged=True)
+            if action == "purge":
+                # Only immediate purge is retained for a Deployment Administrator (ADR 0083).
+                add(endpoint, "Only a deleted Node can be purged", 409, path=uri,
+                    headers=DEPLOYMENT_ADMINISTRATOR, node_unchanged=True)
+            else:
+                # Default, deletion and restore are Tenant administration (ADR 0102).
+                add(endpoint, "Deployment Administrator has no Tenant authority over its Nodes", 403,
+                    path=uri, body=body, headers=DEPLOYMENT_ADMINISTRATOR, node_unchanged=True)
+            if action == "deletion":
+                add(endpoint, "Malformed JSON cannot reach the use case", 400,
+                    path=uri, body="{", headers=SUBJECT, node_unchanged=True)
             continue
         add(endpoint, "Anonymous request is rejected", 401, immutable=method != "GET")
         admitted = route["name"] in ADMIN_ADMITTED

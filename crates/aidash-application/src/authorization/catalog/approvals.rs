@@ -237,7 +237,8 @@ pub async fn approve_with_satisfied(
 				.require_subject(&subject, rules::SUBJECT_GROUP_UPDATE, &groups)
 				.await?;
 		}
-		rules::add_agent_subject(scope.policy(), &subject, &groups)?;
+		let node = scope.node().node.clone();
+		rules::add_agent_subject(scope.policy(), &subject, &node, &groups)?;
 		changed = true;
 	}
 	if changed {

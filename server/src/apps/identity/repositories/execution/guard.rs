@@ -29,6 +29,11 @@ impl RunGuardScope for RunGuard<'_> {
 		&self.access.snapshot.bundle
 	}
 	async fn run_visible(&mut self, run: &RunMetadata) -> Result<bool> {
+		crate::apps::execution::repositories::node_cancellations::require_run_open(
+			&mut **self.access.tx,
+			run.id,
+		)
+		.await?;
 		self.access.run_visible(run).await.map_err(Into::into)
 	}
 	async fn cluster_targets(&mut self, workspace: Uuid) -> Result<Vec<String>> {

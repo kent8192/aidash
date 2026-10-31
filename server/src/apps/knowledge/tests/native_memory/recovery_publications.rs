@@ -26,7 +26,7 @@ async fn read_only_backup_revalidates_selected_publishers_through_credentialless
 			1,
 			serde_json::from_value(json!({
 				"tenant": "acme",
-				"subjects": {"alice": {"kind": "user"}, owner: {"kind": "agent"}},
+				"subjects": {"alice": {"kind": "user"}, owner: {"kind": "agent", "node": &home.node}},
 				"policies": [{
 					"id": "publication-proof",
 					"effect": "allow",

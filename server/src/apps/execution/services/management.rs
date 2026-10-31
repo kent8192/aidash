@@ -58,14 +58,17 @@ impl HarnessManagement {
 		let f = self.runtime.clone();
 
 		if let Some(scope) = scoped(&f, actor) {
-			let state = scope.state(f.config.deployment_identity()).await?;
+			let state = scope
+				.state(crate::apps::federation::peer::services::identity::publication(&f).await?)
+				.await?;
 			return crate::marketplace::state_response(&scope.store, &scope.identity, state).await;
 		}
 		// A Deployment Administrator holds no Tenant authority (#484, #301): the
 		// state carries the access profile and the Deployment identity only.
 		let state = StateResponse {
+			offering: crate::bootstrap::build::offering().as_str().to_owned(),
 			access: AccessProfile::DeploymentAdministrator,
-			deployment: f.config.deployment_identity(),
+			deployment: crate::apps::federation::peer::services::identity::publication(&f).await?,
 			registry: Vec::new(),
 			workspaces: Vec::new(),
 			tasks: Vec::new(),

@@ -589,6 +589,29 @@ def gcip_settings(project, output, dashboard):
     return {"dashboard": {"gcip": deepcopy(settings)}}
 
 
+def deployment_settings(cluster, identity, descriptor):
+    """Public Cloud bootstrap settings; existing key schedules own all rollovers."""
+    if (not isinstance(descriptor, dict) or descriptor.keys() - {"offering", "key"}
+            or descriptor.get("offering") != "cloud"):
+        raise Refused("managed Deployment settings accept only the Cloud Offering and optional key.kms")
+    key = descriptor.get("key")
+    if "key" in descriptor and (
+        not isinstance(key, dict) or set(key) != {"kms"} or not isinstance(key["kms"], str)
+        or len(key["kms"]) > 1024
+        or not re.fullmatch(r"projects/[A-Za-z0-9_-]+/locations/[A-Za-z0-9_-]+/keyRings/[A-Za-z0-9_-]+/cryptoKeys/[A-Za-z0-9_-]+/cryptoKeyVersions/[1-9][0-9]*", key["kms"])
+        or int(key["kms"].rsplit("/", 1)[1]) > 2**64 - 1
+    ):
+        raise Refused("deployment.key must contain only a full immutable KMS key-version reference")
+    current = cluster.get("configmap", "app-aidash-deployment-settings", namespace_of(identity))
+    if current:
+        previous = json.loads(current["data"]["settings.json"])["deployment"]
+        if previous["offering"] != descriptor["offering"]:
+            raise Refused("an existing Deployment identity must retain its Offering")
+        if previous.get("key") is not None and previous["key"] != key:
+            raise Refused("the initial Deployment Key is immutable; use deployment-key rollover")
+    return deepcopy(descriptor)
+
+
 def common_auth_settings(output, dashboard, tls, external):
     """Opt-in Cloud sign-in. Return Secret files, never Helm or Terraform values.
 
@@ -660,6 +683,7 @@ def materialize(cluster, identity, project, output, runtime):
     namespace = namespace_of(identity)
     external = deepcopy(runtime)
     dashboard = external.pop("dashboard", None)
+    deployment = deployment_settings(cluster, identity, external.pop("deployment", {"offering": "cloud"}))
     tls = external.pop("common_auth_tls", None)
     # Older BYOK configuration stored the fingerprint under its Registry-resolvable
     # name. Carry the same value over and never emit the legacy name.
@@ -714,7 +738,7 @@ def materialize(cluster, identity, project, output, runtime):
         cluster.apply(manifest)
     if common:
         cluster.apply(secret(namespace, "app-common-auth", common, environment=False))
-    return {"gcip": gcip, "provider": provider, "common_auth": "app-common-auth" if common else ""}
+    return {"gcip": gcip, "provider": provider, "deployment": deployment, "common_auth": "app-common-auth" if common else ""}
 
 
 def failover(identity):
@@ -768,7 +792,8 @@ def app_values(cluster, identity, output, release, sha, settings):
                         pruneServiceAccount={"annotations": {"iam.gke.io/gcp-service-account": protection["prune_service_account"]}})
     return {
         "image": {"repository": repository, "digest": digest},
-        "deployment": {"id": "aidash://" + output["runtime_secret"], "endpoint": "https://" + output["hostname"]},
+        "deployment": {"id": "aidash://" + output["runtime_secret"], "endpoint": "https://" + output["hostname"],
+                       "settings": deployment_settings(cluster, identity, settings.get("deployment", {"offering": "cloud"}))},
         "existingSecret": "app-runtime",
         "memoryRecovery": {
             "existingClaim": "memory-recovery",
@@ -1260,6 +1285,9 @@ def reload(cluster, identity, output, settings):
     """Apply new settings to the deployed release without changing its images."""
     namespace = namespace_of(identity)
     values = cluster.values(namespace, "app")
+    values.setdefault("deployment", {})["settings"] = deployment_settings(
+        cluster, identity, settings.get("deployment", {"offering": "cloud"}),
+    )
     values.update(
         providerCredentials={"settings": settings["provider"]},
         gcip={"settings": settings["gcip"]},
