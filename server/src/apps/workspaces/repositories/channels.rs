@@ -562,7 +562,14 @@ impl ChannelScope for NativeChannels<'_> {
 		if existing.is_some() {
 			return Ok(None);
 		}
+		let size_bytes = i64::try_from(content.len())
+			.map_err(|_| crate::Error::Invalid("attachment is too large".into()))?;
 		let object_id = self.put_object(content, digest).await?;
+		let tenant = Query::select()
+			.column(Alias::new("tenant"))
+			.from(Alias::new("workspaces"))
+			.and_where(Expr::col(Alias::new("id")).eq(Expr::value(workspace)))
+			.to_owned();
 		let insert = Query::insert()
 			.into_table(Alias::new("channel_attachments"))
 			.columns([
@@ -580,23 +587,22 @@ impl ChannelScope for NativeChannels<'_> {
 				Alias::new("duration_ms"),
 				Alias::new("tenant"),
 			])
-			.from_subquery(
-				Query::select()
-					.expr(Expr::cust("$1"))
-					.expr(Expr::cust("$2"))
-					.expr(Expr::cust("$3"))
-					.expr(Expr::cust("$4"))
-					.expr(Expr::cust("$5"))
-					.expr(Expr::cust("$6"))
-					.expr(Expr::cust("$7"))
-					.expr(Expr::cust("$8"))
-					.expr(Expr::cust("$9"))
-					.expr(Expr::cust("$10"))
-					.expr(Expr::cust("$11"))
-					.expr(Expr::cust("$12"))
-					.expr(Expr::cust("(SELECT tenant FROM workspaces WHERE id = $2)"))
-					.to_owned(),
-			)
+			.values_expr(vec![
+				Expr::value(Uuid::new_v4()).into(),
+				Expr::value(workspace).into(),
+				Expr::value(uploader.to_owned()).into(),
+				Expr::value(input.idempotency_key).into(),
+				Expr::value(input.filename.to_owned()).into(),
+				Expr::value(input.media_type.to_owned()).into(),
+				Expr::value(digest.to_owned()).into(),
+				Expr::value(size_bytes).into(),
+				Expr::value(object_id).into(),
+				Expr::value(input.measurements.width).into(),
+				Expr::value(input.measurements.height).into(),
+				Expr::value(input.measurements.duration_ms).into(),
+				Expr::subquery(tenant).into(),
+			])
+			.expect("one value per column")
 			.on_conflict(
 				OnConflict::columns([
 					Alias::new("workspace_id"),
@@ -609,21 +615,6 @@ impl ChannelScope for NativeChannels<'_> {
 			.returning_all()
 			.to_string(PostgresQueryBuilder);
 		let inserted: Option<AttachmentRecord> = crate::database::query_as(&insert)
-			.bind(Uuid::new_v4())
-			.bind(workspace)
-			.bind(uploader)
-			.bind(input.idempotency_key)
-			.bind(input.filename)
-			.bind(input.media_type)
-			.bind(digest)
-			.bind(
-				i64::try_from(content.len())
-					.map_err(|_| crate::Error::Invalid("attachment is too large".into()))?,
-			)
-			.bind(object_id)
-			.bind(input.measurements.width)
-			.bind(input.measurements.height)
-			.bind(input.measurements.duration_ms)
 			.fetch_optional(&mut **self.lease.tx())
 			.await?;
 		if inserted.is_none() {
