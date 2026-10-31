@@ -37,11 +37,12 @@ Tenant, across Tenants and across Deployments.
 - Within one Tenant, its policy may admit the Tenant's other Nodes without
   per-Node registration. Across Tenants, explicit registration by the
   receiving Node stays required. The receiver's authority decides in both cases.
-- Agents cannot create Nodes (Subnodes). Parent tasks, the delegation chain and
-  clusters cover agent-made structure. A Subnode that never exceeds its
-  creator's authority and ends with its parent Run is left to a separate
-  design, for when a concrete need appears.
+- Agents cannot create Nodes. Parent tasks, the delegation chain and clusters
+  cover agent-made structure. A Subnode that never exceeds its creator's
+  authority and ends with its parent Run was left to a separate design (ADR 0110).
 
 ## Status
 
 Amended 2026-10-18 by ADR 0064: Federation is authenticated by Deployment Keys, and a Node Registration by the receiving Tenant's administrators replaces Peer Credentials.
+
+Amended 2026-10-31 by ADR 0110: agents may create Subnodes, Run-scoped groups of agents that are not Nodes.
