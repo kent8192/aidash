@@ -362,7 +362,10 @@ impl Home {
 			.await?
 			.is_some()
 		{
-			return Err(Error::Forbidden);
+			return Err(Error::Invalid(
+				"a Run started by a Remote Grant is limited to one hop and cannot discover agents"
+					.into(),
+			));
 		}
 		let Some(authority) = &self.authority else {
 			return Err(Error::Forbidden);
@@ -792,6 +795,15 @@ impl Home {
 		node: &str,
 		agent: &EntityRef,
 	) -> Result<Delegation> {
+		if crate::authorization::peer::admission::run_grant(&self.federation.store, &self.run)
+			.await?
+			.is_some()
+		{
+			return Err(Error::Invalid(
+				"a Run started by a Remote Grant is limited to one hop and cannot delegate tasks"
+					.into(),
+			));
+		}
 		let _scope = self.tenancy().await?;
 		if let Some(authority) = &self.authority {
 			return authority
@@ -802,7 +814,30 @@ impl Home {
 					node,
 					agent,
 				)
-				.await;
+				.await
+				.map_err(|error| match error {
+					Error::RemoteExecutionRefused(
+						aidash_domain::federation::execution::Refusal::PolicyAsk,
+					) => Error::AuthorityRefused(Box::new(aidash_domain::tool::AuthorityRefusal {
+						tool: "task_delegate".into(),
+						check: aidash_domain::tool::RefusalCheck::Policy,
+						action: Some("federation.execute".into()),
+					})),
+					Error::RemoteExecutionRefused(
+						aidash_domain::federation::execution::Refusal::NodeUseAsk,
+					) => Error::AuthorityRefused(Box::new(aidash_domain::tool::AuthorityRefusal {
+						tool: "task_delegate".into(),
+						check: aidash_domain::tool::RefusalCheck::Policy,
+						action: Some("node.use".into()),
+					})),
+					Error::RemoteExecutionRefused(reason) => Error::Invalid(reason.to_string()),
+					Error::External(message)
+						if message == "remote execution authority unavailable" =>
+					{
+						Error::Invalid("the target Node is unreachable".into())
+					}
+					other => other,
+				});
 		}
 		if self.local() {
 			return Err(Error::Forbidden);

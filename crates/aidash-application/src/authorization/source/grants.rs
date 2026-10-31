@@ -46,9 +46,20 @@ async fn inspect<R: GrantRepository>(
 	scope
 		.source_require(&resource, "federation.execute")
 		.await?;
-	require_peer(scope, node).await?;
+	if scope.route(node).await?.is_none() {
+		scope.record_refusal(&resource, "node_unreachable").await?;
+		return Err(Error::RemoteExecutionRefused(
+			aidash_domain::federation::execution::Refusal::NodeUnreachable,
+		));
+	}
 	let identity = scope.identity();
-	let inspection:Inspection=repository.source_request(&scope.home_address(),node,"/scoped/execution/inspect",&json!({"task_id":input.task_id,"agent":input.agent,"requirements":input.requirements,"decider":input.decider}),&identity).await?;
+	let inspection:Inspection=match repository.source_request(&scope.home_address(),node,"/scoped/execution/inspect",&json!({"task_id":input.task_id,"agent":input.agent,"requirements":input.requirements,"decider":input.decider}),&identity).await {
+		Err(Error::External(message)) if message == "remote execution authority unavailable" => {
+			scope.record_refusal(&resource, "node_unreachable").await?;
+			return Err(Error::RemoteExecutionRefused(aidash_domain::federation::execution::Refusal::NodeUnreachable));
+		}
+		other => other?,
+	};
 	crate::federation::admission::validate_inspection(
 		&repository.validation(),
 		&inspection,
@@ -101,11 +112,17 @@ pub async fn agent_inspection<R: GrantRepository>(
 			.source_bundle()
 			.subjects
 			.get(&executor)
-			.is_none_or(|subject| subject.kind != SubjectKind::Agent)
+			.is_some_and(|subject| subject.kind != SubjectKind::Agent)
 		{
-			return Err(Error::Forbidden);
+			let resource =
+				scope.source_resource("node", &input.node_id, json!({"remote_node":input.node_id}));
+			scope
+				.record_refusal(&resource, "invalid_executor_subject")
+				.await?;
+			return Err(Error::RemoteExecutionRefused(
+				aidash_domain::federation::execution::Refusal::InvalidExecutor,
+			));
 		}
-		scope.append_subject(executor);
 		let workspace = scope.workspace(task.workspace_id).await?;
 		scope.source_context(workspace.attributes.clone());
 		let resource = scope.task_resource(&task).await?;
@@ -114,6 +131,7 @@ pub async fn agent_inspection<R: GrantRepository>(
 		let requirements: Search = serde_json::from_value(task.requirements.clone())?;
 		let request = inspection_input(task.id, &input.agent, requirements, None);
 		let inspection = inspect(repository, &mut scope, &input.node_id, request).await?;
+		scope.append_subject(executor);
 		crate::generation::foreign::check_preparation(&task, inspection.generation.as_ref())?;
 		super::authorize(&mut scope, &task, &input.node_id, &inspection).await?;
 		super::semantic::requirements(&inspection)
@@ -141,8 +159,7 @@ pub async fn prepare<R: GrantRepository>(
   if task.status!=TaskStatus::Open {return Err(Error::Conflict("task is already assigned".into()));}
   if scope.source_subjects().len()>=32 {return Err(Error::Invalid("execution delegation depth exceeds 32".into()));}
   let executor=aidash_domain::agent_subject(&input.node_id,&input.agent.id,&input.agent.version);
-  if scope.source_bundle().subjects.get(&executor).is_none_or(|subject|subject.kind!=SubjectKind::Agent) {return Err(Error::Forbidden);}
-  scope.append_subject(executor);
+  if scope.source_bundle().subjects.get(&executor).is_some_and(|subject|subject.kind!=SubjectKind::Agent) {let resource=scope.source_resource("node",&input.node_id,json!({"remote_node":input.node_id}));scope.record_refusal(&resource,"invalid_executor_subject").await?;return Err(Error::RemoteExecutionRefused(aidash_domain::federation::execution::Refusal::InvalidExecutor));}
   let workspace=scope.workspace(task.workspace_id).await?;
   scope.source_context(workspace.attributes.clone());
   let resource=scope.task_resource(&task).await?;
@@ -151,6 +168,7 @@ pub async fn prepare<R: GrantRepository>(
   let requirements:Search=serde_json::from_value(task.requirements.clone())?;
   let request=inspection_input(task.id,&input.agent,requirements,input.semantic.decider());
   let inspection=inspect(repository,&mut scope,&input.node_id,request).await?;
+  scope.append_subject(executor);
   crate::generation::foreign::check_preparation(&task,inspection.generation.as_ref())?;
   let semantic=serde_json::to_value(scope.semantic_binding(&task,&input.node_id,&inspection,&input.semantic).await?)?;
   super::authorize(&mut scope,&task,&input.node_id,&inspection).await?;

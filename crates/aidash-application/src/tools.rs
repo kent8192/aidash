@@ -336,7 +336,7 @@ pub fn builtins() -> BTreeMap<String, Builtin> {
 			name: "task_delegate",
 			contract: aidash_domain::tool::builtin_contract("task_delegate")
 				.expect("declared builtin"),
-			description: "Offer an existing workspace task to the explicitly selected local or remote agent.",
+			description: "Delegate an existing workspace task to the selected agent on this Node or another discoverable Node. A Run started by a Remote Grant cannot discover agents or delegate tasks onward.",
 			schema: json!({"type":"object","required":["task_id","node_id","agent"],"properties":{"task_id":string,"node_id":string,"agent":entity_ref},"additionalProperties":false}),
 		},
 		Builtin {

@@ -135,6 +135,8 @@ fn access() -> Access {
 		cached_runs: Default::default(),
 		cached_humans: Default::default(),
 		pending_decisions: vec![],
+		last_policy_explicit_deny: false,
+		decision_serial: 0,
 		pool: sqlx::postgres::PgPoolOptions::new()
 			.connect_lazy("postgres://unused:unused@127.0.0.1:1/unused")
 			.unwrap()

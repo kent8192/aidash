@@ -1,7 +1,7 @@
 //! The Deployment's answers to `accept` (ADR 0064): which Node names a Tenant,
 //! whether that Tenant is deleted, and what its Node Registrations, Peer
 //! Mappings and policy say.
-use crate::apps::identity::models::AuthorizationBundle;
+use crate::apps::identity::models::{AuthorizationBundle, AuthorizationDecision};
 use crate::apps::identity::repositories::{
 	node_registrations as registrations, nodes, tenant_deletions,
 };
@@ -91,15 +91,12 @@ impl InboundRepository for Federation {
 		receiver: &NodeName,
 		subject: &str,
 	) -> Result<bool> {
-		Ok(self
+		let decision = self
 			.store
 			.pool
 			.atomic(&TenancyScope::Tenant(tenant.clone()), async |tx| {
 				let snapshot =
 					AuthorizationBundle::lock_snapshot(tx, tenant.as_str(), false).await?;
-				if !aidash_domain::identity::authority::enabled(&snapshot.bundle, subject) {
-					return Ok(false);
-				}
 				let node = nodes::get(tx, tenant.as_str(), receiver.as_str()).await?;
 				let evaluation = Evaluation {
 					subject: subject.to_owned(),
@@ -112,8 +109,28 @@ impl InboundRepository for Federation {
 					},
 					environment: json!({"transport": "federation"}),
 				};
-				Ok(snapshot.bundle.evaluate(&evaluation).allowed)
+				let mut decision = snapshot.bundle.evaluate(&evaluation);
+				decision.revision = snapshot.revision;
+				if !decision.allowed {
+					AuthorizationDecision::append_many(
+						tx,
+						tenant.as_str(),
+						&[(evaluation, decision.clone())],
+					)
+					.await?;
+				}
+				Ok(decision)
 			})
-			.await?)
+			.await?;
+		if !decision.allowed {
+			return Err(aidash_application::Error::RemoteExecutionRefused(
+				if decision.reason == "explicit_deny" {
+					aidash_domain::federation::execution::Refusal::NodeUseDenied
+				} else {
+					aidash_domain::federation::execution::Refusal::NodeUseAsk
+				},
+			));
+		}
+		Ok(true)
 	}
 }

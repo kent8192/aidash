@@ -269,6 +269,9 @@ impl SourceAuthorityScope for SourceSession {
 	fn source_subjects(&self) -> &[String] {
 		&self.subjects
 	}
+	fn source_replace_subjects(&mut self, subjects: Vec<String>) {
+		self.subjects = subjects;
+	}
 	fn source_bundle(&self) -> &PolicyBundle {
 		&self.bundle
 	}
@@ -313,6 +316,10 @@ impl GrantScope for SourceSession {
 	}
 	fn append_subject(&mut self, subject: String) {
 		self.subjects.push(subject);
+	}
+	async fn record_refusal(&mut self, _: &aidash_domain::policy::Resource, _: &str) -> Result<()> {
+		self.repository.call("record_refusal");
+		Ok(())
 	}
 	async fn inherit_task_origin(&mut self, _: Uuid) -> Result<()> {
 		self.repository.call("inherit_origin");
@@ -446,8 +453,16 @@ async fn non_agent_executor_is_rejected_before_disclosure() {
 	repository.bundle.subjects.values_mut().next().unwrap().kind = SubjectKind::User;
 	assert!(matches!(
 		use_case::prepare(&repository, task().id, input()).await,
-		Err(Error::Forbidden)
+		Err(Error::RemoteExecutionRefused(
+			aidash_domain::federation::execution::Refusal::InvalidExecutor
+		))
 	));
+	assert!(
+		repository
+			.repository
+			.calls()
+			.contains(&"record_refusal".into())
+	);
 	assert!(!repository.repository.calls().contains(&"source_rpc".into()));
 }
 #[rstest]

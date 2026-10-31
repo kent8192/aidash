@@ -12,6 +12,11 @@ impl Transport for HttpTransport {
 	async fn request(&self, route: &Route, path: &str, body: &Value) -> Result<Reply> {
 		let response = self.send(route, "POST", path, Some(body)).await?;
 		let status = response.status();
+		let execution_refusal = response
+			.headers()
+			.get("x-aidash-execution-refusal")
+			.and_then(|value| value.to_str().ok())
+			.and_then(|value| serde_json::from_value(json!(value)).ok());
 		let semantic_headers = ["x-aidash-semantic-cause", "x-aidash-semantic-reason"];
 		let semantic_reason = semantic_headers
 			.iter()
@@ -36,6 +41,7 @@ impl Transport for HttpTransport {
 		Ok(Reply {
 			status: status.as_u16(),
 			semantic_reason,
+			execution_refusal,
 			transaction_pending,
 			body,
 		})

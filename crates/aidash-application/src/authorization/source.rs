@@ -8,66 +8,75 @@ pub async fn authorize<S: SourceAuthorityScope + ?Sized>(
 	node: &str,
 	inspection: &Inspection,
 ) -> Result<()> {
-	access
-		.generation_home(task, node, inspection.generation.as_ref())
-		.await?;
 	let executor =
 		aidash_domain::agent_subject(node, &inspection.agent.id, &inspection.agent.version);
-	if access.source_subjects().last() != Some(&executor)
+	let subjects = access.source_subjects().to_vec();
+	if subjects.len() < 2
+		|| subjects.last() != Some(&executor)
 		|| access
 			.source_bundle()
 			.subjects
 			.get(&executor)
-			.is_none_or(|subject| subject.kind != SubjectKind::Agent)
+			.is_some_and(|subject| subject.kind != SubjectKind::Agent)
 	{
 		return Err(Error::Forbidden);
 	}
-	let workspace = access.source_workspace(task.workspace_id).await?;
-	access.source_context(workspace.attributes.clone());
-	access.source_require(&workspace, "workspace.read").await?;
-	let resource = access.source_task_resource(task).await?;
-	access.source_require(&resource, "task.read").await?;
-	access.source_require(&resource, "task.delegate").await?;
-	access.source_require(&resource, "task.execute").await?;
-	let resource = access.source_resource("node", node, json!({"remote_node":node}));
 	access
-		.source_require(&resource, "federation.execute")
+		.generation_home(task, node, inspection.generation.as_ref())
 		.await?;
-	for definition in &inspection.definitions {
-		let id = format!(
-			"{node}/{}s/{}@{}",
-			definition.kind, definition.entry.id, definition.entry.version
-		);
-		let mut resource = access.source_resource(
-			&definition.metadata.kind,
-			&definition.metadata.id,
-			crate::authorization::catalog::attributes(&definition.metadata),
-		);
-		resource.id = id;
-		resource.attributes["remote_node"] = json!(node);
-		resource.attributes["digest"] = json!(definition.digest);
-		access.source_require(&resource, "registry.read").await?;
-		if aidash_domain::registry::bindings::defaults::is_compaction_decider(&definition.metadata)
-			&& inspection.decider.as_ref() != Some(&definition.entry)
-		{
-			continue;
+	access.source_replace_subjects(subjects[..subjects.len() - 1].to_vec());
+	let result = async {
+		let workspace = access.source_workspace(task.workspace_id).await?;
+		access.source_context(workspace.attributes.clone());
+		access.source_require(&workspace, "workspace.read").await?;
+		let resource = access.source_task_resource(task).await?;
+		access.source_require(&resource, "task.read").await?;
+		access.source_require(&resource, "task.delegate").await?;
+		access.source_require(&resource, "task.execute").await?;
+		let resource = access.source_resource("node", node, json!({"remote_node":node}));
+		access
+			.source_require(&resource, "federation.execute")
+			.await?;
+		for definition in &inspection.definitions {
+			let id = format!(
+				"{node}/{}s/{}@{}",
+				definition.kind, definition.entry.id, definition.entry.version
+			);
+			let mut resource = access.source_resource(
+				&definition.metadata.kind,
+				&definition.metadata.id,
+				crate::authorization::catalog::attributes(&definition.metadata),
+			);
+			resource.id = id;
+			resource.attributes["remote_node"] = json!(node);
+			resource.attributes["digest"] = json!(definition.digest);
+			access.source_require(&resource, "registry.read").await?;
+			if aidash_domain::registry::bindings::defaults::is_compaction_decider(
+				&definition.metadata,
+			) && inspection.decider.as_ref() != Some(&definition.entry)
+			{
+				continue;
+			}
+			let action = match definition.kind.as_str() {
+				"agent" => "agent.execute",
+				"model" => "model.infer",
+				"tool" => "tool.invoke",
+				"skill" => "skill.use",
+				"cluster" => "cluster.execute",
+				"decider" => "decision.invoke",
+				// Native provider roles are pinned configuration dependencies. Their
+				// model/effect calls retain the separate runtime authorization checks.
+				"source" | "memory" | "bundle" | "embedding" | "reranker" | "tokenizer"
+				| "external_service" => continue,
+				_ => return Err(Error::Forbidden),
+			};
+			access.source_require(&resource, action).await?;
 		}
-		let action = match definition.kind.as_str() {
-			"agent" => "agent.execute",
-			"model" => "model.infer",
-			"tool" => "tool.invoke",
-			"skill" => "skill.use",
-			"cluster" => "cluster.execute",
-			"decider" => "decision.invoke",
-			// Native provider roles are pinned configuration dependencies. Their
-			// model/effect calls retain the separate runtime authorization checks.
-			"source" | "memory" | "bundle" | "embedding" | "reranker" | "tokenizer"
-			| "external_service" => continue,
-			_ => return Err(Error::Forbidden),
-		};
-		access.source_require(&resource, action).await?;
+		Ok(())
 	}
-	Ok(())
+	.await;
+	access.source_replace_subjects(subjects);
+	result
 }
 #[cfg(test)]
 mod tests;

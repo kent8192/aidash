@@ -16,6 +16,10 @@ _Avoid_: Run, worker
 A durable execution of a Task using an exact Agent definition and its fixed execution dependencies. A Run is distinct from a model request or an individual capability invocation.
 _Avoid_: Model request, tool call
 
+**Remote Grant**:
+A time-limited authorization for one Task to execute on another Node, subject to the sending and receiving Nodes' current authority. A Run started through a Remote Grant cannot delegate work onward.
+_Avoid_: Node Registration, permanent execution permission
+
 **Execution policy**:
 The effective authorization and resource constraints governing a Run's capabilities and actions. Declaring a capability does not grant permission to exercise it.
 _Avoid_: Agent preference, Skill instruction

@@ -104,6 +104,7 @@ impl Transport for Wire {
 		Ok(Reply {
 			status: outcome.status,
 			semantic_reason: outcome.semantic_reason,
+			execution_refusal: outcome.execution_refusal,
 			transaction_pending: outcome.transaction_pending,
 			body: if (200..300).contains(&outcome.status) {
 				serde_json::to_vec(&outcome.body).map_err(Into::into)

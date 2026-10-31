@@ -59,6 +59,8 @@ pub enum Error {
 	#[error("forbidden")]
 	AuthorityRefused(Box<aidash_domain::tool::AuthorityRefusal>),
 	#[error("{0}")]
+	RemoteExecutionRefused(aidash_domain::federation::execution::Refusal),
+	#[error("{0}")]
 	External(String),
 	/// The tool request is known not to have been delivered, or the service
 	/// explicitly asked for a retry. The harness journals this before retrying.

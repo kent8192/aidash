@@ -95,6 +95,9 @@ impl SourceAuthorityScope for Producer<'_> {
 	fn source_subjects(&self) -> &[String] {
 		self.base.source_subjects()
 	}
+	fn source_replace_subjects(&mut self, subjects: Vec<String>) {
+		self.base.source_replace_subjects(subjects);
+	}
 	fn source_bundle(&self) -> &PolicyBundle {
 		self.base.source_bundle()
 	}

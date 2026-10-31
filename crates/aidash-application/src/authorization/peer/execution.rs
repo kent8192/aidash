@@ -16,10 +16,19 @@ async fn definition(
 	definitions: &mut BTreeMap<(String, String), Definition>,
 ) -> Result<Entry> {
 	let entry = if users.is_empty() {
-		access.entry(reference, action).await?
+		access.entry(reference, action).await
 	} else {
-		access.closure_entry(reference, action, users).await?
-	};
+		access.closure_entry(reference, action, users).await
+	}
+	.map_err(|error| match error {
+		Error::Forbidden => Error::RemoteExecutionRefused(
+			aidash_domain::federation::execution::Refusal::CatalogApproval,
+		),
+		Error::AuthorityRefused(_) => {
+			Error::RemoteExecutionRefused(aidash_domain::federation::execution::Refusal::Policy)
+		}
+		other => other,
+	})?;
 	access
 		.require(&access.entry_resource(&entry), "registry.read")
 		.await?;
@@ -47,24 +56,51 @@ async fn inspect_in(
 ) -> Result<Inspection> {
 	// Receiving external execution is separate from advertising metadata.
 	let resource = access.receiver_resource().await?;
-	access.require(&resource, "federation.execute").await?;
+	access
+		.require(&resource, "federation.execute")
+		.await
+		.map_err(|error| match error {
+			Error::Forbidden => {
+				Error::RemoteExecutionRefused(aidash_domain::federation::execution::Refusal::Policy)
+			}
+			other => other,
+		})?;
 	// The agent runs on the receiving Node, whose address names its subject.
 	let executor = aidash_domain::agent_subject(
 		&access.receiver_address(),
 		&input.agent.id,
 		&input.agent.version,
 	);
-	if access
+	let valid_executor = access
 		.bundle()
 		.subjects
 		.get(&executor)
-		.is_none_or(|subject| subject.kind != SubjectKind::Agent)
-	{
-		return Err(Error::Forbidden);
-	}
+		.is_some_and(|subject| subject.kind == SubjectKind::Agent);
+	let invalid_kind = access
+		.bundle()
+		.subjects
+		.get(&executor)
+		.is_some_and(|subject| subject.kind != SubjectKind::Agent);
 	let generation = access.generation(node, input).await?;
 	access.push_subject(executor);
-	access.require(&resource, "federation.execute").await?;
+	if invalid_kind {
+		access.invalid_executor(&resource).await?;
+		return Err(Error::RemoteExecutionRefused(
+			aidash_domain::federation::execution::Refusal::InvalidExecutor,
+		));
+	}
+	access
+		.require(&resource, "federation.execute")
+		.await
+		.map_err(|error| match error {
+			Error::Forbidden => {
+				Error::RemoteExecutionRefused(aidash_domain::federation::execution::Refusal::Policy)
+			}
+			other => other,
+		})?;
+	if !valid_executor {
+		return Err(Error::Forbidden);
+	}
 	let mut definitions = BTreeMap::new();
 	let entry = definition(
 		access,
