@@ -1,14 +1,26 @@
 //! Conversation writes retain the same access transaction and audit context.
+use crate::apps::identity::models::AuthorizationWorkspace;
 use crate::apps::workspaces::models::Conversation as ConversationRecord;
+use crate::apps::workspaces::models::Workspace as WorkspaceRecord;
+use crate::semantic::{
+	models::{SemanticCollection, SemanticHistory, SemanticIndexe},
+	native_memory,
+	repositories::bindings,
+	service::Lease,
+};
 use crate::{
 	authorization::{access::Access, catalog, execution, policy::Resource},
 	federation::Federation,
 };
-use aidash_application::{Result, ports::workspaces::ConversationScope};
+use aidash_application::{
+	Result,
+	ports::workspaces::{ConversationScope, MemoryEmbedding},
+};
 use aidash_domain::{
 	Conversation, NewTask, Task, Workspace,
 	federation::Delegation,
 	registry::{EntityRef, Entry},
+	semantic::indexing::IndexingSpec,
 };
 use async_trait::async_trait;
 use reinhardt::query::{
@@ -21,6 +33,7 @@ pub(crate) struct NativeConversation<'a> {
 	pub(crate) federation: &'a Federation,
 	pub(crate) access: &'a mut Access,
 	workspace: Option<Resource>,
+	workspace_id: Option<Uuid>,
 }
 impl<'a> NativeConversation<'a> {
 	pub(crate) fn new(federation: &'a Federation, access: &'a mut Access) -> Self {
@@ -28,6 +41,7 @@ impl<'a> NativeConversation<'a> {
 			federation,
 			access,
 			workspace: None,
+			workspace_id: None,
 		}
 	}
 }
@@ -48,6 +62,7 @@ impl ConversationScope for NativeConversation<'_> {
 		let resource = self.access.workspace(workspace).await?;
 		self.access.context = resource.attributes.clone();
 		self.workspace = Some(resource);
+		self.workspace_id = Some(workspace);
 		Ok(())
 	}
 	async fn require_workspace(&mut self, action: &str) -> Result<()> {
@@ -186,6 +201,93 @@ impl ConversationScope for NativeConversation<'_> {
 	async fn bind_task(&mut self, task: Uuid, conversation: Uuid) -> Result<()> {
 		crate::capabilities::sessions::bind_task(self.access, task, conversation)
 			.await
+			.map_err(Into::into)
+	}
+	/// The same resolution a local claim makes before it pins the memory bank.
+	async fn memory_embedding(&mut self, agent: &EntityRef) -> Result<Option<MemoryEmbedding>> {
+		let workspace = self
+			.workspace_id
+			.expect("workspace context initialized by conversation use case");
+		let entry = catalog::entry(self.access, agent, "registry.read").await?;
+		let tenant = AuthorizationWorkspace::tenant_in(&mut **self.access.tx, workspace)
+			.await?
+			.ok_or(aidash_application::Error::Forbidden)?;
+		let deployment = self.federation.store.deployment.as_str();
+		let mut lease = Lease::Inherited(self.access);
+		let config = bindings::configuration(&mut lease, &tenant, &entry, deployment).await?;
+		let Some(provider) = config.memory else {
+			return Ok(None);
+		};
+		let policy = native_memory::policy(&mut lease, &tenant, &provider).await?;
+		let embedding =
+			native_memory::definition(&mut lease, &tenant, &policy.embedding, "embedding").await?;
+		Ok(Some(MemoryEmbedding {
+			provider,
+			embedding: serde_json::from_value(embedding.config)?,
+		}))
+	}
+	async fn create_memory_index(
+		&mut self,
+		conversation: &Conversation,
+		agent: &EntityRef,
+		provider: &EntityRef,
+		spec: &IndexingSpec,
+	) -> Result<()> {
+		let workspace = conversation.workspace_id;
+		crate::semantic::repositories::mutations::validate_index(&self.federation.store, spec)?;
+		let tx = &mut **self.access.tx;
+		WorkspaceRecord::lock_existing(tx, workspace).await?;
+		let tenant = AuthorizationWorkspace::tenant_in(tx, workspace)
+			.await?
+			.ok_or(aidash_application::Error::Forbidden)?;
+		if SemanticIndexe::locked(tx, workspace, true).await?.is_some() {
+			return Err(aidash_application::Error::Conflict(
+				"semantic index revision changed".into(),
+			));
+		}
+		let collection = format!("aidash_{}", Uuid::new_v4().simple());
+		let index = SemanticIndexe::replace_generation(
+			tx,
+			workspace,
+			&tenant,
+			1,
+			serde_json::to_value(spec)?,
+			&collection,
+		)
+		.await?;
+		SemanticCollection::record_generation(
+			tx,
+			&collection,
+			workspace,
+			serde_json::to_value(&spec.vector)?,
+		)
+		.await?;
+		SemanticHistory::append(
+			tx,
+			workspace,
+			None,
+			index.revision,
+			"CONFIGURED",
+			"new immutable index generation for the conversation target's memory",
+		)
+		.await?;
+		self.federation
+			.store
+			.event(
+				&mut self.access.tx,
+				Some(workspace),
+				"conversation.index_created",
+				// `id` names the conversation, whose readers may see this event.
+				json!({
+					"id": conversation.id,
+					"workspace_id": workspace,
+					"revision": index.revision,
+					"agent": agent,
+					"memory_provider": provider,
+				}),
+			)
+			.await
+			.map(|_| ())
 			.map_err(Into::into)
 	}
 	async fn delegate(&mut self, task: Uuid, agent: &EntityRef) -> Result<Delegation> {

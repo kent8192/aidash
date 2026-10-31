@@ -29,6 +29,25 @@ use uuid::Uuid;
 /// Configuring a Workspace's semantic index (#360).
 pub(crate) const SEMANTIC_INDEX_MANAGE: &str = "semantic.index.manage";
 
+/// Validate an index specification against this node's runtime composition.
+pub(crate) fn validate_index(store: &Store, spec: &IndexingSpec) -> Result<()> {
+	native::IndexSpec::from(spec.clone())
+		.validate_with(&crate::bootstrap::registry_validation_for(store))?;
+	// An address literal is refused when configured, as before any call; a
+	// host name is checked again at each connection.
+	if spec.embedding.provider_credential.is_none()
+		&& store.keyless.destination(&spec.embedding.endpoint)?
+			== aidash_domain::keyless::Destination::Forbidden
+	{
+		return Err(aidash_application::Error::Invalid(
+			"a Keyless endpoint at a non-public address needs its origin in \
+			 [keyless_endpoints] permitted_private_origins"
+				.into(),
+		));
+	}
+	Ok(())
+}
+
 pub(crate) struct NativeConfiguration {
 	pub store: Store,
 	pub actor: Actor,
@@ -56,21 +75,7 @@ pub(crate) struct Entries<'a, 'scope> {
 #[async_trait]
 impl SemanticConfigurationRepository for NativeConfiguration {
 	fn validate(&self, spec: &IndexingSpec) -> Result<()> {
-		native::IndexSpec::from(spec.clone())
-			.validate_with(&crate::bootstrap::registry_validation_for(&self.store))?;
-		// An address literal is refused when configured, as before any call; a
-		// host name is checked again at each connection.
-		if spec.embedding.provider_credential.is_none()
-			&& self.store.keyless.destination(&spec.embedding.endpoint)?
-				== aidash_domain::keyless::Destination::Forbidden
-		{
-			return Err(aidash_application::Error::Invalid(
-				"a Keyless endpoint at a non-public address needs its origin in \
-				 [keyless_endpoints] permitted_private_origins"
-					.into(),
-			));
-		}
-		Ok(())
+		validate_index(&self.store, spec)
 	}
 	async fn begin(&self) -> Result<Box<dyn SemanticConfigurationSession>> {
 		Ok(Box::new(Configuration {

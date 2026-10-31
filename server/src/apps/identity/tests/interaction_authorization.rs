@@ -668,3 +668,87 @@ use reinhardt::query::QueryStatementBuilder as _;
 use reinhardt::query::SimpleExpr;
 
 use reinhardt::query::Expr;
+
+/// A conversation creates its new Workspace, so it also creates the index the
+/// target's memory bank requires, from the memory policy's embedding (#647).
+#[rstest::rstest]
+#[tokio::test]
+async fn a_conversation_with_a_memory_target_creates_the_workspace_index(
+	#[future(awt)]
+	#[from(common::native_application)]
+	fixture: common::ApplicationFixture,
+) {
+	// Arrange: an agent that binds a native memory provider.
+	let (f, url, schema) = fixture.runtime.parts();
+	let app = fixture.application;
+	let endpoint = "http://127.0.0.1:9";
+	let (_, token, _) = bootstrap(&f, &app, endpoint).await;
+	let deployment = f.config.deployment.as_str();
+	let reference = |id: &str| json!({"id":id,"version":"1.0.0"});
+	let rate = json!({"input_per_million":0,"output_per_million":0});
+	let embedding = json!({"provider":"openai","endpoint":format!("{endpoint}/v1"),"model":"fixture","model_version":"1.0.0","dimensions":3});
+	let provider = json!({"engine":"hindsight_rust","policy":{
+		"extraction":reference("model"),"derivation":reference("model"),"reflection":reference("model"),
+		"embedding":reference("e"),"reranker":reference("r"),"tokenizer":reference("t"),
+		"semantic_link_min_similarity_millionths":700_000,
+		"prices":{"extraction":rate,"derivation":rate,"reflection":rate,"embedding":rate,"reranker":rate},
+		"retention":{"unit_max_age_days":null,"candidate_days":7,"history_days":30,"history_versions":16,"model_result_days":7,"backup_days":7,"purge_after_seconds":60,"purge_batch":32,"max_unit_records":128,"max_model_operations":1024},
+		"bounds":{"max_unit_bytes":8192,"max_input_bytes":16384,"max_units":16,"max_candidates":8,"max_entities":8,"max_evidence":8,"max_links":8,"max_graph_hops":3,"max_graph_visits":32,"max_results":4,"max_context_tokens":8192,"max_model_calls":4,"max_model_tokens":8192,"max_cost_micros":10000,"max_retries":2,"max_call_seconds":30},
+		"learn_from_runs":false,"maintain_observations":false,"refresh_mental_models":false,
+	}});
+	let agent = json!({"schema_version":1,"model":reference("model"),"instructions":"Remember approved work","bindings":[
+		{"kind":"memory","target":{"registry_deployment":deployment,"id":"p","version":"1.0.0"},"narrow":{}},
+	],"remove_default":["file_search","file_read"]});
+	for (kind, id, config) in [
+		("embedding", "e", embedding.clone()),
+		("reranker", "r", json!({"provider":"rrf"})),
+		("tokenizer", "t", json!({"provider":"utf8_upper_bound"})),
+		("memory", "p", provider),
+		("agent", "remembering", agent),
+	] {
+		let entry = json!({"id":id,"version":"1.0.0","kind":kind,"name":{"en":id},"description":{"en":"fixture"},"schema":{},"config":config});
+		let (status, body) = request(&app, &token, "POST", "/api/registry", entry).await;
+		assert_eq!(status, 200, "{id}: {body}");
+		let (status, body) = request(
+			&app,
+			&token,
+			"POST",
+			"/api/authorization/acme/catalog",
+			json!({"node":aidash_domain::nodes::NodeName::derived("acme"),"entry":reference(id),"expected_revision":0,"enabled":true}),
+		)
+		.await;
+		assert_eq!(status, 200, "{id}: {body}");
+	}
+	let mut input = conversation();
+	input["target"]["id"] = json!("remembering");
+	// Act
+	let (status, created) = request(&app, &token, "POST", "/api/conversations", input).await;
+	// Assert: the agent was delegated, and the index carries the policy's embedding.
+	assert_eq!(status, 200, "{created}");
+	assert_eq!(created["task"]["status"], "CLAIMED");
+	let workspace = created["workspace"]["id"].as_str().unwrap();
+	let (status, index) = request(
+		&app,
+		&token,
+		"GET",
+		&format!("/api/workspaces/{workspace}/semantic/index"),
+		Value::Null,
+	)
+	.await;
+	assert_eq!(status, 200, "{index}");
+	assert_eq!(index["revision"], 1);
+	assert_eq!(index["spec"]["embedding"], embedding);
+	assert_eq!(index["spec"]["enabled"], true);
+	assert_eq!(index["spec"]["auto_context"], false);
+	let event: Value = sqlx::query_scalar(
+		"SELECT data FROM events WHERE workspace_id = $1 AND kind = 'conversation.index_created'",
+	)
+	.bind(workspace.parse::<Uuid>().unwrap())
+	.fetch_one(f.store.pool.fixture_driver())
+	.await
+	.unwrap();
+	assert_eq!(event["id"], created["conversation"]["id"]);
+	assert_eq!(event["agent"], reference("remembering"));
+	assert_eq!(event["memory_provider"], reference("p"));
+	cleanup(f, &url, &schema).await;
+}
