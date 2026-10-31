@@ -2641,8 +2641,20 @@ async fn receiver_owns_the_remote_executor_subject(
 		)
 		.await
 		.unwrap();
-	let (status, body) = request(&p.aa, &p.token, "POST", &format!("/api/tasks/{}/remote-grants", p.task), json!({"id":Uuid::new_v4(),"node_id":node_of(&p.b),"agent":{"id":"research","version":"1.0.0"},"ttl_seconds":3600,"semantic":{"mode":"disabled"}})).await;
+	let grant = Uuid::new_v4();
+	let (status, body) = request(&p.aa, &p.token, "POST", &format!("/api/tasks/{}/remote-grants", p.task), json!({"id":grant,"node_id":node_of(&p.b),"agent":{"id":"research","version":"1.0.0"},"ttl_seconds":3600,"semantic":{"mode":"disabled"}})).await;
 	assert_eq!(status, 200, "{body}");
+	// The source describes the grant by its sending chain, so activation starts
+	// remote work although the source policy does not know the executor.
+	let (status, activated) = request(
+		&p.aa,
+		&p.token,
+		"POST",
+		&format!("/api/tasks/{}/remote-grants/{grant}/activate", p.task),
+		json!({}),
+	)
+	.await;
+	assert_eq!(status, 200, "{activated}");
 	p.close().await;
 }
 

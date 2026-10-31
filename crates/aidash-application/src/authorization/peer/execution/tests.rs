@@ -88,6 +88,18 @@ impl PeerInspectionScope for Scope {
 	}
 	async fn require(&mut self, _: &Resource, action: &str) -> Result<()> {
 		self.call(action);
+		// Like the native scope, an unknown pushed executor is not an explicit
+		// deny, so it surfaces as an authority-approval refusal.
+		if self.subjects.len() > 1
+			&& self
+				.subjects
+				.last()
+				.is_some_and(|subject| !self.bundle.subjects.contains_key(subject))
+		{
+			return Err(Error::RemoteExecutionRefused(
+				aidash_domain::federation::execution::Refusal::PolicyAsk,
+			));
+		}
 		Ok(())
 	}
 	async fn generation(&mut self, _: &str, _: &InspectInput) -> Result<Option<Value>> {

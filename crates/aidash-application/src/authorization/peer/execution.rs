@@ -89,21 +89,26 @@ async fn inspect_in(
 			aidash_domain::federation::execution::Refusal::InvalidExecutor,
 		));
 	}
-	access
-		.require(&resource, "federation.execute")
-		.await
-		.map_err(|error| match error {
-			Error::Forbidden => {
-				Error::RemoteExecutionRefused(aidash_domain::federation::execution::Refusal::Policy)
-			}
-			other => other,
-		})?;
-	// Only this Node's Catalog Approval creates the executor subject.
+	let authorized = access.require(&resource, "federation.execute").await;
+	// Only this Node's Catalog Approval creates the executor subject. A missing
+	// subject is still evaluated above so its denial is audited, but the refusal
+	// names the missing approval instead of an authority-approval pause.
 	if !valid_executor {
-		return Err(Error::RemoteExecutionRefused(
-			aidash_domain::federation::execution::Refusal::CatalogApproval,
-		));
+		return match authorized {
+			Ok(()) | Err(Error::Forbidden | Error::RemoteExecutionRefused(_)) => {
+				Err(Error::RemoteExecutionRefused(
+					aidash_domain::federation::execution::Refusal::CatalogApproval,
+				))
+			}
+			Err(other) => Err(other),
+		};
 	}
+	authorized.map_err(|error| match error {
+		Error::Forbidden => {
+			Error::RemoteExecutionRefused(aidash_domain::federation::execution::Refusal::Policy)
+		}
+		other => other,
+	})?;
 	let mut definitions = BTreeMap::new();
 	let entry = definition(
 		access,

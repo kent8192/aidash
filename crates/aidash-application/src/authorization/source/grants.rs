@@ -261,7 +261,22 @@ pub async fn description_mode<R: GrantRepository>(
 		if !scope.live(current.id).await? {
 			return Err(Error::Forbidden);
 		}
-		scope.replace_subjects(current.subject_chain.clone());
+		let inspection: Inspection = serde_json::from_value(current.inspection.clone())?;
+		let chain = current.subject_chain.clone();
+		let executor =
+			aidash_domain::agent_subject(node, &inspection.agent.id, &inspection.agent.version);
+		// The chain ends with the receiver's executor. An executor this Node's
+		// policy does not know is evaluated only by the receiver, so every
+		// source check below uses the sending chain (ADR 0109).
+		let receiver_only = chain.len() >= 2
+			&& chain.last() == Some(&executor)
+			&& !scope.source_bundle().subjects.contains_key(&executor);
+		let sending = if receiver_only {
+			chain[..chain.len() - 1].to_vec()
+		} else {
+			chain
+		};
+		scope.replace_subjects(sending.clone());
 		let task = scope.task_read(current.task_id).await?;
 		scope.workspace(task.workspace_id).await?;
 		let locked = scope.locked_task(task.id).await?;
@@ -273,8 +288,12 @@ pub async fn description_mode<R: GrantRepository>(
 		let admitted = current
 			.admitted_task(&task, binding.as_ref())?
 			.ok_or(Error::Forbidden)?;
-		let inspection: Inspection = serde_json::from_value(current.inspection)?;
+		if receiver_only {
+			// `authorize` validates the complete chain and strips the executor itself.
+			scope.append_subject(executor);
+		}
 		super::authorize(&mut scope, &task, node, &inspection).await?;
+		scope.replace_subjects(sending);
 		scope.remote_semantic_sources(current.id).await?;
 		if !scope.grant_reads_visible(current.id).await? {
 			return Err(Error::Forbidden);
