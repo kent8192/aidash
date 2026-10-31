@@ -110,6 +110,14 @@ revoked or unauthorized credentials never trigger a different auth mode. Codex
 execution is blocked before these live cases can be exercised; it does not claim
 that login success proves token entitlement or remaining quota.
 
+## Manual Claude OAuth-token verification
+
+`CLAUDE_CODE_OAUTH_TOKEN` is not an implemented backend auth mode. A nonempty
+value in the process environment or dedicated env file is rejected before CLI
+inference, so a token check cannot silently use a saved account. For a separate
+manual test of the official CLI, see [the token check guide](claude-token-manual-check.md).
+That test is not evidence of Aidash integration or managed-hook isolation.
+
 ## Env contract
 
 Root `.env` belongs to the existing Aidash deployment/Compose environment. Native
@@ -142,6 +150,9 @@ keys fail. Empty secret placeholders are not treated as supplied credentials.
 | `CODEX_HOME`                   | optional absolute path                                                                 | Only Codex child; official state/auth root unchanged                        |
 | `CODEX_ACCESS_TOKEN`           | secret, no default                                                                     | Required only for access-token; never argv                                  |
 | `CODEX_API_KEY`                | secret, no default                                                                     | Required only for api-key; never argv                                       |
+
+`CLAUDE_CODE_OAUTH_TOKEN` is a recognized secret key with no supported backend mode;
+it must be absent or empty. It is never forwarded to a backend child.
 
 Saved access-token/API-key modes require the corresponding prior official login and
 no nonempty direct secret. A nonempty secret for a different selected mode is an

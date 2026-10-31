@@ -37,3 +37,8 @@ models, limits and Agent references in generated definitions come from one confi
 The model/Agent examples use Legacy projection, text input, no explicit cache markers
 and non-streaming. The Agent explicitly removes default compaction for the minimal
 short-Run setup. Other inference dependencies remain separately configured.
+
+For `claude setup-token` / `CLAUDE_CODE_OAUTH_TOKEN`, see the
+[manual CLI-only check](../../docs/operations/claude-token-manual-check.md).
+Token-based Aidash inference is not supported; the backend rejects a nonempty
+token rather than falling back to its saved-login mode.

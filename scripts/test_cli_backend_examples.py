@@ -20,7 +20,7 @@ class CliBackendExamples(unittest.TestCase):
     def test_credentials_do_not_enter_server_env_or_registry(self):
         for path in [ROOT / ".env.example", *sorted((ROOT / "examples/cli-backends/registry").glob("*.json"))]:
             text = path.read_text()
-            for secret in ("CODEX_ACCESS_TOKEN=", "CODEX_API_KEY=", '"credential_env"', '"plan_connection"', '"provider_credential"'):
+            for secret in ("CODEX_ACCESS_TOKEN=", "CODEX_API_KEY=", "CLAUDE_CODE_OAUTH_TOKEN=", '"credential_env"', '"plan_connection"', '"provider_credential"'):
                 self.assertNotIn(secret, text)
 
     def test_exact_origins_and_endpoint_paths(self):

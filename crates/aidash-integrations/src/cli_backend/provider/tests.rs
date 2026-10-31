@@ -115,6 +115,39 @@ fn required_values_modes_and_secret_environment_are_explicit() {
 }
 
 #[test]
+fn unsupported_claude_token_never_falls_back_to_saved_login() {
+	let tmp = tempfile::tempdir().unwrap();
+	let file = tmp.path().join("config");
+	std::fs::write(&file, "AIDASH_CLI_PROVIDER=claude\nAIDASH_CLI_AUTH_MODE=native\nAIDASH_CLI_MODEL=fixture-model-1\nAIDASH_CLI_CONTEXT_WINDOW=8192").unwrap();
+	let ambient = Values::from([("CLAUDE_CODE_OAUTH_TOKEN".into(), "fixture-token".into())]);
+	assert!(matches!(
+		config::load(&file, &ambient, &Values::new()),
+		Err(Failure("claude_oauth_token_backend_unsupported"))
+	));
+	let mut from_file = values();
+	from_file.insert("CLAUDE_CODE_OAUTH_TOKEN".into(), "fixture-token".into());
+	assert!(matches!(
+		Config::from_values(from_file.clone()),
+		Err(Failure("claude_oauth_token_backend_unsupported"))
+	));
+	from_file.insert("AIDASH_CLI_PROVIDER".into(), "codex".into());
+	assert!(matches!(
+		Config::from_values(from_file),
+		Err(Failure("conflicting_auth_environment"))
+	));
+	let overrides = Values::from([("CLAUDE_CODE_OAUTH_TOKEN".into(), "fixture-token".into())]);
+	assert!(matches!(
+		config::load(&file, &Values::new(), &overrides),
+		Err(Failure("invalid_cli_override"))
+	));
+	assert!(
+		!config()
+			.child_env(&ambient)
+			.contains_key("CLAUDE_CODE_OAUTH_TOKEN")
+	);
+}
+
+#[test]
 fn examples_parse_and_initialization_preserves_private_settings() {
 	let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../examples/cli-backends");
 	let tmp = tempfile::tempdir().unwrap();

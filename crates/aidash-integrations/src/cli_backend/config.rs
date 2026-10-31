@@ -18,11 +18,16 @@ pub const KEYS: &[&str] = &[
 	"AIDASH_CLI_WORK_DIR",
 	"AIDASH_CLI_CONTEXT_WINDOW",
 	"CLAUDE_CONFIG_DIR",
+	"CLAUDE_CODE_OAUTH_TOKEN",
 	"CODEX_HOME",
 	"CODEX_ACCESS_TOKEN",
 	"CODEX_API_KEY",
 ];
-const SECRETS: &[&str] = &["CODEX_ACCESS_TOKEN", "CODEX_API_KEY"];
+const SECRETS: &[&str] = &[
+	"CODEX_ACCESS_TOKEN",
+	"CODEX_API_KEY",
+	"CLAUDE_CODE_OAUTH_TOKEN",
+];
 pub type Values = BTreeMap<String, String>;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -150,6 +155,15 @@ impl Config {
 		};
 		if provider == Provider::Claude && auth != Auth::Native {
 			return Err(Failure("invalid_provider_auth_combination"));
+		}
+		if provider == Provider::Claude
+			&& values
+				.get("CLAUDE_CODE_OAUTH_TOKEN")
+				.is_some_and(|v| !v.is_empty())
+		{
+			// This profile verifies a saved personal login, not an environment
+			// token's account. Never silently test a different saved account.
+			return Err(Failure("claude_oauth_token_backend_unsupported"));
 		}
 		let selected = match auth {
 			Auth::AccessToken => Some("CODEX_ACCESS_TOKEN"),
