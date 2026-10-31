@@ -27,6 +27,28 @@ pub struct IndexingSpec {
 	pub max_input_bytes: usize,
 }
 
+impl IndexingSpec {
+	/// The index a conversation creates for its target's memory provider
+	/// (#647): only what the memory bank needs, so no automatic Workspace
+	/// context, and the limits the dashboard offers by default.
+	pub fn for_memory(embedding: EmbeddingConfig) -> Self {
+		Self {
+			embedding,
+			vector: VectorConfig {
+				provider: "postgres".into(),
+				endpoint: "local".into(),
+				credential_env: None,
+			},
+			enabled: true,
+			auto_context: false,
+			max_sources: 256,
+			max_results: 10,
+			max_result_tokens: 4096,
+			max_input_bytes: 8192,
+		}
+	}
+}
+
 #[derive(Debug, Clone)]
 pub struct IndexingEntry {
 	pub id: Uuid,
