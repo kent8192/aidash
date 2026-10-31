@@ -404,8 +404,8 @@ impl WorkerAuthority {
 	) -> Result<Value> {
 		use crate::apps::execution::capabilities::{contracts::FileScope, service, sessions};
 		let mut access = self.access.write().await;
-		let own = sessions::for_run(&mut access, run).await?;
-		sessions::require_current_run(&mut access, &own, run).await?;
+		// `load` authorizes `file.read` on the selected Area itself.
+		sessions::current_own_area(&mut access, run).await?;
 		let area = sessions::load(&mut access, selection.area_id).await?;
 		if area.workspace_id != run.workspace_id || area.generation != selection.generation {
 			return Err(Error::Forbidden);

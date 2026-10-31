@@ -27,10 +27,23 @@ const MAINTENANCE: TenancyScope =
 	TenancyScope::Deployment(DeploymentScopeReason::SemanticMaintenance);
 
 /// Serialize image publication and rebuild within one Workspace only.
+///
+/// Every caller takes the parent `workspaces` row before the advisory lock.
+/// Publication inserts need a key-share lock on that row through their foreign
+/// key, while configuration and bootstrap lock it `FOR UPDATE` first; taking
+/// the row here keeps one order and avoids a lock cycle. A caller already
+/// holding `FOR UPDATE` keeps it.
 pub(crate) async fn lock_workspace(
 	tx: &mut dyn reinhardt::db::backends::TransactionExecutor,
 	workspace: Uuid,
 ) -> Result<()> {
+	let parent = Query::select()
+		.column(Alias::new("id"))
+		.from(Alias::new("workspaces"))
+		.and_where(Expr::col("id").eq(Expr::value(workspace)))
+		.lock(LockType::KeyShare)
+		.to_string(PostgresQueryBuilder);
+	native::query(&parent).execute(&mut *tx).await?;
 	let statement = Query::select()
 		.expr(Expr::cust(format!(
 			"pg_advisory_xact_lock(71003201, hashtext('{workspace}'::text))"

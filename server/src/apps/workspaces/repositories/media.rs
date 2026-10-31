@@ -134,8 +134,12 @@ impl aidash_application::ports::execution::media::SelectedMediaScope for Selecte
 			.lease
 			.as_mut()
 			.ok_or(aidash_application::Error::Forbidden)?;
-		let area = sessions::for_run(access, self.run).await?;
-		sessions::require_current_run(access, &area, self.run).await?;
+		// A Run without its own Working Area can still open authorized
+		// Workspace image matches; it simply has no own Files to select.
+		let Some(area) = sessions::current_own_area(access, self.run).await? else {
+			self.files = Vec::new();
+			return Ok(Vec::new());
+		};
 		sessions::authorize(access, &area, "file.read").await?;
 		let files = service::files(&area)?;
 		let selected = files

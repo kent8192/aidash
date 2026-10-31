@@ -250,8 +250,10 @@ impl SemanticIndexingSession for Session {
 				&Query::select()
 					.expr(SimpleExpr::from(Expr::col(ColumnRef::Asterisk)))
 					.from(Alias::new("semantic_entries"))
+					// Repeat `due`'s eligibility under the row lock: a rebuild
+					// may exclude a queued image after it was selected.
 					.and_where(SimpleExpr::CustomWithExpr(
-						"(id = ? AND NOT deleted AND next_attempt <= CLOCK_TIMESTAMP())".to_owned(),
+						"(id = ? AND NOT deleted AND state <> 'UNSUPPORTED' AND COALESCE(last_error, '') <> 'awaiting_owner_run' AND next_attempt <= CLOCK_TIMESTAMP())".to_owned(),
 						vec![Expr::value(query_bind_1.to_owned()).into()],
 					))
 					.lock(LockType::Update)

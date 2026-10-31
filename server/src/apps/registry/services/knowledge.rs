@@ -33,6 +33,9 @@ pub(crate) async fn embed_before_registration(
 			let entry =
 				crate::authorization::catalog::entry(&mut access, reference, "registry.read")
 					.await?;
+			// Sending images to the provider is an invocation, independent of reading the entry.
+			crate::authorization::catalog::entry(&mut access, reference, "embedding.invoke")
+				.await?;
 			aidash_application::generation::embedding::require_reference_policy(
 				&mut crate::bootstrap::generation_embedding_authority_scope(&mut access),
 				store.deployment.as_str(),
@@ -180,6 +183,7 @@ pub(crate) async fn reference_image_context(
 		.ok_or_else(unavailable)?;
 	let approved =
 		crate::authorization::catalog::entry(access, &reference, "registry.read").await?;
+	crate::authorization::catalog::entry(access, &reference, "embedding.invoke").await?;
 	aidash_application::generation::embedding::require_reference_policy(
 		&mut crate::bootstrap::generation_embedding_authority_scope(access),
 		store.deployment.as_str(),
