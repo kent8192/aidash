@@ -42,7 +42,6 @@ impl Reads<'_> {
 		crate::database::native::query_scalar(&query)
 			.scalar_optional(&mut **self.access.tx)
 			.await
-			.map_err(crate::Error::from)
 			.map_err(Error::from)?
 			.ok_or_else(|| Error::Invalid("invalid cursor".into()))
 	}
@@ -110,7 +109,6 @@ impl Scope for Reads<'_> {
 		aidash_server::database::query_as(&query.to_string(PostgresQueryBuilder))
 			.fetch_all(&mut **self.access.tx)
 			.await
-			.map_err(crate::Error::from)
 			.map_err(Into::into)
 	}
 	async fn humans(
@@ -171,7 +169,6 @@ impl Scope for Reads<'_> {
 		aidash_server::database::query_as(&query.to_string(PostgresQueryBuilder))
 			.fetch_all(&mut **self.access.tx)
 			.await
-			.map_err(crate::Error::from)
 			.map_err(Into::into)
 	}
 	async fn human_resource(&mut self, request: &HumanRequest) -> Result<Resource> {
