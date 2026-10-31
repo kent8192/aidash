@@ -404,6 +404,17 @@ pub trait ExecutionHome: Send + Sync {
 		offset: usize,
 		maximum: usize,
 	) -> Result<Value>;
+	/// Read a Workspace owned by a Subnode created by this Run.
+	async fn read_subnode_record_chunk(
+		&self,
+		_workspace: Uuid,
+		_kind: &str,
+		_id: &str,
+		_offset: usize,
+		_maximum: usize,
+	) -> Result<Value> {
+		Err(crate::Error::Forbidden)
+	}
 	async fn observation(&self, offset: usize, limit: usize) -> Result<Value>;
 	async fn observation_fitted(
 		&self,

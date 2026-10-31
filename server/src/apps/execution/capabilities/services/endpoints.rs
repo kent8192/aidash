@@ -136,14 +136,27 @@ async fn dispatch(
 	input: Value,
 ) -> Result<Envelope> {
 	let (mut access, run) = run_access(&f, actor, id).await?;
-	let result = service::invoke(
-		&f.store,
-		&mut access,
-		&run,
-		name,
-		input,
-		&Uuid::new_v4().to_string(),
-	)
+	let result = async {
+		if !matches!(
+			name,
+			"file_read" | "file_search" | "skill_list" | "skill_load" | "skill_read"
+		) {
+			crate::apps::execution::repositories::subnodes::require_writable(
+				access.tx.native_mut(),
+				run.workspace_id,
+			)
+			.await?;
+		}
+		service::invoke(
+			&f.store,
+			&mut access,
+			&run,
+			name,
+			input,
+			&Uuid::new_v4().to_string(),
+		)
+		.await
+	}
 	.await;
 	access.finish(result).await
 }
@@ -190,7 +203,15 @@ pub(crate) async fn materialize(
 	input: Materialize,
 ) -> Result<MaterializedFile> {
 	let (mut access, run) = run_access(&f, actor, id).await?;
-	let result = service::materialize(&f.store, &mut access, &run, input).await;
+	let result = async {
+		crate::apps::execution::repositories::subnodes::require_writable(
+			access.tx.native_mut(),
+			run.workspace_id,
+		)
+		.await?;
+		service::materialize(&f.store, &mut access, &run, input).await
+	}
+	.await;
 	typed(access.finish(result).await?)
 }
 pub(crate) async fn session(f: Federation, actor: Actor, id: Uuid) -> Result<SessionStatus> {

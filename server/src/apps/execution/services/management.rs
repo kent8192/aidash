@@ -115,6 +115,28 @@ impl HarnessManagement {
 	}
 	/// One Source citation of a Run, for a reader who may read that Run now.
 	/// Every reason the reader cannot see it is the same `NotFound`.
+	pub(crate) async fn run_subnodes(
+		&self,
+		actor: Actor,
+		id: Uuid,
+	) -> Result<Vec<crate::apps::execution::serializers::subnodes::SubnodeView>> {
+		let Actor::Subject(identity) = actor else {
+			return Err(Error::Forbidden);
+		};
+		crate::apps::identity::services::execution::subnodes::list(&self.runtime, &identity, id)
+			.await
+	}
+	pub(crate) async fn dissolve_subnode(
+		&self,
+		actor: Actor,
+		id: Uuid,
+	) -> Result<crate::apps::execution::serializers::subnodes::Dissolved> {
+		let Actor::Subject(identity) = actor else {
+			return Err(Error::Forbidden);
+		};
+		crate::apps::identity::services::execution::subnodes::dissolve(&self.runtime, &identity, id)
+			.await
+	}
 	pub(crate) async fn run_evidence(
 		&self,
 		actor: Actor,

@@ -72,6 +72,27 @@ pub async fn run_evidence(
 	crate::http::json(service.run_evidence(actor, id, &reference).await)
 }
 
+#[get("/api/runs/{id}/subnodes", name = "run-subnodes", auth = "protected")]
+pub async fn run_subnodes(
+	#[inject] service: Depends<HarnessManagement>,
+	#[inject] actor: Actor,
+	Path(id): Path<Uuid>,
+) -> ViewResult<Response> {
+	crate::http::json(service.run_subnodes(actor, id).await)
+}
+#[post(
+	"/api/subnodes/{id}/dissolve",
+	name = "subnode-dissolve",
+	auth = "protected"
+)]
+pub async fn subnode_dissolve(
+	#[inject] service: Depends<HarnessManagement>,
+	#[inject] actor: Actor,
+	Path(id): Path<Uuid>,
+) -> ViewResult<Response> {
+	crate::http::json(service.dissolve_subnode(actor, id).await)
+}
+
 #[post("/api/runs/{id}/control", name = "run-control", auth = "protected")]
 pub async fn run_control(
 	#[inject] service: Depends<HarnessManagement>,

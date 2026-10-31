@@ -19,6 +19,8 @@ pub trait ExecutionAdmissionSession: ExecutionGrantSession {
 	) -> Result<aidash_domain::nodes::NodeAddress>;
 	fn bundle(&self) -> &PolicyBundle;
 	async fn task(&mut self, id: Uuid) -> Result<Option<Task>>;
+	/// Verify Subnode membership and task origin under the membership lock.
+	async fn subnode_admission(&mut self, task: &Task, agent: &EntityRef) -> Result<()>;
 	async fn task_resource(&mut self, task: &Task) -> Result<Resource>;
 	async fn require_live_agent(&mut self, task: Uuid, agent: &EntityRef) -> Result<()>;
 	async fn executable_entry(&mut self, agent: &EntityRef) -> Result<Entry>;

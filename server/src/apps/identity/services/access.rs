@@ -18,6 +18,33 @@ use uuid::Uuid;
 #[path = "visibility.rs"]
 mod visibility;
 
+pub(super) fn subnode_workspace_write(action: &str) -> bool {
+	matches!(
+		action,
+		"workspace.update"
+			| "workspace.share"
+			| "task.create"
+			| "task.update"
+			| "task.claim"
+			| "task.delegate"
+			| "task.execute"
+			| "task.complete"
+			| "task.abandon"
+			| "artifact.create"
+			| "message.create"
+			| "message.update"
+			| "run.message"
+			| "run.control"
+			| "file.write"
+			| "file.delete"
+			| "file.restore"
+			| "file.receive"
+			| "file.transfer"
+			| "file.share"
+			| "semantic.index.manage"
+	)
+}
+
 /// Every input of one catalog admission decision: who decides, under which policy
 /// revision and inherited fence, with which evaluation context and audit mode, for
 /// which definition. A decision first made unaudited or with deferred audit is never
@@ -673,7 +700,47 @@ impl Access {
 		})
 	}
 
+	/// A dissolved Subnode Workspace is retained for reading and citations.
+	/// User mutations hold a shared Subnode lock until their transaction commits;
+	/// dissolution takes the exclusive lock. Worker mutations already hold it
+	/// through their narrower Subnode effect boundary.
+	pub(crate) async fn ensure_subnode_writable(&mut self, workspace: Uuid) -> Result<()> {
+		use reinhardt::db::orm::{QueryRow, execution::convert_values};
+		use reinhardt::query::LockType;
+		let (sql, values) = Query::select()
+			.column(Alias::new("state"))
+			.from(Alias::new("subnodes"))
+			.and_where(Expr::col("tenant").eq(self.identity.tenant.clone()))
+			.and_where(Expr::col("workspace_id").eq(Expr::value(workspace)))
+			.lock(LockType::Share)
+			.build(PostgresQueryBuilder);
+		if let Some(row) = self
+			.tx
+			.native_mut()
+			.fetch_optional(&sql, convert_values(values))
+			.await?
+		{
+			let row = QueryRow::from_backend_row(row);
+			let state: String = row.get("state").ok_or(crate::Error::Forbidden)?;
+			if state != "active" {
+				return Err(Error::Forbidden);
+			}
+		}
+		Ok(())
+	}
+
 	pub async fn decide(&mut self, resource: &Resource, action: &str) -> Result<bool> {
+		if self.read_run.is_none() && subnode_workspace_write(action) {
+			let workspace = resource
+				.attributes
+				.get("workspace_id")
+				.and_then(Value::as_str)
+				.or_else(|| (resource.kind == "workspace").then_some(resource.id.as_str()))
+				.and_then(|id| Uuid::parse_str(id).ok());
+			if let Some(workspace) = workspace {
+				self.ensure_subnode_writable(workspace).await?;
+			}
+		}
 		aidash_application::authorization::lease::decide(
 			&mut crate::bootstrap::run_visibility_scope(self),
 			resource,

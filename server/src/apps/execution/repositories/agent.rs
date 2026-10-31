@@ -555,6 +555,18 @@ impl ExecutionHome for NativeHome {
 			.await
 			.map_err(Into::into)
 	}
+	async fn read_subnode_record_chunk(
+		&self,
+		workspace: Uuid,
+		kind: &str,
+		id: &str,
+		offset: usize,
+		maximum: usize,
+	) -> Result<Value> {
+		Home::read_subnode_record_chunk(&self.0, workspace, kind, id, offset, maximum)
+			.await
+			.map_err(Into::into)
+	}
 	async fn observation(&self, offset: usize, limit: usize) -> Result<Value> {
 		Home::observation(&self.0, offset, limit)
 			.await
@@ -1578,13 +1590,56 @@ impl aidash_application::ports::bindings::BindingResolver for Environment<'_> {
 			return Err(aidash_application::Error::Forbidden);
 		};
 		let authority = authority.guard.binding_authority();
-		aidash_application::registry::bindings::execution::PinnedResolver {
-			providers,
+		let mut tools = aidash_application::registry::bindings::execution::PinnedResolver {
+			providers: providers.clone(),
 			authority,
 			sessions: Some(self.federation.store.plugin_sessions.clone()),
 		}
 		.tools(run)
-		.await
+		.await?;
+		if self
+			.authority
+			.as_ref()
+			.expect("checked above")
+			.guard
+			.subnode_tool_filter(&mut tools)
+			.await?
+		{
+			for name in aidash_domain::subnodes::COORDINATION_TOOLS {
+				if let Some(existing) = tools.get(*name) {
+					// Only the matching builtin may occupy a mandatory alias.
+					let is_matching = match existing.contract().identity {
+						aidash_domain::tool::ToolIdentity::Builtin(ref identity) => {
+							identity == &format!("builtin:{name}")
+						}
+						aidash_domain::tool::ToolIdentity::Descriptor(ref identity) => run
+							.context
+							.binding_snapshot
+							.as_ref()
+							.is_some_and(|snapshot| {
+								snapshot.bindings.iter().any(|binding| {
+									&binding.identity == identity
+										&& serde_json::from_value::<
+											aidash_domain::tool::providers::ToolDescriptor,
+										>(binding.definition.config.clone())
+										.is_ok_and(|descriptor| {
+											descriptor.provider.starts_with("core.")
+												&& descriptor.operation == *name
+										})
+								})
+							}),
+						_ => false,
+					};
+					if !is_matching {
+						return Err(aidash_application::Error::Conflict(format!(
+							"Subnode coordination alias is already bound: {name}"
+						)));
+					}
+				}
+				tools.insert((*name).to_owned(), providers.coordination_tool(name)?);
+			}
+		}
+		Ok(tools)
 	}
 }
 

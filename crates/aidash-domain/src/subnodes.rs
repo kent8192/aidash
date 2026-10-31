@@ -205,7 +205,9 @@ pub fn member_fits(required: &Allowance, allowance: &Allowance) -> Result<(), Re
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct SubnodeLimits {
+	#[schemars(range(min = 1, max = 20))]
 	pub members_per_subnode: u32,
+	#[schemars(range(min = 1, max = 10))]
 	pub subnodes_per_run: u32,
 	pub remote_runs_may_create: bool,
 }

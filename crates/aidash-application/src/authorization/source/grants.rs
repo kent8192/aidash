@@ -87,6 +87,9 @@ pub async fn agent_inspection<R: GrantRepository>(
 	let result = async {
 		scope.inherit_task_origin(task_id).await?;
 		let task = scope.task_read(task_id).await?;
+		scope
+			.require_non_subnode_workspace(task.workspace_id)
+			.await?;
 		if task.status != TaskStatus::Open {
 			return Err(Error::Conflict("task is already assigned".into()));
 		}
@@ -138,6 +141,7 @@ pub async fn prepare<R: GrantRepository>(
 	let result=async {
   scope.inherit_task_origin(task_id).await?;
   let task=scope.task_read(task_id).await?;
+  scope.require_non_subnode_workspace(task.workspace_id).await?;
   if task.status!=TaskStatus::Open {return Err(Error::Conflict("task is already assigned".into()));}
   if scope.source_subjects().len()>=32 {return Err(Error::Invalid("execution delegation depth exceeds 32".into()));}
   let executor=aidash_domain::agent_subject(&input.node_id,&input.agent.id,&input.agent.version);

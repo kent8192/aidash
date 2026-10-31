@@ -100,6 +100,66 @@ fn named<T>(
 	})
 }
 
+/// Resolve the pinned tool identity, never the model-chosen alias, against a Subnode allowance.
+fn allowed_in_subnode(
+	repository: &dyn AgentToolRepository,
+	contract: &ToolContract,
+	allowance: &aidash_domain::subnodes::Allowance,
+) -> Result<bool> {
+	let (name, secret) = match &contract.identity {
+		ToolIdentity::Builtin(name) => (
+			name.strip_prefix("builtin:").unwrap_or(name).to_owned(),
+			None,
+		),
+		ToolIdentity::Registry(reference) => {
+			let Some(snapshot) = repository.binding_snapshot() else {
+				return Ok(false);
+			};
+			let mut matches = snapshot.bindings.iter().filter(|binding| {
+				binding.identity.local() == *reference
+					&& binding.definition.kind == "tool"
+					&& binding.excluded_reason.is_none()
+			});
+			let Some(binding) = matches.next() else {
+				return Ok(false);
+			};
+			if matches.next().is_some() {
+				return Ok(false);
+			}
+			(
+				binding.identity.resource_id(),
+				aidash_domain::tenant_secrets::definition_secret(&binding.definition),
+			)
+		}
+		ToolIdentity::Descriptor(reference) => {
+			let Some(binding) = repository.binding_snapshot().and_then(|snapshot| {
+				snapshot.bindings.iter().find(|binding| {
+					binding.identity == *reference && binding.excluded_reason.is_none()
+				})
+			}) else {
+				return Ok(false);
+			};
+			let descriptor: aidash_domain::tool::providers::ToolDescriptor =
+				serde_json::from_value(binding.definition.config.clone())?;
+			let name = if descriptor.provider.starts_with("core.") {
+				descriptor.operation
+			} else {
+				reference.resource_id()
+			};
+			(
+				name,
+				aidash_domain::tenant_secrets::definition_secret(&binding.definition),
+			)
+		}
+		ToolIdentity::AgentPlugin(_) => return Ok(false),
+	};
+	Ok(
+		(aidash_domain::subnodes::COORDINATION_TOOLS.contains(&name.as_str())
+			|| allowance.tools.contains(&name))
+			&& secret.is_none_or(|secret| allowance.secrets.contains(&secret)),
+	)
+}
+
 pub async fn authorize(
 	repository: &dyn AgentToolRepository,
 	run: &RunMetadata,
@@ -122,6 +182,11 @@ pub async fn authorize(
 	}
 	// Taking the lease only waits for the Access guard; it refuses nothing.
 	let mut scope = repository.lease().await?;
+	if let Some(allowance) = scope.subnode_allowance().await?
+		&& !allowed_in_subnode(repository, contract, &allowance)?
+	{
+		return Err(refused(call, RefusalCheck::Policy, None));
+	}
 	let mut current;
 	let mut operation = None;
 	let authorization = match &contract.identity {
@@ -452,6 +517,24 @@ fn asset_skill(
 		}))
 }
 
+/// Filter the assembled tools against the current Subnode allowance, if any.
+pub async fn filter_subnode<T: Send>(
+	repository: &dyn AgentToolRepository,
+	tools: &mut BTreeMap<String, T>,
+	contract: impl Fn(&T) -> ToolContract,
+) -> Result<bool> {
+	let mut scope = repository.lease().await?;
+	let Some(allowance) = scope.subnode_allowance().await? else {
+		return Ok(false);
+	};
+	for name in tools.keys().cloned().collect::<Vec<_>>() {
+		if !allowed_in_subnode(repository, &contract(&tools[&name]), &allowance)? {
+			tools.remove(&name);
+		}
+	}
+	Ok(true)
+}
+
 /// Apply removals immediately so a later adapter failure retains earlier filtering.
 pub async fn filter<T: Send>(
 	repository: &dyn AgentToolRepository,
@@ -463,6 +546,13 @@ pub async fn filter<T: Send>(
 		tools.retain(|_, tool| contract(tool).remote_exposure);
 	}
 	let mut scope = repository.lease().await?;
+	if let Some(allowance) = scope.subnode_allowance().await? {
+		for name in tools.keys().cloned().collect::<Vec<_>>() {
+			if !allowed_in_subnode(repository, &contract(&tools[&name]), &allowance)? {
+				tools.remove(&name);
+			}
+		}
+	}
 	for name in tools.keys().cloned().collect::<Vec<_>>() {
 		let declaration = contract(&tools[&name]);
 		if !declaration

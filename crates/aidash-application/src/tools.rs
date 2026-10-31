@@ -157,6 +157,85 @@ impl Builtin {
 			.validate(&input)
 			.map_err(|e| Error::Invalid(e.to_string()))?;
 		match self.name {
+			"subnode_task"
+			| "subnode_add_member"
+			| "subnode_remove_member"
+			| "subnode_dissolve"
+			| "subnode_message" => {
+				use crate::subnodes::Command;
+				let id = || -> Result<aidash_domain::subnodes::SubnodeId> {
+					Ok(aidash_domain::subnodes::SubnodeId(
+						required(&input, "subnode_id")?
+							.parse()
+							.map_err(|_| Error::Invalid("invalid Subnode id".into()))?,
+					))
+				};
+				let parse_agent = || -> Result<EntityRef> {
+					let (id, version) = required(&input, "agent")?
+						.rsplit_once('@')
+						.filter(|(id, version)| !id.is_empty() && !version.is_empty())
+						.ok_or_else(|| Error::Invalid("agent must be id@version".into()))?;
+					Ok(EntityRef {
+						id: id.into(),
+						version: version.into(),
+					})
+				};
+				let command = match self.name {
+					"subnode_task" => Command::Task {
+						id: id()?,
+						title: required(&input, "title")?.into(),
+						request: required(&input, "request")?.into(),
+					},
+					"subnode_add_member" => Command::Add {
+						id: id()?,
+						agent: parse_agent()?,
+					},
+					"subnode_remove_member" => Command::Remove {
+						id: id()?,
+						agent: parse_agent()?,
+					},
+					"subnode_dissolve" => Command::Dissolve { id: id()? },
+					"subnode_message" => Command::Message {
+						content: required(&input, "content")?.into(),
+					},
+					_ => unreachable!(),
+				};
+				ctx.operations.subnode_command(key, &command).await
+			}
+			"subnode_create" => {
+				let parse = |value: &str| -> Result<EntityRef> {
+					let (id, version) = value
+						.rsplit_once('@')
+						.filter(|(id, version)| !id.is_empty() && !version.is_empty())
+						.ok_or_else(|| Error::Invalid("agent must be id@version".into()))?;
+					Ok(EntityRef {
+						id: id.into(),
+						version: version.into(),
+					})
+				};
+				let leader = parse(required(&input, "leader")?)?;
+				let members =
+					input["members"]
+						.as_array()
+						.ok_or_else(|| Error::Invalid("members must be an array".into()))?
+						.iter()
+						.map(|value| {
+							parse(value.as_str().ok_or_else(|| {
+								Error::Invalid("member must be id@version".into())
+							})?)
+						})
+						.collect::<Result<Vec<_>>>()?;
+				let allowance = serde_json::from_value(input["allowance"].clone())
+					.map_err(|error| Error::Invalid(error.to_string()))?;
+				let create = crate::subnodes::Create {
+					leader,
+					members,
+					allowance,
+					title: input["title"].as_str().map(str::to_owned),
+				};
+				let subnode = ctx.operations.subnode_create(key, &create).await?;
+				Ok(json!({"subnode_id":subnode.id.0,"workspace_id":subnode.workspace_id}))
+			}
 			"skill_read" => {
 				let reference: EntityRef = serde_json::from_value(input["skill"].clone())
 					.map_err(|error| Error::Invalid(error.to_string()))?;
@@ -250,14 +329,20 @@ impl Builtin {
 			"workspace_read" => {
 				let kind = required(&input, "kind")?;
 				let id = required(&input, "id")?;
-				ctx.operations
-					.read_record_chunk(
-						kind,
-						id,
-						input["offset"].as_u64().unwrap_or(0) as usize,
-						input["max_chars"].as_u64().unwrap_or(8000) as usize,
-					)
-					.await
+				let offset = input["offset"].as_u64().unwrap_or(0) as usize;
+				let maximum = input["max_chars"].as_u64().unwrap_or(8000) as usize;
+				if let Some(workspace) = input["workspace_id"].as_str() {
+					let workspace = workspace
+						.parse()
+						.map_err(|_| Error::Invalid("invalid workspace id".into()))?;
+					ctx.operations
+						.read_subnode_record_chunk(workspace, kind, id, offset, maximum)
+						.await
+				} else {
+					ctx.operations
+						.read_record_chunk(kind, id, offset, maximum)
+						.await
+				}
 			}
 			"workspace_wait" => {
 				Ok(json!({"wait_seconds":input["seconds"].as_u64().unwrap_or(2).clamp(1,60)}))
@@ -304,6 +389,48 @@ pub fn builtins() -> BTreeMap<String, Builtin> {
 	let string = json!({"type":"string"});
 	let entity_ref = json!({"type":"object","required":["id","version"],"properties":{"id":string,"version":string},"additionalProperties":false});
 	let entries = vec![
+		Builtin {
+			name: "subnode_task",
+			contract: aidash_domain::tool::builtin_contract("subnode_task")
+				.expect("declared builtin"),
+			description: "Give a task to a Subnode's leader.",
+			schema: json!({"type":"object","required":["subnode_id","title","request"],"properties":{"subnode_id":string,"title":string,"request":string},"additionalProperties":false}),
+		},
+		Builtin {
+			name: "subnode_add_member",
+			contract: aidash_domain::tool::builtin_contract("subnode_add_member")
+				.expect("declared builtin"),
+			description: "Add an approved agent version to a Subnode.",
+			schema: json!({"type":"object","required":["subnode_id","agent"],"properties":{"subnode_id":string,"agent":string},"additionalProperties":false}),
+		},
+		Builtin {
+			name: "subnode_remove_member",
+			contract: aidash_domain::tool::builtin_contract("subnode_remove_member")
+				.expect("declared builtin"),
+			description: "Remove a member without unfinished work from a Subnode.",
+			schema: json!({"type":"object","required":["subnode_id","agent"],"properties":{"subnode_id":string,"agent":string},"additionalProperties":false}),
+		},
+		Builtin {
+			name: "subnode_dissolve",
+			contract: aidash_domain::tool::builtin_contract("subnode_dissolve")
+				.expect("declared builtin"),
+			description: "Dissolve a Subnode created by this Run and cancel its active Runs.",
+			schema: json!({"type":"object","required":["subnode_id"],"properties":{"subnode_id":string},"additionalProperties":false}),
+		},
+		Builtin {
+			name: "subnode_message",
+			contract: aidash_domain::tool::builtin_contract("subnode_message")
+				.expect("declared builtin"),
+			description: "Send a message to the Run that created this Subnode.",
+			schema: json!({"type":"object","required":["content"],"properties":{"content":string},"additionalProperties":false}),
+		},
+		Builtin {
+			name: "subnode_create",
+			contract: aidash_domain::tool::builtin_contract("subnode_create")
+				.expect("declared builtin"),
+			description: "Create a Run-scoped Subnode with approved members and a narrower allowance. Name built-in tools by operation and other tools as registry_deployment/tools/id@version.",
+			schema: json!({"type":"object","required":["leader","members","allowance"],"properties":{"leader":string,"members":{"type":"array","minItems":1,"items":string},"allowance":{"type":"object","required":["tools","secrets"],"properties":{"tools":{"type":"array","items":string},"secrets":{"type":"array","items":string}},"additionalProperties":false},"title":string},"additionalProperties":false}),
+		},
 		Builtin {
 			name: "skill_read",
 			contract: aidash_domain::tool::builtin_contract("skill_read")
@@ -364,8 +491,8 @@ pub fn builtins() -> BTreeMap<String, Builtin> {
 			name: "workspace_read",
 			contract: aidash_domain::tool::builtin_contract("workspace_read")
 				.expect("declared builtin"),
-			description: "Read one accessible workspace record by kind and exact ID. Returns a JSON text chunk, total_chars and next_offset; concatenate chunks in offset order to recover the full record. The returned chunk is capped to fit the active request budget. If budget_limited is true, continue from next_offset on a later turn; if deferred is true, stop reading until that later turn.",
-			schema: json!({"type":"object","required":["kind","id"],"properties":{"kind":{"enum":["workspace","task","artifact","message","event"]},"id":string,"offset":{"type":"integer","minimum":0},"max_chars":{"type":"integer","minimum":0,"maximum":16000}},"additionalProperties":false}),
+			description: "Read one accessible workspace record by kind and exact ID. To read a Subnode created by this Run, pass its workspace_id. Returns a JSON text chunk, total_chars and next_offset; concatenate chunks in offset order to recover the full record. The returned chunk is capped to fit the active request budget. If budget_limited is true, continue from next_offset on a later turn; if deferred is true, stop reading until that later turn.",
+			schema: json!({"type":"object","required":["kind","id"],"properties":{"kind":{"enum":["workspace","task","artifact","message","event"]},"id":string,"workspace_id":string,"offset":{"type":"integer","minimum":0},"max_chars":{"type":"integer","minimum":0,"maximum":16000}},"additionalProperties":false}),
 		},
 		Builtin {
 			name: "workspace_wait",

@@ -25,6 +25,8 @@ pub trait GrantScope: HomeScope + SourceAuthorityScope + SourcePeerScope {
 	fn replace_subjects(&mut self, subjects: Vec<String>);
 	fn append_subject(&mut self, subject: String);
 	async fn inherit_task_origin(&mut self, id: Uuid) -> Result<()>;
+	/// A Subnode Workspace may delegate only to its local members.
+	async fn require_non_subnode_workspace(&mut self, workspace: Uuid) -> Result<()>;
 	async fn command_lock(&mut self, id: Uuid) -> Result<()>;
 	async fn current_grant(&mut self, id: Uuid) -> Result<Grant>;
 	async fn live(&mut self, id: Uuid) -> Result<bool>;

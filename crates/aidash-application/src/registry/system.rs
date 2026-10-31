@@ -26,7 +26,16 @@ pub fn operations() -> impl Iterator<Item = &'static str> {
 		.chain(DEFAULT_TOOLS)
 		.chain(EXPOSURE_TOOLS)
 		.copied()
-		.chain([SKILL_ASSET_READ, TASK_ASSIGN])
+		.chain([
+			SKILL_ASSET_READ,
+			TASK_ASSIGN,
+			"subnode_create",
+			"subnode_task",
+			"subnode_add_member",
+			"subnode_remove_member",
+			"subnode_dissolve",
+			"subnode_message",
+		])
 }
 
 /// Starts a generation inside Aidash only, so it is an ordinary built-in that

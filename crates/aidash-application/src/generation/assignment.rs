@@ -86,6 +86,18 @@ pub async fn assign_in(
 	reason: &str,
 	validation: &DefinitionValidation,
 ) -> Result<Assignment> {
+	assign_in_restricted(scope, task_id, policy_id, reason, validation, None).await
+}
+
+/// A Subnode may reuse only its current members and may not generate agents.
+pub async fn assign_in_restricted(
+	scope: &mut dyn GenerationAssignmentScope,
+	task_id: Uuid,
+	policy_id: &str,
+	reason: &str,
+	validation: &DefinitionValidation,
+	members: Option<&[EntityRef]>,
+) -> Result<Assignment> {
 	aidash_domain::nonempty(reason, "generation reason")?;
 	if reason.len() > 4096 {
 		return Err(Error::Invalid(
@@ -110,6 +122,9 @@ pub async fn assign_in(
 	// The exclusive policy lock serializes quota reservations and task retries.
 	let policy = scope.policy(policy_id).await?;
 	if let Some(existing) = scope.existing(task_id).await? {
+		if members.is_some() {
+			return Err(Error::Refused("Subnodes cannot generate agents".into()));
+		}
 		if existing.tenant != scope.tenant()
 			|| existing.root_subject != scope.subject()
 			|| existing.policy_id != policy_id
@@ -129,6 +144,13 @@ pub async fn assign_in(
 	}
 	if task.status != TaskStatus::Open {
 		if let Some((id, version, chain)) = scope.existing_run(task_id).await? {
+			if members.is_some_and(|members| {
+				!members
+					.iter()
+					.any(|member| member.id == id && member.version == version)
+			}) {
+				return Err(Error::Forbidden);
+			}
 			let node = scope.workspace_node(task.workspace_id).await?;
 			let mut expected = scope.subjects().to_vec();
 			expected.push(qualified_agent(&node, &id, &version));
@@ -160,6 +182,13 @@ pub async fn assign_in(
 	search.kind = Some("agent".into());
 	let node = scope.workspace_node(task.workspace_id).await?;
 	for entry in scope.catalog(&search).await? {
+		if members.is_some_and(|members| {
+			!members
+				.iter()
+				.any(|member| member.id == entry.id && member.version == entry.version)
+		}) {
+			continue;
+		}
 		if scope.generated(&entry).await? {
 			continue;
 		}
@@ -184,6 +213,9 @@ pub async fn assign_in(
 				.await?;
 			return Ok(Assignment::Existing { delegation });
 		}
+	}
+	if members.is_some() {
+		return Err(Error::Refused("no Subnode member matches this task".into()));
 	}
 	create_in(scope, &task, policy, reason, None, validation).await
 }
