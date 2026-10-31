@@ -40,6 +40,7 @@ impl Client {
 			.timeout(std::time::Duration::from_secs(30))
 			.connect_timeout(std::time::Duration::from_secs(5))
 			.redirect(reqwest::redirect::Policy::none())
+			.user_agent(crate::USER_AGENT)
 			.build()
 			.map_err(crate::http_error)?;
 		Ok(Self {

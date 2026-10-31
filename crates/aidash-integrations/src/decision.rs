@@ -94,6 +94,7 @@ impl RouteDecisionProvider {
 		// Redirects/retries create unreserved physical attempts or move disclosure.
 		let client = reqwest::Client::builder()
 			.redirect(reqwest::redirect::Policy::none())
+			.user_agent(crate::USER_AGENT)
 			.retry(reqwest::retry::never())
 			.timeout(timeout)
 			.build()
