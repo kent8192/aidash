@@ -171,14 +171,13 @@ impl SubnodeRecord {
 		tenant: &str,
 		run: Uuid,
 	) -> Result<usize> {
-		let count = Self::objects()
+		Self::objects()
 			.filter(Self::field_tenant().eq(tenant.to_owned()))
 			.filter(Self::field_creator_run_id().eq(run))
 			.filter(Self::field_state().eq("active"))
 			.count_with_executor(tx)
 			.await
-			.map_err(framework)?;
-		usize::try_from(count).map_err(|_| Error::Invalid("invalid Subnode count".into()))
+			.map_err(framework)
 	}
 
 	pub(crate) async fn insert_active(

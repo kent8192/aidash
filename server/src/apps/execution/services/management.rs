@@ -113,8 +113,6 @@ impl HarnessManagement {
 		details.media_input_routes = f.run_media_input_routes(&details.run).await?;
 		Ok(details)
 	}
-	/// One Source citation of a Run, for a reader who may read that Run now.
-	/// Every reason the reader cannot see it is the same `NotFound`.
 	pub(crate) async fn run_subnodes(
 		&self,
 		actor: Actor,
@@ -137,6 +135,8 @@ impl HarnessManagement {
 		crate::apps::identity::services::execution::subnodes::dissolve(&self.runtime, &identity, id)
 			.await
 	}
+	/// One Source citation of a Run, for a reader who may read that Run now.
+	/// Every reason the reader cannot see it is the same `NotFound`.
 	pub(crate) async fn run_evidence(
 		&self,
 		actor: Actor,

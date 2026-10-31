@@ -1007,8 +1007,8 @@ impl WorkerAuthority {
 			&& locked.members.iter().any(|member| {
 				member.agent_id == run.agent_id && member.agent_version == run.agent_version
 			});
-		if (!creator && !member)
-			|| (matches!(command, Command::Task { .. } | Command::Dissolve { .. }) && !creator)
+		if (!member || matches!(command, Command::Task { .. } | Command::Dissolve { .. }))
+			&& !creator
 			|| (matches!(command, Command::Message { .. }) && !member)
 		{
 			return Err(Error::Forbidden);
