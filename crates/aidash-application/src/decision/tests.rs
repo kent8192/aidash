@@ -1727,6 +1727,55 @@ async fn state_retention_is_prior_opt_in_and_replay_requires_current_reader_auth
 	corrupt.attempts.clear();
 	assert!(corrupt.replay().is_err());
 }
+/// serde_json sorts keys, so the Decider reads the brief before the goal and
+/// the history; each question names what its answer does (ADR 0107).
+#[test]
+fn the_compaction_brief_comes_first_and_questions_say_what_an_answer_keeps() {
+	let context = history();
+	let boundary = Boundary {
+		node: "aidash://execution".into(),
+		run: Uuid::new_v4(),
+		step: 1,
+		run_revision: 1,
+		input_revision: 1,
+		worker: Uuid::new_v4(),
+		input_digest: format!("sha256:{}", "a".repeat(64)),
+		cycle: 0,
+		retry: 0,
+	};
+	let view = Disclosure {
+		goal: Some("goal".into()),
+		tool_inputs: (0..10).map(|i| (i, json!({"query":"permitted"}))).collect(),
+		..Default::default()
+	};
+	let built = build_compaction_state(
+		&context,
+		&boundary,
+		&view,
+		&Restrictions::default(),
+		&StateBudget::default(),
+		false,
+	)
+	.unwrap();
+	assert!(
+		built
+			.state
+			.to_string()
+			.starts_with(r#"{"brief":"An agent conversation"#)
+	);
+	assert!(built.state.get("rubric").is_none());
+	let candidate = &built.candidates[0];
+	assert!(built.questions[&candidate.keep_call].description.ends_with(
+		"\nShould the agent still see that this call was made? A short record of the call stays when yes."
+	));
+	assert!(
+		built.questions[&candidate.keep_result]
+			.description
+			.ends_with(
+				"\nMust the complete result stay verbatim, rather than only its first 300 characters?"
+			)
+	);
+}
 #[test]
 fn states_are_abridged_in_stages_and_beyond_the_long_context_budget_pause() {
 	let mut context = history();

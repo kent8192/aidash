@@ -1849,7 +1849,7 @@ fn decider_config() -> Value {
 	json!({"hook":"compaction","answer_type":"noul","description":"Preserve needed history",
         "provider_credential":"openrouter",
         "routes":[{"provider_contract":"typesafe.jev/1","model":"typesafe/jev-1.13","threshold":"3fe0000000000000"}],
-        "builder":"aidash.compaction/2","option_source":"history_event/1",
+        "builder":"aidash.compaction/3","option_source":"history_event/1",
         "rule":"compaction.keep/1","mode":"enforce",
         "max_calls_per_run":20})
 }
