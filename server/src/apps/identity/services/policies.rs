@@ -408,6 +408,12 @@ impl PolicyAdministration {
 					&input.root.version,
 				));
 			}
+			// The same holds for the closure agents the review names as an item's
+			// consumers: a delegated agent's dependency may be approved first,
+			// with the proposed restriction naming that agent (ADR 0095).
+			for item in &current.items {
+				extra_subjects.extend(item.consumers.iter().cloned());
+			}
 			for approval in &plan.approvals {
 				if let Some(item) = current
 					.items
