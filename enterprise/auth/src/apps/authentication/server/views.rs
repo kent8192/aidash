@@ -5,7 +5,7 @@
 //! First-party browser interaction and OAuth protocol adapters.
 use crate::{
 	Error, Result,
-	service::{Authentication, Flow, digest, secret},
+	service::{Authentication, BROWSER_SESSION_ABSOLUTE_SECONDS, Flow, digest, secret},
 };
 use aes_gcm::{
 	Aes256Gcm, KeyInit, Nonce,
@@ -156,7 +156,7 @@ impl Http {
 					&mut response,
 					&browser,
 					self.auth.config.loopback_development,
-					43200,
+					BROWSER_SESSION_ABSOLUTE_SECONDS,
 				)?;
 				Ok(response)
 			}

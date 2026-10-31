@@ -11,6 +11,10 @@ struct Fixture {
 	documents: Vec<Value>,
 	inactive: BTreeSet<String>,
 	denied: Option<String>,
+	restricted_ids: BTreeSet<String>,
+	/// Direct users every restriction admits.
+	restriction_admits: BTreeSet<String>,
+	restriction_checks: Vec<String>,
 	calls: Vec<String>,
 }
 fn definition(id: &str) -> Value {
@@ -31,6 +35,9 @@ impl Fixture {
 			documents: vec![definition("first"), definition("second")],
 			inactive: BTreeSet::new(),
 			denied: None,
+			restricted_ids: BTreeSet::new(),
+			restriction_admits: BTreeSet::new(),
+			restriction_checks: vec![],
 			calls: vec![],
 		}
 	}
@@ -46,6 +53,22 @@ impl CatalogScope for Fixture {
 	fn approved(&self, reference: &EntityRef) -> bool {
 		self.approved
 			.contains(&(reference.id.clone(), reference.version.clone()))
+	}
+	fn direct_user(&self, reference: &EntityRef) -> String {
+		format!("user-of:{}", reference.id)
+	}
+	fn agent_subject(&self, agent: &EntityRef) -> Option<String> {
+		Some(format!("agent:{}", agent.id))
+	}
+	async fn permits_restriction(
+		&mut self,
+		reference: &EntityRef,
+		direct_user: &str,
+	) -> Result<bool> {
+		self.restriction_checks
+			.push(format!("{}:{direct_user}", reference.id));
+		Ok(!self.restricted_ids.contains(&reference.id)
+			|| self.restriction_admits.contains(direct_user))
 	}
 	fn remember(&mut self, reference: &EntityRef) {
 		self.calls.push(format!("remember:{}", reference.id));
@@ -330,4 +353,81 @@ async fn dependency_connection_failure_retains_the_external_retry_error() {
 	assert!(
 		matches!(result,Err(Error::External(message)) if message=="fixture dependency read failed")
 	);
+}
+
+#[rstest]
+#[tokio::test]
+async fn a_restricted_out_direct_user_is_refused_like_an_unapproved_version() {
+	let mut scope = Fixture::new();
+	scope.restricted_ids.insert("first".into());
+	let result = entry(&mut scope, &reference("first"), "registry.read").await;
+	assert!(matches!(result, Err(Error::Forbidden)));
+	assert_eq!(
+		scope.calls,
+		vec!["lock"],
+		"a refused restriction records no catalog read, policy decision or admission"
+	);
+}
+
+#[rstest]
+#[tokio::test]
+async fn discovery_never_offers_a_definition_its_restriction_excludes() {
+	let mut scope = Fixture::new();
+	scope.restricted_ids.insert("first".into());
+	let listed = list(&mut scope, &Search::default()).await.unwrap();
+	assert_eq!(
+		listed
+			.iter()
+			.map(|entry| entry.id.as_str())
+			.collect::<Vec<_>>(),
+		["second"],
+		"a restricted-out definition is not offered by discovery"
+	);
+}
+
+#[rstest]
+#[tokio::test]
+async fn a_delegated_closure_definition_is_restricted_to_its_nearest_agents() {
+	// The executing agent pins a model only the delegated agent `b` uses.
+	let mut scope = Fixture::new();
+	scope.restricted_ids.insert("first".into());
+	scope.restriction_admits.insert("agent:b".into());
+	let refused = entry(&mut scope, &reference("first"), "registry.read").await;
+	assert!(matches!(refused, Err(Error::Forbidden)));
+	assert_eq!(scope.restriction_checks, ["first:user-of:first"]);
+	scope.calls.clear();
+	let admitted = closure_entry(
+		&mut scope,
+		&reference("first"),
+		"registry.read",
+		&[reference("b")],
+	)
+	.await
+	.unwrap();
+	assert_eq!(admitted.id, "first");
+	assert!(
+		scope.restriction_checks.last() == Some(&"first:agent:b".into())
+			&& scope.calls.contains(&"remember:first".into()),
+		"{:?} {:?}",
+		scope.restriction_checks,
+		scope.calls
+	);
+	// Every nearest agent must be admitted.
+	let refused = closure_entry(
+		&mut scope,
+		&reference("second"),
+		"registry.read",
+		&[reference("b"), reference("c")],
+	)
+	.await;
+	assert!(refused.is_ok(), "second is unrestricted");
+	scope.restricted_ids.insert("second".into());
+	let refused = closure_entry(
+		&mut scope,
+		&reference("second"),
+		"registry.read",
+		&[reference("b"), reference("c")],
+	)
+	.await;
+	assert!(matches!(refused, Err(Error::Forbidden)));
 }

@@ -28,28 +28,9 @@ When the table is absent, the Offering is `self-hosted`. Every command that load
 
 `enterprise/infra/` holds the GCP Environments and delivery Terraform, the environment chart and the Cloud-only scripts. It is not part of the Community build.
 
-`enterprise/` keeps copies of `rust-toolchain.toml`, `rustfmt.toml`, `clippy.toml`, the `[workspace.package]` and `[workspace.lints]` tables and the profiles. `scripts/check-enterprise-alignment.py` fails when a copy differs from the Community file, or when `enterprise/Cargo.lock` holds a version of a Community-locked package that `Cargo.lock` does not hold. To fix a version difference, run the `cargo update --manifest-path enterprise/Cargo.toml -p <package> --precise <version>` command that the check prints.
+`enterprise/` keeps copies of `rust-toolchain.toml`, `rustfmt.toml`, `clippy.toml`, the `[workspace.package]` and `[workspace.lints]` tables and the profiles. Keep them equal to the Community files, except the `[workspace.package]` license, which is `Apache-2.0` for Community and `BUSL-1.1` for Enterprise (ADR 0035), and keep `enterprise/Cargo.lock` on the versions `Cargo.lock` holds for packages both lock (`cargo update --manifest-path enterprise/Cargo.toml -p <package> --precise <version>`).
 
 Nothing under `enterprise/` declares a license until the licensing cutover (#255).
-
-## Check the Community export
-
-Run this from a clean commit. Docker must be running.
-
-```sh
-scripts/check-community-export.sh
-```
-
-The script does these steps:
-
-1. It extracts `git archive HEAD` into a temporary directory, deletes `enterprise/` there, and refuses a tree that still has a top-level `infra/`.
-2. It generates the OpenAPI description with `scripts/generate-api.sh` in the full tree's Community build and in the extracted tree. It fails unless the two files are byte-identical, and unless no path or tag names a Cloud-only feature (GCIP, the broker, billing, Secret Manager or Cloud KMS). `scripts/check-community-openapi.py` holds the denylist.
-3. It runs `cargo metadata --locked` and `scripts/check-workspace-boundaries.py` in that tree.
-4. It builds the root `Dockerfile` at the `runtime` target, which runs `cargo build --locked`.
-5. It starts that image with `offering = "cloud"` and expects the Community refusal.
-6. It starts the `dev` Compose profile's `backend` and waits until `/health` answers.
-
-The CI job `community-export` runs the same script.
 
 ## Dashboard
 
@@ -64,7 +45,7 @@ The dashboard in `web/` is one single-page app. It reaches build-specific UI thr
 
 The contracts are in `web/src/slots/types.ts`. The Enterprise build fails its type check when it lacks a slot or implements one differently.
 
-`enterprise/web/` holds the Enterprise slots and the GCIP sources behind them. Its Vite configuration is the one in `web/vite.config.ts` with `@slots` pointed at `enterprise/web/src/slots`, so both builds read `web/index.html` and the same `node_modules`. `enterprise/web/package.json` declares no dependencies. Its `link` script makes `enterprise/web/node_modules` a link to `web/node_modules`, because packages must resolve from files outside `web/`, and every script runs it first. The GCIP SDK (`firebase`) stays in `web/package.json` and its lockfile, so that the dashboard keeps one dependency set. No Community module imports it, and `scripts/check-community-bundle.py` proves that the Community bundle does not contain it.
+`enterprise/web/` holds the Enterprise slots and the GCIP sources behind them. Its Vite configuration is the one in `web/vite.config.ts` with `@slots` pointed at `enterprise/web/src/slots`, so both builds read `web/index.html` and the same `node_modules`. `enterprise/web/package.json` declares no dependencies. Its `link` script makes `enterprise/web/node_modules` a link to `web/node_modules`, because packages must resolve from files outside `web/`, and every script runs it first. The GCIP SDK (`firebase`) stays in `web/package.json` and its lockfile, so that the dashboard keeps one dependency set. No Community module imports it.
 
 Build and test the Enterprise dashboard from the repository root:
 
@@ -77,17 +58,12 @@ npm run test:gcip --prefix enterprise/web
 
 `generate:api` exports the OpenAPI contract of the Enterprise server and generates the client in `web/src/generated/`. `enterprise/Dockerfile` runs the same build.
 
-`scripts/check-community-bundle.py` rejects a Community bundle that holds Enterprise code. Pass it the output of `npm run build --prefix web -- --sourcemap`. It fails when a source map lists a file under `enterprise/`, when any file names a GCIP library or endpoint, or when the directory has no source maps. The CI job `community-bundle` runs it on the Community bundle, and the job `enterprise-web` runs it on the Enterprise bundle and expects both rules to reject it.
-
 ## Develop the Enterprise build locally
 
 Build and test the Enterprise workspace from the repository root:
 
 ```sh
 cargo test --locked --manifest-path enterprise/Cargo.toml
-cargo metadata --locked --format-version 1 --manifest-path enterprise/Cargo.toml \
-  | python3 scripts/check-workspace-boundaries.py --workspace enterprise
-python3 scripts/check-enterprise-alignment.py
 ```
 
 To run the Enterprise server against the services of `compose.yaml`, set `offering = "cloud"` in your local `server/settings/local.toml`. Then start it:

@@ -57,8 +57,8 @@ DETERMINISTIC_LIMITATIONS = [
     "not model quality.",
     "Token counts, cost and prompt-cache hits are synthetic fixture values (one token per byte, fixture prices, "
     "a simulated prefix cache); they test accounting and request shape, not provider prices.",
-    "Ordinary Runs are not pruned until #108 binds the built-in compaction Decider (ADR 0041), so long-context "
-    "tasks stop at the window instead of measuring pruning.",
+    "The scripted Agents carry no compaction Decider (the evaluator never approves the built-in one), so "
+    "long-context tasks pause with `context_unreducible` at the window instead of measuring pruning.",
     "Summary recovery (#113) and the other feature-not-available comparisons are reported, not measured.",
 ]
 LIVE_LIMITATIONS = [
@@ -74,9 +74,10 @@ LIVE_LIMITATIONS = [
     "for information only.",
     "Code-execution oracles require an explicitly approved pinned Docker image and run only in disposable "
     "resource-bounded containers with no network, host environment or parent process visibility.",
-    "Auxiliary definitions can describe planned Decider/Summary work, but live dispatch is refused until an "
-    "enforced provider/broker monetary bound exists. A declared reservation is not a provider cap "
-    "or a reported charge; recovery diagnostics remain not measured in this live tier.",
+    "Decider/Summary work is dispatched only when the approval accepts its declared per-call amount as a "
+    "reservation (external_compaction.cost_enforcement). The Node enforces only the call counts; a declared "
+    "reservation is not a provider cap or a reported charge, and Decision Attempt costs have no HTTP read "
+    "endpoint, so every such Run stays charged at its full auxiliary reservation.",
 ]
 
 
@@ -664,7 +665,7 @@ def run_deterministic(args, binary_directory):
         error = (error + "; " if error else "") + drift
     model = {"kind": "scripted-fixture", "registrations": dict(model_refs),
              "reported_identities": sorted(model_ids.values()), "route": "local scripted fixture", "mutable_alias": False}
-    harness = {"compaction": "none: ordinary Runs are not pruned until #108 (ADR 0041)", "cache_salt": True,
+    harness = {"compaction": "none: the scripted Agents remove the default compaction binding", "cache_salt": True,
                "provider_credential": None, "disclosure_approval": None, "jev_classifier": "none",
                "builtin_policy": "historical-defaults/1" if corpus["version"] == "fixed-task-corpus-v1"
                                  else "minimal-task-support/1"}
@@ -894,7 +895,8 @@ def live(args, read_json=None, transport=None, clock=time.monotonic, sleep=time.
                    "source_attestation_sha256": evaluation.canonical_sha256(source_attestation) if source_attestation else None,
                    "provider_credential": args.provider_credential,
                    "disclosure_approval": evaluation.canonical_sha256(approval),
-                   "jev_classifier": "bounded approved Decider" if auxiliary["decider"] else
+                   "jev_classifier": f"bounded approved Decider ({auxiliary['cost_enforcement']})"
+                                     if auxiliary["decider"] else
                                      "excluded: the approval attests the Tenant approves no compaction Decider"}
         limits = {"run_timeout_seconds": args.run_timeout, "wall_seconds": args.max_wall_seconds,
                   "max_output_tokens": max(config["max_output_tokens"] for config in models.values()),

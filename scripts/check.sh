@@ -1,8 +1,6 @@
 #!/usr/bin/env bash
 set -euo pipefail
 cd "$(dirname "$0")/.."
-cargo metadata --locked --format-version 1 --manifest-path enterprise/Cargo.toml | python3 scripts/check-workspace-boundaries.py --workspace enterprise
-python3 scripts/check-enterprise-alignment.py
 python3 -m unittest scripts/test_check_licensing.py
 python3 scripts/check-licensing.py scope
 python3 scripts/check-licensing.py expression

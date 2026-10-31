@@ -16,6 +16,11 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use uuid::Uuid;
 
+/// Browser sign-in follows the issuer's NIST SP 800-63B-4 AAL1 policy (#627):
+/// 30 days overall and 7 days without use.
+pub(crate) const SESSION_ABSOLUTE_SECONDS: i64 = 2_592_000;
+pub(crate) const SESSION_IDLE_SECONDS: i64 = 604_800;
+
 pub fn secret() -> String {
 	format!("{}{}", Uuid::new_v4().simple(), Uuid::new_v4().simple())
 }
@@ -33,6 +38,13 @@ pub struct Session {
 	pub(crate) refresh_token: Option<String>,
 	pub(crate) created_at: DateTime<Utc>,
 	pub(crate) last_used: DateTime<Utc>,
+}
+impl Session {
+	/// Whether the local session has outlived its absolute or idle limit.
+	pub(crate) fn expired(&self, now: DateTime<Utc>) -> bool {
+		self.created_at + Duration::seconds(SESSION_ABSOLUTE_SECONDS) <= now
+			|| self.last_used + Duration::seconds(SESSION_IDLE_SECONDS) <= now
+	}
 }
 #[derive(Serialize, Deserialize)]
 struct Login {
@@ -105,9 +117,7 @@ impl Marketplace {
 				let mut session: Session =
 					store::get(tx, &key).await?.ok_or(Error::Unauthorized)?;
 				let now = Utc::now();
-				if session.created_at + Duration::hours(12) <= now
-					|| session.last_used + Duration::minutes(30) <= now
-				{
+				if session.expired(now) {
 					return Err(Error::Unauthorized);
 				}
 				let mut active = self.introspect(&session.access_token).await?;
@@ -329,7 +339,7 @@ impl Marketplace {
 			.with_header("cache-control", "no-store");
 		response.headers.append(
 			"set-cookie",
-			self.cookie(self.session_cookie(), &token, 43_200)
+			self.cookie(self.session_cookie(), &token, SESSION_ABSOLUTE_SECONDS)
 				.parse()
 				.map_err(|_| Error::Unavailable)?,
 		);

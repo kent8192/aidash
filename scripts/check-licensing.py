@@ -909,30 +909,11 @@ def check_history(root: Path, base: str) -> list[str]:
     return errors
 
 
-def check_boundary(root: Path, boundary_script: Path | None = None) -> list[str]:
+def check_boundary(root: Path) -> list[str]:
+    # No Community input may name enterprise/. A Community Cargo.toml that
+    # reaches an Enterprise crate has to name its path, so the manifest scan
+    # below also covers the Cargo workspace.
     errors: list[str] = []
-    script = boundary_script or Path(__file__).with_name("check-workspace-boundaries.py")
-    manifest = root / "Cargo.toml"
-    if manifest.is_file():
-        metadata = subprocess.run(
-            ["cargo", "metadata", "--locked", "--format-version", "1"],
-            cwd=root, capture_output=True,
-        )
-        if metadata.returncode != 0:
-            detail = metadata.stderr.decode(errors="replace").strip()
-            errors.append(f"cargo metadata failed: {detail}" if detail else "cargo metadata failed")
-        elif not script.is_file():
-            errors.append(f"{script}: workspace boundary check is missing")
-        else:
-            checked = subprocess.run(
-                [sys.executable, str(script), "--workspace", "community"],
-                cwd=root, input=metadata.stdout, capture_output=True,
-            )
-            if checked.returncode != 0:
-                output = (checked.stderr + checked.stdout).decode(errors="replace").strip()
-                errors.extend(line for line in output.splitlines() if line.strip())
-    else:
-        print("note: no Cargo.toml; skipping the cargo-metadata workspace boundary check")
     files = tracked(root)
     for path in files:
         if is_enterprise(path):

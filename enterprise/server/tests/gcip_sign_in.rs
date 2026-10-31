@@ -1758,8 +1758,14 @@ async fn abandoned_sign_in_keeps_display_attributes_only_while_its_session_lives
 		"the live session retains them"
 	);
 	assert_eq!(view["verified_email"], "person@example.test");
-	// The idle limit is 30 minutes; the abandoned session no longer counts.
-	age(&f, "dashboard_sessions", "last_activity_at", "31 minutes").await;
+	// The idle limit is 7 days; the abandoned session no longer counts.
+	age(
+		&f,
+		"dashboard_sessions",
+		"last_activity_at",
+		"7 days 1 minute",
+	)
+	.await;
 	sweep(&f).await;
 	let view = deployment_administrator_get(&app, &f, &path).await;
 	assert!(view["display_name"].is_null() && view["verified_email"].is_null());

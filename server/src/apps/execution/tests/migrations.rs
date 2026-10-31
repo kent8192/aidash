@@ -63,6 +63,9 @@ const TENANT_REGISTRY_MIGRATIONS: &[(&str, &str)] = &[
 	("registry", "0048_context_marketplace_merge"),
 	("registry", "0048_plugin_marketplace_merge"),
 	("registry", "0049_plugin_context_merge"),
+	("registry", "0050_harness_contract"),
+	("registry", "0051_harness_plugin_merge"),
+	("registry", "0052_harness_contract_structured3"),
 	("marketplace", "0008_remove_compatibility_gate"),
 	("marketplace", "0009_remove_compatibility_gate_state"),
 	("marketplace", "0010_row_level_security"),
@@ -115,7 +118,7 @@ async fn native_history_uses_typed_schema_operations_and_lf_sql_assets() {
 			.iter()
 			.filter(|migration| migration.state_only)
 			.count(),
-		68
+		71
 	);
 	let tables = migrations
 		.iter()
@@ -353,14 +356,14 @@ async fn generation_with_existing_sql_assets_preserves_history_and_dependency(
 	);
 	assert_eq!(std::fs::read(history).unwrap(), original);
 	let generated = FilesystemSource::new(fixture.directory.path().join("migrations"))
-		.get_migration("execution", "0080_policy_probe")
+		.get_migration("execution", "0084_policy_probe")
 		.await
 		.unwrap();
 	assert_eq!(
 		generated.dependencies,
 		vec![(
 			"execution".to_owned(),
-			"0079_run_safety_stops_state".to_owned()
+			"0083_harness_contract_state".to_owned()
 		)]
 	);
 	assert!(generated.operations.is_empty());
@@ -708,7 +711,7 @@ async fn preserved_baseline_does_not_generate_table_recreation(
 			.iter()
 			.filter(|migration| migration.state_only)
 			.count(),
-		68
+		71
 	);
 }
 
@@ -2263,6 +2266,23 @@ async fn agent_plugin_settings_migration_validates_the_key_and_refuses_rollback_
 			"agent_plugin_settings":settings})
 	};
 	let digest = format!("sha256:{}", "ab01".repeat(16));
+	// The current validator must accept both independently versioned contracts.
+	for version in ["legacy@1", "structured@1", "structured@2"] {
+		let mut combined = agent(json!({"acme":{"docs":{"tools":["search"]}}}));
+		combined["projection_version"] = json!("native");
+		combined["harness_contract"] = json!(version);
+		assert!(
+			contract_accepts(
+				&pool,
+				"aidash_agent_bindings_is_valid",
+				vec![combined.clone()]
+			)
+			.await,
+			"Harness Contract and Agent Plugin settings must coexist: {version}"
+		);
+		combined["harness_contract"] = json!("structured@99");
+		assert!(!contract_accepts(&pool, "aidash_agent_bindings_is_valid", vec![combined]).await);
+	}
 	// Generated Agents disable implicit compaction. The replacement validator
 	// must preserve that key and the current Decider Binding restrictions.
 	let mut compaction = json!({"schema_version":1,"model":{"id":"model","version":"1.0.0"},
@@ -2443,6 +2463,126 @@ async fn agent_plugin_settings_migration_validates_the_key_and_refuses_rollback_
 	assert!(
 		contract_accepts(&pool, "aidash_agent_bindings_is_valid", vec![stored]).await,
 		"the denied rollback must retain the upgraded contract"
+	);
+}
+
+#[rstest]
+#[tokio::test]
+async fn harness_contract_rollback_refuses_stored_packages_and_snapshots(
+	#[future] fresh_database: MigrationFixture,
+) {
+	let fixture = fresh_database.await;
+	fixture.migrate().await;
+	let pool = fixture.connection.clone().into_postgres().unwrap();
+	let migration =
+		FilesystemSource::new(PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("migrations"))
+			.all_migrations()
+			.await
+			.unwrap()
+			.into_iter()
+			.find(|m| m.app_label == "registry" && m.name == "0050_harness_contract")
+			.unwrap();
+	let mut executor =
+		reinhardt::db::migrations::DatabaseMigrationExecutor::new(fixture.connection.clone());
+	// The fixture inserts directly, outside the Marketplace publication workflow.
+	sqlx::query("ALTER TABLE marketplace_versions DISABLE TRIGGER USER")
+		.execute(&pool)
+		.await
+		.unwrap();
+	let manifest =
+		json!({"entity":{"kind":"agent","config":{"harness_contract":"structured@1"}}}).to_string();
+	sqlx::query("INSERT INTO marketplace_versions (key, document, repository, owner, package_id, version, kind, source_id, source_version, source_content) VALUES ('fixture', $1, 'r', 'o', 'p', '1', 'agent', 'a', '1', '')")
+		.bind(json!({"manifest_source":manifest})).execute(&pool).await.unwrap();
+	let error = executor
+		.rollback_migrations(std::slice::from_ref(&migration))
+		.await
+		.unwrap_err();
+	assert!(
+		error
+			.to_string()
+			.contains("packages declare harness_contract"),
+		"{error}"
+	);
+	sqlx::query("DELETE FROM marketplace_versions WHERE key = 'fixture'")
+		.execute(&pool)
+		.await
+		.unwrap();
+	// Isolate the Run snapshot guard from the unrelated Run lifecycle constraints.
+	sqlx::query("DROP TABLE public.runs CASCADE")
+		.execute(&pool)
+		.await
+		.unwrap();
+	sqlx::query("CREATE TABLE public.runs (context jsonb NOT NULL)")
+		.execute(&pool)
+		.await
+		.unwrap();
+	for snapshot in [
+		json!({"definitions":[{"definition":{"kind":"agent","config":{"harness_contract":"legacy@1"}}}]}),
+		json!({"foreign_agents":[{"definitions":[{"definition":{"kind":"agent","config":{"harness_contract":"structured@2"}}}]}]}),
+	] {
+		sqlx::query("INSERT INTO public.runs (context) VALUES ($1)")
+			.bind(json!({"binding_snapshot":snapshot}))
+			.execute(&pool)
+			.await
+			.unwrap();
+		let error = executor
+			.rollback_migrations(std::slice::from_ref(&migration))
+			.await
+			.unwrap_err();
+		assert!(
+			error
+				.to_string()
+				.contains("Runs pin Agent definitions declaring harness_contract"),
+			"{error}"
+		);
+		sqlx::query("DELETE FROM public.runs")
+			.execute(&pool)
+			.await
+			.unwrap();
+	}
+	executor
+		.rollback_migrations(std::slice::from_ref(&migration))
+		.await
+		.unwrap();
+	executor
+		.apply_migrations(std::slice::from_ref(&migration))
+		.await
+		.unwrap();
+	fixture.tenant_root("acme").await;
+	let lease = DatabaseConnectionLease::register(fixture.connection.clone()).unwrap();
+	let mut connection = lease.handle();
+	use aidash_server::apps::registry::{models::Definition, services::states::DefinitionKind};
+	let model = json!({"id":"model","version":"1.0.0","kind":"model",
+		"name":{"en":"Model"},"description":{"en":"Migration test"},
+		"config":{"provider":"openrouter","model_id":"anthropic/model",
+			"endpoint":"http://127.0.0.1:1/v1","context_window":32768,"max_output_tokens":4096,
+			"modalities":["text"],"cost":{}}});
+	Definition::objects()
+		.create_with_conn(
+			&mut connection,
+			&Definition::build()
+				.tenant("acme")
+				.id("model")
+				.version("1.0.0")
+				.kind(DefinitionKind::Model)
+				.metadata(model.into())
+				.finish(),
+		)
+		.await
+		.unwrap();
+	let config = json!({"schema_version":1,"model":{"id":"model","version":"1.0.0"},"instructions":"Work","harness_contract":"legacy@1"});
+	Definition::objects().create_with_conn(&mut connection, &Definition::build()
+		.tenant("acme").id("agent").version("1.0.0").kind(DefinitionKind::Agent)
+		.metadata(json!({"id":"agent","version":"1.0.0","kind":"agent","name":{"en":"Agent"},"description":{"en":"Migration test"},"config":config}).into()).finish()).await.unwrap();
+	let error = executor
+		.rollback_migrations(std::slice::from_ref(&migration))
+		.await
+		.unwrap_err();
+	assert!(
+		error
+			.to_string()
+			.contains("Agent definitions declare harness_contract"),
+		"{error}"
 	);
 }
 

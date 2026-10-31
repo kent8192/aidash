@@ -12,9 +12,14 @@ async fn definition(
 	reference: &EntityRef,
 	kind: &str,
 	action: &str,
+	users: &[EntityRef],
 	definitions: &mut BTreeMap<(String, String), Definition>,
 ) -> Result<Entry> {
-	let entry = access.entry(reference, action).await?;
+	let entry = if users.is_empty() {
+		access.entry(reference, action).await?
+	} else {
+		access.closure_entry(reference, action, users).await?
+	};
 	access
 		.require(&access.entry_resource(&entry), "registry.read")
 		.await?;
@@ -66,6 +71,7 @@ async fn inspect_in(
 		&input.agent,
 		"agent",
 		"agent.execute",
+		&[],
 		&mut definitions,
 	)
 	.await?;
@@ -84,12 +90,24 @@ async fn inspect_in(
 	} else {
 		access.bindings(&entry).await?
 	};
+	if pinned.is_none() {
+		// A new inspection starts a Run here: the executing Node requires the
+		// Agent's compaction Decider to hold its Catalog Approval (#540).
+		for binding in crate::authorization::execution::compaction::bound(&snapshot) {
+			let current = access
+				.entry(&binding.identity.local(), aidash_domain::decision::INVOKE)
+				.await;
+			crate::authorization::execution::compaction::require(binding, current)?;
+		}
+	}
 	if !snapshot.remote
 		|| snapshot.agent.registry_deployment != access.node_id()
 		|| snapshot.agent.local() != input.agent
 	{
 		return Err(Error::Forbidden);
 	}
+	// A delegated agent's own dependencies are restricted to that agent.
+	let delegated = snapshot.delegated_users()?;
 	for pinned in &snapshot.definitions {
 		if pinned.identity.registry_deployment != access.node_id() {
 			return Err(Error::Forbidden);
@@ -125,11 +143,16 @@ async fn inspect_in(
 			}
 			_ => "registry.read",
 		};
+		let users = delegated
+			.get(&pinned.identity)
+			.map(|users| users.iter().map(|user| user.local()).collect::<Vec<_>>())
+			.unwrap_or_default();
 		let current = definition(
 			access,
 			&pinned.identity.local(),
 			&pinned.definition.kind,
 			action,
+			&users,
 			&mut definitions,
 		)
 		.await?;
@@ -144,6 +167,7 @@ async fn inspect_in(
 			decider,
 			"decider",
 			"decision.invoke",
+			&[],
 			&mut definitions,
 		)
 		.await?;

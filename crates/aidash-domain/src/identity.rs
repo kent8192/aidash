@@ -7,6 +7,7 @@ pub enum Principal {
 }
 
 pub mod catalog;
+pub mod catalog_request;
 
 pub mod credentials;
 

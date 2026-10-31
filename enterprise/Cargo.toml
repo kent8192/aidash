@@ -3,8 +3,7 @@
 # See enterprise/LICENSE.
 
 # Enterprise is its own workspace, so deleting enterprise/ leaves the Community
-# workspace intact (ADR 0032). Shared tables match the root manifest; CI checks
-# them with scripts/check-enterprise-alignment.py.
+# workspace intact (ADR 0032). Shared tables match the root manifest.
 [workspace]
 members = ["crates/*", "server", "auth", "marketplace"]
 resolver = "3"

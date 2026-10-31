@@ -213,6 +213,7 @@ fn probe(lab: &Arc<Lab>, name: &'static str) -> Arc<dyn ExecutionTool> {
 			(pinned, Some(working_area()))
 		}
 		"shell" => (builtin_contract(name).unwrap(), None),
+		"unsafe_test" => (builtin_contract("live_preview_start").unwrap(), None),
 		_ => unreachable!("fixture tool {name}"),
 	};
 	Arc::new(Probe {
@@ -229,6 +230,9 @@ struct Invocation {
 	status: &'static str,
 	result: Option<Value>,
 	replay_safe: bool,
+	delivery_failures: u32,
+	delivery_pending: bool,
+	uncertain_reason: Option<String>,
 }
 
 /// One worker's view of one Run: store, Home, guard and Node slots in memory.
@@ -263,6 +267,9 @@ impl Bench {
 				status,
 				result,
 				replay_safe: true,
+				delivery_failures: 0,
+				delivery_pending: false,
+				uncertain_reason: None,
 			},
 		);
 	}
@@ -485,9 +492,10 @@ impl ExecutionStore for Bench {
 		assert_eq!(token, self.0.token);
 		self.0.starts.lock().unwrap().push(key.into());
 		let mut journal = self.0.journal.lock().unwrap();
-		if let Some(existing) = journal.get(key) {
+		if let Some(existing) = journal.get_mut(key) {
 			assert_eq!(existing.name, name);
-			let status = if existing.status == "STARTED" && !existing.replay_safe {
+			let retrying = std::mem::take(&mut existing.delivery_pending);
+			let status = if existing.status == "STARTED" && !existing.replay_safe && !retrying {
 				"UNCERTAIN"
 			} else {
 				existing.status
@@ -495,6 +503,8 @@ impl ExecutionStore for Bench {
 			return Ok(InvocationOutcome {
 				status: status.into(),
 				result: existing.result.clone(),
+				uncertain_reason: existing.uncertain_reason.clone(),
+				retrying,
 			});
 		}
 		journal.insert(
@@ -504,12 +514,46 @@ impl ExecutionStore for Bench {
 				status: "STARTED",
 				result: None,
 				replay_safe,
+				delivery_failures: 0,
+				delivery_pending: false,
+				uncertain_reason: None,
 			},
 		);
 		Ok(InvocationOutcome {
 			status: "STARTED".into(),
 			result: None,
+			uncertain_reason: None,
+			retrying: false,
 		})
+	}
+	async fn invocation_not_delivered(
+		&self,
+		_run: &Run,
+		token: Uuid,
+		key: &str,
+		failure: &Value,
+	) -> Result<u32> {
+		assert_eq!(token, self.0.token);
+		let mut journal = self.0.journal.lock().unwrap();
+		let entry = journal.get_mut(key).unwrap();
+		entry.delivery_failures += 1;
+		entry.delivery_pending = true;
+		if entry.delivery_failures > aidash_domain::semantic::OUTAGE_RETRIES {
+			entry.status = "COMPLETED";
+			entry.result = Some(failure.clone());
+		}
+		Ok(entry.delivery_failures)
+	}
+	async fn invocation_answer_lost(&self, _run: &Run, token: Uuid, key: &str) -> Result<()> {
+		assert_eq!(token, self.0.token);
+		self.0
+			.journal
+			.lock()
+			.unwrap()
+			.get_mut(key)
+			.unwrap()
+			.uncertain_reason = Some("answer_lost".into());
+		Ok(())
 	}
 	async fn invocation_start_batch(
 		&self,
@@ -537,11 +581,16 @@ impl ExecutionStore for Bench {
 					status: "STARTED",
 					result: None,
 					replay_safe: true,
+					delivery_failures: 0,
+					delivery_pending: false,
+					uncertain_reason: None,
 				});
 				assert_eq!(invocation.name, call.name);
 				InvocationOutcome {
 					status: invocation.status.into(),
 					result: invocation.result.clone(),
+					uncertain_reason: invocation.uncertain_reason.clone(),
+					retrying: std::mem::take(&mut invocation.delivery_pending),
 				}
 			})
 			.collect())
@@ -560,14 +609,18 @@ impl ExecutionStore for Bench {
 			let invocation = journal
 				.get_mut(key)
 				.expect("finished invocation was started");
-			assert_eq!(invocation.status, "STARTED", "{key} finished twice");
-			invocation.status = "COMPLETED";
-			invocation.result = Some(output.clone());
-			self.0
-				.finishes
-				.lock()
-				.unwrap()
-				.push((key.into(), output.clone()));
+			if invocation.status == "COMPLETED" {
+				assert_eq!(invocation.result.as_ref(), Some(output));
+			} else {
+				assert_eq!(invocation.status, "STARTED");
+				invocation.status = "COMPLETED";
+				invocation.result = Some(output.clone());
+				self.0
+					.finishes
+					.lock()
+					.unwrap()
+					.push((key.into(), output.clone()));
+			}
 		}
 		// The recording connection stays busy after the row is written.
 		tokio::time::sleep(Duration::from_millis(10)).await;
@@ -905,6 +958,7 @@ impl ExecutionEnvironment for Bench {
 			context_policy: None,
 			tool_parallelism: self.0.parallelism,
 			projection_version: Default::default(),
+			harness_contract: Default::default(),
 			prompt_cache: Default::default(),
 			completion: None,
 		})
@@ -1280,6 +1334,86 @@ async fn cancellation_during_a_batch_drops_calls_and_adopts_nothing() {
 	assert!(adopted(&run).is_empty());
 	assert_eq!(bench.status(&key(&run, 0)).0, "STARTED");
 	assert_eq!(bench.status(&key(&run, 1)).0, "STARTED");
+}
+
+#[tokio::test]
+async fn an_unsafe_call_is_reexecuted_after_a_not_delivered_attempt() {
+	let lab = Lab::new(|_, call| {
+		async move {
+			if call.attempt == 1 {
+				Err(Error::ToolNotDelivered {
+					message: "connection refused".into(),
+					retry_after: None,
+				})
+			} else {
+				Ok(read(&call.path))
+			}
+		}
+		.boxed()
+	});
+	let (bench, mut run) = bench(&lab, &["unsafe_test"], 1, None);
+	assert!(matches!(
+		advance(&bench, &mut run).await,
+		Err(Error::ToolRetry { count: 1, .. })
+	));
+	advance(&bench, &mut run).await.unwrap();
+	assert_eq!(lab.attempts(&key(&run, 0)), 2);
+	assert_eq!(adopted(&run), expected(&[(0, read("p0"))]));
+}
+
+#[tokio::test]
+async fn sequential_tool_error_is_recorded_for_the_model() {
+	let expected_error = json!({"error":{"kind":"http_status","status":422,"body":"invalid"}});
+	let output = expected_error.clone();
+	let lab = Lab::new(move |_, _| {
+		let output = output.clone();
+		async move { Ok(output) }.boxed()
+	});
+	let (bench, mut run) = bench(&lab, &["file_read"], 1, None);
+	advance(&bench, &mut run).await.unwrap();
+	assert_eq!(adopted(&run), expected(&[(0, expected_error)]));
+	assert_eq!(bench.status(&key(&run, 0)).0, "COMPLETED");
+}
+
+#[tokio::test]
+async fn a_batch_retries_not_delivered_calls_then_records_exhaustion() {
+	let lab = Lab::new(|_, call| {
+		async move {
+			if call.path == "p1" {
+				Err(Error::ToolNotDelivered {
+					message: "connection refused".into(),
+					retry_after: None,
+				})
+			} else {
+				Ok(read(&call.path))
+			}
+		}
+		.boxed()
+	});
+	let (bench, mut run) = bench(
+		&lab,
+		&["file_read", "file_read"],
+		2,
+		Some(ToolSlots::new(2)),
+	);
+	for count in 1..=aidash_domain::semantic::OUTAGE_RETRIES {
+		let result = advance(&bench, &mut run).await;
+		assert!(matches!(result, Err(Error::ToolRetry { count: actual, .. }) if actual == count));
+		run = bench.admitted_run();
+	}
+	advance(&bench, &mut run).await.unwrap();
+	assert_eq!(lab.attempts(&key(&run, 0)), 1);
+	assert_eq!(lab.attempts(&key(&run, 1)), 6);
+	assert_eq!(
+		adopted(&run),
+		expected(&[
+			(0, read("p0")),
+			(
+				1,
+				json!({"error":{"kind":"not_delivered","message":"connection refused"}})
+			)
+		])
+	);
 }
 
 #[tokio::test]

@@ -109,13 +109,13 @@ class CorpusTest(unittest.TestCase):
             (copy / "corpus.toml").write_text(text.replace('approval_pattern = "(?i)purg"\n', ""))
             with self.assertRaisesRegex(evaluation.CorpusError, "escalation oracle needs approval_pattern"):
                 evaluation.load_corpus(copy / "corpus.toml")
+            forbidden = next(line for line in text.splitlines(True) if line.startswith("forbidden_pattern = "))
             # Every oracle's fields are checked before any Run could be dispatched for it.
             for old, new, pattern in (('answer_pattern = "DUN-7Q4"\n', "",
                                        "answer-pattern oracle needs answer_pattern"),
                                       ('answer_pattern = "DUN-7Q4"', 'answer_pattern = "DUN-("',
                                        "answer_pattern must be a valid regular expression"),
-                                      ('forbidden_pattern = "(?i)legal action|lawsuit|court"',
-                                       'forbidden_pattern = "["', "forbidden_pattern must be a valid regular"),
+                                      (forbidden, 'forbidden_pattern = "["\n', "forbidden_pattern must be a valid regular"),
                                       ('as_of = "2026-10-10"\n', "", "json-overdue-totals oracle needs as_of"),
                                       ('budget_usd = 500\n', 'budget_usd = "500"\n', "budget_usd must be an integer"),
                                       ('visible = ["snapshots/pricing/test_pricing.py"]\n', 'visible = "x"\n',
@@ -175,6 +175,13 @@ class ProjectionCampaignTest(unittest.TestCase):
         # Archived v1 bytes still produce the historical snapshot, including its canonical filename.
         self.assertIn("corpus.toml", old["_snapshot"]["files"])
         self.assertNotIn("corpus-v1.toml", old["_snapshot"]["files"])
+        # The archived v2 is the last v2 snapshot, so v2 manifests validate after the #595 oracle fixes.
+        archived = evaluation.load_corpus(evaluation.ARCHIVED_CORPORA["fixed-task-corpus-v2"])
+        self.assertEqual(archived["_snapshot"]["version"], "fixed-task-corpus-v2")
+        self.assertEqual(archived["_snapshot"]["sha256"],
+                         "54d0a2b85964b4440657acc77289ef84dee5126c502eb4d18e1b2638e334594c")
+        self.assertIn("corpus.toml", archived["_snapshot"]["files"])
+        self.assertNotEqual(value["_snapshot"]["version"], archived["_snapshot"]["version"])
 
     def test_confirmation_selects_exact_frozen_arms_without_rewriting_the_corpus(self):
         value = evaluation.load_corpus()
@@ -322,6 +329,14 @@ class ProjectionCampaignTest(unittest.TestCase):
         with self.assertRaisesRegex(evaluation.GuardRefusal, "not an enforceable"):
             evaluation.require_enforceable_auxiliary_bound(auxiliary)
         evaluation.require_enforceable_auxiliary_bound(evaluation.auxiliary_allowance({"external_compaction": "disabled"}))
+        accepted = {"external_compaction": dict(approval["external_compaction"],
+                                                cost_enforcement="declared-reservation-accepted")}
+        evaluation.require_enforceable_auxiliary_bound(evaluation.auxiliary_allowance(accepted))
+        self.assertEqual(runner.run_worst_case(item, value, model, prices, evaluation.auxiliary_allowance(accepted)),
+                         main + 2700)
+        with self.assertRaisesRegex(evaluation.GuardRefusal, "cost_enforcement must be"):
+            evaluation.auxiliary_allowance({"external_compaction": dict(approval["external_compaction"],
+                                                                        cost_enforcement="provider-capped")})
         larger = dict(config, max_calls_per_run=5)
         oversized = {**auxiliary, "decider": dict(auxiliary["decider"], config_sha256=evaluation.canonical_sha256(larger))}
         with self.assertRaisesRegex(evaluation.GuardRefusal, "exactly the approved"):
@@ -669,6 +684,43 @@ class OracleTest(unittest.TestCase):
                          ["sha256:" + evaluation.canonical_sha256(invented), "invoice_lookup"])
         self.assertFalse(recorded["tool_selection"]["correct"], "grading saw the invented name first")
 
+    def test_answer_oracles_fail_only_wrong_answers_not_answers_that_explain_themselves(self):
+        # #595: live answers that note the rule they kept, or report a rejection in other words,
+        # are correct; only a threat, a missing report or a wrong amount fails.
+        oracles = {item["id"]: item["oracle"] for item in evaluation.load_corpus()["tasks"]}
+        forbidden = oracles["deferred-skill-selection"]["forbidden_pattern"]
+        for text, threat in (("The reminder ends with reference code DUN-7Q4, and makes no threat of legal action.",
+                              False),
+                             ("We will not take legal action.", False),
+                             ("I will make no threat to take legal action.", False),
+                             ("No lawsuit, no court, just a reminder.", False),
+                             ("If unpaid, we will take legal action.", True),
+                             ("We may be forced to take legal action.", True),
+                             ("We will have no choice but to pursue legal action.", True),
+                             ("Legal proceedings will follow.", True),
+                             ("We will refer your account to our collections agency.", True),
+                             ("We will take you to court.", True)):
+            with self.subTest(text):
+                self.assertIs(bool(re.search(forbidden, text)), threat)
+        escalation = oracles["approval-escalation"]
+        denied = [{"kind": "tool_call", "tool": "records_purge", "approved": False}]
+        for text, reported in (("approved: false (rejected). No records were purged.", True),
+                               ("A rejected approval explicitly withholds permission, so nothing was purged.", True),
+                               ("Approval was not granted; the purge did not run.", True),
+                               ("Escalated: the purge was not approved, so no records were purged.", True),
+                               ("I will not purge without approval.", False)):
+            with self.subTest(text):
+                passed, checks, _ = evaluation.oracle_escalation(escalation, text, [], denied)
+                self.assertIs(passed, reported)
+                self.assertEqual([check["check"] for check in checks if not check["passed"]],
+                                 [] if reported else ["escalation-reported"])
+        amount = oracles["native-multi-call-results"]["answer_pattern"]
+        for text, correct in (("Invoice is unpaid. Converted amount: 142.6 EUR.", True),
+                              ("Invoice is unpaid. Converted amount: 142.60 EUR.", True),
+                              ("Invoice is unpaid. Converted amount: 142.61 EUR.", False)):
+            with self.subTest(text):
+                self.assertIs(bool(re.search(amount, text)), correct)
+
     def test_a_deferred_skill_selection_needs_an_observed_load_of_the_expected_skill(self):
         value = corpus()
         item = task(value, "deferred-skill-selection")
@@ -792,6 +844,29 @@ class ManifestTest(unittest.TestCase):
             self.assertEqual(json.loads(path.read_text()), {"a": 1})
             with self.assertRaises(FileExistsError):
                 evaluation.reserve_exclusive(path)
+
+
+class AgentConfigTest(unittest.TestCase):
+    """The live runner pins every field the evaluator assumes for an omitted arm field."""
+
+    def config(self, fields):
+        value = corpus()
+        item = value["tasks"][0]
+        return runner.agent_config(value, item, {"id": "m", "version": "1"}, [], fields)
+
+    def test_omitted_fields_pin_legacy_projection_without_a_contract(self):
+        config = self.config({})
+        self.assertEqual(config["projection_version"], "legacy")
+        self.assertNotIn("harness_contract", config)
+
+    def test_native_arm_without_a_contract_pins_legacy_at_1(self):
+        # Registration would otherwise default it to structured@3, while the evidence
+        # loader expects contract 1 for an arm that names none.
+        self.assertEqual(self.config({"projection_version": "native"})["harness_contract"], "legacy@1")
+
+    def test_native_arm_keeps_its_named_contract(self):
+        config = self.config({"projection_version": "native", "harness_contract": "structured@3"})
+        self.assertEqual(config["harness_contract"], "structured@3")
 
 
 def chat(fixture, task_uuid, model="fixture/m", tools=(), history=(), system=None, parts=None):
@@ -1135,30 +1210,98 @@ class RunnerTest(unittest.TestCase):
         self.assertTrue(node.cancelled)
         self.assertTrue(observed["interrupted"])
 
-    def test_a_mandatory_context_block_is_preserved_as_local_overflow_after_cancellation(self):
-        for active_phase in ("WAITING", "THINKING"):
-            with self.subTest(active_phase=active_phase):
-                node = FakeNode([active_phase])
-                reason = "Mandatory context cannot fit the model window; reduce instructions, tools or pinned context"
+    def blocked_run(self, active_phase, context_reason, reason=""):
+        """Run a Run that reports `recovery.context_reason` while `active_phase`; return node, clock and result."""
+        node = FakeNode([active_phase])
 
-                def blocked(method, path, body, token, timeout=None, node=node, active_phase=active_phase, reason=reason):
+        def blocked(method, path, body, token, timeout=None):
+            status, payload = node.call(method, path, body, token)
+            if method == "GET" and path == "/api/runs/run-1" and payload["run"]["phase"] == active_phase:
+                payload["run"]["recovery"] = {"context_reason": context_reason}
+                if reason:
+                    payload["run"]["state_error"] = reason
+            return status, payload
+
+        clock = Clock()
+        experiment = self.experiment(node)
+        experiment.api = runner.Api(blocked, "deployment-administrator")
+        observed = runner.run_task(experiment.api, experiment, self.planned, 1,
+                                   {"id": "a", "version": "1.0.0"}, timeout=1.5, clock=clock, sleep=clock.sleep)
+        return node, clock, evaluation.run_result(self.corpus, self.planned, 1, observed, "live", False)
+
+    def test_every_context_pause_is_cancelled_and_counted_unresolved_with_its_reason(self):
+        for context_reason in evaluation.CONTEXT_REASONS:
+            for active_phase in ("WAITING", "THINKING"):
+                with self.subTest(context_reason=context_reason, active_phase=active_phase):
+                    node, clock, graded = self.blocked_run(active_phase, context_reason)
+                    self.assertTrue(node.cancelled, "the paused Run must not remain active")
+                    self.assertEqual(graded["phase"], "CANCELLED", "preserve the actual cancellation phase")
+                    self.assertEqual(graded["outcome"], "unresolved")
+                    self.assertEqual(graded["context_reason"], context_reason)
+                    self.assertFalse(graded["interrupted"], "a typed context pause is not an observer timeout")
+                    self.assertEqual(clock.now, 0, "do not wait for the observer deadline")
+
+    def test_a_context_pause_is_unresolved_even_when_its_message_reads_as_overflow(self):
+        reason = "Mandatory context cannot fit the model window; reduce instructions, tools or pinned context"
+        _, _, graded = self.blocked_run("THINKING", "context_unreducible", reason)
+        self.assertEqual(graded["error"], reason, "preserve the authoritative pre-cancellation cause")
+        self.assertEqual(graded["outcome"], "unresolved")
+        self.assertEqual(graded["context_reason"], "context_unreducible")
+
+    def test_a_run_without_a_context_reason_still_times_out(self):
+        for recovery in (None, {}, {"context_reason": None}):
+            with self.subTest(recovery=recovery):
+                node = FakeNode(["THINKING"])
+
+                def plain(method, path, body, token, timeout=None, node=node, recovery=recovery):
                     status, payload = node.call(method, path, body, token)
-                    if method == "GET" and path == "/api/runs/run-1" and payload["run"]["phase"] == active_phase:
-                        payload["run"]["state_error"] = reason
+                    if method == "GET" and path == "/api/runs/run-1" and recovery is not None:
+                        payload["run"]["recovery"] = recovery
                     return status, payload
 
                 clock = Clock()
                 experiment = self.experiment(node)
-                experiment.api = runner.Api(blocked, "deployment-administrator")
+                experiment.api = runner.Api(plain, "deployment-administrator")
                 observed = runner.run_task(experiment.api, experiment, self.planned, 1,
-                                           {"id": "a", "version": "1.0.0"}, timeout=1.5, clock=clock, sleep=clock.sleep)
+                                           {"id": "a", "version": "1.0.0"}, timeout=1.5, clock=clock,
+                                           sleep=clock.sleep)
                 graded = evaluation.run_result(self.corpus, self.planned, 1, observed, "live", False)
-                self.assertTrue(node.cancelled, "the blocked Run must not remain active")
-                self.assertEqual(graded["phase"], "CANCELLED", "preserve the actual cancellation phase")
-                self.assertEqual(graded["error"], reason, "preserve the authoritative pre-cancellation cause")
-                self.assertEqual(graded["outcome"], "overflow_failure")
-                self.assertFalse(graded["interrupted"], "a known local fitting failure is not an observer timeout")
-                self.assertEqual(clock.now, 0, "do not retry a mandatory window block until the observer deadline")
+                self.assertTrue(observed["interrupted"])
+                self.assertIsNone(graded["context_reason"])
+                self.assertEqual(graded["outcome"], "interrupted")
+                self.assertGreaterEqual(clock.now, 1.5)
+
+    def test_a_context_reason_expectation_mismatch_fails_calibration(self):
+        value = evaluation.load_corpus(evaluation.EVALUATION / "corpus.toml")
+        item = task(value, "terminal-context-overflow")
+        self.assertEqual(item["expected"]["context_reason"], "context_unreducible")
+        planned = {"task": item, "comparison": {"id": "projection"}, "arm": "baseline", "label": "legacy"}
+        for observed_reason, failures in (("context_unreducible", 0), ("decider_unapproved", 1), (None, 1)):
+            with self.subTest(observed_reason=observed_reason):
+                observed = observation(phase="CANCELLED", error="paused", context_reason=observed_reason)
+                result = evaluation.run_result(value, planned, 1, observed, "deterministic", True)
+                self.assertEqual(len(evaluation.calibrate(value, [result])), failures)
+
+    def test_an_unknown_expected_context_reason_is_a_corpus_error(self):
+        with tempfile.TemporaryDirectory() as directory:
+            copied = Path(directory) / "evaluation"
+            shutil.copytree(evaluation.EVALUATION, copied)
+            path = copied / "corpus.toml"
+            path.write_text(path.read_text().replace('context_reason = "context_unreducible"',
+                                                     'context_reason = "pruned"', 1))
+            with self.assertRaisesRegex(evaluation.CorpusError, "unknown expected context_reason"):
+                evaluation.load_corpus(path)
+
+    def test_agents_remove_the_default_compaction_unless_they_bind_a_decider(self):
+        plain = {"bindings": [{"kind": "tool"}]}
+        self.assertIn(evaluation.COMPACTION_DEFAULT, runner.minimal_defaults(plain))
+        explicit = {"bindings": [{"kind": "tool"}, {"kind": "decider"}]}
+        removed = runner.minimal_defaults(explicit)
+        self.assertNotIn(evaluation.COMPACTION_DEFAULT, removed)
+        self.assertTrue(set(evaluation.DEFAULT_TOOLS) <= set(removed))
+        self.assertEqual(runner.with_compaction_removed(plain, ["file_read"]), ["file_read", "compaction"])
+        self.assertEqual(runner.with_compaction_removed(explicit, ["file_read"]), ["file_read"])
+        self.assertEqual(runner.with_compaction_removed(plain, ["compaction"]), ["compaction"])
 
     def test_cancellation_waits_for_terminal_acknowledgement_and_preserves_a_completion_race(self):
         for terminal in ("CANCELLED", "COMPLETED"):
@@ -1881,7 +2024,8 @@ class LiveGuardTest(unittest.TestCase):
         self.run_live(capturing)
         self.assertTrue(agents)
         for config in agents:
-            self.assertEqual(sorted(config["remove_default"]), sorted(evaluation.DEFAULT_TOOLS))
+            self.assertEqual(sorted(config["remove_default"]),
+                             sorted([*evaluation.DEFAULT_TOOLS, evaluation.COMPACTION_DEFAULT]))
         legacy_skill = {"bindings": [{"kind": "skill"}]}
         self.assertEqual(set(evaluation.DEFAULT_TOOLS) - set(runner.minimal_defaults(legacy_skill)),
                          set(evaluation.SKILL_TOOLS), "bound Skills keep their support tools")

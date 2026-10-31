@@ -19,8 +19,9 @@ provider calls. Only `run` can dispatch live work, after its admission checks.
 ## Frozen population and routes
 
 The v2 corpus retains the original projection tasks and adds Tool/Skill,
-multiple-call and recovery diagnostics. It preserves the v1 corpus in
-`tests/evaluation/corpus-v1.toml` for historical validation. The pilot
+multiple-call and recovery diagnostics; v3 keeps those tasks and corrects
+three answer oracles (#595). The v1 and v2 corpora are preserved in
+`tests/evaluation/corpus-v1.toml` and `corpus-v2.toml` for historical validation. The pilot
 plans ten repetitions per task and arm with a seeded, balanced execution order.
 Every task remains in the manifest, including skipped or unavailable work.
 
@@ -84,8 +85,10 @@ checked-in configuration. A full live comparison is not established by a
 fixture report or by this implementation. In particular, the current Decider
 transport has no enforceable upstream monetary ceiling for an individual call.
 Declaring `max_nanocredits_per_call` alone does not enforce it. Bounded live
-Decider execution is therefore refused before dispatch; the complete recovery
-matrix remains blocked until that bound is enforceable. Actual Rust recovery
+Decider execution is therefore refused before dispatch unless the approval
+explicitly accepts the declared amount as a reservation
+(`external_compaction.cost_enforcement`, see [evaluation](evaluation.md));
+such a campaign must say so wherever its cost is reported. Actual Rust recovery
 tests provide separate deterministic evidence and do not substitute for this
 live requirement.
 

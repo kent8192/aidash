@@ -72,6 +72,371 @@ mod destinations {
 	};
 	use std::time::Duration;
 
+	#[tokio::test]
+	async fn mcp_call_http_status_obeys_replay_safety_and_retry_after() {
+		use axum::extract::Path;
+		async fn respond(Path(status): Path<u16>, Json(body): Json<Value>) -> Response {
+			if body["method"] == "tools/call" {
+				if (206..=210).contains(&status) {
+					let id = if status != 207 {
+						body["id"].clone()
+					} else {
+						json!(999999)
+					};
+					let event = json!({"jsonrpc":"2.0","id":id,"result":{"content":[{"type":"text","text":"x".repeat(256_001)}]}});
+					let event_type = if status == 208 { "event: ping\n" } else { "" };
+					let tail = match status {
+						209 => "",
+						210 => "\nevent: ping\n\n",
+						_ => "\n\n",
+					};
+					return (
+						[("content-type", "text/event-stream")],
+						format!("{event_type}data: {event}{tail}"),
+					)
+						.into_response();
+				}
+				if status == 205 {
+					return ([("content-type", "text/event-stream")], format!("data: {{\"jsonrpc\":\"2.0\",\"method\":\"notifications/progress\",\"params\":{{\"detail\":\"{}\"}}}}\n\n", "x".repeat(256_001))).into_response();
+				}
+				if matches!(status, 201 | 203) {
+					let id = if status == 201 {
+						body["id"].clone()
+					} else {
+						json!(999999)
+					};
+					return Json(json!({"jsonrpc":"2.0","id":id,"result":{"content":[{"type":"text","text":"x".repeat(256_001)}]}})).into_response();
+				}
+				if status == 600 {
+					return Json(
+						json!({"jsonrpc":"2.0","id":body["id"],"error":{"code":-32603,"message":"call rejected"}}),
+					)
+					.into_response();
+				}
+				return (
+					StatusCode::from_u16(status).unwrap(),
+					[("retry-after", "60")],
+					"fixture failure",
+				)
+					.into_response();
+			}
+			echo_mcp(Json(body)).await
+		}
+		let (listener, port) = serve().await;
+		let server = tokio::spawn(async move {
+			axum::serve(listener, Router::new().route("/{status}", post(respond)))
+				.await
+				.unwrap()
+		});
+		let base = format!("http://127.0.0.1:{port}");
+		let transport = tools(&[&base]);
+		for (status, replay, retry) in [
+			(422, "unsafe", false),
+			(429, "unsafe", true),
+			(503, "idempotent", true),
+			(503, "unsafe", false),
+		] {
+			let config = ToolConfig::Mcp {
+				endpoint: format!("{base}/{status}"),
+				tool_name: "echo".into(),
+				replay: replay.into(),
+				idempotency_argument: (replay == "idempotent").then(|| "request_id".into()),
+				secret: None,
+			};
+			let result = transport.invoke(&config, json!({}), "key", None).await;
+			if retry {
+				assert!(
+					matches!(result, Err(Error::ToolNotDelivered { retry_after: Some(delay), .. }) if delay == Duration::from_secs(32)),
+					"{status} {replay}"
+				);
+			} else {
+				let output = result.unwrap();
+				assert_eq!(output["error"]["status"], status);
+				assert_eq!(output["error"]["body"], "fixture failure");
+				if status == 503 {
+					assert!(
+						output["error"]["message"]
+							.as_str()
+							.unwrap()
+							.contains("may have started")
+					);
+				}
+			}
+		}
+		let config = mcp(format!("{base}/200"));
+		let unreadable = transport.invoke(&config, json!({}), "key", None).await;
+		assert!(matches!(unreadable, Err(Error::External(_))));
+		let oversized_result = transport
+			.invoke(&mcp(format!("{base}/201")), json!({}), "key", None)
+			.await
+			.unwrap();
+		assert_eq!(
+			oversized_result,
+			json!({"message":"The call succeeded but its result could not be read."})
+		);
+		let wrong_id = transport
+			.invoke(&mcp(format!("{base}/203")), json!({}), "key", None)
+			.await;
+		assert!(matches!(wrong_id, Err(Error::External(_))));
+		let intermediate = tokio::time::timeout(
+			Duration::from_secs(3),
+			transport.invoke(&mcp(format!("{base}/205")), json!({}), "key", None),
+		)
+		.await
+		.unwrap();
+		assert!(matches!(intermediate, Err(Error::External(_))));
+		let final_event = tokio::time::timeout(
+			Duration::from_secs(3),
+			transport.invoke(&mcp(format!("{base}/206")), json!({}), "key", None),
+		)
+		.await
+		.unwrap()
+		.unwrap();
+		assert_eq!(
+			final_event,
+			json!({"message":"The call succeeded but its result could not be read."})
+		);
+		let wrong_event = tokio::time::timeout(
+			Duration::from_secs(3),
+			transport.invoke(&mcp(format!("{base}/207")), json!({}), "key", None),
+		)
+		.await
+		.unwrap();
+		assert!(matches!(wrong_event, Err(Error::External(_))));
+		let control_event = tokio::time::timeout(
+			Duration::from_secs(3),
+			transport.invoke(&mcp(format!("{base}/208")), json!({}), "key", None),
+		)
+		.await
+		.unwrap();
+		assert!(matches!(control_event, Err(Error::External(_))));
+		for status in [209, 210] {
+			let interrupted = tokio::time::timeout(
+				Duration::from_secs(10),
+				transport.invoke(&mcp(format!("{base}/{status}")), json!({}), "key", None),
+			)
+			.await
+			.unwrap();
+			assert!(
+				matches!(interrupted, Err(Error::External(_))),
+				"status {status}"
+			);
+		}
+		let rejected = transport
+			.invoke(&mcp(format!("{base}/600")), json!({}), "key", None)
+			.await
+			.unwrap();
+		assert_eq!(
+			rejected,
+			json!({"error":{"kind":"mcp_error","message":"call rejected"}})
+		);
+		server.abort();
+	}
+
+	#[tokio::test]
+	async fn retryable_http_responses_and_connection_refusal_are_not_delivered() {
+		let (listener, port) = serve().await;
+		let server = tokio::spawn(async move {
+			axum::serve(
+				listener,
+				Router::new()
+					.route(
+						"/rate",
+						post(|| async {
+							(
+								StatusCode::TOO_MANY_REQUESTS,
+								[("retry-after", "99999999999999999999999999")],
+								"busy",
+							)
+						}),
+					)
+					.route(
+						"/unavailable",
+						post(|| async { (StatusCode::SERVICE_UNAVAILABLE, "busy") }),
+					)
+					.route(
+						"/timeout",
+						post(|| async { (StatusCode::REQUEST_TIMEOUT, "timeout") }),
+					),
+			)
+			.await
+			.unwrap()
+		});
+		let base = format!("http://127.0.0.1:{port}");
+		let transport = tools(&[&base]);
+		let rate = ToolConfig::Http {
+			endpoint: format!("{base}/rate"),
+			replay: "unsafe".into(),
+			secret: None,
+		};
+		let error = transport
+			.invoke(&rate, json!({}), "key", None)
+			.await
+			.unwrap_err();
+		assert!(
+			matches!(error, Error::ToolNotDelivered { retry_after: Some(delay), .. } if delay == Duration::from_secs(32))
+		);
+		let timeout = ToolConfig::Http {
+			endpoint: format!("{base}/timeout"),
+			replay: "unsafe".into(),
+			secret: None,
+		};
+		assert!(matches!(
+			transport.invoke(&timeout, json!({}), "key", None).await,
+			Err(Error::ToolNotDelivered { .. })
+		));
+		let idempotent = ToolConfig::Http {
+			endpoint: format!("{base}/unavailable"),
+			replay: "idempotent".into(),
+			secret: None,
+		};
+		let error = transport
+			.invoke(&idempotent, json!({}), "key", None)
+			.await
+			.unwrap_err();
+		assert!(matches!(error, Error::ToolNotDelivered { .. }));
+		server.abort();
+		let _ = server.await;
+		let error = transport
+			.invoke(&http(base), json!({}), "key", None)
+			.await
+			.unwrap_err();
+		assert!(matches!(error, Error::ToolNotDelivered { .. }));
+	}
+
+	#[tokio::test]
+	async fn refused_http_destination_is_a_failed_call() {
+		let (listener, port) = serve().await;
+		let result = tools(&[])
+			.invoke(
+				&http(format!("http://127.0.0.1:{port}/")),
+				json!({}),
+				"key",
+				None,
+			)
+			.await
+			.unwrap();
+		assert_eq!(result["error"]["kind"], "outbound_policy");
+		never_accepts(&listener).await;
+	}
+
+	#[tokio::test]
+	async fn unsafe_http_server_failure_warns_that_change_may_have_started() {
+		let (listener, port) = serve().await;
+		let server = tokio::spawn(async move {
+			axum::serve(
+				listener,
+				Router::new().route(
+					"/",
+					post(|| async { (StatusCode::INTERNAL_SERVER_ERROR, "failure") }),
+				),
+			)
+			.await
+			.unwrap()
+		});
+		let endpoint = format!("http://127.0.0.1:{port}");
+		let config = ToolConfig::Http {
+			endpoint: endpoint.clone(),
+			replay: "unsafe".into(),
+			secret: None,
+		};
+		let result = tools(&[&endpoint])
+			.invoke(&config, json!({}), "key", None)
+			.await
+			.unwrap();
+		assert_eq!(result["error"]["status"], 500);
+		assert_eq!(result["error"]["kind"], "http_status");
+		assert!(
+			result["error"]["message"]
+				.as_str()
+				.unwrap()
+				.contains("may have started")
+		);
+		server.abort();
+	}
+
+	#[tokio::test]
+	async fn http_success_with_unreadable_result_is_completed() {
+		let (listener, port) = serve().await;
+		let server = tokio::spawn(async move {
+			axum::serve(
+				listener,
+				Router::new()
+					.route("/", post(|| async { "not json" }))
+					.route(
+						"/oversized",
+						post(|| async { Json(json!({"value":"x".repeat(256_001)})) }),
+					),
+			)
+			.await
+			.unwrap()
+		});
+		let endpoint = format!("http://127.0.0.1:{port}");
+		let result = tools(&[&endpoint])
+			.invoke(&http(endpoint.clone()), json!({}), "key", None)
+			.await
+			.unwrap();
+		assert_eq!(
+			result,
+			json!({"message":"The call succeeded but its result could not be read."})
+		);
+		let oversized = tools(&[&endpoint])
+			.invoke(
+				&http(format!("{endpoint}/oversized")),
+				json!({}),
+				"key",
+				None,
+			)
+			.await
+			.unwrap();
+		assert_eq!(oversized, result);
+		server.abort();
+	}
+
+	#[tokio::test]
+	async fn http_validation_failure_is_returned_as_a_tool_result() {
+		let (listener, port) = serve().await;
+		let server = tokio::spawn(async move {
+			axum::serve(
+				listener,
+				Router::new()
+					.route(
+						"/",
+						post(|| async { (StatusCode::UNPROCESSABLE_ENTITY, "invalid input") }),
+					)
+					.route(
+						"/long",
+						post(|| async {
+							(
+								StatusCode::UNPROCESSABLE_ENTITY,
+								format!("{}🦀", "x".repeat(4095)),
+							)
+						}),
+					),
+			)
+			.await
+			.unwrap()
+		});
+		let endpoint = format!("http://127.0.0.1:{port}");
+		let result = tools(&[&endpoint])
+			.invoke(&http(endpoint.clone()), json!({}), "key", None)
+			.await
+			.unwrap();
+		assert_eq!(
+			result,
+			json!({"error":{"kind":"http_status","status":422,"body":"invalid input"}})
+		);
+		let truncated = tools(&[&endpoint])
+			.invoke(&http(format!("{endpoint}/long")), json!({}), "key", None)
+			.await
+			.unwrap();
+		assert_eq!(
+			truncated["error"]["body"].as_str().unwrap(),
+			"x".repeat(4095)
+		);
+		server.abort();
+	}
+
 	fn tools(permitted: &[&str]) -> HttpTools {
 		HttpTools::new(
 			KeylessAccess::permitting(PermittedOrigins::parse(permitted).unwrap()),
@@ -193,10 +558,10 @@ mod destinations {
 			http(format!("http://public.example:{port}/echo")),
 			mcp(format!("http://public.example:{port}/mcp")),
 		] {
-			refused.push(matches!(
-				tools.invoke(&config, json!({}), "key", None).await,
-				Err(Error::Forbidden)
-			));
+			refused.push(
+				tools.invoke(&config, json!({}), "key", None).await.unwrap()["error"]["kind"]
+					== "outbound_policy",
+			);
 		}
 		let sessions = crate::plugin_sessions::McpPluginSessions::new(
 			KeylessAccess::default(),
@@ -229,10 +594,10 @@ mod destinations {
 			http(format!("http://127.0.0.1:{port}/echo")),
 			mcp(format!("http://127.0.0.1:{port}/mcp")),
 		] {
-			assert!(matches!(
-				tools.invoke(&config, json!({}), "key", None).await,
-				Err(Error::Forbidden)
-			));
+			assert_eq!(
+				tools.invoke(&config, json!({}), "key", None).await.unwrap()["error"]["kind"],
+				"outbound_policy"
+			);
 		}
 		never_accepts(&listener).await;
 	}
@@ -241,7 +606,7 @@ mod destinations {
 	async fn permitting_one_origin_does_not_permit_another_port() {
 		let (listener, port) = serve().await;
 		let tools = tools(&[&format!("http://127.0.0.1:{}", port.wrapping_add(1))]);
-		assert!(matches!(
+		assert_eq!(
 			tools
 				.invoke(
 					&http(format!("http://127.0.0.1:{port}/echo")),
@@ -249,9 +614,10 @@ mod destinations {
 					"key",
 					None,
 				)
-				.await,
-			Err(Error::Forbidden)
-		));
+				.await
+				.unwrap()["error"]["kind"],
+			"outbound_policy"
+		);
 		never_accepts(&listener).await;
 	}
 
@@ -263,10 +629,10 @@ mod destinations {
 			http(format!("https://localhost:{port}/echo")),
 			mcp(format!("https://localhost:{port}/mcp")),
 		] {
-			assert!(matches!(
-				tools.invoke(&config, json!({}), "key", None).await,
-				Err(Error::Forbidden)
-			));
+			assert_eq!(
+				tools.invoke(&config, json!({}), "key", None).await.unwrap()["error"]["kind"],
+				"outbound_policy"
+			);
 		}
 		never_accepts(&listener).await;
 	}
@@ -277,17 +643,20 @@ mod destinations {
 		let server = tokio::spawn(async move { axum::serve(listener, fixture()).await.unwrap() });
 		let base = format!("http://127.0.0.1:{port}");
 		let tools = tools(&[&base]);
-		for config in [http(format!("{base}/moved")), mcp(format!("{base}/moved"))] {
-			assert!(matches!(
-				tools.invoke(&config, json!({}), "key", None).await,
-				Err(Error::External(_))
-			));
-		}
+		let http_result = tools
+			.invoke(&http(format!("{base}/moved")), json!({}), "key", None)
+			.await;
+		assert!(matches!(http_result, Err(Error::External(_))));
+		// Initialization failed before the MCP tools/call was sent.
+		let mcp_result = tools
+			.invoke(&mcp(format!("{base}/moved")), json!({}), "key", None)
+			.await;
+		assert!(matches!(mcp_result, Err(Error::ToolNotDelivered { .. })));
 		server.abort();
 	}
 
 	#[tokio::test]
-	async fn an_unreachable_permitted_origin_stays_an_outage() {
+	async fn an_unreachable_permitted_origin_is_not_delivered() {
 		let (listener, port) = serve().await;
 		drop(listener);
 		let base = format!("http://127.0.0.1:{port}");
@@ -295,7 +664,7 @@ mod destinations {
 		for config in [http(format!("{base}/echo")), mcp(format!("{base}/mcp"))] {
 			assert!(matches!(
 				tools.invoke(&config, json!({}), "key", None).await,
-				Err(Error::External(_))
+				Err(Error::ToolNotDelivered { .. })
 			));
 		}
 	}

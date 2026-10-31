@@ -33,6 +33,9 @@ pub struct ExecutionAgent {
 	/// Pinned through the Run's Binding snapshot; Legacy when the definition
 	/// names none.
 	pub projection_version: aidash_domain::projection::ProjectionVersion,
+	/// Pinned through the Run's Binding snapshot; `legacy@1` when the
+	/// definition names none.
+	pub harness_contract: aidash_domain::harness_contract::HarnessContract,
 	/// Pinned through the Run's Binding snapshot; `off` when the definition
 	/// names none (ADR 0019).
 	pub prompt_cache: aidash_domain::projection::PromptCache,
@@ -43,6 +46,8 @@ pub struct ExecutionAgent {
 pub struct InvocationOutcome {
 	pub status: String,
 	pub result: Option<Value>,
+	pub uncertain_reason: Option<String>,
+	pub retrying: bool,
 }
 /// One call journaled by Tool Batch admission.
 pub struct BatchInvocation<'a> {
@@ -245,6 +250,26 @@ pub trait ExecutionStore: Send + Sync {
 		input: &Value,
 		replay_safe: bool,
 	) -> Result<InvocationOutcome>;
+	/// Record a not-delivered attempt under the lease. When the retry budget is
+	/// exhausted, atomically complete the invocation with `failure` so a crash
+	/// before the next step cannot dispatch an extra attempt.
+	async fn invocation_not_delivered(
+		&self,
+		_run: &Run,
+		_token: Uuid,
+		_key: &str,
+		_failure: &Value,
+	) -> Result<u32> {
+		Err(crate::Error::Invalid(
+			"tool delivery journal unavailable".into(),
+		))
+	}
+	/// Record an answer lost after sending, before releasing the worker lease.
+	async fn invocation_answer_lost(&self, _run: &Run, _token: Uuid, _key: &str) -> Result<()> {
+		Err(crate::Error::Invalid(
+			"tool delivery journal unavailable".into(),
+		))
+	}
 	/// Admit a Tool Batch atomically: persist the Run (whose ToolCall state
 	/// records the batch end) and journal every call as STARTED under the
 	/// worker lease and the stale-input check, before any call is dispatched.

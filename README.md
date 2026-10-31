@@ -168,6 +168,13 @@ Re-run `cargo make dev` to rebuild after source changes. The example credentials
 and localhost bindings are for local development. Configure unique credentials
 and an HTTPS endpoint for a deployed Deployment.
 
+The Compose backend is a debug build. Debug builds of the server binaries give
+their Tokio worker threads a 16 MiB stack, because unoptimized frames on a
+Run's memory recall path overflow Tokio's 2 MiB default ([#597](https://github.com/kent8192/aidash/issues/597)).
+Release builds keep Tokio's default. Setting `RUST_MIN_STACK` turns this
+default off and sizes every thread, the workers included; the test scripts and
+CI export `RUST_MIN_STACK=8388608`, so their workers run with 8 MiB.
+
 Compose waits for JetStream readiness and provisions the activation stream and
 durable consumer before starting the backend. The stream is recreated after
 `docker compose --profile dev down -v`, so a fresh stack exercises broker
@@ -231,8 +238,8 @@ project_id = "aidash-cloud-project"
 web_api_key = "PUBLIC_FIREBASE_WEB_API_KEY"
 public_origin = "https://develop.aidash.run"
 auth_helper = "public_origin"  # default "firebase"
-session_absolute_seconds = 43200
-session_idle_seconds = 1800
+session_absolute_seconds = 2592000
+session_idle_seconds = 604800
 shared_pool = "shared-pool-id"
 password_sign_up = ["shared-pool-id", "acme-pool-id"]
 
@@ -274,7 +281,7 @@ Self-hosted Aidash signs in through any OpenID Connect issuer, directly with Goo
 2. Create an OAuth client of type **Web application**. Register the exact authorized redirect URI `<origin>/auth/callback`, for example `https://dashboard.example.test/auth/callback`.
 3. Set `AIDASH_OIDC_CLIENT_ID`, `AIDASH_OIDC_CLIENT_SECRET`, and `AIDASH_OIDC_PUBLIC_ORIGIN` on the backend as shown in `.env.example`, then restart it. `AIDASH_OIDC_ISSUER` defaults to `https://accounts.google.com`. Keep the client secret on the backend only.
 
-The Vite proxy forwards `/auth` to the backend. Every dashboard origin that enables browser sign-in must use trusted HTTPS, which enables Secure host-only session cookies. Upgrading from a release that allowed loopback HTTP signs existing browser sessions out once; desktop credentials are unaffected. Sessions expire after 12 hours or 30 minutes without user activity by default. See [Google's OpenID Connect documentation](https://developers.google.com/identity/openid-connect/openid-connect) for provider setup.
+The Vite proxy forwards `/auth` to the backend. Every dashboard origin that enables browser sign-in must use trusted HTTPS, which enables Secure host-only session cookies. Upgrading from a release that allowed loopback HTTP signs existing browser sessions out once; desktop credentials are unaffected. Sessions expire after 30 days or 7 days without user activity by default. See [Google's OpenID Connect documentation](https://developers.google.com/identity/openid-connect/openid-connect) for provider setup.
 
 Aidash reads no account status from an OIDC issuer: a valid ID token is the whole admission. An issuer may still send back-channel logout notifications to `POST /auth/backchannel-logout`; Google sends none. Account changes at the issuer therefore do not immediately revoke existing Aidash sessions or pause admitted work. Aidash continues checking local identity disablement, subject policy, mappings and credentials at execution boundaries; use local mapping/deployment-administrator-grant revocation to remove access. Aidash logout affects Aidash sessions, not the Google browser session. No offline Google access or refresh token is requested.
 

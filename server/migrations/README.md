@@ -1,5 +1,11 @@
 # Aidash native migration history
 
+`execution/0081_lease_recoveries` updates the physical `runs.pending` default,
+and replaces the activation trigger function. PostgreSQL function replacement
+is a SQL exception that Reinhardt cannot express. The server decodes the
+former Lease Recovery flag of existing Runs, so the migration writes no Run
+rows; rollback does not rewrite stored counters for older binaries.
+
 Issue #296 adds write-only Tenant Secrets in `identity/0036` through `0038`
 and durable operation egress budgets and audits in `execution/0046` through
 `0048`. Their forced Tenant row policies use the existing policy renderer.
@@ -9,6 +15,21 @@ constraints use typed Reinhardt operations. PostgreSQL function replacements
 remain SQL DDL assets because Reinhardt has no function-body operation. The
 reverse restores the previous Tool and Agent contracts; remove External
 service definitions and bindings before reversing the kind constraints.
+
+`identity/0041_catalog_restriction` adds a nullable `restriction` jsonb column
+to `authorization_catalog` and to its append-only history (ADR 0029, ADR 0095).
+The column names subjects and Assignable Groups that may use one exact version
+on one Node; NULL keeps the pre-existing meaning, everyone the Tenant's policy
+allows, so every existing approval and history row migrates as unrestricted.
+The columns are typed `AddColumn` operations, so the model state follows the
+physical migration and no state-only checkpoint is needed.
+
+`identity/0042_catalog_approval_requests` creates the Tenant-owned request
+table for ADR 0096, its `0043` row policy and its `0044` state-only snapshot.
+The physical table has a partial unique index keeping at most one open request
+per requester, root and Node, and a check that only a declined request carries
+a decline reason. The policy asset follows the standard Tenant template; the
+state snapshot carries the columns without the physical checks and index.
 
 Reinhardt is the sole migration owner. The source files are grouped under the
 labels `identity`, `registry`, `workspaces`, `execution`, `federation`, `knowledge`,
@@ -74,7 +95,7 @@ the pinned revision incorporates
 [#6638](https://github.com/kent8192/reinhardt-web/issues/6638). The final snapshot
 records the registered model metadata. These migrations extend the original table definitions and preserve their SQL
 assets. The environment migration additionally records conditional extension
-ownership before this new native history is published. The complete native graph contains 57
+ownership before this new native history is published. The complete native graph contains 58
 records and describes 119 models.
 
 The original baseline has 36 migrations for physical schema creation and eight
@@ -710,3 +731,34 @@ CHECKs bound the reason to 1 to 1000 characters and tie `identity_id` to a brows
 `execution/0078_run_safety_stops_row_level_security` adds the tenant policy template
 through `RunSQL`, and `execution/0079_run_safety_stops_state` is the generated state-only
 snapshot that leaves the physical constraints and indexes to `0077`.
+
+## Harness Contract versions (#531)
+
+`registry/0050_harness_contract` (after `registry/0048_context_marketplace_merge`
+and `registry/0045_agent_plugin_settings`)
+replaces `public.aidash_agent_bindings_is_valid` so the optional
+`harness_contract` key accepts `legacy@1`, `structured@1` or `structured@2`;
+omitted and explicit null are accepted so definitions written before #531 keep
+their bytes. `AgentBindings::validate` rejects a structured version whose
+Projection Version is not Native. PostgreSQL function bodies have no typed
+Reinhardt operation, so the replacement and its 0045 restore live in reversible
+SQL assets. Rollback refuses while definitions, packages, or Run Binding snapshots declare the key; restore the pre-upgrade backup to recover. It is database-only and changes no model state.
+
+`execution/0082_harness_contract` (after `execution/0081_lease_recoveries`)
+adds `inference_usage.harness_contract` with typed column operations. Historical
+Usage Records receive `1` (`legacy@1`); the migration then removes the default so
+every new dispatch supplies the pinned version, and a check keeps it positive.
+The generated state-only checkpoint `execution/0083_harness_contract_state`
+drops that check from the ORM snapshot again, because it is enforced apart from
+model state like the earlier `inference_usage` checks. Rollback drops the
+evidence column and loses the recorded versions.
+
+`registry/0052_harness_contract_structured3` lets the Agent Bindings validator accept
+`structured@3` (#532). Its rollback restores the 0050 body and refuses while
+definitions, packages or Run Binding snapshots declare `structured@3`.
+
+`registry/0051_harness_plugin_merge` joins the Harness Contract and Agent
+Plugin/Context Source heads. The Harness Contract validator extends the Agent
+Plugin settings validator, including its compaction rules, and restores that
+validator on rollback. The join is an empty state-only migration that preserves
+existing identities and one leaf per app.

@@ -190,6 +190,34 @@ impl Run {
 			== 1)
 	}
 
+	/// Durably sets the Lease Recovery count while the worker still holds the
+	/// lease. Like a renewal, it is not a scheduling transition (#604).
+	pub(crate) async fn charge_lease_recovery(
+		tx: &mut dyn TransactionExecutor,
+		id: Uuid,
+		worker: Uuid,
+		lease_recoveries: u32,
+	) -> Result<bool> {
+		Self::worker_context(tx).await?;
+		let (sql, values) = Query::update()
+			.table(Alias::new(Self::table_name()))
+			.value_expr(
+				Alias::new("pending"),
+				SimpleExpr::CustomWithExpr(
+					"jsonb_set(pending, '{recovery,lease_recoveries}', to_jsonb(?::integer))"
+						.to_owned(),
+					vec![Expr::value(i64::from(lease_recoveries)).into()],
+				),
+			)
+			.and_where(worker_lease(id, worker))
+			.build(PostgresQueryBuilder);
+		Ok(tx
+			.execute(&sql, convert_values(values))
+			.await?
+			.rows_affected
+			== 1)
+	}
+
 	pub(crate) async fn release_worker(
 		tx: &mut dyn TransactionExecutor,
 		id: Uuid,

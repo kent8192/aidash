@@ -6,8 +6,13 @@ import {
   dependencies,
   earlierAgentGroups,
   requestedGroups,
+  restrictionLabel,
+  restrictionRequest,
   unapprovedClosure,
+  unapprovedCompactionDecider,
   unapprovedDependency,
+  withdrawalAgentLabels,
+  withdrawalHasNoImpact,
 } from "../src/catalog-approval-model.ts";
 
 const version = (id, kind, config = {}, state = {}) => ({
@@ -140,6 +145,22 @@ test("only a dependency refusal names a dependency", () => {
   assert.equal(unapprovedDependency("forbidden"), null);
 });
 
+test("only a refused Run start names its compaction Decider", () => {
+  assert.deepEqual(
+    unapprovedCompactionDecider(
+      "COMPACTION_DECIDER_UNAPPROVED: aidash.compaction-decider@1.0.0",
+    ),
+    ref("aidash.compaction-decider"),
+  );
+  assert.equal(
+    unapprovedCompactionDecider(
+      "CATALOG_DEPENDENCY_UNAPPROVED: aidash.shell@1.0.0",
+    ),
+    null,
+  );
+  assert.equal(unapprovedCompactionDecider("forbidden"), null);
+});
+
 test("a new agent version starts from the latest approved earlier version's groups", () => {
   const agent = (number, groups, enabled = true) =>
     version(
@@ -213,5 +234,70 @@ test("an approval fences on the version's current approval revision", () => {
       expected_revision: 4,
       groups: ["members"],
     },
+  );
+});
+
+test("a restriction names subjects and groups, or clears them", () => {
+  assert.equal(restrictionRequest(undefined), undefined);
+  assert.deepEqual(restrictionRequest(null), { subjects: [], groups: [] });
+  assert.deepEqual(
+    restrictionRequest({
+      subjects: ["writer@1", "alice"],
+      groups: ["members"],
+    }),
+    { subjects: ["alice", "writer@1"], groups: ["members"] },
+  );
+  assert.equal(restrictionLabel(null), "");
+  assert.equal(
+    restrictionLabel({ subjects: ["alice"], groups: ["members"] }),
+    "alice, members",
+  );
+});
+
+test("an approval carries a named restriction and omits an absent one", () => {
+  const target = version(
+    "tool",
+    "tool",
+    {},
+    { approval: { enabled: true, revision: 2 } },
+  );
+  assert.deepEqual(
+    approvalRequest(target, true, undefined, {
+      subjects: ["alice"],
+      groups: [],
+    }),
+    {
+      entry: ref("tool"),
+      enabled: true,
+      expected_revision: 2,
+      restriction: { subjects: ["alice"], groups: [] },
+    },
+  );
+  assert.equal(
+    approvalRequest(target, true, undefined, undefined).restriction,
+    undefined,
+  );
+  assert.deepEqual(approvalRequest(target, true, undefined, null).restriction, {
+    subjects: [],
+    groups: [],
+  });
+});
+
+test("a withdrawal with no dependent Agent and no Run stops nothing", () => {
+  assert.equal(withdrawalHasNoImpact({ agents: [], running_runs: 0 }), true);
+  assert.equal(
+    withdrawalHasNoImpact({ agents: [ref("a")], running_runs: 0 }),
+    false,
+  );
+  assert.equal(withdrawalHasNoImpact({ agents: [], running_runs: 2 }), false);
+});
+
+test("a withdrawal lists the Agents it stops in a stable order", () => {
+  assert.deepEqual(
+    withdrawalAgentLabels({
+      agents: [ref("b", "2.0.0"), ref("a")],
+      running_runs: 1,
+    }),
+    ["a@1.0.0", "b@2.0.0"],
   );
 });

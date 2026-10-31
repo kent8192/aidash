@@ -136,6 +136,34 @@ async fn execute(fixture: &mut Fixture, remote: &Remote) -> Result<Option<Value>
 
 #[rstest]
 #[tokio::test]
+async fn read_only_plugin_round_replays_after_a_lost_answer(mut fixture: Fixture) {
+	fixture.run.state = RunState::ToolCall(Box::default());
+	let original = call("remote", "plugin__remote__ask", json!({}));
+	let key = format!("{KEY}:mcp:round:0");
+	let mut checkpoint = CallCheckpoint::new(KEY.into());
+	checkpoint.wire_pending = true;
+	checkpoint.sent = Some(aidash_domain::agent_plugin::interaction::SentRound {
+		key: key.clone(),
+		input: json!({"call": original, "request_state": null, "input_responses": {}}),
+	});
+	fixture.run.state.tool_mut().unwrap().mcp = Some(checkpoint);
+	fixture
+		.backend
+		.0
+		.invocations
+		.lock()
+		.unwrap()
+		.insert(key, ("STARTED".into(), None));
+	assert_eq!(
+		execute(&mut fixture, &Remote(Reply::InvalidInput))
+			.await
+			.unwrap(),
+		Some(json!({"error":"MCP_INPUT_INVALID"}))
+	);
+}
+
+#[rstest]
+#[tokio::test]
 async fn a_rejected_input_batch_finishes_the_round_and_replays_its_error(mut fixture: Fixture) {
 	fixture.run.state = RunState::ToolCall(Box::default());
 	let expected = json!({"error":"MCP_INPUT_INVALID"});
@@ -218,6 +246,9 @@ async fn sampling_resume_failures_close_the_attempt_and_invocation(
 async fn capped_sampling_returns_partial_text_and_max_tokens_without_a_provider_retry(
 	mut fixture: Fixture,
 ) {
+	let state = Arc::get_mut(&mut fixture.backend.0).unwrap();
+	state.projection = aidash_domain::projection::ProjectionVersion::Native;
+	state.harness_contract = aidash_domain::harness_contract::HarnessContract::Structured2;
 	sampling(&mut fixture);
 	fixture
 		.backend
@@ -251,6 +282,12 @@ async fn capped_sampling_returns_partial_text_and_max_tokens_without_a_provider_
 		[vec![ProgressOutcome::Accepted]]
 	);
 	assert_eq!(fixture.backend.0.requests.lock().unwrap().len(), 1);
+	assert_eq!(
+		fixture.backend.0.usage.lock().unwrap()[0]
+			.0
+			.harness_contract,
+		3
+	);
 	assert_eq!(
 		fixture.backend.0.usage.lock().unwrap()[0].1,
 		Some(UsageOutcome::Completed(ReportedUsage {

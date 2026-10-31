@@ -228,3 +228,16 @@ fn pool_settings_name_only_shared_or_bound_pools(
 	}
 	assert!(gcip_config.normalized().is_err(), "{setting}");
 }
+
+#[rstest]
+fn gcip_session_lifetime_defaults_and_bound(mut gcip_config: GcipConfig) {
+	assert_eq!(gcip_config.session_idle_seconds, 604_800);
+	assert_eq!(gcip_config.session_absolute_seconds, 2_592_000);
+	gcip_config.session_idle_seconds = 2_592_000;
+	assert!(gcip_config.normalized().is_ok());
+	gcip_config.session_absolute_seconds = 2_592_001;
+	assert!(gcip_config.normalized().is_err());
+	gcip_config.session_idle_seconds = 2_592_001;
+	gcip_config.session_absolute_seconds = 2_592_000;
+	assert!(gcip_config.normalized().is_err());
+}

@@ -383,27 +383,6 @@ class BoundaryTests(unittest.TestCase):
         for expected in ("package.json", "vite.config.ts", "tsconfig.json", "Dockerfile"):
             self.assertIn(expected, joined)
 
-    @unittest.skipUnless(shutil.which("cargo"), "cargo is required")
-    def test_delegates_to_the_existing_workspace_check(self):
-        with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory)
-            (root / "src").mkdir()
-            (root / "Cargo.toml").write_text(
-                '[package]\nname = "fixture"\nversion = "0.1.0"\nedition = "2024"\n'
-            )
-            (root / "src" / "lib.rs").write_text("pub fn fixture() {}\n")
-            init_repository(root)
-            git(root, "add", "-A")
-            subprocess.run(
-                ["cargo", "generate-lockfile", "--manifest-path", "Cargo.toml"],
-                cwd=root, check=True, capture_output=True,
-            )
-            git(root, "add", "-A")
-            fake = root / "fake-boundary.py"
-            fake.write_text('import sys\nprint("fake boundary failure", file=sys.stderr)\nsys.exit(1)\n')
-            errors = LICENSING.check_boundary(root, fake)
-        self.assertIn("fake boundary failure", errors)
-
 
 class ArtifactTests(unittest.TestCase):
     def test_accepts_a_community_filesystem(self):

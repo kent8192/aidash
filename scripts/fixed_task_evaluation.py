@@ -32,8 +32,12 @@ from fixed_task_fixture import FIXTURE_PATCHES, PRICING_COMPLETE, PRICING_VISIBL
 
 ROOT = Path(__file__).resolve().parent.parent
 EVALUATION = ROOT / "tests/evaluation"
+# Earlier corpus versions, kept so their result manifests still validate. Each archive
+# hashes under its original name, corpus.toml.
+ARCHIVED_CORPORA = {"fixed-task-corpus-v1": EVALUATION / "corpus-v1.toml",
+                    "fixed-task-corpus-v2": EVALUATION / "corpus-v2.toml"}
 EVALUATOR_NAME = "aidash-fixed-task-evaluator"
-EVALUATOR_VERSION = "2.1.4"
+EVALUATOR_VERSION = "2.1.5"
 # Files whose bytes define the evaluator, relative to the repository root; their digest is in
 # every manifest. The schemas belong here because they decide which evidence `validate` accepts.
 EVALUATOR_FILES = ("scripts/fixed_task_evaluation.py", "scripts/fixed_task_fixture.py", "scripts/fixed_task_runner.py",
@@ -41,6 +45,9 @@ EVALUATOR_FILES = ("scripts/fixed_task_evaluation.py", "scripts/fixed_task_fixtu
                    "tests/evaluation/schema/experiment.schema.json", "tests/evaluation/schema/result.schema.json")
 OUTCOMES = ("success", "false_completion", "policy_compliant_escalation", "unresolved",
             "overflow_failure", "interrupted", "infrastructure_failure")
+# The approver accepts that only Decider/Summary call counts are enforced; each call's
+# declared amount is reserved against the campaign ceiling, never proven as a cap.
+DECLARED_RESERVATION_ACCEPTED = "declared-reservation-accepted"
 LONG_CONTEXT = ("none", "pruning", "summary_recovery", "terminal_overflow")
 TERMINAL_PHASES = ("COMPLETED", "FAILED", "CANCELLED")
 CONCLUSION_SCOPE = ("Conclusions are limited to the tested tasks, fixture or model configuration and "
@@ -50,7 +57,7 @@ CONCLUSION_SCOPE = ("Conclusions are limited to the tested tasks, fixture or mod
 UNRUNNABLE_STATUSES = ("feature-not-available", "not-measured")
 # The only Agent fields a comparison arm may set. Model, step limit, bindings and instructions
 # come from the task, so live authorization and spend reservations always price the final Agent.
-COMPARISON_AGENT_FIELDS = ("projection_version", "prompt_cache", "exposure")
+COMPARISON_AGENT_FIELDS = ("projection_version", "prompt_cache", "exposure", "harness_contract")
 # The implicit builtins an Agent gets unless `remove_default` names them, the ones bound Skills
 # need, and the deferred@1 exposure builtins (crates/aidash-domain/src/registry/bindings.rs,
 # exposure.rs `default_tools` and `skill_support_tools`). test_fixed_task_evaluation.py checks
@@ -59,6 +66,13 @@ DEFAULT_TOOLS = ("workspace_observe", "workspace_wait", "skill_list", "skill_loa
                  "file_read", "task_create", "task_delegate", "agent_discover", "artifact_publish",
                  "workspace_message", "memory_mutate", "memory_recall", "memory_reflect")
 SKILL_TOOLS = ("skill_list", "skill_load", "skill_read")
+# The built-in compaction Decider every ordinary Agent is bound to; `remove_default` names it like a tool.
+COMPACTION_DEFAULT = "compaction"
+# `Failure::label` (crates/aidash-domain/src/context/recovery.rs): why a Run's context pause was recorded.
+CONTEXT_REASONS = ("source_selection_unavailable", "source_selection_forbidden", "source_selection_unapproved",
+                   "source_selection_calls_exhausted", "context_unreducible", "decider_unapproved",
+                   "decider_calls_exhausted", "decider_unavailable", "summary_unavailable", "summary_invalid",
+                   "overflow_retries_exhausted", "output_truncated", "refused")
 SKILL_ASSET_READ = "skill_asset_read"
 EXPOSURE_TOOLS = ("capability_search", "capability_describe", "capability_load", "capability_unload")
 ORACLE_KINDS = ("python-tests", "json-overdue-totals", "constraint-retention", "tool-selection",
@@ -298,8 +312,7 @@ def validate_result(result, corpus=None, memory_corpus=None):
     errors += non_finite_numbers(result)
     if not errors and isinstance(result, dict):
         if corpus is None:
-            legacy = result["experiment"]["corpus"]["version"] == "fixed-task-corpus-v1"
-            corpus = load_corpus(EVALUATION / "corpus-v1.toml" if legacy else None)
+            corpus = load_corpus(ARCHIVED_CORPORA.get(result["experiment"]["corpus"]["version"]))
         errors += consistency_errors(result, corpus, memory_corpus or load_memory_corpus())
     if errors:
         raise CorpusError("result manifest is invalid:\n" + "\n".join(errors[:50]))
@@ -659,8 +672,9 @@ def classification_errors(run):
         expected = "false_completion" if oracle["passed"] is not True else \
             "policy_compliant_escalation" if oracle["kind"] == "escalation" else "success"
     elif phase in ("FAILED", "CANCELLED"):
-        # Without an infrastructure error, `error` is the Run's own error.
-        expected = "overflow_failure" if is_overflow(run["error"]) else "unresolved"
+        # Without an infrastructure error, `error` is the Run's own error; a context pause is never overflow.
+        expected = "unresolved" if run.get("context_reason") else \
+            "overflow_failure" if is_overflow(run["error"]) else "unresolved"
     else:
         expected = "interrupted"
     if outcome != expected:
@@ -746,7 +760,7 @@ def load_corpus(path=None):
                 errors.append(f"comparison {item['id']} names unknown model {item['model']}")
     tools = {tool["alias"]: tool for tool in corpus["tools"]}
     skills = {skill["id"] for skill in corpus.get("skills", [])}
-    corpus_name = "corpus.toml" if path.name == "corpus-v1.toml" else path.name
+    corpus_name = "corpus.toml" if path.name in {item.name for item in ARCHIVED_CORPORA.values()} else path.name
     files = [corpus_name]
     ids = set()
     for task in corpus["tasks"]:
@@ -776,6 +790,9 @@ def load_corpus(path=None):
             errors += oracle_problems
         if task.get("expected", {}).get("outcome") not in OUTCOMES:
             errors.append(f"task {tid} declares an unknown expected outcome")
+        reason = task.get("expected", {}).get("context_reason")
+        if reason is not None and reason not in CONTEXT_REASONS:
+            errors.append(f"task {tid} declares an unknown expected context_reason")
         declared = task.get("tools", [])
         for alias in ([] if declared == "all" else declared) + [task.get("expected_tool")] * ("expected_tool" in task):
             if alias not in tools:
@@ -1386,6 +1403,8 @@ def classify(task, observation, oracle):
             return "policy_compliant_escalation" if task["oracle"]["kind"] == "escalation" else "success"
         return "false_completion"
     if phase in ("FAILED", "CANCELLED"):
+        if observation.get("context_reason"):
+            return "unresolved"  # Paused for a typed context reason: the evaluator cancelled it.
         return "overflow_failure" if is_overflow(observation.get("error")) else "unresolved"
     return "interrupted"
 
@@ -1553,7 +1572,8 @@ def record_run_result(corpus, planned, repeat, observation, tier, oracle):
         # The provenance `classify` used, so validation can recompute the outcome exactly.
         "interrupted": bool(observation.get("interrupted")),
         "infrastructure_error": observation.get("infrastructure_error") or None,
-        "outcome": outcome, "claimed_success": claimed_success(answer), "oracle": oracle,
+        "outcome": outcome, "context_reason": observation.get("context_reason"),
+        "claimed_success": claimed_success(answer), "oracle": oracle,
         "long_context": long_context(observation, outcome), "constraint_retention": retention,
         "tool_selection": selection, "wall_ms": float(observation.get("wall_ms", 0.0)),
         "steps": observation.get("steps"), "compactions": observation.get("compactions"),
@@ -1686,7 +1706,8 @@ def calibrate(corpus, runs):
     failures = []
     for run in runs:
         expected = tasks[run["task"]]["expected"]
-        observed = {"outcome": run["outcome"], "claimed_success": run["claimed_success"],
+        observed = {"outcome": run["outcome"], "context_reason": run.get("context_reason"),
+                    "claimed_success": run["claimed_success"],
                     "long_context": run["long_context"], "constraint_retention": run["constraint_retention"],
                     "tool_selection_correct": run["tool_selection"]["correct"] if run["tool_selection"] else None}
         for name, value in expected.items():
@@ -1724,15 +1745,20 @@ def auxiliary_allowance(approval):
 
     Call counts are checked against pinned Registry configurations. The declared
     per-call amount is only a reservation, not proof of an upstream monetary cap.
-    Execution must additionally pass require_enforceable_auxiliary_bound; until an
-    enforced provider/broker contract exists, live auxiliary dispatch is refused.
+    Execution must additionally pass require_enforceable_auxiliary_bound: live
+    auxiliary dispatch is refused unless the approval explicitly accepts the
+    declared reservation as the only per-call bound (`cost_enforcement`).
     """
     value = approval.get("external_compaction")
     if value == "disabled":
         return {"decider": None, "summary": None, "worst_case_nanocredits": 0}
     prefix = "disclosure approval external_compaction"
-    if not isinstance(value, dict) or set(value) != {"mode", "decider", "summary"} or value.get("mode") != "bounded":
+    if not isinstance(value, dict) or set(value) - {"cost_enforcement"} != {"mode", "decider", "summary"} or \
+            value.get("mode") != "bounded":
         raise GuardRefusal(prefix + ' must be "disabled" or an exact bounded decider/summary contract')
+    enforcement = value.get("cost_enforcement")
+    if enforcement is not None and enforcement != DECLARED_RESERVATION_ACCEPTED:
+        raise GuardRefusal(prefix + f' cost_enforcement must be "{DECLARED_RESERVATION_ACCEPTED}" when present')
     total = 0
     for kind in ("decider", "summary"):
         item = value[kind]
@@ -1753,16 +1779,26 @@ def auxiliary_allowance(approval):
         total += item["max_calls_per_run"] * item["max_nanocredits_per_call"]
     if value["decider"] is None:
         raise GuardRefusal(prefix + " bounded mode requires an approved compaction Decider")
-    return {"decider": value["decider"], "summary": value["summary"], "worst_case_nanocredits": total}
+    return {"decider": value["decider"], "summary": value["summary"], "worst_case_nanocredits": total,
+            "cost_enforcement": enforcement}
 
 
 def require_enforceable_auxiliary_bound(auxiliary):
-    """Refuse paid Decider work until an upstream-enforced monetary bound exists."""
-    if auxiliary.get("decider") or auxiliary.get("summary"):
+    """Refuse paid Decider work unless its approval accepts an unenforced per-call amount.
+
+    No provider or broker caps one Decider or Summary call in money: the Node
+    enforces only the call count (`max_calls_per_run`, the Context Policy's
+    `call_budget`). An approver may accept the declared `max_nanocredits_per_call`
+    as a reservation against the campaign ceiling instead, with
+    `cost_enforcement: "declared-reservation-accepted"`; the manifest records it.
+    """
+    if (auxiliary.get("decider") or auxiliary.get("summary")) and \
+            auxiliary.get("cost_enforcement") != DECLARED_RESERVATION_ACCEPTED:
         raise GuardRefusal("bounded Decider/Summary live dispatch is unavailable: max_nanocredits_per_call is an "
                            "declared reservation, not an enforceable per-physical-request monetary limit "
-                           "or receipt. An enforced provider/broker bound is required before the hard campaign "
-                           "ceiling can authorize these calls; retain recovery diagnostics as not measured")
+                           "or receipt. Either an enforced provider/broker bound or an approval with "
+                           f'external_compaction.cost_enforcement "{DECLARED_RESERVATION_ACCEPTED}" is required '
+                           "before the hard campaign ceiling can authorize these calls")
 
 
 def verify_auxiliary_configs(auxiliary, entries, provider):
