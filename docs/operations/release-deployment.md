@@ -43,8 +43,12 @@ deployments before authorizing their retry; mail retries do not redeploy.
    `develop` staging environment. Newer development commits supersede older
    candidates; a successful older run cannot publish readiness for a newer one.
    All Release CI runs share one concurrency group with
-   `cancel-in-progress: true`: the newest push cancels the older
-   running and pending Release CI. Ordinary application PRs retain full CI
+   `cancel-in-progress: false`: a running suite finishes, and the newest push
+   replaces only the pending run, so a day of merges still yields develop
+   results (#606). A newer candidate therefore waits up to one suite before its
+   own run starts. After each suite that is not cancelled, Release CI opens one
+   Issue marked `<!-- release-ci:develop-red -->` when develop is red, comments
+   on it while develop stays red, and closes it once a suite passes. Ordinary application PRs retain full CI
    and their own concurrency groups. Release CI includes the reusable
    Desktop workflow's native platform checks on the exact source S; application
    PRs keep their existing path-filtered Desktop workflow.

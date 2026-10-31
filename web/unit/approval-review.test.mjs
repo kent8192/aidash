@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import {
   answeredRequest,
   canRequestAgain,
+  consumerLabel,
   defaultSelection,
   itemKey,
   needsAction,
@@ -17,6 +18,7 @@ import {
 
 const item = (id, status, can_approve = true, extra = {}) => ({
   reference: { id, version: "1.0.0" },
+  consumers: [],
   kind: "model",
   name: { en: id },
   description: { en: `${id} description` },
@@ -236,4 +238,11 @@ test("a final request lets the requester ask again while unready", () => {
     canRequestAgain(request("declined"), { ...current, ready: true }),
     false,
   );
+});
+
+test("visible consumers explain the proposed restriction", () => {
+  const model = item("model", "approvable", true, {
+    consumers: ["node/agents/a@1", "node/agents/b@1"],
+  });
+  assert.equal(consumerLabel(model), "node/agents/a@1, node/agents/b@1");
 });

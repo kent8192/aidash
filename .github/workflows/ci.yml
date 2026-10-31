@@ -498,6 +498,7 @@ jobs:
       - run: python3 -m unittest discover -s scripts -p test_golden_path.py
       - run: python3 -m unittest discover -s scripts -p test_local_k8s_credentials.py
       - run: python3 -m unittest discover -s scripts -p test_ci_success_aggregate.py
+      - run: python3 -m unittest discover -s scripts -p test_develop_red.py
       # Fixed-task evaluator (#122): deterministic corpus, oracles and guard rails; no Docker or credentials.
       - run: python3 -m unittest discover -s scripts -p test_fixed_task_evaluation.py
       # Matched projection campaign import, statistical gates and shared limits (#181).
