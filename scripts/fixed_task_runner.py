@@ -612,7 +612,8 @@ def register_variants(experiment, corpus, planned_runs, model_refs, fixture_url,
         if task.get("requires_summary") and auxiliary and auxiliary.get("summary"):
             identifier, _, version = auxiliary["summary"]["reference"].partition("@")
             config.setdefault("context_policy", {"version": "context-recovery/1"})["summary"] = {
-                "model": {"id": identifier, "version": version}, "max_tokens": 1024,
+                # A reasoning or verbose summary model may need more than the default; at most 4096.
+                "model": {"id": identifier, "version": version}, "max_tokens": task.get("summary_max_tokens", 1024),
                 "call_budget": auxiliary["summary"]["max_calls_per_run"]}
         identifier = agent_id(experiment.prefix, planned)
         try:

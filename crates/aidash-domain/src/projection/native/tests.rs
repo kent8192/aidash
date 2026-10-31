@@ -147,7 +147,8 @@ fn elided_results_keep_their_call_id() {
 		panic!("expected a tool message")
 	};
 	assert_eq!(tool_call_id, "a");
-	assert_eq!(envelope.content, json!({"elided": true, "invocation": "a"}));
+	assert_eq!(envelope.content, ContextEvent::elided_result("a"));
+	assert_eq!(envelope.content["invocation"], "a");
 	check_model_turns(&native.history).unwrap();
 }
 
