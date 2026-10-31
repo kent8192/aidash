@@ -6115,6 +6115,174 @@ async fn catalog_request_is_fulfilled_by_the_review_and_grants_nothing_before_it
 
 #[rstest::rstest]
 #[tokio::test]
+async fn catalog_request_fulfilled_by_an_ordinary_approval_stays_final(
+	#[future(awt)]
+	#[from(common::native_application)]
+	fixture: common::ApplicationFixture,
+) {
+	let (f, url, schema) = fixture.runtime.parts();
+	let app = fixture.application;
+	let (_, alice, _) = bootstrap(&f, &app, "http://127.0.0.1:9").await;
+	let node = aidash_domain::nodes::NodeName::derived("acme");
+	let catalog = "/api/authorization/acme/catalog";
+	let set_model = |enabled: bool, expected_revision: u64| {
+		json!({"node":node,"entry":{"id":"model","version":"1.0.0"},
+			"enabled":enabled,"expected_revision":expected_revision})
+	};
+	let (status, body) = request(&app, &alice, "POST", catalog, set_model(false, 1)).await;
+	assert_eq!(status, 200, "{body}");
+	let (status, review) = request(
+		&app,
+		&alice,
+		"GET",
+		&format!("/api/authorization/acme/catalog/review?node={node}&entry=agent/research@1.0.0"),
+		Value::Null,
+	)
+	.await;
+	assert_eq!(status, 200, "{review}");
+	assert_eq!(review["ready"], false, "{review}");
+	// Requests are planted with Reinhardt Query: the HTTP submission refuses an
+	// unreviewable root, so the API cannot create the unrelated request below.
+	let open_request = |id: Uuid, root: &str, digest: &str| {
+		use reinhardt::query::{Alias, IntoValue, PostgresQueryBuilder, Query};
+		Query::insert()
+			.into_table(Alias::new("catalog_approval_requests"))
+			.columns(
+				[
+					"id",
+					"tenant",
+					"node",
+					"root_id",
+					"root_version",
+					"requester",
+					"reason",
+					"closure_digest",
+					"state",
+					"created_at",
+					"updated_at",
+					"revision",
+				]
+				.map(Alias::new),
+			)
+			.values_panic([
+				IntoValue::into_value(id),
+				IntoValue::into_value("acme"),
+				IntoValue::into_value(node.as_str().to_owned()),
+				IntoValue::into_value(root.to_owned()),
+				IntoValue::into_value("1.0.0"),
+				IntoValue::into_value("bob"),
+				IntoValue::into_value("Please"),
+				IntoValue::into_value(digest.to_owned()),
+				IntoValue::into_value("open"),
+				IntoValue::into_value(chrono::Utc::now()),
+				IntoValue::into_value(chrono::Utc::now()),
+				IntoValue::into_value(1_i64),
+			])
+			.to_string(PostgresQueryBuilder)
+	};
+	let request_state = |id: Uuid| {
+		use reinhardt::query::{Alias, IntoValue, PostgresQueryBuilder, Query};
+		Query::select()
+			.column(Alias::new("state"))
+			.from(Alias::new("catalog_approval_requests"))
+			.and_where(Expr::col("id").eq(IntoValue::into_value(id)))
+			.to_string(PostgresQueryBuilder)
+	};
+	let id = Uuid::new_v4();
+	sqlx::query(&open_request(
+		id,
+		"research",
+		review["closure_digest"].as_str().unwrap(),
+	))
+	.execute(f.store.pool.fixture_driver())
+	.await
+	.unwrap();
+	// An unrelated open request whose root cannot be reviewed at all (its
+	// Agent binds one target twice, which review refuses as invalid) must not
+	// roll back the approval below. Fault injection only: such a row predates
+	// the config constraint, so the table owner drops it to plant the row.
+	// Raw DDL because Reinhardt Query has no constraint-drop statement.
+	let owner = common::owner_pool(f.store.pool.fixture_driver()).await;
+	sqlx::query("ALTER TABLE registry DROP CONSTRAINT registry_agent_config")
+		.execute(&owner)
+		.await
+		.unwrap();
+	let deployment = f.config.deployment.clone();
+	let twice = json!({"kind":"tool","target":{"registry_deployment":deployment,
+		"id":"later","version":"1.0.0"},"narrow":{}});
+	let unreviewable = json!({"id":"unreviewable","version":"1.0.0","kind":"agent",
+		"name":{"en":"Unreviewable"},"description":{"en":"Invalid bindings"},
+		"config":{"schema_version":1,"model":{"id":"model","version":"1.0.0"},
+			"instructions":"Wait","bindings":[twice.clone(),twice],"remove_default":[]}});
+	{
+		use reinhardt::query::{Alias, IntoValue, PostgresQueryBuilder, Query};
+		sqlx::query(
+			&Query::insert()
+				.into_table(Alias::new("registry"))
+				.columns(["tenant", "id", "version", "kind", "metadata"].map(Alias::new))
+				.values_panic([
+					IntoValue::into_value("acme"),
+					IntoValue::into_value("unreviewable"),
+					IntoValue::into_value("1.0.0"),
+					IntoValue::into_value("agent"),
+					IntoValue::into_value(unreviewable),
+				])
+				.to_string(PostgresQueryBuilder),
+		)
+		.execute(f.store.pool.fixture_driver())
+		.await
+		.unwrap();
+	}
+	let unrelated = Uuid::new_v4();
+	sqlx::query(&open_request(
+		unrelated,
+		"unreviewable",
+		"sha256:unreviewable",
+	))
+	.execute(f.store.pool.fixture_driver())
+	.await
+	.unwrap();
+
+	// The ordinary approval endpoint completes the closure, then the approval
+	// is withdrawn again. The request was fulfilled at that write and stays so.
+	let (status, body) = request(&app, &alice, "POST", catalog, set_model(true, 2)).await;
+	assert_eq!(status, 200, "{body}");
+	let (status, body) = request(&app, &alice, "POST", catalog, set_model(false, 3)).await;
+	assert_eq!(status, 200, "{body}");
+
+	let state: String = sqlx::query_scalar(&request_state(id))
+		.fetch_one(f.store.pool.fixture_driver())
+		.await
+		.unwrap();
+	assert_eq!(state, "fulfilled");
+	let unrelated_state: String = sqlx::query_scalar(&request_state(unrelated))
+		.fetch_one(f.store.pool.fixture_driver())
+		.await
+		.unwrap();
+	assert_eq!(unrelated_state, "open");
+	// Nor does it fail the approver's queue read.
+	let (status, pending) = request(
+		&app,
+		&alice,
+		"GET",
+		&format!("/api/authorization/acme/catalog/requests/pending?node={node}"),
+		Value::Null,
+	)
+	.await;
+	assert_eq!(status, 200, "{pending}");
+	assert!(
+		pending["requests"]
+			.as_array()
+			.unwrap()
+			.iter()
+			.all(|request| request["id"] != id.to_string()),
+		"{pending}"
+	);
+	cleanup(f, &url, &schema).await;
+}
+
+#[rstest::rstest]
+#[tokio::test]
 async fn catalog_request_turns_stale_after_a_missing_dependency_is_registered(
 	#[future(awt)]
 	#[from(common::native_application)]

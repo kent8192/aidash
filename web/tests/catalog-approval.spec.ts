@@ -1007,6 +1007,36 @@ test("an approver opens a pending request with its id and declines it with a rea
   });
 });
 
+test("an approver scoped to named definitions still finds the pending queue", async ({
+  page,
+}) => {
+  const review = reviewBody([
+    reviewItem("writer", "agent", "approved"),
+    reviewItem("model", "model", "approvable"),
+  ]);
+  let pending = [requestBody("request-scoped")];
+  await reviewDashboard(page, {
+    // No collection-wide `catalog.approve`: the server filters per item.
+    actions: [],
+    review: () => review,
+    pending: () => pending,
+    answer: () => ({ json: { bindings: [], installations: [] } }),
+  });
+  await page.goto("/settings?view=registry");
+  await page.getByRole("button", { name: "Approval requests" }).click();
+  const queue = page.getByRole("region", { name: "Approval requests" });
+  await expect(queue.getByText("bob", { exact: true })).toBeVisible();
+
+  pending = [];
+  await page.reload();
+  await expect(
+    page.getByRole("button", { name: "Sources and indexes" }),
+  ).toBeVisible();
+  await expect(
+    page.getByRole("button", { name: "Approval requests" }),
+  ).toHaveCount(0);
+});
+
 test("a consumer's request is fulfilled through the approver queue and then reads ready", async ({
   browser,
 }) => {
