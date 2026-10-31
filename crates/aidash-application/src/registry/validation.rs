@@ -315,6 +315,7 @@ impl DefinitionValidation {
 				m.validate_projection_versions()?;
 				m.validate_cache_mode()?;
 				m.validate_provider_route()?;
+				m.validate_model_variant()?;
 				m.validate_estimate_diagnostics()?;
 				if m.provider_credential.is_some() || m.plan_connection.is_some() {
 					aidash_domain::provider_credentials::validate_model_id(&m.model_id)?;

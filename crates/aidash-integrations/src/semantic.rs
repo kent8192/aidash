@@ -20,6 +20,7 @@ pub fn client() -> Result<reqwest::Client> {
 		.timeout(TIMEOUT)
 		.connect_timeout(CONNECT_TIMEOUT)
 		.redirect(reqwest::redirect::Policy::none())
+		.user_agent(crate::USER_AGENT)
 		.build()
 		.map_err(crate::http_error)
 }
