@@ -32,6 +32,14 @@ enum Mode {
 	GarbageList,
 	/// `tools/call` fails after the server received it.
 	BreakCall,
+	RateCall,
+	UnreadableCall,
+	OversizedCall,
+	OversizedResult,
+	OversizedEvent,
+	OversizedFinalEvent,
+	TruncatedFinalEvent,
+	RejectCall,
 }
 
 struct Seen {
@@ -274,6 +282,36 @@ async fn rpc(
 		"tools/call" if matches!(*fake.mode.lock().unwrap(), Mode::BreakCall) => {
 			StatusCode::INTERNAL_SERVER_ERROR.into_response()
 		}
+		"tools/call" if matches!(*fake.mode.lock().unwrap(), Mode::RateCall) => (
+			StatusCode::TOO_MANY_REQUESTS,
+			[("retry-after", "60")],
+			"busy",
+		)
+			.into_response(),
+		"tools/call" if matches!(*fake.mode.lock().unwrap(), Mode::UnreadableCall) => {
+			([("content-type", "application/json")], "broken").into_response()
+		}
+		"tools/call" if matches!(*fake.mode.lock().unwrap(), Mode::OversizedCall) => {
+			([("content-type", "application/json")], "x".repeat(256_001)).into_response()
+		}
+		"tools/call" if matches!(*fake.mode.lock().unwrap(), Mode::OversizedResult) => {
+			Json(json!({"jsonrpc":"2.0","id":id,"result":{"content":[{"type":"text","text":"x".repeat(256_001)}]}})).into_response()
+		}
+		"tools/call" if matches!(*fake.mode.lock().unwrap(), Mode::OversizedEvent) => {
+			([("content-type", "text/event-stream")], format!("data: {{\"jsonrpc\":\"2.0\",\"method\":\"notifications/progress\",\"params\":{{\"detail\":\"{}\"}}}}\n\n", "x".repeat(256_001))).into_response()
+		}
+		"tools/call" if matches!(*fake.mode.lock().unwrap(), Mode::OversizedFinalEvent) => {
+			let event = json!({"jsonrpc":"2.0","id":id,"result":{"content":[{"type":"text","text":"x".repeat(256_001)}]}});
+			([("content-type", "text/event-stream")], format!("data: {event}\n\n")).into_response()
+		}
+		"tools/call" if matches!(*fake.mode.lock().unwrap(), Mode::TruncatedFinalEvent) => {
+			let event = json!({"jsonrpc":"2.0","id":id,"result":{"content":[{"type":"text","text":"x".repeat(256_001)}]}});
+			([("content-type", "text/event-stream")], format!("data: {event}")).into_response()
+		}
+		"tools/call" if matches!(*fake.mode.lock().unwrap(), Mode::RejectCall) => {
+			Json(json!({"jsonrpc":"2.0","id":id,"error":{"code":-32603,"message":"call rejected"}}))
+				.into_response()
+		}
 		"tools/call" => {
 			if fake
 				.lost_calls
@@ -405,6 +443,7 @@ impl Fixture {
 				&self.config,
 				tool,
 				digest,
+				false,
 				arguments,
 				"key-1",
 			)
@@ -522,7 +561,7 @@ async fn a_sent_call_is_never_replayed_on_session_loss_and_a_later_call_reopens_
 	let result = fixture
 		.call("alpha", &digest(&alpha()), json!({"q":"first"}))
 		.await;
-	assert!(matches!(result, Err(Error::External(_))));
+	assert_eq!(result.unwrap()["error"]["status"], 404);
 	assert_eq!(fixture.fake.count("tools/call"), 1);
 	assert_eq!(fixture.fake.count("initialize"), 1);
 	let result = fixture
@@ -538,6 +577,70 @@ async fn a_sent_call_is_never_replayed_on_session_loss_and_a_later_call_reopens_
 }
 
 #[tokio::test]
+async fn plugin_call_definitive_and_retryable_results_are_classified() {
+	let fixture = Fixture::start().await;
+	fixture.list().await.unwrap();
+	fixture.fake.set_mode(Mode::RateCall);
+	let limited = fixture.call("alpha", &digest(&alpha()), json!({})).await;
+	assert!(
+		matches!(limited, Err(Error::ToolNotDelivered { retry_after: Some(delay), .. }) if delay == Duration::from_secs(32))
+	);
+	fixture.fake.set_mode(Mode::UnreadableCall);
+	assert!(matches!(
+		fixture.call("alpha", &digest(&alpha()), json!({})).await,
+		Err(Error::External(_))
+	));
+	fixture.fake.set_mode(Mode::OversizedCall);
+	assert!(matches!(
+		fixture.call("alpha", &digest(&alpha()), json!({})).await,
+		Err(Error::External(_))
+	));
+	fixture.fake.set_mode(Mode::OversizedResult);
+	let success = fixture
+		.call("alpha", &digest(&alpha()), json!({}))
+		.await
+		.unwrap();
+	assert_eq!(
+		success,
+		json!({"message":"The call succeeded but its result could not be read."})
+	);
+	fixture.fake.set_mode(Mode::OversizedEvent);
+	let event = tokio::time::timeout(
+		Duration::from_secs(3),
+		fixture.call("alpha", &digest(&alpha()), json!({})),
+	)
+	.await
+	.unwrap();
+	assert!(matches!(event, Err(Error::External(_))));
+	fixture.fake.set_mode(Mode::OversizedFinalEvent);
+	let final_event = tokio::time::timeout(
+		Duration::from_secs(3),
+		fixture.call("alpha", &digest(&alpha()), json!({})),
+	)
+	.await
+	.unwrap()
+	.unwrap();
+	assert_eq!(final_event, success);
+	fixture.fake.set_mode(Mode::TruncatedFinalEvent);
+	let truncated = tokio::time::timeout(
+		Duration::from_secs(10),
+		fixture.call("alpha", &digest(&alpha()), json!({})),
+	)
+	.await
+	.unwrap();
+	assert!(matches!(truncated, Err(Error::External(_))));
+	fixture.fake.set_mode(Mode::RejectCall);
+	let rejected = fixture
+		.call("alpha", &digest(&alpha()), json!({}))
+		.await
+		.unwrap();
+	assert_eq!(
+		rejected,
+		json!({"error":{"kind":"mcp_error","message":"call rejected"}})
+	);
+}
+
+#[tokio::test]
 async fn a_call_that_failed_after_the_server_got_it_is_not_sent_again() {
 	let fixture = Fixture::start().await;
 	fixture.list().await.unwrap();
@@ -547,8 +650,29 @@ async fn a_call_that_failed_after_the_server_got_it_is_not_sent_again() {
 		.call("alpha", &digest(&alpha()), json!({"q": "x"}))
 		.await;
 
-	assert!(matches!(result, Err(Error::External(_))));
+	let result = result.unwrap();
+	assert_eq!(result["error"]["status"], 500);
+	assert!(
+		result["error"]["message"]
+			.as_str()
+			.unwrap()
+			.contains("may have started")
+	);
 	assert_eq!(fixture.fake.count("tools/call"), 1);
+	let retryable = fixture
+		.sessions
+		.call(
+			fixture.run,
+			&server("demo"),
+			&fixture.config,
+			"alpha",
+			&digest(&alpha()),
+			true,
+			json!({"q": "x"}),
+			"read-only-key",
+		)
+		.await;
+	assert!(matches!(retryable, Err(Error::ToolNotDelivered { .. })));
 }
 
 #[tokio::test]
@@ -660,13 +784,14 @@ async fn an_origin_the_deployment_did_not_permit_is_refused_before_any_connectio
 			&config,
 			"alpha",
 			"digest",
+			false,
 			json!({}),
 			"key-1",
 		)
 		.await;
 
 	assert!(matches!(listed, Err(Error::Forbidden)));
-	assert!(matches!(called, Err(Error::Forbidden)));
+	assert_eq!(called.unwrap()["error"]["kind"], "outbound_policy");
 	assert!(
 		tokio::time::timeout(Duration::from_millis(200), listener.accept())
 			.await
@@ -688,7 +813,10 @@ async fn a_server_that_rejects_initialization_is_reported_as_initialize_failed()
 			failure(listed.unwrap_err()),
 			Some(ListFailure::InitializeFailed)
 		);
-		assert!(matches!(called, Err(Error::External(_))));
+		match mode {
+			Mode::BreakInitialize => assert_eq!(called.unwrap()["error"]["status"], 500),
+			_ => assert!(matches!(called, Err(Error::ToolNotDelivered { .. }))),
+		}
 	}
 }
 
@@ -703,6 +831,19 @@ async fn a_server_nobody_answers_for_is_reported_as_unreachable() {
 		.await;
 
 	assert_eq!(failure(listed.unwrap_err()), Some(ListFailure::Unreachable));
+	let called = sessions
+		.call(
+			Uuid::new_v4(),
+			&server("demo"),
+			&remote(&origin, &[]),
+			"alpha",
+			&digest(&alpha()),
+			false,
+			json!({}),
+			"key",
+		)
+		.await;
+	assert!(matches!(called, Err(Error::ToolNotDelivered { .. })));
 }
 
 #[tokio::test]
@@ -828,6 +969,7 @@ async fn modern_http_returns_one_input_batch_and_only_an_explicit_continuation_s
 			&fixture.config,
 			"alpha",
 			&digest(&alpha()),
+			false,
 			json!({"q":"original"}),
 			"call",
 			None,
@@ -855,6 +997,7 @@ async fn modern_http_returns_one_input_batch_and_only_an_explicit_continuation_s
 			&fixture.config,
 			"alpha",
 			&digest(&alpha()),
+			false,
 			json!({"q":"original"}),
 			"call",
 			Some(&checkpoint),
@@ -914,6 +1057,7 @@ async fn legacy_inputs_are_answered_inside_the_live_call_and_overlaps_are_refuse
 				&fixture.config,
 				"alpha",
 				&digest(&alpha()),
+				false,
 				json!({}),
 				"call",
 				None,
@@ -970,6 +1114,7 @@ async fn a_live_input_wait_is_not_evicted_by_idle_or_session_capacity_and_can_st
 		&fixture.config,
 		"alpha",
 		&schema,
+		false,
 		json!({}),
 		"call",
 		None,

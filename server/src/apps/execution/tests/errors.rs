@@ -198,3 +198,18 @@ fn semantic_invariant_failures_are_not_retried_as_outages() {
 		"{failure:?}"
 	);
 }
+
+#[test]
+fn tool_retry_survives_native_worker_error_conversion() {
+	let native = Error::from(aidash_application::Error::ToolRetry {
+		message: "not delivered".into(),
+		count: 3,
+		retry_after: Some(std::time::Duration::from_secs(11)),
+	});
+	let application = aidash_application::Error::from(native);
+	let native = Error::from(application);
+	assert!(
+		matches!(crate::apps::execution::repositories::worker::classify_failure(&native),
+		aidash_application::recovery::ExecutionFailure::ToolRetry { count: 3, retry_after: Some(delay), .. } if delay == std::time::Duration::from_secs(11))
+	);
+}

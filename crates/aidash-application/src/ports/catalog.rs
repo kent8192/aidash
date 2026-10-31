@@ -19,6 +19,12 @@ pub trait CatalogScope: Send {
 	fn direct_user(&self, _reference: &EntityRef) -> String {
 		String::new()
 	}
+	/// The subject `agent` runs as on the executing agent's Node, for a closure
+	/// definition that `agent` rather than the executing agent uses directly.
+	/// Scopes without an executing agent return `None` and keep `direct_user`.
+	fn agent_subject(&self, _agent: &EntityRef) -> Option<String> {
+		None
+	}
 	/// Whether the stored Catalog Approval restriction admits `direct_user`.
 	/// Scopes without stored restrictions admit everyone, like an unrestricted
 	/// approval.

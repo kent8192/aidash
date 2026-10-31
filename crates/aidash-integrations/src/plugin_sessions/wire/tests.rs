@@ -92,6 +92,29 @@ async fn sse_limit_applies_to_each_event_across_a_long_lived_stream() {
 }
 
 #[tokio::test]
+async fn oversized_final_result_on_get_stream_keeps_its_request_identity() {
+	let response = json!({"jsonrpc":"2.0","id":42,"result":{"content":[{"type":"text","text":"x".repeat(256_001)}]}});
+	let (mut stream, server) = stream(vec![format!("data: {response}\n\n").into_bytes()]).await;
+	let event = tokio::time::timeout(std::time::Duration::from_secs(5), stream.next())
+		.await
+		.unwrap()
+		.unwrap()
+		.unwrap();
+	let synthetic: Value = serde_json::from_str(event.data.as_deref().unwrap()).unwrap();
+	assert_eq!(synthetic["id"], 42);
+	let message = synthetic["error"]["message"].as_str().unwrap();
+	assert_eq!(
+		crate::tools::mcp_protocol_result(message).unwrap(),
+		json!({"message":"The call succeeded but its result could not be read."})
+	);
+	assert!(matches!(
+		crate::tools::mcp_protocol_result(message),
+		Err(Error::External(_))
+	));
+	server.abort();
+}
+
+#[tokio::test]
 async fn sse_limit_rejects_oversized_events_and_unterminated_fields() {
 	for (prefix, newline, fields, terminated) in [
 		("data: ", "", 1, false),
