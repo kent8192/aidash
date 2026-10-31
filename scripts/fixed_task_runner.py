@@ -8,6 +8,7 @@ observes; fixed_task_evaluation.py grades and aggregates.
 import copy
 import json
 import time
+from urllib.parse import quote
 import uuid
 
 import tool_call_approvals
@@ -347,8 +348,8 @@ def cancel_run(api, token, task_uuid, run_id, clock, sleep, claim_uncertain=Fals
     grace_deadline = clock() + CANCEL_GRACE
     grace = api.until(grace_deadline, clock, sleep)
     while run_id is None:
-        run_id = next((run["id"] for run in grace.get("/api/state", token)["runs"] if run["task_id"] == task_uuid),
-                      None)
+        runs = [] if token is None else grace.get(f"/api/tasks/{task_uuid}/runs", token)["items"]
+        run_id = next((run["id"] for run in runs), None)
         if run_id is not None:
             break
         if not claim_uncertain:
@@ -368,6 +369,18 @@ def cancel_run(api, token, task_uuid, run_id, clock, sleep, claim_uncertain=Fals
         if clock() >= grace_deadline:
             raise RuntimeError(f"Run {run_id} did not acknowledge cancellation within {CANCEL_GRACE}s")
         sleep(min(1.0, max(0.0, grace_deadline - clock())))
+
+
+def pending_human_requests(api, token, run_id):
+    """Read every page, including pages shortened by visibility filtering."""
+    path = f"/api/human-requests?run={run_id}"
+    while True:
+        page = api.get(path, token)
+        yield from page["items"]
+        cursor = page["next_cursor"]
+        if cursor is None:
+            break
+        path = f"/api/human-requests?run={run_id}&cursor={quote(cursor, safe='')}"
 
 
 def record_final_state(observation, run):
@@ -435,12 +448,11 @@ def run_task(api, experiment, planned, repeat, agent_ref, fixture=None, usage_re
                         raise DeadlineExceeded(f"retrying the claim of Task {task_uuid} would pass the deadline") \
                             from error
                     sleep(delay)
-                    if any(run["task_id"] == task_uuid for run in bounded.get("/api/state", token)["runs"]):
+                    if bounded.get(f"/api/tasks/{task_uuid}/runs", token)["items"]:
                         break
             run_id = None
             while run_id is None:
-                run_id = next((run["id"] for run in bounded.get("/api/state", token)["runs"]
-                               if run["task_id"] == task_uuid), None)
+                run_id = next((run["id"] for run in bounded.get(f"/api/tasks/{task_uuid}/runs", token)["items"]), None)
                 if run_id is None:
                     if clock() > deadline:
                         raise RuntimeError(f"no Run appeared for Task {task_uuid}")
@@ -472,7 +484,7 @@ def run_task(api, experiment, planned, repeat, agent_ref, fixture=None, usage_re
                         run = stopped
                     break
                 if run["phase"] == "WAITING":
-                    for request in bounded.get("/api/state", token)["human_requests"]:
+                    for request in pending_human_requests(bounded, token, run_id):
                         if request["run_id"] != run_id or request.get("response") is not None:
                             continue
                         # The Agent raised this itself: the harness asks for tool calls through

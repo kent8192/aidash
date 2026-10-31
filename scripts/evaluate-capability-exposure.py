@@ -18,6 +18,7 @@ from pathlib import Path
 import time
 import tomllib
 import urllib.error
+import urllib.parse
 import urllib.request
 import uuid
 
@@ -95,10 +96,13 @@ def evaluate(call, node, model, profile, fixture=None, report=None, endpoint=Non
         return identifier
 
     def human_requests(run_id):
-        state = api("/api/state")
-        for request in state["human_requests"]:
-            if request["run_id"] == run_id and request.get("response") is None:
-                yield request
+        path = f"/api/human-requests?run={run_id}"
+        while True:
+            page = api(path)
+            yield from page["items"]
+            if page["next_cursor"] is None:
+                break
+            path = f"/api/human-requests?run={run_id}&cursor={urllib.parse.quote(page['next_cursor'], safe='')}"
 
     def run_task(case, variant, agent_id):
         nonlocal phase
@@ -113,7 +117,7 @@ def evaluate(call, node, model, profile, fixture=None, report=None, endpoint=Non
         deadline = time.monotonic() + timeout
         run_id = None
         while run_id is None:
-            run_id = next((run["id"] for run in api("/api/state")["runs"] if run["task_id"] == task), None)
+            run_id = next((run["id"] for run in api(f"/api/tasks/{task}/runs")["items"]), None)
             if run_id is None:
                 if time.monotonic() > deadline:
                     raise RuntimeError(f"no Run appeared for task {task}")
