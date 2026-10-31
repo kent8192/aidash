@@ -359,11 +359,25 @@ UI strings live in `web/src/locales/en-US.json` and `ja-JP.json`. Entity names a
 
 `GET /api/tasks?offset=N` returns up to 500 authorized tasks, newest first, with
 `next_offset` for the next page. `/api/state` includes only the first task page.
+`GET /api/tasks/{id}/runs` and `GET /api/human-requests` return `{items, next_cursor}`
+in newest-first order, with up to 50 candidates per page. Supply the opaque `cursor` to
+continue; visibility filtering can leave a page short or empty even when it has
+a next cursor. A full candidate page can also lead to an empty final page.
+Human Requests accept `run` and `state=pending|answered|all`;
+the default is `pending`. An unanswered request's `answer_by` comes from the
+owning Run's waiting state. Run creation times for records predating the
+creation-time migration are approximated by their last update at migration. The
+cursor currently encodes the last scanned candidate ID; candidate queries are
+restricted to the caller's readable Workspaces before individual visibility checks.
+Without `run`, the Human Request list first evaluates Workspace visibility across
+the Tenant; with `run`, it checks only that Run's Workspace.
+Run visibility still checks its dependencies, including every Human Request of
+the Run; the Human Request list reuses each Run decision within the page.
 `GET /api/runs/{id}?offset=N` returns at most 100 invocation previews; request the
 next offset when a page is full. Inputs/results over 1 KiB are represented by an
 explicit `truncated` marker and text preview. Durable execution records retain
 original values. Credential inventories use `?offset=N` pages of 200 records.
-Scoped collections fill pages after authorization checks.
+Other scoped collections fill pages after authorization checks.
 
 Scoped federation discovery returns `entries` and `next_offset`, with at most 64
 entries and 3 MB of metadata per response. Observation returns at most 100

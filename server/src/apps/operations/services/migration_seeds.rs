@@ -7,7 +7,7 @@ use std::path::{Path, PathBuf};
 
 pub struct MigrationSeeds;
 
-fn assets() -> [(&'static str, String); 4] {
+fn assets() -> [(&'static str, String); 6] {
 	use crate::apps::{
 		federation::services::migration_seed as federation,
 		marketplace::services::migration_seed as marketplace,
@@ -35,6 +35,14 @@ fn assets() -> [(&'static str, String); 4] {
 			"marketplace/sql/backward/0005_seed.sql",
 			format!("{};\n", marketplace::backward()),
 		),
+		(
+			"execution/sql/forward/0082_run_created_at.sql",
+			crate::apps::execution::services::migration_backfill::forward(),
+		),
+		(
+			"execution/sql/backward/0082_run_created_at.sql",
+			crate::apps::execution::services::migration_backfill::backward(),
+		),
 	]
 }
 
@@ -57,9 +65,7 @@ fn materialize(root: &Path, write: bool) -> CommandResult<()> {
 impl CapabilityCommand for MigrationSeeds {
 	fn cli(&self) -> clap::Command {
 		clap::Command::new("migrationseeds")
-			.about(
-				"Check or regenerate Query-backed baseline seed SQL without connecting to services",
-			)
+			.about("Check or regenerate Query-backed migration SQL without connecting to services")
 			.arg(
 				clap::Arg::new("check")
 					.long("check")
@@ -93,7 +99,7 @@ impl CapabilityCommand for MigrationSeeds {
 			.cloned()
 			.unwrap_or_else(|| PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("migrations"));
 		materialize(&root, matches.get_flag("write"))?;
-		println!("Baseline seed assets match their Reinhardt Query builders.");
+		println!("Migration assets match their Reinhardt Query builders.");
 		Ok(())
 	}
 }
@@ -128,5 +134,18 @@ mod tests {
 				Some(expected[index * 2 + 1].1.as_str())
 			);
 		}
+		let migration = FilesystemSource::new(&root)
+			.get_migration("execution", "0082_run_created_at")
+			.await
+			.unwrap();
+		assert!(
+			migration
+				.operations
+				.iter()
+				.any(|operation| matches!(operation,
+					Operation::RunSQL { sql, reverse_sql }
+					if sql == &expected[4].1 && reverse_sql.as_deref() == Some(expected[5].1.as_str())
+				))
+		);
 	}
 }
