@@ -731,3 +731,10 @@ CHECKs bound the reason to 1 to 1000 characters and tie `identity_id` to a brows
 `execution/0078_run_safety_stops_row_level_security` adds the tenant policy template
 through `RunSQL`, and `execution/0080_invocation_delivery` is the generated state-only
 snapshot that leaves the physical constraints and indexes to `0077`.
+
+`registry/0050_subnode_provider` extends the PostgreSQL built-in Tool descriptor
+validator with the six `core.subnodes@1` operations (#660). Its reversible
+`RunSQL` replaces the PostgreSQL function body because Reinhardt migrations
+cannot express PL/pgSQL function definitions. Rolling back restores the
+previous descriptor contract; existing Subnode descriptors then cannot be
+rewritten until the migration is reapplied.
