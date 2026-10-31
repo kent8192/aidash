@@ -48,32 +48,13 @@ impl OpenRouterProvider {
 		});
 		context
 	}
-	async fn verified_routes(&self, request: &ModelRequest) -> Result<Vec<String>> {
-		self.config.validate_provider_route_structure()?;
-		let formats: Vec<&str> = request
-			.content_parts
-			.iter()
-			.filter_map(|part| match part {
-				ContentPart::Image { media_type, .. } => Some(media_type.as_str()),
-				ContentPart::Audio { format, .. } => Some(format.as_str()),
-				ContentPart::Text(_) => None,
-			})
-			.collect();
-		if formats.is_empty() && self.config.provider_route.is_none() {
-			return Ok(Vec::new());
-		}
-		// Without a pin there is no candidate to report; this still fails the
-		// Run rather than pausing it (#658 decides outcomes by reason).
-		if !formats.is_empty()
-			&& self.config.provider_route.is_none()
-			&& self.config.media_routes.is_empty()
-		{
-			return Err(Error::Invalid(format!(
-				"model {} has no verified media route",
-				self.config.model_id
-			)));
-		}
-		let now = chrono::Utc::now();
+	/// Judges every candidate's approval evidence at `now`. Discovery can take
+	/// seconds, so callers check before it and again with a fresh `now` after it.
+	fn evidence_candidates(
+		&self,
+		formats: &[&str],
+		now: chrono::DateTime<chrono::Utc>,
+	) -> Result<Vec<RouteRefusal>> {
 		let timing = |verified, expires| {
 			let mut reasons = Vec::new();
 			if verified > now {
@@ -163,6 +144,35 @@ impl OpenRouterProvider {
 				});
 			}
 		}
+		Ok(candidates)
+	}
+	async fn verified_routes(&self, request: &ModelRequest) -> Result<Vec<String>> {
+		self.config.validate_provider_route_structure()?;
+		let formats: Vec<&str> = request
+			.content_parts
+			.iter()
+			.filter_map(|part| match part {
+				ContentPart::Image { media_type, .. } => Some(media_type.as_str()),
+				ContentPart::Audio { format, .. } => Some(format.as_str()),
+				ContentPart::Text(_) => None,
+			})
+			.collect();
+		if formats.is_empty() && self.config.provider_route.is_none() {
+			return Ok(Vec::new());
+		}
+		// Without a pin there is no candidate to report; this still fails the
+		// Run rather than pausing it (#658 decides outcomes by reason).
+		if !formats.is_empty()
+			&& self.config.provider_route.is_none()
+			&& self.config.media_routes.is_empty()
+		{
+			return Err(Error::Invalid(format!(
+				"model {} has no verified media route",
+				self.config.model_id
+			)));
+		}
+		// Reject expired evidence before spending a catalog round trip.
+		self.evidence_candidates(&formats, chrono::Utc::now())?;
 		let access = self
 			.access
 			.resolve(
@@ -250,6 +260,8 @@ impl OpenRouterProvider {
 			.get("data")
 			.and_then(Value::as_array)
 			.ok_or_else(|| Error::External("OpenRouter ZDR endpoint list unavailable".into()))?;
+		// Evidence may have expired while the catalog requests were in flight.
+		let mut candidates = self.evidence_candidates(&formats, chrono::Utc::now())?;
 		let mut eligible = Vec::new();
 		for candidate in &mut candidates {
 			if !candidate.reasons.is_empty() {

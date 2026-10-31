@@ -542,6 +542,72 @@ mod exact_routes {
 		assert_eq!(calls, 0);
 	}
 
+	/// Discovery may take seconds; evidence that lapses meanwhile must not
+	/// authorize the route even though both catalogs accept it.
+	#[tokio::test]
+	async fn evidence_expiring_during_discovery_is_rechecked() {
+		let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+		let endpoint = format!("http://{}/v1", listener.local_addr().unwrap());
+		let catalog = json!({"data":{"architecture":{"input_modalities":["text"]},"endpoints":[{"tag":"fixture/us","context_length":8192}]}});
+		let zdr = json!({"data":[{"model_id":"vendor/model","tag":"fixture/us"}]});
+		let calls = Arc::new(AtomicUsize::new(0));
+		let (catalog_calls, zdr_calls) = (calls.clone(), calls.clone());
+		let app = Router::new()
+			.route(
+				"/v1/models/vendor/model/endpoints",
+				get(move || {
+					let value = catalog.clone();
+					let calls = catalog_calls.clone();
+					async move {
+						calls.fetch_add(1, Ordering::SeqCst);
+						tokio::time::sleep(std::time::Duration::from_millis(1500)).await;
+						Json(value)
+					}
+				}),
+			)
+			.route(
+				"/v1/endpoints/zdr",
+				get(move || {
+					let value = zdr.clone();
+					let calls = zdr_calls.clone();
+					async move {
+						calls.fetch_add(1, Ordering::SeqCst);
+						Json(value)
+					}
+				}),
+			);
+		let _server = TestServer(tokio::spawn(async move {
+			axum::serve(listener, app).await.unwrap()
+		}));
+		let now = chrono::Utc::now();
+		let mut config: ModelConfig = serde_json::from_value(json!({"provider":"openrouter","model_id":"vendor/model","endpoint":endpoint,"context_window":8192,"modalities":["text"],"cost":{},"streaming":false})).unwrap();
+		config.provider_route = Some(ProviderRouteEvidence {
+			tag: "fixture/us".into(),
+			source: "approval".into(),
+			verified_at: now - chrono::Duration::minutes(1),
+			expires_at: now + chrono::Duration::milliseconds(750),
+		});
+		let provider = OpenRouterProvider {
+			clients: test_clients(),
+			config,
+			access: Arc::new(permitting(&endpoint)),
+			context: Default::default(),
+			cache_salt: None,
+		};
+		let request = ModelRequest {
+			instructions: "inspect".into(),
+			max_output_tokens: 64,
+			..Default::default()
+		};
+		let error = provider.verified_routes(&request).await.unwrap_err();
+		assert!(matches!(error, Error::ProviderRouteUnavailable { .. }));
+		assert!(
+			error.to_string().contains("approval evidence has expired"),
+			"{error}"
+		);
+		assert_eq!(calls.load(Ordering::SeqCst), 2);
+	}
+
 	#[tokio::test]
 	async fn media_refusals_combine_evidence_and_catalog_failures() {
 		let (error, calls) = refusal_fixture(
