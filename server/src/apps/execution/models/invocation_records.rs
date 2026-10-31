@@ -20,6 +20,7 @@ impl Invocation {
 			.table(Alias::new(Self::table_name()))
 			.value_expr(Alias::new("status"), Expr::value("COMPLETED"))
 			.value_expr(Alias::new("result"), Expr::value(result.clone()))
+			.value(Alias::new("delivery_pending"), false)
 			.and_where(Expr::col("idempotency_key").eq(Expr::value(key)))
 			.and_where(Expr::col("run_id").eq(Expr::value(run)))
 			.and_where(Expr::col("status").ne(reinhardt::query::Expr::value("COMPLETED")))

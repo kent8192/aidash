@@ -65,6 +65,8 @@ class FakeCluster:
         self.sql = {}
         self.role_sql = {}
         self.legacy_tables = set()
+        # Workloads whose Pods exist but whose container never starts (CrashLoopBackOff).
+        self.crashing = set()
 
     # Fixture controls
     def fail(self, event, error):
@@ -153,7 +155,8 @@ class FakeCluster:
             pods = []
             for (other, scope, name), obj in self.objects.items():
                 if other in {"deployment", "statefulset"} and scope == namespace and (names is None or name in names):
-                    pods += [{"status": {"phase": "Running"}}] * obj["spec"]["replicas"]
+                    state = {"waiting": {"reason": "CrashLoopBackOff"}} if name in self.crashing else {"running": {}}
+                    pods += [{"status": {"phase": "Running", "containerStatuses": [{"state": state}]}}] * obj["spec"]["replicas"]
             return pods
         if kind == "volumeattachment":
             result = []

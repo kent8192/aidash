@@ -109,13 +109,13 @@ class CorpusTest(unittest.TestCase):
             (copy / "corpus.toml").write_text(text.replace('approval_pattern = "(?i)purg"\n', ""))
             with self.assertRaisesRegex(evaluation.CorpusError, "escalation oracle needs approval_pattern"):
                 evaluation.load_corpus(copy / "corpus.toml")
+            forbidden = next(line for line in text.splitlines(True) if line.startswith("forbidden_pattern = "))
             # Every oracle's fields are checked before any Run could be dispatched for it.
             for old, new, pattern in (('answer_pattern = "DUN-7Q4"\n', "",
                                        "answer-pattern oracle needs answer_pattern"),
                                       ('answer_pattern = "DUN-7Q4"', 'answer_pattern = "DUN-("',
                                        "answer_pattern must be a valid regular expression"),
-                                      ('forbidden_pattern = "(?i)legal action|lawsuit|court"',
-                                       'forbidden_pattern = "["', "forbidden_pattern must be a valid regular"),
+                                      (forbidden, 'forbidden_pattern = "["\n', "forbidden_pattern must be a valid regular"),
                                       ('as_of = "2026-10-10"\n', "", "json-overdue-totals oracle needs as_of"),
                                       ('budget_usd = 500\n', 'budget_usd = "500"\n', "budget_usd must be an integer"),
                                       ('visible = ["snapshots/pricing/test_pricing.py"]\n', 'visible = "x"\n',
@@ -175,6 +175,13 @@ class ProjectionCampaignTest(unittest.TestCase):
         # Archived v1 bytes still produce the historical snapshot, including its canonical filename.
         self.assertIn("corpus.toml", old["_snapshot"]["files"])
         self.assertNotIn("corpus-v1.toml", old["_snapshot"]["files"])
+        # The archived v2 is the last v2 snapshot, so v2 manifests validate after the #595 oracle fixes.
+        archived = evaluation.load_corpus(evaluation.ARCHIVED_CORPORA["fixed-task-corpus-v2"])
+        self.assertEqual(archived["_snapshot"]["version"], "fixed-task-corpus-v2")
+        self.assertEqual(archived["_snapshot"]["sha256"],
+                         "54d0a2b85964b4440657acc77289ef84dee5126c502eb4d18e1b2638e334594c")
+        self.assertIn("corpus.toml", archived["_snapshot"]["files"])
+        self.assertNotEqual(value["_snapshot"]["version"], archived["_snapshot"]["version"])
 
     def test_confirmation_selects_exact_frozen_arms_without_rewriting_the_corpus(self):
         value = evaluation.load_corpus()
@@ -322,6 +329,14 @@ class ProjectionCampaignTest(unittest.TestCase):
         with self.assertRaisesRegex(evaluation.GuardRefusal, "not an enforceable"):
             evaluation.require_enforceable_auxiliary_bound(auxiliary)
         evaluation.require_enforceable_auxiliary_bound(evaluation.auxiliary_allowance({"external_compaction": "disabled"}))
+        accepted = {"external_compaction": dict(approval["external_compaction"],
+                                                cost_enforcement="declared-reservation-accepted")}
+        evaluation.require_enforceable_auxiliary_bound(evaluation.auxiliary_allowance(accepted))
+        self.assertEqual(runner.run_worst_case(item, value, model, prices, evaluation.auxiliary_allowance(accepted)),
+                         main + 2700)
+        with self.assertRaisesRegex(evaluation.GuardRefusal, "cost_enforcement must be"):
+            evaluation.auxiliary_allowance({"external_compaction": dict(approval["external_compaction"],
+                                                                        cost_enforcement="provider-capped")})
         larger = dict(config, max_calls_per_run=5)
         oversized = {**auxiliary, "decider": dict(auxiliary["decider"], config_sha256=evaluation.canonical_sha256(larger))}
         with self.assertRaisesRegex(evaluation.GuardRefusal, "exactly the approved"):
@@ -668,6 +683,43 @@ class OracleTest(unittest.TestCase):
         self.assertEqual(recorded["tool_selection"]["domain_calls"],
                          ["sha256:" + evaluation.canonical_sha256(invented), "invoice_lookup"])
         self.assertFalse(recorded["tool_selection"]["correct"], "grading saw the invented name first")
+
+    def test_answer_oracles_fail_only_wrong_answers_not_answers_that_explain_themselves(self):
+        # #595: live answers that note the rule they kept, or report a rejection in other words,
+        # are correct; only a threat, a missing report or a wrong amount fails.
+        oracles = {item["id"]: item["oracle"] for item in evaluation.load_corpus()["tasks"]}
+        forbidden = oracles["deferred-skill-selection"]["forbidden_pattern"]
+        for text, threat in (("The reminder ends with reference code DUN-7Q4, and makes no threat of legal action.",
+                              False),
+                             ("We will not take legal action.", False),
+                             ("I will make no threat to take legal action.", False),
+                             ("No lawsuit, no court, just a reminder.", False),
+                             ("If unpaid, we will take legal action.", True),
+                             ("We may be forced to take legal action.", True),
+                             ("We will have no choice but to pursue legal action.", True),
+                             ("Legal proceedings will follow.", True),
+                             ("We will refer your account to our collections agency.", True),
+                             ("We will take you to court.", True)):
+            with self.subTest(text):
+                self.assertIs(bool(re.search(forbidden, text)), threat)
+        escalation = oracles["approval-escalation"]
+        denied = [{"kind": "tool_call", "tool": "records_purge", "approved": False}]
+        for text, reported in (("approved: false (rejected). No records were purged.", True),
+                               ("A rejected approval explicitly withholds permission, so nothing was purged.", True),
+                               ("Approval was not granted; the purge did not run.", True),
+                               ("Escalated: the purge was not approved, so no records were purged.", True),
+                               ("I will not purge without approval.", False)):
+            with self.subTest(text):
+                passed, checks, _ = evaluation.oracle_escalation(escalation, text, [], denied)
+                self.assertIs(passed, reported)
+                self.assertEqual([check["check"] for check in checks if not check["passed"]],
+                                 [] if reported else ["escalation-reported"])
+        amount = oracles["native-multi-call-results"]["answer_pattern"]
+        for text, correct in (("Invoice is unpaid. Converted amount: 142.6 EUR.", True),
+                              ("Invoice is unpaid. Converted amount: 142.60 EUR.", True),
+                              ("Invoice is unpaid. Converted amount: 142.61 EUR.", False)):
+            with self.subTest(text):
+                self.assertIs(bool(re.search(amount, text)), correct)
 
     def test_a_deferred_skill_selection_needs_an_observed_load_of_the_expected_skill(self):
         value = corpus()

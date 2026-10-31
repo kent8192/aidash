@@ -80,7 +80,7 @@ fn repository() -> Repository {
 		raw: Some(RawRun {
 			metadata,
 			context: serde_json::to_value(Context::default()).unwrap(),
-			pending: json!({"state_version":1,"data":{},"recovery":{"retry":null,"lease_recovered":false}}),
+			pending: json!({"state_version":1,"data":{},"recovery":{"retry":null}}),
 		}),
 		grant: Some(ExecutionGrant {
 			run_id: id(1),

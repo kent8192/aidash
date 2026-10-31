@@ -156,13 +156,28 @@ impl Executor<'_> {
 			// retains the exact request that was sent.
 			run.state.tool_mut()?.mcp = Some(checkpoint.clone());
 			let invocation = store
-				.invocation_start(run, token, &round_key, "mcp.round", &wire_input, false)
+				.invocation_start(
+					run,
+					token,
+					&round_key,
+					"mcp.round",
+					&wire_input,
+					call.tool.replay_safe(),
+				)
 				.await?;
 			if invocation.status == "UNCERTAIN"
-				|| (recovering_send && invocation.status != "COMPLETED")
+				|| (recovering_send
+					&& invocation.status != "COMPLETED"
+					&& !invocation.retrying
+					&& !call.tool.replay_safe())
 			{
+				let reason = if invocation.uncertain_reason.as_deref() == Some("answer_lost") {
+					"its answer was lost after the request was sent"
+				} else {
+					"the worker stopped"
+				};
 				let prompt = format!(
-					"MCP tool {} may have completed. Reconcile its effect and answer with a JSON object containing result. It will not be sent again. Invocation: {round_key}",
+					"MCP tool {} may have completed before {reason}. Reconcile its effect and answer with a JSON object containing result. It will not be sent again. Invocation: {round_key}",
 					call.call.name
 				);
 				run.state.tool_mut()?.mcp = Some(checkpoint);
@@ -223,6 +238,35 @@ impl Executor<'_> {
 						Error::Invalid(message)
 						| Error::Domain(aidash_domain::Error::Invalid(message)),
 					) => ToolRound::Complete(json!({"error": message})),
+					Err(Error::ToolNotDelivered {
+						message,
+						retry_after,
+					}) => {
+						let failure = ToolRound::Complete(
+							json!({"error":{"kind":"not_delivered","message":message}}),
+						);
+						let count = store
+							.invocation_not_delivered(
+								run,
+								token,
+								&round_key,
+								&serde_json::to_value(&failure)?,
+							)
+							.await?;
+						if count > aidash_domain::semantic::OUTAGE_RETRIES {
+							failure
+						} else {
+							return Err(Error::ToolRetry {
+								message,
+								count,
+								retry_after,
+							});
+						}
+					}
+					Err(error @ Error::External(_)) => {
+						store.invocation_answer_lost(run, token, &round_key).await?;
+						return Err(error);
+					}
 					// Leave the sent request unfinished. Recovery reconciles it.
 					Err(error) => return Err(error),
 				};

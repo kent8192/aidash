@@ -332,6 +332,7 @@ impl<E: Executor> SchedulingScope for Scope<E> {
 		run: &Run,
 		token: Uuid,
 		seconds: i32,
+		node: &str,
 	) -> aidash_application::Result<Option<Run>> {
 		let (sql, values) = Query::update()
 			.table(Alias::new("runs"))
@@ -363,7 +364,25 @@ impl<E: Executor> SchedulingScope for Scope<E> {
 		// A claim proves every earlier lease lost, so its dispatched attempts
 		// can no longer complete even if this Run never infers again.
 		InferenceUsage::abandon_superseded(self.tx.executor(), run.id, token).await?;
-		if run.recovery.lease_recovered {
+		if run.recovery.lease_recoveries > 0 {
+			// Commit claim-time evidence before an Isolated Step can abort the process.
+			let (sql, values) = Query::insert()
+				.into_table(Alias::new("events"))
+				.columns([Alias::new("id"), Alias::new("node"), Alias::new("workspace_id"), Alias::new("kind"), Alias::new("data"), Alias::new("tenant")])
+				.from_subquery(Query::select()
+					.expr(Expr::value(Uuid::new_v4()))
+					.expr(Expr::value(run.is_local(node).then(|| run.node.to_string())))
+					.expr(Expr::value(run.is_local(node).then_some(run.workspace_id)))
+					.expr(Expr::value("run.lease_recovery_claimed"))
+					.expr(Expr::value(json!({"run_id": run.id, "task_id": run.task_id, "lease_recoveries": run.recovery.lease_recoveries, "isolated": true})))
+					.expr(crate::database::scope::tenant_of("runs", "id", run.id))
+					.to_owned())
+				.build(PostgresQueryBuilder);
+			self.tx
+				.executor()
+				.execute(&sql, convert_values(values))
+				.await
+				.map_err(Error::from)?;
 			// The previous worker's unsettled Compaction Attempt can never settle.
 			let (sql, values) =
 				crate::apps::execution::repositories::context_journal::abandon_open(run.id)
@@ -451,6 +470,52 @@ impl<E: Executor> SchedulingScope for Scope<E> {
 					.expr(Expr::value("run.invalid_state"))
 					.expr(Expr::value(
 						json!({"run_id":owned.id,"task_id":owned.task_id,"category":reason}),
+					))
+					.expr(crate::database::scope::tenant_of("runs", "id", owned.id))
+					.to_owned(),
+			)
+			.build(PostgresQueryBuilder);
+		self.tx
+			.executor()
+			.execute(&sql, convert_values(values))
+			.await
+			.map_err(Error::from)?;
+		Ok(())
+	}
+	async fn crash_loop(
+		&mut self,
+		owned: &RunMetadata,
+		token: Uuid,
+		state: &RunState,
+		reason: &str,
+		node: &str,
+		lease_recoveries: u32,
+	) -> aidash_application::Result<()> {
+		self.deliver_failure(owned, token, state, Some(reason))
+			.await?;
+		// Record the Crash Loop Failure in the same transaction as failure delivery.
+		let (sql, values) = Query::insert()
+			.into_table(Alias::new("events"))
+			.columns([
+				Alias::new("id"),
+				Alias::new("node"),
+				Alias::new("workspace_id"),
+				Alias::new("kind"),
+				Alias::new("data"),
+				Alias::new("tenant"),
+			])
+			.from_subquery(
+				Query::select()
+					.expr(Expr::value(Uuid::new_v4()))
+					.expr(Expr::value(
+						owned.is_local(node).then(|| owned.node.to_string()),
+					))
+					.expr(Expr::value(
+						owned.is_local(node).then_some(owned.workspace_id),
+					))
+					.expr(Expr::value("run.crash_loop"))
+					.expr(Expr::value(
+						json!({"run_id":owned.id,"task_id":owned.task_id,"lease_recoveries":lease_recoveries}),
 					))
 					.expr(crate::database::scope::tenant_of("runs", "id", owned.id))
 					.to_owned(),
