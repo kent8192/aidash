@@ -345,12 +345,14 @@ async fn a_connection_cannot_send_its_bearer_to_another_resource() {
 	let endpoint = format!("{}/mcp", server.uri());
 	let auth = connection("https://other.example/mcp", Arc::new(Tokens::default()));
 	let tools = HttpTools::new(permitting([endpoint.as_str()]), ToolClients::new().unwrap());
-	assert!(matches!(
+	// The refusal is a Failed Call the model reads (ADR 0106); nothing was sent.
+	assert_eq!(
 		tools
 			.invoke(&config(endpoint), json!({}), "key", Some(&auth))
-			.await,
-		Err(Error::Forbidden)
-	));
+			.await
+			.unwrap(),
+		crate::tools::tool_policy_refusal()
+	);
 	assert!(server.received_requests().await.unwrap().is_empty());
 }
 
@@ -436,10 +438,13 @@ async fn plugin_auth_refusal_after_an_accepted_input_round_is_not_replayed(#[cas
 			Some(&auth),
 		)
 		.await;
-	assert!(
-		matches!(result, Err(Error::External(_))),
-		"an accepted operation must stay an uncertain MCP failure: {result:?}"
-	);
+	// The service answered the continuation, so it is a Failed Call (ADR 0106), but the
+	// refusal of an accepted operation is never refreshed and resent.
+	let Ok(ToolRound::Complete(value)) = &result else {
+		panic!("an answered continuation must be a Failed Call: {result:?}");
+	};
+	assert_eq!(value["error"]["kind"], "http_status");
+	assert_eq!(value["error"]["status"], 401);
 	assert_eq!(
 		source.invalidations.load(SeqCst) + routes.invalidations.load(SeqCst),
 		0
